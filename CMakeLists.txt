@@ -1,0 +1,14 @@
+# Place all plugin .so files in a single output directory for easy loading.
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
+
+add_subdirectory(parser_json)
+add_subdirectory(parser_protobuf)
+add_subdirectory(parser_ros)
+add_subdirectory(data_load_csv)
+add_subdirectory(data_load_mcap)
+add_subdirectory(data_load_parquet)
+add_subdirectory(data_load_ulog)
+add_subdirectory(data_stream_zmq)
+add_subdirectory(data_stream_mqtt)
+add_subdirectory(data_stream_foxglove_bridge)
+add_subdirectory(data_stream_pj_bridge)
