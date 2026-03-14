@@ -318,7 +318,7 @@ class ParquetSource : public PJ::FileSourceBase {
         for (size_t c = 0; c < columns.size(); c++) {
           auto val = getArrowValueRef(col_arrays[c], row, columns[c].arrow_type);
           // Skip null cells — finishRow() auto-fills with null
-          if (std::holds_alternative<PJ::NullValue>(val)) continue;
+          if (PJ::sdk::isNull(val)) continue;
 
           row_fields.push_back({
               .name = columns[c].name,

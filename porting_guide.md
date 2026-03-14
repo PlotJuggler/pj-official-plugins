@@ -155,25 +155,30 @@ writeHost().appendRecord(*topic, PJ::Timestamp{ts}, fields);
 File: pj_datastore/src/writer.cpp, lines 516-567
 ```
 
-`ensureColumn()` now returns an error if the topic already has a builder with completed rows. This prevents schema fragmentation where early chunks lack columns that later chunks have (which caused segfaults when reading).
+`ensureColumn()` auto-seals the current chunk when a new column is added
+after rows already exist. The expanded column set continues in a fresh chunk.
+Readers treat absent columns in earlier chunks as null.
 
-**CRITICAL: Pre-register ALL columns before writing any data.**
+**Pre-registration is optional but recommended when the schema is known
+upfront** — it avoids mid-stream chunk sealing and enables the faster
+bound-write path (`appendBoundRecord`).
 
 ```cpp
 auto topic = writeHost().ensureTopic(topic_name);
 
-// Pre-register ALL fields FIRST — prevents mid-stream chunk sealing
+// Optional: pre-register fields when the schema is known upfront
 for (const auto& col_name : all_column_names) {
   writeHost().ensureField(*topic, col_name, PJ::PrimitiveType::kFloat64);
 }
 
-// NOW write data — all columns exist from the start
+// Write data — fields auto-create on first non-null value if not pre-registered
 for (...) {
   writeHost().appendRecord(*topic, ts, fields);
 }
 ```
 
-This was the root cause of the segfault in the CSV plugin with sparse data.
+The original CSV segfault was caused by the reader not handling varying column
+sets across chunks. That is now fixed — chunks may have different column sets.
 
 ### 3b. finishRow() auto-fills unset columns with null
 
@@ -351,10 +356,10 @@ This preserves: delimiter choice, time column selection, custom format, etc.
 
 The turtle.csv dataset has sparse data: turtle1 columns are empty on rows where turtle2 has data. The correct approach:
 
-1. Pre-register ALL columns before writing
+1. Pre-register columns (optional but recommended since CSV headers are known upfront)
 2. Group data points by timestamp (merge across columns)
 3. For each timestamp, write a record with only the columns that have data
-4. `finishRow()` fills missing columns with null automatically
+4. Missing columns are auto-filled with null
 
 ### Timestamp Column Selection
 
@@ -481,7 +486,7 @@ The following plugins compile and have unit tests but have **NOT been tested end
 
 ### Common Issues to Check in Each Plugin
 
-1. **Pre-register columns** before writing any data (if using direct ingest)
+1. **Pre-register columns** when the schema is known upfront (recommended for direct ingest, optional otherwise)
 2. **ValueRef types** — don't cast to double; push native int64/uint64/bool
 3. **string_view lifetime** — ensure owned strings outlive appendRecord call
 4. **Null handling** — readers must check `isNull()` before using values
