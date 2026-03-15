@@ -1,12 +1,7 @@
 find_package(nlohmann_json REQUIRED)
+find_package(date REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
-
-# Vendored date library (header-only)
-add_library(pj_date_lib INTERFACE)
-target_include_directories(pj_date_lib INTERFACE
-  ${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/date/include
-)
 
 # --- CSV parser library (pure C++, no Qt) ---
 add_library(csv_parser_lib STATIC
@@ -17,7 +12,7 @@ set_target_properties(csv_parser_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(csv_parser_lib PUBLIC cxx_std_20)
 target_compile_options(csv_parser_lib PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(csv_parser_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(csv_parser_lib PUBLIC pj_date_lib)
+target_link_libraries(csv_parser_lib PUBLIC date::date)
 
 # --- Plugin shared library ---
 add_library(csv_source_plugin SHARED src/csv_source.cpp)
