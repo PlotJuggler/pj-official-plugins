@@ -14,7 +14,7 @@ if(NOT TARGET data_tamer_parser)
 endif()
 
 # --- Plugin shared library ---
-add_library(parser_data_tamer_plugin SHARED src/data_tamer_parser.cpp)
+add_library(parser_data_tamer_plugin SHARED data_tamer_parser.cpp)
 target_compile_features(parser_data_tamer_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_data_tamer_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(parser_data_tamer_plugin PRIVATE pj_base data_tamer_parser)

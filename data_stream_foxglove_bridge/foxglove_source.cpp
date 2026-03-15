@@ -279,12 +279,13 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       }
     }
 
-    // Handle server status/warning messages
+    // Handle server status/warning messages (level: 0=info, 1=warning, 2=error)
     if (op == "status") {
       int level = json.value("level", 0);
       std::string status_msg = json.value("message", "");
-      auto pj_level = (level >= 2) ? PJ::DataSourceMessageLevel::kError
-                                   : PJ::DataSourceMessageLevel::kWarning;
+      auto pj_level = PJ::DataSourceMessageLevel::kInfo;
+      if (level == 1) pj_level = PJ::DataSourceMessageLevel::kWarning;
+      if (level >= 2) pj_level = PJ::DataSourceMessageLevel::kError;
       runtimeHost().reportMessage(pj_level, "Foxglove server: " + status_msg);
     }
   }

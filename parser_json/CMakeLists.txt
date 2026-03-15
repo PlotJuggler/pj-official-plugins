@@ -1,7 +1,7 @@
 find_package(nlohmann_json REQUIRED)
 
 # --- Plugin shared library ---
-add_library(parser_json_plugin SHARED src/json_parser.cpp)
+add_library(parser_json_plugin SHARED json_parser.cpp)
 target_compile_features(parser_json_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_json_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(parser_json_plugin PRIVATE pj_base nlohmann_json::nlohmann_json)

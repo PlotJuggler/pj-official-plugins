@@ -8,7 +8,7 @@ find_package(nlohmann_json REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 
-add_library(foxglove_source_plugin SHARED src/foxglove_source.cpp)
+add_library(foxglove_source_plugin SHARED foxglove_source.cpp)
 target_compile_features(foxglove_source_plugin PRIVATE cxx_std_20)
 target_compile_options(foxglove_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(foxglove_source_plugin PRIVATE
@@ -16,7 +16,7 @@ target_link_libraries(foxglove_source_plugin PRIVATE
 )
 
 pj_embed_ui(foxglove_source_plugin
-  UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/ui/foxglove_client.ui
+  UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/foxglove_client.ui
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/foxglove_client_ui.hpp
   VAR_NAME kFoxgloveClientUi
 )

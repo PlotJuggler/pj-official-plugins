@@ -1,4 +1,4 @@
-#include "../src/csv_parser.hpp"
+#include "../csv_parser.hpp"
 
 #include <gtest/gtest.h>
 

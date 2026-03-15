@@ -16,7 +16,7 @@ if(_ulog_includes)
 endif()
 
 # --- Plugin shared library ---
-add_library(ulog_source_plugin SHARED src/ulog_source.cpp)
+add_library(ulog_source_plugin SHARED ulog_source.cpp)
 target_compile_features(ulog_source_plugin PRIVATE cxx_std_20)
 target_compile_options(ulog_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(ulog_source_plugin PRIVATE pj_base ulog_cpp::ulog_cpp nlohmann_json::nlohmann_json)

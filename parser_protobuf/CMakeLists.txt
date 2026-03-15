@@ -1,7 +1,7 @@
 find_package(protobuf REQUIRED)
 
 # --- Plugin shared library ---
-add_library(parser_protobuf_plugin SHARED src/protobuf_parser.cpp)
+add_library(parser_protobuf_plugin SHARED protobuf_parser.cpp)
 target_compile_features(parser_protobuf_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_protobuf_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(parser_protobuf_plugin PRIVATE pj_base protobuf::protobuf)

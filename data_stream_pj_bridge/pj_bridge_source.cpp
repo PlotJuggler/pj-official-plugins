@@ -109,38 +109,30 @@ class PjBridgeSource : public PJ::StreamSourceBase {
                             address_ + ":" + std::to_string(port_));
     }
 
-    // Create parser bindings for selected topics
-    for (const auto& info : selected_topics_) {
-      auto schema_bytes = reinterpret_cast<const uint8_t*>(info.schema.data());
-
-      // Build parser config with array size policy
-      nlohmann::json parser_cfg;
-      parser_cfg["max_array_size"] = max_array_size_;
-      parser_cfg["clamp_large_arrays"] = clamp_large_arrays_;
-      parser_cfg["use_timestamp"] = use_timestamp_;
-
-      auto binding = runtimeHost().ensureParserBinding({
-          .topic_name = info.name,
-          .parser_encoding = info.encoding,
-          .type_name = info.schema_name,
-          .schema = PJ::Span<const uint8_t>(schema_bytes, info.schema.size()),
-          .parser_config_json = parser_cfg.dump(),
-      });
-      if (binding) {
-        bindings_[info.name] = *binding;
-      }
-    }
-
-    // Subscribe to selected topics
+    // Subscribe to selected topics — the response contains schemas needed for parsing
     nlohmann::json subscribe_cmd;
     subscribe_cmd["command"] = "subscribe";
+    subscribe_cmd["id"] = generateRequestId();
     subscribe_cmd["protocol_version"] = 1;
     nlohmann::json topic_names = nlohmann::json::array();
     for (const auto& info : selected_topics_) {
       topic_names.push_back(info.name);
     }
     subscribe_cmd["topics"] = topic_names;
+    subscribe_response_received_ = false;
     socket_->sendTextMessage(QString::fromStdString(subscribe_cmd.dump()));
+
+    // Wait for the subscribe response (contains schemas)
+    auto sub_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!subscribe_response_received_ &&
+           std::chrono::steady_clock::now() < sub_deadline) {
+      QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+    }
+
+    if (!subscribe_response_received_) {
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning,
+                                  "Subscribe response not received; parsers may lack schemas");
+    }
 
     return PJ::okStatus();
   }
@@ -199,9 +191,65 @@ class PjBridgeSource : public PJ::StreamSourceBase {
 
  private:
   void onTextMessage(const QString& message) {
-    // In streaming mode, text messages are protocol responses (heartbeat acks, etc.)
-    // Topic discovery is handled by the dialog — source just streams data.
-    (void)message;
+    auto json = nlohmann::json::parse(message.toStdString(), nullptr, false);
+    if (json.is_discarded() || !json.is_object()) return;
+
+    auto status = json.value("status", std::string{});
+
+    // Handle subscribe response: extract schemas and create parser bindings
+    if (json.contains("schemas") && (status == "success" || status == "partial_success")) {
+      auto schemas = json["schemas"];
+      if (schemas.is_object()) {
+        nlohmann::json parser_cfg;
+        parser_cfg["max_array_size"] = max_array_size_;
+        parser_cfg["clamp_large_arrays"] = clamp_large_arrays_;
+        parser_cfg["use_timestamp"] = use_timestamp_;
+        std::string parser_cfg_str = parser_cfg.dump();
+
+        for (auto it = schemas.begin(); it != schemas.end(); ++it) {
+          const std::string& topic_name = it.key();
+          auto& schema_obj = it.value();
+          std::string encoding = schema_obj.value("encoding", std::string("cdr"));
+          std::string definition = schema_obj.value("definition", std::string{});
+
+          // Find schema_name from selected_topics_ (the type name)
+          std::string schema_name;
+          for (const auto& info : selected_topics_) {
+            if (info.name == topic_name) {
+              schema_name = info.schema_name;
+              break;
+            }
+          }
+
+          auto schema_bytes = reinterpret_cast<const uint8_t*>(definition.data());
+          auto binding = runtimeHost().ensureParserBinding({
+              .topic_name = topic_name,
+              .parser_encoding = encoding,
+              .type_name = schema_name,
+              .schema = PJ::Span<const uint8_t>(schema_bytes, definition.size()),
+              .parser_config_json = parser_cfg_str,
+          });
+          if (binding) {
+            bindings_[topic_name] = *binding;
+          } else {
+            runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning,
+                                       "Failed to create parser for " + topic_name + ": " + binding.error());
+          }
+        }
+      }
+
+      // Report any failures from partial_success
+      if (json.contains("failures") && json["failures"].is_array()) {
+        for (const auto& f : json["failures"]) {
+          runtimeHost().reportMessage(
+              PJ::DataSourceMessageLevel::kWarning,
+              "Subscription failed: " + f.value("topic", std::string{"?"}) +
+              " — " + f.value("reason", std::string{"unknown"}));
+        }
+      }
+
+      subscribe_response_received_ = true;
+    }
   }
 
   void onBinaryMessage(const QByteArray& message) {
@@ -229,6 +277,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   std::vector<uint8_t> decompress_buffer_;
   int heartbeat_tick_ = 0;
   bool paused_ = false;
+  bool subscribe_response_received_ = false;
 };
 
 }  // namespace

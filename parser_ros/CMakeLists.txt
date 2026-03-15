@@ -29,7 +29,7 @@ target_include_directories(data_tamer_parser SYSTEM INTERFACE
   "${data_tamer_SOURCE_DIR}/data_tamer_cpp/include")
 
 # --- Plugin shared library ---
-add_library(parser_ros_plugin SHARED src/ros_parser.cpp)
+add_library(parser_ros_plugin SHARED ros_parser.cpp)
 target_compile_features(parser_ros_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_ros_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(parser_ros_plugin PRIVATE
