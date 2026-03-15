@@ -12,41 +12,58 @@ namespace {
 struct FlattenedField {
   std::string name;
   PJ::sdk::ValueRef value;
+  std::string owned_string;  // keeps string data alive for string_view in value
 };
 
 /// Flatten a JSON value into scalar fields using "/" as separator.
 /// Arrays use bracket notation: "arr[0]", "arr[1]", etc.
 /// Only numeric and boolean leaves are emitted; strings and nulls are skipped.
 void flattenJson(const std::string& prefix, const nlohmann::json& value,
+                 unsigned max_array_size, bool clamp_arrays,
                  std::vector<FlattenedField>& out) {
   switch (value.type()) {
     case nlohmann::detail::value_t::object:
       for (const auto& [key, child] : value.items()) {
-        flattenJson(prefix.empty() ? key : prefix + "/" + key, child, out);
+        flattenJson(prefix.empty() ? key : prefix + "/" + key, child, max_array_size, clamp_arrays, out);
       }
       break;
 
-    case nlohmann::detail::value_t::array:
-      for (std::size_t i = 0; i < value.size(); ++i) {
-        flattenJson(prefix + "[" + std::to_string(i) + "]", value[i], out);
+    case nlohmann::detail::value_t::array: {
+      auto count = value.size();
+      if (max_array_size > 0 && count > max_array_size) {
+        if (!clamp_arrays) break;  // skip oversized
+        count = max_array_size;
+      }
+      for (std::size_t i = 0; i < count; ++i) {
+        flattenJson(prefix + "[" + std::to_string(i) + "]", value[i], max_array_size, clamp_arrays, out);
       }
       break;
+    }
 
     case nlohmann::detail::value_t::boolean:
-      out.push_back({prefix, value.get<bool>()});
+      out.push_back({prefix, value.get<bool>(), {}});
       break;
 
     case nlohmann::detail::value_t::number_integer:
-      out.push_back({prefix, value.get<int64_t>()});
+      out.push_back({prefix, value.get<int64_t>(), {}});
       break;
 
     case nlohmann::detail::value_t::number_unsigned:
-      out.push_back({prefix, value.get<uint64_t>()});
+      out.push_back({prefix, value.get<uint64_t>(), {}});
       break;
 
     case nlohmann::detail::value_t::number_float:
-      out.push_back({prefix, value.get<double>()});
+      out.push_back({prefix, value.get<double>(), {}});
       break;
+
+    case nlohmann::detail::value_t::string: {
+      auto str = value.get<std::string>();
+      if (str.size() < 100) {
+        out.push_back({prefix, PJ::sdk::ValueRef{}, std::move(str)});
+        out.back().value = std::string_view(out.back().owned_string);
+      }
+      break;
+    }
 
     default:
       break;
@@ -59,6 +76,8 @@ class JsonParser : public PJ::MessageParserPluginBase {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
     if (!cfg.is_discarded()) {
       encoding_hint_ = cfg.value("encoding_hint", std::string{});
+      max_array_size_ = cfg.value("max_array_size", 0u);
+      clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
     }
     return PJ::okStatus();
   }
@@ -89,7 +108,14 @@ class JsonParser : public PJ::MessageParserPluginBase {
  private:
   PJ::Status flattenAndAppend(PJ::Timestamp ts, const nlohmann::json& json) {
     owned_fields_.clear();
-    flattenJson("", json, owned_fields_);
+    flattenJson("", json, max_array_size_, clamp_large_arrays_, owned_fields_);
+
+    // Fix up string_view entries now that the vector won't reallocate.
+    for (auto& f : owned_fields_) {
+      if (!f.owned_string.empty()) {
+        f.value = std::string_view(f.owned_string);
+      }
+    }
 
     bound_fields_.clear();
     bound_fields_.reserve(owned_fields_.size());
@@ -144,6 +170,8 @@ class JsonParser : public PJ::MessageParserPluginBase {
   }
 
   std::string encoding_hint_;
+  unsigned max_array_size_ = 0;
+  bool clamp_large_arrays_ = true;
   std::unordered_map<std::string, PJ::sdk::FieldHandle> field_cache_;
   std::vector<FlattenedField> owned_fields_;
   std::vector<PJ::sdk::BoundFieldValue> bound_fields_;

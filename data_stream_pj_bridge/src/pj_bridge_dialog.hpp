@@ -68,20 +68,17 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     wd.setChecked("checkBoxUseTimestamp", use_timestamp_);
 
     // Topic list — apply case-insensitive filter matching on name AND type
-    if (topics_dirty_) {
-      wd.setTableHeaders("topicsList", {"Topic Name", "DataType"});
-      std::vector<std::vector<std::string>> rows;
-      rows.reserve(topics_.size());
-      for (const auto& t : topics_) {
-        if (!matchesFilter(t)) continue;
-        rows.push_back({t.name, t.type});
-      }
-      wd.setTableRows("topicsList", rows);
+    wd.setTableHeaders("topicsList", {"Topic Name", "DataType"});
+    std::vector<std::vector<std::string>> rows;
+    rows.reserve(topics_.size());
+    for (const auto& t : topics_) {
+      if (!matchesFilter(t)) continue;
+      rows.push_back({t.name, t.type});
+    }
+    wd.setTableRows("topicsList", rows);
 
-      if (!selected_topic_names_.empty()) {
-        wd.setSelectedItems("topicsList", selected_topic_names_);
-      }
-      topics_dirty_ = false;
+    if (!selected_topic_names_.empty()) {
+      wd.setSelectedItems("topicsList", selected_topic_names_);
     }
 
     // OK button: enabled only when connected and topics are selected

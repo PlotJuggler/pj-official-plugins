@@ -61,32 +61,29 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     wd.setChecked("checkBoxUseTimestamp", use_timestamp_);
 
     // Channel list
-    if (channels_dirty_) {
-      wd.setTableHeaders("topicsList", {"Topic Name", "DataType"});
-      std::vector<std::vector<std::string>> rows;
-      rows.reserve(channels_.size());
-      for (const auto& ch : channels_) {
-        // Apply filter
-        if (!filter_.empty()) {
-          std::string lower_topic = ch.topic;
-          std::string lower_type = ch.schema_name;
-          std::string lower_filter = filter_;
-          for (auto& c : lower_topic) c = static_cast<char>(std::tolower(c));
-          for (auto& c : lower_type) c = static_cast<char>(std::tolower(c));
-          for (auto& c : lower_filter) c = static_cast<char>(std::tolower(c));
-          if (lower_topic.find(lower_filter) == std::string::npos &&
-              lower_type.find(lower_filter) == std::string::npos) {
-            continue;
-          }
+    wd.setTableHeaders("topicsList", {"Topic Name", "DataType"});
+    std::vector<std::vector<std::string>> rows;
+    rows.reserve(channels_.size());
+    for (const auto& ch : channels_) {
+      // Apply filter
+      if (!filter_.empty()) {
+        std::string lower_topic = ch.topic;
+        std::string lower_type = ch.schema_name;
+        std::string lower_filter = filter_;
+        for (auto& c : lower_topic) c = static_cast<char>(std::tolower(c));
+        for (auto& c : lower_type) c = static_cast<char>(std::tolower(c));
+        for (auto& c : lower_filter) c = static_cast<char>(std::tolower(c));
+        if (lower_topic.find(lower_filter) == std::string::npos &&
+            lower_type.find(lower_filter) == std::string::npos) {
+          continue;
         }
-        rows.push_back({ch.topic, ch.schema_name});
       }
-      wd.setTableRows("topicsList", rows);
+      rows.push_back({ch.topic, ch.schema_name});
+    }
+    wd.setTableRows("topicsList", rows);
 
-      if (!selected_topic_names_.empty()) {
-        wd.setSelectedItems("topicsList", selected_topic_names_);
-      }
-      channels_dirty_ = false;
+    if (!selected_topic_names_.empty()) {
+      wd.setSelectedItems("topicsList", selected_topic_names_);
     }
 
     // OK button: enabled only when connected and channels are selected

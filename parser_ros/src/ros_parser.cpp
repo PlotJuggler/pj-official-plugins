@@ -874,7 +874,9 @@ class RosParser : public PJ::MessageParserPluginBase {
     }
 
     if (g_tsl_definitions.count(hash) == 0) {
-      g_tsl_values_buffer[hash].push({current_timestamp_, std::move(values)});
+      auto& queue = g_tsl_values_buffer[hash];
+      if (queue.size() > 1000) queue.pop();  // cap buffer to prevent unbounded growth
+      queue.push({current_timestamp_, std::move(values)});
       return;
     }
 

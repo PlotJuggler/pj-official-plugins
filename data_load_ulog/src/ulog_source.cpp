@@ -57,48 +57,88 @@ void collectFlatFieldNames(const ulog_cpp::MessageFormat& format, const std::str
   }
 }
 
+/// Map ULog BasicType to PJ::PrimitiveType.
+PJ::PrimitiveType ulogTypeToPrimitive(ulog_cpp::Field::BasicType type) {
+  switch (type) {
+    case ulog_cpp::Field::BasicType::INT8: return PJ::PrimitiveType::kInt8;
+    case ulog_cpp::Field::BasicType::UINT8: return PJ::PrimitiveType::kUint8;
+    case ulog_cpp::Field::BasicType::INT16: return PJ::PrimitiveType::kInt16;
+    case ulog_cpp::Field::BasicType::UINT16: return PJ::PrimitiveType::kUint16;
+    case ulog_cpp::Field::BasicType::INT32: return PJ::PrimitiveType::kInt32;
+    case ulog_cpp::Field::BasicType::UINT32: return PJ::PrimitiveType::kUint32;
+    case ulog_cpp::Field::BasicType::INT64: return PJ::PrimitiveType::kInt64;
+    case ulog_cpp::Field::BasicType::UINT64: return PJ::PrimitiveType::kUint64;
+    case ulog_cpp::Field::BasicType::FLOAT: return PJ::PrimitiveType::kFloat32;
+    case ulog_cpp::Field::BasicType::DOUBLE: return PJ::PrimitiveType::kFloat64;
+    case ulog_cpp::Field::BasicType::BOOL: return PJ::PrimitiveType::kBool;
+    case ulog_cpp::Field::BasicType::CHAR: return PJ::PrimitiveType::kUint8;
+    default: return PJ::PrimitiveType::kFloat64;
+  }
+}
+
+/// Recursively collect flattened field types for a ulog_cpp MessageFormat,
+/// matching the order produced by collectFlatFieldNames.
+void collectFlatFieldTypes(const ulog_cpp::MessageFormat& format,
+                           std::vector<PJ::PrimitiveType>& out) {
+  for (const auto& field_ptr : format.fields()) {
+    const auto& field = *field_ptr;
+    const std::string& name = field.name();
+    if (name == "timestamp" || name.substr(0, 8) == "_padding") continue;
+    int arr_len = field.arrayLength();
+    int count = (arr_len < 0) ? 1 : arr_len;
+    for (int i = 0; i < count; ++i) {
+      if (field.type().type == ulog_cpp::Field::BasicType::NESTED) {
+        auto nested_fmt = field.nestedFormat();
+        if (nested_fmt) collectFlatFieldTypes(*nested_fmt, out);
+      } else {
+        out.push_back(ulogTypeToPrimitive(field.type().type));
+      }
+    }
+  }
+}
+
 /// Read a single primitive value from raw ULog data at a given offset.
-double readPrimitiveValue(const uint8_t* data, size_t offset, ulog_cpp::Field::BasicType type) {
+PJ::sdk::ValueRef readPrimitiveValue(const uint8_t* data, size_t offset, ulog_cpp::Field::BasicType type) {
   const uint8_t* p = data + offset;
   switch (type) {
     case ulog_cpp::Field::BasicType::INT8:
-      return static_cast<double>(*reinterpret_cast<const int8_t*>(p));
+      return *reinterpret_cast<const int8_t*>(p);
     case ulog_cpp::Field::BasicType::UINT8:
-      return static_cast<double>(*p);
+      return *p;
     case ulog_cpp::Field::BasicType::INT16: {
       int16_t v;
       std::memcpy(&v, p, sizeof(v));
-      return static_cast<double>(v);
+      return v;
     }
     case ulog_cpp::Field::BasicType::UINT16: {
       uint16_t v;
       std::memcpy(&v, p, sizeof(v));
-      return static_cast<double>(v);
+      return v;
     }
     case ulog_cpp::Field::BasicType::INT32: {
       int32_t v;
       std::memcpy(&v, p, sizeof(v));
-      return static_cast<double>(v);
+      return v;
     }
     case ulog_cpp::Field::BasicType::UINT32: {
       uint32_t v;
       std::memcpy(&v, p, sizeof(v));
-      return static_cast<double>(v);
+      return v;
     }
     case ulog_cpp::Field::BasicType::INT64: {
       int64_t v;
       std::memcpy(&v, p, sizeof(v));
-      return static_cast<double>(v);
+      return v;
     }
     case ulog_cpp::Field::BasicType::UINT64: {
       uint64_t v;
       std::memcpy(&v, p, sizeof(v));
-      return static_cast<double>(v);
+      return v;
     }
     case ulog_cpp::Field::BasicType::FLOAT: {
       float v;
       std::memcpy(&v, p, sizeof(v));
-      return static_cast<double>(v);
+      return v;
     }
     case ulog_cpp::Field::BasicType::DOUBLE: {
       double v;
@@ -106,18 +146,18 @@ double readPrimitiveValue(const uint8_t* data, size_t offset, ulog_cpp::Field::B
       return v;
     }
     case ulog_cpp::Field::BasicType::BOOL:
-      return static_cast<double>(*p);
+      return static_cast<bool>(*p);
     case ulog_cpp::Field::BasicType::CHAR:
-      return static_cast<double>(*p);
+      return static_cast<uint8_t>(*p);
     default:
-      return 0.0;
+      return PJ::NullValue{};
   }
 }
 
 /// Recursively extract numeric values from raw data bytes using resolved field offsets,
 /// matching the order produced by collectFlatFieldNames.
 void extractFlatValues(const uint8_t* raw_data, size_t base_offset,
-                       const ulog_cpp::MessageFormat& format, std::vector<double>& values) {
+                       const ulog_cpp::MessageFormat& format, std::vector<PJ::sdk::ValueRef>& values) {
   for (const auto& field_ptr : format.fields()) {
     const auto& field = *field_ptr;
     const std::string& name = field.name();
@@ -138,16 +178,16 @@ void extractFlatValues(const uint8_t* raw_data, size_t base_offset,
       if (!nested_fmt) {
         continue;
       }
-      size_t nested_size = nested_fmt->sizeBytes();
-      for (int i = 0; i < count; ++i) {
+      auto nested_size = nested_fmt->sizeBytes();
+      for (size_t i = 0; i < static_cast<size_t>(count); ++i) {
         extractFlatValues(raw_data, field_offset + static_cast<size_t>(i) * nested_size, *nested_fmt,
                           values);
       }
     } else {
-      size_t elem_size = field.type().size;
-      for (int i = 0; i < count; ++i) {
+      size_t elem_size = static_cast<size_t>(field.type().size);
+      for (size_t i = 0; i < static_cast<size_t>(count); ++i) {
         values.push_back(
-            readPrimitiveValue(raw_data, field_offset + static_cast<size_t>(i) * elem_size, field.type().type));
+            readPrimitiveValue(raw_data, field_offset + i * elem_size, field.type().type));
       }
     }
   }
@@ -267,8 +307,11 @@ class ULogSource : public PJ::FileSourceBase {
         return PJ::unexpected(topic.error());
       }
 
-      for (const auto& fname : field_names) {
-        auto field = writeHost().ensureField(*topic, fname, PJ::PrimitiveType::kFloat64);
+      std::vector<PJ::PrimitiveType> field_types;
+      collectFlatFieldTypes(*sub->format(), field_types);
+
+      for (size_t fi = 0; fi < field_names.size() && fi < field_types.size(); ++fi) {
+        auto field = writeHost().ensureField(*topic, field_names[fi], field_types[fi]);
         if (!field) {
           return PJ::unexpected(field.error());
         }
@@ -277,7 +320,7 @@ class ULogSource : public PJ::FileSourceBase {
       // Write data records.
       std::vector<PJ::sdk::NamedFieldValue> row_fields;
       row_fields.reserve(field_names.size());
-      std::vector<double> values;
+      std::vector<PJ::sdk::ValueRef> values;
       values.reserve(field_names.size());
 
       const auto& raw_samples = sub->rawSamples();

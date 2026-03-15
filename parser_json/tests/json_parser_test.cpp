@@ -20,6 +20,8 @@ struct RecordedField {
   double value = 0.0;
   bool is_bool = false;
   bool bool_value = false;
+  bool is_string = false;
+  std::string string_value;
 };
 
 struct RecordedRow {
@@ -59,6 +61,11 @@ struct ParserWriteRecorder {
     } else if (value.type == PJ_PRIMITIVE_TYPE_BOOL) {
       f.is_bool = true;
       f.bool_value = value.data.as_bool != 0;
+    } else if (value.type == PJ_PRIMITIVE_TYPE_STRING) {
+      f.is_string = true;
+      if (value.data.as_string.data != nullptr) {
+        f.string_value = std::string(value.data.as_string.data, value.data.as_string.size);
+      }
     }
     return f;
   }
@@ -188,13 +195,25 @@ TEST(JsonParserTest, BooleanFields) {
   EXPECT_FALSE(f.recorder.rows[0].fields[1].bool_value);
 }
 
-TEST(JsonParserTest, StringFieldsSkipped) {
+TEST(JsonParserTest, StringFieldsIncluded) {
   JsonParserFixture f;
   f.setUp();
   ASSERT_TRUE(f.parse(R"({"name":"sensor1","value":42.0})"));
   ASSERT_EQ(f.recorder.rows.size(), 1u);
-  ASSERT_EQ(f.recorder.rows[0].fields.size(), 1u);
-  EXPECT_EQ(f.recorder.rows[0].fields[0].name, "value");
+  ASSERT_EQ(f.recorder.rows[0].fields.size(), 2u);
+  bool found_name = false;
+  bool found_value = false;
+  for (const auto& field : f.recorder.rows[0].fields) {
+    if (field.name == "name") {
+      EXPECT_TRUE(field.is_string);
+      EXPECT_EQ(field.string_value, "sensor1");
+      found_name = true;
+    } else if (field.name == "value") {
+      found_value = true;
+    }
+  }
+  EXPECT_TRUE(found_name);
+  EXPECT_TRUE(found_value);
 }
 
 TEST(JsonParserTest, NullFieldsSkipped) {

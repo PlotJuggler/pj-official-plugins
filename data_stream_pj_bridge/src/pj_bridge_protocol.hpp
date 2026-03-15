@@ -28,7 +28,7 @@ struct RawMessage {
 
 /// Parse a binary data frame into individual raw messages.
 /// Frame format: [magic:4][msg_count:4][zstd_compressed_payload]
-/// Each message in payload: [topic_len:4][topic:N][timestamp_ns:8][cdr_len:4][cdr:M]
+/// Each message in payload: [topic_len:2][topic:N][timestamp_ns:8][cdr_len:4][cdr:M]
 bool parseBinaryFrame(const uint8_t* data, size_t size,
                       std::vector<RawMessage>& messages,
                       std::vector<uint8_t>& decompress_buffer);

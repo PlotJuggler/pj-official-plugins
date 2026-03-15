@@ -149,6 +149,12 @@ class CsvSource : public PJ::FileSourceBase {
 
       if (has_numeric) {
         numeric_col_indices.push_back(i);
+        if (has_string) {
+          runtimeHost().reportMessage(
+              PJ::DataSourceMessageLevel::kWarning,
+              "Column '" + col.name + "' has " + std::to_string(col.string_points.size()) +
+              " non-numeric cells that were skipped");
+        }
       } else if (has_string) {
         string_col_indices.push_back(i);
       }

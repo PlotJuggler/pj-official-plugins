@@ -62,15 +62,12 @@ class ZmqSource : public PJ::StreamSourceBase {
         // Split by comma/semicolon/whitespace
         std::string current;
         for (char c : topic_filter_) {
-          if (c == ',' || c == ';') {
+          if (c == ',' || c == ';' || c == ' ' || c == '\t') {
             if (!current.empty()) {
               socket_->set(zmq::sockopt::subscribe, current);
               current.clear();
             }
-          } else if (c != ' ' && c != '\t') {
-            current += c;
-          } else if (!current.empty()) {
-            // space inside topic name
+          } else {
             current += c;
           }
         }

@@ -107,24 +107,31 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   PJ::Status onPoll() override {
     QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
 
-    // Reconnection: if connection was lost, try to reconnect every ~5s
-    if (!connected_ && socket_ && ++reconnect_tick_ >= 150) {
-      reconnect_tick_ = 0;
-      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, "Attempting to reconnect to Foxglove bridge...");
-      QNetworkRequest request(
-          QUrl(QString("ws://%1:%2").arg(QString::fromStdString(address_)).arg(port_)));
-      request.setRawHeader("Sec-WebSocket-Protocol", "foxglove.sdk.v1");
-      socket_->open(request);
-
-      auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-      while (socket_->state() != QAbstractSocket::ConnectedState &&
-             std::chrono::steady_clock::now() < deadline) {
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
-      }
-      if (socket_->state() == QAbstractSocket::ConnectedState) {
-        connected_ = true;
-        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, "Reconnected to Foxglove bridge");
-        // Server will re-advertise channels, triggering re-subscription in onTextMessage
+    // Non-blocking reconnection: if connection was lost, try every ~5s
+    if (!connected_ && socket_) {
+      if (reconnect_pending_) {
+        // Check if the async open succeeded
+        if (socket_->state() == QAbstractSocket::ConnectedState) {
+          connected_ = true;
+          reconnect_pending_ = false;
+          reconnect_tick_ = 0;
+          // Reset subscription state so new advertise messages create fresh bindings
+          subscriptions_.clear();
+          binding_by_subscription_.clear();
+          advertised_channels_.clear();
+          next_subscription_id_ = 1;
+          runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, "Reconnected to Foxglove bridge");
+        } else if (socket_->state() == QAbstractSocket::UnconnectedState) {
+          // Connection attempt failed
+          reconnect_pending_ = false;
+        }
+      } else if (++reconnect_tick_ >= 150) {
+        reconnect_tick_ = 0;
+        reconnect_pending_ = true;
+        QNetworkRequest request(
+            QUrl(QString("ws://%1:%2").arg(QString::fromStdString(address_)).arg(port_)));
+        request.setRawHeader("Sec-WebSocket-Protocol", "foxglove.sdk.v1");
+        socket_->open(request);  // async — result checked on next poll
       }
     }
 
@@ -326,6 +333,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   std::mutex queue_mutex_;
   std::queue<QueuedBinaryMessage> message_queue_;
   int reconnect_tick_ = 0;
+  bool reconnect_pending_ = false;
 };
 
 }  // namespace

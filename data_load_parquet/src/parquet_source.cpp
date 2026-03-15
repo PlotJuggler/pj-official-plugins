@@ -30,12 +30,13 @@ std::string basenameWithoutExt(const std::string& filepath) {
   return filepath.substr(start);
 }
 
-bool isNumericArrowType(arrow::Type::type t) {
+bool isSupportedArrowType(arrow::Type::type t) {
   return t == arrow::Type::BOOL || t == arrow::Type::INT8 || t == arrow::Type::INT16 ||
          t == arrow::Type::INT32 || t == arrow::Type::INT64 || t == arrow::Type::UINT8 ||
          t == arrow::Type::UINT16 || t == arrow::Type::UINT32 ||
          t == arrow::Type::UINT64 || t == arrow::Type::FLOAT ||
-         t == arrow::Type::DOUBLE || t == arrow::Type::TIMESTAMP;
+         t == arrow::Type::DOUBLE || t == arrow::Type::TIMESTAMP ||
+         t == arrow::Type::STRING || t == arrow::Type::LARGE_STRING;
 }
 
 /// Map Arrow type to PJ::PrimitiveType for field pre-registration.
@@ -53,6 +54,8 @@ PJ::PrimitiveType arrowTypeToPrimitive(arrow::Type::type t) {
     case arrow::Type::FLOAT: return PJ::PrimitiveType::kFloat32;
     case arrow::Type::DOUBLE: return PJ::PrimitiveType::kFloat64;
     case arrow::Type::TIMESTAMP: return PJ::PrimitiveType::kInt64;  // nanoseconds
+    case arrow::Type::STRING: return PJ::PrimitiveType::kString;
+    case arrow::Type::LARGE_STRING: return PJ::PrimitiveType::kString;
     default: return PJ::PrimitiveType::kFloat64;
   }
 }
@@ -97,32 +100,19 @@ PJ::sdk::ValueRef getArrowValueRef(const std::shared_ptr<arrow::Array>& array,
         case arrow::TimeUnit::MICRO: value *= 1000LL; break;
         case arrow::TimeUnit::NANO: break;
       }
-      // Apply timezone offset for non-UTC timestamps.
-      // Arrow stores timezone as a string (e.g. "America/New_York" or "+05:30").
-      // For fixed-offset timezones like "+HH:MM" or "-HH:MM", we can parse directly.
-      // IANA timezone names require ICU and are left as UTC.
-      const auto& tz = ts_type->timezone();
-      if (!tz.empty() && tz != "UTC" && tz != "utc") {
-        int64_t offset_ns = 0;
-        if ((tz[0] == '+' || tz[0] == '-') && tz.size() >= 5) {
-          // Parse "+HH:MM" or "-HHMM" style offsets
-          int sign = (tz[0] == '-') ? -1 : 1;
-          int hours = 0;
-          int minutes = 0;
-          if (tz.size() == 6 && tz[3] == ':') {
-            // "+HH:MM"
-            hours = (tz[1] - '0') * 10 + (tz[2] - '0');
-            minutes = (tz[4] - '0') * 10 + (tz[5] - '0');
-          } else if (tz.size() == 5) {
-            // "+HHMM"
-            hours = (tz[1] - '0') * 10 + (tz[2] - '0');
-            minutes = (tz[3] - '0') * 10 + (tz[4] - '0');
-          }
-          offset_ns = static_cast<int64_t>(sign) * (hours * 3600LL + minutes * 60LL) * 1000000000LL;
-        }
-        value -= offset_ns;
-      }
+      // Arrow TIMESTAMP with timezone is already stored as UTC.
+      // No offset adjustment needed.
       return value;
+    }
+    case arrow::Type::STRING: {
+      auto str_array = std::static_pointer_cast<arrow::StringArray>(array);
+      auto sv = str_array->GetView(index);
+      return std::string_view(sv.data(), sv.size());
+    }
+    case arrow::Type::LARGE_STRING: {
+      auto str_array = std::static_pointer_cast<arrow::LargeStringArray>(array);
+      auto sv = str_array->GetView(index);
+      return std::string_view(sv.data(), sv.size());
     }
     default:
       return PJ::NullValue{};
@@ -266,13 +256,13 @@ class ParquetSource : public PJ::FileSourceBase {
     for (int i = 0; i < schema->num_fields(); i++) {
       if (i == ts_col) continue;
       const auto& field = schema->field(i);
-      if (isNumericArrowType(field->type()->id())) {
+      if (isSupportedArrowType(field->type()->id())) {
         columns.push_back(ColumnInfo{field->name(), field->type()->id(), i});
       }
     }
 
     if (columns.empty()) {
-      return PJ::unexpected(std::string("no numeric columns found"));
+      return PJ::unexpected(std::string("no supported columns found"));
     }
 
     // Create a SINGLE topic from the file basename
@@ -334,7 +324,7 @@ class ParquetSource : public PJ::FileSourceBase {
         if (ts_col >= 0) {
           ts_ns = getTimestampNanos(ts_array, row, ts_arrow_type);
         } else {
-          ts_ns = (rows_processed + row) * 1000000;
+          ts_ns = (rows_processed + row) * 1000000000LL;
         }
         ts_row_pairs.push_back({ts_ns, row});
       }

@@ -21,6 +21,7 @@ namespace {
 struct FlattenedField {
   std::string name;
   PJ::sdk::ValueRef value;
+  std::string owned_string;  // keeps string data alive for string_view in value
 };
 
 /// Recursively flatten a protobuf message into scalar fields.
@@ -68,43 +69,43 @@ void flattenMessage(const gp::Message& msg, const std::string& prefix, bool is_m
         case gp::FieldDescriptor::CPPTYPE_DOUBLE: {
           double v = repeated ? reflection->GetRepeatedDouble(msg, field, static_cast<int>(idx))
                               : reflection->GetDouble(msg, field);
-          out.push_back({full_key, v});
+          out.push_back({full_key, v, {}});
           break;
         }
         case gp::FieldDescriptor::CPPTYPE_FLOAT: {
           float v = repeated ? reflection->GetRepeatedFloat(msg, field, static_cast<int>(idx))
                              : reflection->GetFloat(msg, field);
-          out.push_back({full_key, v});
+          out.push_back({full_key, v, {}});
           break;
         }
         case gp::FieldDescriptor::CPPTYPE_INT32: {
           int32_t v = repeated ? reflection->GetRepeatedInt32(msg, field, static_cast<int>(idx))
                                : reflection->GetInt32(msg, field);
-          out.push_back({full_key, v});
+          out.push_back({full_key, v, {}});
           break;
         }
         case gp::FieldDescriptor::CPPTYPE_INT64: {
           int64_t v = repeated ? reflection->GetRepeatedInt64(msg, field, static_cast<int>(idx))
                                : reflection->GetInt64(msg, field);
-          out.push_back({full_key, v});
+          out.push_back({full_key, v, {}});
           break;
         }
         case gp::FieldDescriptor::CPPTYPE_UINT32: {
           uint32_t v = repeated ? reflection->GetRepeatedUInt32(msg, field, static_cast<int>(idx))
                                 : reflection->GetUInt32(msg, field);
-          out.push_back({full_key, v});
+          out.push_back({full_key, v, {}});
           break;
         }
         case gp::FieldDescriptor::CPPTYPE_UINT64: {
           uint64_t v = repeated ? reflection->GetRepeatedUInt64(msg, field, static_cast<int>(idx))
                                 : reflection->GetUInt64(msg, field);
-          out.push_back({full_key, v});
+          out.push_back({full_key, v, {}});
           break;
         }
         case gp::FieldDescriptor::CPPTYPE_BOOL: {
           bool v = repeated ? reflection->GetRepeatedBool(msg, field, static_cast<int>(idx))
                             : reflection->GetBool(msg, field);
-          out.push_back({full_key, v});
+          out.push_back({full_key, v, {}});
           break;
         }
         case gp::FieldDescriptor::CPPTYPE_ENUM: {
@@ -112,7 +113,8 @@ void flattenMessage(const gp::Message& msg, const std::string& prefix, bool is_m
               repeated ? reflection->GetRepeatedEnum(msg, field, static_cast<int>(idx))
                        : reflection->GetEnum(msg, field);
           // Store enum name as string (matching original PlotJuggler behavior)
-          out.push_back({full_key, std::string(ev->name())});
+          out.push_back({full_key, PJ::sdk::ValueRef{}, std::string(ev->name())});
+          out.back().value = std::string_view(out.back().owned_string);
           break;
         }
         case gp::FieldDescriptor::CPPTYPE_MESSAGE: {
@@ -150,7 +152,7 @@ void flattenMessage(const gp::Message& msg, const std::string& prefix, bool is_m
                   break;
               }
             }
-            flattenMessage(sub, full_key + map_suffix, true, max_array_size, clamp_arrays, out);
+            flattenMessage(sub, full_key + map_suffix, false, max_array_size, clamp_arrays, out);
           } else {
             flattenMessage(sub, full_key, false, max_array_size, clamp_arrays, out);
           }
@@ -163,7 +165,8 @@ void flattenMessage(const gp::Message& msg, const std::string& prefix, bool is_m
               repeated ? reflection->GetRepeatedString(msg, field, static_cast<int>(idx))
                        : reflection->GetString(msg, field);
           if (str_val.size() < 100) {
-            out.push_back({full_key, std::move(str_val)});
+            out.push_back({full_key, PJ::sdk::ValueRef{}, std::move(str_val)});
+            out.back().value = std::string_view(out.back().owned_string);
           }
           break;
         }
@@ -182,7 +185,8 @@ PJ::PrimitiveType protobufCppTypeToPrimitive(gp::FieldDescriptor::CppType cpp_ty
     case gp::FieldDescriptor::CPPTYPE_UINT32: return PJ::PrimitiveType::kUint32;
     case gp::FieldDescriptor::CPPTYPE_UINT64: return PJ::PrimitiveType::kUint64;
     case gp::FieldDescriptor::CPPTYPE_BOOL: return PJ::PrimitiveType::kBool;
-    case gp::FieldDescriptor::CPPTYPE_ENUM: return PJ::PrimitiveType::kInt32;
+    case gp::FieldDescriptor::CPPTYPE_ENUM: return PJ::PrimitiveType::kString;
+    case gp::FieldDescriptor::CPPTYPE_STRING: return PJ::PrimitiveType::kString;
     default: return PJ::PrimitiveType::kUnspecified;
   }
 }
@@ -206,10 +210,6 @@ void preRegisterFields(const gp::Descriptor* descriptor, const std::string& pref
       preRegisterFields(field->message_type(), path, host, cache);
       continue;
     }
-    if (field->cpp_type() == gp::FieldDescriptor::CPPTYPE_STRING) {
-      continue;
-    }
-
     auto type = protobufCppTypeToPrimitive(field->cpp_type());
     auto handle = host.ensureField(path, type);
     if (handle.has_value()) {
@@ -291,6 +291,15 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
 
     owned_fields_.clear();
     flattenMessage(*msg, "", false, max_array_size_, clamp_large_arrays_, owned_fields_);
+
+    // Fix up string_view entries now that the vector won't reallocate.
+    // During flattenMessage, push_back may have reallocated the vector,
+    // invalidating earlier string_view pointers. Re-point them now.
+    for (auto& f : owned_fields_) {
+      if (!f.owned_string.empty()) {
+        f.value = std::string_view(f.owned_string);
+      }
+    }
 
     bound_fields_.clear();
     bound_fields_.reserve(owned_fields_.size());

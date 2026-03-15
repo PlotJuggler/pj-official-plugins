@@ -44,8 +44,12 @@ class MqttDialog : public PJ::DialogPluginTyped {
     wd.setEnabled("lineEditHost", !connected_);
     wd.setEnabled("lineEditPort", !connected_);
 
-    // Connect button state
+    // Connect button state + error feedback
     wd.setButtonText("buttonConnect", connected_ ? "Disconnect" : "Connect");
+    wd.setText("label_12",
+               last_connect_error_.empty()
+                   ? (connected_ ? "Connected — select topics below" : "Select a specific topic:")
+                   : ("Connection error: " + last_connect_error_));
 
     // Protocol version combo
     wd.setCurrentIndex("comboBoxVersion", protocol_version_index_);
@@ -265,9 +269,23 @@ class MqttDialog : public PJ::DialogPluginTyped {
       mqtt::connect_options opts;
       opts.set_clean_session(true);
       opts.set_connect_timeout(std::chrono::seconds(5));
+      if (protocol_version_index_ == 0) {
+        opts.set_mqtt_version(MQTTVERSION_3_1);
+      } else if (protocol_version_index_ == 2) {
+        opts.set_mqtt_version(MQTTVERSION_5);
+      } else {
+        opts.set_mqtt_version(MQTTVERSION_3_1_1);
+      }
       if (!username_.empty()) {
         opts.set_user_name(username_);
         opts.set_password(password_);
+      }
+      if (use_ssl_) {
+        mqtt::ssl_options ssl_opts;
+        if (!ca_cert_path_.empty()) ssl_opts.set_trust_store(ca_cert_path_);
+        if (!client_cert_path_.empty()) ssl_opts.set_key_store(client_cert_path_);
+        if (!private_key_path_.empty()) ssl_opts.set_private_key(private_key_path_);
+        opts.set_ssl(ssl_opts);
       }
 
       discovery_client_->connect(opts)->wait();
@@ -275,7 +293,9 @@ class MqttDialog : public PJ::DialogPluginTyped {
       std::string sub_filter = topic_filter_.empty() ? "#" : topic_filter_;
       discovery_client_->subscribe(sub_filter, 0)->wait();
       connected_ = true;
-    } catch (const mqtt::exception&) {
+      last_connect_error_.clear();
+    } catch (const mqtt::exception& e) {
+      last_connect_error_ = e.what();
       discovery_client_.reset();
       connected_ = false;
     }
@@ -309,6 +329,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
 
   // Dialog-time discovery state
   bool connected_ = false;
+  std::string last_connect_error_;
   std::unique_ptr<mqtt::async_client> discovery_client_;
   std::mutex topics_mutex_;
   std::set<std::string> discovered_topics_;

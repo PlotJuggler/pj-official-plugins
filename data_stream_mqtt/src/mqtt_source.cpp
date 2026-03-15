@@ -188,7 +188,13 @@ class MqttSource : public PJ::StreamSourceBase {
     if (client_) {
       try {
         if (client_->is_connected()) {
-          client_->unsubscribe(topic_filter_)->wait();
+          if (!selected_topics_.empty()) {
+            for (const auto& topic : selected_topics_) {
+              client_->unsubscribe(topic)->wait();
+            }
+          } else {
+            client_->unsubscribe(topic_filter_)->wait();
+          }
           client_->disconnect()->wait();
         }
       } catch (...) {

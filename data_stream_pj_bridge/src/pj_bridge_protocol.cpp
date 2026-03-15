@@ -85,7 +85,7 @@ bool parseBinaryFrame(const uint8_t* data, size_t size,
 }
 
 std::string buildRequest(const std::string& command, const std::string& uuid) {
-  return R"({"op":")" + command + R"(","id":")" + uuid + R"("})";
+  return R"({"command":")" + command + R"(","id":")" + uuid + R"(","protocol_version":1})";
 }
 
 std::string generateRequestId() {

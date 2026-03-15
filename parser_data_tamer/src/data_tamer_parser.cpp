@@ -3,6 +3,7 @@
 #include <data_tamer_parser/data_tamer_parser.hpp>
 
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -41,8 +42,21 @@ class DataTamerParserPlugin : public PJ::MessageParserPluginBase {
     DataTamerParser::ParseSnapshot(
         schema_, snapshot,
         [this](const std::string& field_name, const DataTamerParser::VarNumber& var) {
-          double value = std::visit([](const auto& v) { return static_cast<double>(v); }, var);
-          owned_fields_.push_back({"/" + field_name, PJ::sdk::ValueRef{value}});
+          PJ::sdk::ValueRef value = std::visit([](const auto& v) -> PJ::sdk::ValueRef {
+              using T = std::decay_t<decltype(v)>;
+              if constexpr (std::is_same_v<T, float>) return v;
+              else if constexpr (std::is_same_v<T, double>) return v;
+              else if constexpr (std::is_same_v<T, int8_t>) return v;
+              else if constexpr (std::is_same_v<T, uint8_t>) return v;
+              else if constexpr (std::is_same_v<T, int16_t>) return v;
+              else if constexpr (std::is_same_v<T, uint16_t>) return v;
+              else if constexpr (std::is_same_v<T, int32_t>) return v;
+              else if constexpr (std::is_same_v<T, uint32_t>) return v;
+              else if constexpr (std::is_same_v<T, int64_t>) return v;
+              else if constexpr (std::is_same_v<T, uint64_t>) return v;
+              else return static_cast<double>(v);
+          }, var);
+          owned_fields_.push_back({"/" + field_name, value});
         });
 
     if (owned_fields_.empty()) return PJ::okStatus();

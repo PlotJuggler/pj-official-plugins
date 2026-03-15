@@ -1,5 +1,107 @@
-# Place all plugin .so files in a single output directory for easy loading.
+cmake_minimum_required(VERSION 3.22)
+
+# ---------------------------------------------------------------------------
+# Dual-mode: standalone project OR subdirectory of plotjuggler_core.
+#
+# Detection: if pj_base already exists as a target, we are a subdirectory
+# and all deps are already provided by the parent project.
+# ---------------------------------------------------------------------------
+
+if(TARGET pj_base)
+  # Subdirectory mode — deps already provided by parent.
+  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
+
+  add_subdirectory(parser_json)
+  add_subdirectory(parser_protobuf)
+  add_subdirectory(parser_ros)
+  add_subdirectory(parser_data_tamer)
+  add_subdirectory(data_load_csv)
+  add_subdirectory(data_load_mcap)
+  add_subdirectory(data_load_parquet)
+  add_subdirectory(data_load_ulog)
+  add_subdirectory(data_stream_zmq)
+  add_subdirectory(data_stream_mqtt)
+  add_subdirectory(data_stream_foxglove_bridge)
+  add_subdirectory(data_stream_pj_bridge)
+  return()
+endif()
+
+# ---------------------------------------------------------------------------
+# Standalone build
+# ---------------------------------------------------------------------------
+
+project(pj_ported_plugins LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# ---------------------------------------------------------------------------
+# Compiler warnings (matches plotjuggler_core)
+# ---------------------------------------------------------------------------
+
+if(MSVC)
+  set(PJ_WARNING_FLAGS /W4 /WX /permissive-)
+else()
+  set(PJ_WARNING_FLAGS
+    -Wall -Wextra -Werror -Wshadow -Wnon-virtual-dtor -Wold-style-cast
+    -Wcast-qual -Wconversion -Woverloaded-virtual -Wpedantic
+  )
+endif()
+
+# ---------------------------------------------------------------------------
+# Conan toolchain (convenience fallback — prefer -DCMAKE_TOOLCHAIN_FILE)
+# ---------------------------------------------------------------------------
+
+if(EXISTS "${CMAKE_BINARY_DIR}/conan_toolchain.cmake")
+  include("${CMAKE_BINARY_DIR}/conan_toolchain.cmake")
+endif()
+
+# ---------------------------------------------------------------------------
+# Third-party dependencies (via Conan)
+# ---------------------------------------------------------------------------
+
+find_package(nlohmann_json REQUIRED)
+find_package(mcap REQUIRED)
+find_package(Arrow REQUIRED)
+find_package(Parquet REQUIRED)
+find_package(PahoMqttCpp REQUIRED)
+find_package(cppzmq REQUIRED)
+find_package(protobuf REQUIRED)
+find_package(zstd REQUIRED)
+find_package(GTest REQUIRED)
+
+# Optional Qt6 (for foxglove_bridge and pj_bridge plugins)
+find_package(Qt6 QUIET COMPONENTS Widgets WebSockets Network)
+
+# ---------------------------------------------------------------------------
+# PlotJuggler Core SDK (via CPM)
+# ---------------------------------------------------------------------------
+
+include(cmake/CPM.cmake)
+
+CPMAddPackage(
+  NAME plotjuggler_core
+  GITHUB_REPOSITORY facontidavide/plotjuggler_core
+  GIT_TAG development
+  OPTIONS
+    "PJ_BUILD_DATASTORE OFF"
+    "PJ_BUILD_PORTED_PLUGINS OFF"
+    "PJ_BUILD_TESTS OFF"
+    "PJ_BUILD_DIALOG_ENGINE_QT OFF"
+    "PJ_BUILD_PARQUET_IMPORT_EXAMPLE OFF"
+)
+
+# ---------------------------------------------------------------------------
+# Plugin output directory and testing
+# ---------------------------------------------------------------------------
+
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
+
+enable_testing()
+
+# ---------------------------------------------------------------------------
+# Plugins
+# ---------------------------------------------------------------------------
 
 add_subdirectory(parser_json)
 add_subdirectory(parser_protobuf)
