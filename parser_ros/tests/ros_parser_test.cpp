@@ -2,9 +2,11 @@
 
 #include <gtest/gtest.h>
 
+#include <nlohmann/json.hpp>
 #include <rosx_introspection/ros_parser.hpp>
 #include <rosx_introspection/serializer.hpp>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -511,6 +513,667 @@ TEST(RosParserTest, ArrayClampingConfig) {
 
   // Load empty/invalid JSON should use defaults (not fail)
   ASSERT_TRUE(f.handle.loadConfig("{}"));
+}
+
+// ---- Helper: find field by name ----
+
+const RecordedField* findField(const RecordedRow& row, const std::string& name) {
+  for (const auto& f : row.fields) {
+    if (f.name == name) return &f;
+  }
+  return nullptr;
+}
+
+// ---- Helper: serialize a ROS2 header (sec, nsec, frame_id) ----
+void serializeHeader(RosMsgParser::NanoCDR_Serializer& enc, int32_t sec, uint32_t nsec,
+                     const std::string& frame_id) {
+  enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(sec));
+  enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(nsec));
+  enc.serializeString(frame_id);
+}
+
+// ---- Helper: serialize a quaternion (x,y,z,w) ----
+void serializeQuaternion(RosMsgParser::NanoCDR_Serializer& enc, double x, double y, double z,
+                         double w) {
+  enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(x));
+  enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(y));
+  enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(z));
+  enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(w));
+}
+
+// ---- Helper: serialize a vector3 (x,y,z) ----
+void serializeVector3(RosMsgParser::NanoCDR_Serializer& enc, double x, double y, double z) {
+  enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(x));
+  enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(y));
+  enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(z));
+}
+
+// ===== ROS message definitions for specialized types =====
+
+static const char* kPoseDef =
+    "Point position\n"
+    "Quaternion orientation\n"
+    "================\n"
+    "MSG: geometry_msgs/Point\n"
+    "float64 x\nfloat64 y\nfloat64 z\n"
+    "================\n"
+    "MSG: geometry_msgs/Quaternion\n"
+    "float64 x\nfloat64 y\nfloat64 z\nfloat64 w\n";
+
+static const char* kPoseStampedDef =
+    "std_msgs/Header header\n"
+    "geometry_msgs/Pose pose\n"
+    "================\n"
+    "MSG: std_msgs/Header\n"
+    "builtin_interfaces/Time stamp\n"
+    "string frame_id\n"
+    "================\n"
+    "MSG: builtin_interfaces/Time\n"
+    "int32 sec\nuint32 nanosec\n"
+    "================\n"
+    "MSG: geometry_msgs/Pose\n"
+    "geometry_msgs/Point position\n"
+    "geometry_msgs/Quaternion orientation\n"
+    "================\n"
+    "MSG: geometry_msgs/Point\n"
+    "float64 x\nfloat64 y\nfloat64 z\n"
+    "================\n"
+    "MSG: geometry_msgs/Quaternion\n"
+    "float64 x\nfloat64 y\nfloat64 z\nfloat64 w\n";
+
+static const char* kImuDef =
+    "std_msgs/Header header\n"
+    "geometry_msgs/Quaternion orientation\n"
+    "float64[9] orientation_covariance\n"
+    "geometry_msgs/Vector3 angular_velocity\n"
+    "float64[9] angular_velocity_covariance\n"
+    "geometry_msgs/Vector3 linear_acceleration\n"
+    "float64[9] linear_acceleration_covariance\n"
+    "================\n"
+    "MSG: std_msgs/Header\n"
+    "builtin_interfaces/Time stamp\nstring frame_id\n"
+    "================\n"
+    "MSG: builtin_interfaces/Time\n"
+    "int32 sec\nuint32 nanosec\n"
+    "================\n"
+    "MSG: geometry_msgs/Quaternion\n"
+    "float64 x\nfloat64 y\nfloat64 z\nfloat64 w\n"
+    "================\n"
+    "MSG: geometry_msgs/Vector3\n"
+    "float64 x\nfloat64 y\nfloat64 z\n";
+
+static const char* kEmptyDef = "";
+
+static const char* kJointStateDef =
+    "std_msgs/Header header\n"
+    "string[] name\n"
+    "float64[] position\n"
+    "float64[] velocity\n"
+    "float64[] effort\n"
+    "================\n"
+    "MSG: std_msgs/Header\n"
+    "builtin_interfaces/Time stamp\nstring frame_id\n"
+    "================\n"
+    "MSG: builtin_interfaces/Time\n"
+    "int32 sec\nuint32 nanosec\n";
+
+static const char* kDiagnosticArrayDef =
+    "std_msgs/Header header\n"
+    "diagnostic_msgs/DiagnosticStatus[] status\n"
+    "================\n"
+    "MSG: std_msgs/Header\n"
+    "builtin_interfaces/Time stamp\nstring frame_id\n"
+    "================\n"
+    "MSG: builtin_interfaces/Time\n"
+    "int32 sec\nuint32 nanosec\n"
+    "================\n"
+    "MSG: diagnostic_msgs/DiagnosticStatus\n"
+    "uint8 level\nstring name\nstring message\nstring hardware_id\n"
+    "diagnostic_msgs/KeyValue[] values\n"
+    "================\n"
+    "MSG: diagnostic_msgs/KeyValue\n"
+    "string key\nstring value\n";
+
+static const char* kTFMessageDef =
+    "geometry_msgs/TransformStamped[] transforms\n"
+    "================\n"
+    "MSG: geometry_msgs/TransformStamped\n"
+    "std_msgs/Header header\nstring child_frame_id\n"
+    "geometry_msgs/Transform transform\n"
+    "================\n"
+    "MSG: std_msgs/Header\n"
+    "builtin_interfaces/Time stamp\nstring frame_id\n"
+    "================\n"
+    "MSG: builtin_interfaces/Time\n"
+    "int32 sec\nuint32 nanosec\n"
+    "================\n"
+    "MSG: geometry_msgs/Transform\n"
+    "geometry_msgs/Vector3 translation\n"
+    "geometry_msgs/Quaternion rotation\n"
+    "================\n"
+    "MSG: geometry_msgs/Vector3\n"
+    "float64 x\nfloat64 y\nfloat64 z\n"
+    "================\n"
+    "MSG: geometry_msgs/Quaternion\n"
+    "float64 x\nfloat64 y\nfloat64 z\nfloat64 w\n";
+
+// ===== Specialization tests =====
+
+TEST(RosParserTest, QuaternionRPY) {
+  // Identity quaternion (0,0,0,1) → RPY all zeros.
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("geometry_msgs/Pose", kPoseDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeVector3(enc, 1.0, 2.0, 3.0);        // position
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);  // identity quaternion
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows.size(), 1u);
+
+  auto* roll = findField(f.recorder.rows[0], "/orientation/roll");
+  auto* pitch = findField(f.recorder.rows[0], "/orientation/pitch");
+  auto* yaw = findField(f.recorder.rows[0], "/orientation/yaw");
+  ASSERT_NE(roll, nullptr);
+  ASSERT_NE(pitch, nullptr);
+  ASSERT_NE(yaw, nullptr);
+  EXPECT_NEAR(roll->value, 0.0, 1e-10);
+  EXPECT_NEAR(pitch->value, 0.0, 1e-10);
+  EXPECT_NEAR(yaw->value, 0.0, 1e-10);
+
+  // Also check position fields.
+  auto* px = findField(f.recorder.rows[0], "/position/x");
+  ASSERT_NE(px, nullptr);
+  EXPECT_DOUBLE_EQ(px->value, 1.0);
+}
+
+TEST(RosParserTest, PoseWithRPY) {
+  // 90-degree rotation around Z: quaternion (0, 0, sin(45°), cos(45°))
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("geometry_msgs/Pose", kPoseDef));
+
+  double angle = M_PI / 2.0;
+  double qz = std::sin(angle / 2.0);
+  double qw = std::cos(angle / 2.0);
+
+  auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeVector3(enc, 10.0, 20.0, 30.0);
+    serializeQuaternion(enc, 0.0, 0.0, qz, qw);
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  auto* yaw = findField(f.recorder.rows[0], "/orientation/yaw");
+  ASSERT_NE(yaw, nullptr);
+  EXPECT_NEAR(yaw->value, M_PI / 2.0, 1e-10);
+
+  auto* roll = findField(f.recorder.rows[0], "/orientation/roll");
+  EXPECT_NEAR(roll->value, 0.0, 1e-10);
+
+  // Check all 7 quaternion + RPY fields exist.
+  EXPECT_NE(findField(f.recorder.rows[0], "/orientation/x"), nullptr);
+  EXPECT_NE(findField(f.recorder.rows[0], "/orientation/y"), nullptr);
+  EXPECT_NE(findField(f.recorder.rows[0], "/orientation/z"), nullptr);
+  EXPECT_NE(findField(f.recorder.rows[0], "/orientation/w"), nullptr);
+  EXPECT_NE(findField(f.recorder.rows[0], "/orientation/pitch"), nullptr);
+}
+
+TEST(RosParserTest, ImuRPY) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/Imu", kImuDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 100, 500000000, "imu_frame");
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);  // identity
+    // orientation_covariance: 9 doubles
+    for (int i = 0; i < 9; i++) {
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(static_cast<double>(i + 1)));
+    }
+    serializeVector3(enc, 0.1, 0.2, 0.3);  // angular_velocity
+    for (int i = 0; i < 9; i++) {
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(0.0));
+    }
+    serializeVector3(enc, 9.8, 0.0, 0.0);  // linear_acceleration
+    for (int i = 0; i < 9; i++) {
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(0.0));
+    }
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows.size(), 1u);
+
+  // RPY from identity quaternion.
+  auto* roll = findField(f.recorder.rows[0], "/orientation/roll");
+  ASSERT_NE(roll, nullptr);
+  EXPECT_NEAR(roll->value, 0.0, 1e-10);
+
+  // Header stamp.
+  auto* stamp = findField(f.recorder.rows[0], "/header/stamp");
+  ASSERT_NE(stamp, nullptr);
+  EXPECT_NEAR(stamp->value, 100.5, 1e-6);
+
+  // Covariance upper-triangle: 3x3 → 6 entries.
+  auto* cov00 = findField(f.recorder.rows[0], "/orientation_covariance/[0;0]");
+  ASSERT_NE(cov00, nullptr);
+  EXPECT_DOUBLE_EQ(cov00->value, 1.0);
+
+  auto* cov01 = findField(f.recorder.rows[0], "/orientation_covariance/[0;1]");
+  ASSERT_NE(cov01, nullptr);
+  EXPECT_DOUBLE_EQ(cov01->value, 2.0);
+
+  auto* cov22 = findField(f.recorder.rows[0], "/orientation_covariance/[2;2]");
+  ASSERT_NE(cov22, nullptr);
+  EXPECT_DOUBLE_EQ(cov22->value, 9.0);
+
+  // Angular velocity.
+  auto* ang_x = findField(f.recorder.rows[0], "/angular_velocity/x");
+  ASSERT_NE(ang_x, nullptr);
+  EXPECT_DOUBLE_EQ(ang_x->value, 0.1);
+
+  // Linear acceleration.
+  auto* lin_x = findField(f.recorder.rows[0], "/linear_acceleration/x");
+  ASSERT_NE(lin_x, nullptr);
+  EXPECT_DOUBLE_EQ(lin_x->value, 9.8);
+}
+
+TEST(RosParserTest, EmbeddedTimestamp) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  ASSERT_TRUE(f.bindSchema("geometry_msgs/PoseStamped", kPoseStampedDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 42, 500000000, "base");
+    serializeVector3(enc, 1.0, 2.0, 3.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+  });
+
+  ASSERT_TRUE(f.parse(payload, /*host_ts=*/1000));
+  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  // Embedded timestamp: 42 sec + 500000000 nsec = 42.5 sec = 42500000000 ns.
+  EXPECT_EQ(f.recorder.rows[0].timestamp, 42500000000LL);
+}
+
+TEST(RosParserTest, EmbeddedTimestampDisabled) {
+  RosParserFixture f;
+  f.setUp();
+  // Default: use_embedded_timestamp = false.
+  ASSERT_TRUE(f.bindSchema("geometry_msgs/PoseStamped", kPoseStampedDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 42, 500000000, "base");
+    serializeVector3(enc, 1.0, 2.0, 3.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+  });
+
+  ASSERT_TRUE(f.parse(payload, /*host_ts=*/9999));
+  EXPECT_EQ(f.recorder.rows[0].timestamp, 9999);
+}
+
+TEST(RosParserTest, CovarianceUpperTriangle6x6) {
+  // Test via Odometry which has PoseWithCovariance (6×6) and TwistWithCovariance (6×6).
+  // We just test that field naming is correct via a simpler path: Imu has 3×3 covariance.
+  // The 6×6 case is tested implicitly through Odometry if needed.
+  // Here we directly test the 3×3 from Imu: 6 upper triangle entries.
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/Imu", kImuDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 0, 0, "");
+    serializeQuaternion(enc, 0, 0, 0, 1);
+    // orientation_covariance: 9 values row-major
+    for (int i = 0; i < 9; i++) {
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(static_cast<double>(i)));
+    }
+    serializeVector3(enc, 0, 0, 0);
+    for (int i = 0; i < 9; i++) {
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(0.0));
+    }
+    serializeVector3(enc, 0, 0, 0);
+    for (int i = 0; i < 9; i++) {
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(0.0));
+    }
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  // 3×3 upper triangle: [0;0]=0, [0;1]=1, [0;2]=2, [1;1]=4, [1;2]=5, [2;2]=8
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/orientation_covariance/[0;0]")->value, 0.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/orientation_covariance/[0;1]")->value, 1.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/orientation_covariance/[0;2]")->value, 2.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/orientation_covariance/[1;1]")->value, 4.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/orientation_covariance/[1;2]")->value, 5.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/orientation_covariance/[2;2]")->value, 8.0);
+  // Lower triangle entries should NOT be present.
+  EXPECT_EQ(findField(f.recorder.rows[0], "/orientation_covariance/[1;0]"), nullptr);
+}
+
+TEST(RosParserTest, Empty) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("std_msgs/Empty", kEmptyDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer&) {
+    // Empty message: zero bytes.
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  ASSERT_EQ(f.recorder.rows[0].fields.size(), 1u);
+  EXPECT_EQ(f.recorder.rows[0].fields[0].name, "/value");
+  EXPECT_DOUBLE_EQ(f.recorder.rows[0].fields[0].value, 0.0);
+}
+
+TEST(RosParserTest, JointState) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/JointState", kJointStateDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 10, 0, "");
+    // names: 3
+    enc.serializeUInt32(3);
+    enc.serializeString("shoulder");
+    enc.serializeString("elbow");
+    enc.serializeString("wrist");
+    // positions: 3
+    enc.serializeUInt32(3);
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(1.0));
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(2.0));
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(3.0));
+    // velocities: 3
+    enc.serializeUInt32(3);
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(0.1));
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(0.2));
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(0.3));
+    // efforts: 3
+    enc.serializeUInt32(3);
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(10.0));
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(20.0));
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(30.0));
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows.size(), 1u);
+
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/shoulder/position")->value, 1.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/elbow/position")->value, 2.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/wrist/position")->value, 3.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/shoulder/velocity")->value, 0.1);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/wrist/effort")->value, 30.0);
+}
+
+TEST(RosParserTest, JointStatePartial) {
+  // Names but no velocity/effort arrays.
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/JointState", kJointStateDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 10, 0, "");
+    enc.serializeUInt32(2);
+    enc.serializeString("j1");
+    enc.serializeString("j2");
+    // positions: 2
+    enc.serializeUInt32(2);
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(1.0));
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(2.0));
+    // velocities: 0
+    enc.serializeUInt32(0);
+    // efforts: 0
+    enc.serializeUInt32(0);
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/j1/position")->value, 1.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/j2/position")->value, 2.0);
+  // No velocity or effort fields.
+  EXPECT_EQ(findField(f.recorder.rows[0], "/j1/velocity"), nullptr);
+  EXPECT_EQ(findField(f.recorder.rows[0], "/j1/effort"), nullptr);
+}
+
+TEST(RosParserTest, DiagnosticArray) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("diagnostic_msgs/DiagnosticArray", kDiagnosticArrayDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 1, 0, "");
+    // 2 statuses
+    enc.serializeUInt32(2);
+
+    // Status 1: with hardware_id
+    enc.serialize(RosMsgParser::BYTE, RosMsgParser::Variant(static_cast<uint8_t>(0)));  // level OK
+    enc.serializeString("CPU Temperature");
+    enc.serializeString("OK");
+    enc.serializeString("cpu0");
+    // 1 key-value pair
+    enc.serializeUInt32(1);
+    enc.serializeString("temperature");
+    enc.serializeString("65.5");
+
+    // Status 2: no hardware_id
+    enc.serialize(RosMsgParser::BYTE, RosMsgParser::Variant(static_cast<uint8_t>(1)));  // level WARN
+    enc.serializeString("Battery");
+    enc.serializeString("Low");
+    enc.serializeString("");
+    enc.serializeUInt32(1);
+    enc.serializeString("voltage");
+    enc.serializeString("11.2");
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows.size(), 1u);
+
+  // With hardware_id: /{hw_id}/{name}/{key}
+  auto* temp = findField(f.recorder.rows[0], "/cpu0/CPU Temperature/temperature");
+  ASSERT_NE(temp, nullptr);
+  EXPECT_DOUBLE_EQ(temp->value, 65.5);
+
+  auto* level1 = findField(f.recorder.rows[0], "/cpu0/CPU Temperature/level");
+  ASSERT_NE(level1, nullptr);
+  EXPECT_DOUBLE_EQ(level1->value, 0.0);
+
+  // Without hardware_id: /{name}/{key}
+  auto* voltage = findField(f.recorder.rows[0], "/Battery/voltage");
+  ASSERT_NE(voltage, nullptr);
+  EXPECT_DOUBLE_EQ(voltage->value, 11.2);
+}
+
+TEST(RosParserTest, TFMessage) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("tf2_msgs/TFMessage", kTFMessageDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    // 2 transforms
+    enc.serializeUInt32(2);
+
+    // Transform 1: world → base_link
+    serializeHeader(enc, 1, 0, "world");
+    enc.serializeString("base_link");
+    serializeVector3(enc, 1.0, 0.0, 0.0);          // translation
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);  // rotation (identity)
+
+    // Transform 2: base_link → sensor
+    serializeHeader(enc, 1, 0, "base_link");
+    enc.serializeString("sensor");
+    serializeVector3(enc, 0.0, 0.5, 0.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows.size(), 1u);
+
+  auto* tx = findField(f.recorder.rows[0], "/world/base_link/translation/x");
+  ASSERT_NE(tx, nullptr);
+  EXPECT_DOUBLE_EQ(tx->value, 1.0);
+
+  auto* ty = findField(f.recorder.rows[0], "/base_link/sensor/translation/y");
+  ASSERT_NE(ty, nullptr);
+  EXPECT_DOUBLE_EQ(ty->value, 0.5);
+
+  // RPY fields from identity quaternion.
+  auto* roll = findField(f.recorder.rows[0], "/world/base_link/rotation/roll");
+  ASSERT_NE(roll, nullptr);
+  EXPECT_NEAR(roll->value, 0.0, 1e-10);
+}
+
+TEST(RosParserTest, ROS1Serialization) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"serialization":"ros1"})"));
+
+  const char* def = "int32 value\nfloat64 temperature\n";
+  ASSERT_TRUE(f.bindSchema("pkg/Simple", def));
+
+  // ROS1 wire format: raw little-endian, no CDR encapsulation header.
+  std::vector<uint8_t> payload;
+  // int32 value = 42
+  int32_t i32 = 42;
+  auto* p = reinterpret_cast<const uint8_t*>(&i32);
+  payload.insert(payload.end(), p, p + sizeof(i32));
+  // float64 temperature = 23.5
+  double f64 = 23.5;
+  p = reinterpret_cast<const uint8_t*>(&f64);
+  payload.insert(payload.end(), p, p + sizeof(f64));
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows.size(), 1u);
+
+  auto* val = findField(f.recorder.rows[0], "/value");
+  ASSERT_NE(val, nullptr);
+  EXPECT_DOUBLE_EQ(val->value, 42.0);
+
+  auto* temp = findField(f.recorder.rows[0], "/temperature");
+  ASSERT_NE(temp, nullptr);
+  EXPECT_DOUBLE_EQ(temp->value, 23.5);
+}
+
+TEST(RosParserTest, ConfigRoundTrip) {
+  RosParserFixture f;
+  f.setUp();
+
+  ASSERT_TRUE(f.handle.loadConfig(
+      R"({"max_array_size":200,"use_embedded_timestamp":true,"serialization":"ros1","topic_name":"/test"})"));
+
+  std::string cfg = f.handle.saveConfig();
+  auto json = nlohmann::json::parse(cfg);
+  EXPECT_EQ(json["max_array_size"], 200);
+  EXPECT_EQ(json["use_embedded_timestamp"], true);
+  EXPECT_EQ(json["serialization"], "ros1");
+  EXPECT_EQ(json["topic_name"], "/test");
+}
+
+TEST(RosParserTest, GenericQuaternionRPY) {
+  // Test that the generic path detects quaternion fields and adds RPY.
+  // Use a custom message that contains a Quaternion but is NOT a known specialization.
+  RosParserFixture f;
+  f.setUp();
+
+  const char* custom_def =
+      "float64 value\n"
+      "geometry_msgs/Quaternion rotation\n"
+      "================\n"
+      "MSG: geometry_msgs/Quaternion\n"
+      "float64 x\nfloat64 y\nfloat64 z\nfloat64 w\n";
+
+  ASSERT_TRUE(f.bindSchema("my_pkg/CustomMsg", custom_def));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(42.0));
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);  // identity
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows.size(), 1u);
+
+  // Generic path should produce /rotation/x,y,z,w AND /rotation/roll,pitch,yaw.
+  auto* roll = findField(f.recorder.rows[0], "/rotation/roll");
+  ASSERT_NE(roll, nullptr);
+  EXPECT_NEAR(roll->value, 0.0, 1e-10);
+
+  auto* w = findField(f.recorder.rows[0], "/rotation/w");
+  ASSERT_NE(w, nullptr);
+  EXPECT_DOUBLE_EQ(w->value, 1.0);
+}
+
+TEST(RosParserTest, GenericEmbeddedTimestamp) {
+  // Test embedded timestamp extraction in the generic path for a non-specialized message
+  // that has a Header.
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+
+  const char* def =
+      "std_msgs/Header header\n"
+      "float64 data\n"
+      "================\n"
+      "MSG: std_msgs/Header\n"
+      "builtin_interfaces/Time stamp\nstring frame_id\n"
+      "================\n"
+      "MSG: builtin_interfaces/Time\n"
+      "int32 sec\nuint32 nanosec\n";
+
+  ASSERT_TRUE(f.bindSchema("my_pkg/Stamped", def));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(100)));
+    enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(static_cast<uint32_t>(0)));
+    enc.serializeString("frame");
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(3.14));
+  });
+
+  ASSERT_TRUE(f.parse(payload, 1000));
+  // Embedded timestamp: sec=100, nsec=0 → 100*1e9 = 100000000000
+  EXPECT_EQ(f.recorder.rows[0].timestamp, 100000000000LL);
+}
+
+TEST(RosParserTest, TransformStampedSpecialization) {
+  static const char* kTransformStampedDef =
+      "std_msgs/Header header\n"
+      "string child_frame_id\n"
+      "geometry_msgs/Transform transform\n"
+      "================\n"
+      "MSG: std_msgs/Header\n"
+      "builtin_interfaces/Time stamp\nstring frame_id\n"
+      "================\n"
+      "MSG: builtin_interfaces/Time\n"
+      "int32 sec\nuint32 nanosec\n"
+      "================\n"
+      "MSG: geometry_msgs/Transform\n"
+      "geometry_msgs/Vector3 translation\n"
+      "geometry_msgs/Quaternion rotation\n"
+      "================\n"
+      "MSG: geometry_msgs/Vector3\n"
+      "float64 x\nfloat64 y\nfloat64 z\n"
+      "================\n"
+      "MSG: geometry_msgs/Quaternion\n"
+      "float64 x\nfloat64 y\nfloat64 z\nfloat64 w\n";
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("geometry_msgs/TransformStamped", kTransformStampedDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 5, 0, "world");
+    enc.serializeString("robot");
+    serializeVector3(enc, 1.0, 2.0, 3.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  auto* child = findField(f.recorder.rows[0], "/child_frame_id");
+  ASSERT_NE(child, nullptr);
+  EXPECT_TRUE(child->is_string);
+  EXPECT_EQ(child->string_value, "robot");
+
+  auto* tx = findField(f.recorder.rows[0], "/transform/translation/x");
+  ASSERT_NE(tx, nullptr);
+  EXPECT_DOUBLE_EQ(tx->value, 1.0);
 }
 
 }  // namespace

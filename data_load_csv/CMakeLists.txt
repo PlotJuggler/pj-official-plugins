@@ -33,6 +33,12 @@ pj_embed_ui(csv_source_plugin
   VAR_NAME kDataLoadCsvUi
 )
 
+pj_embed_ui(csv_source_plugin
+  UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/ui/datetimehelp.ui
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/datetimehelp_ui.hpp
+  VAR_NAME kDateTimeHelpUi
+)
+
 # --- Unit test for CSV parser (no plugin loading) ---
 add_executable(csv_parser_test tests/csv_parser_test.cpp)
 target_compile_features(csv_parser_test PRIVATE cxx_std_20)

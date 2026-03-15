@@ -81,6 +81,9 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     QObject::connect(socket_.get(), &QWebSocket::binaryMessageReceived,
                      [this](const QByteArray& message) { onBinaryMessage(message); });
 
+    QObject::connect(socket_.get(), &QWebSocket::disconnected,
+                     [this]() { onDisconnected(); });
+
     QNetworkRequest request(
         QUrl(QString("ws://%1:%2").arg(QString::fromStdString(address_)).arg(port_)));
     request.setRawHeader("Sec-WebSocket-Protocol", "foxglove.sdk.v1");
@@ -103,6 +106,27 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
   PJ::Status onPoll() override {
     QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
+
+    // Reconnection: if connection was lost, try to reconnect every ~5s
+    if (!connected_ && socket_ && ++reconnect_tick_ >= 150) {
+      reconnect_tick_ = 0;
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, "Attempting to reconnect to Foxglove bridge...");
+      QNetworkRequest request(
+          QUrl(QString("ws://%1:%2").arg(QString::fromStdString(address_)).arg(port_)));
+      request.setRawHeader("Sec-WebSocket-Protocol", "foxglove.sdk.v1");
+      socket_->open(request);
+
+      auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      while (socket_->state() != QAbstractSocket::ConnectedState &&
+             std::chrono::steady_clock::now() < deadline) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+      }
+      if (socket_->state() == QAbstractSocket::ConnectedState) {
+        connected_ = true;
+        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, "Reconnected to Foxglove bridge");
+        // Server will re-advertise channels, triggering re-subscription in onTextMessage
+      }
+    }
 
     std::queue<QueuedBinaryMessage> batch;
     {
@@ -160,6 +184,8 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
     if (op == "advertise") {
       auto channels_arr = json.value("channels", nlohmann::json::array());
+      std::vector<std::string> parser_errors;
+
       for (const auto& ch_json : channels_arr) {
         ChannelInfo ch;
         ch.id = ch_json.value("id", uint64_t{0});
@@ -168,6 +194,9 @@ class FoxgloveSource : public PJ::StreamSourceBase {
         ch.schema_name = ch_json.value("schemaName", "");
         ch.schema = ch_json.value("schema", "");
         ch.schema_encoding = ch_json.value("schemaEncoding", "");
+
+        // Track server-advertised channels for unadvertise
+        advertised_channels_[ch.id] = ch.topic;
 
         // Only subscribe to channels that were selected in the dialog
         bool user_selected = false;
@@ -198,11 +227,66 @@ class FoxgloveSource : public PJ::StreamSourceBase {
         });
         if (binding) {
           binding_by_subscription_[sub_id] = *binding;
+        } else {
+          parser_errors.push_back(ch.topic + " (" + ch.encoding + "): " + binding.error());
         }
 
         socket_->sendTextMessage(QString::fromStdString(
             buildSubscribeMessage({{sub_id, ch.id}})));
       }
+
+      // Report all parser binding failures in a single aggregated message
+      if (!parser_errors.empty()) {
+        std::string msg = "Failed to create parser for " +
+                          std::to_string(parser_errors.size()) + " channel(s):\n";
+        for (const auto& e : parser_errors) msg += "  - " + e + "\n";
+        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, msg);
+      }
+    }
+
+    // Handle unadvertise: server removed channels
+    if (op == "unadvertise") {
+      auto channel_ids = json.value("channelIds", nlohmann::json::array());
+      std::vector<std::string> removed_topics;
+      for (const auto& id_json : channel_ids) {
+        uint64_t removed_id = id_json.get<uint64_t>();
+        auto it = advertised_channels_.find(removed_id);
+        if (it != advertised_channels_.end()) {
+          removed_topics.push_back(it->second);
+          advertised_channels_.erase(it);
+        }
+        // Clean up subscriptions referencing removed channels
+        for (auto sub_it = subscriptions_.begin(); sub_it != subscriptions_.end();) {
+          if (sub_it->second == removed_id) {
+            binding_by_subscription_.erase(sub_it->first);
+            sub_it = subscriptions_.erase(sub_it);
+          } else {
+            ++sub_it;
+          }
+        }
+      }
+      if (!removed_topics.empty()) {
+        std::string msg = "Server removed " + std::to_string(removed_topics.size()) + " channel(s):";
+        for (const auto& t : removed_topics) msg += " " + t;
+        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, msg);
+      }
+    }
+
+    // Handle server status/warning messages
+    if (op == "status") {
+      int level = json.value("level", 0);
+      std::string status_msg = json.value("message", "");
+      auto pj_level = (level >= 2) ? PJ::DataSourceMessageLevel::kError
+                                   : PJ::DataSourceMessageLevel::kWarning;
+      runtimeHost().reportMessage(pj_level, "Foxglove server: " + status_msg);
+    }
+  }
+
+  void onDisconnected() {
+    if (connected_) {
+      connected_ = false;
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning,
+                                  "Foxglove bridge connection lost");
     }
   }
 
@@ -236,10 +320,12 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
   std::map<uint32_t, uint64_t> subscriptions_;  // sub_id -> channel_id
   std::map<uint32_t, PJ::ParserBindingHandle> binding_by_subscription_;
+  std::map<uint64_t, std::string> advertised_channels_;  // channel_id -> topic name
   uint32_t next_subscription_id_ = 1;
 
   std::mutex queue_mutex_;
   std::queue<QueuedBinaryMessage> message_queue_;
+  int reconnect_tick_ = 0;
 };
 
 }  // namespace

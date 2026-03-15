@@ -1,5 +1,7 @@
 #include <pj_base/sdk/message_parser_plugin_base.hpp>
 
+#include <nlohmann/json.hpp>
+
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/descriptor.pb.h>
 #include <google/protobuf/dynamic_message.h>
@@ -9,6 +11,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace gp = google::protobuf;
@@ -23,8 +26,8 @@ struct FlattenedField {
 /// Recursively flatten a protobuf message into scalar fields.
 /// Nested messages use "/" separator. Repeated fields use "[i]" suffix.
 /// Map fields: skip the "key" field, extract the "value" field.
-/// String and bytes fields are skipped.
 void flattenMessage(const gp::Message& msg, const std::string& prefix, bool is_map,
+                    unsigned max_array_size, bool clamp_arrays,
                     std::vector<FlattenedField>& out) {
   const gp::Reflection* reflection = msg.GetReflection();
   const gp::Descriptor* descriptor = msg.GetDescriptor();
@@ -49,6 +52,10 @@ void flattenMessage(const gp::Message& msg, const std::string& prefix, bool is_m
     bool repeated = field->is_repeated();
     if (repeated) {
       count = static_cast<unsigned>(reflection->FieldSize(msg, field));
+      if (max_array_size > 0 && count > max_array_size) {
+        if (!clamp_arrays) continue;  // skip oversized arrays
+        count = max_array_size;       // clamp to limit
+      }
     }
 
     for (unsigned idx = 0; idx < count; ++idx) {
@@ -104,7 +111,8 @@ void flattenMessage(const gp::Message& msg, const std::string& prefix, bool is_m
           const gp::EnumValueDescriptor* ev =
               repeated ? reflection->GetRepeatedEnum(msg, field, static_cast<int>(idx))
                        : reflection->GetEnum(msg, field);
-          out.push_back({full_key, static_cast<int32_t>(ev->number())});
+          // Store enum name as string (matching original PlotJuggler behavior)
+          out.push_back({full_key, std::string(ev->name())});
           break;
         }
         case gp::FieldDescriptor::CPPTYPE_MESSAGE: {
@@ -142,22 +150,86 @@ void flattenMessage(const gp::Message& msg, const std::string& prefix, bool is_m
                   break;
               }
             }
-            flattenMessage(sub, full_key + map_suffix, true, out);
+            flattenMessage(sub, full_key + map_suffix, true, max_array_size, clamp_arrays, out);
           } else {
-            flattenMessage(sub, full_key, false, out);
+            flattenMessage(sub, full_key, false, max_array_size, clamp_arrays, out);
           }
           break;
         }
-        case gp::FieldDescriptor::CPPTYPE_STRING:
-          // Skip string and bytes fields.
+        case gp::FieldDescriptor::CPPTYPE_STRING: {
+          // Include short string fields (< 100 bytes), skip large blobs.
+          // This matches original PlotJuggler behavior.
+          std::string str_val =
+              repeated ? reflection->GetRepeatedString(msg, field, static_cast<int>(idx))
+                       : reflection->GetString(msg, field);
+          if (str_val.size() < 100) {
+            out.push_back({full_key, std::move(str_val)});
+          }
           break;
+        }
       }
+    }
+  }
+}
+
+/// Map protobuf cpp_type to PJ::PrimitiveType for pre-registration.
+PJ::PrimitiveType protobufCppTypeToPrimitive(gp::FieldDescriptor::CppType cpp_type) {
+  switch (cpp_type) {
+    case gp::FieldDescriptor::CPPTYPE_DOUBLE: return PJ::PrimitiveType::kFloat64;
+    case gp::FieldDescriptor::CPPTYPE_FLOAT: return PJ::PrimitiveType::kFloat32;
+    case gp::FieldDescriptor::CPPTYPE_INT32: return PJ::PrimitiveType::kInt32;
+    case gp::FieldDescriptor::CPPTYPE_INT64: return PJ::PrimitiveType::kInt64;
+    case gp::FieldDescriptor::CPPTYPE_UINT32: return PJ::PrimitiveType::kUint32;
+    case gp::FieldDescriptor::CPPTYPE_UINT64: return PJ::PrimitiveType::kUint64;
+    case gp::FieldDescriptor::CPPTYPE_BOOL: return PJ::PrimitiveType::kBool;
+    case gp::FieldDescriptor::CPPTYPE_ENUM: return PJ::PrimitiveType::kInt32;
+    default: return PJ::PrimitiveType::kUnspecified;
+  }
+}
+
+/// Walk the descriptor tree and pre-register non-repeated scalar fields.
+/// Repeated fields, maps, and nested messages with repeated parents are skipped
+/// (they produce dynamic field names like "arr[0]" at runtime).
+void preRegisterFields(const gp::Descriptor* descriptor, const std::string& prefix,
+                       PJ::sdk::ParserWriteHostView host,
+                       std::unordered_map<std::string, PJ::sdk::FieldHandle>& cache) {
+  for (int i = 0; i < descriptor->field_count(); ++i) {
+    const gp::FieldDescriptor* field = descriptor->field(i);
+    if (field->is_repeated() || field->is_map()) {
+      continue;
+    }
+
+    std::string name(field->name());
+    std::string path = prefix.empty() ? name : prefix + "/" + name;
+
+    if (field->cpp_type() == gp::FieldDescriptor::CPPTYPE_MESSAGE) {
+      preRegisterFields(field->message_type(), path, host, cache);
+      continue;
+    }
+    if (field->cpp_type() == gp::FieldDescriptor::CPPTYPE_STRING) {
+      continue;
+    }
+
+    auto type = protobufCppTypeToPrimitive(field->cpp_type());
+    auto handle = host.ensureField(path, type);
+    if (handle.has_value()) {
+      cache.emplace(path, *handle);
     }
   }
 }
 
 class ProtobufParser : public PJ::MessageParserPluginBase {
  public:
+  PJ::Status loadConfig(std::string_view config_json) override {
+    auto cfg = nlohmann::json::parse(config_json, nullptr, false);
+    if (!cfg.is_discarded()) {
+      use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
+      max_array_size_ = cfg.value("max_array_size", 0u);
+      clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
+    }
+    return PJ::okStatus();
+  }
+
   PJ::Status bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema) override {
     gp::FileDescriptorSet fd_set;
     if (!fd_set.ParseFromArray(schema.data(), static_cast<int>(schema.size()))) {
@@ -177,6 +249,23 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::unexpected(std::string("message type not found: ") + std::string(type_name));
     }
 
+    // Detect embedded timestamp field: a top-level non-repeated double named "timestamp"
+    timestamp_field_ = nullptr;
+    if (use_embedded_timestamp_) {
+      for (int i = 0; i < descriptor_->field_count(); ++i) {
+        const auto* f = descriptor_->field(i);
+        if (f->name() == "timestamp" && !f->is_repeated() &&
+            f->cpp_type() == gp::FieldDescriptor::CPPTYPE_DOUBLE) {
+          timestamp_field_ = f;
+          break;
+        }
+      }
+    }
+
+    if (writeHostBound()) {
+      preRegisterFields(descriptor_, "", writeHost(), field_cache_);
+    }
+
     return PJ::okStatus();
   }
 
@@ -194,27 +283,46 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::unexpected(std::string("failed to deserialize protobuf message"));
     }
 
-    owned_fields_.clear();
-    flattenMessage(*msg, "", false, owned_fields_);
-
-    named_fields_.clear();
-    named_fields_.reserve(owned_fields_.size());
-    for (const auto& f : owned_fields_) {
-      named_fields_.push_back({.name = f.name, .value = f.value});
+    // Extract embedded timestamp if available (overrides the provided timestamp)
+    if (timestamp_field_ != nullptr) {
+      double ts_seconds = msg->GetReflection()->GetDouble(*msg, timestamp_field_);
+      timestamp_ns = static_cast<PJ::Timestamp>(ts_seconds * 1e9);
     }
 
-    return writeHost().appendRecord(
+    owned_fields_.clear();
+    flattenMessage(*msg, "", false, max_array_size_, clamp_large_arrays_, owned_fields_);
+
+    bound_fields_.clear();
+    bound_fields_.reserve(owned_fields_.size());
+    for (const auto& f : owned_fields_) {
+      auto it = field_cache_.find(f.name);
+      if (it == field_cache_.end()) {
+        auto handle = writeHost().ensureField(f.name, PJ::sdk::typeOf(f.value));
+        if (!handle.has_value()) {
+          return PJ::unexpected(handle.error());
+        }
+        it = field_cache_.emplace(f.name, *handle).first;
+      }
+      bound_fields_.push_back({.field = it->second, .value = f.value});
+    }
+
+    return writeHost().appendBoundRecord(
         timestamp_ns,
-        PJ::Span<const PJ::sdk::NamedFieldValue>(named_fields_.data(), named_fields_.size()));
+        PJ::Span<const PJ::sdk::BoundFieldValue>(bound_fields_.data(), bound_fields_.size()));
   }
 
  private:
   std::unique_ptr<gp::DescriptorPool> pool_;
   std::unique_ptr<gp::DynamicMessageFactory> factory_;
   const gp::Descriptor* descriptor_ = nullptr;
+  const gp::FieldDescriptor* timestamp_field_ = nullptr;
+  bool use_embedded_timestamp_ = false;
+  unsigned max_array_size_ = 0;
+  bool clamp_large_arrays_ = true;
 
+  std::unordered_map<std::string, PJ::sdk::FieldHandle> field_cache_;
   std::vector<FlattenedField> owned_fields_;
-  std::vector<PJ::sdk::NamedFieldValue> named_fields_;
+  std::vector<PJ::sdk::BoundFieldValue> bound_fields_;
 };
 
 }  // namespace

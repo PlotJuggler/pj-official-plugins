@@ -12,6 +12,8 @@
 #include <QWebSocket>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <string>
 #include <vector>
 
@@ -65,12 +67,13 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     wd.setChecked("radioSkip", !clamp_large_arrays_);
     wd.setChecked("checkBoxUseTimestamp", use_timestamp_);
 
-    // Topic list
+    // Topic list — apply case-insensitive filter matching on name AND type
     if (topics_dirty_) {
       wd.setTableHeaders("topicsList", {"Topic Name", "DataType"});
       std::vector<std::vector<std::string>> rows;
       rows.reserve(topics_.size());
       for (const auto& t : topics_) {
+        if (!matchesFilter(t)) continue;
         rows.push_back({t.name, t.type});
       }
       wd.setTableRows("topicsList", rows);
@@ -316,14 +319,28 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     tick_dirty_ = true;
   }
 
-  void applyFilter() {
-    // Filter is applied by the table's visibility — but since the SDK
-    // replaces all rows on each update, we filter topics_ into the table
-    // during widget_data(). For now, filtering is a TODO that would require
-    // the dialog to maintain a filtered_topics_ list. The original does this
-    // by hiding QTreeWidget items — with QTableWidget, we'd need to rebuild rows.
-    // This is handled in widget_data() by only emitting matching rows.
-    topics_dirty_ = true;
+  void applyFilter() { topics_dirty_ = true; }
+
+  /// Case-insensitive substring match on topic name and type.
+  /// Selected topics always match (so they remain visible even when filtered).
+  bool matchesFilter(const DiscoveredTopic& t) const {
+    if (filter_.empty()) return true;
+    // Always show selected topics regardless of filter
+    for (const auto& sel : selected_topic_names_) {
+      if (sel == t.name) return true;
+    }
+    // Case-insensitive search
+    std::string lower_filter = filter_;
+    std::transform(lower_filter.begin(), lower_filter.end(), lower_filter.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    std::string lower_name = t.name;
+    std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    std::string lower_type = t.type;
+    std::transform(lower_type.begin(), lower_type.end(), lower_type.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return lower_name.find(lower_filter) != std::string::npos ||
+           lower_type.find(lower_filter) != std::string::npos;
   }
 
   // --- State ---

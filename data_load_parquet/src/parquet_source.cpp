@@ -97,9 +97,31 @@ PJ::sdk::ValueRef getArrowValueRef(const std::shared_ptr<arrow::Array>& array,
         case arrow::TimeUnit::MICRO: value *= 1000LL; break;
         case arrow::TimeUnit::NANO: break;
       }
-      // Timezone note: all timestamps are treated as UTC.
-      // If the column has a non-UTC timezone, the raw value is still used as-is
-      // since timezone conversion requires ICU or similar library.
+      // Apply timezone offset for non-UTC timestamps.
+      // Arrow stores timezone as a string (e.g. "America/New_York" or "+05:30").
+      // For fixed-offset timezones like "+HH:MM" or "-HH:MM", we can parse directly.
+      // IANA timezone names require ICU and are left as UTC.
+      const auto& tz = ts_type->timezone();
+      if (!tz.empty() && tz != "UTC" && tz != "utc") {
+        int64_t offset_ns = 0;
+        if ((tz[0] == '+' || tz[0] == '-') && tz.size() >= 5) {
+          // Parse "+HH:MM" or "-HHMM" style offsets
+          int sign = (tz[0] == '-') ? -1 : 1;
+          int hours = 0;
+          int minutes = 0;
+          if (tz.size() == 6 && tz[3] == ':') {
+            // "+HH:MM"
+            hours = (tz[1] - '0') * 10 + (tz[2] - '0');
+            minutes = (tz[4] - '0') * 10 + (tz[5] - '0');
+          } else if (tz.size() == 5) {
+            // "+HHMM"
+            hours = (tz[1] - '0') * 10 + (tz[2] - '0');
+            minutes = (tz[3] - '0') * 10 + (tz[4] - '0');
+          }
+          offset_ns = static_cast<int64_t>(sign) * (hours * 3600LL + minutes * 60LL) * 1000000000LL;
+        }
+        value -= offset_ns;
+      }
       return value;
     }
     default:
@@ -303,16 +325,23 @@ class ParquetSource : public PJ::FileSourceBase {
         ts_array = batch->column(ts_col);
       }
 
-      // Iterate rows, building a multi-field record per row
+      // Build per-row timestamps, then sort by timestamp to ensure monotonic order
+      // (matches original PlotJuggler behavior)
+      std::vector<std::pair<int64_t, int64_t>> ts_row_pairs;  // (timestamp_ns, row_index)
+      ts_row_pairs.reserve(static_cast<size_t>(batch_rows));
       for (int64_t row = 0; row < batch_rows; row++) {
         int64_t ts_ns = 0;
         if (ts_col >= 0) {
           ts_ns = getTimestampNanos(ts_array, row, ts_arrow_type);
         } else {
-          // Row index as microseconds when no time column
           ts_ns = (rows_processed + row) * 1000000;
         }
+        ts_row_pairs.push_back({ts_ns, row});
+      }
+      std::sort(ts_row_pairs.begin(), ts_row_pairs.end());
 
+      // Iterate in sorted order, building a multi-field record per row
+      for (const auto& [ts_ns, row] : ts_row_pairs) {
         row_fields.clear();
 
         for (size_t c = 0; c < columns.size(); c++) {

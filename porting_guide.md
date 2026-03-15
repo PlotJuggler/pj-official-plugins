@@ -2,28 +2,92 @@
 
 Reference document for porting PlotJuggler plugins to the new SDK. Based on lessons learned porting the CSV plugin (the only fully verified plugin so far). Other plugins (Parquet, ULog, MCAP, Protobuf, ROS, ZMQ, MQTT, Foxglove Bridge, PJ Bridge) are ported but **not yet validated end-to-end** — expect similar issues.
 
-> **RULE: Full feature parity is mandatory.** When porting a plugin, every feature
-> of the original must be replicated — no skipping, no "good enough" shortcuts.
-> If a feature cannot be implemented due to SDK limitations, document it explicitly
-> as a known limitation with a workaround plan. Never mark a port as complete
-> when features are silently dropped. This includes: string data columns, user-facing
-> warning dialogs, detailed error reporting, and all dialog interactions.
+---
 
-> **RULE: 1:1 dialog replication is non-negotiable.** This is not optional, not
-> "over-engineering", and must not be postponed or simplified:
->
-> - **Copy the original `.ui` file exactly.** Only modify what strictly cannot work
->   (e.g., custom widget classes whose headers don't exist in this codebase).
->   Everything else — layout, sizing, spacing, naming, properties — stays identical.
-> - **Use real `.ui` files** editable in Qt Creator, auto-embedded into a
->   `constexpr char[]` header via CMake's `pj_embed_ui()`. Do NOT write inline
->   XML strings manually. Plugins must NOT depend on Qt for UI loading.
-> - **Smart dialog plugins**: streaming source dialogs that have dynamic topic
->   discovery (PJ Bridge, Foxglove, MQTT) must own the connection logic inside
->   the dialog plugin itself, replicating the original Connect → discover → select
->   → subscribe flow.
-> - If the dialog SDK lacks support for a widget type used by the original (e.g.,
->   QTreeWidget), **extend the SDK** — do not downgrade to a simpler widget.
+## 0. Porting Philosophy — Read This First
+
+Porting a plugin is a **mechanical translation**, not a rewrite. The original
+plugin is the specification. Your job is to produce code that behaves
+identically to the original in every observable way, using the new SDK as the
+target language. Nothing more, nothing less.
+
+### What "translation" means in practice
+
+1. **Read the original code in its entirety before writing anything.** Not a
+   skim — a line-by-line read. Open every function, every signal/slot
+   connection, every conditional branch. You cannot translate what you have not
+   read.
+
+2. **Every code path in the original must have a corresponding code path in
+   the port.** If the original has 14 `if` branches, the port has 14 `if`
+   branches. If the original emits a warning on a specific condition, the port
+   emits the same warning on the same condition. If the original saves dialog
+   geometry, the port saves dialog geometry.
+
+3. **There are no minor features.** Dialog geometry persistence is not minor.
+   Splitter ratios are not minor. A help button that opens a sub-dialog is not
+   minor. Column selection history is not minor. Every feature the user can
+   observe, interact with, or benefit from is equally mandatory. Do not
+   classify features by importance — classify them only as "ported" or "not
+   yet ported."
+
+4. **Do not optimize, simplify, or "improve" the original's behavior.** If the
+   original has verbose logic, redundant checks, or a roundabout approach —
+   translate it faithfully. The original was tested in production. Your
+   "improvement" was not. If you believe something in the original is a bug,
+   flag it explicitly — do not silently fix it.
+
+5. **Do not substitute a different approach.** If the original uses
+   `QTreeWidget`, you do not get to decide that `QTableWidget` is "close
+   enough." If the SDK does not support what the original uses, that is a
+   blocker — see the escalation rules below.
+
+6. **Speed does not matter. Completeness does.** This work should take as many
+   iterations as needed. Porting one plugin may take multiple sessions. That
+   is expected and acceptable. What is not acceptable is declaring a plugin
+   "ported" when features have been silently dropped.
+
+### When you cannot translate something
+
+If the new SDK lacks a capability that the original plugin uses (e.g., a
+widget type, an event type, a host callback), you have exactly two options:
+
+- **Option A: Extend the SDK** to support it, then use it.
+- **Option B: Stop and ask the user** what to do.
+
+You do NOT have the option to silently drop the feature, substitute a simpler
+alternative, or mark it as a "minor gap." If you are unsure whether the SDK
+can do something, ask.
+
+### Verification before claiming "done"
+
+Before you say a plugin port is complete, you must produce a **feature audit
+table** with one row per feature of the original plugin:
+
+| # | Original Feature | Original Code Location | Port Status | New Code Location | Notes |
+|---|-----------------|----------------------|-------------|-------------------|-------|
+| 1 | (feature name)  | (file:line)          | DONE / BLOCKED / NOT YET | (file:line) | (if BLOCKED: what SDK gap) |
+
+Every row must be filled. Empty rows or missing features mean the audit is
+incomplete. The port is not done until every row says DONE or BLOCKED (with
+an explicit SDK limitation and a decision from the user on how to proceed).
+
+### Common failure modes to guard against
+
+These are patterns that have repeatedly caused incomplete ports. Treat them
+as red flags — if you catch yourself doing any of these, stop and correct:
+
+- **"This is just cosmetic"** — Cosmetic features are features. Port them.
+- **"The SDK doesn't support X, so I'll use Y instead"** — Stop. Ask.
+- **"I'll come back to this later"** — You will not. Port it now or mark it
+  BLOCKED with a specific SDK limitation.
+- **"The original code is messy, let me clean it up"** — Do not. Translate
+  it as-is. Cleanup is a separate task that can only happen after the
+  translation is verified correct.
+- **"This edge case probably never happens"** — The original author handled
+  it. You handle it too.
+- **"I'm almost done, just these last few things"** — Run the audit table.
+  If any row is not DONE or BLOCKED, you are not almost done.
 
 ---
 
@@ -234,6 +298,27 @@ Pattern: pj_plugins/examples/mock_source_with_dialog.cpp
 WidgetData API: pj_plugins/dialog_protocol/include/pj_plugins/sdk/widget_data.hpp
 ```
 
+### Dialog Porting Rule
+
+The dialog is part of the plugin's user-facing behavior. It must be ported
+with the same exactness as the data logic. Specifically:
+
+- **Copy the original `.ui` file exactly.** Only modify what strictly cannot
+  work (e.g., custom widget classes whose headers don't exist in this
+  codebase). Everything else — layout, sizing, spacing, naming, properties,
+  tab order — stays identical.
+- **Use real `.ui` files** editable in Qt Creator, auto-embedded into a
+  `constexpr char[]` header via CMake's `pj_embed_ui()`. Do NOT write inline
+  XML strings manually. Plugins must NOT depend on Qt for UI loading.
+- **Smart dialog plugins**: streaming source dialogs that have dynamic topic
+  discovery (PJ Bridge, Foxglove, MQTT) must own the connection logic inside
+  the dialog plugin itself, replicating the original Connect → discover →
+  select → subscribe flow.
+- **Every signal/slot connection in the original dialog must be replicated.**
+  If the original wires `itemDoubleClicked` → `accept()`, the port must do
+  the same. If the SDK lacks the event type, that is a blocker — extend the
+  SDK or ask the user.
+
 ### Supported Widgets (via WidgetData)
 
 | Widget | set* Methods |
@@ -251,7 +336,16 @@ WidgetData API: pj_plugins/dialog_protocol/include/pj_plugins/sdk/widget_data.hp
 | QTabWidget | `setTabIndex` |
 | Any widget | `setEnabled`, `setVisible` |
 
-**NOT supported:** QTextEdit, QTableView (model-based), QTreeWidget, custom widgets. Use QTableWidget for both preview tables and multi-column selection lists (replace QTreeWidget → QTableWidget in .ui files).
+### When the original uses an unsupported widget
+
+If the original plugin uses a widget type not in the table above (e.g.,
+QTreeWidget, QTextEdit, QTableView, custom widgets), you must **not**
+silently replace it with a supported widget. Instead:
+
+1. Check if the SDK can be extended to support it (see "Extending the Dialog
+   Protocol" below).
+2. If yes, extend it.
+3. If you are unsure, ask the user.
 
 ### Extending the Dialog Protocol
 
@@ -339,7 +433,7 @@ This preserves: delimiter choice, time column selection, custom format, etc.
 
 - `QDialogButtonBox` **must** be named `"buttonBox"` (not `"button_box"`) — the DialogEngine searches by this exact name
 - `QDialogButtonBox` **must** have `standardButtons` property set in the XML, or no OK/Cancel buttons appear
-- `QTextEdit` is **not supported** by the widget binding system — use `QTableWidget` instead for previews
+- `QTextEdit` is **not supported** by the widget binding system — see "When the original uses an unsupported widget" above
 - `setSelectedItems` takes a vector of strings (not indices) — use the item text, not a numeric index
 
 ---
@@ -451,14 +545,13 @@ The CSV plugin was audited feature-by-feature against the old plugin. **45 featu
 | **Date Format Help dialog** | NOT PORTED | Old has a separate dialog with format reference tables. Could be implemented as a second dialog or inline help text. |
 | **Raw text preview tab** | NOT PORTED | Old uses QCodeEditor with CSV syntax highlighting. Dialog SDK doesn't support QTextEdit. Requires protocol extension. |
 
-### Partial/Minor Gaps
+### Other Gaps (equally mandatory — "minor" is not a category)
 
-| Feature | Description |
-|---------|-------------|
-| **Preview label** | Says "first 20 rows" but code reads 100. Cosmetic — fix the label. |
-| **toDouble** | Old uses QLocale::c() after replacing all commas. New uses strtod with smarter single-comma logic. More correct but slightly different behavior for edge cases like `"1,000,000"`. |
-| **Dialog geometry** | Old saves/restores dialog geometry. New relies on dialog SDK defaults. |
-| **Splitter ratio** | Old sets explicit stretch factors (1:2). New uses default. |
+| Feature | Description | What must happen |
+|---------|-------------|-----------------|
+| **toDouble locale handling** | Old uses QLocale::c() after replacing all commas. New uses strtod with different single-comma logic. | Must match original behavior exactly, including for inputs like `"1,000,000"`. |
+| **Dialog geometry** | Old saves/restores dialog geometry via QSettings. New relies on dialog SDK defaults. | Must be ported — either extend dialog SDK or replicate via config. |
+| **Splitter ratio** | Old sets explicit stretch factors (1:2). New uses default. | Must be ported. |
 
 ### Confirmed Bugs in New Code
 

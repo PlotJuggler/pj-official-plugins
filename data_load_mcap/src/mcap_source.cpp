@@ -1,7 +1,9 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 
-#include <mcap/internal.hpp>
+#define MCAP_IMPLEMENTATION
 #include <mcap/reader.hpp>
+
+#include "mcap_dialog.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -28,18 +30,14 @@ struct McapSummaryInfo {
 mcap::Status readSelectiveSummary(mcap::IReadable& reader, McapSummaryInfo& info) {
   const uint64_t file_size = reader.size();
 
-  // 1. Read the Footer (last 37 bytes of the file).
   mcap::Footer footer;
   auto status =
       mcap::McapReader::ReadFooter(reader, file_size - mcap::internal::FooterLength, &footer);
-  if (!status.ok()) {
-    return status;
-  }
+  if (!status.ok()) return status;
 
   if (footer.summaryStart == 0) {
     return mcap::Status{mcap::StatusCode::MissingStatistics, "no summary section"};
   }
-
   info.summary_start = footer.summaryStart;
 
   const mcap::ByteOffset summary_offset_start =
@@ -50,26 +48,19 @@ mcap::Status readSelectiveSummary(mcap::IReadable& reader, McapSummaryInfo& info
     return mcap::Status{mcap::StatusCode::InvalidFooter, "no SummaryOffset section available"};
   }
 
-  // 2. Read the SummaryOffset section to find group byte ranges.
   struct GroupRange {
     mcap::ByteOffset start = 0;
     mcap::ByteOffset end = 0;
   };
-  GroupRange schema_range;
-  GroupRange channel_range;
-  GroupRange stats_range;
+  GroupRange schema_range, channel_range, stats_range;
   bool found_any = false;
 
   mcap::RecordReader offset_reader(reader, summary_offset_start,
                                    file_size - mcap::internal::FooterLength);
   while (auto record = offset_reader.next()) {
-    if (record->opcode != mcap::OpCode::SummaryOffset) {
-      continue;
-    }
+    if (record->opcode != mcap::OpCode::SummaryOffset) continue;
     mcap::SummaryOffset so;
-    if (!mcap::McapReader::ParseSummaryOffset(*record, &so).ok()) {
-      continue;
-    }
+    if (!mcap::McapReader::ParseSummaryOffset(*record, &so).ok()) continue;
     if (so.groupOpCode == mcap::OpCode::Schema) {
       schema_range = {so.groupStart, so.groupStart + so.groupLength};
       found_any = true;
@@ -83,67 +74,50 @@ mcap::Status readSelectiveSummary(mcap::IReadable& reader, McapSummaryInfo& info
   }
 
   if (!found_any) {
-    return mcap::Status{mcap::StatusCode::MissingStatistics,
-                        "no relevant SummaryOffset records found"};
+    return mcap::Status{mcap::StatusCode::MissingStatistics, "no relevant SummaryOffset records found"};
   }
 
-  // 3. Read each targeted group.
   if (schema_range.start != 0) {
     mcap::RecordReader rdr(reader, schema_range.start, schema_range.end);
     while (auto record = rdr.next()) {
-      if (record->opcode != mcap::OpCode::Schema) {
-        continue;
-      }
+      if (record->opcode != mcap::OpCode::Schema) continue;
       auto ptr = std::make_shared<mcap::Schema>();
       if (mcap::McapReader::ParseSchema(*record, ptr.get()).ok()) {
         info.schemas.try_emplace(ptr->id, ptr);
       }
     }
   }
-
   if (channel_range.start != 0) {
     mcap::RecordReader rdr(reader, channel_range.start, channel_range.end);
     while (auto record = rdr.next()) {
-      if (record->opcode != mcap::OpCode::Channel) {
-        continue;
-      }
+      if (record->opcode != mcap::OpCode::Channel) continue;
       auto ptr = std::make_shared<mcap::Channel>();
       if (mcap::McapReader::ParseChannel(*record, ptr.get()).ok()) {
         info.channels.try_emplace(ptr->id, ptr);
       }
     }
   }
-
   if (stats_range.start != 0) {
     mcap::RecordReader rdr(reader, stats_range.start, stats_range.end);
     while (auto record = rdr.next()) {
-      if (record->opcode != mcap::OpCode::Statistics) {
-        continue;
-      }
+      if (record->opcode != mcap::OpCode::Statistics) continue;
       mcap::Statistics stats;
       if (mcap::McapReader::ParseStatistics(*record, &stats).ok()) {
         info.statistics = stats;
-        break;  // only one Statistics record expected
+        break;
       }
     }
   }
 
   if (!info.statistics) {
-    return mcap::Status{mcap::StatusCode::MissingStatistics,
-                        "Statistics record not found in summary"};
+    return mcap::Status{mcap::StatusCode::MissingStatistics, "Statistics record not found in summary"};
   }
-
   return mcap::StatusCode::Success;
 }
 
-/// Read summary the standard way (full readSummary) and populate McapSummaryInfo.
 void populateSummaryFromReader(const mcap::McapReader& reader, McapSummaryInfo& info) {
-  for (const auto& [id, ptr] : reader.schemas()) {
-    info.schemas.insert({id, ptr});
-  }
-  for (const auto& [id, ptr] : reader.channels()) {
-    info.channels.insert({id, ptr});
-  }
+  for (const auto& [id, ptr] : reader.schemas()) info.schemas.insert({id, ptr});
+  for (const auto& [id, ptr] : reader.channels()) info.channels.insert({id, ptr});
   info.statistics = reader.statistics();
 }
 
@@ -153,31 +127,30 @@ void populateSummaryFromReader(const mcap::McapReader& reader, McapSummaryInfo& 
 
 class McapSource : public PJ::FileSourceBase {
  public:
-  uint64_t extraCapabilities() const override { return PJ::kCapabilityDelegatedIngest; }
+  void* dialogContext() override { return &dialog_; }
 
-  std::string saveConfig() const override {
-    return nlohmann::json{{"filepath", filepath_}}.dump();
+  uint64_t extraCapabilities() const override {
+    return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;
   }
 
+  std::string saveConfig() const override { return dialog_.saveConfig(); }
+
   PJ::Status loadConfig(std::string_view config_json) override {
-    auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-    if (cfg.is_discarded()) {
+    if (!dialog_.loadConfig(config_json)) {
       return PJ::unexpected(std::string("invalid config JSON"));
     }
-    filepath_ = cfg.value("filepath", std::string{});
     return PJ::okStatus();
   }
 
   PJ::Status importData() override {
-    if (filepath_.empty()) {
+    if (dialog_.filepath().empty()) {
       return PJ::unexpected(std::string("no filepath configured"));
     }
 
     mcap::McapReader reader;
-    auto status = reader.open(filepath_);
+    auto status = reader.open(dialog_.filepath());
     if (!status.ok()) {
-      return PJ::unexpected(
-          std::string("cannot open MCAP file: ") + status.message);
+      return PJ::unexpected(std::string("cannot open MCAP file: ") + status.message);
     }
 
     // --- Read summary (schemas, channels, statistics) ---
@@ -190,50 +163,51 @@ class McapSource : public PJ::FileSourceBase {
       status = reader.readSummary(mcap::ReadSummaryMethod::NoFallbackScan);
       if (!status.ok()) {
         reader.close();
-        return PJ::unexpected(
-            std::string("cannot read MCAP summary: ") + status.message);
+        return PJ::unexpected(std::string("cannot read MCAP summary: ") + status.message);
       }
       populateSummaryFromReader(reader, summary);
     }
 
-    // --- Count total messages for progress reporting ---
     uint64_t total_messages = 0;
     if (summary.statistics) {
       total_messages = summary.statistics->messageCount;
     }
+    (void)runtimeHost().progressStart("Importing MCAP", total_messages, true);
 
-    if (!runtimeHost().progressStart("Importing MCAP", total_messages, true)) {
-      // Progress not supported; continue without it.
-    }
+    // --- Build parser config JSON from dialog settings ---
+    nlohmann::json parser_config;
+    parser_config["max_array_size"] = dialog_.maxArraySize();
+    parser_config["use_embedded_timestamp"] = dialog_.useTimestamp();
+    parser_config["clamp_large_arrays"] = dialog_.clampLargeArrays();
+    std::string parser_config_str = parser_config.dump();
 
-    // --- Ensure parser bindings for each channel ---
-    // Maps channel_id -> binding handle for channels that have a valid parser.
+    // --- Ensure parser bindings for selected channels ---
+    const auto& selected = dialog_.selectedTopics();
     std::unordered_map<mcap::ChannelId, PJ::ParserBindingHandle> bindings;
 
     for (const auto& [channel_id, channel_ptr] : summary.channels) {
-      auto schema_it = summary.schemas.find(channel_ptr->schemaId);
-      if (schema_it == summary.schemas.end()) {
+      // Filter by dialog selection
+      if (selected.find(channel_ptr->topic) == selected.end()) {
         continue;
       }
+
+      auto schema_it = summary.schemas.find(channel_ptr->schemaId);
+      if (schema_it == summary.schemas.end()) continue;
       const auto& schema = schema_it->second;
 
-      // Build schema bytes span from the mcap schema data.
       PJ::Span<const uint8_t> schema_bytes{
           reinterpret_cast<const uint8_t*>(schema->data.data()),
           schema->data.size()};
 
-      // Try channel messageEncoding first, then schema encoding.
       std::string_view encoding = channel_ptr->messageEncoding;
-      if (encoding.empty()) {
-        encoding = schema->encoding;
-      }
+      if (encoding.empty()) encoding = schema->encoding;
 
       PJ::ParserBindingRequest request{
           .topic_name = channel_ptr->topic,
           .parser_encoding = encoding,
           .type_name = schema->name,
           .schema = schema_bytes,
-          .parser_config_json = {},
+          .parser_config_json = parser_config_str,
       };
 
       auto handle = runtimeHost().ensureParserBinding(request);
@@ -269,23 +243,21 @@ class McapSource : public PJ::FileSourceBase {
 
     auto messages = create_message_view();
     uint64_t msg_count = 0;
+    bool use_log_time = dialog_.useMcapLogTime();
 
     for (const auto& msg_view : messages) {
       auto binding_it = bindings.find(msg_view.channel->id);
-      if (binding_it == bindings.end()) {
-        continue;
-      }
+      if (binding_it == bindings.end()) continue;
 
-      // MCAP timestamps are in nanoseconds; push as-is (host expects nanoseconds).
-      PJ::Timestamp timestamp_ns =
-          static_cast<PJ::Timestamp>(msg_view.message.logTime);
+      // Select timestamp based on dialog setting
+      PJ::Timestamp timestamp_ns = static_cast<PJ::Timestamp>(
+          use_log_time ? msg_view.message.logTime : msg_view.message.publishTime);
 
       PJ::Span<const uint8_t> payload{
           reinterpret_cast<const uint8_t*>(msg_view.message.data),
           msg_view.message.dataSize};
 
-      auto push_status =
-          runtimeHost().pushRawMessage(binding_it->second, timestamp_ns, payload);
+      auto push_status = runtimeHost().pushRawMessage(binding_it->second, timestamp_ns, payload);
       if (!push_status) {
         runtimeHost().reportMessage(
             PJ::DataSourceMessageLevel::kWarning,
@@ -295,13 +267,8 @@ class McapSource : public PJ::FileSourceBase {
 
       ++msg_count;
       if (msg_count % 1000 == 0) {
-        if (!runtimeHost().progressUpdate(msg_count)) {
-          // User cancelled.
-          break;
-        }
-        if (runtimeHost().isStopRequested()) {
-          break;
-        }
+        if (!runtimeHost().progressUpdate(msg_count)) break;
+        if (runtimeHost().isStopRequested()) break;
       }
     }
 
@@ -310,10 +277,12 @@ class McapSource : public PJ::FileSourceBase {
   }
 
  private:
-  std::string filepath_;
+  McapDialog dialog_;
 };
 
 }  // namespace
 
 PJ_DATA_SOURCE_PLUGIN(McapSource,
     R"({"name":"MCAP File Source","version":"1.0.0","file_extensions":[".mcap"]})")
+
+PJ_DIALOG_PLUGIN(McapDialog)

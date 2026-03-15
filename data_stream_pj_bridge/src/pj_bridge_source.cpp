@@ -30,7 +30,25 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   void* dialogContext() override { return &dialog_; }
 
   uint64_t extraCapabilities() const override {
-    return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;
+    return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog | PJ::kCapabilitySupportsPause;
+  }
+
+  PJ::Status pause() override {
+    if (socket_ && socket_->state() == QAbstractSocket::ConnectedState) {
+      socket_->sendTextMessage(
+          QString::fromStdString(buildRequest("pause", generateRequestId())));
+      paused_ = true;
+    }
+    return PJ::okStatus();
+  }
+
+  PJ::Status resume() override {
+    if (socket_ && socket_->state() == QAbstractSocket::ConnectedState) {
+      socket_->sendTextMessage(
+          QString::fromStdString(buildRequest("resume", generateRequestId())));
+      paused_ = false;
+    }
+    return PJ::okStatus();
   }
 
   std::string saveConfig() const override { return dialog_.saveConfig(); }
@@ -130,6 +148,13 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   PJ::Status onPoll() override {
     QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
 
+    // Heartbeat: send every ~1s (30 polls at 33ms each)
+    if (socket_ && ++heartbeat_tick_ >= 30) {
+      heartbeat_tick_ = 0;
+      socket_->sendTextMessage(
+          QString::fromStdString(buildRequest("heartbeat", generateRequestId())));
+    }
+
     // Process queued binary frames
     std::queue<QueuedFrame> batch;
     {
@@ -202,6 +227,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   std::mutex queue_mutex_;
   std::queue<QueuedFrame> frame_queue_;
   std::vector<uint8_t> decompress_buffer_;
+  int heartbeat_tick_ = 0;
+  bool paused_ = false;
 };
 
 }  // namespace

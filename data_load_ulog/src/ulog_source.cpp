@@ -336,6 +336,50 @@ class ULogSource : public PJ::FileSourceBase {
       }
     }
 
+    // Write file info metadata as _info/ topic.
+    {
+      auto& info_multi = data_container->messageInfoMulti();
+      for (const auto& [key, values_vec] : info_multi) {
+        if (values_vec.empty() || values_vec[0].empty()) continue;
+        const auto& info = values_vec[0][0];  // first instance
+        std::string info_topic = "_info/" + key;
+        auto topic = writeHost().ensureTopic(info_topic);
+        if (!topic) continue;
+        try {
+          double val = info.value().as<double>();
+          auto ts_ns = static_cast<int64_t>(file_start_time_us) * 1000;
+          (void)writeHost().appendRecord(*topic, PJ::Timestamp{ts_ns}, {{.name = "value", .value = val}});
+        } catch (...) {
+          // Non-numeric info: try as string via reportMessage
+          try {
+            std::string str_val = info.value().as<std::string>();
+            runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, key + ": " + str_val);
+          } catch (...) {
+          }
+        }
+      }
+    }
+
+    // Write embedded log messages as _log/ topic.
+    {
+      const auto& logs = data_container->logging();
+      if (!logs.empty()) {
+        auto topic = writeHost().ensureTopic("_log");
+        if (topic) {
+          (void)writeHost().ensureField(*topic, "level", PJ::PrimitiveType::kString);
+          (void)writeHost().ensureField(*topic, "message", PJ::PrimitiveType::kString);
+          for (const auto& log : logs) {
+            auto ts_ns = static_cast<int64_t>(log.timestamp()) * 1000;
+            std::string level_str = log.logLevelStr();
+            std::string msg = log.message();
+            (void)writeHost().appendRecord(*topic, PJ::Timestamp{ts_ns},
+                {{.name = "level", .value = std::string_view(level_str)},
+                 {.name = "message", .value = std::string_view(msg)}});
+          }
+        }
+      }
+    }
+
     runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo,
                                 "Imported " + std::to_string(total_series_count) + " time series");
 

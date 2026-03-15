@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -54,15 +55,24 @@ void flattenJson(const std::string& prefix, const nlohmann::json& value,
 
 class JsonParser : public PJ::MessageParserPluginBase {
  public:
+  PJ::Status loadConfig(std::string_view config_json) override {
+    auto cfg = nlohmann::json::parse(config_json, nullptr, false);
+    if (!cfg.is_discarded()) {
+      encoding_hint_ = cfg.value("encoding_hint", std::string{});
+    }
+    return PJ::okStatus();
+  }
+
   PJ::Status parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> payload) override {
     if (!writeHostBound()) {
       return PJ::unexpected(std::string("write host not bound"));
     }
 
-    auto json = nlohmann::json::parse(payload.data(), payload.data() + payload.size(),
-                                      /*cb=*/nullptr, /*allow_exceptions=*/false);
+    // Try parsing in order: JSON → CBOR → MessagePack → BSON
+    // (or use encoding_hint_ to skip straight to the right one)
+    auto json = tryParse(payload);
     if (json.is_discarded()) {
-      return PJ::unexpected(std::string("invalid JSON payload"));
+      return PJ::unexpected(std::string("failed to parse payload as JSON/CBOR/MessagePack/BSON"));
     }
 
     if (json.is_array()) {
@@ -81,22 +91,65 @@ class JsonParser : public PJ::MessageParserPluginBase {
     owned_fields_.clear();
     flattenJson("", json, owned_fields_);
 
-    // Build string_view references now that owned_fields_ is stable.
-    named_fields_.clear();
-    named_fields_.reserve(owned_fields_.size());
+    bound_fields_.clear();
+    bound_fields_.reserve(owned_fields_.size());
     for (const auto& f : owned_fields_) {
-      named_fields_.push_back({.name = f.name, .value = f.value});
+      auto it = field_cache_.find(f.name);
+      if (it == field_cache_.end()) {
+        auto handle = writeHost().ensureField(f.name, PJ::sdk::typeOf(f.value));
+        if (!handle.has_value()) {
+          return PJ::unexpected(handle.error());
+        }
+        it = field_cache_.emplace(f.name, *handle).first;
+      }
+      bound_fields_.push_back({.field = it->second, .value = f.value});
     }
 
-    return writeHost().appendRecord(
-        ts, PJ::Span<const PJ::sdk::NamedFieldValue>(named_fields_.data(), named_fields_.size()));
+    return writeHost().appendBoundRecord(
+        ts, PJ::Span<const PJ::sdk::BoundFieldValue>(bound_fields_.data(), bound_fields_.size()));
   }
 
+  nlohmann::json tryParse(PJ::Span<const uint8_t> payload) {
+    const auto* data = payload.data();
+    auto size = payload.size();
+
+    if (encoding_hint_ == "cbor") {
+      return nlohmann::json::from_cbor(data, data + size, /*strict=*/true, /*allow_exceptions=*/false);
+    }
+    if (encoding_hint_ == "msgpack") {
+      return nlohmann::json::from_msgpack(data, data + size, /*strict=*/true, /*allow_exceptions=*/false);
+    }
+    if (encoding_hint_ == "bson") {
+      return nlohmann::json::from_bson(data, data + size, /*strict=*/true, /*allow_exceptions=*/false);
+    }
+
+    // No hint — try JSON first (most common)
+    auto result = nlohmann::json::parse(data, data + size, nullptr, false);
+    if (!result.is_discarded()) return result;
+
+    // Only try binary formats if the payload starts with a non-ASCII byte
+    // (JSON always starts with '{', '[', '"', or a digit — all ASCII)
+    if (size > 0 && data[0] > 0x7F) {
+      result = nlohmann::json::from_cbor(data, data + size, true, false);
+      if (!result.is_discarded()) return result;
+
+      result = nlohmann::json::from_msgpack(data, data + size, true, false);
+      if (!result.is_discarded()) return result;
+
+      result = nlohmann::json::from_bson(data, data + size, true, false);
+      if (!result.is_discarded()) return result;
+    }
+
+    return result;  // still discarded from JSON parse attempt
+  }
+
+  std::string encoding_hint_;
+  std::unordered_map<std::string, PJ::sdk::FieldHandle> field_cache_;
   std::vector<FlattenedField> owned_fields_;
-  std::vector<PJ::sdk::NamedFieldValue> named_fields_;
+  std::vector<PJ::sdk::BoundFieldValue> bound_fields_;
 };
 
 }  // namespace
 
 PJ_MESSAGE_PARSER_PLUGIN(JsonParser,
-                         R"({"name":"JSON Parser","version":"1.0.0","encoding":"json"})")
+                         R"({"name":"JSON Parser","version":"1.0.0","encoding":"json","additional_encodings":["cbor","msgpack","bson"]})")

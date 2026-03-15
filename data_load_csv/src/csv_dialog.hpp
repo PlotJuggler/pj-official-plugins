@@ -7,6 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -14,8 +15,9 @@
 
 namespace {
 
-// Generated from ui/dataload_csv.ui at configure time
+// Generated from ui files at configure time
 #include "dataload_csv_ui.hpp"
+#include "datetimehelp_ui.hpp"
 
 class CsvDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
@@ -109,6 +111,11 @@ class CsvDialog : public PJ::DialogPluginTyped {
       wd.requestAccept();
     }
 
+    if (show_help_requested_) {
+      show_help_requested_ = false;
+      wd.requestSubDialog(kDateTimeHelpUi);
+    }
+
     return wd.toJson();
   }
 
@@ -158,6 +165,14 @@ class CsvDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
+  bool onClicked(std::string_view widget_name) override {
+    if (widget_name == "dateTimeHelpButton") {
+      show_help_requested_ = true;
+      return true;  // trigger widget_data refresh which will carry the sub-dialog request
+    }
+    return false;
+  }
+
   bool onTextChanged(std::string_view widget_name, std::string_view text) override {
     if (widget_name == "lineEditDateFormat") {
       custom_format_ = std::string(text);
@@ -166,7 +181,20 @@ class CsvDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
-  void onAccepted(std::string_view /*json*/) override {}
+  void onAccepted(std::string_view /*json*/) override {
+    // Remember the selected column name for future files
+    if (time_mode_ == "column" && selected_column_index_ >= 0 &&
+        selected_column_index_ < static_cast<int>(column_names_.size())) {
+      auto& name = column_names_[static_cast<size_t>(selected_column_index_)];
+      // Move to front of history (remove duplicates first)
+      column_history_.erase(
+          std::remove(column_history_.begin(), column_history_.end(), name),
+          column_history_.end());
+      column_history_.insert(column_history_.begin(), name);
+      // Keep history bounded
+      if (column_history_.size() > 10) column_history_.resize(10);
+    }
+  }
   void onRejected() override {}
 
   std::string saveConfig() const override {
@@ -178,6 +206,7 @@ class CsvDialog : public PJ::DialogPluginTyped {
     cfg["combined_column_index"] = combined_index_;
     cfg["custom_time_format"] = custom_format_;
     cfg["use_custom_format"] = use_custom_format_;
+    cfg["column_history"] = column_history_;
     return cfg.dump();
   }
 
@@ -192,6 +221,9 @@ class CsvDialog : public PJ::DialogPluginTyped {
     combined_index_ = cfg.value("combined_column_index", -1);
     custom_format_ = cfg.value("custom_time_format", std::string{});
     use_custom_format_ = cfg.value("use_custom_format", false);
+    if (cfg.contains("column_history") && cfg["column_history"].is_array()) {
+      column_history_ = cfg["column_history"].get<std::vector<std::string>>();
+    }
     if (!filepath_.empty()) analyzeFile();
     return true;
   }
@@ -214,6 +246,20 @@ class CsvDialog : public PJ::DialogPluginTyped {
     if (delimiter_ == '\0') delimiter_ = PJ::CSV::DetectDelimiter(header_line);
 
     column_names_ = PJ::CSV::ParseHeaderLine(header_line, delimiter_);
+
+    // Auto-select a time column from history (if no explicit selection yet)
+    if (selected_column_index_ < 0) {
+      for (const auto& hist_name : column_history_) {
+        for (int i = 0; i < static_cast<int>(column_names_.size()); ++i) {
+          if (column_names_[static_cast<size_t>(i)] == hist_name) {
+            selected_column_index_ = i;
+            if (time_mode_ == "row_number") time_mode_ = "column";
+            break;
+          }
+        }
+        if (selected_column_index_ >= 0) break;
+      }
+    }
 
     // Build preview rows: first 100 data lines (like the original)
     std::string line;
@@ -267,8 +313,10 @@ class CsvDialog : public PJ::DialogPluginTyped {
   std::string custom_format_;
   bool use_custom_format_ = false;
   bool accept_requested_ = false;
+  bool show_help_requested_ = false;
 
   std::vector<std::string> column_names_;
+  std::vector<std::string> column_history_;
   std::vector<PJ::CSV::CombinedColumnPair> combined_pairs_;
   std::vector<std::vector<std::string>> preview_rows_;
 };

@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "pj_base/plugin_data_api.h"
@@ -25,6 +26,8 @@ namespace {
 struct RecordedField {
   std::string name;
   double value = 0.0;
+  std::string string_value;
+  bool is_string = false;
 };
 
 struct RecordedRow {
@@ -35,16 +38,58 @@ struct RecordedRow {
 struct ParserWriteRecorder {
   std::vector<RecordedRow> rows;
   std::string last_error;
+  std::unordered_map<uint32_t, std::string> field_names;
+  uint32_t next_field_id = 0;
 
   static const char* getLastError(void* ctx) {
     auto* self = static_cast<ParserWriteRecorder*>(ctx);
     return self->last_error.empty() ? nullptr : self->last_error.c_str();
   }
 
-  static bool ensureField(void*, PJ_string_view_t, PJ_primitive_type_t,
+  static bool ensureField(void* ctx, PJ_string_view_t name, PJ_primitive_type_t,
                            PJ_field_handle_t* out_field) {
-    *out_field = PJ_field_handle_t{{1}, 1};
+    auto* self = static_cast<ParserWriteRecorder*>(ctx);
+    uint32_t id = self->next_field_id++;
+    self->field_names[id] = std::string(name.data, name.size);
+    *out_field = PJ_field_handle_t{{1}, id};
     return true;
+  }
+
+  static RecordedField extractField(const PJ_scalar_value_t& value, const std::string& name) {
+    RecordedField f;
+    f.name = name;
+    switch (value.type) {
+      case PJ_PRIMITIVE_TYPE_FLOAT64:
+        f.value = value.data.as_float64;
+        break;
+      case PJ_PRIMITIVE_TYPE_FLOAT32:
+        f.value = static_cast<double>(value.data.as_float32);
+        break;
+      case PJ_PRIMITIVE_TYPE_INT32:
+        f.value = static_cast<double>(value.data.as_int32);
+        break;
+      case PJ_PRIMITIVE_TYPE_INT64:
+        f.value = static_cast<double>(value.data.as_int64);
+        break;
+      case PJ_PRIMITIVE_TYPE_UINT32:
+        f.value = static_cast<double>(value.data.as_uint32);
+        break;
+      case PJ_PRIMITIVE_TYPE_UINT64:
+        f.value = static_cast<double>(value.data.as_uint64);
+        break;
+      case PJ_PRIMITIVE_TYPE_BOOL:
+        f.value = value.data.as_bool != 0 ? 1.0 : 0.0;
+        break;
+      case PJ_PRIMITIVE_TYPE_STRING:
+        if (value.data.as_string.data != nullptr) {
+          f.string_value = std::string(value.data.as_string.data, value.data.as_string.size);
+          f.is_string = true;
+        }
+        break;
+      default:
+        break;
+    }
+    return f;
   }
 
   static bool appendRecord(void* ctx, int64_t timestamp, const PJ_named_field_value_t* fields,
@@ -53,40 +98,24 @@ struct ParserWriteRecorder {
     RecordedRow row;
     row.timestamp = timestamp;
     for (size_t i = 0; i < field_count; ++i) {
-      RecordedField f;
-      f.name = std::string(fields[i].name.data, fields[i].name.size);
-      switch (fields[i].value.type) {
-        case PJ_PRIMITIVE_TYPE_FLOAT64:
-          f.value = fields[i].value.data.as_float64;
-          break;
-        case PJ_PRIMITIVE_TYPE_FLOAT32:
-          f.value = static_cast<double>(fields[i].value.data.as_float32);
-          break;
-        case PJ_PRIMITIVE_TYPE_INT32:
-          f.value = static_cast<double>(fields[i].value.data.as_int32);
-          break;
-        case PJ_PRIMITIVE_TYPE_INT64:
-          f.value = static_cast<double>(fields[i].value.data.as_int64);
-          break;
-        case PJ_PRIMITIVE_TYPE_UINT32:
-          f.value = static_cast<double>(fields[i].value.data.as_uint32);
-          break;
-        case PJ_PRIMITIVE_TYPE_UINT64:
-          f.value = static_cast<double>(fields[i].value.data.as_uint64);
-          break;
-        case PJ_PRIMITIVE_TYPE_BOOL:
-          f.value = fields[i].value.data.as_bool != 0 ? 1.0 : 0.0;
-          break;
-        default:
-          break;
-      }
-      row.fields.push_back(f);
+      std::string name(fields[i].name.data, fields[i].name.size);
+      row.fields.push_back(extractField(fields[i].value, name));
     }
     self->rows.push_back(std::move(row));
     return true;
   }
 
-  static bool appendBoundRecord(void*, int64_t, const PJ_bound_field_value_t*, size_t) {
+  static bool appendBoundRecord(void* ctx, int64_t timestamp, const PJ_bound_field_value_t* fields,
+                                 size_t field_count) {
+    auto* self = static_cast<ParserWriteRecorder*>(ctx);
+    RecordedRow row;
+    row.timestamp = timestamp;
+    for (size_t i = 0; i < field_count; ++i) {
+      auto it = self->field_names.find(fields[i].field.id);
+      std::string name = (it != self->field_names.end()) ? it->second : "unknown";
+      row.fields.push_back(extractField(fields[i].value, name));
+    }
+    self->rows.push_back(std::move(row));
     return true;
   }
 
@@ -527,7 +556,8 @@ TEST(ProtobufParserTest, EnumField) {
   bool found_val = false;
   for (const auto& field : f.recorder.rows[0].fields) {
     if (field.name == "color") {
-      EXPECT_DOUBLE_EQ(field.value, 1.0);  // GREEN = 1
+      EXPECT_TRUE(field.is_string);
+      EXPECT_EQ(field.string_value, "GREEN");
       found_color = true;
     } else if (field.name == "value") {
       EXPECT_DOUBLE_EQ(field.value, 99.0);

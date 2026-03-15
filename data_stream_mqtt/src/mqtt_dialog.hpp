@@ -7,6 +7,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <mqtt/async_client.h>
+
+#include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -27,14 +31,21 @@ class MqttDialog : public PJ::DialogPluginTyped {
 
   std::string ui_content() const override { return kDataStreamMqttUi; }
 
+  ~MqttDialog() override { disconnectBroker(); }
+
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    // Connection tab widgets (original names from .ui)
+    // Connection tab widgets
     wd.setText("lineEditHost", broker_address_);
     wd.setText("lineEditPort", std::to_string(port_));
     wd.setText("lineEditUsername", username_);
     wd.setText("lineEditPassword", password_);
+    wd.setEnabled("lineEditHost", !connected_);
+    wd.setEnabled("lineEditPort", !connected_);
+
+    // Connect button state
+    wd.setButtonText("buttonConnect", connected_ ? "Disconnect" : "Connect");
 
     // Protocol version combo
     wd.setCurrentIndex("comboBoxVersion", protocol_version_index_);
@@ -42,16 +53,51 @@ class MqttDialog : public PJ::DialogPluginTyped {
     // QoS combo
     wd.setCurrentIndex("comboBoxQoS", qos_);
 
+    // SSL checkbox
+    wd.setChecked("checkBoxSecurity", use_ssl_);
+
     // Topic filter
-    wd.setText("lineEditTopics", topic_filter_);
+    wd.setText("lineEditTopicFilter", topic_filter_);
+
+    // Discovered topic list (from live MQTT subscription)
+    {
+      std::lock_guard<std::mutex> lock(topics_mutex_);
+      std::vector<std::string> topic_list(discovered_topics_.begin(), discovered_topics_.end());
+      wd.setListItems("listWidget", topic_list);
+      wd.setSelectedItems("listWidget", selected_topics_);
+    }
 
     // Protocol combo
     wd.setItems("comboBoxProtocol", {"json", "protobuf", "cdr"});
     wd.setCurrentIndex("comboBoxProtocol", encodingToIndex(encoding_));
 
+    // TLS certificate file pickers
+    wd.setFilePicker("buttonLoadServerCertificate", "...", "*.pem *.crt *.cer", "Select Server CA Certificate");
+    wd.setFilePicker("buttonLoadClientCertificate", "...", "*.pem *.crt *.cer", "Select Client Certificate");
+    wd.setFilePicker("buttonLoadPrivateKey", "...", "*.pem *.key", "Select Private Key");
+    wd.setText("labelServerCertificate", ca_cert_path_.empty() ? "(none)" : filenameFromPath(ca_cert_path_));
+    wd.setText("labelClientCertificate", client_cert_path_.empty() ? "(none)" : filenameFromPath(client_cert_path_));
+    wd.setText("labelPrivateKey", private_key_path_.empty() ? "(none)" : filenameFromPath(private_key_path_));
+    wd.setEnabled("buttonEraseServerCertificate", !ca_cert_path_.empty());
+    wd.setEnabled("buttonEraseClientCertificate", !client_cert_path_.empty());
+    wd.setEnabled("buttonErasePrivateKey", !private_key_path_.empty());
+
     wd.setOkEnabled(true);
 
     return wd.toJson();
+  }
+
+  bool onTick() override {
+    // Check if new topics have arrived from the MQTT callback
+    bool new_topics = false;
+    {
+      std::lock_guard<std::mutex> lock(topics_mutex_);
+      if (topics_dirty_) {
+        topics_dirty_ = false;
+        new_topics = true;
+      }
+    }
+    return new_topics;
   }
 
   bool onTextChanged(std::string_view widget_name, std::string_view text) override {
@@ -74,10 +120,17 @@ class MqttDialog : public PJ::DialogPluginTyped {
       password_ = std::string(text);
       return false;
     }
-    if (widget_name == "lineEditTopics") {
+    if (widget_name == "lineEditTopicFilter") {
       topic_filter_ = std::string(text);
       return false;
     }
+    return false;
+  }
+
+  bool onFileSelected(std::string_view widget_name, std::string_view path) override {
+    if (widget_name == "buttonLoadServerCertificate") { ca_cert_path_ = std::string(path); return true; }
+    if (widget_name == "buttonLoadClientCertificate") { client_cert_path_ = std::string(path); return true; }
+    if (widget_name == "buttonLoadPrivateKey") { private_key_path_ = std::string(path); return true; }
     return false;
   }
 
@@ -98,15 +151,39 @@ class MqttDialog : public PJ::DialogPluginTyped {
   }
 
   bool onToggled(std::string_view widget_name, bool checked) override {
-    if (widget_name == "checkBoxSSL") {
+    if (widget_name == "checkBoxSecurity") {
       use_ssl_ = checked;
       return false;
     }
     return false;
   }
 
-  void onAccepted(std::string_view /*json*/) override {}
-  void onRejected() override {}
+  bool onSelectionChanged(std::string_view widget_name,
+                          const std::vector<std::string>& selected) override {
+    if (widget_name == "listWidget") {
+      selected_topics_ = selected;
+      return false;
+    }
+    return false;
+  }
+
+  bool onClicked(std::string_view widget_name) override {
+    if (widget_name == "buttonConnect") {
+      if (connected_) {
+        disconnectBroker();
+      } else {
+        connectBroker();
+      }
+      return true;
+    }
+    if (widget_name == "buttonEraseServerCertificate") { ca_cert_path_.clear(); return true; }
+    if (widget_name == "buttonEraseClientCertificate") { client_cert_path_.clear(); return true; }
+    if (widget_name == "buttonErasePrivateKey") { private_key_path_.clear(); return true; }
+    return false;
+  }
+
+  void onAccepted(std::string_view /*json*/) override { disconnectBroker(); }
+  void onRejected() override { disconnectBroker(); }
 
   std::string saveConfig() const override {
     nlohmann::json cfg;
@@ -117,8 +194,12 @@ class MqttDialog : public PJ::DialogPluginTyped {
     cfg["protocol_version"] = protocol_version_index_;
     cfg["qos"] = qos_;
     cfg["topics"] = topic_filter_;
+    cfg["selected_topics"] = selected_topics_;
     cfg["default_encoding"] = encoding_;
     cfg["use_ssl"] = use_ssl_;
+    cfg["ca_cert_path"] = ca_cert_path_;
+    cfg["client_cert_path"] = client_cert_path_;
+    cfg["private_key_path"] = private_key_path_;
     return cfg.dump();
   }
 
@@ -134,6 +215,15 @@ class MqttDialog : public PJ::DialogPluginTyped {
     topic_filter_ = cfg.value("topics", std::string("#"));
     encoding_ = cfg.value("default_encoding", std::string("json"));
     use_ssl_ = cfg.value("use_ssl", false);
+    ca_cert_path_ = cfg.value("ca_cert_path", std::string{});
+    client_cert_path_ = cfg.value("client_cert_path", std::string{});
+    private_key_path_ = cfg.value("private_key_path", std::string{});
+    if (cfg.contains("selected_topics") && cfg["selected_topics"].is_array()) {
+      selected_topics_.clear();
+      for (const auto& t : cfg["selected_topics"]) {
+        if (t.is_string()) selected_topics_.push_back(t.get<std::string>());
+      }
+    }
     return true;
   }
 
@@ -152,6 +242,58 @@ class MqttDialog : public PJ::DialogPluginTyped {
     }
   }
 
+  static std::string filenameFromPath(const std::string& path) {
+    auto pos = path.find_last_of("/\\");
+    return (pos != std::string::npos) ? path.substr(pos + 1) : path;
+  }
+
+  void connectBroker() {
+    std::string scheme = use_ssl_ ? "ssl://" : "tcp://";
+    std::string uri = scheme + broker_address_ + ":" + std::to_string(port_);
+
+    try {
+      discovery_client_ = std::make_unique<mqtt::async_client>(uri, "pj_mqtt_discovery");
+
+      // Collect discovered topic names from incoming messages
+      discovery_client_->set_message_callback([this](mqtt::const_message_ptr msg) {
+        std::lock_guard<std::mutex> lock(topics_mutex_);
+        if (discovered_topics_.insert(msg->get_topic()).second) {
+          topics_dirty_ = true;
+        }
+      });
+
+      mqtt::connect_options opts;
+      opts.set_clean_session(true);
+      opts.set_connect_timeout(std::chrono::seconds(5));
+      if (!username_.empty()) {
+        opts.set_user_name(username_);
+        opts.set_password(password_);
+      }
+
+      discovery_client_->connect(opts)->wait();
+      // Subscribe to the user's topic filter to discover topics
+      std::string sub_filter = topic_filter_.empty() ? "#" : topic_filter_;
+      discovery_client_->subscribe(sub_filter, 0)->wait();
+      connected_ = true;
+    } catch (const mqtt::exception&) {
+      discovery_client_.reset();
+      connected_ = false;
+    }
+  }
+
+  void disconnectBroker() {
+    if (discovery_client_) {
+      try {
+        if (discovery_client_->is_connected()) {
+          discovery_client_->disconnect()->wait();
+        }
+      } catch (...) {
+      }
+      discovery_client_.reset();
+    }
+    connected_ = false;
+  }
+
   std::string broker_address_ = "localhost";
   int port_ = 1883;
   std::string username_;
@@ -161,6 +303,17 @@ class MqttDialog : public PJ::DialogPluginTyped {
   std::string topic_filter_ = "#";
   std::string encoding_ = "json";
   bool use_ssl_ = false;
+  std::string ca_cert_path_;
+  std::string client_cert_path_;
+  std::string private_key_path_;
+
+  // Dialog-time discovery state
+  bool connected_ = false;
+  std::unique_ptr<mqtt::async_client> discovery_client_;
+  std::mutex topics_mutex_;
+  std::set<std::string> discovered_topics_;
+  std::vector<std::string> selected_topics_;
+  bool topics_dirty_ = false;
 };
 
 }  // namespace

@@ -51,8 +51,22 @@ class MqttSource : public PJ::StreamSourceBase {
     qos_ = cfg.value("qos", 0);
     client_id_ = cfg.value("client_id", std::string("plotjuggler_mqtt"));
     default_encoding_ = cfg.value("default_encoding", std::string("json"));
+    protocol_version_ = cfg.value("protocol_version", 1);  // 0=3.1, 1=3.1.1, 2=5.0
 
-    std::string server_uri = "tcp://" + broker_address_ + ":" + std::to_string(port_);
+    // Read selected topics (from dialog discovery)
+    selected_topics_.clear();
+    if (cfg.contains("selected_topics") && cfg["selected_topics"].is_array()) {
+      for (const auto& t : cfg["selected_topics"]) {
+        if (t.is_string()) selected_topics_.push_back(t.get<std::string>());
+      }
+    }
+
+    bool use_ssl = cfg.value("use_ssl", false);
+    std::string scheme = use_ssl ? "ssl://" : "tcp://";
+    std::string server_uri = scheme + broker_address_ + ":" + std::to_string(port_);
+
+    std::string username = cfg.value("username", std::string{});
+    std::string password = cfg.value("password", std::string{});
 
     try {
       client_ = std::make_unique<mqtt::async_client>(server_uri, client_id_);
@@ -74,12 +88,53 @@ class MqttSource : public PJ::StreamSourceBase {
             message_queue_.push(std::move(m));
           });
 
+      // Detect connection loss
+      client_->set_connection_lost_handler([this](const std::string& cause) {
+        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning,
+                                   "MQTT connection lost" + (cause.empty() ? "" : ": " + cause));
+      });
+
       mqtt::connect_options conn_opts;
       conn_opts.set_clean_session(true);
       conn_opts.set_connect_timeout(std::chrono::seconds(5));
 
+      // MQTT protocol version
+      if (protocol_version_ == 0) {
+        conn_opts.set_mqtt_version(MQTTVERSION_3_1);
+      } else if (protocol_version_ == 2) {
+        conn_opts.set_mqtt_version(MQTTVERSION_5);
+      } else {
+        conn_opts.set_mqtt_version(MQTTVERSION_3_1_1);
+      }
+
+      // Authentication
+      if (!username.empty()) {
+        conn_opts.set_user_name(username);
+        conn_opts.set_password(password);
+      }
+
+      // TLS certificates
+      if (use_ssl) {
+        mqtt::ssl_options ssl_opts;
+        auto ca = cfg.value("ca_cert_path", std::string{});
+        auto cert = cfg.value("client_cert_path", std::string{});
+        auto key = cfg.value("private_key_path", std::string{});
+        if (!ca.empty()) ssl_opts.set_trust_store(ca);
+        if (!cert.empty()) ssl_opts.set_key_store(cert);
+        if (!key.empty()) ssl_opts.set_private_key(key);
+        conn_opts.set_ssl(ssl_opts);
+      }
+
       client_->connect(conn_opts)->wait();
-      client_->subscribe(topic_filter_, qos_)->wait();
+
+      // Subscribe to selected topics from dialog, or fall back to topic filter
+      if (!selected_topics_.empty()) {
+        for (const auto& topic : selected_topics_) {
+          client_->subscribe(topic, qos_)->wait();
+        }
+      } else {
+        client_->subscribe(topic_filter_, qos_)->wait();
+      }
 
     } catch (const mqtt::exception& e) {
       return PJ::unexpected(std::string("MQTT error: ") + e.what());
@@ -152,6 +207,8 @@ class MqttSource : public PJ::StreamSourceBase {
   int qos_ = 0;
   std::string client_id_ = "plotjuggler_mqtt";
   std::string default_encoding_ = "json";
+  int protocol_version_ = 1;
+  std::vector<std::string> selected_topics_;
 
   std::unique_ptr<mqtt::async_client> client_;
   std::mutex queue_mutex_;

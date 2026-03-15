@@ -13,7 +13,8 @@ bool parseBinaryFrame(const uint8_t* data, size_t size,
                       std::vector<uint8_t>& decompress_buffer) {
   messages.clear();
 
-  if (size < 8) return false;
+  // Header: magic(4) + msg_count(4) + uncompressed_size(4) + flags(4) = 16 bytes
+  if (size < 16) return false;
 
   uint32_t magic = 0;
   std::memcpy(&magic, data, 4);
@@ -22,8 +23,14 @@ bool parseBinaryFrame(const uint8_t* data, size_t size,
   uint32_t msg_count = 0;
   std::memcpy(&msg_count, data + 4, 4);
 
-  const uint8_t* compressed = data + 8;
-  size_t compressed_size = size - 8;
+  // uncompressed_size at offset 8 (informational, ZSTD has its own)
+  // flags at offset 12 — must be zero in current protocol version
+  uint32_t flags = 0;
+  std::memcpy(&flags, data + 12, 4);
+  if (flags != 0) return false;
+
+  const uint8_t* compressed = data + 16;
+  size_t compressed_size = size - 16;
 
   // Decompress with ZSTD
   size_t decompressed_size = ZSTD_getFrameContentSize(compressed, compressed_size);
@@ -45,10 +52,10 @@ bool parseBinaryFrame(const uint8_t* data, size_t size,
   const uint8_t* end = ptr + result;
 
   for (uint32_t i = 0; i < msg_count; i++) {
-    if (ptr + 4 > end) return false;
-    uint32_t topic_len = 0;
-    std::memcpy(&topic_len, ptr, 4);
-    ptr += 4;
+    if (ptr + 2 > end) return false;
+    uint16_t topic_len = 0;
+    std::memcpy(&topic_len, ptr, 2);
+    ptr += 2;
 
     if (ptr + topic_len > end) return false;
     RawMessage msg;
