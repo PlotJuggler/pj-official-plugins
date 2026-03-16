@@ -285,10 +285,14 @@ class ParquetSource : public PJ::FileSourceBase {
 
     // Read via RecordBatchReader
     std::shared_ptr<arrow::RecordBatchReader> batch_reader;
+#if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
     status = reader->GetRecordBatchReader(&batch_reader);
+#if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
+#endif
     if (!status.ok()) {
       return PJ::unexpected(std::string("failed to create batch reader"));
     }

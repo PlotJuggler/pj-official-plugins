@@ -22,11 +22,18 @@ endif()
 add_library(ulog_source_plugin SHARED ulog_source.cpp)
 target_compile_features(ulog_source_plugin PRIVATE cxx_std_20)
 target_compile_options(ulog_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
+if(MSVC)
+  # Suppress C4702 (unreachable code) from ulog_cpp third-party headers.
+  target_compile_options(ulog_source_plugin PRIVATE /wd4702)
+endif()
 target_link_libraries(ulog_source_plugin PRIVATE pj_base ulog_cpp::ulog_cpp nlohmann_json::nlohmann_json)
 
 # --- Integration test ---
 add_executable(ulog_source_test tests/ulog_source_test.cpp)
 target_compile_features(ulog_source_test PRIVATE cxx_std_20)
 target_compile_options(ulog_source_test PRIVATE ${PJ_WARNING_FLAGS})
+if(MSVC)
+  target_compile_options(ulog_source_test PRIVATE /wd4702)
+endif()
 target_link_libraries(ulog_source_test PRIVATE ulog_cpp::ulog_cpp GTest::gtest_main)
 add_test(NAME ulog_source_test COMMAND ulog_source_test)
