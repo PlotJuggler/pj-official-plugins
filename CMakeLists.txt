@@ -82,7 +82,7 @@ include(cmake/CPM.cmake)
 
 CPMAddPackage(
   NAME plotjuggler_core
-  GITHUB_REPOSITORY facontidavide/plotjuggler_core
+  GIT_REPOSITORY git@github.com:PlotJuggler/plotjuggler_core.git
   GIT_TAG development
   OPTIONS
     "PJ_BUILD_DATASTORE OFF"
