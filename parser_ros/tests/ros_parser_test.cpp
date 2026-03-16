@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <numbers>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -695,7 +696,7 @@ TEST(RosParserTest, PoseWithRPY) {
   f.setUp();
   ASSERT_TRUE(f.bindSchema("geometry_msgs/Pose", kPoseDef));
 
-  double angle = M_PI / 2.0;
+  double angle = std::numbers::pi / 2.0;
   double qz = std::sin(angle / 2.0);
   double qw = std::cos(angle / 2.0);
 
@@ -707,7 +708,7 @@ TEST(RosParserTest, PoseWithRPY) {
   ASSERT_TRUE(f.parse(payload));
   auto* yaw = findField(f.recorder.rows[0], "/orientation/yaw");
   ASSERT_NE(yaw, nullptr);
-  EXPECT_NEAR(yaw->value, M_PI / 2.0, 1e-10);
+  EXPECT_NEAR(yaw->value, std::numbers::pi / 2.0, 1e-10);
 
   auto* roll = findField(f.recorder.rows[0], "/orientation/roll");
   EXPECT_NEAR(roll->value, 0.0, 1e-10);

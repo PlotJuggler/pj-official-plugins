@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <numbers>
 #include <deque>
 #include <limits>
 #include <queue>
@@ -69,7 +70,7 @@ RPY quaternionToRPY(double x, double y, double z, double w) {
   double sinp = 2 * (w * y - z * x);
   double pitch = 0.0;
   if (std::abs(sinp) >= 1) {
-    pitch = std::copysign(M_PI / 2.0, sinp);
+    pitch = std::copysign(std::numbers::pi / 2.0, sinp);
   } else {
     pitch = std::asin(sinp);
   }
