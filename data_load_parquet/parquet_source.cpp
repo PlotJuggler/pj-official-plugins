@@ -285,12 +285,17 @@ class ParquetSource : public PJ::FileSourceBase {
 
     // Read via RecordBatchReader
     std::shared_ptr<arrow::RecordBatchReader> batch_reader;
-#if defined(__GNUC__) || defined(__clang__)
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#elif defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
     status = reader->GetRecordBatchReader(&batch_reader);
-#if defined(__GNUC__) || defined(__clang__)
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#elif defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
     if (!status.ok()) {
