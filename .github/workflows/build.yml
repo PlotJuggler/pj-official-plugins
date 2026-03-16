@@ -45,6 +45,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Configure SSH for private dependencies
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.CORE_DEPLOY_KEY }}
+
       - name: Install Conan
         uses: conan-io/setup-conan@v1.3.0
         with:
