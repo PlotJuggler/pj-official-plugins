@@ -5,9 +5,9 @@
 
 #include <nlohmann/json.hpp>
 
-#include <QCoreApplication>
-#include <QWebSocket>
+#include <ixwebsocket/IXWebSocket.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -15,6 +15,7 @@
 #include <mutex>
 #include <queue>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -34,18 +35,16 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   }
 
   PJ::Status pause() override {
-    if (socket_ && socket_->state() == QAbstractSocket::ConnectedState) {
-      socket_->sendTextMessage(
-          QString::fromStdString(buildRequest("pause", generateRequestId())));
+    if (socket_ && socket_->getReadyState() == ix::ReadyState::Open) {
+      socket_->sendText(buildRequest("pause", generateRequestId()));
       paused_ = true;
     }
     return PJ::okStatus();
   }
 
   PJ::Status resume() override {
-    if (socket_ && socket_->state() == QAbstractSocket::ConnectedState) {
-      socket_->sendTextMessage(
-          QString::fromStdString(buildRequest("resume", generateRequestId())));
+    if (socket_ && socket_->getReadyState() == ix::ReadyState::Open) {
+      socket_->sendText(buildRequest("resume", generateRequestId()));
       paused_ = false;
     }
     return PJ::okStatus();
@@ -87,24 +86,32 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       }
     }
 
-    socket_ = std::make_unique<QWebSocket>();
+    socket_ = std::make_unique<ix::WebSocket>();
+    socket_->setUrl("ws://" + address_ + ":" + std::to_string(port_));
+    socket_->disableAutomaticReconnection();
 
-    QObject::connect(socket_.get(), &QWebSocket::textMessageReceived,
-                     [this](const QString& message) { onTextMessage(message); });
+    socket_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
+      if (msg->type == ix::WebSocketMessageType::Message) {
+        if (msg->binary) {
+          onBinaryMessage(msg->str);
+        } else {
+          onTextMessage(msg->str);
+        }
+      }
+    });
 
-    QObject::connect(socket_.get(), &QWebSocket::binaryMessageReceived,
-                     [this](const QByteArray& message) { onBinaryMessage(message); });
-
-    QUrl url(QString("ws://%1:%2").arg(QString::fromStdString(address_)).arg(port_));
-    socket_->open(url);
+    socket_->start();
 
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (socket_->state() != QAbstractSocket::ConnectedState &&
-           std::chrono::steady_clock::now() < deadline) {
-      QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+    while (std::chrono::steady_clock::now() < deadline) {
+      auto state = socket_->getReadyState();
+      if (state == ix::ReadyState::Open) break;
+      if (state == ix::ReadyState::Closed) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
-    if (socket_->state() != QAbstractSocket::ConnectedState) {
+    if (socket_->getReadyState() != ix::ReadyState::Open) {
+      socket_->stop();
       return PJ::unexpected(std::string("failed to connect to PJ bridge at ") +
                             address_ + ":" + std::to_string(port_));
     }
@@ -120,13 +127,13 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     }
     subscribe_cmd["topics"] = topic_names;
     subscribe_response_received_ = false;
-    socket_->sendTextMessage(QString::fromStdString(subscribe_cmd.dump()));
+    socket_->sendText(subscribe_cmd.dump());
 
     // Wait for the subscribe response (contains schemas)
     auto sub_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (!subscribe_response_received_ &&
            std::chrono::steady_clock::now() < sub_deadline) {
-      QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
     if (!subscribe_response_received_) {
@@ -138,13 +145,10 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   }
 
   PJ::Status onPoll() override {
-    QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
-
     // Heartbeat: send every ~1s (30 polls at 33ms each)
     if (socket_ && ++heartbeat_tick_ >= 30) {
       heartbeat_tick_ = 0;
-      socket_->sendTextMessage(
-          QString::fromStdString(buildRequest("heartbeat", generateRequestId())));
+      socket_->sendText(buildRequest("heartbeat", generateRequestId()));
     }
 
     // Process queued binary frames
@@ -182,7 +186,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
 
   void onStop() override {
     if (socket_) {
-      socket_->close();
+      socket_->stop();
       socket_.reset();
     }
     bindings_.clear();
@@ -190,8 +194,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   }
 
  private:
-  void onTextMessage(const QString& message) {
-    auto json = nlohmann::json::parse(message.toStdString(), nullptr, false);
+  void onTextMessage(const std::string& message) {
+    auto json = nlohmann::json::parse(message, nullptr, false);
     if (json.is_discarded() || !json.is_object()) return;
 
     auto status = json.value("status", std::string{});
@@ -252,10 +256,10 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     }
   }
 
-  void onBinaryMessage(const QByteArray& message) {
+  void onBinaryMessage(const std::string& message) {
     QueuedFrame frame;
-    frame.data.assign(reinterpret_cast<const uint8_t*>(message.constData()),
-                      reinterpret_cast<const uint8_t*>(message.constData()) + message.size());
+    frame.data.assign(reinterpret_cast<const uint8_t*>(message.data()),
+                      reinterpret_cast<const uint8_t*>(message.data()) + message.size());
     std::lock_guard<std::mutex> lock(queue_mutex_);
     frame_queue_.push(std::move(frame));
   }
@@ -269,7 +273,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   bool use_timestamp_ = false;
 
   std::vector<TopicInfo> selected_topics_;
-  std::unique_ptr<QWebSocket> socket_;
+  std::unique_ptr<ix::WebSocket> socket_;
   std::map<std::string, PJ::ParserBindingHandle> bindings_;
 
   std::mutex queue_mutex_;
@@ -277,7 +281,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   std::vector<uint8_t> decompress_buffer_;
   int heartbeat_tick_ = 0;
   bool paused_ = false;
-  bool subscribe_response_received_ = false;
+  std::atomic<bool> subscribe_response_received_ = false;
 };
 
 }  // namespace

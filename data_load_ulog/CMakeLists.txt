@@ -7,6 +7,9 @@ CPMAddPackage(
   URL https://github.com/PX4/ulog_cpp/archive/refs/tags/v1.0.1.zip
 )
 
+# Ensure ulog_cpp is statically linked into the plugin .so.
+set_target_properties(ulog_cpp PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # Mark ulog_cpp include dirs as SYSTEM to suppress -Werror on
 # third-party headers.
 get_target_property(_ulog_includes ulog_cpp INTERFACE_INCLUDE_DIRECTORIES)

@@ -8,8 +8,10 @@ protobuf/6.33.5
 zstd/1.5.5
 date/3.0.4
 gtest/1.17.0
+ixwebsocket/11.4.6
 
 [options]
+*:shared=False
 arrow/*:parquet=True
 arrow/*:with_snappy=True
 boost/*:without_test=True

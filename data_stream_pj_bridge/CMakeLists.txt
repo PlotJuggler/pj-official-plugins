@@ -1,11 +1,6 @@
-find_package(Qt6 COMPONENTS WebSockets QUIET)
-if(NOT Qt6WebSockets_FOUND)
-  message(STATUS "Qt6::WebSockets not found — skipping pj_bridge plugin")
-  return()
-endif()
-
 find_package(nlohmann_json REQUIRED)
 find_package(zstd REQUIRED)
+find_package(ixwebsocket REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 
@@ -20,7 +15,7 @@ add_library(pj_bridge_source_plugin SHARED pj_bridge_source.cpp)
 target_compile_features(pj_bridge_source_plugin PRIVATE cxx_std_20)
 target_compile_options(pj_bridge_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(pj_bridge_source_plugin PRIVATE
-  pj_base pj_dialog_sdk nlohmann_json::nlohmann_json pj_bridge_protocol_lib Qt6::WebSockets Qt6::Network
+  pj_base pj_dialog_sdk nlohmann_json::nlohmann_json pj_bridge_protocol_lib ixwebsocket::ixwebsocket
 )
 
 pj_embed_ui(pj_bridge_source_plugin

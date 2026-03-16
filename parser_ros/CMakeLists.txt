@@ -10,6 +10,9 @@ CPMAddPackage(
   URL https://github.com/facontidavide/rosx_introspection/archive/refs/heads/master.zip
 )
 
+# Ensure rosx_introspection is statically linked into the plugin .so.
+set_target_properties(rosx_introspection PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # Mark rosx_introspection include dirs as SYSTEM to suppress -Werror on
 # third-party headers (old-style casts, narrowing conversions, etc.).
 get_target_property(_rosx_includes rosx_introspection INTERFACE_INCLUDE_DIRECTORIES)

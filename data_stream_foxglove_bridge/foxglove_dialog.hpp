@@ -5,12 +5,12 @@
 
 #include "foxglove_client_ui.hpp"
 
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QWebSocket>
+#include <ixwebsocket/IXWebSocket.h>
 #include <nlohmann/json.hpp>
 
+#include <atomic>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -52,7 +52,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     wd.setEnabled("lineEditAddress", !connected_);
     wd.setEnabled("lineEditPort", !connected_);
     wd.setButtonText("buttonConnect", connected_ ? "Connected" : "Connect");
-    wd.setChecked("buttonConnect", connected_);
+    wd.setChecked("buttonConnect", connected_.load());
 
     // Parser options
     wd.setValue("spinBoxArraySize", max_array_size_);
@@ -63,22 +63,25 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     // Channel list
     wd.setTableHeaders("topicsList", {"Topic Name", "DataType"});
     std::vector<std::vector<std::string>> rows;
-    rows.reserve(channels_.size());
-    for (const auto& ch : channels_) {
-      // Apply filter
-      if (!filter_.empty()) {
-        std::string lower_topic = ch.topic;
-        std::string lower_type = ch.schema_name;
-        std::string lower_filter = filter_;
-        for (auto& c : lower_topic) c = static_cast<char>(std::tolower(c));
-        for (auto& c : lower_type) c = static_cast<char>(std::tolower(c));
-        for (auto& c : lower_filter) c = static_cast<char>(std::tolower(c));
-        if (lower_topic.find(lower_filter) == std::string::npos &&
-            lower_type.find(lower_filter) == std::string::npos) {
-          continue;
+    {
+      std::lock_guard<std::mutex> lock(channels_mutex_);
+      rows.reserve(channels_.size());
+      for (const auto& ch : channels_) {
+        // Apply filter
+        if (!filter_.empty()) {
+          std::string lower_topic = ch.topic;
+          std::string lower_type = ch.schema_name;
+          std::string lower_filter = filter_;
+          for (auto& c : lower_topic) c = static_cast<char>(std::tolower(c));
+          for (auto& c : lower_type) c = static_cast<char>(std::tolower(c));
+          for (auto& c : lower_filter) c = static_cast<char>(std::tolower(c));
+          if (lower_topic.find(lower_filter) == std::string::npos &&
+              lower_type.find(lower_filter) == std::string::npos) {
+            continue;
+          }
         }
+        rows.push_back({ch.topic, ch.schema_name});
       }
-      rows.push_back({ch.topic, ch.schema_name});
     }
     wd.setTableRows("topicsList", rows);
 
@@ -177,18 +180,21 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
 
     // Save selected channels with full schema info for the source plugin
     nlohmann::json channels_json = nlohmann::json::array();
-    for (const auto& name : selected_topic_names_) {
-      for (const auto& ch : channels_) {
-        if (ch.topic == name) {
-          channels_json.push_back({
-              {"id", ch.id},
-              {"topic", ch.topic},
-              {"encoding", ch.encoding},
-              {"schema_name", ch.schema_name},
-              {"schema", ch.schema},
-              {"schema_encoding", ch.schema_encoding},
-          });
-          break;
+    {
+      std::lock_guard<std::mutex> lock(channels_mutex_);
+      for (const auto& name : selected_topic_names_) {
+        for (const auto& ch : channels_) {
+          if (ch.topic == name) {
+            channels_json.push_back({
+                {"id", ch.id},
+                {"topic", ch.topic},
+                {"encoding", ch.encoding},
+                {"schema_name", ch.schema_name},
+                {"schema", ch.schema},
+                {"schema_encoding", ch.schema_encoding},
+            });
+            break;
+          }
         }
       }
     }
@@ -220,47 +226,49 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
 
  private:
   void connectToServer() {
-    socket_ = std::make_unique<QWebSocket>();
+    socket_ = std::make_unique<ix::WebSocket>();
+    socket_->setUrl("ws://" + address_ + ":" + std::to_string(port_));
+    socket_->addSubProtocol("foxglove.sdk.v1");
 
-    QObject::connect(socket_.get(), &QWebSocket::connected, [this]() {
-      connected_ = true;
-      tick_dirty_ = true;
-      // Foxglove sends "advertise" automatically — no request needed
+    socket_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
+      if (msg->type == ix::WebSocketMessageType::Open) {
+        connected_ = true;
+        tick_dirty_ = true;
+        // Foxglove sends "advertise" automatically — no request needed
+      } else if (msg->type == ix::WebSocketMessageType::Close) {
+        connected_ = false;
+        {
+          std::lock_guard<std::mutex> lock(channels_mutex_);
+          channels_.clear();
+        }
+        channels_dirty_ = true;
+        tick_dirty_ = true;
+      } else if (msg->type == ix::WebSocketMessageType::Message && !msg->binary) {
+        onServerMessage(msg->str);
+      }
     });
 
-    QObject::connect(socket_.get(), &QWebSocket::disconnected, [this]() {
-      connected_ = false;
-      channels_.clear();
-      channels_dirty_ = true;
-      tick_dirty_ = true;
-    });
-
-    QObject::connect(socket_.get(), &QWebSocket::textMessageReceived, [this](const QString& msg) {
-      onServerMessage(msg);
-    });
-
-    QNetworkRequest request(
-        QUrl(QString("ws://%1:%2").arg(QString::fromStdString(address_)).arg(port_)));
-    request.setRawHeader("Sec-WebSocket-Protocol", "foxglove.sdk.v1");
-    socket_->open(request);
+    socket_->start();
   }
 
   void disconnect() {
     if (socket_) {
-      socket_->close();
+      socket_->stop();
       socket_.reset();
     }
     connected_ = false;
   }
 
-  void onServerMessage(const QString& message) {
-    auto json = nlohmann::json::parse(message.toStdString(), nullptr, false);
+  void onServerMessage(const std::string& message) {
+    auto json = nlohmann::json::parse(message, nullptr, false);
     if (json.is_discarded() || !json.is_object()) return;
 
     std::string op = json.value("op", "");
     if (op != "advertise") return;
 
     auto channels_arr = json.value("channels", nlohmann::json::array());
+
+    std::lock_guard<std::mutex> lock(channels_mutex_);
     for (const auto& ch_json : channels_arr) {
       DiscoveredChannel ch;
       ch.id = ch_json.value("id", uint64_t{0});
@@ -297,13 +305,14 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   bool use_timestamp_ = false;
   std::string filter_;
 
-  bool connected_ = false;
-  std::unique_ptr<QWebSocket> socket_;
+  std::atomic<bool> connected_ = false;
+  std::unique_ptr<ix::WebSocket> socket_;
 
+  mutable std::mutex channels_mutex_;
   std::vector<DiscoveredChannel> channels_;
   std::vector<std::string> selected_topic_names_;
   bool channels_dirty_ = true;
-  bool tick_dirty_ = false;
+  std::atomic<bool> tick_dirty_ = false;
 };
 
 }  // namespace

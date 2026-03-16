@@ -1,10 +1,5 @@
-find_package(Qt6 COMPONENTS WebSockets QUIET)
-if(NOT Qt6WebSockets_FOUND)
-  message(STATUS "Qt6::WebSockets not found — skipping foxglove_bridge plugin")
-  return()
-endif()
-
 find_package(nlohmann_json REQUIRED)
+find_package(ixwebsocket REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 
@@ -12,7 +7,7 @@ add_library(foxglove_source_plugin SHARED foxglove_source.cpp)
 target_compile_features(foxglove_source_plugin PRIVATE cxx_std_20)
 target_compile_options(foxglove_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(foxglove_source_plugin PRIVATE
-  pj_base pj_dialog_sdk nlohmann_json::nlohmann_json Qt6::WebSockets Qt6::Network
+  pj_base pj_dialog_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket
 )
 
 pj_embed_ui(foxglove_source_plugin

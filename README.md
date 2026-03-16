@@ -71,3 +71,35 @@ cd /path/to/plotjuggler_core
 | data_stream_mqtt | DataSource | MQTT streaming |
 | data_stream_foxglove_bridge | DataSource | Foxglove WebSocket bridge |
 | data_stream_pj_bridge | DataSource | PlotJuggler WebSocket bridge |
+
+## Releasing
+
+Each plugin is independently versioned and released using git tags.
+
+### Tag convention
+
+```
+<plugin_directory>/v<semver>
+```
+
+Examples:
+
+```bash
+git tag data_load_csv/v1.0.0
+git tag parser_json/v0.2.1
+git tag data_stream_mqtt/v1.1.0
+```
+
+### How to release
+
+1. Tag the commit you want to release:
+   ```bash
+   git tag <plugin>/v<version>
+   git push origin <plugin>/v<version>
+   ```
+2. The CI workflow builds the plugin on 6 platforms (linux x86_64/aarch64, macOS Intel/ARM, Windows x64/ARM64).
+3. A GitHub Release is created automatically with:
+   - `<plugin>-<version>-<os>-<arch>.zip` — the plugin shared library
+   - `<plugin>-<version>-<os>-<arch>.zip.sha256` — checksum
+
+The workflow can also be triggered manually via `workflow_dispatch` for CI-only runs (no release artifacts).

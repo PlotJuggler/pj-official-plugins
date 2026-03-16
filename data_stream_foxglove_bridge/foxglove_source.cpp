@@ -5,9 +5,9 @@
 
 #include <nlohmann/json.hpp>
 
-#include <QCoreApplication>
-#include <QWebSocket>
+#include <ixwebsocket/IXWebSocket.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -15,6 +15,7 @@
 #include <mutex>
 #include <queue>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -73,29 +74,35 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       }
     }
 
-    socket_ = std::make_unique<QWebSocket>();
+    socket_ = std::make_unique<ix::WebSocket>();
+    socket_->setUrl("ws://" + address_ + ":" + std::to_string(port_));
+    socket_->addSubProtocol("foxglove.sdk.v1");
+    socket_->disableAutomaticReconnection();
 
-    QObject::connect(socket_.get(), &QWebSocket::textMessageReceived,
-                     [this](const QString& message) { onTextMessage(message); });
+    socket_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
+      if (msg->type == ix::WebSocketMessageType::Message) {
+        if (msg->binary) {
+          onBinaryMessage(msg->str);
+        } else {
+          onTextMessage(msg->str);
+        }
+      } else if (msg->type == ix::WebSocketMessageType::Close) {
+        onDisconnected();
+      }
+    });
 
-    QObject::connect(socket_.get(), &QWebSocket::binaryMessageReceived,
-                     [this](const QByteArray& message) { onBinaryMessage(message); });
-
-    QObject::connect(socket_.get(), &QWebSocket::disconnected,
-                     [this]() { onDisconnected(); });
-
-    QNetworkRequest request(
-        QUrl(QString("ws://%1:%2").arg(QString::fromStdString(address_)).arg(port_)));
-    request.setRawHeader("Sec-WebSocket-Protocol", "foxglove.sdk.v1");
-    socket_->open(request);
+    socket_->start();
 
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (socket_->state() != QAbstractSocket::ConnectedState &&
-           std::chrono::steady_clock::now() < deadline) {
-      QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+    while (std::chrono::steady_clock::now() < deadline) {
+      auto state = socket_->getReadyState();
+      if (state == ix::ReadyState::Open) break;
+      if (state == ix::ReadyState::Closed) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
-    if (socket_->state() != QAbstractSocket::ConnectedState) {
+    if (socket_->getReadyState() != ix::ReadyState::Open) {
+      socket_->stop();
       return PJ::unexpected(std::string("failed to connect to Foxglove bridge at ") +
                             address_ + ":" + std::to_string(port_));
     }
@@ -105,13 +112,11 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   }
 
   PJ::Status onPoll() override {
-    QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
-
     // Non-blocking reconnection: if connection was lost, try every ~5s
     if (!connected_ && socket_) {
       if (reconnect_pending_) {
-        // Check if the async open succeeded
-        if (socket_->state() == QAbstractSocket::ConnectedState) {
+        // Check if the async reconnect succeeded
+        if (socket_->getReadyState() == ix::ReadyState::Open) {
           connected_ = true;
           reconnect_pending_ = false;
           reconnect_tick_ = 0;
@@ -121,17 +126,15 @@ class FoxgloveSource : public PJ::StreamSourceBase {
           advertised_channels_.clear();
           next_subscription_id_ = 1;
           runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, "Reconnected to Foxglove bridge");
-        } else if (socket_->state() == QAbstractSocket::UnconnectedState) {
+        } else if (socket_->getReadyState() == ix::ReadyState::Closed) {
           // Connection attempt failed
           reconnect_pending_ = false;
         }
       } else if (++reconnect_tick_ >= 150) {
         reconnect_tick_ = 0;
         reconnect_pending_ = true;
-        QNetworkRequest request(
-            QUrl(QString("ws://%1:%2").arg(QString::fromStdString(address_)).arg(port_)));
-        request.setRawHeader("Sec-WebSocket-Protocol", "foxglove.sdk.v1");
-        socket_->open(request);  // async — result checked on next poll
+        socket_->stop();
+        socket_->start();  // async — result checked on next poll
       }
     }
 
@@ -168,11 +171,10 @@ class FoxgloveSource : public PJ::StreamSourceBase {
         for (const auto& [id, _channel_id] : subscriptions_) {
           ids.push_back(id);
         }
-        socket_->sendTextMessage(
-            QString::fromStdString(buildUnsubscribeMessage(ids)));
+        socket_->sendText(buildUnsubscribeMessage(ids));
       }
 
-      socket_->close();
+      socket_->stop();
       socket_.reset();
     }
     connected_ = false;
@@ -183,8 +185,8 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   }
 
  private:
-  void onTextMessage(const QString& message) {
-    auto json = nlohmann::json::parse(message.toStdString(), nullptr, false);
+  void onTextMessage(const std::string& message) {
+    auto json = nlohmann::json::parse(message, nullptr, false);
     if (json.is_discarded() || !json.is_object()) return;
 
     std::string op = json.value("op", "");
@@ -238,8 +240,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
           parser_errors.push_back(ch.topic + " (" + ch.encoding + "): " + binding.error());
         }
 
-        socket_->sendTextMessage(QString::fromStdString(
-            buildSubscribeMessage({{sub_id, ch.id}})));
+        socket_->sendText(buildSubscribeMessage({{sub_id, ch.id}}));
       }
 
       // Report all parser binding failures in a single aggregated message
@@ -298,10 +299,10 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     }
   }
 
-  void onBinaryMessage(const QByteArray& message) {
+  void onBinaryMessage(const std::string& message) {
     BinaryFrame frame;
-    if (!parseBinaryFrame(reinterpret_cast<const uint8_t*>(message.constData()),
-                          static_cast<size_t>(message.size()), frame)) {
+    if (!parseBinaryFrame(reinterpret_cast<const uint8_t*>(message.data()),
+                          message.size(), frame)) {
       return;
     }
 
@@ -323,8 +324,8 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   bool use_timestamp_ = false;
 
   std::vector<ChannelInfo> selected_channels_;
-  std::unique_ptr<QWebSocket> socket_;
-  bool connected_ = false;
+  std::unique_ptr<ix::WebSocket> socket_;
+  std::atomic<bool> connected_ = false;
 
   std::map<uint32_t, uint64_t> subscriptions_;  // sub_id -> channel_id
   std::map<uint32_t, PJ::ParserBindingHandle> binding_by_subscription_;
@@ -334,7 +335,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   std::mutex queue_mutex_;
   std::queue<QueuedBinaryMessage> message_queue_;
   int reconnect_tick_ = 0;
-  bool reconnect_pending_ = false;
+  std::atomic<bool> reconnect_pending_ = false;
 };
 
 }  // namespace

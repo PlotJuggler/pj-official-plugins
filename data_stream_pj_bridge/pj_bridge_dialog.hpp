@@ -5,15 +5,14 @@
 
 #include "websocket_client_ui.hpp"
 
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QUuid>
-#include <QWebSocket>
+#include <ixwebsocket/IXWebSocket.h>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -59,7 +58,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     wd.setEnabled("lineEditAddress", !connected_);
     wd.setEnabled("lineEditPort", !connected_);
     wd.setButtonText("buttonConnect", connected_ ? "Connected" : "Connect");
-    wd.setChecked("buttonConnect", connected_);
+    wd.setChecked("buttonConnect", connected_.load());
 
     // Parser options
     wd.setValue("spinBoxArraySize", max_array_size_);
@@ -70,10 +69,13 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     // Topic list — apply case-insensitive filter matching on name AND type
     wd.setTableHeaders("topicsList", {"Topic Name", "DataType"});
     std::vector<std::vector<std::string>> rows;
-    rows.reserve(topics_.size());
-    for (const auto& t : topics_) {
-      if (!matchesFilter(t)) continue;
-      rows.push_back({t.name, t.type});
+    {
+      std::lock_guard<std::mutex> lock(topics_mutex_);
+      rows.reserve(topics_.size());
+      for (const auto& t : topics_) {
+        if (!matchesFilter(t)) continue;
+        rows.push_back({t.name, t.type});
+      }
     }
     wd.setTableRows("topicsList", rows);
 
@@ -156,8 +158,6 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       return false;
     }
 
-    // Process pending WebSocket events
-    // (QWebSocket signals fire during the dialog's event loop — onTick just checks for state changes)
     if (tick_dirty_) {
       tick_dirty_ = false;
       return true;
@@ -185,17 +185,20 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
     // Save selected topics with schema info for the source plugin
     nlohmann::json topics_json = nlohmann::json::array();
-    for (const auto& name : selected_topic_names_) {
-      for (const auto& t : topics_) {
-        if (t.name == name) {
-          topics_json.push_back({
-              {"name", t.name},
-              {"type", t.type},
-              {"schema_name", t.schema_name},
-              {"schema_encoding", t.schema_encoding},
-              {"schema_definition", t.schema_definition},
-          });
-          break;
+    {
+      std::lock_guard<std::mutex> lock(topics_mutex_);
+      for (const auto& name : selected_topic_names_) {
+        for (const auto& t : topics_) {
+          if (t.name == name) {
+            topics_json.push_back({
+                {"name", t.name},
+                {"type", t.type},
+                {"schema_name", t.schema_name},
+                {"schema_encoding", t.schema_encoding},
+                {"schema_definition", t.schema_definition},
+            });
+            break;
+          }
         }
       }
     }
@@ -227,73 +230,71 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
  private:
   void connectToServer() {
-    socket_ = std::make_unique<QWebSocket>();
+    socket_ = std::make_unique<ix::WebSocket>();
+    socket_->setUrl("ws://" + address_ + ":" + std::to_string(port_));
 
-    QObject::connect(socket_.get(), &QWebSocket::connected, [this]() {
-      connected_ = true;
-      tick_dirty_ = true;
-      requestTopics();
+    socket_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
+      if (msg->type == ix::WebSocketMessageType::Open) {
+        connected_ = true;
+        tick_dirty_ = true;
+        requestTopics();
+      } else if (msg->type == ix::WebSocketMessageType::Close) {
+        connected_ = false;
+        {
+          std::lock_guard<std::mutex> lock(topics_mutex_);
+          topics_.clear();
+        }
+        topics_dirty_ = true;
+        tick_dirty_ = true;
+      } else if (msg->type == ix::WebSocketMessageType::Message && !msg->binary) {
+        onServerMessage(msg->str);
+      }
     });
 
-    QObject::connect(socket_.get(), &QWebSocket::disconnected, [this]() {
-      connected_ = false;
-      topics_.clear();
-      topics_dirty_ = true;
-      tick_dirty_ = true;
-    });
-
-    QObject::connect(socket_.get(), &QWebSocket::textMessageReceived, [this](const QString& msg) {
-      onServerMessage(msg);
-    });
-
-    QUrl url(QString("ws://%1:%2").arg(QString::fromStdString(address_)).arg(port_));
-    socket_->open(url);
+    socket_->start();
   }
 
   void disconnect() {
     if (socket_) {
-      socket_->close();
+      socket_->stop();
       socket_.reset();
     }
     connected_ = false;
   }
 
   void requestTopics() {
-    if (!socket_ || socket_->state() != QAbstractSocket::ConnectedState) {
+    if (!socket_ || socket_->getReadyState() != ix::ReadyState::Open) {
       return;
     }
-    QJsonObject cmd;
+    nlohmann::json cmd;
     cmd["command"] = "get_topics";
     cmd["protocol_version"] = 1;
-    cmd["id"] = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    socket_->sendTextMessage(QString::fromUtf8(QJsonDocument(cmd).toJson(QJsonDocument::Compact)));
+    cmd["id"] = std::to_string(request_id_++);
+    socket_->sendText(cmd.dump());
   }
 
-  void onServerMessage(const QString& message) {
-    QJsonParseError err;
-    auto doc = QJsonDocument::fromJson(message.toUtf8(), &err);
-    if (err.error != QJsonParseError::NoError || !doc.isObject()) return;
+  void onServerMessage(const std::string& message) {
+    auto json = nlohmann::json::parse(message, nullptr, false);
+    if (json.is_discarded() || !json.is_object()) return;
 
-    auto obj = doc.object();
-    auto status = obj.value("status").toString();
+    auto status = json.value("status", std::string{});
     if (status != "success") return;
 
-    if (!obj.contains("topics") || !obj.value("topics").isArray()) return;
+    if (!json.contains("topics") || !json["topics"].is_array()) return;
 
     // Merge current selection with persisted selection
     std::vector<std::string> wanted = selected_topic_names_;
 
+    std::lock_guard<std::mutex> lock(topics_mutex_);
     topics_.clear();
-    auto arr = obj.value("topics").toArray();
-    for (const auto& v : arr) {
-      if (!v.isObject()) continue;
-      auto t = v.toObject();
+    for (const auto& v : json["topics"]) {
+      if (!v.is_object()) continue;
       DiscoveredTopic dt;
-      dt.name = t.value("name").toString().toStdString();
-      dt.type = t.value("type").toString().toStdString();
-      dt.schema_name = t.value("schema_name").toString(QString::fromStdString(dt.type)).toStdString();
-      dt.schema_encoding = t.value("encoding").toString().toStdString();
-      dt.schema_definition = t.value("definition").toString().toStdString();
+      dt.name = v.value("name", std::string{});
+      dt.type = v.value("type", std::string{});
+      dt.schema_name = v.value("schema_name", dt.type);
+      dt.schema_encoding = v.value("encoding", std::string{});
+      dt.schema_definition = v.value("definition", std::string{});
       if (!dt.name.empty()) {
         topics_.push_back(std::move(dt));
       }
@@ -348,14 +349,16 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   bool use_timestamp_ = false;
   std::string filter_;
 
-  bool connected_ = false;
-  std::unique_ptr<QWebSocket> socket_;
+  std::atomic<bool> connected_ = false;
+  std::unique_ptr<ix::WebSocket> socket_;
 
+  mutable std::mutex topics_mutex_;
   std::vector<DiscoveredTopic> topics_;
   std::vector<std::string> selected_topic_names_;
   bool topics_dirty_ = true;
-  bool tick_dirty_ = false;
+  std::atomic<bool> tick_dirty_ = false;
   int tick_count_ = 0;
+  uint32_t request_id_ = 1;
 };
 
 }  // namespace
