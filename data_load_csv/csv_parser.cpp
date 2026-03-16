@@ -80,12 +80,12 @@ void SplitLine(const std::string& line, char separator, std::vector<std::string>
   parts.clear();
   bool inside_quotes = false;
   bool quoted_word = false;
-  int start_pos = 0;
+  size_t start_pos = 0;
 
-  int quote_start = 0;
-  int quote_end = 0;
+  size_t quote_start = 0;
+  size_t quote_end = 0;
 
-  for (int pos = 0; pos < static_cast<int>(line.size()); pos++) {
+  for (size_t pos = 0; pos < line.size(); pos++) {
     if (line[pos] == '"') {
       if (inside_quotes) {
         quoted_word = true;
@@ -98,12 +98,12 @@ void SplitLine(const std::string& line, char separator, std::vector<std::string>
 
     bool part_completed = false;
     bool add_empty = false;
-    int end_pos = pos;
+    size_t end_pos = pos;
 
     if (!inside_quotes && line[pos] == separator) {
       part_completed = true;
     }
-    if (pos + 1 == static_cast<int>(line.size())) {
+    if (pos + 1 == line.size()) {
       part_completed = true;
       end_pos = pos + 1;
       if (line[pos] == separator) {
@@ -115,11 +115,9 @@ void SplitLine(const std::string& line, char separator, std::vector<std::string>
     if (part_completed) {
       std::string part;
       if (quoted_word) {
-        part = line.substr(static_cast<size_t>(quote_start),
-                           static_cast<size_t>(quote_end - quote_start + 1));
+        part = line.substr(quote_start, quote_end - quote_start + 1);
       } else {
-        part = line.substr(static_cast<size_t>(start_pos),
-                           static_cast<size_t>(end_pos - start_pos));
+        part = line.substr(start_pos, end_pos - start_pos);
       }
 
       parts.push_back(Trim(part));
