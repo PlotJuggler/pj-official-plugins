@@ -79,7 +79,7 @@ jobs:
 
           # When triggered by a tag (e.g. data_load_csv/v0.1.0), build only that plugin
           CMAKE_EXTRA_ARGS=""
-          if [[ "${GITHUB_REF_NAME:-}" == */* ]]; then
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == */* ]]; then
             PLUGIN_NAME="${GITHUB_REF_NAME%/*}"
             CMAKE_EXTRA_ARGS="-DPJ_BUILD_PLUGIN=${PLUGIN_NAME}"
             echo "Building single plugin: ${PLUGIN_NAME}"
