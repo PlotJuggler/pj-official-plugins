@@ -4,6 +4,9 @@ on:
   workflow_dispatch:
   push:
     tags: ['*/v*']
+  schedule:
+    # Keep Conan cache warm — runs weekly (cache expires after 7 days of no access)
+    - cron: '0 3 * * 1'  # Monday 3am UTC
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -110,27 +113,27 @@ jobs:
 
           mkdir -p "dist/${EXT_NAME}"
 
-          # Find the plugin .so/.dylib/.dll — search by directory name or known target
-          find build/Release -name "*${EXT_NAME}*.${{ matrix.lib_ext }}" -exec cp {} "dist/${EXT_NAME}/" \; 2>/dev/null || true
+          # Map plugin directory name to target name pattern
+          declare -A PLUGIN_MAP=(
+            [data_load_csv]=csv_source
+            [data_load_mcap]=mcap_source
+            [data_load_parquet]=parquet_source
+            [data_load_ulog]=ulog_source
+            [data_stream_foxglove_bridge]=foxglove_source
+            [data_stream_mqtt]=mqtt_source
+            [data_stream_pj_bridge]=pj_bridge_source
+            [data_stream_zmq]=zmq_source
+            [data_stream_dummy]=dummy_stream
+            [parser_json]=parser_json
+            [parser_protobuf]=parser_protobuf
+            [parser_ros]=parser_ros
+            [parser_data_tamer]=parser_data_tamer
+          )
+          TARGET_PATTERN="${PLUGIN_MAP[${EXT_NAME}]:-${EXT_NAME}}"
 
-          # Also try the bin/ output directory directly
-          if [ -z "$(ls -A dist/${EXT_NAME}/ 2>/dev/null)" ]; then
-            find build/Release/bin -name "*.${{ matrix.lib_ext }}" 2>/dev/null | while read f; do
-              base=$(basename "$f")
-              # Match plugin files whose name relates to the extension directory
-              case "${EXT_NAME}" in
-                data_load_csv)       [[ "$base" == *csv_source* ]] && cp "$f" "dist/${EXT_NAME}/" ;;
-                data_load_mcap)      [[ "$base" == *mcap_source* ]] && cp "$f" "dist/${EXT_NAME}/" ;;
-                data_load_parquet)   [[ "$base" == *parquet_source* ]] && cp "$f" "dist/${EXT_NAME}/" ;;
-                data_load_ulog)      [[ "$base" == *ulog_source* ]] && cp "$f" "dist/${EXT_NAME}/" ;;
-                data_stream_foxglove_bridge) [[ "$base" == *foxglove_source* ]] && cp "$f" "dist/${EXT_NAME}/" ;;
-                data_stream_mqtt)    [[ "$base" == *mqtt_source* ]] && cp "$f" "dist/${EXT_NAME}/" ;;
-                data_stream_pj_bridge) [[ "$base" == *pj_bridge_source* ]] && cp "$f" "dist/${EXT_NAME}/" ;;
-                data_stream_zmq)     [[ "$base" == *zmq_source* ]] && cp "$f" "dist/${EXT_NAME}/" ;;
-                parser_*)            [[ "$base" == *${EXT_NAME}* ]] && cp "$f" "dist/${EXT_NAME}/" ;;
-              esac
-            done
-          fi
+          # Search everywhere under build/Release for the plugin binary
+          find build/Release -name "*${TARGET_PATTERN}*.${{ matrix.lib_ext }}" \
+            -exec cp {} "dist/${EXT_NAME}/" \; 2>/dev/null || true
 
           ls -la "dist/${EXT_NAME}/"
           echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
