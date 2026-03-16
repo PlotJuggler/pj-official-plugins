@@ -180,7 +180,7 @@ void extractFlatValues(const uint8_t* raw_data, size_t base_offset,
       }
       auto nested_size = nested_fmt->sizeBytes();
       for (size_t i = 0; i < static_cast<size_t>(count); ++i) {
-        extractFlatValues(raw_data, field_offset + static_cast<size_t>(i) * nested_size, *nested_fmt,
+        extractFlatValues(raw_data, field_offset + i * static_cast<size_t>(nested_size), *nested_fmt,
                           values);
       }
     } else {

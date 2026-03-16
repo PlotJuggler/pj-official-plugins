@@ -19,7 +19,7 @@ struct FlattenedField {
 /// Arrays use bracket notation: "arr[0]", "arr[1]", etc.
 /// Only numeric and boolean leaves are emitted; strings and nulls are skipped.
 void flattenJson(const std::string& prefix, const nlohmann::json& value,
-                 unsigned max_array_size, bool clamp_arrays,
+                 std::size_t max_array_size, bool clamp_arrays,
                  std::vector<FlattenedField>& out) {
   switch (value.type()) {
     case nlohmann::detail::value_t::object:
@@ -76,7 +76,7 @@ class JsonParser : public PJ::MessageParserPluginBase {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
     if (!cfg.is_discarded()) {
       encoding_hint_ = cfg.value("encoding_hint", std::string{});
-      max_array_size_ = cfg.value("max_array_size", 0u);
+      max_array_size_ = cfg.value("max_array_size", std::size_t{0});
       clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
     }
     return PJ::okStatus();
@@ -170,7 +170,7 @@ class JsonParser : public PJ::MessageParserPluginBase {
   }
 
   std::string encoding_hint_;
-  unsigned max_array_size_ = 0;
+  std::size_t max_array_size_ = 0;
   bool clamp_large_arrays_ = true;
   std::unordered_map<std::string, PJ::sdk::FieldHandle> field_cache_;
   std::vector<FlattenedField> owned_fields_;

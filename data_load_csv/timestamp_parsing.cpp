@@ -77,7 +77,7 @@ static std::pair<std::string, std::chrono::nanoseconds> ExtractFractionalSeconds
   std::string frac_str = input.substr(frac_start, frac_end - frac_start);
 
   if (frac_str.size() < 9) {
-    frac_str.append(9 - frac_str.size(), '0');
+    frac_str.append(size_t{9} - frac_str.size(), '0');
   } else if (frac_str.size() > 9) {
     frac_str = frac_str.substr(0, 9);
   }
