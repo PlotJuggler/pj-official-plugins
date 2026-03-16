@@ -17,9 +17,6 @@ arrow/*:with_snappy=True
 boost/*:without_test=True
 boost/*:without_cobalt=True
 
-[settings]
-compiler.cppstd=20
-
 [generators]
 CMakeDeps
 CMakeToolchain
