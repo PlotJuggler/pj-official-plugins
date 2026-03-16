@@ -113,23 +113,20 @@ jobs:
 
           mkdir -p "dist/${EXT_NAME}"
 
-          # Map plugin directory name to target name pattern
-          declare -A PLUGIN_MAP=(
-            [data_load_csv]=csv_source
-            [data_load_mcap]=mcap_source
-            [data_load_parquet]=parquet_source
-            [data_load_ulog]=ulog_source
-            [data_stream_foxglove_bridge]=foxglove_source
-            [data_stream_mqtt]=mqtt_source
-            [data_stream_pj_bridge]=pj_bridge_source
-            [data_stream_zmq]=zmq_source
-            [data_stream_dummy]=dummy_stream
-            [parser_json]=parser_json
-            [parser_protobuf]=parser_protobuf
-            [parser_ros]=parser_ros
-            [parser_data_tamer]=parser_data_tamer
-          )
-          TARGET_PATTERN="${PLUGIN_MAP[${EXT_NAME}]:-${EXT_NAME}}"
+          # Map plugin directory name to target name pattern (no associative arrays — macOS has bash 3)
+          case "${EXT_NAME}" in
+            data_load_csv)                TARGET_PATTERN=csv_source ;;
+            data_load_mcap)               TARGET_PATTERN=mcap_source ;;
+            data_load_parquet)            TARGET_PATTERN=parquet_source ;;
+            data_load_ulog)               TARGET_PATTERN=ulog_source ;;
+            data_stream_foxglove_bridge)  TARGET_PATTERN=foxglove_source ;;
+            data_stream_mqtt)             TARGET_PATTERN=mqtt_source ;;
+            data_stream_pj_bridge)        TARGET_PATTERN=pj_bridge_source ;;
+            data_stream_zmq)              TARGET_PATTERN=zmq_source ;;
+            data_stream_dummy)            TARGET_PATTERN=dummy_stream ;;
+            parser_*)                     TARGET_PATTERN="${EXT_NAME}" ;;
+            *)                            TARGET_PATTERN="${EXT_NAME}" ;;
+          esac
 
           # Search everywhere under build/Release for the plugin binary
           find build/Release -name "*${TARGET_PATTERN}*.${{ matrix.lib_ext }}" \
