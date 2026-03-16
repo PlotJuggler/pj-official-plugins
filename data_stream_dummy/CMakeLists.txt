@@ -1,0 +1,4 @@
+add_library(dummy_stream_plugin SHARED dummy_stream.cpp)
+target_compile_features(dummy_stream_plugin PRIVATE cxx_std_20)
+target_compile_options(dummy_stream_plugin PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(dummy_stream_plugin PRIVATE pj_base)
