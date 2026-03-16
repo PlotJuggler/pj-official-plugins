@@ -41,6 +41,13 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
  public:
   ~PjBridgeDialog() override { disconnect(); }
 
+  /// Transfer ownership of the live socket to the caller (source plugin).
+  /// Returns nullptr if the dialog is not connected.
+  std::unique_ptr<ix::WebSocket> takeSocket() {
+    connected_ = false;
+    return std::move(socket_);
+  }
+
   // --- Dialog protocol ---
 
   std::string manifest() const override {
@@ -148,6 +155,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name == "topicsList") {
       selected_topic_names_ = selected;
+      snapshotSelectedTopics();
       return true;  // re-evaluate OK button state
     }
     return false;
@@ -172,7 +180,9 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
-  void onAccepted(std::string_view /*json*/) override { disconnect(); }
+  void onAccepted(std::string_view /*json*/) override {
+    // Do NOT disconnect — the source's onStart() will steal the socket.
+  }
   void onRejected() override { disconnect(); }
 
   std::string saveConfig() const override {
@@ -183,24 +193,16 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     cfg["clamp_large_arrays"] = clamp_large_arrays_;
     cfg["use_timestamp"] = use_timestamp_;
 
-    // Save selected topics with schema info for the source plugin
+    // Use the snapshot — topics_ may already be cleared by disconnect()
     nlohmann::json topics_json = nlohmann::json::array();
-    {
-      std::lock_guard<std::mutex> lock(topics_mutex_);
-      for (const auto& name : selected_topic_names_) {
-        for (const auto& t : topics_) {
-          if (t.name == name) {
-            topics_json.push_back({
-                {"name", t.name},
-                {"type", t.type},
-                {"schema_name", t.schema_name},
-                {"schema_encoding", t.schema_encoding},
-                {"schema_definition", t.schema_definition},
-            });
-            break;
-          }
-        }
-      }
+    for (const auto& t : selected_topics_snapshot_) {
+      topics_json.push_back({
+          {"name", t.name},
+          {"type", t.type},
+          {"schema_name", t.schema_name},
+          {"schema_encoding", t.schema_encoding},
+          {"schema_definition", t.schema_definition},
+      });
     }
     cfg["topics"] = topics_json;
 
@@ -216,12 +218,20 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     clamp_large_arrays_ = cfg.value("clamp_large_arrays", false);
     use_timestamp_ = cfg.value("use_timestamp", false);
 
-    // Restore previously selected topic names for re-selection after connect
+    // Restore previously selected topic names and snapshot for re-selection after connect
     if (cfg.contains("topics") && cfg["topics"].is_array()) {
       selected_topic_names_.clear();
+      selected_topics_snapshot_.clear();
       for (const auto& t : cfg["topics"]) {
         if (t.contains("name") && t["name"].is_string()) {
           selected_topic_names_.push_back(t["name"].get<std::string>());
+          DiscoveredTopic dt;
+          dt.name = t.value("name", std::string{});
+          dt.type = t.value("type", std::string{});
+          dt.schema_name = t.value("schema_name", std::string{});
+          dt.schema_encoding = t.value("schema_encoding", std::string{});
+          dt.schema_definition = t.value("schema_definition", std::string{});
+          selected_topics_snapshot_.push_back(std::move(dt));
         }
       }
     }
@@ -319,6 +329,21 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
   void applyFilter() { topics_dirty_ = true; }
 
+  /// Snapshot the full schema info for selected topics so saveConfig()
+  /// doesn't depend on topics_ (which gets cleared on disconnect).
+  void snapshotSelectedTopics() {
+    std::lock_guard<std::mutex> lock(topics_mutex_);
+    selected_topics_snapshot_.clear();
+    for (const auto& name : selected_topic_names_) {
+      for (const auto& t : topics_) {
+        if (t.name == name) {
+          selected_topics_snapshot_.push_back(t);
+          break;
+        }
+      }
+    }
+  }
+
   /// Case-insensitive substring match on topic name and type.
   /// Selected topics always match (so they remain visible even when filtered).
   bool matchesFilter(const DiscoveredTopic& t) const {
@@ -355,6 +380,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   mutable std::mutex topics_mutex_;
   std::vector<DiscoveredTopic> topics_;
   std::vector<std::string> selected_topic_names_;
+  std::vector<DiscoveredTopic> selected_topics_snapshot_;
   bool topics_dirty_ = true;
   std::atomic<bool> tick_dirty_ = false;
   int tick_count_ = 0;

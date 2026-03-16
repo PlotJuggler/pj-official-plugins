@@ -74,11 +74,33 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       }
     }
 
-    socket_ = std::make_unique<ix::WebSocket>();
-    socket_->setUrl("ws://" + address_ + ":" + std::to_string(port_));
-    socket_->addSubProtocol("foxglove.sdk.v1");
-    socket_->disableAutomaticReconnection();
+    // Steal the live socket from the dialog (it stays connected on accept).
+    socket_ = dialog_.takeSocket();
 
+    if (!socket_ || socket_->getReadyState() != ix::ReadyState::Open) {
+      // Fallback: connect fresh (e.g. when started without dialog via saved config)
+      socket_ = std::make_unique<ix::WebSocket>();
+      socket_->setUrl("ws://" + address_ + ":" + std::to_string(port_));
+      socket_->addSubProtocol("foxglove.sdk.v1");
+      socket_->disableAutomaticReconnection();
+      socket_->start();
+
+      auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      while (std::chrono::steady_clock::now() < deadline) {
+        auto state = socket_->getReadyState();
+        if (state == ix::ReadyState::Open) break;
+        if (state == ix::ReadyState::Closed) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
+
+      if (socket_->getReadyState() != ix::ReadyState::Open) {
+        socket_->stop();
+        return PJ::unexpected(std::string("failed to connect to Foxglove bridge at ") +
+                              address_ + ":" + std::to_string(port_));
+      }
+    }
+
+    // Re-register message callback for the streaming source
     socket_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
       if (msg->type == ix::WebSocketMessageType::Message) {
         if (msg->binary) {
@@ -90,22 +112,6 @@ class FoxgloveSource : public PJ::StreamSourceBase {
         onDisconnected();
       }
     });
-
-    socket_->start();
-
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (std::chrono::steady_clock::now() < deadline) {
-      auto state = socket_->getReadyState();
-      if (state == ix::ReadyState::Open) break;
-      if (state == ix::ReadyState::Closed) break;
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-
-    if (socket_->getReadyState() != ix::ReadyState::Open) {
-      socket_->stop();
-      return PJ::unexpected(std::string("failed to connect to Foxglove bridge at ") +
-                            address_ + ":" + std::to_string(port_));
-    }
 
     connected_ = true;
     return PJ::okStatus();
@@ -227,9 +233,10 @@ class FoxgloveSource : public PJ::StreamSourceBase {
         parser_cfg["use_timestamp"] = use_timestamp_;
 
         auto schema_bytes = reinterpret_cast<const uint8_t*>(ch.schema.data());
+        // Use schema_encoding (e.g. "ros2msg") for parser lookup, not encoding (e.g. "cdr")
         auto binding = runtimeHost().ensureParserBinding({
             .topic_name = ch.topic,
-            .parser_encoding = ch.encoding,
+            .parser_encoding = ch.schema_encoding,
             .type_name = ch.schema_name,
             .schema = PJ::Span<const uint8_t>(schema_bytes, ch.schema.size()),
             .parser_config_json = parser_cfg.dump(),

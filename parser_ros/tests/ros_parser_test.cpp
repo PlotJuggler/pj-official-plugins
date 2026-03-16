@@ -419,7 +419,7 @@ TEST(RosParserTest, ParseWithoutSchemaFails) {
 TEST(RosParserTest, ManifestContainsEncoding) {
   RosParserFixture f;
   f.setUp();
-  EXPECT_NE(f.handle.manifest().find("\"encoding\":\"cdr\""), std::string::npos);
+  EXPECT_NE(f.handle.manifest().find("\"encoding\":[\"ros2msg\""), std::string::npos);
 }
 
 TEST(RosParserTest, TimestampPreserved) {

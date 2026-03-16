@@ -965,4 +965,5 @@ class RosParser : public PJ::MessageParserPluginBase {
 }  // namespace
 
 PJ_MESSAGE_PARSER_PLUGIN(RosParser,
-                         R"({"name":"ROS CDR Parser","version":"2.0.0","encoding":"cdr"})")
+                         R"({"name":"ROS CDR Parser","version":"2.0.0",)"
+                         R"("encoding":["ros2msg","ros1msg","cdr"]})")
