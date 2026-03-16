@@ -67,10 +67,20 @@ jobs:
         run: |
           conan install . --output-folder=build --build=missing -s build_type=Release \
             -s compiler.cppstd=20 -c tools.cmake.cmaketoolchain:generator=Ninja
+
+          # When triggered by a tag (e.g. data_load_csv/v0.1.0), build only that plugin
+          CMAKE_EXTRA_ARGS=""
+          if [[ "${GITHUB_REF_NAME:-}" == */* ]]; then
+            PLUGIN_NAME="${GITHUB_REF_NAME%/*}"
+            CMAKE_EXTRA_ARGS="-DPJ_BUILD_PLUGIN=${PLUGIN_NAME}"
+            echo "Building single plugin: ${PLUGIN_NAME}"
+          fi
+
           cmake -S . -B build/Release -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
             -DCMAKE_PREFIX_PATH=build \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_BUILD_TYPE=Release \
+            ${CMAKE_EXTRA_ARGS}
           cmake --build build/Release --config Release
           ctest --test-dir build/Release -V --output-on-failure
 

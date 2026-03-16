@@ -58,22 +58,10 @@ if(EXISTS "${CMAKE_BINARY_DIR}/conan_toolchain.cmake")
 endif()
 
 # ---------------------------------------------------------------------------
-# Third-party dependencies (via Conan)
+# Common dependencies (GTest used by most plugins' tests)
 # ---------------------------------------------------------------------------
 
-find_package(nlohmann_json REQUIRED)
-find_package(mcap REQUIRED)
-find_package(Arrow REQUIRED)
-if(NOT TARGET Parquet::parquet_static)
-  find_package(Parquet REQUIRED)
-endif()
-find_package(PahoMqttCpp REQUIRED)
-find_package(cppzmq REQUIRED)
-find_package(protobuf REQUIRED)
-find_package(zstd REQUIRED)
 find_package(GTest REQUIRED)
-
-find_package(ixwebsocket REQUIRED)
 
 # ---------------------------------------------------------------------------
 # PlotJuggler Core SDK (via CPM)
@@ -102,19 +90,25 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 enable_testing()
 
 # ---------------------------------------------------------------------------
-# Plugins
+# Plugins — use -DPJ_BUILD_PLUGIN=<dir> to build a single plugin (CI mode),
+# or omit to build all plugins (local development).
+# Each plugin's CMakeLists.txt calls find_package for its own dependencies.
 # ---------------------------------------------------------------------------
 
-add_subdirectory(parser_json)
-add_subdirectory(parser_protobuf)
-add_subdirectory(parser_ros)
-add_subdirectory(parser_data_tamer)
-add_subdirectory(data_load_csv)
-add_subdirectory(data_load_mcap)
-add_subdirectory(data_load_parquet)
-add_subdirectory(data_load_ulog)
-add_subdirectory(data_stream_zmq)
-add_subdirectory(data_stream_mqtt)
-add_subdirectory(data_stream_foxglove_bridge)
-add_subdirectory(data_stream_pj_bridge)
-add_subdirectory(data_stream_dummy)
+if(DEFINED PJ_BUILD_PLUGIN)
+  add_subdirectory(${PJ_BUILD_PLUGIN})
+else()
+  add_subdirectory(parser_json)
+  add_subdirectory(parser_protobuf)
+  add_subdirectory(parser_ros)
+  add_subdirectory(parser_data_tamer)
+  add_subdirectory(data_load_csv)
+  add_subdirectory(data_load_mcap)
+  add_subdirectory(data_load_parquet)
+  add_subdirectory(data_load_ulog)
+  add_subdirectory(data_stream_zmq)
+  add_subdirectory(data_stream_mqtt)
+  add_subdirectory(data_stream_foxglove_bridge)
+  add_subdirectory(data_stream_pj_bridge)
+  add_subdirectory(data_stream_dummy)
+endif()

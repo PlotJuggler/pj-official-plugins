@@ -8,6 +8,7 @@ set(INTROSPECTION_TESTS OFF CACHE BOOL "" FORCE)
 CPMAddPackage(
   NAME rosx_introspection
   URL https://github.com/facontidavide/rosx_introspection/archive/refs/heads/master.zip
+  OPTIONS "ROSX_HAS_JSON OFF"
 )
 
 # Ensure rosx_introspection is statically linked into the plugin .so.
