@@ -9,6 +9,8 @@ zstd/1.5.5
 date/3.0.4
 gtest/1.17.0
 ixwebsocket/11.4.6
+# Pin libsodium to 1.0.20: 1.0.21 has broken ARM NEON code that fails with GCC on aarch64
+libsodium/1.0.20
 
 [options]
 *:shared=False
