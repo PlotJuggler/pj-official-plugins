@@ -1,0 +1,53 @@
+name: CI Linux
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure SSH for private dependencies
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.CORE_DEPLOY_KEY }}
+
+      - name: Add GitHub to SSH known hosts
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Install Conan
+        uses: conan-io/setup-conan@v1.3.0
+        with:
+          cache_packages: true
+
+      - name: Install cmake and ninja
+        run: pip install cmake ninja
+
+      - name: Build & Test
+        shell: bash
+        run: |
+          conan profile detect --force
+          conan install . --output-folder=build --build=missing -s build_type=Release \
+            -s compiler.cppstd=20 -c tools.cmake.cmaketoolchain:generator=Ninja
+
+          cmake -S . -B build/Release -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
+            -DCMAKE_PREFIX_PATH=build \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/Release --config Release
+          ctest --test-dir build/Release -V --output-on-failure
