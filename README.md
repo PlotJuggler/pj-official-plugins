@@ -1,5 +1,10 @@
 # PlotJuggler Ported Plugins
 
+[![CI Linux](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-linux.yml)
+[![CI Windows](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-windows.yml/badge.svg)](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-windows.yml)
+[![CI macOS](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-macos.yml)
+
+
 Plugin collection for PlotJuggler Core — CSV, Parquet, ULog, MCAP, JSON,
 Protobuf, ROS, ZMQ, MQTT, Foxglove Bridge, and PJ Bridge.
 
