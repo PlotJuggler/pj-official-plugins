@@ -43,6 +43,8 @@ cd /path/to/plotjuggler_core
 | cppzmq | 4.11.0 | data_stream_zmq |
 | protobuf | 6.33.5 | parser_protobuf |
 | zstd | 1.5.5 | data_stream_pj_bridge |
+| date | 3.0.4 | data_load_csv |
+| ixwebsocket | 11.4.6 | data_stream_foxglove_bridge, data_stream_pj_bridge |
 | gtest | 1.17.0 | All plugin tests |
 
 ### Via CPM (GitHub-only)
@@ -54,11 +56,11 @@ cd /path/to/plotjuggler_core
 | rosx_introspection | parser_ros |
 | data_tamer | parser_ros, parser_data_tamer |
 
-### Optional
+### Pinned transitive dependencies
 
-| Package | Used by |
-|---------|---------|
-| Qt 6 (WebSockets, Network) | data_stream_foxglove_bridge, data_stream_pj_bridge |
+| Package | Version | Reason |
+|---------|---------|--------|
+| libsodium | 1.0.20 | 1.0.21 has broken ARM NEON code that fails with GCC on aarch64 |
 
 ## Plugins
 
