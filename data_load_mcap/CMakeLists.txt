@@ -2,6 +2,7 @@ find_package(nlohmann_json REQUIRED)
 find_package(mcap REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 # --- Plugin shared library ---
 add_library(mcap_source_plugin SHARED mcap_source.cpp)
@@ -15,4 +16,9 @@ pj_embed_ui(mcap_source_plugin
   UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/dialog_mcap.ui
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/dialog_mcap_ui.hpp
   VAR_NAME kDialogMcapUi
+)
+
+pj_embed_manifest(mcap_source_plugin
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/mcap_manifest.hpp
+  VAR_NAME kMcapManifest
 )

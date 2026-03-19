@@ -1,6 +1,7 @@
 find_package(nlohmann_json REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CPM.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 # rosx_introspection builds tests by default; disable them.
 set(INTROSPECTION_TESTS OFF CACHE BOOL "" FORCE)
@@ -38,6 +39,11 @@ target_compile_features(parser_ros_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_ros_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(parser_ros_plugin PRIVATE
   pj_base nlohmann_json::nlohmann_json rosx_introspection data_tamer_parser)
+
+pj_embed_manifest(parser_ros_plugin
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/ros_manifest.hpp
+  VAR_NAME kRosManifest
+)
 
 # --- Integration test (loads plugin .so via host library) ---
 add_executable(ros_parser_test tests/ros_parser_test.cpp)

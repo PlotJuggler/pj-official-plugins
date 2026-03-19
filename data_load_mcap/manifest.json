@@ -1,0 +1,16 @@
+{
+    "id": "mcap-loader",
+    "name": "MCAP Loader",
+    "version": "1.0.0",
+    "description": "Data loader for MCAP files. Supports ROS1, ROS2, Protobuf, and JSON message encodings.",
+    "author": "PlotJuggler Team",
+    "publisher": "PlotJuggler",
+    "website": "https://github.com/PlotJuggler/pj-official-plugins",
+    "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+    "license": "MIT",
+    "icon_url": "",
+    "category": "data_loader",
+    "tags": ["mcap", "file", "loader", "ros", "ros2", "protobuf"],
+    "file_extensions": [".mcap"],
+    "min_plotjuggler_version": "4.0.0"
+}

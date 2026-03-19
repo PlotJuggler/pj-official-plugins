@@ -1,0 +1,15 @@
+{
+    "id": "plotjuggler-bridge",
+    "name": "PlotJuggler Bridge",
+    "version": "1.0.0",
+    "description": "Connect to PlotJuggler Bridge server for generic data streaming over WebSocket.",
+    "author": "PlotJuggler Team",
+    "publisher": "PlotJuggler",
+    "website": "https://github.com/PlotJuggler/pj-official-plugins",
+    "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+    "license": "MIT",
+    "icon_url": "",
+    "category": "data_stream",
+    "tags": ["bridge", "stream", "websocket", "realtime"],
+    "min_plotjuggler_version": "4.0.0"
+}

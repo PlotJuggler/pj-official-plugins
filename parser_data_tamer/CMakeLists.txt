@@ -1,4 +1,5 @@
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CPM.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 # data_tamer_parser — header-only library for DataTamer schema/snapshot parsing.
 # Reuse cached download if parser_ros already fetched it.
@@ -18,6 +19,11 @@ add_library(parser_data_tamer_plugin SHARED data_tamer_parser.cpp)
 target_compile_features(parser_data_tamer_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_data_tamer_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(parser_data_tamer_plugin PRIVATE pj_base data_tamer_parser)
+
+pj_embed_manifest(parser_data_tamer_plugin
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/data_tamer_manifest.hpp
+  VAR_NAME kDataTamerManifest
+)
 
 # --- Integration test ---
 add_executable(data_tamer_parser_test tests/data_tamer_parser_test.cpp)

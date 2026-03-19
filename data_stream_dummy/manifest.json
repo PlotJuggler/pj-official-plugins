@@ -1,0 +1,15 @@
+{
+    "id": "dummy-streamer",
+    "name": "Dummy Streamer",
+    "version": "1.0.0",
+    "description": "Generates synthetic sine, cosine, sawtooth, and noise signals for testing and demonstration.",
+    "author": "PlotJuggler Team",
+    "publisher": "PlotJuggler",
+    "website": "https://github.com/PlotJuggler/pj-official-plugins",
+    "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+    "license": "MIT",
+    "icon_url": "",
+    "category": "data_stream",
+    "tags": ["dummy", "test", "synthetic", "demo", "stream"],
+    "min_plotjuggler_version": "4.0.0"
+}

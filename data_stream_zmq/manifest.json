@@ -1,0 +1,15 @@
+{
+    "id": "zmq-subscriber",
+    "name": "ZMQ Subscriber",
+    "version": "1.0.0",
+    "description": "Real-time data streaming via ZeroMQ. High-performance messaging for distributed systems.",
+    "author": "PlotJuggler Team",
+    "publisher": "PlotJuggler",
+    "website": "https://github.com/PlotJuggler/pj-official-plugins",
+    "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+    "license": "MIT",
+    "icon_url": "",
+    "category": "data_stream",
+    "tags": ["zmq", "zeromq", "stream", "realtime", "subscriber"],
+    "min_plotjuggler_version": "4.0.0"
+}

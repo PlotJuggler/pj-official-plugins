@@ -1,0 +1,17 @@
+{
+    "id": "json-parser",
+    "name": "JSON Parser",
+    "version": "1.0.0",
+    "description": "Message parser for JSON, CBOR, MessagePack, and BSON encoded data.",
+    "author": "PlotJuggler Team",
+    "publisher": "PlotJuggler",
+    "website": "https://github.com/PlotJuggler/pj-official-plugins",
+    "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+    "license": "MIT",
+    "icon_url": "",
+    "category": "message_parser",
+    "tags": ["json", "cbor", "msgpack", "bson", "parser"],
+    "encoding": "json",
+    "additional_encodings": ["cbor", "msgpack", "bson"],
+    "min_plotjuggler_version": "4.0.0"
+}
