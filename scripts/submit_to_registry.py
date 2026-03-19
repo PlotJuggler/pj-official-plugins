@@ -22,11 +22,14 @@ REGISTRY_REPO = "PlotJuggler/pj-plugin-registry"
 
 # Registry platform keys.  The workflow matrix produces os_label-arch combos;
 # normalize the ones that differ from the registry convention.
-ARCH_NORMALIZE = {"x64": "x86_64"}
+ARCH_NORMALIZE = {
+    "x64": "x86_64",
+    "aarch64": "arm64",
+}
 
 PLATFORMS = [
     "linux-x86_64",
-    "linux-aarch64",
+    "linux-arm64",
     "macos-x86_64",
     "macos-arm64",
     "windows-x86_64",
