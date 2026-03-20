@@ -1,11 +1,18 @@
 find_package(nlohmann_json REQUIRED)
 find_package(protobuf REQUIRED)
 
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
+
 # --- Plugin shared library ---
 add_library(parser_protobuf_plugin SHARED protobuf_parser.cpp)
 target_compile_features(parser_protobuf_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_protobuf_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(parser_protobuf_plugin PRIVATE pj_base protobuf::protobuf nlohmann_json::nlohmann_json)
+
+pj_embed_manifest(parser_protobuf_plugin
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/protobuf_manifest.hpp
+  VAR_NAME kProtobufManifest
+)
 
 # --- Integration test (loads plugin .so via host library) ---
 add_executable(protobuf_parser_test tests/protobuf_parser_test.cpp)

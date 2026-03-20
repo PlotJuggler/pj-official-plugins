@@ -1,6 +1,7 @@
 find_package(nlohmann_json REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CPM.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 CPMAddPackage(
   NAME ulog_cpp
@@ -27,6 +28,11 @@ if(MSVC)
   target_compile_options(ulog_source_plugin PRIVATE /wd4702)
 endif()
 target_link_libraries(ulog_source_plugin PRIVATE pj_base ulog_cpp::ulog_cpp nlohmann_json::nlohmann_json)
+
+pj_embed_manifest(ulog_source_plugin
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/ulog_manifest.hpp
+  VAR_NAME kUlogManifest
+)
 
 # --- Integration test ---
 add_executable(ulog_source_test tests/ulog_source_test.cpp)

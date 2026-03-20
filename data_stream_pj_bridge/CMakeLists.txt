@@ -3,6 +3,7 @@ find_package(zstd REQUIRED)
 find_package(ixwebsocket REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 add_library(pj_bridge_protocol_lib STATIC pj_bridge_protocol.cpp)
 set_target_properties(pj_bridge_protocol_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -22,4 +23,9 @@ pj_embed_ui(pj_bridge_source_plugin
   UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/websocket_client.ui
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/websocket_client_ui.hpp
   VAR_NAME kWebSocketClientUi
+)
+
+pj_embed_manifest(pj_bridge_source_plugin
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/pj_bridge_manifest.hpp
+  VAR_NAME kPjBridgeManifest
 )

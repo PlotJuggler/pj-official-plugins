@@ -1,10 +1,17 @@
 find_package(nlohmann_json REQUIRED)
 
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
+
 # --- Plugin shared library ---
 add_library(parser_json_plugin SHARED json_parser.cpp)
 target_compile_features(parser_json_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_json_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(parser_json_plugin PRIVATE pj_base nlohmann_json::nlohmann_json)
+
+pj_embed_manifest(parser_json_plugin
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/json_manifest.hpp
+  VAR_NAME kJsonManifest
+)
 
 # --- Integration test (loads plugin .so via host library) ---
 add_executable(json_parser_test tests/json_parser_test.cpp)
