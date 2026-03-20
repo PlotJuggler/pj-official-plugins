@@ -17,9 +17,11 @@ Then use submit_to_registry.py to submit to the plugin registry.
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import git
 
@@ -104,6 +106,33 @@ def check_tag_remote(repo: git.Repo, remote_name: str, tag: str) -> tuple[bool, 
     return False, None
 
 
+def build_authenticated_url(url: str, token: str) -> str | None:
+    """Build authenticated URL for HTTPS remotes.
+
+    Returns authenticated URL or None if not an HTTPS URL.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        return None
+    # Build URL with token: https://token@github.com/owner/repo.git
+    return f"https://{token}@{parsed.netloc}{parsed.path}"
+
+
+def push_tag_with_auth(repo: git.Repo, remote_url: str, tag: str, token: str | None) -> None:
+    """Push tag to remote, using token authentication if provided."""
+    if token:
+        auth_url = build_authenticated_url(remote_url, token)
+        if auth_url:
+            # Push directly to authenticated URL
+            repo.git.push(auth_url, tag)
+            return
+        else:
+            print(f"  Warning: Token provided but remote is not HTTPS, ignoring token")
+
+    # Fall back to normal push (uses git credentials/SSH)
+    repo.git.push(remote_url, tag)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Create and push a release tag for a plugin.",
@@ -123,7 +152,15 @@ def main():
         metavar="NAME",
         help="Git remote to push to (default: auto-detect GitHub remote)",
     )
+    parser.add_argument(
+        "--token",
+        metavar="TOKEN",
+        help="GitHub token for authentication (or set GITHUB_TOKEN env var)",
+    )
     args = parser.parse_args()
+
+    # Get token from args or environment
+    github_token = args.token or os.environ.get("GITHUB_TOKEN")
 
     repo = git.Repo(".")
     head_commit = repo.head.commit.hexsha
@@ -217,7 +254,7 @@ def main():
             print(f"  [dry-run] Would push tag to {remote_name}")
         else:
             try:
-                repo.remotes[remote_name].push(tag)
+                push_tag_with_auth(repo, remote_url, tag, github_token)
                 print(f"  ✓ Tag pushed to {remote_name}")
             except git.GitCommandError as e:
                 print(f"  ✗ Error pushing tag: {e}")
