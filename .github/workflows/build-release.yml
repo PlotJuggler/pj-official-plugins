@@ -127,7 +127,7 @@ jobs:
           fi
           ZIP_NAME="${ARTIFACT_NAME}-${VERSION}-${{ matrix.os_label }}-${{ matrix.arch }}.zip"
 
-          mkdir -p "dist/${EXT_NAME}"
+          mkdir -p "dist/${ARTIFACT_NAME}"
 
           # Map plugin directory name to target name pattern (no associative arrays — macOS has bash 3)
           case "${EXT_NAME}" in
@@ -146,9 +146,11 @@ jobs:
 
           # Search everywhere under build/Release for the plugin binary
           find build/Release -name "*${TARGET_PATTERN}*.${{ matrix.lib_ext }}" \
-            -exec cp {} "dist/${EXT_NAME}/" \; 2>/dev/null || true
+            -exec cp {} "dist/${ARTIFACT_NAME}/" \; 2>/dev/null || true
 
-          ls -la "dist/${EXT_NAME}/"
+          cp "${EXT_NAME}/manifest.json" "dist/${ARTIFACT_NAME}/" 2>/dev/null || true
+
+          ls -la "dist/${ARTIFACT_NAME}/"
           echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
 
       - name: Compress artifacts (Linux/macOS)
