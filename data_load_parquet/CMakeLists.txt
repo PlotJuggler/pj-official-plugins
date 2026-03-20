@@ -7,6 +7,7 @@ if(NOT TARGET Parquet::parquet_static)
 endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 # --- Plugin shared library ---
 add_library(parquet_source_plugin SHARED parquet_source.cpp)
@@ -20,4 +21,9 @@ pj_embed_ui(parquet_source_plugin
   UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/dataload_parquet.ui
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/dataload_parquet_ui.hpp
   VAR_NAME kDataLoadParquetUi
+)
+
+pj_embed_manifest(parquet_source_plugin
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/parquet_manifest.hpp
+  VAR_NAME kParquetManifest
 )

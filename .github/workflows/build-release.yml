@@ -118,7 +118,14 @@ jobs:
           VERSION="${{ github.ref_name }}"
           VERSION="${VERSION##*/}"
           VERSION="${VERSION#v}"
-          ZIP_NAME="${EXT_NAME}-${VERSION}-${{ matrix.os_label }}-${{ matrix.arch }}.zip"
+
+          # Use manifest id for artifact naming when available, fall back to directory name
+          if [ -f "${EXT_NAME}/manifest.json" ]; then
+            ARTIFACT_NAME=$(python3 -c "import json; print(json.load(open('${EXT_NAME}/manifest.json'))['id'])")
+          else
+            ARTIFACT_NAME="${EXT_NAME}"
+          fi
+          ZIP_NAME="${ARTIFACT_NAME}-${VERSION}-${{ matrix.os_label }}-${{ matrix.arch }}.zip"
 
           mkdir -p "dist/${EXT_NAME}"
 

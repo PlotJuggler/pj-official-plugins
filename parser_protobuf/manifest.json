@@ -1,0 +1,16 @@
+{
+    "id": "protobuf-parser",
+    "name": "Protobuf Parser",
+    "version": "1.0.0",
+    "description": "Message parser for Protocol Buffers encoded data. Requires .proto schema files.",
+    "author": "PlotJuggler Team",
+    "publisher": "PlotJuggler",
+    "website": "https://github.com/PlotJuggler/pj-official-plugins",
+    "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+    "license": "MIT",
+    "icon_url": "",
+    "category": "message_parser",
+    "tags": ["protobuf", "proto", "parser", "schema"],
+    "encoding": "protobuf",
+    "min_plotjuggler_version": "4.0.0"
+}

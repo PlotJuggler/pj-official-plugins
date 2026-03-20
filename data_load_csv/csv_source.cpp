@@ -1,6 +1,7 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 
 #include "csv_dialog.hpp"
+#include "csv_manifest.hpp"
 #include "csv_parser.hpp"
 
 #include <nlohmann/json.hpp>
@@ -254,8 +255,6 @@ class CsvSource : public PJ::FileSourceBase {
 
 }  // namespace
 
-PJ_DATA_SOURCE_PLUGIN(
-    CsvSource,
-    R"({"name":"CSV File Source","version":"1.0.0","file_extensions":[".csv",".tsv",".txt"]})")
+PJ_DATA_SOURCE_PLUGIN(CsvSource, kCsvManifest)
 
 PJ_DIALOG_PLUGIN(CsvDialog)

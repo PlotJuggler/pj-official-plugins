@@ -2,6 +2,7 @@ find_package(nlohmann_json REQUIRED)
 find_package(date REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 # --- CSV parser library (pure C++, no Qt) ---
 add_library(csv_parser_lib STATIC
@@ -32,6 +33,11 @@ pj_embed_ui(csv_source_plugin
   UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/datetimehelp.ui
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/datetimehelp_ui.hpp
   VAR_NAME kDateTimeHelpUi
+)
+
+pj_embed_manifest(csv_source_plugin
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/csv_manifest.hpp
+  VAR_NAME kCsvManifest
 )
 
 # --- Unit test for CSV parser (no plugin loading) ---
