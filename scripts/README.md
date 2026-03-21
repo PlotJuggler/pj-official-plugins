@@ -83,10 +83,16 @@ python3 scripts/submit_to_registry.py csv-loader --dry-run
 
 **Usage:**
 ```bash
-# Basic usage (checks manifest only)
+# Using release tag (recommended for CI)
+python3 scripts/release_tools.py verify-version-consistency \
+    --release-tag "data_load_csv/v1.0.5" \
+    --build-dir build/Release \
+    --check-manifest
+
+# Using plugin name directly
 python3 scripts/release_tools.py verify-version-consistency data_load_csv
 
-# Full verification with binary check
+# Full verification with explicit expected version
 python3 scripts/release_tools.py verify-version-consistency data_load_csv \
     --build-dir build/Release \
     --expected-version 1.0.5 \
@@ -121,6 +127,15 @@ PASSED: All checks successful
 
 **Usage:**
 ```bash
+# Using release tag (recommended for CI)
+python3 scripts/release_tools.py create-distribution-package \
+    --release-tag "data_load_csv/v1.0.5" \
+    --build-dir build/Release \
+    --output-dir dist \
+    --os-label linux \
+    --arch x86_64
+
+# Using plugin name directly
 python3 scripts/release_tools.py create-distribution-package data_load_csv \
     --build-dir build/Release \
     --output-dir dist \
@@ -301,28 +316,34 @@ python3 scripts/submit_to_registry.py csv-loader
 
 ## CI Integration
 
-The CI workflow (`.github/workflows/build-release.yml`) uses these tools:
+The CI workflow (`.github/workflows/build-release.yml`) uses these tools. The `--release-tag` argument extracts both the plugin name and version from the tag, eliminating the need for bash string parsing:
 
 ```yaml
 # After building, verify version consistency
 - name: Verify plugin version
+  if: startsWith(github.ref, 'refs/tags/')
   run: |
-    python3 scripts/release_tools.py verify-version-consistency "${PLUGIN_DIR}" \
+    python3 scripts/release_tools.py verify-version-consistency \
+      --release-tag "${{ github.ref_name }}" \
       --build-dir build/Release \
-      --expected-version "${VERSION}" \
       --check-manifest
 
 # Create distribution package
 - name: Package artifacts
+  if: startsWith(github.ref, 'refs/tags/')
   run: |
-    ZIP_NAME=$(python3 scripts/release_tools.py create-distribution-package "${PLUGIN_DIR}" \
+    ZIP_NAME=$(python3 scripts/release_tools.py create-distribution-package \
+      --release-tag "${{ github.ref_name }}" \
       --build-dir build/Release \
       --output-dir dist \
-      --version "${VERSION}" \
       --os-label "${{ matrix.os_label }}" \
       --arch "${{ matrix.arch }}")
     echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
 ```
+
+The `--release-tag` argument accepts tags in the format `{plugin_dir}/v{version}` (e.g., `data_load_csv/v1.0.5`) and internally extracts:
+- Plugin directory name: `data_load_csv`
+- Version: `1.0.5`
 
 ---
 

@@ -648,9 +648,25 @@ def cmd_verify_version_consistency(args) -> int:
     script_dir = Path(__file__).parent
     root = script_dir.parent
 
-    plugin_dir = find_plugin_dir(args.plugin, root)
+    # Parse release tag if provided
+    if args.release_tag:
+        parsed = parse_tag_version(args.release_tag)
+        if not parsed:
+            print(f"Error: Invalid release tag format: {args.release_tag}", file=sys.stderr)
+            print(f"Expected: {{plugin_dir}}/v{{version}} (e.g., data_load_csv/v1.0.5)", file=sys.stderr)
+            return 1
+        plugin_name, expected_version = parsed
+        if not args.expected_version:
+            args.expected_version = expected_version
+    elif args.plugin:
+        plugin_name = args.plugin
+    else:
+        print("Error: Either plugin or --release-tag must be provided", file=sys.stderr)
+        return 1
+
+    plugin_dir = find_plugin_dir(plugin_name, root)
     if not plugin_dir:
-        print(f"Error: Plugin not found: {args.plugin}", file=sys.stderr)
+        print(f"Error: Plugin not found: {plugin_name}", file=sys.stderr)
         return 1
 
     manifest_path = plugin_dir / "manifest.json"
@@ -733,9 +749,25 @@ def cmd_create_distribution_package(args) -> int:
     script_dir = Path(__file__).parent
     root = script_dir.parent
 
-    plugin_dir = find_plugin_dir(args.plugin, root)
+    # Parse release tag if provided
+    if args.release_tag:
+        parsed = parse_tag_version(args.release_tag)
+        if not parsed:
+            print(f"Error: Invalid release tag format: {args.release_tag}", file=sys.stderr)
+            print(f"Expected: {{plugin_dir}}/v{{version}} (e.g., data_load_csv/v1.0.5)", file=sys.stderr)
+            return 1
+        plugin_name, tag_version = parsed
+        if not args.version:
+            args.version = tag_version
+    elif args.plugin:
+        plugin_name = args.plugin
+    else:
+        print("Error: Either plugin or --release-tag must be provided", file=sys.stderr)
+        return 1
+
+    plugin_dir = find_plugin_dir(plugin_name, root)
     if not plugin_dir:
-        print(f"Error: Plugin not found: {args.plugin}", file=sys.stderr)
+        print(f"Error: Plugin not found: {plugin_name}", file=sys.stderr)
         return 1
 
     manifest_path = plugin_dir / "manifest.json"
@@ -1006,9 +1038,10 @@ def main():
         description="Compares versions from multiple sources to ensure release consistency. "
                     "Used in CI after building to catch version mismatches before publishing.",
     )
-    p_verify.add_argument("plugin", help="Plugin directory name or manifest id")
+    p_verify.add_argument("plugin", nargs="?", help="Plugin directory name or manifest id")
+    p_verify.add_argument("--release-tag", help="Release tag (e.g., data_load_csv/v1.0.5). Extracts plugin and version automatically.")
     p_verify.add_argument("--build-dir", type=Path, help="Directory containing compiled binaries")
-    p_verify.add_argument("--expected-version", help="Expected version (e.g., from git tag)")
+    p_verify.add_argument("--expected-version", help="Expected version (overrides tag version if both provided)")
     p_verify.add_argument("--check-manifest", action="store_true", help="Also validate manifest.json structure")
     p_verify.set_defaults(func=cmd_verify_version_consistency)
 
@@ -1019,10 +1052,11 @@ def main():
         description="Finds the compiled binary by its embedded manifest id and copies it "
                     "along with manifest.json to the output directory. Outputs ZIP filename to stdout.",
     )
-    p_package.add_argument("plugin", help="Plugin directory name or manifest id")
+    p_package.add_argument("plugin", nargs="?", help="Plugin directory name or manifest id")
+    p_package.add_argument("--release-tag", help="Release tag (e.g., data_load_csv/v1.0.5). Extracts plugin and version automatically.")
     p_package.add_argument("--build-dir", type=Path, required=True, help="Directory containing compiled binaries")
     p_package.add_argument("--output-dir", type=Path, required=True, help="Output directory for package")
-    p_package.add_argument("--version", help="Version for ZIP filename (default: from manifest)")
+    p_package.add_argument("--version", help="Version for ZIP filename (overrides tag version if both provided)")
     p_package.add_argument("--os-label", help="OS label for ZIP filename (linux, macos, windows)")
     p_package.add_argument("--arch", help="Architecture for ZIP filename (x86_64, arm64, etc.)")
     p_package.set_defaults(func=cmd_create_distribution_package)
