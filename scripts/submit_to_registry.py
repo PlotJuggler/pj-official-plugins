@@ -138,7 +138,7 @@ def download_and_verify_asset(asset: dict, expected_checksum: str) -> bool:
         check=True,
     )
 
-    # Calculate SHA256 using pj_validation
+    # Calculate SHA256 using release_tools
     sha256 = compute_sha256_bytes(result.stdout)
 
     if sha256 != expected_checksum:
