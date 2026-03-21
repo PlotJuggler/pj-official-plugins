@@ -106,8 +106,8 @@ jobs:
           VERSION="${VERSION##*/}"
           VERSION="${VERSION#v}"
 
-          python3 scripts/verify_release.py "${PLUGIN_DIR}" \
-            --find-binary build/Release \
+          python3 scripts/release_tools.py verify-version-consistency "${PLUGIN_DIR}" \
+            --build-dir build/Release \
             --expected-version "${VERSION}" \
             --check-manifest
 
@@ -121,7 +121,7 @@ jobs:
           VERSION="${VERSION##*/}"
           VERSION="${VERSION#v}"
 
-          ZIP_NAME=$(python3 scripts/package_plugin.py "${PLUGIN_DIR}" \
+          ZIP_NAME=$(python3 scripts/release_tools.py create-distribution-package "${PLUGIN_DIR}" \
             --build-dir build/Release \
             --output-dir dist \
             --version "${VERSION}" \

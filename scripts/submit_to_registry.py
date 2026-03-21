@@ -24,7 +24,7 @@ import git
 SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from pj_validation import (
+from release_tools import (
     compute_sha256_bytes,
     id_to_class_name,
     normalize_platform,

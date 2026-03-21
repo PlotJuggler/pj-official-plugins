@@ -28,7 +28,7 @@ import git
 SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from pj_validation import (
+from release_tools import (
     read_manifest,
     validate_manifest_file,
     validate_semver,
