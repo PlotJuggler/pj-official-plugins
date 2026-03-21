@@ -16,7 +16,6 @@ Then use submit_to_registry.py to submit to the plugin registry.
 """
 
 import argparse
-import json
 import os
 import re
 import sys
@@ -24,6 +23,16 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import git
+
+# Add scripts directory to path for imports
+SCRIPT_DIR = Path(__file__).parent
+sys.path.insert(0, str(SCRIPT_DIR))
+
+from pj_validation import (
+    read_manifest,
+    validate_manifest_file,
+    validate_semver,
+)
 
 GITHUB_REMOTE_PATTERN = re.compile(r"github\.com[:/].+/pj-official-plugins")
 
@@ -41,32 +50,11 @@ def find_plugin_dir(arg: str) -> str:
 
     # Search all manifests for matching id
     for manifest_path in Path(".").glob("*/manifest.json"):
-        try:
-            with open(manifest_path) as f:
-                manifest = json.load(f)
-                if manifest.get("id") == arg:
-                    return manifest_path.parent.name
-        except (json.JSONDecodeError, IOError):
-            continue
+        manifest = read_manifest(manifest_path)
+        if manifest and manifest.get("id") == arg:
+            return manifest_path.parent.name
 
     sys.exit(f"Error: Plugin '{arg}' not found. Provide directory name (e.g. data_load_csv) or manifest id (e.g. csv-loader)")
-
-
-def read_manifest(plugin_dir: str) -> dict:
-    """Read and validate manifest.json."""
-    manifest_path = Path(plugin_dir) / "manifest.json"
-    if not manifest_path.exists():
-        sys.exit(f"Error: {manifest_path} not found")
-    with open(manifest_path) as f:
-        manifest = json.load(f)
-
-    # Validate required fields
-    if "version" not in manifest:
-        sys.exit(f"Error: 'version' not found in {manifest_path}")
-    if "id" not in manifest:
-        sys.exit(f"Error: 'id' not found in {manifest_path}")
-
-    return manifest
 
 
 def find_github_remote(repo: git.Repo) -> tuple[str, str] | None:
@@ -167,12 +155,25 @@ def main():
 
     # Find plugin directory
     plugin_dir = find_plugin_dir(args.plugin)
+    manifest_path = Path(plugin_dir) / "manifest.json"
 
     # Read and validate manifest
-    manifest = read_manifest(plugin_dir)
+    manifest, validation_errors = validate_manifest_file(manifest_path)
+    if manifest is None:
+        sys.exit(f"Error: Could not read {manifest_path}")
+    if validation_errors:
+        print(f"Error: Manifest validation failed:", file=sys.stderr)
+        for err in validation_errors:
+            print(f"  - {err}", file=sys.stderr)
+        sys.exit(1)
+
     version = manifest["version"]
     artifact_name = manifest["id"]
     tag = f"{plugin_dir}/v{version}"
+
+    # Validate semver format
+    if not validate_semver(version):
+        sys.exit(f"Error: Invalid version format '{version}'. Expected semantic versioning (e.g., 1.0.0)")
 
     print(f"Plugin: {plugin_dir}")
     print(f"Version: {version}")

@@ -13,33 +13,30 @@ Prerequisites:
 """
 
 import argparse
-import hashlib
 import json
-import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import git
 
+# Add scripts directory to path for imports
+SCRIPT_DIR = Path(__file__).parent
+sys.path.insert(0, str(SCRIPT_DIR))
+
+from pj_validation import (
+    compute_sha256_bytes,
+    id_to_class_name,
+    normalize_platform,
+    read_manifest,
+    validate_manifest_file,
+    VALID_PLATFORMS,
+)
+
 SOURCE_REPO = "PlotJuggler/pj-official-plugins"
 REGISTRY_REPO = "PlotJuggler/pj-plugin-registry"
 
-# Map CI artifact arch names to registry platform keys
-ARCH_NORMALIZE = {
-    "x64": "x86_64",
-    "aarch64": "arm64",  # CI uses aarch64, registry uses arm64
-}
-
-PLATFORMS = [
-    "linux-x86_64",
-    "linux-arm64",
-    "macos-x86_64",
-    "macos-arm64",
-    "windows-x86_64",
-    "windows-arm64",
-]
+PLATFORMS = VALID_PLATFORMS
 
 MANIFEST_FIELDS = [
     "id",
@@ -58,12 +55,6 @@ MANIFEST_FIELDS = [
 ]
 
 
-def id_to_class_name(plugin_id: str) -> str:
-    """Convert plugin id to class name (kebab-case to PascalCase)."""
-    # csv-loader -> CsvLoader
-    return "".join(word.capitalize() for word in plugin_id.split("-"))
-
-
 def find_plugin_dir(arg: str) -> str:
     """Find plugin directory from argument.
 
@@ -77,32 +68,11 @@ def find_plugin_dir(arg: str) -> str:
 
     # Search all manifests for matching id
     for manifest_path in Path(".").glob("*/manifest.json"):
-        try:
-            with open(manifest_path) as f:
-                manifest = json.load(f)
-                if manifest.get("id") == arg:
-                    return manifest_path.parent.name
-        except (json.JSONDecodeError, IOError):
-            continue
+        manifest = read_manifest(manifest_path)
+        if manifest and manifest.get("id") == arg:
+            return manifest_path.parent.name
 
     sys.exit(f"Error: Plugin '{arg}' not found. Provide directory name (e.g. data_load_csv) or manifest id (e.g. csv-loader)")
-
-
-def read_manifest(plugin_dir: str) -> dict:
-    """Read and validate manifest.json."""
-    manifest_path = Path(plugin_dir) / "manifest.json"
-    if not manifest_path.exists():
-        sys.exit(f"Error: {manifest_path} not found")
-    with open(manifest_path) as f:
-        manifest = json.load(f)
-
-    # Validate required fields
-    if "version" not in manifest:
-        sys.exit(f"Error: 'version' not found in {manifest_path}")
-    if "id" not in manifest:
-        sys.exit(f"Error: 'id' not found in {manifest_path}")
-
-    return manifest
 
 
 def get_local_tag(tag: str) -> str | None:
@@ -162,25 +132,22 @@ def fetch_release_assets(tag: str) -> list[dict]:
 
 def download_and_verify_asset(asset: dict, expected_checksum: str) -> bool:
     """Download asset and verify SHA256 checksum."""
-    with tempfile.NamedTemporaryFile(delete=True) as tmp:
-        result = subprocess.run(
-            ["gh", "api", asset["apiUrl"], "-H", "Accept: application/octet-stream"],
-            capture_output=True,
-            check=True,
-        )
-        tmp.write(result.stdout)
-        tmp.flush()
+    result = subprocess.run(
+        ["gh", "api", asset["apiUrl"], "-H", "Accept: application/octet-stream"],
+        capture_output=True,
+        check=True,
+    )
 
-        # Calculate SHA256
-        sha256 = hashlib.sha256(result.stdout).hexdigest()
+    # Calculate SHA256 using pj_validation
+    sha256 = compute_sha256_bytes(result.stdout)
 
-        if sha256 != expected_checksum:
-            print(f"    Checksum mismatch for {asset['name']}:")
-            print(f"      Expected: {expected_checksum}")
-            print(f"      Got:      {sha256}")
-            return False
+    if sha256 != expected_checksum:
+        print(f"    Checksum mismatch for {asset['name']}:")
+        print(f"      Expected: {expected_checksum}")
+        print(f"      Got:      {sha256}")
+        return False
 
-        return True
+    return True
 
 
 def download_asset_text(url: str) -> str:
@@ -192,16 +159,6 @@ def download_asset_text(url: str) -> str:
         check=True,
     )
     return result.stdout
-
-
-def normalize_platform(filename: str) -> str | None:
-    """Extract and normalize the platform key from an artifact filename."""
-    match = re.search(r"-([a-z]+)-([a-z0-9_]+)\.zip$", filename)
-    if not match:
-        return None
-    os_label = match.group(1)
-    arch = ARCH_NORMALIZE.get(match.group(2), match.group(2))
-    return f"{os_label}-{arch}"
 
 
 def build_platforms(assets: list[dict], artifact_name: str, version: str, verify_checksums: bool = True) -> dict:
@@ -465,9 +422,18 @@ def main():
 
     # Find plugin directory
     plugin_dir = find_plugin_dir(args.plugin)
+    manifest_path = Path(plugin_dir) / "manifest.json"
 
-    # Read manifest for artifact name
-    manifest = read_manifest(plugin_dir)
+    # Read and validate manifest
+    manifest, validation_errors = validate_manifest_file(manifest_path)
+    if manifest is None:
+        sys.exit(f"Error: Could not read {manifest_path}")
+    if validation_errors:
+        print(f"Error: Manifest validation failed:", file=sys.stderr)
+        for err in validation_errors:
+            print(f"  - {err}", file=sys.stderr)
+        sys.exit(1)
+
     artifact_name = manifest["id"]
 
     print(f"Plugin: {plugin_dir}")
