@@ -38,7 +38,9 @@ import json
 import re
 import shutil
 import sys
+import tempfile
 import urllib.request
+import zipfile
 from pathlib import Path
 
 
@@ -488,6 +490,61 @@ def normalize_platform(filename: str) -> str | None:
     return None
 
 
+def parse_zip_filename(filename: str) -> dict | None:
+    """
+    Parse a distribution ZIP filename into its components.
+
+    Expected format: {artifact_id}-{version}-{os}-{arch}.zip
+    Example: csv-loader-1.0.5-linux-x86_64.zip
+
+    Args:
+        filename: ZIP filename (with or without path)
+
+    Returns:
+        Dict with keys: artifact_id, version, os_label, arch, platform
+        Or None if filename doesn't match expected format
+    """
+    basename = Path(filename).name
+    if not basename.endswith(".zip"):
+        return None
+
+    name = basename[:-4]  # Remove .zip
+    parts = name.split("-")
+
+    if len(parts) < 4:
+        return None
+
+    arch_raw = parts[-1]
+    os_raw = parts[-2]
+
+    arch = PLATFORM_ARCH_MAP.get(arch_raw.lower())
+    os_label = PLATFORM_OS_MAP.get(os_raw.lower())
+
+    if not arch or not os_label:
+        return None
+
+    # Version is second-to-last before os-arch
+    # Artifact ID is everything before version
+    # Handle artifact IDs with dashes (e.g., "csv-loader")
+    version_idx = len(parts) - 3
+    if version_idx < 1:
+        return None
+
+    version = parts[version_idx]
+    artifact_id = "-".join(parts[:version_idx])
+
+    if not artifact_id or not validate_semver(version):
+        return None
+
+    return {
+        "artifact_id": artifact_id,
+        "version": version,
+        "os_label": os_raw,
+        "arch": arch_raw,
+        "platform": f"{os_label}-{arch}",
+    }
+
+
 def get_platform_extension(platform: str) -> str:
     """Get the library extension for a platform."""
     if platform.startswith("linux"):
@@ -767,6 +824,168 @@ def cmd_validate_manifest(args) -> int:
     return 0
 
 
+def cmd_validate_distribution_package(args) -> int:
+    """
+    Validate a distribution ZIP package.
+
+    Performs comprehensive validation:
+    1. Filename format: {artifact_id}-{version}-{os}-{arch}.zip
+    2. SHA256 checksum (if --checksum-file provided)
+    3. ZIP contains binary and manifest.json
+    4. Binary's embedded manifest matches the included manifest.json
+    5. Version in filename matches version in manifest
+    """
+    zip_path = Path(args.package)
+    if not zip_path.exists():
+        print(f"Error: Package not found: {zip_path}", file=sys.stderr)
+        return 1
+
+    errors = []
+    print(f"Validating: {zip_path.name}")
+    print()
+
+    # === 1. Filename format ===
+    print("Filename parsing:")
+    filename_info = parse_zip_filename(zip_path.name)
+    if filename_info:
+        print(f"  Artifact:  {filename_info['artifact_id']}")
+        print(f"  Version:   {filename_info['version']}")
+        print(f"  Platform:  {filename_info['platform']}")
+        print("  OK: Filename format valid")
+    else:
+        print("  ERROR: Invalid filename format")
+        print("  Expected: {artifact_id}-{version}-{os}-{arch}.zip")
+        errors.append("Invalid filename format")
+    print()
+
+    # === 2. Checksum verification ===
+    if args.checksum_file:
+        print("Checksum verification:")
+        checksum_path = Path(args.checksum_file)
+        if not checksum_path.exists():
+            print(f"  ERROR: Checksum file not found: {checksum_path}")
+            errors.append("Checksum file not found")
+        else:
+            with open(checksum_path) as f:
+                content = f.read().strip()
+            # Format: "hash  filename" or just "hash"
+            expected_hash = content.split()[0]
+            actual_hash = compute_sha256(zip_path)
+            print(f"  Expected: {expected_hash[:16]}...")
+            print(f"  Actual:   {actual_hash[:16]}...")
+            if actual_hash.lower() == expected_hash.lower():
+                print("  OK: SHA256 matches")
+            else:
+                print("  ERROR: SHA256 mismatch")
+                errors.append("SHA256 checksum mismatch")
+        print()
+
+    # === 3-5. ZIP contents validation ===
+    print("Package contents:")
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            names = zf.namelist()
+
+            # Find binary and manifest
+            binary_name = None
+            manifest_name = None
+            for name in names:
+                if name.endswith('.so') or name.endswith('.dll') or name.endswith('.dylib'):
+                    binary_name = name
+                if name.endswith('manifest.json'):
+                    manifest_name = name
+
+            if binary_name:
+                print(f"  Binary:   {binary_name}")
+            else:
+                print("  ERROR: No binary found (.so/.dll/.dylib)")
+                errors.append("No binary in package")
+
+            if manifest_name:
+                print(f"  Manifest: {manifest_name}")
+            else:
+                print("  ERROR: No manifest.json found")
+                errors.append("No manifest.json in package")
+
+            print()
+
+            # === 4. Compare manifests ===
+            if binary_name and manifest_name:
+                print("Manifest consistency:")
+
+                # Extract to temp dir and validate
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    zf.extractall(tmpdir)
+                    tmp_path = Path(tmpdir)
+
+                    # Read file manifest
+                    file_manifest_path = tmp_path / manifest_name
+                    file_manifest = read_manifest(file_manifest_path)
+
+                    # Read binary manifest
+                    binary_path = tmp_path / binary_name
+                    binary_manifest = extract_binary_manifest(binary_path)
+
+                    if file_manifest:
+                        print(f"  File manifest:   id={file_manifest.get('id')}, version={file_manifest.get('version')}")
+                    else:
+                        print("  ERROR: Could not read manifest.json")
+                        errors.append("Invalid manifest.json in package")
+
+                    if binary_manifest:
+                        print(f"  Binary manifest: id={binary_manifest.get('id')}, version={binary_manifest.get('version')}")
+                    else:
+                        print("  ERROR: Could not extract manifest from binary")
+                        errors.append("Binary has no embedded manifest")
+
+                    if file_manifest and binary_manifest:
+                        if (file_manifest.get('id') == binary_manifest.get('id') and
+                            file_manifest.get('version') == binary_manifest.get('version')):
+                            print("  OK: Manifests match")
+                        else:
+                            print("  ERROR: Manifests do not match")
+                            errors.append("File manifest != binary manifest")
+
+                    print()
+
+                    # === 5. Filename vs content ===
+                    if filename_info and file_manifest:
+                        print("Filename vs content:")
+                        print(f"  Filename version:  {filename_info['version']}")
+                        print(f"  Manifest version:  {file_manifest.get('version')}")
+                        print(f"  Filename artifact: {filename_info['artifact_id']}")
+                        print(f"  Manifest id:       {file_manifest.get('id')}")
+
+                        version_match = filename_info['version'] == file_manifest.get('version')
+                        id_match = filename_info['artifact_id'] == file_manifest.get('id')
+
+                        if version_match and id_match:
+                            print("  OK: Filename matches content")
+                        else:
+                            if not version_match:
+                                print("  ERROR: Version mismatch")
+                                errors.append("Filename version != manifest version")
+                            if not id_match:
+                                print("  ERROR: Artifact ID mismatch")
+                                errors.append("Filename artifact != manifest id")
+                        print()
+
+    except zipfile.BadZipFile:
+        print("  ERROR: Invalid ZIP file")
+        errors.append("Invalid ZIP file")
+        print()
+
+    # === Summary ===
+    if errors:
+        print(f"FAILED: {len(errors)} error(s)")
+        for err in errors:
+            print(f"  - {err}")
+        return 1
+    else:
+        print("PASSED: All validations successful")
+        return 0
+
+
 # =============================================================================
 # CLI MAIN
 # =============================================================================
@@ -827,6 +1046,18 @@ def main():
     )
     p_validate.add_argument("manifest", help="Path to manifest.json file")
     p_validate.set_defaults(func=cmd_validate_manifest)
+
+    # validate-distribution-package
+    p_validate_pkg = subparsers.add_parser(
+        "validate-distribution-package",
+        help="Validate a distribution ZIP package completely",
+        description="Performs comprehensive validation of a distribution package: "
+                    "filename format, SHA256 checksum, ZIP contents, manifest consistency "
+                    "(file vs binary), and filename vs content match.",
+    )
+    p_validate_pkg.add_argument("package", help="Path to distribution ZIP file")
+    p_validate_pkg.add_argument("--checksum-file", help="Path to .sha256 checksum file")
+    p_validate_pkg.set_defaults(func=cmd_validate_distribution_package)
 
     args = parser.parse_args()
     sys.exit(args.func(args))
