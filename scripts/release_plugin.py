@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Create and push a release tag for a plugin.
+"""Create and push a release tag for an extension.
+
+Terminology:
+- extension: The distributable package (ZIP containing plugin binary + manifest.json)
+- plugin: The compiled binary (.so/.dll/.dylib) containing the C++ class
+- source_dir: The source directory containing code and manifest.json
 
 Usage:
     python3 scripts/release_plugin.py data_load_csv
@@ -11,12 +16,11 @@ Prerequisites:
     - Push access to the target GitHub remote
     - Run from the repository root (pj_official_plugins)
 
-After running this script, CI will build the release artifacts.
-Then use submit_to_registry.py to submit to the plugin registry.
+After running this script, CI will build the extension artifacts.
+Then use submit_to_registry.py to submit to the extension registry.
 """
 
 import argparse
-import json
 import os
 import re
 import sys
@@ -25,15 +29,25 @@ from urllib.parse import urlparse
 
 import git
 
+# Add scripts directory to path for imports
+SCRIPT_DIR = Path(__file__).parent
+sys.path.insert(0, str(SCRIPT_DIR))
+
+from release_tools import (
+    read_manifest,
+    validate_manifest_file,
+    validate_semver,
+)
+
 GITHUB_REMOTE_PATTERN = re.compile(r"github\.com[:/].+/pj-official-plugins")
 
 
-def find_plugin_dir(arg: str) -> str:
-    """Find plugin directory from argument.
+def find_source_dir(arg: str) -> str:
+    """Find source directory from argument.
 
     Accepts:
       - Directory name: data_load_csv
-      - Manifest id: csv-loader
+      - Extension id (manifest id): csv-loader
     """
     # Check if it's a direct directory match
     if Path(arg).is_dir() and (Path(arg) / "manifest.json").exists():
@@ -41,32 +55,11 @@ def find_plugin_dir(arg: str) -> str:
 
     # Search all manifests for matching id
     for manifest_path in Path(".").glob("*/manifest.json"):
-        try:
-            with open(manifest_path) as f:
-                manifest = json.load(f)
-                if manifest.get("id") == arg:
-                    return manifest_path.parent.name
-        except (json.JSONDecodeError, IOError):
-            continue
+        manifest = read_manifest(manifest_path)
+        if manifest and manifest.get("id") == arg:
+            return manifest_path.parent.name
 
-    sys.exit(f"Error: Plugin '{arg}' not found. Provide directory name (e.g. data_load_csv) or manifest id (e.g. csv-loader)")
-
-
-def read_manifest(plugin_dir: str) -> dict:
-    """Read and validate manifest.json."""
-    manifest_path = Path(plugin_dir) / "manifest.json"
-    if not manifest_path.exists():
-        sys.exit(f"Error: {manifest_path} not found")
-    with open(manifest_path) as f:
-        manifest = json.load(f)
-
-    # Validate required fields
-    if "version" not in manifest:
-        sys.exit(f"Error: 'version' not found in {manifest_path}")
-    if "id" not in manifest:
-        sys.exit(f"Error: 'id' not found in {manifest_path}")
-
-    return manifest
+    sys.exit(f"Error: Source directory '{arg}' not found. Provide directory name (e.g. data_load_csv) or extension id (e.g. csv-loader)")
 
 
 def find_github_remote(repo: git.Repo) -> tuple[str, str] | None:
@@ -135,12 +128,12 @@ def push_tag_with_auth(repo: git.Repo, remote_url: str, tag: str, token: str | N
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Create and push a release tag for a plugin.",
-        epilog="After this, CI will build artifacts. Then use submit_to_registry.py to submit to registry.",
+        description="Create and push a release tag for an extension.",
+        epilog="After this, CI will build extension artifacts. Then use submit_to_registry.py to submit to registry.",
     )
     parser.add_argument(
-        "plugin",
-        help="Plugin directory (e.g. data_load_csv) or manifest id (e.g. csv-loader)",
+        "source",
+        help="Source directory (e.g. data_load_csv) or extension id (e.g. csv-loader)",
     )
     parser.add_argument(
         "--dry-run",
@@ -165,19 +158,32 @@ def main():
     repo = git.Repo(".")
     head_commit = repo.head.commit.hexsha
 
-    # Find plugin directory
-    plugin_dir = find_plugin_dir(args.plugin)
+    # Find source directory
+    source_dir = find_source_dir(args.source)
+    manifest_path = Path(source_dir) / "manifest.json"
 
     # Read and validate manifest
-    manifest = read_manifest(plugin_dir)
-    version = manifest["version"]
-    artifact_name = manifest["id"]
-    tag = f"{plugin_dir}/v{version}"
+    manifest, validation_errors = validate_manifest_file(manifest_path)
+    if manifest is None:
+        sys.exit(f"Error: Could not read {manifest_path}")
+    if validation_errors:
+        print(f"Error: Manifest validation failed:", file=sys.stderr)
+        for err in validation_errors:
+            print(f"  - {err}", file=sys.stderr)
+        sys.exit(1)
 
-    print(f"Plugin: {plugin_dir}")
+    version = manifest["version"]
+    extension_id = manifest["id"]
+    tag = f"{source_dir}/v{version}"
+
+    # Validate semver format
+    if not validate_semver(version):
+        sys.exit(f"Error: Invalid version format '{version}'. Expected semantic versioning (e.g., 1.0.0)")
+
+    print(f"Source: {source_dir}")
     print(f"Version: {version}")
     print(f"Tag: {tag}")
-    print(f"Artifact: {artifact_name}")
+    print(f"Extension: {extension_id}")
     print(f"HEAD: {head_commit[:12]}")
 
     # Find GitHub remote
@@ -262,8 +268,8 @@ def main():
 
     print(f"\n✓ Release tag '{tag}' created and pushed!")
     print(f"\nNext steps:")
-    print(f"  1. Wait for CI to build release artifacts")
-    print(f"  2. Run: python3 scripts/submit_to_registry.py {args.plugin}")
+    print(f"  1. Wait for CI to build extension artifacts")
+    print(f"  2. Run: python3 scripts/submit_to_registry.py {args.source}")
 
 
 if __name__ == "__main__":

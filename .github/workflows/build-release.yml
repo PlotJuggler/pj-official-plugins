@@ -96,61 +96,26 @@ jobs:
           cmake --build build/Release --config Release
           ctest --test-dir build/Release -V --output-on-failure
 
-      # Plugin directory name → .so target name mapping:
-      #   data_load_csv       → csv_source_plugin
-      #   data_load_mcap      → mcap_source_plugin
-      #   data_load_parquet   → parquet_source_plugin
-      #   data_load_ulog      → ulog_source_plugin
-      #   data_stream_foxglove_bridge → foxglove_source_plugin
-      #   data_stream_mqtt    → mqtt_source_plugin
-      #   data_stream_pj_bridge → pj_bridge_source_plugin
-      #   data_stream_zmq     → zmq_source_plugin
-      #   parser_data_tamer   → parser_data_tamer_plugin
-      #   parser_json         → parser_json_plugin
-      #   parser_protobuf     → parser_protobuf_plugin
-      #   parser_ros          → parser_ros_plugin
+      - name: Verify plugin version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          python3 scripts/release_tools.py verify-version-consistency \
+            --release-tag "${{ github.ref_name }}" \
+            --build-dir build/Release \
+            --check-manifest
+
       - name: Package artifacts
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
-          EXT_NAME="${{ github.ref_name }}"
-          EXT_NAME="${EXT_NAME%/*}"
-          VERSION="${{ github.ref_name }}"
-          VERSION="${VERSION##*/}"
-          VERSION="${VERSION#v}"
+          ZIP_NAME=$(python3 scripts/release_tools.py create-distribution-package \
+            --release-tag "${{ github.ref_name }}" \
+            --build-dir build/Release \
+            --output-dir dist \
+            --os-label "${{ matrix.os_label }}" \
+            --arch "${{ matrix.arch }}")
 
-          # Use manifest id for artifact naming when available, fall back to directory name
-          if [ -f "${EXT_NAME}/manifest.json" ]; then
-            ARTIFACT_NAME=$(python3 -c "import json; print(json.load(open('${EXT_NAME}/manifest.json'))['id'])")
-          else
-            ARTIFACT_NAME="${EXT_NAME}"
-          fi
-          ZIP_NAME="${ARTIFACT_NAME}-${VERSION}-${{ matrix.os_label }}-${{ matrix.arch }}.zip"
-
-          mkdir -p "dist/${ARTIFACT_NAME}"
-
-          # Map plugin directory name to target name pattern (no associative arrays — macOS has bash 3)
-          case "${EXT_NAME}" in
-            data_load_csv)                TARGET_PATTERN=csv_source ;;
-            data_load_mcap)               TARGET_PATTERN=mcap_source ;;
-            data_load_parquet)            TARGET_PATTERN=parquet_source ;;
-            data_load_ulog)               TARGET_PATTERN=ulog_source ;;
-            data_stream_foxglove_bridge)  TARGET_PATTERN=foxglove_source ;;
-            data_stream_mqtt)             TARGET_PATTERN=mqtt_source ;;
-            data_stream_pj_bridge)        TARGET_PATTERN=pj_bridge_source ;;
-            data_stream_zmq)              TARGET_PATTERN=zmq_source ;;
-            data_stream_dummy)            TARGET_PATTERN=dummy_stream ;;
-            parser_*)                     TARGET_PATTERN="${EXT_NAME}" ;;
-            *)                            TARGET_PATTERN="${EXT_NAME}" ;;
-          esac
-
-          # Search everywhere under build/Release for the plugin binary
-          find build/Release -name "*${TARGET_PATTERN}*.${{ matrix.lib_ext }}" \
-            -exec cp {} "dist/${ARTIFACT_NAME}/" \; 2>/dev/null || true
-
-          cp "${EXT_NAME}/manifest.json" "dist/${ARTIFACT_NAME}/" 2>/dev/null || true
-
-          ls -la "dist/${ARTIFACT_NAME}/"
           echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
 
       - name: Compress artifacts (Linux/macOS)
