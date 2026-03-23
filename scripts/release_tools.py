@@ -716,22 +716,22 @@ def cmd_verify_version_consistency(args) -> int:
         else:
             check_errors.append(f"No plugin found with extension id '{extension_id}' in {args.build_dir}")
 
+    # Validate semver
+    for source, ver in versions.items():
+        if ver and not validate_semver(ver):
+            check_errors.append(f"Invalid semver format in {source}: {ver}")
+
     # Compare versions
     print()
     if len(versions) >= 2:
         unique = set(versions.values())
         if len(unique) == 1:
-            print("OK: All versions match")
+            print("Versions: all match")
         else:
             print("ERROR: Version mismatch!", file=sys.stderr)
             for source, ver in versions.items():
                 print(f"  {source}: {ver}", file=sys.stderr)
             check_errors.append("Version mismatch")
-
-    # Validate semver
-    for source, ver in versions.items():
-        if ver and not validate_semver(ver):
-            check_errors.append(f"Invalid semver format in {source}: {ver}")
 
     if check_errors:
         print(f"\nFAILED: {len(check_errors)} error(s)", file=sys.stderr)
