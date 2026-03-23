@@ -254,10 +254,6 @@ def update_registry(registry: dict, entry: dict) -> dict:
     extensions.sort(key=lambda x: x.get("id", ""))
 
     registry["extensions"] = extensions
-    registry["last_updated"] = subprocess.run(
-        ["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"],
-        capture_output=True, text=True, check=True
-    ).stdout.strip()
 
     return registry
 
