@@ -1,5 +1,7 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 
+#include "ulog_manifest.hpp"
+
 #include <ulog_cpp/data_container.hpp>
 #include <ulog_cpp/reader.hpp>
 
@@ -435,4 +437,4 @@ class ULogSource : public PJ::FileSourceBase {
 
 }  // namespace
 
-PJ_DATA_SOURCE_PLUGIN(ULogSource, R"({"name":"ULog File Source","version":"1.0.0","file_extensions":[".ulg"]})")
+PJ_DATA_SOURCE_PLUGIN(ULogSource, kUlogManifest)

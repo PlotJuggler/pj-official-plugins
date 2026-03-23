@@ -1,6 +1,7 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 
 #include "foxglove_dialog.hpp"
+#include "foxglove_manifest.hpp"
 #include "foxglove_protocol.hpp"
 
 #include <nlohmann/json.hpp>
@@ -347,7 +348,6 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
 }  // namespace
 
-PJ_DATA_SOURCE_PLUGIN(FoxgloveSource,
-                       R"({"name":"Foxglove Bridge","version":"1.0.0"})")
+PJ_DATA_SOURCE_PLUGIN(FoxgloveSource, kFoxgloveManifest)
 
 PJ_DIALOG_PLUGIN(FoxgloveDialog)

@@ -1,5 +1,7 @@
 #include <pj_base/sdk/message_parser_plugin_base.hpp>
 
+#include "data_tamer_manifest.hpp"
+
 #include <data_tamer_parser/data_tamer_parser.hpp>
 
 #include <string>
@@ -84,6 +86,4 @@ class DataTamerParserPlugin : public PJ::MessageParserPluginBase {
 
 }  // namespace
 
-PJ_MESSAGE_PARSER_PLUGIN(
-    DataTamerParserPlugin,
-    R"({"name":"DataTamer Parser","version":"1.0.0","encoding":"data_tamer"})")
+PJ_MESSAGE_PARSER_PLUGIN(DataTamerParserPlugin, kDataTamerManifest)

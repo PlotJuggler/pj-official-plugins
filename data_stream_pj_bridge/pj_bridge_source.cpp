@@ -1,6 +1,7 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 
 #include "pj_bridge_dialog.hpp"
+#include "pj_bridge_manifest.hpp"
 #include "pj_bridge_protocol.hpp"
 
 #include <nlohmann/json.hpp>
@@ -293,7 +294,6 @@ class PjBridgeSource : public PJ::StreamSourceBase {
 
 }  // namespace
 
-PJ_DATA_SOURCE_PLUGIN(PjBridgeSource,
-                       R"({"name":"PlotJuggler Bridge","version":"1.0.0"})")
+PJ_DATA_SOURCE_PLUGIN(PjBridgeSource, kPjBridgeManifest)
 
 PJ_DIALOG_PLUGIN(PjBridgeDialog)

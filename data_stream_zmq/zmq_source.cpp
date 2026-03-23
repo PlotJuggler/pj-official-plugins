@@ -1,6 +1,7 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 
 #include "zmq_dialog.hpp"
+#include "zmq_manifest.hpp"
 
 #include <nlohmann/json.hpp>
 #include <zmq.hpp>
@@ -189,7 +190,6 @@ class ZmqSource : public PJ::StreamSourceBase {
 
 }  // namespace
 
-PJ_DATA_SOURCE_PLUGIN(ZmqSource,
-                       R"({"name":"ZMQ Subscriber","version":"1.0.0"})")
+PJ_DATA_SOURCE_PLUGIN(ZmqSource, kZmqManifest)
 
 PJ_DIALOG_PLUGIN(ZmqDialog)
