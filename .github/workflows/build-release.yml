@@ -167,3 +167,46 @@ jobs:
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Submit to registry if tag metadata requests it
+  submit-to-registry:
+    needs: build
+    if: success() && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history for tag annotations
+
+      - name: Check tag metadata
+        id: check-tag
+        run: |
+          # Get tag annotation message (contains JSON metadata)
+          TAG_MSG=$(git tag -l --format='%(contents)' "${{ github.ref_name }}" 2>/dev/null || echo "{}")
+          echo "Tag message: $TAG_MSG"
+
+          # Parse auto_submit_to_registry from JSON
+          AUTO_SUBMIT=$(echo "$TAG_MSG" | python3 -c "import sys,json; d=json.loads(sys.stdin.read() or '{}'); print(str(d.get('auto_submit_to_registry', False)).lower())")
+          echo "auto_submit=$AUTO_SUBMIT" >> $GITHUB_OUTPUT
+          echo "Auto-submit to registry: $AUTO_SUBMIT"
+
+      - name: Setup Python
+        if: steps.check-tag.outputs.auto_submit == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        if: steps.check-tag.outputs.auto_submit == 'true'
+        run: pip install GitPython
+
+      - name: Submit to registry
+        if: steps.check-tag.outputs.auto_submit == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.REGISTRY_PAT }}
+        run: |
+          # Extract source_dir from tag (data_load_csv/v1.0.5 -> data_load_csv)
+          SOURCE_DIR="${GITHUB_REF_NAME%/*}"
+          echo "Submitting $SOURCE_DIR to registry..."
+          python3 scripts/submit_to_registry.py "$SOURCE_DIR" --skip-checksum-verify

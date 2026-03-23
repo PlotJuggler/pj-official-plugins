@@ -7,20 +7,22 @@ Terminology:
 - source_dir: The source directory containing code and manifest.json
 
 Usage:
-    python3 scripts/release_plugin.py data_load_csv
-    python3 scripts/release_plugin.py csv-loader
-    python3 scripts/release_plugin.py data_load_csv --dry-run
+    python3 scripts/release_extension.py data_load_csv
+    python3 scripts/release_extension.py csv-loader
+    python3 scripts/release_extension.py csv-loader --submit-to-registry
+    python3 scripts/release_extension.py data_load_csv --dry-run
 
 Prerequisites:
     - GitPython installed (pip install -r scripts/requirements.txt)
     - Push access to the target GitHub remote
     - Run from the repository root (pj_official_plugins)
 
-After running this script, CI will build the extension artifacts.
-Then use submit_to_registry.py to submit to the extension registry.
+The --submit-to-registry flag embeds metadata in the tag annotation that tells
+CI to automatically create a PR to the extension registry after successful builds.
 """
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -126,14 +128,32 @@ def push_tag_with_auth(repo: git.Repo, remote_url: str, tag: str, token: str | N
     repo.git.push(remote_url, tag)
 
 
+def build_tag_message(extension_id: str, version: str, submit_to_registry: bool) -> str:
+    """Build annotated tag message with JSON metadata.
+
+    The metadata is used by CI to determine post-build actions.
+    """
+    metadata = {
+        "extension_id": extension_id,
+        "version": version,
+        "auto_submit_to_registry": submit_to_registry,
+    }
+    return json.dumps(metadata, indent=2)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Create and push a release tag for an extension.",
-        epilog="After this, CI will build extension artifacts. Then use submit_to_registry.py to submit to registry.",
+        epilog="CI will build extension artifacts. Use --submit-to-registry for automatic PR creation.",
     )
     parser.add_argument(
         "source",
         help="Source directory (e.g. data_load_csv) or extension id (e.g. csv-loader)",
+    )
+    parser.add_argument(
+        "--submit-to-registry",
+        action="store_true",
+        help="Automatically create registry PR after successful CI build",
     )
     parser.add_argument(
         "--dry-run",
@@ -185,6 +205,7 @@ def main():
     print(f"Tag: {tag}")
     print(f"Extension: {extension_id}")
     print(f"HEAD: {head_commit[:12]}")
+    print(f"Auto-submit to registry: {'Yes' if args.submit_to_registry else 'No'}")
 
     # Find GitHub remote
     if args.remote:
@@ -214,7 +235,7 @@ def main():
     if local_exists:
         print(f"  Local:  exists at {local_commit[:12]}")
         if local_commit != head_commit:
-            print(f"\n  ⚠ Warning: Tag points to different commit than HEAD!")
+            print(f"\n  Warning: Tag points to different commit than HEAD!")
             print(f"    Tag commit:  {local_commit[:12]}")
             print(f"    HEAD commit: {head_commit[:12]}")
             print(f"\n  Did you forget to update the version in manifest.json?")
@@ -226,7 +247,7 @@ def main():
     if remote_exists:
         print(f"  Remote: exists at {remote_commit[:12]}")
         if remote_commit != head_commit:
-            print(f"\n  ⚠ Warning: Remote tag points to different commit than HEAD!")
+            print(f"\n  Warning: Remote tag points to different commit than HEAD!")
             print(f"    Remote commit: {remote_commit[:12]}")
             print(f"    HEAD commit:   {head_commit[:12]}")
             print(f"\n  Did you forget to update the version in manifest.json?")
@@ -240,18 +261,22 @@ def main():
     need_push = not remote_exists
 
     if not need_create_local and not need_push:
-        print(f"\n✓ Tag '{tag}' already exists locally and on remote at HEAD")
+        print(f"\n Tag '{tag}' already exists locally and on remote at HEAD")
         print(f"  Nothing to do. CI should have created the release.")
         return
 
+    # Build tag message with metadata
+    tag_message = build_tag_message(extension_id, version, args.submit_to_registry)
+
     # Create local tag if needed
     if need_create_local:
-        print(f"\nCreating local tag '{tag}'...")
+        print(f"\nCreating annotated tag '{tag}'...")
         if args.dry_run:
             print(f"  [dry-run] Would create tag at {head_commit[:12]}")
+            print(f"  [dry-run] Tag message:\n{tag_message}")
         else:
-            repo.create_tag(tag)
-            print(f"  ✓ Tag created at {head_commit[:12]}")
+            repo.create_tag(tag, message=tag_message)
+            print(f"  Tag created at {head_commit[:12]}")
 
     # Push to remote if needed
     if need_push:
@@ -261,15 +286,18 @@ def main():
         else:
             try:
                 push_tag_with_auth(repo, remote_url, tag, github_token)
-                print(f"  ✓ Tag pushed to {remote_name}")
+                print(f"  Tag pushed to {remote_name}")
             except git.GitCommandError as e:
-                print(f"  ✗ Error pushing tag: {e}")
+                print(f"  Error pushing tag: {e}")
                 sys.exit(1)
 
-    print(f"\n✓ Release tag '{tag}' created and pushed!")
-    print(f"\nNext steps:")
-    print(f"  1. Wait for CI to build extension artifacts")
-    print(f"  2. Run: python3 scripts/submit_to_registry.py {args.source}")
+    print(f"\n Release tag '{tag}' created and pushed!")
+    if args.submit_to_registry:
+        print(f"\nCI will automatically submit to registry after successful build.")
+    else:
+        print(f"\nNext steps:")
+        print(f"  1. Wait for CI to build extension artifacts")
+        print(f"  2. Run: python3 scripts/submit_to_registry.py {args.source}")
 
 
 if __name__ == "__main__":
