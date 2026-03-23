@@ -704,6 +704,15 @@ def cmd_verify_version_consistency(args) -> int:
     # Find and check plugin binary
     if args.build_dir:
         print(f"\nSearching for plugin binary with id '{extension_id}' in {args.build_dir}...")
+        all_binaries = find_plugin_binaries(args.build_dir, "*")
+        if all_binaries:
+            print(f"Found {len(all_binaries)} binary file(s):")
+            for b in all_binaries[:10]:  # Show up to 10
+                print(f"  - {b}")
+            if len(all_binaries) > 10:
+                print(f"  ... and {len(all_binaries) - 10} more")
+        else:
+            print("  No binary files found in directory")
         binary_path = find_binary_by_manifest_id(args.build_dir, extension_id)
         if binary_path:
             print(f"Found plugin: {binary_path}")
@@ -714,6 +723,15 @@ def cmd_verify_version_consistency(args) -> int:
             else:
                 check_errors.append(f"Could not extract version from plugin: {binary_path}")
         else:
+            # Show what manifests were found in the binaries for debugging
+            if all_binaries:
+                print(f"\nManifest IDs found in binaries:")
+                for b in all_binaries:
+                    manifest = extract_binary_manifest(b)
+                    if manifest:
+                        print(f"  - {b.name}: id='{manifest.get('id', 'N/A')}'")
+                    else:
+                        print(f"  - {b.name}: (no manifest)")
             check_errors.append(f"No plugin found with extension id '{extension_id}' in {args.build_dir}")
 
     # Validate semver
