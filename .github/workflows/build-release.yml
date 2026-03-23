@@ -179,11 +179,26 @@ jobs:
         with:
           fetch-depth: 0  # Need full history for tag annotations
 
+      - name: Fetch tags with annotations
+        run: git fetch --tags --force
+
       - name: Check tag metadata
         id: check-tag
         run: |
           # Get tag annotation message (contains JSON metadata)
-          TAG_MSG=$(git tag -l --format='%(contents)' "${{ github.ref_name }}" 2>/dev/null || echo "{}")
+          # Use git cat-file to reliably get the tag message for annotated tags
+          TAG_SHA=$(git rev-parse "refs/tags/${{ github.ref_name }}")
+          TAG_TYPE=$(git cat-file -t "$TAG_SHA")
+
+          if [ "$TAG_TYPE" = "tag" ]; then
+            # Annotated tag - extract message (skip header lines, get body)
+            TAG_MSG=$(git cat-file -p "$TAG_SHA" | sed -n '/^$/,$p' | tail -n +2)
+          else
+            # Lightweight tag - no message
+            TAG_MSG="{}"
+          fi
+
+          echo "Tag type: $TAG_TYPE"
           echo "Tag message: $TAG_MSG"
 
           # Parse auto_submit_to_registry from JSON
