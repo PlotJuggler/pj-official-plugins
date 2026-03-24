@@ -304,6 +304,15 @@ def create_registry_pr(entry: dict, dry_run: bool = False) -> str:
     )
     branch_sha = result.stdout.strip()
 
+    # Delete branch if it already exists (from a previous failed attempt)
+    subprocess.run(
+        ["gh", "api", f"repos/{REGISTRY_REPO}/git/refs/heads/{branch_name}",
+         "-X", "DELETE"],
+        capture_output=True,
+        text=True,
+        check=False,  # Ignore errors if branch doesn't exist
+    )
+
     # Create branch
     print(f"  Creating branch {branch_name}...")
     subprocess.run(
