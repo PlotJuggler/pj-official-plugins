@@ -203,12 +203,22 @@ class McapSource : public PJ::FileSourceBase {
       std::string_view encoding = channel_ptr->messageEncoding;
       if (encoding.empty()) encoding = schema->encoding;
 
+      // Inject serialization hint for ROS parser: MCAP uses "ros1"/"ros2" but
+      // the parser defaults to CDR. Explicitly set the serialization mode so
+      // the correct deserializer is selected.
+      std::string channel_config_str = parser_config_str;
+      if (encoding == "ros1" || encoding == "ros1msg") {
+        auto cfg = nlohmann::json::parse(parser_config_str);
+        cfg["serialization"] = "ros1";
+        channel_config_str = cfg.dump();
+      }
+
       PJ::ParserBindingRequest request{
           .topic_name = channel_ptr->topic,
           .parser_encoding = encoding,
           .type_name = schema->name,
           .schema = schema_bytes,
-          .parser_config_json = parser_config_str,
+          .parser_config_json = channel_config_str,
       };
 
       auto handle = runtimeHost().ensureParserBinding(request);
