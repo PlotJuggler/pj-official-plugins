@@ -1,5 +1,6 @@
 find_package(nlohmann_json REQUIRED)
 find_package(PahoMqttCpp REQUIRED)
+find_package(protobuf REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
@@ -9,6 +10,7 @@ target_compile_features(mqtt_source_plugin PRIVATE cxx_std_20)
 target_compile_options(mqtt_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(mqtt_source_plugin PRIVATE
   pj_base pj_dialog_sdk nlohmann_json::nlohmann_json PahoMqttCpp::paho-mqttpp3-static
+  protobuf::libprotobuf protobuf::libprotoc
 )
 
 pj_embed_ui(mqtt_source_plugin

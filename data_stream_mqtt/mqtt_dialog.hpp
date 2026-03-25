@@ -9,8 +9,11 @@
 
 #include <mqtt/async_client.h>
 
+#include <algorithm>
+#include <fstream>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -71,9 +74,23 @@ class MqttDialog : public PJ::DialogPluginTyped {
       wd.setSelectedItems("listWidget", selected_topics_);
     }
 
-    // Protocol combo
+    // Protocol combo (in "Message SerializationProtocol:" section)
     wd.setItems("comboBoxProtocol", {"json", "protobuf", "cdr"});
     wd.setCurrentIndex("comboBoxProtocol", encodingToIndex(encoding_));
+
+    // Show protobuf options only when protobuf encoding is selected
+    wd.setVisible("scrollAreaProto", encoding_ == "protobuf");
+
+    // Protobuf tab — Proto File
+    wd.setFilePicker("buttonLoadProtoFile", "Load .proto file", "*.proto", "Select Protobuf Schema");
+    wd.setText("lineEditLoadedProto", proto_file_path_);
+    wd.setText("lineEditMessageType", proto_message_type_);
+    wd.setChecked("checkBoxTimestamp", use_embedded_timestamp_);
+    wd.setText("textEditProtoPreview", proto_file_content_);
+
+    // Protobuf tab — Include Folders
+    wd.setFilePicker("buttonAddInclude", "Add include Folder", "", "Select Include Folder");
+    wd.setListItems("listWidgetIncludeFolders", include_folders_);
 
     // TLS certificate file pickers
     wd.setFilePicker("buttonLoadServerCertificate", "...", "*.pem *.crt *.cer", "Select Server CA Certificate");
@@ -128,6 +145,10 @@ class MqttDialog : public PJ::DialogPluginTyped {
       topic_filter_ = std::string(text);
       return false;
     }
+    if (widget_name == "lineEditMessageType") {
+      proto_message_type_ = std::string(text);
+      return false;
+    }
     return false;
   }
 
@@ -135,6 +156,15 @@ class MqttDialog : public PJ::DialogPluginTyped {
     if (widget_name == "buttonLoadServerCertificate") { ca_cert_path_ = std::string(path); return true; }
     if (widget_name == "buttonLoadClientCertificate") { client_cert_path_ = std::string(path); return true; }
     if (widget_name == "buttonLoadPrivateKey") { private_key_path_ = std::string(path); return true; }
+    if (widget_name == "buttonLoadProtoFile") {
+      proto_file_path_ = std::string(path);
+      proto_file_content_ = readFileContent(proto_file_path_);
+      return true;
+    }
+    if (widget_name == "buttonAddInclude") {
+      include_folders_.push_back(std::string(path));
+      return true;
+    }
     return false;
   }
 
@@ -149,7 +179,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
     }
     if (widget_name == "comboBoxProtocol") {
       encoding_ = indexToEncoding(index);
-      return false;
+      return true;  // refresh UI to show/hide widgetProtobuf
     }
     return false;
   }
@@ -159,6 +189,10 @@ class MqttDialog : public PJ::DialogPluginTyped {
       use_ssl_ = checked;
       return false;
     }
+    if (widget_name == "checkBoxTimestamp") {
+      use_embedded_timestamp_ = checked;
+      return false;
+    }
     return false;
   }
 
@@ -166,6 +200,10 @@ class MqttDialog : public PJ::DialogPluginTyped {
                           const std::vector<std::string>& selected) override {
     if (widget_name == "listWidget") {
       selected_topics_ = selected;
+      return false;
+    }
+    if (widget_name == "listWidgetIncludeFolders") {
+      selected_include_folders_ = selected;
       return false;
     }
     return false;
@@ -183,6 +221,14 @@ class MqttDialog : public PJ::DialogPluginTyped {
     if (widget_name == "buttonEraseServerCertificate") { ca_cert_path_.clear(); return true; }
     if (widget_name == "buttonEraseClientCertificate") { client_cert_path_.clear(); return true; }
     if (widget_name == "buttonErasePrivateKey") { private_key_path_.clear(); return true; }
+    if (widget_name == "buttonRemoveInclude") {
+      for (const auto& item : selected_include_folders_) {
+        include_folders_.erase(std::remove(include_folders_.begin(), include_folders_.end(), item),
+                               include_folders_.end());
+      }
+      selected_include_folders_.clear();
+      return true;
+    }
     return false;
   }
 
@@ -204,6 +250,10 @@ class MqttDialog : public PJ::DialogPluginTyped {
     cfg["ca_cert_path"] = ca_cert_path_;
     cfg["client_cert_path"] = client_cert_path_;
     cfg["private_key_path"] = private_key_path_;
+    cfg["proto_file_path"] = proto_file_path_;
+    cfg["proto_message_type"] = proto_message_type_;
+    cfg["use_embedded_timestamp"] = use_embedded_timestamp_;
+    cfg["include_folders"] = include_folders_;
     return cfg.dump();
   }
 
@@ -222,6 +272,18 @@ class MqttDialog : public PJ::DialogPluginTyped {
     ca_cert_path_ = cfg.value("ca_cert_path", std::string{});
     client_cert_path_ = cfg.value("client_cert_path", std::string{});
     private_key_path_ = cfg.value("private_key_path", std::string{});
+    proto_file_path_ = cfg.value("proto_file_path", std::string{});
+    proto_message_type_ = cfg.value("proto_message_type", std::string{});
+    use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
+    if (!proto_file_path_.empty()) {
+      proto_file_content_ = readFileContent(proto_file_path_);
+    }
+    if (cfg.contains("include_folders") && cfg["include_folders"].is_array()) {
+      include_folders_.clear();
+      for (const auto& f : cfg["include_folders"]) {
+        if (f.is_string()) include_folders_.push_back(f.get<std::string>());
+      }
+    }
     if (cfg.contains("selected_topics") && cfg["selected_topics"].is_array()) {
       selected_topics_.clear();
       for (const auto& t : cfg["selected_topics"]) {
@@ -249,6 +311,14 @@ class MqttDialog : public PJ::DialogPluginTyped {
   static std::string filenameFromPath(const std::string& path) {
     auto pos = path.find_last_of("/\\");
     return (pos != std::string::npos) ? path.substr(pos + 1) : path;
+  }
+
+  static std::string readFileContent(const std::string& path) {
+    std::ifstream file(path);
+    if (!file.is_open()) return {};
+    std::ostringstream ss;
+    ss << file.rdbuf();
+    return ss.str();
   }
 
   void connectBroker() {
@@ -326,6 +396,12 @@ class MqttDialog : public PJ::DialogPluginTyped {
   std::string ca_cert_path_;
   std::string client_cert_path_;
   std::string private_key_path_;
+  std::string proto_file_path_;
+  std::string proto_file_content_;
+  std::string proto_message_type_;
+  bool use_embedded_timestamp_ = false;
+  std::vector<std::string> include_folders_;
+  std::vector<std::string> selected_include_folders_;
 
   // Dialog-time discovery state
   bool connected_ = false;

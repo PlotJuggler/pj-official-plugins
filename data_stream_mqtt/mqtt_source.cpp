@@ -3,12 +3,15 @@
 #include "mqtt_dialog.hpp"
 #include "mqtt_manifest.hpp"
 
+#include <google/protobuf/compiler/importer.h>
+#include <google/protobuf/descriptor.pb.h>
 #include <nlohmann/json.hpp>
 
 #include <mqtt/async_client.h>
 
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -16,6 +19,44 @@
 #include <vector>
 
 namespace {
+
+/// Compiles a .proto file into serialized FileDescriptorSet bytes.
+/// Returns empty vector on failure, setting error_out.
+static std::vector<uint8_t> compileProtoFile(const std::string& proto_path,
+                                              const std::vector<std::string>& include_folders,
+                                              std::string& error_out) {
+  namespace fs = std::filesystem;
+  fs::path p(proto_path);
+  std::string dir = p.parent_path().string();
+  std::string filename = p.filename().string();
+
+  google::protobuf::compiler::DiskSourceTree source_tree;
+  source_tree.MapPath("", dir);
+  for (const auto& folder : include_folders) {
+    source_tree.MapPath("", folder);
+  }
+
+  google::protobuf::compiler::Importer importer(&source_tree, nullptr);
+  const google::protobuf::FileDescriptor* fd = importer.Import(filename);
+  if (!fd) {
+    error_out = "Failed to compile proto file: " + proto_path;
+    return {};
+  }
+
+  google::protobuf::FileDescriptorSet fds;
+  // Collect all transitive dependencies
+  std::function<void(const google::protobuf::FileDescriptor*)> collect =
+      [&](const google::protobuf::FileDescriptor* f) {
+        for (int i = 0; i < f->dependency_count(); ++i) {
+          collect(f->dependency(i));
+        }
+        f->CopyTo(fds.add_file());
+      };
+  collect(fd);
+
+  std::string serialized = fds.SerializeAsString();
+  return std::vector<uint8_t>(serialized.begin(), serialized.end());
+}
 
 struct MqttMessage {
   std::string topic;
@@ -42,7 +83,8 @@ class MqttSource : public PJ::StreamSourceBase {
 
   PJ::Status onStart() override {
     // Read config from dialog
-    auto cfg = nlohmann::json::parse(dialog_.saveConfig(), nullptr, false);
+    auto raw_config = dialog_.saveConfig();
+    auto cfg = nlohmann::json::parse(raw_config, nullptr, false);
     if (cfg.is_discarded()) {
       return PJ::unexpected("invalid dialog config");
     }
@@ -53,6 +95,34 @@ class MqttSource : public PJ::StreamSourceBase {
     client_id_ = cfg.value("client_id", std::string("plotjuggler_mqtt"));
     default_encoding_ = cfg.value("default_encoding", std::string("json"));
     protocol_version_ = cfg.value("protocol_version", 1);  // 0=3.1, 1=3.1.1, 2=5.0
+    proto_file_path_ = cfg.value("proto_file_path", std::string{});
+    proto_message_type_ = cfg.value("proto_message_type", std::string{});
+    use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
+    include_folders_.clear();
+    if (cfg.contains("include_folders") && cfg["include_folders"].is_array()) {
+      for (const auto& f : cfg["include_folders"]) {
+        if (f.is_string()) include_folders_.push_back(f.get<std::string>());
+      }
+    }
+
+    // Compile .proto schema if encoding is protobuf
+    proto_schema_.clear();
+    if (default_encoding_ == "protobuf") {
+      if (proto_file_path_.empty()) {
+        return PJ::unexpected("Protobuf encoding requires a .proto file. Set it in the dialog.");
+      }
+      if (proto_message_type_.empty()) {
+        return PJ::unexpected("Protobuf encoding requires a message type name. Set it in the dialog.");
+      }
+      std::string compile_error;
+      proto_schema_ = compileProtoFile(proto_file_path_, include_folders_, compile_error);
+      if (proto_schema_.empty()) {
+        return PJ::unexpected(compile_error);
+      }
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo,
+                                 "Protobuf schema loaded: " + proto_message_type_ +
+                                     " (" + std::to_string(proto_schema_.size()) + " bytes)");
+    }
 
     // Read selected topics (from dialog discovery)
     selected_topics_.clear();
@@ -157,12 +227,16 @@ class MqttSource : public PJ::StreamSourceBase {
       // Look up or create parser binding for this topic (cached)
       auto it = binding_cache_.find(msg.topic);
       if (it == binding_cache_.end()) {
+        std::string parser_cfg;
+        if (default_encoding_ == "protobuf" && use_embedded_timestamp_) {
+          parser_cfg = "{\"use_embedded_timestamp\":true}";
+        }
         auto binding = runtimeHost().ensureParserBinding({
             .topic_name = msg.topic,
             .parser_encoding = default_encoding_,
-            .type_name = {},
-            .schema = {},
-            .parser_config_json = {},
+            .type_name = proto_message_type_,
+            .schema = PJ::Span<const uint8_t>(proto_schema_.data(), proto_schema_.size()),
+            .parser_config_json = parser_cfg,
         });
         if (binding) {
           it = binding_cache_.emplace(msg.topic, *binding).first;
@@ -216,6 +290,11 @@ class MqttSource : public PJ::StreamSourceBase {
   std::string default_encoding_ = "json";
   int protocol_version_ = 1;
   std::vector<std::string> selected_topics_;
+  std::string proto_file_path_;
+  std::string proto_message_type_;
+  bool use_embedded_timestamp_ = false;
+  std::vector<std::string> include_folders_;
+  std::vector<uint8_t> proto_schema_;
 
   std::unique_ptr<mqtt::async_client> client_;
   std::mutex queue_mutex_;
