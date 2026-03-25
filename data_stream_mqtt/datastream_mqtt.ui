@@ -653,6 +653,19 @@
         </property>
        </widget>
       </item>
+      <item>
+       <widget class="QCheckBox" name="checkBoxUseTimestamp">
+        <property name="font">
+         <font>
+          <weight>50</weight>
+          <bold>false</bold>
+         </font>
+        </property>
+        <property name="text">
+         <string>use field as timestamp if available</string>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>
