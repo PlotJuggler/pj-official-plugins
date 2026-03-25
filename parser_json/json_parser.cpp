@@ -80,8 +80,21 @@ class JsonParser : public PJ::MessageParserPluginBase {
       encoding_hint_ = cfg.value("encoding_hint", std::string{});
       max_array_size_ = cfg.value("max_array_size", std::size_t{0});
       clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
+      use_message_stamp_ = cfg.value("use_message_stamp", false);
+      stamp_fieldname_ = cfg.value("stamp_fieldname", std::string{});
     }
     return PJ::okStatus();
+  }
+
+  std::string saveConfig() const override {
+    return nlohmann::json{
+               {"encoding_hint", encoding_hint_},
+               {"max_array_size", max_array_size_},
+               {"clamp_large_arrays", clamp_large_arrays_},
+               {"use_message_stamp", use_message_stamp_},
+               {"stamp_fieldname", stamp_fieldname_},
+           }
+        .dump();
   }
 
   PJ::Status parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> payload) override {
@@ -108,7 +121,19 @@ class JsonParser : public PJ::MessageParserPluginBase {
   }
 
  private:
+  PJ::Timestamp resolveTimestamp(PJ::Timestamp host_ts, const nlohmann::json& json) const {
+    if (!use_message_stamp_ || stamp_fieldname_.empty()) {
+      return host_ts;
+    }
+    auto it = json.find(stamp_fieldname_);
+    if (it == json.end() || !it->is_number()) {
+      return host_ts;
+    }
+    return static_cast<PJ::Timestamp>(it->get<double>());
+  }
+
   PJ::Status flattenAndAppend(PJ::Timestamp ts, const nlohmann::json& json) {
+    ts = resolveTimestamp(ts, json);
     owned_fields_.clear();
     flattenJson("", json, max_array_size_, clamp_large_arrays_, owned_fields_);
 
@@ -174,6 +199,8 @@ class JsonParser : public PJ::MessageParserPluginBase {
   std::string encoding_hint_;
   std::size_t max_array_size_ = 0;
   bool clamp_large_arrays_ = true;
+  bool use_message_stamp_ = false;
+  std::string stamp_fieldname_;
   std::unordered_map<std::string, PJ::sdk::FieldHandle> field_cache_;
   std::vector<FlattenedField> owned_fields_;
   std::vector<PJ::sdk::BoundFieldValue> bound_fields_;

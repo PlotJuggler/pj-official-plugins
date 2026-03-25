@@ -273,4 +273,21 @@ TEST(JsonParserTest, ManifestContainsEncoding) {
   EXPECT_NE(f.handle.manifest().find("\"encoding\": \"json\""), std::string::npos);
 }
 
+// --- Embedded timestamp ---
+// Checks if the system supports overriding the host timestamp with a numeric
+// field from the JSON payload (configured via stamp_fieldname).
+
+TEST(JsonParserTest, EmbeddedTimestamp_UsesFieldAsTimestamp) {
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_message_stamp":true,"stamp_fieldname":"ts"})"));
+
+  // "ts" = 5000 in the payload; host timestamp is 99999.
+  // The recorded timestamp must come from the JSON field, not the host.
+  ASSERT_TRUE(f.parse(R"({"ts":5000,"v":42.0})", /*host_ts=*/99999));
+
+  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  EXPECT_NE(f.recorder.rows[0].timestamp, 99999LL);  // must NOT be the host timestamp
+}
+
 }  // namespace
