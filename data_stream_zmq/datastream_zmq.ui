@@ -6,14 +6,14 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>550</width>
-    <height>400</height>
+    <width>580</width>
+    <height>600</height>
    </rect>
   </property>
   <property name="minimumSize">
    <size>
-    <width>550</width>
-    <height>400</height>
+    <width>520</width>
+    <height>460</height>
    </size>
   </property>
   <property name="windowTitle">
@@ -161,6 +161,171 @@
         </property>
        </widget>
       </item>
+      <item>
+       <widget class="QCheckBox" name="checkBoxTimestamp">
+        <property name="text">
+         <string>Use field as timestamp if available</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QWidget" name="boxProtobufOptions" native="true">
+        <layout class="QVBoxLayout" name="layoutProtobuf">
+         <property name="leftMargin">
+          <number>0</number>
+         </property>
+         <property name="topMargin">
+          <number>0</number>
+         </property>
+         <property name="rightMargin">
+          <number>0</number>
+         </property>
+         <property name="bottomMargin">
+          <number>0</number>
+         </property>
+         <item>
+          <widget class="QTabWidget" name="tabWidgetProto">
+           <widget class="QWidget" name="tabProtoFile">
+            <attribute name="title">
+             <string>Proto File</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="layoutProtoFile">
+             <item>
+              <widget class="QLabel" name="labelProtoInstr">
+               <property name="text">
+                <string>To parse a protobuf message, you need to load its definition from file and specify its type explicitly</string>
+               </property>
+               <property name="wordWrap">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <layout class="QHBoxLayout" name="layoutLoadProto">
+               <item>
+                <widget class="QPushButton" name="buttonLoadProto">
+                 <property name="text">
+                  <string>Load .proto file</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QLineEdit" name="lineEditProtoFilePath">
+                 <property name="readOnly">
+                  <bool>true</bool>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <spacer name="spacerLoadRow">
+                 <property name="orientation">
+                  <enum>Qt::Horizontal</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>40</width>
+                   <height>20</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+              </layout>
+             </item>
+             <item>
+              <widget class="QLabel" name="labelMsgTypeHint">
+               <property name="text">
+                <string>Select your message type:</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QComboBox" name="comboMessageType"/>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="checkBoxProtoTimestamp">
+               <property name="text">
+                <string>Use the field 'timestamp' if present</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLabel" name="labelProtoFileContent">
+               <property name="text">
+                <string>File Text:</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPlainTextEdit" name="plainTextEditProtoContent">
+               <property name="readOnly">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+           <widget class="QWidget" name="tabIncludeFolders">
+            <attribute name="title">
+             <string>Include Folders</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="layoutFolders">
+             <item>
+              <widget class="QLabel" name="labelFoldersHint">
+               <property name="text">
+                <string>If you have problems loading a .proto file that import other files, you might need to include some additional folders.</string>
+               </property>
+               <property name="wordWrap">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <layout class="QHBoxLayout" name="layoutFolderButtons">
+               <item>
+                <widget class="QPushButton" name="buttonAddFolder">
+                 <property name="text">
+                  <string>Add include Folder</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <spacer name="spacerFolderButtons">
+                 <property name="orientation">
+                  <enum>Qt::Horizontal</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>40</width>
+                   <height>20</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+               <item>
+                <widget class="QPushButton" name="buttonRemoveFolder">
+                 <property name="text">
+                  <string>Del</string>
+                 </property>
+                 <property name="maximumSize">
+                  <size>
+                   <width>40</width>
+                   <height>16777215</height>
+                  </size>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </item>
+             <item>
+              <widget class="QListWidget" name="listWidgetFolders"/>
+             </item>
+            </layout>
+           </widget>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>
@@ -187,7 +352,7 @@
      <property name="sizeHint" stdset="0">
       <size>
        <width>20</width>
-       <height>76</height>
+       <height>20</height>
       </size>
      </property>
     </spacer>

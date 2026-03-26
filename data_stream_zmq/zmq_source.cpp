@@ -44,6 +44,12 @@ class ZmqSource : public PJ::StreamSourceBase {
     topic_filter_ = cfg.value("topics", std::string{});
     default_encoding_ = cfg.value("default_encoding", std::string("json"));
 
+    if (cfg.contains("parser_config") && cfg["parser_config"].is_object()) {
+      parser_config_json_ = cfg["parser_config"].dump();
+    } else {
+      parser_config_json_.clear();
+    }
+
     context_ = std::make_unique<zmq::context_t>();
     socket_ = std::make_unique<zmq::socket_t>(*context_, zmq::socket_type::sub);
 
@@ -60,10 +66,22 @@ class ZmqSource : public PJ::StreamSourceBase {
       if (topic_filter_.empty()) {
         socket_->set(zmq::sockopt::subscribe, "");
       } else {
-        // Split by comma/semicolon/whitespace
+        // Split by ", " (comma+space) or "; " (semicolon+optional-space),
+        // matching the original PlotJuggler regex: "(,{0,1}\s+)|(;\s*)"
         std::string current;
-        for (char c : topic_filter_) {
-          if (c == ',' || c == ';' || c == ' ' || c == '\t') {
+        for (size_t i = 0; i < topic_filter_.size(); ++i) {
+          char c = topic_filter_[i];
+          bool is_sep = false;
+          if (c == ';') {
+            // semicolon with optional trailing space
+            is_sep = true;
+            if (i + 1 < topic_filter_.size() && topic_filter_[i + 1] == ' ') ++i;
+          } else if (c == ',' && i + 1 < topic_filter_.size() && topic_filter_[i + 1] == ' ') {
+            // comma must be followed by a space
+            is_sep = true;
+            ++i;
+          }
+          if (is_sep) {
             if (!current.empty()) {
               socket_->set(zmq::sockopt::subscribe, current);
               current.clear();
@@ -122,7 +140,7 @@ class ZmqSource : public PJ::StreamSourceBase {
           (void)socket_->recv(ts_msg, zmq::recv_flags::dontwait);
         }
       } else {
-        auto now = std::chrono::system_clock::now().time_since_epoch();
+        auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
         timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
       }
 
@@ -136,7 +154,7 @@ class ZmqSource : public PJ::StreamSourceBase {
             .parser_encoding = default_encoding_,
             .type_name = {},
             .schema = {},
-            .parser_config_json = {},
+            .parser_config_json = parser_config_json_,
         });
         if (binding) {
           it = binding_cache_.emplace(topic_name, *binding).first;
@@ -181,6 +199,7 @@ class ZmqSource : public PJ::StreamSourceBase {
   bool connect_mode_ = true;
   std::string topic_filter_;
   std::string default_encoding_ = "json";
+  std::string parser_config_json_;
   std::string endpoint_;
 
   std::unique_ptr<zmq::context_t> context_;
