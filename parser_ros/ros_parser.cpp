@@ -1,3 +1,4 @@
+#include "ros_manifest.hpp"
 #include "ros_parser_internal.hpp"
 
 namespace ros_parser_detail {
@@ -352,6 +353,4 @@ void RosParser::addQuaternionRPY() {
 
 }  // namespace ros_parser_detail
 
-PJ_MESSAGE_PARSER_PLUGIN(ros_parser_detail::RosParser,
-                         R"({"name":"ROS CDR Parser","version":"2.0.0",)"
-                         R"("encoding":["ros2msg","ros1msg","cdr"]})")
+PJ_MESSAGE_PARSER_PLUGIN(ros_parser_detail::RosParser, kRosManifest)

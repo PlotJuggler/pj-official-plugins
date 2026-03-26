@@ -1,5 +1,7 @@
 #include <pj_base/sdk/message_parser_plugin_base.hpp>
 
+#include "json_manifest.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
@@ -179,5 +181,4 @@ class JsonParser : public PJ::MessageParserPluginBase {
 
 }  // namespace
 
-PJ_MESSAGE_PARSER_PLUGIN(JsonParser,
-                         R"({"name":"JSON Parser","version":"1.0.0","encoding":"json","additional_encodings":["cbor","msgpack","bson"]})")
+PJ_MESSAGE_PARSER_PLUGIN(JsonParser, kJsonManifest)

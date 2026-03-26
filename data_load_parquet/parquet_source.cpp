@@ -1,6 +1,7 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 
 #include "parquet_dialog.hpp"
+#include "parquet_manifest.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -384,8 +385,6 @@ class ParquetSource : public PJ::FileSourceBase {
 
 }  // namespace
 
-PJ_DATA_SOURCE_PLUGIN(
-    ParquetSource,
-    R"({"name":"Parquet File Source","version":"1.0.0","file_extensions":[".parquet"]})")
+PJ_DATA_SOURCE_PLUGIN(ParquetSource, kParquetManifest)
 
 PJ_DIALOG_PLUGIN(ParquetDialog)

@@ -4,6 +4,7 @@
 #include <mcap/reader.hpp>
 
 #include "mcap_dialog.hpp"
+#include "mcap_manifest.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -282,7 +283,6 @@ class McapSource : public PJ::FileSourceBase {
 
 }  // namespace
 
-PJ_DATA_SOURCE_PLUGIN(McapSource,
-    R"({"name":"MCAP File Source","version":"1.0.0","file_extensions":[".mcap"]})")
+PJ_DATA_SOURCE_PLUGIN(McapSource, kMcapManifest)
 
 PJ_DIALOG_PLUGIN(McapDialog)
