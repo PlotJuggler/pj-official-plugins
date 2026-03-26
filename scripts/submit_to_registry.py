@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Submit a plugin release to pj-plugin-registry as a GitHub issue.
+"""Submit an extension release to pj-plugin-registry as a PR.
+
+Terminology:
+- extension: The distributable package (ZIP containing plugin binary + manifest.json)
+- plugin: The compiled binary (.so/.dll/.dylib) containing the C++ class
+- source_dir: The source directory containing code and manifest.json
 
 Usage:
     python3 scripts/submit_to_registry.py data_load_csv
@@ -13,33 +18,29 @@ Prerequisites:
 """
 
 import argparse
-import hashlib
 import json
-import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import git
 
+# Add scripts directory to path for imports
+SCRIPT_DIR = Path(__file__).parent
+sys.path.insert(0, str(SCRIPT_DIR))
+
+from release_tools import (
+    compute_sha256_bytes,
+    normalize_platform,
+    read_manifest,
+    validate_manifest_file,
+    VALID_PLATFORMS,
+)
+
 SOURCE_REPO = "PlotJuggler/pj-official-plugins"
 REGISTRY_REPO = "PlotJuggler/pj-plugin-registry"
 
-# Map CI artifact arch names to registry platform keys
-ARCH_NORMALIZE = {
-    "x64": "x86_64",
-    "aarch64": "arm64",  # CI uses aarch64, registry uses arm64
-}
-
-PLATFORMS = [
-    "linux-x86_64",
-    "linux-arm64",
-    "macos-x86_64",
-    "macos-arm64",
-    "windows-x86_64",
-    "windows-arm64",
-]
+PLATFORMS = VALID_PLATFORMS
 
 MANIFEST_FIELDS = [
     "id",
@@ -58,18 +59,12 @@ MANIFEST_FIELDS = [
 ]
 
 
-def id_to_class_name(plugin_id: str) -> str:
-    """Convert plugin id to class name (kebab-case to PascalCase)."""
-    # csv-loader -> CsvLoader
-    return "".join(word.capitalize() for word in plugin_id.split("-"))
-
-
-def find_plugin_dir(arg: str) -> str:
-    """Find plugin directory from argument.
+def find_source_dir(arg: str) -> str:
+    """Find source directory from argument.
 
     Accepts:
       - Directory name: data_load_csv
-      - Manifest id: csv-loader
+      - Extension id (manifest id): csv-loader
     """
     # Check if it's a direct directory match
     if Path(arg).is_dir() and (Path(arg) / "manifest.json").exists():
@@ -77,32 +72,11 @@ def find_plugin_dir(arg: str) -> str:
 
     # Search all manifests for matching id
     for manifest_path in Path(".").glob("*/manifest.json"):
-        try:
-            with open(manifest_path) as f:
-                manifest = json.load(f)
-                if manifest.get("id") == arg:
-                    return manifest_path.parent.name
-        except (json.JSONDecodeError, IOError):
-            continue
+        manifest = read_manifest(manifest_path)
+        if manifest and manifest.get("id") == arg:
+            return manifest_path.parent.name
 
-    sys.exit(f"Error: Plugin '{arg}' not found. Provide directory name (e.g. data_load_csv) or manifest id (e.g. csv-loader)")
-
-
-def read_manifest(plugin_dir: str) -> dict:
-    """Read and validate manifest.json."""
-    manifest_path = Path(plugin_dir) / "manifest.json"
-    if not manifest_path.exists():
-        sys.exit(f"Error: {manifest_path} not found")
-    with open(manifest_path) as f:
-        manifest = json.load(f)
-
-    # Validate required fields
-    if "version" not in manifest:
-        sys.exit(f"Error: 'version' not found in {manifest_path}")
-    if "id" not in manifest:
-        sys.exit(f"Error: 'id' not found in {manifest_path}")
-
-    return manifest
+    sys.exit(f"Error: Source directory '{arg}' not found. Provide directory name (e.g. data_load_csv) or extension id (e.g. csv-loader)")
 
 
 def get_local_tag(tag: str) -> str | None:
@@ -113,21 +87,21 @@ def get_local_tag(tag: str) -> str | None:
     return None
 
 
-def list_github_releases(plugin_dir: str) -> list[dict]:
-    """List all releases for a plugin from GitHub."""
+def list_github_releases(source_dir: str) -> list[dict]:
+    """List all releases for an extension from GitHub."""
     try:
         releases = gh_json(["release", "list", "-R", SOURCE_REPO, "--json", "tagName,publishedAt,isDraft,isPrerelease"])
-        # Filter releases for this plugin
-        prefix = f"{plugin_dir}/v"
-        plugin_releases = [r for r in releases if r["tagName"].startswith(prefix)]
-        return sorted(plugin_releases, key=lambda r: r["publishedAt"], reverse=True)
+        # Filter releases for this extension
+        prefix = f"{source_dir}/v"
+        extension_releases = [r for r in releases if r["tagName"].startswith(prefix)]
+        return sorted(extension_releases, key=lambda r: r["publishedAt"], reverse=True)
     except subprocess.CalledProcessError:
         return []
 
 
-def get_latest_release_version(plugin_dir: str) -> str | None:
-    """Get the latest release version for a plugin from GitHub."""
-    releases = list_github_releases(plugin_dir)
+def get_latest_release_version(source_dir: str) -> str | None:
+    """Get the latest release version for an extension from GitHub."""
+    releases = list_github_releases(source_dir)
     if not releases:
         return None
     # Extract version from tag (e.g., "data_load_csv/v1.0.5" -> "1.0.5")
@@ -162,25 +136,22 @@ def fetch_release_assets(tag: str) -> list[dict]:
 
 def download_and_verify_asset(asset: dict, expected_checksum: str) -> bool:
     """Download asset and verify SHA256 checksum."""
-    with tempfile.NamedTemporaryFile(delete=True) as tmp:
-        result = subprocess.run(
-            ["gh", "api", asset["apiUrl"], "-H", "Accept: application/octet-stream"],
-            capture_output=True,
-            check=True,
-        )
-        tmp.write(result.stdout)
-        tmp.flush()
+    result = subprocess.run(
+        ["gh", "api", asset["apiUrl"], "-H", "Accept: application/octet-stream"],
+        capture_output=True,
+        check=True,
+    )
 
-        # Calculate SHA256
-        sha256 = hashlib.sha256(result.stdout).hexdigest()
+    # Calculate SHA256 using release_tools
+    sha256 = compute_sha256_bytes(result.stdout)
 
-        if sha256 != expected_checksum:
-            print(f"    Checksum mismatch for {asset['name']}:")
-            print(f"      Expected: {expected_checksum}")
-            print(f"      Got:      {sha256}")
-            return False
+    if sha256 != expected_checksum:
+        print(f"    Checksum mismatch for {asset['name']}:")
+        print(f"      Expected: {expected_checksum}")
+        print(f"      Got:      {sha256}")
+        return False
 
-        return True
+    return True
 
 
 def download_asset_text(url: str) -> str:
@@ -194,24 +165,14 @@ def download_asset_text(url: str) -> str:
     return result.stdout
 
 
-def normalize_platform(filename: str) -> str | None:
-    """Extract and normalize the platform key from an artifact filename."""
-    match = re.search(r"-([a-z]+)-([a-z0-9_]+)\.zip$", filename)
-    if not match:
-        return None
-    os_label = match.group(1)
-    arch = ARCH_NORMALIZE.get(match.group(2), match.group(2))
-    return f"{os_label}-{arch}"
-
-
-def build_platforms(assets: list[dict], artifact_name: str, version: str, verify_checksums: bool = True) -> dict:
+def build_platforms(assets: list[dict], extension_id: str, version: str, verify_checksums: bool = True) -> dict:
     """Build the platforms dict from release assets."""
     platforms = {}
     asset_map = {a["name"]: a for a in assets}
 
     for asset in assets:
         name = asset["name"]
-        if not name.startswith(f"{artifact_name}-{version}-") or not name.endswith(".zip"):
+        if not name.startswith(f"{extension_id}-{version}-") or not name.endswith(".zip"):
             continue
         if name.endswith(".sha256"):
             continue
@@ -246,37 +207,13 @@ def build_platforms(assets: list[dict], artifact_name: str, version: str, verify
 
 
 def build_registry_entry(manifest: dict, platforms: dict) -> dict:
-    """Build a complete registry entry from manifest + platform artifacts."""
+    """Build a complete registry extension entry from manifest + platform assets."""
     entry = {}
     for field in MANIFEST_FIELDS:
         if field in manifest:
             entry[field] = manifest[field]
 
-    # Add plugins array (from manifest or generate default)
-    if "plugins" in manifest:
-        entry["plugins"] = manifest["plugins"]
-    else:
-        # Generate default plugins entry
-        plugin_id = manifest["id"]
-        category = manifest.get("category", "parser")
-        entry["plugins"] = [
-            {
-                "name": id_to_class_name(plugin_id),
-                "type": category,
-                "library": plugin_id,
-            }
-        ]
-
     entry["platforms"] = platforms
-
-    # Add changelog (from manifest or generate default)
-    if "changelog" in manifest:
-        entry["changelog"] = manifest["changelog"]
-    else:
-        version = manifest["version"]
-        entry["changelog"] = {
-            version: f"Release v{version}"
-        }
 
     return entry
 
@@ -313,25 +250,24 @@ def update_registry(registry: dict, entry: dict) -> dict:
         # Add new entry
         extensions.append(entry)
 
+    # Sort extensions alphabetically by id
+    extensions.sort(key=lambda x: x.get("id", ""))
+
     registry["extensions"] = extensions
-    registry["last_updated"] = subprocess.run(
-        ["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"],
-        capture_output=True, text=True, check=True
-    ).stdout.strip()
 
     return registry
 
 
 def create_registry_pr(entry: dict, dry_run: bool = False) -> str:
-    """Create a PR to update the registry with the new entry."""
-    ext_id = entry["id"]
+    """Create a PR to update the registry with the new extension entry."""
+    extension_id = entry["id"]
     version = entry["version"]
-    branch_name = f"update-{ext_id}-{version}"
+    branch_name = f"update-{extension_id}-{version}"
 
     print(f"  Fetching current registry.json...")
     registry = fetch_registry_json()
 
-    print(f"  Updating registry with {ext_id} v{version}...")
+    print(f"  Updating registry with {extension_id} v{version}...")
     updated_registry = update_registry(registry, entry)
 
     if dry_run:
@@ -368,6 +304,15 @@ def create_registry_pr(entry: dict, dry_run: bool = False) -> str:
     )
     branch_sha = result.stdout.strip()
 
+    # Delete branch if it already exists (from a previous failed attempt)
+    subprocess.run(
+        ["gh", "api", f"repos/{REGISTRY_REPO}/git/refs/heads/{branch_name}",
+         "-X", "DELETE"],
+        capture_output=True,
+        text=True,
+        check=False,  # Ignore errors if branch doesn't exist
+    )
+
     # Create branch
     print(f"  Creating branch {branch_name}...")
     subprocess.run(
@@ -388,7 +333,7 @@ def create_registry_pr(entry: dict, dry_run: bool = False) -> str:
     print(f"  Committing registry.json update...")
     subprocess.run(
         ["gh", "api", f"repos/{REGISTRY_REPO}/contents/registry.json", "-X", "PUT",
-         "-f", f"message=Update {ext_id} to v{version}",
+         "-f", f"message=Update {extension_id} to v{version}",
          "-f", f"content={content_b64}",
          "-f", f"branch={branch_name}",
          "-f", f"sha={base_sha}"],
@@ -401,9 +346,9 @@ def create_registry_pr(entry: dict, dry_run: bool = False) -> str:
     print(f"  Creating PR...")
     platform_summary = ", ".join(sorted(entry.get("platforms", {}).keys()))
     pr_body = (
-        f"## Update `{ext_id}` to v{version}\n\n"
+        f"## Update `{extension_id}` to v{version}\n\n"
         f"**Platforms:** {platform_summary}\n\n"
-        f"This PR updates the registry entry for `{ext_id}`.\n\n"
+        f"This PR updates the registry entry for extension `{extension_id}`.\n\n"
         f"---\n"
         f"*Generated by submit_to_registry.py*"
     )
@@ -413,7 +358,7 @@ def create_registry_pr(entry: dict, dry_run: bool = False) -> str:
          "--repo", REGISTRY_REPO,
          "--head", branch_name,
          "--base", default_branch,
-         "--title", f"Update {ext_id} to v{version}",
+         "--title", f"Update {extension_id} to v{version}",
          "--body", pr_body],
         capture_output=True,
         text=True,
@@ -427,12 +372,12 @@ def main():
     global SOURCE_REPO
 
     parser = argparse.ArgumentParser(
-        description="Submit a plugin release to pj-plugin-registry.",
+        description="Submit an extension release to pj-plugin-registry.",
         epilog="Note: Release must already exist on GitHub. Use release_plugin.py to create it first.",
     )
     parser.add_argument(
-        "plugin",
-        help="Plugin directory (e.g. data_load_csv) or manifest id (e.g. csv-loader)",
+        "source",
+        help="Source directory (e.g. data_load_csv) or extension id (e.g. csv-loader)",
     )
     parser.add_argument(
         "--version", "-v",
@@ -442,7 +387,7 @@ def main():
     parser.add_argument(
         "--list-releases", "-l",
         action="store_true",
-        help="List available releases for the plugin and exit",
+        help="List available releases for the extension and exit",
     )
     parser.add_argument(
         "--dry-run",
@@ -463,21 +408,30 @@ def main():
 
     SOURCE_REPO = args.releases_repo
 
-    # Find plugin directory
-    plugin_dir = find_plugin_dir(args.plugin)
+    # Find source directory
+    source_dir = find_source_dir(args.source)
+    manifest_path = Path(source_dir) / "manifest.json"
 
-    # Read manifest for artifact name
-    manifest = read_manifest(plugin_dir)
-    artifact_name = manifest["id"]
+    # Read and validate manifest
+    manifest, validation_errors = validate_manifest_file(manifest_path)
+    if manifest is None:
+        sys.exit(f"Error: Could not read {manifest_path}")
+    if validation_errors:
+        print(f"Error: Manifest validation failed:", file=sys.stderr)
+        for err in validation_errors:
+            print(f"  - {err}", file=sys.stderr)
+        sys.exit(1)
 
-    print(f"Plugin: {plugin_dir}")
-    print(f"Artifact: {artifact_name}")
+    extension_id = manifest["id"]
+
+    print(f"Source: {source_dir}")
+    print(f"Extension: {extension_id}")
     print(f"Source repo: {SOURCE_REPO}")
 
     # List releases if requested
     if args.list_releases:
-        print(f"\nAvailable releases for {plugin_dir}:")
-        releases = list_github_releases(plugin_dir)
+        print(f"\nAvailable releases for {source_dir}:")
+        releases = list_github_releases(source_dir)
         if not releases:
             print("  No releases found")
         else:
@@ -500,12 +454,12 @@ def main():
         print(f"\nUsing specified version: {version}")
     else:
         print(f"\nFetching latest release from GitHub...")
-        version = get_latest_release_version(plugin_dir)
+        version = get_latest_release_version(source_dir)
         if not version:
-            sys.exit(f"Error: No releases found for {plugin_dir} on {SOURCE_REPO}. Specify --version or create a release first.")
+            sys.exit(f"Error: No releases found for {source_dir} on {SOURCE_REPO}. Specify --version or create a release first.")
         print(f"  Latest version: {version}")
 
-    tag = f"{plugin_dir}/v{version}"
+    tag = f"{source_dir}/v{version}"
     print(f"Tag: {tag}")
 
     # Check if tag exists locally (warning only, not required)
@@ -530,7 +484,7 @@ def main():
     # Build platforms (with checksum verification)
     print(f"\nBuilding platform entries...")
     platforms = build_platforms(
-        assets, artifact_name, version,
+        assets, extension_id, version,
         verify_checksums=not args.skip_checksum_verify
     )
     if not platforms:

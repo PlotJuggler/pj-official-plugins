@@ -270,7 +270,7 @@ TEST(JsonParserTest, TimestampPreserved) {
 TEST(JsonParserTest, ManifestContainsEncoding) {
   JsonParserFixture f;
   f.setUp();
-  EXPECT_NE(f.handle.manifest().find("\"encoding\":\"json\""), std::string::npos);
+  EXPECT_NE(f.handle.manifest().find("\"encoding\": \"json\""), std::string::npos);
 }
 
 }  // namespace

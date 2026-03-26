@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
-"""Create and push a release tag for a plugin.
+"""Create and push a release tag for an extension.
+
+Terminology:
+- extension: The distributable package (ZIP containing plugin binary + manifest.json)
+- plugin: The compiled binary (.so/.dll/.dylib) containing the C++ class
+- source_dir: The source directory containing code and manifest.json
 
 Usage:
-    python3 scripts/release_plugin.py data_load_csv
-    python3 scripts/release_plugin.py csv-loader
-    python3 scripts/release_plugin.py data_load_csv --dry-run
+    python3 scripts/release_extension.py data_load_csv
+    python3 scripts/release_extension.py csv-loader
+    python3 scripts/release_extension.py csv-loader --submit-to-registry
+    python3 scripts/release_extension.py data_load_csv --dry-run
 
 Prerequisites:
     - GitPython installed (pip install -r scripts/requirements.txt)
     - Push access to the target GitHub remote
     - Run from the repository root (pj_official_plugins)
 
-After running this script, CI will build the release artifacts.
-Then use submit_to_registry.py to submit to the plugin registry.
+The --submit-to-registry flag embeds metadata in the tag annotation that tells
+CI to automatically create a PR to the extension registry after successful builds.
 """
 
 import argparse
@@ -25,15 +31,25 @@ from urllib.parse import urlparse
 
 import git
 
+# Add scripts directory to path for imports
+SCRIPT_DIR = Path(__file__).parent
+sys.path.insert(0, str(SCRIPT_DIR))
+
+from release_tools import (
+    read_manifest,
+    validate_manifest_file,
+    validate_semver,
+)
+
 GITHUB_REMOTE_PATTERN = re.compile(r"github\.com[:/].+/pj-official-plugins")
 
 
-def find_plugin_dir(arg: str) -> str:
-    """Find plugin directory from argument.
+def find_source_dir(arg: str) -> str:
+    """Find source directory from argument.
 
     Accepts:
       - Directory name: data_load_csv
-      - Manifest id: csv-loader
+      - Extension id (manifest id): csv-loader
     """
     # Check if it's a direct directory match
     if Path(arg).is_dir() and (Path(arg) / "manifest.json").exists():
@@ -41,32 +57,11 @@ def find_plugin_dir(arg: str) -> str:
 
     # Search all manifests for matching id
     for manifest_path in Path(".").glob("*/manifest.json"):
-        try:
-            with open(manifest_path) as f:
-                manifest = json.load(f)
-                if manifest.get("id") == arg:
-                    return manifest_path.parent.name
-        except (json.JSONDecodeError, IOError):
-            continue
+        manifest = read_manifest(manifest_path)
+        if manifest and manifest.get("id") == arg:
+            return manifest_path.parent.name
 
-    sys.exit(f"Error: Plugin '{arg}' not found. Provide directory name (e.g. data_load_csv) or manifest id (e.g. csv-loader)")
-
-
-def read_manifest(plugin_dir: str) -> dict:
-    """Read and validate manifest.json."""
-    manifest_path = Path(plugin_dir) / "manifest.json"
-    if not manifest_path.exists():
-        sys.exit(f"Error: {manifest_path} not found")
-    with open(manifest_path) as f:
-        manifest = json.load(f)
-
-    # Validate required fields
-    if "version" not in manifest:
-        sys.exit(f"Error: 'version' not found in {manifest_path}")
-    if "id" not in manifest:
-        sys.exit(f"Error: 'id' not found in {manifest_path}")
-
-    return manifest
+    sys.exit(f"Error: Source directory '{arg}' not found. Provide directory name (e.g. data_load_csv) or extension id (e.g. csv-loader)")
 
 
 def find_github_remote(repo: git.Repo) -> tuple[str, str] | None:
@@ -133,14 +128,32 @@ def push_tag_with_auth(repo: git.Repo, remote_url: str, tag: str, token: str | N
     repo.git.push(remote_url, tag)
 
 
+def build_tag_message(extension_id: str, version: str, submit_to_registry: bool) -> str:
+    """Build annotated tag message with JSON metadata.
+
+    The metadata is used by CI to determine post-build actions.
+    """
+    metadata = {
+        "extension_id": extension_id,
+        "version": version,
+        "auto_submit_to_registry": submit_to_registry,
+    }
+    return json.dumps(metadata, indent=2)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Create and push a release tag for a plugin.",
-        epilog="After this, CI will build artifacts. Then use submit_to_registry.py to submit to registry.",
+        description="Create and push a release tag for an extension.",
+        epilog="CI will build extension artifacts. Use --submit-to-registry for automatic PR creation.",
     )
     parser.add_argument(
-        "plugin",
-        help="Plugin directory (e.g. data_load_csv) or manifest id (e.g. csv-loader)",
+        "source",
+        help="Source directory (e.g. data_load_csv) or extension id (e.g. csv-loader)",
+    )
+    parser.add_argument(
+        "--submit-to-registry",
+        action="store_true",
+        help="Automatically create registry PR after successful CI build",
     )
     parser.add_argument(
         "--dry-run",
@@ -165,20 +178,34 @@ def main():
     repo = git.Repo(".")
     head_commit = repo.head.commit.hexsha
 
-    # Find plugin directory
-    plugin_dir = find_plugin_dir(args.plugin)
+    # Find source directory
+    source_dir = find_source_dir(args.source)
+    manifest_path = Path(source_dir) / "manifest.json"
 
     # Read and validate manifest
-    manifest = read_manifest(plugin_dir)
-    version = manifest["version"]
-    artifact_name = manifest["id"]
-    tag = f"{plugin_dir}/v{version}"
+    manifest, validation_errors = validate_manifest_file(manifest_path)
+    if manifest is None:
+        sys.exit(f"Error: Could not read {manifest_path}")
+    if validation_errors:
+        print(f"Error: Manifest validation failed:", file=sys.stderr)
+        for err in validation_errors:
+            print(f"  - {err}", file=sys.stderr)
+        sys.exit(1)
 
-    print(f"Plugin: {plugin_dir}")
+    version = manifest["version"]
+    extension_id = manifest["id"]
+    tag = f"{source_dir}/v{version}"
+
+    # Validate semver format
+    if not validate_semver(version):
+        sys.exit(f"Error: Invalid version format '{version}'. Expected semantic versioning (e.g., 1.0.0)")
+
+    print(f"Source: {source_dir}")
     print(f"Version: {version}")
     print(f"Tag: {tag}")
-    print(f"Artifact: {artifact_name}")
+    print(f"Extension: {extension_id}")
     print(f"HEAD: {head_commit[:12]}")
+    print(f"Auto-submit to registry: {'Yes' if args.submit_to_registry else 'No'}")
 
     # Find GitHub remote
     if args.remote:
@@ -208,7 +235,7 @@ def main():
     if local_exists:
         print(f"  Local:  exists at {local_commit[:12]}")
         if local_commit != head_commit:
-            print(f"\n  ⚠ Warning: Tag points to different commit than HEAD!")
+            print(f"\n  Warning: Tag points to different commit than HEAD!")
             print(f"    Tag commit:  {local_commit[:12]}")
             print(f"    HEAD commit: {head_commit[:12]}")
             print(f"\n  Did you forget to update the version in manifest.json?")
@@ -220,7 +247,7 @@ def main():
     if remote_exists:
         print(f"  Remote: exists at {remote_commit[:12]}")
         if remote_commit != head_commit:
-            print(f"\n  ⚠ Warning: Remote tag points to different commit than HEAD!")
+            print(f"\n  Warning: Remote tag points to different commit than HEAD!")
             print(f"    Remote commit: {remote_commit[:12]}")
             print(f"    HEAD commit:   {head_commit[:12]}")
             print(f"\n  Did you forget to update the version in manifest.json?")
@@ -234,18 +261,22 @@ def main():
     need_push = not remote_exists
 
     if not need_create_local and not need_push:
-        print(f"\n✓ Tag '{tag}' already exists locally and on remote at HEAD")
+        print(f"\n Tag '{tag}' already exists locally and on remote at HEAD")
         print(f"  Nothing to do. CI should have created the release.")
         return
 
+    # Build tag message with metadata
+    tag_message = build_tag_message(extension_id, version, args.submit_to_registry)
+
     # Create local tag if needed
     if need_create_local:
-        print(f"\nCreating local tag '{tag}'...")
+        print(f"\nCreating annotated tag '{tag}'...")
         if args.dry_run:
             print(f"  [dry-run] Would create tag at {head_commit[:12]}")
+            print(f"  [dry-run] Tag message:\n{tag_message}")
         else:
-            repo.create_tag(tag)
-            print(f"  ✓ Tag created at {head_commit[:12]}")
+            repo.create_tag(tag, message=tag_message)
+            print(f"  Tag created at {head_commit[:12]}")
 
     # Push to remote if needed
     if need_push:
@@ -255,15 +286,18 @@ def main():
         else:
             try:
                 push_tag_with_auth(repo, remote_url, tag, github_token)
-                print(f"  ✓ Tag pushed to {remote_name}")
+                print(f"  Tag pushed to {remote_name}")
             except git.GitCommandError as e:
-                print(f"  ✗ Error pushing tag: {e}")
+                print(f"  Error pushing tag: {e}")
                 sys.exit(1)
 
-    print(f"\n✓ Release tag '{tag}' created and pushed!")
-    print(f"\nNext steps:")
-    print(f"  1. Wait for CI to build release artifacts")
-    print(f"  2. Run: python3 scripts/submit_to_registry.py {args.plugin}")
+    print(f"\n Release tag '{tag}' created and pushed!")
+    if args.submit_to_registry:
+        print(f"\nCI will automatically submit to registry after successful build.")
+    else:
+        print(f"\nNext steps:")
+        print(f"  1. Wait for CI to build extension artifacts")
+        print(f"  2. Run: python3 scripts/submit_to_registry.py {args.source}")
 
 
 if __name__ == "__main__":

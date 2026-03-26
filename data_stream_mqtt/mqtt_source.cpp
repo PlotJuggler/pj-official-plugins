@@ -1,6 +1,7 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 
 #include "mqtt_dialog.hpp"
+#include "mqtt_manifest.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -224,7 +225,6 @@ class MqttSource : public PJ::StreamSourceBase {
 
 }  // namespace
 
-PJ_DATA_SOURCE_PLUGIN(MqttSource,
-                       R"({"name":"MQTT Subscriber","version":"1.0.0"})")
+PJ_DATA_SOURCE_PLUGIN(MqttSource, kMqttManifest)
 
 PJ_DIALOG_PLUGIN(MqttDialog)

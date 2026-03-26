@@ -1,5 +1,7 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 
+#include "dummy_manifest.hpp"
+
 #include <chrono>
 #include <cmath>
 #include <random>
@@ -158,6 +160,4 @@ class DummyStreamer : public PJ::StreamSourceBase {
 
 }  // namespace
 
-PJ_DATA_SOURCE_PLUGIN(
-    DummyStreamer, R"({"name":"Dummy Streamer","version":"1.0.0",)"
-                   R"("description":"Generates synthetic sine/cosine/sawtooth/noise for testing"})")
+PJ_DATA_SOURCE_PLUGIN(DummyStreamer, kDummyManifest)

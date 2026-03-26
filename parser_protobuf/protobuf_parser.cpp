@@ -1,5 +1,7 @@
 #include <pj_base/sdk/message_parser_plugin_base.hpp>
 
+#include "protobuf_manifest.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <google/protobuf/descriptor.h>
@@ -336,5 +338,4 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
 
 }  // namespace
 
-PJ_MESSAGE_PARSER_PLUGIN(ProtobufParser,
-                         R"({"name":"Protobuf Parser","version":"1.0.0","encoding":"protobuf"})")
+PJ_MESSAGE_PARSER_PLUGIN(ProtobufParser, kProtobufManifest)
