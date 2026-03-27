@@ -6,7 +6,7 @@ snapshots into typed numeric fields.
 ## Features
 
 - Schema parsing via `BuilSchemaFromText()`
-- All DataTamer numeric types extracted as double values
+- Native type preservation: `float`, `double`, `int8_t`…`uint64_t` stored without casting to double
 - Field names prefixed with topic path (`/field_name`)
 
 ## Encoding
