@@ -1,5 +1,6 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 
+#include "ulog_params_dialog.hpp"
 #include "ulog_manifest.hpp"
 
 #include <ulog_cpp/data_container.hpp>
@@ -197,7 +198,11 @@ void extractFlatValues(const uint8_t* raw_data, size_t base_offset,
 
 class ULogSource : public PJ::FileSourceBase {
  public:
-  uint64_t extraCapabilities() const override { return PJ::kCapabilityDirectIngest; }
+  uint64_t extraCapabilities() const override {
+    return PJ::kCapabilityDirectIngest | PJ::kCapabilityHasDialog;
+  }
+
+  void* dialogContext() override { return &dialog_; }
 
   std::string saveConfig() const override {
     return nlohmann::json{{"filepath", filepath_}}.dump();
@@ -209,6 +214,9 @@ class ULogSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("invalid config JSON"));
     }
     filepath_ = cfg.value("filepath", std::string{});
+    if (!filepath_.empty()) {
+      dialog_.setFilePath(filepath_);
+    }
     return PJ::okStatus();
   }
 
@@ -433,8 +441,10 @@ class ULogSource : public PJ::FileSourceBase {
 
  private:
   std::string filepath_;
+  ULogParamsDialog dialog_;
 };
 
 }  // namespace
 
+PJ_DIALOG_PLUGIN(ULogParamsDialog)
 PJ_DATA_SOURCE_PLUGIN(ULogSource, kUlogManifest)
