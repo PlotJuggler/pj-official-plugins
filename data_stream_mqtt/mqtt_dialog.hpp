@@ -9,6 +9,7 @@
 
 #include <mqtt/async_client.h>
 
+#include <functional>
 #include <mutex>
 #include <set>
 #include <string>
@@ -27,6 +28,12 @@ class MqttDialog : public PJ::DialogPluginTyped {
 
   std::string manifest() const override {
     return R"({"name":"MQTT Subscriber","version":"1.0.0"})";
+  }
+
+  /// Called by MqttSource::bindRuntimeHost() to wire the parser-options query.
+  /// Mirrors original PlotJuggler: parserFactories()->at(enc)->optionsWidget().
+  void setParserOptionsQueryFn(std::function<std::string(const std::string&)> fn) {
+    parser_options_query_fn_ = std::move(fn);
   }
 
   std::string ui_content() const override { return kDataStreamMqttUi; }
@@ -72,8 +79,23 @@ class MqttDialog : public PJ::DialogPluginTyped {
     }
 
     // Protocol combo
-    wd.setItems("comboBoxProtocol", {"json", "protobuf", "cdr"});
+    wd.setItems("comboBoxProtocol",
+                {"bson", "cbor", "json", "msgpack", "protobuf", "cdr", "Influx (Line protocol)",
+                 "data_tamer", "ros1msg", "ros2msg"});
     wd.setCurrentIndex("comboBoxProtocol", encodingToIndex(encoding_));
+
+    // Protocol options section — dynamically query the parser for its options.
+    // Mirrors original PlotJuggler: parserFactories()->at(enc)->optionsWidget().
+    bool show_timestamp_opt = false;
+    if (parser_options_query_fn_) {
+      auto meta_json = parser_options_query_fn_(encoding_);
+      auto meta = nlohmann::json::parse(meta_json, nullptr, false);
+      if (!meta.is_discarded() && meta.contains("checkBoxUseTimestamp")) {
+        show_timestamp_opt = true;
+      }
+    }
+    wd.setVisible("widgetOptions", show_timestamp_opt);
+    wd.setChecked("checkBoxUseTimestamp", use_field_as_timestamp_);
 
     // TLS certificate file pickers
     wd.setFilePicker("buttonLoadServerCertificate", "...", "*.pem *.crt *.cer", "Select Server CA Certificate");
@@ -149,7 +171,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
     }
     if (widget_name == "comboBoxProtocol") {
       encoding_ = indexToEncoding(index);
-      return false;
+      return true;  // refresh to show/hide checkBoxUseTimestamp
     }
     return false;
   }
@@ -157,6 +179,10 @@ class MqttDialog : public PJ::DialogPluginTyped {
   bool onToggled(std::string_view widget_name, bool checked) override {
     if (widget_name == "checkBoxSecurity") {
       use_ssl_ = checked;
+      return false;
+    }
+    if (widget_name == "checkBoxUseTimestamp") {
+      use_field_as_timestamp_ = checked;
       return false;
     }
     return false;
@@ -200,6 +226,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
     cfg["topics"] = topic_filter_;
     cfg["selected_topics"] = selected_topics_;
     cfg["default_encoding"] = encoding_;
+    cfg["use_field_as_timestamp"] = use_field_as_timestamp_;
     cfg["use_ssl"] = use_ssl_;
     cfg["ca_cert_path"] = ca_cert_path_;
     cfg["client_cert_path"] = client_cert_path_;
@@ -218,6 +245,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
     qos_ = cfg.value("qos", 0);
     topic_filter_ = cfg.value("topics", std::string("#"));
     encoding_ = cfg.value("default_encoding", std::string("json"));
+    use_field_as_timestamp_ = cfg.value("use_field_as_timestamp", false);
     use_ssl_ = cfg.value("use_ssl", false);
     ca_cert_path_ = cfg.value("ca_cert_path", std::string{});
     client_cert_path_ = cfg.value("client_cert_path", std::string{});
@@ -233,15 +261,31 @@ class MqttDialog : public PJ::DialogPluginTyped {
 
  private:
   static int encodingToIndex(const std::string& e) {
-    if (e == "protobuf") return 1;
-    if (e == "cdr") return 2;
-    return 0;  // json
+    if (e == "bson") return 0;
+    if (e == "cbor") return 1;
+    if (e == "json") return 2;
+    if (e == "msgpack") return 3;
+    if (e == "protobuf") return 4;
+    if (e == "cdr") return 5;
+    if (e == "influx") return 6;
+    if (e == "data_tamer") return 7;
+    if (e == "ros1msg") return 8;
+    if (e == "ros2msg") return 9;
+    return 2;  // json
   }
 
   static std::string indexToEncoding(int idx) {
     switch (idx) {
-      case 1: return "protobuf";
-      case 2: return "cdr";
+      case 0: return "bson";
+      case 1: return "cbor";
+      case 2: return "json";
+      case 3: return "msgpack";
+      case 4: return "protobuf";
+      case 5: return "cdr";
+      case 6: return "influx";
+      case 7: return "data_tamer";
+      case 8: return "ros1msg";
+      case 9: return "ros2msg";
       default: return "json";
     }
   }
@@ -322,10 +366,14 @@ class MqttDialog : public PJ::DialogPluginTyped {
   int qos_ = 0;
   std::string topic_filter_ = "#";
   std::string encoding_ = "json";
+  bool use_field_as_timestamp_ = false;
   bool use_ssl_ = false;
   std::string ca_cert_path_;
   std::string client_cert_path_;
   std::string private_key_path_;
+
+  // Parser-options query callback — set by MqttSource::bindRuntimeHost()
+  std::function<std::string(const std::string&)> parser_options_query_fn_;
 
   // Dialog-time discovery state
   bool connected_ = false;

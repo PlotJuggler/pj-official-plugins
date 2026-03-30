@@ -27,6 +27,20 @@ class MqttSource : public PJ::StreamSourceBase {
  public:
   void* dialogContext() override { return &dialog_; }
 
+  PJ::Status bindRuntimeHost(PJ_data_source_runtime_host_t runtime_host) override {
+    auto status = PJ::StreamSourceBase::bindRuntimeHost(runtime_host);
+    if (!status) {
+      return status;
+    }
+    // Wire parser-options query callback into the dialog so it can dynamically
+    // show/hide the options section — mirrors parserFactories()->at(enc)->optionsWidget()
+    // from the original PlotJuggler DataStreamMQTT.
+    dialog_.setParserOptionsQueryFn([this](const std::string& encoding) {
+      return runtimeHost().queryParserOptionsMetadata(encoding);
+    });
+    return status;
+  }
+
   uint64_t extraCapabilities() const override {
     return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;
   }
@@ -41,6 +55,8 @@ class MqttSource : public PJ::StreamSourceBase {
   }
 
   PJ::Status onStart() override {
+    failed_parsing_ = 0;
+
     // Read config from dialog
     auto cfg = nlohmann::json::parse(dialog_.saveConfig(), nullptr, false);
     if (cfg.is_discarded()) {
@@ -52,6 +68,7 @@ class MqttSource : public PJ::StreamSourceBase {
     qos_ = cfg.value("qos", 0);
     client_id_ = cfg.value("client_id", std::string("plotjuggler_mqtt"));
     default_encoding_ = cfg.value("default_encoding", std::string("json"));
+    use_field_as_timestamp_ = cfg.value("use_field_as_timestamp", false);
     protocol_version_ = cfg.value("protocol_version", 1);  // 0=3.1, 1=3.1.1, 2=5.0
 
     // Read selected topics (from dialog discovery)
@@ -81,7 +98,7 @@ class MqttSource : public PJ::StreamSourceBase {
             m.payload.assign(
                 reinterpret_cast<const uint8_t*>(payload.data()),
                 reinterpret_cast<const uint8_t*>(payload.data()) + payload.size());
-            auto now = std::chrono::system_clock::now().time_since_epoch();
+            auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
             m.timestamp_ns =
                 std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
 
@@ -157,12 +174,16 @@ class MqttSource : public PJ::StreamSourceBase {
       // Look up or create parser binding for this topic (cached)
       auto it = binding_cache_.find(msg.topic);
       if (it == binding_cache_.end()) {
+        nlohmann::json parser_cfg;
+        if (use_field_as_timestamp_) {
+          parser_cfg["use_field_as_timestamp"] = true;
+        }
         auto binding = runtimeHost().ensureParserBinding({
             .topic_name = msg.topic,
             .parser_encoding = default_encoding_,
             .type_name = {},
             .schema = {},
-            .parser_config_json = {},
+            .parser_config_json = parser_cfg.empty() ? std::string{} : parser_cfg.dump(),
         });
         if (binding) {
           it = binding_cache_.emplace(msg.topic, *binding).first;
@@ -174,12 +195,17 @@ class MqttSource : public PJ::StreamSourceBase {
             it->second, PJ::Timestamp{msg.timestamp_ns},
             PJ::Span<const uint8_t>(msg.payload.data(), msg.payload.size()));
         if (!status) {
-          runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning,
-                                     "Failed to push message: " + status.error());
+          failed_parsing_++;
         }
       }
 
       batch.pop();
+    }
+
+    if (failed_parsing_ > 0) {
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning,
+                                  "Failed to parse " + std::to_string(failed_parsing_) + " messages");
+      failed_parsing_ = 0;
     }
 
     return PJ::okStatus();
@@ -214,6 +240,7 @@ class MqttSource : public PJ::StreamSourceBase {
   int qos_ = 0;
   std::string client_id_ = "plotjuggler_mqtt";
   std::string default_encoding_ = "json";
+  bool use_field_as_timestamp_ = false;
   int protocol_version_ = 1;
   std::vector<std::string> selected_topics_;
 
@@ -221,6 +248,7 @@ class MqttSource : public PJ::StreamSourceBase {
   std::mutex queue_mutex_;
   std::queue<MqttMessage> message_queue_;
   std::unordered_map<std::string, PJ::ParserBindingHandle> binding_cache_;
+  uint32_t failed_parsing_ = 0;
 };
 
 }  // namespace

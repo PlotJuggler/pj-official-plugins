@@ -7,18 +7,15 @@ to message parsers.
 
 - MQTT connection with configurable address, port, and QoS level
 - Topic filter subscription (e.g. `#` for all topics, or specific patterns)
-- Message queuing with poll-based delivery
+- Live topic discovery via a dedicated async client during dialog
 - Per-topic parser binding and caching
+- Username/password authentication
+- SSL/TLS with configurable CA certificate, client certificate, and private key
+- MQTT protocol version selection (3.1, 3.1.1, 5.0)
+- Connection-loss detection and warning
 
 ## Configuration
 
 The dialog configures broker address, port, topic filter, QoS level,
-and SSL toggle. Parser encoding is auto-detected from message content.
-
-## Known Limitations
-
-- TLS certificate management not yet available (only on/off toggle)
-- Live topic discovery not implemented (manual filter only)
-- Username/password authentication not exposed in dialog
-- No reconnection detection or retry logic
-- MQTT protocol version not configurable (uses library default)
+SSL toggle and certificate paths, username/password, and MQTT protocol version.
+Parser encoding is selected per-topic in the dialog.

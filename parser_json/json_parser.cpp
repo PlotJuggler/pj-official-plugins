@@ -74,12 +74,19 @@ void flattenJson(const std::string& prefix, const nlohmann::json& value,
 
 class JsonParser : public PJ::MessageParserPluginBase {
  public:
+  std::string optionsMetadata() const override {
+    // Mirrors the original PlotJuggler optionsWidget() for JSON/CBOR/BSON/Msgpack:
+    // a "Use 'timestamp' field as timestamp" checkbox.
+    return R"({"checkBoxUseTimestamp":{"visible":true}})";
+  }
+
   PJ::Status loadConfig(std::string_view config_json) override {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
     if (!cfg.is_discarded()) {
       encoding_hint_ = cfg.value("encoding_hint", std::string{});
       max_array_size_ = cfg.value("max_array_size", std::size_t{0});
       clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
+      use_field_as_timestamp_ = cfg.value("use_field_as_timestamp", false);
     }
     return PJ::okStatus();
   }
@@ -108,7 +115,20 @@ class JsonParser : public PJ::MessageParserPluginBase {
   }
 
  private:
+  // Extract timestamp from a top-level "timestamp" field (value in seconds → nanoseconds).
+  // Returns fallback if the field is absent or not numeric.
+  static PJ::Timestamp extractTimestamp(const nlohmann::json& json, PJ::Timestamp fallback) {
+    auto it = json.find("timestamp");
+    if (it == json.end() || !it->is_number()) {
+      return fallback;
+    }
+    return static_cast<PJ::Timestamp>(it->get<double>() * 1e9);
+  }
+
   PJ::Status flattenAndAppend(PJ::Timestamp ts, const nlohmann::json& json) {
+    if (use_field_as_timestamp_ && json.is_object()) {
+      ts = extractTimestamp(json, ts);
+    }
     owned_fields_.clear();
     flattenJson("", json, max_array_size_, clamp_large_arrays_, owned_fields_);
 
@@ -174,6 +194,7 @@ class JsonParser : public PJ::MessageParserPluginBase {
   std::string encoding_hint_;
   std::size_t max_array_size_ = 0;
   bool clamp_large_arrays_ = true;
+  bool use_field_as_timestamp_ = false;
   std::unordered_map<std::string, PJ::sdk::FieldHandle> field_cache_;
   std::vector<FlattenedField> owned_fields_;
   std::vector<PJ::sdk::BoundFieldValue> bound_fields_;
