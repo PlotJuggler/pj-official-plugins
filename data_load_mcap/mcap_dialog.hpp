@@ -16,8 +16,9 @@
 
 namespace {
 
-// Generated from ui/dialog_mcap.ui at configure time
+// Generated at configure time
 #include "dialog_mcap_ui.hpp"
+#include "mcap_manifest.hpp"
 
 struct ChannelInfo {
   std::string topic;
@@ -40,9 +41,7 @@ class McapDialog : public PJ::DialogPluginTyped {
 
   // --- Dialog protocol ---
 
-  std::string manifest() const override {
-    return R"({"name":"MCAP File Source","version":"1.0.0"})";
-  }
+  std::string manifest() const override { return kMcapManifest; }
 
   std::string ui_content() const override { return kDialogMcapUi; }
 

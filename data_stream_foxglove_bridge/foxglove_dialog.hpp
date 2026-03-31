@@ -4,6 +4,7 @@
 #include <pj_plugins/sdk/widget_data.hpp>
 
 #include "foxglove_client_ui.hpp"
+#include "foxglove_manifest.hpp"
 
 #include <ixwebsocket/IXWebSocket.h>
 #include <nlohmann/json.hpp>
@@ -43,9 +44,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
 
   // --- Dialog protocol ---
 
-  std::string manifest() const override {
-    return R"({"name":"Foxglove Bridge","version":"1.0.0"})";
-  }
+  std::string manifest() const override { return kFoxgloveManifest; }
 
   std::string ui_content() const override { return kFoxgloveClientUi; }
 

@@ -3,6 +3,7 @@
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 
+#include "pj_bridge_manifest.hpp"
 #include "websocket_client_ui.hpp"
 
 #include <ixwebsocket/IXWebSocket.h>
@@ -50,9 +51,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
   // --- Dialog protocol ---
 
-  std::string manifest() const override {
-    return R"({"name":"PlotJuggler Bridge","version":"1.0.0"})";
-  }
+  std::string manifest() const override { return kPjBridgeManifest; }
 
   std::string ui_content() const override { return kWebSocketClientUi; }
 
