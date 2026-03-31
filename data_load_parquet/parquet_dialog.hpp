@@ -15,8 +15,9 @@
 
 namespace {
 
-// Generated from ui/dataload_parquet.ui at configure time
+// Generated at configure time
 #include "dataload_parquet_ui.hpp"
+#include "parquet_manifest.hpp"
 
 class ParquetDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
@@ -42,9 +43,7 @@ class ParquetDialog : public PJ::DialogPluginTyped {
 
   // --- Dialog protocol ---
 
-  std::string manifest() const override {
-    return R"({"name":"Parquet File Source","version":"1.0.0"})";
-  }
+  std::string manifest() const override { return kParquetManifest; }
 
   std::string ui_content() const override { return kDataLoadParquetUi; }
 
