@@ -4,6 +4,7 @@
 #include <pj_plugins/sdk/widget_data.hpp>
 
 #include "datastream_mqtt_ui.hpp"
+#include "mqtt_manifest.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -25,9 +26,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
  public:
   // --- Dialog protocol ---
 
-  std::string manifest() const override {
-    return R"({"name":"MQTT Subscriber","version":"1.0.0"})";
-  }
+  std::string manifest() const override { return kMqttManifest; }
 
   std::string ui_content() const override { return kDataStreamMqttUi; }
 
