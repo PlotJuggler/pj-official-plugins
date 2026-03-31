@@ -8,6 +8,28 @@
 #include <string>
 #include <vector>
 
+// Generated at configure time
+#include "csv_manifest.hpp"
+#include "dataload_csv_ui.hpp"
+#include "datetimehelp_ui.hpp"
+
+enum class TimeMode { RowNumber, Column, Combined };
+
+inline std::string timeModeToString(TimeMode mode) {
+  switch (mode) {
+    case TimeMode::RowNumber: return "row_number";
+    case TimeMode::Column: return "column";
+    case TimeMode::Combined: return "combined";
+  }
+  return "row_number";
+}
+
+inline TimeMode stringToTimeMode(const std::string& s) {
+  if (s == "column") return TimeMode::Column;
+  if (s == "combined") return TimeMode::Combined;
+  return TimeMode::RowNumber;
+}
+
 class CsvDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
@@ -50,7 +72,7 @@ class CsvDialog : public PJ::DialogPluginTyped {
 
   std::string filepath_;
   char delimiter_ = ',';
-  std::string time_mode_ = "row_number";
+  TimeMode time_mode_ = TimeMode::RowNumber;
   int selected_column_index_ = -1;
   int combined_index_ = -1;
   std::string custom_format_;

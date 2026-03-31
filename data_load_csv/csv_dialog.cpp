@@ -7,19 +7,15 @@
 #include <string>
 #include <vector>
 
-// Generated from ui files at configure time
-#include "dataload_csv_ui.hpp"
-#include "datetimehelp_ui.hpp"
-
 int CsvDialog::timeColumnIndex() const {
-  if (time_mode_ == "column" && selected_column_index_ >= 0) {
+  if (time_mode_ == TimeMode::Column && selected_column_index_ >= 0) {
     return selected_column_index_;
   }
   return -1;
 }
 
 int CsvDialog::combinedColumnIndex() const {
-  if (time_mode_ == "combined") return combined_index_;
+  if (time_mode_ == TimeMode::Combined) return combined_index_;
   return -1;
 }
 
@@ -29,7 +25,7 @@ void CsvDialog::setFilePath(const std::string& filepath) {
 }
 
 std::string CsvDialog::manifest() const {
-  return R"({"name":"CSV File Source","version":"1.0.0"})";
+  return kCsvManifest;
 }
 
 std::string CsvDialog::ui_content() const {
@@ -46,14 +42,14 @@ std::string CsvDialog::widget_data() {
   wd.setCurrentIndex("comboBox", delimiterToIndex(delimiter_));
 
   // Time axis radios
-  wd.setChecked("radioButtonIndex", time_mode_ == "row_number");
-  wd.setChecked("radioButtonSelect", time_mode_ == "column");
-  wd.setChecked("radioButtonDateTimeColumns", time_mode_ == "combined");
+  wd.setChecked("radioButtonIndex", time_mode_ == TimeMode::RowNumber);
+  wd.setChecked("radioButtonSelect", time_mode_ == TimeMode::Column);
+  wd.setChecked("radioButtonDateTimeColumns", time_mode_ == TimeMode::Combined);
 
   // Column list
   wd.setListItems("listWidgetSeries", column_names_);
-  wd.setEnabled("listWidgetSeries", time_mode_ == "column");
-  if (time_mode_ == "column" && selected_column_index_ >= 0 &&
+  wd.setEnabled("listWidgetSeries", time_mode_ == TimeMode::Column);
+  if (time_mode_ == TimeMode::Column && selected_column_index_ >= 0 &&
       selected_column_index_ < static_cast<int>(column_names_.size())) {
     wd.setSelectedItems("listWidgetSeries",
                         {column_names_[static_cast<size_t>(selected_column_index_)]});
@@ -65,7 +61,7 @@ std::string CsvDialog::widget_data() {
   wd.setItems("combinedCombo", combo_items);
   if (combined_index_ >= 0) wd.setCurrentIndex("combinedCombo", combined_index_);
   wd.setEnabled("radioButtonDateTimeColumns", !combined_pairs_.empty());
-  wd.setEnabled("combinedCombo", time_mode_ == "combined" && !combined_pairs_.empty());
+  wd.setEnabled("combinedCombo", time_mode_ == TimeMode::Combined && !combined_pairs_.empty());
   wd.setVisible("combinedCombo", !combined_pairs_.empty());
 
   // Timestamp format
@@ -87,9 +83,9 @@ std::string CsvDialog::widget_data() {
   wd.setTableRows("tableView", preview_rows_);
 
   // OK enabled?
-  bool ok = (time_mode_ == "row_number") ||
-            (time_mode_ == "column" && selected_column_index_ >= 0) ||
-            (time_mode_ == "combined" && combined_index_ >= 0);
+  bool ok = (time_mode_ == TimeMode::RowNumber) ||
+            (time_mode_ == TimeMode::Column && selected_column_index_ >= 0) ||
+            (time_mode_ == TimeMode::Combined && combined_index_ >= 0);
   wd.setOkEnabled("buttonBox", ok);
 
   if (accept_requested_) {
@@ -120,9 +116,9 @@ bool CsvDialog::onIndexChanged(std::string_view widget_name, int index) {
 
 bool CsvDialog::onToggled(std::string_view widget_name, bool checked) {
   if (!checked) return false;
-  if (widget_name == "radioButtonIndex") { time_mode_ = "row_number"; return true; }
-  if (widget_name == "radioButtonSelect") { time_mode_ = "column"; return true; }
-  if (widget_name == "radioButtonDateTimeColumns") { time_mode_ = "combined"; return true; }
+  if (widget_name == "radioButtonIndex") { time_mode_ = TimeMode::RowNumber; return true; }
+  if (widget_name == "radioButtonSelect") { time_mode_ = TimeMode::Column; return true; }
+  if (widget_name == "radioButtonDateTimeColumns") { time_mode_ = TimeMode::Combined; return true; }
   if (widget_name == "radioAutoTime") { use_custom_format_ = false; return true; }
   if (widget_name == "radioCustomTime") { use_custom_format_ = true; return true; }
   return false;
@@ -142,7 +138,7 @@ bool CsvDialog::onSelectionChanged(std::string_view widget_name,
 }
 
 bool CsvDialog::onItemDoubleClicked(std::string_view widget_name, int index) {
-  if (widget_name == "listWidgetSeries" && time_mode_ == "column" &&
+  if (widget_name == "listWidgetSeries" && time_mode_ == TimeMode::Column &&
       index >= 0 && index < static_cast<int>(column_names_.size())) {
     selected_column_index_ = index;
     accept_requested_ = true;
@@ -168,7 +164,7 @@ bool CsvDialog::onTextChanged(std::string_view widget_name, std::string_view tex
 }
 
 void CsvDialog::onAccepted(std::string_view /*json*/) {
-  if (time_mode_ == "column" && selected_column_index_ >= 0 &&
+  if (time_mode_ == TimeMode::Column && selected_column_index_ >= 0 &&
       selected_column_index_ < static_cast<int>(column_names_.size())) {
     auto& name = column_names_[static_cast<size_t>(selected_column_index_)];
     column_history_.erase(
@@ -183,7 +179,7 @@ std::string CsvDialog::saveConfig() const {
   nlohmann::json cfg;
   cfg["filepath"] = filepath_;
   cfg["delimiter"] = std::string(1, delimiter_);
-  cfg["time_mode"] = time_mode_;
+  cfg["time_mode"] = timeModeToString(time_mode_);
   cfg["time_column_index"] = selected_column_index_;
   cfg["combined_column_index"] = combined_index_;
   cfg["custom_time_format"] = custom_format_;
@@ -198,7 +194,7 @@ bool CsvDialog::loadConfig(std::string_view config_json) {
   filepath_ = cfg.value("filepath", std::string{});
   auto d = cfg.value("delimiter", std::string(","));
   delimiter_ = d.empty() ? ',' : d[0];
-  time_mode_ = cfg.value("time_mode", std::string("row_number"));
+  time_mode_ = stringToTimeMode(cfg.value("time_mode", std::string("row_number")));
   selected_column_index_ = cfg.value("time_column_index", -1);
   combined_index_ = cfg.value("combined_column_index", -1);
   custom_format_ = cfg.value("custom_time_format", std::string{});
@@ -207,8 +203,8 @@ bool CsvDialog::loadConfig(std::string_view config_json) {
     column_history_ = cfg["column_history"].get<std::vector<std::string>>();
   }
   // Validate: a mode that requires a selection is useless without one — fall back to row_number
-  if (time_mode_ == "column" && selected_column_index_ < 0) time_mode_ = "row_number";
-  if (time_mode_ == "combined" && combined_index_ < 0) time_mode_ = "row_number";
+  if (time_mode_ == TimeMode::Column && selected_column_index_ < 0) time_mode_ = TimeMode::RowNumber;
+  if (time_mode_ == TimeMode::Combined && combined_index_ < 0) time_mode_ = TimeMode::RowNumber;
   if (!filepath_.empty()) analyzeFile();
   return true;
 }
@@ -256,8 +252,8 @@ void CsvDialog::analyzeFile() {
 
   // If the current mode was "combined" but this file has no detectable pairs,
   // fall back to row_number to avoid an invalid state.
-  if (time_mode_ == "combined" && combined_pairs_.empty()) {
-    time_mode_ = "row_number";
+  if (time_mode_ == TimeMode::Combined && combined_pairs_.empty()) {
+    time_mode_ = TimeMode::RowNumber;
     combined_index_ = -1;
   }
   // Auto-select the first combined pair if none is selected yet.
