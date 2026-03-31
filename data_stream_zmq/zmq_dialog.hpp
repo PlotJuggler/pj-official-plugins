@@ -4,6 +4,7 @@
 #include <pj_plugins/sdk/widget_data.hpp>
 
 #include "datastream_zmq_ui.hpp"
+#include "zmq_manifest.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -21,9 +22,7 @@ class ZmqDialog : public PJ::DialogPluginTyped {
  public:
   // --- Dialog protocol ---
 
-  std::string manifest() const override {
-    return R"({"name":"ZMQ Subscriber","version":"1.0.0"})";
-  }
+  std::string manifest() const override { return kZmqManifest; }
 
   std::string ui_content() const override { return kDataStreamZmqUi; }
 

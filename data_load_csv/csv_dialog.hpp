@@ -15,7 +15,8 @@
 
 namespace {
 
-// Generated from ui files at configure time
+// Generated at configure time
+#include "csv_manifest.hpp"
 #include "dataload_csv_ui.hpp"
 #include "datetimehelp_ui.hpp"
 
@@ -53,9 +54,7 @@ class CsvDialog : public PJ::DialogPluginTyped {
 
   // --- Dialog protocol ---
 
-  std::string manifest() const override {
-    return R"({"name":"CSV File Source","version":"1.0.0"})";
-  }
+  std::string manifest() const override { return kCsvManifest; }
 
   std::string ui_content() const override { return kDataLoadCsvUi; }
 
