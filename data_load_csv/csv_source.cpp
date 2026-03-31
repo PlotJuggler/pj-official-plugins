@@ -6,7 +6,6 @@
 
 #include <nlohmann/json.hpp>
 
-#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <string>

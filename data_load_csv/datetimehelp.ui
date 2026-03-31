@@ -3,45 +3,103 @@
  <class>DateTimeHelp</class>
  <widget class="QDialog" name="DateTimeHelp">
   <property name="geometry">
-   <rect><x>0</x><y>0</y><width>700</width><height>500</height></rect>
+   <rect><x>0</x><y>0</y><width>820</width><height>620</height></rect>
   </property>
   <property name="windowTitle">
-   <string>Date-Time Format Reference</string>
+   <string>Date-Time Format</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
-    <widget class="QLabel" name="labelTitle">
+    <widget class="QGroupBox" name="groupExample">
+     <property name="title"><string>Date-Time Example</string></property>
      <property name="font">
       <font><weight>75</weight><bold>true</bold></font>
      </property>
-     <property name="text">
-      <string>Date/Time Format Codes</string>
-     </property>
+     <layout class="QFormLayout" name="formLayout">
+      <item row="0" column="0">
+       <widget class="QLabel" name="labelDateTimeTitle">
+        <property name="text"><string>Example Date-Time (Format: M/d/yyyy h:mm:ss.zzz AP):</string></property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLabel" name="labelDateTimeValue">
+        <property name="text"><string>1/15/2024 2:30:45.123 PM</string></property>
+        <property name="font">
+         <font><italic>true</italic></font>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="labelFormatTitle">
+        <property name="text"><string>Example Format String:</string></property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLabel" name="labelFormatValue">
+        <property name="text"><string>d-MM-yyyy h:mm:ss</string></property>
+        <property name="font">
+         <font><italic>true</italic></font>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="labelResultTitle">
+        <property name="text"><string>Result:</string></property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLabel" name="labelResultValue">
+        <property name="text"><string>15-01-2024 2:30:45</string></property>
+        <property name="font">
+         <font><italic>true</italic></font>
+        </property>
+       </widget>
+      </item>
+     </layout>
     </widget>
    </item>
    <item>
-    <widget class="QLabel" name="labelInfo">
-     <property name="text">
-      <string>Use these codes in the custom time format field. Example: yyyy-MM-dd hh:mm:ss</string>
-     </property>
-    </widget>
-   </item>
-   <item>
-    <widget class="QSplitter" name="splitter">
-     <property name="orientation">
-      <enum>Qt::Horizontal</enum>
-     </property>
-     <widget class="QGroupBox" name="groupDate">
-      <property name="title"><string>Date Formats</string></property>
-      <layout class="QVBoxLayout" name="dateLayout">
+    <widget class="QScrollArea" name="scrollArea">
+     <property name="verticalScrollBarPolicy"><enum>Qt::ScrollBarAsNeeded</enum></property>
+     <property name="horizontalScrollBarPolicy"><enum>Qt::ScrollBarAsNeeded</enum></property>
+     <property name="widgetResizable"><bool>true</bool></property>
+     <widget class="QWidget" name="scrollAreaWidgetContents">
+      <property name="geometry">
+       <rect><x>0</x><y>0</y><width>780</width><height>800</height></rect>
+      </property>
+      <layout class="QVBoxLayout" name="scrollLayout">
        <item>
-        <widget class="QTableWidget" name="tableDateFormats">
+        <widget class="QLabel" name="labelNote">
+         <property name="text"><string>All other input characters will be treated as text. Any non-empty sequence of characters enclosed in single quotes will also be treated (stripped of the quotes) as text and not be interpreted as expressions.</string></property>
+         <property name="wordWrap"><bool>true</bool></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="labelDateHeader">
+         <property name="text"><string>Date Format</string></property>
+         <property name="font">
+          <font><weight>75</weight><bold>true</bold></font>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QTableWidget" name="dateFormatTable">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+         <property name="verticalScrollBarPolicy"><enum>Qt::ScrollBarAlwaysOff</enum></property>
+         <property name="sizeAdjustPolicy"><enum>QAbstractScrollArea::AdjustToContents</enum></property>
          <property name="editTriggers"><set>QAbstractItemView::NoEditTriggers</set></property>
+         <property name="alternatingRowColors"><bool>true</bool></property>
+         <attribute name="horizontalHeaderStretchLastSection"><bool>true</bool></attribute>
+         <attribute name="verticalHeaderVisible"><bool>false</bool></attribute>
          <property name="columnCount"><number>2</number></property>
          <property name="rowCount"><number>10</number></property>
-         <attribute name="verticalHeaderVisible"><bool>false</bool></attribute>
-         <column><property name="text"><string>Code</string></property></column>
-         <column><property name="text"><string>Meaning</string></property></column>
+         <column><property name="text"><string>Expression</string></property></column>
+         <column><property name="text"><string>Output</string></property></column>
          <row><property name="text"><string/></property></row>
          <row><property name="text"><string/></property></row>
          <row><property name="text"><string/></property></row>
@@ -53,40 +111,53 @@
          <row><property name="text"><string/></property></row>
          <row><property name="text"><string/></property></row>
          <item row="0" column="0"><property name="text"><string>d</string></property></item>
-         <item row="0" column="1"><property name="text"><string>Day without leading zero (1-31)</string></property></item>
+         <item row="0" column="1"><property name="text"><string>The day as a number without a leading zero (1 to 31)</string></property></item>
          <item row="1" column="0"><property name="text"><string>dd</string></property></item>
-         <item row="1" column="1"><property name="text"><string>Day with leading zero (01-31)</string></property></item>
+         <item row="1" column="1"><property name="text"><string>The day as a number with a leading zero (01 to 31)</string></property></item>
          <item row="2" column="0"><property name="text"><string>ddd</string></property></item>
-         <item row="2" column="1"><property name="text"><string>Abbreviated day name (Mon, Tue, ...)</string></property></item>
+         <item row="2" column="1"><property name="text"><string>The abbreviated localized day name (e.g. 'Mon' to 'Sun')</string></property></item>
          <item row="3" column="0"><property name="text"><string>dddd</string></property></item>
-         <item row="3" column="1"><property name="text"><string>Full day name (Monday, Tuesday, ...)</string></property></item>
+         <item row="3" column="1"><property name="text"><string>The long localized day name (e.g. 'Monday' to 'Sunday')</string></property></item>
          <item row="4" column="0"><property name="text"><string>M</string></property></item>
-         <item row="4" column="1"><property name="text"><string>Month without leading zero (1-12)</string></property></item>
+         <item row="4" column="1"><property name="text"><string>The month as a number without a leading zero (1 to 12)</string></property></item>
          <item row="5" column="0"><property name="text"><string>MM</string></property></item>
-         <item row="5" column="1"><property name="text"><string>Month with leading zero (01-12)</string></property></item>
+         <item row="5" column="1"><property name="text"><string>The month as a number with a leading zero (01 to 12)</string></property></item>
          <item row="6" column="0"><property name="text"><string>MMM</string></property></item>
-         <item row="6" column="1"><property name="text"><string>Abbreviated month name (Jan, Feb, ...)</string></property></item>
+         <item row="6" column="1"><property name="text"><string>The abbreviated localized month name (e.g. 'Jan' to 'Dec')</string></property></item>
          <item row="7" column="0"><property name="text"><string>MMMM</string></property></item>
-         <item row="7" column="1"><property name="text"><string>Full month name (January, ...)</string></property></item>
+         <item row="7" column="1"><property name="text"><string>The long localized month name (e.g. 'January' to 'December')</string></property></item>
          <item row="8" column="0"><property name="text"><string>yy</string></property></item>
-         <item row="8" column="1"><property name="text"><string>Two-digit year (00-99)</string></property></item>
+         <item row="8" column="1"><property name="text"><string>The year as a two digit number (00 to 99)</string></property></item>
          <item row="9" column="0"><property name="text"><string>yyyy</string></property></item>
-         <item row="9" column="1"><property name="text"><string>Four-digit year (2024)</string></property></item>
+         <item row="9" column="1"><property name="text"><string>The year as a four digit number, possibly plus a leading minus sign for negative years</string></property></item>
         </widget>
        </item>
-      </layout>
-     </widget>
-     <widget class="QGroupBox" name="groupTime">
-      <property name="title"><string>Time Formats</string></property>
-      <layout class="QVBoxLayout" name="timeLayout">
        <item>
-        <widget class="QTableWidget" name="tableTimeFormats">
+        <widget class="QLabel" name="labelTimeHeader">
+         <property name="text"><string>Time Format</string></property>
+         <property name="font">
+          <font><weight>75</weight><bold>true</bold></font>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QTableWidget" name="timeFormatTable">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+         <property name="verticalScrollBarPolicy"><enum>Qt::ScrollBarAlwaysOff</enum></property>
+         <property name="sizeAdjustPolicy"><enum>QAbstractScrollArea::AdjustToContents</enum></property>
          <property name="editTriggers"><set>QAbstractItemView::NoEditTriggers</set></property>
+         <property name="alternatingRowColors"><bool>true</bool></property>
+         <attribute name="horizontalHeaderStretchLastSection"><bool>true</bool></attribute>
+         <attribute name="verticalHeaderVisible"><bool>false</bool></attribute>
          <property name="columnCount"><number>2</number></property>
          <property name="rowCount"><number>12</number></property>
-         <attribute name="verticalHeaderVisible"><bool>false</bool></attribute>
-         <column><property name="text"><string>Code</string></property></column>
-         <column><property name="text"><string>Meaning</string></property></column>
+         <column><property name="text"><string>Expression</string></property></column>
+         <column><property name="text"><string>Output</string></property></column>
          <row><property name="text"><string/></property></row>
          <row><property name="text"><string/></property></row>
          <row><property name="text"><string/></property></row>
@@ -100,29 +171,29 @@
          <row><property name="text"><string/></property></row>
          <row><property name="text"><string/></property></row>
          <item row="0" column="0"><property name="text"><string>h</string></property></item>
-         <item row="0" column="1"><property name="text"><string>Hour without leading zero (0-23 or 1-12 with AM/PM)</string></property></item>
+         <item row="0" column="1"><property name="text"><string>The hour without a leading zero (0 to 23 or 1 to 12 if AM/PM display)</string></property></item>
          <item row="1" column="0"><property name="text"><string>hh</string></property></item>
-         <item row="1" column="1"><property name="text"><string>Hour with leading zero (00-23 or 01-12)</string></property></item>
+         <item row="1" column="1"><property name="text"><string>The hour with a leading zero (00 to 23 or 01 to 12 if AM/PM display)</string></property></item>
          <item row="2" column="0"><property name="text"><string>H</string></property></item>
-         <item row="2" column="1"><property name="text"><string>Hour without leading zero, 24-hour (0-23)</string></property></item>
+         <item row="2" column="1"><property name="text"><string>The hour without a leading zero (0 to 23, even with AM/PM display)</string></property></item>
          <item row="3" column="0"><property name="text"><string>HH</string></property></item>
-         <item row="3" column="1"><property name="text"><string>Hour with leading zero, 24-hour (00-23)</string></property></item>
+         <item row="3" column="1"><property name="text"><string>The hour with a leading zero (00 to 23, even with AM/PM display)</string></property></item>
          <item row="4" column="0"><property name="text"><string>m</string></property></item>
-         <item row="4" column="1"><property name="text"><string>Minute without leading zero (0-59)</string></property></item>
+         <item row="4" column="1"><property name="text"><string>The minute without a leading zero (0 to 59)</string></property></item>
          <item row="5" column="0"><property name="text"><string>mm</string></property></item>
-         <item row="5" column="1"><property name="text"><string>Minute with leading zero (00-59)</string></property></item>
+         <item row="5" column="1"><property name="text"><string>The minute with a leading zero (00 to 59)</string></property></item>
          <item row="6" column="0"><property name="text"><string>s</string></property></item>
-         <item row="6" column="1"><property name="text"><string>Second without leading zero (0-59)</string></property></item>
+         <item row="6" column="1"><property name="text"><string>The whole second, without any leading zero (0 to 59)</string></property></item>
          <item row="7" column="0"><property name="text"><string>ss</string></property></item>
-         <item row="7" column="1"><property name="text"><string>Second with leading zero (00-59)</string></property></item>
+         <item row="7" column="1"><property name="text"><string>The whole second, with a leading zero where applicable (00 to 59)</string></property></item>
          <item row="8" column="0"><property name="text"><string>z</string></property></item>
-         <item row="8" column="1"><property name="text"><string>Milliseconds without leading zeros (0-999)</string></property></item>
+         <item row="8" column="1"><property name="text"><string>The fractional part of the second, to go after a decimal point, without trailing zeroes (0 to 999). Thus "s.z" reports the seconds to full available (millisecond) precision without trailing zeroes.</string></property></item>
          <item row="9" column="0"><property name="text"><string>zzz</string></property></item>
-         <item row="9" column="1"><property name="text"><string>Milliseconds with leading zeros (000-999)</string></property></item>
-         <item row="10" column="0"><property name="text"><string>AP</string></property></item>
-         <item row="10" column="1"><property name="text"><string>AM/PM (uppercase)</string></property></item>
-         <item row="11" column="0"><property name="text"><string>ap</string></property></item>
-         <item row="11" column="1"><property name="text"><string>am/pm (lowercase)</string></property></item>
+         <item row="9" column="1"><property name="text"><string>The fractional part of the second, to millisecond precision, including trailing zeroes where applicable (000 to 999).</string></property></item>
+         <item row="10" column="0"><property name="text"><string>AP or A</string></property></item>
+         <item row="10" column="1"><property name="text"><string>Interpret as an AM/PM time. A/AP will match an upper-case version of either QLocale::amText() or QLocale::pmText().</string></property></item>
+         <item row="11" column="0"><property name="text"><string>ap or a</string></property></item>
+         <item row="11" column="1"><property name="text"><string>Interpret as an am/pm time. a/ap will match a lower-case version of either QLocale::amText() or QLocale::pmText().</string></property></item>
         </widget>
        </item>
       </layout>
