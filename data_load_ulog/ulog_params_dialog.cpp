@@ -13,7 +13,8 @@
 #include <string>
 #include <vector>
 
-// Generated from ulog_params.ui at configure time
+// Generated at configure time
+#include "ulog_manifest.hpp"
 #include "ulog_params_ui.hpp"
 
 namespace ulog_detail {
@@ -39,9 +40,7 @@ void ULogParamsDialog::setFilePath(const std::string& filepath) {
   parseFile();
 }
 
-std::string ULogParamsDialog::manifest() const {
-  return R"({"name":"ULog Parameters","version":"1.0.0"})";
-}
+std::string ULogParamsDialog::manifest() const { return kUlogManifest; }
 
 std::string ULogParamsDialog::ui_content() const { return kULogParamsUi; }
 
