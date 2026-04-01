@@ -1,16 +1,22 @@
 {
-    "id": "csv-loader",
-    "name": "CSV Loader",
-    "version": "1.0.5",
-    "description": "Data loader for CSV files.",
-    "author": "PlotJuggler Team",
-    "publisher": "PlotJuggler",
-    "website": "https://github.com/PlotJuggler/pj-official-plugins",
-    "repository": "https://github.com/PlotJuggler/pj-official-plugins",
-    "license": "MIT",
-    "icon_url": "",
-    "category": "data_loader",
-    "tags": ["csv", "file", "loader"],
-    "file_extensions": [".csv"],
-    "min_plotjuggler_version": "4.0.0"
+  "id": "csv-loader",
+  "name": "CSV Loader",
+  "version": "1.1.0",
+  "description": "Data loader for CSV files.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "data_loader",
+  "tags": [
+    "csv",
+    "file",
+    "loader"
+  ],
+  "file_extensions": [
+    ".csv"
+  ],
+  "min_plotjuggler_version": "4.0.0"
 }
