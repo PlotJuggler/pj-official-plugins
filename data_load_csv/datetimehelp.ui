@@ -11,48 +11,47 @@
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
     <widget class="QGroupBox" name="groupExample">
-     <property name="title"><string>Date-Time Example</string></property>
+     <property name="title"><string>Common Format Examples (input date: 1/15/2024 2:30:45.123 PM)</string></property>
      <property name="font">
       <font><weight>75</weight><bold>true</bold></font>
      </property>
-     <layout class="QFormLayout" name="formLayout">
-      <item row="0" column="0">
-       <widget class="QLabel" name="labelDateTimeTitle">
-        <property name="text"><string>Example Date-Time (Format: M/d/yyyy h:mm:ss.zzz AP):</string></property>
-       </widget>
-      </item>
-      <item row="0" column="1">
-       <widget class="QLabel" name="labelDateTimeValue">
-        <property name="text"><string>1/15/2024 2:30:45.123 PM</string></property>
-        <property name="font">
-         <font><italic>true</italic></font>
+     <layout class="QVBoxLayout" name="exampleLayout">
+      <item>
+       <widget class="QTableWidget" name="exampleTable">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
         </property>
-       </widget>
-      </item>
-      <item row="1" column="0">
-       <widget class="QLabel" name="labelFormatTitle">
-        <property name="text"><string>Example Format String:</string></property>
-       </widget>
-      </item>
-      <item row="1" column="1">
-       <widget class="QLabel" name="labelFormatValue">
-        <property name="text"><string>d-MM-yyyy h:mm:ss</string></property>
-        <property name="font">
-         <font><italic>true</italic></font>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="0">
-       <widget class="QLabel" name="labelResultTitle">
-        <property name="text"><string>Result:</string></property>
-       </widget>
-      </item>
-      <item row="2" column="1">
-       <widget class="QLabel" name="labelResultValue">
-        <property name="text"><string>15-01-2024 2:30:45</string></property>
-        <property name="font">
-         <font><italic>true</italic></font>
-        </property>
+        <property name="verticalScrollBarPolicy"><enum>Qt::ScrollBarAlwaysOff</enum></property>
+        <property name="sizeAdjustPolicy"><enum>QAbstractScrollArea::AdjustToContents</enum></property>
+        <property name="editTriggers"><set>QAbstractItemView::NoEditTriggers</set></property>
+        <property name="alternatingRowColors"><bool>true</bool></property>
+        <attribute name="horizontalHeaderStretchLastSection"><bool>true</bool></attribute>
+        <attribute name="verticalHeaderVisible"><bool>false</bool></attribute>
+        <property name="columnCount"><number>2</number></property>
+        <property name="rowCount"><number>6</number></property>
+        <column><property name="text"><string>Format String</string></property></column>
+        <column><property name="text"><string>Result</string></property></column>
+        <row><property name="text"><string/></property></row>
+        <row><property name="text"><string/></property></row>
+        <row><property name="text"><string/></property></row>
+        <row><property name="text"><string/></property></row>
+        <row><property name="text"><string/></property></row>
+        <row><property name="text"><string/></property></row>
+        <item row="0" column="0"><property name="text"><string>yyyy-MM-dd HH:mm:ss</string></property></item>
+        <item row="0" column="1"><property name="text"><string>2024-01-15 14:30:45</string></property></item>
+        <item row="1" column="0"><property name="text"><string>yyyy-MM-dd HH:mm:ss.zzz</string></property></item>
+        <item row="1" column="1"><property name="text"><string>2024-01-15 14:30:45.123</string></property></item>
+        <item row="2" column="0"><property name="text"><string>MM/dd/yyyy h:mm:ss AP</string></property></item>
+        <item row="2" column="1"><property name="text"><string>01/15/2024 2:30:45 PM</string></property></item>
+        <item row="3" column="0"><property name="text"><string>d-MM-yyyy h:mm:ss</string></property></item>
+        <item row="3" column="1"><property name="text"><string>15-01-2024 2:30:45</string></property></item>
+        <item row="4" column="0"><property name="text"><string>dd MMM yyyy HH:mm</string></property></item>
+        <item row="4" column="1"><property name="text"><string>15 Jan 2024 14:30</string></property></item>
+        <item row="5" column="0"><property name="text"><string>yyyy/MM/dd HH:mm:ss.zzz</string></property></item>
+        <item row="5" column="1"><property name="text"><string>2024/01/15 14:30:45.123</string></property></item>
        </widget>
       </item>
      </layout>

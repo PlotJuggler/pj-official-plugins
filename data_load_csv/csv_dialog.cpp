@@ -1,9 +1,16 @@
 #include "csv_dialog.hpp"
 
+// Generated at configure time
+#include "csv_manifest.hpp"
+#include "dataload_csv_ui.hpp"
+#include "datetimehelp_ui.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <fstream>
+#include <limits>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -69,6 +76,8 @@ std::string CsvDialog::widget_data() {
   wd.setChecked("radioCustomTime", use_custom_format_);
   wd.setText("lineEditDateFormat", custom_format_);
   wd.setEnabled("lineEditDateFormat", use_custom_format_);
+  wd.setEnabled("checkBoxAutoCloseHelp", use_custom_format_);
+  wd.setChecked("checkBoxAutoCloseHelp", close_after_help_);
 
   // Format live preview
   if (use_custom_format_ && !custom_format_.empty()) {
@@ -81,6 +90,10 @@ std::string CsvDialog::widget_data() {
   // Preview table
   wd.setTableHeaders("tableView", column_names_);
   wd.setTableRows("tableView", preview_rows_);
+
+  // Preview warning (shared label — text set by analyzeFile)
+  wd.setVisible("labelWarning", !warning_message_.empty());
+  if (!warning_message_.empty()) wd.setText("labelWarning", warning_message_);
 
   // OK enabled?
   bool ok = (time_mode_ == TimeMode::RowNumber) ||
@@ -95,6 +108,7 @@ std::string CsvDialog::widget_data() {
 
   if (show_help_requested_) {
     show_help_requested_ = false;
+    help_was_shown_ = true;
     wd.requestSubDialog(kDateTimeHelpUi);
   }
 
@@ -121,6 +135,7 @@ bool CsvDialog::onToggled(std::string_view widget_name, bool checked) {
   if (widget_name == "radioButtonDateTimeColumns") { time_mode_ = TimeMode::Combined; return true; }
   if (widget_name == "radioAutoTime") { use_custom_format_ = false; return true; }
   if (widget_name == "radioCustomTime") { use_custom_format_ = true; return true; }
+  if (widget_name == "checkBoxAutoCloseHelp") { close_after_help_ = checked; return true; }
   return false;
 }
 
@@ -130,6 +145,7 @@ bool CsvDialog::onSelectionChanged(std::string_view widget_name,
     for (int i = 0; i < static_cast<int>(column_names_.size()); i++) {
       if (column_names_[static_cast<size_t>(i)] == selected[0]) {
         selected_column_index_ = i;
+        analyzeFile();
         return true;
       }
     }
@@ -150,6 +166,15 @@ bool CsvDialog::onItemDoubleClicked(std::string_view widget_name, int index) {
 bool CsvDialog::onClicked(std::string_view widget_name) {
   if (widget_name == "dateTimeHelpButton") {
     show_help_requested_ = true;
+    return true;
+  }
+  return false;
+}
+
+bool CsvDialog::onTick() {
+  if (help_was_shown_ && close_after_help_) {
+    help_was_shown_ = false;
+    accept_requested_ = true;
     return true;
   }
   return false;
@@ -184,6 +209,7 @@ std::string CsvDialog::saveConfig() const {
   cfg["combined_column_index"] = combined_index_;
   cfg["custom_time_format"] = custom_format_;
   cfg["use_custom_format"] = use_custom_format_;
+  cfg["close_after_help"] = close_after_help_;
   cfg["column_history"] = column_history_;
   return cfg.dump();
 }
@@ -199,6 +225,7 @@ bool CsvDialog::loadConfig(std::string_view config_json) {
   combined_index_ = cfg.value("combined_column_index", -1);
   custom_format_ = cfg.value("custom_time_format", std::string{});
   use_custom_format_ = cfg.value("use_custom_format", false);
+  close_after_help_ = cfg.value("close_after_help", false);
   if (cfg.contains("column_history") && cfg["column_history"].is_array()) {
     column_history_ = cfg["column_history"].get<std::vector<std::string>>();
   }
@@ -225,6 +252,20 @@ void CsvDialog::analyzeFile() {
 
   if (delimiter_ == '\0') delimiter_ = PJ::CSV::DetectDelimiter(header_line);
 
+  // Check for duplicate column names before deduplication
+  {
+    std::vector<std::string> raw_parts;
+    PJ::CSV::SplitLine(header_line, delimiter_, raw_parts);
+    std::set<std::string> seen;
+    has_duplicate_columns_ = false;
+    for (const auto& part : raw_parts) {
+      if (!seen.insert(part).second) {
+        has_duplicate_columns_ = true;
+        break;
+      }
+    }
+  }
+
   column_names_ = PJ::CSV::ParseHeaderLine(header_line, delimiter_);
 
   // Build preview rows: first 100 data lines (like the original)
@@ -248,6 +289,47 @@ void CsvDialog::analyzeFile() {
           PJ::CSV::DetectCombinedDateTimeColumns(column_names_, first_row_types);
     }
     count++;
+  }
+
+  // Compute preview warning message
+  warning_message_.clear();
+  // Check for duplicate column names in header
+  if (has_duplicate_columns_) {
+    warning_message_ =
+        "WARNING: duplicate column names detected in the header. Suffixes have been added "
+        "automatically to make them unique.";
+  }
+  // Check for rows with wrong column count
+  if (warning_message_.empty()) {
+    for (const auto& row : preview_rows_) {
+      if (row.size() != column_names_.size()) {
+        warning_message_ =
+            "WARNING: some rows in the preview have a different number of columns than the "
+            "header. Those rows will be skipped during loading.";
+        break;
+      }
+    }
+  }
+  // Check for non-monotonic timestamps in selected column (numeric only)
+  if (warning_message_.empty() && time_mode_ == TimeMode::Column && selected_column_index_ >= 0 &&
+      selected_column_index_ < static_cast<int>(column_names_.size())) {
+    double prev_val = std::numeric_limits<double>::lowest();
+    for (const auto& row : preview_rows_) {
+      auto col = static_cast<size_t>(selected_column_index_);
+      if (col >= row.size() || row[col].empty()) continue;
+      try {
+        double val = std::stod(row[col]);
+        if (val < prev_val) {
+          warning_message_ =
+              "WARNING: timestamps in the selected column are not monotonically increasing. "
+              "Data will be sorted automatically after loading.";
+          break;
+        }
+        prev_val = val;
+      } catch (...) {
+        break;  // Non-numeric timestamps: skip check
+      }
+    }
   }
 
   // If the current mode was "combined" but this file has no detectable pairs,

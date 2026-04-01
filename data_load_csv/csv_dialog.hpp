@@ -8,11 +8,6 @@
 #include <string>
 #include <vector>
 
-// Generated at configure time
-#include "csv_manifest.hpp"
-#include "dataload_csv_ui.hpp"
-#include "datetimehelp_ui.hpp"
-
 enum class TimeMode { RowNumber, Column, Combined };
 
 inline std::string timeModeToString(TimeMode mode) {
@@ -58,6 +53,7 @@ class CsvDialog : public PJ::DialogPluginTyped {
   bool onItemDoubleClicked(std::string_view widget_name, int index) override;
   bool onClicked(std::string_view widget_name) override;
   bool onTextChanged(std::string_view widget_name, std::string_view text) override;
+  bool onTick() override;
   void onAccepted(std::string_view json) override;
   void onRejected() override {}
 
@@ -79,6 +75,10 @@ class CsvDialog : public PJ::DialogPluginTyped {
   bool use_custom_format_ = false;
   bool accept_requested_ = false;
   bool show_help_requested_ = false;
+  bool close_after_help_ = false;
+  bool help_was_shown_ = false;
+  bool has_duplicate_columns_ = false;
+  std::string warning_message_;
 
   std::vector<std::string> column_names_;
   std::vector<std::string> column_history_;

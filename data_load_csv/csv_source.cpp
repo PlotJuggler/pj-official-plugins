@@ -99,10 +99,13 @@ class CsvSource : public PJ::FileSourceBase {
 
     // --- Non-monotonic time warning ---
     if (result.time_is_non_monotonic) {
-      runtimeHost().reportMessage(
-          PJ::DataSourceMessageLevel::kWarning,
-          "Time column is not monotonically increasing. "
-          "Data will be sorted by timestamp. This may indicate an issue with the input data.");
+      if (!runtimeHost().askContinue(
+              "Non-monotonic Timestamps",
+              "The time column is not monotonically increasing.\n"
+              "Data will be sorted automatically after loading.\n\n"
+              "Continue?")) {
+        return PJ::unexpected(std::string("Loading aborted by user"));
+      }
     }
 
     // --- Skipped lines warning with detail ---
@@ -115,9 +118,12 @@ class CsvSource : public PJ::FileSourceBase {
         }
       }
       if (!detail.empty()) {
-        runtimeHost().reportMessage(
-            PJ::DataSourceMessageLevel::kWarning,
-            "Some lines were skipped:\n" + detail);
+        if (!runtimeHost().askContinue(
+                "Rows Skipped",
+                "Some rows have an incorrect number of columns and will be skipped:\n\n" + detail +
+                    "\nContinue loading?")) {
+          return PJ::unexpected(std::string("Loading aborted by user"));
+        }
       }
     }
 
@@ -150,10 +156,10 @@ class CsvSource : public PJ::FileSourceBase {
       if (has_numeric) {
         numeric_col_indices.push_back(i);
         if (has_string) {
-          runtimeHost().reportMessage(
-              PJ::DataSourceMessageLevel::kWarning,
+          runtimeHost().showWarning(
+              "Mixed Column Type",
               "Column '" + col.name + "' has " + std::to_string(col.string_points.size()) +
-              " non-numeric cells that were skipped");
+                  " non-numeric cells that were skipped.");
         }
       } else if (has_string) {
         string_col_indices.push_back(i);

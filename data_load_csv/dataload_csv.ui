@@ -184,6 +184,13 @@
            </property>
           </widget>
          </item>
+         <item>
+          <widget class="QCheckBox" name="checkBoxAutoCloseHelp">
+           <property name="text">
+            <string>Close window automatically</string>
+           </property>
+          </widget>
+         </item>
         </layout>
        </item>
        <item>
@@ -204,6 +211,22 @@
         <widget class="QLabel" name="label_2">
          <property name="text">
           <string>Preview (first 100 lines at most):</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="labelWarning">
+         <property name="visible">
+          <bool>false</bool>
+         </property>
+         <property name="text">
+          <string/>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+         <property name="styleSheet">
+          <string>color: #cc6600; font-weight: bold;</string>
          </property>
         </widget>
        </item>
