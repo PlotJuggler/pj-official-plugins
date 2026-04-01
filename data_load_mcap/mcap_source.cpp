@@ -163,6 +163,9 @@ class McapSource : public PJ::FileSourceBase {
     } else {
       status = reader.readSummary(mcap::ReadSummaryMethod::NoFallbackScan);
       if (!status.ok()) {
+        runtimeHost().showError("Can't open summary of the file",
+                                "Code: " + std::to_string(static_cast<int>(status.code)) +
+                                    "\nMessage: " + status.message);
         reader.close();
         return PJ::unexpected(std::string("cannot read MCAP summary: ") + status.message);
       }
@@ -226,6 +229,7 @@ class McapSource : public PJ::FileSourceBase {
       for (const auto& e : binding_errors) {
         msg += "  - " + e + "\n";
       }
+      runtimeHost().showError("Parser Error", msg);
       reader.close();
       return PJ::unexpected(msg);
     }
@@ -235,7 +239,7 @@ class McapSource : public PJ::FileSourceBase {
       for (const auto& e : binding_errors) {
         msg += "  - " + e + "\n";
       }
-      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, msg);
+      runtimeHost().showWarning("Parser Error", msg);
     }
 
     // --- Iterate messages and push raw bytes ---
