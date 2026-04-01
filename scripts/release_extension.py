@@ -222,6 +222,12 @@ def main():
         metavar="TOKEN",
         help="GitHub token for authentication (or set GITHUB_TOKEN env var)",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force recreate tag even if it already exists. WARNING: This will invalidate "
+             "existing registry checksums and break installations referencing the old release.",
+    )
     args = parser.parse_args()
 
     # Get token from args or environment
@@ -324,35 +330,83 @@ def main():
 
     if local_exists:
         print(f"  Local:  exists at {local_commit[:12]}")
-        if local_commit != head_commit:
-            print(f"\n  Warning: Tag points to different commit than HEAD!")
-            print(f"    Tag commit:  {local_commit[:12]}")
-            print(f"    HEAD commit: {head_commit[:12]}")
-            print(f"\n  Did you forget to update the version in manifest.json?")
-            print(f"  Current manifest version: {version}")
-            sys.exit(1)
     else:
         print(f"  Local:  does not exist")
 
     if remote_exists:
         print(f"  Remote: exists at {remote_commit[:12]}")
-        if remote_commit != head_commit:
-            print(f"\n  Warning: Remote tag points to different commit than HEAD!")
-            print(f"    Remote commit: {remote_commit[:12]}")
-            print(f"    HEAD commit:   {head_commit[:12]}")
-            print(f"\n  Did you forget to update the version in manifest.json?")
-            print(f"  Current manifest version: {version}")
-            sys.exit(1)
     else:
         print(f"  Remote: does not exist")
+
+    # Check for tag conflicts
+    tag_conflict = False
+    tag_at_head = False
+
+    if local_exists and local_commit != head_commit:
+        tag_conflict = True
+        print(f"\n  Conflict: Local tag points to different commit than HEAD")
+        print(f"    Tag commit:  {local_commit[:12]}")
+        print(f"    HEAD commit: {head_commit[:12]}")
+
+    if remote_exists and remote_commit != head_commit:
+        tag_conflict = True
+        print(f"\n  Conflict: Remote tag points to different commit than HEAD")
+        print(f"    Remote commit: {remote_commit[:12]}")
+        print(f"    HEAD commit:   {head_commit[:12]}")
+
+    if local_exists and remote_exists and local_commit == head_commit and remote_commit == head_commit:
+        tag_at_head = True
+
+    # Handle conflicts
+    if tag_conflict:
+        if not args.force:
+            print(f"\n  ERROR: Tag '{tag}' already exists at a different commit.")
+            print(f"  Did you forget to update the version in manifest.json?")
+            print(f"  Current manifest version: {version}")
+            print(f"\n  To force recreate the tag, use: --force")
+            print(f"  WARNING: Using --force will invalidate existing registry checksums!")
+            sys.exit(1)
+        else:
+            print(f"\n  --force specified: Will delete and recreate tag")
+            print(f"\n  *** WARNING ***")
+            print(f"  Recreating an existing release tag will change the artifact checksums.")
+            print(f"  If this version is already in the extension registry, existing installations")
+            print(f"  will fail checksum verification and the registry entry must be updated.")
+            print(f"  ***************")
+
+            # Delete local tag if exists
+            if local_exists:
+                print(f"\n  Deleting local tag '{tag}'...")
+                if not args.dry_run:
+                    repo.delete_tag(tag)
+                    print(f"    Deleted")
+                else:
+                    print(f"    [dry-run] Would delete")
+
+            # Delete remote tag if exists
+            if remote_exists:
+                print(f"\n  Deleting remote tag '{tag}' from {remote_name}...")
+                if not args.dry_run:
+                    try:
+                        repo.git.push(remote_url, "--delete", f"refs/tags/{tag}")
+                        print(f"    Deleted")
+                    except git.GitCommandError as e:
+                        print(f"    Warning: Could not delete remote tag: {e}")
+                else:
+                    print(f"    [dry-run] Would delete")
+
+            # Reset state after deletion
+            local_exists = False
+            remote_exists = False
 
     # Determine actions needed
     need_create_local = not local_exists
     need_push = not remote_exists
 
-    if not need_create_local and not need_push:
-        print(f"\n Tag '{tag}' already exists locally and on remote at HEAD")
+    if tag_at_head and not args.force:
+        print(f"\n  Tag '{tag}' already exists locally and on remote at HEAD")
         print(f"  Nothing to do. CI should have created the release.")
+        print(f"\n  To force recreate anyway, use: --force")
         return
 
     # Build tag message with metadata
