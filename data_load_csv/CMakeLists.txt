@@ -16,7 +16,7 @@ target_include_directories(csv_parser_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(csv_parser_lib PUBLIC date::date)
 
 # --- Plugin shared library ---
-add_library(csv_source_plugin SHARED csv_source.cpp)
+add_library(csv_source_plugin SHARED csv_source.cpp csv_dialog.cpp)
 target_compile_features(csv_source_plugin PRIVATE cxx_std_20)
 target_compile_options(csv_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(csv_source_plugin PRIVATE

@@ -29,15 +29,15 @@
          <property name="text">
           <string>Use row number as X axis</string>
          </property>
+         <property name="checked">
+          <bool>true</bool>
+         </property>
         </widget>
        </item>
        <item>
         <widget class="QRadioButton" name="radioButtonSelect">
          <property name="text">
           <string>Select a column to be used as X axis</string>
-         </property>
-         <property name="checked">
-          <bool>true</bool>
          </property>
         </widget>
        </item>
@@ -48,6 +48,13 @@
          </property>
          <property name="text">
           <string>Combine Date + Time columns</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QComboBox" name="combinedCombo">
+         <property name="enabled">
+          <bool>false</bool>
          </property>
         </widget>
        </item>
@@ -177,7 +184,21 @@
            </property>
           </widget>
          </item>
+         <item>
+          <widget class="QCheckBox" name="checkBoxAutoCloseHelp">
+           <property name="text">
+            <string>Close window automatically</string>
+           </property>
+          </widget>
+         </item>
         </layout>
+       </item>
+       <item>
+        <widget class="QLabel" name="labelFormatPreview">
+         <property name="text">
+          <string/>
+         </property>
+        </widget>
        </item>
        <item>
         <widget class="Line" name="line_2">
@@ -190,6 +211,22 @@
         <widget class="QLabel" name="label_2">
          <property name="text">
           <string>Preview (first 100 lines at most):</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="labelWarning">
+         <property name="visible">
+          <bool>false</bool>
+         </property>
+         <property name="text">
+          <string/>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+         <property name="styleSheet">
+          <string>color: #cc6600; font-weight: bold;</string>
          </property>
         </widget>
        </item>
