@@ -27,3 +27,13 @@ pj_embed_manifest(parquet_source_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/parquet_manifest.hpp
   VAR_NAME kParquetManifest
 )
+
+# --- Unit test for Parquet helpers ---
+add_executable(parquet_helpers_test tests/parquet_helpers_test.cpp)
+target_compile_features(parquet_helpers_test PRIVATE cxx_std_20)
+target_compile_options(parquet_helpers_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(parquet_helpers_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(parquet_helpers_test PRIVATE
+  pj_base Arrow::arrow_static GTest::gtest_main
+)
+add_test(NAME parquet_helpers_test COMMAND parquet_helpers_test)
