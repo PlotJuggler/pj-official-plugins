@@ -10,6 +10,7 @@
 #include <parquet/arrow/reader.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -29,6 +30,20 @@ std::string basenameWithoutExt(const std::string& filepath) {
     return filepath.substr(start, dot - start);
   }
   return filepath.substr(start);
+}
+
+/// Replicates the original PlotJuggler DataLoadParquet timezone adjustment:
+/// subtracts the UTC offset of the named timezone from the nanosecond timestamp.
+int64_t adjustTimezoneNanos(int64_t nanos, const std::string& tz_str) {
+  if (tz_str.empty() || tz_str == "UTC") return nanos;
+  try {
+    const auto* tz = std::chrono::locate_zone(tz_str);
+    auto utc_tp = std::chrono::sys_seconds{std::chrono::seconds{nanos / 1'000'000'000LL}};
+    auto offset_s = tz->get_info(utc_tp).offset.count();
+    return nanos - offset_s * 1'000'000'000LL;
+  } catch (...) {
+    return nanos;
+  }
 }
 
 bool isSupportedArrowType(arrow::Type::type t) {
@@ -101,9 +116,7 @@ PJ::sdk::ValueRef getArrowValueRef(const std::shared_ptr<arrow::Array>& array,
         case arrow::TimeUnit::MICRO: value *= 1000LL; break;
         case arrow::TimeUnit::NANO: break;
       }
-      // Arrow TIMESTAMP with timezone is already stored as UTC.
-      // No offset adjustment needed.
-      return value;
+      return adjustTimezoneNanos(value, ts_type->timezone());
     }
     case arrow::Type::STRING: {
       auto str_array = std::static_pointer_cast<arrow::StringArray>(array);
@@ -131,12 +144,12 @@ int64_t getTimestampNanos(const std::shared_ptr<arrow::Array>& array,
       auto ts_type = std::static_pointer_cast<arrow::TimestampType>(ts_array->type());
       int64_t value = ts_array->Value(index);
       switch (ts_type->unit()) {
-        case arrow::TimeUnit::SECOND: return value * 1000000000LL;
-        case arrow::TimeUnit::MILLI: return value * 1000000LL;
-        case arrow::TimeUnit::MICRO: return value * 1000LL;
-        case arrow::TimeUnit::NANO: return value;
+        case arrow::TimeUnit::SECOND: value *= 1000000000LL; break;
+        case arrow::TimeUnit::MILLI: value *= 1000000LL; break;
+        case arrow::TimeUnit::MICRO: value *= 1000LL; break;
+        case arrow::TimeUnit::NANO: break;
       }
-      return value;
+      return adjustTimezoneNanos(value, ts_type->timezone());
     }
     case arrow::Type::INT64:
       return std::static_pointer_cast<arrow::Int64Array>(array)->Value(index);

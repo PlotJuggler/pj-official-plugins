@@ -16,8 +16,12 @@ numeric columns with optional timestamp detection.
 - **Auto-detection** — heuristic search for columns named `timestamp`, `time`, `ts`, etc.
 - Optional custom date format parsing
 
+## Timezone Handling
+
+Timestamps with timezone metadata (e.g., `America/New_York`) are automatically
+adjusted using `std::chrono::locate_zone` (C++20).
+
 ## Known Limitations
 
-- Timezone offset handling not yet supported (non-UTC timestamps used as-is)
 - Rows not sorted by timestamp within batches (may produce non-monotonic time)
 - Column selection history not preserved across sessions
