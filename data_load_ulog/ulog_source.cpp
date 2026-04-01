@@ -378,7 +378,13 @@ class ULogSource : public PJ::FileSourceBase {
       try {
         param_value = param.value().as<double>();
       } catch (const std::exception&) {
-        continue;  // skip non-numeric parameters
+        // Non-numeric parameter: report as info message instead of silently skipping
+        try {
+          std::string str_val = param.value().as<std::string>();
+          runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, param_name + ": " + str_val);
+        } catch (...) {
+        }
+        continue;
       }
 
       auto ts_ns = static_cast<int64_t>(file_start_time_us) * 1000;
