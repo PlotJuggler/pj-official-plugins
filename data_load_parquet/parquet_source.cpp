@@ -9,8 +9,9 @@
 #include <arrow/io/file.h>
 #include <parquet/arrow/reader.h>
 
+#include <date/tz.h>
+
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -34,11 +35,12 @@ std::string basenameWithoutExt(const std::string& filepath) {
 
 /// Replicates the original PlotJuggler DataLoadParquet timezone adjustment:
 /// subtracts the UTC offset of the named timezone from the nanosecond timestamp.
+/// Uses Howard Hinnant's date library for cross-platform timezone support.
 int64_t adjustTimezoneNanos(int64_t nanos, const std::string& tz_str) {
   if (tz_str.empty() || tz_str == "UTC") return nanos;
   try {
-    const auto* tz = std::chrono::locate_zone(tz_str);
-    auto utc_tp = std::chrono::sys_seconds{std::chrono::seconds{nanos / 1'000'000'000LL}};
+    const auto* tz = date::locate_zone(tz_str);
+    auto utc_tp = date::sys_seconds{std::chrono::seconds{nanos / 1'000'000'000LL}};
     auto offset_s = tz->get_info(utc_tp).offset.count();
     return nanos - offset_s * 1'000'000'000LL;
   } catch (...) {
