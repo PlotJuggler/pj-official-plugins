@@ -21,7 +21,7 @@ if(_ulog_includes)
 endif()
 
 # --- Plugin shared library ---
-add_library(ulog_source_plugin SHARED ulog_source.cpp)
+add_library(ulog_source_plugin SHARED ulog_source.cpp ulog_params_dialog.cpp)
 target_compile_features(ulog_source_plugin PRIVATE cxx_std_20)
 target_compile_options(ulog_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 if(MSVC)

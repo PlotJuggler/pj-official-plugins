@@ -441,10 +441,10 @@ class ULogSource : public PJ::FileSourceBase {
 
  private:
   std::string filepath_;
-  ULogParamsDialog dialog_;
+  ulog_detail::ULogParamsDialog dialog_;
 };
 
 }  // namespace
 
-PJ_DIALOG_PLUGIN(ULogParamsDialog)
+PJ_DIALOG_PLUGIN(ulog_detail::ULogParamsDialog)
 PJ_DATA_SOURCE_PLUGIN(ULogSource, kUlogManifest)
