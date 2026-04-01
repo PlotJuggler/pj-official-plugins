@@ -265,7 +265,7 @@ Options:
                              minor: 1.0.5 -> 1.1.0
                              major: 1.0.5 -> 2.0.0
   --version VERSION        Set explicit version (e.g., 2.0.0)
-  --submit-to-registry     Auto-submit to registry after CI builds complete
+  --submit-to-registry     Submit to registry after CI builds complete
   --dry-run                Show what would be done without making changes
   --remote NAME            Git remote to push to (default: auto-detect GitHub)
   --token TOKEN            GitHub token (or set GITHUB_TOKEN env var)

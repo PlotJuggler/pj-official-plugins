@@ -301,7 +301,7 @@ def main():
     print(f"Tag: {tag}")
     print(f"Extension: {extension_id}")
     print(f"HEAD: {head_commit[:12]}")
-    print(f"Auto-submit to registry: {'Yes' if args.submit_to_registry else 'No'}")
+    print(f"Submit to registry: {'Yes' if args.submit_to_registry else 'No'}")
 
     # Find GitHub remote
     if args.remote:
