@@ -163,6 +163,9 @@ class McapSource : public PJ::FileSourceBase {
     } else {
       status = reader.readSummary(mcap::ReadSummaryMethod::NoFallbackScan);
       if (!status.ok()) {
+        runtimeHost().showError("Can't open summary of the file",
+                                "Code: " + std::to_string(static_cast<int>(status.code)) +
+                                    "\nMessage: " + status.message);
         reader.close();
         return PJ::unexpected(std::string("cannot read MCAP summary: ") + status.message);
       }
@@ -185,6 +188,7 @@ class McapSource : public PJ::FileSourceBase {
     // --- Ensure parser bindings for selected channels ---
     const auto& selected = dialog_.selectedTopics();
     std::unordered_map<mcap::ChannelId, PJ::ParserBindingHandle> bindings;
+    std::vector<std::string> binding_errors;
 
     for (const auto& [channel_id, channel_ptr] : summary.channels) {
       // Filter by dialog selection
@@ -215,16 +219,27 @@ class McapSource : public PJ::FileSourceBase {
       if (handle) {
         bindings.emplace(channel_id, *handle);
       } else {
-        runtimeHost().reportMessage(
-            PJ::DataSourceMessageLevel::kWarning,
-            std::string("no parser for channel '") + channel_ptr->topic +
-                "' (encoding: " + std::string(encoding) + "): " + handle.error());
+        binding_errors.push_back(
+            channel_ptr->topic + " (encoding: " + std::string(encoding) + "): " + handle.error());
       }
     }
 
     if (bindings.empty()) {
+      std::string msg = "No channels could be bound to parsers:\n";
+      for (const auto& e : binding_errors) {
+        msg += "  - " + e + "\n";
+      }
+      runtimeHost().showError("Parser Error", msg);
       reader.close();
-      return PJ::unexpected(std::string("no channels could be bound to parsers"));
+      return PJ::unexpected(msg);
+    }
+
+    if (!binding_errors.empty()) {
+      std::string msg = std::to_string(binding_errors.size()) + " channel(s) skipped (no parser):\n";
+      for (const auto& e : binding_errors) {
+        msg += "  - " + e + "\n";
+      }
+      runtimeHost().showWarning("Parser Error", msg);
     }
 
     // --- Iterate messages and push raw bytes ---
