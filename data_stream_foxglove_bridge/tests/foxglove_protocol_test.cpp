@@ -1,3 +1,17 @@
+/**
+ * @file foxglove_protocol_test.cpp
+ * @brief Unit tests for Foxglove WebSocket protocol parsing.
+ *
+ * These tests verify the binary protocol handling for Foxglove Bridge:
+ *   - parseBinaryFrame: decode binary WebSocket messages (opcode + subscription_id
+ *     + log_time + payload)
+ *   - buildSubscribeMessage / buildUnsubscribeMessage: JSON message generation
+ *   - isUsableChannel: validate channel has CDR encoding and ros2msg schema
+ *
+ * All binary frames are constructed in memory as byte vectors. No network
+ * connections or WebSocket servers are needed.
+ */
+
 #include "../foxglove_protocol.hpp"
 
 #include <gtest/gtest.h>

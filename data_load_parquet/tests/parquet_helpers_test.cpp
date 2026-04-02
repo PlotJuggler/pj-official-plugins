@@ -1,3 +1,20 @@
+/**
+ * @file parquet_helpers_test.cpp
+ * @brief Unit tests for Parquet/Arrow type handling helpers.
+ *
+ * These tests verify the helper functions used to read Parquet files:
+ *   - basenameWithoutExt: extract filename from paths (Unix and Windows)
+ *   - isSupportedArrowType: check if Arrow type can be plotted
+ *   - arrowTypeToPrimitive: map Arrow types to PJ primitive types
+ *   - findTimestampColumn: heuristic to detect timestamp columns by name/type
+ *   - getArrowValueRef: extract native values from Arrow arrays
+ *   - getTimestampNanos: convert various timestamp formats to nanoseconds
+ *
+ * All tests create Arrow arrays in memory using builders, so no disk I/O
+ * or external files are needed. Path strings in basenameWithoutExt tests
+ * are just input literals, not actual filesystem access.
+ */
+
 #include "../parquet_helpers.hpp"
 
 #include <gtest/gtest.h>

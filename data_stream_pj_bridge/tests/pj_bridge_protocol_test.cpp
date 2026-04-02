@@ -1,3 +1,19 @@
+/**
+ * @file pj_bridge_protocol_test.cpp
+ * @brief Unit tests for PJ Bridge binary protocol parsing.
+ *
+ * These tests verify the ZSTD-compressed binary frame protocol used by
+ * the PlotJuggler Bridge streaming source:
+ *   - parseBinaryFrame: decompress ZSTD payload and extract messages
+ *     (topic_name + timestamp_ns + CDR data)
+ *   - buildRequest: generate JSON command messages
+ *   - generateRequestId: create unique UUID-format request IDs
+ *
+ * The buildTestFrame() helper creates valid compressed frames in memory
+ * using ZSTD compression. No network connections or WebSocket servers
+ * are required.
+ */
+
 #include "../pj_bridge_protocol.hpp"
 
 #include <gtest/gtest.h>

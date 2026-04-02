@@ -1,3 +1,19 @@
+/**
+ * @file mcap_helpers_test.cpp
+ * @brief Unit tests for MCAP file reading helpers.
+ *
+ * These tests verify the MCAP summary reading functions work correctly by
+ * creating MCAP data entirely in memory (no disk I/O). We use MemoryWritable
+ * and MemoryReadable helper classes to simulate file operations, making the
+ * tests fast and portable across machines.
+ *
+ * What we test:
+ *   - Reading schemas and channels from MCAP summary
+ *   - Iterating through messages
+ *   - Handling multi-channel MCAP files
+ *   - Empty MCAP files
+ */
+
 #define MCAP_IMPLEMENTATION
 #include "../mcap_helpers.hpp"
 
