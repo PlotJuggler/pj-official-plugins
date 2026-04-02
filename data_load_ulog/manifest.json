@@ -1,16 +1,25 @@
 {
-    "id": "ulog-loader",
-    "name": "ULog Loader",
-    "version": "1.0.0",
-    "description": "Data loader for PX4 ULog files. Flight log format for PX4 autopilot.",
-    "author": "PlotJuggler Team",
-    "publisher": "PlotJuggler",
-    "website": "https://github.com/PlotJuggler/pj-official-plugins",
-    "repository": "https://github.com/PlotJuggler/pj-official-plugins",
-    "license": "MIT",
-    "icon_url": "",
-    "category": "data_loader",
-    "tags": ["ulog", "file", "loader", "px4", "drone", "flight"],
-    "file_extensions": [".ulg"],
-    "min_plotjuggler_version": "4.0.0"
+  "id": "ulog-loader",
+  "name": "ULog Loader",
+  "version": "1.1.0",
+  "description": "Data loader for PX4 ULog files. Flight log format for PX4 autopilot.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "data_loader",
+  "tags": [
+    "ulog",
+    "file",
+    "loader",
+    "px4",
+    "drone",
+    "flight"
+  ],
+  "file_extensions": [
+    ".ulg"
+  ],
+  "min_plotjuggler_version": "4.0.0"
 }

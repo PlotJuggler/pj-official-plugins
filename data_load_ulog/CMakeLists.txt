@@ -2,6 +2,7 @@ find_package(nlohmann_json REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CPM.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 
 CPMAddPackage(
   NAME ulog_cpp
@@ -20,18 +21,24 @@ if(_ulog_includes)
 endif()
 
 # --- Plugin shared library ---
-add_library(ulog_source_plugin SHARED ulog_source.cpp)
+add_library(ulog_source_plugin SHARED ulog_source.cpp ulog_params_dialog.cpp)
 target_compile_features(ulog_source_plugin PRIVATE cxx_std_20)
 target_compile_options(ulog_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 if(MSVC)
   # Suppress C4702 (unreachable code) from ulog_cpp third-party headers.
   target_compile_options(ulog_source_plugin PRIVATE /wd4702)
 endif()
-target_link_libraries(ulog_source_plugin PRIVATE pj_base ulog_cpp::ulog_cpp nlohmann_json::nlohmann_json)
+target_link_libraries(ulog_source_plugin PRIVATE pj_base pj_dialog_sdk ulog_cpp::ulog_cpp nlohmann_json::nlohmann_json)
 
 pj_embed_manifest(ulog_source_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/ulog_manifest.hpp
   VAR_NAME kUlogManifest
+)
+
+pj_embed_ui(ulog_source_plugin
+  UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/ulog_params.ui
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/ulog_params_ui.hpp
+  VAR_NAME kULogParamsUi
 )
 
 # --- Integration test ---

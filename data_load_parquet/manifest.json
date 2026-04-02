@@ -1,16 +1,24 @@
 {
-    "id": "parquet-loader",
-    "name": "Parquet Loader",
-    "version": "1.0.0",
-    "description": "Data loader for Apache Parquet files. Efficient columnar storage format.",
-    "author": "PlotJuggler Team",
-    "publisher": "PlotJuggler",
-    "website": "https://github.com/PlotJuggler/pj-official-plugins",
-    "repository": "https://github.com/PlotJuggler/pj-official-plugins",
-    "license": "MIT",
-    "icon_url": "",
-    "category": "data_loader",
-    "tags": ["parquet", "file", "loader", "columnar", "arrow"],
-    "file_extensions": [".parquet"],
-    "min_plotjuggler_version": "4.0.0"
+  "id": "parquet-loader",
+  "name": "Parquet Loader",
+  "version": "1.1.1",
+  "description": "Data loader for Apache Parquet files. Efficient columnar storage format.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "data_loader",
+  "tags": [
+    "parquet",
+    "file",
+    "loader",
+    "columnar",
+    "arrow"
+  ],
+  "file_extensions": [
+    ".parquet"
+  ],
+  "min_plotjuggler_version": "4.0.0"
 }
