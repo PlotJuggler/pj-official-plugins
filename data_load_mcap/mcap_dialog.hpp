@@ -38,6 +38,7 @@ class McapDialog : public PJ::DialogPluginTyped {
   bool useTimestamp() const { return use_timestamp_; }
   bool useMcapLogTime() const { return use_mcap_log_time_; }
   const std::unordered_set<std::string>& selectedTopics() const { return selected_topics_; }
+  const std::string& analyzeError() const { return analyze_error_; }
 
   // --- Dialog protocol ---
 
@@ -80,7 +81,6 @@ class McapDialog : public PJ::DialogPluginTyped {
     wd.setTableRows("tableWidget", rows);
     wd.setSelectedRows("tableWidget", selected_row_indices);
 
-    // OK enabled only if at least one channel selected
     wd.setOkEnabled(!selected_topics_.empty());
 
     return wd.toJson();
@@ -182,6 +182,7 @@ class McapDialog : public PJ::DialogPluginTyped {
  private:
   void analyzeFile() {
     all_channels_.clear();
+    analyze_error_.clear();
 
     mcap::McapReader reader;
     auto status = reader.open(filepath_);
@@ -189,8 +190,15 @@ class McapDialog : public PJ::DialogPluginTyped {
 
     status = reader.readSummary(mcap::ReadSummaryMethod::NoFallbackScan);
     if (!status.ok()) {
-      reader.close();
-      return;
+      if (status.code == mcap::StatusCode::MissingStatistics) {
+        // readSummarySection_ still populated channels and schemas before returning
+        // this error — record it so McapSource can route to the error dialog.
+        analyze_error_ = "Code: " + std::to_string(static_cast<int>(status.code)) +
+                         "\nMessage: " + status.message;
+      } else {
+        reader.close();
+        return;
+      }
     }
 
     // Build message count map from statistics
@@ -267,6 +275,7 @@ class McapDialog : public PJ::DialogPluginTyped {
   }
 
   // Config state
+  std::string analyze_error_;
   std::string filepath_;
   unsigned max_array_size_ = 500;
   bool clamp_large_arrays_ = true;
