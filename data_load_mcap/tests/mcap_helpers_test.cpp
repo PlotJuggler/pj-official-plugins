@@ -16,7 +16,7 @@ using namespace PJ::McapHelpers;
 // Helper class to write MCAP data to an in-memory buffer
 class MemoryWritable : public mcap::IWritable {
  public:
-  void write(const std::byte* data, uint64_t size) override {
+  void handleWrite(const std::byte* data, uint64_t size) override {
     const auto* bytes = reinterpret_cast<const uint8_t*>(data);
     buffer_.insert(buffer_.end(), bytes, bytes + size);
   }
@@ -91,7 +91,7 @@ std::vector<uint8_t> createTestMcap(uint64_t message_count = 10) {
     msg.sequence = static_cast<uint32_t>(i);
     msg.publishTime = 1000000000 + i * 10000000;  // 1s + i*10ms
     msg.logTime = msg.publishTime;
-    writer.write(msg);
+    (void)writer.write(msg);
   }
 
   writer.close();
@@ -238,11 +238,11 @@ TEST(McapHelpersTest, McapWithMultipleChannels) {
   for (int i = 0; i < 3; i++) {
     msg.channelId = channel1.id;
     msg.publishTime = msg.logTime = static_cast<uint64_t>(i) * 1000000;
-    writer.write(msg);
+    (void)writer.write(msg);
 
     msg.channelId = channel2.id;
     msg.publishTime = msg.logTime = static_cast<uint64_t>(i) * 1000000 + 500000;
-    writer.write(msg);
+    (void)writer.write(msg);
   }
 
   writer.close();
