@@ -18,12 +18,6 @@ pj_embed_ui(mcap_source_plugin
   VAR_NAME kDialogMcapUi
 )
 
-pj_embed_ui(mcap_source_plugin
-  UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/dialog_mcap_error.ui
-  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/dialog_mcap_error_ui.hpp
-  VAR_NAME kDialogMcapErrorUi
-)
-
 pj_embed_manifest(mcap_source_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/mcap_manifest.hpp
   VAR_NAME kMcapManifest

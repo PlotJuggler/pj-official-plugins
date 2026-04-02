@@ -38,6 +38,7 @@ class McapDialog : public PJ::DialogPluginTyped {
   bool useTimestamp() const { return use_timestamp_; }
   bool useMcapLogTime() const { return use_mcap_log_time_; }
   const std::unordered_set<std::string>& selectedTopics() const { return selected_topics_; }
+  const std::string& analyzeError() const { return analyze_error_; }
 
   // --- Dialog protocol ---
 
@@ -80,24 +81,7 @@ class McapDialog : public PJ::DialogPluginTyped {
     wd.setTableRows("tableWidget", rows);
     wd.setSelectedRows("tableWidget", selected_row_indices);
 
-    // Error popup — emitted once via onTick → widget_data() cycle.
-    // error_pending_ is set by onTick() (NOT during initial widget_data() load)
-    // so the sub-dialog only fires from the tick-triggered apply_and_diff path.
-    if (!analyze_error_.empty() && error_pending_) {
-      error_pending_ = false;
-      error_shown_ = true;
-      // Inject the error text into the placeholder in the embedded UI
-      std::string error_xml = kDialogMcapErrorUi;
-      const std::string placeholder = "<string/>";
-      auto pos = error_xml.find(placeholder);
-      if (pos != std::string::npos) {
-        error_xml.replace(pos, placeholder.size(), "<string>" + analyze_error_ + "</string>");
-      }
-      wd.requestSubDialog(error_xml);
-    }
-
-    // OK disabled if there is an error or no topics selected
-    wd.setOkEnabled(analyze_error_.empty() && !selected_topics_.empty());
+    wd.setOkEnabled(!selected_topics_.empty());
 
     return wd.toJson();
   }
@@ -161,15 +145,6 @@ class McapDialog : public PJ::DialogPluginTyped {
   void onAccepted(std::string_view /*json*/) override {}
   void onRejected() override {}
 
-  // onTick signals a pending error popup; sets error_pending_ so widget_data() emits it.
-  bool onTick() override {
-    if (!analyze_error_.empty() && !error_shown_) {
-      error_pending_ = true;
-      return true;
-    }
-    return false;
-  }
-
   std::string saveConfig() const override {
     nlohmann::json cfg;
     cfg["filepath"] = filepath_;
@@ -208,8 +183,6 @@ class McapDialog : public PJ::DialogPluginTyped {
   void analyzeFile() {
     all_channels_.clear();
     analyze_error_.clear();
-    error_shown_ = false;
-    error_pending_ = false;
 
     mcap::McapReader reader;
     auto status = reader.open(filepath_);
@@ -219,8 +192,7 @@ class McapDialog : public PJ::DialogPluginTyped {
     if (!status.ok()) {
       if (status.code == mcap::StatusCode::MissingStatistics) {
         // readSummarySection_ still populated channels and schemas before returning
-        // this error — continue with msg_count = 0 for all channels and surface the
-        // error through the dialog label so the user knows before clicking OK.
+        // this error — record it so McapSource can route to the error dialog.
         analyze_error_ = "Code: " + std::to_string(static_cast<int>(status.code)) +
                          "\nMessage: " + status.message;
       } else {
@@ -304,8 +276,6 @@ class McapDialog : public PJ::DialogPluginTyped {
 
   // Config state
   std::string analyze_error_;
-  bool error_shown_ = false;
-  bool error_pending_ = false;
   std::string filepath_;
   unsigned max_array_size_ = 500;
   bool clamp_large_arrays_ = true;
