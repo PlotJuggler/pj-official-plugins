@@ -9,10 +9,8 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
-#include <functional>
 #include <iterator>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace {
@@ -24,13 +22,11 @@ class ZmqDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
  public:
-  /// Callback type for querying available encodings from the runtime host.
-  /// Returns JSON array string, e.g. ["json","cbor","protobuf"], or empty if unavailable.
-  using EncodingsCallback = std::function<std::string_view()>;
-
-  /// Set the callback to query available encodings from the runtime host.
-  /// Called by the owning DataSource after runtime host is bound.
-  void setEncodingsCallback(EncodingsCallback callback) { encodings_callback_ = std::move(callback); }
+  /// Set the available encodings from the runtime host.
+  /// Called by the owning DataSource after runtime host is bound (in loadConfig).
+  void setAvailableEncodings(std::vector<std::string> encodings) {
+    available_encodings_ = std::move(encodings);
+  }
 
   // --- Dialog protocol ---
 
@@ -159,26 +155,10 @@ class ZmqDialog : public PJ::DialogPluginTyped {
     }
   }
 
-/// Query available encodings from runtime host.
+/// Get available encodings set by the owning DataSource.
   /// Returns empty vector if no parsers are loaded or host doesn't support the method.
   std::vector<std::string> getAvailableEncodings() const {
-    if (encodings_callback_) {
-      auto json_str = encodings_callback_();
-      if (!json_str.empty()) {
-        auto arr = nlohmann::json::parse(json_str, nullptr, false);
-        if (arr.is_array()) {
-          std::vector<std::string> result;
-          result.reserve(arr.size());
-          for (const auto& e : arr) {
-            if (e.is_string()) {
-              result.push_back(e.get<std::string>());
-            }
-          }
-          return result;
-        }
-      }
-    }
-    return {};
+    return available_encodings_;
   }
 
   static int encodingToIndex(const std::string& e, const std::vector<std::string>& encodings) {
@@ -193,7 +173,7 @@ class ZmqDialog : public PJ::DialogPluginTyped {
     return encodings.empty() ? "json" : encodings[0];
   }
 
-  EncodingsCallback encodings_callback_;
+  std::vector<std::string> available_encodings_;
 
   std::string address_ = "localhost";
   int port_ = 9872;

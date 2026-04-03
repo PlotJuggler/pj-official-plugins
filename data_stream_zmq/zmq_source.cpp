@@ -22,24 +22,14 @@ class ZmqSource : public PJ::StreamSourceBase {
     return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;
   }
 
-  PJ::Status bindRuntimeHost(PJ_data_source_runtime_host_t runtime_host) override {
-    auto status = PJ::StreamSourceBase::bindRuntimeHost(runtime_host);
-    if (!status) {
-      return status;
-    }
-    // Wire up the dialog's encoding callback to query the runtime host
-    dialog_.setEncodingsCallback([this]() -> std::string_view {
-      return runtimeHost().listAvailableEncodings();
-    });
-    return PJ::okStatus();
-  }
-
   std::string saveConfig() const override { return dialog_.saveConfig(); }
 
   PJ::Status loadConfig(std::string_view config_json) override {
     if (!dialog_.loadConfig(config_json)) {
       return PJ::unexpected(std::string("invalid config JSON"));
     }
+    // Populate available encodings from runtime host (for dialog's protocol combo)
+    dialog_.setAvailableEncodings(runtimeHost().listAvailableEncodings());
     return PJ::okStatus();
   }
 
