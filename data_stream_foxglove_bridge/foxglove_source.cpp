@@ -29,6 +29,10 @@ struct QueuedBinaryMessage {
   std::vector<uint8_t> payload;
 };
 
+struct QueuedTextMessage {
+  std::string text;
+};
+
 class FoxgloveSource : public PJ::StreamSourceBase {
  public:
   void* dialogContext() override { return &dialog_; }
@@ -101,24 +105,44 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       }
     }
 
-    // Re-register message callback for the streaming source
+    // Re-register message callback for the streaming source.
+    // Text messages (advertise/unadvertise) are queued and processed in onPoll()
+    // so that ensureParserBinding() is always called from the poll thread.
     socket_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
       if (msg->type == ix::WebSocketMessageType::Message) {
         if (msg->binary) {
           onBinaryMessage(msg->str);
         } else {
-          onTextMessage(msg->str);
+          std::lock_guard<std::mutex> lock(text_queue_mutex_);
+          text_queue_.push({msg->str});
         }
       } else if (msg->type == ix::WebSocketMessageType::Close) {
         onDisconnected();
       }
     });
 
+    // When the socket is stolen from the dialog it is already connected and the server
+    // already sent its initial "advertise" burst — it will not re-send it.
+    // Subscribe directly using the channel info captured by the dialog.
+    subscribeToSelectedChannels();
+
     connected_ = true;
     return PJ::okStatus();
   }
 
   PJ::Status onPoll() override {
+    // Drain text messages (advertise/unadvertise) queued from the WebSocket callback thread.
+    // ensureParserBinding() must be called from the poll thread, not the callback thread.
+    std::queue<QueuedTextMessage> text_batch;
+    {
+      std::lock_guard<std::mutex> lock(text_queue_mutex_);
+      std::swap(text_batch, text_queue_);
+    }
+    while (!text_batch.empty()) {
+      onTextMessage(text_batch.front().text);
+      text_batch.pop();
+    }
+
     // Non-blocking reconnection: if connection was lost, try every ~5s
     if (!connected_ && socket_) {
       if (reconnect_pending_) {
@@ -192,6 +216,50 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   }
 
  private:
+  // Subscribe to all selected channels using the channel info already captured by the dialog.
+  // Called from onStart() when the socket is stolen (server won't re-send "advertise").
+  // Also safe to call after a fresh connect where selected_channels_ is pre-populated.
+  void subscribeToSelectedChannels() {
+    std::vector<std::string> parser_errors;
+
+    for (const auto& ch : selected_channels_) {
+      if (!isUsableChannel(ch)) continue;
+
+      advertised_channels_[ch.id] = ch.topic;
+
+      uint32_t sub_id = next_subscription_id_++;
+      subscriptions_[sub_id] = ch.id;
+
+      nlohmann::json parser_cfg;
+      parser_cfg["max_array_size"] = max_array_size_;
+      parser_cfg["clamp_large_arrays"] = clamp_large_arrays_;
+      parser_cfg["use_timestamp"] = use_timestamp_;
+
+      auto schema_bytes = reinterpret_cast<const uint8_t*>(ch.schema.data());
+      auto binding = runtimeHost().ensureParserBinding({
+          .topic_name = ch.topic,
+          .parser_encoding = ch.schema_encoding,
+          .type_name = ch.schema_name,
+          .schema = PJ::Span<const uint8_t>(schema_bytes, ch.schema.size()),
+          .parser_config_json = parser_cfg.dump(),
+      });
+      if (binding) {
+        binding_by_subscription_[sub_id] = *binding;
+      } else {
+        parser_errors.push_back(ch.topic + " (" + ch.encoding + "): " + binding.error());
+      }
+
+      socket_->sendText(buildSubscribeMessage({{sub_id, ch.id}}));
+    }
+
+    if (!parser_errors.empty()) {
+      std::string msg = "Failed to create parser for " +
+                        std::to_string(parser_errors.size()) + " channel(s):\n";
+      for (const auto& e : parser_errors) msg += "  - " + e + "\n";
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, msg);
+    }
+  }
+
   void onTextMessage(const std::string& message) {
     auto json = nlohmann::json::parse(message, nullptr, false);
     if (json.is_discarded() || !json.is_object()) return;
@@ -342,6 +410,8 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
   std::mutex queue_mutex_;
   std::queue<QueuedBinaryMessage> message_queue_;
+  std::mutex text_queue_mutex_;
+  std::queue<QueuedTextMessage> text_queue_;
   int reconnect_tick_ = 0;
   std::atomic<bool> reconnect_pending_ = false;
 };

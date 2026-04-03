@@ -79,34 +79,38 @@ cd /path/to/plotjuggler_core
 | data_stream_foxglove_bridge | DataSource | Foxglove WebSocket bridge |
 | data_stream_pj_bridge | DataSource | PlotJuggler WebSocket bridge |
 
-## Releasing
+## Releasing Extensions
 
-Each plugin is independently versioned and released using git tags.
+Each plugin is independently versioned and released. The release pipeline builds on **6 platforms** (Linux x86_64/aarch64, macOS Intel/ARM, Windows x64/ARM64) and can automatically submit to the extension registry.
 
-### Tag convention
-
-```
-<plugin_directory>/v<semver>
-```
-
-Examples:
+### Quick Start (Recommended)
 
 ```bash
-git tag data_load_csv/v1.0.0
-git tag parser_json/v0.2.1
-git tag data_stream_mqtt/v1.1.0
+# One command: bump version, commit, tag, push, build, submit to registry
+python3 scripts/release_extension.py foxglove-bridge --bump minor --submit-to-registry
 ```
 
-### How to release
+This will:
+1. Update `manifest.json` with new version
+2. Commit and push the change
+3. Create annotated tag → triggers CI
+4. CI builds all 6 platforms and creates GitHub Release
+5. Automatically creates PR to `pj-plugin-registry`
 
-1. Tag the commit you want to release:
-   ```bash
-   git tag <plugin>/v<version>
-   git push origin <plugin>/v<version>
-   ```
-2. The CI workflow builds the plugin on 6 platforms (linux x86_64/aarch64, macOS Intel/ARM, Windows x64/ARM64).
-3. A GitHub Release is created automatically with:
-   - `<plugin>-<version>-<os>-<arch>.zip` — the plugin shared library
-   - `<plugin>-<version>-<os>-<arch>.zip.sha256` — checksum
+### Tag Convention
 
-The workflow can also be triggered manually via `workflow_dispatch` for CI-only runs (no release artifacts).
+```
+<source_directory>/v<semver>
+```
+
+Examples: `data_load_csv/v1.0.6`, `parser_ros/v2.1.0`
+
+### Available Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `release_extension.py` | Bump version, create tag, trigger CI |
+| `submit_to_registry.py` | Submit release to extension registry |
+| `release_tools.py` | Validation and packaging utilities |
+
+**Full documentation:** [`scripts/README.md`](scripts/README.md) — detailed pipeline diagram, CLI reference, troubleshooting.

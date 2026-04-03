@@ -10,9 +10,11 @@
 
 #include <mqtt/async_client.h>
 
+#include <algorithm>
 #include <mutex>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -24,6 +26,11 @@ class MqttDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
  public:
+  /// Called by the DataSource after loadConfig() to populate available encodings.
+  void setAvailableEncodings(std::vector<std::string> encodings) {
+    available_encodings_ = std::move(encodings);
+  }
+
   // --- Dialog protocol ---
 
   std::string manifest() const override { return kMqttManifest; }
@@ -70,9 +77,16 @@ class MqttDialog : public PJ::DialogPluginTyped {
       wd.setSelectedItems("listWidget", selected_topics_);
     }
 
-    // Protocol combo
-    wd.setItems("comboBoxProtocol", {"json", "protobuf", "cdr"});
-    wd.setCurrentIndex("comboBoxProtocol", encodingToIndex(encoding_));
+    // Protocol combo — dynamically populated from available parsers
+    bool has_encodings = !available_encodings_.empty();
+    if (has_encodings) {
+      wd.setItems("comboBoxProtocol", available_encodings_);
+      wd.setCurrentIndex("comboBoxProtocol", encodingToIndex(encoding_));
+    } else {
+      wd.setItems("comboBoxProtocol", {"(no parsers available)"});
+      wd.setCurrentIndex("comboBoxProtocol", 0);
+      wd.setEnabled("comboBoxProtocol", false);
+    }
 
     // TLS certificate file pickers
     wd.setFilePicker("buttonLoadServerCertificate", "...", "*.pem *.crt *.cer", "Select Server CA Certificate");
@@ -85,7 +99,8 @@ class MqttDialog : public PJ::DialogPluginTyped {
     wd.setEnabled("buttonEraseClientCertificate", !client_cert_path_.empty());
     wd.setEnabled("buttonErasePrivateKey", !private_key_path_.empty());
 
-    wd.setOkEnabled(true);
+    // Disable OK if no encodings available
+    wd.setOkEnabled(has_encodings);
 
     return wd.toJson();
   }
@@ -231,18 +246,16 @@ class MqttDialog : public PJ::DialogPluginTyped {
   }
 
  private:
-  static int encodingToIndex(const std::string& e) {
-    if (e == "protobuf") return 1;
-    if (e == "cdr") return 2;
-    return 0;  // json
+  int encodingToIndex(const std::string& e) const {
+    auto it = std::find(available_encodings_.begin(), available_encodings_.end(), e);
+    return (it != available_encodings_.end()) ? static_cast<int>(std::distance(available_encodings_.begin(), it)) : 0;
   }
 
-  static std::string indexToEncoding(int idx) {
-    switch (idx) {
-      case 1: return "protobuf";
-      case 2: return "cdr";
-      default: return "json";
+  std::string indexToEncoding(int idx) const {
+    if (idx >= 0 && idx < static_cast<int>(available_encodings_.size())) {
+      return available_encodings_[static_cast<size_t>(idx)];
     }
+    return available_encodings_.empty() ? "json" : available_encodings_[0];
   }
 
   static std::string filenameFromPath(const std::string& path) {
@@ -312,6 +325,8 @@ class MqttDialog : public PJ::DialogPluginTyped {
     }
     connected_ = false;
   }
+
+  std::vector<std::string> available_encodings_;
 
   std::string broker_address_ = "localhost";
   int port_ = 1883;
