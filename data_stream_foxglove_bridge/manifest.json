@@ -1,15 +1,21 @@
 {
-    "id": "foxglove-bridge",
-    "name": "Foxglove Bridge",
-    "version": "1.0.0",
-    "description": "Connect to Foxglove WebSocket server for ROS data streaming. Compatible with Foxglove Studio.",
-    "author": "PlotJuggler Team",
-    "publisher": "PlotJuggler",
-    "website": "https://github.com/PlotJuggler/pj-official-plugins",
-    "repository": "https://github.com/PlotJuggler/pj-official-plugins",
-    "license": "MIT",
-    "icon_url": "",
-    "category": "data_stream",
-    "tags": ["foxglove", "bridge", "stream", "ros", "websocket"],
-    "min_plotjuggler_version": "4.0.0"
+  "id": "foxglove-bridge",
+  "name": "Foxglove Bridge",
+  "version": "1.1.0",
+  "description": "Connect to Foxglove WebSocket server for ROS data streaming. Compatible with Foxglove Studio.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "data_stream",
+  "tags": [
+    "foxglove",
+    "bridge",
+    "stream",
+    "ros",
+    "websocket"
+  ],
+  "min_plotjuggler_version": "4.0.0"
 }
