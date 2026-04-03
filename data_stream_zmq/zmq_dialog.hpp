@@ -8,6 +8,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -41,8 +43,8 @@ class ZmqDialog : public PJ::DialogPluginTyped {
     wd.setText("lineEditAddress", address_);
     wd.setText("lineEditPort", std::to_string(port_));
 
-    // Protocol combo
-    wd.setItems("comboBoxProtocol", {"json", "protobuf", "cdr"});
+    // Protocol combo — extended list supporting all nlohmann-based parsers
+    wd.setItems("comboBoxProtocol", {"json", "cbor", "msgpack", "bson", "protobuf", "cdr"});
     wd.setCurrentIndex("comboBoxProtocol", encodingToIndex(encoding_));
 
     // Topic filter
@@ -138,17 +140,14 @@ class ZmqDialog : public PJ::DialogPluginTyped {
   }
 
   static int encodingToIndex(const std::string& e) {
-    if (e == "protobuf") return 1;
-    if (e == "cdr") return 2;
-    return 0;  // json
+    static const std::vector<std::string> encodings = {"json", "cbor", "msgpack", "bson", "protobuf", "cdr"};
+    auto it = std::find(encodings.begin(), encodings.end(), e);
+    return (it != encodings.end()) ? static_cast<int>(std::distance(encodings.begin(), it)) : 0;
   }
 
   static std::string indexToEncoding(int idx) {
-    switch (idx) {
-      case 1: return "protobuf";
-      case 2: return "cdr";
-      default: return "json";
-    }
+    static const std::vector<std::string> encodings = {"json", "cbor", "msgpack", "bson", "protobuf", "cdr"};
+    return (idx >= 0 && idx < static_cast<int>(encodings.size())) ? encodings[static_cast<size_t>(idx)] : "json";
   }
 
   std::string address_ = "localhost";
