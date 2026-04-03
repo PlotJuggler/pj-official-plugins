@@ -34,12 +34,13 @@ class MqttSource : public PJ::StreamSourceBase {
   std::string saveConfig() const override { return dialog_.saveConfig(); }
 
   PJ::Status loadConfig(std::string_view config_json) override {
-    if (!dialog_.loadConfig(config_json)) {
-      return PJ::unexpected(std::string("invalid config JSON"));
-    }
-
-    // Populate available encodings from runtime host (for dialog's protocol combo)
+    // Always populate available encodings first (needed even if config is empty)
     dialog_.setAvailableEncodings(runtimeHost().listAvailableEncodings());
+
+    // Load config if provided (empty config on first run is OK)
+    if (!config_json.empty()) {
+      (void)dialog_.loadConfig(config_json);  // Ignore errors, use defaults
+    }
 
     return PJ::okStatus();
   }
