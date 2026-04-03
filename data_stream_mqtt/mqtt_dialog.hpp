@@ -11,8 +11,6 @@
 #include <mqtt/async_client.h>
 
 #include <algorithm>
-#include <functional>
-#include <iterator>
 #include <mutex>
 #include <set>
 #include <string>
@@ -28,13 +26,10 @@ class MqttDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
  public:
-  /// Callback type for querying available encodings from the runtime host.
-  /// Returns JSON array string, e.g. ["json","cbor","protobuf"], or empty if unavailable.
-  using EncodingsCallback = std::function<std::string_view()>;
-
-  /// Set the callback to query available encodings from the runtime host.
-  /// Called by the owning DataSource after runtime host is bound.
-  void setEncodingsCallback(EncodingsCallback callback) { encodings_callback_ = std::move(callback); }
+  /// Called by the DataSource after loadConfig() to populate available encodings.
+  void setAvailableEncodings(std::vector<std::string> encodings) {
+    available_encodings_ = std::move(encodings);
+  }
 
   // --- Dialog protocol ---
 
@@ -83,11 +78,10 @@ class MqttDialog : public PJ::DialogPluginTyped {
     }
 
     // Protocol combo — dynamically populated from available parsers
-    auto encodings = getAvailableEncodings();
-    bool has_encodings = !encodings.empty();
+    bool has_encodings = !available_encodings_.empty();
     if (has_encodings) {
-      wd.setItems("comboBoxProtocol", encodings);
-      wd.setCurrentIndex("comboBoxProtocol", encodingToIndex(encoding_, encodings));
+      wd.setItems("comboBoxProtocol", available_encodings_);
+      wd.setCurrentIndex("comboBoxProtocol", encodingToIndex(encoding_));
     } else {
       wd.setItems("comboBoxProtocol", {"(no parsers available)"});
       wd.setCurrentIndex("comboBoxProtocol", 0);
@@ -168,8 +162,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
       return false;
     }
     if (widget_name == "comboBoxProtocol") {
-      auto encodings = getAvailableEncodings();
-      encoding_ = indexToEncoding(index, encodings);
+      encoding_ = indexToEncoding(index);
       return false;
     }
     return false;
@@ -253,38 +246,16 @@ class MqttDialog : public PJ::DialogPluginTyped {
   }
 
  private:
-/// Query available encodings from runtime host.
-  /// Returns empty vector if no parsers are loaded or host doesn't support the method.
-  std::vector<std::string> getAvailableEncodings() const {
-    if (encodings_callback_) {
-      auto json_str = encodings_callback_();
-      if (!json_str.empty()) {
-        auto arr = nlohmann::json::parse(json_str, nullptr, false);
-        if (arr.is_array()) {
-          std::vector<std::string> result;
-          result.reserve(arr.size());
-          for (const auto& e : arr) {
-            if (e.is_string()) {
-              result.push_back(e.get<std::string>());
-            }
-          }
-          return result;
-        }
-      }
-    }
-    return {};
+  int encodingToIndex(const std::string& e) const {
+    auto it = std::find(available_encodings_.begin(), available_encodings_.end(), e);
+    return (it != available_encodings_.end()) ? static_cast<int>(std::distance(available_encodings_.begin(), it)) : 0;
   }
 
-  static int encodingToIndex(const std::string& e, const std::vector<std::string>& encodings) {
-    auto it = std::find(encodings.begin(), encodings.end(), e);
-    return (it != encodings.end()) ? static_cast<int>(std::distance(encodings.begin(), it)) : 0;
-  }
-
-  static std::string indexToEncoding(int idx, const std::vector<std::string>& encodings) {
-    if (idx >= 0 && idx < static_cast<int>(encodings.size())) {
-      return encodings[static_cast<size_t>(idx)];
+  std::string indexToEncoding(int idx) const {
+    if (idx >= 0 && idx < static_cast<int>(available_encodings_.size())) {
+      return available_encodings_[static_cast<size_t>(idx)];
     }
-    return encodings.empty() ? "json" : encodings[0];
+    return available_encodings_.empty() ? "json" : available_encodings_[0];
   }
 
   static std::string filenameFromPath(const std::string& path) {
@@ -355,7 +326,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
     connected_ = false;
   }
 
-  EncodingsCallback encodings_callback_;
+  std::vector<std::string> available_encodings_;
 
   std::string broker_address_ = "localhost";
   int port_ = 1883;
