@@ -80,6 +80,9 @@ class JsonParser : public PJ::MessageParserPluginBase {
       encoding_hint_ = cfg.value("encoding_hint", std::string{});
       max_array_size_ = cfg.value("max_array_size", std::size_t{0});
       clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
+      // Embedded timestamp options
+      use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
+      timestamp_field_name_ = cfg.value("timestamp_field_name", std::string("timestamp"));
     }
     return PJ::okStatus();
   }
@@ -109,6 +112,18 @@ class JsonParser : public PJ::MessageParserPluginBase {
 
  private:
   PJ::Status flattenAndAppend(PJ::Timestamp ts, const nlohmann::json& json) {
+    // Extract embedded timestamp if configured
+    PJ::Timestamp effective_ts = ts;
+    if (use_embedded_timestamp_ && json.is_object()) {
+      auto it = json.find(timestamp_field_name_);
+      if (it != json.end() && it->is_number()) {
+        // Assume the value is seconds (with potential fractional part)
+        // Convert to nanoseconds
+        double ts_seconds = it->get<double>();
+        effective_ts = PJ::Timestamp{static_cast<int64_t>(ts_seconds * 1e9)};
+      }
+    }
+
     owned_fields_.clear();
     flattenJson("", json, max_array_size_, clamp_large_arrays_, owned_fields_);
 
@@ -134,7 +149,7 @@ class JsonParser : public PJ::MessageParserPluginBase {
     }
 
     return writeHost().appendBoundRecord(
-        ts, PJ::Span<const PJ::sdk::BoundFieldValue>(bound_fields_.data(), bound_fields_.size()));
+        effective_ts, PJ::Span<const PJ::sdk::BoundFieldValue>(bound_fields_.data(), bound_fields_.size()));
   }
 
   nlohmann::json tryParse(PJ::Span<const uint8_t> payload) {
@@ -174,6 +189,8 @@ class JsonParser : public PJ::MessageParserPluginBase {
   std::string encoding_hint_;
   std::size_t max_array_size_ = 0;
   bool clamp_large_arrays_ = true;
+  bool use_embedded_timestamp_ = false;
+  std::string timestamp_field_name_ = "timestamp";
   std::unordered_map<std::string, PJ::sdk::FieldHandle> field_cache_;
   std::vector<FlattenedField> owned_fields_;
   std::vector<PJ::sdk::BoundFieldValue> bound_fields_;
