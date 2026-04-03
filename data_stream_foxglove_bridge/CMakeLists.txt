@@ -21,3 +21,11 @@ pj_embed_manifest(foxglove_source_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/foxglove_manifest.hpp
   VAR_NAME kFoxgloveManifest
 )
+
+# --- Unit test for Foxglove protocol (header-only) ---
+add_executable(foxglove_protocol_test tests/foxglove_protocol_test.cpp)
+target_compile_features(foxglove_protocol_test PRIVATE cxx_std_20)
+target_compile_options(foxglove_protocol_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(foxglove_protocol_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(foxglove_protocol_test PRIVATE GTest::gtest_main)
+add_test(NAME foxglove_protocol_test COMMAND foxglove_protocol_test)

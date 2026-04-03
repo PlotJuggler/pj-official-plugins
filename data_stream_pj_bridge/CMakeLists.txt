@@ -29,3 +29,10 @@ pj_embed_manifest(pj_bridge_source_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/pj_bridge_manifest.hpp
   VAR_NAME kPjBridgeManifest
 )
+
+# --- Unit test for PJ Bridge protocol ---
+add_executable(pj_bridge_protocol_test tests/pj_bridge_protocol_test.cpp)
+target_compile_features(pj_bridge_protocol_test PRIVATE cxx_std_20)
+target_compile_options(pj_bridge_protocol_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(pj_bridge_protocol_test PRIVATE pj_bridge_protocol_lib GTest::gtest_main)
+add_test(NAME pj_bridge_protocol_test COMMAND pj_bridge_protocol_test)

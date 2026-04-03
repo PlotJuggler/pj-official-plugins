@@ -22,3 +22,11 @@ pj_embed_manifest(mcap_source_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/mcap_manifest.hpp
   VAR_NAME kMcapManifest
 )
+
+# --- Unit test for MCAP helpers ---
+add_executable(mcap_helpers_test tests/mcap_helpers_test.cpp)
+target_compile_features(mcap_helpers_test PRIVATE cxx_std_20)
+target_compile_options(mcap_helpers_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(mcap_helpers_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mcap_helpers_test PRIVATE mcap::mcap GTest::gtest_main)
+add_test(NAME mcap_helpers_test COMMAND mcap_helpers_test)
