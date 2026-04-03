@@ -10,6 +10,8 @@
 
 #include <mqtt/async_client.h>
 
+#include <algorithm>
+#include <iterator>
 #include <mutex>
 #include <set>
 #include <string>
@@ -70,8 +72,8 @@ class MqttDialog : public PJ::DialogPluginTyped {
       wd.setSelectedItems("listWidget", selected_topics_);
     }
 
-    // Protocol combo
-    wd.setItems("comboBoxProtocol", {"json", "protobuf", "cdr"});
+    // Protocol combo — extended list supporting all nlohmann-based parsers
+    wd.setItems("comboBoxProtocol", {"json", "cbor", "msgpack", "bson", "protobuf", "cdr"});
     wd.setCurrentIndex("comboBoxProtocol", encodingToIndex(encoding_));
 
     // TLS certificate file pickers
@@ -232,17 +234,14 @@ class MqttDialog : public PJ::DialogPluginTyped {
 
  private:
   static int encodingToIndex(const std::string& e) {
-    if (e == "protobuf") return 1;
-    if (e == "cdr") return 2;
-    return 0;  // json
+    static const std::vector<std::string> encodings = {"json", "cbor", "msgpack", "bson", "protobuf", "cdr"};
+    auto it = std::find(encodings.begin(), encodings.end(), e);
+    return (it != encodings.end()) ? static_cast<int>(std::distance(encodings.begin(), it)) : 0;
   }
 
   static std::string indexToEncoding(int idx) {
-    switch (idx) {
-      case 1: return "protobuf";
-      case 2: return "cdr";
-      default: return "json";
-    }
+    static const std::vector<std::string> encodings = {"json", "cbor", "msgpack", "bson", "protobuf", "cdr"};
+    return (idx >= 0 && idx < static_cast<int>(encodings.size())) ? encodings[static_cast<size_t>(idx)] : "json";
   }
 
   static std::string filenameFromPath(const std::string& path) {

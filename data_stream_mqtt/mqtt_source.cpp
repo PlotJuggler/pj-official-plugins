@@ -81,7 +81,7 @@ class MqttSource : public PJ::StreamSourceBase {
             m.payload.assign(
                 reinterpret_cast<const uint8_t*>(payload.data()),
                 reinterpret_cast<const uint8_t*>(payload.data()) + payload.size());
-            auto now = std::chrono::system_clock::now().time_since_epoch();
+            auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
             m.timestamp_ns =
                 std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
 
