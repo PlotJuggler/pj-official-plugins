@@ -273,4 +273,58 @@ TEST(JsonParserTest, ManifestContainsEncoding) {
   EXPECT_NE(f.handle.manifest().find("\"encoding\": \"json\""), std::string::npos);
 }
 
+// ---------------------------------------------------------------------------
+// Embedded timestamp tests
+// ---------------------------------------------------------------------------
+
+TEST(JsonParserTest, EmbeddedTimestampDisabledByDefault) {
+  JsonParserFixture f;
+  f.setUp();
+  // Without config, the host timestamp should be used even if JSON has "timestamp" field
+  ASSERT_TRUE(f.parse(R"({"timestamp":1234.567,"value":42.0})", 9999));
+  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  EXPECT_EQ(f.recorder.rows[0].timestamp, 9999);  // host timestamp, not embedded
+}
+
+TEST(JsonParserTest, EmbeddedTimestampEnabled) {
+  JsonParserFixture f;
+  f.setUp();
+  // Enable embedded timestamp via config
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  ASSERT_TRUE(f.parse(R"({"timestamp":1234.567,"value":42.0})", 9999));
+  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  // 1234.567 seconds -> nanoseconds
+  EXPECT_EQ(f.recorder.rows[0].timestamp, 1234567000000LL);
+}
+
+TEST(JsonParserTest, EmbeddedTimestampCustomFieldName) {
+  JsonParserFixture f;
+  f.setUp();
+  // Use custom field name "ts" instead of default "timestamp"
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true,"timestamp_field_name":"ts"})"));
+  ASSERT_TRUE(f.parse(R"({"ts":5678.123,"value":42.0})", 9999));
+  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  EXPECT_EQ(f.recorder.rows[0].timestamp, 5678123000000LL);
+}
+
+TEST(JsonParserTest, EmbeddedTimestampMissingFieldFallsBackToHost) {
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  // JSON doesn't have "timestamp" field, should use host timestamp
+  ASSERT_TRUE(f.parse(R"({"value":42.0})", 9999));
+  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  EXPECT_EQ(f.recorder.rows[0].timestamp, 9999);
+}
+
+TEST(JsonParserTest, EmbeddedTimestampIntegerValue) {
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  // Integer timestamp (seconds)
+  ASSERT_TRUE(f.parse(R"({"timestamp":1000,"value":42.0})", 9999));
+  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  EXPECT_EQ(f.recorder.rows[0].timestamp, 1000000000000LL);  // 1000 * 1e9
+}
+
 }  // namespace
