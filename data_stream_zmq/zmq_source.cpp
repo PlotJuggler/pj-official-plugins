@@ -28,6 +28,8 @@ class ZmqSource : public PJ::StreamSourceBase {
     if (!dialog_.loadConfig(config_json)) {
       return PJ::unexpected(std::string("invalid config JSON"));
     }
+    // Populate available encodings from runtime host (for dialog's protocol combo)
+    dialog_.setAvailableEncodings(runtimeHost().listAvailableEncodings());
     return PJ::okStatus();
   }
 
@@ -122,7 +124,7 @@ class ZmqSource : public PJ::StreamSourceBase {
           (void)socket_->recv(ts_msg, zmq::recv_flags::dontwait);
         }
       } else {
-        auto now = std::chrono::system_clock::now().time_since_epoch();
+        auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
         timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
       }
 
