@@ -99,7 +99,29 @@ python3 scripts/release_extension.py csv-loader
 python3 scripts/submit_to_registry.py csv-loader
 ```
 
-### Option C: Fully Manual (Create Tags by Hand)
+### Option C: Tag-Only (Manifest Already Updated)
+
+When the manifest already has the correct version (e.g., version was bumped in a previous commit), use the script without `--bump` or `--version` to create only the tag.
+
+```bash
+# Manifest already has version 1.2.0 committed to main
+# Just create tag and trigger CI
+
+python3 scripts/release_extension.py csv-loader --submit-to-registry
+
+# The script will:
+#   - Read version from manifest.json (e.g., 1.2.0)
+#   - Create annotated tag data_load_csv/v1.2.0
+#   - Push to GitHub → triggers CI
+#   - NO manifest update, NO new commit
+```
+
+**Use cases:**
+- Version was bumped in a hotfix commit
+- Multiple plugins need releasing after a batch version update
+- Re-creating tags after cleanup (deleted tags, failed releases)
+
+### Option D: Fully Manual (Create Tags by Hand)
 
 Maximum control. Useful for debugging or special releases.
 
@@ -276,6 +298,9 @@ Examples:
 
   # Set specific version
   python3 scripts/release_extension.py csv-loader --version 2.0.0 --submit-to-registry
+
+  # Tag-only: manifest already has correct version, just create tag
+  python3 scripts/release_extension.py csv-loader --submit-to-registry
 
   # Preview what would happen
   python3 scripts/release_extension.py csv-loader --bump minor --dry-run

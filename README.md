@@ -97,6 +97,17 @@ This will:
 4. CI builds all 6 platforms and creates GitHub Release
 5. Automatically creates PR to `pj-plugin-registry`
 
+### Tag-Only (Manifest Already Updated)
+
+When manifest already has the correct version (e.g., bumped in a previous commit):
+
+```bash
+# No --bump or --version: reads version from manifest, creates tag only
+python3 scripts/release_extension.py foxglove-bridge --submit-to-registry
+```
+
+Useful for batch releases or re-creating tags after cleanup.
+
 ### Tag Convention
 
 ```
