@@ -1,15 +1,16 @@
 import paho.mqtt.client as mqtt
-from paho.mqtt.enums import CallbackAPIVersion
 import math
 import json
 from time import sleep
 
 # The callback for when the client receives a CONNACK response from the server.
-def on_connect(client, userdata, flags, reason_code, properties):
-    print("Connected with result code "+str(reason_code))
+def on_connect(client, userdata, flags, rc):
+    print("Connected with result code "+str(rc))
 
-client = mqtt.Client(callback_api_version=CallbackAPIVersion.VERSION2, client_id="PlotJuggler-test")
+client = mqtt.Client()
 client.on_connect = on_connect
+
+client = mqtt.Client("PlotJuggler-test") #create new instance
 
 client.connect("127.0.0.1", 1883, 60)
 

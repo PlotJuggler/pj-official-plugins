@@ -47,12 +47,10 @@ class MqttSource : public PJ::StreamSourceBase {
 
   PJ::Status onStart() override {
     // Read config from dialog
-    auto config_str = dialog_.saveConfig();
-    auto cfg = nlohmann::json::parse(config_str, nullptr, false);
+    auto cfg = nlohmann::json::parse(dialog_.saveConfig(), nullptr, false);
     if (cfg.is_discarded()) {
       return PJ::unexpected("invalid dialog config");
     }
-
     broker_address_ = cfg.value("address", std::string("localhost"));
     port_ = cfg.value("port", 1883);
     topic_filter_ = cfg.value("topics", std::string("#"));
