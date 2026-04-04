@@ -1,6 +1,8 @@
 #include <pj_base/sdk/message_parser_plugin_base.hpp>
+#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 
 #include "json_manifest.hpp"
+#include "json_parser_dialog.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -199,3 +201,5 @@ class JsonParser : public PJ::MessageParserPluginBase {
 }  // namespace
 
 PJ_MESSAGE_PARSER_PLUGIN(JsonParser, kJsonManifest)
+
+PJ_DIALOG_PLUGIN(JsonParserDialog)
