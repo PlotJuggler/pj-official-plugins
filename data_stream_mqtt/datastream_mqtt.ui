@@ -647,10 +647,37 @@
        <number>6</number>
       </property>
       <item>
-       <widget class="QLabel" name="label_9">
-        <property name="text">
-         <string>Protocol options:</string>
+       <widget class="QGroupBox" name="groupBoxParserOptions">
+        <property name="title">
+         <string>Parser Options</string>
         </property>
+        <property name="styleSheet">
+         <string>QGroupBox > QWidget { font-weight: normal; }</string>
+        </property>
+        <layout class="QVBoxLayout" name="layoutParserOptions">
+         <property name="leftMargin">
+          <number>6</number>
+         </property>
+         <property name="topMargin">
+          <number>6</number>
+         </property>
+         <property name="rightMargin">
+          <number>6</number>
+         </property>
+         <property name="bottomMargin">
+          <number>6</number>
+         </property>
+         <item>
+          <widget class="QWidget" name="pj_parser_slot" native="true">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>280</height>
+            </size>
+           </property>
+          </widget>
+         </item>
+        </layout>
        </widget>
       </item>
      </layout>
