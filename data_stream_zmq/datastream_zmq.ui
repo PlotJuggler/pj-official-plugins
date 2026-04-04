@@ -7,13 +7,13 @@
     <x>0</x>
     <y>0</y>
     <width>550</width>
-    <height>400</height>
+    <height>620</height>
    </rect>
   </property>
   <property name="minimumSize">
    <size>
     <width>550</width>
-    <height>400</height>
+    <height>620</height>
    </size>
   </property>
   <property name="windowTitle">
@@ -150,15 +150,37 @@
        <number>6</number>
       </property>
       <item>
-       <widget class="QLabel" name="label_5">
-        <property name="font">
-         <font>
-          <bold>true</bold>
-         </font>
+       <widget class="QGroupBox" name="groupBoxParserOptions">
+        <property name="title">
+         <string>Parser Options</string>
         </property>
-        <property name="text">
-         <string>Protocol options:</string>
+        <property name="styleSheet">
+         <string>QGroupBox > QWidget { font-weight: normal; }</string>
         </property>
+        <layout class="QVBoxLayout" name="layoutParserOptions">
+         <property name="leftMargin">
+          <number>6</number>
+         </property>
+         <property name="topMargin">
+          <number>6</number>
+         </property>
+         <property name="rightMargin">
+          <number>6</number>
+         </property>
+         <property name="bottomMargin">
+          <number>6</number>
+         </property>
+         <item>
+          <widget class="QWidget" name="pj_parser_slot" native="true">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>280</height>
+            </size>
+           </property>
+          </widget>
+         </item>
+        </layout>
        </widget>
       </item>
      </layout>

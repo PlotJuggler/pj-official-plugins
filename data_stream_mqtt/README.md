@@ -15,6 +15,33 @@ to message parsers.
 The dialog configures broker address, port, topic filter, QoS level,
 and SSL toggle. Parser encoding is auto-detected from message content.
 
+## Testing
+
+Test publisher scripts are in `test_scripts/`. Requires `pip install paho-mqtt protobuf`.
+
+```bash
+cd test_scripts/
+
+# JSON without embedded timestamp
+./mqtt_publisher.py --mode json
+
+# JSON with embedded timestamp field
+./mqtt_publisher.py --mode json_ts
+
+# Protobuf without timestamp
+./mqtt_publisher.py --mode protobuf
+
+# Protobuf with timestamp field
+./mqtt_publisher.py --mode protobuf_ts
+
+# Custom broker/topic/rate
+./mqtt_publisher.py --mode json_ts --host 192.168.1.100 --topic sensors --rate 20
+```
+
+Options: `--host`, `--port`, `--topic`, `--rate`, `--qos`.
+
+The `test_message.proto` schema is used for protobuf modes.
+
 ## Known Limitations
 
 - TLS certificate management not yet available (only on/off toggle)

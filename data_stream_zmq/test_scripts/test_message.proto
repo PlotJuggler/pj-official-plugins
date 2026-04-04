@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package pj.test;
+
+// Simple test message for PlotJuggler streaming tests.
+// Supports both with and without timestamp field scenarios.
+message TestMessage {
+  // Optional timestamp field (seconds as double)
+  // When use_embedded_timestamp is enabled in parser, this field is used
+  double timestamp = 1;
+
+  // Simple sensor data
+  double value_sin = 2;
+  double value_cos = 3;
+  int32 counter = 4;
+
+  // Nested data structure
+  SensorData sensors = 5;
+}
+
+message SensorData {
+  double temperature = 1;
+  double pressure = 2;
+  double humidity = 3;
+}
