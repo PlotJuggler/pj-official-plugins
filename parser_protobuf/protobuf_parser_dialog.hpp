@@ -337,9 +337,9 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     output.reserve(((input.size() + 2) / 3) * 4);
 
     for (size_t i = 0; i < input.size(); i += 3) {
-      uint32_t n = (static_cast<uint8_t>(input[i]) << 16);
-      if (i + 1 < input.size()) n |= (static_cast<uint8_t>(input[i + 1]) << 8);
-      if (i + 2 < input.size()) n |= static_cast<uint8_t>(input[i + 2]);
+      uint32_t n = static_cast<uint32_t>(static_cast<uint8_t>(input[i])) << 16;
+      if (i + 1 < input.size()) n |= static_cast<uint32_t>(static_cast<uint8_t>(input[i + 1])) << 8;
+      if (i + 2 < input.size()) n |= static_cast<uint32_t>(static_cast<uint8_t>(input[i + 2]));
 
       output.push_back(kBase64Chars[(n >> 18) & 0x3F]);
       output.push_back(kBase64Chars[(n >> 12) & 0x3F]);
