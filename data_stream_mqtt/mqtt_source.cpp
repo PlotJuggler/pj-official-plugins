@@ -1,4 +1,5 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
+#include <pj_plugins/sdk/encoding_utils.hpp>
 
 #include "mqtt_dialog.hpp"
 #include "mqtt_manifest.hpp"
@@ -35,7 +36,7 @@ class MqttSource : public PJ::StreamSourceBase {
 
   PJ::Status loadConfig(std::string_view config_json) override {
     // Always populate available encodings first (needed even if config is empty)
-    dialog_.setAvailableEncodings(runtimeHost().listAvailableEncodings());
+    dialog_.setAvailableEncodings(PJ::sdk::parseEncodingsJson(runtimeHost().listAvailableEncodings()));
 
     // Load config if provided (empty config on first run is OK)
     if (!config_json.empty()) {
@@ -47,12 +48,10 @@ class MqttSource : public PJ::StreamSourceBase {
 
   PJ::Status onStart() override {
     // Read config from dialog
-    auto config_str = dialog_.saveConfig();
-    auto cfg = nlohmann::json::parse(config_str, nullptr, false);
+    auto cfg = nlohmann::json::parse(dialog_.saveConfig(), nullptr, false);
     if (cfg.is_discarded()) {
       return PJ::unexpected("invalid dialog config");
     }
-
     broker_address_ = cfg.value("address", std::string("localhost"));
     port_ = cfg.value("port", 1883);
     topic_filter_ = cfg.value("topics", std::string("#"));
