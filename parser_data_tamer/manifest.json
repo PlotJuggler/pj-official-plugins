@@ -1,16 +1,21 @@
 {
-    "id": "data-tamer-parser",
-    "name": "DataTamer Parser",
-    "version": "1.0.0",
-    "description": "Message parser for DataTamer encoded data. Efficient serialization for robotics.",
-    "author": "PlotJuggler Team",
-    "publisher": "PlotJuggler",
-    "website": "https://github.com/PlotJuggler/pj-official-plugins",
-    "repository": "https://github.com/PlotJuggler/pj-official-plugins",
-    "license": "MIT",
-    "icon_url": "",
-    "category": "message_parser",
-    "tags": ["data_tamer", "parser", "robotics", "serialization"],
-    "encoding": "data_tamer",
-    "min_plotjuggler_version": "4.0.0"
+  "id": "data-tamer-parser",
+  "name": "DataTamer Parser",
+  "version": "1.2.0",
+  "description": "Message parser for DataTamer encoded data. Efficient serialization for robotics.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "message_parser",
+  "tags": [
+    "data_tamer",
+    "parser",
+    "robotics",
+    "serialization"
+  ],
+  "encoding": "data_tamer",
+  "min_plotjuggler_version": "4.0.0"
 }
