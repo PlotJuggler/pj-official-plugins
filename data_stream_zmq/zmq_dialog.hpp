@@ -8,6 +8,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -20,6 +22,12 @@ class ZmqDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
  public:
+  /// Set the available encodings from the runtime host.
+  /// Called by the owning DataSource after runtime host is bound (in loadConfig).
+  void setAvailableEncodings(std::vector<std::string> encodings) {
+    available_encodings_ = std::move(encodings);
+  }
+
   // --- Dialog protocol ---
 
   std::string manifest() const override { return kZmqManifest; }
@@ -41,14 +49,23 @@ class ZmqDialog : public PJ::DialogPluginTyped {
     wd.setText("lineEditAddress", address_);
     wd.setText("lineEditPort", std::to_string(port_));
 
-    // Protocol combo
-    wd.setItems("comboBoxProtocol", {"json", "protobuf", "cdr"});
-    wd.setCurrentIndex("comboBoxProtocol", encodingToIndex(encoding_));
+    // Protocol combo — dynamically populated from available parsers
+    auto encodings = getAvailableEncodings();
+    bool has_encodings = !encodings.empty();
+    if (has_encodings) {
+      wd.setItems("comboBoxProtocol", encodings);
+      wd.setCurrentIndex("comboBoxProtocol", encodingToIndex(encoding_, encodings));
+    } else {
+      wd.setItems("comboBoxProtocol", {"(no parsers available)"});
+      wd.setCurrentIndex("comboBoxProtocol", 0);
+      wd.setEnabled("comboBoxProtocol", false);
+    }
 
     // Topic filter
     wd.setText("lineEditTopics", topic_filter_);
 
-    wd.setOkEnabled(true);
+    // Disable OK if no encodings available
+    wd.setOkEnabled(has_encodings);
 
     return wd.toJson();
   }
@@ -71,7 +88,8 @@ class ZmqDialog : public PJ::DialogPluginTyped {
       return false;
     }
     if (widget_name == "comboBoxProtocol") {
-      encoding_ = indexToEncoding(index);
+      auto encodings = getAvailableEncodings();
+      encoding_ = indexToEncoding(index, encodings);
       return false;
     }
     return false;
@@ -137,19 +155,25 @@ class ZmqDialog : public PJ::DialogPluginTyped {
     }
   }
 
-  static int encodingToIndex(const std::string& e) {
-    if (e == "protobuf") return 1;
-    if (e == "cdr") return 2;
-    return 0;  // json
+/// Get available encodings set by the owning DataSource.
+  /// Returns empty vector if no parsers are loaded or host doesn't support the method.
+  std::vector<std::string> getAvailableEncodings() const {
+    return available_encodings_;
   }
 
-  static std::string indexToEncoding(int idx) {
-    switch (idx) {
-      case 1: return "protobuf";
-      case 2: return "cdr";
-      default: return "json";
-    }
+  static int encodingToIndex(const std::string& e, const std::vector<std::string>& encodings) {
+    auto it = std::find(encodings.begin(), encodings.end(), e);
+    return (it != encodings.end()) ? static_cast<int>(std::distance(encodings.begin(), it)) : 0;
   }
+
+  static std::string indexToEncoding(int idx, const std::vector<std::string>& encodings) {
+    if (idx >= 0 && idx < static_cast<int>(encodings.size())) {
+      return encodings[static_cast<size_t>(idx)];
+    }
+    return encodings.empty() ? "json" : encodings[0];
+  }
+
+  std::vector<std::string> available_encodings_;
 
   std::string address_ = "localhost";
   int port_ = 9872;
