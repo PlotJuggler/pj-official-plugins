@@ -34,18 +34,25 @@ class MqttSource : public PJ::StreamSourceBase {
   std::string saveConfig() const override { return dialog_.saveConfig(); }
 
   PJ::Status loadConfig(std::string_view config_json) override {
-    if (!dialog_.loadConfig(config_json)) {
-      return PJ::unexpected(std::string("invalid config JSON"));
+    // Always populate available encodings first (needed even if config is empty)
+    dialog_.setAvailableEncodings(runtimeHost().listAvailableEncodings());
+
+    // Load config if provided (empty config on first run is OK)
+    if (!config_json.empty()) {
+      (void)dialog_.loadConfig(config_json);  // Ignore errors, use defaults
     }
+
     return PJ::okStatus();
   }
 
   PJ::Status onStart() override {
     // Read config from dialog
-    auto cfg = nlohmann::json::parse(dialog_.saveConfig(), nullptr, false);
+    auto config_str = dialog_.saveConfig();
+    auto cfg = nlohmann::json::parse(config_str, nullptr, false);
     if (cfg.is_discarded()) {
       return PJ::unexpected("invalid dialog config");
     }
+
     broker_address_ = cfg.value("address", std::string("localhost"));
     port_ = cfg.value("port", 1883);
     topic_filter_ = cfg.value("topics", std::string("#"));
@@ -81,7 +88,7 @@ class MqttSource : public PJ::StreamSourceBase {
             m.payload.assign(
                 reinterpret_cast<const uint8_t*>(payload.data()),
                 reinterpret_cast<const uint8_t*>(payload.data()) + payload.size());
-            auto now = std::chrono::system_clock::now().time_since_epoch();
+            auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
             m.timestamp_ns =
                 std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
 
