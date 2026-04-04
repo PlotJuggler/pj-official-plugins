@@ -1,4 +1,5 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
+#include <pj_plugins/sdk/encoding_utils.hpp>
 
 #include "zmq_dialog.hpp"
 #include "zmq_manifest.hpp"
@@ -26,7 +27,7 @@ class ZmqSource : public PJ::StreamSourceBase {
 
   PJ::Status loadConfig(std::string_view config_json) override {
     // Always populate available encodings first (needed even if config is empty)
-    dialog_.setAvailableEncodings(runtimeHost().listAvailableEncodings());
+    dialog_.setAvailableEncodings(PJ::sdk::parseEncodingsJson(runtimeHost().listAvailableEncodings()));
 
     // Load config if provided (empty config on first run is OK)
     if (!config_json.empty()) {
