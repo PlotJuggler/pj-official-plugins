@@ -1,17 +1,29 @@
 {
-    "id": "ros-parser",
-    "name": "ROS CDR Parser",
-    "version": "2.0.0",
-    "description": "Message parser for ROS1 and ROS2 messages. Supports ros1msg, ros2msg, and CDR encodings.",
-    "author": "PlotJuggler Team",
-    "publisher": "PlotJuggler",
-    "website": "https://github.com/PlotJuggler/pj-official-plugins",
-    "repository": "https://github.com/PlotJuggler/pj-official-plugins",
-    "license": "MIT",
-    "icon_url": "",
-    "category": "message_parser",
-    "tags": ["ros", "ros1", "ros2", "cdr", "parser", "robotics"],
-    "encoding": "ros2msg",
-    "additional_encodings": ["ros1msg", "cdr", "ros1", "ros2"],
-    "min_plotjuggler_version": "4.0.0"
+  "id": "ros-parser",
+  "name": "ROS CDR Parser",
+  "version": "2.2.0",
+  "description": "Message parser for ROS1 and ROS2 messages. Supports ros1msg, ros2msg, and CDR encodings.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "message_parser",
+  "tags": [
+    "ros",
+    "ros1",
+    "ros2",
+    "cdr",
+    "parser",
+    "robotics"
+  ],
+  "encoding": "ros2msg",
+  "additional_encodings": [
+    "ros1msg",
+    "cdr",
+    "ros1",
+    "ros2"
+  ],
+  "min_plotjuggler_version": "4.0.0"
 }
