@@ -69,6 +69,7 @@ class McapDialog : public PJ::DialogPluginTyped {
 
     std::vector<std::vector<std::string>> rows;
     std::vector<int> selected_row_indices;
+    std::vector<int> disabled_row_indices;
     rows.reserve(filtered.size());
 
     for (size_t i = 0; i < filtered.size(); ++i) {
@@ -77,8 +78,12 @@ class McapDialog : public PJ::DialogPluginTyped {
       if (selected_topics_.count(ch.topic) > 0) {
         selected_row_indices.push_back(static_cast<int>(i));
       }
+      if (ch.msg_count == 0) {
+        disabled_row_indices.push_back(static_cast<int>(i));
+      }
     }
     wd.setTableRows("tableWidget", rows);
+    wd.setDisabledRows("tableWidget", disabled_row_indices);
     wd.setSelectedRows("tableWidget", selected_row_indices);
 
     wd.setOkEnabled(!selected_topics_.empty());
