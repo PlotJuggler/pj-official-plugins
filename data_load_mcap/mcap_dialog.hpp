@@ -86,6 +86,9 @@ class McapDialog : public PJ::DialogPluginTyped {
     wd.setDisabledRows("tableWidget", disabled_row_indices);
     wd.setSelectedRows("tableWidget", selected_row_indices);
 
+    wd.setShortcut("btnSelectAll", "Ctrl+A");
+    wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
+
     wd.setOkEnabled(!selected_topics_.empty());
 
     return wd.toJson();
