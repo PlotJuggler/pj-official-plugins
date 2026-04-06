@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package pj.common;
+
+// Base types shared across multiple message definitions.
+// This file is in a subdirectory to test include folder functionality.
+
+message Vector3 {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+
+message Quaternion {
+  double w = 1;
+  double x = 2;
+  double y = 3;
+  double z = 4;
+}
+
+message Header {
+  double timestamp = 1;  // seconds
+  string frame_id = 2;
+  uint32 seq = 3;
+}
