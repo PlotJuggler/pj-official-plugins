@@ -124,7 +124,13 @@ class ParquetDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
-  void onAccepted(std::string_view /*json*/) override {}
+  void onAccepted(std::string_view /*json*/) override {
+    // Persist the selected column name for cross-file history within the session
+    if (time_mode_ == "column" && selected_column_index_ >= 0 &&
+        selected_column_index_ < static_cast<int>(column_names_.size())) {
+      last_selected_column_name_ = column_names_[static_cast<size_t>(selected_column_index_)];
+    }
+  }
   void onRejected() override {}
 
   std::string saveConfig() const override {
@@ -170,9 +176,19 @@ class ParquetDialog : public PJ::DialogPluginTyped {
       column_names_.push_back(schema->field(i)->name());
     }
 
-    // Auto-select timestamp column if none selected yet
+    // Auto-select timestamp column if none selected yet:
+    // 1. Try Arrow TIMESTAMP type or well-known name
+    // 2. Fall back to previously selected column name (cross-file history within session)
     if (selected_column_index_ < 0) {
       selected_column_index_ = findTimestampColumn(schema);
+    }
+    if (selected_column_index_ < 0 && !last_selected_column_name_.empty()) {
+      for (int i = 0; i < static_cast<int>(column_names_.size()); ++i) {
+        if (column_names_[static_cast<size_t>(i)] == last_selected_column_name_) {
+          selected_column_index_ = i;
+          break;
+        }
+      }
     }
   }
 
@@ -197,6 +213,9 @@ class ParquetDialog : public PJ::DialogPluginTyped {
     }
     return -1;
   }
+
+  // Cross-file column history: remembers the last accepted column name within the session
+  inline static std::string last_selected_column_name_;
 
   std::string filepath_;
   std::string time_mode_ = "column";
