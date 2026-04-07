@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package pj.test;
+
+// Import from subdirectory - requires adding include folder in PlotJuggler
+import "common/types.proto";
+
+// Robot pose message that uses imported types.
+// To compile this proto in PlotJuggler:
+//   1. Load this file (robot_pose.proto)
+//   2. Add the parent directory as an include folder
+//   3. The import "common/types.proto" will be resolved
+message RobotPose {
+  // Header with timestamp (for embedded timestamp feature)
+  pj.common.Header header = 1;
+
+  // Position using imported Vector3
+  pj.common.Vector3 position = 2;
+
+  // Orientation using imported Quaternion
+  pj.common.Quaternion orientation = 3;
+
+  // Velocity
+  pj.common.Vector3 linear_velocity = 4;
+  pj.common.Vector3 angular_velocity = 5;
+
+  // Additional robot state
+  string robot_name = 6;
+  bool is_moving = 7;
+  double battery_level = 8;
+}
