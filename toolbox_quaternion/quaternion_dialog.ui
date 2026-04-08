@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>QuaternionDialog</class>
+ <widget class="QWidget" name="QuaternionDialog">
+  <property name="windowTitle">
+   <string>Quaternion to RPY</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <item>
+    <layout class="QFormLayout" name="formLayout">
+     <item row="0" column="0"><widget class="QLabel"><property name="text"><string>X series:</string></property></widget></item>
+     <item row="0" column="1"><widget class="QComboBox" name="input_x"/></item>
+     <item row="1" column="0"><widget class="QLabel"><property name="text"><string>Y series:</string></property></widget></item>
+     <item row="1" column="1"><widget class="QComboBox" name="input_y"/></item>
+     <item row="2" column="0"><widget class="QLabel"><property name="text"><string>Z series:</string></property></widget></item>
+     <item row="2" column="1"><widget class="QComboBox" name="input_z"/></item>
+     <item row="3" column="0"><widget class="QLabel"><property name="text"><string>W series:</string></property></widget></item>
+     <item row="3" column="1"><widget class="QComboBox" name="input_w"/></item>
+     <item row="4" column="0"><widget class="QLabel"><property name="text"><string>Output prefix:</string></property></widget></item>
+     <item row="4" column="1"><widget class="QLineEdit" name="output_prefix"><property name="placeholderText"><string>e.g. /imu/rpy/</string></property></widget></item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout">
+     <item>
+      <widget class="QCheckBox" name="unwrap_check">
+       <property name="text"><string>Unwrap angles</string></property>
+       <property name="checked"><bool>true</bool></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QCheckBox" name="degrees_check">
+       <property name="text"><string>Output in degrees</string></property>
+       <property name="checked"><bool>true</bool></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QLabel" name="status_label">
+     <property name="text"><string></string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>

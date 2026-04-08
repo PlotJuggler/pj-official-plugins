@@ -1,0 +1,5 @@
+{
+  "name": "Quaternion to RPY",
+  "version": "1.0.0",
+  "description": "Converts quaternion (x, y, z, w) time series into Roll, Pitch, Yaw angles with optional unwrapping and degree/radian output."
+}
