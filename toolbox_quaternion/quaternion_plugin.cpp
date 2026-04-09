@@ -239,7 +239,7 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
 class QuaternionToolbox : public PJ::ToolboxPluginBase {
  public:
   uint64_t capabilities() const override {
-    return PJ::kToolboxCapabilityHasDialog;
+    return PJ::kToolboxCapabilityHasDialog | PJ::kToolboxCapabilityNonModalDialog;
   }
 
   void* dialogContext() override {
