@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "quaternion_manifest.hpp"
@@ -52,9 +53,28 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
 
     wd.setText("output_prefix", output_prefix_)
         .setChecked("unwrap_check", unwrap_)
-        .setChecked("degrees_check", degrees_)
+        .setChecked("radio_degrees", degrees_)
+        .setChecked("radio_radians", !degrees_)
         .setText("status_label", status_msg_)
-        .setOkEnabled(isValid());
+        .setEnabled("save_button", isValid());
+
+    if (save_requested_) {
+      save_requested_ = false;
+      wd.requestAccept();
+    }
+
+    // Compute and attach preview chart if inputs are valid.
+    if (isValid()) {
+      auto preview = computePreview();
+      if (!preview.empty()) {
+        wd.setChartSeries("chart_preview", preview);
+      } else {
+        wd.clearChart("chart_preview");
+      }
+    } else {
+      wd.clearChart("chart_preview");
+    }
+
     return wd.toJson();
   }
 
@@ -77,7 +97,15 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
 
   bool onToggled(std::string_view name, bool checked) override {
     if (name == "unwrap_check") { unwrap_ = checked; return true; }
-    if (name == "degrees_check") { degrees_ = checked; return true; }
+    if (name == "radio_degrees") { degrees_ = checked; return true; }
+    return false;
+  }
+
+  bool onClicked(std::string_view name) override {
+    if (name == "save_button" && isValid()) {
+      save_requested_ = true;
+      return true;
+    }
     return false;
   }
 
@@ -134,7 +162,63 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
 
   void setStatus(std::string msg) { status_msg_ = std::move(msg); }
 
+  struct SeriesData {
+    std::vector<double> timestamps;
+    std::vector<double> values;
+  };
+
+  void setSeriesDataMap(std::unordered_map<std::string, SeriesData> data) {
+    series_data_ = std::move(data);
+  }
+
  private:
+  std::vector<PJ::ChartSeries> computePreview() const {
+    auto find = [&](const std::string& name) -> const SeriesData* {
+      auto it = series_data_.find(name);
+      return (it != series_data_.end()) ? &it->second : nullptr;
+    };
+
+    const auto* sx = find(input_x_);
+    const auto* sy = find(input_y_);
+    const auto* sz = find(input_z_);
+    const auto* sw = find(input_w_);
+    if (!sx || !sy || !sz || !sw) return {};
+
+    size_t count = sx->timestamps.size();
+    if (count == 0 || sy->values.size() != count ||
+        sz->values.size() != count || sw->values.size() != count) {
+      return {};
+    }
+
+    QuaternionToRPYConverter converter;
+    converter.setScale(degrees_ ? kDegPerRad : 1.0);
+    converter.setUnwrap(unwrap_);
+    converter.reset();
+
+    PJ::ChartSeries roll_s{"roll", {}};
+    PJ::ChartSeries pitch_s{"pitch", {}};
+    PJ::ChartSeries yaw_s{"yaw", {}};
+    roll_s.points.reserve(count);
+    pitch_s.points.reserve(count);
+    yaw_s.points.reserve(count);
+
+    // Use relative time (seconds from first timestamp) for the X axis.
+    double t0 = sx->timestamps.front();
+
+    for (size_t i = 0; i < count; ++i) {
+      std::array<double, 4> quat = {sx->values[i], sy->values[i], sz->values[i], sw->values[i]};
+      std::array<double, 3> rpy{};
+      converter.convert(i, quat, rpy);
+
+      double t = (sx->timestamps[i] - t0) / 1e9;
+      roll_s.points.push_back({t, rpy[0]});
+      pitch_s.points.push_back({t, rpy[1]});
+      yaw_s.points.push_back({t, rpy[2]});
+    }
+
+    return {std::move(roll_s), std::move(pitch_s), std::move(yaw_s)};
+  }
+
   std::string input_x_;
   std::string input_y_;
   std::string input_z_;
@@ -142,8 +226,10 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
   std::string output_prefix_ = "rpy/";
   bool unwrap_ = true;
   bool degrees_ = true;
+  bool save_requested_ = false;
   std::string status_msg_;
   std::vector<std::string> available_fields_;
+  std::unordered_map<std::string, SeriesData> series_data_;
 };
 
 // ---------------------------------------------------------------------------
@@ -157,17 +243,44 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
   }
 
   void* dialogContext() override {
-    // Populate available fields from catalog before the dialog opens.
+    // Populate available fields and series data from catalog before the dialog opens.
     if (toolboxHostBound()) {
       auto host = toolboxHost();
       auto catalog = host.catalogSnapshot();
       if (catalog) {
         std::vector<std::string> names;
-        for (const auto& f : catalog->fields()) {
-          names.emplace_back(PJ::sdk::toStringView(f.name));
+        std::unordered_map<std::string, QuaternionDialog::SeriesData> data_map;
+
+        auto all_fields = catalog->fields();
+        for (const auto& topic : catalog->topics()) {
+          std::string topic_name(PJ::sdk::toStringView(topic.name));
+          for (uint32_t fi = topic.first_field; fi < topic.first_field + topic.field_count; ++fi) {
+            const auto& f = all_fields[fi];
+            std::string name = topic_name + "/" + std::string(PJ::sdk::toStringView(f.name));
+            names.push_back(name);
+
+            // Read series data for preview.
+            auto series = host.readSeries(f.handle);
+            if (series) {
+              auto ts = series->timestamps();
+              const auto& raw = series->raw();
+              size_t count = ts.size();
+
+              QuaternionDialog::SeriesData sd;
+              sd.timestamps.resize(count);
+              sd.values.resize(count);
+              for (size_t i = 0; i < count; ++i) {
+                sd.timestamps[i] = static_cast<double>(ts[i]);
+                sd.values[i] = raw.values.as_float64[i];
+              }
+              data_map[name] = std::move(sd);
+            }
+          }
         }
+
         std::sort(names.begin(), names.end());
         dialog_.setAvailableFields(std::move(names));
+        dialog_.setSeriesDataMap(std::move(data_map));
       }
     }
     return &dialog_;
@@ -195,14 +308,20 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
       return PJ::unexpected("failed to acquire catalog: " + std::string(catalog.error()));
     }
 
-    auto find_field = [&](const std::string& name)
+    auto find_field = [&](const std::string& full_name)
         -> PJ::Expected<PJ::sdk::FieldHandle> {
-      for (const auto& f : catalog->fields()) {
-        if (PJ::sdk::toStringView(f.name) == name) {
-          return f.handle;
+      auto all_fields = catalog->fields();
+      for (const auto& topic : catalog->topics()) {
+        std::string topic_name(PJ::sdk::toStringView(topic.name));
+        for (uint32_t fi = topic.first_field; fi < topic.first_field + topic.field_count; ++fi) {
+          const auto& f = all_fields[fi];
+          std::string qualified = topic_name + "/" + std::string(PJ::sdk::toStringView(f.name));
+          if (qualified == full_name) {
+            return f.handle;
+          }
         }
       }
-      return PJ::unexpected("field not found: " + name);
+      return PJ::unexpected("field not found: " + full_name);
     };
 
     auto field_x = find_field(dialog_.inputX());
