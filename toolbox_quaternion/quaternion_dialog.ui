@@ -21,13 +21,13 @@
         <item>
          <layout class="QFormLayout" name="formLayout">
           <item row="0" column="0"><widget class="QLabel"><property name="text"><string>X:</string></property></widget></item>
-          <item row="0" column="1"><widget class="QComboBox" name="input_x"><property name="minimumSize"><size><width>300</width><height>0</height></size></property></widget></item>
+          <item row="0" column="1"><widget class="QLineEdit" name="input_x"><property name="minimumSize"><size><width>300</width><height>0</height></size></property><property name="readOnly"><bool>true</bool></property></widget></item>
           <item row="1" column="0"><widget class="QLabel"><property name="text"><string>Y:</string></property></widget></item>
-          <item row="1" column="1"><widget class="QComboBox" name="input_y"><property name="minimumSize"><size><width>300</width><height>0</height></size></property></widget></item>
+          <item row="1" column="1"><widget class="QLineEdit" name="input_y"><property name="minimumSize"><size><width>300</width><height>0</height></size></property><property name="readOnly"><bool>true</bool></property></widget></item>
           <item row="2" column="0"><widget class="QLabel"><property name="text"><string>Z:</string></property></widget></item>
-          <item row="2" column="1"><widget class="QComboBox" name="input_z"><property name="minimumSize"><size><width>300</width><height>0</height></size></property></widget></item>
+          <item row="2" column="1"><widget class="QLineEdit" name="input_z"><property name="minimumSize"><size><width>300</width><height>0</height></size></property><property name="readOnly"><bool>true</bool></property></widget></item>
           <item row="3" column="0"><widget class="QLabel"><property name="text"><string>W:</string></property></widget></item>
-          <item row="3" column="1"><widget class="QComboBox" name="input_w"><property name="minimumSize"><size><width>300</width><height>0</height></size></property></widget></item>
+          <item row="3" column="1"><widget class="QLineEdit" name="input_w"><property name="minimumSize"><size><width>300</width><height>0</height></size></property><property name="readOnly"><bool>true</bool></property></widget></item>
           <item row="4" column="0"><widget class="QLabel"><property name="text"><string>Output:</string></property></widget></item>
           <item row="4" column="1"><widget class="QLineEdit" name="output_prefix"><property name="placeholderText"><string>e.g. /imu/rpy/</string></property></widget></item>
          </layout>

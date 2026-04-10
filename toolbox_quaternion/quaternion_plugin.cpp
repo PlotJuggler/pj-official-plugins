@@ -34,22 +34,11 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
 
   std::string widget_data() override {
     PJ::WidgetData wd;
-    wd.setItems("input_x", available_fields_)
-        .setItems("input_y", available_fields_)
-        .setItems("input_z", available_fields_)
-        .setItems("input_w", available_fields_);
-
-    // Restore selection if previously set.
-    auto select = [&](const char* name, const std::string& value) {
-      auto it = std::find(available_fields_.begin(), available_fields_.end(), value);
-      if (it != available_fields_.end()) {
-        wd.setCurrentIndex(name, static_cast<int>(it - available_fields_.begin()));
-      }
-    };
-    select("input_x", input_x_);
-    select("input_y", input_y_);
-    select("input_z", input_z_);
-    select("input_w", input_w_);
+    wd.setDropTarget("inputFrame");
+    wd.setText("input_x", input_x_);
+    wd.setText("input_y", input_y_);
+    wd.setText("input_z", input_z_);
+    wd.setText("input_w", input_w_);
 
     wd.setText("output_prefix", output_prefix_)
         .setChecked("unwrap_check", unwrap_)
@@ -78,18 +67,6 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
     return wd.toJson();
   }
 
-  bool onIndexChanged(std::string_view name, int index) override {
-    if (index < 0 || static_cast<size_t>(index) >= available_fields_.size()) return false;
-    const auto& value = available_fields_[static_cast<size_t>(index)];
-    if (name == "input_x") { input_x_ = value; }
-    else if (name == "input_y") { input_y_ = value; }
-    else if (name == "input_z") { input_z_ = value; }
-    else if (name == "input_w") { input_w_ = value; }
-    else { return false; }
-    status_msg_.clear();
-    return true;
-  }
-
   bool onTextChanged(std::string_view name, std::string_view text) override {
     if (name == "output_prefix") { output_prefix_ = std::string(text); return true; }
     return false;
@@ -106,6 +83,55 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
       save_requested_ = true;
       return true;
     }
+    return false;
+  }
+
+  bool onCurvesDropped(std::string_view /*name*/, const std::vector<std::string>& curves) override {
+    if (curves.empty()) return false;
+
+    const auto& dropped = curves.front();
+    auto last_slash = dropped.rfind('/');
+    if (last_slash == std::string::npos) return false;
+
+    std::string prefix = dropped.substr(0, last_slash + 1);
+    std::string suffix = dropped.substr(last_slash + 1);
+
+    // Try known quaternion component naming patterns.
+    static constexpr std::array<std::array<const char*, 4>, 2> kPatterns = {{
+        {{"x", "y", "z", "w"}},
+        {{"qx", "qy", "qz", "qw"}},
+    }};
+
+    auto field_exists = [&](const std::string& field) {
+      return std::find(available_fields_.begin(), available_fields_.end(), field) != available_fields_.end();
+    };
+
+    for (const auto& pattern : kPatterns) {
+      bool suffix_matches = false;
+      for (const auto* p : pattern) {
+        if (suffix == p) {
+          suffix_matches = true;
+          break;
+        }
+      }
+      if (!suffix_matches) continue;
+
+      std::string fx = prefix + pattern[0];
+      std::string fy = prefix + pattern[1];
+      std::string fz = prefix + pattern[2];
+      std::string fw = prefix + pattern[3];
+
+      if (field_exists(fx) && field_exists(fy) && field_exists(fz) && field_exists(fw)) {
+        input_x_ = fx;
+        input_y_ = fy;
+        input_z_ = fz;
+        input_w_ = fw;
+        output_prefix_ = prefix + "rpy/";
+        status_msg_.clear();
+        return true;
+      }
+    }
+
     return false;
   }
 
@@ -143,13 +169,6 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
 
   void setAvailableFields(std::vector<std::string> fields) {
     available_fields_ = std::move(fields);
-    // Auto-select first available field for any empty input.
-    if (!available_fields_.empty()) {
-      if (input_x_.empty()) input_x_ = available_fields_.front();
-      if (input_y_.empty()) input_y_ = available_fields_.front();
-      if (input_z_.empty()) input_z_ = available_fields_.front();
-      if (input_w_.empty()) input_w_ = available_fields_.front();
-    }
   }
 
   [[nodiscard]] const std::string& inputX() const { return input_x_; }

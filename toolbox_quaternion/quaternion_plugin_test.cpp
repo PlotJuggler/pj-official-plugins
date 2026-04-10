@@ -32,11 +32,23 @@ struct OutputRecord {
   double value;
 };
 
+struct TopicEntry {
+  std::string name;
+  uint32_t topic_id;
+  uint32_t first_field;
+  uint32_t field_count;
+};
+
 struct MockDataStore {
   std::vector<FieldEntry> fields;
+  std::vector<TopicEntry> topics;
   std::vector<OutputRecord> output;
   int create_data_source_calls = 0;
   int notify_data_changed_calls = 0;
+
+  void addTopic(const std::string& name, uint32_t topic_id, uint32_t first_field, uint32_t field_count) {
+    topics.push_back({name, topic_id, first_field, field_count});
+  }
 
   void addField(const std::string& name, uint32_t topic_id, uint32_t field_id,
                 const std::vector<double>& values, const std::vector<int64_t>& timestamps) {
@@ -99,25 +111,44 @@ static bool hostAppendArrowIpc(void*, PJ_topic_handle_t, PJ_bytes_view_t, PJ_str
   return true;
 }
 
+struct CatalogRelease {
+  PJ_topic_info_t* topics;
+  PJ_field_info_t* fields;
+};
+
 static bool hostAcquireCatalogSnapshot(void* ctx, PJ_catalog_snapshot_t* out) {
   auto* store = static_cast<MockDataStore*>(ctx);
 
-  // Build field infos from stored fields.
-  auto* infos = new PJ_field_info_t[store->fields.size()];
+  auto* field_infos = new PJ_field_info_t[store->fields.size()];
   for (size_t i = 0; i < store->fields.size(); ++i) {
-    infos[i].handle = store->fields[i].handle;
-    infos[i].name = PJ_string_view_t{store->fields[i].name.data(), store->fields[i].name.size()};
-    infos[i].type = PJ_PRIMITIVE_TYPE_FLOAT64;
+    field_infos[i].handle = store->fields[i].handle;
+    field_infos[i].name = PJ_string_view_t{store->fields[i].name.data(), store->fields[i].name.size()};
+    field_infos[i].type = PJ_PRIMITIVE_TYPE_FLOAT64;
+  }
+
+  auto* topic_infos = new PJ_topic_info_t[store->topics.size()];
+  for (size_t i = 0; i < store->topics.size(); ++i) {
+    topic_infos[i].handle = PJ_topic_handle_t{store->topics[i].topic_id};
+    topic_infos[i].source = PJ_data_source_handle_t{1};
+    topic_infos[i].name = PJ_string_view_t{store->topics[i].name.data(), store->topics[i].name.size()};
+    topic_infos[i].first_field = store->topics[i].first_field;
+    topic_infos[i].field_count = store->topics[i].field_count;
   }
 
   out->data_sources = nullptr;
   out->data_source_count = 0;
-  out->topics = nullptr;
-  out->topic_count = 0;
-  out->fields = infos;
+  out->topics = topic_infos;
+  out->topic_count = store->topics.size();
+  out->fields = field_infos;
   out->field_count = store->fields.size();
-  out->release_ctx = infos;
-  out->release = [](void* p) { delete[] static_cast<PJ_field_info_t*>(p); };
+  auto* rel = new CatalogRelease{topic_infos, field_infos};
+  out->release_ctx = rel;
+  out->release = [](void* p) {
+    auto* r = static_cast<CatalogRelease*>(p);
+    delete[] r->topics;
+    delete[] r->fields;
+    delete r;
+  };
   return true;
 }
 
@@ -202,10 +233,11 @@ TEST(QuaternionPluginTest, IdentityQuaternionProducesZeroRPY) {
   MockDataStore store;
   std::vector<int64_t> ts = {0, 1000000000};  // 0s, 1s in nanoseconds
 
-  store.addField("quat/x", 1, 1, {0.0, 0.0}, ts);
-  store.addField("quat/y", 1, 2, {0.0, 0.0}, ts);
-  store.addField("quat/z", 1, 3, {0.0, 0.0}, ts);
-  store.addField("quat/w", 1, 4, {1.0, 1.0}, ts);
+  store.addTopic("quat", 1, 0, 4);
+  store.addField("x", 1, 1, {0.0, 0.0}, ts);
+  store.addField("y", 1, 2, {0.0, 0.0}, ts);
+  store.addField("z", 1, 3, {0.0, 0.0}, ts);
+  store.addField("w", 1, 4, {1.0, 1.0}, ts);
 
   ASSERT_TRUE(handle.bindToolboxHost(makeToolboxHost(&store)));
   ASSERT_TRUE(handle.bindRuntimeHost(makeRuntimeHost(&store)));
@@ -243,10 +275,11 @@ TEST(QuaternionPluginTest, NinetyDegreeRotations) {
   // Sample 2: 90 yaw   (0, 0, 0.707, 0.707)
   std::vector<int64_t> ts = {0, 1000000000, 2000000000};
 
-  store.addField("quat/x", 1, 1, {s, 0.0, 0.0}, ts);
-  store.addField("quat/y", 1, 2, {0.0, s, 0.0}, ts);
-  store.addField("quat/z", 1, 3, {0.0, 0.0, s}, ts);
-  store.addField("quat/w", 1, 4, {s, s, s}, ts);
+  store.addTopic("quat", 1, 0, 4);
+  store.addField("x", 1, 1, {s, 0.0, 0.0}, ts);
+  store.addField("y", 1, 2, {0.0, s, 0.0}, ts);
+  store.addField("z", 1, 3, {0.0, 0.0, s}, ts);
+  store.addField("w", 1, 4, {s, s, s}, ts);
 
   ASSERT_TRUE(handle.bindToolboxHost(makeToolboxHost(&store)));
   ASSERT_TRUE(handle.bindRuntimeHost(makeRuntimeHost(&store)));
@@ -291,10 +324,11 @@ TEST(QuaternionPluginTest, RadianOutput) {
   constexpr double s = 0.7071067811865476;
   std::vector<int64_t> ts = {0};
 
-  store.addField("q/x", 1, 1, {s}, ts);
-  store.addField("q/y", 1, 2, {0.0}, ts);
-  store.addField("q/z", 1, 3, {0.0}, ts);
-  store.addField("q/w", 1, 4, {s}, ts);
+  store.addTopic("q", 1, 0, 4);
+  store.addField("x", 1, 1, {s}, ts);
+  store.addField("y", 1, 2, {0.0}, ts);
+  store.addField("z", 1, 3, {0.0}, ts);
+  store.addField("w", 1, 4, {s}, ts);
 
   ASSERT_TRUE(handle.bindToolboxHost(makeToolboxHost(&store)));
   ASSERT_TRUE(handle.bindRuntimeHost(makeRuntimeHost(&store)));
