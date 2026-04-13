@@ -1,0 +1,5 @@
+{
+  "name": "Fast Fourier Transform",
+  "version": "1.0.0",
+  "description": "Compute the frequency-domain amplitude of numeric time series using FFT."
+}
