@@ -1,0 +1,5 @@
+{
+  "name": "Reactive Script Editor",
+  "version": "1.0.0",
+  "description": "Execute Lua scripts reactively on time series data. Port of the PJ 3.x Reactive Script Editor toolbox."
+}
