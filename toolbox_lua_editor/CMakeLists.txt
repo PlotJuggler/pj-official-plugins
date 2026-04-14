@@ -1,6 +1,8 @@
 find_package(lua REQUIRED)
 find_package(sol2 REQUIRED)
 find_package(nlohmann_json REQUIRED)
+find_package(pybind11 REQUIRED)
+find_package(Python3 COMPONENTS Development REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
@@ -15,6 +17,7 @@ target_link_libraries(toolbox_lua_editor_plugin PRIVATE
   lua::lua
   sol2::sol2
   nlohmann_json::nlohmann_json
+  pybind11::embed
 )
 
 pj_embed_manifest(toolbox_lua_editor_plugin

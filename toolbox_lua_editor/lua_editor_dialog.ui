@@ -128,7 +128,7 @@ QScrollBar::handle:vertical {
             <property name="rightMargin"><number>0</number></property>
             <property name="bottomMargin"><number>0</number></property>
 
-            <!-- Function header: label + save to library button -->
+            <!-- Function header: label + language radios + save to library button -->
             <item>
              <layout class="QHBoxLayout" name="funcHeaderLayout">
               <item>
@@ -144,6 +144,17 @@ QScrollBar::handle:vertical {
                  <size><width>40</width><height>20</height></size>
                 </property>
                </spacer>
+              </item>
+              <item>
+               <widget class="QRadioButton" name="radio_lua">
+                <property name="text"><string>Lua</string></property>
+                <property name="checked"><bool>true</bool></property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QRadioButton" name="radio_python">
+                <property name="text"><string>Python</string></property>
+               </widget>
               </item>
               <item>
                <widget class="QPushButton" name="save_button">

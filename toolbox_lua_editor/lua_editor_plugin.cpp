@@ -5,12 +5,23 @@
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
 
+#include <pybind11/embed.h>
+#include <pybind11/stl.h>
+namespace py = pybind11;
+
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <functional>
 #include <map>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "lua_editor_manifest.hpp"
@@ -27,6 +38,94 @@ struct SnippetData {
   std::string global_code;
   std::string function_name;
 };
+
+// ---------------------------------------------------------------------------
+// User-data directory resolution (cross-platform, Qt-free)
+//
+// Mirrors `QStandardPaths::GenericDataLocation + "/plotjuggler"`, the same root
+// used by the Qt-linked PlatformUtils helper in pj_marketplace, so plugins and
+// the host share a common data location per user.
+// ---------------------------------------------------------------------------
+
+std::filesystem::path pjUserDataDir() {
+  namespace fs = std::filesystem;
+#if defined(_WIN32)
+  if (const char* p = std::getenv("LOCALAPPDATA"); p && *p) {
+    return fs::path(p) / "plotjuggler";
+  }
+  if (const char* h = std::getenv("USERPROFILE"); h && *h) {
+    return fs::path(h) / "AppData" / "Local" / "plotjuggler";
+  }
+#elif defined(__APPLE__)
+  if (const char* h = std::getenv("HOME"); h && *h) {
+    return fs::path(h) / "Library" / "Application Support" / "plotjuggler";
+  }
+#else
+  if (const char* x = std::getenv("XDG_DATA_HOME"); x && *x) {
+    return fs::path(x) / "plotjuggler";
+  }
+  if (const char* h = std::getenv("HOME"); h && *h) {
+    return fs::path(h) / ".local" / "share" / "plotjuggler";
+  }
+#endif
+  // Last-resort fallback: a writable temp location. Won't survive reboots on
+  // every platform, but avoids returning an empty path.
+  return fs::temp_directory_path() / "plotjuggler";
+}
+
+std::filesystem::path luaEditorLibraryPath() {
+  return pjUserDataDir() / "toolbox_lua_editor" / "library.json";
+}
+
+// ---------------------------------------------------------------------------
+// Library disk I/O
+//
+// Returns empty string on success, or a human-readable error on failure.
+// ---------------------------------------------------------------------------
+
+std::string persistLibraryToDisk(const std::filesystem::path& path,
+                                 const std::map<std::string, SnippetData>& snippets) {
+  try {
+    std::filesystem::create_directories(path.parent_path());
+    nlohmann::json j = nlohmann::json::object();
+    for (const auto& [name, snippet] : snippets) {
+      j[name] = {
+          {"code", snippet.code},
+          {"global_code", snippet.global_code},
+          {"function_name", snippet.function_name},
+      };
+    }
+    std::ofstream out(path);
+    if (!out) {
+      return "cannot open " + path.string() + " for writing";
+    }
+    out << j.dump(2);
+    return "";
+  } catch (const std::exception& e) {
+    return std::string("library write failed: ") + e.what();
+  }
+}
+
+std::map<std::string, SnippetData> loadLibraryFromDisk(const std::filesystem::path& path) {
+  std::map<std::string, SnippetData> result;
+  std::ifstream in(path);
+  if (!in) return result;  // Missing file is fine: no snippets yet.
+
+  std::stringstream buf;
+  buf << in.rdbuf();
+  auto j = nlohmann::json::parse(buf.str(), nullptr, false);
+  if (j.is_discarded() || !j.is_object()) return result;
+
+  for (auto& [key, val] : j.items()) {
+    if (!val.is_object()) continue;
+    result[key] = SnippetData{
+        val.value("code", std::string{}),
+        val.value("global_code", std::string{}),
+        val.value("function_name", key),
+    };
+  }
+  return result;
+}
 
 // ---------------------------------------------------------------------------
 // validateLuaSyntax — lightweight parse check (no execution)
@@ -58,6 +157,55 @@ std::string validateLuaSyntax(const std::string& global_code, const std::string&
 }
 
 // ---------------------------------------------------------------------------
+// Python interpreter singleton — CPython can only be initialized once per
+// process, so we use a static guard that lives until program exit.
+// ---------------------------------------------------------------------------
+
+void ensurePythonInterpreter() {
+  static py::scoped_interpreter guard{};
+  (void)guard;
+}
+
+// ---------------------------------------------------------------------------
+// indentPythonCode — wrap user code in a def block with 4-space indentation
+// ---------------------------------------------------------------------------
+
+std::string indentPythonCode(const std::string& code) {
+  std::string result = "def _pj_user_func(tracker_time):\n";
+  std::istringstream stream(code);
+  std::string line;
+  while (std::getline(stream, line)) {
+    result += "    " + line + "\n";
+  }
+  if (code.empty()) {
+    result += "    pass\n";
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// validatePythonSyntax — lightweight parse check (no execution)
+// ---------------------------------------------------------------------------
+
+std::string validatePythonSyntax(const std::string& global_code, const std::string& function_code) {
+  ensurePythonInterpreter();
+  try {
+    if (!global_code.empty()) {
+      py::exec("compile(" + py::repr(py::str(global_code)).cast<std::string>() +
+               ", '<global>', 'exec')");
+    }
+    std::string wrapped = indentPythonCode(function_code);
+    py::exec("compile(" + py::repr(py::str(wrapped)).cast<std::string>() +
+             ", '<editor>', 'exec')");
+  } catch (const py::error_already_set& e) {
+    return e.what();
+  } catch (const std::exception& e) {
+    return e.what();
+  }
+  return "";
+}
+
+// ---------------------------------------------------------------------------
 // LuaEditorDialog
 // ---------------------------------------------------------------------------
 
@@ -75,14 +223,29 @@ class LuaEditorDialog : public PJ::DialogPluginTyped {
     // -- Timeseries list (left panel) --
     wd.setListItems("series_list", series_names_);
 
+    // -- Language selector --
+    bool is_lua = (language_ == "lua");
+    wd.setChecked("radio_lua", is_lua);
+    wd.setChecked("radio_python", !is_lua);
+
     // -- Code editors --
     wd.setCodeContent("global_editor", global_code_)
-        .setCodeLanguage("global_editor", "lua")
+        .setCodeLanguage("global_editor", language_)
         .setCodeContent("code_editor", code_)
-        .setCodeLanguage("code_editor", "lua")
+        .setCodeLanguage("code_editor", language_)
         .setText("function_name", function_name_)
         .setEnabled("save_button", !function_name_.empty() && !code_.empty())
-        .setEnabled("run_button", !function_name_.empty() && !code_.empty() && !terminal_visible_);
+        .setEnabled("run_button", !function_name_.empty() && !code_.empty() && !has_syntax_error_);
+
+    // -- Dynamic labels based on language --
+    if (is_lua) {
+      wd.setText("funcLabel", "function(tracker_time)");
+      wd.setText("endLabel", "end");
+      wd.setVisible("endLabel", true);
+    } else {
+      wd.setText("funcLabel", "def transform(tracker_time):");
+      wd.setVisible("endLabel", false);
+    }
 
     // Terminal: show/hide based on validation state
     wd.setVisible("terminal_output", terminal_visible_);
@@ -124,12 +287,6 @@ class LuaEditorDialog : public PJ::DialogPluginTyped {
       switch_to_tab_ = -1;
     }
 
-    // Run triggers dialog accept (executes the script)
-    if (run_requested_) {
-      run_requested_ = false;
-      wd.requestAccept();
-    }
-
     return wd.toJson();
   }
 
@@ -138,12 +295,14 @@ class LuaEditorDialog : public PJ::DialogPluginTyped {
       code_ = std::string(code);
       validation_pending_ = true;
       validation_tick_counter_ = 0;
+      terminal_sticky_ = false;
       return true;
     }
     if (name == "global_editor") {
       global_code_ = std::string(code);
       validation_pending_ = true;
       validation_tick_counter_ = 0;
+      terminal_sticky_ = false;
       return true;
     }
     return false;
@@ -162,14 +321,42 @@ class LuaEditorDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
+  bool onToggled(std::string_view name, bool checked) override {
+    if (name == "radio_lua" && checked) {
+      language_ = "lua";
+      validation_pending_ = true;
+      validation_tick_counter_ = 0;
+      return true;
+    }
+    if (name == "radio_python" && checked) {
+      language_ = "python";
+      validation_pending_ = true;
+      validation_tick_counter_ = 0;
+      return true;
+    }
+    return false;
+  }
+
   bool onClicked(std::string_view name) override {
     if (name == "save_button" && !function_name_.empty() && !code_.empty()) {
       // Save current code to the library (does NOT execute)
       saved_snippets_[function_name_] = SnippetData{code_, global_code_, function_name_};
+      requestLibraryPersist();
       return true;
     }
     if (name == "run_button" && !function_name_.empty() && !code_.empty()) {
-      run_requested_ = true;
+      std::string msg;
+      try {
+        msg = run_callback_ ? run_callback_(code_, global_code_, function_name_)
+                            : std::string("Run unavailable: toolbox not bound");
+      } catch (const std::exception& e) {
+        msg = std::string("Error: unhandled exception: ") + e.what();
+      } catch (...) {
+        msg = "Error: unhandled exception (non-std)";
+      }
+      terminal_text_ = msg;
+      terminal_visible_ = true;
+      terminal_sticky_ = true;
       return true;
     }
     if (name == "library_use") {
@@ -178,6 +365,7 @@ class LuaEditorDialog : public PJ::DialogPluginTyped {
     if (name == "library_delete" && !library_selected_.empty()) {
       saved_snippets_.erase(library_selected_);
       library_selected_.clear();
+      requestLibraryPersist();
       return true;
     }
     return false;
@@ -207,32 +395,32 @@ class LuaEditorDialog : public PJ::DialogPluginTyped {
     validation_pending_ = false;
     validation_tick_counter_ = 0;
 
-    std::string err = validateLuaSyntax(global_code_, code_);
+    std::string err = (language_ == "lua") ? validateLuaSyntax(global_code_, code_)
+                                           : validatePythonSyntax(global_code_, code_);
     if (err.empty()) {
-      terminal_visible_ = false;
-      terminal_text_.clear();
+      has_syntax_error_ = false;
+      // Preserve Run output if sticky; otherwise clear terminal.
+      if (!terminal_sticky_) {
+        terminal_visible_ = false;
+        terminal_text_.clear();
+      }
     } else {
+      has_syntax_error_ = true;
+      terminal_sticky_ = false;  // A new error overrides any prior Run output.
       terminal_visible_ = true;
       terminal_text_ = err;
     }
     return true;
   }
 
+  // Workspace session config carries only the "current" snippet. The library
+  // lives on disk (per-user) and is owned by the toolbox.
   std::string saveConfig() const override {
     nlohmann::json j;
     j["current"]["code"] = code_;
     j["current"]["global_code"] = global_code_;
     j["current"]["function_name"] = function_name_;
-
-    nlohmann::json lib = nlohmann::json::object();
-    for (const auto& [name, snippet] : saved_snippets_) {
-      lib[name] = {
-          {"code", snippet.code},
-          {"global_code", snippet.global_code},
-          {"function_name", snippet.function_name},
-      };
-    }
-    j["library"] = lib;
+    j["current"]["language"] = language_;
     return j.dump();
   }
 
@@ -246,6 +434,7 @@ class LuaEditorDialog : public PJ::DialogPluginTyped {
       code_ = cur.value("code", std::string{});
       global_code_ = cur.value("global_code", std::string{});
       function_name_ = cur.value("function_name", std::string{});
+      language_ = cur.value("language", std::string{"lua"});
     } else {
       // Backward compat: old flat schema
       code_ = j.value("code", std::string{});
@@ -253,11 +442,13 @@ class LuaEditorDialog : public PJ::DialogPluginTyped {
       global_code_.clear();
     }
 
-    // Load library
-    saved_snippets_.clear();
+    // Migration path: legacy workspaces embedded the library inline. Surface
+    // those snippets via `legacyLibrarySnippets()` so the toolbox can merge
+    // them into the on-disk library exactly once.
+    legacy_library_snippets_.clear();
     if (j.contains("library") && j["library"].is_object()) {
       for (auto& [key, val] : j["library"].items()) {
-        saved_snippets_[key] = SnippetData{
+        legacy_library_snippets_[key] = SnippetData{
             val.value("code", ""),
             val.value("global_code", ""),
             val.value("function_name", key),
@@ -274,13 +465,40 @@ class LuaEditorDialog : public PJ::DialogPluginTyped {
     return true;
   }
 
+  // One-shot accessor for migration: returns inline-library snippets parsed
+  // from a legacy workspace config and clears them. Empty after the first call.
+  std::map<std::string, SnippetData> takeLegacyLibrarySnippets() {
+    return std::exchange(legacy_library_snippets_, {});
+  }
+
   [[nodiscard]] const std::string& code() const { return code_; }
   [[nodiscard]] const std::string& globalCode() const { return global_code_; }
   [[nodiscard]] const std::string& functionName() const { return function_name_; }
+  [[nodiscard]] const std::string& language() const { return language_; }
 
   void setSeriesNames(std::vector<std::string> names) { series_names_ = std::move(names); }
 
+  using RunCallback =
+      std::function<std::string(const std::string& code, const std::string& global, const std::string& name)>;
+  void setRunCallback(RunCallback cb) { run_callback_ = std::move(cb); }
+
+  // Library injection: called by the toolbox after loading from disk.
+  void setLibrary(std::map<std::string, SnippetData> snippets) { saved_snippets_ = std::move(snippets); }
+
+  // Persistence callback: called by the dialog after a save/delete in the library.
+  // The toolbox provides this to flush the library to disk and surface errors via the runtime host.
+  using LibrarySaveCallback = std::function<void(const std::map<std::string, SnippetData>&)>;
+  void setLibrarySaveCallback(LibrarySaveCallback cb) { library_save_callback_ = std::move(cb); }
+
+  [[nodiscard]] const std::map<std::string, SnippetData>& library() const { return saved_snippets_; }
+
  private:
+  void requestLibraryPersist() {
+    if (library_save_callback_) {
+      library_save_callback_(saved_snippets_);
+    }
+  }
+
   bool loadSelectedSnippet() {
     if (library_selected_.empty()) return false;
     auto it = saved_snippets_.find(library_selected_);
@@ -302,22 +520,29 @@ class LuaEditorDialog : public PJ::DialogPluginTyped {
                        "--   local val = series:atTime(tracker_time)\n";
   std::string global_code_;
   std::string function_name_;
-  bool run_requested_ = false;
+  std::string language_ = "lua";
 
   // Terminal / validation
   std::string terminal_text_;
   bool terminal_visible_ = false;
+  bool terminal_sticky_ = false;   // True while terminal shows Run output; cleared on code edit or new syntax error.
+  bool has_syntax_error_ = false;  // Tracks last validation result; gates the Run button.
   bool validation_pending_ = false;
   int validation_tick_counter_ = 0;
   static constexpr int kValidationDebounce = 5;  // 5 * 50ms = 250ms
+
+  // Run execution (injected by the toolbox in dialogContext).
+  RunCallback run_callback_;
 
   // Timeseries (populated by toolbox before dialog opens)
   std::vector<std::string> series_names_;
 
   // Library
   std::map<std::string, SnippetData> saved_snippets_;
+  std::map<std::string, SnippetData> legacy_library_snippets_;  // Set by loadConfig() for one-shot migration.
   std::string library_search_;
   std::string library_selected_;
+  LibrarySaveCallback library_save_callback_;
   int switch_to_tab_ = -1;  // -1 = no programmatic switch
 };
 
@@ -325,22 +550,23 @@ class LuaEditorDialog : public PJ::DialogPluginTyped {
 // SeriesAccessor — read-only access to a series from the catalog
 // ---------------------------------------------------------------------------
 
+struct TimePoint {
+  double t;
+  double v;
+};
+
 struct SeriesAccessor {
   std::vector<double> timestamps;
   std::vector<double> values;
 
   [[nodiscard]] size_t size() const { return timestamps.size(); }
 
-  sol::object at(size_t index, sol::this_state s) const {
-    if (index >= timestamps.size()) return sol::make_object(s, sol::nil);
-    sol::state_view lua(s);
-    sol::table result = lua.create_table();
-    result[1] = timestamps[index];
-    result[2] = values[index];
-    return result;
+  [[nodiscard]] std::optional<TimePoint> at(size_t index) const {
+    if (index >= timestamps.size()) return std::nullopt;
+    return TimePoint{timestamps[index], values[index]};
   }
 
-  double atTime(double t) const {
+  [[nodiscard]] double atTime(double t) const {
     if (timestamps.empty()) return 0.0;
     // Binary search for the closest timestamp.
     auto it = std::lower_bound(timestamps.begin(), timestamps.end(), t);
@@ -379,6 +605,33 @@ struct CreatedSeries {
 
   [[nodiscard]] size_t size() const { return timestamps.size(); }
 };
+
+}  // close anonymous namespace for PYBIND11_EMBEDDED_MODULE (requires external linkage)
+
+// ---------------------------------------------------------------------------
+// Embedded Python module — registers SeriesAccessor and CreatedSeries as
+// Python types once at interpreter startup. Functions that depend on runtime
+// state (TimeseriesView, Timeseries, GetSeriesNames) are injected per-execution.
+// ---------------------------------------------------------------------------
+
+PYBIND11_EMBEDDED_MODULE(_pj_types, m) {
+  py::class_<SeriesAccessor>(m, "SeriesAccessor")
+      .def("size", &SeriesAccessor::size)
+      .def("at",
+           [](const SeriesAccessor& sa, size_t index) -> py::object {
+             auto pt = sa.at(index);
+             if (!pt) return py::none();
+             return py::make_tuple(pt->t, pt->v);
+           })
+      .def("atTime", &SeriesAccessor::atTime);
+
+  py::class_<CreatedSeries>(m, "CreatedSeries")
+      .def("push_back", &CreatedSeries::push_back)
+      .def("clear", &CreatedSeries::clear)
+      .def("size", &CreatedSeries::size);
+}
+
+namespace {  // re-open anonymous namespace
 
 // ---------------------------------------------------------------------------
 // LuaEditorToolbox
@@ -426,6 +679,11 @@ class LuaEditorToolbox : public PJ::ToolboxPluginBase {
       }
       dialog_.setSeriesNames(series_names_);
     }
+    ensureLibraryLoaded();
+    dialog_.setRunCallback([this](const std::string& c, const std::string& g,
+                                  const std::string& n) { return executeScript(c, g, n); });
+    dialog_.setLibrarySaveCallback(
+        [this](const std::map<std::string, SnippetData>& snippets) { writeLibrary(snippets); });
     return &dialog_;
   }
 
@@ -435,21 +693,94 @@ class LuaEditorToolbox : public PJ::ToolboxPluginBase {
     if (!dialog_.loadConfig(config_json)) {
       return PJ::unexpected("invalid config JSON");
     }
+
+    // Migrate inline library from a legacy workspace into the on-disk store
+    // (one-shot; the dialog only surfaces these once after each loadConfig).
+    auto legacy = dialog_.takeLegacyLibrarySnippets();
+    if (!legacy.empty()) {
+      ensureLibraryLoaded();
+      auto merged = dialog_.library();
+      for (auto& [k, v] : legacy) {
+        merged.try_emplace(k, std::move(v));  // Disk wins on conflict.
+      }
+      dialog_.setLibrary(merged);
+      writeLibrary(merged);
+      if (runtimeHostBound()) {
+        runtimeHost().reportMessage(PJ::ToolboxMessageLevel::kInfo,
+                                    "Migrated " + std::to_string(legacy.size()) +
+                                        " legacy library snippet(s) to disk");
+      }
+    }
+
     if (!dialog_.code().empty() && !dialog_.functionName().empty() && toolboxHostBound() &&
         runtimeHostBound()) {
-      return executeLuaScript();
+      std::string msg = executeScript(dialog_.code(), dialog_.globalCode(), dialog_.functionName());
+      if (msg.rfind("Error:", 0) == 0) {
+        return PJ::unexpected(msg);
+      }
     }
     return PJ::okStatus();
   }
 
  private:
-  PJ::Status executeLuaScript() {
-    const std::string& code = dialog_.code();
-    const std::string& global_code = dialog_.globalCode();
-    const std::string& func_name = dialog_.functionName();
+  // Writes script-created series to the datastore. Returns a user-facing summary
+  // or an error prefixed with "Error:". Shared by all language backends.
+  std::string writeCreatedSeries(const std::unordered_map<std::string, CreatedSeries>& created,
+                                 const std::string& func_name) {
+    if (!created.empty()) {
+      auto host = toolboxHost();
+      auto source = host.createDataSource("script_output");
+      if (!source) {
+        return "Error: failed to create data source";
+      }
 
+      for (const auto& [name, series] : created) {
+        auto topic = host.ensureTopic(*source, func_name + "/" + name);
+        if (!topic) continue;
+
+        for (size_t i = 0; i < series.size(); ++i) {
+          auto ts = static_cast<int64_t>(series.timestamps[i]);
+          const PJ::sdk::NamedFieldValue fields[] = {
+              {.name = "value", .value = series.values[i]},
+          };
+          auto status = host.appendRecord(*topic, ts, PJ::Span(fields));
+          if (!status) {
+            return "Error: failed to append record: " + std::string(status.error());
+          }
+        }
+      }
+
+      runtimeHost().notifyDataChanged();
+    }
+
+    size_t total_points = 0;
+    for (const auto& [_, s] : created) {
+      total_points += s.size();
+    }
+    std::string summary = "Executed '" + func_name + "': " + std::to_string(created.size()) +
+                          " series, " + std::to_string(total_points) + " points";
+    runtimeHost().reportMessage(PJ::ToolboxMessageLevel::kInfo, summary);
+    return summary;
+  }
+
+  // Dispatches script execution to the appropriate language backend.
+  std::string executeScript(const std::string& code, const std::string& global_code,
+                            const std::string& func_name) {
+    if (dialog_.language() == "python") {
+      return executePythonScriptImpl(code, global_code, func_name);
+    }
+    return executeLuaScriptImpl(code, global_code, func_name);
+  }
+
+  // Executes a Lua script in batch mode (tracker_time = 0). Returns a user-facing
+  // message: success summary or error prefixed with "Error:".
+  std::string executeLuaScriptImpl(const std::string& code, const std::string& global_code,
+                                   const std::string& func_name) {
     if (code.empty() || func_name.empty()) {
-      return PJ::unexpected("empty code or function name");
+      return "Error: empty code or function name";
+    }
+    if (!toolboxHostBound() || !runtimeHostBound()) {
+      return "Error: toolbox/runtime host not bound";
     }
 
     // Set up Lua state.
@@ -478,7 +809,15 @@ class LuaEditorToolbox : public PJ::ToolboxPluginBase {
     std::string sa_name = "_SeriesAccessor";
     auto sa_type = lua.new_usertype<SeriesAccessor>(sa_name);
     sa_type["size"] = &SeriesAccessor::size;
-    sa_type["at"] = &SeriesAccessor::at;
+    sa_type["at"] = [](const SeriesAccessor& sa, size_t index, sol::this_state s) -> sol::object {
+      auto pt = sa.at(index);
+      if (!pt) return sol::make_object(s, sol::nil);
+      sol::state_view lv(s);
+      sol::table result = lv.create_table();
+      result[1] = pt->t;
+      result[2] = pt->v;
+      return result;
+    };
     sa_type["atTime"] = &SeriesAccessor::atTime;
 
     // Register CreatedSeries type.
@@ -493,7 +832,7 @@ class LuaEditorToolbox : public PJ::ToolboxPluginBase {
       auto global_result = lua.safe_script(global_code, sol::script_pass_on_error);
       if (!global_result.valid()) {
         sol::error err = global_result;
-        return PJ::unexpected("Lua global code error: " + std::string(err.what()));
+        return "Error: Lua global code: " + std::string(err.what());
       }
     }
 
@@ -502,56 +841,100 @@ class LuaEditorToolbox : public PJ::ToolboxPluginBase {
     auto parse_result = lua.safe_script(wrapped, sol::script_pass_on_error);
     if (!parse_result.valid()) {
       sol::error err = parse_result;
-      return PJ::unexpected("Lua parse error: " + std::string(err.what()));
+      return "Error: Lua parse: " + std::string(err.what());
     }
 
     // Execute once with tracker_time = 0 (batch mode).
+    // NOTE: Reactive re-execution on time-tracker changes is blocked on an SDK gap
+    // (missing `on_time_changed` callback in PJ_toolbox_runtime_host_vtable_t).
+    // See LUA_EDITOR_MIGRATION_PLAN.md (Phase 2).
     auto exec_result = lua["_pj_user_func"](0.0);
     if (!exec_result.valid()) {
       sol::error err = exec_result;
-      return PJ::unexpected("Lua runtime error: " + std::string(err.what()));
+      return "Error: Lua runtime: " + std::string(err.what());
     }
 
-    // Write created series to the datastore.
-    if (!created.empty() && toolboxHostBound()) {
-      auto host = toolboxHost();
-      auto source = host.createDataSource("lua_script");
-      if (!source) {
-        return PJ::unexpected("failed to create data source");
+    return writeCreatedSeries(created, func_name);
+  }
+
+  // Executes a Python script in batch mode (tracker_time = 0). Returns a user-facing
+  // message: success summary or error prefixed with "Error:".
+  std::string executePythonScriptImpl(const std::string& code, const std::string& global_code,
+                                      const std::string& func_name) {
+    if (code.empty() || func_name.empty()) {
+      return "Error: empty code or function name";
+    }
+    if (!toolboxHostBound() || !runtimeHostBound()) {
+      return "Error: toolbox/runtime host not bound";
+    }
+
+    ensurePythonInterpreter();
+
+    try {
+      py::dict scope;
+
+      // Import pre-registered types (from PYBIND11_EMBEDDED_MODULE above).
+      py::module_::import("_pj_types");
+
+      // Register global functions with runtime state.
+      std::unordered_map<std::string, CreatedSeries> created;
+
+      scope["TimeseriesView"] = py::cpp_function(
+          [this](const std::string& name) -> py::object {
+            auto it = series_map_.find(name);
+            if (it == series_map_.end()) return py::none();
+            return py::cast(it->second, py::return_value_policy::reference);
+          });
+
+      scope["Timeseries"] = py::cpp_function(
+          [&created](const std::string& name) -> CreatedSeries& { return created[name]; },
+          py::return_value_policy::reference);
+
+      scope["GetSeriesNames"] = py::cpp_function(
+          [this]() -> std::vector<std::string> { return series_names_; });
+
+      // Import common modules into the scope.
+      scope["math"] = py::module_::import("math");
+
+      // Execute global code.
+      if (!global_code.empty()) {
+        py::exec(global_code, scope);
       }
 
-      for (auto& [name, series] : created) {
-        auto topic = host.ensureTopic(*source, func_name + "/" + name);
-        if (!topic) continue;
+      // Wrap user code in a function and execute.
+      std::string wrapped = indentPythonCode(code);
+      py::exec(wrapped, scope);
+      py::exec("_pj_user_func(0.0)", scope);
 
-        for (size_t i = 0; i < series.size(); ++i) {
-          auto ts = static_cast<int64_t>(series.timestamps[i]);
-          const PJ::sdk::NamedFieldValue fields[] = {
-              {.name = "value", .value = series.values[i]},
-          };
-          auto status = host.appendRecord(*topic, ts, PJ::Span(fields));
-          if (!status) {
-            return PJ::unexpected("failed to append record: " + std::string(status.error()));
-          }
-        }
-      }
+      return writeCreatedSeries(created, func_name);
 
-      runtimeHost().notifyDataChanged();
+    } catch (const py::error_already_set& e) {
+      return "Error: Python runtime: " + std::string(e.what());
+    } catch (const std::exception& e) {
+      return "Error: Python: " + std::string(e.what());
     }
+  }
 
-    size_t total_points = 0;
-    for (const auto& [_, s] : created) {
-      total_points += s.size();
+  // Loads the on-disk library into the dialog the first time it's needed.
+  void ensureLibraryLoaded() {
+    if (library_loaded_) return;
+    dialog_.setLibrary(loadLibraryFromDisk(luaEditorLibraryPath()));
+    library_loaded_ = true;
+  }
+
+  // Persists the library to disk; surfaces failures via the runtime host.
+  void writeLibrary(const std::map<std::string, SnippetData>& snippets) {
+    std::string err = persistLibraryToDisk(luaEditorLibraryPath(), snippets);
+    if (!err.empty() && runtimeHostBound()) {
+      runtimeHost().reportMessage(PJ::ToolboxMessageLevel::kWarning,
+                                  "Lua editor library: " + err);
     }
-    runtimeHost().reportMessage(PJ::ToolboxMessageLevel::kInfo,
-                                "Executed '" + func_name + "': " + std::to_string(created.size()) +
-                                    " series, " + std::to_string(total_points) + " points");
-    return PJ::okStatus();
   }
 
   LuaEditorDialog dialog_;
   std::unordered_map<std::string, SeriesAccessor> series_map_;
   std::vector<std::string> series_names_;
+  bool library_loaded_ = false;
 };
 
 }  // namespace
