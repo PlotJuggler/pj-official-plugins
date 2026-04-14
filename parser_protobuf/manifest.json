@@ -16,6 +16,6 @@
     "parser",
     "schema"
   ],
-  "encoding": "protobuf",
+  "encoding": ["protobuf"],
   "min_plotjuggler_version": "4.0.0"
 }
