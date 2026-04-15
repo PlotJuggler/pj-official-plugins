@@ -17,11 +17,6 @@
     "bson",
     "parser"
   ],
-  "encoding": "json",
-  "additional_encodings": [
-    "cbor",
-    "msgpack",
-    "bson"
-  ],
+  "encoding": ["json", "cbor", "msgpack", "bson"],
   "min_plotjuggler_version": "4.0.0"
 }

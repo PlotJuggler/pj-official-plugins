@@ -270,7 +270,11 @@ TEST(JsonParserTest, TimestampPreserved) {
 TEST(JsonParserTest, ManifestContainsEncoding) {
   JsonParserFixture f;
   f.setUp();
-  EXPECT_NE(f.handle.manifest().find("\"encoding\": \"json\""), std::string::npos);
+  // Manifest uses "encoding" as an array containing all supported encodings
+  EXPECT_NE(f.handle.manifest().find("\"json\""), std::string::npos);
+  EXPECT_NE(f.handle.manifest().find("\"cbor\""), std::string::npos);
+  EXPECT_NE(f.handle.manifest().find("\"msgpack\""), std::string::npos);
+  EXPECT_NE(f.handle.manifest().find("\"bson\""), std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
