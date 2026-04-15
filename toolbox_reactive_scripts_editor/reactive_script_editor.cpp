@@ -211,9 +211,7 @@ std::string validatePythonSyntax(const std::string& global_code, const std::stri
 
 class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
  public:
-  std::string manifest() const override {
-    return R"({"name":"Reactive Script Editor","version":"1.0.0"})";
-  }
+  std::string manifest() const override { return kReactiveScriptEditorManifest; }
 
   std::string ui_content() const override { return kReactiveScriptEditorDialogUi; }
 
