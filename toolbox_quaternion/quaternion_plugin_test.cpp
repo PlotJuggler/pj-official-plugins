@@ -1,6 +1,9 @@
+#define _USE_MATH_DEFINES
+
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cinttypes>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -253,7 +256,7 @@ TEST(QuaternionPluginTest, IdentityQuaternionProducesZeroRPY) {
 
   printf("\n=== Identity Quaternion (0,0,0,1) -> RPY (degrees) ===\n");
   for (const auto& r : store.output) {
-    printf("  ts=%ld  %-6s = %8.3f\n", r.timestamp, r.field_name.c_str(), r.value);
+    printf("  ts=%" PRId64 "  %-6s = %8.3f\n", r.timestamp, r.field_name.c_str(), r.value);
   }
 
   // All values should be 0.
