@@ -172,7 +172,8 @@ std::vector<uint8_t> buildSnapshot(const DataTamerParser::Schema& schema,
 TEST(DataTamerParserTest, ManifestContainsEncoding) {
   DTFixture f;
   f.setUp();
-  EXPECT_NE(f.handle.manifest().find("\"encoding\": \"data_tamer\""), std::string::npos);
+  // Manifest uses "encoding" as an array containing all supported encodings
+  EXPECT_NE(f.handle.manifest().find("\"data_tamer\""), std::string::npos);
 }
 
 TEST(DataTamerParserTest, BasicParsing) {
