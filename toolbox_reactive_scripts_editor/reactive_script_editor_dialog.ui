@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>LuaEditorDialog</class>
- <widget class="QWidget" name="LuaEditorDialog">
+ <class>ReactiveScriptEditorDialog</class>
+ <widget class="QWidget" name="ReactiveScriptEditorDialog">
   <property name="windowTitle">
    <string>Reactive Script Editor</string>
   </property>

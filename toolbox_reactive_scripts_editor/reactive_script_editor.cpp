@@ -24,8 +24,8 @@ namespace py = pybind11;
 #include <utility>
 #include <vector>
 
-#include "lua_editor_manifest.hpp"
-#include "lua_editor_dialog_ui.hpp"
+#include "reactive_script_editor_manifest.hpp"
+#include "reactive_script_editor_dialog_ui.hpp"
 
 namespace {
 
@@ -74,7 +74,7 @@ std::filesystem::path pjUserDataDir() {
 }
 
 std::filesystem::path luaEditorLibraryPath() {
-  return pjUserDataDir() / "toolbox_lua_editor" / "library.json";
+  return pjUserDataDir() / "toolbox_reactive_scripts_editor" / "library.json";
 }
 
 // ---------------------------------------------------------------------------
@@ -206,16 +206,16 @@ std::string validatePythonSyntax(const std::string& global_code, const std::stri
 }
 
 // ---------------------------------------------------------------------------
-// LuaEditorDialog
+// ReactiveScriptEditorDialog
 // ---------------------------------------------------------------------------
 
-class LuaEditorDialog : public PJ::DialogPluginTyped {
+class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
  public:
   std::string manifest() const override {
     return R"({"name":"Reactive Script Editor","version":"1.0.0"})";
   }
 
-  std::string ui_content() const override { return kLuaEditorDialogUi; }
+  std::string ui_content() const override { return kReactiveScriptEditorDialogUi; }
 
   std::string widget_data() override {
     PJ::WidgetData wd;
@@ -634,10 +634,10 @@ PYBIND11_EMBEDDED_MODULE(_pj_types, m) {
 namespace {  // re-open anonymous namespace
 
 // ---------------------------------------------------------------------------
-// LuaEditorToolbox
+// ReactiveScriptEditorToolbox
 // ---------------------------------------------------------------------------
 
-class LuaEditorToolbox : public PJ::ToolboxPluginBase {
+class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
  public:
   uint64_t capabilities() const override {
     return PJ::kToolboxCapabilityHasDialog;
@@ -931,7 +931,7 @@ class LuaEditorToolbox : public PJ::ToolboxPluginBase {
     }
   }
 
-  LuaEditorDialog dialog_;
+  ReactiveScriptEditorDialog dialog_;
   std::unordered_map<std::string, SeriesAccessor> series_map_;
   std::vector<std::string> series_names_;
   bool library_loaded_ = false;
@@ -939,5 +939,5 @@ class LuaEditorToolbox : public PJ::ToolboxPluginBase {
 
 }  // namespace
 
-PJ_TOOLBOX_PLUGIN(LuaEditorToolbox, kLuaEditorManifest)
-PJ_DIALOG_PLUGIN(LuaEditorDialog)
+PJ_TOOLBOX_PLUGIN(ReactiveScriptEditorToolbox, kReactiveScriptEditorManifest)
+PJ_DIALOG_PLUGIN(ReactiveScriptEditorDialog)
