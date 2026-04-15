@@ -420,8 +420,10 @@ TEST(RosParserTest, ParseWithoutSchemaFails) {
 TEST(RosParserTest, ManifestContainsEncoding) {
   RosParserFixture f;
   f.setUp();
-  // Manifest uses "encoding": "ros2msg" with additional_encodings for ros1msg/cdr
-  EXPECT_NE(f.handle.manifest().find("\"encoding\": \"ros2msg\""), std::string::npos);
+  // Manifest uses "encoding" as an array containing all supported encodings
+  EXPECT_NE(f.handle.manifest().find("\"ros2msg\""), std::string::npos);
+  EXPECT_NE(f.handle.manifest().find("\"ros1msg\""), std::string::npos);
+  EXPECT_NE(f.handle.manifest().find("\"cdr\""), std::string::npos);
 }
 
 TEST(RosParserTest, TimestampPreserved) {
