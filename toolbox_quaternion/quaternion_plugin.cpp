@@ -26,7 +26,9 @@ constexpr double kDegPerRad = QuaternionToRPYConverter::kDegPerRad;
 
 class QuaternionDialog : public PJ::DialogPluginTyped {
  public:
-  std::string manifest() const override { return kQuaternionManifest; }
+  std::string manifest() const override {
+    return R"({"name":"Quaternion to RPY","version":"1.0.0"})";
+  }
 
   std::string ui_content() const override { return kQuaternionDialogUi; }
 
@@ -84,10 +86,10 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
-  bool onCurvesDropped(std::string_view /*name*/, const std::vector<std::string>& curves) override {
-    if (curves.empty()) return false;
+  bool onItemsDropped(std::string_view /*name*/, const std::vector<std::string>& items) override {
+    if (items.empty()) return false;
 
-    const auto& dropped = curves.front();
+    const auto& dropped = items.front();
     auto last_slash = dropped.rfind('/');
     if (last_slash == std::string::npos) return false;
 
@@ -212,9 +214,9 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
     converter.setUnwrap(unwrap_);
     converter.reset();
 
-    PJ::ChartSeries roll_s{"roll", {}};
-    PJ::ChartSeries pitch_s{"pitch", {}};
-    PJ::ChartSeries yaw_s{"yaw", {}};
+    PJ::ChartSeries roll_s{"roll", {}, {}};
+    PJ::ChartSeries pitch_s{"pitch", {}, {}};
+    PJ::ChartSeries yaw_s{"yaw", {}, {}};
     roll_s.points.reserve(count);
     pitch_s.points.reserve(count);
     yaw_s.points.reserve(count);
