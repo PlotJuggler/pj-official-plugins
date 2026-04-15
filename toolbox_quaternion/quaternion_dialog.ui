@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>QuaternionDialog</class>
+ <widget class="QWidget" name="QuaternionDialog">
+  <property name="windowTitle">
+   <string>Quaternion to RPY</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <item>
+    <layout class="QHBoxLayout" name="topLayout">
+     <item>
+      <widget class="QFrame" name="inputFrame">
+       <property name="frameShape"><enum>QFrame::Box</enum></property>
+       <property name="frameShadow"><enum>QFrame::Plain</enum></property>
+       <layout class="QVBoxLayout">
+        <item>
+         <widget class="QLabel">
+          <property name="text"><string>Drag and Drop the Quaternion values here:</string></property>
+         </widget>
+        </item>
+        <item>
+         <layout class="QFormLayout" name="formLayout">
+          <item row="0" column="0"><widget class="QLabel"><property name="text"><string>X:</string></property></widget></item>
+          <item row="0" column="1"><widget class="QLineEdit" name="input_x"><property name="minimumSize"><size><width>300</width><height>0</height></size></property><property name="readOnly"><bool>true</bool></property></widget></item>
+          <item row="1" column="0"><widget class="QLabel"><property name="text"><string>Y:</string></property></widget></item>
+          <item row="1" column="1"><widget class="QLineEdit" name="input_y"><property name="minimumSize"><size><width>300</width><height>0</height></size></property><property name="readOnly"><bool>true</bool></property></widget></item>
+          <item row="2" column="0"><widget class="QLabel"><property name="text"><string>Z:</string></property></widget></item>
+          <item row="2" column="1"><widget class="QLineEdit" name="input_z"><property name="minimumSize"><size><width>300</width><height>0</height></size></property><property name="readOnly"><bool>true</bool></property></widget></item>
+          <item row="3" column="0"><widget class="QLabel"><property name="text"><string>W:</string></property></widget></item>
+          <item row="3" column="1"><widget class="QLineEdit" name="input_w"><property name="minimumSize"><size><width>300</width><height>0</height></size></property><property name="readOnly"><bool>true</bool></property></widget></item>
+          <item row="4" column="0"><widget class="QLabel"><property name="text"><string>Output:</string></property></widget></item>
+          <item row="4" column="1"><widget class="QLineEdit" name="output_prefix"><property name="placeholderText"><string>e.g. /imu/rpy/</string></property></widget></item>
+         </layout>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <widget class="QFrame" name="optionsFrame">
+       <property name="frameShape"><enum>QFrame::Box</enum></property>
+       <property name="frameShadow"><enum>QFrame::Plain</enum></property>
+       <layout class="QVBoxLayout">
+        <item>
+         <widget class="QRadioButton" name="radio_radians">
+          <property name="text"><string>Radians</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QRadioButton" name="radio_degrees">
+          <property name="text"><string>Degrees</string></property>
+          <property name="checked"><bool>true</bool></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QCheckBox" name="unwrap_check">
+          <property name="text"><string>Unwrap Angles</string></property>
+          <property name="checked"><bool>true</bool></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="save_button">
+          <property name="text"><string>Save</string></property>
+         </widget>
+        </item>
+        <item>
+         <spacer>
+          <property name="orientation"><enum>Qt::Vertical</enum></property>
+          <property name="sizeHint" stdset="0"><size><width>20</width><height>40</height></size></property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QFrame" name="chart_preview">
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>150</height>
+      </size>
+     </property>
+     <property name="maximumSize">
+      <size>
+       <width>16777215</width>
+       <height>400</height>
+      </size>
+     </property>
+     <property name="frameShape">
+      <enum>QFrame::Box</enum>
+     </property>
+     <property name="frameShadow">
+      <enum>QFrame::Plain</enum>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="status_label">
+     <property name="text"><string></string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Close</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>
