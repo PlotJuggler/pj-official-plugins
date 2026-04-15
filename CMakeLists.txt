@@ -24,6 +24,7 @@ if(TARGET pj_base)
   add_subdirectory(data_stream_foxglove_bridge)
   add_subdirectory(data_stream_pj_bridge)
   add_subdirectory(data_stream_dummy)
+  add_subdirectory(toolbox_reactive_scripts_editor)
   return()
 endif()
 
