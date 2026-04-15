@@ -16,6 +16,6 @@
     "robotics",
     "serialization"
   ],
-  "encoding": "data_tamer",
+  "encoding": ["data_tamer"],
   "min_plotjuggler_version": "4.0.0"
 }
