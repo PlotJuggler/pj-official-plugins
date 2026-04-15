@@ -33,9 +33,7 @@ static constexpr const char* kTrashSvg =
 
 class ColormapDialog : public PJ::DialogPluginTyped {
  public:
-  std::string manifest() const override {
-    return R"({"name":"ColorMap Editor","version":"1.0.0"})";
-  }
+  std::string manifest() const override { return kColormapManifest; }
 
   std::string ui_content() const override { return kColormapDialogUi; }
 
