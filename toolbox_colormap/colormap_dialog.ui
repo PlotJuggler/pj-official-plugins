@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ColormapDialog</class>
+ <widget class="QWidget" name="ColormapDialog">
+  <property name="windowTitle">
+   <string>ColorMap Editor</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <property name="spacing"><number>12</number></property>
+   <property name="leftMargin"><number>12</number></property>
+   <property name="topMargin"><number>16</number></property>
+   <property name="rightMargin"><number>12</number></property>
+   <property name="bottomMargin"><number>12</number></property>
+
+   <!-- Description text -->
+   <item>
+    <widget class="QFrame" name="header_frame">
+     <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+     <property name="frameShadow"><enum>QFrame::Plain</enum></property>
+     <layout class="QVBoxLayout">
+      <property name="contentsMargins">
+       <rect><x>12</x><y>10</y><width>12</width><height>10</height></rect>
+      </property>
+      <item>
+       <widget class="QLabel" name="description_label">
+        <property name="text">
+         <string>For each value of the series, the &lt;b&gt;ColorMap&lt;/b&gt; function must return a string containing a color.&lt;br/&gt;&lt;br/&gt;You can use hexadecimal notation ('&lt;b&gt;#98fb98&lt;/b&gt;') or any of these names ('&lt;b&gt;palegreen&lt;/b&gt;').&lt;br/&gt;&lt;br/&gt;Return no parameters if you want to skip this point.</string>
+        </property>
+        <property name="wordWrap"><bool>true</bool></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+
+   <!-- Two columns in a grid layout for equal width -->
+   <item>
+    <layout class="QGridLayout" name="columnsGrid">
+     <property name="horizontalSpacing"><number>12</number></property>
+     <property name="verticalSpacing"><number>4</number></property>
+
+     <!-- Row 0: headers -->
+     <item row="0" column="0">
+      <layout class="QHBoxLayout">
+       <property name="spacing"><number>2</number></property>
+       <item>
+        <widget class="QLabel">
+         <property name="text"><string>&lt;b&gt;Saved ColorMaps:&lt;/b&gt;</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="delete_btn">
+         <property name="text"><string></string></property>
+         <property name="toolTip"><string>Delete selected colormap</string></property>
+         <property name="maximumSize"><size><width>28</width><height>28</height></size></property>
+         <property name="flat"><bool>true</bool></property>
+        </widget>
+       </item>
+       <item>
+        <spacer><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer>
+       </item>
+      </layout>
+     </item>
+     <item row="0" column="1">
+      <widget class="QLabel" name="header_label">
+       <property name="text"><string>&lt;b&gt;function ColorMap(v)&lt;/b&gt;</string></property>
+      </widget>
+     </item>
+
+     <!-- Row 1: hint | name + save -->
+     <item row="1" column="0">
+      <widget class="QLabel">
+       <property name="text"><string>&lt;i&gt;Double-click to load&lt;/i&gt;</string></property>
+      </widget>
+     </item>
+     <item row="1" column="1">
+      <layout class="QHBoxLayout">
+       <item>
+        <widget class="QLineEdit" name="name_edit">
+         <property name="placeholderText"><string>Colormap name</string></property>
+         <property name="maximumSize"><size><width>150</width><height>16777215</height></size></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="save_btn">
+         <property name="text"><string>Save</string></property>
+        </widget>
+       </item>
+      </layout>
+     </item>
+
+     <!-- Row 2: list | editor (both expanding) -->
+     <item row="2" column="0">
+      <widget class="QListWidget" name="saved_list">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Ignored" vsizetype="Expanding"/>
+       </property>
+      </widget>
+     </item>
+     <item row="2" column="1">
+      <widget class="QPlainTextEdit" name="code_editor">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Ignored" vsizetype="Expanding"/>
+       </property>
+       <property name="placeholderText">
+        <string>-- Example:
+if v &gt; 0 then return "red" else return "#4488ff" end</string>
+       </property>
+      </widget>
+     </item>
+
+     <!-- Row 3: empty | status -->
+     <item row="3" column="1">
+      <widget class="QLabel" name="status_label">
+       <property name="text"><string></string></property>
+      </widget>
+     </item>
+
+     <!-- Column stretch: equal -->
+     <property name="columnStretch" stdset="0">
+      <string>1,1</string>
+     </property>
+    </layout>
+   </item>
+
+   <!-- Close button -->
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Close</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>
