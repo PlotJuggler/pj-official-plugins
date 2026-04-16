@@ -47,7 +47,7 @@ struct LuaColorMap {
     if (!result.valid()) {
       return false;
     }
-    func = lua["ColorMap"];
+    func = sol::protected_function(lua["ColorMap"]);
     return true;
   }
 
@@ -278,7 +278,6 @@ class ColormapToolbox : public PJ::ToolboxPluginBase {
       auto host = toolboxHost();
       dialog_.setHostCallbacks(
           [host](const std::string& name, const char*(*fn)(double, void*), void* ctx) {
-            auto sv = PJ::sdk::toAbiString(name);
             return host.registerColorMap(name, fn, ctx).has_value();
           },
           [host](const std::string& name) {
