@@ -1,4 +1,6 @@
 find_package(nlohmann_json REQUIRED)
+find_package(lua REQUIRED)
+find_package(sol2 REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
@@ -11,6 +13,8 @@ target_link_libraries(toolbox_colormap_plugin PRIVATE
   pj_base
   pj_dialog_sdk
   nlohmann_json::nlohmann_json
+  lua::lua
+  sol2::sol2
 )
 
 pj_embed_ui(toolbox_colormap_plugin
