@@ -47,7 +47,7 @@ struct LuaColorMap {
     if (!result.valid()) {
       return false;
     }
-    func = sol::protected_function(lua["ColorMap"]);
+    func = lua.get<sol::protected_function>("ColorMap");
     return true;
   }
 
