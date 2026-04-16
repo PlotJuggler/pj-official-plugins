@@ -45,21 +45,31 @@ class ColormapDialog : public PJ::DialogPluginTyped {
     }
 
     PJ::WidgetData wd;
-    wd.setPlainText("code_editor", lua_body_)
+    wd.setCodeContent("code_editor", lua_body_)
+        .setCodeLanguage("code_editor", "lua")
         .setText("name_edit", current_name_)
         .setListItems("saved_list", names)
         .setText("status_label", status_msg_)
         .setButtonIcon("delete_btn", kTrashSvg);
 
+    if (should_accept_) {
+      should_accept_ = false;
+      wd.requestAccept();
+    }
+
     return wd.toJson();
   }
 
-  bool onTextChanged(std::string_view name, std::string_view text) override {
+  bool onCodeChanged(std::string_view name, std::string_view code) override {
     if (name == "code_editor") {
-      lua_body_ = std::string(text);
+      lua_body_ = std::string(code);
       status_msg_.clear();
-      return true;
+      return false;  // no widget refresh needed on every keystroke
     }
+    return false;
+  }
+
+  bool onTextChanged(std::string_view name, std::string_view text) override {
     if (name == "name_edit") {
       current_name_ = std::string(text);
       return false;
@@ -114,6 +124,7 @@ class ColormapDialog : public PJ::DialogPluginTyped {
       current_name_ = map.name;
       selected_name_ = map.name;
       status_msg_.clear();
+      should_accept_ = true;  // close dialog and trigger apply in MainWindow
       return true;
     }
     return false;
@@ -157,6 +168,7 @@ class ColormapDialog : public PJ::DialogPluginTyped {
   std::string selected_name_;
   std::string status_msg_;
   std::vector<SavedMap> saved_maps_;
+  bool should_accept_ = false;
 };
 
 // ---------------------------------------------------------------------------
