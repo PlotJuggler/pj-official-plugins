@@ -3,6 +3,7 @@
 #include <pj_plugins/sdk/widget_data.hpp>
 
 #include <nlohmann/json.hpp>
+#include <sol/sol.hpp>
 
 #include <algorithm>
 #include <string>
@@ -26,6 +27,52 @@ static constexpr const char* kTrashSvg =
     R"(<line x1="10" y1="11" x2="10" y2="17"/>)"
     R"(<line x1="14" y1="11" x2="14" y2="17"/>)"
     R"(</svg>)";
+
+// ---------------------------------------------------------------------------
+// LuaColorMap — compiles and evaluates a Lua ColorMap(v) function.
+// Mirrors the PJ 3.x ColorMap class but lives entirely in the plugin.
+// ---------------------------------------------------------------------------
+
+struct LuaColorMap {
+  sol::state lua;
+  sol::protected_function func;
+  std::string last_result;  // buffer for the returned color string
+
+  bool compile(const std::string& body) {
+    lua = {};
+    func = {};
+    lua.open_libraries(sol::lib::base, sol::lib::math, sol::lib::string);
+    auto wrapped = "function ColorMap(v)\n" + body + "\nend\n";
+    auto result = lua.safe_script(wrapped, sol::script_pass_on_error);
+    if (!result.valid()) {
+      return false;
+    }
+    func = lua["ColorMap"];
+    return true;
+  }
+
+  /// Evaluate the colormap for a scalar value. Returns a CSS color string
+  /// or empty string on error. The returned c_str() is valid until the next call.
+  const char* evaluate(double value) {
+    if (!func.valid()) {
+      last_result.clear();
+      return last_result.c_str();
+    }
+    auto res = func(value);
+    if (res.valid() && res.return_count() == 1 && res.get_type(0) == sol::type::string) {
+      last_result = res.get<std::string>(0);
+    } else {
+      last_result.clear();
+    }
+    return last_result.c_str();
+  }
+};
+
+// C callback for the host registry. user_ctx points to a LuaColorMap*.
+static const char* colormapEvalCallback(double value, void* user_ctx) {
+  auto* cm = static_cast<LuaColorMap*>(user_ctx);
+  return cm->evaluate(value);
+}
 
 // ---------------------------------------------------------------------------
 // ColormapDialog
@@ -64,7 +111,7 @@ class ColormapDialog : public PJ::DialogPluginTyped {
     if (name == "code_editor") {
       lua_body_ = std::string(code);
       status_msg_.clear();
-      return false;  // no widget refresh needed on every keystroke
+      return false;
     }
     return false;
   }
@@ -83,18 +130,38 @@ class ColormapDialog : public PJ::DialogPluginTyped {
         status_msg_ = "Enter a name before saving.";
         return true;
       }
+
+      // Try to compile the Lua script
+      auto cm = std::make_shared<LuaColorMap>();
+      if (!cm->compile(lua_body_)) {
+        status_msg_ = "Lua compilation error.";
+        return true;
+      }
+
+      // Update or add to saved maps
       auto it = std::find_if(saved_maps_.begin(), saved_maps_.end(),
                              [&](const SavedMap& m) { return m.name == current_name_; });
       if (it != saved_maps_.end()) {
         it->body = lua_body_;
+        it->colormap = cm;
       } else {
-        saved_maps_.push_back({current_name_, lua_body_});
+        saved_maps_.push_back({current_name_, lua_body_, cm});
       }
-      status_msg_.clear();
+
+      // Register with host (if bound)
+      if (register_fn_) {
+        register_fn_(current_name_, colormapEvalCallback, cm.get());
+      }
+
+      status_msg_ = "Saved and registered: " + current_name_;
       return true;
     }
     if (name == "delete_btn") {
       if (!selected_name_.empty()) {
+        // Unregister from host
+        if (unregister_fn_) {
+          unregister_fn_(selected_name_);
+        }
         saved_maps_.erase(
             std::remove_if(saved_maps_.begin(), saved_maps_.end(),
                            [&](const SavedMap& m) { return m.name == selected_name_; }),
@@ -124,7 +191,7 @@ class ColormapDialog : public PJ::DialogPluginTyped {
       current_name_ = map.name;
       selected_name_ = map.name;
       status_msg_.clear();
-      should_accept_ = true;  // close dialog and trigger apply in MainWindow
+      should_accept_ = true;
       return true;
     }
     return false;
@@ -148,7 +215,10 @@ class ColormapDialog : public PJ::DialogPluginTyped {
     saved_maps_.clear();
     if (j.contains("saved") && j["saved"].is_array()) {
       for (const auto& item : j["saved"]) {
-        saved_maps_.push_back({item.value("name", ""), item.value("body", "")});
+        auto cm = std::make_shared<LuaColorMap>();
+        std::string body = item.value("body", "");
+        cm->compile(body);
+        saved_maps_.push_back({item.value("name", ""), body, cm});
       }
     }
     status_msg_.clear();
@@ -157,10 +227,31 @@ class ColormapDialog : public PJ::DialogPluginTyped {
     return true;
   }
 
+  /// Called by ColormapToolbox to wire the register/unregister functions.
+  using RegisterFn = std::function<bool(const std::string&,
+      const char*(*)(double, void*), void*)>;
+  using UnregisterFn = std::function<bool(const std::string&)>;
+
+  void setHostCallbacks(RegisterFn reg, UnregisterFn unreg) {
+    register_fn_ = std::move(reg);
+    unregister_fn_ = std::move(unreg);
+  }
+
+  /// Re-register all saved colormaps (called after host binding).
+  void registerAllColormaps() {
+    if (!register_fn_) return;
+    for (auto& m : saved_maps_) {
+      if (m.colormap && m.colormap->func.valid()) {
+        register_fn_(m.name, colormapEvalCallback, m.colormap.get());
+      }
+    }
+  }
+
  private:
   struct SavedMap {
     std::string name;
     std::string body;
+    std::shared_ptr<LuaColorMap> colormap;
   };
 
   std::string lua_body_;
@@ -169,6 +260,8 @@ class ColormapDialog : public PJ::DialogPluginTyped {
   std::string status_msg_;
   std::vector<SavedMap> saved_maps_;
   bool should_accept_ = false;
+  RegisterFn register_fn_;
+  UnregisterFn unregister_fn_;
 };
 
 // ---------------------------------------------------------------------------
@@ -179,7 +272,23 @@ class ColormapToolbox : public PJ::ToolboxPluginBase {
  public:
   uint64_t capabilities() const override { return PJ::kToolboxCapabilityHasDialog; }
 
-  void* dialogContext() override { return &dialog_; }
+  void* dialogContext() override {
+    // Wire host callbacks on first access (after bindToolboxHost).
+    if (!callbacks_wired_ && toolboxHostBound()) {
+      auto host = toolboxHost();
+      dialog_.setHostCallbacks(
+          [host](const std::string& name, const char*(*fn)(double, void*), void* ctx) {
+            auto sv = PJ::sdk::toAbiString(name);
+            return host.registerColorMap(name, fn, ctx).has_value();
+          },
+          [host](const std::string& name) {
+            return host.unregisterColorMap(name).has_value();
+          });
+      dialog_.registerAllColormaps();
+      callbacks_wired_ = true;
+    }
+    return &dialog_;
+  }
 
   std::string saveConfig() const override { return dialog_.saveConfig(); }
 
@@ -190,6 +299,7 @@ class ColormapToolbox : public PJ::ToolboxPluginBase {
 
  private:
   ColormapDialog dialog_;
+  bool callbacks_wired_ = false;
 };
 
 }  // namespace
