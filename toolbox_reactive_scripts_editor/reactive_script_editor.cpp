@@ -49,6 +49,13 @@ struct SnippetData {
 
 std::filesystem::path pjUserDataDir() {
   namespace fs = std::filesystem;
+  // MSVC flags std::getenv as deprecated (C4996); -Werror turns that into a
+  // hard failure. The function is well-defined in standard C++ and we only
+  // read process env here, so silence the warning locally.
+#if defined(_MSC_VER)
+#  pragma warning(push)
+#  pragma warning(disable : 4996)
+#endif
 #if defined(_WIN32)
   if (const char* p = std::getenv("LOCALAPPDATA"); p && *p) {
     return fs::path(p) / "plotjuggler";
@@ -67,6 +74,9 @@ std::filesystem::path pjUserDataDir() {
   if (const char* h = std::getenv("HOME"); h && *h) {
     return fs::path(h) / ".local" / "share" / "plotjuggler";
   }
+#endif
+#if defined(_MSC_VER)
+#  pragma warning(pop)
 #endif
   // Last-resort fallback: a writable temp location. Won't survive reboots on
   // every platform, but avoids returning an empty path.
