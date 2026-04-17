@@ -78,9 +78,10 @@ SEMVER_REGEX = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9.-]+))?(?:\+([a-z
 
 class PluginVtable(ctypes.Structure):
     """
-    Partial vtable structure matching PJ_data_source_vtable_t and PJ_message_parser_vtable_t.
+    Partial vtable structure matching PJ_data_source_vtable_t, PJ_message_parser_vtable_t,
+    and PJ_toolbox_vtable_t.
 
-    Both vtable types have the same initial fields up to manifest_json:
+    All three vtable types have the same initial fields up to manifest_json:
     - protocol_version (uint32_t) at offset +0
     - struct_size (uint32_t) at offset +4
     - create (void* function pointer) at offset +8
@@ -121,7 +122,7 @@ def extract_binary_manifest(plugin_path: Path) -> dict | None:
         return None
 
     vtable = None
-    for func_name in ["PJ_get_data_source_vtable", "PJ_get_message_parser_vtable"]:
+    for func_name in ["PJ_get_data_source_vtable", "PJ_get_message_parser_vtable", "PJ_get_toolbox_vtable"]:
         try:
             get_vtable = getattr(lib, func_name)
             get_vtable.restype = ctypes.POINTER(PluginVtable)

@@ -1,0 +1,20 @@
+{
+  "id": "toolbox-quaternion",
+  "name": "Quaternion to RPY",
+  "version": "1.0.0",
+  "description": "Converts quaternion (x, y, z, w) time series into Roll, Pitch, Yaw angles with optional unwrapping and degree/radian output.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "toolbox",
+  "tags": [
+    "quaternion",
+    "rpy",
+    "rotation",
+    "toolbox"
+  ],
+  "min_plotjuggler_version": "4.0.0"
+}

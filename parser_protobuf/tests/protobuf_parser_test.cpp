@@ -603,7 +603,8 @@ TEST(ProtobufParserTest, TimestampPreserved) {
 TEST(ProtobufParserTest, ManifestContainsEncoding) {
   ProtobufParserFixture f;
   f.setUp();
-  EXPECT_NE(f.handle.manifest().find("\"encoding\": \"protobuf\""), std::string::npos);
+  // Manifest uses "encoding" as an array containing all supported encodings
+  EXPECT_NE(f.handle.manifest().find("\"protobuf\""), std::string::npos);
 }
 
 }  // namespace
