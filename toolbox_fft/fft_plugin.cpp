@@ -573,7 +573,7 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
           {.name = "frequency_hz", .value = result.frequencies_hz[i]},
           {.name = "amplitude", .value = result.amplitudes[i]},
       };
-      (void)host.appendRecord(*topic, ts, PJ::Span(fields));
+      (void)host.appendRecord(*topic, ts, PJ::Span<const PJ::sdk::NamedFieldValue>(fields));
     }
 
     if (runtimeHostBound()) {

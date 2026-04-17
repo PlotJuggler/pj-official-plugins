@@ -426,7 +426,7 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
           {.name = "yaw", .value = rpy[2]},
       };
 
-      auto status = host.appendRecord(*topic, ts[i], PJ::Span(fields));
+      auto status = host.appendRecord(*topic, ts[i], PJ::Span<const PJ::sdk::NamedFieldValue>(fields));
       if (!status) {
         return PJ::unexpected("failed to append record at index " + std::to_string(i));
       }
