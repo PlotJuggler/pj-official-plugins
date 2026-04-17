@@ -604,32 +604,33 @@ struct CreatedSeries {
   [[nodiscard]] size_t size() const { return timestamps.size(); }
 };
 
-}  // close anonymous namespace for PYBIND11_EMBEDDED_MODULE (requires external linkage)
+// Register SeriesAccessor and CreatedSeries with pybind11 inside the embedded
+// interpreter. Called lazily from executePythonScriptImpl() after the
+// scoped_interpreter is live; registering at static-init time via
+// PYBIND11_EMBEDDED_MODULE would fault when the plugin is dlopen'ed from a
+// process that already has Python initialized (for example the release
+// verification tool).
+void registerPjTypes() {
+  static const bool once = [] {
+    py::module_ m = py::module_::import("__main__");
+    py::class_<SeriesAccessor>(m, "_PJSeriesAccessor")
+        .def("size", &SeriesAccessor::size)
+        .def("at",
+             [](const SeriesAccessor& sa, size_t index) -> py::object {
+               auto pt = sa.at(index);
+               if (!pt) return py::none();
+               return py::make_tuple(pt->t, pt->v);
+             })
+        .def("atTime", &SeriesAccessor::atTime);
 
-// ---------------------------------------------------------------------------
-// Embedded Python module — registers SeriesAccessor and CreatedSeries as
-// Python types once at interpreter startup. Functions that depend on runtime
-// state (TimeseriesView, Timeseries, GetSeriesNames) are injected per-execution.
-// ---------------------------------------------------------------------------
-
-PYBIND11_EMBEDDED_MODULE(_pj_types, m) {
-  py::class_<SeriesAccessor>(m, "SeriesAccessor")
-      .def("size", &SeriesAccessor::size)
-      .def("at",
-           [](const SeriesAccessor& sa, size_t index) -> py::object {
-             auto pt = sa.at(index);
-             if (!pt) return py::none();
-             return py::make_tuple(pt->t, pt->v);
-           })
-      .def("atTime", &SeriesAccessor::atTime);
-
-  py::class_<CreatedSeries>(m, "CreatedSeries")
-      .def("push_back", &CreatedSeries::push_back)
-      .def("clear", &CreatedSeries::clear)
-      .def("size", &CreatedSeries::size);
+    py::class_<CreatedSeries>(m, "_PJCreatedSeries")
+        .def("push_back", &CreatedSeries::push_back)
+        .def("clear", &CreatedSeries::clear)
+        .def("size", &CreatedSeries::size);
+    return true;
+  }();
+  (void)once;
 }
-
-namespace {  // re-open anonymous namespace
 
 // ---------------------------------------------------------------------------
 // ReactiveScriptEditorToolbox
@@ -867,12 +868,10 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
     }
 
     ensurePythonInterpreter();
+    registerPjTypes();
 
     try {
       py::dict scope;
-
-      // Import pre-registered types (from PYBIND11_EMBEDDED_MODULE above).
-      py::module_::import("_pj_types");
 
       // Register global functions with runtime state.
       std::unordered_map<std::string, CreatedSeries> created;
