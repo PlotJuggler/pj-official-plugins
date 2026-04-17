@@ -741,7 +741,7 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
           const PJ::sdk::NamedFieldValue fields[] = {
               {.name = "value", .value = series.values[i]},
           };
-          auto status = host.appendRecord(*topic, ts, PJ::Span(fields));
+          auto status = host.appendRecord(*topic, ts, PJ::Span<const PJ::sdk::NamedFieldValue>(fields));
           if (!status) {
             return "Error: failed to append record: " + std::string(status.error());
           }
