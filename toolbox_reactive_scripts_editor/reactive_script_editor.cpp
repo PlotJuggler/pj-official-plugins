@@ -1,3 +1,4 @@
+#include <pj_base/sdk/platform.hpp>
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
@@ -11,7 +12,6 @@ namespace py = pybind11;
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -39,52 +39,8 @@ struct SnippetData {
   std::string function_name;
 };
 
-// ---------------------------------------------------------------------------
-// User-data directory resolution (cross-platform, Qt-free)
-//
-// Mirrors `QStandardPaths::GenericDataLocation + "/plotjuggler"`, the same root
-// used by the Qt-linked PlatformUtils helper in pj_marketplace, so plugins and
-// the host share a common data location per user.
-// ---------------------------------------------------------------------------
-
-std::filesystem::path pjUserDataDir() {
-  namespace fs = std::filesystem;
-  // MSVC flags std::getenv as deprecated (C4996); -Werror turns that into a
-  // hard failure. The function is well-defined in standard C++ and we only
-  // read process env here, so silence the warning locally.
-#if defined(_MSC_VER)
-#  pragma warning(push)
-#  pragma warning(disable : 4996)
-#endif
-#if defined(_WIN32)
-  if (const char* p = std::getenv("LOCALAPPDATA"); p && *p) {
-    return fs::path(p) / "plotjuggler";
-  }
-  if (const char* h = std::getenv("USERPROFILE"); h && *h) {
-    return fs::path(h) / "AppData" / "Local" / "plotjuggler";
-  }
-#elif defined(__APPLE__)
-  if (const char* h = std::getenv("HOME"); h && *h) {
-    return fs::path(h) / "Library" / "Application Support" / "plotjuggler";
-  }
-#else
-  if (const char* x = std::getenv("XDG_DATA_HOME"); x && *x) {
-    return fs::path(x) / "plotjuggler";
-  }
-  if (const char* h = std::getenv("HOME"); h && *h) {
-    return fs::path(h) / ".local" / "share" / "plotjuggler";
-  }
-#endif
-#if defined(_MSC_VER)
-#  pragma warning(pop)
-#endif
-  // Last-resort fallback: a writable temp location. Won't survive reboots on
-  // every platform, but avoids returning an empty path.
-  return fs::temp_directory_path() / "plotjuggler";
-}
-
 std::filesystem::path luaEditorLibraryPath() {
-  return pjUserDataDir() / "toolbox_reactive_scripts_editor" / "library.json";
+  return PJ::sdk::userDataDir() / "toolbox_reactive_scripts_editor" / "library.json";
 }
 
 // ---------------------------------------------------------------------------
