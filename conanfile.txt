@@ -9,6 +9,7 @@ zstd/1.5.5
 date/3.0.4
 gtest/1.17.0
 ixwebsocket/11.4.6
+asio/1.28.2
 kissfft/131.1.0
 lua/5.4.6
 sol2/3.5.0
