@@ -788,7 +788,7 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
     // Register TimeseriesView as a callable that returns a SeriesAccessor.
     lua["TimeseriesView"] = [this, &lua](const std::string& name) -> sol::object {
       auto it = series_map_.find(name);
-      if (it == series_map_.end()) return sol::make_object(lua, sol::nil);
+      if (it == series_map_.end()) return sol::make_object(lua, sol::lua_nil);
       return sol::make_object(lua, it->second);
     };
 
@@ -809,7 +809,7 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
     sa_type["size"] = &SeriesAccessor::size;
     sa_type["at"] = [](const SeriesAccessor& sa, size_t index, sol::this_state s) -> sol::object {
       auto pt = sa.at(index);
-      if (!pt) return sol::make_object(s, sol::nil);
+      if (!pt) return sol::make_object(s, sol::lua_nil);
       sol::state_view lv(s);
       sol::table result = lv.create_table();
       result[1] = pt->t;
