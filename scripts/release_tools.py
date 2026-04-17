@@ -40,8 +40,10 @@ import argparse
 import ctypes
 import hashlib
 import json
+import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.request
@@ -103,18 +105,11 @@ class PluginVtable(ctypes.Structure):
 # =============================================================================
 
 
-def extract_binary_manifest(plugin_path: Path) -> dict | None:
+def _extract_binary_manifest_in_process(plugin_path: Path) -> dict | None:
     """
-    Load a plugin binary and extract the full embedded manifest.
-
-    Uses ctypes to load the shared library and call the vtable getter function.
-    Works cross-platform: .so (Linux), .dylib (macOS), .dll (Windows).
-
-    Args:
-        plugin_path: Path to the plugin binary
-
-    Returns:
-        Manifest dict if found, None if extraction failed
+    In-process manifest extraction via ctypes. Runs in a subprocess when
+    called from extract_binary_manifest() to avoid side effects such as
+    pybind11 module registration aborting the main interpreter.
     """
     try:
         lib = ctypes.CDLL(str(plugin_path))
@@ -139,6 +134,45 @@ def extract_binary_manifest(plugin_path: Path) -> dict | None:
         manifest_str = vtable.contents.manifest_json.decode("utf-8")
         return json.loads(manifest_str)
     except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
+def extract_binary_manifest(plugin_path: Path) -> dict | None:
+    """
+    Load a plugin binary and extract the full embedded manifest.
+
+    Runs the ctypes dlopen in a short-lived subprocess. Plugins that embed
+    a Python interpreter (pybind11) register modules at load time and
+    abort if loaded into a Python process with an already-initialized
+    interpreter. Isolating the load keeps release verification robust.
+
+    Args:
+        plugin_path: Path to the plugin binary
+
+    Returns:
+        Manifest dict if found, None if extraction failed
+    """
+    if os.environ.get("_PJ_RELEASE_TOOLS_IN_CHILD") == "1":
+        return _extract_binary_manifest_in_process(plugin_path)
+
+    env = {**os.environ, "_PJ_RELEASE_TOOLS_IN_CHILD": "1"}
+    try:
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve()), "extract-embedded-manifest", str(plugin_path)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
         return None
 
 
