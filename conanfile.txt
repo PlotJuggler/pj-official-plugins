@@ -23,6 +23,10 @@ arrow/*:parquet=True
 arrow/*:with_snappy=True
 boost/*:without_test=True
 boost/*:without_cobalt=True
+# Verbose b2 output (-d2) so failed build steps on preview runners like
+# windows-11-arm surface the actual compiler error instead of a bare
+# "Error 1 while executing" with no context.
+boost/*:extra_b2_flags=-d2
 
 [generators]
 CMakeDeps
