@@ -329,6 +329,18 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
     return PJ::okStatus();
   }
 
+  void onDataChanged() override {
+    if (!toolboxHostBound() || !runtimeHostBound() || !dialog_.isValid()) {
+      return;
+    }
+    auto status = applyTransform();
+    if (!status) {
+      runtimeHost().reportMessage(
+          PJ::ToolboxMessageLevel::kWarning,
+          "quaternion re-apply failed: " + std::string(status.error()));
+    }
+  }
+
  private:
   PJ::Status applyTransform() {
     auto host = toolboxHost();
