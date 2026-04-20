@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -261,6 +262,13 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
     return PJ::kToolboxCapabilityHasDialog | PJ::kToolboxCapabilityNonModalDialog;
   }
 
+  void resetIncrementalState() {
+    source_handle_ = std::nullopt;
+    topic_handle_ = std::nullopt;
+    processed_count_ = 0;
+    converter_.reset();
+  }
+
   void* dialogContext() override {
     // Populate available fields and series data from catalog before the dialog opens.
     if (toolboxHostBound()) {
@@ -308,8 +316,12 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
   std::string saveConfig() const override { return dialog_.saveConfig(); }
 
   PJ::Status loadConfig(std::string_view config_json) override {
+    auto prev_config = dialog_.saveConfig();
     if (!dialog_.loadConfig(config_json)) {
       return PJ::unexpected("invalid config JSON");
+    }
+    if (dialog_.saveConfig() != prev_config) {
+      resetIncrementalState();
     }
     if (dialog_.isValid() && toolboxHostBound() && runtimeHostBound()) {
       return applyTransform();
@@ -382,11 +394,9 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
       return PJ::unexpected("input series have different lengths");
     }
 
-    // 3. Compute RPY.
-    QuaternionToRPYConverter converter;
-    converter.setScale(dialog_.degrees() ? kDegPerRad : 1.0);
-    converter.setUnwrap(dialog_.unwrap());
-    converter.reset();
+    // 3. Configure converter (reuse state for incremental processing).
+    converter_.setScale(dialog_.degrees() ? kDegPerRad : 1.0);
+    converter_.setUnwrap(dialog_.unwrap());
 
     // Access raw double values from MaterializedSeries.
     const auto& raw_x = series_x->raw();
@@ -398,19 +408,32 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
       return s.values.as_float64[i];
     };
 
-    // 4. Write output.
-    auto source = host.createDataSource("quaternion_rpy");
-    if (!source) {
-      return PJ::unexpected("failed to create output data source");
+    // 4. Create data source and topic only on first invocation.
+    if (!source_handle_) {
+      auto source = host.createDataSource("quaternion_rpy");
+      if (!source) {
+        return PJ::unexpected("failed to create output data source");
+      }
+      source_handle_ = *source;
     }
 
-    std::string prefix = dialog_.outputPrefix();
-    auto topic = host.ensureTopic(*source, prefix + "rpy");
-    if (!topic) {
-      return PJ::unexpected("failed to create output topic");
+    if (!topic_handle_) {
+      std::string prefix = dialog_.outputPrefix();
+      auto topic = host.ensureTopic(*source_handle_, prefix + "rpy");
+      if (!topic) {
+        return PJ::unexpected("failed to create output topic");
+      }
+      topic_handle_ = *topic;
     }
 
-    for (size_t i = 0; i < count; ++i) {
+    // 5. Process only new points (incremental).
+    size_t start = processed_count_;
+    if (start >= count) {
+      dialog_.setStatus("No new samples to process");
+      return PJ::okStatus();
+    }
+
+    for (size_t i = start; i < count; ++i) {
       std::array<double, 4> quat = {
           as_double(raw_x, i),
           as_double(raw_y, i),
@@ -418,7 +441,7 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
           as_double(raw_w, i)};
 
       std::array<double, 3> rpy{};
-      converter.convert(i, quat, rpy);
+      converter_.convert(i, quat, rpy);
 
       const PJ::sdk::NamedFieldValue fields[] = {
           {.name = "roll", .value = rpy[0]},
@@ -426,18 +449,26 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
           {.name = "yaw", .value = rpy[2]},
       };
 
-      auto status = host.appendRecord(*topic, ts[i], PJ::Span<const PJ::sdk::NamedFieldValue>(fields));
+      auto status = host.appendRecord(*topic_handle_, ts[i], PJ::Span<const PJ::sdk::NamedFieldValue>(fields));
       if (!status) {
         return PJ::unexpected("failed to append record at index " + std::to_string(i));
       }
     }
 
+    processed_count_ = count;
     runtimeHost().notifyDataChanged();
-    dialog_.setStatus("Converted " + std::to_string(count) + " samples");
+    dialog_.setStatus("Converted " + std::to_string(count) + " samples (" +
+                      std::to_string(count - start) + " new)");
     return PJ::okStatus();
   }
 
   QuaternionDialog dialog_;
+
+  // Incremental processing state — persists across applyTransform() calls.
+  QuaternionToRPYConverter converter_;
+  std::optional<PJ::sdk::DataSourceHandle> source_handle_;
+  std::optional<PJ::sdk::TopicHandle> topic_handle_;
+  size_t processed_count_ = 0;
 };
 
 }  // namespace
