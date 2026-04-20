@@ -353,6 +353,60 @@ TEST(QuaternionPluginTest, RadianOutput) {
   EXPECT_NEAR(store.output[2].value, 0.0, 0.0001);
 }
 
+TEST(QuaternionPluginTest, IncrementalProcessing) {
+  auto library = PJ::ToolboxLibrary::load(PJ_QUATERNION_PLUGIN_PATH);
+  ASSERT_TRUE(library) << library.error();
+  auto handle = library->createHandle();
+
+  MockDataStore store;
+
+  // Start with 2 identity quaternion samples.
+  store.addTopic("quat", 1, 0, 4);
+  store.addField("x", 1, 1, {0.0, 0.0}, {0, 1000000000});
+  store.addField("y", 1, 2, {0.0, 0.0}, {0, 1000000000});
+  store.addField("z", 1, 3, {0.0, 0.0}, {0, 1000000000});
+  store.addField("w", 1, 4, {1.0, 1.0}, {0, 1000000000});
+
+  ASSERT_TRUE(handle.bindToolboxHost(makeToolboxHost(&store)));
+  ASSERT_TRUE(handle.bindRuntimeHost(makeRuntimeHost(&store)));
+
+  std::string config = R"({
+    "input_x": "quat/x", "input_y": "quat/y",
+    "input_z": "quat/z", "input_w": "quat/w",
+    "output_prefix": "rpy/", "unwrap": true, "degrees": true
+  })";
+
+  // First call: processes 2 samples.
+  ASSERT_TRUE(handle.loadConfig(config));
+  EXPECT_EQ(store.create_data_source_calls, 1);
+  ASSERT_EQ(store.output.size(), 6u);  // 2 samples x 3 fields
+  EXPECT_EQ(store.notify_data_changed_calls, 1);
+
+  // Simulate new data arriving: append a third sample (90-degree roll).
+  constexpr double s = 0.7071067811865476;
+  for (auto& f : store.fields) {
+    f.timestamps.push_back(2000000000);
+    if (f.name == "x") {
+      f.values.push_back(s);
+    } else if (f.name == "w") {
+      f.values.push_back(s);
+    } else {
+      f.values.push_back(0.0);
+    }
+  }
+
+  // Second call with same config: should only process the new sample.
+  ASSERT_TRUE(handle.loadConfig(config));
+  EXPECT_EQ(store.create_data_source_calls, 1);  // NOT 2 — reuses the existing data source
+  ASSERT_EQ(store.output.size(), 9u);  // 6 previous + 3 new (1 sample x 3 fields)
+  EXPECT_EQ(store.notify_data_changed_calls, 2);
+
+  // The new sample should be a 90-degree roll.
+  EXPECT_NEAR(store.output[6].value, 90.0, 0.01);   // roll
+  EXPECT_NEAR(store.output[7].value, 0.0, 0.01);    // pitch
+  EXPECT_NEAR(store.output[8].value, 0.0, 0.01);    // yaw
+}
+
 TEST(QuaternionPluginTest, ConfigRoundTrip) {
   auto library = PJ::ToolboxLibrary::load(PJ_QUATERNION_PLUGIN_PATH);
   ASSERT_TRUE(library) << library.error();
