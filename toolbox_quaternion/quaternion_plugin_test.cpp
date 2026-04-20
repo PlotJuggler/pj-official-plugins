@@ -187,8 +187,6 @@ PJ_toolbox_host_t makeToolboxHost(MockDataStore* store) {
       .append_arrow_ipc = hostAppendArrowIpc,
       .acquire_catalog_snapshot = hostAcquireCatalogSnapshot,
       .read_series = hostReadSeries,
-      .register_colormap = nullptr,
-      .unregister_colormap = nullptr,
   };
   return PJ_toolbox_host_t{.ctx = store, .vtable = &vtable};
 }

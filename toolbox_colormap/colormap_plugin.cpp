@@ -273,15 +273,15 @@ class ColormapToolbox : public PJ::ToolboxPluginBase {
   uint64_t capabilities() const override { return PJ::kToolboxCapabilityHasDialog; }
 
   void* dialogContext() override {
-    // Wire host callbacks on first access (after bindToolboxHost).
-    if (!callbacks_wired_ && toolboxHostBound()) {
-      auto host = toolboxHost();
+    // Wire registry callbacks on first access (after bindColorMapRegistry).
+    if (!callbacks_wired_ && colorMapRegistryBound()) {
+      auto registry = colorMapRegistry();
       dialog_.setHostCallbacks(
-          [host](const std::string& name, const char*(*fn)(double, void*), void* ctx) {
-            return host.registerColorMap(name, fn, ctx).has_value();
+          [registry](const std::string& name, const char* (*fn)(double, void*), void* ctx) {
+            return registry.registerMap(name, fn, ctx);
           },
-          [host](const std::string& name) {
-            return host.unregisterColorMap(name).has_value();
+          [registry](const std::string& name) {
+            return registry.unregisterMap(name);
           });
       dialog_.registerAllColormaps();
       callbacks_wired_ = true;
