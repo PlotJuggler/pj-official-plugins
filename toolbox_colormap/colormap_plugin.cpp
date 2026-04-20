@@ -212,6 +212,13 @@ class ColormapDialog : public PJ::DialogPluginTyped {
     auto j = nlohmann::json::parse(config_json, nullptr, false);
     if (j.is_discarded()) return false;
     lua_body_ = j.value("lua_body", std::string{});
+    // Unregister before destroying the LuaColorMap objects to avoid dangling
+    // pointers in the registry (registry holds raw user_ctx pointers).
+    if (unregister_fn_) {
+      for (const auto& m : saved_maps_) {
+        unregister_fn_(m.name);
+      }
+    }
     saved_maps_.clear();
     if (j.contains("saved") && j["saved"].is_array()) {
       for (const auto& item : j["saved"]) {
@@ -219,6 +226,13 @@ class ColormapDialog : public PJ::DialogPluginTyped {
         std::string body = item.value("body", "");
         cm->compile(body);
         saved_maps_.push_back({item.value("name", ""), body, cm});
+      }
+    }
+    if (register_fn_) {
+      for (auto& m : saved_maps_) {
+        if (m.colormap && m.colormap->func.valid()) {
+          register_fn_(m.name, colormapEvalCallback, m.colormap.get());
+        }
       }
     }
     status_msg_.clear();
@@ -273,15 +287,15 @@ class ColormapToolbox : public PJ::ToolboxPluginBase {
   uint64_t capabilities() const override { return PJ::kToolboxCapabilityHasDialog; }
 
   void* dialogContext() override {
-    // Wire host callbacks on first access (after bindToolboxHost).
-    if (!callbacks_wired_ && toolboxHostBound()) {
-      auto host = toolboxHost();
+    // Wire registry callbacks on first access (after bindColorMapRegistry).
+    if (!callbacks_wired_ && colorMapRegistryBound()) {
+      auto registry = colorMapRegistry();
       dialog_.setHostCallbacks(
-          [host](const std::string& name, const char*(*fn)(double, void*), void* ctx) {
-            return host.registerColorMap(name, fn, ctx).has_value();
+          [registry](const std::string& name, const char* (*fn)(double, void*), void* ctx) {
+            return registry.registerMap(name, fn, ctx);
           },
-          [host](const std::string& name) {
-            return host.unregisterColorMap(name).has_value();
+          [registry](const std::string& name) {
+            return registry.unregisterMap(name);
           });
       dialog_.registerAllColormaps();
       callbacks_wired_ = true;
