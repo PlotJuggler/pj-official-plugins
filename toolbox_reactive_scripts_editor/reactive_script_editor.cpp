@@ -609,6 +609,7 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
   }
 
   void* dialogContext() override {
+    auto_run_pending_ = false;
     if (toolboxHostBound()) {
       auto host = toolboxHost();
       auto catalog = host.catalogSnapshot();
@@ -677,8 +678,9 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
       }
     }
 
-    if (!dialog_.code().empty() && !dialog_.functionName().empty() && toolboxHostBound() &&
-        runtimeHostBound()) {
+    if (auto_run_pending_ && !dialog_.code().empty() && !dialog_.functionName().empty() &&
+        toolboxHostBound() && runtimeHostBound()) {
+      auto_run_pending_ = false;
       std::string msg = executeScript(dialog_.code(), dialog_.globalCode(), dialog_.functionName());
       if (msg.rfind("Error:", 0) == 0) {
         return PJ::unexpected(msg);
@@ -898,6 +900,7 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
   std::unordered_map<std::string, SeriesAccessor> series_map_;
   std::vector<std::string> series_names_;
   bool library_loaded_ = false;
+  bool auto_run_pending_ = true;
 };
 
 }  // namespace
