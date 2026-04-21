@@ -18,6 +18,7 @@ target_link_libraries(toolbox_reactive_scripts_editor_plugin PRIVATE
   sol2::sol2
   nlohmann_json::nlohmann_json
   pybind11::embed
+  ${CMAKE_DL_LIBS}
 )
 
 # Bundle the Python stdlib next to the plugin binary so release_tools can include
