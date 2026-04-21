@@ -824,6 +824,15 @@ def cmd_create_distribution_package(args) -> int:
     shutil.copy(manifest_path, output_path)
     print(f"Copied manifest to: {output_path / 'manifest.json'}", file=sys.stderr)
 
+    # Bundle any Python stdlib directories placed next to the plugin binary by
+    # the CMake POST_BUILD step (e.g. python3.12/).  This makes the plugin
+    # self-contained: no system Python installation is required at runtime.
+    for entry in plugin_path.parent.iterdir():
+        if entry.is_dir() and entry.name.startswith("python3"):
+            dest = output_path / entry.name
+            shutil.copytree(entry, dest, dirs_exist_ok=True)
+            print(f"Bundled Python stdlib: {dest}", file=sys.stderr)
+
     # Output extension ZIP filename to stdout
     if args.os_label and args.arch:
         zip_name = f"{extension_id}-{version}-{args.os_label}-{args.arch}.zip"

@@ -16,6 +16,7 @@ sol2/3.5.0
 # Pin libsodium to 1.0.20: 1.0.21 has broken ARM NEON code that fails with GCC on aarch64
 libsodium/1.0.20
 pybind11/2.13.6
+cpython/3.12.7
 
 [options]
 *:shared=False
@@ -23,6 +24,12 @@ arrow/*:parquet=True
 arrow/*:with_snappy=True
 boost/*:without_test=True
 boost/*:without_cobalt=True
+lua/*:compile_as_cpp=True
+# cpython built static: libpython3.12.a links into the plugin .so directly.
+# C extension stdlib modules (math, json, re, struct...) compile into the static lib.
+# Pure Python stdlib (.py files) are copied to python3.12/ next to the plugin binary
+# at build time and bundled in the release zip.
+cpython/*:shared=False
 
 [generators]
 CMakeDeps

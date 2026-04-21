@@ -20,6 +20,18 @@ target_link_libraries(toolbox_reactive_scripts_editor_plugin PRIVATE
   pybind11::embed
 )
 
+# Bundle the Python stdlib next to the plugin binary so release_tools can include
+# it in the distribution zip. Python3_STDLIB is set by find_package(Python3) and
+# points to the lib/python3.x directory of the Conan-managed CPython installation.
+if(Python3_STDLIB)
+  add_custom_command(TARGET toolbox_reactive_scripts_editor_plugin POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${Python3_STDLIB}"
+      "$<TARGET_FILE_DIR:toolbox_reactive_scripts_editor_plugin>/python3.12"
+    COMMENT "Bundling Python stdlib alongside plugin binary"
+  )
+endif()
+
 pj_embed_manifest(toolbox_reactive_scripts_editor_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/reactive_script_editor_manifest.hpp
   VAR_NAME kReactiveScriptEditorManifest

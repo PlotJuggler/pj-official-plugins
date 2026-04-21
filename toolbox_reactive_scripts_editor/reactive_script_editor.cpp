@@ -10,6 +10,12 @@
 #include <pybind11/stl.h>
 namespace py = pybind11;
 
+#if defined(__linux__) || defined(__APPLE__)
+#include <dlfcn.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -123,11 +129,63 @@ std::string validateLuaSyntax(const std::string& global_code, const std::string&
 }
 
 // ---------------------------------------------------------------------------
+// getPluginDir — returns the directory containing this .so/.dll at runtime.
+//
+// Used to locate the bundled Python stdlib (python3.12/ next to the plugin).
+// The stdlib path is passed to Py_SetPath() before Py_Initialize() so CPython
+// finds its pure-Python modules without needing a system Python installation.
+// ---------------------------------------------------------------------------
+
+static std::filesystem::path getPluginDir() {
+#if defined(__linux__) || defined(__APPLE__)
+  Dl_info info{};
+  if (dladdr(reinterpret_cast<const void*>(&getPluginDir), &info) && info.dli_fname) {
+    return std::filesystem::path(info.dli_fname).parent_path();
+  }
+#elif defined(_WIN32)
+  wchar_t buf[MAX_PATH] = {};
+  HMODULE hm = nullptr;
+  if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         reinterpret_cast<LPCWSTR>(&getPluginDir), &hm)) {
+    GetModuleFileNameW(hm, buf, MAX_PATH);
+    return std::filesystem::path(buf).parent_path();
+  }
+#endif
+  return {};
+}
+
+// ---------------------------------------------------------------------------
 // Python interpreter singleton — CPython can only be initialized once per
 // process, so we use a static guard that lives until program exit.
+//
+// Before constructing the guard (which calls Py_Initialize), we call
+// Py_SetPath() to point CPython at the bundled stdlib shipped alongside the
+// plugin. If the stdlib directory is absent (developer build pointing at a
+// system Python), Py_SetPath is skipped and CPython uses its default search.
 // ---------------------------------------------------------------------------
 
 void ensurePythonInterpreter() {
+  // Step 1: resolve stdlib path — runs exactly once before Py_Initialize.
+  // C++ guarantees static locals initialize in declaration order within a
+  // function, so stdlib_configured is fully set before guard is constructed.
+  static bool stdlib_configured = [] {
+    auto plugin_dir = getPluginDir();
+    if (!plugin_dir.empty()) {
+      auto stdlib = plugin_dir / "python3.12";
+      if (std::filesystem::exists(stdlib)) {
+#ifdef _WIN32
+        Py_SetPath(stdlib.wstring().c_str());
+#else
+        Py_SetPath(stdlib.string().c_str());
+#endif
+      }
+    }
+    return true;
+  }();
+  (void)stdlib_configured;
+
+  // Step 2: initialize CPython — also exactly once, after Py_SetPath.
   static py::scoped_interpreter guard{};
   (void)guard;
 }
