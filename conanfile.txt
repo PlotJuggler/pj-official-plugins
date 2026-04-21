@@ -23,6 +23,7 @@ arrow/*:parquet=True
 arrow/*:with_snappy=True
 boost/*:without_test=True
 boost/*:without_cobalt=True
+lua/*:compile_as_cpp=True
 
 [generators]
 CMakeDeps
