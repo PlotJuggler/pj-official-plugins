@@ -1,7 +1,7 @@
 {
   "id": "json-parser",
   "name": "JSON Parser",
-  "version": "1.2.0",
+  "version": "1.3.1",
   "description": "Message parser for JSON, CBOR, MessagePack, and BSON encoded data.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
@@ -17,6 +17,11 @@
     "bson",
     "parser"
   ],
-  "encoding": ["json", "cbor", "msgpack", "bson"],
+  "encoding": [
+    "json",
+    "cbor",
+    "msgpack",
+    "bson"
+  ],
   "min_plotjuggler_version": "4.0.0"
 }
