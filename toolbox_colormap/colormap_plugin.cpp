@@ -12,9 +12,6 @@
 #include "colormap_manifest.hpp"
 #include "colormap_dialog_ui.hpp"
 
-// Forward declaration of the dialog vtable emitter — defined at file scope
-// by PJ_DIALOG_PLUGIN(ColormapDialog) at the bottom of this TU.
-extern "C" PJ_DIALOG_EXPORT const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -305,7 +302,7 @@ class ColormapToolbox : public PJ::ToolboxPluginBase {
       dialog_.registerAllColormaps();
       callbacks_wired_ = true;
     }
-    return PJ_borrowed_dialog_t{&dialog_, PJ_get_dialog_vtable()};
+    return PJ::borrowDialog(dialog_);
   }
 
   std::string saveConfig() const override { return dialog_.saveConfig(); }

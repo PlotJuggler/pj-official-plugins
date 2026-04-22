@@ -17,9 +17,6 @@
 #include "quaternion_dialog_ui.hpp"
 #include "quaternion_to_rpy.hpp"
 
-// Forward declaration of the dialog vtable emitter — defined at file scope
-// by PJ_DIALOG_PLUGIN(QuaternionDialog) at the bottom of this TU.
-extern "C" PJ_DIALOG_EXPORT const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
 
 // ---------------------------------------------------------------------------
 // QuaternionDialog
@@ -316,7 +313,7 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
         dialog_.setSeriesDataMap(std::move(data_map));
       }
     }
-    return PJ_borrowed_dialog_t{&dialog_, PJ_get_dialog_vtable()};
+    return PJ::borrowDialog(dialog_);
   }
 
   std::string saveConfig() const override { return dialog_.saveConfig(); }

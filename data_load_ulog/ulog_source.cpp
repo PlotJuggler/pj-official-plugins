@@ -15,8 +15,6 @@
 #include <string>
 #include <vector>
 
-// Forward declaration emitted by PJ_DIALOG_PLUGIN(ulog_detail::ULogParamsDialog) below.
-extern "C" PJ_DIALOG_EXPORT const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
 
 namespace {
 
@@ -206,7 +204,7 @@ class ULogSource : public PJ::FileSourceBase {
   }
 
   PJ_borrowed_dialog_t getDialog() override {
-    return PJ_borrowed_dialog_t{&dialog_, PJ_get_dialog_vtable()};
+    return PJ::borrowDialog(dialog_);
   }
 
   std::string saveConfig() const override {

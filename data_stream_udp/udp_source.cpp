@@ -15,9 +15,6 @@
 #include <string>
 #include <unordered_map>
 
-// Forward declaration of the dialog vtable emitter — defined at file scope
-// by PJ_DIALOG_PLUGIN(UdpDialog) at the bottom of this TU.
-extern "C" PJ_DIALOG_EXPORT const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
 
 namespace {
 
@@ -26,7 +23,7 @@ constexpr size_t kMaxDatagramSize = 65507;  // max UDP payload (IPv4)
 class UdpSource : public PJ::StreamSourceBase {
  public:
   PJ_borrowed_dialog_t getDialog() override {
-    return PJ_borrowed_dialog_t{&dialog_, PJ_get_dialog_vtable()};
+    return PJ::borrowDialog(dialog_);
   }
 
   uint64_t extraCapabilities() const override {

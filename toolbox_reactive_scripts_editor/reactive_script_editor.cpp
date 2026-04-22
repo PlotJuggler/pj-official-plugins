@@ -3,9 +3,6 @@
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 
-// Forward declaration of the dialog vtable emitter — defined at file scope
-// by PJ_DIALOG_PLUGIN(ReactiveScriptEditorDialog) at the bottom of this TU.
-extern "C" PJ_DIALOG_EXPORT const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
 
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
@@ -656,7 +653,7 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
                                   const std::string& n) { return executeScript(c, g, n); });
     dialog_.setLibrarySaveCallback(
         [this](const std::map<std::string, SnippetData>& snippets) { writeLibrary(snippets); });
-    return PJ_borrowed_dialog_t{&dialog_, PJ_get_dialog_vtable()};
+    return PJ::borrowDialog(dialog_);
   }
 
   std::string saveConfig() const override { return dialog_.saveConfig(); }

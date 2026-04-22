@@ -21,9 +21,6 @@ extern "C" {
 #include <kissfft/kiss_fftr.h>
 }
 
-// Forward declaration of the dialog vtable emitter — defined at file scope
-// by PJ_DIALOG_PLUGIN(FFTDialog) at the bottom of this TU.
-extern "C" PJ_DIALOG_EXPORT const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
 
 // ---------------------------------------------------------------------------
 // FFT math (ported from PJ 3.x ToolboxFFT / fft_editor.cpp)
@@ -368,7 +365,7 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
     }
     refreshFieldList();
     refreshInputPreview();
-    return PJ_borrowed_dialog_t{&dialog_, PJ_get_dialog_vtable()};
+    return PJ::borrowDialog(dialog_);
   }
 
   PJ::Status bind(PJ::sdk::ServiceRegistry services) override {
