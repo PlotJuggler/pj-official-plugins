@@ -11,24 +11,30 @@ if(TARGET pj_base)
   # Subdirectory mode — deps already provided by parent.
   set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 
-  add_subdirectory(parser_json)
-  add_subdirectory(parser_protobuf)
-  add_subdirectory(parser_ros)
-  add_subdirectory(parser_data_tamer)
+  # Enabled entries track the v4 ABI (PJ_ABI_VERSION == 4): service-
+  # registry API, Arrow C Data Interface at the write boundary, and the
+  # PJ_NOEXCEPT vtable surface. Commented-out entries stopped at the
+  # v1/v2 ABI (old bindWriteHost, dialogContext, etc.) and need a fresh
+  # v4 port — v3 was never an official release, so there is no v3
+  # intermediate stop. Uncomment each as it is brought over to v4.
   add_subdirectory(data_load_csv)
   add_subdirectory(data_load_mcap)
   add_subdirectory(data_load_parquet)
   add_subdirectory(data_load_ulog)
-  add_subdirectory(data_stream_zmq)
-  add_subdirectory(data_stream_mqtt)
-  add_subdirectory(data_stream_udp)
-  add_subdirectory(data_stream_foxglove_bridge)
-  add_subdirectory(data_stream_pj_bridge)
-  add_subdirectory(data_stream_dummy)
-  add_subdirectory(toolbox_fft)
-  add_subdirectory(toolbox_colormap)
-  add_subdirectory(toolbox_quaternion)
-  add_subdirectory(toolbox_reactive_scripts_editor)
+  # add_subdirectory(parser_json)                      # v1/v2 -> needs v4 port
+  # add_subdirectory(parser_protobuf)                  # v1/v2 -> needs v4 port
+  # add_subdirectory(parser_ros)                       # v1/v2 -> needs v4 port
+  # add_subdirectory(parser_data_tamer)                # v1/v2 -> needs v4 port
+  # add_subdirectory(data_stream_zmq)                  # v1/v2 -> needs v4 port
+  # add_subdirectory(data_stream_mqtt)                 # v1/v2 -> needs v4 port
+  # add_subdirectory(data_stream_udp)                  # v1/v2 -> needs v4 port
+  # add_subdirectory(data_stream_foxglove_bridge)      # v1/v2 -> needs v4 port
+  # add_subdirectory(data_stream_pj_bridge)            # v1/v2 -> needs v4 port
+  # add_subdirectory(data_stream_dummy)                # v1/v2 -> needs v4 port
+  # add_subdirectory(toolbox_fft)                      # v1/v2 -> needs v4 port
+  # add_subdirectory(toolbox_colormap)                 # v1/v2 -> needs v4 port
+  # add_subdirectory(toolbox_quaternion)               # v1/v2 -> needs v4 port
+  # add_subdirectory(toolbox_reactive_scripts_editor)  # v1/v2 -> needs v4 port
   return()
 endif()
 

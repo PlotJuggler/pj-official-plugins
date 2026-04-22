@@ -19,6 +19,9 @@
 #include <string_view>
 #include <vector>
 
+// Forward declaration emitted by PJ_DIALOG_PLUGIN(ParquetDialog) below.
+extern "C" PJ_DIALOG_EXPORT const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
+
 namespace {
 
 /// Extract the file basename (without extension) from a path.
@@ -211,7 +214,9 @@ struct ColumnInfo {
 
 class ParquetSource : public PJ::FileSourceBase {
  public:
-  void* dialogContext() override { return &dialog_; }
+  PJ_borrowed_dialog_t getDialog() override {
+    return PJ_borrowed_dialog_t{&dialog_, PJ_get_dialog_vtable()};
+  }
 
   uint64_t extraCapabilities() const override {
     return PJ::kCapabilityDirectIngest | PJ::kCapabilityHasDialog;

@@ -11,6 +11,12 @@
 #include <string>
 #include <vector>
 
+// Forward declaration of the dialog vtable accessor emitted by
+// PJ_DIALOG_PLUGIN(CsvDialog) at the bottom of this TU. Lets
+// CsvSource::getDialog() pair its embedded dialog member with the matching
+// vtable into a typed PJ_borrowed_dialog_t.
+extern "C" PJ_DIALOG_EXPORT const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
+
 namespace {
 
 /// Extract the file basename (without extension) from a path.
@@ -27,7 +33,9 @@ std::string basenameWithoutExt(const std::string& filepath) {
 
 class CsvSource : public PJ::FileSourceBase {
  public:
-  void* dialogContext() override { return &dialog_; }
+  PJ_borrowed_dialog_t getDialog() override {
+    return PJ_borrowed_dialog_t{&dialog_, PJ_get_dialog_vtable()};
+  }
 
   uint64_t extraCapabilities() const override {
     return PJ::kCapabilityDirectIngest | PJ::kCapabilityHasDialog;
