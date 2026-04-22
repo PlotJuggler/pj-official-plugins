@@ -21,6 +21,10 @@ extern "C" {
 #include <kissfft/kiss_fftr.h>
 }
 
+// Forward declaration of the dialog vtable emitter — defined at file scope
+// by PJ_DIALOG_PLUGIN(FFTDialog) at the bottom of this TU.
+extern "C" PJ_DIALOG_EXPORT const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
+
 // ---------------------------------------------------------------------------
 // FFT math (ported from PJ 3.x ToolboxFFT / fft_editor.cpp)
 // ---------------------------------------------------------------------------
@@ -348,8 +352,8 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
     return PJ::kToolboxCapabilityHasDialog | PJ::kToolboxCapabilityNonModalDialog;
   }
 
-  void* dialogContext() override {
-    // Wire the dialog's callbacks to this toolbox the first time dialogContext
+  PJ_borrowed_dialog_t getDialog() override {
+    // Wire the dialog's callbacks to this toolbox the first time getDialog
     // is queried. The dialog invokes these on selection/drop/radio/button events
     // so the host-side data plane (readSeries, visibleRange, ScatterXY ingest)
     // runs in reaction to user input — not just at dialog-open time.
@@ -364,11 +368,11 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
     }
     refreshFieldList();
     refreshInputPreview();
-    return &dialog_;
+    return PJ_borrowed_dialog_t{&dialog_, PJ_get_dialog_vtable()};
   }
 
-  PJ::Status bindToolboxHost(PJ_toolbox_host_t host) override {
-    auto status = ToolboxPluginBase::bindToolboxHost(host);
+  PJ::Status bind(PJ::sdk::ServiceRegistry services) override {
+    auto status = ToolboxPluginBase::bind(services);
     if (!status) return status;
     refreshFieldList();
     return PJ::okStatus();
@@ -434,9 +438,9 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
       if (read->type() != PJ::PrimitiveType::kFloat64) continue;
 
       auto ts_span = read->timestamps();
-      const size_t row_count = read->raw().row_count;
-      const double* values = read->raw().values.as_float64;
-      if (row_count == 0 || ts_span.size() != row_count) continue;
+      const size_t row_count = read->rowCount();
+      const double* values = read->valuesAsFloat64();
+      if (row_count == 0 || ts_span.size() != row_count || values == nullptr) continue;
 
       int64_t t_min = ts_span[0];
       int64_t t_max = ts_span[row_count - 1];
@@ -473,9 +477,9 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
     if (read->type() != PJ::PrimitiveType::kFloat64) return false;
 
     auto ts_span = read->timestamps();
-    const size_t row_count = read->raw().row_count;
-    const double* values = read->raw().values.as_float64;
-    if (row_count == 0 || ts_span.size() != row_count) return false;
+    const size_t row_count = read->rowCount();
+    const double* values = read->valuesAsFloat64();
+    if (row_count == 0 || ts_span.size() != row_count || values == nullptr) return false;
 
     int64_t t_min = ts_span[0];
     int64_t t_max = ts_span[row_count - 1];
@@ -552,14 +556,14 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
     auto host = toolboxHost();
     auto source = host.createDataSource("fft_output");
     if (!source) {
-      dialog_.setStatus(std::string("createDataSource failed: ") + std::string(host.lastError()));
+      dialog_.setStatus(std::string("createDataSource failed: ") + source.error());
       return;
     }
 
     const std::string topic_name = dialog_.selectedFields().front() + dialog_.suffix();
     auto topic = host.ensureTopic(*source, topic_name);
     if (!topic) {
-      dialog_.setStatus(std::string("ensureTopic failed: ") + std::string(host.lastError()));
+      dialog_.setStatus(std::string("ensureTopic failed: ") + topic.error());
       return;
     }
 

@@ -3,6 +3,10 @@
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 
+// Forward declaration of the dialog vtable emitter — defined at file scope
+// by PJ_DIALOG_PLUGIN(ReactiveScriptEditorDialog) at the bottom of this TU.
+extern "C" PJ_DIALOG_EXPORT const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
+
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
 
@@ -608,7 +612,7 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
     return PJ::kToolboxCapabilityHasDialog;
   }
 
-  void* dialogContext() override {
+  PJ_borrowed_dialog_t getDialog() override {
     auto_run_pending_ = false;
     if (toolboxHostBound()) {
       auto host = toolboxHost();
@@ -626,19 +630,21 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
             series_names_.push_back(name);
 
             auto series = host.readSeries(f.handle);
-            if (series) {
+            if (series && series->type() == PJ::PrimitiveType::kFloat64) {
               auto ts = series->timestamps();
-              const auto& raw = series->raw();
+              const double* values = series->valuesAsFloat64();
               size_t count = ts.size();
 
-              SeriesAccessor sa;
-              sa.timestamps.resize(count);
-              sa.values.resize(count);
-              for (size_t i = 0; i < count; ++i) {
-                sa.timestamps[i] = static_cast<double>(ts[i]);
-                sa.values[i] = raw.values.as_float64[i];
+              if (values != nullptr) {
+                SeriesAccessor sa;
+                sa.timestamps.resize(count);
+                sa.values.resize(count);
+                for (size_t i = 0; i < count; ++i) {
+                  sa.timestamps[i] = static_cast<double>(ts[i]);
+                  sa.values[i] = values[i];
+                }
+                series_map_[name] = std::move(sa);
               }
-              series_map_[name] = std::move(sa);
             }
           }
         }
@@ -650,7 +656,7 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
                                   const std::string& n) { return executeScript(c, g, n); });
     dialog_.setLibrarySaveCallback(
         [this](const std::map<std::string, SnippetData>& snippets) { writeLibrary(snippets); });
-    return &dialog_;
+    return PJ_borrowed_dialog_t{&dialog_, PJ_get_dialog_vtable()};
   }
 
   std::string saveConfig() const override { return dialog_.saveConfig(); }

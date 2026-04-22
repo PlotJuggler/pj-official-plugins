@@ -12,6 +12,10 @@
 #include "colormap_manifest.hpp"
 #include "colormap_dialog_ui.hpp"
 
+// Forward declaration of the dialog vtable emitter — defined at file scope
+// by PJ_DIALOG_PLUGIN(ColormapDialog) at the bottom of this TU.
+extern "C" PJ_DIALOG_EXPORT const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -286,21 +290,22 @@ class ColormapToolbox : public PJ::ToolboxPluginBase {
  public:
   uint64_t capabilities() const override { return PJ::kToolboxCapabilityHasDialog; }
 
-  void* dialogContext() override {
-    // Wire registry callbacks on first access (after bindColorMapRegistry).
+  PJ_borrowed_dialog_t getDialog() override {
+    // Wire registry callbacks on first access (after bind() acquires the
+    // ColorMapRegistry service).
     if (!callbacks_wired_ && colorMapRegistryBound()) {
       auto registry = colorMapRegistry();
       dialog_.setHostCallbacks(
-          [registry](const std::string& name, const char* (*fn)(double, void*), void* ctx) {
-            return registry.registerMap(name, fn, ctx);
+          [registry](const std::string& name, const char* (*fn)(double, void*), void* ctx) -> bool {
+            return registry.registerMap(name, fn, ctx).has_value();
           },
-          [registry](const std::string& name) {
-            return registry.unregisterMap(name);
+          [registry](const std::string& name) -> bool {
+            return registry.unregisterMap(name).has_value();
           });
       dialog_.registerAllColormaps();
       callbacks_wired_ = true;
     }
-    return &dialog_;
+    return PJ_borrowed_dialog_t{&dialog_, PJ_get_dialog_vtable()};
   }
 
   std::string saveConfig() const override { return dialog_.saveConfig(); }

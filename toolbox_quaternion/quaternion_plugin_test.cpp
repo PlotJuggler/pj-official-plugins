@@ -9,7 +9,9 @@
 #include <vector>
 
 #include "pj_base/plugin_data_api.h"
+#include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/toolbox_plugin_base.hpp"
+#include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_plugins/host/toolbox_library.hpp"
 
 #ifndef PJ_QUATERNION_PLUGIN_PATH
@@ -17,6 +19,135 @@
 #endif
 
 namespace {
+
+// ---------------------------------------------------------------------------
+// Minimal Arrow C Data Interface builder — just enough to let the toolbox
+// plugin's readSeries() helper walk the resulting struct. We emit two
+// children: an int64 "timestamp" column and a float64 value column.
+//
+// Schema and array have DISJOINT ownership — each carries its own private_data
+// heap block and its own release callback frees only that block. This keeps
+// their lifetimes independent, which matters because MaterializedSeriesView's
+// holders destroy the array before the schema.
+// ---------------------------------------------------------------------------
+
+struct ArrowSchemaPayload {
+  ArrowSchema child_ts{};
+  ArrowSchema child_val{};
+  ArrowSchema* child_ptrs[2]{};
+};
+
+struct ArrowArrayPayload {
+  std::vector<int64_t> timestamps;
+  std::vector<double> values;
+  ArrowArray child_ts{};
+  ArrowArray child_val{};
+  ArrowArray* child_ptrs[2]{};
+  const void* ts_buffers[2]{};
+  const void* val_buffers[2]{};
+};
+
+inline void releaseArrowSchema(ArrowSchema* schema) noexcept {
+  auto* p = static_cast<ArrowSchemaPayload*>(schema->private_data);
+  delete p;
+  schema->release = nullptr;
+  schema->private_data = nullptr;
+  schema->children = nullptr;
+  schema->n_children = 0;
+}
+
+inline void releaseArrowArray(ArrowArray* array) noexcept {
+  auto* p = static_cast<ArrowArrayPayload*>(array->private_data);
+  delete p;
+  array->release = nullptr;
+  array->private_data = nullptr;
+  array->children = nullptr;
+  array->n_children = 0;
+}
+
+inline void buildArrowSeries(
+    const std::vector<int64_t>& ts, const std::vector<double>& vals, ArrowSchema* out_schema, ArrowArray* out_array) {
+  auto* sp = new ArrowSchemaPayload{};
+  sp->child_ts = ArrowSchema{
+      .format = "l",
+      .name = "timestamp",
+      .metadata = nullptr,
+      .flags = 0,
+      .n_children = 0,
+      .children = nullptr,
+      .dictionary = nullptr,
+      .release = [](ArrowSchema* s) noexcept { s->release = nullptr; },
+      .private_data = nullptr};
+  sp->child_val = ArrowSchema{
+      .format = "g",
+      .name = "value",
+      .metadata = nullptr,
+      .flags = 0,
+      .n_children = 0,
+      .children = nullptr,
+      .dictionary = nullptr,
+      .release = [](ArrowSchema* s) noexcept { s->release = nullptr; },
+      .private_data = nullptr};
+  sp->child_ptrs[0] = &sp->child_ts;
+  sp->child_ptrs[1] = &sp->child_val;
+
+  *out_schema = ArrowSchema{
+      .format = "+s",
+      .name = "",
+      .metadata = nullptr,
+      .flags = 0,
+      .n_children = 2,
+      .children = sp->child_ptrs,
+      .dictionary = nullptr,
+      .release = releaseArrowSchema,
+      .private_data = sp};
+
+  auto* ap = new ArrowArrayPayload{};
+  ap->timestamps = ts;
+  ap->values = vals;
+  ap->ts_buffers[0] = nullptr;
+  ap->ts_buffers[1] = ap->timestamps.data();
+  ap->val_buffers[0] = nullptr;
+  ap->val_buffers[1] = ap->values.data();
+
+  const int64_t length = static_cast<int64_t>(ap->values.size());
+  ap->child_ts = ArrowArray{
+      .length = length,
+      .null_count = 0,
+      .offset = 0,
+      .n_buffers = 2,
+      .n_children = 0,
+      .buffers = ap->ts_buffers,
+      .children = nullptr,
+      .dictionary = nullptr,
+      .release = [](ArrowArray* a) noexcept { a->release = nullptr; },
+      .private_data = nullptr};
+  ap->child_val = ArrowArray{
+      .length = length,
+      .null_count = 0,
+      .offset = 0,
+      .n_buffers = 2,
+      .n_children = 0,
+      .buffers = ap->val_buffers,
+      .children = nullptr,
+      .dictionary = nullptr,
+      .release = [](ArrowArray* a) noexcept { a->release = nullptr; },
+      .private_data = nullptr};
+  ap->child_ptrs[0] = &ap->child_ts;
+  ap->child_ptrs[1] = &ap->child_val;
+
+  *out_array = ArrowArray{
+      .length = length,
+      .null_count = 0,
+      .offset = 0,
+      .n_buffers = 0,
+      .n_children = 2,
+      .buffers = nullptr,
+      .children = ap->child_ptrs,
+      .dictionary = nullptr,
+      .release = releaseArrowArray,
+      .private_data = ap};
+}
 
 // ---------------------------------------------------------------------------
 // Mock data store — holds input quaternion series and captures output records.
@@ -70,31 +201,32 @@ struct MockDataStore {
 };
 
 // ---------------------------------------------------------------------------
-// Toolbox host vtable callbacks
+// v4 toolbox host vtable — all trampolines noexcept, PJ_error_t out-param.
 // ---------------------------------------------------------------------------
 
-static const char* hostGetLastError(void*) { return nullptr; }
-
-static bool hostCreateDataSource(void* ctx, PJ_string_view_t, PJ_data_source_handle_t* out) {
+static bool hostCreateDataSource(
+    void* ctx, PJ_string_view_t, PJ_data_source_handle_t* out, PJ_error_t*) noexcept {
   auto* store = static_cast<MockDataStore*>(ctx);
   ++store->create_data_source_calls;
   *out = PJ_data_source_handle_t{1};
   return true;
 }
 
-static bool hostEnsureTopic(void*, PJ_data_source_handle_t, PJ_string_view_t, PJ_topic_handle_t* out) {
+static bool hostEnsureTopic(
+    void*, PJ_data_source_handle_t, PJ_string_view_t, PJ_topic_handle_t* out, PJ_error_t*) noexcept {
   *out = PJ_topic_handle_t{100};
   return true;
 }
 
-static bool hostEnsureField(void*, PJ_topic_handle_t, PJ_string_view_t, PJ_primitive_type_t,
-                            PJ_field_handle_t* out) {
+static bool hostEnsureField(
+    void*, PJ_topic_handle_t, PJ_string_view_t, PJ_primitive_type_t, PJ_field_handle_t* out, PJ_error_t*) noexcept {
   *out = PJ_field_handle_t{PJ_topic_handle_t{100}, 1};
   return true;
 }
 
-static bool hostAppendRecord(void* ctx, PJ_topic_handle_t, int64_t timestamp,
-                             const PJ_named_field_value_t* fields, size_t field_count) {
+static bool hostAppendRecord(
+    void* ctx, PJ_topic_handle_t, int64_t timestamp, const PJ_named_field_value_t* fields, size_t field_count,
+    PJ_error_t*) noexcept {
   auto* store = static_cast<MockDataStore*>(ctx);
   for (size_t i = 0; i < field_count; ++i) {
     store->output.push_back({
@@ -106,11 +238,16 @@ static bool hostAppendRecord(void* ctx, PJ_topic_handle_t, int64_t timestamp,
   return true;
 }
 
-static bool hostAppendBoundRecord(void*, PJ_topic_handle_t, int64_t, const PJ_bound_field_value_t*, size_t) {
+static bool hostAppendBoundRecord(
+    void*, PJ_topic_handle_t, int64_t, const PJ_bound_field_value_t*, size_t, PJ_error_t*) noexcept {
   return true;
 }
 
-static bool hostAppendArrowIpc(void*, PJ_topic_handle_t, PJ_bytes_view_t, PJ_string_view_t) {
+static bool hostAppendArrowStream(
+    void*, PJ_topic_handle_t, struct ArrowArrayStream* stream, PJ_string_view_t, PJ_error_t*) noexcept {
+  if (stream != nullptr && stream->release != nullptr) {
+    stream->release(stream);
+  }
   return true;
 }
 
@@ -119,7 +256,8 @@ struct CatalogRelease {
   PJ_field_info_t* fields;
 };
 
-static bool hostAcquireCatalogSnapshot(void* ctx, PJ_catalog_snapshot_t* out) {
+static bool hostAcquireCatalogSnapshot(
+    void* ctx, PJ_catalog_snapshot_t* out, PJ_error_t*) noexcept {
   auto* store = static_cast<MockDataStore*>(ctx);
 
   auto* field_infos = new PJ_field_info_t[store->fields.size()];
@@ -155,22 +293,13 @@ static bool hostAcquireCatalogSnapshot(void* ctx, PJ_catalog_snapshot_t* out) {
   return true;
 }
 
-static bool hostReadSeries(void* ctx, PJ_field_handle_t field, PJ_materialized_series_t* out) {
+static bool hostReadSeriesArrow(
+    void* ctx, PJ_field_handle_t field, struct ArrowSchema* out_schema, struct ArrowArray* out_array,
+    PJ_error_t*) noexcept {
   auto* store = static_cast<MockDataStore*>(ctx);
   const FieldEntry* entry = store->findField(field);
   if (!entry || entry->values.empty()) return false;
-
-  out->source = PJ_data_source_handle_t{1};
-  out->topic = field.topic;
-  out->field = field;
-  out->type = PJ_PRIMITIVE_TYPE_FLOAT64;
-  out->timestamps = entry->timestamps.data();
-  out->row_count = entry->values.size();
-  out->validity_bits = nullptr;
-  out->validity_size = 0;
-  out->values.as_float64 = entry->values.data();
-  out->release_ctx = nullptr;
-  out->release = nullptr;
+  buildArrowSeries(entry->timestamps, entry->values, out_schema, out_array);
   return true;
 }
 
@@ -178,27 +307,25 @@ PJ_toolbox_host_t makeToolboxHost(MockDataStore* store) {
   static const PJ_toolbox_host_vtable_t vtable = {
       .abi_version = PJ_PLUGIN_DATA_API_VERSION,
       .struct_size = sizeof(PJ_toolbox_host_vtable_t),
-      .get_last_error = hostGetLastError,
       .create_data_source = hostCreateDataSource,
       .ensure_topic = hostEnsureTopic,
       .ensure_field = hostEnsureField,
       .append_record = hostAppendRecord,
       .append_bound_record = hostAppendBoundRecord,
-      .append_arrow_ipc = hostAppendArrowIpc,
+      .append_arrow_stream = hostAppendArrowStream,
       .acquire_catalog_snapshot = hostAcquireCatalogSnapshot,
-      .read_series = hostReadSeries,
+      .read_series_arrow = hostReadSeriesArrow,
   };
   return PJ_toolbox_host_t{.ctx = store, .vtable = &vtable};
 }
 
 // ---------------------------------------------------------------------------
-// Runtime host vtable callbacks
+// Runtime host vtable — v4 signatures.
 // ---------------------------------------------------------------------------
 
-static const char* runtimeGetLastError(void*) { return nullptr; }
-static void runtimeReportMessage(void*, PJ_toolbox_message_level_t, PJ_string_view_t) {}
+static void runtimeReportMessage(void*, PJ_toolbox_message_level_t, PJ_string_view_t) noexcept {}
 
-static void runtimeNotifyDataChanged(void* ctx) {
+static void runtimeNotifyDataChanged(void* ctx) noexcept {
   auto* store = static_cast<MockDataStore*>(ctx);
   ++store->notify_data_changed_calls;
 }
@@ -207,11 +334,17 @@ PJ_toolbox_runtime_host_t makeRuntimeHost(MockDataStore* store) {
   static const PJ_toolbox_runtime_host_vtable_t vtable = {
       .protocol_version = PJ_TOOLBOX_PLUGIN_PROTOCOL_VERSION,
       .struct_size = sizeof(PJ_toolbox_runtime_host_vtable_t),
-      .get_last_error = runtimeGetLastError,
       .report_message = runtimeReportMessage,
       .notify_data_changed = runtimeNotifyDataChanged,
   };
   return PJ_toolbox_runtime_host_t{.ctx = store, .vtable = &vtable};
+}
+
+// Convenience: bind both services to a registry and bind() the handle.
+void bindStoreServices(PJ::ToolboxHandle& handle, MockDataStore& store, PJ::ServiceRegistryBuilder& registry) {
+  registry.registerService<PJ::sdk::ToolboxHostService>(makeToolboxHost(&store));
+  registry.registerService<PJ::sdk::ToolboxRuntimeHostService>(makeRuntimeHost(&store));
+  ASSERT_TRUE(handle.bind(registry.view()));
 }
 
 // ---------------------------------------------------------------------------
@@ -242,8 +375,8 @@ TEST(QuaternionPluginTest, IdentityQuaternionProducesZeroRPY) {
   store.addField("z", 1, 3, {0.0, 0.0}, ts);
   store.addField("w", 1, 4, {1.0, 1.0}, ts);
 
-  ASSERT_TRUE(handle.bindToolboxHost(makeToolboxHost(&store)));
-  ASSERT_TRUE(handle.bindRuntimeHost(makeRuntimeHost(&store)));
+  PJ::ServiceRegistryBuilder registry;
+  bindStoreServices(handle, store, registry);
 
   ASSERT_TRUE(handle.loadConfig(R"({
     "input_x": "quat/x", "input_y": "quat/y",
@@ -284,8 +417,8 @@ TEST(QuaternionPluginTest, NinetyDegreeRotations) {
   store.addField("z", 1, 3, {0.0, 0.0, s}, ts);
   store.addField("w", 1, 4, {s, s, s}, ts);
 
-  ASSERT_TRUE(handle.bindToolboxHost(makeToolboxHost(&store)));
-  ASSERT_TRUE(handle.bindRuntimeHost(makeRuntimeHost(&store)));
+  PJ::ServiceRegistryBuilder registry;
+  bindStoreServices(handle, store, registry);
 
   ASSERT_TRUE(handle.loadConfig(R"({
     "input_x": "quat/x", "input_y": "quat/y",
@@ -333,8 +466,8 @@ TEST(QuaternionPluginTest, RadianOutput) {
   store.addField("z", 1, 3, {0.0}, ts);
   store.addField("w", 1, 4, {s}, ts);
 
-  ASSERT_TRUE(handle.bindToolboxHost(makeToolboxHost(&store)));
-  ASSERT_TRUE(handle.bindRuntimeHost(makeRuntimeHost(&store)));
+  PJ::ServiceRegistryBuilder registry;
+  bindStoreServices(handle, store, registry);
 
   ASSERT_TRUE(handle.loadConfig(R"({
     "input_x": "q/x", "input_y": "q/y",
@@ -367,8 +500,8 @@ TEST(QuaternionPluginTest, IncrementalProcessing) {
   store.addField("z", 1, 3, {0.0, 0.0}, {0, 1000000000});
   store.addField("w", 1, 4, {1.0, 1.0}, {0, 1000000000});
 
-  ASSERT_TRUE(handle.bindToolboxHost(makeToolboxHost(&store)));
-  ASSERT_TRUE(handle.bindRuntimeHost(makeRuntimeHost(&store)));
+  PJ::ServiceRegistryBuilder registry;
+  bindStoreServices(handle, store, registry);
 
   std::string config = R"({
     "input_x": "quat/x", "input_y": "quat/y",
@@ -414,7 +547,9 @@ TEST(QuaternionPluginTest, ConfigRoundTrip) {
 
   std::string config = R"({"degrees":true,"input_w":"w","input_x":"x","input_y":"y","input_z":"z","output_prefix":"out/","unwrap":true})";
   ASSERT_TRUE(handle.loadConfig(config));
-  EXPECT_EQ(handle.saveConfig(), config);
+  std::string out_config;
+  ASSERT_TRUE(handle.saveConfig(out_config));
+  EXPECT_EQ(out_config, config);
 }
 
 }  // namespace

@@ -24,6 +24,13 @@ pj_embed_ui(toolbox_quaternion_plugin
   VAR_NAME kQuaternionDialogUi
 )
 
+# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
+# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+pj_emit_plugin_manifest(toolbox_quaternion_plugin
+  FAMILY        toolbox
+  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
+)
+
 if(TARGET GTest::gtest_main)
   add_executable(quaternion_plugin_test quaternion_plugin_test.cpp)
   target_compile_features(quaternion_plugin_test PRIVATE cxx_std_20)

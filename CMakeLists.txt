@@ -31,10 +31,10 @@ if(TARGET pj_base)
   add_subdirectory(data_stream_foxglove_bridge)
   add_subdirectory(data_stream_pj_bridge)
   add_subdirectory(data_stream_dummy)
-  # add_subdirectory(toolbox_fft)                      # v1/v2 -> needs v4 port
-  # add_subdirectory(toolbox_colormap)                 # v1/v2 -> needs v4 port
-  # add_subdirectory(toolbox_quaternion)               # v1/v2 -> needs v4 port
-  # add_subdirectory(toolbox_reactive_scripts_editor)  # v1/v2 -> needs v4 port
+  add_subdirectory(toolbox_fft)
+  add_subdirectory(toolbox_colormap)
+  add_subdirectory(toolbox_quaternion)
+  add_subdirectory(toolbox_reactive_scripts_editor)
   return()
 endif()
 
