@@ -13,11 +13,17 @@
 #include <unordered_map>
 #include <vector>
 
+// Forward declaration of the dialog vtable emitter — defined at file scope
+// by PJ_DIALOG_PLUGIN(ZmqDialog) at the bottom of this TU.
+extern "C" PJ_DIALOG_EXPORT const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
+
 namespace {
 
 class ZmqSource : public PJ::StreamSourceBase {
  public:
-  void* dialogContext() override { return &dialog_; }
+  PJ_borrowed_dialog_t getDialog() override {
+    return PJ_borrowed_dialog_t{&dialog_, PJ_get_dialog_vtable()};
+  }
 
   uint64_t extraCapabilities() const override {
     return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;

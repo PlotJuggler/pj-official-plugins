@@ -25,12 +25,12 @@ if(TARGET pj_base)
   add_subdirectory(parser_protobuf)
   add_subdirectory(parser_ros)
   add_subdirectory(parser_data_tamer)
-  # add_subdirectory(data_stream_zmq)                  # v1/v2 -> needs v4 port
-  # add_subdirectory(data_stream_mqtt)                 # v1/v2 -> needs v4 port
-  # add_subdirectory(data_stream_udp)                  # v1/v2 -> needs v4 port
-  # add_subdirectory(data_stream_foxglove_bridge)      # v1/v2 -> needs v4 port
-  # add_subdirectory(data_stream_pj_bridge)            # v1/v2 -> needs v4 port
-  # add_subdirectory(data_stream_dummy)                # v1/v2 -> needs v4 port
+  add_subdirectory(data_stream_zmq)
+  add_subdirectory(data_stream_mqtt)
+  add_subdirectory(data_stream_udp)
+  add_subdirectory(data_stream_foxglove_bridge)
+  add_subdirectory(data_stream_pj_bridge)
+  add_subdirectory(data_stream_dummy)
   # add_subdirectory(toolbox_fft)                      # v1/v2 -> needs v4 port
   # add_subdirectory(toolbox_colormap)                 # v1/v2 -> needs v4 port
   # add_subdirectory(toolbox_quaternion)               # v1/v2 -> needs v4 port
