@@ -11,6 +11,8 @@
 #include <vector>
 
 #include "pj_base/plugin_data_api.h"
+#include "pj_base/sdk/service_traits.hpp"
+#include "pj_plugins/host/service_registry_builder.hpp"
 
 #ifndef PJ_DATA_TAMER_PARSER_PLUGIN_PATH
 #error "PJ_DATA_TAMER_PARSER_PLUGIN_PATH must be defined"
@@ -30,20 +32,15 @@ struct RecordedRow {
 
 struct ParserWriteRecorder {
   std::vector<RecordedRow> rows;
-  std::string last_error;
 
-  static const char* getLastError(void* ctx) {
-    auto* self = static_cast<ParserWriteRecorder*>(ctx);
-    return self->last_error.empty() ? nullptr : self->last_error.c_str();
-  }
-
-  static bool ensureField(void*, PJ_string_view_t, PJ_primitive_type_t, PJ_field_handle_t* out_field) {
+  static bool ensureField(
+      void*, PJ_string_view_t, PJ_primitive_type_t, PJ_field_handle_t* out_field, PJ_error_t*) noexcept {
     *out_field = PJ_field_handle_t{{1}, 1};
     return true;
   }
 
-  static bool appendRecord(void* ctx, int64_t timestamp, const PJ_named_field_value_t* fields,
-                           size_t field_count) {
+  static bool appendRecord(
+      void* ctx, int64_t timestamp, const PJ_named_field_value_t* fields, size_t field_count, PJ_error_t*) noexcept {
     auto* self = static_cast<ParserWriteRecorder*>(ctx);
     RecordedRow row;
     row.timestamp = timestamp;
@@ -65,19 +62,20 @@ struct ParserWriteRecorder {
     return true;
   }
 
-  static bool appendBoundRecord(void*, int64_t, const PJ_bound_field_value_t*, size_t) { return true; }
-  static bool appendArrowIpc(void*, PJ_bytes_view_t, PJ_string_view_t) { return true; }
+  static bool appendBoundRecord(
+      void*, int64_t, const PJ_bound_field_value_t*, size_t, PJ_error_t*) noexcept {
+    return true;
+  }
 };
 
 PJ_parser_write_host_t makeWriteHost(ParserWriteRecorder* recorder) {
+  // v4: parser write vtable is per-record only.
   static const PJ_parser_write_host_vtable_t vtable = {
       .abi_version = PJ_PLUGIN_DATA_API_VERSION,
       .struct_size = sizeof(PJ_parser_write_host_vtable_t),
-      .get_last_error = ParserWriteRecorder::getLastError,
       .ensure_field = ParserWriteRecorder::ensureField,
       .append_record = ParserWriteRecorder::appendRecord,
       .append_bound_record = ParserWriteRecorder::appendBoundRecord,
-      .append_arrow_ipc = ParserWriteRecorder::appendArrowIpc,
   };
   return PJ_parser_write_host_t{.ctx = recorder, .vtable = &vtable};
 }
@@ -85,6 +83,7 @@ PJ_parser_write_host_t makeWriteHost(ParserWriteRecorder* recorder) {
 struct DTFixture {
   PJ::MessageParserLibrary library;
   PJ::MessageParserHandle handle{static_cast<const PJ_message_parser_vtable_t*>(nullptr)};
+  PJ::ServiceRegistryBuilder registry;
   ParserWriteRecorder recorder;
 
   void setUp() {
@@ -93,16 +92,17 @@ struct DTFixture {
     library = std::move(*lib);
     handle = library.createHandle();
     ASSERT_TRUE(handle.valid());
-    ASSERT_TRUE(handle.bindWriteHost(makeWriteHost(&recorder)));
+    registry.registerService<PJ::sdk::ParserWriteHostService>(makeWriteHost(&recorder));
+    ASSERT_TRUE(handle.bind(registry.view()));
   }
 
   bool bindSchema(const std::string& schema_text) {
     const auto* data = reinterpret_cast<const uint8_t*>(schema_text.data());
-    return handle.bindSchema("data_tamer", {data, schema_text.size()});
+    return handle.bindSchema("data_tamer", PJ::Span<const uint8_t>(data, schema_text.size())).has_value();
   }
 
   bool parse(const std::vector<uint8_t>& payload, int64_t ts = 1000) {
-    return handle.parse(ts, {payload.data(), payload.size()});
+    return handle.parse(ts, PJ::Span<const uint8_t>(payload.data(), payload.size())).has_value();
   }
 };
 

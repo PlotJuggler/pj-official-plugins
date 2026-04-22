@@ -286,9 +286,11 @@ void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
     parser_->deserialize(
         RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()),
         &flat_msg_, deserializer_.get());
-  } catch (const std::exception& e) {
-    // Store error but still try to emit what we have.
-    setLastError(std::string("CDR deserialization failed: ") + e.what());
+  } catch (const std::exception&) {
+    // CDR deserialization failed; bail and let the empty owned_fields_
+    // signal "no record" to the outer parse() caller. The SDK base
+    // class surfaces parse errors via PJ::unexpected() — best-effort
+    // mid-flatten errors are silently dropped.
     return;
   }
 

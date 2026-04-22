@@ -21,10 +21,10 @@ if(TARGET pj_base)
   add_subdirectory(data_load_mcap)
   add_subdirectory(data_load_parquet)
   add_subdirectory(data_load_ulog)
-  # add_subdirectory(parser_json)                      # v1/v2 -> needs v4 port
-  # add_subdirectory(parser_protobuf)                  # v1/v2 -> needs v4 port
-  # add_subdirectory(parser_ros)                       # v1/v2 -> needs v4 port
-  # add_subdirectory(parser_data_tamer)                # v1/v2 -> needs v4 port
+  add_subdirectory(parser_json)
+  add_subdirectory(parser_protobuf)
+  add_subdirectory(parser_ros)
+  add_subdirectory(parser_data_tamer)
   # add_subdirectory(data_stream_zmq)                  # v1/v2 -> needs v4 port
   # add_subdirectory(data_stream_mqtt)                 # v1/v2 -> needs v4 port
   # add_subdirectory(data_stream_udp)                  # v1/v2 -> needs v4 port

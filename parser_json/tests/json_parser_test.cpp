@@ -8,6 +8,8 @@
 #include <vector>
 
 #include "pj_base/plugin_data_api.h"
+#include "pj_base/sdk/service_traits.hpp"
+#include "pj_plugins/host/service_registry_builder.hpp"
 
 #ifndef PJ_JSON_PARSER_PLUGIN_PATH
 #error "PJ_JSON_PARSER_PLUGIN_PATH must be defined"
@@ -31,17 +33,11 @@ struct RecordedRow {
 
 struct ParserWriteRecorder {
   std::vector<RecordedRow> rows;
-  std::string last_error;
   std::unordered_map<uint32_t, std::string> field_names;
   uint32_t next_field_id = 0;
 
-  static const char* getLastError(void* ctx) {
-    auto* self = static_cast<ParserWriteRecorder*>(ctx);
-    return self->last_error.empty() ? nullptr : self->last_error.c_str();
-  }
-
-  static bool ensureField(void* ctx, PJ_string_view_t name, PJ_primitive_type_t,
-                           PJ_field_handle_t* out_field) {
+  static bool ensureField(
+      void* ctx, PJ_string_view_t name, PJ_primitive_type_t, PJ_field_handle_t* out_field, PJ_error_t*) noexcept {
     auto* self = static_cast<ParserWriteRecorder*>(ctx);
     uint32_t id = self->next_field_id++;
     self->field_names[id] = std::string(name.data, name.size);
@@ -70,8 +66,8 @@ struct ParserWriteRecorder {
     return f;
   }
 
-  static bool appendRecord(void* ctx, int64_t timestamp, const PJ_named_field_value_t* fields,
-                            size_t field_count) {
+  static bool appendRecord(
+      void* ctx, int64_t timestamp, const PJ_named_field_value_t* fields, size_t field_count, PJ_error_t*) noexcept {
     auto* self = static_cast<ParserWriteRecorder*>(ctx);
     RecordedRow row;
     row.timestamp = timestamp;
@@ -83,8 +79,8 @@ struct ParserWriteRecorder {
     return true;
   }
 
-  static bool appendBoundRecord(void* ctx, int64_t timestamp, const PJ_bound_field_value_t* fields,
-                                 size_t field_count) {
+  static bool appendBoundRecord(
+      void* ctx, int64_t timestamp, const PJ_bound_field_value_t* fields, size_t field_count, PJ_error_t*) noexcept {
     auto* self = static_cast<ParserWriteRecorder*>(ctx);
     RecordedRow row;
     row.timestamp = timestamp;
@@ -97,18 +93,18 @@ struct ParserWriteRecorder {
     return true;
   }
 
-  static bool appendArrowIpc(void*, PJ_bytes_view_t, PJ_string_view_t) { return true; }
 };
 
 PJ_parser_write_host_t makeWriteHost(ParserWriteRecorder* recorder) {
+  // v4: parser write vtable is per-record only — no append_arrow_stream
+  // or append_arrow_ipc slot. The host coalesces into Arrow batches
+  // internally before committing to storage.
   static const PJ_parser_write_host_vtable_t vtable = {
       .abi_version = PJ_PLUGIN_DATA_API_VERSION,
       .struct_size = sizeof(PJ_parser_write_host_vtable_t),
-      .get_last_error = ParserWriteRecorder::getLastError,
       .ensure_field = ParserWriteRecorder::ensureField,
       .append_record = ParserWriteRecorder::appendRecord,
       .append_bound_record = ParserWriteRecorder::appendBoundRecord,
-      .append_arrow_ipc = ParserWriteRecorder::appendArrowIpc,
   };
   return PJ_parser_write_host_t{.ctx = recorder, .vtable = &vtable};
 }
@@ -116,6 +112,7 @@ PJ_parser_write_host_t makeWriteHost(ParserWriteRecorder* recorder) {
 struct JsonParserFixture {
   PJ::MessageParserLibrary library;
   PJ::MessageParserHandle handle{static_cast<const PJ_message_parser_vtable_t*>(nullptr)};
+  PJ::ServiceRegistryBuilder registry;
   ParserWriteRecorder recorder;
 
   void setUp() {
@@ -124,12 +121,13 @@ struct JsonParserFixture {
     library = std::move(*lib);
     handle = library.createHandle();
     ASSERT_TRUE(handle.valid());
-    ASSERT_TRUE(handle.bindWriteHost(makeWriteHost(&recorder)));
+    registry.registerService<PJ::sdk::ParserWriteHostService>(makeWriteHost(&recorder));
+    ASSERT_TRUE(handle.bind(registry.view()));
   }
 
   bool parse(std::string_view json, int64_t ts = 1000) {
     const auto* data = reinterpret_cast<const uint8_t*>(json.data());
-    return handle.parse(ts, {data, json.size()});
+    return handle.parse(ts, PJ::Span<const uint8_t>(data, json.size())).has_value();
   }
 };
 

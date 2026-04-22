@@ -25,6 +25,13 @@ pj_embed_manifest(parser_data_tamer_plugin
   VAR_NAME kDataTamerManifest
 )
 
+# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
+# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+pj_emit_plugin_manifest(parser_data_tamer_plugin
+  FAMILY        message_parser
+  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
+)
+
 # --- Integration test ---
 add_executable(data_tamer_parser_test tests/data_tamer_parser_test.cpp)
 target_compile_features(data_tamer_parser_test PRIVATE cxx_std_20)
