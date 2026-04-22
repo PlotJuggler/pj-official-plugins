@@ -13,8 +13,8 @@
 #include <string>
 #include <vector>
 
-#include "pj_base/plugin_data_api.h"
 #include "pj_base/sdk/service_traits.hpp"
+#include "pj_base/sdk/testing/parser_write_recorder.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
 
 #ifndef PJ_ROS_PARSER_PLUGIN_PATH
@@ -23,108 +23,11 @@
 
 namespace {
 
-struct RecordedField {
-  std::string name;
-  double value = 0.0;
-  bool is_string = false;
-  std::string string_value;
-  PJ_primitive_type_t type = PJ_PRIMITIVE_TYPE_FLOAT64;
-};
-
-struct RecordedRow {
-  int64_t timestamp = 0;
-  std::vector<RecordedField> fields;
-};
-
-struct ParserWriteRecorder {
-  std::vector<RecordedRow> rows;
-
-  static bool ensureField(
-      void*, PJ_string_view_t, PJ_primitive_type_t, PJ_field_handle_t* out_field, PJ_error_t*) noexcept {
-    *out_field = PJ_field_handle_t{{1}, 1};
-    return true;
-  }
-
-  static bool appendRecord(
-      void* ctx, int64_t timestamp, const PJ_named_field_value_t* fields, size_t field_count, PJ_error_t*) noexcept {
-    auto* self = static_cast<ParserWriteRecorder*>(ctx);
-    RecordedRow row;
-    row.timestamp = timestamp;
-    for (size_t i = 0; i < field_count; ++i) {
-      RecordedField f;
-      f.name = std::string(fields[i].name.data, fields[i].name.size);
-      f.type = fields[i].value.type;
-      switch (fields[i].value.type) {
-        case PJ_PRIMITIVE_TYPE_FLOAT64:
-          f.value = fields[i].value.data.as_float64;
-          break;
-        case PJ_PRIMITIVE_TYPE_FLOAT32:
-          f.value = static_cast<double>(fields[i].value.data.as_float32);
-          break;
-        case PJ_PRIMITIVE_TYPE_INT8:
-          f.value = static_cast<double>(fields[i].value.data.as_int8);
-          break;
-        case PJ_PRIMITIVE_TYPE_INT16:
-          f.value = static_cast<double>(fields[i].value.data.as_int16);
-          break;
-        case PJ_PRIMITIVE_TYPE_INT32:
-          f.value = static_cast<double>(fields[i].value.data.as_int32);
-          break;
-        case PJ_PRIMITIVE_TYPE_INT64:
-          f.value = static_cast<double>(fields[i].value.data.as_int64);
-          break;
-        case PJ_PRIMITIVE_TYPE_UINT8:
-          f.value = static_cast<double>(fields[i].value.data.as_uint8);
-          break;
-        case PJ_PRIMITIVE_TYPE_UINT16:
-          f.value = static_cast<double>(fields[i].value.data.as_uint16);
-          break;
-        case PJ_PRIMITIVE_TYPE_UINT32:
-          f.value = static_cast<double>(fields[i].value.data.as_uint32);
-          break;
-        case PJ_PRIMITIVE_TYPE_UINT64:
-          f.value = static_cast<double>(fields[i].value.data.as_uint64);
-          break;
-        case PJ_PRIMITIVE_TYPE_BOOL:
-          f.value = fields[i].value.data.as_bool != 0 ? 1.0 : 0.0;
-          break;
-        case PJ_PRIMITIVE_TYPE_STRING:
-          f.is_string = true;
-          f.string_value =
-              std::string(fields[i].value.data.as_string.data, fields[i].value.data.as_string.size);
-          break;
-        default:
-          break;
-      }
-      row.fields.push_back(f);
-    }
-    self->rows.push_back(std::move(row));
-    return true;
-  }
-
-  static bool appendBoundRecord(
-      void*, int64_t, const PJ_bound_field_value_t*, size_t, PJ_error_t*) noexcept {
-    return true;
-  }
-};
-
-PJ_parser_write_host_t makeWriteHost(ParserWriteRecorder* recorder) {
-  // v4: parser write vtable is per-record only.
-  static const PJ_parser_write_host_vtable_t vtable = {
-      .abi_version = PJ_PLUGIN_DATA_API_VERSION,
-      .struct_size = sizeof(PJ_parser_write_host_vtable_t),
-      .ensure_field = ParserWriteRecorder::ensureField,
-      .append_record = ParserWriteRecorder::appendRecord,
-      .append_bound_record = ParserWriteRecorder::appendBoundRecord,
-  };
-  return PJ_parser_write_host_t{.ctx = recorder, .vtable = &vtable};
-}
-
 struct RosParserFixture {
   PJ::MessageParserLibrary library;
   PJ::MessageParserHandle handle{static_cast<const PJ_message_parser_vtable_t*>(nullptr)};
   PJ::ServiceRegistryBuilder registry;
-  ParserWriteRecorder recorder;
+  PJ::sdk::testing::ParserWriteRecorder recorder;
 
   void setUp() {
     auto lib = PJ::MessageParserLibrary::load(PJ_ROS_PARSER_PLUGIN_PATH);
@@ -132,7 +35,7 @@ struct RosParserFixture {
     library = std::move(*lib);
     handle = library.createHandle();
     ASSERT_TRUE(handle.valid());
-    registry.registerService<PJ::sdk::ParserWriteHostService>(makeWriteHost(&recorder));
+    registry.registerService<PJ::sdk::ParserWriteHostService>(recorder.makeHost());
     ASSERT_TRUE(handle.bind(registry.view()));
   }
 
@@ -205,23 +108,23 @@ TEST(RosParserTest, SimpleScalarMessage) {
   });
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
 
   bool found_status = false;
   bool found_temp = false;
   bool found_active = false;
-  for (const auto& field : f.recorder.rows[0].fields) {
+  for (const auto& field : f.recorder.rows()[0].fields) {
     if (field.name == "/status") {
-      EXPECT_EQ(field.type, PJ_PRIMITIVE_TYPE_INT32);
-      EXPECT_DOUBLE_EQ(field.value, 42.0);
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kInt32);
+      EXPECT_DOUBLE_EQ(field.numeric, 42.0);
       found_status = true;
     } else if (field.name == "/temperature") {
-      EXPECT_EQ(field.type, PJ_PRIMITIVE_TYPE_FLOAT64);
-      EXPECT_DOUBLE_EQ(field.value, 23.5);
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kFloat64);
+      EXPECT_DOUBLE_EQ(field.numeric, 23.5);
       found_temp = true;
     } else if (field.name == "/active") {
-      EXPECT_EQ(field.type, PJ_PRIMITIVE_TYPE_BOOL);
-      EXPECT_DOUBLE_EQ(field.value, 1.0);
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kBool);
+      EXPECT_DOUBLE_EQ(field.numeric, 1.0);
       found_active = true;
     }
   }
@@ -247,25 +150,25 @@ TEST(RosParserTest, NestedMessage) {
   });
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
 
   bool found_sec = false;
   bool found_nanosec = false;
   bool found_frame_id = false;
   bool found_value = false;
-  for (const auto& field : f.recorder.rows[0].fields) {
+  for (const auto& field : f.recorder.rows()[0].fields) {
     if (field.name == "/header/stamp/sec") {
-      EXPECT_DOUBLE_EQ(field.value, 1234.0);
+      EXPECT_DOUBLE_EQ(field.numeric, 1234.0);
       found_sec = true;
     } else if (field.name == "/header/stamp/nanosec") {
-      EXPECT_DOUBLE_EQ(field.value, 567.0);
+      EXPECT_DOUBLE_EQ(field.numeric, 567.0);
       found_nanosec = true;
     } else if (field.name == "/header/frame_id") {
-      EXPECT_TRUE(field.is_string);
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kString);
       EXPECT_EQ(field.string_value, "base_link");
       found_frame_id = true;
     } else if (field.name == "/value") {
-      EXPECT_DOUBLE_EQ(field.value, 3.14);
+      EXPECT_DOUBLE_EQ(field.numeric, 3.14);
       found_value = true;
     }
   }
@@ -285,11 +188,11 @@ TEST(RosParserTest, StringField) {
   });
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
-  ASSERT_EQ(f.recorder.rows[0].fields.size(), 1u);
-  EXPECT_EQ(f.recorder.rows[0].fields[0].name, "/data");
-  EXPECT_TRUE(f.recorder.rows[0].fields[0].is_string);
-  EXPECT_EQ(f.recorder.rows[0].fields[0].string_value, "hello world");
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].name, "/data");
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].type, PJ::PrimitiveType::kString);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].string_value, "hello world");
 }
 
 TEST(RosParserTest, Ros2TypeNameNormalization) {
@@ -306,10 +209,10 @@ TEST(RosParserTest, Ros2TypeNameNormalization) {
   });
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
-  ASSERT_EQ(f.recorder.rows[0].fields.size(), 1u);
-  EXPECT_EQ(f.recorder.rows[0].fields[0].name, "/value");
-  EXPECT_DOUBLE_EQ(f.recorder.rows[0].fields[0].value, 99.0);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].name, "/value");
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[0].numeric, 99.0);
 }
 
 TEST(RosParserTest, FixedSizeArray) {
@@ -327,26 +230,26 @@ TEST(RosParserTest, FixedSizeArray) {
   });
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
-  ASSERT_GE(f.recorder.rows[0].fields.size(), 4u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_GE(f.recorder.rows()[0].fields.size(), 4u);
 
   // Check array elements
   bool found_pos0 = false;
   bool found_pos1 = false;
   bool found_pos2 = false;
   bool found_count = false;
-  for (const auto& field : f.recorder.rows[0].fields) {
+  for (const auto& field : f.recorder.rows()[0].fields) {
     if (field.name == "/position[0]") {
-      EXPECT_DOUBLE_EQ(field.value, 1.0);
+      EXPECT_DOUBLE_EQ(field.numeric, 1.0);
       found_pos0 = true;
     } else if (field.name == "/position[1]") {
-      EXPECT_DOUBLE_EQ(field.value, 2.0);
+      EXPECT_DOUBLE_EQ(field.numeric, 2.0);
       found_pos1 = true;
     } else if (field.name == "/position[2]") {
-      EXPECT_DOUBLE_EQ(field.value, 3.0);
+      EXPECT_DOUBLE_EQ(field.numeric, 3.0);
       found_pos2 = true;
     } else if (field.name == "/count") {
-      EXPECT_DOUBLE_EQ(field.value, 3.0);
+      EXPECT_DOUBLE_EQ(field.numeric, 3.0);
       found_count = true;
     }
   }
@@ -372,25 +275,25 @@ TEST(RosParserTest, VariableLengthArray) {
   });
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
-  ASSERT_GE(f.recorder.rows[0].fields.size(), 4u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_GE(f.recorder.rows()[0].fields.size(), 4u);
 
   bool found_v0 = false;
   bool found_v1 = false;
   bool found_v2 = false;
   bool found_count = false;
-  for (const auto& field : f.recorder.rows[0].fields) {
+  for (const auto& field : f.recorder.rows()[0].fields) {
     if (field.name == "/values[0]") {
-      EXPECT_DOUBLE_EQ(field.value, 10.0);
+      EXPECT_DOUBLE_EQ(field.numeric, 10.0);
       found_v0 = true;
     } else if (field.name == "/values[1]") {
-      EXPECT_DOUBLE_EQ(field.value, 20.0);
+      EXPECT_DOUBLE_EQ(field.numeric, 20.0);
       found_v1 = true;
     } else if (field.name == "/values[2]") {
-      EXPECT_DOUBLE_EQ(field.value, 30.0);
+      EXPECT_DOUBLE_EQ(field.numeric, 30.0);
       found_v2 = true;
     } else if (field.name == "/count") {
-      EXPECT_DOUBLE_EQ(field.value, 3.0);
+      EXPECT_DOUBLE_EQ(field.numeric, 3.0);
       found_count = true;
     }
   }
@@ -437,8 +340,8 @@ TEST(RosParserTest, TimestampPreserved) {
   });
 
   ASSERT_TRUE(f.parse(payload, 99999));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
-  EXPECT_EQ(f.recorder.rows[0].timestamp, 99999);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 99999);
 }
 
 TEST(RosParserTest, NativeIntegerTypes) {
@@ -471,31 +374,31 @@ TEST(RosParserTest, NativeIntegerTypes) {
   });
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
 
-  for (const auto& field : f.recorder.rows[0].fields) {
+  for (const auto& field : f.recorder.rows()[0].fields) {
     if (field.name == "/i32") {
-      EXPECT_EQ(field.type, PJ_PRIMITIVE_TYPE_INT32);
-      EXPECT_DOUBLE_EQ(field.value, -42.0);
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kInt32);
+      EXPECT_DOUBLE_EQ(field.numeric, -42.0);
     } else if (field.name == "/u32") {
-      EXPECT_EQ(field.type, PJ_PRIMITIVE_TYPE_UINT32);
-      EXPECT_DOUBLE_EQ(field.value, 100.0);
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kUint32);
+      EXPECT_DOUBLE_EQ(field.numeric, 100.0);
     } else if (field.name == "/i64") {
-      EXPECT_EQ(field.type, PJ_PRIMITIVE_TYPE_INT64);
-      EXPECT_DOUBLE_EQ(field.value, -9999.0);
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kInt64);
+      EXPECT_DOUBLE_EQ(field.numeric, -9999.0);
     } else if (field.name == "/u64") {
-      EXPECT_EQ(field.type, PJ_PRIMITIVE_TYPE_UINT64);
-      EXPECT_DOUBLE_EQ(field.value, 12345.0);
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kUint64);
+      EXPECT_DOUBLE_EQ(field.numeric, 12345.0);
     } else if (field.name == "/i8") {
-      EXPECT_EQ(field.type, PJ_PRIMITIVE_TYPE_INT8);
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kInt8);
     } else if (field.name == "/u8") {
-      EXPECT_EQ(field.type, PJ_PRIMITIVE_TYPE_UINT8);
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kUint8);
     } else if (field.name == "/i16") {
-      EXPECT_EQ(field.type, PJ_PRIMITIVE_TYPE_INT16);
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kInt16);
     } else if (field.name == "/u16") {
-      EXPECT_EQ(field.type, PJ_PRIMITIVE_TYPE_UINT16);
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kUint16);
     } else if (field.name == "/f32") {
-      EXPECT_EQ(field.type, PJ_PRIMITIVE_TYPE_FLOAT32);
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kFloat32);
     }
   }
 }
@@ -522,7 +425,7 @@ TEST(RosParserTest, ArrayClampingConfig) {
 
 // ---- Helper: find field by name ----
 
-const RecordedField* findField(const RecordedRow& row, const std::string& name) {
+const PJ::sdk::testing::RecordedField* findField(const PJ::sdk::testing::RecordedRow& row, const std::string& name) {
   for (const auto& f : row.fields) {
     if (f.name == name) return &f;
   }
@@ -676,22 +579,22 @@ TEST(RosParserTest, QuaternionRPY) {
   });
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
 
-  auto* roll = findField(f.recorder.rows[0], "/orientation/roll");
-  auto* pitch = findField(f.recorder.rows[0], "/orientation/pitch");
-  auto* yaw = findField(f.recorder.rows[0], "/orientation/yaw");
+  auto* roll = findField(f.recorder.rows()[0], "/orientation/roll");
+  auto* pitch = findField(f.recorder.rows()[0], "/orientation/pitch");
+  auto* yaw = findField(f.recorder.rows()[0], "/orientation/yaw");
   ASSERT_NE(roll, nullptr);
   ASSERT_NE(pitch, nullptr);
   ASSERT_NE(yaw, nullptr);
-  EXPECT_NEAR(roll->value, 0.0, 1e-10);
-  EXPECT_NEAR(pitch->value, 0.0, 1e-10);
-  EXPECT_NEAR(yaw->value, 0.0, 1e-10);
+  EXPECT_NEAR(roll->numeric, 0.0, 1e-10);
+  EXPECT_NEAR(pitch->numeric, 0.0, 1e-10);
+  EXPECT_NEAR(yaw->numeric, 0.0, 1e-10);
 
   // Also check position fields.
-  auto* px = findField(f.recorder.rows[0], "/position/x");
+  auto* px = findField(f.recorder.rows()[0], "/position/x");
   ASSERT_NE(px, nullptr);
-  EXPECT_DOUBLE_EQ(px->value, 1.0);
+  EXPECT_DOUBLE_EQ(px->numeric, 1.0);
 }
 
 TEST(RosParserTest, PoseWithRPY) {
@@ -710,19 +613,19 @@ TEST(RosParserTest, PoseWithRPY) {
   });
 
   ASSERT_TRUE(f.parse(payload));
-  auto* yaw = findField(f.recorder.rows[0], "/orientation/yaw");
+  auto* yaw = findField(f.recorder.rows()[0], "/orientation/yaw");
   ASSERT_NE(yaw, nullptr);
-  EXPECT_NEAR(yaw->value, std::numbers::pi / 2.0, 1e-10);
+  EXPECT_NEAR(yaw->numeric, std::numbers::pi / 2.0, 1e-10);
 
-  auto* roll = findField(f.recorder.rows[0], "/orientation/roll");
-  EXPECT_NEAR(roll->value, 0.0, 1e-10);
+  auto* roll = findField(f.recorder.rows()[0], "/orientation/roll");
+  EXPECT_NEAR(roll->numeric, 0.0, 1e-10);
 
   // Check all 7 quaternion + RPY fields exist.
-  EXPECT_NE(findField(f.recorder.rows[0], "/orientation/x"), nullptr);
-  EXPECT_NE(findField(f.recorder.rows[0], "/orientation/y"), nullptr);
-  EXPECT_NE(findField(f.recorder.rows[0], "/orientation/z"), nullptr);
-  EXPECT_NE(findField(f.recorder.rows[0], "/orientation/w"), nullptr);
-  EXPECT_NE(findField(f.recorder.rows[0], "/orientation/pitch"), nullptr);
+  EXPECT_NE(findField(f.recorder.rows()[0], "/orientation/x"), nullptr);
+  EXPECT_NE(findField(f.recorder.rows()[0], "/orientation/y"), nullptr);
+  EXPECT_NE(findField(f.recorder.rows()[0], "/orientation/z"), nullptr);
+  EXPECT_NE(findField(f.recorder.rows()[0], "/orientation/w"), nullptr);
+  EXPECT_NE(findField(f.recorder.rows()[0], "/orientation/pitch"), nullptr);
 }
 
 TEST(RosParserTest, ImuRPY) {
@@ -748,40 +651,40 @@ TEST(RosParserTest, ImuRPY) {
   });
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
 
   // RPY from identity quaternion.
-  auto* roll = findField(f.recorder.rows[0], "/orientation/roll");
+  auto* roll = findField(f.recorder.rows()[0], "/orientation/roll");
   ASSERT_NE(roll, nullptr);
-  EXPECT_NEAR(roll->value, 0.0, 1e-10);
+  EXPECT_NEAR(roll->numeric, 0.0, 1e-10);
 
   // Header stamp.
-  auto* stamp = findField(f.recorder.rows[0], "/header/stamp");
+  auto* stamp = findField(f.recorder.rows()[0], "/header/stamp");
   ASSERT_NE(stamp, nullptr);
-  EXPECT_NEAR(stamp->value, 100.5, 1e-6);
+  EXPECT_NEAR(stamp->numeric, 100.5, 1e-6);
 
   // Covariance upper-triangle: 3x3 → 6 entries.
-  auto* cov00 = findField(f.recorder.rows[0], "/orientation_covariance/[0;0]");
+  auto* cov00 = findField(f.recorder.rows()[0], "/orientation_covariance/[0;0]");
   ASSERT_NE(cov00, nullptr);
-  EXPECT_DOUBLE_EQ(cov00->value, 1.0);
+  EXPECT_DOUBLE_EQ(cov00->numeric, 1.0);
 
-  auto* cov01 = findField(f.recorder.rows[0], "/orientation_covariance/[0;1]");
+  auto* cov01 = findField(f.recorder.rows()[0], "/orientation_covariance/[0;1]");
   ASSERT_NE(cov01, nullptr);
-  EXPECT_DOUBLE_EQ(cov01->value, 2.0);
+  EXPECT_DOUBLE_EQ(cov01->numeric, 2.0);
 
-  auto* cov22 = findField(f.recorder.rows[0], "/orientation_covariance/[2;2]");
+  auto* cov22 = findField(f.recorder.rows()[0], "/orientation_covariance/[2;2]");
   ASSERT_NE(cov22, nullptr);
-  EXPECT_DOUBLE_EQ(cov22->value, 9.0);
+  EXPECT_DOUBLE_EQ(cov22->numeric, 9.0);
 
   // Angular velocity.
-  auto* ang_x = findField(f.recorder.rows[0], "/angular_velocity/x");
+  auto* ang_x = findField(f.recorder.rows()[0], "/angular_velocity/x");
   ASSERT_NE(ang_x, nullptr);
-  EXPECT_DOUBLE_EQ(ang_x->value, 0.1);
+  EXPECT_DOUBLE_EQ(ang_x->numeric, 0.1);
 
   // Linear acceleration.
-  auto* lin_x = findField(f.recorder.rows[0], "/linear_acceleration/x");
+  auto* lin_x = findField(f.recorder.rows()[0], "/linear_acceleration/x");
   ASSERT_NE(lin_x, nullptr);
-  EXPECT_DOUBLE_EQ(lin_x->value, 9.8);
+  EXPECT_DOUBLE_EQ(lin_x->numeric, 9.8);
 }
 
 TEST(RosParserTest, EmbeddedTimestamp) {
@@ -797,9 +700,9 @@ TEST(RosParserTest, EmbeddedTimestamp) {
   });
 
   ASSERT_TRUE(f.parse(payload, /*host_ts=*/1000));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
   // Embedded timestamp: 42 sec + 500000000 nsec = 42.5 sec = 42500000000 ns.
-  EXPECT_EQ(f.recorder.rows[0].timestamp, 42500000000LL);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 42500000000LL);
 }
 
 TEST(RosParserTest, EmbeddedTimestampDisabled) {
@@ -815,7 +718,7 @@ TEST(RosParserTest, EmbeddedTimestampDisabled) {
   });
 
   ASSERT_TRUE(f.parse(payload, /*host_ts=*/9999));
-  EXPECT_EQ(f.recorder.rows[0].timestamp, 9999);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 9999);
 }
 
 TEST(RosParserTest, CovarianceUpperTriangle6x6) {
@@ -846,14 +749,14 @@ TEST(RosParserTest, CovarianceUpperTriangle6x6) {
 
   ASSERT_TRUE(f.parse(payload));
   // 3×3 upper triangle: [0;0]=0, [0;1]=1, [0;2]=2, [1;1]=4, [1;2]=5, [2;2]=8
-  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/orientation_covariance/[0;0]")->value, 0.0);
-  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/orientation_covariance/[0;1]")->value, 1.0);
-  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/orientation_covariance/[0;2]")->value, 2.0);
-  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/orientation_covariance/[1;1]")->value, 4.0);
-  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/orientation_covariance/[1;2]")->value, 5.0);
-  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/orientation_covariance/[2;2]")->value, 8.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows()[0], "/orientation_covariance/[0;0]")->numeric, 0.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows()[0], "/orientation_covariance/[0;1]")->numeric, 1.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows()[0], "/orientation_covariance/[0;2]")->numeric, 2.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows()[0], "/orientation_covariance/[1;1]")->numeric, 4.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows()[0], "/orientation_covariance/[1;2]")->numeric, 5.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows()[0], "/orientation_covariance/[2;2]")->numeric, 8.0);
   // Lower triangle entries should NOT be present.
-  EXPECT_EQ(findField(f.recorder.rows[0], "/orientation_covariance/[1;0]"), nullptr);
+  EXPECT_EQ(findField(f.recorder.rows()[0], "/orientation_covariance/[1;0]"), nullptr);
 }
 
 TEST(RosParserTest, Empty) {
@@ -866,10 +769,10 @@ TEST(RosParserTest, Empty) {
   });
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
-  ASSERT_EQ(f.recorder.rows[0].fields.size(), 1u);
-  EXPECT_EQ(f.recorder.rows[0].fields[0].name, "/value");
-  EXPECT_DOUBLE_EQ(f.recorder.rows[0].fields[0].value, 0.0);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].name, "/value");
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[0].numeric, 0.0);
 }
 
 TEST(RosParserTest, JointState) {
@@ -902,13 +805,13 @@ TEST(RosParserTest, JointState) {
   });
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
 
-  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/shoulder/position")->value, 1.0);
-  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/elbow/position")->value, 2.0);
-  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/wrist/position")->value, 3.0);
-  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/shoulder/velocity")->value, 0.1);
-  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/wrist/effort")->value, 30.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows()[0], "/shoulder/position")->numeric, 1.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows()[0], "/elbow/position")->numeric, 2.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows()[0], "/wrist/position")->numeric, 3.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows()[0], "/shoulder/velocity")->numeric, 0.1);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows()[0], "/wrist/effort")->numeric, 30.0);
 }
 
 TEST(RosParserTest, JointStatePartial) {
@@ -933,11 +836,11 @@ TEST(RosParserTest, JointStatePartial) {
   });
 
   ASSERT_TRUE(f.parse(payload));
-  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/j1/position")->value, 1.0);
-  EXPECT_DOUBLE_EQ(findField(f.recorder.rows[0], "/j2/position")->value, 2.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows()[0], "/j1/position")->numeric, 1.0);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows()[0], "/j2/position")->numeric, 2.0);
   // No velocity or effort fields.
-  EXPECT_EQ(findField(f.recorder.rows[0], "/j1/velocity"), nullptr);
-  EXPECT_EQ(findField(f.recorder.rows[0], "/j1/effort"), nullptr);
+  EXPECT_EQ(findField(f.recorder.rows()[0], "/j1/velocity"), nullptr);
+  EXPECT_EQ(findField(f.recorder.rows()[0], "/j1/effort"), nullptr);
 }
 
 TEST(RosParserTest, DiagnosticArray) {
@@ -971,21 +874,21 @@ TEST(RosParserTest, DiagnosticArray) {
   });
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
 
   // With hardware_id: /{hw_id}/{name}/{key}
-  auto* temp = findField(f.recorder.rows[0], "/cpu0/CPU Temperature/temperature");
+  auto* temp = findField(f.recorder.rows()[0], "/cpu0/CPU Temperature/temperature");
   ASSERT_NE(temp, nullptr);
-  EXPECT_DOUBLE_EQ(temp->value, 65.5);
+  EXPECT_DOUBLE_EQ(temp->numeric, 65.5);
 
-  auto* level1 = findField(f.recorder.rows[0], "/cpu0/CPU Temperature/level");
+  auto* level1 = findField(f.recorder.rows()[0], "/cpu0/CPU Temperature/level");
   ASSERT_NE(level1, nullptr);
-  EXPECT_DOUBLE_EQ(level1->value, 0.0);
+  EXPECT_DOUBLE_EQ(level1->numeric, 0.0);
 
   // Without hardware_id: /{name}/{key}
-  auto* voltage = findField(f.recorder.rows[0], "/Battery/voltage");
+  auto* voltage = findField(f.recorder.rows()[0], "/Battery/voltage");
   ASSERT_NE(voltage, nullptr);
-  EXPECT_DOUBLE_EQ(voltage->value, 11.2);
+  EXPECT_DOUBLE_EQ(voltage->numeric, 11.2);
 }
 
 TEST(RosParserTest, TFMessage) {
@@ -1011,20 +914,20 @@ TEST(RosParserTest, TFMessage) {
   });
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
 
-  auto* tx = findField(f.recorder.rows[0], "/world/base_link/translation/x");
+  auto* tx = findField(f.recorder.rows()[0], "/world/base_link/translation/x");
   ASSERT_NE(tx, nullptr);
-  EXPECT_DOUBLE_EQ(tx->value, 1.0);
+  EXPECT_DOUBLE_EQ(tx->numeric, 1.0);
 
-  auto* ty = findField(f.recorder.rows[0], "/base_link/sensor/translation/y");
+  auto* ty = findField(f.recorder.rows()[0], "/base_link/sensor/translation/y");
   ASSERT_NE(ty, nullptr);
-  EXPECT_DOUBLE_EQ(ty->value, 0.5);
+  EXPECT_DOUBLE_EQ(ty->numeric, 0.5);
 
   // RPY fields from identity quaternion.
-  auto* roll = findField(f.recorder.rows[0], "/world/base_link/rotation/roll");
+  auto* roll = findField(f.recorder.rows()[0], "/world/base_link/rotation/roll");
   ASSERT_NE(roll, nullptr);
-  EXPECT_NEAR(roll->value, 0.0, 1e-10);
+  EXPECT_NEAR(roll->numeric, 0.0, 1e-10);
 }
 
 TEST(RosParserTest, ROS1Serialization) {
@@ -1047,15 +950,15 @@ TEST(RosParserTest, ROS1Serialization) {
   payload.insert(payload.end(), p, p + sizeof(f64));
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
 
-  auto* val = findField(f.recorder.rows[0], "/value");
+  auto* val = findField(f.recorder.rows()[0], "/value");
   ASSERT_NE(val, nullptr);
-  EXPECT_DOUBLE_EQ(val->value, 42.0);
+  EXPECT_DOUBLE_EQ(val->numeric, 42.0);
 
-  auto* temp = findField(f.recorder.rows[0], "/temperature");
+  auto* temp = findField(f.recorder.rows()[0], "/temperature");
   ASSERT_NE(temp, nullptr);
-  EXPECT_DOUBLE_EQ(temp->value, 23.5);
+  EXPECT_DOUBLE_EQ(temp->numeric, 23.5);
 }
 
 TEST(RosParserTest, ConfigRoundTrip) {
@@ -1095,16 +998,16 @@ TEST(RosParserTest, GenericQuaternionRPY) {
   });
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
 
   // Generic path should produce /rotation/x,y,z,w AND /rotation/roll,pitch,yaw.
-  auto* roll = findField(f.recorder.rows[0], "/rotation/roll");
+  auto* roll = findField(f.recorder.rows()[0], "/rotation/roll");
   ASSERT_NE(roll, nullptr);
-  EXPECT_NEAR(roll->value, 0.0, 1e-10);
+  EXPECT_NEAR(roll->numeric, 0.0, 1e-10);
 
-  auto* w = findField(f.recorder.rows[0], "/rotation/w");
+  auto* w = findField(f.recorder.rows()[0], "/rotation/w");
   ASSERT_NE(w, nullptr);
-  EXPECT_DOUBLE_EQ(w->value, 1.0);
+  EXPECT_DOUBLE_EQ(w->numeric, 1.0);
 }
 
 TEST(RosParserTest, GenericEmbeddedTimestamp) {
@@ -1135,7 +1038,7 @@ TEST(RosParserTest, GenericEmbeddedTimestamp) {
 
   ASSERT_TRUE(f.parse(payload, 1000));
   // Embedded timestamp: sec=100, nsec=0 → 100*1e9 = 100000000000
-  EXPECT_EQ(f.recorder.rows[0].timestamp, 100000000000LL);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 100000000000LL);
 }
 
 TEST(RosParserTest, TransformStampedSpecialization) {
@@ -1172,14 +1075,14 @@ TEST(RosParserTest, TransformStampedSpecialization) {
   });
 
   ASSERT_TRUE(f.parse(payload));
-  auto* child = findField(f.recorder.rows[0], "/child_frame_id");
+  auto* child = findField(f.recorder.rows()[0], "/child_frame_id");
   ASSERT_NE(child, nullptr);
-  EXPECT_TRUE(child->is_string);
+  EXPECT_EQ(child->type, PJ::PrimitiveType::kString);
   EXPECT_EQ(child->string_value, "robot");
 
-  auto* tx = findField(f.recorder.rows[0], "/transform/translation/x");
+  auto* tx = findField(f.recorder.rows()[0], "/transform/translation/x");
   ASSERT_NE(tx, nullptr);
-  EXPECT_DOUBLE_EQ(tx->value, 1.0);
+  EXPECT_DOUBLE_EQ(tx->numeric, 1.0);
 }
 
 }  // namespace
