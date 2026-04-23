@@ -10,6 +10,12 @@
 #include <pybind11/stl.h>
 namespace py = pybind11;
 
+#if defined(_WIN32)
+#  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX
+#  include <windows.h>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -153,6 +159,12 @@ void ensurePythonInterpreter() {
 #if defined(_WIN32)
         // On Windows native extensions (.pyd) sit in a sibling DLLs/ dir.
         append(py_root / "DLLs");
+        // Windows won't automatically search the plugin dir or DLLs/ when CPython
+        // loads .pyd modules, so register them explicitly. python3XX.dll lives
+        // next to the plugin binary (see CMake POST_BUILD copy); aux DLLs that
+        // the .pyd modules link against live under DLLs/.
+        AddDllDirectory(plugin_dir.wstring().c_str());
+        AddDllDirectory((py_root / "DLLs").wstring().c_str());
 #endif
       }
     }
