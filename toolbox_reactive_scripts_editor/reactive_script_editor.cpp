@@ -126,30 +126,31 @@ std::string validateLuaSyntax(const std::string& global_code, const std::string&
 // Python interpreter singleton — CPython can only be initialized once per
 // process, so we use a static guard that lives until program exit.
 //
-// Before constructing the guard (which calls Py_Initialize), we call
-// Py_SetPath() to point CPython at the bundled stdlib shipped alongside the
-// plugin. If the stdlib directory is absent (developer build pointing at a
-// system Python), Py_SetPath is skipped and CPython uses its default search.
+// Before constructing the guard, PyConfig is populated so CPython searches the
+// bundled stdlib shipped alongside the plugin. If the stdlib directory is
+// absent (developer build pointing at a system Python), module_search_paths
+// is left untouched and CPython uses its default search.
 // ---------------------------------------------------------------------------
 
 void ensurePythonInterpreter() {
-  // Step 1: resolve stdlib path — runs exactly once before Py_Initialize.
-  // C++ guarantees static locals initialize in declaration order within a
-  // function, so stdlib_configured is fully set before guard is constructed.
-  static bool stdlib_configured = [] {
+  static py::scoped_interpreter guard = [] {
+    PyConfig config;
+    PyConfig_InitPythonConfig(&config);
+
     auto plugin_dir = PJ::sdk::getSharedLibDir(reinterpret_cast<const void*>(&ensurePythonInterpreter));
     if (!plugin_dir.empty()) {
       auto stdlib = plugin_dir / "python3.12";
       if (std::filesystem::exists(stdlib)) {
-        Py_SetPath(stdlib.wstring().c_str());  // Py_SetPath takes wchar_t* on all Python 3 platforms
+        config.module_search_paths_set = 1;
+        PyStatus status = PyWideStringList_Append(&config.module_search_paths, stdlib.wstring().c_str());
+        if (PyStatus_Exception(status)) {
+          PyConfig_Clear(&config);
+          Py_ExitStatusException(status);
+        }
       }
     }
-    return true;
+    return py::scoped_interpreter(&config);  // calls Py_InitializeFromConfig and PyConfig_Clear
   }();
-  (void)stdlib_configured;
-
-  // Step 2: initialize CPython — also exactly once, after Py_SetPath.
-  static py::scoped_interpreter guard{};
   (void)guard;
 }
 
