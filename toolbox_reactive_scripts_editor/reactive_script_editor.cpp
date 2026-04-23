@@ -139,14 +139,21 @@ void ensurePythonInterpreter() {
 
     auto plugin_dir = PJ::sdk::getSharedLibDir(reinterpret_cast<const void*>(&ensurePythonInterpreter));
     if (!plugin_dir.empty()) {
-      auto stdlib = plugin_dir / "python3.12";
-      if (std::filesystem::exists(stdlib)) {
+      auto py_root = plugin_dir / "python3.12";
+      if (std::filesystem::exists(py_root)) {
         config.module_search_paths_set = 1;
-        PyStatus status = PyWideStringList_Append(&config.module_search_paths, stdlib.wstring().c_str());
-        if (PyStatus_Exception(status)) {
-          PyConfig_Clear(&config);
-          Py_ExitStatusException(status);
-        }
+        auto append = [&](const std::filesystem::path& p) {
+          PyStatus status = PyWideStringList_Append(&config.module_search_paths, p.wstring().c_str());
+          if (PyStatus_Exception(status)) {
+            PyConfig_Clear(&config);
+            Py_ExitStatusException(status);
+          }
+        };
+        append(py_root / "Lib");
+#if defined(_WIN32)
+        // On Windows native extensions (.pyd) sit in a sibling DLLs/ dir.
+        append(py_root / "DLLs");
+#endif
       }
     }
     return py::scoped_interpreter(&config);  // calls Py_InitializeFromConfig and PyConfig_Clear

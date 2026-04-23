@@ -22,14 +22,26 @@ target_link_libraries(toolbox_reactive_scripts_editor_plugin PRIVATE
 )
 
 # Bundle the Python stdlib next to the plugin binary so release_tools can include
-# it in the distribution zip. Python3_STDLIB is set by find_package(Python3) and
-# points to the lib/python3.x directory of the Conan-managed CPython installation.
+# it in the distribution zip. Layout:
+#   <plugin_dir>/python3.12/Lib   — pure-Python modules (Python3_STDLIB)
+#   <plugin_dir>/python3.12/DLLs  — native extensions on Windows (Python3_STDARCH)
+# On Linux, Python3_STDARCH is nested inside Python3_STDLIB, so a single copy
+# covers both pure and native modules.
 if(Python3_STDLIB)
   add_custom_command(TARGET toolbox_reactive_scripts_editor_plugin POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
       "${Python3_STDLIB}"
-      "$<TARGET_FILE_DIR:toolbox_reactive_scripts_editor_plugin>/python3.12"
-    COMMENT "Bundling Python stdlib alongside plugin binary"
+      "$<TARGET_FILE_DIR:toolbox_reactive_scripts_editor_plugin>/python3.12/Lib"
+    COMMENT "Bundling Python pure stdlib"
+  )
+endif()
+
+if(WIN32 AND Python3_STDARCH AND NOT Python3_STDARCH STREQUAL Python3_STDLIB)
+  add_custom_command(TARGET toolbox_reactive_scripts_editor_plugin POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${Python3_STDARCH}"
+      "$<TARGET_FILE_DIR:toolbox_reactive_scripts_editor_plugin>/python3.12/DLLs"
+    COMMENT "Bundling Python platform-specific extensions (.pyd)"
   )
 endif()
 
