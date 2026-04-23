@@ -16,6 +16,17 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+      - name: Install system dependencies
+        # libturbojpeg0-dev + pkg-config are required by pj_media_core
+        # in the core, which we pull in transitively via CPM. Without them
+        # the configure step fails with "Target PkgConfig::TURBOJPEG not found".
+        # Tracked as a follow-up to switch the core to find_package(libjpeg-turbo)
+        # and pull the dep through Conan instead.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libturbojpeg0-dev
+
       - name: Checkout
         uses: actions/checkout@v4
 
