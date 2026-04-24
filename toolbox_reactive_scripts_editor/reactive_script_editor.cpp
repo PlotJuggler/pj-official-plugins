@@ -11,6 +11,12 @@
 #include <pybind11/stl.h>
 namespace py = pybind11;
 
+#if defined(_WIN32)
+#  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX
+#  include <windows.h>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -126,10 +132,45 @@ std::string validateLuaSyntax(const std::string& global_code, const std::string&
 // ---------------------------------------------------------------------------
 // Python interpreter singleton — CPython can only be initialized once per
 // process, so we use a static guard that lives until program exit.
+//
+// Before constructing the guard, PyConfig is populated so CPython searches the
+// bundled stdlib shipped alongside the plugin. If the stdlib directory is
+// absent (developer build pointing at a system Python), module_search_paths
+// is left untouched and CPython uses its default search.
 // ---------------------------------------------------------------------------
 
 void ensurePythonInterpreter() {
-  static py::scoped_interpreter guard{};
+  static py::scoped_interpreter guard = [] {
+    PyConfig config;
+    PyConfig_InitPythonConfig(&config);
+
+    auto plugin_dir = PJ::sdk::getSharedLibDir(reinterpret_cast<const void*>(&ensurePythonInterpreter));
+    if (!plugin_dir.empty()) {
+      auto py_root = plugin_dir / "python3.12";
+      if (std::filesystem::exists(py_root)) {
+        config.module_search_paths_set = 1;
+        auto append = [&](const std::filesystem::path& p) {
+          PyStatus status = PyWideStringList_Append(&config.module_search_paths, p.wstring().c_str());
+          if (PyStatus_Exception(status)) {
+            PyConfig_Clear(&config);
+            Py_ExitStatusException(status);
+          }
+        };
+        append(py_root / "Lib");
+#if defined(_WIN32)
+        // On Windows native extensions (.pyd) sit in a sibling DLLs/ dir.
+        append(py_root / "DLLs");
+        // Windows won't automatically search the plugin dir or DLLs/ when CPython
+        // loads .pyd modules, so register them explicitly. python3XX.dll lives
+        // next to the plugin binary (see CMake POST_BUILD copy); aux DLLs that
+        // the .pyd modules link against live under DLLs/.
+        AddDllDirectory(plugin_dir.wstring().c_str());
+        AddDllDirectory((py_root / "DLLs").wstring().c_str());
+#endif
+      }
+    }
+    return py::scoped_interpreter(&config);  // calls Py_InitializeFromConfig and PyConfig_Clear
+  }();
   (void)guard;
 }
 

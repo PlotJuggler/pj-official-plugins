@@ -18,7 +18,49 @@ target_link_libraries(toolbox_reactive_scripts_editor_plugin PRIVATE
   sol2::sol2
   nlohmann_json::nlohmann_json
   pybind11::embed
+  ${CMAKE_DL_LIBS}
 )
+
+# Bundle the Python stdlib next to the plugin binary so release_tools can include
+# it in the distribution zip. Layout:
+#   <plugin_dir>/python3.12/Lib   — pure-Python modules (Python3_STDLIB)
+#   <plugin_dir>/python3.12/DLLs  — native extensions on Windows (Python3_STDARCH)
+# On Linux, Python3_STDARCH is nested inside Python3_STDLIB, so a single copy
+# covers both pure and native modules.
+if(Python3_STDLIB)
+  add_custom_command(TARGET toolbox_reactive_scripts_editor_plugin POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${Python3_STDLIB}"
+      "$<TARGET_FILE_DIR:toolbox_reactive_scripts_editor_plugin>/python3.12/Lib"
+    COMMENT "Bundling Python pure stdlib"
+  )
+endif()
+
+if(WIN32 AND Python3_STDARCH AND NOT Python3_STDARCH STREQUAL Python3_STDLIB)
+  add_custom_command(TARGET toolbox_reactive_scripts_editor_plugin POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${Python3_STDARCH}"
+      "$<TARGET_FILE_DIR:toolbox_reactive_scripts_editor_plugin>/python3.12/DLLs"
+    COMMENT "Bundling Python platform-specific extensions (.pyd)"
+  )
+endif()
+
+# When the Conan cpython package is built shared (required on Windows/MSVC to
+# support .pyd extensions), python3XX.dll must sit next to the plugin binary so
+# Windows' alternate search order (used when the plugin is loaded by absolute
+# path) resolves it. The guard on TYPE makes this a no-op with static cpython
+# or on Linux.
+if(WIN32 AND TARGET Python3::Python)
+  get_target_property(_pj_python_type Python3::Python TYPE)
+  if(_pj_python_type STREQUAL "SHARED_LIBRARY")
+    add_custom_command(TARGET toolbox_reactive_scripts_editor_plugin POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:Python3::Python>
+        "$<TARGET_FILE_DIR:toolbox_reactive_scripts_editor_plugin>"
+      COMMENT "Bundling python3XX.dll alongside plugin binary"
+    )
+  endif()
+endif()
 
 pj_embed_manifest(toolbox_reactive_scripts_editor_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/reactive_script_editor_manifest.hpp
