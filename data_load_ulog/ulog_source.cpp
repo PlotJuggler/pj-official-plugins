@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+
 namespace {
 
 /// Recursively collect flattened field names for a ulog_cpp MessageFormat.
@@ -202,7 +203,9 @@ class ULogSource : public PJ::FileSourceBase {
     return PJ::kCapabilityDirectIngest | PJ::kCapabilityHasDialog;
   }
 
-  void* dialogContext() override { return &dialog_; }
+  PJ_borrowed_dialog_t getDialog() override {
+    return PJ::borrowDialog(dialog_);
+  }
 
   std::string saveConfig() const override {
     return nlohmann::json{{"filepath", filepath_}}.dump();

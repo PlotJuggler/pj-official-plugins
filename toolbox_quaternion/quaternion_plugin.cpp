@@ -17,6 +17,7 @@
 #include "quaternion_dialog_ui.hpp"
 #include "quaternion_to_rpy.hpp"
 
+
 // ---------------------------------------------------------------------------
 // QuaternionDialog
 // ---------------------------------------------------------------------------
@@ -269,7 +270,7 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
     converter_.reset();
   }
 
-  void* dialogContext() override {
+  PJ_borrowed_dialog_t getDialog() override {
     // Populate available fields and series data from catalog before the dialog opens.
     if (toolboxHostBound()) {
       auto host = toolboxHost();
@@ -288,19 +289,21 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
 
             // Read series data for preview.
             auto series = host.readSeries(f.handle);
-            if (series) {
+            if (series && series->type() == PJ::PrimitiveType::kFloat64) {
               auto ts = series->timestamps();
-              const auto& raw = series->raw();
+              const double* values = series->valuesAsFloat64();
               size_t count = ts.size();
 
-              QuaternionDialog::SeriesData sd;
-              sd.timestamps.resize(count);
-              sd.values.resize(count);
-              for (size_t i = 0; i < count; ++i) {
-                sd.timestamps[i] = static_cast<double>(ts[i]);
-                sd.values[i] = raw.values.as_float64[i];
+              if (values != nullptr) {
+                QuaternionDialog::SeriesData sd;
+                sd.timestamps.resize(count);
+                sd.values.resize(count);
+                for (size_t i = 0; i < count; ++i) {
+                  sd.timestamps[i] = static_cast<double>(ts[i]);
+                  sd.values[i] = values[i];
+                }
+                data_map[name] = std::move(sd);
               }
-              data_map[name] = std::move(sd);
             }
           }
         }
@@ -310,7 +313,7 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
         dialog_.setSeriesDataMap(std::move(data_map));
       }
     }
-    return &dialog_;
+    return PJ::borrowDialog(dialog_);
   }
 
   std::string saveConfig() const override { return dialog_.saveConfig(); }
@@ -410,15 +413,15 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
     converter_.setScale(dialog_.degrees() ? kDegPerRad : 1.0);
     converter_.setUnwrap(dialog_.unwrap());
 
-    // Access raw double values from MaterializedSeries.
-    const auto& raw_x = series_x->raw();
-    const auto& raw_y = series_y->raw();
-    const auto& raw_z = series_z->raw();
-    const auto& raw_w = series_w->raw();
+    // Grab typed value pointers from the Arrow-backed series views.
+    const double* vals_x = series_x->valuesAsFloat64();
+    const double* vals_y = series_y->valuesAsFloat64();
+    const double* vals_z = series_z->valuesAsFloat64();
+    const double* vals_w = series_w->valuesAsFloat64();
 
-    auto as_double = [](const PJ_materialized_series_t& s, size_t i) -> double {
-      return s.values.as_float64[i];
-    };
+    if (vals_x == nullptr || vals_y == nullptr || vals_z == nullptr || vals_w == nullptr) {
+      return PJ::unexpected("input series must be float64");
+    }
 
     // 4. Create data source and topic only on first invocation.
     if (!source_handle_) {
@@ -446,11 +449,7 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
     }
 
     for (size_t i = start; i < count; ++i) {
-      std::array<double, 4> quat = {
-          as_double(raw_x, i),
-          as_double(raw_y, i),
-          as_double(raw_z, i),
-          as_double(raw_w, i)};
+      std::array<double, 4> quat = {vals_x[i], vals_y[i], vals_z[i], vals_w[i]};
 
       std::array<double, 3> rpy{};
       converter_.convert(i, quat, rpy);

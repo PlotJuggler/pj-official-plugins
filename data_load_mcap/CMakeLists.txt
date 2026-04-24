@@ -23,6 +23,13 @@ pj_embed_manifest(mcap_source_plugin
   VAR_NAME kMcapManifest
 )
 
+# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
+# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+pj_emit_plugin_manifest(mcap_source_plugin
+  FAMILY        data_source
+  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
+)
+
 # --- Unit test for MCAP helpers ---
 add_executable(mcap_helpers_test tests/mcap_helpers_test.cpp)
 target_compile_features(mcap_helpers_test PRIVATE cxx_std_20)

@@ -72,3 +72,10 @@ pj_embed_ui(toolbox_reactive_scripts_editor_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/reactive_script_editor_dialog_ui.hpp
   VAR_NAME kReactiveScriptEditorDialogUi
 )
+
+# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
+# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+pj_emit_plugin_manifest(toolbox_reactive_scripts_editor_plugin
+  FAMILY        toolbox
+  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
+)

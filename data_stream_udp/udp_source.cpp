@@ -15,13 +15,16 @@
 #include <string>
 #include <unordered_map>
 
+
 namespace {
 
 constexpr size_t kMaxDatagramSize = 65507;  // max UDP payload (IPv4)
 
 class UdpSource : public PJ::StreamSourceBase {
  public:
-  void* dialogContext() override { return &dialog_; }
+  PJ_borrowed_dialog_t getDialog() override {
+    return PJ::borrowDialog(dialog_);
+  }
 
   uint64_t extraCapabilities() const override {
     return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;
