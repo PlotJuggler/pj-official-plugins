@@ -29,6 +29,13 @@ pj_embed_manifest(parquet_source_plugin
   VAR_NAME kParquetManifest
 )
 
+# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
+# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+pj_emit_plugin_manifest(parquet_source_plugin
+  FAMILY        data_source
+  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
+)
+
 # --- Unit test for Parquet helpers ---
 add_executable(parquet_helpers_test tests/parquet_helpers_test.cpp)
 target_compile_features(parquet_helpers_test PRIVATE cxx_std_20)

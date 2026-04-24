@@ -11,14 +11,20 @@ if(TARGET pj_base)
   # Subdirectory mode — deps already provided by parent.
   set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 
-  add_subdirectory(parser_json)
-  add_subdirectory(parser_protobuf)
-  add_subdirectory(parser_ros)
-  add_subdirectory(parser_data_tamer)
+  # Enabled entries track the v4 ABI (PJ_ABI_VERSION == 4): service-
+  # registry API, Arrow C Data Interface at the write boundary, and the
+  # PJ_NOEXCEPT vtable surface. Commented-out entries stopped at the
+  # v1/v2 ABI (old bindWriteHost, dialogContext, etc.) and need a fresh
+  # v4 port — v3 was never an official release, so there is no v3
+  # intermediate stop. Uncomment each as it is brought over to v4.
   add_subdirectory(data_load_csv)
   add_subdirectory(data_load_mcap)
   add_subdirectory(data_load_parquet)
   add_subdirectory(data_load_ulog)
+  add_subdirectory(parser_json)
+  add_subdirectory(parser_protobuf)
+  add_subdirectory(parser_ros)
+  add_subdirectory(parser_data_tamer)
   add_subdirectory(data_stream_zmq)
   add_subdirectory(data_stream_mqtt)
   add_subdirectory(data_stream_udp)

@@ -19,6 +19,7 @@
 #include <thread>
 #include <vector>
 
+
 namespace {
 
 using namespace PJ::FoxgloveProtocol;
@@ -35,7 +36,9 @@ struct QueuedTextMessage {
 
 class FoxgloveSource : public PJ::StreamSourceBase {
  public:
-  void* dialogContext() override { return &dialog_; }
+  PJ_borrowed_dialog_t getDialog() override {
+    return PJ::borrowDialog(dialog_);
+  }
 
   uint64_t extraCapabilities() const override {
     return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;

@@ -35,6 +35,13 @@ pj_embed_manifest(ulog_source_plugin
   VAR_NAME kUlogManifest
 )
 
+# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
+# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+pj_emit_plugin_manifest(ulog_source_plugin
+  FAMILY        data_source
+  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
+)
+
 pj_embed_ui(ulog_source_plugin
   UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/ulog_params.ui
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/ulog_params_ui.hpp

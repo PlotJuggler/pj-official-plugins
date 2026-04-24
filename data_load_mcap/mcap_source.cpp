@@ -14,6 +14,7 @@
 #include <string_view>
 #include <unordered_map>
 
+
 namespace {
 
 using McapSummaryInfo = PJ::McapHelpers::McapSummaryInfo;
@@ -26,7 +27,9 @@ using PJ::McapHelpers::readSelectiveSummary;
 
 class McapSource : public PJ::FileSourceBase {
  public:
-  void* dialogContext() override { return &dialog_; }
+  PJ_borrowed_dialog_t getDialog() override {
+    return PJ::borrowDialog(dialog_);
+  }
 
   uint64_t extraCapabilities() const override {
     return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;
