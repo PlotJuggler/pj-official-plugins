@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include <vector>
 
+
 namespace {
 
 struct MqttMessage {
@@ -26,7 +27,9 @@ struct MqttMessage {
 
 class MqttSource : public PJ::StreamSourceBase {
  public:
-  void* dialogContext() override { return &dialog_; }
+  PJ_borrowed_dialog_t getDialog() override {
+    return PJ::borrowDialog(dialog_);
+  }
 
   uint64_t extraCapabilities() const override {
     return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;

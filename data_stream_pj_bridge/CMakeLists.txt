@@ -30,6 +30,13 @@ pj_embed_manifest(pj_bridge_source_plugin
   VAR_NAME kPjBridgeManifest
 )
 
+# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
+# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+pj_emit_plugin_manifest(pj_bridge_source_plugin
+  FAMILY        data_source
+  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
+)
+
 # --- Unit test for PJ Bridge protocol ---
 add_executable(pj_bridge_protocol_test tests/pj_bridge_protocol_test.cpp)
 target_compile_features(pj_bridge_protocol_test PRIVATE cxx_std_20)

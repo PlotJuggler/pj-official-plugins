@@ -13,7 +13,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include "pj_base/plugin_data_api.h"
+#include "pj_base/sdk/service_traits.hpp"
+#include "pj_base/sdk/testing/parser_write_recorder.hpp"
+#include "pj_plugins/host/service_registry_builder.hpp"
 
 #ifndef PJ_PROTOBUF_PARSER_PLUGIN_PATH
 #error "PJ_PROTOBUF_PARSER_PLUGIN_PATH must be defined"
@@ -22,118 +24,6 @@
 namespace gp = google::protobuf;
 
 namespace {
-
-struct RecordedField {
-  std::string name;
-  double value = 0.0;
-  std::string string_value;
-  bool is_string = false;
-};
-
-struct RecordedRow {
-  int64_t timestamp = 0;
-  std::vector<RecordedField> fields;
-};
-
-struct ParserWriteRecorder {
-  std::vector<RecordedRow> rows;
-  std::string last_error;
-  std::unordered_map<uint32_t, std::string> field_names;
-  uint32_t next_field_id = 0;
-
-  static const char* getLastError(void* ctx) {
-    auto* self = static_cast<ParserWriteRecorder*>(ctx);
-    return self->last_error.empty() ? nullptr : self->last_error.c_str();
-  }
-
-  static bool ensureField(void* ctx, PJ_string_view_t name, PJ_primitive_type_t,
-                           PJ_field_handle_t* out_field) {
-    auto* self = static_cast<ParserWriteRecorder*>(ctx);
-    uint32_t id = self->next_field_id++;
-    self->field_names[id] = std::string(name.data, name.size);
-    *out_field = PJ_field_handle_t{{1}, id};
-    return true;
-  }
-
-  static RecordedField extractField(const PJ_scalar_value_t& value, const std::string& name) {
-    RecordedField f;
-    f.name = name;
-    switch (value.type) {
-      case PJ_PRIMITIVE_TYPE_FLOAT64:
-        f.value = value.data.as_float64;
-        break;
-      case PJ_PRIMITIVE_TYPE_FLOAT32:
-        f.value = static_cast<double>(value.data.as_float32);
-        break;
-      case PJ_PRIMITIVE_TYPE_INT32:
-        f.value = static_cast<double>(value.data.as_int32);
-        break;
-      case PJ_PRIMITIVE_TYPE_INT64:
-        f.value = static_cast<double>(value.data.as_int64);
-        break;
-      case PJ_PRIMITIVE_TYPE_UINT32:
-        f.value = static_cast<double>(value.data.as_uint32);
-        break;
-      case PJ_PRIMITIVE_TYPE_UINT64:
-        f.value = static_cast<double>(value.data.as_uint64);
-        break;
-      case PJ_PRIMITIVE_TYPE_BOOL:
-        f.value = value.data.as_bool != 0 ? 1.0 : 0.0;
-        break;
-      case PJ_PRIMITIVE_TYPE_STRING:
-        if (value.data.as_string.data != nullptr) {
-          f.string_value = std::string(value.data.as_string.data, value.data.as_string.size);
-          f.is_string = true;
-        }
-        break;
-      default:
-        break;
-    }
-    return f;
-  }
-
-  static bool appendRecord(void* ctx, int64_t timestamp, const PJ_named_field_value_t* fields,
-                            size_t field_count) {
-    auto* self = static_cast<ParserWriteRecorder*>(ctx);
-    RecordedRow row;
-    row.timestamp = timestamp;
-    for (size_t i = 0; i < field_count; ++i) {
-      std::string name(fields[i].name.data, fields[i].name.size);
-      row.fields.push_back(extractField(fields[i].value, name));
-    }
-    self->rows.push_back(std::move(row));
-    return true;
-  }
-
-  static bool appendBoundRecord(void* ctx, int64_t timestamp, const PJ_bound_field_value_t* fields,
-                                 size_t field_count) {
-    auto* self = static_cast<ParserWriteRecorder*>(ctx);
-    RecordedRow row;
-    row.timestamp = timestamp;
-    for (size_t i = 0; i < field_count; ++i) {
-      auto it = self->field_names.find(fields[i].field.id);
-      std::string name = (it != self->field_names.end()) ? it->second : "unknown";
-      row.fields.push_back(extractField(fields[i].value, name));
-    }
-    self->rows.push_back(std::move(row));
-    return true;
-  }
-
-  static bool appendArrowIpc(void*, PJ_bytes_view_t, PJ_string_view_t) { return true; }
-};
-
-PJ_parser_write_host_t makeWriteHost(ParserWriteRecorder* recorder) {
-  static const PJ_parser_write_host_vtable_t vtable = {
-      .abi_version = PJ_PLUGIN_DATA_API_VERSION,
-      .struct_size = sizeof(PJ_parser_write_host_vtable_t),
-      .get_last_error = ParserWriteRecorder::getLastError,
-      .ensure_field = ParserWriteRecorder::ensureField,
-      .append_record = ParserWriteRecorder::appendRecord,
-      .append_bound_record = ParserWriteRecorder::appendBoundRecord,
-      .append_arrow_ipc = ParserWriteRecorder::appendArrowIpc,
-  };
-  return PJ_parser_write_host_t{.ctx = recorder, .vtable = &vtable};
-}
 
 // Build a FileDescriptorSet containing a simple message:
 //   message SensorData {
@@ -286,7 +176,8 @@ std::string buildEnumSchema() {
 struct ProtobufParserFixture {
   PJ::MessageParserLibrary library;
   PJ::MessageParserHandle handle{static_cast<const PJ_message_parser_vtable_t*>(nullptr)};
-  ParserWriteRecorder recorder;
+  PJ::ServiceRegistryBuilder registry;
+  PJ::sdk::testing::ParserWriteRecorder recorder;
 
   void setUp() {
     auto lib = PJ::MessageParserLibrary::load(PJ_PROTOBUF_PARSER_PLUGIN_PATH);
@@ -294,17 +185,18 @@ struct ProtobufParserFixture {
     library = std::move(*lib);
     handle = library.createHandle();
     ASSERT_TRUE(handle.valid());
-    ASSERT_TRUE(handle.bindWriteHost(makeWriteHost(&recorder)));
+    registry.registerService<PJ::sdk::ParserWriteHostService>(recorder.makeHost());
+    ASSERT_TRUE(handle.bind(registry.view()));
   }
 
   bool bindSchema(std::string_view type_name, const std::string& schema_bytes) {
     const auto* data = reinterpret_cast<const uint8_t*>(schema_bytes.data());
-    return handle.bindSchema(type_name, {data, schema_bytes.size()});
+    return handle.bindSchema(type_name, PJ::Span<const uint8_t>(data, schema_bytes.size())).has_value();
   }
 
   bool parse(const std::string& serialized, int64_t ts = 1000) {
     const auto* data = reinterpret_cast<const uint8_t*>(serialized.data());
-    return handle.parse(ts, {data, serialized.size()});
+    return handle.parse(ts, PJ::Span<const uint8_t>(data, serialized.size())).has_value();
   }
 };
 
@@ -354,17 +246,17 @@ TEST(ProtobufParserTest, SimpleMessage) {
   auto payload = serializeSimple(23.5, 42);
   ASSERT_TRUE(f.parse(payload));
 
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
-  ASSERT_EQ(f.recorder.rows[0].fields.size(), 2u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 2u);
 
   bool found_temp = false;
   bool found_status = false;
-  for (const auto& field : f.recorder.rows[0].fields) {
+  for (const auto& field : f.recorder.rows()[0].fields) {
     if (field.name == "temperature") {
-      EXPECT_DOUBLE_EQ(field.value, 23.5);
+      EXPECT_DOUBLE_EQ(field.numeric, 23.5);
       found_temp = true;
     } else if (field.name == "status") {
-      EXPECT_DOUBLE_EQ(field.value, 42.0);
+      EXPECT_DOUBLE_EQ(field.numeric, 42.0);
       found_status = true;
     }
   }
@@ -426,16 +318,16 @@ TEST(ProtobufParserTest, NestedMessage) {
   msg->SerializeToString(&payload);
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
 
   bool found_seq = false;
   bool found_val = false;
-  for (const auto& field : f.recorder.rows[0].fields) {
+  for (const auto& field : f.recorder.rows()[0].fields) {
     if (field.name == "header/seq") {
-      EXPECT_DOUBLE_EQ(field.value, 7.0);
+      EXPECT_DOUBLE_EQ(field.numeric, 7.0);
       found_seq = true;
     } else if (field.name == "value") {
-      EXPECT_DOUBLE_EQ(field.value, 3.14);
+      EXPECT_DOUBLE_EQ(field.numeric, 3.14);
       found_val = true;
     }
   }
@@ -484,17 +376,17 @@ TEST(ProtobufParserTest, RepeatedField) {
   msg->SerializeToString(&payload);
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
-  ASSERT_EQ(f.recorder.rows[0].fields.size(), 4u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 4u);
 
-  EXPECT_EQ(f.recorder.rows[0].fields[0].name, "values[0]");
-  EXPECT_DOUBLE_EQ(f.recorder.rows[0].fields[0].value, 1.0);
-  EXPECT_EQ(f.recorder.rows[0].fields[1].name, "values[1]");
-  EXPECT_DOUBLE_EQ(f.recorder.rows[0].fields[1].value, 2.0);
-  EXPECT_EQ(f.recorder.rows[0].fields[2].name, "values[2]");
-  EXPECT_DOUBLE_EQ(f.recorder.rows[0].fields[2].value, 3.0);
-  EXPECT_EQ(f.recorder.rows[0].fields[3].name, "count");
-  EXPECT_DOUBLE_EQ(f.recorder.rows[0].fields[3].value, 3.0);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].name, "values[0]");
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[0].numeric, 1.0);
+  EXPECT_EQ(f.recorder.rows()[0].fields[1].name, "values[1]");
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[1].numeric, 2.0);
+  EXPECT_EQ(f.recorder.rows()[0].fields[2].name, "values[2]");
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[2].numeric, 3.0);
+  EXPECT_EQ(f.recorder.rows()[0].fields[3].name, "count");
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[3].numeric, 3.0);
 }
 
 TEST(ProtobufParserTest, EnumField) {
@@ -550,17 +442,17 @@ TEST(ProtobufParserTest, EnumField) {
   msg->SerializeToString(&payload);
 
   ASSERT_TRUE(f.parse(payload));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
 
   bool found_color = false;
   bool found_val = false;
-  for (const auto& field : f.recorder.rows[0].fields) {
+  for (const auto& field : f.recorder.rows()[0].fields) {
     if (field.name == "color") {
-      EXPECT_TRUE(field.is_string);
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kString);
       EXPECT_EQ(field.string_value, "GREEN");
       found_color = true;
     } else if (field.name == "value") {
-      EXPECT_DOUBLE_EQ(field.value, 99.0);
+      EXPECT_DOUBLE_EQ(field.numeric, 99.0);
       found_val = true;
     }
   }
@@ -596,8 +488,8 @@ TEST(ProtobufParserTest, TimestampPreserved) {
   ASSERT_TRUE(f.bindSchema("SensorData", schema));
   auto payload = serializeSimple(1.0, 0);
   ASSERT_TRUE(f.parse(payload, 99999));
-  ASSERT_EQ(f.recorder.rows.size(), 1u);
-  EXPECT_EQ(f.recorder.rows[0].timestamp, 99999);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 99999);
 }
 
 TEST(ProtobufParserTest, ManifestContainsEncoding) {

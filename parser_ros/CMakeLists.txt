@@ -45,6 +45,13 @@ pj_embed_manifest(parser_ros_plugin
   VAR_NAME kRosManifest
 )
 
+# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
+# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+pj_emit_plugin_manifest(parser_ros_plugin
+  FAMILY        message_parser
+  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
+)
+
 # --- Integration test (loads plugin .so via host library) ---
 add_executable(ros_parser_test tests/ros_parser_test.cpp)
 target_compile_features(ros_parser_test PRIVATE cxx_std_20)

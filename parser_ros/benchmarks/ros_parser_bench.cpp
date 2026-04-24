@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "pj_base/plugin_data_api.h"
+#include "pj_base/sdk/service_traits.hpp"
+#include "pj_plugins/host/service_registry_builder.hpp"
 
 #ifndef PJ_ROS_PARSER_PLUGIN_PATH
 #error "PJ_ROS_PARSER_PLUGIN_PATH must be defined"
@@ -18,26 +20,28 @@ namespace {
 
 // Lightweight write host that discards all output.
 struct NullWriteHost {
-  static const char* getLastError(void*) { return nullptr; }
-  static bool ensureField(void*, PJ_string_view_t, PJ_primitive_type_t, PJ_field_handle_t* out) {
+  static bool ensureField(
+      void*, PJ_string_view_t, PJ_primitive_type_t, PJ_field_handle_t* out, PJ_error_t*) noexcept {
     *out = PJ_field_handle_t{{1}, 1};
     return true;
   }
-  static bool appendRecord(void*, int64_t, const PJ_named_field_value_t*, size_t) { return true; }
-  static bool appendBoundRecord(void*, int64_t, const PJ_bound_field_value_t*, size_t) { return true; }
-  static bool appendArrowIpc(void*, PJ_bytes_view_t, PJ_string_view_t) { return true; }
+  static bool appendRecord(void*, int64_t, const PJ_named_field_value_t*, size_t, PJ_error_t*) noexcept {
+    return true;
+  }
+  static bool appendBoundRecord(void*, int64_t, const PJ_bound_field_value_t*, size_t, PJ_error_t*) noexcept {
+    return true;
+  }
 };
 
 PJ_parser_write_host_t makeNullHost() {
   static NullWriteHost host;
+  // v4: parser write vtable is per-record only.
   static const PJ_parser_write_host_vtable_t vtable = {
       .abi_version = PJ_PLUGIN_DATA_API_VERSION,
       .struct_size = sizeof(PJ_parser_write_host_vtable_t),
-      .get_last_error = NullWriteHost::getLastError,
       .ensure_field = NullWriteHost::ensureField,
       .append_record = NullWriteHost::appendRecord,
       .append_bound_record = NullWriteHost::appendBoundRecord,
-      .append_arrow_ipc = NullWriteHost::appendArrowIpc,
   };
   return {.ctx = &host, .vtable = &vtable};
 }
@@ -163,6 +167,7 @@ std::vector<uint8_t> makePosePayload() {
 struct ParserBench {
   PJ::MessageParserLibrary library;
   PJ::MessageParserHandle handle{static_cast<const PJ_message_parser_vtable_t*>(nullptr)};
+  PJ::ServiceRegistryBuilder registry;
 
   bool setup(const char* type_name, const char* def) {
     auto lib = PJ::MessageParserLibrary::load(PJ_ROS_PARSER_PLUGIN_PATH);
@@ -170,9 +175,10 @@ struct ParserBench {
     library = std::move(*lib);
     handle = library.createHandle();
     if (!handle.valid()) return false;
-    if (!handle.bindWriteHost(makeNullHost())) return false;
+    registry.registerService<PJ::sdk::ParserWriteHostService>(makeNullHost());
+    if (!handle.bind(registry.view())) return false;
     auto* data = reinterpret_cast<const uint8_t*>(def);
-    return handle.bindSchema(type_name, {data, std::strlen(def)});
+    return handle.bindSchema(type_name, PJ::Span<const uint8_t>(data, std::strlen(def))).has_value();
   }
 };
 
@@ -187,7 +193,7 @@ void BM_ParseImu(benchmark::State& state) {
   auto payload = makeImuPayload();
   int64_t ts = 1000;
   for (auto _ : state) {
-    bench.handle.parse(ts++, {payload.data(), payload.size()});
+    (void)bench.handle.parse(ts++, PJ::Span<const uint8_t>(payload.data(), payload.size()));
   }
   state.SetItemsProcessed(state.iterations());
 }
@@ -202,7 +208,7 @@ void BM_ParseJointState(benchmark::State& state) {
   auto payload = makeJointStatePayload();
   int64_t ts = 1000;
   for (auto _ : state) {
-    bench.handle.parse(ts++, {payload.data(), payload.size()});
+    (void)bench.handle.parse(ts++, PJ::Span<const uint8_t>(payload.data(), payload.size()));
   }
   state.SetItemsProcessed(state.iterations());
 }
@@ -217,7 +223,7 @@ void BM_ParsePose(benchmark::State& state) {
   auto payload = makePosePayload();
   int64_t ts = 1000;
   for (auto _ : state) {
-    bench.handle.parse(ts++, {payload.data(), payload.size()});
+    (void)bench.handle.parse(ts++, PJ::Span<const uint8_t>(payload.data(), payload.size()));
   }
   state.SetItemsProcessed(state.iterations());
 }

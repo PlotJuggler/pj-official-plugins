@@ -19,6 +19,7 @@
 #include <thread>
 #include <vector>
 
+
 namespace {
 
 using namespace PJ::BridgeProtocol;
@@ -29,7 +30,9 @@ struct QueuedFrame {
 
 class PjBridgeSource : public PJ::StreamSourceBase {
  public:
-  void* dialogContext() override { return &dialog_; }
+  PJ_borrowed_dialog_t getDialog() override {
+    return PJ::borrowDialog(dialog_);
+  }
 
   uint64_t extraCapabilities() const override {
     return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog | PJ::kCapabilitySupportsPause;
