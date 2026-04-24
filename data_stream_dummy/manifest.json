@@ -1,7 +1,7 @@
 {
   "id": "dummy-streamer",
   "name": "Dummy Streamer",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "Generates synthetic sine, cosine, sawtooth, and noise signals for testing and demonstration.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
