@@ -73,7 +73,7 @@ python3 scripts/release_extension.py csv-loader --version 2.0.0 --submit-to-regi
 #   - Commit the change
 #   - Create annotated tag
 #   - Push to GitHub (triggers CI)
-#   - CI builds all 6 platforms
+#   - CI builds the tagged plugin on all 6 platforms
 #   - CI creates GitHub release with plugin-scoped notes and artifacts
 #   - CI automatically creates PR to registry
 ```
@@ -195,7 +195,8 @@ Triggered by tags matching `*/v*` pattern.
 | Step | Description |
 |------|-------------|
 | Checkout | Clone repository at tagged commit |
-| Install dependencies | Conan packages, cmake, ninja |
+| Install dependencies | For tags, install the tagged plugin's `conanfile.py`; for scheduled/manual full builds, install the root `conanfile.txt` |
+| Restore Conan cache | Use a cache key scoped by Conan version, platform, plugin, and recipe hash |
 | Build | Compile only the tagged plugin (`-DPJ_BUILD_PLUGIN=source_dir`) |
 | Test | Run plugin tests via ctest |
 | **Verify version** | `release_tools.py verify-version-consistency` |
@@ -214,6 +215,8 @@ Triggered by tags matching `*/v*` pattern.
 | Submit to registry | Run `submit_to_registry.py --version <tag version>` if `auto_submit_to_registry: true` |
 
 Release notes are intentionally generated from non-merge commits touching only the tagged plugin directory, with release bookkeeping commits omitted. This keeps a CSV release from inheriting a ROS, MQTT, or toolbox changelog entry just because both live in the same repository. Shared build, packaging, or runtime commits can be included manually with `--include-shared` when they are genuinely useful for a specific release.
+
+Tagged releases keep the existing one-tag-per-plugin strategy. The source directory before `/v` selects both the dependency graph and the CMake target scope. For example, `data_load_csv/v1.2.0` installs `data_load_csv/conanfile.py` and configures CMake with `-DPJ_BUILD_PLUGIN=data_load_csv`, so Arrow, MQTT, CPython, and other unrelated plugin dependencies are not installed for that release.
 
 ---
 

@@ -13,13 +13,27 @@ Protobuf, ROS, ZMQ, MQTT, Foxglove Bridge, and PJ Bridge.
 ### Standalone (requires Conan 2.x)
 
 ```bash
-# Install third-party dependencies
-conan install . --output-folder=build --build=missing
-
-# Configure and build
-cmake -B build -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake
-cmake --build build
+# Build the full plugin collection
+./build.sh
 ```
+
+To work on only one plugin, pass the plugin directory:
+
+```bash
+./build.sh data_load_csv
+```
+
+Run `./build.sh --help` to see the available arguments.
+
+By default, `build.sh` installs the root `conanfile.txt` and builds into
+`build/all/Release`. With a plugin argument, it installs that plugin's
+`conanfile.py`, configures CMake with `-DPJ_BUILD_PLUGIN=<plugin_dir>`, and
+builds into `build/<plugin_dir>/Release`.
+
+Each plugin directory has its own `conanfile.py`. Keep it in sync with the
+plugin's `find_package(... REQUIRED)` dependencies in `CMakeLists.txt`. The
+root `conanfile.txt` remains the full-repository dependency set for local full
+builds and scheduled CI.
 
 ### As subdirectory of plotjuggler_core
 
@@ -45,6 +59,12 @@ cd /path/to/plotjuggler_core
 | zstd | 1.5.5 | data_stream_pj_bridge |
 | date | 3.0.4 | data_load_csv |
 | ixwebsocket | 11.4.6 | data_stream_foxglove_bridge, data_stream_pj_bridge |
+| asio | 1.28.2 | data_stream_udp |
+| kissfft | 131.1.0 | toolbox_fft |
+| lua | 5.4.6 | toolbox_colormap, toolbox_reactive_scripts_editor |
+| sol2 | 3.5.0 | toolbox_colormap, toolbox_reactive_scripts_editor |
+| pybind11 | 2.13.6 | toolbox_reactive_scripts_editor |
+| cpython | 3.12.7 | toolbox_reactive_scripts_editor |
 | gtest | 1.17.0 | All plugin tests |
 
 ### Via CPM (GitHub-only)
@@ -79,9 +99,19 @@ cd /path/to/plotjuggler_core
 | data_stream_foxglove_bridge | DataSource | Foxglove WebSocket bridge |
 | data_stream_pj_bridge | DataSource | PlotJuggler WebSocket bridge |
 
+## Development Checklist
+
+When adding or changing a plugin:
+
+1. Keep `manifest.json` current; the release tag version must match it.
+2. Add or update the plugin's `CMakeLists.txt`.
+3. Add any Conan dependencies to the plugin's `conanfile.py`.
+4. Add new dependencies to the root `conanfile.txt` when full-repository builds need them.
+5. Add focused tests in the plugin directory when behavior changes.
+
 ## Releasing Extensions
 
-Each plugin is independently versioned and released. The release pipeline builds on **6 platforms** (Linux x86_64/aarch64, macOS Intel/ARM, Windows x64/ARM64), creates plugin-scoped release notes, and can automatically submit to the extension registry.
+Each plugin is independently versioned and released. The release pipeline builds the tagged plugin on **6 platforms** (Linux x86_64/aarch64, macOS Intel/ARM, Windows x64/ARM64), creates plugin-scoped release notes, and can automatically submit to the extension registry.
 
 ### Quick Start (Recommended)
 
@@ -94,7 +124,7 @@ This will:
 1. Update `manifest.json` with new version
 2. Commit and push the change
 3. Create annotated tag → triggers CI
-4. CI builds all 6 platforms and creates a GitHub Release with notes from that plugin's directory
+4. CI installs that plugin's Conan recipe, builds it on all 6 platforms, and creates a GitHub Release with notes from that plugin's directory
 5. Automatically creates a `pj-plugin-registry` PR for the exact version in the triggering tag
 
 ### Tag-Only (Manifest Already Updated)
@@ -115,6 +145,11 @@ Useful for batch releases or re-creating tags after cleanup.
 ```
 
 Examples: `data_load_csv/v1.0.6`, `parser_ros/v2.1.0`
+
+The source directory before `/v` controls the CI build scope. A
+`data_load_csv/v1.0.6` tag installs `data_load_csv/conanfile.py` and configures
+CMake with `-DPJ_BUILD_PLUGIN=data_load_csv`; it does not install or compile
+dependencies for unrelated plugins.
 
 ### Available Scripts
 

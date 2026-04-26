@@ -5,7 +5,7 @@ on:
   push:
     tags: ['*/v*']
   schedule:
-    # Keep Conan cache warm — runs weekly (cache expires after 7 days of no access)
+    # Keep the full-build Conan cache warm — runs weekly (cache expires after 7 days of no access)
     - cron: '0 3 * * 1'  # Monday 3am UTC
 
 concurrency:
@@ -59,10 +59,51 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
 
+      - name: Resolve build scope
+        id: build-scope
+        shell: bash
+        run: |
+          CONAN_RECIPE="."
+          CONAN_HASH_PATH="conanfile.txt"
+          CMAKE_EXTRA_ARGS=""
+          SCOPE="all"
+
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == */* ]]; then
+            PLUGIN_NAME="${GITHUB_REF_NAME%/*}"
+            CONAN_RECIPE="${PLUGIN_NAME}"
+            CONAN_HASH_PATH="${PLUGIN_NAME}/conanfile.py"
+            CMAKE_EXTRA_ARGS="-DPJ_BUILD_PLUGIN=${PLUGIN_NAME}"
+            SCOPE="plugin-${PLUGIN_NAME}"
+
+            if [[ ! -f "${CONAN_HASH_PATH}" ]]; then
+              echo "::error::Missing Conan recipe for tagged plugin: ${CONAN_HASH_PATH}"
+              exit 1
+            fi
+          fi
+
+          CONAN_HASH=$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "${CONAN_HASH_PATH}")
+
+          {
+            echo "conan_recipe=${CONAN_RECIPE}"
+            echo "conan_hash=${CONAN_HASH}"
+            echo "cmake_extra_args=${CMAKE_EXTRA_ARGS}"
+            echo "scope=${SCOPE}"
+          } >> "${GITHUB_OUTPUT}"
+
+          echo "Conan recipe: ${CONAN_RECIPE}"
+          echo "Build scope: ${SCOPE}"
+
       - name: Install Conan
+        id: setup-conan
         uses: conan-io/setup-conan@v1.3.0
+
+      - name: Restore Conan package cache
+        uses: actions/cache@v4
         with:
-          cache_packages: true
+          path: ${{ steps.setup-conan.outputs.conan-home }}/p
+          key: conan-${{ steps.setup-conan.outputs.conan-version }}-${{ runner.os }}-${{ matrix.arch }}-${{ steps.build-scope.outputs.scope }}-${{ steps.build-scope.outputs.conan_hash }}
+          restore-keys: |
+            conan-${{ steps.setup-conan.outputs.conan-version }}-${{ runner.os }}-${{ matrix.arch }}-${{ steps.build-scope.outputs.scope }}-
 
       - name: Install cmake and ninja
         run: pip install cmake ninja
@@ -76,17 +117,18 @@ jobs:
       - name: Build & Test
         shell: bash
         run: |
-          conan profile detect --force
-          conan install . --output-folder=build --build=missing -s build_type=Release \
-            -s compiler.cppstd=20 -c tools.cmake.cmaketoolchain:generator=Ninja
+          CONAN_RECIPE="${{ steps.build-scope.outputs.conan_recipe }}"
+          CMAKE_EXTRA_ARGS="${{ steps.build-scope.outputs.cmake_extra_args }}"
+          CONAN_EXTRA_ARGS=()
 
-          # When triggered by a tag (e.g. data_load_csv/v0.1.0), build only that plugin
-          CMAKE_EXTRA_ARGS=""
-          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == */* ]]; then
-            PLUGIN_NAME="${GITHUB_REF_NAME%/*}"
-            CMAKE_EXTRA_ARGS="-DPJ_BUILD_PLUGIN=${PLUGIN_NAME}"
-            echo "Building single plugin: ${PLUGIN_NAME}"
+          if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+            CONAN_EXTRA_ARGS+=("-o" "cpython/*:shared=True")
           fi
+
+          conan profile detect --force
+          conan install "${CONAN_RECIPE}" --output-folder=build --build=missing -s build_type=Release \
+            -s compiler.cppstd=20 -c tools.cmake.cmaketoolchain:generator=Ninja \
+            "${CONAN_EXTRA_ARGS[@]}"
 
           cmake -S . -B build/Release -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
