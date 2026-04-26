@@ -11,6 +11,7 @@ This module provides utilities for the extension release workflow:
 - Version extraction from compiled plugin binaries (via embedded manifest)
 - Version consistency verification (tag vs manifest.json vs binary)
 - Distribution package creation (locates plugin binary by manifest id)
+- Plugin-scoped release note generation for monorepo tags
 - Manifest validation
 
 Used as library by: release_plugin.py, submit_to_registry.py
@@ -34,6 +35,11 @@ CLI Usage:
 
     # Validate manifest.json structure and required fields
     python3 scripts/release_tools.py validate-manifest data_load_csv/manifest.json
+
+    # Generate release notes containing only plugin-specific changes
+    python3 scripts/release_tools.py generate-release-notes \\
+        --release-tag data_load_csv/v1.0.5 \\
+        --output release-notes.md
 """
 
 import argparse
@@ -42,6 +48,7 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.request
@@ -307,6 +314,15 @@ def compare_versions(v1: str, v2: str) -> int:
     elif p1 > p2:
         return 1
     return 0
+
+
+def semver_sort_key(version: str) -> tuple[int, int, int, str]:
+    """Return a stable sort key for supported semantic versions."""
+    match = SEMVER_REGEX.match(version)
+    if not match:
+        return (0, 0, 0, "")
+    prerelease = match.group(4) or ""
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)), prerelease)
 
 
 # =============================================================================
@@ -638,6 +654,78 @@ def find_source_dir(source_arg: str, root: Path) -> Path | None:
             return source_dir
 
     return None
+
+
+def run_git(root: Path, args: list[str]) -> str:
+    """Run a git command in the repository root and return stdout."""
+    result = subprocess.run(
+        ["git"] + args,
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def find_previous_release_tag(root: Path, source_name: str, current_tag: str) -> str | None:
+    """Return the nearest older tag for the same plugin source directory."""
+    parsed = parse_tag_version(current_tag)
+    if not parsed:
+        return None
+    _, current_version = parsed
+
+    tags = run_git(root, ["tag", "--list", f"{source_name}/v*"]).splitlines()
+    candidates = []
+    for tag in tags:
+        tag = tag.strip()
+        if not tag or tag == current_tag:
+            continue
+        tag_info = parse_tag_version(tag)
+        if not tag_info:
+            continue
+        _, version = tag_info
+        if compare_versions(version, current_version) < 0:
+            candidates.append((version, tag))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: semver_sort_key(item[0]))
+    return candidates[-1][1]
+
+
+def list_commits_for_paths(root: Path, revision_range: str, paths: list[str]) -> list[tuple[str, str]]:
+    """List commits in a revision range that touched any of the requested paths."""
+    args = ["log", "--reverse", "--no-merges", "--format=%H%x1f%s", revision_range]
+    if paths:
+        args += ["--"] + paths
+    output = run_git(root, args)
+    commits = []
+    for line in output.splitlines():
+        if not line:
+            continue
+        commit_hash, _, subject = line.partition("\x1f")
+        if commit_hash and subject and not is_release_bookkeeping(subject):
+            commits.append((commit_hash, subject))
+    return commits
+
+
+def is_release_bookkeeping(subject: str) -> bool:
+    """Return true for version-bump commits that add noise to release notes."""
+    normalized = subject.lower()
+    return (
+        normalized.startswith("chore(release):")
+        or "bump version to" in normalized
+        or "bump all plugins" in normalized
+    )
+
+
+def format_commit_list(commits: list[tuple[str, str]]) -> str:
+    """Format commit subjects as a markdown bullet list."""
+    if not commits:
+        return "- No plugin-specific changes detected in this range."
+    return "\n".join(f"- {subject} ({commit_hash[:7]})" for commit_hash, subject in commits)
 
 
 # =============================================================================
@@ -1051,6 +1139,94 @@ def cmd_validate_distribution_package(args) -> int:
         return 0
 
 
+def cmd_generate_release_notes(args) -> int:
+    """
+    Generate release notes scoped to a single plugin in the monorepo.
+
+    GitHub's generated release notes are repository-wide. This command keeps
+    each plugin release focused on commits that touched that plugin directory,
+    with optional shared release/build changes separated explicitly.
+    """
+    script_dir = Path(__file__).parent
+    root = script_dir.parent
+
+    parsed = parse_tag_version(args.release_tag)
+    if not parsed:
+        print(f"Error: Invalid release tag format: {args.release_tag}", file=sys.stderr)
+        print(f"Expected: {{source_dir}}/v{{version}} (e.g., data_load_csv/v1.0.5)", file=sys.stderr)
+        return 1
+
+    source_name, version = parsed
+    source_dir = find_source_dir(source_name, root)
+    if not source_dir:
+        print(f"Error: Source directory not found: {source_name}", file=sys.stderr)
+        return 1
+
+    manifest_path = source_dir / "manifest.json"
+    manifest = read_manifest(manifest_path)
+    if not manifest:
+        print(f"Error: Could not read manifest: {manifest_path}", file=sys.stderr)
+        return 1
+
+    previous_tag = args.previous_tag or find_previous_release_tag(root, source_name, args.release_tag)
+    revision_range = f"{previous_tag}..{args.release_tag}" if previous_tag else args.release_tag
+    plugin_commits = list_commits_for_paths(root, revision_range, [source_name])
+
+    shared_commits = []
+    if args.include_shared:
+        shared_paths = [
+            ".github/workflows/build-release.yml",
+            "CMakeLists.txt",
+            "cmake",
+            "conanfile.txt",
+            "scripts",
+        ]
+        shared_commits = list_commits_for_paths(root, revision_range, shared_paths)
+        plugin_hashes = {commit_hash for commit_hash, _ in plugin_commits}
+        shared_commits = [(commit_hash, subject) for commit_hash, subject in shared_commits
+                          if commit_hash not in plugin_hashes]
+
+    title = f"{manifest.get('name', manifest.get('id', source_name))} v{version}"
+    if previous_tag:
+        intro = f"Changes since `{previous_tag}`."
+    else:
+        intro = "First tagged release for this plugin."
+
+    sections = [
+        f"## {title}",
+        "",
+        intro,
+        "",
+        "### Plugin Changes",
+        "",
+        format_commit_list(plugin_commits),
+    ]
+
+    if shared_commits:
+        sections += [
+            "",
+            "### Shared Build And Runtime Changes",
+            "",
+            format_commit_list(shared_commits),
+        ]
+
+    sections += [
+        "",
+        "### Artifacts",
+        "",
+        "Platform-specific ZIP packages and SHA256 checksum files are attached to this release.",
+        "",
+    ]
+
+    notes = "\n".join(sections)
+    if args.output:
+        args.output.write_text(notes)
+    else:
+        print(notes)
+
+    return 0
+
+
 # =============================================================================
 # CLI MAIN
 # =============================================================================
@@ -1125,6 +1301,19 @@ def main():
     p_validate_pkg.add_argument("package", help="Path to extension ZIP file")
     p_validate_pkg.add_argument("--checksum-file", help="Path to .sha256 checksum file")
     p_validate_pkg.set_defaults(func=cmd_validate_distribution_package)
+
+    # generate-release-notes
+    p_notes = subparsers.add_parser(
+        "generate-release-notes",
+        help="Generate plugin-scoped release notes for a monorepo tag",
+        description="Builds release notes from commits that touched the tagged plugin "
+                    "directory. Shared build/runtime commits can be included explicitly.",
+    )
+    p_notes.add_argument("--release-tag", required=True, help="Release tag (e.g., data_load_csv/v1.0.5)")
+    p_notes.add_argument("--previous-tag", help="Previous tag to diff against. Defaults to the previous tag for the same source directory.")
+    p_notes.add_argument("--output", type=Path, help="Path where markdown release notes should be written")
+    p_notes.add_argument("--include-shared", action="store_true", help="Also include shared build/runtime commits in a separate section")
+    p_notes.set_defaults(func=cmd_generate_release_notes)
 
     args = parser.parse_args()
     sys.exit(args.func(args))

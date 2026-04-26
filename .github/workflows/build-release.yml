@@ -156,14 +156,34 @@ jobs:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}
 
-      - name: Upload to Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Generate release notes
+        if: startsWith(github.ref, 'refs/tags/') && matrix.runner == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          git fetch --tags --force --unshallow || git fetch --tags --force
+          python3 scripts/release_tools.py generate-release-notes \
+            --release-tag "${{ github.ref_name }}" \
+            --output release-notes.md
+
+      - name: Upload to Release with notes
+        if: startsWith(github.ref, 'refs/tags/') && matrix.runner == 'ubuntu-22.04'
         uses: softprops/action-gh-release@v2
         with:
           files: |
             ${{ env.ZIP_NAME }}
             ${{ env.ZIP_NAME }}.sha256
-          generate_release_notes: ${{ matrix.runner == 'ubuntu-22.04' }}
+          body_path: release-notes.md
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/') && matrix.runner != 'ubuntu-22.04'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ZIP_NAME }}
+            ${{ env.ZIP_NAME }}.sha256
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -206,16 +226,6 @@ jobs:
           echo "auto_submit=$AUTO_SUBMIT" >> $GITHUB_OUTPUT
           echo "Auto-submit to registry: $AUTO_SUBMIT"
 
-      - name: Setup Python
-        if: steps.check-tag.outputs.auto_submit == 'true'
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        if: steps.check-tag.outputs.auto_submit == 'true'
-        run: pip install GitPython
-
       - name: Submit to registry
         if: steps.check-tag.outputs.auto_submit == 'true'
         env:
@@ -223,5 +233,12 @@ jobs:
         run: |
           # Extract source_dir from tag (data_load_csv/v1.0.5 -> data_load_csv)
           SOURCE_DIR="${GITHUB_REF_NAME%/*}"
-          echo "Submitting $SOURCE_DIR to registry..."
-          python3 scripts/submit_to_registry.py "$SOURCE_DIR" --skip-checksum-verify
+          VERSION="${GITHUB_REF_NAME#*/v}"
+          python3 scripts/release_tools.py generate-release-notes \
+            --release-tag "${GITHUB_REF_NAME}" \
+            --output release-notes.md
+          echo "Submitting $SOURCE_DIR v$VERSION to registry..."
+          python3 scripts/submit_to_registry.py "$SOURCE_DIR" \
+            --version "$VERSION" \
+            --release-notes release-notes.md \
+            --skip-checksum-verify

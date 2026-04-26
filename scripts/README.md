@@ -41,6 +41,7 @@ Scripts for releasing PlotJuggler extensions and submitting them to the extensio
 │  - Semver check           - Version consistency   - Verify checksums      validation│
 │  - Tag conflict check     - Package ZIPs          - Build registry entry- Checksum │
 │  - Push annotated tag     - Generate checksums    - Create PR             verify   │
+│                           - Generate plugin notes                                   │
 │                           - Upload to release                                       │
 │                           - (Auto-submit if flag)                                   │
 └─────────────────────────────────────────────────────────────────────────────────────┘
@@ -73,7 +74,7 @@ python3 scripts/release_extension.py csv-loader --version 2.0.0 --submit-to-regi
 #   - Create annotated tag
 #   - Push to GitHub (triggers CI)
 #   - CI builds all 6 platforms
-#   - CI creates GitHub release with artifacts
+#   - CI creates GitHub release with plugin-scoped notes and artifacts
 #   - CI automatically creates PR to registry
 ```
 
@@ -202,14 +203,17 @@ Triggered by tags matching `*/v*` pattern.
 | Compress | Create ZIP: `{ext_id}-{version}-{os}-{arch}.zip` |
 | Generate checksum | SHA256 in `.sha256` file |
 | Upload artifact | Store in GitHub Actions artifacts |
-| Upload to release | Attach ZIP + checksum to GitHub Release |
+| Generate release notes | `release_tools.py generate-release-notes` keeps notes scoped to this plugin |
+| Upload to release | Attach ZIP + checksum to GitHub Release, with plugin-scoped notes from the Linux x86_64 job |
 
 **Post-build (if `--submit-to-registry` was used):**
 
 | Step | Description |
 |------|-------------|
 | Check tag metadata | Read JSON from annotated tag message |
-| Submit to registry | Run `submit_to_registry.py` if `auto_submit_to_registry: true` |
+| Submit to registry | Run `submit_to_registry.py --version <tag version>` if `auto_submit_to_registry: true` |
+
+Release notes are intentionally generated from non-merge commits touching only the tagged plugin directory, with release bookkeeping commits omitted. This keeps a CSV release from inheriting a ROS, MQTT, or toolbox changelog entry just because both live in the same repository. Shared build, packaging, or runtime commits can be included manually with `--include-shared` when they are genuinely useful for a specific release.
 
 ---
 
@@ -224,9 +228,10 @@ Triggered by tags matching `*/v*` pattern.
 | Download assets | Downloads each platform's ZIP |
 | Verify checksums | Validates SHA256 matches `.sha256` file |
 | Build registry entry | Creates JSON with download URLs and checksums |
-| Clone registry repo | Clones pj-plugin-registry |
+| Attach release notes | Copies the plugin-scoped release notes into the registry PR body |
+| Fetch registry JSON | Reads the current registry via the GitHub API |
 | Update registry.json | Adds or updates extension entry |
-| Create PR branch | `registry/{extension_id}-{version}` |
+| Create PR branch | `update-{extension_id}-{version}` |
 | Push and create PR | Opens PR on pj-plugin-registry |
 
 **Registry entry format:**
@@ -240,14 +245,12 @@ Triggered by tags matching `*/v*` pattern.
   "author": "PlotJuggler Team",
   "category": "data_loader",
   "repository": "https://github.com/PlotJuggler/pj-official-plugins",
-  "artifacts": [
-    {
-      "platform": "linux-x86_64",
+  "platforms": {
+    "linux-x86_64": {
       "url": "https://github.com/.../csv-loader-1.0.6-linux-x86_64.zip",
-      "sha256": "abc123..."
-    },
-    ...
-  ]
+      "checksum": "sha256:abc123..."
+    }
+  }
 }
 ```
 
@@ -262,7 +265,7 @@ Triggered on PRs to pj-plugin-registry that modify `registry.json`.
 | Check | Description |
 |-------|-------------|
 | JSON schema | Valid JSON structure |
-| Required fields | All extensions have id, name, version, artifacts |
+| Required fields | All extensions have id, name, version, platforms |
 | URL format | All artifact URLs are valid HTTPS |
 | Platform coverage | Warns if missing platforms |
 | **Checksum verification** | Downloads each artifact and verifies SHA256 |
@@ -319,6 +322,7 @@ Options:
   --list-releases          List available releases and exit
   --dry-run                Show registry entry without creating PR
   --skip-checksum-verify   Skip downloading and verifying checksums (CI use)
+  --release-notes FILE     Include plugin-scoped release notes in the registry PR
 ```
 
 ### `release_tools.py` Subcommands
@@ -376,6 +380,18 @@ python3 scripts/release_tools.py validate-distribution-package \
     --checksum-file csv-loader-1.0.5-linux-x86_64.zip.sha256
 ```
 
+#### generate-release-notes
+
+Generate release notes for only the plugin represented by a monorepo tag.
+
+```bash
+python3 scripts/release_tools.py generate-release-notes \
+    --release-tag "data_load_csv/v1.0.5" \
+    --output release-notes.md
+```
+
+By default the command diffs against the previous tag for the same source directory. Use `--previous-tag` to override that range when repairing or backfilling a release, and `--include-shared` only when shared build/runtime changes should be called out explicitly.
+
 ---
 
 ## Prerequisites
@@ -386,7 +402,7 @@ pip install -r scripts/requirements.txt
 
 Required:
 - Python 3.10+
-- GitPython (`pip install GitPython`)
+- GitPython for `release_extension.py` (`pip install GitPython`)
 - GitHub CLI (`gh`) - authenticated with appropriate permissions
 
 ---

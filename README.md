@@ -81,7 +81,7 @@ cd /path/to/plotjuggler_core
 
 ## Releasing Extensions
 
-Each plugin is independently versioned and released. The release pipeline builds on **6 platforms** (Linux x86_64/aarch64, macOS Intel/ARM, Windows x64/ARM64) and can automatically submit to the extension registry.
+Each plugin is independently versioned and released. The release pipeline builds on **6 platforms** (Linux x86_64/aarch64, macOS Intel/ARM, Windows x64/ARM64), creates plugin-scoped release notes, and can automatically submit to the extension registry.
 
 ### Quick Start (Recommended)
 
@@ -94,8 +94,8 @@ This will:
 1. Update `manifest.json` with new version
 2. Commit and push the change
 3. Create annotated tag → triggers CI
-4. CI builds all 6 platforms and creates GitHub Release
-5. Automatically creates PR to `pj-plugin-registry`
+4. CI builds all 6 platforms and creates a GitHub Release with notes from that plugin's directory
+5. Automatically creates a `pj-plugin-registry` PR for the exact version in the triggering tag
 
 ### Tag-Only (Manifest Already Updated)
 
