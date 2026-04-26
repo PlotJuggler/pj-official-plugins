@@ -5,7 +5,7 @@ on:
   push:
     tags: ['*/v*']
   schedule:
-    # Keep Conan cache warm — runs weekly (cache expires after 7 days of no access)
+    # Keep the full-build Conan cache warm — runs weekly (cache expires after 7 days of no access)
     - cron: '0 3 * * 1'  # Monday 3am UTC
 
 concurrency:
@@ -59,10 +59,51 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
 
+      - name: Resolve build scope
+        id: build-scope
+        shell: bash
+        run: |
+          CONAN_HASH_PATH="conanfile.txt"
+          BUILD_DIR="build/all/Release"
+          BUILD_SCRIPT_ARGS=""
+          SCOPE="all"
+
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == */* ]]; then
+            PLUGIN_NAME="${GITHUB_REF_NAME%/*}"
+            CONAN_HASH_PATH="${PLUGIN_NAME}/conanfile.py"
+            BUILD_DIR="build/${PLUGIN_NAME}/Release"
+            BUILD_SCRIPT_ARGS="${PLUGIN_NAME}"
+            SCOPE="plugin-${PLUGIN_NAME}"
+
+            if [[ ! -f "${CONAN_HASH_PATH}" ]]; then
+              echo "::error::Missing Conan recipe for tagged plugin: ${CONAN_HASH_PATH}"
+              exit 1
+            fi
+          fi
+
+          CONAN_HASH=$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "${CONAN_HASH_PATH}")
+
+          {
+            echo "build_dir=${BUILD_DIR}"
+            echo "build_script_args=${BUILD_SCRIPT_ARGS}"
+            echo "conan_hash=${CONAN_HASH}"
+            echo "scope=${SCOPE}"
+          } >> "${GITHUB_OUTPUT}"
+
+          echo "Build scope: ${SCOPE}"
+          echo "Build directory: ${BUILD_DIR}"
+
       - name: Install Conan
+        id: setup-conan
         uses: conan-io/setup-conan@v1.3.0
+
+      - name: Restore Conan package cache
+        uses: actions/cache@v4
         with:
-          cache_packages: true
+          path: ${{ steps.setup-conan.outputs.conan-home }}/p
+          key: conan-${{ steps.setup-conan.outputs.conan-version }}-${{ runner.os }}-${{ matrix.arch }}-${{ steps.build-scope.outputs.scope }}-${{ steps.build-scope.outputs.conan_hash }}
+          restore-keys: |
+            conan-${{ steps.setup-conan.outputs.conan-version }}-${{ runner.os }}-${{ matrix.arch }}-${{ steps.build-scope.outputs.scope }}-
 
       - name: Install cmake and ninja
         run: pip install cmake ninja
@@ -76,25 +117,8 @@ jobs:
       - name: Build & Test
         shell: bash
         run: |
-          conan profile detect --force
-          conan install . --output-folder=build --build=missing -s build_type=Release \
-            -s compiler.cppstd=20 -c tools.cmake.cmaketoolchain:generator=Ninja
-
-          # When triggered by a tag (e.g. data_load_csv/v0.1.0), build only that plugin
-          CMAKE_EXTRA_ARGS=""
-          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == */* ]]; then
-            PLUGIN_NAME="${GITHUB_REF_NAME%/*}"
-            CMAKE_EXTRA_ARGS="-DPJ_BUILD_PLUGIN=${PLUGIN_NAME}"
-            echo "Building single plugin: ${PLUGIN_NAME}"
-          fi
-
-          cmake -S . -B build/Release -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
-            -DCMAKE_PREFIX_PATH=build \
-            -DCMAKE_BUILD_TYPE=Release \
-            ${CMAKE_EXTRA_ARGS}
-          cmake --build build/Release --config Release
-          ctest --test-dir build/Release -V --output-on-failure
+          ./build.sh ${{ steps.build-scope.outputs.build_script_args }}
+          ctest --test-dir "${{ steps.build-scope.outputs.build_dir }}" -V --output-on-failure
 
       - name: Verify plugin version
         if: startsWith(github.ref, 'refs/tags/')
@@ -102,7 +126,7 @@ jobs:
         run: |
           python3 scripts/release_tools.py verify-version-consistency \
             --release-tag "${{ github.ref_name }}" \
-            --build-dir build/Release \
+            --build-dir "${{ steps.build-scope.outputs.build_dir }}" \
             --check-manifest
 
       - name: Package artifacts
@@ -111,7 +135,7 @@ jobs:
         run: |
           ZIP_NAME=$(python3 scripts/release_tools.py create-distribution-package \
             --release-tag "${{ github.ref_name }}" \
-            --build-dir build/Release \
+            --build-dir "${{ steps.build-scope.outputs.build_dir }}" \
             --output-dir dist \
             --os-label "${{ matrix.os_label }}" \
             --arch "${{ matrix.arch }}")
@@ -156,14 +180,34 @@ jobs:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}
 
-      - name: Upload to Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Generate release notes
+        if: startsWith(github.ref, 'refs/tags/') && matrix.runner == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          git fetch --tags --force --unshallow || git fetch --tags --force
+          python3 scripts/release_tools.py generate-release-notes \
+            --release-tag "${{ github.ref_name }}" \
+            --output release-notes.md
+
+      - name: Upload to Release with notes
+        if: startsWith(github.ref, 'refs/tags/') && matrix.runner == 'ubuntu-22.04'
         uses: softprops/action-gh-release@v2
         with:
           files: |
             ${{ env.ZIP_NAME }}
             ${{ env.ZIP_NAME }}.sha256
-          generate_release_notes: ${{ matrix.runner == 'ubuntu-22.04' }}
+          body_path: release-notes.md
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/') && matrix.runner != 'ubuntu-22.04'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ZIP_NAME }}
+            ${{ env.ZIP_NAME }}.sha256
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -206,16 +250,6 @@ jobs:
           echo "auto_submit=$AUTO_SUBMIT" >> $GITHUB_OUTPUT
           echo "Auto-submit to registry: $AUTO_SUBMIT"
 
-      - name: Setup Python
-        if: steps.check-tag.outputs.auto_submit == 'true'
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        if: steps.check-tag.outputs.auto_submit == 'true'
-        run: pip install GitPython
-
       - name: Submit to registry
         if: steps.check-tag.outputs.auto_submit == 'true'
         env:
@@ -223,5 +257,12 @@ jobs:
         run: |
           # Extract source_dir from tag (data_load_csv/v1.0.5 -> data_load_csv)
           SOURCE_DIR="${GITHUB_REF_NAME%/*}"
-          echo "Submitting $SOURCE_DIR to registry..."
-          python3 scripts/submit_to_registry.py "$SOURCE_DIR" --skip-checksum-verify
+          VERSION="${GITHUB_REF_NAME#*/v}"
+          python3 scripts/release_tools.py generate-release-notes \
+            --release-tag "${GITHUB_REF_NAME}" \
+            --output release-notes.md
+          echo "Submitting $SOURCE_DIR v$VERSION to registry..."
+          python3 scripts/submit_to_registry.py "$SOURCE_DIR" \
+            --version "$VERSION" \
+            --release-notes release-notes.md \
+            --skip-checksum-verify
