@@ -149,7 +149,8 @@ Examples: `data_load_csv/v1.0.6`, `parser_ros/v2.1.0`
 The source directory before `/v` controls the CI build scope. A
 `data_load_csv/v1.0.6` tag installs `data_load_csv/conanfile.py` and configures
 CMake with `-DPJ_BUILD_PLUGIN=data_load_csv`; it does not install or compile
-dependencies for unrelated plugins.
+dependencies for unrelated plugins. CI uses the same `build.sh` entry point as
+local standalone builds.
 
 ### Available Scripts
 

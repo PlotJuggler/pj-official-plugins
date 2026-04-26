@@ -53,11 +53,15 @@ fi
 CMAKE_BUILD_DIR="$BUILD_DIR/$BUILD_TYPE"
 CONAN_ARGS=()
 
-case "$(uname -s)" in
-  MINGW*|MSYS*|CYGWIN*)
-    CONAN_ARGS+=("-o" "cpython/*:shared=True")
-    ;;
-esac
+if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+  CONAN_ARGS+=("-o" "cpython/*:shared=True")
+else
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      CONAN_ARGS+=("-o" "cpython/*:shared=True")
+      ;;
+  esac
+fi
 
 echo "Conan recipe: $CONAN_RECIPE"
 echo "Build directory: $CMAKE_BUILD_DIR"

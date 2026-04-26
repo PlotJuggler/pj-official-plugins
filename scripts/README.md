@@ -197,7 +197,7 @@ Triggered by tags matching `*/v*` pattern.
 | Checkout | Clone repository at tagged commit |
 | Install dependencies | For tags, install the tagged plugin's `conanfile.py`; for scheduled/manual full builds, install the root `conanfile.txt` |
 | Restore Conan cache | Use a cache key scoped by Conan version, platform, plugin, and recipe hash |
-| Build | Compile only the tagged plugin (`-DPJ_BUILD_PLUGIN=source_dir`) |
+| Build | Run `./build.sh source_dir`, which installs the plugin recipe and configures CMake with `-DPJ_BUILD_PLUGIN=source_dir` |
 | Test | Run plugin tests via ctest |
 | **Verify version** | `release_tools.py verify-version-consistency` |
 | Package | `release_tools.py create-distribution-package` |
@@ -216,7 +216,7 @@ Triggered by tags matching `*/v*` pattern.
 
 Release notes are intentionally generated from non-merge commits touching only the tagged plugin directory, with release bookkeeping commits omitted. This keeps a CSV release from inheriting a ROS, MQTT, or toolbox changelog entry just because both live in the same repository. Shared build, packaging, or runtime commits can be included manually with `--include-shared` when they are genuinely useful for a specific release.
 
-Tagged releases keep the existing one-tag-per-plugin strategy. The source directory before `/v` selects both the dependency graph and the CMake target scope. For example, `data_load_csv/v1.2.0` installs `data_load_csv/conanfile.py` and configures CMake with `-DPJ_BUILD_PLUGIN=data_load_csv`, so Arrow, MQTT, CPython, and other unrelated plugin dependencies are not installed for that release.
+Tagged releases keep the existing one-tag-per-plugin strategy. The source directory before `/v` selects both the dependency graph and the CMake target scope. For example, `data_load_csv/v1.2.0` runs `./build.sh data_load_csv`, which installs `data_load_csv/conanfile.py` and configures CMake with `-DPJ_BUILD_PLUGIN=data_load_csv`, so Arrow, MQTT, CPython, and other unrelated plugin dependencies are not installed for that release.
 
 ---
 

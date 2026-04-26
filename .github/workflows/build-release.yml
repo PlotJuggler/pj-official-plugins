@@ -63,16 +63,16 @@ jobs:
         id: build-scope
         shell: bash
         run: |
-          CONAN_RECIPE="."
           CONAN_HASH_PATH="conanfile.txt"
-          CMAKE_EXTRA_ARGS=""
+          BUILD_DIR="build/all/Release"
+          BUILD_SCRIPT_ARGS=""
           SCOPE="all"
 
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == */* ]]; then
             PLUGIN_NAME="${GITHUB_REF_NAME%/*}"
-            CONAN_RECIPE="${PLUGIN_NAME}"
             CONAN_HASH_PATH="${PLUGIN_NAME}/conanfile.py"
-            CMAKE_EXTRA_ARGS="-DPJ_BUILD_PLUGIN=${PLUGIN_NAME}"
+            BUILD_DIR="build/${PLUGIN_NAME}/Release"
+            BUILD_SCRIPT_ARGS="${PLUGIN_NAME}"
             SCOPE="plugin-${PLUGIN_NAME}"
 
             if [[ ! -f "${CONAN_HASH_PATH}" ]]; then
@@ -84,14 +84,14 @@ jobs:
           CONAN_HASH=$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "${CONAN_HASH_PATH}")
 
           {
-            echo "conan_recipe=${CONAN_RECIPE}"
+            echo "build_dir=${BUILD_DIR}"
+            echo "build_script_args=${BUILD_SCRIPT_ARGS}"
             echo "conan_hash=${CONAN_HASH}"
-            echo "cmake_extra_args=${CMAKE_EXTRA_ARGS}"
             echo "scope=${SCOPE}"
           } >> "${GITHUB_OUTPUT}"
 
-          echo "Conan recipe: ${CONAN_RECIPE}"
           echo "Build scope: ${SCOPE}"
+          echo "Build directory: ${BUILD_DIR}"
 
       - name: Install Conan
         id: setup-conan
@@ -117,26 +117,8 @@ jobs:
       - name: Build & Test
         shell: bash
         run: |
-          CONAN_RECIPE="${{ steps.build-scope.outputs.conan_recipe }}"
-          CMAKE_EXTRA_ARGS="${{ steps.build-scope.outputs.cmake_extra_args }}"
-          CONAN_EXTRA_ARGS=()
-
-          if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
-            CONAN_EXTRA_ARGS+=("-o" "cpython/*:shared=True")
-          fi
-
-          conan profile detect --force
-          conan install "${CONAN_RECIPE}" --output-folder=build --build=missing -s build_type=Release \
-            -s compiler.cppstd=20 -c tools.cmake.cmaketoolchain:generator=Ninja \
-            "${CONAN_EXTRA_ARGS[@]}"
-
-          cmake -S . -B build/Release -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
-            -DCMAKE_PREFIX_PATH=build \
-            -DCMAKE_BUILD_TYPE=Release \
-            ${CMAKE_EXTRA_ARGS}
-          cmake --build build/Release --config Release
-          ctest --test-dir build/Release -V --output-on-failure
+          ./build.sh ${{ steps.build-scope.outputs.build_script_args }}
+          ctest --test-dir "${{ steps.build-scope.outputs.build_dir }}" -V --output-on-failure
 
       - name: Verify plugin version
         if: startsWith(github.ref, 'refs/tags/')
@@ -144,7 +126,7 @@ jobs:
         run: |
           python3 scripts/release_tools.py verify-version-consistency \
             --release-tag "${{ github.ref_name }}" \
-            --build-dir build/Release \
+            --build-dir "${{ steps.build-scope.outputs.build_dir }}" \
             --check-manifest
 
       - name: Package artifacts
@@ -153,7 +135,7 @@ jobs:
         run: |
           ZIP_NAME=$(python3 scripts/release_tools.py create-distribution-package \
             --release-tag "${{ github.ref_name }}" \
-            --build-dir build/Release \
+            --build-dir "${{ steps.build-scope.outputs.build_dir }}" \
             --output-dir dist \
             --os-label "${{ matrix.os_label }}" \
             --arch "${{ matrix.arch }}")
