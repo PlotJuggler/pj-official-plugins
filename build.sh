@@ -70,12 +70,12 @@ conan install "$CONAN_RECIPE" --output-folder="$BUILD_DIR" --build=missing \
   -s build_type="$BUILD_TYPE" \
   -s compiler.cppstd=20 \
   -c tools.cmake.cmaketoolchain:generator=Ninja \
-  "${CONAN_ARGS[@]}"
+  ${CONAN_ARGS[@]+"${CONAN_ARGS[@]}"}
 
 cmake -S "$SCRIPT_DIR" -B "$CMAKE_BUILD_DIR" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$BUILD_DIR/conan_toolchain.cmake" \
   -DCMAKE_PREFIX_PATH="$BUILD_DIR" \
   -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-  "${CMAKE_ARGS[@]}"
+  ${CMAKE_ARGS[@]+"${CMAKE_ARGS[@]}"}
 
 cmake --build "$CMAKE_BUILD_DIR" --config "$BUILD_TYPE" --parallel
