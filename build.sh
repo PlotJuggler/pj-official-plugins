@@ -66,6 +66,27 @@ fi
 echo "Conan recipe: $CONAN_RECIPE"
 echo "Build directory: $CMAKE_BUILD_DIR"
 
+# Export local Conan recipe overrides so they take precedence over Conan Center.
+# See conan_overrides/README.md for the rationale.
+if [[ -d "$SCRIPT_DIR/conan_overrides" ]]; then
+  for OVERRIDE_RECIPE in "$SCRIPT_DIR"/conan_overrides/*/all; do
+    [[ -f "$OVERRIDE_RECIPE/conanfile.py" && -f "$OVERRIDE_RECIPE/conandata.yml" ]] || continue
+    OVERRIDE_PKG=$(basename "$(dirname "$OVERRIDE_RECIPE")")
+    OVERRIDE_VERSIONS=$(python3 - "$OVERRIDE_RECIPE/conandata.yml" <<'PY'
+import re, sys
+text = open(sys.argv[1]).read()
+m = re.search(r'^sources:\s*\n((?:^[ \t].*\n)*)', text, re.MULTILINE)
+if m:
+    print('\n'.join(re.findall(r'^\s+"([^"]+)":\s*$', m.group(1), re.MULTILINE)))
+PY
+)
+    for OVERRIDE_VERSION in $OVERRIDE_VERSIONS; do
+      echo "Exporting local Conan override: ${OVERRIDE_PKG}/${OVERRIDE_VERSION}"
+      conan export "$OVERRIDE_RECIPE" --version="$OVERRIDE_VERSION"
+    done
+  done
+fi
+
 conan install "$CONAN_RECIPE" --output-folder="$BUILD_DIR" --build=missing \
   -s build_type="$BUILD_TYPE" \
   -s compiler.cppstd=20 \

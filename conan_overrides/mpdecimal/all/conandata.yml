@@ -1,0 +1,9 @@
+sources:
+  "2.5.1":
+    sha256: "9f9cd4c041f99b5c49ffb7b59d9f12d95b683d88585608aa56a6307667b2b21f"
+    url: "http://www.bytereef.org/software/mpdecimal/releases/mpdecimal-2.5.1.tar.gz"
+patches:
+  "2.5.1":
+    - patch_file: "patches/2.5.1-0001-msvc-fixes.patch"
+    - patch_file: "patches/2.5.1-0002-add-mingw-to-configure-ac.patch"
+    - patch_file: "patches/2.5.1-0003-use-MPDECIMAL_DLL.patch"
