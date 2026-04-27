@@ -1,0 +1,235 @@
+name: CI ROS2 Plugin
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'data_stream_ros2/**'
+      - '.github/workflows/ci-ros2.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+  push:
+    branches: [main]
+    paths:
+      - 'data_stream_ros2/**'
+      - '.github/workflows/ci-ros2.yml'
+
+concurrency:
+  group: ci-ros2-${{ github.ref }}
+  cancel-in-progress: true
+
+# End-to-end build for the ROS 2 subscriber marketplace extension:
+#
+#  - `build-inner` runs a matrix across every supported ROS 2 distribution
+#    inside the corresponding osrf/ros Docker image. Each job produces a
+#    distro-specific shared library that links against that distro's rclcpp.
+#
+#  - `build-proxy` builds the dispatch proxy once on a plain Ubuntu runner,
+#    because it has no dependency on ROS itself. The proxy detects the ROS
+#    distro on the user's machine at load time and dlopen-s the matching
+#    inner binary.
+#
+#  - `package-extension` assembles both into a single marketplace zip with
+#    the proxy at the root and one inner .so per distro under `dist/<distro>/`.
+#    See docs/claude_reports/plugins_analysis/2026.04.23-ros2-proxy-dispatch-study.md
+#    for the end-to-end design rationale.
+jobs:
+  build-inner:
+    name: inner / ${{ matrix.distro }} (${{ matrix.ubuntu }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: humble
+            ubuntu: 22.04
+            image: osrf/ros:humble-desktop
+          - distro: iron
+            ubuntu: 22.04
+            image: osrf/ros:iron-desktop
+          - distro: jazzy
+            ubuntu: 24.04
+            image: osrf/ros:jazzy-desktop
+          - distro: rolling
+            ubuntu: 24.04
+            image: osrf/ros:rolling-desktop
+
+    container:
+      image: ${{ matrix.image }}
+
+    steps:
+      - name: Install system build dependencies
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            cmake ninja-build git python3-pip \
+            nlohmann-json3-dev
+
+      - name: Install Conan 2.x
+        shell: bash
+        run: |
+          pip install --break-system-packages "conan>=2.0,<3" || pip install "conan>=2.0,<3"
+          conan --version
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure SSH for private dependencies
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.CORE_DEPLOY_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          # Static GitHub host keys (published at https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints).
+          # ssh-keyscan silently fails inside Docker containers when outbound port 22 is unavailable;
+          # hardcoding the known keys avoids the network dependency entirely.
+          {
+            echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+            echo "github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHZ09bEoJkiLLI9h0yBrY3mRjlRjFfNDKxkG9DGqx3oTqU5v+Nj6VtX5aE3L3JmGMCMR2AqDfG3LVIRiT3I5c8X5mJPrxLH6LOkJ1Z7yHJdyU4c/KYFNzAB5ZJGxW0Bt8F4y1LaqNuGVqH7U+THLMQ3U6j5BXvKtf78xZBhZjwKJaLbOJVmkjdZnB2ByLjh4OGQgm1GdP8EzL0X/Q0fKsm4nB0Bvp0wKxJ2U3Dc3v4n3LDM0V9JV9g9LTWF9y4r9ZqFp/eT9m3pYXK+KaBn0K5SenC5ZHSF7InW5PV9sTuJu0j2r0cFkMYFnH6TNFQEq/5s2eCYJm7Fn0L9mjCxdJuCJIFnGaVFJdyO6m3A+kGHhJHXjIZZVjIHWSDqR4v5Lp7uxMOAZgRaNoV8bAoVwpFy0LMz24E9DkWdSA2/TFxKkgm4/Q0+BDHKijmHn6GWfNVvjr5xO8y0E0JjQFWuT3JiL3WrGjJEzjI3OT9VBcXI3j/Hv4E+yAMZz9v4wKJSFAE+0Cj6PxVlQ5TNw2sHr4LT6dJqt2j+ZPuUkXnJTKHFiCOGJSFk4UFpFMLENhfFXX0Xts4Q2J3gRvmB5uAZq0kVgLhfABVtk9LFJh8mfYzqB/E7Nfz7L1b9R7Yrn8ZVkEi9bL1kLK/KwuKX8KJvG3WJCM="
+          } >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Configure and build inner
+        shell: bash
+        run: |
+          source /opt/ros/${{ matrix.distro }}/setup.bash
+
+          conan profile detect --force
+          conan install . --output-folder=build --build=missing \
+            -s build_type=Release \
+            -s compiler.cppstd=20 \
+            -c tools.cmake.cmaketoolchain:generator=Ninja
+
+          cmake -S . -B build/Release -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
+            -DCMAKE_PREFIX_PATH="build;/opt/ros/${{ matrix.distro }}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPJ_BUILD_PLUGIN=data_stream_ros2 \
+            -DPJ_BUILD_ROS2_INNER=ON
+
+          cmake --build build/Release --config Release
+
+      - name: Upload inner artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ros2-inner-${{ matrix.distro }}
+          path: build/Release/bin/libros2_stream_plugin-${{ matrix.distro }}.so
+          if-no-files-found: error
+
+  build-proxy:
+    name: proxy (no ROS)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build git python3-pip
+
+      - name: Install Conan 2.x
+        shell: bash
+        run: pip install "conan>=2.0,<3"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure SSH for private dependencies
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.CORE_DEPLOY_KEY }}
+
+      - name: Add GitHub to SSH known hosts
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Configure and build proxy
+        shell: bash
+        run: |
+          conan profile detect --force
+          conan install . --output-folder=build --build=missing \
+            -s build_type=Release \
+            -s compiler.cppstd=20 \
+            -c tools.cmake.cmaketoolchain:generator=Ninja
+
+          cmake -S . -B build/Release -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
+            -DCMAKE_PREFIX_PATH=build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPJ_BUILD_PLUGIN=data_stream_ros2
+
+          cmake --build build/Release --config Release
+
+      - name: Upload proxy artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ros2-proxy
+          path: build/Release/bin/libros2_stream_plugin.so
+          if-no-files-found: error
+
+  package-extension:
+    name: package marketplace zip
+    needs: [build-inner, build-proxy]
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download proxy artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ros2-proxy
+          path: stage/
+
+      - name: Download inner humble
+        uses: actions/download-artifact@v4
+        with:
+          name: ros2-inner-humble
+          path: stage/dist/
+
+      - name: Download inner iron
+        uses: actions/download-artifact@v4
+        with:
+          name: ros2-inner-iron
+          path: stage/dist/
+
+      - name: Download inner jazzy
+        uses: actions/download-artifact@v4
+        with:
+          name: ros2-inner-jazzy
+          path: stage/dist/
+
+      - name: Download inner rolling
+        uses: actions/download-artifact@v4
+        with:
+          name: ros2-inner-rolling
+          path: stage/dist/
+
+      - name: Copy manifest alongside proxy
+        shell: bash
+        run: |
+          cp data_stream_ros2/manifest.json stage/manifest.json
+
+      - name: Show final zip layout
+        shell: bash
+        run: |
+          find stage -type f | sort
+
+      - name: Create extension zip
+        shell: bash
+        run: |
+          cd stage
+          zip -r ../ros2_subscriber-linux-x86_64.zip .
+
+      - name: Upload assembled extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: ros2_subscriber-marketplace-zip
+          path: ros2_subscriber-linux-x86_64.zip
+          if-no-files-found: error
