@@ -7,18 +7,18 @@
 #     Distro dispatch shim with no rclcpp dependency. Always built.
 #     Entry point advertised by the marketplace manifest. Detects the
 #     installed ROS 2 distribution at load time and dlopen-s the
-#     matching per-distro inner binary.
+#     matching per-distro binary.
 #     Output: libros2_stream_plugin.so
 #
-#   ros2_stream_plugin_inner  (inner/src/)
+#   ros2_stream_plugin_distro  (distro/src/)
 #     Actual subscriber compiled against a specific ROS 2 distribution.
-#     Opt-in: only built when -DPJ_BUILD_ROS2_INNER=ON, inside a
+#     Opt-in: only built when -DPJ_BUILD_ROS2_DISTRO=ON, inside a
 #     ROS-aware environment (osrf/ros Docker container).
 #     Output: libros2_stream_plugin-<distro>.so  (e.g. -humble, -jazzy)
 #
 # Typical CI invocations:
 #   proxy : cmake ... -DPJ_BUILD_PLUGIN=data_stream_ros2
-#   inner : cmake ... -DPJ_BUILD_PLUGIN=data_stream_ros2 -DPJ_BUILD_ROS2_INNER=ON
+#   distro : cmake ... -DPJ_BUILD_PLUGIN=data_stream_ros2 -DPJ_BUILD_ROS2_DISTRO=ON
 #           (requires ROS_DISTRO to be set via source /opt/ros/<distro>/setup.bash)
 # ---------------------------------------------------------------------------
 
@@ -45,10 +45,10 @@ pj_emit_plugin_manifest(ros2_stream_plugin
 )
 
 # ---------------------------------------------------------------------------
-# Inner target — per-distro ROS 2 subscriber, opt-in
+# Per-distro target — per-distro ROS 2 subscriber, opt-in
 # ---------------------------------------------------------------------------
 
-if(PJ_BUILD_ROS2_INNER)
+if(PJ_BUILD_ROS2_DISTRO)
   # Read distro from environment (set by source /opt/ros/<distro>/setup.bash).
   # Can also be overridden explicitly with -DROS_DISTRO=<distro>.
   if(NOT DEFINED ROS_DISTRO)
@@ -56,7 +56,7 @@ if(PJ_BUILD_ROS2_INNER)
   endif()
   if(NOT ROS_DISTRO)
     message(FATAL_ERROR
-      "PJ_BUILD_ROS2_INNER=ON but ROS_DISTRO is not set. "
+      "PJ_BUILD_ROS2_DISTRO=ON but ROS_DISTRO is not set. "
       "Source /opt/ros/<distro>/setup.bash first, or pass -DROS_DISTRO=<distro>.")
   endif()
 
@@ -69,10 +69,10 @@ if(PJ_BUILD_ROS2_INNER)
   include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
   include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 
-  add_library(ros2_stream_plugin_inner SHARED inner/src/data_stream_ros2.cpp)
-  target_compile_features(ros2_stream_plugin_inner PRIVATE cxx_std_20)
-  target_compile_options(ros2_stream_plugin_inner PRIVATE ${PJ_WARNING_FLAGS})
-  target_link_libraries(ros2_stream_plugin_inner
+  add_library(ros2_stream_plugin_distro SHARED distro/src/data_stream_ros2.cpp)
+  target_compile_features(ros2_stream_plugin_distro PRIVATE cxx_std_20)
+  target_compile_options(ros2_stream_plugin_distro PRIVATE ${PJ_WARNING_FLAGS})
+  target_link_libraries(ros2_stream_plugin_distro
     PRIVATE
       pj_base
       pj_dialog_sdk
@@ -83,24 +83,24 @@ if(PJ_BUILD_ROS2_INNER)
       rosbag2_cpp::rosbag2_cpp
   )
 
-  pj_embed_manifest(ros2_stream_plugin_inner
+  pj_embed_manifest(ros2_stream_plugin_distro
     MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
     HEADER        ${CMAKE_CURRENT_BINARY_DIR}/generated/ros2_manifest.hpp
     VAR_NAME      kRos2Manifest
   )
 
-  pj_embed_ui(ros2_stream_plugin_inner
-    UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/inner/datastream_ros2.ui
+  pj_embed_ui(ros2_stream_plugin_distro
+    UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/distro/datastream_ros2.ui
     HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/datastream_ros2_ui.hpp
     VAR_NAME kDataStreamRos2Ui
   )
 
-  set_target_properties(ros2_stream_plugin_inner PROPERTIES
+  set_target_properties(ros2_stream_plugin_distro PROPERTIES
     OUTPUT_NAME "ros2_stream_plugin-${ROS_DISTRO}"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
   )
 
-  pj_emit_plugin_manifest(ros2_stream_plugin_inner
+  pj_emit_plugin_manifest(ros2_stream_plugin_distro
     FAMILY        data_source
     MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
   )

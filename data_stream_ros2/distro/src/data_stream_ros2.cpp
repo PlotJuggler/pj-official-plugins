@@ -1,6 +1,6 @@
 /**
  * @file data_stream_ros2.cpp
- * @brief ROS 2 topic subscriber — inner per-distro implementation.
+ * @brief ROS 2 topic subscriber — per-distro implementation.
  *
  * Subscribes to a user-selected list of ROS 2 topics, collects raw CDR bytes
  * via `GenericSubscription`, and hands them off to the host parser registry

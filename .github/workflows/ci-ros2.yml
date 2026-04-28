@@ -21,22 +21,20 @@ concurrency:
 
 # End-to-end build for the ROS 2 subscriber marketplace extension:
 #
-#  - `build-inner` runs a matrix across every supported ROS 2 distribution
+#  - `build-distro` runs a matrix across every supported ROS 2 distribution
 #    inside the corresponding osrf/ros Docker image. Each job produces a
 #    distro-specific shared library that links against that distro's rclcpp.
 #
 #  - `build-proxy` builds the dispatch proxy once on a plain Ubuntu runner,
 #    because it has no dependency on ROS itself. The proxy detects the ROS
 #    distro on the user's machine at load time and dlopen-s the matching
-#    inner binary.
+#    per-distro binary.
 #
 #  - `package-extension` assembles both into a single marketplace zip with
-#    the proxy at the root and one inner .so per distro under `dist/<distro>/`.
-#    See docs/claude_reports/plugins_analysis/2026.04.23-ros2-proxy-dispatch-study.md
-#    for the end-to-end design rationale.
+#    the proxy at the root and one .so per distro under `dist/<distro>/`.
 jobs:
-  build-inner:
-    name: inner / ${{ matrix.distro }} (${{ matrix.ubuntu }})
+  build-distro:
+    name: distro / ${{ matrix.distro }} (${{ matrix.ubuntu }})
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -91,7 +89,7 @@ jobs:
           } >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Configure and build inner
+      - name: Configure and build distro
         shell: bash
         run: |
           source /opt/ros/${{ matrix.distro }}/setup.bash
@@ -107,14 +105,14 @@ jobs:
             -DCMAKE_PREFIX_PATH="build;/opt/ros/${{ matrix.distro }}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DPJ_BUILD_PLUGIN=data_stream_ros2 \
-            -DPJ_BUILD_ROS2_INNER=ON
+            -DPJ_BUILD_ROS2_DISTRO=ON
 
           cmake --build build/Release --config Release
 
-      - name: Upload inner artifact
+      - name: Upload distro artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ros2-inner-${{ matrix.distro }}
+          name: ros2-distro-${{ matrix.distro }}
           path: build/Release/bin/libros2_stream_plugin-${{ matrix.distro }}.so
           if-no-files-found: error
 
@@ -174,7 +172,7 @@ jobs:
 
   package-extension:
     name: package marketplace zip
-    needs: [build-inner, build-proxy]
+    needs: [build-distro, build-proxy]
     runs-on: ubuntu-22.04
 
     steps:
@@ -187,28 +185,28 @@ jobs:
           name: ros2-proxy
           path: stage/
 
-      - name: Download inner humble
+      - name: Download distro humble
         uses: actions/download-artifact@v4
         with:
-          name: ros2-inner-humble
+          name: ros2-distro-humble
           path: stage/dist/
 
-      - name: Download inner iron
+      - name: Download distro iron
         uses: actions/download-artifact@v4
         with:
-          name: ros2-inner-iron
+          name: ros2-distro-iron
           path: stage/dist/
 
-      - name: Download inner jazzy
+      - name: Download distro jazzy
         uses: actions/download-artifact@v4
         with:
-          name: ros2-inner-jazzy
+          name: ros2-distro-jazzy
           path: stage/dist/
 
-      - name: Download inner rolling
+      - name: Download distro rolling
         uses: actions/download-artifact@v4
         with:
-          name: ros2-inner-rolling
+          name: ros2-distro-rolling
           path: stage/dist/
 
       - name: Copy manifest alongside proxy
