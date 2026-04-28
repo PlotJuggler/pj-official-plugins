@@ -1295,18 +1295,13 @@ def cmd_resolve_build_scope(args) -> int:
 
     if is_plugin_tag:
         plugin_name = args.tag.split("/", 1)[0]
-        conan_hash_path = Path(plugin_name) / "conanfile.py"
         build_dir = f"build/{plugin_name}/Release"
         build_script_args = plugin_name
         scope = f"plugin-{plugin_name}"
 
-        if not conan_hash_path.is_file():
-            print(
-                f"::error::Missing Conan recipe for tagged plugin: {conan_hash_path}",
-                file=sys.stderr,
-            )
-            return 1
-
+        # supported_platforms decides early whether this matrix entry runs at
+        # all. Done first so that skipped entries don't trip on later checks
+        # (e.g. missing conanfile.py for plugins that override the build).
         manifest_path = Path(plugin_name) / "manifest.json"
         if manifest_path.is_file():
             manifest = json.loads(manifest_path.read_text())
@@ -1319,6 +1314,9 @@ def cmd_resolve_build_scope(args) -> int:
                     file=sys.stderr,
                 )
 
+        # release.sh override takes the place of the default conan + cmake
+        # flow, so plugins that ship one are not required to also ship a
+        # conanfile.py.
         release_script = Path(plugin_name) / "release.sh"
         if release_script.is_file() and release_script.stat().st_mode & 0o111:
             use_release_override = True
@@ -1327,6 +1325,21 @@ def cmd_resolve_build_scope(args) -> int:
                 f"the default build flow",
                 file=sys.stderr,
             )
+
+        # Choose the source for the cache key + assert the build inputs exist.
+        # Skipped entries don't need either.
+        if skip:
+            conan_hash_path = manifest_path if manifest_path.is_file() else Path("conanfile.txt")
+        elif use_release_override:
+            conan_hash_path = release_script
+        else:
+            conan_hash_path = Path(plugin_name) / "conanfile.py"
+            if not conan_hash_path.is_file():
+                print(
+                    f"::error::Missing Conan recipe for tagged plugin: {conan_hash_path}",
+                    file=sys.stderr,
+                )
+                return 1
 
     conan_hash = hashlib.sha256(conan_hash_path.read_bytes()).hexdigest()
 
