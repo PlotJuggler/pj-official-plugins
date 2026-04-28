@@ -10,16 +10,18 @@
 #   run-local.sh --proxy                   build the proxy only
 #   run-local.sh --bundle                  build everything + assemble + zip
 #
-#   [--plugins <path>] [--core <path>]
+#   [--plugins <path>] [--core <path>] [--core-repo <url>]
 #
 # Defaults:
-#   --plugins  pj-official-plugins root inferred from this script's location
-#   --core     unset (CPM fetches plotjuggler_core from GitHub at build time)
+#   --plugins   pj-official-plugins root inferred from this script's location
+#   --core      unset (CPM fetches plotjuggler_core from GitHub at build time)
+#   --core-repo unset (used only when --core is not set; redirects the canonical
+#               plotjuggler_core git URL to the override inside the container)
 
 set -eo pipefail
 
 usage() {
-  sed -n 's/^# \{0,1\}//p' "$0" | head -16
+  sed -n 's/^# \{0,1\}//p' "$0" | head -18
   exit 1
 }
 
@@ -32,6 +34,7 @@ MODE=""
 DISTRO=""
 PLUGINS_DIR=""
 CORE_DIR=""
+CORE_REPO_URL=""
 
 set_mode() {
   if [[ -n "${MODE}" && "${MODE}" != "$1" ]]; then
@@ -43,12 +46,13 @@ set_mode() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --distro)  set_mode "distro"; DISTRO="$2"; shift 2 ;;
-    --proxy)   set_mode "proxy"; shift ;;
-    --bundle)  set_mode "bundle"; shift ;;
-    --plugins) PLUGINS_DIR="$2"; shift 2 ;;
-    --core)    CORE_DIR="$2"; shift 2 ;;
-    -h|--help) usage ;;
+    --distro)    set_mode "distro"; DISTRO="$2"; shift 2 ;;
+    --proxy)     set_mode "proxy"; shift ;;
+    --bundle)    set_mode "bundle"; shift ;;
+    --plugins)   PLUGINS_DIR="$2"; shift 2 ;;
+    --core)      CORE_DIR="$2"; shift 2 ;;
+    --core-repo) CORE_REPO_URL="$2"; shift 2 ;;
+    -h|--help)   usage ;;
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
 done
@@ -96,6 +100,7 @@ build_distro() {
   echo "[run-local] PLUGINS_DIR ENV VAR VALUE ${PLUGINS_DIR}"
   docker run --rm \
     -e "ROS_DISTRO=${distro}" \
+    ${CORE_REPO_URL:+-e "CORE_REPO_URL=${CORE_REPO_URL}"} \
     -v "${PLUGINS_DIR}:/workspace" \
     ${CORE_MOUNT_ARGS[@]+"${CORE_MOUNT_ARGS[@]}"} \
     ${GITDIR_MOUNT_ARGS[@]+"${GITDIR_MOUNT_ARGS[@]}"} \
@@ -111,6 +116,7 @@ build_proxy() {
 
   echo "[run-local] building proxy"
   docker run --rm \
+    ${CORE_REPO_URL:+-e "CORE_REPO_URL=${CORE_REPO_URL}"} \
     -v "${PLUGINS_DIR}:/workspace" \
     ${CORE_MOUNT_ARGS[@]+"${CORE_MOUNT_ARGS[@]}"} \
     ${GITDIR_MOUNT_ARGS[@]+"${GITDIR_MOUNT_ARGS[@]}"} \

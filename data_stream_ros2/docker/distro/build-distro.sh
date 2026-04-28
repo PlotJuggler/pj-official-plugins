@@ -24,6 +24,10 @@ BUILD_DIR="build_ros2_${ROS_DISTRO}"
 CMAKE_EXTRA_ARGS=()
 if [[ -d /core ]]; then
   CMAKE_EXTRA_ARGS+=(-DCPM_plotjuggler_core_SOURCE=/core)
+elif [[ -n "${CORE_REPO_URL:-}" ]]; then
+  # Redirect the canonical plotjuggler_core URL to the user-supplied override.
+  git config --global url."${CORE_REPO_URL}".insteadOf "git@github.com:PlotJuggler/plotjuggler_core.git"
+  git config --global url."${CORE_REPO_URL}".insteadOf "https://github.com/PlotJuggler/plotjuggler_core.git"
 else
   # Parent CMake fetches plotjuggler_core via SSH. Without an SSH agent in
   # the container, fall back to HTTPS so the clone succeeds anonymously.
