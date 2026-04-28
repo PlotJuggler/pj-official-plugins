@@ -100,6 +100,15 @@ if(PJ_BUILD_ROS2_DISTRO)
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
   )
 
+  # Expose the active distro as a compile macro (e.g. ROS_DISTRO_HUMBLE,
+  # ROS_DISTRO_JAZZY) so source code can branch on the version when an
+  # API differs across distros (see distro/src/ros2_schema_builder.hpp
+  # for the rosbag2_cpp -> rclcpp typesupport migration).
+  string(TOUPPER "${ROS_DISTRO}" ROS_DISTRO_UPPER)
+  target_compile_definitions(ros2_stream_plugin_distro PRIVATE
+    "ROS_DISTRO_${ROS_DISTRO_UPPER}"
+  )
+
   pj_emit_plugin_manifest(ros2_stream_plugin_distro
     FAMILY        data_source
     MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json

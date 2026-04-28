@@ -9,7 +9,7 @@
 /// the fly using the C++ introspection typesupport that the user's ROS
 /// installation already ships, so we don't need .msg files on disk.
 
-#include <rosbag2_cpp/typesupport_helpers.hpp>
+#include <rclcpp/typesupport_helpers.hpp>
 #include <rosidl_typesupport_introspection_cpp/field_types.hpp>
 #include <rosidl_typesupport_introspection_cpp/message_introspection.hpp>
 
@@ -17,6 +17,32 @@
 #include <string>
 
 namespace ros2_streamer {
+
+namespace detail {
+
+// Resolve the non-deprecated `rclcpp` typesupport handle accessor for the ROS
+// distro this translation unit is being compiled against.
+//   • humble / iron   → `get_typesupport_handle` (the only one available)
+//   • jazzy onward    → `get_message_typesupport_handle` (the previous name
+//                       is deprecated with `[[deprecated]]` and breaks the
+//                       build under `-Werror=deprecated-declarations`)
+//
+// The CMake glue passes `-DROS_DISTRO_<UPPER>` for the active distribution,
+// so adding a new distro means just listing it here. The `else` branch is
+// the forward-compatible default: any unknown future distro is assumed to
+// follow the `get_message_typesupport_handle` naming.
+inline const rosidl_message_type_support_t* getMessageTypesupportHandle(
+    const std::string& type_name,
+    const std::string& typesupport_identifier,
+    rcpputils::SharedLibrary& library) {
+#if defined(ROS_DISTRO_HUMBLE) || defined(ROS_DISTRO_IRON)
+  return rclcpp::get_typesupport_handle(type_name, typesupport_identifier, library);
+#else
+  return rclcpp::get_message_typesupport_handle(type_name, typesupport_identifier, library);
+#endif
+}
+
+}  // namespace detail
 
 inline std::string buildRos2Schema(const std::string& base_type) {
   using namespace rosidl_typesupport_introspection_cpp;
@@ -26,10 +52,10 @@ inline std::string buildRos2Schema(const std::string& base_type) {
   std::set<std::string> done;
 
   auto append_type = [&](const std::string& type_name, bool with_separator) {
-    auto lib = rosbag2_cpp::get_typesupport_library(
+    auto lib = rclcpp::get_typesupport_library(
         type_name, "rosidl_typesupport_introspection_cpp");
-    auto support = rosbag2_cpp::get_typesupport_handle(
-        type_name, "rosidl_typesupport_introspection_cpp", lib);
+    auto support = detail::getMessageTypesupportHandle(
+        type_name, "rosidl_typesupport_introspection_cpp", *lib);
 
     if (with_separator) {
       schema += "=====================================\nMSG: ";
