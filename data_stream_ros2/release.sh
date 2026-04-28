@@ -17,6 +17,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUNDLE_DIR="${REPO_ROOT}/dist_ros2"
 STAGING_DIR="${REPO_ROOT}/build/data_stream_ros2/Release/dist"
 
+# plotjuggler_core is private. The SSH agent from the workflow's "Configure
+# SSH for private dependencies" step is forwarded into the build containers
+# by docker/run-local.sh (when SSH_AUTH_SOCK is set in the environment),
+# matching the same CORE_DEPLOY_KEY-based access the rest of the plugins use.
+
 # Build proxy + per-distro inner + assemble marketplace tree.
 "${SCRIPT_DIR}/docker/run-local.sh" --bundle
 

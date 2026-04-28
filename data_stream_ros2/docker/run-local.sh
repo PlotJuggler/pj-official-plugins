@@ -84,6 +84,19 @@ if [[ -f "${PLUGINS_DIR}/.git" ]]; then
   fi
 fi
 
+# Forward the host's SSH agent socket into the container when one is set
+# (e.g. webfactory/ssh-agent in the release workflow exporting
+# CORE_DEPLOY_KEY). CMake/CPM inside the container then clones private
+# plotjuggler_core via SSH using the same key as the rest of the plugins'
+# release flow.
+SSH_MOUNT_ARGS=()
+if [[ -n "${SSH_AUTH_SOCK:-}" && -S "${SSH_AUTH_SOCK}" ]]; then
+  SSH_MOUNT_ARGS+=(
+    -v "${SSH_AUTH_SOCK}:/ssh-agent.sock"
+    -e "SSH_AUTH_SOCK=/ssh-agent.sock"
+  )
+fi
+
 # ─── Distro build (one distro) ──────────────────────────────────────────────
 build_distro() {
   local distro="$1" base="$2"
@@ -97,13 +110,13 @@ build_distro() {
     "${DISTRO_DIR}"
 
   echo "[run-local] building distro for ${distro}"
-  echo "[run-local] PLUGINS_DIR ENV VAR VALUE ${PLUGINS_DIR}"
   docker run --rm \
     -e "ROS_DISTRO=${distro}" \
     ${CORE_REPO_URL:+-e "CORE_REPO_URL=${CORE_REPO_URL}"} \
     -v "${PLUGINS_DIR}:/workspace" \
     ${CORE_MOUNT_ARGS[@]+"${CORE_MOUNT_ARGS[@]}"} \
     ${GITDIR_MOUNT_ARGS[@]+"${GITDIR_MOUNT_ARGS[@]}"} \
+    ${SSH_MOUNT_ARGS[@]+"${SSH_MOUNT_ARGS[@]}"} \
     "${tag}"
 }
 
@@ -120,6 +133,7 @@ build_proxy() {
     -v "${PLUGINS_DIR}:/workspace" \
     ${CORE_MOUNT_ARGS[@]+"${CORE_MOUNT_ARGS[@]}"} \
     ${GITDIR_MOUNT_ARGS[@]+"${GITDIR_MOUNT_ARGS[@]}"} \
+    ${SSH_MOUNT_ARGS[@]+"${SSH_MOUNT_ARGS[@]}"} \
     "${tag}"
 }
 

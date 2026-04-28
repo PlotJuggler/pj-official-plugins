@@ -28,9 +28,14 @@ elif [[ -n "${CORE_REPO_URL:-}" ]]; then
   # Redirect the canonical plotjuggler_core URL to the user-supplied override.
   git config --global url."${CORE_REPO_URL}".insteadOf "git@github.com:PlotJuggler/plotjuggler_core.git"
   git config --global url."${CORE_REPO_URL}".insteadOf "https://github.com/PlotJuggler/plotjuggler_core.git"
+elif [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
+  # SSH agent forwarded from the host. Seed known_hosts so the clone does
+  # not block on host-key confirmation, then let CMake/CPM clone via SSH.
+  mkdir -p ~/.ssh
+  ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
 else
-  # Parent CMake fetches plotjuggler_core via SSH. Without an SSH agent in
-  # the container, fall back to HTTPS so the clone succeeds anonymously.
+  # No SSH agent available — fall back to anonymous HTTPS so public mirrors
+  # can still be cloned without credentials.
   git config --global url."https://github.com/".insteadOf "git@github.com:"
 fi
 
