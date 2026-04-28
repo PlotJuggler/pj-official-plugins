@@ -65,6 +65,21 @@ if [[ -n "${CORE_DIR}" ]]; then
   CORE_MOUNT_ARGS+=(-v "${CORE_DIR}:/core:ro")
 fi
 
+# When PLUGINS_DIR is a git submodule, /workspace/.git is a gitlink pointing
+# to ../.git/modules/<name> in the superproject — unreachable inside the
+# container. Expose the real gitdir at the path the gitlink expects so any
+# tool that resolves git state (CMake/CPM/git describe) keeps working.
+GITDIR_MOUNT_ARGS=()
+if [[ -f "${PLUGINS_DIR}/.git" ]]; then
+  gitlink_rel="$(sed -n 's/^gitdir: //p' "${PLUGINS_DIR}/.git")"
+  gitdir_host="$(cd "${PLUGINS_DIR}" && cd "$(dirname "${gitlink_rel}")" && pwd)/$(basename "${gitlink_rel}")"
+  if [[ -d "${gitdir_host}" ]]; then
+    GITDIR_MOUNT_ARGS+=(-v "${gitdir_host}:/workspace/${gitlink_rel}:ro")
+  else
+    echo "warning: submodule gitdir not found at ${gitdir_host}" >&2
+  fi
+fi
+
 # ─── Distro build (one distro) ──────────────────────────────────────────────
 build_distro() {
   local distro="$1" base="$2"
@@ -78,10 +93,12 @@ build_distro() {
     "${DISTRO_DIR}"
 
   echo "[run-local] building distro for ${distro}"
+  echo "[run-local] PLUGINS_DIR ENV VAR VALUE ${PLUGINS_DIR}"
   docker run --rm \
     -e "ROS_DISTRO=${distro}" \
     -v "${PLUGINS_DIR}:/workspace" \
     ${CORE_MOUNT_ARGS[@]+"${CORE_MOUNT_ARGS[@]}"} \
+    ${GITDIR_MOUNT_ARGS[@]+"${GITDIR_MOUNT_ARGS[@]}"} \
     "${tag}"
 }
 
@@ -96,6 +113,7 @@ build_proxy() {
   docker run --rm \
     -v "${PLUGINS_DIR}:/workspace" \
     ${CORE_MOUNT_ARGS[@]+"${CORE_MOUNT_ARGS[@]}"} \
+    ${GITDIR_MOUNT_ARGS[@]+"${GITDIR_MOUNT_ARGS[@]}"} \
     "${tag}"
 }
 
