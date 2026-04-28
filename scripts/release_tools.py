@@ -1227,6 +1227,102 @@ def cmd_generate_release_notes(args) -> int:
     return 0
 
 
+def cmd_resolve_build_scope(args) -> int:
+    """Resolve a CI matrix entry's build scope and emit GitHub Actions outputs.
+
+    Inputs:
+      --tag, --tag-type     GITHUB_REF_NAME / GITHUB_REF_TYPE
+      --os-label, --arch    matrix.os_label / matrix.arch (raw values)
+
+    Outputs (key=value lines on stdout, redirected by the workflow into
+    $GITHUB_OUTPUT):
+      build_dir, build_script_args, conan_hash, scope, plugin_name,
+      platform, skip, use_release_override
+
+    Notices and errors go to stderr where Actions still parses them as
+    `::notice::` / `::error::` annotations.
+
+    Optional per-plugin manifest fields honoured for plugin tags:
+      supported_platforms  list of canonical "os-arch" strings (see
+                           VALID_PLATFORMS). Matrix entries whose canonical
+                           platform is not listed are skipped.
+      <plugin>/release.sh  if present and executable, supplants the default
+                           build flow. The script is responsible for both
+                           build and any tests.
+    """
+    canonical_arch = PLATFORM_ARCH_MAP.get(args.arch.lower(), args.arch)
+    canonical_os = PLATFORM_OS_MAP.get(args.os_label.lower(), args.os_label)
+    canonical_platform = f"{canonical_os}-{canonical_arch}"
+
+    # Defaults: full repo build (matches workflow_dispatch / scheduled triggers).
+    build_dir = "build/all/Release"
+    build_script_args = ""
+    scope = "all"
+    plugin_name = ""
+    conan_hash_path = Path("conanfile.txt")
+    skip = False
+    use_release_override = False
+
+    is_plugin_tag = args.tag_type == "tag" and "/" in args.tag
+
+    if is_plugin_tag:
+        plugin_name = args.tag.split("/", 1)[0]
+        conan_hash_path = Path(plugin_name) / "conanfile.py"
+        build_dir = f"build/{plugin_name}/Release"
+        build_script_args = plugin_name
+        scope = f"plugin-{plugin_name}"
+
+        if not conan_hash_path.is_file():
+            print(
+                f"::error::Missing Conan recipe for tagged plugin: {conan_hash_path}",
+                file=sys.stderr,
+            )
+            return 1
+
+        manifest_path = Path(plugin_name) / "manifest.json"
+        if manifest_path.is_file():
+            manifest = json.loads(manifest_path.read_text())
+            platforms = manifest.get("supported_platforms")
+            if platforms is not None and canonical_platform not in platforms:
+                skip = True
+                print(
+                    f"::notice::Platform {canonical_platform} not in {manifest_path} "
+                    f"supported_platforms — skipping this matrix entry",
+                    file=sys.stderr,
+                )
+
+        release_script = Path(plugin_name) / "release.sh"
+        if release_script.is_file() and release_script.stat().st_mode & 0o111:
+            use_release_override = True
+            print(
+                f"::notice::Plugin {plugin_name} provides release.sh — using it instead of "
+                f"the default build flow",
+                file=sys.stderr,
+            )
+
+    conan_hash = hashlib.sha256(conan_hash_path.read_bytes()).hexdigest()
+
+    outputs = {
+        "build_dir": build_dir,
+        "build_script_args": build_script_args,
+        "conan_hash": conan_hash,
+        "scope": scope,
+        "plugin_name": plugin_name,
+        "platform": canonical_platform,
+        "skip": "true" if skip else "false",
+        "use_release_override": "true" if use_release_override else "false",
+    }
+    for key, value in outputs.items():
+        print(f"{key}={value}")
+
+    print(
+        f"Build scope: {scope} | dir={build_dir} | platform={canonical_platform} | "
+        f"skip={skip} | release.sh override={use_release_override}",
+        file=sys.stderr,
+    )
+    return 0
+
+
 # =============================================================================
 # CLI MAIN
 # =============================================================================
@@ -1314,6 +1410,21 @@ def main():
     p_notes.add_argument("--output", type=Path, help="Path where markdown release notes should be written")
     p_notes.add_argument("--include-shared", action="store_true", help="Also include shared build/runtime commits in a separate section")
     p_notes.set_defaults(func=cmd_generate_release_notes)
+
+    # resolve-build-scope (CI helper)
+    p_scope = subparsers.add_parser(
+        "resolve-build-scope",
+        help="Resolve a CI matrix entry into GitHub Actions outputs",
+        description="Computes build directory, conan recipe hash, plugin scope, "
+                    "canonical platform, and the optional supported_platforms / "
+                    "release.sh override flags. Outputs key=value lines on stdout; "
+                    "the caller redirects them into $GITHUB_OUTPUT.",
+    )
+    p_scope.add_argument("--tag", default="", help="GITHUB_REF_NAME (empty when not on a tag)")
+    p_scope.add_argument("--tag-type", default="", help="GITHUB_REF_TYPE (tag | branch | empty)")
+    p_scope.add_argument("--os-label", required=True, help="matrix.os_label (linux | macos | windows)")
+    p_scope.add_argument("--arch", required=True, help="matrix.arch (x86_64 | aarch64 | x64 | arm64)")
+    p_scope.set_defaults(func=cmd_resolve_build_scope)
 
     args = parser.parse_args()
     sys.exit(args.func(args))

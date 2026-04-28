@@ -63,35 +63,12 @@ jobs:
         id: build-scope
         shell: bash
         run: |
-          CONAN_HASH_PATH="conanfile.txt"
-          BUILD_DIR="build/all/Release"
-          BUILD_SCRIPT_ARGS=""
-          SCOPE="all"
-
-          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == */* ]]; then
-            PLUGIN_NAME="${GITHUB_REF_NAME%/*}"
-            CONAN_HASH_PATH="${PLUGIN_NAME}/conanfile.py"
-            BUILD_DIR="build/${PLUGIN_NAME}/Release"
-            BUILD_SCRIPT_ARGS="${PLUGIN_NAME}"
-            SCOPE="plugin-${PLUGIN_NAME}"
-
-            if [[ ! -f "${CONAN_HASH_PATH}" ]]; then
-              echo "::error::Missing Conan recipe for tagged plugin: ${CONAN_HASH_PATH}"
-              exit 1
-            fi
-          fi
-
-          CONAN_HASH=$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "${CONAN_HASH_PATH}")
-
-          {
-            echo "build_dir=${BUILD_DIR}"
-            echo "build_script_args=${BUILD_SCRIPT_ARGS}"
-            echo "conan_hash=${CONAN_HASH}"
-            echo "scope=${SCOPE}"
-          } >> "${GITHUB_OUTPUT}"
-
-          echo "Build scope: ${SCOPE}"
-          echo "Build directory: ${BUILD_DIR}"
+          python3 scripts/release_tools.py resolve-build-scope \
+            --tag "${GITHUB_REF_NAME:-}" \
+            --tag-type "${GITHUB_REF_TYPE:-}" \
+            --os-label "${{ matrix.os_label }}" \
+            --arch "${{ matrix.arch }}" \
+            >> "${GITHUB_OUTPUT}"
 
       - name: Install Conan
         id: setup-conan
@@ -115,13 +92,18 @@ jobs:
           arch: ${{ matrix.arch }}
 
       - name: Build & Test
+        if: steps.build-scope.outputs.skip != 'true'
         shell: bash
         run: |
-          ./build.sh ${{ steps.build-scope.outputs.build_script_args }}
-          ctest --test-dir "${{ steps.build-scope.outputs.build_dir }}" -V --output-on-failure
+          if [[ "${{ steps.build-scope.outputs.use_release_override }}" == "true" ]]; then
+            "./${{ steps.build-scope.outputs.plugin_name }}/release.sh"
+          else
+            ./build.sh ${{ steps.build-scope.outputs.build_script_args }}
+            ctest --test-dir "${{ steps.build-scope.outputs.build_dir }}" -V --output-on-failure
+          fi
 
       - name: Verify plugin version
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && steps.build-scope.outputs.skip != 'true'
         shell: bash
         run: |
           python3 scripts/release_tools.py verify-version-consistency \
@@ -130,7 +112,7 @@ jobs:
             --check-manifest
 
       - name: Package artifacts
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && steps.build-scope.outputs.skip != 'true'
         shell: bash
         run: |
           ZIP_NAME=$(python3 scripts/release_tools.py create-distribution-package \
@@ -143,19 +125,19 @@ jobs:
           echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
 
       - name: Compress artifacts (Linux/macOS)
-        if: startsWith(github.ref, 'refs/tags/') && runner.os != 'Windows'
+        if: startsWith(github.ref, 'refs/tags/') && runner.os != 'Windows' && steps.build-scope.outputs.skip != 'true'
         shell: bash
         run: cd dist && zip -r "../${{ env.ZIP_NAME }}" .
 
       - name: Compress artifacts (Windows)
-        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows' && steps.build-scope.outputs.skip != 'true'
         shell: pwsh
         run: |
           Compress-Archive -Path dist\* -DestinationPath "$env:ZIP_NAME"
           Write-Host "Package created: $env:ZIP_NAME"
 
       - name: Generate checksum (Linux/macOS)
-        if: startsWith(github.ref, 'refs/tags/') && runner.os != 'Windows'
+        if: startsWith(github.ref, 'refs/tags/') && runner.os != 'Windows' && steps.build-scope.outputs.skip != 'true'
         shell: bash
         run: |
           if command -v sha256sum &> /dev/null; then
@@ -166,7 +148,7 @@ jobs:
           cat "${{ env.ZIP_NAME }}.sha256"
 
       - name: Generate checksum (Windows)
-        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows' && steps.build-scope.outputs.skip != 'true'
         shell: pwsh
         run: |
           $hash = (Get-FileHash -Algorithm SHA256 "$env:ZIP_NAME").Hash.ToLower()
@@ -174,14 +156,14 @@ jobs:
           Get-Content "$env:ZIP_NAME.sha256"
 
       - name: Upload artifact
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && steps.build-scope.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}
 
       - name: Generate release notes
-        if: startsWith(github.ref, 'refs/tags/') && matrix.runner == 'ubuntu-22.04'
+        if: startsWith(github.ref, 'refs/tags/') && matrix.runner == 'ubuntu-22.04' && steps.build-scope.outputs.skip != 'true'
         shell: bash
         run: |
           git fetch --tags --force --unshallow || git fetch --tags --force
@@ -190,7 +172,7 @@ jobs:
             --output release-notes.md
 
       - name: Upload to Release with notes
-        if: startsWith(github.ref, 'refs/tags/') && matrix.runner == 'ubuntu-22.04'
+        if: startsWith(github.ref, 'refs/tags/') && matrix.runner == 'ubuntu-22.04' && steps.build-scope.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -202,7 +184,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload to Release
-        if: startsWith(github.ref, 'refs/tags/') && matrix.runner != 'ubuntu-22.04'
+        if: startsWith(github.ref, 'refs/tags/') && matrix.runner != 'ubuntu-22.04' && steps.build-scope.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: |
