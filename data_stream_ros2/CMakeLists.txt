@@ -62,9 +62,12 @@ if(PJ_BUILD_ROS2_INNER)
 
   find_package(rclcpp REQUIRED)
   find_package(rosidl_typesupport_cpp REQUIRED)
+  find_package(rosidl_typesupport_introspection_cpp REQUIRED)
+  find_package(rosbag2_cpp REQUIRED)
   find_package(nlohmann_json REQUIRED)
 
   include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
+  include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 
   add_library(ros2_stream_plugin_inner SHARED inner/src/data_stream_ros2.cpp)
   target_compile_features(ros2_stream_plugin_inner PRIVATE cxx_std_20)
@@ -76,6 +79,8 @@ if(PJ_BUILD_ROS2_INNER)
       nlohmann_json::nlohmann_json
       rclcpp::rclcpp
       rosidl_typesupport_cpp::rosidl_typesupport_cpp
+      rosidl_typesupport_introspection_cpp::rosidl_typesupport_introspection_cpp
+      rosbag2_cpp::rosbag2_cpp
   )
 
   pj_embed_manifest(ros2_stream_plugin_inner
@@ -84,8 +89,19 @@ if(PJ_BUILD_ROS2_INNER)
     VAR_NAME      kRos2Manifest
   )
 
+  pj_embed_ui(ros2_stream_plugin_inner
+    UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/inner/datastream_ros2.ui
+    HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/datastream_ros2_ui.hpp
+    VAR_NAME kDataStreamRos2Ui
+  )
+
   set_target_properties(ros2_stream_plugin_inner PROPERTIES
     OUTPUT_NAME "ros2_stream_plugin-${ROS_DISTRO}"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+  )
+
+  pj_emit_plugin_manifest(ros2_stream_plugin_inner
+    FAMILY        data_source
+    MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
   )
 endif()
