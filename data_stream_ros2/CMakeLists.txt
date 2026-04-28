@@ -39,6 +39,11 @@ set_target_properties(ros2_stream_plugin PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 
+pj_emit_plugin_manifest(ros2_stream_plugin
+  FAMILY        data_source
+  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
+)
+
 # ---------------------------------------------------------------------------
 # Inner target — per-distro ROS 2 subscriber, opt-in
 # ---------------------------------------------------------------------------

@@ -28,6 +28,7 @@
 #include <string_view>
 
 #include "pj_base/data_source_protocol.h"
+#include "pj_base/plugin_abi_export.h"
 
 namespace {
 
