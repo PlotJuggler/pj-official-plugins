@@ -1,7 +1,7 @@
 {
   "id": "ros2-topic-subscriber",
   "name": "ROS 2 Topic Subscriber",
-  "version": "0.1.2",
+  "version": "0.2.0-rc.1",
   "description": "Subscribe to ROS 2 topics in real time and stream the decoded fields into PlotJuggler.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
@@ -17,6 +17,7 @@
   ],
   "min_plotjuggler_version": "4.0.0",
   "supported_platforms": [
-    "linux-x86_64"
+    "linux-x86_64",
+    "linux-arm64"
   ]
 }

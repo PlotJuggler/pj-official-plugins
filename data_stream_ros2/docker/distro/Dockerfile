@@ -3,7 +3,7 @@
 # Parametrized by ROS_DISTRO and BASE_IMAGE so the same Dockerfile covers
 # every supported distro. Driven by ../run-local.sh.
 
-ARG BASE_IMAGE=osrf/ros:humble-desktop
+ARG BASE_IMAGE=ros:humble-ros-base
 FROM ${BASE_IMAGE}
 
 ARG ROS_DISTRO=humble
@@ -17,6 +17,7 @@ RUN apt-get update -qq \
       git \
       python3-venv \
       ca-certificates \
+      openssh-client \
  && rm -rf /var/lib/apt/lists/*
 
 # Conan in an isolated venv.
