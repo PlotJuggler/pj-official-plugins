@@ -97,6 +97,17 @@ if [[ -n "${SSH_AUTH_SOCK:-}" && -S "${SSH_AUTH_SOCK}" ]]; then
   )
 fi
 
+# Share a single Conan home across every container in this invocation
+# (and, when build-release.yml's actions/cache step restores it, across
+# CI runs as well). Conan keys binaries by settings hash, so containers
+# with the same compiler/cppstd reuse each other's gtest + nlohmann_json
+# builds (humble + iron + proxy = GCC 11 / Ubuntu 22.04;
+# jazzy + rolling = GCC 13 / Ubuntu 24.04) instead of rebuilding from
+# source per distro.
+CONAN_CACHE_HOST="${CONAN_HOME:-${HOME}/.conan2}"
+mkdir -p "${CONAN_CACHE_HOST}"
+CONAN_CACHE_MOUNT_ARGS=(-v "${CONAN_CACHE_HOST}:/root/.conan2")
+
 # ─── Distro build (one distro) ──────────────────────────────────────────────
 build_distro() {
   local distro="$1" base="$2"
@@ -117,6 +128,7 @@ build_distro() {
     ${CORE_MOUNT_ARGS[@]+"${CORE_MOUNT_ARGS[@]}"} \
     ${GITDIR_MOUNT_ARGS[@]+"${GITDIR_MOUNT_ARGS[@]}"} \
     ${SSH_MOUNT_ARGS[@]+"${SSH_MOUNT_ARGS[@]}"} \
+    "${CONAN_CACHE_MOUNT_ARGS[@]}" \
     "${tag}"
 }
 
@@ -134,6 +146,7 @@ build_proxy() {
     ${CORE_MOUNT_ARGS[@]+"${CORE_MOUNT_ARGS[@]}"} \
     ${GITDIR_MOUNT_ARGS[@]+"${GITDIR_MOUNT_ARGS[@]}"} \
     ${SSH_MOUNT_ARGS[@]+"${SSH_MOUNT_ARGS[@]}"} \
+    "${CONAN_CACHE_MOUNT_ARGS[@]}" \
     "${tag}"
 }
 
