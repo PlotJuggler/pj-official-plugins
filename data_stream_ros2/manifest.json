@@ -17,6 +17,7 @@
   ],
   "min_plotjuggler_version": "4.0.0",
   "supported_platforms": [
-    "linux-x86_64"
+    "linux-x86_64",
+    "linux-arm64"
   ]
 }
