@@ -95,7 +95,9 @@ jobs:
           source /opt/ros/${{ matrix.distro }}/setup.bash
 
           conan profile detect --force
-          conan install . --output-folder=build --build=missing \
+          # Plugin-local recipe (gtest + nlohmann_json), not the repo-root
+          # conanfile.txt that pulls every plugin's deps.
+          conan install data_stream_ros2 --output-folder=build --build=missing \
             -s build_type=Release \
             -s compiler.cppstd=20 \
             -c tools.cmake.cmaketoolchain:generator=Ninja
@@ -150,7 +152,9 @@ jobs:
         shell: bash
         run: |
           conan profile detect --force
-          conan install . --output-folder=build --build=missing \
+          # Plugin-local recipe (gtest + nlohmann_json), not the repo-root
+          # conanfile.txt that pulls every plugin's deps.
+          conan install data_stream_ros2 --output-folder=build --build=missing \
             -s build_type=Release \
             -s compiler.cppstd=20 \
             -c tools.cmake.cmaketoolchain:generator=Ninja
