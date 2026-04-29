@@ -303,3 +303,16 @@ const PJ_dialog_vtable_t* PJ_ros2_inner_get_dialog_vtable() noexcept {
       });
   return vt;
 }
+
+// `Ros2StreamSource::getDialog()` calls PJ::borrowDialog(dialog_), which
+// expands to PJ::dialogVtableFor<Ros2Dialog>(). The PJ_DIALOG_PLUGIN macro
+// is what normally specialises that template, but we don't use the macro
+// here (it would also export the standard symbol the host scanner picks
+// up). Provide the specialisation explicitly, pointing at the private
+// inner getter.
+namespace PJ {
+template <>
+[[maybe_unused]] inline const PJ_dialog_vtable_t* dialogVtableFor<Ros2Dialog>() noexcept {
+  return PJ_ros2_inner_get_dialog_vtable();
+}
+}  // namespace PJ
