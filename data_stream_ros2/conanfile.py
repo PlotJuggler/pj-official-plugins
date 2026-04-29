@@ -6,8 +6,8 @@ class DataStreamRos2Conan(ConanFile):
     version = "0"
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain"
-    # rclcpp / rosidl_typesupport_cpp / rosidl_typesupport_introspection_cpp /
-    # rosbag2_cpp come from the ROS overlay (osrf/ros image), not Conan.
+    # rclcpp / rosidl_typesupport_cpp / rosidl_typesupport_introspection_cpp
+    # come from the ROS overlay (osrf/ros image), not Conan.
     requires = (
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",

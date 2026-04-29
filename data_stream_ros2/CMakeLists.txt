@@ -63,7 +63,6 @@ if(PJ_BUILD_ROS2_DISTRO)
   find_package(rclcpp REQUIRED)
   find_package(rosidl_typesupport_cpp REQUIRED)
   find_package(rosidl_typesupport_introspection_cpp REQUIRED)
-  find_package(rosbag2_cpp REQUIRED)
   find_package(nlohmann_json REQUIRED)
 
   include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
@@ -80,7 +79,6 @@ if(PJ_BUILD_ROS2_DISTRO)
       rclcpp::rclcpp
       rosidl_typesupport_cpp::rosidl_typesupport_cpp
       rosidl_typesupport_introspection_cpp::rosidl_typesupport_introspection_cpp
-      rosbag2_cpp::rosbag2_cpp
   )
 
   pj_embed_manifest(ros2_stream_plugin_distro
