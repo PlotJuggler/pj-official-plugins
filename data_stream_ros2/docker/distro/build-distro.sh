@@ -26,8 +26,11 @@ if [[ -d /core ]]; then
   CMAKE_EXTRA_ARGS+=(-DCPM_plotjuggler_core_SOURCE=/core)
 elif [[ -n "${CORE_REPO_URL:-}" ]]; then
   # Redirect the canonical plotjuggler_core URL to the user-supplied override.
-  git config --global url."${CORE_REPO_URL}".insteadOf "git@github.com:PlotJuggler/plotjuggler_core.git"
-  git config --global url."${CORE_REPO_URL}".insteadOf "https://github.com/PlotJuggler/plotjuggler_core.git"
+  # NOTE: must use --add — plain `git config key value` replaces the value, so
+  # registering two insteadOf entries under the same URL key requires --add or
+  # only the last one survives (and SSH/HTTPS forms stop being interchangeable).
+  git config --global --add url."${CORE_REPO_URL}".insteadOf "git@github.com:PlotJuggler/plotjuggler_core.git"
+  git config --global --add url."${CORE_REPO_URL}".insteadOf "https://github.com/PlotJuggler/plotjuggler_core.git"
 elif [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
   # SSH agent forwarded from the host. Seed known_hosts so the clone does
   # not block on host-key confirmation, then let CMake/CPM clone via SSH.
