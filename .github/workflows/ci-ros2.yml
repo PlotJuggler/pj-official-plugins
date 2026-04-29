@@ -115,7 +115,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: plotjuggler-core-src
-          path: ${{ runner.temp }}/plotjuggler_core
+          path: ${{ github.workspace }}/plotjuggler_core
 
       - name: Configure and build distro
         shell: bash
@@ -136,7 +136,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DPJ_BUILD_PLUGIN=data_stream_ros2 \
             -DPJ_BUILD_ROS2_DISTRO=ON \
-            -DCPM_plotjuggler_core_SOURCE="${{ runner.temp }}/plotjuggler_core"
+            -DCPM_plotjuggler_core_SOURCE="${{ github.workspace }}/plotjuggler_core"
 
           cmake --build build/Release --config Release
 
@@ -171,7 +171,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: plotjuggler-core-src
-          path: ${{ runner.temp }}/plotjuggler_core
+          path: ${{ github.workspace }}/plotjuggler_core
 
       - name: Configure and build proxy
         shell: bash
@@ -189,7 +189,7 @@ jobs:
             -DCMAKE_PREFIX_PATH=build \
             -DCMAKE_BUILD_TYPE=Release \
             -DPJ_BUILD_PLUGIN=data_stream_ros2 \
-            -DCPM_plotjuggler_core_SOURCE="${{ runner.temp }}/plotjuggler_core"
+            -DCPM_plotjuggler_core_SOURCE="${{ github.workspace }}/plotjuggler_core"
 
           cmake --build build/Release --config Release
 
