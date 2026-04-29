@@ -17,6 +17,7 @@ RUN apt-get update -qq \
       cmake \
       ninja-build \
       git \
+      openssh-client \
       python3-venv \
       ca-certificates \
  && rm -rf /var/lib/apt/lists/*
