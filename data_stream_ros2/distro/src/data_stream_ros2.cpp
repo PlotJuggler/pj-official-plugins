@@ -100,8 +100,13 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
       executor_->add_node(node_);
 
       for (const auto& [topic, type] : selected_topics_) {
-        const auto endpoints = node_->get_publishers_info_by_topic(topic);
-        const auto qos = ros2_streamer::adaptQosFromOffers(endpoints);
+        const auto qos = ros2_streamer::adaptQosWaitingForPublishers(*node_, topic);
+        if (node_->count_publishers(topic) == 0) {
+          runtimeHost().reportMessage(
+              PJ::DataSourceMessageLevel::kWarning,
+              "No publishers visible for " + topic +
+                  " within discovery timeout — using default QoS");
+        }
 
         auto callback =
             [this, topic](std::shared_ptr<rclcpp::SerializedMessage> msg) {
