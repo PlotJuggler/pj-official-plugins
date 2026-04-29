@@ -792,36 +792,54 @@ def cmd_verify_version_consistency(args) -> int:
 
     # Find and check plugin binary
     if args.build_dir:
-        print(f"\nSearching for plugin binary with id '{extension_id}' in {args.build_dir}...")
-        all_binaries = find_plugin_binaries(args.build_dir, "*")
-        if all_binaries:
-            print(f"Found {len(all_binaries)} binary file(s):")
-            for b in all_binaries[:10]:  # Show up to 10
-                print(f"  - {b}")
-            if len(all_binaries) > 10:
-                print(f"  ... and {len(all_binaries) - 10} more")
+        # Staging-dir mode: a plugin that produced <build_dir>/dist/ via a
+        # release.sh override has the marketplace tree pre-assembled. Its
+        # binary either dispatches to a per-platform inner (the proxy in
+        # data_stream_ros2 only loads the inner when ROS is available) or
+        # the inner itself links against host-only deps that ctypes cannot
+        # load on a vanilla CI runner. Either way the embedded-manifest
+        # check is meaningless; trust the staging tree's manifest.json
+        # (or fall back to the source manifest).
+        staging_dir = args.build_dir / "dist"
+        if staging_dir.is_dir() and any(staging_dir.iterdir()):
+            print(f"\nStaging tree detected at {staging_dir} — skipping embedded-manifest binary check")
+            staged_manifest = staging_dir / "manifest.json"
+            if staged_manifest.is_file():
+                staged_version = read_manifest_version(staged_manifest)
+                if staged_version:
+                    versions["staged_manifest"] = staged_version
+                    print(f"Staged manifest version: {staged_version}")
         else:
-            print("  No binary files found in directory")
-        binary_path = find_binary_by_manifest_id(args.build_dir, extension_id)
-        if binary_path:
-            print(f"Found plugin: {binary_path}")
-            binary_version = extract_binary_version(binary_path)
-            if binary_version:
-                versions["plugin"] = binary_version
-                print(f"Plugin version:   {binary_version}")
-            else:
-                check_errors.append(f"Could not extract version from plugin: {binary_path}")
-        else:
-            # Show what manifests were found in the binaries for debugging
+            print(f"\nSearching for plugin binary with id '{extension_id}' in {args.build_dir}...")
+            all_binaries = find_plugin_binaries(args.build_dir, "*")
             if all_binaries:
-                print(f"\nManifest IDs found in binaries:")
-                for b in all_binaries:
-                    manifest = extract_binary_manifest(b)
-                    if manifest:
-                        print(f"  - {b.name}: id='{manifest.get('id', 'N/A')}'")
-                    else:
-                        print(f"  - {b.name}: (no manifest)")
-            check_errors.append(f"No plugin found with extension id '{extension_id}' in {args.build_dir}")
+                print(f"Found {len(all_binaries)} binary file(s):")
+                for b in all_binaries[:10]:  # Show up to 10
+                    print(f"  - {b}")
+                if len(all_binaries) > 10:
+                    print(f"  ... and {len(all_binaries) - 10} more")
+            else:
+                print("  No binary files found in directory")
+            binary_path = find_binary_by_manifest_id(args.build_dir, extension_id)
+            if binary_path:
+                print(f"Found plugin: {binary_path}")
+                binary_version = extract_binary_version(binary_path)
+                if binary_version:
+                    versions["plugin"] = binary_version
+                    print(f"Plugin version:   {binary_version}")
+                else:
+                    check_errors.append(f"Could not extract version from plugin: {binary_path}")
+            else:
+                # Show what manifests were found in the binaries for debugging
+                if all_binaries:
+                    print(f"\nManifest IDs found in binaries:")
+                    for b in all_binaries:
+                        manifest = extract_binary_manifest(b)
+                        if manifest:
+                            print(f"  - {b.name}: id='{manifest.get('id', 'N/A')}'")
+                        else:
+                            print(f"  - {b.name}: (no manifest)")
+                check_errors.append(f"No plugin found with extension id '{extension_id}' in {args.build_dir}")
 
     # Validate semver
     for source, ver in versions.items():
