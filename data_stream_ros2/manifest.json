@@ -1,0 +1,22 @@
+{
+  "id": "ros2-topic-subscriber",
+  "name": "ROS 2 Topic Subscriber",
+  "version": "0.1.2",
+  "description": "Subscribe to ROS 2 topics in real time and stream the decoded fields into PlotJuggler.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "data_stream",
+  "tags": [
+    "ros2",
+    "streaming",
+    "subscriber"
+  ],
+  "min_plotjuggler_version": "4.0.0",
+  "supported_platforms": [
+    "linux-x86_64"
+  ]
+}

@@ -792,36 +792,54 @@ def cmd_verify_version_consistency(args) -> int:
 
     # Find and check plugin binary
     if args.build_dir:
-        print(f"\nSearching for plugin binary with id '{extension_id}' in {args.build_dir}...")
-        all_binaries = find_plugin_binaries(args.build_dir, "*")
-        if all_binaries:
-            print(f"Found {len(all_binaries)} binary file(s):")
-            for b in all_binaries[:10]:  # Show up to 10
-                print(f"  - {b}")
-            if len(all_binaries) > 10:
-                print(f"  ... and {len(all_binaries) - 10} more")
+        # Staging-dir mode: a plugin that produced <build_dir>/dist/ via a
+        # release.sh override has the marketplace tree pre-assembled. Its
+        # binary either dispatches to a per-platform inner (the proxy in
+        # data_stream_ros2 only loads the inner when ROS is available) or
+        # the inner itself links against host-only deps that ctypes cannot
+        # load on a vanilla CI runner. Either way the embedded-manifest
+        # check is meaningless; trust the staging tree's manifest.json
+        # (or fall back to the source manifest).
+        staging_dir = args.build_dir / "dist"
+        if staging_dir.is_dir() and any(staging_dir.iterdir()):
+            print(f"\nStaging tree detected at {staging_dir} — skipping embedded-manifest binary check")
+            staged_manifest = staging_dir / "manifest.json"
+            if staged_manifest.is_file():
+                staged_version = read_manifest_version(staged_manifest)
+                if staged_version:
+                    versions["staged_manifest"] = staged_version
+                    print(f"Staged manifest version: {staged_version}")
         else:
-            print("  No binary files found in directory")
-        binary_path = find_binary_by_manifest_id(args.build_dir, extension_id)
-        if binary_path:
-            print(f"Found plugin: {binary_path}")
-            binary_version = extract_binary_version(binary_path)
-            if binary_version:
-                versions["plugin"] = binary_version
-                print(f"Plugin version:   {binary_version}")
-            else:
-                check_errors.append(f"Could not extract version from plugin: {binary_path}")
-        else:
-            # Show what manifests were found in the binaries for debugging
+            print(f"\nSearching for plugin binary with id '{extension_id}' in {args.build_dir}...")
+            all_binaries = find_plugin_binaries(args.build_dir, "*")
             if all_binaries:
-                print(f"\nManifest IDs found in binaries:")
-                for b in all_binaries:
-                    manifest = extract_binary_manifest(b)
-                    if manifest:
-                        print(f"  - {b.name}: id='{manifest.get('id', 'N/A')}'")
-                    else:
-                        print(f"  - {b.name}: (no manifest)")
-            check_errors.append(f"No plugin found with extension id '{extension_id}' in {args.build_dir}")
+                print(f"Found {len(all_binaries)} binary file(s):")
+                for b in all_binaries[:10]:  # Show up to 10
+                    print(f"  - {b}")
+                if len(all_binaries) > 10:
+                    print(f"  ... and {len(all_binaries) - 10} more")
+            else:
+                print("  No binary files found in directory")
+            binary_path = find_binary_by_manifest_id(args.build_dir, extension_id)
+            if binary_path:
+                print(f"Found plugin: {binary_path}")
+                binary_version = extract_binary_version(binary_path)
+                if binary_version:
+                    versions["plugin"] = binary_version
+                    print(f"Plugin version:   {binary_version}")
+                else:
+                    check_errors.append(f"Could not extract version from plugin: {binary_path}")
+            else:
+                # Show what manifests were found in the binaries for debugging
+                if all_binaries:
+                    print(f"\nManifest IDs found in binaries:")
+                    for b in all_binaries:
+                        manifest = extract_binary_manifest(b)
+                        if manifest:
+                            print(f"  - {b.name}: id='{manifest.get('id', 'N/A')}'")
+                        else:
+                            print(f"  - {b.name}: (no manifest)")
+                check_errors.append(f"No plugin found with extension id '{extension_id}' in {args.build_dir}")
 
     # Validate semver
     for source, ver in versions.items():
@@ -1295,18 +1313,13 @@ def cmd_resolve_build_scope(args) -> int:
 
     if is_plugin_tag:
         plugin_name = args.tag.split("/", 1)[0]
-        conan_hash_path = Path(plugin_name) / "conanfile.py"
         build_dir = f"build/{plugin_name}/Release"
         build_script_args = plugin_name
         scope = f"plugin-{plugin_name}"
 
-        if not conan_hash_path.is_file():
-            print(
-                f"::error::Missing Conan recipe for tagged plugin: {conan_hash_path}",
-                file=sys.stderr,
-            )
-            return 1
-
+        # supported_platforms decides early whether this matrix entry runs at
+        # all. Done first so that skipped entries don't trip on later checks
+        # (e.g. missing conanfile.py for plugins that override the build).
         manifest_path = Path(plugin_name) / "manifest.json"
         if manifest_path.is_file():
             manifest = json.loads(manifest_path.read_text())
@@ -1319,6 +1332,9 @@ def cmd_resolve_build_scope(args) -> int:
                     file=sys.stderr,
                 )
 
+        # release.sh override takes the place of the default conan + cmake
+        # flow, so plugins that ship one are not required to also ship a
+        # conanfile.py.
         release_script = Path(plugin_name) / "release.sh"
         if release_script.is_file() and release_script.stat().st_mode & 0o111:
             use_release_override = True
@@ -1327,6 +1343,21 @@ def cmd_resolve_build_scope(args) -> int:
                 f"the default build flow",
                 file=sys.stderr,
             )
+
+        # Choose the source for the cache key + assert the build inputs exist.
+        # Skipped entries don't need either.
+        if skip:
+            conan_hash_path = manifest_path if manifest_path.is_file() else Path("conanfile.txt")
+        elif use_release_override:
+            conan_hash_path = release_script
+        else:
+            conan_hash_path = Path(plugin_name) / "conanfile.py"
+            if not conan_hash_path.is_file():
+                print(
+                    f"::error::Missing Conan recipe for tagged plugin: {conan_hash_path}",
+                    file=sys.stderr,
+                )
+                return 1
 
     conan_hash = hashlib.sha256(conan_hash_path.read_bytes()).hexdigest()
 
