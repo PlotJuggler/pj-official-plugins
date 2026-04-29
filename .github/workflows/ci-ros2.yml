@@ -21,8 +21,15 @@ concurrency:
 
 # End-to-end build for the ROS 2 subscriber marketplace extension:
 #
+#  - `fetch-core` clones plotjuggler_core (private) once on the host runner
+#    where webfactory/ssh-agent + CORE_DEPLOY_KEY have outbound SSH access.
+#    The result is shared with the build jobs as an artifact, avoiding the
+#    "Host key verification failed" that bites SSH inside the osrf/ros
+#    Docker images regardless of how known_hosts is seeded.
+#
 #  - `build-distro` runs a matrix across every supported ROS 2 distribution
-#    inside the corresponding osrf/ros Docker image. Each job produces a
+#    inside the corresponding osrf/ros Docker image. Each job consumes the
+#    pre-fetched core via -DCPM_plotjuggler_core_SOURCE and produces a
 #    distro-specific shared library that links against that distro's rclcpp.
 #
 #  - `build-proxy` builds the dispatch proxy once on a plain Ubuntu runner,
@@ -33,8 +40,38 @@ concurrency:
 #  - `package-extension` assembles both into a single marketplace zip with
 #    the proxy at the root and one .so per distro under `dist/<distro>/`.
 jobs:
+  fetch-core:
+    name: fetch plotjuggler_core
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Configure SSH for private dependencies
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.CORE_DEPLOY_KEY }}
+
+      - name: Add GitHub to SSH known hosts
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Clone plotjuggler_core (development, shallow)
+        shell: bash
+        run: |
+          git clone --depth=1 --branch development \
+            git@github.com:PlotJuggler/plotjuggler_core.git plotjuggler_core
+
+      - name: Upload plotjuggler_core source
+        uses: actions/upload-artifact@v4
+        with:
+          name: plotjuggler-core-src
+          path: plotjuggler_core
+          retention-days: 1
+          if-no-files-found: error
+
   build-distro:
     name: distro / ${{ matrix.distro }} (${{ matrix.ubuntu }})
+    needs: fetch-core
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -74,20 +111,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure SSH for private dependencies
-        shell: bash
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.CORE_DEPLOY_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          # Static GitHub host keys (published at https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints).
-          # ssh-keyscan silently fails inside Docker containers when outbound port 22 is unavailable;
-          # hardcoding the known keys avoids the network dependency entirely.
-          {
-            echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
-            echo "github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHZ09bEoJkiLLI9h0yBrY3mRjlRjFfNDKxkG9DGqx3oTqU5v+Nj6VtX5aE3L3JmGMCMR2AqDfG3LVIRiT3I5c8X5mJPrxLH6LOkJ1Z7yHJdyU4c/KYFNzAB5ZJGxW0Bt8F4y1LaqNuGVqH7U+THLMQ3U6j5BXvKtf78xZBhZjwKJaLbOJVmkjdZnB2ByLjh4OGQgm1GdP8EzL0X/Q0fKsm4nB0Bvp0wKxJ2U3Dc3v4n3LDM0V9JV9g9LTWF9y4r9ZqFp/eT9m3pYXK+KaBn0K5SenC5ZHSF7InW5PV9sTuJu0j2r0cFkMYFnH6TNFQEq/5s2eCYJm7Fn0L9mjCxdJuCJIFnGaVFJdyO6m3A+kGHhJHXjIZZVjIHWSDqR4v5Lp7uxMOAZgRaNoV8bAoVwpFy0LMz24E9DkWdSA2/TFxKkgm4/Q0+BDHKijmHn6GWfNVvjr5xO8y0E0JjQFWuT3JiL3WrGjJEzjI3OT9VBcXI3j/Hv4E+yAMZz9v4wKJSFAE+0Cj6PxVlQ5TNw2sHr4LT6dJqt2j+ZPuUkXnJTKHFiCOGJSFk4UFpFMLENhfFXX0Xts4Q2J3gRvmB5uAZq0kVgLhfABVtk9LFJh8mfYzqB/E7Nfz7L1b9R7Yrn8ZVkEi9bL1kLK/KwuKX8KJvG3WJCM="
-          } >> ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
+      - name: Download plotjuggler_core source
+        uses: actions/download-artifact@v4
+        with:
+          name: plotjuggler-core-src
+          path: ${{ runner.temp }}/plotjuggler_core
 
       - name: Configure and build distro
         shell: bash
@@ -107,7 +135,8 @@ jobs:
             -DCMAKE_PREFIX_PATH="build;/opt/ros/${{ matrix.distro }}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DPJ_BUILD_PLUGIN=data_stream_ros2 \
-            -DPJ_BUILD_ROS2_DISTRO=ON
+            -DPJ_BUILD_ROS2_DISTRO=ON \
+            -DCPM_plotjuggler_core_SOURCE="${{ runner.temp }}/plotjuggler_core"
 
           cmake --build build/Release --config Release
 
@@ -120,6 +149,7 @@ jobs:
 
   build-proxy:
     name: proxy (no ROS)
+    needs: fetch-core
     runs-on: ubuntu-22.04
 
     steps:
@@ -137,16 +167,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure SSH for private dependencies
-        uses: webfactory/ssh-agent@v0.9.0
+      - name: Download plotjuggler_core source
+        uses: actions/download-artifact@v4
         with:
-          ssh-private-key: ${{ secrets.CORE_DEPLOY_KEY }}
-
-      - name: Add GitHub to SSH known hosts
-        shell: bash
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          name: plotjuggler-core-src
+          path: ${{ runner.temp }}/plotjuggler_core
 
       - name: Configure and build proxy
         shell: bash
@@ -163,7 +188,8 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
             -DCMAKE_PREFIX_PATH=build \
             -DCMAKE_BUILD_TYPE=Release \
-            -DPJ_BUILD_PLUGIN=data_stream_ros2
+            -DPJ_BUILD_PLUGIN=data_stream_ros2 \
+            -DCPM_plotjuggler_core_SOURCE="${{ runner.temp }}/plotjuggler_core"
 
           cmake --build build/Release --config Release
 
