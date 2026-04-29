@@ -32,6 +32,7 @@ target_compile_options(ros2_stream_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(ros2_stream_plugin
   PRIVATE
     pj_base
+    pj_dialog_protocol
     ${CMAKE_DL_LIBS}
 )
 

@@ -3,13 +3,22 @@
  * @brief ROS 2 topic subscriber plugin — distro dispatch entry point.
  *
  * The host plugin loader opens this shared library directly (it is the
- * entry point advertised by the marketplace extension manifest). On the
- * first call to PJ_get_data_source_vtable() it detects the ROS 2
- * distribution installed on the user's system, dlopen-s the matching
- * per-distro binary (`dist/libros2_stream_plugin-<distro>.so`
- * alongside this library), resolves its vtable, and returns it. From that
- * point onward the host drives the distro library directly — this dispatch layer
- * only participates in the initial resolution.
+ * entry point of the marketplace extension). On the first call to
+ * PJ_get_data_source_vtable() or PJ_get_dialog_vtable() it detects the
+ * ROS 2 distribution installed on the user's system, dlopen-s the
+ * matching per-distro binary (`dist/<distro>/libros2_stream_plugin-<distro>.so`
+ * relative to this library), resolves the inner's *private* getters, and
+ * returns the resulting vtables. From that point onward the host drives
+ * the inner library directly — this dispatch layer only participates in
+ * the initial resolution.
+ *
+ * The inner DSO deliberately does NOT export the standard
+ * `PJ_get_data_source_vtable` / `PJ_get_dialog_vtable` symbols — the
+ * host's recursive plugin scanner (`scanPluginDsos`) would otherwise
+ * register every per-distro inner as a top-level plugin (one per ROS
+ * distro) instead of just this proxy. Inner exports are therefore named
+ * `PJ_ros2_inner_get_*_vtable`, invisible to the scanner but reachable
+ * from this file via dlsym.
  *
  * By design this translation unit has **no dependency** on rclcpp or any
  * ROS component. Only <dlfcn.h>, <filesystem> and <cstdlib>. This way
@@ -29,6 +38,7 @@
 
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/plugin_abi_export.h"
+#include "pj_plugins/dialog_protocol.h"
 
 namespace {
 
@@ -40,11 +50,12 @@ constexpr std::array<std::string_view, 4> kSupportedDistros = {
     "humble", "iron", "jazzy", "rolling"
 };
 
-// Cached state — the distro library stays resident for the process lifetime.
+// Cached state — the inner library stays resident for the process lifetime.
 std::once_flag g_load_once;
-void*                             g_distro_handle = nullptr;
-const PJ_data_source_vtable_t*    g_distro_vtable = nullptr;
-std::string                       g_last_error;
+void*                              g_inner_handle = nullptr;
+const PJ_data_source_vtable_t*     g_data_source_vtable = nullptr;
+const PJ_dialog_vtable_t*          g_dialog_vtable = nullptr;
+std::string                        g_last_error;
 
 // Returns the directory that contains this .so. Used as anchor to
 // locate the sibling `dist/` folder with per-distro binaries.
@@ -106,8 +117,9 @@ std::string supportedDistrosList() {
   return out;
 }
 
-// Called exactly once. Resolves the distro, loads the distro library, captures its
-// vtable. On failure populates g_last_error and leaves g_distro_vtable null.
+// Called exactly once. Resolves the distro, loads the inner library, captures
+// its data-source and dialog vtables. On failure populates g_last_error and
+// leaves the cached vtables null.
 void loadInnerOnce() {
   auto distro = detectRosDistro();
   if (!distro.has_value()) {
@@ -124,8 +136,8 @@ void loadInnerOnce() {
     return;
   }
 
-  const auto distro_path = dir / "dist" / ("libros2_stream_plugin-" + *distro + ".so");
-  if (!std::filesystem::exists(distro_path)) {
+  const auto inner_path = dir / "dist" / *distro / ("libros2_stream_plugin-" + *distro + ".so");
+  if (!std::filesystem::exists(inner_path)) {
     g_last_error = "ROS 2 distribution '" + *distro +
                    "' is installed but no matching binary is shipped in this extension. "
                    "Supported: " + supportedDistrosList() + ".";
@@ -134,35 +146,56 @@ void loadInnerOnce() {
 
   // RTLD_LOCAL keeps rclcpp symbols from leaking to other plugins; RTLD_LAZY
   // defers symbol resolution so incompatible leaves don't blow up on load.
-  g_distro_handle = dlopen(distro_path.string().c_str(), RTLD_LAZY | RTLD_LOCAL);
-  if (g_distro_handle == nullptr) {
+  g_inner_handle = dlopen(inner_path.string().c_str(), RTLD_LAZY | RTLD_LOCAL);
+  if (g_inner_handle == nullptr) {
     const char* err = dlerror();
-    g_last_error = "dlopen failed for " + distro_path.string() + ": " +
+    g_last_error = "dlopen failed for " + inner_path.string() + ": " +
                    (err != nullptr ? err : "unknown");
     return;
   }
 
-  using VtableGetter = const PJ_data_source_vtable_t* (*)(void);
-  auto* getter = reinterpret_cast<VtableGetter>(
-      dlsym(g_distro_handle, "PJ_get_data_source_vtable"));
-  if (getter == nullptr) {
+  using DataSourceGetter = const PJ_data_source_vtable_t* (*)(void);
+  auto* ds_getter = reinterpret_cast<DataSourceGetter>(
+      dlsym(g_inner_handle, "PJ_ros2_inner_get_data_source_vtable"));
+  if (ds_getter == nullptr) {
     const char* err = dlerror();
-    g_last_error = "dlsym(PJ_get_data_source_vtable) failed on distro library: " +
+    g_last_error = "dlsym(PJ_ros2_inner_get_data_source_vtable) failed: " +
                    std::string(err != nullptr ? err : "unknown");
-    dlclose(g_distro_handle);
-    g_distro_handle = nullptr;
+    dlclose(g_inner_handle);
+    g_inner_handle = nullptr;
     return;
   }
 
-  const PJ_data_source_vtable_t* vt = getter();
-  if (vt == nullptr) {
-    g_last_error = "Inner getter returned a null vtable.";
-    dlclose(g_distro_handle);
-    g_distro_handle = nullptr;
+  using DialogGetter = const PJ_dialog_vtable_t* (*)(void);
+  auto* dlg_getter = reinterpret_cast<DialogGetter>(
+      dlsym(g_inner_handle, "PJ_ros2_inner_get_dialog_vtable"));
+  if (dlg_getter == nullptr) {
+    const char* err = dlerror();
+    g_last_error = "dlsym(PJ_ros2_inner_get_dialog_vtable) failed: " +
+                   std::string(err != nullptr ? err : "unknown");
+    dlclose(g_inner_handle);
+    g_inner_handle = nullptr;
     return;
   }
 
-  g_distro_vtable = vt;
+  const PJ_data_source_vtable_t* ds_vt = ds_getter();
+  if (ds_vt == nullptr) {
+    g_last_error = "Inner data-source getter returned a null vtable.";
+    dlclose(g_inner_handle);
+    g_inner_handle = nullptr;
+    return;
+  }
+
+  const PJ_dialog_vtable_t* dlg_vt = dlg_getter();
+  if (dlg_vt == nullptr) {
+    g_last_error = "Inner dialog getter returned a null vtable.";
+    dlclose(g_inner_handle);
+    g_inner_handle = nullptr;
+    return;
+  }
+
+  g_data_source_vtable = ds_vt;
+  g_dialog_vtable = dlg_vt;
 }
 
 }  // namespace
@@ -170,10 +203,16 @@ void loadInnerOnce() {
 extern "C" PJ_DATA_SOURCE_EXPORT
 const PJ_data_source_vtable_t* PJ_get_data_source_vtable() {
   std::call_once(g_load_once, loadInnerOnce);
-  return g_distro_vtable;
+  return g_data_source_vtable;
 }
 
-/// Diagnostic hook: the host may query this if the vtable getter returned
+extern "C" PJ_DIALOG_EXPORT
+const PJ_dialog_vtable_t* PJ_get_dialog_vtable() {
+  std::call_once(g_load_once, loadInnerOnce);
+  return g_dialog_vtable;
+}
+
+/// Diagnostic hook: the host may query this if a vtable getter returned
 /// null, to show a human-readable reason to the user. Optional — older hosts
 /// that don't know about it simply ignore the symbol.
 extern "C" PJ_DATA_SOURCE_EXPORT

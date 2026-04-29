@@ -269,5 +269,37 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
 
 }  // namespace
 
-PJ_DATA_SOURCE_PLUGIN(Ros2StreamSource, kRos2Manifest)
-PJ_DIALOG_PLUGIN(Ros2Dialog)
+// The inner DSO is loaded only by the proxy via dlopen + dlsym on private
+// symbols. We deliberately do NOT export PJ_get_data_source_vtable nor
+// PJ_get_dialog_vtable — those are the names the host's plugin scanner
+// looks for, and the scanner walks the extension directory recursively.
+// If the inner exported the standard names, every per-distro inner would
+// be picked up as a top-level plugin (one per ROS distro) instead of the
+// single proxy entry point. Renamed exports keep the inner invisible to
+// the scanner while remaining reachable from the proxy.
+extern "C" __attribute__((visibility("default")))
+const PJ_data_source_vtable_t* PJ_ros2_inner_get_data_source_vtable() noexcept {
+  static const PJ_data_source_vtable_t* vt = PJ::DataSourcePluginBase::vtableWithCreate(
+      []() noexcept -> void* {
+        try {
+          return new Ros2StreamSource();
+        } catch (...) {
+          return nullptr;
+        }
+      },
+      kRos2Manifest);
+  return vt;
+}
+
+extern "C" __attribute__((visibility("default")))
+const PJ_dialog_vtable_t* PJ_ros2_inner_get_dialog_vtable() noexcept {
+  static const PJ_dialog_vtable_t* vt = PJ::DialogPluginBase::vtableWithCreate(
+      []() noexcept -> void* {
+        try {
+          return new Ros2Dialog();
+        } catch (...) {
+          return nullptr;
+        }
+      });
+  return vt;
+}
