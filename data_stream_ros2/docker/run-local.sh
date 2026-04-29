@@ -164,16 +164,26 @@ assemble_bundle() {
   local zip_path="${PLUGINS_DIR}/ros2-topic-subscriber-linux-x86_64.zip"
   local manifest_src="${PLUGINS_DIR}/data_stream_ros2/manifest.json"
   local proxy_so="${PLUGINS_DIR}/build_ros2_proxy/Release/bin/libros2_stream_plugin.so"
+  # plotjuggler_core's sidecar scanner discovers plugins by reading
+  # *.pjmanifest.json files non-recursively at the extension root and uses
+  # them as the single source of entry-point metadata. The proxy carries
+  # the user-facing one; the per-distro .so files under dist/<distro>/
+  # are internal to the proxy's dispatch and must NOT advertise sidecars
+  # of their own (otherwise the host would surface them as separate
+  # plugins).
+  local proxy_sidecar="${PLUGINS_DIR}/build_ros2_proxy/Release/bin/ros2_stream_plugin.pjmanifest.json"
 
-  [[ -f "${manifest_src}" ]] || { echo "manifest not found: ${manifest_src}" >&2; exit 3; }
-  [[ -f "${proxy_so}"     ]] || { echo "proxy .so not found: ${proxy_so}"     >&2; exit 3; }
+  [[ -f "${manifest_src}"  ]] || { echo "manifest not found: ${manifest_src}" >&2; exit 3; }
+  [[ -f "${proxy_so}"      ]] || { echo "proxy .so not found: ${proxy_so}"     >&2; exit 3; }
+  [[ -f "${proxy_sidecar}" ]] || { echo "proxy .pjmanifest.json not found: ${proxy_sidecar}" >&2; exit 3; }
 
   echo "[run-local] assembling bundle at ${stage}"
   rm -rf "${stage}" "${zip_path}"
   mkdir -p "${stage}/dist"
 
-  cp "${proxy_so}"     "${stage}/libros2_stream_plugin.so"
-  cp "${manifest_src}" "${stage}/manifest.json"
+  cp "${proxy_so}"      "${stage}/libros2_stream_plugin.so"
+  cp "${proxy_sidecar}" "${stage}/ros2_stream_plugin.pjmanifest.json"
+  cp "${manifest_src}"  "${stage}/manifest.json"
 
   while IFS=: read -r distro _; do
     [[ -z "${distro}" || "${distro}" =~ ^# ]] && continue
@@ -181,6 +191,8 @@ assemble_bundle() {
     [[ -f "${distro_so}" ]] || { echo "distro .so not found for ${distro}: ${distro_so}" >&2; exit 3; }
     mkdir -p "${stage}/dist/${distro}"
     cp "${distro_so}" "${stage}/dist/${distro}/libros2_stream_plugin-${distro}.so"
+    # Deliberately skip the per-distro .pjmanifest.json: those are build
+    # artefacts that would advertise the inner as a stand-alone plugin.
   done < "${DISTROS_FILE}"
 
   echo "[run-local] tree:"
