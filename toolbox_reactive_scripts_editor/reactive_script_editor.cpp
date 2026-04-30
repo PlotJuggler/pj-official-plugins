@@ -855,14 +855,31 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
       return "Error: Lua parse: " + std::string(err.what());
     }
 
-    // Execute once with tracker_time = 0 (batch mode).
-    // NOTE: Reactive re-execution on time-tracker changes is blocked on an SDK gap
-    // (missing `on_time_changed` callback in PJ_toolbox_runtime_host_vtable_t).
-    // See LUA_EDITOR_MIGRATION_PLAN.md (Phase 2).
-    auto exec_result = lua["_pj_user_func"](0.0);
-    if (!exec_result.valid()) {
-      sol::error err = exec_result;
-      return "Error: Lua runtime: " + std::string(err.what());
+    // Execute in batch mode: call once per timestamp of the first available
+    // series so the script produces a properly time-aligned output series.
+    // tracker_time is passed in nanoseconds (same scale as the stored timestamps)
+    // so TimeseriesView(...):atTime(tracker_time) and push_back(tracker_time, v)
+    // work correctly without unit conversion.
+    // Fall back to a single call at t=0 when no series are loaded.
+    auto fn = lua.get<sol::protected_function>("_pj_user_func");
+    const std::vector<double>* timeline = nullptr;
+    if (!series_map_.empty()) {
+      timeline = &series_map_.begin()->second.timestamps;
+    }
+    auto run_at = [&](double t) -> std::string {
+      sol::protected_function_result r = fn(t);
+      if (!r.valid()) {
+        sol::error err = r;
+        return "Error: Lua runtime: " + std::string(err.what());
+      }
+      return {};
+    };
+    if (timeline && !timeline->empty()) {
+      for (double t : *timeline) {
+        if (auto err = run_at(t); !err.empty()) return err;
+      }
+    } else {
+      if (auto err = run_at(0.0); !err.empty()) return err;
     }
 
     return writeCreatedSeries(created, func_name);
@@ -910,10 +927,22 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
         py::exec(global_code, scope);
       }
 
-      // Wrap user code in a function and execute.
+      // Wrap user code in a function and execute in batch mode:
+      // call once per timestamp of the first series (same approach as Lua).
       std::string wrapped = indentPythonCode(code);
       py::exec(wrapped, scope);
-      py::exec("_pj_user_func(0.0)", scope);
+      const std::vector<double>* timeline = nullptr;
+      if (!series_map_.empty()) {
+        timeline = &series_map_.begin()->second.timestamps;
+      }
+      if (timeline && !timeline->empty()) {
+        for (double t : *timeline) {
+          scope["_pj_t"] = t;
+          py::exec("_pj_user_func(_pj_t)", scope);
+        }
+      } else {
+        py::exec("_pj_user_func(0.0)", scope);
+      }
 
       return writeCreatedSeries(created, func_name);
 
