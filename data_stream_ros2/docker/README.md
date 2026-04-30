@@ -50,6 +50,7 @@ have installed (including 24.04+).
 | `--distro all` | Iterates every entry in `distros.env` | one `build_ros2_<distro>/…` per distro |
 | `--proxy` | Builds the proxy in plain Ubuntu 22.04 | `build_ros2_proxy/Release/bin/libros2_stream_plugin.so` |
 | `--bundle` | Every per-distro build + proxy + assembled tree + marketplace zip | see "Bundle layout" below |
+| `--with-pj-app` | (modifier) After the distro build, also build `pj_app` from `pj4` and assemble a single-distro test extension layout | `<pj4>/build/Release/pj_app/pj_app` and `build_ros2_<distro>/Release/test_extensions/ros2-topic-subscriber/` |
 
 ## Examples
 
@@ -58,6 +59,7 @@ have installed (including 24.04+).
     ./run-local.sh --distro all
     ./run-local.sh --proxy
     ./run-local.sh --bundle
+    ./run-local.sh --distro humble --with-pj-app --pj4 /path/to/pj4
 
 ## Bundle layout
 
@@ -84,6 +86,63 @@ The plugin's CMake fetches `plotjuggler_core` via CPM. Two modes:
 - **`--core <path>`**: bind-mounts an existing local checkout at `/core`
   and passes `-DCPM_plotjuggler_core_SOURCE=/core` to CMake. Useful for
   offline builds and to avoid re-cloning.
+
+## `--with-pj-app` (smoke-testing a distro in a clean environment)
+
+Distro mode only. Requires `--pj4 <path>` because the build artifacts land
+in `<pj4>/build/`.
+
+When set, the distro builder image is extended with Qt 6.8.3 (via
+`aqtinstall`, mirroring `pj4/build.sh`) plus the X/GL runtime libs needed
+by Qt apps. After the plugin `.so` is built, the container also configures
+`pj4` and builds the `pj_app` target. `pj4`'s own `CMakeLists.txt` already
+forces `PJ_BUILD_TESTS`, `PJ_BUILD_PORTED_PLUGINS` and
+`PJ_BUILD_PARQUET_IMPORT_EXAMPLE` internally, so this script does not pass
+them on the cmake command line.
+
+Image tags are namespaced (`pj-ros2-builder:<distro>-with-pj-app`) so the
+heavier image never replaces the lean one used by CI. The plain-build path
+(without the flag) is unchanged in every respect.
+
+The single `build/` directory under `<pj4>` is intentional — `pj4` is
+ROS-agnostic. If you switch between toolchains (humble/iron use GCC 11,
+jazzy/rolling use GCC 13) the script aborts with a hint to
+`rm -rf <pj4>/build/`. It does not auto-delete.
+
+### Test extension layout
+
+`pj_app` discovers extensions by scanning every subdirectory of its
+extensions root (default `~/.local/share/PlotJuggler4/extensions/`). The
+script assembles a marketplace-style layout next to the plugin build:
+
+    <plugins>/build_ros2_<distro>/Release/test_extensions/
+      ros2-topic-subscriber/                                ← one extension dir
+        libros2_stream_plugin.so                            ← proxy entrypoint
+        manifest.json                                        ← from data_stream_ros2/
+        dist/<distro>/libros2_stream_plugin-<distro>.so     ← per-distro inner
+
+To run `pj_app` inside the same image, bind-mount the assembled
+`test_extensions/` as the container user's extensions dir and forward X11:
+
+    xhost +local:root
+    docker run --rm -it \
+      --net=host \
+      -e DISPLAY=$DISPLAY \
+      -e QT_X11_NO_MITSHM=1 \
+      -v /tmp/.X11-unix:/tmp/.X11-unix:ro \
+      -v <plugins>:/workspace \
+      -v <pj4>:/pj4 \
+      -v <plugins>/build_ros2_<distro>/Release/test_extensions:/root/.local/share/PlotJuggler4/extensions \
+      --entrypoint bash \
+      pj-ros2-builder:<distro>-with-pj-app
+
+    # inside the container
+    source /opt/ros/<distro>/setup.bash
+    export LD_LIBRARY_PATH=${QT_DIR}/lib:${LD_LIBRARY_PATH}
+    /pj4/build/Release/pj_app/pj_app
+
+For headless validation, replace the X11 flags with
+`-e QT_QPA_PLATFORM=offscreen`.
 
 ## Supported distros
 
