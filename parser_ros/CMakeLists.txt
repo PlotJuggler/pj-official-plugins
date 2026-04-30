@@ -6,12 +6,8 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 # rosx_introspection builds tests by default; disable them.
 set(INTROSPECTION_TESTS OFF CACHE BOOL "" FORCE)
 
-# rosx_introspection calls find_package(ament_cmake) and then ament_package(),
-# which invokes a ROS Python script using whatever Python CMake resolved — on
-# machines where ROS is installed but we are NOT inside a colcon workspace that
-# Python is Conan's interpreter, which lacks the ament Python packages and
-# fails.  CMAKE_DISABLE_FIND_PACKAGE_* is the standard way to block a specific
-# find_package() call without touching the rest of the build.
+# Prevent rosx_introspection from invoking ament_package() when ROS is installed
+# on the host but we are not building inside a colcon workspace.
 set(CMAKE_DISABLE_FIND_PACKAGE_ament_cmake TRUE)
 
 CPMAddPackage(

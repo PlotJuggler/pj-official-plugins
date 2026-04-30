@@ -45,9 +45,11 @@ class ZmqDialog : public PJ::DialogPluginTyped {
     wd.setItems("comboBox", {"tcp://", "ipc://", "pgm://"});
     wd.setCurrentIndex("comboBox", transportToIndex(transport_));
 
-    // Address and port
+    // Address and port — port is not used for IPC transport
+    bool is_ipc = (transport_ == "ipc://");
     wd.setText("lineEditAddress", address_);
     wd.setText("lineEditPort", std::to_string(port_));
+    wd.setEnabled("lineEditPort", !is_ipc);
 
     // Protocol combo — dynamically populated from available parsers
     auto encodings = getAvailableEncodings();
@@ -85,7 +87,7 @@ class ZmqDialog : public PJ::DialogPluginTyped {
   bool onIndexChanged(std::string_view widget_name, int index) override {
     if (widget_name == "comboBox") {
       transport_ = indexToTransport(index);
-      return false;
+      return true;  // refresh UI so port field enable/disable updates immediately
     }
     if (widget_name == "comboBoxProtocol") {
       auto encodings = getAvailableEncodings();
