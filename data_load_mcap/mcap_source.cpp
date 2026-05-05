@@ -13,6 +13,9 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 
 namespace {
@@ -20,6 +23,18 @@ namespace {
 using McapSummaryInfo = PJ::McapHelpers::McapSummaryInfo;
 using PJ::McapHelpers::populateSummaryFromReader;
 using PJ::McapHelpers::readSelectiveSummary;
+
+// Schemas whose raw payload is worth retaining in the ObjectStore for replay
+// or out-of-band rendering (image / video). Match exact `schema->name`. The
+// list is intentionally small; extend as new media-bearing message types are
+// validated. A future config option in `McapDialog` may let the user override
+// this set per-load.
+const std::unordered_set<std::string>& blobBearingSchemas() {
+  static const std::unordered_set<std::string> kSet = {
+      "sensor_msgs/Image", "sensor_msgs/msg/Image"
+  };
+  return kSet;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // McapSource plugin
@@ -89,6 +104,11 @@ class McapSource : public PJ::FileSourceBase {
     // --- Ensure parser bindings for selected channels ---
     const auto& selected = dialog_.selectedTopics();
     std::unordered_map<mcap::ChannelId, PJ::ParserBindingHandle> bindings;
+    // Per-channel object topics for blob-bearing schemas. Populated only when
+    // the host registered `pj.source_object_write.v1` AND the channel's
+    // schema is in the blob-bearing set. Empty otherwise — the message-loop
+    // below skips the lazy push when a channel isn't present.
+    std::unordered_map<mcap::ChannelId, PJ::sdk::ObjectTopicHandle> object_topics;
     std::vector<std::string> binding_errors;
 
     for (const auto& [channel_id, channel_ptr] : summary.channels) {
@@ -122,6 +142,22 @@ class McapSource : public PJ::FileSourceBase {
       } else {
         binding_errors.push_back(
             channel_ptr->topic + " (encoding: " + std::string(encoding) + "): " + handle.error());
+        continue;
+      }
+
+      // Register a parallel object topic when the schema is blob-bearing and
+      // the host exposed an ObjectStore. Failure is non-fatal — the scalar
+      // ingest path continues; the warning surfaces via reportMessage.
+      if (objectWriteHost() != nullptr && blobBearingSchemas().count(schema->name) != 0) {
+        auto obj_topic = objectWriteHost()->registerTopic(channel_ptr->topic, /*metadata_json*/ "{}");
+        if (obj_topic) {
+          object_topics.emplace(channel_id, *obj_topic);
+        } else {
+          runtimeHost().reportMessage(
+              PJ::DataSourceMessageLevel::kWarning,
+              std::string("failed to register object topic for '") + channel_ptr->topic +
+                  "': " + obj_topic.error());
+        }
       }
     }
 
@@ -180,6 +216,40 @@ class McapSource : public PJ::FileSourceBase {
             PJ::DataSourceMessageLevel::kWarning,
             std::string("push failed on '") + msg_view.channel->topic +
                 "': " + push_status.error());
+      }
+
+      // Lazy retention of the raw message in ObjectStore for blob-bearing
+      // channels. Capture (file_path, channel_id, log_time): the closure
+      // reopens the file and reads the message at that coordinate when (and
+      // only when) something downstream resolves the entry. No bytes are
+      // copied here at ingest time.
+      auto obj_it = object_topics.find(msg_view.channel->id);
+      if (obj_it != object_topics.end()) {
+        const auto obj_handle = obj_it->second;
+        const auto channel_id_capture = msg_view.channel->id;
+        const auto log_time_capture = msg_view.message.logTime;
+        std::string file_path_capture = dialog_.filepath();
+        auto lazy_status = objectWriteHost()->pushLazy(
+            obj_handle, timestamp_ns,
+            [path = std::move(file_path_capture), channel_id_capture, log_time_capture]() -> std::vector<uint8_t> {
+              mcap::McapReader r;
+              if (!r.open(path).ok()) return {};
+              auto noop_problem = [](const mcap::Status&) {};
+              for (const auto& v : r.readMessages(noop_problem, log_time_capture, log_time_capture + 1)) {
+                if (v.channel->id == channel_id_capture) {
+                  return std::vector<uint8_t>(
+                      reinterpret_cast<const uint8_t*>(v.message.data),
+                      reinterpret_cast<const uint8_t*>(v.message.data) + v.message.dataSize);
+                }
+              }
+              return {};
+            });
+        if (!lazy_status) {
+          runtimeHost().reportMessage(
+              PJ::DataSourceMessageLevel::kWarning,
+              std::string("object pushLazy failed on '") + msg_view.channel->topic +
+                  "': " + lazy_status.error());
+        }
       }
 
       ++msg_count;
