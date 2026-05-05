@@ -55,10 +55,10 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Clone plotjuggler_core (development, shallow)
+      - name: Clone plotjuggler_core (main, shallow)
         shell: bash
         run: |
-          git clone --depth=1 --branch development \
+          git clone --depth=1 --branch main \
             git@github.com:PlotJuggler/plotjuggler_core.git plotjuggler_core
 
       - name: Upload plotjuggler_core source
