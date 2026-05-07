@@ -31,7 +31,8 @@ using PJ::McapHelpers::readSelectiveSummary;
 // this set per-load.
 const std::unordered_set<std::string>& blobBearingSchemas() {
   static const std::unordered_set<std::string> kSet = {
-      "sensor_msgs/Image", "sensor_msgs/msg/Image"
+      "sensor_msgs/Image", "sensor_msgs/msg/Image",
+      "sensor_msgs/CompressedImage", "sensor_msgs/msg/CompressedImage"
   };
   return kSet;
 }
