@@ -136,18 +136,12 @@ class McapSource : public PJ::FileSourceBase {
           .parser_config_json = parser_config_str,
       };
 
-      auto handle = runtimeHost().ensureParserBinding(request);
-      if (handle) {
-        bindings.emplace(channel_id, *handle);
-      } else {
-        binding_errors.push_back(
-            channel_ptr->topic + " (encoding: " + std::string(encoding) + "): " + handle.error());
-        continue;
-      }
-
-      // Register a parallel object topic when the schema is blob-bearing and
-      // the host exposed an ObjectStore. Failure is non-fatal — the scalar
-      // ingest path continues; the warning surfaces via reportMessage.
+      // Register the parallel object topic BEFORE binding the parser. The
+      // runtime host resolves the parser-side write surface against an
+      // already-registered topic (via ObjectStore::findTopic), so the source
+      // must own and complete its source-side registration first. Failure is
+      // non-fatal — the scalar ingest path continues; the warning surfaces
+      // via reportMessage.
       if (objectWriteHost() != nullptr && blobBearingSchemas().count(schema->name) != 0) {
         auto obj_topic = objectWriteHost()->registerTopic(channel_ptr->topic, /*metadata_json*/ "{}");
         if (obj_topic) {
@@ -158,6 +152,15 @@ class McapSource : public PJ::FileSourceBase {
               std::string("failed to register object topic for '") + channel_ptr->topic +
                   "': " + obj_topic.error());
         }
+      }
+
+      auto handle = runtimeHost().ensureParserBinding(request);
+      if (handle) {
+        bindings.emplace(channel_id, *handle);
+      } else {
+        binding_errors.push_back(
+            channel_ptr->topic + " (encoding: " + std::string(encoding) + "): " + handle.error());
+        continue;
       }
     }
 
