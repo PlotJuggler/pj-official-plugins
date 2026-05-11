@@ -63,6 +63,12 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
       {"plotjuggler_msgs/StatisticsValues",    {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePalStatisticsValues>}},
       {"tsl_msgs/TSLDefinition",               {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTSLDefinition>}},
       {"tsl_msgs/TSLValues",                   {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTSLValues>}},
+
+      // ----- Default entry -----
+      // Used by bindSchema for any ROS schema not matched above.
+      // Drives the generic rosx_introspection walker that flattens
+      // nested messages into one column per primitive field.
+      {CatalogEntry::kDefault,                 {.parse_scalars = &RosParser::parseScalarsGeneric}},
   };
   return kMap;
 }
@@ -98,11 +104,13 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
   ensureDeserializer();
 
   // Lookup the catalog entry, bind its member-fn pointers to this
-  // instance, register a single SchemaHandler. Catalog miss falls back to
-  // an entry whose parse_scalars points at parseScalarsGeneric.
-  static const CatalogEntry kFallback{.parse_scalars = &RosParser::parseScalarsGeneric};
+  // instance, register a single SchemaHandler. Catalog miss falls back
+  // to the kDefault entry in the catalog itself — guaranteed present.
   auto it = catalog().find(msg_type);
-  const auto& entry = (it != catalog().end()) ? it->second : kFallback;
+  if (it == catalog().end()) {
+    it = catalog().find(CatalogEntry::kDefault);
+  }
+  const auto& entry = it->second;
 
   PJ::sdk::SchemaHandler handler;
   handler.object_kind = entry.object_kind;

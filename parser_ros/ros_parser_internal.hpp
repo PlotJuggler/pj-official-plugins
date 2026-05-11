@@ -170,6 +170,11 @@ class RosParser : public PJ::MessageParserPluginBase {
   // — that gives a member-fn-ptr of the right shape, no per-entry
   // wrapping logic needed at bind time.
   struct CatalogEntry {
+    // Catalog key reserved for the default (catch-all) entry. When
+    // bindSchema() looks up a schema name and finds no specific
+    // match, it resolves to the entry keyed by this value instead.
+    static constexpr const char* kDefault = "*";
+
     PJ::sdk::CanonicalObjectKind object_kind = PJ::sdk::CanonicalObjectKind::kNone;
 
     PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> (RosParser::*parse_scalars)(
