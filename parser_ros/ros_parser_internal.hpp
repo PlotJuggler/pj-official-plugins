@@ -1,5 +1,6 @@
 #pragma once
 
+#include <pj_base/sdk/canonical_object.hpp>
 #include <pj_base/sdk/message_parser_plugin_base.hpp>
 
 #include <nlohmann/json.hpp>
@@ -143,30 +144,42 @@ inline std::string palStatisticsKey(const std::string& topic) {
 
 class RosParser : public PJ::MessageParserPluginBase {
  public:
+  /// Default-constructed. The class-level catalog (see catalog() below) holds
+  /// the schemas this plugin understands; bindSchema looks the bound type up
+  /// in the catalog and registers exactly one SchemaHandler tailored to it
+  /// (or a generic flatten handler when the bound type is unknown). No
+  /// per-instance handler table populated at construction time.
+  RosParser() = default;
+
   PJ::Status bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema) override;
   std::string saveConfig() const override;
   PJ::Status loadConfig(std::string_view config_json) override;
-  PJ::Status parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> payload) override;
 
-  enum class Specialization {
-    kNone,
-    kEmpty,
-    kJointState,
-    kDiagnosticArray,
-    kTFMessage,
-    kDataTamerSchemas,
-    kDataTamerSnapshot,
-    kImu,
-    kPose,
-    kPoseStamped,
-    kOdometry,
-    kTransform,
-    kTransformStamped,
-    kPalStatisticsNames,
-    kPalStatisticsValues,
-    kTSLDefinition,
-    kTSLValues,
+  // ----- Class-level schema catalog -----
+  //
+  // Pure data, mirrors PJ::sdk::SchemaHandler field naming. Each entry
+  // holds member-function pointers describing what this plugin does for a
+  // given schema. bindSchema looks the entry up, binds the pointers to
+  // `this` via std::bind_front, and registers a single SchemaHandler.
+  // Per-instance handlers_ table ends up with one entry.
+  //
+  // Catalog is uniform: every entry uses the same `parse_scalars` field,
+  // whose value is a member-fn-ptr matching SchemaHandler::parse_scalars.
+  // For schemas served by an imperative handle*() void method, the entry
+  // points directly at the wrapVoidHandler<Handler> template instantiation
+  // — that gives a member-fn-ptr of the right shape, no per-entry
+  // wrapping logic needed at bind time.
+  struct CatalogEntry {
+    PJ::sdk::CanonicalObjectKind object_kind = PJ::sdk::CanonicalObjectKind::kNone;
+
+    PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> (RosParser::*parse_scalars)(
+        PJ::Timestamp, PJ::Span<const uint8_t>) = nullptr;
+
+    PJ::Expected<PJ::sdk::CanonicalObject> (RosParser::*parse_object)(
+        PJ::Timestamp, PJ::sdk::PayloadView) = nullptr;
   };
+
+  static const std::unordered_map<std::string, CatalogEntry>& catalog();
 
   // Configuration
   size_t max_array_size_ = 500;
@@ -177,7 +190,6 @@ class RosParser : public PJ::MessageParserPluginBase {
 
   // Schema state
   std::string type_name_;
-  Specialization specialization_ = Specialization::kNone;
   bool has_header_ = false;
   std::vector<std::string> quaternion_prefixes_;
 
@@ -194,7 +206,6 @@ class RosParser : public PJ::MessageParserPluginBase {
 
   // Setup helpers
   void ensureDeserializer();
-  void detectSpecialization(const std::string& msg_type);
   void detectSchemaFeatures();
   void findQuaternionPrefixes(const RosMsgParser::ROSMessage* msg, const std::string& prefix,
                               const RosMsgParser::RosMessageLibrary& lib);
@@ -230,7 +241,75 @@ class RosParser : public PJ::MessageParserPluginBase {
   void parsePoseWithCovariance(const std::string& prefix);
   void parseTwistWithCovariance(const std::string& prefix);
 
-  // Specialized handlers
+  // ----- Canonical-object handlers (route: parseScalars / parseObject) -----
+  //
+  // Each schema maps one ROS canonical type to its sdk::X counterpart via
+  // a single parse<X>() entry point that returns a CanonicalObject ready
+  // for ObjectStore ingestion. The scalar-side companion is shared across
+  // all object-bearing schemas: parseScalarsDiscardingLargeArrays() reuses
+  // the generic flattenGeneric path with a forced DISCARD_LARGE_ARRAYS
+  // policy, so the bulk byte payload (data[]) is dropped automatically and
+  // we keep only the small metadata as scalar columns. No per-schema
+  // hand-written scalar walker.
+
+  // Shared scalar-side handler registered by every object-bearing schema.
+  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseScalarsDiscardingLargeArrays(
+      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+
+  // Default-handler scalar route. Walks any ROS message whose schema is
+  // known via rosx_introspection (flattenGeneric) and harvests all fields
+  // honoring the user-configured array policy. Registered as the default
+  // SchemaHandler in the constructor — fires for every type name not in
+  // the specific table.
+  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseScalarsGeneric(
+      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+
+  // sensor_msgs/Image
+  PJ::Expected<PJ::sdk::CanonicalObject> parseImage(
+      PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // sensor_msgs/CompressedImage (also covers compressedDepth via the format string)
+  PJ::Expected<PJ::sdk::CanonicalObject> parseCompressedImage(
+      PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // sensor_msgs/PointCloud2
+  PJ::Expected<PJ::sdk::CanonicalObject> parsePointCloud(
+      PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // ----- Specialized scalar handlers -----
+  //
+  // Each one walks a specific ROS message type and pushes its decoded fields
+  // into owned_fields_ via addField/addStringField. They are imperative
+  // (return void, side-effect on the parser's accumulators).
+  //
+  // wrapVoidHandler<Handler> is a member-function template that decorates
+  // such a handler with the standard setup + harvest boilerplate, yielding
+  // a member function whose signature matches PJ::sdk::SchemaHandler
+  // ::parse_scalars exactly. Each instantiation has its own member-fn-ptr
+  // address: write `&RosParser::wrapVoidHandler<&RosParser::handleImu>`
+  // and you have a parse_scalars callable suitable for direct catalog
+  // registration.
+  template <void (RosParser::*Handler)()>
+  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> wrapVoidHandler(
+      PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+    if (!parser_.has_value()) {
+      return PJ::unexpected(std::string("no schema bound"));
+    }
+    ensureDeserializer();
+    owned_fields_.clear();
+    string_storage_.clear();
+    named_fields_.clear();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()));
+    (this->*Handler)();
+    std::vector<PJ::sdk::NamedFieldValue> out;
+    out.reserve(owned_fields_.size());
+    for (const auto& f : owned_fields_) {
+      out.push_back({.name = f.name, .value = f.value});
+    }
+    return out;
+  }
+
   void handleEmpty();
   void handlePose();
   void handlePoseStamped();

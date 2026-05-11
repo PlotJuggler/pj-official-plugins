@@ -1,7 +1,71 @@
 #include "ros_manifest.hpp"
 #include "ros_parser_internal.hpp"
 
+#include <functional>
+
 namespace ros_parser_detail {
+
+// ---------------------------------------------------------------------------
+// Class-level catalog of every ROS schema this parser recognizes.
+//
+// What the catalog IS: pure data — pointers to member functions, no `this`
+// capture, populated once per process via the static-local map. Adding a
+// schema = one new entry here.
+//
+// What an INSTANCE does with it: bindSchema looks up the entry for the
+// bound type and registers a single SchemaHandler tailored to it on this
+// instance. If the bound type is not in the catalog, bindSchema registers
+// a generic flatten handler under the bound type name. Either way, the
+// per-instance handlers_ table ends up with exactly one entry — honest
+// about the fact that one RosParser instance binds to one schema.
+//
+// Field naming mirrors PJ::sdk::SchemaHandler: object_kind / parse_scalars /
+// parse_object. Type difference for parse_scalars (raw void member fn vs.
+// the std::function the SchemaHandler expects) is intentional — bindSchema
+// adapts via wrapVoidHandler at registration time.
+// ---------------------------------------------------------------------------
+
+const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catalog() {
+  using Kind = PJ::sdk::CanonicalObjectKind;
+  static const std::unordered_map<std::string, CatalogEntry> kMap = {
+      // ----- Canonical-object schemas -----
+      {"sensor_msgs/Image",
+          {.object_kind   = Kind::kImage,
+           .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+           .parse_object  = &RosParser::parseImage}},
+      {"sensor_msgs/CompressedImage",
+          {.object_kind   = Kind::kCompressedImage,
+           .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+           .parse_object  = &RosParser::parseCompressedImage}},
+      {"sensor_msgs/PointCloud2",
+          {.object_kind   = Kind::kPointCloud,
+           .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+           .parse_object  = &RosParser::parsePointCloud}},
+
+      // ----- Specialized scalar schemas -----
+      // wrapVoidHandler<Handler> is a member-fn-template; its address is a
+      // member-fn-ptr matching parse_scalars, so it slots in directly.
+      {"std_msgs/Empty",                       {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleEmpty>}},
+      {"geometry_msgs/Pose",                   {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePose>}},
+      {"geometry_msgs/PoseStamped",            {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePoseStamped>}},
+      {"geometry_msgs/Transform",              {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTransform>}},
+      {"geometry_msgs/TransformStamped",       {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTransformStamped>}},
+      {"sensor_msgs/Imu",                      {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleImu>}},
+      {"nav_msgs/Odometry",                    {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleOdometry>}},
+      {"sensor_msgs/JointState",               {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleJointState>}},
+      {"diagnostic_msgs/DiagnosticArray",      {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleDiagnosticArray>}},
+      {"tf2_msgs/TFMessage",                   {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTFMessage>}},
+      {"data_tamer_msgs/Schemas",              {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleDataTamerSchemas>}},
+      {"data_tamer_msgs/Snapshot",             {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleDataTamerSnapshot>}},
+      {"pal_statistics_msgs/StatisticsNames",  {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePalStatisticsNames>}},
+      {"pal_statistics_msgs/StatisticsValues", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePalStatisticsValues>}},
+      {"plotjuggler_msgs/StatisticsNames",     {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePalStatisticsNames>}},
+      {"plotjuggler_msgs/StatisticsValues",    {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePalStatisticsValues>}},
+      {"tsl_msgs/TSLDefinition",               {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTSLDefinition>}},
+      {"tsl_msgs/TSLValues",                   {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTSLValues>}},
+  };
+  return kMap;
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -10,11 +74,15 @@ namespace ros_parser_detail {
 PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema) {
   std::string definition(reinterpret_cast<const char*>(schema.data()), schema.size());
 
-  // Normalise ROS 2 type names: "pkg/msg/Type" -> "pkg/Type"
+  // Normalise ROS 2 type names: "pkg/msg/Type" -> "pkg/Type". The catalog
+  // keys (and bound_type_name_) use the canonical form; both must agree.
   type_name_ = std::string(type_name);
   std::string msg_type = type_name_;
   if (auto pos = msg_type.find("/msg/"); pos != std::string::npos) {
     msg_type.erase(pos, 4);
+  }
+  if (auto status = PJ::MessageParserPluginBase::bindSchema(msg_type, schema); !status) {
+    return status;
   }
 
   try {
@@ -26,9 +94,26 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
     return PJ::unexpected(std::string("failed to parse ROS schema: ") + e.what());
   }
 
-  detectSpecialization(msg_type);
   detectSchemaFeatures();
   ensureDeserializer();
+
+  // Lookup the catalog entry, bind its member-fn pointers to this
+  // instance, register a single SchemaHandler. Catalog miss falls back to
+  // an entry whose parse_scalars points at parseScalarsGeneric.
+  static const CatalogEntry kFallback{.parse_scalars = &RosParser::parseScalarsGeneric};
+  auto it = catalog().find(msg_type);
+  const auto& entry = (it != catalog().end()) ? it->second : kFallback;
+
+  PJ::sdk::SchemaHandler handler;
+  handler.object_kind = entry.object_kind;
+  if (entry.parse_scalars) {
+    handler.parse_scalars = std::bind_front(entry.parse_scalars, this);
+  }
+  if (entry.parse_object) {
+    handler.parse_object = std::bind_front(entry.parse_object, this);
+  }
+  registerSchemaHandler(msg_type, std::move(handler));
+
   return PJ::okStatus();
 }
 
@@ -66,80 +151,52 @@ PJ::Status RosParser::loadConfig(std::string_view config_json) {
   return PJ::okStatus();
 }
 
-PJ::Status RosParser::parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> payload) {
-  if (!writeHostBound()) return PJ::unexpected(std::string("write host not bound"));
-  if (!parser_.has_value()) return PJ::unexpected(std::string("no schema bound"));
-  ensureDeserializer();
+// ---------------------------------------------------------------------------
+// Generic scalar route. Walks any ROS message whose schema rosx_introspection
+// understands, honoring the user-configured array policy. Used as the
+// default-handler scalar route; also reused as the building block for
+// parseScalarsDiscardingLargeArrays below.
+// ---------------------------------------------------------------------------
 
+PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>>
+RosParser::parseScalarsGeneric(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+  if (!parser_.has_value()) {
+    return PJ::unexpected(std::string("no schema bound"));
+  }
+  ensureDeserializer();
   owned_fields_.clear();
   string_storage_.clear();
   named_fields_.clear();
-  current_timestamp_ = timestamp_ns;
+  current_timestamp_ = ts;
+  flattenGeneric(payload);
 
-  if (specialization_ != Specialization::kNone) {
-    deserializer_->init(
-        RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()));
-
-    switch (specialization_) {
-      case Specialization::kEmpty:
-        handleEmpty();
-        break;
-      case Specialization::kPose:
-        handlePose();
-        break;
-      case Specialization::kPoseStamped:
-        handlePoseStamped();
-        break;
-      case Specialization::kTransform:
-        handleTransform();
-        break;
-      case Specialization::kTransformStamped:
-        handleTransformStamped();
-        break;
-      case Specialization::kImu:
-        handleImu();
-        break;
-      case Specialization::kOdometry:
-        handleOdometry();
-        break;
-      case Specialization::kJointState:
-        handleJointState();
-        break;
-      case Specialization::kDiagnosticArray:
-        handleDiagnosticArray();
-        break;
-      case Specialization::kTFMessage:
-        handleTFMessage();
-        break;
-      case Specialization::kDataTamerSchemas:
-        handleDataTamerSchemas();
-        break;
-      case Specialization::kDataTamerSnapshot:
-        handleDataTamerSnapshot();
-        break;
-      case Specialization::kPalStatisticsNames:
-        handlePalStatisticsNames();
-        break;
-      case Specialization::kPalStatisticsValues:
-        handlePalStatisticsValues();
-        break;
-      case Specialization::kTSLDefinition:
-        handleTSLDefinition();
-        break;
-      case Specialization::kTSLValues:
-        handleTSLValues();
-        break;
-      default:
-        break;
-    }
-  } else {
-    flattenGeneric(payload);
+  std::vector<PJ::sdk::NamedFieldValue> out;
+  out.reserve(owned_fields_.size());
+  for (const auto& f : owned_fields_) {
+    out.push_back({.name = f.name, .value = f.value});
   }
+  return out;
+}
 
-  if (!owned_fields_.empty()) {
-    return emitRecord(current_timestamp_);
+// ---------------------------------------------------------------------------
+// Scalar route for canonical-object schemas. Delegates to parseScalarsGeneric
+// after flipping the parser to DISCARD_LARGE_ARRAYS so the bulk byte payload
+// (Image::data, PointCloud2::data, …) is dropped automatically while small
+// metadata (height, width, encoding, fields[].name, …) survives as scalars.
+// The user-configured array policy is restored on exit.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>>
+RosParser::parseScalarsDiscardingLargeArrays(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+  if (!parser_.has_value()) {
+    return PJ::unexpected(std::string("no schema bound"));
   }
-  return PJ::okStatus();
+  parser_->setMaxArrayPolicy(RosMsgParser::Parser::DISCARD_LARGE_ARRAYS, max_array_size_);
+  auto result = parseScalarsGeneric(ts, payload);
+  auto restored = discard_large_arrays_ ? RosMsgParser::Parser::DISCARD_LARGE_ARRAYS
+                                        : RosMsgParser::Parser::KEEP_LARGE_ARRAYS;
+  parser_->setMaxArrayPolicy(restored, max_array_size_);
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,31 +212,6 @@ void RosParser::ensureDeserializer() {
       deserializer_ = std::make_unique<RosMsgParser::NanoCDR_Deserializer>();
     }
   }
-}
-
-void RosParser::detectSpecialization(const std::string& msg_type) {
-  static const std::unordered_map<std::string, Specialization> kMap = {
-      {"std_msgs/Empty", Specialization::kEmpty},
-      {"sensor_msgs/JointState", Specialization::kJointState},
-      {"diagnostic_msgs/DiagnosticArray", Specialization::kDiagnosticArray},
-      {"tf2_msgs/TFMessage", Specialization::kTFMessage},
-      {"data_tamer_msgs/Schemas", Specialization::kDataTamerSchemas},
-      {"data_tamer_msgs/Snapshot", Specialization::kDataTamerSnapshot},
-      {"sensor_msgs/Imu", Specialization::kImu},
-      {"geometry_msgs/Pose", Specialization::kPose},
-      {"geometry_msgs/PoseStamped", Specialization::kPoseStamped},
-      {"nav_msgs/Odometry", Specialization::kOdometry},
-      {"geometry_msgs/Transform", Specialization::kTransform},
-      {"geometry_msgs/TransformStamped", Specialization::kTransformStamped},
-      {"pal_statistics_msgs/StatisticsNames", Specialization::kPalStatisticsNames},
-      {"pal_statistics_msgs/StatisticsValues", Specialization::kPalStatisticsValues},
-      {"plotjuggler_msgs/StatisticsNames", Specialization::kPalStatisticsNames},
-      {"plotjuggler_msgs/StatisticsValues", Specialization::kPalStatisticsValues},
-      {"tsl_msgs/TSLDefinition", Specialization::kTSLDefinition},
-      {"tsl_msgs/TSLValues", Specialization::kTSLValues},
-  };
-  auto it = kMap.find(msg_type);
-  specialization_ = (it != kMap.end()) ? it->second : Specialization::kNone;
 }
 
 void RosParser::detectSchemaFeatures() {
