@@ -74,7 +74,7 @@ What a MessageParser **is not**:
   only what the schema says.
 - **Not the dispatcher.** It does not decide *when* to parse. It
   answers `parse_scalars` / `parse_object` when the host calls,
-  and that is the entire surface.
+  and nothing more.
 
 ### Why the separation matters
 
@@ -163,9 +163,9 @@ kind a schema produces *before* the bytes are touched.
   `BufferAnchor` (`std::shared_ptr<const void>`), so the parser can
   return spans over the original payload buffer. The host copies into
   the `ObjectStore` only when retention policy demands it.
-- **Stable surface.** New widgets (e.g. depth fusion, ROIs) only add
-  consumers of existing variants. New encodings are handled by adding a
-  `Format` value, not by introducing a new viewer-facing type.
+- **Stable for viewers.** New widgets (e.g. depth fusion, ROIs) only
+  add consumers of existing variants. New encodings are handled by
+  adding a `Format` value, not by introducing a new viewer-facing type.
 
 ### `PayloadView` and `BufferAnchor`
 
@@ -297,8 +297,8 @@ or provide it (then unmatched schemas flow into the generic handler).
 
 The SDK base class implements `classifySchema`, `parseScalars`, and
 `parseObject` as table lookups. There is no enum to maintain, no switch
-to extend, and no virtual override surface — **adding a schema is a new
-entry in the catalog and the corresponding member-function**.
+to extend, and no virtual methods to override — **adding a schema is a
+new entry in the catalog and the corresponding member-function**.
 
 **Reference implementation:** `parser_ros` — canonical-object handlers
 for `sensor_msgs/Image`, `sensor_msgs/CompressedImage`,
@@ -325,7 +325,7 @@ PJ4's runtime is free to pick its ingest strategy per message:
 The selection is done by an `ObjectIngestPolicyResolver` that cascades
 `topic > source > kind > default`, configured by the runtime. In PJ4
 this will eventually be user-facing — per dataset, per topic, per kind
-— but the plugin contract does not change when that surface lands. A
+— but the plugin contract does not change when those controls land. A
 plugin written today against the declarative shape will keep working
 unmodified when the user starts flipping policies in a future PJ4
 release.

@@ -125,8 +125,8 @@ through the runtime's `ObjectIngestPolicyResolver`.
      canonical media bytes (if any).
 3. Add a focused test under `parser_ros/tests/`.
 
-No enum to extend, no switch to update, no virtual override surface to
-maintain — registration is just an entry in the table.
+No enum to extend, no switch to update, no virtual methods to
+override — registration is just an entry in the table.
 
 ## Timestamp handling
 
