@@ -16,8 +16,13 @@ that wires them together.
 
 A DataSource is the entry point of data into the host. It enumerates
 channels, advertises each channel's schema, and emits messages as
-`(binding_handle, timestamp_ns, fetcher)` triples. There are two
-sub-shapes:
+`(binding_handle, timestamp_ns, fetcher)` triples — where the
+**fetcher** is a small callback the host can invoke later to retrieve
+the bytes for that message (think *"give me the data for this instant
+in time"*). The detailed shape of the fetcher is covered in the
+DataSource concrete section below; for now, the important property is
+that the bytes are not handed to the host eagerly — only a way to
+obtain them is. There are two sub-shapes:
 
 | Sub-shape | Base class | When to use | Examples |
 |-----------|------------|-------------|----------|
@@ -80,7 +85,7 @@ messages whether they arrived through `data_load_mcap`,
 `data_stream_foxglove_bridge`, or a future bag streamer — without a
 single line of MCAP- or bridge-specific code in the parser.
 
-## What plugins emit: scalars and canonical objects
+## What plugins emit: scalars and canonical objects in time
 
 PlotJuggler began life as a time-series plotter. The primary product of
 the ingest pipeline has always been — and still is — **scalar columns
@@ -107,13 +112,15 @@ canonical object that carries the raw pixels or point bytes.
 These payloads are usually large in aggregate. A 200 GB MCAP recording
 of camera streams holds tens of thousands of frames that cannot all sit
 in memory at once. For that reason canonical objects are typically
-loaded **on demand**: the host keeps a small, referenceable load
-function — a callback — per object, and invokes it only when something
-actually asks for the bytes. Whether ingest is eager, partly eager, or
-fully on demand is configurable per topic and per source, but because
-on-demand is the common case, every canonical-object channel needs a
-way to *name the work to be done later*. That callback is the
-*fetcher* introduced in the DataSource section below.
+loaded **on demand**: the host keeps the fetcher associated with each
+object and invokes it only when something actually asks for the bytes.
+Whether ingest is eager, partly eager, or fully on demand is
+configurable per topic and per source, but because on-demand is the
+common case, every canonical-object channel needs a way to *name the
+work to be done later* — which is precisely what the fetcher is. The
+DataSource section below details the exact signature; here it is enough
+to think of it as "the callback that returns the bytes for one message
+when called".
 
 Concretely, every bound schema is described by a `CatalogEntry` with two
 output slots:
@@ -229,8 +236,9 @@ message offset, and reads the bytes on demand.
 
 A parser does not override `parse()`. It declares a **table of
 handlers**, one entry per schema type name it knows how to translate.
-The optional wildcard key `"*"` (`CatalogEntry::kWildcard`) declares the
-generic fallback used for every schema not matched by name:
+The optional default entry (`CatalogEntry::kDefault`, conventionally
+keyed as `"*"`) declares the generic fallback used for every schema not
+matched by name:
 
 ```cpp
 // In your plugin's class scope: a static catalog of schemas. Pure
@@ -250,17 +258,17 @@ const auto& MyParser::catalog() {
       {"my_pkg/MyTelemetry",
           {.parse_scalars = &MyParser::telemetryScalars}},
 
-      // Wildcard entry — generic fallback for every other schema.
+      // Default entry — generic fallback for every other schema.
       // Optional: omit it and any unmatched schema is rejected at
       // bindSchema time.
-      {CatalogEntry::kWildcard,
+      {CatalogEntry::kDefault,
           {.parse_scalars = &MyParser::genericScalars}},
   };
   return kMap;
 }
 
 // `bindSchema` becomes a single lookup with no branching: resolve()
-// returns the exact-match entry if present, otherwise the wildcard.
+// returns the exact-match entry if present, otherwise the default.
 PJ::Status MyParser::bindSchema(std::string_view type_name,
                                  PJ::Span<const uint8_t> schema) {
   base::bindSchema(type_name, schema);
@@ -283,9 +291,9 @@ PJ::Status MyParser::bindSchema(std::string_view type_name,
   variant from the payload, populating spans over the input buffer
   whenever possible.
 
-`CatalogEntry::kWildcard` is the conventional `"*"` key. A catalog may
-omit it (then `resolve()` reports an error for unmatched schemas) or
-provide it (then unmatched schemas flow into the generic handler).
+`CatalogEntry::kDefault` is conventionally keyed as `"*"`. A catalog
+may omit it (then `resolve()` reports an error for unmatched schemas)
+or provide it (then unmatched schemas flow into the generic handler).
 
 The SDK base class implements `classifySchema`, `parseScalars`, and
 `parseObject` as table lookups. There is no enum to maintain, no switch
@@ -299,8 +307,14 @@ for `sensor_msgs/Image`, `sensor_msgs/CompressedImage`,
 
 ## How the host uses these declarations
 
-Because both DataSource and MessageParser are declarative, the host
-(PJ4's runtime) is free to pick its ingest strategy per message:
+**As a plugin author you do not need to write any code that handles
+this.** The plugin's job is the declarative shape covered above:
+announce messages with a fetcher, declare a schema catalog, answer
+honestly when called. The rest of this section explains what the host
+does with those declarations, so you have a mental model of *why* the
+shape is what it is — not because you have to manage it.
+
+PJ4's runtime is free to pick its ingest strategy per message:
 
 | Policy | Effect |
 |--------|--------|
@@ -308,10 +322,45 @@ Because both DataSource and MessageParser are declarative, the host
 | **`kLazyObjectsEagerScalars`** | Invoke the fetcher now. Invoke `parseScalars` now (columns available immediately). Defer the fetcher + `parseObject` behind a lazy `ObjectStore` entry, pulled on demand. |
 | **`kPureLazy`** | Skip the fetcher and the parser at push time. Register the fetcher in the `ObjectStore`; nothing runs until a consumer pulls. |
 
-The plugins do not know which mode is active. They just answer
-honestly when asked. Selection is done by an
-`ObjectIngestPolicyResolver` that cascades `topic > source > kind >
-default` — configured by the runtime, not by the plugin.
+The selection is done by an `ObjectIngestPolicyResolver` that cascades
+`topic > source > kind > default`, configured by the runtime. In PJ4
+this will eventually be user-facing — per dataset, per topic, per kind
+— but the plugin contract does not change when that surface lands. A
+plugin written today against the declarative shape will keep working
+unmodified when the user starts flipping policies in a future PJ4
+release.
+
+### What this means in practice for the plugin
+
+Even though you do not touch policy code, the existence of lazy modes
+constrains how you implement the plugin:
+
+- **Keep the source open and seekable for as long as the host might
+  call your fetcher.** For a DataLoader, that usually means holding
+  the file handle / reader as a `shared_ptr` and capturing it inside
+  every fetcher closure (and into the `BufferAnchor` if the bytes are
+  spans over a mapped or cached chunk). The host may invoke your
+  fetcher seconds, minutes, or hours after `pushMessage` returned —
+  and in any order, because the user may scrub through time. The
+  specifics depend on the underlying technology (mmap, an indexed
+  reader, a chunked decompressor, …), but the contract is the same:
+  *if your closure is invoked, it must succeed*.
+
+- **Do not cache decoded data inside the plugin.** The entire
+  motivation for lazy ingest is to handle datasets that do not fit in
+  memory — a 200 GB MCAP recording of camera streams, a multi-hour
+  bag of lidar frames. If the plugin holds onto decoded frames or
+  duplicates payload bytes "to be helpful", it defeats the point. Let
+  the host's `ObjectStore` be the single owner of materialized data;
+  the plugin keeps only what it strictly needs to *fetch* bytes again
+  on demand (file offsets, chunk indices, the reader itself).
+
+- **Make the fetcher idempotent.** The host may invoke it zero, one,
+  or many times for the same message — once at eager-time and again
+  later when a viewer pulls; multiple times across a session if the
+  store evicts and refetches. Returning the same bytes each call
+  (modulo a fresh anchor) is fine; doing one-shot work that the
+  closure cannot repeat is not.
 
 ## End-to-end dispatch
 
@@ -355,7 +404,7 @@ For a new MessageParser:
 1. Subclass `MessageParserPluginBase` (or your family's intermediate
    base).
 2. Add a static `catalog()` returning the `CatalogEntry` table. Add a
-   `CatalogEntry::kWildcard` entry if the plugin can fall back to a
+   `CatalogEntry::kDefault` entry if the plugin should fall back to a
    generic handler for unknown schemas; omit it to reject unmatched
    types at bind time.
 3. Implement the `parse_scalars` / `parse_object` member functions

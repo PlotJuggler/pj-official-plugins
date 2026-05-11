@@ -10,8 +10,9 @@ Registered for `"ros1msg"`, `"ros2msg"`, and `"cdr"` schema encodings.
 
 `parser_ros` does not implement a `parse()` function. Instead it declares
 a **static catalog** of schemas it knows how to translate. The catalog
-includes a wildcard entry (`"*"`) for the generic introspection-based
-fallback, so `bindSchema` is a single lookup with no branching:
+includes a default entry (`CatalogEntry::kDefault`, keyed `"*"`) for
+the generic introspection-based fallback, so `bindSchema` is a single
+lookup with no branching:
 
 ```cpp
 const auto& RosMsgParser::catalog() {
@@ -39,10 +40,10 @@ const auto& RosMsgParser::catalog() {
           {.parse_scalars = wrapVoidHandler<&RosMsgParser::handleJointState>()}},
       // ... etc.
 
-      // Wildcard entry — used for any schema not matched above.
+      // Default entry — used for any schema not matched above.
       // Drives the generic rosx_introspection walker that flattens
       // nested messages and emits one column per primitive field.
-      {CatalogEntry::kWildcard,
+      {CatalogEntry::kDefault,
           {.parse_scalars = &RosMsgParser::introspectionScalars}},
   };
   return kMap;
