@@ -9,8 +9,9 @@ Registered for `"ros1msg"`, `"ros2msg"`, and `"cdr"` schema encodings.
 ## Architecture — declarative schema catalog
 
 `parser_ros` does not implement a `parse()` function. Instead it declares
-a **static catalog** of schemas it knows how to translate, and lets the
-SDK base class dispatch per message:
+a **static catalog** of schemas it knows how to translate. The catalog
+includes a wildcard entry (`"*"`) for the generic introspection-based
+fallback, so `bindSchema` is a single lookup with no branching:
 
 ```cpp
 const auto& RosMsgParser::catalog() {
@@ -37,6 +38,12 @@ const auto& RosMsgParser::catalog() {
       {"sensor_msgs/msg/JointState",
           {.parse_scalars = wrapVoidHandler<&RosMsgParser::handleJointState>()}},
       // ... etc.
+
+      // Wildcard entry — used for any schema not matched above.
+      // Drives the generic rosx_introspection walker that flattens
+      // nested messages and emits one column per primitive field.
+      {CatalogEntry::kWildcard,
+          {.parse_scalars = &RosMsgParser::introspectionScalars}},
   };
   return kMap;
 }
@@ -46,18 +53,17 @@ PJ::Status RosMsgParser::bindSchema(std::string_view type_name,
   base::bindSchema(type_name, schema);
   // ... rosx_introspection setup ...
 
-  auto it = catalog().find(canonical_name(type_name));
-  auto handler = (it != catalog().end())
-      ? makeHandler(it->second)
-      : makeDefaultIntrospectionHandler();
-  registerSchemaHandler(type_name, std::move(handler));
+  registerSchemaHandler(type_name,
+                        makeHandler(catalog().resolve(type_name)));
   return PJ::Status::ok();
 }
 ```
 
-The entries are pure data — member-function pointers, no `this` capture.
-Per bound schema, the base class invokes `parse_scalars` for column
-extraction and `parse_object` for canonical media bytes.
+`catalog().resolve(name)` returns the exact-match entry if present and
+falls back to the `"*"` entry otherwise — guaranteed by the catalog
+construction. The entries are pure data — member-function pointers, no
+`this` capture. Per bound schema, the base class invokes `parse_scalars`
+for column extraction and `parse_object` for canonical media bytes.
 
 ## Canonical-object handlers (zero-copy)
 

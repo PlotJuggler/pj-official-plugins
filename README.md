@@ -99,132 +99,21 @@ cd /path/to/plotjuggler_core
 | data_stream_foxglove_bridge | DataSource | Foxglove WebSocket bridge |
 | data_stream_pj_bridge | DataSource | PlotJuggler WebSocket bridge |
 
-## Plugin architecture — the declarative shape
+## Plugin architecture
 
-Both plugin families in this repo follow a **declarative** style on top of the
-`plotjuggler_core` SDK: instead of writing imperative dispatch logic, you
-declare a small piece of metadata (a closure, a schema table) and let the
-host route everything. This lets the host pick its own ingest strategy
-(eager vs lazy, with-objects vs scalar-only) without the plugin caring.
+Both plugin families in this repo follow a **declarative** style on top of
+the `plotjuggler_core` SDK: a DataSource hands the host a deferred byte
+fetcher per message, and a MessageParser declares a table of schema
+handlers that produce **canonical objects** (`sdk::Image`,
+`sdk::CompressedImage`, `sdk::PointCloud`) plus scalar columns. The host
+chooses eager vs lazy materialization per message without either plugin
+caring.
 
-### DataSource plugins — `pushMessage` with a deferred byte fetcher
-
-A DataSource doesn't deliver bytes; it delivers a **callable that produces
-bytes when invoked**. One call per message, regardless of policy:
-
-```cpp
-runtimeHost().pushMessage(
-    binding_handle, timestamp_ns,
-    [reader = reader_shared_ptr_, offset = msg.offset]() -> PJ::sdk::PayloadView {
-      // Materialize the bytes on demand. Idempotent — the host may invoke
-      // this zero, one, or many times depending on the active policy and
-      // consumer pulls.
-      return readMessageBytesAt(reader, offset);
-    });
-```
-
-The closure can return:
-
-- `PJ::sdk::PayloadView { bytes, anchor }` — preferred. Zero-copy
-  `Span<const uint8_t>` over a buffer the plugin keeps alive via the
-  `BufferAnchor` (typically a `shared_ptr<vector<uint8_t>>` referencing the
-  source's chunk/page).
-- `std::vector<uint8_t>` — legacy. The SDK template heap-allocates the
-  vector and treats it as its own anchor.
-
-What the DataSource **does NOT** do:
-
-- Doesn't consult ingest policy. The host applies `kEager` / `kLazyObjectsEagerScalars` / `kPureLazy` per-message via an `ObjectIngestPolicyResolver`.
-- Doesn't invoke the parser. The host does, when and only when it's the right time.
-- Doesn't push to the ObjectStore directly. The host orchestrates.
-
-This shape lets the same `pushMessage` call result in either an immediate
-parse + store, or a deferred entry that the host materializes only when a
-consumer pulls — the plugin is the same. `data_load_mcap` is the reference
-implementation; see its README.
-
-### MessageParser plugins — `SchemaHandler` table
-
-A parser doesn't override `parse()`; it declares a **table of handlers**,
-one entry per schema type name it knows how to translate:
-
-```cpp
-// In your plugin's class scope: a static catalog of schemas. Pure data —
-// member-function pointers, no `this` capture.
-const auto& MyParser::catalog() {
-  using Kind = PJ::sdk::CanonicalObjectKind;
-  static const std::unordered_map<std::string, CatalogEntry> kMap = {
-      // Canonical-object schema: produces an sdk::Image / CompressedImage /
-      // PointCloud via parse_object, plus small-metadata scalars via the
-      // canonical scalar route.
-      {"my_pkg/MyImage",
-          {.object_kind   = Kind::kImage,
-           .parse_scalars = &MyParser::imageScalars,
-           .parse_object  = &MyParser::parseImage}},
-
-      // Scalar-only schema: just emits columns.
-      {"my_pkg/MyTelemetry",
-          {.parse_scalars = &MyParser::telemetryScalars}},
-  };
-  return kMap;
-}
-
-// In bindSchema, look up the bound type and register the single handler
-// this instance needs (specific from the catalog, or a default fallback).
-PJ::Status MyParser::bindSchema(std::string_view type_name,
-                                 PJ::Span<const uint8_t> schema) {
-  base::bindSchema(type_name, schema);
-  // ... parser-specific setup ...
-
-  auto it = catalog().find(canonical_name(type_name));
-  // ... build a SchemaHandler from the entry and registerSchemaHandler ...
-}
-```
-
-The base class implements `classifySchema` / `parseScalars` / `parseObject`
-as table lookups. There is no enum to maintain, no switch to extend, and no
-virtual override surface — adding a schema is a new entry in the catalog
-and the corresponding member-function.
-
-Because the dispatch is declarative, the host (PJ4's runtime) can choose
-how to call into the parser per message:
-
-- **Eager** — invoke `parseScalars` + `parseObject` immediately, materialize
-  the canonical bytes in the `ObjectStore`.
-- **Lazy objects, eager scalars** — invoke `parseScalars` now for columns,
-  retain the fetcher for later `parseObject` calls on consumer pulls.
-- **Pure lazy** — register the fetcher in the `ObjectStore` and don't call
-  the parser at all until something pulls.
-
-The parser doesn't know which mode is active. It just answers questions
-honestly when asked.
-
-### How it fits together end-to-end
-
-```
-DataSource          Host (PJ4)                MessageParser         ObjectStore
-─────────           ──────────                ─────────────         ───────────
-pushMessage(ts,
-   fetcher)   ──►   resolver.resolve(...)
-                      ▼
-                    kEager ─► fetcher.fetch()
-                              parser.parseScalars  ─►  schemaHandler.parse_scalars
-                              parser.parseObject   ─►  schemaHandler.parse_object
-                              pushOwned(bytes)                              ─► [bytes]
-
-                    kLazyObjectsEagerScalars ─► fetcher.fetch()
-                                                parser.parseScalars  ─►  schemaHandler.parse_scalars
-                                                pushLazy(fetcher_closure)              ─► [fetcher]
-                                                                  (pull later)         ─► fetcher.fetch + parseObject
-
-                    kPureLazy ─► pushLazy(fetcher_closure)                              ─► [fetcher]
-                                                                  (pull later)         ─► fetcher.fetch + parseObject
-```
-
-`parser_ros` (canonical-object handlers for Image/CompressedImage/PointCloud2
-+ specialized scalar handlers for Imu, JointState, Pose, …) and
-`data_load_mcap` (deferred fetcher closure capturing the open `McapReader`)
-are the canonical reference implementations in this collection.
+See [`PLUGIN_DEVELOPMENT.md`](PLUGIN_DEVELOPMENT.md) for the full
+developer guide: the canonical-object vocabulary, the DataSource and
+MessageParser shapes, end-to-end dispatch flow, authoring checklists,
+and pointers to `data_load_mcap` and `parser_ros` as reference
+implementations.
 
 ## Development Checklist
 
