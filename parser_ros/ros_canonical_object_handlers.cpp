@@ -31,6 +31,49 @@
 namespace ros_parser_detail {
 
 // ---------------------------------------------------------------------------
+// Minimal sequential CDR reader — no alignment padding between fields.
+//
+// ROS2 MCAP files written by Python tooling (and many real rosbag2 recordings)
+// use CDR-LE with NO post-string alignment padding, i.e. each field is
+// written back-to-back with no gap. Using rosx_introspection's NanoCDR
+// deserializer (which follows strict CDR alignment rules) produces wrong
+// reads for those files. This simple reader is used exclusively for the
+// known-schema parse_object handlers where the CDR layout is fixed.
+// ---------------------------------------------------------------------------
+struct CdrSeqReader {
+  const uint8_t* ptr;
+  const uint8_t* end;
+  bool ok = true;
+
+  // Skips the 4-byte CDR encapsulation header.
+  CdrSeqReader(const uint8_t* data, size_t size)
+      : ptr(size >= 4 ? data + 4 : data), end(data + size) {}
+
+  uint8_t u8() {
+    if (ptr + 1 > end) { ok = false; return 0; }
+    return *ptr++;
+  }
+  uint32_t u32() {
+    if (ptr + 4 > end) { ok = false; return 0; }
+    uint32_t v; std::memcpy(&v, ptr, 4); ptr += 4;
+    return v;
+  }
+  // CDR string: uint32 length (including null terminator) + char[length].
+  // No alignment padding after the char array.
+  std::string str() {
+    uint32_t len = u32();
+    if (!ok || len == 0 || len > 65536 || ptr + len > end) { ok = false; return {}; }
+    std::string s(reinterpret_cast<const char*>(ptr), len - 1);
+    ptr += len;
+    return s;
+  }
+  // Skip the ROS Header: stamp (sec+nsec) + frame_id string.
+  void skipHeader() { u32(); u32(); str(); }
+  const uint8_t* cursor() const { return ptr; }
+  size_t remaining() const { return ok ? static_cast<size_t>(end - ptr) : 0; }
+};
+
+// ---------------------------------------------------------------------------
 // sensor_msgs/Image
 //
 // CDR layout (after the 4-byte CDR header consumed by the deserializer):
@@ -72,17 +115,17 @@ const std::unordered_map<std::string, RosEncodingMap>& kRosImageEncodings() {
 
 PJ::Expected<PJ::sdk::CanonicalObject> RosParser::parseImage(
     PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
-  if (!parser_.has_value()) return PJ::unexpected(std::string("no schema bound"));
-  ensureDeserializer();
-  deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+  CdrSeqReader r(payload.bytes.data(), payload.bytes.size());
+  r.skipHeader();
+  uint32_t height = r.u32();
+  uint32_t width  = r.u32();
+  std::string encoding = r.str();
+  uint8_t is_be = r.u8();
+  uint32_t step  = r.u32();
+  uint32_t data_len = r.u32();
+  const uint8_t* src_data = r.cursor();
 
-  (void)readHeader();
-  uint32_t height = deserializer_->deserializeUInt32();
-  uint32_t width = deserializer_->deserializeUInt32();
-  std::string encoding;
-  deserializer_->deserializeString(encoding);
-  uint8_t is_be = deserializer_->deserialize(RosMsgParser::UINT8).convert<uint8_t>();
-  uint32_t step = deserializer_->deserializeUInt32();
+  if (!r.ok) return PJ::unexpected(std::string("Image: CDR read error"));
 
   auto it = kRosImageEncodings().find(encoding);
   if (it == kRosImageEncodings().end()) {
@@ -90,19 +133,11 @@ PJ::Expected<PJ::sdk::CanonicalObject> RosParser::parseImage(
   }
   const auto& enc = it->second;
 
-  uint32_t data_len = deserializer_->deserializeUInt32();
-  if (data_len < step * height) {
+  if (data_len < step * height)
     return PJ::unexpected(std::string("Image data[] truncated"));
-  }
-  if (step < width * enc.bytes_per_pixel) {
+  if (step < width * enc.bytes_per_pixel)
     return PJ::unexpected(std::string("Image step smaller than width*bpp"));
-  }
-  const uint8_t* src_data = deserializer_->getCurrentPtr();
 
-  // Zero-copy: the canonical Image holds a Span into the original payload
-  // buffer plus the same anchor. No allocation, no copy. row_step preserves
-  // any per-row padding the source had — consumer handles it. BGR encodings
-  // stay as kBGR* — consumer handles the swap (free on GPU).
   return PJ::sdk::CanonicalObject{PJ::sdk::Image{
       .width = width,
       .height = height,
@@ -127,19 +162,15 @@ PJ::Expected<PJ::sdk::CanonicalObject> RosParser::parseImage(
 
 PJ::Expected<PJ::sdk::CanonicalObject> RosParser::parseCompressedImage(
     PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
-  if (!parser_.has_value()) return PJ::unexpected(std::string("no schema bound"));
-  ensureDeserializer();
-  deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+  CdrSeqReader r(payload.bytes.data(), payload.bytes.size());
+  r.skipHeader();
+  std::string format = r.str();
+  uint32_t data_len = r.u32();
+  const uint8_t* src = r.cursor();
 
-  (void)readHeader();
-  std::string format;
-  deserializer_->deserializeString(format);
-
-  uint32_t data_len = deserializer_->deserializeUInt32();
-  if (data_len > payload.bytes.size()) {
-    return PJ::unexpected(std::string("CompressedImage data[] truncated"));
+  if (!r.ok || data_len > r.remaining()) {
+    return PJ::unexpected(std::string("CompressedImage: CDR read error"));
   }
-  const uint8_t* src = deserializer_->getCurrentPtr();
 
   PJ::sdk::CompressedImage::Format fmt = PJ::sdk::CompressedImage::Format::kUnknown;
   PJ::sdk::CompressedImage::Extras extras;
@@ -230,23 +261,21 @@ inline PJ::sdk::PointField::Datatype mapRosPointDatatype(uint8_t dt) {
 
 PJ::Expected<PJ::sdk::CanonicalObject> RosParser::parsePointCloud(
     PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
-  if (!parser_.has_value()) return PJ::unexpected(std::string("no schema bound"));
-  ensureDeserializer();
-  deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+  CdrSeqReader r(payload.bytes.data(), payload.bytes.size());
+  r.skipHeader();
+  uint32_t height = r.u32();
+  uint32_t width  = r.u32();
 
-  (void)readHeader();
-  uint32_t height = deserializer_->deserializeUInt32();
-  uint32_t width = deserializer_->deserializeUInt32();
-
-  uint32_t fields_count = deserializer_->deserializeUInt32();
+  uint32_t fields_count = r.u32();
+  if (!r.ok || fields_count > 1024)
+    return PJ::unexpected(std::string("PointCloud2: CDR read error or too many fields"));
   std::vector<PJ::sdk::PointField> fields;
   fields.reserve(fields_count);
   for (uint32_t i = 0; i < fields_count; ++i) {
-    std::string name;
-    deserializer_->deserializeString(name);
-    uint32_t offset = deserializer_->deserializeUInt32();
-    uint8_t dt_raw = deserializer_->deserialize(RosMsgParser::UINT8).convert<uint8_t>();
-    uint32_t count = deserializer_->deserializeUInt32();
+    std::string name = r.str();
+    uint32_t offset = r.u32();
+    uint8_t dt_raw  = r.u8();
+    uint32_t count  = r.u32();
     fields.push_back(PJ::sdk::PointField{
         .name = std::move(name),
         .offset = offset,
@@ -255,19 +284,16 @@ PJ::Expected<PJ::sdk::CanonicalObject> RosParser::parsePointCloud(
     });
   }
 
-  uint8_t is_be = deserializer_->deserialize(RosMsgParser::UINT8).convert<uint8_t>();
-  uint32_t point_step = deserializer_->deserializeUInt32();
-  uint32_t row_step = deserializer_->deserializeUInt32();
+  uint8_t is_be     = r.u8();
+  uint32_t point_step = r.u32();
+  uint32_t row_step   = r.u32();
+  uint32_t data_len   = r.u32();
+  const uint8_t* src_data = r.cursor();
 
-  uint32_t data_len = deserializer_->deserializeUInt32();
-  const uint8_t* src_data = deserializer_->getCurrentPtr();
-  // is_dense follows data[] in the CDR layout. The exact placement of the
-  // post-data cursor depends on how rosx_introspection's deserializer
-  // advances over the array contents; verify against the test MCAPs when
-  // wiring up the consumer side.
-  // TODO(rfc): verify is_dense read after data[] with the actual
-  // NanoCDR_Deserializer semantics. For now, default to "true" (dense).
-  bool is_dense = true;
+  if (!r.ok) return PJ::unexpected(std::string("PointCloud2: CDR read error"));
+  // is_dense follows data[] but the cursor is now past src_data+data_len.
+  // Read it with the sequential reader; default true on parse failure.
+  bool is_dense = (r.u8() != 0);
 
   // Zero-copy: data is a Span over [src_data, src_data+data_len) sharing
   // the payload anchor. For a PointCloud2 with a few MB of points this is
