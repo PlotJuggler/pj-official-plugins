@@ -78,6 +78,8 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
 // ---------------------------------------------------------------------------
 
 PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema) {
+  // The schema arrives as raw bytes; rosx_introspection consumes it as a
+  // std::string (the textual .msg definition).
   std::string definition(reinterpret_cast<const char*>(schema.data()), schema.size());
 
   // Normalise ROS 2 type names: "pkg/msg/Type" -> "pkg/Type". The catalog
@@ -87,10 +89,17 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
   if (auto pos = msg_type.find("/msg/"); pos != std::string::npos) {
     msg_type.erase(pos, 4);
   }
+
+  // Let the SDK base class record the bound type and run its own bind
+  // bookkeeping (host registration, dialog config, …). Abort on rejection.
   if (auto status = PJ::MessageParserPluginBase::bindSchema(msg_type, schema); !status) {
     return status;
   }
 
+  // Compile the message definition once and keep the rosx_introspection
+  // parser cached on this instance — it is reused for every message of
+  // this type. The array policy controls how variable-length fields are
+  // truncated by the generic introspection walker.
   try {
     parser_.emplace("", RosMsgParser::ROSType(msg_type), definition);
     auto policy = discard_large_arrays_ ? RosMsgParser::Parser::DISCARD_LARGE_ARRAYS
@@ -100,18 +109,23 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
     return PJ::unexpected(std::string("failed to parse ROS schema: ") + e.what());
   }
 
+  // Cache schema-derived flags (has_header_, quaternion prefixes, …) and
+  // prepare the wire-format deserializer (ROS 1 binary vs ROS 2 CDR).
   detectSchemaFeatures();
   ensureDeserializer();
 
-  // Lookup the catalog entry, bind its member-fn pointers to this
-  // instance, register a single SchemaHandler. Catalog miss falls back
-  // to the kDefault entry in the catalog itself — guaranteed present.
+  // Catalog lookup: exact match for this schema, otherwise the kDefault
+  // entry (generic introspection fallback). kDefault is guaranteed to be
+  // present in the catalog, so the second find always hits.
   auto it = catalog().find(msg_type);
   if (it == catalog().end()) {
     it = catalog().find(CatalogEntry::kDefault);
   }
   const auto& entry = it->second;
 
+  // Bind the catalog entry's member-function pointers to `this` and
+  // register a single SchemaHandler with the host. The per-instance
+  // handler table ends up with exactly one entry for this bound schema.
   PJ::sdk::SchemaHandler handler;
   handler.object_kind = entry.object_kind;
   if (entry.parse_scalars) {
