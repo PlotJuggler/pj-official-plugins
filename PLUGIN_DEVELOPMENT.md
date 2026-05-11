@@ -2,9 +2,9 @@
 
 Reference guide for authors of DataSource and MessageParser plugins in
 this collection. Reads top-down: start with the two plugin families
-that live in this repo, then with what they emit (scalars and canonical
-objects), then the concrete DataSource and MessageParser shapes, and
-finally the end-to-end host dispatch.
+that live in this repo, then with what a MessageParser emits (scalars
+and canonical objects), then the concrete DataSource and MessageParser
+shapes, and finally the end-to-end host dispatch.
 
 ## The two plugin families
 
@@ -85,17 +85,16 @@ messages whether they arrived through `data_load_mcap`,
 `data_stream_foxglove_bridge`, or a future bag streamer — without a
 single line of MCAP- or bridge-specific code in the parser.
 
-## What plugins emit: scalars and canonical objects in time
+## What a MessageParser emits: scalars and canonical objects in time
 
 PlotJuggler began life as a time-series plotter. The primary product of
-the ingest pipeline has always been — and still is — **scalar columns
-extracted from message fields**: every `IMU.angular_velocity.x`,
+a parser has always been — and still is — **scalar columns extracted
+from message fields**: every `IMU.angular_velocity.x`,
 `JointState.position[3]`, `BatteryState.voltage`, `/cmd_vel.linear.x`
 ends up as a stream of `(timestamp, value)` samples that the plotter,
-tables, transforms, and Lua scripts can consume directly. Most plugins
+tables, transforms, and Lua scripts can consume directly. Most parsers
 in this collection do exactly that and nothing else — `parser_json`,
-`parser_protobuf`, `data_load_csv`, `data_load_ulog`, `data_load_parquet`,
-all the streaming sources. The canonical mental model of a parser is
+`parser_protobuf`, `parser_data_tamer`. The canonical mental model is
 *"walk the message, name every primitive, emit one column per leaf"*.
 
 Some message types do not fit the scalar model: a camera frame, a
