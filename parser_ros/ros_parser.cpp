@@ -97,8 +97,12 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
   }
 
   // Let the SDK base class record the bound type and run its own bind
-  // bookkeeping (host registration, dialog config, …). Abort on rejection.
-  if (auto status = PJ::MessageParserPluginBase::bindSchema(msg_type, schema); !status) {
+  // bookkeeping (host registration, dialog config, …). We hand it the
+  // ORIGINAL type_name (with the "/msg/" segment if present), so that
+  // bound_type_name_ matches what the host will pass to classifySchema /
+  // parseScalars / parseObject later. The internal `msg_type` is used only
+  // for catalog lookup below.
+  if (auto status = PJ::MessageParserPluginBase::bindSchema(type_name_, schema); !status) {
     return status;
   }
 
@@ -140,7 +144,10 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
   if (entry.parse_object) {
     handler.parse_object = std::bind_front(entry.parse_object, this);
   }
-  registerSchemaHandler(msg_type, std::move(handler));
+  // Register under the original type_name (matches the key the host uses
+  // when calling classifySchema / parseScalars / parseObject — keeps lookups
+  // symmetric regardless of "/msg/" presence).
+  registerSchemaHandler(type_name_, std::move(handler));
 
   return PJ::okStatus();
 }
