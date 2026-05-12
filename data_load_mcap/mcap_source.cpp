@@ -22,11 +22,6 @@ using McapSummaryInfo = PJ::McapHelpers::McapSummaryInfo;
 using PJ::McapHelpers::populateSummaryFromReader;
 using PJ::McapHelpers::readSelectiveSummary;
 
-// (Removed: the previous hardcoded blobBearingSchemas() set. Whether a topic
-// produces a blob is now declared by the bound MessageParser via
-// SchemaClassification — see the call to runtimeHost().classificationOf()
-// inside importData(). The DataSource no longer knows ROS schema names.)
-
 // Read the bytes of a single mcap message identified by its RecordOffset.
 // Used by the deferred fetcher captured in the per-message lambda below.
 //
