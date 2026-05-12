@@ -13,31 +13,28 @@
  * only be called from `onPoll()`).
  */
 
-#include <pj_base/sdk/data_source_patterns.hpp>
-
-#include "ros2_dialog.hpp"
-#include "ros2_manifest.hpp"
-#include "ros2_qos_adapter.hpp"
-#include "ros2_schema_builder.hpp"
-
-#include <nlohmann/json.hpp>
-
-#include <rclcpp/executors/multi_threaded_executor.hpp>
-#include <rclcpp/generic_subscription.hpp>
-#include <rclcpp/rclcpp.hpp>
-#include <rclcpp/serialized_message.hpp>
-
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
+#include <pj_base/sdk/data_source_patterns.hpp>
 #include <queue>
+#include <rclcpp/executors/multi_threaded_executor.hpp>
+#include <rclcpp/generic_subscription.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp/serialized_message.hpp>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include "ros2_dialog.hpp"
+#include "ros2_manifest.hpp"
+#include "ros2_qos_adapter.hpp"
+#include "ros2_schema_builder.hpp"
 
 namespace {
 
@@ -49,13 +46,17 @@ struct PendingMessage {
 
 class Ros2StreamSource : public PJ::StreamSourceBase {
  public:
-  PJ_borrowed_dialog_t getDialog() override { return PJ::borrowDialog(dialog_); }
+  PJ_borrowed_dialog_t getDialog() override {
+    return PJ::borrowDialog(dialog_);
+  }
 
   uint64_t extraCapabilities() const override {
     return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;
   }
 
-  std::string saveConfig() const override { return dialog_.saveConfig(); }
+  std::string saveConfig() const override {
+    return dialog_.saveConfig();
+  }
 
   PJ::Status loadConfig(std::string_view config_json) override {
     if (!config_json.empty()) {
@@ -104,17 +105,14 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
         if (node_->count_publishers(topic) == 0) {
           runtimeHost().reportMessage(
               PJ::DataSourceMessageLevel::kWarning,
-              "No publishers visible for " + topic +
-                  " within discovery timeout — using default QoS");
+              "No publishers visible for " + topic + " within discovery timeout — using default QoS");
         }
 
-        auto callback =
-            [this, topic](std::shared_ptr<rclcpp::SerializedMessage> msg) {
-              enqueueMessage(topic, std::move(msg));
-            };
+        auto callback = [this, topic](std::shared_ptr<rclcpp::SerializedMessage> msg) {
+          enqueueMessage(topic, std::move(msg));
+        };
 
-        auto subscription =
-            node_->create_generic_subscription(topic, type, qos, callback);
+        auto subscription = node_->create_generic_subscription(topic, type, qos, callback);
         subscriptions_.emplace(topic, std::move(subscription));
       }
 
@@ -144,8 +142,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
       auto* binding = ensureBinding(msg.topic);
       if (binding != nullptr) {
         auto status = runtimeHost().pushRawMessage(
-            *binding, PJ::Timestamp{msg.timestamp_ns},
-            PJ::Span<const uint8_t>(msg.payload.data(), msg.payload.size()));
+            *binding, PJ::Timestamp{msg.timestamp_ns}, PJ::Span<const uint8_t>(msg.payload.data(), msg.payload.size()));
         if (!status) {
           runtimeHost().reportMessage(
               PJ::DataSourceMessageLevel::kWarning,
@@ -157,11 +154,12 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
     return PJ::okStatus();
   }
 
-  void onStop() override { teardown(); }
+  void onStop() override {
+    teardown();
+  }
 
  private:
-  void enqueueMessage(const std::string& topic,
-                      std::shared_ptr<rclcpp::SerializedMessage> msg) {
+  void enqueueMessage(const std::string& topic, std::shared_ptr<rclcpp::SerializedMessage> msg) {
     if (!msg) {
       return;
     }
@@ -170,8 +168,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
     pending.topic = topic;
     pending.payload.assign(raw.buffer, raw.buffer + raw.buffer_length);
     const auto now = std::chrono::system_clock::now().time_since_epoch();
-    pending.timestamp_ns =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+    pending.timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
 
     std::lock_guard<std::mutex> lock(queue_mutex_);
     message_queue_.push(std::move(pending));
@@ -208,14 +205,12 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
         .topic_name = topic,
         .parser_encoding = "ros2msg",
         .type_name = type_name,
-        .schema = PJ::Span<const uint8_t>(
-            reinterpret_cast<const uint8_t*>(schema.data()), schema.size()),
+        .schema = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(schema.data()), schema.size()),
         .parser_config_json = {},
     });
     if (!binding) {
       runtimeHost().reportMessage(
-          PJ::DataSourceMessageLevel::kWarning,
-          "Parser binding failed for " + topic + ": " + binding.error());
+          PJ::DataSourceMessageLevel::kWarning, "Parser binding failed for " + topic + ": " + binding.error());
       return nullptr;
     }
     auto [iter, _] = binding_cache_.emplace(topic, *binding);
@@ -239,8 +234,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
     if (context_) {
       try {
         context_->shutdown("plugin stopping");
-      } catch (...) {
-      }
+      } catch (...) {}
       context_.reset();
     }
     binding_cache_.clear();
@@ -257,8 +251,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
   std::shared_ptr<rclcpp::Context> context_;
   std::shared_ptr<rclcpp::Node> node_;
   std::unique_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
-  std::unordered_map<std::string, std::shared_ptr<rclcpp::GenericSubscription>>
-      subscriptions_;
+  std::unordered_map<std::string, std::shared_ptr<rclcpp::GenericSubscription>> subscriptions_;
   std::thread spinner_;
   std::atomic<bool> running_{false};
 
@@ -277,8 +270,8 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
 // be picked up as a top-level plugin (one per ROS distro) instead of the
 // single proxy entry point. Renamed exports keep the inner invisible to
 // the scanner while remaining reachable from the proxy.
-extern "C" __attribute__((visibility("default")))
-const PJ_data_source_vtable_t* PJ_ros2_inner_get_data_source_vtable() noexcept {
+extern "C" __attribute__((visibility("default"))) const PJ_data_source_vtable_t*
+PJ_ros2_inner_get_data_source_vtable() noexcept {
   static const PJ_data_source_vtable_t* vt = PJ::DataSourcePluginBase::vtableWithCreate(
       []() noexcept -> void* {
         try {
@@ -291,16 +284,14 @@ const PJ_data_source_vtable_t* PJ_ros2_inner_get_data_source_vtable() noexcept {
   return vt;
 }
 
-extern "C" __attribute__((visibility("default")))
-const PJ_dialog_vtable_t* PJ_ros2_inner_get_dialog_vtable() noexcept {
-  static const PJ_dialog_vtable_t* vt = PJ::DialogPluginBase::vtableWithCreate(
-      []() noexcept -> void* {
-        try {
-          return new Ros2Dialog();
-        } catch (...) {
-          return nullptr;
-        }
-      });
+extern "C" __attribute__((visibility("default"))) const PJ_dialog_vtable_t* PJ_ros2_inner_get_dialog_vtable() noexcept {
+  static const PJ_dialog_vtable_t* vt = PJ::DialogPluginBase::vtableWithCreate([]() noexcept -> void* {
+    try {
+      return new Ros2Dialog();
+    } catch (...) {
+      return nullptr;
+    }
+  });
   return vt;
 }
 

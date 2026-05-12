@@ -1,19 +1,17 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 
 #define MCAP_IMPLEMENTATION
-#include "mcap_dialog.hpp"
-#include "mcap_helpers.hpp"
-#include "mcap_manifest.hpp"
-
-#include <nlohmann/json.hpp>
-
 #include <cstdint>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 
+#include "mcap_dialog.hpp"
+#include "mcap_helpers.hpp"
+#include "mcap_manifest.hpp"
 
 namespace {
 
@@ -35,7 +33,9 @@ class McapSource : public PJ::FileSourceBase {
     return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;
   }
 
-  std::string saveConfig() const override { return dialog_.saveConfig(); }
+  std::string saveConfig() const override {
+    return dialog_.saveConfig();
+  }
 
   PJ::Status loadConfig(std::string_view config_json) override {
     if (!dialog_.loadConfig(config_json)) {
@@ -64,9 +64,9 @@ class McapSource : public PJ::FileSourceBase {
     } else {
       status = reader.readSummary(mcap::ReadSummaryMethod::NoFallbackScan);
       if (!status.ok()) {
-        runtimeHost().showError("Can't open summary of the file",
-                                "Code: " + std::to_string(static_cast<int>(status.code)) +
-                                    "\nMessage: " + status.message);
+        runtimeHost().showError(
+            "Can't open summary of the file",
+            "Code: " + std::to_string(static_cast<int>(status.code)) + "\nMessage: " + status.message);
         reader.close();
         return PJ::unexpected(std::string("cannot read MCAP summary: ") + status.message);
       }
@@ -98,15 +98,17 @@ class McapSource : public PJ::FileSourceBase {
       }
 
       auto schema_it = summary.schemas.find(channel_ptr->schemaId);
-      if (schema_it == summary.schemas.end()) continue;
+      if (schema_it == summary.schemas.end()) {
+        continue;
+      }
       const auto& schema = schema_it->second;
 
-      PJ::Span<const uint8_t> schema_bytes{
-          reinterpret_cast<const uint8_t*>(schema->data.data()),
-          schema->data.size()};
+      PJ::Span<const uint8_t> schema_bytes{reinterpret_cast<const uint8_t*>(schema->data.data()), schema->data.size()};
 
       std::string_view encoding = channel_ptr->messageEncoding;
-      if (encoding.empty()) encoding = schema->encoding;
+      if (encoding.empty()) {
+        encoding = schema->encoding;
+      }
 
       PJ::ParserBindingRequest request{
           .topic_name = channel_ptr->topic,
@@ -120,8 +122,7 @@ class McapSource : public PJ::FileSourceBase {
       if (handle) {
         bindings.emplace(channel_id, *handle);
       } else {
-        binding_errors.push_back(
-            channel_ptr->topic + " (encoding: " + std::string(encoding) + "): " + handle.error());
+        binding_errors.push_back(channel_ptr->topic + " (encoding: " + std::string(encoding) + "): " + handle.error());
       }
     }
 
@@ -152,8 +153,7 @@ class McapSource : public PJ::FileSourceBase {
       if (used_selective_summary) {
         auto [data_start, data_end_unused] = reader.byteRange(0);
         (void)data_end_unused;
-        return mcap::LinearMessageView(reader, data_start, summary.summary_start, 0,
-                                       mcap::MaxTime, on_problem);
+        return mcap::LinearMessageView(reader, data_start, summary.summary_start, 0, mcap::MaxTime, on_problem);
       }
       return reader.readMessages(on_problem);
     };
@@ -164,28 +164,32 @@ class McapSource : public PJ::FileSourceBase {
 
     for (const auto& msg_view : messages) {
       auto binding_it = bindings.find(msg_view.channel->id);
-      if (binding_it == bindings.end()) continue;
+      if (binding_it == bindings.end()) {
+        continue;
+      }
 
       // Select timestamp based on dialog setting
-      PJ::Timestamp timestamp_ns = static_cast<PJ::Timestamp>(
-          use_log_time ? msg_view.message.logTime : msg_view.message.publishTime);
+      PJ::Timestamp timestamp_ns =
+          static_cast<PJ::Timestamp>(use_log_time ? msg_view.message.logTime : msg_view.message.publishTime);
 
       PJ::Span<const uint8_t> payload{
-          reinterpret_cast<const uint8_t*>(msg_view.message.data),
-          msg_view.message.dataSize};
+          reinterpret_cast<const uint8_t*>(msg_view.message.data), msg_view.message.dataSize};
 
       auto push_status = runtimeHost().pushRawMessage(binding_it->second, timestamp_ns, payload);
       if (!push_status) {
         runtimeHost().reportMessage(
             PJ::DataSourceMessageLevel::kWarning,
-            std::string("push failed on '") + msg_view.channel->topic +
-                "': " + push_status.error());
+            std::string("push failed on '") + msg_view.channel->topic + "': " + push_status.error());
       }
 
       ++msg_count;
       if (msg_count % 1000 == 0) {
-        if (!runtimeHost().progressUpdate(msg_count)) break;
-        if (runtimeHost().isStopRequested()) break;
+        if (!runtimeHost().progressUpdate(msg_count)) {
+          break;
+        }
+        if (runtimeHost().isStopRequested()) {
+          break;
+        }
       }
     }
 

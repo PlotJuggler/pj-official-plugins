@@ -10,20 +10,19 @@
 /// the publisher's offer. The logic below mirrors `rosbag2_transport`'s
 /// `Recorder::serialized_offered_qos_profiles_for_topic` strategy.
 
-#include <rclcpp/node.hpp>
-#include <rclcpp/node_interfaces/node_graph_interface.hpp>
-#include <rclcpp/qos.hpp>
 #include <rmw/qos_profiles.h>
 
 #include <chrono>
+#include <rclcpp/node.hpp>
+#include <rclcpp/node_interfaces/node_graph_interface.hpp>
+#include <rclcpp/qos.hpp>
 #include <string>
 #include <thread>
 #include <vector>
 
 namespace ros2_streamer {
 
-inline rclcpp::QoS adaptQosFromOffers(
-    const std::vector<rclcpp::TopicEndpointInfo>& endpoints) {
+inline rclcpp::QoS adaptQosFromOffers(const std::vector<rclcpp::TopicEndpointInfo>& endpoints) {
   rclcpp::QoS qos(rmw_qos_profile_default.depth);
   if (endpoints.empty()) {
     return qos;
@@ -63,8 +62,7 @@ inline rclcpp::QoS adaptQosFromOffers(
 /// publishers (no data flows). Polling count_publishers gates on a positive
 /// signal that the endpoint info is populated.
 inline rclcpp::QoS adaptQosWaitingForPublishers(
-    rclcpp::Node& node, const std::string& topic,
-    std::chrono::milliseconds timeout = std::chrono::milliseconds(2000),
+    rclcpp::Node& node, const std::string& topic, std::chrono::milliseconds timeout = std::chrono::milliseconds(2000),
     std::chrono::milliseconds poll_interval = std::chrono::milliseconds(50)) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (std::chrono::steady_clock::now() < deadline) {
