@@ -1,17 +1,15 @@
 #pragma once
 
+#include <algorithm>
+#include <iterator>
+#include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <string>
+#include <vector>
 
 #include "datastream_zmq_ui.hpp"
 #include "zmq_manifest.hpp"
-
-#include <nlohmann/json.hpp>
-
-#include <algorithm>
-#include <iterator>
-#include <string>
-#include <vector>
 
 namespace {
 
@@ -30,9 +28,13 @@ class ZmqDialog : public PJ::DialogPluginTyped {
 
   // --- Dialog protocol ---
 
-  std::string manifest() const override { return kZmqManifest; }
+  std::string manifest() const override {
+    return kZmqManifest;
+  }
 
-  std::string ui_content() const override { return kDataStreamZmqUi; }
+  std::string ui_content() const override {
+    return kDataStreamZmqUi;
+  }
 
   std::string widget_data() override {
     PJ::WidgetData wd;
@@ -132,7 +134,9 @@ class ZmqDialog : public PJ::DialogPluginTyped {
 
   bool loadConfig(std::string_view config_json) override {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-    if (cfg.is_discarded()) return false;
+    if (cfg.is_discarded()) {
+      return false;
+    }
     address_ = cfg.value("address", std::string("localhost"));
     port_ = cfg.value("port", 9872);
     transport_ = cfg.value("transport", std::string("tcp://"));
@@ -144,20 +148,27 @@ class ZmqDialog : public PJ::DialogPluginTyped {
 
  private:
   static int transportToIndex(const std::string& t) {
-    if (t == "ipc://") return 1;
-    if (t == "pgm://") return 2;
+    if (t == "ipc://") {
+      return 1;
+    }
+    if (t == "pgm://") {
+      return 2;
+    }
     return 0;  // tcp://
   }
 
   static std::string indexToTransport(int idx) {
     switch (idx) {
-      case 1: return "ipc://";
-      case 2: return "pgm://";
-      default: return "tcp://";
+      case 1:
+        return "ipc://";
+      case 2:
+        return "pgm://";
+      default:
+        return "tcp://";
     }
   }
 
-/// Get available encodings set by the owning DataSource.
+  /// Get available encodings set by the owning DataSource.
   /// Returns empty vector if no parsers are loaded or host doesn't support the method.
   std::vector<std::string> getAvailableEncodings() const {
     return available_encodings_;
