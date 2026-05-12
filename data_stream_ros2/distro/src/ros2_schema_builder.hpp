@@ -12,7 +12,6 @@
 #include <rclcpp/typesupport_helpers.hpp>
 #include <rosidl_typesupport_introspection_cpp/field_types.hpp>
 #include <rosidl_typesupport_introspection_cpp/message_introspection.hpp>
-
 #include <set>
 #include <string>
 
@@ -32,9 +31,7 @@ namespace detail {
 // the forward-compatible default: any unknown future distro is assumed to
 // follow the `get_message_typesupport_handle` naming.
 inline const rosidl_message_type_support_t* getMessageTypesupportHandle(
-    const std::string& type_name,
-    const std::string& typesupport_identifier,
-    rcpputils::SharedLibrary& library) {
+    const std::string& type_name, const std::string& typesupport_identifier, rcpputils::SharedLibrary& library) {
 #if defined(ROS_DISTRO_HUMBLE) || defined(ROS_DISTRO_IRON)
   return rclcpp::get_typesupport_handle(type_name, typesupport_identifier, library);
 #else
@@ -52,10 +49,8 @@ inline std::string buildRos2Schema(const std::string& base_type) {
   std::set<std::string> done;
 
   auto append_type = [&](const std::string& type_name, bool with_separator) {
-    auto lib = rclcpp::get_typesupport_library(
-        type_name, "rosidl_typesupport_introspection_cpp");
-    auto support = detail::getMessageTypesupportHandle(
-        type_name, "rosidl_typesupport_introspection_cpp", *lib);
+    auto lib = rclcpp::get_typesupport_library(type_name, "rosidl_typesupport_introspection_cpp");
+    auto support = detail::getMessageTypesupportHandle(type_name, "rosidl_typesupport_introspection_cpp", *lib);
 
     if (with_separator) {
       schema += "=====================================\nMSG: ";
@@ -68,24 +63,47 @@ inline std::string buildRos2Schema(const std::string& base_type) {
       const MessageMember& member = members->members_[i];
 
       switch (member.type_id_) {
-        case ROS_TYPE_FLOAT32: schema += "float32"; break;
-        case ROS_TYPE_FLOAT64: schema += "float64"; break;
+        case ROS_TYPE_FLOAT32:
+          schema += "float32";
+          break;
+        case ROS_TYPE_FLOAT64:
+          schema += "float64";
+          break;
         case ROS_TYPE_UINT8:
         case ROS_TYPE_BYTE:
-        case ROS_TYPE_CHAR:    schema += "uint8";   break;
-        case ROS_TYPE_BOOLEAN: schema += "bool";    break;
-        case ROS_TYPE_INT8:    schema += "int8";    break;
-        case ROS_TYPE_UINT16:  schema += "uint16";  break;
-        case ROS_TYPE_INT16:   schema += "int16";   break;
-        case ROS_TYPE_UINT32:  schema += "uint32";  break;
-        case ROS_TYPE_INT32:   schema += "int32";   break;
-        case ROS_TYPE_UINT64:  schema += "uint64";  break;
-        case ROS_TYPE_INT64:   schema += "int64";   break;
+        case ROS_TYPE_CHAR:
+          schema += "uint8";
+          break;
+        case ROS_TYPE_BOOLEAN:
+          schema += "bool";
+          break;
+        case ROS_TYPE_INT8:
+          schema += "int8";
+          break;
+        case ROS_TYPE_UINT16:
+          schema += "uint16";
+          break;
+        case ROS_TYPE_INT16:
+          schema += "int16";
+          break;
+        case ROS_TYPE_UINT32:
+          schema += "uint32";
+          break;
+        case ROS_TYPE_INT32:
+          schema += "int32";
+          break;
+        case ROS_TYPE_UINT64:
+          schema += "uint64";
+          break;
+        case ROS_TYPE_INT64:
+          schema += "int64";
+          break;
         case ROS_TYPE_STRING:
-        case ROS_TYPE_WSTRING: schema += "string";  break;
+        case ROS_TYPE_WSTRING:
+          schema += "string";
+          break;
         case ROS_TYPE_MESSAGE: {
-          const auto* nested =
-              reinterpret_cast<const MessageMembers*>(member.members_->data);
+          const auto* nested = reinterpret_cast<const MessageMembers*>(member.members_->data);
           // message_namespace_ is "<package>::msg" — strip the trailing "::msg".
           std::string ns = nested->message_namespace_;
           if (ns.size() >= 5) {

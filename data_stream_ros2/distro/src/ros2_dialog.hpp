@@ -8,33 +8,36 @@
 /// The Context is torn down on accept/reject — the source plugin builds its
 /// own Context in `onStart()` independently.
 
-#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
-#include <pj_plugins/sdk/widget_data.hpp>
-
-#include "datastream_ros2_ui.hpp"
-#include "ros2_manifest.hpp"
-
-#include <nlohmann/json.hpp>
-
-#include <rclcpp/rclcpp.hpp>
-
 #include <atomic>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
+#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/widget_data.hpp>
+#include <rclcpp/rclcpp.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "datastream_ros2_ui.hpp"
+#include "ros2_manifest.hpp"
+
 namespace {
 
 class Ros2Dialog : public PJ::DialogPluginTyped {
  public:
-  ~Ros2Dialog() override { stopDiscovery(); }
+  ~Ros2Dialog() override {
+    stopDiscovery();
+  }
 
-  std::string manifest() const override { return kRos2Manifest; }
-  std::string ui_content() const override { return kDataStreamRos2Ui; }
+  std::string manifest() const override {
+    return kRos2Manifest;
+  }
+  std::string ui_content() const override {
+    return kDataStreamRos2Ui;
+  }
 
   std::string widget_data() override {
     PJ::WidgetData wd;
@@ -56,17 +59,14 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     }
     wd.setSelectedItems("listWidget", selected_labels);
 
-    wd.setButtonText("buttonRefresh",
-                     discovery_running_ ? "Stop discovery" : "Start discovery");
+    wd.setButtonText("buttonRefresh", discovery_running_ ? "Stop discovery" : "Start discovery");
 
     if (discovery_running_) {
-      wd.setText("labelStatus",
-                 "Discovering... " + std::to_string(labels.size()) + " topic(s) found");
+      wd.setText("labelStatus", "Discovering... " + std::to_string(labels.size()) + " topic(s) found");
     } else if (labels.empty()) {
       wd.setText("labelStatus", "Click 'Start discovery' to scan ROS 2 topics");
     } else {
-      wd.setText("labelStatus",
-                 std::to_string(labels.size()) + " topic(s) found — discovery stopped");
+      wd.setText("labelStatus", std::to_string(labels.size()) + " topic(s) found — discovery stopped");
     }
 
     wd.setOkEnabled(!selected_topics_.empty());
@@ -93,8 +93,7 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     return false;
   }
 
-  bool onSelectionChanged(std::string_view widget_name,
-                          const std::vector<std::string>& selected) override {
+  bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name != "listWidget") {
       return false;
     }
@@ -115,8 +114,12 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     return false;
   }
 
-  void onAccepted(std::string_view /*json*/) override { stopDiscovery(); }
-  void onRejected() override { stopDiscovery(); }
+  void onAccepted(std::string_view /*json*/) override {
+    stopDiscovery();
+  }
+  void onRejected() override {
+    stopDiscovery();
+  }
 
   std::string saveConfig() const override {
     nlohmann::json arr = nlohmann::json::array();
@@ -137,9 +140,7 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     if (cfg.contains("selected_topics") && cfg["selected_topics"].is_array()) {
       for (const auto& entry : cfg["selected_topics"]) {
         if (entry.is_object()) {
-          selected_topics_.emplace_back(
-              entry.value("name", std::string{}),
-              entry.value("type", std::string{}));
+          selected_topics_.emplace_back(entry.value("name", std::string{}), entry.value("type", std::string{}));
         }
       }
     }
@@ -175,8 +176,7 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     if (context_) {
       try {
         context_->shutdown("dialog closed");
-      } catch (...) {
-      }
+      } catch (...) {}
       context_.reset();
     }
   }
