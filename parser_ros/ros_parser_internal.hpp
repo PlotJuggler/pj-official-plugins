@@ -1,18 +1,16 @@
 #pragma once
 
-#include <pj_base/sdk/canonical_object.hpp>
-#include <pj_base/sdk/message_parser_plugin_base.hpp>
-
-#include <nlohmann/json.hpp>
-#include <rosx_introspection/ros_parser.hpp>
-
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdlib>
 #include <deque>
 #include <limits>
+#include <nlohmann/json.hpp>
 #include <numbers>
+#include <pj_base/sdk/canonical_object.hpp>
+#include <pj_base/sdk/message_parser_plugin_base.hpp>
+#include <rosx_introspection/ros_parser.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -110,8 +108,9 @@ inline double valueRefAsDouble(const PJ::sdk::ValueRef& v) {
         using T = std::decay_t<decltype(val)>;
         if constexpr (std::is_same_v<T, bool>) {
           return val ? 1.0 : 0.0;
-        } else if constexpr (std::is_same_v<T, std::string_view> || std::is_same_v<T, PJ::NullValue> ||
-                             std::is_same_v<T, PJ::sdk::TypedNull>) {
+        } else if constexpr (
+            std::is_same_v<T, std::string_view> || std::is_same_v<T, PJ::NullValue> ||
+            std::is_same_v<T, PJ::sdk::TypedNull>) {
           return 0.0;
         } else {
           return static_cast<double>(val);
@@ -121,10 +120,14 @@ inline double valueRefAsDouble(const PJ::sdk::ValueRef& v) {
 }
 
 inline std::pair<double, bool> tryParseDouble(const std::string& s) {
-  if (s.empty()) return {0.0, false};
+  if (s.empty()) {
+    return {0.0, false};
+  }
   char* end = nullptr;
   double val = std::strtod(s.c_str(), &end);
-  if (end != s.c_str() && *end == '\0') return {val, true};
+  if (end != s.c_str() && *end == '\0') {
+    return {val, true};
+  }
   return {0.0, false};
 }
 
@@ -180,8 +183,7 @@ class RosParser : public PJ::MessageParserPluginBase {
     PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> (RosParser::*parse_scalars)(
         PJ::Timestamp, PJ::Span<const uint8_t>) = nullptr;
 
-    PJ::Expected<PJ::sdk::CanonicalObject> (RosParser::*parse_object)(
-        PJ::Timestamp, PJ::sdk::PayloadView) = nullptr;
+    PJ::Expected<PJ::sdk::CanonicalObject> (RosParser::*parse_object)(PJ::Timestamp, PJ::sdk::PayloadView) = nullptr;
   };
 
   static const std::unordered_map<std::string, CatalogEntry>& catalog();
@@ -212,8 +214,8 @@ class RosParser : public PJ::MessageParserPluginBase {
   // Setup helpers
   void ensureDeserializer();
   void detectSchemaFeatures();
-  void findQuaternionPrefixes(const RosMsgParser::ROSMessage* msg, const std::string& prefix,
-                              const RosMsgParser::RosMessageLibrary& lib);
+  void findQuaternionPrefixes(
+      const RosMsgParser::ROSMessage* msg, const std::string& prefix, const RosMsgParser::RosMessageLibrary& lib);
 
   // Field accumulation helpers
   void addField(const std::string& name, double value);
@@ -270,16 +272,13 @@ class RosParser : public PJ::MessageParserPluginBase {
       PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
 
   // sensor_msgs/Image
-  PJ::Expected<PJ::sdk::CanonicalObject> parseImage(
-      PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+  PJ::Expected<PJ::sdk::CanonicalObject> parseImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
   // sensor_msgs/CompressedImage (also covers compressedDepth via the format string)
-  PJ::Expected<PJ::sdk::CanonicalObject> parseCompressedImage(
-      PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+  PJ::Expected<PJ::sdk::CanonicalObject> parseCompressedImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
   // sensor_msgs/PointCloud2
-  PJ::Expected<PJ::sdk::CanonicalObject> parsePointCloud(
-      PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+  PJ::Expected<PJ::sdk::CanonicalObject> parsePointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
   // ----- Specialized scalar handlers -----
   //

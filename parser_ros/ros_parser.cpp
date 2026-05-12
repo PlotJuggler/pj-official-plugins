@@ -1,7 +1,7 @@
+#include <functional>
+
 #include "ros_manifest.hpp"
 #include "ros_parser_internal.hpp"
-
-#include <functional>
 
 namespace ros_parser_detail {
 
@@ -30,45 +30,51 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
   static const std::unordered_map<std::string, CatalogEntry> kMap = {
       // ----- Canonical-object schemas -----
       {"sensor_msgs/Image",
-          {.object_kind   = Kind::kImage,
-           .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
-           .parse_object  = &RosParser::parseImage}},
+       {.object_kind = Kind::kImage,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseImage}},
       {"sensor_msgs/CompressedImage",
-          {.object_kind   = Kind::kCompressedImage,
-           .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
-           .parse_object  = &RosParser::parseCompressedImage}},
+       {.object_kind = Kind::kCompressedImage,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseCompressedImage}},
       {"sensor_msgs/PointCloud2",
-          {.object_kind   = Kind::kPointCloud,
-           .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
-           .parse_object  = &RosParser::parsePointCloud}},
+       {.object_kind = Kind::kPointCloud,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parsePointCloud}},
 
       // ----- Specialized scalar schemas -----
       // wrapVoidHandler<Handler> is a member-fn-template; its address is a
       // member-fn-ptr matching parse_scalars, so it slots in directly.
-      {"std_msgs/Empty",                       {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleEmpty>}},
-      {"geometry_msgs/Pose",                   {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePose>}},
-      {"geometry_msgs/PoseStamped",            {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePoseStamped>}},
-      {"geometry_msgs/Transform",              {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTransform>}},
-      {"geometry_msgs/TransformStamped",       {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTransformStamped>}},
-      {"sensor_msgs/Imu",                      {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleImu>}},
-      {"nav_msgs/Odometry",                    {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleOdometry>}},
-      {"sensor_msgs/JointState",               {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleJointState>}},
-      {"diagnostic_msgs/DiagnosticArray",      {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleDiagnosticArray>}},
-      {"tf2_msgs/TFMessage",                   {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTFMessage>}},
-      {"data_tamer_msgs/Schemas",              {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleDataTamerSchemas>}},
-      {"data_tamer_msgs/Snapshot",             {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleDataTamerSnapshot>}},
-      {"pal_statistics_msgs/StatisticsNames",  {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePalStatisticsNames>}},
-      {"pal_statistics_msgs/StatisticsValues", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePalStatisticsValues>}},
-      {"plotjuggler_msgs/StatisticsNames",     {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePalStatisticsNames>}},
-      {"plotjuggler_msgs/StatisticsValues",    {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePalStatisticsValues>}},
-      {"tsl_msgs/TSLDefinition",               {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTSLDefinition>}},
-      {"tsl_msgs/TSLValues",                   {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTSLValues>}},
+      {"std_msgs/Empty", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleEmpty>}},
+      {"geometry_msgs/Pose", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePose>}},
+      {"geometry_msgs/PoseStamped", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePoseStamped>}},
+      {"geometry_msgs/Transform", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTransform>}},
+      {"geometry_msgs/TransformStamped",
+       {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTransformStamped>}},
+      {"sensor_msgs/Imu", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleImu>}},
+      {"nav_msgs/Odometry", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleOdometry>}},
+      {"sensor_msgs/JointState", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleJointState>}},
+      {"diagnostic_msgs/DiagnosticArray",
+       {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleDiagnosticArray>}},
+      {"tf2_msgs/TFMessage", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTFMessage>}},
+      {"data_tamer_msgs/Schemas", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleDataTamerSchemas>}},
+      {"data_tamer_msgs/Snapshot", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleDataTamerSnapshot>}},
+      {"pal_statistics_msgs/StatisticsNames",
+       {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePalStatisticsNames>}},
+      {"pal_statistics_msgs/StatisticsValues",
+       {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePalStatisticsValues>}},
+      {"plotjuggler_msgs/StatisticsNames",
+       {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePalStatisticsNames>}},
+      {"plotjuggler_msgs/StatisticsValues",
+       {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePalStatisticsValues>}},
+      {"tsl_msgs/TSLDefinition", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTSLDefinition>}},
+      {"tsl_msgs/TSLValues", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTSLValues>}},
 
       // ----- Default entry -----
       // Used by bindSchema for any ROS schema not matched above.
       // Drives the generic rosx_introspection walker that flattens
       // nested messages into one column per primitive field.
-      {CatalogEntry::kDefault,                 {.parse_scalars = &RosParser::parseScalarsGeneric}},
+      {CatalogEntry::kDefault, {.parse_scalars = &RosParser::parseScalarsGeneric}},
   };
   return kMap;
 }
@@ -102,8 +108,8 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
   // truncated by the generic introspection walker.
   try {
     parser_.emplace("", RosMsgParser::ROSType(msg_type), definition);
-    auto policy = discard_large_arrays_ ? RosMsgParser::Parser::DISCARD_LARGE_ARRAYS
-                                        : RosMsgParser::Parser::KEEP_LARGE_ARRAYS;
+    auto policy =
+        discard_large_arrays_ ? RosMsgParser::Parser::DISCARD_LARGE_ARRAYS : RosMsgParser::Parser::KEEP_LARGE_ARRAYS;
     parser_->setMaxArrayPolicy(policy, max_array_size_);
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("failed to parse ROS schema: ") + e.what());
@@ -145,13 +151,17 @@ std::string RosParser::saveConfig() const {
   cfg["discard_large_arrays"] = discard_large_arrays_;
   cfg["use_embedded_timestamp"] = use_embedded_timestamp_;
   cfg["serialization"] = use_ros1_ ? "ros1" : "cdr";
-  if (!topic_name_.empty()) cfg["topic_name"] = topic_name_;
+  if (!topic_name_.empty()) {
+    cfg["topic_name"] = topic_name_;
+  }
   return cfg.dump();
 }
 
 PJ::Status RosParser::loadConfig(std::string_view config_json) {
   auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-  if (cfg.is_discarded()) return PJ::okStatus();
+  if (cfg.is_discarded()) {
+    return PJ::okStatus();
+  }
 
   max_array_size_ = static_cast<size_t>(cfg.value("max_array_size", 500));
   discard_large_arrays_ = cfg.value("discard_large_arrays", false);
@@ -165,8 +175,8 @@ PJ::Status RosParser::loadConfig(std::string_view config_json) {
   }
 
   if (parser_.has_value()) {
-    auto policy = discard_large_arrays_ ? RosMsgParser::Parser::DISCARD_LARGE_ARRAYS
-                                         : RosMsgParser::Parser::KEEP_LARGE_ARRAYS;
+    auto policy =
+        discard_large_arrays_ ? RosMsgParser::Parser::DISCARD_LARGE_ARRAYS : RosMsgParser::Parser::KEEP_LARGE_ARRAYS;
     parser_->setMaxArrayPolicy(policy, max_array_size_);
   }
   ensureDeserializer();
@@ -180,8 +190,8 @@ PJ::Status RosParser::loadConfig(std::string_view config_json) {
 // parseScalarsDiscardingLargeArrays below.
 // ---------------------------------------------------------------------------
 
-PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>>
-RosParser::parseScalarsGeneric(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsGeneric(
+    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   if (!parser_.has_value()) {
     return PJ::unexpected(std::string("no schema bound"));
   }
@@ -208,15 +218,15 @@ RosParser::parseScalarsGeneric(PJ::Timestamp ts, PJ::Span<const uint8_t> payload
 // The user-configured array policy is restored on exit.
 // ---------------------------------------------------------------------------
 
-PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>>
-RosParser::parseScalarsDiscardingLargeArrays(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsDiscardingLargeArrays(
+    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   if (!parser_.has_value()) {
     return PJ::unexpected(std::string("no schema bound"));
   }
   parser_->setMaxArrayPolicy(RosMsgParser::Parser::DISCARD_LARGE_ARRAYS, max_array_size_);
   auto result = parseScalarsGeneric(ts, payload);
-  auto restored = discard_large_arrays_ ? RosMsgParser::Parser::DISCARD_LARGE_ARRAYS
-                                        : RosMsgParser::Parser::KEEP_LARGE_ARRAYS;
+  auto restored =
+      discard_large_arrays_ ? RosMsgParser::Parser::DISCARD_LARGE_ARRAYS : RosMsgParser::Parser::KEEP_LARGE_ARRAYS;
   parser_->setMaxArrayPolicy(restored, max_array_size_);
   return result;
 }
@@ -240,17 +250,18 @@ void RosParser::detectSchemaFeatures() {
   const auto& schema = parser_->getSchema();
   const auto& root_fields = schema->root_msg->fields();
 
-  has_header_ =
-      !root_fields.empty() && root_fields.front().type().baseName() == "std_msgs/Header";
+  has_header_ = !root_fields.empty() && root_fields.front().type().baseName() == "std_msgs/Header";
 
   quaternion_prefixes_.clear();
   findQuaternionPrefixes(schema->root_msg.get(), "", schema->msg_library);
 }
 
-void RosParser::findQuaternionPrefixes(const RosMsgParser::ROSMessage* msg, const std::string& prefix,
-                                       const RosMsgParser::RosMessageLibrary& lib) {
+void RosParser::findQuaternionPrefixes(
+    const RosMsgParser::ROSMessage* msg, const std::string& prefix, const RosMsgParser::RosMessageLibrary& lib) {
   for (const auto& field : msg->fields()) {
-    if (field.isConstant()) continue;
+    if (field.isConstant()) {
+      continue;
+    }
 
     std::string fp = prefix + "/" + field.name();
     const auto& type = field.type();
@@ -313,9 +324,10 @@ RosParser::HeaderData RosParser::readHeader() {
   h.nsec = deserializer_->deserializeUInt32();
 
   if (use_embedded_timestamp_) {
-    int64_t ts_ns =
-        static_cast<int64_t>(h.sec) * 1000000000LL + static_cast<int64_t>(h.nsec);
-    if (ts_ns > 0) current_timestamp_ = ts_ns;
+    int64_t ts_ns = static_cast<int64_t>(h.sec) * 1000000000LL + static_cast<int64_t>(h.nsec);
+    if (ts_ns > 0) {
+      current_timestamp_ = ts_ns;
+    }
   }
 
   deserializer_->deserializeString(h.frame_id);
@@ -338,8 +350,7 @@ void RosParser::emitHeader(const HeaderData& h) {
 void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
   try {
     parser_->deserialize(
-        RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()),
-        &flat_msg_, deserializer_.get());
+        RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()), &flat_msg_, deserializer_.get());
   } catch (const std::exception&) {
     // CDR deserialization failed; bail and let the empty owned_fields_
     // signal "no record" to the outer parse() caller. The SDK base
@@ -369,8 +380,7 @@ void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
     key.toStr(field_name);
     if (variant.getTypeID() == RosMsgParser::STRING) {
       string_storage_.push_back(variant.extract<std::string>());
-      owned_fields_.push_back(
-          {field_name, PJ::sdk::ValueRef{std::string_view(string_storage_.back())}});
+      owned_fields_.push_back({field_name, PJ::sdk::ValueRef{std::string_view(string_storage_.back())}});
     } else {
       owned_fields_.push_back({field_name, variantToValueRef(variant)});
     }
@@ -380,7 +390,9 @@ void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
 }
 
 void RosParser::addQuaternionRPY() {
-  if (quaternion_prefixes_.empty()) return;
+  if (quaternion_prefixes_.empty()) {
+    return;
+  }
 
   // Build name → index map for O(1) lookup.
   std::unordered_map<std::string, size_t> idx;
@@ -392,7 +404,9 @@ void RosParser::addQuaternionRPY() {
   for (const auto& prefix : quaternion_prefixes_) {
     auto find_val = [&](const std::string& suffix) -> double {
       auto it = idx.find(prefix + suffix);
-      if (it == idx.end()) return 0.0;
+      if (it == idx.end()) {
+        return 0.0;
+      }
       return valueRefAsDouble(owned_fields_[it->second].value);
     };
 

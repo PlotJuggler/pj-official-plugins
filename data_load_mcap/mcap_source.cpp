@@ -2,14 +2,9 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 
 #define MCAP_IMPLEMENTATION
-#include "mcap_dialog.hpp"
-#include "mcap_helpers.hpp"
-#include "mcap_manifest.hpp"
-
-#include <nlohmann/json.hpp>
-
 #include <cstdint>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -17,6 +12,9 @@
 #include <utility>
 #include <vector>
 
+#include "mcap_dialog.hpp"
+#include "mcap_helpers.hpp"
+#include "mcap_manifest.hpp"
 
 namespace {
 
@@ -51,9 +49,7 @@ using PJ::McapHelpers::readSelectiveSummary;
 // so zero-copy is preserved through the rest of the pipeline. Production
 // LRU path replaces the per-call copy with chunk-shared ownership.
 inline PJ::sdk::PayloadView readMessageBytesAt(
-    const std::shared_ptr<mcap::McapReader>& reader,
-    mcap::RecordOffset /*offset*/,
-    mcap::ChannelId channel_id,
+    const std::shared_ptr<mcap::McapReader>& reader, mcap::RecordOffset /*offset*/, mcap::ChannelId channel_id,
     mcap::Timestamp log_time) {
   auto noop_problem = [](const mcap::Status&) {};
   for (const auto& v : reader->readMessages(noop_problem, log_time, log_time + 1)) {
@@ -82,7 +78,9 @@ class McapSource : public PJ::FileSourceBase {
     return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;
   }
 
-  std::string saveConfig() const override { return dialog_.saveConfig(); }
+  std::string saveConfig() const override {
+    return dialog_.saveConfig();
+  }
 
   PJ::Status loadConfig(std::string_view config_json) override {
     if (!dialog_.loadConfig(config_json)) {
@@ -117,9 +115,9 @@ class McapSource : public PJ::FileSourceBase {
     } else {
       status = reader.readSummary(mcap::ReadSummaryMethod::NoFallbackScan);
       if (!status.ok()) {
-        runtimeHost().showError("Can't open summary of the file",
-                                "Code: " + std::to_string(static_cast<int>(status.code)) +
-                                    "\nMessage: " + status.message);
+        runtimeHost().showError(
+            "Can't open summary of the file",
+            "Code: " + std::to_string(static_cast<int>(status.code)) + "\nMessage: " + status.message);
         reader_keeper_.reset();  // bail out: drop the keeper so the reader closes.
         return PJ::unexpected(std::string("cannot read MCAP summary: ") + status.message);
       }
@@ -151,15 +149,17 @@ class McapSource : public PJ::FileSourceBase {
       }
 
       auto schema_it = summary.schemas.find(channel_ptr->schemaId);
-      if (schema_it == summary.schemas.end()) continue;
+      if (schema_it == summary.schemas.end()) {
+        continue;
+      }
       const auto& schema = schema_it->second;
 
-      PJ::Span<const uint8_t> schema_bytes{
-          reinterpret_cast<const uint8_t*>(schema->data.data()),
-          schema->data.size()};
+      PJ::Span<const uint8_t> schema_bytes{reinterpret_cast<const uint8_t*>(schema->data.data()), schema->data.size()};
 
       std::string_view encoding = channel_ptr->messageEncoding;
-      if (encoding.empty()) encoding = schema->encoding;
+      if (encoding.empty()) {
+        encoding = schema->encoding;
+      }
 
       PJ::ParserBindingRequest request{
           .topic_name = channel_ptr->topic,
@@ -177,8 +177,7 @@ class McapSource : public PJ::FileSourceBase {
       // schema->name nor mentions object_kind anywhere.
       auto handle = runtimeHost().ensureParserBinding(request);
       if (!handle) {
-        binding_errors.push_back(
-            channel_ptr->topic + " (encoding: " + std::string(encoding) + "): " + handle.error());
+        binding_errors.push_back(channel_ptr->topic + " (encoding: " + std::string(encoding) + "): " + handle.error());
         continue;
       }
       bindings.emplace(channel_id, *handle);
@@ -211,8 +210,7 @@ class McapSource : public PJ::FileSourceBase {
       if (used_selective_summary) {
         auto [data_start, data_end_unused] = reader.byteRange(0);
         (void)data_end_unused;
-        return mcap::LinearMessageView(reader, data_start, summary.summary_start, 0,
-                                       mcap::MaxTime, on_problem);
+        return mcap::LinearMessageView(reader, data_start, summary.summary_start, 0, mcap::MaxTime, on_problem);
       }
       return reader.readMessages(on_problem);
     };
@@ -223,10 +221,12 @@ class McapSource : public PJ::FileSourceBase {
 
     for (const auto& msg_view : messages) {
       auto binding_it = bindings.find(msg_view.channel->id);
-      if (binding_it == bindings.end()) continue;
+      if (binding_it == bindings.end()) {
+        continue;
+      }
 
-      PJ::Timestamp timestamp_ns = static_cast<PJ::Timestamp>(
-          use_log_time ? msg_view.message.logTime : msg_view.message.publishTime);
+      PJ::Timestamp timestamp_ns =
+          static_cast<PJ::Timestamp>(use_log_time ? msg_view.message.logTime : msg_view.message.publishTime);
 
       // Single uniform call per message. The DataSource hands the host a
       // fetcher (callable that produces the payload bytes when invoked)
@@ -244,21 +244,22 @@ class McapSource : public PJ::FileSourceBase {
       // lifetime.
       auto push_status = runtimeHost().pushMessage(
           binding_it->second, timestamp_ns,
-          [reader = reader_keeper_, off = msg_view.messageOffset,
-           ch = msg_view.channel->id, lt = msg_view.message.logTime]() {
-            return readMessageBytesAt(reader, off, ch, lt);
-          });
+          [reader = reader_keeper_, off = msg_view.messageOffset, ch = msg_view.channel->id,
+           lt = msg_view.message.logTime]() { return readMessageBytesAt(reader, off, ch, lt); });
       if (!push_status) {
         runtimeHost().reportMessage(
             PJ::DataSourceMessageLevel::kWarning,
-            std::string("push failed on '") + msg_view.channel->topic +
-                "': " + push_status.error());
+            std::string("push failed on '") + msg_view.channel->topic + "': " + push_status.error());
       }
 
       ++msg_count;
       if (msg_count % 1000 == 0) {
-        if (!runtimeHost().progressUpdate(msg_count)) break;
-        if (runtimeHost().isStopRequested()) break;
+        if (!runtimeHost().progressUpdate(msg_count)) {
+          break;
+        }
+        if (runtimeHost().isStopRequested()) {
+          break;
+        }
       }
     }
 
