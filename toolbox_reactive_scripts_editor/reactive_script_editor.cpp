@@ -1,10 +1,8 @@
+#include <nlohmann/json.hpp>
 #include <pj_base/sdk/platform.hpp>
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
-
-
-#include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
 
 #ifdef PJ_REACTIVE_HAS_PYTHON
@@ -14,9 +12,9 @@ namespace py = pybind11;
 #endif
 
 #if defined(_WIN32)
-#  define WIN32_LEAN_AND_MEAN
-#  define NOMINMAX
-#  include <windows.h>
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
 #endif
 
 #include <algorithm>
@@ -33,8 +31,8 @@ namespace py = pybind11;
 #include <utility>
 #include <vector>
 
-#include "reactive_script_editor_manifest.hpp"
 #include "reactive_script_editor_dialog_ui.hpp"
+#include "reactive_script_editor_manifest.hpp"
 
 namespace {
 
@@ -58,8 +56,8 @@ std::filesystem::path luaEditorLibraryPath() {
 // Returns empty string on success, or a human-readable error on failure.
 // ---------------------------------------------------------------------------
 
-std::string persistLibraryToDisk(const std::filesystem::path& path,
-                                 const std::map<std::string, SnippetData>& snippets) {
+std::string persistLibraryToDisk(
+    const std::filesystem::path& path, const std::map<std::string, SnippetData>& snippets) {
   try {
     std::filesystem::create_directories(path.parent_path());
     nlohmann::json j = nlohmann::json::object();
@@ -84,15 +82,21 @@ std::string persistLibraryToDisk(const std::filesystem::path& path,
 std::map<std::string, SnippetData> loadLibraryFromDisk(const std::filesystem::path& path) {
   std::map<std::string, SnippetData> result;
   std::ifstream in(path);
-  if (!in) return result;  // Missing file is fine: no snippets yet.
+  if (!in) {
+    return result;  // Missing file is fine: no snippets yet.
+  }
 
   std::stringstream buf;
   buf << in.rdbuf();
   auto j = nlohmann::json::parse(buf.str(), nullptr, false);
-  if (j.is_discarded() || !j.is_object()) return result;
+  if (j.is_discarded() || !j.is_object()) {
+    return result;
+  }
 
   for (auto& [key, val] : j.items()) {
-    if (!val.is_object()) continue;
+    if (!val.is_object()) {
+      continue;
+    }
     result[key] = SnippetData{
         val.value("code", std::string{}),
         val.value("global_code", std::string{}),
@@ -210,12 +214,10 @@ std::string validatePythonSyntax(const std::string& global_code, const std::stri
   ensurePythonInterpreter();
   try {
     if (!global_code.empty()) {
-      py::exec("compile(" + py::repr(py::str(global_code)).cast<std::string>() +
-               ", '<global>', 'exec')");
+      py::exec("compile(" + py::repr(py::str(global_code)).cast<std::string>() + ", '<global>', 'exec')");
     }
     std::string wrapped = indentPythonCode(function_code);
-    py::exec("compile(" + py::repr(py::str(wrapped)).cast<std::string>() +
-             ", '<editor>', 'exec')");
+    py::exec("compile(" + py::repr(py::str(wrapped)).cast<std::string>() + ", '<editor>', 'exec')");
   } catch (const py::error_already_set& e) {
     return e.what();
   } catch (const std::exception& e) {
@@ -232,9 +234,13 @@ std::string validatePythonSyntax(const std::string& global_code, const std::stri
 
 class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
  public:
-  std::string manifest() const override { return kReactiveScriptEditorManifest; }
+  std::string manifest() const override {
+    return kReactiveScriptEditorManifest;
+  }
 
-  std::string ui_content() const override { return kReactiveScriptEditorDialogUi; }
+  std::string ui_content() const override {
+    return kReactiveScriptEditorDialogUi;
+  }
 
   std::string widget_data() override {
     PJ::WidgetData wd;
@@ -417,10 +423,14 @@ class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
   }
 
   bool onTick() override {
-    if (!validation_pending_) return false;
+    if (!validation_pending_) {
+      return false;
+    }
 
     ++validation_tick_counter_;
-    if (validation_tick_counter_ < kValidationDebounce) return false;
+    if (validation_tick_counter_ < kValidationDebounce) {
+      return false;
+    }
 
     validation_pending_ = false;
     validation_tick_counter_ = 0;
@@ -464,7 +474,9 @@ class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
 
   bool loadConfig(std::string_view config_json) override {
     auto j = nlohmann::json::parse(config_json, nullptr, false);
-    if (j.is_discarded()) return false;
+    if (j.is_discarded()) {
+      return false;
+    }
 
     // New schema (nested "current" object)
     if (j.contains("current") && j["current"].is_object()) {
@@ -509,26 +521,44 @@ class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
     return std::exchange(legacy_library_snippets_, {});
   }
 
-  [[nodiscard]] const std::string& code() const { return code_; }
-  [[nodiscard]] const std::string& globalCode() const { return global_code_; }
-  [[nodiscard]] const std::string& functionName() const { return function_name_; }
-  [[nodiscard]] const std::string& language() const { return language_; }
+  [[nodiscard]] const std::string& code() const {
+    return code_;
+  }
+  [[nodiscard]] const std::string& globalCode() const {
+    return global_code_;
+  }
+  [[nodiscard]] const std::string& functionName() const {
+    return function_name_;
+  }
+  [[nodiscard]] const std::string& language() const {
+    return language_;
+  }
 
-  void setSeriesNames(std::vector<std::string> names) { series_names_ = std::move(names); }
+  void setSeriesNames(std::vector<std::string> names) {
+    series_names_ = std::move(names);
+  }
 
   using RunCallback =
       std::function<std::string(const std::string& code, const std::string& global, const std::string& name)>;
-  void setRunCallback(RunCallback cb) { run_callback_ = std::move(cb); }
+  void setRunCallback(RunCallback cb) {
+    run_callback_ = std::move(cb);
+  }
 
   // Library injection: called by the toolbox after loading from disk.
-  void setLibrary(std::map<std::string, SnippetData> snippets) { saved_snippets_ = std::move(snippets); }
+  void setLibrary(std::map<std::string, SnippetData> snippets) {
+    saved_snippets_ = std::move(snippets);
+  }
 
   // Persistence callback: called by the dialog after a save/delete in the library.
   // The toolbox provides this to flush the library to disk and surface errors via the runtime host.
   using LibrarySaveCallback = std::function<void(const std::map<std::string, SnippetData>&)>;
-  void setLibrarySaveCallback(LibrarySaveCallback cb) { library_save_callback_ = std::move(cb); }
+  void setLibrarySaveCallback(LibrarySaveCallback cb) {
+    library_save_callback_ = std::move(cb);
+  }
 
-  [[nodiscard]] const std::map<std::string, SnippetData>& library() const { return saved_snippets_; }
+  [[nodiscard]] const std::map<std::string, SnippetData>& library() const {
+    return saved_snippets_;
+  }
 
  private:
   void requestLibraryPersist() {
@@ -538,9 +568,13 @@ class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
   }
 
   bool loadSelectedSnippet() {
-    if (library_selected_.empty()) return false;
+    if (library_selected_.empty()) {
+      return false;
+    }
     auto it = saved_snippets_.find(library_selected_);
-    if (it == saved_snippets_.end()) return false;
+    if (it == saved_snippets_.end()) {
+      return false;
+    }
 
     code_ = it->second.code;
     global_code_ = it->second.global_code;
@@ -551,11 +585,12 @@ class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
     return true;
   }
 
-  std::string code_ = "-- Write your Lua function body here.\n"
-                       "-- It receives tracker_time as parameter.\n"
-                       "-- Example:\n"
-                       "--   local series = TimeseriesView(\"my_field\")\n"
-                       "--   local val = series:atTime(tracker_time)\n";
+  std::string code_ =
+      "-- Write your Lua function body here.\n"
+      "-- It receives tracker_time as parameter.\n"
+      "-- Example:\n"
+      "--   local series = TimeseriesView(\"my_field\")\n"
+      "--   local val = series:atTime(tracker_time)\n";
   std::string global_code_;
   std::string function_name_;
   std::string language_ = "lua";
@@ -597,26 +632,38 @@ struct SeriesAccessor {
   std::vector<double> timestamps;
   std::vector<double> values;
 
-  [[nodiscard]] size_t size() const { return timestamps.size(); }
+  [[nodiscard]] size_t size() const {
+    return timestamps.size();
+  }
 
   [[nodiscard]] std::optional<TimePoint> at(size_t index) const {
-    if (index >= timestamps.size()) return std::nullopt;
+    if (index >= timestamps.size()) {
+      return std::nullopt;
+    }
     return TimePoint{timestamps[index], values[index]};
   }
 
   [[nodiscard]] double atTime(double t) const {
-    if (timestamps.empty()) return 0.0;
+    if (timestamps.empty()) {
+      return 0.0;
+    }
     // Binary search for the closest timestamp.
     auto it = std::lower_bound(timestamps.begin(), timestamps.end(), t);
-    if (it == timestamps.end()) return values.back();
-    if (it == timestamps.begin()) return values.front();
+    if (it == timestamps.end()) {
+      return values.back();
+    }
+    if (it == timestamps.begin()) {
+      return values.front();
+    }
     size_t idx = static_cast<size_t>(it - timestamps.begin());
     // Linear interpolation between idx-1 and idx.
     double t0 = timestamps[idx - 1];
     double t1 = timestamps[idx];
     double v0 = values[idx - 1];
     double v1 = values[idx];
-    if (t1 == t0) return v0;
+    if (t1 == t0) {
+      return v0;
+    }
     double alpha = (t - t0) / (t1 - t0);
     return v0 + alpha * (v1 - v0);
   }
@@ -641,7 +688,9 @@ struct CreatedSeries {
     values.clear();
   }
 
-  [[nodiscard]] size_t size() const { return timestamps.size(); }
+  [[nodiscard]] size_t size() const {
+    return timestamps.size();
+  }
 };
 
 #ifdef PJ_REACTIVE_HAS_PYTHON
@@ -656,12 +705,15 @@ void registerPjTypes() {
     py::module_ m = py::module_::import("__main__");
     py::class_<SeriesAccessor>(m, "_PJSeriesAccessor")
         .def("size", &SeriesAccessor::size)
-        .def("at",
-             [](const SeriesAccessor& sa, size_t index) -> py::object {
-               auto pt = sa.at(index);
-               if (!pt) return py::none();
-               return py::make_tuple(pt->t, pt->v);
-             })
+        .def(
+            "at",
+            [](const SeriesAccessor& sa, size_t index) -> py::object {
+              auto pt = sa.at(index);
+              if (!pt) {
+                return py::none();
+              }
+              return py::make_tuple(pt->t, pt->v);
+            })
         .def("atTime", &SeriesAccessor::atTime);
 
     py::class_<CreatedSeries>(m, "_PJCreatedSeries")
@@ -724,14 +776,16 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
       dialog_.setSeriesNames(series_names_);
     }
     ensureLibraryLoaded();
-    dialog_.setRunCallback([this](const std::string& c, const std::string& g,
-                                  const std::string& n) { return executeScript(c, g, n); });
+    dialog_.setRunCallback(
+        [this](const std::string& c, const std::string& g, const std::string& n) { return executeScript(c, g, n); });
     dialog_.setLibrarySaveCallback(
         [this](const std::map<std::string, SnippetData>& snippets) { writeLibrary(snippets); });
     return PJ::borrowDialog(dialog_);
   }
 
-  std::string saveConfig() const override { return dialog_.saveConfig(); }
+  std::string saveConfig() const override {
+    return dialog_.saveConfig();
+  }
 
   PJ::Status loadConfig(std::string_view config_json) override {
     if (!dialog_.loadConfig(config_json)) {
@@ -750,14 +804,14 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
       dialog_.setLibrary(merged);
       writeLibrary(merged);
       if (runtimeHostBound()) {
-        runtimeHost().reportMessage(PJ::ToolboxMessageLevel::kInfo,
-                                    "Migrated " + std::to_string(legacy.size()) +
-                                        " legacy library snippet(s) to disk");
+        runtimeHost().reportMessage(
+            PJ::ToolboxMessageLevel::kInfo,
+            "Migrated " + std::to_string(legacy.size()) + " legacy library snippet(s) to disk");
       }
     }
 
-    if (auto_run_pending_ && !dialog_.code().empty() && !dialog_.functionName().empty() &&
-        toolboxHostBound() && runtimeHostBound()) {
+    if (auto_run_pending_ && !dialog_.code().empty() && !dialog_.functionName().empty() && toolboxHostBound() &&
+        runtimeHostBound()) {
       auto_run_pending_ = false;
       std::string msg = executeScript(dialog_.code(), dialog_.globalCode(), dialog_.functionName());
       if (msg.rfind("Error:", 0) == 0) {
@@ -770,8 +824,8 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
  private:
   // Writes script-created series to the datastore. Returns a user-facing summary
   // or an error prefixed with "Error:". Shared by all language backends.
-  std::string writeCreatedSeries(const std::unordered_map<std::string, CreatedSeries>& created,
-                                 const std::string& func_name) {
+  std::string writeCreatedSeries(
+      const std::unordered_map<std::string, CreatedSeries>& created, const std::string& func_name) {
     if (!created.empty()) {
       auto host = toolboxHost();
       auto source = host.createDataSource("script_output");
@@ -781,7 +835,9 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
 
       for (const auto& [name, series] : created) {
         auto topic = host.ensureTopic(*source, func_name + "/" + name);
-        if (!topic) continue;
+        if (!topic) {
+          continue;
+        }
 
         for (size_t i = 0; i < series.size(); ++i) {
           auto ts = static_cast<int64_t>(series.timestamps[i]);
@@ -802,15 +858,14 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
     for (const auto& [_, s] : created) {
       total_points += s.size();
     }
-    std::string summary = "Executed '" + func_name + "': " + std::to_string(created.size()) +
-                          " series, " + std::to_string(total_points) + " points";
+    std::string summary = "Executed '" + func_name + "': " + std::to_string(created.size()) + " series, " +
+                          std::to_string(total_points) + " points";
     runtimeHost().reportMessage(PJ::ToolboxMessageLevel::kInfo, summary);
     return summary;
   }
 
   // Dispatches script execution to the appropriate language backend.
-  std::string executeScript(const std::string& code, const std::string& global_code,
-                            const std::string& func_name) {
+  std::string executeScript(const std::string& code, const std::string& global_code, const std::string& func_name) {
     if (dialog_.language() == "python") {
 #ifdef PJ_REACTIVE_HAS_PYTHON
       return executePythonScriptImpl(code, global_code, func_name);
@@ -824,8 +879,8 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
 
   // Executes a Lua script in batch mode (tracker_time = 0). Returns a user-facing
   // message: success summary or error prefixed with "Error:".
-  std::string executeLuaScriptImpl(const std::string& code, const std::string& global_code,
-                                   const std::string& func_name) {
+  std::string executeLuaScriptImpl(
+      const std::string& code, const std::string& global_code, const std::string& func_name) {
     if (code.empty() || func_name.empty()) {
       return "Error: empty code or function name";
     }
@@ -840,20 +895,18 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
     // Register TimeseriesView as a callable that returns a SeriesAccessor.
     lua["TimeseriesView"] = [this, &lua](const std::string& name) -> sol::object {
       auto it = series_map_.find(name);
-      if (it == series_map_.end()) return sol::make_object(lua, sol::lua_nil);
+      if (it == series_map_.end()) {
+        return sol::make_object(lua, sol::lua_nil);
+      }
       return sol::make_object(lua, it->second);
     };
 
     // Register Timeseries constructor.
     std::unordered_map<std::string, CreatedSeries> created;
-    lua["Timeseries"] = [&created](const std::string& name) -> CreatedSeries& {
-      return created[name];
-    };
+    lua["Timeseries"] = [&created](const std::string& name) -> CreatedSeries& { return created[name]; };
 
     // Register GetSeriesNames.
-    lua["GetSeriesNames"] = [this]() -> std::vector<std::string> {
-      return series_names_;
-    };
+    lua["GetSeriesNames"] = [this]() -> std::vector<std::string> { return series_names_; };
 
     // Register SeriesAccessor type.
     std::string sa_name = "_SeriesAccessor";
@@ -861,7 +914,9 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
     sa_type["size"] = &SeriesAccessor::size;
     sa_type["at"] = [](const SeriesAccessor& sa, size_t index, sol::this_state s) -> sol::object {
       auto pt = sa.at(index);
-      if (!pt) return sol::make_object(s, sol::lua_nil);
+      if (!pt) {
+        return sol::make_object(s, sol::lua_nil);
+      }
       sol::state_view lv(s);
       sol::table result = lv.create_table();
       result[1] = pt->t;
@@ -915,10 +970,14 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
     };
     if (timeline && !timeline->empty()) {
       for (double t : *timeline) {
-        if (auto err = run_at(t); !err.empty()) return err;
+        if (auto err = run_at(t); !err.empty()) {
+          return err;
+        }
       }
     } else {
-      if (auto err = run_at(0.0); !err.empty()) return err;
+      if (auto err = run_at(0.0); !err.empty()) {
+        return err;
+      }
     }
 
     return writeCreatedSeries(created, func_name);
@@ -927,8 +986,8 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
 #ifdef PJ_REACTIVE_HAS_PYTHON
   // Executes a Python script in batch mode (tracker_time = 0). Returns a user-facing
   // message: success summary or error prefixed with "Error:".
-  std::string executePythonScriptImpl(const std::string& code, const std::string& global_code,
-                                      const std::string& func_name) {
+  std::string executePythonScriptImpl(
+      const std::string& code, const std::string& global_code, const std::string& func_name) {
     if (code.empty() || func_name.empty()) {
       return "Error: empty code or function name";
     }
@@ -945,19 +1004,19 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
       // Register global functions with runtime state.
       std::unordered_map<std::string, CreatedSeries> created;
 
-      scope["TimeseriesView"] = py::cpp_function(
-          [this](const std::string& name) -> py::object {
-            auto it = series_map_.find(name);
-            if (it == series_map_.end()) return py::none();
-            return py::cast(it->second, py::return_value_policy::reference);
-          });
+      scope["TimeseriesView"] = py::cpp_function([this](const std::string& name) -> py::object {
+        auto it = series_map_.find(name);
+        if (it == series_map_.end()) {
+          return py::none();
+        }
+        return py::cast(it->second, py::return_value_policy::reference);
+      });
 
       scope["Timeseries"] = py::cpp_function(
           [&created](const std::string& name) -> CreatedSeries& { return created[name]; },
           py::return_value_policy::reference);
 
-      scope["GetSeriesNames"] = py::cpp_function(
-          [this]() -> std::vector<std::string> { return series_names_; });
+      scope["GetSeriesNames"] = py::cpp_function([this]() -> std::vector<std::string> { return series_names_; });
 
       // Import common modules into the scope.
       scope["math"] = py::module_::import("math");
@@ -996,7 +1055,9 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
 
   // Loads the on-disk library into the dialog the first time it's needed.
   void ensureLibraryLoaded() {
-    if (library_loaded_) return;
+    if (library_loaded_) {
+      return;
+    }
     dialog_.setLibrary(loadLibraryFromDisk(luaEditorLibraryPath()));
     library_loaded_ = true;
   }
@@ -1005,8 +1066,7 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
   void writeLibrary(const std::map<std::string, SnippetData>& snippets) {
     std::string err = persistLibraryToDisk(luaEditorLibraryPath(), snippets);
     if (!err.empty() && runtimeHostBound()) {
-      runtimeHost().reportMessage(PJ::ToolboxMessageLevel::kWarning,
-                                  "Lua editor library: " + err);
+      runtimeHost().reportMessage(PJ::ToolboxMessageLevel::kWarning, "Lua editor library: " + err);
     }
   }
 
