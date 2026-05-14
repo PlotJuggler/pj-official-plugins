@@ -1,4 +1,5 @@
-#include <pj_base/sdk/canonical_object.hpp>
+#include <pj_scene_protocol/builtin/BuiltinObject.h>
+
 #include <pj_base/sdk/data_source_patterns.hpp>
 
 #define MCAP_IMPLEMENTATION
@@ -129,7 +130,7 @@ class McapSource : public PJ::FileSourceBase {
     }
 
     // readSelectiveSummary deliberately skips ChunkIndex parsing for a
-    // faster initial open, but the random-access fetcher below depends on
+    // faster initial open, but the random-access FetchMessageData below depends on
     // `reader.chunkIndexes()` to know each chunk's byte range and time
     // bounds. If we took the selective path, do an additional
     // NoFallbackScan summary read solely to populate that data. Strictly
@@ -190,7 +191,7 @@ class McapSource : public PJ::FileSourceBase {
 
       // Bind the parser. The host runtime, internally, also asks the parser
       // about its schema classification (classifySchema) and — when the
-      // parser declares a canonical-object kind != kNone — registers the
+      // parser declares a builtin-object kind != kNone — registers the
       // matching ObjectTopic in the ObjectStore on the source's behalf,
       // associated with this binding. The DataSource never inspects
       // schema->name nor mentions object_kind anywhere.
@@ -239,7 +240,7 @@ class McapSource : public PJ::FileSourceBase {
     bool use_log_time = dialog_.useMcapLogTime();
 
     // Build a chunk_offset → (length, start_time, end_time) index from the
-    // summary. The fetcher closure captures the containing chunk's byte
+    // summary. The FetchMessageData closure captures the containing chunk's byte
     // range AND time bounds so the cache loader can construct a
     // byte-bounded LinearMessageView — O(1) random access instead of
     // O(N_chunks_before_target).
@@ -284,10 +285,10 @@ class McapSource : public PJ::FileSourceBase {
       }
 
       // Single uniform call per message. The DataSource hands the host a
-      // fetcher (callable that produces the payload bytes when invoked)
+      // FetchMessageData callable (produces the payload bytes when invoked)
       // and stays out of any further routing. The host applies the
       // configured ObjectIngestPolicy (kPureLazy / kLazyObjectsEagerScalars / kEager)
-      // to decide whether to invoke the fetcher now (parse scalars and/or
+      // to decide whether to invoke the callable now (parse scalars and/or
       // materialize the object) or only register it for later pulls. The
       // DataSource never knows which mode is active.
       //
@@ -329,7 +330,7 @@ class McapSource : public PJ::FileSourceBase {
  private:
   McapDialog dialog_;
   // Keeps the open mcap reader alive past importData() so the deferred
-  // fetchers handed to runtimeHost().pushMessage() can read messages on
+  // FetchMessageData callables handed to runtimeHost().pushMessage() can read messages on
   // demand. Reset on bail-out paths or destroyed with the source.
   std::shared_ptr<mcap::McapReader> reader_keeper_;
 };

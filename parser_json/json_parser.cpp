@@ -1,15 +1,13 @@
-#include <pj_base/sdk/message_parser_plugin_base.hpp>
-#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
-
-#include "json_manifest.hpp"
-#include "json_parser_dialog.hpp"
-
-#include <nlohmann/json.hpp>
-
 #include <cstddef>
+#include <nlohmann/json.hpp>
+#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "json_manifest.hpp"
+#include "json_parser_dialog.hpp"
 
 namespace {
 
@@ -22,9 +20,9 @@ struct FlattenedField {
 /// Flatten a JSON value into scalar fields using "/" as separator.
 /// Arrays use bracket notation: "arr[0]", "arr[1]", etc.
 /// Only numeric and boolean leaves are emitted; strings and nulls are skipped.
-void flattenJson(const std::string& prefix, const nlohmann::json& value,
-                 std::size_t max_array_size, bool clamp_arrays,
-                 std::vector<FlattenedField>& out) {
+void flattenJson(
+    const std::string& prefix, const nlohmann::json& value, std::size_t max_array_size, bool clamp_arrays,
+    std::vector<FlattenedField>& out) {
   switch (value.type()) {
     case nlohmann::detail::value_t::object:
       for (const auto& [key, child] : value.items()) {
@@ -35,7 +33,9 @@ void flattenJson(const std::string& prefix, const nlohmann::json& value,
     case nlohmann::detail::value_t::array: {
       auto count = value.size();
       if (max_array_size > 0 && count > max_array_size) {
-        if (!clamp_arrays) break;  // skip oversized
+        if (!clamp_arrays) {
+          break;  // skip oversized
+        }
         count = max_array_size;
       }
       for (std::size_t i = 0; i < count; ++i) {
@@ -104,7 +104,9 @@ class JsonParser : public PJ::MessageParserPluginBase {
     if (json.is_array()) {
       for (auto& element : json) {
         auto status = flattenAndAppend(timestamp_ns, element);
-        if (!status) return status;
+        if (!status) {
+          return status;
+        }
       }
       return PJ::okStatus();
     }
@@ -170,19 +172,27 @@ class JsonParser : public PJ::MessageParserPluginBase {
 
     // No hint — try JSON first (most common)
     auto result = nlohmann::json::parse(data, data + size, nullptr, false);
-    if (!result.is_discarded()) return result;
+    if (!result.is_discarded()) {
+      return result;
+    }
 
     // Only try binary formats if the payload starts with a non-ASCII byte
     // (JSON always starts with '{', '[', '"', or a digit — all ASCII)
     if (size > 0 && data[0] > 0x7F) {
       result = nlohmann::json::from_cbor(data, data + size, true, false);
-      if (!result.is_discarded()) return result;
+      if (!result.is_discarded()) {
+        return result;
+      }
 
       result = nlohmann::json::from_msgpack(data, data + size, true, false);
-      if (!result.is_discarded()) return result;
+      if (!result.is_discarded()) {
+        return result;
+      }
 
       result = nlohmann::json::from_bson(data, data + size, true, false);
-      if (!result.is_discarded()) return result;
+      if (!result.is_discarded()) {
+        return result;
+      }
     }
 
     return result;  // still discarded from JSON parse attempt

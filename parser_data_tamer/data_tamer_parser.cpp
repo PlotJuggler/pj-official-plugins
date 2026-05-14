@@ -1,12 +1,10 @@
-#include <pj_base/sdk/message_parser_plugin_base.hpp>
-
-#include "data_tamer_manifest.hpp"
-
 #include <data_tamer_parser/data_tamer_parser.hpp>
-
+#include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <string>
 #include <type_traits>
 #include <vector>
+
+#include "data_tamer_manifest.hpp"
 
 namespace {
 
@@ -23,7 +21,9 @@ class DataTamerParserPlugin : public PJ::MessageParserPluginBase {
   }
 
   PJ::Status parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> payload) override {
-    if (!writeHostBound()) return PJ::unexpected(std::string("write host not bound"));
+    if (!writeHostBound()) {
+      return PJ::unexpected(std::string("write host not bound"));
+    }
 
     owned_fields_.clear();
 
@@ -42,26 +42,41 @@ class DataTamerParserPlugin : public PJ::MessageParserPluginBase {
     snapshot.payload.size = payload_size;
 
     DataTamerParser::ParseSnapshot(
-        schema_, snapshot,
-        [this](const std::string& field_name, const DataTamerParser::VarNumber& var) {
-          PJ::sdk::ValueRef value = std::visit([](const auto& v) -> PJ::sdk::ValueRef {
-              using T = std::decay_t<decltype(v)>;
-              if constexpr (std::is_same_v<T, float>) return v;
-              else if constexpr (std::is_same_v<T, double>) return v;
-              else if constexpr (std::is_same_v<T, int8_t>) return v;
-              else if constexpr (std::is_same_v<T, uint8_t>) return v;
-              else if constexpr (std::is_same_v<T, int16_t>) return v;
-              else if constexpr (std::is_same_v<T, uint16_t>) return v;
-              else if constexpr (std::is_same_v<T, int32_t>) return v;
-              else if constexpr (std::is_same_v<T, uint32_t>) return v;
-              else if constexpr (std::is_same_v<T, int64_t>) return v;
-              else if constexpr (std::is_same_v<T, uint64_t>) return v;
-              else return static_cast<double>(v);
-          }, var);
+        schema_, snapshot, [this](const std::string& field_name, const DataTamerParser::VarNumber& var) {
+          PJ::sdk::ValueRef value = std::visit(
+              [](const auto& v) -> PJ::sdk::ValueRef {
+                using T = std::decay_t<decltype(v)>;
+                if constexpr (std::is_same_v<T, float>) {
+                  return v;
+                } else if constexpr (std::is_same_v<T, double>) {
+                  return v;
+                } else if constexpr (std::is_same_v<T, int8_t>) {
+                  return v;
+                } else if constexpr (std::is_same_v<T, uint8_t>) {
+                  return v;
+                } else if constexpr (std::is_same_v<T, int16_t>) {
+                  return v;
+                } else if constexpr (std::is_same_v<T, uint16_t>) {
+                  return v;
+                } else if constexpr (std::is_same_v<T, int32_t>) {
+                  return v;
+                } else if constexpr (std::is_same_v<T, uint32_t>) {
+                  return v;
+                } else if constexpr (std::is_same_v<T, int64_t>) {
+                  return v;
+                } else if constexpr (std::is_same_v<T, uint64_t>) {
+                  return v;
+                } else {
+                  return static_cast<double>(v);
+                }
+              },
+              var);
           owned_fields_.push_back({"/" + field_name, value});
         });
 
-    if (owned_fields_.empty()) return PJ::okStatus();
+    if (owned_fields_.empty()) {
+      return PJ::okStatus();
+    }
 
     named_fields_.clear();
     named_fields_.reserve(owned_fields_.size());
@@ -69,8 +84,7 @@ class DataTamerParserPlugin : public PJ::MessageParserPluginBase {
       named_fields_.push_back({.name = f.name, .value = f.value});
     }
     return writeHost().appendRecord(
-        timestamp_ns,
-        PJ::Span<const PJ::sdk::NamedFieldValue>(named_fields_.data(), named_fields_.size()));
+        timestamp_ns, PJ::Span<const PJ::sdk::NamedFieldValue>(named_fields_.data(), named_fields_.size()));
   }
 
  private:

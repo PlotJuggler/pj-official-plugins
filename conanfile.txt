@@ -13,6 +13,7 @@ asio/1.28.2
 kissfft/131.1.0
 lua/5.4.6
 sol2/3.5.0
+magic_enum/0.9.7
 # Pin libsodium to 1.0.20: 1.0.21 has broken ARM NEON code that fails with GCC on aarch64
 libsodium/1.0.20
 pybind11/2.13.6

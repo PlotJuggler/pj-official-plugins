@@ -1,7 +1,7 @@
 /**
- * @file ros_canonical_object_handlers.cpp
- * @brief Per-schema canonical-object decoders. One parse<X>() entry per
- *        schema returns an Expected<CanonicalObject> ready for ObjectStore
+ * @file ros_builtin_object_handlers.cpp
+ * @brief Per-schema builtin-object decoders. One parse<X>() entry per
+ *        schema returns an Expected<BuiltinObject> ready for ObjectStore
  *        ingestion: deserializer setup + body walk + zero-copy variant
  *        wrap, all inline.
  *
@@ -44,20 +44,12 @@ namespace ros_parser_detail {
 
 namespace {
 
-struct RosEncodingMap {
-  PJ::sdk::PixelFormat format;
-  uint32_t bytes_per_pixel;
-};
-
-// Mapping ROS encoding string → canonical PJ pixel format. BGR variants map
-// straight to kBGR888/kBGRA8888 (no R↔B swap); the consumer handles channel
-// order via texture-format selection.
-const std::unordered_map<std::string, RosEncodingMap>& kRosImageEncodings() {
-  static const std::unordered_map<std::string, RosEncodingMap> kMap = {
-      {"rgb8", {PJ::sdk::PixelFormat::kRGB888, 3}},  {"rgba8", {PJ::sdk::PixelFormat::kRGBA8888, 4}},
-      {"bgr8", {PJ::sdk::PixelFormat::kBGR888, 3}},  {"bgra8", {PJ::sdk::PixelFormat::kBGRA8888, 4}},
-      {"mono8", {PJ::sdk::PixelFormat::kMono8, 1}},  {"mono16", {PJ::sdk::PixelFormat::kMono16, 2}},
-      {"16UC1", {PJ::sdk::PixelFormat::kMono16, 2}},
+// Bytes per pixel for the raw ROS image encodings parser_ros consumes. Used
+// only to validate that row_step >= width * bpp. Encoding strings are
+// emitted into Image::encoding verbatim — the consumer routes by string.
+const std::unordered_map<std::string, uint32_t>& kRosImageBytesPerPixel() {
+  static const std::unordered_map<std::string, uint32_t> kMap = {
+      {"rgb8", 3}, {"rgba8", 4}, {"bgr8", 3}, {"bgra8", 4}, {"mono8", 1}, {"mono16", 2}, {"16UC1", 2},
   };
   return kMap;
 }
@@ -104,7 +96,7 @@ inline uint8_t readU8(RosMsgParser::Deserializer& d) {
 //   data                    uint8[height*step]
 // ---------------------------------------------------------------------------
 
-PJ::Expected<PJ::sdk::CanonicalObject> RosParser::parseImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
@@ -118,28 +110,30 @@ PJ::Expected<PJ::sdk::CanonicalObject> RosParser::parseImage(PJ::Timestamp ts, P
     const uint32_t step = deserializer_->deserializeUInt32();
     const auto data_span = deserializer_->deserializeByteSequence();
 
-    auto it = kRosImageEncodings().find(encoding);
-    if (it == kRosImageEncodings().end()) {
+    auto it = kRosImageBytesPerPixel().find(encoding);
+    if (it == kRosImageBytesPerPixel().end()) {
       return PJ::unexpected(std::string("unsupported ROS encoding: ") + encoding);
     }
-    const auto& enc = it->second;
+    const uint32_t bytes_per_pixel = it->second;
 
     const size_t required = static_cast<size_t>(step) * height;
     if (data_span.size() < required) {
       return PJ::unexpected(std::string("Image data[] truncated"));
     }
-    if (step < width * enc.bytes_per_pixel) {
+    if (step < width * bytes_per_pixel) {
       return PJ::unexpected(std::string("Image step smaller than width*bpp"));
     }
 
-    return PJ::sdk::CanonicalObject{PJ::sdk::Image{
+    return PJ::sdk::BuiltinObject{PJ::sdk::Image{
         .width = width,
         .height = height,
-        .pixel_format = enc.format,
+        .encoding = encoding,
         .row_step = step,
         .is_bigendian = (is_be != 0),
-        .pixels = PJ::Span<const uint8_t>(data_span.data(), required),
+        .data = PJ::Span<const uint8_t>(data_span.data(), required),
         .anchor = payload.anchor,
+        .compressed_depth_min = std::nullopt,
+        .compressed_depth_max = std::nullopt,
         .timestamp_ns = ts,
     }};
   } catch (const std::exception& e) {
@@ -157,7 +151,7 @@ PJ::Expected<PJ::sdk::CanonicalObject> RosParser::parseImage(PJ::Timestamp ts, P
 //                                       12-byte compressedDepth mini-header
 // ---------------------------------------------------------------------------
 
-PJ::Expected<PJ::sdk::CanonicalObject> RosParser::parseCompressedImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseCompressedImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
@@ -169,8 +163,9 @@ PJ::Expected<PJ::sdk::CanonicalObject> RosParser::parseCompressedImage(PJ::Times
     const uint8_t* src = data_span.data();
     const uint32_t data_len = static_cast<uint32_t>(data_span.size());
 
-    PJ::sdk::CompressedImage::Format fmt = PJ::sdk::CompressedImage::Format::kUnknown;
-    PJ::sdk::CompressedImage::Extras extras;
+    std::string out_encoding;
+    std::optional<float> depth_min;
+    std::optional<float> depth_max;
     size_t blob_offset = 0;
     uint32_t blob_size = data_len;
 
@@ -180,32 +175,37 @@ PJ::Expected<PJ::sdk::CanonicalObject> RosParser::parseCompressedImage(PJ::Times
       }
       // Mini-header: uint32 format (ignored), float depth_min, float depth_max.
       // This is inside a uint8[] body, so it is byte-packed — no CDR alignment.
-      float depth_min = 0.0f;
-      float depth_max = 0.0f;
-      std::memcpy(&depth_min, src + 4, sizeof(float));
-      std::memcpy(&depth_max, src + 8, sizeof(float));
-      extras.compressed_depth_min = depth_min;
-      extras.compressed_depth_max = depth_max;
-      fmt = PJ::sdk::CompressedImage::Format::kPNG;  // compressedDepth always wraps PNG
+      float dmin = 0.0f;
+      float dmax = 0.0f;
+      std::memcpy(&dmin, src + 4, sizeof(float));
+      std::memcpy(&dmax, src + 8, sizeof(float));
+      depth_min = dmin;
+      depth_max = dmax;
+      out_encoding = "compressedDepth";  // PNG payload + depth quantization range.
       blob_offset = 12;
       blob_size = data_len - 12;
     } else if (format.find("jpeg") != std::string::npos) {
-      fmt = PJ::sdk::CompressedImage::Format::kJPEG;
+      out_encoding = "jpeg";
     } else if (format == "png") {
-      fmt = PJ::sdk::CompressedImage::Format::kPNG;
+      out_encoding = "png";
     } else {
       return PJ::unexpected(std::string("unsupported CompressedImage format: ") + format);
     }
 
     // Zero-copy: the bytes span is a slice of the payload; stripping the
     // 12-byte compressedDepth header is a pointer/length adjustment.
-    PJ::sdk::CompressedImage out;
-    out.format = fmt;
-    out.bytes = PJ::Span<const uint8_t>(src + blob_offset, blob_size);
-    out.anchor = payload.anchor;
-    out.timestamp_ns = ts;
-    out.extras = extras;
-    return PJ::sdk::CanonicalObject{std::move(out)};
+    return PJ::sdk::BuiltinObject{PJ::sdk::Image{
+        .width = 0,  // unknown for compressed encodings; consumer decodes to learn.
+        .height = 0,
+        .encoding = std::move(out_encoding),
+        .row_step = 0,
+        .is_bigendian = false,
+        .data = PJ::Span<const uint8_t>(src + blob_offset, blob_size),
+        .anchor = payload.anchor,
+        .compressed_depth_min = depth_min,
+        .compressed_depth_max = depth_max,
+        .timestamp_ns = ts,
+    }};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("CompressedImage: CDR read error: ") + e.what());
   }
@@ -232,7 +232,7 @@ PJ::Expected<PJ::sdk::CanonicalObject> RosParser::parseCompressedImage(PJ::Times
 //   is_dense                uint8
 // ---------------------------------------------------------------------------
 
-PJ::Expected<PJ::sdk::CanonicalObject> RosParser::parsePointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parsePointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
@@ -277,7 +277,7 @@ PJ::Expected<PJ::sdk::CanonicalObject> RosParser::parsePointCloud(PJ::Timestamp 
     // Zero-copy: data_span is a slice of the payload. For a PointCloud2 with
     // a few MB of points this is the win — no per-message alloc/copy on the
     // hot path.
-    return PJ::sdk::CanonicalObject{PJ::sdk::PointCloud{
+    return PJ::sdk::BuiltinObject{PJ::sdk::PointCloud{
         .width = width,
         .height = height,
         .point_step = point_step,

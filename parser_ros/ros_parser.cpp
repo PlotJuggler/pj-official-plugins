@@ -26,15 +26,15 @@ namespace ros_parser_detail {
 // ---------------------------------------------------------------------------
 
 const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catalog() {
-  using Kind = PJ::sdk::CanonicalObjectKind;
+  using Kind = PJ::sdk::BuiltinObjectKind;
   static const std::unordered_map<std::string, CatalogEntry> kMap = {
-      // ----- Canonical-object schemas -----
+      // ----- Builtin-object schemas -----
       {"sensor_msgs/Image",
        {.object_kind = Kind::kImage,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseImage}},
       {"sensor_msgs/CompressedImage",
-       {.object_kind = Kind::kCompressedImage,
+       {.object_kind = Kind::kImage,  // unified Image distinguishes by encoding string.
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseCompressedImage}},
       {"sensor_msgs/PointCloud2",
@@ -218,7 +218,7 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsGener
 }
 
 // ---------------------------------------------------------------------------
-// Scalar route for canonical-object schemas. Delegates to parseScalarsGeneric
+// Scalar route for builtin-object schemas. Delegates to parseScalarsGeneric
 // after flipping the parser to DISCARD_LARGE_ARRAYS so the bulk byte payload
 // (Image::data, PointCloud2::data, …) is dropped automatically while small
 // metadata (height, width, encoding, fields[].name, …) survives as scalars.
