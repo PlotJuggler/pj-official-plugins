@@ -6,12 +6,8 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 # rosx_introspection builds tests by default; disable them.
 set(INTROSPECTION_TESTS OFF CACHE BOOL "" FORCE)
 
-# rosx_introspection calls find_package(ament_cmake) and then ament_package(),
-# which invokes a ROS Python script using whatever Python CMake resolved — on
-# machines where ROS is installed but we are NOT inside a colcon workspace that
-# Python is Conan's interpreter, which lacks the ament Python packages and
-# fails.  CMAKE_DISABLE_FIND_PACKAGE_* is the standard way to block a specific
-# find_package() call without touching the rest of the build.
+# Prevent rosx_introspection from invoking ament_package() when ROS is installed
+# on the host but we are not building inside a colcon workspace.
 set(CMAKE_DISABLE_FIND_PACKAGE_ament_cmake TRUE)
 
 CPMAddPackage(
@@ -42,11 +38,15 @@ target_include_directories(data_tamer_parser SYSTEM INTERFACE
   "${data_tamer_SOURCE_DIR}/data_tamer_cpp/include")
 
 # --- Plugin shared library ---
-add_library(parser_ros_plugin SHARED ros_parser.cpp ros_specializations.cpp)
+add_library(parser_ros_plugin SHARED
+  ros_parser.cpp
+  ros_specializations.cpp
+  ros_builtin_object_handlers.cpp
+)
 target_compile_features(parser_ros_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_ros_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(parser_ros_plugin PRIVATE
-  pj_base nlohmann_json::nlohmann_json rosx_introspection data_tamer_parser)
+  pj_plugin_sdk nlohmann_json::nlohmann_json rosx_introspection data_tamer_parser)
 
 pj_embed_manifest(parser_ros_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/ros_manifest.hpp
@@ -68,7 +68,7 @@ target_compile_definitions(ros_parser_test PRIVATE
   PJ_ROS_PARSER_PLUGIN_PATH="$<TARGET_FILE:parser_ros_plugin>"
 )
 target_link_libraries(ros_parser_test PRIVATE
-  pj_base
+  pj_plugin_sdk
   pj_message_parser_host
   rosx_introspection
   nlohmann_json::nlohmann_json
@@ -85,5 +85,5 @@ if(benchmark_FOUND)
     PJ_ROS_PARSER_PLUGIN_PATH="$<TARGET_FILE:parser_ros_plugin>"
   )
   target_link_libraries(ros_parser_bench PRIVATE
-    pj_base pj_message_parser_host rosx_introspection benchmark::benchmark)
+    pj_plugin_sdk pj_message_parser_host rosx_introspection benchmark::benchmark)
 endif()

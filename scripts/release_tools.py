@@ -792,36 +792,54 @@ def cmd_verify_version_consistency(args) -> int:
 
     # Find and check plugin binary
     if args.build_dir:
-        print(f"\nSearching for plugin binary with id '{extension_id}' in {args.build_dir}...")
-        all_binaries = find_plugin_binaries(args.build_dir, "*")
-        if all_binaries:
-            print(f"Found {len(all_binaries)} binary file(s):")
-            for b in all_binaries[:10]:  # Show up to 10
-                print(f"  - {b}")
-            if len(all_binaries) > 10:
-                print(f"  ... and {len(all_binaries) - 10} more")
+        # Staging-dir mode: a plugin that produced <build_dir>/dist/ via a
+        # release.sh override has the marketplace tree pre-assembled. Its
+        # binary either dispatches to a per-platform inner (the proxy in
+        # data_stream_ros2 only loads the inner when ROS is available) or
+        # the inner itself links against host-only deps that ctypes cannot
+        # load on a vanilla CI runner. Either way the embedded-manifest
+        # check is meaningless; trust the staging tree's manifest.json
+        # (or fall back to the source manifest).
+        staging_dir = args.build_dir / "dist"
+        if staging_dir.is_dir() and any(staging_dir.iterdir()):
+            print(f"\nStaging tree detected at {staging_dir} — skipping embedded-manifest binary check")
+            staged_manifest = staging_dir / "manifest.json"
+            if staged_manifest.is_file():
+                staged_version = read_manifest_version(staged_manifest)
+                if staged_version:
+                    versions["staged_manifest"] = staged_version
+                    print(f"Staged manifest version: {staged_version}")
         else:
-            print("  No binary files found in directory")
-        binary_path = find_binary_by_manifest_id(args.build_dir, extension_id)
-        if binary_path:
-            print(f"Found plugin: {binary_path}")
-            binary_version = extract_binary_version(binary_path)
-            if binary_version:
-                versions["plugin"] = binary_version
-                print(f"Plugin version:   {binary_version}")
-            else:
-                check_errors.append(f"Could not extract version from plugin: {binary_path}")
-        else:
-            # Show what manifests were found in the binaries for debugging
+            print(f"\nSearching for plugin binary with id '{extension_id}' in {args.build_dir}...")
+            all_binaries = find_plugin_binaries(args.build_dir, "*")
             if all_binaries:
-                print(f"\nManifest IDs found in binaries:")
-                for b in all_binaries:
-                    manifest = extract_binary_manifest(b)
-                    if manifest:
-                        print(f"  - {b.name}: id='{manifest.get('id', 'N/A')}'")
-                    else:
-                        print(f"  - {b.name}: (no manifest)")
-            check_errors.append(f"No plugin found with extension id '{extension_id}' in {args.build_dir}")
+                print(f"Found {len(all_binaries)} binary file(s):")
+                for b in all_binaries[:10]:  # Show up to 10
+                    print(f"  - {b}")
+                if len(all_binaries) > 10:
+                    print(f"  ... and {len(all_binaries) - 10} more")
+            else:
+                print("  No binary files found in directory")
+            binary_path = find_binary_by_manifest_id(args.build_dir, extension_id)
+            if binary_path:
+                print(f"Found plugin: {binary_path}")
+                binary_version = extract_binary_version(binary_path)
+                if binary_version:
+                    versions["plugin"] = binary_version
+                    print(f"Plugin version:   {binary_version}")
+                else:
+                    check_errors.append(f"Could not extract version from plugin: {binary_path}")
+            else:
+                # Show what manifests were found in the binaries for debugging
+                if all_binaries:
+                    print(f"\nManifest IDs found in binaries:")
+                    for b in all_binaries:
+                        manifest = extract_binary_manifest(b)
+                        if manifest:
+                            print(f"  - {b.name}: id='{manifest.get('id', 'N/A')}'")
+                        else:
+                            print(f"  - {b.name}: (no manifest)")
+                check_errors.append(f"No plugin found with extension id '{extension_id}' in {args.build_dir}")
 
     # Validate semver
     for source, ver in versions.items():
@@ -854,9 +872,22 @@ def cmd_create_distribution_package(args) -> int:
     """
     Create distribution package (extension) for a plugin.
 
-    Finds the compiled plugin binary by its embedded manifest id, copies it along
-    with manifest.json to the output directory. Outputs the ZIP filename
-    to stdout for CI to capture.
+    Two modes, auto-selected by whether ``<build_dir>/dist/`` exists:
+
+    - **Staging-dir mode** (``<build_dir>/dist/`` exists): the plugin has
+      pre-assembled the tree it wants in the marketplace zip — typically
+      a ``release.sh`` override that produces a multi-artifact layout
+      (e.g. proxy at the root + per-distro binaries under ``dist/<distro>/``).
+      The contents of ``<build_dir>/dist/`` are copied as-is into
+      ``<output_dir>/<extension_id>/``. ``manifest.json`` is added
+      automatically if the staging tree omits it.
+
+    - **Heuristic mode** (default): the binary is located by its embedded
+      manifest id and copied alongside ``manifest.json``. Any sibling
+      ``python3*`` directory placed next to the binary by a CMake
+      POST_BUILD step (e.g. reactive scripts toolbox) is bundled too.
+
+    Outputs the ZIP filename to stdout for CI to capture.
     """
     script_dir = Path(__file__).parent
     root = script_dir.parent
@@ -891,35 +922,50 @@ def cmd_create_distribution_package(args) -> int:
     extension_id = manifest["id"]
     version = args.version or manifest["version"]
 
-    # Find plugin binary by extension id
-    print(f"Searching for plugin with id '{extension_id}' in {args.build_dir}...", file=sys.stderr)
-    plugin_path = find_binary_by_manifest_id(args.build_dir, extension_id)
-    if not plugin_path:
-        print(f"Error: No plugin found with extension id '{extension_id}'", file=sys.stderr)
-        return 1
-
-    print(f"Found plugin: {plugin_path}", file=sys.stderr)
-
-    # Create output directory for extension
     output_path = args.output_dir / extension_id
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Copy plugin binary
-    shutil.copy(plugin_path, output_path)
-    print(f"Copied plugin to: {output_path / plugin_path.name}", file=sys.stderr)
-
-    # Copy manifest
-    shutil.copy(manifest_path, output_path)
-    print(f"Copied manifest to: {output_path / 'manifest.json'}", file=sys.stderr)
-
-    # Bundle any Python stdlib directories placed next to the plugin binary by
-    # the CMake POST_BUILD step (e.g. python3.12/).  This makes the plugin
-    # self-contained: no system Python installation is required at runtime.
-    for entry in plugin_path.parent.iterdir():
-        if entry.is_dir() and entry.name.startswith("python3"):
+    staging_dir = args.build_dir / "dist"
+    if staging_dir.is_dir() and any(staging_dir.iterdir()):
+        # Staging-dir mode — plugin has pre-assembled the marketplace tree.
+        print(f"Staging tree found at {staging_dir} — packaging as-is", file=sys.stderr)
+        for entry in sorted(staging_dir.iterdir()):
             dest = output_path / entry.name
-            shutil.copytree(entry, dest, dirs_exist_ok=True)
-            print(f"Bundled Python stdlib: {dest}", file=sys.stderr)
+            if entry.is_dir():
+                shutil.copytree(entry, dest, dirs_exist_ok=True)
+            else:
+                shutil.copy(entry, dest)
+            print(f"  staged {entry.name}", file=sys.stderr)
+
+        # Backstop: never ship without a manifest.json, even if the staging tree
+        # forgot it.
+        if not (output_path / "manifest.json").is_file():
+            shutil.copy(manifest_path, output_path)
+            print(f"  added missing manifest.json from {manifest_path}", file=sys.stderr)
+    else:
+        # Heuristic mode — locate the binary by its embedded manifest id.
+        print(f"Searching for plugin with id '{extension_id}' in {args.build_dir}...", file=sys.stderr)
+        plugin_path = find_binary_by_manifest_id(args.build_dir, extension_id)
+        if not plugin_path:
+            print(f"Error: No plugin found with extension id '{extension_id}'", file=sys.stderr)
+            return 1
+
+        print(f"Found plugin: {plugin_path}", file=sys.stderr)
+
+        shutil.copy(plugin_path, output_path)
+        print(f"Copied plugin to: {output_path / plugin_path.name}", file=sys.stderr)
+
+        shutil.copy(manifest_path, output_path)
+        print(f"Copied manifest to: {output_path / 'manifest.json'}", file=sys.stderr)
+
+        # Bundle any Python stdlib directories placed next to the plugin binary
+        # by the CMake POST_BUILD step (e.g. python3.12/). Makes the plugin
+        # self-contained: no system Python installation is required at runtime.
+        for entry in plugin_path.parent.iterdir():
+            if entry.is_dir() and entry.name.startswith("python3"):
+                dest = output_path / entry.name
+                shutil.copytree(entry, dest, dirs_exist_ok=True)
+                print(f"Bundled Python stdlib: {dest}", file=sys.stderr)
 
     # Output extension ZIP filename to stdout
     if args.os_label and args.arch:
@@ -1227,6 +1273,115 @@ def cmd_generate_release_notes(args) -> int:
     return 0
 
 
+def cmd_resolve_build_scope(args) -> int:
+    """Resolve a CI matrix entry's build scope and emit GitHub Actions outputs.
+
+    Inputs:
+      --tag, --tag-type     GITHUB_REF_NAME / GITHUB_REF_TYPE
+      --os-label, --arch    matrix.os_label / matrix.arch (raw values)
+
+    Outputs (key=value lines on stdout, redirected by the workflow into
+    $GITHUB_OUTPUT):
+      build_dir, build_script_args, conan_hash, scope, plugin_name,
+      platform, skip, use_release_override
+
+    Notices and errors go to stderr where Actions still parses them as
+    `::notice::` / `::error::` annotations.
+
+    Optional per-plugin manifest fields honoured for plugin tags:
+      supported_platforms  list of canonical "os-arch" strings (see
+                           VALID_PLATFORMS). Matrix entries whose canonical
+                           platform is not listed are skipped.
+      <plugin>/release.sh  if present and executable, supplants the default
+                           build flow. The script is responsible for both
+                           build and any tests.
+    """
+    canonical_arch = PLATFORM_ARCH_MAP.get(args.arch.lower(), args.arch)
+    canonical_os = PLATFORM_OS_MAP.get(args.os_label.lower(), args.os_label)
+    canonical_platform = f"{canonical_os}-{canonical_arch}"
+
+    # Defaults: full repo build (matches workflow_dispatch / scheduled triggers).
+    build_dir = "build/all/Release"
+    build_script_args = ""
+    scope = "all"
+    plugin_name = ""
+    conan_hash_path = Path("conanfile.txt")
+    skip = False
+    use_release_override = False
+
+    is_plugin_tag = args.tag_type == "tag" and "/" in args.tag
+
+    if is_plugin_tag:
+        plugin_name = args.tag.split("/", 1)[0]
+        build_dir = f"build/{plugin_name}/Release"
+        build_script_args = plugin_name
+        scope = f"plugin-{plugin_name}"
+
+        # supported_platforms decides early whether this matrix entry runs at
+        # all. Done first so that skipped entries don't trip on later checks
+        # (e.g. missing conanfile.py for plugins that override the build).
+        manifest_path = Path(plugin_name) / "manifest.json"
+        if manifest_path.is_file():
+            manifest = json.loads(manifest_path.read_text())
+            platforms = manifest.get("supported_platforms")
+            if platforms is not None and canonical_platform not in platforms:
+                skip = True
+                print(
+                    f"::notice::Platform {canonical_platform} not in {manifest_path} "
+                    f"supported_platforms — skipping this matrix entry",
+                    file=sys.stderr,
+                )
+
+        # release.sh override takes the place of the default conan + cmake
+        # flow, so plugins that ship one are not required to also ship a
+        # conanfile.py.
+        release_script = Path(plugin_name) / "release.sh"
+        if release_script.is_file() and release_script.stat().st_mode & 0o111:
+            use_release_override = True
+            print(
+                f"::notice::Plugin {plugin_name} provides release.sh — using it instead of "
+                f"the default build flow",
+                file=sys.stderr,
+            )
+
+        # Choose the source for the cache key + assert the build inputs exist.
+        # Skipped entries don't need either.
+        if skip:
+            conan_hash_path = manifest_path if manifest_path.is_file() else Path("conanfile.txt")
+        elif use_release_override:
+            conan_hash_path = release_script
+        else:
+            conan_hash_path = Path(plugin_name) / "conanfile.py"
+            if not conan_hash_path.is_file():
+                print(
+                    f"::error::Missing Conan recipe for tagged plugin: {conan_hash_path}",
+                    file=sys.stderr,
+                )
+                return 1
+
+    conan_hash = hashlib.sha256(conan_hash_path.read_bytes()).hexdigest()
+
+    outputs = {
+        "build_dir": build_dir,
+        "build_script_args": build_script_args,
+        "conan_hash": conan_hash,
+        "scope": scope,
+        "plugin_name": plugin_name,
+        "platform": canonical_platform,
+        "skip": "true" if skip else "false",
+        "use_release_override": "true" if use_release_override else "false",
+    }
+    for key, value in outputs.items():
+        print(f"{key}={value}")
+
+    print(
+        f"Build scope: {scope} | dir={build_dir} | platform={canonical_platform} | "
+        f"skip={skip} | release.sh override={use_release_override}",
+        file=sys.stderr,
+    )
+    return 0
+
+
 # =============================================================================
 # CLI MAIN
 # =============================================================================
@@ -1314,6 +1469,21 @@ def main():
     p_notes.add_argument("--output", type=Path, help="Path where markdown release notes should be written")
     p_notes.add_argument("--include-shared", action="store_true", help="Also include shared build/runtime commits in a separate section")
     p_notes.set_defaults(func=cmd_generate_release_notes)
+
+    # resolve-build-scope (CI helper)
+    p_scope = subparsers.add_parser(
+        "resolve-build-scope",
+        help="Resolve a CI matrix entry into GitHub Actions outputs",
+        description="Computes build directory, conan recipe hash, plugin scope, "
+                    "canonical platform, and the optional supported_platforms / "
+                    "release.sh override flags. Outputs key=value lines on stdout; "
+                    "the caller redirects them into $GITHUB_OUTPUT.",
+    )
+    p_scope.add_argument("--tag", default="", help="GITHUB_REF_NAME (empty when not on a tag)")
+    p_scope.add_argument("--tag-type", default="", help="GITHUB_REF_TYPE (tag | branch | empty)")
+    p_scope.add_argument("--os-label", required=True, help="matrix.os_label (linux | macos | windows)")
+    p_scope.add_argument("--arch", required=True, help="matrix.arch (x86_64 | aarch64 | x64 | arm64)")
+    p_scope.set_defaults(func=cmd_resolve_build_scope)
 
     args = parser.parse_args()
     sys.exit(args.func(args))

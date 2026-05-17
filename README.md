@@ -99,6 +99,22 @@ cd /path/to/plotjuggler_core
 | data_stream_foxglove_bridge | DataSource | Foxglove WebSocket bridge |
 | data_stream_pj_bridge | DataSource | PlotJuggler WebSocket bridge |
 
+## Plugin architecture
+
+Both plugin families in this repo follow a **declarative** style on top of
+the `plotjuggler_core` SDK: a DataSource hands the host a deferred byte
+fetcher per message, and a MessageParser declares a table of schema
+handlers that produce **canonical objects** (`sdk::Image`,
+`sdk::PointCloud`, and related builtin types) plus scalar columns. The host
+chooses eager vs lazy materialization per message without either plugin
+caring.
+
+See [`PLUGIN_DEVELOPMENT.md`](PLUGIN_DEVELOPMENT.md) for the full
+developer guide: the canonical-object vocabulary, the DataSource and
+MessageParser shapes, end-to-end dispatch flow, authoring checklists,
+and pointers to `data_load_mcap` and `parser_ros` as reference
+implementations.
+
 ## Development Checklist
 
 When adding or changing a plugin:

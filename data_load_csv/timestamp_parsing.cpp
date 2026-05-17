@@ -21,7 +21,9 @@ std::string Trim(const std::string& str) {
 }
 
 std::optional<double> toDouble(const std::string& str) {
-  if (str.empty()) return std::nullopt;
+  if (str.empty()) {
+    return std::nullopt;
+  }
 
   // Handle European comma decimal separator by replacing with dot.
   // Only replace if there's exactly one comma and no dots (to avoid
@@ -44,18 +46,15 @@ std::optional<double> toDouble(const std::string& str) {
 }
 
 static const char* const UNAMBIGUOUS_FORMATS[] = {
-    "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ",
-    "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S%z", "%Y-%m-%d",
-    "%Y/%m/%d %H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S%z",
+    "%Y-%m-%d",          "%Y/%m/%d %H:%M:%S",
 };
-static constexpr size_t NUM_UNAMBIGUOUS_FORMATS =
-    sizeof(UNAMBIGUOUS_FORMATS) / sizeof(UNAMBIGUOUS_FORMATS[0]);
+static constexpr size_t NUM_UNAMBIGUOUS_FORMATS = sizeof(UNAMBIGUOUS_FORMATS) / sizeof(UNAMBIGUOUS_FORMATS[0]);
 
 static constexpr int64_t EPOCH_FIRST = 1400000000;
 static constexpr int64_t EPOCH_LAST = 2000000000;
 
-static std::pair<std::string, std::chrono::nanoseconds> ExtractFractionalSeconds(
-    const std::string& input) {
+static std::pair<std::string, std::chrono::nanoseconds> ExtractFractionalSeconds(const std::string& input) {
   size_t dot_pos = input.rfind('.');
   size_t colon_pos = input.rfind(':');
 
@@ -85,20 +84,19 @@ static std::pair<std::string, std::chrono::nanoseconds> ExtractFractionalSeconds
   std::chrono::nanoseconds fractional_ns{0};
   try {
     fractional_ns = std::chrono::nanoseconds{std::stoll(frac_str)};
-  } catch (...) {
-  }
+  } catch (...) {}
 
   std::string base_str = input.substr(0, dot_pos) + input.substr(frac_end);
   return {base_str, fractional_ns};
 }
 
-static std::optional<double> TryParseFormat(const std::string& base_str, const char* fmt,
-                                            std::chrono::nanoseconds fractional_ns) {
+static std::optional<double> TryParseFormat(
+    const std::string& base_str, const char* fmt, std::chrono::nanoseconds fractional_ns) {
   std::istringstream in{base_str};
   in.imbue(std::locale::classic());
 
   date::sys_time<std::chrono::seconds> tp;
-  in >> date::parse(fmt, tp);
+  date::from_stream(in, fmt, tp);
 
   if (!in.fail()) {
     auto duration = tp.time_since_epoch();
@@ -241,8 +239,7 @@ std::optional<double> AutoParseTimestamp(const std::string& str) {
         return EpochToSeconds(ts, epoch_type);
       }
       return toDouble(trimmed);
-    } catch (...) {
-    }
+    } catch (...) {}
   }
 
   auto [base_str, fractional_ns] = ExtractFractionalSeconds(trimmed);
@@ -254,8 +251,7 @@ std::optional<double> AutoParseTimestamp(const std::string& str) {
   }
 
   if (base_str.find('/') != std::string::npos && !base_str.empty() && base_str[0] != '2') {
-    const char* fmt =
-        IsDayFirstFormat(base_str, '/') ? "%d/%m/%Y %H:%M:%S" : "%m/%d/%Y %H:%M:%S";
+    const char* fmt = IsDayFirstFormat(base_str, '/') ? "%d/%m/%Y %H:%M:%S" : "%m/%d/%Y %H:%M:%S";
     if (auto result = TryParseFormat(base_str, fmt, fractional_ns)) {
       return result;
     }
@@ -345,8 +341,7 @@ ColumnTypeInfo DetectColumnType(const std::string& str) {
       int64_t ts = std::stoll(trimmed);
       info.type = DetectEpochType(ts);
       return info;
-    } catch (...) {
-    }
+    } catch (...) {}
 
     info.type = ColumnType::NUMBER;
     return info;
@@ -359,7 +354,7 @@ ColumnTypeInfo DetectColumnType(const std::string& str) {
     std::istringstream in{base_str};
     in.imbue(std::locale::classic());
     date::sys_time<std::chrono::seconds> tp;
-    in >> date::parse(fmt, tp);
+    date::from_stream(in, fmt, tp);
     return !in.fail();
   };
 
@@ -372,12 +367,11 @@ ColumnTypeInfo DetectColumnType(const std::string& str) {
       std::istringstream in{trimmed};
       in.imbue(std::locale::classic());
       date::year_month_day ymd;
-      in >> date::parse(fmt, ymd);
+      date::from_stream(in, fmt, ymd);
       return !in.fail() && ymd.ok() && (in.peek() == EOF);
     };
 
-    const char* date_formats[] = {"%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y",
-                                  "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y"};
+    const char* date_formats[] = {"%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y"};
     for (const char* fmt : date_formats) {
       if (try_date_format(fmt)) {
         info.type = ColumnType::DATE_ONLY;
@@ -392,7 +386,7 @@ ColumnTypeInfo DetectColumnType(const std::string& str) {
       std::istringstream in{base_str};
       in.imbue(std::locale::classic());
       std::chrono::seconds tod;
-      in >> date::parse(fmt, tod);
+      date::from_stream(in, fmt, tod);
       return !in.fail();
     };
 
@@ -415,8 +409,7 @@ ColumnTypeInfo DetectColumnType(const std::string& str) {
   }
 
   if (base_str.find('/') != std::string::npos && !base_str.empty() && base_str[0] != '2') {
-    const char* fmt =
-        IsDayFirstFormat(base_str, '/') ? "%d/%m/%Y %H:%M:%S" : "%m/%d/%Y %H:%M:%S";
+    const char* fmt = IsDayFirstFormat(base_str, '/') ? "%d/%m/%Y %H:%M:%S" : "%m/%d/%Y %H:%M:%S";
     if (try_format(fmt)) {
       info.type = ColumnType::DATETIME;
       info.format = fmt;
@@ -471,7 +464,7 @@ std::optional<double> ParseWithType(const std::string& str, const ColumnTypeInfo
         std::istringstream in{trimmed};
         in.imbue(std::locale::classic());
         date::year_month_day ymd;
-        in >> date::parse(type_info.format.c_str(), ymd);
+        date::from_stream(in, type_info.format.c_str(), ymd);
         if (!in.fail() && ymd.ok()) {
           auto tp = date::sys_days{ymd};
           return std::chrono::duration<double>(tp.time_since_epoch()).count();
@@ -487,10 +480,9 @@ std::optional<double> ParseWithType(const std::string& str, const ColumnTypeInfo
         std::istringstream in{base_str};
         in.imbue(std::locale::classic());
         std::chrono::seconds tod;
-        in >> date::parse(type_info.format.c_str(), tod);
+        date::from_stream(in, type_info.format.c_str(), tod);
         if (!in.fail()) {
-          auto total_ns =
-              std::chrono::duration_cast<std::chrono::nanoseconds>(tod) + fractional_ns;
+          auto total_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(tod) + fractional_ns;
           return std::chrono::duration<double>(total_ns).count();
         }
         return std::nullopt;
@@ -505,10 +497,9 @@ std::optional<double> ParseWithType(const std::string& str, const ColumnTypeInfo
   }
 }
 
-std::optional<double> ParseCombinedDateTime(const std::string& date_str,
-                                            const std::string& time_str,
-                                            const ColumnTypeInfo& date_info,
-                                            const ColumnTypeInfo& time_info) {
+std::optional<double> ParseCombinedDateTime(
+    const std::string& date_str, const std::string& time_str, const ColumnTypeInfo& date_info,
+    const ColumnTypeInfo& time_info) {
   std::string trimmed_date = Trim(date_str);
   std::string trimmed_time = Trim(time_str);
 
@@ -520,7 +511,7 @@ std::optional<double> ParseCombinedDateTime(const std::string& date_str,
     std::istringstream date_in{trimmed_date};
     date_in.imbue(std::locale::classic());
     date::year_month_day ymd;
-    date_in >> date::parse(date_info.format.c_str(), ymd);
+    date::from_stream(date_in, date_info.format.c_str(), ymd);
     if (date_in.fail() || !ymd.ok()) {
       return std::nullopt;
     }
@@ -533,13 +524,12 @@ std::optional<double> ParseCombinedDateTime(const std::string& date_str,
     std::istringstream time_in{time_base};
     time_in.imbue(std::locale::classic());
     std::chrono::seconds tod;
-    time_in >> date::parse(time_info.format.c_str(), tod);
+    date::from_stream(time_in, time_info.format.c_str(), tod);
     if (time_in.fail()) {
       return std::nullopt;
     }
 
-    auto tp = date::sys_days{ymd} +
-              std::chrono::duration_cast<std::chrono::nanoseconds>(tod) + fractional_ns;
+    auto tp = date::sys_days{ymd} + std::chrono::duration_cast<std::chrono::nanoseconds>(tod) + fractional_ns;
     return std::chrono::duration<double>(tp.time_since_epoch()).count();
   } catch (...) {
     return std::nullopt;
