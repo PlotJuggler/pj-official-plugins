@@ -19,26 +19,26 @@ namespace ros_parser_detail {
 // per-instance handlers_ table ends up with exactly one entry — honest
 // about the fact that one RosParser instance binds to one schema.
 //
-// Field naming mirrors PJ::sdk::SchemaHandler: object_kind / parse_scalars /
+// Field naming mirrors PJ::sdk::SchemaHandler: object_type / parse_scalars /
 // parse_object. Type difference for parse_scalars (raw void member fn vs.
 // the std::function the SchemaHandler expects) is intentional — bindSchema
 // adapts via wrapVoidHandler at registration time.
 // ---------------------------------------------------------------------------
 
 const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catalog() {
-  using Kind = PJ::sdk::BuiltinObjectKind;
+  using ObjectType = PJ::sdk::BuiltinObjectType;
   static const std::unordered_map<std::string, CatalogEntry> kMap = {
       // ----- Builtin-object schemas -----
       {"sensor_msgs/Image",
-       {.object_kind = Kind::kImage,
+       {.object_type = ObjectType::kImage,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseImage}},
       {"sensor_msgs/CompressedImage",
-       {.object_kind = Kind::kImage,  // unified Image distinguishes by encoding string.
+       {.object_type = ObjectType::kImage,  // unified Image distinguishes by encoding string.
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseCompressedImage}},
       {"sensor_msgs/PointCloud2",
-       {.object_kind = Kind::kPointCloud,
+       {.object_type = ObjectType::kPointCloud,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parsePointCloud}},
 
@@ -137,7 +137,7 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
   // register a single SchemaHandler with the host. The per-instance
   // handler table ends up with exactly one entry for this bound schema.
   PJ::sdk::SchemaHandler handler;
-  handler.object_kind = entry.object_kind;
+  handler.object_type = entry.object_type;
   if (entry.parse_scalars) {
     handler.parse_scalars = std::bind_front(entry.parse_scalars, this);
   }
@@ -188,6 +188,21 @@ PJ::Status RosParser::loadConfig(std::string_view config_json) {
   }
   ensureDeserializer();
   return PJ::okStatus();
+}
+
+PJ::Status RosParser::parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> payload) {
+  if (!writeHostBound()) {
+    return PJ::unexpected(std::string("write host not bound"));
+  }
+  auto fields = parseScalars(timestamp_ns, payload);
+  if (!fields) {
+    return PJ::unexpected(std::move(fields).error());
+  }
+  if (fields->empty()) {
+    return PJ::okStatus();
+  }
+  return writeHost().appendRecord(
+      current_timestamp_, PJ::Span<const PJ::sdk::NamedFieldValue>(fields->data(), fields->size()));
 }
 
 // ---------------------------------------------------------------------------

@@ -218,39 +218,40 @@ about.
 ## Builtin objects — the media vocabulary
 
 A **builtin object** is a type-erased value defined in
-`pj_scene_protocol/builtin/BuiltinObject.h`:
+`pj_base/builtin/BuiltinObject.hpp`:
 
 ```cpp
 namespace PJ::sdk {
 using BuiltinObject = std::any;
-[[nodiscard]] BuiltinObjectKind kindOf(const BuiltinObject& obj) noexcept;
+[[nodiscard]] BuiltinObjectType typeOf(const BuiltinObject& obj) noexcept;
 }  // namespace PJ::sdk
 ```
 
 It is the *only* shape a parser is allowed to hand to the
-visualizers. Today the SDK ships four builtin types, one header per
-type under `pj_scene_protocol/builtin/`:
+visualizers. The SDK ships one header per concrete builtin type under
+`pj_base/builtin/`:
 
 | Type | Purpose |
 |------|---------|
 | `sdk::Image` | Image — `width`, `height`, `std::string encoding` (`"rgb8"`, `"bgr8"`, `"mono8"`, `"jpeg"`, `"png"`, `"compressedDepth"`, …), `row_step`, `Span<const uint8_t> data`, `BufferAnchor`. The encoding string distinguishes raw vs compressed; the field replaces the old `PixelFormat` enum and unifies what used to be two separate types. |
-| `sdk::DepthImage` | Depth image — pixels + camera intrinsics (`K` 3×3, `D` distortion, `distortion_model` string). `R` and `P` matrices are derived via free helpers in `depth_image_utils.h`. |
+| `sdk::DepthImage` | Depth image — pixels + camera intrinsics (`K` 3×3, `D` distortion, `distortion_model` string). `R` and `P` matrices are derived via free helpers in `depth_image_utils.hpp`. |
 | `sdk::PointCloud` | Point-cloud frame — `width`, `height`, `point_step`, `row_step`, field descriptors, raw `Span<const uint8_t> data`, `BufferAnchor`. |
 | `sdk::ImageAnnotations` | 2D vector overlays (points, lines, circles, text). Small enough to own outright (`std::vector` members), no anchor needed. |
+| `sdk::FrameTransforms` | Named 3D frame relationships. |
 
 Choosing `std::any` over `std::variant` is deliberate: adding a new
-builtin kind no longer changes the public type of `BuiltinObject`, so
-plugins built against an older SDK keep producing the kinds they know
+builtin object type no longer changes the public type of `BuiltinObject`, so
+plugins built against an older SDK keep producing the types they know
 and hosts built against an older SDK simply see
-`BuiltinObjectKind::kNone` from `kindOf` for unknown kinds. The
-declared kind in the catalog (`object_kind` below) lets the host pick
+`BuiltinObjectType::kNone` from `typeOf` for unknown types. The
+declared type in the catalog (`object_type` below) lets the host pick
 an ingest policy *before* the bytes are touched.
 
 Consumers recover the concrete type with `std::any_cast`:
 
 ```cpp
 auto obj = parser->parseObject(timestamp_ns, payload);
-if (obj && PJ::sdk::kindOf(*obj) == PJ::sdk::BuiltinObjectKind::kImage) {
+if (obj && PJ::sdk::typeOf(*obj) == PJ::sdk::BuiltinObjectType::kImage) {
   const auto* img = std::any_cast<PJ::sdk::Image>(&*obj);
   // ... use img->encoding, img->data, img->anchor, ...
 }
@@ -399,13 +400,13 @@ not matched by name:
 // In your plugin's class scope: a static catalog of schemas. Pure
 // data — member-function pointers, no `this` capture.
 const auto& MyParser::catalog() {
-  using Kind = PJ::sdk::BuiltinObjectKind;
+  using ObjectType = PJ::sdk::BuiltinObjectType;
   static const std::unordered_map<std::string, CatalogEntry> kMap = {
       // Builtin-object schema: produces an sdk::Image / DepthImage /
       // PointCloud / ImageAnnotations via parse_object, plus
       // small-metadata scalars via parse_scalars.
       {"my_pkg/MyImage",
-          {.object_kind   = Kind::kImage,
+          {.object_type   = ObjectType::kImage,
            .parse_scalars = &MyParser::imageScalars,
            .parse_object  = &MyParser::parseImage}},
 
@@ -437,8 +438,8 @@ PJ::Status MyParser::bindSchema(std::string_view type_name,
 
 `CatalogEntry` carries:
 
-- `object_kind` — `BuiltinObjectKind::kImage` / `kDepthImage` /
-  `kPointCloud` / `kImageAnnotations` / `kNone`. The host uses this
+- `object_type` — `BuiltinObjectType::kImage` / `kDepthImage` /
+  `kPointCloud` / `kImageAnnotations` / `kFrameTransforms` / `kNone`. The host uses this
   to pick the right ingest policy *before* the bytes are touched.
 - `parse_scalars` — function pointer that walks the payload and emits
   columns through the `ScalarSink`.

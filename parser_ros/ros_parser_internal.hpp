@@ -1,7 +1,5 @@
 #pragma once
 
-#include <pj_scene_protocol/builtin/BuiltinObject.h>
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -10,6 +8,7 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <numbers>
+#include <pj_base/builtin/BuiltinObject.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <rosx_introspection/ros_parser.hpp>
 #include <string>
@@ -158,6 +157,7 @@ class RosParser : public PJ::MessageParserPluginBase {
   PJ::Status bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema) override;
   std::string saveConfig() const override;
   PJ::Status loadConfig(std::string_view config_json) override;
+  PJ::Status parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> payload) override;
 
   // ----- Class-level schema catalog -----
   //
@@ -179,7 +179,7 @@ class RosParser : public PJ::MessageParserPluginBase {
     // match, it resolves to the entry keyed by this value instead.
     static constexpr const char* kDefault = "*";
 
-    PJ::sdk::BuiltinObjectKind object_kind = PJ::sdk::BuiltinObjectKind::kNone;
+    PJ::sdk::BuiltinObjectType object_type = PJ::sdk::BuiltinObjectType::kNone;
 
     PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> (RosParser::*parse_scalars)(
         PJ::Timestamp, PJ::Span<const uint8_t>) = nullptr;

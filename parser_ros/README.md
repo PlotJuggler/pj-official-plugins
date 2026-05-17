@@ -8,28 +8,28 @@ Registered for `"ros1msg"`, `"ros2msg"`, and `"cdr"` schema encodings.
 
 ## Architecture — declarative schema catalog
 
-`parser_ros` does not implement a `parse()` function. Instead it declares
-a **static catalog** of schemas it knows how to translate. The catalog
+`parser_ros` declares a **static catalog** of schemas it knows how to
+translate. The catalog
 includes a default entry (`CatalogEntry::kDefault`, keyed `"*"`) for
 the generic introspection-based fallback, so `bindSchema` is a single
 lookup with no branching:
 
 ```cpp
 const auto& RosMsgParser::catalog() {
-  using Kind = PJ::sdk::CanonicalObjectKind;
+  using ObjectType = PJ::sdk::BuiltinObjectType;
   static const std::unordered_map<std::string, CatalogEntry> kMap = {
       // Canonical-object schemas: produce zero-copy sdk::Image /
-      // CompressedImage / PointCloud, plus header scalars.
+      // PointCloud, plus header scalars.
       {"sensor_msgs/msg/Image",
-          {.object_kind   = Kind::kImage,
+          {.object_type   = ObjectType::kImage,
            .parse_scalars = &RosMsgParser::imageScalars,
            .parse_object  = &RosMsgParser::parseImage}},
       {"sensor_msgs/msg/CompressedImage",
-          {.object_kind   = Kind::kCompressedImage,
+          {.object_type   = ObjectType::kImage,
            .parse_scalars = &RosMsgParser::compressedImageScalars,
            .parse_object  = &RosMsgParser::parseCompressedImage}},
       {"sensor_msgs/msg/PointCloud2",
-          {.object_kind   = Kind::kPointCloud,
+          {.object_type   = ObjectType::kPointCloud,
            .parse_scalars = &RosMsgParser::pointCloud2Scalars,
            .parse_object  = &RosMsgParser::parsePointCloud2}},
 
@@ -68,14 +68,14 @@ for column extraction and `parse_object` for canonical media bytes.
 
 ## Canonical-object handlers (zero-copy)
 
-Three schemas produce canonical objects whose `bytes` / `pixels` spans
+Three schemas produce canonical objects whose `data` spans
 sit over the original CDR payload, kept alive by the `BufferAnchor`
 shipped in the `PayloadView`:
 
-| Schema | `CanonicalObjectKind` | Handler |
+| Schema | `BuiltinObjectType` | Handler |
 |--------|-----------------------|---------|
-| `sensor_msgs/msg/Image` | `kImage` | `parseImage` — populates `sdk::Image` (width, height, encoding → `PixelFormat`, `row_step`, `pixels`) |
-| `sensor_msgs/msg/CompressedImage` | `kCompressedImage` | `parseCompressedImage` — strips the `format` string + CDR alignment, returns JPEG/PNG bytes and detects `compressedDepth` extras |
+| `sensor_msgs/msg/Image` | `kImage` | `parseImage` — populates `sdk::Image` (width, height, encoding string, `row_step`, `data`) |
+| `sensor_msgs/msg/CompressedImage` | `kImage` | `parseCompressedImage` — returns unified `sdk::Image` with `jpeg`, `png`, or `compressedDepth` encoding and detects compressed-depth extras |
 | `sensor_msgs/msg/PointCloud2` | `kPointCloud` | `parsePointCloud2` — fills `sdk::PointCloud` with point step, row step, and the raw `data` span |
 
 The canonical object's lifetime is tied to the input payload — the host
@@ -111,18 +111,18 @@ The host (PJ4's runtime) selects how to call into the parser per message:
 | `kPureLazy` | Neither invoked at push time; the fetcher closure sits in the `ObjectStore` until something pulls. |
 
 The parser does not know which mode is active — it answers honestly when
-the host asks. Per-topic / per-source / per-kind defaults are configured
+the host asks. Per-topic / per-source / per-type defaults are configured
 through the runtime's `ObjectIngestPolicyResolver`.
 
 ## Adding a new schema
 
 1. Add a new entry to `catalog()` in `RosMsgParser.cpp`. Choose a
-   `CanonicalObjectKind` if the schema maps to one (image, compressed
+   `BuiltinObjectType` if the schema maps to one (image, compressed
    image, point cloud); leave it `kNone` for scalar-only schemas.
 2. Implement the handler member function(s):
    - `parse_scalars(const ParseContext&, ScalarSink&)` for columns.
-   - `parse_object(int64_t pts, sdk::PayloadView, CanonicalSink&)` for
-     canonical media bytes (if any).
+   - `parse_object(Timestamp, sdk::PayloadView)` for canonical media bytes
+     (if any).
 3. Add a focused test under `parser_ros/tests/`.
 
 No enum to extend, no switch to update, no virtual methods to

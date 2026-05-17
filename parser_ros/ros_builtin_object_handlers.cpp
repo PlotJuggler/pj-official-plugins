@@ -25,8 +25,8 @@
  *     propagate `payload.anchor` into the result so the bytes outlive the
  *     parse call.
  *   - When the wire format has BGR ordering or per-row padding, that is
- *     reflected in the canonical fields (PixelFormat::kBGR*, row_step) so
- *     the consumer handles them — no parser-side conversion.
+ *     reflected in the canonical fields (encoding string, row_step) so the
+ *     consumer handles them — no parser-side conversion.
  *
  * The scalar-side companion lives in ros_parser.cpp:
  * parseScalarsDiscardingLargeArrays() reuses flattenGeneric with the bulk
@@ -99,6 +99,7 @@ inline uint8_t readU8(RosMsgParser::Deserializer& d) {
 PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
+    current_timestamp_ = ts;
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
     (void)readHeader();
 
@@ -134,7 +135,7 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseImage(PJ::Timestamp ts, PJ:
         .anchor = payload.anchor,
         .compressed_depth_min = std::nullopt,
         .compressed_depth_max = std::nullopt,
-        .timestamp_ns = ts,
+        .timestamp_ns = current_timestamp_,
     }};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("Image: CDR read error: ") + e.what());
@@ -154,6 +155,7 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseImage(PJ::Timestamp ts, PJ:
 PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseCompressedImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
+    current_timestamp_ = ts;
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
     (void)readHeader();
 
@@ -204,7 +206,7 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseCompressedImage(PJ::Timesta
         .anchor = payload.anchor,
         .compressed_depth_min = depth_min,
         .compressed_depth_max = depth_max,
-        .timestamp_ns = ts,
+        .timestamp_ns = current_timestamp_,
     }};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("CompressedImage: CDR read error: ") + e.what());
@@ -235,6 +237,7 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseCompressedImage(PJ::Timesta
 PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parsePointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
+    current_timestamp_ = ts;
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
     (void)readHeader();
 
@@ -287,7 +290,7 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parsePointCloud(PJ::Timestamp ts
         .fields = std::move(fields),
         .data = PJ::Span<const uint8_t>(data_span.data(), data_span.size()),
         .anchor = payload.anchor,
-        .timestamp_ns = ts,
+        .timestamp_ns = current_timestamp_,
     }};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("PointCloud2: CDR read error: ") + e.what());

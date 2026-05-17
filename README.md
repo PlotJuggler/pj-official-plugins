@@ -105,7 +105,7 @@ Both plugin families in this repo follow a **declarative** style on top of
 the `plotjuggler_core` SDK: a DataSource hands the host a deferred byte
 fetcher per message, and a MessageParser declares a table of schema
 handlers that produce **canonical objects** (`sdk::Image`,
-`sdk::CompressedImage`, `sdk::PointCloud`) plus scalar columns. The host
+`sdk::PointCloud`, and related builtin types) plus scalar columns. The host
 chooses eager vs lazy materialization per message without either plugin
 caring.
 

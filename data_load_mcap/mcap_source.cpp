@@ -1,5 +1,4 @@
-#include <pj_scene_protocol/builtin/BuiltinObject.h>
-
+#include <pj_base/builtin/BuiltinObject.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 
 #define MCAP_IMPLEMENTATION
@@ -191,10 +190,10 @@ class McapSource : public PJ::FileSourceBase {
 
       // Bind the parser. The host runtime, internally, also asks the parser
       // about its schema classification (classifySchema) and — when the
-      // parser declares a builtin-object kind != kNone — registers the
+      // parser declares a builtin object type != kNone — registers the
       // matching ObjectTopic in the ObjectStore on the source's behalf,
       // associated with this binding. The DataSource never inspects
-      // schema->name nor mentions object_kind anywhere.
+      // schema->name nor mentions object_type anywhere.
       auto handle = runtimeHost().ensureParserBinding(request);
       if (!handle) {
         binding_errors.push_back(channel_ptr->topic + " (encoding: " + std::string(encoding) + "): " + handle.error());
