@@ -37,7 +37,7 @@
 #include <string_view>
 
 #include "pj_base/data_source_protocol.h"
-#include "pj_base/plugin_abi_export.h"
+#include "pj_base/plugin_abi_export.hpp"
 #include "pj_plugins/dialog_protocol.h"
 
 namespace {
