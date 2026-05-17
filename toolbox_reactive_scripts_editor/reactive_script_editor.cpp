@@ -1,13 +1,15 @@
-#include <pybind11/embed.h>
-#include <pybind11/stl.h>
-
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/platform.hpp>
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <sol/sol.hpp>
+
+#ifdef PJ_REACTIVE_HAS_PYTHON
+#include <pybind11/embed.h>
+#include <pybind11/stl.h>
 namespace py = pybind11;
+#endif
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -134,15 +136,30 @@ std::string validateLuaSyntax(const std::string& global_code, const std::string&
 }
 
 // ---------------------------------------------------------------------------
-// Python interpreter singleton — CPython can only be initialized once per
-// process, so we use a static guard that lives until program exit.
+// Python integration
 //
-// Before constructing the guard, PyConfig is populated so CPython searches the
-// bundled stdlib shipped alongside the plugin. If the stdlib directory is
-// absent (developer build pointing at a system Python), module_search_paths
-// is left untouched and CPython uses its default search.
+// All embedded-CPython code (interpreter setup, syntax check, execution path,
+// pybind11 type registration) is gated behind PJ_REACTIVE_HAS_PYTHON. Builds
+// without that flag link no libpython, ship no Python stdlib, and surface the
+// Python tab in the dialog as disabled. See CMakeLists.txt — the option is
+// PJ_REACTIVE_ENABLE_PYTHON, default OFF.
 // ---------------------------------------------------------------------------
 
+constexpr bool kReactivePythonEnabled =
+#ifdef PJ_REACTIVE_HAS_PYTHON
+    true;
+#else
+    false;
+#endif
+
+#ifdef PJ_REACTIVE_HAS_PYTHON
+
+// CPython can only be initialized once per process, so we use a static guard
+// that lives until program exit. Before constructing the guard, PyConfig is
+// populated so CPython searches the bundled stdlib shipped alongside the
+// plugin. If the stdlib directory is absent (developer build pointing at a
+// system Python), module_search_paths is left untouched and CPython uses its
+// default search.
 void ensurePythonInterpreter() {
   static py::scoped_interpreter guard = [] {
     PyConfig config;
@@ -178,10 +195,7 @@ void ensurePythonInterpreter() {
   (void)guard;
 }
 
-// ---------------------------------------------------------------------------
-// indentPythonCode — wrap user code in a def block with 4-space indentation
-// ---------------------------------------------------------------------------
-
+// indentPythonCode — wrap user code in a def block with 4-space indentation.
 std::string indentPythonCode(const std::string& code) {
   std::string result = "def _pj_user_func(tracker_time):\n";
   std::istringstream stream(code);
@@ -195,10 +209,7 @@ std::string indentPythonCode(const std::string& code) {
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// validatePythonSyntax — lightweight parse check (no execution)
-// ---------------------------------------------------------------------------
-
+// validatePythonSyntax — lightweight parse check (no execution).
 std::string validatePythonSyntax(const std::string& global_code, const std::string& function_code) {
   ensurePythonInterpreter();
   try {
@@ -214,6 +225,8 @@ std::string validatePythonSyntax(const std::string& global_code, const std::stri
   }
   return "";
 }
+
+#endif  // PJ_REACTIVE_HAS_PYTHON
 
 // ---------------------------------------------------------------------------
 // ReactiveScriptEditorDialog
@@ -239,6 +252,11 @@ class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
     bool is_lua = (language_ == "lua");
     wd.setChecked("radio_lua", is_lua);
     wd.setChecked("radio_python", !is_lua);
+    // When Python is not compiled in, force-disable the radio so users can't
+    // pick a backend that won't run. Lua remains the only option.
+    if (!kReactivePythonEnabled) {
+      wd.setEnabled("radio_python", false);
+    }
 
     // -- Code editors --
     wd.setCodeContent("global_editor", global_code_)
@@ -341,6 +359,12 @@ class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
       return true;
     }
     if (name == "radio_python" && checked) {
+      // Reject the toggle when Python is not compiled in — the radio is
+      // already disabled in widget_data(), but a stale checked event from a
+      // restored config could still arrive here.
+      if (!kReactivePythonEnabled) {
+        return false;
+      }
       language_ = "python";
       validation_pending_ = true;
       validation_tick_counter_ = 0;
@@ -411,8 +435,16 @@ class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
     validation_pending_ = false;
     validation_tick_counter_ = 0;
 
-    std::string err =
-        (language_ == "lua") ? validateLuaSyntax(global_code_, code_) : validatePythonSyntax(global_code_, code_);
+    std::string err;
+    if (language_ == "lua") {
+      err = validateLuaSyntax(global_code_, code_);
+    } else {
+#ifdef PJ_REACTIVE_HAS_PYTHON
+      err = validatePythonSyntax(global_code_, code_);
+#else
+      err = "Python is not available in this build (Lua-only).";
+#endif
+    }
     if (err.empty()) {
       has_syntax_error_ = false;
       // Preserve Run output if sticky; otherwise clear terminal.
@@ -661,6 +693,7 @@ struct CreatedSeries {
   }
 };
 
+#ifdef PJ_REACTIVE_HAS_PYTHON
 // Register SeriesAccessor and CreatedSeries with pybind11 inside the embedded
 // interpreter. Called lazily from executePythonScriptImpl() after the
 // scoped_interpreter is live; registering at static-init time via
@@ -691,6 +724,7 @@ void registerPjTypes() {
   }();
   (void)once;
 }
+#endif  // PJ_REACTIVE_HAS_PYTHON
 
 // ---------------------------------------------------------------------------
 // ReactiveScriptEditorToolbox
@@ -833,7 +867,12 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
   // Dispatches script execution to the appropriate language backend.
   std::string executeScript(const std::string& code, const std::string& global_code, const std::string& func_name) {
     if (dialog_.language() == "python") {
+#ifdef PJ_REACTIVE_HAS_PYTHON
       return executePythonScriptImpl(code, global_code, func_name);
+#else
+      return "Error: Python is not available in this build. "
+             "Switch the language selector to Lua.";
+#endif
     }
     return executeLuaScriptImpl(code, global_code, func_name);
   }
@@ -944,6 +983,7 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
     return writeCreatedSeries(created, func_name);
   }
 
+#ifdef PJ_REACTIVE_HAS_PYTHON
   // Executes a Python script in batch mode (tracker_time = 0). Returns a user-facing
   // message: success summary or error prefixed with "Error:".
   std::string executePythonScriptImpl(
@@ -1011,6 +1051,7 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
       return "Error: Python: " + std::string(e.what());
     }
   }
+#endif  // PJ_REACTIVE_HAS_PYTHON
 
   // Loads the on-disk library into the dialog the first time it's needed.
   void ensureLibraryLoaded() {
