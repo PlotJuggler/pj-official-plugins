@@ -1,4 +1,5 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
+#include <pj_base/sdk/media_metadata.hpp>
 
 #include "lerobot_dialog.hpp"
 #include "lerobot_manifest.hpp"
@@ -143,6 +144,7 @@ class LeRobotSource : public PJ::FileSourceBase {
     std::vector<std::vector<int64_t>> ep_frame_ts(selected.size());
 
     for (std::size_t ei = 0; ei < selected.size(); ++ei) {
+      ep_frame_ts[ei].reserve(static_cast<std::size_t>(lengths[ei]));
       auto st = importEpisode(*model, selected[ei], offsets[ei], plan, *topic, processed,
                               ep_frame_ts[ei]);
       if (!st) {
@@ -376,7 +378,8 @@ class LeRobotSource : public PJ::FileSourceBase {
       // canonical kImage: CatalogModel keys off "builtin_object_type" and
       // Media2DDockWidget's built-in kImage→JPEG pipeline decodes the bytes
       // (no parser plugin needed).
-      auto otopic = obj->registerTopic("lerobot/" + cam, R"({"builtin_object_type":"kImage"})");
+      const std::string meta = PJ::sdk::MediaMetadataBuilder().extraString("builtin_object_type", "kImage").build();
+      auto otopic = obj->registerTopic("lerobot/" + cam, meta);
       if (!otopic) {
         return PJ::unexpected(otopic.error());
       }

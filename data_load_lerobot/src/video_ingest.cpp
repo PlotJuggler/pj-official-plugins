@@ -128,7 +128,7 @@ PJ::Status ingestEpisodeVideo(
   const auto last_ts = frame_ts_ns.back();
   std::size_t ordinal = 0;
   bool init_done = false;
-  PJ::Status fail = PJ::okStatus();
+  PJ::Status status = PJ::okStatus();  // !status == an error to propagate
 
   auto initEncoderAndScaler = [&](int w, int h, AVPixelFormat src_fmt) -> bool {
     ectx.ctx = avcodec_alloc_context3(enc);
@@ -197,9 +197,14 @@ PJ::Status ingestEpisodeVideo(
         }
         init_done = true;
       }
-      sws_scale(
-          sws.ctx, dframe.f->data, dframe.f->linesize, 0, dframe.f->height, jframe.f->data,
-          jframe.f->linesize);
+      if (av_frame_make_writable(jframe.f) < 0) {
+        return PJ::unexpected("frame not writable: " + mp4_path);
+      }
+      if (sws_scale(
+              sws.ctx, dframe.f->data, dframe.f->linesize, 0, dframe.f->height, jframe.f->data,
+              jframe.f->linesize) < 0) {
+        return PJ::unexpected("pixel-format conversion failed: " + mp4_path);
+      }
       jframe.f->pts = static_cast<int64_t>(ordinal);
       jframe.f->quality = ectx.ctx->global_quality;
       auto st = encodeAndPush(jframe.f);
@@ -213,24 +218,26 @@ PJ::Status ingestEpisodeVideo(
   while (av_read_frame(fmt.ctx, pkt.pkt) >= 0) {
     const bool is_video = pkt.pkt->stream_index == video_idx;
     if (is_video && avcodec_send_packet(dctx.ctx, pkt.pkt) >= 0) {
-      fail = drainDecoder();
+      status = drainDecoder();
     }
     av_packet_unref(pkt.pkt);
-    if (!fail) {
-      return fail;
+    if (!status) {
+      return status;
     }
   }
 
   // Flush the decoder, then the encoder.
-  avcodec_send_packet(dctx.ctx, nullptr);
-  fail = drainDecoder();
-  if (!fail) {
-    return fail;
+  if (avcodec_send_packet(dctx.ctx, nullptr) < 0) {
+    return PJ::unexpected("decoder flush failed: " + mp4_path);
+  }
+  status = drainDecoder();
+  if (!status) {
+    return status;
   }
   if (init_done) {
-    fail = encodeAndPush(nullptr);
-    if (!fail) {
-      return fail;
+    status = encodeAndPush(nullptr);
+    if (!status) {
+      return status;
     }
   }
   return PJ::okStatus();
