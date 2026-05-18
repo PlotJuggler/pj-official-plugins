@@ -51,6 +51,25 @@ class DataLoadLerobotConan(ConanFile):
         "ffmpeg/*:with_vaapi": False,
         "ffmpeg/*:with_vdpau": False,
         "ffmpeg/*:with_xcb": False,
+        # The conan recipe rejects display/extra deps unless avdevice is on
+        # (e.g. with_xlib requires avdevice). We have avdevice=False, so all
+        # of these must be explicitly disabled (mirrors the PJ4 monorepo
+        # ffmpeg stanza).
+        "ffmpeg/*:with_xlib": False,
+        "ffmpeg/*:with_libdrm": False,
+        "ffmpeg/*:with_libxml2": False,
+        "ffmpeg/*:with_fontconfig": False,
+        "ffmpeg/*:with_fribidi": False,
+        "ffmpeg/*:with_harfbuzz": False,
+        "ffmpeg/*:with_libjxl": False,
+        "ffmpeg/*:with_openapv": False,
+        "ffmpeg/*:with_zeromq": False,
+        "ffmpeg/*:with_sdl": False,
+        "ffmpeg/*:with_appkit": False,
+        "ffmpeg/*:with_audiotoolbox": False,
+        "ffmpeg/*:with_avfoundation": False,
+        "ffmpeg/*:with_coreimage": False,
+        "ffmpeg/*:with_videotoolbox": False,
         "ffmpeg/*:with_libsvtav1": False,
         "ffmpeg/*:with_libaom": False,
         "ffmpeg/*:with_libdav1d": False,
