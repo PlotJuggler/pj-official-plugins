@@ -26,6 +26,14 @@ target_link_libraries(lerobot_source_plugin PRIVATE
   Arrow::arrow_static Parquet::parquet_static
   ffmpeg::avformat ffmpeg::avcodec ffmpeg::avutil ffmpeg::swscale
 )
+# This plugin statically embeds FFmpeg (+zlib), libdav1d and Arrow. Without
+# this, their symbols (inflate/deflate/crc32, av_*, dav1d_*, arrow::*) are
+# exported from the .so and interpose on the host's own copies once the
+# extension manager dlopen()s us — a png/zlib buffer allocated by one copy
+# then freed by another aborts with "munmap_chunk(): invalid pointer" during
+# plugin scanning. Give every static-archive symbol local binding so only our
+# PJ_get_*_vtable entry points (from our own objects) stay exported.
+target_link_options(lerobot_source_plugin PRIVATE LINKER:--exclude-libs,ALL)
 
 pj_embed_ui(lerobot_source_plugin
   UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/dialog_lerobot.ui
