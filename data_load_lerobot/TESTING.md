@@ -104,7 +104,7 @@ pequeño. Si quieres más episodios añade sus `episode_0000NN.parquet`/`.mp4`.)
 
 ---
 
-## 5. Probar en la app (parte numérica — visible hoy)
+## 5. Probar en la app (numérico + imágenes)
 
 1. Lanza PlotJuggler 4 (el binario instalado, o `~/Work/PJ4/run.sh`).
 2. **File → Open** (o el botón de cargar datos) → filtro `*.parquet`.
@@ -126,19 +126,27 @@ pequeño. Si quieres más episodios añade sus `episode_0000NN.parquet`/`.mp4`.)
      tiempo (sin solaparse). Con gap, hueco plano entre episodios.
    - `episode_index` es escalonado (0,0,…,1,1,…) y el cursor mueve
      todas las curvas a la vez.
-   - Cambiar de dataset: botón **Change dataset…** (selector de carpeta).
+   - Cambiar de dataset: botón **Change dataset...** (selector de carpeta).
+6. **Imágenes de cámara:** en el árbol de datos aparece la cámara como
+   object-topic (p.ej. `lerobot/observation.image`). **Arrástrala a una
+   vista 2D vacía** (panel/placeholder de visualización). Debe abrirse un
+   **2D View** mostrando el frame; al mover el cursor de tiempo la imagen
+   avanza sincronizada con las curvas.
 
-> **Vídeo:** la app aún **no** muestra vídeo de ObjectStore (es trabajo
-> upstream de pj_scene2D/pj_app, fuera de este plugin). El plugin SÍ
-> empuja los frames correctamente; eso se valida headless (paso 6).
+> El plugin **decodifica** cada frame (AV1/H.264/…) y lo re-encoda **JPEG**,
+> registrándolo como `builtin_object_type:"kImage"`. Por eso PJ4 lo muestra
+> con su pipeline JPEG built-in **sin parser** y **sin depender del set de
+> códecs de PJ4** (pusht v2.1 es AV1; lo resuelve el plugin con dav1d
+> propio). Multi-cámara: una vista 2D por cámara.
 
 ---
 
-## 6. Verificar el vídeo (headless)
+## 6. Verificar las imágenes (headless)
 
-`tests/video_ingest_test` demuxea un mp4 real, aplica el bitstream filter
-annex-b y comprueba que se hace `pushOwned` de cada frame con el timestamp
-sintetizado correcto, contra un host mock (no necesita pj_scene2D).
+`tests/video_ingest_test` decodifica un mp4 real, re-encoda JPEG y, contra
+un host mock, comprueba que **cada entrada es un JPEG válido** (SOI/EOI) al
+timestamp sintetizado correcto, y que el primero **decodifica a dimensiones
+reales**. No necesita pj_scene2D ni GUI.
 
 ```bash
 LEROBOT_TEST_MP4=$(find ~/datasets/pusht_v21/videos -name 'episode_000000.mp4' | head -1) \
@@ -146,11 +154,9 @@ LEROBOT_TEST_MP4=$(find ~/datasets/pusht_v21/videos -name 'episode_000000.mp4' |
         -R lerobot_video_ingest_test --output-on-failure
 ```
 
-Ya verificado contra el mp4 real de pusht v2.1 (AV1): 3/3 OK — todos los
-frames se hacen `pushOwned` al timestamp sintetizado correcto.
-
-**Esperado:** N entradas push con timestamps monótonos crecientes y
-payloads no vacíos. (Sin `LEROBOT_TEST_MP4` el test se salta — `SKIPPED`.)
+Verificado contra el mp4 real de pusht v2.1 (AV1): 3/3 OK — JPEGs válidos,
+timestamps correctos, primer frame decodifica a dimensiones reales.
+(Sin `LEROBOT_TEST_MP4` los tests data-driven se saltan — `SKIPPED`.)
 
 ---
 
@@ -165,11 +171,12 @@ y `~/Work/pj-official-plugins/build/data_load_lerobot/`, y repite desde el paso 
 
 - **CPM clona por SSH** si no pasas `-DCPM_plotjuggler_core_SOURCE=` → usa la
   variante con el path local (paso 2).
-- **Códec AV1 (¡pusht v2.1 lo usa!) / mp4v**: el push funciona siempre
-  (el plugin solo demuxea, no decodifica), verificado headless con el
-  AV1 real de pusht. Pero para *ver* el vídeo en la app hace falta que el
-  FFmpeg de **PlotJuggler 4** (no este plugin) incluya ese decoder; el
-  build actual de PJ4 habilita solo `h264,hevc,mjpeg` → para AV1 habría
-  que añadir `libdav1d` + `av1` a su conanfile (cambio de PJ4, fuera de
-  este plugin). avc1/H.264 y H.265 van out-of-the-box.
-- 1ª build de conan (Arrow/FFmpeg desde fuente) es larga; es normal.
+- **Códec del vídeo (AV1/H.264/HEVC/…)**: ya **no** es un problema. El
+  plugin decodifica con su propio FFmpeg (AV1 vía libdav1d) y emite JPEG,
+  así que PJ4 solo necesita su decodificador JPEG (turbojpeg, siempre
+  presente). El set de códecs de PJ4 es irrelevante para estas imágenes.
+- `swscaler: deprecated pixel format used` en logs: **benigno**. Es la
+  conversión yuv420p→yuvj420p (full-range) para el encoder MJPEG; la
+  imagen sale correcta.
+- 1ª build de conan (Arrow/FFmpeg desde fuente, ahora con dav1d) es larga;
+  es normal.
