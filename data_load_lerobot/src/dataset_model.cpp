@@ -124,6 +124,24 @@ PJ::Expected<fs::path> resolveRoot(const fs::path& picked) {
   return PJ::unexpected("not a LeRobot dataset: meta/info.json not found near " + picked.string());
 }
 
+// `names` may be a flat array (["a","b"]) or a dict of arrays
+// (e.g. {"motors": ["motor_0","motor_1"]}, as used by lerobot/pusht).
+// Collect the string leaves in document order, recursing through
+// arrays/objects.
+void collectNameLeaves(const json& node, std::vector<std::string>& out) {
+  if (node.is_string()) {
+    out.push_back(node.get<std::string>());
+  } else if (node.is_array()) {
+    for (const auto& e : node) {
+      collectNameLeaves(e, out);
+    }
+  } else if (node.is_object()) {
+    for (auto it = node.begin(); it != node.end(); ++it) {
+      collectNameLeaves(it.value(), out);
+    }
+  }
+}
+
 void parseFeatures(const json& info, DatasetModel& model) {
   auto feats = info.find("features");
   if (feats == info.end() || !feats->is_object()) {
@@ -141,12 +159,8 @@ void parseFeatures(const json& info, DatasetModel& model) {
         }
       }
     }
-    if (auto nm = f.find("names"); nm != f.end() && nm->is_array()) {
-      for (const auto& n : *nm) {
-        if (n.is_string()) {
-          spec.names.push_back(n.get<std::string>());
-        }
-      }
+    if (auto nm = f.find("names"); nm != f.end()) {
+      collectNameLeaves(*nm, spec.names);
     }
     if (spec.is_video()) {
       if (auto inf = f.find("info"); inf != f.end() && inf->is_object()) {

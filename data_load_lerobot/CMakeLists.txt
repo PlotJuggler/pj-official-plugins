@@ -58,3 +58,13 @@ endfunction()
 lerobot_add_test(lerobot_dataset_model_test tests/dataset_model_test.cpp src/dataset_model.cpp)
 lerobot_add_test(lerobot_timeline_test     tests/timeline_test.cpp     src/timeline.cpp)
 lerobot_add_test(lerobot_flatten_plan_test tests/flatten_plan_test.cpp src/flatten_plan.cpp)
+
+# --- Video ingest test (needs FFmpeg; SKIPs unless LEROBOT_TEST_MP4 is set) ---
+add_executable(lerobot_video_ingest_test tests/video_ingest_test.cpp src/video_ingest.cpp)
+target_compile_features(lerobot_video_ingest_test PRIVATE cxx_std_20)
+target_compile_options(lerobot_video_ingest_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(lerobot_video_ingest_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(lerobot_video_ingest_test PRIVATE
+  pj_base ffmpeg::avformat ffmpeg::avcodec ffmpeg::avutil GTest::gtest_main
+)
+add_test(NAME lerobot_video_ingest_test COMMAND lerobot_video_ingest_test)

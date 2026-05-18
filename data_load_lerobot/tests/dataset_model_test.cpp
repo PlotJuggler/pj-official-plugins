@@ -129,3 +129,31 @@ TEST(LoadDatasetModel, FailsWhenNotADataset) {
   ASSERT_FALSE(model.has_value());
   EXPECT_NE(model.error().find("not a LeRobot dataset"), std::string::npos);
 }
+
+TEST(LoadDatasetModel, ParsesDictFormFeatureNames) {
+  // Arrange: real lerobot/pusht v2.1 stores names as {"motors": [...]}, not [...]
+  const fs::path root = fs::temp_directory_path() / "lerobot_dictnames_fixture";
+  fs::remove_all(root);
+  fs::create_directories(root / "meta");
+  std::ofstream(root / "meta" / "info.json") << R"({
+    "codebase_version": "v2.1", "fps": 10, "chunks_size": 1000,
+    "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
+    "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
+    "features": {
+      "observation.state": {"dtype":"float32","shape":[2],"names":{"motors":["motor_0","motor_1"]}}
+    }
+  })";
+  std::ofstream(root / "meta" / "episodes.jsonl")
+      << R"({"episode_index": 0, "tasks": ["push"], "length": 5})" << "\n";
+
+  // Act
+  auto model = loadDatasetModel(root / "meta" / "info.json");
+
+  // Assert
+  ASSERT_TRUE(model.has_value()) << (model.has_value() ? "" : model.error());
+  const FeatureSpec* st = model->feature("observation.state");
+  ASSERT_NE(st, nullptr);
+  EXPECT_EQ(st->names, (std::vector<std::string>{"motor_0", "motor_1"}));
+
+  fs::remove_all(root);
+}

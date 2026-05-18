@@ -78,16 +78,29 @@ Debe quedar junto a `parquet-loader/`, `mcap-loader/`, etc.
 
 ## 4. Conseguir un dataset LeRobot v2.1 de ejemplo
 
-`lerobot/pusht` es pequeño y v2.1:
+⚠️ `lerobot/pusht` en `main` **ya es v3.0** (el plugin lo rechazará con un
+mensaje claro — comportamiento correcto). Hay que pedir el **tag `v2.1`**.
+`huggingface-cli` está deprecado; usa `huggingface_hub` por Python:
 
 ```bash
-huggingface-cli download lerobot/pusht --repo-type dataset \
-  --local-dir ~/datasets/pusht
-# Verifica versión:
-grep codebase_version ~/datasets/pusht/meta/info.json   # → "v2.1"
-ls ~/datasets/pusht/data/chunk-000 | head
-ls ~/datasets/pusht/videos/chunk-000                     # cámaras
+python3 -c "
+from huggingface_hub import snapshot_download
+snapshot_download('lerobot/pusht', repo_type='dataset', revision='v2.1',
+  local_dir='$HOME/datasets/pusht_v21',
+  allow_patterns=['meta/*','data/chunk-000/episode_000000.parquet',
+                  'videos/chunk-000/*/episode_000000.mp4'])
+"
+grep -o '\"codebase_version\"[^,]*' ~/datasets/pusht_v21/meta/info.json  # → "v2.1"
+ls ~/datasets/pusht_v21/data/chunk-000
+find ~/datasets/pusht_v21/videos -name '*.mp4'
 ```
+
+(Quita `allow_patterns` para bajar el dataset completo — sigue siendo
+pequeño. Si quieres más episodios añade sus `episode_0000NN.parquet`/`.mp4`.)
+
+> Nota: el vídeo de pusht v2.1 está en **AV1**. El push headless (paso 6)
+> funciona igual; *verlo* en la app requeriría que el FFmpeg de PlotJuggler 4
+> incluya el decoder AV1 (libdav1d) — ver "Problemas conocidos".
 
 ---
 
@@ -95,7 +108,7 @@ ls ~/datasets/pusht/videos/chunk-000                     # cámaras
 
 1. Lanza PlotJuggler 4 (el binario instalado, o `~/Work/PJ4/run.sh`).
 2. **File → Open** (o el botón de cargar datos) → filtro `*.parquet`.
-3. Navega a `~/datasets/pusht/data/chunk-000/` y elige cualquier
+3. Navega a `~/datasets/pusht_v21/data/chunk-000/` y elige
    `episode_000000.parquet`.
 4. Aparece el diálogo **LeRobot Dataset**:
    - Cabecera: ruta · `v2.1` · fps · nº episodios · cámaras.
@@ -104,9 +117,10 @@ ls ~/datasets/pusht/videos/chunk-000                     # cámaras
      **Separate episodes** y pon `gap = 1.0 s`.
    - **OK** (deshabilitado si no hay selección).
 5. **Qué verificar:**
-   - Aparecen series `lerobot/observation.state.<joint>` y
-     `lerobot/action.<...>` (aplanadas con nombres de `info.json`),
-     más `lerobot/episode_index`, `lerobot/frame_index`, etc.
+   - Aparecen series aplanadas con nombres de `info.json`; en pusht v2.1:
+     `lerobot/observation.state.motor_0`, `…motor_1`,
+     `lerobot/action.motor_0`, `…motor_1`, más `lerobot/episode_index`,
+     `lerobot/frame_index`, `lerobot/next.reward`, etc.
    - Arrastra `observation.state.*` a un plot: curva continua.
    - Con varios episodios: van **encadenados** en una sola línea de
      tiempo (sin solaparse). Con gap, hueco plano entre episodios.
@@ -127,10 +141,13 @@ annex-b y comprueba que se hace `pushOwned` de cada frame con el timestamp
 sintetizado correcto, contra un host mock (no necesita pj_scene2D).
 
 ```bash
-LEROBOT_TEST_MP4=$(ls ~/datasets/pusht/videos/chunk-000/*/episode_000000.mp4 | head -1) \
+LEROBOT_TEST_MP4=$(find ~/datasets/pusht_v21/videos -name 'episode_000000.mp4' | head -1) \
   ctest --test-dir ~/Work/pj-official-plugins/build/data_load_lerobot/Release \
         -R lerobot_video_ingest_test --output-on-failure
 ```
+
+Ya verificado contra el mp4 real de pusht v2.1 (AV1): 3/3 OK — todos los
+frames se hacen `pushOwned` al timestamp sintetizado correcto.
 
 **Esperado:** N entradas push con timestamps monótonos crecientes y
 payloads no vacíos. (Sin `LEROBOT_TEST_MP4` el test se salta — `SKIPPED`.)
@@ -148,7 +165,11 @@ y `~/Work/pj-official-plugins/build/data_load_lerobot/`, y repite desde el paso 
 
 - **CPM clona por SSH** si no pasas `-DCPM_plotjuggler_core_SOURCE=` → usa la
   variante con el path local (paso 2).
-- **mp4v / AV1**: el push funciona (solo demuxea), pero para *ver* esos
-  códecs hace falta que el FFmpeg de **PlotJuggler 4** (no este plugin)
-  incluya el decoder. avc1/H.264 y H.265 van out-of-the-box.
+- **Códec AV1 (¡pusht v2.1 lo usa!) / mp4v**: el push funciona siempre
+  (el plugin solo demuxea, no decodifica), verificado headless con el
+  AV1 real de pusht. Pero para *ver* el vídeo en la app hace falta que el
+  FFmpeg de **PlotJuggler 4** (no este plugin) incluya ese decoder; el
+  build actual de PJ4 habilita solo `h264,hevc,mjpeg` → para AV1 habría
+  que añadir `libdav1d` + `av1` a su conanfile (cambio de PJ4, fuera de
+  este plugin). avc1/H.264 y H.265 van out-of-the-box.
 - 1ª build de conan (Arrow/FFmpeg desde fuente) es larga; es normal.
