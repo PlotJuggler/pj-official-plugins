@@ -21,7 +21,7 @@
      <item>
       <widget class="QPushButton" name="change_btn">
        <property name="text">
-        <string>Change dataset…</string>
+        <string>Change dataset...</string>
        </property>
       </widget>
      </item>

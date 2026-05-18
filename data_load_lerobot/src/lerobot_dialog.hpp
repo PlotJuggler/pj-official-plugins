@@ -201,10 +201,10 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
       return;
     }
     for (const auto& ep : model_->episodes) {
-      std::string item = "ep " + std::to_string(ep.episode_index) + "  ·  " +
+      std::string item = "ep " + std::to_string(ep.episode_index) + "  -  " +
                          std::to_string(ep.length) + " frames";
       if (!ep.task_text.empty()) {
-        item += "  ·  " + ep.task_text;
+        item += "  -  " + ep.task_text;
       }
       episode_items_.push_back(std::move(item));
     }
@@ -234,9 +234,9 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
     for (const auto& c : model_->camera_names) {
       cams += (cams.empty() ? "" : ", ") + c;
     }
-    return model_->root.string() + "  ·  " + model_->codebase_version + "  ·  fps=" +
-           std::to_string(static_cast<int>(model_->fps)) + "  ·  " +
-           std::to_string(model_->episodes.size()) + " episodes  ·  cams: " +
+    return model_->root.string() + "  -  " + model_->codebase_version + "  -  fps=" +
+           std::to_string(static_cast<int>(model_->fps)) + "  -  " +
+           std::to_string(model_->episodes.size()) + " episodes  -  cams: " +
            (cams.empty() ? "(none)" : cams);
   }
 
