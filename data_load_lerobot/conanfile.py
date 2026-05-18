@@ -80,7 +80,10 @@ class DataLoadLerobotConan(ConanFile):
         "ffmpeg/*:enable_encoders": "mjpeg",
         "ffmpeg/*:disable_all_muxers": True,
         "ffmpeg/*:disable_all_decoders": True,
-        "ffmpeg/*:enable_decoders": "h264,hevc,mjpeg,av1,vp9,vp8,mpeg4",
+        # libdav1d = the SOFTWARE AV1 decoder; the bare "av1" decoder is a
+        # HW-only stub and fails headless. disable_all_decoders=True means
+        # libdav1d must be in this allowlist explicitly.
+        "ffmpeg/*:enable_decoders": "h264,hevc,mjpeg,libdav1d,vp9,vp8,mpeg4",
         "ffmpeg/*:disable_all_demuxers": True,
         "ffmpeg/*:enable_demuxers": "mov,matroska,avi",
         "ffmpeg/*:disable_all_parsers": True,

@@ -89,7 +89,16 @@ PJ::Status ingestEpisodeVideo(
   }
   AVCodecParameters* par = fmt.ctx->streams[video_idx]->codecpar;
 
-  const AVCodec* dec = avcodec_find_decoder(par->codec_id);
+  // FFmpeg's native "av1" decoder is hardware-only (fails on headless boxes
+  // with "Failed to get pixel format"); the software AV1 decoder is the
+  // separate libdav1d. Pick it by name so we don't get the HW stub.
+  const AVCodec* dec = nullptr;
+  if (par->codec_id == AV_CODEC_ID_AV1) {
+    dec = avcodec_find_decoder_by_name("libdav1d");
+  }
+  if (dec == nullptr) {
+    dec = avcodec_find_decoder(par->codec_id);
+  }
   if (dec == nullptr) {
     return PJ::unexpected(
         std::string("no decoder for codec '") + avcodec_get_name(par->codec_id) + "' in " + mp4_path);
