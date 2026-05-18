@@ -24,7 +24,7 @@ target_include_directories(lerobot_source_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_
 target_link_libraries(lerobot_source_plugin PRIVATE
   pj_base pj_dialog_sdk nlohmann_json::nlohmann_json
   Arrow::arrow_static Parquet::parquet_static
-  ffmpeg::avformat ffmpeg::avcodec ffmpeg::avutil
+  ffmpeg::avformat ffmpeg::avcodec ffmpeg::avutil ffmpeg::swscale
 )
 
 pj_embed_ui(lerobot_source_plugin
@@ -65,6 +65,6 @@ target_compile_features(lerobot_video_ingest_test PRIVATE cxx_std_20)
 target_compile_options(lerobot_video_ingest_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(lerobot_video_ingest_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(lerobot_video_ingest_test PRIVATE
-  pj_base ffmpeg::avformat ffmpeg::avcodec ffmpeg::avutil GTest::gtest_main
+  pj_base ffmpeg::avformat ffmpeg::avcodec ffmpeg::avutil ffmpeg::swscale GTest::gtest_main
 )
 add_test(NAME lerobot_video_ingest_test COMMAND lerobot_video_ingest_test)

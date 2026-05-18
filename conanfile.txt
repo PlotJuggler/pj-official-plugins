@@ -27,13 +27,14 @@ arrow/*:parquet=True
 arrow/*:with_snappy=True
 boost/*:without_test=True
 boost/*:without_cobalt=True
-# data_load_lerobot: lean LGPL-clean FFmpeg — demux + annex-b bitstream
-# filter only (decoding happens in pj_scene2D, not the plugin). avdevice off
-# ⇒ all display/extra deps must be off (the conan recipe rejects e.g.
-# with_xlib otherwise).
+# data_load_lerobot: FFmpeg decodes each LeRobot camera frame (AV1/H.264/…)
+# and re-encodes JPEG for PlotJuggler's built-in kImage pipeline. LGPL-clean:
+# dav1d (BSD) AV1 decode + built-in mjpeg encoder, no GPL/nonfree, no
+# muxers/devices. avdevice off ⇒ all display/extra deps off (the conan recipe
+# rejects e.g. with_xlib otherwise).
 ffmpeg/*:avcodec=True
 ffmpeg/*:avformat=True
-ffmpeg/*:swscale=False
+ffmpeg/*:swscale=True
 ffmpeg/*:swresample=False
 ffmpeg/*:avfilter=False
 ffmpeg/*:avdevice=False
@@ -77,14 +78,16 @@ ffmpeg/*:with_coreimage=False
 ffmpeg/*:with_videotoolbox=False
 ffmpeg/*:with_libsvtav1=False
 ffmpeg/*:with_libaom=False
-ffmpeg/*:with_libdav1d=False
+ffmpeg/*:with_libdav1d=True
 ffmpeg/*:disable_all_encoders=True
+ffmpeg/*:enable_encoders=mjpeg
 ffmpeg/*:disable_all_muxers=True
 ffmpeg/*:disable_all_decoders=True
+ffmpeg/*:enable_decoders=h264,hevc,mjpeg,av1,vp9,vp8,mpeg4
 ffmpeg/*:disable_all_demuxers=True
 ffmpeg/*:enable_demuxers=mov,matroska,avi
 ffmpeg/*:disable_all_parsers=True
-ffmpeg/*:enable_parsers=h264,hevc,mjpeg
+ffmpeg/*:enable_parsers=h264,hevc,mjpeg,av1,vp9,vp8,mpeg4video
 ffmpeg/*:disable_all_bitstream_filters=True
 ffmpeg/*:enable_bitstream_filters=h264_mp4toannexb,hevc_mp4toannexb
 ffmpeg/*:disable_all_protocols=True

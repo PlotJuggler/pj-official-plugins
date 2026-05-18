@@ -1,5 +1,4 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
-#include <pj_base/sdk/media_metadata.hpp>
 
 #include "lerobot_dialog.hpp"
 #include "lerobot_manifest.hpp"
@@ -373,12 +372,11 @@ class LeRobotSource : public PJ::FileSourceBase {
     for (const std::string& cam : model.camera_names) {
       const lerobot::FeatureSpec* fs = model.feature(cam);
       const std::string codec = fs != nullptr ? fs->video_codec : std::string{};
-      const std::string meta = PJ::sdk::MediaMetadataBuilder()
-                                   .mediaClass("video")
-                                   .encoding(codec.empty() ? "h264" : codec)
-                                   .schema("foxglove/CompressedVideo")
-                                   .build();
-      auto otopic = obj->registerTopic("lerobot/" + cam, meta);
+      // The plugin decodes frames and pushes JPEG per entry, so the topic is a
+      // canonical kImage: CatalogModel keys off "builtin_object_type" and
+      // Media2DDockWidget's built-in kImage→JPEG pipeline decodes the bytes
+      // (no parser plugin needed).
+      auto otopic = obj->registerTopic("lerobot/" + cam, R"({"builtin_object_type":"kImage"})");
       if (!otopic) {
         return PJ::unexpected(otopic.error());
       }

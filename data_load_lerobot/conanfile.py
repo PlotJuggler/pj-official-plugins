@@ -19,12 +19,15 @@ class DataLoadLerobotConan(ConanFile):
         "arrow/*:with_zstd": True,
         "boost/*:without_test": True,
         "boost/*:without_cobalt": True,
-        # FFmpeg: the plugin only DEMUXES mp4 and runs the annex-b bitstream
-        # filter — decoding happens later inside pj_scene2D. Keep this lean and
-        # LGPL-clean (no encoders/muxers/devices, no GPL/nonfree codecs).
+        # FFmpeg: the plugin DECODES each camera frame (LeRobot mp4 may be
+        # AV1/H.264/H.265/…) and re-encodes it to JPEG so PlotJuggler's
+        # built-in kImage→JPEG pipeline can display it (no parser needed, and
+        # PJ4's own ffmpeg codec set becomes irrelevant for our images).
+        # LGPL-clean: dav1d (BSD) for AV1 decode, built-in mjpeg encoder, no
+        # GPL/nonfree codecs, no muxers/devices.
         "ffmpeg/*:avcodec": True,
         "ffmpeg/*:avformat": True,
-        "ffmpeg/*:swscale": False,
+        "ffmpeg/*:swscale": True,
         "ffmpeg/*:swresample": False,
         "ffmpeg/*:avfilter": False,
         "ffmpeg/*:avdevice": False,
@@ -72,14 +75,16 @@ class DataLoadLerobotConan(ConanFile):
         "ffmpeg/*:with_videotoolbox": False,
         "ffmpeg/*:with_libsvtav1": False,
         "ffmpeg/*:with_libaom": False,
-        "ffmpeg/*:with_libdav1d": False,
+        "ffmpeg/*:with_libdav1d": True,
         "ffmpeg/*:disable_all_encoders": True,
+        "ffmpeg/*:enable_encoders": "mjpeg",
         "ffmpeg/*:disable_all_muxers": True,
         "ffmpeg/*:disable_all_decoders": True,
+        "ffmpeg/*:enable_decoders": "h264,hevc,mjpeg,av1,vp9,vp8,mpeg4",
         "ffmpeg/*:disable_all_demuxers": True,
         "ffmpeg/*:enable_demuxers": "mov,matroska,avi",
         "ffmpeg/*:disable_all_parsers": True,
-        "ffmpeg/*:enable_parsers": "h264,hevc,mjpeg",
+        "ffmpeg/*:enable_parsers": "h264,hevc,mjpeg,av1,vp9,vp8,mpeg4video",
         "ffmpeg/*:disable_all_bitstream_filters": True,
         "ffmpeg/*:enable_bitstream_filters": "h264_mp4toannexb,hevc_mp4toannexb",
         "ffmpeg/*:disable_all_protocols": True,
