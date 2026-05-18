@@ -17,20 +17,22 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
 
 namespace ah = lerobot::arrow_helpers;
 
-// One numeric output column. For a scalar parquet column `arrow_name` ==
-// source name and `vec_k` == -1. For a flattened vector element, `arrow_name`
-// is the list column and `vec_k` the child index.
+// Guard against an absurd `shape` in info.json blowing up into millions of
+// series (a vector feature in real datasets is a handful of elements).
+constexpr int kMaxVectorWidth = 4096;
+
 struct OutColumn {
-  std::string out_name;            // series name (stable, owns the string)
-  std::string arrow_name;          // source parquet column
-  int vec_k = -1;                  // -1 scalar; >=0 vector element index
-  arrow::Type::type scalar_type = arrow::Type::NA;  // scalar only
+  std::string out_name;     // series name (stable, owns the string)
+  std::string arrow_name;   // source parquet column
+  int vec_k = -1;           // -1 = scalar column; >=0 = element of a list column
+  arrow::Type::type scalar_type = arrow::Type::NA;
   PJ::PrimitiveType prim = PJ::PrimitiveType::kFloat64;
 };
 
@@ -97,20 +99,21 @@ class LeRobotSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("no episodes selected"));
     }
 
-    // Episode lengths in selection order → uniform per-episode offsets.
+    std::unordered_map<int64_t, int64_t> episode_length;
+    episode_length.reserve(model->episodes.size());
+    for (const auto& e : model->episodes) {
+      episode_length.emplace(e.episode_index, e.length);
+    }
     std::vector<int64_t> lengths;
     lengths.reserve(selected.size());
     int64_t total_rows = 0;
     for (int64_t ep : selected) {
-      int64_t len = 0;
-      for (const auto& e : model->episodes) {
-        if (e.episode_index == ep) {
-          len = e.length;
-          break;
-        }
+      auto it = episode_length.find(ep);
+      if (it == episode_length.end()) {
+        return PJ::unexpected("selected episode " + std::to_string(ep) + " is not in the dataset");
       }
-      lengths.push_back(len);
-      total_rows += len;
+      lengths.push_back(it->second);
+      total_rows += it->second;
     }
     const auto offsets = lerobot::computeEpisodeOffsetsNs(lengths, model->fps, dialog_.gapSeconds());
 
@@ -197,6 +200,16 @@ class LeRobotSource : public PJ::FileSourceBase {
         if (k <= 0 && fs != nullptr && !fs->shape.empty()) {
           k = static_cast<int>(fs->shape.back());
         }
+        if (k <= 0) {
+          runtimeHost().reportMessage(
+              PJ::DataSourceMessageLevel::kWarning, "skipping vector column '" + name + "' (unknown width)");
+          continue;
+        }
+        if (k > kMaxVectorWidth) {
+          return PJ::unexpected(
+              "vector column '" + name + "' width " + std::to_string(k) + " exceeds limit " +
+              std::to_string(kMaxVectorWidth));
+        }
         const std::vector<std::string> labels = lerobot::flattenedFieldNames(
             name, k, fs != nullptr ? fs->names : std::vector<std::string>{});
         for (int e = 0; e < k; ++e) {
@@ -257,16 +270,23 @@ class LeRobotSource : public PJ::FileSourceBase {
       return PJ::unexpected("failed to read schema: " + path);
     }
 
-    auto col_index = [&](const std::string& n) -> int {
-      for (int i = 0; i < schema->num_fields(); ++i) {
-        if (schema->field(i)->name() == n) {
-          return i;
-        }
-      }
-      return -1;
+    // Resolve column names → Arrow index once per episode (tolerating schema
+    // drift across episodes); the row loop then indexes by position only.
+    std::unordered_map<std::string, int> col_of;
+    col_of.reserve(static_cast<std::size_t>(schema->num_fields()));
+    for (int i = 0; i < schema->num_fields(); ++i) {
+      col_of.emplace(schema->field(i)->name(), i);
+    }
+    auto idx_of = [&](const std::string& n) -> int {
+      auto it = col_of.find(n);
+      return it != col_of.end() ? it->second : -1;
     };
-    const int ts_idx = col_index("timestamp");
-    const int frame_idx = col_index("frame_index");
+    const int ts_idx = idx_of("timestamp");
+    const int frame_idx = idx_of("frame_index");
+    std::vector<int> plan_idx(plan.size());
+    for (std::size_t k = 0; k < plan.size(); ++k) {
+      plan_idx[k] = idx_of(plan[k].arrow_name);
+    }
 
     std::shared_ptr<arrow::RecordBatchReader> batches;
 #if defined(__GNUC__) || defined(__clang__)
@@ -282,15 +302,18 @@ class LeRobotSource : public PJ::FileSourceBase {
 
     std::vector<PJ::sdk::NamedFieldValue> row_fields;
     row_fields.reserve(plan.size());
+    std::vector<std::shared_ptr<arrow::Array>> cols(plan.size());
     std::shared_ptr<arrow::RecordBatch> batch;
     int64_t row_counter = 0;
+    arrow::Status read_st;
 
-    while (batches->ReadNext(&batch).ok() && batch) {
+    while ((read_st = batches->ReadNext(&batch)).ok() && batch) {
       const int64_t n = batch->num_rows();
-      std::shared_ptr<arrow::Array> ts_arr =
-          ts_idx >= 0 ? batch->column(ts_idx) : nullptr;
-      std::shared_ptr<arrow::Array> fidx_arr =
-          frame_idx >= 0 ? batch->column(frame_idx) : nullptr;
+      std::shared_ptr<arrow::Array> ts_arr = ts_idx >= 0 ? batch->column(ts_idx) : nullptr;
+      std::shared_ptr<arrow::Array> fidx_arr = frame_idx >= 0 ? batch->column(frame_idx) : nullptr;
+      for (std::size_t k = 0; k < plan.size(); ++k) {
+        cols[k] = plan_idx[k] >= 0 ? batch->column(plan_idx[k]) : nullptr;
+      }
 
       for (int64_t r = 0; r < n; ++r) {
         const bool has_ts = ts_arr != nullptr && !ts_arr->IsNull(r);
@@ -299,12 +322,12 @@ class LeRobotSource : public PJ::FileSourceBase {
         const int64_t ts_ns = lerobot::rowTimestampNs(offset, has_ts, sec, fi, model.fps);
 
         row_fields.clear();
-        for (const auto& c : plan) {
-          const int ci = col_index(c.arrow_name);
-          if (ci < 0) {
+        for (std::size_t k = 0; k < plan.size(); ++k) {
+          const std::shared_ptr<arrow::Array>& arr = cols[k];
+          if (!arr) {
             continue;
           }
-          const auto& arr = batch->column(ci);
+          const OutColumn& c = plan[k];
           if (c.vec_k < 0) {
             auto v = ah::getArrowValueRef(arr, r, c.scalar_type);
             if (!PJ::sdk::isNull(v)) {
@@ -333,6 +356,9 @@ class LeRobotSource : public PJ::FileSourceBase {
       if (runtimeHost().isStopRequested()) {
         return PJ::unexpected(std::string("import cancelled"));
       }
+    }
+    if (!read_st.ok()) {
+      return PJ::unexpected("error reading parquet batches from " + path + ": " + read_st.ToString());
     }
     return PJ::okStatus();
   }

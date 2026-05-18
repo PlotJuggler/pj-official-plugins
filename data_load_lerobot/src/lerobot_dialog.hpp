@@ -5,7 +5,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <optional>
 #include <string>
 #include <vector>
@@ -170,10 +172,17 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
       loadModel();
     }
     if (model_) {
-      if (!restored.empty()) {
-        selected_eps_ = std::move(restored);
-      } else {
-        for (const auto& ep : model_->episodes) {  // default: all episodes
+      // Keep only restored indices still present (the dataset may have
+      // changed since the layout was saved); empty selection ⇒ default all.
+      for (int64_t ep : restored) {
+        const auto& eps = model_->episodes;
+        if (std::any_of(eps.begin(), eps.end(),
+                        [ep](const lerobot::EpisodeInfo& e) { return e.episode_index == ep; })) {
+          selected_eps_.push_back(ep);
+        }
+      }
+      if (selected_eps_.empty()) {
+        for (const auto& ep : model_->episodes) {
           selected_eps_.push_back(ep.episode_index);
         }
       }
@@ -234,8 +243,9 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
     for (const auto& c : model_->camera_names) {
       cams += (cams.empty() ? "" : ", ") + c;
     }
-    return model_->root.string() + "  -  " + model_->codebase_version + "  -  fps=" +
-           std::to_string(static_cast<int>(model_->fps)) + "  -  " +
+    char fps[32];
+    std::snprintf(fps, sizeof(fps), "%g", model_->fps);  // %g: "10", "29.97" — no fake truncation
+    return model_->root.string() + "  -  " + model_->codebase_version + "  -  fps=" + fps + "  -  " +
            std::to_string(model_->episodes.size()) + " episodes  -  cams: " +
            (cams.empty() ? "(none)" : cams);
   }
