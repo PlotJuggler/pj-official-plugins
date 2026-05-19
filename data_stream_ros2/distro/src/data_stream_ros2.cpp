@@ -19,6 +19,7 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <pj_base/buffer_anchor.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <queue>
 #include <rclcpp/executors/multi_threaded_executor.hpp>
@@ -40,7 +41,10 @@ namespace {
 
 struct PendingMessage {
   std::string topic;
-  std::vector<uint8_t> payload;
+  // Hold the rclcpp::SerializedMessage shared_ptr so its rcl buffer survives
+  // any deferred FetchMessageData pull the host issues. The same shared_ptr
+  // is forwarded as the PayloadView anchor at push time.
+  std::shared_ptr<rclcpp::SerializedMessage> msg;
   int64_t timestamp_ns;
 };
 
@@ -141,8 +145,21 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
       auto& msg = batch.front();
       auto* binding = ensureBinding(msg.topic);
       if (binding != nullptr) {
-        auto status = runtimeHost().pushRawMessage(
-            *binding, PJ::Timestamp{msg.timestamp_ns}, PJ::Span<const uint8_t>(msg.payload.data(), msg.payload.size()));
+        // Zero-copy push: the FetchMessageData closure captures the
+        // SerializedMessage shared_ptr (which owns the rcl buffer) and hands
+        // the host a PayloadView pointing at that buffer with the shared_ptr
+        // as the BufferAnchor. The host applies ObjectIngestPolicy to decide
+        // whether to invoke the closure now (eager), on consumer pull
+        // (lazy), or never. The buffer survives any pending pull because
+        // every captured shared_ptr keeps the SerializedMessage alive.
+        auto status = runtimeHost().pushMessage(
+            *binding, PJ::Timestamp{msg.timestamp_ns}, [keeper = msg.msg]() -> PJ::sdk::PayloadView {
+              const auto& rcl = keeper->get_rcl_serialized_message();
+              return PJ::sdk::PayloadView{
+                  PJ::Span<const uint8_t>{rcl.buffer, rcl.buffer_length},
+                  PJ::sdk::BufferAnchor{keeper},
+              };
+            });
         if (!status) {
           runtimeHost().reportMessage(
               PJ::DataSourceMessageLevel::kWarning,
@@ -163,12 +180,12 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
     if (!msg) {
       return;
     }
-    const auto& raw = msg->get_rcl_serialized_message();
-    PendingMessage pending;
-    pending.topic = topic;
-    pending.payload.assign(raw.buffer, raw.buffer + raw.buffer_length);
     const auto now = std::chrono::system_clock::now().time_since_epoch();
-    pending.timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+    PendingMessage pending{
+        .topic = topic,
+        .msg = std::move(msg),
+        .timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count(),
+    };
 
     std::lock_guard<std::mutex> lock(queue_mutex_);
     message_queue_.push(std::move(pending));
