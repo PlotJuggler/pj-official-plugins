@@ -111,7 +111,8 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
       }
     }
     selected_topics_ = std::move(next);
-    return false;
+    // Re-render so widget_data() refreshes the OK-enabled state.
+    return true;
   }
 
   void onAccepted(std::string_view /*json*/) override {
