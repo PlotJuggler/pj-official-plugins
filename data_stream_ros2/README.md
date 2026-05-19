@@ -127,11 +127,78 @@ End-to-end recipe and headless variants are documented in
 
 ## Testing the plugin without Docker
 
-Everything Docker does can be reproduced on a host that already has a
-working ROS 2 install: source the distro's `setup.bash`, build the plugin
-with `-DPJ_BUILD_ROS2_DISTRO=ON`, and copy the resulting `.so` files into
-`~/.local/share/PlotJuggler4/extensions/ros2-topic-subscriber/` following
-the layout above. Docker is a convenience, not a requirement.
+Docker is a convenience, not a requirement. On a host that already has a
+working ROS 2 install you can build the plugin in-tree against the local
+`plotjuggler_core` checkout and drop the artifacts straight into the
+proto-app's plugin directory.
+
+### Native build recipe
+
+Assumes the repo layout `plotjuggler_core/pj_ported_plugins/` (i.e. the
+plugin tree lives inside `plotjuggler_core` as a sibling of the other
+plugins) and that Conan 2.x is installed.
+
+```bash
+cd plotjuggler_core/pj_ported_plugins
+source /opt/ros/<distro>/setup.bash
+
+# 1) Conan dependencies into a side build directory so the main build/
+#    is not touched.
+conan install . --output-folder=build_ros2 --build=missing \
+  -s compiler.cppstd=20
+
+# 2) Configure only this plugin. PJ_BUILD_ROS2_DISTRO=ON enables the
+#    per-distro inner target (rclcpp-linked). CPM_plotjuggler_core_SOURCE
+#    points to the sibling checkout so CPM does not fetch core from
+#    GitHub (which fails on hosts without the right credentials).
+cmake -B build_ros2 \
+  -DCMAKE_TOOLCHAIN_FILE=build_ros2/conan_toolchain.cmake \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DPJ_BUILD_PLUGIN=data_stream_ros2 \
+  -DPJ_BUILD_ROS2_DISTRO=ON \
+  -DCPM_plotjuggler_core_SOURCE="$(pwd)/.."
+
+# 3) Build.
+cmake --build build_ros2 -j"$(nproc)"
+```
+
+The build produces three artifacts under `build_ros2/bin/`:
+
+- `libros2_stream_plugin.so`               — proxy (advertised by the manifest)
+- `libros2_stream_plugin-<distro>.so`      — per-distro inner
+- `ros2_stream_plugin.pjmanifest.json`     — plugin manifest
+
+### Drop the artifacts where the proto-app's plugin loader expects them
+
+The proxy resolves the inner at runtime as
+`dist/<distro>/libros2_stream_plugin-<distro>.so` **relative to the proxy's
+own location**. So next to whichever `bin/` you use as `--plugin-dir`:
+
+```bash
+PJBIN=/path/to/your/plugin-dir       # e.g. plotjuggler_core/build/pj_ported_plugins/bin
+mkdir -p "$PJBIN/dist/<distro>"
+cp build_ros2/bin/libros2_stream_plugin.so          "$PJBIN/"
+cp build_ros2/bin/ros2_stream_plugin.pjmanifest.json "$PJBIN/"
+cp build_ros2/bin/libros2_stream_plugin-<distro>.so "$PJBIN/dist/<distro>/"
+```
+
+Final layout under `$PJBIN/`:
+
+    libros2_stream_plugin.so
+    ros2_stream_plugin.pjmanifest.json
+    dist/
+      <distro>/
+        libros2_stream_plugin-<distro>.so
+
+When the proto-app loads, the proxy detects `ROS_DISTRO` (or scans
+`/opt/ros/*`) and `dlopen`s the matching inner from `dist/<distro>/`.
+
+### Marketplace-style install layout
+
+Same artifacts, different anchor: drop them at
+`~/.local/share/PlotJuggler4/extensions/ros2-topic-subscriber/` with the
+manifest at the root and the inner under `dist/<distro>/` — the
+marketplace scanner picks it up like any installed extension.
 
 ## Supported distros and platforms
 
