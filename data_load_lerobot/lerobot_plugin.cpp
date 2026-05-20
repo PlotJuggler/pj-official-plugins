@@ -7,12 +7,12 @@
 #include "dataset_model.hpp"
 #include "flatten_plan.hpp"
 #include "lerobot_arrow_helpers.hpp"
-#include "timeline.hpp"
 
 #include <arrow/api.h>
 #include <arrow/io/file.h>
 #include <parquet/arrow/reader.h>
 
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -22,6 +22,18 @@
 namespace {
 
 namespace ah = lerobot::arrow_helpers;
+
+// Per-row ns timestamp on the episode's 0-based clock. Uses the parquet
+// `timestamp` column when present, otherwise `frame_index / fps`. Each
+// episode is its own DatasetId so no cross-episode offset arithmetic is
+// needed.
+int64_t rowTimestampNs(bool has_ts, double ts_seconds, int64_t frame_index, double fps) {
+  if (has_ts) {
+    return static_cast<int64_t>(std::llround(ts_seconds * 1e9));
+  }
+  const double safe_fps = fps > 0.0 ? fps : 1.0;
+  return static_cast<int64_t>(std::llround(static_cast<double>(frame_index) / safe_fps * 1e9));
+}
 
 // Guard against an absurd `shape` in info.json blowing up into millions of
 // series (a vector feature in real datasets is a handful of elements).
@@ -308,7 +320,7 @@ class LeRobotSource : public PJ::FileSourceBase {
         const bool has_ts = ts_arr != nullptr && !ts_arr->IsNull(r);
         const double sec = has_ts ? readSeconds(ts_arr, r) : 0.0;
         const int64_t fi = fidx_arr ? readInt(fidx_arr, r, row_counter) : row_counter;
-        const int64_t ts_ns = lerobot::rowTimestampNs(has_ts, sec, fi, model.fps);
+        const int64_t ts_ns = rowTimestampNs(has_ts, sec, fi, model.fps);
 
         row_fields.clear();
         for (std::size_t k = 0; k < plan.size(); ++k) {

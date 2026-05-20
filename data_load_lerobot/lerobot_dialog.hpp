@@ -23,10 +23,8 @@ namespace {
 /// DataSource-owned dialog: pick which episodes of a LeRobot dataset to load,
 /// and how to lay them out on the timeline. Mirrors the ParquetDialog pattern.
 class LeRobotDialog : public PJ::DialogPluginTyped {
-  using PJ::DialogPluginTyped::onValueChanged;
-
  public:
-  // --- Accessors for LeRobotSource ---
+  // --- Accessors used by LeRobotSource ---
 
   const lerobot::DatasetModel* model() const {
     return model_ ? &*model_ : nullptr;
@@ -34,17 +32,8 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
   const std::string& datasetError() const {
     return model_error_;
   }
-  /// Selected episode_index values, ascending (dataset order).
-  /// Empty when the dialog was constructed in per-instance fanout mode (the
-  /// loader gave loadConfig a single `episode` int) — in that case, use
-  /// singleEpisode().
-  const std::vector<int64_t>& selectedEpisodes() const {
-    return selected_eps_;
-  }
-  /// In fanout mode the dialog config carries `episode: <int>`. importData
-  /// reads this to import exactly one episode without iterating selected_eps_.
-  /// Returns nullopt when the dialog is in dialog/UI mode (legacy or just
-  /// after the dialog accepts a multi-selection).
+  /// Episode this LeRobotSource instance imports. Populated when the host
+  /// passes a per-instance fanout config carrying `"episode": <int>`.
   std::optional<int64_t> singleEpisode() const {
     return single_episode_;
   }

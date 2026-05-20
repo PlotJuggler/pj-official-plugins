@@ -11,14 +11,12 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 # --- Plugin shared library ---
 add_library(lerobot_source_plugin SHARED
-  src/lerobot_plugin.cpp
-  src/dataset_model.cpp
-  src/timeline.cpp
-  src/flatten_plan.cpp
+  lerobot_plugin.cpp
+  dataset_model.cpp
+  flatten_plan.cpp
 )
 target_compile_features(lerobot_source_plugin PRIVATE cxx_std_20)
 target_compile_options(lerobot_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
-target_include_directories(lerobot_source_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(lerobot_source_plugin PRIVATE
   pj_base pj_dialog_sdk nlohmann_json::nlohmann_json
   Arrow::arrow_static Parquet::parquet_static
@@ -49,27 +47,28 @@ pj_emit_plugin_manifest(lerobot_source_plugin
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# --- Unit tests (pure logic: no Arrow / FFmpeg / host needed) ---
+# --- Unit tests ---
+# Tests live under tests/ but #include headers from the plugin root, so each
+# target gets ${CMAKE_CURRENT_SOURCE_DIR} on its include path.
 function(lerobot_add_test name)
   add_executable(${name} ${ARGN})
   target_compile_features(${name} PRIVATE cxx_std_20)
   target_compile_options(${name} PRIVATE ${PJ_WARNING_FLAGS})
-  target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(${name} PRIVATE pj_base nlohmann_json::nlohmann_json GTest::gtest_main)
   add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
-lerobot_add_test(lerobot_dataset_model_test tests/dataset_model_test.cpp src/dataset_model.cpp)
-lerobot_add_test(lerobot_timeline_test     tests/timeline_test.cpp     src/timeline.cpp)
-lerobot_add_test(lerobot_flatten_plan_test tests/flatten_plan_test.cpp src/flatten_plan.cpp)
-# Dialog fanout/serialization test. Uses LeRobotDialog from lerobot_dialog.hpp;
-# requires dataset_model.cpp because loadModel() is referenced in the header
-# even though our tests pass empty filepaths to avoid touching the filesystem.
-# pj_dialog_sdk supplies DialogPluginTyped + WidgetData base classes.
-add_executable(lerobot_dialog_fanout_test tests/dialog_fanout_test.cpp src/dataset_model.cpp)
+lerobot_add_test(lerobot_dataset_model_test tests/dataset_model_test.cpp dataset_model.cpp)
+lerobot_add_test(lerobot_flatten_plan_test  tests/flatten_plan_test.cpp  flatten_plan.cpp)
+
+# Dialog/fanout serialization test: needs dataset_model.cpp because
+# LeRobotDialog::loadModel() resolves to lerobot::loadDatasetModel; pj_dialog_sdk
+# supplies the DialogPluginTyped + WidgetData base classes.
+add_executable(lerobot_dialog_fanout_test tests/dialog_fanout_test.cpp dataset_model.cpp)
 target_compile_features(lerobot_dialog_fanout_test PRIVATE cxx_std_20)
 target_compile_options(lerobot_dialog_fanout_test PRIVATE ${PJ_WARNING_FLAGS})
-target_include_directories(lerobot_dialog_fanout_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(lerobot_dialog_fanout_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lerobot_dialog_fanout_test PRIVATE
   pj_base pj_dialog_sdk nlohmann_json::nlohmann_json GTest::gtest_main
 )
