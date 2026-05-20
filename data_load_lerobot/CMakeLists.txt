@@ -5,7 +5,6 @@ endif()
 if(NOT TARGET Parquet::parquet_static)
   find_package(Parquet REQUIRED)
 endif()
-find_package(ffmpeg REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
@@ -16,7 +15,6 @@ add_library(lerobot_source_plugin SHARED
   src/dataset_model.cpp
   src/timeline.cpp
   src/flatten_plan.cpp
-  src/video_ingest.cpp
 )
 target_compile_features(lerobot_source_plugin PRIVATE cxx_std_20)
 target_compile_options(lerobot_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
@@ -24,14 +22,12 @@ target_include_directories(lerobot_source_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_
 target_link_libraries(lerobot_source_plugin PRIVATE
   pj_base pj_dialog_sdk nlohmann_json::nlohmann_json
   Arrow::arrow_static Parquet::parquet_static
-  ffmpeg::avformat ffmpeg::avcodec ffmpeg::avutil ffmpeg::swscale
 )
-# This plugin statically embeds FFmpeg (+zlib), libdav1d and Arrow. Without
-# this, their symbols (inflate/deflate/crc32, av_*, dav1d_*, arrow::*) are
-# exported from the .so and interpose on the host's own copies once the
-# extension manager dlopen()s us — a png/zlib buffer allocated by one copy
-# then freed by another aborts with "munmap_chunk(): invalid pointer" during
-# plugin scanning. Give every static-archive symbol local binding so only our
+# This plugin statically embeds Arrow. Without this, its symbols (arrow::*)
+# are exported from the .so and interpose on the host's own copies once the
+# extension manager dlopen()s us — a buffer allocated by one copy then freed
+# by another aborts with "munmap_chunk(): invalid pointer" during plugin
+# scanning. Give every static-archive symbol local binding so only our
 # PJ_get_*_vtable entry points (from our own objects) stay exported.
 target_link_options(lerobot_source_plugin PRIVATE LINKER:--exclude-libs,ALL)
 
@@ -83,13 +79,3 @@ target_include_directories(lerobot_dialog_fanout_test PRIVATE
   $<TARGET_PROPERTY:lerobot_source_plugin,INCLUDE_DIRECTORIES>
 )
 add_test(NAME lerobot_dialog_fanout_test COMMAND lerobot_dialog_fanout_test)
-
-# --- Video ingest test (needs FFmpeg; SKIPs unless LEROBOT_TEST_MP4 is set) ---
-add_executable(lerobot_video_ingest_test tests/video_ingest_test.cpp src/video_ingest.cpp)
-target_compile_features(lerobot_video_ingest_test PRIVATE cxx_std_20)
-target_compile_options(lerobot_video_ingest_test PRIVATE ${PJ_WARNING_FLAGS})
-target_include_directories(lerobot_video_ingest_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(lerobot_video_ingest_test PRIVATE
-  pj_base ffmpeg::avformat ffmpeg::avcodec ffmpeg::avutil ffmpeg::swscale GTest::gtest_main
-)
-add_test(NAME lerobot_video_ingest_test COMMAND lerobot_video_ingest_test)

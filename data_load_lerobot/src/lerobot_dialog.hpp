@@ -48,12 +48,6 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
   std::optional<int64_t> singleEpisode() const {
     return single_episode_;
   }
-  /// "video" (default) emits metadata-only video topics; "jpeg" runs the
-  /// legacy transcode-to-JPEG path. The flag survives loadConfig/saveConfig
-  /// roundtrips so a user-set preference sticks across sessions.
-  const std::string& videoMode() const {
-    return video_mode_;
-  }
 
   // --- Dialog protocol ---
 
@@ -142,7 +136,6 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
     nlohmann::json cfg;
     cfg["filepath"] = filepath_;
     cfg["selected_episodes"] = selected_eps_;
-    cfg["video_mode"] = video_mode_;
 
     if (!selected_eps_.empty()) {
       nlohmann::json fanout = nlohmann::json::array();
@@ -150,7 +143,6 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
         nlohmann::json entry;
         entry["filepath"] = filepath_;
         entry["episode"] = selected_eps_[i];
-        entry["video_mode"] = video_mode_;
         entry["display_suffix"] = std::string("ep_") + std::to_string(selected_eps_[i]);
         fanout.push_back(entry.dump());
       }
@@ -165,10 +157,6 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
       return false;
     }
     filepath_ = cfg.value("filepath", std::string{});
-    video_mode_ = cfg.value("video_mode", std::string("video"));
-    // separate_episodes/gap_seconds removed in this PR — each episode is now
-    // its own DatasetId, so no concatenation gap is meaningful. Old configs
-    // carrying those keys parse fine; we just ignore them.
 
     // Per-instance fanout mode: the FileLoader passes a sub-config with a
     // single `episode` int. importData reads singleEpisode() to skip the
@@ -291,9 +279,6 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
   // Per-instance fanout: set by loadConfig when the host passes a single
   // `episode` int; importData uses it to bypass the multi-episode iteration.
   std::optional<int64_t> single_episode_;
-  // "video" (default, registerTopic + 0 push, host opens FileVideoSource) or
-  // "jpeg" (legacy transcode path). Survives save/load.
-  std::string video_mode_ = "video";
 };
 
 }  // namespace

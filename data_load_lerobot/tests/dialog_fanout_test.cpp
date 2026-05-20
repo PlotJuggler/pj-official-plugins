@@ -1,10 +1,9 @@
 // Verifies LeRobotDialog's per-instance fanout serialization API.
 //
-// The dialog is the persistence layer for both the UI selection (legacy
-// multi-episode mode) and the per-instance fanout configs the host issues
-// when spawning one LeRobotSource per episode. Loading a fanout sub-config
-// (with `episode: int`) must populate singleEpisode() so importData skips
-// the multi-episode iteration. The video_mode flag survives roundtrips.
+// The dialog persists both the UI selection (multi-episode list) and the
+// per-instance fanout configs the host issues when spawning one LeRobotSource
+// per episode. Loading a fanout sub-config (with `episode: int`) must populate
+// singleEpisode() so importData reads exactly one episode.
 //
 // Note: the dialog is defined in an anonymous namespace inside the header,
 // so we get our own copy of the class here — fine for unit testing, since
@@ -20,29 +19,16 @@ namespace {
 
 TEST(LeRobotDialogFanout, LoadsSingleEpisodeFromFanoutConfig) {
   LeRobotDialog d;
-  // Per-instance fanout payload: single episode int + explicit video_mode.
-  // filepath empty so loadDatasetModel fails (we're not testing model parsing).
-  ASSERT_TRUE(d.loadConfig(R"({"episode":5,"video_mode":"video","display_suffix":"ep_5"})"));
+  // Per-instance fanout payload: single episode int. filepath empty so
+  // loadDatasetModel fails (we're not testing model parsing here).
+  ASSERT_TRUE(d.loadConfig(R"({"episode":5,"display_suffix":"ep_5"})"));
   ASSERT_TRUE(d.singleEpisode().has_value());
   EXPECT_EQ(*d.singleEpisode(), 5);
-  EXPECT_EQ(d.videoMode(), "video");
 }
 
-TEST(LeRobotDialogFanout, DefaultsToVideoModeWhenMissing) {
+TEST(LeRobotDialogFanout, DialogUiConfigHasNoSingleEpisode) {
   LeRobotDialog d;
-  ASSERT_TRUE(d.loadConfig(R"({"episode":0})"));
-  EXPECT_EQ(d.videoMode(), "video");
-}
-
-TEST(LeRobotDialogFanout, JpegModePreserved) {
-  LeRobotDialog d;
-  ASSERT_TRUE(d.loadConfig(R"({"episode":0,"video_mode":"jpeg"})"));
-  EXPECT_EQ(d.videoMode(), "jpeg");
-}
-
-TEST(LeRobotDialogFanout, LegacyConfigHasNoSingleEpisode) {
-  LeRobotDialog d;
-  // Legacy mode (no `episode`, has `selected_episodes`). With no real
+  // Dialog/UI mode (no `episode`, has `selected_episodes`). With no real
   // dataset loaded, selected_eps_ stays empty (loadModel fails silently);
   // what matters is that singleEpisode() remains nullopt.
   ASSERT_TRUE(d.loadConfig(R"({"selected_episodes":[1,2,3]})"));
@@ -54,31 +40,22 @@ TEST(LeRobotDialogFanout, MalformedJsonReturnsFalse) {
   EXPECT_FALSE(d.loadConfig("{not-json"));
 }
 
-TEST(LeRobotDialogFanout, SaveConfigEmitsVideoMode) {
+TEST(LeRobotDialogFanout, SaveConfigOmitsFanoutWhenSelectionEmpty) {
   LeRobotDialog d;
-  ASSERT_TRUE(d.loadConfig(R"({"video_mode":"jpeg"})"));
+  ASSERT_TRUE(d.loadConfig(R"({})"));
   const std::string out = d.saveConfig();
   auto j = nlohmann::json::parse(out);
-  EXPECT_EQ(j["video_mode"], "jpeg");
   // Empty selection → no fanout key (FileLoader treats absence as
   // single-instance and reuses the scratch handle).
   EXPECT_FALSE(j.contains("__pj_fanout"));
 }
 
-TEST(LeRobotDialogFanout, SaveConfigRoundtripPreservesEpisode) {
-  // A fanout sub-config must roundtrip through save/load on a fresh dialog
-  // so persisted layouts (one per spawned instance) restore deterministically.
-  LeRobotDialog src;
-  ASSERT_TRUE(src.loadConfig(R"({"episode":42,"video_mode":"video","display_suffix":"ep_42"})"));
-  const std::string serialized = src.saveConfig();
-
-  // saveConfig in dialog/UI mode emits selected_eps_ (empty here) and
-  // video_mode. The `episode` int is not echoed because saveConfig is
-  // dialog-state-only — fanout entries are generated from selected_eps_,
-  // not from singleEpisode(). What we verify is that videoMode survives.
-  LeRobotDialog dst;
-  ASSERT_TRUE(dst.loadConfig(serialized));
-  EXPECT_EQ(dst.videoMode(), "video");
+TEST(LeRobotDialogFanout, IgnoresLegacyVideoModeKey) {
+  // Old QSettings configs may carry `video_mode:"jpeg"` or similar from the
+  // retired JPEG transcode era. We just ignore unknown keys.
+  LeRobotDialog d;
+  EXPECT_TRUE(d.loadConfig(R"({"episode":0,"video_mode":"jpeg"})"));
+  EXPECT_TRUE(d.singleEpisode().has_value());
 }
 
 }  // namespace
