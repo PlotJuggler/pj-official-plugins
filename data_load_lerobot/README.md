@@ -57,7 +57,6 @@ data_load_lerobot/
 ├── conanfile.py           Conan deps: arrow + parquet + nlohmann_json + gtest
 ├── CMakeLists.txt         shared-library target + 3 unit tests
 ├── dialog_lerobot.ui      Qt Designer .ui — embedded at build time as a const char[]
-├── manifest.json
 │
 ├── lerobot_plugin.cpp     LeRobotSource: importData() entry point. Reads the
 │                          single episode index from the dialog, builds the
