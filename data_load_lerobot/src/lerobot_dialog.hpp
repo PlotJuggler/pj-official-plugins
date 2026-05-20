@@ -35,12 +35,24 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
     return model_error_;
   }
   /// Selected episode_index values, ascending (dataset order).
+  /// Empty when the dialog was constructed in per-instance fanout mode (the
+  /// loader gave loadConfig a single `episode` int) — in that case, use
+  /// singleEpisode().
   const std::vector<int64_t>& selectedEpisodes() const {
     return selected_eps_;
   }
-  /// Gap inserted between consecutive episodes, in seconds (0 if disabled).
-  double gapSeconds() const {
-    return separate_episodes_ ? gap_seconds_ : 0.0;
+  /// In fanout mode the dialog config carries `episode: <int>`. importData
+  /// reads this to import exactly one episode without iterating selected_eps_.
+  /// Returns nullopt when the dialog is in dialog/UI mode (legacy or just
+  /// after the dialog accepts a multi-selection).
+  std::optional<int64_t> singleEpisode() const {
+    return single_episode_;
+  }
+  /// "video" (default) emits metadata-only video topics; "jpeg" runs the
+  /// legacy transcode-to-JPEG path. The flag survives loadConfig/saveConfig
+  /// roundtrips so a user-set preference sticks across sessions.
+  const std::string& videoMode() const {
+    return video_mode_;
   }
 
   // --- Dialog protocol ---
@@ -68,9 +80,6 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
       wd.setListItems("episode_list", {});
     }
 
-    wd.setChecked("separate_check", separate_episodes_);
-    wd.setValue("gap_spin", gap_seconds_);
-    wd.setEnabled("gap_spin", separate_episodes_);
     wd.setOkEnabled("buttonBox", !selected_eps_.empty());
     return wd.toJson();
   }
@@ -109,22 +118,6 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
-  bool onToggled(std::string_view widget_name, bool checked) override {
-    if (widget_name == "separate_check") {
-      separate_episodes_ = checked;
-      return true;
-    }
-    return false;
-  }
-
-  bool onValueChanged(std::string_view widget_name, double value) override {
-    if (widget_name == "gap_spin") {
-      gap_seconds_ = value;
-      return true;
-    }
-    return false;
-  }
-
   bool onFolderSelected(std::string_view widget_name, std::string_view path) override {
     if (widget_name != "change_btn") {
       return false;
@@ -141,11 +134,28 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
   void onRejected() override {}
 
   std::string saveConfig() const override {
+    // Dialog/UI mode: emit the dialog template the user just confirmed AND a
+    // top-level `__pj_fanout` array if multi-select produced ≥1 episodes.
+    // FileLoader peels `__pj_fanout` to spawn one LeRobotSource per entry
+    // (each entry → one DatasetId). The outer fields restore the dialog
+    // selection on next open. See FileLoader::extractFanout in pj_app.
     nlohmann::json cfg;
     cfg["filepath"] = filepath_;
     cfg["selected_episodes"] = selected_eps_;
-    cfg["separate_episodes"] = separate_episodes_;
-    cfg["gap_seconds"] = gap_seconds_;
+    cfg["video_mode"] = video_mode_;
+
+    if (!selected_eps_.empty()) {
+      nlohmann::json fanout = nlohmann::json::array();
+      for (std::size_t i = 0; i < selected_eps_.size(); ++i) {
+        nlohmann::json entry;
+        entry["filepath"] = filepath_;
+        entry["episode"] = selected_eps_[i];
+        entry["video_mode"] = video_mode_;
+        entry["display_suffix"] = std::string("ep_") + std::to_string(selected_eps_[i]);
+        fanout.push_back(entry.dump());
+      }
+      cfg["__pj_fanout"] = std::move(fanout);
+    }
     return cfg.dump();
   }
 
@@ -155,8 +165,22 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
       return false;
     }
     filepath_ = cfg.value("filepath", std::string{});
-    separate_episodes_ = cfg.value("separate_episodes", false);
-    gap_seconds_ = cfg.value("gap_seconds", 0.0);
+    video_mode_ = cfg.value("video_mode", std::string("video"));
+    // separate_episodes/gap_seconds removed in this PR — each episode is now
+    // its own DatasetId, so no concatenation gap is meaningful. Old configs
+    // carrying those keys parse fine; we just ignore them.
+
+    // Per-instance fanout mode: the FileLoader passes a sub-config with a
+    // single `episode` int. importData reads singleEpisode() to skip the
+    // multi-episode iteration. The dialog UI fields stay at defaults — this
+    // instance is never shown.
+    single_episode_.reset();
+    if (auto it = cfg.find("episode"); it != cfg.end() && it->is_number_integer()) {
+      single_episode_ = it->get<int64_t>();
+    }
+
+    // Restore dialog selection (dialog/UI mode path). Per-instance configs
+    // don't carry selected_episodes, so this is a no-op for fanout entries.
     std::vector<int64_t> restored;
     if (auto it = cfg.find("selected_episodes"); it != cfg.end() && it->is_array()) {
       for (const auto& v : *it) {
@@ -171,7 +195,16 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
     if (!filepath_.empty()) {
       loadModel();
     }
-    if (model_) {
+    if (model_ && single_episode_.has_value()) {
+      // Per-instance: verify the episode still exists in the dataset; refuse
+      // the config otherwise so the host reports a clean error.
+      const int64_t ep = *single_episode_;
+      const auto& eps = model_->episodes;
+      if (!std::any_of(eps.begin(), eps.end(),
+                       [ep](const lerobot::EpisodeInfo& e) { return e.episode_index == ep; })) {
+        return false;
+      }
+    } else if (model_) {
       // Keep only restored indices still present (the dataset may have
       // changed since the layout was saved); empty selection ⇒ default all.
       for (int64_t ep : restored) {
@@ -255,8 +288,12 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
   std::string model_error_;
   std::vector<std::string> episode_items_;  // aligned 1:1 with model_->episodes
   std::vector<int64_t> selected_eps_;       // episode_index values, ascending
-  bool separate_episodes_ = false;
-  double gap_seconds_ = 0.0;
+  // Per-instance fanout: set by loadConfig when the host passes a single
+  // `episode` int; importData uses it to bypass the multi-episode iteration.
+  std::optional<int64_t> single_episode_;
+  // "video" (default, registerTopic + 0 push, host opens FileVideoSource) or
+  // "jpeg" (legacy transcode path). Survives save/load.
+  std::string video_mode_ = "video";
 };
 
 }  // namespace

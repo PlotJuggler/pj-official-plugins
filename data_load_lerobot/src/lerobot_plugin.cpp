@@ -94,9 +94,21 @@ class LeRobotSource : public PJ::FileSourceBase {
       const std::string& err = dialog_.datasetError();
       return PJ::unexpected(err.empty() ? std::string("no LeRobot dataset loaded") : err);
     }
-    const std::vector<int64_t>& selected = dialog_.selectedEpisodes();
-    if (selected.empty()) {
-      return PJ::unexpected(std::string("no episodes selected"));
+
+    // Per-instance fanout mode (one LeRobotSource per episode → one DatasetId)
+    // collapses `selected` to a single element and pins offset 0. Legacy
+    // multi-episode-into-one-dataset mode (back-compat with old QSettings
+    // configs that have no __pj_fanout) keeps the offset/gap arithmetic.
+    const auto single_ep = dialog_.singleEpisode();
+    std::vector<int64_t> selected;
+    if (single_ep.has_value()) {
+      selected.push_back(*single_ep);
+    } else {
+      const std::vector<int64_t>& dialog_selected = dialog_.selectedEpisodes();
+      if (dialog_selected.empty()) {
+        return PJ::unexpected(std::string("no episodes selected"));
+      }
+      selected = dialog_selected;
     }
 
     std::unordered_map<int64_t, int64_t> episode_length;
@@ -115,7 +127,16 @@ class LeRobotSource : public PJ::FileSourceBase {
       lengths.push_back(it->second);
       total_rows += it->second;
     }
-    const auto offsets = lerobot::computeEpisodeOffsetsNs(lengths, model->fps, dialog_.gapSeconds());
+    std::vector<int64_t> offsets;
+    if (single_ep.has_value()) {
+      // 0-based per-episode clock — each episode is its own DatasetId.
+      offsets.assign(selected.size(), 0);
+    } else {
+      // Legacy mode (no fanout, no single_episode_): episodes concatenated
+      // back-to-back. The separate-episodes gap UI was retired in this PR
+      // because the per-episode-dataset model makes it pointless.
+      offsets = lerobot::computeEpisodeOffsetsNs(lengths, model->fps, /*gap_seconds=*/0.0);
+    }
 
     auto topic = writeHost().ensureTopic("lerobot");
     if (!topic) {
@@ -155,9 +176,22 @@ class LeRobotSource : public PJ::FileSourceBase {
       }
     }
 
-    auto vst = importVideos(*model, selected, ep_frame_ts);
-    if (!vst) {
-      return vst;
+    // Video branch:
+    //   per-instance + video_mode="video" → metadata-only topic, host opens
+    //                                       FileVideoSource on drop (no push).
+    //   per-instance + video_mode="jpeg"  → legacy transcode of this episode.
+    //   legacy mode (no single_ep)        → legacy transcode of all selected.
+    const bool video_metadata_mode = single_ep.has_value() && dialog_.videoMode() == "video";
+    if (video_metadata_mode) {
+      auto vst = importVideosMetadataOnly(*model, selected);
+      if (!vst) {
+        return vst;
+      }
+    } else {
+      auto vst = importVideos(*model, selected, ep_frame_ts);
+      if (!vst) {
+        return vst;
+      }
     }
 
     runtimeHost().reportMessage(
@@ -367,6 +401,11 @@ class LeRobotSource : public PJ::FileSourceBase {
   PJ::Status importVideos(
       const lerobot::DatasetModel& model, const std::vector<int64_t>& selected,
       const std::vector<std::vector<int64_t>>& ep_frame_ts) {
+    // Legacy transcode path. Kept while video_mode="jpeg" is still selectable
+    // for fallback diagnosis. TODO(lerobot-video): remove this method (and
+    // src/video_ingest.{cpp,hpp}) after one release with video_mode="video"
+    // default — file-backed FileVideoSource in pj_app handles all production
+    // playback now.
     const PJ::sdk::SourceObjectWriteHostView* obj = objectWriteHost();
     if (obj == nullptr || model.camera_names.empty()) {
       return PJ::okStatus();  // no media host or no cameras → numeric only
@@ -392,6 +431,44 @@ class LeRobotSource : public PJ::FileSourceBase {
               "camera '" + cam + "' episode " + std::to_string(selected[ei]) + ": " + st.error());
         }
       }
+    }
+    return PJ::okStatus();
+  }
+
+  PJ::Status importVideosMetadataOnly(
+      const lerobot::DatasetModel& model, const std::vector<int64_t>& selected) {
+    // Per-instance + video_mode="video" path. Each camera gets a single
+    // metadata-only topic with `video_file_path` pointing at the episode's
+    // MP4. ZERO bytes pushed: pj_app's Media2DDockWidget reads the metadata,
+    // opens a FileVideoSource on the file, and drives it from the global
+    // tracker. Saves ~20× RAM and preserves lazy seek vs the JPEG transcode
+    // path. ARCH §4.5 ("File-based video does not go through ObjectStore").
+    const PJ::sdk::SourceObjectWriteHostView* obj = objectWriteHost();
+    if (obj == nullptr || model.camera_names.empty()) {
+      return PJ::okStatus();
+    }
+    if (selected.size() != 1) {
+      return PJ::unexpected(std::string("importVideosMetadataOnly: expected exactly one episode"));
+    }
+    const int64_t ep = selected.front();
+    char fps_buf[32];
+    std::snprintf(fps_buf, sizeof(fps_buf), "%g", model.fps);
+    const std::string fps_str = fps_buf;
+    for (const std::string& cam : model.camera_names) {
+      const lerobot::FeatureSpec* fs = model.feature(cam);
+      const std::string codec = fs != nullptr ? fs->video_codec : std::string{};
+      const std::string mp4 = model.episodeVideo(ep, cam).string();
+      const std::string meta = PJ::sdk::MediaMetadataBuilder()
+                                   .mediaClass("video")
+                                   .encoding(codec)
+                                   .extraString("video_file_path", mp4)
+                                   .extra("fps", fps_str)
+                                   .build();
+      auto otopic = obj->registerTopic("lerobot/" + cam, meta);
+      if (!otopic) {
+        return PJ::unexpected(otopic.error());
+      }
+      // ZERO push by design.
     }
     return PJ::okStatus();
   }

@@ -66,6 +66,23 @@ endfunction()
 lerobot_add_test(lerobot_dataset_model_test tests/dataset_model_test.cpp src/dataset_model.cpp)
 lerobot_add_test(lerobot_timeline_test     tests/timeline_test.cpp     src/timeline.cpp)
 lerobot_add_test(lerobot_flatten_plan_test tests/flatten_plan_test.cpp src/flatten_plan.cpp)
+# Dialog fanout/serialization test. Uses LeRobotDialog from lerobot_dialog.hpp;
+# requires dataset_model.cpp because loadModel() is referenced in the header
+# even though our tests pass empty filepaths to avoid touching the filesystem.
+# pj_dialog_sdk supplies DialogPluginTyped + WidgetData base classes.
+add_executable(lerobot_dialog_fanout_test tests/dialog_fanout_test.cpp src/dataset_model.cpp)
+target_compile_features(lerobot_dialog_fanout_test PRIVATE cxx_std_20)
+target_compile_options(lerobot_dialog_fanout_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(lerobot_dialog_fanout_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(lerobot_dialog_fanout_test PRIVATE
+  pj_base pj_dialog_sdk nlohmann_json::nlohmann_json GTest::gtest_main
+)
+# Pull in the generated headers (dialog_lerobot_ui.hpp, lerobot_manifest.hpp)
+# that lerobot_dialog.hpp transitively includes.
+target_include_directories(lerobot_dialog_fanout_test PRIVATE
+  $<TARGET_PROPERTY:lerobot_source_plugin,INCLUDE_DIRECTORIES>
+)
+add_test(NAME lerobot_dialog_fanout_test COMMAND lerobot_dialog_fanout_test)
 
 # --- Video ingest test (needs FFmpeg; SKIPs unless LEROBOT_TEST_MP4 is set) ---
 add_executable(lerobot_video_ingest_test tests/video_ingest_test.cpp src/video_ingest.cpp)

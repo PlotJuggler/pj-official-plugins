@@ -64,29 +64,6 @@
        </property>
       </spacer>
      </item>
-     <item>
-      <widget class="QCheckBox" name="separate_check">
-       <property name="text">
-        <string>Separate episodes (gap):</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QDoubleSpinBox" name="gap_spin">
-       <property name="suffix">
-        <string> s</string>
-       </property>
-       <property name="minimum">
-        <double>0.000000000000000</double>
-       </property>
-       <property name="maximum">
-        <double>3600.000000000000000</double>
-       </property>
-       <property name="singleStep">
-        <double>0.500000000000000</double>
-       </property>
-      </widget>
-     </item>
     </layout>
    </item>
    <item>

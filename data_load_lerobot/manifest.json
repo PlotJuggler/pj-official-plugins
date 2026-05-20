@@ -18,7 +18,8 @@
     "loader"
   ],
   "file_extensions": [
-    ".parquet"
+    ".parquet",
+    ".json"
   ],
   "min_plotjuggler_version": "4.0.0"
 }
