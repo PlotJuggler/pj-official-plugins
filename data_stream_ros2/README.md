@@ -134,12 +134,12 @@ proto-app's plugin directory.
 
 ### Native build recipe
 
-Assumes the repo layout `plotjuggler_core/pj_ported_plugins/` (i.e. the
-plugin tree lives inside `plotjuggler_core` as a sibling of the other
-plugins) and that Conan 2.x is installed.
+Assumes a sibling checkout of `plotjuggler_core` next to this repo (so
+that CPM can resolve the foundation libraries locally instead of fetching
+them from GitHub) and that Conan 2.x is installed.
 
 ```bash
-cd plotjuggler_core/pj_ported_plugins
+cd /path/to/pj-official-plugins         # this repo
 source /opt/ros/<distro>/setup.bash
 
 # 1) Conan dependencies into a side build directory so the main build/
@@ -156,7 +156,7 @@ cmake -B build_ros2 \
   -DCMAKE_BUILD_TYPE=Release \
   -DPJ_BUILD_PLUGIN=data_stream_ros2 \
   -DPJ_BUILD_ROS2_DISTRO=ON \
-  -DCPM_plotjuggler_core_SOURCE="$(pwd)/.."
+  -DCPM_plotjuggler_core_SOURCE=/path/to/plotjuggler_core
 
 # 3) Build.
 cmake --build build_ros2 -j"$(nproc)"
@@ -175,7 +175,7 @@ The proxy resolves the inner at runtime as
 own location**. So next to whichever `bin/` you use as `--plugin-dir`:
 
 ```bash
-PJBIN=/path/to/your/plugin-dir       # e.g. plotjuggler_core/build/pj_ported_plugins/bin
+PJBIN=/path/to/your/plugin-dir       # the directory passed as --plugin-dir to the app
 mkdir -p "$PJBIN/dist/<distro>"
 cp build_ros2/bin/libros2_stream_plugin.so          "$PJBIN/"
 cp build_ros2/bin/ros2_stream_plugin.pjmanifest.json "$PJBIN/"
