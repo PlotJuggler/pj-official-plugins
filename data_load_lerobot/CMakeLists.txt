@@ -42,17 +42,24 @@ pj_emit_plugin_manifest(lerobot_source_plugin
 # --- Unit tests ---
 # Tests live under tests/ but #include headers from the plugin root, so each
 # target gets ${CMAKE_CURRENT_SOURCE_DIR} on its include path.
-function(lerobot_add_test name)
-  add_executable(${name} ${ARGN})
-  target_compile_features(${name} PRIVATE cxx_std_20)
-  target_compile_options(${name} PRIVATE ${PJ_WARNING_FLAGS})
-  target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(${name} PRIVATE pj_base nlohmann_json::nlohmann_json GTest::gtest_main)
-  add_test(NAME ${name} COMMAND ${name})
-endfunction()
 
-lerobot_add_test(lerobot_dataset_model_test tests/dataset_model_test.cpp dataset_model.cpp)
-lerobot_add_test(lerobot_flatten_plan_test  tests/flatten_plan_test.cpp  flatten_plan.cpp)
+add_executable(lerobot_dataset_model_test tests/dataset_model_test.cpp dataset_model.cpp)
+target_compile_features(lerobot_dataset_model_test PRIVATE cxx_std_20)
+target_compile_options(lerobot_dataset_model_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(lerobot_dataset_model_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(lerobot_dataset_model_test PRIVATE
+  pj_base nlohmann_json::nlohmann_json GTest::gtest_main
+)
+add_test(NAME lerobot_dataset_model_test COMMAND lerobot_dataset_model_test)
+
+add_executable(lerobot_flatten_plan_test tests/flatten_plan_test.cpp flatten_plan.cpp)
+target_compile_features(lerobot_flatten_plan_test PRIVATE cxx_std_20)
+target_compile_options(lerobot_flatten_plan_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(lerobot_flatten_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(lerobot_flatten_plan_test PRIVATE
+  pj_base nlohmann_json::nlohmann_json GTest::gtest_main
+)
+add_test(NAME lerobot_flatten_plan_test COMMAND lerobot_flatten_plan_test)
 
 # Dialog/fanout serialization test: needs dataset_model.cpp because
 # LeRobotDialog::loadModel() resolves to lerobot::loadDatasetModel; pj_dialog_sdk
