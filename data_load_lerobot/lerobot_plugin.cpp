@@ -1,13 +1,3 @@
-#include <pj_base/sdk/data_source_patterns.hpp>
-#include <pj_base/sdk/media_metadata.hpp>
-
-#include "lerobot_dialog.hpp"
-#include "lerobot_manifest.hpp"
-
-#include "dataset_model.hpp"
-#include "flatten_plan.hpp"
-#include "lerobot_arrow_helpers.hpp"
-
 #include <arrow/api.h>
 #include <arrow/io/file.h>
 #include <parquet/arrow/reader.h>
@@ -15,9 +5,17 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <pj_base/sdk/data_source_patterns.hpp>
+#include <pj_base/sdk/media_metadata.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "dataset_model.hpp"
+#include "flatten_plan.hpp"
+#include "lerobot_arrow_helpers.hpp"
+#include "lerobot_dialog.hpp"
+#include "lerobot_manifest.hpp"
 
 namespace {
 
@@ -40,9 +38,9 @@ int64_t rowTimestampNs(bool has_ts, double ts_seconds, int64_t frame_index, doub
 constexpr int kMaxVectorWidth = 4096;
 
 struct OutColumn {
-  std::string out_name;     // series name (stable, owns the string)
-  std::string arrow_name;   // source parquet column
-  int vec_k = -1;           // -1 = scalar column; >=0 = element of a list column
+  std::string out_name;    // series name (stable, owns the string)
+  std::string arrow_name;  // source parquet column
+  int vec_k = -1;          // -1 = scalar column; >=0 = element of a list column
   arrow::Type::type scalar_type = arrow::Type::NA;
   PJ::PrimitiveType prim = PJ::PrimitiveType::kFloat64;
 };
@@ -162,9 +160,8 @@ class LeRobotSource : public PJ::FileSourceBase {
     }
 
     runtimeHost().reportMessage(
-        PJ::DataSourceMessageLevel::kInfo,
-        "LeRobot " + model->codebase_version + ": imported " + std::to_string(processed) +
-            " rows from episode " + std::to_string(ep));
+        PJ::DataSourceMessageLevel::kInfo, "LeRobot " + model->codebase_version + ": imported " +
+                                               std::to_string(processed) + " rows from episode " + std::to_string(ep));
     return PJ::okStatus();
   }
 
@@ -212,8 +209,8 @@ class LeRobotSource : public PJ::FileSourceBase {
               "vector column '" + name + "' width " + std::to_string(k) + " exceeds limit " +
               std::to_string(kMaxVectorWidth));
         }
-        const std::vector<std::string> labels = lerobot::flattenedFieldNames(
-            name, k, fs != nullptr ? fs->names : std::vector<std::string>{});
+        const std::vector<std::string> labels =
+            lerobot::flattenedFieldNames(name, k, fs != nullptr ? fs->names : std::vector<std::string>{});
         for (int e = 0; e < k; ++e) {
           OutColumn c;
           c.out_name = labels[static_cast<std::size_t>(e)];
@@ -227,8 +224,7 @@ class LeRobotSource : public PJ::FileSourceBase {
       // struct / other columns are intentionally skipped.
     }
     if (plan.empty()) {
-      return PJ::unexpected(std::string("no supported columns in ") +
-                            model.episodeParquet(first_ep).string());
+      return PJ::unexpected(std::string("no supported columns in ") + model.episodeParquet(first_ep).string());
     }
     const auto deduped = lerobot::dedupeFieldNames(raw_names);
     for (std::size_t i = 0; i < plan.size(); ++i) {
@@ -254,8 +250,8 @@ class LeRobotSource : public PJ::FileSourceBase {
   }
 
   PJ::Status importEpisode(
-      const lerobot::DatasetModel& model, int64_t ep, const std::vector<OutColumn>& plan,
-      PJ::sdk::TopicHandle topic, int64_t& processed) {
+      const lerobot::DatasetModel& model, int64_t ep, const std::vector<OutColumn>& plan, PJ::sdk::TopicHandle topic,
+      int64_t& processed) {
     const std::string path = model.episodeParquet(ep).string();
     auto infile = arrow::io::ReadableFile::Open(path);
     if (!infile.ok()) {
@@ -290,6 +286,10 @@ class LeRobotSource : public PJ::FileSourceBase {
     }
 
     std::shared_ptr<arrow::RecordBatchReader> batches;
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -299,6 +299,9 @@ class LeRobotSource : public PJ::FileSourceBase {
     }
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
+#endif
+#if defined(_MSC_VER)
+#pragma warning(pop)
 #endif
 
     std::vector<PJ::sdk::NamedFieldValue> row_fields;

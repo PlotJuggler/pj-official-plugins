@@ -27,7 +27,13 @@ target_link_libraries(lerobot_source_plugin PRIVATE
 # by another aborts with "munmap_chunk(): invalid pointer" during plugin
 # scanning. Give every static-archive symbol local binding so only our
 # PJ_get_*_vtable entry points (from our own objects) stay exported.
-target_link_options(lerobot_source_plugin PRIVATE LINKER:--exclude-libs,ALL)
+#
+# --exclude-libs is GNU ld / lld / gold only. macOS ld64 and MSVC's link.exe
+# don't understand it (and don't need it: default static-archive visibility
+# differs on those platforms, so the interposition problem doesn't arise).
+if(NOT APPLE AND NOT WIN32)
+  target_link_options(lerobot_source_plugin PRIVATE LINKER:--exclude-libs,ALL)
+endif()
 
 pj_embed_ui(lerobot_source_plugin
   UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/dialog_lerobot.ui
