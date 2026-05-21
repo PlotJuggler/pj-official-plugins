@@ -6,9 +6,10 @@ files (per-frame numeric data — state, action, rewards, …) with one MP4 per
 camera per episode, plus a `meta/info.json` describing the schema and an
 `episodes.jsonl` describing the episodes.
 
-The user picks any file inside a dataset (typically `meta/info.json` or the
-first parquet) and the plugin walks up to find the dataset root, lets the user
-multi-select episodes in a dialog, and **spawns one plugin instance per
+The user picks the dataset's `meta/info.json` (the plugin's only registered
+file extension is `.json`, so it doesn't shadow `data_load_parquet` for plain
+parquet files). From there it walks up to confirm the dataset root, lets the
+user multi-select episodes in a dialog, and **spawns one plugin instance per
 selected episode**. Each instance gets its own `DatasetId`, so an episode is
 also a dataset in the PlotJuggler catalog.
 
