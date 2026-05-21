@@ -194,6 +194,10 @@ class RosParser : public PJ::MessageParserPluginBase {
   bool discard_large_arrays_ = false;
   bool use_embedded_timestamp_ = false;
   bool use_ros1_ = false;
+  // String-to-number conversion toggles applied at the
+  // `RosMsgParser::STRING` write path in flattenGeneric.
+  bool boolean_strings_to_number_ = false;
+  bool remove_suffix_from_strings_ = false;
   std::string topic_name_;
 
   // Schema state

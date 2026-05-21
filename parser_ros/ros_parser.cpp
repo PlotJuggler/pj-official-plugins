@@ -1,9 +1,81 @@
+#include <cctype>
+#include <cstdlib>
 #include <functional>
+#include <string>
 
 #include "ros_manifest.hpp"
 #include "ros_parser_internal.hpp"
 
 namespace ros_parser_detail {
+
+namespace {
+
+// Port of the legacy PJ::ParseDouble helper (PJ3
+// `plotjuggler-ros-plugins/src/parser_configuration.cpp:115-153`). Same
+// three-stage semantics, std::strtod in place of boost::spirit:
+//
+//   1. Strict full-string double parse: success only when strtod consumes
+//      every byte of `str`.
+//   2. If that fails and `remove_suffix` is on, scan a numeric prefix
+//      consisting of {digit, '+', '-', '.'} characters, stop at the first
+//      character outside that set, and re-parse the prefix. PJ3 quirks are
+//      preserved verbatim — scientific-notation 'e' is treated as a
+//      non-numeric terminator, so "1e3km" yields 1 not 1000.
+//   3. If still unparsed and `parse_boolean` is on, match a case-insensitive
+//      "true"/"false" of length 4-5 to 1.0/0.0.
+//
+// Returns true and writes to `value` on success; returns false (leaving
+// `value` unchanged from the caller's perspective) otherwise.
+bool parseStringAsDouble(const std::string& str, double& value, bool remove_suffix, bool parse_boolean) {
+  if (str.empty()) {
+    return false;
+  }
+
+  char* parse_end = nullptr;
+  double parsed = std::strtod(str.data(), &parse_end);
+  if (parse_end == str.data() + str.size()) {
+    value = parsed;
+    return true;
+  }
+
+  if (remove_suffix) {
+    std::size_t pos = 0;
+    while (pos < str.size()) {
+      const char c = str[pos];
+      if (!std::isdigit(static_cast<unsigned char>(c)) && c != '-' && c != '+' && c != '.') {
+        break;
+      }
+      ++pos;
+    }
+    if (pos > 0 && pos < str.size()) {
+      const std::string prefix(str, 0, pos);
+      parse_end = nullptr;
+      parsed = std::strtod(prefix.data(), &parse_end);
+      if (parse_end == prefix.data() + prefix.size()) {
+        value = parsed;
+        return true;
+      }
+    }
+  }
+
+  if (parse_boolean && str.size() >= 4 && str.size() <= 5) {
+    std::string lower = str;
+    std::transform(
+        lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (lower == "true") {
+      value = 1.0;
+      return true;
+    }
+    if (lower == "false") {
+      value = 0.0;
+      return true;
+    }
+  }
+
+  return false;
+}
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Class-level catalog of every ROS schema this parser recognizes.
@@ -157,6 +229,8 @@ std::string RosParser::saveConfig() const {
   cfg["max_array_size"] = max_array_size_;
   cfg["discard_large_arrays"] = discard_large_arrays_;
   cfg["use_embedded_timestamp"] = use_embedded_timestamp_;
+  cfg["boolean_strings_to_number"] = boolean_strings_to_number_;
+  cfg["remove_suffix_from_strings"] = remove_suffix_from_strings_;
   cfg["serialization"] = use_ros1_ ? "ros1" : "cdr";
   if (!topic_name_.empty()) {
     cfg["topic_name"] = topic_name_;
@@ -173,6 +247,8 @@ PJ::Status RosParser::loadConfig(std::string_view config_json) {
   max_array_size_ = static_cast<size_t>(cfg.value("max_array_size", 500));
   discard_large_arrays_ = cfg.value("discard_large_arrays", false);
   use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
+  boolean_strings_to_number_ = cfg.value("boolean_strings_to_number", false);
+  remove_suffix_from_strings_ = cfg.value("remove_suffix_from_strings", false);
   topic_name_ = cfg.value("topic_name", std::string{});
 
   bool new_ros1 = (cfg.value("serialization", "cdr") == "ros1");
@@ -401,8 +477,20 @@ void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
   for (const auto& [key, variant] : flat_msg_.value) {
     key.toStr(field_name);
     if (variant.getTypeID() == RosMsgParser::STRING) {
-      string_storage_.push_back(variant.extract<std::string>());
-      owned_fields_.push_back({field_name, PJ::sdk::ValueRef{std::string_view(string_storage_.back())}});
+      auto extracted = variant.extract<std::string>();
+      double numeric = 0.0;
+      // Apply the string-to-number toggles before falling back to the string
+      // representation. parseStringAsDouble returns false when either both
+      // toggles are off or no rule matches; in that case we keep the string
+      // verbatim. The doubled storage (owned via string_storage_) is needed
+      // because ValueRef holds a non-owning string_view.
+      if ((boolean_strings_to_number_ || remove_suffix_from_strings_) &&
+          parseStringAsDouble(extracted, numeric, remove_suffix_from_strings_, boolean_strings_to_number_)) {
+        owned_fields_.push_back({field_name, PJ::sdk::ValueRef{numeric}});
+      } else {
+        string_storage_.push_back(std::move(extracted));
+        owned_fields_.push_back({field_name, PJ::sdk::ValueRef{std::string_view(string_storage_.back())}});
+      }
     } else {
       owned_fields_.push_back({field_name, variantToValueRef(variant)});
     }
