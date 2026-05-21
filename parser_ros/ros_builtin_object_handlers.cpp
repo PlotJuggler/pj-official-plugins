@@ -239,7 +239,7 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parsePointCloud(PJ::Timestamp ts
     ensureDeserializer();
     current_timestamp_ = ts;
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
-    (void)readHeader();
+    auto header = readHeader();
 
     const uint32_t height = deserializer_->deserializeUInt32();
     const uint32_t width = deserializer_->deserializeUInt32();
@@ -287,6 +287,7 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parsePointCloud(PJ::Timestamp ts
         .row_step = row_step,
         .is_bigendian = (is_be != 0),
         .is_dense = is_dense,
+        .frame_id = std::move(header.frame_id),
         .fields = std::move(fields),
         .data = PJ::Span<const uint8_t>(data_span.data(), data_span.size()),
         .anchor = payload.anchor,
