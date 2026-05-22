@@ -91,6 +91,14 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
       return PJ::unexpected("no ROS 2 topics selected");
     }
 
+    // Stash the parser_config sub-object as a string for every ensureBinding
+    // call. parser_ros::loadConfig accepts unknown keys silently, so unknown
+    // future options pass through harmlessly.
+    parser_config_json_.clear();
+    if (cfg.contains("parser_config") && cfg["parser_config"].is_object()) {
+      parser_config_json_ = cfg["parser_config"].dump();
+    }
+
     try {
       context_ = std::make_shared<rclcpp::Context>();
       context_->init(0, nullptr);
@@ -223,7 +231,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
         .parser_encoding = "ros2msg",
         .type_name = type_name,
         .schema = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(schema.data()), schema.size()),
-        .parser_config_json = {},
+        .parser_config_json = parser_config_json_,
     });
     if (!binding) {
       runtimeHost().reportMessage(
@@ -264,6 +272,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
 
   Ros2Dialog dialog_;
   std::vector<std::pair<std::string, std::string>> selected_topics_;
+  std::string parser_config_json_;
 
   std::shared_ptr<rclcpp::Context> context_;
   std::shared_ptr<rclcpp::Node> node_;
