@@ -3,11 +3,11 @@ cmake_minimum_required(VERSION 3.22)
 # ---------------------------------------------------------------------------
 # Dual-mode: standalone project OR subdirectory of plotjuggler_core.
 #
-# Detection: if pj_base already exists as a target, we are a subdirectory
+# Detection: if plotjuggler_core::plugin_sdk already exists as a target, we are a subdirectory
 # and all deps are already provided by the parent project.
 # ---------------------------------------------------------------------------
 
-if(TARGET pj_base)
+if(TARGET plotjuggler_core::plugin_sdk)
   # Subdirectory mode — deps already provided by parent.
   set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 
@@ -75,21 +75,18 @@ endif()
 find_package(GTest REQUIRED)
 
 # ---------------------------------------------------------------------------
-# PlotJuggler Core SDK (via CPM)
+# PlotJuggler Core SDK (Conan package, plotjuggler cloudsmith remote).
+# The exact version is pinned by Conan (see conanfile.txt / each plugin's
+# conanfile.py) — CMakeDeps generates a config for precisely that version, so
+# no version is asserted here. Keeping the version out of find_package means a
+# core bump only touches the Conan recipe(s), not this file.
+# Plugins that still need CPM (parser_ros, parser_data_tamer, data_load_ulog
+# for rosx_introspection, data_tamer, ulog_cpp) include cmake/CPM.cmake
+# themselves; nothing at the root needs it anymore.
 # ---------------------------------------------------------------------------
 
-include(cmake/CPM.cmake)
-
-CPMAddPackage(
-  NAME plotjuggler_core
-  GIT_REPOSITORY git@github.com:PlotJuggler/plotjuggler_core.git
-  GIT_TAG main
-  OPTIONS
-    "PJ_BUILD_DATASTORE OFF"
-    "PJ_BUILD_PORTED_PLUGINS OFF"
-    "PJ_BUILD_TESTS OFF"
-    "PJ_BUILD_DIALOG_ENGINE_QT OFF"
-    "PJ_BUILD_PARQUET_IMPORT_EXAMPLE OFF"
+find_package(plotjuggler_core CONFIG REQUIRED
+  COMPONENTS base plugin_sdk plugin_host
 )
 
 # ---------------------------------------------------------------------------
