@@ -25,7 +25,6 @@ target_compile_options(toolbox_reactive_scripts_editor_plugin PRIVATE ${PJ_WARNI
 
 target_link_libraries(toolbox_reactive_scripts_editor_plugin PRIVATE
   plotjuggler_core::plugin_sdk
-  plotjuggler_core::plugin_sdk
   lua::lua
   sol2::sol2
   nlohmann_json::nlohmann_json

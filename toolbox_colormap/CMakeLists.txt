@@ -11,7 +11,6 @@ target_compile_options(toolbox_colormap_plugin PRIVATE ${PJ_WARNING_FLAGS})
 
 target_link_libraries(toolbox_colormap_plugin PRIVATE
   plotjuggler_core::plugin_sdk
-  plotjuggler_core::plugin_sdk
   nlohmann_json::nlohmann_json
   lua::lua
   sol2::sol2
