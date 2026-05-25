@@ -10,8 +10,7 @@ target_compile_features(toolbox_fft_plugin PRIVATE cxx_std_20)
 target_compile_options(toolbox_fft_plugin PRIVATE ${PJ_WARNING_FLAGS})
 
 target_link_libraries(toolbox_fft_plugin PRIVATE
-  pj_base
-  pj_dialog_sdk
+  plotjuggler_core::plugin_sdk
   nlohmann_json::nlohmann_json
   kissfft::kissfft
 )

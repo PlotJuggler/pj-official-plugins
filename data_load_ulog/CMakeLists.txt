@@ -28,7 +28,7 @@ if(MSVC)
   # Suppress C4702 (unreachable code) from ulog_cpp third-party headers.
   target_compile_options(ulog_source_plugin PRIVATE /wd4702)
 endif()
-target_link_libraries(ulog_source_plugin PRIVATE pj_base pj_dialog_sdk ulog_cpp::ulog_cpp nlohmann_json::nlohmann_json)
+target_link_libraries(ulog_source_plugin PRIVATE plotjuggler_core::plugin_sdk ulog_cpp::ulog_cpp nlohmann_json::nlohmann_json)
 
 pj_embed_manifest(ulog_source_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/ulog_manifest.hpp

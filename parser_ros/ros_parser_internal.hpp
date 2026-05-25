@@ -8,7 +8,7 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <numbers>
-#include <pj_base/builtin/BuiltinObject.hpp>
+#include <pj_base/builtin/builtin_object.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <rosx_introspection/ros_parser.hpp>
 #include <string>

@@ -241,7 +241,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       auto schema_bytes = reinterpret_cast<const uint8_t*>(ch.schema.data());
       auto binding = runtimeHost().ensureParserBinding({
           .topic_name = ch.topic,
-          .parser_encoding = ch.schema_encoding,
+          .parser_encoding = ch.encoding,
           .type_name = ch.schema_name,
           .schema = PJ::Span<const uint8_t>(schema_bytes, ch.schema.size()),
           .parser_config_json = parser_cfg.dump(),
@@ -305,10 +305,9 @@ class FoxgloveSource : public PJ::StreamSourceBase {
         parser_cfg["use_timestamp"] = use_timestamp_;
 
         auto schema_bytes = reinterpret_cast<const uint8_t*>(ch.schema.data());
-        // Use schema_encoding (e.g. "ros2msg") for parser lookup, not encoding (e.g. "cdr")
         auto binding = runtimeHost().ensureParserBinding({
             .topic_name = ch.topic,
-            .parser_encoding = ch.schema_encoding,
+            .parser_encoding = ch.encoding,
             .type_name = ch.schema_name,
             .schema = PJ::Span<const uint8_t>(schema_bytes, ch.schema.size()),
             .parser_config_json = parser_cfg.dump(),

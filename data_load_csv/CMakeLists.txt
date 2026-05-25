@@ -20,7 +20,7 @@ add_library(csv_source_plugin SHARED csv_source.cpp csv_dialog.cpp)
 target_compile_features(csv_source_plugin PRIVATE cxx_std_20)
 target_compile_options(csv_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(csv_source_plugin PRIVATE
-  pj_base pj_dialog_sdk csv_parser_lib nlohmann_json::nlohmann_json
+  plotjuggler_core::plugin_sdk csv_parser_lib nlohmann_json::nlohmann_json
 )
 
 pj_embed_ui(csv_source_plugin
