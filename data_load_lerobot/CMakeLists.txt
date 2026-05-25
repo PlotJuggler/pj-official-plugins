@@ -61,6 +61,18 @@ target_link_libraries(lerobot_flatten_plan_test PRIVATE
 )
 add_test(NAME lerobot_flatten_plan_test COMMAND lerobot_flatten_plan_test)
 
+# Round-trip test for the sdk::AssetVideo wire format the plugin pushes per
+# camera. Pure header-driven — no plugin .cpp deps; pj_base supplies both the
+# struct and the serializer.
+add_executable(lerobot_asset_video_export_test tests/asset_video_export_test.cpp)
+target_compile_features(lerobot_asset_video_export_test PRIVATE cxx_std_20)
+target_compile_options(lerobot_asset_video_export_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(lerobot_asset_video_export_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(lerobot_asset_video_export_test PRIVATE
+  pj_base GTest::gtest_main
+)
+add_test(NAME lerobot_asset_video_export_test COMMAND lerobot_asset_video_export_test)
+
 # Dialog/fanout serialization test: needs dataset_model.cpp because
 # LeRobotDialog::loadModel() resolves to lerobot::loadDatasetModel; pj_dialog_sdk
 # supplies the DialogPluginTyped + WidgetData base classes.

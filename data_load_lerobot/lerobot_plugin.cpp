@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <pj_base/builtin/asset_video.hpp>
+#include <pj_base/builtin/asset_video_codec.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_base/sdk/media_metadata.hpp>
 #include <string>
@@ -154,7 +156,7 @@ class LeRobotSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("import cancelled"));
     }
 
-    auto vst = importVideosMetadataOnly(*model, ep);
+    auto vst = importVideoAssets(*model, ep);
     if (!vst) {
       return vst;
     }
@@ -366,32 +368,43 @@ class LeRobotSource : public PJ::FileSourceBase {
     return PJ::okStatus();
   }
 
-  PJ::Status importVideosMetadataOnly(const lerobot::DatasetModel& model, int64_t ep) {
-    // Each camera gets one metadata-only topic with `video_file_path` pointing
-    // at the episode's MP4. ZERO bytes pushed: pj_app's Media2DDockWidget reads
-    // the metadata, opens a FileVideoSource on the file, and drives it from
-    // the global tracker. ARCH §4.5 ("File-based video does not go through
-    // ObjectStore").
+  PJ::Status importVideoAssets(const lerobot::DatasetModel& model, int64_t ep) {
+    // Each camera gets ONE sdk::AssetVideo entry pointing at the episode's MP4.
+    // pj_app's Media2DDockWidget deserializes the entry, opens FileVideoSource
+    // on file_path, applies time_origin_ns as the wall-clock anchor, and drives
+    // the decoder from the global tracker (PJ4 ARCH §4.5). The MP4 bytes never
+    // reach ObjectStore — the file itself is the random-access store.
     const PJ::sdk::SourceObjectWriteHostView* obj = objectWriteHost();
     if (obj == nullptr || model.camera_names.empty()) {
       return PJ::okStatus();
     }
-    char fps_buf[32];
-    std::snprintf(fps_buf, sizeof(fps_buf), "%g", model.fps);
-    const std::string fps_str = fps_buf;
+
+    // Per-episode datasets: each episode is its own time domain starting at 0
+    // (see rowTimestampNs above). The MP4's first frame corresponds to t=0.
+    constexpr int64_t kEpisodeOriginNs = 0;
+
+    const std::string meta = PJ::sdk::MediaMetadataBuilder()
+                                 .extraString("builtin_object_type", "kAssetVideo")
+                                 .schema(PJ::kSchemaAssetVideo)
+                                 .build();
+
     for (const std::string& cam : model.camera_names) {
-      const lerobot::FeatureSpec* fs = model.feature(cam);
-      const std::string codec = fs != nullptr ? fs->video_codec : std::string{};
-      const std::string mp4 = model.episodeVideo(ep, cam).string();
-      const std::string meta = PJ::sdk::MediaMetadataBuilder()
-                                   .mediaClass("video")
-                                   .encoding(codec)
-                                   .extraString("video_file_path", mp4)
-                                   .extra("fps", fps_str)
-                                   .build();
       auto otopic = obj->registerTopic("lerobot/" + cam, meta);
       if (!otopic) {
         return PJ::unexpected(otopic.error());
+      }
+
+      PJ::sdk::AssetVideo asset;
+      asset.file_path = model.episodeVideo(ep, cam).string();
+      asset.time_origin_ns = PJ::Timestamp{kEpisodeOriginNs};
+      asset.frame_rate = model.fps;
+      // media_type, width, height, duration_ns: defaults → PJ4 probes via FFmpeg.
+
+      const std::vector<uint8_t> bytes = PJ::serializeAssetVideo(asset);
+      auto pushed =
+          obj->pushOwned(*otopic, PJ::Timestamp{kEpisodeOriginNs}, PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
+      if (!pushed) {
+        return PJ::unexpected(pushed.error());
       }
     }
     return PJ::okStatus();
