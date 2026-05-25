@@ -1,3 +1,5 @@
+#include <pj_base/builtin/asset_video.hpp>
+#include <pj_base/builtin/asset_video_codec.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_base/sdk/media_metadata.hpp>
 
@@ -13,6 +15,7 @@ extern "C" {
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -22,7 +25,6 @@ struct Mp4Metadata {
   std::optional<int64_t> creation_time_ns;  // epoch ns; nullopt if absent / unparseable
   int64_t duration_ns = 0;                  // 0 if unknown
   std::string codec;                        // e.g. "h264", "av1"; empty if unknown
-  std::string creation_time_iso;            // raw tag value when present, kept for display
 };
 
 [[nodiscard]] PJ::Expected<Mp4Metadata> readMp4Metadata(const std::string& path) {
@@ -38,7 +40,6 @@ struct Mp4Metadata {
 
   AVDictionaryEntry* tag = av_dict_get(ctx->metadata, "creation_time", nullptr, 0);
   if (tag != nullptr && tag->value != nullptr) {
-    meta.creation_time_iso = tag->value;
     meta.creation_time_ns = pj_mp4::parseIso8601ToEpochNs(tag->value);
   }
 
@@ -64,10 +65,11 @@ struct Mp4Metadata {
 
 /// Generic MP4 loader. For each .mp4 the user opens, reads container metadata
 /// (creation_time, duration, codec) via libavformat without decoding any
-/// frames, then registers a metadata-only ObjectStore topic carrying
-/// `video_file_path` (so the host renders via FileVideoSource) and, when the
-/// MP4 carries a `creation_time` tag, `media_start_ns` so the host can anchor
-/// playback on a wall-clock timeline.
+/// frames, then registers ONE sdk::AssetVideo ObjectStore entry pointing at
+/// the file. pj_app's Media2DDockWidget deserializes the entry, opens
+/// FileVideoSource on file_path, applies time_origin_ns as wall-clock anchor
+/// (when the MP4 carried a creation_time tag), and drives the decoder from
+/// the global tracker (PJ4 ARCH §4.5).
 class Mp4Source : public PJ::FileSourceBase {
  public:
   uint64_t extraCapabilities() const override {
@@ -102,19 +104,32 @@ class Mp4Source : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("MP4 plugin: objectWriteHost not bound"));
     }
 
-    PJ::sdk::MediaMetadataBuilder builder;
-    builder.mediaClass("video").encoding(meta.codec).extraString("video_file_path", filepath_);
-    if (meta.creation_time_ns.has_value()) {
-      builder.extra("media_start_ns", std::to_string(*meta.creation_time_ns));
-      builder.extraString("creation_time", meta.creation_time_iso);
-    }
-    if (meta.duration_ns > 0) {
-      builder.extra("media_duration_ns", std::to_string(meta.duration_ns));
-    }
-
-    auto topic = obj->registerTopic("video", builder.build());
+    const std::string topic_meta = PJ::sdk::MediaMetadataBuilder()
+                                       .extraString("builtin_object_type", "kAssetVideo")
+                                       .schema(PJ::kSchemaAssetVideo)
+                                       .build();
+    auto topic = obj->registerTopic("video", topic_meta);
     if (!topic) {
       return PJ::unexpected(topic.error());
+    }
+
+    PJ::sdk::AssetVideo asset;
+    asset.file_path = filepath_;
+    if (meta.creation_time_ns.has_value()) {
+      asset.time_origin_ns = PJ::Timestamp{*meta.creation_time_ns};
+    }
+    if (meta.duration_ns > 0) {
+      asset.duration_ns = meta.duration_ns;
+    }
+    // media_type, width, height, frame_rate: defaults → PJ4 probes via FFmpeg.
+
+    // ObjectStore timestamp equals time_origin_ns per AssetVideo contract;
+    // when the MP4 lacks a creation_time tag, fall back to 0 (file-relative).
+    const int64_t entry_ts = meta.creation_time_ns.value_or(0);
+    const std::vector<uint8_t> bytes = PJ::serializeAssetVideo(asset);
+    auto pushed = obj->pushOwned(*topic, PJ::Timestamp{entry_ts}, PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
+    if (!pushed) {
+      return PJ::unexpected(pushed.error());
     }
     return PJ::okStatus();
   }
