@@ -131,6 +131,11 @@ class Mp4Source : public PJ::FileSourceBase {
     if (!pushed) {
       return PJ::unexpected(pushed.error());
     }
+
+    runtimeHost().reportMessage(
+        PJ::DataSourceMessageLevel::kInfo,
+        "MP4: imported " + filepath_ +
+            (meta.creation_time_ns.has_value() ? " (wall-clock anchored)" : " (file-relative; no creation_time tag)"));
     return PJ::okStatus();
   }
 
