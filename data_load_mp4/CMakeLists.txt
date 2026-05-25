@@ -10,7 +10,7 @@ target_compile_features(mp4_source_plugin PRIVATE cxx_std_20)
 target_compile_options(mp4_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(mp4_source_plugin PRIVATE
   plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json date::date
-  ffmpeg::avformat ffmpeg::avcodec ffmpeg::avutil
+  ffmpeg::avformat ffmpeg::avutil
 )
 
 pj_embed_manifest(mp4_source_plugin

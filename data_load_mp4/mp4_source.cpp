@@ -24,7 +24,6 @@ namespace {
 struct Mp4Metadata {
   std::optional<int64_t> creation_time_ns;  // epoch ns; nullopt if absent / unparseable
   int64_t duration_ns = 0;                  // 0 if unknown
-  std::string codec;                        // e.g. "h264", "av1"; empty if unknown
 };
 
 [[nodiscard]] PJ::Expected<Mp4Metadata> readMp4Metadata(const std::string& path) {
@@ -48,23 +47,12 @@ struct Mp4Metadata {
     meta.duration_ns = ctx->duration * 1000;
   }
 
-  for (unsigned i = 0; i < ctx->nb_streams; ++i) {
-    AVStream* st = ctx->streams[i];
-    if (st->codecpar != nullptr && st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-      const AVCodec* codec = avcodec_find_decoder(st->codecpar->codec_id);
-      if (codec != nullptr && codec->name != nullptr) {
-        meta.codec = codec->name;
-      }
-      break;
-    }
-  }
-
   avformat_close_input(&ctx);
   return meta;
 }
 
 /// Generic MP4 loader. For each .mp4 the user opens, reads container metadata
-/// (creation_time, duration, codec) via libavformat without decoding any
+/// (creation_time, duration) via libavformat without decoding any
 /// frames, then registers ONE sdk::AssetVideo ObjectStore entry pointing at
 /// the file. pj_app's Media2DDockWidget deserializes the entry, opens
 /// FileVideoSource on file_path, applies time_origin_ns as wall-clock anchor
