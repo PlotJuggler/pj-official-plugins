@@ -71,7 +71,7 @@ The top-level CMakeLists.txt supports two modes:
 
 Plugin CMakeLists.txt files link `plotjuggler_core::plugin_sdk` (plugin .so) and `plotjuggler_core::plugin_host` (test executables) — same target names work in both modes.
 
-The core version is **not** pinned in CMake — `find_package` resolves whatever Conan installed. The version lives only in the Conan recipes (`conanfile.txt` + each plugin's `conanfile.py`). To bump it everywhere in one step: `python3 scripts/bump_core_version.py <new-version>`.
+The core version is **not** pinned in CMake — `find_package` resolves whatever Conan installed. The requirement lives only in the Conan recipes (`conanfile.txt` + each plugin's `conanfile.py`) as a patch-level range, currently `plotjuggler_core/[~0.3]` (i.e. `>=0.3.0 <0.4.0`), so new core patch releases are picked up automatically. To retarget a different minor/major in one step: `python3 scripts/bump_core_version.py 0.4` (range) or `... 0.4.0` (exact pin).
 
 ### Dialog System
 

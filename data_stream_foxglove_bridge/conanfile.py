@@ -7,7 +7,7 @@ class DataStreamFoxgloveBridgeConan(ConanFile):
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain"
     requires = (
-        "plotjuggler_core/0.2.1",
+        "plotjuggler_core/[~0.3]",
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
         "ixwebsocket/11.4.6",

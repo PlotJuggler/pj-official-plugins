@@ -70,7 +70,7 @@ subdirectory-mode fallback for standalone builds. Every per-plugin
 
 | Package | Version | Used by |
 |---------|---------|---------|
-| **plotjuggler_core** (cloudsmith) | **0.2.1** | **SDK + host loaders** (`plotjuggler_core::plugin_sdk`, `::plugin_host`) |
+| **plotjuggler_core** (cloudsmith) | **[~0.3]** (any 0.3.x) | **SDK + host loaders** (`plotjuggler_core::plugin_sdk`, `::plugin_host`) |
 | nlohmann_json | 3.12.0 | Most plugins |
 | mcap | 2.1.1 | data_load_mcap |
 | arrow + parquet | 23.0.1 | data_load_parquet |
