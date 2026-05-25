@@ -348,6 +348,129 @@ def gen_large_file():
 
 
 # ---------------------------------------------------------------------------
+# JSON embedded timestamp with field name "timestamp" (standard)
+# ---------------------------------------------------------------------------
+
+def gen_json_embedded_ts():
+    """JSON messages with embedded 'timestamp' field ahead of MCAP log_time by 5 s.
+
+    Use this file to verify timestamp_field_name="timestamp" config in the JSON parser.
+    Three channels:
+      /sensor/scalar  -- flat object: {timestamp, temperature, pressure}
+      /sensor/nested  -- nested object: {timestamp, accel{x,y,z}, speed}
+      /sensor/array   -- root array of joint objects (no embedded ts in elements)
+    """
+    import math as _math
+    path = OUT / "test_json_embedded_ts.mcap"
+    n_msgs = 50
+    dt_ns = 100_000_000   # 100 ms steps
+    log_start_ns = 5_000_000_000  # log_time starts at t=5 s
+    ts_start_s = 0.0      # embedded timestamp starts at 0.0 s
+
+    with open(path, "wb") as f:
+        w = Writer(f)
+        w.start(profile="", library="pj-verification")
+
+        schema_id = w.register_schema(name="json", encoding="jsonschema", data=b"{}")
+        ch_scalar = w.register_channel(topic="/sensor/scalar", message_encoding="json", schema_id=schema_id)
+        ch_nested = w.register_channel(topic="/sensor/nested", message_encoding="json", schema_id=schema_id)
+        ch_array  = w.register_channel(topic="/sensor/array",  message_encoding="json", schema_id=schema_id)
+
+        joints = ["shoulder", "elbow", "wrist"]
+        joint_vel = [0.1, 0.2, 0.3]
+
+        for i in range(n_msgs):
+            log_ts = log_start_ns + i * dt_ns
+            t = ts_start_s + i * 0.1
+
+            scalar_msg = {
+                "timestamp": round(t, 4),
+                "temperature": round(20.0 + _math.log1p(i) * 0.2, 4),
+                "pressure": round(1014.0 - i * 0.018 + _math.sin(i * 0.3) * 0.05, 4),
+            }
+            nested_msg = {
+                "timestamp": round(t, 4),
+                "accel": {"x": round(_math.sin(t), 4), "y": round(_math.cos(t), 4), "z": round(9.81 + _math.sin(t * 0.5) * 0.05, 4)},
+                "speed": round(abs(_math.sin(t)), 4),
+            }
+            array_msg = [
+                {"joint": j, "angle": round(_math.sin(t + k * 0.5), 4), "velocity": round(v, 4)}
+                for k, (j, v) in enumerate(zip(joints, joint_vel))
+            ]
+
+            import json as _json
+            for ch, msg in [(ch_scalar, scalar_msg), (ch_nested, nested_msg), (ch_array, array_msg)]:
+                data = _json.dumps(msg).encode()
+                w.add_message(channel_id=ch, log_time=log_ts, publish_time=log_ts, data=data)
+
+        w.finish()
+    print(f"[OK] {path.name:45s} {path.stat().st_size:>8} bytes")
+
+
+# ---------------------------------------------------------------------------
+# JSON embedded timestamp with custom field name "ts"
+# ---------------------------------------------------------------------------
+
+def gen_json_embedded_ts_custom():
+    """Identical to gen_json_embedded_ts but uses 'ts' as the timestamp field.
+
+    Use this file to verify that timestamp_field_name="ts" config works, i.e.
+    the field name is not hardcoded to "timestamp". The MCAP log_time is 5 s
+    ahead of the embedded 'ts' values, so if the parser reads 'ts' correctly
+    the resulting series timestamps will start at 0 s, not 5 s.
+    Three channels:
+      /sensor/scalar  -- flat object: {ts, temperature, pressure}
+      /sensor/nested  -- nested object: {ts, accel{x,y,z}, speed}
+      /sensor/array   -- root array of joint objects (no embedded ts in elements)
+    """
+    import math as _math
+    import json as _json
+    path = OUT / "test_json_embedded_ts_custom.mcap"
+    n_msgs = 50
+    dt_ns = 100_000_000
+    log_start_ns = 5_000_000_000
+    ts_start_s = 0.0
+
+    with open(path, "wb") as f:
+        w = Writer(f)
+        w.start(profile="", library="pj-verification")
+
+        schema_id = w.register_schema(name="json", encoding="jsonschema", data=b"{}")
+        ch_scalar = w.register_channel(topic="/sensor/scalar", message_encoding="json", schema_id=schema_id)
+        ch_nested = w.register_channel(topic="/sensor/nested", message_encoding="json", schema_id=schema_id)
+        ch_array  = w.register_channel(topic="/sensor/array",  message_encoding="json", schema_id=schema_id)
+
+        joints = ["shoulder", "elbow", "wrist"]
+        joint_vel = [0.1, 0.2, 0.3]
+
+        for i in range(n_msgs):
+            log_ts = log_start_ns + i * dt_ns
+            t = ts_start_s + i * 0.1
+
+            scalar_msg = {
+                "ts": round(t, 4),
+                "temperature": round(20.0 + _math.log1p(i) * 0.2, 4),
+                "pressure": round(1014.0 - i * 0.018 + _math.sin(i * 0.3) * 0.05, 4),
+            }
+            nested_msg = {
+                "ts": round(t, 4),
+                "accel": {"x": round(_math.sin(t), 4), "y": round(_math.cos(t), 4), "z": round(9.81 + _math.sin(t * 0.5) * 0.05, 4)},
+                "speed": round(abs(_math.sin(t)), 4),
+            }
+            array_msg = [
+                {"joint": j, "angle": round(_math.sin(t + k * 0.5), 4), "velocity": round(v, 4)}
+                for k, (j, v) in enumerate(zip(joints, joint_vel))
+            ]
+
+            for ch, msg in [(ch_scalar, scalar_msg), (ch_nested, nested_msg), (ch_array, array_msg)]:
+                data = _json.dumps(msg).encode()
+                w.add_message(channel_id=ch, log_time=log_ts, publish_time=log_ts, data=data)
+
+        w.finish()
+    print(f"[OK] {path.name:45s} {path.stat().st_size:>8} bytes")
+
+
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     print("Generating verification MCAPs...\n")
@@ -359,5 +482,7 @@ if __name__ == "__main__":
     gen_unsupported_encoding()
     gen_bad_schema()
     gen_large_file()
+    gen_json_embedded_ts()
+    gen_json_embedded_ts_custom()
 
     print("\nDone. See data_load_mcap_verification.md for test procedures.")
