@@ -76,12 +76,16 @@ find_package(GTest REQUIRED)
 
 # ---------------------------------------------------------------------------
 # PlotJuggler Core SDK (Conan package, plotjuggler cloudsmith remote).
+# The exact version is pinned by Conan (see conanfile.txt / each plugin's
+# conanfile.py) — CMakeDeps generates a config for precisely that version, so
+# no version is asserted here. Keeping the version out of find_package means a
+# core bump only touches the Conan recipe(s), not this file.
 # Plugins that still need CPM (parser_ros, parser_data_tamer, data_load_ulog
 # for rosx_introspection, data_tamer, ulog_cpp) include cmake/CPM.cmake
 # themselves; nothing at the root needs it anymore.
 # ---------------------------------------------------------------------------
 
-find_package(plotjuggler_core 0.2.1 CONFIG REQUIRED
+find_package(plotjuggler_core CONFIG REQUIRED
   COMPONENTS base plugin_sdk plugin_host
 )
 

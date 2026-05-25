@@ -67,9 +67,11 @@ Export macros: `PJ_DATA_SOURCE_PLUGIN(Class, manifest_json)`, `PJ_MESSAGE_PARSER
 
 The top-level CMakeLists.txt supports two modes:
 1. **Subdirectory mode** — when `TARGET plotjuggler_core::plugin_sdk` already exists (built inside plotjuggler_core; the namespaced alias is added by plotjuggler_core ≥0.2.1)
-2. **Standalone mode** — `find_package(plotjuggler_core 0.2.1 CONFIG REQUIRED)` against the Conan package from the plotjuggler cloudsmith remote; all other deps via Conan
+2. **Standalone mode** — `find_package(plotjuggler_core CONFIG REQUIRED)` against the Conan package from the plotjuggler cloudsmith remote; all other deps via Conan
 
 Plugin CMakeLists.txt files link `plotjuggler_core::plugin_sdk` (plugin .so) and `plotjuggler_core::plugin_host` (test executables) — same target names work in both modes.
+
+The core version is **not** pinned in CMake — `find_package` resolves whatever Conan installed. The version lives only in the Conan recipes (`conanfile.txt` + each plugin's `conanfile.py`). To bump it everywhere in one step: `python3 scripts/bump_core_version.py <new-version>`.
 
 ### Dialog System
 
