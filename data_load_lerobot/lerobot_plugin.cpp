@@ -162,8 +162,9 @@ class LeRobotSource : public PJ::FileSourceBase {
     }
 
     runtimeHost().reportMessage(
-        PJ::DataSourceMessageLevel::kInfo, "LeRobot " + model->codebase_version + ": imported " +
-                                               std::to_string(processed) + " rows from episode " + std::to_string(ep));
+        PJ::DataSourceMessageLevel::kInfo,
+        "LeRobot " + model->codebase_version + ": imported " + std::to_string(processed) + " rows + " +
+            std::to_string(model->camera_names.size()) + " video asset(s) from episode " + std::to_string(ep));
     return PJ::okStatus();
   }
 
