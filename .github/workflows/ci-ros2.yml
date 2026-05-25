@@ -21,16 +21,11 @@ concurrency:
 
 # End-to-end build for the ROS 2 subscriber marketplace extension:
 #
-#  - `fetch-core` clones plotjuggler_core (private) once on the host runner
-#    where webfactory/ssh-agent + CORE_DEPLOY_KEY have outbound SSH access.
-#    The result is shared with the build jobs as an artifact, avoiding the
-#    "Host key verification failed" that bites SSH inside the osrf/ros
-#    Docker images regardless of how known_hosts is seeded.
-#
 #  - `build-distro` runs a matrix across every supported ROS 2 distribution
-#    inside the corresponding osrf/ros Docker image. Each job consumes the
-#    pre-fetched core via -DCPM_plotjuggler_core_SOURCE and produces a
-#    distro-specific shared library that links against that distro's rclcpp.
+#    inside the corresponding osrf/ros Docker image. Each job pulls
+#    plotjuggler_core from the plotjuggler cloudsmith Conan repo and links
+#    the resulting distro-specific shared library against that distro's
+#    rclcpp.
 #
 #  - `build-proxy` builds the dispatch proxy once on a plain Ubuntu runner,
 #    because it has no dependency on ROS itself. The proxy detects the ROS
@@ -40,38 +35,8 @@ concurrency:
 #  - `package-extension` assembles both into a single marketplace zip with
 #    the proxy at the root and one .so per distro under `dist/<distro>/`.
 jobs:
-  fetch-core:
-    name: fetch plotjuggler_core
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Configure SSH for private dependencies
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.CORE_DEPLOY_KEY }}
-
-      - name: Add GitHub to SSH known hosts
-        shell: bash
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
-
-      - name: Clone plotjuggler_core (main, shallow)
-        shell: bash
-        run: |
-          git clone --depth=1 --branch main \
-            git@github.com:PlotJuggler/plotjuggler_core.git plotjuggler_core
-
-      - name: Upload plotjuggler_core source
-        uses: actions/upload-artifact@v4
-        with:
-          name: plotjuggler-core-src
-          path: plotjuggler_core
-          retention-days: 1
-          if-no-files-found: error
-
   build-distro:
     name: distro / ${{ matrix.distro }} (${{ matrix.ubuntu }})
-    needs: fetch-core
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -111,20 +76,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download plotjuggler_core source
-        uses: actions/download-artifact@v4
-        with:
-          name: plotjuggler-core-src
-          path: plotjuggler_core_cache
+      - name: Configure plotjuggler cloudsmith Conan remote
+        env:
+          CLOUDSMITH_USER: ${{ secrets.CLOUDSMITH_USER }}
+          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+        shell: bash
+        run: |
+          conan profile detect --force
+          conan remote add plotjuggler-cloudsmith \
+            https://conan.cloudsmith.io/plotjuggler/plotjuggler --force
+          conan remote login plotjuggler-cloudsmith \
+            "$CLOUDSMITH_USER" -p "$CLOUDSMITH_API_KEY"
 
       - name: Configure and build distro
         shell: bash
         run: |
           source /opt/ros/${{ matrix.distro }}/setup.bash
 
-          conan profile detect --force
-          # Plugin-local recipe (gtest + nlohmann_json), not the repo-root
-          # conanfile.txt that pulls every plugin's deps.
+          # Plugin-local recipe (plotjuggler_core + gtest + nlohmann_json),
+          # not the repo-root conanfile.txt that pulls every plugin's deps.
           conan install data_stream_ros2 --output-folder=build --build=missing \
             -s build_type=Release \
             -s compiler.cppstd=20 \
@@ -135,8 +105,7 @@ jobs:
             -DCMAKE_PREFIX_PATH="build;/opt/ros/${{ matrix.distro }}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DPJ_BUILD_PLUGIN=data_stream_ros2 \
-            -DPJ_BUILD_ROS2_DISTRO=ON \
-            -DCPM_plotjuggler_core_SOURCE="${GITHUB_WORKSPACE}/plotjuggler_core_cache"
+            -DPJ_BUILD_ROS2_DISTRO=ON
 
           cmake --build build/Release --config Release
 
@@ -149,7 +118,6 @@ jobs:
 
   build-proxy:
     name: proxy (no ROS)
-    needs: fetch-core
     runs-on: ubuntu-22.04
 
     steps:
@@ -167,18 +135,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download plotjuggler_core source
-        uses: actions/download-artifact@v4
-        with:
-          name: plotjuggler-core-src
-          path: plotjuggler_core_cache
+      - name: Configure plotjuggler cloudsmith Conan remote
+        env:
+          CLOUDSMITH_USER: ${{ secrets.CLOUDSMITH_USER }}
+          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+        shell: bash
+        run: |
+          conan profile detect --force
+          conan remote add plotjuggler-cloudsmith \
+            https://conan.cloudsmith.io/plotjuggler/plotjuggler --force
+          conan remote login plotjuggler-cloudsmith \
+            "$CLOUDSMITH_USER" -p "$CLOUDSMITH_API_KEY"
 
       - name: Configure and build proxy
         shell: bash
         run: |
-          conan profile detect --force
-          # Plugin-local recipe (gtest + nlohmann_json), not the repo-root
-          # conanfile.txt that pulls every plugin's deps.
+          # Plugin-local recipe (plotjuggler_core + gtest + nlohmann_json),
+          # not the repo-root conanfile.txt that pulls every plugin's deps.
           conan install data_stream_ros2 --output-folder=build --build=missing \
             -s build_type=Release \
             -s compiler.cppstd=20 \
@@ -188,8 +161,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
             -DCMAKE_PREFIX_PATH=build \
             -DCMAKE_BUILD_TYPE=Release \
-            -DPJ_BUILD_PLUGIN=data_stream_ros2 \
-            -DCPM_plotjuggler_core_SOURCE="${GITHUB_WORKSPACE}/plotjuggler_core_cache"
+            -DPJ_BUILD_PLUGIN=data_stream_ros2
 
           cmake --build build/Release --config Release
 

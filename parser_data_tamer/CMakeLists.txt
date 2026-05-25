@@ -18,7 +18,7 @@ endif()
 add_library(parser_data_tamer_plugin SHARED data_tamer_parser.cpp)
 target_compile_features(parser_data_tamer_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_data_tamer_plugin PRIVATE ${PJ_WARNING_FLAGS})
-target_link_libraries(parser_data_tamer_plugin PRIVATE pj_plugin_sdk data_tamer_parser)
+target_link_libraries(parser_data_tamer_plugin PRIVATE plotjuggler_core::plugin_sdk data_tamer_parser)
 
 pj_embed_manifest(parser_data_tamer_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/data_tamer_manifest.hpp
@@ -40,8 +40,8 @@ target_compile_definitions(data_tamer_parser_test PRIVATE
   PJ_DATA_TAMER_PARSER_PLUGIN_PATH="$<TARGET_FILE:parser_data_tamer_plugin>"
 )
 target_link_libraries(data_tamer_parser_test PRIVATE
-  pj_plugin_sdk
-  pj_message_parser_host
+  plotjuggler_core::plugin_sdk
+  plotjuggler_core::plugin_host
   data_tamer_parser
   GTest::gtest_main
 )

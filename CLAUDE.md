@@ -66,8 +66,10 @@ Export macros: `PJ_DATA_SOURCE_PLUGIN(Class, manifest_json)`, `PJ_MESSAGE_PARSER
 ### Dual-mode CMake
 
 The top-level CMakeLists.txt supports two modes:
-1. **Subdirectory mode** — when `TARGET pj_base` already exists (built inside plotjuggler_core)
-2. **Standalone mode** — fetches plotjuggler_core via CPM, deps via Conan
+1. **Subdirectory mode** — when `TARGET plotjuggler_core::plugin_sdk` already exists (built inside plotjuggler_core; the namespaced alias is added by plotjuggler_core ≥0.2.1)
+2. **Standalone mode** — `find_package(plotjuggler_core 0.2.1 CONFIG REQUIRED)` against the Conan package from the plotjuggler cloudsmith remote; all other deps via Conan
+
+Plugin CMakeLists.txt files link `plotjuggler_core::plugin_sdk` (plugin .so) and `plotjuggler_core::plugin_host` (test executables) — same target names work in both modes.
 
 ### Dialog System
 
@@ -85,8 +87,9 @@ Plugins with UI subclass `PJ::DialogPluginTyped` and use real `.ui` files (Qt Cr
 
 | Source | Packages |
 |--------|----------|
-| Conan | nlohmann_json, mcap, arrow/parquet, paho-mqtt-cpp, cppzmq, protobuf, zstd, date, gtest |
-| CPM | plotjuggler_core (pj_base, pj_dialog_sdk), ulog_cpp, rosx_introspection, data_tamer |
+| Conan (cloudsmith) | plotjuggler_core (`plotjuggler_core::plugin_sdk`, `::plugin_host`) |
+| Conan (conancenter) | nlohmann_json, mcap, arrow/parquet, paho-mqtt-cpp, cppzmq, protobuf, zstd, date, ixwebsocket, asio, kissfft, lua, sol2, libsodium, pybind11, cpython, gtest |
+| CPM | ulog_cpp, rosx_introspection, data_tamer (plugin-private deps only) |
 | Optional | Qt 6 (WebSockets, Network) — only for foxglove_bridge and pj_bridge |
 
 ## Porting Rules (Summary)

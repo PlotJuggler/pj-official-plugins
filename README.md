@@ -12,6 +12,17 @@ Protobuf, ROS, ZMQ, MQTT, Foxglove Bridge, and PJ Bridge.
 
 ### Standalone (requires Conan 2.x)
 
+Configure the plotjuggler cloudsmith Conan remote once per machine so
+`plotjuggler_core` resolves on `conan install`:
+
+```bash
+conan remote add plotjuggler-cloudsmith \
+  https://conan.cloudsmith.io/plotjuggler/plotjuggler
+conan remote login plotjuggler-cloudsmith <user> -p <api-key>
+```
+
+Then build:
+
 ```bash
 # Build the full plugin collection
 ./build.sh
@@ -30,14 +41,18 @@ By default, `build.sh` installs the root `conanfile.txt` and builds into
 `conanfile.py`, configures CMake with `-DPJ_BUILD_PLUGIN=<plugin_dir>`, and
 builds into `build/<plugin_dir>/Release`.
 
-Each plugin directory has its own `conanfile.py`. Keep it in sync with the
-plugin's `find_package(... REQUIRED)` dependencies in `CMakeLists.txt`. The
-root `conanfile.txt` remains the full-repository dependency set for local full
-builds and scheduled CI.
+Each plugin directory has its own `conanfile.py` that lists
+`plotjuggler_core` plus the plugin's own third-party deps. Keep it in sync
+with the plugin's `find_package(... REQUIRED)` calls in `CMakeLists.txt`.
+The root `conanfile.txt` remains the full-repository dependency set for
+local full builds and scheduled CI.
 
 ### As subdirectory of plotjuggler_core
 
-No extra steps — the parent project's build system handles everything:
+No extra steps — the parent project's build system handles everything (and
+`plotjuggler_core::plugin_sdk` / `::plugin_host` resolve to the in-tree
+targets, so plugin CMakeLists.txt files write the same `target_link_libraries`
+call in both modes):
 
 ```bash
 cd /path/to/plotjuggler_core
@@ -46,10 +61,16 @@ cd /path/to/plotjuggler_core
 
 ## Dependencies
 
-### Via Conan (third-party)
+### Via Conan
+
+`plotjuggler_core` is consumed exclusively as a Conan package from the
+plotjuggler cloudsmith remote — no CPM source clone, no SSH deploy key, no
+subdirectory-mode fallback for standalone builds. Every per-plugin
+`conanfile.py` also lists it so single-plugin builds resolve it the same way.
 
 | Package | Version | Used by |
 |---------|---------|---------|
+| **plotjuggler_core** (cloudsmith) | **0.2.1** | **SDK + host loaders** (`plotjuggler_core::plugin_sdk`, `::plugin_host`) |
 | nlohmann_json | 3.12.0 | Most plugins |
 | mcap | 2.1.1 | data_load_mcap |
 | arrow + parquet | 23.0.1 | data_load_parquet |
@@ -67,11 +88,10 @@ cd /path/to/plotjuggler_core
 | cpython | 3.12.7 | toolbox_reactive_scripts_editor |
 | gtest | 1.17.0 | All plugin tests |
 
-### Via CPM (GitHub-only)
+### Via CPM (plugin-private deps only)
 
 | Package | Used by |
 |---------|---------|
-| plotjuggler_core | SDK (pj_base, pj_dialog_sdk, pj_message_parser_host) |
 | ulog_cpp | data_load_ulog |
 | rosx_introspection | parser_ros |
 | data_tamer | parser_ros, parser_data_tamer |
