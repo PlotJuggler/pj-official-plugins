@@ -2,6 +2,10 @@
 nlohmann_json/3.12.0
 mcap/2.1.1
 arrow/23.0.1
+# fmt required transitively by plotjuggler_core/pj_plugins when CPM-fetched
+# in standalone mode (it is provided by PJ4's conanfile when built inside
+# plotjuggler_core via add_subdirectory).
+fmt/12.1.0
 paho-mqtt-cpp/1.5.3
 cppzmq/4.11.0
 protobuf/6.33.5

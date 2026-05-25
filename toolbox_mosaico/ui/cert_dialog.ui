@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>CertDialog</class>
+ <widget class="QDialog" name="CertDialog">
+  <property name="windowTitle"><string>Server Certificate / API Key</string></property>
+  <property name="minimumWidth"><number>520</number></property>
+  <layout class="QVBoxLayout">
+   <item>
+    <!-- CertDialogContents (PjUiLoader custom widget) provides the cert path +
+         Browse, the API-key field + Show/Hide, live validation ticks, and the
+         plaintext-fallback checkbox. Its inner inputs keep the objectNames
+         certPath / apiKey / allowInsecure so PanelEngine's sub-dialog harvester
+         surfaces them to the plugin on OK. -->
+    <widget class="CertDialogContents" name="certContents"/>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>
