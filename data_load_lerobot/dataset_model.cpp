@@ -74,10 +74,15 @@ PJ::Expected<json> readJsonFile(const fs::path& path) {
   return parsed;
 }
 
-// Reject anything that is not LeRobot v2.0 / v2.1.
-PJ::Status gateVersion(const std::string& version) {
+// Classify the LeRobot dataset version from info.json's `codebase_version`.
+// v2.0 / v2.1 share the same on-disk layout from the plugin's point of view
+// and collapse to `V2_x`. Any `v3.x` is accepted as `V3_0` (the v3 line
+// reserves further point releases for non-breaking metadata extensions; the
+// plugin reads only the fields documented for v3.0 and is forward-tolerant
+// of new ones). Everything else is rejected.
+PJ::Expected<DatasetVersion> gateVersion(const std::string& version) {
   if (version == "v2.0" || version == "v2.1") {
-    return PJ::okStatus();
+    return DatasetVersion::V2_x;
   }
   std::string trimmed = version;
   if (!trimmed.empty() && (trimmed[0] == 'v' || trimmed[0] == 'V')) {
@@ -92,11 +97,15 @@ PJ::Status gateVersion(const std::string& version) {
       major = major * 10 + (c - '0');
     }
   }
-  if (major >= 3) {
-    return PJ::unexpected(
-        "LeRobot v3.0 datasets are not supported yet (found codebase_version='" + version + "'); v2.1 only");
+  if (major == 3) {
+    return DatasetVersion::V3_0;
   }
-  return PJ::unexpected("unsupported LeRobot codebase_version='" + version + "' (expected v2.0 or v2.1)");
+  if (major >= 4) {
+    return PJ::unexpected(
+        "LeRobot v" + std::to_string(major) + ".x datasets are not supported (found codebase_version='" + version +
+        "'); this plugin understands v2.0, v2.1 and v3.x");
+  }
+  return PJ::unexpected("unsupported LeRobot codebase_version='" + version + "' (expected v2.0, v2.1 or v3.x)");
 }
 
 PJ::Expected<fs::path> resolveRoot(const fs::path& picked) {
@@ -308,9 +317,11 @@ PJ::Expected<DatasetModel> loadDatasetModel(const std::filesystem::path& picked_
   DatasetModel model;
   model.root = *root;
   model.codebase_version = strField(info, "codebase_version");
-  if (auto status = gateVersion(model.codebase_version); !status) {
-    return PJ::unexpected(status.error());
+  auto ver_or = gateVersion(model.codebase_version);
+  if (!ver_or) {
+    return PJ::unexpected(ver_or.error());
   }
+  model.version = *ver_or;
   model.fps = doubleField(info, "fps", 30.0);
   model.chunks_size = intField(info, "chunks_size", 1000);
   model.data_path_tmpl = strField(info, "data_path", kDefaultDataPath);

@@ -105,19 +105,12 @@ TEST(LoadDatasetModel, WalksUpFromParquetFile) {
   fs::remove_all(root);
 }
 
-TEST(LoadDatasetModel, RejectsV3WithClearMessage) {
-  // Arrange
-  const fs::path root = makeFixture("v3.0");
-
-  // Act
-  auto model = loadDatasetModel(root / "meta" / "info.json");
-
-  // Assert
-  ASSERT_FALSE(model.has_value());
-  EXPECT_NE(model.error().find("v3.0"), std::string::npos);
-
-  fs::remove_all(root);
-}
+// The old `RejectsV3WithClearMessage` test was removed when v3.0 became a
+// supported on-disk layout. End-to-end v3.0 loading is exercised by the
+// new fixture in dataset_model_test_v3 (see E9): it builds a real
+// meta/episodes/chunk-000/file-000.parquet plus a multi-episode
+// data/chunk-000/file-000.parquet with Arrow, and asserts
+// `model.version == DatasetVersion::V3_0` plus a populated `episode_shards`.
 
 TEST(LoadDatasetModel, FailsWhenNotADataset) {
   // Act
