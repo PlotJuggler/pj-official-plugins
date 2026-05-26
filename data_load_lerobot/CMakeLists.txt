@@ -55,6 +55,18 @@ target_link_libraries(lerobot_dataset_model_test PRIVATE
 )
 add_test(NAME lerobot_dataset_model_test COMMAND lerobot_dataset_model_test)
 
+# v3.0 fixture test — exercises the Arrow-backed meta/episodes reader against
+# a synthetic, real-Parquet dataset built in-process.
+add_executable(lerobot_dataset_model_v3_test tests/dataset_model_v3_test.cpp dataset_model.cpp dataset_shards_v3.cpp)
+target_compile_features(lerobot_dataset_model_v3_test PRIVATE cxx_std_20)
+target_compile_options(lerobot_dataset_model_v3_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(lerobot_dataset_model_v3_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(lerobot_dataset_model_v3_test PRIVATE
+  plotjuggler_core::plugin_sdk plotjuggler_core::plugin_host nlohmann_json::nlohmann_json
+  Arrow::arrow_static Parquet::parquet_static GTest::gtest_main
+)
+add_test(NAME lerobot_dataset_model_v3_test COMMAND lerobot_dataset_model_v3_test)
+
 add_executable(lerobot_flatten_plan_test tests/flatten_plan_test.cpp flatten_plan.cpp)
 target_compile_features(lerobot_flatten_plan_test PRIVATE cxx_std_20)
 target_compile_options(lerobot_flatten_plan_test PRIVATE ${PJ_WARNING_FLAGS})
