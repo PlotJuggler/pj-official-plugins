@@ -370,14 +370,27 @@ def find_binary_by_manifest_id(directory: Path, manifest_id: str) -> Path | None
     Returns:
         Path to matching binary, or None if not found
     """
+    matches = find_binaries_by_manifest_id(directory, manifest_id)
+    return matches[0] if matches else None
+
+
+def find_binaries_by_manifest_id(directory: Path, manifest_id: str) -> list[Path]:
+    """
+    Find all plugin binaries with the given embedded manifest id.
+
+    Most extensions ship one DSO. Some extensions intentionally ship multiple
+    parser entry points under one marketplace id; all matching binaries must be
+    packaged together.
+    """
     binaries = find_plugin_binaries(directory, "*")
+    matches = []
 
     for binary_path in binaries:
         manifest = extract_binary_manifest(binary_path)
         if manifest and manifest.get("id") == manifest_id:
-            return binary_path
+            matches.append(binary_path)
 
-    return None
+    return sorted(matches)
 
 
 # =============================================================================
@@ -882,7 +895,7 @@ def cmd_create_distribution_package(args) -> int:
       ``<output_dir>/<extension_id>/``. ``manifest.json`` is added
       automatically if the staging tree omits it.
 
-    - **Heuristic mode** (default): the binary is located by its embedded
+    - **Heuristic mode** (default): binaries are located by their embedded
       manifest id and copied alongside ``manifest.json``. Any sibling
       ``python3*`` directory placed next to the binary by a CMake
       POST_BUILD step (e.g. reactive scripts toolbox) is bundled too.
@@ -943,17 +956,18 @@ def cmd_create_distribution_package(args) -> int:
             shutil.copy(manifest_path, output_path)
             print(f"  added missing manifest.json from {manifest_path}", file=sys.stderr)
     else:
-        # Heuristic mode — locate the binary by its embedded manifest id.
-        print(f"Searching for plugin with id '{extension_id}' in {args.build_dir}...", file=sys.stderr)
-        plugin_path = find_binary_by_manifest_id(args.build_dir, extension_id)
-        if not plugin_path:
+        # Heuristic mode — locate binaries by embedded manifest id.
+        print(f"Searching for plugin(s) with id '{extension_id}' in {args.build_dir}...", file=sys.stderr)
+        plugin_paths = find_binaries_by_manifest_id(args.build_dir, extension_id)
+        if not plugin_paths:
             print(f"Error: No plugin found with extension id '{extension_id}'", file=sys.stderr)
             return 1
 
-        print(f"Found plugin: {plugin_path}", file=sys.stderr)
-
-        shutil.copy(plugin_path, output_path)
-        print(f"Copied plugin to: {output_path / plugin_path.name}", file=sys.stderr)
+        print(f"Found {len(plugin_paths)} plugin binary file(s):", file=sys.stderr)
+        for plugin_path in plugin_paths:
+            print(f"  - {plugin_path}", file=sys.stderr)
+            shutil.copy(plugin_path, output_path)
+            print(f"Copied plugin to: {output_path / plugin_path.name}", file=sys.stderr)
 
         shutil.copy(manifest_path, output_path)
         print(f"Copied manifest to: {output_path / 'manifest.json'}", file=sys.stderr)
@@ -961,11 +975,14 @@ def cmd_create_distribution_package(args) -> int:
         # Bundle any Python stdlib directories placed next to the plugin binary
         # by the CMake POST_BUILD step (e.g. python3.12/). Makes the plugin
         # self-contained: no system Python installation is required at runtime.
-        for entry in plugin_path.parent.iterdir():
-            if entry.is_dir() and entry.name.startswith("python3"):
-                dest = output_path / entry.name
-                shutil.copytree(entry, dest, dirs_exist_ok=True)
-                print(f"Bundled Python stdlib: {dest}", file=sys.stderr)
+        bundled_python_dirs = set()
+        for plugin_path in plugin_paths:
+            for entry in plugin_path.parent.iterdir():
+                if entry.is_dir() and entry.name.startswith("python3") and entry not in bundled_python_dirs:
+                    bundled_python_dirs.add(entry)
+                    dest = output_path / entry.name
+                    shutil.copytree(entry, dest, dirs_exist_ok=True)
+                    print(f"Bundled Python stdlib: {dest}", file=sys.stderr)
 
     # Output extension ZIP filename to stdout
     if args.os_label and args.arch:

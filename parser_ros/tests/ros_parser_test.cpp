@@ -20,6 +20,10 @@
 #error "PJ_ROS_PARSER_PLUGIN_PATH must be defined"
 #endif
 
+#ifndef PJ_ROS_IDL_PARSER_PLUGIN_PATH
+#error "PJ_ROS_IDL_PARSER_PLUGIN_PATH must be defined"
+#endif
+
 namespace {
 
 struct RosParserFixture {
@@ -28,8 +32,8 @@ struct RosParserFixture {
   PJ::ServiceRegistryBuilder registry;
   PJ::sdk::testing::ParserWriteRecorder recorder;
 
-  void setUp() {
-    auto lib = PJ::MessageParserLibrary::load(PJ_ROS_PARSER_PLUGIN_PATH);
+  void setUp(const char* plugin_path = PJ_ROS_PARSER_PLUGIN_PATH) {
+    auto lib = PJ::MessageParserLibrary::load(plugin_path);
     ASSERT_TRUE(lib) << lib.error();
     library = std::move(*lib);
     handle = library.createHandle();
@@ -280,7 +284,7 @@ TEST(RosParserTest, Ros2TypeNameNormalization) {
 
 TEST(RosParserTest, OmgIdlSchemaParsesCdrPayload) {
   RosParserFixture f;
-  f.setUp();
+  f.setUp(PJ_ROS_IDL_PARSER_PLUGIN_PATH);
   ASSERT_TRUE(f.bindSchema("pkg::SimpleIdl", kSimpleIdlDef));
 
   auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
@@ -423,11 +427,18 @@ TEST(RosParserTest, ParseWithoutSchemaFails) {
 TEST(RosParserTest, ManifestContainsEncoding) {
   RosParserFixture f;
   f.setUp();
-  // Manifest uses "encoding" as an array containing all supported encodings
   EXPECT_NE(f.handle.manifest().find("\"ros2msg\""), std::string::npos);
-  EXPECT_NE(f.handle.manifest().find("\"omgidl\""), std::string::npos);
   EXPECT_NE(f.handle.manifest().find("\"ros1msg\""), std::string::npos);
-  EXPECT_NE(f.handle.manifest().find("\"cdr\""), std::string::npos);
+  EXPECT_EQ(f.handle.manifest().find("\"omgidl\""), std::string::npos);
+  EXPECT_EQ(f.handle.manifest().find("\"cdr\""), std::string::npos);
+}
+
+TEST(RosParserTest, OmgIdlManifestContainsOnlyIdlEncoding) {
+  RosParserFixture f;
+  f.setUp(PJ_ROS_IDL_PARSER_PLUGIN_PATH);
+  EXPECT_NE(f.handle.manifest().find("\"omgidl\""), std::string::npos);
+  EXPECT_EQ(f.handle.manifest().find("\"ros2msg\""), std::string::npos);
+  EXPECT_EQ(f.handle.manifest().find("\"cdr\""), std::string::npos);
 }
 
 TEST(RosParserTest, ExposesDialogVtable) {

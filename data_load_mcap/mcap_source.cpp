@@ -137,7 +137,13 @@ class McapSource : public PJ::FileSourceBase {
     // Parser config comes entirely from the embedded parser dialog
     // (pj_parser_slot). Empty when no override is set (first run / old config),
     // so the parser falls back to its own defaults.
-    const std::string parser_config_str = parser_config_override_;
+    nlohmann::json parser_config = nlohmann::json::object();
+    if (!parser_config_override_.empty()) {
+      auto parsed_config = nlohmann::json::parse(parser_config_override_, nullptr, false);
+      if (parsed_config.is_object()) {
+        parser_config = std::move(parsed_config);
+      }
+    }
 
     // --- Ensure parser bindings for selected channels ---
     const auto& selected = dialog_.selectedTopics();
@@ -160,14 +166,21 @@ class McapSource : public PJ::FileSourceBase {
 
       PJ::Span<const uint8_t> schema_bytes{reinterpret_cast<const uint8_t*>(schema->data.data()), schema->data.size()};
 
-      std::string_view encoding = channel_ptr->messageEncoding;
-      if (encoding.empty()) {
-        encoding = schema->encoding;
+      std::string parser_encoding = channel_ptr->messageEncoding;
+      if (parser_encoding.empty() || (parser_encoding == "cdr" && !schema->encoding.empty())) {
+        parser_encoding = schema->encoding;
       }
+
+      auto channel_parser_config = parser_config;
+      const bool use_ros1_serialization = channel_ptr->messageEncoding == "ros1" || parser_encoding == "ros1" ||
+                                          parser_encoding == "ros1msg" || schema->encoding == "ros1msg";
+      channel_parser_config["serialization"] = use_ros1_serialization ? "ros1" : "cdr";
+      channel_parser_config["schema_encoding"] = parser_encoding;
+      const std::string parser_config_str = channel_parser_config.dump();
 
       PJ::ParserBindingRequest request{
           .topic_name = channel_ptr->topic,
-          .parser_encoding = encoding,
+          .parser_encoding = parser_encoding,
           .type_name = schema->name,
           .schema = schema_bytes,
           .parser_config_json = parser_config_str,
@@ -181,7 +194,7 @@ class McapSource : public PJ::FileSourceBase {
       // schema->name nor mentions object_type anywhere.
       auto handle = runtimeHost().ensureParserBinding(request);
       if (!handle) {
-        binding_errors.push_back(channel_ptr->topic + " (encoding: " + std::string(encoding) + "): " + handle.error());
+        binding_errors.push_back(channel_ptr->topic + " (encoding: " + parser_encoding + "): " + handle.error());
         continue;
       }
       bindings.emplace(channel_id, *handle);

@@ -6,7 +6,7 @@
  *   - parseBinaryFrame: decode binary WebSocket messages (opcode + subscription_id
  *     + log_time + payload)
  *   - buildSubscribeMessage / buildUnsubscribeMessage: JSON message generation
- *   - isUsableChannel: validate channel has CDR encoding and ros2msg schema
+ *   - isUsableChannel: validate channel has CDR encoding and supported ROS schema
  *
  * All binary frames are constructed in memory as byte vectors. No network
  * connections or WebSocket servers are needed.
@@ -124,6 +124,17 @@ TEST(FoxgloveProtocolTest, IsUsableChannelValid) {
   ch.schema_name = "std_msgs/msg/String";
   ch.schema = "string data";
   ch.schema_encoding = "ros2msg";
+  EXPECT_TRUE(isUsableChannel(ch));
+}
+
+TEST(FoxgloveProtocolTest, IsUsableChannelValidOmgIdl) {
+  ChannelInfo ch;
+  ch.id = 1;
+  ch.topic = "/test/topic";
+  ch.encoding = "cdr";
+  ch.schema_name = "pkg::Simple";
+  ch.schema = "module pkg { struct Simple { long value; }; };";
+  ch.schema_encoding = "omgidl";
   EXPECT_TRUE(isUsableChannel(ch));
 }
 

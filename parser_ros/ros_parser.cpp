@@ -3,8 +3,6 @@
 #include <functional>
 #include <string>
 
-#include "ros_manifest.hpp"
-#include "ros_parser_dialog.hpp"
 #include "ros_parser_internal.hpp"
 
 namespace ros_parser_detail {
@@ -74,15 +72,6 @@ bool parseStringAsDouble(const std::string& str, double& value, bool remove_suff
   }
 
   return false;
-}
-
-bool looksLikeIdlSchema(std::string_view type_name, std::string_view definition) {
-  if (type_name.find("::") != std::string_view::npos) {
-    return true;
-  }
-  return definition.find("module ") != std::string_view::npos || definition.find("struct ") != std::string_view::npos ||
-         definition.find("#include") != std::string_view::npos || definition.find("@topic") != std::string_view::npos ||
-         definition.find("@key") != std::string_view::npos || definition.find("sequence<") != std::string_view::npos;
 }
 
 std::string normalizedMessageType(std::string_view type_name, RosMsgParser::SchemaFormat schema_format) {
@@ -184,7 +173,7 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
   // std::string (the textual .msg or IDL definition).
   std::string definition(reinterpret_cast<const char*>(schema.data()), schema.size());
 
-  const auto schema_format = looksLikeIdlSchema(type_name, definition) ? RosMsgParser::DDS_IDL : RosMsgParser::ROS_MSG;
+  const auto schema_format = schema_format_;
 
   // Normalize root names to the conventions used by rosx_introspection. ROS 2
   // .msg schemas use "pkg/msg/Type" externally and "pkg/Type" internally;
@@ -589,6 +578,3 @@ void RosParser::addQuaternionRPY() {
 }
 
 }  // namespace ros_parser_detail
-
-PJ_MESSAGE_PARSER_PLUGIN(ros_parser_detail::RosParser, kRosManifest)
-PJ_DIALOG_PLUGIN(RosParserDialog)

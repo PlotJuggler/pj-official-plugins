@@ -151,7 +151,8 @@ class RosParser : public PJ::MessageParserPluginBase {
   /// in the catalog and registers exactly one SchemaHandler tailored to it
   /// (or a generic flatten handler when the bound type is unknown). No
   /// per-instance handler table populated at construction time.
-  RosParser() = default;
+  explicit RosParser(RosMsgParser::SchemaFormat schema_format = RosMsgParser::ROS_MSG)
+      : schema_format_(schema_format) {}
 
   PJ::Status bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema) override;
   std::string saveConfig() const override;
@@ -201,6 +202,7 @@ class RosParser : public PJ::MessageParserPluginBase {
 
   // Schema state
   std::string type_name_;
+  RosMsgParser::SchemaFormat schema_format_ = RosMsgParser::ROS_MSG;
   bool has_header_ = false;
   std::vector<std::string> quaternion_prefixes_;
 
@@ -338,6 +340,11 @@ class RosParser : public PJ::MessageParserPluginBase {
   // Generic path
   void flattenGeneric(PJ::Span<const uint8_t> payload);
   void addQuaternionRPY();
+};
+
+class RosOmgIdlParser final : public RosParser {
+ public:
+  RosOmgIdlParser() : RosParser(RosMsgParser::DDS_IDL) {}
 };
 
 // parseCovariance is a template — define it here.
