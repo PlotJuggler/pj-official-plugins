@@ -93,6 +93,16 @@ static const char* kVarArrayDef =
     "float64[] values\n"
     "int32 count\n";
 
+static const char* kSimpleIdlDef = R"(
+module pkg {
+  struct SimpleIdl {
+    long status;
+    double temperature;
+    boolean active;
+  };
+};
+)";
+
 // ---- Tests ----
 
 TEST(RosParserTest, SimpleScalarMessage) {
@@ -268,6 +278,43 @@ TEST(RosParserTest, Ros2TypeNameNormalization) {
   EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[0].numeric, 99.0);
 }
 
+TEST(RosParserTest, OmgIdlSchemaParsesCdrPayload) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("pkg::SimpleIdl", kSimpleIdlDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(42)));
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(23.5));
+    enc.serialize(RosMsgParser::BOOL, RosMsgParser::Variant(static_cast<uint8_t>(1)));
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+
+  bool found_status = false;
+  bool found_temp = false;
+  bool found_active = false;
+  for (const auto& field : f.recorder.rows()[0].fields) {
+    if (field.name == "/status") {
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kInt32);
+      EXPECT_DOUBLE_EQ(field.numeric, 42.0);
+      found_status = true;
+    } else if (field.name == "/temperature") {
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kFloat64);
+      EXPECT_DOUBLE_EQ(field.numeric, 23.5);
+      found_temp = true;
+    } else if (field.name == "/active") {
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kBool);
+      EXPECT_DOUBLE_EQ(field.numeric, 1.0);
+      found_active = true;
+    }
+  }
+  EXPECT_TRUE(found_status);
+  EXPECT_TRUE(found_temp);
+  EXPECT_TRUE(found_active);
+}
+
 TEST(RosParserTest, FixedSizeArray) {
   RosParserFixture f;
   f.setUp();
@@ -378,6 +425,7 @@ TEST(RosParserTest, ManifestContainsEncoding) {
   f.setUp();
   // Manifest uses "encoding" as an array containing all supported encodings
   EXPECT_NE(f.handle.manifest().find("\"ros2msg\""), std::string::npos);
+  EXPECT_NE(f.handle.manifest().find("\"omgidl\""), std::string::npos);
   EXPECT_NE(f.handle.manifest().find("\"ros1msg\""), std::string::npos);
   EXPECT_NE(f.handle.manifest().find("\"cdr\""), std::string::npos);
 }

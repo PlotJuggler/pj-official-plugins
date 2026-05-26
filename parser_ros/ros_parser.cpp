@@ -76,6 +76,29 @@ bool parseStringAsDouble(const std::string& str, double& value, bool remove_suff
   return false;
 }
 
+bool looksLikeIdlSchema(std::string_view type_name, std::string_view definition) {
+  if (type_name.find("::") != std::string_view::npos) {
+    return true;
+  }
+  return definition.find("module ") != std::string_view::npos || definition.find("struct ") != std::string_view::npos ||
+         definition.find("#include") != std::string_view::npos || definition.find("@topic") != std::string_view::npos ||
+         definition.find("@key") != std::string_view::npos || definition.find("sequence<") != std::string_view::npos;
+}
+
+std::string normalizedMessageType(std::string_view type_name, RosMsgParser::SchemaFormat schema_format) {
+  std::string msg_type(type_name);
+  if (schema_format == RosMsgParser::DDS_IDL) {
+    // OMG IDL schemas use scoped names such as "pkg::Type". rosx_introspection
+    // expects the root type as "pkg/Type", matching PJ3's ParserOMGIDL.
+    if (auto pos = msg_type.rfind("::"); pos != std::string::npos) {
+      msg_type.replace(pos, 2, "/");
+    }
+  } else if (auto pos = msg_type.find("/msg/"); pos != std::string::npos) {
+    msg_type.erase(pos, 4);
+  }
+  return msg_type;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -158,16 +181,16 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
 
 PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema) {
   // The schema arrives as raw bytes; rosx_introspection consumes it as a
-  // std::string (the textual .msg definition).
+  // std::string (the textual .msg or IDL definition).
   std::string definition(reinterpret_cast<const char*>(schema.data()), schema.size());
 
-  // Normalise ROS 2 type names: "pkg/msg/Type" -> "pkg/Type". The catalog
-  // keys (and bound_type_name_) use the canonical form; both must agree.
+  const auto schema_format = looksLikeIdlSchema(type_name, definition) ? RosMsgParser::DDS_IDL : RosMsgParser::ROS_MSG;
+
+  // Normalize root names to the conventions used by rosx_introspection. ROS 2
+  // .msg schemas use "pkg/msg/Type" externally and "pkg/Type" internally;
+  // OMG IDL schemas use scoped names externally and "pkg/Type" internally.
   type_name_ = std::string(type_name);
-  std::string msg_type = type_name_;
-  if (auto pos = msg_type.find("/msg/"); pos != std::string::npos) {
-    msg_type.erase(pos, 4);
-  }
+  std::string msg_type = normalizedMessageType(type_name_, schema_format);
 
   // Let the SDK base class record the bound type and run its own bind
   // bookkeeping (host registration, dialog config, …). We hand it the
@@ -184,7 +207,7 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
   // this type. The array policy controls how variable-length fields are
   // truncated by the generic introspection walker.
   try {
-    parser_.emplace("", RosMsgParser::ROSType(msg_type), definition);
+    parser_.emplace("", RosMsgParser::ROSType(msg_type), definition, schema_format);
     auto policy =
         discard_large_arrays_ ? RosMsgParser::Parser::DISCARD_LARGE_ARRAYS : RosMsgParser::Parser::KEEP_LARGE_ARRAYS;
     parser_->setMaxArrayPolicy(policy, max_array_size_);

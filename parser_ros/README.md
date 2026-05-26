@@ -4,7 +4,7 @@ Decodes ROS 1 and ROS 2 (CDR) messages using `rosx_introspection`, with
 canonical-object handlers for image, compressed image, and point cloud
 types, plus specialized scalar handlers for common sensor types.
 
-Registered for `"ros1msg"`, `"ros2msg"`, and `"cdr"` schema encodings.
+Registered for `"ros1msg"`, `"ros2msg"`, `"omgidl"`, and `"cdr"` schema encodings.
 
 ## Architecture — declarative schema catalog
 
