@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <pj_base/builtin/asset_video.hpp>
 #include <pj_base/builtin/asset_video_codec.hpp>
@@ -387,15 +388,39 @@ class LeRobotSource : public PJ::FileSourceBase {
 #pragma warning(pop)
 #endif
 
+    // Resolve the row range to emit. v2.x → [0, infinity) (whole file is the
+    // episode); v3.0 → [dataset_from_index, dataset_to_index) from the shard
+    // map (one episode's slice inside a consolidated parquet that holds many).
+    int64_t row_from = 0;
+    int64_t row_to = std::numeric_limits<int64_t>::max();
+    if (auto sit = model.episode_shards.find(ep); sit != model.episode_shards.end()) {
+      row_from = sit->second.row_from;
+      // A row_to of 0 means "shard never recorded an upper bound" — interpret
+      // it as "until EOF" to stay backward-compatible with any shard map that
+      // omits it (e.g. synthesized for an empty v2.x episode).
+      row_to = sit->second.row_to > 0 ? sit->second.row_to : std::numeric_limits<int64_t>::max();
+    }
+
     std::vector<PJ::sdk::NamedFieldValue> row_fields;
     row_fields.reserve(plan.size());
     std::vector<std::shared_ptr<arrow::Array>> cols(plan.size());
     std::shared_ptr<arrow::RecordBatch> batch;
     int64_t row_counter = 0;
     arrow::Status read_st;
+    bool done = false;
 
-    while ((read_st = batches->ReadNext(&batch)).ok() && batch) {
+    while (!done && (read_st = batches->ReadNext(&batch)).ok() && batch) {
       const int64_t n = batch->num_rows();
+      // Whole-batch skips: avoids touching arrays when the entire batch sits
+      // outside [row_from, row_to). For v2.x both checks are trivially false
+      // and the loop runs as before.
+      if (row_counter + n <= row_from) {
+        row_counter += n;
+        continue;
+      }
+      if (row_counter >= row_to) {
+        break;
+      }
       std::shared_ptr<arrow::Array> ts_arr = ts_idx >= 0 ? batch->column(ts_idx) : nullptr;
       std::shared_ptr<arrow::Array> fidx_arr = frame_idx >= 0 ? batch->column(frame_idx) : nullptr;
       for (std::size_t k = 0; k < plan.size(); ++k) {
@@ -403,9 +428,21 @@ class LeRobotSource : public PJ::FileSourceBase {
       }
 
       for (int64_t r = 0; r < n; ++r) {
+        if (row_counter < row_from) {
+          ++row_counter;
+          continue;
+        }
+        if (row_counter >= row_to) {
+          done = true;
+          break;
+        }
         const bool has_ts = ts_arr != nullptr && !ts_arr->IsNull(r);
         const double sec = has_ts ? readSeconds(ts_arr, r) : 0.0;
-        const int64_t fi = fidx_arr ? readInt(fidx_arr, r, row_counter) : row_counter;
+        // Frame index inside the *episode*: subtract row_from so v3.0 episodes
+        // see frame_index starting at 0 just like v2.x, regardless of where
+        // the slice sits inside the consolidated parquet.
+        const int64_t fi =
+            fidx_arr != nullptr ? readInt(fidx_arr, r, row_counter - row_from) : (row_counter - row_from);
         const int64_t ts_ns = rowTimestampNs(has_ts, sec, fi, model.fps);
 
         row_fields.clear();
@@ -452,17 +489,27 @@ class LeRobotSource : public PJ::FileSourceBase {
   PJ::Status importVideoAssets(const lerobot::DatasetModel& model, int64_t ep) {
     // Each camera gets ONE sdk::AssetVideo entry pointing at the episode's MP4.
     // pj_app's Media2DDockWidget deserializes the entry, opens FileVideoSource
-    // on file_path, applies time_origin_ns as the wall-clock anchor, and drives
-    // the decoder from the global tracker (PJ4 ARCH §4.5). The MP4 bytes never
-    // reach ObjectStore — the file itself is the random-access store.
+    // on file_path, applies time_origin_ns as the wall-clock anchor (and, in
+    // v3.0, clamps playback to [start_ns, end_ns] inside the shared file),
+    // and drives the decoder from the global tracker (PJ4 ARCH §4.5). The MP4
+    // bytes never reach ObjectStore — the file itself is the random-access
+    // store.
     const PJ::sdk::SourceObjectWriteHostView* obj = objectWriteHost();
     if (obj == nullptr || model.camera_names.empty()) {
       return PJ::okStatus();
     }
 
     // Per-episode datasets: each episode is its own time domain starting at 0
-    // (see rowTimestampNs above). The MP4's first frame corresponds to t=0.
+    // (see rowTimestampNs above). The MP4's first frame corresponds to t=0
+    // for v2.x (whole-file = one episode) and to t = -start_ns for v3.0
+    // (the file starts before the clip; subtract start_ns so the episode's
+    // first frame still lands on t=0 in the tracker's timeline).
     constexpr int64_t kEpisodeOriginNs = 0;
+
+    const lerobot::EpisodeShard* shard = nullptr;
+    if (auto it = model.episode_shards.find(ep); it != model.episode_shards.end()) {
+      shard = &it->second;
+    }
 
     const std::string meta = PJ::sdk::MediaMetadataBuilder()
                                  .extraString("builtin_object_type", "kAssetVideo")
@@ -475,11 +522,33 @@ class LeRobotSource : public PJ::FileSourceBase {
         return PJ::unexpected(otopic.error());
       }
 
+      // Resolve per-camera clip metadata from the shard map when present
+      // (v3.0). For v2.x the lookup falls through and clip_start/end stay
+      // absent → whole-file playback, unchanged from the original behavior.
+      const lerobot::VideoShard* video_shard = nullptr;
+      if (shard != nullptr) {
+        if (auto vit = shard->videos.find(cam); vit != shard->videos.end()) {
+          video_shard = &vit->second;
+        }
+      }
+
       PJ::sdk::AssetVideo asset;
       asset.file_path = model.episodeVideo(ep, cam).string();
-      asset.time_origin_ns = PJ::Timestamp{kEpisodeOriginNs};
       asset.frame_rate = model.fps;
-      // media_type, width, height, duration_ns: defaults → PJ4 probes via FFmpeg.
+      if (video_shard != nullptr && video_shard->start_ns.has_value()) {
+        // v3.0: align the episode's first frame to tracker t=0 by shifting
+        // time_origin back by start_ns, then mark the clip window so the
+        // consumer clamps playback. start_ns sits inside the file, ≥0, so
+        // -start_ns yields ≤0 — a "pre-anchor" that aligns episode-local 0
+        // with the actual first frame of this episode in the shared mp4.
+        asset.time_origin_ns = PJ::Timestamp{-(*video_shard->start_ns)};
+        asset.start_ns = video_shard->start_ns;
+        asset.end_ns = video_shard->end_ns;
+      } else {
+        asset.time_origin_ns = PJ::Timestamp{kEpisodeOriginNs};
+        // start_ns / end_ns left absent → whole-file playback for v2.x.
+      }
+      // media_type, width, height: defaults → PJ4 probes via FFmpeg.
 
       const std::vector<uint8_t> bytes = PJ::serializeAssetVideo(asset);
       auto pushed =
