@@ -251,8 +251,9 @@ PJ::Status parseEpisodes(const fs::path& root, const std::vector<std::string>& t
 // can stay layout-blind and consume `model.episode_shards` for both versions.
 void synthesizeShardsV2(DatasetModel& model) {
   for (const auto& ep : model.episodes) {
+    const int64_t chunk = model.chunks_size > 0 ? ep.episode_index / model.chunks_size : 0;
     EpisodeShard shard;
-    shard.parquet_path = model.episodeParquet(ep.episode_index);
+    shard.parquet_path = model.root / expandPathTemplate(model.data_path_tmpl, chunk, ep.episode_index, {});
     shard.row_from = 0;
     shard.row_to = ep.length;
     if (!ep.task_text.empty()) {
@@ -260,7 +261,7 @@ void synthesizeShardsV2(DatasetModel& model) {
     }
     for (const std::string& cam : model.camera_names) {
       VideoShard vs;
-      vs.mp4_path = model.episodeVideo(ep.episode_index, cam);
+      vs.mp4_path = model.root / expandPathTemplate(model.video_path_tmpl, chunk, ep.episode_index, cam);
       // start_ns / end_ns left absent → whole-file playback, unchanged from
       // the original v2.x behavior.
       shard.videos[cam] = std::move(vs);
@@ -326,15 +327,13 @@ const FeatureSpec* DatasetModel::feature(std::string_view name) const {
 }
 
 std::filesystem::path DatasetModel::episodeParquet(int64_t episode_index) const {
+  // `episode_shards` is populated for both versions by loadDatasetModel
+  // (v2.x → synthesizeShardsV2, v3.0 → loadV3EpisodeShards). An empty path
+  // here means the caller is asking for an episode the model does not know.
   if (auto it = episode_shards.find(episode_index); it != episode_shards.end()) {
     return it->second.parquet_path;
   }
-  // Fallback: template-based resolution when the shard map has not been
-  // populated yet — used by synthesizeShardsV2 itself (which calls this
-  // method before populating episode_shards) and by any legacy caller that
-  // operates on the dataset model pre-load.
-  int64_t chunk = chunks_size > 0 ? episode_index / chunks_size : 0;
-  return root / expandPathTemplate(data_path_tmpl, chunk, episode_index, {});
+  return {};
 }
 
 std::filesystem::path DatasetModel::episodeVideo(int64_t episode_index, std::string_view camera) const {
@@ -343,9 +342,7 @@ std::filesystem::path DatasetModel::episodeVideo(int64_t episode_index, std::str
       return vit->second.mp4_path;
     }
   }
-  // Same template-based fallback as `episodeParquet`.
-  int64_t chunk = chunks_size > 0 ? episode_index / chunks_size : 0;
-  return root / expandPathTemplate(video_path_tmpl, chunk, episode_index, camera);
+  return {};
 }
 
 PJ::Expected<DatasetModel> loadDatasetModel(const std::filesystem::path& picked_path) {

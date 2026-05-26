@@ -405,21 +405,25 @@ class LeRobotSource : public PJ::FileSourceBase {
     row_fields.reserve(plan.size());
     std::vector<std::shared_ptr<arrow::Array>> cols(plan.size());
     std::shared_ptr<arrow::RecordBatch> batch;
-    int64_t row_counter = 0;
+    int64_t batch_start = 0;  // global row index of batch->column(*)[0]
     arrow::Status read_st;
-    bool done = false;
 
-    while (!done && (read_st = batches->ReadNext(&batch)).ok() && batch) {
+    while ((read_st = batches->ReadNext(&batch)).ok() && batch) {
       const int64_t n = batch->num_rows();
-      // Whole-batch skips: avoids touching arrays when the entire batch sits
-      // outside [row_from, row_to). For v2.x both checks are trivially false
-      // and the loop runs as before.
-      if (row_counter + n <= row_from) {
-        row_counter += n;
+      const int64_t batch_end = batch_start + n;
+      // Trim the batch to [row_from, row_to). For v2.x with the default
+      // row_from=0 and row_to=int64_max this collapses to [0, n) and the
+      // loop is identical to the original whole-file iteration. For v3.0
+      // the slice typically straddles or sits inside the batch.
+      const int64_t r_first = std::max<int64_t>(0, row_from - batch_start);
+      const int64_t r_last = std::min<int64_t>(n, row_to - batch_start);
+      if (r_first >= r_last) {
+        // Whole batch is outside the window — skip without touching arrays.
+        if (batch_end >= row_to) {
+          break;
+        }
+        batch_start = batch_end;
         continue;
-      }
-      if (row_counter >= row_to) {
-        break;
       }
       std::shared_ptr<arrow::Array> ts_arr = ts_idx >= 0 ? batch->column(ts_idx) : nullptr;
       std::shared_ptr<arrow::Array> fidx_arr = frame_idx >= 0 ? batch->column(frame_idx) : nullptr;
@@ -427,22 +431,14 @@ class LeRobotSource : public PJ::FileSourceBase {
         cols[k] = plan_idx[k] >= 0 ? batch->column(plan_idx[k]) : nullptr;
       }
 
-      for (int64_t r = 0; r < n; ++r) {
-        if (row_counter < row_from) {
-          ++row_counter;
-          continue;
-        }
-        if (row_counter >= row_to) {
-          done = true;
-          break;
-        }
+      for (int64_t r = r_first; r < r_last; ++r) {
         const bool has_ts = ts_arr != nullptr && !ts_arr->IsNull(r);
         const double sec = has_ts ? readSeconds(ts_arr, r) : 0.0;
-        // Frame index inside the *episode*: subtract row_from so v3.0 episodes
-        // see frame_index starting at 0 just like v2.x, regardless of where
-        // the slice sits inside the consolidated parquet.
-        const int64_t fi =
-            fidx_arr != nullptr ? readInt(fidx_arr, r, row_counter - row_from) : (row_counter - row_from);
+        // Frame index inside the *episode*: relative to row_from so v3.0
+        // episodes see frame_index starting at 0 just like v2.x, regardless
+        // of where the slice sits inside the consolidated parquet.
+        const int64_t episode_row = (batch_start + r) - row_from;
+        const int64_t fi = fidx_arr != nullptr ? readInt(fidx_arr, r, episode_row) : episode_row;
         const int64_t ts_ns = rowTimestampNs(has_ts, sec, fi, model.fps);
 
         row_fields.clear();
@@ -472,10 +468,13 @@ class LeRobotSource : public PJ::FileSourceBase {
             return st;
           }
         }
-        ++row_counter;
         ++processed;
       }
+      batch_start = batch_end;
       (void)runtimeHost().progressUpdate(static_cast<uint64_t>(processed));
+      if (batch_start >= row_to) {
+        break;
+      }
       if (runtimeHost().isStopRequested()) {
         return PJ::unexpected(std::string("import cancelled"));
       }
