@@ -13,6 +13,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 add_library(lerobot_source_plugin SHARED
   lerobot_plugin.cpp
   dataset_model.cpp
+  dataset_shards_v3.cpp
   flatten_plan.cpp
 )
 target_compile_features(lerobot_source_plugin PRIVATE cxx_std_20)
@@ -44,12 +45,13 @@ pj_emit_plugin_manifest(lerobot_source_plugin
 # Tests live under tests/ but #include headers from the plugin root, so each
 # target gets ${CMAKE_CURRENT_SOURCE_DIR} on its include path.
 
-add_executable(lerobot_dataset_model_test tests/dataset_model_test.cpp dataset_model.cpp)
+add_executable(lerobot_dataset_model_test tests/dataset_model_test.cpp dataset_model.cpp dataset_shards_v3.cpp)
 target_compile_features(lerobot_dataset_model_test PRIVATE cxx_std_20)
 target_compile_options(lerobot_dataset_model_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(lerobot_dataset_model_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lerobot_dataset_model_test PRIVATE
-  plotjuggler_core::plugin_sdk plotjuggler_core::plugin_host nlohmann_json::nlohmann_json GTest::gtest_main
+  plotjuggler_core::plugin_sdk plotjuggler_core::plugin_host nlohmann_json::nlohmann_json
+  Arrow::arrow_static Parquet::parquet_static GTest::gtest_main
 )
 add_test(NAME lerobot_dataset_model_test COMMAND lerobot_dataset_model_test)
 
@@ -77,12 +79,13 @@ add_test(NAME lerobot_asset_video_export_test COMMAND lerobot_asset_video_export
 # Dialog/fanout serialization test: needs dataset_model.cpp because
 # LeRobotDialog::loadModel() resolves to lerobot::loadDatasetModel; plugin_sdk
 # supplies the DialogPluginTyped + WidgetData base classes.
-add_executable(lerobot_dialog_fanout_test tests/dialog_fanout_test.cpp dataset_model.cpp)
+add_executable(lerobot_dialog_fanout_test tests/dialog_fanout_test.cpp dataset_model.cpp dataset_shards_v3.cpp)
 target_compile_features(lerobot_dialog_fanout_test PRIVATE cxx_std_20)
 target_compile_options(lerobot_dialog_fanout_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(lerobot_dialog_fanout_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lerobot_dialog_fanout_test PRIVATE
-  plotjuggler_core::plugin_sdk plotjuggler_core::plugin_host nlohmann_json::nlohmann_json GTest::gtest_main
+  plotjuggler_core::plugin_sdk plotjuggler_core::plugin_host nlohmann_json::nlohmann_json
+  Arrow::arrow_static Parquet::parquet_static GTest::gtest_main
 )
 # Pull in the generated headers (dialog_lerobot_ui.hpp, lerobot_manifest.hpp)
 # that lerobot_dialog.hpp transitively includes.

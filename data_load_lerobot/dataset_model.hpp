@@ -116,8 +116,18 @@ struct DatasetModel {
 [[nodiscard]] PJ::Expected<DatasetModel> loadDatasetModel(const std::filesystem::path& picked_path);
 
 /// Expand a LeRobot path template (Python-style `{name}` / `{name:0Nd}`)
-/// against episode_chunk / episode_index (ints) and video_key (string).
-/// Exposed for unit testing.
+/// against a generic dictionary of placeholders. Int placeholders are zero-
+/// padded according to the optional `:0Nd` width spec; string placeholders
+/// are substituted verbatim. Unknown tokens are kept literal in the output.
+/// v2.x defaults expect placeholders {episode_chunk, episode_index, video_key
+/// (or camera_key)}; v3.0 expects {chunk_index, file_index, video_key}.
+[[nodiscard]] std::string expandPathTemplate(
+    std::string_view tmpl, const std::unordered_map<std::string, int64_t>& int_args,
+    const std::unordered_map<std::string, std::string>& str_args = {});
+
+/// v2.x convenience overload — delegates to the generic version with the
+/// {episode_chunk, episode_index, video_key/camera_key} placeholders. Kept
+/// for backward compatibility with existing callers and unit tests.
 [[nodiscard]] std::string expandPathTemplate(
     std::string_view tmpl, int64_t episode_chunk, int64_t episode_index, std::string_view video_key);
 

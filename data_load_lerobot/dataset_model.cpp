@@ -6,6 +6,8 @@
 #include <sstream>
 #include <system_error>
 
+#include "dataset_shards_v3.hpp"
+
 namespace lerobot {
 namespace {
 
@@ -243,10 +245,35 @@ PJ::Status parseEpisodes(const fs::path& root, const std::vector<std::string>& t
   return PJ::okStatus();
 }
 
+// For v2.x datasets, every episode lives in its own parquet (rows 0..length)
+// and every (episode, camera) has its own mp4 (whole file is the clip).
+// Synthesize that "trivial shard map" from `model.episodes` so the importer
+// can stay layout-blind and consume `model.episode_shards` for both versions.
+void synthesizeShardsV2(DatasetModel& model) {
+  for (const auto& ep : model.episodes) {
+    EpisodeShard shard;
+    shard.parquet_path = model.episodeParquet(ep.episode_index);
+    shard.row_from = 0;
+    shard.row_to = ep.length;
+    if (!ep.task_text.empty()) {
+      shard.tasks.push_back(ep.task_text);
+    }
+    for (const std::string& cam : model.camera_names) {
+      VideoShard vs;
+      vs.mp4_path = model.episodeVideo(ep.episode_index, cam);
+      // start_ns / end_ns left absent → whole-file playback, unchanged from
+      // the original v2.x behavior.
+      shard.videos[cam] = std::move(vs);
+    }
+    model.episode_shards[ep.episode_index] = std::move(shard);
+  }
+}
+
 }  // namespace
 
 std::string expandPathTemplate(
-    std::string_view tmpl, int64_t episode_chunk, int64_t episode_index, std::string_view video_key) {
+    std::string_view tmpl, const std::unordered_map<std::string, int64_t>& int_args,
+    const std::unordered_map<std::string, std::string>& str_args) {
   std::string out;
   out.reserve(tmpl.size() + 16);
   for (std::size_t i = 0; i < tmpl.size();) {
@@ -266,18 +293,27 @@ std::string expandPathTemplate(
       name = token.substr(0, colon);
       spec = token.substr(colon + 1);
     }
-    if (name == "episode_chunk") {
-      out += zeroPad(episode_chunk, parseWidth(spec));
-    } else if (name == "episode_index") {
-      out += zeroPad(episode_index, parseWidth(spec));
-    } else if (name == "video_key" || name == "camera_key") {
-      out.append(video_key);
+    const std::string name_key(name);
+    if (auto ii = int_args.find(name_key); ii != int_args.end()) {
+      out += zeroPad(ii->second, parseWidth(spec));
+    } else if (auto si = str_args.find(name_key); si != str_args.end()) {
+      out.append(si->second);
     } else {
       out.append(tmpl.substr(i, close - i + 1));  // unknown token: keep literal
     }
     i = close + 1;
   }
   return out;
+}
+
+std::string expandPathTemplate(
+    std::string_view tmpl, int64_t episode_chunk, int64_t episode_index, std::string_view video_key) {
+  // `video_key` and `camera_key` are aliases used interchangeably across
+  // LeRobot v2.x info.json files — register both so either template works.
+  const std::string vk(video_key);
+  return expandPathTemplate(
+      tmpl, {{"episode_chunk", episode_chunk}, {"episode_index", episode_index}},
+      {{"video_key", vk}, {"camera_key", vk}});
 }
 
 const FeatureSpec* DatasetModel::feature(std::string_view name) const {
@@ -329,6 +365,20 @@ PJ::Expected<DatasetModel> loadDatasetModel(const std::filesystem::path& picked_
 
   parseFeatures(info, model);
 
+  if (model.version == DatasetVersion::V3_0) {
+    // v3.0 episode metadata lives in chunked Parquet under meta/episodes/,
+    // and the data/video layouts are file-bucketed rather than per-episode.
+    // The Arrow-aware reader lives in a sibling translation unit so the
+    // pure-stdlib `dataset_model.cpp` stays Arrow-free.
+    if (auto status = loadV3EpisodeShards(*root, model); !status) {
+      return PJ::unexpected(status.error());
+    }
+    if (model.episodes.empty()) {
+      return PJ::unexpected("no episodes found in meta/episodes/*.parquet");
+    }
+    return model;
+  }
+
   std::vector<std::string> tasks_by_index;
   if (auto status = parseTasks(*root, tasks_by_index); !status) {
     return PJ::unexpected(status.error());
@@ -339,6 +389,7 @@ PJ::Expected<DatasetModel> loadDatasetModel(const std::filesystem::path& picked_
   if (model.episodes.empty()) {
     return PJ::unexpected("no episodes found in meta/episodes.jsonl");
   }
+  synthesizeShardsV2(model);
   return model;
 }
 
