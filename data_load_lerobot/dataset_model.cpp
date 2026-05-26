@@ -326,11 +326,24 @@ const FeatureSpec* DatasetModel::feature(std::string_view name) const {
 }
 
 std::filesystem::path DatasetModel::episodeParquet(int64_t episode_index) const {
+  if (auto it = episode_shards.find(episode_index); it != episode_shards.end()) {
+    return it->second.parquet_path;
+  }
+  // Fallback: template-based resolution when the shard map has not been
+  // populated yet — used by synthesizeShardsV2 itself (which calls this
+  // method before populating episode_shards) and by any legacy caller that
+  // operates on the dataset model pre-load.
   int64_t chunk = chunks_size > 0 ? episode_index / chunks_size : 0;
   return root / expandPathTemplate(data_path_tmpl, chunk, episode_index, {});
 }
 
 std::filesystem::path DatasetModel::episodeVideo(int64_t episode_index, std::string_view camera) const {
+  if (auto it = episode_shards.find(episode_index); it != episode_shards.end()) {
+    if (auto vit = it->second.videos.find(std::string(camera)); vit != it->second.videos.end()) {
+      return vit->second.mp4_path;
+    }
+  }
+  // Same template-based fallback as `episodeParquet`.
   int64_t chunk = chunks_size > 0 ? episode_index / chunks_size : 0;
   return root / expandPathTemplate(video_path_tmpl, chunk, episode_index, camera);
 }
