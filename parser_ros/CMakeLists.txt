@@ -18,6 +18,9 @@ CPMAddPackage(
 
 # Ensure rosx_introspection is statically linked into the plugin .so.
 set_target_properties(rosx_introspection PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_options(rosx_introspection PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:/Zc:__cplusplus>
+)
 
 # rosx_introspection bundles peglib.h, which requires __cplusplus >= 201703L.
 # MSVC reports 199711L unless /Zc:__cplusplus is set, so the Windows build
