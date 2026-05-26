@@ -388,17 +388,18 @@ class LeRobotSource : public PJ::FileSourceBase {
 #pragma warning(pop)
 #endif
 
-    // Resolve the row range to emit. v2.x → [0, infinity) (whole file is the
+    // Resolve the row range to emit. v2.x → [0, length) (whole file is the
     // episode); v3.0 → [dataset_from_index, dataset_to_index) from the shard
     // map (one episode's slice inside a consolidated parquet that holds many).
+    // No "row_to == 0 means EOF" overload: an episode with row_from == row_to
+    // is a legitimate empty episode and emits no rows. When the episode is
+    // missing from the shard map entirely we fall through to a read-until-EOF
+    // range, which is the legacy v2.x behavior.
     int64_t row_from = 0;
     int64_t row_to = std::numeric_limits<int64_t>::max();
     if (auto sit = model.episode_shards.find(ep); sit != model.episode_shards.end()) {
       row_from = sit->second.row_from;
-      // A row_to of 0 means "shard never recorded an upper bound" — interpret
-      // it as "until EOF" to stay backward-compatible with any shard map that
-      // omits it (e.g. synthesized for an empty v2.x episode).
-      row_to = sit->second.row_to > 0 ? sit->second.row_to : std::numeric_limits<int64_t>::max();
+      row_to = sit->second.row_to;
     }
 
     std::vector<PJ::sdk::NamedFieldValue> row_fields;

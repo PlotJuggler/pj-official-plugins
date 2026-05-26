@@ -16,7 +16,6 @@
 #include <arrow/io/api.h>
 #include <arrow/result.h>
 #include <arrow/status.h>
-#include <arrow/util/key_value_metadata.h>
 #include <parquet/arrow/reader.h>
 
 #include <algorithm>
@@ -49,6 +48,24 @@ PJ::Expected<std::shared_ptr<arrow::ChunkedArray>> requireColumn(const arrow::Ta
     return PJ::unexpected("v3.0 episode shard missing required column: " + name);
   }
   return c;
+}
+
+/// Required column with a declared Arrow type. Surfaces a clear error if the
+/// shard ever emits the column with a different physical type (e.g. int32
+/// instead of int64) — otherwise `static_pointer_cast` below would return 0
+/// silently and the importer would skip the episode without diagnostic.
+PJ::Expected<std::shared_ptr<arrow::ChunkedArray>> requireTypedColumn(
+    const arrow::Table& t, const std::string& name, arrow::Type::type expected) {
+  auto c_or = requireColumn(t, name);
+  if (!c_or) {
+    return c_or;
+  }
+  if ((*c_or)->type()->id() != expected) {
+    return PJ::unexpected(
+        "v3.0 episode shard column '" + name + "' has type " + (*c_or)->type()->ToString() +
+        " (expected Arrow type id " + std::to_string(static_cast<int>(expected)) + ")");
+  }
+  return c_or;
 }
 
 /// Extract one int64 value at row `i` from a chunked int64 column.
@@ -158,35 +175,37 @@ PJ::Status loadV3EpisodeShards(const fs::path& root, DatasetModel& model) {
     }
     const arrow::Table& table = **table_or;
 
-    auto ep_col_or = requireColumn(table, "episode_index");
+    auto ep_col_or = requireTypedColumn(table, "episode_index", arrow::Type::INT64);
     if (!ep_col_or) {
       return PJ::unexpected(ep_col_or.error());
     }
-    auto len_col_or = requireColumn(table, "length");
+    auto len_col_or = requireTypedColumn(table, "length", arrow::Type::INT64);
     if (!len_col_or) {
       return PJ::unexpected(len_col_or.error());
     }
-    auto data_chunk_col_or = requireColumn(table, "data/chunk_index");
+    auto data_chunk_col_or = requireTypedColumn(table, "data/chunk_index", arrow::Type::INT64);
     if (!data_chunk_col_or) {
       return PJ::unexpected(data_chunk_col_or.error());
     }
-    auto data_file_col_or = requireColumn(table, "data/file_index");
+    auto data_file_col_or = requireTypedColumn(table, "data/file_index", arrow::Type::INT64);
     if (!data_file_col_or) {
       return PJ::unexpected(data_file_col_or.error());
     }
-    auto from_idx_col_or = requireColumn(table, "dataset_from_index");
+    auto from_idx_col_or = requireTypedColumn(table, "dataset_from_index", arrow::Type::INT64);
     if (!from_idx_col_or) {
       return PJ::unexpected(from_idx_col_or.error());
     }
-    auto to_idx_col_or = requireColumn(table, "dataset_to_index");
+    auto to_idx_col_or = requireTypedColumn(table, "dataset_to_index", arrow::Type::INT64);
     if (!to_idx_col_or) {
       return PJ::unexpected(to_idx_col_or.error());
     }
     const auto tasks_col = column(table, "tasks");  // optional
 
-    // Pre-resolve per-camera column tuples once per shard. Cameras whose
-    // columns are missing are silently skipped (info.json may declare a
-    // camera that has no shard recorded yet — rare, but tolerable).
+    // Pre-resolve per-camera column tuples once per shard. All four columns
+    // must be present for the camera to be usable; if any is missing the
+    // shard is malformed and we surface a clear error rather than silently
+    // dropping a declared camera (which would leave the user wondering why
+    // their feature does not appear in the catalog).
     struct CamCols {
       std::shared_ptr<arrow::ChunkedArray> chunk_index;
       std::shared_ptr<arrow::ChunkedArray> file_index;
@@ -196,14 +215,20 @@ PJ::Status loadV3EpisodeShards(const fs::path& root, DatasetModel& model) {
     std::vector<std::pair<std::string, CamCols>> cam_cols;
     cam_cols.reserve(model.camera_names.size());
     for (const std::string& cam : model.camera_names) {
-      CamCols cc;
-      cc.chunk_index = column(table, "videos/" + cam + "/chunk_index");
-      cc.file_index = column(table, "videos/" + cam + "/file_index");
-      cc.from_ts = column(table, "videos/" + cam + "/from_timestamp");
-      cc.to_ts = column(table, "videos/" + cam + "/to_timestamp");
-      if (cc.chunk_index != nullptr && cc.file_index != nullptr && cc.from_ts != nullptr && cc.to_ts != nullptr) {
-        cam_cols.emplace_back(cam, cc);
+      const std::string prefix = "videos/" + cam + "/";
+      auto ci = requireTypedColumn(table, prefix + "chunk_index", arrow::Type::INT64);
+      auto fi = requireTypedColumn(table, prefix + "file_index", arrow::Type::INT64);
+      auto ft = requireTypedColumn(table, prefix + "from_timestamp", arrow::Type::DOUBLE);
+      auto tt = requireTypedColumn(table, prefix + "to_timestamp", arrow::Type::DOUBLE);
+      if (!ci || !fi || !ft || !tt) {
+        return PJ::unexpected(
+            "v3.0 episode shard has incomplete columns for camera '" + cam + "': " +
+            (!ci   ? ci.error()
+             : !fi ? fi.error()
+             : !ft ? ft.error()
+                   : tt.error()));
       }
+      cam_cols.emplace_back(cam, CamCols{*ci, *fi, *ft, *tt});
     }
 
     const int64_t num_rows = table.num_rows();

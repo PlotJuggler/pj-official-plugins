@@ -169,7 +169,7 @@ std::shared_ptr<arrow::Table> buildDataShardTable() {
 fs::path makeV3Fixture() {
   const fs::path root =
       fs::temp_directory_path() /
-      fs::path("lerobot_v3_fixture_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+      fs::path(std::string("lerobot_v3_fixture_") + ::testing::UnitTest::GetInstance()->current_test_info()->name());
   fs::remove_all(root);
   fs::create_directories(root / "meta" / "episodes" / "chunk-000");
   fs::create_directories(root / "data" / "chunk-000");
