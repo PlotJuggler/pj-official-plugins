@@ -27,9 +27,10 @@ TEST(AssetVideoExport, SerializeRoundTripsBasicFields) {
 }
 
 TEST(AssetVideoExport, EmptyOptionalsRoundTripAsAbsent) {
-  // Defaults: width/height/duration_ns/media_type/time_origin_ns unset means
-  // the producer wants PJ4 to probe the file. The wire format must preserve
-  // "absent" as "absent", not collapse it to a sentinel value.
+  // Defaults: width/height/start_ns/end_ns/media_type/time_origin_ns unset
+  // means the producer wants PJ4 to probe the file and play the whole video.
+  // The wire format must preserve "absent" as "absent", not collapse it to a
+  // sentinel value.
   PJ::sdk::AssetVideo in;
   in.file_path = "/x/y.mp4";
 
@@ -39,7 +40,8 @@ TEST(AssetVideoExport, EmptyOptionalsRoundTripAsAbsent) {
 
   EXPECT_EQ(out->file_path, "/x/y.mp4");
   EXPECT_FALSE(out->time_origin_ns.has_value());
-  EXPECT_FALSE(out->duration_ns.has_value());
+  EXPECT_FALSE(out->start_ns.has_value());
+  EXPECT_FALSE(out->end_ns.has_value());
   EXPECT_EQ(out->width, 0u);
   EXPECT_EQ(out->height, 0u);
   EXPECT_DOUBLE_EQ(out->frame_rate, 0.0);
