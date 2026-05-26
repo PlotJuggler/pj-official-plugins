@@ -20,7 +20,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Conan
-        run: pip install conan
+        uses: conan-io/setup-conan@v1.3.0
+        with:
+          cache_packages: true
 
       - name: Install cmake and ninja
         run: pip install cmake ninja

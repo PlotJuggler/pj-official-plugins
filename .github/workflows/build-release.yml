@@ -61,11 +61,7 @@ jobs:
 
       - name: Install Conan
         id: setup-conan
-        shell: bash
-        run: |
-          pip install conan
-          echo "conan-version=$(conan --version | awk '{print $3}')" >> "${GITHUB_OUTPUT}"
-          echo "conan-home=$(conan config home)" >> "${GITHUB_OUTPUT}"
+        uses: conan-io/setup-conan@v1.3.0
 
       - name: Restore Conan package cache
         uses: actions/cache@v4
