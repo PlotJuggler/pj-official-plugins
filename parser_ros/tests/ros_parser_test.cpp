@@ -20,10 +20,6 @@
 #error "PJ_ROS_PARSER_PLUGIN_PATH must be defined"
 #endif
 
-#ifndef PJ_ROS_IDL_PARSER_PLUGIN_PATH
-#error "PJ_ROS_IDL_PARSER_PLUGIN_PATH must be defined"
-#endif
-
 namespace {
 
 struct RosParserFixture {
@@ -42,9 +38,27 @@ struct RosParserFixture {
     ASSERT_TRUE(handle.bind(registry.view()));
   }
 
-  bool bindSchema(std::string_view type_name, const std::string& definition) {
+  bool loadSchemaEncoding(std::string_view schema_encoding) {
+    std::string config_json;
+    if (!handle.saveConfig(config_json)) {
+      return false;
+    }
+    auto cfg = nlohmann::json::parse(config_json, nullptr, false);
+    if (cfg.is_discarded()) {
+      cfg = nlohmann::json::object();
+    }
+    cfg["schema_encoding"] = schema_encoding;
+    return handle.loadConfig(cfg.dump()).has_value();
+  }
+
+  bool bindSchemaRaw(std::string_view type_name, const std::string& definition) {
     const auto* data = reinterpret_cast<const uint8_t*>(definition.data());
     return handle.bindSchema(type_name, PJ::Span<const uint8_t>(data, definition.size())).has_value();
+  }
+
+  bool bindSchema(
+      std::string_view type_name, const std::string& definition, std::string_view schema_encoding = "ros2msg") {
+    return bindSchemaRaw(type_name, definition) && loadSchemaEncoding(schema_encoding);
   }
 
   bool parse(const std::vector<uint8_t>& payload, int64_t ts = 1000) {
@@ -284,8 +298,8 @@ TEST(RosParserTest, Ros2TypeNameNormalization) {
 
 TEST(RosParserTest, OmgIdlSchemaParsesCdrPayload) {
   RosParserFixture f;
-  f.setUp(PJ_ROS_IDL_PARSER_PLUGIN_PATH);
-  ASSERT_TRUE(f.bindSchema("pkg::SimpleIdl", kSimpleIdlDef));
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("pkg::SimpleIdl", kSimpleIdlDef, "omgidl"));
 
   auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
     enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(42)));
@@ -410,10 +424,11 @@ TEST(RosParserTest, VariableLengthArray) {
 TEST(RosParserTest, InvalidSchemaFails) {
   RosParserFixture f;
   f.setUp();
-  // An invalid definition should cause bindSchema to return an error.
-  // Use a definition with an unknown type that should trigger a parse error.
+  // PJ4 supplies parser_config_json after bindSchema(), so schema validation
+  // happens when loadConfig() compiles the stored definition.
   std::string bad_def = "unknown_type_xyz foo\n";
-  EXPECT_FALSE(f.bindSchema("pkg/Bad", bad_def));
+  ASSERT_TRUE(f.bindSchemaRaw("pkg/Bad", bad_def));
+  EXPECT_FALSE(f.handle.loadConfig(R"({"schema_encoding":"ros2msg"})"));
 }
 
 TEST(RosParserTest, ParseWithoutSchemaFails) {
@@ -429,15 +444,7 @@ TEST(RosParserTest, ManifestContainsEncoding) {
   f.setUp();
   EXPECT_NE(f.handle.manifest().find("\"ros2msg\""), std::string::npos);
   EXPECT_NE(f.handle.manifest().find("\"ros1msg\""), std::string::npos);
-  EXPECT_EQ(f.handle.manifest().find("\"omgidl\""), std::string::npos);
-  EXPECT_EQ(f.handle.manifest().find("\"cdr\""), std::string::npos);
-}
-
-TEST(RosParserTest, OmgIdlManifestContainsOnlyIdlEncoding) {
-  RosParserFixture f;
-  f.setUp(PJ_ROS_IDL_PARSER_PLUGIN_PATH);
   EXPECT_NE(f.handle.manifest().find("\"omgidl\""), std::string::npos);
-  EXPECT_EQ(f.handle.manifest().find("\"ros2msg\""), std::string::npos);
   EXPECT_EQ(f.handle.manifest().find("\"cdr\""), std::string::npos);
 }
 

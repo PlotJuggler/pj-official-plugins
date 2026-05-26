@@ -53,10 +53,9 @@ const auto& RosMsgParser::catalog() {
 PJ::Status RosMsgParser::bindSchema(std::string_view type_name,
                                      PJ::Span<const uint8_t> schema) {
   base::bindSchema(type_name, schema);
-  // ... rosx_introspection setup ...
-
-  registerSchemaHandler(type_name,
-                        makeHandler(catalog().resolve(type_name)));
+  // Store the schema. PJ4 passes parser_config_json immediately after
+  // bindSchema(), so loadConfig({"schema_encoding":"omgidl"}) selects the
+  // rosx_introspection schema format before compiling/registering handlers.
   return PJ::Status::ok();
 }
 ```
@@ -66,6 +65,11 @@ falls back to the `"*"` entry otherwise — guaranteed by the catalog
 construction. The entries are pure data — member-function pointers, no
 `this` capture. Per bound schema, the base class invokes `parse_scalars`
 for column extraction and `parse_object` for canonical media bytes.
+
+Delegated sources pass the selected schema encoding through parser config:
+`{"schema_encoding":"ros2msg"}` or `{"schema_encoding":"omgidl"}`. This keeps
+ROS `.msg` and OMG IDL selection explicit without guessing from type names or
+schema text.
 
 ## Canonical-object handlers (zero-copy)
 

@@ -18,9 +18,6 @@ CPMAddPackage(
 
 # Ensure rosx_introspection is statically linked into the plugin .so.
 set_target_properties(rosx_introspection PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_compile_options(rosx_introspection PRIVATE
-  $<$<CXX_COMPILER_ID:MSVC>:/Zc:__cplusplus>
-)
 
 # rosx_introspection bundles peglib.h, which requires __cplusplus >= 201703L.
 # MSVC reports 199711L unless /Zc:__cplusplus is set, so the Windows build
@@ -68,7 +65,7 @@ configure_parser_ros_target(parser_ros_plugin)
 pj_embed_manifest(parser_ros_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/ros_manifest.hpp
   VAR_NAME kRosManifest
-  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/rosmsg_manifest.json
+  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
 pj_embed_ui(parser_ros_plugin
@@ -78,27 +75,10 @@ pj_embed_ui(parser_ros_plugin
 )
 
 # v4 plugin discovery: emit sidecar .pjmanifest.json files the host can scan
-# pre-dlopen. Content derived from each embedded parser manifest + {abi_major, family}.
+# pre-dlopen. Content derived from the embedded parser manifest + {abi_major, family}.
 pj_emit_plugin_manifest(parser_ros_plugin
   FAMILY        message_parser
-  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/rosmsg_manifest.json
-)
-
-add_library(parser_ros_omgidl_plugin SHARED
-  ${PARSER_ROS_COMMON_SOURCES}
-  ros_omgidl_parser_plugin.cpp
-)
-configure_parser_ros_target(parser_ros_omgidl_plugin)
-
-pj_embed_manifest(parser_ros_omgidl_plugin
-  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/ros_omgidl_manifest.hpp
-  VAR_NAME kRosOmgIdlManifest
-  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/omgidl_manifest.json
-)
-
-pj_emit_plugin_manifest(parser_ros_omgidl_plugin
-  FAMILY        message_parser
-  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/omgidl_manifest.json
+  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
 # --- Integration test (loads plugin .so via host library) ---
@@ -107,7 +87,6 @@ target_compile_features(ros_parser_test PRIVATE cxx_std_20)
 target_compile_options(ros_parser_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(ros_parser_test PRIVATE
   PJ_ROS_PARSER_PLUGIN_PATH="$<TARGET_FILE:parser_ros_plugin>"
-  PJ_ROS_IDL_PARSER_PLUGIN_PATH="$<TARGET_FILE:parser_ros_omgidl_plugin>"
 )
 target_link_libraries(ros_parser_test PRIVATE
   plotjuggler_core::plugin_sdk
