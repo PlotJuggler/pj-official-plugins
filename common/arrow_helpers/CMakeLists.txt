@@ -1,9 +1,20 @@
 # Shared Arrow helpers used by data_load_parquet and data_load_lerobot.
 # Internal target — not exported, not installed; consumers in this repo link
 # pj_arrow_helpers directly.
+#
+# Skipped gracefully when Arrow is unavailable: builds that exercise only
+# non-Arrow plugins (e.g. the ROS2 proxy job in ci-ros2.yml) still configure
+# this subdir from the top-level CMakeLists.txt but have no Arrow Conan dep.
+# Any plugin that actually consumes pj_arrow_helpers already does its own
+# find_package(Arrow REQUIRED), so a real consumer never silently runs
+# without the target — it errors at the consumer's own find_package.
 
 if(NOT TARGET Arrow::arrow_static)
-  find_package(Arrow REQUIRED)
+  find_package(Arrow QUIET CONFIG)
+  if(NOT TARGET Arrow::arrow_static)
+    message(STATUS "pj_arrow_helpers: Arrow not found, skipping shared helper library")
+    return()
+  endif()
 endif()
 
 add_library(pj_arrow_helpers STATIC arrow_helpers.cpp)
