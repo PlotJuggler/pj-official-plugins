@@ -323,6 +323,29 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePointCloud(PJ::Timestamp ts,
 // parallel for users who want to plot the transforms as time series.
 // ---------------------------------------------------------------------------
 
+PJ::sdk::FrameTransform RosParser::readStampedTransform() {
+  HeaderData header = readHeader();
+  std::string child_frame_id;
+  deserializer_->deserializeString(child_frame_id);
+
+  const double tx = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+  const double ty = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+  const double tz = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+  const double qx = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+  const double qy = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+  const double qz = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+  const double qw = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+
+  PJ::sdk::FrameTransform tf;
+  tf.timestamp =
+      static_cast<PJ::Timestamp>(static_cast<int64_t>(header.sec) * 1000000000LL + static_cast<int64_t>(header.nsec));
+  tf.parent_frame_id = std::move(header.frame_id);
+  tf.child_frame_id = std::move(child_frame_id);
+  tf.translation = {.x = tx, .y = ty, .z = tz};
+  tf.rotation = {.x = qx, .y = qy, .z = qz, .w = qw};
+  return tf;
+}
+
 PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseFrameTransforms(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
@@ -332,33 +355,127 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseFrameTransforms(PJ::Timesta
     const uint32_t transform_count = deserializer_->deserializeUInt32();
     PJ::sdk::FrameTransforms transforms;
     transforms.transforms.reserve(transform_count);
-
     for (uint32_t i = 0; i < transform_count; ++i) {
-      HeaderData header = readHeader();
-      std::string child_frame_id;
-      deserializer_->deserializeString(child_frame_id);
-
-      const double tx = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
-      const double ty = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
-      const double tz = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
-      const double qx = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
-      const double qy = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
-      const double qz = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
-      const double qw = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
-
-      PJ::sdk::FrameTransform tf;
-      tf.timestamp = static_cast<PJ::Timestamp>(
-          static_cast<int64_t>(header.sec) * 1000000000LL + static_cast<int64_t>(header.nsec));
-      tf.parent_frame_id = std::move(header.frame_id);
-      tf.child_frame_id = std::move(child_frame_id);
-      tf.translation = {.x = tx, .y = ty, .z = tz};
-      tf.rotation = {.x = qx, .y = qy, .z = qz, .w = qw};
-      transforms.transforms.push_back(std::move(tf));
+      transforms.transforms.push_back(readStampedTransform());
     }
-
     return PJ::sdk::BuiltinObject{std::move(transforms)};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("TFMessage: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// geometry_msgs/TransformStamped — a single stamped transform on its own
+// topic, surfaced as a one-element FrameTransforms so it feeds the same TF
+// buffer as /tf. The scalar handler (handleTransformStamped) still runs.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseTransformStampedObject(
+    PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+
+    PJ::sdk::FrameTransforms transforms;
+    transforms.transforms.push_back(readStampedTransform());
+    return PJ::sdk::BuiltinObject{std::move(transforms)};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("TransformStamped: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// nav_msgs/OccupancyGrid
+//
+// Wire layout:
+//   header        std_msgs/Header   (sec, nanosec, frame_id)
+//   info          nav_msgs/MapMetaData
+//     map_load_time  builtin_interfaces/Time  (sec, nanosec)   [read + discard]
+//     resolution     float32
+//     width          uint32
+//     height         uint32
+//     origin         geometry_msgs/Pose  (position xyz f64, orientation xyzw f64)
+//   data          int8[]            (uint32 count + bytes)
+//
+// Byte-backed: the cell bytes are zero-copied as a Span over the payload,
+// pinned by payload.anchor (same pattern as PointCloud2 / Image).
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseOccupancyGrid(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+
+    auto header = readHeader();
+
+    // MapMetaData.map_load_time — read and discard; the grid uses the Header stamp.
+    deserializer_->deserialize(RosMsgParser::INT32);
+    deserializer_->deserialize(RosMsgParser::UINT32);
+
+    const float resolution = deserializer_->deserialize(RosMsgParser::FLOAT32).convert<float>();
+    const uint32_t width = deserializer_->deserializeUInt32();
+    const uint32_t height = deserializer_->deserializeUInt32();
+
+    const double px = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+    const double py = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+    const double pz = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+    const double ox = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+    const double oy = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+    const double oz = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+    const double ow = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+
+    const auto data_span = deserializer_->deserializeByteSequence();
+
+    PJ::sdk::OccupancyGrid grid;
+    grid.timestamp_ns = current_timestamp_;
+    grid.frame_id = std::move(header.frame_id);
+    grid.origin.position = {.x = px, .y = py, .z = pz};
+    grid.origin.orientation = {.x = ox, .y = oy, .z = oz, .w = ow};
+    grid.resolution = static_cast<double>(resolution);
+    grid.width = width;
+    grid.height = height;
+    grid.data = PJ::Span<const uint8_t>(data_span.data(), data_span.size());
+    grid.anchor = payload.anchor;
+    return PJ::sdk::BuiltinObject{std::move(grid)};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("OccupancyGrid: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// std_msgs/String on a robot_description topic -> sdk::RobotDescription
+//
+// Dispatched in bindSchema by topic name (a generic String stays generic).
+// The body is one string (the URDF/SDF/MJCF source); we carry it verbatim
+// plus a best-effort format hint sniffed from the root element. Downstream
+// consumers do the format-specific parsing.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseRobotDescription(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+
+    std::string text;
+    deserializer_->deserializeString(text);
+
+    PJ::sdk::RobotDescription rd;
+    rd.timestamp_ns = current_timestamp_;
+    rd.topic = topic_name_;
+    if (text.find("<robot") != std::string::npos) {
+      rd.format = "urdf";
+    } else if (text.find("<sdf") != std::string::npos) {
+      rd.format = "sdf";
+    } else if (text.find("<mujoco") != std::string::npos) {
+      rd.format = "mjcf";
+    }
+    rd.text = std::move(text);
+    return PJ::sdk::BuiltinObject{std::move(rd)};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("RobotDescription: read error: ") + e.what());
   }
 }
 

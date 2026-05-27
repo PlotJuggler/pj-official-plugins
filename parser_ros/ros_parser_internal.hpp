@@ -289,6 +289,19 @@ class RosParser : public PJ::MessageParserPluginBase {
   // carrying its own Header.stamp)
   PJ::Expected<PJ::sdk::BuiltinObject> parseFrameTransforms(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
+  // geometry_msgs/TransformStamped -> sdk::FrameTransforms (single element)
+  PJ::Expected<PJ::sdk::BuiltinObject> parseTransformStampedObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // nav_msgs/OccupancyGrid -> sdk::OccupancyGrid (byte-backed, zero-copy cells)
+  PJ::Expected<PJ::sdk::BuiltinObject> parseOccupancyGrid(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // std_msgs/String on a robot_description topic -> sdk::RobotDescription
+  PJ::Expected<PJ::sdk::BuiltinObject> parseRobotDescription(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // Reads one geometry_msgs/TransformStamped from the deserializer into a
+  // FrameTransform. Shared by parseFrameTransforms and parseTransformStampedObject.
+  PJ::sdk::FrameTransform readStampedTransform();
+
   // ----- Specialized scalar handlers -----
   //
   // Each one walks a specific ROS message type and pushes its decoded fields
