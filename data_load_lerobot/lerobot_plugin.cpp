@@ -22,6 +22,7 @@
 namespace {
 
 namespace ah = lerobot::arrow_helpers;
+namespace pah = pj::arrow_helpers;
 
 // Per-row ns timestamp on the episode's 0-based clock. Uses the parquet
 // `timestamp` column when present, otherwise `frame_index / fps`. Each
@@ -185,12 +186,12 @@ class LeRobotSource : public PJ::FileSourceBase {
       if (name == "timestamp") {
         continue;  // synthesized into the time axis, not a series
       }
-      if (ah::isScalarArrowType(type->id())) {
+      if (pah::isSupportedArrowType(type->id())) {
         OutColumn c;
         c.out_name = name;
         c.arrow_name = name;
         c.scalar_type = type->id();
-        c.prim = ah::arrowTypeToPrimitive(type->id());
+        c.prim = pah::arrowTypeToPrimitive(type->id());
         plan.push_back(std::move(c));
         raw_names.push_back(name);
       } else if (ah::isFloatVectorColumn(type)) {
@@ -336,7 +337,7 @@ class LeRobotSource : public PJ::FileSourceBase {
           }
           const OutColumn& c = plan[k];
           if (c.vec_k < 0) {
-            auto v = ah::getArrowValueRef(arr, r, c.scalar_type);
+            auto v = pah::getArrowValueRef(arr, r, c.scalar_type);
             if (!PJ::sdk::isNull(v)) {
               row_fields.push_back({.name = c.out_name, .value = v});
             }

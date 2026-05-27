@@ -20,6 +20,7 @@ target_compile_options(lerobot_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(lerobot_source_plugin PRIVATE
   plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json
   Arrow::arrow_static Parquet::parquet_static
+  pj_arrow_helpers
 )
 pj_embed_ui(lerobot_source_plugin
   UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/dialog_lerobot.ui
