@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <any>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -10,10 +11,12 @@
 #include <string>
 #include <vector>
 
+#include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/testing/parser_write_recorder.hpp"
 #include "pj_plugins/host/message_parser_library.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
+#include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 
 #ifndef PJ_ROS_PARSER_PLUGIN_PATH
 #error "PJ_ROS_PARSER_PLUGIN_PATH must be defined"
@@ -980,6 +983,61 @@ TEST(RosParserTest, TFMessage) {
   auto* roll = findField(f.recorder.rows()[0], "/world/base_link/rotation/roll");
   ASSERT_NE(roll, nullptr);
   EXPECT_NEAR(roll->numeric, 0.0, 1e-10);
+}
+
+TEST(RosParserTest, TFMessageProducesFrameTransformsObject) {
+  RosParserFixture f;
+  f.setUp();
+
+  const std::string def(kTFMessageDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+
+  ASSERT_TRUE(f.bindSchema("tf2_msgs/TFMessage", kTFMessageDef));
+
+  // TF advertises the canonical-object route alongside its scalars, so it lands
+  // in BOTH the datastore (the TFMessage scalar test above) and the objectstore.
+  EXPECT_EQ(f.handle.classifySchema("tf2_msgs/TFMessage", def_span), PJ::sdk::BuiltinObjectType::kFrameTransforms);
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serializeUInt32(2);
+    serializeHeader(enc, 1, 500, "world");  // stamp = 1 s + 500 ns
+    enc.serializeString("base_link");
+    serializeVector3(enc, 1.0, 2.0, 3.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+    serializeHeader(enc, 2, 0, "base_link");  // stamp = 2 s
+    enc.serializeString("sensor");
+    serializeVector3(enc, 4.0, 5.0, 6.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.707, 0.707);
+  });
+
+  // The object route is the in-process C++ path: the host calls parseObject on
+  // the MessageParserPluginBase* directly (the C ABI vtable carries only the
+  // scalar parse() slot). context() hands back that base pointer.
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1000, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* ft = std::any_cast<PJ::sdk::FrameTransforms>(&rec->object);
+  ASSERT_NE(ft, nullptr);
+  ASSERT_EQ(ft->transforms.size(), 2u);
+
+  // Each FrameTransform keeps its own Header.stamp — the per-sample time the 3D
+  // TF buffer needs — independent of the 1000 ns message receive time above.
+  EXPECT_EQ(ft->transforms[0].parent_frame_id, "world");
+  EXPECT_EQ(ft->transforms[0].child_frame_id, "base_link");
+  EXPECT_EQ(ft->transforms[0].timestamp, 1'000'000'500);
+  EXPECT_DOUBLE_EQ(ft->transforms[0].translation.x, 1.0);
+  EXPECT_DOUBLE_EQ(ft->transforms[0].translation.z, 3.0);
+  EXPECT_DOUBLE_EQ(ft->transforms[0].rotation.w, 1.0);
+
+  EXPECT_EQ(ft->transforms[1].parent_frame_id, "base_link");
+  EXPECT_EQ(ft->transforms[1].child_frame_id, "sensor");
+  EXPECT_EQ(ft->transforms[1].timestamp, 2'000'000'000);
+  EXPECT_DOUBLE_EQ(ft->transforms[1].translation.y, 5.0);
+  EXPECT_DOUBLE_EQ(ft->transforms[1].rotation.z, 0.707);
 }
 
 TEST(RosParserTest, ROS1Serialization) {

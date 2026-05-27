@@ -304,4 +304,62 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePointCloud(PJ::Timestamp ts,
   }
 }
 
+// ---------------------------------------------------------------------------
+// tf2_msgs/TFMessage
+//
+// Wire layout:
+//   transforms              geometry_msgs/TransformStamped[]  (uint32 count + N)
+//     each TransformStamped:
+//       header              std_msgs/Header  (sec, nanosec, frame_id = parent)
+//       child_frame_id      string
+//       transform           geometry_msgs/Transform
+//         translation       Vector3     (x, y, z   : float64)
+//         rotation          Quaternion  (x, y, z, w: float64)
+//
+// Emitted as a canonical sdk::FrameTransforms (owned — no byte blob). Each
+// FrameTransform carries its OWN Header.stamp: that per-sample time is what the
+// 3D scene's TF buffer needs for zero-order-hold scrub lookups, independent of
+// the message receive time. The scalar handler (handleTFMessage) still runs in
+// parallel for users who want to plot the transforms as time series.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseFrameTransforms(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+
+    const uint32_t transform_count = deserializer_->deserializeUInt32();
+    PJ::sdk::FrameTransforms transforms;
+    transforms.transforms.reserve(transform_count);
+
+    for (uint32_t i = 0; i < transform_count; ++i) {
+      HeaderData header = readHeader();
+      std::string child_frame_id;
+      deserializer_->deserializeString(child_frame_id);
+
+      const double tx = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+      const double ty = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+      const double tz = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+      const double qx = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+      const double qy = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+      const double qz = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+      const double qw = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+
+      PJ::sdk::FrameTransform tf;
+      tf.timestamp = static_cast<PJ::Timestamp>(
+          static_cast<int64_t>(header.sec) * 1000000000LL + static_cast<int64_t>(header.nsec));
+      tf.parent_frame_id = std::move(header.frame_id);
+      tf.child_frame_id = std::move(child_frame_id);
+      tf.translation = {.x = tx, .y = ty, .z = tz};
+      tf.rotation = {.x = qx, .y = qy, .z = qz, .w = qw};
+      transforms.transforms.push_back(std::move(tf));
+    }
+
+    return PJ::sdk::BuiltinObject{std::move(transforms)};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("TFMessage: CDR read error: ") + e.what());
+  }
+}
+
 }  // namespace ros_parser_detail

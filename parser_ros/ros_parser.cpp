@@ -113,6 +113,12 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kPointCloud,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parsePointCloud}},
+      // TF keeps its specialized scalar flattening (handleTFMessage) AND emits a
+      // canonical FrameTransforms object for the 3D scene's TF buffer.
+      {"tf2_msgs/TFMessage",
+       {.object_type = ObjectType::kFrameTransforms,
+        .parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTFMessage>,
+        .parse_object = &RosParser::parseFrameTransforms}},
 
       // ----- Specialized scalar schemas -----
       // wrapVoidHandler<Handler> is a member-fn-template; its address is a
@@ -128,7 +134,6 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
       {"sensor_msgs/JointState", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleJointState>}},
       {"diagnostic_msgs/DiagnosticArray",
        {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleDiagnosticArray>}},
-      {"tf2_msgs/TFMessage", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTFMessage>}},
       {"data_tamer_msgs/Schemas", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleDataTamerSchemas>}},
       {"data_tamer_msgs/Snapshot", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleDataTamerSnapshot>}},
       {"pal_statistics_msgs/StatisticsNames",
