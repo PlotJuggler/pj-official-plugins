@@ -149,6 +149,13 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
       // per-cell scalar columns.
       {"nav_msgs/OccupancyGrid",
        {.object_type = ObjectType::kOccupancyGrid, .parse_object = &RosParser::parseOccupancyGrid}},
+      // Object-only: markers are 3D scene content, not scalar columns. One
+      // SceneEntity per Marker (ADD/MODIFY) or a SceneEntityDeletion
+      // (DELETE/DELETEALL). Per-message/stateless — see MARKER_NOTES.md.
+      {"visualization_msgs/Marker",
+       {.object_type = ObjectType::kSceneEntities, .parse_object = &RosParser::parseMarker}},
+      {"visualization_msgs/MarkerArray",
+       {.object_type = ObjectType::kSceneEntities, .parse_object = &RosParser::parseMarkerArray}},
 
       // ----- Specialized scalar schemas -----
       // wrapVoidHandler<Handler> is a member-fn-template; its address is a
@@ -331,6 +338,15 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
   // prepare the wire-format deserializer (ROS 1 binary vs ROS 2 CDR).
   detectSchemaFeatures();
   ensureDeserializer();
+
+  // visualization_msgs/Marker has two wire layouts: ROS 2 humble+ added a
+  // texture block (texture_resource / texture / uv_coordinates) and a
+  // mesh_file field; EOL foxy/galactic and ROS 1 lack them. Sniff the bound
+  // definition so the positional decoder consumes the correct variable tail.
+  if (msg_type == "visualization_msgs/Marker" || msg_type == "visualization_msgs/MarkerArray") {
+    marker_has_texture_block_ = schema_definition_.find("uv_coordinates") != std::string::npos;
+    marker_has_mesh_file_ = schema_definition_.find("mesh_file") != std::string::npos;
+  }
   schema_compiled_ = true;
 
   if (register_specialized_handler) {
