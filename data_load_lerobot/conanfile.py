@@ -10,7 +10,6 @@ class DataLoadLerobotConan(ConanFile):
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
         "arrow/23.0.1",
-        "fmt/12.1.0",
     )
     default_options = {
         "*:shared": False,
