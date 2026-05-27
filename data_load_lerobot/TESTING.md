@@ -1,23 +1,25 @@
-# Probar el plugin LeRobot Loader a mano
+# Manual testing guide for the LeRobot Loader plugin
 
-Guía paso a paso para verificar el plugin de cero. Asume:
+Step-by-step procedure to validate the plugin from scratch. Assumes:
 
-- Repo de plugins en `~/Work/pj-official-plugins` (rama `feature/data_load_lerobot`).
-- `plotjuggler_core` local en `~/Work/PJ4/plotjuggler_core`.
-- PlotJuggler 4 compilado en `~/Work/PJ4` desde la rama `feature/file-backed-video-lerobot`
-  (es la que cablea `FileVideoSource` en `Media2DDockWidget` y enciende libdav1d en el
-  FFmpeg del host — sin ella, los topics de cámara no se renderizan).
-- Extensiones en `~/.local/share/PlotJuggler/PlotJuggler4/extensions/`.
-- `conan` 2.x, `cmake`, `ninja`, `huggingface_hub` (Python) disponibles.
+- Plugin repo at `~/Work/pj-official-plugins` (branch `feature/data_load_lerobot`).
+- Local `plotjuggler_core` at `~/Work/PJ4/plotjuggler_core`.
+- PlotJuggler 4 built under `~/Work/PJ4` from the `feature/file-backed-video-lerobot`
+  branch (this is the branch that wires `FileVideoSource` into
+  `Media2DDockWidget` and enables libdav1d in the host's FFmpeg — without it,
+  camera topics will not render).
+- Extensions folder at `~/.local/share/PlotJuggler/PlotJuggler4/extensions/`.
+- `conan` 2.x, `cmake`, `ninja` and `huggingface_hub` (Python) available.
 
 ---
 
-## 1. Compilar el plugin (`.so`)
+## 1. Build the plugin (`.so`)
 
-El plugin solo necesita Arrow + Parquet + nlohmann_json (no FFmpeg — el plugin
-ya no decodifica vídeo, lo hace el host vía `FileVideoSource`). `build.sh` no
-sirve aquí porque clona `plotjuggler_core` por SSH y no reenvía argumentos
-extra; usamos cmake a mano apuntando CPM al `plotjuggler_core` **local**.
+The plugin only needs Arrow + Parquet + nlohmann_json (no FFmpeg — the plugin
+no longer decodes video, the host does via `FileVideoSource`). `build.sh` is
+not usable here because it clones `plotjuggler_core` over SSH and doesn't
+forward extra arguments; we invoke cmake by hand, pointing CPM at the
+**local** `plotjuggler_core`.
 
 ```bash
 cd ~/Work/pj-official-plugins
@@ -37,33 +39,35 @@ cmake -S . -B "$BUILD" -G Ninja \
 cmake --build "$BUILD" --parallel
 ```
 
-**Esperado:** `liblerobot_source_plugin.so` (≈ 18 MB) + sidecar
-`lerobot_source_plugin.pjmanifest.json` en `build/data_load_lerobot/Release/bin/`.
+**Expected:** `liblerobot_source_plugin.so` (~ 18 MB) plus the
+`lerobot_source_plugin.pjmanifest.json` sidecar in
+`build/data_load_lerobot/Release/bin/`.
 
-> 1ª compilación: conan construye Arrow desde fuente (varios minutos).
-> Subsiguientes: cacheado, segundos.
+> First build: conan builds Arrow from source (several minutes).
+> Subsequent builds: cached, seconds.
 
 ---
 
-## 2. Tests unitarios
+## 2. Unit tests
 
-Tres tests GTest cubren lo headless-verificable: parseo de `meta/info.json` +
-`episodes.jsonl` + `tasks.jsonl`, aplanado y dedupe de nombres de columnas
-vector, y la serialización de `__pj_fanout` del diálogo.
+Three GTest binaries cover what's headless-verifiable: parsing `meta/info.json`
+plus `episodes.jsonl` plus `tasks.jsonl`, flattening and deduping vector-column
+names, and the dialog's `__pj_fanout` serialization.
 
 ```bash
 ctest --test-dir build/data_load_lerobot/Release -R lerobot --output-on-failure
 ```
 
-**Esperado:** `100% tests passed, 0 tests failed out of 3` (16 casos en total).
+**Expected:** `100% tests passed, 0 tests failed out of 3` (16 cases total).
 
 ---
 
-## 3. Instalar el plugin en PlotJuggler 4
+## 3. Install the plugin into PlotJuggler 4
 
-Solo dos artefactos van a la carpeta de extensiones: el `.so` y el sidecar
-`.pjmanifest.json`. El `manifest.json` del repo es **input** de `cmake`
-(se embebe en el `.so` y se transforma en el sidecar); no se instala.
+Only two artifacts go into the extensions folder: the `.so` and the
+`.pjmanifest.json` sidecar. The repo's `manifest.json` is `cmake` **input**
+(embedded into the `.so` and transformed into the sidecar); it is not
+installed.
 
 ```bash
 DST=~/.local/share/PlotJuggler/PlotJuggler4/extensions/lerobot-loader
@@ -74,15 +78,16 @@ cp "$SRC/lerobot_source_plugin.pjmanifest.json" "$DST/"
 ls "$DST"
 ```
 
-Debe quedar junto a `parquet-loader/`, `mcap-loader/`, etc.
+It should sit next to `parquet-loader/`, `mcap-loader/`, etc.
 
 ---
 
-## 4. Conseguir un dataset LeRobot v2.1 de ejemplo
+## 4. Grab a sample LeRobot v2.1 dataset
 
-⚠️ `lerobot/pusht` en `main` **ya es v3.0** (el plugin lo rechazará con un
-mensaje claro — comportamiento correcto). Hay que pedir el **tag `v2.1`**.
-`huggingface-cli` está deprecado; usa `huggingface_hub` por Python:
+⚠️ `lerobot/pusht` on `main` is **already v3.0** (the plugin will reject it
+with a clear message — that's the correct behaviour). You have to request
+the **`v2.1` tag**. `huggingface-cli` is deprecated; use `huggingface_hub`
+from Python:
 
 ```bash
 python3 -c "
@@ -97,74 +102,77 @@ ls ~/datasets/pusht_v21/data/chunk-000
 find ~/datasets/pusht_v21/videos -name '*.mp4'
 ```
 
-(Quita `allow_patterns` para bajar el dataset completo — sigue siendo
-pequeño. Si quieres más episodios, añade sus `episode_0000NN.parquet`/`.mp4`.)
+(Drop `allow_patterns` to fetch the full dataset — it's still small. If you
+want more episodes, add their `episode_0000NN.parquet` / `.mp4` files.)
 
-> El vídeo de pusht v2.1 está en **AV1**. PJ4 lo decodifica con su propio
-> FFmpeg (libdav1d, habilitado en `feature/file-backed-video-lerobot` por el
-> commit `45bb5c4`). El plugin no decodifica nada — solo registra el path.
+> The pusht v2.1 video stream is **AV1**. PJ4 decodes it with its own
+> FFmpeg (libdav1d, enabled on `feature/file-backed-video-lerobot` by commit
+> `45bb5c4`). The plugin decodes nothing — it only registers the path.
 
 ---
 
-## 5. Probar en la app (numérico + vídeo)
+## 5. Try it in the app (numeric + video)
 
-1. Lanza PlotJuggler 4: `~/Work/PJ4/run.sh`.
-2. **File → Open** → filtro `*.json`.
-3. Navega a `~/datasets/pusht_v21/meta/` y elige `info.json`. (El plugin
-   solo reclama `.json` para no solapar con `data_load_parquet` en parquets
-   sueltos — el dataset se identifica por `meta/info.json`, no por uno de
-   sus parquets.)
-4. Aparece el diálogo **LeRobot Dataset**:
-   - Cabecera: ruta · `v2.1` · fps · nº episodios · lista de cámaras.
-   - Lista de episodios (`ep N · L frames · task`).
-   - Selecciona uno o varios episodios (multi-select). **OK**
-     queda deshabilitado si no hay selección.
-5. **Series escalares** (DataEngine):
-   - Aparecen series aplanadas con nombres de `info.json`. En pusht v2.1:
+1. Launch PlotJuggler 4: `~/Work/PJ4/run.sh`.
+2. **File → Open** → filter `*.json`.
+3. Navigate to `~/datasets/pusht_v21/meta/` and pick `info.json`. (The plugin
+   only claims `.json` so it doesn't overlap with `data_load_parquet` on
+   loose parquet files — the dataset is identified by `meta/info.json`, not
+   by one of its parquets.)
+4. The **LeRobot Dataset** dialog appears:
+   - Header: path · `v2.1` · fps · episode count · camera list.
+   - Episode list (`ep N · L frames · task`).
+   - Select one or several episodes (multi-select). **OK** stays disabled
+     when nothing is selected.
+5. **Scalar series** (DataEngine):
+   - Flattened series appear with names from `info.json`. In pusht v2.1:
      `lerobot/observation.state.motor_0`, `…motor_1`,
-     `lerobot/action.motor_0`, `…motor_1`, más `lerobot/episode_index`,
+     `lerobot/action.motor_0`, `…motor_1`, plus `lerobot/episode_index`,
      `lerobot/frame_index`, `lerobot/next.reward`, etc.
-   - Arrastra `observation.state.*` a un plot: curva continua.
-6. **Multi-episodio** (`__pj_fanout`):
-   - Cada episodio seleccionado se carga como **DatasetId propio**.
-     En el catálogo aparecen como `pusht_v21/ep_3`, `pusht_v21/ep_5`, …
-     (no se concatenan en un único timeline — cada uno tiene su reloj
-     desde 0).
-7. **Vídeo de cámara** (`FileVideoSource` en el host):
-   - En el árbol del catálogo, cada cámara aparece como **object-topic**
-     bajo su episodio: p.ej. `lerobot/observation.image`.
-   - **Arrástrala a una vista 2D vacía** (placeholder en el dock).
-   - PJ4 lee el `video_file_path` del metadata del topic, abre el MP4
-     directamente con `FileVideoSource` (`FfmpegBackend` + libdav1d para
-     AV1, seek lazy + ThumbnailCache).
-   - Mueve el cursor de tiempo: el frame del vídeo sigue al cursor en
-     sincronía con las curvas. Multi-cámara → una vista 2D por cámara.
+   - Drag `observation.state.*` onto a plot: continuous curve.
+6. **Multi-episode** (`__pj_fanout`):
+   - Each selected episode is loaded as its own **DatasetId**. They appear
+     in the catalog as `pusht_v21/ep_3`, `pusht_v21/ep_5`, … (they are
+     **not** concatenated into a single timeline — each has its own clock
+     starting at 0).
+7. **Camera video** (`FileVideoSource` on the host):
+   - In the catalog tree, each camera appears as an **object-topic** under
+     its episode: e.g. `lerobot/observation.image`.
+   - **Drag it onto an empty 2D view** (placeholder in the dock).
+   - PJ4 reads `video_file_path` from the topic metadata and opens the MP4
+     directly with `FileVideoSource` (`FfmpegBackend` + libdav1d for AV1,
+     lazy seek + ThumbnailCache).
+   - Move the time cursor: the video frame follows the cursor in sync with
+     the curves. Multi-camera → one 2D view per camera.
 
-> El plugin **no** decodifica vídeo. Solo registra el topic con
-> `media_class:"video"` + `video_file_path:"/.../episode_*.mp4"`. El
-> ObjectStore no recibe bytes (`entryCount == 0` por diseño — ARCH §4.5
+> The plugin does **not** decode video. It only registers the topic with
+> `media_class:"video"` + `video_file_path:"/.../episode_*.mp4"`. The
+> ObjectStore receives no bytes (`entryCount == 0` by design — ARCH §4.5
 > *"File-based video does not go through ObjectStore"*).
 
 ---
 
-## 6. Reset / repetir
+## 6. Reset / repeat
 
-Para reprobar de cero: borra `~/.local/share/PlotJuggler/PlotJuggler4/extensions/lerobot-loader/`
-y `~/Work/pj-official-plugins/build/data_load_lerobot/`, y repite desde el paso 1.
+To re-test from scratch: delete
+`~/.local/share/PlotJuggler/PlotJuggler4/extensions/lerobot-loader/` and
+`~/Work/pj-official-plugins/build/data_load_lerobot/`, then repeat from
+step 1.
 
 ---
 
-## Problemas conocidos
+## Known issues
 
-- **CPM clona por SSH** si no pasas `-DCPM_plotjuggler_core_SOURCE=` → usa
-  la variante con el path local (paso 1).
-- **Códec del vídeo (AV1/H.264/HEVC/…)**: lo decodifica el FFmpeg del **host**
-  (PJ4), no el plugin. AV1 requiere que la build de PJ4 incluya libdav1d (la
-  rama `feature/file-backed-video-lerobot` lo trae). Si la cámara aparece en
-  el árbol pero al arrastrarla a la vista 2D no se ve nada, comprueba que el
-  PJ4 que ejecutas es de esa rama y reconstruye con `conan install` para
-  re-pillar libdav1d.
-- **Diálogo no aparece al cargar `info.json`**: el filtro `*.json` y el
-  diálogo se enganchan por la extensión registrada en el manifest del
-  plugin. Comprueba que `~/.local/.../extensions/lerobot-loader/` contiene
-  el sidecar `.pjmanifest.json` y que lleva `"file_extensions": [".json"]`.
+- **CPM clones over SSH** if you don't pass `-DCPM_plotjuggler_core_SOURCE=`
+  → use the local-path variant (step 1).
+- **Video codec (AV1/H.264/HEVC/…)**: decoded by the **host's** FFmpeg (PJ4),
+  not by the plugin. AV1 requires the PJ4 build to include libdav1d (the
+  `feature/file-backed-video-lerobot` branch carries it). If the camera
+  shows up in the tree but nothing renders when you drag it onto the 2D
+  view, check that the PJ4 you're running is from that branch and rebuild
+  after `conan install` to re-pick libdav1d.
+- **Dialog doesn't appear when loading `info.json`**: the `*.json` filter
+  and the dialog hook in via the file extension registered in the plugin
+  manifest. Check that `~/.local/.../extensions/lerobot-loader/` contains
+  the `.pjmanifest.json` sidecar and that it carries
+  `"file_extensions": [".json"]`.
