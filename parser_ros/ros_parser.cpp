@@ -119,10 +119,10 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kFrameTransforms,
         .parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTFMessage>,
         .parse_object = &RosParser::parseFrameTransforms}},
+      // Object-only: a map/costmap is consumed as a grid, not plotted as
+      // per-cell scalar columns.
       {"nav_msgs/OccupancyGrid",
-       {.object_type = ObjectType::kOccupancyGrid,
-        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
-        .parse_object = &RosParser::parseOccupancyGrid}},
+       {.object_type = ObjectType::kOccupancyGrid, .parse_object = &RosParser::parseOccupancyGrid}},
 
       // ----- Specialized scalar schemas -----
       // wrapVoidHandler<Handler> is a member-fn-template; its address is a
@@ -219,12 +219,15 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
   // Topic-conditional override: a std_msgs/String on a robot_description topic
   // carries a URDF/SDF/MJCF model, not a generic string. The catalog keys on
   // type name, which can't distinguish this — so dispatch here by topic name.
+  // Matches the bare topic and any namespace-prefixed "<ns>/robot_description"
+  // (e.g. "/my_robot/robot_description").
   const bool robot_description_topic =
       topic_name_ == "robot_description" || topic_name_.ends_with("/robot_description");
   if (msg_type == "std_msgs/String" && robot_description_topic) {
+    // Object-only: the URDF/SDF/MJCF text is consumed as a model, not stored
+    // as a giant string column in the datastore.
     entry = CatalogEntry{
         .object_type = PJ::sdk::BuiltinObjectType::kRobotDescription,
-        .parse_scalars = &RosParser::parseScalarsGeneric,
         .parse_object = &RosParser::parseRobotDescription};
   }
 
