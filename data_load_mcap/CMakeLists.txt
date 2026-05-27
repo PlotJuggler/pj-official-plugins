@@ -9,7 +9,7 @@ add_library(mcap_source_plugin SHARED mcap_source.cpp)
 target_compile_features(mcap_source_plugin PRIVATE cxx_std_20)
 target_compile_options(mcap_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(mcap_source_plugin PRIVATE
-  pj_plugin_sdk pj_dialog_sdk nlohmann_json::nlohmann_json mcap::mcap
+  plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json mcap::mcap
 )
 
 pj_embed_ui(mcap_source_plugin

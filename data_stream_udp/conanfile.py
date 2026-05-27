@@ -7,6 +7,7 @@ class DataStreamUdpConan(ConanFile):
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain"
     requires = (
+        "plotjuggler_core/[~0.3]",
         "gtest/1.17.0",
         "asio/1.28.2",
         "nlohmann_json/3.12.0",

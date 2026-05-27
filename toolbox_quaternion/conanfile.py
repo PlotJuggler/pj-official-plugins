@@ -7,6 +7,7 @@ class ToolboxQuaternionConan(ConanFile):
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain"
     requires = (
+        "plotjuggler_core/[~0.3]",
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
     )
