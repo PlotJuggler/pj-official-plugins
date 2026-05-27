@@ -1255,6 +1255,33 @@ TEST(RosParserTest, RobotDescriptionTopicProducesObject) {
   EXPECT_EQ(rd->text, urdf);
 }
 
+TEST(RosParserTest, RobotDescriptionNamespacedTopicProducesObject) {
+  RosParserFixture f;
+  f.setUp();
+  // A namespace-prefixed robot_description topic is matched too.
+  ASSERT_TRUE(f.handle.loadConfig(R"({"topic_name":"/my_robot/robot_description"})"));
+
+  const std::string def = "string data\n";
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("std_msgs/String", def));
+  EXPECT_EQ(f.handle.classifySchema("std_msgs/String", def_span), PJ::sdk::BuiltinObjectType::kRobotDescription);
+
+  const std::string sdf = "<sdf version=\"1.6\"><model name=\"m\"/></sdf>";
+  auto payload = serializeCdr([&sdf](RosMsgParser::NanoCDR_Serializer& enc) { enc.serializeString(sdf); });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* rd = std::any_cast<PJ::sdk::RobotDescription>(&rec->object);
+  ASSERT_NE(rd, nullptr);
+  EXPECT_EQ(rd->topic, "/my_robot/robot_description");
+  EXPECT_EQ(rd->format, "sdf");  // also exercises the SDF format sniff
+  EXPECT_EQ(rd->text, sdf);
+}
+
 TEST(RosParserTest, GenericStringTopicIsNotRobotDescription) {
   RosParserFixture f;
   f.setUp();
