@@ -225,6 +225,9 @@ class RosParser : public PJ::MessageParserPluginBase {
   // Setup helpers
   PJ::Status compileBoundSchema(bool register_specialized_handler);
   void registerBoundSchemaHandler(const CatalogEntry& entry);
+  // Resolve the catalog entry for a bound schema, applying topic-conditional
+  // overrides (e.g. std_msgs/String on a robot_description topic -> RobotDescription).
+  CatalogEntry selectCatalogEntry(const std::string& msg_type) const;
   void ensureDeserializer();
   void detectSchemaFeatures();
   void findQuaternionPrefixes(
@@ -296,6 +299,19 @@ class RosParser : public PJ::MessageParserPluginBase {
   // tf2_msgs/TFMessage -> sdk::FrameTransforms (one per TransformStamped, each
   // carrying its own Header.stamp)
   PJ::Expected<PJ::sdk::BuiltinObject> parseFrameTransforms(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // geometry_msgs/TransformStamped -> sdk::FrameTransforms (single element)
+  PJ::Expected<PJ::sdk::BuiltinObject> parseTransformStampedObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // nav_msgs/OccupancyGrid -> sdk::OccupancyGrid (byte-backed, zero-copy cells)
+  PJ::Expected<PJ::sdk::BuiltinObject> parseOccupancyGrid(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // std_msgs/String on a robot_description topic -> sdk::RobotDescription
+  PJ::Expected<PJ::sdk::BuiltinObject> parseRobotDescription(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // Reads one geometry_msgs/TransformStamped from the deserializer into a
+  // FrameTransform. Shared by parseFrameTransforms and parseTransformStampedObject.
+  PJ::sdk::FrameTransform readStampedTransform();
 
   // ----- Specialized scalar handlers -----
   //

@@ -1129,6 +1129,144 @@ TEST(RosParserTest, TFMessageProducesFrameTransformsObject) {
   EXPECT_DOUBLE_EQ(ft->transforms[1].rotation.z, 0.707);
 }
 
+TEST(RosParserTest, TransformStampedProducesFrameTransformsObject) {
+  static const char* kTransformStampedDef =
+      "std_msgs/Header header\nstring child_frame_id\ngeometry_msgs/Transform transform\n"
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+      "================\nMSG: geometry_msgs/Transform\n"
+      "geometry_msgs/Vector3 translation\ngeometry_msgs/Quaternion rotation\n"
+      "================\nMSG: geometry_msgs/Vector3\nfloat64 x\nfloat64 y\nfloat64 z\n"
+      "================\nMSG: geometry_msgs/Quaternion\nfloat64 x\nfloat64 y\nfloat64 z\nfloat64 w\n";
+
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kTransformStampedDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("geometry_msgs/TransformStamped", kTransformStampedDef));
+  EXPECT_EQ(
+      f.handle.classifySchema("geometry_msgs/TransformStamped", def_span),
+      PJ::sdk::BuiltinObjectType::kFrameTransforms);
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 5, 0, "odom");
+    enc.serializeString("base_link");
+    serializeVector3(enc, 1.0, 2.0, 3.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(999, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* ft = std::any_cast<PJ::sdk::FrameTransforms>(&rec->object);
+  ASSERT_NE(ft, nullptr);
+  ASSERT_EQ(ft->transforms.size(), 1u);
+  EXPECT_EQ(ft->transforms[0].parent_frame_id, "odom");
+  EXPECT_EQ(ft->transforms[0].child_frame_id, "base_link");
+  EXPECT_EQ(ft->transforms[0].timestamp, 5'000'000'000);
+  EXPECT_DOUBLE_EQ(ft->transforms[0].translation.z, 3.0);
+  EXPECT_DOUBLE_EQ(ft->transforms[0].rotation.w, 1.0);
+}
+
+TEST(RosParserTest, OccupancyGridProducesObject) {
+  static const char* kOccupancyGridDef =
+      "std_msgs/Header header\nnav_msgs/MapMetaData info\nint8[] data\n"
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+      "================\nMSG: nav_msgs/MapMetaData\n"
+      "builtin_interfaces/Time map_load_time\nfloat32 resolution\nuint32 width\nuint32 height\n"
+      "geometry_msgs/Pose origin\n"
+      "================\nMSG: geometry_msgs/Pose\n"
+      "geometry_msgs/Point position\ngeometry_msgs/Quaternion orientation\n"
+      "================\nMSG: geometry_msgs/Point\nfloat64 x\nfloat64 y\nfloat64 z\n"
+      "================\nMSG: geometry_msgs/Quaternion\nfloat64 x\nfloat64 y\nfloat64 z\nfloat64 w\n";
+
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kOccupancyGridDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("nav_msgs/OccupancyGrid", kOccupancyGridDef));
+  EXPECT_EQ(f.handle.classifySchema("nav_msgs/OccupancyGrid", def_span), PJ::sdk::BuiltinObjectType::kOccupancyGrid);
+
+  const std::vector<uint8_t> cells = {0, 50, 100, 0xFF /* -1 unknown */, 25, 75};
+  auto payload = serializeCdr([&cells](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 7, 0, "map");
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(0)));     // map_load_time.sec
+    enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(static_cast<uint32_t>(0)));   // map_load_time.nanosec
+    enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(static_cast<float>(0.05)));  // resolution
+    enc.serializeUInt32(3);                                                                 // width
+    enc.serializeUInt32(2);                                                                 // height
+    serializeVector3(enc, 1.0, 2.0, 0.0);                                                   // origin.position
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);                                           // origin.orientation
+    enc.serializeUInt32(static_cast<uint32_t>(cells.size()));
+    for (uint8_t c : cells) {
+      enc.serialize(RosMsgParser::INT8, RosMsgParser::Variant(static_cast<int8_t>(c)));
+    }
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* grid = std::any_cast<PJ::sdk::OccupancyGrid>(&rec->object);
+  ASSERT_NE(grid, nullptr);
+  EXPECT_EQ(grid->frame_id, "map");
+  EXPECT_EQ(grid->width, 3u);
+  EXPECT_EQ(grid->height, 2u);
+  EXPECT_NEAR(grid->resolution, 0.05, 1e-6);
+  EXPECT_DOUBLE_EQ(grid->origin.position.x, 1.0);
+  EXPECT_DOUBLE_EQ(grid->origin.position.y, 2.0);
+  EXPECT_DOUBLE_EQ(grid->origin.orientation.w, 1.0);
+  ASSERT_EQ(grid->data.size(), cells.size());
+  for (size_t i = 0; i < cells.size(); ++i) {
+    EXPECT_EQ(grid->data.data()[i], cells[i]);
+  }
+}
+
+TEST(RosParserTest, RobotDescriptionTopicProducesObject) {
+  RosParserFixture f;
+  f.setUp();
+  // Topic-gated: only a std_msgs/String on a robot_description topic becomes a robot.
+  ASSERT_TRUE(f.handle.loadConfig(R"({"topic_name":"/robot_description"})"));
+
+  const std::string def = "string data\n";
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("std_msgs/String", def));
+  EXPECT_EQ(f.handle.classifySchema("std_msgs/String", def_span), PJ::sdk::BuiltinObjectType::kRobotDescription);
+
+  const std::string urdf = "<robot name=\"r\"><link name=\"base_link\"/></robot>";
+  auto payload = serializeCdr([&urdf](RosMsgParser::NanoCDR_Serializer& enc) { enc.serializeString(urdf); });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* rd = std::any_cast<PJ::sdk::RobotDescription>(&rec->object);
+  ASSERT_NE(rd, nullptr);
+  EXPECT_EQ(rd->topic, "/robot_description");
+  EXPECT_EQ(rd->format, "urdf");
+  EXPECT_EQ(rd->text, urdf);
+}
+
+TEST(RosParserTest, GenericStringTopicIsNotRobotDescription) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"topic_name":"/chatter"})"));
+
+  const std::string def = "string data\n";
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("std_msgs/String", def));
+  // A String on a non-robot_description topic stays a generic scalar — no object.
+  EXPECT_EQ(f.handle.classifySchema("std_msgs/String", def_span), PJ::sdk::BuiltinObjectType::kNone);
+}
+
 TEST(RosParserTest, ROS1Serialization) {
   RosParserFixture f;
   f.setUp();
