@@ -8,6 +8,7 @@
 #include <pj_plugins/sdk/encoding_utils.hpp>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "udp_dialog.hpp"
 #include "udp_manifest.hpp"
@@ -135,8 +136,14 @@ class UdpSource : public PJ::StreamSourceBase {
       }
 
       if (it != binding_cache_.end()) {
-        auto status = runtimeHost().pushRawMessage(
-            it->second, PJ::Timestamp{timestamp_ns}, PJ::Span<const uint8_t>(recv_buffer_.data(), n));
+        auto payload = std::make_shared<std::vector<uint8_t>>(recv_buffer_.data(), recv_buffer_.data() + n);
+        auto status =
+            runtimeHost().pushMessage(it->second, PJ::Timestamp{timestamp_ns}, [payload]() -> PJ::sdk::PayloadView {
+              return PJ::sdk::PayloadView{
+                  PJ::Span<const uint8_t>(payload->data(), payload->size()),
+                  payload,
+              };
+            });
         if (!status) {
           // Mirror PJ 3.x behavior: a parse failure stops the stream.
           runtimeHost().reportMessage(
