@@ -1,4 +1,4 @@
-#include <pj_base/builtin/BuiltinObject.hpp>
+#include <pj_base/builtin/builtin_object.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 
 #define MCAP_IMPLEMENTATION

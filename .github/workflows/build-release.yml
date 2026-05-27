@@ -48,17 +48,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure SSH for private dependencies
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.CORE_DEPLOY_KEY }}
-
-      - name: Add GitHub to SSH known hosts
-        shell: bash
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
-
       - name: Resolve build scope
         id: build-scope
         shell: bash
@@ -84,6 +73,20 @@ jobs:
 
       - name: Install cmake and ninja
         run: pip install cmake ninja
+
+      - name: Configure plotjuggler cloudsmith Conan remote
+        # plotjuggler_core is consumed from the plotjuggler cloudsmith Conan
+        # repo. Configured before build.sh runs `conan install`.
+        env:
+          CLOUDSMITH_USER: ${{ secrets.CLOUDSMITH_USER }}
+          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+        shell: bash
+        run: |
+          conan profile detect --force
+          conan remote add plotjuggler-cloudsmith \
+            https://conan.cloudsmith.io/plotjuggler/plotjuggler --force
+          conan remote login plotjuggler-cloudsmith \
+            "$CLOUDSMITH_USER" -p "$CLOUDSMITH_API_KEY"
 
       - name: Set up MSVC environment (Windows)
         if: runner.os == 'Windows'

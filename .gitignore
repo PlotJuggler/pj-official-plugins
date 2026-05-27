@@ -2,3 +2,11 @@
 /build/*
 __pycache__/
 */CMakeUserPresets.json
+
+# Conan-generated environment scripts (output of `conan install` in the repo root)
+/conanbuild.sh
+/conanrun.sh
+/conanbuildenv-*.sh
+/conanrunenv-*.sh
+/deactivate_conanbuild.sh
+/deactivate_conanrun.sh

@@ -208,13 +208,52 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
   // Bind the catalog entry's member-function pointers to `this` and
   // register a single SchemaHandler with the host. The per-instance
   // handler table ends up with exactly one entry for this bound schema.
+  //
+  // The catalog still stores handlers that return the bare field vector /
+  // BuiltinObject (the pre-0.3 shape). The SchemaHandler callables now return
+  // ScalarRecord / ObjectRecord, which wrap that payload with an optional
+  // parser-controlled timestamp. We bridge the two here: run the handler,
+  // then wrap its result. When use_embedded_timestamp_ is on we carry
+  // current_timestamp_ as the record's ts — the handlers resolve that member
+  // to the payload-embedded Header stamp (readHeader / flattenGeneric), so
+  // exposing it through the record makes the host honor it on the
+  // pure-functional parseScalars / parseObject path, not just the legacy
+  // parse() route. When the option is off ts stays nullopt and the host uses
+  // the message receive time, exactly as before.
   PJ::sdk::SchemaHandler handler;
   handler.object_type = entry.object_type;
   if (entry.parse_scalars) {
-    handler.parse_scalars = std::bind_front(entry.parse_scalars, this);
+    auto fn = std::bind_front(entry.parse_scalars, this);
+    handler.parse_scalars = [this, fn = std::move(fn)](
+                                PJ::Timestamp ts,
+                                PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+      auto fields = fn(ts, payload);
+      if (!fields) {
+        return PJ::unexpected(std::move(fields).error());
+      }
+      PJ::sdk::ScalarRecord record;
+      if (use_embedded_timestamp_) {
+        record.ts = current_timestamp_;
+      }
+      record.fields = std::move(*fields);
+      return record;
+    };
   }
   if (entry.parse_object) {
-    handler.parse_object = std::bind_front(entry.parse_object, this);
+    auto fn = std::bind_front(entry.parse_object, this);
+    handler.parse_object = [this, fn = std::move(fn)](
+                               PJ::Timestamp ts, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      auto object = fn(ts, payload);
+      if (!object) {
+        return PJ::unexpected(std::move(object).error());
+      }
+      PJ::sdk::ObjectRecord record;
+      if (use_embedded_timestamp_) {
+        record.ts = current_timestamp_;
+      }
+      record.object = std::move(*object);
+      return record;
+    };
   }
   // Register under the original type_name (matches the key the host uses
   // when calling classifySchema / parseScalars / parseObject — keeps lookups
@@ -270,15 +309,19 @@ PJ::Status RosParser::parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> 
   if (!writeHostBound()) {
     return PJ::unexpected(std::string("write host not bound"));
   }
-  auto fields = parseScalars(timestamp_ns, payload);
-  if (!fields) {
-    return PJ::unexpected(std::move(fields).error());
+  auto record = parseScalars(timestamp_ns, payload);
+  if (!record) {
+    return PJ::unexpected(std::move(record).error());
   }
-  if (fields->empty()) {
+  if (record->fields.empty()) {
     return PJ::okStatus();
   }
+  // Honor the parser-controlled timestamp when the scalar handler set one
+  // (use_embedded_timestamp_); otherwise fall back to the message receive
+  // time. The handler already folded the embedded stamp into the record.
+  const PJ::Timestamp ts = record->ts.value_or(timestamp_ns);
   return writeHost().appendRecord(
-      current_timestamp_, PJ::Span<const PJ::sdk::NamedFieldValue>(fields->data(), fields->size()));
+      ts, PJ::Span<const PJ::sdk::NamedFieldValue>(record->fields.data(), record->fields.size()));
 }
 
 // ---------------------------------------------------------------------------
