@@ -293,6 +293,10 @@ class RosParser : public PJ::MessageParserPluginBase {
   // sensor_msgs/PointCloud2
   PJ::Expected<PJ::sdk::ObjectRecord> parsePointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
+  // tf2_msgs/TFMessage -> sdk::FrameTransforms (one per TransformStamped, each
+  // carrying its own Header.stamp)
+  PJ::Expected<PJ::sdk::BuiltinObject> parseFrameTransforms(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
   // ----- Specialized scalar handlers -----
   //
   // Each one walks a specific ROS message type and pushes its decoded fields
