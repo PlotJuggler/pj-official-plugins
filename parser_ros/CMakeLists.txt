@@ -47,6 +47,7 @@ add_library(parser_ros_plugin SHARED
   ros_parser.cpp
   ros_specializations.cpp
   ros_builtin_object_handlers.cpp
+  ros_marker_handlers.cpp
 )
 target_compile_features(parser_ros_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_ros_plugin PRIVATE ${PJ_WARNING_FLAGS})

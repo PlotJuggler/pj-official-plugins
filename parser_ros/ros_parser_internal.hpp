@@ -205,6 +205,14 @@ class RosParser : public PJ::MessageParserPluginBase {
   bool has_header_ = false;
   std::vector<std::string> quaternion_prefixes_;
 
+  // visualization_msgs/Marker layout flags, sniffed from the bound .msg
+  // definition in bindSchema. The Marker wire layout gained a texture block
+  // (texture_resource / texture / uv_coordinates) and a mesh_file field in
+  // ROS 2 humble; EOL foxy/galactic and ROS 1 lack them. These gate the
+  // variable-tail decode so it stays aligned on every layout.
+  bool marker_has_texture_block_ = false;
+  bool marker_has_mesh_file_ = false;
+
   // Parse state
   std::optional<RosMsgParser::Parser> parser_;
   std::unique_ptr<RosMsgParser::Deserializer> deserializer_;
@@ -297,6 +305,19 @@ class RosParser : public PJ::MessageParserPluginBase {
 
   // std_msgs/String on a robot_description topic -> sdk::RobotDescription
   PJ::Expected<PJ::sdk::BuiltinObject> parseRobotDescription(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // visualization_msgs/Marker -> sdk::SceneEntities (one SceneEntity, or one
+  // SceneEntityDeletion for DELETE/DELETEALL).
+  PJ::Expected<PJ::sdk::BuiltinObject> parseMarker(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // visualization_msgs/MarkerArray -> sdk::SceneEntities (one per Marker).
+  PJ::Expected<PJ::sdk::BuiltinObject> parseMarkerArray(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // Reads one visualization_msgs/Marker from the deserializer at the current
+  // cursor and appends the resulting entity (ADD/MODIFY) or deletion
+  // (DELETE/DELETEALL) to `out`. Always consumes the whole marker so the next
+  // element of a MarkerArray stays aligned. Shared by parseMarker / parseMarkerArray.
+  void decodeOneMarker(PJ::sdk::SceneEntities& out);
 
   // Reads one geometry_msgs/TransformStamped from the deserializer into a
   // FrameTransform. Shared by parseFrameTransforms and parseTransformStampedObject.
