@@ -178,9 +178,12 @@ class PjBridgeSource : public PJ::StreamSourceBase {
         for (const auto& msg : messages) {
           auto it = bindings_.find(msg.topic_name);
           if (it != bindings_.end()) {
-            auto status = runtimeHost().pushRawMessage(
+            // Copy into the lambda: msg.cdr_data points into decompress_buffer_
+            // which is reused for the next frame, so we cannot hold a raw pointer.
+            auto bytes = std::vector<uint8_t>(msg.cdr_data, msg.cdr_data + msg.cdr_size);
+            auto status = runtimeHost().pushMessage(
                 it->second, PJ::Timestamp{msg.timestamp_ns},
-                PJ::Span<const uint8_t>(msg.cdr_data, msg.cdr_size));
+                [b = std::move(bytes)]() mutable { return std::move(b); });
             if (!status) {
               runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning,
                                          "Failed to push message: " + status.error());
