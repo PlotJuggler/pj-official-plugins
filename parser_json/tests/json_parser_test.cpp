@@ -128,14 +128,20 @@ TEST(JsonParserTest, NullFieldsSkipped) {
   EXPECT_EQ(f.recorder.rows()[0].fields[0].name, "b");
 }
 
-TEST(JsonParserTest, BatchedArray) {
+TEST(JsonParserTest, RootArrayFlattened) {
+  // parse_scalars yields one ScalarRecord per message, so a root JSON array
+  // flattens into a single row with index-prefixed field names.
   JsonParserFixture f;
   f.setUp();
   ASSERT_TRUE(f.parse(R"([{"v":1.0},{"v":2.0},{"v":3.0}])"));
-  ASSERT_EQ(f.recorder.rows().size(), 3u);
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 3u);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].name, "[0]/v");
   EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[0].numeric, 1.0);
-  EXPECT_DOUBLE_EQ(f.recorder.rows()[1].fields[0].numeric, 2.0);
-  EXPECT_DOUBLE_EQ(f.recorder.rows()[2].fields[0].numeric, 3.0);
+  EXPECT_EQ(f.recorder.rows()[0].fields[1].name, "[1]/v");
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[1].numeric, 2.0);
+  EXPECT_EQ(f.recorder.rows()[0].fields[2].name, "[2]/v");
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[2].numeric, 3.0);
 }
 
 TEST(JsonParserTest, DeeplyNested) {
@@ -149,11 +155,12 @@ TEST(JsonParserTest, DeeplyNested) {
 }
 
 TEST(JsonParserTest, EmptyObject) {
+  // An empty JSON object has no scalar fields; appendRecord with an empty
+  // field span is a no-op in the datastore, so no row is recorded.
   JsonParserFixture f;
   f.setUp();
   ASSERT_TRUE(f.parse(R"({})"));
-  ASSERT_EQ(f.recorder.rows().size(), 1u);
-  EXPECT_EQ(f.recorder.rows()[0].fields.size(), 0u);
+  EXPECT_EQ(f.recorder.rows().size(), 0u);
 }
 
 TEST(JsonParserTest, InvalidJsonFails) {
@@ -196,18 +203,16 @@ TEST(JsonParserTest, EmbeddedTimestampDisabledByDefault) {
 TEST(JsonParserTest, EmbeddedTimestampEnabled) {
   JsonParserFixture f;
   f.setUp();
-  // Enable embedded timestamp via config
   ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
   ASSERT_TRUE(f.parse(R"({"timestamp":1234.567,"value":42.0})", 9999));
   ASSERT_EQ(f.recorder.rows().size(), 1u);
-  // 1234.567 seconds -> nanoseconds
+  // 1234.567 seconds → nanoseconds
   EXPECT_EQ(f.recorder.rows()[0].timestamp, 1234567000000LL);
 }
 
 TEST(JsonParserTest, EmbeddedTimestampCustomFieldName) {
   JsonParserFixture f;
   f.setUp();
-  // Use custom field name "ts" instead of default "timestamp"
   ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true,"timestamp_field_name":"ts"})"));
   ASSERT_TRUE(f.parse(R"({"ts":5678.123,"value":42.0})", 9999));
   ASSERT_EQ(f.recorder.rows().size(), 1u);
@@ -231,7 +236,7 @@ TEST(JsonParserTest, EmbeddedTimestampIntegerValue) {
   // Integer timestamp (seconds)
   ASSERT_TRUE(f.parse(R"({"timestamp":1000,"value":42.0})", 9999));
   ASSERT_EQ(f.recorder.rows().size(), 1u);
-  EXPECT_EQ(f.recorder.rows()[0].timestamp, 1000000000000LL);  // 1000 * 1e9
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 1000000000000LL);  // 1000s * 1e9
 }
 
 }  // namespace

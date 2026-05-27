@@ -3,7 +3,6 @@
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "json_manifest.hpp"
@@ -11,22 +10,20 @@
 
 namespace {
 
-struct FlattenedField {
-  std::string name;
-  PJ::sdk::ValueRef value;
-  std::string owned_string;  // keeps string data alive for string_view in value
-};
-
-/// Flatten a JSON value into scalar fields using "/" as separator.
+/// Flatten a JSON value into NamedFieldValue entries using "/" as separator.
 /// Arrays use bracket notation: "arr[0]", "arr[1]", etc.
-/// Only numeric and boolean leaves are emitted; strings and nulls are skipped.
+/// String values shorter than 100 chars are preserved; longer strings and
+/// nulls are skipped. String storage is appended to `string_storage` so the
+/// string_view in the returned ValueRef stays valid for the duration of the
+/// caller's appendRecord() call.
 void flattenJson(
     const std::string& prefix, const nlohmann::json& value, std::size_t max_array_size, bool clamp_arrays,
-    std::vector<FlattenedField>& out) {
+    std::vector<PJ::sdk::NamedFieldValue>& out, std::vector<std::string>& string_storage) {
   switch (value.type()) {
     case nlohmann::detail::value_t::object:
       for (const auto& [key, child] : value.items()) {
-        flattenJson(prefix.empty() ? key : prefix + "/" + key, child, max_array_size, clamp_arrays, out);
+        flattenJson(
+            prefix.empty() ? key : prefix + "/" + key, child, max_array_size, clamp_arrays, out, string_storage);
       }
       break;
 
@@ -34,37 +31,38 @@ void flattenJson(
       auto count = value.size();
       if (max_array_size > 0 && count > max_array_size) {
         if (!clamp_arrays) {
-          break;  // skip oversized
+          break;
         }
         count = max_array_size;
       }
       for (std::size_t i = 0; i < count; ++i) {
-        flattenJson(prefix + "[" + std::to_string(i) + "]", value[i], max_array_size, clamp_arrays, out);
+        flattenJson(
+            prefix + "[" + std::to_string(i) + "]", value[i], max_array_size, clamp_arrays, out, string_storage);
       }
       break;
     }
 
     case nlohmann::detail::value_t::boolean:
-      out.push_back({prefix, value.get<bool>(), {}});
+      out.push_back({prefix, value.get<bool>()});
       break;
 
     case nlohmann::detail::value_t::number_integer:
-      out.push_back({prefix, value.get<int64_t>(), {}});
+      out.push_back({prefix, value.get<int64_t>()});
       break;
 
     case nlohmann::detail::value_t::number_unsigned:
-      out.push_back({prefix, value.get<uint64_t>(), {}});
+      out.push_back({prefix, value.get<uint64_t>()});
       break;
 
     case nlohmann::detail::value_t::number_float:
-      out.push_back({prefix, value.get<double>(), {}});
+      out.push_back({prefix, value.get<double>()});
       break;
 
     case nlohmann::detail::value_t::string: {
       auto str = value.get<std::string>();
       if (str.size() < 100) {
-        out.push_back({prefix, PJ::sdk::ValueRef{}, std::move(str)});
-        out.back().value = std::string_view(out.back().owned_string);
+        string_storage.push_back(std::move(str));
+        out.push_back({prefix, std::string_view(string_storage.back())});
       }
       break;
     }
@@ -76,84 +74,78 @@ void flattenJson(
 
 class JsonParser : public PJ::MessageParserPluginBase {
  public:
+  JsonParser() {
+    // Register under the empty key so parse() works even without a prior
+    // bindSchema() call (e.g. in unit tests or hosts that skip schema binding).
+    // bindSchema() re-registers under the concrete type name.
+    registerSchemaHandler("", makeHandler());
+  }
+
   PJ::Status loadConfig(std::string_view config_json) override {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
     if (!cfg.is_discarded()) {
       encoding_hint_ = cfg.value("encoding_hint", std::string{});
       max_array_size_ = cfg.value("max_array_size", std::size_t{0});
       clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
-      // Embedded timestamp options
+      // Embedded timestamp: when set, doParseScalars reports the field's value
+      // as ScalarRecord::ts so the host keys the row by it instead of the
+      // transport receive time.
       use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
       timestamp_field_name_ = cfg.value("timestamp_field_name", std::string("timestamp"));
     }
     return PJ::okStatus();
   }
 
-  PJ::Status parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> payload) override {
-    if (!writeHostBound()) {
-      return PJ::unexpected(std::string("write host not bound"));
+  // Override bindSchema to register a handler for the specific type_name
+  // being bound. The handler table routes parse() → parseScalars() → our
+  // lambda, so no parse() override is needed.
+  PJ::Status bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema) override {
+    auto status = MessageParserPluginBase::bindSchema(type_name, schema);
+    if (!status) {
+      return status;
     }
+    registerSchemaHandler(std::string(type_name), makeHandler());
+    return PJ::okStatus();
+  }
 
-    // Try parsing in order: JSON → CBOR → MessagePack → BSON
-    // (or use encoding_hint_ to skip straight to the right one)
+ private:
+  PJ::sdk::SchemaHandler makeHandler() {
+    return {
+        .object_type = PJ::sdk::BuiltinObjectType::kNone,
+        .parse_scalars = [this](PJ::Timestamp ts, PJ::Span<const uint8_t> payload)
+            -> PJ::Expected<PJ::sdk::ScalarRecord> { return doParseScalars(ts, payload); },
+        .parse_object = nullptr};
+  }
+
+  PJ::Expected<PJ::sdk::ScalarRecord> doParseScalars(PJ::Timestamp host_ts, PJ::Span<const uint8_t> payload) {
     auto json = tryParse(payload);
     if (json.is_discarded()) {
       return PJ::unexpected(std::string("failed to parse payload as JSON/CBOR/MessagePack/BSON"));
     }
 
-    if (json.is_array()) {
-      for (auto& element : json) {
-        auto status = flattenAndAppend(timestamp_ns, element);
-        if (!status) {
-          return status;
-        }
-      }
-      return PJ::okStatus();
-    }
+    // string_storage_ keeps string_view values alive across the call chain.
+    string_storage_.clear();
 
-    return flattenAndAppend(timestamp_ns, json);
+    PJ::sdk::ScalarRecord rec;
+    // Apply the configured embedded timestamp (nullopt -> host keeps its own).
+    rec.ts = extractEmbeddedTimestamp(json, host_ts);
+    flattenJson("", json, max_array_size_, clamp_large_arrays_, rec.fields, string_storage_);
+    return rec;
   }
 
- private:
-  PJ::Status flattenAndAppend(PJ::Timestamp ts, const nlohmann::json& json) {
-    // Extract embedded timestamp if configured
-    PJ::Timestamp effective_ts = ts;
-    if (use_embedded_timestamp_ && json.is_object()) {
-      auto it = json.find(timestamp_field_name_);
-      if (it != json.end() && it->is_number()) {
-        // Assume the value is seconds (with potential fractional part)
-        // Convert to nanoseconds
-        double ts_seconds = it->get<double>();
-        effective_ts = PJ::Timestamp{static_cast<int64_t>(ts_seconds * 1e9)};
-      }
+  // Returns the embedded timestamp from the JSON object when use_embedded_timestamp_
+  // is set and the configured field is present and numeric; otherwise nullopt so
+  // the host keeps the message's own timestamp.
+  std::optional<PJ::Timestamp> extractEmbeddedTimestamp(const nlohmann::json& json, PJ::Timestamp /*host_ts*/) const {
+    if (!use_embedded_timestamp_ || !json.is_object()) {
+      return std::nullopt;
     }
-
-    owned_fields_.clear();
-    flattenJson("", json, max_array_size_, clamp_large_arrays_, owned_fields_);
-
-    // Fix up string_view entries now that the vector won't reallocate.
-    for (auto& f : owned_fields_) {
-      if (!f.owned_string.empty()) {
-        f.value = std::string_view(f.owned_string);
-      }
+    auto it = json.find(timestamp_field_name_);
+    if (it == json.end() || !it->is_number()) {
+      return std::nullopt;
     }
-
-    bound_fields_.clear();
-    bound_fields_.reserve(owned_fields_.size());
-    for (const auto& f : owned_fields_) {
-      auto it = field_cache_.find(f.name);
-      if (it == field_cache_.end()) {
-        auto handle = writeHost().ensureField(f.name, PJ::sdk::typeOf(f.value));
-        if (!handle.has_value()) {
-          return PJ::unexpected(handle.error());
-        }
-        it = field_cache_.emplace(f.name, *handle).first;
-      }
-      bound_fields_.push_back({.field = it->second, .value = f.value});
-    }
-
-    return writeHost().appendBoundRecord(
-        effective_ts, PJ::Span<const PJ::sdk::BoundFieldValue>(bound_fields_.data(), bound_fields_.size()));
+    const double ts_seconds = it->get<double>();
+    return PJ::Timestamp{static_cast<int64_t>(ts_seconds * 1e9)};
   }
 
   nlohmann::json tryParse(PJ::Span<const uint8_t> payload) {
@@ -203,9 +195,9 @@ class JsonParser : public PJ::MessageParserPluginBase {
   bool clamp_large_arrays_ = true;
   bool use_embedded_timestamp_ = false;
   std::string timestamp_field_name_ = "timestamp";
-  std::unordered_map<std::string, PJ::sdk::FieldHandle> field_cache_;
-  std::vector<FlattenedField> owned_fields_;
-  std::vector<PJ::sdk::BoundFieldValue> bound_fields_;
+  // Storage for string_view values in NamedFieldValue — kept alive across
+  // the doParseScalars() → appendRecord() call chain.
+  std::vector<std::string> string_storage_;
 };
 
 }  // namespace
