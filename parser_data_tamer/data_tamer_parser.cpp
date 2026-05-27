@@ -1,5 +1,6 @@
 #include <data_tamer_parser/data_tamer_parser.hpp>
 #include <functional>
+#include <optional>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <string>
 #include <type_traits>
@@ -31,7 +32,7 @@ class DataTamerParserPlugin : public PJ::MessageParserPluginBase {
   }
 
  private:
-  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseScalarsImpl(
+  PJ::Expected<PJ::sdk::ScalarRecord> parseScalarsImpl(
       PJ::Timestamp /*timestamp_ns*/, PJ::Span<const uint8_t> payload) {
     owned_fields_.clear();
 
@@ -87,7 +88,9 @@ class DataTamerParserPlugin : public PJ::MessageParserPluginBase {
     for (const auto& f : owned_fields_) {
       out.push_back({.name = f.name, .value = f.value});
     }
-    return out;
+    // 0.3.1 SchemaHandler::parse_scalars returns a ScalarRecord; ts stays
+    // nullopt so the host keeps the message's own timestamp.
+    return PJ::sdk::ScalarRecord{.ts = std::nullopt, .fields = std::move(out)};
   }
 
   DataTamerParser::Schema schema_;
