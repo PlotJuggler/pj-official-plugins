@@ -19,6 +19,11 @@
 #include "mcap_helpers.hpp"
 #include "mcap_manifest.hpp"
 
+// Vendored parallel-reader fork (contrib/mcap/). Pulled in after reader.hpp
+// so MCAP_IMPLEMENTATION already lit up reader.inl; parallel reader is fully
+// inline and stacks on top.
+#include <mcap/parallel_reader.hpp>  // NOLINT(build/include_order)
+
 namespace {
 
 using McapSummaryInfo = PJ::McapHelpers::McapSummaryInfo;
@@ -151,8 +156,15 @@ inline PJ::sdk::PayloadView readMessageBytesAt(
 class McapSource : public PJ::FileSourceBase {
   // Chunk cache budget. 128 MiB comfortably holds tens of typical 4 MiB
   // chunks so a scrubbing consumer rarely re-decompresses, while staying
-  // well below host memory pressure.
+  // well below host memory pressure. Only the COLD path (post-import lazy
+  // re-decompression) populates this cache — import-time eager fetches
+  // come straight from the parallel reader's pinned chunk via a
+  // non-owning weak_ptr.
   static constexpr size_t kChunkCacheCapacityBytes = 128ULL * 1024 * 1024;
+  // Parallel-import in-flight decompression budget.
+  static constexpr uint64_t kParallelImportBudgetBytes = 256ULL * 1024 * 1024;
+  // Parallel-import worker count.
+  static constexpr unsigned kParallelImportThreadCount = 4;
 
  public:
   PJ_borrowed_dialog_t getDialog() override {
@@ -332,110 +344,176 @@ class McapSource : public PJ::FileSourceBase {
       runtimeHost().showWarning("Parser Error", msg);
     }
 
-    // --- Iterate messages and push raw bytes ---
+    // --- Iterate messages via the parallel reader ---
+    // The fork's parallel reader decompresses chunks on a worker pool ahead
+    // of the merge frontier. Each ReadyChunk is held only while at least one
+    // message from it is being emitted; chunks are evicted by a byte budget
+    // when no longer referenced.
+    //
+    // For each message we capture a NON-OWNING weak_ptr to the chunk in the
+    // fetcher closure. During import, the host's eager-policy invocation of
+    // the fetcher races with the parallel reader's normal pinning: lock()
+    // succeeds, we return a Span into the chunk's bytes. The parser consumes
+    // them synchronously and the locked shared_ptr is released. Memory stays
+    // bounded by the parallel reader's own byte budget.
+    //
+    // After import the parallel reader is destroyed; weak_ptr.lock() returns
+    // null on subsequent invocations and the closure falls back to the cold
+    // path — readMessageBytesAt with the long-lived reader_keeper_, which
+    // re-decompresses the chunk on demand and stores it in the LRU
+    // ChunkCache. True lazy.
     auto on_problem = [this](const mcap::Status& problem) {
       runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, problem.message);
     };
 
-    auto create_message_view = [&]() -> mcap::LinearMessageView {
-      if (used_selective_summary) {
-        auto [data_start, data_end_unused] = reader.byteRange(0);
-        (void)data_end_unused;
-        return mcap::LinearMessageView(reader, data_start, summary.summary_start, 0, mcap::MaxTime, on_problem);
-      }
-      return reader.readMessages(on_problem);
-    };
-
-    auto messages = create_message_view();
     uint64_t msg_count = 0;
-    bool use_log_time = dialog_.useMcapLogTime();
+    const bool use_log_time = dialog_.useMcapLogTime();
 
-    // Build a chunk_offset → (length, start_time, end_time) index from the
-    // summary. The FetchMessageData closure captures the containing chunk's byte
-    // range AND time bounds so the cache loader can construct a
-    // byte-bounded LinearMessageView — O(1) random access instead of
-    // O(N_chunks_before_target).
-    struct ChunkBounds {
+    // Cold-path metadata: byte range + time bounds keyed by chunk file offset,
+    // used by the bounded LinearMessageView inside ChunkCache::loadChunk.
+    struct ChunkMeta {
       uint64_t length;
       mcap::Timestamp ts_start;
       mcap::Timestamp ts_end;
     };
-    std::unordered_map<uint64_t, ChunkBounds> chunk_index;
+    std::unordered_map<uint64_t, ChunkMeta> chunk_meta;
     for (const auto& ci : reader.chunkIndexes()) {
-      chunk_index.emplace(
+      chunk_meta.emplace(
           ci.chunkStartOffset,
-          ChunkBounds{.length = ci.chunkLength, .ts_start = ci.messageStartTime, .ts_end = ci.messageEndTime});
+          ChunkMeta{.length = ci.chunkLength, .ts_start = ci.messageStartTime, .ts_end = ci.messageEndTime});
     }
 
-    for (const auto& msg_view : messages) {
-      auto binding_it = bindings.find(msg_view.channel->id);
-      if (binding_it == bindings.end()) {
-        continue;
-      }
+    // mmap-backed source for the parallel reader; local to importData so its
+    // lifetime is bounded by the inner block below (and the parallel reader
+    // it backs).
+    mcap::MmapReader mmap_reader;
+    if (auto status_mmap = mmap_reader.open(dialog_.filepath()); !status_mmap.ok()) {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kError, std::string("cannot mmap MCAP file: ") + status_mmap.message);
+      return PJ::unexpected(std::string("cannot mmap MCAP file: ") + status_mmap.message);
+    }
 
-      PJ::Timestamp timestamp_ns =
-          static_cast<PJ::Timestamp>(use_log_time ? msg_view.message.logTime : msg_view.message.publishTime);
-
-      // Lookup the containing chunk in the summary-built index.
-      //
-      // Note on RecordOffset semantics inside LinearMessageView: for
-      // messages stored inside a chunk, `messageOffset.offset` is the
-      // **file offset of the containing chunk record** (matching
-      // ChunkIndex::chunkStartOffset), and `messageOffset.chunkOffset`
-      // is the byte position of the message WITHIN the decompressed
-      // chunk body — the field names are misleading. We use `offset`
-      // because that's what indexes into ChunkIndex.
-      const uint64_t chunk_off = msg_view.messageOffset.offset;
-      uint64_t chunk_len = 0;
-      mcap::Timestamp chunk_ts_start = msg_view.message.logTime;
-      mcap::Timestamp chunk_ts_end = msg_view.message.logTime;
-      if (auto rit = chunk_index.find(chunk_off); rit != chunk_index.end()) {
-        chunk_len = rit->second.length;
-        chunk_ts_start = rit->second.ts_start;
-        chunk_ts_end = rit->second.ts_end;
-      }
-
-      // Single uniform call per message. The DataSource hands the host a
-      // FetchMessageData callable (produces the payload bytes when invoked)
-      // and stays out of any further routing. The host applies the
-      // configured ObjectIngestPolicy (kPureLazy / kLazyObjectsEagerScalars / kEager)
-      // to decide whether to invoke the callable now (parse scalars and/or
-      // materialize the object) or only register it for later pulls. The
-      // DataSource never knows which mode is active.
-      //
-      // The lambda captures the open mcap reader + chunk cache + the
-      // chunk's byte range and time bounds. On pull, readMessageBytesAt
-      // returns a Span into the cached chunk buffer; the chunk is
-      // decompressed at most once per cache lifetime.
-      auto push_status = runtimeHost().pushMessage(
-          binding_it->second, timestamp_ns,
-          [reader = reader_keeper_, cache = chunk_cache_, chunk_off, chunk_len, chunk_ts_start, chunk_ts_end,
-           ch = msg_view.channel->id, lt = msg_view.message.logTime]() {
-            return readMessageBytesAt(
-                reader, cache, chunk_off, chunk_off + chunk_len, chunk_ts_start, chunk_ts_end, ch, lt);
-          });
-      if (!push_status) {
+    {
+      mcap::ParallelReader parallel_reader;
+      if (auto pstatus = parallel_reader.open(mmap_reader); !pstatus.ok()) {
         runtimeHost().reportMessage(
-            PJ::DataSourceMessageLevel::kWarning,
-            std::string("push failed on '") + msg_view.channel->topic + "': " + push_status.error());
+            PJ::DataSourceMessageLevel::kWarning, std::string("parallel reader open failed: ") + pstatus.message);
       }
 
-      ++msg_count;
-      if (msg_count % 1000 == 0) {
-        if (!runtimeHost().progressUpdate(msg_count)) {
-          break;
-        }
-        if (runtimeHost().isStopRequested()) {
-          break;
-        }
-      }
-    }
+      mcap::ParallelReadOptions parallel_opts;
+      parallel_opts.read.readOrder = mcap::ReadMessageOptions::ReadOrder::LogTimeOrder;
+      parallel_opts.maxBytesInFlight = kParallelImportBudgetBytes;
+      parallel_opts.threadCount = kParallelImportThreadCount;
+      parallel_opts.read.topicFilter = [selected_topics = dialog_.selectedTopics()](std::string_view topic) {
+        return selected_topics.find(std::string(topic)) != selected_topics.end();
+      };
 
-    // Intentionally NOT closing the reader here. reader_keeper_ stays alive
-    // as a member of the source so the lambdas the host captured during the
-    // message loop can still hit the file when the configured ObjectIngestPolicy
-    // resolves them on pull. The reader closes automatically when the source
-    // itself is destroyed.
+      auto messages = parallel_reader.readMessages(on_problem, parallel_opts);
+      try {
+        // Explicit iterator so we can call currentChunk() per message.
+        for (auto it = messages.begin(); it != messages.end(); ++it) {
+          const auto& msg_view = *it;
+          if (msg_view.channel == nullptr || msg_view.message.data == nullptr) {
+            continue;
+          }
+          auto binding_it = bindings.find(msg_view.channel->id);
+          if (binding_it == bindings.end()) {
+            continue;
+          }
+
+          const PJ::Timestamp timestamp_ns =
+              static_cast<PJ::Timestamp>(use_log_time ? msg_view.message.logTime : msg_view.message.publishTime);
+
+          // RecordOffset semantics in the parallel reader fork:
+          //   .offset       = within-chunk position of the message record
+          //   .chunkOffset  = chunk record's FILE offset (= ChunkIndex::chunkStartOffset)
+          const uint64_t chunk_off = msg_view.messageOffset.chunkOffset.value_or(msg_view.messageOffset.offset);
+          uint64_t chunk_len = 0;
+          mcap::Timestamp chunk_ts_start = msg_view.message.logTime;
+          mcap::Timestamp chunk_ts_end = msg_view.message.logTime;
+          if (auto mit = chunk_meta.find(chunk_off); mit != chunk_meta.end()) {
+            chunk_len = mit->second.length;
+            chunk_ts_start = mit->second.ts_start;
+            chunk_ts_end = mit->second.ts_end;
+          }
+
+          // Compute the message data's byte offset within the chunk's
+          // decompressed buffer. msg_view.message.data points into
+          // ReadyChunk::bytes (a vector<std::byte>); the offset is stable
+          // and reusable when the closure later locks the weak_ptr.
+          auto chunk_handle = it.currentChunk();
+          const size_t data_size = msg_view.message.dataSize;
+          size_t data_offset = 0;
+          bool hot_path_eligible = false;
+          if (auto chunk = chunk_handle.lock()) {
+            const auto* chunk_base = reinterpret_cast<const uint8_t*>(chunk->bytes.data());
+            const auto* msg_data = reinterpret_cast<const uint8_t*>(msg_view.message.data);
+            if (msg_data >= chunk_base && msg_data + data_size <= chunk_base + chunk->bytes.size()) {
+              data_offset = static_cast<size_t>(msg_data - chunk_base);
+              hot_path_eligible = true;
+            }
+          }
+          if (!hot_path_eligible) {
+            chunk_handle = {};  // disable the hot path; fetcher will go cold
+          }
+
+          // Fetcher closure: weak_ptr is NON-OWNING. If the host stores this
+          // for a later lazy pull, the parallel reader is gone by then,
+          // lock() returns null, and we fall through to readMessageBytesAt
+          // (which lazily decompresses + caches via ChunkCache).
+          auto push_status = runtimeHost().pushMessage(
+              binding_it->second, timestamp_ns,
+              [chunk_handle, data_offset, data_size, reader = reader_keeper_, cache = chunk_cache_, chunk_off,
+               chunk_len, chunk_ts_start, chunk_ts_end, ch = msg_view.channel->id,
+               lt = msg_view.message.logTime]() -> PJ::sdk::PayloadView {
+                // Hot path: chunk still pinned by parallel reader's worker
+                // pool. Return a Span into its bytes with the locked
+                // shared_ptr as anchor. Anchor is released when the host
+                // finishes consuming this PayloadView.
+                if (auto chunk = chunk_handle.lock()) {
+                  if (data_offset + data_size <= chunk->bytes.size()) {
+                    const auto* base = reinterpret_cast<const uint8_t*>(chunk->bytes.data());
+                    return PJ::sdk::PayloadView{
+                        PJ::Span<const uint8_t>(base + data_offset, data_size),
+                        PJ::sdk::BufferAnchor{std::move(chunk)},
+                    };
+                  }
+                }
+                // Cold path: chunk evicted or parallel reader gone. Lazy
+                // re-decompress via ChunkCache.
+                return readMessageBytesAt(
+                    reader, cache, chunk_off, chunk_off + chunk_len, chunk_ts_start, chunk_ts_end, ch, lt);
+              });
+          if (!push_status) {
+            runtimeHost().reportMessage(
+                PJ::DataSourceMessageLevel::kWarning,
+                std::string("push failed on '") + msg_view.channel->topic + "': " + push_status.error());
+          }
+
+          ++msg_count;
+          if (msg_count % 1000 == 0) {
+            if (!runtimeHost().progressUpdate(msg_count)) {
+              break;
+            }
+            if (runtimeHost().isStopRequested()) {
+              break;
+            }
+          }
+        }
+      } catch (const std::exception& e) {
+        runtimeHost().reportMessage(
+            PJ::DataSourceMessageLevel::kError,
+            std::string("MCAP import aborted: ") + e.what() + " (loaded " + std::to_string(msg_count) + " messages)");
+      } catch (...) {
+        runtimeHost().reportMessage(
+            PJ::DataSourceMessageLevel::kError,
+            std::string("MCAP import aborted on unknown error (loaded ") + std::to_string(msg_count) + " messages)");
+      }
+    }  // ~messages, ~parallel_reader run here, before mmap_reader destructs at scope end.
+
+    // Intentionally NOT closing reader_keeper_: it stays alive past
+    // importData() so the captured fetcher closures can re-decompress on
+    // demand via the cold path. It closes when the source destructs.
     return PJ::okStatus();
   }
 
