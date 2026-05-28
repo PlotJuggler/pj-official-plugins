@@ -15,6 +15,7 @@
 
 #include "parquet_dialog.hpp"
 #include "parquet_manifest.hpp"
+#include "pj_arrow_helpers/arrow_helpers.hpp"
 
 namespace {
 
@@ -47,51 +48,13 @@ int64_t adjustTimezoneNanos(int64_t nanos, const std::string& tz_str) {
   }
 }
 
-bool isSupportedArrowType(arrow::Type::type t) {
-  return t == arrow::Type::BOOL || t == arrow::Type::INT8 || t == arrow::Type::INT16 || t == arrow::Type::INT32 ||
-         t == arrow::Type::INT64 || t == arrow::Type::UINT8 || t == arrow::Type::UINT16 || t == arrow::Type::UINT32 ||
-         t == arrow::Type::UINT64 || t == arrow::Type::FLOAT || t == arrow::Type::DOUBLE ||
-         t == arrow::Type::TIMESTAMP || t == arrow::Type::STRING || t == arrow::Type::LARGE_STRING;
-}
-
-/// Map Arrow type to PJ::PrimitiveType for field pre-registration.
-PJ::PrimitiveType arrowTypeToPrimitive(arrow::Type::type t) {
-  switch (t) {
-    case arrow::Type::BOOL:
-      return PJ::PrimitiveType::kBool;
-    case arrow::Type::INT8:
-      return PJ::PrimitiveType::kInt8;
-    case arrow::Type::INT16:
-      return PJ::PrimitiveType::kInt16;
-    case arrow::Type::INT32:
-      return PJ::PrimitiveType::kInt32;
-    case arrow::Type::INT64:
-      return PJ::PrimitiveType::kInt64;
-    case arrow::Type::UINT8:
-      return PJ::PrimitiveType::kUint8;
-    case arrow::Type::UINT16:
-      return PJ::PrimitiveType::kUint16;
-    case arrow::Type::UINT32:
-      return PJ::PrimitiveType::kUint32;
-    case arrow::Type::UINT64:
-      return PJ::PrimitiveType::kUint64;
-    case arrow::Type::FLOAT:
-      return PJ::PrimitiveType::kFloat32;
-    case arrow::Type::DOUBLE:
-      return PJ::PrimitiveType::kFloat64;
-    case arrow::Type::TIMESTAMP:
-      return PJ::PrimitiveType::kInt64;  // nanoseconds
-    case arrow::Type::STRING:
-      return PJ::PrimitiveType::kString;
-    case arrow::Type::LARGE_STRING:
-      return PJ::PrimitiveType::kString;
-    default:
-      return PJ::PrimitiveType::kFloat64;
-  }
-}
+using pj::arrow_helpers::arrowTypeToPrimitive;
+using pj::arrow_helpers::isSupportedArrowType;
 
 /// Extract a native-typed ValueRef from an Arrow array cell.
-/// Returns NullValue for nulls and unsupported types.
+/// Returns NullValue for nulls and unsupported types. Parquet-specific
+/// variant: applies the host timezone adjustment to TIMESTAMP cells, which
+/// the generic pj::arrow_helpers::getArrowValueRef does not.
 PJ::sdk::ValueRef getArrowValueRef(
     const std::shared_ptr<arrow::Array>& array, int64_t index, arrow::Type::type arrow_type) {
   if (array->IsNull(index)) {

@@ -1,8 +1,8 @@
 from conan import ConanFile
 
 
-class DataLoadParquetConan(ConanFile):
-    name = "data_load_parquet"
+class DataLoadLerobotConan(ConanFile):
+    name = "data_load_lerobot"
     version = "0"
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain"
@@ -10,7 +10,6 @@ class DataLoadParquetConan(ConanFile):
         "plotjuggler_core/[>=0.4.1 <0.5.0]",
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
-        "date/3.0.4",
         "arrow/23.0.1",
     )
     default_options = {
