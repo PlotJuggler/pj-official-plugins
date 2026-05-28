@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+#include "parquet_helpers.hpp"
+
 namespace {
 
 // Generated at configure time
@@ -202,7 +204,7 @@ class ParquetDialog : public PJ::DialogPluginTyped {
     // 1. Try Arrow TIMESTAMP type or well-known name
     // 2. Fall back to previously selected column name (cross-file history within session)
     if (selected_column_index_ < 0) {
-      selected_column_index_ = findTimestampColumn(schema);
+      selected_column_index_ = PJ::ParquetHelpers::findTimestampColumn(schema);
     }
     if (selected_column_index_ < 0 && !last_selected_column_name_.empty()) {
       for (int i = 0; i < static_cast<int>(column_names_.size()); ++i) {
@@ -212,28 +214,6 @@ class ParquetDialog : public PJ::DialogPluginTyped {
         }
       }
     }
-  }
-
-  static int findTimestampColumn(const std::shared_ptr<arrow::Schema>& schema) {
-    // Prefer Arrow TIMESTAMP typed columns
-    for (int i = 0; i < schema->num_fields(); i++) {
-      if (schema->field(i)->type()->id() == arrow::Type::TIMESTAMP) {
-        return i;
-      }
-    }
-    // Fallback: match by name (case-insensitive)
-    static const std::vector<std::string> kTimestampNames = {
-        "timestamp", "time", "t", "ts", "time_stamp", "datetime", "date_time", "_timestamp", "_time"};
-    for (int i = 0; i < schema->num_fields(); i++) {
-      std::string name = schema->field(i)->name();
-      std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::tolower(c); });
-      for (const auto& candidate : kTimestampNames) {
-        if (name == candidate) {
-          return i;
-        }
-      }
-    }
-    return -1;
   }
 
   // Cross-file column history: remembers the last accepted column name within the session

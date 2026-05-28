@@ -23,7 +23,6 @@ namespace {
 /// these fields, and closes — no frames are decoded.
 struct Mp4Metadata {
   std::optional<int64_t> creation_time_ns;  // epoch ns; nullopt if absent / unparseable
-  int64_t duration_ns = 0;                  // 0 if unknown
 };
 
 [[nodiscard]] PJ::Expected<Mp4Metadata> readMp4Metadata(const std::string& path) {
@@ -42,22 +41,18 @@ struct Mp4Metadata {
     meta.creation_time_ns = pj_mp4::parseIso8601ToEpochNs(tag->value);
   }
 
-  // AVFormatContext::duration is in AV_TIME_BASE units (microseconds).
-  if (ctx->duration > 0) {
-    meta.duration_ns = ctx->duration * 1000;
-  }
-
   avformat_close_input(&ctx);
   return meta;
 }
 
 /// Generic MP4 loader. For each .mp4 the user opens, reads container metadata
-/// (creation_time, duration) via libavformat without decoding any
-/// frames, then registers ONE sdk::AssetVideo ObjectStore entry pointing at
-/// the file. pj_app's Media2DDockWidget deserializes the entry, opens
-/// FileVideoSource on file_path, applies time_origin_ns as wall-clock anchor
-/// (when the MP4 carried a creation_time tag), and drives the decoder from
-/// the global tracker (PJ4 ARCH §4.5).
+/// (creation_time only) via libavformat without decoding any frames, then
+/// registers ONE sdk::AssetVideo ObjectStore entry pointing at the file.
+/// pj_app's Media2DDockWidget deserializes the entry, opens FileVideoSource
+/// on file_path, applies time_origin_ns as wall-clock anchor (when the MP4
+/// carried a creation_time tag), and drives the decoder from the global
+/// tracker (PJ4 ARCH §4.5). File duration is reported by the FFmpeg backend
+/// on open; AssetVideo no longer carries a duration field.
 class Mp4Source : public PJ::FileSourceBase {
  public:
   uint64_t extraCapabilities() const override {
@@ -106,9 +101,7 @@ class Mp4Source : public PJ::FileSourceBase {
     if (meta.creation_time_ns.has_value()) {
       asset.time_origin_ns = PJ::Timestamp{*meta.creation_time_ns};
     }
-    if (meta.duration_ns > 0) {
-      asset.duration_ns = meta.duration_ns;
-    }
+    // start_ns / end_ns left absent → whole file is playable (single-clip MP4).
     // media_type, width, height, frame_rate: defaults → PJ4 probes via FFmpeg.
 
     // ObjectStore timestamp equals time_origin_ns per AssetVideo contract;

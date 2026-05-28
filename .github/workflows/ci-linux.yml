@@ -53,3 +53,74 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
           cmake --build build/Release --config Release
           ctest --test-dir build/Release -V --output-on-failure
+
+  # Emit the matrix list of plugins to build in isolation. A plugin is
+  # included when it has its own conanfile.py and a manifest.json, and does
+  # not provide a release.sh (release.sh-driven plugins, e.g. data_stream_ros2,
+  # have their own dedicated workflow).
+  discover-plugins:
+    runs-on: ubuntu-22.04
+    outputs:
+      plugins: ${{ steps.list.outputs.plugins }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: List plugins
+        id: list
+        shell: bash
+        run: |
+          plugins=()
+          for d in */conanfile.py; do
+            plugin=$(dirname "$d")
+            [[ -f "$plugin/release.sh" ]] && continue
+            [[ -f "$plugin/manifest.json" ]] || continue
+            plugins+=("$plugin")
+          done
+          json=$(printf '%s\n' "${plugins[@]}" | jq -R . | jq -sc .)
+          echo "plugins=$json" >> "$GITHUB_OUTPUT"
+          echo "Discovered plugins: $json"
+
+  # Build each plugin in isolation against its own conanfile.py, matching the
+  # path the release workflow takes. Catches per-plugin recipe gaps that the
+  # monolithic `build` job above masks because root conanfile.txt is a
+  # superset.
+  per-plugin-build:
+    needs: discover-plugins
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: ${{ fromJson(needs.discover-plugins.outputs.plugins) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Conan
+        uses: conan-io/setup-conan@v1.3.0
+        with:
+          cache_packages: true
+
+      - name: Install cmake and ninja
+        run: pip install cmake ninja
+
+      - name: Configure plotjuggler cloudsmith Conan remote
+        env:
+          CLOUDSMITH_USER: ${{ secrets.CLOUDSMITH_USER }}
+          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+        shell: bash
+        run: |
+          conan profile detect --force
+          conan remote add plotjuggler-cloudsmith \
+            https://conan.cloudsmith.io/plotjuggler/plotjuggler --force
+          conan remote login plotjuggler-cloudsmith \
+            "$CLOUDSMITH_USER" -p "$CLOUDSMITH_API_KEY"
+
+      - name: Build ${{ matrix.plugin }}
+        shell: bash
+        run: ./build.sh "${{ matrix.plugin }}"
+
+      - name: Test ${{ matrix.plugin }}
+        shell: bash
+        run: ctest --test-dir "build/${{ matrix.plugin }}/Release" --output-on-failure -V
