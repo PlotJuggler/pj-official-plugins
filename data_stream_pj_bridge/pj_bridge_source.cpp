@@ -1,11 +1,3 @@
-#include <pj_base/sdk/data_source_patterns.hpp>
-
-#include "pj_bridge_dialog.hpp"
-#include "pj_bridge_manifest.hpp"
-#include "pj_bridge_protocol.hpp"
-
-#include <nlohmann/json.hpp>
-
 #include <ixwebsocket/IXWebSocket.h>
 
 #include <atomic>
@@ -14,11 +6,16 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
+#include <pj_base/sdk/data_source_patterns.hpp>
 #include <queue>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "pj_bridge_dialog.hpp"
+#include "pj_bridge_manifest.hpp"
+#include "pj_bridge_protocol.hpp"
 
 namespace {
 
@@ -54,7 +51,9 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     return PJ::okStatus();
   }
 
-  std::string saveConfig() const override { return dialog_.saveConfig(); }
+  std::string saveConfig() const override {
+    return dialog_.saveConfig();
+  }
 
   PJ::Status loadConfig(std::string_view config_json) override {
     if (!dialog_.loadConfig(config_json)) {
@@ -104,15 +103,19 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
       while (std::chrono::steady_clock::now() < deadline) {
         auto state = socket_->getReadyState();
-        if (state == ix::ReadyState::Open) break;
-        if (state == ix::ReadyState::Closed) break;
+        if (state == ix::ReadyState::Open) {
+          break;
+        }
+        if (state == ix::ReadyState::Closed) {
+          break;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
       }
 
       if (socket_->getReadyState() != ix::ReadyState::Open) {
         socket_->stop();
-        return PJ::unexpected(std::string("failed to connect to PJ bridge at ") +
-                              address_ + ":" + std::to_string(port_));
+        return PJ::unexpected(
+            std::string("failed to connect to PJ bridge at ") + address_ + ":" + std::to_string(port_));
       }
     }
 
@@ -142,14 +145,13 @@ class PjBridgeSource : public PJ::StreamSourceBase {
 
     // Wait for the subscribe response (contains schemas)
     auto sub_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (!subscribe_response_received_ &&
-           std::chrono::steady_clock::now() < sub_deadline) {
+    while (!subscribe_response_received_ && std::chrono::steady_clock::now() < sub_deadline) {
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
     if (!subscribe_response_received_) {
-      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning,
-                                  "Subscribe response not received; parsers may lack schemas");
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kWarning, "Subscribe response not received; parsers may lack schemas");
     }
 
     return PJ::okStatus();
@@ -173,20 +175,23 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       auto& frame = batch.front();
 
       std::vector<RawMessage> messages;
-      if (parseBinaryFrame(frame.data.data(), frame.data.size(),
-                           messages, decompress_buffer_)) {
+      if (parseBinaryFrame(frame.data.data(), frame.data.size(), messages, decompress_buffer_)) {
         for (const auto& msg : messages) {
           auto it = bindings_.find(msg.topic_name);
           if (it != bindings_.end()) {
-            // Copy into the lambda: msg.cdr_data points into decompress_buffer_
-            // which is reused for the next frame, so we cannot hold a raw pointer.
-            auto bytes = std::vector<uint8_t>(msg.cdr_data, msg.cdr_data + msg.cdr_size);
+            // msg.cdr_data points into decompress_buffer_ which is reused for the
+            // next frame, so we own the bytes through a shared_ptr-owned buffer.
+            // The fetcher must be idempotent (ObjectIngestPolicy may dispatch
+            // it more than once / asynchronously) and must return a PayloadView
+            // whose anchor keeps the bytes alive past the call.
+            auto payload = std::make_shared<std::vector<uint8_t>>(msg.cdr_data, msg.cdr_data + msg.cdr_size);
             auto status = runtimeHost().pushMessage(
-                it->second, PJ::Timestamp{msg.timestamp_ns},
-                [b = std::move(bytes)]() mutable { return std::move(b); });
+                it->second, PJ::Timestamp{msg.timestamp_ns}, [payload]() -> PJ::sdk::PayloadView {
+                  return PJ::sdk::PayloadView{PJ::Span<const uint8_t>(payload->data(), payload->size()), payload};
+                });
             if (!status) {
-              runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning,
-                                         "Failed to push message: " + status.error());
+              runtimeHost().reportMessage(
+                  PJ::DataSourceMessageLevel::kWarning, "Failed to push message: " + status.error());
             }
           }
         }
@@ -210,7 +215,9 @@ class PjBridgeSource : public PJ::StreamSourceBase {
  private:
   void onTextMessage(const std::string& message) {
     auto json = nlohmann::json::parse(message, nullptr, false);
-    if (json.is_discarded() || !json.is_object()) return;
+    if (json.is_discarded() || !json.is_object()) {
+      return;
+    }
 
     auto status = json.value("status", std::string{});
 
@@ -250,8 +257,9 @@ class PjBridgeSource : public PJ::StreamSourceBase {
           if (binding) {
             bindings_[topic_name] = *binding;
           } else {
-            runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning,
-                                       "Failed to create parser for " + topic_name + ": " + binding.error());
+            runtimeHost().reportMessage(
+                PJ::DataSourceMessageLevel::kWarning,
+                "Failed to create parser for " + topic_name + ": " + binding.error());
           }
         }
       }
@@ -260,9 +268,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       if (json.contains("failures") && json["failures"].is_array()) {
         for (const auto& f : json["failures"]) {
           runtimeHost().reportMessage(
-              PJ::DataSourceMessageLevel::kWarning,
-              "Subscription failed: " + f.value("topic", std::string{"?"}) +
-              " — " + f.value("reason", std::string{"unknown"}));
+              PJ::DataSourceMessageLevel::kWarning, "Subscription failed: " + f.value("topic", std::string{"?"}) +
+                                                        " — " + f.value("reason", std::string{"unknown"}));
         }
       }
 
@@ -272,8 +279,9 @@ class PjBridgeSource : public PJ::StreamSourceBase {
 
   void onBinaryMessage(const std::string& message) {
     QueuedFrame frame;
-    frame.data.assign(reinterpret_cast<const uint8_t*>(message.data()),
-                      reinterpret_cast<const uint8_t*>(message.data()) + message.size());
+    frame.data.assign(
+        reinterpret_cast<const uint8_t*>(message.data()),
+        reinterpret_cast<const uint8_t*>(message.data()) + message.size());
     std::lock_guard<std::mutex> lock(queue_mutex_);
     frame_queue_.push(std::move(frame));
   }
