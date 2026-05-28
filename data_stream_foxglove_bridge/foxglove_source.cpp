@@ -1,11 +1,3 @@
-#include <pj_base/sdk/data_source_patterns.hpp>
-
-#include "foxglove_dialog.hpp"
-#include "foxglove_manifest.hpp"
-#include "foxglove_protocol.hpp"
-
-#include <nlohmann/json.hpp>
-
 #include <ixwebsocket/IXWebSocket.h>
 
 #include <atomic>
@@ -14,11 +6,16 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
+#include <pj_base/sdk/data_source_patterns.hpp>
 #include <queue>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "foxglove_dialog.hpp"
+#include "foxglove_manifest.hpp"
+#include "foxglove_protocol.hpp"
 
 namespace {
 
@@ -44,7 +41,9 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;
   }
 
-  std::string saveConfig() const override { return dialog_.saveConfig(); }
+  std::string saveConfig() const override {
+    return dialog_.saveConfig();
+  }
 
   PJ::Status loadConfig(std::string_view config_json) override {
     if (!dialog_.loadConfig(config_json)) {
@@ -96,15 +95,19 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
       while (std::chrono::steady_clock::now() < deadline) {
         auto state = socket_->getReadyState();
-        if (state == ix::ReadyState::Open) break;
-        if (state == ix::ReadyState::Closed) break;
+        if (state == ix::ReadyState::Open) {
+          break;
+        }
+        if (state == ix::ReadyState::Closed) {
+          break;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
       }
 
       if (socket_->getReadyState() != ix::ReadyState::Open) {
         socket_->stop();
-        return PJ::unexpected(std::string("failed to connect to Foxglove bridge at ") +
-                              address_ + ":" + std::to_string(port_));
+        return PJ::unexpected(
+            std::string("failed to connect to Foxglove bridge at ") + address_ + ":" + std::to_string(port_));
       }
     }
 
@@ -183,12 +186,17 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
       auto it = binding_by_subscription_.find(msg.subscription_id);
       if (it != binding_by_subscription_.end()) {
-        auto status = runtimeHost().pushRawMessage(
-            it->second, PJ::Timestamp{msg.timestamp_ns},
-            PJ::Span<const uint8_t>(msg.payload.data(), msg.payload.size()));
+        // Move the per-message payload into a shared_ptr-owned buffer so the
+        // PayloadView fetcher remains valid after onPoll returns
+        // (ObjectIngestPolicy may defer dispatch beyond this call).
+        auto payload = std::make_shared<std::vector<uint8_t>>(std::move(msg.payload));
+        auto status =
+            runtimeHost().pushMessage(it->second, PJ::Timestamp{msg.timestamp_ns}, [payload]() -> PJ::sdk::PayloadView {
+              return PJ::sdk::PayloadView{PJ::Span<const uint8_t>(payload->data(), payload->size()), payload};
+            });
         if (!status) {
-          runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning,
-                                     "Failed to push message: " + status.error());
+          runtimeHost().reportMessage(
+              PJ::DataSourceMessageLevel::kWarning, "Failed to push message: " + status.error());
         }
       }
 
@@ -226,7 +234,9 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     std::vector<std::string> parser_errors;
 
     for (const auto& ch : selected_channels_) {
-      if (!isUsableChannel(ch)) continue;
+      if (!isUsableChannel(ch)) {
+        continue;
+      }
 
       advertised_channels_[ch.id] = ch.topic;
 
@@ -256,16 +266,19 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     }
 
     if (!parser_errors.empty()) {
-      std::string msg = "Failed to create parser for " +
-                        std::to_string(parser_errors.size()) + " channel(s):\n";
-      for (const auto& e : parser_errors) msg += "  - " + e + "\n";
+      std::string msg = "Failed to create parser for " + std::to_string(parser_errors.size()) + " channel(s):\n";
+      for (const auto& e : parser_errors) {
+        msg += "  - " + e + "\n";
+      }
       runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, msg);
     }
   }
 
   void onTextMessage(const std::string& message) {
     auto json = nlohmann::json::parse(message, nullptr, false);
-    if (json.is_discarded() || !json.is_object()) return;
+    if (json.is_discarded() || !json.is_object()) {
+      return;
+    }
 
     std::string op = json.value("op", "");
 
@@ -293,7 +306,9 @@ class FoxgloveSource : public PJ::StreamSourceBase {
             break;
           }
         }
-        if (!user_selected || !isUsableChannel(ch)) continue;
+        if (!user_selected || !isUsableChannel(ch)) {
+          continue;
+        }
 
         uint32_t sub_id = next_subscription_id_++;
         subscriptions_[sub_id] = ch.id;
@@ -323,9 +338,10 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
       // Report all parser binding failures in a single aggregated message
       if (!parser_errors.empty()) {
-        std::string msg = "Failed to create parser for " +
-                          std::to_string(parser_errors.size()) + " channel(s):\n";
-        for (const auto& e : parser_errors) msg += "  - " + e + "\n";
+        std::string msg = "Failed to create parser for " + std::to_string(parser_errors.size()) + " channel(s):\n";
+        for (const auto& e : parser_errors) {
+          msg += "  - " + e + "\n";
+        }
         runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, msg);
       }
     }
@@ -353,7 +369,9 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       }
       if (!removed_topics.empty()) {
         std::string msg = "Server removed " + std::to_string(removed_topics.size()) + " channel(s):";
-        for (const auto& t : removed_topics) msg += " " + t;
+        for (const auto& t : removed_topics) {
+          msg += " " + t;
+        }
         runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, msg);
       }
     }
@@ -363,8 +381,12 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       int level = json.value("level", 0);
       std::string status_msg = json.value("message", "");
       auto pj_level = PJ::DataSourceMessageLevel::kInfo;
-      if (level == 1) pj_level = PJ::DataSourceMessageLevel::kWarning;
-      if (level >= 2) pj_level = PJ::DataSourceMessageLevel::kError;
+      if (level == 1) {
+        pj_level = PJ::DataSourceMessageLevel::kWarning;
+      }
+      if (level >= 2) {
+        pj_level = PJ::DataSourceMessageLevel::kError;
+      }
       runtimeHost().reportMessage(pj_level, "Foxglove server: " + status_msg);
     }
   }
@@ -372,15 +394,13 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   void onDisconnected() {
     if (connected_) {
       connected_ = false;
-      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning,
-                                  "Foxglove bridge connection lost");
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, "Foxglove bridge connection lost");
     }
   }
 
   void onBinaryMessage(const std::string& message) {
     BinaryFrame frame;
-    if (!parseBinaryFrame(reinterpret_cast<const uint8_t*>(message.data()),
-                          message.size(), frame)) {
+    if (!parseBinaryFrame(reinterpret_cast<const uint8_t*>(message.data()), message.size(), frame)) {
       return;
     }
 
