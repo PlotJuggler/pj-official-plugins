@@ -8,7 +8,10 @@
 /// The Context is torn down on accept/reject — the source plugin builds its
 /// own Context in `onStart()` independently.
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
+#include <chrono>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -42,32 +45,46 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    std::vector<std::string> labels;
-    {
-      std::lock_guard<std::mutex> lock(topics_mutex_);
-      labels.reserve(discovered_topics_.size());
-      for (const auto& [name, type] : discovered_topics_) {
-        labels.push_back(formatLabel(name, type));
+    auto visible = visibleTopics();
+    std::vector<std::vector<std::string>> rows;
+    std::vector<std::string> ordered_names;
+    rows.reserve(visible.size());
+    ordered_names.reserve(visible.size());
+    for (const auto& [name, type] : visible) {
+      rows.push_back({name, type});
+      ordered_names.push_back(name);
+    }
+    wd.setTableHeaders("listRosTopics", {"Topic", "Datatype"});
+    wd.setTableRows("listRosTopics", rows);
+
+    // Translate the name-keyed selection set into the row indices the host
+    // uses to restore selection on a QTableWidget. Single pass over both
+    // vectors is fine — selections are tiny in practice.
+    std::vector<int> selected_rows;
+    selected_rows.reserve(selected_topics_.size());
+    for (const auto& [sel_name, sel_type] : selected_topics_) {
+      (void)sel_type;
+      for (std::size_t i = 0; i < ordered_names.size(); ++i) {
+        if (ordered_names[i] == sel_name) {
+          selected_rows.push_back(static_cast<int>(i));
+          break;
+        }
       }
     }
-    wd.setListItems("listWidget", labels);
+    wd.setSelectedRows("listRosTopics", selected_rows);
 
-    std::vector<std::string> selected_labels;
-    selected_labels.reserve(selected_topics_.size());
-    for (const auto& [name, type] : selected_topics_) {
-      selected_labels.push_back(formatLabel(name, type));
-    }
-    wd.setSelectedItems("listWidget", selected_labels);
-
-    wd.setButtonText("buttonRefresh", discovery_running_ ? "Stop discovery" : "Start discovery");
-
-    if (discovery_running_) {
-      wd.setText("labelStatus", "Discovering... " + std::to_string(labels.size()) + " topic(s) found");
-    } else if (labels.empty()) {
-      wd.setText("labelStatus", "Click 'Start discovery' to scan ROS 2 topics");
+    if (rows.empty()) {
+      wd.setText("labelStatus", "Scanning ROS 2 topics...");
     } else {
-      wd.setText("labelStatus", std::to_string(labels.size()) + " topic(s) found — discovery stopped");
+      wd.setText("labelStatus", std::to_string(rows.size()) + " topic(s) found");
     }
+
+    wd.setChecked("checkBoxTimestamp", use_embedded_timestamp_);
+    wd.setValue("spinBoxArraySize", max_array_size_);
+    wd.setChecked("radioMaxClamp", !discard_large_arrays_);
+    wd.setChecked("radioMaxDiscard", discard_large_arrays_);
+    wd.setChecked("checkBoxStringSuffix", remove_suffix_from_strings_);
+    wd.setChecked("checkBoxStringBoolean", boolean_strings_to_number_);
 
     wd.setOkEnabled(!selected_topics_.empty());
     return wd.toJson();
@@ -77,36 +94,94 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     if (!discovery_running_) {
       return false;
     }
+    // Match PJ3 cadence: poll get_topic_names_and_types() once per second.
+    // The engine drives onTick at ~50 ms; throttle to 1 Hz here.
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_refresh_ < std::chrono::seconds(1)) {
+      return false;
+    }
+    last_refresh_ = now;
     refreshFromNode();
     return topics_dirty_.exchange(false);
   }
 
-  bool onClicked(std::string_view widget_name) override {
-    if (widget_name == "buttonRefresh") {
-      if (discovery_running_) {
-        stopDiscovery();
-      } else {
-        startDiscovery();
-      }
+  bool onTextChanged(std::string_view widget_name, std::string_view text) override {
+    if (widget_name == "lineEditFilter") {
+      filter_.assign(text);
+      // Force widget_data to rebuild — visibleTopics now resolves differently.
       return true;
     }
     return false;
   }
 
-  bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
-    if (widget_name != "listWidget") {
+  bool onToggled(std::string_view widget_name, bool checked) override {
+    if (widget_name == "checkBoxTimestamp") {
+      use_embedded_timestamp_ = checked;
       return false;
     }
+    if (widget_name == "radioMaxClamp") {
+      if (checked) {
+        discard_large_arrays_ = false;
+      }
+      return false;
+    }
+    if (widget_name == "radioMaxDiscard") {
+      if (checked) {
+        discard_large_arrays_ = true;
+      }
+      return false;
+    }
+    if (widget_name == "checkBoxStringSuffix") {
+      remove_suffix_from_strings_ = checked;
+      return false;
+    }
+    if (widget_name == "checkBoxStringBoolean") {
+      boolean_strings_to_number_ = checked;
+      return false;
+    }
+    return false;
+  }
+
+  using PJ::DialogPluginTyped::onValueChanged;  // keep the double overload visible
+  bool onValueChanged(std::string_view widget_name, int value) override {
+    if (widget_name == "spinBoxArraySize") {
+      max_array_size_ = value;
+      return false;
+    }
+    return false;
+  }
+
+  bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
+    if (widget_name != "listRosTopics") {
+      return false;
+    }
+    // The host emits column-0 strings (topic names) for QTableWidget — and
+    // only for the rows currently visible under the active filter. Preserve
+    // selections of topics filtered out of view; otherwise typing in the
+    // filter then changing visible-row selection would silently drop
+    // previously-selected hidden topics.
+    auto visible = visibleTopics();
+    auto isVisible = [&](const std::string& name) {
+      for (const auto& [vname, vtype] : visible) {
+        if (vname == name) {
+          return true;
+        }
+      }
+      return false;
+    };
+
     std::vector<std::pair<std::string, std::string>> next;
-    next.reserve(selected.size());
-    {
-      std::lock_guard<std::mutex> lock(topics_mutex_);
-      for (const auto& label : selected) {
-        for (const auto& [name, type] : discovered_topics_) {
-          if (formatLabel(name, type) == label) {
-            next.emplace_back(name, type);
-            break;
-          }
+    next.reserve(selected_topics_.size() + selected.size());
+    for (const auto& [name, type] : selected_topics_) {
+      if (!isVisible(name)) {
+        next.emplace_back(name, type);
+      }
+    }
+    for (const auto& name : selected) {
+      for (const auto& [vname, vtype] : visible) {
+        if (vname == name) {
+          next.emplace_back(vname, vtype);
+          break;
         }
       }
     }
@@ -129,28 +204,72 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     }
     nlohmann::json cfg;
     cfg["selected_topics"] = arr;
+    // Keys mirror parser_ros's loadConfig schema. The streamer forwards this
+    // sub-object verbatim as PJ_parser_binding_request_t::parser_config_json.
+    cfg["parser_config"] = {
+        {"use_embedded_timestamp", use_embedded_timestamp_},
+        {"max_array_size", max_array_size_},
+        {"discard_large_arrays", discard_large_arrays_},
+        {"boolean_strings_to_number", boolean_strings_to_number_},
+        {"remove_suffix_from_strings", remove_suffix_from_strings_},
+    };
     return cfg.dump();
   }
 
   bool loadConfig(std::string_view config_json) override {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-    if (cfg.is_discarded()) {
-      return false;
-    }
-    selected_topics_.clear();
-    if (cfg.contains("selected_topics") && cfg["selected_topics"].is_array()) {
-      for (const auto& entry : cfg["selected_topics"]) {
-        if (entry.is_object()) {
-          selected_topics_.emplace_back(entry.value("name", std::string{}), entry.value("type", std::string{}));
+    if (!cfg.is_discarded()) {
+      selected_topics_.clear();
+      if (cfg.contains("selected_topics") && cfg["selected_topics"].is_array()) {
+        for (const auto& entry : cfg["selected_topics"]) {
+          if (entry.is_object()) {
+            selected_topics_.emplace_back(entry.value("name", std::string{}), entry.value("type", std::string{}));
+          }
         }
       }
+      if (cfg.contains("parser_config") && cfg["parser_config"].is_object()) {
+        const auto& pc = cfg["parser_config"];
+        use_embedded_timestamp_ = pc.value("use_embedded_timestamp", use_embedded_timestamp_);
+        max_array_size_ = pc.value("max_array_size", max_array_size_);
+        discard_large_arrays_ = pc.value("discard_large_arrays", discard_large_arrays_);
+        boolean_strings_to_number_ = pc.value("boolean_strings_to_number", boolean_strings_to_number_);
+        remove_suffix_from_strings_ = pc.value("remove_suffix_from_strings", remove_suffix_from_strings_);
+      }
     }
-    return true;
+    // PJ3 parity: open the dialog with discovery already running. onTick()
+    // throttles get_topic_names_and_types() to 1 Hz; the user sees topics
+    // appear in the list while it is open. stopDiscovery() runs on
+    // accept/reject and in the destructor.
+    startDiscovery();
+    return !cfg.is_discarded();
   }
 
  private:
-  static std::string formatLabel(const std::string& name, const std::string& type) {
-    return name + "  [" + type + "]";
+  // Snapshot of topics passing the current filter, ordered as the table
+  // displays them. Locks the topics mutex briefly; callers must not already
+  // hold it.
+  std::vector<std::pair<std::string, std::string>> visibleTopics() {
+    std::string needle = filter_;
+    std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+
+    std::vector<std::pair<std::string, std::string>> out;
+    std::lock_guard<std::mutex> lock(topics_mutex_);
+    out.reserve(discovered_topics_.size());
+    for (const auto& [name, type] : discovered_topics_) {
+      if (!needle.empty()) {
+        std::string haystack = name;
+        std::transform(haystack.begin(), haystack.end(), haystack.begin(), [](unsigned char c) {
+          return static_cast<char>(std::tolower(c));
+        });
+        if (haystack.find(needle) == std::string::npos) {
+          continue;
+        }
+      }
+      out.emplace_back(name, type);
+    }
+    return out;
   }
 
   void startDiscovery() {
@@ -168,6 +287,7 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
       return;
     }
     discovery_running_ = true;
+    last_refresh_ = std::chrono::steady_clock::now();
     refreshFromNode();
   }
 
@@ -216,10 +336,25 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   std::shared_ptr<rclcpp::Node> node_;
   std::atomic<bool> discovery_running_{false};
   std::atomic<bool> topics_dirty_{false};
+  std::chrono::steady_clock::time_point last_refresh_{};
 
   std::mutex topics_mutex_;
   std::map<std::string, std::string> discovered_topics_;
   std::vector<std::pair<std::string, std::string>> selected_topics_;
+
+  // Current filter substring (case-insensitive match on topic name); empty
+  // means "show everything". In-session only — not persisted via saveConfig.
+  std::string filter_;
+
+  // Parser options — forwarded verbatim to parser_ros via the streamer's
+  // ensureParserBinding call (PJ_parser_binding_request_t::parser_config_json).
+  // Defaults mirror parser_ros's RosParser defaults so an unsent JSON behaves
+  // identically to "send the parser's own defaults".
+  bool use_embedded_timestamp_ = false;
+  int max_array_size_ = 500;
+  bool discard_large_arrays_ = false;
+  bool boolean_strings_to_number_ = false;
+  bool remove_suffix_from_strings_ = false;
 };
 
 }  // namespace
