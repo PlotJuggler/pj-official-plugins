@@ -31,12 +31,10 @@ TEST(FoxgloveProtocolTest, ParseBinaryFrameValid) {
   frame.push_back(kMessageDataOpcode);  // opcode = 0x01
 
   uint32_t sub_id = 42;
-  frame.insert(frame.end(), reinterpret_cast<uint8_t*>(&sub_id),
-               reinterpret_cast<uint8_t*>(&sub_id) + 4);
+  frame.insert(frame.end(), reinterpret_cast<uint8_t*>(&sub_id), reinterpret_cast<uint8_t*>(&sub_id) + 4);
 
   uint64_t log_time = 1234567890123456789ULL;
-  frame.insert(frame.end(), reinterpret_cast<uint8_t*>(&log_time),
-               reinterpret_cast<uint8_t*>(&log_time) + 8);
+  frame.insert(frame.end(), reinterpret_cast<uint8_t*>(&log_time), reinterpret_cast<uint8_t*>(&log_time) + 8);
 
   // Payload: "hello"
   const char* payload = "hello";
@@ -69,12 +67,10 @@ TEST(FoxgloveProtocolTest, ParseBinaryFrameEmptyPayload) {
   frame.push_back(kMessageDataOpcode);
 
   uint32_t sub_id = 1;
-  frame.insert(frame.end(), reinterpret_cast<uint8_t*>(&sub_id),
-               reinterpret_cast<uint8_t*>(&sub_id) + 4);
+  frame.insert(frame.end(), reinterpret_cast<uint8_t*>(&sub_id), reinterpret_cast<uint8_t*>(&sub_id) + 4);
 
   uint64_t log_time = 0;
-  frame.insert(frame.end(), reinterpret_cast<uint8_t*>(&log_time),
-               reinterpret_cast<uint8_t*>(&log_time) + 8);
+  frame.insert(frame.end(), reinterpret_cast<uint8_t*>(&log_time), reinterpret_cast<uint8_t*>(&log_time) + 8);
 
   BinaryFrame out;
   ASSERT_TRUE(parseBinaryFrame(frame.data(), frame.size(), out));
@@ -91,7 +87,9 @@ TEST(FoxgloveProtocolTest, BuildSubscribeMessageSingle) {
 
 TEST(FoxgloveProtocolTest, BuildSubscribeMessageMultiple) {
   auto msg = buildSubscribeMessage({{1, 100}, {2, 200}, {3, 300}});
-  EXPECT_EQ(msg, R"({"op":"subscribe","subscriptions":[{"id":1,"channelId":100},{"id":2,"channelId":200},{"id":3,"channelId":300}]})");
+  EXPECT_EQ(
+      msg,
+      R"({"op":"subscribe","subscriptions":[{"id":1,"channelId":100},{"id":2,"channelId":200},{"id":3,"channelId":300}]})");
 }
 
 TEST(FoxgloveProtocolTest, BuildSubscribeMessageEmpty) {

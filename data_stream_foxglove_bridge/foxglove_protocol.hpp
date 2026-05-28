@@ -29,10 +29,14 @@ constexpr size_t kBinaryFrameHeaderSize = 1 + 4 + 8;  // opcode + sub_id + log_t
 
 /// Parse a binary Foxglove data frame. Returns false if buffer too small or wrong opcode.
 inline bool parseBinaryFrame(const uint8_t* data, size_t size, BinaryFrame& out) {
-  if (size < kBinaryFrameHeaderSize) return false;
+  if (size < kBinaryFrameHeaderSize) {
+    return false;
+  }
 
   out.opcode = data[0];
-  if (out.opcode != kMessageDataOpcode) return false;
+  if (out.opcode != kMessageDataOpcode) {
+    return false;
+  }
 
   std::memcpy(&out.subscription_id, data + 1, 4);
   std::memcpy(&out.log_time_ns, data + 5, 8);
@@ -43,13 +47,14 @@ inline bool parseBinaryFrame(const uint8_t* data, size_t size, BinaryFrame& out)
 }
 
 /// Build a JSON subscribe message for given subscription IDs and channel IDs.
-inline std::string buildSubscribeMessage(
-    const std::vector<std::pair<uint32_t, uint64_t>>& subscriptions) {
+inline std::string buildSubscribeMessage(const std::vector<std::pair<uint32_t, uint64_t>>& subscriptions) {
   std::string json = R"({"op":"subscribe","subscriptions":[)";
   for (size_t i = 0; i < subscriptions.size(); i++) {
-    if (i > 0) json += ',';
-    json += R"({"id":)" + std::to_string(subscriptions[i].first) +
-            R"(,"channelId":)" + std::to_string(subscriptions[i].second) + '}';
+    if (i > 0) {
+      json += ',';
+    }
+    json += R"({"id":)" + std::to_string(subscriptions[i].first) + R"(,"channelId":)" +
+            std::to_string(subscriptions[i].second) + '}';
   }
   json += "]}";
   return json;
@@ -59,7 +64,9 @@ inline std::string buildSubscribeMessage(
 inline std::string buildUnsubscribeMessage(const std::vector<uint32_t>& subscription_ids) {
   std::string json = R"({"op":"unsubscribe","subscriptionIds":[)";
   for (size_t i = 0; i < subscription_ids.size(); i++) {
-    if (i > 0) json += ',';
+    if (i > 0) {
+      json += ',';
+    }
     json += std::to_string(subscription_ids[i]);
   }
   json += "]}";
@@ -68,8 +75,8 @@ inline std::string buildUnsubscribeMessage(const std::vector<uint32_t>& subscrip
 
 /// Check if a channel is a CDR-encoded ROS2 stream this plugin can handle.
 inline bool isUsableChannel(const ChannelInfo& ch) {
-  return ch.encoding == "cdr" && ch.schema_encoding == "ros2msg" &&
-         !ch.schema.empty() && !ch.schema_name.empty() && !ch.topic.empty();
+  return ch.encoding == "cdr" && ch.schema_encoding == "ros2msg" && !ch.schema.empty() && !ch.schema_name.empty() &&
+         !ch.topic.empty();
 }
 
 }  // namespace PJ::FoxgloveProtocol

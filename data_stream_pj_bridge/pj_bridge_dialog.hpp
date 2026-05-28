@@ -1,21 +1,20 @@
 #pragma once
 
-#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
-#include <pj_plugins/sdk/widget_data.hpp>
-
-#include "pj_bridge_manifest.hpp"
-#include "websocket_client_ui.hpp"
-
 #include <ixwebsocket/IXWebSocket.h>
-#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
+#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
 #include <vector>
+
+#include "pj_bridge_manifest.hpp"
+#include "websocket_client_ui.hpp"
 
 namespace {
 
@@ -40,7 +39,9 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
  public:
-  ~PjBridgeDialog() override { disconnect(); }
+  ~PjBridgeDialog() override {
+    disconnect();
+  }
 
   /// Transfer ownership of the live socket to the caller (source plugin).
   /// Returns nullptr if the dialog is not connected.
@@ -51,9 +52,13 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
   // --- Dialog protocol ---
 
-  std::string manifest() const override { return kPjBridgeManifest; }
+  std::string manifest() const override {
+    return kPjBridgeManifest;
+  }
 
-  std::string ui_content() const override { return kWebSocketClientUi; }
+  std::string ui_content() const override {
+    return kWebSocketClientUi;
+  }
 
   std::string widget_data() override {
     PJ::WidgetData wd;
@@ -79,7 +84,9 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       std::lock_guard<std::mutex> lock(topics_mutex_);
       rows.reserve(topics_.size());
       for (const auto& t : topics_) {
-        if (!matchesFilter(t)) continue;
+        if (!matchesFilter(t)) {
+          continue;
+        }
         rows.push_back({t.name, t.type});
       }
     }
@@ -182,7 +189,9 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   void onAccepted(std::string_view /*json*/) override {
     // Do NOT disconnect — the source's onStart() will steal the socket.
   }
-  void onRejected() override { disconnect(); }
+  void onRejected() override {
+    disconnect();
+  }
 
   std::string saveConfig() const override {
     nlohmann::json cfg;
@@ -210,7 +219,9 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
   bool loadConfig(std::string_view config_json) override {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-    if (cfg.is_discarded()) return false;
+    if (cfg.is_discarded()) {
+      return false;
+    }
     address_ = cfg.value("address", std::string("127.0.0.1"));
     port_ = cfg.value("port", 9871);
     max_array_size_ = cfg.value("max_array_size", 100);
@@ -284,12 +295,18 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
   void onServerMessage(const std::string& message) {
     auto json = nlohmann::json::parse(message, nullptr, false);
-    if (json.is_discarded() || !json.is_object()) return;
+    if (json.is_discarded() || !json.is_object()) {
+      return;
+    }
 
     auto status = json.value("status", std::string{});
-    if (status != "success") return;
+    if (status != "success") {
+      return;
+    }
 
-    if (!json.contains("topics") || !json["topics"].is_array()) return;
+    if (!json.contains("topics") || !json["topics"].is_array()) {
+      return;
+    }
 
     // Merge current selection with persisted selection
     std::vector<std::string> wanted = selected_topic_names_;
@@ -297,7 +314,9 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     std::lock_guard<std::mutex> lock(topics_mutex_);
     topics_.clear();
     for (const auto& v : json["topics"]) {
-      if (!v.is_object()) continue;
+      if (!v.is_object()) {
+        continue;
+      }
       DiscoveredTopic dt;
       dt.name = v.value("name", std::string{});
       dt.type = v.value("type", std::string{});
@@ -326,7 +345,9 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     tick_dirty_ = true;
   }
 
-  void applyFilter() { topics_dirty_ = true; }
+  void applyFilter() {
+    topics_dirty_ = true;
+  }
 
   /// Snapshot the full schema info for selected topics so saveConfig()
   /// doesn't depend on topics_ (which gets cleared on disconnect).
@@ -346,23 +367,27 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   /// Case-insensitive substring match on topic name and type.
   /// Selected topics always match (so they remain visible even when filtered).
   bool matchesFilter(const DiscoveredTopic& t) const {
-    if (filter_.empty()) return true;
+    if (filter_.empty()) {
+      return true;
+    }
     // Always show selected topics regardless of filter
     for (const auto& sel : selected_topic_names_) {
-      if (sel == t.name) return true;
+      if (sel == t.name) {
+        return true;
+      }
     }
     // Case-insensitive search
     std::string lower_filter = filter_;
-    std::transform(lower_filter.begin(), lower_filter.end(), lower_filter.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
+    std::transform(lower_filter.begin(), lower_filter.end(), lower_filter.begin(), [](unsigned char c) {
+      return std::tolower(c);
+    });
     std::string lower_name = t.name;
-    std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
+    std::transform(
+        lower_name.begin(), lower_name.end(), lower_name.begin(), [](unsigned char c) { return std::tolower(c); });
     std::string lower_type = t.type;
-    std::transform(lower_type.begin(), lower_type.end(), lower_type.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
-    return lower_name.find(lower_filter) != std::string::npos ||
-           lower_type.find(lower_filter) != std::string::npos;
+    std::transform(
+        lower_type.begin(), lower_type.end(), lower_type.begin(), [](unsigned char c) { return std::tolower(c); });
+    return lower_name.find(lower_filter) != std::string::npos || lower_type.find(lower_filter) != std::string::npos;
   }
 
   // --- State ---

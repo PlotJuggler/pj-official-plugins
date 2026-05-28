@@ -1,21 +1,19 @@
 #pragma once
 
-#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
-#include <pj_plugins/sdk/widget_data.hpp>
-
-#include "datastream_mqtt_ui.hpp"
-#include "mqtt_manifest.hpp"
-
-#include <nlohmann/json.hpp>
-
 #include <mqtt/async_client.h>
 
 #include <algorithm>
 #include <mutex>
+#include <nlohmann/json.hpp>
+#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/widget_data.hpp>
 #include <set>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "datastream_mqtt_ui.hpp"
+#include "mqtt_manifest.hpp"
 
 namespace {
 
@@ -33,11 +31,17 @@ class MqttDialog : public PJ::DialogPluginTyped {
 
   // --- Dialog protocol ---
 
-  std::string manifest() const override { return kMqttManifest; }
+  std::string manifest() const override {
+    return kMqttManifest;
+  }
 
-  std::string ui_content() const override { return kDataStreamMqttUi; }
+  std::string ui_content() const override {
+    return kDataStreamMqttUi;
+  }
 
-  ~MqttDialog() override { disconnectBroker(); }
+  ~MqttDialog() override {
+    disconnectBroker();
+  }
 
   std::string widget_data() override {
     PJ::WidgetData wd;
@@ -52,10 +56,10 @@ class MqttDialog : public PJ::DialogPluginTyped {
 
     // Connect button state + error feedback
     wd.setButtonText("buttonConnect", connected_ ? "Disconnect" : "Connect");
-    wd.setText("label_12",
-               last_connect_error_.empty()
-                   ? (connected_ ? "Connected — select topics below" : "Select a specific topic:")
-                   : ("Connection error: " + last_connect_error_));
+    wd.setText(
+        "label_12", last_connect_error_.empty()
+                        ? (connected_ ? "Connected — select topics below" : "Select a specific topic:")
+                        : ("Connection error: " + last_connect_error_));
 
     // Protocol version combo
     wd.setCurrentIndex("comboBoxVersion", protocol_version_index_);
@@ -146,9 +150,18 @@ class MqttDialog : public PJ::DialogPluginTyped {
   }
 
   bool onFileSelected(std::string_view widget_name, std::string_view path) override {
-    if (widget_name == "buttonLoadServerCertificate") { ca_cert_path_ = std::string(path); return true; }
-    if (widget_name == "buttonLoadClientCertificate") { client_cert_path_ = std::string(path); return true; }
-    if (widget_name == "buttonLoadPrivateKey") { private_key_path_ = std::string(path); return true; }
+    if (widget_name == "buttonLoadServerCertificate") {
+      ca_cert_path_ = std::string(path);
+      return true;
+    }
+    if (widget_name == "buttonLoadClientCertificate") {
+      client_cert_path_ = std::string(path);
+      return true;
+    }
+    if (widget_name == "buttonLoadPrivateKey") {
+      private_key_path_ = std::string(path);
+      return true;
+    }
     return false;
   }
 
@@ -176,8 +189,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
-  bool onSelectionChanged(std::string_view widget_name,
-                          const std::vector<std::string>& selected) override {
+  bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name == "listWidget") {
       selected_topics_ = selected;
       return false;
@@ -194,14 +206,27 @@ class MqttDialog : public PJ::DialogPluginTyped {
       }
       return true;
     }
-    if (widget_name == "buttonEraseServerCertificate") { ca_cert_path_.clear(); return true; }
-    if (widget_name == "buttonEraseClientCertificate") { client_cert_path_.clear(); return true; }
-    if (widget_name == "buttonErasePrivateKey") { private_key_path_.clear(); return true; }
+    if (widget_name == "buttonEraseServerCertificate") {
+      ca_cert_path_.clear();
+      return true;
+    }
+    if (widget_name == "buttonEraseClientCertificate") {
+      client_cert_path_.clear();
+      return true;
+    }
+    if (widget_name == "buttonErasePrivateKey") {
+      private_key_path_.clear();
+      return true;
+    }
     return false;
   }
 
-  void onAccepted(std::string_view /*json*/) override { disconnectBroker(); }
-  void onRejected() override { disconnectBroker(); }
+  void onAccepted(std::string_view /*json*/) override {
+    disconnectBroker();
+  }
+  void onRejected() override {
+    disconnectBroker();
+  }
 
   std::string saveConfig() const override {
     nlohmann::json cfg;
@@ -223,7 +248,9 @@ class MqttDialog : public PJ::DialogPluginTyped {
 
   bool loadConfig(std::string_view config_json) override {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-    if (cfg.is_discarded()) return false;
+    if (cfg.is_discarded()) {
+      return false;
+    }
     broker_address_ = cfg.value("address", std::string("localhost"));
     port_ = cfg.value("port", 1883);
     username_ = cfg.value("username", std::string{});
@@ -239,7 +266,9 @@ class MqttDialog : public PJ::DialogPluginTyped {
     if (cfg.contains("selected_topics") && cfg["selected_topics"].is_array()) {
       selected_topics_.clear();
       for (const auto& t : cfg["selected_topics"]) {
-        if (t.is_string()) selected_topics_.push_back(t.get<std::string>());
+        if (t.is_string()) {
+          selected_topics_.push_back(t.get<std::string>());
+        }
       }
     }
     return true;
@@ -294,9 +323,15 @@ class MqttDialog : public PJ::DialogPluginTyped {
       }
       if (use_ssl_) {
         mqtt::ssl_options ssl_opts;
-        if (!ca_cert_path_.empty()) ssl_opts.set_trust_store(ca_cert_path_);
-        if (!client_cert_path_.empty()) ssl_opts.set_key_store(client_cert_path_);
-        if (!private_key_path_.empty()) ssl_opts.set_private_key(private_key_path_);
+        if (!ca_cert_path_.empty()) {
+          ssl_opts.set_trust_store(ca_cert_path_);
+        }
+        if (!client_cert_path_.empty()) {
+          ssl_opts.set_key_store(client_cert_path_);
+        }
+        if (!private_key_path_.empty()) {
+          ssl_opts.set_private_key(private_key_path_);
+        }
         opts.set_ssl(ssl_opts);
       }
 
@@ -319,8 +354,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
         if (discovery_client_->is_connected()) {
           discovery_client_->disconnect()->wait();
         }
-      } catch (...) {
-      }
+      } catch (...) {}
       discovery_client_.reset();
     }
     connected_ = false;

@@ -1,16 +1,13 @@
 #include "ulog_params_dialog.hpp"
 
-#include <pj_plugins/sdk/widget_data.hpp>
-
-#include <ulog_cpp/data_container.hpp>
-#include <ulog_cpp/reader.hpp>
-
-#include <nlohmann/json.hpp>
-
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <nlohmann/json.hpp>
+#include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
+#include <ulog_cpp/data_container.hpp>
+#include <ulog_cpp/reader.hpp>
 #include <vector>
 
 // Generated at configure time
@@ -24,14 +21,12 @@ namespace ulog_detail {
 std::string infoValueToString(const ulog_cpp::MessageInfo& info) {
   try {
     return info.value().as<std::string>();
-  } catch (...) {
-  }
+  } catch (...) {}
   try {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%g", info.value().as<double>());
     return buf;
-  } catch (...) {
-  }
+  } catch (...) {}
   return "N/A";
 }
 
@@ -40,9 +35,13 @@ void ULogParamsDialog::setFilePath(const std::string& filepath) {
   parseFile();
 }
 
-std::string ULogParamsDialog::manifest() const { return kUlogManifest; }
+std::string ULogParamsDialog::manifest() const {
+  return kUlogManifest;
+}
 
-std::string ULogParamsDialog::ui_content() const { return kULogParamsUi; }
+std::string ULogParamsDialog::ui_content() const {
+  return kULogParamsUi;
+}
 
 std::string ULogParamsDialog::widget_data() {
   PJ::WidgetData wd;
@@ -68,9 +67,13 @@ std::string ULogParamsDialog::saveConfig() const {
 
 bool ULogParamsDialog::loadConfig(std::string_view config_json) {
   auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-  if (cfg.is_discarded()) return false;
+  if (cfg.is_discarded()) {
+    return false;
+  }
   filepath_ = cfg.value("filepath", std::string{});
-  if (!filepath_.empty()) parseFile();
+  if (!filepath_.empty()) {
+    parseFile();
+  }
   return true;
 }
 
@@ -79,13 +82,16 @@ void ULogParamsDialog::parseFile() {
   param_rows_.clear();
   log_rows_.clear();
 
-  if (filepath_.empty()) return;
+  if (filepath_.empty()) {
+    return;
+  }
 
   std::ifstream file(filepath_, std::ios::binary);
-  if (!file.is_open()) return;
+  if (!file.is_open()) {
+    return;
+  }
 
-  auto data_container =
-      std::make_shared<ulog_cpp::DataContainer>(ulog_cpp::DataContainer::StorageConfig::FullLog);
+  auto data_container = std::make_shared<ulog_cpp::DataContainer>(ulog_cpp::DataContainer::StorageConfig::FullLog);
   ulog_cpp::Reader reader{data_container};
 
   static constexpr size_t kChunkSize = 65536;
@@ -93,7 +99,9 @@ void ULogParamsDialog::parseFile() {
   while (file) {
     file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(kChunkSize));
     auto count = static_cast<size_t>(file.gcount());
-    if (count == 0) break;
+    if (count == 0) {
+      break;
+    }
     reader.readChunk(buffer.data(), static_cast<int>(count));
   }
 

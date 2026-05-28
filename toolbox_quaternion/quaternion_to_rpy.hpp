@@ -18,19 +18,25 @@ class QuaternionToRPYConverter {
     yaw_offset_ = 0;
   }
 
-  void setScale(double scale) { scale_ = scale; }
-  void setUnwrap(bool unwrap) { unwrap_ = unwrap; }
+  void setScale(double scale) {
+    scale_ = scale;
+  }
+  void setUnwrap(bool unwrap) {
+    unwrap_ = unwrap;
+  }
 
-  [[nodiscard]] double scale() const { return scale_; }
-  [[nodiscard]] bool unwrap() const { return unwrap_; }
+  [[nodiscard]] double scale() const {
+    return scale_;
+  }
+  [[nodiscard]] bool unwrap() const {
+    return unwrap_;
+  }
 
   /// Convert a single quaternion sample to RPY.
   /// @param index Sample index (0 = first point, used for unwrap logic).
   /// @param quat  Input quaternion {x, y, z, w}.
   /// @param rpy   Output {roll, pitch, yaw} in radians (before scale).
-  void convert(size_t index,
-               const std::array<double, 4>& quat,
-               std::array<double, 3>& rpy) {
+  void convert(size_t index, const std::array<double, 4>& quat, std::array<double, 3>& rpy) {
     double qx = quat[0];
     double qy = quat[1];
     double qz = quat[2];
@@ -53,9 +59,7 @@ class QuaternionToRPYConverter {
 
     // Pitch (y-axis rotation).
     double sinp = 2.0 * (qw * qy - qz * qx);
-    double pitch = (std::abs(sinp) >= 1.0)
-                       ? std::copysign(kHalfPi, sinp)
-                       : std::asin(sinp);
+    double pitch = (std::abs(sinp) >= 1.0) ? std::copysign(kHalfPi, sinp) : std::asin(sinp);
 
     // Yaw (z-axis rotation).
     double siny_cosp = 2.0 * (qw * qz + qx * qy);
@@ -73,9 +77,7 @@ class QuaternionToRPYConverter {
     prev_pitch_ = pitch;
     prev_yaw_ = yaw;
 
-    rpy = {scale_ * (roll + roll_offset_),
-            scale_ * (pitch + pitch_offset_),
-            scale_ * (yaw + yaw_offset_)};
+    rpy = {scale_ * (roll + roll_offset_), scale_ * (pitch + pitch_offset_), scale_ * (yaw + yaw_offset_)};
   }
 
   static constexpr double kPi = 3.14159265358979323846;

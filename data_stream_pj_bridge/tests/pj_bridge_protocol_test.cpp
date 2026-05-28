@@ -33,21 +33,18 @@ std::vector<uint8_t> buildTestFrame(const std::vector<RawMessage>& messages) {
   for (const auto& msg : messages) {
     // topic_len (2 bytes)
     auto topic_len = static_cast<uint16_t>(msg.topic_name.size());
-    payload.insert(payload.end(), reinterpret_cast<uint8_t*>(&topic_len),
-                   reinterpret_cast<uint8_t*>(&topic_len) + 2);
+    payload.insert(payload.end(), reinterpret_cast<uint8_t*>(&topic_len), reinterpret_cast<uint8_t*>(&topic_len) + 2);
 
     // topic (N bytes)
     payload.insert(payload.end(), msg.topic_name.begin(), msg.topic_name.end());
 
     // timestamp_ns (8 bytes)
     auto ts = static_cast<uint64_t>(msg.timestamp_ns);
-    payload.insert(payload.end(), reinterpret_cast<uint8_t*>(&ts),
-                   reinterpret_cast<uint8_t*>(&ts) + 8);
+    payload.insert(payload.end(), reinterpret_cast<uint8_t*>(&ts), reinterpret_cast<uint8_t*>(&ts) + 8);
 
     // cdr_len (4 bytes)
     auto cdr_len = static_cast<uint32_t>(msg.cdr_size);
-    payload.insert(payload.end(), reinterpret_cast<uint8_t*>(&cdr_len),
-                   reinterpret_cast<uint8_t*>(&cdr_len) + 4);
+    payload.insert(payload.end(), reinterpret_cast<uint8_t*>(&cdr_len), reinterpret_cast<uint8_t*>(&cdr_len) + 4);
 
     // cdr_data (M bytes)
     if (msg.cdr_data && msg.cdr_size > 0) {
@@ -58,28 +55,24 @@ std::vector<uint8_t> buildTestFrame(const std::vector<RawMessage>& messages) {
   // Compress with ZSTD
   size_t compress_bound = ZSTD_compressBound(payload.size());
   std::vector<uint8_t> compressed(compress_bound);
-  size_t compressed_size =
-      ZSTD_compress(compressed.data(), compress_bound, payload.data(), payload.size(), 1);
+  size_t compressed_size = ZSTD_compress(compressed.data(), compress_bound, payload.data(), payload.size(), 1);
   compressed.resize(compressed_size);
 
   // Build header: magic(4) + msg_count(4) + uncompressed_size(4) + flags(4)
   std::vector<uint8_t> frame;
 
   uint32_t magic = kMagic;
-  frame.insert(frame.end(), reinterpret_cast<uint8_t*>(&magic),
-               reinterpret_cast<uint8_t*>(&magic) + 4);
+  frame.insert(frame.end(), reinterpret_cast<uint8_t*>(&magic), reinterpret_cast<uint8_t*>(&magic) + 4);
 
   auto msg_count = static_cast<uint32_t>(messages.size());
-  frame.insert(frame.end(), reinterpret_cast<uint8_t*>(&msg_count),
-               reinterpret_cast<uint8_t*>(&msg_count) + 4);
+  frame.insert(frame.end(), reinterpret_cast<uint8_t*>(&msg_count), reinterpret_cast<uint8_t*>(&msg_count) + 4);
 
   auto uncompressed_size = static_cast<uint32_t>(payload.size());
-  frame.insert(frame.end(), reinterpret_cast<uint8_t*>(&uncompressed_size),
-               reinterpret_cast<uint8_t*>(&uncompressed_size) + 4);
+  frame.insert(
+      frame.end(), reinterpret_cast<uint8_t*>(&uncompressed_size), reinterpret_cast<uint8_t*>(&uncompressed_size) + 4);
 
   uint32_t flags = 0;
-  frame.insert(frame.end(), reinterpret_cast<uint8_t*>(&flags),
-               reinterpret_cast<uint8_t*>(&flags) + 4);
+  frame.insert(frame.end(), reinterpret_cast<uint8_t*>(&flags), reinterpret_cast<uint8_t*>(&flags) + 4);
 
   // Append compressed payload
   frame.insert(frame.end(), compressed.begin(), compressed.end());

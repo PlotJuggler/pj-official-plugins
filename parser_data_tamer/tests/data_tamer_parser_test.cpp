@@ -1,17 +1,15 @@
-#include "pj_plugins/host/message_parser_library.hpp"
-
 #include <gtest/gtest.h>
-
-#include <data_tamer_parser/data_tamer_parser.hpp>
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <data_tamer_parser/data_tamer_parser.hpp>
 #include <string>
 #include <vector>
 
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/testing/parser_write_recorder.hpp"
+#include "pj_plugins/host/message_parser_library.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
 
 #ifndef PJ_DATA_TAMER_PARSER_PLUGIN_PATH
@@ -48,15 +46,16 @@ struct DTFixture {
 
 const PJ::sdk::testing::RecordedField* findField(const PJ::sdk::testing::RecordedRow& row, const std::string& name) {
   for (const auto& f : row.fields) {
-    if (f.name == name) return &f;
+    if (f.name == name) {
+      return &f;
+    }
   }
   return nullptr;
 }
 
 // Build a DataTamer binary snapshot payload:
 //   uint32_t mask_size | active_mask bytes | uint32_t payload_size | payload bytes
-std::vector<uint8_t> buildSnapshot(const DataTamerParser::Schema& schema,
-                                   const std::vector<double>& values) {
+std::vector<uint8_t> buildSnapshot(const DataTamerParser::Schema& schema, const std::vector<double>& values) {
   // All fields active: mask = all 1s.
   size_t num_fields = schema.fields.size();
   size_t mask_bytes = (num_fields + 7) / 8;
@@ -191,9 +190,9 @@ TEST(DataTamerParserTest, EmptyPayload) {
     auto* p = reinterpret_cast<const uint8_t*>(&val);
     payload.insert(payload.end(), p, p + 4);
   };
-  push32(1);           // mask_size = 1
+  push32(1);             // mask_size = 1
   payload.push_back(0);  // mask = 0 (field inactive)
-  push32(0);           // payload_size = 0
+  push32(0);             // payload_size = 0
 
   ASSERT_TRUE(f.parse(payload));
   // No fields emitted since the field is inactive.

@@ -17,10 +17,9 @@
 
 #include "../parquet_helpers.hpp"
 
-#include <gtest/gtest.h>
-
 #include <arrow/api.h>
 #include <arrow/builder.h>
+#include <gtest/gtest.h>
 
 namespace {
 
@@ -161,8 +160,7 @@ TEST(ParquetHelpersTest, FindTimestampColumnByNameCaseInsensitive) {
 
 TEST(ParquetHelpersTest, FindTimestampColumnVariousNames) {
   // Test various timestamp name patterns
-  std::vector<std::string> names = {"time", "t", "ts", "time_stamp", "datetime",
-                                     "date_time", "_timestamp", "_time"};
+  std::vector<std::string> names = {"time", "t", "ts", "time_stamp", "datetime", "date_time", "_timestamp", "_time"};
   for (const auto& name : names) {
     auto schema = arrow::schema({
         arrow::field("value", arrow::float64()),
@@ -175,7 +173,7 @@ TEST(ParquetHelpersTest, FindTimestampColumnVariousNames) {
 TEST(ParquetHelpersTest, FindTimestampColumnPrefersType) {
   // Type should be preferred over name
   auto schema = arrow::schema({
-      arrow::field("timestamp", arrow::int64()),  // Name match
+      arrow::field("timestamp", arrow::int64()),                       // Name match
       arrow::field("value", arrow::timestamp(arrow::TimeUnit::NANO)),  // Type match
   });
   EXPECT_EQ(findTimestampColumn(schema), 1);  // Should pick column 1 (type match)
@@ -192,8 +190,7 @@ TEST(ParquetHelpersTest, FindTimestampColumnNotFound) {
 // --- getTimestampNanos ---
 
 TEST(ParquetHelpersTest, GetTimestampNanosFromNano) {
-  arrow::TimestampBuilder builder(arrow::timestamp(arrow::TimeUnit::NANO),
-                                   arrow::default_memory_pool());
+  arrow::TimestampBuilder builder(arrow::timestamp(arrow::TimeUnit::NANO), arrow::default_memory_pool());
   ASSERT_TRUE(builder.Append(1234567890123456789LL).ok());
   std::shared_ptr<arrow::Array> array;
   ASSERT_TRUE(builder.Finish(&array).ok());
@@ -202,8 +199,7 @@ TEST(ParquetHelpersTest, GetTimestampNanosFromNano) {
 }
 
 TEST(ParquetHelpersTest, GetTimestampNanosFromMicro) {
-  arrow::TimestampBuilder builder(arrow::timestamp(arrow::TimeUnit::MICRO),
-                                   arrow::default_memory_pool());
+  arrow::TimestampBuilder builder(arrow::timestamp(arrow::TimeUnit::MICRO), arrow::default_memory_pool());
   ASSERT_TRUE(builder.Append(1234567890123LL).ok());
   std::shared_ptr<arrow::Array> array;
   ASSERT_TRUE(builder.Finish(&array).ok());
@@ -212,8 +208,7 @@ TEST(ParquetHelpersTest, GetTimestampNanosFromMicro) {
 }
 
 TEST(ParquetHelpersTest, GetTimestampNanosFromMilli) {
-  arrow::TimestampBuilder builder(arrow::timestamp(arrow::TimeUnit::MILLI),
-                                   arrow::default_memory_pool());
+  arrow::TimestampBuilder builder(arrow::timestamp(arrow::TimeUnit::MILLI), arrow::default_memory_pool());
   ASSERT_TRUE(builder.Append(1234567890LL).ok());
   std::shared_ptr<arrow::Array> array;
   ASSERT_TRUE(builder.Finish(&array).ok());
@@ -222,8 +217,7 @@ TEST(ParquetHelpersTest, GetTimestampNanosFromMilli) {
 }
 
 TEST(ParquetHelpersTest, GetTimestampNanosFromSecond) {
-  arrow::TimestampBuilder builder(arrow::timestamp(arrow::TimeUnit::SECOND),
-                                   arrow::default_memory_pool());
+  arrow::TimestampBuilder builder(arrow::timestamp(arrow::TimeUnit::SECOND), arrow::default_memory_pool());
   ASSERT_TRUE(builder.Append(1234567890LL).ok());
   std::shared_ptr<arrow::Array> array;
   ASSERT_TRUE(builder.Finish(&array).ok());

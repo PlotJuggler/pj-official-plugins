@@ -1,19 +1,18 @@
 #pragma once
 
-#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
-#include <pj_plugins/sdk/widget_data.hpp>
-
-#include "foxglove_client_ui.hpp"
-#include "foxglove_manifest.hpp"
-
 #include <ixwebsocket/IXWebSocket.h>
-#include <nlohmann/json.hpp>
 
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
+#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
 #include <vector>
+
+#include "foxglove_client_ui.hpp"
+#include "foxglove_manifest.hpp"
 
 namespace {
 
@@ -34,7 +33,9 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
  public:
-  ~FoxgloveDialog() override { disconnect(); }
+  ~FoxgloveDialog() override {
+    disconnect();
+  }
 
   /// Transfer ownership of the live socket to the caller (source plugin).
   std::unique_ptr<ix::WebSocket> takeSocket() {
@@ -44,9 +45,13 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
 
   // --- Dialog protocol ---
 
-  std::string manifest() const override { return kFoxgloveManifest; }
+  std::string manifest() const override {
+    return kFoxgloveManifest;
+  }
 
-  std::string ui_content() const override { return kFoxgloveClientUi; }
+  std::string ui_content() const override {
+    return kFoxgloveClientUi;
+  }
 
   std::string widget_data() override {
     PJ::WidgetData wd;
@@ -77,9 +82,15 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
           std::string lower_topic = ch.topic;
           std::string lower_type = ch.schema_name;
           std::string lower_filter = filter_;
-          for (auto& c : lower_topic) c = static_cast<char>(std::tolower(c));
-          for (auto& c : lower_type) c = static_cast<char>(std::tolower(c));
-          for (auto& c : lower_filter) c = static_cast<char>(std::tolower(c));
+          for (auto& c : lower_topic) {
+            c = static_cast<char>(std::tolower(c));
+          }
+          for (auto& c : lower_type) {
+            c = static_cast<char>(std::tolower(c));
+          }
+          for (auto& c : lower_filter) {
+            c = static_cast<char>(std::tolower(c));
+          }
           if (lower_topic.find(lower_filter) == std::string::npos &&
               lower_type.find(lower_filter) == std::string::npos) {
             continue;
@@ -177,7 +188,9 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     // Do NOT disconnect — the source's onStart() will steal the socket.
     snapshotSelectedChannels();
   }
-  void onRejected() override { disconnect(); }
+  void onRejected() override {
+    disconnect();
+  }
 
   std::string saveConfig() const override {
     nlohmann::json cfg;
@@ -206,7 +219,9 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
 
   bool loadConfig(std::string_view config_json) override {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-    if (cfg.is_discarded()) return false;
+    if (cfg.is_discarded()) {
+      return false;
+    }
     address_ = cfg.value("address", std::string("localhost"));
     port_ = cfg.value("port", 8765);
     max_array_size_ = cfg.value("max_array_size", 100);
@@ -271,10 +286,14 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
 
   void onServerMessage(const std::string& message) {
     auto json = nlohmann::json::parse(message, nullptr, false);
-    if (json.is_discarded() || !json.is_object()) return;
+    if (json.is_discarded() || !json.is_object()) {
+      return;
+    }
 
     std::string op = json.value("op", "");
-    if (op != "advertise") return;
+    if (op != "advertise") {
+      return;
+    }
 
     auto channels_arr = json.value("channels", nlohmann::json::array());
 
