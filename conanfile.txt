@@ -18,7 +18,7 @@ sol2/3.5.0
 libsodium/1.0.20
 pybind11/2.13.6
 cpython/3.12.7
-plotjuggler_core/[~0.3]
+plotjuggler_core/[~0.4]
 
 [options]
 *:shared=False

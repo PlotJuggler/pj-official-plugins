@@ -126,7 +126,6 @@ class McapDialog : public PJ::DialogPluginTyped {
   }
 
   bool onToggled(std::string_view widget_name, bool checked) override {
-    // Checkbox must be handled before the radio button early-return
     if (widget_name == "checkBoxUseTimestamp") {
       use_timestamp_ = checked;
       return true;
@@ -358,6 +357,9 @@ class McapDialog : public PJ::DialogPluginTyped {
   // Config state
   std::string analyze_error_;
   std::string filepath_;
+  unsigned max_array_size_ = 500;
+  bool clamp_large_arrays_ = true;
+  bool use_timestamp_ = false;
   bool use_mcap_log_time_ = false;
   std::unordered_set<std::string> selected_topics_;
   std::string filter_text_;
