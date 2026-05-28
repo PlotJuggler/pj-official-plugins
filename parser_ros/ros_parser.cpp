@@ -240,20 +240,10 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
     };
   }
   if (entry.parse_object) {
-    auto fn = std::bind_front(entry.parse_object, this);
-    handler.parse_object = [this, fn = std::move(fn)](
-                               PJ::Timestamp ts, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
-      auto object = fn(ts, payload);
-      if (!object) {
-        return PJ::unexpected(std::move(object).error());
-      }
-      PJ::sdk::ObjectRecord record;
-      if (use_embedded_timestamp_) {
-        record.ts = current_timestamp_;
-      }
-      record.object = std::move(*object);
-      return record;
-    };
+    // Object handlers already return a fully-formed ObjectRecord (the embedded
+    // Header stamp is exposed via ObjectRecord::ts inside each handler), so the
+    // catalog entry binds straight onto the SchemaHandler with no adapter.
+    handler.parse_object = std::bind_front(entry.parse_object, this);
   }
   // Register under the original type_name (matches the key the host uses
   // when calling classifySchema / parseScalars / parseObject — keeps lookups

@@ -184,7 +184,7 @@ class RosParser : public PJ::MessageParserPluginBase {
     PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> (RosParser::*parse_scalars)(
         PJ::Timestamp, PJ::Span<const uint8_t>) = nullptr;
 
-    PJ::Expected<PJ::sdk::BuiltinObject> (RosParser::*parse_object)(PJ::Timestamp, PJ::sdk::PayloadView) = nullptr;
+    PJ::Expected<PJ::sdk::ObjectRecord> (RosParser::*parse_object)(PJ::Timestamp, PJ::sdk::PayloadView) = nullptr;
   };
 
   static const std::unordered_map<std::string, CatalogEntry>& catalog();
@@ -277,13 +277,13 @@ class RosParser : public PJ::MessageParserPluginBase {
       PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
 
   // sensor_msgs/Image
-  PJ::Expected<PJ::sdk::BuiltinObject> parseImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+  PJ::Expected<PJ::sdk::ObjectRecord> parseImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
   // sensor_msgs/CompressedImage (also covers compressedDepth via the format string)
-  PJ::Expected<PJ::sdk::BuiltinObject> parseCompressedImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+  PJ::Expected<PJ::sdk::ObjectRecord> parseCompressedImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
   // sensor_msgs/PointCloud2
-  PJ::Expected<PJ::sdk::BuiltinObject> parsePointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+  PJ::Expected<PJ::sdk::ObjectRecord> parsePointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
   // ----- Specialized scalar handlers -----
   //

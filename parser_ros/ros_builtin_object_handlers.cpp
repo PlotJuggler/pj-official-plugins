@@ -96,7 +96,7 @@ inline uint8_t readU8(RosMsgParser::Deserializer& d) {
 //   data                    uint8[height*step]
 // ---------------------------------------------------------------------------
 
-PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
     current_timestamp_ = ts;
@@ -125,18 +125,20 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseImage(PJ::Timestamp ts, PJ:
       return PJ::unexpected(std::string("Image step smaller than width*bpp"));
     }
 
-    return PJ::sdk::BuiltinObject{PJ::sdk::Image{
-        .width = width,
-        .height = height,
-        .encoding = encoding,
-        .row_step = step,
-        .is_bigendian = (is_be != 0),
-        .data = PJ::Span<const uint8_t>(data_span.data(), required),
-        .anchor = payload.anchor,
-        .compressed_depth_min = std::nullopt,
-        .compressed_depth_max = std::nullopt,
-        .timestamp_ns = current_timestamp_,
-    }};
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{PJ::sdk::Image{
+            .width = width,
+            .height = height,
+            .encoding = encoding,
+            .row_step = step,
+            .is_bigendian = (is_be != 0),
+            .data = PJ::Span<const uint8_t>(data_span.data(), required),
+            .anchor = payload.anchor,
+            .compressed_depth_min = std::nullopt,
+            .compressed_depth_max = std::nullopt,
+            .timestamp_ns = current_timestamp_,
+        }}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("Image: CDR read error: ") + e.what());
   }
@@ -152,7 +154,7 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseImage(PJ::Timestamp ts, PJ:
 //                                       12-byte compressedDepth mini-header
 // ---------------------------------------------------------------------------
 
-PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseCompressedImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
     current_timestamp_ = ts;
@@ -196,18 +198,20 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseCompressedImage(PJ::Timesta
 
     // Zero-copy: the bytes span is a slice of the payload; stripping the
     // 12-byte compressedDepth header is a pointer/length adjustment.
-    return PJ::sdk::BuiltinObject{PJ::sdk::Image{
-        .width = 0,  // unknown for compressed encodings; consumer decodes to learn.
-        .height = 0,
-        .encoding = std::move(out_encoding),
-        .row_step = 0,
-        .is_bigendian = false,
-        .data = PJ::Span<const uint8_t>(src + blob_offset, blob_size),
-        .anchor = payload.anchor,
-        .compressed_depth_min = depth_min,
-        .compressed_depth_max = depth_max,
-        .timestamp_ns = current_timestamp_,
-    }};
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{PJ::sdk::Image{
+            .width = 0,
+            .height = 0,
+            .encoding = std::move(out_encoding),
+            .row_step = 0,
+            .is_bigendian = false,
+            .data = PJ::Span<const uint8_t>(src + blob_offset, blob_size),
+            .anchor = payload.anchor,
+            .compressed_depth_min = depth_min,
+            .compressed_depth_max = depth_max,
+            .timestamp_ns = current_timestamp_,
+        }}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("CompressedImage: CDR read error: ") + e.what());
   }
@@ -234,7 +238,7 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseCompressedImage(PJ::Timesta
 //   is_dense                uint8
 // ---------------------------------------------------------------------------
 
-PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parsePointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
     current_timestamp_ = ts;
@@ -280,19 +284,21 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parsePointCloud(PJ::Timestamp ts
     // Zero-copy: data_span is a slice of the payload. For a PointCloud2 with
     // a few MB of points this is the win — no per-message alloc/copy on the
     // hot path.
-    return PJ::sdk::BuiltinObject{PJ::sdk::PointCloud{
-        .width = width,
-        .height = height,
-        .point_step = point_step,
-        .row_step = row_step,
-        .is_bigendian = (is_be != 0),
-        .is_dense = is_dense,
-        .frame_id = std::move(header.frame_id),
-        .fields = std::move(fields),
-        .data = PJ::Span<const uint8_t>(data_span.data(), data_span.size()),
-        .anchor = payload.anchor,
-        .timestamp_ns = current_timestamp_,
-    }};
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{PJ::sdk::PointCloud{
+            .width = width,
+            .height = height,
+            .point_step = point_step,
+            .row_step = row_step,
+            .is_bigendian = (is_be != 0),
+            .is_dense = is_dense,
+            .frame_id = std::move(header.frame_id),
+            .fields = std::move(fields),
+            .data = PJ::Span<const uint8_t>(data_span.data(), data_span.size()),
+            .anchor = payload.anchor,
+            .timestamp_ns = current_timestamp_,
+        }}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("PointCloud2: CDR read error: ") + e.what());
   }
