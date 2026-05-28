@@ -1,15 +1,13 @@
 #pragma once
 
-#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
-#include <pj_plugins/sdk/widget_data.hpp>
-
-#include <nlohmann/json.hpp>
-
 #include <arrow/api.h>
 #include <arrow/io/file.h>
 #include <parquet/arrow/reader.h>
 
 #include <algorithm>
+#include <nlohmann/json.hpp>
+#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
 #include <vector>
 
@@ -33,8 +31,12 @@ class ParquetDialog : public PJ::DialogPluginTyped {
     return -1;
   }
 
-  bool useCustomDateFormat() const { return use_custom_date_format_; }
-  const std::string& customDateFormat() const { return custom_date_format_; }
+  bool useCustomDateFormat() const {
+    return use_custom_date_format_;
+  }
+  const std::string& customDateFormat() const {
+    return custom_date_format_;
+  }
 
   void setFilePath(const std::string& filepath) {
     filepath_ = filepath;
@@ -43,9 +45,13 @@ class ParquetDialog : public PJ::DialogPluginTyped {
 
   // --- Dialog protocol ---
 
-  std::string manifest() const override { return kParquetManifest; }
+  std::string manifest() const override {
+    return kParquetManifest;
+  }
 
-  std::string ui_content() const override { return kDataLoadParquetUi; }
+  std::string ui_content() const override {
+    return kDataLoadParquetUi;
+  }
 
   std::string widget_data() override {
     PJ::WidgetData wd;
@@ -57,10 +63,8 @@ class ParquetDialog : public PJ::DialogPluginTyped {
     // Column list
     wd.setListItems("listWidgetSeries", column_names_);
     wd.setEnabled("listWidgetSeries", time_mode_ == "column");
-    if (selected_column_index_ >= 0 &&
-        selected_column_index_ < static_cast<int>(column_names_.size())) {
-      wd.setSelectedItems("listWidgetSeries",
-                          {column_names_[static_cast<size_t>(selected_column_index_)]});
+    if (selected_column_index_ >= 0 && selected_column_index_ < static_cast<int>(column_names_.size())) {
+      wd.setSelectedItems("listWidgetSeries", {column_names_[static_cast<size_t>(selected_column_index_)]});
     }
 
     // Custom date format
@@ -69,8 +73,7 @@ class ParquetDialog : public PJ::DialogPluginTyped {
     wd.setEnabled("lineEditDateFormat", use_custom_date_format_);
 
     // OK enabled?
-    bool ok = (time_mode_ == "row_number") ||
-              (time_mode_ == "column" && selected_column_index_ >= 0);
+    bool ok = (time_mode_ == "row_number") || (time_mode_ == "column" && selected_column_index_ >= 0);
     wd.setOkEnabled("buttonBox", ok);
 
     if (accept_requested_) {
@@ -87,14 +90,21 @@ class ParquetDialog : public PJ::DialogPluginTyped {
       return true;
     }
     // Radio buttons only fire on checked=true
-    if (!checked) return false;
-    if (widget_name == "radioButtonIndex") { time_mode_ = "row_number"; return true; }
-    if (widget_name == "radioButtonSelect") { time_mode_ = "column"; return true; }
+    if (!checked) {
+      return false;
+    }
+    if (widget_name == "radioButtonIndex") {
+      time_mode_ = "row_number";
+      return true;
+    }
+    if (widget_name == "radioButtonSelect") {
+      time_mode_ = "column";
+      return true;
+    }
     return false;
   }
 
-  bool onSelectionChanged(std::string_view widget_name,
-                          const std::vector<std::string>& selected) override {
+  bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name == "listWidgetSeries" && !selected.empty()) {
       for (int i = 0; i < static_cast<int>(column_names_.size()); i++) {
         if (column_names_[static_cast<size_t>(i)] == selected[0]) {
@@ -107,8 +117,8 @@ class ParquetDialog : public PJ::DialogPluginTyped {
   }
 
   bool onItemDoubleClicked(std::string_view widget_name, int index) override {
-    if (widget_name == "listWidgetSeries" && time_mode_ == "column" &&
-        index >= 0 && index < static_cast<int>(column_names_.size())) {
+    if (widget_name == "listWidgetSeries" && time_mode_ == "column" && index >= 0 &&
+        index < static_cast<int>(column_names_.size())) {
       selected_column_index_ = index;
       accept_requested_ = true;
       return true;
@@ -145,32 +155,44 @@ class ParquetDialog : public PJ::DialogPluginTyped {
 
   bool loadConfig(std::string_view config_json) override {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-    if (cfg.is_discarded()) return false;
+    if (cfg.is_discarded()) {
+      return false;
+    }
     filepath_ = cfg.value("filepath", std::string{});
     time_mode_ = cfg.value("time_mode", std::string("column"));
     selected_column_index_ = cfg.value("time_column_index", -1);
     use_custom_date_format_ = cfg.value("use_custom_date_format", false);
     custom_date_format_ = cfg.value("custom_date_format", std::string{});
-    if (!filepath_.empty()) analyzeFile();
+    if (!filepath_.empty()) {
+      analyzeFile();
+    }
     return true;
   }
 
  private:
   void analyzeFile() {
     column_names_.clear();
-    if (filepath_.empty()) return;
+    if (filepath_.empty()) {
+      return;
+    }
 
     auto infile_result = arrow::io::ReadableFile::Open(filepath_);
-    if (!infile_result.ok()) return;
+    if (!infile_result.ok()) {
+      return;
+    }
     auto infile = *infile_result;
 
     auto reader_result = parquet::arrow::OpenFile(infile, arrow::default_memory_pool());
-    if (!reader_result.ok()) return;
+    if (!reader_result.ok()) {
+      return;
+    }
     auto reader = std::move(*reader_result);
 
     std::shared_ptr<arrow::Schema> schema;
     auto status = reader->GetSchema(&schema);
-    if (!status.ok()) return;
+    if (!status.ok()) {
+      return;
+    }
 
     for (int i = 0; i < schema->num_fields(); i++) {
       column_names_.push_back(schema->field(i)->name());
@@ -201,14 +223,14 @@ class ParquetDialog : public PJ::DialogPluginTyped {
     }
     // Fallback: match by name (case-insensitive)
     static const std::vector<std::string> kTimestampNames = {
-        "timestamp", "time", "t", "ts", "time_stamp", "datetime", "date_time",
-        "_timestamp", "_time"};
+        "timestamp", "time", "t", "ts", "time_stamp", "datetime", "date_time", "_timestamp", "_time"};
     for (int i = 0; i < schema->num_fields(); i++) {
       std::string name = schema->field(i)->name();
-      std::transform(name.begin(), name.end(), name.begin(),
-                     [](unsigned char c) { return std::tolower(c); });
+      std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::tolower(c); });
       for (const auto& candidate : kTimestampNames) {
-        if (name == candidate) return i;
+        if (name == candidate) {
+          return i;
+        }
       }
     }
     return -1;

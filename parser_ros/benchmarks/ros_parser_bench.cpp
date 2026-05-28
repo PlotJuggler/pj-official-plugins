@@ -1,15 +1,14 @@
-#include "pj_plugins/host/message_parser_library.hpp"
-
 #include <benchmark/benchmark.h>
-#include <rosx_introspection/ros_parser.hpp>
-#include <rosx_introspection/serializer.hpp>
 
 #include <cstdint>
+#include <rosx_introspection/ros_parser.hpp>
+#include <rosx_introspection/serializer.hpp>
 #include <string>
 #include <vector>
 
 #include "pj_base/plugin_data_api.h"
 #include "pj_base/sdk/service_traits.hpp"
+#include "pj_plugins/host/message_parser_library.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
 
 #ifndef PJ_ROS_PARSER_PLUGIN_PATH
@@ -20,8 +19,7 @@ namespace {
 
 // Lightweight write host that discards all output.
 struct NullWriteHost {
-  static bool ensureField(
-      void*, PJ_string_view_t, PJ_primitive_type_t, PJ_field_handle_t* out, PJ_error_t*) noexcept {
+  static bool ensureField(void*, PJ_string_view_t, PJ_primitive_type_t, PJ_field_handle_t* out, PJ_error_t*) noexcept {
     *out = PJ_field_handle_t{{1}, 1};
     return true;
   }
@@ -53,8 +51,7 @@ std::vector<uint8_t> serializeCdr(const std::function<void(RosMsgParser::NanoCDR
   return {encoder.getBufferData(), encoder.getBufferData() + encoder.getBufferSize()};
 }
 
-void serializeHeader(RosMsgParser::NanoCDR_Serializer& enc, int32_t sec, uint32_t nsec,
-                     const std::string& frame_id) {
+void serializeHeader(RosMsgParser::NanoCDR_Serializer& enc, int32_t sec, uint32_t nsec, const std::string& frame_id) {
   enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(sec));
   enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(nsec));
   enc.serializeString(frame_id);
@@ -66,8 +63,7 @@ void serializeVector3(RosMsgParser::NanoCDR_Serializer& enc, double x, double y,
   enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(z));
 }
 
-void serializeQuaternion(RosMsgParser::NanoCDR_Serializer& enc, double x, double y, double z,
-                         double w) {
+void serializeQuaternion(RosMsgParser::NanoCDR_Serializer& enc, double x, double y, double z, double w) {
   enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(x));
   enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(y));
   enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(z));
@@ -126,14 +122,17 @@ std::vector<uint8_t> makeImuPayload() {
   return serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
     serializeHeader(enc, 100, 500000000, "imu_frame");
     serializeQuaternion(enc, 0.1, 0.2, 0.3, 0.9);
-    for (int i = 0; i < 9; i++)
+    for (int i = 0; i < 9; i++) {
       enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(static_cast<double>(i)));
+    }
     serializeVector3(enc, 0.01, 0.02, 0.03);
-    for (int i = 0; i < 9; i++)
+    for (int i = 0; i < 9; i++) {
       enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(0.0));
+    }
     serializeVector3(enc, 9.8, 0.0, 0.0);
-    for (int i = 0; i < 9; i++)
+    for (int i = 0; i < 9; i++) {
       enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(0.0));
+    }
   });
 }
 
@@ -141,17 +140,21 @@ std::vector<uint8_t> makeJointStatePayload() {
   return serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
     serializeHeader(enc, 10, 0, "");
     enc.serializeUInt32(6);
-    for (auto name : {"shoulder_pan", "shoulder_lift", "elbow", "wrist_1", "wrist_2", "wrist_3"})
+    for (auto name : {"shoulder_pan", "shoulder_lift", "elbow", "wrist_1", "wrist_2", "wrist_3"}) {
       enc.serializeString(name);
+    }
     enc.serializeUInt32(6);
-    for (int i = 0; i < 6; i++)
+    for (int i = 0; i < 6; i++) {
       enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(static_cast<double>(i) * 0.1));
+    }
     enc.serializeUInt32(6);
-    for (int i = 0; i < 6; i++)
+    for (int i = 0; i < 6; i++) {
       enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(static_cast<double>(i) * 0.01));
+    }
     enc.serializeUInt32(6);
-    for (int i = 0; i < 6; i++)
+    for (int i = 0; i < 6; i++) {
       enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(static_cast<double>(i) * 10.0));
+    }
   });
 }
 
@@ -171,12 +174,18 @@ struct ParserBench {
 
   bool setup(const char* type_name, const char* def) {
     auto lib = PJ::MessageParserLibrary::load(PJ_ROS_PARSER_PLUGIN_PATH);
-    if (!lib) return false;
+    if (!lib) {
+      return false;
+    }
     library = std::move(*lib);
     handle = library.createHandle();
-    if (!handle.valid()) return false;
+    if (!handle.valid()) {
+      return false;
+    }
     registry.registerService<PJ::sdk::ParserWriteHostService>(makeNullHost());
-    if (!handle.bind(registry.view())) return false;
+    if (!handle.bind(registry.view())) {
+      return false;
+    }
     auto* data = reinterpret_cast<const uint8_t*>(def);
     return handle.bindSchema(type_name, PJ::Span<const uint8_t>(data, std::strlen(def))).has_value();
   }

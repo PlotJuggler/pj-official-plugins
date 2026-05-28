@@ -1,17 +1,14 @@
+#include <algorithm>
+#include <nlohmann/json.hpp>
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
-
-#include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
-
-#include <algorithm>
 #include <string>
 #include <vector>
 
-#include "colormap_manifest.hpp"
 #include "colormap_dialog_ui.hpp"
-
+#include "colormap_manifest.hpp"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -81,9 +78,13 @@ static const char* colormapEvalCallback(double value, void* user_ctx) {
 
 class ColormapDialog : public PJ::DialogPluginTyped {
  public:
-  std::string manifest() const override { return kColormapManifest; }
+  std::string manifest() const override {
+    return kColormapManifest;
+  }
 
-  std::string ui_content() const override { return kColormapDialogUi; }
+  std::string ui_content() const override {
+    return kColormapDialogUi;
+  }
 
   std::string widget_data() override {
     std::vector<std::string> names;
@@ -140,8 +141,8 @@ class ColormapDialog : public PJ::DialogPluginTyped {
       }
 
       // Update or add to saved maps
-      auto it = std::find_if(saved_maps_.begin(), saved_maps_.end(),
-                             [&](const SavedMap& m) { return m.name == current_name_; });
+      auto it = std::find_if(
+          saved_maps_.begin(), saved_maps_.end(), [&](const SavedMap& m) { return m.name == current_name_; });
       if (it != saved_maps_.end()) {
         it->body = lua_body_;
         it->colormap = cm;
@@ -164,8 +165,8 @@ class ColormapDialog : public PJ::DialogPluginTyped {
           unregister_fn_(selected_name_);
         }
         saved_maps_.erase(
-            std::remove_if(saved_maps_.begin(), saved_maps_.end(),
-                           [&](const SavedMap& m) { return m.name == selected_name_; }),
+            std::remove_if(
+                saved_maps_.begin(), saved_maps_.end(), [&](const SavedMap& m) { return m.name == selected_name_; }),
             saved_maps_.end());
         selected_name_.clear();
         status_msg_.clear();
@@ -176,8 +177,7 @@ class ColormapDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
-  bool onSelectionChanged(std::string_view name,
-                          const std::vector<std::string>& items) override {
+  bool onSelectionChanged(std::string_view name, const std::vector<std::string>& items) override {
     if (name == "saved_list" && !items.empty()) {
       selected_name_ = items.front();
       return false;
@@ -211,7 +211,9 @@ class ColormapDialog : public PJ::DialogPluginTyped {
 
   bool loadConfig(std::string_view config_json) override {
     auto j = nlohmann::json::parse(config_json, nullptr, false);
-    if (j.is_discarded()) return false;
+    if (j.is_discarded()) {
+      return false;
+    }
     lua_body_ = j.value("lua_body", std::string{});
     // Unregister before destroying the LuaColorMap objects to avoid dangling
     // pointers in the registry (registry holds raw user_ctx pointers).
@@ -243,8 +245,7 @@ class ColormapDialog : public PJ::DialogPluginTyped {
   }
 
   /// Called by ColormapToolbox to wire the register/unregister functions.
-  using RegisterFn = std::function<bool(const std::string&,
-      const char*(*)(double, void*), void*)>;
+  using RegisterFn = std::function<bool(const std::string&, const char* (*)(double, void*), void*)>;
   using UnregisterFn = std::function<bool(const std::string&)>;
 
   void setHostCallbacks(RegisterFn reg, UnregisterFn unreg) {
@@ -254,7 +255,9 @@ class ColormapDialog : public PJ::DialogPluginTyped {
 
   /// Re-register all saved colormaps (called after host binding).
   void registerAllColormaps() {
-    if (!register_fn_) return;
+    if (!register_fn_) {
+      return;
+    }
     for (auto& m : saved_maps_) {
       if (m.colormap && m.colormap->func.valid()) {
         register_fn_(m.name, colormapEvalCallback, m.colormap.get());
@@ -285,7 +288,9 @@ class ColormapDialog : public PJ::DialogPluginTyped {
 
 class ColormapToolbox : public PJ::ToolboxPluginBase {
  public:
-  uint64_t capabilities() const override { return PJ::kToolboxCapabilityHasDialog; }
+  uint64_t capabilities() const override {
+    return PJ::kToolboxCapabilityHasDialog;
+  }
 
   PJ_borrowed_dialog_t getDialog() override {
     // Wire registry callbacks on first access (after bind() acquires the
@@ -296,16 +301,16 @@ class ColormapToolbox : public PJ::ToolboxPluginBase {
           [registry](const std::string& name, const char* (*fn)(double, void*), void* ctx) -> bool {
             return registry.registerMap(name, fn, ctx).has_value();
           },
-          [registry](const std::string& name) -> bool {
-            return registry.unregisterMap(name).has_value();
-          });
+          [registry](const std::string& name) -> bool { return registry.unregisterMap(name).has_value(); });
       dialog_.registerAllColormaps();
       callbacks_wired_ = true;
     }
     return PJ::borrowDialog(dialog_);
   }
 
-  std::string saveConfig() const override { return dialog_.saveConfig(); }
+  std::string saveConfig() const override {
+    return dialog_.saveConfig();
+  }
 
   PJ::Status loadConfig(std::string_view config_json) override {
     dialog_.loadConfig(config_json);

@@ -1,26 +1,23 @@
-#include <pj_base/sdk/toolbox_plugin_base.hpp>
-#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
-#include <pj_plugins/sdk/widget_data.hpp>
-
-#include <nlohmann/json.hpp>
-
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <nlohmann/json.hpp>
 #include <optional>
+#include <pj_base/sdk/toolbox_plugin_base.hpp>
+#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "fft_manifest.hpp"
 #include "fft_dialog_ui.hpp"
+#include "fft_manifest.hpp"
 
 extern "C" {
 #include <kissfft/kiss_fftr.h>
 }
-
 
 // ---------------------------------------------------------------------------
 // FFT math (ported from PJ 3.x ToolboxFFT / fft_editor.cpp)
@@ -33,16 +30,20 @@ struct FftResult {
   std::vector<double> amplitudes;
 };
 
-std::optional<FftResult> computeFFT(const int64_t* timestamps, const double* values, size_t count,
-                                    bool remove_dc) {
-  if (count < 8) return std::nullopt;
+std::optional<FftResult> computeFFT(const int64_t* timestamps, const double* values, size_t count, bool remove_dc) {
+  if (count < 8) {
+    return std::nullopt;
+  }
 
   size_t n = count;
-  if ((n & 1U) != 0U) --n;  // make even
+  if ((n & 1U) != 0U) {
+    --n;  // make even
+  }
 
-  double dt_seconds =
-      static_cast<double>(timestamps[n - 1] - timestamps[0]) / (static_cast<double>(n - 1) * 1e9);
-  if (dt_seconds <= 0.0) return std::nullopt;
+  double dt_seconds = static_cast<double>(timestamps[n - 1] - timestamps[0]) / (static_cast<double>(n - 1) * 1e9);
+  if (dt_seconds <= 0.0) {
+    return std::nullopt;
+  }
 
   std::vector<kiss_fft_scalar> input(n);
   double average = 0.0;
@@ -59,7 +60,9 @@ std::optional<FftResult> computeFFT(const int64_t* timestamps, const double* val
 
   std::vector<kiss_fft_cpx> out(n / 2 + 1);
   kiss_fftr_cfg cfg = kiss_fftr_alloc(static_cast<int>(n), 0, nullptr, nullptr);
-  if (cfg == nullptr) return std::nullopt;
+  if (cfg == nullptr) {
+    return std::nullopt;
+  }
 
   kiss_fftr(cfg, input.data(), out.data());
   KISS_FFT_FREE(cfg);
@@ -71,8 +74,7 @@ std::optional<FftResult> computeFFT(const int64_t* timestamps, const double* val
   const double nd = static_cast<double>(n);
   for (size_t i = 0; i < n / 2; ++i) {
     res.frequencies_hz.push_back(static_cast<double>(i) * (1.0 / dt_seconds) / nd);
-    res.amplitudes.push_back(
-        std::hypot(static_cast<double>(out[i].r), static_cast<double>(out[i].i)) / nd);
+    res.amplitudes.push_back(std::hypot(static_cast<double>(out[i].r), static_cast<double>(out[i].i)) / nd);
   }
 
   return res;
@@ -85,9 +87,13 @@ std::optional<FftResult> computeFFT(const int64_t* timestamps, const double* val
 
 class FFTDialog : public PJ::DialogPluginTyped {
  public:
-  std::string manifest() const override { return kFftManifest; }
+  std::string manifest() const override {
+    return kFftManifest;
+  }
 
-  std::string ui_content() const override { return kFftDialogUi; }
+  std::string ui_content() const override {
+    return kFftDialogUi;
+  }
 
   std::string widget_data() override {
     PJ::WidgetData wd;
@@ -122,8 +128,7 @@ class FFTDialog : public PJ::DialogPluginTyped {
       for (size_t i = 0; i < last_result_.frequencies_hz.size(); ++i) {
         pts.push_back({last_result_.frequencies_hz[i], last_result_.amplitudes[i]});
       }
-      const std::string label =
-          selected_fields_.empty() ? std::string{"FFT"} : selected_fields_.front() + suffix_;
+      const std::string label = selected_fields_.empty() ? std::string{"FFT"} : selected_fields_.front() + suffix_;
       std::vector<PJ::ChartSeries> fft_series;
       fft_series.push_back({label, std::move(pts), "#ff7f0e"});
       wd.setChartSeries("chart_fft", fft_series);
@@ -136,13 +141,13 @@ class FFTDialog : public PJ::DialogPluginTyped {
 
   // --- Event handlers -------------------------------------------------------
 
-  bool onItemsDropped(std::string_view widget_name,
-                      const std::vector<std::string>& items) override {
-    if (widget_name != "inputFrame") return false;
+  bool onItemsDropped(std::string_view widget_name, const std::vector<std::string>& items) override {
+    if (widget_name != "inputFrame") {
+      return false;
+    }
     bool changed = false;
     for (const auto& path : items) {
-      if (std::find(selected_fields_.begin(), selected_fields_.end(), path) !=
-          selected_fields_.end()) {
+      if (std::find(selected_fields_.begin(), selected_fields_.end(), path) != selected_fields_.end()) {
         continue;  // already selected
       }
       selected_fields_.push_back(path);
@@ -156,9 +161,11 @@ class FFTDialog : public PJ::DialogPluginTyped {
     return changed;
   }
 
-  bool onChartViewChanged(std::string_view name, double x_min, double x_max,
-                          double /*y_min*/, double /*y_max*/) override {
-    if (name != "chart_input") return false;
+  bool onChartViewChanged(
+      std::string_view name, double x_min, double x_max, double /*y_min*/, double /*y_max*/) override {
+    if (name != "chart_input") {
+      return false;
+    }
     zoom_range_min_ = x_min;
     zoom_range_max_ = x_max;
     return false;  // zoom range is only applied at compute time — no UI refresh needed
@@ -230,7 +237,9 @@ class FFTDialog : public PJ::DialogPluginTyped {
 
   bool loadConfig(std::string_view config_json) override {
     auto j = nlohmann::json::parse(config_json, nullptr, false);
-    if (j.is_discarded()) return false;
+    if (j.is_discarded()) {
+      return false;
+    }
 
     remove_dc_ = j.value("remove_dc", false);
     suffix_ = j.value("suffix", std::string{"_FFT"});
@@ -250,7 +259,9 @@ class FFTDialog : public PJ::DialogPluginTyped {
   // --- Public accessors used by FFTToolbox ----------------------------------
 
   void setAvailableFields(const std::vector<std::string>& fields) {
-    if (fields == available_fields_) return;
+    if (fields == available_fields_) {
+      return;
+    }
     available_fields_ = fields;
 
     // Reconcile previously-selected fields that may have disappeared and
@@ -263,33 +274,60 @@ class FFTDialog : public PJ::DialogPluginTyped {
     }
     selected_fields_.clear();
     for (const auto& sel : merged) {
-      if (std::find(available_fields_.begin(), available_fields_.end(), sel) !=
-          available_fields_.end()) {
+      if (std::find(available_fields_.begin(), available_fields_.end(), sel) != available_fields_.end()) {
         selected_fields_.push_back(sel);
       }
     }
   }
 
-  void setInputPreview(std::vector<PJ::ChartSeries> series) { input_series_ = std::move(series); }
-  void setStatus(const std::string& msg) { status_msg_ = msg; }
-  void setLastResult(FftResult r) { last_result_ = std::move(r); }
-  void clearFftOutput() { last_result_ = {}; }
+  void setInputPreview(std::vector<PJ::ChartSeries> series) {
+    input_series_ = std::move(series);
+  }
+  void setStatus(const std::string& msg) {
+    status_msg_ = msg;
+  }
+  void setLastResult(FftResult r) {
+    last_result_ = std::move(r);
+  }
+  void clearFftOutput() {
+    last_result_ = {};
+  }
 
   // Callbacks into the owning FFTToolbox — set once during dialogContext().
   // The dialog holds them as std::function so the host-specific data-plane
   // logic (readSeries, visibleRange, register/append ScatterXY) stays in the
   // toolbox, not in this UI-only class.
-  void setOnRefreshPreview(std::function<void()> cb) { on_refresh_preview_ = std::move(cb); }
-  void setOnCompute(std::function<void()> cb) { on_compute_ = std::move(cb); }
-  void setOnSave(std::function<void()> cb) { on_save_ = std::move(cb); }
+  void setOnRefreshPreview(std::function<void()> cb) {
+    on_refresh_preview_ = std::move(cb);
+  }
+  void setOnCompute(std::function<void()> cb) {
+    on_compute_ = std::move(cb);
+  }
+  void setOnSave(std::function<void()> cb) {
+    on_save_ = std::move(cb);
+  }
 
-  [[nodiscard]] const std::vector<std::string>& selectedFields() const { return selected_fields_; }
-  [[nodiscard]] bool removeDC() const { return remove_dc_; }
-  [[nodiscard]] bool rangeZoomed() const { return range_zoomed_; }
-  [[nodiscard]] double zoomRangeMin() const { return zoom_range_min_; }
-  [[nodiscard]] double zoomRangeMax() const { return zoom_range_max_; }
-  [[nodiscard]] const std::string& suffix() const { return suffix_; }
-  [[nodiscard]] const FftResult& lastResult() const { return last_result_; }
+  [[nodiscard]] const std::vector<std::string>& selectedFields() const {
+    return selected_fields_;
+  }
+  [[nodiscard]] bool removeDC() const {
+    return remove_dc_;
+  }
+  [[nodiscard]] bool rangeZoomed() const {
+    return range_zoomed_;
+  }
+  [[nodiscard]] double zoomRangeMin() const {
+    return zoom_range_min_;
+  }
+  [[nodiscard]] double zoomRangeMax() const {
+    return zoom_range_max_;
+  }
+  [[nodiscard]] const std::string& suffix() const {
+    return suffix_;
+  }
+  [[nodiscard]] const FftResult& lastResult() const {
+    return last_result_;
+  }
 
   [[nodiscard]] bool consumeComputeRequest() {
     const bool req = compute_requested_;
@@ -304,13 +342,19 @@ class FFTDialog : public PJ::DialogPluginTyped {
 
  private:
   void invokeRefreshPreview() {
-    if (on_refresh_preview_) on_refresh_preview_();
+    if (on_refresh_preview_) {
+      on_refresh_preview_();
+    }
   }
   void invokeCompute() {
-    if (on_compute_) on_compute_();
+    if (on_compute_) {
+      on_compute_();
+    }
   }
   void invokeSave() {
-    if (on_save_) on_save_();
+    if (on_save_) {
+      on_save_();
+    }
   }
   void resetZoomRange() {
     zoom_range_min_ = std::numeric_limits<double>::lowest();
@@ -370,12 +414,16 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
 
   PJ::Status bind(PJ::sdk::ServiceRegistry services) override {
     auto status = ToolboxPluginBase::bind(services);
-    if (!status) return status;
+    if (!status) {
+      return status;
+    }
     refreshFieldList();
     return PJ::okStatus();
   }
 
-  std::string saveConfig() const override { return dialog_.saveConfig(); }
+  std::string saveConfig() const override {
+    return dialog_.saveConfig();
+  }
 
   PJ::Status loadConfig(std::string_view config_json) override {
     dialog_.loadConfig(config_json);
@@ -384,10 +432,14 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
 
  private:
   void refreshFieldList() {
-    if (!toolboxHostBound()) return;
+    if (!toolboxHostBound()) {
+      return;
+    }
 
     auto catalog = toolboxHost().catalogSnapshot();
-    if (!catalog) return;
+    if (!catalog) {
+      return;
+    }
 
     std::vector<std::string> fields;
     field_index_.clear();
@@ -428,16 +480,24 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
 
     for (const auto& path : dialog_.selectedFields()) {
       auto it = field_index_.find(path);
-      if (it == field_index_.end()) continue;
+      if (it == field_index_.end()) {
+        continue;
+      }
 
       auto read = host.readSeries(it->second);
-      if (!read) continue;
-      if (read->type() != PJ::PrimitiveType::kFloat64) continue;
+      if (!read) {
+        continue;
+      }
+      if (read->type() != PJ::PrimitiveType::kFloat64) {
+        continue;
+      }
 
       auto ts_span = read->timestamps();
       const size_t row_count = read->rowCount();
       const double* values = read->valuesAsFloat64();
-      if (row_count == 0 || ts_span.size() != row_count || values == nullptr) continue;
+      if (row_count == 0 || ts_span.size() != row_count || values == nullptr) {
+        continue;
+      }
 
       int64_t t_min = ts_span[0];
       int64_t t_max = ts_span[row_count - 1];
@@ -451,7 +511,9 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
       std::vector<PJ::ChartPoint> pts;
       pts.reserve(row_count);
       for (size_t i = 0; i < row_count; ++i) {
-        if (ts_span[i] < t_min || ts_span[i] > t_max) continue;
+        if (ts_span[i] < t_min || ts_span[i] > t_max) {
+          continue;
+        }
         const double x = static_cast<double>(ts_span[i] - t0_common) / 1e9;
         pts.push_back({x, values[i]});
       }
@@ -463,20 +525,27 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
 
   /// Read one field's samples in the current range (all/zoomed) into vectors.
   /// Returns false if the field is missing, not float64, or has no samples in range.
-  bool readField(const std::string& field_path, std::vector<int64_t>& out_ts,
-                 std::vector<double>& out_vals) {
+  bool readField(const std::string& field_path, std::vector<int64_t>& out_ts, std::vector<double>& out_vals) {
     auto host = toolboxHost();
     auto it = field_index_.find(field_path);
-    if (it == field_index_.end()) return false;
+    if (it == field_index_.end()) {
+      return false;
+    }
 
     auto read = host.readSeries(it->second);
-    if (!read) return false;
-    if (read->type() != PJ::PrimitiveType::kFloat64) return false;
+    if (!read) {
+      return false;
+    }
+    if (read->type() != PJ::PrimitiveType::kFloat64) {
+      return false;
+    }
 
     auto ts_span = read->timestamps();
     const size_t row_count = read->rowCount();
     const double* values = read->valuesAsFloat64();
-    if (row_count == 0 || ts_span.size() != row_count || values == nullptr) return false;
+    if (row_count == 0 || ts_span.size() != row_count || values == nullptr) {
+      return false;
+    }
 
     int64_t t_min = ts_span[0];
     int64_t t_max = ts_span[row_count - 1];
@@ -495,7 +564,9 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
     out_ts.reserve(row_count);
     out_vals.reserve(row_count);
     for (size_t i = 0; i < row_count; ++i) {
-      if (ts_span[i] < t_min || ts_span[i] > t_max) continue;
+      if (ts_span[i] < t_min || ts_span[i] > t_max) {
+        continue;
+      }
       out_ts.push_back(ts_span[i]);
       out_vals.push_back(values[i]);
     }
@@ -541,14 +612,18 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
 
   /// Persist the last FFT result as a ScatterXY topic (Hz vs amplitude).
   void saveLastResult() {
-    if (!toolboxHostBound()) return;
+    if (!toolboxHostBound()) {
+      return;
+    }
 
     const auto& result = dialog_.lastResult();
     if (result.frequencies_hz.empty()) {
       dialog_.setStatus("Nothing to save — run Calculate first");
       return;
     }
-    if (dialog_.selectedFields().empty()) return;
+    if (dialog_.selectedFields().empty()) {
+      return;
+    }
 
     auto host = toolboxHost();
     auto source = host.createDataSource("fft_output");
@@ -580,8 +655,7 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
     if (runtimeHostBound()) {
       runtimeHost().notifyDataChanged();
     }
-    dialog_.setStatus("Saved '" + topic_name + "' (" +
-                      std::to_string(result.frequencies_hz.size()) + " points)");
+    dialog_.setStatus("Saved '" + topic_name + "' (" + std::to_string(result.frequencies_hz.size()) + " points)");
   }
 
   FFTDialog dialog_;

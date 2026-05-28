@@ -1,22 +1,20 @@
 #pragma once
 
-#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
-#include <pj_plugins/sdk/widget_data.hpp>
-
-#include "protobuf_manifest.hpp"
-#include "protobuf_parser_options_ui.hpp"
-
-#include <nlohmann/json.hpp>
-
 #include <google/protobuf/compiler/importer.h>
 #include <google/protobuf/descriptor.pb.h>
 
 #include <algorithm>
 #include <fstream>
 #include <memory>
+#include <nlohmann/json.hpp>
+#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/widget_data.hpp>
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include "protobuf_manifest.hpp"
+#include "protobuf_parser_options_ui.hpp"
 
 namespace {
 
@@ -29,18 +27,22 @@ class ProtoErrorCollector : public gp::compiler::MultiFileErrorCollector {
   void RecordError(absl::string_view filename, int line, int /*column*/, absl::string_view message) override {
     errors_.push_back(std::string(filename) + ":" + std::to_string(line) + ": " + std::string(message));
   }
-  void RecordWarning(absl::string_view /*filename*/, int /*line*/, int /*column*/,
-                     absl::string_view /*message*/) override {}
+  void RecordWarning(
+      absl::string_view /*filename*/, int /*line*/, int /*column*/, absl::string_view /*message*/) override {}
 #else
   void AddError(const std::string& filename, int line, int /*column*/, const std::string& message) override {
     errors_.push_back(filename + ":" + std::to_string(line) + ": " + message);
   }
-  void AddWarning(const std::string& /*filename*/, int /*line*/, int /*column*/,
-                  const std::string& /*message*/) override {}
+  void AddWarning(
+      const std::string& /*filename*/, int /*line*/, int /*column*/, const std::string& /*message*/) override {}
 #endif
 
-  const std::vector<std::string>& errors() const { return errors_; }
-  void clear() { errors_.clear(); }
+  const std::vector<std::string>& errors() const {
+    return errors_;
+  }
+  void clear() {
+    errors_.clear();
+  }
 
  private:
   std::vector<std::string> errors_;
@@ -54,16 +56,20 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
  public:
   // --- Dialog protocol ---
 
-  std::string manifest() const override { return kProtobufManifest; }
+  std::string manifest() const override {
+    return kProtobufManifest;
+  }
 
-  std::string ui_content() const override { return kProtobufParserOptionsUi; }
+  std::string ui_content() const override {
+    return kProtobufParserOptionsUi;
+  }
 
   std::string widget_data() override {
     PJ::WidgetData wd;
 
     // Proto file path display
-    wd.setText("labelProtoFilePath",
-               proto_file_path_.empty() ? "(no file selected)" : filenameFromPath(proto_file_path_));
+    wd.setText(
+        "labelProtoFilePath", proto_file_path_.empty() ? "(no file selected)" : filenameFromPath(proto_file_path_));
 
     // Proto file picker button
     wd.setFilePicker("buttonLoadProtoFile", "Load .proto file", "*.proto", "Select Proto File");
@@ -200,7 +206,9 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     include_folders_.clear();
     if (cfg.contains("include_folders") && cfg["include_folders"].is_array()) {
       for (const auto& f : cfg["include_folders"]) {
-        if (f.is_string()) include_folders_.push_back(f.get<std::string>());
+        if (f.is_string()) {
+          include_folders_.push_back(f.get<std::string>());
+        }
       }
     }
 
@@ -234,7 +242,9 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     compiled_schema_.clear();
     compile_error_.clear();
 
-    if (proto_file_path_.empty()) return;
+    if (proto_file_path_.empty()) {
+      return;
+    }
 
     // Read file content for preview
     std::ifstream file(proto_file_path_);
@@ -325,7 +335,9 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
   }
 
   int messageTypeIndex() const {
-    if (selected_message_type_.empty() || message_types_.empty()) return 0;
+    if (selected_message_type_.empty() || message_types_.empty()) {
+      return 0;
+    }
     auto it = std::find(message_types_.begin(), message_types_.end(), selected_message_type_);
     return (it != message_types_.end()) ? static_cast<int>(std::distance(message_types_.begin(), it)) : 0;
   }
@@ -338,8 +350,12 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
 
     for (size_t i = 0; i < input.size(); i += 3) {
       uint32_t n = static_cast<uint32_t>(static_cast<uint8_t>(input[i])) << 16;
-      if (i + 1 < input.size()) n |= static_cast<uint32_t>(static_cast<uint8_t>(input[i + 1])) << 8;
-      if (i + 2 < input.size()) n |= static_cast<uint32_t>(static_cast<uint8_t>(input[i + 2]));
+      if (i + 1 < input.size()) {
+        n |= static_cast<uint32_t>(static_cast<uint8_t>(input[i + 1])) << 8;
+      }
+      if (i + 2 < input.size()) {
+        n |= static_cast<uint32_t>(static_cast<uint8_t>(input[i + 2]));
+      }
 
       output.push_back(kBase64Chars[(n >> 18) & 0x3F]);
       output.push_back(kBase64Chars[(n >> 12) & 0x3F]);
@@ -367,7 +383,9 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
       int n2 = (i + 2 < input.size() && input[i + 2] != '=') ? kDecodeTable[static_cast<uint8_t>(input[i + 2])] : 0;
       int n3 = (i + 3 < input.size() && input[i + 3] != '=') ? kDecodeTable[static_cast<uint8_t>(input[i + 3])] : 0;
 
-      if (n0 < 0 || n1 < 0) continue;
+      if (n0 < 0 || n1 < 0) {
+        continue;
+      }
 
       output.push_back(static_cast<char>((n0 << 2) | (n1 >> 4)));
       if (i + 2 < input.size() && input[i + 2] != '=') {

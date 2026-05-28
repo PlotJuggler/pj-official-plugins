@@ -1,11 +1,8 @@
-#include "pj_plugins/host/message_parser_library.hpp"
-
-#include <gtest/gtest.h>
-
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/descriptor.pb.h>
 #include <google/protobuf/dynamic_message.h>
 #include <google/protobuf/reflection.h>
+#include <gtest/gtest.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -15,6 +12,7 @@
 
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/testing/parser_write_recorder.hpp"
+#include "pj_plugins/host/message_parser_library.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
 
 #ifndef PJ_PROTOBUF_PARSER_PLUGIN_PATH
@@ -307,8 +305,7 @@ TEST(ProtobufParserTest, NestedMessage) {
 
 #pragma push_macro("GetMessage")
 #undef GetMessage
-  gp::Message* header_msg =
-      ref->MutableMessage(msg.get(), stamped_desc->FindFieldByName("header"));
+  gp::Message* header_msg = ref->MutableMessage(msg.get(), stamped_desc->FindFieldByName("header"));
 #pragma pop_macro("GetMessage")
   const gp::Reflection* hdr_ref = header_msg->GetReflection();
   hdr_ref->SetInt32(header_msg, header_msg->GetDescriptor()->FindFieldByName("seq"), 7);

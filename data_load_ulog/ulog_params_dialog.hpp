@@ -1,7 +1,6 @@
 #pragma once
 
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
-
 #include <string>
 #include <vector>
 

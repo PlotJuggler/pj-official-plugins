@@ -21,8 +21,7 @@
 namespace {
 
 // Bind both toolbox + runtime services to the handle.
-void bindStore(PJ::ToolboxHandle& handle, PJ::testing::ToolboxTestStore& store,
-               PJ::ServiceRegistryBuilder& registry) {
+void bindStore(PJ::ToolboxHandle& handle, PJ::testing::ToolboxTestStore& store, PJ::ServiceRegistryBuilder& registry) {
   registry.registerService<PJ::sdk::ToolboxHostService>(store.makeHost());
   registry.registerService<PJ::sdk::ToolboxRuntimeHostService>(store.makeRuntimeHost());
   ASSERT_TRUE(handle.bind(registry.view()));
@@ -107,8 +106,9 @@ TEST(QuaternionPluginTest, NinetyDegreeRotations) {
 
   printf("\n=== 90-degree Rotations -> RPY (degrees) ===\n");
   for (size_t i = 0; i < flat.size(); i += 3) {
-    printf("  Sample %zu: roll=%8.3f  pitch=%8.3f  yaw=%8.3f\n", i / 3, flat[i].numeric,
-           flat[i + 1].numeric, flat[i + 2].numeric);
+    printf(
+        "  Sample %zu: roll=%8.3f  pitch=%8.3f  yaw=%8.3f\n", i / 3, flat[i].numeric, flat[i + 1].numeric,
+        flat[i + 2].numeric);
   }
 
   // Sample 0: 90 roll

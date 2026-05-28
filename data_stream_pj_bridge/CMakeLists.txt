@@ -2,6 +2,12 @@ find_package(nlohmann_json REQUIRED)
 find_package(zstd REQUIRED)
 find_package(ixwebsocket REQUIRED)
 
+# Fix ixwebsocket include dirs when built inside the PJ4 tree without conan toolchain.
+if(DEFINED IXWEBSOCKET_INCLUDE_DIR AND TARGET ixwebsocket::ixwebsocket)
+  set_target_properties(ixwebsocket::ixwebsocket PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${IXWEBSOCKET_INCLUDE_DIR}")
+endif()
+
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 

@@ -1,18 +1,17 @@
 #include "csv_dialog.hpp"
 
 // Generated at configure time
-#include "csv_manifest.hpp"
-#include "dataload_csv_ui.hpp"
-#include "datetimehelp_ui.hpp"
-
-#include <nlohmann/json.hpp>
-
 #include <algorithm>
 #include <fstream>
 #include <limits>
+#include <nlohmann/json.hpp>
 #include <set>
 #include <string>
 #include <vector>
+
+#include "csv_manifest.hpp"
+#include "dataload_csv_ui.hpp"
+#include "datetimehelp_ui.hpp"
 
 int CsvDialog::timeColumnIndex() const {
   if (time_mode_ == TimeMode::Column && selected_column_index_ >= 0) {
@@ -22,7 +21,9 @@ int CsvDialog::timeColumnIndex() const {
 }
 
 int CsvDialog::combinedColumnIndex() const {
-  if (time_mode_ == TimeMode::Combined) return combined_index_;
+  if (time_mode_ == TimeMode::Combined) {
+    return combined_index_;
+  }
   return -1;
 }
 
@@ -43,8 +44,7 @@ std::string CsvDialog::widget_data() {
   PJ::WidgetData wd;
 
   // Delimiter
-  std::vector<std::string> delimiters = {
-      "\",\" (comma)", "\";\" (semicolon)", "\" \" (space)", "\"\\t\" (tab)"};
+  std::vector<std::string> delimiters = {"\",\" (comma)", "\";\" (semicolon)", "\" \" (space)", "\"\\t\" (tab)"};
   wd.setItems("comboBox", delimiters);
   wd.setCurrentIndex("comboBox", delimiterToIndex(delimiter_));
 
@@ -58,15 +58,18 @@ std::string CsvDialog::widget_data() {
   wd.setEnabled("listWidgetSeries", time_mode_ == TimeMode::Column);
   if (time_mode_ == TimeMode::Column && selected_column_index_ >= 0 &&
       selected_column_index_ < static_cast<int>(column_names_.size())) {
-    wd.setSelectedItems("listWidgetSeries",
-                        {column_names_[static_cast<size_t>(selected_column_index_)]});
+    wd.setSelectedItems("listWidgetSeries", {column_names_[static_cast<size_t>(selected_column_index_)]});
   }
 
   // Combined pairs
   std::vector<std::string> combo_items;
-  for (const auto& p : combined_pairs_) combo_items.push_back(p.virtual_name);
+  for (const auto& p : combined_pairs_) {
+    combo_items.push_back(p.virtual_name);
+  }
   wd.setItems("combinedCombo", combo_items);
-  if (combined_index_ >= 0) wd.setCurrentIndex("combinedCombo", combined_index_);
+  if (combined_index_ >= 0) {
+    wd.setCurrentIndex("combinedCombo", combined_index_);
+  }
   wd.setEnabled("radioButtonDateTimeColumns", !combined_pairs_.empty());
   wd.setEnabled("combinedCombo", time_mode_ == TimeMode::Combined && !combined_pairs_.empty());
   wd.setVisible("combinedCombo", !combined_pairs_.empty());
@@ -81,8 +84,7 @@ std::string CsvDialog::widget_data() {
 
   // Format live preview
   if (use_custom_format_ && !custom_format_.empty()) {
-    wd.setText("labelFormatPreview",
-               "Example (2024-01-15 14:30:45): " + computeFormatPreview(custom_format_));
+    wd.setText("labelFormatPreview", "Example (2024-01-15 14:30:45): " + computeFormatPreview(custom_format_));
   } else {
     wd.setText("labelFormatPreview", "");
   }
@@ -93,11 +95,12 @@ std::string CsvDialog::widget_data() {
 
   // Preview warning (shared label — text set by analyzeFile)
   wd.setVisible("labelWarning", !warning_message_.empty());
-  if (!warning_message_.empty()) wd.setText("labelWarning", warning_message_);
+  if (!warning_message_.empty()) {
+    wd.setText("labelWarning", warning_message_);
+  }
 
   // OK enabled?
-  bool ok = (time_mode_ == TimeMode::RowNumber) ||
-            (time_mode_ == TimeMode::Column && selected_column_index_ >= 0) ||
+  bool ok = (time_mode_ == TimeMode::RowNumber) || (time_mode_ == TimeMode::Column && selected_column_index_ >= 0) ||
             (time_mode_ == TimeMode::Combined && combined_index_ >= 0);
   wd.setOkEnabled("buttonBox", ok);
 
@@ -129,18 +132,37 @@ bool CsvDialog::onIndexChanged(std::string_view widget_name, int index) {
 }
 
 bool CsvDialog::onToggled(std::string_view widget_name, bool checked) {
-  if (!checked) return false;
-  if (widget_name == "radioButtonIndex") { time_mode_ = TimeMode::RowNumber; return true; }
-  if (widget_name == "radioButtonSelect") { time_mode_ = TimeMode::Column; return true; }
-  if (widget_name == "radioButtonDateTimeColumns") { time_mode_ = TimeMode::Combined; return true; }
-  if (widget_name == "radioAutoTime") { use_custom_format_ = false; return true; }
-  if (widget_name == "radioCustomTime") { use_custom_format_ = true; return true; }
-  if (widget_name == "checkBoxAutoCloseHelp") { close_after_help_ = checked; return true; }
+  if (!checked) {
+    return false;
+  }
+  if (widget_name == "radioButtonIndex") {
+    time_mode_ = TimeMode::RowNumber;
+    return true;
+  }
+  if (widget_name == "radioButtonSelect") {
+    time_mode_ = TimeMode::Column;
+    return true;
+  }
+  if (widget_name == "radioButtonDateTimeColumns") {
+    time_mode_ = TimeMode::Combined;
+    return true;
+  }
+  if (widget_name == "radioAutoTime") {
+    use_custom_format_ = false;
+    return true;
+  }
+  if (widget_name == "radioCustomTime") {
+    use_custom_format_ = true;
+    return true;
+  }
+  if (widget_name == "checkBoxAutoCloseHelp") {
+    close_after_help_ = checked;
+    return true;
+  }
   return false;
 }
 
-bool CsvDialog::onSelectionChanged(std::string_view widget_name,
-                                   const std::vector<std::string>& selected) {
+bool CsvDialog::onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) {
   if (widget_name == "listWidgetSeries" && !selected.empty()) {
     for (int i = 0; i < static_cast<int>(column_names_.size()); i++) {
       if (column_names_[static_cast<size_t>(i)] == selected[0]) {
@@ -154,8 +176,8 @@ bool CsvDialog::onSelectionChanged(std::string_view widget_name,
 }
 
 bool CsvDialog::onItemDoubleClicked(std::string_view widget_name, int index) {
-  if (widget_name == "listWidgetSeries" && time_mode_ == TimeMode::Column &&
-      index >= 0 && index < static_cast<int>(column_names_.size())) {
+  if (widget_name == "listWidgetSeries" && time_mode_ == TimeMode::Column && index >= 0 &&
+      index < static_cast<int>(column_names_.size())) {
     selected_column_index_ = index;
     accept_requested_ = true;
     return true;
@@ -192,11 +214,11 @@ void CsvDialog::onAccepted(std::string_view /*json*/) {
   if (time_mode_ == TimeMode::Column && selected_column_index_ >= 0 &&
       selected_column_index_ < static_cast<int>(column_names_.size())) {
     auto& name = column_names_[static_cast<size_t>(selected_column_index_)];
-    column_history_.erase(
-        std::remove(column_history_.begin(), column_history_.end(), name),
-        column_history_.end());
+    column_history_.erase(std::remove(column_history_.begin(), column_history_.end(), name), column_history_.end());
     column_history_.insert(column_history_.begin(), name);
-    if (column_history_.size() > 10) column_history_.resize(10);
+    if (column_history_.size() > 10) {
+      column_history_.resize(10);
+    }
   }
 }
 
@@ -216,7 +238,9 @@ std::string CsvDialog::saveConfig() const {
 
 bool CsvDialog::loadConfig(std::string_view config_json) {
   auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-  if (cfg.is_discarded()) return false;
+  if (cfg.is_discarded()) {
+    return false;
+  }
   filepath_ = cfg.value("filepath", std::string{});
   auto d = cfg.value("delimiter", std::string(","));
   delimiter_ = d.empty() ? ',' : d[0];
@@ -230,9 +254,15 @@ bool CsvDialog::loadConfig(std::string_view config_json) {
     column_history_ = cfg["column_history"].get<std::vector<std::string>>();
   }
   // Validate: a mode that requires a selection is useless without one — fall back to row_number
-  if (time_mode_ == TimeMode::Column && selected_column_index_ < 0) time_mode_ = TimeMode::RowNumber;
-  if (time_mode_ == TimeMode::Combined && combined_index_ < 0) time_mode_ = TimeMode::RowNumber;
-  if (!filepath_.empty()) analyzeFile();
+  if (time_mode_ == TimeMode::Column && selected_column_index_ < 0) {
+    time_mode_ = TimeMode::RowNumber;
+  }
+  if (time_mode_ == TimeMode::Combined && combined_index_ < 0) {
+    time_mode_ = TimeMode::RowNumber;
+  }
+  if (!filepath_.empty()) {
+    analyzeFile();
+  }
   return true;
 }
 
@@ -241,16 +271,26 @@ void CsvDialog::analyzeFile() {
   combined_pairs_.clear();
   preview_rows_.clear();
 
-  if (filepath_.empty()) return;
+  if (filepath_.empty()) {
+    return;
+  }
   std::ifstream file(filepath_);
-  if (!file.is_open()) return;
+  if (!file.is_open()) {
+    return;
+  }
 
   // Read header
   std::string header_line;
-  if (!std::getline(file, header_line)) return;
-  if (!header_line.empty() && header_line.back() == '\r') header_line.pop_back();
+  if (!std::getline(file, header_line)) {
+    return;
+  }
+  if (!header_line.empty() && header_line.back() == '\r') {
+    header_line.pop_back();
+  }
 
-  if (delimiter_ == '\0') delimiter_ = PJ::CSV::DetectDelimiter(header_line);
+  if (delimiter_ == '\0') {
+    delimiter_ = PJ::CSV::DetectDelimiter(header_line);
+  }
 
   // Check for duplicate column names before deduplication
   {
@@ -274,8 +314,12 @@ void CsvDialog::analyzeFile() {
   std::vector<PJ::CSV::ColumnTypeInfo> first_row_types;
   int count = 0;
   while (std::getline(file, line) && count < 100) {
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (line.empty()) continue;
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.empty()) {
+      continue;
+    }
     PJ::CSV::SplitLine(line, delimiter_, parts);
     preview_rows_.push_back(parts);
 
@@ -283,10 +327,11 @@ void CsvDialog::analyzeFile() {
     if (count == 0) {
       first_row_types.resize(column_names_.size());
       for (size_t i = 0; i < parts.size() && i < first_row_types.size(); i++) {
-        if (!parts[i].empty()) first_row_types[i] = PJ::CSV::DetectColumnType(parts[i]);
+        if (!parts[i].empty()) {
+          first_row_types[i] = PJ::CSV::DetectColumnType(parts[i]);
+        }
       }
-      combined_pairs_ =
-          PJ::CSV::DetectCombinedDateTimeColumns(column_names_, first_row_types);
+      combined_pairs_ = PJ::CSV::DetectCombinedDateTimeColumns(column_names_, first_row_types);
     }
     count++;
   }
@@ -316,7 +361,9 @@ void CsvDialog::analyzeFile() {
     double prev_val = std::numeric_limits<double>::lowest();
     for (const auto& row : preview_rows_) {
       auto col = static_cast<size_t>(selected_column_index_);
-      if (col >= row.size() || row[col].empty()) continue;
+      if (col >= row.size() || row[col].empty()) {
+        continue;
+      }
       try {
         double val = std::stod(row[col]);
         if (val < prev_val) {
@@ -352,19 +399,19 @@ std::string CsvDialog::computeFormatPreview(const std::string& fmt) {
   const int year = 2024, month = 1, day = 15, hour = 14, min = 30, sec = 45;
   const int weekday = 0;  // Monday (2024-01-15)
 
-  static const char* month_long[] = {"January",  "February", "March",    "April",
-                                     "May",       "June",     "July",     "August",
-                                     "September", "October",  "November", "December"};
+  static const char* month_long[] = {"January", "February", "March",     "April",   "May",      "June",
+                                     "July",    "August",   "September", "October", "November", "December"};
   static const char* month_short[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-  static const char* wday_long[] = {"Monday",   "Tuesday", "Wednesday", "Thursday",
-                                    "Friday",   "Saturday", "Sunday"};
+  static const char* wday_long[] = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"};
   static const char* wday_short[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
 
   auto pad2 = [](int v) -> std::string { return (v < 10 ? "0" : "") + std::to_string(v); };
   auto match = [&](size_t pos, const char* tok) -> bool {
     size_t n = 0;
-    while (tok[n]) ++n;
+    while (tok[n]) {
+      ++n;
+    }
     return fmt.size() - pos >= n && fmt.compare(pos, n, tok) == 0;
   };
 
@@ -373,53 +420,125 @@ std::string CsvDialog::computeFormatPreview(const std::string& fmt) {
   while (i < fmt.size()) {
     if (fmt[i] == '\'') {
       ++i;
-      while (i < fmt.size() && fmt[i] != '\'') out += fmt[i++];
-      if (i < fmt.size()) ++i;
-    } else if (match(i, "yyyy"))  { out += std::to_string(year); i += 4; }
-    else if (match(i, "yy"))      { out += pad2(year % 100); i += 2; }
-    else if (match(i, "MMMM"))    { out += month_long[month - 1]; i += 4; }
-    else if (match(i, "MMM"))     { out += month_short[month - 1]; i += 3; }
-    else if (match(i, "MM"))      { out += pad2(month); i += 2; }
-    else if (fmt[i] == 'M')       { out += std::to_string(month); ++i; }
-    else if (match(i, "dddd"))    { out += wday_long[weekday]; i += 4; }
-    else if (match(i, "ddd"))     { out += wday_short[weekday]; i += 3; }
-    else if (match(i, "dd"))      { out += pad2(day); i += 2; }
-    else if (fmt[i] == 'd')       { out += std::to_string(day); ++i; }
-    else if (match(i, "HH"))      { out += pad2(hour); i += 2; }
-    else if (fmt[i] == 'H')       { out += std::to_string(hour); ++i; }
-    else if (match(i, "hh"))      { int h = hour % 12; if (!h) h = 12; out += pad2(h); i += 2; }
-    else if (fmt[i] == 'h')       { int h = hour % 12; if (!h) h = 12; out += std::to_string(h); ++i; }
-    else if (match(i, "mm"))      { out += pad2(min); i += 2; }
-    else if (fmt[i] == 'm')       { out += std::to_string(min); ++i; }
-    else if (match(i, "ss"))      { out += pad2(sec); i += 2; }
-    else if (fmt[i] == 's')       { out += std::to_string(sec); ++i; }
-    else if (match(i, "zzz"))     { out += "000"; i += 3; }
-    else if (fmt[i] == 'z')       { out += "0"; ++i; }
-    else if (match(i, "AP"))      { out += (hour < 12 ? "AM" : "PM"); i += 2; }
-    else if (match(i, "ap"))      { out += (hour < 12 ? "am" : "pm"); i += 2; }
-    else if (fmt[i] == 'A')       { out += (hour < 12 ? "AM" : "PM"); ++i; }
-    else if (fmt[i] == 'a')       { out += (hour < 12 ? "am" : "pm"); ++i; }
-    else                          { out += fmt[i++]; }
+      while (i < fmt.size() && fmt[i] != '\'') {
+        out += fmt[i++];
+      }
+      if (i < fmt.size()) {
+        ++i;
+      }
+    } else if (match(i, "yyyy")) {
+      out += std::to_string(year);
+      i += 4;
+    } else if (match(i, "yy")) {
+      out += pad2(year % 100);
+      i += 2;
+    } else if (match(i, "MMMM")) {
+      out += month_long[month - 1];
+      i += 4;
+    } else if (match(i, "MMM")) {
+      out += month_short[month - 1];
+      i += 3;
+    } else if (match(i, "MM")) {
+      out += pad2(month);
+      i += 2;
+    } else if (fmt[i] == 'M') {
+      out += std::to_string(month);
+      ++i;
+    } else if (match(i, "dddd")) {
+      out += wday_long[weekday];
+      i += 4;
+    } else if (match(i, "ddd")) {
+      out += wday_short[weekday];
+      i += 3;
+    } else if (match(i, "dd")) {
+      out += pad2(day);
+      i += 2;
+    } else if (fmt[i] == 'd') {
+      out += std::to_string(day);
+      ++i;
+    } else if (match(i, "HH")) {
+      out += pad2(hour);
+      i += 2;
+    } else if (fmt[i] == 'H') {
+      out += std::to_string(hour);
+      ++i;
+    } else if (match(i, "hh")) {
+      int h = hour % 12;
+      if (!h) {
+        h = 12;
+      }
+      out += pad2(h);
+      i += 2;
+    } else if (fmt[i] == 'h') {
+      int h = hour % 12;
+      if (!h) {
+        h = 12;
+      }
+      out += std::to_string(h);
+      ++i;
+    } else if (match(i, "mm")) {
+      out += pad2(min);
+      i += 2;
+    } else if (fmt[i] == 'm') {
+      out += std::to_string(min);
+      ++i;
+    } else if (match(i, "ss")) {
+      out += pad2(sec);
+      i += 2;
+    } else if (fmt[i] == 's') {
+      out += std::to_string(sec);
+      ++i;
+    } else if (match(i, "zzz")) {
+      out += "000";
+      i += 3;
+    } else if (fmt[i] == 'z') {
+      out += "0";
+      ++i;
+    } else if (match(i, "AP")) {
+      out += (hour < 12 ? "AM" : "PM");
+      i += 2;
+    } else if (match(i, "ap")) {
+      out += (hour < 12 ? "am" : "pm");
+      i += 2;
+    } else if (fmt[i] == 'A') {
+      out += (hour < 12 ? "AM" : "PM");
+      ++i;
+    } else if (fmt[i] == 'a') {
+      out += (hour < 12 ? "am" : "pm");
+      ++i;
+    } else {
+      out += fmt[i++];
+    }
   }
   return out;
 }
 
 int CsvDialog::delimiterToIndex(char d) {
   switch (d) {
-    case ',': return 0;
-    case ';': return 1;
-    case ' ': return 2;
-    case '\t': return 3;
-    default: return 0;
+    case ',':
+      return 0;
+    case ';':
+      return 1;
+    case ' ':
+      return 2;
+    case '\t':
+      return 3;
+    default:
+      return 0;
   }
 }
 
 char CsvDialog::indexToDelimiter(int idx) {
   switch (idx) {
-    case 0: return ',';
-    case 1: return ';';
-    case 2: return ' ';
-    case 3: return '\t';
-    default: return ',';
+    case 0:
+      return ',';
+    case 1:
+      return ';';
+    case 2:
+      return ' ';
+    case 3:
+      return '\t';
+    default:
+      return ',';
   }
 }

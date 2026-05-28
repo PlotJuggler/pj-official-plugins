@@ -1,28 +1,24 @@
-#include <pj_base/sdk/data_source_patterns.hpp>
-
-#include "ulog_params_dialog.hpp"
-#include "ulog_manifest.hpp"
-
-#include <ulog_cpp/data_container.hpp>
-#include <ulog_cpp/reader.hpp>
-
-#include <nlohmann/json.hpp>
-
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <nlohmann/json.hpp>
+#include <pj_base/sdk/data_source_patterns.hpp>
 #include <string>
+#include <ulog_cpp/data_container.hpp>
+#include <ulog_cpp/reader.hpp>
 #include <vector>
 
+#include "ulog_manifest.hpp"
+#include "ulog_params_dialog.hpp"
 
 namespace {
 
 /// Recursively collect flattened field names for a ulog_cpp MessageFormat.
 /// Skips the "timestamp" field and "_padding*" fields.
 /// Nested fields are separated by "." and array elements get ".00", ".01" etc.
-void collectFlatFieldNames(const ulog_cpp::MessageFormat& format, const std::string& prefix,
-                           std::vector<std::string>& out) {
+void collectFlatFieldNames(
+    const ulog_cpp::MessageFormat& format, const std::string& prefix, std::vector<std::string>& out) {
   for (const auto& field_ptr : format.fields()) {
     const auto& field = *field_ptr;
     const std::string& name = field.name();
@@ -64,36 +60,52 @@ void collectFlatFieldNames(const ulog_cpp::MessageFormat& format, const std::str
 /// Map ULog BasicType to PJ::PrimitiveType.
 PJ::PrimitiveType ulogTypeToPrimitive(ulog_cpp::Field::BasicType type) {
   switch (type) {
-    case ulog_cpp::Field::BasicType::INT8: return PJ::PrimitiveType::kInt8;
-    case ulog_cpp::Field::BasicType::UINT8: return PJ::PrimitiveType::kUint8;
-    case ulog_cpp::Field::BasicType::INT16: return PJ::PrimitiveType::kInt16;
-    case ulog_cpp::Field::BasicType::UINT16: return PJ::PrimitiveType::kUint16;
-    case ulog_cpp::Field::BasicType::INT32: return PJ::PrimitiveType::kInt32;
-    case ulog_cpp::Field::BasicType::UINT32: return PJ::PrimitiveType::kUint32;
-    case ulog_cpp::Field::BasicType::INT64: return PJ::PrimitiveType::kInt64;
-    case ulog_cpp::Field::BasicType::UINT64: return PJ::PrimitiveType::kUint64;
-    case ulog_cpp::Field::BasicType::FLOAT: return PJ::PrimitiveType::kFloat32;
-    case ulog_cpp::Field::BasicType::DOUBLE: return PJ::PrimitiveType::kFloat64;
-    case ulog_cpp::Field::BasicType::BOOL: return PJ::PrimitiveType::kBool;
-    case ulog_cpp::Field::BasicType::CHAR: return PJ::PrimitiveType::kUint8;
-    default: return PJ::PrimitiveType::kFloat64;
+    case ulog_cpp::Field::BasicType::INT8:
+      return PJ::PrimitiveType::kInt8;
+    case ulog_cpp::Field::BasicType::UINT8:
+      return PJ::PrimitiveType::kUint8;
+    case ulog_cpp::Field::BasicType::INT16:
+      return PJ::PrimitiveType::kInt16;
+    case ulog_cpp::Field::BasicType::UINT16:
+      return PJ::PrimitiveType::kUint16;
+    case ulog_cpp::Field::BasicType::INT32:
+      return PJ::PrimitiveType::kInt32;
+    case ulog_cpp::Field::BasicType::UINT32:
+      return PJ::PrimitiveType::kUint32;
+    case ulog_cpp::Field::BasicType::INT64:
+      return PJ::PrimitiveType::kInt64;
+    case ulog_cpp::Field::BasicType::UINT64:
+      return PJ::PrimitiveType::kUint64;
+    case ulog_cpp::Field::BasicType::FLOAT:
+      return PJ::PrimitiveType::kFloat32;
+    case ulog_cpp::Field::BasicType::DOUBLE:
+      return PJ::PrimitiveType::kFloat64;
+    case ulog_cpp::Field::BasicType::BOOL:
+      return PJ::PrimitiveType::kBool;
+    case ulog_cpp::Field::BasicType::CHAR:
+      return PJ::PrimitiveType::kUint8;
+    default:
+      return PJ::PrimitiveType::kFloat64;
   }
 }
 
 /// Recursively collect flattened field types for a ulog_cpp MessageFormat,
 /// matching the order produced by collectFlatFieldNames.
-void collectFlatFieldTypes(const ulog_cpp::MessageFormat& format,
-                           std::vector<PJ::PrimitiveType>& out) {
+void collectFlatFieldTypes(const ulog_cpp::MessageFormat& format, std::vector<PJ::PrimitiveType>& out) {
   for (const auto& field_ptr : format.fields()) {
     const auto& field = *field_ptr;
     const std::string& name = field.name();
-    if (name == "timestamp" || name.substr(0, 8) == "_padding") continue;
+    if (name == "timestamp" || name.substr(0, 8) == "_padding") {
+      continue;
+    }
     int arr_len = field.arrayLength();
     int count = (arr_len < 0) ? 1 : arr_len;
     for (int i = 0; i < count; ++i) {
       if (field.type().type == ulog_cpp::Field::BasicType::NESTED) {
         auto nested_fmt = field.nestedFormat();
-        if (nested_fmt) collectFlatFieldTypes(*nested_fmt, out);
+        if (nested_fmt) {
+          collectFlatFieldTypes(*nested_fmt, out);
+        }
       } else {
         out.push_back(ulogTypeToPrimitive(field.type().type));
       }
@@ -160,8 +172,9 @@ PJ::sdk::ValueRef readPrimitiveValue(const uint8_t* data, size_t offset, ulog_cp
 
 /// Recursively extract numeric values from raw data bytes using resolved field offsets,
 /// matching the order produced by collectFlatFieldNames.
-void extractFlatValues(const uint8_t* raw_data, size_t base_offset,
-                       const ulog_cpp::MessageFormat& format, std::vector<PJ::sdk::ValueRef>& values) {
+void extractFlatValues(
+    const uint8_t* raw_data, size_t base_offset, const ulog_cpp::MessageFormat& format,
+    std::vector<PJ::sdk::ValueRef>& values) {
   for (const auto& field_ptr : format.fields()) {
     const auto& field = *field_ptr;
     const std::string& name = field.name();
@@ -184,14 +197,12 @@ void extractFlatValues(const uint8_t* raw_data, size_t base_offset,
       }
       auto nested_size = nested_fmt->sizeBytes();
       for (size_t i = 0; i < static_cast<size_t>(count); ++i) {
-        extractFlatValues(raw_data, field_offset + i * static_cast<size_t>(nested_size), *nested_fmt,
-                          values);
+        extractFlatValues(raw_data, field_offset + i * static_cast<size_t>(nested_size), *nested_fmt, values);
       }
     } else {
       size_t elem_size = static_cast<size_t>(field.type().size);
       for (size_t i = 0; i < static_cast<size_t>(count); ++i) {
-        values.push_back(
-            readPrimitiveValue(raw_data, field_offset + i * elem_size, field.type().type));
+        values.push_back(readPrimitiveValue(raw_data, field_offset + i * elem_size, field.type().type));
       }
     }
   }
@@ -241,8 +252,7 @@ class ULogSource : public PJ::FileSourceBase {
     (void)runtimeHost().progressStart("Importing ULog", file_size, true);
 
     // Parse via ulog_cpp.
-    auto data_container =
-        std::make_shared<ulog_cpp::DataContainer>(ulog_cpp::DataContainer::StorageConfig::FullLog);
+    auto data_container = std::make_shared<ulog_cpp::DataContainer>(ulog_cpp::DataContainer::StorageConfig::FullLog);
     ulog_cpp::Reader reader{data_container};
 
     static constexpr size_t kChunkSize = 65536;
@@ -385,14 +395,12 @@ class ULogSource : public PJ::FileSourceBase {
         try {
           std::string str_val = param.value().as<std::string>();
           runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, param_name + ": " + str_val);
-        } catch (...) {
-        }
+        } catch (...) {}
         continue;
       }
 
       auto ts_ns = static_cast<int64_t>(file_start_time_us) * 1000;
-      auto status =
-          writeHost().appendRecord(*topic, PJ::Timestamp{ts_ns}, {{.name = "value", .value = param_value}});
+      auto status = writeHost().appendRecord(*topic, PJ::Timestamp{ts_ns}, {{.name = "value", .value = param_value}});
       if (!status) {
         return status;
       }
@@ -402,11 +410,15 @@ class ULogSource : public PJ::FileSourceBase {
     {
       auto& info_multi = data_container->messageInfoMulti();
       for (const auto& [key, values_vec] : info_multi) {
-        if (values_vec.empty() || values_vec[0].empty()) continue;
+        if (values_vec.empty() || values_vec[0].empty()) {
+          continue;
+        }
         const auto& info = values_vec[0][0];  // first instance
         std::string info_topic = "_info/" + key;
         auto topic = writeHost().ensureTopic(info_topic);
-        if (!topic) continue;
+        if (!topic) {
+          continue;
+        }
         try {
           double val = info.value().as<double>();
           auto ts_ns = static_cast<int64_t>(file_start_time_us) * 1000;
@@ -416,8 +428,7 @@ class ULogSource : public PJ::FileSourceBase {
           try {
             std::string str_val = info.value().as<std::string>();
             runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, key + ": " + str_val);
-          } catch (...) {
-          }
+          } catch (...) {}
         }
       }
     }
@@ -434,7 +445,8 @@ class ULogSource : public PJ::FileSourceBase {
             auto ts_ns = static_cast<int64_t>(log.timestamp()) * 1000;
             std::string level_str = log.logLevelStr();
             std::string msg = log.message();
-            (void)writeHost().appendRecord(*topic, PJ::Timestamp{ts_ns},
+            (void)writeHost().appendRecord(
+                *topic, PJ::Timestamp{ts_ns},
                 {{.name = "level", .value = std::string_view(level_str)},
                  {.name = "message", .value = std::string_view(msg)}});
           }
@@ -442,8 +454,8 @@ class ULogSource : public PJ::FileSourceBase {
       }
     }
 
-    runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo,
-                                "Imported " + std::to_string(total_series_count) + " time series");
+    runtimeHost().reportMessage(
+        PJ::DataSourceMessageLevel::kInfo, "Imported " + std::to_string(total_series_count) + " time series");
 
     return PJ::okStatus();
   }

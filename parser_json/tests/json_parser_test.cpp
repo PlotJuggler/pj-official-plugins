@@ -1,5 +1,3 @@
-#include "pj_plugins/host/message_parser_library.hpp"
-
 #include <gtest/gtest.h>
 
 #include <string>
@@ -7,6 +5,7 @@
 
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/testing/parser_write_recorder.hpp"
+#include "pj_plugins/host/message_parser_library.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
 
 #ifndef PJ_JSON_PARSER_PLUGIN_PATH

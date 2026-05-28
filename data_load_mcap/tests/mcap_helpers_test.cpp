@@ -19,9 +19,8 @@
 
 #include <gtest/gtest.h>
 
-#include <mcap/writer.hpp>
-
 #include <cstring>
+#include <mcap/writer.hpp>
 #include <sstream>
 #include <vector>
 
@@ -39,9 +38,13 @@ class MemoryWritable : public mcap::IWritable {
 
   void end() override {}
 
-  uint64_t size() const override { return buffer_.size(); }
+  uint64_t size() const override {
+    return buffer_.size();
+  }
 
-  const std::vector<uint8_t>& data() const { return buffer_; }
+  const std::vector<uint8_t>& data() const {
+    return buffer_;
+  }
 
  private:
   std::vector<uint8_t> buffer_;
@@ -52,7 +55,9 @@ class MemoryReadable : public mcap::IReadable {
  public:
   explicit MemoryReadable(const std::vector<uint8_t>& data) : data_(data) {}
 
-  uint64_t size() const override { return data_.size(); }
+  uint64_t size() const override {
+    return data_.size();
+  }
 
   uint64_t read(std::byte** output, uint64_t offset, uint64_t size) override {
     if (offset >= data_.size()) {
@@ -84,8 +89,7 @@ std::vector<uint8_t> createTestMcap(uint64_t message_count = 10) {
   mcap::Schema schema;
   schema.name = "test_msg";
   schema.encoding = "json";
-  schema.data.assign(reinterpret_cast<const std::byte*>("{}"),
-                     reinterpret_cast<const std::byte*>("{}") + 2);
+  schema.data.assign(reinterpret_cast<const std::byte*>("{}"), reinterpret_cast<const std::byte*>("{}") + 2);
   writer.addSchema(schema);
 
   // Add a channel
@@ -152,8 +156,7 @@ TEST(McapHelpersTest, ReadSelectiveSummaryValid) {
   // If the test fails, it's expected for minimal files without SummaryOffset.
   if (!status.ok()) {
     // This is expected for minimal MCAP files - they may not have SummaryOffset section
-    EXPECT_TRUE(status.code == mcap::StatusCode::MissingStatistics ||
-                status.code == mcap::StatusCode::InvalidFooter)
+    EXPECT_TRUE(status.code == mcap::StatusCode::MissingStatistics || status.code == mcap::StatusCode::InvalidFooter)
         << "Unexpected error: " << status.message;
   } else {
     EXPECT_FALSE(info.schemas.empty());
@@ -219,16 +222,14 @@ TEST(McapHelpersTest, McapWithMultipleChannels) {
   mcap::Schema schema1;
   schema1.name = "type_a";
   schema1.encoding = "json";
-  schema1.data.assign(reinterpret_cast<const std::byte*>("{}"),
-                      reinterpret_cast<const std::byte*>("{}") + 2);
+  schema1.data.assign(reinterpret_cast<const std::byte*>("{}"), reinterpret_cast<const std::byte*>("{}") + 2);
   writer.addSchema(schema1);
 
   // Schema 2
   mcap::Schema schema2;
   schema2.name = "type_b";
   schema2.encoding = "json";
-  schema2.data.assign(reinterpret_cast<const std::byte*>("{}"),
-                      reinterpret_cast<const std::byte*>("{}") + 2);
+  schema2.data.assign(reinterpret_cast<const std::byte*>("{}"), reinterpret_cast<const std::byte*>("{}") + 2);
   writer.addSchema(schema2);
 
   // Channel 1

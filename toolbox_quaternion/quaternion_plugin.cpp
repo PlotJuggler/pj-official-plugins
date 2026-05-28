@@ -1,22 +1,19 @@
-#include <pj_base/sdk/toolbox_plugin_base.hpp>
-#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
-#include <pj_plugins/sdk/widget_data.hpp>
-
-#include <nlohmann/json.hpp>
-
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <nlohmann/json.hpp>
 #include <optional>
+#include <pj_base/sdk/toolbox_plugin_base.hpp>
+#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
 
-#include "quaternion_manifest.hpp"
 #include "quaternion_dialog_ui.hpp"
+#include "quaternion_manifest.hpp"
 #include "quaternion_to_rpy.hpp"
-
 
 // ---------------------------------------------------------------------------
 // QuaternionDialog
@@ -32,7 +29,9 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
     return R"({"name":"Quaternion to RPY","version":"1.0.0"})";
   }
 
-  std::string ui_content() const override { return kQuaternionDialogUi; }
+  std::string ui_content() const override {
+    return kQuaternionDialogUi;
+  }
 
   std::string widget_data() override {
     PJ::WidgetData wd;
@@ -70,13 +69,22 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
   }
 
   bool onTextChanged(std::string_view name, std::string_view text) override {
-    if (name == "output_prefix") { output_prefix_ = std::string(text); return true; }
+    if (name == "output_prefix") {
+      output_prefix_ = std::string(text);
+      return true;
+    }
     return false;
   }
 
   bool onToggled(std::string_view name, bool checked) override {
-    if (name == "unwrap_check") { unwrap_ = checked; return true; }
-    if (name == "radio_degrees") { degrees_ = checked; return true; }
+    if (name == "unwrap_check") {
+      unwrap_ = checked;
+      return true;
+    }
+    if (name == "radio_degrees") {
+      degrees_ = checked;
+      return true;
+    }
     return false;
   }
 
@@ -89,11 +97,15 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
   }
 
   bool onItemsDropped(std::string_view /*name*/, const std::vector<std::string>& items) override {
-    if (items.empty()) return false;
+    if (items.empty()) {
+      return false;
+    }
 
     const auto& dropped = items.front();
     auto last_slash = dropped.rfind('/');
-    if (last_slash == std::string::npos) return false;
+    if (last_slash == std::string::npos) {
+      return false;
+    }
 
     std::string prefix = dropped.substr(0, last_slash + 1);
     std::string suffix = dropped.substr(last_slash + 1);
@@ -116,7 +128,9 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
           break;
         }
       }
-      if (!suffix_matches) continue;
+      if (!suffix_matches) {
+        continue;
+      }
 
       std::string fx = prefix + pattern[0];
       std::string fy = prefix + pattern[1];
@@ -151,7 +165,9 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
 
   bool loadConfig(std::string_view config_json) override {
     auto j = nlohmann::json::parse(config_json, nullptr, false);
-    if (j.is_discarded()) return false;
+    if (j.is_discarded()) {
+      return false;
+    }
     input_x_ = j.value("input_x", std::string{});
     input_y_ = j.value("input_y", std::string{});
     input_z_ = j.value("input_z", std::string{});
@@ -164,24 +180,38 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
   }
 
   [[nodiscard]] bool isValid() const {
-    return !input_x_.empty() && !input_y_.empty() &&
-           !input_z_.empty() && !input_w_.empty() &&
-           !output_prefix_.empty();
+    return !input_x_.empty() && !input_y_.empty() && !input_z_.empty() && !input_w_.empty() && !output_prefix_.empty();
   }
 
   void setAvailableFields(std::vector<std::string> fields) {
     available_fields_ = std::move(fields);
   }
 
-  [[nodiscard]] const std::string& inputX() const { return input_x_; }
-  [[nodiscard]] const std::string& inputY() const { return input_y_; }
-  [[nodiscard]] const std::string& inputZ() const { return input_z_; }
-  [[nodiscard]] const std::string& inputW() const { return input_w_; }
-  [[nodiscard]] const std::string& outputPrefix() const { return output_prefix_; }
-  [[nodiscard]] bool unwrap() const { return unwrap_; }
-  [[nodiscard]] bool degrees() const { return degrees_; }
+  [[nodiscard]] const std::string& inputX() const {
+    return input_x_;
+  }
+  [[nodiscard]] const std::string& inputY() const {
+    return input_y_;
+  }
+  [[nodiscard]] const std::string& inputZ() const {
+    return input_z_;
+  }
+  [[nodiscard]] const std::string& inputW() const {
+    return input_w_;
+  }
+  [[nodiscard]] const std::string& outputPrefix() const {
+    return output_prefix_;
+  }
+  [[nodiscard]] bool unwrap() const {
+    return unwrap_;
+  }
+  [[nodiscard]] bool degrees() const {
+    return degrees_;
+  }
 
-  void setStatus(std::string msg) { status_msg_ = std::move(msg); }
+  void setStatus(std::string msg) {
+    status_msg_ = std::move(msg);
+  }
 
   struct SeriesData {
     std::vector<double> timestamps;
@@ -203,11 +233,12 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
     const auto* sy = find(input_y_);
     const auto* sz = find(input_z_);
     const auto* sw = find(input_w_);
-    if (!sx || !sy || !sz || !sw) return {};
+    if (!sx || !sy || !sz || !sw) {
+      return {};
+    }
 
     size_t count = sx->timestamps.size();
-    if (count == 0 || sy->values.size() != count ||
-        sz->values.size() != count || sw->values.size() != count) {
+    if (count == 0 || sy->values.size() != count || sz->values.size() != count || sw->values.size() != count) {
       return {};
     }
 
@@ -316,7 +347,9 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
     return PJ::borrowDialog(dialog_);
   }
 
-  std::string saveConfig() const override { return dialog_.saveConfig(); }
+  std::string saveConfig() const override {
+    return dialog_.saveConfig();
+  }
 
   PJ::Status loadConfig(std::string_view config_json) override {
     auto prev_config = dialog_.saveConfig();
@@ -339,8 +372,7 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
     auto status = applyTransform();
     if (!status) {
       runtimeHost().reportMessage(
-          PJ::ToolboxMessageLevel::kWarning,
-          "quaternion re-apply failed: " + std::string(status.error()));
+          PJ::ToolboxMessageLevel::kWarning, "quaternion re-apply failed: " + std::string(status.error()));
     }
   }
 
@@ -354,8 +386,7 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
       return PJ::unexpected("failed to acquire catalog: " + std::string(catalog.error()));
     }
 
-    auto find_field = [&](const std::string& full_name)
-        -> PJ::Expected<PJ::sdk::FieldHandle> {
+    auto find_field = [&](const std::string& full_name) -> PJ::Expected<PJ::sdk::FieldHandle> {
       auto all_fields = catalog->fields();
       for (const auto& topic : catalog->topics()) {
         std::string topic_name(PJ::sdk::toStringView(topic.name));
@@ -377,10 +408,18 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
 
     if (!field_x || !field_y || !field_z || !field_w) {
       std::string err = "Missing input fields:";
-      if (!field_x) err += " X(" + dialog_.inputX() + ")";
-      if (!field_y) err += " Y(" + dialog_.inputY() + ")";
-      if (!field_z) err += " Z(" + dialog_.inputZ() + ")";
-      if (!field_w) err += " W(" + dialog_.inputW() + ")";
+      if (!field_x) {
+        err += " X(" + dialog_.inputX() + ")";
+      }
+      if (!field_y) {
+        err += " Y(" + dialog_.inputY() + ")";
+      }
+      if (!field_z) {
+        err += " Z(" + dialog_.inputZ() + ")";
+      }
+      if (!field_w) {
+        err += " W(" + dialog_.inputW() + ")";
+      }
       dialog_.setStatus(err);
       return PJ::unexpected(err);
     }
@@ -403,8 +442,7 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
     }
 
     // Validate all series have the same length.
-    if (series_y->timestamps().size() != count ||
-        series_z->timestamps().size() != count ||
+    if (series_y->timestamps().size() != count || series_z->timestamps().size() != count ||
         series_w->timestamps().size() != count) {
       return PJ::unexpected("input series have different lengths");
     }
@@ -468,8 +506,7 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
 
     processed_count_ = count;
     runtimeHost().notifyDataChanged();
-    dialog_.setStatus("Converted " + std::to_string(count) + " samples (" +
-                      std::to_string(count - start) + " new)");
+    dialog_.setStatus("Converted " + std::to_string(count) + " samples (" + std::to_string(count - start) + " new)");
     return PJ::okStatus();
   }
 

@@ -1,20 +1,16 @@
-#include <pj_base/sdk/data_source_patterns.hpp>
-#include <pj_plugins/sdk/encoding_utils.hpp>
-
-#include "udp_dialog.hpp"
-#include "udp_manifest.hpp"
-
-#include <asio.hpp>
-
-#include <nlohmann/json.hpp>
-
 #include <array>
+#include <asio.hpp>
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <nlohmann/json.hpp>
+#include <pj_base/sdk/data_source_patterns.hpp>
+#include <pj_plugins/sdk/encoding_utils.hpp>
 #include <string>
 #include <unordered_map>
 
+#include "udp_dialog.hpp"
+#include "udp_manifest.hpp"
 
 namespace {
 
@@ -30,11 +26,12 @@ class UdpSource : public PJ::StreamSourceBase {
     return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;
   }
 
-  std::string saveConfig() const override { return dialog_.saveConfig(); }
+  std::string saveConfig() const override {
+    return dialog_.saveConfig();
+  }
 
   PJ::Status loadConfig(std::string_view config_json) override {
-    dialog_.setAvailableEncodings(
-        PJ::sdk::parseEncodingsJson(runtimeHost().listAvailableEncodings()));
+    dialog_.setAvailableEncodings(PJ::sdk::parseEncodingsJson(runtimeHost().listAvailableEncodings()));
 
     if (!config_json.empty()) {
       (void)dialog_.loadConfig(config_json);
@@ -75,9 +72,8 @@ class UdpSource : public PJ::StreamSourceBase {
 
     if (is_multicast) {
       // Multicast: bind to any, then join the group.
-      auto bind_ep = addr.is_v6()
-                         ? asio::ip::udp::endpoint(asio::ip::udp::v6(), port_)
-                         : asio::ip::udp::endpoint(asio::ip::udp::v4(), port_);
+      auto bind_ep = addr.is_v6() ? asio::ip::udp::endpoint(asio::ip::udp::v6(), port_)
+                                  : asio::ip::udp::endpoint(asio::ip::udp::v4(), port_);
       socket_->bind(bind_ep, ec);
       if (ec) {
         return PJ::unexpected("UDP bind failed: " + ec.message());
@@ -117,8 +113,7 @@ class UdpSource : public PJ::StreamSourceBase {
         break;  // no more datagrams pending
       }
       if (ec || n == 0) {
-        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning,
-                                   "receive_from error: " + ec.message());
+        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, "receive_from error: " + ec.message());
         break;
       }
 
@@ -141,12 +136,11 @@ class UdpSource : public PJ::StreamSourceBase {
 
       if (it != binding_cache_.end()) {
         auto status = runtimeHost().pushRawMessage(
-            it->second, PJ::Timestamp{timestamp_ns},
-            PJ::Span<const uint8_t>(recv_buffer_.data(), n));
+            it->second, PJ::Timestamp{timestamp_ns}, PJ::Span<const uint8_t>(recv_buffer_.data(), n));
         if (!status) {
           // Mirror PJ 3.x behavior: a parse failure stops the stream.
-          runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError,
-                                     "Parse error — stopping stream: " + status.error());
+          runtimeHost().reportMessage(
+              PJ::DataSourceMessageLevel::kError, "Parse error — stopping stream: " + status.error());
           return PJ::unexpected(status.error());
         }
       }

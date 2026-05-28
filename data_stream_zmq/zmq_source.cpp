@@ -1,18 +1,15 @@
-#include <pj_base/sdk/data_source_patterns.hpp>
-#include <pj_plugins/sdk/encoding_utils.hpp>
-
-#include "zmq_dialog.hpp"
-#include "zmq_manifest.hpp"
-
-#include <nlohmann/json.hpp>
-#include <zmq.hpp>
-
 #include <chrono>
 #include <cstdint>
+#include <nlohmann/json.hpp>
+#include <pj_base/sdk/data_source_patterns.hpp>
+#include <pj_plugins/sdk/encoding_utils.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <zmq.hpp>
 
+#include "zmq_dialog.hpp"
+#include "zmq_manifest.hpp"
 
 namespace {
 
@@ -26,7 +23,9 @@ class ZmqSource : public PJ::StreamSourceBase {
     return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;
   }
 
-  std::string saveConfig() const override { return dialog_.saveConfig(); }
+  std::string saveConfig() const override {
+    return dialog_.saveConfig();
+  }
 
   PJ::Status loadConfig(std::string_view config_json) override {
     // Always populate available encodings first (needed even if config is empty)
@@ -101,7 +100,9 @@ class ZmqSource : public PJ::StreamSourceBase {
     for (int i = 0; i < kMaxMessagesPerPoll; i++) {
       zmq::message_t recv_msg;
       auto result = socket_->recv(recv_msg, zmq::recv_flags::dontwait);
-      if (!result || recv_msg.size() == 0) break;
+      if (!result || recv_msg.size() == 0) {
+        break;
+      }
 
       // Multi-part: first frame is topic
       std::string topic;
@@ -109,7 +110,9 @@ class ZmqSource : public PJ::StreamSourceBase {
         topic = std::string(static_cast<const char*>(recv_msg.data()), recv_msg.size());
         recv_msg.rebuild();
         result = socket_->recv(recv_msg, zmq::recv_flags::dontwait);
-        if (!result || recv_msg.size() == 0) continue;
+        if (!result || recv_msg.size() == 0) {
+          continue;
+        }
       }
 
       auto* payload_data = static_cast<const uint8_t*>(recv_msg.data());
@@ -156,8 +159,8 @@ class ZmqSource : public PJ::StreamSourceBase {
         auto status = runtimeHost().pushRawMessage(
             it->second, PJ::Timestamp{timestamp_ns}, PJ::Span<const uint8_t>(payload_data, payload_size));
         if (!status) {
-          runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning,
-                                     "Failed to push message: " + status.error());
+          runtimeHost().reportMessage(
+              PJ::DataSourceMessageLevel::kWarning, "Failed to push message: " + status.error());
         }
       }
     }
@@ -173,8 +176,7 @@ class ZmqSource : public PJ::StreamSourceBase {
         } else {
           socket_->unbind(endpoint_);
         }
-      } catch (...) {
-      }
+      } catch (...) {}
       socket_.reset();
     }
     context_.reset();
