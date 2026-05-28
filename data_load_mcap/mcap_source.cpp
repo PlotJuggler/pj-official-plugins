@@ -90,6 +90,31 @@ class McapSource : public PJ::FileSourceBase {
     if (!dialog_.loadConfig(config_json)) {
       return PJ::unexpected(std::string("invalid config JSON"));
     }
+    auto cfg = nlohmann::json::parse(config_json, nullptr, false);
+    if (!cfg.is_discarded()) {
+      if (cfg.contains("_parser_config")) {
+        // Parser config forwarded by FileLoader from the embedded pj_parser_slot
+        // dialog — takes precedence over everything else.
+        parser_config_override_ = cfg["_parser_config"].get<std::string>();
+      } else {
+        // Migration: old configs had use_timestamp / timestamp_field_name directly
+        // in the MCAP dialog config. Synthesize a parser config from those keys so
+        // existing saved sessions keep working after the controls moved to
+        // JsonParserDialog.
+        bool use_ts = cfg.value("use_timestamp", false);
+        std::string ts_field = cfg.value("timestamp_field_name", std::string{});
+        if (use_ts) {
+          nlohmann::json migrated;
+          migrated["use_embedded_timestamp"] = true;
+          migrated["timestamp_field_name"] = ts_field;
+          parser_config_override_ = migrated.dump();
+        } else {
+          parser_config_override_.clear();
+        }
+      }
+    } else {
+      parser_config_override_.clear();
+    }
     return PJ::okStatus();
   }
 
@@ -149,12 +174,14 @@ class McapSource : public PJ::FileSourceBase {
     }
     (void)runtimeHost().progressStart("Importing MCAP", total_messages, true);
 
-    // --- Build parser config JSON from dialog settings ---
-    nlohmann::json parser_config;
-    parser_config["max_array_size"] = dialog_.maxArraySize();
-    parser_config["use_embedded_timestamp"] = dialog_.useTimestamp();
-    parser_config["clamp_large_arrays"] = dialog_.clampLargeArrays();
-    std::string parser_config_str = parser_config.dump();
+    // --- Build parser config: prefer embedded parser dialog config when
+    //     available (set via the pj_parser_slot mechanism), otherwise fall
+    //     back to building it from the individual dialog accessors.
+    std::string parser_config_str;
+    // parser_config comes entirely from the embedded parser dialog (pj_parser_slot).
+    // When no override is set (first run / old config), use an empty config so
+    // the parser falls back to its own defaults.
+    parser_config_str = parser_config_override_;
 
     // --- Ensure parser bindings for selected channels ---
     const auto& selected = dialog_.selectedTopics();
@@ -328,6 +355,10 @@ class McapSource : public PJ::FileSourceBase {
 
  private:
   McapDialog dialog_;
+  // Parser config from the embedded parser dialog (pj_parser_slot). Set by
+  // loadConfig() when FileLoader embeds it under "_parser_config". When
+  // non-empty, takes precedence over per-field accessors in McapDialog.
+  std::string parser_config_override_;
   // Keeps the open mcap reader alive past importData() so the deferred
   // FetchMessageData callables handed to runtimeHost().pushMessage() can read messages on
   // demand. Reset on bail-out paths or destroyed with the source.

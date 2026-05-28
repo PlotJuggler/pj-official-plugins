@@ -50,6 +50,11 @@ class McapDialog : public PJ::DialogPluginTyped {
   const std::string& analyzeError() const {
     return analyze_error_;
   }
+  /// Primary encoding for the comboBoxProtocol / parser dialog embedding.
+  /// Empty when no channels have been analyzed yet.
+  const std::string& primaryEncoding() const {
+    return primary_encoding_;
+  }
 
   // --- Dialog protocol ---
 
@@ -64,13 +69,6 @@ class McapDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    // Array size controls
-    wd.setValue("spinBox", static_cast<int>(max_array_size_));
-    wd.setChecked("radioClamp", clamp_large_arrays_);
-    wd.setChecked("radioSkip", !clamp_large_arrays_);
-
-    // Timestamp controls
-    wd.setChecked("checkBoxUseTimestamp", use_timestamp_);
     wd.setChecked("radioPubTime", !use_mcap_log_time_);
     wd.setChecked("radioLogTime", use_mcap_log_time_);
 
@@ -104,13 +102,30 @@ class McapDialog : public PJ::DialogPluginTyped {
     wd.setShortcut("btnSelectAll", "Ctrl+A");
     wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
 
+    // Encoding combobox for pj_parser_slot — hide row when only one encoding
+    // (nothing to choose) but keep the widget so DialogEngine can find it.
+    wd.setItems("comboBoxProtocol", available_encodings_);
+    wd.setCurrentIndex("comboBoxProtocol", encodingIndex(primary_encoding_));
+    bool multi_encoding = available_encodings_.size() > 1;
+    wd.setVisible("comboBoxProtocol", multi_encoding);
+    wd.setVisible("labelEncoding", multi_encoding);
+
     wd.setOkEnabled(!selected_topics_.empty());
 
     return wd.toJson();
   }
 
+  bool onIndexChanged(std::string_view widget_name, int index) override {
+    if (widget_name == "comboBoxProtocol") {
+      if (index >= 0 && index < static_cast<int>(available_encodings_.size())) {
+        primary_encoding_ = available_encodings_[static_cast<size_t>(index)];
+      }
+      return false;
+    }
+    return false;
+  }
+
   bool onToggled(std::string_view widget_name, bool checked) override {
-    // Checkbox must be handled before the radio button early-return
     if (widget_name == "checkBoxUseTimestamp") {
       use_timestamp_ = checked;
       return true;
@@ -133,14 +148,6 @@ class McapDialog : public PJ::DialogPluginTyped {
     if (widget_name == "radioLogTime") {
       use_mcap_log_time_ = true;
       return true;
-    }
-    return false;
-  }
-
-  bool onValueChanged(std::string_view widget_name, int value) override {
-    if (widget_name == "spinBox") {
-      max_array_size_ = static_cast<unsigned>(value);
-      return false;  // no UI refresh needed
     }
     return false;
   }
@@ -187,9 +194,6 @@ class McapDialog : public PJ::DialogPluginTyped {
   std::string saveConfig() const override {
     nlohmann::json cfg;
     cfg["filepath"] = filepath_;
-    cfg["max_array_size"] = max_array_size_;
-    cfg["clamp_large_arrays"] = clamp_large_arrays_;
-    cfg["use_timestamp"] = use_timestamp_;
     cfg["use_mcap_log_time"] = use_mcap_log_time_;
     cfg["selected_topics"] = std::vector<std::string>(selected_topics_.begin(), selected_topics_.end());
     return cfg.dump();
@@ -202,9 +206,6 @@ class McapDialog : public PJ::DialogPluginTyped {
     }
 
     filepath_ = cfg.value("filepath", std::string{});
-    max_array_size_ = cfg.value("max_array_size", 500u);
-    clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
-    use_timestamp_ = cfg.value("use_timestamp", false);
     use_mcap_log_time_ = cfg.value("use_mcap_log_time", false);
 
     selected_topics_.clear();
@@ -275,6 +276,24 @@ class McapDialog : public PJ::DialogPluginTyped {
 
     reader.close();
 
+    // Derive unique encodings (insertion-ordered) for comboBoxProtocol.
+    // Preserve the previously selected primary_encoding_ if it is still present.
+    {
+      std::unordered_set<std::string> seen;
+      std::vector<std::string> encodings;
+      for (const auto& ch : all_channels_) {
+        if (!ch.encoding.empty() && seen.insert(ch.encoding).second) {
+          encodings.push_back(ch.encoding);
+        }
+      }
+      available_encodings_ = std::move(encodings);
+
+      bool prev_still_valid = !primary_encoding_.empty() && seen.count(primary_encoding_) > 0;
+      if (!prev_still_valid) {
+        primary_encoding_ = available_encodings_.empty() ? std::string{} : available_encodings_.front();
+      }
+    }
+
     // If no previous selection, select all channels with messages
     if (selected_topics_.empty()) {
       for (const auto& ch : all_channels_) {
@@ -326,6 +345,15 @@ class McapDialog : public PJ::DialogPluginTyped {
     return result;
   }
 
+  int encodingIndex(const std::string& enc) const {
+    for (int i = 0; i < static_cast<int>(available_encodings_.size()); ++i) {
+      if (available_encodings_[static_cast<size_t>(i)] == enc) {
+        return i;
+      }
+    }
+    return 0;
+  }
+
   // Config state
   std::string analyze_error_;
   std::string filepath_;
@@ -338,6 +366,8 @@ class McapDialog : public PJ::DialogPluginTyped {
 
   // File analysis results
   std::vector<ChannelInfo> all_channels_;
+  std::vector<std::string> available_encodings_;
+  std::string primary_encoding_;
 };
 
 }  // namespace
