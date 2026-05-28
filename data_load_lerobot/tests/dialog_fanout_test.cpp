@@ -11,11 +11,41 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
 #include <nlohmann/json.hpp>
+#include <string>
 
 #include "lerobot_dialog.hpp"
 
 namespace {
+
+namespace fs = std::filesystem;
+
+// Minimal valid v2.1 dataset tree under a fresh temp dir whose folder name is
+// the dataset name we expect to surface (deliberately not "info").
+fs::path makeDatasetFixture() {
+  const fs::path root =
+      fs::temp_directory_path() /
+      fs::path("pusht_v21_dialogfix_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+  fs::remove_all(root);
+  fs::create_directories(root / "meta");
+  std::ofstream(root / "meta" / "info.json") << R"({
+    "codebase_version": "v2.1",
+    "robot_type": "so101",
+    "fps": 20,
+    "chunks_size": 1000,
+    "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
+    "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
+    "features": {
+      "observation.state": {"dtype": "float32", "shape": [3], "names": ["a","b","c"]},
+      "action": {"dtype": "float32", "shape": [2]}
+    }
+  })";
+  std::ofstream(root / "meta" / "tasks.jsonl") << R"({"task_index": 0, "task": "t"})" << "\n";
+  std::ofstream(root / "meta" / "episodes.jsonl") << R"({"episode_index": 0, "tasks": [0], "length": 42})" << "\n";
+  return root;
+}
 
 TEST(LeRobotDialogFanout, LoadsSingleEpisodeFromFanoutConfig) {
   LeRobotDialog d;
@@ -56,6 +86,23 @@ TEST(LeRobotDialogFanout, IgnoresLegacyVideoModeKey) {
   LeRobotDialog d;
   EXPECT_TRUE(d.loadConfig(R"({"episode":0,"video_mode":"jpeg"})"));
   EXPECT_TRUE(d.singleEpisode().has_value());
+}
+
+// issue #98: the dialog names the dataset after its root folder so the host's
+// catalog tree shows e.g. "pusht_v21", not the opened file's basename ("info").
+TEST(LeRobotDialogFanout, SaveConfigEmitsDisplayNameFromDatasetRoot) {
+  const fs::path root = makeDatasetFixture();
+  LeRobotDialog d;
+  // The user opens meta/info.json; the plugin resolves the dataset root.
+  ASSERT_TRUE(d.loadConfig(nlohmann::json{{"filepath", (root / "meta" / "info.json").string()}}.dump()));
+  ASSERT_NE(d.model(), nullptr) << d.datasetError();
+
+  const auto j = nlohmann::json::parse(d.saveConfig());
+  ASSERT_TRUE(j.contains("display_name"));
+  EXPECT_EQ(j["display_name"].get<std::string>(), root.filename().string());
+  EXPECT_NE(j["display_name"].get<std::string>(), std::string("info"));
+
+  fs::remove_all(root);
 }
 
 }  // namespace

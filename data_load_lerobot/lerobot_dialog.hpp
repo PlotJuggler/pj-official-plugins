@@ -1,14 +1,12 @@
 #pragma once
 
-#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
-#include <pj_plugins/sdk/widget_data.hpp>
-
-#include <nlohmann/json.hpp>
-
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <nlohmann/json.hpp>
 #include <optional>
+#include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
 #include <vector>
 
@@ -126,6 +124,18 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
     cfg["filepath"] = filepath_;
     cfg["selected_episodes"] = selected_eps_;
 
+    // Name the dataset tree-root after the dataset folder (e.g. "pusht_v21")
+    // rather than the opened file (info.json → "info"). pj_app reads this
+    // top-level `display_name` and uses it as the catalog root label (and as
+    // the shared prefix combined with each entry's `display_suffix` in fanout).
+    // model_->root is the resolved dataset root (walked up to meta/info.json).
+    if (model_) {
+      const std::string name = model_->root.filename().string();
+      if (!name.empty()) {
+        cfg["display_name"] = name;
+      }
+    }
+
     if (!selected_eps_.empty()) {
       nlohmann::json fanout = nlohmann::json::array();
       for (std::size_t i = 0; i < selected_eps_.size(); ++i) {
@@ -177,8 +187,7 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
       // the config otherwise so the host reports a clean error.
       const int64_t ep = *single_episode_;
       const auto& eps = model_->episodes;
-      if (!std::any_of(eps.begin(), eps.end(),
-                       [ep](const lerobot::EpisodeInfo& e) { return e.episode_index == ep; })) {
+      if (!std::any_of(eps.begin(), eps.end(), [ep](const lerobot::EpisodeInfo& e) { return e.episode_index == ep; })) {
         return false;
       }
     } else if (model_) {
@@ -186,8 +195,8 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
       // changed since the layout was saved); empty selection ⇒ default all.
       for (int64_t ep : restored) {
         const auto& eps = model_->episodes;
-        if (std::any_of(eps.begin(), eps.end(),
-                        [ep](const lerobot::EpisodeInfo& e) { return e.episode_index == ep; })) {
+        if (std::any_of(
+                eps.begin(), eps.end(), [ep](const lerobot::EpisodeInfo& e) { return e.episode_index == ep; })) {
           selected_eps_.push_back(ep);
         }
       }
@@ -220,8 +229,7 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
       return;
     }
     for (const auto& ep : model_->episodes) {
-      std::string item = "ep " + std::to_string(ep.episode_index) + "  -  " +
-                         std::to_string(ep.length) + " frames";
+      std::string item = "ep " + std::to_string(ep.episode_index) + "  -  " + std::to_string(ep.length) + " frames";
       if (!ep.task_text.empty()) {
         item += "  -  " + ep.task_text;
       }
@@ -256,8 +264,7 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
     char fps[32];
     std::snprintf(fps, sizeof(fps), "%g", model_->fps);  // %g: "10", "29.97" — no fake truncation
     return model_->root.string() + "  -  " + model_->codebase_version + "  -  fps=" + fps + "  -  " +
-           std::to_string(model_->episodes.size()) + " episodes  -  cams: " +
-           (cams.empty() ? "(none)" : cams);
+           std::to_string(model_->episodes.size()) + " episodes  -  cams: " + (cams.empty() ? "(none)" : cams);
   }
 
   std::string filepath_;
