@@ -3,6 +3,7 @@
 #include <google/protobuf/dynamic_message.h>
 #include <google/protobuf/reflection.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -274,6 +275,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
 
     // Load options
     use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
+    timestamp_field_name_ = cfg.value("timestamp_field_name", std::string{});
     max_array_size_ = cfg.value("max_array_size", 0u);
     clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
 
@@ -308,6 +310,14 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   }
 
   PJ::Status bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema) override {
+    // When schema bytes are empty (e.g. UDP/stream sources that have no schema),
+    // the schema was already bound via loadConfig()'s compiled_schema_base64 path.
+    // Just record the type name and keep the existing descriptor.
+    if (schema.empty()) {
+      MessageParserPluginBase::bindSchema(type_name, schema);
+      return PJ::okStatus();
+    }
+
     gp::FileDescriptorSet fd_set;
     if (!fd_set.ParseFromArray(schema.data(), static_cast<int>(schema.size()))) {
       return PJ::unexpected(std::string("failed to parse FileDescriptorSet"));
@@ -326,14 +336,31 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::unexpected(std::string("message type not found: ") + std::string(type_name));
     }
 
-    // Detect embedded timestamp field: a top-level non-repeated double named "timestamp"
+    // Detect embedded timestamp field: a top-level non-repeated double.
+    // Resolution order (same contract as parser_json):
+    //   1. If timestamp_field_name_ is set, only that name is tried.
+    //   2. If empty, try "timestamp" then "ts" (conventional defaults).
     timestamp_field_ = nullptr;
     if (use_embedded_timestamp_) {
-      for (int i = 0; i < descriptor_->field_count(); ++i) {
-        const auto* f = descriptor_->field(i);
-        if (f->name() == "timestamp" && !f->is_repeated() && f->cpp_type() == gp::FieldDescriptor::CPPTYPE_DOUBLE) {
-          timestamp_field_ = f;
-          break;
+      auto tryField = [&](const std::string& name) -> const gp::FieldDescriptor* {
+        for (int i = 0; i < descriptor_->field_count(); ++i) {
+          const auto* f = descriptor_->field(i);
+          if (f->name() == name && !f->is_repeated() && f->cpp_type() == gp::FieldDescriptor::CPPTYPE_DOUBLE) {
+            return f;
+          }
+        }
+        return nullptr;
+      };
+
+      if (!timestamp_field_name_.empty()) {
+        timestamp_field_ = tryField(timestamp_field_name_);
+      } else {
+        static const std::array<std::string, 2> kDefaults = {"timestamp", "ts"};
+        for (const auto& name : kDefaults) {
+          timestamp_field_ = tryField(name);
+          if (timestamp_field_) {
+            break;
+          }
         }
       }
     }
@@ -406,6 +433,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   const gp::Descriptor* descriptor_ = nullptr;
   const gp::FieldDescriptor* timestamp_field_ = nullptr;
   bool use_embedded_timestamp_ = false;
+  std::string timestamp_field_name_;  // empty = fallback chain ("timestamp" → "ts")
   unsigned max_array_size_ = 0;
   bool clamp_large_arrays_ = true;
 
