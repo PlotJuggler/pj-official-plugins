@@ -253,6 +253,19 @@ public:
       return &*view_->curView_;
     }
 
+    // Non-owning handle to the decompressed chunk backing the current message.
+    // lock() succeeds while the iterator is positioned on this message; the
+    // result becomes empty after operator++ or after the ParallelReader is
+    // destroyed. Callers MUST NOT store the locked shared_ptr — that would
+    // pin the chunk past the parallel reader's normal byte-budget eviction
+    // and grow memory unboundedly.
+    std::weak_ptr<internal::ReadyChunk> currentChunk() const {
+      if (!view_) {
+        return {};
+      }
+      return view_->pinned_;
+    }
+
     Iterator& operator++() {
       if (view_ && !view_->produceNext()) {
         view_ = nullptr;  // exhausted -> equals end()
@@ -464,6 +477,15 @@ private:
         rc->liveBytesAccounted = rc->bytes.size();
         stats_->addLive(rc->liveBytesAccounted);
         stats_->chunksDecompressed.fetch_add(1, std::memory_order_relaxed);
+        // Source-file pages backing this chunk's compressed bytes + message
+        // index records won't be read again by this worker. Hint to the OS
+        // that those pages can be evicted from its file-backed page cache so
+        // RSS stays bounded on long files. No-op for sources that aren't
+        // backed by an OS page cache (FileReader, BufferReader).
+        if (source_ != nullptr) {
+          const auto& plan = plans_[planIdx];
+          source_->dontNeed(plan.chunkStartOffset, plan.messageIndexEndOffset - plan.chunkStartOffset);
+        }
       }
     } catch (const std::exception& e) {
       rc->bytes.clear();

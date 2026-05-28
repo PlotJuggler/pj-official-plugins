@@ -123,8 +123,10 @@ public:
       return Status{StatusCode::OpenFailed, "mmap failed for " + p};
     }
     base_ = static_cast<const std::byte*>(m);
-    // Forward sequential scans benefit from readahead.
-    ::madvise(const_cast<void*>(static_cast<const void*>(base_)), size_, MADV_WILLNEED);
+    // Hint sequential access pattern: kernel ramps up readahead and frees
+    // pages aggressively after access. Avoids the RSS spike that WILLNEED
+    // on the whole file would cause for multi-GB MCAPs.
+    ::madvise(const_cast<void*>(static_cast<const void*>(base_)), size_, MADV_SEQUENTIAL);
     return StatusCode::Success;
   }
 
@@ -138,6 +140,30 @@ public:
       fd_ = -1;
     }
     size_ = 0;
+  }
+
+  // Hint to the kernel that [offset, offset+size) source-file pages can be
+  // dropped from the page cache. Used by the parallel reader after a chunk's
+  // bytes have been decompressed into its own heap buffer — the source bytes
+  // are not re-read after that. Conservatively page-aligns the range inward
+  // so we never advise a page that may be shared with an adjacent chunk.
+  void dontNeed(uint64_t offset, uint64_t size) override {
+    if (base_ == nullptr || size == 0) {
+      return;
+    }
+    const long page = ::sysconf(_SC_PAGESIZE);
+    if (page <= 0) {
+      return;
+    }
+    const uint64_t pg = static_cast<uint64_t>(page);
+    const uint64_t end = std::min(offset + size, size_);
+    const uint64_t aligned_offset = (offset + pg - 1) & ~(pg - 1);
+    const uint64_t aligned_end = end & ~(pg - 1);
+    if (aligned_end <= aligned_offset) {
+      return;
+    }
+    void* addr = const_cast<std::byte*>(base_) + aligned_offset;
+    (void)::madvise(addr, aligned_end - aligned_offset, MADV_DONTNEED);
   }
 #endif
 

@@ -78,6 +78,16 @@ struct MCAP_PUBLIC IReadable {
   virtual bool supportsConcurrentRead() const {
     return false;
   }
+
+  /**
+   * @brief Hint to the source that pages backing [offset, offset+size) won't
+   * be read again soon, so the OS may evict them to relieve RSS pressure.
+   * Used by the parallel reader after a chunk has been decompressed (the
+   * worker never re-reads those source bytes). Default no-op for sources
+   * that aren't backed by an OS-managed page cache (FileReader, BufferReader).
+   * MmapReader implements this via madvise(DONTNEED) on Linux/macOS.
+   */
+  virtual void dontNeed(uint64_t /*offset*/, uint64_t /*size*/) {}
 };
 
 /**
