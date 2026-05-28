@@ -51,9 +51,9 @@ inline int findTimestampColumn(const std::shared_ptr<arrow::Schema>& schema) {
 }
 
 /// Extract timestamp in nanoseconds from an Arrow array cell (for the time axis).
-/// Parquet-specific variant that does NOT apply timezone adjustment — the
-/// production code path in parquet_source.cpp has its own copy that does.
-/// Kept here for the unit tests, which exercise the pure-Arrow conversion.
+/// Does NOT apply timezone adjustment — callers that need the host-relative
+/// nanoseconds wrap this with their own timezone post-step (the production
+/// import path in parquet_source.cpp does so via adjustTimezoneNanos).
 inline int64_t getTimestampNanos(
     const std::shared_ptr<arrow::Array>& array, int64_t index, arrow::Type::type arrow_type) {
   if (array->IsNull(index)) {
