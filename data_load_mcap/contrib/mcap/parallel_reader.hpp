@@ -42,6 +42,7 @@
 #include <new>
 #include <optional>
 #include <queue>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -92,7 +93,11 @@ struct NoInitAllocator {
   }
   template <class U>
   void construct(U* p) noexcept {
-    ::new (static_cast<void*>(p)) U;  // default-init: leaves std::byte uninitialized
+    // Guard against accidental rebind to a non-trivial type: default-init
+    // would call its default ctor and we'd lose the no-init semantics that
+    // exist only to skip zeroing decompression buffers.
+    static_assert(std::is_trivial_v<U>, "NoInitAllocator is safe only for trivial element types");
+    ::new (static_cast<void*>(p)) U;  // default-init: leaves bytes uninitialized
   }
 };
 template <class A, class B>

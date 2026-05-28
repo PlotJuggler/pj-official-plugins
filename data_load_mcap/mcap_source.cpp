@@ -2,6 +2,7 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 
 #define MCAP_IMPLEMENTATION
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <list>
@@ -12,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -205,6 +207,52 @@ inline PJ::sdk::PayloadView readMessageBytesAt(
   };
 }
 
+// Per-message fetcher: handed verbatim to runtimeHost().pushMessage() as the
+// FetchMessageData callable. Hot path returns a Span into the parallel
+// reader's pinned ReadyChunk; cold path falls through to readMessageBytesAt
+// for the post-import lazy case. Hoisted from an inline lambda to a named
+// struct so the (12-field) capture is documented and testable in isolation.
+struct MessageFetcher {
+  std::weak_ptr<mcap::internal::ReadyChunk> chunk_handle;  // empty → skip hot path
+  std::size_t data_offset = 0;                             // within ReadyChunk::bytes
+  std::size_t data_size = 0;
+  std::shared_ptr<mcap::McapReader> reader;  // cold-path FileReader
+  std::shared_ptr<ChunkCache> cache;         // cold-path LRU
+  std::uint64_t chunk_off = 0;               // chunk's file offset
+  std::uint64_t chunk_len = 0;               // 0 → cold path will report missing meta
+  mcap::Timestamp chunk_ts_start = 0;
+  mcap::Timestamp chunk_ts_end = 0;
+  mcap::ChannelId channel_id = 0;
+  mcap::Timestamp log_time = 0;
+  mcap::ByteOffset within_chunk_offset = 0;
+
+  PJ::sdk::PayloadView operator()() const {
+    // Hot path: chunk still pinned by parallel reader's worker pool.
+    if (auto chunk = chunk_handle.lock()) {
+      if (data_offset + data_size <= chunk->bytes.size()) {
+        const auto* base = reinterpret_cast<const uint8_t*>(chunk->bytes.data());
+        return PJ::sdk::PayloadView{
+            PJ::Span<const uint8_t>(base + data_offset, data_size),
+            PJ::sdk::BufferAnchor{std::move(chunk)},
+        };
+      }
+    }
+    // Cold path: chunk evicted or parallel reader gone. Lazy re-decompress.
+    return readMessageBytesAt(
+        reader, cache, chunk_off, chunk_off + chunk_len, chunk_ts_start, chunk_ts_end, channel_id, log_time,
+        within_chunk_offset);
+  }
+};
+
+// Hardware-derived worker count. Floor at 2 so we still get parallelism on
+// virtualized hosts that report 1 core; cap at 8 to avoid oversubscription on
+// many-core machines where the byte-budget and consumer drain rate become the
+// real limits anyway.
+inline unsigned parallelImportThreadCount() {
+  const unsigned hw = std::thread::hardware_concurrency();
+  return std::min(8u, std::max(2u, hw));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // McapSource plugin
 // ─────────────────────────────────────────────────────────────────────────────
@@ -219,8 +267,14 @@ class McapSource : public PJ::FileSourceBase {
   static constexpr size_t kChunkCacheCapacityBytes = 128ULL * 1024 * 1024;
   // Parallel-import in-flight decompression budget.
   static constexpr uint64_t kParallelImportBudgetBytes = 256ULL * 1024 * 1024;
-  // Parallel-import worker count.
-  static constexpr unsigned kParallelImportThreadCount = 4;
+  // Progress / log throttling.
+  static constexpr uint64_t kProgressUpdateInterval = 1000;
+  // Push-failure threshold + log throttling. A handful of transient push
+  // failures is acceptable (parser binding temporarily backpressured); a
+  // sustained run means something structural is broken and the import
+  // should abort rather than spam the message panel.
+  static constexpr uint64_t kMaxConsecutivePushFailures = 100;
+  static constexpr uint64_t kPushFailureLogInterval = 25;
 
  public:
   PJ_borrowed_dialog_t getDialog() override {
@@ -287,37 +341,23 @@ class McapSource : public PJ::FileSourceBase {
     }
 
     // --- Read summary (schemas, channels, statistics) ---
+    // We populate channels/schemas here for binding setup. Chunk indexes
+    // (needed for the cold-path LinearMessageView) come from the parallel
+    // reader's own summary inside the inner block below — saving a second
+    // readSummary call here on reader_keeper_.
     McapSummaryInfo summary;
-    bool used_selective_summary = false;
     status = readSelectiveSummary(*reader.dataSource(), summary);
-    if (status.ok()) {
-      used_selective_summary = true;
-    } else {
+    if (!status.ok()) {
       status = reader.readSummary(mcap::ReadSummaryMethod::NoFallbackScan);
       if (!status.ok()) {
         runtimeHost().showError(
             "Can't open summary of the file",
             "Code: " + std::to_string(static_cast<int>(status.code)) + "\nMessage: " + status.message);
-        reader_keeper_.reset();  // bail out: drop the keeper so the reader closes.
+        reader_keeper_.reset();
         chunk_cache_.reset();
         return PJ::unexpected(std::string("cannot read MCAP summary: ") + status.message);
       }
       populateSummaryFromReader(reader, summary);
-    }
-
-    // readSelectiveSummary deliberately skips ChunkIndex parsing for a
-    // faster initial open, but the random-access FetchMessageData below depends on
-    // `reader.chunkIndexes()` to know each chunk's byte range and time
-    // bounds. If we took the selective path, do an additional
-    // NoFallbackScan summary read solely to populate that data. Strictly
-    // necessary for byte-bounded LinearMessageView.
-    if (used_selective_summary && reader.chunkIndexes().empty()) {
-      auto idx_status = reader.readSummary(mcap::ReadSummaryMethod::NoFallbackScan);
-      if (!idx_status.ok()) {
-        runtimeHost().reportMessage(
-            PJ::DataSourceMessageLevel::kWarning,
-            std::string("chunk index unavailable: ") + idx_status.message + "; random-access pulls will be slow.");
-      }
     }
 
     uint64_t total_messages = 0;
@@ -423,21 +463,19 @@ class McapSource : public PJ::FileSourceBase {
     };
 
     uint64_t msg_count = 0;
+    uint64_t consecutive_push_failures = 0;
     const bool use_log_time = dialog_.useMcapLogTime();
 
-    // Cold-path metadata: byte range + time bounds keyed by chunk file offset,
-    // used by the bounded LinearMessageView inside ChunkCache::loadChunk.
+    // Cold-path metadata: byte range + time bounds keyed by chunk file offset.
+    // Built inside the inner block from the parallel reader's own
+    // AllowFallbackScan summary, so reader_keeper_ doesn't need to parse
+    // chunk indexes a second time.
     struct ChunkMeta {
       uint64_t length;
       mcap::Timestamp ts_start;
       mcap::Timestamp ts_end;
     };
     std::unordered_map<uint64_t, ChunkMeta> chunk_meta;
-    for (const auto& ci : reader.chunkIndexes()) {
-      chunk_meta.emplace(
-          ci.chunkStartOffset,
-          ChunkMeta{.length = ci.chunkLength, .ts_start = ci.messageStartTime, .ts_end = ci.messageEndTime});
-    }
 
     // mmap-backed source for the parallel reader; local to importData so its
     // lifetime is bounded by the inner block below (and the parallel reader
@@ -464,12 +502,21 @@ class McapSource : public PJ::FileSourceBase {
         import_failure = msg;
         // Skip the iteration — readMessages on an unopened reader would
         // silently emit nothing and we'd still return failure below.
+      } else {
+        // The parallel reader's open() performs AllowFallbackScan summary,
+        // so its internal McapReader already has chunkIndexes populated.
+        // Reuse them for cold-path metadata.
+        for (const auto& ci : parallel_reader.chunkIndexes()) {
+          chunk_meta.emplace(
+              ci.chunkStartOffset,
+              ChunkMeta{.length = ci.chunkLength, .ts_start = ci.messageStartTime, .ts_end = ci.messageEndTime});
+        }
       }
 
       mcap::ParallelReadOptions parallel_opts;
       parallel_opts.read.readOrder = mcap::ReadMessageOptions::ReadOrder::LogTimeOrder;
       parallel_opts.maxBytesInFlight = kParallelImportBudgetBytes;
-      parallel_opts.threadCount = kParallelImportThreadCount;
+      parallel_opts.threadCount = parallelImportThreadCount();
       parallel_opts.read.topicFilter = [selected_topics = dialog_.selectedTopics()](std::string_view topic) {
         return selected_topics.find(std::string(topic)) != selected_topics.end();
       };
@@ -534,36 +581,46 @@ class McapSource : public PJ::FileSourceBase {
               chunk_handle = {};  // disable the hot path; fetcher will go cold
             }
 
-            // Fetcher closure: weak_ptr is NON-OWNING. If the host stores
-            // this for a later lazy pull, the parallel reader is gone by
-            // then, lock() returns null, and we fall through to
-            // readMessageBytesAt (which lazily decompresses + caches via
-            // ChunkCache).
+            // Fetcher: weak_ptr is NON-OWNING. If the host stores this for a
+            // later lazy pull, the parallel reader is gone by then, lock()
+            // returns null, and we fall through to readMessageBytesAt (which
+            // lazily decompresses + caches via ChunkCache).
             auto push_status = runtimeHost().pushMessage(
                 binding_it->second, timestamp_ns,
-                [chunk_handle, data_offset, data_size, reader = reader_keeper_, cache = chunk_cache_, chunk_off,
-                 chunk_len, chunk_ts_start, chunk_ts_end, ch = msg_view.channel->id, lt = msg_view.message.logTime,
-                 wc = within_chunk_off]() -> PJ::sdk::PayloadView {
-                  if (auto chunk = chunk_handle.lock()) {
-                    if (data_offset + data_size <= chunk->bytes.size()) {
-                      const auto* base = reinterpret_cast<const uint8_t*>(chunk->bytes.data());
-                      return PJ::sdk::PayloadView{
-                          PJ::Span<const uint8_t>(base + data_offset, data_size),
-                          PJ::sdk::BufferAnchor{std::move(chunk)},
-                      };
-                    }
-                  }
-                  return readMessageBytesAt(
-                      reader, cache, chunk_off, chunk_off + chunk_len, chunk_ts_start, chunk_ts_end, ch, lt, wc);
+                MessageFetcher{
+                    .chunk_handle = std::move(chunk_handle),
+                    .data_offset = data_offset,
+                    .data_size = data_size,
+                    .reader = reader_keeper_,
+                    .cache = chunk_cache_,
+                    .chunk_off = chunk_off,
+                    .chunk_len = chunk_len,
+                    .chunk_ts_start = chunk_ts_start,
+                    .chunk_ts_end = chunk_ts_end,
+                    .channel_id = msg_view.channel->id,
+                    .log_time = msg_view.message.logTime,
+                    .within_chunk_offset = within_chunk_off,
                 });
             if (!push_status) {
-              runtimeHost().reportMessage(
-                  PJ::DataSourceMessageLevel::kWarning,
-                  std::string("push failed on '") + msg_view.channel->topic + "': " + push_status.error());
+              ++consecutive_push_failures;
+              if (consecutive_push_failures % kPushFailureLogInterval == 1) {
+                runtimeHost().reportMessage(
+                    PJ::DataSourceMessageLevel::kWarning,
+                    std::string("push failed on '") + msg_view.channel->topic + "': " + push_status.error() +
+                        " (consecutive failures: " + std::to_string(consecutive_push_failures) + ")");
+              }
+              if (consecutive_push_failures >= kMaxConsecutivePushFailures) {
+                import_failure = "MCAP import aborted: " + std::to_string(consecutive_push_failures) +
+                                 " consecutive push failures (loaded " + std::to_string(msg_count) + " messages)";
+                runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, *import_failure);
+                break;
+              }
+            } else {
+              consecutive_push_failures = 0;
             }
 
             ++msg_count;
-            if (msg_count % 1000 == 0) {
+            if (msg_count % kProgressUpdateInterval == 0) {
               if (!runtimeHost().progressUpdate(msg_count)) {
                 break;
               }
