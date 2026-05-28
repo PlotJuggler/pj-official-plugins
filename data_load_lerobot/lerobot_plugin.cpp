@@ -15,14 +15,15 @@
 
 #include "dataset_model.hpp"
 #include "flatten_plan.hpp"
-#include "lerobot_arrow_helpers.hpp"
 #include "lerobot_dialog.hpp"
 #include "lerobot_manifest.hpp"
+#include "pj_arrow_helpers/arrow_helpers.hpp"
 
 namespace {
 
-namespace ah = lerobot::arrow_helpers;
-namespace pah = pj::arrow_helpers;
+using pj::arrow_helpers::arrowTypeToPrimitive;
+using pj::arrow_helpers::getArrowValueRef;
+using pj::arrow_helpers::isSupportedArrowType;
 
 // Per-row ns timestamp on the episode's 0-based clock. Uses the parquet
 // `timestamp` column when present, otherwise `frame_index / fps`. Each
@@ -76,6 +77,92 @@ int64_t readInt(const std::shared_ptr<arrow::Array>& a, int64_t row, int64_t fal
     default:
       return fallback;
   }
+}
+
+// True for `list<float|double>` / `fixed_size_list<float|double>` columns
+// (LeRobot observation.state / action are stored this way).
+bool isFloatVectorColumn(const std::shared_ptr<arrow::DataType>& type) {
+  std::shared_ptr<arrow::DataType> value_type;
+  if (type->id() == arrow::Type::FIXED_SIZE_LIST) {
+    value_type = std::static_pointer_cast<arrow::FixedSizeListType>(type)->value_type();
+  } else if (type->id() == arrow::Type::LIST) {
+    value_type = std::static_pointer_cast<arrow::ListType>(type)->value_type();
+  } else if (type->id() == arrow::Type::LARGE_LIST) {
+    value_type = std::static_pointer_cast<arrow::LargeListType>(type)->value_type();
+  } else {
+    return false;
+  }
+  return value_type->id() == arrow::Type::FLOAT || value_type->id() == arrow::Type::DOUBLE;
+}
+
+// A vector-column cell viewed as its flat child float values for one row.
+struct FloatVectorCell {
+  std::shared_ptr<arrow::DoubleArray> d_values;  // set if child is double
+  std::shared_ptr<arrow::FloatArray> f_values;   // set if child is float
+  int64_t offset = 0;                            // start index into the child array for this row
+  int64_t width = 0;                             // number of elements for this row
+
+  [[nodiscard]] bool isNull(int64_t k) const {
+    if (d_values) {
+      return d_values->IsNull(offset + k);
+    }
+    if (f_values) {
+      return f_values->IsNull(offset + k);
+    }
+    return true;
+  }
+  [[nodiscard]] double value(int64_t k) const {
+    if (d_values) {
+      return d_values->Value(offset + k);
+    }
+    if (f_values) {
+      return static_cast<double>(f_values->Value(offset + k));
+    }
+    return 0.0;
+  }
+};
+
+// Resolve the child float values + [offset,width) for `row` of a
+// list/fixed_size_list float column. width==0 if the cell is null/empty.
+FloatVectorCell floatVectorCell(const std::shared_ptr<arrow::Array>& array, int64_t row) {
+  FloatVectorCell cell;
+  std::shared_ptr<arrow::Array> child;
+  if (array->type_id() == arrow::Type::FIXED_SIZE_LIST) {
+    auto fsl = std::static_pointer_cast<arrow::FixedSizeListArray>(array);
+    if (fsl->IsNull(row)) {
+      return cell;
+    }
+    const int64_t w = fsl->value_length();
+    cell.offset = (fsl->offset() + row) * w;
+    cell.width = w;
+    child = fsl->values();
+  } else if (array->type_id() == arrow::Type::LIST) {
+    auto la = std::static_pointer_cast<arrow::ListArray>(array);
+    if (la->IsNull(row)) {
+      return cell;
+    }
+    cell.offset = la->value_offset(row);
+    cell.width = la->value_length(row);
+    child = la->values();
+  } else if (array->type_id() == arrow::Type::LARGE_LIST) {
+    auto la = std::static_pointer_cast<arrow::LargeListArray>(array);
+    if (la->IsNull(row)) {
+      return cell;
+    }
+    cell.offset = la->value_offset(row);
+    cell.width = la->value_length(row);
+    child = la->values();
+  } else {
+    return cell;
+  }
+  if (child->type_id() == arrow::Type::DOUBLE) {
+    cell.d_values = std::static_pointer_cast<arrow::DoubleArray>(child);
+  } else if (child->type_id() == arrow::Type::FLOAT) {
+    cell.f_values = std::static_pointer_cast<arrow::FloatArray>(child);
+  } else {
+    cell.width = 0;
+  }
+  return cell;
 }
 
 /// LeRobot v2.1 dataset loader (numeric + per-camera video on one timeline).
@@ -133,7 +220,13 @@ class LeRobotSource : public PJ::FileSourceBase {
       return PJ::unexpected(topic.error());
     }
 
-    auto plan_or = buildPlan(*model, ep);
+    const std::string path = model->episodeParquet(ep).string();
+    auto opened = openParquetReader(path);
+    if (!opened) {
+      return PJ::unexpected(opened.error());
+    }
+
+    auto plan_or = buildPlan(*model, *opened->schema, path);
     if (!plan_or) {
       return PJ::unexpected(plan_or.error());
     }
@@ -149,7 +242,7 @@ class LeRobotSource : public PJ::FileSourceBase {
     (void)runtimeHost().progressStart("Importing LeRobot", static_cast<uint64_t>(length), true);
 
     int64_t processed = 0;
-    auto st = importEpisode(*model, ep, plan, *topic, processed);
+    auto st = importEpisode(*model, plan, *opened->reader, *opened->schema, path, *topic, processed);
     if (!st) {
       return st;
     }
@@ -170,31 +263,48 @@ class LeRobotSource : public PJ::FileSourceBase {
   }
 
  private:
-  PJ::Expected<std::vector<OutColumn>> buildPlan(const lerobot::DatasetModel& model, int64_t first_ep) {
-    auto schema_or = openSchema(model.episodeParquet(first_ep).string());
-    if (!schema_or) {
-      return PJ::unexpected(schema_or.error());
-    }
-    const std::shared_ptr<arrow::Schema>& schema = *schema_or;
+  struct OpenedParquet {
+    std::unique_ptr<parquet::arrow::FileReader> reader;
+    std::shared_ptr<arrow::Schema> schema;
+  };
 
+  static PJ::Expected<OpenedParquet> openParquetReader(const std::string& path) {
+    auto infile = arrow::io::ReadableFile::Open(path);
+    if (!infile.ok()) {
+      return PJ::unexpected("cannot open parquet: " + path);
+    }
+    auto reader = parquet::arrow::OpenFile(*infile, arrow::default_memory_pool());
+    if (!reader.ok()) {
+      return PJ::unexpected("failed to open parquet: " + path);
+    }
+    OpenedParquet out;
+    out.reader = std::move(*reader);
+    if (!out.reader->GetSchema(&out.schema).ok()) {
+      return PJ::unexpected("failed to read schema: " + path);
+    }
+    return out;
+  }
+
+  PJ::Expected<std::vector<OutColumn>> buildPlan(
+      const lerobot::DatasetModel& model, const arrow::Schema& schema, const std::string& path) {
     std::vector<OutColumn> plan;
     std::vector<std::string> raw_names;  // for global dedupe
-    for (int i = 0; i < schema->num_fields(); ++i) {
-      const auto& field = schema->field(i);
+    for (int i = 0; i < schema.num_fields(); ++i) {
+      const auto& field = schema.field(i);
       const std::string& name = field->name();
       const auto& type = field->type();
       if (name == "timestamp") {
         continue;  // synthesized into the time axis, not a series
       }
-      if (pah::isSupportedArrowType(type->id())) {
+      if (isSupportedArrowType(type->id())) {
         OutColumn c;
         c.out_name = name;
         c.arrow_name = name;
         c.scalar_type = type->id();
-        c.prim = pah::arrowTypeToPrimitive(type->id());
+        c.prim = arrowTypeToPrimitive(type->id());
         plan.push_back(std::move(c));
         raw_names.push_back(name);
-      } else if (ah::isFloatVectorColumn(type)) {
+      } else if (isFloatVectorColumn(type)) {
         int k = 0;
         if (type->id() == arrow::Type::FIXED_SIZE_LIST) {
           k = std::static_pointer_cast<arrow::FixedSizeListType>(type)->list_size();
@@ -228,7 +338,7 @@ class LeRobotSource : public PJ::FileSourceBase {
       // struct / other columns are intentionally skipped.
     }
     if (plan.empty()) {
-      return PJ::unexpected(std::string("no supported columns in ") + model.episodeParquet(first_ep).string());
+      return PJ::unexpected("no supported columns in " + path);
     }
     const auto deduped = lerobot::dedupeFieldNames(raw_names);
     for (std::size_t i = 0; i < plan.size(); ++i) {
@@ -237,46 +347,15 @@ class LeRobotSource : public PJ::FileSourceBase {
     return plan;
   }
 
-  static PJ::Expected<std::shared_ptr<arrow::Schema>> openSchema(const std::string& path) {
-    auto infile = arrow::io::ReadableFile::Open(path);
-    if (!infile.ok()) {
-      return PJ::unexpected("cannot open parquet: " + path);
-    }
-    auto reader = parquet::arrow::OpenFile(*infile, arrow::default_memory_pool());
-    if (!reader.ok()) {
-      return PJ::unexpected("failed to open parquet: " + path);
-    }
-    std::shared_ptr<arrow::Schema> schema;
-    if (!(*reader)->GetSchema(&schema).ok()) {
-      return PJ::unexpected("failed to read schema: " + path);
-    }
-    return schema;
-  }
-
   PJ::Status importEpisode(
-      const lerobot::DatasetModel& model, int64_t ep, const std::vector<OutColumn>& plan, PJ::sdk::TopicHandle topic,
-      int64_t& processed) {
-    const std::string path = model.episodeParquet(ep).string();
-    auto infile = arrow::io::ReadableFile::Open(path);
-    if (!infile.ok()) {
-      return PJ::unexpected("cannot open parquet: " + path);
-    }
-    auto reader_or = parquet::arrow::OpenFile(*infile, arrow::default_memory_pool());
-    if (!reader_or.ok()) {
-      return PJ::unexpected("failed to open parquet: " + path);
-    }
-    auto reader = std::move(*reader_or);
-    std::shared_ptr<arrow::Schema> schema;
-    if (!reader->GetSchema(&schema).ok()) {
-      return PJ::unexpected("failed to read schema: " + path);
-    }
-
+      const lerobot::DatasetModel& model, const std::vector<OutColumn>& plan, parquet::arrow::FileReader& reader,
+      const arrow::Schema& schema, const std::string& path, PJ::sdk::TopicHandle topic, int64_t& processed) {
     // Resolve column names → Arrow index once per episode (tolerating schema
     // drift across episodes); the row loop then indexes by position only.
     std::unordered_map<std::string, int> col_of;
-    col_of.reserve(static_cast<std::size_t>(schema->num_fields()));
-    for (int i = 0; i < schema->num_fields(); ++i) {
-      col_of.emplace(schema->field(i)->name(), i);
+    col_of.reserve(static_cast<std::size_t>(schema.num_fields()));
+    for (int i = 0; i < schema.num_fields(); ++i) {
+      col_of.emplace(schema.field(i)->name(), i);
     }
     auto idx_of = [&](const std::string& n) -> int {
       auto it = col_of.find(n);
@@ -298,7 +377,7 @@ class LeRobotSource : public PJ::FileSourceBase {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
-    if (!reader->GetRecordBatchReader(&batches).ok()) {
+    if (!reader.GetRecordBatchReader(&batches).ok()) {
       return PJ::unexpected("failed to create batch reader: " + path);
     }
 #if defined(__GNUC__) || defined(__clang__)
@@ -337,12 +416,12 @@ class LeRobotSource : public PJ::FileSourceBase {
           }
           const OutColumn& c = plan[k];
           if (c.vec_k < 0) {
-            auto v = pah::getArrowValueRef(arr, r, c.scalar_type);
+            auto v = getArrowValueRef(arr, r, c.scalar_type);
             if (!PJ::sdk::isNull(v)) {
               row_fields.push_back({.name = c.out_name, .value = v});
             }
           } else {
-            const auto cell = ah::floatVectorCell(arr, r);
+            const auto cell = floatVectorCell(arr, r);
             if (c.vec_k < cell.width && !cell.isNull(c.vec_k)) {
               row_fields.push_back({.name = c.out_name, .value = cell.value(c.vec_k)});
             }

@@ -32,8 +32,7 @@ fs::path makeFixture(const std::string& version = "v2.1") {
     "features": {
       "observation.state": {"dtype": "float32", "shape": [3], "names": ["a","b","c"]},
       "action": {"dtype": "float32", "shape": [2]},
-      "observation.images.top": {"dtype": "video", "shape": [224,224,3],
-        "info": {"video.fps": 20, "video.codec": "h264"}}
+      "observation.images.top": {"dtype": "video", "shape": [224,224,3]}
     }
   })";
 
@@ -81,7 +80,6 @@ TEST(LoadDatasetModel, ParsesInfoEpisodesAndTasks) {
   const FeatureSpec* cam = model->feature("observation.images.top");
   ASSERT_NE(cam, nullptr);
   EXPECT_TRUE(cam->is_video());
-  EXPECT_EQ(cam->video_codec, "h264");
   const FeatureSpec* state = model->feature("observation.state");
   ASSERT_NE(state, nullptr);
   EXPECT_EQ(state->names, (std::vector<std::string>{"a", "b", "c"}));

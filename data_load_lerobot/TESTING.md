@@ -50,15 +50,16 @@ cmake --build "$BUILD" --parallel
 
 ## 2. Unit tests
 
-Three GTest binaries cover what's headless-verifiable: parsing `meta/info.json`
+Four GTest binaries cover what's headless-verifiable: parsing `meta/info.json`
 plus `episodes.jsonl` plus `tasks.jsonl`, flattening and deduping vector-column
-names, and the dialog's `__pj_fanout` serialization.
+names, the dialog's `__pj_fanout` serialization, and the per-camera
+`sdk::AssetVideo` wire-format round-trip.
 
 ```bash
 ctest --test-dir build/data_load_lerobot/Release -R lerobot --output-on-failure
 ```
 
-**Expected:** `100% tests passed, 0 tests failed out of 3` (16 cases total).
+**Expected:** `100% tests passed, 0 tests failed out of 4`.
 
 ---
 
@@ -139,16 +140,18 @@ want more episodes, add their `episode_0000NN.parquet` / `.mp4` files.)
    - In the catalog tree, each camera appears as an **object-topic** under
      its episode: e.g. `lerobot/observation.image`.
    - **Drag it onto an empty 2D view** (placeholder in the dock).
-   - PJ4 reads `video_file_path` from the topic metadata and opens the MP4
+   - PJ4 deserializes the `sdk::AssetVideo` record from the topic
+     (`file_path` + `time_origin_ns` + `frame_rate`) and opens the MP4
      directly with `FileVideoSource` (`FfmpegBackend` + libdav1d for AV1,
      lazy seek + ThumbnailCache).
    - Move the time cursor: the video frame follows the cursor in sync with
      the curves. Multi-camera → one 2D view per camera.
 
-> The plugin does **not** decode video. It only registers the topic with
-> `media_class:"video"` + `video_file_path:"/.../episode_*.mp4"`. The
-> ObjectStore receives no bytes (`entryCount == 0` by design — ARCH §4.5
-> *"File-based video does not go through ObjectStore"*).
+> The plugin does **not** decode video. It pushes one `sdk::AssetVideo`
+> entry per camera, schema-tagged `kSchemaAssetVideo`, pointing at the
+> episode MP4. The MP4 bytes never reach `ObjectStore` — the file itself is
+> the random-access store (ARCH §4.5 *"File-based video does not go through
+> ObjectStore"*).
 
 ---
 

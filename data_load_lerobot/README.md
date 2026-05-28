@@ -18,8 +18,8 @@ also a dataset in the PlotJuggler catalog.
 | Source | Goes to | How |
 |---|---|---|
 | `data/chunk-NNN/episode_NNNNNN.parquet` scalar columns | `DataEngine` topic `lerobot` | One field per Arrow column, native types preserved via `ValueRef`. Per-row timestamp from the parquet `timestamp` column or `frame_index / fps`. |
-| `data/...` `list<float>` / `fixed_size_list<float>` columns (`observation.state`, `action`, …) | `DataEngine` topic `lerobot`, one field per element | Flattened with names from `info.json`'s `features[...].names` when present; otherwise `<col>_0`, `<col>_1`, …. Dedupe handles cross-column collisions. |
-| `videos/chunk-NNN/<cam>/episode_NNNNNN.mp4` | `ObjectStore` topic `lerobot/<cam>` | **Metadata-only.** No bytes are pushed. The topic carries `video_file_path` pointing at the absolute MP4 path; the host's `Media2DDockWidget` opens a `FileVideoSource` on that file with FFmpeg's lazy seek + ThumbnailCache. |
+| `data/...` `list<float>` / `fixed_size_list<float>` columns (`observation.state`, `action`, …) | `DataEngine` topic `lerobot`, one field per element | Flattened with names from `info.json`'s `features[...].names` when present; otherwise `<col>.0`, `<col>.1`, …. Dedupe handles cross-column collisions. |
+| `videos/chunk-NNN/<cam>/episode_NNNNNN.mp4` | `ObjectStore` topic `lerobot/<cam>` | **Metadata-only.** No bytes are pushed. The topic publishes one `sdk::AssetVideo` record (`file_path`, `time_origin_ns`, `frame_rate`) carrying the absolute MP4 path; the host's `Media2DDockWidget` deserializes it and opens a `FileVideoSource` with FFmpeg's lazy seek + ThumbnailCache. |
 
 ## Multi-episode imports — `__pj_fanout`
 
@@ -56,7 +56,7 @@ single-element list, so the host runs one import as before.
 data_load_lerobot/
 ├── manifest.json          plugin id / name / version / file_extensions
 ├── conanfile.py           Conan deps: arrow + parquet + nlohmann_json + gtest
-├── CMakeLists.txt         shared-library target + 3 unit tests
+├── CMakeLists.txt         shared-library target + 4 unit tests
 ├── dialog_lerobot.ui      Qt Designer .ui — embedded at build time as a const char[]
 │
 ├── lerobot_plugin.cpp     LeRobotSource: importData() entry point. Reads the
@@ -71,12 +71,11 @@ data_load_lerobot/
 │                              DatasetModel struct. Pure, no host APIs.
 ├── flatten_plan.{hpp,cpp}    Flatten vector columns into per-element field
 │                              names with dedupe. Pure, testable.
-├── lerobot_arrow_helpers.hpp Arrow scalar/vector cell extraction → PJ::sdk
-│                              ValueRef. Mirrors data_load_parquet's helpers.
 │
 └── tests/                 GTest binaries, one per .{hpp,cpp} pair worth pinning
     ├── dataset_model_test.cpp
     ├── flatten_plan_test.cpp
+    ├── asset_video_export_test.cpp
     └── dialog_fanout_test.cpp
 ```
 

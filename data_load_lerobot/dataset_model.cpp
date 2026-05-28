@@ -163,9 +163,6 @@ void parseFeatures(const json& info, DatasetModel& model) {
       collectNameLeaves(*nm, spec.names);
     }
     if (spec.is_video()) {
-      if (auto inf = f.find("info"); inf != f.end() && inf->is_object()) {
-        spec.video_codec = strField(*inf, "video.codec");
-      }
       model.camera_names.push_back(spec.name);
     }
     model.features.push_back(std::move(spec));

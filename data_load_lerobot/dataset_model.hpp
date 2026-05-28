@@ -21,7 +21,6 @@ struct FeatureSpec {
   std::string dtype;               // "float32" | "int64" | "bool" | "video" | ...
   std::vector<int64_t> shape;      // e.g. [7] or [224,224,3]
   std::vector<std::string> names;  // sub-field labels; may be empty
-  std::string video_codec;         // info["video.codec"] when dtype == "video"
 
   [[nodiscard]] bool is_video() const {
     return dtype == "video";
