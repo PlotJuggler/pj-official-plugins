@@ -258,13 +258,22 @@ public:
       return &*view_->curView_;
     }
 
-    // Non-owning handle to the decompressed chunk backing the current message.
-    // lock() succeeds while the iterator is positioned on this message; the
-    // result becomes empty after operator++ or after the ParallelReader is
-    // destroyed. Callers MUST NOT store the locked shared_ptr — that would
-    // pin the chunk past the parallel reader's normal byte-budget eviction
-    // and grow memory unboundedly.
-    std::weak_ptr<internal::ReadyChunk> currentChunk() const {
+    // Opaque, non-owning handle to the buffer that backs the current message's
+    // bytes (`(*it).message.data` points inside it). Advanced/optional: most
+    // consumers read `message.data` directly during iteration and never call
+    // this. It exists for consumers that want to *defer* reading a message:
+    // lock() succeeds while the iterator is positioned on this message (the
+    // bytes are alive), and returns empty after operator++ or after the
+    // ParallelReader is destroyed (the bytes are gone — re-read from the file).
+    //
+    // The handle is type-erased to `const void` on purpose: callers get a
+    // liveness/ownership token, not access to reader internals. A consumer
+    // pairs the locked anchor with the already-public `message.data`/`dataSize`
+    // to form a zero-copy view valid for as long as it holds the anchor.
+    //
+    // Callers MUST NOT persistently store the locked shared_ptr: pinning a
+    // chunk past the reader's byte-budget eviction grows memory unboundedly.
+    std::weak_ptr<const void> currentBuffer() const {
       if (!view_) {
         return {};
       }
@@ -482,17 +491,9 @@ private:
         rc->liveBytesAccounted = rc->bytes.size();
         stats_->addLive(rc->liveBytesAccounted);
         stats_->chunksDecompressed.fetch_add(1, std::memory_order_relaxed);
-        // Source-file pages backing this chunk's compressed bytes + message
-        // index records won't be read again by this worker. Hint to the OS
-        // that those pages can be evicted from its file-backed page cache so
-        // RSS stays bounded on long files. No-op for sources that aren't
-        // backed by an OS page cache (FileReader, BufferReader).
-        // Guard against corrupt indexes where messageIndexEndOffset would
-        // underflow chunkStartOffset (unsigned wrap → 2^64-sized madvise).
-        if (source_ != nullptr && plans_[planIdx].messageIndexEndOffset > plans_[planIdx].chunkStartOffset) {
-          const auto& plan = plans_[planIdx];
-          source_->dontNeed(plan.chunkStartOffset, plan.messageIndexEndOffset - plan.chunkStartOffset);
-        }
+        // Source-file pages backing the compressed bytes are released
+        // automatically by the source itself (MmapReader bounds its own RSS via
+        // a read-driven drop-behind) — no explicit hint from here.
       }
     } catch (const std::exception& e) {
       rc->bytes.clear();

@@ -42,3 +42,15 @@ target_include_directories(mcap_helpers_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 target_include_directories(mcap_helpers_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
 target_link_libraries(mcap_helpers_test PRIVATE LZ4::lz4_static zstd::libzstd_static GTest::gtest_main)
 add_test(NAME mcap_helpers_test COMMAND mcap_helpers_test)
+
+# --- Unit test for the MessageByteStore (hot/cold lazy byte layer) ---
+find_package(Threads REQUIRED)
+add_executable(message_byte_store_test tests/message_byte_store_test.cpp)
+target_compile_features(message_byte_store_test PRIVATE cxx_std_20)
+target_compile_options(message_byte_store_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(message_byte_store_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(message_byte_store_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
+target_link_libraries(message_byte_store_test PRIVATE
+  LZ4::lz4_static zstd::libzstd_static GTest::gtest_main Threads::Threads
+)
+add_test(NAME message_byte_store_test COMMAND message_byte_store_test)
