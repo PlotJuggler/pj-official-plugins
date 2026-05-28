@@ -1,20 +1,18 @@
-#include "pj_plugins/host/message_parser_library.hpp"
-
 #include <gtest/gtest.h>
-
-#include <nlohmann/json.hpp>
-#include <rosx_introspection/ros_parser.hpp>
-#include <rosx_introspection/serializer.hpp>
 
 #include <cmath>
 #include <cstddef>
-#include <numbers>
 #include <cstdint>
+#include <nlohmann/json.hpp>
+#include <numbers>
+#include <rosx_introspection/ros_parser.hpp>
+#include <rosx_introspection/serializer.hpp>
 #include <string>
 #include <vector>
 
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/testing/parser_write_recorder.hpp"
+#include "pj_plugins/host/message_parser_library.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
 
 #ifndef PJ_ROS_PARSER_PLUGIN_PATH
@@ -183,9 +181,7 @@ TEST(RosParserTest, StringField) {
   f.setUp();
   ASSERT_TRUE(f.bindSchema("pkg/StringMsg", kStringDef));
 
-  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
-    enc.serializeString("hello world");
-  });
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) { enc.serializeString("hello world"); });
 
   ASSERT_TRUE(f.parse(payload));
   ASSERT_EQ(f.recorder.rows().size(), 1u);
@@ -193,6 +189,62 @@ TEST(RosParserTest, StringField) {
   EXPECT_EQ(f.recorder.rows()[0].fields[0].name, "/data");
   EXPECT_EQ(f.recorder.rows()[0].fields[0].type, PJ::PrimitiveType::kString);
   EXPECT_EQ(f.recorder.rows()[0].fields[0].string_value, "hello world");
+}
+
+TEST(RosParserTest, StringSuffixStrippedToNumberWhenFlagOn) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("pkg/StringMsg", kStringDef));
+  ASSERT_TRUE(f.handle.loadConfig(R"({"remove_suffix_from_strings":true})"));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) { enc.serializeString("100ms"); });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].name, "/data");
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].type, PJ::PrimitiveType::kFloat64);
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[0].numeric, 100.0);
+}
+
+TEST(RosParserTest, BooleanStringConvertedToNumberWhenFlagOn) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("pkg/StringMsg", kStringDef));
+  ASSERT_TRUE(f.handle.loadConfig(R"({"boolean_strings_to_number":true})"));
+
+  // "True" → 1.0 (case-insensitive, length 4).
+  auto payload_true = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) { enc.serializeString("True"); });
+  ASSERT_TRUE(f.parse(payload_true));
+  ASSERT_FALSE(f.recorder.rows().empty());
+  ASSERT_FALSE(f.recorder.rows().back().fields.empty());
+  EXPECT_EQ(f.recorder.rows().back().fields[0].type, PJ::PrimitiveType::kFloat64);
+  EXPECT_DOUBLE_EQ(f.recorder.rows().back().fields[0].numeric, 1.0);
+
+  // "false" → 0.0.
+  auto payload_false = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) { enc.serializeString("false"); });
+  ASSERT_TRUE(f.parse(payload_false));
+  EXPECT_EQ(f.recorder.rows().back().fields[0].type, PJ::PrimitiveType::kFloat64);
+  EXPECT_DOUBLE_EQ(f.recorder.rows().back().fields[0].numeric, 0.0);
+}
+
+TEST(RosParserTest, StringPassesThroughWhenFlagsOff) {
+  // Sanity check that a non-numeric, non-boolean string still reaches the
+  // recorder as a string when both toggles are off — and that the toggles
+  // default to off.
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("pkg/StringMsg", kStringDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serializeString("100ms");  // would be parseable with suffix flag on
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].type, PJ::PrimitiveType::kString);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].string_value, "100ms");
 }
 
 TEST(RosParserTest, Ros2TypeNameNormalization) {
@@ -427,22 +479,22 @@ TEST(RosParserTest, ArrayClampingConfig) {
 
 const PJ::sdk::testing::RecordedField* findField(const PJ::sdk::testing::RecordedRow& row, const std::string& name) {
   for (const auto& f : row.fields) {
-    if (f.name == name) return &f;
+    if (f.name == name) {
+      return &f;
+    }
   }
   return nullptr;
 }
 
 // ---- Helper: serialize a ROS2 header (sec, nsec, frame_id) ----
-void serializeHeader(RosMsgParser::NanoCDR_Serializer& enc, int32_t sec, uint32_t nsec,
-                     const std::string& frame_id) {
+void serializeHeader(RosMsgParser::NanoCDR_Serializer& enc, int32_t sec, uint32_t nsec, const std::string& frame_id) {
   enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(sec));
   enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(nsec));
   enc.serializeString(frame_id);
 }
 
 // ---- Helper: serialize a quaternion (x,y,z,w) ----
-void serializeQuaternion(RosMsgParser::NanoCDR_Serializer& enc, double x, double y, double z,
-                         double w) {
+void serializeQuaternion(RosMsgParser::NanoCDR_Serializer& enc, double x, double y, double z, double w) {
   enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(x));
   enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(y));
   enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(z));
@@ -574,7 +626,7 @@ TEST(RosParserTest, QuaternionRPY) {
   ASSERT_TRUE(f.bindSchema("geometry_msgs/Pose", kPoseDef));
 
   auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
-    serializeVector3(enc, 1.0, 2.0, 3.0);        // position
+    serializeVector3(enc, 1.0, 2.0, 3.0);          // position
     serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);  // identity quaternion
   });
 

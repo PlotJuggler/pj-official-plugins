@@ -40,9 +40,8 @@ ColumnTypeInfo DetectColumnType(const std::string& str);
 
 std::optional<double> ParseWithType(const std::string& str, const ColumnTypeInfo& type_info);
 
-std::optional<double> ParseCombinedDateTime(const std::string& date_str,
-                                            const std::string& time_str,
-                                            const ColumnTypeInfo& date_info,
-                                            const ColumnTypeInfo& time_info);
+std::optional<double> ParseCombinedDateTime(
+    const std::string& date_str, const std::string& time_str, const ColumnTypeInfo& date_info,
+    const ColumnTypeInfo& time_info);
 
 }  // namespace PJ::CSV

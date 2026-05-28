@@ -1,13 +1,10 @@
 #pragma once
 
+#include <algorithm>
+#include <mcap/reader.hpp>
+#include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
-
-#include <mcap/reader.hpp>
-
-#include <nlohmann/json.hpp>
-
-#include <algorithm>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -32,19 +29,37 @@ class McapDialog : public PJ::DialogPluginTyped {
 
  public:
   // --- Accessors for McapSource ---
-  const std::string& filepath() const { return filepath_; }
-  unsigned maxArraySize() const { return max_array_size_; }
-  bool clampLargeArrays() const { return clamp_large_arrays_; }
-  bool useTimestamp() const { return use_timestamp_; }
-  bool useMcapLogTime() const { return use_mcap_log_time_; }
-  const std::unordered_set<std::string>& selectedTopics() const { return selected_topics_; }
-  const std::string& analyzeError() const { return analyze_error_; }
+  const std::string& filepath() const {
+    return filepath_;
+  }
+  unsigned maxArraySize() const {
+    return max_array_size_;
+  }
+  bool clampLargeArrays() const {
+    return clamp_large_arrays_;
+  }
+  bool useTimestamp() const {
+    return use_timestamp_;
+  }
+  bool useMcapLogTime() const {
+    return use_mcap_log_time_;
+  }
+  const std::unordered_set<std::string>& selectedTopics() const {
+    return selected_topics_;
+  }
+  const std::string& analyzeError() const {
+    return analyze_error_;
+  }
 
   // --- Dialog protocol ---
 
-  std::string manifest() const override { return kMcapManifest; }
+  std::string manifest() const override {
+    return kMcapManifest;
+  }
 
-  std::string ui_content() const override { return kDialogMcapUi; }
+  std::string ui_content() const override {
+    return kDialogMcapUi;
+  }
 
   std::string widget_data() override {
     PJ::WidgetData wd;
@@ -96,12 +111,29 @@ class McapDialog : public PJ::DialogPluginTyped {
 
   bool onToggled(std::string_view widget_name, bool checked) override {
     // Checkbox must be handled before the radio button early-return
-    if (widget_name == "checkBoxUseTimestamp") { use_timestamp_ = checked; return true; }
-    if (!checked) return false;
-    if (widget_name == "radioClamp") { clamp_large_arrays_ = true; return true; }
-    if (widget_name == "radioSkip") { clamp_large_arrays_ = false; return true; }
-    if (widget_name == "radioPubTime") { use_mcap_log_time_ = false; return true; }
-    if (widget_name == "radioLogTime") { use_mcap_log_time_ = true; return true; }
+    if (widget_name == "checkBoxUseTimestamp") {
+      use_timestamp_ = checked;
+      return true;
+    }
+    if (!checked) {
+      return false;
+    }
+    if (widget_name == "radioClamp") {
+      clamp_large_arrays_ = true;
+      return true;
+    }
+    if (widget_name == "radioSkip") {
+      clamp_large_arrays_ = false;
+      return true;
+    }
+    if (widget_name == "radioPubTime") {
+      use_mcap_log_time_ = false;
+      return true;
+    }
+    if (widget_name == "radioLogTime") {
+      use_mcap_log_time_ = true;
+      return true;
+    }
     return false;
   }
 
@@ -121,8 +153,7 @@ class McapDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
-  bool onSelectionChanged(std::string_view widget_name,
-                          const std::vector<std::string>& selected) override {
+  bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name == "tableWidget") {
       selected_topics_.clear();
       for (const auto& topic : selected) {
@@ -166,7 +197,9 @@ class McapDialog : public PJ::DialogPluginTyped {
 
   bool loadConfig(std::string_view config_json) override {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-    if (cfg.is_discarded()) return false;
+    if (cfg.is_discarded()) {
+      return false;
+    }
 
     filepath_ = cfg.value("filepath", std::string{});
     max_array_size_ = cfg.value("max_array_size", 500u);
@@ -177,7 +210,9 @@ class McapDialog : public PJ::DialogPluginTyped {
     selected_topics_.clear();
     if (auto it = cfg.find("selected_topics"); it != cfg.end() && it->is_array()) {
       for (const auto& t : *it) {
-        if (t.is_string()) selected_topics_.insert(t.get<std::string>());
+        if (t.is_string()) {
+          selected_topics_.insert(t.get<std::string>());
+        }
       }
     }
 
@@ -194,15 +229,16 @@ class McapDialog : public PJ::DialogPluginTyped {
 
     mcap::McapReader reader;
     auto status = reader.open(filepath_);
-    if (!status.ok()) return;
+    if (!status.ok()) {
+      return;
+    }
 
     status = reader.readSummary(mcap::ReadSummaryMethod::NoFallbackScan);
     if (!status.ok()) {
       if (status.code == mcap::StatusCode::MissingStatistics) {
         // readSummarySection_ still populated channels and schemas before returning
         // this error — record it so McapSource can route to the error dialog.
-        analyze_error_ = "Code: " + std::to_string(static_cast<int>(status.code)) +
-                         "\nMessage: " + status.message;
+        analyze_error_ = "Code: " + std::to_string(static_cast<int>(status.code)) + "\nMessage: " + status.message;
       } else {
         reader.close();
         return;
@@ -233,8 +269,9 @@ class McapDialog : public PJ::DialogPluginTyped {
     }
 
     // Sort by topic name
-    std::sort(all_channels_.begin(), all_channels_.end(),
-              [](const ChannelInfo& a, const ChannelInfo& b) { return a.topic < b.topic; });
+    std::sort(all_channels_.begin(), all_channels_.end(), [](const ChannelInfo& a, const ChannelInfo& b) {
+      return a.topic < b.topic;
+    });
 
     reader.close();
 
@@ -262,12 +299,17 @@ class McapDialog : public PJ::DialogPluginTyped {
     std::string word;
     for (char c : filter_text_) {
       if (c == ' ') {
-        if (!word.empty()) { words.push_back(word); word.clear(); }
+        if (!word.empty()) {
+          words.push_back(word);
+          word.clear();
+        }
       } else {
         word += c;
       }
     }
-    if (!word.empty()) words.push_back(word);
+    if (!word.empty()) {
+      words.push_back(word);
+    }
 
     for (const auto& ch : all_channels_) {
       bool match = true;
@@ -277,7 +319,9 @@ class McapDialog : public PJ::DialogPluginTyped {
           break;
         }
       }
-      if (match) result.push_back(&ch);
+      if (match) {
+        result.push_back(&ch);
+      }
     }
     return result;
   }

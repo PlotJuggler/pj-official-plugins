@@ -1,11 +1,10 @@
-#include <ulog_cpp/data_container.hpp>
-#include <ulog_cpp/reader.hpp>
-
 #include <gtest/gtest.h>
 
 #include <cstring>
 #include <memory>
 #include <string>
+#include <ulog_cpp/data_container.hpp>
+#include <ulog_cpp/reader.hpp>
 #include <vector>
 
 namespace {
@@ -75,7 +74,9 @@ class ULogBuilder {
     writeMessage('D', payload);
   }
 
-  const std::vector<uint8_t>& data() const { return buf_; }
+  const std::vector<uint8_t>& data() const {
+    return buf_;
+  }
 
  private:
   std::vector<uint8_t> buf_;
@@ -109,7 +110,9 @@ class FieldDataBuilder {
     data_.insert(data_.end(), bytes, bytes + sizeof(T));
   }
 
-  std::vector<uint8_t> build() const { return data_; }
+  std::vector<uint8_t> build() const {
+    return data_;
+  }
 
  private:
   std::vector<uint8_t> data_;
@@ -117,8 +120,7 @@ class FieldDataBuilder {
 
 // Parse a ULogBuilder into a DataContainer.
 std::shared_ptr<ulog_cpp::DataContainer> parseBuilder(const ULogBuilder& builder) {
-  auto container =
-      std::make_shared<ulog_cpp::DataContainer>(ulog_cpp::DataContainer::StorageConfig::FullLog);
+  auto container = std::make_shared<ulog_cpp::DataContainer>(ulog_cpp::DataContainer::StorageConfig::FullLog);
   ulog_cpp::Reader reader{container};
   const auto& buf = builder.data();
   reader.readChunk(buf.data(), static_cast<int>(buf.size()));
@@ -126,10 +128,8 @@ std::shared_ptr<ulog_cpp::DataContainer> parseBuilder(const ULogBuilder& builder
 }
 
 TEST(ULogSourceTest, InvalidDataReportsFatalError) {
-  std::vector<uint8_t> bad_data = {'N', 'O', 'T', '_', 'U', 'L', 'O', 'G',
-                                    0, 0, 0, 0, 0, 0, 0, 0};
-  auto container =
-      std::make_shared<ulog_cpp::DataContainer>(ulog_cpp::DataContainer::StorageConfig::FullLog);
+  std::vector<uint8_t> bad_data = {'N', 'O', 'T', '_', 'U', 'L', 'O', 'G', 0, 0, 0, 0, 0, 0, 0, 0};
+  auto container = std::make_shared<ulog_cpp::DataContainer>(ulog_cpp::DataContainer::StorageConfig::FullLog);
   ulog_cpp::Reader reader{container};
   reader.readChunk(bad_data.data(), static_cast<int>(bad_data.size()));
   EXPECT_TRUE(container->hadFatalError());

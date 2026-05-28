@@ -1,10 +1,9 @@
-#include <pj_base/sdk/data_source_patterns.hpp>
-
-#include "dummy_manifest.hpp"
-
 #include <chrono>
 #include <cmath>
+#include <pj_base/sdk/data_source_patterns.hpp>
 #include <random>
+
+#include "dummy_manifest.hpp"
 
 namespace {
 
@@ -71,10 +70,8 @@ class DummyStreamer : public PJ::StreamSourceBase {
     auto now = std::chrono::steady_clock::now();
     auto epoch_now = std::chrono::system_clock::now();
 
-    double elapsed_s =
-        std::chrono::duration<double>(now - start_time_).count();
-    double dt_since_last =
-        std::chrono::duration<double>(now - last_poll_time_).count();
+    double elapsed_s = std::chrono::duration<double>(now - start_time_).count();
+    double dt_since_last = std::chrono::duration<double>(now - last_poll_time_).count();
     last_poll_time_ = now;
 
     // Generate samples at ~100 Hz covering the time since last poll
@@ -91,12 +88,9 @@ class DummyStreamer : public PJ::StreamSourceBase {
 
     for (int i = 0; i < num_samples; ++i) {
       double t = elapsed_s - dt_since_last + sample_dt * static_cast<double>(i + 1);
-      auto epoch_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                          epoch_now.time_since_epoch())
-                          .count() -
-                      std::chrono::duration_cast<std::chrono::nanoseconds>(
-                          std::chrono::duration<double>(elapsed_s - t))
-                          .count();
+      auto epoch_ns =
+          std::chrono::duration_cast<std::chrono::nanoseconds>(epoch_now.time_since_epoch()).count() -
+          std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(elapsed_s - t)).count();
       PJ::Timestamp ts{epoch_ns};
 
       constexpr double kTwoPi = 2.0 * 3.14159265358979323846;
