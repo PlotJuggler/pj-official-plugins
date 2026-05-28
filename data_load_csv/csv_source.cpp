@@ -1,15 +1,13 @@
+#include <cstdint>
+#include <fstream>
+#include <nlohmann/json.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
+#include <string>
+#include <vector>
 
 #include "csv_dialog.hpp"
 #include "csv_manifest.hpp"
 #include "csv_parser.hpp"
-
-#include <nlohmann/json.hpp>
-
-#include <cstdint>
-#include <fstream>
-#include <string>
-#include <vector>
 
 namespace {
 
@@ -35,7 +33,9 @@ class CsvSource : public PJ::FileSourceBase {
     return PJ::kCapabilityDirectIngest | PJ::kCapabilityHasDialog;
   }
 
-  std::string saveConfig() const override { return dialog_.saveConfig(); }
+  std::string saveConfig() const override {
+    return dialog_.saveConfig();
+  }
 
   PJ::Status loadConfig(std::string_view config_json) override {
     if (!dialog_.loadConfig(config_json)) {
@@ -50,7 +50,9 @@ class CsvSource : public PJ::FileSourceBase {
     {
       auto cfg_str = dialog_.saveConfig();
       auto cfg = nlohmann::json::parse(cfg_str, nullptr, false);
-      if (cfg.is_discarded()) return PJ::unexpected(std::string("invalid config"));
+      if (cfg.is_discarded()) {
+        return PJ::unexpected(std::string("invalid config"));
+      }
       filepath = cfg.value("filepath", std::string{});
     }
 
@@ -68,8 +70,7 @@ class CsvSource : public PJ::FileSourceBase {
     config.delimiter = dialog_.delimiter();
     config.time_column_index = dialog_.timeColumnIndex();
     config.combined_column_index = dialog_.combinedColumnIndex();
-    config.combined_columns.assign(dialog_.combinedPairs().begin(),
-                                    dialog_.combinedPairs().end());
+    config.combined_columns.assign(dialog_.combinedPairs().begin(), dialog_.combinedPairs().end());
     if (dialog_.useCustomFormat()) {
       config.custom_time_format = dialog_.customTimeFormat();
     }
@@ -86,14 +87,14 @@ class CsvSource : public PJ::FileSourceBase {
     }
     config.total_lines = total_lines;
 
-    (void)runtimeHost().progressStart(
-        "Importing CSV", static_cast<uint64_t>(total_lines), true);
+    (void)runtimeHost().progressStart("Importing CSV", static_cast<uint64_t>(total_lines), true);
 
-    auto result = PJ::CSV::ParseCsvData(
-        file, config, [this](int current, int /*total*/) -> bool {
-          if (runtimeHost().isStopRequested()) return false;
-          return runtimeHost().progressUpdate(static_cast<uint64_t>(current));
-        });
+    auto result = PJ::CSV::ParseCsvData(file, config, [this](int current, int /*total*/) -> bool {
+      if (runtimeHost().isStopRequested()) {
+        return false;
+      }
+      return runtimeHost().progressUpdate(static_cast<uint64_t>(current));
+    });
 
     if (!result.success) {
       return PJ::unexpected(std::string("CSV parsing failed"));
@@ -121,9 +122,8 @@ class CsvSource : public PJ::FileSourceBase {
       }
       if (!detail.empty()) {
         if (!runtimeHost().askContinue(
-                "Rows Skipped",
-                "Some rows have an incorrect number of columns and will be skipped:\n\n" + detail +
-                    "\nContinue loading?")) {
+                "Rows Skipped", "Some rows have an incorrect number of columns and will be skipped:\n\n" + detail +
+                                    "\nContinue loading?")) {
           return PJ::unexpected(std::string("Loading aborted by user"));
         }
       }
@@ -131,10 +131,14 @@ class CsvSource : public PJ::FileSourceBase {
 
     // --- Classify columns ---
     std::string topic_name = basenameWithoutExt(filepath);
-    if (topic_name.empty()) topic_name = "data";
+    if (topic_name.empty()) {
+      topic_name = "data";
+    }
 
     auto topic = writeHost().ensureTopic(topic_name);
-    if (!topic) return PJ::unexpected(topic.error());
+    if (!topic) {
+      return PJ::unexpected(topic.error());
+    }
 
     // Identify which columns are data (not time, not combined components)
     std::vector<size_t> numeric_col_indices;
@@ -142,8 +146,7 @@ class CsvSource : public PJ::FileSourceBase {
 
     for (size_t i = 0; i < result.columns.size(); i++) {
       // Skip time column
-      if (config.time_column_index >= 0 &&
-          static_cast<size_t>(config.time_column_index) == i) {
+      if (config.time_column_index >= 0 && static_cast<size_t>(config.time_column_index) == i) {
         continue;
       }
       // Skip combined date/time component columns
@@ -159,9 +162,8 @@ class CsvSource : public PJ::FileSourceBase {
         numeric_col_indices.push_back(i);
         if (has_string) {
           runtimeHost().showWarning(
-              "Mixed Column Type",
-              "Column '" + col.name + "' has " + std::to_string(col.string_points.size()) +
-                  " non-numeric cells that were skipped.");
+              "Mixed Column Type", "Column '" + col.name + "' has " + std::to_string(col.string_points.size()) +
+                                       " non-numeric cells that were skipped.");
         }
       } else if (has_string) {
         string_col_indices.push_back(i);
@@ -175,14 +177,16 @@ class CsvSource : public PJ::FileSourceBase {
 
     // --- Pre-register ALL columns before writing any data ---
     for (size_t col_idx : numeric_col_indices) {
-      auto field = writeHost().ensureField(
-          *topic, result.columns[col_idx].name, PJ::PrimitiveType::kFloat64);
-      if (!field) return PJ::unexpected(field.error());
+      auto field = writeHost().ensureField(*topic, result.columns[col_idx].name, PJ::PrimitiveType::kFloat64);
+      if (!field) {
+        return PJ::unexpected(field.error());
+      }
     }
     for (size_t col_idx : string_col_indices) {
-      auto field = writeHost().ensureField(
-          *topic, result.columns[col_idx].name, PJ::PrimitiveType::kString);
-      if (!field) return PJ::unexpected(field.error());
+      auto field = writeHost().ensureField(*topic, result.columns[col_idx].name, PJ::PrimitiveType::kString);
+      if (!field) {
+        return PJ::unexpected(field.error());
+      }
     }
 
     // --- Build merged timeline and write records ---
@@ -200,21 +204,17 @@ class CsvSource : public PJ::FileSourceBase {
     for (size_t col_idx : numeric_col_indices) {
       const auto& col = result.columns[col_idx];
       for (const auto& [t, v] : col.numeric_points) {
-        all_points.push_back(
-            {static_cast<int64_t>(t * 1e9), col_idx, false, v, {}});
+        all_points.push_back({static_cast<int64_t>(t * 1e9), col_idx, false, v, {}});
       }
     }
     for (size_t col_idx : string_col_indices) {
       const auto& col = result.columns[col_idx];
       for (const auto& [t, v] : col.string_points) {
-        all_points.push_back(
-            {static_cast<int64_t>(t * 1e9), col_idx, true, 0.0, v});
+        all_points.push_back({static_cast<int64_t>(t * 1e9), col_idx, true, 0.0, v});
       }
     }
-    std::stable_sort(all_points.begin(), all_points.end(),
-                     [](const DataPoint& a, const DataPoint& b) {
-                       return a.ts_ns < b.ts_ns;
-                     });
+    std::stable_sort(
+        all_points.begin(), all_points.end(), [](const DataPoint& a, const DataPoint& b) { return a.ts_ns < b.ts_ns; });
 
     // Group by timestamp and write multi-field records
     std::vector<PJ::sdk::NamedFieldValue> row_fields;
@@ -243,15 +243,15 @@ class CsvSource : public PJ::FileSourceBase {
       }
 
       auto status = writeHost().appendRecord(
-          *topic, PJ::Timestamp{ts},
-          PJ::Span<const PJ::sdk::NamedFieldValue>(row_fields.data(), row_fields.size()));
-      if (!status) return status;
+          *topic, PJ::Timestamp{ts}, PJ::Span<const PJ::sdk::NamedFieldValue>(row_fields.data(), row_fields.size()));
+      if (!status) {
+        return status;
+      }
     }
 
     runtimeHost().reportMessage(
-        PJ::DataSourceMessageLevel::kInfo,
-        "Imported " + std::to_string(result.lines_processed) + " rows, " +
-            std::to_string(result.lines_skipped) + " skipped");
+        PJ::DataSourceMessageLevel::kInfo, "Imported " + std::to_string(result.lines_processed) + " rows, " +
+                                               std::to_string(result.lines_skipped) + " skipped");
 
     return PJ::okStatus();
   }

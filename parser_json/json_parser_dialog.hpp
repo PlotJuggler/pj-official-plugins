@@ -1,14 +1,12 @@
 #pragma once
 
+#include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <string>
 
 #include "json_manifest.hpp"
 #include "json_parser_options_ui.hpp"
-
-#include <nlohmann/json.hpp>
-
-#include <string>
 
 namespace {
 
@@ -18,9 +16,13 @@ class JsonParserDialog : public PJ::DialogPluginTyped {
  public:
   // --- Dialog protocol ---
 
-  std::string manifest() const override { return kJsonManifest; }
+  std::string manifest() const override {
+    return kJsonManifest;
+  }
 
-  std::string ui_content() const override { return kJsonParserOptionsUi; }
+  std::string ui_content() const override {
+    return kJsonParserOptionsUi;
+  }
 
   std::string widget_data() override {
     PJ::WidgetData wd;

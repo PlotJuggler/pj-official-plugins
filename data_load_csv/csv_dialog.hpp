@@ -2,26 +2,32 @@
 
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
-
-#include "csv_parser.hpp"
-
 #include <string>
 #include <vector>
+
+#include "csv_parser.hpp"
 
 enum class TimeMode { RowNumber, Column, Combined };
 
 inline std::string timeModeToString(TimeMode mode) {
   switch (mode) {
-    case TimeMode::RowNumber: return "row_number";
-    case TimeMode::Column: return "column";
-    case TimeMode::Combined: return "combined";
+    case TimeMode::RowNumber:
+      return "row_number";
+    case TimeMode::Column:
+      return "column";
+    case TimeMode::Combined:
+      return "combined";
   }
   return "row_number";
 }
 
 inline TimeMode stringToTimeMode(const std::string& s) {
-  if (s == "column") return TimeMode::Column;
-  if (s == "combined") return TimeMode::Combined;
+  if (s == "column") {
+    return TimeMode::Column;
+  }
+  if (s == "combined") {
+    return TimeMode::Combined;
+  }
   return TimeMode::RowNumber;
 }
 
@@ -31,10 +37,18 @@ class CsvDialog : public PJ::DialogPluginTyped {
  public:
   // --- Accessors for CsvSource ---
 
-  char delimiter() const { return delimiter_; }
-  const std::string& customTimeFormat() const { return custom_format_; }
-  bool useCustomFormat() const { return use_custom_format_; }
-  const std::vector<PJ::CSV::CombinedColumnPair>& combinedPairs() const { return combined_pairs_; }
+  char delimiter() const {
+    return delimiter_;
+  }
+  const std::string& customTimeFormat() const {
+    return custom_format_;
+  }
+  bool useCustomFormat() const {
+    return use_custom_format_;
+  }
+  const std::vector<PJ::CSV::CombinedColumnPair>& combinedPairs() const {
+    return combined_pairs_;
+  }
 
   int timeColumnIndex() const;
   int combinedColumnIndex() const;
@@ -48,8 +62,7 @@ class CsvDialog : public PJ::DialogPluginTyped {
 
   bool onIndexChanged(std::string_view widget_name, int index) override;
   bool onToggled(std::string_view widget_name, bool checked) override;
-  bool onSelectionChanged(std::string_view widget_name,
-                          const std::vector<std::string>& selected) override;
+  bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override;
   bool onItemDoubleClicked(std::string_view widget_name, int index) override;
   bool onClicked(std::string_view widget_name) override;
   bool onTextChanged(std::string_view widget_name, std::string_view text) override;

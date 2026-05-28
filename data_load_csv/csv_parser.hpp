@@ -1,11 +1,11 @@
 #pragma once
 
-#include "timestamp_parsing.hpp"
-
 #include <functional>
 #include <set>
 #include <string>
 #include <vector>
+
+#include "timestamp_parsing.hpp"
 
 namespace PJ::CSV {
 
@@ -58,13 +58,12 @@ struct CsvParseResult {
 };
 
 std::vector<CombinedColumnPair> DetectCombinedDateTimeColumns(
-    const std::vector<std::string>& column_names,
-    const std::vector<ColumnTypeInfo>& column_types);
+    const std::vector<std::string>& column_names, const std::vector<ColumnTypeInfo>& column_types);
 
-CsvParseResult ParseCsvData(std::istream& input, const CsvParseConfig& config,
-                            std::function<bool(int, int)> progress = nullptr);
+CsvParseResult ParseCsvData(
+    std::istream& input, const CsvParseConfig& config, std::function<bool(int, int)> progress = nullptr);
 
-CsvParseResult ParseCsvData(const std::string& csv_content, const CsvParseConfig& config,
-                            std::function<bool(int, int)> progress = nullptr);
+CsvParseResult ParseCsvData(
+    const std::string& csv_content, const CsvParseConfig& config, std::function<bool(int, int)> progress = nullptr);
 
 }  // namespace PJ::CSV

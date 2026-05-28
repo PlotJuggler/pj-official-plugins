@@ -1,9 +1,8 @@
-#include "ros_parser_internal.hpp"
-
 #include <data_tamer_parser/data_tamer_parser.hpp>
-
 #include <queue>
 #include <tuple>
+
+#include "ros_parser_internal.hpp"
 
 namespace ros_parser_detail {
 
@@ -21,15 +20,13 @@ thread_local std::unordered_map<std::string, std::unordered_map<uint32_t, std::v
 
 // TSL: keyed by definition hash
 thread_local std::unordered_map<uint64_t, std::vector<std::string>> g_tsl_definitions;
-thread_local std::unordered_map<uint64_t, std::queue<std::tuple<int64_t, std::vector<double>>>>
-    g_tsl_values_buffer;
+thread_local std::unordered_map<uint64_t, std::queue<std::tuple<int64_t, std::vector<double>>>> g_tsl_values_buffer;
 
 // TSL type order (matches old parser)
 constexpr std::array<RosMsgParser::BuiltinType, 11> kTslTypeOrder = {
-    RosMsgParser::BOOL,    RosMsgParser::INT8,    RosMsgParser::UINT8,
-    RosMsgParser::INT16,   RosMsgParser::UINT16,  RosMsgParser::INT32,
-    RosMsgParser::UINT32,  RosMsgParser::INT64,   RosMsgParser::UINT64,
-    RosMsgParser::FLOAT32, RosMsgParser::FLOAT64,
+    RosMsgParser::BOOL,   RosMsgParser::INT8,    RosMsgParser::UINT8,   RosMsgParser::INT16,
+    RosMsgParser::UINT16, RosMsgParser::INT32,   RosMsgParser::UINT32,  RosMsgParser::INT64,
+    RosMsgParser::UINT64, RosMsgParser::FLOAT32, RosMsgParser::FLOAT64,
 };
 
 }  // namespace
@@ -189,8 +186,7 @@ void RosParser::handleDiagnosticArray() {
 
   size_t status_count = deserializer_->deserializeUInt32();
   for (size_t st = 0; st < status_count; st++) {
-    uint8_t level =
-        deserializer_->deserialize(RosMsgParser::BYTE).convert<uint8_t>();
+    uint8_t level = deserializer_->deserialize(RosMsgParser::BYTE).convert<uint8_t>();
     std::string name;
     deserializer_->deserializeString(name);
     std::string message;
@@ -250,8 +246,7 @@ void RosParser::handleTFMessage() {
 void RosParser::handleDataTamerSchemas() {
   size_t count = deserializer_->deserializeUInt32();
   for (size_t i = 0; i < count; i++) {
-    auto wire_hash =
-        deserializer_->deserialize(RosMsgParser::UINT64).convert<uint64_t>();
+    auto wire_hash = deserializer_->deserialize(RosMsgParser::UINT64).convert<uint64_t>();
     std::string channel_name;
     deserializer_->deserializeString(channel_name);
     std::string schema_text;
@@ -266,16 +261,16 @@ void RosParser::handleDataTamerSchemas() {
 }
 
 void RosParser::handleDataTamerSnapshot() {
-  uint64_t timestamp =
-      deserializer_->deserialize(RosMsgParser::UINT64).convert<uint64_t>();
-  uint64_t schema_hash =
-      deserializer_->deserialize(RosMsgParser::UINT64).convert<uint64_t>();
+  uint64_t timestamp = deserializer_->deserialize(RosMsgParser::UINT64).convert<uint64_t>();
+  uint64_t schema_hash = deserializer_->deserialize(RosMsgParser::UINT64).convert<uint64_t>();
 
   auto active_mask = deserializer_->deserializeByteSequence();
   auto payload = deserializer_->deserializeByteSequence();
 
   auto it = g_data_tamer_schemas.find(schema_hash);
-  if (it == g_data_tamer_schemas.end()) return;
+  if (it == g_data_tamer_schemas.end()) {
+    return;
+  }
 
   const auto& schema = it->second;
   DataTamerParser::SnapshotView snapshot;
@@ -290,10 +285,8 @@ void RosParser::handleDataTamerSnapshot() {
   const auto to_double = [](const auto& value) { return static_cast<double>(value); };
 
   DataTamerParser::ParseSnapshot(
-      schema, snapshot,
-      [&](const std::string& field_name, const DataTamerParser::VarNumber& value) {
-        addField("/" + schema.channel_name + "/" + field_name,
-                 std::visit(to_double, value));
+      schema, snapshot, [&](const std::string& field_name, const DataTamerParser::VarNumber& value) {
+        addField("/" + schema.channel_name + "/" + field_name, std::visit(to_double, value));
       });
 }
 
@@ -326,10 +319,14 @@ void RosParser::handlePalStatisticsValues() {
 
   std::string key = palStatisticsKey(topic_name_);
   auto topic_it = g_pal_statistics_names.find(key);
-  if (topic_it == g_pal_statistics_names.end()) return;
+  if (topic_it == g_pal_statistics_names.end()) {
+    return;
+  }
 
   auto ver_it = topic_it->second.find(version);
-  if (ver_it == topic_it->second.end()) return;
+  if (ver_it == topic_it->second.end()) {
+    return;
+  }
 
   const auto& names = ver_it->second;
   size_t n = std::min(names.size(), values.size());
@@ -344,10 +341,11 @@ void RosParser::handlePalStatisticsValues() {
 void RosParser::handleTSLDefinition() {
   (void)deserializer_->deserializeUInt32();  // stamp sec
   (void)deserializer_->deserializeUInt32();  // stamp nsec
-  uint64_t hash =
-      deserializer_->deserialize(RosMsgParser::UINT64).extract<uint64_t>();
+  uint64_t hash = deserializer_->deserialize(RosMsgParser::UINT64).extract<uint64_t>();
 
-  if (g_tsl_definitions.count(hash) != 0) return;  // already known
+  if (g_tsl_definitions.count(hash) != 0) {
+    return;  // already known
+  }
 
   std::vector<std::string> definition;
   for (auto type : kTslTypeOrder) {
@@ -387,8 +385,7 @@ void RosParser::handleTSLDefinition() {
 void RosParser::handleTSLValues() {
   (void)deserializer_->deserializeUInt32();  // stamp sec
   (void)deserializer_->deserializeUInt32();  // stamp nsec
-  uint64_t hash =
-      deserializer_->deserialize(RosMsgParser::UINT64).extract<uint64_t>();
+  uint64_t hash = deserializer_->deserialize(RosMsgParser::UINT64).extract<uint64_t>();
 
   std::vector<double> values;
   for (auto type_id : kTslTypeOrder) {
@@ -402,7 +399,9 @@ void RosParser::handleTSLValues() {
 
   if (g_tsl_definitions.count(hash) == 0) {
     auto& queue = g_tsl_values_buffer[hash];
-    if (queue.size() > 1000) queue.pop();  // cap buffer to prevent unbounded growth
+    if (queue.size() > 1000) {
+      queue.pop();  // cap buffer to prevent unbounded growth
+    }
     queue.push({current_timestamp_, std::move(values)});
     return;
   }

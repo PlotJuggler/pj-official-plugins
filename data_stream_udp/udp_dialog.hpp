@@ -1,17 +1,15 @@
 #pragma once
 
+#include <algorithm>
+#include <iterator>
+#include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <string>
+#include <vector>
 
 #include "datastream_udp_ui.hpp"
 #include "udp_manifest.hpp"
-
-#include <nlohmann/json.hpp>
-
-#include <algorithm>
-#include <iterator>
-#include <string>
-#include <vector>
 
 namespace {
 
@@ -27,9 +25,13 @@ class UdpDialog : public PJ::DialogPluginTyped {
 
   // --- Dialog protocol ---
 
-  std::string manifest() const override { return kUdpManifest; }
+  std::string manifest() const override {
+    return kUdpManifest;
+  }
 
-  std::string ui_content() const override { return kDataStreamUdpUi; }
+  std::string ui_content() const override {
+    return kDataStreamUdpUi;
+  }
 
   std::string widget_data() override {
     PJ::WidgetData wd;
@@ -89,7 +91,9 @@ class UdpDialog : public PJ::DialogPluginTyped {
 
   bool loadConfig(std::string_view config_json) override {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-    if (cfg.is_discarded()) return false;
+    if (cfg.is_discarded()) {
+      return false;
+    }
     address_ = cfg.value("address", std::string("127.0.0.1"));
     port_ = cfg.value("port", 9870);
     encoding_ = cfg.value("default_encoding", std::string("json"));
