@@ -1,21 +1,19 @@
-#include <pj_base/sdk/data_source_patterns.hpp>
-#include <pj_plugins/sdk/encoding_utils.hpp>
-
-#include "mqtt_dialog.hpp"
-#include "mqtt_manifest.hpp"
-
-#include <nlohmann/json.hpp>
-
 #include <mqtt/async_client.h>
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
+#include <pj_base/sdk/data_source_patterns.hpp>
+#include <pj_plugins/sdk/encoding_utils.hpp>
 #include <queue>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "mqtt_dialog.hpp"
+#include "mqtt_manifest.hpp"
 
 namespace {
 
@@ -35,7 +33,9 @@ class MqttSource : public PJ::StreamSourceBase {
     return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;
   }
 
-  std::string saveConfig() const override { return dialog_.saveConfig(); }
+  std::string saveConfig() const override {
+    return dialog_.saveConfig();
+  }
 
   PJ::Status loadConfig(std::string_view config_json) override {
     // Always populate available encodings first (needed even if config is empty)
@@ -67,7 +67,9 @@ class MqttSource : public PJ::StreamSourceBase {
     selected_topics_.clear();
     if (cfg.contains("selected_topics") && cfg["selected_topics"].is_array()) {
       for (const auto& t : cfg["selected_topics"]) {
-        if (t.is_string()) selected_topics_.push_back(t.get<std::string>());
+        if (t.is_string()) {
+          selected_topics_.push_back(t.get<std::string>());
+        }
       }
     }
 
@@ -82,26 +84,24 @@ class MqttSource : public PJ::StreamSourceBase {
       client_ = std::make_unique<mqtt::async_client>(server_uri, client_id_);
 
       // Set up callback for incoming messages
-      client_->set_message_callback(
-          [this](mqtt::const_message_ptr msg) {
-            MqttMessage m;
-            m.topic = msg->get_topic();
-            auto payload = msg->get_payload();
-            m.payload.assign(
-                reinterpret_cast<const uint8_t*>(payload.data()),
-                reinterpret_cast<const uint8_t*>(payload.data()) + payload.size());
-            auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
-            m.timestamp_ns =
-                std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+      client_->set_message_callback([this](mqtt::const_message_ptr msg) {
+        MqttMessage m;
+        m.topic = msg->get_topic();
+        auto payload = msg->get_payload();
+        m.payload.assign(
+            reinterpret_cast<const uint8_t*>(payload.data()),
+            reinterpret_cast<const uint8_t*>(payload.data()) + payload.size());
+        auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+        m.timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
 
-            std::lock_guard<std::mutex> lock(queue_mutex_);
-            message_queue_.push(std::move(m));
-          });
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        message_queue_.push(std::move(m));
+      });
 
       // Detect connection loss
       client_->set_connection_lost_handler([this](const std::string& cause) {
-        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning,
-                                   "MQTT connection lost" + (cause.empty() ? "" : ": " + cause));
+        runtimeHost().reportMessage(
+            PJ::DataSourceMessageLevel::kWarning, "MQTT connection lost" + (cause.empty() ? "" : ": " + cause));
       });
 
       mqtt::connect_options conn_opts;
@@ -129,9 +129,15 @@ class MqttSource : public PJ::StreamSourceBase {
         auto ca = cfg.value("ca_cert_path", std::string{});
         auto cert = cfg.value("client_cert_path", std::string{});
         auto key = cfg.value("private_key_path", std::string{});
-        if (!ca.empty()) ssl_opts.set_trust_store(ca);
-        if (!cert.empty()) ssl_opts.set_key_store(cert);
-        if (!key.empty()) ssl_opts.set_private_key(key);
+        if (!ca.empty()) {
+          ssl_opts.set_trust_store(ca);
+        }
+        if (!cert.empty()) {
+          ssl_opts.set_key_store(cert);
+        }
+        if (!key.empty()) {
+          ssl_opts.set_private_key(key);
+        }
         conn_opts.set_ssl(ssl_opts);
       }
 
@@ -179,12 +185,17 @@ class MqttSource : public PJ::StreamSourceBase {
       }
 
       if (it != binding_cache_.end()) {
-        auto status = runtimeHost().pushRawMessage(
-            it->second, PJ::Timestamp{msg.timestamp_ns},
-            PJ::Span<const uint8_t>(msg.payload.data(), msg.payload.size()));
+        // Move the per-message payload into a shared_ptr-owned buffer so the
+        // PayloadView fetcher remains valid after onPoll returns
+        // (ObjectIngestPolicy may defer dispatch beyond this call).
+        auto payload = std::make_shared<std::vector<uint8_t>>(std::move(msg.payload));
+        auto status =
+            runtimeHost().pushMessage(it->second, PJ::Timestamp{msg.timestamp_ns}, [payload]() -> PJ::sdk::PayloadView {
+              return PJ::sdk::PayloadView{PJ::Span<const uint8_t>(payload->data(), payload->size()), payload};
+            });
         if (!status) {
-          runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning,
-                                     "Failed to push message: " + status.error());
+          runtimeHost().reportMessage(
+              PJ::DataSourceMessageLevel::kWarning, "Failed to push message: " + status.error());
         }
       }
 
@@ -207,8 +218,7 @@ class MqttSource : public PJ::StreamSourceBase {
           }
           client_->disconnect()->wait();
         }
-      } catch (...) {
-      }
+      } catch (...) {}
       client_.reset();
     }
     binding_cache_.clear();
