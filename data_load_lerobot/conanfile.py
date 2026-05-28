@@ -7,6 +7,7 @@ class DataLoadLerobotConan(ConanFile):
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain"
     requires = (
+        "plotjuggler_core/[>=0.4.1 <0.5.0]",
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
         "arrow/23.0.1",
@@ -15,7 +16,6 @@ class DataLoadLerobotConan(ConanFile):
         "*:shared": False,
         "arrow/*:parquet": True,
         "arrow/*:with_snappy": True,
-        "arrow/*:with_zstd": True,
         "boost/*:without_test": True,
         "boost/*:without_cobalt": True,
     }
