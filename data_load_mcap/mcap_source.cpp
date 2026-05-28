@@ -3,6 +3,7 @@
 
 #define MCAP_IMPLEMENTATION
 #include <cstdint>
+#include <cstdio>
 #include <list>
 #include <map>
 #include <memory>
@@ -11,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -30,20 +32,31 @@ using McapSummaryInfo = PJ::McapHelpers::McapSummaryInfo;
 using PJ::McapHelpers::populateSummaryFromReader;
 using PJ::McapHelpers::readSelectiveSummary;
 
-// LRU cache of decompressed MCAP chunks, bounded by total bytes held.
+// Saturating add for MCAP timestamps. mcap::MaxTime is the upper bound of the
+// type; +1 would wrap to 0 and make any half-open range degenerate.
+inline mcap::Timestamp incrementEndTimeSaturating(mcap::Timestamp ts) {
+  return (ts == mcap::MaxTime) ? mcap::MaxTime : ts + 1;
+}
+
+// LRU cache of decompressed MCAP chunks, bounded by total bytes. Cold-path
+// only: serves fetcher closures stored by the host that fire AFTER import
+// completes (the parallel reader is gone). Hot-path import-time fetches go
+// directly through the parallel reader's pinned ReadyChunk via a weak_ptr
+// captured in the closure — see importData().
 //
 // On miss: byte-bounded LinearMessageView decompresses the target chunk
-// directly (no O(chunks_before_target) scan from the data section start),
-// then we walk it once and concatenate every message into a single buffer,
-// indexed by (channel_id, log_time). Per-pull cost on miss = 1 decompress +
-// 1 chunk-sized memcpy.
+// directly (no O(chunks_before_target) scan), then we walk it once and
+// concatenate every message into a single buffer, indexed by
+// (channel_id, log_time, within_chunk_record_offset). The third key element
+// disambiguates messages that share a (channel, logTime) — MCAP permits
+// duplicate timestamps on the same channel; a 2-tuple key would silently
+// drop all but the first.
 //
-// On hit: O(log n) lookup in the per-chunk index; returns a Span into the
-// cached buffer with the buffer's shared_ptr as anchor. Zero-copy through
-// to the consumer (plotjuggler_core >=0.5 preserves the anchor end-to-end).
+// On hit: O(log n) lookup; returns a Span into the cached buffer with the
+// buffer's shared_ptr as anchor. Zero-copy through plotjuggler_core 0.5+.
 class ChunkCache {
  public:
-  using Key = std::pair<mcap::ChannelId, mcap::Timestamp>;
+  using Key = std::tuple<mcap::ChannelId, mcap::Timestamp, mcap::ByteOffset>;
 
   struct Entry {
     std::shared_ptr<const std::vector<uint8_t>> bytes;
@@ -96,19 +109,38 @@ class ChunkCache {
   }
 
  private:
+  // Cold-path decompression. mcap errors surfaced via stderr (NOT silently
+  // dropped) since this code path can run after the McapSource is destroyed
+  // (host's stored fetcher firing on consumer scrub), so we cannot route
+  // through runtimeHost. A dropped chunk record or decompression mismatch
+  // here means the user will see missing bytes on scrubbing — they need a
+  // breadcrumb.
   static std::shared_ptr<const Entry> loadChunk(
       mcap::McapReader& reader, uint64_t chunk_byte_start, uint64_t chunk_byte_end, mcap::Timestamp chunk_ts_start,
       mcap::Timestamp chunk_ts_end) {
     auto buffer = std::make_shared<std::vector<uint8_t>>();
     auto entry = std::make_shared<Entry>();
+    auto on_problem = [chunk_byte_start](const mcap::Status& s) {
+      std::fprintf(
+          stderr, "[data_load_mcap] cold-path chunk@%llu mcap problem (code=%d): %s\n",
+          static_cast<unsigned long long>(chunk_byte_start), static_cast<int>(s.code), s.message.c_str());
+    };
     mcap::LinearMessageView view(
-        reader, chunk_byte_start, chunk_byte_end, chunk_ts_start, chunk_ts_end + 1, [](const mcap::Status&) {});
+        reader, chunk_byte_start, chunk_byte_end, chunk_ts_start, incrementEndTimeSaturating(chunk_ts_end), on_problem);
     for (const auto& v : view) {
+      if (v.channel == nullptr || v.message.data == nullptr) {
+        continue;
+      }
       const auto* data = reinterpret_cast<const uint8_t*>(v.message.data);
       const size_t size = v.message.dataSize;
       const size_t offset = buffer->size();
       buffer->insert(buffer->end(), data, data + size);
-      entry->index.emplace(Key{v.channel->id, v.message.logTime}, std::pair<size_t, size_t>{offset, size});
+      // Third key element: within-chunk record offset. Serial LinearMessageView
+      // populates this in messageOffset.chunkOffset (per reader.inl conventions);
+      // value_or(0) covers the unlikely "not set" case.
+      const mcap::ByteOffset within_chunk = v.messageOffset.chunkOffset.value_or(0);
+      entry->index.emplace(
+          Key{v.channel->id, v.message.logTime, within_chunk}, std::pair<size_t, size_t>{offset, size});
     }
     entry->bytes = std::shared_ptr<const std::vector<uint8_t>>(std::move(buffer));
     return entry;
@@ -126,20 +158,44 @@ class ChunkCache {
   size_t total_bytes_ = 0;
 };
 
-// Resolve one message via the chunk cache. On hit (typical for sequential
-// reads within a chunk) the returned Span points directly into the cached
-// chunk buffer; the BufferAnchor keeps that buffer alive for as long as the
-// host or consumer holds the PayloadView.
+// Resolve one message via the chunk cache (cold path). On hit returns a Span
+// into the cached buffer; on cache miss decompresses the chunk via mcap and
+// inserts.
+//
+// Degenerate inputs (null reader/cache, zero-length byte range, zero chunk
+// length signalling chunk_meta-miss) return empty without engaging mcap —
+// surfaced via stderr so the user gets a breadcrumb instead of silently
+// missing bytes. Index lookup misses are also logged (could indicate file
+// corruption or upstream offset-tracking bug).
 inline PJ::sdk::PayloadView readMessageBytesAt(
     const std::shared_ptr<mcap::McapReader>& reader, const std::shared_ptr<ChunkCache>& cache,
     uint64_t chunk_byte_start, uint64_t chunk_byte_end, mcap::Timestamp chunk_ts_start, mcap::Timestamp chunk_ts_end,
-    mcap::ChannelId channel_id, mcap::Timestamp log_time) {
+    mcap::ChannelId channel_id, mcap::Timestamp log_time, mcap::ByteOffset within_chunk_offset) {
+  if (reader == nullptr || cache == nullptr) {
+    std::fprintf(stderr, "[data_load_mcap] cold-path called after source teardown; cannot fetch bytes\n");
+    return {};
+  }
+  if (chunk_byte_end <= chunk_byte_start) {
+    std::fprintf(
+        stderr,
+        "[data_load_mcap] cold-path missing chunk metadata for ch=%u ts=%llu "
+        "(chunk_off=%llu len=0 — likely a missed NoFallbackScan on a selective summary)\n",
+        static_cast<unsigned>(channel_id), static_cast<unsigned long long>(log_time),
+        static_cast<unsigned long long>(chunk_byte_start));
+    return {};
+  }
   auto entry = cache->get(*reader, chunk_byte_start, chunk_byte_end, chunk_ts_start, chunk_ts_end);
   if (!entry) {
     return {};
   }
-  auto it = entry->index.find({channel_id, log_time});
+  auto it = entry->index.find({channel_id, log_time, within_chunk_offset});
   if (it == entry->index.end()) {
+    std::fprintf(
+        stderr,
+        "[data_load_mcap] cold-path lookup miss after chunk loaded — chunk@%llu ch=%u ts=%llu wc=%llu "
+        "(possible corruption or offset mismatch)\n",
+        static_cast<unsigned long long>(chunk_byte_start), static_cast<unsigned>(channel_id),
+        static_cast<unsigned long long>(log_time), static_cast<unsigned long long>(within_chunk_offset));
     return {};
   }
   const auto [offset, size] = it->second;
@@ -393,11 +449,21 @@ class McapSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("cannot mmap MCAP file: ") + status_mmap.message);
     }
 
+    // Track terminal failure inside the inner block so we can return
+    // PJ::unexpected after the parallel reader cleanly destructs. Setting a
+    // status here is structural — a failed open or a thrown exception during
+    // iteration must propagate to FileLoader as a load failure, not get
+    // silently downgraded to okStatus() with a warning toast.
+    std::optional<std::string> import_failure;
+
     {
       mcap::ParallelReader parallel_reader;
       if (auto pstatus = parallel_reader.open(mmap_reader); !pstatus.ok()) {
-        runtimeHost().reportMessage(
-            PJ::DataSourceMessageLevel::kWarning, std::string("parallel reader open failed: ") + pstatus.message);
+        const std::string msg = std::string("parallel reader open failed: ") + pstatus.message;
+        runtimeHost().showError("MCAP import failed", msg);
+        import_failure = msg;
+        // Skip the iteration — readMessages on an unopened reader would
+        // silently emit nothing and we'd still return failure below.
       }
 
       mcap::ParallelReadOptions parallel_opts;
@@ -408,109 +474,121 @@ class McapSource : public PJ::FileSourceBase {
         return selected_topics.find(std::string(topic)) != selected_topics.end();
       };
 
-      auto messages = parallel_reader.readMessages(on_problem, parallel_opts);
-      try {
-        // Explicit iterator so we can call currentChunk() per message.
-        for (auto it = messages.begin(); it != messages.end(); ++it) {
-          const auto& msg_view = *it;
-          if (msg_view.channel == nullptr || msg_view.message.data == nullptr) {
-            continue;
-          }
-          auto binding_it = bindings.find(msg_view.channel->id);
-          if (binding_it == bindings.end()) {
-            continue;
-          }
-
-          const PJ::Timestamp timestamp_ns =
-              static_cast<PJ::Timestamp>(use_log_time ? msg_view.message.logTime : msg_view.message.publishTime);
-
-          // RecordOffset semantics in the parallel reader fork:
-          //   .offset       = within-chunk position of the message record
-          //   .chunkOffset  = chunk record's FILE offset (= ChunkIndex::chunkStartOffset)
-          const uint64_t chunk_off = msg_view.messageOffset.chunkOffset.value_or(msg_view.messageOffset.offset);
-          uint64_t chunk_len = 0;
-          mcap::Timestamp chunk_ts_start = msg_view.message.logTime;
-          mcap::Timestamp chunk_ts_end = msg_view.message.logTime;
-          if (auto mit = chunk_meta.find(chunk_off); mit != chunk_meta.end()) {
-            chunk_len = mit->second.length;
-            chunk_ts_start = mit->second.ts_start;
-            chunk_ts_end = mit->second.ts_end;
-          }
-
-          // Compute the message data's byte offset within the chunk's
-          // decompressed buffer. msg_view.message.data points into
-          // ReadyChunk::bytes (a vector<std::byte>); the offset is stable
-          // and reusable when the closure later locks the weak_ptr.
-          auto chunk_handle = it.currentChunk();
-          const size_t data_size = msg_view.message.dataSize;
-          size_t data_offset = 0;
-          bool hot_path_eligible = false;
-          if (auto chunk = chunk_handle.lock()) {
-            const auto* chunk_base = reinterpret_cast<const uint8_t*>(chunk->bytes.data());
-            const auto* msg_data = reinterpret_cast<const uint8_t*>(msg_view.message.data);
-            if (msg_data >= chunk_base && msg_data + data_size <= chunk_base + chunk->bytes.size()) {
-              data_offset = static_cast<size_t>(msg_data - chunk_base);
-              hot_path_eligible = true;
+      if (!import_failure) {
+        auto messages = parallel_reader.readMessages(on_problem, parallel_opts);
+        try {
+          // Explicit iterator so we can call currentChunk() per message.
+          for (auto it = messages.begin(); it != messages.end(); ++it) {
+            const auto& msg_view = *it;
+            if (msg_view.channel == nullptr || msg_view.message.data == nullptr) {
+              continue;
             }
-          }
-          if (!hot_path_eligible) {
-            chunk_handle = {};  // disable the hot path; fetcher will go cold
-          }
+            auto binding_it = bindings.find(msg_view.channel->id);
+            if (binding_it == bindings.end()) {
+              continue;
+            }
 
-          // Fetcher closure: weak_ptr is NON-OWNING. If the host stores this
-          // for a later lazy pull, the parallel reader is gone by then,
-          // lock() returns null, and we fall through to readMessageBytesAt
-          // (which lazily decompresses + caches via ChunkCache).
-          auto push_status = runtimeHost().pushMessage(
-              binding_it->second, timestamp_ns,
-              [chunk_handle, data_offset, data_size, reader = reader_keeper_, cache = chunk_cache_, chunk_off,
-               chunk_len, chunk_ts_start, chunk_ts_end, ch = msg_view.channel->id,
-               lt = msg_view.message.logTime]() -> PJ::sdk::PayloadView {
-                // Hot path: chunk still pinned by parallel reader's worker
-                // pool. Return a Span into its bytes with the locked
-                // shared_ptr as anchor. Anchor is released when the host
-                // finishes consuming this PayloadView.
-                if (auto chunk = chunk_handle.lock()) {
-                  if (data_offset + data_size <= chunk->bytes.size()) {
-                    const auto* base = reinterpret_cast<const uint8_t*>(chunk->bytes.data());
-                    return PJ::sdk::PayloadView{
-                        PJ::Span<const uint8_t>(base + data_offset, data_size),
-                        PJ::sdk::BufferAnchor{std::move(chunk)},
-                    };
+            const PJ::Timestamp timestamp_ns =
+                static_cast<PJ::Timestamp>(use_log_time ? msg_view.message.logTime : msg_view.message.publishTime);
+
+            // RecordOffset semantics in the parallel reader fork:
+            //   .offset       = within-chunk position of the message record
+            //   .chunkOffset  = chunk record's FILE offset (= ChunkIndex::chunkStartOffset)
+            const uint64_t chunk_off = msg_view.messageOffset.chunkOffset.value_or(msg_view.messageOffset.offset);
+            const mcap::ByteOffset within_chunk_off = msg_view.messageOffset.offset;
+            uint64_t chunk_len = 0;
+            mcap::Timestamp chunk_ts_start = msg_view.message.logTime;
+            mcap::Timestamp chunk_ts_end = msg_view.message.logTime;
+            if (auto mit = chunk_meta.find(chunk_off); mit != chunk_meta.end()) {
+              chunk_len = mit->second.length;
+              chunk_ts_start = mit->second.ts_start;
+              chunk_ts_end = mit->second.ts_end;
+            }
+
+            // Compute the message data's byte offset within the chunk's
+            // decompressed buffer. msg_view.message.data points into
+            // ReadyChunk::bytes (a vector<std::byte>); the offset is stable
+            // and reusable when the closure later locks the weak_ptr.
+            //
+            // IMPORTANT INVARIANT: the host's eager-policy push_message_v2
+            // is documented to invoke the fetcher SYNCHRONOUSLY before
+            // returning from runtimeHost().pushMessage(). That synchrony is
+            // what makes the weak_ptr.lock() succeed on the hot path —
+            // pinned_ hasn't been rotated by operator++ yet. If the SDK ever
+            // queues the eager callback asynchronously, the lock would fail
+            // and we'd silently degrade to the cold path. Worth a static
+            // contract somewhere in the host SDK.
+            auto chunk_handle = it.currentChunk();
+            const size_t data_size = msg_view.message.dataSize;
+            size_t data_offset = 0;
+            bool hot_path_eligible = false;
+            if (auto chunk = chunk_handle.lock()) {
+              const auto* chunk_base = reinterpret_cast<const uint8_t*>(chunk->bytes.data());
+              const auto* msg_data = reinterpret_cast<const uint8_t*>(msg_view.message.data);
+              if (msg_data >= chunk_base && msg_data + data_size <= chunk_base + chunk->bytes.size()) {
+                data_offset = static_cast<size_t>(msg_data - chunk_base);
+                hot_path_eligible = true;
+              }
+            }
+            if (!hot_path_eligible) {
+              chunk_handle = {};  // disable the hot path; fetcher will go cold
+            }
+
+            // Fetcher closure: weak_ptr is NON-OWNING. If the host stores
+            // this for a later lazy pull, the parallel reader is gone by
+            // then, lock() returns null, and we fall through to
+            // readMessageBytesAt (which lazily decompresses + caches via
+            // ChunkCache).
+            auto push_status = runtimeHost().pushMessage(
+                binding_it->second, timestamp_ns,
+                [chunk_handle, data_offset, data_size, reader = reader_keeper_, cache = chunk_cache_, chunk_off,
+                 chunk_len, chunk_ts_start, chunk_ts_end, ch = msg_view.channel->id, lt = msg_view.message.logTime,
+                 wc = within_chunk_off]() -> PJ::sdk::PayloadView {
+                  if (auto chunk = chunk_handle.lock()) {
+                    if (data_offset + data_size <= chunk->bytes.size()) {
+                      const auto* base = reinterpret_cast<const uint8_t*>(chunk->bytes.data());
+                      return PJ::sdk::PayloadView{
+                          PJ::Span<const uint8_t>(base + data_offset, data_size),
+                          PJ::sdk::BufferAnchor{std::move(chunk)},
+                      };
+                    }
                   }
-                }
-                // Cold path: chunk evicted or parallel reader gone. Lazy
-                // re-decompress via ChunkCache.
-                return readMessageBytesAt(
-                    reader, cache, chunk_off, chunk_off + chunk_len, chunk_ts_start, chunk_ts_end, ch, lt);
-              });
-          if (!push_status) {
-            runtimeHost().reportMessage(
-                PJ::DataSourceMessageLevel::kWarning,
-                std::string("push failed on '") + msg_view.channel->topic + "': " + push_status.error());
-          }
+                  return readMessageBytesAt(
+                      reader, cache, chunk_off, chunk_off + chunk_len, chunk_ts_start, chunk_ts_end, ch, lt, wc);
+                });
+            if (!push_status) {
+              runtimeHost().reportMessage(
+                  PJ::DataSourceMessageLevel::kWarning,
+                  std::string("push failed on '") + msg_view.channel->topic + "': " + push_status.error());
+            }
 
-          ++msg_count;
-          if (msg_count % 1000 == 0) {
-            if (!runtimeHost().progressUpdate(msg_count)) {
-              break;
-            }
-            if (runtimeHost().isStopRequested()) {
-              break;
+            ++msg_count;
+            if (msg_count % 1000 == 0) {
+              if (!runtimeHost().progressUpdate(msg_count)) {
+                break;
+              }
+              if (runtimeHost().isStopRequested()) {
+                break;
+              }
             }
           }
+        } catch (const std::exception& e) {
+          const std::string msg =
+              std::string("MCAP import aborted: ") + e.what() + " (loaded " + std::to_string(msg_count) + " messages)";
+          runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, msg);
+          import_failure = msg;
+        } catch (...) {
+          const std::string msg =
+              "MCAP import aborted on unknown error (loaded " + std::to_string(msg_count) + " messages)";
+          runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, msg);
+          import_failure = msg;
         }
-      } catch (const std::exception& e) {
-        runtimeHost().reportMessage(
-            PJ::DataSourceMessageLevel::kError,
-            std::string("MCAP import aborted: ") + e.what() + " (loaded " + std::to_string(msg_count) + " messages)");
-      } catch (...) {
-        runtimeHost().reportMessage(
-            PJ::DataSourceMessageLevel::kError,
-            std::string("MCAP import aborted on unknown error (loaded ") + std::to_string(msg_count) + " messages)");
       }
     }  // ~messages, ~parallel_reader run here, before mmap_reader destructs at scope end.
 
+    if (import_failure) {
+      return PJ::unexpected(*import_failure);
+    }
     // Intentionally NOT closing reader_keeper_: it stays alive past
     // importData() so the captured fetcher closures can re-decompress on
     // demand via the cold path. It closes when the source destructs.

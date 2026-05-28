@@ -482,7 +482,9 @@ private:
         // that those pages can be evicted from its file-backed page cache so
         // RSS stays bounded on long files. No-op for sources that aren't
         // backed by an OS page cache (FileReader, BufferReader).
-        if (source_ != nullptr) {
+        // Guard against corrupt indexes where messageIndexEndOffset would
+        // underflow chunkStartOffset (unsigned wrap → 2^64-sized madvise).
+        if (source_ != nullptr && plans_[planIdx].messageIndexEndOffset > plans_[planIdx].chunkStartOffset) {
           const auto& plan = plans_[planIdx];
           source_->dontNeed(plan.chunkStartOffset, plan.messageIndexEndOffset - plan.chunkStartOffset);
         }
