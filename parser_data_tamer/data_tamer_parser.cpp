@@ -83,14 +83,14 @@ class DataTamerParserPlugin : public PJ::MessageParserPluginBase {
           owned_fields_.push_back({"/" + field_name, value});
         });
 
-    std::vector<PJ::sdk::NamedFieldValue> out;
-    out.reserve(owned_fields_.size());
+    named_fields_.clear();
+    named_fields_.reserve(owned_fields_.size());
     for (const auto& f : owned_fields_) {
-      out.push_back({.name = f.name, .value = f.value});
+      named_fields_.push_back({.name = f.name, .value = f.value});
     }
-    // 0.3.1 SchemaHandler::parse_scalars returns a ScalarRecord; ts stays
-    // nullopt so the host keeps the message's own timestamp.
-    return PJ::sdk::ScalarRecord{.ts = std::nullopt, .fields = std::move(out)};
+    // ts is nullopt: DataTamer has no payload-embedded timestamp, so the
+    // host falls back to the message receive time.
+    return PJ::sdk::ScalarRecord{.ts = std::nullopt, .fields = std::move(named_fields_)};
   }
 
   DataTamerParser::Schema schema_;
@@ -100,6 +100,7 @@ class DataTamerParserPlugin : public PJ::MessageParserPluginBase {
     PJ::sdk::ValueRef value;
   };
   std::vector<Field> owned_fields_;
+  std::vector<PJ::sdk::NamedFieldValue> named_fields_;
 };
 
 }  // namespace
