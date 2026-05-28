@@ -11,6 +11,9 @@ if(TARGET plotjuggler_core::plugin_sdk)
   # Subdirectory mode — deps already provided by parent.
   set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 
+  # Internal helper libraries shared by several plugins.
+  add_subdirectory(common/arrow_helpers)
+
   # Enabled entries track the v4 ABI (PJ_ABI_VERSION == 4): service-
   # registry API, Arrow C Data Interface at the write boundary, and the
   # PJ_NOEXCEPT vtable surface. Commented-out entries stopped at the
@@ -21,6 +24,7 @@ if(TARGET plotjuggler_core::plugin_sdk)
   add_subdirectory(data_load_mcap)
   add_subdirectory(data_load_parquet)
   add_subdirectory(data_load_ulog)
+  add_subdirectory(data_load_lerobot)
   add_subdirectory(parser_json)
   add_subdirectory(parser_protobuf)
   add_subdirectory(parser_ros)
@@ -98,6 +102,14 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 enable_testing()
 
 # ---------------------------------------------------------------------------
+# Internal helper libraries shared by several plugins.
+# Added before any plugin subdir so they are visible regardless of whether
+# the build picks a single plugin or all of them.
+# ---------------------------------------------------------------------------
+
+add_subdirectory(common/arrow_helpers)
+
+# ---------------------------------------------------------------------------
 # Plugins — use -DPJ_BUILD_PLUGIN=<dir> to build a single plugin (CI mode),
 # or omit to build all plugins (local development).
 # Each plugin's CMakeLists.txt calls find_package for its own dependencies.
@@ -114,6 +126,7 @@ else()
   add_subdirectory(data_load_mcap)
   add_subdirectory(data_load_parquet)
   add_subdirectory(data_load_ulog)
+  add_subdirectory(data_load_lerobot)
   add_subdirectory(data_stream_zmq)
   add_subdirectory(data_stream_mqtt)
   add_subdirectory(data_stream_udp)

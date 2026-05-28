@@ -496,4 +496,140 @@ TEST(ProtobufParserTest, ManifestContainsEncoding) {
   EXPECT_NE(f.handle.manifest().find("\"protobuf\""), std::string::npos);
 }
 
+// ---------------------------------------------------------------------------
+// Embedded timestamp tests
+// ---------------------------------------------------------------------------
+
+// Build a schema with a top-level double "timestamp" field + a value field.
+std::string buildTimestampSchema(
+    const std::string& ts_field_name = "timestamp", const std::string& msg_name = "TsMessage") {
+  gp::FileDescriptorProto file_proto;
+  file_proto.set_name("ts_test_" + ts_field_name + ".proto");
+  file_proto.set_syntax("proto3");
+
+  auto* msg = file_proto.add_message_type();
+  msg->set_name(msg_name);
+
+  auto* f1 = msg->add_field();
+  f1->set_name(ts_field_name);
+  f1->set_number(1);
+  f1->set_type(gp::FieldDescriptorProto::TYPE_DOUBLE);
+  f1->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+
+  auto* f2 = msg->add_field();
+  f2->set_name("value");
+  f2->set_number(2);
+  f2->set_type(gp::FieldDescriptorProto::TYPE_DOUBLE);
+  f2->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+
+  gp::FileDescriptorSet fd_set;
+  *fd_set.add_file() = file_proto;
+  std::string out;
+  fd_set.SerializeToString(&out);
+  return out;
+}
+
+// Serialize a TsMessage using the FileDescriptorSet bytes from buildTimestampSchema.
+// Avoids building a separate DescriptorPool that might collide with the global one.
+std::string serializeTsMessage(
+    const std::string& ts_field_name, double ts_seconds, double value, const std::string& msg_name = "TsMessage") {
+  // Reconstruct the schema bytes the same way buildTimestampSchema does so we
+  // can build a local pool and serialize without touching the global pool.
+  gp::FileDescriptorProto file_proto;
+  file_proto.set_name("ts_serial_" + ts_field_name + "_" + msg_name + ".proto");
+  file_proto.set_syntax("proto3");
+  auto* msg_desc = file_proto.add_message_type();
+  msg_desc->set_name(msg_name);
+  auto* f1 = msg_desc->add_field();
+  f1->set_name(ts_field_name);
+  f1->set_number(1);
+  f1->set_type(gp::FieldDescriptorProto::TYPE_DOUBLE);
+  f1->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+  auto* f2 = msg_desc->add_field();
+  f2->set_name("value");
+  f2->set_number(2);
+  f2->set_type(gp::FieldDescriptorProto::TYPE_DOUBLE);
+  f2->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+
+  gp::DescriptorPool pool;
+  const gp::FileDescriptor* file_desc = pool.BuildFile(file_proto);
+  if (!file_desc) {
+    return {};  // build failed — test will catch the empty payload
+  }
+  gp::DynamicMessageFactory factory(&pool);
+  const auto* desc = pool.FindMessageTypeByName(msg_name);
+  if (!desc) {
+    return {};
+  }
+  std::unique_ptr<gp::Message> msg(factory.GetPrototype(desc)->New());
+  const auto* refl = msg->GetReflection();
+  refl->SetDouble(msg.get(), desc->FindFieldByName(ts_field_name), ts_seconds);
+  refl->SetDouble(msg.get(), desc->FindFieldByName("value"), value);
+  std::string out;
+  msg->SerializeToString(&out);
+  return out;
+}
+
+TEST(ProtobufParserTest, EmbeddedTimestampDisabledByDefault) {
+  ProtobufParserFixture f;
+  f.setUp();
+  auto schema = buildTimestampSchema("timestamp", "TsMsg1");
+  ASSERT_TRUE(f.bindSchema("TsMsg1", schema));
+  auto payload = serializeTsMessage("timestamp", 1234.567, 42.0, "TsMsg1");
+  ASSERT_TRUE(f.parse(payload, 9999));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 9999);  // host ts, not embedded
+}
+
+TEST(ProtobufParserTest, EmbeddedTimestampExplicitField) {
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true,"timestamp_field_name":"timestamp"})"));
+  auto schema = buildTimestampSchema("timestamp", "TsMsg2");
+  ASSERT_TRUE(f.bindSchema("TsMsg2", schema));
+  auto payload = serializeTsMessage("timestamp", 1234.567, 42.0, "TsMsg2");
+  ASSERT_TRUE(f.parse(payload, 9999));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 1234567000000LL);
+}
+
+TEST(ProtobufParserTest, EmbeddedTimestampDefaultFallbackPicksTimestamp) {
+  ProtobufParserFixture f;
+  f.setUp();
+  // No field name configured — should default to "timestamp"
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  auto schema = buildTimestampSchema("timestamp", "TsMsg3");
+  ASSERT_TRUE(f.bindSchema("TsMsg3", schema));
+  auto payload = serializeTsMessage("timestamp", 1234.567, 42.0, "TsMsg3");
+  ASSERT_TRUE(f.parse(payload, 9999));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 1234567000000LL);
+}
+
+TEST(ProtobufParserTest, EmbeddedTimestampDefaultFallbackPicksTs) {
+  ProtobufParserFixture f;
+  f.setUp();
+  // No field name configured — should fall back to "ts" when "timestamp" absent
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  auto schema = buildTimestampSchema("ts", "TsMsg4");
+  ASSERT_TRUE(f.bindSchema("TsMsg4", schema));
+  auto payload = serializeTsMessage("ts", 1234.567, 42.0, "TsMsg4");
+  ASSERT_TRUE(f.parse(payload, 9999));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 1234567000000LL);
+}
+
+TEST(ProtobufParserTest, EmbeddedTimestampMissingFieldFallsBackToHost) {
+  ProtobufParserFixture f;
+  f.setUp();
+  // Explicit field configured but not present in schema → host ts
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true,"timestamp_field_name":"timestamp"})"));
+  auto schema = buildTimestampSchema("other_field", "TsMsg5");
+  ASSERT_TRUE(f.bindSchema("TsMsg5", schema));
+  auto payload = serializeTsMessage("other_field", 1234.567, 42.0, "TsMsg5");
+  ASSERT_TRUE(f.parse(payload, 9999));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 9999);
+}
+
 }  // namespace

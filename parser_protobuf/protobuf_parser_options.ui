@@ -132,12 +132,33 @@
        <item>
         <widget class="QCheckBox" name="checkBoxUseEmbeddedTimestamp">
          <property name="text">
-          <string>use the field "timestamp", if present</string>
+          <string>Use embedded timestamp field</string>
          </property>
          <property name="toolTip">
-          <string>If enabled, the parser will look for a top-level 'timestamp' field (double) and use its value as the message timestamp.</string>
+          <string>If enabled, the parser will look for a top-level double field and use its value (in seconds) as the message timestamp.</string>
          </property>
         </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayoutTimestampField">
+         <item>
+          <widget class="QLabel" name="labelTimestampField">
+           <property name="text">
+            <string>Timestamp field name:</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="lineEditTimestampField">
+           <property name="placeholderText">
+            <string>e.g. timestamp, ts, time</string>
+           </property>
+           <property name="toolTip">
+            <string>Name of the top-level double field containing the timestamp in seconds. Leave empty to try "timestamp" then "ts" automatically.</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
        </item>
        <item>
         <widget class="QLabel" name="labelFileText">
