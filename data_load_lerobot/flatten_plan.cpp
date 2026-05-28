@@ -5,8 +5,7 @@
 
 namespace lerobot {
 
-std::vector<std::string> flattenedFieldNames(
-    const std::string& base, int k, const std::vector<std::string>& names) {
+std::vector<std::string> flattenedFieldNames(const std::string& base, int k, const std::vector<std::string>& names) {
   std::vector<std::string> out;
   if (k <= 0) {
     return out;

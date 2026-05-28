@@ -1,18 +1,17 @@
 #include "flatten_plan.hpp"
 
+#include <gtest/gtest.h>
+
 #include <string>
 #include <vector>
-
-#include <gtest/gtest.h>
 
 using namespace lerobot;  // NOLINT(build/namespaces) — test-local convenience
 
 TEST(FlattenedFieldNames, UsesInfoJsonNamesWhenAvailable) {
   const auto out = flattenedFieldNames("observation.state", 3, {"shoulder_pan", "elbow_flex", "wrist"});
-  EXPECT_EQ(out, (std::vector<std::string>{
-                     "observation.state.shoulder_pan",
-                     "observation.state.elbow_flex",
-                     "observation.state.wrist"}));
+  EXPECT_EQ(
+      out, (std::vector<std::string>{
+               "observation.state.shoulder_pan", "observation.state.elbow_flex", "observation.state.wrist"}));
 }
 
 TEST(FlattenedFieldNames, FallsBackToIndexWhenNamesMissingOrShort) {

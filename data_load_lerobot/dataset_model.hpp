@@ -17,11 +17,11 @@ namespace lerobot {
 
 /// One entry of meta/info.json "features".
 struct FeatureSpec {
-  std::string name;                 // e.g. "observation.state"
-  std::string dtype;                // "float32" | "int64" | "bool" | "video" | ...
-  std::vector<int64_t> shape;       // e.g. [7] or [224,224,3]
-  std::vector<std::string> names;   // sub-field labels; may be empty
-  std::string video_codec;          // info["video.codec"] when dtype == "video"
+  std::string name;                // e.g. "observation.state"
+  std::string dtype;               // "float32" | "int64" | "bool" | "video" | ...
+  std::vector<int64_t> shape;      // e.g. [7] or [224,224,3]
+  std::vector<std::string> names;  // sub-field labels; may be empty
+  std::string video_codec;         // info["video.codec"] when dtype == "video"
 
   [[nodiscard]] bool is_video() const {
     return dtype == "video";
@@ -31,21 +31,21 @@ struct FeatureSpec {
 /// One entry of meta/episodes.jsonl, with its task resolved via tasks.jsonl.
 struct EpisodeInfo {
   int64_t episode_index = 0;
-  int64_t length = 0;       // frame count
-  std::string task_text;    // first task (resolved to text)
+  int64_t length = 0;     // frame count
+  std::string task_text;  // first task (resolved to text)
 };
 
 /// Parsed LeRobot dataset (v2.0 / v2.1). v3.0 is rejected by loadDatasetModel.
 struct DatasetModel {
   std::filesystem::path root;
-  std::string codebase_version;          // "v2.0" | "v2.1"
+  std::string codebase_version;  // "v2.0" | "v2.1"
   double fps = 30.0;
-  std::string data_path_tmpl;            // info.json "data_path"
-  std::string video_path_tmpl;           // info.json "video_path"
-  int64_t chunks_size = 1000;            // info.json "chunks_size"
+  std::string data_path_tmpl;   // info.json "data_path"
+  std::string video_path_tmpl;  // info.json "video_path"
+  int64_t chunks_size = 1000;   // info.json "chunks_size"
   std::vector<FeatureSpec> features;
-  std::vector<std::string> camera_names; // names of features with dtype "video"
-  std::vector<EpisodeInfo> episodes;     // sorted by episode_index
+  std::vector<std::string> camera_names;  // names of features with dtype "video"
+  std::vector<EpisodeInfo> episodes;      // sorted by episode_index
 
   [[nodiscard]] const FeatureSpec* feature(std::string_view name) const;
 

@@ -1,10 +1,10 @@
 #include "dataset_model.hpp"
 
+#include <gtest/gtest.h>
+
 #include <filesystem>
 #include <fstream>
 #include <string>
-
-#include <gtest/gtest.h>
 
 namespace fs = std::filesystem;
 using namespace lerobot;  // NOLINT(build/namespaces) — test-local convenience
@@ -15,9 +15,8 @@ namespace {
 // `version` lets a test override codebase_version for the v3 gate case.
 fs::path makeFixture(const std::string& version = "v2.1") {
   const fs::path root =
-      fs::temp_directory_path() / fs::path("lerobot_fixture_" + std::to_string(::testing::UnitTest::GetInstance()
-                                                                                   ->random_seed()) +
-                                           "_" + version);
+      fs::temp_directory_path() /
+      fs::path("lerobot_fixture_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()) + "_" + version);
   fs::remove_all(root);
   fs::create_directories(root / "meta");
   fs::create_directories(root / "data" / "chunk-000");
@@ -101,8 +100,9 @@ TEST(LoadDatasetModel, WalksUpFromParquetFile) {
   ASSERT_TRUE(model.has_value()) << (model.has_value() ? "" : model.error());
   EXPECT_EQ(model->root, root);
   EXPECT_EQ(model->episodeParquet(0), root / "data" / "chunk-000" / "episode_000000.parquet");
-  EXPECT_EQ(model->episodeVideo(1, "observation.images.top"),
-            root / "videos" / "chunk-000" / "observation.images.top" / "episode_000001.mp4");
+  EXPECT_EQ(
+      model->episodeVideo(1, "observation.images.top"),
+      root / "videos" / "chunk-000" / "observation.images.top" / "episode_000001.mp4");
 
   fs::remove_all(root);
 }
@@ -143,8 +143,7 @@ TEST(LoadDatasetModel, ParsesDictFormFeatureNames) {
       "observation.state": {"dtype":"float32","shape":[2],"names":{"motors":["motor_0","motor_1"]}}
     }
   })";
-  std::ofstream(root / "meta" / "episodes.jsonl")
-      << R"({"episode_index": 0, "tasks": ["push"], "length": 5})" << "\n";
+  std::ofstream(root / "meta" / "episodes.jsonl") << R"({"episode_index": 0, "tasks": ["push"], "length": 5})" << "\n";
 
   // Act
   auto model = loadDatasetModel(root / "meta" / "info.json");

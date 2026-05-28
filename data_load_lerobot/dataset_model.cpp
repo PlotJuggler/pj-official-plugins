@@ -2,10 +2,9 @@
 
 #include <algorithm>
 #include <fstream>
+#include <nlohmann/json.hpp>
 #include <sstream>
 #include <system_error>
-
-#include <nlohmann/json.hpp>
 
 namespace lerobot {
 namespace {
@@ -15,7 +14,8 @@ namespace fs = std::filesystem;
 
 constexpr int kMaxRootWalk = 6;
 constexpr const char* kDefaultDataPath = "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet";
-constexpr const char* kDefaultVideoPath = "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4";
+constexpr const char* kDefaultVideoPath =
+    "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4";
 
 std::string zeroPad(int64_t value, int width) {
   std::string digits = std::to_string(value < 0 ? -value : value);
@@ -231,8 +231,9 @@ PJ::Status parseEpisodes(const fs::path& root, const std::vector<std::string>& t
     }
     model.episodes.push_back(std::move(ep));
   }
-  std::sort(model.episodes.begin(), model.episodes.end(),
-            [](const EpisodeInfo& a, const EpisodeInfo& b) { return a.episode_index < b.episode_index; });
+  std::sort(model.episodes.begin(), model.episodes.end(), [](const EpisodeInfo& a, const EpisodeInfo& b) {
+    return a.episode_index < b.episode_index;
+  });
   return PJ::okStatus();
 }
 
