@@ -66,6 +66,14 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
     if (!config_json.empty()) {
       (void)dialog_.loadConfig(config_json);
     }
+    // Extract parser config (e.g. "use_embedded_timestamp") persisted by the
+    // host under "_parser_config" so it reaches ensureParserBinding.
+    auto cfg = nlohmann::json::parse(config_json, nullptr, false);
+    if (!cfg.is_discarded() && cfg.contains("_parser_config")) {
+      parser_config_override_ = cfg["_parser_config"].get<std::string>();
+    } else {
+      parser_config_override_.clear();
+    }
     return PJ::okStatus();
   }
 
@@ -89,6 +97,14 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
     }
     if (selected_topics_.empty()) {
       return PJ::unexpected("no ROS 2 topics selected");
+    }
+
+    // Stash the parser_config sub-object as a string for every ensureBinding
+    // call. parser_ros::loadConfig accepts unknown keys silently, so unknown
+    // future options pass through harmlessly.
+    parser_config_json_.clear();
+    if (cfg.contains("parser_config") && cfg["parser_config"].is_object()) {
+      parser_config_json_ = cfg["parser_config"].dump();
     }
 
     try {
@@ -223,7 +239,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
         .parser_encoding = "ros2msg",
         .type_name = type_name,
         .schema = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(schema.data()), schema.size()),
-        .parser_config_json = {},
+        .parser_config_json = parser_config_override_,
     });
     if (!binding) {
       runtimeHost().reportMessage(
@@ -264,6 +280,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
 
   Ros2Dialog dialog_;
   std::vector<std::pair<std::string, std::string>> selected_topics_;
+  std::string parser_config_json_;
 
   std::shared_ptr<rclcpp::Context> context_;
   std::shared_ptr<rclcpp::Node> node_;
@@ -272,6 +289,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
   std::thread spinner_;
   std::atomic<bool> running_{false};
 
+  std::string parser_config_override_;
   std::mutex queue_mutex_;
   std::queue<PendingMessage> message_queue_;
   std::unordered_map<std::string, PJ::ParserBindingHandle> binding_cache_;
