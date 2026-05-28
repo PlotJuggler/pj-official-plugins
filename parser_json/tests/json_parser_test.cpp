@@ -119,6 +119,32 @@ TEST(JsonParserTest, StringFieldsIncluded) {
   EXPECT_TRUE(found_value);
 }
 
+// Regression: several short (SSO-range) string values in one payload must
+// not corrupt each other. The internal string buffer is a std::deque
+// precisely so push_back doesn't invalidate string_view references captured
+// before it — a std::vector here would dangle prior views on each realloc.
+TEST(JsonParserTest, MultipleShortStringsPreserved) {
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.parse(R"({"a":"hi","b":"bye","c":"ok","d":"yes","e":"no","f":"end"})"));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 6u);
+  const std::vector<std::pair<std::string, std::string>> expected{{"a", "hi"},  {"b", "bye"}, {"c", "ok"},
+                                                                  {"d", "yes"}, {"e", "no"},  {"f", "end"}};
+  for (const auto& [name, value] : expected) {
+    bool found = false;
+    for (const auto& field : f.recorder.rows()[0].fields) {
+      if (field.name == name) {
+        EXPECT_EQ(field.type, PJ::PrimitiveType::kString);
+        EXPECT_EQ(field.string_value, value) << "field " << name;
+        found = true;
+        break;
+      }
+    }
+    EXPECT_TRUE(found) << "field " << name << " missing";
+  }
+}
+
 TEST(JsonParserTest, NullFieldsSkipped) {
   JsonParserFixture f;
   f.setUp();
