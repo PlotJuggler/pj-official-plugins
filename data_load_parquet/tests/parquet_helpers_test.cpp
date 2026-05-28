@@ -24,6 +24,7 @@
 namespace {
 
 using namespace PJ::ParquetHelpers;
+using namespace pj::arrow_helpers;
 
 // --- basenameWithoutExt ---
 

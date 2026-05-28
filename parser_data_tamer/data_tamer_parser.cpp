@@ -1,4 +1,6 @@
 #include <data_tamer_parser/data_tamer_parser.hpp>
+#include <functional>
+#include <optional>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <string>
 #include <type_traits>
@@ -10,21 +12,28 @@ namespace {
 
 class DataTamerParserPlugin : public PJ::MessageParserPluginBase {
  public:
-  PJ::Status bindSchema(std::string_view /*type_name*/, PJ::Span<const uint8_t> schema) override {
+  PJ::Status bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema) override {
     std::string schema_text(reinterpret_cast<const char*>(schema.data()), schema.size());
     try {
       schema_ = DataTamerParser::BuilSchemaFromText(schema_text);
     } catch (const std::exception& e) {
       return PJ::unexpected(std::string("failed to parse DataTamer schema: ") + e.what());
     }
+
+    if (auto status = PJ::MessageParserPluginBase::bindSchema(type_name, schema); !status) {
+      return status;
+    }
+
+    PJ::sdk::SchemaHandler handler;
+    handler.parse_scalars = std::bind_front(&DataTamerParserPlugin::parseScalarsImpl, this);
+    registerSchemaHandler(std::string(type_name), std::move(handler));
+
     return PJ::okStatus();
   }
 
-  PJ::Status parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> payload) override {
-    if (!writeHostBound()) {
-      return PJ::unexpected(std::string("write host not bound"));
-    }
-
+ private:
+  PJ::Expected<PJ::sdk::ScalarRecord> parseScalarsImpl(
+      PJ::Timestamp /*timestamp_ns*/, PJ::Span<const uint8_t> payload) {
     owned_fields_.clear();
 
     DataTamerParser::SnapshotView snapshot;
@@ -74,20 +83,16 @@ class DataTamerParserPlugin : public PJ::MessageParserPluginBase {
           owned_fields_.push_back({"/" + field_name, value});
         });
 
-    if (owned_fields_.empty()) {
-      return PJ::okStatus();
-    }
-
     named_fields_.clear();
     named_fields_.reserve(owned_fields_.size());
     for (const auto& f : owned_fields_) {
       named_fields_.push_back({.name = f.name, .value = f.value});
     }
-    return writeHost().appendRecord(
-        timestamp_ns, PJ::Span<const PJ::sdk::NamedFieldValue>(named_fields_.data(), named_fields_.size()));
+    // ts is nullopt: DataTamer has no payload-embedded timestamp, so the
+    // host falls back to the message receive time.
+    return PJ::sdk::ScalarRecord{.ts = std::nullopt, .fields = std::move(named_fields_)};
   }
 
- private:
   DataTamerParser::Schema schema_;
 
   struct Field {

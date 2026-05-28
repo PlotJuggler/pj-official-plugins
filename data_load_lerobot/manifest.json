@@ -1,0 +1,24 @@
+{
+  "id": "lerobot-loader",
+  "name": "LeRobot Loader",
+  "version": "0.1.0",
+  "description": "Data loader for LeRobot v2.1 datasets: flattened numeric series + per-camera video on a shared timeline.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "data_loader",
+  "tags": [
+    "lerobot",
+    "robotics",
+    "parquet",
+    "video",
+    "loader"
+  ],
+  "file_extensions": [
+    ".json"
+  ],
+  "min_plotjuggler_version": "4.0.0"
+}

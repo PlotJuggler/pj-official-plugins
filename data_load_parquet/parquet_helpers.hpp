@@ -5,9 +5,10 @@
 #include <algorithm>
 #include <cctype>
 #include <memory>
-#include <pj_base/sdk/data_source_patterns.hpp>
 #include <string>
 #include <vector>
+
+#include "pj_arrow_helpers/arrow_helpers.hpp"
 
 namespace PJ::ParquetHelpers {
 
@@ -21,49 +22,6 @@ inline std::string basenameWithoutExt(const std::string& filepath) {
     return filepath.substr(start, dot - start);
   }
   return filepath.substr(start);
-}
-
-inline bool isSupportedArrowType(arrow::Type::type t) {
-  return t == arrow::Type::BOOL || t == arrow::Type::INT8 || t == arrow::Type::INT16 || t == arrow::Type::INT32 ||
-         t == arrow::Type::INT64 || t == arrow::Type::UINT8 || t == arrow::Type::UINT16 || t == arrow::Type::UINT32 ||
-         t == arrow::Type::UINT64 || t == arrow::Type::FLOAT || t == arrow::Type::DOUBLE ||
-         t == arrow::Type::TIMESTAMP || t == arrow::Type::STRING || t == arrow::Type::LARGE_STRING;
-}
-
-/// Map Arrow type to PJ::PrimitiveType for field pre-registration.
-inline PJ::PrimitiveType arrowTypeToPrimitive(arrow::Type::type t) {
-  switch (t) {
-    case arrow::Type::BOOL:
-      return PJ::PrimitiveType::kBool;
-    case arrow::Type::INT8:
-      return PJ::PrimitiveType::kInt8;
-    case arrow::Type::INT16:
-      return PJ::PrimitiveType::kInt16;
-    case arrow::Type::INT32:
-      return PJ::PrimitiveType::kInt32;
-    case arrow::Type::INT64:
-      return PJ::PrimitiveType::kInt64;
-    case arrow::Type::UINT8:
-      return PJ::PrimitiveType::kUint8;
-    case arrow::Type::UINT16:
-      return PJ::PrimitiveType::kUint16;
-    case arrow::Type::UINT32:
-      return PJ::PrimitiveType::kUint32;
-    case arrow::Type::UINT64:
-      return PJ::PrimitiveType::kUint64;
-    case arrow::Type::FLOAT:
-      return PJ::PrimitiveType::kFloat32;
-    case arrow::Type::DOUBLE:
-      return PJ::PrimitiveType::kFloat64;
-    case arrow::Type::TIMESTAMP:
-      return PJ::PrimitiveType::kInt64;  // nanoseconds
-    case arrow::Type::STRING:
-      return PJ::PrimitiveType::kString;
-    case arrow::Type::LARGE_STRING:
-      return PJ::PrimitiveType::kString;
-    default:
-      return PJ::PrimitiveType::kFloat64;
-  }
 }
 
 // Heuristic: find a column that looks like a timestamp by name or type.
@@ -92,73 +50,10 @@ inline int findTimestampColumn(const std::shared_ptr<arrow::Schema>& schema) {
   return -1;
 }
 
-/// Extract a native-typed ValueRef from an Arrow array cell.
-/// Returns NullValue for nulls and unsupported types.
-inline PJ::sdk::ValueRef getArrowValueRef(
-    const std::shared_ptr<arrow::Array>& array, int64_t index, arrow::Type::type arrow_type) {
-  if (array->IsNull(index)) {
-    return PJ::NullValue{};
-  }
-
-  switch (arrow_type) {
-    case arrow::Type::BOOL:
-      return std::static_pointer_cast<arrow::BooleanArray>(array)->Value(index);
-    case arrow::Type::INT8:
-      return std::static_pointer_cast<arrow::Int8Array>(array)->Value(index);
-    case arrow::Type::INT16:
-      return std::static_pointer_cast<arrow::Int16Array>(array)->Value(index);
-    case arrow::Type::INT32:
-      return std::static_pointer_cast<arrow::Int32Array>(array)->Value(index);
-    case arrow::Type::INT64:
-      return std::static_pointer_cast<arrow::Int64Array>(array)->Value(index);
-    case arrow::Type::UINT8:
-      return std::static_pointer_cast<arrow::UInt8Array>(array)->Value(index);
-    case arrow::Type::UINT16:
-      return std::static_pointer_cast<arrow::UInt16Array>(array)->Value(index);
-    case arrow::Type::UINT32:
-      return std::static_pointer_cast<arrow::UInt32Array>(array)->Value(index);
-    case arrow::Type::UINT64:
-      return std::static_pointer_cast<arrow::UInt64Array>(array)->Value(index);
-    case arrow::Type::FLOAT:
-      return std::static_pointer_cast<arrow::FloatArray>(array)->Value(index);
-    case arrow::Type::DOUBLE:
-      return std::static_pointer_cast<arrow::DoubleArray>(array)->Value(index);
-    case arrow::Type::TIMESTAMP: {
-      auto ts_array = std::static_pointer_cast<arrow::TimestampArray>(array);
-      auto ts_type = std::static_pointer_cast<arrow::TimestampType>(ts_array->type());
-      int64_t value = ts_array->Value(index);
-      // Convert to nanoseconds
-      switch (ts_type->unit()) {
-        case arrow::TimeUnit::SECOND:
-          value *= 1000000000LL;
-          break;
-        case arrow::TimeUnit::MILLI:
-          value *= 1000000LL;
-          break;
-        case arrow::TimeUnit::MICRO:
-          value *= 1000LL;
-          break;
-        case arrow::TimeUnit::NANO:
-          break;
-      }
-      return value;
-    }
-    case arrow::Type::STRING: {
-      auto str_array = std::static_pointer_cast<arrow::StringArray>(array);
-      auto sv = str_array->GetView(index);
-      return std::string_view(sv.data(), sv.size());
-    }
-    case arrow::Type::LARGE_STRING: {
-      auto str_array = std::static_pointer_cast<arrow::LargeStringArray>(array);
-      auto sv = str_array->GetView(index);
-      return std::string_view(sv.data(), sv.size());
-    }
-    default:
-      return PJ::NullValue{};
-  }
-}
-
 /// Extract timestamp in nanoseconds from an Arrow array cell (for the time axis).
+/// Does NOT apply timezone adjustment — callers that need the host-relative
+/// nanoseconds wrap this with their own timezone post-step (the production
+/// import path in parquet_source.cpp does so via adjustTimezoneNanos).
 inline int64_t getTimestampNanos(
     const std::shared_ptr<arrow::Array>& array, int64_t index, arrow::Type::type arrow_type) {
   if (array->IsNull(index)) {
@@ -172,11 +67,11 @@ inline int64_t getTimestampNanos(
       int64_t value = ts_array->Value(index);
       switch (ts_type->unit()) {
         case arrow::TimeUnit::SECOND:
-          return value * 1000000000LL;
+          return value * 1'000'000'000LL;
         case arrow::TimeUnit::MILLI:
-          return value * 1000000LL;
+          return value * 1'000'000LL;
         case arrow::TimeUnit::MICRO:
-          return value * 1000LL;
+          return value * 1'000LL;
         case arrow::TimeUnit::NANO:
           return value;
       }

@@ -93,8 +93,11 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
       wd.setPlainText("textEditProtoPreview", proto_file_content_);
     }
 
-    // Timestamp checkbox
+    // Timestamp controls
     wd.setChecked("checkBoxUseEmbeddedTimestamp", use_embedded_timestamp_);
+    wd.setText("lineEditTimestampField", timestamp_field_name_);
+    wd.setEnabled("lineEditTimestampField", use_embedded_timestamp_);
+    wd.setEnabled("labelTimestampField", use_embedded_timestamp_);
 
     // Include folders - folder picker
     wd.setFolderPicker("buttonAddIncludeFolder", "Add folder...", "Select Include Folder");
@@ -147,6 +150,14 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
   bool onToggled(std::string_view widget_name, bool checked) override {
     if (widget_name == "checkBoxUseEmbeddedTimestamp") {
       use_embedded_timestamp_ = checked;
+      return true;  // refresh to enable/disable lineEditTimestampField
+    }
+    return false;
+  }
+
+  bool onTextChanged(std::string_view widget_name, std::string_view text) override {
+    if (widget_name == "lineEditTimestampField") {
+      timestamp_field_name_ = std::string(text);
       return false;
     }
     return false;
@@ -184,6 +195,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     cfg["proto_file_path"] = proto_file_path_;
     cfg["message_type"] = selected_message_type_;
     cfg["use_embedded_timestamp"] = use_embedded_timestamp_;
+    cfg["timestamp_field_name"] = timestamp_field_name_;
     cfg["include_folders"] = include_folders_;
 
     // Include the compiled schema as base64-encoded bytes
@@ -202,6 +214,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     proto_file_path_ = cfg.value("proto_file_path", std::string{});
     selected_message_type_ = cfg.value("message_type", std::string{});
     use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
+    timestamp_field_name_ = cfg.value("timestamp_field_name", std::string{});
 
     include_folders_.clear();
     if (cfg.contains("include_folders") && cfg["include_folders"].is_array()) {
@@ -402,6 +415,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
   std::string proto_file_path_;
   std::string selected_message_type_;
   bool use_embedded_timestamp_ = false;
+  std::string timestamp_field_name_;  // empty = fallback chain ("timestamp" → "ts")
   std::vector<std::string> include_folders_;
   std::string compiled_schema_;  // Serialized FileDescriptorSet
 
