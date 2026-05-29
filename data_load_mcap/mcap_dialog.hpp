@@ -234,7 +234,7 @@ class McapDialog : public PJ::DialogPluginTyped {
       return;
     }
 
-    status = reader.readSummary(mcap::ReadSummaryMethod::NoFallbackScan);
+    status = reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan);
     if (!status.ok()) {
       if (status.code == mcap::StatusCode::MissingStatistics) {
         // readSummarySection_ still populated channels and schemas before returning
@@ -260,7 +260,10 @@ class McapDialog : public PJ::DialogPluginTyped {
       auto schema_it = schemas.find(channel_ptr->schemaId);
       if (schema_it != schemas.end()) {
         info.schema = schema_it->second->name;
-        info.encoding = schema_it->second->encoding;
+        info.encoding =
+            channel_ptr->messageEncoding.empty() ? schema_it->second->encoding : channel_ptr->messageEncoding;
+      } else {
+        info.encoding = channel_ptr->messageEncoding;
       }
 
       auto count_it = msg_counts.find(id);

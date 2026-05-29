@@ -12,6 +12,7 @@
 
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/testing/parser_write_recorder.hpp"
+#include "pj_plugins/host/dialog_handle.hpp"
 #include "pj_plugins/host/message_parser_library.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
 
@@ -379,6 +380,28 @@ TEST(RosParserTest, ManifestContainsEncoding) {
   EXPECT_NE(f.handle.manifest().find("\"ros2msg\""), std::string::npos);
   EXPECT_NE(f.handle.manifest().find("\"ros1msg\""), std::string::npos);
   EXPECT_NE(f.handle.manifest().find("\"cdr\""), std::string::npos);
+}
+
+TEST(RosParserTest, ExposesDialogVtable) {
+  RosParserFixture f;
+  f.setUp();
+
+  auto vtable = f.library.resolveDialogVtable();
+  ASSERT_TRUE(vtable) << vtable.error();
+
+  PJ::DialogHandle dialog(*vtable);
+  const auto ui = dialog.ui_content();
+  EXPECT_EQ(ui.rfind("<?xml", 0), 0u);
+  EXPECT_EQ(ui.find("comboBoxSerialization"), std::string::npos);
+  EXPECT_NE(ui.find("spinBoxArraySize"), std::string::npos);
+  EXPECT_NE(ui.find("checkBoxTimestamp"), std::string::npos);
+  ASSERT_TRUE(dialog.load_config(
+      R"({"max_array_size":200,"discard_large_arrays":true,"use_embedded_timestamp":true,"serialization":"ros1"})"));
+  const auto cfg = nlohmann::json::parse(dialog.save_config());
+  EXPECT_EQ(cfg["max_array_size"], 200);
+  EXPECT_EQ(cfg["discard_large_arrays"], true);
+  EXPECT_EQ(cfg["use_embedded_timestamp"], true);
+  EXPECT_FALSE(cfg.contains("serialization"));
 }
 
 TEST(RosParserTest, TimestampPreserved) {
