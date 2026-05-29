@@ -190,10 +190,9 @@ class FoxgloveSource : public PJ::StreamSourceBase {
         // PayloadView fetcher remains valid after onPoll returns
         // (ObjectIngestPolicy may defer dispatch beyond this call).
         auto payload = std::make_shared<std::vector<uint8_t>>(std::move(msg.payload));
-        auto status =
-            runtimeHost().pushMessage(it->second, PJ::Timestamp{msg.timestamp_ns}, [payload]() -> PJ::sdk::PayloadView {
-              return PJ::sdk::PayloadView{PJ::Span<const uint8_t>(payload->data(), payload->size()), payload};
-            });
+        auto status = runtimeHost().pushMessage(
+            it->second, PJ::Timestamp{msg.timestamp_ns},
+            [payload]() -> PJ::sdk::PayloadView { return PJ::sdk::PayloadView{payload}; });
         if (!status) {
           runtimeHost().reportMessage(
               PJ::DataSourceMessageLevel::kWarning, "Failed to push message: " + status.error());
