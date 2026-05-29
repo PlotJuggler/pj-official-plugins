@@ -5,8 +5,11 @@
 [![CI macOS](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-macos.yml)
 
 
-Plugin collection for PlotJuggler Core — CSV, Parquet, ULog, MCAP, JSON,
-Protobuf, ROS, ZMQ, MQTT, Foxglove Bridge, and PJ Bridge.
+Plugin collection for PlotJuggler Core: message parsers (JSON, Protobuf, ROS,
+DataTamer), file loaders (CSV, MCAP, Parquet, ULog, MP4, LeRobot), streaming
+sources (ZMQ, MQTT, UDP, ROS 2, Foxglove and PlotJuggler bridges), and toolbox
+widgets (FFT, quaternion, colormap, reactive scripts). See the
+[Plugins](#plugins) table for the full list and per-plugin build status.
 
 ## Building
 
@@ -104,20 +107,58 @@ subdirectory-mode fallback for standalone builds. Every per-plugin
 
 ## Plugins
 
-| Plugin | Type | Description |
-|--------|------|-------------|
-| parser_json | MessageParser | JSON message parsing |
-| parser_protobuf | MessageParser | Protobuf message parsing |
-| parser_ros | MessageParser | ROS 1/2 message parsing |
-| parser_data_tamer | MessageParser | DataTamer schema/snapshot parsing |
-| data_load_csv | DataSource | CSV file loading |
-| data_load_mcap | DataSource | MCAP file loading |
-| data_load_parquet | DataSource | Parquet file loading |
-| data_load_ulog | DataSource | ULog file loading |
-| data_stream_zmq | DataSource | ZeroMQ streaming |
-| data_stream_mqtt | DataSource | MQTT streaming |
-| data_stream_foxglove_bridge | DataSource | Foxglove WebSocket bridge |
-| data_stream_pj_bridge | DataSource | PlotJuggler WebSocket bridge |
+The **Status** badge shows each plugin's released version and turns green when
+its latest build on `main` passed CI (red if it failed). It is published from
+CI to the `badges` branch; see [Per-plugin status badges](#per-plugin-status-badges).
+
+| Plugin | Type | Description | Status |
+|--------|------|-------------|--------|
+| parser_json | MessageParser | JSON message parsing | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_json.json)](parser_json/) |
+| parser_protobuf | MessageParser | Protobuf message parsing | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_protobuf.json)](parser_protobuf/) |
+| parser_ros | MessageParser | ROS 1/2 message parsing | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_ros.json)](parser_ros/) |
+| parser_data_tamer | MessageParser | DataTamer schema/snapshot parsing | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_data_tamer.json)](parser_data_tamer/) |
+| data_load_csv | DataSource | CSV file loading | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_csv.json)](data_load_csv/) |
+| data_load_mcap | DataSource | MCAP file loading | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mcap.json)](data_load_mcap/) |
+| data_load_parquet | DataSource | Parquet file loading | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_parquet.json)](data_load_parquet/) |
+| data_load_ulog | DataSource | ULog file loading | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_ulog.json)](data_load_ulog/) |
+| data_load_lerobot | DataSource | LeRobot v2.1 dataset loading | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_lerobot.json)](data_load_lerobot/) |
+| data_load_mp4 | DataSource | MP4 video loading | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mp4.json)](data_load_mp4/) |
+| data_stream_zmq | DataSource | ZeroMQ streaming | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_zmq.json)](data_stream_zmq/) |
+| data_stream_mqtt | DataSource | MQTT streaming | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_mqtt.json)](data_stream_mqtt/) |
+| data_stream_foxglove_bridge | DataSource | Foxglove WebSocket bridge | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_foxglove_bridge.json)](data_stream_foxglove_bridge/) |
+| data_stream_pj_bridge | DataSource | PlotJuggler WebSocket bridge | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_pj_bridge.json)](data_stream_pj_bridge/) |
+| data_stream_ros2 | DataSource | ROS 2 topic streaming | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_ros2.json)](data_stream_ros2/) |
+| data_stream_udp | DataSource | UDP unicast/multicast streaming | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_udp.json)](data_stream_udp/) |
+| data_stream_dummy | DataSource | Synthetic test-signal generator | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_dummy.json)](data_stream_dummy/) |
+| toolbox_fft | Toolbox | FFT frequency-domain transform | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_fft.json)](toolbox_fft/) |
+| toolbox_quaternion | Toolbox | Quaternion → roll/pitch/yaw | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_quaternion.json)](toolbox_quaternion/) |
+| toolbox_colormap | Toolbox | Lua colormap editor | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_colormap.json)](toolbox_colormap/) |
+| toolbox_reactive_scripts_editor | Toolbox | Reactive Lua/Python script editor | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_reactive_scripts_editor.json)](toolbox_reactive_scripts_editor/) |
+
+### Per-plugin status badges
+
+Each **Status** badge is a [shields.io endpoint badge](https://shields.io/badges/endpoint-badge)
+backed by a small JSON file on the orphan `badges` branch — one
+`<plugin>.json` per plugin holding `{ label, message: version, color }`. A
+native GitHub Actions badge can only report pass/fail for a whole workflow, so
+this scheme is what lets a single badge carry both the version and the build
+color.
+
+CI publishes them on pushes to `main`:
+
+- The CI Linux `per-plugin-build` matrix builds each plugin in isolation;
+  every leg emits its badge JSON (version from `manifest.json`, color from that
+  leg's outcome) as an artifact, and the `update-badges` job commits all of
+  them to the `badges` branch in one push.
+- `data_stream_ros2` is built only by CI ROS2, so that workflow owns its badge
+  and writes it from its own `update-badge` job (color aggregated from the
+  distro matrix and the proxy build).
+
+Both writers share a `badges-branch` concurrency group and resync-on-conflict
+(see `scripts/publish_badges.sh`), so their pushes never clobber each other.
+Badges first appear after the feature's initial run on `main`; until then
+shields renders them as `invalid` because the `badges` branch does not yet
+exist.
 
 ## Plugin architecture
 

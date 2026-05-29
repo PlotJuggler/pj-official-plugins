@@ -233,3 +233,48 @@ jobs:
           name: ros2_subscriber-marketplace-zip
           path: ros2_subscriber-linux-x86_64.zip
           if-no-files-found: error
+
+  # Publish the data_stream_ros2 status badge to the shared `badges` branch.
+  # This plugin is built only by this workflow (not the CI Linux per-plugin
+  # matrix), so its badge is owned here. Color aggregates the distro matrix and
+  # the proxy build. Shares the `badges-branch` concurrency group with CI Linux
+  # so the two workflows serialize their pushes to the badges branch.
+  update-badge:
+    name: update status badge
+    needs: [build-distro, build-proxy]
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    concurrency:
+      group: badges-branch
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine aggregate status
+        id: status
+        shell: bash
+        run: |
+          distro='${{ needs.build-distro.result }}'
+          proxy='${{ needs.build-proxy.result }}'
+          if [[ "$distro" == "success" && "$proxy" == "success" ]]; then
+            echo "result=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write status badge JSON
+        shell: bash
+        run: |
+          python3 scripts/write_badge_json.py \
+            --plugin data_stream_ros2 \
+            --status "${{ steps.status.outputs.result }}" \
+            --out-dir badge-out
+
+      - name: Publish badge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: scripts/publish_badges.sh badge-out
