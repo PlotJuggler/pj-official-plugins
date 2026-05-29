@@ -1,0 +1,286 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MosaicoPanel</class>
+ <widget class="QWidget" name="MosaicoPanel">
+  <layout class="QVBoxLayout" name="rootLayout">
+   <property name="spacing"><number>8</number></property>
+   <property name="leftMargin"><number>10</number></property>
+   <property name="topMargin"><number>10</number></property>
+   <property name="rightMargin"><number>10</number></property>
+   <property name="bottomMargin"><number>10</number></property>
+
+   <!-- Connect row: URI combo + Connect + Certificate -->
+   <item>
+    <layout class="QHBoxLayout" name="connectRow">
+     <item>
+      <widget class="QLabel" name="labelUri">
+       <property name="text"><string>Server:</string></property>
+       <property name="minimumSize"><size><width>50</width><height>0</height></size></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="comboUri">
+       <property name="editable"><bool>true</bool></property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed"><horstretch>1</horstretch><verstretch>0</verstretch></sizepolicy>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="buttonConnect">
+       <property name="text"><string/></property>
+       <property name="toolTip"><string>Connect</string></property>
+       <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="buttonRefresh">
+       <property name="text"><string/></property>
+       <property name="toolTip"><string>Refresh sequences</string></property>
+       <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="buttonCert">
+       <property name="text"><string/></property>
+       <property name="toolTip"><string>Cert / API Key&#8230;</string></property>
+       <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+
+   <!-- Three-column splitter: Sequences | Topics | Info -->
+   <item>
+    <widget class="QSplitter" name="mainSplitter">
+     <property name="orientation"><enum>Qt::Horizontal</enum></property>
+     <property name="childrenCollapsible"><bool>false</bool></property>
+
+     <!-- ============ SEQUENCES COLUMN ============ -->
+     <!-- QFrame (not QWidget) so the app QSS three-sided border paints; the
+          border meets the mainSplitter handle on the right (see stylesheet). -->
+     <widget class="QFrame" name="seqPanelContainer">
+      <layout class="QVBoxLayout" name="seqLayout">
+       <property name="spacing"><number>4</number></property>
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>0</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
+       <item>
+        <widget class="QLabel" name="seqHeader">
+         <property name="text"><string>Sequences</string></property>
+         <property name="font"><font><bold>true</bold></font></property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="seqFilterRow">
+         <property name="spacing"><number>4</number></property>
+         <item>
+          <widget class="QLineEdit" name="seqFilter">
+           <property name="placeholderText"><string>Filter&#8230;</string></property>
+           <property name="clearButtonEnabled"><bool>true</bool></property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="seqRegexToggle">
+           <property name="text"><string>.*</string></property>
+           <property name="checkable"><bool>true</bool></property>
+           <property name="toolTip"><string>Use regular expression</string></property>
+           <property name="maximumSize"><size><width>28</width><height>16777215</height></size></property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <!-- Generic date/time range picker: presets + from/to fields + calendar overlay -->
+       <item>
+        <widget class="DateRangePicker" name="datePicker">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Preferred" vsizetype="Preferred"><horstretch>0</horstretch><verstretch>0</verstretch></sizepolicy>
+         </property>
+        </widget>
+       </item>
+       <!-- The sequence table and the Lua query editor share a DRAGGABLE
+            vertical splitter. Its handle is the separator (grab-and-resize),
+            styled by the app's global QSplitter::handle QSS (a 1px border-grey
+            line that highlights on hover) exactly like the column splitters.
+            Initial bias toward the table via verstretch (2 vs 1); the query
+            editor starts compact and the user can drag the divider to taste. -->
+       <item>
+        <widget class="QSplitter" name="seqQuerySplitter">
+         <property name="orientation"><enum>Qt::Vertical</enum></property>
+         <property name="childrenCollapsible"><bool>false</bool></property>
+         <widget class="QTableWidget" name="seqTable">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Expanding" vsizetype="Expanding"><horstretch>0</horstretch><verstretch>2</verstretch></sizepolicy>
+          </property>
+          <property name="selectionMode"><enum>QAbstractItemView::SingleSelection</enum></property>
+          <property name="selectionBehavior"><enum>QAbstractItemView::SelectRows</enum></property>
+          <property name="editTriggers"><set>QAbstractItemView::NoEditTriggers</set></property>
+          <attribute name="verticalHeaderVisible"><bool>false</bool></attribute>
+         </widget>
+         <widget class="QWidget" name="queryPane" native="true">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Expanding" vsizetype="Expanding"><horstretch>0</horstretch><verstretch>1</verstretch></sizepolicy>
+          </property>
+          <layout class="QVBoxLayout" name="queryPaneLayout">
+           <property name="leftMargin"><number>0</number></property>
+           <property name="topMargin"><number>0</number></property>
+           <property name="rightMargin"><number>0</number></property>
+           <property name="bottomMargin"><number>0</number></property>
+           <property name="spacing"><number>2</number></property>
+           <!-- Cursor-aware Key/Op/Value assist dropdowns. The plugin populates
+                them per the caret position and inserts the picked token into the
+                query at the caret (no popup completer). -->
+           <item>
+            <layout class="QHBoxLayout" name="queryAssistRow">
+             <item>
+              <widget class="QComboBox" name="keyCombo">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Expanding" vsizetype="Fixed"><horstretch>1</horstretch><verstretch>0</verstretch></sizepolicy>
+               </property>
+               <property name="placeholderText"><string>Key</string></property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QComboBox" name="opCombo">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Fixed" vsizetype="Fixed"><horstretch>0</horstretch><verstretch>0</verstretch></sizepolicy>
+               </property>
+               <property name="maximumSize"><size><width>72</width><height>16777215</height></size></property>
+               <property name="placeholderText"><string>Op</string></property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QComboBox" name="valCombo">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Expanding" vsizetype="Fixed"><horstretch>1</horstretch><verstretch>0</verstretch></sizepolicy>
+               </property>
+               <property name="placeholderText"><string>Value</string></property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QPlainTextEdit" name="lua_queryBar">
+             <property name="sizePolicy">
+              <sizepolicy hsizetype="Expanding" vsizetype="Expanding"><horstretch>0</horstretch><verstretch>1</verstretch></sizepolicy>
+             </property>
+             <property name="minimumSize"><size><width>0</width><height>72</height></size></property>
+             <property name="styleSheet"><string notr="true">QPlainTextEdit { background-color: #ffffff; }</string></property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- ============ TOPICS COLUMN ============ -->
+     <widget class="QFrame" name="topicPanelContainer">
+      <layout class="QVBoxLayout" name="topicLayout">
+       <property name="spacing"><number>4</number></property>
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>0</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
+       <item>
+        <widget class="QLabel" name="topicHeader">
+         <property name="text"><string>Topics</string></property>
+         <property name="font"><font><bold>true</bold></font></property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="topicFilterRow">
+         <property name="spacing"><number>4</number></property>
+         <item>
+          <widget class="QLineEdit" name="topicFilter">
+           <property name="placeholderText"><string>Filter&#8230;</string></property>
+           <property name="clearButtonEnabled"><bool>true</bool></property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="topicRegexToggle">
+           <property name="text"><string>.*</string></property>
+           <property name="checkable"><bool>true</bool></property>
+           <property name="toolTip"><string>Use regular expression</string></property>
+           <property name="maximumSize"><size><width>28</width><height>16777215</height></size></property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QTableWidget" name="topicTable">
+         <property name="selectionMode"><enum>QAbstractItemView::ExtendedSelection</enum></property>
+         <property name="selectionBehavior"><enum>QAbstractItemView::SelectRows</enum></property>
+         <property name="editTriggers"><set>QAbstractItemView::NoEditTriggers</set></property>
+         <attribute name="verticalHeaderVisible"><bool>false</bool></attribute>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- ============ INFO COLUMN ============ -->
+     <widget class="QFrame" name="dataViewContainer">
+      <layout class="QVBoxLayout" name="dataViewLayout">
+       <property name="spacing"><number>4</number></property>
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>0</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
+       <item>
+        <widget class="QLabel" name="dataViewHeader">
+         <property name="text"><string>Info</string></property>
+         <property name="font"><font><bold>true</bold></font></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPlainTextEdit" name="dataView">
+         <property name="readOnly"><bool>true</bool></property>
+         <property name="font">
+          <font><family>Monospace</family><styleStrategy>PreferDefault</styleStrategy></font>
+         </property>
+         <property name="lineWrapMode"><enum>QPlainTextEdit::NoWrap</enum></property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+
+   <!-- Two-handle time range slider + Download button (PJ3 RangeSlider) -->
+   <item>
+    <layout class="QHBoxLayout" name="rangeRow">
+     <item>
+      <widget class="RangeSlider" name="rangeSlider">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Preferred"><horstretch>1</horstretch><verstretch>0</verstretch></sizepolicy>
+       </property>
+       <property name="minimumSize"><size><width>0</width><height>52</height></size></property>
+       <property name="enabled"><bool>false</bool></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="buttonFetch">
+       <property name="text"><string>Download</string></property>
+       <property name="minimumSize"><size><width>90</width><height>0</height></size></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="buttonCancel">
+       <property name="text"><string>Cancel</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="buttonClose">
+       <property name="text"><string>Close</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <!-- No in-panel status strip: connection / import / error events surface in
+        the app's top notification bell (reportMessage); live download progress
+        shows in the Info panel during a fetch. -->
+  </layout>
+ </widget>
+</ui>
