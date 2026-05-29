@@ -42,7 +42,15 @@ jobs:
       - name: Build & Test
         shell: bash
         run: |
-          conan install . --output-folder=build --build=missing -s build_type=Release \
+          # --update: re-resolve the latest recipe revision (and its sources) from
+          # the remote rather than trusting whatever revision is in the restored
+          # Conan cache. macOS has no prebuilt plotjuggler_core binary in Cloudsmith
+          # (the core release job publishes only a Linux binary), so it always builds
+          # core from source. Without --update, a cached recipe revision that was
+          # superseded on the remote — e.g. after a version is re-published — leaves
+          # the cache pointing at sources that "no longer exist", and the build dies
+          # with "exports_sources but sources not found in local cache".
+          conan install . --output-folder=build --build=missing --update -s build_type=Release \
             -s compiler.cppstd=20 -c tools.cmake.cmaketoolchain:generator=Ninja
 
           cmake -S . -B build/Release -G Ninja \
