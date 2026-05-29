@@ -76,7 +76,9 @@ inline Timestamp incrementEndTimeSaturating(Timestamp ts) {
 // FileReader-backed McapReader and a byte-bounded LRU of decompressed chunks.
 // All cold work is serialized behind mu_ because the FileReader-backed reader is
 // NOT concurrent-safe (single shared cursor) and lazy pulls may arrive from
-// several consumer threads.
+// several consumer threads. It is intentionally retained by fetchers after the
+// MessageByteStore owner is destroyed: PJ4 destroys the DataSource instance at
+// the end of import, but ObjectStore lazy pulls happen later.
 class ColdChunkStore {
  public:
   struct ChunkMeta {
@@ -88,15 +90,11 @@ class ColdChunkStore {
   std::string filepath_;
   std::size_t capacity_bytes_ = 0;
   std::unordered_map<uint64_t, ChunkMeta> meta_;  // chunkStartOffset -> bounds
-  std::atomic<bool> dead_{false};                 // set by ~MessageByteStore
 
   // Resolve one message to a message-sized owned copy. Empty on any failure;
   // failures are surfaced via stderr (NOT a callback) because this can run after
   // the owning data source is gone — a captured callback would dangle.
   ByteView fetch(uint64_t chunk_start, ByteOffset within_chunk, ChannelId channel_id, Timestamp log_time) {
-    if (dead_.load(std::memory_order_acquire)) {
-      return {};
-    }
     std::lock_guard<std::mutex> lock(mu_);
     if (!ensureOpenLocked()) {
       return {};
@@ -295,14 +293,7 @@ class MessageByteStore {
   MessageByteStore& operator=(const MessageByteStore&) = delete;
   MessageByteStore(MessageByteStore&&) = default;
   MessageByteStore& operator=(MessageByteStore&&) = default;
-  // Mark the shared cold state dead so any fetcher firing during/after teardown
-  // fast-fails instead of doing disk I/O. Shared ownership keeps the object
-  // alive for in-flight fetches; this just stops new work.
-  ~MessageByteStore() {
-    if (cold_) {
-      cold_->dead_.store(true, std::memory_order_release);
-    }
-  }
+  ~MessageByteStore() = default;
 
   // I/O-free: only consumes the passed-in chunk index. `onProblem`, if given, is
   // used ONLY here as a cheap early-warning (a non-readable file is reported now

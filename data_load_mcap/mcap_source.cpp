@@ -327,10 +327,9 @@ class McapSource : public PJ::FileSourceBase {
   // loadConfig() when FileLoader embeds it under "_parser_config". When
   // non-empty, takes precedence over per-field accessors in McapDialog.
   std::string parser_config_override_;
-  // Owns the cold (post-import lazy) byte path. Outlives importData() so the
-  // fetcher closures handed to the host can re-decompress on demand; its
-  // destructor marks the shared cold state dead so late pulls fast-fail instead
-  // of doing I/O during teardown.
+  // Owns the cold (post-import lazy) byte path while fetchers are created.
+  // Each fetcher retains the shared cold state, so deferred ObjectStore pulls
+  // still work after PJ4 destroys the DataSourceHandle at the end of loadFile().
   mcap::MessageByteStore byte_store_;
 };
 

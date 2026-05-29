@@ -16,7 +16,8 @@
  *                buffers (not a shared chunk buffer).
  *   - tiny LRU : cold reads stay correct under heavy eviction.
  *   - removed file: cold open fails -> empty, no retry storm.
- *   - dead flag: a fetcher fast-fails empty once its store is destroyed.
+ *   - source teardown: a fetcher still works after its MessageByteStore owner
+ *                is destroyed, matching PJ4's DataSourceHandle lifetime.
  *   - concurrency: many cold reads from several threads stay correct.
  *   - init early-warning: a non-readable path reports once via the callback.
  */
@@ -253,20 +254,26 @@ TEST_F(MessageByteStoreTest, RemovedFileFailsClosedNoRetryStorm) {
   EXPECT_EQ(v2.data, nullptr);
 }
 
-TEST_F(MessageByteStoreTest, FetcherFastFailsAfterStoreDestroyed) {
+TEST_F(MessageByteStoreTest, FetcherSurvivesStoreDestroyed) {
   auto store = std::make_unique<mcap::MessageByteStore>();
   std::vector<Item> items = collect(*store, /*invoke_hot=*/false);
   ASSERT_FALSE(items.empty());
   mcap::MessageByteFetcher fetcher = items.front().fetcher;
+  std::vector<uint8_t> expected = items.front().expected;
 
   // Store alive -> cold path works.
   mcap::ByteView before = fetcher();
   ASSERT_NE(before.data, nullptr);
+  ASSERT_EQ(before.size, expected.size());
+  EXPECT_EQ(0, std::memcmp(before.data, expected.data(), before.size));
 
-  // Destroying the store marks the (still shared-alive) cold state dead.
+  // PJ4 destroys the source plugin handle after import, but ObjectStore lazy
+  // closures can be pulled later. The fetcher must keep the cold state alive.
   store.reset();
   mcap::ByteView after = fetcher();
-  EXPECT_EQ(after.data, nullptr) << "fetcher must fast-fail once its store is gone";
+  ASSERT_NE(after.data, nullptr) << "fetcher must survive source teardown";
+  ASSERT_EQ(after.size, expected.size());
+  EXPECT_EQ(0, std::memcmp(after.data, expected.data(), after.size));
 }
 
 TEST_F(MessageByteStoreTest, ConcurrentColdReads) {
