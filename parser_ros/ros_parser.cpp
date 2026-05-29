@@ -1,8 +1,10 @@
 #include <cctype>
 #include <cstdlib>
 #include <functional>
+#include <iostream>
 #include <string>
 
+#include "pj_config_utils/config_utils.hpp"
 #include "ros_manifest.hpp"
 #include "ros_parser_internal.hpp"
 
@@ -268,8 +270,17 @@ std::string RosParser::saveConfig() const {
 }
 
 PJ::Status RosParser::loadConfig(std::string_view config_json) {
-  auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-  if (cfg.is_discarded()) {
+  // Parser tier (see common/pj_config_utils): a non-parseable config (empty or
+  // malformed) keeps the parser's current settings rather than aborting an
+  // otherwise-valid stream. Warn on malformed so corruption is visible instead
+  // of silently swallowed. A parseable object (including "{}") is applied,
+  // resetting unspecified fields to their defaults — matching the original.
+  bool config_malformed = false;
+  auto cfg = pj::config::parseLenient(config_json, &config_malformed);
+  if (config_malformed) {
+    std::cerr << "[parser_ros] loadConfig: ignoring malformed config JSON; keeping current settings\n";
+  }
+  if (config_json.empty() || config_malformed) {
     return PJ::okStatus();
   }
 

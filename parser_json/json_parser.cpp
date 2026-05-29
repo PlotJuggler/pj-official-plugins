@@ -1,5 +1,6 @@
 #include <cstddef>
 #include <deque>
+#include <iostream>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
@@ -8,6 +9,7 @@
 
 #include "json_manifest.hpp"
 #include "json_parser_dialog.hpp"
+#include "pj_config_utils/config_utils.hpp"
 
 namespace {
 
@@ -91,17 +93,25 @@ class JsonParser : public PJ::MessageParserPluginBase {
   }
 
   PJ::Status loadConfig(std::string_view config_json) override {
-    auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-    if (!cfg.is_discarded()) {
-      encoding_hint_ = cfg.value("encoding_hint", std::string{});
-      max_array_size_ = cfg.value("max_array_size", std::size_t{0});
-      clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
-      // Embedded timestamp: when set, doParseScalars reports the field's value
-      // as ScalarRecord::ts so the host keys the row by it instead of the
-      // transport receive time.
-      use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
-      timestamp_field_name_ = cfg.value("timestamp_field_name", std::string("timestamp"));
+    // Parser tier (see common/pj_config_utils): a non-parseable config (empty or
+    // malformed) keeps current settings; warn on malformed rather than failing
+    // or staying silent. A parseable object (including "{}") is applied.
+    bool config_malformed = false;
+    auto cfg = pj::config::parseLenient(config_json, &config_malformed);
+    if (config_malformed) {
+      std::cerr << "[parser_json] loadConfig: ignoring malformed config JSON; keeping current settings\n";
     }
+    if (config_json.empty() || config_malformed) {
+      return PJ::okStatus();
+    }
+    encoding_hint_ = cfg.value("encoding_hint", std::string{});
+    max_array_size_ = cfg.value("max_array_size", std::size_t{0});
+    clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
+    // Embedded timestamp: when set, doParseScalars reports the field's value
+    // as ScalarRecord::ts so the host keys the row by it instead of the
+    // transport receive time.
+    use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
+    timestamp_field_name_ = cfg.value("timestamp_field_name", std::string("timestamp"));
     return PJ::okStatus();
   }
 

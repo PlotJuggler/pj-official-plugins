@@ -12,6 +12,7 @@
 #include "csv_manifest.hpp"
 #include "dataload_csv_ui.hpp"
 #include "datetimehelp_ui.hpp"
+#include "pj_config_utils/config_utils.hpp"
 
 int CsvDialog::timeColumnIndex() const {
   if (time_mode_ == TimeMode::Column && selected_column_index_ >= 0) {
@@ -237,10 +238,11 @@ std::string CsvDialog::saveConfig() const {
 }
 
 bool CsvDialog::loadConfig(std::string_view config_json) {
-  auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-  if (cfg.is_discarded()) {
+  auto parsed = pj::config::parseStrict(config_json, "CSV config");
+  if (!parsed) {
     return false;
   }
+  const auto& cfg = *parsed;
   filepath_ = cfg.value("filepath", std::string{});
   auto d = cfg.value("delimiter", std::string(","));
   delimiter_ = d.empty() ? ',' : d[0];

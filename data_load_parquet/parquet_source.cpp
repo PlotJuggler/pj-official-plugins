@@ -17,6 +17,7 @@
 #include "parquet_helpers.hpp"
 #include "parquet_manifest.hpp"
 #include "pj_arrow_helpers/arrow_helpers.hpp"
+#include "pj_config_utils/config_utils.hpp"
 
 namespace {
 
@@ -104,12 +105,11 @@ class ParquetSource : public PJ::FileSourceBase {
     // Extract configuration from dialog state
     std::string filepath;
     {
-      auto cfg_str = dialog_.saveConfig();
-      auto cfg = nlohmann::json::parse(cfg_str, nullptr, false);
-      if (cfg.is_discarded()) {
-        return PJ::unexpected(std::string("invalid config"));
+      auto cfg = pj::config::parseStrict(dialog_.saveConfig(), "config");
+      if (!cfg) {
+        return PJ::unexpected(cfg.error());
       }
-      filepath = cfg.value("filepath", std::string{});
+      filepath = cfg->value("filepath", std::string{});
     }
 
     if (filepath.empty()) {

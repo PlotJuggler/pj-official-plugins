@@ -28,6 +28,7 @@ target_link_libraries(toolbox_reactive_scripts_editor_plugin PRIVATE
   lua::lua
   sol2::sol2
   nlohmann_json::nlohmann_json
+  pj_config_utils
   ${CMAKE_DL_LIBS}
 )
 

@@ -7,7 +7,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 add_library(parser_json_plugin SHARED json_parser.cpp)
 target_compile_features(parser_json_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_json_plugin PRIVATE ${PJ_WARNING_FLAGS})
-target_link_libraries(parser_json_plugin PRIVATE plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json)
+target_link_libraries(parser_json_plugin PRIVATE plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json pj_config_utils)
 
 pj_embed_ui(parser_json_plugin
   UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/json_parser_options.ui

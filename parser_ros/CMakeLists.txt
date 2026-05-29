@@ -51,7 +51,7 @@ add_library(parser_ros_plugin SHARED
 target_compile_features(parser_ros_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_ros_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(parser_ros_plugin PRIVATE
-  plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json rosx_introspection data_tamer_parser)
+  plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json rosx_introspection data_tamer_parser pj_config_utils)
 
 pj_embed_manifest(parser_ros_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/ros_manifest.hpp

@@ -16,7 +16,7 @@ target_compile_features(parquet_source_plugin PRIVATE cxx_std_20)
 target_compile_options(parquet_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(parquet_source_plugin PRIVATE
   plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json date::date-tz Arrow::arrow_static Parquet::parquet_static
-  pj_arrow_helpers
+  pj_arrow_helpers pj_config_utils
 )
 
 pj_embed_ui(parquet_source_plugin

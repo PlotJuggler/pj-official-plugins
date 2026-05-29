@@ -31,6 +31,7 @@ namespace py = pybind11;
 #include <utility>
 #include <vector>
 
+#include "pj_config_utils/config_utils.hpp"
 #include "reactive_script_editor_dialog_ui.hpp"
 #include "reactive_script_editor_manifest.hpp"
 
@@ -46,6 +47,13 @@ struct SnippetData {
   std::string function_name;
 };
 
+// The snippet library is cross-session and cross-layout structured state, so it
+// lives in a per-user JSON file under the SDK's standard `userDataDir()` (the
+// blessed channel for on-disk plugin state — see pj_base/sdk/platform.hpp).
+// This is deliberately NOT the "pj.settings.v1" key/value settings service,
+// which is meant for small scalar preferences, not a multi-KB structured map
+// written atomically. The per-layout "current snippet" lives in saveConfig()
+// JSON instead (see saveConfig below).
 std::filesystem::path luaEditorLibraryPath() {
   return PJ::sdk::userDataDir() / "toolbox_reactive_scripts_editor" / "library.json";
 }
@@ -79,7 +87,12 @@ std::string persistLibraryToDisk(
   }
 }
 
-std::map<std::string, SnippetData> loadLibraryFromDisk(const std::filesystem::path& path) {
+// Reads the on-disk library. A missing file is normal (no snippets yet) and is
+// NOT flagged. A present-but-corrupt or wrong-shaped file degrades to an empty
+// library and sets *out_corrupt so the caller can warn the user rather than
+// silently losing the library (matches the two-tier policy in
+// common/pj_config_utils).
+std::map<std::string, SnippetData> loadLibraryFromDisk(const std::filesystem::path& path, bool* out_corrupt = nullptr) {
   std::map<std::string, SnippetData> result;
   std::ifstream in(path);
   if (!in) {
@@ -88,8 +101,12 @@ std::map<std::string, SnippetData> loadLibraryFromDisk(const std::filesystem::pa
 
   std::stringstream buf;
   buf << in.rdbuf();
-  auto j = nlohmann::json::parse(buf.str(), nullptr, false);
-  if (j.is_discarded() || !j.is_object()) {
+  bool malformed = false;
+  auto j = pj::config::parseLenient(buf.str(), &malformed);
+  if (malformed || !j.is_object()) {
+    if (out_corrupt != nullptr) {
+      *out_corrupt = true;
+    }
     return result;
   }
 
@@ -1058,7 +1075,13 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
     if (library_loaded_) {
       return;
     }
-    dialog_.setLibrary(loadLibraryFromDisk(luaEditorLibraryPath()));
+    bool corrupt = false;
+    dialog_.setLibrary(loadLibraryFromDisk(luaEditorLibraryPath(), &corrupt));
+    if (corrupt && runtimeHostBound()) {
+      runtimeHost().reportMessage(
+          PJ::ToolboxMessageLevel::kWarning, "Lua editor library: ignoring malformed " +
+                                                 luaEditorLibraryPath().string() + "; starting with an empty library");
+    }
     library_loaded_ = true;
   }
 

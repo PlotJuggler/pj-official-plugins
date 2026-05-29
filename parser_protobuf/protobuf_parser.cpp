@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "pj_config_utils/config_utils.hpp"
 #include "protobuf_manifest.hpp"
 #include "protobuf_parser_dialog.hpp"
 
@@ -268,8 +269,15 @@ std::string base64Decode(const std::string& input) {
 class ProtobufParser : public PJ::MessageParserPluginBase {
  public:
   PJ::Status loadConfig(std::string_view config_json) override {
-    auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-    if (cfg.is_discarded()) {
+    // Parser tier (see common/pj_config_utils): a non-parseable config (empty or
+    // malformed) keeps current settings; warn on malformed rather than staying
+    // silent. A parseable object (including "{}") is applied below.
+    bool config_malformed = false;
+    auto cfg = pj::config::parseLenient(config_json, &config_malformed);
+    if (config_malformed) {
+      std::cerr << "[protobuf_parser] loadConfig: ignoring malformed config JSON; keeping current settings\n";
+    }
+    if (config_json.empty() || config_malformed) {
       return PJ::okStatus();
     }
 

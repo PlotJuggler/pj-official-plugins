@@ -13,6 +13,7 @@ if(TARGET plotjuggler_core::plugin_sdk)
 
   # Internal helper libraries shared by several plugins.
   add_subdirectory(common/arrow_helpers)
+  add_subdirectory(common/pj_config_utils)
 
   # Enabled entries track the v4 ABI (PJ_ABI_VERSION == 4): service-
   # registry API, Arrow C Data Interface at the write boundary, and the
@@ -108,6 +109,7 @@ enable_testing()
 # ---------------------------------------------------------------------------
 
 add_subdirectory(common/arrow_helpers)
+add_subdirectory(common/pj_config_utils)
 
 # ---------------------------------------------------------------------------
 # Plugins — use -DPJ_BUILD_PLUGIN=<dir> to build a single plugin (CI mode),

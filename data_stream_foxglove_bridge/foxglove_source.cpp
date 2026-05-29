@@ -16,6 +16,7 @@
 #include "foxglove_dialog.hpp"
 #include "foxglove_manifest.hpp"
 #include "foxglove_protocol.hpp"
+#include "pj_config_utils/config_utils.hpp"
 
 namespace {
 
@@ -53,10 +54,11 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   }
 
   PJ::Status onStart() override {
-    auto cfg = nlohmann::json::parse(dialog_.saveConfig(), nullptr, false);
-    if (cfg.is_discarded()) {
-      return PJ::unexpected("invalid dialog config");
+    auto parsed = pj::config::parseStrict(dialog_.saveConfig(), "dialog config");
+    if (!parsed) {
+      return PJ::unexpected(parsed.error());
     }
+    const auto& cfg = *parsed;
 
     address_ = cfg.value("address", std::string("localhost"));
     port_ = cfg.value("port", 8765);

@@ -9,6 +9,7 @@
 #include <ulog_cpp/reader.hpp>
 #include <vector>
 
+#include "pj_config_utils/config_utils.hpp"
 #include "ulog_manifest.hpp"
 #include "ulog_params_dialog.hpp"
 
@@ -223,11 +224,11 @@ class ULogSource : public PJ::FileSourceBase {
   }
 
   PJ::Status loadConfig(std::string_view config_json) override {
-    auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-    if (cfg.is_discarded()) {
-      return PJ::unexpected(std::string("invalid config JSON"));
+    auto cfg = pj::config::parseStrict(config_json, "config");
+    if (!cfg) {
+      return PJ::unexpected(cfg.error());
     }
-    filepath_ = cfg.value("filepath", std::string{});
+    filepath_ = cfg->value("filepath", std::string{});
     if (!filepath_.empty()) {
       dialog_.setFilePath(filepath_);
     }

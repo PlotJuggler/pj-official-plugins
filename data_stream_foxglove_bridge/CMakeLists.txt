@@ -8,7 +8,7 @@ add_library(foxglove_source_plugin SHARED foxglove_source.cpp)
 target_compile_features(foxglove_source_plugin PRIVATE cxx_std_20)
 target_compile_options(foxglove_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(foxglove_source_plugin PRIVATE
-  plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket
+  plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket pj_config_utils
 )
 
 pj_embed_ui(foxglove_source_plugin

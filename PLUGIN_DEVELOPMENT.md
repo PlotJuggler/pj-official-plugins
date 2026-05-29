@@ -629,6 +629,70 @@ pushMessage(ts,
                                                                   (pull later)         ─► fetchMessageData + parseObject
 ```
 
+## Config persistence — `saveConfig()` / `loadConfig()` and the parse-error policy
+
+Every plugin family round-trips its per-instance configuration as a JSON string
+via `saveConfig()` / `loadConfig()`; the host persists that blob with the layout
+and replays it on restore (a DataSource must support `loadConfig(saved) →
+start()` headless, with no dialog). Cross-session, cross-layout state that is
+*not* tied to one layout does not belong here — small key/value preferences use
+the host's `pj.settings.v1` settings service, and larger structured state (e.g.
+a script library) uses a per-user file under `PJ::sdk::userDataDir()`.
+
+### The two-tier parse policy
+
+When `loadConfig()` receives a config string, classify it consistently. Use the
+shared helpers in `common/pj_config_utils` rather than open-coding
+`nlohmann::json::parse(s, nullptr, false)` + `is_discarded()`:
+
+- **Empty / absent config → use defaults (never an error).** A first load with
+  no saved config is normal. Both helpers return an empty object for `""`, so
+  `cfg.value(key, default)` yields defaults.
+
+- **Present but malformed config:**
+  - **Data sources** (file/stream importers) treat it as a **hard error** — a
+    source that cannot read its own config (e.g. its `filepath`) must not start
+    with silent defaults. Use `pj::config::parseStrict(json, "context")`, which
+    returns `unexpected("invalid <context> JSON")`.
+  - **Parsers** (message decoders) treat it as **recoverable** — a bad flag must
+    not abort decoding of an otherwise-valid stream, so the parser keeps its
+    current settings. Use `pj::config::parseLenient(json, &was_malformed)` and
+    **log a warning** when `was_malformed` is set, so corruption is visible
+    instead of silently swallowed. Note `parseLenient` returns `{}` for both
+    empty and malformed input, so guard with `if (json.empty() || was_malformed)
+    return okStatus();` when "apply" must reset unspecified fields to defaults
+    only for a genuinely-parsed object (including `"{}"`).
+
+Dialog `loadConfig()` keeps its `bool` contract: return `false` on a malformed
+config.
+
+### Example
+
+```cpp
+// Data source (hard error on malformed):
+auto cfg = pj::config::parseStrict(config_json, "MP4 config");
+if (!cfg) {
+  return PJ::unexpected(cfg.error());
+}
+filepath_ = cfg->value("filepath", std::string{});
+if (filepath_.empty()) {
+  return PJ::unexpected("MP4 config missing required `filepath` field");
+}
+
+// Parser (keep current settings on malformed, but warn):
+bool malformed = false;
+auto cfg = pj::config::parseLenient(config_json, &malformed);
+if (malformed) {
+  std::cerr << "[my_parser] loadConfig: ignoring malformed config JSON; keeping current settings\n";
+}
+if (config_json.empty() || malformed) {
+  return PJ::okStatus();
+}
+max_array_size_ = cfg.value("max_array_size", 500);
+```
+
+Link `pj_config_utils` in the plugin's `target_link_libraries`.
+
 ## Authoring checklist
 
 ### For a new self-parsing DataSource (Shape A)

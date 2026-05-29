@@ -14,6 +14,7 @@
 
 #include "mqtt_dialog.hpp"
 #include "mqtt_manifest.hpp"
+#include "pj_config_utils/config_utils.hpp"
 
 namespace {
 
@@ -51,10 +52,11 @@ class MqttSource : public PJ::StreamSourceBase {
 
   PJ::Status onStart() override {
     // Read config from dialog
-    auto cfg = nlohmann::json::parse(dialog_.saveConfig(), nullptr, false);
-    if (cfg.is_discarded()) {
-      return PJ::unexpected("invalid dialog config");
+    auto parsed = pj::config::parseStrict(dialog_.saveConfig(), "dialog config");
+    if (!parsed) {
+      return PJ::unexpected(parsed.error());
     }
+    const auto& cfg = *parsed;
     broker_address_ = cfg.value("address", std::string("localhost"));
     port_ = cfg.value("port", 1883);
     topic_filter_ = cfg.value("topics", std::string("#"));
