@@ -1,6 +1,7 @@
 find_package(nlohmann_json REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CPM.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 # rosx_introspection builds tests by default; disable them.
@@ -56,6 +57,12 @@ target_link_libraries(parser_ros_plugin PRIVATE
 pj_embed_manifest(parser_ros_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/ros_manifest.hpp
   VAR_NAME kRosManifest
+)
+
+pj_embed_ui(parser_ros_plugin
+  UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/ros_parser_options.ui
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/ros_parser_options_ui.hpp
+  VAR_NAME kRosParserOptionsUi
 )
 
 # v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
