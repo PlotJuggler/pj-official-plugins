@@ -243,7 +243,7 @@ class LeRobotSource : public PJ::FileSourceBase {
     (void)runtimeHost().progressStart("Importing LeRobot", static_cast<uint64_t>(length), true);
 
     int64_t processed = 0;
-    auto st = importEpisode(*model, plan, *opened->reader, *opened->schema, path, *topic, processed);
+    auto st = importEpisode(*model, ep, plan, *opened->reader, *opened->schema, path, *topic, processed);
     if (!st) {
       return st;
     }
@@ -349,8 +349,9 @@ class LeRobotSource : public PJ::FileSourceBase {
   }
 
   PJ::Status importEpisode(
-      const lerobot::DatasetModel& model, const std::vector<OutColumn>& plan, parquet::arrow::FileReader& reader,
-      const arrow::Schema& schema, const std::string& path, PJ::sdk::TopicHandle topic, int64_t& processed) {
+      const lerobot::DatasetModel& model, int64_t ep, const std::vector<OutColumn>& plan,
+      parquet::arrow::FileReader& reader, const arrow::Schema& schema, const std::string& path,
+      PJ::sdk::TopicHandle topic, int64_t& processed) {
     // Resolve column names → Arrow index once per episode (tolerating schema
     // drift across episodes); the row loop then indexes by position only.
     std::unordered_map<std::string, int> col_of;
