@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 #include <numbers>
 #include <pj_base/builtin/builtin_object.hpp>
+#include <pj_base/number_parse.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <rosx_introspection/ros_parser.hpp>
 #include <string>
@@ -120,13 +121,11 @@ inline double valueRefAsDouble(const PJ::sdk::ValueRef& v) {
 }
 
 inline std::pair<double, bool> tryParseDouble(const std::string& s) {
-  if (s.empty()) {
-    return {0.0, false};
-  }
-  char* end = nullptr;
-  double val = std::strtod(s.c_str(), &end);
-  if (end != s.c_str() && *end == '\0') {
-    return {val, true};
+  // Strict whole-string parse: succeed only if every byte is consumed.
+  // PJ::parseNumber is locale-independent (unlike std::strtod, which respects
+  // LC_NUMERIC) and backs the float branch with fast_float.
+  if (auto val = PJ::parseNumber<double>(s)) {
+    return {*val, true};
   }
   return {0.0, false};
 }

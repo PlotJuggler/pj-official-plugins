@@ -124,3 +124,57 @@ jobs:
       - name: Test ${{ matrix.plugin }}
         shell: bash
         run: ctest --test-dir "build/${{ matrix.plugin }}/Release" --output-on-failure -V
+
+      # Emit this plugin's status badge JSON (version from manifest, color from
+      # this leg's outcome) and hand it to the update-badges job as an artifact.
+      # `always()` so a failed build still reports red instead of going stale.
+      - name: Write status badge JSON
+        if: always()
+        shell: bash
+        run: |
+          python3 scripts/write_badge_json.py \
+            --plugin "${{ matrix.plugin }}" \
+            --status "${{ job.status }}" \
+            --out-dir badge-out
+
+      - name: Upload status badge JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: badge-${{ matrix.plugin }}
+          path: badge-out/${{ matrix.plugin }}.json
+          if-no-files-found: error
+          retention-days: 1
+
+  # Publish per-plugin status badges (version + green/red) to the orphan
+  # `badges` branch that the README's shields.io endpoint badges read. Funnels
+  # every matrix leg's artifact into a single committer so the parallel legs
+  # never race on `git push`. Runs only on pushes to main, so badges track
+  # main's health rather than in-flight PRs; `always()` so red builds still
+  # publish a red badge.
+  update-badges:
+    name: update status badges
+    needs: [discover-plugins, per-plugin-build]
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    concurrency:
+      group: badges-branch
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download badge JSON artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: badge-*
+          path: badge-out
+          merge-multiple: true
+
+      - name: Publish badges
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: scripts/publish_badges.sh badge-out

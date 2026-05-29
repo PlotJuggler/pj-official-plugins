@@ -273,9 +273,8 @@ class UdpSource : public PJ::StreamSourceBase {
         // (ObjectIngestPolicy may defer dispatch beyond this call).
         auto payload = std::make_shared<std::vector<uint8_t>>(std::move(dgram.data));
         auto status = runtimeHost().pushMessage(
-            it->second, PJ::Timestamp{dgram.timestamp_ns}, [payload]() -> PJ::sdk::PayloadView {
-              return PJ::sdk::PayloadView{PJ::Span<const uint8_t>(payload->data(), payload->size()), payload};
-            });
+            it->second, PJ::Timestamp{dgram.timestamp_ns},
+            [payload]() -> PJ::sdk::PayloadView { return PJ::sdk::PayloadView{payload}; });
         if (!status) {
           runtimeHost().reportMessage(
               PJ::DataSourceMessageLevel::kError, "Parse error — stopping stream: " + status.error());

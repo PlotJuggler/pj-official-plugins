@@ -59,10 +59,7 @@ inline PJ::sdk::PayloadView readMessageBytesAt(
       auto owned = std::make_shared<std::vector<uint8_t>>(
           reinterpret_cast<const uint8_t*>(v.message.data),
           reinterpret_cast<const uint8_t*>(v.message.data) + v.message.dataSize);
-      return PJ::sdk::PayloadView{
-          PJ::Span<const uint8_t>(owned->data(), owned->size()),
-          owned,
-      };
+      return PJ::sdk::PayloadView{owned};
     }
   }
   return {};

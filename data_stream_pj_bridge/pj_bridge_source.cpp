@@ -186,9 +186,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
             // whose anchor keeps the bytes alive past the call.
             auto payload = std::make_shared<std::vector<uint8_t>>(msg.cdr_data, msg.cdr_data + msg.cdr_size);
             auto status = runtimeHost().pushMessage(
-                it->second, PJ::Timestamp{msg.timestamp_ns}, [payload]() -> PJ::sdk::PayloadView {
-                  return PJ::sdk::PayloadView{PJ::Span<const uint8_t>(payload->data(), payload->size()), payload};
-                });
+                it->second, PJ::Timestamp{msg.timestamp_ns},
+                [payload]() -> PJ::sdk::PayloadView { return PJ::sdk::PayloadView{payload}; });
             if (!status) {
               runtimeHost().reportMessage(
                   PJ::DataSourceMessageLevel::kWarning, "Failed to push message: " + status.error());
