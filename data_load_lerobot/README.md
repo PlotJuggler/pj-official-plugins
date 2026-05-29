@@ -104,8 +104,8 @@ data_load_lerobot/
 │                                 dataset_model.cpp.
 ├── flatten_plan.{hpp,cpp}       Flatten vector columns into per-element field
 │                                 names with dedupe. Pure, testable.
-├── lerobot_arrow_helpers.hpp    Arrow scalar/vector cell extraction → PJ::sdk
-│                                 ValueRef. Mirrors data_load_parquet's helpers.
+│   (Arrow scalar/vector cell extraction → PJ::sdk ValueRef comes from the
+│    shared common/arrow_helpers module, included as pj_arrow_helpers.)
 │
 └── tests/                    GTest binaries
     ├── dataset_model_test.cpp       v2.x fixture (synthesized parquet stubs)
