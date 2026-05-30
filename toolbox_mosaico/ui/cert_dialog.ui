@@ -10,8 +10,14 @@
          Browse, the API-key field + Show/Hide, a validation tick, and the
          plaintext-fallback checkbox. Its inner inputs keep the objectNames
          certPath / apiKey / allowInsecure so PanelEngine's sub-dialog harvester
-         surfaces them to the plugin on OK. -->
-    <widget class="CredentialsEditor" name="certContents"/>
+         surfaces them to the plugin on OK. apiKeyPattern restores the Mosaico
+         key-format tick: the editor itself is format-agnostic and defaults to
+         "non-empty is valid" unless a plugin supplies its own pattern. -->
+    <widget class="CredentialsEditor" name="certContents">
+     <property name="apiKeyPattern">
+      <string>^msco_[a-z0-9]{32}_[0-9a-f]{8}$</string>
+     </property>
+    </widget>
    </item>
    <item>
     <widget class="QDialogButtonBox" name="buttonBox">
