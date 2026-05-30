@@ -44,6 +44,9 @@ class Registry {
   // owning entity by walking the init-event chains.
   std::optional<ResolvedCallback> resolveCallback(EntityKey callback) const;
 
+  // Resolve an rmw subscription handle (as seen in rmw_take) to its topic name.
+  std::optional<std::string> topicForRmwSubscription(EntityKey rmw_handle) const;
+
  private:
   struct SubInfo {
     std::string topic;
@@ -59,9 +62,10 @@ class Registry {
   };
 
   std::unordered_map<EntityKey, NodeInfo, EntityKeyHash> nodes_;
-  std::unordered_map<EntityKey, SubInfo, EntityKeyHash> subscriptions_;    // by rcl subscription_handle
-  std::unordered_map<EntityKey, EntityKey, EntityKeyHash> sub_objects_;    // rclcpp subscription -> subscription_handle
-  std::unordered_map<EntityKey, TimerInfo, EntityKeyHash> timers_;         // by rcl timer_handle
+  std::unordered_map<EntityKey, SubInfo, EntityKeyHash> subscriptions_;  // by rcl subscription_handle
+  std::unordered_map<EntityKey, EntityKey, EntityKeyHash> sub_objects_;  // rclcpp subscription -> subscription_handle
+  std::unordered_map<EntityKey, EntityKey, EntityKeyHash> rmw_subs_;  // rmw subscription_handle -> subscription_handle
+  std::unordered_map<EntityKey, TimerInfo, EntityKeyHash> timers_;    // by rcl timer_handle
   std::unordered_map<EntityKey, CallbackOwner, EntityKeyHash> callbacks_;  // callback -> owner
   std::unordered_map<EntityKey, std::string, EntityKeyHash> callback_symbols_;
 };

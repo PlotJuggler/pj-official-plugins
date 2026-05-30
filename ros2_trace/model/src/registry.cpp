@@ -25,6 +25,9 @@ void Registry::consume(const RawEvent& ev) {
       info.topic = std::string(ev.str("topic_name").value_or(std::string_view{}));
       info.node = EntityKey{*node_handle};
       subscriptions_[EntityKey{*sub_handle}] = std::move(info);
+      if (const auto rmw = ev.handle("rmw_subscription_handle")) {
+        rmw_subs_[EntityKey{*rmw}] = EntityKey{*sub_handle};
+      }
       break;
     }
     case Tp::RclcppSubscriptionInit: {
@@ -136,6 +139,18 @@ std::optional<ResolvedCallback> Registry::resolveCallback(EntityKey callback) co
   }
 
   return out;
+}
+
+std::optional<std::string> Registry::topicForRmwSubscription(EntityKey rmw_handle) const {
+  const auto it = rmw_subs_.find(rmw_handle);
+  if (it == rmw_subs_.end()) {
+    return std::nullopt;
+  }
+  const auto sub_it = subscriptions_.find(it->second);
+  if (sub_it == subscriptions_.end()) {
+    return std::nullopt;
+  }
+  return sub_it->second.topic;
 }
 
 }  // namespace ros2_trace_model
