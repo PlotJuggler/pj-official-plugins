@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>CertDialog</class>
+ <widget class="QDialog" name="CertDialog">
+  <property name="windowTitle"><string>Server Certificate / API Key</string></property>
+  <property name="minimumWidth"><number>520</number></property>
+  <layout class="QVBoxLayout">
+   <item>
+    <!-- CredentialsEditor (PjUiLoader building block) provides the cert path +
+         Browse, the API-key field + Show/Hide, a validation tick, and the
+         plaintext-fallback checkbox. Its inner inputs keep the objectNames
+         certPath / apiKey / allowInsecure so PanelEngine's sub-dialog harvester
+         surfaces them to the plugin on OK. apiKeyPattern restores the Mosaico
+         key-format tick: the editor itself is format-agnostic and defaults to
+         "non-empty is valid" unless a plugin supplies its own pattern. -->
+    <widget class="CredentialsEditor" name="certContents">
+     <property name="apiKeyPattern">
+      <string>^msco_[a-z0-9]{32}_[0-9a-f]{8}$</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>

@@ -1,0 +1,20 @@
+{
+  "id": "toolbox-mosaico",
+  "name": "Mosaico Cloud Server",
+  "version": "0.1.0",
+  "description": "Browse and import data from Mosaico cloud servers via Apache Arrow Flight. Includes Lua metadata predicate filter, multi-topic streaming, and time-range selection.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "toolbox",
+  "tags": [
+    "cloud",
+    "mosaico",
+    "arrow",
+    "flight"
+  ],
+  "min_plotjuggler_version": "4.0.0"
+}

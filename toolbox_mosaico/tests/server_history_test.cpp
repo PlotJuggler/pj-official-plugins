@@ -1,0 +1,83 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+#include "server_history.h"
+
+#include <gtest/gtest.h>
+
+#include <string>
+#include <vector>
+
+// ---------- normalizeServerKey ----------
+
+TEST(ServerHistoryNormalize, StripsGrpcScheme) {
+  EXPECT_EQ(normalizeServerKey("grpc://demo.mosaico.dev:6726"), std::string("demo.mosaico.dev:6726"));
+}
+
+TEST(ServerHistoryNormalize, StripsGrpcTlsScheme) {
+  EXPECT_EQ(normalizeServerKey("grpc+tls://demo.mosaico.dev:6726"), std::string("demo.mosaico.dev:6726"));
+}
+
+TEST(ServerHistoryNormalize, StripsTrailingSlash) {
+  EXPECT_EQ(normalizeServerKey("grpc://demo.mosaico.dev:6726/"), std::string("demo.mosaico.dev:6726"));
+}
+
+TEST(ServerHistoryNormalize, LowercasesHost) {
+  EXPECT_EQ(normalizeServerKey("grpc://DEMO.Mosaico.DEV:6726"), std::string("demo.mosaico.dev:6726"));
+}
+
+TEST(ServerHistoryNormalize, PreservesPortCase) {
+  EXPECT_EQ(normalizeServerKey("demo.mosaico.dev:6726"), std::string("demo.mosaico.dev:6726"));
+}
+
+TEST(ServerHistoryNormalize, BareHostWithoutPortIsLowercased) {
+  EXPECT_EQ(normalizeServerKey("EXAMPLE.Host"), std::string("example.host"));
+}
+
+TEST(ServerHistoryNormalize, TrimsWhitespace) {
+  EXPECT_EQ(normalizeServerKey("  grpc://demo.mosaico.dev:6726  "), std::string("demo.mosaico.dev:6726"));
+}
+
+TEST(ServerHistoryNormalize, EmptyInputYieldsEmpty) {
+  EXPECT_EQ(normalizeServerKey(""), std::string(""));
+  EXPECT_EQ(normalizeServerKey("   "), std::string(""));
+}
+
+TEST(ServerHistoryNormalize, MalformedSchemeOnlyYieldsEmpty) {
+  EXPECT_EQ(normalizeServerKey("grpc://"), std::string(""));
+}
+
+// ---------- promoteToHead ----------
+
+TEST(ServerHistoryPromote, PrependsNewKey) {
+  std::vector<std::string> h = {"a:1", "b:2"};
+  EXPECT_EQ(promoteToHead(h, "c:3", 10), (std::vector<std::string>{"c:3", "a:1", "b:2"}));
+}
+
+TEST(ServerHistoryPromote, MovesExistingKeyToFront) {
+  std::vector<std::string> h = {"a:1", "b:2", "c:3"};
+  EXPECT_EQ(promoteToHead(h, "c:3", 10), (std::vector<std::string>{"c:3", "a:1", "b:2"}));
+}
+
+TEST(ServerHistoryPromote, NoDuplicatesAfterPromotion) {
+  std::vector<std::string> h = {"a:1", "b:2"};
+  EXPECT_EQ(promoteToHead(h, "a:1", 10), (std::vector<std::string>{"a:1", "b:2"}));
+}
+
+TEST(ServerHistoryPromote, CapEvictsOldest) {
+  std::vector<std::string> h = {"a:1", "b:2", "c:3"};
+  EXPECT_EQ(promoteToHead(h, "d:4", 3), (std::vector<std::string>{"d:4", "a:1", "b:2"}));
+}
+
+TEST(ServerHistoryPromote, CapOfZeroYieldsEmpty) {
+  std::vector<std::string> h = {"a:1"};
+  EXPECT_EQ(promoteToHead(h, "b:2", 0), (std::vector<std::string>{}));
+}
+
+TEST(ServerHistoryPromote, EmptyKeyIsRejected) {
+  std::vector<std::string> h = {"a:1"};
+  EXPECT_EQ(promoteToHead(h, "", 10), (std::vector<std::string>{"a:1"}));
+}
