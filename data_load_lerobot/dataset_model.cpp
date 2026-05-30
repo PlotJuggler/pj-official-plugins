@@ -6,6 +6,8 @@
 #include <sstream>
 #include <system_error>
 
+#include "dataset_shards_v3.hpp"
+
 namespace lerobot {
 namespace {
 
@@ -74,10 +76,15 @@ PJ::Expected<json> readJsonFile(const fs::path& path) {
   return parsed;
 }
 
-// Reject anything that is not LeRobot v2.0 / v2.1.
-PJ::Status gateVersion(const std::string& version) {
+// Classify the LeRobot dataset version from info.json's `codebase_version`.
+// v2.0 / v2.1 share the same on-disk layout from the plugin's point of view
+// and collapse to `V2_x`. Any `v3.x` is accepted as `V3_0` (the v3 line
+// reserves further point releases for non-breaking metadata extensions; the
+// plugin reads only the fields documented for v3.0 and is forward-tolerant
+// of new ones). Everything else is rejected.
+PJ::Expected<DatasetVersion> gateVersion(const std::string& version) {
   if (version == "v2.0" || version == "v2.1") {
-    return PJ::okStatus();
+    return DatasetVersion::V2_x;
   }
   std::string trimmed = version;
   if (!trimmed.empty() && (trimmed[0] == 'v' || trimmed[0] == 'V')) {
@@ -92,11 +99,15 @@ PJ::Status gateVersion(const std::string& version) {
       major = major * 10 + (c - '0');
     }
   }
-  if (major >= 3) {
-    return PJ::unexpected(
-        "LeRobot v3.0 datasets are not supported yet (found codebase_version='" + version + "'); v2.1 only");
+  if (major == 3) {
+    return DatasetVersion::V3_0;
   }
-  return PJ::unexpected("unsupported LeRobot codebase_version='" + version + "' (expected v2.0 or v2.1)");
+  if (major >= 4) {
+    return PJ::unexpected(
+        "LeRobot v" + std::to_string(major) + ".x datasets are not supported (found codebase_version='" + version +
+        "'); this plugin understands v2.0, v2.1 and v3.x");
+  }
+  return PJ::unexpected("unsupported LeRobot codebase_version='" + version + "' (expected v2.0, v2.1 or v3.x)");
 }
 
 PJ::Expected<fs::path> resolveRoot(const fs::path& picked) {
@@ -234,10 +245,36 @@ PJ::Status parseEpisodes(const fs::path& root, const std::vector<std::string>& t
   return PJ::okStatus();
 }
 
+// For v2.x datasets, every episode lives in its own parquet (rows 0..length)
+// and every (episode, camera) has its own mp4 (whole file is the clip).
+// Synthesize that "trivial shard map" from `model.episodes` so the importer
+// can stay layout-blind and consume `model.episode_shards` for both versions.
+void synthesizeShardsV2(DatasetModel& model) {
+  for (const auto& ep : model.episodes) {
+    const int64_t chunk = model.chunks_size > 0 ? ep.episode_index / model.chunks_size : 0;
+    EpisodeShard shard;
+    shard.parquet_path = model.root / expandPathTemplate(model.data_path_tmpl, chunk, ep.episode_index, {});
+    shard.row_from = 0;
+    shard.row_to = ep.length;
+    if (!ep.task_text.empty()) {
+      shard.tasks.push_back(ep.task_text);
+    }
+    for (const std::string& cam : model.camera_names) {
+      VideoShard vs;
+      vs.mp4_path = model.root / expandPathTemplate(model.video_path_tmpl, chunk, ep.episode_index, cam);
+      // start_ns / end_ns left absent → whole-file playback, unchanged from
+      // the original v2.x behavior.
+      shard.videos[cam] = std::move(vs);
+    }
+    model.episode_shards[ep.episode_index] = std::move(shard);
+  }
+}
+
 }  // namespace
 
 std::string expandPathTemplate(
-    std::string_view tmpl, int64_t episode_chunk, int64_t episode_index, std::string_view video_key) {
+    std::string_view tmpl, const std::unordered_map<std::string, int64_t>& int_args,
+    const std::unordered_map<std::string, std::string>& str_args) {
   std::string out;
   out.reserve(tmpl.size() + 16);
   for (std::size_t i = 0; i < tmpl.size();) {
@@ -257,18 +294,27 @@ std::string expandPathTemplate(
       name = token.substr(0, colon);
       spec = token.substr(colon + 1);
     }
-    if (name == "episode_chunk") {
-      out += zeroPad(episode_chunk, parseWidth(spec));
-    } else if (name == "episode_index") {
-      out += zeroPad(episode_index, parseWidth(spec));
-    } else if (name == "video_key" || name == "camera_key") {
-      out.append(video_key);
+    const std::string name_key(name);
+    if (auto ii = int_args.find(name_key); ii != int_args.end()) {
+      out += zeroPad(ii->second, parseWidth(spec));
+    } else if (auto si = str_args.find(name_key); si != str_args.end()) {
+      out.append(si->second);
     } else {
       out.append(tmpl.substr(i, close - i + 1));  // unknown token: keep literal
     }
     i = close + 1;
   }
   return out;
+}
+
+std::string expandPathTemplate(
+    std::string_view tmpl, int64_t episode_chunk, int64_t episode_index, std::string_view video_key) {
+  // `video_key` and `camera_key` are aliases used interchangeably across
+  // LeRobot v2.x info.json files — register both so either template works.
+  const std::string vk(video_key);
+  return expandPathTemplate(
+      tmpl, {{"episode_chunk", episode_chunk}, {"episode_index", episode_index}},
+      {{"video_key", vk}, {"camera_key", vk}});
 }
 
 const FeatureSpec* DatasetModel::feature(std::string_view name) const {
@@ -281,13 +327,22 @@ const FeatureSpec* DatasetModel::feature(std::string_view name) const {
 }
 
 std::filesystem::path DatasetModel::episodeParquet(int64_t episode_index) const {
-  int64_t chunk = chunks_size > 0 ? episode_index / chunks_size : 0;
-  return root / expandPathTemplate(data_path_tmpl, chunk, episode_index, {});
+  // `episode_shards` is populated for both versions by loadDatasetModel
+  // (v2.x → synthesizeShardsV2, v3.0 → loadV3EpisodeShards). An empty path
+  // here means the caller is asking for an episode the model does not know.
+  if (auto it = episode_shards.find(episode_index); it != episode_shards.end()) {
+    return it->second.parquet_path;
+  }
+  return {};
 }
 
 std::filesystem::path DatasetModel::episodeVideo(int64_t episode_index, std::string_view camera) const {
-  int64_t chunk = chunks_size > 0 ? episode_index / chunks_size : 0;
-  return root / expandPathTemplate(video_path_tmpl, chunk, episode_index, camera);
+  if (auto it = episode_shards.find(episode_index); it != episode_shards.end()) {
+    if (auto vit = it->second.videos.find(std::string(camera)); vit != it->second.videos.end()) {
+      return vit->second.mp4_path;
+    }
+  }
+  return {};
 }
 
 PJ::Expected<DatasetModel> loadDatasetModel(const std::filesystem::path& picked_path) {
@@ -308,15 +363,31 @@ PJ::Expected<DatasetModel> loadDatasetModel(const std::filesystem::path& picked_
   DatasetModel model;
   model.root = *root;
   model.codebase_version = strField(info, "codebase_version");
-  if (auto status = gateVersion(model.codebase_version); !status) {
-    return PJ::unexpected(status.error());
+  auto ver_or = gateVersion(model.codebase_version);
+  if (!ver_or) {
+    return PJ::unexpected(ver_or.error());
   }
+  model.version = *ver_or;
   model.fps = doubleField(info, "fps", 30.0);
   model.chunks_size = intField(info, "chunks_size", 1000);
   model.data_path_tmpl = strField(info, "data_path", kDefaultDataPath);
   model.video_path_tmpl = strField(info, "video_path", kDefaultVideoPath);
 
   parseFeatures(info, model);
+
+  if (model.version == DatasetVersion::V3_0) {
+    // v3.0 episode metadata lives in chunked Parquet under meta/episodes/,
+    // and the data/video layouts are file-bucketed rather than per-episode.
+    // The Arrow-aware reader lives in a sibling translation unit so the
+    // pure-stdlib `dataset_model.cpp` stays Arrow-free.
+    if (auto status = loadV3EpisodeShards(*root, model); !status) {
+      return PJ::unexpected(status.error());
+    }
+    if (model.episodes.empty()) {
+      return PJ::unexpected("no episodes found in meta/episodes/*.parquet");
+    }
+    return model;
+  }
 
   std::vector<std::string> tasks_by_index;
   if (auto status = parseTasks(*root, tasks_by_index); !status) {
@@ -328,6 +399,7 @@ PJ::Expected<DatasetModel> loadDatasetModel(const std::filesystem::path& picked_
   if (model.episodes.empty()) {
     return PJ::unexpected("no episodes found in meta/episodes.jsonl");
   }
+  synthesizeShardsV2(model);
   return model;
 }
 
