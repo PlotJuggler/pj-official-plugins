@@ -53,8 +53,10 @@ jobs:
         run: scripts/ensure_core.sh
 
       - name: Save plotjuggler_core to a Conan cache artifact
+        # Pin to the exact SDK_VERSION so a stale plotjuggler_core left in the
+        # setup-conan package cache can never be shipped in the artifact.
         shell: bash
-        run: conan cache save "plotjuggler_core/*:*" --file core-cache.tgz
+        run: conan cache save "plotjuggler_core/$(cat SDK_VERSION):*" --file core-cache.tgz
 
       - name: Upload core cache artifact
         uses: actions/upload-artifact@v4

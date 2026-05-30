@@ -20,7 +20,10 @@ REF="plotjuggler_core/${CORE_VERSION}"
 REMOTE="plotjuggler-cloudsmith"
 SETTINGS=(-s build_type="${BUILD_TYPE:-Release}" -s compiler.cppstd=20)
 
-if conan list "${REF}:*" 2>/dev/null | grep -q "${REF}"; then
+# Use `conan cache path` (errors when the recipe is truly absent) rather than
+# `conan list | grep`: conan list echoes the queried reference in its "not found"
+# output, which made the grep false-positive and skip building the real package.
+if conan cache path "${REF}" >/dev/null 2>&1; then
   echo "ensure_core: ${REF} already present in the local Conan cache"
   exit 0
 fi
