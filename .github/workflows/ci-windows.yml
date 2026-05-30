@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Conan
         uses: conan-io/setup-conan@v1.3.0
@@ -32,17 +34,15 @@ jobs:
         with:
           arch: x64
 
-      - name: Configure plotjuggler cloudsmith Conan remote
-        env:
-          CLOUDSMITH_USER: ${{ secrets.CLOUDSMITH_USER }}
-          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+      - name: Acquire plotjuggler_core
+        # Cloudsmith publishes only a Linux binary, so Windows builds core from source.
+        # ensure_core.sh builds it from the pinned extern/plotjuggler_core submodule
+        # with no cloudsmith remote configured, so a cloudsmith outage can never break
+        # the Windows build. Runs after the MSVC env is set up so conan can compile it.
         shell: bash
         run: |
           conan profile detect --force
-          conan remote add plotjuggler-cloudsmith \
-            https://conan.cloudsmith.io/plotjuggler/plotjuggler --force
-          conan remote login plotjuggler-cloudsmith \
-            "$CLOUDSMITH_USER" -p "$CLOUDSMITH_API_KEY"
+          scripts/ensure_core.sh
 
       - name: Build & Test
         shell: bash

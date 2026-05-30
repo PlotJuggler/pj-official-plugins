@@ -1,0 +1,64 @@
+import os
+
+from conan import ConanFile
+
+# Single source of truth for the plotjuggler_core version: the SDK_VERSION file at the
+# repo root, read live so the pin lives in exactly one place. Edit it with
+# scripts/bump_core_version.py (which also moves the extern/plotjuggler_core submodule).
+_SDK_VERSION = (
+    open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "SDK_VERSION"))
+    .read()
+    .strip()
+)
+
+
+class PjOfficialPluginsConan(ConanFile):
+    """Full-repository dependency superset (every plugin's third-party deps).
+
+    Used by `build.sh` with no argument and by the scheduled/manual full builds.
+    Per-plugin builds use each plugin's own conanfile.py instead.
+    """
+
+    settings = "os", "compiler", "build_type", "arch"
+    generators = "CMakeDeps", "CMakeToolchain"
+
+    requires = (
+        "nlohmann_json/3.12.0",
+        "arrow/23.0.1",
+        "fmt/12.1.0",
+        "paho-mqtt-cpp/1.5.3",
+        "cppzmq/4.11.0",
+        "protobuf/6.33.5",
+        "lz4/1.10.0",
+        "zstd/1.5.7",
+        "date/3.0.4",
+        "gtest/1.17.0",
+        "ixwebsocket/11.4.6",
+        "asio/1.28.2",
+        "kissfft/131.1.0",
+        "lua/5.4.6",
+        "sol2/3.5.0",
+        # Pin libsodium to 1.0.20: 1.0.21 has broken ARM NEON code that fails with
+        # GCC on aarch64.
+        "libsodium/1.0.20",
+        "pybind11/2.13.6",
+        "cpython/3.12.7",
+        f"plotjuggler_core/{_SDK_VERSION}",
+    )
+
+    default_options = {
+        "*:shared": False,
+        "arrow/*:parquet": True,
+        "arrow/*:with_snappy": True,
+        "boost/*:without_test": True,
+        "boost/*:without_cobalt": True,
+        "lua/*:compile_as_cpp": True,
+        # cpython built static on Linux/macOS: libpython3.12.a links into the plugin
+        # .so directly. Windows/MSVC disables static cpython >=3.10, so ci-windows.yml
+        # overrides to shared=True via -o flag; the CMakeLists.txt then copies
+        # python3XX.dll.
+        "cpython/*:shared": False,
+        # Tkinter requires X11 system libs (libx11-dev, libxcb-*-dev) which are not
+        # available on CI runners. We do not need Tkinter for scripting.
+        "cpython/*:with_tkinter": False,
+    }

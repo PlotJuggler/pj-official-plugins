@@ -1241,7 +1241,8 @@ def cmd_generate_release_notes(args) -> int:
             ".github/workflows/build-release.yml",
             "CMakeLists.txt",
             "cmake",
-            "conanfile.txt",
+            "conanfile.py",
+            "SDK_VERSION",
             "scripts",
         ]
         shared_commits = list_commits_for_paths(root, revision_range, shared_paths)
@@ -1322,7 +1323,7 @@ def cmd_resolve_build_scope(args) -> int:
     build_script_args = ""
     scope = "all"
     plugin_name = ""
-    conan_hash_path = Path("conanfile.txt")
+    conan_hash_path = Path("conanfile.py")
     skip = False
     use_release_override = False
 
@@ -1364,7 +1365,7 @@ def cmd_resolve_build_scope(args) -> int:
         # Choose the source for the cache key + assert the build inputs exist.
         # Skipped entries don't need either.
         if skip:
-            conan_hash_path = manifest_path if manifest_path.is_file() else Path("conanfile.txt")
+            conan_hash_path = manifest_path if manifest_path.is_file() else Path("conanfile.py")
         elif use_release_override:
             conan_hash_path = release_script
         else:
@@ -1376,7 +1377,14 @@ def cmd_resolve_build_scope(args) -> int:
                 )
                 return 1
 
-    conan_hash = hashlib.sha256(conan_hash_path.read_bytes()).hexdigest()
+    # Every recipe derives its plotjuggler_core pin from SDK_VERSION, so a core bump
+    # must invalidate the cache even though the recipe's own bytes are unchanged.
+    _conan_hash = hashlib.sha256()
+    _conan_hash.update(conan_hash_path.read_bytes())
+    _sdk_version_path = Path("SDK_VERSION")
+    if _sdk_version_path.is_file():
+        _conan_hash.update(_sdk_version_path.read_bytes())
+    conan_hash = _conan_hash.hexdigest()
 
     outputs = {
         "build_dir": build_dir,

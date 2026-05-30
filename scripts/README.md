@@ -195,7 +195,7 @@ Triggered by tags matching `*/v*` pattern.
 | Step | Description |
 |------|-------------|
 | Checkout | Clone repository at tagged commit |
-| Install dependencies | For tags, install the tagged plugin's `conanfile.py`; for scheduled/manual full builds, install the root `conanfile.txt` |
+| Install dependencies | For tags, install the tagged plugin's `conanfile.py`; for scheduled/manual full builds, install the root `conanfile.py` |
 | Restore Conan cache | Use a cache key scoped by Conan version, platform, plugin, and recipe hash |
 | Build | Run `./build.sh source_dir`, which installs the plugin recipe and configures CMake with `-DPJ_BUILD_PLUGIN=source_dir` |
 | Test | Run plugin tests via ctest |
