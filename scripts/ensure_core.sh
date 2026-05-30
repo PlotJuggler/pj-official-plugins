@@ -35,8 +35,18 @@ if conan remote list 2>/dev/null | grep -q "${REMOTE}"; then
   echo "ensure_core: ${REMOTE} unavailable or has no prebuilt binary — falling back to source"
 fi
 
-echo "ensure_core: building ${REF} from submodule extern/plotjuggler_core"
-git -C "${REPO_ROOT}" submodule update --init --depth 1 extern/plotjuggler_core
-conan create "${REPO_ROOT}/extern/plotjuggler_core" --version "${CORE_VERSION}" \
-  "${SETTINGS[@]}" --build=missing
+echo "ensure_core: building ${REF} from source (extern/plotjuggler_core)"
+CORE_DIR="${REPO_ROOT}/extern/plotjuggler_core"
+if [ ! -f "${CORE_DIR}/conanfile.py" ]; then
+  # A pinned, non-tip commit cannot be fetched with `--depth 1`, so do a full
+  # submodule fetch (non-fatal); the direct tag clone below is the last resort.
+  git -C "${REPO_ROOT}" submodule update --init --recursive extern/plotjuggler_core || true
+fi
+if [ ! -f "${CORE_DIR}/conanfile.py" ]; then
+  echo "ensure_core: submodule not populated — cloning v${CORE_VERSION} directly"
+  rm -rf "${CORE_DIR}"
+  git clone --branch "v${CORE_VERSION}" --depth 1 \
+    https://github.com/PlotJuggler/plotjuggler_core.git "${CORE_DIR}"
+fi
+conan create "${CORE_DIR}" --version "${CORE_VERSION}" "${SETTINGS[@]}" --build=missing
 echo "ensure_core: built ${REF} from source"
