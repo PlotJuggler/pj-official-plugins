@@ -30,6 +30,7 @@ add_library(ros2_trace_model STATIC
   src/raw_event.cpp
   src/registry.cpp
   src/callback_deriver.cpp
+  src/pipeline.cpp
 )
 set_target_properties(ros2_trace_model PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(ros2_trace_model PUBLIC cxx_std_20)
@@ -42,6 +43,7 @@ if(BUILD_TESTING)
   add_executable(ros2_trace_model_test
     tests/registry_test.cpp
     tests/callback_deriver_test.cpp
+    tests/pipeline_test.cpp
   )
   target_compile_features(ros2_trace_model_test PRIVATE cxx_std_20)
   target_compile_options(ros2_trace_model_test PRIVATE ${PJ_WARNING_FLAGS})

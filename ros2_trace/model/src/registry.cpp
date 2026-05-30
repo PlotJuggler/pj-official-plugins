@@ -53,6 +53,32 @@ void Registry::consume(const RawEvent& ev) {
       callback_symbols_[EntityKey{*callback}] = std::string(ev.str("symbol").value_or(std::string_view{}));
       break;
     }
+    case Tp::RclTimerInit: {
+      const auto timer = ev.handle("timer_handle");
+      if (!timer) {
+        return;
+      }
+      timers_[EntityKey{*timer}].period_ns = ev.i64("period").value_or(0);
+      break;
+    }
+    case Tp::RclcppTimerLinkNode: {
+      const auto timer = ev.handle("timer_handle");
+      const auto node_handle = ev.handle("node_handle");
+      if (!timer || !node_handle) {
+        return;
+      }
+      timers_[EntityKey{*timer}].node = EntityKey{*node_handle};
+      break;
+    }
+    case Tp::RclcppTimerCallbackAdded: {
+      const auto timer = ev.handle("timer_handle");
+      const auto callback = ev.handle("callback");
+      if (!timer || !callback) {
+        return;
+      }
+      callbacks_[EntityKey{*callback}] = CallbackOwner{CallbackKind::Timer, EntityKey{*timer}};
+      break;
+    }
     default:
       break;
   }
@@ -95,7 +121,15 @@ std::optional<ResolvedCallback> Registry::resolveCallback(EntityKey callback) co
       }
       break;
     }
-    case CallbackKind::Timer:
+    case CallbackKind::Timer: {
+      const auto t_it = timers_.find(cb_it->second.owner);
+      if (t_it != timers_.end()) {
+        if (const auto node_it = nodes_.find(t_it->second.node); node_it != nodes_.end()) {
+          out.node_name = node_it->second.name;
+        }
+      }
+      break;
+    }
     case CallbackKind::Service:
     case CallbackKind::Unknown:
       break;

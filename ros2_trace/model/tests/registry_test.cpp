@@ -54,3 +54,25 @@ TEST(Registry, ResolvesSubscriptionCallbackChain) {
   EXPECT_EQ(rc->topic_name, "/chatter");
   EXPECT_EQ(rc->symbol, "Listener::on_msg(std_msgs::msg::String)");
 }
+
+TEST(Registry, ResolvesTimerCallbackChain) {
+  Registry reg;
+  const std::uint64_t node = 0x1000;
+  const std::uint64_t timer = 0x5000;
+  const std::uint64_t cb = 0x6000;
+
+  reg.consume(RawEvent(
+      Tp::RclNodeInit, 1,
+      {{"node_handle", node}, {"node_name", std::string("talker")}, {"namespace", std::string("/")}}));
+  reg.consume(RawEvent(Tp::RclTimerInit, 2, {{"timer_handle", timer}, {"period", std::int64_t{100000000}}}));
+  reg.consume(RawEvent(Tp::RclcppTimerLinkNode, 3, {{"timer_handle", timer}, {"node_handle", node}}));
+  reg.consume(RawEvent(Tp::RclcppTimerCallbackAdded, 4, {{"timer_handle", timer}, {"callback", cb}}));
+  reg.consume(RawEvent(Tp::RclcppCallbackRegister, 5, {{"callback", cb}, {"symbol", std::string("on_timer")}}));
+
+  const auto rc = reg.resolveCallback(EntityKey{cb});
+  ASSERT_TRUE(rc.has_value());
+  EXPECT_EQ(rc->kind, CallbackKind::Timer);
+  EXPECT_EQ(rc->node_name, "talker");
+  EXPECT_EQ(rc->symbol, "on_timer");
+  EXPECT_TRUE(rc->topic_name.empty());
+}

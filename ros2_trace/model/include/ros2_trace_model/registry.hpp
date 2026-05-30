@@ -53,10 +53,15 @@ class Registry {
     CallbackKind kind{CallbackKind::Unknown};
     EntityKey owner;  // subscription object / timer handle / service handle
   };
+  struct TimerInfo {
+    EntityKey node;
+    std::int64_t period_ns{};
+  };
 
   std::unordered_map<EntityKey, NodeInfo, EntityKeyHash> nodes_;
   std::unordered_map<EntityKey, SubInfo, EntityKeyHash> subscriptions_;    // by rcl subscription_handle
   std::unordered_map<EntityKey, EntityKey, EntityKeyHash> sub_objects_;    // rclcpp subscription -> subscription_handle
+  std::unordered_map<EntityKey, TimerInfo, EntityKeyHash> timers_;         // by rcl timer_handle
   std::unordered_map<EntityKey, CallbackOwner, EntityKeyHash> callbacks_;  // callback -> owner
   std::unordered_map<EntityKey, std::string, EntityKeyHash> callback_symbols_;
 };
