@@ -234,12 +234,24 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
       return nullptr;
     }
 
+    nlohmann::json parser_config = nlohmann::json::object();
+    const std::string& base_parser_config =
+        !parser_config_override_.empty() ? parser_config_override_ : parser_config_json_;
+    if (!base_parser_config.empty()) {
+      auto parsed_config = nlohmann::json::parse(base_parser_config, nullptr, false);
+      if (parsed_config.is_object()) {
+        parser_config = std::move(parsed_config);
+      }
+    }
+    parser_config["schema_encoding"] = "ros2msg";
+    const std::string parser_config_str = parser_config.dump();
+
     auto binding = runtimeHost().ensureParserBinding({
         .topic_name = topic,
         .parser_encoding = "ros2msg",
         .type_name = type_name,
         .schema = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(schema.data()), schema.size()),
-        .parser_config_json = parser_config_override_,
+        .parser_config_json = parser_config_str,
     });
     if (!binding) {
       runtimeHost().reportMessage(

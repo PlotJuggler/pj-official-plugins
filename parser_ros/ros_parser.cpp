@@ -3,8 +3,6 @@
 #include <functional>
 #include <string>
 
-#include "ros_manifest.hpp"
-#include "ros_parser_dialog.hpp"
 #include "ros_parser_internal.hpp"
 
 namespace ros_parser_detail {
@@ -74,6 +72,33 @@ bool parseStringAsDouble(const std::string& str, double& value, bool remove_suff
   }
 
   return false;
+}
+
+std::string normalizedMessageType(std::string_view type_name, RosMsgParser::SchemaFormat schema_format) {
+  std::string msg_type(type_name);
+  if (schema_format == RosMsgParser::DDS_IDL) {
+    // OMG IDL schemas use scoped names such as "pkg::Type". rosx_introspection
+    // expects the root type as "pkg/Type", matching PJ3's ParserOMGIDL.
+    if (auto pos = msg_type.rfind("::"); pos != std::string::npos) {
+      msg_type.replace(pos, 2, "/");
+    }
+  } else if (auto pos = msg_type.find("/msg/"); pos != std::string::npos) {
+    msg_type.erase(pos, 4);
+  }
+  return msg_type;
+}
+
+PJ::Expected<std::pair<std::string, RosMsgParser::SchemaFormat>> schemaEncodingToFormat(std::string_view encoding) {
+  if (encoding == "omgidl") {
+    return std::make_pair(std::string("omgidl"), RosMsgParser::DDS_IDL);
+  }
+  if (encoding == "ros1msg" || encoding == "ros1") {
+    return std::make_pair(std::string("ros1msg"), RosMsgParser::ROS_MSG);
+  }
+  if (encoding.empty() || encoding == "ros2msg" || encoding == "ros2") {
+    return std::make_pair(std::string("ros2msg"), RosMsgParser::ROS_MSG);
+  }
+  return PJ::unexpected(std::string("unsupported ROS schema encoding: ") + std::string(encoding));
 }
 
 }  // namespace
@@ -158,16 +183,14 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
 
 PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema) {
   // The schema arrives as raw bytes; rosx_introspection consumes it as a
-  // std::string (the textual .msg definition).
-  std::string definition(reinterpret_cast<const char*>(schema.data()), schema.size());
-
-  // Normalise ROS 2 type names: "pkg/msg/Type" -> "pkg/Type". The catalog
-  // keys (and bound_type_name_) use the canonical form; both must agree.
+  // std::string (the textual .msg or IDL definition).
   type_name_ = std::string(type_name);
-  std::string msg_type = type_name_;
-  if (auto pos = msg_type.find("/msg/"); pos != std::string::npos) {
-    msg_type.erase(pos, 4);
-  }
+  schema_definition_.assign(reinterpret_cast<const char*>(schema.data()), schema.size());
+  schema_bound_ = true;
+  schema_compiled_ = false;
+  parser_.reset();
+  has_header_ = false;
+  quaternion_prefixes_.clear();
 
   // Let the SDK base class record the bound type and run its own bind
   // bookkeeping (host registration, dialog config, …). We hand it the
@@ -179,33 +202,19 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
     return status;
   }
 
-  // Compile the message definition once and keep the rosx_introspection
-  // parser cached on this instance — it is reused for every message of
-  // this type. The array policy controls how variable-length fields are
-  // truncated by the generic introspection walker.
-  try {
-    parser_.emplace("", RosMsgParser::ROSType(msg_type), definition);
-    auto policy =
-        discard_large_arrays_ ? RosMsgParser::Parser::DISCARD_LARGE_ARRAYS : RosMsgParser::Parser::KEEP_LARGE_ARRAYS;
-    parser_->setMaxArrayPolicy(policy, max_array_size_);
-  } catch (const std::exception& e) {
-    return PJ::unexpected(std::string("failed to parse ROS schema: ") + e.what());
+  // Runtime hosts in PJ4 call bindSchema() before loadConfig(). The selected
+  // schema encoding therefore arrives later through parser_config_json. Keep a
+  // generic scalar handler available immediately, then replace it with the
+  // schema-specific handler once loadConfig() has selected ros2msg/omgidl.
+  registerBoundSchemaHandler(catalog().at(CatalogEntry::kDefault));
+
+  if (schema_format_configured_) {
+    return compileBoundSchema(true);
   }
+  return PJ::okStatus();
+}
 
-  // Cache schema-derived flags (has_header_, quaternion prefixes, …) and
-  // prepare the wire-format deserializer (ROS 1 binary vs ROS 2 CDR).
-  detectSchemaFeatures();
-  ensureDeserializer();
-
-  // Catalog lookup: exact match for this schema, otherwise the kDefault
-  // entry (generic introspection fallback). kDefault is guaranteed to be
-  // present in the catalog, so the second find always hits.
-  auto it = catalog().find(msg_type);
-  if (it == catalog().end()) {
-    it = catalog().find(CatalogEntry::kDefault);
-  }
-  const auto& entry = it->second;
-
+void RosParser::registerBoundSchemaHandler(const CatalogEntry& entry) {
   // Bind the catalog entry's member-function pointers to `this` and
   // register a single SchemaHandler with the host. The per-instance
   // handler table ends up with exactly one entry for this bound schema.
@@ -250,6 +259,56 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
   // when calling classifySchema / parseScalars / parseObject — keeps lookups
   // symmetric regardless of "/msg/" presence).
   registerSchemaHandler(type_name_, std::move(handler));
+}
+
+PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
+  if (!schema_bound_) {
+    return PJ::unexpected(std::string("no schema bound"));
+  }
+  const std::string msg_type = normalizedMessageType(type_name_, schema_format_);
+  if (schema_compiled_) {
+    if (register_specialized_handler) {
+      auto it = catalog().find(msg_type);
+      if (it == catalog().end()) {
+        it = catalog().find(CatalogEntry::kDefault);
+      }
+      registerBoundSchemaHandler(it->second);
+    }
+    return PJ::okStatus();
+  }
+
+  // Normalize root names to the conventions used by rosx_introspection. ROS 2
+  // .msg schemas use "pkg/msg/Type" externally and "pkg/Type" internally;
+  // OMG IDL schemas use scoped names externally and "pkg/Type" internally.
+  // Compile the message definition once and keep the rosx_introspection
+  // parser cached on this instance — it is reused for every message of
+  // this type. The array policy controls how variable-length fields are
+  // truncated by the generic introspection walker.
+  try {
+    parser_.emplace("", RosMsgParser::ROSType(msg_type), schema_definition_, schema_format_);
+    auto policy =
+        discard_large_arrays_ ? RosMsgParser::Parser::DISCARD_LARGE_ARRAYS : RosMsgParser::Parser::KEEP_LARGE_ARRAYS;
+    parser_->setMaxArrayPolicy(policy, max_array_size_);
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("failed to parse ROS schema: ") + e.what());
+  }
+
+  // Cache schema-derived flags (has_header_, quaternion prefixes, …) and
+  // prepare the wire-format deserializer (ROS 1 binary vs ROS 2 CDR).
+  detectSchemaFeatures();
+  ensureDeserializer();
+  schema_compiled_ = true;
+
+  if (register_specialized_handler) {
+    // Catalog lookup: exact match for this schema, otherwise the kDefault
+    // entry (generic introspection fallback). kDefault is guaranteed to be
+    // present in the catalog, so the second find always hits.
+    auto it = catalog().find(msg_type);
+    if (it == catalog().end()) {
+      it = catalog().find(CatalogEntry::kDefault);
+    }
+    registerBoundSchemaHandler(it->second);
+  }
 
   return PJ::okStatus();
 }
@@ -262,6 +321,7 @@ std::string RosParser::saveConfig() const {
   cfg["boolean_strings_to_number"] = boolean_strings_to_number_;
   cfg["remove_suffix_from_strings"] = remove_suffix_from_strings_;
   cfg["serialization"] = use_ros1_ ? "ros1" : "cdr";
+  cfg["schema_encoding"] = schema_encoding_;
   if (!topic_name_.empty()) {
     cfg["topic_name"] = topic_name_;
   }
@@ -275,11 +335,29 @@ PJ::Status RosParser::loadConfig(std::string_view config_json) {
   }
 
   max_array_size_ = static_cast<size_t>(cfg.value("max_array_size", 500));
-  discard_large_arrays_ = cfg.value("discard_large_arrays", false);
+  discard_large_arrays_ = cfg.value("discard_large_arrays", cfg.value("clamp_large_arrays", false));
   use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
   boolean_strings_to_number_ = cfg.value("boolean_strings_to_number", false);
   remove_suffix_from_strings_ = cfg.value("remove_suffix_from_strings", false);
   topic_name_ = cfg.value("topic_name", std::string{});
+
+  const std::string requested_schema_encoding = cfg.value("schema_encoding", cfg.value("encoding", std::string{}));
+  if (!requested_schema_encoding.empty()) {
+    auto schema_format = schemaEncodingToFormat(requested_schema_encoding);
+    if (!schema_format) {
+      return PJ::unexpected(std::move(schema_format).error());
+    }
+    const bool format_changed = schema_format->second != schema_format_;
+    schema_encoding_ = std::move(schema_format->first);
+    schema_format_ = schema_format->second;
+    schema_format_configured_ = true;
+    if (format_changed) {
+      schema_compiled_ = false;
+      parser_.reset();
+      has_header_ = false;
+      quaternion_prefixes_.clear();
+    }
+  }
 
   bool new_ros1 = (cfg.value("serialization", "cdr") == "ros1");
   if (new_ros1 != use_ros1_) {
@@ -293,6 +371,11 @@ PJ::Status RosParser::loadConfig(std::string_view config_json) {
     parser_->setMaxArrayPolicy(policy, max_array_size_);
   }
   ensureDeserializer();
+  if (schema_bound_) {
+    if (auto status = compileBoundSchema(true); !status) {
+      return status;
+    }
+  }
   return PJ::okStatus();
 }
 
@@ -324,6 +407,9 @@ PJ::Status RosParser::parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> 
 
 PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsGeneric(
     PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+  if (auto status = compileBoundSchema(false); !status) {
+    return PJ::unexpected(std::move(status).error());
+  }
   if (!parser_.has_value()) {
     return PJ::unexpected(std::string("no schema bound"));
   }
@@ -352,6 +438,9 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsGener
 
 PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsDiscardingLargeArrays(
     PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+  if (auto status = compileBoundSchema(false); !status) {
+    return PJ::unexpected(std::move(status).error());
+  }
   if (!parser_.has_value()) {
     return PJ::unexpected(std::string("no schema bound"));
   }
@@ -566,6 +655,3 @@ void RosParser::addQuaternionRPY() {
 }
 
 }  // namespace ros_parser_detail
-
-PJ_MESSAGE_PARSER_PLUGIN(ros_parser_detail::RosParser, kRosManifest)
-PJ_DIALOG_PLUGIN(RosParserDialog)

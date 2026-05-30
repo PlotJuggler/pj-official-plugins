@@ -28,8 +28,8 @@ struct RosParserFixture {
   PJ::ServiceRegistryBuilder registry;
   PJ::sdk::testing::ParserWriteRecorder recorder;
 
-  void setUp() {
-    auto lib = PJ::MessageParserLibrary::load(PJ_ROS_PARSER_PLUGIN_PATH);
+  void setUp(const char* plugin_path = PJ_ROS_PARSER_PLUGIN_PATH) {
+    auto lib = PJ::MessageParserLibrary::load(plugin_path);
     ASSERT_TRUE(lib) << lib.error();
     library = std::move(*lib);
     handle = library.createHandle();
@@ -38,9 +38,27 @@ struct RosParserFixture {
     ASSERT_TRUE(handle.bind(registry.view()));
   }
 
-  bool bindSchema(std::string_view type_name, const std::string& definition) {
+  bool loadSchemaEncoding(std::string_view schema_encoding) {
+    std::string config_json;
+    if (!handle.saveConfig(config_json)) {
+      return false;
+    }
+    auto cfg = nlohmann::json::parse(config_json, nullptr, false);
+    if (cfg.is_discarded()) {
+      cfg = nlohmann::json::object();
+    }
+    cfg["schema_encoding"] = schema_encoding;
+    return handle.loadConfig(cfg.dump()).has_value();
+  }
+
+  bool bindSchemaRaw(std::string_view type_name, const std::string& definition) {
     const auto* data = reinterpret_cast<const uint8_t*>(definition.data());
     return handle.bindSchema(type_name, PJ::Span<const uint8_t>(data, definition.size())).has_value();
+  }
+
+  bool bindSchema(
+      std::string_view type_name, const std::string& definition, std::string_view schema_encoding = "ros2msg") {
+    return bindSchemaRaw(type_name, definition) && loadSchemaEncoding(schema_encoding);
   }
 
   bool parse(const std::vector<uint8_t>& payload, int64_t ts = 1000) {
@@ -92,6 +110,16 @@ static const char* kArrayDef =
 static const char* kVarArrayDef =
     "float64[] values\n"
     "int32 count\n";
+
+static const char* kSimpleIdlDef = R"(
+module pkg {
+  struct SimpleIdl {
+    long status;
+    double temperature;
+    boolean active;
+  };
+};
+)";
 
 // ---- Tests ----
 
@@ -268,6 +296,43 @@ TEST(RosParserTest, Ros2TypeNameNormalization) {
   EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[0].numeric, 99.0);
 }
 
+TEST(RosParserTest, OmgIdlSchemaParsesCdrPayload) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("pkg::SimpleIdl", kSimpleIdlDef, "omgidl"));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(42)));
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(23.5));
+    enc.serialize(RosMsgParser::BOOL, RosMsgParser::Variant(static_cast<uint8_t>(1)));
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+
+  bool found_status = false;
+  bool found_temp = false;
+  bool found_active = false;
+  for (const auto& field : f.recorder.rows()[0].fields) {
+    if (field.name == "/status") {
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kInt32);
+      EXPECT_DOUBLE_EQ(field.numeric, 42.0);
+      found_status = true;
+    } else if (field.name == "/temperature") {
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kFloat64);
+      EXPECT_DOUBLE_EQ(field.numeric, 23.5);
+      found_temp = true;
+    } else if (field.name == "/active") {
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kBool);
+      EXPECT_DOUBLE_EQ(field.numeric, 1.0);
+      found_active = true;
+    }
+  }
+  EXPECT_TRUE(found_status);
+  EXPECT_TRUE(found_temp);
+  EXPECT_TRUE(found_active);
+}
+
 TEST(RosParserTest, FixedSizeArray) {
   RosParserFixture f;
   f.setUp();
@@ -359,10 +424,11 @@ TEST(RosParserTest, VariableLengthArray) {
 TEST(RosParserTest, InvalidSchemaFails) {
   RosParserFixture f;
   f.setUp();
-  // An invalid definition should cause bindSchema to return an error.
-  // Use a definition with an unknown type that should trigger a parse error.
+  // PJ4 supplies parser_config_json after bindSchema(), so schema validation
+  // happens when loadConfig() compiles the stored definition.
   std::string bad_def = "unknown_type_xyz foo\n";
-  EXPECT_FALSE(f.bindSchema("pkg/Bad", bad_def));
+  ASSERT_TRUE(f.bindSchemaRaw("pkg/Bad", bad_def));
+  EXPECT_FALSE(f.handle.loadConfig(R"({"schema_encoding":"ros2msg"})"));
 }
 
 TEST(RosParserTest, ParseWithoutSchemaFails) {
@@ -376,10 +442,10 @@ TEST(RosParserTest, ParseWithoutSchemaFails) {
 TEST(RosParserTest, ManifestContainsEncoding) {
   RosParserFixture f;
   f.setUp();
-  // Manifest uses "encoding" as an array containing all supported encodings
   EXPECT_NE(f.handle.manifest().find("\"ros2msg\""), std::string::npos);
   EXPECT_NE(f.handle.manifest().find("\"ros1msg\""), std::string::npos);
-  EXPECT_NE(f.handle.manifest().find("\"cdr\""), std::string::npos);
+  EXPECT_NE(f.handle.manifest().find("\"omgidl\""), std::string::npos);
+  EXPECT_EQ(f.handle.manifest().find("\"cdr\""), std::string::npos);
 }
 
 TEST(RosParserTest, ExposesDialogVtable) {
