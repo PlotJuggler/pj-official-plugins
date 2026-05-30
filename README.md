@@ -39,7 +39,7 @@ To work on only one plugin, pass the plugin directory:
 
 Run `./build.sh --help` to see the available arguments.
 
-By default, `build.sh` installs the root `conanfile.txt` and builds into
+By default, `build.sh` installs the root `conanfile.py` and builds into
 `build/all/Release`. With a plugin argument, it installs that plugin's
 `conanfile.py`, configures CMake with `-DPJ_BUILD_PLUGIN=<plugin_dir>`, and
 builds into `build/<plugin_dir>/Release`.
@@ -47,7 +47,7 @@ builds into `build/<plugin_dir>/Release`.
 Each plugin directory has its own `conanfile.py` that lists
 `plotjuggler_core` plus the plugin's own third-party deps. Keep it in sync
 with the plugin's `find_package(... REQUIRED)` calls in `CMakeLists.txt`.
-The root `conanfile.txt` remains the full-repository dependency set for
+The root `conanfile.py` remains the full-repository dependency set for
 local full builds and scheduled CI.
 
 ### As subdirectory of plotjuggler_core
@@ -66,14 +66,17 @@ cd /path/to/plotjuggler_core
 
 ### Via Conan
 
-`plotjuggler_core` is consumed exclusively as a Conan package from the
+`plotjuggler_core` is consumed as a Conan package from the
 plotjuggler cloudsmith remote — no CPM source clone, no SSH deploy key, no
 subdirectory-mode fallback for standalone builds. Every per-plugin
 `conanfile.py` also lists it so single-plugin builds resolve it the same way.
+The version is pinned in one place — the top-level `SDK_VERSION` file — and CI
+builds core from the pinned `extern/plotjuggler_core` submodule when cloudsmith
+is unavailable (`scripts/ensure_core.sh`).
 
 | Package | Version | Used by |
 |---------|---------|---------|
-| **plotjuggler_core** (cloudsmith) | **[~0.5]** (any 0.5.x) | **SDK + host loaders** (`plotjuggler_core::plugin_sdk`, `::plugin_host`) |
+| **plotjuggler_core** (cloudsmith) | pinned via `SDK_VERSION` (exact) | **SDK + host loaders** (`plotjuggler_core::plugin_sdk`, `::plugin_host`) |
 | nlohmann_json | 3.12.0 | Most plugins |
 | mcap | 2.1.1 | data_load_mcap |
 | arrow + parquet | 23.0.1 | data_load_parquet |
@@ -183,7 +186,7 @@ When adding or changing a plugin:
 1. Keep `manifest.json` current; the release tag version must match it.
 2. Add or update the plugin's `CMakeLists.txt`.
 3. Add any Conan dependencies to the plugin's `conanfile.py`.
-4. Add new dependencies to the root `conanfile.txt` when full-repository builds need them.
+4. Add new dependencies to the root `conanfile.py` when full-repository builds need them.
 5. Add focused tests in the plugin directory when behavior changes.
 
 ## Releasing Extensions

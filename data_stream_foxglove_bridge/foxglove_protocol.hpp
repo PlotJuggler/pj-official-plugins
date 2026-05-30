@@ -75,8 +75,8 @@ inline std::string buildUnsubscribeMessage(const std::vector<uint32_t>& subscrip
 
 /// Check if a channel is a CDR-encoded ROS2 stream this plugin can handle.
 inline bool isUsableChannel(const ChannelInfo& ch) {
-  return ch.encoding == "cdr" && ch.schema_encoding == "ros2msg" && !ch.schema.empty() && !ch.schema_name.empty() &&
-         !ch.topic.empty();
+  return ch.encoding == "cdr" && (ch.schema_encoding == "ros2msg" || ch.schema_encoding == "omgidl") &&
+         !ch.schema.empty() && !ch.schema_name.empty() && !ch.topic.empty();
 }
 
 }  // namespace PJ::FoxgloveProtocol

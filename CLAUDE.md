@@ -71,7 +71,7 @@ The top-level CMakeLists.txt supports two modes:
 
 Plugin CMakeLists.txt files link `plotjuggler_core::plugin_sdk` (plugin .so) and `plotjuggler_core::plugin_host` (test executables) — same target names work in both modes.
 
-The core version is **not** pinned in CMake — `find_package` resolves whatever Conan installed. The requirement lives only in the Conan recipes (`conanfile.txt` + each plugin's `conanfile.py`) as a patch-level range, currently `plotjuggler_core/[~0.3]` (i.e. `>=0.3.0 <0.4.0`), so new core patch releases are picked up automatically. To retarget a different minor/major in one step: `python3 scripts/bump_core_version.py 0.4` (range) or `... 0.4.0` (exact pin).
+The core version is **not** pinned in CMake — `find_package` resolves whatever Conan installed. The requirement is pinned in **one** place: the top-level `SDK_VERSION` file (an exact version, e.g. `0.5.1`), which the root `conanfile.py` and every plugin's `conanfile.py` read live, and to which the `extern/plotjuggler_core` git submodule is pinned (`v<version>`). Retarget in one step: `python3 scripts/bump_core_version.py 0.5.2` (writes `SDK_VERSION` and moves the submodule); `python3 scripts/bump_core_version.py --check` guards that they agree in CI.
 
 ### Dialog System
 
@@ -89,7 +89,7 @@ Plugins with UI subclass `PJ::DialogPluginTyped` and use real `.ui` files (Qt Cr
 
 | Source | Packages |
 |--------|----------|
-| Conan (cloudsmith) | plotjuggler_core (`plotjuggler_core::plugin_sdk`, `::plugin_host`) |
+| Conan (cloudsmith) + `extern/plotjuggler_core` submodule fallback | plotjuggler_core (`plotjuggler_core::plugin_sdk`, `::plugin_host`) |
 | Conan (conancenter) | nlohmann_json, mcap, arrow/parquet, paho-mqtt-cpp, cppzmq, protobuf, zstd, date, ixwebsocket, asio, kissfft, lua, sol2, libsodium, pybind11, cpython, gtest |
 | CPM | ulog_cpp, rosx_introspection, data_tamer (plugin-private deps only) |
 | Optional | Qt 6 (WebSockets, Network) — only for foxglove_bridge and pj_bridge |

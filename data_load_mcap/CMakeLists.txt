@@ -1,15 +1,19 @@
 find_package(nlohmann_json REQUIRED)
-find_package(mcap REQUIRED)
+find_package(lz4 REQUIRED)
+find_package(zstd REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 # --- Plugin shared library ---
+# mcap is header-only and vendored under contrib/mcap/ from the
+# parallel-reader fork. lz4 + zstd come from conan for chunk decompression.
 add_library(mcap_source_plugin SHARED mcap_source.cpp)
 target_compile_features(mcap_source_plugin PRIVATE cxx_std_20)
 target_compile_options(mcap_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(mcap_source_plugin SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
 target_link_libraries(mcap_source_plugin PRIVATE
-  plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json mcap::mcap
+  plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json LZ4::lz4_static zstd::libzstd_static
 )
 
 pj_embed_ui(mcap_source_plugin
@@ -35,5 +39,35 @@ add_executable(mcap_helpers_test tests/mcap_helpers_test.cpp)
 target_compile_features(mcap_helpers_test PRIVATE cxx_std_20)
 target_compile_options(mcap_helpers_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(mcap_helpers_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(mcap_helpers_test PRIVATE mcap::mcap GTest::gtest_main)
+target_include_directories(mcap_helpers_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
+target_link_libraries(mcap_helpers_test PRIVATE LZ4::lz4_static zstd::libzstd_static GTest::gtest_main)
 add_test(NAME mcap_helpers_test COMMAND mcap_helpers_test)
+
+# --- Unit test for MCAP dialog model/config behavior ---
+add_executable(mcap_dialog_test tests/mcap_dialog_test.cpp)
+target_compile_features(mcap_dialog_test PRIVATE cxx_std_20)
+target_compile_options(mcap_dialog_test PRIVATE ${PJ_WARNING_FLAGS})
+target_compile_definitions(mcap_dialog_test PRIVATE
+  MCAP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data"
+)
+target_include_directories(mcap_dialog_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
+target_include_directories(mcap_dialog_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
+target_link_libraries(mcap_dialog_test PRIVATE
+  plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json LZ4::lz4_static zstd::libzstd_static GTest::gtest_main
+)
+add_test(NAME mcap_dialog_test COMMAND mcap_dialog_test)
+
+# --- Unit test for the MessageByteStore (hot/cold lazy byte layer) ---
+find_package(Threads REQUIRED)
+add_executable(message_byte_store_test tests/message_byte_store_test.cpp)
+target_compile_features(message_byte_store_test PRIVATE cxx_std_20)
+target_compile_options(message_byte_store_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(message_byte_store_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(message_byte_store_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
+target_link_libraries(message_byte_store_test PRIVATE
+  LZ4::lz4_static zstd::libzstd_static GTest::gtest_main Threads::Threads
+)
+add_test(NAME message_byte_store_test COMMAND message_byte_store_test)

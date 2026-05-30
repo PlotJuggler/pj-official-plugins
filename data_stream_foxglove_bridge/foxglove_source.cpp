@@ -246,11 +246,13 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       parser_cfg["max_array_size"] = max_array_size_;
       parser_cfg["clamp_large_arrays"] = clamp_large_arrays_;
       parser_cfg["use_timestamp"] = use_timestamp_;
+      parser_cfg["use_embedded_timestamp"] = use_timestamp_;
+      parser_cfg["schema_encoding"] = ch.schema_encoding;
 
       auto schema_bytes = reinterpret_cast<const uint8_t*>(ch.schema.data());
       auto binding = runtimeHost().ensureParserBinding({
           .topic_name = ch.topic,
-          .parser_encoding = ch.encoding,
+          .parser_encoding = ch.schema_encoding,
           .type_name = ch.schema_name,
           .schema = PJ::Span<const uint8_t>(schema_bytes, ch.schema.size()),
           .parser_config_json = parser_cfg.dump(),
@@ -258,7 +260,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       if (binding) {
         binding_by_subscription_[sub_id] = *binding;
       } else {
-        parser_errors.push_back(ch.topic + " (" + ch.encoding + "): " + binding.error());
+        parser_errors.push_back(ch.topic + " (" + ch.schema_encoding + "): " + binding.error());
       }
 
       socket_->sendText(buildSubscribeMessage({{sub_id, ch.id}}));
@@ -317,11 +319,13 @@ class FoxgloveSource : public PJ::StreamSourceBase {
         parser_cfg["max_array_size"] = max_array_size_;
         parser_cfg["clamp_large_arrays"] = clamp_large_arrays_;
         parser_cfg["use_timestamp"] = use_timestamp_;
+        parser_cfg["use_embedded_timestamp"] = use_timestamp_;
+        parser_cfg["schema_encoding"] = ch.schema_encoding;
 
         auto schema_bytes = reinterpret_cast<const uint8_t*>(ch.schema.data());
         auto binding = runtimeHost().ensureParserBinding({
             .topic_name = ch.topic,
-            .parser_encoding = ch.encoding,
+            .parser_encoding = ch.schema_encoding,
             .type_name = ch.schema_name,
             .schema = PJ::Span<const uint8_t>(schema_bytes, ch.schema.size()),
             .parser_config_json = parser_cfg.dump(),
@@ -329,7 +333,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
         if (binding) {
           binding_by_subscription_[sub_id] = *binding;
         } else {
-          parser_errors.push_back(ch.topic + " (" + ch.encoding + "): " + binding.error());
+          parser_errors.push_back(ch.topic + " (" + ch.schema_encoding + "): " + binding.error());
         }
 
         socket_->sendText(buildSubscribeMessage({{sub_id, ch.id}}));

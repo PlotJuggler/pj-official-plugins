@@ -1,8 +1,8 @@
 {
   "id": "ros-parser",
   "name": "ROS CDR Parser",
-  "version": "2.5.0",
-  "description": "Message parser for ROS1 and ROS2 messages. Supports ros1msg, ros2msg, and CDR encodings.",
+  "version": "3.0.0",
+  "description": "Message parser for ROS1 and ROS2 messages. Supports ros1msg, ros2msg, and omgidl schema encodings.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
   "website": "https://github.com/PlotJuggler/pj-official-plugins",
@@ -14,14 +14,14 @@
     "ros",
     "ros1",
     "ros2",
-    "cdr",
+    "idl",
     "parser",
     "robotics"
   ],
   "encoding": [
     "ros2msg",
+    "omgidl",
     "ros1msg",
-    "cdr",
     "ros1",
     "ros2"
   ],

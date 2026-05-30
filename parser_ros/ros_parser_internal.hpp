@@ -14,6 +14,7 @@
 #include <rosx_introspection/ros_parser.hpp>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace ros_parser_detail {
@@ -201,6 +202,12 @@ class RosParser : public PJ::MessageParserPluginBase {
 
   // Schema state
   std::string type_name_;
+  std::string schema_definition_;
+  std::string schema_encoding_ = "ros2msg";
+  RosMsgParser::SchemaFormat schema_format_ = RosMsgParser::ROS_MSG;
+  bool schema_format_configured_ = false;
+  bool schema_bound_ = false;
+  bool schema_compiled_ = false;
   bool has_header_ = false;
   std::vector<std::string> quaternion_prefixes_;
 
@@ -216,6 +223,8 @@ class RosParser : public PJ::MessageParserPluginBase {
   std::deque<std::string> string_storage_;
 
   // Setup helpers
+  PJ::Status compileBoundSchema(bool register_specialized_handler);
+  void registerBoundSchemaHandler(const CatalogEntry& entry);
   void ensureDeserializer();
   void detectSchemaFeatures();
   void findQuaternionPrefixes(

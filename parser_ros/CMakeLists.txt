@@ -1,18 +1,18 @@
 find_package(nlohmann_json REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CPM.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
-
-# rosx_introspection builds tests by default; disable them.
-set(INTROSPECTION_TESTS OFF CACHE BOOL "" FORCE)
 
 # Prevent rosx_introspection from invoking ament_package() when ROS is installed
 # on the host but we are not building inside a colcon workspace.
 set(CMAKE_DISABLE_FIND_PACKAGE_ament_cmake TRUE)
 
+# Pin rosx_introspection 3.x for IDL-support APIs used by the PJ3 ROS parser lineage.
 CPMAddPackage(
   NAME rosx_introspection
-  URL https://github.com/facontidavide/rosx_introspection/archive/refs/heads/master.zip
+  URL https://github.com/facontidavide/rosx_introspection/archive/refs/tags/3.1.0.zip
+  URL_HASH SHA256=cce5cba9215cbd1f285ddd3f4d0e2f738372178c45731aaa86ba3e65ee492a22
   OPTIONS "ROSX_HAS_JSON OFF"
 )
 
@@ -42,24 +42,40 @@ add_library(data_tamer_parser INTERFACE)
 target_include_directories(data_tamer_parser SYSTEM INTERFACE
   "${data_tamer_SOURCE_DIR}/data_tamer_cpp/include")
 
-# --- Plugin shared library ---
-add_library(parser_ros_plugin SHARED
+set(PARSER_ROS_COMMON_SOURCES
   ros_parser.cpp
   ros_specializations.cpp
   ros_builtin_object_handlers.cpp
 )
-target_compile_features(parser_ros_plugin PRIVATE cxx_std_20)
-target_compile_options(parser_ros_plugin PRIVATE ${PJ_WARNING_FLAGS})
-target_link_libraries(parser_ros_plugin PRIVATE
-  plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json rosx_introspection data_tamer_parser)
+
+function(configure_parser_ros_target TARGET)
+  target_compile_features(${TARGET} PRIVATE cxx_std_20)
+  target_compile_options(${TARGET} PRIVATE ${PJ_WARNING_FLAGS})
+  target_link_libraries(${TARGET} PRIVATE
+    plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json rosx_introspection data_tamer_parser)
+endfunction()
+
+# --- Plugin shared libraries ---
+add_library(parser_ros_plugin SHARED
+  ${PARSER_ROS_COMMON_SOURCES}
+  ros_parser_plugin.cpp
+)
+configure_parser_ros_target(parser_ros_plugin)
 
 pj_embed_manifest(parser_ros_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/ros_manifest.hpp
   VAR_NAME kRosManifest
+  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
-# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+pj_embed_ui(parser_ros_plugin
+  UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/ros_parser_options.ui
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/ros_parser_options_ui.hpp
+  VAR_NAME kRosParserOptionsUi
+)
+
+# v4 plugin discovery: emit sidecar .pjmanifest.json files the host can scan
+# pre-dlopen. Content derived from the embedded parser manifest + {abi_major, family}.
 pj_emit_plugin_manifest(parser_ros_plugin
   FAMILY        message_parser
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json

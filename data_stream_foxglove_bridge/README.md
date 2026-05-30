@@ -8,7 +8,7 @@ server and streams real-time data via delegated ingest.
 - WebSocket connection with configurable address and port
 - Automatic channel discovery via Foxglove `advertise` protocol
 - Topic filtering by name in the dialog
-- Parser delegation based on channel encoding (typically `ros2msg` / CDR)
+- Parser delegation based on schema encoding (`ros2msg` or `omgidl` over CDR)
 - Configurable array size limits and embedded timestamp usage
 
 ## Configuration
