@@ -47,12 +47,18 @@ enum class Tp {
   RclLifecycleTransition,
 };
 
+// Map an LTTng event-class name (e.g. "ros2:callback_start", with or without
+// the "ros2:" provider prefix) to its Tp. Unknown names map to Tp::Other.
+Tp classifyTracepoint(std::string_view name);
+
 // A field value as produced by the CTF reader OR fabricated by a test. Handle
 // pointers are carried as uint64_t (the raw address from the trace).
 using FieldValue = std::variant<std::monostate, std::uint64_t, std::int64_t, bool, std::string>;
 
 struct NamedField {
-  std::string_view name;
+  // Owned (not string_view): the CTF reader copies field names out of the trace,
+  // whose memory is freed when the babeltrace2 graph is destroyed.
+  std::string name;
   FieldValue value;
 };
 

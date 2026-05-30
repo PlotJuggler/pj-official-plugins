@@ -41,6 +41,22 @@ target_compile_features(ros2_trace_model PUBLIC cxx_std_20)
 target_compile_options(ros2_trace_model PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(ros2_trace_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
+# Optional CTF reader (libbabeltrace2). When present, compile FsTraceSource and
+# link it; otherwise the library stays dependency-free — the join engine and
+# derivers need no babeltrace2, so they (and their tests) build either way.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(BABELTRACE2 IMPORTED_TARGET babeltrace2)
+endif()
+if(TARGET PkgConfig::BABELTRACE2)
+  target_sources(ros2_trace_model PRIVATE src/fs_trace_source.cpp)
+  target_link_libraries(ros2_trace_model PUBLIC PkgConfig::BABELTRACE2)
+  target_compile_definitions(ros2_trace_model PUBLIC ROS2_TRACE_WITH_BABELTRACE)
+  message(STATUS "ros2_trace_model: CTF reader enabled (babeltrace2 ${BABELTRACE2_VERSION})")
+else()
+  message(STATUS "ros2_trace_model: babeltrace2 not found — CTF reader disabled")
+endif()
+
 include(CTest)
 if(BUILD_TESTING)
   find_package(GTest REQUIRED)
@@ -51,6 +67,8 @@ if(BUILD_TESTING)
     tests/lifecycle_deriver_test.cpp
     tests/timer_deriver_test.cpp
     tests/executor_deriver_test.cpp
+    tests/tracepoint_id_test.cpp
+    tests/fs_trace_source_test.cpp
     tests/pipeline_test.cpp
   )
   target_compile_features(ros2_trace_model_test PRIVATE cxx_std_20)
