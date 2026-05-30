@@ -415,8 +415,8 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOccupancyGrid(PJ::Timestamp 
     auto header = readHeader();
 
     // MapMetaData.map_load_time — read and discard; the grid uses the Header stamp.
-    deserializer_->deserialize(RosMsgParser::INT32);
-    deserializer_->deserialize(RosMsgParser::UINT32);
+    (void)deserializer_->deserialize(RosMsgParser::INT32);
+    (void)deserializer_->deserialize(RosMsgParser::UINT32);
 
     const float resolution = deserializer_->deserialize(RosMsgParser::FLOAT32).convert<float>();
     const uint32_t width = deserializer_->deserializeUInt32();

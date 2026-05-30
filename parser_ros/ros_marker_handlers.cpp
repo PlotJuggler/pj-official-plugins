@@ -123,10 +123,10 @@ void RosParser::decodeOneMarker(PJ::sdk::SceneEntities& out) {
     // via readHeader() (which would clobber current_timestamp_). The block only
     // exists in ROS 2, but branch on isROS2() defensively.
     if (!deserializer_->isROS2()) {
-      deserializer_->deserializeUInt32();  // header.seq (ROS 1 only)
+      (void)deserializer_->deserializeUInt32();  // header.seq (ROS 1 only)
     }
-    deserializer_->deserializeUInt32();  // header.stamp.sec
-    deserializer_->deserializeUInt32();  // header.stamp.nsec
+    (void)deserializer_->deserializeUInt32();  // header.stamp.sec
+    (void)deserializer_->deserializeUInt32();  // header.stamp.nsec
     std::string texture_frame;
     deserializer_->deserializeString(texture_frame);
     std::string texture_format;
