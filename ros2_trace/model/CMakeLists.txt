@@ -33,6 +33,7 @@ add_library(ros2_trace_model STATIC
   src/latency_deriver.cpp
   src/lifecycle_deriver.cpp
   src/timer_deriver.cpp
+  src/executor_deriver.cpp
   src/pipeline.cpp
 )
 set_target_properties(ros2_trace_model PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -49,6 +50,7 @@ if(BUILD_TESTING)
     tests/latency_deriver_test.cpp
     tests/lifecycle_deriver_test.cpp
     tests/timer_deriver_test.cpp
+    tests/executor_deriver_test.cpp
     tests/pipeline_test.cpp
   )
   target_compile_features(ros2_trace_model_test PRIVATE cxx_std_20)

@@ -31,7 +31,10 @@ void CallbackDeriver::consume(const RawEvent& ev) {
   switch (ev.tp()) {
     case Tp::CallbackStart: {
       if (const auto cb = ev.handle("callback")) {
-        open_starts_[EntityKey{*cb}] = ev.ts_ns();
+        const EntityKey key{*cb};
+        open_starts_[key] = ev.ts_ns();
+        // Interval "active" step: rises to 1 while the callback runs.
+        sink_.onSample(Sample{callbackSeriesBase(registry_, key) + "/active", ev.ts_ns(), 1.0});
       }
       break;
     }
@@ -48,8 +51,11 @@ void CallbackDeriver::consume(const RawEvent& ev) {
       const std::int64_t start_ns = it->second;
       open_starts_.erase(it);
 
+      const std::string base = callbackSeriesBase(registry_, key);
       const double duration_ms = static_cast<double>(ev.ts_ns() - start_ns) / 1.0e6;
-      sink_.onSample(Sample{callbackSeriesBase(registry_, key) + "/duration_ms", start_ns, duration_ms});
+      sink_.onSample(Sample{base + "/duration_ms", start_ns, duration_ms});
+      // Interval "active" step falls back to 0 when the callback returns.
+      sink_.onSample(Sample{base + "/active", ev.ts_ns(), 0.0});
       break;
     }
     default:

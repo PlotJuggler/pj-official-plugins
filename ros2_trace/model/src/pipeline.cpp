@@ -7,7 +7,8 @@ Pipeline::Pipeline(MetricSampleSink& metric_sink)
       callback_deriver_(registry_, metric_sink_),
       latency_deriver_(registry_, metric_sink_),
       timer_deriver_(registry_, metric_sink_),
-      lifecycle_deriver_(registry_, metric_sink_) {}
+      lifecycle_deriver_(registry_, metric_sink_),
+      executor_deriver_(metric_sink_) {}
 
 void Pipeline::run(TraceSource& source) {
   while (std::optional<RawEvent> ev = source.next()) {
@@ -23,6 +24,7 @@ void Pipeline::consume(const RawEvent& ev) {
   latency_deriver_.consume(ev);
   timer_deriver_.consume(ev);
   lifecycle_deriver_.consume(ev);
+  executor_deriver_.consume(ev);
 }
 
 }  // namespace ros2_trace_model

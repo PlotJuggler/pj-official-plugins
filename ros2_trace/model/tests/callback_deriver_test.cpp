@@ -3,7 +3,9 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "ros2_trace_model/raw_event.hpp"
@@ -48,8 +50,42 @@ TEST(CallbackDeriver, EmitsDurationMillisOnCallbackEnd) {
   deriver.consume(RawEvent(Tp::CallbackStart, 1'000'000, {{"callback", cb}, {"is_intra_process", false}}));
   deriver.consume(RawEvent(Tp::CallbackEnd, 1'500'000, {{"callback", cb}}));
 
-  ASSERT_EQ(sink.samples.size(), 1u);
-  EXPECT_EQ(sink.samples[0].series, "/ros2_trace/listener/callbacks/on_msg/duration_ms");
-  EXPECT_EQ(sink.samples[0].ts_ns, 1'000'000);
-  EXPECT_DOUBLE_EQ(std::get<double>(sink.samples[0].value), 0.5);  // (1.5ms - 1.0ms)
+  const Sample* duration = nullptr;
+  for (const auto& s : sink.samples) {
+    if (s.series == "/ros2_trace/listener/callbacks/on_msg/duration_ms") {
+      duration = &s;
+    }
+  }
+  ASSERT_NE(duration, nullptr);
+  EXPECT_EQ(duration->ts_ns, 1'000'000);
+  EXPECT_DOUBLE_EQ(std::get<double>(duration->value), 0.5);  // (1.5ms - 1.0ms)
+}
+
+TEST(CallbackDeriver, EmitsActiveStepInterval) {
+  Registry reg;
+  const std::uint64_t cb = 0x4000;
+  registerSubscriptionCallback(reg, 0x1000, 0x2000, 0x3000, cb, "listener", "/chatter", "on_msg");
+
+  CollectingSink sink;
+  CallbackDeriver deriver(reg, sink);
+
+  deriver.consume(RawEvent(Tp::CallbackStart, 1'000'000, {{"callback", cb}}));
+  deriver.consume(RawEvent(Tp::CallbackEnd, 1'500'000, {{"callback", cb}}));
+
+  std::optional<double> active_at_start;
+  std::optional<double> active_at_end;
+  for (const auto& s : sink.samples) {
+    if (s.series == "/ros2_trace/listener/callbacks/on_msg/active") {
+      if (s.ts_ns == 1'000'000) {
+        active_at_start = std::get<double>(s.value);
+      }
+      if (s.ts_ns == 1'500'000) {
+        active_at_end = std::get<double>(s.value);
+      }
+    }
+  }
+  ASSERT_TRUE(active_at_start.has_value());
+  ASSERT_TRUE(active_at_end.has_value());
+  EXPECT_DOUBLE_EQ(*active_at_start, 1.0);
+  EXPECT_DOUBLE_EQ(*active_at_end, 0.0);
 }

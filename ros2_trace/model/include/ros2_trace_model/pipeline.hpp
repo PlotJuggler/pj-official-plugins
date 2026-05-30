@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ros2_trace_model/callback_deriver.hpp"
+#include "ros2_trace_model/executor_deriver.hpp"
 #include "ros2_trace_model/latency_deriver.hpp"
 #include "ros2_trace_model/lifecycle_deriver.hpp"
 #include "ros2_trace_model/raw_event.hpp"
@@ -32,6 +33,7 @@ class Pipeline {
   LatencyDeriver latency_deriver_;
   TimerDeriver timer_deriver_;
   LifecycleDeriver lifecycle_deriver_;
+  ExecutorDeriver executor_deriver_;
 };
 
 }  // namespace ros2_trace_model

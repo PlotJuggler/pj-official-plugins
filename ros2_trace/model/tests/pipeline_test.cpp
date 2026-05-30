@@ -60,10 +60,15 @@ TEST(Pipeline, ResolvesAndEmitsCallbackDurationEndToEnd) {
   Pipeline pipeline(sink);
   pipeline.run(src);
 
-  ASSERT_EQ(sink.samples.size(), 1u);
-  EXPECT_EQ(sink.samples[0].series, "/ros2_trace/listener/callbacks/on_msg/duration_ms");
-  EXPECT_EQ(sink.samples[0].ts_ns, 1'000'000);
-  EXPECT_DOUBLE_EQ(std::get<double>(sink.samples[0].value), 2.0);  // (3.0ms - 1.0ms)
+  const Sample* duration = nullptr;
+  for (const auto& s : sink.samples) {
+    if (s.series == "/ros2_trace/listener/callbacks/on_msg/duration_ms") {
+      duration = &s;
+    }
+  }
+  ASSERT_NE(duration, nullptr);
+  EXPECT_EQ(duration->ts_ns, 1'000'000);
+  EXPECT_DOUBLE_EQ(std::get<double>(duration->value), 2.0);  // (3.0ms - 1.0ms)
 }
 
 TEST(Pipeline, RunsLatencyAndLifecycleDerivers) {
@@ -89,6 +94,10 @@ TEST(Pipeline, RunsLatencyAndLifecycleDerivers) {
   src.events.push_back(RawEvent(
       Tp::RclLifecycleTransition, 5'000'000,
       {{"state_machine", sm}, {"start_label", std::string("unconfigured")}, {"goal_label", std::string("active")}}));
+  src.events.push_back(RawEvent(
+      Tp::RclcppExecutorWaitForWork, 6'000'000, {{"timeout", std::int64_t{-1}}}, std::optional<std::uint32_t>{0}));
+  src.events.push_back(RawEvent(
+      Tp::RclcppExecutorExecute, 6'400'000, {{"handle", std::uint64_t{0x2000}}}, std::optional<std::uint32_t>{0}));
 
   CollectingSink sink;
   Pipeline pipeline(sink);
@@ -96,6 +105,7 @@ TEST(Pipeline, RunsLatencyAndLifecycleDerivers) {
 
   bool has_latency = false;
   bool has_lifecycle = false;
+  bool has_executor = false;
   for (const auto& s : sink.samples) {
     if (s.series == "/ros2_trace/chatter/latency_ms") {
       has_latency = true;
@@ -103,7 +113,11 @@ TEST(Pipeline, RunsLatencyAndLifecycleDerivers) {
     if (s.series == "/ros2_trace/listener/lifecycle/state") {
       has_lifecycle = true;
     }
+    if (s.series == "/ros2_trace/executor/cpu0/wait_ms") {
+      has_executor = true;
+    }
   }
   EXPECT_TRUE(has_latency);
   EXPECT_TRUE(has_lifecycle);
+  EXPECT_TRUE(has_executor);
 }

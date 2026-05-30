@@ -62,14 +62,18 @@ struct NamedField {
 // in tests.
 class RawEvent {
  public:
-  RawEvent(Tp tp, std::int64_t ts_ns, std::vector<NamedField> fields)
-      : tp_(tp), ts_ns_(ts_ns), fields_(std::move(fields)) {}
+  RawEvent(Tp tp, std::int64_t ts_ns, std::vector<NamedField> fields, std::optional<std::uint32_t> cpu = std::nullopt)
+      : tp_(tp), ts_ns_(ts_ns), fields_(std::move(fields)), cpu_(cpu) {}
 
   Tp tp() const noexcept {
     return tp_;
   }
   std::int64_t ts_ns() const noexcept {
     return ts_ns_;
+  }
+  // CPU the event was recorded on (CTF packet context), if known.
+  std::optional<std::uint32_t> cpu() const noexcept {
+    return cpu_;
   }
 
   std::optional<std::uint64_t> handle(std::string_view name) const;
@@ -83,6 +87,7 @@ class RawEvent {
   Tp tp_;
   std::int64_t ts_ns_;
   std::vector<NamedField> fields_;
+  std::optional<std::uint32_t> cpu_;
 };
 
 }  // namespace ros2_trace_model
