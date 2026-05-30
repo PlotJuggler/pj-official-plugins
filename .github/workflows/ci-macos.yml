@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Conan
         uses: conan-io/setup-conan@v1.3.0
@@ -27,30 +29,21 @@ jobs:
       - name: Install cmake and ninja
         run: pip install cmake ninja
 
-      - name: Configure plotjuggler cloudsmith Conan remote
-        env:
-          CLOUDSMITH_USER: ${{ secrets.CLOUDSMITH_USER }}
-          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+      - name: Acquire plotjuggler_core
+        # Cloudsmith publishes only a Linux binary, so macOS always builds core from
+        # source. ensure_core.sh builds it from the pinned extern/plotjuggler_core
+        # submodule with no cloudsmith remote configured, so a cloudsmith outage can
+        # never break the macOS build (and the recipe-revision races that motivated
+        # the old `--update` flag are gone — the submodule is the source of truth).
         shell: bash
         run: |
           conan profile detect --force
-          conan remote add plotjuggler-cloudsmith \
-            https://conan.cloudsmith.io/plotjuggler/plotjuggler --force
-          conan remote login plotjuggler-cloudsmith \
-            "$CLOUDSMITH_USER" -p "$CLOUDSMITH_API_KEY"
+          scripts/ensure_core.sh
 
       - name: Build & Test
         shell: bash
         run: |
-          # --update: re-resolve the latest recipe revision (and its sources) from
-          # the remote rather than trusting whatever revision is in the restored
-          # Conan cache. macOS has no prebuilt plotjuggler_core binary in Cloudsmith
-          # (the core release job publishes only a Linux binary), so it always builds
-          # core from source. Without --update, a cached recipe revision that was
-          # superseded on the remote — e.g. after a version is re-published — leaves
-          # the cache pointing at sources that "no longer exist", and the build dies
-          # with "exports_sources but sources not found in local cache".
-          conan install . --output-folder=build --build=missing --update -s build_type=Release \
+          conan install . --output-folder=build --build=missing -s build_type=Release \
             -s compiler.cppstd=20 -c tools.cmake.cmaketoolchain:generator=Ninja
 
           cmake -S . -B build/Release -G Ninja \

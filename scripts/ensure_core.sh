@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Make plotjuggler_core available in the local Conan cache WITHOUT depending on the
+# cloudsmith remote at build time. Resolution order:
+#
+#   1. Already in the local cache (e.g. restored from a CI artifact) -> done.
+#   2. If the cloudsmith remote is configured, try to fetch a PREBUILT binary
+#      (`--build=never`: never build from the remote recipe, so a 402 / bandwidth
+#      failure or a missing per-OS binary simply falls through) -> done on success.
+#   3. Otherwise build from the pinned git submodule (no network) via `conan create`.
+#
+# Single source of truth for the version: the SDK_VERSION file (exact, e.g. 0.5.1),
+# which must equal the submodule's pinned tag v<SDK_VERSION>.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+CORE_VERSION="${CORE_VERSION:-$(cat "${REPO_ROOT}/SDK_VERSION")}"
+REF="plotjuggler_core/${CORE_VERSION}"
+REMOTE="plotjuggler-cloudsmith"
+SETTINGS=(-s build_type="${BUILD_TYPE:-Release}" -s compiler.cppstd=20)
+
+if conan list "${REF}:*" 2>/dev/null | grep -q "${REF}"; then
+  echo "ensure_core: ${REF} already present in the local Conan cache"
+  exit 0
+fi
+
+if conan remote list 2>/dev/null | grep -q "${REMOTE}"; then
+  echo "ensure_core: trying prebuilt ${REF} from ${REMOTE}"
+  if conan install --requires="${REF}" "${SETTINGS[@]}" \
+       --build=never -r "${REMOTE}" -of "$(mktemp -d)" >/dev/null 2>&1; then
+    echo "ensure_core: fetched prebuilt ${REF} from ${REMOTE}"
+    exit 0
+  fi
+  echo "ensure_core: ${REMOTE} unavailable or has no prebuilt binary — falling back to source"
+fi
+
+echo "ensure_core: building ${REF} from submodule extern/plotjuggler_core"
+git -C "${REPO_ROOT}" submodule update --init --depth 1 extern/plotjuggler_core
+conan create "${REPO_ROOT}/extern/plotjuggler_core" --version "${CORE_VERSION}" \
+  "${SETTINGS[@]}" --build=missing
+echo "ensure_core: built ${REF} from source"

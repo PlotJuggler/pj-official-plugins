@@ -12,12 +12,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  # Acquire plotjuggler_core ONCE per run and hand it to every build leg as a Conan
+  # cache artifact. Cloudsmith is contacted only here (prebuilt-binary fast path); on
+  # a cloudsmith failure (e.g. HTTP 402 bandwidth exceeded) ensure_core.sh builds core
+  # from the pinned extern/plotjuggler_core submodule instead, so CI never hard-depends
+  # on cloudsmith. This is what collapses the old ~21 per-run cloudsmith pulls to 1.
+  acquire-core:
     runs-on: ubuntu-22.04
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Conan
         uses: conan-io/setup-conan@v1.3.0
@@ -28,8 +34,6 @@ jobs:
         run: pip install cmake ninja
 
       - name: Configure plotjuggler cloudsmith Conan remote
-        # plotjuggler_core is consumed as a Conan package from the
-        # plotjuggler cloudsmith repo. No CPM source clone, no SSH agent.
         env:
           CLOUDSMITH_USER: ${{ secrets.CLOUDSMITH_USER }}
           CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
@@ -38,21 +42,27 @@ jobs:
           conan profile detect --force
           conan remote add plotjuggler-cloudsmith \
             https://conan.cloudsmith.io/plotjuggler/plotjuggler --force
+          # Non-fatal: if cloudsmith is down or over quota (HTTP 402), ensure_core.sh
+          # below still builds core from the submodule, so don't fail the job here.
           conan remote login plotjuggler-cloudsmith \
-            "$CLOUDSMITH_USER" -p "$CLOUDSMITH_API_KEY"
+            "$CLOUDSMITH_USER" -p "$CLOUDSMITH_API_KEY" \
+            || echo "::warning::cloudsmith login failed; core will be built from the submodule"
 
-      - name: Build & Test
+      - name: Acquire plotjuggler_core (cloudsmith → submodule fallback)
         shell: bash
-        run: |
-          conan install . --output-folder=build --build=missing -s build_type=Release \
-            -s compiler.cppstd=20 -c tools.cmake.cmaketoolchain:generator=Ninja
+        run: scripts/ensure_core.sh
 
-          cmake -S . -B build/Release -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
-            -DCMAKE_PREFIX_PATH=build \
-            -DCMAKE_BUILD_TYPE=Release
-          cmake --build build/Release --config Release
-          ctest --test-dir build/Release -V --output-on-failure
+      - name: Save plotjuggler_core to a Conan cache artifact
+        shell: bash
+        run: conan cache save "plotjuggler_core/*:*" --file core-cache.tgz
+
+      - name: Upload core cache artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: conan-core-cache
+          path: core-cache.tgz
+          if-no-files-found: error
+          retention-days: 1
 
   # Emit the matrix list of plugins to build in isolation. A plugin is
   # included when it has its own conanfile.py and a manifest.json, and does
@@ -82,11 +92,12 @@ jobs:
           echo "Discovered plugins: $json"
 
   # Build each plugin in isolation against its own conanfile.py, matching the
-  # path the release workflow takes. Catches per-plugin recipe gaps that the
-  # monolithic `build` job above masks because root conanfile.txt is a
-  # superset.
+  # path the release workflow takes. Catches per-plugin recipe gaps. Each leg
+  # restores plotjuggler_core from the acquire-core artifact (no cloudsmith remote
+  # is configured here), so the matrix fan-out costs zero cloudsmith bandwidth;
+  # conancenter still serves each plugin's other third-party deps.
   per-plugin-build:
-    needs: discover-plugins
+    needs: [discover-plugins, acquire-core]
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -96,6 +107,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Conan
         uses: conan-io/setup-conan@v1.3.0
@@ -105,17 +118,21 @@ jobs:
       - name: Install cmake and ninja
         run: pip install cmake ninja
 
-      - name: Configure plotjuggler cloudsmith Conan remote
-        env:
-          CLOUDSMITH_USER: ${{ secrets.CLOUDSMITH_USER }}
-          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+      - name: Detect Conan profile
         shell: bash
-        run: |
-          conan profile detect --force
-          conan remote add plotjuggler-cloudsmith \
-            https://conan.cloudsmith.io/plotjuggler/plotjuggler --force
-          conan remote login plotjuggler-cloudsmith \
-            "$CLOUDSMITH_USER" -p "$CLOUDSMITH_API_KEY"
+        run: conan profile detect --force
+
+      - name: Download core cache artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: conan-core-cache
+
+      - name: Restore plotjuggler_core into the Conan cache
+        # Core comes from the artifact primed by acquire-core. No cloudsmith remote is
+        # configured in this job, so a build leg can never pull core from cloudsmith.
+        # If the restore somehow misses, ensure_core.sh rebuilds it from the submodule.
+        shell: bash
+        run: conan cache restore core-cache.tgz || scripts/ensure_core.sh
 
       - name: Build ${{ matrix.plugin }}
         shell: bash
