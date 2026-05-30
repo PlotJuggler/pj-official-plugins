@@ -4,7 +4,7 @@ Status doc for the `ros2_trace` plugin. Read this first to resume work.
 
 - **Branch:** `dfaconti/ros2-trace-plugin` (worktree of `pj-official-plugins`, off `main`)
 - **Last updated:** 2026-05-30
-- **Full design spec:** `/home/davide/ws_plotjuggler/docs/superpowers/specs/2026-05-30-ros2-trace-plugin-design.md`
+- **Full design spec:** `ros2_trace/DESIGN_SPEC.md`
 - **Original implementation plan:** `/home/davide/.claude/plans/twinkling-leaping-prism.md`
 
 ---
