@@ -244,6 +244,20 @@ class McapSource : public PJ::FileSourceBase {
     uint64_t consecutive_push_failures = 0;
     const bool use_log_time = dialog_.useMcapLogTime();
 
+    // Authoritative recording window (log-time envelope) from the MCAP summary,
+    // already read by parallel_reader.open(). Header (publishTime) stamps that
+    // fall outside it come from latched / long-running publishers — static TF,
+    // robot_description, a map computed hours or days earlier — and would drag
+    // the playback range off the actual recording. For those we fall back to the
+    // message's own logTime (see the per-message timestamp below). If the summary
+    // has no statistics the window stays fully open and behaviour is unchanged.
+    uint64_t log_window_min = 0;
+    uint64_t log_window_max = UINT64_MAX;
+    if (parallel_reader.statistics()) {
+      log_window_min = parallel_reader.statistics()->messageStartTime;
+      log_window_max = parallel_reader.statistics()->messageEndTime;
+    }
+
     mcap::ParallelReadOptions parallel_opts;
     parallel_opts.read.readOrder = mcap::ReadMessageOptions::ReadOrder::LogTimeOrder;
     parallel_opts.maxBytesInFlight = kParallelImportBudgetBytes;
@@ -272,8 +286,23 @@ class McapSource : public PJ::FileSourceBase {
             continue;
           }
 
-          const PJ::Timestamp timestamp_ns =
-              static_cast<PJ::Timestamp>(use_log_time ? mv.message.logTime : mv.message.publishTime);
+          // Window fallback: trust the header (publishTime) only when it lands
+          // inside the recording's log-time window. A header outside it comes from
+          // a latched / long-running publisher (static TF, robot_description, a map
+          // computed hours/days earlier); pin those to the recording's first
+          // timestamp (log_window_min) so the data is valid from the very start of
+          // playback rather than at its own arrival offset. useMcapLogTime() forces
+          // the message's own logTime unconditionally.
+          const uint64_t pub_time = mv.message.publishTime;
+          const bool header_in_window = pub_time >= log_window_min && pub_time <= log_window_max;
+          PJ::Timestamp timestamp_ns;
+          if (use_log_time) {
+            timestamp_ns = static_cast<PJ::Timestamp>(mv.message.logTime);
+          } else if (header_in_window) {
+            timestamp_ns = static_cast<PJ::Timestamp>(pub_time);
+          } else {
+            timestamp_ns = static_cast<PJ::Timestamp>(log_window_min);
+          }
 
           // The fetcher captures the hot (pinned-chunk) handle + cold locator
           // now; the lambda just adapts the std-only ByteView to PayloadView

@@ -289,20 +289,22 @@ void RosParser::decodeOneMarker(PJ::sdk::SceneEntities& out) {
   out.entities.push_back(std::move(entity));
 }
 
-PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseMarker(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseMarker(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
     current_timestamp_ = ts;
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
     PJ::sdk::SceneEntities out;
     decodeOneMarker(out);
-    return PJ::sdk::BuiltinObject{std::move(out)};
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(out)}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("Marker: CDR read error: ") + e.what());
   }
 }
 
-PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseMarkerArray(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseMarkerArray(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
     current_timestamp_ = ts;
@@ -316,7 +318,9 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseMarkerArray(PJ::Timestamp t
     for (uint32_t i = 0; i < count; ++i) {
       decodeOneMarker(out);
     }
-    return PJ::sdk::BuiltinObject{std::move(out)};
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(out)}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("MarkerArray: CDR read error: ") + e.what());
   }

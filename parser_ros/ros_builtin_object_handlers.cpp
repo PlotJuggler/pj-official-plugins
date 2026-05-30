@@ -346,7 +346,7 @@ PJ::sdk::FrameTransform RosParser::readStampedTransform() {
   return tf;
 }
 
-PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseFrameTransforms(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFrameTransforms(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
     current_timestamp_ = ts;
@@ -358,7 +358,9 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseFrameTransforms(PJ::Timesta
     for (uint32_t i = 0; i < transform_count; ++i) {
       transforms.transforms.push_back(readStampedTransform());
     }
-    return PJ::sdk::BuiltinObject{std::move(transforms)};
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(transforms)}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("TFMessage: CDR read error: ") + e.what());
   }
@@ -370,7 +372,7 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseFrameTransforms(PJ::Timesta
 // buffer as /tf. The scalar handler (handleTransformStamped) still runs.
 // ---------------------------------------------------------------------------
 
-PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseTransformStampedObject(
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseTransformStampedObject(
     PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
@@ -379,7 +381,9 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseTransformStampedObject(
 
     PJ::sdk::FrameTransforms transforms;
     transforms.transforms.push_back(readStampedTransform());
-    return PJ::sdk::BuiltinObject{std::move(transforms)};
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(transforms)}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("TransformStamped: CDR read error: ") + e.what());
   }
@@ -402,7 +406,7 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseTransformStampedObject(
 // pinned by payload.anchor (same pattern as PointCloud2 / Image).
 // ---------------------------------------------------------------------------
 
-PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseOccupancyGrid(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOccupancyGrid(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
     current_timestamp_ = ts;
@@ -438,7 +442,9 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseOccupancyGrid(PJ::Timestamp
     grid.height = height;
     grid.data = PJ::Span<const uint8_t>(data_span.data(), data_span.size());
     grid.anchor = payload.anchor;
-    return PJ::sdk::BuiltinObject{std::move(grid)};
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(grid)}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("OccupancyGrid: CDR read error: ") + e.what());
   }
@@ -453,7 +459,7 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseOccupancyGrid(PJ::Timestamp
 // consumers do the format-specific parsing.
 // ---------------------------------------------------------------------------
 
-PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseRobotDescription(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseRobotDescription(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
     current_timestamp_ = ts;
@@ -473,7 +479,9 @@ PJ::Expected<PJ::sdk::BuiltinObject> RosParser::parseRobotDescription(PJ::Timest
       rd.format = "mjcf";
     }
     rd.text = std::move(text);
-    return PJ::sdk::BuiltinObject{std::move(rd)};
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(rd)}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("RobotDescription: read error: ") + e.what());
   }

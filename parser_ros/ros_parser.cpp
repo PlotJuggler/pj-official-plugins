@@ -145,10 +145,15 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kFrameTransforms,
         .parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTFMessage>,
         .parse_object = &RosParser::parseFrameTransforms}},
-      // Object-only: a map/costmap is consumed as a grid, not plotted as
-      // per-cell scalar columns.
+      // A map/costmap is consumed as a grid object; parseScalarsDiscardingLargeArrays
+      // keeps the metadata (resolution, size, origin) plottable while discarding the
+      // large data[] array. The scalar handler is also required by the ingest path —
+      // an object-only entry (no parse_scalars) aborts the message push before the
+      // object route runs, so nothing reaches the ObjectStore.
       {"nav_msgs/OccupancyGrid",
-       {.object_type = ObjectType::kOccupancyGrid, .parse_object = &RosParser::parseOccupancyGrid}},
+       {.object_type = ObjectType::kOccupancyGrid,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseOccupancyGrid}},
       // Object-only: markers are 3D scene content, not scalar columns. One
       // SceneEntity per Marker (ADD/MODIFY) or a SceneEntityDeletion
       // (DELETE/DELETEALL). Per-message/stateless — see MARKER_NOTES.md.

@@ -306,23 +306,23 @@ class RosParser : public PJ::MessageParserPluginBase {
 
   // tf2_msgs/TFMessage -> sdk::FrameTransforms (one per TransformStamped, each
   // carrying its own Header.stamp)
-  PJ::Expected<PJ::sdk::BuiltinObject> parseFrameTransforms(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+  PJ::Expected<PJ::sdk::ObjectRecord> parseFrameTransforms(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
   // geometry_msgs/TransformStamped -> sdk::FrameTransforms (single element)
-  PJ::Expected<PJ::sdk::BuiltinObject> parseTransformStampedObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+  PJ::Expected<PJ::sdk::ObjectRecord> parseTransformStampedObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
   // nav_msgs/OccupancyGrid -> sdk::OccupancyGrid (byte-backed, zero-copy cells)
-  PJ::Expected<PJ::sdk::BuiltinObject> parseOccupancyGrid(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+  PJ::Expected<PJ::sdk::ObjectRecord> parseOccupancyGrid(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
   // std_msgs/String on a robot_description topic -> sdk::RobotDescription
-  PJ::Expected<PJ::sdk::BuiltinObject> parseRobotDescription(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+  PJ::Expected<PJ::sdk::ObjectRecord> parseRobotDescription(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
   // visualization_msgs/Marker -> sdk::SceneEntities (one SceneEntity, or one
   // SceneEntityDeletion for DELETE/DELETEALL).
-  PJ::Expected<PJ::sdk::BuiltinObject> parseMarker(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+  PJ::Expected<PJ::sdk::ObjectRecord> parseMarker(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
   // visualization_msgs/MarkerArray -> sdk::SceneEntities (one per Marker).
-  PJ::Expected<PJ::sdk::BuiltinObject> parseMarkerArray(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+  PJ::Expected<PJ::sdk::ObjectRecord> parseMarkerArray(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
   // Reads one visualization_msgs/Marker from the deserializer at the current
   // cursor and appends the resulting entity (ADD/MODIFY) or deletion
