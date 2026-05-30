@@ -76,3 +76,26 @@ TEST(Registry, ResolvesTimerCallbackChain) {
   EXPECT_EQ(rc->symbol, "on_timer");
   EXPECT_TRUE(rc->topic_name.empty());
 }
+
+TEST(Registry, ResolvesServiceCallbackChain) {
+  Registry reg;
+  const std::uint64_t node = 0x1000;
+  const std::uint64_t service = 0x8000;
+  const std::uint64_t cb = 0x9000;
+
+  reg.consume(RawEvent(
+      Tp::RclNodeInit, 1,
+      {{"node_handle", node}, {"node_name", std::string("srv_node")}, {"namespace", std::string("/")}}));
+  reg.consume(RawEvent(
+      Tp::RclServiceInit, 2,
+      {{"service_handle", service}, {"node_handle", node}, {"service_name", std::string("/add_two_ints")}}));
+  reg.consume(RawEvent(Tp::RclcppServiceCallbackAdded, 3, {{"service_handle", service}, {"callback", cb}}));
+  reg.consume(RawEvent(Tp::RclcppCallbackRegister, 4, {{"callback", cb}, {"symbol", std::string("on_request")}}));
+
+  const auto rc = reg.resolveCallback(EntityKey{cb});
+  ASSERT_TRUE(rc.has_value());
+  EXPECT_EQ(rc->kind, CallbackKind::Service);
+  EXPECT_EQ(rc->node_name, "srv_node");
+  EXPECT_EQ(rc->topic_name, "/add_two_ints");
+  EXPECT_EQ(rc->symbol, "on_request");
+}

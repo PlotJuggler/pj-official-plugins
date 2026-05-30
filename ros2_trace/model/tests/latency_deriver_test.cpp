@@ -49,7 +49,7 @@ TEST(LatencyDeriver, EmitsMessageLatencyOnTake) {
   ASSERT_EQ(sink.samples.size(), 1u);
   EXPECT_EQ(sink.samples[0].series, "/ros2_trace/chatter/latency_ms");
   EXPECT_EQ(sink.samples[0].ts_ns, 3'000'000);
-  EXPECT_DOUBLE_EQ(sink.samples[0].value, 2.0);
+  EXPECT_DOUBLE_EQ(std::get<double>(sink.samples[0].value), 2.0);
 }
 
 TEST(LatencyDeriver, IgnoresFailedTake) {

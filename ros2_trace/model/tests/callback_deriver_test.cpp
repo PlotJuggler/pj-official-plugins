@@ -51,5 +51,5 @@ TEST(CallbackDeriver, EmitsDurationMillisOnCallbackEnd) {
   ASSERT_EQ(sink.samples.size(), 1u);
   EXPECT_EQ(sink.samples[0].series, "/ros2_trace/listener/callbacks/on_msg/duration_ms");
   EXPECT_EQ(sink.samples[0].ts_ns, 1'000'000);
-  EXPECT_DOUBLE_EQ(sink.samples[0].value, 0.5);  // (1.5ms - 1.0ms)
+  EXPECT_DOUBLE_EQ(std::get<double>(sink.samples[0].value), 0.5);  // (1.5ms - 1.0ms)
 }

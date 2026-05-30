@@ -82,6 +82,36 @@ void Registry::consume(const RawEvent& ev) {
       callbacks_[EntityKey{*callback}] = CallbackOwner{CallbackKind::Timer, EntityKey{*timer}};
       break;
     }
+    case Tp::RclServiceInit: {
+      const auto service = ev.handle("service_handle");
+      const auto node_handle = ev.handle("node_handle");
+      if (!service || !node_handle) {
+        return;
+      }
+      ServiceInfo info;
+      info.name = std::string(ev.str("service_name").value_or(std::string_view{}));
+      info.node = EntityKey{*node_handle};
+      services_[EntityKey{*service}] = std::move(info);
+      break;
+    }
+    case Tp::RclcppServiceCallbackAdded: {
+      const auto service = ev.handle("service_handle");
+      const auto callback = ev.handle("callback");
+      if (!service || !callback) {
+        return;
+      }
+      callbacks_[EntityKey{*callback}] = CallbackOwner{CallbackKind::Service, EntityKey{*service}};
+      break;
+    }
+    case Tp::RclLifecycleStateMachineInit: {
+      const auto sm = ev.handle("state_machine");
+      const auto node_handle = ev.handle("node_handle");
+      if (!sm || !node_handle) {
+        return;
+      }
+      state_machines_[EntityKey{*sm}] = EntityKey{*node_handle};
+      break;
+    }
     default:
       break;
   }
@@ -133,7 +163,17 @@ std::optional<ResolvedCallback> Registry::resolveCallback(EntityKey callback) co
       }
       break;
     }
-    case CallbackKind::Service:
+    case CallbackKind::Service: {
+      const auto svc_it = services_.find(cb_it->second.owner);
+      if (svc_it == services_.end()) {
+        break;
+      }
+      out.topic_name = svc_it->second.name;
+      if (const auto node_it = nodes_.find(svc_it->second.node); node_it != nodes_.end()) {
+        out.node_name = node_it->second.name;
+      }
+      break;
+    }
     case CallbackKind::Unknown:
       break;
   }
@@ -151,6 +191,30 @@ std::optional<std::string> Registry::topicForRmwSubscription(EntityKey rmw_handl
     return std::nullopt;
   }
   return sub_it->second.topic;
+}
+
+std::optional<std::string> Registry::nodeForStateMachine(EntityKey state_machine) const {
+  const auto it = state_machines_.find(state_machine);
+  if (it == state_machines_.end()) {
+    return std::nullopt;
+  }
+  const auto node_it = nodes_.find(it->second);
+  if (node_it == nodes_.end()) {
+    return std::nullopt;
+  }
+  return node_it->second.name;
+}
+
+std::optional<std::int64_t> Registry::timerPeriodForCallback(EntityKey callback) const {
+  const auto cb_it = callbacks_.find(callback);
+  if (cb_it == callbacks_.end() || cb_it->second.kind != CallbackKind::Timer) {
+    return std::nullopt;
+  }
+  const auto t_it = timers_.find(cb_it->second.owner);
+  if (t_it == timers_.end()) {
+    return std::nullopt;
+  }
+  return t_it->second.period_ns;
 }
 
 }  // namespace ros2_trace_model

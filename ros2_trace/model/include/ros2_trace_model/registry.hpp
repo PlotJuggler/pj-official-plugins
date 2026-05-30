@@ -47,6 +47,12 @@ class Registry {
   // Resolve an rmw subscription handle (as seen in rmw_take) to its topic name.
   std::optional<std::string> topicForRmwSubscription(EntityKey rmw_handle) const;
 
+  // Resolve a lifecycle state-machine handle to its owning node's name.
+  std::optional<std::string> nodeForStateMachine(EntityKey state_machine) const;
+
+  // Nominal period (ns) of the timer owning a timer callback, if known.
+  std::optional<std::int64_t> timerPeriodForCallback(EntityKey callback) const;
+
  private:
   struct SubInfo {
     std::string topic;
@@ -60,13 +66,19 @@ class Registry {
     EntityKey node;
     std::int64_t period_ns{};
   };
+  struct ServiceInfo {
+    std::string name;
+    EntityKey node;
+  };
 
   std::unordered_map<EntityKey, NodeInfo, EntityKeyHash> nodes_;
   std::unordered_map<EntityKey, SubInfo, EntityKeyHash> subscriptions_;  // by rcl subscription_handle
   std::unordered_map<EntityKey, EntityKey, EntityKeyHash> sub_objects_;  // rclcpp subscription -> subscription_handle
   std::unordered_map<EntityKey, EntityKey, EntityKeyHash> rmw_subs_;  // rmw subscription_handle -> subscription_handle
-  std::unordered_map<EntityKey, TimerInfo, EntityKeyHash> timers_;    // by rcl timer_handle
-  std::unordered_map<EntityKey, CallbackOwner, EntityKeyHash> callbacks_;  // callback -> owner
+  std::unordered_map<EntityKey, EntityKey, EntityKeyHash> state_machines_;  // lifecycle state_machine -> node_handle
+  std::unordered_map<EntityKey, TimerInfo, EntityKeyHash> timers_;          // by rcl timer_handle
+  std::unordered_map<EntityKey, ServiceInfo, EntityKeyHash> services_;      // by rcl service_handle
+  std::unordered_map<EntityKey, CallbackOwner, EntityKeyHash> callbacks_;   // callback -> owner
   std::unordered_map<EntityKey, std::string, EntityKeyHash> callback_symbols_;
 };
 

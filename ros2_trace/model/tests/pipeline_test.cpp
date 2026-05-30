@@ -63,5 +63,47 @@ TEST(Pipeline, ResolvesAndEmitsCallbackDurationEndToEnd) {
   ASSERT_EQ(sink.samples.size(), 1u);
   EXPECT_EQ(sink.samples[0].series, "/ros2_trace/listener/callbacks/on_msg/duration_ms");
   EXPECT_EQ(sink.samples[0].ts_ns, 1'000'000);
-  EXPECT_DOUBLE_EQ(sink.samples[0].value, 2.0);  // (3.0ms - 1.0ms)
+  EXPECT_DOUBLE_EQ(std::get<double>(sink.samples[0].value), 2.0);  // (3.0ms - 1.0ms)
+}
+
+TEST(Pipeline, RunsLatencyAndLifecycleDerivers) {
+  const std::uint64_t node = 0x1000;
+  const std::uint64_t sub_handle = 0x2000;
+  const std::uint64_t rmw_sub = 0x2500;
+  const std::uint64_t sm = 0x7000;
+
+  InMemoryTraceSource src;
+  src.events.push_back(RawEvent(
+      Tp::RclNodeInit, 1,
+      {{"node_handle", node}, {"node_name", std::string("listener")}, {"namespace", std::string("/")}}));
+  src.events.push_back(RawEvent(
+      Tp::RclSubscriptionInit, 2,
+      {{"subscription_handle", sub_handle},
+       {"node_handle", node},
+       {"rmw_subscription_handle", rmw_sub},
+       {"topic_name", std::string("/chatter")}}));
+  src.events.push_back(RawEvent(Tp::RclLifecycleStateMachineInit, 3, {{"node_handle", node}, {"state_machine", sm}}));
+  src.events.push_back(RawEvent(
+      Tp::RmwTake, 3'000'000,
+      {{"rmw_subscription_handle", rmw_sub}, {"source_timestamp", std::int64_t{1'000'000}}, {"taken", true}}));
+  src.events.push_back(RawEvent(
+      Tp::RclLifecycleTransition, 5'000'000,
+      {{"state_machine", sm}, {"start_label", std::string("unconfigured")}, {"goal_label", std::string("active")}}));
+
+  CollectingSink sink;
+  Pipeline pipeline(sink);
+  pipeline.run(src);
+
+  bool has_latency = false;
+  bool has_lifecycle = false;
+  for (const auto& s : sink.samples) {
+    if (s.series == "/ros2_trace/chatter/latency_ms") {
+      has_latency = true;
+    }
+    if (s.series == "/ros2_trace/listener/lifecycle/state") {
+      has_lifecycle = true;
+    }
+  }
+  EXPECT_TRUE(has_latency);
+  EXPECT_TRUE(has_lifecycle);
 }

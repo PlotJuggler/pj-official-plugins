@@ -3,16 +3,22 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <variant>
 
 #include "ros2_trace_model/entity_key.hpp"
 
 namespace ros2_trace_model {
 
-// A single numeric (or, later, string) point on a named PlotJuggler series.
+// A sample value: numeric for metrics (durations, latencies, jitter, the 0/1
+// "active" step) or a string for categorical state series (executor, lifecycle).
+// Maps directly onto PlotJuggler's ValueRef at the plugin boundary.
+using SampleValue = std::variant<double, std::string>;
+
+// A single point on a named PlotJuggler series.
 struct Sample {
   std::string series;
   std::int64_t ts_ns{};
-  double value{};
+  SampleValue value{0.0};
 };
 
 // Phase-1 output: derived metric samples that become PlotJuggler y(t) curves.

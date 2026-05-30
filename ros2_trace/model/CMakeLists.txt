@@ -31,6 +31,8 @@ add_library(ros2_trace_model STATIC
   src/registry.cpp
   src/callback_deriver.cpp
   src/latency_deriver.cpp
+  src/lifecycle_deriver.cpp
+  src/timer_deriver.cpp
   src/pipeline.cpp
 )
 set_target_properties(ros2_trace_model PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -45,6 +47,8 @@ if(BUILD_TESTING)
     tests/registry_test.cpp
     tests/callback_deriver_test.cpp
     tests/latency_deriver_test.cpp
+    tests/lifecycle_deriver_test.cpp
+    tests/timer_deriver_test.cpp
     tests/pipeline_test.cpp
   )
   target_compile_features(ros2_trace_model_test PRIVATE cxx_std_20)

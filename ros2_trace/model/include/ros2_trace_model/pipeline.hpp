@@ -1,9 +1,12 @@
 #pragma once
 
 #include "ros2_trace_model/callback_deriver.hpp"
+#include "ros2_trace_model/latency_deriver.hpp"
+#include "ros2_trace_model/lifecycle_deriver.hpp"
 #include "ros2_trace_model/raw_event.hpp"
 #include "ros2_trace_model/registry.hpp"
 #include "ros2_trace_model/sinks.hpp"
+#include "ros2_trace_model/timer_deriver.hpp"
 #include "ros2_trace_model/trace_source.hpp"
 
 namespace ros2_trace_model {
@@ -26,6 +29,9 @@ class Pipeline {
   Registry registry_;
   MetricSampleSink& metric_sink_;
   CallbackDeriver callback_deriver_;
+  LatencyDeriver latency_deriver_;
+  TimerDeriver timer_deriver_;
+  LifecycleDeriver lifecycle_deriver_;
 };
 
 }  // namespace ros2_trace_model
