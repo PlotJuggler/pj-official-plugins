@@ -51,5 +51,12 @@ if [ ! -f "${CORE_DIR}/conanfile.py" ]; then
   git clone --branch "v${CORE_VERSION}" --depth 1 \
     https://github.com/PlotJuggler/plotjuggler_core.git "${CORE_DIR}"
 fi
-conan create "${CORE_DIR}" --version "${CORE_VERSION}" "${SETTINGS[@]}" --build=missing
+# Force a from-source build of core. We only reach here because the cloudsmith
+# binary is unavailable (e.g. 402), but if the remote is still configured a plain
+# --build=missing sees the advertised (unservable) binary and tries to DOWNLOAD it,
+# failing again with 402. The explicit `plotjuggler_core/*` build pattern overrides
+# that and builds from the recipe we just exported; --build=missing covers core's
+# own dependencies.
+conan create "${CORE_DIR}" --version "${CORE_VERSION}" "${SETTINGS[@]}" \
+  --build="plotjuggler_core/*" --build=missing
 echo "ensure_core: built ${REF} from source"
