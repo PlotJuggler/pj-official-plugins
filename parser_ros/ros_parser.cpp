@@ -139,6 +139,14 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kPointCloud,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parsePointCloud}},
+      {"nav_msgs/OccupancyGrid",
+       {.object_type = ObjectType::kOccupancyGrid,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseOccupancyGrid}},
+      {"map_msgs/OccupancyGridUpdate",
+       {.object_type = ObjectType::kOccupancyGridUpdate,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseOccupancyGridUpdate}},
 
       // ----- Specialized scalar schemas -----
       // wrapVoidHandler<Handler> is a member-fn-template; its address is a

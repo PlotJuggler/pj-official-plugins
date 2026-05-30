@@ -81,6 +81,23 @@ inline uint8_t readU8(RosMsgParser::Deserializer& d) {
   return d.deserialize(RosMsgParser::UINT8).extract<uint8_t>();
 }
 
+inline double readF64(RosMsgParser::Deserializer& d) {
+  return d.deserialize(RosMsgParser::FLOAT64).convert<double>();
+}
+
+// Read a geometry_msgs/Pose: position (3 × float64) + orientation (4 × float64).
+inline PJ::sdk::Pose readPose(RosMsgParser::Deserializer& d) {
+  PJ::sdk::Pose pose;
+  pose.position.x = readF64(d);
+  pose.position.y = readF64(d);
+  pose.position.z = readF64(d);
+  pose.orientation.x = readF64(d);
+  pose.orientation.y = readF64(d);
+  pose.orientation.z = readF64(d);
+  pose.orientation.w = readF64(d);
+  return pose;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -301,6 +318,116 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePointCloud(PJ::Timestamp ts,
         }}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("PointCloud2: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// nav_msgs/OccupancyGrid
+//
+// Wire layout (ROS2 shown; ROS1 prepends a uint32 seq inside the header):
+//   header                  std_msgs/Header  (handled by readHeader())
+//   info                    nav_msgs/MapMetaData:
+//     map_load_time         builtin_interfaces/Time (sec int32/uint32 + nanosec uint32)
+//     resolution            float32     ← cell size in meters
+//     width                 uint32      ← columns (cells along x)
+//     height                uint32      ← rows (cells along y)
+//     origin                geometry_msgs/Pose (position 3×float64 + orientation 4×float64)
+//   data                    int8[width*height]   ← row-major occupancy cells
+//
+// `info.resolution` is a float32 on the wire; sdk::OccupancyGrid stores it as a
+// double, so we widen on read. The int8[] cells are byte-identical to uint8 on
+// the wire, so the zero-copy span maps straight onto sdk::OccupancyGrid::data.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOccupancyGrid(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    auto header = readHeader();
+
+    // info.map_load_time (builtin_interfaces/Time): sec + nanosec, unused here.
+    (void)deserializer_->deserializeUInt32();
+    (void)deserializer_->deserializeUInt32();
+
+    const double resolution = deserializer_->deserialize(RosMsgParser::FLOAT32).convert<double>();
+    const uint32_t width = deserializer_->deserializeUInt32();
+    const uint32_t height = deserializer_->deserializeUInt32();
+    const PJ::sdk::Pose origin = readPose(*deserializer_);
+    const auto data_span = deserializer_->deserializeByteSequence();
+
+    const size_t expected = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (data_span.size() < expected) {
+      return PJ::unexpected(std::string("OccupancyGrid data[] smaller than width*height"));
+    }
+
+    // Zero-copy: data_span slices the payload buffer; the anchor keeps it alive.
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{PJ::sdk::OccupancyGrid{
+            .timestamp_ns = current_timestamp_,
+            .frame_id = std::move(header.frame_id),
+            .origin = origin,
+            .resolution = resolution,
+            .width = width,
+            .height = height,
+            .data = PJ::Span<const uint8_t>(data_span.data(), expected),
+            .anchor = payload.anchor,
+        }}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("OccupancyGrid: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// map_msgs/OccupancyGridUpdate
+//
+// Wire layout (ROS2 shown; ROS1 prepends a uint32 seq inside the header):
+//   header                  std_msgs/Header  (handled by readHeader())
+//   x                       int32     ← column offset of the patch top-left
+//   y                       int32     ← row offset of the patch top-left
+//   width                   uint32    ← patch width in cells
+//   height                  uint32    ← patch height in cells
+//   data                    int8[width*height]   ← row-major patch cells
+//
+// The patch carries no origin/resolution; a stateful consumer places it at the
+// base grid's origin + (x, y) * resolution (see occupancy_grid_update.hpp).
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOccupancyGridUpdate(
+    PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    auto header = readHeader();
+
+    const int32_t x = deserializer_->deserialize(RosMsgParser::INT32).convert<int32_t>();
+    const int32_t y = deserializer_->deserialize(RosMsgParser::INT32).convert<int32_t>();
+    const uint32_t width = deserializer_->deserializeUInt32();
+    const uint32_t height = deserializer_->deserializeUInt32();
+    const auto data_span = deserializer_->deserializeByteSequence();
+
+    const size_t expected = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (data_span.size() < expected) {
+      return PJ::unexpected(std::string("OccupancyGridUpdate data[] smaller than width*height"));
+    }
+
+    // Zero-copy: data_span slices the payload buffer; the anchor keeps it alive.
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{PJ::sdk::OccupancyGridUpdate{
+            .timestamp_ns = current_timestamp_,
+            .frame_id = std::move(header.frame_id),
+            .x = x,
+            .y = y,
+            .width = width,
+            .height = height,
+            .data = PJ::Span<const uint8_t>(data_span.data(), expected),
+            .anchor = payload.anchor,
+        }}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("OccupancyGridUpdate: CDR read error: ") + e.what());
   }
 }
 

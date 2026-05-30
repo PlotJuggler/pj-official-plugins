@@ -293,6 +293,12 @@ class RosParser : public PJ::MessageParserPluginBase {
   // sensor_msgs/PointCloud2
   PJ::Expected<PJ::sdk::ObjectRecord> parsePointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
+  // nav_msgs/OccupancyGrid
+  PJ::Expected<PJ::sdk::ObjectRecord> parseOccupancyGrid(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // map_msgs/OccupancyGridUpdate
+  PJ::Expected<PJ::sdk::ObjectRecord> parseOccupancyGridUpdate(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
   // ----- Specialized scalar handlers -----
   //
   // Each one walks a specific ROS message type and pushes its decoded fields
