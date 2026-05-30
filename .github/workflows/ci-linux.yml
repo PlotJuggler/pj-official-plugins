@@ -66,16 +66,24 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Build arrow/23.0.1 from source ONCE per run and hand it to the arrow-consuming
-  # plugins as a Conan cache artifact, instead of compiling Arrow (and its heavy boost
-  # dependency) independently in every arrow plugin's leg. conancenter has no prebuilt
-  # binary for our profile — the repo forces compiler.cppstd=20 globally and Conan 2
-  # cannot give Arrow a different cppstd than the consumer — so Arrow always builds from
-  # source (~14 min).
+  # Build every Arrow variant the repo needs from source ONCE per run and hand them to
+  # the arrow-consuming plugins as a Conan cache artifact, instead of compiling Arrow
+  # (and its heavy boost / grpc / protobuf deps) independently in each arrow plugin's
+  # leg. conancenter has no prebuilt binary for our profile — the repo forces
+  # compiler.cppstd=20 globally and Conan 2 cannot give Arrow a different cppstd than the
+  # consumer — so Arrow always builds from source.
   #
-  # The build runs in an ISOLATED CONAN_HOME so the saved closure is exactly Arrow + its
+  # Two variants are primed, because Arrow's package_id depends on its options:
+  #   * parquet/snappy  — shared by data_load_parquet + data_load_lerobot (~14 min)
+  #   * +Flight/grpc/protobuf — used by toolbox_mosaico's Arrow Flight client (~50 min)
+  # Both land in the one "*:*" artifact below; each build leg restores it and Conan picks
+  # the matching package_id. Adding the Flight variant here (vs letting mosaico rebuild
+  # it every run) costs nothing on warm runs and no extra wall-clock on cold runs —
+  # mosaico already had to wait for this job, then built Flight in-leg anyway.
+  #
+  # The builds run in an ISOLATED CONAN_HOME so the saved closure is exactly Arrow + its
   # from-source deps and can never fold in a stale plotjuggler_core from the shared
-  # setup-conan cache. A precisely-keyed actions/cache skips even the one build on warm
+  # setup-conan cache. A precisely-keyed actions/cache skips even these builds on warm
   # runs (GitHub cache keys are immutable, so the key encodes the exact Arrow config).
   acquire-arrow:
     runs-on: ubuntu-22.04
@@ -100,18 +108,34 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.conan-arrow
-          # Bump the trailing -vN whenever the Arrow option set below changes, so a
+          # Bump the trailing -vN whenever either Arrow option set below changes, so a
           # stale immutable entry can't pin an old binary.
-          key: conan-arrow-23.0.1-cppstd20-parquet-snappy-${{ runner.os }}-v1
+          key: conan-arrow-23.0.1-cppstd20-parquet-flight-${{ runner.os }}-v2
 
-      - name: Build arrow/23.0.1 (no-op on a cache hit)
+      - name: Build the Arrow variants (no-op on a cache hit)
         shell: bash
-        # Options MUST match data_load_parquet/data_load_lerobot default_options so the
-        # resulting package_id is identical and the build legs reuse the binary.
+        # Each variant's options MUST match the consuming recipe's default_options so the
+        # resulting package_id is identical and the build legs reuse the binary (verified
+        # with `conan graph info`: parquet/lerobot share one id, mosaico's Flight build
+        # another).
         run: |
           conan profile detect --force
+          # Variant 1 — parquet/snappy (data_load_parquet, data_load_lerobot).
           conan install --requires=arrow/23.0.1 \
             -o "arrow/*:parquet=True" -o "arrow/*:with_snappy=True" \
+            -o "*:shared=False" \
+            -o "boost/*:without_test=True" -o "boost/*:without_cobalt=True" \
+            -s build_type=Release -s compiler.cppstd=20 \
+            -c tools.cmake.cmaketoolchain:generator=Ninja \
+            --build=missing -of "$(mktemp -d)"
+          # Variant 2 — Arrow Flight (toolbox_mosaico). Pulls grpc + protobuf + re2 +
+          # thrift; lz4/zstd are needed because the Mosaico server sends LZ4/ZSTD batches.
+          conan install --requires=arrow/23.0.1 \
+            -o "arrow/*:parquet=True" -o "arrow/*:with_snappy=True" \
+            -o "arrow/*:with_flight_rpc=True" -o "arrow/*:with_grpc=True" \
+            -o "arrow/*:with_protobuf=True" -o "arrow/*:with_re2=True" \
+            -o "arrow/*:with_thrift=True" \
+            -o "arrow/*:with_lz4=True" -o "arrow/*:with_zstd=True" \
             -o "*:shared=False" \
             -o "boost/*:without_test=True" -o "boost/*:without_cobalt=True" \
             -s build_type=Release -s compiler.cppstd=20 \
@@ -149,12 +173,13 @@ jobs:
         id: list
         shell: bash
         # Partition into Arrow consumers and the rest. The Arrow consumers build in a
-        # dedicated job (arrow-plugin-build) that reuses the once-built Arrow binary from
+        # dedicated job (arrow-plugin-build) that reuses a once-built Arrow binary from
         # acquire-arrow, while everyone else builds immediately after acquire-core. The
-        # split is by recipe content (grep "arrow/"), so a future Arrow plugin — e.g.
-        # toolbox_mosaico from PR #97 — is routed automatically with no workflow edit.
-        # (A plugin requesting a different Arrow variant simply builds its own; the prime
-        # only serves the parquet/snappy variant declared by parquet + lerobot.)
+        # split is by recipe content (grep "arrow/"), so a new Arrow plugin is routed
+        # automatically with no workflow edit. acquire-arrow primes the variants the repo
+        # needs (parquet/snappy + Flight); a plugin requesting some other Arrow variant
+        # still works — it just rebuilds that variant in-leg until acquire-arrow primes it
+        # too.
         run: |
           plugins=()
           arrow_plugins=()

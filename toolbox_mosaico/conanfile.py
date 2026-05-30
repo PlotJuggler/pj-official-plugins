@@ -12,6 +12,7 @@ class ToolboxMosaicoConan(ConanFile):
         # that landed in 0.5.1, so the floor is 0.5.1 — a bare 0.5.0 won't
         # compile. The rest of the repo is still on [~0.4].
         "plotjuggler_core/[>=0.5.1 <0.6]",
+        "gtest/1.17.0",
         "nlohmann_json/3.12.0",
         "arrow/23.0.1",
         "lua/5.4.6",
