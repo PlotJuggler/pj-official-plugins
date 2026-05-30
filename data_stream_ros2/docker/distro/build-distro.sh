@@ -56,7 +56,7 @@ fi
 conan profile detect --force
 
 # Install only what data_stream_ros2 needs (plugin-local recipe), not the
-# root conanfile.txt which carries deps for every plugin.
+# root conanfile.py which carries deps for every plugin.
 conan install /workspace/data_stream_ros2 \
   --output-folder="${BUILD_DIR}" \
   --build=missing \
