@@ -154,6 +154,13 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kOccupancyGrid,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseOccupancyGrid}},
+      // The incremental delta-patch counterpart to OccupancyGrid (e.g.
+      // costmap_updates). Same dual route: x/y/width/height stay plottable, the
+      // large data[] patch is discarded by the scalar handler.
+      {"map_msgs/OccupancyGridUpdate",
+       {.object_type = ObjectType::kOccupancyGridUpdate,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseOccupancyGridUpdate}},
       // Object-only: markers are 3D scene content, not scalar columns. One
       // SceneEntity per Marker (ADD/MODIFY) or a SceneEntityDeletion
       // (DELETE/DELETEALL). Per-message/stateless — see MARKER_NOTES.md.

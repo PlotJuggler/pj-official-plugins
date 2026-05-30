@@ -314,6 +314,9 @@ class RosParser : public PJ::MessageParserPluginBase {
   // nav_msgs/OccupancyGrid -> sdk::OccupancyGrid (byte-backed, zero-copy cells)
   PJ::Expected<PJ::sdk::ObjectRecord> parseOccupancyGrid(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
+  // map_msgs/OccupancyGridUpdate -> sdk::OccupancyGridUpdate (byte-backed, zero-copy cells)
+  PJ::Expected<PJ::sdk::ObjectRecord> parseOccupancyGridUpdate(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
   // std_msgs/String on a robot_description topic -> sdk::RobotDescription
   PJ::Expected<PJ::sdk::ObjectRecord> parseRobotDescription(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 

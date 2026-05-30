@@ -451,6 +451,61 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOccupancyGrid(PJ::Timestamp 
 }
 
 // ---------------------------------------------------------------------------
+// map_msgs/OccupancyGridUpdate
+//
+// Wire layout (ROS2 shown; ROS1 prepends a uint32 seq inside the header):
+//   header   std_msgs/Header  (handled by readHeader())
+//   x        int32   ← column offset of the patch top-left into the base grid
+//   y        int32   ← row offset of the patch top-left
+//   width    uint32  ← patch width in cells
+//   height   uint32  ← patch height in cells
+//   data     int8[width*height]   ← row-major patch cells
+//
+// The patch carries no origin/resolution; a stateful consumer places it at the
+// base grid's origin + (x, y) * resolution (see occupancy_grid_update.hpp). The
+// int8[] cells are byte-identical to uint8 on the wire, so the zero-copy span
+// maps straight onto sdk::OccupancyGridUpdate::data.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOccupancyGridUpdate(
+    PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+
+    auto header = readHeader();
+
+    const int32_t x = deserializer_->deserialize(RosMsgParser::INT32).convert<int32_t>();
+    const int32_t y = deserializer_->deserialize(RosMsgParser::INT32).convert<int32_t>();
+    const uint32_t width = deserializer_->deserializeUInt32();
+    const uint32_t height = deserializer_->deserializeUInt32();
+    const auto data_span = deserializer_->deserializeByteSequence();
+
+    const size_t expected = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (data_span.size() < expected) {
+      return PJ::unexpected(std::string("OccupancyGridUpdate data[] smaller than width*height"));
+    }
+
+    PJ::sdk::OccupancyGridUpdate update;
+    update.timestamp_ns = current_timestamp_;
+    update.frame_id = std::move(header.frame_id);
+    update.x = x;
+    update.y = y;
+    update.width = width;
+    update.height = height;
+    // Zero-copy: data_span slices the payload buffer; the anchor keeps it alive.
+    update.data = PJ::Span<const uint8_t>(data_span.data(), expected);
+    update.anchor = payload.anchor;
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(update)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("OccupancyGridUpdate: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
 // std_msgs/String on a robot_description topic -> sdk::RobotDescription
 //
 // Dispatched in bindSchema by topic name (a generic String stays generic).
