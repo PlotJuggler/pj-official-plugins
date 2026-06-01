@@ -193,7 +193,14 @@ QLineEdit:focus { border-bottom: 2px solid palette(highlight); }</string>
             </font>
            </property>
            <property name="text">
-            <string>Tip: [CTRL+A] select all</string>
+            <string>Tip: [CTRL+A] select all, [CTRL+SHIFT+A] deselect all</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="btnDeselectAll">
+           <property name="visible">
+            <bool>false</bool>
            </property>
           </widget>
          </item>
