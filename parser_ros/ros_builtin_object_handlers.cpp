@@ -218,6 +218,57 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestam
 }
 
 // ---------------------------------------------------------------------------
+// foxglove_msgs/CompressedVideo
+//
+// Wire layout (ROS2 CDR):
+//   timestamp               builtin_interfaces/Time  (sec int32, nanosec uint32)
+//   frame_id                string
+//   data                    uint8[]   ← compressed bitstream for ONE frame
+//                                       (Annex-B for h264/h265), zero-copied
+//   format                  string    ← lowercase codec id: "h264","h265","vp9","av1"
+//
+// Unlike the Image / PointCloud schemas, the first field is a BARE
+// builtin_interfaces/Time, not a std_msgs/Header — so readHeader() must NOT be
+// used (it would also consume a frame_id string that does not exist here, and
+// the ROS1 seq branch). We read the two Time words directly instead.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedVideo(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+
+    // builtin_interfaces/Time timestamp — bare, not wrapped in a Header.
+    const uint32_t sec = deserializer_->deserializeUInt32();
+    const uint32_t nsec = deserializer_->deserializeUInt32();
+    const int64_t embedded_ts_ns = static_cast<int64_t>(sec) * 1000000000LL + static_cast<int64_t>(nsec);
+    if (use_embedded_timestamp_ && embedded_ts_ns > 0) {
+      current_timestamp_ = embedded_ts_ns;
+    }
+
+    std::string frame_id;
+    deserializer_->deserializeString(frame_id);
+    const auto data_span = deserializer_->deserializeByteSequence();
+    std::string format;
+    deserializer_->deserializeString(format);
+
+    // Zero-copy: data_span slices the payload buffer; payload.anchor keeps it alive.
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{PJ::sdk::VideoFrame{
+            .timestamp_ns = current_timestamp_,
+            .frame_id = std::move(frame_id),
+            .format = std::move(format),
+            .data = PJ::Span<const uint8_t>(data_span.data(), data_span.size()),
+            .anchor = payload.anchor,
+        }}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("CompressedVideo: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
 // sensor_msgs/PointCloud2
 //
 // Wire layout:

@@ -4,16 +4,20 @@
 #include <google/protobuf/reflection.h>
 #include <gtest/gtest.h>
 
+#include <any>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/builtin/video_frame_codec.hpp"
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/testing/parser_write_recorder.hpp"
 #include "pj_plugins/host/message_parser_library.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
+#include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 
 #ifndef PJ_PROTOBUF_PARSER_PLUGIN_PATH
 #error "PJ_PROTOBUF_PARSER_PLUGIN_PATH must be defined"
@@ -630,6 +634,108 @@ TEST(ProtobufParserTest, EmbeddedTimestampMissingFieldFallsBackToHost) {
   ASSERT_TRUE(f.parse(payload, 9999));
   ASSERT_EQ(f.recorder.rows().size(), 1u);
   EXPECT_EQ(f.recorder.rows()[0].timestamp, 9999);
+}
+
+// ---------------------------------------------------------------------------
+// Canonical VideoFrame fast path
+//
+// PJ.VideoFrame and foxglove.CompressedVideo are wire-identical, so a single
+// decoder serves both. The bindSchema fast path bypasses the descriptor pool
+// and registers a SchemaHandler that decodes the canonical wire bytes
+// zero-copy. We feed serializeVideoFrame() output (the canonical writer) so the
+// test stays in lock-step with the codec's wire layout.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A small, recognizable H.264-ish payload. The exact bytes are arbitrary — we
+// only assert the decoder returns them verbatim and aliases the input buffer.
+const std::vector<uint8_t> kVideoBlob = {0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0, 0x1E, 0xDE, 0xAD, 0xBE, 0xEF};
+
+std::vector<uint8_t> buildVideoFrameWire(const std::string& format, PJ::Timestamp ts_ns) {
+  PJ::sdk::VideoFrame frame;
+  frame.timestamp_ns = ts_ns;
+  frame.frame_id = "camera_optical";
+  frame.format = format;
+  frame.data = PJ::Span<const uint8_t>(kVideoBlob.data(), kVideoBlob.size());
+  return PJ::serializeVideoFrame(frame);
+}
+
+// Decode via the in-process object route. The host calls parseObject() on the
+// MessageParserPluginBase* directly (the C ABI vtable carries only the scalar
+// parse() slot); context() hands back that base pointer — same pattern as the
+// ros_parser object-route tests.
+void checkVideoFrameObjectRoute(std::string_view registered_name) {
+  ProtobufParserFixture f;
+  f.setUp();
+
+  // Empty schema bytes: the canonical fast path keys off the type name only.
+  ASSERT_TRUE(f.bindSchema(registered_name, std::string{}));
+  const PJ::Span<const uint8_t> empty_schema{};
+  EXPECT_EQ(f.handle.classifySchema(registered_name, empty_schema), PJ::sdk::BuiltinObjectType::kVideoFrame);
+
+  const auto wire = buildVideoFrameWire("h264", 7'000'000'042LL);
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  // Pass a real anchor so we can verify parse_object forwards it — the zero-copy
+  // contract is that vf->data aliases the wire buffer, kept alive by this anchor.
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(wire.data(), wire.size()), anchor};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* vf = std::any_cast<PJ::sdk::VideoFrame>(&rec->object);
+  ASSERT_NE(vf, nullptr);
+  EXPECT_EQ(vf->frame_id, "camera_optical");
+  EXPECT_EQ(vf->format, "h264");
+  ASSERT_EQ(vf->data.size(), kVideoBlob.size());
+  for (size_t i = 0; i < kVideoBlob.size(); ++i) {
+    EXPECT_EQ(vf->data.data()[i], kVideoBlob[i]);
+  }
+  // Zero-copy: the decoded data span must alias the wire buffer we passed in,
+  // not a fresh copy. The bytes live inside `wire` at the field-3 offset.
+  EXPECT_GE(vf->data.data(), wire.data());
+  EXPECT_LE(vf->data.data() + vf->data.size(), wire.data() + wire.size());
+  // ...and the frame must carry the caller's anchor so those aliased bytes stay
+  // alive for as long as a consumer holds the frame.
+  EXPECT_EQ(vf->anchor, anchor) << "parse_object must forward payload.anchor (zero-copy lifetime token)";
+}
+
+}  // namespace
+
+TEST(ProtobufParserTest, VideoFrameObjectRouteCanonicalName) {
+  checkVideoFrameObjectRoute(PJ::kSchemaVideoFrame);
+}
+
+TEST(ProtobufParserTest, VideoFrameObjectRouteFoxgloveName) {
+  // Same bytes, different registered schema name — one decoder serves both.
+  checkVideoFrameObjectRoute("foxglove.CompressedVideo");
+}
+
+TEST(ProtobufParserTest, VideoFrameScalarRouteEmitsSlimMetadata) {
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema(std::string(PJ::kSchemaVideoFrame), std::string{}));
+
+  const auto wire = buildVideoFrameWire("h265", 0);
+  ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(wire.data()), wire.size()), 555));
+
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+  EXPECT_EQ(row.timestamp, 555);  // embedded ts disabled by default → host ts
+
+  const auto* frame_id = PJ::sdk::testing::ParserWriteRecorder::findField(row, "frame_id");
+  ASSERT_NE(frame_id, nullptr);
+  EXPECT_EQ(frame_id->string_value, "camera_optical");
+
+  const auto* format = PJ::sdk::testing::ParserWriteRecorder::findField(row, "format");
+  ASSERT_NE(format, nullptr);
+  EXPECT_EQ(format->string_value, "h265");
+
+  const auto* data_size = PJ::sdk::testing::ParserWriteRecorder::findField(row, "data_size");
+  ASSERT_NE(data_size, nullptr);
+  EXPECT_DOUBLE_EQ(data_size->numeric, static_cast<double>(kVideoBlob.size()));
 }
 
 }  // namespace
