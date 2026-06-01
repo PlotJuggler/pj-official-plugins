@@ -211,6 +211,14 @@ class RosParser : public PJ::MessageParserPluginBase {
   bool has_header_ = false;
   std::vector<std::string> quaternion_prefixes_;
 
+  // visualization_msgs/Marker layout flags, sniffed from the bound .msg
+  // definition in bindSchema. The Marker wire layout gained a texture block
+  // (texture_resource / texture / uv_coordinates) and a mesh_file field in
+  // ROS 2 humble; EOL foxy/galactic and ROS 1 lack them. These gate the
+  // variable-tail decode so it stays aligned on every layout.
+  bool marker_has_texture_block_ = false;
+  bool marker_has_mesh_file_ = false;
+
   // Parse state
   std::optional<RosMsgParser::Parser> parser_;
   std::unique_ptr<RosMsgParser::Deserializer> deserializer_;
@@ -225,6 +233,9 @@ class RosParser : public PJ::MessageParserPluginBase {
   // Setup helpers
   PJ::Status compileBoundSchema(bool register_specialized_handler);
   void registerBoundSchemaHandler(const CatalogEntry& entry);
+  // Resolve the catalog entry for a bound schema, applying topic-conditional
+  // overrides (e.g. std_msgs/String on a robot_description topic -> RobotDescription).
+  CatalogEntry selectCatalogEntry(const std::string& msg_type) const;
   void ensureDeserializer();
   void detectSchemaFeatures();
   void findQuaternionPrefixes(
@@ -292,6 +303,39 @@ class RosParser : public PJ::MessageParserPluginBase {
 
   // sensor_msgs/PointCloud2
   PJ::Expected<PJ::sdk::ObjectRecord> parsePointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // tf2_msgs/TFMessage -> sdk::FrameTransforms (one per TransformStamped, each
+  // carrying its own Header.stamp)
+  PJ::Expected<PJ::sdk::ObjectRecord> parseFrameTransforms(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // geometry_msgs/TransformStamped -> sdk::FrameTransforms (single element)
+  PJ::Expected<PJ::sdk::ObjectRecord> parseTransformStampedObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // nav_msgs/OccupancyGrid -> sdk::OccupancyGrid (byte-backed, zero-copy cells)
+  PJ::Expected<PJ::sdk::ObjectRecord> parseOccupancyGrid(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // map_msgs/OccupancyGridUpdate -> sdk::OccupancyGridUpdate (byte-backed, zero-copy cells)
+  PJ::Expected<PJ::sdk::ObjectRecord> parseOccupancyGridUpdate(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // std_msgs/String on a robot_description topic -> sdk::RobotDescription
+  PJ::Expected<PJ::sdk::ObjectRecord> parseRobotDescription(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // visualization_msgs/Marker -> sdk::SceneEntities (one SceneEntity, or one
+  // SceneEntityDeletion for DELETE/DELETEALL).
+  PJ::Expected<PJ::sdk::ObjectRecord> parseMarker(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // visualization_msgs/MarkerArray -> sdk::SceneEntities (one per Marker).
+  PJ::Expected<PJ::sdk::ObjectRecord> parseMarkerArray(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // Reads one visualization_msgs/Marker from the deserializer at the current
+  // cursor and appends the resulting entity (ADD/MODIFY) or deletion
+  // (DELETE/DELETEALL) to `out`. Always consumes the whole marker so the next
+  // element of a MarkerArray stays aligned. Shared by parseMarker / parseMarkerArray.
+  void decodeOneMarker(PJ::sdk::SceneEntities& out);
+
+  // Reads one geometry_msgs/TransformStamped from the deserializer into a
+  // FrameTransform. Shared by parseFrameTransforms and parseTransformStampedObject.
+  PJ::sdk::FrameTransform readStampedTransform();
 
   // ----- Specialized scalar handlers -----
   //

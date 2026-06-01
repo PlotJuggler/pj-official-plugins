@@ -139,6 +139,35 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kPointCloud,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parsePointCloud}},
+      // TF keeps its specialized scalar flattening (handleTFMessage) AND emits a
+      // canonical FrameTransforms object for the 3D scene's TF buffer.
+      {"tf2_msgs/TFMessage",
+       {.object_type = ObjectType::kFrameTransforms,
+        .parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTFMessage>,
+        .parse_object = &RosParser::parseFrameTransforms}},
+      // A map/costmap is consumed as a grid object; parseScalarsDiscardingLargeArrays
+      // keeps the metadata (resolution, size, origin) plottable while discarding the
+      // large data[] array. The scalar handler is also required by the ingest path —
+      // an object-only entry (no parse_scalars) aborts the message push before the
+      // object route runs, so nothing reaches the ObjectStore.
+      {"nav_msgs/OccupancyGrid",
+       {.object_type = ObjectType::kOccupancyGrid,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseOccupancyGrid}},
+      // The incremental delta-patch counterpart to OccupancyGrid (e.g.
+      // costmap_updates). Same dual route: x/y/width/height stay plottable, the
+      // large data[] patch is discarded by the scalar handler.
+      {"map_msgs/OccupancyGridUpdate",
+       {.object_type = ObjectType::kOccupancyGridUpdate,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseOccupancyGridUpdate}},
+      // Object-only: markers are 3D scene content, not scalar columns. One
+      // SceneEntity per Marker (ADD/MODIFY) or a SceneEntityDeletion
+      // (DELETE/DELETEALL). Per-message/stateless — see MARKER_NOTES.md.
+      {"visualization_msgs/Marker",
+       {.object_type = ObjectType::kSceneEntities, .parse_object = &RosParser::parseMarker}},
+      {"visualization_msgs/MarkerArray",
+       {.object_type = ObjectType::kSceneEntities, .parse_object = &RosParser::parseMarkerArray}},
 
       // ----- Specialized scalar schemas -----
       // wrapVoidHandler<Handler> is a member-fn-template; its address is a
@@ -148,13 +177,14 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
       {"geometry_msgs/PoseStamped", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePoseStamped>}},
       {"geometry_msgs/Transform", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTransform>}},
       {"geometry_msgs/TransformStamped",
-       {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTransformStamped>}},
+       {.object_type = ObjectType::kFrameTransforms,
+        .parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTransformStamped>,
+        .parse_object = &RosParser::parseTransformStampedObject}},
       {"sensor_msgs/Imu", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleImu>}},
       {"nav_msgs/Odometry", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleOdometry>}},
       {"sensor_msgs/JointState", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleJointState>}},
       {"diagnostic_msgs/DiagnosticArray",
        {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleDiagnosticArray>}},
-      {"tf2_msgs/TFMessage", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTFMessage>}},
       {"data_tamer_msgs/Schemas", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleDataTamerSchemas>}},
       {"data_tamer_msgs/Snapshot", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleDataTamerSnapshot>}},
       {"pal_statistics_msgs/StatisticsNames",
@@ -261,6 +291,33 @@ void RosParser::registerBoundSchemaHandler(const CatalogEntry& entry) {
   registerSchemaHandler(type_name_, std::move(handler));
 }
 
+RosParser::CatalogEntry RosParser::selectCatalogEntry(const std::string& msg_type) const {
+  // Catalog lookup: exact match for this schema, otherwise the kDefault
+  // entry (generic introspection fallback). kDefault is guaranteed to be
+  // present in the catalog, so the second find always hits.
+  auto it = catalog().find(msg_type);
+  if (it == catalog().end()) {
+    it = catalog().find(CatalogEntry::kDefault);
+  }
+  CatalogEntry entry = it->second;
+
+  // Topic-conditional override: a std_msgs/String on a robot_description topic
+  // carries a URDF/SDF/MJCF model, not a generic string. The catalog keys on
+  // type name, which can't distinguish this — so dispatch here by topic name.
+  // Matches the bare topic and any namespace-prefixed "<ns>/robot_description"
+  // (e.g. "/my_robot/robot_description").
+  const bool robot_description_topic =
+      topic_name_ == "robot_description" || topic_name_.ends_with("/robot_description");
+  if (msg_type == "std_msgs/String" && robot_description_topic) {
+    // Object-only: the URDF/SDF/MJCF text is consumed as a model, not stored
+    // as a giant string column in the datastore.
+    entry = CatalogEntry{
+        .object_type = PJ::sdk::BuiltinObjectType::kRobotDescription,
+        .parse_object = &RosParser::parseRobotDescription};
+  }
+  return entry;
+}
+
 PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
   if (!schema_bound_) {
     return PJ::unexpected(std::string("no schema bound"));
@@ -268,11 +325,7 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
   const std::string msg_type = normalizedMessageType(type_name_, schema_format_);
   if (schema_compiled_) {
     if (register_specialized_handler) {
-      auto it = catalog().find(msg_type);
-      if (it == catalog().end()) {
-        it = catalog().find(CatalogEntry::kDefault);
-      }
-      registerBoundSchemaHandler(it->second);
+      registerBoundSchemaHandler(selectCatalogEntry(msg_type));
     }
     return PJ::okStatus();
   }
@@ -297,17 +350,19 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
   // prepare the wire-format deserializer (ROS 1 binary vs ROS 2 CDR).
   detectSchemaFeatures();
   ensureDeserializer();
+
+  // visualization_msgs/Marker has two wire layouts: ROS 2 humble+ added a
+  // texture block (texture_resource / texture / uv_coordinates) and a
+  // mesh_file field; EOL foxy/galactic and ROS 1 lack them. Sniff the bound
+  // definition so the positional decoder consumes the correct variable tail.
+  if (msg_type == "visualization_msgs/Marker" || msg_type == "visualization_msgs/MarkerArray") {
+    marker_has_texture_block_ = schema_definition_.find("uv_coordinates") != std::string::npos;
+    marker_has_mesh_file_ = schema_definition_.find("mesh_file") != std::string::npos;
+  }
   schema_compiled_ = true;
 
   if (register_specialized_handler) {
-    // Catalog lookup: exact match for this schema, otherwise the kDefault
-    // entry (generic introspection fallback). kDefault is guaranteed to be
-    // present in the catalog, so the second find always hits.
-    auto it = catalog().find(msg_type);
-    if (it == catalog().end()) {
-      it = catalog().find(CatalogEntry::kDefault);
-    }
-    registerBoundSchemaHandler(it->second);
+    registerBoundSchemaHandler(selectCatalogEntry(msg_type));
   }
 
   return PJ::okStatus();

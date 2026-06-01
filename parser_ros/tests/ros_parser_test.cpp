@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <any>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -10,11 +12,13 @@
 #include <string>
 #include <vector>
 
+#include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/testing/parser_write_recorder.hpp"
 #include "pj_plugins/host/dialog_handle.hpp"
 #include "pj_plugins/host/message_parser_library.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
+#include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 
 #ifndef PJ_ROS_PARSER_PLUGIN_PATH
 #error "PJ_ROS_PARSER_PLUGIN_PATH must be defined"
@@ -1071,6 +1075,226 @@ TEST(RosParserTest, TFMessage) {
   EXPECT_NEAR(roll->numeric, 0.0, 1e-10);
 }
 
+TEST(RosParserTest, TFMessageProducesFrameTransformsObject) {
+  RosParserFixture f;
+  f.setUp();
+
+  const std::string def(kTFMessageDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+
+  ASSERT_TRUE(f.bindSchema("tf2_msgs/TFMessage", kTFMessageDef));
+
+  // TF advertises the canonical-object route alongside its scalars, so it lands
+  // in BOTH the datastore (the TFMessage scalar test above) and the objectstore.
+  EXPECT_EQ(f.handle.classifySchema("tf2_msgs/TFMessage", def_span), PJ::sdk::BuiltinObjectType::kFrameTransforms);
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serializeUInt32(2);
+    serializeHeader(enc, 1, 500, "world");  // stamp = 1 s + 500 ns
+    enc.serializeString("base_link");
+    serializeVector3(enc, 1.0, 2.0, 3.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+    serializeHeader(enc, 2, 0, "base_link");  // stamp = 2 s
+    enc.serializeString("sensor");
+    serializeVector3(enc, 4.0, 5.0, 6.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.707, 0.707);
+  });
+
+  // The object route is the in-process C++ path: the host calls parseObject on
+  // the MessageParserPluginBase* directly (the C ABI vtable carries only the
+  // scalar parse() slot). context() hands back that base pointer.
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1000, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* ft = std::any_cast<PJ::sdk::FrameTransforms>(&rec->object);
+  ASSERT_NE(ft, nullptr);
+  ASSERT_EQ(ft->transforms.size(), 2u);
+
+  // Each FrameTransform keeps its own Header.stamp — the per-sample time the 3D
+  // TF buffer needs — independent of the 1000 ns message receive time above.
+  EXPECT_EQ(ft->transforms[0].parent_frame_id, "world");
+  EXPECT_EQ(ft->transforms[0].child_frame_id, "base_link");
+  EXPECT_EQ(ft->transforms[0].timestamp, 1'000'000'500);
+  EXPECT_DOUBLE_EQ(ft->transforms[0].translation.x, 1.0);
+  EXPECT_DOUBLE_EQ(ft->transforms[0].translation.z, 3.0);
+  EXPECT_DOUBLE_EQ(ft->transforms[0].rotation.w, 1.0);
+
+  EXPECT_EQ(ft->transforms[1].parent_frame_id, "base_link");
+  EXPECT_EQ(ft->transforms[1].child_frame_id, "sensor");
+  EXPECT_EQ(ft->transforms[1].timestamp, 2'000'000'000);
+  EXPECT_DOUBLE_EQ(ft->transforms[1].translation.y, 5.0);
+  EXPECT_DOUBLE_EQ(ft->transforms[1].rotation.z, 0.707);
+}
+
+TEST(RosParserTest, TransformStampedProducesFrameTransformsObject) {
+  static const char* kTransformStampedDef =
+      "std_msgs/Header header\nstring child_frame_id\ngeometry_msgs/Transform transform\n"
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+      "================\nMSG: geometry_msgs/Transform\n"
+      "geometry_msgs/Vector3 translation\ngeometry_msgs/Quaternion rotation\n"
+      "================\nMSG: geometry_msgs/Vector3\nfloat64 x\nfloat64 y\nfloat64 z\n"
+      "================\nMSG: geometry_msgs/Quaternion\nfloat64 x\nfloat64 y\nfloat64 z\nfloat64 w\n";
+
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kTransformStampedDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("geometry_msgs/TransformStamped", kTransformStampedDef));
+  EXPECT_EQ(
+      f.handle.classifySchema("geometry_msgs/TransformStamped", def_span),
+      PJ::sdk::BuiltinObjectType::kFrameTransforms);
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 5, 0, "odom");
+    enc.serializeString("base_link");
+    serializeVector3(enc, 1.0, 2.0, 3.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(999, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* ft = std::any_cast<PJ::sdk::FrameTransforms>(&rec->object);
+  ASSERT_NE(ft, nullptr);
+  ASSERT_EQ(ft->transforms.size(), 1u);
+  EXPECT_EQ(ft->transforms[0].parent_frame_id, "odom");
+  EXPECT_EQ(ft->transforms[0].child_frame_id, "base_link");
+  EXPECT_EQ(ft->transforms[0].timestamp, 5'000'000'000);
+  EXPECT_DOUBLE_EQ(ft->transforms[0].translation.z, 3.0);
+  EXPECT_DOUBLE_EQ(ft->transforms[0].rotation.w, 1.0);
+}
+
+TEST(RosParserTest, OccupancyGridProducesObject) {
+  static const char* kOccupancyGridDef =
+      "std_msgs/Header header\nnav_msgs/MapMetaData info\nint8[] data\n"
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+      "================\nMSG: nav_msgs/MapMetaData\n"
+      "builtin_interfaces/Time map_load_time\nfloat32 resolution\nuint32 width\nuint32 height\n"
+      "geometry_msgs/Pose origin\n"
+      "================\nMSG: geometry_msgs/Pose\n"
+      "geometry_msgs/Point position\ngeometry_msgs/Quaternion orientation\n"
+      "================\nMSG: geometry_msgs/Point\nfloat64 x\nfloat64 y\nfloat64 z\n"
+      "================\nMSG: geometry_msgs/Quaternion\nfloat64 x\nfloat64 y\nfloat64 z\nfloat64 w\n";
+
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kOccupancyGridDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("nav_msgs/OccupancyGrid", kOccupancyGridDef));
+  EXPECT_EQ(f.handle.classifySchema("nav_msgs/OccupancyGrid", def_span), PJ::sdk::BuiltinObjectType::kOccupancyGrid);
+
+  const std::vector<uint8_t> cells = {0, 50, 100, 0xFF /* -1 unknown */, 25, 75};
+  auto payload = serializeCdr([&cells](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 7, 0, "map");
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(0)));     // map_load_time.sec
+    enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(static_cast<uint32_t>(0)));   // map_load_time.nanosec
+    enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(static_cast<float>(0.05)));  // resolution
+    enc.serializeUInt32(3);                                                                 // width
+    enc.serializeUInt32(2);                                                                 // height
+    serializeVector3(enc, 1.0, 2.0, 0.0);                                                   // origin.position
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);                                           // origin.orientation
+    enc.serializeUInt32(static_cast<uint32_t>(cells.size()));
+    for (uint8_t c : cells) {
+      enc.serialize(RosMsgParser::INT8, RosMsgParser::Variant(static_cast<int8_t>(c)));
+    }
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* grid = std::any_cast<PJ::sdk::OccupancyGrid>(&rec->object);
+  ASSERT_NE(grid, nullptr);
+  EXPECT_EQ(grid->frame_id, "map");
+  EXPECT_EQ(grid->width, 3u);
+  EXPECT_EQ(grid->height, 2u);
+  EXPECT_NEAR(grid->resolution, 0.05, 1e-6);
+  EXPECT_DOUBLE_EQ(grid->origin.position.x, 1.0);
+  EXPECT_DOUBLE_EQ(grid->origin.position.y, 2.0);
+  EXPECT_DOUBLE_EQ(grid->origin.orientation.w, 1.0);
+  ASSERT_EQ(grid->data.size(), cells.size());
+  for (size_t i = 0; i < cells.size(); ++i) {
+    EXPECT_EQ(grid->data.data()[i], cells[i]);
+  }
+}
+
+TEST(RosParserTest, RobotDescriptionTopicProducesObject) {
+  RosParserFixture f;
+  f.setUp();
+  // Topic-gated: only a std_msgs/String on a robot_description topic becomes a robot.
+  ASSERT_TRUE(f.handle.loadConfig(R"({"topic_name":"/robot_description"})"));
+
+  const std::string def = "string data\n";
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("std_msgs/String", def));
+  EXPECT_EQ(f.handle.classifySchema("std_msgs/String", def_span), PJ::sdk::BuiltinObjectType::kRobotDescription);
+
+  const std::string urdf = "<robot name=\"r\"><link name=\"base_link\"/></robot>";
+  auto payload = serializeCdr([&urdf](RosMsgParser::NanoCDR_Serializer& enc) { enc.serializeString(urdf); });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* rd = std::any_cast<PJ::sdk::RobotDescription>(&rec->object);
+  ASSERT_NE(rd, nullptr);
+  EXPECT_EQ(rd->topic, "/robot_description");
+  EXPECT_EQ(rd->format, "urdf");
+  EXPECT_EQ(rd->text, urdf);
+}
+
+TEST(RosParserTest, RobotDescriptionNamespacedTopicProducesObject) {
+  RosParserFixture f;
+  f.setUp();
+  // A namespace-prefixed robot_description topic is matched too.
+  ASSERT_TRUE(f.handle.loadConfig(R"({"topic_name":"/my_robot/robot_description"})"));
+
+  const std::string def = "string data\n";
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("std_msgs/String", def));
+  EXPECT_EQ(f.handle.classifySchema("std_msgs/String", def_span), PJ::sdk::BuiltinObjectType::kRobotDescription);
+
+  const std::string sdf = "<sdf version=\"1.6\"><model name=\"m\"/></sdf>";
+  auto payload = serializeCdr([&sdf](RosMsgParser::NanoCDR_Serializer& enc) { enc.serializeString(sdf); });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* rd = std::any_cast<PJ::sdk::RobotDescription>(&rec->object);
+  ASSERT_NE(rd, nullptr);
+  EXPECT_EQ(rd->topic, "/my_robot/robot_description");
+  EXPECT_EQ(rd->format, "sdf");  // also exercises the SDF format sniff
+  EXPECT_EQ(rd->text, sdf);
+}
+
+TEST(RosParserTest, GenericStringTopicIsNotRobotDescription) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"topic_name":"/chatter"})"));
+
+  const std::string def = "string data\n";
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("std_msgs/String", def));
+  // A String on a non-robot_description topic stays a generic scalar — no object.
+  EXPECT_EQ(f.handle.classifySchema("std_msgs/String", def_span), PJ::sdk::BuiltinObjectType::kNone);
+}
+
 TEST(RosParserTest, ROS1Serialization) {
   RosParserFixture f;
   f.setUp();
@@ -1224,6 +1448,332 @@ TEST(RosParserTest, TransformStampedSpecialization) {
   auto* tx = findField(f.recorder.rows()[0], "/transform/translation/x");
   ASSERT_NE(tx, nullptr);
   EXPECT_DOUBLE_EQ(tx->numeric, 1.0);
+}
+
+// ===== visualization_msgs/Marker(Array) -> sdk::SceneEntities =====
+
+// Builds a visualization_msgs/Marker .msg definition. `humble` adds the
+// texture block (texture_resource/texture/uv_coordinates) and mesh_file field
+// that ROS 2 humble+ carry but EOL foxy/galactic do not.
+std::string makeMarkerFields(bool humble) {
+  std::string s =
+      "std_msgs/Header header\nstring ns\nint32 id\nint32 type\nint32 action\n"
+      "geometry_msgs/Pose pose\ngeometry_msgs/Vector3 scale\nstd_msgs/ColorRGBA color\n"
+      "builtin_interfaces/Duration lifetime\nbool frame_locked\n"
+      "geometry_msgs/Point[] points\nstd_msgs/ColorRGBA[] colors\n";
+  if (humble) {
+    s += "string texture_resource\nsensor_msgs/CompressedImage texture\n"
+         "visualization_msgs/UVCoordinate[] uv_coordinates\n";
+  }
+  s += "string text\nstring mesh_resource\n";
+  if (humble) {
+    s += "visualization_msgs/MeshFile mesh_file\n";
+  }
+  s += "bool mesh_use_embedded_materials\n";
+  return s;
+}
+
+std::string makeMarkerNested(bool humble) {
+  std::string s =
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+      "================\nMSG: builtin_interfaces/Duration\nint32 sec\nuint32 nanosec\n"
+      "================\nMSG: geometry_msgs/Pose\ngeometry_msgs/Point position\ngeometry_msgs/Quaternion orientation\n"
+      "================\nMSG: geometry_msgs/Point\nfloat64 x\nfloat64 y\nfloat64 z\n"
+      "================\nMSG: geometry_msgs/Quaternion\nfloat64 x\nfloat64 y\nfloat64 z\nfloat64 w\n"
+      "================\nMSG: geometry_msgs/Vector3\nfloat64 x\nfloat64 y\nfloat64 z\n"
+      "================\nMSG: std_msgs/ColorRGBA\nfloat32 r\nfloat32 g\nfloat32 b\nfloat32 a\n";
+  if (humble) {
+    s += "================\nMSG: sensor_msgs/CompressedImage\nstd_msgs/Header header\nstring format\nuint8[] data\n"
+         "================\nMSG: visualization_msgs/UVCoordinate\nfloat32 u\nfloat32 v\n"
+         "================\nMSG: visualization_msgs/MeshFile\nstring filename\nuint8[] data\n";
+  }
+  return s;
+}
+
+std::string markerDef(bool humble) {
+  return makeMarkerFields(humble) + makeMarkerNested(humble);
+}
+
+std::string markerArrayDef(bool humble) {
+  return std::string("visualization_msgs/Marker[] markers\n") + "================\nMSG: visualization_msgs/Marker\n" +
+         makeMarkerFields(humble) + makeMarkerNested(humble);
+}
+
+struct MarkerWire {
+  int32_t id = 0;
+  int32_t type = 0;
+  int32_t action = 0;
+  std::string ns = "ns";
+  std::string frame_id = "world";
+  int32_t sec = 1;
+  uint32_t nsec = 0;
+  std::array<double, 7> pose{{0, 0, 0, 0, 0, 0, 1}};  // position xyz, orientation xyzw
+  std::array<double, 3> scale{{1, 1, 1}};
+  std::array<float, 4> color{{1, 1, 1, 1}};
+  int32_t life_sec = 0;
+  uint32_t life_nsec = 0;
+  bool frame_locked = false;
+  std::vector<std::array<double, 3>> points;
+  std::vector<std::array<float, 4>> colors;
+  std::string text;
+  std::string mesh_resource;
+  bool mesh_use_embedded = false;
+};
+
+// Serializes one Marker in CDR exactly as decodeOneMarker reads it. The two
+// layout flags must match the bound definition.
+void serializeMarker(
+    RosMsgParser::NanoCDR_Serializer& enc, const MarkerWire& m, bool has_texture_block, bool has_mesh_file) {
+  serializeHeader(enc, m.sec, m.nsec, m.frame_id);
+  enc.serializeString(m.ns);
+  enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(m.id));
+  enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(m.type));
+  enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(m.action));
+  for (double v : m.pose) {
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(v));
+  }
+  for (double v : m.scale) {
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(v));
+  }
+  for (float v : m.color) {
+    enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(v));
+  }
+  enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(m.life_sec));
+  enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(m.life_nsec));
+  enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(m.frame_locked ? 1 : 0)));
+
+  enc.serializeUInt32(static_cast<uint32_t>(m.points.size()));
+  for (const auto& p : m.points) {
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(p[0]));
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(p[1]));
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(p[2]));
+  }
+  enc.serializeUInt32(static_cast<uint32_t>(m.colors.size()));
+  for (const auto& c : m.colors) {
+    enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(c[0]));
+    enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(c[1]));
+    enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(c[2]));
+    enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(c[3]));
+  }
+
+  if (has_texture_block) {
+    enc.serializeString("");         // texture_resource
+    serializeHeader(enc, 0, 0, "");  // texture.header
+    enc.serializeString("");         // texture.format
+    enc.serializeUInt32(0);          // texture.data (empty byte sequence)
+    enc.serializeUInt32(0);          // uv_coordinates (empty)
+  }
+  enc.serializeString(m.text);
+  enc.serializeString(m.mesh_resource);
+  if (has_mesh_file) {
+    enc.serializeString("");  // mesh_file.filename
+    enc.serializeUInt32(0);   // mesh_file.data (empty byte sequence)
+  }
+  enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(m.mesh_use_embedded ? 1 : 0)));
+}
+
+const PJ::sdk::SceneEntities* parseSceneEntities(
+    RosParserFixture& f, const std::vector<uint8_t>& payload, std::any& hold) {
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  if (base == nullptr) {
+    return nullptr;
+  }
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1000, view);
+  if (!rec.has_value()) {
+    return nullptr;
+  }
+  hold = std::move(rec->object);
+  return std::any_cast<PJ::sdk::SceneEntities>(&hold);
+}
+
+TEST(RosParserTest, MarkerArrayProducesSceneEntities) {
+  RosParserFixture f;
+  f.setUp();
+  const std::string def = markerArrayDef(/*humble=*/true);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("visualization_msgs/MarkerArray", def));
+  EXPECT_EQ(
+      f.handle.classifySchema("visualization_msgs/MarkerArray", def_span), PJ::sdk::BuiltinObjectType::kSceneEntities);
+
+  MarkerWire cube;
+  cube.ns = "a";
+  cube.id = 1;
+  cube.type = 1;  // CUBE
+  cube.sec = 1;
+  cube.nsec = 500;
+  cube.scale = {2.0, 3.0, 4.0};
+  cube.color = {1.0f, 0.0f, 0.0f, 1.0f};
+
+  MarkerWire sphere;
+  sphere.ns = "a";
+  sphere.id = 2;
+  sphere.type = 2;  // SPHERE
+  sphere.scale = {0.5, 0.5, 0.5};
+
+  MarkerWire line;
+  line.ns = "a";
+  line.id = 3;
+  line.type = 4;  // LINE_STRIP
+  line.scale = {0.05, 0.0, 0.0};
+  line.points = {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {1.0, 1.0, 0.0}};
+
+  auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serializeUInt32(3);
+    serializeMarker(enc, cube, true, true);
+    serializeMarker(enc, sphere, true, true);
+    serializeMarker(enc, line, true, true);
+  });
+
+  std::any hold;
+  const auto* se = parseSceneEntities(f, payload, hold);
+  ASSERT_NE(se, nullptr);
+  ASSERT_EQ(se->entities.size(), 3u);
+  EXPECT_TRUE(se->deletions.empty());
+
+  EXPECT_EQ(se->entities[0].id, "1:a:1");
+  EXPECT_EQ(se->entities[0].frame_id, "world");
+  EXPECT_EQ(se->entities[0].timestamp, 1'000'000'500);
+  ASSERT_EQ(se->entities[0].cubes.size(), 1u);
+  EXPECT_DOUBLE_EQ(se->entities[0].cubes[0].size.x, 2.0);
+  EXPECT_DOUBLE_EQ(se->entities[0].cubes[0].size.z, 4.0);
+  EXPECT_EQ(se->entities[0].cubes[0].color.r, 255);
+  EXPECT_EQ(se->entities[0].cubes[0].color.g, 0);
+
+  ASSERT_EQ(se->entities[1].spheres.size(), 1u);
+  EXPECT_DOUBLE_EQ(se->entities[1].spheres[0].size.x, 0.5);
+
+  ASSERT_EQ(se->entities[2].lines.size(), 1u);
+  EXPECT_EQ(se->entities[2].lines[0].type, PJ::sdk::LineType::kLineStrip);
+  ASSERT_EQ(se->entities[2].lines[0].points.size(), 3u);
+  EXPECT_DOUBLE_EQ(se->entities[2].lines[0].points[2].y, 1.0);
+  EXPECT_DOUBLE_EQ(se->entities[2].lines[0].thickness, 0.05);
+}
+
+TEST(RosParserTest, TextMarkerHumbleAndFoxyLayouts) {
+  for (bool humble : {true, false}) {
+    RosParserFixture f;
+    f.setUp();
+    const std::string def = markerDef(humble);
+    ASSERT_TRUE(f.bindSchema("visualization_msgs/Marker", def)) << (humble ? "humble" : "foxy");
+
+    MarkerWire text;
+    text.type = 9;  // TEXT_VIEW_FACING
+    text.scale = {0.0, 0.0, 0.25};
+    text.text = "hello";
+
+    auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+      serializeMarker(enc, text, /*has_texture_block=*/humble, /*has_mesh_file=*/humble);
+    });
+
+    std::any hold;
+    const auto* se = parseSceneEntities(f, payload, hold);
+    ASSERT_NE(se, nullptr) << (humble ? "humble" : "foxy");
+    ASSERT_EQ(se->entities.size(), 1u);
+    ASSERT_EQ(se->entities[0].texts.size(), 1u);
+    EXPECT_EQ(se->entities[0].texts[0].text, "hello");
+    EXPECT_TRUE(se->entities[0].texts[0].billboard);
+    EXPECT_DOUBLE_EQ(se->entities[0].texts[0].font_size, 0.25);
+  }
+}
+
+TEST(RosParserTest, MeshResourceMarkerProducesModel) {
+  RosParserFixture f;
+  f.setUp();
+  const std::string def = markerDef(/*humble=*/true);
+  ASSERT_TRUE(f.bindSchema("visualization_msgs/Marker", def));
+
+  MarkerWire mesh;
+  mesh.type = 10;  // MESH_RESOURCE
+  mesh.scale = {1.0, 1.0, 1.0};
+  mesh.mesh_resource = "package://robot/meshes/base.dae";
+  mesh.mesh_use_embedded = false;  // -> override_color = true
+
+  auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) { serializeMarker(enc, mesh, true, true); });
+
+  std::any hold;
+  const auto* se = parseSceneEntities(f, payload, hold);
+  ASSERT_NE(se, nullptr);
+  ASSERT_EQ(se->entities.size(), 1u);
+  ASSERT_EQ(se->entities[0].models.size(), 1u);
+  EXPECT_EQ(se->entities[0].models[0].url, "package://robot/meshes/base.dae");
+  EXPECT_TRUE(se->entities[0].models[0].override_color);
+}
+
+TEST(RosParserTest, MarkerDeleteAndDeleteAll) {
+  RosParserFixture f;
+  f.setUp();
+  const std::string def = markerArrayDef(/*humble=*/true);
+  ASSERT_TRUE(f.bindSchema("visualization_msgs/MarkerArray", def));
+
+  MarkerWire del;
+  del.ns = "a";
+  del.id = 5;
+  del.action = 2;  // DELETE
+  del.sec = 7;
+
+  MarkerWire del_all;
+  del_all.action = 3;  // DELETEALL
+
+  auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serializeUInt32(2);
+    serializeMarker(enc, del, true, true);
+    serializeMarker(enc, del_all, true, true);
+  });
+
+  std::any hold;
+  const auto* se = parseSceneEntities(f, payload, hold);
+  ASSERT_NE(se, nullptr);
+  EXPECT_TRUE(se->entities.empty());
+  ASSERT_EQ(se->deletions.size(), 2u);
+  EXPECT_EQ(se->deletions[0].type, PJ::sdk::SceneEntityDeletion::Type::kMatchingId);
+  EXPECT_EQ(se->deletions[0].id, "1:a:5");
+  EXPECT_EQ(se->deletions[0].timestamp, 7'000'000'000);
+  EXPECT_EQ(se->deletions[1].type, PJ::sdk::SceneEntityDeletion::Type::kAll);
+}
+
+TEST(RosParserTest, CubeListPerPointColors) {
+  RosParserFixture f;
+  f.setUp();
+  const std::string def = markerDef(/*humble=*/true);
+  ASSERT_TRUE(f.bindSchema("visualization_msgs/Marker", def));
+
+  MarkerWire list;
+  list.type = 6;  // CUBE_LIST
+  list.scale = {0.1, 0.1, 0.1};
+  list.points = {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}};
+  list.colors = {{1.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f, 1.0f}};
+
+  auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) { serializeMarker(enc, list, true, true); });
+
+  std::any hold;
+  const auto* se = parseSceneEntities(f, payload, hold);
+  ASSERT_NE(se, nullptr);
+  ASSERT_EQ(se->entities.size(), 1u);
+  ASSERT_EQ(se->entities[0].cubes.size(), 2u);
+  EXPECT_EQ(se->entities[0].cubes[0].color.r, 255);
+  EXPECT_EQ(se->entities[0].cubes[1].color.g, 255);
+  EXPECT_DOUBLE_EQ(se->entities[0].cubes[1].pose.position.x, 1.0);
+}
+
+TEST(RosParserTest, PointsMarkerSkipped) {
+  RosParserFixture f;
+  f.setUp();
+  const std::string def = markerDef(/*humble=*/true);
+  ASSERT_TRUE(f.bindSchema("visualization_msgs/Marker", def));
+
+  MarkerWire pts;
+  pts.type = 8;  // POINTS
+  pts.points = {{0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}};
+
+  auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) { serializeMarker(enc, pts, true, true); });
+
+  std::any hold;
+  const auto* se = parseSceneEntities(f, payload, hold);
+  ASSERT_NE(se, nullptr);
+  EXPECT_TRUE(se->entities.empty());
+  EXPECT_TRUE(se->deletions.empty());
 }
 
 }  // namespace
