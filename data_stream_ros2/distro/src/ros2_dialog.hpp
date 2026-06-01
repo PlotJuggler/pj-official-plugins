@@ -86,6 +86,10 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     wd.setChecked("checkBoxStringSuffix", remove_suffix_from_strings_);
     wd.setChecked("checkBoxStringBoolean", boolean_strings_to_number_);
 
+    // Ctrl+A select-all is provided natively by the QTableWidget; bind the
+    // companion deselect-all shortcut to the button (PJ3 parity).
+    wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
+
     wd.setOkEnabled(!selected_topics_.empty());
     return wd.toJson();
   }
@@ -188,6 +192,17 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     selected_topics_ = std::move(next);
     // Re-render so widget_data() refreshes the OK-enabled state.
     return true;
+  }
+
+  bool onClicked(std::string_view widget_name) override {
+    if (widget_name == "btnDeselectAll") {
+      // Clear every selection, including topics filtered out of view — the
+      // table only ever reports its visible rows, so dropping the whole set
+      // here keeps hidden selections from silently surviving a deselect-all.
+      selected_topics_.clear();
+      return true;  // re-render to update the table selection and OK state
+    }
+    return false;
   }
 
   void onAccepted(std::string_view /*json*/) override {
