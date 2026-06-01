@@ -19,7 +19,7 @@ shape for a new plugin will fight the runtime the entire way.
 | Shape | What it does | Identifier in code | Examples |
 |-------|--------------|---------------------|----------|
 | **Self-parsing DataSource** | Reads *and* decodes its file/stream in one plugin. Writes scalar fields straight into the host via `writeHost().appendRecord(...)`. | `kCapabilityDirectIngest` | `data_load_ulog`, `data_load_csv`, `data_load_parquet` |
-| **Delegating DataSource** | Reads the file/stream, advertises each channel's schema, and hands raw bytes off via `pushMessage` / `pushRawMessage`. Never inspects message content. | `kCapabilityDelegatedIngest` | `data_load_mcap`, `data_stream_zmq`, `data_stream_mqtt`, `data_stream_foxglove_bridge` |
+| **Delegating DataSource** | Reads the file/stream, advertises each channel's schema, and hands raw bytes off via `pushMessage`. Never inspects message content. | `kCapabilityDelegatedIngest` | `data_load_mcap`, `data_stream_zmq`, `data_stream_mqtt`, `data_stream_foxglove_bridge` |
 | **MessageParser** | Has no I/O of its own. Decodes bytes on behalf of a delegating source whenever the host calls. | Declares its `"encoding"` in the plugin manifest | `parser_protobuf`, `parser_ros`, `parser_json`, `parser_data_tamer` |
 
 You can see the flag at the top of each DataSource class:
@@ -97,7 +97,7 @@ MessageParser. There are two sub-shapes, picked by base class:
 | Sub-shape | Base class | Ingest call | Examples |
 |-----------|------------|-------------|----------|
 | **DataLoader** | `FileSourceBase` | `pushMessage(handle, ts, fetchMessageData)` — lazy callable | `data_load_mcap` |
-| **DataStream** | `StreamSourceBase` | `pushRawMessage(handle, ts, bytes)` — eager byte span | `data_stream_zmq`, `data_stream_mqtt`, `data_stream_foxglove_bridge`, `data_stream_pj_bridge` |
+| **DataStream** | `StreamSourceBase` | `pushMessage(handle, ts, fetchMessageData)` — closure returns the just-received bytes (resolved eagerly) | `data_stream_zmq`, `data_stream_mqtt`, `data_stream_foxglove_bridge`, `data_stream_pj_bridge` |
 
 "Enumerate" here is lighter than it sounds. A loader walks the file
 from start to end and announces every message to the host, but does
@@ -123,8 +123,7 @@ them on the spot.
   to ingest policy.
 - **Not policy-aware.** It does not consult `ObjectIngestPolicy`,
   does not branch on eager vs lazy, and does not vary its behaviour
-  per topic. One `pushMessage` / `pushRawMessage` call per message,
-  regardless.
+  per topic. One `pushMessage` call per message, regardless.
 
 ### Shape C — MessageParser
 
@@ -308,7 +307,7 @@ streams use the eager form.
 | Call | Used by | Payload form | Why |
 |------|---------|--------------|-----|
 | `pushMessage(handle, ts, fetchMessageData)` | File sources (`data_load_mcap`, future bag streamers) | Closure that returns `PayloadView` when invoked | Bytes are reachable on demand — the file is still there. Pairs with lazy ingest policies; the host can invoke the callable zero, one, or many times. |
-| `pushRawMessage(handle, ts, bytes)` | Streams (`data_stream_zmq`, `data_stream_mqtt`, bridges) | `Span<const uint8_t>` over the just-received payload | Bytes exist only at receive time — no replay, no laziness. Parse now or lose the message. |
+| `pushMessage(handle, ts, fetchMessageData)` | Streams (`data_stream_zmq`, `data_stream_mqtt`, bridges) | Closure that returns the just-received payload (own a copy) | Bytes exist only at receive time — no replay. The host resolves the closure eagerly (`kEager`). |
 
 ### File source — `pushMessage` with a FetchMessageData callable
 
@@ -346,20 +345,19 @@ the context exactly once when the callable is no longer needed.
 `fetchMessageData` MUST be thread-safe — the host may invoke it from
 the ingest thread (kEager) or from consumer threads (lazy pulls).
 
-### Stream source — `pushRawMessage` with bytes
+### Stream source — `pushMessage` over received bytes
 
-A DataStream cannot offer a callable: the data is in a frame that
-just arrived from a socket, and the next frame will overwrite the
-receive buffer. So the stream copies (or spans) the payload and
-passes it to the host immediately. The host applies the same
-binding-handle routing as for files; the only difference is that the
-payload is fully materialized at call time.
+A DataStream wraps the just-arrived bytes in a closure that returns
+them. The data is in a receive buffer the next frame will overwrite,
+so the closure owns a copy. The host applies the same binding-handle
+routing as for files; the only difference is that there is no past to
+seek, so the host resolves the closure eagerly at call time.
 
 ```cpp
 // data_stream_zmq/zmq_source.cpp (abridged)
-auto status = runtimeHost().pushRawMessage(
+auto status = runtimeHost().pushMessage(
     it->second, PJ::Timestamp{timestamp_ns},
-    PJ::Span<const uint8_t>(payload_data, payload_size));
+    [bytes = std::vector<uint8_t>(payload_data, payload_data + payload_size)]() { return bytes; });
 ```
 
 `data_stream_mqtt` and the bridges use the same call. Streams
@@ -385,8 +383,8 @@ caring.
 - `data_load_mcap` — the FetchMessageData closure captures the open
   `mcap::McapReader` (as a `shared_ptr`) plus the message offset, and
   reads the bytes on demand.
-- `data_stream_zmq` / `data_stream_mqtt` — eager `pushRawMessage`
-  with the payload pulled off the socket / broker queue.
+- `data_stream_zmq` / `data_stream_mqtt` — eager `pushMessage` whose
+  closure returns the payload pulled off the socket / broker queue.
 
 ## MessageParser plugins — declarative `SchemaHandler` catalog
 
@@ -604,7 +602,7 @@ constrains how you implement the plugin:
 
 ## End-to-end dispatch
 
-Once the source has called `pushMessage` (or `pushRawMessage`), the
+Once the source has called `pushMessage`, the
 host follows one of three paths through the resolver, the parser, and
 the `ObjectStore`. Streams take only the eager path; files can take
 any of the three depending on policy.
@@ -654,9 +652,9 @@ pushMessage(ts,
    with a FetchMessageData closure that returns a `PayloadView` over
    your buffer (use a `BufferAnchor` so the bytes stay alive past the
    call).
-   **Stream**: for each message, call
-   `runtimeHost().pushRawMessage(...)` with a `Span` over the
-   just-received payload.
+   **Stream**: for each message, call `runtimeHost().pushMessage(...)`
+   with a closure that returns the just-received payload (own a copy —
+   the receive buffer is reused). The host resolves it eagerly.
 4. Do not call the parser, do not consult policy, do not touch the
    `ObjectStore`.
 
@@ -684,6 +682,6 @@ pushMessage(ts,
 | `data_load_csv` | Self-parsing DataSource | Same pattern as ULog with a tiny in-tree CSV decoder. |
 | `data_load_parquet` | Self-parsing DataSource | Direct ingest with Arrow/Parquet column-oriented reads. |
 | `data_load_mcap` | Delegating DataSource (file) | Deferred FetchMessageData closure capturing the open `McapReader`; reusing decompressed chunks as `BufferAnchor`. |
-| `data_stream_zmq` / `data_stream_mqtt` | Delegating DataSource (stream) | Eager `pushRawMessage` with the payload pulled off the socket / broker queue. |
+| `data_stream_zmq` / `data_stream_mqtt` | Delegating DataSource (stream) | Eager `pushMessage` whose closure returns the payload pulled off the socket / broker queue. |
 | `parser_ros` | MessageParser | Static catalog with builtin-object handlers (`sensor_msgs/Image` + `CompressedImage` unified into `sdk::Image`, `sensor_msgs/PointCloud2`) and many scalar handlers; default introspection fallback. |
 | `parser_protobuf` | MessageParser | Shared across MCAP, ZMQ, MQTT through the encoding string `"protobuf"`. Reads `FileDescriptorSet` from the schema. |
