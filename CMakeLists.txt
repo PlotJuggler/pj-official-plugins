@@ -9,7 +9,9 @@ cmake_minimum_required(VERSION 3.22)
 
 if(TARGET plotjuggler_sdk::plugin_sdk)
   # Subdirectory mode — deps already provided by parent.
-  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
+  if(NOT CMAKE_LIBRARY_OUTPUT_DIRECTORY)
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
+  endif()
 
   # Internal helper libraries shared by several plugins.
   add_subdirectory(common/arrow_helpers)
@@ -47,7 +49,7 @@ endif()
 # Standalone build
 # ---------------------------------------------------------------------------
 
-project(pj_ported_plugins LANGUAGES CXX)
+project(pj_official_plugins LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -98,7 +100,9 @@ find_package(plotjuggler_sdk CONFIG REQUIRED
 # Plugin output directory and testing
 # ---------------------------------------------------------------------------
 
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
+if(NOT CMAKE_LIBRARY_OUTPUT_DIRECTORY)
+  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
+endif()
 
 enable_testing()
 

@@ -39,10 +39,16 @@ To work on only one plugin, pass the plugin directory:
 
 Run `./build.sh --help` to see the available arguments.
 
-By default, `build.sh` installs the root `conanfile.py` and builds into
-`build/all/Release`. With a plugin argument, it installs that plugin's
-`conanfile.py`, configures CMake with `-DPJ_BUILD_PLUGIN=<plugin_dir>`, and
-builds into `build/<plugin_dir>/Release`.
+By default, `build.sh` installs the root `conanfile.py`, builds into
+`build/all/Release`, and writes plugin shared libraries plus manifest sidecars
+to `build/bin`. With a plugin argument, it installs that plugin's
+`conanfile.py`, configures CMake with `-DPJ_BUILD_PLUGIN=<plugin_dir>`, builds
+into `build/<plugin_dir>/Release`, and still writes plugin outputs to
+`build/bin`.
+
+Use `build/bin` as the plugin directory when launching PlotJuggler or a plugin
+host. It contains both the plugin shared libraries and the generated
+`.pjmanifest.json` sidecars needed for discovery.
 
 Each plugin directory has its own `conanfile.py` that lists
 `plotjuggler_sdk` plus the plugin's own third-party deps. Keep it in sync

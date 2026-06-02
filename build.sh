@@ -16,6 +16,7 @@ Build one plugin:
 
 Environment:
   BUILD_TYPE=${BUILD_TYPE}  CMake/Conan build type
+  PLUGIN_OUTPUT_DIR=${SCRIPT_DIR}/build/bin  Plugin shared library output directory
 EOF
 }
 
@@ -51,6 +52,7 @@ else
 fi
 
 CMAKE_BUILD_DIR="$BUILD_DIR/$BUILD_TYPE"
+PLUGIN_OUTPUT_DIR="${PLUGIN_OUTPUT_DIR:-$SCRIPT_DIR/build/bin}"
 CONAN_ARGS=()
 
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
@@ -65,6 +67,7 @@ fi
 
 echo "Conan recipe: $CONAN_RECIPE"
 echo "Build directory: $CMAKE_BUILD_DIR"
+echo "Plugin output directory: $PLUGIN_OUTPUT_DIR"
 
 conan install "$CONAN_RECIPE" --output-folder="$BUILD_DIR" --build=missing \
   -s build_type="$BUILD_TYPE" \
@@ -76,6 +79,7 @@ cmake -S "$SCRIPT_DIR" -B "$CMAKE_BUILD_DIR" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$BUILD_DIR/conan_toolchain.cmake" \
   -DCMAKE_PREFIX_PATH="$BUILD_DIR" \
   -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+  -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$PLUGIN_OUTPUT_DIR" \
   ${CMAKE_ARGS[@]+"${CMAKE_ARGS[@]}"}
 
 cmake --build "$CMAKE_BUILD_DIR" --config "$BUILD_TYPE" --parallel

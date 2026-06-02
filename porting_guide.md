@@ -473,7 +473,7 @@ When no time column selected (row number mode):
 
 ```bash
 ./build/pj_proto_app/pj_proto_app \
-  --plugin-dir ./build/pj_ported_plugins/bin/ \
+  --plugin-dir ./build/bin/ \
   --load /path/to/file.csv \       # auto-load file (skips dialog)
   --plot 3 \                        # auto-plot first N fields
   --screenshot /tmp/output.png      # take screenshot and exit
@@ -484,7 +484,7 @@ When no time column selected (row number mode):
 ```bash
 ./build.sh --debug   # builds with ASAN in build/debug_asan/
 ./build/debug_asan/pj_proto_app/pj_proto_app \
-  --plugin-dir ./build/debug_asan/pj_ported_plugins/bin/ \
+  --plugin-dir ./build/bin/ \
   --load turtle.csv --plot 3 --screenshot /tmp/test.png
 # Check stderr for ASAN errors
 ```
@@ -493,10 +493,11 @@ When no time column selected (row number mode):
 
 All plugin `.so` files are built into a single directory for easy loading:
 ```
-build/pj_ported_plugins/bin/   # set by CMAKE_LIBRARY_OUTPUT_DIRECTORY in umbrella CMakeLists.txt
+build/bin/   # plugin libraries and manifest sidecars
 ```
 
-This is set in `pj_ported_plugins/CMakeLists.txt`:
+This defaults in the top-level `CMakeLists.txt` and can be overridden with
+`CMAKE_LIBRARY_OUTPUT_DIRECTORY`:
 ```cmake
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 ```
@@ -515,13 +516,13 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 
 # Smoke test: load CSV, auto-plot, screenshot
 ./build/pj_proto_app/pj_proto_app \
-  --plugin-dir ./build/pj_ported_plugins/bin/ \
+  --plugin-dir ./build/bin/ \
   --load ~/ws_plotjuggler/src/PlotJuggler/datasamples/turtle.csv \
   --plot 3 --screenshot /tmp/test.png
 
 # ASAN smoke test (catches heap overflows, use-after-free)
 ./build/debug_asan/pj_proto_app/pj_proto_app \
-  --plugin-dir ./build/debug_asan/pj_ported_plugins/bin/ \
+  --plugin-dir ./build/bin/ \
   --load ~/ws_plotjuggler/src/PlotJuggler/datasamples/turtle.csv \
   --plot 3 --screenshot /tmp/test_asan.png
 # If ASAN reports errors, check stderr

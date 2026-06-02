@@ -39,12 +39,15 @@ Tests exist for: csv, json, protobuf, data_tamer, ros, ulog.
 
 ```bash
 ./build/pj_proto_app/pj_proto_app \
-  --plugin-dir ./build/pj_ported_plugins/bin/ \
+  --plugin-dir ./build/bin/ \
   --load /path/to/file.csv \
   --plot 3 --screenshot /tmp/test.png
 ```
 
-All plugin `.so` files build into `build/pj_ported_plugins/bin/`.
+Use `build/bin/` as the plugin directory. The standalone `build.sh` flow writes
+plugin `.so` files and their `.pjmanifest.json` sidecars there, even though the
+CMake build tree itself lives under `build/all/<BUILD_TYPE>/` or
+`build/<plugin_dir>/<BUILD_TYPE>/`.
 
 ## Code Style
 
