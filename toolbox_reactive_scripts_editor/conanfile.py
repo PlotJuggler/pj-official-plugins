@@ -15,7 +15,7 @@ class ToolboxReactiveScriptsEditorConan(ConanFile):
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain"
     requires = (
-        f"plotjuggler_core/{_SDK_VERSION}",
+        f"plotjuggler_sdk/{_SDK_VERSION}",
         "gtest/1.17.0",
         "lua/5.4.6",
         "sol2/3.5.0",

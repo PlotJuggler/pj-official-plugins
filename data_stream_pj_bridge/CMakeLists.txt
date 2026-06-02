@@ -22,7 +22,7 @@ add_library(pj_bridge_source_plugin SHARED pj_bridge_source.cpp)
 target_compile_features(pj_bridge_source_plugin PRIVATE cxx_std_20)
 target_compile_options(pj_bridge_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(pj_bridge_source_plugin PRIVATE
-  plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json pj_bridge_protocol_lib ixwebsocket::ixwebsocket
+  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json pj_bridge_protocol_lib ixwebsocket::ixwebsocket
 )
 
 pj_embed_ui(pj_bridge_source_plugin

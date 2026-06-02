@@ -2,7 +2,7 @@ import os
 
 from conan import ConanFile
 
-# Single source of truth for the plotjuggler_core version: the SDK_VERSION file at the
+# Single source of truth for the plotjuggler_sdk version: the SDK_VERSION file at the
 # repo root, read live so the pin lives in exactly one place. Edit it with
 # scripts/bump_core_version.py (which also moves the extern/plotjuggler_core submodule).
 _SDK_VERSION = (
@@ -43,7 +43,7 @@ class PjOfficialPluginsConan(ConanFile):
         "libsodium/1.0.20",
         "pybind11/2.13.6",
         "cpython/3.12.7",
-        f"plotjuggler_core/{_SDK_VERSION}",
+        f"plotjuggler_sdk/{_SDK_VERSION}",
     )
 
     default_options = {
