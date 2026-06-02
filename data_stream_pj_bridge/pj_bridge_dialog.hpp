@@ -32,9 +32,12 @@ struct DiscoveredTopic {
 ///   1. User enters address/port, clicks Connect
 ///   2. Dialog connects via WebSocket, sends get_topics
 ///   3. Topics populate the table, user selects topics
-///   4. User configures parser options (array size, clamp/skip, use timestamp)
-///   5. User clicks Subscribe (OK)
-///   6. saveConfig() returns the full config for the source plugin
+///   4. User clicks OK
+///   5. saveConfig() returns the full config for the source plugin
+///
+/// The array-size / clamp-skip / use-timestamp parser options are not exposed
+/// in the dialog (matching the PJ3 websocket client window); they keep their
+/// defaults and are still emitted in saveConfig() for the source plugin.
 class PjBridgeDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
@@ -70,12 +73,6 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     wd.setEnabled("lineEditPort", !connected_);
     wd.setButtonText("buttonConnect", connected_ ? "Connected" : "Connect");
     wd.setChecked("buttonConnect", connected_.load());
-
-    // Parser options
-    wd.setValue("spinBoxArraySize", max_array_size_);
-    wd.setChecked("radioClamp", clamp_large_arrays_);
-    wd.setChecked("radioSkip", !clamp_large_arrays_);
-    wd.setChecked("checkBoxUseTimestamp", use_timestamp_);
 
     // Topic list — apply case-insensitive filter matching on name AND type
     wd.setTableHeaders("topicsList", {"Topic Name", "DataType"});
@@ -118,30 +115,6 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       filter_ = std::string(text);
       applyFilter();
       return true;
-    }
-    return false;
-  }
-
-  bool onValueChanged(std::string_view widget_name, int value) override {
-    if (widget_name == "spinBoxArraySize") {
-      max_array_size_ = value;
-      return false;
-    }
-    return false;
-  }
-
-  bool onToggled(std::string_view widget_name, bool checked) override {
-    if (widget_name == "radioClamp") {
-      clamp_large_arrays_ = checked;
-      return false;
-    }
-    if (widget_name == "radioSkip") {
-      clamp_large_arrays_ = !checked;
-      return false;
-    }
-    if (widget_name == "checkBoxUseTimestamp") {
-      use_timestamp_ = checked;
-      return false;
     }
     return false;
   }
