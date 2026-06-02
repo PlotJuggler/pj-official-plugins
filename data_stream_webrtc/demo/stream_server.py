@@ -1,26 +1,43 @@
 #!/usr/bin/env python3
-"""One-command WebRTC streaming server for the PJ4 data_stream_webrtc plugin.
+"""One-command multi-camera WebRTC streaming server for the data_stream_webrtc plugin.
 
-Runs the GStreamer "simple-signaling" broker and auto-launches the camera sender
-(send_camera.py) as a subprocess whenever a receiver registers, so the demo is a
-single command with no start-order to get wrong:
+Runs the GStreamer "simple-signaling" broker AND owns the camera catalog. It
 
-    python3 stream_server.py                       # x264, /dev/video0, :8443
-    python3 stream_server.py --encoder vaapi --device /dev/video2
+  1. advertises a multi-camera catalog (>=2 cameras: a real /dev/video0 plus a
+     synthetic videotestsrc) to the receiver on HELLO and on a `list` request,
+  2. accepts a `subscribe` naming the chosen streams, and
+  3. launches a multi-track GStreamer offerer (send_cameras.py) that builds ONE
+     webrtcbin with one H.264 sendonly track per requested camera, each m-line's
+     `a=mid` rewritten to the camera's stream id (the mid == stream-id contract).
 
-Start this once, then Start the WebRTC source in PlotJuggler (peer id 'receiver').
-The server waits for that receiver, spawns the sender, and re-spawns it if you
-Stop/Start the source. The sender runs in its OWN process (send_camera.py) on
-purpose: driving GStreamer from the asyncio loop that also hosts the websocket
-server segfaults on some PyGObject stacks. The plugin is the ANSWERER;
-send_camera.py is the OFFERER.
+So the demo stays a single command with no start-order to get wrong:
 
-Deps: websockets (this broker) + send_camera.py's deps (python3-gi, GStreamer).
+    python3 stream_server.py                       # x264, :8443, legacy autostart
+    python3 stream_server.py --encoder vaapi
+    python3 stream_server.py --no-legacy-autostart # require a real `subscribe`
+
+The sender always runs in its OWN process (send_cameras.py) on purpose: driving
+GStreamer from the asyncio loop that also hosts the websocket server segfaults on
+some PyGObject stacks. The plugin is the ANSWERER; send_cameras.py is the OFFERER.
+
+Backward compatibility
+----------------------
+A receiver that does NOT advertise/subscribe (the legacy single-stream path, and
+the plugin's current shipped behavior) simply never sends `subscribe`. With
+`--legacy-autostart` (ON by default) the broker pre-arms a subscribe to every
+advertised camera the moment such a receiver registers, so the zero-click demo
+still streams. `--single` narrows that autostart to one camera to reproduce the
+old single-stream demo exactly. A subscribe-capable receiver overrides the
+autostart with its own selection.
+
+Deps: websockets (this broker) + send_cameras.py's deps (python3-gi, GStreamer).
 """
 import argparse
 import asyncio
+import json
 import logging
 import os
+import re
 import sys
 
 import websockets
@@ -28,18 +45,114 @@ import websockets
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger("stream-server")
 
-SEND_CAMERA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "send_camera.py")
+HERE = os.path.dirname(os.path.abspath(__file__))
+SEND_CAMERAS = os.path.join(HERE, "send_cameras.py")
+
+# The signaling protocol version this broker speaks (PROTOCOL.md). A subscribe
+# with a higher `protocol` is rejected with `ERROR unsupported protocol <n>`.
+PROTOCOL_VERSION = 1
+
+# Advertised catalog, built at startup from the cameras ACTUALLY connected
+# (detect_catalog below) — one entry per physical camera, generic names
+# camera0/camera1/... `id == mid` is the contract; `device` is consumed only by
+# the launched sender. Populated in amain() so --device can force the first one.
+CAMERAS = []
+
+
+def _v4l2_capture_devices():
+    """Auto-detect real V4L2 capture cameras: one /dev/videoN per PHYSICAL camera.
+
+    Each camera exposes several nodes (capture + metadata/control); we probe
+    VIDIOC_QUERYCAP, keep only VIDEO_CAPTURE nodes, and de-dup by USB `bus_info`
+    so a camera with nodes video0+video1 yields a single device (its first
+    capture node). No external tools (v4l2-ctl) required."""
+    import fcntl
+    import glob
+    import struct
+
+    VIDIOC_QUERYCAP = 0x80685600  # _IOR('V', 0, struct v4l2_capability) — 104 bytes
+    V4L2_CAP_VIDEO_CAPTURE = 0x00000001
+    V4L2_CAP_DEVICE_CAPS = 0x80000000
+
+    def _num(path):
+        m = re.search(r"(\d+)$", path)
+        return int(m.group(1)) if m else 0
+
+    devices = []
+    seen = set()
+    for dev in sorted(glob.glob("/dev/video*"), key=_num):
+        try:
+            fd = os.open(dev, os.O_RDWR | os.O_NONBLOCK)
+        except OSError:
+            continue
+        try:
+            cap = bytearray(104)
+            try:
+                fcntl.ioctl(fd, VIDIOC_QUERYCAP, cap, True)
+            except OverflowError:  # older Pythons treat the ioctl nr as signed
+                fcntl.ioctl(fd, VIDIOC_QUERYCAP - (1 << 32), cap, True)
+            bus_info = cap[48:80].split(b"\0", 1)[0].decode("ascii", "replace")
+            caps, device_caps = struct.unpack_from("<II", cap, 84)
+            effective = device_caps if (caps & V4L2_CAP_DEVICE_CAPS) else caps
+            if not (effective & V4L2_CAP_VIDEO_CAPTURE):
+                continue
+            key = bus_info or dev
+            if key in seen:
+                continue
+            seen.add(key)
+            devices.append(dev)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+    return devices
+
+
+def detect_catalog(force_first_device=None):
+    """Build the advertised catalog from the cameras actually connected. Generic
+    names (camera0, camera1, ...) in detection order; `id == mid`. `--device`, if
+    given, is forced as camera0. Falls back to one synthetic videotestsrc only if
+    no real camera is found, so the demo still runs headless."""
+    devices = _v4l2_capture_devices()
+    if force_first_device:
+        devices = [force_first_device] + [d for d in devices if d != force_first_device]
+    cams = [
+        {"id": "cam{}".format(i), "name": "camera{}".format(i), "codec": "h264",
+         "width": 640, "height": 480, "source": "v4l2", "device": dev}
+        for i, dev in enumerate(devices)
+    ]
+    if not cams:
+        log.warning("no V4L2 capture camera found; advertising one synthetic videotestsrc as camera0")
+        cams = [{"id": "cam0", "name": "camera0", "codec": "h264", "width": 640,
+                 "height": 480, "source": "videotestsrc", "device": None}]
+    return cams
+
+
+def catalog_message():
+    return json.dumps({
+        "type": "catalog",
+        "protocol": PROTOCOL_VERSION,
+        "streams": [
+            {"id": c["id"], "name": c["name"], "codec": c["codec"],
+             "width": c["width"], "height": c["height"], "mid": c["id"]}
+            for c in CAMERAS
+        ],
+    })
 
 
 class Broker:
     """GStreamer 'simple signaling' relay (HELLO/SESSION + verbatim SDP/ICE),
-    plus a `receiver_present` event the sender supervisor waits on."""
+    extended with catalog advertisement + subscribe bookkeeping, plus the
+    `receiver_present` / `subscribe_ready` events the sender supervisor waits on."""
 
     def __init__(self, receiver_id):
         self.receiver_id = receiver_id
         self.peers = {}     # uid -> [ws, status]   status: None | 'session'
         self.sessions = {}  # uid -> paired uid
         self.receiver_present = asyncio.Event()
+        self.subscribe_ready = asyncio.Event()
+        self.catalog_ids = [c["id"] for c in CAMERAS]
+        self.requested_streams = []  # set by `subscribe` (or by legacy autostart)
 
     async def hello(self, ws):
         msg = await ws.recv()
@@ -53,6 +166,9 @@ class Broker:
         log.info("registered peer %r", uid)
         if uid == self.receiver_id:
             self.receiver_present.set()
+            # Push the catalog unsolicited so a discovery-capable receiver can
+            # render it without a `list`. A legacy receiver ignores this JSON.
+            await ws.send(catalog_message())
         return uid
 
     async def start_session(self, uid, callee_id):
@@ -67,7 +183,46 @@ class Broker:
         self.sessions[uid], self.sessions[callee_id] = callee_id, uid
         log.info("session established: %r <-> %r", uid, callee_id)
 
+    def set_subscription(self, ids):
+        self.requested_streams = ids
+        self.subscribe_ready.set()
+
+    async def handle_discovery(self, uid, obj):
+        """Handle a catalog `list` / `subscribe` from a discovery-capable peer.
+        Returns True if the message was a discovery command (and handled)."""
+        mtype = obj.get("type")
+        if mtype == "list":
+            await self.peers[uid][0].send(catalog_message())
+            return True
+        if mtype == "subscribe":
+            # Protocol-version negotiation (PROTOCOL.md §3.1): reject a subscribe
+            # whose protocol is newer than we support. Absent == legacy/1.
+            proto = obj.get("protocol", 1)
+            if isinstance(proto, int) and proto > PROTOCOL_VERSION:
+                await self.peers[uid][0].send("ERROR unsupported protocol {}".format(proto))
+                return True
+            ids = [s for s in obj.get("streams", []) if s in self.catalog_ids]
+            if not ids:
+                await self.peers[uid][0].send("ERROR no valid streams in subscribe")
+                return True
+            log.info("subscribe from %r: %s", uid, ids)
+            self.set_subscription(ids)
+            return True
+        return False
+
     async def relay_or_command(self, uid, msg):
+        # Intercept catalog discovery JSON (list/subscribe) BEFORE the session
+        # relay, so it is handled with or without an active SESSION — the broker
+        # owns the catalog, not the paired sender.
+        if isinstance(msg, str) and msg.startswith("{"):
+            try:
+                obj = json.loads(msg)
+            except Exception:
+                obj = None
+            if isinstance(obj, dict) and obj.get("type") in ("list", "subscribe"):
+                await self.handle_discovery(uid, obj)
+                return
+
         if self.peers[uid][1] == "session":
             await self.peers[self.sessions[uid]][0].send(msg)
             return
@@ -93,6 +248,9 @@ class Broker:
                     pass
         if uid == self.receiver_id:
             self.receiver_present.clear()
+            # A fresh receiver must re-subscribe (or re-trigger legacy autostart).
+            self.subscribe_ready.clear()
+            self.requested_streams = []
         log.info("removed peer %r", uid)
 
     async def handler(self, ws, *_unused):  # *_unused absorbs the legacy `path` arg
@@ -107,21 +265,57 @@ class Broker:
             if uid is not None:
                 await self.remove(uid)
 
+    def streams_argv(self):
+        """Encode the requested streams as send_cameras.py positional specs:
+        `<id>=<source>:<device>`, in subscribe order."""
+        by_id = {c["id"]: c for c in CAMERAS}
+        out = []
+        for sid in self.requested_streams:
+            c = by_id[sid]
+            dev = c["device"] or ""
+            out.append("{}={}:{}".format(c["id"], c["source"], dev))
+        return out
+
 
 async def _wait_cleared(event):
     while event.is_set():
         await asyncio.sleep(0.2)
 
 
-async def sender_supervisor(broker, url, our_id, peer_id, device, encoder):
+async def _wait_both(present, subscribe):
+    await present.wait()
+    await subscribe.wait()
+
+
+async def legacy_autostart(broker, single):
+    """Pre-arm a subscribe for a non-advertising receiver so the zero-click demo
+    still streams. Re-arms each time a fresh receiver registers (after a clear).
+    A real `subscribe` from a discovery-capable receiver still wins: if it landed
+    first, subscribe_ready is already set and this no-ops."""
     while True:
-        await broker.receiver_present.wait()  # blocks until the plugin registers
-        log.info("receiver %r present; launching camera sender (%s, %s)", peer_id, encoder, device)
+        await broker.receiver_present.wait()
+        if not broker.subscribe_ready.is_set():
+            ids = broker.catalog_ids[:1] if single else list(broker.catalog_ids)
+            log.info("legacy autostart: no subscribe seen; defaulting to %s", ids)
+            broker.set_subscription(ids)
+        # Wait until this receiver leaves before considering a re-arm.
+        await _wait_cleared(broker.receiver_present)
+
+
+async def sender_supervisor(broker, url, our_id, peer_id, encoder):
+    while True:
+        # Stream only once a receiver is present AND a selection exists (from a
+        # real subscribe or the legacy autostart).
+        await _wait_both(broker.receiver_present, broker.subscribe_ready)
+        specs = broker.streams_argv()
+        if not specs:
+            broker.subscribe_ready.clear()
+            continue
+        log.info("launching multi-cam sender for %s (%s)", broker.requested_streams, encoder)
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, SEND_CAMERA, "--server", url, "--our-id", our_id,
-            "--peer", peer_id, "--encoder", encoder, "--device", device)
-        # Run until the sender exits (the broker closes it when the receiver
-        # leaves) or the receiver disconnects; then tear down and wait again.
+            sys.executable, SEND_CAMERAS, "--server", url, "--our-id", our_id,
+            "--peer", peer_id, "--encoder", encoder, *specs)
+        # Run until the sender exits or the receiver disconnects; then tear down.
         waiter = asyncio.ensure_future(proc.wait())
         gone = asyncio.ensure_future(_wait_cleared(broker.receiver_present))
         await asyncio.wait({waiter, gone}, return_when=asyncio.FIRST_COMPLETED)
@@ -132,30 +326,47 @@ async def sender_supervisor(broker, url, our_id, peer_id, device, encoder):
                 await asyncio.wait_for(proc.wait(), timeout=3)
             except asyncio.TimeoutError:
                 proc.kill()
+        # Require a fresh subscribe (or autostart re-arm) before relaunching.
+        broker.subscribe_ready.clear()
         log.info("camera sender stopped (code %s)", proc.returncode)
-        await asyncio.sleep(0.5)  # backoff before re-launching to a still-present receiver
+        await asyncio.sleep(0.5)
 
 
 async def amain(args):
+    # Build the catalog from the cameras actually connected (--device, if given,
+    # is forced as camera0).
+    global CAMERAS
+    CAMERAS = detect_catalog(args.device)
     broker = Broker(args.peer)
     url = "ws://127.0.0.1:{}".format(args.port)
-    asyncio.get_running_loop().create_task(
-        sender_supervisor(broker, url, args.our_id, args.peer, args.device, args.encoder))
+    loop = asyncio.get_running_loop()
+    loop.create_task(sender_supervisor(broker, url, args.our_id, args.peer, args.encoder))
+    if args.legacy_autostart:
+        loop.create_task(legacy_autostart(broker, args.single))
     log.info("listening on ws://%s:%d — now Start the WebRTC source in PlotJuggler (peer id %r)",
              args.host, args.port, args.peer)
+    log.info("advertising %d camera(s): %s", len(CAMERAS),
+             ", ".join("{}={}".format(c["name"], c["device"] or c["source"]) for c in CAMERAS))
     async with websockets.serve(broker.handler, args.host, args.port, max_queue=16):
         await asyncio.Future()  # run forever
 
 
 def main():
-    ap = argparse.ArgumentParser(description="One-command WebRTC streaming server for PJ4.")
+    ap = argparse.ArgumentParser(description="One-command multi-camera WebRTC streaming server for PJ4.")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8443)
-    ap.add_argument("--device", default="/dev/video0")
+    ap.add_argument("--device", default=None,
+                    help="force a specific v4l2 device as the first camera (default: auto-detect all)")
     ap.add_argument("--encoder", default="x264",
                     choices=["x264", "vaapi", "nvenc", "jetson", "passthrough"])
     ap.add_argument("--peer", default="receiver", help="the plugin's 'Our peer id'")
     ap.add_argument("--our-id", default="sender")
+    ap.add_argument("--legacy-autostart", dest="legacy_autostart", action="store_true", default=True,
+                    help="auto-stream to a non-subscribing receiver (default: on)")
+    ap.add_argument("--no-legacy-autostart", dest="legacy_autostart", action="store_false",
+                    help="require a real `subscribe` before streaming")
+    ap.add_argument("--single", action="store_true",
+                    help="legacy autostart streams ONE camera (reproduces the old single-stream demo)")
     args = ap.parse_args()
     try:
         asyncio.run(amain(args))
