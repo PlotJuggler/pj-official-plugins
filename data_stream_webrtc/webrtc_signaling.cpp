@@ -67,6 +67,22 @@ void WebrtcSignaling::close() {
   hello_done_ = false;
 }
 
+void WebrtcSignaling::detachCallbacks() {
+  // Drop libdatachannel's own dispatch first so no queued WS message can re-enter
+  // onMessage and fire a user callback while we clear them.
+  if (ws_) {
+    try {
+      ws_->resetCallbacks();
+    } catch (...) {}
+  }
+  on_sdp_ = {};
+  on_ice_ = {};
+  on_connected_ = {};
+  on_closed_ = {};
+  on_error_ = {};
+  on_catalog_ = {};
+}
+
 bool WebrtcSignaling::isOpen() const {
   return ws_ && ws_->isOpen();
 }
@@ -86,6 +102,9 @@ void WebrtcSignaling::onMessage(const std::string& text) {
       return;
     }
     // Any non-HELLO first reply (e.g. "ERROR ...") is a failed handshake.
+    if (text.rfind("ERROR", 0) == 0 && on_error_) {
+      on_error_(text);
+    }
     if (on_closed_) {
       on_closed_();
     }
@@ -96,6 +115,11 @@ void WebrtcSignaling::onMessage(const std::string& text) {
     return;  // pairing confirmed; the offer follows
   }
   if (text.rfind("ERROR", 0) == 0) {
+    // Surface the reason verbatim (PROTOCOL.md §6.7) so the owner can decide
+    // whether retrying is futile, then tear the session down.
+    if (on_error_) {
+      on_error_(text);
+    }
     if (on_closed_) {
       on_closed_();
     }

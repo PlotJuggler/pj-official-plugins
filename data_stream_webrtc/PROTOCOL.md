@@ -216,8 +216,8 @@ Optional; a streamer/broker MAY advertise unsolicited.
   "type": "catalog",
   "protocol": 1,
   "streams": [
-    { "id": "cam0", "name": "front", "codec": "h264", "width": 640, "height": 480, "mid": "cam0" },
-    { "id": "cam1", "name": "test",  "codec": "h264", "width": 640, "height": 480, "mid": "cam1" }
+    { "id": "cam0", "name": "camera0", "codec": "h264", "width": 640, "height": 480, "mid": "cam0" },
+    { "id": "cam1", "name": "camera1", "codec": "h264", "width": 640, "height": 480, "mid": "cam1" }
   ]
 }
 ```

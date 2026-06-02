@@ -153,6 +153,18 @@ class Broker:
         self.subscribe_ready = asyncio.Event()
         self.catalog_ids = [c["id"] for c in CAMERAS]
         self.requested_streams = []  # set by `subscribe` (or by legacy autostart)
+        # Monotonic counter bumped every time the well-known receiver registers.
+        # Edge-triggered waiters compare against a captured value instead of
+        # polling the level flag, so a fast Stop->Start (disconnect+reconnect
+        # inside one poll window) cannot be missed (see wait_receiver_changed).
+        self.receiver_generation = 0
+        self.receiver_changed = asyncio.Event()
+        # Monotonic counter bumped on every distinct subscription, so the sender
+        # supervisor can detect a re-subscribe WHILE a sender is running and
+        # relaunch with the new selection (PROTOCOL.md §5.1 — re-subscription is
+        # supported; the demo restarts the pipeline).
+        self.subscribe_generation = 0
+        self.subscribe_changed = asyncio.Event()
 
     async def hello(self, ws):
         msg = await ws.recv()
@@ -161,15 +173,44 @@ class Broker:
         if not uid or " " in uid or uid in self.peers:
             await ws.close(code=1002, reason="invalid peer uid")
             raise websockets.ConnectionClosed(None, None)
+        # Register only AFTER the greeting sends succeed. If the socket drops
+        # between recv and send, an early insert would orphan the uid in
+        # self.peers (remove() is the only reaper), permanently blocking that id
+        # — notably the well-known "receiver" — from reconnecting.
         self.peers[uid] = [ws, None]
-        await ws.send("HELLO")
+        try:
+            await ws.send("HELLO")
+            if uid == self.receiver_id:
+                # Push the catalog unsolicited so a discovery-capable receiver can
+                # render it without a `list`. A legacy receiver ignores this JSON.
+                await ws.send(catalog_message())
+        except Exception:
+            self.peers.pop(uid, None)
+            raise
         log.info("registered peer %r", uid)
         if uid == self.receiver_id:
+            self.receiver_generation += 1
             self.receiver_present.set()
-            # Push the catalog unsolicited so a discovery-capable receiver can
-            # render it without a `list`. A legacy receiver ignores this JSON.
-            await ws.send(catalog_message())
+            self._notify_receiver_changed()
         return uid
+
+    def _notify_receiver_changed(self):
+        # Pulse the change event so every waiter wakes, then immediately re-arm
+        # it for the next transition (a fresh, unconsumed edge each time).
+        self.receiver_changed.set()
+        self.receiver_changed.clear()
+
+    async def wait_receiver_changed(self, since_generation):
+        """Return once the receiver state has advanced past `since_generation`
+        (a new receiver registered) OR the receiver is currently absent. Misses
+        no present->absent->present transition, unlike polling the level flag."""
+        while self.receiver_generation == since_generation and self.receiver_present.is_set():
+            await self.receiver_changed.wait()
+
+    async def wait_subscribe_changed(self, since_generation):
+        """Return once a new subscription has been set past `since_generation`."""
+        while self.subscribe_generation == since_generation:
+            await self.subscribe_changed.wait()
 
     async def start_session(self, uid, callee_id):
         if callee_id not in self.peers:
@@ -185,7 +226,12 @@ class Broker:
 
     def set_subscription(self, ids):
         self.requested_streams = ids
+        self.subscribe_generation += 1
         self.subscribe_ready.set()
+        # Wake a running sender supervisor so a re-subscribe relaunches the
+        # pipeline with the new selection (pulse-then-rearm, like receiver_changed).
+        self.subscribe_changed.set()
+        self.subscribe_changed.clear()
 
     async def handle_discovery(self, uid, obj):
         """Handle a catalog `list` / `subscribe` from a discovery-capable peer.
@@ -251,6 +297,7 @@ class Broker:
             # A fresh receiver must re-subscribe (or re-trigger legacy autostart).
             self.subscribe_ready.clear()
             self.requested_streams = []
+            self._notify_receiver_changed()
         log.info("removed peer %r", uid)
 
     async def handler(self, ws, *_unused):  # *_unused absorbs the legacy `path` arg
@@ -277,11 +324,6 @@ class Broker:
         return out
 
 
-async def _wait_cleared(event):
-    while event.is_set():
-        await asyncio.sleep(0.2)
-
-
 async def _wait_both(present, subscribe):
     await present.wait()
     await subscribe.wait()
@@ -289,47 +331,79 @@ async def _wait_both(present, subscribe):
 
 async def legacy_autostart(broker, single):
     """Pre-arm a subscribe for a non-advertising receiver so the zero-click demo
-    still streams. Re-arms each time a fresh receiver registers (after a clear).
-    A real `subscribe` from a discovery-capable receiver still wins: if it landed
-    first, subscribe_ready is already set and this no-ops."""
+    still streams. Re-arms each time a fresh receiver registers. A real
+    `subscribe` from a discovery-capable receiver still wins: if it landed first,
+    subscribe_ready is already set and this no-ops."""
     while True:
-        await broker.receiver_present.wait()
-        if not broker.subscribe_ready.is_set():
-            ids = broker.catalog_ids[:1] if single else list(broker.catalog_ids)
-            log.info("legacy autostart: no subscribe seen; defaulting to %s", ids)
-            broker.set_subscription(ids)
-        # Wait until this receiver leaves before considering a re-arm.
-        await _wait_cleared(broker.receiver_present)
+        try:
+            await broker.receiver_present.wait()
+            gen = broker.receiver_generation
+            if not broker.subscribe_ready.is_set():
+                ids = broker.catalog_ids[:1] if single else list(broker.catalog_ids)
+                log.info("legacy autostart: no subscribe seen; defaulting to %s", ids)
+                broker.set_subscription(ids)
+            # Wait until THIS receiver leaves (or a fresh one registers) before
+            # re-arming. Generation-based so a fast Stop->Start is not missed.
+            await broker.wait_receiver_changed(gen)
+        except Exception:
+            # Never let a transient error kill auto-streaming for good; log and
+            # loop. (asyncio would otherwise swallow the exception and stop the
+            # task permanently.)
+            log.exception("legacy_autostart iteration failed; continuing")
+            await asyncio.sleep(0.5)
+
+
+async def _terminate(proc):
+    if proc.returncode is None:
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=3)
+        except asyncio.TimeoutError:
+            proc.kill()
 
 
 async def sender_supervisor(broker, url, our_id, peer_id, encoder):
     while True:
-        # Stream only once a receiver is present AND a selection exists (from a
-        # real subscribe or the legacy autostart).
-        await _wait_both(broker.receiver_present, broker.subscribe_ready)
-        specs = broker.streams_argv()
-        if not specs:
+        proc = None
+        try:
+            # Stream only once a receiver is present AND a selection exists (from a
+            # real subscribe or the legacy autostart).
+            await _wait_both(broker.receiver_present, broker.subscribe_ready)
+            specs = broker.streams_argv()
+            if not specs:
+                broker.subscribe_ready.clear()
+                continue
+            sub_gen = broker.subscribe_generation
+            recv_gen = broker.receiver_generation
+            log.info("launching multi-cam sender for %s (%s)", broker.requested_streams, encoder)
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, SEND_CAMERAS, "--server", url, "--our-id", our_id,
+                "--peer", peer_id, "--encoder", encoder, *specs)
+            # Run until the sender exits, the receiver disconnects, OR the
+            # selection changes (re-subscribe). Whichever fires first wins; a
+            # re-subscribe relaunches with the fresh streams (PROTOCOL.md §5.1).
+            waiter = asyncio.ensure_future(proc.wait())
+            gone = asyncio.ensure_future(broker.wait_receiver_changed(recv_gen))
+            resub = asyncio.ensure_future(broker.wait_subscribe_changed(sub_gen))
+            await asyncio.wait({waiter, gone, resub}, return_when=asyncio.FIRST_COMPLETED)
+            resubscribed = resub.done() and not waiter.done() and not gone.done()
+            for t in (gone, resub):
+                t.cancel()
+            await _terminate(proc)
+            log.info("camera sender stopped (code %s)", proc.returncode)
+            if resubscribed:
+                # New selection already armed (subscribe_ready set, generation
+                # bumped): loop straight back and relaunch without clearing it.
+                continue
+            # Require a fresh subscribe (or autostart re-arm) before relaunching.
             broker.subscribe_ready.clear()
-            continue
-        log.info("launching multi-cam sender for %s (%s)", broker.requested_streams, encoder)
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable, SEND_CAMERAS, "--server", url, "--our-id", our_id,
-            "--peer", peer_id, "--encoder", encoder, *specs)
-        # Run until the sender exits or the receiver disconnects; then tear down.
-        waiter = asyncio.ensure_future(proc.wait())
-        gone = asyncio.ensure_future(_wait_cleared(broker.receiver_present))
-        await asyncio.wait({waiter, gone}, return_when=asyncio.FIRST_COMPLETED)
-        gone.cancel()
-        if proc.returncode is None:
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=3)
-            except asyncio.TimeoutError:
-                proc.kill()
-        # Require a fresh subscribe (or autostart re-arm) before relaunching.
-        broker.subscribe_ready.clear()
-        log.info("camera sender stopped (code %s)", proc.returncode)
-        await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5)
+        except Exception:
+            log.exception("sender_supervisor iteration failed; continuing")
+            if proc is not None:
+                await _terminate(proc)
+            broker.subscribe_ready.clear()
+            await asyncio.sleep(0.5)
 
 
 async def amain(args):

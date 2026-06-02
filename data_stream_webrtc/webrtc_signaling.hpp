@@ -49,6 +49,7 @@ class WebrtcSignaling {
   using SdpCallback = std::function<void(const std::string& type, const std::string& sdp)>;
   using IceCallback = std::function<void(const std::string& candidate, int mline_index)>;
   using StateCallback = std::function<void()>;
+  using ErrorCallback = std::function<void(const std::string& reason)>;
 
   WebrtcSignaling();
   ~WebrtcSignaling();
@@ -68,6 +69,12 @@ class WebrtcSignaling {
   void setClosedCallback(StateCallback cb) {
     on_closed_ = std::move(cb);
   }
+  // Fired with the verbatim broker `ERROR <reason>` text (PROTOCOL.md §6.7) so
+  // the owner can surface it and decide whether a retry is futile. Always
+  // followed by the closed callback (an ERROR also tears the session down).
+  void setErrorCallback(ErrorCallback cb) {
+    on_error_ = std::move(cb);
+  }
 
   using CatalogCallback = std::function<void(std::vector<DiscoveredStream>)>;
   void setCatalogCallback(CatalogCallback cb) {
@@ -86,6 +93,12 @@ class WebrtcSignaling {
   // completion arrives via callbacks. Idempotent teardown via close().
   void open(const SignalingConfig& config);
   void close();
+
+  // Detach every user callback (on_sdp_/on_ice_/on_connected_/on_closed_/
+  // on_error_/on_catalog_) AND the underlying socket's callbacks, so no further
+  // delivery can reach the owner. Call before tearing down objects the callbacks
+  // dereference (e.g. the receiver) to close the signaling->receiver race.
+  void detachCallbacks();
 
   bool isOpen() const;
 
@@ -107,6 +120,7 @@ class WebrtcSignaling {
   IceCallback on_ice_;
   StateCallback on_connected_;
   StateCallback on_closed_;
+  ErrorCallback on_error_;
 
   CatalogCallback on_catalog_;
   mutable std::mutex catalog_mutex_;

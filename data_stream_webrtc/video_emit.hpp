@@ -141,10 +141,7 @@ class H264AnnexBNormalizer {
     return false;
   }
   static void appendNal(std::vector<uint8_t>& out, const uint8_t* nal, size_t len) {
-    out.push_back(0x00);  // 4-byte start code: repo convention
-    out.push_back(0x00);
-    out.push_back(0x00);
-    out.push_back(0x01);
+    out.insert(out.end(), {0x00, 0x00, 0x00, 0x01});  // 4-byte start code: repo convention
     out.insert(out.end(), nal, nal + len);
   }
 
@@ -158,6 +155,11 @@ std::vector<uint8_t> base64Decode(std::string_view in);
 // Splits "<b64>,<b64>,..." and base64-decodes each into a raw NAL (RFC 6184
 // sprop-parameter-sets order: SPS first, then PPS).
 std::vector<std::vector<uint8_t>> parseSpropParameterSets(std::string_view sprop);
+
+// Parse an SDP sprop-parameter-sets value ("<b64>,<b64>,...") and prime `norm`
+// with the FIRST SPS and FIRST PPS it carries. Primes only when BOTH are found
+// (priming is idempotent); a value missing either set leaves `norm` untouched.
+void primeNormalizerFromSprop(H264AnnexBNormalizer& norm, std::string_view sprop_base64_csv);
 
 // Builds a PJ.VideoFrame (format "h264") from the Annex-B access unit and pushes
 // it through the runtime host on the given parser binding. Owns the bytes via a

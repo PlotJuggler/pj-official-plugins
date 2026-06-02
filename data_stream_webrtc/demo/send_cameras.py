@@ -129,6 +129,11 @@ def build_pipeline(specs, enc):
     return Gst.parse_launch(desc)
 
 
+# WHY string-rewrite the SDP at all: webrtcbin assigns its OWN transceiver mids
+# (video0, video1, ...) and the installed GStreamer exposes no API to rename them,
+# so we can't make it emit the stream-id mids the plugin keys tracks on. Instead we
+# rewrite only the OFFER we put on the wire (rewrite_mids) and map the inbound ANSWER
+# back to webrtcbin's mids (restore_mids) so set-remote-description still matches.
 def rewrite_mids(sdp_text, stream_ids):
     """Rename each video m-line's `a=mid:videoN` to `a=mid:<stream-id>` in
     m-line order, replace webrtcbin's `a=msid:` with `a=msid:<id> <id>`, and

@@ -85,6 +85,7 @@ class WebrtcReceiver {
   using LocalDescriptionCallback = std::function<void(const std::string& type, const std::string& sdp)>;
   using LocalCandidateCallback = std::function<void(const std::string& candidate, int mline_index)>;
   using StateCallback = std::function<void(ConnectionState)>;
+  using ErrorCallback = std::function<void(const std::string& reason)>;
 
   WebrtcReceiver();
   ~WebrtcReceiver();
@@ -101,6 +102,12 @@ class WebrtcReceiver {
   void setStateCallback(StateCallback cb) {
     on_state_ = std::move(cb);
   }
+  // Fired when applying a remote description throws (malformed/incompatible
+  // offer). The PeerConnection never reaches Failed in that case, so without
+  // this the stall is silent; the owner surfaces it and arms a reconnect.
+  void setErrorCallback(ErrorCallback cb) {
+    on_error_ = std::move(cb);
+  }
 
   // Build the PeerConnection (no track added: ANSWERER role; tracks arrive from
   // the remote offer's m-lines). `expected` declares the subscribed streams so
@@ -110,6 +117,11 @@ class WebrtcReceiver {
   // config.frame_id is used). Idempotent teardown via close().
   PJ::Status open(const WebrtcConfig& config, const std::vector<StreamSpec>& expected);
   void close();
+
+  // Drop every libdatachannel callback (onTrack/onFrame/onStateChange/
+  // onLocalDescription/onLocalCandidate) so no worker-thread delivery can reach
+  // this object again. Call before the owner resets cross-wired peers.
+  void detachCallbacks();
 
   // --- driven by signaling (answerer role) ---
   void setRemoteDescription(const std::string& type, const std::string& sdp);
@@ -126,6 +138,25 @@ class WebrtcReceiver {
   // from the given sprop-parameter-sets.
   static EncodedFrame normalizeAccessUnit(
       const uint8_t* au, size_t size, int64_t ts_ns, const std::string& sprop_parameter_sets);
+
+  // Test seams (no PeerConnection): exercise the per-mid demux and the
+  // unsubscribed-mid drop that onTrack/onFrame implement on the live path.
+  // acceptTrackForTest mirrors onTrack's accept/drop decision WITHOUT a real
+  // rtc::Track (it does not retain a track, only the receive state); it returns
+  // true if the mid was accepted (subscribed, or accept-any when expected empty)
+  // and false if dropped. feedAccessUnitForTest routes a depacketized access
+  // unit through the same onFrame path so drainByStream tagging can be asserted.
+  bool acceptTrackForTest(const std::string& mid);
+  void feedAccessUnitForTest(const std::string& mid, const uint8_t* data, size_t size, int64_t ts_ns) {
+    onFrame(mid, data, size, /*rtp_timestamp_90khz=*/0);
+    (void)ts_ns;  // onFrame stamps with the wall clock; ts_ns is informational
+  }
+
+  // Test seams over the SDP-parsing helpers (otherwise internal-linkage in the
+  // .cpp), driving the ICE-candidate->mid mapping (§6.6) and per-mid SPS/PPS
+  // priming (§5.2). Pure functions: no PeerConnection involved.
+  static std::vector<std::string> extractMidsInOrderForTest(const std::string& sdp);
+  static std::map<std::string, std::string> extractSpropPerMidForTest(const std::string& sdp);
 
  private:
   void onFrame(const std::string& mid, const uint8_t* data, size_t size, uint32_t rtp_timestamp_90khz);
@@ -145,6 +176,7 @@ class WebrtcReceiver {
   LocalDescriptionCallback on_local_description_;
   LocalCandidateCallback on_local_candidate_;
   StateCallback on_state_;
+  ErrorCallback on_error_;
 };
 
 }  // namespace webrtc

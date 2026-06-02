@@ -3,13 +3,14 @@
 //
 // Headless WebRTC receiver probe — the answerer half of the demo/ rig, without
 // PlotJuggler. Exercises the REAL plugin cores (WebrtcReceiver + WebrtcSignaling
-// + the H264 Annex-B normalizer): connects to signaling_server.py, receives an
+// + the H264 Annex-B normalizer): connects to stream_server.py, receives an
 // H.264 stream from the GStreamer sender, and writes the normalized Annex-B to a
 // file while printing live frame/keyframe/byte counts. Confirms the receive path
 // end-to-end (camera -> WebRTC -> plugin) before building the full app.
 //
 //   ./webrtc_recv_probe --port 8443 --our receiver --out /tmp/webrtc_recv.h264
-//   then (sender): ENCODER=x264 PEER_ID=receiver ./send_camera.sh
+//   then (sender): python3 send_camera.py --server ws://127.0.0.1:8443
+//                      --device /dev/video0 --peer receiver
 //   verify:        ffplay /tmp/webrtc_recv.h264
 //                  (or pipe it through: gst-launch-1.0 filesrc
 //                   location=/tmp/webrtc_recv.h264 ! h264parse ! avdec_h264 !

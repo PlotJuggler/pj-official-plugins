@@ -55,6 +55,18 @@ std::vector<uint8_t> H264AnnexBNormalizer::normalize(const uint8_t* au, size_t s
   }
 
   std::vector<uint8_t> out;
+  // Reserve the whole output once: each NAL gets a 4-byte start code, plus the
+  // primed SPS/PPS (with their own start codes) when injected on a keyframe.
+  size_t reserve = size + 4 * nals.size();
+  if (has_idr) {
+    if (!has_sps && !primed_sps_.empty()) {
+      reserve += primed_sps_.size() + 4;
+    }
+    if (!has_pps && !primed_pps_.empty()) {
+      reserve += primed_pps_.size() + 4;
+    }
+  }
+  out.reserve(reserve);
   // Keyframe missing in-band parameter sets -> inject primed SPS/PPS first, so
   // the consumer's extractH264SpsPps (which stops at the IDR) finds them.
   if (has_idr) {
@@ -130,6 +142,29 @@ std::vector<std::vector<uint8_t>> parseSpropParameterSets(std::string_view sprop
     start = comma + 1;
   }
   return nals;
+}
+
+void primeNormalizerFromSprop(H264AnnexBNormalizer& norm, std::string_view sprop_base64_csv) {
+  if (sprop_base64_csv.empty()) {
+    return;
+  }
+  auto nals = parseSpropParameterSets(sprop_base64_csv);
+  std::vector<uint8_t> sps;
+  std::vector<uint8_t> pps;
+  for (auto& nal : nals) {
+    if (nal.empty()) {
+      continue;
+    }
+    const uint8_t t = nalType(nal[0]);
+    if (t == kNalSps && sps.empty()) {
+      sps = std::move(nal);
+    } else if (t == kNalPps && pps.empty()) {
+      pps = std::move(nal);
+    }
+  }
+  if (!sps.empty() && !pps.empty()) {
+    norm.prime(std::move(sps), std::move(pps));
+  }
 }
 
 Status pushVideoFrame(

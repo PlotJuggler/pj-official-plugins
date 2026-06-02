@@ -158,9 +158,9 @@ PJ::Status WebrtcReceiver::open(const WebrtcConfig& config, const std::vector<St
   });
 
   pc_->onLocalDescription([this](rtc::Description desc) {
-    if (auto remote = pc_->remoteDescription()) {
-      primeFromRemoteSdp(std::string(*remote));
-    }
+    // Per-mid normalizers are primed once, from setRemoteDescription, when the
+    // remote offer is applied. Re-priming here (same remote SDP) would re-parse
+    // and re-decode it for no effect, since prime() is idempotent state.
     if (on_local_description_) {
       on_local_description_(desc.typeString(), std::string(desc));
     }
@@ -204,6 +204,21 @@ PJ::Status WebrtcReceiver::open(const WebrtcConfig& config, const std::vector<St
   return PJ::okStatus();
 }
 
+void WebrtcReceiver::detachCallbacks() {
+  // Drop libdatachannel's own dispatch (onTrack/onFrame/onStateChange/
+  // onLocalDescription/onLocalCandidate) AND our user callbacks, so no
+  // worker-thread delivery can call back into this object or its peers.
+  if (pc_) {
+    try {
+      pc_->resetCallbacks();
+    } catch (...) {}
+  }
+  on_local_description_ = {};
+  on_local_candidate_ = {};
+  on_state_ = {};
+  on_error_ = {};
+}
+
 void WebrtcReceiver::close() {
   if (pc_) {
     try {
@@ -228,7 +243,13 @@ void WebrtcReceiver::setRemoteDescription(const std::string& type, const std::st
   try {
     pc_->setRemoteDescription(rtc::Description(sdp, type));
     primeFromRemoteSdp(sdp);
-  } catch (const std::exception&) {}
+  } catch (const std::exception& e) {
+    // libdatachannel rejected the offer synchronously: no answer, no ICE, no
+    // state change. Surface it so the owner does not stall silently forever.
+    if (on_error_) {
+      on_error_(std::string("setRemoteDescription failed: ") + e.what());
+    }
+  }
 }
 
 void WebrtcReceiver::addRemoteCandidate(const std::string& candidate, int mline_index) {
@@ -258,23 +279,7 @@ void WebrtcReceiver::primeFromRemoteSdp(const std::string& sdp) {
     if (it == tracks_.end()) {
       continue;
     }
-    auto nals = parseSpropParameterSets(sprop);
-    std::vector<uint8_t> sps;
-    std::vector<uint8_t> pps;
-    for (auto& nal : nals) {
-      if (nal.empty()) {
-        continue;
-      }
-      const uint8_t t = nalType(nal[0]);
-      if (t == kNalSps && sps.empty()) {
-        sps = std::move(nal);
-      } else if (t == kNalPps && pps.empty()) {
-        pps = std::move(nal);
-      }
-    }
-    if (!sps.empty() && !pps.empty()) {
-      it->second.normalizer.prime(std::move(sps), std::move(pps));
-    }
+    primeNormalizerFromSprop(it->second.normalizer, sprop);
   }
 }
 
@@ -282,13 +287,23 @@ void WebrtcReceiver::onFrame(const std::string& mid, const uint8_t* data, size_t
   if (data == nullptr || size == 0) {
     return;
   }
-  std::lock_guard<std::mutex> lk(tracks_mutex_);
-  auto it = tracks_.find(mid);
-  if (it == tracks_.end()) {
-    return;
+  // normalize() allocates and copies the whole access unit; keep it OFF the
+  // lock. normalize() is const (only prime() mutates), so under the lock we grab
+  // a stable pointer to the normalizer, release, normalize into a local frame,
+  // then re-lock only to enqueue. std::map nodes are stable across inserts, but
+  // a concurrent close()/open() can clear the map, so re-find before pushing.
+  const H264AnnexBNormalizer* normalizer = nullptr;
+  {
+    std::lock_guard<std::mutex> lk(tracks_mutex_);
+    auto it = tracks_.find(mid);
+    if (it == tracks_.end()) {
+      return;
+    }
+    normalizer = &it->second.normalizer;
   }
+
   bool keyframe = false;
-  std::vector<uint8_t> annexb = it->second.normalizer.normalize(data, size, keyframe);
+  std::vector<uint8_t> annexb = normalizer->normalize(data, size, keyframe);
   if (annexb.empty()) {
     return;
   }
@@ -296,6 +311,12 @@ void WebrtcReceiver::onFrame(const std::string& mid, const uint8_t* data, size_t
   ef.ts_ns = wallClockNs();
   ef.keyframe = keyframe;
   ef.annexb = std::move(annexb);
+
+  std::lock_guard<std::mutex> lk(tracks_mutex_);
+  auto it = tracks_.find(mid);
+  if (it == tracks_.end()) {
+    return;  // track removed (close/reopen) while normalizing: drop the frame
+  }
   it->second.queue.push(std::move(ef));
 }
 
@@ -311,28 +332,37 @@ std::vector<std::pair<std::string, EncodedFrame>> WebrtcReceiver::drainByStream(
   return out;
 }
 
+std::vector<std::string> WebrtcReceiver::extractMidsInOrderForTest(const std::string& sdp) {
+  return extractMidsInOrder(sdp);
+}
+
+std::map<std::string, std::string> WebrtcReceiver::extractSpropPerMidForTest(const std::string& sdp) {
+  return extractSpropPerMid(sdp);
+}
+
+bool WebrtcReceiver::acceptTrackForTest(const std::string& mid) {
+  // Mirrors the accept/drop decision in onTrack (minus retaining a real
+  // rtc::Track): a known mid is accepted; an unknown mid is dropped unless the
+  // subscribe set was empty (manual/legacy accept-any-track), in which case it
+  // is admitted with the fallback frame_id.
+  std::lock_guard<std::mutex> lk(tracks_mutex_);
+  auto it = tracks_.find(mid);
+  if (it == tracks_.end()) {
+    if (!expected_empty_) {
+      return false;  // a mid we never subscribed to: drop it
+    }
+    TrackState ts;
+    ts.stream_id = mid;
+    ts.frame_id = config_.frame_id;
+    tracks_.emplace(mid, std::move(ts));
+  }
+  return true;
+}
+
 EncodedFrame WebrtcReceiver::normalizeAccessUnit(
     const uint8_t* au, size_t size, int64_t ts_ns, const std::string& sprop_parameter_sets) {
   H264AnnexBNormalizer normalizer;
-  if (!sprop_parameter_sets.empty()) {
-    auto nals = parseSpropParameterSets(sprop_parameter_sets);
-    std::vector<uint8_t> sps;
-    std::vector<uint8_t> pps;
-    for (auto& nal : nals) {
-      if (nal.empty()) {
-        continue;
-      }
-      const uint8_t t = nalType(nal[0]);
-      if (t == kNalSps && sps.empty()) {
-        sps = std::move(nal);
-      } else if (t == kNalPps && pps.empty()) {
-        pps = std::move(nal);
-      }
-    }
-    if (!sps.empty() && !pps.empty()) {
-      normalizer.prime(std::move(sps), std::move(pps));
-    }
-  }
+  primeNormalizerFromSprop(normalizer, sprop_parameter_sets);
   EncodedFrame ef;
   ef.ts_ns = ts_ns;
   ef.annexb = normalizer.normalize(au, size, ef.keyframe);

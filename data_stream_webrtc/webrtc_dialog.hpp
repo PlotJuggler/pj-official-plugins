@@ -17,6 +17,7 @@
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "datastream_webrtc_ui.hpp"
@@ -32,13 +33,12 @@ struct IceRow {
 };
 
 // A camera the user picked, captured so the source can subscribe even after the
-// live catalog is gone (saved-layout reload).
+// live catalog is gone (saved-layout reload). Only id (== mid contract) and name
+// (topic leaf) are needed downstream; codec/resolution come from the live
+// catalog at render time, so they are not persisted here.
 struct SelectedStream {
   std::string id;    // == mid contract
   std::string name;  // topic leaf
-  std::string codec = "h264";
-  int width = 0;
-  int height = 0;
 };
 
 class WebrtcDialog : public PJ::DialogPluginTyped {
@@ -80,12 +80,11 @@ class WebrtcDialog : public PJ::DialogPluginTyped {
     {
       std::lock_guard<std::mutex> lock(catalog_mutex_);
       rows.reserve(catalog_.size());
-      const std::string flt = toLower(filter_);
+      const auto base_counts = buildBaseNameCounts(catalog_);
       for (const auto& s : catalog_) {
-        const std::string label = s.name.empty() ? s.id : s.name;
+        const std::string label = displayLabel(s, base_counts);
         const std::string codec = s.codec.empty() ? "h264" : s.codec;
-        if (!flt.empty() && toLower(label).find(flt) == std::string::npos &&
-            toLower(codec).find(flt) == std::string::npos) {
+        if (!passesFilter(label, codec)) {
           continue;
         }
         const std::string res =
@@ -161,7 +160,8 @@ class WebrtcDialog : public PJ::DialogPluginTyped {
     }
     if (widget_name == "lineEditFilter") {
       filter_ = std::string(text);
-      return true;  // re-filter
+      filter_lower_ = toLower(filter_);  // cache: passesFilter runs per row
+      return true;                       // re-filter
     }
     return false;
   }
@@ -169,12 +169,32 @@ class WebrtcDialog : public PJ::DialogPluginTyped {
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name == "camerasList") {
       std::lock_guard<std::mutex> lock(catalog_mutex_);
-      selected_.clear();
+      const auto base_counts = buildBaseNameCounts(catalog_);
+      // The host reports the selection of the CURRENTLY rendered (filtered) table
+      // only, so a previously-picked camera that the active filter hides is
+      // absent here. Rebuilding from scratch would silently unselect it. Keep
+      // those still-selected-but-now-hidden entries (matched by id) and rebuild
+      // the visible portion from the reported labels.
+      std::vector<SelectedStream> preserved;
+      for (const auto& sel : selected_) {
+        bool visible = false;
+        for (const auto& s : catalog_) {
+          if (s.id == sel.id && passesFilter(displayLabel(s, base_counts), s.codec)) {
+            visible = true;
+            break;
+          }
+        }
+        if (!visible) {
+          preserved.push_back(sel);
+        }
+      }
+      selected_ = std::move(preserved);
+      // Resolve each reported label back to its id via the same unique label the
+      // rows were rendered with (1:1 even when names collide).
       for (const auto& label : selected) {
         for (const auto& s : catalog_) {
-          const std::string s_label = s.name.empty() ? s.id : s.name;
-          if (s_label == label) {
-            selected_.push_back({s.id, s.name, s.codec, s.width, s.height});
+          if (displayLabel(s, base_counts) == label) {
+            selected_.push_back({s.id, s.name});
             break;
           }
         }
@@ -208,13 +228,7 @@ class WebrtcDialog : public PJ::DialogPluginTyped {
 
     nlohmann::json sel = nlohmann::json::array();
     for (const auto& s : selected_) {
-      sel.push_back(
-          {{"id", s.id},
-           {"name", s.name},
-           {"mid", s.id},
-           {"codec", s.codec},
-           {"width", s.width},
-           {"height", s.height}});
+      sel.push_back({{"id", s.id}, {"name", s.name}, {"mid", s.id}});
     }
     cfg["selected"] = sel;
 
@@ -243,9 +257,6 @@ class WebrtcDialog : public PJ::DialogPluginTyped {
         SelectedStream s;
         s.id = e.value("id", std::string());
         s.name = e.value("name", std::string());
-        s.codec = e.value("codec", std::string("h264"));
-        s.width = e.value("width", 0);
-        s.height = e.value("height", 0);
         if (!s.id.empty()) {
           selected_.push_back(std::move(s));
         }
@@ -273,9 +284,73 @@ class WebrtcDialog : public PJ::DialogPluginTyped {
     }
     return s;
   }
+
+  // The base label for a stream: its name, or its id when unnamed.
+  static std::string baseLabel(const PJ::webrtc::DiscoveredStream& s) {
+    return s.name.empty() ? s.id : s.name;
+  }
+
+  // Count how many catalog entries share each base label, in ONE pass. The
+  // render loop (and onSelectionChanged) computes this once and feeds it to
+  // displayLabel, instead of re-scanning the whole catalog per row (O(n^2)).
+  // Caller holds catalog_mutex_.
+  static std::unordered_map<std::string, int> buildBaseNameCounts(
+      const std::vector<PJ::webrtc::DiscoveredStream>& catalog) {
+    std::unordered_map<std::string, int> counts;
+    counts.reserve(catalog.size());
+    for (const auto& s : catalog) {
+      ++counts[baseLabel(s)];
+    }
+    return counts;
+  }
+
+  // The Camera-column label for a stream, made UNIQUE within the catalog so the
+  // host (which echoes only the column-0 text on selection) can resolve it back
+  // to exactly one id. The base label is the name (or id if unnamed); if another
+  // catalog entry shares that base, disambiguate with the id. Without this, two
+  // cameras advertised under the same name would mis-bind selection. `counts`
+  // is buildBaseNameCounts over the same catalog the rows are built from.
+  static std::string displayLabel(
+      const PJ::webrtc::DiscoveredStream& s, const std::unordered_map<std::string, int>& counts) {
+    const std::string base = baseLabel(s);
+    const auto it = counts.find(base);
+    const bool duplicate = it != counts.end() && it->second > 1;
+    return duplicate ? (base + " (" + s.id + ")") : base;
+  }
+
+  // Whether a (label, codec) pair survives the active filter text. Shared by
+  // widget_data (row rendering) and onSelectionChanged (visibility check) so the
+  // two never disagree about which rows the host can report.
+  bool passesFilter(const std::string& label, const std::string& codec_in) const {
+    if (filter_lower_.empty()) {
+      return true;
+    }
+    const std::string codec = codec_in.empty() ? "h264" : codec_in;
+    return toLower(label).find(filter_lower_) != std::string::npos ||
+           toLower(codec).find(filter_lower_) != std::string::npos;
+  }
   bool catalogEmpty() const {
     std::lock_guard<std::mutex> lock(catalog_mutex_);
     return catalog_.empty();
+  }
+
+  // Refresh each persisted selection's name from the freshly discovered catalog,
+  // keyed by the stable id (== mid). A saved layout restores selected_ with the
+  // name the streamer used LAST session; if the streamer now advertises the same
+  // id under a new name, the topic leaf and frame_id derive from selected_.name
+  // (webrtc_source.cpp), so without this they would follow the stale name even
+  // though the dialog table (built from catalog_) shows the fresh one. id is the
+  // contract; name is presentation, so an id-keyed refresh is correct and
+  // self-heals the saved config. Caller MUST hold catalog_mutex_.
+  void reconcileSelectedWithCatalogLocked() {
+    for (auto& sel : selected_) {
+      for (const auto& s : catalog_) {
+        if (s.id == sel.id) {
+          sel.name = s.name;
+          break;
+        }
+      }
+    }
   }
 
   void connect() {
@@ -284,6 +359,7 @@ class WebrtcDialog : public PJ::DialogPluginTyped {
       {
         std::lock_guard<std::mutex> lock(catalog_mutex_);
         catalog_ = std::move(streams);
+        reconcileSelectedWithCatalogLocked();
       }
       catalog_dirty_.store(true);
     });
@@ -324,6 +400,7 @@ class WebrtcDialog : public PJ::DialogPluginTyped {
   std::string topic_prefix_ = "webrtc";
   std::string manual_stream_;
   std::string filter_;
+  std::string filter_lower_;  // cached toLower(filter_); kept in sync in onTextChanged
 
   std::atomic<bool> connected_ = false;
   std::atomic<bool> catalog_dirty_ = false;

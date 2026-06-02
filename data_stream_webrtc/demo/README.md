@@ -18,8 +18,8 @@ synthetic `videotestsrc` that needs no hardware:
 
 ```json
 { "type": "catalog", "protocol": 1, "streams": [
-    {"id": "cam0", "name": "front", "codec": "h264", "width": 640, "height": 480, "mid": "cam0"},
-    {"id": "cam1", "name": "test",  "codec": "h264", "width": 640, "height": 480, "mid": "cam1"}
+    {"id": "cam0", "name": "camera0", "codec": "h264", "width": 640, "height": 480, "mid": "cam0"},
+    {"id": "cam1", "name": "camera1", "codec": "h264", "width": 640, "height": 480, "mid": "cam1"}
 ]}
 ```
 
@@ -94,8 +94,8 @@ waits for the source to register, advertises its cameras, and (with the default
 if you Stop/Start — no start-order, no extra terminals. With a discovery-capable
 build, pick the cameras you want in the dialog and only those are offered.
 
-Drop each `webrtc/<camera name>` topic into a 2D dock (e.g. `webrtc/front`,
-`webrtc/test`). Each subscribed camera is its own topic and follows the live tip.
+Drop each `webrtc/<camera name>` topic into a 2D dock (e.g. `webrtc/camera0`,
+`webrtc/camera1`). Each subscribed camera is its own topic and follows the live tip.
 
 Options: `--encoder vaapi|nvenc|jetson|passthrough`, `--device /dev/videoN` (the
 v4l2 device for `cam0`), `--port N`, `--single`, `--no-legacy-autostart`.
@@ -173,7 +173,7 @@ already emits H.264 — no transcode). Both senders share the same encoder chain
 - **`Gst.parse_launch` raises.** The selected encoder element is missing /
   driver not present. Try `--encoder x264`.
 - **One camera shows, the other doesn't.** Check the second m-line negotiated:
-  the synthetic `videotestsrc` camera (`cam1`/`webrtc/test`) needs no hardware,
+  the synthetic `videotestsrc` camera (`cam1`/`webrtc/camera1`) needs no hardware,
   so if only it appears, your `/dev/video0` is missing or busy — pass
   `--device /dev/videoN` or subscribe to only the synthetic camera.
 - **Green/garbage until the first keyframe.** Ensure `config-interval=-1` (it is
