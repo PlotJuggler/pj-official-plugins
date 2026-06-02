@@ -90,7 +90,7 @@ target_include_directories(toolbox_mosaico_plugin PRIVATE
 )
 
 target_link_libraries(toolbox_mosaico_plugin PRIVATE
-  plotjuggler_core::plugin_sdk
+  plotjuggler_sdk::plugin_sdk
   fmt::fmt
   nlohmann_json::nlohmann_json
   mosaico_sdk
@@ -148,7 +148,7 @@ if(BUILD_TESTING)
     src/arrow_ingest.cpp
   )
   target_link_libraries(toolbox_mosaico_detect_timestamp_test PRIVATE
-    plotjuggler_core::plugin_sdk
+    plotjuggler_sdk::plugin_sdk
     ${_test_arrow_target}
     GTest::gtest_main
   )
@@ -194,7 +194,7 @@ if(BUILD_TESTING)
     src/arrow_ingest.cpp
   )
   target_link_libraries(toolbox_mosaico_fetch_grouping_test PRIVATE
-    plotjuggler_core::plugin_sdk
+    plotjuggler_sdk::plugin_sdk
     ${_test_arrow_target}
     GTest::gtest_main
   )
@@ -211,7 +211,7 @@ if(BUILD_TESTING)
     src/arrow_ingest.cpp
   )
   target_link_libraries(toolbox_mosaico_image_serialize_test PRIVATE
-    plotjuggler_core::plugin_sdk
+    plotjuggler_sdk::plugin_sdk
     ${_test_arrow_target}
     GTest::gtest_main
   )
@@ -229,7 +229,7 @@ if(BUILD_TESTING)
     src/arrow_ingest.cpp
   )
   target_link_libraries(toolbox_mosaico_image_real_fixture_test PRIVATE
-    plotjuggler_core::plugin_sdk
+    plotjuggler_sdk::plugin_sdk
     ${_test_arrow_target}
     GTest::gtest_main
   )
@@ -372,7 +372,7 @@ if(BUILD_TESTING)
   )
   target_include_directories(toolbox_mosaico_settings_store_test PRIVATE src)
   target_link_libraries(toolbox_mosaico_settings_store_test PRIVATE
-    plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
+    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
   )
   add_test(NAME toolbox_mosaico_settings_store_test COMMAND toolbox_mosaico_settings_store_test)
 

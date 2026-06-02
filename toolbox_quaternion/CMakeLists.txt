@@ -8,7 +8,7 @@ target_compile_features(toolbox_quaternion_plugin PRIVATE cxx_std_20)
 target_compile_options(toolbox_quaternion_plugin PRIVATE ${PJ_WARNING_FLAGS})
 
 target_link_libraries(toolbox_quaternion_plugin PRIVATE
-  plotjuggler_core::plugin_sdk
+  plotjuggler_sdk::plugin_sdk
   nlohmann_json::nlohmann_json
 )
 
@@ -38,8 +38,8 @@ if(TARGET GTest::gtest_main)
     PJ_QUATERNION_PLUGIN_PATH="$<TARGET_FILE:toolbox_quaternion_plugin>"
   )
   target_link_libraries(quaternion_plugin_test PRIVATE
-    plotjuggler_core::plugin_host
-    plotjuggler_core::plugin_sdk
+    plotjuggler_sdk::plugin_host
+    plotjuggler_sdk::plugin_sdk
     GTest::gtest_main
   )
   add_test(NAME quaternion_plugin_test COMMAND quaternion_plugin_test)

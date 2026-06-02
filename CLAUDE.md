@@ -18,10 +18,10 @@ cmake -B build -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake
 cmake --build build
 ```
 
-### As subdirectory of plotjuggler_core
+### As subdirectory of plotjuggler_sdk
 
 ```bash
-cd ~/ws_plotjuggler/plotjuggler_core
+cd ~/ws_plotjuggler/plotjuggler_sdk
 ./build.sh          # RelWithDebInfo
 ./build.sh --debug  # Debug + ASAN
 ```
@@ -66,12 +66,14 @@ Export macros: `PJ_DATA_SOURCE_PLUGIN(Class, manifest_json)`, `PJ_MESSAGE_PARSER
 ### Dual-mode CMake
 
 The top-level CMakeLists.txt supports two modes:
-1. **Subdirectory mode** — when `TARGET plotjuggler_core::plugin_sdk` already exists (built inside plotjuggler_core; the namespaced alias is added by plotjuggler_core ≥0.2.1)
-2. **Standalone mode** — `find_package(plotjuggler_core CONFIG REQUIRED)` against the Conan package from the plotjuggler cloudsmith remote; all other deps via Conan
+1. **Subdirectory mode** — when `TARGET plotjuggler_sdk::plugin_sdk` already exists (built inside the plotjuggler_sdk repo, which provides the namespaced alias)
+2. **Standalone mode** — `find_package(plotjuggler_sdk CONFIG REQUIRED)` against the Conan package from the plotjuggler cloudsmith remote; all other deps via Conan
 
-Plugin CMakeLists.txt files link `plotjuggler_core::plugin_sdk` (plugin .so) and `plotjuggler_core::plugin_host` (test executables) — same target names work in both modes.
+Plugin CMakeLists.txt files link `plotjuggler_sdk::plugin_sdk` (plugin .so) and `plotjuggler_sdk::plugin_host` (test executables) — same target names work in both modes.
 
-The core version is **not** pinned in CMake — `find_package` resolves whatever Conan installed. The requirement is pinned in **one** place: the top-level `SDK_VERSION` file (an exact version, e.g. `0.5.1`), which the root `conanfile.py` and every plugin's `conanfile.py` read live, and to which the `extern/plotjuggler_core` git submodule is pinned (`v<version>`). Retarget in one step: `python3 scripts/bump_core_version.py 0.5.2` (writes `SDK_VERSION` and moves the submodule); `python3 scripts/bump_core_version.py --check` guards that they agree in CI.
+The core version is **not** pinned in CMake — `find_package` resolves whatever Conan installed. The requirement is pinned in **one** place: the top-level `SDK_VERSION` file (an exact version, e.g. `0.6.0`), which the root `conanfile.py` and every plugin's `conanfile.py` read live, and to which the `extern/plotjuggler_core` git submodule is pinned (`v<version>`). Retarget in one step: `python3 scripts/bump_core_version.py 0.6.1` (writes `SDK_VERSION` and moves the submodule); `python3 scripts/bump_core_version.py --check` guards that they agree in CI.
+
+**Repository & package rename (core `v0.6.0`):** the SDK was renamed `plotjuggler_core` → [`plotjuggler_sdk`](https://github.com/PlotJuggler/plotjuggler_sdk) — GitHub repo, Conan package, and CMake identity all move together. Recipes require `plotjuggler_sdk/<version>`; CMake uses `find_package(plotjuggler_sdk)` and links `plotjuggler_sdk::base|plugin_sdk|plugin_host`. The single thing that keeps the old name is the submodule mount point, `extern/plotjuggler_core` (a local directory, not the package). The upstream SDK recipe (`name`, `cmake_file_name`, `cmake_target_name`) and the cloudsmith package are renamed on the SDK side; this repo only consumes the new name.
 
 ### Dialog System
 
@@ -89,7 +91,7 @@ Plugins with UI subclass `PJ::DialogPluginTyped` and use real `.ui` files (Qt Cr
 
 | Source | Packages |
 |--------|----------|
-| Conan (cloudsmith) + `extern/plotjuggler_core` submodule fallback | plotjuggler_core (`plotjuggler_core::plugin_sdk`, `::plugin_host`) |
+| Conan (cloudsmith) + `extern/plotjuggler_core` submodule fallback | plotjuggler_sdk (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
 | Conan (conancenter) | nlohmann_json, mcap, arrow/parquet, paho-mqtt-cpp, cppzmq, protobuf, zstd, date, ixwebsocket, asio, kissfft, lua, sol2, libsodium, pybind11, cpython, gtest |
 | CPM | ulog_cpp, rosx_introspection, data_tamer (plugin-private deps only) |
 | Optional | Qt 6 (WebSockets, Network) — only for foxglove_bridge and pj_bridge |

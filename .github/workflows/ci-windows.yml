@@ -34,7 +34,7 @@ jobs:
         with:
           arch: x64
 
-      - name: Acquire plotjuggler_core
+      - name: Acquire plotjuggler_sdk
         # Cloudsmith publishes only a Linux binary, so Windows builds core from source.
         # ensure_core.sh builds it from the pinned extern/plotjuggler_core submodule
         # with no cloudsmith remote configured, so a cloudsmith outage can never break

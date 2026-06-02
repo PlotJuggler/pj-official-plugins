@@ -9,7 +9,7 @@ add_library(mp4_source_plugin SHARED mp4_source.cpp)
 target_compile_features(mp4_source_plugin PRIVATE cxx_std_20)
 target_compile_options(mp4_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(mp4_source_plugin PRIVATE
-  plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json date::date
+  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json date::date
   ffmpeg::avformat ffmpeg::avutil
 )
 
