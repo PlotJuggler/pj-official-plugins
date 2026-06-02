@@ -32,14 +32,8 @@ class ZmqSource : public PJ::StreamSourceBase {
     // Always populate available encodings first (needed even if config is empty).
     // Exclude ROS-specific and CDR encodings — ZMQ subscriber only supports
     // self-describing formats (JSON, Protobuf, etc.).
-    auto all_encodings = PJ::sdk::parseEncodingsJson(runtimeHost().listAvailableEncodings());
-    std::vector<std::string> filtered_encodings;
-    for (const auto& enc : all_encodings) {
-      if (enc != "ros1" && enc != "ros2" && enc != "cdr") {
-        filtered_encodings.push_back(enc);
-      }
-    }
-    dialog_.setAvailableEncodings(std::move(filtered_encodings));
+    auto all_encodings = PJ::sdk::parseEncodings
+    dialog_.setAvailableEncodings(all_encondings);
 
     // Load config if provided (empty config on first run is OK)
     if (!config_json.empty()) {
