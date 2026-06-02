@@ -32,6 +32,6 @@ target_include_directories(pj_arrow_helpers PUBLIC
 
 # Arrow types appear in the public API; plugin_sdk supplies PJ::sdk::ValueRef.
 target_link_libraries(pj_arrow_helpers PUBLIC
-  plotjuggler_core::plugin_sdk
+  plotjuggler_sdk::plugin_sdk
   Arrow::arrow_static
 )

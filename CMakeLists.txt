@@ -1,13 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
 
 # ---------------------------------------------------------------------------
-# Dual-mode: standalone project OR subdirectory of plotjuggler_core.
+# Dual-mode: standalone project OR subdirectory of plotjuggler_sdk.
 #
-# Detection: if plotjuggler_core::plugin_sdk already exists as a target, we are a subdirectory
+# Detection: if plotjuggler_sdk::plugin_sdk already exists as a target, we are a subdirectory
 # and all deps are already provided by the parent project.
 # ---------------------------------------------------------------------------
 
-if(TARGET plotjuggler_core::plugin_sdk)
+if(TARGET plotjuggler_sdk::plugin_sdk)
   # Subdirectory mode — deps already provided by parent.
   set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 
@@ -53,7 +53,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ---------------------------------------------------------------------------
-# Compiler warnings (matches plotjuggler_core)
+# Compiler warnings (matches plotjuggler_sdk)
 # ---------------------------------------------------------------------------
 
 if(MSVC)
@@ -90,7 +90,7 @@ find_package(GTest REQUIRED)
 # themselves; nothing at the root needs it anymore.
 # ---------------------------------------------------------------------------
 
-find_package(plotjuggler_core CONFIG REQUIRED
+find_package(plotjuggler_sdk CONFIG REQUIRED
   COMPONENTS base plugin_sdk plugin_host
 )
 

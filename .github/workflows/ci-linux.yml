@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Acquire plotjuggler_core ONCE per run and hand it to every build leg as a Conan
+  # Acquire plotjuggler_sdk ONCE per run and hand it to every build leg as a Conan
   # cache artifact. Cloudsmith is contacted only here (prebuilt-binary fast path); on
   # a cloudsmith failure (e.g. HTTP 402 bandwidth exceeded) ensure_core.sh builds core
   # from the pinned extern/plotjuggler_core submodule instead, so CI never hard-depends
@@ -48,15 +48,15 @@ jobs:
             "$CLOUDSMITH_USER" -p "$CLOUDSMITH_API_KEY" \
             || echo "::warning::cloudsmith login failed; core will be built from the submodule"
 
-      - name: Acquire plotjuggler_core (cloudsmith → submodule fallback)
+      - name: Acquire plotjuggler_sdk (cloudsmith → submodule fallback)
         shell: bash
         run: scripts/ensure_core.sh
 
-      - name: Save plotjuggler_core to a Conan cache artifact
-        # Pin to the exact SDK_VERSION so a stale plotjuggler_core left in the
+      - name: Save plotjuggler_sdk to a Conan cache artifact
+        # Pin to the exact SDK_VERSION so a stale plotjuggler_sdk left in the
         # setup-conan package cache can never be shipped in the artifact.
         shell: bash
-        run: conan cache save "plotjuggler_core/$(cat SDK_VERSION):*" --file core-cache.tgz
+        run: conan cache save "plotjuggler_sdk/$(cat SDK_VERSION):*" --file core-cache.tgz
 
       - name: Upload core cache artifact
         uses: actions/upload-artifact@v4
@@ -82,7 +82,7 @@ jobs:
   # mosaico already had to wait for this job, then built Flight in-leg anyway.
   #
   # The builds run in an ISOLATED CONAN_HOME so the saved closure is exactly Arrow + its
-  # from-source deps and can never fold in a stale plotjuggler_core from the shared
+  # from-source deps and can never fold in a stale plotjuggler_sdk from the shared
   # setup-conan cache. A precisely-keyed actions/cache skips even these builds on warm
   # runs (GitHub cache keys are immutable, so the key encodes the exact Arrow config).
   acquire-arrow:
@@ -145,7 +145,7 @@ jobs:
       - name: Pack the Arrow closure for the build legs
         shell: bash
         # The isolated home holds only Arrow's closure (incl. boost), never
-        # plotjuggler_core, so saving everything is both safe and complete.
+        # plotjuggler_sdk, so saving everything is both safe and complete.
         run: conan cache save "*:*" --file "$GITHUB_WORKSPACE/arrow-cache.tgz"
 
       - name: Upload Arrow cache artifact
@@ -206,7 +206,7 @@ jobs:
 
   # Build each plugin in isolation against its own conanfile.py, matching the
   # path the release workflow takes. Catches per-plugin recipe gaps. Each leg
-  # restores plotjuggler_core from the acquire-core artifact (no cloudsmith remote
+  # restores plotjuggler_sdk from the acquire-core artifact (no cloudsmith remote
   # is configured here), so the matrix fan-out costs zero cloudsmith bandwidth;
   # conancenter still serves each plugin's other third-party deps.
   per-plugin-build:
@@ -240,7 +240,7 @@ jobs:
         with:
           name: conan-core-cache
 
-      - name: Restore plotjuggler_core into the Conan cache
+      - name: Restore plotjuggler_sdk into the Conan cache
         # Core comes from the artifact primed by acquire-core. No cloudsmith remote is
         # configured in this job, so a build leg can never pull core from cloudsmith.
         # If the restore somehow misses, ensure_core.sh rebuilds it from the submodule.
@@ -318,7 +318,7 @@ jobs:
         with:
           name: conan-arrow-cache
 
-      - name: Restore plotjuggler_core and Arrow into the Conan cache
+      - name: Restore plotjuggler_sdk and Arrow into the Conan cache
         # Core comes from acquire-core, Arrow (+ boost) from acquire-arrow. With the
         # Arrow binary present at a matching package_id, build.sh's `--build=missing`
         # reuses it instead of recompiling. ensure_core.sh covers a rare core-restore

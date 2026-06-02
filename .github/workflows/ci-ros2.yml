@@ -23,7 +23,7 @@ concurrency:
 #
 #  - `build-distro` runs a matrix across every supported ROS 2 distribution
 #    inside the corresponding osrf/ros Docker image. Each job builds
-#    plotjuggler_core from the pinned extern/plotjuggler_core submodule and links
+#    plotjuggler_sdk from the pinned extern/plotjuggler_core submodule and links
 #    the resulting distro-specific shared library against that distro's
 #    rclcpp.
 #
@@ -78,7 +78,7 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Acquire plotjuggler_core (submodule build; no cloudsmith)
+      - name: Acquire plotjuggler_sdk (submodule build; no cloudsmith)
         shell: bash
         run: |
           conan profile detect --force
@@ -89,7 +89,7 @@ jobs:
         run: |
           source /opt/ros/${{ matrix.distro }}/setup.bash
 
-          # Plugin-local recipe (plotjuggler_core + gtest + nlohmann_json),
+          # Plugin-local recipe (plotjuggler_sdk + gtest + nlohmann_json),
           # not the repo-root conanfile.py that pulls every plugin's deps.
           conan install data_stream_ros2 --output-folder=build --build=missing \
             -s build_type=Release \
@@ -133,7 +133,7 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Acquire plotjuggler_core (submodule build; no cloudsmith)
+      - name: Acquire plotjuggler_sdk (submodule build; no cloudsmith)
         shell: bash
         run: |
           conan profile detect --force
@@ -142,7 +142,7 @@ jobs:
       - name: Configure and build proxy
         shell: bash
         run: |
-          # Plugin-local recipe (plotjuggler_core + gtest + nlohmann_json),
+          # Plugin-local recipe (plotjuggler_sdk + gtest + nlohmann_json),
           # not the repo-root conanfile.py that pulls every plugin's deps.
           conan install data_stream_ros2 --output-folder=build --build=missing \
             -s build_type=Release \

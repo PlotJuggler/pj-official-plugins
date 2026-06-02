@@ -15,7 +15,7 @@ class DataStreamDummyConan(ConanFile):
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain"
     requires = (
-        f"plotjuggler_core/{_SDK_VERSION}",
+        f"plotjuggler_sdk/{_SDK_VERSION}",
         "gtest/1.17.0",
     )
     default_options = {"*:shared": False}

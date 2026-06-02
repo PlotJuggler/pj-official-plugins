@@ -16,7 +16,7 @@ widgets (FFT, quaternion, colormap, reactive scripts). See the
 ### Standalone (requires Conan 2.x)
 
 Configure the plotjuggler cloudsmith Conan remote once per machine so
-`plotjuggler_core` resolves on `conan install`:
+`plotjuggler_sdk` resolves on `conan install`:
 
 ```bash
 conan remote add plotjuggler-cloudsmith \
@@ -45,20 +45,20 @@ By default, `build.sh` installs the root `conanfile.py` and builds into
 builds into `build/<plugin_dir>/Release`.
 
 Each plugin directory has its own `conanfile.py` that lists
-`plotjuggler_core` plus the plugin's own third-party deps. Keep it in sync
+`plotjuggler_sdk` plus the plugin's own third-party deps. Keep it in sync
 with the plugin's `find_package(... REQUIRED)` calls in `CMakeLists.txt`.
 The root `conanfile.py` remains the full-repository dependency set for
 local full builds and scheduled CI.
 
-### As subdirectory of plotjuggler_core
+### As subdirectory of plotjuggler_sdk
 
 No extra steps — the parent project's build system handles everything (and
-`plotjuggler_core::plugin_sdk` / `::plugin_host` resolve to the in-tree
+`plotjuggler_sdk::plugin_sdk` / `::plugin_host` resolve to the in-tree
 targets, so plugin CMakeLists.txt files write the same `target_link_libraries`
 call in both modes):
 
 ```bash
-cd /path/to/plotjuggler_core
+cd /path/to/plotjuggler_sdk
 ./build.sh
 ```
 
@@ -66,7 +66,7 @@ cd /path/to/plotjuggler_core
 
 ### Via Conan
 
-`plotjuggler_core` is consumed as a Conan package from the
+`plotjuggler_sdk` is consumed as a Conan package from the
 plotjuggler cloudsmith remote — no CPM source clone, no SSH deploy key, no
 subdirectory-mode fallback for standalone builds. Every per-plugin
 `conanfile.py` also lists it so single-plugin builds resolve it the same way.
@@ -74,9 +74,16 @@ The version is pinned in one place — the top-level `SDK_VERSION` file — and 
 builds core from the pinned `extern/plotjuggler_core` submodule when cloudsmith
 is unavailable (`scripts/ensure_core.sh`).
 
+> **Repository & package rename:** the SDK source now lives in the
+> [**plotjuggler_sdk**](https://github.com/PlotJuggler/plotjuggler_sdk)
+> repository (formerly `plotjuggler_core`), and the Conan package and CMake
+> targets are renamed to match — recipes require `plotjuggler_sdk/<version>` and
+> link `plotjuggler_sdk::plugin_sdk` / `::plugin_host`. The only thing that keeps
+> the old name is the submodule mount point, `extern/plotjuggler_core`.
+
 | Package | Version | Used by |
 |---------|---------|---------|
-| **plotjuggler_core** (cloudsmith) | pinned via `SDK_VERSION` (exact) | **SDK + host loaders** (`plotjuggler_core::plugin_sdk`, `::plugin_host`) |
+| **plotjuggler_sdk** (cloudsmith) | pinned via `SDK_VERSION` (exact) | **SDK + host loaders** (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
 | nlohmann_json | 3.12.0 | Most plugins |
 | mcap | 2.1.1 | data_load_mcap |
 | arrow + parquet | 23.0.1 | data_load_parquet |
@@ -166,7 +173,7 @@ exist.
 ## Plugin architecture
 
 Both plugin families in this repo follow a **declarative** style on top of
-the `plotjuggler_core` SDK: a DataSource hands the host a deferred byte
+the `plotjuggler_sdk` SDK: a DataSource hands the host a deferred byte
 fetcher per message, and a MessageParser declares a table of schema
 handlers that produce **canonical objects** (`sdk::Image`,
 `sdk::PointCloud`, and related builtin types) plus scalar columns. The host

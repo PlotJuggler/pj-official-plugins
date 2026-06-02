@@ -24,7 +24,7 @@ target_compile_features(toolbox_reactive_scripts_editor_plugin PRIVATE cxx_std_2
 target_compile_options(toolbox_reactive_scripts_editor_plugin PRIVATE ${PJ_WARNING_FLAGS})
 
 target_link_libraries(toolbox_reactive_scripts_editor_plugin PRIVATE
-  plotjuggler_core::plugin_sdk
+  plotjuggler_sdk::plugin_sdk
   lua::lua
   sol2::sol2
   nlohmann_json::nlohmann_json

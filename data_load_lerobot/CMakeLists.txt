@@ -19,7 +19,7 @@ add_library(lerobot_source_plugin SHARED
 target_compile_features(lerobot_source_plugin PRIVATE cxx_std_20)
 target_compile_options(lerobot_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(lerobot_source_plugin PRIVATE
-  plotjuggler_core::plugin_sdk nlohmann_json::nlohmann_json
+  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json
   Arrow::arrow_static Parquet::parquet_static
   pj_arrow_helpers
 )
@@ -50,7 +50,7 @@ target_compile_features(lerobot_dataset_model_test PRIVATE cxx_std_20)
 target_compile_options(lerobot_dataset_model_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(lerobot_dataset_model_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lerobot_dataset_model_test PRIVATE
-  plotjuggler_core::plugin_sdk plotjuggler_core::plugin_host nlohmann_json::nlohmann_json
+  plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json
   Arrow::arrow_static Parquet::parquet_static GTest::gtest_main
 )
 add_test(NAME lerobot_dataset_model_test COMMAND lerobot_dataset_model_test)
@@ -62,7 +62,7 @@ target_compile_features(lerobot_dataset_model_v3_test PRIVATE cxx_std_20)
 target_compile_options(lerobot_dataset_model_v3_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(lerobot_dataset_model_v3_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lerobot_dataset_model_v3_test PRIVATE
-  plotjuggler_core::plugin_sdk plotjuggler_core::plugin_host nlohmann_json::nlohmann_json
+  plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json
   Arrow::arrow_static Parquet::parquet_static GTest::gtest_main
 )
 add_test(NAME lerobot_dataset_model_v3_test COMMAND lerobot_dataset_model_v3_test)
@@ -72,7 +72,7 @@ target_compile_features(lerobot_flatten_plan_test PRIVATE cxx_std_20)
 target_compile_options(lerobot_flatten_plan_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(lerobot_flatten_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lerobot_flatten_plan_test PRIVATE
-  plotjuggler_core::plugin_sdk plotjuggler_core::plugin_host nlohmann_json::nlohmann_json GTest::gtest_main
+  plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json GTest::gtest_main
 )
 add_test(NAME lerobot_flatten_plan_test COMMAND lerobot_flatten_plan_test)
 
@@ -84,7 +84,7 @@ target_compile_features(lerobot_asset_video_export_test PRIVATE cxx_std_20)
 target_compile_options(lerobot_asset_video_export_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(lerobot_asset_video_export_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lerobot_asset_video_export_test PRIVATE
-  plotjuggler_core::plugin_sdk plotjuggler_core::plugin_host GTest::gtest_main
+  plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host GTest::gtest_main
 )
 add_test(NAME lerobot_asset_video_export_test COMMAND lerobot_asset_video_export_test)
 
@@ -96,7 +96,7 @@ target_compile_features(lerobot_dialog_fanout_test PRIVATE cxx_std_20)
 target_compile_options(lerobot_dialog_fanout_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(lerobot_dialog_fanout_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lerobot_dialog_fanout_test PRIVATE
-  plotjuggler_core::plugin_sdk plotjuggler_core::plugin_host nlohmann_json::nlohmann_json
+  plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json
   Arrow::arrow_static Parquet::parquet_static GTest::gtest_main
 )
 # Pull in the generated headers (dialog_lerobot_ui.hpp, lerobot_manifest.hpp)
