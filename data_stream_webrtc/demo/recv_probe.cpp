@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <pj_base/sdk/platform.hpp>
 #include <rtc/rtc.hpp>
 #include <string>
 #include <thread>
@@ -60,11 +61,11 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, onSigint);
   // libdatachannel diagnostics: Warning by default (quiet — the [recv] counter
   // is the probe's main output). Set RTC_LOG=info|debug to trace ICE/DTLS.
-  const char* lvl = std::getenv("RTC_LOG");
+  const auto rtc_log = PJ::sdk::getEnv("RTC_LOG");  // SDK helper: portable, MSVC-clean
   rtc::InitLogger(
-      lvl && std::string(lvl) == "debug"  ? rtc::LogLevel::Debug
-      : lvl && std::string(lvl) == "info" ? rtc::LogLevel::Info
-                                          : rtc::LogLevel::Warning);
+      rtc_log == "debug"  ? rtc::LogLevel::Debug
+      : rtc_log == "info" ? rtc::LogLevel::Info
+                          : rtc::LogLevel::Warning);
 
   PJ::webrtc::WebrtcReceiver receiver;
   PJ::webrtc::WebrtcSignaling signaling;
