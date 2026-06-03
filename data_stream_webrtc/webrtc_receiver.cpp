@@ -260,7 +260,7 @@ void WebrtcReceiver::addRemoteCandidate(const std::string& candidate, int mline_
   {
     std::lock_guard<std::mutex> lk(tracks_mutex_);
     if (mline_index >= 0 && static_cast<size_t>(mline_index) < mid_by_mline_.size()) {
-      mid = mid_by_mline_[mline_index];
+      mid = mid_by_mline_[static_cast<size_t>(mline_index)];
     }
   }
   if (mid.empty()) {
