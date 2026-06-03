@@ -10,8 +10,10 @@
 //
 // It serves two regimes from one `MessageByteFetcher` callable:
 //   * HOT  — the fetcher is invoked while the iterator is still positioned on
-//            the message (its chunk is still pinned). Returns a zero-copy view
-//            into the worker-decompressed bytes. No re-decompression.
+//            the message (its chunk is still pinned). Copies the message's bytes
+//            out of the worker-decompressed chunk. No re-decompression, and the
+//            returned anchor pins only the message — never the whole chunk, so a
+//            retained view can't keep a chunk (and its ~100 siblings) resident.
 //   * COLD — the fetcher is invoked after the chunk is gone. Re-decompresses the
 //            containing chunk on demand (byte-bounded, O(1) seek), under a
 //            byte-budgeted LRU, and returns a MESSAGE-SIZED COPY so a retained
@@ -19,8 +21,8 @@
 //
 // The fetcher distinguishes the two by a non-owning liveness handle obtained
 // from `Iterator::currentBuffer()`. This is what avoids decompressing every
-// eager message twice (worker + consumer): the hot path hands back the bytes the
-// worker already produced.
+// eager message twice (worker + consumer): the hot path copies out the bytes the
+// worker already produced instead of re-decompressing the chunk.
 //
 // std-only public surface: `ByteView` carries only `{const std::byte*, size_t,
 // std::shared_ptr<const void>}`, so this layer never imposes a plotjuggler_core
@@ -243,16 +245,28 @@ class ColdChunkStore {
 
 }  // namespace detail
 
-// One message's deferred byte accessor. A plain callable (NOT std::function) so
-// the hot path costs no per-message heap allocation. Safe to invoke after the
-// ParallelReader is destroyed: the hot handle simply expires and it falls back
-// to the cold store it shares.
+// One message's deferred byte accessor. A plain callable (NOT std::function) to
+// keep per-message binding cheap. The hot path copies the message out of the
+// still-decompressed chunk (a message-sized alloc); the cold path re-decompresses.
+// Safe to invoke after the ParallelReader is destroyed: the hot handle simply
+// expires and it falls back to the cold store it shares.
 class MessageByteFetcher {
  public:
   ByteView operator()() const {
-    // Hot: still positioned on (or otherwise pinning) this message's chunk.
+    // Hot: the worker-decompressed chunk is still alive. Copy THIS message out
+    // of it rather than aliasing it — a retained anchor must pin one message,
+    // not the whole chunk (one chunk backs ~100 messages, so a per-message
+    // object topic present in every chunk, e.g. /tf, would otherwise pin the
+    // entire decompressed file). The chunk is still decompressed only once, so
+    // consecutive messages never re-decompress; this only adds a small memcpy.
     if (auto anchor = hot_buffer_.lock()) {
-      return ByteView{hot_data_, size_, std::move(anchor)};
+      if (hot_data_ == nullptr || size_ == 0) {
+        return {};  // empty/degenerate message: nothing to copy, and don't pin the chunk
+      }
+      const auto* src = reinterpret_cast<const uint8_t*>(hot_data_);
+      auto copy = std::make_shared<std::vector<uint8_t>>(src, src + size_);
+      const auto* base = reinterpret_cast<const std::byte*>(copy->data());
+      return ByteView{base, size_, std::move(copy)};
     }
     // Cold: chunk gone — re-decompress on demand (or fast-fail if torn down).
     if (!cold_) {
