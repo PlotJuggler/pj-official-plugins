@@ -7,8 +7,9 @@
  * temporary MCAP file (chunked + zstd) rather than using an in-memory buffer.
  *
  * Coverage:
- *   - hot hit  : fetcher invoked during iteration returns a zero-copy view
- *                (pointer-identical to message.data — no re-decompress).
+ *   - hot hit  : fetcher invoked during iteration returns a message-sized copy
+ *                with equal bytes (no re-decompress) whose anchor pins only the
+ *                message, never the source chunk.
  *   - cold hit : fetcher invoked after the reader is destroyed re-decompresses
  *                and returns equal bytes (covers every message, including
  *                duplicate-(channel,logTime) collisions via the 3-tuple key).
@@ -116,7 +117,7 @@ class MessageByteStoreTest : public ::testing::Test {
 
   // Iterate via the parallel reader, building a fetcher per message. If
   // `invoke_hot` is true, also invokes each fetcher immediately (hot path) and
-  // checks zero-copy identity. Returns the items (fetchers valid for cold use
+  // checks it returns a distinct buffer with equal bytes. Returns the items (fetchers valid for cold use
   // after the reader is destroyed). The reader/source live only for the
   // duration of this call.
   std::vector<Item> collect(mcap::MessageByteStore& store, bool invoke_hot) {
@@ -148,8 +149,9 @@ class MessageByteStoreTest : public ::testing::Test {
       item.fetcher = store.makeFetcher(it, mv);
       if (invoke_hot) {
         mcap::ByteView v = item.fetcher();
-        EXPECT_EQ(v.data, mv.message.data) << "hot path should be zero-copy";
         EXPECT_EQ(v.size, mv.message.dataSize);
+        EXPECT_NE(v.data, mv.message.data) << "hot path returns a message copy, not a chunk alias";
+        EXPECT_EQ(0, std::memcmp(v.data, mv.message.data, v.size)) << "hot copy must equal the message bytes";
       }
       items.push_back(std::move(item));
     }
@@ -162,10 +164,57 @@ class MessageByteStoreTest : public ::testing::Test {
   mcap::ChannelId channel_b_ = 0;
 };
 
-TEST_F(MessageByteStoreTest, HotPathZeroCopy) {
+TEST_F(MessageByteStoreTest, HotPathReturnsMessageCopy) {
   mcap::MessageByteStore store;
   auto items = collect(store, /*invoke_hot=*/true);
   ASSERT_GE(items.size(), 24u);
+}
+
+// Regression: a retained hot ByteView must NOT keep its source chunk resident.
+// One MCAP chunk backs ~100 messages, so if the hot anchor pinned the chunk, a
+// per-message object topic present in every chunk (e.g. /tf) would pin the whole
+// decompressed file. We hold the first message's hot view to the end of
+// iteration and assert its source chunk has been freed (weak handle expired)
+// while the copied bytes stay valid.
+TEST_F(MessageByteStoreTest, HotViewDoesNotPinSourceChunk) {
+  mcap::MessageByteStore store;
+  mcap::MmapReader mmap;
+  ASSERT_TRUE(mmap.open(path_).ok());
+  mcap::ParallelReader reader;
+  ASSERT_TRUE(reader.open(mmap).ok());
+  store.init(path_, reader.chunkIndexes());
+
+  mcap::ParallelReadOptions opts;
+  opts.read.readOrder = mcap::ReadMessageOptions::ReadOrder::LogTimeOrder;
+  opts.maxBytesInFlight = 64ULL * 1024 * 1024;
+  opts.threadCount = 2;
+  auto on_problem = [](const mcap::Status&) {};
+
+  auto messages = reader.readMessages(on_problem, opts);
+  auto it = messages.begin();
+  ASSERT_NE(it, messages.end());
+  ASSERT_NE(it->message.data, nullptr);
+
+  // First message: capture its chunk liveness handle + a retained hot view.
+  std::weak_ptr<const void> first_chunk = it.currentBuffer();
+  ASSERT_FALSE(first_chunk.expired()) << "the first message's chunk is live during iteration";
+  const auto* p = reinterpret_cast<const uint8_t*>(it->message.data);
+  std::vector<uint8_t> expected(p, p + it->message.dataSize);
+  mcap::ByteView held = store.makeFetcher(it, *it)();  // hot: a copy of the first message
+  ASSERT_NE(held.data, nullptr);
+
+  // Drive iteration to the end so the reader advances past — and frees — the
+  // first chunk, while we keep `held` alive throughout.
+  size_t count = 1;
+  for (++it; it != messages.end(); ++it) {
+    ++count;
+  }
+  ASSERT_GE(count, 24u) << "fixture must span multiple chunks";
+
+  EXPECT_TRUE(first_chunk.expired())
+      << "a retained hot view must not pin its source chunk (the chunk-pinning memory bug)";
+  ASSERT_EQ(held.size, expected.size());
+  EXPECT_EQ(0, std::memcmp(held.data, expected.data(), held.size)) << "the copy outlives its source chunk";
 }
 
 TEST_F(MessageByteStoreTest, ColdPathReproducesEveryMessage) {
