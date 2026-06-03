@@ -135,6 +135,15 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kImage,  // unified Image distinguishes by encoding string.
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseCompressedImage}},
+      // foxglove_msgs/CompressedVideo — a single compressed video frame
+      // (h264/h265/vp9/av1). The scalar route is included so the object-ingest
+      // path runs (an object-only entry would abort the push before the object
+      // route fires); it discards the large data[] blob and keeps frame_id /
+      // format as plottable columns, mirroring the Image entries.
+      {"foxglove_msgs/CompressedVideo",
+       {.object_type = ObjectType::kVideoFrame,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseCompressedVideo}},
       {"sensor_msgs/PointCloud2",
        {.object_type = ObjectType::kPointCloud,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,

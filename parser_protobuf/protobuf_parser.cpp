@@ -9,6 +9,8 @@
 #include <iostream>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <pj_base/builtin/builtin_object.hpp>
+#include <pj_base/builtin/video_frame_codec.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <string>
@@ -310,6 +312,21 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   }
 
   PJ::Status bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema) override {
+    // Canonical-object fast path. PJ.VideoFrame and foxglove.CompressedVideo are
+    // wire-identical (a fixed protobuf layout — see the SDK contract), so a
+    // single decoder serves both. We bypass the reflection/descriptor pool
+    // entirely: the wire layout is known, and deserializeVideoFrameView() reads
+    // it zero-copy (the H.264/H.265/… bitstream span aliases the payload). The
+    // descriptor-pool machinery below is only needed for arbitrary user schemas.
+    if (type_name == PJ::kSchemaVideoFrame || type_name == "foxglove.CompressedVideo") {
+      // Record the bound type so the base class dispatch finds our handler.
+      if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
+        return status;
+      }
+      registerVideoFrameHandler(type_name);
+      return PJ::okStatus();
+    }
+
     // When schema bytes are empty (e.g. UDP/stream sources that have no schema),
     // the schema was already bound via loadConfig()'s compiled_schema_base64 path.
     // Just record the type name and keep the existing descriptor.
@@ -376,7 +393,13 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     if (!writeHostBound()) {
       return PJ::unexpected(std::string("write host not bound"));
     }
+    // Canonical-object schemas (VideoFrame) have no descriptor pool — they are
+    // served by a registered SchemaHandler. Defer to the base parse(), which
+    // dispatches through parseScalars() to that handler.
     if (descriptor_ == nullptr) {
+      if (findSchemaHandler(bound_type_name_) != nullptr) {
+        return MessageParserPluginBase::parse(timestamp_ns, payload);
+      }
       return PJ::unexpected(std::string("no schema bound"));
     }
 
@@ -428,6 +451,67 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   }
 
  private:
+  // Register the SchemaHandler for the canonical VideoFrame fast path. The
+  // object route decodes one PJ.VideoFrame / foxglove.CompressedVideo per
+  // message zero-copy; the scalar route emits a slim metadata row so the
+  // ingest path still produces plottable columns (frame_id / format / data
+  // size) alongside the object, mirroring the Image/PointCloud handlers in
+  // parser_ros.
+  void registerVideoFrameHandler(std::string_view type_name) {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kVideoFrame;
+
+    handler.parse_scalars =
+        [this](PJ::Timestamp /*ts*/, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+      // Owning decode (not the zero-copy view): the scalar route only needs the
+      // metadata strings + data size, and an owning frame avoids leaving a span
+      // that aliases `payload` with a null anchor (a use-after-free footgun if
+      // this handler is ever extended to surface the bytes).
+      auto frame = PJ::deserializeVideoFrame(payload.data(), payload.size());
+      if (!frame) {
+        return PJ::unexpected(std::move(frame).error());
+      }
+      // ValueRef holds a non-owning string_view, so the decoded strings must
+      // outlive the returned ScalarRecord (the host reads its fields after this
+      // lambda returns). Park them in member storage — same lifetime trick the
+      // generic path uses with owned_fields_.
+      video_frame_id_ = std::move(frame->frame_id);
+      video_format_ = std::move(frame->format);
+      PJ::sdk::ScalarRecord record;
+      // Match the object route's timestamp policy so the scalar columns and the
+      // object entry land on the same timeline (otherwise scalars use host time
+      // while the object uses the embedded sensor time).
+      if (use_embedded_timestamp_ && frame->timestamp_ns > 0) {
+        record.ts = frame->timestamp_ns;
+      }
+      record.fields.push_back({.name = "frame_id", .value = PJ::sdk::ValueRef{std::string_view(video_frame_id_)}});
+      record.fields.push_back({.name = "format", .value = PJ::sdk::ValueRef{std::string_view(video_format_)}});
+      record.fields.push_back(
+          {.name = "data_size", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(frame->data.size())}});
+      return record;
+    };
+
+    handler.parse_object =
+        [this](PJ::Timestamp /*ts*/, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      // Zero-copy: the decoded frame's data span aliases payload.bytes; the
+      // anchor keeps that buffer alive past this call.
+      auto frame = PJ::deserializeVideoFrameView(payload.bytes.data(), payload.bytes.size(), payload.anchor);
+      if (!frame) {
+        return PJ::unexpected(std::move(frame).error());
+      }
+      // Embedded-timestamp policy mirrors the generic path: when enabled, the
+      // proto Timestamp drives the record time; otherwise the host's receive
+      // time is used.
+      std::optional<PJ::Timestamp> ts;
+      if (use_embedded_timestamp_ && frame->timestamp_ns > 0) {
+        ts = frame->timestamp_ns;
+      }
+      return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*frame)}};
+    };
+
+    registerSchemaHandler(type_name, std::move(handler));
+  }
+
   std::unique_ptr<gp::DescriptorPool> pool_;
   std::unique_ptr<gp::DynamicMessageFactory> factory_;
   const gp::Descriptor* descriptor_ = nullptr;
@@ -440,6 +524,11 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   std::unordered_map<std::string, PJ::sdk::FieldHandle> field_cache_;
   std::vector<FlattenedField> owned_fields_;
   std::vector<PJ::sdk::BoundFieldValue> bound_fields_;
+
+  // VideoFrame scalar-route string storage. Keeps the decoded frame_id/format
+  // alive while the host reads the ScalarRecord's string_view fields.
+  std::string video_frame_id_;
+  std::string video_format_;
 };
 
 }  // namespace

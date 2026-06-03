@@ -1229,6 +1229,93 @@ TEST(RosParserTest, OccupancyGridProducesObject) {
   }
 }
 
+TEST(RosParserTest, CompressedVideoProducesObject) {
+  // foxglove_msgs/CompressedVideo. The first field is a BARE
+  // builtin_interfaces/Time (sec, nanosec) — NOT a std_msgs/Header — followed
+  // by frame_id, the compressed uint8[] data, and the format string.
+  static const char* kCompressedVideoDef =
+      "builtin_interfaces/Time timestamp\nstring frame_id\nuint8[] data\nstring format\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kCompressedVideoDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("foxglove_msgs/CompressedVideo", kCompressedVideoDef));
+  EXPECT_EQ(
+      f.handle.classifySchema("foxglove_msgs/CompressedVideo", def_span), PJ::sdk::BuiltinObjectType::kVideoFrame);
+
+  // A small, recognizable H.264-ish blob. Only its verbatim round-trip and
+  // zero-copy aliasing matter here.
+  const std::vector<uint8_t> bitstream = {0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0, 0x1E, 0xDE, 0xAD, 0xBE, 0xEF};
+  auto payload = serializeCdr([&bitstream](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(7)));     // timestamp.sec
+    enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(static_cast<uint32_t>(42)));  // timestamp.nanosec
+    enc.serializeString("camera_optical");                                                  // frame_id
+    enc.serializeUInt32(static_cast<uint32_t>(bitstream.size()));                           // uint8[] data: count
+    for (uint8_t b : bitstream) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+    enc.serializeString("h264");  // format
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* vf = std::any_cast<PJ::sdk::VideoFrame>(&rec->object);
+  ASSERT_NE(vf, nullptr);
+  EXPECT_EQ(vf->frame_id, "camera_optical");
+  EXPECT_EQ(vf->format, "h264");
+  ASSERT_EQ(vf->data.size(), bitstream.size());
+  for (size_t i = 0; i < bitstream.size(); ++i) {
+    EXPECT_EQ(vf->data.data()[i], bitstream[i]);
+  }
+  // Zero-copy: the decoded data span must alias the CDR payload buffer, not a
+  // fresh copy. The bytes live inside `payload` at the uint8[] body offset.
+  EXPECT_GE(vf->data.data(), payload.data());
+  EXPECT_LE(vf->data.data() + vf->data.size(), payload.data() + payload.size());
+}
+
+TEST(RosParserTest, CompressedVideoEmbeddedTimestamp) {
+  static const char* kCompressedVideoDef =
+      "builtin_interfaces/Time timestamp\nstring frame_id\nuint8[] data\nstring format\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  ASSERT_TRUE(f.bindSchema("foxglove_msgs/CompressedVideo", kCompressedVideoDef));
+
+  const std::vector<uint8_t> bitstream = {0x01, 0x02, 0x03};
+  auto payload = serializeCdr([&bitstream](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(5)));            // sec
+    enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(static_cast<uint32_t>(250000000)));  // nanosec
+    enc.serializeString("cam");
+    enc.serializeUInt32(static_cast<uint32_t>(bitstream.size()));
+    for (uint8_t b : bitstream) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+    enc.serializeString("av1");
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(9999, view);
+  ASSERT_TRUE(rec.has_value());
+  // 5s + 250ms embedded -> 5'250'000'000 ns, overriding the host ts (9999).
+  ASSERT_TRUE(rec->ts.has_value());
+  EXPECT_EQ(*rec->ts, 5'250'000'000LL);
+
+  const auto* vf = std::any_cast<PJ::sdk::VideoFrame>(&rec->object);
+  ASSERT_NE(vf, nullptr);
+  EXPECT_EQ(vf->format, "av1");
+  EXPECT_EQ(vf->timestamp_ns, 5'250'000'000LL);
+}
+
 TEST(RosParserTest, RobotDescriptionTopicProducesObject) {
   RosParserFixture f;
   f.setUp();
