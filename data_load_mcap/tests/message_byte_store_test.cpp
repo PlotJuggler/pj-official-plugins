@@ -56,6 +56,38 @@ std::vector<uint8_t> makePayload(unsigned channel, unsigned seq) {
   return std::vector<uint8_t>(s.begin(), s.end());
 }
 
+// Writes a many-chunk fixture for the residency test: `count` messages of
+// `payload_bytes` each on one channel, with a small chunkSize so each chunk
+// holds only a few messages. The whole decompressed size deliberately dwarfs the
+// in-flight byte budget, so a retention regression shows up as inflated peak
+// residency. Returns void (uses gtest ASSERTs) like writeFixture().
+void writeManyChunkFixture(const std::string& path, size_t count, size_t payload_bytes) {
+  mcap::McapWriter writer;
+  mcap::McapWriterOptions options("");
+  options.compression = mcap::Compression::Zstd;
+  options.chunkSize = 4096;  // few messages per chunk -> many chunks
+  ASSERT_TRUE(writer.open(path, options).ok());
+  mcap::Schema schema("test/Raw", "raw", mcap::ByteArray{});
+  writer.addSchema(schema);
+  mcap::Channel chan("/topic/big", "raw", schema.id);
+  writer.addChannel(chan);
+  std::vector<uint8_t> payload(payload_bytes);
+  for (size_t i = 0; i < count; ++i) {
+    for (size_t b = 0; b < payload_bytes; ++b) {
+      payload[b] = static_cast<uint8_t>((i * 131u + b * 7u) & 0xFFu);  // varied, checkable
+    }
+    mcap::Message m;
+    m.channelId = chan.id;
+    m.sequence = static_cast<uint32_t>(i);
+    m.logTime = 1'000'000'000ULL + i * 1'000'000ULL;
+    m.publishTime = m.logTime;
+    m.dataSize = payload.size();
+    m.data = reinterpret_cast<const std::byte*>(payload.data());
+    ASSERT_TRUE(writer.write(m).ok());
+  }
+  writer.close();
+}
+
 class MessageByteStoreTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -215,6 +247,77 @@ TEST_F(MessageByteStoreTest, HotViewDoesNotPinSourceChunk) {
       << "a retained hot view must not pin its source chunk (the chunk-pinning memory bug)";
   ASSERT_EQ(held.size, expected.size());
   EXPECT_EQ(0, std::memcmp(held.data, expected.data(), held.size)) << "the copy outlives its source chunk";
+}
+
+// Resource invariant — the scaled regression guard for the chunk-pinning bug.
+// Retaining EVERY message's bytes (as the host does for object topics) must not
+// grow resident decompressed memory toward the whole file. With the bug each
+// retained hot view pinned its chunk, so peak residency equalled the entire
+// decompressed dataset; with the fix it tracks the in-flight byte budget. We
+// assert on the reader's own peak-residency stat — which nothing else does — and
+// that no retained view keeps a chunk alive.
+TEST_F(MessageByteStoreTest, RetainingEveryMessageKeepsResidencyBounded) {
+  const std::string big = path_ + ".big";
+  writeManyChunkFixture(big, /*count=*/200, /*payload_bytes=*/4096);
+  struct Cleanup {
+    std::string p;
+    ~Cleanup() {
+      std::error_code ec;
+      std::filesystem::remove(p, ec);
+    }
+  } cleanup{big};
+
+  constexpr uint64_t kBudget = 64ULL * 1024;  // whole decompressed file is ~800 KB
+  mcap::MessageByteStore store;
+  std::vector<mcap::ByteView> held;  // simulate the host retaining object payloads
+  std::vector<std::weak_ptr<const void>> chunks;
+  std::vector<uint8_t> first_expected;
+  int64_t peak = 0;
+  size_t total_payload = 0;
+  {
+    mcap::MmapReader mmap;
+    ASSERT_TRUE(mmap.open(big).ok());
+    mcap::ParallelReader reader;
+    ASSERT_TRUE(reader.open(mmap).ok());
+    store.init(big, reader.chunkIndexes());
+    mcap::ParallelReadOptions opts;
+    opts.read.readOrder = mcap::ReadMessageOptions::ReadOrder::LogTimeOrder;
+    opts.maxBytesInFlight = kBudget;
+    opts.threadCount = 2;
+    auto messages = reader.readMessages([](const mcap::Status&) {}, opts);
+    for (auto it = messages.begin(); it != messages.end(); ++it) {
+      if (it->message.data == nullptr) {
+        continue;
+      }
+      if (held.empty()) {
+        const auto* p = reinterpret_cast<const uint8_t*>(it->message.data);
+        first_expected.assign(p, p + it->message.dataSize);
+      }
+      chunks.push_back(it.currentBuffer());
+      mcap::ByteView v = store.makeFetcher(it, *it)();  // hot copy, retained for the whole run
+      ASSERT_NE(v.data, nullptr);
+      total_payload += v.size;
+      held.push_back(std::move(v));
+    }
+    peak = messages.stats().peakDecompressedBytes.load();
+  }
+  ASSERT_GE(held.size(), 200u);
+  EXPECT_GT(total_payload, 4u * kBudget) << "fixture too small to discriminate";
+
+  // Peak resident decompressed bytes tracked the budget, not the whole file.
+  EXPECT_LE(peak, static_cast<int64_t>(kBudget) + 64 * 1024)
+      << "retaining every message held " << peak << " B resident (budget " << kBudget << " B)";
+  // No retained view kept its source chunk alive.
+  size_t pinned = 0;
+  for (const auto& w : chunks) {
+    if (!w.expired()) {
+      ++pinned;
+    }
+  }
+  EXPECT_EQ(pinned, 0u) << pinned << " chunk(s) still pinned by retained hot views";
+  // The retained copies are still the right bytes after their chunks are gone.
+  ASSERT_EQ(held.front().size, first_expected.size());
+  EXPECT_EQ(0, std::memcmp(held.front().data, first_expected.data(), held.front().size));
 }
 
 TEST_F(MessageByteStoreTest, ColdPathReproducesEveryMessage) {
