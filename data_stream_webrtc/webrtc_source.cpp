@@ -390,7 +390,7 @@ class WebrtcSource : public PJ::StreamSourceBase {
     // Keep streams_ (bindings) across a reconnect — same topics resume.
   }
 
-  WebrtcDialog dialog_;
+  webrtc_dialog_detail::WebrtcDialog dialog_;
 
   std::string address_ = "127.0.0.1";
   uint16_t port_ = 8443;
@@ -430,4 +430,4 @@ class WebrtcSource : public PJ::StreamSourceBase {
 }  // namespace
 
 PJ_DATA_SOURCE_PLUGIN(WebrtcSource, kWebrtcManifest)
-PJ_DIALOG_PLUGIN(WebrtcDialog)
+PJ_DIALOG_PLUGIN(webrtc_dialog_detail::WebrtcDialog)

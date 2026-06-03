@@ -14,6 +14,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 #     plumbing and the plugin export macros.
 # ---------------------------------------------------------------------------
 add_library(webrtc_source_plugin SHARED
+  webrtc_dialog.cpp
   webrtc_source.cpp
   webrtc_receiver.cpp
   webrtc_signaling.cpp
