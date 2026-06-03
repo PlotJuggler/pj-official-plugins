@@ -336,6 +336,10 @@ class RosParser : public PJ::MessageParserPluginBase {
   // visualization_msgs/MarkerArray -> sdk::SceneEntities (one per Marker).
   PJ::Expected<PJ::sdk::ObjectRecord> parseMarkerArray(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
+  // yolo_msgs/DetectionArray -> sdk::ImageAnnotations (boxes, labels, mask
+  // outline, 2D keypoints). Third-party message, net-new — see YOLO_NOTES.md.
+  PJ::Expected<PJ::sdk::ObjectRecord> parseYoloDetectionArray(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
   // Reads one visualization_msgs/Marker from the deserializer at the current
   // cursor and appends the resulting entity (ADD/MODIFY) or deletion
   // (DELETE/DELETEALL) to `out`. Always consumes the whole marker so the next

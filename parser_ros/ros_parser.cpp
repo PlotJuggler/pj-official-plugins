@@ -191,6 +191,11 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kSceneEntities, .parse_object = &RosParser::parseMarker}},
       {"visualization_msgs/MarkerArray",
        {.object_type = ObjectType::kSceneEntities, .parse_object = &RosParser::parseMarkerArray}},
+      // Object-only: YOLO detections become 2D image overlays (boxes + labels +
+      // mask outline + keypoints), not scalar columns. Third-party message,
+      // net-new (not a port) — see YOLO_NOTES.md.
+      {"yolo_msgs/DetectionArray",
+       {.object_type = ObjectType::kImageAnnotations, .parse_object = &RosParser::parseYoloDetectionArray}},
 
       // ----- Specialized scalar schemas -----
       // wrapVoidHandler<Handler> is a member-fn-template; its address is a

@@ -1229,6 +1229,193 @@ TEST(RosParserTest, OccupancyGridProducesObject) {
   }
 }
 
+// ===== yolo_msgs/DetectionArray -> sdk::ImageAnnotations =====
+
+// Full nested .msg definition for yolo_msgs/DetectionArray (mgonzs13/yolo_ros).
+// Field order here must match what parseYoloDetectionArray reads positionally.
+static const char* kYoloDetectionArrayDef =
+    "std_msgs/Header header\nyolo_msgs/Detection[] detections\n"
+    "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+    "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+    "================\nMSG: yolo_msgs/Detection\n"
+    "int32 class_id\nstring class_name\nfloat64 score\nstring id\n"
+    "yolo_msgs/BoundingBox2D bbox\nyolo_msgs/BoundingBox3D bbox3d\nyolo_msgs/Mask mask\n"
+    "yolo_msgs/KeyPoint2DArray keypoints\nyolo_msgs/KeyPoint3DArray keypoints3d\n"
+    "================\nMSG: yolo_msgs/BoundingBox2D\nyolo_msgs/Pose2D center\nyolo_msgs/Vector2 size\n"
+    "================\nMSG: yolo_msgs/Pose2D\nyolo_msgs/Point2D position\nfloat64 theta\n"
+    "================\nMSG: yolo_msgs/Point2D\nfloat64 x\nfloat64 y\n"
+    "================\nMSG: yolo_msgs/Vector2\nfloat64 x\nfloat64 y\n"
+    "================\nMSG: yolo_msgs/BoundingBox3D\ngeometry_msgs/Pose center\ngeometry_msgs/Vector3 size\nstring "
+    "frame_id\n"
+    "================\nMSG: geometry_msgs/Pose\ngeometry_msgs/Point position\ngeometry_msgs/Quaternion orientation\n"
+    "================\nMSG: geometry_msgs/Point\nfloat64 x\nfloat64 y\nfloat64 z\n"
+    "================\nMSG: geometry_msgs/Quaternion\nfloat64 x\nfloat64 y\nfloat64 z\nfloat64 w\n"
+    "================\nMSG: geometry_msgs/Vector3\nfloat64 x\nfloat64 y\nfloat64 z\n"
+    "================\nMSG: yolo_msgs/Mask\nint32 height\nint32 width\nyolo_msgs/Point2D[] data\n"
+    "================\nMSG: yolo_msgs/KeyPoint2DArray\nyolo_msgs/KeyPoint2D[] data\n"
+    "================\nMSG: yolo_msgs/KeyPoint2D\nint32 id\nyolo_msgs/Point2D point\nfloat64 score\n"
+    "================\nMSG: yolo_msgs/KeyPoint3DArray\nyolo_msgs/KeyPoint3D[] data\nstring frame_id\n"
+    "================\nMSG: yolo_msgs/KeyPoint3D\nint32 id\ngeometry_msgs/Point point\nfloat64 score\n";
+
+namespace {
+
+void serializeF64(RosMsgParser::NanoCDR_Serializer& enc, double v) {
+  enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(v));
+}
+void serializeI32(RosMsgParser::NanoCDR_Serializer& enc, int32_t v) {
+  enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(v));
+}
+
+// Serializes one yolo_msgs/Detection exactly as parseYoloDetectionArray reads it.
+struct YoloDet {
+  int32_t class_id = 0;
+  std::string class_name;
+  double score = 0.0;
+  double cx = 0.0, cy = 0.0, sx = 0.0, sy = 0.0;
+  std::vector<std::pair<double, double>> mask;
+  std::vector<std::pair<double, double>> keypoints2d;
+};
+
+void serializeYoloDetection(RosMsgParser::NanoCDR_Serializer& enc, const YoloDet& d) {
+  serializeI32(enc, d.class_id);
+  enc.serializeString(d.class_name);
+  serializeF64(enc, d.score);
+  enc.serializeString("");  // tracking id
+  // bbox2d = Pose2D{Point2D{x,y}, theta} + Vector2{x,y}
+  serializeF64(enc, d.cx);
+  serializeF64(enc, d.cy);
+  serializeF64(enc, 0.0);  // theta
+  serializeF64(enc, d.sx);
+  serializeF64(enc, d.sy);
+  // bbox3d = Pose{Point(3)+Quaternion(4)} + Vector3(3) + frame_id
+  for (int k = 0; k < 10; ++k) {
+    serializeF64(enc, 0.0);
+  }
+  enc.serializeString("");  // bbox3d.frame_id
+  // mask = int32 height + int32 width + Point2D[] data
+  serializeI32(enc, 480);
+  serializeI32(enc, 640);
+  enc.serializeUInt32(static_cast<uint32_t>(d.mask.size()));
+  for (const auto& p : d.mask) {
+    serializeF64(enc, p.first);
+    serializeF64(enc, p.second);
+  }
+  // keypoints2d = KeyPoint2D[] {int32 id, Point2D{x,y}, float64 score}
+  enc.serializeUInt32(static_cast<uint32_t>(d.keypoints2d.size()));
+  for (const auto& p : d.keypoints2d) {
+    serializeI32(enc, 0);  // id
+    serializeF64(enc, p.first);
+    serializeF64(enc, p.second);
+    serializeF64(enc, 0.5);  // score
+  }
+  // keypoints3d = KeyPoint3D[] (empty) + frame_id
+  enc.serializeUInt32(0);
+  enc.serializeString("");  // keypoints3d.frame_id
+}
+
+}  // namespace
+
+TEST(RosParserTest, YoloDetectionArrayProducesImageAnnotations) {
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kYoloDetectionArrayDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("yolo_msgs/DetectionArray", kYoloDetectionArrayDef));
+  EXPECT_EQ(
+      f.handle.classifySchema("yolo_msgs/DetectionArray", def_span), PJ::sdk::BuiltinObjectType::kImageAnnotations);
+
+  YoloDet det;
+  det.class_id = 1;
+  det.class_name = "person";
+  det.score = 0.9;
+  det.cx = 100.0;
+  det.cy = 50.0;
+  det.sx = 40.0;
+  det.sy = 20.0;
+  det.mask = {{10.0, 10.0}, {20.0, 10.0}, {15.0, 25.0}};
+  det.keypoints2d = {{12.0, 13.0}, {14.0, 15.0}};
+
+  auto payload = serializeCdr([&det](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 7, 0, "camera_optical");
+    enc.serializeUInt32(1);  // one detection
+    serializeYoloDetection(enc, det);
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* ann = std::any_cast<PJ::sdk::ImageAnnotations>(&rec->object);
+  ASSERT_NE(ann, nullptr);
+
+  // Box (LineLoop of 4 corners) + mask outline (LineLoop) = 2 PointsAnnotations.
+  ASSERT_EQ(ann->points.size(), 2u);
+  const auto& box = ann->points[0];
+  EXPECT_EQ(box.topology, PJ::sdk::AnnotationTopology::kLineLoop);
+  ASSERT_EQ(box.points.size(), 4u);
+  EXPECT_DOUBLE_EQ(box.points[0].x, 80.0);   // cx - sx/2
+  EXPECT_DOUBLE_EQ(box.points[0].y, 40.0);   // cy - sy/2
+  EXPECT_DOUBLE_EQ(box.points[2].x, 120.0);  // cx + sx/2
+  EXPECT_DOUBLE_EQ(box.points[2].y, 60.0);   // cy + sy/2
+
+  const auto& mask = ann->points[1];
+  EXPECT_EQ(mask.topology, PJ::sdk::AnnotationTopology::kLineLoop);
+  ASSERT_EQ(mask.points.size(), 3u);
+  EXPECT_DOUBLE_EQ(mask.points[0].x, 10.0);
+  EXPECT_DOUBLE_EQ(mask.points[2].y, 25.0);
+
+  // Label.
+  ASSERT_EQ(ann->texts.size(), 1u);
+  EXPECT_EQ(ann->texts[0].text, "person 0.90");
+  EXPECT_DOUBLE_EQ(ann->texts[0].position.x, 80.0);
+
+  // Two keypoints -> two filled circles.
+  ASSERT_EQ(ann->circles.size(), 2u);
+  EXPECT_DOUBLE_EQ(ann->circles[0].center.x, 12.0);
+  EXPECT_DOUBLE_EQ(ann->circles[1].center.y, 15.0);
+}
+
+TEST(RosParserTest, YoloDetectionArrayBoxOnlyNoMaskNoKeypoints) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("yolo_msgs/DetectionArray", kYoloDetectionArrayDef));
+
+  YoloDet a;
+  a.class_id = 0;
+  a.class_name = "cat";
+  a.score = 0.5;
+  a.cx = 200.0;
+  a.cy = 200.0;
+  a.sx = 10.0;
+  a.sy = 10.0;
+  YoloDet b = a;
+  b.class_name = "dog";
+
+  auto payload = serializeCdr([&a, &b](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 1, 0, "cam");
+    enc.serializeUInt32(2);  // two detections
+    serializeYoloDetection(enc, a);
+    serializeYoloDetection(enc, b);
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(99, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* ann = std::any_cast<PJ::sdk::ImageAnnotations>(&rec->object);
+  ASSERT_NE(ann, nullptr);
+  // Two detections, box only (no mask, no keypoints).
+  EXPECT_EQ(ann->points.size(), 2u);
+  EXPECT_EQ(ann->texts.size(), 2u);
+  EXPECT_TRUE(ann->circles.empty());
+  EXPECT_EQ(ann->texts[0].text, "cat 0.50");
+  EXPECT_EQ(ann->texts[1].text, "dog 0.50");
+}
+
 TEST(RosParserTest, CompressedVideoProducesObject) {
   // foxglove_msgs/CompressedVideo. The first field is a BARE
   // builtin_interfaces/Time (sec, nanosec) — NOT a std_msgs/Header — followed
