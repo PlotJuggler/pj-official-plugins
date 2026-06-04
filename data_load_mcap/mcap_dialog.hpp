@@ -32,12 +32,6 @@ class McapDialog : public PJ::DialogPluginTyped {
   const std::string& filepath() const {
     return filepath_;
   }
-  unsigned maxArraySize() const {
-    return max_array_size_;
-  }
-  bool clampLargeArrays() const {
-    return clamp_large_arrays_;
-  }
   bool useTimestamp() const {
     return use_timestamp_;
   }
@@ -132,14 +126,6 @@ class McapDialog : public PJ::DialogPluginTyped {
     }
     if (!checked) {
       return false;
-    }
-    if (widget_name == "radioClamp") {
-      clamp_large_arrays_ = true;
-      return true;
-    }
-    if (widget_name == "radioSkip") {
-      clamp_large_arrays_ = false;
-      return true;
     }
     if (widget_name == "radioPubTime") {
       use_mcap_log_time_ = false;
@@ -360,8 +346,6 @@ class McapDialog : public PJ::DialogPluginTyped {
   // Config state
   std::string analyze_error_;
   std::string filepath_;
-  unsigned max_array_size_ = 500;
-  bool clamp_large_arrays_ = true;
   bool use_timestamp_ = false;
   bool use_mcap_log_time_ = false;
   std::unordered_set<std::string> selected_topics_;

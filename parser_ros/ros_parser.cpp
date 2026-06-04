@@ -1,6 +1,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <functional>
+#include <pj_array_policy/array_policy.hpp>
 #include <string>
 
 #include "ros_parser_internal.hpp"
@@ -379,8 +380,11 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
 
 std::string RosParser::saveConfig() const {
   nlohmann::json cfg;
-  cfg["max_array_size"] = max_array_size_;
-  cfg["discard_large_arrays"] = discard_large_arrays_;
+  pj::array_policy::ArrayLimit array_limit;
+  array_limit.max_size = static_cast<uint32_t>(max_array_size_);
+  array_limit.policy =
+      discard_large_arrays_ ? pj::array_policy::ArrayPolicy::kSkip : pj::array_policy::ArrayPolicy::kClamp;
+  pj::array_policy::arrayLimitToJson(cfg, array_limit);
   cfg["use_embedded_timestamp"] = use_embedded_timestamp_;
   cfg["boolean_strings_to_number"] = boolean_strings_to_number_;
   cfg["remove_suffix_from_strings"] = remove_suffix_from_strings_;
@@ -398,8 +402,9 @@ PJ::Status RosParser::loadConfig(std::string_view config_json) {
     return PJ::okStatus();
   }
 
-  max_array_size_ = static_cast<size_t>(cfg.value("max_array_size", 500));
-  discard_large_arrays_ = cfg.value("discard_large_arrays", cfg.value("clamp_large_arrays", false));
+  const auto array_limit = pj::array_policy::arrayLimitFromJson(cfg);
+  max_array_size_ = array_limit.max_size;
+  discard_large_arrays_ = (array_limit.policy == pj::array_policy::ArrayPolicy::kSkip);
   use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
   boolean_strings_to_number_ = cfg.value("boolean_strings_to_number", false);
   remove_suffix_from_strings_ = cfg.value("remove_suffix_from_strings", false);

@@ -7,6 +7,7 @@
 #include <fstream>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <pj_array_policy/array_policy.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <sstream>
@@ -99,6 +100,11 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     wd.setEnabled("lineEditTimestampField", use_embedded_timestamp_);
     wd.setEnabled("labelTimestampField", use_embedded_timestamp_);
 
+    // Array-size policy
+    wd.setValue("spinBoxArraySize", static_cast<int>(array_limit_.max_size));
+    wd.setChecked("radioMaxClamp", array_limit_.clamp());
+    wd.setChecked("radioMaxDiscard", !array_limit_.clamp());
+
     // Include folders - folder picker
     wd.setFolderPicker("buttonAddIncludeFolder", "Add folder...", "Select Include Folder");
 
@@ -147,10 +153,26 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
+  bool onValueChanged(std::string_view widget_name, int value) override {
+    if (widget_name == "spinBoxArraySize") {
+      array_limit_.max_size = static_cast<uint32_t>(value);
+      return false;
+    }
+    return false;
+  }
+
   bool onToggled(std::string_view widget_name, bool checked) override {
     if (widget_name == "checkBoxUseEmbeddedTimestamp") {
       use_embedded_timestamp_ = checked;
       return true;  // refresh to enable/disable lineEditTimestampField
+    }
+    if (checked && widget_name == "radioMaxClamp") {
+      array_limit_.policy = pj::array_policy::ArrayPolicy::kClamp;
+      return false;
+    }
+    if (checked && widget_name == "radioMaxDiscard") {
+      array_limit_.policy = pj::array_policy::ArrayPolicy::kSkip;
+      return false;
     }
     return false;
   }
@@ -197,6 +219,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     cfg["use_embedded_timestamp"] = use_embedded_timestamp_;
     cfg["timestamp_field_name"] = timestamp_field_name_;
     cfg["include_folders"] = include_folders_;
+    pj::array_policy::arrayLimitToJson(cfg, array_limit_);
 
     // Include the compiled schema as base64-encoded bytes
     if (!compiled_schema_.empty()) {
@@ -215,6 +238,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     selected_message_type_ = cfg.value("message_type", std::string{});
     use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
     timestamp_field_name_ = cfg.value("timestamp_field_name", std::string{});
+    array_limit_ = pj::array_policy::arrayLimitFromJson(cfg);
 
     include_folders_.clear();
     if (cfg.contains("include_folders") && cfg["include_folders"].is_array()) {
@@ -416,6 +440,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
   std::string selected_message_type_;
   bool use_embedded_timestamp_ = false;
   std::string timestamp_field_name_;  // empty = fallback chain ("timestamp" → "ts")
+  pj::array_policy::ArrayLimit array_limit_;
   std::vector<std::string> include_folders_;
   std::string compiled_schema_;  // Serialized FileDescriptorSet
 

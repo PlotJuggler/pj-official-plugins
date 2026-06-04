@@ -16,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <pj_array_policy/array_policy.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -221,13 +222,17 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     cfg["selected_topics"] = arr;
     // Keys mirror parser_ros's loadConfig schema. The streamer forwards this
     // sub-object verbatim as PJ_parser_binding_request_t::parser_config_json.
-    cfg["parser_config"] = {
+    nlohmann::json parser_config = {
         {"use_embedded_timestamp", use_embedded_timestamp_},
-        {"max_array_size", max_array_size_},
-        {"discard_large_arrays", discard_large_arrays_},
         {"boolean_strings_to_number", boolean_strings_to_number_},
         {"remove_suffix_from_strings", remove_suffix_from_strings_},
     };
+    pj::array_policy::ArrayLimit array_limit;
+    array_limit.max_size = static_cast<uint32_t>(max_array_size_);
+    array_limit.policy =
+        discard_large_arrays_ ? pj::array_policy::ArrayPolicy::kSkip : pj::array_policy::ArrayPolicy::kClamp;
+    pj::array_policy::arrayLimitToJson(parser_config, array_limit);
+    cfg["parser_config"] = parser_config;
     return cfg.dump();
   }
 
@@ -245,8 +250,9 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
       if (cfg.contains("parser_config") && cfg["parser_config"].is_object()) {
         const auto& pc = cfg["parser_config"];
         use_embedded_timestamp_ = pc.value("use_embedded_timestamp", use_embedded_timestamp_);
-        max_array_size_ = pc.value("max_array_size", max_array_size_);
-        discard_large_arrays_ = pc.value("discard_large_arrays", discard_large_arrays_);
+        const auto array_limit = pj::array_policy::arrayLimitFromJson(pc);
+        max_array_size_ = static_cast<int>(array_limit.max_size);
+        discard_large_arrays_ = (array_limit.policy == pj::array_policy::ArrayPolicy::kSkip);
         boolean_strings_to_number_ = pc.value("boolean_strings_to_number", boolean_strings_to_number_);
         remove_suffix_from_strings_ = pc.value("remove_suffix_from_strings", remove_suffix_from_strings_);
       }

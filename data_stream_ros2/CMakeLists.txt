@@ -78,6 +78,7 @@ if(PJ_BUILD_ROS2_DISTRO)
       rclcpp::rclcpp
       rosidl_typesupport_cpp::rosidl_typesupport_cpp
       rosidl_typesupport_introspection_cpp::rosidl_typesupport_introspection_cpp
+      pj_array_policy
   )
 
   pj_embed_manifest(ros2_stream_plugin_distro

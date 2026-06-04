@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <pj_array_policy/array_policy.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
@@ -197,8 +198,11 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     nlohmann::json cfg;
     cfg["address"] = address_;
     cfg["port"] = port_;
-    cfg["max_array_size"] = max_array_size_;
-    cfg["clamp_large_arrays"] = clamp_large_arrays_;
+    pj::array_policy::ArrayLimit array_limit;
+    array_limit.max_size = static_cast<uint32_t>(max_array_size_);
+    array_limit.policy =
+        clamp_large_arrays_ ? pj::array_policy::ArrayPolicy::kClamp : pj::array_policy::ArrayPolicy::kSkip;
+    pj::array_policy::arrayLimitToJson(cfg, array_limit);
     cfg["use_timestamp"] = use_timestamp_;
 
     // Use the snapshot — topics_ may already be cleared by disconnect()
@@ -224,8 +228,9 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     }
     address_ = cfg.value("address", std::string("127.0.0.1"));
     port_ = cfg.value("port", 9871);
-    max_array_size_ = cfg.value("max_array_size", 100);
-    clamp_large_arrays_ = cfg.value("clamp_large_arrays", false);
+    const auto array_limit = pj::array_policy::arrayLimitFromJson(cfg);
+    max_array_size_ = static_cast<int>(array_limit.max_size);
+    clamp_large_arrays_ = array_limit.clamp();
     use_timestamp_ = cfg.value("use_timestamp", false);
 
     // Restore previously selected topic names and snapshot for re-selection after connect
@@ -393,8 +398,8 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   // --- State ---
   std::string address_ = "127.0.0.1";
   int port_ = 9871;
-  int max_array_size_ = 100;
-  bool clamp_large_arrays_ = false;
+  int max_array_size_ = 500;
+  bool clamp_large_arrays_ = true;
   bool use_timestamp_ = false;
   std::string filter_;
 
