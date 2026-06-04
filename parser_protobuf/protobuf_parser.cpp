@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 #include <pj_array_policy/array_policy.hpp>
 #include <pj_base/builtin/builtin_object.hpp>
+#include <pj_base/builtin/point_cloud.hpp>
 #include <pj_base/builtin/video_frame_codec.hpp>
 #include <pj_base64/base64.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
@@ -19,6 +20,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "foxglove_object_codecs.hpp"
+#include "foxglove_pointcloud_codec.hpp"
 #include "protobuf_manifest.hpp"
 #include "protobuf_parser_dialog.hpp"
 
@@ -294,6 +297,36 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::okStatus();
     }
 
+    // Canonical-object fast path for foxglove.PointCloud. Unlike VideoFrame, the
+    // Foxglove point-cloud wire layout differs from the canonical PJ.PointCloud
+    // (point_stride vs point_step, PackedElementField with a swapped enum, an
+    // extra pose, no width/height), so the SDK codec does not apply — we decode
+    // it plugin-local and zero-copy, exactly mirroring how parser_ros promotes
+    // sensor_msgs/PointCloud2 to a kPointCloud object. The schema bytes (a real
+    // FileDescriptorSet) are intentionally ignored: the layout is known.
+    if (type_name == "foxglove.PointCloud") {
+      if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
+        return status;
+      }
+      registerFoxglovePointCloudHandler(type_name);
+      return PJ::okStatus();
+    }
+
+    // Other well-known Foxglove schemas -> their canonical builtin objects.
+    // Same rationale as PointCloud: the wire layout is known, so we decode it
+    // directly and bypass the descriptor pool. Crucially, promoting these stops
+    // the generic scalar-flatten of their large nested arrays (a Foxglove scene
+    // / annotation message flattens to a pathological number of scalar series).
+    if (type_name == "foxglove.FrameTransform" || type_name == "foxglove.CompressedImage" ||
+        type_name == "foxglove.CameraCalibration" || type_name == "foxglove.ImageAnnotations" ||
+        type_name == "foxglove.SceneUpdate") {
+      if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
+        return status;
+      }
+      registerFoxgloveObjectHandler(type_name);
+      return PJ::okStatus();
+    }
+
     // When schema bytes are empty (e.g. UDP/stream sources that have no schema),
     // the schema was already bound via loadConfig()'s compiled_schema_base64 path.
     // Just record the type name and keep the existing descriptor.
@@ -479,6 +512,193 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     registerSchemaHandler(type_name, std::move(handler));
   }
 
+  // Register the SchemaHandler for foxglove.PointCloud. The object route decodes
+  // one cloud per message zero-copy (the packed-point span aliases the payload);
+  // the scalar route emits a slim metadata row (frame_id / point_count /
+  // point_step / num_fields) so the ingest path still produces plottable
+  // columns, mirroring parseScalarsDiscardingLargeArrays for PointCloud2.
+  void registerFoxglovePointCloudHandler(std::string_view type_name) {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kPointCloud;
+
+    handler.parse_scalars =
+        [this](PJ::Timestamp /*ts*/, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+      // No anchor needed: the scalar route reads only metadata and never retains
+      // the aliased point buffer past this call.
+      auto decoded = pj_protobuf::deserializeFoxglovePointCloudView(payload.data(), payload.size(), nullptr);
+      if (!decoded) {
+        return PJ::unexpected(std::move(decoded).error());
+      }
+      const auto& cloud = decoded->cloud;
+      pointcloud_frame_id_ = cloud.frame_id;  // keep alive for the string_view below.
+      PJ::sdk::ScalarRecord record;
+      if (use_embedded_timestamp_ && cloud.timestamp_ns > 0) {
+        record.ts = cloud.timestamp_ns;
+      }
+      record.fields.push_back({.name = "frame_id", .value = PJ::sdk::ValueRef{std::string_view(pointcloud_frame_id_)}});
+      record.fields.push_back({.name = "point_count", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(cloud.width)}});
+      record.fields.push_back(
+          {.name = "point_step", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(cloud.point_step)}});
+      record.fields.push_back(
+          {.name = "num_fields", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(cloud.fields.size())}});
+      return record;
+    };
+
+    handler.parse_object =
+        [this](PJ::Timestamp /*ts*/, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      auto decoded =
+          pj_protobuf::deserializeFoxglovePointCloudView(payload.bytes.data(), payload.bytes.size(), payload.anchor);
+      if (!decoded) {
+        return PJ::unexpected(std::move(decoded).error());
+      }
+      // sdk::PointCloud expresses geometry in frame_id and relies on an external
+      // TF tree (like PointCloud2). Foxglove's inline pose has no home in the
+      // struct, so a non-identity pose is dropped — warn once so it is not a
+      // silent failure (the cloud would be mislocated if no equivalent TF is
+      // present). foxglove.FrameTransform support is the follow-up that fixes it.
+      if (decoded->has_pose && !decoded->pose_is_identity && !pointcloud_pose_warned_) {
+        pointcloud_pose_warned_ = true;
+        std::cerr << "[protobuf_parser] foxglove.PointCloud carries a non-identity pose; it is dropped "
+                     "(points kept in frame_id). Provide the matching /tf transform for correct 3D placement.\n";
+      }
+      std::optional<PJ::Timestamp> ts;
+      if (use_embedded_timestamp_ && decoded->cloud.timestamp_ns > 0) {
+        ts = decoded->cloud.timestamp_ns;
+      }
+      return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(decoded->cloud)}};
+    };
+
+    registerSchemaHandler(type_name, std::move(handler));
+  }
+
+  // Register a SchemaHandler for one of the well-known Foxglove scene/image
+  // schemas. parse_object decodes the canonical builtin object; parse_scalars
+  // emits a slim, BOUNDED metadata row (counts/sizes only) so promoted topics
+  // still produce a few plottable columns without the per-element scalar blow-up
+  // that made the generic flatten pathological.
+  void registerFoxgloveObjectHandler(std::string_view type_name) {
+    PJ::sdk::SchemaHandler handler;
+    const std::string name(type_name);
+
+    if (name == "foxglove.FrameTransform") {
+      handler.object_type = PJ::sdk::BuiltinObjectType::kFrameTransforms;
+      handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+        auto obj = pj_protobuf::deserializeFoxgloveFrameTransform(p.bytes.data(), p.bytes.size());
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());
+        }
+        std::optional<PJ::Timestamp> ts;
+        if (use_embedded_timestamp_ && !obj->transforms.empty() && obj->transforms.front().timestamp > 0) {
+          ts = obj->transforms.front().timestamp;
+        }
+        return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
+      };
+      handler.parse_scalars = [](PJ::Timestamp, PJ::Span<const uint8_t>) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+        PJ::sdk::ScalarRecord r;
+        r.fields.push_back({.name = "num_transforms", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(1)}});
+        return r;
+      };
+    } else if (name == "foxglove.CompressedImage") {
+      handler.object_type = PJ::sdk::BuiltinObjectType::kImage;
+      handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+        auto obj = pj_protobuf::deserializeFoxgloveCompressedImageView(p.bytes.data(), p.bytes.size(), p.anchor);
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());
+        }
+        std::optional<PJ::Timestamp> ts;
+        if (use_embedded_timestamp_ && obj->timestamp_ns > 0) {
+          ts = obj->timestamp_ns;
+        }
+        return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
+      };
+      handler.parse_scalars = [](PJ::Timestamp,
+                                 PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+        auto obj = pj_protobuf::deserializeFoxgloveCompressedImageView(payload.data(), payload.size(), nullptr);
+        PJ::sdk::ScalarRecord r;
+        if (obj) {
+          r.fields.push_back(
+              {.name = "data_size", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->data.size())}});
+        }
+        return r;
+      };
+    } else if (name == "foxglove.CameraCalibration") {
+      handler.object_type = PJ::sdk::BuiltinObjectType::kCameraInfo;
+      handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+        auto obj = pj_protobuf::deserializeFoxgloveCameraCalibration(p.bytes.data(), p.bytes.size());
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());
+        }
+        std::optional<PJ::Timestamp> ts;
+        if (use_embedded_timestamp_ && obj->timestamp_ns > 0) {
+          ts = obj->timestamp_ns;
+        }
+        return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
+      };
+      handler.parse_scalars = [](PJ::Timestamp,
+                                 PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+        auto obj = pj_protobuf::deserializeFoxgloveCameraCalibration(payload.data(), payload.size());
+        PJ::sdk::ScalarRecord r;
+        if (obj) {
+          r.fields.push_back({.name = "width", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->width)}});
+          r.fields.push_back({.name = "height", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->height)}});
+        }
+        return r;
+      };
+    } else if (name == "foxglove.ImageAnnotations") {
+      handler.object_type = PJ::sdk::BuiltinObjectType::kImageAnnotations;
+      handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+        auto obj = pj_protobuf::deserializeFoxgloveImageAnnotations(p.bytes.data(), p.bytes.size());
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());
+        }
+        std::optional<PJ::Timestamp> ts;
+        if (use_embedded_timestamp_ && obj->timestamp > 0) {
+          ts = obj->timestamp;
+        }
+        return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
+      };
+      handler.parse_scalars = [](PJ::Timestamp,
+                                 PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+        auto obj = pj_protobuf::deserializeFoxgloveImageAnnotations(payload.data(), payload.size());
+        PJ::sdk::ScalarRecord r;
+        if (obj) {
+          r.fields.push_back(
+              {.name = "num_circles", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->circles.size())}});
+          r.fields.push_back(
+              {.name = "num_points", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->points.size())}});
+          r.fields.push_back(
+              {.name = "num_texts", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->texts.size())}});
+        }
+        return r;
+      };
+    } else {  // foxglove.SceneUpdate
+      handler.object_type = PJ::sdk::BuiltinObjectType::kSceneEntities;
+      handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+        auto obj = pj_protobuf::deserializeFoxgloveSceneUpdate(p.bytes.data(), p.bytes.size());
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());
+        }
+        std::optional<PJ::Timestamp> ts;
+        if (use_embedded_timestamp_ && !obj->entities.empty() && obj->entities.front().timestamp > 0) {
+          ts = obj->entities.front().timestamp;
+        }
+        return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
+      };
+      handler.parse_scalars = [](PJ::Timestamp,
+                                 PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+        auto obj = pj_protobuf::deserializeFoxgloveSceneUpdate(payload.data(), payload.size());
+        PJ::sdk::ScalarRecord r;
+        if (obj) {
+          r.fields.push_back(
+              {.name = "num_entities", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->entities.size())}});
+        }
+        return r;
+      };
+    }
+
+    registerSchemaHandler(type_name, std::move(handler));
+  }
+
   std::unique_ptr<gp::DescriptorPool> pool_;
   std::unique_ptr<gp::DynamicMessageFactory> factory_;
   const gp::Descriptor* descriptor_ = nullptr;
@@ -495,6 +715,11 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   // alive while the host reads the ScalarRecord's string_view fields.
   std::string video_frame_id_;
   std::string video_format_;
+
+  // foxglove.PointCloud scalar-route frame_id storage (same lifetime trick) and
+  // a latch so the dropped-pose warning fires only once per parser instance.
+  std::string pointcloud_frame_id_;
+  bool pointcloud_pose_warned_ = false;
 };
 
 }  // namespace

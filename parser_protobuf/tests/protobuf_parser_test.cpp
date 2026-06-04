@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "../foxglove_pointcloud_codec.hpp"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/video_frame_codec.hpp"
 #include "pj_base/sdk/service_traits.hpp"
@@ -736,6 +737,243 @@ TEST(ProtobufParserTest, VideoFrameScalarRouteEmitsSlimMetadata) {
   const auto* data_size = PJ::sdk::testing::ParserWriteRecorder::findField(row, "data_size");
   ASSERT_NE(data_size, nullptr);
   EXPECT_DOUBLE_EQ(data_size->numeric, static_cast<double>(kVideoBlob.size()));
+}
+
+// ---------------------------------------------------------------------------
+// foxglove.PointCloud → kPointCloud
+//
+// Mirrors how parser_ros promotes sensor_msgs/PointCloud2. We serialize a real
+// foxglove.PointCloud message with the genuine protobuf serializer (so the wire
+// layout — fixed32 stride/offset, nested timestamp/pose, repeated
+// PackedElementField, bytes payload — matches what the decoder must read) and
+// assert the canonical fields, the enum remap, and zero-copy aliasing.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct FoxgloveField {
+  std::string name;
+  uint32_t offset;
+  int32_t numeric_type;  // foxglove PackedElementField.NumericType (UINT8=1, INT8=2, …)
+};
+
+// A recognizable 32-byte packed-point blob: 2 points * 16 bytes/point.
+const std::vector<uint8_t> kCloudBlob = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
+                                         0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
+                                         0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F};
+
+std::vector<uint8_t> buildFoxglovePointCloudWire(
+    int64_t ts_sec, int32_t ts_nanos, const std::string& frame_id, uint32_t point_stride,
+    const std::vector<FoxgloveField>& fields, const std::vector<uint8_t>& data, bool with_pose, double pose_tx) {
+  gp::FileDescriptorProto file;
+  file.set_name("foxglove_pc.proto");
+  file.set_syntax("proto3");
+  file.set_package("test");
+
+  auto add_field = [](gp::DescriptorProto* m, const char* name, int num, gp::FieldDescriptorProto::Type type,
+                      const char* type_name = nullptr, bool repeated = false) {
+    auto* f = m->add_field();
+    f->set_name(name);
+    f->set_number(num);
+    f->set_type(type);
+    f->set_label(repeated ? gp::FieldDescriptorProto::LABEL_REPEATED : gp::FieldDescriptorProto::LABEL_OPTIONAL);
+    if (type_name != nullptr) {
+      f->set_type_name(type_name);
+    }
+  };
+
+  auto* ts = file.add_message_type();
+  ts->set_name("Timestamp");
+  add_field(ts, "seconds", 1, gp::FieldDescriptorProto::TYPE_INT64);
+  add_field(ts, "nanos", 2, gp::FieldDescriptorProto::TYPE_INT32);
+
+  auto* vec = file.add_message_type();
+  vec->set_name("Vec3");
+  add_field(vec, "x", 1, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(vec, "y", 2, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(vec, "z", 3, gp::FieldDescriptorProto::TYPE_DOUBLE);
+
+  auto* quat = file.add_message_type();
+  quat->set_name("Quat");
+  add_field(quat, "x", 1, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(quat, "y", 2, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(quat, "z", 3, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(quat, "w", 4, gp::FieldDescriptorProto::TYPE_DOUBLE);
+
+  auto* pose = file.add_message_type();
+  pose->set_name("Pose");
+  add_field(pose, "position", 1, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Vec3");
+  add_field(pose, "orientation", 2, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Quat");
+
+  auto* pef = file.add_message_type();
+  pef->set_name("PackedElementField");
+  add_field(pef, "name", 1, gp::FieldDescriptorProto::TYPE_STRING);
+  add_field(pef, "offset", 2, gp::FieldDescriptorProto::TYPE_FIXED32);
+  add_field(pef, "type", 3, gp::FieldDescriptorProto::TYPE_INT32);  // enum on the wire == varint == int32
+
+  auto* pc = file.add_message_type();
+  pc->set_name("PointCloud");
+  add_field(pc, "timestamp", 1, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Timestamp");
+  add_field(pc, "frame_id", 2, gp::FieldDescriptorProto::TYPE_STRING);
+  add_field(pc, "pose", 3, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Pose");
+  add_field(pc, "point_stride", 4, gp::FieldDescriptorProto::TYPE_FIXED32);
+  add_field(pc, "fields", 5, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.PackedElementField", true);
+  add_field(pc, "data", 6, gp::FieldDescriptorProto::TYPE_BYTES);
+
+  gp::DescriptorPool pool;
+  const gp::FileDescriptor* fd = pool.BuildFile(file);
+  const gp::Descriptor* pc_desc = fd->FindMessageTypeByName("PointCloud");
+  gp::DynamicMessageFactory factory;
+  std::unique_ptr<gp::Message> msg(factory.GetPrototype(pc_desc)->New());
+  const gp::Reflection* ref = msg->GetReflection();
+
+  gp::Message* tsm = ref->MutableMessage(msg.get(), pc_desc->FindFieldByName("timestamp"), &factory);
+  const gp::Descriptor* tsd = tsm->GetDescriptor();
+  tsm->GetReflection()->SetInt64(tsm, tsd->FindFieldByName("seconds"), ts_sec);
+  tsm->GetReflection()->SetInt32(tsm, tsd->FindFieldByName("nanos"), ts_nanos);
+
+  ref->SetString(msg.get(), pc_desc->FindFieldByName("frame_id"), frame_id);
+  ref->SetUInt32(msg.get(), pc_desc->FindFieldByName("point_stride"), point_stride);
+  ref->SetString(
+      msg.get(), pc_desc->FindFieldByName("data"),
+      std::string(reinterpret_cast<const char*>(data.data()), data.size()));
+
+  if (with_pose) {
+    gp::Message* pm = ref->MutableMessage(msg.get(), pc_desc->FindFieldByName("pose"), &factory);
+    const gp::Descriptor* pd = pm->GetDescriptor();
+    gp::Message* posm = pm->GetReflection()->MutableMessage(pm, pd->FindFieldByName("position"), &factory);
+    const gp::Descriptor* vd = posm->GetDescriptor();
+    posm->GetReflection()->SetDouble(posm, vd->FindFieldByName("x"), pose_tx);
+  }
+
+  const gp::FieldDescriptor* fields_f = pc_desc->FindFieldByName("fields");
+  for (const auto& ff : fields) {
+    gp::Message* fm = ref->AddMessage(msg.get(), fields_f, &factory);
+    const gp::Descriptor* fdesc = fm->GetDescriptor();
+    fm->GetReflection()->SetString(fm, fdesc->FindFieldByName("name"), ff.name);
+    fm->GetReflection()->SetUInt32(fm, fdesc->FindFieldByName("offset"), ff.offset);
+    fm->GetReflection()->SetInt32(fm, fdesc->FindFieldByName("type"), ff.numeric_type);
+  }
+
+  std::string out;
+  msg->SerializeToString(&out);
+  return std::vector<uint8_t>(out.begin(), out.end());
+}
+
+// Four channels spanning a few datatypes, including the signed/unsigned pair
+// that the Foxglove↔SDK enum remap must keep straight (UINT8=1, INT8=2).
+const std::vector<FoxgloveField> kCloudFields = {
+    {"x", 0, 7},          // FLOAT32
+    {"y", 4, 7},          // FLOAT32
+    {"intensity", 8, 1},  // UINT8  → kUint8 (NOT kInt8)
+    {"ring", 9, 2},       // INT8   → kInt8
+};
+
+}  // namespace
+
+TEST(ProtobufParserTest, FoxglovePointCloudCodecDecodesAndSynthesizes) {
+  const auto wire = buildFoxglovePointCloudWire(7, 250, "lidar_top", 16, kCloudFields, kCloudBlob, false, 0.0);
+
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  auto decoded = pj_protobuf::deserializeFoxglovePointCloudView(wire.data(), wire.size(), anchor);
+  ASSERT_TRUE(decoded.has_value()) << decoded.error();
+  const auto& cloud = decoded->cloud;
+
+  EXPECT_EQ(cloud.frame_id, "lidar_top");
+  EXPECT_EQ(cloud.point_step, 16u);
+  EXPECT_EQ(cloud.height, 1u);
+  EXPECT_EQ(cloud.width, 2u);      // 32 bytes / 16 stride
+  EXPECT_EQ(cloud.row_step, 32u);  // width * point_step
+  EXPECT_FALSE(cloud.is_bigendian);
+  EXPECT_TRUE(cloud.is_dense);
+  EXPECT_EQ(cloud.timestamp_ns, 7'000'000'250LL);  // 7s + 250ns
+
+  ASSERT_EQ(cloud.fields.size(), 4u);
+  using DT = PJ::sdk::PointField::Datatype;
+  EXPECT_EQ(cloud.fields[0].name, "x");
+  EXPECT_EQ(cloud.fields[0].offset, 0u);
+  EXPECT_EQ(cloud.fields[0].datatype, DT::kFloat32);
+  EXPECT_EQ(cloud.fields[0].count, 1u);
+  // The crux: Foxglove's swapped enum must map UINT8(1)→kUint8 and INT8(2)→kInt8.
+  EXPECT_EQ(cloud.fields[2].datatype, DT::kUint8);
+  EXPECT_EQ(cloud.fields[2].offset, 8u);
+  EXPECT_EQ(cloud.fields[3].datatype, DT::kInt8);
+  EXPECT_EQ(cloud.fields[3].offset, 9u);
+
+  // Zero-copy: the packed-point span must alias the wire buffer, not a copy.
+  ASSERT_EQ(cloud.data.size(), kCloudBlob.size());
+  EXPECT_GE(cloud.data.data(), wire.data());
+  EXPECT_LE(cloud.data.data() + cloud.data.size(), wire.data() + wire.size());
+  EXPECT_EQ(cloud.anchor, anchor);
+  EXPECT_FALSE(decoded->has_pose);
+}
+
+TEST(ProtobufParserTest, FoxglovePointCloudCodecFlagsNonIdentityPose) {
+  const auto wire = buildFoxglovePointCloudWire(0, 0, "lidar", 16, kCloudFields, kCloudBlob, true, 3.5);
+  auto decoded = pj_protobuf::deserializeFoxglovePointCloudView(wire.data(), wire.size(), nullptr);
+  ASSERT_TRUE(decoded.has_value()) << decoded.error();
+  EXPECT_TRUE(decoded->has_pose);
+  EXPECT_FALSE(decoded->pose_is_identity);  // translation x = 3.5 → not identity
+}
+
+TEST(ProtobufParserTest, FoxglovePointCloudObjectRoute) {
+  ProtobufParserFixture f;
+  f.setUp();
+
+  // Empty schema bytes: the canonical fast path keys off the type name only.
+  ASSERT_TRUE(f.bindSchema("foxglove.PointCloud", std::string{}));
+  const PJ::Span<const uint8_t> empty_schema{};
+  EXPECT_EQ(f.handle.classifySchema("foxglove.PointCloud", empty_schema), PJ::sdk::BuiltinObjectType::kPointCloud);
+
+  const auto wire = buildFoxglovePointCloudWire(7, 0, "lidar_top", 16, kCloudFields, kCloudBlob, false, 0.0);
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(wire.data(), wire.size()), anchor};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* pc = std::any_cast<PJ::sdk::PointCloud>(&rec->object);
+  ASSERT_NE(pc, nullptr);
+  EXPECT_EQ(pc->frame_id, "lidar_top");
+  EXPECT_EQ(pc->point_step, 16u);
+  EXPECT_EQ(pc->width, 2u);
+  ASSERT_EQ(pc->fields.size(), 4u);
+  EXPECT_EQ(pc->fields[2].datatype, PJ::sdk::PointField::Datatype::kUint8);
+  // Zero-copy + anchor forwarding across the in-process object route.
+  EXPECT_GE(pc->data.data(), wire.data());
+  EXPECT_LE(pc->data.data() + pc->data.size(), wire.data() + wire.size());
+  EXPECT_EQ(pc->anchor, anchor);
+}
+
+TEST(ProtobufParserTest, FoxglovePointCloudScalarRoute) {
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("foxglove.PointCloud", std::string{}));
+
+  const auto wire = buildFoxglovePointCloudWire(7, 0, "lidar_top", 16, kCloudFields, kCloudBlob, false, 0.0);
+  ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(wire.data()), wire.size()), 555));
+
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+  EXPECT_EQ(row.timestamp, 555);  // embedded ts disabled by default → host ts
+
+  const auto* frame_id = PJ::sdk::testing::ParserWriteRecorder::findField(row, "frame_id");
+  ASSERT_NE(frame_id, nullptr);
+  EXPECT_EQ(frame_id->string_value, "lidar_top");
+
+  const auto* point_count = PJ::sdk::testing::ParserWriteRecorder::findField(row, "point_count");
+  ASSERT_NE(point_count, nullptr);
+  EXPECT_DOUBLE_EQ(point_count->numeric, 2.0);
+
+  const auto* point_step = PJ::sdk::testing::ParserWriteRecorder::findField(row, "point_step");
+  ASSERT_NE(point_step, nullptr);
+  EXPECT_DOUBLE_EQ(point_step->numeric, 16.0);
+
+  const auto* num_fields = PJ::sdk::testing::ParserWriteRecorder::findField(row, "num_fields");
+  ASSERT_NE(num_fields, nullptr);
+  EXPECT_DOUBLE_EQ(num_fields->numeric, 4.0);
 }
 
 }  // namespace
