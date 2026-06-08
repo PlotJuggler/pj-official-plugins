@@ -193,11 +193,45 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseYoloDetectionArray(PJ::Times
       }
     }
 
+    // A corrupt-but-in-bounds count can desync the positional CDR decode without
+    // overrunning, so the try/catch never sees it; trailing bytes are the only
+    // signature. Warn once and still return best-effort — a hard throw would risk
+    // rejecting valid frames, since bytesLeft() > 0 is ambiguous (desync vs CDR
+    // alignment slack) and no other handler asserts an exact end of buffer.
+    if (deserializer_->bytesLeft() != 0 && !yolo_trailing_warned_) {
+      yolo_trailing_warned_ = true;
+      std::fprintf(
+          stderr,
+          "[ros_parser] yolo_msgs/DetectionArray: %zu trailing byte(s) after decode; "
+          "possible yolo_msgs layout/version mismatch (rendered best-effort).\n",
+          deserializer_->bytesLeft());
+    }
+
     return PJ::sdk::ObjectRecord{
         .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
         .object = PJ::sdk::BuiltinObject{std::move(out)}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("DetectionArray: CDR read error: ") + e.what());
+  }
+}
+
+// Slim scalar companion: read just the header + the detections[] count and emit
+// `num_detections`. Keeps the host's eager-scalar ingest from aborting on this
+// object-only schema (see parseScalarsObjectOnly) while giving a useful plottable
+// count. The full per-detection decode stays in parseYoloDetectionArray.
+PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseYoloScalars(
+    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()));
+    (void)readHeader();
+    const uint32_t num_detections = deserializer_->deserializeUInt32();
+    std::vector<PJ::sdk::NamedFieldValue> out;
+    out.push_back({.name = "num_detections", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(num_detections)}});
+    return out;
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("DetectionArray scalars: CDR read error: ") + e.what());
   }
 }
 

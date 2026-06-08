@@ -1350,6 +1350,9 @@ TEST(RosParserTest, YoloDetectionArrayProducesImageAnnotations) {
   const auto* ann = std::any_cast<PJ::sdk::ImageAnnotations>(&rec->object);
   ASSERT_NE(ann, nullptr);
 
+  // The handler uses the Header.frame_id as the best-available image-topic hint.
+  EXPECT_EQ(ann->image_topic, "camera_optical");
+
   // Box (LineLoop of 4 corners) + mask outline (LineLoop) = 2 PointsAnnotations.
   ASSERT_EQ(ann->points.size(), 2u);
   const auto& box = ann->points[0];
@@ -1414,6 +1417,80 @@ TEST(RosParserTest, YoloDetectionArrayBoxOnlyNoMaskNoKeypoints) {
   EXPECT_TRUE(ann->circles.empty());
   EXPECT_EQ(ann->texts[0].text, "cat 0.50");
   EXPECT_EQ(ann->texts[1].text, "dog 0.50");
+}
+
+// Scalar companion for the object-only YOLO entry. Without a parse_scalars, the
+// host's eager-scalar ingest (parse() -> parseScalars) fails and aborts the push
+// on any non-kPureLazy policy (e.g. live streams), silently dropping the overlay.
+// The slim companion emits num_detections so the object ingests under any policy.
+TEST(RosParserTest, YoloDetectionArrayScalarRouteEmitsNumDetections) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("yolo_msgs/DetectionArray", kYoloDetectionArrayDef));
+
+  YoloDet d;
+  d.class_id = 1;
+  d.class_name = "person";
+  d.score = 0.9;
+  d.cx = 100.0;
+  d.cy = 50.0;
+  d.sx = 40.0;
+  d.sy = 20.0;
+  auto payload = serializeCdr([&d](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 7, 0, "camera_optical");
+    enc.serializeUInt32(2);  // two detections
+    serializeYoloDetection(enc, d);
+    serializeYoloDetection(enc, d);
+  });
+
+  // parse() drives the scalar route; it would FAIL (push abort) without the
+  // companion parse_scalars on this object-only schema.
+  ASSERT_TRUE(f.parse(payload, 1234));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto* num = PJ::sdk::testing::ParserWriteRecorder::findField(f.recorder.rows()[0], "num_detections");
+  ASSERT_NE(num, nullptr);
+  EXPECT_DOUBLE_EQ(num->numeric, 2.0);
+}
+
+// frame_id producer: parseImage must carry Header.frame_id into the canonical
+// sdk::Image so a consumer can match the image to its CameraInfo / place it in 3D.
+TEST(RosParserTest, ImageObjectCarriesFrameId) {
+  static const char* kImageDef =
+      "std_msgs/Header header\nuint32 height\nuint32 width\nstring encoding\n"
+      "uint8 is_bigendian\nuint32 step\nuint8[] data\n"
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/Image", kImageDef));
+
+  const std::vector<uint8_t> pixels = {0x10, 0x20, 0x30, 0x40};  // 2x2 mono8 = step(2) * height(2)
+  auto payload = serializeCdr([&pixels](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 7, 0, "camera_link");
+    enc.serializeUInt32(2);  // height
+    enc.serializeUInt32(2);  // width
+    enc.serializeString("mono8");
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(0)));  // is_bigendian
+    enc.serializeUInt32(2);                                                              // step
+    enc.serializeUInt32(static_cast<uint32_t>(pixels.size()));                           // uint8[] data: count
+    for (uint8_t b : pixels) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* img = std::any_cast<PJ::sdk::Image>(&rec->object);
+  ASSERT_NE(img, nullptr);
+  EXPECT_EQ(img->frame_id, "camera_link");
+  EXPECT_EQ(img->width, 2u);
+  EXPECT_EQ(img->height, 2u);
+  EXPECT_EQ(img->encoding, "mono8");
 }
 
 TEST(RosParserTest, CompressedVideoProducesObject) {
