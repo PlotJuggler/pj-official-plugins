@@ -693,6 +693,35 @@ struct CreatedSeries {
   }
 };
 
+// Collapse a script-built series into the strictly-increasing-by-timestamp form
+// the datastore's append path requires. User scripts may push points in any
+// order, and a whole-series script driven once per timeline sample (batch mode)
+// pushes the same points repeatedly — both produce timestamps that are not
+// monotonically non-decreasing, which appendRecord rejects ("Out-of-order
+// timestamp"). Timestamps are quantized to the int64 nanoseconds the store uses
+// before deduplication so two doubles that round to the same tick collapse into
+// one row; the last value pushed for a given timestamp wins.
+std::vector<std::pair<int64_t, double>> orderedUniquePoints(const CreatedSeries& series) {
+  std::vector<std::pair<int64_t, double>> points;
+  points.reserve(series.size());
+  for (size_t i = 0; i < series.size(); ++i) {
+    points.emplace_back(static_cast<int64_t>(series.timestamps[i]), series.values[i]);
+  }
+  // Stable sort keeps push order among equal timestamps so "last value wins" below is well-defined.
+  std::stable_sort(points.begin(), points.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+
+  std::vector<std::pair<int64_t, double>> deduped;
+  deduped.reserve(points.size());
+  for (const auto& [t, v] : points) {
+    if (!deduped.empty() && deduped.back().first == t) {
+      deduped.back().second = v;
+    } else {
+      deduped.emplace_back(t, v);
+    }
+  }
+  return deduped;
+}
+
 #ifdef PJ_REACTIVE_HAS_PYTHON
 // Register SeriesAccessor and CreatedSeries with pybind11 inside the embedded
 // interpreter. Called lazily from executePythonScriptImpl() after the
@@ -826,6 +855,7 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
   // or an error prefixed with "Error:". Shared by all language backends.
   std::string writeCreatedSeries(
       const std::unordered_map<std::string, CreatedSeries>& created, const std::string& func_name) {
+    size_t total_points = 0;
     if (!created.empty()) {
       auto host = toolboxHost();
       auto source = host.createDataSource("script_output");
@@ -839,25 +869,24 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
           continue;
         }
 
-        for (size_t i = 0; i < series.size(); ++i) {
-          auto ts = static_cast<int64_t>(series.timestamps[i]);
+        // The datastore is append-only and rejects out-of-order timestamps, so
+        // hand it a clean, time-sorted, timestamp-unique series regardless of
+        // the order the script pushed points in.
+        for (const auto& [ts, value] : orderedUniquePoints(series)) {
           const PJ::sdk::NamedFieldValue fields[] = {
-              {.name = "value", .value = series.values[i]},
+              {.name = "value", .value = value},
           };
           auto status = host.appendRecord(*topic, ts, PJ::Span<const PJ::sdk::NamedFieldValue>(fields));
           if (!status) {
             return "Error: failed to append record: " + std::string(status.error());
           }
+          ++total_points;
         }
       }
 
       runtimeHost().notifyDataChanged();
     }
 
-    size_t total_points = 0;
-    for (const auto& [_, s] : created) {
-      total_points += s.size();
-    }
     std::string summary = "Executed '" + func_name + "': " + std::to_string(created.size()) + " series, " +
                           std::to_string(total_points) + " points";
     runtimeHost().reportMessage(PJ::ToolboxMessageLevel::kInfo, summary);
