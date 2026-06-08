@@ -6,10 +6,17 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <pj_base/builtin/asset_video.hpp>
 #include <pj_base/builtin/asset_video_codec.hpp>
+#include <pj_base/builtin/video_frame.hpp>
+#include <pj_base/builtin/video_frame_codec.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_base/sdk/media_metadata.hpp>
+#include <pj_base/sdk/platform.hpp>
+#include <pj_video_demux/video_demux.hpp>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -18,6 +25,7 @@
 #include "flatten_plan.hpp"
 #include "lerobot_dialog.hpp"
 #include "lerobot_manifest.hpp"
+#include "lerobot_video_window.hpp"
 #include "pj_arrow_helpers/arrow_helpers.hpp"
 
 namespace {
@@ -166,6 +174,34 @@ FloatVectorCell floatVectorCell(const std::shared_ptr<arrow::Array>& array, int6
   return cell;
 }
 
+// Demux-index a camera's MP4 once per distinct file. v3.0 fans out N episodes
+// that share one consolidated mp4 via __pj_fanout (sibling LeRobotSource
+// instances in the same process); the cache stops each from re-demuxing the
+// shared file. Thread-safe — fanout instances may run concurrently.
+PJ::Expected<std::shared_ptr<const PJ::video_demux::VideoIndex>> indexVideoCached(const std::string& path) {
+  static std::mutex mutex;
+  static std::unordered_map<std::string, std::shared_ptr<const PJ::video_demux::VideoIndex>> cache;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (auto it = cache.find(path); it != cache.end()) {
+    return it->second;
+  }
+  auto idx = PJ::video_demux::indexFile(path);
+  if (!idx) {
+    return PJ::unexpected(idx.error());
+  }
+  auto shared = std::make_shared<const PJ::video_demux::VideoIndex>(std::move(*idx));
+  cache.emplace(path, shared);
+  return shared;
+}
+
+// Transition / A-B aid: PJ_LEROBOT_EMIT_VIDEOFRAME=0 forces the legacy
+// file-reference AssetVideo path; unset or any other value uses the default
+// lazy-VideoFrame path. Removed once AssetVideo is retired.
+bool emitVideoFrameMode() {
+  const auto env = PJ::sdk::getEnv("PJ_LEROBOT_EMIT_VIDEOFRAME");
+  return !env.has_value() || *env != "0";
+}
+
 /// LeRobot v2.1 dataset loader (numeric + per-camera video on one timeline).
 class LeRobotSource : public PJ::FileSourceBase {
  public:
@@ -174,7 +210,10 @@ class LeRobotSource : public PJ::FileSourceBase {
   }
 
   uint64_t extraCapabilities() const override {
-    return PJ::kCapabilityDirectIngest | PJ::kCapabilityHasDialog;
+    // DirectIngest: numeric parquet series written via writeHost(). DelegatedIngest:
+    // per-camera video pushed as PJ.VideoFrame through a parser binding (the
+    // VideoFrame path). HasDialog: the episode/camera picker.
+    return PJ::kCapabilityDirectIngest | PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;
   }
 
   std::string saveConfig() const override {
@@ -251,7 +290,8 @@ class LeRobotSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("import cancelled"));
     }
 
-    auto vst = importVideoAssets(*model, ep);
+    const bool emit_videoframe = emitVideoFrameMode();
+    auto vst = emit_videoframe ? importVideoFrames(*model, ep) : importVideoAssets(*model, ep);
     if (!vst) {
       return vst;
     }
@@ -259,7 +299,8 @@ class LeRobotSource : public PJ::FileSourceBase {
     runtimeHost().reportMessage(
         PJ::DataSourceMessageLevel::kInfo,
         "LeRobot " + model->codebase_version + ": imported " + std::to_string(processed) + " rows + " +
-            std::to_string(model->camera_names.size()) + " video asset(s) from episode " + std::to_string(ep));
+            std::to_string(model->camera_names.size()) + " video topic(s) from episode " + std::to_string(ep) +
+            (emit_videoframe ? " (VideoFrame)" : " (AssetVideo)"));
     return PJ::okStatus();
   }
 
@@ -558,6 +599,121 @@ class LeRobotSource : public PJ::FileSourceBase {
         return PJ::unexpected(pushed.error());
       }
     }
+    return PJ::okStatus();
+  }
+
+  // Per-camera lazy PJ.VideoFrame entries over the episode's MP4 — the
+  // unification replacement for importVideoAssets(). The container is
+  // demux-indexed once (no decode); each access unit is pushed as a lazy entry
+  // whose bytes are read from the file on demand (never fully resident). The
+  // host's streaming decoder drives playback from these per-frame entries.
+  //
+  // Timeline: each episode is its own DatasetId starting at t=0 (rowTimestampNs
+  // above). v2.x — the whole mp4 is the episode, rebased to its first DTS. v3.0
+  // — the mp4 is shared across episodes; this episode is the presentation window
+  // [start_ns, end_ns) (VideoShard, in the file's PTS clock). We start at the
+  // keyframe at-or-before start_ns so a mid-GOP window still decodes (the
+  // pre-window frames carry negative episode-local timestamps the tracker never
+  // visits) and rebase so the frame at start_ns lands on t=0.
+  PJ::Status importVideoFrames(const lerobot::DatasetModel& model, int64_t ep) {
+    if (model.camera_names.empty()) {
+      return PJ::okStatus();
+    }
+
+    const lerobot::EpisodeShard* shard = nullptr;
+    if (auto it = model.episode_shards.find(ep); it != model.episode_shards.end()) {
+      shard = &it->second;
+    }
+
+    int64_t total_frames = 0;
+    for (const std::string& cam : model.camera_names) {
+      const std::string path = model.episodeVideo(ep, cam).string();
+      auto idx_or = indexVideoCached(path);
+      if (!idx_or) {
+        return PJ::unexpected(idx_or.error());
+      }
+      const PJ::video_demux::VideoIndex& idx = **idx_or;
+      if (idx.units.empty()) {
+        // Unreachable for a successful index (indexFile errors on zero packets),
+        // but keep the guard defensive and non-silent — matching the warn-and-skip
+        // convention used for unsupported numeric columns above.
+        runtimeHost().reportMessage(
+            PJ::DataSourceMessageLevel::kWarning, "LeRobot: camera '" + cam + "' has no video packets; skipping");
+        continue;
+      }
+
+      const lerobot::VideoShard* video_shard = nullptr;
+      if (shard != nullptr) {
+        if (auto vit = shard->videos.find(cam); vit != shard->videos.end()) {
+          video_shard = &vit->second;
+        }
+      }
+
+      // Resolve which decode-order slice to emit + the rebase origin. v2.x has no
+      // window (whole file); v3.0 carries the [start_ns, end_ns) presentation
+      // window inside the shared file. See lerobot_video_window.hpp.
+      std::optional<int64_t> window_start;
+      std::optional<int64_t> window_end;
+      if (video_shard != nullptr && video_shard->start_ns.has_value()) {
+        window_start = video_shard->start_ns;
+        window_end = video_shard->end_ns;
+      }
+      const lerobot::EmitSlice slice = lerobot::resolveEmitSlice(idx.units, window_start, window_end);
+
+      auto binding_or = runtimeHost().ensureParserBinding({
+          .topic_name = "lerobot/" + cam,
+          .parser_encoding = "protobuf",
+          .type_name = PJ::kSchemaVideoFrame,
+          .schema = {},
+          .parser_config_json = {},
+      });
+      if (!binding_or) {
+        return PJ::unexpected(
+            "LeRobot: ensureParserBinding(PJ.VideoFrame) failed for " + cam + ": " + binding_or.error());
+      }
+      const PJ::ParserBindingHandle binding = *binding_or;
+
+      // Shared, lazily-opened reader: each fetch reads exactly one access unit.
+      // Captured by shared_ptr so it outlives this importData() call.
+      auto reader =
+          PJ::video_demux::LazyAccessUnitReader::create(path, idx.format, idx.param_sets, idx.nal_length_size);
+      const std::string fmt = idx.format;
+
+      for (std::size_t i = slice.first_idx; i <= slice.last_idx; ++i) {
+        const PJ::video_demux::AccessUnit au = idx.units[i];
+        // ObjectStore key is DTS-based (monotonic decode order); the embedded
+        // VideoFrame.timestamp is PTS-based (presentation). Both episode-local.
+        const int64_t host_ts = au.dts_ns - slice.origin_ns;
+        const int64_t pts_ts = au.pts_ns - slice.origin_ns;
+        auto status = runtimeHost().pushMessage(
+            binding, PJ::Timestamp{host_ts}, [reader, au, fmt, cam, pts_ts]() -> PJ::sdk::PayloadView {
+              auto bytes_or = reader->readUnit(au);
+              if (!bytes_or) {
+                // Surface the precise read error (file removed mid-session, short
+                // read, …) through the fetcher ABI, which turns a thrown exception
+                // into a failed pull. Returning an empty PayloadView would instead
+                // be recorded as a successful zero-byte frame.
+                throw std::runtime_error("LeRobot video read failed for " + cam + ": " + bytes_or.error());
+              }
+              PJ::sdk::VideoFrame vf;
+              vf.timestamp_ns = pts_ts;
+              vf.frame_id = cam;
+              vf.format = fmt;
+              vf.data = PJ::Span<const uint8_t>(bytes_or->data(), bytes_or->size());
+              auto serialized = std::make_shared<std::vector<uint8_t>>(PJ::serializeVideoFrame(vf));
+              return PJ::sdk::PayloadView{serialized};
+            });
+        if (!status) {
+          return PJ::unexpected("LeRobot: pushMessage failed for " + cam + ": " + status.error());
+        }
+        ++total_frames;
+      }
+    }
+
+    runtimeHost().reportMessage(
+        PJ::DataSourceMessageLevel::kInfo,
+        "LeRobot: imported " + std::to_string(total_frames) + " lazy VideoFrame entries across " +
+            std::to_string(model.camera_names.size()) + " camera(s) for episode " + std::to_string(ep));
     return PJ::okStatus();
   }
 

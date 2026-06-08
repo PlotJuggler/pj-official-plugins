@@ -1,6 +1,7 @@
-# pj_video_demux — lazy, non-resident container demux + AVCC→Annex-B helper.
-# Used by data_load_mp4 (and future file-backed VideoFrame loaders) to emit
-# per-frame PJ.VideoFrame entries without ever buffering the whole video.
+# pj_video_demux — lazy, non-resident container demux + access-unit rewrite
+# (H.264/H.265 Annex-B, AV1 OBU temporal units). Used by data_load_mp4 and
+# data_load_lerobot to emit per-frame PJ.VideoFrame entries without ever
+# buffering the whole video.
 #
 # Skipped gracefully when ffmpeg is unavailable, mirroring common/arrow_helpers:
 # builds that exercise only non-ffmpeg plugins still configure this subdir from
@@ -37,7 +38,8 @@ target_link_libraries(pj_video_demux PUBLIC
   ffmpeg::avutil
 )
 
-# --- Unit test (fixture-free for the AVCC→Annex-B core; env-gated e2e) ---
+# --- Unit tests: pure byte-rewrite cases + committed h264/hevc/av1 fixtures
+#     (+ an env-gated external e2e via PJ_TEST_VIDEO) ---
 find_package(GTest QUIET CONFIG)
 if(TARGET GTest::gtest_main)
   add_executable(pj_video_demux_test tests/video_demux_test.cpp)
@@ -45,6 +47,9 @@ if(TARGET GTest::gtest_main)
   if(DEFINED PJ_WARNING_FLAGS)
     target_compile_options(pj_video_demux_test PRIVATE ${PJ_WARNING_FLAGS})
   endif()
+  # Committed h264/hevc/av1 fixtures drive the per-codec index+read e2e tests.
+  target_compile_definitions(pj_video_demux_test PRIVATE
+    PJ_VIDEO_DEMUX_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
   target_link_libraries(pj_video_demux_test PRIVATE pj_video_demux GTest::gtest_main)
   add_test(NAME pj_video_demux_test COMMAND pj_video_demux_test)
 endif()

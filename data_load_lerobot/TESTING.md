@@ -50,16 +50,20 @@ cmake --build "$BUILD" --parallel
 
 ## 2. Unit tests
 
-Four GTest binaries cover what's headless-verifiable: parsing `meta/info.json`
+Six GTest binaries cover what's headless-verifiable: parsing `meta/info.json`
 plus `episodes.jsonl` plus `tasks.jsonl`, flattening and deduping vector-column
-names, the dialog's `__pj_fanout` serialization, and the per-camera
-`sdk::AssetVideo` wire-format round-trip.
+names, the dialog's `__pj_fanout` serialization, the v2.x/v3.0 video emit-slice
+resolution (`video_window_test` — keyframe-seek-back + presentation window +
+rebase), and the per-camera `sdk::AssetVideo` wire-format round-trip (the
+fallback path). The shared `pj_video_demux` helper additionally ships
+`pj_video_demux_test` (h264/h265/av1 index + Annex-B/OBU rewrite against
+committed fixtures).
 
 ```bash
 ctest --test-dir build/data_load_lerobot/Release -R lerobot --output-on-failure
 ```
 
-**Expected:** `100% tests passed, 0 tests failed out of 4`.
+**Expected:** `100% tests passed, 0 tests failed out of 6`.
 
 ---
 
@@ -136,22 +140,22 @@ want more episodes, add their `episode_0000NN.parquet` / `.mp4` files.)
      in the catalog as `pusht_v21/ep_3`, `pusht_v21/ep_5`, … (they are
      **not** concatenated into a single timeline — each has its own clock
      starting at 0).
-7. **Camera video** (`FileVideoSource` on the host):
+7. **Camera video** (host streaming video decoder):
    - In the catalog tree, each camera appears as an **object-topic** under
      its episode: e.g. `lerobot/observation.image`.
    - **Drag it onto an empty 2D view** (placeholder in the dock).
-   - PJ4 deserializes the `sdk::AssetVideo` record from the topic
-     (`file_path` + `time_origin_ns` + `frame_rate`) and opens the MP4
-     directly with `FileVideoSource` (`FfmpegBackend` + libdav1d for AV1,
-     lazy seek + ThumbnailCache).
+   - PJ4 unwraps the lazy `PJ.VideoFrame` entries and feeds them to the
+     streaming video decoder (codec-generic: H.264 / H.265 / AV1). Each entry's
+     bytes are read from the MP4 on demand, so the clip stays non-resident.
    - Move the time cursor: the video frame follows the cursor in sync with
      the curves. Multi-camera → one 2D view per camera.
 
-> The plugin does **not** decode video. It pushes one `sdk::AssetVideo`
-> entry per camera, schema-tagged `kSchemaAssetVideo`, pointing at the
-> episode MP4. The MP4 bytes never reach `ObjectStore` — the file itself is
-> the random-access store (ARCH §4.5 *"File-based video does not go through
-> ObjectStore"*).
+> The plugin does **not** decode video. By default it demux-indexes each MP4
+> (no decode) and pushes one lazy `PJ.VideoFrame` per access unit,
+> schema-tagged `kSchemaVideoFrame`; the compressed bytes are read from the
+> file on demand and never fully buffered. Set `PJ_LEROBOT_EMIT_VIDEOFRAME=0`
+> to fall back to the legacy `sdk::AssetVideo` file-reference path (decoded by
+> the host's `FileVideoSource`) for side-by-side comparison.
 
 ---
 

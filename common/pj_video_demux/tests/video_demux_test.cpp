@@ -1,18 +1,23 @@
-// Unit tests for pj_video_demux. The AVCC→Annex-B core is fixture-free; an
-// end-to-end index+read test runs only when PJ_TEST_VIDEO points at an H.264
-// .mp4 (it is GTEST_SKIPped otherwise, mirroring the host video tests).
+// Unit tests for pj_video_demux. The byte-rewrite core (avccToAnnexB,
+// prependAv1SeqHeader) is fixture-free; per-codec index+read e2e tests run
+// against the committed h264/hevc/av1 fixtures in tests/data/ (path injected via
+// PJ_VIDEO_DEMUX_TEST_DATA_DIR). An optional PJ_TEST_VIDEO env var points the
+// e2e at an external file instead.
 #include "pj_video_demux/video_demux.hpp"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <string>
 #include <vector>
 
 namespace {
 
 using PJ::Span;
 using PJ::video_demux::avccToAnnexB;
+using PJ::video_demux::prependAv1SeqHeader;
 
 Span<const uint8_t> span(const std::vector<uint8_t>& v) {
   return Span<const uint8_t>(v.data(), v.size());
@@ -47,26 +52,75 @@ TEST(VideoDemuxTest, AvccToAnnexBStopsAtTruncatedNal) {
   EXPECT_TRUE(out.empty());
 }
 
-TEST(VideoDemuxTest, IndexAndReadRealMp4) {
+TEST(VideoDemuxTest, Av1PrependsSeqHeaderOnKeyframe) {
+  // AV1 OBUs have no start codes; the seq-header configOBUs are prepended raw.
+  const std::vector<uint8_t> seq = {0x0A, 0x0B, 0x00};     // (pretend) sequence header OBU
+  const std::vector<uint8_t> sample = {0x32, 0x01, 0xFF};  // a frame OBU
+  const auto out = prependAv1SeqHeader(span(sample), span(seq), /*keyframe=*/true);
+  const std::vector<uint8_t> expected = {0x0A, 0x0B, 0x00, 0x32, 0x01, 0xFF};
+  EXPECT_EQ(out, expected);
+}
+
+TEST(VideoDemuxTest, Av1PassesNonKeyframeThrough) {
+  const std::vector<uint8_t> seq = {0x0A, 0x0B, 0x00};
+  const std::vector<uint8_t> sample = {0x32, 0x01, 0xFF};
+  const auto out = prependAv1SeqHeader(span(sample), span(seq), /*keyframe=*/false);
+  EXPECT_EQ(out, sample);
+}
+
+// Index a committed fixture, then read its first access unit. The first AU must
+// be a keyframe, and (since keyframes carry the parameter sets / seq header) the
+// assembled bytes must begin with `param_sets` — the codec-agnostic proxy for a
+// self-decodable keyframe.
+void indexAndReadFixture(const std::string& path, const std::string& expected_format) {
+  auto idx = PJ::video_demux::indexFile(path);
+  ASSERT_TRUE(idx.has_value()) << idx.error();
+  EXPECT_EQ(idx->format, expected_format);
+  ASSERT_FALSE(idx->units.empty());
+  EXPECT_TRUE(idx->units.front().keyframe) << "the first access unit should be a keyframe";
+  ASSERT_FALSE(idx->param_sets.empty()) << "a keyframe-decodable index must carry parameter sets";
+
+  auto reader = PJ::video_demux::LazyAccessUnitReader::create(path, idx->format, idx->param_sets, idx->nal_length_size);
+  auto bytes = reader->readUnit(idx->units.front());
+  ASSERT_TRUE(bytes.has_value()) << bytes.error();
+  ASSERT_GE(bytes->size(), idx->param_sets.size());
+  EXPECT_TRUE(std::equal(idx->param_sets.begin(), idx->param_sets.end(), bytes->begin()))
+      << "keyframe must begin with the parameter sets (" << expected_format << ")";
+}
+
+std::string fixture(const char* name) {
+#ifdef PJ_VIDEO_DEMUX_TEST_DATA_DIR
+  return std::string(PJ_VIDEO_DEMUX_TEST_DATA_DIR) + "/" + name;
+#else
+  return name;
+#endif
+}
+
+TEST(VideoDemuxTest, IndexAndReadH264Fixture) {
+  indexAndReadFixture(fixture("test_h264.mp4"), "h264");
+}
+
+TEST(VideoDemuxTest, IndexAndReadHevcFixture) {
+  indexAndReadFixture(fixture("test_hevc.mp4"), "h265");
+}
+
+TEST(VideoDemuxTest, IndexAndReadAv1Fixture) {
+  indexAndReadFixture(fixture("test_av1.mp4"), "av1");
+}
+
+TEST(VideoDemuxTest, IndexAndReadExternalVideo) {
   const char* path = std::getenv("PJ_TEST_VIDEO");
   if (path == nullptr) {
-    GTEST_SKIP() << "set PJ_TEST_VIDEO to an H.264 .mp4 to run the end-to-end index+read test";
+    GTEST_SKIP() << "set PJ_TEST_VIDEO to an h264/h265/av1 .mp4 to run the external index+read test";
   }
   auto idx = PJ::video_demux::indexFile(path);
   ASSERT_TRUE(idx.has_value()) << idx.error();
-  EXPECT_EQ(idx->format, "h264");
   ASSERT_FALSE(idx->units.empty());
   EXPECT_TRUE(idx->units.front().keyframe) << "the first access unit should be a keyframe";
-
-  auto reader = PJ::video_demux::LazyAnnexBReader::create(path, idx->annexb_params, idx->nal_length_size);
+  auto reader = PJ::video_demux::LazyAccessUnitReader::create(path, idx->format, idx->param_sets, idx->nal_length_size);
   auto bytes = reader->readUnit(idx->units.front());
   ASSERT_TRUE(bytes.has_value()) << bytes.error();
-  // Annex-B: starts with a 4-byte start code; the keyframe carries SPS+PPS.
-  ASSERT_GE(bytes->size(), 5u);
-  EXPECT_EQ((*bytes)[0], 0x00);
-  EXPECT_EQ((*bytes)[1], 0x00);
-  EXPECT_EQ((*bytes)[2], 0x00);
-  EXPECT_EQ((*bytes)[3], 0x01);
+  EXPECT_FALSE(bytes->empty());
 }
 
 }  // namespace

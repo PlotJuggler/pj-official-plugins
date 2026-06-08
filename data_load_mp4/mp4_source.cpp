@@ -4,6 +4,7 @@
 #include <pj_base/builtin/video_frame_codec.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_base/sdk/media_metadata.hpp>
+#include <pj_base/sdk/platform.hpp>
 #include <pj_video_demux/video_demux.hpp>
 
 #include "mp4_iso8601.hpp"
@@ -18,6 +19,7 @@ extern "C" {
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -58,12 +60,12 @@ struct Mp4Metadata {
 ///  - **VideoFrame** (emit_videoframe=true): demux-indexes the container (no
 ///    decode) and pushes one LAZY sdk::VideoFrame per access unit through a
 ///    PJ.VideoFrame parser binding. Each entry's bitstream is read from the file
-///    on demand (pj_video_demux::LazyAnnexBReader), so the whole video never
-///    lands on the heap. This is the unification spike path; both modes coexist
-///    so the same file can be loaded either way for side-by-side comparison.
+///    on demand (pj_video_demux::LazyAccessUnitReader), so the whole video never
+///    lands on the heap. Both modes coexist so the same file can be loaded
+///    either way for side-by-side comparison.
 ///
-/// Spike scope for the VideoFrame path: H.264 only (the host streaming decoder
-/// is H.264-only today); other codecs surface a clear error.
+/// VideoFrame-path codecs: H.264 / H.265 / AV1 (matching the host streaming
+/// decoder); any other codec surfaces a clear error from indexFile().
 class Mp4Source : public PJ::FileSourceBase {
  public:
   uint64_t extraCapabilities() const override {
@@ -91,7 +93,10 @@ class Mp4Source : public PJ::FileSourceBase {
   }
 
   PJ::Status importData() override {
-    return emit_videoframe_ ? importVideoFrames() : importAssetVideo();
+    // Benchmark/dev override: PJ_MP4_EMIT_VIDEOFRAME=1 forces the lazy VideoFrame
+    // path without editing saved config, so the same file can be A/B-loaded.
+    const bool emit_vf = emit_videoframe_ || PJ::sdk::getEnv("PJ_MP4_EMIT_VIDEOFRAME").has_value();
+    return emit_vf ? importVideoFrames() : importAssetVideo();
   }
 
  private:
@@ -141,7 +146,7 @@ class Mp4Source : public PJ::FileSourceBase {
     return PJ::okStatus();
   }
 
-  /// Spike path: lazy per-frame PJ.VideoFrame entries over the original file.
+  /// Lazy per-frame PJ.VideoFrame entries over the original file.
   PJ::Status importVideoFrames() {
     auto idx_or = PJ::video_demux::indexFile(filepath_);
     if (!idx_or) {
@@ -176,7 +181,8 @@ class Mp4Source : public PJ::FileSourceBase {
 
     // Shared, lazily-opened reader: each fetch reads exactly one access unit
     // from the file. Captured by shared_ptr so it outlives this call.
-    auto reader = PJ::video_demux::LazyAnnexBReader::create(filepath_, idx.annexb_params, idx.nal_length_size);
+    auto reader =
+        PJ::video_demux::LazyAccessUnitReader::create(filepath_, idx.format, idx.param_sets, idx.nal_length_size);
     const std::string frame_id = "camera";
     const std::string fmt = idx.format;
 
@@ -191,7 +197,10 @@ class Mp4Source : public PJ::FileSourceBase {
           binding, PJ::Timestamp{host_ts}, [reader, au, fmt, frame_id, pts_ts]() -> PJ::sdk::PayloadView {
             auto bytes_or = reader->readUnit(au);
             if (!bytes_or) {
-              return PJ::sdk::PayloadView{};  // read failure → empty payload
+              // Surface the read error through the fetcher ABI (a thrown exception
+              // becomes a failed pull) instead of recording a successful zero-byte
+              // frame.
+              throw std::runtime_error("MP4 video read failed: " + bytes_or.error());
             }
             PJ::sdk::VideoFrame vf;
             vf.timestamp_ns = pts_ts;
