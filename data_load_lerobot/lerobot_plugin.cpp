@@ -8,12 +8,8 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <pj_base/builtin/asset_video.hpp>
-#include <pj_base/builtin/asset_video_codec.hpp>
 #include <pj_base/builtin/video_frame_codec.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
-#include <pj_base/sdk/media_metadata.hpp>
-#include <pj_base/sdk/platform.hpp>
 #include <pj_video_demux/video_demux.hpp>
 #include <string>
 #include <unordered_map>
@@ -192,14 +188,6 @@ PJ::Expected<std::shared_ptr<const PJ::video_demux::VideoIndex>> indexVideoCache
   return shared;
 }
 
-// Transition / A-B aid: PJ_LEROBOT_EMIT_VIDEOFRAME=0 forces the legacy
-// file-reference AssetVideo path; unset or any other value uses the default
-// lazy-VideoFrame path. Removed once AssetVideo is retired.
-bool emitVideoFrameMode() {
-  const auto env = PJ::sdk::getEnv("PJ_LEROBOT_EMIT_VIDEOFRAME");
-  return !env.has_value() || *env != "0";
-}
-
 /// LeRobot v2.1 dataset loader (numeric + per-camera video on one timeline).
 class LeRobotSource : public PJ::FileSourceBase {
  public:
@@ -288,8 +276,7 @@ class LeRobotSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("import cancelled"));
     }
 
-    const bool emit_videoframe = emitVideoFrameMode();
-    auto vst = emit_videoframe ? importVideoFrames(*model, ep) : importVideoAssets(*model, ep);
+    auto vst = importVideoFrames(*model, ep);
     if (!vst) {
       return vst;
     }
@@ -297,8 +284,7 @@ class LeRobotSource : public PJ::FileSourceBase {
     runtimeHost().reportMessage(
         PJ::DataSourceMessageLevel::kInfo,
         "LeRobot " + model->codebase_version + ": imported " + std::to_string(processed) + " rows + " +
-            std::to_string(model->camera_names.size()) + " video topic(s) from episode " + std::to_string(ep) +
-            (emit_videoframe ? " (VideoFrame)" : " (AssetVideo)"));
+            std::to_string(model->camera_names.size()) + " video topic(s) from episode " + std::to_string(ep));
     return PJ::okStatus();
   }
 
@@ -526,82 +512,7 @@ class LeRobotSource : public PJ::FileSourceBase {
     return PJ::okStatus();
   }
 
-  PJ::Status importVideoAssets(const lerobot::DatasetModel& model, int64_t ep) {
-    // Each camera gets ONE sdk::AssetVideo entry pointing at the episode's MP4.
-    // pj_app's Media2DDockWidget deserializes the entry, opens FileVideoSource
-    // on file_path, applies time_origin_ns as the wall-clock anchor (and, in
-    // v3.0, clamps playback to [start_ns, end_ns] inside the shared file),
-    // and drives the decoder from the global tracker (PJ4 ARCH §4.5). The MP4
-    // bytes never reach ObjectStore — the file itself is the random-access
-    // store.
-    const PJ::sdk::SourceObjectWriteHostView* obj = objectWriteHost();
-    if (obj == nullptr || model.camera_names.empty()) {
-      return PJ::okStatus();
-    }
-
-    // Per-episode datasets: each episode is its own time domain starting at 0
-    // (see rowTimestampNs above). The MP4's first frame corresponds to t=0
-    // for v2.x (whole-file = one episode) and to t = -start_ns for v3.0
-    // (the file starts before the clip; subtract start_ns so the episode's
-    // first frame still lands on t=0 in the tracker's timeline).
-    constexpr int64_t kEpisodeOriginNs = 0;
-
-    const lerobot::EpisodeShard* shard = nullptr;
-    if (auto it = model.episode_shards.find(ep); it != model.episode_shards.end()) {
-      shard = &it->second;
-    }
-
-    const std::string meta = PJ::sdk::MediaMetadataBuilder()
-                                 .extraString("builtin_object_type", "kAssetVideo")
-                                 .schema(PJ::kSchemaAssetVideo)
-                                 .build();
-
-    for (const std::string& cam : model.camera_names) {
-      auto otopic = obj->registerTopic("lerobot/" + cam, meta);
-      if (!otopic) {
-        return PJ::unexpected(otopic.error());
-      }
-
-      // Resolve per-camera clip metadata from the shard map when present
-      // (v3.0). For v2.x the lookup falls through and clip_start/end stay
-      // absent → whole-file playback, unchanged from the original behavior.
-      const lerobot::VideoShard* video_shard = nullptr;
-      if (shard != nullptr) {
-        if (auto vit = shard->videos.find(cam); vit != shard->videos.end()) {
-          video_shard = &vit->second;
-        }
-      }
-
-      PJ::sdk::AssetVideo asset;
-      asset.file_path = model.episodeVideo(ep, cam).string();
-      asset.frame_rate = model.fps;
-      if (video_shard != nullptr && video_shard->start_ns.has_value()) {
-        // v3.0: align the episode's first frame to tracker t=0 by shifting
-        // time_origin back by start_ns, then mark the clip window so the
-        // consumer clamps playback. start_ns sits inside the file, ≥0, so
-        // -start_ns yields ≤0 — a "pre-anchor" that aligns episode-local 0
-        // with the actual first frame of this episode in the shared mp4.
-        asset.time_origin_ns = PJ::Timestamp{-(*video_shard->start_ns)};
-        asset.start_ns = video_shard->start_ns;
-        asset.end_ns = video_shard->end_ns;
-      } else {
-        asset.time_origin_ns = PJ::Timestamp{kEpisodeOriginNs};
-        // start_ns / end_ns left absent → whole-file playback for v2.x.
-      }
-      // media_type, width, height: defaults → PJ4 probes via FFmpeg.
-
-      const std::vector<uint8_t> bytes = PJ::serializeAssetVideo(asset);
-      auto pushed =
-          obj->pushOwned(*otopic, PJ::Timestamp{kEpisodeOriginNs}, PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
-      if (!pushed) {
-        return PJ::unexpected(pushed.error());
-      }
-    }
-    return PJ::okStatus();
-  }
-
-  // Per-camera lazy PJ.VideoFrame entries over the episode's MP4 — the
-  // unification replacement for importVideoAssets(). The container is
+  // Per-camera lazy PJ.VideoFrame entries over the episode's MP4. The container is
   // demux-indexed once (no decode); each access unit is pushed as a lazy entry
   // whose bytes are read from the file on demand (never fully resident). The
   // host's streaming decoder drives playback from these per-frame entries.

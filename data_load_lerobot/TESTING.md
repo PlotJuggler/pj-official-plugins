@@ -50,12 +50,11 @@ cmake --build "$BUILD" --parallel
 
 ## 2. Unit tests
 
-Six GTest binaries cover what's headless-verifiable: parsing `meta/info.json`
+Five GTest binaries cover what's headless-verifiable: parsing `meta/info.json`
 plus `episodes.jsonl` plus `tasks.jsonl`, flattening and deduping vector-column
-names, the dialog's `__pj_fanout` serialization, the v2.x/v3.0 video emit-slice
-resolution (`video_window_test` — keyframe-seek-back + presentation window +
-rebase), and the per-camera `sdk::AssetVideo` wire-format round-trip (the
-fallback path). The shared `pj_video_demux` helper additionally ships
+names, the dialog's `__pj_fanout` serialization, and the v2.x/v3.0 video
+emit-slice resolution (`video_window_test` — keyframe-seek-back + presentation
+window + rebase). The shared `pj_video_demux` helper additionally ships
 `pj_video_demux_test` (h264/h265/av1 index + Annex-B/OBU rewrite against
 committed fixtures).
 
@@ -63,7 +62,7 @@ committed fixtures).
 ctest --test-dir build/data_load_lerobot/Release -R lerobot --output-on-failure
 ```
 
-**Expected:** `100% tests passed, 0 tests failed out of 6`.
+**Expected:** `100% tests passed, 0 tests failed out of 5`.
 
 ---
 
@@ -150,12 +149,10 @@ want more episodes, add their `episode_0000NN.parquet` / `.mp4` files.)
    - Move the time cursor: the video frame follows the cursor in sync with
      the curves. Multi-camera → one 2D view per camera.
 
-> The plugin does **not** decode video. By default it demux-indexes each MP4
-> (no decode) and pushes one lazy `PJ.VideoFrame` per access unit,
-> schema-tagged `kSchemaVideoFrame`; the compressed bytes are read from the
-> file on demand and never fully buffered. Set `PJ_LEROBOT_EMIT_VIDEOFRAME=0`
-> to fall back to the legacy `sdk::AssetVideo` file-reference path (decoded by
-> the host's `FileVideoSource`) for side-by-side comparison.
+> The plugin does **not** decode video. It demux-indexes each MP4 (no decode)
+> and pushes one lazy `PJ.VideoFrame` per access unit, schema-tagged
+> `kSchemaVideoFrame`; the compressed bytes are read from the file on demand and
+> never fully buffered.
 
 ---
 

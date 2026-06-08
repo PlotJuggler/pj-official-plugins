@@ -1,10 +1,5 @@
-#include <pj_base/builtin/asset_video.hpp>
-#include <pj_base/builtin/asset_video_codec.hpp>
-#include <pj_base/builtin/video_frame.hpp>
 #include <pj_base/builtin/video_frame_codec.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
-#include <pj_base/sdk/media_metadata.hpp>
-#include <pj_base/sdk/platform.hpp>
 #include <pj_video_demux/video_demux.hpp>
 
 #include "mp4_iso8601.hpp"
@@ -50,32 +45,21 @@ struct Mp4Metadata {
   return meta;
 }
 
-/// Generic MP4 loader with two emission modes (chosen by the `emit_videoframe`
-/// config flag, default false):
-///
-///  - **AssetVideo** (default): registers ONE sdk::AssetVideo entry pointing at
-///    the file; the host opens FileVideoSource and decodes from the file.
-///
-///  - **VideoFrame** (emit_videoframe=true): demux-indexes the container (no
-///    decode) and pushes one LAZY sdk::VideoFrame per access unit through a
-///    PJ.VideoFrame parser binding. Each entry's bitstream is read from the file
-///    on demand (pj_video_demux::LazyAccessUnitReader), so the whole video never
-///    lands on the heap. Both modes coexist so the same file can be loaded
-///    either way for side-by-side comparison.
-///
-/// VideoFrame-path codecs: H.264 / H.265 / AV1 (matching the host streaming
-/// decoder); any other codec surfaces a clear error from indexFile().
+/// Generic MP4 loader: demux-indexes the container (no decode) and pushes one
+/// LAZY sdk::VideoFrame per access unit through a PJ.VideoFrame parser binding.
+/// Each entry's bitstream is read from the file on demand
+/// (pj_video_demux::LazyAccessUnitReader), so the whole video never lands on the
+/// heap. Codecs: H.264 / H.265 / AV1 (matching the host streaming decoder); any
+/// other codec surfaces a clear error from indexFile().
 class Mp4Source : public PJ::FileSourceBase {
  public:
   uint64_t extraCapabilities() const override {
-    // Advertise both: the AssetVideo path writes objects directly, the
-    // VideoFrame path delegates to a parser binding. The active mode is chosen
-    // per-import by `emit_videoframe_`.
-    return PJ::kCapabilityDirectIngest | PJ::kCapabilityDelegatedIngest;
+    // Lazy VideoFrame entries are pushed through a parser binding (delegated).
+    return PJ::kCapabilityDelegatedIngest;
   }
 
   std::string saveConfig() const override {
-    return nlohmann::json{{"filepath", filepath_}, {"emit_videoframe", emit_videoframe_}}.dump();
+    return nlohmann::json{{"filepath", filepath_}}.dump();
   }
 
   PJ::Status loadConfig(std::string_view config_json) override {
@@ -87,64 +71,14 @@ class Mp4Source : public PJ::FileSourceBase {
     if (filepath_.empty()) {
       return PJ::unexpected(std::string("MP4 config missing required `filepath` field"));
     }
-    emit_videoframe_ = cfg.value("emit_videoframe", false);
     return PJ::okStatus();
   }
 
   PJ::Status importData() override {
-    // Benchmark/dev override: PJ_MP4_EMIT_VIDEOFRAME=1 forces the lazy VideoFrame
-    // path without editing saved config, so the same file can be A/B-loaded.
-    const bool emit_vf = emit_videoframe_ || PJ::sdk::getEnv("PJ_MP4_EMIT_VIDEOFRAME").has_value();
-    return emit_vf ? importVideoFrames() : importAssetVideo();
+    return importVideoFrames();
   }
 
  private:
-  /// Default path: one file-reference AssetVideo entry (unchanged behavior).
-  PJ::Status importAssetVideo() {
-    auto meta_or = readMp4Metadata(filepath_);
-    if (!meta_or) {
-      return PJ::unexpected(meta_or.error());
-    }
-    const Mp4Metadata& meta = *meta_or;
-
-    const PJ::sdk::SourceObjectWriteHostView* obj = objectWriteHost();
-    if (obj == nullptr) {
-      return PJ::unexpected(std::string("MP4 plugin: objectWriteHost not bound"));
-    }
-
-    const std::string topic_meta = PJ::sdk::MediaMetadataBuilder()
-                                       .extraString("builtin_object_type", "kAssetVideo")
-                                       .schema(PJ::kSchemaAssetVideo)
-                                       .build();
-    auto topic = obj->registerTopic("video", topic_meta);
-    if (!topic) {
-      return PJ::unexpected(topic.error());
-    }
-
-    PJ::sdk::AssetVideo asset;
-    asset.file_path = filepath_;
-    if (meta.creation_time_ns.has_value()) {
-      asset.time_origin_ns = PJ::Timestamp{*meta.creation_time_ns};
-    }
-    // start_ns / end_ns left absent → whole file is playable (single-clip MP4).
-    // media_type, width, height, frame_rate: defaults → PJ4 probes via FFmpeg.
-
-    // ObjectStore timestamp equals time_origin_ns per AssetVideo contract;
-    // when the MP4 lacks a creation_time tag, fall back to 0 (file-relative).
-    const int64_t entry_ts = meta.creation_time_ns.value_or(0);
-    const std::vector<uint8_t> bytes = PJ::serializeAssetVideo(asset);
-    auto pushed = obj->pushOwned(*topic, PJ::Timestamp{entry_ts}, PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
-    if (!pushed) {
-      return PJ::unexpected(pushed.error());
-    }
-
-    runtimeHost().reportMessage(
-        PJ::DataSourceMessageLevel::kInfo,
-        "MP4: imported " + filepath_ +
-            (meta.creation_time_ns.has_value() ? " (wall-clock anchored)" : " (file-relative; no creation_time tag)"));
-    return PJ::okStatus();
-  }
-
   /// Lazy per-frame PJ.VideoFrame entries over the original file.
   PJ::Status importVideoFrames() {
     auto idx_or = PJ::video_demux::indexFile(filepath_);
@@ -207,7 +141,6 @@ class Mp4Source : public PJ::FileSourceBase {
   }
 
   std::string filepath_;
-  bool emit_videoframe_ = false;
 };
 
 }  // namespace
