@@ -19,7 +19,6 @@ extern "C" {
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -194,22 +193,7 @@ class Mp4Source : public PJ::FileSourceBase {
       const int64_t pts_ts = origin_ns + (au.pts_ns - base_dts_ns);
 
       auto status = runtimeHost().pushMessage(
-          binding, PJ::Timestamp{host_ts}, [reader, au, fmt, frame_id, pts_ts]() -> PJ::sdk::PayloadView {
-            auto bytes_or = reader->readUnit(au);
-            if (!bytes_or) {
-              // Surface the read error through the fetcher ABI (a thrown exception
-              // becomes a failed pull) instead of recording a successful zero-byte
-              // frame.
-              throw std::runtime_error("MP4 video read failed: " + bytes_or.error());
-            }
-            PJ::sdk::VideoFrame vf;
-            vf.timestamp_ns = pts_ts;
-            vf.frame_id = frame_id;
-            vf.format = fmt;
-            vf.data = PJ::Span<const uint8_t>(bytes_or->data(), bytes_or->size());
-            auto serialized = std::make_shared<std::vector<uint8_t>>(PJ::serializeVideoFrame(vf));
-            return PJ::sdk::PayloadView{serialized};
-          });
+          binding, PJ::Timestamp{host_ts}, PJ::video_demux::makeVideoFrameFetcher(reader, au, fmt, frame_id, pts_ts));
       if (!status) {
         return PJ::unexpected("MP4: pushMessage failed: " + status.error());
       }

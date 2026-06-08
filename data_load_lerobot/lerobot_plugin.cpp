@@ -10,13 +10,11 @@
 #include <optional>
 #include <pj_base/builtin/asset_video.hpp>
 #include <pj_base/builtin/asset_video_codec.hpp>
-#include <pj_base/builtin/video_frame.hpp>
 #include <pj_base/builtin/video_frame_codec.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_base/sdk/media_metadata.hpp>
 #include <pj_base/sdk/platform.hpp>
 #include <pj_video_demux/video_demux.hpp>
-#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -686,23 +684,7 @@ class LeRobotSource : public PJ::FileSourceBase {
         const int64_t host_ts = au.dts_ns - slice.origin_ns;
         const int64_t pts_ts = au.pts_ns - slice.origin_ns;
         auto status = runtimeHost().pushMessage(
-            binding, PJ::Timestamp{host_ts}, [reader, au, fmt, cam, pts_ts]() -> PJ::sdk::PayloadView {
-              auto bytes_or = reader->readUnit(au);
-              if (!bytes_or) {
-                // Surface the precise read error (file removed mid-session, short
-                // read, …) through the fetcher ABI, which turns a thrown exception
-                // into a failed pull. Returning an empty PayloadView would instead
-                // be recorded as a successful zero-byte frame.
-                throw std::runtime_error("LeRobot video read failed for " + cam + ": " + bytes_or.error());
-              }
-              PJ::sdk::VideoFrame vf;
-              vf.timestamp_ns = pts_ts;
-              vf.frame_id = cam;
-              vf.format = fmt;
-              vf.data = PJ::Span<const uint8_t>(bytes_or->data(), bytes_or->size());
-              auto serialized = std::make_shared<std::vector<uint8_t>>(PJ::serializeVideoFrame(vf));
-              return PJ::sdk::PayloadView{serialized};
-            });
+            binding, PJ::Timestamp{host_ts}, PJ::video_demux::makeVideoFrameFetcher(reader, au, fmt, cam, pts_ts));
         if (!status) {
           return PJ::unexpected("LeRobot: pushMessage failed for " + cam + ": " + status.error());
         }

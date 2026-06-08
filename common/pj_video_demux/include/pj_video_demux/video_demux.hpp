@@ -16,11 +16,17 @@
 
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <pj_base/buffer_anchor.hpp>
+#include <pj_base/builtin/video_frame.hpp>
+#include <pj_base/builtin/video_frame_codec.hpp>
 #include <pj_base/expected.hpp>
 #include <pj_base/span.hpp>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace PJ {
@@ -111,6 +117,38 @@ class LazyAccessUnitReader {
   bool open_attempted_ = false;
   bool open_failed_ = false;
 };
+
+/// Build the lazy host-pushMessage fetcher for one access unit — the per-frame
+/// emit primitive shared by every file-backed VideoFrame producer. The returned
+/// callable reads `unit` via `reader`, wraps it as a `PJ.VideoFrame`
+/// (`frame_id`, `format`, `timestamp_ns = pts_ns`) and serializes it to the
+/// canonical wire bytes the host parser expects.
+///
+/// It THROWS on a read failure so the host fetcher ABI surfaces the precise
+/// error (file removed mid-session, short read, …) instead of recording a
+/// successful zero-byte frame. Everything is captured by value and the reader is
+/// mutex-serialized + idempotent, so the callable is safe to invoke from any
+/// host thread any number of times. `pts_ns` is the frame's presentation
+/// timestamp; the producer passes the ObjectStore (DTS-based) key separately to
+/// `pushMessage`.
+[[nodiscard]] inline std::function<PJ::sdk::PayloadView()> makeVideoFrameFetcher(
+    std::shared_ptr<LazyAccessUnitReader> reader, AccessUnit unit, std::string format, std::string frame_id,
+    int64_t pts_ns) {
+  return [reader = std::move(reader), unit, format = std::move(format), frame_id = std::move(frame_id),
+          pts_ns]() -> PJ::sdk::PayloadView {
+    auto bytes_or = reader->readUnit(unit);
+    if (!bytes_or) {
+      throw std::runtime_error("pj_video_demux: read failed for '" + frame_id + "': " + bytes_or.error());
+    }
+    PJ::sdk::VideoFrame frame;
+    frame.timestamp_ns = pts_ns;
+    frame.frame_id = frame_id;
+    frame.format = format;
+    frame.data = PJ::Span<const uint8_t>(bytes_or->data(), bytes_or->size());
+    auto serialized = std::make_shared<std::vector<uint8_t>>(PJ::serializeVideoFrame(frame));
+    return PJ::sdk::PayloadView{serialized};
+  };
+}
 
 }  // namespace video_demux
 }  // namespace PJ
