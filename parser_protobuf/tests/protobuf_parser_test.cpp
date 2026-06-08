@@ -5,12 +5,14 @@
 #include <gtest/gtest.h>
 
 #include <any>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "../foxglove_object_codecs.hpp"
 #include "../foxglove_pointcloud_codec.hpp"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/video_frame_codec.hpp"
@@ -977,3 +979,201 @@ TEST(ProtobufParserTest, FoxglovePointCloudScalarRoute) {
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// Well-known Foxglove object decoders (foxglove_object_codecs.cpp)
+//
+// These 5 decoders had no protobuf-layer test. We build minimal but genuine
+// Foxglove-wire protobuf bytes with a tiny hand-rolled writer (exact control
+// over field numbers / wire types, matching the schemas the decoder reads) and
+// assert the canonical field mapping. Happy-path coverage for the wire reader.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Minimal protobuf wire writer — just the field shapes these decoders consume.
+struct PW {
+  std::vector<uint8_t> b;
+  void rawVarint(uint64_t v) {
+    while (v >= 0x80) {
+      b.push_back(static_cast<uint8_t>((v & 0x7Fu) | 0x80u));
+      v >>= 7;
+    }
+    b.push_back(static_cast<uint8_t>(v));
+  }
+  void tag(int field, int wire) {
+    rawVarint((static_cast<uint64_t>(field) << 3) | static_cast<uint64_t>(wire));
+  }
+  void varint(int field, uint64_t v) {
+    tag(field, 0);
+    rawVarint(v);
+  }
+  void fixed32(int field, uint32_t v) {
+    tag(field, 5);
+    for (int i = 0; i < 4; ++i) {
+      b.push_back(static_cast<uint8_t>(v >> (8 * i)));
+    }
+  }
+  void dbl(int field, double d) {
+    tag(field, 1);
+    const uint64_t bits = std::bit_cast<uint64_t>(d);
+    for (int i = 0; i < 8; ++i) {
+      b.push_back(static_cast<uint8_t>(bits >> (8 * i)));
+    }
+  }
+  void str(int field, const std::string& s) {
+    tag(field, 2);
+    rawVarint(s.size());
+    b.insert(b.end(), s.begin(), s.end());
+  }
+  void bytesField(int field, const std::vector<uint8_t>& v) {
+    tag(field, 2);
+    rawVarint(v.size());
+    b.insert(b.end(), v.begin(), v.end());
+  }
+  void sub(int field, const PW& w) {
+    tag(field, 2);
+    rawVarint(w.b.size());
+    b.insert(b.end(), w.b.begin(), w.b.end());
+  }
+  void packedDoubles(int field, const std::vector<double>& ds) {
+    PW inner;
+    for (double d : ds) {
+      const uint64_t bits = std::bit_cast<uint64_t>(d);
+      for (int i = 0; i < 8; ++i) {
+        inner.b.push_back(static_cast<uint8_t>(bits >> (8 * i)));
+      }
+    }
+    sub(field, inner);
+  }
+};
+
+// google.protobuf.Timestamp { seconds=1, nanos=2 }.
+PW foxgloveTimestamp(int64_t seconds, int32_t nanos) {
+  PW ts;
+  ts.varint(1, static_cast<uint64_t>(seconds));
+  ts.varint(2, static_cast<uint64_t>(static_cast<uint32_t>(nanos)));
+  return ts;
+}
+
+}  // namespace
+
+TEST(ProtobufParserTest, FoxgloveCompressedImageDecodes) {
+  const std::vector<uint8_t> blob = {0xFF, 0xD8, 0xFF, 0xE0, 0xDE, 0xAD};  // jpeg-ish
+  PW img;
+  img.sub(1, foxgloveTimestamp(7, 42));
+  img.bytesField(2, blob);
+  img.str(3, "jpeg");            // foxglove `format` -> sdk `encoding`
+  img.str(4, "camera_optical");  // frame_id -> sdk::Image.frame_id
+  const auto& w = img.b;
+
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  auto r = pj_protobuf::deserializeFoxgloveCompressedImageView(w.data(), w.size(), anchor);
+  ASSERT_TRUE(r) << r.error();
+  EXPECT_EQ(r->encoding, "jpeg");
+  EXPECT_EQ(r->frame_id, "camera_optical");
+  EXPECT_EQ(r->timestamp_ns, 7'000'000'042LL);
+  ASSERT_EQ(r->data.size(), blob.size());
+  for (size_t i = 0; i < blob.size(); ++i) {
+    EXPECT_EQ(r->data.data()[i], blob[i]);
+  }
+  // Zero-copy: the data span aliases the input buffer.
+  EXPECT_GE(r->data.data(), w.data());
+  EXPECT_LE(r->data.data() + r->data.size(), w.data() + w.size());
+}
+
+TEST(ProtobufParserTest, FoxgloveCameraCalibrationDecodes) {
+  PW cc;
+  cc.sub(1, foxgloveTimestamp(0, 0));
+  cc.fixed32(2, 640);  // width
+  cc.fixed32(3, 480);  // height
+  cc.str(4, "plumb_bob");
+  cc.packedDoubles(5, {0.1, 0.2, 0.3, 0.4, 0.5});        // D
+  cc.packedDoubles(6, {1, 0, 320, 0, 1, 240, 0, 0, 1});  // K (3x3)
+  cc.str(9, "camera_optical");                           // frame_id
+  const auto& w = cc.b;
+
+  auto r = pj_protobuf::deserializeFoxgloveCameraCalibration(w.data(), w.size());
+  ASSERT_TRUE(r) << r.error();
+  EXPECT_EQ(r->width, 640u);
+  EXPECT_EQ(r->height, 480u);
+  EXPECT_EQ(r->distortion_model, "plumb_bob");
+  EXPECT_EQ(r->frame_id, "camera_optical");
+  ASSERT_GE(r->D.size(), 5u);
+  EXPECT_DOUBLE_EQ(r->D[0], 0.1);
+  EXPECT_DOUBLE_EQ(r->K[0], 1.0);
+  EXPECT_DOUBLE_EQ(r->K[2], 320.0);
+}
+
+TEST(ProtobufParserTest, FoxgloveFrameTransformDecodes) {
+  PW vec3;
+  vec3.dbl(1, 1.0);
+  vec3.dbl(2, 2.0);
+  vec3.dbl(3, 3.0);
+  PW quat;
+  quat.dbl(1, 0.0);
+  quat.dbl(2, 0.0);
+  quat.dbl(3, 0.0);
+  quat.dbl(4, 1.0);
+  PW tf;
+  tf.sub(1, foxgloveTimestamp(5, 0));
+  tf.str(2, "world");
+  tf.str(3, "base_link");
+  tf.sub(4, vec3);
+  tf.sub(5, quat);
+  const auto& w = tf.b;
+
+  auto r = pj_protobuf::deserializeFoxgloveFrameTransform(w.data(), w.size());
+  ASSERT_TRUE(r) << r.error();
+  ASSERT_EQ(r->transforms.size(), 1u);
+  const auto& t = r->transforms[0];
+  EXPECT_EQ(t.parent_frame_id, "world");
+  EXPECT_EQ(t.child_frame_id, "base_link");
+  EXPECT_DOUBLE_EQ(t.translation.x, 1.0);
+  EXPECT_DOUBLE_EQ(t.translation.z, 3.0);
+  EXPECT_DOUBLE_EQ(t.rotation.w, 1.0);
+  EXPECT_EQ(t.timestamp, 5'000'000'000LL);
+}
+
+TEST(ProtobufParserTest, FoxgloveImageAnnotationsDecodes) {
+  // One PointsAnnotation (field 2), type POINTS, with two Point2 vertices.
+  PW p0;
+  p0.dbl(1, 10.0);
+  p0.dbl(2, 20.0);
+  PW p1;
+  p1.dbl(1, 30.0);
+  p1.dbl(2, 40.0);
+  PW pa;
+  pa.varint(2, 1);  // type = POINTS (1)
+  pa.sub(3, p0);    // points[0]
+  pa.sub(3, p1);    // points[1]
+  PW ann;
+  ann.sub(2, pa);  // points (PointsAnnotation)
+  const auto& w = ann.b;
+
+  auto r = pj_protobuf::deserializeFoxgloveImageAnnotations(w.data(), w.size());
+  ASSERT_TRUE(r) << r.error();
+  ASSERT_EQ(r->points.size(), 1u);
+  const auto& pts = r->points[0];
+  EXPECT_EQ(pts.topology, PJ::sdk::AnnotationTopology::kPoints);
+  ASSERT_EQ(pts.points.size(), 2u);
+  EXPECT_DOUBLE_EQ(pts.points[0].x, 10.0);
+  EXPECT_DOUBLE_EQ(pts.points[1].y, 40.0);
+}
+
+TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodes) {
+  PW entity;
+  entity.sub(1, foxgloveTimestamp(3, 0));  // timestamp
+  entity.str(2, "map");                    // frame_id
+  entity.str(3, "robot");                  // id
+  PW scene;
+  scene.sub(2, entity);  // entities
+  const auto& w = scene.b;
+
+  auto r = pj_protobuf::deserializeFoxgloveSceneUpdate(w.data(), w.size());
+  ASSERT_TRUE(r) << r.error();
+  ASSERT_EQ(r->entities.size(), 1u);
+  EXPECT_EQ(r->entities[0].frame_id, "map");
+  EXPECT_EQ(r->entities[0].id, "robot");
+  EXPECT_EQ(r->entities[0].timestamp, 3'000'000'000LL);
+}

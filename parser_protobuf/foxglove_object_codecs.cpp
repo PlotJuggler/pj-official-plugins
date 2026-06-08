@@ -82,6 +82,22 @@ struct SubMessage {
   }
 };
 
+// ---------------------------------------------------------------------------
+// Decode-robustness contract (deliberate, not accidental):
+//   * The nested readers below (geometry + scene/annotation primitives) are
+//     best-effort / LENIENT: each returns a plain value (not Expected) and
+//     `break`s out of its field loop on a malformed/truncated field, returning
+//     whatever was parsed so far. Its `SubMessage` always PopLimits in the
+//     destructor, so a partial nested read NEVER desyncs the parent stream.
+//   * The top-level deserialize* entry points are STRICT: they return
+//     PJ::unexpected on a malformed top-level tag or a failed skipField.
+// Rationale: for a visualization consumer, rendering a partially-decoded frame
+// (e.g. 99 of 100 annotations) beats dropping the whole message on one bad byte.
+// This only affects corrupt/truncated payloads; well-formed Foxglove messages
+// always decode in full. Consumers must treat primitive fields (counts,
+// indices) as untrusted and bounds-check against the sibling arrays.
+// ---------------------------------------------------------------------------
+
 // --- nested geometry readers (each consumes exactly `len` bytes) ---
 
 PJ::sdk::Vector3 readVector3(CodedInputStream& in, uint32_t len) {
@@ -264,12 +280,12 @@ PJ::Expected<PJ::sdk::FrameTransforms> deserializeFoxgloveFrameTransform(const u
         tf.timestamp = readTimestampNs(in, len);
         break;
       case 2:
-        if (!readString(in, tf.parent_frame_id)) {
+        if (wireOf(tag) != kWireLen || !readString(in, tf.parent_frame_id)) {
           return PJ::unexpected(std::string("foxglove.FrameTransform: bad parent_frame_id"));
         }
         break;
       case 3:
-        if (!readString(in, tf.child_frame_id)) {
+        if (wireOf(tag) != kWireLen || !readString(in, tf.child_frame_id)) {
           return PJ::unexpected(std::string("foxglove.FrameTransform: bad child_frame_id"));
         }
         break;
@@ -338,17 +354,15 @@ PJ::Expected<PJ::sdk::Image> deserializeFoxgloveCompressedImageView(
         break;
       }
       case 3:
-        if (!readString(in, img.encoding)) {  // foxglove `format` -> sdk `encoding`
+        if (wireOf(tag) != kWireLen || !readString(in, img.encoding)) {  // foxglove `format` -> sdk `encoding`
           return PJ::unexpected(std::string("foxglove.CompressedImage: bad format"));
         }
         break;
-      case 4: {
-        std::string frame_id;  // sdk::Image has no frame_id field; read + drop.
-        if (!readString(in, frame_id)) {
+      case 4:  // frame_id -> sdk::Image.frame_id (lets the consumer match CameraInfo / place in 3D).
+        if (wireOf(tag) != kWireLen || !readString(in, img.frame_id)) {
           return PJ::unexpected(std::string("foxglove.CompressedImage: bad frame_id"));
         }
         break;
-      }
       default:
         if (!skipField(in, wireOf(tag))) {
           return PJ::unexpected(std::string("foxglove.CompressedImage: malformed"));
@@ -402,7 +416,7 @@ PJ::Expected<PJ::sdk::CameraInfo> deserializeFoxgloveCameraCalibration(const uin
         break;
       }
       case 4:
-        if (!readString(in, ci.distortion_model)) {
+        if (wireOf(tag) != kWireLen || !readString(in, ci.distortion_model)) {
           return PJ::unexpected(std::string("foxglove.CameraCalibration: bad distortion_model"));
         }
         break;
@@ -431,7 +445,7 @@ PJ::Expected<PJ::sdk::CameraInfo> deserializeFoxgloveCameraCalibration(const uin
         readPackedDoubles(in, len, pmat);
         break;
       case 9:
-        if (!readString(in, ci.frame_id)) {
+        if (wireOf(tag) != kWireLen || !readString(in, ci.frame_id)) {
           return PJ::unexpected(std::string("foxglove.CameraCalibration: bad frame_id"));
         }
         break;
@@ -759,72 +773,36 @@ PJ::sdk::SceneEntity readSceneEntity(CodedInputStream& in, uint32_t len) {
   while ((tag = in.ReadTag()) != 0) {
     const int f = fieldOf(tag);
     uint32_t sl = 0;
-    switch (f) {
-      case 1:
-        if (wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-          e.timestamp = readTimestampNs(in, sl);
-        } else {
-          skipField(in, wireOf(tag));
-        }
-        break;
-      case 2:
-        readString(in, e.frame_id);
-        break;
-      case 3:
-        readString(in, e.id);
-        break;
-      case 4:
-        if (wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-          e.lifetime_ns = readTimestampNs(in, sl);  // Duration has the same {sec, nanos} layout
-        } else {
-          skipField(in, wireOf(tag));
-        }
-        break;
-      case 5: {
-        uint64_t v = 0;
-        in.ReadVarint64(&v);
-        e.frame_locked = (v != 0);
-        break;
-      }
-      case 7:
-        if (in.ReadVarint32(&sl)) {
-          e.arrows.push_back(readArrow(in, sl));
-        }
-        break;
-      case 8:
-        if (in.ReadVarint32(&sl)) {
-          e.cubes.push_back(readBoxLike<PJ::sdk::CubePrimitive>(in, sl));
-        }
-        break;
-      case 9:
-        if (in.ReadVarint32(&sl)) {
-          e.spheres.push_back(readBoxLike<PJ::sdk::SpherePrimitive>(in, sl));
-        }
-        break;
-      case 10:
-        if (in.ReadVarint32(&sl)) {
-          e.cylinders.push_back(readCylinder(in, sl));
-        }
-        break;
-      case 11:
-        if (in.ReadVarint32(&sl)) {
-          e.lines.push_back(readLine(in, sl));
-        }
-        break;
-      case 12:
-        if (in.ReadVarint32(&sl)) {
-          e.triangles.push_back(readTriangle(in, sl));
-        }
-        break;
-      case 13:
-        if (in.ReadVarint32(&sl)) {
-          e.texts.push_back(readText(in, sl));
-        }
-        break;
-      default:  // metadata(6), models(14) and unknowns: not rendered, skip.
-        if (!skipField(in, wireOf(tag))) {
-          tag = 0;
-        }
+    // metadata(6), models(14), unknowns and any wrong-wire-type field fall through
+    // to the trailing skipField; a failed skip leaves the stream desynced, so stop.
+    if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+      e.timestamp = readTimestampNs(in, sl);
+    } else if (f == 2 && wireOf(tag) == kWireLen) {
+      readString(in, e.frame_id);
+    } else if (f == 3 && wireOf(tag) == kWireLen) {
+      readString(in, e.id);
+    } else if (f == 4 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+      e.lifetime_ns = readTimestampNs(in, sl);  // Duration has the same {sec, nanos} layout
+    } else if (f == 5 && wireOf(tag) == kWireVarint) {
+      uint64_t v = 0;
+      in.ReadVarint64(&v);
+      e.frame_locked = (v != 0);
+    } else if (f == 7 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+      e.arrows.push_back(readArrow(in, sl));
+    } else if (f == 8 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+      e.cubes.push_back(readBoxLike<PJ::sdk::CubePrimitive>(in, sl));
+    } else if (f == 9 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+      e.spheres.push_back(readBoxLike<PJ::sdk::SpherePrimitive>(in, sl));
+    } else if (f == 10 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+      e.cylinders.push_back(readCylinder(in, sl));
+    } else if (f == 11 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+      e.lines.push_back(readLine(in, sl));
+    } else if (f == 12 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+      e.triangles.push_back(readTriangle(in, sl));
+    } else if (f == 13 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+      e.texts.push_back(readText(in, sl));
+    } else if (!skipField(in, wireOf(tag))) {
+      break;
     }
   }
   return e;

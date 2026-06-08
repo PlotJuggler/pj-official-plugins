@@ -101,7 +101,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseImage(PJ::Timestamp ts, PJ::
     ensureDeserializer();
     current_timestamp_ = ts;
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
-    (void)readHeader();
+    HeaderData header = readHeader();
 
     const uint32_t height = deserializer_->deserializeUInt32();
     const uint32_t width = deserializer_->deserializeUInt32();
@@ -138,6 +138,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseImage(PJ::Timestamp ts, PJ::
             .compressed_depth_min = std::nullopt,
             .compressed_depth_max = std::nullopt,
             .timestamp_ns = current_timestamp_,
+            .frame_id = std::move(header.frame_id),
         }}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("Image: CDR read error: ") + e.what());
@@ -159,7 +160,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestam
     ensureDeserializer();
     current_timestamp_ = ts;
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
-    (void)readHeader();
+    HeaderData header = readHeader();
 
     std::string format;
     deserializer_->deserializeString(format);
@@ -211,6 +212,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestam
             .compressed_depth_min = depth_min,
             .compressed_depth_max = depth_max,
             .timestamp_ns = current_timestamp_,
+            .frame_id = std::move(header.frame_id),
         }}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("CompressedImage: CDR read error: ") + e.what());
