@@ -68,3 +68,48 @@ TEST(ArrayLimitTest, RoundTripThroughJson) {
   EXPECT_FALSE(cfg.value("clamp_large_arrays", true));
   EXPECT_TRUE(cfg.value("discard_large_arrays", false));
 }
+
+TEST(ArrayLimitTest, ToJsonMirrorsClampCaseForLegacyReaders) {
+  // An old plugin .so reads only the legacy bools; make sure a Clamp limit
+  // serializes them both consistently (clamp=true, discard=false).
+  nlohmann::json cfg;
+  arrayLimitToJson(cfg, ArrayLimit{.max_size = 500, .policy = ArrayPolicy::kClamp});
+  EXPECT_TRUE(cfg.value("clamp_large_arrays", false));
+  EXPECT_FALSE(cfg.value("discard_large_arrays", true));
+  EXPECT_EQ(cfg.value("array_policy", std::string{}), "clamp");
+}
+
+// --- Robustness: honor the "never throws, fall back to the default for a
+// malformed field" contract documented on arrayLimitFromJson. A config may be
+// hand-edited or written by a third-party/older plugin, so a wrong-typed or
+// out-of-range field must degrade to the default, never throw and never wrap.
+
+TEST(ArrayLimitTest, WrongTypeMaxArraySizeFallsBackToDefault) {
+  for (const auto& bad :
+       {nlohmann::json("500"), nlohmann::json(nullptr), nlohmann::json::array({1, 2}),
+        nlohmann::json::object({{"k", 1}}), nlohmann::json(true), nlohmann::json(3.7)}) {
+    auto cfg = nlohmann::json::object();
+    cfg["max_array_size"] = bad;
+    ArrayLimit limit;
+    EXPECT_NO_THROW(limit = arrayLimitFromJson(cfg)) << "input: " << bad.dump();
+    EXPECT_EQ(limit.max_size, 500u) << "input: " << bad.dump();
+  }
+}
+
+TEST(ArrayLimitTest, NegativeMaxArraySizeFallsBackToDefault) {
+  EXPECT_NO_THROW((void)arrayLimitFromJson(nlohmann::json{{"max_array_size", -1}}));
+  EXPECT_EQ(arrayLimitFromJson(nlohmann::json{{"max_array_size", -1}}).max_size, 500u);
+  EXPECT_EQ(arrayLimitFromJson(nlohmann::json{{"max_array_size", -500}}).max_size, 500u);
+}
+
+TEST(ArrayLimitTest, OutOfRangeMaxArraySizeFallsBackToDefault) {
+  // > UINT32_MAX must not be truncated modulo 2^32.
+  EXPECT_EQ(arrayLimitFromJson(nlohmann::json{{"max_array_size", 5000000000LL}}).max_size, 500u);
+}
+
+TEST(ArrayLimitTest, WrongTypeLegacyBoolsFallBackToDefault) {
+  // Non-bool legacy keys must not throw and must leave the policy at default.
+  EXPECT_NO_THROW((void)arrayLimitFromJson(nlohmann::json{{"discard_large_arrays", "true"}}));
+  EXPECT_EQ(arrayLimitFromJson(nlohmann::json{{"discard_large_arrays", "true"}}).policy, ArrayPolicy::kClamp);
+  EXPECT_EQ(arrayLimitFromJson(nlohmann::json{{"clamp_large_arrays", 1}}).policy, ArrayPolicy::kClamp);
+}
