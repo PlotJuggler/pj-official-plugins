@@ -71,7 +71,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     wd.setChecked("checkBoxUseTimestamp", use_timestamp_);
 
     // Channel list
-    wd.setTableHeaders("topicsList", {"Topic Name", "DataType"});
+    wd.setTableHeaders("topicsList", {"Topic Name", "DataType", "Encoding"});
     std::vector<std::vector<std::string>> rows;
     {
       std::lock_guard<std::mutex> lock(channels_mutex_);
@@ -96,7 +96,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
             continue;
           }
         }
-        rows.push_back({ch.topic, ch.schema_name});
+        rows.push_back({ch.topic, ch.schema_name, ch.schema_encoding});
       }
     }
     wd.setTableRows("topicsList", rows);

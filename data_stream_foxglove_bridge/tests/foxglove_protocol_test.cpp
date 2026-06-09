@@ -6,7 +6,8 @@
  *   - parseBinaryFrame: decode binary WebSocket messages (opcode + subscription_id
  *     + log_time + payload)
  *   - buildSubscribeMessage / buildUnsubscribeMessage: JSON message generation
- *   - isUsableChannel: validate channel has CDR encoding and supported ROS schema
+ *   - classifyChannel: route a channel by encoding (CDR/ros2msg+omgidl, protobuf)
+ *   - pj_base64::decode: shared base64 decoder used for binary (protobuf) schemas
  *
  * All binary frames are constructed in memory as byte vectors. No network
  * connections or WebSocket servers are needed.
@@ -16,7 +17,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <cstring>
+#include <pj_base64/base64.hpp>
 #include <vector>
 
 namespace {
@@ -114,9 +117,9 @@ TEST(FoxgloveProtocolTest, BuildUnsubscribeMessageEmpty) {
   EXPECT_EQ(msg, R"({"op":"unsubscribe","subscriptionIds":[]})");
 }
 
-// --- isUsableChannel ---
+// --- classifyChannel ---
 
-TEST(FoxgloveProtocolTest, IsUsableChannelValid) {
+TEST(FoxgloveProtocolTest, ClassifyChannelRos2msg) {
   ChannelInfo ch;
   ch.id = 1;
   ch.topic = "/test/topic";
@@ -124,10 +127,13 @@ TEST(FoxgloveProtocolTest, IsUsableChannelValid) {
   ch.schema_name = "std_msgs/msg/String";
   ch.schema = "string data";
   ch.schema_encoding = "ros2msg";
-  EXPECT_TRUE(isUsableChannel(ch));
+  auto route = classifyChannel(ch);
+  EXPECT_TRUE(route.supported);
+  EXPECT_EQ(route.parser_encoding, "ros2msg");
+  EXPECT_FALSE(route.schema_is_base64);
 }
 
-TEST(FoxgloveProtocolTest, IsUsableChannelValidOmgIdl) {
+TEST(FoxgloveProtocolTest, ClassifyChannelOmgIdl) {
   ChannelInfo ch;
   ch.id = 1;
   ch.topic = "/test/topic";
@@ -135,57 +141,108 @@ TEST(FoxgloveProtocolTest, IsUsableChannelValidOmgIdl) {
   ch.schema_name = "pkg::Simple";
   ch.schema = "module pkg { struct Simple { long value; }; };";
   ch.schema_encoding = "omgidl";
-  EXPECT_TRUE(isUsableChannel(ch));
+  auto route = classifyChannel(ch);
+  EXPECT_TRUE(route.supported);
+  EXPECT_EQ(route.parser_encoding, "omgidl");
+  EXPECT_FALSE(route.schema_is_base64);
 }
 
-TEST(FoxgloveProtocolTest, IsUsableChannelWrongEncoding) {
+TEST(FoxgloveProtocolTest, ClassifyChannelProtobuf) {
+  ChannelInfo ch;
+  ch.topic = "/camera/image";
+  ch.encoding = "protobuf";
+  ch.schema_name = "my.pkg.Image";
+  ch.schema = "ChJzb21lLWZpbGUtZGVzY3JpcHRvcg==";  // base64 (content irrelevant here)
+  ch.schema_encoding = "protobuf";
+  auto route = classifyChannel(ch);
+  EXPECT_TRUE(route.supported);
+  EXPECT_EQ(route.parser_encoding, "protobuf");
+  // Must be flagged base64 so the source decodes it before binding.
+  EXPECT_TRUE(route.schema_is_base64);
+}
+
+TEST(FoxgloveProtocolTest, ClassifyChannelProtobufWellKnownEmptySchema) {
+  // Well-known foxglove.* types are bound by name; an empty schema is allowed.
+  ChannelInfo ch;
+  ch.topic = "/camera/image";
+  ch.encoding = "protobuf";
+  ch.schema_name = "foxglove.CompressedImage";
+  ch.schema = "";
+  ch.schema_encoding = "protobuf";
+  auto route = classifyChannel(ch);
+  EXPECT_TRUE(route.supported);
+  EXPECT_EQ(route.parser_encoding, "protobuf");
+}
+
+TEST(FoxgloveProtocolTest, ClassifyChannelUnsupportedSchemaEncoding) {
   ChannelInfo ch;
   ch.topic = "/test/topic";
-  ch.encoding = "json";  // Not CDR
+  ch.encoding = "json";
   ch.schema_name = "std_msgs/msg/String";
-  ch.schema = "string data";
-  ch.schema_encoding = "ros2msg";
-  EXPECT_FALSE(isUsableChannel(ch));
+  ch.schema = "{}";
+  ch.schema_encoding = "jsonschema";  // jsonschema/flatbuffer intentionally unsupported
+  EXPECT_FALSE(classifyChannel(ch).supported);
 }
 
-TEST(FoxgloveProtocolTest, IsUsableChannelWrongSchemaEncoding) {
+TEST(FoxgloveProtocolTest, ClassifyChannelCdrButNonRosSchema) {
   ChannelInfo ch;
   ch.topic = "/test/topic";
   ch.encoding = "cdr";
   ch.schema_name = "std_msgs/msg/String";
   ch.schema = "string data";
-  ch.schema_encoding = "jsonschema";  // Not ros2msg
-  EXPECT_FALSE(isUsableChannel(ch));
+  ch.schema_encoding = "jsonschema";  // cdr but not ros2msg/omgidl
+  EXPECT_FALSE(classifyChannel(ch).supported);
 }
 
-TEST(FoxgloveProtocolTest, IsUsableChannelEmptyTopic) {
+TEST(FoxgloveProtocolTest, ClassifyChannelEmptyTopic) {
   ChannelInfo ch;
   ch.topic = "";  // Empty
   ch.encoding = "cdr";
   ch.schema_name = "std_msgs/msg/String";
   ch.schema = "string data";
   ch.schema_encoding = "ros2msg";
-  EXPECT_FALSE(isUsableChannel(ch));
+  EXPECT_FALSE(classifyChannel(ch).supported);
 }
 
-TEST(FoxgloveProtocolTest, IsUsableChannelEmptySchema) {
+TEST(FoxgloveProtocolTest, ClassifyChannelRos2msgEmptySchemaRejected) {
   ChannelInfo ch;
   ch.topic = "/test/topic";
   ch.encoding = "cdr";
   ch.schema_name = "std_msgs/msg/String";
-  ch.schema = "";  // Empty
+  ch.schema = "";  // ros2msg requires a schema
   ch.schema_encoding = "ros2msg";
-  EXPECT_FALSE(isUsableChannel(ch));
+  EXPECT_FALSE(classifyChannel(ch).supported);
 }
 
-TEST(FoxgloveProtocolTest, IsUsableChannelEmptySchemaName) {
+TEST(FoxgloveProtocolTest, ClassifyChannelEmptySchemaName) {
   ChannelInfo ch;
   ch.topic = "/test/topic";
   ch.encoding = "cdr";
   ch.schema_name = "";  // Empty
   ch.schema = "string data";
   ch.schema_encoding = "ros2msg";
-  EXPECT_FALSE(isUsableChannel(ch));
+  EXPECT_FALSE(classifyChannel(ch).supported);
+}
+
+// --- shared base64 decoder (pj_base64) ---
+
+TEST(Base64Test, KnownVectors) {
+  EXPECT_EQ(PJ::base64::decode(""), "");
+  EXPECT_EQ(PJ::base64::decode("Zg=="), "f");
+  EXPECT_EQ(PJ::base64::decode("Zm8="), "fo");
+  EXPECT_EQ(PJ::base64::decode("Zm9v"), "foo");
+  EXPECT_EQ(PJ::base64::decode("Zm9vYmFy"), "foobar");
+}
+
+TEST(Base64Test, BinarySafe) {
+  // Encodes the 4 bytes {0x00, 0xFF, 0x10, 0x00}; the decoder must preserve the
+  // embedded NULs (a protobuf FileDescriptorSet is arbitrary binary).
+  const std::string decoded = PJ::base64::decode("AP8QAA==");
+  ASSERT_EQ(decoded.size(), 4u);
+  EXPECT_EQ(static_cast<uint8_t>(decoded[0]), 0x00);
+  EXPECT_EQ(static_cast<uint8_t>(decoded[1]), 0xFF);
+  EXPECT_EQ(static_cast<uint8_t>(decoded[2]), 0x10);
+  EXPECT_EQ(static_cast<uint8_t>(decoded[3]), 0x00);
 }
 
 }  // namespace
