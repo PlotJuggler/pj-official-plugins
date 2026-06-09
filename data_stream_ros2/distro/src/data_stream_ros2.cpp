@@ -63,9 +63,10 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
   }
 
   PJ::Status loadConfig(std::string_view config_json) override {
-    if (!config_json.empty()) {
-      (void)dialog_.loadConfig(config_json);
-    }
+    // Forward unconditionally (even on an empty config): dialog_.loadConfig()
+    // both restores any saved selection and starts topic discovery, which must
+    // run on a fresh open too. Mirrors data_stream_mqtt's loadConfig.
+    (void)dialog_.loadConfig(config_json);
     // Extract parser config (e.g. "use_embedded_timestamp") persisted by the
     // host under "_parser_config" so it reaches ensureParserBinding.
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
