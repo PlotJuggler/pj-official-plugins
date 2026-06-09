@@ -63,6 +63,15 @@ class McapDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
+    // Array size row
+    wd.setRange("spinBox", 0, 9999);
+    wd.setValue("spinBox", static_cast<int>(max_array_size_));
+    wd.setChecked("radioClamp", clamp_large_arrays_);
+    wd.setChecked("radioSkip", !clamp_large_arrays_);
+
+    // Timestamp checkbox
+    wd.setChecked("checkBoxUseTimestamp", use_timestamp_);
+
     wd.setChecked("radioPubTime", !use_mcap_log_time_);
     wd.setChecked("radioLogTime", use_mcap_log_time_);
 
@@ -107,6 +116,14 @@ class McapDialog : public PJ::DialogPluginTyped {
     wd.setOkEnabled(!selected_topics_.empty());
 
     return wd.toJson();
+  }
+
+  bool onValueChanged(std::string_view widget_name, int value) override {
+    if (widget_name == "spinBox") {
+      max_array_size_ = static_cast<unsigned>(std::max(0, value));
+      return false;
+    }
+    return false;
   }
 
   bool onIndexChanged(std::string_view widget_name, int index) override {
@@ -180,6 +197,9 @@ class McapDialog : public PJ::DialogPluginTyped {
   std::string saveConfig() const override {
     nlohmann::json cfg;
     cfg["filepath"] = filepath_;
+    cfg["max_array_size"] = max_array_size_;
+    cfg["clamp_large_arrays"] = clamp_large_arrays_;
+    cfg["use_timestamp"] = use_timestamp_;
     cfg["use_mcap_log_time"] = use_mcap_log_time_;
     cfg["selected_topics"] = std::vector<std::string>(selected_topics_.begin(), selected_topics_.end());
     return cfg.dump();
@@ -192,6 +212,9 @@ class McapDialog : public PJ::DialogPluginTyped {
     }
 
     filepath_ = cfg.value("filepath", std::string{});
+    max_array_size_ = cfg.value("max_array_size", 500u);
+    clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
+    use_timestamp_ = cfg.value("use_timestamp", false);
     use_mcap_log_time_ = cfg.value("use_mcap_log_time", false);
 
     selected_topics_.clear();
