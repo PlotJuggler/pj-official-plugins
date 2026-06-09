@@ -9,6 +9,7 @@
 #include <iostream>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <pj_array_policy/array_policy.hpp>
 #include <pj_base/builtin/builtin_object.hpp>
 #include <pj_base/builtin/video_frame_codec.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
@@ -278,8 +279,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     // Load options
     use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
     timestamp_field_name_ = cfg.value("timestamp_field_name", std::string{});
-    max_array_size_ = cfg.value("max_array_size", 0u);
-    clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
+    array_limit_ = pj::array_policy::arrayLimitFromJson(cfg);
 
     // If config contains a compiled schema (from dialog), bind it
     if (cfg.contains("compiled_schema_base64") && cfg["compiled_schema_base64"].is_string() &&
@@ -421,7 +421,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     }
 
     owned_fields_.clear();
-    flattenMessage(*msg, "", false, max_array_size_, clamp_large_arrays_, owned_fields_);
+    flattenMessage(*msg, "", false, array_limit_.max_size, array_limit_.clamp(), owned_fields_);
 
     // Fix up string_view entries now that the vector won't reallocate.
     // During flattenMessage, push_back may have reallocated the vector,
@@ -518,8 +518,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   const gp::FieldDescriptor* timestamp_field_ = nullptr;
   bool use_embedded_timestamp_ = false;
   std::string timestamp_field_name_;  // empty = fallback chain ("timestamp" → "ts")
-  unsigned max_array_size_ = 0;
-  bool clamp_large_arrays_ = true;
+  pj::array_policy::ArrayLimit array_limit_;
 
   std::unordered_map<std::string, PJ::sdk::FieldHandle> field_cache_;
   std::vector<FlattenedField> owned_fields_;
