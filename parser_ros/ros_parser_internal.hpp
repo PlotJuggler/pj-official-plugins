@@ -307,6 +307,12 @@ class RosParser : public PJ::MessageParserPluginBase {
   // sensor_msgs/PointCloud2
   PJ::Expected<PJ::sdk::ObjectRecord> parsePointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
+  // foxglove_msgs/CompressedPointCloud -> sdk::CompressedPointCloud (zero-copy compressed blob)
+  PJ::Expected<PJ::sdk::ObjectRecord> parseFoxgloveCompressedPointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // point_cloud_interfaces/CompressedPointCloud2 -> sdk::CompressedPointCloud (zero-copy compressed blob)
+  PJ::Expected<PJ::sdk::ObjectRecord> parseCompressedPointCloud2(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
   // tf2_msgs/TFMessage -> sdk::FrameTransforms (one per TransformStamped, each
   // carrying its own Header.stamp)
   PJ::Expected<PJ::sdk::ObjectRecord> parseFrameTransforms(PJ::Timestamp ts, PJ::sdk::PayloadView payload);

@@ -1316,6 +1316,125 @@ TEST(RosParserTest, CompressedVideoEmbeddedTimestamp) {
   EXPECT_EQ(vf->timestamp_ns, 5'250'000'000LL);
 }
 
+TEST(RosParserTest, FoxgloveCompressedPointCloudProducesObject) {
+  // foxglove_msgs/CompressedPointCloud. First field is a BARE
+  // builtin_interfaces/Time, then frame_id, a geometry_msgs/Pose (read +
+  // dropped), the compressed uint8[] blob, and finally the format string.
+  static const char* kDef =
+      "builtin_interfaces/Time timestamp\nstring frame_id\ngeometry_msgs/Pose pose\n"
+      "uint8[] data\nstring format\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+      "================\nMSG: geometry_msgs/Pose\n"
+      "geometry_msgs/Point position\ngeometry_msgs/Quaternion orientation\n"
+      "================\nMSG: geometry_msgs/Point\nfloat64 x\nfloat64 y\nfloat64 z\n"
+      "================\nMSG: geometry_msgs/Quaternion\nfloat64 x\nfloat64 y\nfloat64 z\nfloat64 w\n";
+
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("foxglove_msgs/CompressedPointCloud", kDef));
+  EXPECT_EQ(
+      f.handle.classifySchema("foxglove_msgs/CompressedPointCloud", def_span),
+      PJ::sdk::BuiltinObjectType::kCompressedPointCloud);
+
+  const std::vector<uint8_t> blob = {0x44, 0x52, 0x41, 0x43, 0xDE, 0xAD, 0xBE, 0xEF, 0x01};  // "DRAC" + junk
+  auto payload = serializeCdr([&blob](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(7)));     // timestamp.sec
+    enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(static_cast<uint32_t>(42)));  // timestamp.nanosec
+    enc.serializeString("lidar_frame");                                                     // frame_id
+    serializeVector3(enc, 1.0, 2.0, 3.0);                                                   // pose.position (dropped)
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);             // pose.orientation (dropped)
+    enc.serializeUInt32(static_cast<uint32_t>(blob.size()));  // uint8[] data: count
+    for (uint8_t b : blob) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+    enc.serializeString("draco");  // format
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* cloud = std::any_cast<PJ::sdk::CompressedPointCloud>(&rec->object);
+  ASSERT_NE(cloud, nullptr);
+  EXPECT_EQ(cloud->frame_id, "lidar_frame");
+  EXPECT_EQ(cloud->format, "draco");
+  ASSERT_EQ(cloud->data.size(), blob.size());
+  for (size_t i = 0; i < blob.size(); ++i) {
+    EXPECT_EQ(cloud->data.data()[i], blob[i]);
+  }
+  // Zero-copy: the blob span must alias the CDR payload buffer.
+  EXPECT_GE(cloud->data.data(), payload.data());
+  EXPECT_LE(cloud->data.data() + cloud->data.size(), payload.data() + payload.size());
+}
+
+TEST(RosParserTest, CompressedPointCloud2ProducesObject) {
+  // point_cloud_interfaces/CompressedPointCloud2. Header first, then layout
+  // metadata + a PointField[] (all read and discarded), the compressed blob,
+  // is_dense, and finally the format string.
+  static const char* kDef =
+      "std_msgs/Header header\nuint32 height\nuint32 width\nsensor_msgs/PointField[] fields\n"
+      "bool is_bigendian\nuint32 point_step\nuint32 row_step\nuint8[] compressed_data\n"
+      "bool is_dense\nstring format\n"
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+      "================\nMSG: sensor_msgs/PointField\nstring name\nuint32 offset\nuint8 datatype\nuint32 count\n";
+
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("point_cloud_interfaces/CompressedPointCloud2", kDef));
+  EXPECT_EQ(
+      f.handle.classifySchema("point_cloud_interfaces/CompressedPointCloud2", def_span),
+      PJ::sdk::BuiltinObjectType::kCompressedPointCloud);
+
+  const std::vector<uint8_t> blob = {0xCA, 0xFE, 0xBA, 0xBE, 0x10, 0x20, 0x30};
+  auto payload = serializeCdr([&blob](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 11, 500000000, "velodyne");  // header
+    enc.serializeUInt32(1);                           // height
+    enc.serializeUInt32(2048);                        // width
+    // fields[]: two PointField entries (x, y) — read and discarded by the handler.
+    enc.serializeUInt32(2);  // fields count
+    for (const char* fname : {"x", "y"}) {
+      enc.serializeString(fname);                                                          // name
+      enc.serializeUInt32(0);                                                              // offset
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(7)));  // datatype FLOAT32
+      enc.serializeUInt32(1);                                                              // count
+    }
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(0)));  // is_bigendian
+    enc.serializeUInt32(16);                                                             // point_step
+    enc.serializeUInt32(32768);                                                          // row_step
+    enc.serializeUInt32(static_cast<uint32_t>(blob.size()));                             // compressed_data: count
+    for (uint8_t b : blob) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(1)));  // is_dense
+    enc.serializeString("cloudini");                                                     // format
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* cloud = std::any_cast<PJ::sdk::CompressedPointCloud>(&rec->object);
+  ASSERT_NE(cloud, nullptr);
+  EXPECT_EQ(cloud->frame_id, "velodyne");
+  EXPECT_EQ(cloud->format, "cloudini");
+  ASSERT_EQ(cloud->data.size(), blob.size());
+  for (size_t i = 0; i < blob.size(); ++i) {
+    EXPECT_EQ(cloud->data.data()[i], blob[i]);
+  }
+  // Zero-copy: the blob span must alias the CDR payload buffer.
+  EXPECT_GE(cloud->data.data(), payload.data());
+  EXPECT_LE(cloud->data.data() + cloud->data.size(), payload.data() + payload.size());
+}
+
 TEST(RosParserTest, RobotDescriptionTopicProducesObject) {
   RosParserFixture f;
   f.setUp();

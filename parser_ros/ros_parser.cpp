@@ -148,6 +148,19 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kPointCloud,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parsePointCloud}},
+      // foxglove_msgs/CompressedPointCloud — opaque compressed cloud (draco/cloudini/…).
+      // The parser repackages the blob + format; it does not decode. The scalar
+      // route keeps frame_id / format plottable while discarding the data[] blob.
+      {"foxglove_msgs/CompressedPointCloud",
+       {.object_type = ObjectType::kCompressedPointCloud,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseFoxgloveCompressedPointCloud}},
+      // point_cloud_interfaces/CompressedPointCloud2 — the point_cloud_transport
+      // canonical compressed message. Same dual route as above.
+      {"point_cloud_interfaces/CompressedPointCloud2",
+       {.object_type = ObjectType::kCompressedPointCloud,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseCompressedPointCloud2}},
       // TF keeps its specialized scalar flattening (handleTFMessage) AND emits a
       // canonical FrameTransforms object for the 3D scene's TF buffer.
       {"tf2_msgs/TFMessage",
