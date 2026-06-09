@@ -156,7 +156,6 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
   bool onValueChanged(std::string_view widget_name, int value) override {
     if (widget_name == "spinBoxArraySize") {
       array_limit_.max_size = static_cast<uint32_t>(value);
-      return false;
     }
     return false;
   }

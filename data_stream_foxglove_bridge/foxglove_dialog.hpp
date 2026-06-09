@@ -197,11 +197,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     nlohmann::json cfg;
     cfg["address"] = address_;
     cfg["port"] = port_;
-    pj::array_policy::ArrayLimit array_limit;
-    array_limit.max_size = static_cast<uint32_t>(max_array_size_);
-    array_limit.policy =
-        clamp_large_arrays_ ? pj::array_policy::ArrayPolicy::kClamp : pj::array_policy::ArrayPolicy::kSkip;
-    pj::array_policy::arrayLimitToJson(cfg, array_limit);
+    pj::array_policy::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), clamp_large_arrays_);
     cfg["use_timestamp"] = use_timestamp_;
 
     // Use the snapshot — channels_ may be cleared by disconnect()

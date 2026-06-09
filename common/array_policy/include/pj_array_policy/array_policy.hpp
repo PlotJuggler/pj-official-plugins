@@ -112,4 +112,12 @@ inline void arrayLimitToJson(nlohmann::json& cfg, const ArrayLimit& limit) {
   cfg["discard_large_arrays"] = !limit.clamp();
 }
 
+/// Convenience overload for call sites that still carry the legacy loose
+/// (max_size, clamp) pair instead of an ArrayLimit. Mirrors ArrayLimit::clamp()
+/// on the write side so each site avoids re-deriving the cast and the
+/// clamp/skip enum mapping by hand.
+inline void arrayLimitToJson(nlohmann::json& cfg, uint32_t max_size, bool clamp) {
+  arrayLimitToJson(cfg, ArrayLimit{.max_size = max_size, .policy = clamp ? ArrayPolicy::kClamp : ArrayPolicy::kSkip});
+}
+
 }  // namespace pj::array_policy

@@ -227,11 +227,7 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
         {"boolean_strings_to_number", boolean_strings_to_number_},
         {"remove_suffix_from_strings", remove_suffix_from_strings_},
     };
-    pj::array_policy::ArrayLimit array_limit;
-    array_limit.max_size = static_cast<uint32_t>(max_array_size_);
-    array_limit.policy =
-        discard_large_arrays_ ? pj::array_policy::ArrayPolicy::kSkip : pj::array_policy::ArrayPolicy::kClamp;
-    pj::array_policy::arrayLimitToJson(parser_config, array_limit);
+    pj::array_policy::arrayLimitToJson(parser_config, static_cast<uint32_t>(max_array_size_), !discard_large_arrays_);
     cfg["parser_config"] = parser_config;
     return cfg.dump();
   }
