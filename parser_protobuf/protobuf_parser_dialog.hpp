@@ -7,8 +7,8 @@
 #include <fstream>
 #include <memory>
 #include <nlohmann/json.hpp>
-#include <pj_base64/base64.hpp>
 #include <pj_array_policy/array_policy.hpp>
+#include <pj_base64/base64.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <sstream>

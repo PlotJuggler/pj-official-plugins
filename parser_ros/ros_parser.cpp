@@ -136,6 +136,14 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kImage,  // unified Image distinguishes by encoding string.
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseCompressedImage}},
+      // CameraInfo is consumed as a calibration object (intrinsics + distortion)
+      // so the 2D image view can rectify frames and line up annotation overlays;
+      // the consumer pairs it with the image by frame_id. The scalar route keeps
+      // the small matrices (K/D/R/P, width, height) plottable.
+      {"sensor_msgs/CameraInfo",
+       {.object_type = ObjectType::kCameraInfo,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseCameraInfo}},
       // foxglove_msgs/CompressedVideo — a single compressed video frame
       // (h264/h265/vp9/av1). The scalar route is included so the object-ingest
       // path runs (an object-only entry would abort the push before the object
@@ -184,13 +192,29 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kOccupancyGridUpdate,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseOccupancyGridUpdate}},
-      // Object-only: markers are 3D scene content, not scalar columns. One
-      // SceneEntity per Marker (ADD/MODIFY) or a SceneEntityDeletion
-      // (DELETE/DELETEALL). Per-message/stateless — see MARKER_NOTES.md.
+      // Markers are 3D scene content with no meaningful scalar columns, but they
+      // still need a slim parse_scalars: an object-only entry makes the host's
+      // eager-scalar ingest abort the push on any non-kPureLazy policy (e.g. live
+      // streams, which set no override), silently dropping the object.
+      // parseScalarsObjectOnly returns an empty row so the SceneEntities object
+      // ingests under ANY policy. One SceneEntity per Marker (ADD/MODIFY) or a
+      // SceneEntityDeletion (DELETE/DELETEALL) — see MARKER_NOTES.md.
       {"visualization_msgs/Marker",
-       {.object_type = ObjectType::kSceneEntities, .parse_object = &RosParser::parseMarker}},
+       {.object_type = ObjectType::kSceneEntities,
+        .parse_scalars = &RosParser::parseScalarsObjectOnly,
+        .parse_object = &RosParser::parseMarker}},
       {"visualization_msgs/MarkerArray",
-       {.object_type = ObjectType::kSceneEntities, .parse_object = &RosParser::parseMarkerArray}},
+       {.object_type = ObjectType::kSceneEntities,
+        .parse_scalars = &RosParser::parseScalarsObjectOnly,
+        .parse_object = &RosParser::parseMarkerArray}},
+      // YOLO detections become 2D image overlays (boxes + labels + mask outline +
+      // keypoints). The slim parse_scalars emits num_detections so the overlay
+      // ingests under any policy (same ingest reason as the markers above) and
+      // yields a plottable count. Third-party message, net-new — see YOLO_NOTES.md.
+      {"yolo_msgs/DetectionArray",
+       {.object_type = ObjectType::kImageAnnotations,
+        .parse_scalars = &RosParser::parseYoloScalars,
+        .parse_object = &RosParser::parseYoloDetectionArray}},
 
       // ----- Specialized scalar schemas -----
       // wrapVoidHandler<Handler> is a member-fn-template; its address is a
@@ -528,6 +552,21 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsDisca
       discard_large_arrays_ ? RosMsgParser::Parser::DISCARD_LARGE_ARRAYS : RosMsgParser::Parser::KEEP_LARGE_ARRAYS;
   parser_->setMaxArrayPolicy(restored, max_array_size_);
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Slim scalar route for object-only schemas (markers): no meaningful scalar
+// columns, but a non-null parse_scalars is required so the host's eager-scalar
+// ingest path (RosParser::parse -> parseScalars) succeeds and the canonical
+// object reaches the ObjectStore under ANY ObjectIngestPolicy, not only
+// kPureLazy. Returns an empty field set (parse() short-circuits to ok on empty
+// fields, so no scalar row is written). Decodes nothing — zero cost, zero risk.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsObjectOnly(
+    PJ::Timestamp ts, PJ::Span<const uint8_t> /*payload*/) {
+  current_timestamp_ = ts;
+  return std::vector<PJ::sdk::NamedFieldValue>{};
 }
 
 // ---------------------------------------------------------------------------
