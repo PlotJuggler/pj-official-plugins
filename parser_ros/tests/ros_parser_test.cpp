@@ -1229,6 +1229,542 @@ TEST(RosParserTest, OccupancyGridProducesObject) {
   }
 }
 
+TEST(RosParserTest, CameraInfoProducesObject) {
+  static const char* kCameraInfoDef =
+      "std_msgs/Header header\nuint32 height\nuint32 width\nstring distortion_model\n"
+      "float64[] d\nfloat64[9] k\nfloat64[9] r\nfloat64[12] p\n"
+      "uint32 binning_x\nuint32 binning_y\nsensor_msgs/RegionOfInterest roi\n"
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+      "================\nMSG: sensor_msgs/RegionOfInterest\n"
+      "uint32 x_offset\nuint32 y_offset\nuint32 height\nuint32 width\nbool do_rectify\n";
+
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kCameraInfoDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/CameraInfo", kCameraInfoDef));
+  EXPECT_EQ(f.handle.classifySchema("sensor_msgs/CameraInfo", def_span), PJ::sdk::BuiltinObjectType::kCameraInfo);
+
+  const std::vector<double> kD = {0.1, 0.2, 0.3, 0.4, 0.5};
+  const std::vector<double> kK = {500.0, 0.0, 320.0, 0.0, 500.0, 240.0, 0.0, 0.0, 1.0};
+  const std::vector<double> kR = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  const std::vector<double> kP = {500.0, 0, 320.0, 0, 0, 500.0, 240.0, 0, 0, 0, 1.0, 0};
+
+  // parseCameraInfo reads positionally and stops after P, so the payload need
+  // only carry header..P (binning/roi are skipped by the single-message decode).
+  auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 5, 0, "camera_optical");
+    enc.serializeUInt32(480);  // height
+    enc.serializeUInt32(640);  // width
+    enc.serializeString("plumb_bob");
+    enc.serializeUInt32(static_cast<uint32_t>(kD.size()));  // D is a float64[] sequence
+    for (double d : kD) {
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(d));
+    }
+    for (double k : kK) {  // K/R/P are fixed arrays — no count
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(k));
+    }
+    for (double r : kR) {
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(r));
+    }
+    for (double p : kP) {
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(p));
+    }
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* ci = std::any_cast<PJ::sdk::CameraInfo>(&rec->object);
+  ASSERT_NE(ci, nullptr);
+  EXPECT_EQ(ci->frame_id, "camera_optical");
+  EXPECT_EQ(ci->width, 640u);
+  EXPECT_EQ(ci->height, 480u);
+  EXPECT_EQ(ci->distortion_model, "plumb_bob");
+  ASSERT_EQ(ci->D.size(), 5u);
+  EXPECT_DOUBLE_EQ(ci->D[0], 0.1);
+  EXPECT_DOUBLE_EQ(ci->D[4], 0.5);
+  EXPECT_DOUBLE_EQ(ci->K[0], 500.0);
+  EXPECT_DOUBLE_EQ(ci->K[2], 320.0);  // cx
+  EXPECT_DOUBLE_EQ(ci->R[0], 1.0);
+  EXPECT_DOUBLE_EQ(ci->P[0], 500.0);
+  EXPECT_DOUBLE_EQ(ci->P[5], 500.0);  // fy
+}
+
+// ===== yolo_msgs/DetectionArray -> sdk::ImageAnnotations =====
+
+// Full nested .msg definition for yolo_msgs/DetectionArray (mgonzs13/yolo_ros).
+// Field order here must match what parseYoloDetectionArray reads positionally.
+static const char* kYoloDetectionArrayDef =
+    "std_msgs/Header header\nyolo_msgs/Detection[] detections\n"
+    "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+    "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+    "================\nMSG: yolo_msgs/Detection\n"
+    "int32 class_id\nstring class_name\nfloat64 score\nstring id\n"
+    "yolo_msgs/BoundingBox2D bbox\nyolo_msgs/BoundingBox3D bbox3d\nyolo_msgs/Mask mask\n"
+    "yolo_msgs/KeyPoint2DArray keypoints\nyolo_msgs/KeyPoint3DArray keypoints3d\n"
+    "================\nMSG: yolo_msgs/BoundingBox2D\nyolo_msgs/Pose2D center\nyolo_msgs/Vector2 size\n"
+    "================\nMSG: yolo_msgs/Pose2D\nyolo_msgs/Point2D position\nfloat64 theta\n"
+    "================\nMSG: yolo_msgs/Point2D\nfloat64 x\nfloat64 y\n"
+    "================\nMSG: yolo_msgs/Vector2\nfloat64 x\nfloat64 y\n"
+    "================\nMSG: yolo_msgs/BoundingBox3D\ngeometry_msgs/Pose center\ngeometry_msgs/Vector3 size\nstring "
+    "frame_id\n"
+    "================\nMSG: geometry_msgs/Pose\ngeometry_msgs/Point position\ngeometry_msgs/Quaternion orientation\n"
+    "================\nMSG: geometry_msgs/Point\nfloat64 x\nfloat64 y\nfloat64 z\n"
+    "================\nMSG: geometry_msgs/Quaternion\nfloat64 x\nfloat64 y\nfloat64 z\nfloat64 w\n"
+    "================\nMSG: geometry_msgs/Vector3\nfloat64 x\nfloat64 y\nfloat64 z\n"
+    "================\nMSG: yolo_msgs/Mask\nint32 height\nint32 width\nyolo_msgs/Point2D[] data\n"
+    "================\nMSG: yolo_msgs/KeyPoint2DArray\nyolo_msgs/KeyPoint2D[] data\n"
+    "================\nMSG: yolo_msgs/KeyPoint2D\nint32 id\nyolo_msgs/Point2D point\nfloat64 score\n"
+    "================\nMSG: yolo_msgs/KeyPoint3DArray\nyolo_msgs/KeyPoint3D[] data\nstring frame_id\n"
+    "================\nMSG: yolo_msgs/KeyPoint3D\nint32 id\ngeometry_msgs/Point point\nfloat64 score\n";
+
+namespace {
+
+void serializeF64(RosMsgParser::NanoCDR_Serializer& enc, double v) {
+  enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(v));
+}
+void serializeI32(RosMsgParser::NanoCDR_Serializer& enc, int32_t v) {
+  enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(v));
+}
+
+// Serializes one yolo_msgs/Detection exactly as parseYoloDetectionArray reads it.
+struct YoloDet {
+  int32_t class_id = 0;
+  std::string class_name;
+  double score = 0.0;
+  double cx = 0.0, cy = 0.0, sx = 0.0, sy = 0.0;
+  std::vector<std::pair<double, double>> mask;
+  std::vector<std::pair<double, double>> keypoints2d;
+};
+
+void serializeYoloDetection(RosMsgParser::NanoCDR_Serializer& enc, const YoloDet& d) {
+  serializeI32(enc, d.class_id);
+  enc.serializeString(d.class_name);
+  serializeF64(enc, d.score);
+  enc.serializeString("");  // tracking id
+  // bbox2d = Pose2D{Point2D{x,y}, theta} + Vector2{x,y}
+  serializeF64(enc, d.cx);
+  serializeF64(enc, d.cy);
+  serializeF64(enc, 0.0);  // theta
+  serializeF64(enc, d.sx);
+  serializeF64(enc, d.sy);
+  // bbox3d = Pose{Point(3)+Quaternion(4)} + Vector3(3) + frame_id
+  for (int k = 0; k < 10; ++k) {
+    serializeF64(enc, 0.0);
+  }
+  enc.serializeString("");  // bbox3d.frame_id
+  // mask = int32 height + int32 width + Point2D[] data
+  serializeI32(enc, 480);
+  serializeI32(enc, 640);
+  enc.serializeUInt32(static_cast<uint32_t>(d.mask.size()));
+  for (const auto& p : d.mask) {
+    serializeF64(enc, p.first);
+    serializeF64(enc, p.second);
+  }
+  // keypoints2d = KeyPoint2D[] {int32 id, Point2D{x,y}, float64 score}
+  enc.serializeUInt32(static_cast<uint32_t>(d.keypoints2d.size()));
+  for (const auto& p : d.keypoints2d) {
+    serializeI32(enc, 0);  // id
+    serializeF64(enc, p.first);
+    serializeF64(enc, p.second);
+    serializeF64(enc, 0.5);  // score
+  }
+  // keypoints3d = KeyPoint3D[] (empty) + frame_id
+  enc.serializeUInt32(0);
+  enc.serializeString("");  // keypoints3d.frame_id
+}
+
+}  // namespace
+
+TEST(RosParserTest, YoloDetectionArrayProducesImageAnnotations) {
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kYoloDetectionArrayDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("yolo_msgs/DetectionArray", kYoloDetectionArrayDef));
+  EXPECT_EQ(
+      f.handle.classifySchema("yolo_msgs/DetectionArray", def_span), PJ::sdk::BuiltinObjectType::kImageAnnotations);
+
+  YoloDet det;
+  det.class_id = 1;
+  det.class_name = "person";
+  det.score = 0.9;
+  det.cx = 100.0;
+  det.cy = 50.0;
+  det.sx = 40.0;
+  det.sy = 20.0;
+  det.mask = {{10.0, 10.0}, {20.0, 10.0}, {15.0, 25.0}};
+  det.keypoints2d = {{12.0, 13.0}, {14.0, 15.0}};
+
+  auto payload = serializeCdr([&det](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 7, 0, "camera_optical");
+    enc.serializeUInt32(1);  // one detection
+    serializeYoloDetection(enc, det);
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* ann = std::any_cast<PJ::sdk::ImageAnnotations>(&rec->object);
+  ASSERT_NE(ann, nullptr);
+
+  // The handler uses the Header.frame_id as the best-available image-topic hint.
+  EXPECT_EQ(ann->image_topic, "camera_optical");
+
+  // Box (LineLoop of 4 corners) + mask outline (LineLoop) = 2 PointsAnnotations.
+  ASSERT_EQ(ann->points.size(), 2u);
+  const auto& box = ann->points[0];
+  EXPECT_EQ(box.topology, PJ::sdk::AnnotationTopology::kLineLoop);
+  ASSERT_EQ(box.points.size(), 4u);
+  EXPECT_DOUBLE_EQ(box.points[0].x, 80.0);   // cx - sx/2
+  EXPECT_DOUBLE_EQ(box.points[0].y, 40.0);   // cy - sy/2
+  EXPECT_DOUBLE_EQ(box.points[2].x, 120.0);  // cx + sx/2
+  EXPECT_DOUBLE_EQ(box.points[2].y, 60.0);   // cy + sy/2
+
+  const auto& mask = ann->points[1];
+  EXPECT_EQ(mask.topology, PJ::sdk::AnnotationTopology::kLineLoop);
+  ASSERT_EQ(mask.points.size(), 3u);
+  EXPECT_DOUBLE_EQ(mask.points[0].x, 10.0);
+  EXPECT_DOUBLE_EQ(mask.points[2].y, 25.0);
+
+  // Label.
+  ASSERT_EQ(ann->texts.size(), 1u);
+  EXPECT_EQ(ann->texts[0].text, "person 0.90");
+  EXPECT_DOUBLE_EQ(ann->texts[0].position.x, 80.0);
+
+  // Two keypoints -> two filled circles.
+  ASSERT_EQ(ann->circles.size(), 2u);
+  EXPECT_DOUBLE_EQ(ann->circles[0].center.x, 12.0);
+  EXPECT_DOUBLE_EQ(ann->circles[1].center.y, 15.0);
+}
+
+TEST(RosParserTest, YoloDetectionArrayBoxOnlyNoMaskNoKeypoints) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("yolo_msgs/DetectionArray", kYoloDetectionArrayDef));
+
+  YoloDet a;
+  a.class_id = 0;
+  a.class_name = "cat";
+  a.score = 0.5;
+  a.cx = 200.0;
+  a.cy = 200.0;
+  a.sx = 10.0;
+  a.sy = 10.0;
+  YoloDet b = a;
+  b.class_name = "dog";
+
+  auto payload = serializeCdr([&a, &b](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 1, 0, "cam");
+    enc.serializeUInt32(2);  // two detections
+    serializeYoloDetection(enc, a);
+    serializeYoloDetection(enc, b);
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(99, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* ann = std::any_cast<PJ::sdk::ImageAnnotations>(&rec->object);
+  ASSERT_NE(ann, nullptr);
+  // Two detections, box only (no mask, no keypoints).
+  EXPECT_EQ(ann->points.size(), 2u);
+  EXPECT_EQ(ann->texts.size(), 2u);
+  EXPECT_TRUE(ann->circles.empty());
+  EXPECT_EQ(ann->texts[0].text, "cat 0.50");
+  EXPECT_EQ(ann->texts[1].text, "dog 0.50");
+}
+
+// Scalar companion for the object-only YOLO entry. Without a parse_scalars, the
+// host's eager-scalar ingest (parse() -> parseScalars) fails and aborts the push
+// on any non-kPureLazy policy (e.g. live streams), silently dropping the overlay.
+// The slim companion emits num_detections so the object ingests under any policy.
+TEST(RosParserTest, YoloDetectionArrayScalarRouteEmitsNumDetections) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("yolo_msgs/DetectionArray", kYoloDetectionArrayDef));
+
+  YoloDet d;
+  d.class_id = 1;
+  d.class_name = "person";
+  d.score = 0.9;
+  d.cx = 100.0;
+  d.cy = 50.0;
+  d.sx = 40.0;
+  d.sy = 20.0;
+  auto payload = serializeCdr([&d](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 7, 0, "camera_optical");
+    enc.serializeUInt32(2);  // two detections
+    serializeYoloDetection(enc, d);
+    serializeYoloDetection(enc, d);
+  });
+
+  // parse() drives the scalar route; it would FAIL (push abort) without the
+  // companion parse_scalars on this object-only schema.
+  ASSERT_TRUE(f.parse(payload, 1234));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto* num = PJ::sdk::testing::ParserWriteRecorder::findField(f.recorder.rows()[0], "num_detections");
+  ASSERT_NE(num, nullptr);
+  EXPECT_DOUBLE_EQ(num->numeric, 2.0);
+}
+
+// frame_id producer: parseImage must carry Header.frame_id into the canonical
+// sdk::Image so a consumer can match the image to its CameraInfo / place it in 3D.
+TEST(RosParserTest, ImageObjectCarriesFrameId) {
+  static const char* kImageDef =
+      "std_msgs/Header header\nuint32 height\nuint32 width\nstring encoding\n"
+      "uint8 is_bigendian\nuint32 step\nuint8[] data\n"
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/Image", kImageDef));
+
+  const std::vector<uint8_t> pixels = {0x10, 0x20, 0x30, 0x40};  // 2x2 mono8 = step(2) * height(2)
+  auto payload = serializeCdr([&pixels](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 7, 0, "camera_link");
+    enc.serializeUInt32(2);  // height
+    enc.serializeUInt32(2);  // width
+    enc.serializeString("mono8");
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(0)));  // is_bigendian
+    enc.serializeUInt32(2);                                                              // step
+    enc.serializeUInt32(static_cast<uint32_t>(pixels.size()));                           // uint8[] data: count
+    for (uint8_t b : pixels) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* img = std::any_cast<PJ::sdk::Image>(&rec->object);
+  ASSERT_NE(img, nullptr);
+  EXPECT_EQ(img->frame_id, "camera_link");
+  EXPECT_EQ(img->width, 2u);
+  EXPECT_EQ(img->height, 2u);
+  EXPECT_EQ(img->encoding, "mono8");
+}
+
+TEST(RosParserTest, CompressedVideoProducesObject) {
+  // foxglove_msgs/CompressedVideo. The first field is a BARE
+  // builtin_interfaces/Time (sec, nanosec) — NOT a std_msgs/Header — followed
+  // by frame_id, the compressed uint8[] data, and the format string.
+  static const char* kCompressedVideoDef =
+      "builtin_interfaces/Time timestamp\nstring frame_id\nuint8[] data\nstring format\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kCompressedVideoDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("foxglove_msgs/CompressedVideo", kCompressedVideoDef));
+  EXPECT_EQ(
+      f.handle.classifySchema("foxglove_msgs/CompressedVideo", def_span), PJ::sdk::BuiltinObjectType::kVideoFrame);
+
+  // A small, recognizable H.264-ish blob. Only its verbatim round-trip and
+  // zero-copy aliasing matter here.
+  const std::vector<uint8_t> bitstream = {0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0, 0x1E, 0xDE, 0xAD, 0xBE, 0xEF};
+  auto payload = serializeCdr([&bitstream](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(7)));     // timestamp.sec
+    enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(static_cast<uint32_t>(42)));  // timestamp.nanosec
+    enc.serializeString("camera_optical");                                                  // frame_id
+    enc.serializeUInt32(static_cast<uint32_t>(bitstream.size()));                           // uint8[] data: count
+    for (uint8_t b : bitstream) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+    enc.serializeString("h264");  // format
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* vf = std::any_cast<PJ::sdk::VideoFrame>(&rec->object);
+  ASSERT_NE(vf, nullptr);
+  EXPECT_EQ(vf->frame_id, "camera_optical");
+  EXPECT_EQ(vf->format, "h264");
+  ASSERT_EQ(vf->data.size(), bitstream.size());
+  for (size_t i = 0; i < bitstream.size(); ++i) {
+    EXPECT_EQ(vf->data.data()[i], bitstream[i]);
+  }
+  // Zero-copy: the decoded data span must alias the CDR payload buffer, not a
+  // fresh copy. The bytes live inside `payload` at the uint8[] body offset.
+  EXPECT_GE(vf->data.data(), payload.data());
+  EXPECT_LE(vf->data.data() + vf->data.size(), payload.data() + payload.size());
+}
+
+TEST(RosParserTest, CompressedVideoEmbeddedTimestamp) {
+  static const char* kCompressedVideoDef =
+      "builtin_interfaces/Time timestamp\nstring frame_id\nuint8[] data\nstring format\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  ASSERT_TRUE(f.bindSchema("foxglove_msgs/CompressedVideo", kCompressedVideoDef));
+
+  const std::vector<uint8_t> bitstream = {0x01, 0x02, 0x03};
+  auto payload = serializeCdr([&bitstream](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(5)));            // sec
+    enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(static_cast<uint32_t>(250000000)));  // nanosec
+    enc.serializeString("cam");
+    enc.serializeUInt32(static_cast<uint32_t>(bitstream.size()));
+    for (uint8_t b : bitstream) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+    enc.serializeString("av1");
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(9999, view);
+  ASSERT_TRUE(rec.has_value());
+  // 5s + 250ms embedded -> 5'250'000'000 ns, overriding the host ts (9999).
+  ASSERT_TRUE(rec->ts.has_value());
+  EXPECT_EQ(*rec->ts, 5'250'000'000LL);
+
+  const auto* vf = std::any_cast<PJ::sdk::VideoFrame>(&rec->object);
+  ASSERT_NE(vf, nullptr);
+  EXPECT_EQ(vf->format, "av1");
+  EXPECT_EQ(vf->timestamp_ns, 5'250'000'000LL);
+}
+
+TEST(RosParserTest, FoxgloveCompressedPointCloudProducesObject) {
+  // foxglove_msgs/CompressedPointCloud. First field is a BARE
+  // builtin_interfaces/Time, then frame_id, a geometry_msgs/Pose (read +
+  // dropped), the compressed uint8[] blob, and finally the format string.
+  static const char* kDef =
+      "builtin_interfaces/Time timestamp\nstring frame_id\ngeometry_msgs/Pose pose\n"
+      "uint8[] data\nstring format\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+      "================\nMSG: geometry_msgs/Pose\n"
+      "geometry_msgs/Point position\ngeometry_msgs/Quaternion orientation\n"
+      "================\nMSG: geometry_msgs/Point\nfloat64 x\nfloat64 y\nfloat64 z\n"
+      "================\nMSG: geometry_msgs/Quaternion\nfloat64 x\nfloat64 y\nfloat64 z\nfloat64 w\n";
+
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("foxglove_msgs/CompressedPointCloud", kDef));
+  EXPECT_EQ(
+      f.handle.classifySchema("foxglove_msgs/CompressedPointCloud", def_span),
+      PJ::sdk::BuiltinObjectType::kCompressedPointCloud);
+
+  const std::vector<uint8_t> blob = {0x44, 0x52, 0x41, 0x43, 0xDE, 0xAD, 0xBE, 0xEF, 0x01};  // "DRAC" + junk
+  auto payload = serializeCdr([&blob](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(7)));     // timestamp.sec
+    enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(static_cast<uint32_t>(42)));  // timestamp.nanosec
+    enc.serializeString("lidar_frame");                                                     // frame_id
+    serializeVector3(enc, 1.0, 2.0, 3.0);                                                   // pose.position (dropped)
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);             // pose.orientation (dropped)
+    enc.serializeUInt32(static_cast<uint32_t>(blob.size()));  // uint8[] data: count
+    for (uint8_t b : blob) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+    enc.serializeString("draco");  // format
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* cloud = std::any_cast<PJ::sdk::CompressedPointCloud>(&rec->object);
+  ASSERT_NE(cloud, nullptr);
+  EXPECT_EQ(cloud->frame_id, "lidar_frame");
+  EXPECT_EQ(cloud->format, "draco");
+  ASSERT_EQ(cloud->data.size(), blob.size());
+  for (size_t i = 0; i < blob.size(); ++i) {
+    EXPECT_EQ(cloud->data.data()[i], blob[i]);
+  }
+  // Zero-copy: the blob span must alias the CDR payload buffer.
+  EXPECT_GE(cloud->data.data(), payload.data());
+  EXPECT_LE(cloud->data.data() + cloud->data.size(), payload.data() + payload.size());
+}
+
+TEST(RosParserTest, CompressedPointCloud2ProducesObject) {
+  // point_cloud_interfaces/CompressedPointCloud2. Header first, then layout
+  // metadata + a PointField[] (all read and discarded), the compressed blob,
+  // is_dense, and finally the format string.
+  static const char* kDef =
+      "std_msgs/Header header\nuint32 height\nuint32 width\nsensor_msgs/PointField[] fields\n"
+      "bool is_bigendian\nuint32 point_step\nuint32 row_step\nuint8[] compressed_data\n"
+      "bool is_dense\nstring format\n"
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+      "================\nMSG: sensor_msgs/PointField\nstring name\nuint32 offset\nuint8 datatype\nuint32 count\n";
+
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("point_cloud_interfaces/CompressedPointCloud2", kDef));
+  EXPECT_EQ(
+      f.handle.classifySchema("point_cloud_interfaces/CompressedPointCloud2", def_span),
+      PJ::sdk::BuiltinObjectType::kCompressedPointCloud);
+
+  const std::vector<uint8_t> blob = {0xCA, 0xFE, 0xBA, 0xBE, 0x10, 0x20, 0x30};
+  auto payload = serializeCdr([&blob](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 11, 500000000, "velodyne");  // header
+    enc.serializeUInt32(1);                           // height
+    enc.serializeUInt32(2048);                        // width
+    // fields[]: two PointField entries (x, y) — read and discarded by the handler.
+    enc.serializeUInt32(2);  // fields count
+    for (const char* fname : {"x", "y"}) {
+      enc.serializeString(fname);                                                          // name
+      enc.serializeUInt32(0);                                                              // offset
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(7)));  // datatype FLOAT32
+      enc.serializeUInt32(1);                                                              // count
+    }
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(0)));  // is_bigendian
+    enc.serializeUInt32(16);                                                             // point_step
+    enc.serializeUInt32(32768);                                                          // row_step
+    enc.serializeUInt32(static_cast<uint32_t>(blob.size()));                             // compressed_data: count
+    for (uint8_t b : blob) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(1)));  // is_dense
+    enc.serializeString("cloudini");                                                     // format
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* cloud = std::any_cast<PJ::sdk::CompressedPointCloud>(&rec->object);
+  ASSERT_NE(cloud, nullptr);
+  EXPECT_EQ(cloud->frame_id, "velodyne");
+  EXPECT_EQ(cloud->format, "cloudini");
+  ASSERT_EQ(cloud->data.size(), blob.size());
+  for (size_t i = 0; i < blob.size(); ++i) {
+    EXPECT_EQ(cloud->data.data()[i], blob[i]);
+  }
+  // Zero-copy: the blob span must alias the CDR payload buffer.
+  EXPECT_GE(cloud->data.data(), payload.data());
+  EXPECT_LE(cloud->data.data() + cloud->data.size(), payload.data() + payload.size());
+}
+
 TEST(RosParserTest, RobotDescriptionTopicProducesObject) {
   RosParserFixture f;
   f.setUp();

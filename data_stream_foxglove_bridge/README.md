@@ -8,8 +8,17 @@ server and streams real-time data via delegated ingest.
 - WebSocket connection with configurable address and port
 - Automatic channel discovery via Foxglove `advertise` protocol
 - Topic filtering by name in the dialog
-- Parser delegation based on schema encoding (`ros2msg` or `omgidl` over CDR)
+- Per-channel parser delegation by encoding:
+  - `ros2msg` / `omgidl` over CDR → `parser_ros`
+  - `protobuf` (binary `FileDescriptorSet` schema, base64-encoded in the advertise) → `parser_protobuf`
 - Configurable array size limits and embedded timestamp usage
+
+> **Note:** protobuf routing is an intentional, additive enhancement beyond the
+> upstream PlotJuggler plugin, which handled only CDR/ros2msg. The Foxglove
+> WebSocket protocol is multi-encoding, so each channel is classified and routed
+> to the matching parser (`classifyChannel` in `foxglove_protocol.hpp`). Encodings
+> with no parser yet (`jsonschema`, `flatbuffer`) are reported as a visible
+> warning instead of being silently dropped.
 
 ## Configuration
 

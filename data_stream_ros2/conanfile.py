@@ -17,7 +17,7 @@ class DataStreamRos2Conan(ConanFile):
     # rclcpp / rosidl_typesupport_cpp / rosidl_typesupport_introspection_cpp
     # come from the ROS overlay (osrf/ros image), not Conan.
     requires = (
-        f"plotjuggler_core/{_SDK_VERSION}",
+        f"plotjuggler_sdk/{_SDK_VERSION}",
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
     )

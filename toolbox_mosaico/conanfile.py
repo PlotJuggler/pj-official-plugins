@@ -1,4 +1,17 @@
+import os
+
 from conan import ConanFile
+
+# Single source of truth for the plotjuggler_sdk version: the SDK_VERSION file at the
+# repo root (read live), shared by the root recipe and every plugin recipe. Edit it with
+# scripts/bump_core_version.py. Mosaico's cursor-aware query-assist needs the caret dialog
+# SDK (onCodeChangedWithCursor / codeChanged(code,cursor) / codeCursor) that landed in
+# 0.5.1, which the repo-wide pin (now 0.6.0) comfortably satisfies.
+_SDK_VERSION = (
+    open(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "SDK_VERSION"))
+    .read()
+    .strip()
+)
 
 
 class ToolboxMosaicoConan(ConanFile):
@@ -7,17 +20,13 @@ class ToolboxMosaicoConan(ConanFile):
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain"
     requires = (
-        # Mosaico's cursor-aware query-assist needs the caret dialog SDK
-        # (onCodeChangedWithCursor / codeChanged(code,cursor) / codeCursor)
-        # that landed in 0.5.1, so the floor is 0.5.1 — a bare 0.5.0 won't
-        # compile. The rest of the repo is still on [~0.4].
-        "plotjuggler_core/[>=0.5.1 <0.6]",
+        f"plotjuggler_sdk/{_SDK_VERSION}",
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
         "arrow/23.0.1",
         "lua/5.4.6",
         "sol2/3.5.0",
-        # fmt required transitively by plotjuggler_core's pj_plugins
+        # fmt required transitively by plotjuggler_sdk's pj_plugins
         "fmt/12.1.0",
     )
     default_options = {

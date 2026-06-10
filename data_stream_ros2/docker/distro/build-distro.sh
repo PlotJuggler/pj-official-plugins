@@ -40,6 +40,10 @@ elif [[ -n "${CORE_REPO_URL:-}" ]]; then
   # NOTE: must use --add — plain `git config key value` replaces the value, so
   # registering two insteadOf entries under the same URL key requires --add or
   # only the last one survives (and SSH/HTTPS forms stop being interchangeable).
+  git config --global --add url."${CORE_REPO_URL}".insteadOf "git@github.com:PlotJuggler/plotjuggler_sdk.git"
+  git config --global --add url."${CORE_REPO_URL}".insteadOf "https://github.com/PlotJuggler/plotjuggler_sdk.git"
+  # Keep the pre-rename URLs too: plotjuggler_core was renamed to plotjuggler_sdk,
+  # but older checkouts / GitHub redirects may still resolve the legacy name.
   git config --global --add url."${CORE_REPO_URL}".insteadOf "git@github.com:PlotJuggler/plotjuggler_core.git"
   git config --global --add url."${CORE_REPO_URL}".insteadOf "https://github.com/PlotJuggler/plotjuggler_core.git"
 elif [[ -n "${SSH_AUTH_SOCK:-}" ]]; then

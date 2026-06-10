@@ -1,6 +1,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <functional>
+#include <pj_array_policy/array_policy.hpp>
 #include <string>
 
 #include "ros_parser_internal.hpp"
@@ -135,10 +136,40 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kImage,  // unified Image distinguishes by encoding string.
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseCompressedImage}},
+      // CameraInfo is consumed as a calibration object (intrinsics + distortion)
+      // so the 2D image view can rectify frames and line up annotation overlays;
+      // the consumer pairs it with the image by frame_id. The scalar route keeps
+      // the small matrices (K/D/R/P, width, height) plottable.
+      {"sensor_msgs/CameraInfo",
+       {.object_type = ObjectType::kCameraInfo,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseCameraInfo}},
+      // foxglove_msgs/CompressedVideo — a single compressed video frame
+      // (h264/h265/vp9/av1). The scalar route is included so the object-ingest
+      // path runs (an object-only entry would abort the push before the object
+      // route fires); it discards the large data[] blob and keeps frame_id /
+      // format as plottable columns, mirroring the Image entries.
+      {"foxglove_msgs/CompressedVideo",
+       {.object_type = ObjectType::kVideoFrame,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseCompressedVideo}},
       {"sensor_msgs/PointCloud2",
        {.object_type = ObjectType::kPointCloud,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parsePointCloud}},
+      // foxglove_msgs/CompressedPointCloud — opaque compressed cloud (draco/cloudini/…).
+      // The parser repackages the blob + format; it does not decode. The scalar
+      // route keeps frame_id / format plottable while discarding the data[] blob.
+      {"foxglove_msgs/CompressedPointCloud",
+       {.object_type = ObjectType::kCompressedPointCloud,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseFoxgloveCompressedPointCloud}},
+      // point_cloud_interfaces/CompressedPointCloud2 — the point_cloud_transport
+      // canonical compressed message. Same dual route as above.
+      {"point_cloud_interfaces/CompressedPointCloud2",
+       {.object_type = ObjectType::kCompressedPointCloud,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseCompressedPointCloud2}},
       // TF keeps its specialized scalar flattening (handleTFMessage) AND emits a
       // canonical FrameTransforms object for the 3D scene's TF buffer.
       {"tf2_msgs/TFMessage",
@@ -161,13 +192,29 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kOccupancyGridUpdate,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseOccupancyGridUpdate}},
-      // Object-only: markers are 3D scene content, not scalar columns. One
-      // SceneEntity per Marker (ADD/MODIFY) or a SceneEntityDeletion
-      // (DELETE/DELETEALL). Per-message/stateless — see MARKER_NOTES.md.
+      // Markers are 3D scene content with no meaningful scalar columns, but they
+      // still need a slim parse_scalars: an object-only entry makes the host's
+      // eager-scalar ingest abort the push on any non-kPureLazy policy (e.g. live
+      // streams, which set no override), silently dropping the object.
+      // parseScalarsObjectOnly returns an empty row so the SceneEntities object
+      // ingests under ANY policy. One SceneEntity per Marker (ADD/MODIFY) or a
+      // SceneEntityDeletion (DELETE/DELETEALL) — see MARKER_NOTES.md.
       {"visualization_msgs/Marker",
-       {.object_type = ObjectType::kSceneEntities, .parse_object = &RosParser::parseMarker}},
+       {.object_type = ObjectType::kSceneEntities,
+        .parse_scalars = &RosParser::parseScalarsObjectOnly,
+        .parse_object = &RosParser::parseMarker}},
       {"visualization_msgs/MarkerArray",
-       {.object_type = ObjectType::kSceneEntities, .parse_object = &RosParser::parseMarkerArray}},
+       {.object_type = ObjectType::kSceneEntities,
+        .parse_scalars = &RosParser::parseScalarsObjectOnly,
+        .parse_object = &RosParser::parseMarkerArray}},
+      // YOLO detections become 2D image overlays (boxes + labels + mask outline +
+      // keypoints). The slim parse_scalars emits num_detections so the overlay
+      // ingests under any policy (same ingest reason as the markers above) and
+      // yields a plottable count. Third-party message, net-new — see YOLO_NOTES.md.
+      {"yolo_msgs/DetectionArray",
+       {.object_type = ObjectType::kImageAnnotations,
+        .parse_scalars = &RosParser::parseYoloScalars,
+        .parse_object = &RosParser::parseYoloDetectionArray}},
 
       // ----- Specialized scalar schemas -----
       // wrapVoidHandler<Handler> is a member-fn-template; its address is a
@@ -370,8 +417,7 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
 
 std::string RosParser::saveConfig() const {
   nlohmann::json cfg;
-  cfg["max_array_size"] = max_array_size_;
-  cfg["discard_large_arrays"] = discard_large_arrays_;
+  pj::array_policy::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), !discard_large_arrays_);
   cfg["use_embedded_timestamp"] = use_embedded_timestamp_;
   cfg["boolean_strings_to_number"] = boolean_strings_to_number_;
   cfg["remove_suffix_from_strings"] = remove_suffix_from_strings_;
@@ -389,8 +435,9 @@ PJ::Status RosParser::loadConfig(std::string_view config_json) {
     return PJ::okStatus();
   }
 
-  max_array_size_ = static_cast<size_t>(cfg.value("max_array_size", 500));
-  discard_large_arrays_ = cfg.value("discard_large_arrays", cfg.value("clamp_large_arrays", false));
+  const auto array_limit = pj::array_policy::arrayLimitFromJson(cfg);
+  max_array_size_ = array_limit.max_size;
+  discard_large_arrays_ = (array_limit.policy == pj::array_policy::ArrayPolicy::kSkip);
   use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
   boolean_strings_to_number_ = cfg.value("boolean_strings_to_number", false);
   remove_suffix_from_strings_ = cfg.value("remove_suffix_from_strings", false);
@@ -505,6 +552,21 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsDisca
       discard_large_arrays_ ? RosMsgParser::Parser::DISCARD_LARGE_ARRAYS : RosMsgParser::Parser::KEEP_LARGE_ARRAYS;
   parser_->setMaxArrayPolicy(restored, max_array_size_);
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Slim scalar route for object-only schemas (markers): no meaningful scalar
+// columns, but a non-null parse_scalars is required so the host's eager-scalar
+// ingest path (RosParser::parse -> parseScalars) succeeds and the canonical
+// object reaches the ObjectStore under ANY ObjectIngestPolicy, not only
+// kPureLazy. Returns an empty field set (parse() short-circuits to ok on empty
+// fields, so no scalar row is written). Decodes nothing — zero cost, zero risk.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsObjectOnly(
+    PJ::Timestamp ts, PJ::Span<const uint8_t> /*payload*/) {
+  current_timestamp_ = ts;
+  return std::vector<PJ::sdk::NamedFieldValue>{};
 }
 
 // ---------------------------------------------------------------------------

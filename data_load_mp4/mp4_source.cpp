@@ -1,7 +1,6 @@
-#include <pj_base/builtin/asset_video.hpp>
-#include <pj_base/builtin/asset_video_codec.hpp>
+#include <pj_base/builtin/video_frame_codec.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
-#include <pj_base/sdk/media_metadata.hpp>
+#include <pj_video_demux/video_demux.hpp>
 
 #include "mp4_iso8601.hpp"
 #include "mp4_manifest.hpp"
@@ -12,6 +11,7 @@ extern "C" {
 }
 
 #include <cstdint>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -45,18 +45,17 @@ struct Mp4Metadata {
   return meta;
 }
 
-/// Generic MP4 loader. For each .mp4 the user opens, reads container metadata
-/// (creation_time only) via libavformat without decoding any frames, then
-/// registers ONE sdk::AssetVideo ObjectStore entry pointing at the file.
-/// pj_app's Media2DDockWidget deserializes the entry, opens FileVideoSource
-/// on file_path, applies time_origin_ns as wall-clock anchor (when the MP4
-/// carried a creation_time tag), and drives the decoder from the global
-/// tracker (PJ4 ARCH §4.5). File duration is reported by the FFmpeg backend
-/// on open; AssetVideo no longer carries a duration field.
+/// Generic MP4 loader: demux-indexes the container (no decode) and pushes one
+/// LAZY sdk::VideoFrame per access unit through a PJ.VideoFrame parser binding.
+/// Each entry's bitstream is read from the file on demand
+/// (pj_video_demux::LazyAccessUnitReader), so the whole video never lands on the
+/// heap. Codecs: H.264 / H.265 / AV1 (matching the host streaming decoder); any
+/// other codec surfaces a clear error from indexFile().
 class Mp4Source : public PJ::FileSourceBase {
  public:
   uint64_t extraCapabilities() const override {
-    return PJ::kCapabilityDirectIngest;
+    // Lazy VideoFrame entries are pushed through a parser binding (delegated).
+    return PJ::kCapabilityDelegatedIngest;
   }
 
   std::string saveConfig() const override {
@@ -76,51 +75,71 @@ class Mp4Source : public PJ::FileSourceBase {
   }
 
   PJ::Status importData() override {
+    return importVideoFrames();
+  }
+
+ private:
+  /// Lazy per-frame PJ.VideoFrame entries over the original file.
+  PJ::Status importVideoFrames() {
+    auto idx_or = PJ::video_demux::indexFile(filepath_);
+    if (!idx_or) {
+      return PJ::unexpected(idx_or.error());
+    }
+    const PJ::video_demux::VideoIndex& idx = *idx_or;
+    if (idx.units.empty()) {
+      return PJ::unexpected("MP4: no video access units in " + filepath_);
+    }
+
     auto meta_or = readMp4Metadata(filepath_);
     if (!meta_or) {
       return PJ::unexpected(meta_or.error());
     }
-    const Mp4Metadata& meta = *meta_or;
+    const std::optional<int64_t> creation_time_ns = meta_or->creation_time_ns;
+    const int64_t origin_ns = creation_time_ns.value_or(0);
+    const int64_t base_dts_ns = idx.units.front().dts_ns;
 
-    const PJ::sdk::SourceObjectWriteHostView* obj = objectWriteHost();
-    if (obj == nullptr) {
-      return PJ::unexpected(std::string("MP4 plugin: objectWriteHost not bound"));
+    // Bind the protobuf parser for PJ.VideoFrame (descriptor-free canonical
+    // fast path). The host unwraps each pushed entry via deserializeVideoFrameView.
+    auto binding_or = runtimeHost().ensureParserBinding({
+        .topic_name = "video",
+        .parser_encoding = "protobuf",
+        .type_name = PJ::kSchemaVideoFrame,
+        .schema = {},
+        .parser_config_json = {},
+    });
+    if (!binding_or) {
+      return PJ::unexpected("MP4: ensureParserBinding(PJ.VideoFrame) failed: " + binding_or.error());
     }
+    const PJ::ParserBindingHandle binding = *binding_or;
 
-    const std::string topic_meta = PJ::sdk::MediaMetadataBuilder()
-                                       .extraString("builtin_object_type", "kAssetVideo")
-                                       .schema(PJ::kSchemaAssetVideo)
-                                       .build();
-    auto topic = obj->registerTopic("video", topic_meta);
-    if (!topic) {
-      return PJ::unexpected(topic.error());
-    }
+    // Shared, lazily-opened reader: each fetch reads exactly one access unit
+    // from the file. Captured by shared_ptr so it outlives this call.
+    auto reader =
+        PJ::video_demux::LazyAccessUnitReader::create(filepath_, idx.format, idx.param_sets, idx.nal_length_size);
+    const std::string frame_id = "camera";
+    const std::string fmt = idx.format;
 
-    PJ::sdk::AssetVideo asset;
-    asset.file_path = filepath_;
-    if (meta.creation_time_ns.has_value()) {
-      asset.time_origin_ns = PJ::Timestamp{*meta.creation_time_ns};
-    }
-    // start_ns / end_ns left absent → whole file is playable (single-clip MP4).
-    // media_type, width, height, frame_rate: defaults → PJ4 probes via FFmpeg.
+    for (const PJ::video_demux::AccessUnit& au : idx.units) {
+      // ObjectStore key is DTS-based (monotonic decode order); the embedded
+      // VideoFrame.timestamp is PTS-based (presentation). Both rebased to the
+      // creation_time anchor (or to 0 when the file has no creation_time).
+      const int64_t host_ts = origin_ns + (au.dts_ns - base_dts_ns);
+      const int64_t pts_ts = origin_ns + (au.pts_ns - base_dts_ns);
 
-    // ObjectStore timestamp equals time_origin_ns per AssetVideo contract;
-    // when the MP4 lacks a creation_time tag, fall back to 0 (file-relative).
-    const int64_t entry_ts = meta.creation_time_ns.value_or(0);
-    const std::vector<uint8_t> bytes = PJ::serializeAssetVideo(asset);
-    auto pushed = obj->pushOwned(*topic, PJ::Timestamp{entry_ts}, PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
-    if (!pushed) {
-      return PJ::unexpected(pushed.error());
+      auto status = runtimeHost().pushMessage(
+          binding, PJ::Timestamp{host_ts}, PJ::video_demux::makeVideoFrameFetcher(reader, au, fmt, frame_id, pts_ts));
+      if (!status) {
+        return PJ::unexpected("MP4: pushMessage failed: " + status.error());
+      }
     }
 
     runtimeHost().reportMessage(
         PJ::DataSourceMessageLevel::kInfo,
-        "MP4: imported " + filepath_ +
-            (meta.creation_time_ns.has_value() ? " (wall-clock anchored)" : " (file-relative; no creation_time tag)"));
+        "MP4: imported " + std::to_string(idx.units.size()) + " lazy VideoFrame entries from " + filepath_ +
+            (creation_time_ns.has_value() ? " (wall-clock anchored)" : " (file-relative)"));
     return PJ::okStatus();
   }
 
- private:
   std::string filepath_;
 };
 

@@ -31,7 +31,7 @@ target_compile_features(ros2_stream_plugin PRIVATE cxx_std_20)
 target_compile_options(ros2_stream_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(ros2_stream_plugin
   PRIVATE
-    plotjuggler_core::plugin_sdk
+    plotjuggler_sdk::plugin_sdk
     ${CMAKE_DL_LIBS}
 )
 
@@ -73,11 +73,12 @@ if(PJ_BUILD_ROS2_DISTRO)
   target_compile_options(ros2_stream_plugin_distro PRIVATE ${PJ_WARNING_FLAGS})
   target_link_libraries(ros2_stream_plugin_distro
     PRIVATE
-      plotjuggler_core::plugin_sdk
+      plotjuggler_sdk::plugin_sdk
       nlohmann_json::nlohmann_json
       rclcpp::rclcpp
       rosidl_typesupport_cpp::rosidl_typesupport_cpp
       rosidl_typesupport_introspection_cpp::rosidl_typesupport_introspection_cpp
+      pj_array_policy
   )
 
   pj_embed_manifest(ros2_stream_plugin_distro

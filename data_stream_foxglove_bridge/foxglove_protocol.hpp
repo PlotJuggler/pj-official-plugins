@@ -73,10 +73,46 @@ inline std::string buildUnsubscribeMessage(const std::vector<uint32_t>& subscrip
   return json;
 }
 
-/// Check if a channel is a CDR-encoded ROS2 stream this plugin can handle.
+/// How a Foxglove channel routes to a message parser.
+struct ChannelRoute {
+  bool supported = false;
+  std::string parser_encoding;    ///< routing key for ensureParserBinding (host picks the parser).
+  bool schema_is_base64 = false;  ///< true => the advertised schema must be base64-decoded first.
+};
+
+/// Classify a Foxglove channel into a parser route.
+///
+/// The Foxglove WebSocket protocol is multi-encoding. Unlike the ROS2 streamer
+/// (CDR-native by construction), this bridge dispatches per channel:
+///   - CDR + ros2msg/omgidl -> parser_ros (text schema, passed verbatim)
+///   - protobuf             -> parser_protobuf (binary FileDescriptorSet schema,
+///                             base64-encoded in the advertise JSON)
+///
+/// NOTE: this intentionally extends beyond the upstream PlotJuggler plugin,
+/// which was CDR/ros2msg-only. The protobuf route is an additive enhancement
+/// (see data_stream_foxglove_bridge/README.md). Future encodings (jsonschema,
+/// flatbuffer) are a single new branch each.
+inline ChannelRoute classifyChannel(const ChannelInfo& ch) {
+  if (ch.topic.empty() || ch.schema_name.empty()) {
+    return {};
+  }
+  // Text-schema, CDR-serialized ROS 2 (the original behaviour).
+  if (ch.encoding == "cdr" && (ch.schema_encoding == "ros2msg" || ch.schema_encoding == "omgidl") &&
+      !ch.schema.empty()) {
+    return {true, ch.schema_encoding, /*schema_is_base64=*/false};
+  }
+  // Protobuf wire messages with a base64 FileDescriptorSet schema. The schema
+  // MAY be empty for the well-known foxglove.* types, which parser_protobuf
+  // recognizes by name and decodes without a descriptor.
+  if (ch.encoding == "protobuf" && ch.schema_encoding == "protobuf") {
+    return {true, "protobuf", /*schema_is_base64=*/true};
+  }
+  return {};
+}
+
+/// Convenience predicate retained for call sites that only need yes/no.
 inline bool isUsableChannel(const ChannelInfo& ch) {
-  return ch.encoding == "cdr" && (ch.schema_encoding == "ros2msg" || ch.schema_encoding == "omgidl") &&
-         !ch.schema.empty() && !ch.schema_name.empty() && !ch.topic.empty();
+  return classifyChannel(ch).supported;
 }
 
 }  // namespace PJ::FoxgloveProtocol
