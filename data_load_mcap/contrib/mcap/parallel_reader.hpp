@@ -17,7 +17,7 @@
 //       - PREFETCH chunks (further ahead) -> tryAcquire (respects the cap; if the
 //         budget is full we simply don't prefetch yet -> back-pressure).
 //   * Workers only decompress: read compressed bytes from a concurrent
-//     IReadable (MmapReader), DecompressAll into an owned buffer, parse the
+//     IReadable (ConcurrentFileReader), DecompressAll into an owned buffer, parse the
 //     trailing MessageIndex records into a sorted, filtered entry list, fulfill a
 //     promise. Budget is released when the ReadyChunk is destroyed (drained +
 //     unpinned).
@@ -29,7 +29,7 @@
 // MCAP_IMPLEMENTATION like the rest of the library.
 //
 #include "byte_semaphore.hpp"
-#include "mmap_reader.hpp"  // MmapReader, for ParallelReader::open(path)
+#include "concurrent_file_reader.hpp"  // ConcurrentFileReader: the default open(path) source
 #include "parallel_budget.hpp"
 #include "reader.hpp"  // McapReader, IReadable, RecordReader, etc. (included by mcap.hpp before us)
 #include "thread_pool.hpp"
@@ -53,13 +53,29 @@
 
 namespace mcap {
 
+// Back-pressure policy for the parallel reader's resident decompressed memory.
+enum class MemoryCapMode {
+  ByteBudget,  // default: cap resident decompressed BYTES (precise memory ceiling)
+  ChunkCount,  // opt-in: cap the NUMBER of concurrently-live chunks (coarser bound)
+};
+
 struct ParallelReadOptions {
-  ReadMessageOptions read;        // startTime/endTime/topicFilter/readOrder
-  unsigned threadCount = 0;       // 0 -> hardware_concurrency()
+  ReadMessageOptions read;   // startTime/endTime/topicFilter/readOrder
+  unsigned threadCount = 0;  // 0 -> 4 workers (default); any value is capped at 8
+  // Memory back-pressure mode. ByteBudget (default) bounds resident bytes
+  // precisely (a hard, portable ceiling -- matters for general use and WASM);
+  // ChunkCount bounds the number of live chunks instead (simpler, a touch faster
+  // on chunk-dense layouts, but a coarser ~cap*max-chunk-size memory bound).
+  MemoryCapMode memoryCap = MemoryCapMode::ByteBudget;
+  // ChunkCount mode only: max concurrently-live (decompressed) chunks. 0 -> 2 *
+  // topics (channels in the file). REQUIRED frontier chunks bypass the cap via
+  // forceAcquire, so it only throttles prefetch and never deadlocks the merge.
+  unsigned maxLiveChunks = 0;
+  // ByteBudget mode only:
   uint64_t maxBytesInFlight = 0;  // soft cap; 0 -> floor + lookahead (unbounded-ish)
   uint64_t lookaheadBytes = 0;    // prefetch headroom above the floor; 0 -> auto
   MemoryCapPolicy capPolicy =
-    MemoryCapPolicy::Adapt;  // default: exceed the cap rather than deadlock
+    MemoryCapPolicy::Adapt;  // sub-floor behavior: exceed the cap rather than deadlock
   // Reject a chunk whose declared uncompressed size exceeds this (corruption /
   // decompression-bomb guard). 0 disables the check. Default 2 GiB: no legitimate
   // MCAP chunk approaches this.
@@ -343,7 +359,7 @@ private:
     if (source_ == nullptr || !source_->supportsConcurrentRead()) {
       status_ = Status{StatusCode::InvalidMessageReadOptions,
                        "parallel reading requires a source that supports concurrent reads "
-                       "(open the ParallelReader on a file path or an MmapReader)"};
+                       "(open the ParallelReader on a file path or a concurrent-read source)"};
       onProblem_(status_);
       return;
     }
@@ -410,26 +426,64 @@ private:
     scheduled_.assign(plans_.size(), false);
     futures_.resize(plans_.size());
 
-    // Memory cap: profile the (filtered) chunk set and resolve a byte budget.
-    const auto profile = computeResidencyProfile(chunkIndexes, selectedChannels_);
-    uint64_t lookahead = opts_.lookaheadBytes;
-    if (lookahead == 0) {
-      const unsigned t =
-        opts_.threadCount ? opts_.threadCount : std::thread::hardware_concurrency();
-      lookahead = uint64_t(std::max(1u, t)) * (profile.uMaxBytes ? profile.uMaxBytes : 1);
+    // Snapshot channels/schemas by id once for const-ref lookup in produceNext.
+    // reader_.channels()/schemas() return maps BY VALUE, so copy them a single time
+    // here rather than paying a copy (and shared_ptr refcount) for every message.
+    chanById_ = reader_.channels();
+    schemaById_ = reader_.schemas();
+
+    // ---- Memory back-pressure: ByteBudget (default) or ChunkCount (opt-in) ----
+    // Both reuse the same ByteSemaphore; the UNIT differs (bytes vs chunks, see
+    // scheduleChunk). REQUIRED frontier chunks use forceAcquire in either mode, so
+    // the k-way merge never deadlocks regardless of the cap.
+    if (opts_.memoryCap == MemoryCapMode::ChunkCount) {
+      // Cap the number of concurrently-live chunks. Use the TOTAL topic count (not
+      // the selected subset): a single-topic filtered read must still get ample
+      // prefetch depth, so the cap can't collapse to 2 just because one topic is
+      // selected. Default 2 * topics; overridable via opts.maxLiveChunks.
+      const unsigned numTopics = static_cast<unsigned>(reader_.channels().size());
+      const unsigned liveCap =
+        opts_.maxLiveChunks != 0 ? opts_.maxLiveChunks : std::max(2u * std::max(numTopics, 1u), 2u);
+      sem_ = std::make_shared<internal::ByteSemaphore>(static_cast<uint64_t>(liveCap));
+    } else {
+      // Precise byte budget: profile worst-case residency and resolve an effective
+      // byte cap (floor + lookahead). This is the portable hard memory ceiling.
+      const auto profile = computeResidencyProfile(chunkIndexes, selectedChannels_);
+      uint64_t lookahead = opts_.lookaheadBytes;
+      if (lookahead == 0) {
+        const unsigned t =
+          opts_.threadCount ? opts_.threadCount : std::thread::hardware_concurrency();
+        lookahead = uint64_t(std::max(1u, t)) * (profile.uMaxBytes ? profile.uMaxBytes : 1);
+      }
+      budget_ = resolveBudget(profile, opts_.read.readOrder, opts_.maxBytesInFlight,
+                              opts_.capPolicy, lookahead);
+      if (budget_.fallBackToSerial || !budget_.feasibleWithoutEviction) {
+        // Caller asked for a regime this engine won't honor silently. Surface it;
+        // the caller can fall back to McapReader::readMessages.
+        status_ = Status{StatusCode::InvalidMessageReadOptions, budget_.note};
+        onProblem_(status_);
+        return;
+      }
+      sem_ = std::make_shared<internal::ByteSemaphore>(
+        std::max<uint64_t>(budget_.effectiveBudgetBytes, 1));
     }
-    budget_ = resolveBudget(profile, opts_.read.readOrder, opts_.maxBytesInFlight, opts_.capPolicy,
-                            lookahead);
-    if (budget_.fallBackToSerial || !budget_.feasibleWithoutEviction) {
-      // Caller asked for a regime this engine won't honor silently. Surface it;
-      // the caller can fall back to McapReader::readMessages.
-      status_ = Status{StatusCode::InvalidMessageReadOptions, budget_.note};
-      onProblem_(status_);
-      return;
+    // Worker count: default 4 (most reads are consumer/merge-bound, where ~4
+    // decompress workers keep the single consumer fed); HARD CAP 8 (decompression
+    // saturates memory bandwidth around there, so >8 only adds contention and
+    // regresses -- confirmed on both small-message and point-cloud workloads);
+    // never exceed the core count. An explicit threadCount overrides the default
+    // but is still capped at 8.
+    unsigned hw = std::thread::hardware_concurrency();
+    if (hw == 0) {
+      hw = 8;
     }
-    sem_ = std::make_shared<internal::ByteSemaphore>(
-      std::max<uint64_t>(budget_.effectiveBudgetBytes, 1));
-    pool_ = std::make_unique<internal::ThreadPool>(opts_.threadCount);
+    const unsigned cap = std::min(8u, hw);
+    unsigned workers = opts_.threadCount == 0 ? 4u : opts_.threadCount;
+    workers = std::min(workers, cap);
+    if (workers == 0) {
+      workers = 1;
+    }
+    pool_ = std::make_unique<internal::ThreadPool>(workers);
   }
 
   // Decompress + parse one chunk on a worker. `budgetHeld` was already acquired
@@ -455,6 +509,10 @@ private:
       const auto& plan = plans_[planIdx];
       RecordReader rr(*source_, plan.chunkStartOffset, plan.messageIndexEndOffset);
       bool gotChunk = false;
+      // Each MessageIndex contributes one contiguous, per-channel run of entries.
+      // We record the run boundaries so orderEntries() can k-way MERGE the already-
+      // sorted runs (O(N log C)) instead of a full O(N log N) std::sort.
+      std::vector<std::pair<size_t, size_t>> runs;
       for (auto rec = rr.next(); rec.has_value(); rec = rr.next()) {
         if (!rr.status().ok()) {
           rc->status = rr.status();
@@ -472,10 +530,14 @@ private:
           rc->status = McapReader::ParseMessageIndex(*rec, &mi);
           if (!rc->status.ok()) break;
           if (selectedChannels_.count(mi.channelId) == 0) continue;
+          const size_t runStart = rc->entries.size();
           for (const auto& [ts, off] : mi.records) {
             if (ts >= opts_.read.startTime && ts < opts_.read.endTime) {
               rc->entries.push_back({ts, off, plan.chunkStartOffset});
             }
+          }
+          if (rc->entries.size() > runStart) {
+            runs.emplace_back(runStart, rc->entries.size());
           }
         }
       }
@@ -483,17 +545,14 @@ private:
         rc->status = Status{StatusCode::InvalidChunkOffset, "no chunk record at planned offset"};
       }
       if (rc->status.ok()) {
-        std::sort(rc->entries.begin(), rc->entries.end(),
-                  [this](const internal::PMsgEntry& a, const internal::PMsgEntry& b) {
-                    return internal::entryLess(a, b, reverse_);
-                  });
+        orderEntries(rc->entries, runs);
         // Account the decompressed payload as resident until ~ReadyChunk frees it.
         rc->liveBytesAccounted = rc->bytes.size();
         stats_->addLive(rc->liveBytesAccounted);
         stats_->chunksDecompressed.fetch_add(1, std::memory_order_relaxed);
         // Source-file pages backing the compressed bytes are released
-        // automatically by the source itself (MmapReader bounds its own RSS via
-        // a read-driven drop-behind) — no explicit hint from here.
+        // automatically by the source: ConcurrentFileReader keeps only small
+        // per-thread read buffers, so there is no source-side RSS to bound.
       }
     } catch (const std::exception& e) {
       rc->bytes.clear();
@@ -506,6 +565,57 @@ private:
       rc->status = Status{StatusCode::DecompressionFailed, "unknown exception decompressing chunk"};
     }
     prom->set_value(std::move(rc));
+  }
+
+  // Put a chunk's entries into emit order. Each per-channel MessageIndex run is
+  // already monotonic in (timestamp, offset) for any well-formed file, so a k-way
+  // MERGE of the runs is O(N log C) -- cheaper than a full O(N log N) std::sort
+  // (profiling showed the per-chunk sort was a leading consumer-side cost). Falls
+  // back to a full sort for reverse reads, a single/zero run, or if any run turns
+  // out not to be monotonic (so a misbehaving writer can never break ordering).
+  void orderEntries(std::vector<internal::PMsgEntry>& entries,
+                    const std::vector<std::pair<size_t, size_t>>& runs) const {
+    const bool reverse = reverse_;
+    auto less = [reverse](const internal::PMsgEntry& a, const internal::PMsgEntry& b) {
+      return internal::entryLess(a, b, reverse);
+    };
+    if (reverse || runs.size() <= 1) {
+      if (!std::is_sorted(entries.begin(), entries.end(), less)) {
+        std::sort(entries.begin(), entries.end(), less);
+      }
+      return;
+    }
+    for (const auto& r : runs) {
+      if (!std::is_sorted(entries.begin() + static_cast<std::ptrdiff_t>(r.first),
+                          entries.begin() + static_cast<std::ptrdiff_t>(r.second), less)) {
+        std::sort(entries.begin(), entries.end(), less);
+        return;
+      }
+    }
+    // All runs sorted -> k-way merge them (offsets are unique within a chunk, so the
+    // order is a strict total order: the merge result is identical to std::sort).
+    std::vector<internal::PMsgEntry> merged;
+    merged.reserve(entries.size());
+    struct Node {
+      size_t idx;
+      size_t end;
+    };
+    auto worse = [&](const Node& a, const Node& b) {
+      // Max-heap: the run whose head sorts EARLIER must surface first, so a node is
+      // "lower priority" when its head sorts after the other's.
+      return less(entries[b.idx], entries[a.idx]);
+    };
+    std::priority_queue<Node, std::vector<Node>, decltype(worse)> pq(worse);
+    for (const auto& r : runs) {
+      if (r.first < r.second) pq.push(Node{r.first, r.second});
+    }
+    while (!pq.empty()) {
+      const Node n = pq.top();
+      pq.pop();
+      merged.push_back(entries[n.idx]);
+      if (n.idx + 1 < n.end) pq.push(Node{n.idx + 1, n.end});
+    }
+    entries.swap(merged);
   }
 
   Status decompressInto(const Chunk& chunk, internal::RawByteArray& out) {
@@ -563,7 +673,9 @@ private:
   // (prefetch) and return false if the budget is full.
   bool scheduleChunk(size_t planIdx, bool force) {
     if (scheduled_[planIdx]) return true;
-    const uint64_t need = plans_[planIdx].uncompressedSize;
+    const uint64_t need = opts_.memoryCap == MemoryCapMode::ChunkCount
+                            ? uint64_t{1}                        // one credit per chunk
+                            : plans_[planIdx].uncompressedSize;  // bytes for the byte budget
     if (force) {
       sem_->forceAcquire(need);
     } else if (!sem_->tryAcquire(need)) {
@@ -694,17 +806,24 @@ private:
         cur.chunk.reset();
       }
 
-      // Resolve channel/schema.
-      auto channel = reader_.channel(curMessage_.channelId);
-      if (!channel) {
+      // Resolve channel/schema from one-time snapshots by const-ref, so emitting a
+      // message does NOT copy a shared_ptr just to look them up. (reader_.channel()/
+      // schema() return shared_ptr BY VALUE -- profiling showed that per-message
+      // atomic refcount churn was a leading consumer-side cost.) The only refcount
+      // left is the unavoidable copy into the MessageView itself.
+      auto cit = chanById_.find(curMessage_.channelId);
+      if (cit == chanById_.end()) {
         onProblem_(Status{StatusCode::InvalidChannelId, "message references missing channel"});
         continue;  // skip, keep going
       }
-      SchemaPtr schema;
+      const ChannelPtr& channel = cit->second;
+      const SchemaPtr* schema = &emptySchema_;
       if (channel->schemaId != 0) {
-        schema = reader_.schema(channel->schemaId);
+        auto sit = schemaById_.find(channel->schemaId);
+        if (sit != schemaById_.end()) schema = &sit->second;
       }
-      curView_.emplace(curMessage_, channel, schema, RecordOffset{entry.offset, entry.chunkOffset});
+      curView_.emplace(curMessage_, channel, *schema,
+                       RecordOffset{entry.offset, entry.chunkOffset});
       return true;
     }
   }
@@ -736,6 +855,12 @@ private:
   Message curMessage_;
   std::optional<MessageView> curView_;
   internal::ReadyChunkPtr pinned_;  // keeps curMessage_.data alive until next ++
+
+  // One-time snapshots for const-ref channel/schema resolution in produceNext (no
+  // per-message shared_ptr copy on lookup). Populated once in init().
+  std::unordered_map<ChannelId, ChannelPtr> chanById_;
+  std::unordered_map<SchemaId, SchemaPtr> schemaById_;
+  SchemaPtr emptySchema_;  // null sentinel so a missing schema returns by const-ref
   std::atomic<bool> cancelled_{false};
   Status status_;
 };
@@ -758,11 +883,15 @@ public:
   ParallelReader(const ParallelReader&) = delete;
   ParallelReader& operator=(const ParallelReader&) = delete;
 
-  // Open a file via an internally-owned, read-only memory mapping (concurrent-safe)
-  // and parse its summary. This is the common entry point.
+  // Open a file via an internally-owned, concurrent-safe positioned-read source
+  // (pread/ReadFile) and parse its summary. This is the common entry point. It
+  // uses ConcurrentFileReader rather than mmap: same concurrency, but it reads
+  // through the page cache, avoiding mmap's major-fault storms on files near RAM
+  // size. To use a different source, call
+  // open(IReadable&).
   Status open(std::string_view path) {
     close();
-    auto src = std::make_unique<MmapReader>();
+    auto src = std::make_unique<ConcurrentFileReader>();
     Status status = src->open(path);
     if (!status.ok()) {
       return status;
@@ -777,7 +906,7 @@ public:
   }
 
   // Open against a caller-provided source. It MUST support concurrent reads
-  // (source.supportsConcurrentRead() == true), e.g. an MmapReader or an in-memory
+  // (source.supportsConcurrentRead() == true), e.g. a ConcurrentFileReader or an in-memory
   // BufferReader; otherwise readMessages() reports an error and yields nothing.
   // The caller retains ownership of `concurrentSource` (it must outlive this).
   Status open(IReadable& concurrentSource) {
@@ -824,7 +953,7 @@ public:
 
 private:
   McapReader reader_;
-  std::unique_ptr<IReadable> ownedSource_;  // owns an MmapReader when open(path) is used
+  std::unique_ptr<IReadable> ownedSource_;  // owns a ConcurrentFileReader when open(path) is used
   IReadable* source_ = nullptr;             // the concurrent source reader_ reads from
 };
 
