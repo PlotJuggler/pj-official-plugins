@@ -47,6 +47,7 @@ set(PARSER_ROS_COMMON_SOURCES
   ros_specializations.cpp
   ros_builtin_object_handlers.cpp
   ros_marker_handlers.cpp
+  ros_yolo_handlers.cpp
 )
 
 function(configure_parser_ros_target TARGET)
