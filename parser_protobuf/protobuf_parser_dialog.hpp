@@ -7,6 +7,8 @@
 #include <fstream>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <pj_array_policy/array_policy.hpp>
+#include <pj_base64/base64.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <sstream>
@@ -99,6 +101,11 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     wd.setEnabled("lineEditTimestampField", use_embedded_timestamp_);
     wd.setEnabled("labelTimestampField", use_embedded_timestamp_);
 
+    // Array-size policy
+    wd.setValue("spinBoxArraySize", static_cast<int>(array_limit_.max_size));
+    wd.setChecked("radioMaxClamp", array_limit_.clamp());
+    wd.setChecked("radioMaxDiscard", !array_limit_.clamp());
+
     // Include folders - folder picker
     wd.setFolderPicker("buttonAddIncludeFolder", "Add folder...", "Select Include Folder");
 
@@ -147,10 +154,25 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
+  bool onValueChanged(std::string_view widget_name, int value) override {
+    if (widget_name == "spinBoxArraySize") {
+      array_limit_.max_size = static_cast<uint32_t>(value);
+    }
+    return false;
+  }
+
   bool onToggled(std::string_view widget_name, bool checked) override {
     if (widget_name == "checkBoxUseEmbeddedTimestamp") {
       use_embedded_timestamp_ = checked;
       return true;  // refresh to enable/disable lineEditTimestampField
+    }
+    if (checked && widget_name == "radioMaxClamp") {
+      array_limit_.policy = pj::array_policy::ArrayPolicy::kClamp;
+      return false;
+    }
+    if (checked && widget_name == "radioMaxDiscard") {
+      array_limit_.policy = pj::array_policy::ArrayPolicy::kSkip;
+      return false;
     }
     return false;
   }
@@ -197,6 +219,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     cfg["use_embedded_timestamp"] = use_embedded_timestamp_;
     cfg["timestamp_field_name"] = timestamp_field_name_;
     cfg["include_folders"] = include_folders_;
+    pj::array_policy::arrayLimitToJson(cfg, array_limit_);
 
     // Include the compiled schema as base64-encoded bytes
     if (!compiled_schema_.empty()) {
@@ -215,6 +238,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     selected_message_type_ = cfg.value("message_type", std::string{});
     use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
     timestamp_field_name_ = cfg.value("timestamp_field_name", std::string{});
+    array_limit_ = pj::array_policy::arrayLimitFromJson(cfg);
 
     include_folders_.clear();
     if (cfg.contains("include_folders") && cfg["include_folders"].is_array()) {
@@ -227,7 +251,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
 
     // Load compiled schema if present
     if (cfg.contains("compiled_schema_base64") && cfg["compiled_schema_base64"].is_string()) {
-      compiled_schema_ = base64Decode(cfg["compiled_schema_base64"].get<std::string>());
+      compiled_schema_ = PJ::base64::decode(cfg["compiled_schema_base64"].get<std::string>());
     }
 
     // Reload and recompile proto file
@@ -378,44 +402,12 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     return output;
   }
 
-  static std::string base64Decode(const std::string& input) {
-    static const int kDecodeTable[256] = {
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 62, -1, -1, -1, 63, 52, 53, 54, 55,
-        56, 57, 58, 59, 60, 61, -1, -1, -1, -1, -1, -1, -1, 0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12,
-        13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, -1, -1, -1, -1, -1, 26, 27, 28, 29, 30, 31, 32,
-        33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, -1, -1, -1, -1, -1,
-    };
-
-    std::string output;
-    output.reserve((input.size() / 4) * 3);
-
-    for (size_t i = 0; i < input.size(); i += 4) {
-      int n0 = kDecodeTable[static_cast<uint8_t>(input[i])];
-      int n1 = (i + 1 < input.size()) ? kDecodeTable[static_cast<uint8_t>(input[i + 1])] : 0;
-      int n2 = (i + 2 < input.size() && input[i + 2] != '=') ? kDecodeTable[static_cast<uint8_t>(input[i + 2])] : 0;
-      int n3 = (i + 3 < input.size() && input[i + 3] != '=') ? kDecodeTable[static_cast<uint8_t>(input[i + 3])] : 0;
-
-      if (n0 < 0 || n1 < 0) {
-        continue;
-      }
-
-      output.push_back(static_cast<char>((n0 << 2) | (n1 >> 4)));
-      if (i + 2 < input.size() && input[i + 2] != '=') {
-        output.push_back(static_cast<char>(((n1 & 0x0F) << 4) | (n2 >> 2)));
-      }
-      if (i + 3 < input.size() && input[i + 3] != '=') {
-        output.push_back(static_cast<char>(((n2 & 0x03) << 6) | n3));
-      }
-    }
-    return output;
-  }
-
   // Persistent config
   std::string proto_file_path_;
   std::string selected_message_type_;
   bool use_embedded_timestamp_ = false;
   std::string timestamp_field_name_;  // empty = fallback chain ("timestamp" → "ts")
+  pj::array_policy::ArrayLimit array_limit_;
   std::vector<std::string> include_folders_;
   std::string compiled_schema_;  // Serialized FileDescriptorSet
 

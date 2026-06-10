@@ -4,7 +4,7 @@ Imports [LeRobot](https://github.com/huggingface/lerobot) robotics datasets
 into PlotJuggler. **Supports both v2.x (v2.0 / v2.1) and v3.0**: the user
 picks the dataset's `meta/info.json`, the plugin detects the format from
 `codebase_version`, and the rest of the import pipeline (schema discovery,
-row slicing, video asset registration) is layout-blind.
+row slicing, per-camera video emission) is layout-blind.
 
 A v2.x dataset pairs one Parquet per episode with one MP4 per (episode, camera),
 plus JSONL metadata under `meta/`. A v3.0 dataset reorganizes the same content
@@ -27,7 +27,7 @@ the PlotJuggler catalog.
 |---|---|---|
 | Per-frame scalar columns from the data parquet | `DataEngine` topic `lerobot` | One field per Arrow column, native types preserved via `ValueRef`. Per-row timestamp from the parquet `timestamp` column or `frame_index / fps`. v2.x reads the entire per-episode parquet; v3.0 slices `[dataset_from_index, dataset_to_index)` out of the consolidated shard parquet. |
 | `list<float>` / `fixed_size_list<float>` columns (`observation.state`, `action`, …) | `DataEngine` topic `lerobot`, one field per element | Flattened with names from `info.json`'s `features[...].names` when present; otherwise `<col>_0`, `<col>_1`, …. Dedupe handles cross-column collisions. |
-| MP4 file per camera | `ObjectStore` topic `lerobot/<cam>`, schema `sdk::AssetVideo` | **Metadata-only.** No bytes are pushed. v2.x publishes the whole-file `AssetVideo` (one MP4 = one episode). v3.0 publishes the consolidated MP4 path plus `start_ns / end_ns` (the episode's clip window inside the file) and `time_origin_ns = -start_ns` so the global tracker maps episode-local 0 to the right frame. The host's `Media2DDockWidget` opens `FileVideoSource` and clamps every seek to that window. |
+| MP4 file per camera | `ObjectStore` topic `lerobot/<cam>`, schema `PJ.VideoFrame` | **Lazy per-frame.** The MP4 is demux-indexed once (no decode) via the shared `pj_video_demux` helper; each access unit is pushed as a lazy `PJ.VideoFrame` whose compressed bytes are read from the file on demand — the whole video never lands on the heap. Codecs: H.264 / H.265 / AV1. v2.x emits the whole file (one MP4 = one episode, rebased to its first DTS). v3.0 emits the episode's presentation window `[start_ns, end_ns)` inside the shared MP4, seeking back to the keyframe at-or-before `start_ns` and rebasing so episode-local 0 lands on the window start. The host's streaming video decoder drives playback from the per-frame entries. |
 
 ## Version handling
 
@@ -112,12 +112,13 @@ data_load_lerobot/
     ├── dataset_model_v3_test.cpp    v3.0 fixture (real Arrow-written parquets)
     ├── flatten_plan_test.cpp
     ├── dialog_fanout_test.cpp
-    └── asset_video_export_test.cpp  AssetVideo wire round-trip
+    └── video_window_test.cpp        v2.x/v3.0 emit-slice resolution (pure)
 ```
 
-The plugin does **not** decode video — that responsibility moved to the host
-via [PJ4's `FileVideoSource`](https://github.com/PlotJuggler/PJ4) when the
-metadata-only model landed. FFmpeg is no longer a dependency here.
+The plugin does **not** decode video. It demux-indexes each MP4 (via the shared
+`pj_video_demux` helper, which links FFmpeg only to walk the container — no
+decode, no bitstream filters) and pushes lazy `PJ.VideoFrame` entries; the host's
+streaming video decoder decodes them on demand.
 
 ## How a DataSource plugin gets integrated — the short version
 

@@ -219,6 +219,13 @@ class RosParser : public PJ::MessageParserPluginBase {
   bool marker_has_texture_block_ = false;
   bool marker_has_mesh_file_ = false;
 
+  // Latches the one-time "trailing bytes" warning in parseYoloDetectionArray
+  // (#4): a corrupt-but-in-bounds count can desync the positional CDR decode
+  // without overrunning, so the try/catch never sees it. We warn once instead
+  // of throwing — a strict end-of-buffer check would risk rejecting valid
+  // frames on CDR alignment slack (no other handler asserts bytesLeft()==0).
+  bool yolo_trailing_warned_ = false;
+
   // Parse state
   std::optional<RosMsgParser::Parser> parser_;
   std::unique_ptr<RosMsgParser::Deserializer> deserializer_;
@@ -295,17 +302,37 @@ class RosParser : public PJ::MessageParserPluginBase {
   PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseScalarsGeneric(
       PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
 
+  // Slim scalar route for object-only schemas (markers) that carry no
+  // meaningful scalar columns. Returns an EMPTY field set: enough for the
+  // host's eager-scalar ingest path (parse() returns ok on empty fields) to
+  // succeed so the canonical object still reaches the ObjectStore under ANY
+  // ObjectIngestPolicy — not only kPureLazy. Without a parse_scalars, an
+  // object-only handler makes parseScalars fail and the message push aborts on
+  // non-kPureLazy policies (e.g. live streaming sources, which set no override).
+  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseScalarsObjectOnly(
+      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+
   // sensor_msgs/Image
   PJ::Expected<PJ::sdk::ObjectRecord> parseImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
   // sensor_msgs/CompressedImage (also covers compressedDepth via the format string)
   PJ::Expected<PJ::sdk::ObjectRecord> parseCompressedImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
+  // sensor_msgs/CameraInfo -> sdk::CameraInfo (intrinsics + distortion). Lets the
+  // 2D image view rectify frames and align annotation overlays.
+  PJ::Expected<PJ::sdk::ObjectRecord> parseCameraInfo(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
   // foxglove_msgs/CompressedVideo -> sdk::VideoFrame (zero-copy compressed bitstream)
   PJ::Expected<PJ::sdk::ObjectRecord> parseCompressedVideo(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
   // sensor_msgs/PointCloud2
   PJ::Expected<PJ::sdk::ObjectRecord> parsePointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // foxglove_msgs/CompressedPointCloud -> sdk::CompressedPointCloud (zero-copy compressed blob)
+  PJ::Expected<PJ::sdk::ObjectRecord> parseFoxgloveCompressedPointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // point_cloud_interfaces/CompressedPointCloud2 -> sdk::CompressedPointCloud (zero-copy compressed blob)
+  PJ::Expected<PJ::sdk::ObjectRecord> parseCompressedPointCloud2(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
   // tf2_msgs/TFMessage -> sdk::FrameTransforms (one per TransformStamped, each
   // carrying its own Header.stamp)
@@ -329,6 +356,16 @@ class RosParser : public PJ::MessageParserPluginBase {
 
   // visualization_msgs/MarkerArray -> sdk::SceneEntities (one per Marker).
   PJ::Expected<PJ::sdk::ObjectRecord> parseMarkerArray(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // yolo_msgs/DetectionArray -> sdk::ImageAnnotations (boxes, labels, mask
+  // outline, 2D keypoints). Third-party message, net-new — see YOLO_NOTES.md.
+  PJ::Expected<PJ::sdk::ObjectRecord> parseYoloDetectionArray(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // Slim scalar companion for yolo_msgs/DetectionArray: emits `num_detections`
+  // so the object ingests under ANY policy (see parseScalarsObjectOnly) and
+  // gives a useful plottable count. parse_object is unchanged.
+  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseYoloScalars(
+      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
 
   // Reads one visualization_msgs/Marker from the deserializer at the current
   // cursor and appends the resulting entity (ADD/MODIFY) or deletion

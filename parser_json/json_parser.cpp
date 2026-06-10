@@ -1,6 +1,7 @@
 #include <cstddef>
 #include <deque>
 #include <nlohmann/json.hpp>
+#include <pj_array_policy/array_policy.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <string>
@@ -94,8 +95,7 @@ class JsonParser : public PJ::MessageParserPluginBase {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
     if (!cfg.is_discarded()) {
       encoding_hint_ = cfg.value("encoding_hint", std::string{});
-      max_array_size_ = cfg.value("max_array_size", std::size_t{0});
-      clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
+      array_limit_ = pj::array_policy::arrayLimitFromJson(cfg);
       // Embedded timestamp: when set, doParseScalars reports the field's value
       // as ScalarRecord::ts so the host keys the row by it instead of the
       // transport receive time.
@@ -143,7 +143,7 @@ class JsonParser : public PJ::MessageParserPluginBase {
     // Apply the configured embedded timestamp (nullopt -> host keeps its own).
     rec.ts = extractEmbeddedTimestamp(json);
     FlattenSink sink{rec.fields, string_storage_};
-    flattenJson("", json, max_array_size_, clamp_large_arrays_, sink);
+    flattenJson("", json, array_limit_.max_size, array_limit_.clamp(), sink);
     return rec;
   }
 
@@ -205,8 +205,7 @@ class JsonParser : public PJ::MessageParserPluginBase {
   }
 
   std::string encoding_hint_;
-  std::size_t max_array_size_ = 0;
-  bool clamp_large_arrays_ = true;
+  pj::array_policy::ArrayLimit array_limit_;
   bool use_embedded_timestamp_ = false;
   std::string timestamp_field_name_ = "timestamp";
   // Owns the std::string backing every string_view in the returned

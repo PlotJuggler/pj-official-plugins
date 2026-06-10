@@ -38,11 +38,9 @@ class McapDialog : public PJ::DialogPluginTyped {
   bool clampLargeArrays() const {
     return clamp_large_arrays_;
   }
+  /// When true, use the message timestamp if present; fallback to publish time.
   bool useTimestamp() const {
     return use_timestamp_;
-  }
-  bool useMcapLogTime() const {
-    return use_mcap_log_time_;
   }
   const std::unordered_set<std::string>& selectedTopics() const {
     return selected_topics_;
@@ -69,8 +67,14 @@ class McapDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    wd.setChecked("radioPubTime", !use_mcap_log_time_);
-    wd.setChecked("radioLogTime", use_mcap_log_time_);
+    // Array size row
+    wd.setRange("spinBox", 0, 9999);
+    wd.setValue("spinBox", static_cast<int>(max_array_size_));
+    wd.setChecked("radioClamp", clamp_large_arrays_);
+    wd.setChecked("radioSkip", !clamp_large_arrays_);
+
+    // Timestamp checkbox
+    wd.setChecked("checkBoxUseTimestamp", use_timestamp_);
 
     // Filter
     wd.setText("lineEditFilter", filter_text_);
@@ -115,6 +119,14 @@ class McapDialog : public PJ::DialogPluginTyped {
     return wd.toJson();
   }
 
+  bool onValueChanged(std::string_view widget_name, int value) override {
+    if (widget_name == "spinBox") {
+      max_array_size_ = static_cast<unsigned>(std::max(0, value));
+      return false;
+    }
+    return false;
+  }
+
   bool onIndexChanged(std::string_view widget_name, int index) override {
     if (widget_name == "comboBoxProtocol") {
       if (index >= 0 && index < static_cast<int>(available_encodings_.size())) {
@@ -139,14 +151,6 @@ class McapDialog : public PJ::DialogPluginTyped {
     }
     if (widget_name == "radioSkip") {
       clamp_large_arrays_ = false;
-      return true;
-    }
-    if (widget_name == "radioPubTime") {
-      use_mcap_log_time_ = false;
-      return true;
-    }
-    if (widget_name == "radioLogTime") {
-      use_mcap_log_time_ = true;
       return true;
     }
     return false;
@@ -194,7 +198,9 @@ class McapDialog : public PJ::DialogPluginTyped {
   std::string saveConfig() const override {
     nlohmann::json cfg;
     cfg["filepath"] = filepath_;
-    cfg["use_mcap_log_time"] = use_mcap_log_time_;
+    cfg["max_array_size"] = max_array_size_;
+    cfg["clamp_large_arrays"] = clamp_large_arrays_;
+    cfg["use_timestamp"] = use_timestamp_;
     cfg["selected_topics"] = std::vector<std::string>(selected_topics_.begin(), selected_topics_.end());
     return cfg.dump();
   }
@@ -206,7 +212,9 @@ class McapDialog : public PJ::DialogPluginTyped {
     }
 
     filepath_ = cfg.value("filepath", std::string{});
-    use_mcap_log_time_ = cfg.value("use_mcap_log_time", false);
+    max_array_size_ = cfg.value("max_array_size", 500u);
+    clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
+    use_timestamp_ = cfg.value("use_timestamp", false);
 
     selected_topics_.clear();
     if (auto it = cfg.find("selected_topics"); it != cfg.end() && it->is_array()) {
@@ -363,7 +371,6 @@ class McapDialog : public PJ::DialogPluginTyped {
   unsigned max_array_size_ = 500;
   bool clamp_large_arrays_ = true;
   bool use_timestamp_ = false;
-  bool use_mcap_log_time_ = false;
   std::unordered_set<std::string> selected_topics_;
   std::string filter_text_;
 

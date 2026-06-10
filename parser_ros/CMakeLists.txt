@@ -47,13 +47,14 @@ set(PARSER_ROS_COMMON_SOURCES
   ros_specializations.cpp
   ros_builtin_object_handlers.cpp
   ros_marker_handlers.cpp
+  ros_yolo_handlers.cpp
 )
 
 function(configure_parser_ros_target TARGET)
   target_compile_features(${TARGET} PRIVATE cxx_std_20)
   target_compile_options(${TARGET} PRIVATE ${PJ_WARNING_FLAGS})
   target_link_libraries(${TARGET} PRIVATE
-    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json rosx_introspection data_tamer_parser)
+    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json rosx_introspection data_tamer_parser pj_array_policy)
 endfunction()
 
 # --- Plugin shared libraries ---
