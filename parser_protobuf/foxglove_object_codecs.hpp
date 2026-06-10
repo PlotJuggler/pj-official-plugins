@@ -42,6 +42,13 @@ namespace pj_protobuf {
 [[nodiscard]] PJ::Expected<PJ::sdk::Image> deserializeFoxgloveCompressedImageView(
     const uint8_t* data, size_t size, PJ::sdk::BufferAnchor anchor);
 
+/// foxglove.RawImage -> sdk::Image (UNCOMPRESSED pixels). Zero-copy like the
+/// CompressedImage view, but width/height/encoding/row_step are populated from
+/// the message so the consumer can interpret the raw pixel bytes (same contract
+/// as a ROS sensor_msgs/Image; `encoding` is the foxglove encoding verbatim).
+[[nodiscard]] PJ::Expected<PJ::sdk::Image> deserializeFoxgloveRawImageView(
+    const uint8_t* data, size_t size, PJ::sdk::BufferAnchor anchor);
+
 [[nodiscard]] PJ::Expected<PJ::sdk::CameraInfo> deserializeFoxgloveCameraCalibration(const uint8_t* data, size_t size);
 
 [[nodiscard]] PJ::Expected<PJ::sdk::ImageAnnotations> deserializeFoxgloveImageAnnotations(

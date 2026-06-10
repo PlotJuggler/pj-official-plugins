@@ -393,6 +393,96 @@ PJ::Expected<PJ::sdk::Image> deserializeFoxgloveCompressedImageView(
 }
 
 // ===========================================================================
+// foxglove.RawImage -> sdk::Image  (zero-copy data, UNCOMPRESSED pixels)
+// { timestamp=1, frame_id=2 string, width=3 fixed32, height=4 fixed32,
+//   encoding=5 string, step=6 fixed32, data=7 bytes }
+// Unlike CompressedImage, the pixels are raw, so width/height/encoding/row_step
+// MUST be carried through for the consumer to interpret `data` (same contract as
+// a ROS sensor_msgs/Image — the encoding string drives the renderer).
+// ===========================================================================
+PJ::Expected<PJ::sdk::Image> deserializeFoxgloveRawImageView(
+    const uint8_t* data, size_t size, PJ::sdk::BufferAnchor anchor) {
+  if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return PJ::unexpected(std::string("foxglove.RawImage: too large"));
+  }
+  CodedInputStream in(data, static_cast<int>(size));
+  in.SetTotalBytesLimit(std::numeric_limits<int>::max());
+  PJ::sdk::Image img;
+  PJ::Span<const uint8_t> data_span;
+  uint32_t tag = 0;
+  while ((tag = in.ReadTag()) != 0) {
+    const int f = fieldOf(tag);
+    uint32_t len = 0;
+    switch (f) {
+      case 1:
+        if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+          return PJ::unexpected(std::string("foxglove.RawImage: bad timestamp"));
+        }
+        img.timestamp_ns = readTimestampNs(in, len);
+        break;
+      case 2:
+        if (wireOf(tag) != kWireLen || !readString(in, img.frame_id)) {
+          return PJ::unexpected(std::string("foxglove.RawImage: bad frame_id"));
+        }
+        break;
+      case 3: {
+        uint32_t width = 0;
+        if (wireOf(tag) != kWireI32 || !in.ReadLittleEndian32(&width)) {
+          return PJ::unexpected(std::string("foxglove.RawImage: bad width"));
+        }
+        img.width = width;
+        break;
+      }
+      case 4: {
+        uint32_t height = 0;
+        if (wireOf(tag) != kWireI32 || !in.ReadLittleEndian32(&height)) {
+          return PJ::unexpected(std::string("foxglove.RawImage: bad height"));
+        }
+        img.height = height;
+        break;
+      }
+      case 5:
+        if (wireOf(tag) != kWireLen || !readString(in, img.encoding)) {
+          return PJ::unexpected(std::string("foxglove.RawImage: bad encoding"));
+        }
+        break;
+      case 6: {
+        uint32_t step = 0;
+        if (wireOf(tag) != kWireI32 || !in.ReadLittleEndian32(&step)) {
+          return PJ::unexpected(std::string("foxglove.RawImage: bad step"));
+        }
+        img.row_step = step;
+        break;
+      }
+      case 7: {  // data (bytes) — zero-copy
+        if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+          return PJ::unexpected(std::string("foxglove.RawImage: bad data"));
+        }
+        if (len > 0) {
+          const void* ptr = nullptr;
+          int avail = 0;
+          if (!in.GetDirectBufferPointer(&ptr, &avail) || avail < static_cast<int>(len)) {
+            return PJ::unexpected(std::string("foxglove.RawImage: data not contiguous"));
+          }
+          data_span = PJ::Span<const uint8_t>(static_cast<const uint8_t*>(ptr), len);
+          if (!in.Skip(static_cast<int>(len))) {
+            return PJ::unexpected(std::string("foxglove.RawImage: failed to skip data"));
+          }
+        }
+        break;
+      }
+      default:
+        if (!skipField(in, wireOf(tag))) {
+          return PJ::unexpected(std::string("foxglove.RawImage: malformed"));
+        }
+    }
+  }
+  img.data = data_span;
+  img.anchor = std::move(anchor);
+  return img;
+}
+
+// ===========================================================================
 // foxglove.CameraCalibration -> sdk::CameraInfo
 // { timestamp=1, width=2 fixed32, height=3 fixed32, distortion_model=4,
 //   D=5 repeated double, K=6, R=7, P=8, frame_id=9 }

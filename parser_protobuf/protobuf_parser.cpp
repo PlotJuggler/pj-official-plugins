@@ -310,8 +310,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     // the generic scalar-flatten of their large nested arrays (a Foxglove scene
     // / annotation message flattens to a pathological number of scalar series).
     if (type_name == "foxglove.FrameTransform" || type_name == "foxglove.CompressedImage" ||
-        type_name == "foxglove.CameraCalibration" || type_name == "foxglove.ImageAnnotations" ||
-        type_name == "foxglove.SceneUpdate") {
+        type_name == "foxglove.RawImage" || type_name == "foxglove.CameraCalibration" ||
+        type_name == "foxglove.ImageAnnotations" || type_name == "foxglove.SceneUpdate") {
       if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
         return status;
       }
@@ -657,6 +657,31 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         r.fields.push_back(
             {.name = "num_points", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->points.size())}});
         r.fields.push_back({.name = "num_texts", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->texts.size())}});
+        return r;
+      };
+    } else if (name == "foxglove.RawImage") {
+      handler.object_type = PJ::sdk::BuiltinObjectType::kImage;
+      handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+        auto obj = pj_protobuf::deserializeFoxgloveRawImageView(p.bytes.data(), p.bytes.size(), p.anchor);
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());
+        }
+        std::optional<PJ::Timestamp> ts;
+        if (use_embedded_timestamp_ && obj->timestamp_ns > 0) {
+          ts = obj->timestamp_ns;
+        }
+        return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
+      };
+      handler.parse_scalars = [](PJ::Timestamp,
+                                 PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+        auto obj = pj_protobuf::deserializeFoxgloveRawImageView(payload.data(), payload.size(), nullptr);
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
+        }
+        PJ::sdk::ScalarRecord r;
+        r.fields.push_back({.name = "width", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->width)}});
+        r.fields.push_back({.name = "height", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->height)}});
+        r.fields.push_back({.name = "data_size", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->data.size())}});
         return r;
       };
     } else {  // foxglove.SceneUpdate

@@ -1082,6 +1082,36 @@ TEST(ProtobufParserTest, FoxgloveCompressedImageDecodes) {
   EXPECT_LE(r->data.data() + r->data.size(), w.data() + w.size());
 }
 
+TEST(ProtobufParserTest, FoxgloveRawImageDecodes) {
+  const std::vector<uint8_t> pixels = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};  // 2x2 rgb8
+  PW img;
+  img.sub(1, foxgloveTimestamp(5, 0));
+  img.str(2, "camera_optical");  // frame_id
+  img.fixed32(3, 2);             // width
+  img.fixed32(4, 2);             // height
+  img.str(5, "rgb8");            // encoding (verbatim — drives the consumer's raw renderer)
+  img.fixed32(6, 6);             // step = width * 3 bytes
+  img.bytesField(7, pixels);     // data
+  const auto& w = img.b;
+
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  auto r = pj_protobuf::deserializeFoxgloveRawImageView(w.data(), w.size(), anchor);
+  ASSERT_TRUE(r) << r.error();
+  EXPECT_EQ(r->frame_id, "camera_optical");
+  EXPECT_EQ(r->encoding, "rgb8");
+  EXPECT_EQ(r->width, 2u);
+  EXPECT_EQ(r->height, 2u);
+  EXPECT_EQ(r->row_step, 6u);
+  EXPECT_EQ(r->timestamp_ns, 5'000'000'000LL);
+  ASSERT_EQ(r->data.size(), pixels.size());
+  for (size_t i = 0; i < pixels.size(); ++i) {
+    EXPECT_EQ(r->data.data()[i], pixels[i]);
+  }
+  // Zero-copy: the data span aliases the input buffer.
+  EXPECT_GE(r->data.data(), w.data());
+  EXPECT_LE(r->data.data() + r->data.size(), w.data() + w.size());
+}
+
 TEST(ProtobufParserTest, FoxgloveCameraCalibrationDecodes) {
   PW cc;
   cc.sub(1, foxgloveTimestamp(0, 0));
