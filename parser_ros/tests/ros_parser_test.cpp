@@ -1229,6 +1229,72 @@ TEST(RosParserTest, OccupancyGridProducesObject) {
   }
 }
 
+TEST(RosParserTest, CameraInfoProducesObject) {
+  static const char* kCameraInfoDef =
+      "std_msgs/Header header\nuint32 height\nuint32 width\nstring distortion_model\n"
+      "float64[] d\nfloat64[9] k\nfloat64[9] r\nfloat64[12] p\n"
+      "uint32 binning_x\nuint32 binning_y\nsensor_msgs/RegionOfInterest roi\n"
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+      "================\nMSG: sensor_msgs/RegionOfInterest\n"
+      "uint32 x_offset\nuint32 y_offset\nuint32 height\nuint32 width\nbool do_rectify\n";
+
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kCameraInfoDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/CameraInfo", kCameraInfoDef));
+  EXPECT_EQ(f.handle.classifySchema("sensor_msgs/CameraInfo", def_span), PJ::sdk::BuiltinObjectType::kCameraInfo);
+
+  const std::vector<double> kD = {0.1, 0.2, 0.3, 0.4, 0.5};
+  const std::vector<double> kK = {500.0, 0.0, 320.0, 0.0, 500.0, 240.0, 0.0, 0.0, 1.0};
+  const std::vector<double> kR = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  const std::vector<double> kP = {500.0, 0, 320.0, 0, 0, 500.0, 240.0, 0, 0, 0, 1.0, 0};
+
+  // parseCameraInfo reads positionally and stops after P, so the payload need
+  // only carry header..P (binning/roi are skipped by the single-message decode).
+  auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 5, 0, "camera_optical");
+    enc.serializeUInt32(480);  // height
+    enc.serializeUInt32(640);  // width
+    enc.serializeString("plumb_bob");
+    enc.serializeUInt32(static_cast<uint32_t>(kD.size()));  // D is a float64[] sequence
+    for (double d : kD) {
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(d));
+    }
+    for (double k : kK) {  // K/R/P are fixed arrays — no count
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(k));
+    }
+    for (double r : kR) {
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(r));
+    }
+    for (double p : kP) {
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(p));
+    }
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* ci = std::any_cast<PJ::sdk::CameraInfo>(&rec->object);
+  ASSERT_NE(ci, nullptr);
+  EXPECT_EQ(ci->frame_id, "camera_optical");
+  EXPECT_EQ(ci->width, 640u);
+  EXPECT_EQ(ci->height, 480u);
+  EXPECT_EQ(ci->distortion_model, "plumb_bob");
+  ASSERT_EQ(ci->D.size(), 5u);
+  EXPECT_DOUBLE_EQ(ci->D[0], 0.1);
+  EXPECT_DOUBLE_EQ(ci->D[4], 0.5);
+  EXPECT_DOUBLE_EQ(ci->K[0], 500.0);
+  EXPECT_DOUBLE_EQ(ci->K[2], 320.0);  // cx
+  EXPECT_DOUBLE_EQ(ci->R[0], 1.0);
+  EXPECT_DOUBLE_EQ(ci->P[0], 500.0);
+  EXPECT_DOUBLE_EQ(ci->P[5], 500.0);  // fy
+}
+
 // ===== yolo_msgs/DetectionArray -> sdk::ImageAnnotations =====
 
 // Full nested .msg definition for yolo_msgs/DetectionArray (mgonzs13/yolo_ros).

@@ -136,6 +136,14 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kImage,  // unified Image distinguishes by encoding string.
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseCompressedImage}},
+      // CameraInfo is consumed as a calibration object (intrinsics + distortion)
+      // so the 2D image view can rectify frames and line up annotation overlays;
+      // the consumer pairs it with the image by frame_id. The scalar route keeps
+      // the small matrices (K/D/R/P, width, height) plottable.
+      {"sensor_msgs/CameraInfo",
+       {.object_type = ObjectType::kCameraInfo,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseCameraInfo}},
       // foxglove_msgs/CompressedVideo — a single compressed video frame
       // (h264/h265/vp9/av1). The scalar route is included so the object-ingest
       // path runs (an object-only entry would abort the push before the object

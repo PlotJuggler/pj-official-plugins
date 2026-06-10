@@ -38,6 +38,7 @@
 #include <stdexcept>
 #include <unordered_map>
 
+#include "pj_base/builtin/camera_info.hpp"
 #include "ros_parser_internal.hpp"
 
 namespace ros_parser_detail {
@@ -216,6 +217,67 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestam
         }}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("CompressedImage: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// sensor_msgs/CameraInfo
+//
+// Wire layout (ROS2 shown; ROS1 prepends a uint32 seq inside the header):
+//   header                  std_msgs/Header   (handled by readHeader())
+//   height                  uint32
+//   width                   uint32
+//   distortion_model        string
+//   D                       float64[]    (sequence: uint32 count, then doubles)
+//   K                       float64[9]   (fixed array — no count)
+//   R                       float64[9]   (fixed array)
+//   P                       float64[12]  (fixed array)
+//   binning_x / binning_y / roi follow but are not part of sdk::CameraInfo, so
+//   we stop after P (single-message positional decode; trailing fields are left
+//   unread, like the other object handlers).
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCameraInfo(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  // A float64[] D longer than this is corrupt — bound the reserve so a bad count
+  // can't request a huge allocation (real distortion models use 4-8 coeffs).
+  constexpr uint32_t kMaxDistortionCoeffs = 1024;
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    HeaderData header = readHeader();
+
+    PJ::sdk::CameraInfo ci;
+    ci.height = deserializer_->deserializeUInt32();
+    ci.width = deserializer_->deserializeUInt32();
+    deserializer_->deserializeString(ci.distortion_model);
+
+    const uint32_t d_count = deserializer_->deserializeUInt32();  // D is a float64[] sequence
+    if (d_count > kMaxDistortionCoeffs) {
+      return PJ::unexpected(std::string("CameraInfo D[] exceeds sanity cap"));
+    }
+    ci.D.reserve(d_count);
+    for (uint32_t i = 0; i < d_count; ++i) {
+      ci.D.push_back(deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>());
+    }
+    for (double& k : ci.K) {  // K/R/P are fixed-size arrays — no length prefix
+      k = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+    }
+    for (double& r : ci.R) {
+      r = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+    }
+    for (double& p : ci.P) {
+      p = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+    }
+
+    ci.frame_id = std::move(header.frame_id);
+    ci.timestamp_ns = current_timestamp_;
+
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(ci)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("CameraInfo: CDR read error: ") + e.what());
   }
 }
 

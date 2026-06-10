@@ -318,6 +318,10 @@ class RosParser : public PJ::MessageParserPluginBase {
   // sensor_msgs/CompressedImage (also covers compressedDepth via the format string)
   PJ::Expected<PJ::sdk::ObjectRecord> parseCompressedImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
+  // sensor_msgs/CameraInfo -> sdk::CameraInfo (intrinsics + distortion). Lets the
+  // 2D image view rectify frames and align annotation overlays.
+  PJ::Expected<PJ::sdk::ObjectRecord> parseCameraInfo(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
   // foxglove_msgs/CompressedVideo -> sdk::VideoFrame (zero-copy compressed bitstream)
   PJ::Expected<PJ::sdk::ObjectRecord> parseCompressedVideo(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
