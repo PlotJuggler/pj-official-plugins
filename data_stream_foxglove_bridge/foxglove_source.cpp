@@ -7,8 +7,10 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <pj_array_policy/array_policy.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
+#include <pj_base64/base64.hpp>
 #include <queue>
 #include <string>
 #include <thread>
@@ -226,6 +228,56 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   }
 
  private:
+  // Create a parser binding for a supported channel and record it for its
+  // subscription id. Returns an error string on binding failure, std::nullopt
+  // on success. Shared by both subscribe paths (stolen-socket and fresh-connect).
+  std::optional<std::string> bindChannel(const ChannelInfo& ch, uint32_t sub_id) {
+    const ChannelRoute route = classifyChannel(ch);
+
+    nlohmann::json parser_cfg;
+    pj::array_policy::arrayLimitToJson(parser_cfg, array_limit_);
+    parser_cfg["use_timestamp"] = use_timestamp_;
+    parser_cfg["use_embedded_timestamp"] = use_timestamp_;
+    parser_cfg["schema_encoding"] = route.parser_encoding;
+
+    // Foxglove base64-encodes binary schemas (the protobuf FileDescriptorSet) in
+    // the advertise JSON, while text schemas (ros2msg/omgidl) arrive verbatim.
+    // `decoded` must outlive the ensureParserBinding call below — the host
+    // consumes the schema span synchronously, same as data_load_mcap.
+    std::string decoded;
+    PJ::Span<const uint8_t> schema_span;
+    if (route.schema_is_base64) {
+      decoded = PJ::base64::decode(ch.schema);
+      schema_span = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(decoded.data()), decoded.size());
+    } else {
+      schema_span = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(ch.schema.data()), ch.schema.size());
+    }
+
+    auto binding = runtimeHost().ensureParserBinding({
+        .topic_name = ch.topic,
+        .parser_encoding = route.parser_encoding,
+        .type_name = ch.schema_name,
+        .schema = schema_span,
+        .parser_config_json = parser_cfg.dump(),
+    });
+    if (!binding) {
+      return ch.topic + " (" + route.parser_encoding + "): " + binding.error();
+    }
+    binding_by_subscription_[sub_id] = *binding;
+    return std::nullopt;
+  }
+
+  void reportParserErrors(const std::vector<std::string>& parser_errors) {
+    if (parser_errors.empty()) {
+      return;
+    }
+    std::string msg = "Skipped " + std::to_string(parser_errors.size()) + " channel(s):\n";
+    for (const auto& e : parser_errors) {
+      msg += "  - " + e + "\n";
+    }
+    runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, msg);
+  }
+
   // Subscribe to all selected channels using the channel info already captured by the dialog.
   // Called from onStart() when the socket is stolen (server won't re-send "advertise").
   // Also safe to call after a fresh connect where selected_channels_ is pre-populated.
@@ -233,7 +285,8 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     std::vector<std::string> parser_errors;
 
     for (const auto& ch : selected_channels_) {
-      if (!isUsableChannel(ch)) {
+      if (!classifyChannel(ch).supported) {
+        parser_errors.push_back(ch.topic + " (" + ch.schema_encoding + "): unsupported encoding");
         continue;
       }
 
@@ -242,36 +295,14 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       uint32_t sub_id = next_subscription_id_++;
       subscriptions_[sub_id] = ch.id;
 
-      nlohmann::json parser_cfg;
-      pj::array_policy::arrayLimitToJson(parser_cfg, array_limit_);
-      parser_cfg["use_timestamp"] = use_timestamp_;
-      parser_cfg["use_embedded_timestamp"] = use_timestamp_;
-      parser_cfg["schema_encoding"] = ch.schema_encoding;
-
-      auto schema_bytes = reinterpret_cast<const uint8_t*>(ch.schema.data());
-      auto binding = runtimeHost().ensureParserBinding({
-          .topic_name = ch.topic,
-          .parser_encoding = ch.schema_encoding,
-          .type_name = ch.schema_name,
-          .schema = PJ::Span<const uint8_t>(schema_bytes, ch.schema.size()),
-          .parser_config_json = parser_cfg.dump(),
-      });
-      if (binding) {
-        binding_by_subscription_[sub_id] = *binding;
-      } else {
-        parser_errors.push_back(ch.topic + " (" + ch.schema_encoding + "): " + binding.error());
+      if (auto err = bindChannel(ch, sub_id)) {
+        parser_errors.push_back(*err);
       }
 
       socket_->sendText(buildSubscribeMessage({{sub_id, ch.id}}));
     }
 
-    if (!parser_errors.empty()) {
-      std::string msg = "Failed to create parser for " + std::to_string(parser_errors.size()) + " channel(s):\n";
-      for (const auto& e : parser_errors) {
-        msg += "  - " + e + "\n";
-      }
-      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, msg);
-    }
+    reportParserErrors(parser_errors);
   }
 
   void onTextMessage(const std::string& message) {
@@ -306,45 +337,25 @@ class FoxgloveSource : public PJ::StreamSourceBase {
             break;
           }
         }
-        if (!user_selected || !isUsableChannel(ch)) {
+        if (!user_selected) {
+          continue;
+        }
+        if (!classifyChannel(ch).supported) {
+          parser_errors.push_back(ch.topic + " (" + ch.schema_encoding + "): unsupported encoding");
           continue;
         }
 
         uint32_t sub_id = next_subscription_id_++;
         subscriptions_[sub_id] = ch.id;
 
-        // Build parser config with array size policy
-        nlohmann::json parser_cfg;
-        pj::array_policy::arrayLimitToJson(parser_cfg, array_limit_);
-        parser_cfg["use_timestamp"] = use_timestamp_;
-        parser_cfg["use_embedded_timestamp"] = use_timestamp_;
-        parser_cfg["schema_encoding"] = ch.schema_encoding;
-
-        auto schema_bytes = reinterpret_cast<const uint8_t*>(ch.schema.data());
-        auto binding = runtimeHost().ensureParserBinding({
-            .topic_name = ch.topic,
-            .parser_encoding = ch.schema_encoding,
-            .type_name = ch.schema_name,
-            .schema = PJ::Span<const uint8_t>(schema_bytes, ch.schema.size()),
-            .parser_config_json = parser_cfg.dump(),
-        });
-        if (binding) {
-          binding_by_subscription_[sub_id] = *binding;
-        } else {
-          parser_errors.push_back(ch.topic + " (" + ch.schema_encoding + "): " + binding.error());
+        if (auto err = bindChannel(ch, sub_id)) {
+          parser_errors.push_back(*err);
         }
 
         socket_->sendText(buildSubscribeMessage({{sub_id, ch.id}}));
       }
 
-      // Report all parser binding failures in a single aggregated message
-      if (!parser_errors.empty()) {
-        std::string msg = "Failed to create parser for " + std::to_string(parser_errors.size()) + " channel(s):\n";
-        for (const auto& e : parser_errors) {
-          msg += "  - " + e + "\n";
-        }
-        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, msg);
-      }
+      reportParserErrors(parser_errors);
     }
 
     // Handle unadvertise: server removed channels

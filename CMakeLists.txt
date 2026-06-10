@@ -13,6 +13,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
 
   # Internal helper libraries shared by several plugins.
   add_subdirectory(common/arrow_helpers)
+  add_subdirectory(common/base64)
   add_subdirectory(common/pj_video_demux)
   add_subdirectory(common/array_policy)
 
@@ -114,6 +115,7 @@ enable_testing()
 # ---------------------------------------------------------------------------
 
 add_subdirectory(common/arrow_helpers)
+add_subdirectory(common/base64)
 add_subdirectory(common/pj_video_demux)
 add_subdirectory(common/array_policy)
 
