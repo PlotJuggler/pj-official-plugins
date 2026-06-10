@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
@@ -48,11 +49,6 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
         .setText("status_label", status_msg_)
         .setEnabled("save_button", isValid());
 
-    if (save_requested_) {
-      save_requested_ = false;
-      wd.requestAccept();
-    }
-
     // Compute and attach preview chart if inputs are valid.
     if (isValid()) {
       auto preview = computePreview();
@@ -90,8 +86,13 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
 
   bool onClicked(std::string_view name) override {
     if (name == "save_button" && isValid()) {
-      save_requested_ = true;
-      return true;
+      // The toolbox hosts its dialog in a non-modal PanelEngine, which ignores
+      // requestAccept(); so apply directly through the callback the toolbox
+      // installs (it owns the host write surface this dialog cannot reach).
+      if (on_save_) {
+        on_save_();
+      }
+      return true;  // refresh widget_data so the status label / preview update
     }
     return false;
   }
@@ -137,13 +138,27 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
       std::string fz = prefix + pattern[2];
       std::string fw = prefix + pattern[3];
 
-      if (field_exists(fx) && field_exists(fy) && field_exists(fz) && field_exists(fw)) {
+      // available_fields_ is only filled when the dialog opens (getDialog), and
+      // the toolbox's onDataChanged() is not invoked on file load, so a toolbox
+      // opened BEFORE any data was loaded would have an empty list and reject
+      // every drop. Validate the four siblings only when the list is populated;
+      // otherwise accept the best-effort match — applyTransform() re-checks the
+      // fields against the live catalog when the user clicks Save.
+      const bool list_known = !available_fields_.empty();
+      if (!list_known || (field_exists(fx) && field_exists(fy) && field_exists(fz) && field_exists(fw))) {
         input_x_ = fx;
         input_y_ = fy;
         input_z_ = fz;
         input_w_ = fw;
         output_prefix_ = prefix + "rpy/";
         status_msg_.clear();
+        // The dialog's data snapshot is taken once in getDialog(); if the
+        // toolbox was opened before the data was loaded it is stale/empty. The
+        // drop is the moment we know which series the preview needs, so ask the
+        // toolbox to (re-)read them from the catalog now. No periodic polling.
+        if (on_refresh_) {
+          on_refresh_();
+        }
         return true;
       }
     }
@@ -222,6 +237,19 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
     series_data_ = std::move(data);
   }
 
+  // Installed by the owning toolbox: invoked when the user clicks Save so the
+  // transform is applied (the dialog has no host write surface of its own).
+  void setOnSave(std::function<void()> cb) {
+    on_save_ = std::move(cb);
+  }
+
+  // Installed by the owning toolbox: invoked from onTick() so the toolbox can
+  // refresh the field list / preview data from the catalog while the panel is
+  // open (the dialog has no catalog access of its own).
+  void setOnRefresh(std::function<void()> cb) {
+    on_refresh_ = std::move(cb);
+  }
+
  private:
   std::vector<PJ::ChartSeries> computePreview() const {
     auto find = [&](const std::string& name) -> const SeriesData* {
@@ -278,7 +306,8 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
   std::string output_prefix_ = "rpy/";
   bool unwrap_ = true;
   bool degrees_ = true;
-  bool save_requested_ = false;
+  std::function<void()> on_save_;
+  std::function<void()> on_refresh_;
   std::string status_msg_;
   std::vector<std::string> available_fields_;
   std::unordered_map<std::string, SeriesData> series_data_;
@@ -290,6 +319,27 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
 
 class QuaternionToolbox : public PJ::ToolboxPluginBase {
  public:
+  QuaternionToolbox() {
+    // Wire the dialog's Save button to the transform. Non-modal toolbox panels
+    // don't round-trip accept()/loadConfig() on Save, so this is the path that
+    // actually materializes the RPY series when the user clicks Save.
+    dialog_.setOnSave([this]() {
+      if (!dialog_.isValid() || !toolboxHostBound() || !runtimeHostBound()) {
+        return;
+      }
+      if (auto status = applyTransform(); !status) {
+        runtimeHost().reportMessage(
+            PJ::ToolboxMessageLevel::kWarning, "quaternion save failed: " + std::string(status.error()));
+      }
+    });
+
+    // A toolbox opened *before* the data is loaded snapshots an empty catalog
+    // in getDialog(), so its preview has no series to plot. There is no periodic
+    // toolbox tick to lean on; instead, re-read the catalog when the user drops
+    // curves (the moment the needed series become known). One fetch per drop.
+    dialog_.setOnRefresh([this]() { refreshDialogFromCatalog(); });
+  }
+
   uint64_t capabilities() const override {
     return PJ::kToolboxCapabilityHasDialog | PJ::kToolboxCapabilityNonModalDialog;
   }
@@ -302,48 +352,9 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
   }
 
   PJ_borrowed_dialog_t getDialog() override {
-    // Populate available fields and series data from catalog before the dialog opens.
-    if (toolboxHostBound()) {
-      auto host = toolboxHost();
-      auto catalog = host.catalogSnapshot();
-      if (catalog) {
-        std::vector<std::string> names;
-        std::unordered_map<std::string, QuaternionDialog::SeriesData> data_map;
-
-        auto all_fields = catalog->fields();
-        for (const auto& topic : catalog->topics()) {
-          std::string topic_name(PJ::sdk::toStringView(topic.name));
-          for (uint32_t fi = topic.first_field; fi < topic.first_field + topic.field_count; ++fi) {
-            const auto& f = all_fields[fi];
-            std::string name = topic_name + "/" + std::string(PJ::sdk::toStringView(f.name));
-            names.push_back(name);
-
-            // Read series data for preview.
-            auto series = host.readSeries(f.handle);
-            if (series && series->type() == PJ::PrimitiveType::kFloat64) {
-              auto ts = series->timestamps();
-              const double* values = series->valuesAsFloat64();
-              size_t count = ts.size();
-
-              if (values != nullptr) {
-                QuaternionDialog::SeriesData sd;
-                sd.timestamps.resize(count);
-                sd.values.resize(count);
-                for (size_t i = 0; i < count; ++i) {
-                  sd.timestamps[i] = static_cast<double>(ts[i]);
-                  sd.values[i] = values[i];
-                }
-                data_map[name] = std::move(sd);
-              }
-            }
-          }
-        }
-
-        std::sort(names.begin(), names.end());
-        dialog_.setAvailableFields(std::move(names));
-        dialog_.setSeriesDataMap(std::move(data_map));
-      }
-    }
+    // Populate the dialog's field list + preview data from the catalog before
+    // opening; subsequent refreshes are driven by the dialog's onTick (see ctor).
+    refreshDialogFromCatalog();
     return PJ::borrowDialog(dialog_);
   }
 
@@ -377,6 +388,57 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
   }
 
  private:
+  // Pull the catalog into the dialog: the field names it validates drops
+  // against and the per-series data the preview chart plots. Called at two
+  // discrete moments — when the dialog opens (getDialog) and when the user
+  // drops curves (onItemsDropped via the on_refresh_ callback) — so a toolbox
+  // opened before the data was loaded still gets fresh series for its preview.
+  void refreshDialogFromCatalog() {
+    if (!toolboxHostBound()) {
+      return;
+    }
+    auto host = toolboxHost();
+    auto catalog = host.catalogSnapshot();
+    if (!catalog) {
+      return;
+    }
+
+    std::vector<std::string> names;
+    std::unordered_map<std::string, QuaternionDialog::SeriesData> data_map;
+    auto all_fields = catalog->fields();
+    for (const auto& topic : catalog->topics()) {
+      std::string topic_name(PJ::sdk::toStringView(topic.name));
+      for (uint32_t fi = topic.first_field; fi < topic.first_field + topic.field_count; ++fi) {
+        const auto& f = all_fields[fi];
+        std::string name = topic_name + "/" + std::string(PJ::sdk::toStringView(f.name));
+        names.push_back(name);
+
+        // Read series data for the preview chart.
+        auto series = host.readSeries(f.handle);
+        if (series && series->type() == PJ::PrimitiveType::kFloat64) {
+          auto ts = series->timestamps();
+          const double* values = series->valuesAsFloat64();
+          size_t count = ts.size();
+
+          if (values != nullptr) {
+            QuaternionDialog::SeriesData sd;
+            sd.timestamps.resize(count);
+            sd.values.resize(count);
+            for (size_t i = 0; i < count; ++i) {
+              sd.timestamps[i] = static_cast<double>(ts[i]);
+              sd.values[i] = values[i];
+            }
+            data_map[name] = std::move(sd);
+          }
+        }
+      }
+    }
+
+    std::sort(names.begin(), names.end());
+    dialog_.setAvailableFields(std::move(names));
+    dialog_.setSeriesDataMap(std::move(data_map));
+  }
+
   PJ::Status applyTransform() {
     auto host = toolboxHost();
 
