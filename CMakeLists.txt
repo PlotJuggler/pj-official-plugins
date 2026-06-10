@@ -13,6 +13,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
 
   # Internal helper libraries shared by several plugins.
   add_subdirectory(common/arrow_helpers)
+  add_subdirectory(common/pj_video_demux)
   add_subdirectory(common/array_policy)
 
   # Enabled entries track the v4 ABI (PJ_ABI_VERSION == 4): service-
@@ -25,7 +26,10 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(data_load_mcap)
   add_subdirectory(data_load_parquet)
   add_subdirectory(data_load_ulog)
-  add_subdirectory(data_load_lerobot)
+  # data_load_lerobot and data_load_mp4 are intentionally NOT in this aggregate
+  # list: they depend on FFmpeg (via common/pj_video_demux), which this build
+  # does not provide. Both build per-plugin against their own conanfile (CI's
+  # arrow-plugin-build / per-plugin-build and the release path).
   add_subdirectory(parser_json)
   add_subdirectory(parser_protobuf)
   add_subdirectory(parser_ros)
@@ -110,6 +114,7 @@ enable_testing()
 # ---------------------------------------------------------------------------
 
 add_subdirectory(common/arrow_helpers)
+add_subdirectory(common/pj_video_demux)
 add_subdirectory(common/array_policy)
 
 # ---------------------------------------------------------------------------
@@ -129,7 +134,10 @@ else()
   add_subdirectory(data_load_mcap)
   add_subdirectory(data_load_parquet)
   add_subdirectory(data_load_ulog)
-  add_subdirectory(data_load_lerobot)
+  # data_load_lerobot and data_load_mp4 are intentionally NOT in this aggregate
+  # list: they depend on FFmpeg (via common/pj_video_demux), which this build
+  # does not provide. Both build per-plugin against their own conanfile (CI's
+  # arrow-plugin-build / per-plugin-build and the release path).
   add_subdirectory(data_stream_zmq)
   add_subdirectory(data_stream_mqtt)
   add_subdirectory(data_stream_udp)

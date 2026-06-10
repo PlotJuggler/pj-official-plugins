@@ -24,7 +24,11 @@ namespace pj_mp4 {
   }
   std::istringstream in{std::string(iso)};
   std::chrono::sys_time<std::chrono::microseconds> tp;
-  in >> date::parse("%FT%TZ", tp);
+  // Qualified date::from_stream (not `>> date::parse`) so the call resolves
+  // unambiguously to Howard Hinnant's date lib: under C++20 + libstdc++ 15 the
+  // unqualified form is ambiguous with std::chrono::from_stream (ADL on
+  // std::chrono::sys_time). Equivalent behavior on older toolchains.
+  date::from_stream(in, "%FT%TZ", tp);
   if (in.fail()) {
     return std::nullopt;
   }
