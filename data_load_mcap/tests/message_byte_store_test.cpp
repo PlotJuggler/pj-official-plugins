@@ -154,10 +154,10 @@ class MessageByteStoreTest : public ::testing::Test {
   // duration of this call.
   std::vector<Item> collect(mcap::MessageByteStore& store, bool invoke_hot) {
     std::vector<Item> items;
-    mcap::MmapReader mmap;
-    EXPECT_TRUE(mmap.open(path_).ok());
+    mcap::ConcurrentFileReader source;
+    EXPECT_TRUE(source.open(path_).ok());
     mcap::ParallelReader reader;
-    EXPECT_TRUE(reader.open(mmap).ok());
+    EXPECT_TRUE(reader.open(source).ok());
 
     store.init(path_, reader.chunkIndexes());
 
@@ -210,10 +210,10 @@ TEST_F(MessageByteStoreTest, HotPathReturnsMessageCopy) {
 // while the copied bytes stay valid.
 TEST_F(MessageByteStoreTest, HotViewDoesNotPinSourceChunk) {
   mcap::MessageByteStore store;
-  mcap::MmapReader mmap;
-  ASSERT_TRUE(mmap.open(path_).ok());
+  mcap::ConcurrentFileReader source;
+  ASSERT_TRUE(source.open(path_).ok());
   mcap::ParallelReader reader;
-  ASSERT_TRUE(reader.open(mmap).ok());
+  ASSERT_TRUE(reader.open(source).ok());
   store.init(path_, reader.chunkIndexes());
 
   mcap::ParallelReadOptions opts;
@@ -275,10 +275,10 @@ TEST_F(MessageByteStoreTest, RetainingEveryMessageKeepsResidencyBounded) {
   int64_t peak = 0;
   size_t total_payload = 0;
   {
-    mcap::MmapReader mmap;
-    ASSERT_TRUE(mmap.open(big).ok());
+    mcap::ConcurrentFileReader source;
+    ASSERT_TRUE(source.open(big).ok());
     mcap::ParallelReader reader;
-    ASSERT_TRUE(reader.open(mmap).ok());
+    ASSERT_TRUE(reader.open(source).ok());
     store.init(big, reader.chunkIndexes());
     mcap::ParallelReadOptions opts;
     opts.read.readOrder = mcap::ReadMessageOptions::ReadOrder::LogTimeOrder;
@@ -325,7 +325,7 @@ TEST_F(MessageByteStoreTest, ColdPathReproducesEveryMessage) {
   std::vector<Item> items = collect(store, /*invoke_hot=*/false);
   ASSERT_GE(items.size(), 24u);
 
-  // Reader + mmap are destroyed (collect() returned): all fetches go cold.
+  // Reader + source are destroyed (collect() returned): all fetches go cold.
   size_t collisions = 0;
   for (const auto& item : items) {
     if (item.log_time == kCollisionTs) {
@@ -359,10 +359,10 @@ TEST_F(MessageByteStoreTest, TinyCacheStaysCorrectUnderEviction) {
   mcap::MessageByteStore store;
   std::vector<Item> items;
   {
-    mcap::MmapReader mmap;
-    ASSERT_TRUE(mmap.open(path_).ok());
+    mcap::ConcurrentFileReader source;
+    ASSERT_TRUE(source.open(path_).ok());
     mcap::ParallelReader reader;
-    ASSERT_TRUE(reader.open(mmap).ok());
+    ASSERT_TRUE(reader.open(source).ok());
     // 1-byte budget: every cold miss evicts the previous chunk immediately.
     store.init(path_, reader.chunkIndexes(), {.cacheCapacityBytes = 1});
     mcap::ParallelReadOptions opts;

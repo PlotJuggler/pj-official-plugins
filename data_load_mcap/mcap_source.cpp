@@ -108,19 +108,12 @@ class McapSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("no filepath configured"));
     }
 
-    // mmap-backed source for the parallel reader. Declared before the parallel
-    // reader so it outlives it (the reader reads from this mapping); declared
-    // before `messages` below for the same reason.
-    mcap::MmapReader mmap_reader;
-    if (auto st = mmap_reader.open(dialog_.filepath()); !st.ok()) {
-      const std::string msg = std::string("cannot mmap MCAP file: ") + st.message;
-      runtimeHost().showError("MCAP import failed", msg);
-      return PJ::unexpected(msg);
-    }
-
+    // open(path) gives the reader an internally-owned ConcurrentFileReader
+    // (positioned pread/ReadFile, concurrent-safe). Declared before `messages`
+    // below so it outlives the message view.
     mcap::ParallelReader parallel_reader;
-    if (auto st = parallel_reader.open(mmap_reader); !st.ok()) {
-      const std::string msg = std::string("parallel reader open failed: ") + st.message;
+    if (auto st = parallel_reader.open(dialog_.filepath()); !st.ok()) {
+      const std::string msg = std::string("cannot open MCAP file: ") + st.message;
       runtimeHost().showError("MCAP import failed", msg);
       return PJ::unexpected(msg);
     }
@@ -355,7 +348,7 @@ class McapSource : public PJ::FileSourceBase {
         runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, msg);
         import_failure = msg;
       }
-    }  // ~messages then ~parallel_reader run here, before mmap_reader destructs.
+    }  // ~messages runs here, before ~parallel_reader (and its owned source).
 
     if (import_failure) {
       return PJ::unexpected(*import_failure);
