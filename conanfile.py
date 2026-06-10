@@ -34,6 +34,7 @@ class PjOfficialPluginsConan(ConanFile):
         "date/3.0.4",
         "gtest/1.17.0",
         "ixwebsocket/11.4.6",
+        "libdatachannel/0.24.0",
         "asio/1.28.2",
         "kissfft/131.1.0",
         "lua/5.4.6",
@@ -61,4 +62,9 @@ class PjOfficialPluginsConan(ConanFile):
         # Tkinter requires X11 system libs (libx11-dev, libxcb-*-dev) which are not
         # available on CI runners. We do not need Tkinter for scripting.
         "cpython/*:with_tkinter": False,
+        # WebRTC streaming client (data_stream_webrtc): media/SRTP/WebSocket on,
+        # libnice off (use the bundled libjuice ICE agent).
+        "libdatachannel/*:with_websocket": True,
+        "libdatachannel/*:with_nice": False,
+        "libdatachannel/*:with_ssl": "openssl",
     }

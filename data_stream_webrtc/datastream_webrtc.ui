@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>DataStreamWebRTC</class>
+ <widget class="QDialog" name="DataStreamWebRTC">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>620</width><height>560</height></rect>
+  </property>
+  <property name="minimumSize"><size><width>620</width><height>560</height></size></property>
+  <property name="windowTitle"><string>WebRTC Video Client</string></property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QLabel" name="labelSignaling">
+     <property name="font"><font><pointsize>12</pointsize><bold>true</bold></font></property>
+     <property name="text"><string>Signaling Server</string></property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QGridLayout" name="gridLayoutServer" columnstretch="0,2,0,1,0">
+     <item row="0" column="0">
+      <widget class="QLabel" name="labelScheme"><property name="text"><string>  ws://</string></property></widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QLineEdit" name="lineEditAddress"><property name="placeholderText"><string>127.0.0.1</string></property></widget>
+     </item>
+     <item row="0" column="2">
+      <widget class="QLabel" name="labelColon"><property name="text"><string> : </string></property></widget>
+     </item>
+     <item row="0" column="3">
+      <widget class="QLineEdit" name="lineEditPort"><property name="placeholderText"><string>8443</string></property></widget>
+     </item>
+     <item row="0" column="4">
+      <widget class="QPushButton" name="buttonConnect">
+       <property name="minimumSize"><size><width>110</width><height>25</height></size></property>
+       <property name="text"><string>Connect</string></property>
+       <property name="checkable"><bool>true</bool></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QFormLayout" name="formLayoutIds">
+     <item row="0" column="0"><widget class="QLabel" name="labelOurId"><property name="text"><string>Our peer id:</string></property></widget></item>
+     <item row="0" column="1"><widget class="QLineEdit" name="lineEditOurId"><property name="placeholderText"><string>receiver</string></property></widget></item>
+     <item row="1" column="0"><widget class="QLabel" name="labelTopicPrefix"><property name="text"><string>Topic prefix:</string></property></widget></item>
+     <item row="1" column="1">
+      <widget class="QLineEdit" name="lineEditTopicPrefix">
+       <property name="toolTip"><string>Each selected camera becomes the topic  &lt;prefix&gt;/&lt;camera name&gt;.</string></property>
+       <property name="placeholderText"><string>webrtc</string></property>
+      </widget>
+     </item>
+     <item row="2" column="0"><widget class="QLabel" name="labelManualStream"><property name="text"><string>Manual stream id:</string></property></widget></item>
+     <item row="2" column="1">
+      <widget class="QLineEdit" name="lineEditManualStream">
+       <property name="toolTip"><string>Fallback for peers that do not advertise a catalog. Type the stream id the peer offers (its a=mid), or leave empty to accept the peer's single offer as-is (legacy single-stream mode).</string></property>
+       <property name="placeholderText"><string>(optional) e.g. cam0  - used only when no camera is selected above</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item><widget class="Line" name="lineSep1"><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayoutCamerasHeader">
+     <item>
+      <widget class="QLabel" name="labelCameras">
+       <property name="font"><font><pointsize>12</pointsize><bold>true</bold></font></property>
+       <property name="text"><string>Select one or multiple cameras:</string></property>
+      </widget>
+     </item>
+     <item><spacer name="horizontalSpacerCameras"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+     <item><widget class="QLabel" name="labelFilter"><property name="text"><string>Filter: </string></property></widget></item>
+     <item>
+      <widget class="QLineEdit" name="lineEditFilter">
+       <property name="maximumSize"><size><width>300</width><height>16777215</height></size></property>
+       <property name="clearButtonEnabled"><bool>true</bool></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="camerasList">
+     <property name="toolTip"><string>Cameras advertised by the peer. Select the ones you want; each becomes its own PJ.VideoFrame topic.</string></property>
+     <property name="selectionMode"><enum>QAbstractItemView::MultiSelection</enum></property>
+     <property name="columnCount"><number>3</number></property>
+     <column><property name="text"><string>Camera</string></property></column>
+     <column><property name="text"><string>Codec</string></property></column>
+     <column><property name="text"><string>Resolution</string></property></column>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="labelIce">
+     <property name="font"><font><pointsize>12</pointsize><bold>true</bold></font></property>
+     <property name="text"><string>ICE Servers (STUN / TURN)</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="tableIceServers">
+     <property name="toolTip"><string>STUN: fill URL only (e.g. stun:stun.l.google.com:19302). TURN: also fill Username and Credential (e.g. turn:turn.example.org:3478).</string></property>
+     <property name="maximumSize"><size><width>16777215</width><height>120</height></size></property>
+     <property name="columnCount"><number>3</number></property>
+     <column><property name="text"><string>URL</string></property></column>
+     <column><property name="text"><string>Username</string></property></column>
+     <column><property name="text"><string>Credential</string></property></column>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="orientation"><enum>Qt::Horizontal</enum></property>
+     <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection><sender>buttonBox</sender><signal>accepted()</signal><receiver>DataStreamWebRTC</receiver><slot>accept()</slot></connection>
+  <connection><sender>buttonBox</sender><signal>rejected()</signal><receiver>DataStreamWebRTC</receiver><slot>reject()</slot></connection>
+ </connections>
+</ui>
