@@ -16,7 +16,9 @@
  * PlotJuggler plugin — see YOLO_NOTES.md.
  */
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <pj_base/builtin/image_annotations.hpp>
@@ -51,6 +53,14 @@ PJ::sdk::ColorRGBA colorForClass(int32_t class_id) {
   return kClassPalette[static_cast<size_t>(idx)];
 }
 
+// Clamp an array reservation by the bytes actually remaining. An element cannot
+// occupy fewer than `min_wire_bytes`, so however large (but in-cap) a corrupt
+// count is, we never reserve more than the payload could possibly hold — this
+// defuses the allocation amplification of reserving on an untrusted count.
+uint32_t reserveHint(uint32_t count, size_t bytes_left, uint32_t min_wire_bytes) {
+  return std::min(count, static_cast<uint32_t>(bytes_left / min_wire_bytes));
+}
+
 std::string formatLabel(const std::string& class_name, double score) {
   char buf[16];
   std::snprintf(buf, sizeof(buf), "%.2f", score);
@@ -81,8 +91,11 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseYoloDetectionArray(PJ::Times
     if (num_detections > kMaxDetections) {
       throw std::runtime_error("DetectionArray detections[] exceeds sanity cap");
     }
-    out.points.reserve(num_detections);
-    out.texts.reserve(num_detections);
+    // A Detection occupies far more than 64 bytes on the wire (the fixed
+    // bbox2d/bbox3d scalar block alone is ~120), so 64 is a safe lower bound.
+    const uint32_t detection_hint = reserveHint(num_detections, deserializer_->bytesLeft(), 64);
+    out.points.reserve(detection_hint);
+    out.texts.reserve(detection_hint);
 
     for (uint32_t d = 0; d < num_detections; ++d) {
       const int32_t class_id = ri32();
@@ -115,7 +128,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseYoloDetectionArray(PJ::Times
         throw std::runtime_error("Detection mask data[] exceeds sanity cap");
       }
       std::vector<PJ::sdk::Point2> mask_points;
-      mask_points.reserve(num_mask);
+      mask_points.reserve(reserveHint(num_mask, deserializer_->bytesLeft(), 16));  // Point2D = 2 × float64
       for (uint32_t i = 0; i < num_mask; ++i) {
         const double mx = rf64();
         const double my = rf64();
@@ -128,7 +141,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseYoloDetectionArray(PJ::Times
         throw std::runtime_error("Detection keypoints[] exceeds sanity cap");
       }
       std::vector<PJ::sdk::Point2> keypoints;
-      keypoints.reserve(num_kp2);
+      keypoints.reserve(reserveHint(num_kp2, deserializer_->bytesLeft(), 28));  // KeyPoint2D = 4 + 16 + 8 bytes
       for (uint32_t i = 0; i < num_kp2; ++i) {
         (void)ri32();  // id
         const double kx = rf64();
