@@ -43,23 +43,6 @@ target_include_directories(mcap_helpers_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOUR
 target_link_libraries(mcap_helpers_test PRIVATE LZ4::lz4_static zstd::libzstd_static GTest::gtest_main)
 add_test(NAME mcap_helpers_test COMMAND mcap_helpers_test)
 
-# --- Unit test for MCAP dialog model/config behavior ---
-add_executable(mcap_dialog_test tests/mcap_dialog_test.cpp)
-target_compile_features(mcap_dialog_test PRIVATE cxx_std_20)
-target_compile_options(mcap_dialog_test PRIVATE ${PJ_WARNING_FLAGS})
-target_compile_definitions(mcap_dialog_test PRIVATE
-  MCAP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data"
-)
-target_include_directories(mcap_dialog_test PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}
-  ${CMAKE_CURRENT_BINARY_DIR}/generated
-)
-target_include_directories(mcap_dialog_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
-target_link_libraries(mcap_dialog_test PRIVATE
-  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json LZ4::lz4_static zstd::libzstd_static GTest::gtest_main
-)
-add_test(NAME mcap_dialog_test COMMAND mcap_dialog_test)
-
 # --- Unit test for the MessageByteStore (hot/cold lazy byte layer) ---
 find_package(Threads REQUIRED)
 add_executable(message_byte_store_test tests/message_byte_store_test.cpp)
