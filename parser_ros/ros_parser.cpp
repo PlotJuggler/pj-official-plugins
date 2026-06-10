@@ -1,6 +1,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <functional>
+#include <pj_array_policy/array_policy.hpp>
 #include <string>
 
 #include "ros_parser_internal.hpp"
@@ -148,6 +149,19 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kPointCloud,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parsePointCloud}},
+      // foxglove_msgs/CompressedPointCloud — opaque compressed cloud (draco/cloudini/…).
+      // The parser repackages the blob + format; it does not decode. The scalar
+      // route keeps frame_id / format plottable while discarding the data[] blob.
+      {"foxglove_msgs/CompressedPointCloud",
+       {.object_type = ObjectType::kCompressedPointCloud,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseFoxgloveCompressedPointCloud}},
+      // point_cloud_interfaces/CompressedPointCloud2 — the point_cloud_transport
+      // canonical compressed message. Same dual route as above.
+      {"point_cloud_interfaces/CompressedPointCloud2",
+       {.object_type = ObjectType::kCompressedPointCloud,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseCompressedPointCloud2}},
       // TF keeps its specialized scalar flattening (handleTFMessage) AND emits a
       // canonical FrameTransforms object for the 3D scene's TF buffer.
       {"tf2_msgs/TFMessage",
@@ -379,8 +393,7 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
 
 std::string RosParser::saveConfig() const {
   nlohmann::json cfg;
-  cfg["max_array_size"] = max_array_size_;
-  cfg["discard_large_arrays"] = discard_large_arrays_;
+  pj::array_policy::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), !discard_large_arrays_);
   cfg["use_embedded_timestamp"] = use_embedded_timestamp_;
   cfg["boolean_strings_to_number"] = boolean_strings_to_number_;
   cfg["remove_suffix_from_strings"] = remove_suffix_from_strings_;
@@ -398,8 +411,9 @@ PJ::Status RosParser::loadConfig(std::string_view config_json) {
     return PJ::okStatus();
   }
 
-  max_array_size_ = static_cast<size_t>(cfg.value("max_array_size", 500));
-  discard_large_arrays_ = cfg.value("discard_large_arrays", cfg.value("clamp_large_arrays", false));
+  const auto array_limit = pj::array_policy::arrayLimitFromJson(cfg);
+  max_array_size_ = array_limit.max_size;
+  discard_large_arrays_ = (array_limit.policy == pj::array_policy::ArrayPolicy::kSkip);
   use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
   boolean_strings_to_number_ = cfg.value("boolean_strings_to_number", false);
   remove_suffix_from_strings_ = cfg.value("remove_suffix_from_strings", false);

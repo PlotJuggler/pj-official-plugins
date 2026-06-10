@@ -71,93 +71,29 @@
    <item>
     <widget class="QCheckBox" name="checkBoxUseTimestamp">
      <property name="text">
-      <string>Use the timestamp in the message (if present)</string>
+      <string>Use message timestamp if present (fallback: publish time)</string>
      </property>
     </widget>
    </item>
    <item>
-    <layout class="QHBoxLayout" name="horizontalLayout_1">
-     <item>
-      <widget class="QLabel" name="label_3">
-       <property name="text">
-        <string>Select the MCAP timestamping mode:</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QRadioButton" name="radioPubTime">
-       <property name="text">
-        <string>publish time</string>
-       </property>
-       <property name="checked">
-        <bool>true</bool>
-       </property>
-       <attribute name="buttonGroup">
-        <string notr="true">buttonGroup</string>
-       </attribute>
-      </widget>
-     </item>
-     <item>
-      <widget class="QRadioButton" name="radioLogTime">
-       <property name="text">
-        <string>log time</string>
-       </property>
-       <attribute name="buttonGroup">
-        <string notr="true">buttonGroup</string>
-       </attribute>
-      </widget>
-     </item>
-    </layout>
-   </item>
-   <item>
-    <layout class="QHBoxLayout" name="horizontalLayoutEncoding">
-     <item>
-      <widget class="QLabel" name="labelEncoding">
-       <property name="text">
-        <string>Parser options for encoding:</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QComboBox" name="comboBoxProtocol"/>
-     </item>
-    </layout>
-   </item>
-   <item>
-    <widget class="QWidget" name="parserSlotContainer" native="true">
-     <layout class="QVBoxLayout" name="verticalLayoutParserSlot">
-      <property name="leftMargin">
-       <number>0</number>
-      </property>
-      <property name="topMargin">
-       <number>0</number>
-      </property>
-      <property name="rightMargin">
-       <number>0</number>
-      </property>
-      <property name="bottomMargin">
-       <number>0</number>
-      </property>
-      <item>
-       <widget class="QWidget" name="pj_parser_slot" native="true">
-        <property name="minimumSize">
-         <size>
-          <width>0</width>
-          <height>0</height>
-         </size>
-        </property>
-       </widget>
-      </item>
-     </layout>
-    </widget>
-   </item>
-   <item>
-    <widget class="Line" name="line_2">
-     <property name="frameShadow">
-      <enum>QFrame::Plain</enum>
+    <widget class="QFrame" name="line">
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>1</height>
+      </size>
      </property>
-     <property name="orientation">
-      <enum>Qt::Horizontal</enum>
+     <property name="maximumSize">
+      <size>
+       <width>16777215</width>
+       <height>1</height>
+      </size>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">background-color: palette(shadow);</string>
+     </property>
+     <property name="frameShape">
+      <enum>QFrame::NoFrame</enum>
      </property>
     </widget>
    </item>
@@ -175,18 +111,6 @@
          </property>
          <property name="text">
           <string>Select the channels that you want to load</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QLabel" name="labelUsageHint">
-         <property name="font">
-          <font>
-           <pointsize>9</pointsize>
-          </font>
-         </property>
-         <property name="text">
-          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Press &lt;span style=&quot;font-weight:600;&quot;&gt;Ctrl+A&lt;/span&gt; to select all the topics and &lt;span style=&quot;font-weight:600;&quot;&gt;Ctrl+Shift+A&lt;/span&gt; to deselect all&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
          </property>
         </widget>
        </item>
@@ -240,7 +164,18 @@
            <height>16777215</height>
           </size>
          </property>
-         <property name="clearButtonEnabled">
+         <property name="styleSheet">
+          <string notr="true">QLineEdit#lineEditFilter {
+  background-color: transparent;
+  border: 0px;
+  border-radius: 0px;
+  border-bottom: 2px solid palette(mid);
+}
+QLineEdit#lineEditFilter:focus {
+  border-bottom: 2px solid palette(highlight);
+}</string>
+         </property>
+<property name="clearButtonEnabled">
           <bool>true</bool>
          </property>
         </widget>
@@ -251,6 +186,9 @@
    </item>
    <item>
     <widget class="QTableWidget" name="tableWidget">
+     <property name="styleSheet">
+      <string>QHeaderView::section { height: 24px; }</string>
+     </property>
      <property name="editTriggers">
       <set>QAbstractItemView::NoEditTriggers</set>
      </property>
@@ -266,6 +204,30 @@
      <property name="columnCount">
       <number>4</number>
      </property>
+     <attribute name="horizontalHeaderHighlightSections">
+      <bool>false</bool>
+     </attribute>
+     <attribute name="horizontalHeaderMinimumSectionSize">
+      <number>40</number>
+     </attribute>
+     <attribute name="horizontalHeaderDefaultSectionSize">
+      <number>24</number>
+     </attribute>
+     <attribute name="horizontalHeaderStretchLastSection">
+      <bool>false</bool>
+     </attribute>
+     <property name="styleSheet">
+      <string>QHeaderView::section { height: 24px; }</string>
+     </property>
+     <attribute name="horizontalHeaderMinimumSectionSize">
+      <number>40</number>
+     </attribute>
+     <attribute name="horizontalHeaderDefaultSectionSize">
+      <number>24</number>
+     </attribute>
+     <attribute name="horizontalHeaderStretchLastSection">
+      <bool>false</bool>
+     </attribute>
      <attribute name="verticalHeaderVisible">
       <bool>false</bool>
      </attribute>
@@ -291,15 +253,32 @@
      </column>
     </widget>
    </item>
+
    <item>
-    <widget class="QDialogButtonBox" name="buttonBox">
-     <property name="orientation">
-      <enum>Qt::Horizontal</enum>
-     </property>
-     <property name="standardButtons">
-      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
-     </property>
-    </widget>
+    <layout class="QHBoxLayout" name="bottomBar">
+     <item>
+      <widget class="QLabel" name="labelUsageHint">
+       <property name="font">
+        <font>
+         <pointsize>9</pointsize>
+        </font>
+       </property>
+       <property name="text">
+        <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Press &lt;span style=&quot;font-weight:600;&quot;&gt;Ctrl+A&lt;/span&gt; to select all the topics and &lt;span style=&quot;font-weight:600;&quot;&gt;Ctrl+Shift+A&lt;/span&gt; to deselect all&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QDialogButtonBox" name="buttonBox">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="standardButtons">
+        <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+       </property>
+      </widget>
+     </item>
+    </layout>
    </item>
   </layout>
  </widget>

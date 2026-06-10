@@ -15,6 +15,7 @@ add_library(lerobot_source_plugin SHARED
   dataset_model.cpp
   dataset_shards_v3.cpp
   flatten_plan.cpp
+  lerobot_video_window.cpp
 )
 target_compile_features(lerobot_source_plugin PRIVATE cxx_std_20)
 target_compile_options(lerobot_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
@@ -22,6 +23,7 @@ target_link_libraries(lerobot_source_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json
   Arrow::arrow_static Parquet::parquet_static
   pj_arrow_helpers
+  pj_video_demux  # lazy per-frame VideoFrame emission (pulls ffmpeg transitively)
 )
 pj_embed_ui(lerobot_source_plugin
   UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/dialog_lerobot.ui
@@ -76,17 +78,20 @@ target_link_libraries(lerobot_flatten_plan_test PRIVATE
 )
 add_test(NAME lerobot_flatten_plan_test COMMAND lerobot_flatten_plan_test)
 
-# Round-trip test for the sdk::AssetVideo wire format the plugin pushes per
-# camera. Pure header-driven — no plugin .cpp deps; the SDK supplies both the
-# struct and the serializer.
-add_executable(lerobot_asset_video_export_test tests/asset_video_export_test.cpp)
-target_compile_features(lerobot_asset_video_export_test PRIVATE cxx_std_20)
-target_compile_options(lerobot_asset_video_export_test PRIVATE ${PJ_WARNING_FLAGS})
-target_include_directories(lerobot_asset_video_export_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(lerobot_asset_video_export_test PRIVATE
-  plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host GTest::gtest_main
+# Pure video-window resolution test: v2.x whole-file vs v3.0 keyframe-seek-back +
+# presentation window + rebase. No host, no libav — pj_video_demux's header
+# supplies the AccessUnit POD; plugin_sdk supplies its pj_base includes.
+add_executable(lerobot_video_window_test tests/video_window_test.cpp lerobot_video_window.cpp)
+target_compile_features(lerobot_video_window_test PRIVATE cxx_std_20)
+target_compile_options(lerobot_video_window_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(lerobot_video_window_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/../common/pj_video_demux/include
 )
-add_test(NAME lerobot_asset_video_export_test COMMAND lerobot_asset_video_export_test)
+target_link_libraries(lerobot_video_window_test PRIVATE
+  plotjuggler_sdk::plugin_sdk GTest::gtest_main
+)
+add_test(NAME lerobot_video_window_test COMMAND lerobot_video_window_test)
 
 # Dialog/fanout serialization test: needs dataset_model.cpp because
 # LeRobotDialog::loadModel() resolves to lerobot::loadDatasetModel; plugin_sdk
