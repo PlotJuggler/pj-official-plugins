@@ -257,25 +257,17 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       std::string schema_b64 = cfg["compiled_schema_base64"].get<std::string>();
       std::string type_name = cfg["message_type"].get<std::string>();
 
-      std::cerr << "[protobuf_parser] loadConfig: message_type='" << type_name
-                << "', schema_b64_len=" << schema_b64.size() << "\n";
-
       if (!schema_b64.empty() && !type_name.empty()) {
         std::string schema_bytes = PJ::base64::decode(schema_b64);
-        std::cerr << "[protobuf_parser] decoded schema_bytes_len=" << schema_bytes.size() << "\n";
         if (!schema_bytes.empty()) {
           auto status = bindSchema(
               type_name,
               PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(schema_bytes.data()), schema_bytes.size()));
           if (!status) {
-            std::cerr << "[protobuf_parser] bindSchema failed: " << status.error() << "\n";
             return status;
           }
-          std::cerr << "[protobuf_parser] bindSchema succeeded for '" << type_name << "'\n";
         }
       }
-    } else {
-      std::cerr << "[protobuf_parser] loadConfig: no compiled_schema_base64 or message_type in config\n";
     }
 
     return PJ::okStatus();
@@ -406,12 +398,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     const gp::Message* prototype = factory_->GetPrototype(descriptor_);
     std::unique_ptr<gp::Message> msg(prototype->New());
     if (!msg->ParseFromArray(payload.data(), static_cast<int>(payload.size()))) {
-      std::cerr << "[protobuf_parser] parse failed: payload_size=" << payload.size() << ", first_bytes=";
-      for (size_t i = 0; i < std::min<size_t>(16, payload.size()); i++) {
-        std::cerr << std::hex << static_cast<int>(payload[i]) << " ";
-      }
-      std::cerr << std::dec << "\n";
-      return PJ::unexpected(std::string("failed to deserialize protobuf message"));
+      return PJ::unexpected("failed to deserialize protobuf message (" + std::to_string(payload.size()) + " bytes)");
     }
 
     // Extract embedded timestamp if available (overrides the provided timestamp)
@@ -614,11 +601,11 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       handler.parse_scalars = [](PJ::Timestamp,
                                  PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
         auto obj = pj_protobuf::deserializeFoxgloveCompressedImageView(payload.data(), payload.size(), nullptr);
-        PJ::sdk::ScalarRecord r;
-        if (obj) {
-          r.fields.push_back(
-              {.name = "data_size", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->data.size())}});
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
         }
+        PJ::sdk::ScalarRecord r;
+        r.fields.push_back({.name = "data_size", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->data.size())}});
         return r;
       };
     } else if (name == "foxglove.CameraCalibration") {
@@ -637,11 +624,12 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       handler.parse_scalars = [](PJ::Timestamp,
                                  PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
         auto obj = pj_protobuf::deserializeFoxgloveCameraCalibration(payload.data(), payload.size());
-        PJ::sdk::ScalarRecord r;
-        if (obj) {
-          r.fields.push_back({.name = "width", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->width)}});
-          r.fields.push_back({.name = "height", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->height)}});
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
         }
+        PJ::sdk::ScalarRecord r;
+        r.fields.push_back({.name = "width", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->width)}});
+        r.fields.push_back({.name = "height", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->height)}});
         return r;
       };
     } else if (name == "foxglove.ImageAnnotations") {
@@ -660,15 +648,15 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       handler.parse_scalars = [](PJ::Timestamp,
                                  PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
         auto obj = pj_protobuf::deserializeFoxgloveImageAnnotations(payload.data(), payload.size());
-        PJ::sdk::ScalarRecord r;
-        if (obj) {
-          r.fields.push_back(
-              {.name = "num_circles", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->circles.size())}});
-          r.fields.push_back(
-              {.name = "num_points", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->points.size())}});
-          r.fields.push_back(
-              {.name = "num_texts", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->texts.size())}});
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
         }
+        PJ::sdk::ScalarRecord r;
+        r.fields.push_back(
+            {.name = "num_circles", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->circles.size())}});
+        r.fields.push_back(
+            {.name = "num_points", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->points.size())}});
+        r.fields.push_back({.name = "num_texts", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->texts.size())}});
         return r;
       };
     } else {  // foxglove.SceneUpdate
@@ -687,11 +675,12 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       handler.parse_scalars = [](PJ::Timestamp,
                                  PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
         auto obj = pj_protobuf::deserializeFoxgloveSceneUpdate(payload.data(), payload.size());
-        PJ::sdk::ScalarRecord r;
-        if (obj) {
-          r.fields.push_back(
-              {.name = "num_entities", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->entities.size())}});
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
         }
+        PJ::sdk::ScalarRecord r;
+        r.fields.push_back(
+            {.name = "num_entities", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->entities.size())}});
         return r;
       };
     }
