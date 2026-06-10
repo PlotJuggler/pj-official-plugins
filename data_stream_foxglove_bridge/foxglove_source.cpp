@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <pj_array_policy/array_policy.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <queue>
 #include <string>
@@ -60,8 +61,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
     address_ = cfg.value("address", std::string("localhost"));
     port_ = cfg.value("port", 8765);
-    max_array_size_ = cfg.value("max_array_size", 100);
-    clamp_large_arrays_ = cfg.value("clamp_large_arrays", false);
+    array_limit_ = pj::array_policy::arrayLimitFromJson(cfg);
     use_timestamp_ = cfg.value("use_timestamp", false);
 
     // Read selected channels with schema info from dialog config
@@ -243,8 +243,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       subscriptions_[sub_id] = ch.id;
 
       nlohmann::json parser_cfg;
-      parser_cfg["max_array_size"] = max_array_size_;
-      parser_cfg["clamp_large_arrays"] = clamp_large_arrays_;
+      pj::array_policy::arrayLimitToJson(parser_cfg, array_limit_);
       parser_cfg["use_timestamp"] = use_timestamp_;
       parser_cfg["use_embedded_timestamp"] = use_timestamp_;
       parser_cfg["schema_encoding"] = ch.schema_encoding;
@@ -316,8 +315,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
         // Build parser config with array size policy
         nlohmann::json parser_cfg;
-        parser_cfg["max_array_size"] = max_array_size_;
-        parser_cfg["clamp_large_arrays"] = clamp_large_arrays_;
+        pj::array_policy::arrayLimitToJson(parser_cfg, array_limit_);
         parser_cfg["use_timestamp"] = use_timestamp_;
         parser_cfg["use_embedded_timestamp"] = use_timestamp_;
         parser_cfg["schema_encoding"] = ch.schema_encoding;
@@ -420,8 +418,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
   std::string address_ = "localhost";
   int port_ = 8765;
-  int max_array_size_ = 100;
-  bool clamp_large_arrays_ = false;
+  pj::array_policy::ArrayLimit array_limit_;
   bool use_timestamp_ = false;
 
   std::vector<ChannelInfo> selected_channels_;

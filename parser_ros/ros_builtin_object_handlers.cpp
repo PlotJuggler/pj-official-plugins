@@ -356,6 +356,135 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePointCloud(PJ::Timestamp ts,
 }
 
 // ---------------------------------------------------------------------------
+// foxglove_msgs/CompressedPointCloud
+//
+// Wire layout (ROS2 CDR):
+//   timestamp               builtin_interfaces/Time  (sec int32, nanosec uint32)
+//   frame_id                string
+//   pose                    geometry_msgs/Pose       (position xyz f64, orientation xyzw f64)
+//   data                    uint8[]   ← compressed blob (draco/cloudini/…), zero-copied
+//   format                  string    ← lowercase codec id
+//
+// Like foxglove_msgs/CompressedVideo, the first field is a BARE
+// builtin_interfaces/Time, not a std_msgs/Header — so readHeader() must NOT be
+// used (it would consume the wrong fields). We read the two Time words directly.
+//
+// The pose's 7 doubles are read only to advance the cursor and then dropped:
+// the canonical CompressedPointCloud has no pose; clouds are placed via TF on
+// frame_id. A non-identity pose is silently ignored (no logger to warn on).
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxgloveCompressedPointCloud(
+    PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+
+    // builtin_interfaces/Time timestamp — bare, not wrapped in a Header.
+    const uint32_t sec = deserializer_->deserializeUInt32();
+    const uint32_t nsec = deserializer_->deserializeUInt32();
+    const int64_t embedded_ts_ns = static_cast<int64_t>(sec) * 1000000000LL + static_cast<int64_t>(nsec);
+    if (use_embedded_timestamp_ && embedded_ts_ns > 0) {
+      current_timestamp_ = embedded_ts_ns;
+    }
+
+    std::string frame_id;
+    deserializer_->deserializeString(frame_id);
+
+    // geometry_msgs/Pose — 7 doubles (position xyz, orientation xyzw). Read to
+    // advance the cursor, then drop: the canonical object carries no pose.
+    for (int i = 0; i < 7; ++i) {
+      (void)deserializer_->deserialize(RosMsgParser::FLOAT64);
+    }
+
+    const auto data_span = deserializer_->deserializeByteSequence();
+    std::string format;
+    deserializer_->deserializeString(format);
+
+    // Zero-copy: data_span slices the payload buffer; payload.anchor keeps it alive.
+    PJ::sdk::CompressedPointCloud cloud;
+    cloud.timestamp_ns = current_timestamp_;
+    cloud.frame_id = std::move(frame_id);
+    cloud.format = std::move(format);
+    cloud.data = PJ::Span<const uint8_t>(data_span.data(), data_span.size());
+    cloud.anchor = payload.anchor;
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(cloud)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("CompressedPointCloud: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// point_cloud_interfaces/CompressedPointCloud2
+//
+// Wire layout (point_cloud_transport canonical message):
+//   header                  std_msgs/Header  (handled by readHeader())
+//   height                  uint32
+//   width                   uint32
+//   fields                  sensor_msgs/PointField[]  (read + discard: the
+//                                                       compressed blob is
+//                                                       self-describing)
+//     each PointField: string name, uint32 offset, uint8 datatype, uint32 count
+//   is_bigendian            uint8
+//   point_step              uint32
+//   row_step                uint32
+//   compressed_data         uint8[]   ← THE BLOB, zero-copied
+//   is_dense                uint8
+//   format                  string    ← LAST field; lowercase codec id
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedPointCloud2(
+    PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    auto header = readHeader();
+
+    (void)deserializer_->deserializeUInt32();  // height
+    (void)deserializer_->deserializeUInt32();  // width
+
+    // fields[] — read and discard; the compressed blob is self-describing.
+    const uint32_t fields_count = deserializer_->deserializeUInt32();
+    if (fields_count > 1024) {
+      return PJ::unexpected(std::string("CompressedPointCloud2: too many fields"));
+    }
+    for (uint32_t i = 0; i < fields_count; ++i) {
+      std::string name;
+      deserializer_->deserializeString(name);
+      (void)deserializer_->deserializeUInt32();  // offset
+      (void)readU8(*deserializer_);              // datatype
+      (void)deserializer_->deserializeUInt32();  // count
+    }
+
+    (void)readU8(*deserializer_);              // is_bigendian
+    (void)deserializer_->deserializeUInt32();  // point_step
+    (void)deserializer_->deserializeUInt32();  // row_step
+    const auto data_span = deserializer_->deserializeByteSequence();
+    (void)readU8(*deserializer_);  // is_dense
+
+    std::string format;
+    deserializer_->deserializeString(format);
+
+    // Zero-copy: data_span slices the payload buffer; payload.anchor keeps it alive.
+    PJ::sdk::CompressedPointCloud cloud;
+    cloud.timestamp_ns = current_timestamp_;
+    cloud.frame_id = std::move(header.frame_id);
+    cloud.format = std::move(format);
+    cloud.data = PJ::Span<const uint8_t>(data_span.data(), data_span.size());
+    cloud.anchor = payload.anchor;
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(cloud)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("CompressedPointCloud2: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
 // tf2_msgs/TFMessage
 //
 // Wire layout:

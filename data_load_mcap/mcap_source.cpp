@@ -242,7 +242,7 @@ class McapSource : public PJ::FileSourceBase {
 
     uint64_t msg_count = 0;
     uint64_t consecutive_push_failures = 0;
-    const bool use_log_time = dialog_.useMcapLogTime();
+    const bool use_log_time = dialog_.useTimestamp();
 
     // Authoritative recording window (log-time envelope) from the MCAP summary,
     // already read by parallel_reader.open(). Header (publishTime) stamps that
@@ -291,7 +291,7 @@ class McapSource : public PJ::FileSourceBase {
           // a latched / long-running publisher (static TF, robot_description, a map
           // computed hours/days earlier); pin those to the recording's first
           // timestamp (log_window_min) so the data is valid from the very start of
-          // playback rather than at its own arrival offset. useMcapLogTime() forces
+          // playback rather than at its own arrival offset. useTimestamp() forces
           // the message's own logTime unconditionally.
           const uint64_t pub_time = mv.message.publishTime;
           const bool header_in_window = pub_time >= log_window_min && pub_time <= log_window_max;
