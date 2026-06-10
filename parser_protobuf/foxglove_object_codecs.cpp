@@ -72,12 +72,20 @@ bool readString(CodedInputStream& in, std::string& out) {
 }
 
 // RAII for a CodedInputStream length limit over one nested submessage.
+// The destructor skips any bytes the reader left unconsumed (e.g. after
+// `break`ing on a malformed field) BEFORE popping the limit: PopLimit only
+// restores the parent's byte ceiling, it does NOT advance the cursor, so
+// without the skip a partial nested read would strand the parent mid-submessage
+// and misread interior bytes as the next sibling's tag. Skipping to the limit
+// makes the parent always resume exactly at the submessage boundary.
 struct SubMessage {
   CodedInputStream& in;
   CodedInputStream::Limit limit;
-  bool ok;
-  SubMessage(CodedInputStream& s, uint32_t len) : in(s), limit(s.PushLimit(static_cast<int>(len))), ok(true) {}
+  SubMessage(CodedInputStream& s, uint32_t len) : in(s), limit(s.PushLimit(static_cast<int>(len))) {}
   ~SubMessage() {
+    if (const int remaining = in.BytesUntilLimit(); remaining > 0) {
+      in.Skip(remaining);
+    }
     in.PopLimit(limit);
   }
 };
@@ -87,8 +95,9 @@ struct SubMessage {
 //   * The nested readers below (geometry + scene/annotation primitives) are
 //     best-effort / LENIENT: each returns a plain value (not Expected) and
 //     `break`s out of its field loop on a malformed/truncated field, returning
-//     whatever was parsed so far. Its `SubMessage` always PopLimits in the
-//     destructor, so a partial nested read NEVER desyncs the parent stream.
+//     whatever was parsed so far. Its `SubMessage` skips any unconsumed bytes
+//     and PopLimits in the destructor, so a partial nested read resumes the
+//     parent exactly at the submessage boundary and never desyncs it.
 //   * The top-level deserialize* entry points are STRICT: they return
 //     PJ::unexpected on a malformed top-level tag or a failed skipField.
 // Rationale: for a visualization consumer, rendering a partially-decoded frame
@@ -120,7 +129,14 @@ PJ::sdk::Vector3 readVector3(CodedInputStream& in, uint32_t len) {
 }
 
 PJ::sdk::Quaternion readQuaternion(CodedInputStream& in, uint32_t len) {
+  // proto3 omits default-valued (0.0) fields, so the wire is authoritative for
+  // a PRESENT orientation submessage: start from all-zero, not the SDK's
+  // identity default (w=1.0). Otherwise a 180° rotation about an axis — which
+  // legitimately has w=0 and therefore omits w on the wire — would decode as
+  // {x,y,z,1} and silently corrupt the rotation. (A fully-absent orientation
+  // field keeps readPose's identity default, since readQuaternion isn't called.)
   PJ::sdk::Quaternion q;
+  q.w = 0.0;
   SubMessage sub(in, len);
   uint32_t tag = 0;
   while ((tag = in.ReadTag()) != 0) {
@@ -473,7 +489,7 @@ PJ::Expected<PJ::sdk::CameraInfo> deserializeFoxgloveCameraCalibration(const uin
 // ===========================================================================
 namespace {
 
-PJ::sdk::CircleAnnotation readCircle(CodedInputStream& in, uint32_t len) {
+PJ::sdk::CircleAnnotation readCircle(CodedInputStream& in, uint32_t len, int64_t& timestamp_out) {
   // { timestamp=1, position=2 Point2, diameter=3, thickness=4, fill_color=5, outline_color=6 }
   PJ::sdk::CircleAnnotation c;
   SubMessage sub(in, len);
@@ -481,7 +497,9 @@ PJ::sdk::CircleAnnotation readCircle(CodedInputStream& in, uint32_t len) {
   while ((tag = in.ReadTag()) != 0) {
     const int f = fieldOf(tag);
     uint32_t sl = 0;
-    if (f == 2 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+    if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+      timestamp_out = readTimestampNs(in, sl);
+    } else if (f == 2 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
       c.center = readPointXY<PJ::sdk::Point2>(in, sl);
     } else if (f == 3 && wireOf(tag) == kWireI64) {
       double d = 0;
@@ -502,7 +520,7 @@ PJ::sdk::CircleAnnotation readCircle(CodedInputStream& in, uint32_t len) {
   return c;
 }
 
-PJ::sdk::PointsAnnotation readPointsAnnotation(CodedInputStream& in, uint32_t len) {
+PJ::sdk::PointsAnnotation readPointsAnnotation(CodedInputStream& in, uint32_t len, int64_t& timestamp_out) {
   // { timestamp=1, type=2 enum, points=3 Point2[], outline_color=4, outline_colors=5, fill_color=6, thickness=7 }
   // foxglove type: UNKNOWN=0, POINTS=1, LINE_LOOP=2, LINE_STRIP=3, LINE_LIST=4
   PJ::sdk::PointsAnnotation pa;
@@ -511,7 +529,9 @@ PJ::sdk::PointsAnnotation readPointsAnnotation(CodedInputStream& in, uint32_t le
   while ((tag = in.ReadTag()) != 0) {
     const int f = fieldOf(tag);
     uint32_t sl = 0;
-    if (f == 2 && wireOf(tag) == kWireVarint) {
+    if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+      timestamp_out = readTimestampNs(in, sl);
+    } else if (f == 2 && wireOf(tag) == kWireVarint) {
       uint64_t t = 0;
       in.ReadVarint64(&t);
       using Topo = PJ::sdk::AnnotationTopology;
@@ -538,7 +558,7 @@ PJ::sdk::PointsAnnotation readPointsAnnotation(CodedInputStream& in, uint32_t le
   return pa;
 }
 
-PJ::sdk::TextAnnotation readTextAnnotation(CodedInputStream& in, uint32_t len) {
+PJ::sdk::TextAnnotation readTextAnnotation(CodedInputStream& in, uint32_t len, int64_t& timestamp_out) {
   // { timestamp=1, position=2 Point2, text=3, font_size=4, text_color=5, background_color=6 }
   PJ::sdk::TextAnnotation t;
   SubMessage sub(in, len);
@@ -546,7 +566,9 @@ PJ::sdk::TextAnnotation readTextAnnotation(CodedInputStream& in, uint32_t len) {
   while ((tag = in.ReadTag()) != 0) {
     const int f = fieldOf(tag);
     uint32_t sl = 0;
-    if (f == 2 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+    if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+      timestamp_out = readTimestampNs(in, sl);
+    } else if (f == 2 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
       t.position = readPointXY<PJ::sdk::Point2>(in, sl);
     } else if (f == 3 && wireOf(tag) == kWireLen) {
       readString(in, t.text);
@@ -572,20 +594,29 @@ PJ::Expected<PJ::sdk::ImageAnnotations> deserializeFoxgloveImageAnnotations(cons
   CodedInputStream in(data, static_cast<int>(size));
   in.SetTotalBytesLimit(std::numeric_limits<int>::max());
   PJ::sdk::ImageAnnotations ann;
+  // foxglove.ImageAnnotations has no top-level timestamp; each sub-annotation
+  // carries its own (field 1). Adopt the first non-zero one as the message
+  // timestamp so the consumer can time-align the overlay to its image frame.
+  int64_t first_timestamp_ns = 0;
   uint32_t tag = 0;
   while ((tag = in.ReadTag()) != 0) {
     const int f = fieldOf(tag);
     uint32_t len = 0;
+    int64_t ts = 0;
     if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&len)) {
-      ann.circles.push_back(readCircle(in, len));
+      ann.circles.push_back(readCircle(in, len, ts));
     } else if (f == 2 && wireOf(tag) == kWireLen && in.ReadVarint32(&len)) {
-      ann.points.push_back(readPointsAnnotation(in, len));
+      ann.points.push_back(readPointsAnnotation(in, len, ts));
     } else if (f == 3 && wireOf(tag) == kWireLen && in.ReadVarint32(&len)) {
-      ann.texts.push_back(readTextAnnotation(in, len));
+      ann.texts.push_back(readTextAnnotation(in, len, ts));
     } else if (!skipField(in, wireOf(tag))) {
       return PJ::unexpected(std::string("foxglove.ImageAnnotations: malformed"));
     }
+    if (first_timestamp_ns == 0 && ts != 0) {
+      first_timestamp_ns = ts;
+    }
   }
+  ann.timestamp = first_timestamp_ns;
   return ann;
 }
 
@@ -642,7 +673,13 @@ Prim readBoxLike(CodedInputStream& in, uint32_t len) {
 
 PJ::sdk::CylinderPrimitive readCylinder(CodedInputStream& in, uint32_t len) {
   // { pose=1, size=2, bottom_scale=3, top_scale=4, color=5 }
+  // Decode faithfully to the foxglove wire: proto3 omits a 0.0 scale, and
+  // foxglove's renderer reads an omitted scale as 0 (a face collapsed to a
+  // point), not 1. Override the SDK's ergonomic 1.0 default so an omitted
+  // scale stays 0 rather than silently becoming a full-diameter face.
   PJ::sdk::CylinderPrimitive c;
+  c.bottom_scale = 0.0;
+  c.top_scale = 0.0;
   SubMessage sub(in, len);
   uint32_t tag = 0;
   while ((tag = in.ReadTag()) != 0) {

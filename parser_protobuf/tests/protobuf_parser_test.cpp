@@ -1177,3 +1177,150 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodes) {
   EXPECT_EQ(r->entities[0].id, "robot");
   EXPECT_EQ(r->entities[0].timestamp, 3'000'000'000LL);
 }
+
+// Exercises readColor/toU8 (the [0,1]→uint8 rounding) and the readBoxLike /
+// readCylinder primitive readers — none of which had any coverage. Color
+// {1.0, 0.5, 0.0, 1.0} must round to {255, 128, 0, 255} (lround, not truncation:
+// 0.5*255 = 127.5 → 128).
+TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodesCubeColorAndCylinderScales) {
+  PW color;  // foxglove Color: double r/g/b/a in [0,1]
+  color.dbl(1, 1.0);
+  color.dbl(2, 0.5);
+  color.dbl(3, 0.0);
+  color.dbl(4, 1.0);
+
+  PW cube_size;  // Vector3 (2, 3, 4)
+  cube_size.dbl(1, 2.0);
+  cube_size.dbl(2, 3.0);
+  cube_size.dbl(3, 4.0);
+  PW cube;  // CubePrimitive { pose=1, size=2, color=3 } — pose omitted → identity
+  cube.sub(2, cube_size);
+  cube.sub(3, color);
+
+  PW cyl_size;
+  cyl_size.dbl(1, 1.0);
+  cyl_size.dbl(2, 1.0);
+  cyl_size.dbl(3, 2.0);
+  PW cylinder;  // CylinderPrimitive { pose=1, size=2, bottom_scale=3, top_scale=4, color=5 }
+  cylinder.sub(2, cyl_size);
+  cylinder.dbl(3, 0.5);  // bottom_scale
+  cylinder.dbl(4, 0.8);  // top_scale
+  cylinder.sub(5, color);
+
+  PW entity;
+  entity.str(3, "shapes");
+  entity.sub(8, cube);       // cubes[0]
+  entity.sub(10, cylinder);  // cylinders[0]
+  PW scene;
+  scene.sub(2, entity);
+  const auto& w = scene.b;
+
+  auto r = pj_protobuf::deserializeFoxgloveSceneUpdate(w.data(), w.size());
+  ASSERT_TRUE(r) << r.error();
+  ASSERT_EQ(r->entities.size(), 1u);
+  const auto& e = r->entities[0];
+  ASSERT_EQ(e.cubes.size(), 1u);
+  EXPECT_DOUBLE_EQ(e.cubes[0].size.x, 2.0);
+  EXPECT_DOUBLE_EQ(e.cubes[0].size.z, 4.0);
+  EXPECT_EQ(e.cubes[0].color, (PJ::sdk::ColorRGBA{255, 128, 0, 255}));
+  ASSERT_EQ(e.cylinders.size(), 1u);
+  EXPECT_DOUBLE_EQ(e.cylinders[0].bottom_scale, 0.5);
+  EXPECT_DOUBLE_EQ(e.cylinders[0].top_scale, 0.8);
+  EXPECT_EQ(e.cylinders[0].color, (PJ::sdk::ColorRGBA{255, 128, 0, 255}));
+}
+
+// proto3 omits a 0.0 scale; foxglove reads an omitted scale as 0 (collapsed
+// face), so the decoder must override the SDK's ergonomic 1.0 default. Without
+// the fix these decode to 1.0.
+TEST(ProtobufParserTest, FoxgloveCylinderOmittedScalesDecodeToZero) {
+  PW cyl_size;
+  cyl_size.dbl(1, 1.0);
+  cyl_size.dbl(2, 1.0);
+  cyl_size.dbl(3, 2.0);
+  PW cylinder;  // size only — bottom_scale (3) / top_scale (4) omitted
+  cylinder.sub(2, cyl_size);
+  PW entity;
+  entity.sub(10, cylinder);
+  PW scene;
+  scene.sub(2, entity);
+  const auto& w = scene.b;
+
+  auto r = pj_protobuf::deserializeFoxgloveSceneUpdate(w.data(), w.size());
+  ASSERT_TRUE(r) << r.error();
+  ASSERT_EQ(r->entities.size(), 1u);
+  ASSERT_EQ(r->entities[0].cylinders.size(), 1u);
+  EXPECT_DOUBLE_EQ(r->entities[0].cylinders[0].bottom_scale, 0.0);
+  EXPECT_DOUBLE_EQ(r->entities[0].cylinders[0].top_scale, 0.0);
+}
+
+// A 180° rotation about X is {x=1, y=0, z=0, w=0}; proto3 omits the zero fields,
+// leaving only x on the wire. The decoder must NOT fall back to the SDK's
+// identity default (w=1) — that would silently corrupt the rotation.
+TEST(ProtobufParserTest, FoxgloveQuaternionOmittedWDecodesToZero) {
+  PW quat;
+  quat.dbl(1, 1.0);  // x = 1; y, z, w omitted (proto3 zero defaults)
+  PW tf;
+  tf.str(2, "world");
+  tf.str(3, "child");
+  tf.sub(5, quat);  // rotation
+  const auto& w = tf.b;
+
+  auto r = pj_protobuf::deserializeFoxgloveFrameTransform(w.data(), w.size());
+  ASSERT_TRUE(r) << r.error();
+  ASSERT_EQ(r->transforms.size(), 1u);
+  const auto& rot = r->transforms[0].rotation;
+  EXPECT_DOUBLE_EQ(rot.x, 1.0);
+  EXPECT_DOUBLE_EQ(rot.y, 0.0);
+  EXPECT_DOUBLE_EQ(rot.z, 0.0);
+  EXPECT_DOUBLE_EQ(rot.w, 0.0);  // NOT 1.0
+}
+
+// foxglove.ImageAnnotations has no top-level timestamp; the decoder must adopt
+// the first sub-annotation's stamp so the overlay can time-align to its image.
+TEST(ProtobufParserTest, FoxgloveImageAnnotationsAdoptsTimestamp) {
+  PW p0;
+  p0.dbl(1, 10.0);
+  p0.dbl(2, 20.0);
+  PW pa;
+  pa.sub(1, foxgloveTimestamp(8, 500));  // PointsAnnotation.timestamp
+  pa.varint(2, 1);                       // type = POINTS
+  pa.sub(3, p0);
+  PW ann;
+  ann.sub(2, pa);
+  const auto& w = ann.b;
+
+  auto r = pj_protobuf::deserializeFoxgloveImageAnnotations(w.data(), w.size());
+  ASSERT_TRUE(r) << r.error();
+  EXPECT_EQ(r->timestamp, 8'000'000'500LL);
+  ASSERT_EQ(r->points.size(), 1u);
+  ASSERT_EQ(r->points[0].points.size(), 1u);
+}
+
+// Regression for the SubMessage desync: entity 1 ends with an unhandled wire
+// type (group-start, wire 3) that makes readSceneEntity break mid-submessage,
+// followed by trailing bytes. The SubMessage dtor must skip to the entity
+// boundary so entity 2 still decodes cleanly. Pre-fix, PopLimit alone left the
+// parent stranded mid-entity-1 and every following sibling misparsed.
+TEST(ProtobufParserTest, FoxgloveSceneUpdateRecoversFromMalformedEntityField) {
+  PW e1;
+  e1.str(2, "frameA");
+  e1.str(3, "id1");
+  e1.tag(20, 3);         // unhandled wire type → break inside readSceneEntity
+  e1.b.push_back(0x55);  // trailing bytes the broken reader leaves unconsumed
+  e1.b.push_back(0x66);
+  PW e2;
+  e2.str(2, "map");
+  e2.str(3, "robot");
+  PW scene;
+  scene.sub(2, e1);
+  scene.sub(2, e2);
+  const auto& w = scene.b;
+
+  auto r = pj_protobuf::deserializeFoxgloveSceneUpdate(w.data(), w.size());
+  ASSERT_TRUE(r) << r.error();
+  ASSERT_EQ(r->entities.size(), 2u);
+  EXPECT_EQ(r->entities[0].frame_id, "frameA");
+  EXPECT_EQ(r->entities[0].id, "id1");
+  EXPECT_EQ(r->entities[1].frame_id, "map");
+  EXPECT_EQ(r->entities[1].id, "robot");
+}
