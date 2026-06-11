@@ -215,8 +215,6 @@ class DerivativeTransform : public FilterTransform {
     return "{}";
 #endif
   }
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-parameter"
   void loadParams(const std::string& json_str) override {
     (void)json_str;  // suppress unused-param in non-json build
 #ifdef PJ_TRANSFORM_HAS_JSON
@@ -286,8 +284,6 @@ class IntegralTransform : public FilterTransform {
     return "{}";
 #endif
   }
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-parameter"
   void loadParams(const std::string& json_str) override {
     (void)json_str;  // suppress unused-param in non-json build
 #ifdef PJ_TRANSFORM_HAS_JSON
@@ -359,8 +355,6 @@ class MovingAverageTransform : public FilterTransform {
     return "{}";
 #endif
   }
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-parameter"
   void loadParams(const std::string& json_str) override {
     (void)json_str;  // suppress unused-param in non-json build
 #ifdef PJ_TRANSFORM_HAS_JSON
@@ -424,8 +418,6 @@ class MovingRMSTransform : public FilterTransform {
     return "{}";
 #endif
   }
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-parameter"
   void loadParams(const std::string& json_str) override {
     (void)json_str;  // suppress unused-param in non-json build
 #ifdef PJ_TRANSFORM_HAS_JSON
@@ -498,8 +490,6 @@ class MovingVarianceTransform : public FilterTransform {
     return "{}";
 #endif
   }
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-parameter"
   void loadParams(const std::string& json_str) override {
     (void)json_str;  // suppress unused-param in non-json build
 #ifdef PJ_TRANSFORM_HAS_JSON
@@ -598,8 +588,6 @@ class OutlierRemovalTransform : public FilterTransform {
     return "{}";
 #endif
   }
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-parameter"
   void loadParams(const std::string& json_str) override {
     (void)json_str;  // suppress unused-param in non-json build
 #ifdef PJ_TRANSFORM_HAS_JSON
@@ -686,8 +674,6 @@ class SamplesCounterTransform : public FilterTransform {
     return "{}";
 #endif
   }
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-parameter"
   void loadParams(const std::string& json_str) override {
     (void)json_str;  // suppress unused-param in non-json build
 #ifdef PJ_TRANSFORM_HAS_JSON
@@ -767,8 +753,6 @@ class BinaryFilterTransform : public FilterTransform {
     return "{}";
 #endif
   }
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-parameter"
   void loadParams(const std::string& json_str) override {
     (void)json_str;  // suppress unused-param in non-json build
 #ifdef PJ_TRANSFORM_HAS_JSON
