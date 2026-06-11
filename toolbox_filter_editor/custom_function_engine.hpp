@@ -118,9 +118,7 @@ class CustomFunctionEngine {
   /// looking up each additional source at the main timestamp. Appends derived
   /// points to `out`. Returns "" on success or a human-readable error.
   std::string evaluate(
-      const SeriesAccessor& main,
-      const std::vector<const SeriesAccessor*>& additional,
-      double after_timestamp,
+      const SeriesAccessor& main, const std::vector<const SeriesAccessor*>& additional, double after_timestamp,
       std::vector<OutputPoint>& out) {
     if (!calc_.valid()) {
       return "internal error: function not compiled";
