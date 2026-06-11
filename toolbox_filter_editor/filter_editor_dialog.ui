@@ -1,0 +1,339 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>FilterEditorDialog</class>
+ <widget class="QWidget" name="FilterEditorDialog">
+  <property name="windowTitle">
+   <string>Filter Editor</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <property name="spacing"><number>8</number></property>
+   <property name="leftMargin"><number>10</number></property>
+   <property name="topMargin"><number>10</number></property>
+   <property name="rightMargin"><number>10</number></property>
+   <property name="bottomMargin"><number>10</number></property>
+
+   <!-- Preview header -->
+   <item>
+    <widget class="QLabel" name="previewLabel">
+     <property name="text"><string>&lt;b&gt;Preview&lt;/b&gt;</string></property>
+    </widget>
+   </item>
+
+   <!-- Preview chart -->
+   <item>
+    <widget class="QFrame" name="chart_preview">
+     <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch><verstretch>2</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="minimumSize"><size><width>0</width><height>180</height></size></property>
+    </widget>
+   </item>
+
+   <!-- Source curve | Transform + params -->
+   <item>
+    <layout class="QHBoxLayout" name="columnsLayout">
+     <property name="spacing"><number>10</number></property>
+
+     <!-- Left: source curve list -->
+     <item>
+      <widget class="QWidget" name="leftPanel" native="true">
+       <property name="minimumSize"><size><width>220</width><height>0</height></size></property>
+       <property name="maximumSize"><size><width>320</width><height>16777215</height></size></property>
+       <layout class="QVBoxLayout" name="leftLayout">
+        <property name="leftMargin"><number>0</number></property>
+        <property name="topMargin"><number>0</number></property>
+        <property name="rightMargin"><number>0</number></property>
+        <property name="bottomMargin"><number>0</number></property>
+        <item>
+         <widget class="QLabel" name="sourceLabel">
+          <property name="text"><string>&lt;b&gt;Source curve:&lt;/b&gt;</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QListWidget" name="series_list">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+            <horstretch>0</horstretch><verstretch>1</verstretch>
+           </sizepolicy>
+          </property>
+          <property name="selectionMode">
+           <enum>QAbstractItemView::ExtendedSelection</enum>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+
+     <!-- Right: transform list + parameter panels -->
+     <item>
+      <widget class="QWidget" name="rightPanel" native="true">
+       <layout class="QVBoxLayout" name="rightLayout">
+        <property name="leftMargin"><number>0</number></property>
+        <property name="topMargin"><number>0</number></property>
+        <property name="rightMargin"><number>0</number></property>
+        <property name="bottomMargin"><number>0</number></property>
+
+        <!-- Alias row - mirrors PJ3 plotwidget_transforms.ui lineEditAlias -->
+        <item>
+         <layout class="QHBoxLayout" name="aliasRow">
+          <item>
+           <widget class="QLabel" name="aliasLabel">
+            <property name="text"><string>Alias:</string></property>
+            <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="alias_edit">
+            <property name="minimumSize"><size><width>300</width><height>0</height></size></property>
+            <property name="maximumSize"><size><width>500</width><height>16777215</height></size></property>
+            <property name="focusPolicy"><enum>Qt::ClickFocus</enum></property>
+            <property name="enabled"><bool>false</bool></property>
+           </widget>
+          </item>
+          <item>
+           <spacer name="aliasSpacer">
+            <property name="orientation"><enum>Qt::Horizontal</enum></property>
+            <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+           </spacer>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="autozoom_check">
+            <property name="text"><string>AutoZoom</string></property>
+            <property name="checked"><bool>true</bool></property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+
+        <item>
+         <widget class="QLabel" name="transformLabel">
+          <property name="text"><string>&lt;b&gt;Transform:&lt;/b&gt;</string></property>
+         </widget>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="transformRow">
+          <property name="spacing"><number>10</number></property>
+          <item>
+           <widget class="QListWidget" name="transform_list">
+            <property name="minimumSize"><size><width>180</width><height>0</height></size></property>
+            <property name="maximumSize"><size><width>240</width><height>16777215</height></size></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QWidget" name="paramsArea" native="true">
+            <layout class="QVBoxLayout" name="paramsLayout">
+             <property name="leftMargin"><number>0</number></property>
+             <property name="topMargin"><number>0</number></property>
+             <property name="rightMargin"><number>0</number></property>
+             <property name="bottomMargin"><number>0</number></property>
+
+        <!-- ===== Parameter panels (only the relevant one is visible) ===== -->
+
+        <!-- Scale/Offset (mirrors PJ3 scale_transform.ui) -->
+        <item>
+         <widget class="QWidget" name="panel_scale" native="true">
+          <layout class="QVBoxLayout" name="scaleLayout">
+           <property name="leftMargin"><number>0</number></property>
+           <item><widget class="QLabel" name="scaleApplyOffsetLabel"><property name="text"><string>&lt;b&gt;Apply offset&lt;/b&gt;</string></property></widget></item>
+           <item>
+            <layout class="QHBoxLayout" name="scaleTOffRow">
+             <item><widget class="QLabel" name="scaleTOffLabel"><property name="minimumSize"><size><width>120</width><height>0</height></size></property><property name="text"><string>Time offset</string></property></widget></item>
+             <item><widget class="QLineEdit" name="scale_toffset"><property name="maximumSize"><size><width>80</width><height>16777215</height></size></property><property name="text"><string>0.0</string></property></widget></item>
+             <item><spacer name="scaleTOffSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+            </layout>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="scaleVOffRow">
+             <item><widget class="QLabel" name="scaleVOffLabel"><property name="minimumSize"><size><width>120</width><height>0</height></size></property><property name="text"><string>Value offset:</string></property></widget></item>
+             <item><widget class="QLineEdit" name="scale_voffset"><property name="maximumSize"><size><width>80</width><height>16777215</height></size></property><property name="text"><string>0.0</string></property></widget></item>
+             <item><spacer name="scaleVOffSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+            </layout>
+           </item>
+           <item><widget class="QLabel" name="scaleMultLabel"><property name="text"><string>&lt;b&gt;Scale (multiply value)&lt;/b&gt;</string></property></widget></item>
+           <item>
+            <layout class="QHBoxLayout" name="scaleValueRow">
+             <item><widget class="QLabel" name="scaleValueLabel"><property name="minimumSize"><size><width>120</width><height>0</height></size></property><property name="text"><string>Value multiplier:</string></property></widget></item>
+             <item><widget class="QLineEdit" name="scale_value"><property name="maximumSize"><size><width>80</width><height>16777215</height></size></property><property name="text"><string>1.0</string></property></widget></item>
+             <item><spacer name="scaleValueSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+            </layout>
+           </item>
+           <item>
+            <layout class="QGridLayout" name="scaleConstGrid">
+             <item row="0" column="0"><widget class="QLabel" name="scaleConstLabel"><property name="text"><string>Useful constants:</string></property></widget></item>
+             <item row="0" column="1"><widget class="QPushButton" name="scale_deg2rad"><property name="focusPolicy"><enum>Qt::NoFocus</enum></property><property name="text"><string>Rad to Deg</string></property></widget></item>
+             <item row="1" column="1"><widget class="QPushButton" name="scale_rad2deg"><property name="focusPolicy"><enum>Qt::NoFocus</enum></property><property name="text"><string>Deg to Rad</string></property></widget></item>
+             <item row="0" column="2"><spacer name="scaleConstSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+            </layout>
+           </item>
+          </layout>
+         </widget>
+        </item>
+
+        <!-- dt: derivative/integral (mirrors PJ3) -->
+        <item>
+         <widget class="QWidget" name="panel_dt" native="true">
+          <layout class="QVBoxLayout" name="dtLayout">
+           <property name="leftMargin"><number>0</number></property>
+           <item><widget class="QLabel" name="dtTitleLabel"><property name="font"><font><bold>true</bold></font></property><property name="text"><string>Time Difference (dT):</string></property></widget></item>
+           <item>
+            <layout class="QFormLayout" name="dtFormLayout">
+             <item row="0" column="0">
+              <widget class="QRadioButton" name="dt_actual">
+               <property name="toolTip"><string>Use the actual difference in time between two consecutive points.</string></property>
+               <property name="text"><string>Actual </string></property>
+               <property name="checked"><bool>true</bool></property>
+              </widget>
+             </item>
+             <item row="0" column="1"><widget class="QLabel" name="dtActualHint"><property name="text"><string>(It might be noisy!)</string></property></widget></item>
+             <item row="1" column="0">
+              <widget class="QRadioButton" name="dt_custom">
+               <property name="toolTip"><string>Use a fixed, custom value of dT.</string></property>
+               <property name="text"><string>Custom:</string></property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <layout class="QHBoxLayout" name="dtCustomRow">
+               <item><widget class="QLineEdit" name="dt_value"><property name="maximumSize"><size><width>80</width><height>16777215</height></size></property><property name="text"><string>1.0</string></property></widget></item>
+               <item><widget class="QPushButton" name="dt_guess"><property name="toolTip"><string>Calculate the correct delta time. It tries to filter out outliers.</string></property><property name="text"><string>Guess dT</string></property></widget></item>
+               <item><spacer name="dtCustomSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+              </layout>
+             </item>
+            </layout>
+           </item>
+          </layout>
+         </widget>
+        </item>
+
+        <!-- window: moving average/rms/variance (mirrors PJ3) -->
+        <item>
+         <widget class="QWidget" name="panel_window" native="true">
+          <layout class="QVBoxLayout" name="windowLayout">
+           <property name="leftMargin"><number>0</number></property>
+           <item><widget class="QLabel" name="windowTitleLabel"><property name="font"><font><bold>true</bold></font></property><property name="text"><string>Select the size of the window</string></property></widget></item>
+           <item>
+            <layout class="QFormLayout" name="windowFormLayout">
+             <item row="0" column="0"><widget class="QLabel" name="windowLabel"><property name="text"><string>Samples count:</string></property></widget></item>
+             <item row="0" column="1"><widget class="QSpinBox" name="window_spin"><property name="maximumSize"><size><width>100</width><height>16777215</height></size></property><property name="minimum"><number>1</number></property><property name="maximum"><number>100000</number></property><property name="value"><number>10</number></property></widget></item>
+            </layout>
+           </item>
+           <item><widget class="QCheckBox" name="center_check"><property name="toolTip"><string>The Moving Average filter introduces a delay. Checking this, the signal will look centered.</string></property><property name="text"><string>Compensate time offset</string></property></widget></item>
+           <item>
+            <layout class="QHBoxLayout" name="windowVarianceRow">
+             <item><widget class="QCheckBox" name="stddev_check"><property name="text"><string>Apply square root</string></property></widget></item>
+             <item><widget class="QLabel" name="stddevHint"><property name="text"><string>(i.e., convert to standard deviation)</string></property></widget></item>
+             <item><spacer name="windowSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+            </layout>
+           </item>
+          </layout>
+         </widget>
+        </item>
+
+        <!-- outlier removal (mirrors PJ3 outlier_removal.ui) -->
+        <item>
+         <widget class="QWidget" name="panel_outlier" native="true">
+          <layout class="QVBoxLayout" name="outlierLayout">
+           <property name="leftMargin"><number>0</number></property>
+           <item><widget class="QLabel" name="outlierTitleLabel"><property name="font"><font><bold>true</bold></font></property><property name="text"><string>Remove outliers:</string></property></widget></item>
+           <item><widget class="QLabel" name="outlierDescLabel"><property name="text"><string>Outliers are detected using the difference between the current 1st order derivative and the previous one.</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+           <item>
+            <layout class="QFormLayout" name="outlierFormLayout">
+             <item row="0" column="0"><widget class="QLabel" name="outlierLabel"><property name="text"><string>Max ratio</string></property></widget></item>
+             <item row="0" column="1"><widget class="QDoubleSpinBox" name="outlier_spin"><property name="maximumSize"><size><width>120</width><height>16777215</height></size></property><property name="decimals"><number>1</number></property><property name="minimum"><double>10.0</double></property><property name="maximum"><double>100000.0</double></property><property name="value"><double>100.0</double></property></widget></item>
+            </layout>
+           </item>
+           <item><spacer name="outlierSpacer"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>40</height></size></property></spacer></item>
+          </layout>
+         </widget>
+        </item>
+
+        <!-- samples counter (mirrors PJ3 samples_count.ui) -->
+        <item>
+         <widget class="QWidget" name="panel_samples" native="true">
+          <layout class="QVBoxLayout" name="samplesLayout">
+           <property name="leftMargin"><number>0</number></property>
+           <item><widget class="QLabel" name="samplesDescLabel"><property name="text"><string>Count the number of data points in the given time interval:</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+           <item>
+            <layout class="QHBoxLayout" name="samplesRow">
+             <item><widget class="QLabel" name="samplesLabel"><property name="text"><string>Milliseconds:</string></property></widget></item>
+             <item><widget class="QSpinBox" name="samples_spin"><property name="minimumSize"><size><width>100</width><height>0</height></size></property><property name="minimum"><number>1</number></property><property name="maximum"><number>999999</number></property><property name="value"><number>1000</number></property></widget></item>
+             <item><spacer name="samplesSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+            </layout>
+           </item>
+          </layout>
+         </widget>
+        </item>
+
+        <!-- binary filter (mirrors PJ3 binary_filter.ui) -->
+        <item>
+         <widget class="QWidget" name="panel_binary" native="true">
+          <layout class="QVBoxLayout" name="binaryLayout">
+           <property name="leftMargin"><number>0</number></property>
+           <item><widget class="QLabel" name="binaryDescLabel"><property name="font"><font><bold>true</bold></font></property><property name="text"><string>Return 1 (true) / 0 (false) based on the condition below:</string></property></widget></item>
+           <item>
+            <layout class="QVBoxLayout" name="binaryRadioLayout">
+             <property name="topMargin"><number>10</number></property>
+             <item><widget class="QRadioButton" name="bin_eq"><property name="text"><string>Equal (==). Works only with integers</string></property><property name="checked"><bool>false</bool></property></widget></item>
+             <item><widget class="QRadioButton" name="bin_lt"><property name="text"><string>Less (&lt;)</string></property></widget></item>
+             <item><widget class="QRadioButton" name="bin_le"><property name="text"><string>LessEqual (&lt;=)</string></property></widget></item>
+             <item><widget class="QRadioButton" name="bin_gt"><property name="text"><string>Greater (&gt;)</string></property><property name="checked"><bool>true</bool></property></widget></item>
+             <item><widget class="QRadioButton" name="bin_ge"><property name="text"><string>GreaterEqual (&gt;=)</string></property></widget></item>
+             <item><widget class="QRadioButton" name="bin_range"><property name="text"><string>Range (included)</string></property></widget></item>
+            </layout>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="binaryValueRow">
+             <item><widget class="QLineEdit" name="bin_a"><property name="maximumSize"><size><width>120</width><height>16777215</height></size></property><property name="text"><string>0</string></property></widget></item>
+             <item><widget class="QLineEdit" name="bin_b"><property name="maximumSize"><size><width>120</width><height>16777215</height></size></property><property name="text"><string>0</string></property></widget></item>
+             <item><spacer name="binarySpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+            </layout>
+           </item>
+          </layout>
+         </widget>
+        </item>
+
+        <item>
+         <spacer name="rightSpacer">
+          <property name="orientation"><enum>Qt::Vertical</enum></property>
+          <property name="sizeHint" stdset="0"><size><width>20</width><height>0</height></size></property>
+         </spacer>
+        </item>
+            </layout>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+
+   <item>
+    <widget class="QLabel" name="status_label"><property name="text"><string></string></property></widget>
+   </item>
+
+   <!-- Copy / Paste / Reset (left) and Cancel / Save (right). Plain buttons
+        routed to the plugin; the panel closes via requestClose. -->
+   <item>
+    <layout class="QHBoxLayout" name="buttonBar">
+     <item><widget class="QPushButton" name="copy_btn"><property name="text"><string>Copy</string></property><property name="toolTip"><string>Copy this filter (function + parameters) to the clipboard</string></property></widget></item>
+     <item><widget class="QPushButton" name="paste_btn"><property name="text"><string>Paste</string></property><property name="toolTip"><string>Apply a copied filter to the selected source</string></property></widget></item>
+     <item><widget class="QPushButton" name="reset_btn"><property name="text"><string>Reset</string></property><property name="toolTip"><string>Clear the filter (restore the original signal)</string></property></widget></item>
+     <item>
+      <spacer name="buttonBarSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item><widget class="QPushButton" name="cancel_btn"><property name="text"><string>Cancel</string></property></widget></item>
+     <item><widget class="QPushButton" name="save_btn"><property name="text"><string>Save</string></property><property name="default"><bool>true</bool></property></widget></item>
+    </layout>
+   </item>
+
+  </layout>
+ </widget>
+</ui>
