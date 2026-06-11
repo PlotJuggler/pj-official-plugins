@@ -47,6 +47,20 @@
 
 namespace PJ::sdk {
 
+// Read-only timestamp/value view over one input series — used by the dialog's
+// preview / clipboard path. Not part of the FilterTransform contract surface
+// (the host never sees it).
+struct SeriesAccessor {
+  std::vector<double> timestamps;
+  std::vector<double> values;
+  [[nodiscard]] std::size_t size() const {
+    return timestamps.size();
+  }
+  [[nodiscard]] bool empty() const {
+    return timestamps.empty();
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Concrete transforms
 // ---------------------------------------------------------------------------
