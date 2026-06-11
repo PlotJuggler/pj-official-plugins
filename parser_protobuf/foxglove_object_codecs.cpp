@@ -10,6 +10,7 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <vector>
 
 namespace pj_protobuf {
 namespace {
@@ -64,6 +65,18 @@ bool readDouble(CodedInputStream& in, double& out) {
 bool readString(CodedInputStream& in, std::string& out) {
   uint32_t len = 0;
   return in.ReadVarint32(&len) && in.ReadString(&out, static_cast<int>(len));
+}
+
+// A length-delimited `bytes` field straight into a uint8 vector. ReadRaw copies
+// once into the resized buffer (vs the double copy of reading to a std::string
+// then assigning) — matters for large inline payloads like an embedded glTF.
+bool readBytes(CodedInputStream& in, std::vector<uint8_t>& out) {
+  uint32_t len = 0;
+  if (!in.ReadVarint32(&len)) {
+    return false;
+  }
+  out.resize(len);
+  return len == 0 || in.ReadRaw(out.data(), static_cast<int>(len));
 }
 
 /// foxglove Color (double r/g/b/a in [0,1]) -> sdk::ColorRGBA (uint8 0..255).
@@ -891,6 +904,41 @@ PJ::sdk::TextPrimitive readText(CodedInputStream& in, uint32_t len) {
   return t;
 }
 
+// foxglove.ModelPrimitive: a mesh asset, sourced either from `url` (a resolvable
+// resource) or inline `data` tagged by `media_type`. Same lenient pattern as
+// readBoxLike. `data` flows whole (no array clamp) so a downstream mesh loader
+// gets the complete buffer rather than a truncated, silently-broken one.
+PJ::sdk::ModelPrimitive readModel(CodedInputStream& in, uint32_t len) {
+  // { pose=1, scale=2, color=3, override_color=4, url=5, media_type=6, data=7 (bytes) }
+  PJ::sdk::ModelPrimitive m;
+  SubMessage sub(in, len);
+  uint32_t tag = 0;
+  while ((tag = in.ReadTag()) != 0) {
+    const int f = fieldOf(tag);
+    uint32_t sl = 0;
+    if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+      m.pose = readPose(in, sl);
+    } else if (f == 2 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+      m.scale = readVector3(in, sl);
+    } else if (f == 3 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+      m.color = readColor(in, sl);
+    } else if (f == 4 && wireOf(tag) == kWireVarint) {
+      uint64_t v = 0;
+      in.ReadVarint64(&v);
+      m.override_color = (v != 0);
+    } else if (f == 5 && wireOf(tag) == kWireLen) {
+      readString(in, m.url);
+    } else if (f == 6 && wireOf(tag) == kWireLen) {
+      readString(in, m.media_type);
+    } else if (f == 7 && wireOf(tag) == kWireLen) {
+      readBytes(in, m.data);
+    } else if (!skipField(in, wireOf(tag))) {
+      break;
+    }
+  }
+  return m;
+}
+
 PJ::sdk::SceneEntity readSceneEntity(CodedInputStream& in, uint32_t len) {
   // { timestamp=1, frame_id=2, id=3, lifetime=4 Duration, frame_locked=5, metadata=6,
   //   arrows=7, cubes=8, spheres=9, cylinders=10, lines=11, triangles=12, texts=13, models=14 }
@@ -900,7 +948,7 @@ PJ::sdk::SceneEntity readSceneEntity(CodedInputStream& in, uint32_t len) {
   while ((tag = in.ReadTag()) != 0) {
     const int f = fieldOf(tag);
     uint32_t sl = 0;
-    // metadata(6), models(14), unknowns and any wrong-wire-type field fall through
+    // metadata(6), unknowns and any wrong-wire-type field fall through
     // to the trailing skipField; a failed skip leaves the stream desynced, so stop.
     if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
       e.timestamp = readTimestampNs(in, sl);
@@ -928,6 +976,8 @@ PJ::sdk::SceneEntity readSceneEntity(CodedInputStream& in, uint32_t len) {
       e.triangles.push_back(readTriangle(in, sl));
     } else if (f == 13 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
       e.texts.push_back(readText(in, sl));
+    } else if (f == 14 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
+      e.models.push_back(readModel(in, sl));
     } else if (!skipField(in, wireOf(tag))) {
       break;
     }
