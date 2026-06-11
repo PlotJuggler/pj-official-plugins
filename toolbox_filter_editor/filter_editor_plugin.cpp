@@ -980,9 +980,13 @@ class FilterEditorToolbox : public PJ::ToolboxPluginBase {
     std::vector<std::string> created_names;
     for (const auto& series_name : dialog_.sourceSeriesList()) {
       auto source = readSource(series_name);
-      if (!source) continue;
+      if (!source) {
+        continue;
+      }
       auto* transform = dialog_.currentTransform();
-      if (!transform || std::string(transform->id()) == "none") continue;
+      if (!transform || std::string(transform->id()) == "none") {
+        continue;
+      }
 
       std::vector<Point> in, output;
       in.reserve(source->size());
@@ -990,26 +994,35 @@ class FilterEditorToolbox : public PJ::ToolboxPluginBase {
         in.push_back({source->timestamps[i], source->values[i]});
       }
       output = transform->applyBatch(in);
-      if (output.empty()) continue;
+      if (output.empty()) {
+        continue;
+      }
 
       const std::string out_name = series_name + "[" + transform->bracketLabel() + "]";
       auto host = toolboxHost();
       auto src = host.createDataSource("filter_editor_generated");
-      if (!src) continue;
+      if (!src) {
+        continue;
+      }
       auto topic = host.ensureTopic(*src, out_name);
-      if (!topic) continue;
+      if (!topic) {
+        continue;
+      }
       for (const auto& pt : output) {
         const PJ::sdk::NamedFieldValue fields[] = {{.name = "value", .value = pt.y}};
-        (void)host.appendRecord(*topic, static_cast<int64_t>(pt.x),
-                          PJ::Span<const PJ::sdk::NamedFieldValue>(fields));
+        (void)host.appendRecord(*topic, static_cast<int64_t>(pt.x), PJ::Span<const PJ::sdk::NamedFieldValue>(fields));
       }
       created_names.push_back(out_name);
     }
     runtimeHost().notifyDataChanged();
-    if (created_names.empty()) return "No series generated";
+    if (created_names.empty()) {
+      return "No series generated";
+    }
     std::string msg = "Generated: ";
     for (size_t i = 0; i < created_names.size(); ++i) {
-      if (i > 0) msg += ", ";
+      if (i > 0) {
+        msg += ", ";
+      }
       msg += "'" + created_names[i] + "'";
     }
     return msg;

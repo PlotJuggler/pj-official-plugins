@@ -554,6 +554,10 @@ class OutlierRemovalTransform : public FilterTransform {
         }
       }
       if (!drop) {
+        // Intentional PJ3 parity: output the *previous* point (i-1), not the
+        // current one (i). The detector needs one look-ahead sample to decide
+        // whether i-1 is an outlier, so the series is delayed by one sample.
+        // Changing this to output input[i] would break bit-identity with PJ3.
         out.push_back({input[i - 1].x, input[i - 1].y});
       }
     }
@@ -577,6 +581,7 @@ class OutlierRemovalTransform : public FilterTransform {
         return std::nullopt;
       }
     }
+    // Intentional PJ3 parity: output the previous point (i-1). See applyBatch comment.
     return Point2{buf_[i - 1].x, buf_[i - 1].y};
   }
   std::string saveParams() const override {
