@@ -15,6 +15,7 @@
  */
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
@@ -52,6 +53,37 @@ constexpr int32_t kDeleteAll = 3;
 // Reject pathological array sizes from corrupt/hostile payloads before allocating.
 constexpr uint32_t kMaxMarkerVertices = 2'000'000;
 constexpr uint32_t kMaxMarkersPerArray = 200'000;
+
+// visualization_msgs/MeshFile carries only a filename (no MIME type), so the
+// media type of an inline mesh is inferred from the extension. The returned
+// strings match what the Scene3D consumer's hintFromMediaType() recognizes; an
+// unknown extension becomes "model/<ext>" so the consumer can still recover a
+// format from the suffix. An extensionless filename yields an empty media_type.
+std::string mediaTypeFromMeshFilename(const std::string& filename) {
+  const auto dot = filename.find_last_of('.');
+  if (dot == std::string::npos || dot + 1 >= filename.size()) {
+    return {};
+  }
+  std::string ext = filename.substr(dot + 1);
+  std::transform(
+      ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  if (ext == "glb") {
+    return "model/gltf-binary";
+  }
+  if (ext == "gltf") {
+    return "model/gltf+json";
+  }
+  if (ext == "dae") {
+    return "model/vnd.collada+xml";
+  }
+  if (ext == "stl") {
+    return "model/stl";
+  }
+  if (ext == "obj") {
+    return "model/obj";
+  }
+  return "model/" + ext;
+}
 
 uint8_t readU8(RosMsgParser::Deserializer& d) {
   return d.deserialize(RosMsgParser::UINT8).extract<uint8_t>();
@@ -146,10 +178,12 @@ void RosParser::decodeOneMarker(PJ::sdk::SceneEntities& out) {
   deserializer_->deserializeString(text);
   std::string mesh_resource;
   deserializer_->deserializeString(mesh_resource);
+  std::string mesh_filename;
+  std::vector<uint8_t> mesh_file_data;
   if (marker_has_mesh_file_) {
-    std::string mesh_filename;
     deserializer_->deserializeString(mesh_filename);
-    (void)deserializer_->deserializeByteSequence();  // mesh_file.data
+    const auto bytes = deserializer_->deserializeByteSequence();  // mesh_file.data
+    mesh_file_data.assign(bytes.begin(), bytes.end());
   }
   const bool mesh_use_embedded = readU8(*deserializer_) != 0;
 
@@ -268,15 +302,21 @@ void RosParser::decodeOneMarker(PJ::sdk::SceneEntities& out) {
       break;
     }
     case marker_type::kMeshResource: {
-      if (mesh_resource.empty()) {
-        return;  // no asset to reference
+      if (mesh_resource.empty() && mesh_file_data.empty()) {
+        return;  // neither a URL nor inline bytes: no asset to reference
       }
       PJ::sdk::ModelPrimitive model;
       model.pose = pose;
       model.scale = scale;
       model.color = color;
       model.override_color = !mesh_use_embedded;
-      model.url = std::move(mesh_resource);
+      if (!mesh_file_data.empty()) {  // inline mesh (ROS 2 humble+ mesh_file)
+        model.data = std::move(mesh_file_data);
+        model.media_type = mediaTypeFromMeshFilename(mesh_filename);
+      }
+      if (!mesh_resource.empty()) {  // keep the publisher's URL/identifier too
+        model.url = std::move(mesh_resource);
+      }
       entity.models.push_back(std::move(model));
       break;
     }

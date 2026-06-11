@@ -2054,6 +2054,8 @@ struct MarkerWire {
   std::vector<std::array<float, 4>> colors;
   std::string text;
   std::string mesh_resource;
+  std::string mesh_filename;
+  std::vector<uint8_t> mesh_file_data;
   bool mesh_use_embedded = false;
 };
 
@@ -2103,8 +2105,11 @@ void serializeMarker(
   enc.serializeString(m.text);
   enc.serializeString(m.mesh_resource);
   if (has_mesh_file) {
-    enc.serializeString("");  // mesh_file.filename
-    enc.serializeUInt32(0);   // mesh_file.data (empty byte sequence)
+    enc.serializeString(m.mesh_filename);                                 // mesh_file.filename
+    enc.serializeUInt32(static_cast<uint32_t>(m.mesh_file_data.size()));  // mesh_file.data length
+    for (uint8_t byte : m.mesh_file_data) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(byte));
+    }
   }
   enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(m.mesh_use_embedded ? 1 : 0)));
 }
@@ -2235,6 +2240,67 @@ TEST(RosParserTest, MeshResourceMarkerProducesModel) {
   ASSERT_EQ(se->entities[0].models.size(), 1u);
   EXPECT_EQ(se->entities[0].models[0].url, "package://robot/meshes/base.dae");
   EXPECT_TRUE(se->entities[0].models[0].override_color);
+}
+
+// ROS 2 humble+ Markers can embed the mesh bytes inline via mesh_file (no
+// resolvable URL needed). Pre-fix decodeOneMarker read and DISCARDED mesh_file,
+// so the model had empty data and nothing rendered. The bytes must survive
+// whole and the media_type be inferred from the filename extension.
+TEST(RosParserTest, MeshFileMarkerProducesEmbeddedModel) {
+  RosParserFixture f;
+  f.setUp();
+  const std::string def = markerDef(/*humble=*/true);
+  ASSERT_TRUE(f.bindSchema("visualization_msgs/Marker", def));
+
+  const std::vector<uint8_t> glb = {'g', 'l', 'T', 'F', 0x02, 0x00, 0xAB, 0xCD, 0xEF};
+  MarkerWire mesh;
+  mesh.type = 10;  // MESH_RESOURCE
+  mesh.scale = {1.0, 1.0, 1.0};
+  mesh.mesh_filename = "car.glb";
+  mesh.mesh_file_data = glb;      // embedded, no mesh_resource URL
+  mesh.mesh_use_embedded = true;  // -> override_color = false
+
+  auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) { serializeMarker(enc, mesh, true, true); });
+
+  std::any hold;
+  const auto* se = parseSceneEntities(f, payload, hold);
+  ASSERT_NE(se, nullptr);
+  ASSERT_EQ(se->entities.size(), 1u);
+  ASSERT_EQ(se->entities[0].models.size(), 1u);  // embedded-only must still produce a model (guard fix)
+  const auto& model = se->entities[0].models[0];
+  EXPECT_EQ(model.data, glb);  // full bytes, not truncated/dropped
+  EXPECT_EQ(model.media_type, "model/gltf-binary");
+  EXPECT_TRUE(model.url.empty());
+  EXPECT_FALSE(model.override_color);
+}
+
+// When a publisher provides BOTH mesh_resource (url) and mesh_file (bytes), the
+// faithful translation keeps both — the consumer prefers data when present.
+TEST(RosParserTest, MeshFileAndUrlMarkerKeepsBoth) {
+  RosParserFixture f;
+  f.setUp();
+  const std::string def = markerDef(/*humble=*/true);
+  ASSERT_TRUE(f.bindSchema("visualization_msgs/Marker", def));
+
+  const std::vector<uint8_t> stl = {0x73, 0x6F, 0x6C, 0x69, 0x64};  // "solid"
+  MarkerWire mesh;
+  mesh.type = 10;
+  mesh.scale = {1.0, 1.0, 1.0};
+  mesh.mesh_resource = "package://robot/meshes/arm.stl";
+  mesh.mesh_filename = "arm.stl";
+  mesh.mesh_file_data = stl;
+
+  auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) { serializeMarker(enc, mesh, true, true); });
+
+  std::any hold;
+  const auto* se = parseSceneEntities(f, payload, hold);
+  ASSERT_NE(se, nullptr);
+  ASSERT_EQ(se->entities.size(), 1u);
+  ASSERT_EQ(se->entities[0].models.size(), 1u);
+  const auto& model = se->entities[0].models[0];
+  EXPECT_EQ(model.data, stl);
+  EXPECT_EQ(model.media_type, "model/stl");
+  EXPECT_EQ(model.url, "package://robot/meshes/arm.stl");
 }
 
 TEST(RosParserTest, MarkerDeleteAndDeleteAll) {
