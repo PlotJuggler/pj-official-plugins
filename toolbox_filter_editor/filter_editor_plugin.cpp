@@ -229,6 +229,7 @@ class FilterEditorDialog : public PJ::DialogPluginTyped {
     wd.setChecked("autozoom_check", autozoom_);
     wd.setText("status_label", status_msg_);
     wd.setEnabled("save_btn", isValid());
+    wd.setEnabled("generate_btn", isValid());
     wd.setEnabled("paste_btn", !transformClipboard().empty());
 
     wd.setChartZoomEnabled("chart_preview", !autozoom_);
@@ -471,6 +472,14 @@ class FilterEditorDialog : public PJ::DialogPluginTyped {
       status_msg_ = reset_fn_ ? reset_fn_() : std::string("Reset");
       return true;
     }
+    if (name == "generate_btn" && isValid()) {
+      // Generate time series: apply the filter and write the result to the
+      // datastore so it appears as a new persistent series in the curve tree.
+      // Unlike Save (volatile), this creates a real Topic that survives the
+      // toolbox panel closing.
+      status_msg_ = generate_fn_ ? generate_fn_() : std::string("Generate unavailable: toolbox not bound");
+      return true;
+    }
     if (name == "cancel_btn") {
       if (cancel_fn_) {
         cancel_fn_();
@@ -495,6 +504,9 @@ class FilterEditorDialog : public PJ::DialogPluginTyped {
   }
   void setResetCallback(ApplyFn fn) {
     reset_fn_ = std::move(fn);
+  }
+  void setGenerateCallback(ApplyFn fn) {
+    generate_fn_ = std::move(fn);
   }
   void setStatus(std::string msg) {
     status_msg_ = std::move(msg);
@@ -813,6 +825,7 @@ class FilterEditorDialog : public PJ::DialogPluginTyped {
   ApplyFn save_fn_;
   std::function<void()> cancel_fn_;
   ApplyFn reset_fn_;
+  ApplyFn generate_fn_;
   std::string pending_close_;
 };
 
@@ -840,6 +853,7 @@ class FilterEditorToolbox : public PJ::ToolboxPluginBase {
     dialog_.setSaveCallback([this]() { return applyAndReport(); });
     dialog_.setCancelCallback([this]() { dialog_.loadConfig(config_at_open_); });
     dialog_.setResetCallback([this]() { return resetAndReport(); });
+    dialog_.setGenerateCallback([this]() { return generateAndReport(); });
     return PJ::borrowDialog(dialog_);
   }
 
@@ -953,6 +967,52 @@ class FilterEditorToolbox : public PJ::ToolboxPluginBase {
       runtimeHost().notifyDataChanged();
     }
     return "Reset";
+  }
+
+  // Called from the dialog's "Generate time series" button.
+  // Applies the filter to ALL selected sources and writes each result as a
+  // new persistent series in the datastore — it appears in the curve tree.
+  // Unlike Save (volatile), this series survives the panel closing.
+  std::string generateAndReport() {
+    if (!toolboxHostBound() || !runtimeHostBound()) {
+      return "Toolbox not bound to a host";
+    }
+    std::vector<std::string> created_names;
+    for (const auto& series_name : dialog_.sourceSeriesList()) {
+      auto source = readSource(series_name);
+      if (!source) continue;
+      auto* transform = dialog_.currentTransform();
+      if (!transform || std::string(transform->id()) == "none") continue;
+
+      std::vector<Point> in, output;
+      in.reserve(source->size());
+      for (size_t i = 0; i < source->size(); ++i) {
+        in.push_back({source->timestamps[i], source->values[i]});
+      }
+      output = transform->applyBatch(in);
+      if (output.empty()) continue;
+
+      const std::string out_name = series_name + "[" + transform->bracketLabel() + "]";
+      auto host = toolboxHost();
+      auto src = host.createDataSource("filter_editor_generated");
+      if (!src) continue;
+      auto topic = host.ensureTopic(*src, out_name);
+      if (!topic) continue;
+      for (const auto& pt : output) {
+        const PJ::sdk::NamedFieldValue fields[] = {{.name = "value", .value = pt.y}};
+        (void)host.appendRecord(*topic, static_cast<int64_t>(pt.x),
+                          PJ::Span<const PJ::sdk::NamedFieldValue>(fields));
+      }
+      created_names.push_back(out_name);
+    }
+    runtimeHost().notifyDataChanged();
+    if (created_names.empty()) return "No series generated";
+    std::string msg = "Generated: ";
+    for (size_t i = 0; i < created_names.size(); ++i) {
+      if (i > 0) msg += ", ";
+      msg += "'" + created_names[i] + "'";
+    }
+    return msg;
   }
 
   PJ::Status applyTransformToStore(bool reset_if_changed) {
