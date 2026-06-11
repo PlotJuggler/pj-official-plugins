@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "builtin_transforms.hpp"
+#include "custom_function_engine.hpp"
 #include "filter_editor_dialog_ui.hpp"
 #include "filter_editor_manifest.hpp"
 
@@ -42,8 +43,8 @@ using PJ::sdk::Point2;
 using PJ::sdk::registerAllTransforms;
 using PJ::sdk::SamplesCounterTransform;
 using PJ::sdk::ScaleTransform;
-using PJ::sdk::SeriesAccessor;
 using PJ::sdk::TimeSincePreviousTransform;
+using pj_custom_function::SeriesAccessor;
 
 constexpr size_t kPreviewMaxPoints = 2000;
 
