@@ -6,8 +6,12 @@
 
 #include <any>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <limits>
+#include <pj_laser_scan/laser_scan_projector.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -1353,4 +1357,265 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateRecoversFromMalformedEntityField) {
   EXPECT_EQ(r->entities[0].id, "id1");
   EXPECT_EQ(r->entities[1].frame_id, "map");
   EXPECT_EQ(r->entities[1].id, "robot");
+}
+
+// ---------------------------------------------------------------------------
+// foxglove.LaserScan → kPointCloud (eager projection via pj_laser_scan)
+//
+// Wire layout (verified against foxglove-sdk schemas/proto/foxglove/LaserScan.proto):
+//   timestamp = 1 (google.protobuf.Timestamp), frame_id = 2 (string),
+//   pose = 3 (foxglove.Pose), start_angle = 4 (double), end_angle = 5 (double),
+//   ranges = 6 (repeated double, packed), intensities = 7 (repeated double, packed).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr double kDNaN = std::numeric_limits<double>::quiet_NaN();
+constexpr double kDInf = std::numeric_limits<double>::infinity();
+
+std::vector<uint8_t> buildFoxgloveLaserScanWire(
+    int64_t ts_sec, int32_t ts_nanos, const std::string& frame_id, double start_angle, double end_angle,
+    const std::vector<double>& ranges, const std::vector<double>& intensities, bool with_pose, double pose_tx) {
+  PW scan;
+  scan.sub(1, foxgloveTimestamp(ts_sec, ts_nanos));
+  scan.str(2, frame_id);
+  if (with_pose) {
+    PW pos;
+    pos.dbl(1, pose_tx);
+    PW quat;
+    quat.dbl(4, 1.0);  // identity orientation, explicit w
+    PW pose;
+    pose.sub(1, pos);
+    pose.sub(2, quat);
+    scan.sub(3, pose);
+  }
+  scan.dbl(4, start_angle);
+  scan.dbl(5, end_angle);
+  if (!ranges.empty()) {
+    scan.packedDoubles(6, ranges);
+  }
+  if (!intensities.empty()) {
+    scan.packedDoubles(7, intensities);
+  }
+  return scan.b;
+}
+
+/// Reads the float32 at byte offset `off` of point `index` in a packed cloud.
+float scanCloudFloat(const PJ::sdk::PointCloud& cloud, uint32_t index, uint32_t off) {
+  float v = 0.0f;
+  std::memcpy(&v, cloud.data.data() + static_cast<size_t>(index) * cloud.point_step + off, sizeof(float));
+  return v;
+}
+
+}  // namespace
+
+TEST(ProtobufParserTest, FoxgloveLaserScanCodecProjectsAndCachesLut) {
+  // 5 rays from -1.0 to 1.0 rad → angle_increment = 0.5; NaN/Inf drop
+  // (foxglove carries no range bounds, so only non-finite rays drop).
+  const std::vector<double> ranges = {1.0, kDNaN, 2.0, kDInf, 3.0};
+  const auto wire = buildFoxgloveLaserScanWire(7, 42, "lidar_2d", -1.0, 1.0, ranges, {}, false, 0.0);
+
+  PJ::laser_scan::LaserScanProjector projector;
+  auto decoded = pj_protobuf::deserializeFoxgloveLaserScan(wire.data(), wire.size(), projector);
+  ASSERT_TRUE(decoded.has_value()) << decoded.error();
+  const auto& cloud = decoded->cloud;
+
+  EXPECT_EQ(cloud.frame_id, "lidar_2d");
+  EXPECT_EQ(cloud.timestamp_ns, 7'000'000'042LL);
+  EXPECT_EQ(cloud.height, 1u);
+  EXPECT_EQ(cloud.width, 3u);
+  EXPECT_EQ(cloud.point_step, 12u);
+  EXPECT_EQ(cloud.row_step, 3u * 12u);
+  EXPECT_TRUE(cloud.is_dense);
+  EXPECT_FALSE(cloud.is_bigendian);
+  ASSERT_EQ(cloud.fields.size(), 3u);
+  EXPECT_EQ(cloud.fields[0].name, "x");
+  EXPECT_EQ(cloud.fields[1].name, "y");
+  EXPECT_EQ(cloud.fields[2].name, "z");
+  EXPECT_EQ(decoded->ray_count, 5u);
+  EXPECT_DOUBLE_EQ(decoded->start_angle, -1.0);
+  EXPECT_DOUBLE_EQ(decoded->end_angle, 1.0);
+  EXPECT_FALSE(decoded->has_pose);
+
+  // Kept rays 0/2/4 at theta = -1.0 / 0.0 / 1.0.
+  EXPECT_EQ(scanCloudFloat(cloud, 0, 0), 1.0f * static_cast<float>(std::cos(-1.0)));
+  EXPECT_EQ(scanCloudFloat(cloud, 0, 4), 1.0f * static_cast<float>(std::sin(-1.0)));
+  EXPECT_EQ(scanCloudFloat(cloud, 1, 0), 2.0f);
+  EXPECT_EQ(scanCloudFloat(cloud, 1, 4), 0.0f);
+  EXPECT_EQ(scanCloudFloat(cloud, 2, 0), 3.0f * static_cast<float>(std::cos(1.0)));
+
+  // The owned buffer is anchored — the cloud must not alias the wire bytes.
+  ASSERT_NE(cloud.anchor, nullptr);
+  const auto* lo = cloud.data.data();
+  const auto* hi = cloud.data.data() + cloud.data.size();
+  EXPECT_TRUE(hi <= wire.data() || lo >= wire.data() + wire.size());
+
+  // Same scan config decoded again → the cos/sin LUT is reused, not rebuilt.
+  EXPECT_EQ(projector.lutRebuildCount(), 1u);
+  auto decoded2 = pj_protobuf::deserializeFoxgloveLaserScan(wire.data(), wire.size(), projector);
+  ASSERT_TRUE(decoded2.has_value());
+  EXPECT_EQ(projector.lutRebuildCount(), 1u);
+}
+
+TEST(ProtobufParserTest, FoxgloveLaserScanCodecIntensityPassthrough) {
+  const std::vector<double> ranges = {1.0, kDNaN, 3.0};
+  const std::vector<double> intensities = {10.0, 20.0, 30.0};
+  const auto wire = buildFoxgloveLaserScanWire(0, 0, "lidar", 0.0, 0.2, ranges, intensities, false, 0.0);
+
+  PJ::laser_scan::LaserScanProjector projector;
+  auto decoded = pj_protobuf::deserializeFoxgloveLaserScan(wire.data(), wire.size(), projector);
+  ASSERT_TRUE(decoded.has_value()) << decoded.error();
+  const auto& cloud = decoded->cloud;
+
+  ASSERT_EQ(cloud.width, 2u);
+  EXPECT_EQ(cloud.point_step, 16u);
+  ASSERT_EQ(cloud.fields.size(), 4u);
+  EXPECT_EQ(cloud.fields[3].name, "intensity");
+  EXPECT_EQ(scanCloudFloat(cloud, 0, 12), 10.0f);
+  EXPECT_EQ(scanCloudFloat(cloud, 1, 12), 30.0f);  // follows its ray through the drop
+}
+
+TEST(ProtobufParserTest, FoxgloveLaserScanCodecIntensitySizeMismatchIgnored) {
+  const std::vector<double> ranges = {1.0, 2.0, 3.0};
+  const std::vector<double> intensities = {10.0};  // wrong size → xyz-only
+  const auto wire = buildFoxgloveLaserScanWire(0, 0, "lidar", 0.0, 0.2, ranges, intensities, false, 0.0);
+
+  PJ::laser_scan::LaserScanProjector projector;
+  auto decoded = pj_protobuf::deserializeFoxgloveLaserScan(wire.data(), wire.size(), projector);
+  ASSERT_TRUE(decoded.has_value()) << decoded.error();
+  EXPECT_EQ(decoded->cloud.point_step, 12u);
+  EXPECT_EQ(decoded->cloud.fields.size(), 3u);
+  EXPECT_EQ(decoded->cloud.width, 3u);
+}
+
+TEST(ProtobufParserTest, FoxgloveLaserScanCodecSingleRay) {
+  // N = 1: the (end-start)/(N-1) increment formula must not divide by zero.
+  const auto wire = buildFoxgloveLaserScanWire(0, 0, "lidar", 0.5, 0.5, {2.0}, {}, false, 0.0);
+
+  PJ::laser_scan::LaserScanProjector projector;
+  auto decoded = pj_protobuf::deserializeFoxgloveLaserScan(wire.data(), wire.size(), projector);
+  ASSERT_TRUE(decoded.has_value()) << decoded.error();
+  ASSERT_EQ(decoded->cloud.width, 1u);
+  EXPECT_EQ(scanCloudFloat(decoded->cloud, 0, 0), 2.0f * static_cast<float>(std::cos(0.5)));
+  EXPECT_EQ(scanCloudFloat(decoded->cloud, 0, 4), 2.0f * static_cast<float>(std::sin(0.5)));
+}
+
+TEST(ProtobufParserTest, FoxgloveLaserScanCodecEmptyScan) {
+  const auto wire = buildFoxgloveLaserScanWire(1, 0, "lidar", 0.0, 0.0, {}, {}, false, 0.0);
+
+  PJ::laser_scan::LaserScanProjector projector;
+  auto decoded = pj_protobuf::deserializeFoxgloveLaserScan(wire.data(), wire.size(), projector);
+  ASSERT_TRUE(decoded.has_value()) << decoded.error();
+  EXPECT_EQ(decoded->cloud.width, 0u);
+  EXPECT_EQ(decoded->cloud.data.size(), 0u);
+  EXPECT_EQ(decoded->ray_count, 0u);
+}
+
+TEST(ProtobufParserTest, FoxgloveLaserScanCodecAcceptsUnpackedRanges) {
+  // Spec-compliant parsers must accept repeated doubles in unpacked encoding.
+  PW scan;
+  scan.str(2, "lidar");
+  scan.dbl(4, 0.0);
+  scan.dbl(5, 0.1);
+  scan.dbl(6, 1.0);  // ranges as individual I64 entries
+  scan.dbl(6, 2.0);
+  const auto& wire = scan.b;
+
+  PJ::laser_scan::LaserScanProjector projector;
+  auto decoded = pj_protobuf::deserializeFoxgloveLaserScan(wire.data(), wire.size(), projector);
+  ASSERT_TRUE(decoded.has_value()) << decoded.error();
+  EXPECT_EQ(decoded->ray_count, 2u);
+  EXPECT_EQ(decoded->cloud.width, 2u);
+}
+
+TEST(ProtobufParserTest, FoxgloveLaserScanCodecFlagsNonIdentityPose) {
+  const auto wire = buildFoxgloveLaserScanWire(0, 0, "lidar", 0.0, 0.1, {1.0, 2.0}, {}, true, 3.5);
+
+  PJ::laser_scan::LaserScanProjector projector;
+  auto decoded = pj_protobuf::deserializeFoxgloveLaserScan(wire.data(), wire.size(), projector);
+  ASSERT_TRUE(decoded.has_value()) << decoded.error();
+  EXPECT_TRUE(decoded->has_pose);
+  EXPECT_FALSE(decoded->pose_is_identity);  // translation x = 3.5 → not identity
+}
+
+TEST(ProtobufParserTest, FoxgloveLaserScanObjectRoute) {
+  ProtobufParserFixture f;
+  f.setUp();
+
+  // Empty schema bytes: the canonical fast path keys off the type name only.
+  ASSERT_TRUE(f.bindSchema("foxglove.LaserScan", std::string{}));
+  const PJ::Span<const uint8_t> empty_schema{};
+  EXPECT_EQ(f.handle.classifySchema("foxglove.LaserScan", empty_schema), PJ::sdk::BuiltinObjectType::kPointCloud);
+
+  const auto wire = buildFoxgloveLaserScanWire(7, 0, "lidar_2d", -0.5, 0.5, {1.0, kDNaN, 2.0}, {}, false, 0.0);
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(wire.data(), wire.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  EXPECT_FALSE(rec->ts.has_value());  // embedded ts disabled by default
+
+  const auto* pc = std::any_cast<PJ::sdk::PointCloud>(&rec->object);
+  ASSERT_NE(pc, nullptr);
+  EXPECT_EQ(pc->frame_id, "lidar_2d");
+  EXPECT_EQ(pc->width, 2u);
+  EXPECT_EQ(pc->point_step, 12u);
+  EXPECT_EQ(pc->timestamp_ns, 7'000'000'000LL);
+  ASSERT_NE(pc->anchor, nullptr);
+}
+
+TEST(ProtobufParserTest, FoxgloveLaserScanScalarRoute) {
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("foxglove.LaserScan", std::string{}));
+
+  const auto wire = buildFoxgloveLaserScanWire(7, 0, "lidar_2d", -0.5, 0.5, {1.0, kDNaN, 2.0}, {}, false, 0.0);
+  ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(wire.data()), wire.size()), 555));
+
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+  EXPECT_EQ(row.timestamp, 555);  // embedded ts disabled by default → host ts
+
+  const auto* frame_id = PJ::sdk::testing::ParserWriteRecorder::findField(row, "frame_id");
+  ASSERT_NE(frame_id, nullptr);
+  EXPECT_EQ(frame_id->string_value, "lidar_2d");
+
+  const auto* start_angle = PJ::sdk::testing::ParserWriteRecorder::findField(row, "start_angle");
+  ASSERT_NE(start_angle, nullptr);
+  EXPECT_DOUBLE_EQ(start_angle->numeric, -0.5);
+
+  const auto* end_angle = PJ::sdk::testing::ParserWriteRecorder::findField(row, "end_angle");
+  ASSERT_NE(end_angle, nullptr);
+  EXPECT_DOUBLE_EQ(end_angle->numeric, 0.5);
+
+  const auto* num_ranges = PJ::sdk::testing::ParserWriteRecorder::findField(row, "num_ranges");
+  ASSERT_NE(num_ranges, nullptr);
+  EXPECT_DOUBLE_EQ(num_ranges->numeric, 3.0);
+
+  // point_count is NOT emitted: the scalar route is a header-only walk and
+  // never projects, so the kept-point count is unknowable here.
+  EXPECT_EQ(PJ::sdk::testing::ParserWriteRecorder::findField(row, "point_count"), nullptr);
+}
+
+// Regression: a packed-ranges LEN varint claiming 1 GiB with the buffer ending
+// right after must fail cleanly — and must never drive a giant up-front
+// reserve (the capped reserve guarantees this regardless of how the
+// CodedInputStream is constructed; the flat-array constructor's implicit
+// buffer-size limit was previously the only thing preventing it).
+TEST(ProtobufParserTest, FoxgloveLaserScanCorruptRangesLengthFailsCleanly) {
+  PW scan;
+  scan.str(2, "lidar");
+  scan.dbl(4, 0.0);
+  scan.dbl(5, 0.1);
+  scan.tag(6, 2);                     // ranges, LEN wire type…
+  scan.rawVarint(uint64_t{1} << 30);  // …claiming 1 GiB of doubles,
+  const auto& wire = scan.b;          // but the buffer ends here.
+
+  PJ::laser_scan::LaserScanProjector projector;
+  auto decoded = pj_protobuf::deserializeFoxgloveLaserScan(wire.data(), wire.size(), projector);
+  EXPECT_FALSE(decoded.has_value());  // object route: clean error, no crash
+
+  auto info = pj_protobuf::readFoxgloveLaserScanInfo(wire.data(), wire.size());
+  EXPECT_FALSE(info.has_value());  // scalar-route walk rejects it too
 }

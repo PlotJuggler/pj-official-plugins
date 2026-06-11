@@ -30,6 +30,8 @@
 #include <pj_base/buffer_anchor.hpp>
 #include <pj_base/builtin/point_cloud.hpp>
 #include <pj_base/expected.hpp>
+#include <pj_laser_scan/laser_scan_projector.hpp>
+#include <string>
 
 namespace pj_protobuf {
 
@@ -52,5 +54,54 @@ struct FoxglovePointCloudDecode {
 /// (Foxglove omits them: it is always a flat, little-endian, dense point list).
 [[nodiscard]] PJ::Expected<FoxglovePointCloudDecode> deserializeFoxglovePointCloudView(
     const uint8_t* data, size_t size, PJ::sdk::BufferAnchor anchor);
+
+/// Result of decoding a foxglove.LaserScan message into an eagerly projected
+/// point cloud. As with PointCloud above, the inline `pose` has no home in
+/// sdk::PointCloud, so its presence/identity is surfaced for the caller's
+/// warn-once policy.
+///
+///   message foxglove.LaserScan {
+///     google.protobuf.Timestamp timestamp = 1;
+///     string          frame_id    = 2;
+///     foxglove.Pose   pose        = 3;   // dropped (sdk::PointCloud has no pose)
+///     double          start_angle = 4;
+///     double          end_angle   = 5;
+///     repeated double ranges      = 6;   // packed
+///     repeated double intensities = 7;   // packed
+///   }
+struct FoxgloveLaserScanDecode {
+  PJ::sdk::PointCloud cloud;     ///< Projected x/y/z(/intensity) FLOAT32 cloud; data is OWNED (anchored).
+  double start_angle = 0.0;      ///< Bearing of ray 0 [rad].
+  double end_angle = 0.0;        ///< Bearing of the last ray [rad].
+  uint64_t ray_count = 0;        ///< Rays on the wire (before invalid rays are dropped).
+  bool has_pose = false;         ///< field 3 (pose) was present on the wire.
+  bool pose_is_identity = true;  ///< pose == identity (zero translation, unit quaternion).
+};
+
+/// Decodes foxglove.LaserScan wire bytes and eagerly projects them through
+/// `projector` (rays at equally-spaced angles between start_angle and
+/// end_angle; angle_increment = (end-start)/(N-1) for N > 1). Unlike the
+/// PointCloud view decoder there is NO zero-copy and no anchor parameter: the
+/// point bytes are newly generated and owned by the returned cloud's anchor.
+/// Foxglove carries no range bounds, so only non-finite ranges are dropped.
+/// The caller keeps `projector` alive across messages so its cos/sin LUT is
+/// reused for a fixed scanner configuration.
+[[nodiscard]] PJ::Expected<FoxgloveLaserScanDecode> deserializeFoxgloveLaserScan(
+    const uint8_t* data, size_t size, PJ::laser_scan::LaserScanProjector& projector);
+
+/// Slim foxglove.LaserScan metadata for the scalar route.
+struct FoxgloveLaserScanInfo {
+  int64_t timestamp_ns = 0;  ///< 0 when the message carries no timestamp.
+  std::string frame_id;
+  double start_angle = 0.0;
+  double end_angle = 0.0;
+  uint64_t num_ranges = 0;  ///< Rays on the wire (packed LEN/8, plus any unpacked records).
+};
+
+/// Header-only walk of a foxglove.LaserScan: reads timestamp, frame_id and the
+/// angles, and derives `num_ranges` from the LEN of the packed `ranges` field —
+/// no LUT, no cartesian projection, no ranges materialization. Use this for
+/// per-message scalar metadata; the O(N) projection stays on the object route.
+[[nodiscard]] PJ::Expected<FoxgloveLaserScanInfo> readFoxgloveLaserScanInfo(const uint8_t* data, size_t size);
 
 }  // namespace pj_protobuf

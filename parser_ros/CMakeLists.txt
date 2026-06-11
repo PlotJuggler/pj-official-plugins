@@ -54,7 +54,8 @@ function(configure_parser_ros_target TARGET)
   target_compile_features(${TARGET} PRIVATE cxx_std_20)
   target_compile_options(${TARGET} PRIVATE ${PJ_WARNING_FLAGS})
   target_link_libraries(${TARGET} PRIVATE
-    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json rosx_introspection data_tamer_parser pj_array_policy)
+    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json rosx_introspection data_tamer_parser pj_array_policy
+    pj_laser_scan)
 endfunction()
 
 # --- Plugin shared libraries ---
@@ -103,6 +104,8 @@ target_compile_features(ros_parser_test PRIVATE cxx_std_20)
 target_compile_options(ros_parser_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(ros_parser_test PRIVATE
   PJ_ROS_PARSER_PLUGIN_PATH="$<TARGET_FILE:parser_ros_plugin>"
+  # Committed real-recording fixtures (e.g. one CDR LaserScan message).
+  PJ_ROS_PARSER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
 )
 target_link_libraries(ros_parser_test PRIVATE
   plotjuggler_sdk::plugin_sdk
