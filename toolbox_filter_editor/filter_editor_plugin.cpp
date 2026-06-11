@@ -988,7 +988,7 @@ class FilterEditorToolbox : public PJ::ToolboxPluginBase {
         continue;
       }
 
-      std::vector<Point> in, output;
+      std::vector<Point2> in, output;
       in.reserve(source->size());
       for (size_t i = 0; i < source->size(); ++i) {
         in.push_back({source->timestamps[i], source->values[i]});
