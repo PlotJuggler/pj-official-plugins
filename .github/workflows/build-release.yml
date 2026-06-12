@@ -35,7 +35,10 @@ jobs:
             arch: arm64
             os_label: macos
             lib_ext: dylib
-          - runner: windows-latest
+          # Pinned to windows-2022: see ci-windows.yml — the VS18/MSVC 14.5x image
+          # breaks the libsodium/1.0.20 build (MSB8052, toolset 14.44 vs v145).
+          # windows-11-arm below is left as-is (the failure is x64-toolset-specific).
+          - runner: windows-2022
             arch: x64
             os_label: windows
             lib_ext: dll
