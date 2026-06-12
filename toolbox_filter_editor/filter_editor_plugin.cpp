@@ -42,8 +42,21 @@ using PJ::sdk::Point2;
 using PJ::sdk::registerAllTransforms;
 using PJ::sdk::SamplesCounterTransform;
 using PJ::sdk::ScaleTransform;
-using PJ::sdk::SeriesAccessor;
 using PJ::sdk::TimeSincePreviousTransform;
+
+// Read-only timestamp/value view over one input series — used only by the
+// dialog's preview / clipboard path. Plugin-internal; never crosses the SDK
+// boundary, so it lives next to its only consumer instead of in a header.
+struct SeriesAccessor {
+  std::vector<double> timestamps;
+  std::vector<double> values;
+  [[nodiscard]] std::size_t size() const {
+    return timestamps.size();
+  }
+  [[nodiscard]] bool empty() const {
+    return timestamps.empty();
+  }
+};
 
 constexpr size_t kPreviewMaxPoints = 2000;
 
