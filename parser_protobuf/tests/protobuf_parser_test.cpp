@@ -1263,6 +1263,76 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodesCubeColorAndCylinderScales) {
   EXPECT_EQ(e.cylinders[0].color, (PJ::sdk::ColorRGBA{255, 128, 0, 255}));
 }
 
+// Characterizes the lenient-reader contract the field-scanner sugar must keep:
+// a field with the RIGHT number but the WRONG wire type is SKIPPED and decoding
+// CONTINUES with the next field (it is not fatal). Here a cube's Vector3 size
+// encodes x (field 1) as a varint instead of a double; the decoder must drop x
+// (stays 0) yet still read y (field 2). A refactor that treated a wrong-wire
+// field as a hard stop would lose y too.
+TEST(ProtobufParserTest, FoxgloveSceneUpdateSkipsWrongWireTypeFieldAndContinues) {
+  PW cube_size;             // Vector3 with a deliberately malformed x
+  cube_size.varint(1, 42);  // x: wire type varint (should be I64 double) -> skipped
+  cube_size.dbl(2, 3.0);    // y: well-formed, must still decode
+  cube_size.dbl(3, 4.0);    // z: well-formed
+  PW cube;
+  cube.sub(2, cube_size);  // CubePrimitive { size=2 }
+  PW entity;
+  entity.str(3, "lenient");
+  entity.sub(8, cube);
+  PW scene;
+  scene.sub(2, entity);
+  const auto& w = scene.b;
+
+  auto r = pj_protobuf::deserializeFoxgloveSceneUpdate(w.data(), w.size());
+  ASSERT_TRUE(r) << r.error();
+  ASSERT_EQ(r->entities.size(), 1u);
+  ASSERT_EQ(r->entities[0].cubes.size(), 1u);
+  const auto& size = r->entities[0].cubes[0].size;
+  EXPECT_DOUBLE_EQ(size.x, 0.0);  // malformed field dropped
+  EXPECT_DOUBLE_EQ(size.y, 3.0);  // decoding continued past it
+  EXPECT_DOUBLE_EQ(size.z, 4.0);
+}
+
+// Companion to the above at the SceneEntity level: an unknown/handled-elsewhere
+// field (here field 6, metadata, which the decoder intentionally skips) sitting
+// between two real primitives must not disturb either. Pins the catch-all skip
+// of the entity-level field loop.
+TEST(ProtobufParserTest, FoxgloveSceneUpdateSkipsUnhandledEntityFieldBetweenPrimitives) {
+  PW cube_size;
+  cube_size.dbl(1, 1.0);
+  cube_size.dbl(2, 1.0);
+  cube_size.dbl(3, 1.0);
+  PW cube;
+  cube.sub(2, cube_size);
+
+  PW metadata;  // KeyValuePair-ish blob; the decoder skips field 6 wholesale
+  metadata.str(1, "k");
+  metadata.str(2, "v");
+
+  PW sphere_size;
+  sphere_size.dbl(1, 0.5);
+  sphere_size.dbl(2, 0.5);
+  sphere_size.dbl(3, 0.5);
+  PW sphere;
+  sphere.sub(2, sphere_size);
+
+  PW entity;
+  entity.str(3, "interleaved");
+  entity.sub(8, cube);      // cubes[0]
+  entity.sub(6, metadata);  // skipped
+  entity.sub(9, sphere);    // spheres[0] — must survive the skip
+  PW scene;
+  scene.sub(2, entity);
+  const auto& w = scene.b;
+
+  auto r = pj_protobuf::deserializeFoxgloveSceneUpdate(w.data(), w.size());
+  ASSERT_TRUE(r) << r.error();
+  ASSERT_EQ(r->entities.size(), 1u);
+  EXPECT_EQ(r->entities[0].cubes.size(), 1u);
+  ASSERT_EQ(r->entities[0].spheres.size(), 1u);
+  EXPECT_DOUBLE_EQ(r->entities[0].spheres[0].size.x, 0.5);
+}
+
 // SceneEntity.models (field 14) carries mesh assets. Pre-fix readSceneEntity let
 // field 14 fall through to skipField, so an inline glTF model was silently
 // dropped and never rendered. An inline model provides `data` tagged by
