@@ -13,7 +13,13 @@ concurrency:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # Pinned: windows-latest migrated to the VS18/MSVC 14.5x image, where the
+    # libsodium/1.0.20 Conan recipe fails to build from source (MSB8052: default
+    # toolset 14.44 is incompatible with the v145 platform toolset its bundled
+    # vs2022 solution selects). windows-2022 is the last known-green image.
+    # Revert to windows-latest once libsodium's recipe supports v145 or we move
+    # off the 1.0.20 pin. See follow-up infra issue.
+    runs-on: windows-2022
 
     steps:
       - name: Checkout

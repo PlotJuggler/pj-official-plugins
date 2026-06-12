@@ -187,8 +187,14 @@ Triggered by tags matching `*/v*` pattern.
 | Linux ARM64 | ubuntu-22.04-arm | aarch64 |
 | macOS Intel | macos-15-intel | x86_64 |
 | macOS Apple Silicon | macos-14 | arm64 |
-| Windows x64 | windows-latest | x64 |
+| Windows x64 | windows-2022 | x64 |
 | Windows ARM64 | windows-11-arm | arm64 |
+
+> **Note:** Windows x64 is pinned to `windows-2022` (not `windows-latest`). The newer
+> `windows-latest` (VS18 / MSVC 14.5x) image breaks the `libsodium/1.0.20` build with
+> `MSB8052` (default toolset 14.44 vs the v145 platform toolset its bundled solution
+> selects). Revert to `windows-latest` once libsodium's recipe supports v145 or the
+> 1.0.20 pin is lifted.
 
 **Per-platform steps:**
 

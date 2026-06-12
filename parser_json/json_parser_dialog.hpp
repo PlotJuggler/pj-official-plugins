@@ -35,12 +35,6 @@ class JsonParserDialog : public PJ::DialogPluginTyped {
 
     // Embedded timestamp checkbox
     wd.setChecked("checkBoxUseEmbeddedTimestamp", use_embedded_timestamp_);
-
-    // Timestamp field name (enabled only when checkbox is checked)
-    wd.setText("lineEditTimestampField", timestamp_field_name_);
-    wd.setEnabled("lineEditTimestampField", use_embedded_timestamp_);
-    wd.setEnabled("labelTimestampField", use_embedded_timestamp_);
-
     return wd.toJson();
   }
 
@@ -54,7 +48,7 @@ class JsonParserDialog : public PJ::DialogPluginTyped {
   bool onToggled(std::string_view widget_name, bool checked) override {
     if (widget_name == "checkBoxUseEmbeddedTimestamp") {
       use_embedded_timestamp_ = checked;
-      return true;  // Widget state changed, request UI update
+      return false;
     }
     if (checked && widget_name == "radioMaxClamp") {
       array_limit_.policy = pj::array_policy::ArrayPolicy::kClamp;
@@ -63,14 +57,6 @@ class JsonParserDialog : public PJ::DialogPluginTyped {
     if (checked && widget_name == "radioMaxDiscard") {
       array_limit_.policy = pj::array_policy::ArrayPolicy::kSkip;
       return false;
-    }
-    return false;
-  }
-
-  bool onTextChanged(std::string_view widget_name, std::string_view text) override {
-    if (widget_name == "lineEditTimestampField") {
-      timestamp_field_name_ = std::string(text);
-      return true;
     }
     return false;
   }

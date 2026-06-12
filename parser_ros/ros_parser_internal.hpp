@@ -10,6 +10,7 @@
 #include <numbers>
 #include <pj_base/builtin/builtin_object.hpp>
 #include <pj_base/number_parse.hpp>
+#include <pj_laser_scan/laser_scan_projector.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <rosx_introspection/ros_parser.hpp>
 #include <string>
@@ -232,6 +233,15 @@ class RosParser : public PJ::MessageParserPluginBase {
   RosMsgParser::FlatMessage flat_msg_;
   PJ::Timestamp current_timestamp_ = 0;
 
+  // LaserScan -> PointCloud projector. One per parser instance (= per topic),
+  // so its cos/sin LUT — keyed on (ray_count, angle_min, angle_increment) —
+  // is computed once for a whole recording of a fixed scanner config.
+  PJ::laser_scan::LaserScanProjector laser_projector_;
+  // Reusable parseLaserScan scratch (cleared per call): avoids two per-message
+  // heap allocations on the hot path, same pattern as owned_fields_ below.
+  std::vector<float> laserscan_ranges_scratch_;
+  std::vector<float> laserscan_intensities_scratch_;
+
   // Output accumulation
   std::vector<FlattenedField> owned_fields_;
   std::vector<PJ::sdk::NamedFieldValue> named_fields_;
@@ -327,6 +337,10 @@ class RosParser : public PJ::MessageParserPluginBase {
 
   // sensor_msgs/PointCloud2
   PJ::Expected<PJ::sdk::ObjectRecord> parsePointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // sensor_msgs/LaserScan -> sdk::PointCloud, eagerly projected (owned point
+  // buffer) through laser_projector_'s cached cos/sin LUT.
+  PJ::Expected<PJ::sdk::ObjectRecord> parseLaserScan(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
   // foxglove_msgs/CompressedPointCloud -> sdk::CompressedPointCloud (zero-copy compressed blob)
   PJ::Expected<PJ::sdk::ObjectRecord> parseFoxgloveCompressedPointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
