@@ -67,6 +67,11 @@ Severity levels:
 | 5 | Parser creation error collection removed | MEDIUM | `foxglove_client.cpp:357-375, 409-426` | Original collects all parser creation failures and shows a summary. Ported reports first failure only. |
 | 6 | Reconnection strategy removed | MEDIUM | `foxglove_client.cpp:495-524` | Original has `onDisconnected()` error handling and recovery path. Ported has minimal disconnect handling. |
 
+**Intentional additive enhancement (not a gap):** the port routes channels per-encoding via
+`classifyChannel` — CDR/ros2msg+omgidl → `parser_ros` (as upstream) **plus** `protobuf` →
+`parser_protobuf` (base64-decoding the advertised `FileDescriptorSet`). The upstream original was
+CDR/ros2msg-only. This is a deliberate extension of scope, documented in the plugin README.
+
 ---
 
 ## 6. data_stream_mqtt (vs DataStreamMQTT)

@@ -1,18 +1,22 @@
 cmake_minimum_required(VERSION 3.22)
 
 # ---------------------------------------------------------------------------
-# Dual-mode: standalone project OR subdirectory of plotjuggler_core.
+# Dual-mode: standalone project OR subdirectory of plotjuggler_sdk.
 #
-# Detection: if plotjuggler_core::plugin_sdk already exists as a target, we are a subdirectory
+# Detection: if plotjuggler_sdk::plugin_sdk already exists as a target, we are a subdirectory
 # and all deps are already provided by the parent project.
 # ---------------------------------------------------------------------------
 
-if(TARGET plotjuggler_core::plugin_sdk)
+if(TARGET plotjuggler_sdk::plugin_sdk)
   # Subdirectory mode — deps already provided by parent.
   set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 
   # Internal helper libraries shared by several plugins.
   add_subdirectory(common/arrow_helpers)
+  add_subdirectory(common/base64)
+  add_subdirectory(common/pj_video_demux)
+  add_subdirectory(common/array_policy)
+  add_subdirectory(common/laser_scan)
 
   # Enabled entries track the v4 ABI (PJ_ABI_VERSION == 4): service-
   # registry API, Arrow C Data Interface at the write boundary, and the
@@ -24,7 +28,10 @@ if(TARGET plotjuggler_core::plugin_sdk)
   add_subdirectory(data_load_mcap)
   add_subdirectory(data_load_parquet)
   add_subdirectory(data_load_ulog)
-  add_subdirectory(data_load_lerobot)
+  # data_load_lerobot and data_load_mp4 are intentionally NOT in this aggregate
+  # list: they depend on FFmpeg (via common/pj_video_demux), which this build
+  # does not provide. Both build per-plugin against their own conanfile (CI's
+  # arrow-plugin-build / per-plugin-build and the release path).
   add_subdirectory(parser_json)
   add_subdirectory(parser_protobuf)
   add_subdirectory(parser_ros)
@@ -33,6 +40,7 @@ if(TARGET plotjuggler_core::plugin_sdk)
   add_subdirectory(data_stream_mqtt)
   add_subdirectory(data_stream_udp)
   add_subdirectory(data_stream_foxglove_bridge)
+  add_subdirectory(data_stream_webrtc)
   add_subdirectory(data_stream_pj_bridge)
   add_subdirectory(data_stream_dummy)
   add_subdirectory(toolbox_fft)
@@ -53,7 +61,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ---------------------------------------------------------------------------
-# Compiler warnings (matches plotjuggler_core)
+# Compiler warnings (matches plotjuggler_sdk)
 # ---------------------------------------------------------------------------
 
 if(MSVC)
@@ -90,7 +98,7 @@ find_package(GTest REQUIRED)
 # themselves; nothing at the root needs it anymore.
 # ---------------------------------------------------------------------------
 
-find_package(plotjuggler_core CONFIG REQUIRED
+find_package(plotjuggler_sdk CONFIG REQUIRED
   COMPONENTS base plugin_sdk plugin_host
 )
 
@@ -109,6 +117,10 @@ enable_testing()
 # ---------------------------------------------------------------------------
 
 add_subdirectory(common/arrow_helpers)
+add_subdirectory(common/base64)
+add_subdirectory(common/pj_video_demux)
+add_subdirectory(common/array_policy)
+add_subdirectory(common/laser_scan)
 
 # ---------------------------------------------------------------------------
 # Plugins — use -DPJ_BUILD_PLUGIN=<dir> to build a single plugin (CI mode),
@@ -127,11 +139,15 @@ else()
   add_subdirectory(data_load_mcap)
   add_subdirectory(data_load_parquet)
   add_subdirectory(data_load_ulog)
-  add_subdirectory(data_load_lerobot)
+  # data_load_lerobot and data_load_mp4 are intentionally NOT in this aggregate
+  # list: they depend on FFmpeg (via common/pj_video_demux), which this build
+  # does not provide. Both build per-plugin against their own conanfile (CI's
+  # arrow-plugin-build / per-plugin-build and the release path).
   add_subdirectory(data_stream_zmq)
   add_subdirectory(data_stream_mqtt)
   add_subdirectory(data_stream_udp)
   add_subdirectory(data_stream_foxglove_bridge)
+  add_subdirectory(data_stream_webrtc)
   add_subdirectory(data_stream_pj_bridge)
   add_subdirectory(data_stream_dummy)
   add_subdirectory(toolbox_fft)

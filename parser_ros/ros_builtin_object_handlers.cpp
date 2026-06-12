@@ -38,6 +38,7 @@
 #include <stdexcept>
 #include <unordered_map>
 
+#include "pj_base/builtin/camera_info.hpp"
 #include "ros_parser_internal.hpp"
 
 namespace ros_parser_detail {
@@ -101,7 +102,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseImage(PJ::Timestamp ts, PJ::
     ensureDeserializer();
     current_timestamp_ = ts;
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
-    (void)readHeader();
+    HeaderData header = readHeader();
 
     const uint32_t height = deserializer_->deserializeUInt32();
     const uint32_t width = deserializer_->deserializeUInt32();
@@ -138,6 +139,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseImage(PJ::Timestamp ts, PJ::
             .compressed_depth_min = std::nullopt,
             .compressed_depth_max = std::nullopt,
             .timestamp_ns = current_timestamp_,
+            .frame_id = std::move(header.frame_id),
         }}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("Image: CDR read error: ") + e.what());
@@ -159,7 +161,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestam
     ensureDeserializer();
     current_timestamp_ = ts;
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
-    (void)readHeader();
+    HeaderData header = readHeader();
 
     std::string format;
     deserializer_->deserializeString(format);
@@ -211,9 +213,122 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestam
             .compressed_depth_min = depth_min,
             .compressed_depth_max = depth_max,
             .timestamp_ns = current_timestamp_,
+            .frame_id = std::move(header.frame_id),
         }}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("CompressedImage: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// sensor_msgs/CameraInfo
+//
+// Wire layout (ROS2 shown; ROS1 prepends a uint32 seq inside the header):
+//   header                  std_msgs/Header   (handled by readHeader())
+//   height                  uint32
+//   width                   uint32
+//   distortion_model        string
+//   D                       float64[]    (sequence: uint32 count, then doubles)
+//   K                       float64[9]   (fixed array — no count)
+//   R                       float64[9]   (fixed array)
+//   P                       float64[12]  (fixed array)
+//   binning_x / binning_y / roi follow but are not part of sdk::CameraInfo, so
+//   we stop after P (single-message positional decode; trailing fields are left
+//   unread, like the other object handlers).
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCameraInfo(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  // A float64[] D longer than this is corrupt — bound the reserve so a bad count
+  // can't request a huge allocation (real distortion models use 4-8 coeffs).
+  constexpr uint32_t kMaxDistortionCoeffs = 1024;
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    HeaderData header = readHeader();
+
+    PJ::sdk::CameraInfo ci;
+    ci.height = deserializer_->deserializeUInt32();
+    ci.width = deserializer_->deserializeUInt32();
+    deserializer_->deserializeString(ci.distortion_model);
+
+    const uint32_t d_count = deserializer_->deserializeUInt32();  // D is a float64[] sequence
+    if (d_count > kMaxDistortionCoeffs) {
+      return PJ::unexpected(std::string("CameraInfo D[] exceeds sanity cap"));
+    }
+    ci.D.reserve(d_count);
+    for (uint32_t i = 0; i < d_count; ++i) {
+      ci.D.push_back(deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>());
+    }
+    for (double& k : ci.K) {  // K/R/P are fixed-size arrays — no length prefix
+      k = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+    }
+    for (double& r : ci.R) {
+      r = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+    }
+    for (double& p : ci.P) {
+      p = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+    }
+
+    ci.frame_id = std::move(header.frame_id);
+    ci.timestamp_ns = current_timestamp_;
+
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(ci)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("CameraInfo: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// foxglove_msgs/CompressedVideo
+//
+// Wire layout (ROS2 CDR):
+//   timestamp               builtin_interfaces/Time  (sec int32, nanosec uint32)
+//   frame_id                string
+//   data                    uint8[]   ← compressed bitstream for ONE frame
+//                                       (Annex-B for h264/h265), zero-copied
+//   format                  string    ← lowercase codec id: "h264","h265","vp9","av1"
+//
+// Unlike the Image / PointCloud schemas, the first field is a BARE
+// builtin_interfaces/Time, not a std_msgs/Header — so readHeader() must NOT be
+// used (it would also consume a frame_id string that does not exist here, and
+// the ROS1 seq branch). We read the two Time words directly instead.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedVideo(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+
+    // builtin_interfaces/Time timestamp — bare, not wrapped in a Header.
+    const uint32_t sec = deserializer_->deserializeUInt32();
+    const uint32_t nsec = deserializer_->deserializeUInt32();
+    const int64_t embedded_ts_ns = static_cast<int64_t>(sec) * 1000000000LL + static_cast<int64_t>(nsec);
+    if (use_embedded_timestamp_ && embedded_ts_ns > 0) {
+      current_timestamp_ = embedded_ts_ns;
+    }
+
+    std::string frame_id;
+    deserializer_->deserializeString(frame_id);
+    const auto data_span = deserializer_->deserializeByteSequence();
+    std::string format;
+    deserializer_->deserializeString(format);
+
+    // Zero-copy: data_span slices the payload buffer; payload.anchor keeps it alive.
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{PJ::sdk::VideoFrame{
+            .timestamp_ns = current_timestamp_,
+            .frame_id = std::move(frame_id),
+            .format = std::move(format),
+            .data = PJ::Span<const uint8_t>(data_span.data(), data_span.size()),
+            .anchor = payload.anchor,
+        }}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("CompressedVideo: CDR read error: ") + e.what());
   }
 }
 
@@ -301,6 +416,219 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePointCloud(PJ::Timestamp ts,
         }}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("PointCloud2: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// sensor_msgs/LaserScan
+//
+// Wire layout (ROS2 shown; ROS1 prepends a uint32 seq inside the header):
+//   header           std_msgs/Header  (handled by readHeader())
+//   angle_min        float32
+//   angle_max        float32   ← read + discard (derived from min + increment)
+//   angle_increment  float32
+//   time_increment   float32   ← read + discard
+//   scan_time        float32   ← read + discard
+//   range_min        float32
+//   range_max        float32
+//   ranges           float32[]
+//   intensities      float32[]
+//
+// Eagerly projected to a canonical sdk::PointCloud through the shared
+// pj_laser_scan projector: ray i lands at (r*cos(theta), r*sin(theta), 0) with
+// theta = angle_min + i*angle_increment. Rays outside [range_min, range_max]
+// or non-finite are dropped (the ROS contract says to discard them), so the
+// output is unorganized and dense. NOT zero-copy by design: the wire carries
+// polar ranges, so cartesian points are newly generated bytes owned by the
+// cloud's anchor.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseLaserScan(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    HeaderData header = readHeader();
+
+    const float angle_min = deserializer_->deserialize(RosMsgParser::FLOAT32).convert<float>();
+    (void)deserializer_->deserialize(RosMsgParser::FLOAT32);  // angle_max
+    const float angle_increment = deserializer_->deserialize(RosMsgParser::FLOAT32).convert<float>();
+    (void)deserializer_->deserialize(RosMsgParser::FLOAT32);  // time_increment
+    (void)deserializer_->deserialize(RosMsgParser::FLOAT32);  // scan_time
+    const float range_min = deserializer_->deserialize(RosMsgParser::FLOAT32).convert<float>();
+    const float range_max = deserializer_->deserialize(RosMsgParser::FLOAT32).convert<float>();
+
+    // float32[] sequences: validate the count against the remaining payload so
+    // a corrupt length cannot request a huge allocation.
+    const auto read_float_array = [this](std::vector<float>& out, const char* what) -> PJ::Status {
+      const uint32_t count = deserializer_->deserializeUInt32();
+      if (static_cast<size_t>(count) * sizeof(float) > deserializer_->bytesLeft()) {
+        return PJ::unexpected(std::string("LaserScan ") + what + "[] longer than payload");
+      }
+      out.resize(count);
+      for (uint32_t i = 0; i < count; ++i) {
+        out[i] = deserializer_->deserialize(RosMsgParser::FLOAT32).convert<float>();
+      }
+      return PJ::okStatus();
+    };
+
+    std::vector<float>& ranges = laserscan_ranges_scratch_;
+    std::vector<float>& intensities = laserscan_intensities_scratch_;
+    ranges.clear();
+    intensities.clear();
+    if (auto status = read_float_array(ranges, "ranges"); !status) {
+      return PJ::unexpected(std::move(status).error());
+    }
+    if (auto status = read_float_array(intensities, "intensities"); !status) {
+      return PJ::unexpected(std::move(status).error());
+    }
+
+    PJ::laser_scan::ScanParams params;
+    params.angle_min = static_cast<double>(angle_min);
+    params.angle_increment = static_cast<double>(angle_increment);
+    params.range_min = static_cast<double>(range_min);
+    params.range_max = static_cast<double>(range_max);
+
+    auto cloud = laser_projector_.project(
+        params, PJ::Span<const float>(ranges.data(), ranges.size()),
+        PJ::Span<const float>(intensities.data(), intensities.size()));
+    cloud.frame_id = std::move(header.frame_id);
+    cloud.timestamp_ns = current_timestamp_;
+
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(cloud)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("LaserScan: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// foxglove_msgs/CompressedPointCloud
+//
+// Wire layout (ROS2 CDR):
+//   timestamp               builtin_interfaces/Time  (sec int32, nanosec uint32)
+//   frame_id                string
+//   pose                    geometry_msgs/Pose       (position xyz f64, orientation xyzw f64)
+//   data                    uint8[]   ← compressed blob (draco/cloudini/…), zero-copied
+//   format                  string    ← lowercase codec id
+//
+// Like foxglove_msgs/CompressedVideo, the first field is a BARE
+// builtin_interfaces/Time, not a std_msgs/Header — so readHeader() must NOT be
+// used (it would consume the wrong fields). We read the two Time words directly.
+//
+// The pose's 7 doubles are read only to advance the cursor and then dropped:
+// the canonical CompressedPointCloud has no pose; clouds are placed via TF on
+// frame_id. A non-identity pose is silently ignored (no logger to warn on).
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxgloveCompressedPointCloud(
+    PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+
+    // builtin_interfaces/Time timestamp — bare, not wrapped in a Header.
+    const uint32_t sec = deserializer_->deserializeUInt32();
+    const uint32_t nsec = deserializer_->deserializeUInt32();
+    const int64_t embedded_ts_ns = static_cast<int64_t>(sec) * 1000000000LL + static_cast<int64_t>(nsec);
+    if (use_embedded_timestamp_ && embedded_ts_ns > 0) {
+      current_timestamp_ = embedded_ts_ns;
+    }
+
+    std::string frame_id;
+    deserializer_->deserializeString(frame_id);
+
+    // geometry_msgs/Pose — 7 doubles (position xyz, orientation xyzw). Read to
+    // advance the cursor, then drop: the canonical object carries no pose.
+    for (int i = 0; i < 7; ++i) {
+      (void)deserializer_->deserialize(RosMsgParser::FLOAT64);
+    }
+
+    const auto data_span = deserializer_->deserializeByteSequence();
+    std::string format;
+    deserializer_->deserializeString(format);
+
+    // Zero-copy: data_span slices the payload buffer; payload.anchor keeps it alive.
+    PJ::sdk::CompressedPointCloud cloud;
+    cloud.timestamp_ns = current_timestamp_;
+    cloud.frame_id = std::move(frame_id);
+    cloud.format = std::move(format);
+    cloud.data = PJ::Span<const uint8_t>(data_span.data(), data_span.size());
+    cloud.anchor = payload.anchor;
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(cloud)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("CompressedPointCloud: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// point_cloud_interfaces/CompressedPointCloud2
+//
+// Wire layout (point_cloud_transport canonical message):
+//   header                  std_msgs/Header  (handled by readHeader())
+//   height                  uint32
+//   width                   uint32
+//   fields                  sensor_msgs/PointField[]  (read + discard: the
+//                                                       compressed blob is
+//                                                       self-describing)
+//     each PointField: string name, uint32 offset, uint8 datatype, uint32 count
+//   is_bigendian            uint8
+//   point_step              uint32
+//   row_step                uint32
+//   compressed_data         uint8[]   ← THE BLOB, zero-copied
+//   is_dense                uint8
+//   format                  string    ← LAST field; lowercase codec id
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedPointCloud2(
+    PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    auto header = readHeader();
+
+    (void)deserializer_->deserializeUInt32();  // height
+    (void)deserializer_->deserializeUInt32();  // width
+
+    // fields[] — read and discard; the compressed blob is self-describing.
+    const uint32_t fields_count = deserializer_->deserializeUInt32();
+    if (fields_count > 1024) {
+      return PJ::unexpected(std::string("CompressedPointCloud2: too many fields"));
+    }
+    for (uint32_t i = 0; i < fields_count; ++i) {
+      std::string name;
+      deserializer_->deserializeString(name);
+      (void)deserializer_->deserializeUInt32();  // offset
+      (void)readU8(*deserializer_);              // datatype
+      (void)deserializer_->deserializeUInt32();  // count
+    }
+
+    (void)readU8(*deserializer_);              // is_bigendian
+    (void)deserializer_->deserializeUInt32();  // point_step
+    (void)deserializer_->deserializeUInt32();  // row_step
+    const auto data_span = deserializer_->deserializeByteSequence();
+    (void)readU8(*deserializer_);  // is_dense
+
+    std::string format;
+    deserializer_->deserializeString(format);
+
+    // Zero-copy: data_span slices the payload buffer; payload.anchor keeps it alive.
+    PJ::sdk::CompressedPointCloud cloud;
+    cloud.timestamp_ns = current_timestamp_;
+    cloud.frame_id = std::move(header.frame_id);
+    cloud.format = std::move(format);
+    cloud.data = PJ::Span<const uint8_t>(data_span.data(), data_span.size());
+    cloud.anchor = payload.anchor;
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(cloud)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("CompressedPointCloud2: CDR read error: ") + e.what());
   }
 }
 

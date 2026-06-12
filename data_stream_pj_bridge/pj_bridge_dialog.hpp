@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <pj_array_policy/array_policy.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
@@ -32,9 +33,12 @@ struct DiscoveredTopic {
 ///   1. User enters address/port, clicks Connect
 ///   2. Dialog connects via WebSocket, sends get_topics
 ///   3. Topics populate the table, user selects topics
-///   4. User configures parser options (array size, clamp/skip, use timestamp)
-///   5. User clicks Subscribe (OK)
-///   6. saveConfig() returns the full config for the source plugin
+///   4. User clicks OK
+///   5. saveConfig() returns the full config for the source plugin
+///
+/// The array-size / clamp-skip / use-timestamp parser options are not exposed
+/// in the dialog (matching the PJ3 websocket client window); they keep their
+/// defaults and are still emitted in saveConfig() for the source plugin.
 class PjBridgeDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
@@ -70,12 +74,6 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     wd.setEnabled("lineEditPort", !connected_);
     wd.setButtonText("buttonConnect", connected_ ? "Connected" : "Connect");
     wd.setChecked("buttonConnect", connected_.load());
-
-    // Parser options
-    wd.setValue("spinBoxArraySize", max_array_size_);
-    wd.setChecked("radioClamp", clamp_large_arrays_);
-    wd.setChecked("radioSkip", !clamp_large_arrays_);
-    wd.setChecked("checkBoxUseTimestamp", use_timestamp_);
 
     // Topic list — apply case-insensitive filter matching on name AND type
     wd.setTableHeaders("topicsList", {"Topic Name", "DataType"});
@@ -118,30 +116,6 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       filter_ = std::string(text);
       applyFilter();
       return true;
-    }
-    return false;
-  }
-
-  bool onValueChanged(std::string_view widget_name, int value) override {
-    if (widget_name == "spinBoxArraySize") {
-      max_array_size_ = value;
-      return false;
-    }
-    return false;
-  }
-
-  bool onToggled(std::string_view widget_name, bool checked) override {
-    if (widget_name == "radioClamp") {
-      clamp_large_arrays_ = checked;
-      return false;
-    }
-    if (widget_name == "radioSkip") {
-      clamp_large_arrays_ = !checked;
-      return false;
-    }
-    if (widget_name == "checkBoxUseTimestamp") {
-      use_timestamp_ = checked;
-      return false;
     }
     return false;
   }
@@ -197,8 +171,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     nlohmann::json cfg;
     cfg["address"] = address_;
     cfg["port"] = port_;
-    cfg["max_array_size"] = max_array_size_;
-    cfg["clamp_large_arrays"] = clamp_large_arrays_;
+    pj::array_policy::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), clamp_large_arrays_);
     cfg["use_timestamp"] = use_timestamp_;
 
     // Use the snapshot — topics_ may already be cleared by disconnect()
@@ -224,8 +197,9 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     }
     address_ = cfg.value("address", std::string("127.0.0.1"));
     port_ = cfg.value("port", 9871);
-    max_array_size_ = cfg.value("max_array_size", 100);
-    clamp_large_arrays_ = cfg.value("clamp_large_arrays", false);
+    const auto array_limit = pj::array_policy::arrayLimitFromJson(cfg);
+    max_array_size_ = static_cast<int>(array_limit.max_size);
+    clamp_large_arrays_ = array_limit.clamp();
     use_timestamp_ = cfg.value("use_timestamp", false);
 
     // Restore previously selected topic names and snapshot for re-selection after connect
@@ -393,8 +367,8 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   // --- State ---
   std::string address_ = "127.0.0.1";
   int port_ = 9871;
-  int max_array_size_ = 100;
-  bool clamp_large_arrays_ = false;
+  int max_array_size_ = 500;
+  bool clamp_large_arrays_ = true;
   bool use_timestamp_ = false;
   std::string filter_;
 

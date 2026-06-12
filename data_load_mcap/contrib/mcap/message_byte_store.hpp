@@ -10,8 +10,10 @@
 //
 // It serves two regimes from one `MessageByteFetcher` callable:
 //   * HOT  — the fetcher is invoked while the iterator is still positioned on
-//            the message (its chunk is still pinned). Returns a zero-copy view
-//            into the worker-decompressed bytes. No re-decompression.
+//            the message (its chunk is still pinned). Copies the message's bytes
+//            out of the worker-decompressed chunk. No re-decompression, and the
+//            returned anchor pins only the message — never the whole chunk, so a
+//            retained view can't keep a chunk (and its ~100 siblings) resident.
 //   * COLD — the fetcher is invoked after the chunk is gone. Re-decompresses the
 //            containing chunk on demand (byte-bounded, O(1) seek), under a
 //            byte-budgeted LRU, and returns a MESSAGE-SIZED COPY so a retained
@@ -19,12 +21,12 @@
 //
 // The fetcher distinguishes the two by a non-owning liveness handle obtained
 // from `Iterator::currentBuffer()`. This is what avoids decompressing every
-// eager message twice (worker + consumer): the hot path hands back the bytes the
-// worker already produced.
+// eager message twice (worker + consumer): the hot path copies out the bytes the
+// worker already produced instead of re-decompressing the chunk.
 //
 // std-only public surface: `ByteView` carries only `{const std::byte*, size_t,
-// std::shared_ptr<const void>}`, so this layer never imposes a plotjuggler_core
-// (or any non-std) dependency on the core reader. The consumer adapts `ByteView`
+// std::shared_ptr<const void>}`, so this layer never imposes a non-std
+// dependency on the core reader. The consumer adapts `ByteView`
 // to its own owned-span type in one line.
 //
 // LIFETIME CONTRACT: a `ByteView`'s `data` pointer is valid for exactly as long
@@ -33,6 +35,7 @@
 
 #pragma once
 
+#include "parallel_reader.hpp"  // ParallelMessageView::Iterator, McapReader, LinearMessageView, ChunkIndex, MessageView, Status
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -48,8 +51,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-
-#include "parallel_reader.hpp"  // ParallelMessageView::Iterator, McapReader, LinearMessageView, ChunkIndex, MessageView, Status
 
 namespace mcap {
 
@@ -80,7 +81,7 @@ inline Timestamp incrementEndTimeSaturating(Timestamp ts) {
 // MessageByteStore owner is destroyed: PJ4 destroys the DataSource instance at
 // the end of import, but ObjectStore lazy pulls happen later.
 class ColdChunkStore {
- public:
+public:
   struct ChunkMeta {
     uint64_t length = 0;
     Timestamp ts_start = 0;
@@ -94,7 +95,8 @@ class ColdChunkStore {
   // Resolve one message to a message-sized owned copy. Empty on any failure;
   // failures are surfaced via stderr (NOT a callback) because this can run after
   // the owning data source is gone — a captured callback would dangle.
-  ByteView fetch(uint64_t chunk_start, ByteOffset within_chunk, ChannelId channel_id, Timestamp log_time) {
+  ByteView fetch(uint64_t chunk_start, ByteOffset within_chunk, ChannelId channel_id,
+                 Timestamp log_time) {
     std::lock_guard<std::mutex> lock(mu_);
     if (!ensureOpenLocked()) {
       return {};
@@ -105,25 +107,26 @@ class ColdChunkStore {
     }
     auto it = entry->index.find(Key{channel_id, log_time, within_chunk});
     if (it == entry->index.end()) {
-      std::fprintf(
-          stderr,
-          "[data_load_mcap] cold-path lookup miss after chunk loaded — chunk@%llu ch=%u ts=%llu wc=%llu "
-          "(possible corruption or offset mismatch)\n",
-          static_cast<unsigned long long>(chunk_start), static_cast<unsigned>(channel_id),
-          static_cast<unsigned long long>(log_time), static_cast<unsigned long long>(within_chunk));
+      std::fprintf(stderr,
+                   "[data_load_mcap] cold-path lookup miss after chunk loaded — chunk@%llu ch=%u "
+                   "ts=%llu wc=%llu "
+                   "(possible corruption or offset mismatch)\n",
+                   static_cast<unsigned long long>(chunk_start), static_cast<unsigned>(channel_id),
+                   static_cast<unsigned long long>(log_time),
+                   static_cast<unsigned long long>(within_chunk));
       return {};
     }
     const auto [offset, size] = it->second;
     // Message-sized copy: a retained ByteView then pins only this message's
     // bytes, never the whole decompressed chunk (which the LRU still bounds).
     auto copy = std::make_shared<std::vector<uint8_t>>(
-        entry->bytes->begin() + static_cast<std::ptrdiff_t>(offset),
-        entry->bytes->begin() + static_cast<std::ptrdiff_t>(offset + size));
+      entry->bytes->begin() + static_cast<std::ptrdiff_t>(offset),
+      entry->bytes->begin() + static_cast<std::ptrdiff_t>(offset + size));
     const auto* base = reinterpret_cast<const std::byte*>(copy->data());
     return ByteView{base, size, std::move(copy)};
   }
 
- private:
+private:
   using Key = std::tuple<ChannelId, Timestamp, ByteOffset>;
 
   struct Entry {
@@ -148,17 +151,15 @@ class ColdChunkStore {
     }
     reader_ = std::make_unique<McapReader>();
     if (Status st = reader_->open(filepath_); !st.ok()) {
-      std::fprintf(
-          stderr, "[data_load_mcap] cold-path open failed for '%s' (code=%d): %s\n", filepath_.c_str(),
-          static_cast<int>(st.code), st.message.c_str());
+      std::fprintf(stderr, "[data_load_mcap] cold-path open failed for '%s' (code=%d): %s\n",
+                   filepath_.c_str(), static_cast<int>(st.code), st.message.c_str());
       open_error_ = st;
       reader_.reset();
       return false;
     }
     if (Status st = reader_->readSummary(ReadSummaryMethod::AllowFallbackScan); !st.ok()) {
-      std::fprintf(
-          stderr, "[data_load_mcap] cold-path summary failed for '%s' (code=%d): %s\n", filepath_.c_str(),
-          static_cast<int>(st.code), st.message.c_str());
+      std::fprintf(stderr, "[data_load_mcap] cold-path summary failed for '%s' (code=%d): %s\n",
+                   filepath_.c_str(), static_cast<int>(st.code), st.message.c_str());
       open_error_ = st;
       reader_.reset();
       return false;
@@ -173,9 +174,8 @@ class ColdChunkStore {
     }
     auto m = meta_.find(chunk_start);
     if (m == meta_.end()) {
-      std::fprintf(
-          stderr, "[data_load_mcap] cold-path missing chunk metadata for chunk@%llu\n",
-          static_cast<unsigned long long>(chunk_start));
+      std::fprintf(stderr, "[data_load_mcap] cold-path missing chunk metadata for chunk@%llu\n",
+                   static_cast<unsigned long long>(chunk_start));
       return nullptr;
     }
     auto entry = loadChunkLocked(chunk_start, m->second);
@@ -201,18 +201,17 @@ class ColdChunkStore {
   // exact [start, start+length) byte range so mcap decompresses that one chunk
   // directly — no O(chunks_before_target) linear scan. Indexed by
   // (channel_id, log_time, within_chunk_record_offset); the third element
-  // disambiguates messages sharing a (channel, logTime), which MCAP permits.
+  // distinguishes messages sharing a (channel, logTime), which MCAP permits.
   std::shared_ptr<const Entry> loadChunkLocked(uint64_t chunk_start, const ChunkMeta& meta) {
     auto buffer = std::make_shared<std::vector<uint8_t>>();
     auto entry = std::make_shared<Entry>();
     auto on_problem = [chunk_start](const Status& s) {
-      std::fprintf(
-          stderr, "[data_load_mcap] cold-path chunk@%llu mcap problem (code=%d): %s\n",
-          static_cast<unsigned long long>(chunk_start), static_cast<int>(s.code), s.message.c_str());
+      std::fprintf(stderr, "[data_load_mcap] cold-path chunk@%llu mcap problem (code=%d): %s\n",
+                   static_cast<unsigned long long>(chunk_start), static_cast<int>(s.code),
+                   s.message.c_str());
     };
-    LinearMessageView view(
-        *reader_, chunk_start, chunk_start + meta.length, meta.ts_start, incrementEndTimeSaturating(meta.ts_end),
-        on_problem);
+    LinearMessageView view(*reader_, chunk_start, chunk_start + meta.length, meta.ts_start,
+                           incrementEndTimeSaturating(meta.ts_end), on_problem);
     for (const auto& v : view) {
       if (v.channel == nullptr || v.message.data == nullptr) {
         continue;
@@ -226,8 +225,8 @@ class ColdChunkStore {
       // the parallel reader's messageOffset.offset, the value the fetcher keys
       // its lookup with. value_or(0) covers the unlikely "not set" case.
       const ByteOffset within_chunk = v.messageOffset.chunkOffset.value_or(0);
-      entry->index.emplace(
-          Key{v.channel->id, v.message.logTime, within_chunk}, std::pair<size_t, size_t>{offset, size});
+      entry->index.emplace(Key{v.channel->id, v.message.logTime, within_chunk},
+                           std::pair<size_t, size_t>{offset, size});
     }
     entry->bytes = std::shared_ptr<const std::vector<uint8_t>>(std::move(buffer));
     return entry;
@@ -243,16 +242,28 @@ class ColdChunkStore {
 
 }  // namespace detail
 
-// One message's deferred byte accessor. A plain callable (NOT std::function) so
-// the hot path costs no per-message heap allocation. Safe to invoke after the
-// ParallelReader is destroyed: the hot handle simply expires and it falls back
-// to the cold store it shares.
+// One message's deferred byte accessor. A plain callable (NOT std::function) to
+// keep per-message binding cheap. The hot path copies the message out of the
+// still-decompressed chunk (a message-sized alloc); the cold path re-decompresses.
+// Safe to invoke after the ParallelReader is destroyed: the hot handle simply
+// expires and it falls back to the cold store it shares.
 class MessageByteFetcher {
- public:
+public:
   ByteView operator()() const {
-    // Hot: still positioned on (or otherwise pinning) this message's chunk.
+    // Hot: the worker-decompressed chunk is still alive. Copy THIS message out
+    // of it rather than aliasing it — a retained anchor must pin one message,
+    // not the whole chunk (one chunk backs ~100 messages, so a per-message
+    // object topic present in every chunk, e.g. /tf, would otherwise pin the
+    // entire decompressed file). The chunk is still decompressed only once, so
+    // consecutive messages never re-decompress; this only adds a small memcpy.
     if (auto anchor = hot_buffer_.lock()) {
-      return ByteView{hot_data_, size_, std::move(anchor)};
+      if (hot_data_ == nullptr || size_ == 0) {
+        return {};  // empty/degenerate message: nothing to copy, and don't pin the chunk
+      }
+      const auto* src = reinterpret_cast<const uint8_t*>(hot_data_);
+      auto copy = std::make_shared<std::vector<uint8_t>>(src, src + size_);
+      const auto* base = reinterpret_cast<const std::byte*>(copy->data());
+      return ByteView{base, size_, std::move(copy)};
     }
     // Cold: chunk gone — re-decompress on demand (or fast-fail if torn down).
     if (!cold_) {
@@ -261,7 +272,7 @@ class MessageByteFetcher {
     return cold_->fetch(chunk_start_, within_chunk_, channel_id_, log_time_);
   }
 
- private:
+private:
   friend class MessageByteStore;
   std::weak_ptr<const void> hot_buffer_;  // type-erased pinned chunk; empty -> cold
   const std::byte* hot_data_ = nullptr;   // valid iff hot_buffer_.lock() succeeds
@@ -285,7 +296,7 @@ struct MessageByteStoreOptions {
 // index (no second summary parse). The cold FileReader is opened lazily on the
 // first cold miss, so fully-eager imports never open the file a second time.
 class MessageByteStore {
- public:
+public:
   using Options = MessageByteStoreOptions;
 
   MessageByteStore() = default;
@@ -299,21 +310,21 @@ class MessageByteStore {
   // used ONLY here as a cheap early-warning (a non-readable file is reported now
   // rather than silently at the first lazy pull). It is NOT retained — cold-path
   // problems go to stderr because they may fire after the caller is gone.
-  void init(
-      std::string filepath, const std::vector<ChunkIndex>& chunkIndexes, MessageByteStoreOptions options = {},
-      const ProblemCallback& onProblem = {}) {
+  void init(std::string filepath, const std::vector<ChunkIndex>& chunkIndexes,
+            MessageByteStoreOptions options = {}, const ProblemCallback& onProblem = {}) {
     cold_ = std::make_shared<detail::ColdChunkStore>();
     cold_->filepath_ = std::move(filepath);
     cold_->capacity_bytes_ = options.cacheCapacityBytes;
     for (const auto& ci : chunkIndexes) {
       cold_->meta_.emplace(
-          ci.chunkStartOffset,
-          detail::ColdChunkStore::ChunkMeta{ci.chunkLength, ci.messageStartTime, ci.messageEndTime});
+        ci.chunkStartOffset,
+        detail::ColdChunkStore::ChunkMeta{ci.chunkLength, ci.messageStartTime, ci.messageEndTime});
     }
     if (onProblem) {
       std::ifstream probe(cold_->filepath_, std::ios::binary);
       if (!probe.is_open()) {
-        onProblem(Status{StatusCode::OpenFailed, "MCAP file not readable for lazy reads: " + cold_->filepath_});
+        onProblem(Status{StatusCode::OpenFailed,
+                         "MCAP file not readable for lazy reads: " + cold_->filepath_});
       }
     }
   }
@@ -322,7 +333,8 @@ class MessageByteStore {
   // Captures the opaque buffer handle + message.data NOW and retains no
   // reference to the iterator, so the fetcher safely outlives both the iterator
   // and the ParallelReader.
-  MessageByteFetcher makeFetcher(const ParallelMessageView::Iterator& it, const MessageView& view) const {
+  MessageByteFetcher makeFetcher(const ParallelMessageView::Iterator& it,
+                                 const MessageView& view) const {
     MessageByteFetcher f;
     f.cold_ = cold_;
     f.size_ = view.message.dataSize;
@@ -338,7 +350,7 @@ class MessageByteStore {
     return f;
   }
 
- private:
+private:
   std::shared_ptr<detail::ColdChunkStore> cold_;
 };
 

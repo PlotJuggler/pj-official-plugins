@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manage the single plotjuggler_core version pin.
+"""Manage the single plotjuggler_sdk version pin.
 
 The core version now lives in ONE place: the top-level ``SDK_VERSION`` file (an exact
 version, e.g. ``0.5.1``). Every Conan recipe (root ``conanfile.py`` and each plugin's
@@ -38,10 +38,10 @@ SDK_VERSION_FILE = ROOT / "SDK_VERSION"
 SUBMODULE = ROOT / "extern" / "plotjuggler_core"
 
 EXACT_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+([0-9A-Za-z.\-+]*)?$")
-# A *literal* plotjuggler_core pin — the thing that must NOT reappear in a recipe now
-# that the version is read from SDK_VERSION. `f"plotjuggler_core/{_SDK_VERSION}"` is fine
+# A *literal* plotjuggler_sdk pin — the thing that must NOT reappear in a recipe now
+# that the version is read from SDK_VERSION. `f"plotjuggler_sdk/{_SDK_VERSION}"` is fine
 # because the quote does not immediately follow the slash.
-LITERAL_PIN_RE = re.compile(r'"plotjuggler_core/(?:\[[^\]]*\]|[0-9][0-9A-Za-z.\-+]*)"')
+LITERAL_PIN_RE = re.compile(r'"plotjuggler_sdk/(?:\[[^\]]*\]|[0-9][0-9A-Za-z.\-+]*)"')
 
 
 def read_sdk_version() -> str:

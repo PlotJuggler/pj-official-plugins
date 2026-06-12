@@ -2,7 +2,7 @@ import os
 
 from conan import ConanFile
 
-# Single source of truth for the plotjuggler_core version: the SDK_VERSION file at the
+# Single source of truth for the plotjuggler_sdk version: the SDK_VERSION file at the
 # repo root, read live so the pin lives in exactly one place. Edit it with
 # scripts/bump_core_version.py (which also moves the extern/plotjuggler_core submodule).
 _SDK_VERSION = (
@@ -34,6 +34,7 @@ class PjOfficialPluginsConan(ConanFile):
         "date/3.0.4",
         "gtest/1.17.0",
         "ixwebsocket/11.4.6",
+        "libdatachannel/0.24.0",
         "asio/1.28.2",
         "kissfft/131.1.0",
         "lua/5.4.6",
@@ -43,7 +44,7 @@ class PjOfficialPluginsConan(ConanFile):
         "libsodium/1.0.20",
         "pybind11/2.13.6",
         "cpython/3.12.7",
-        f"plotjuggler_core/{_SDK_VERSION}",
+        f"plotjuggler_sdk/{_SDK_VERSION}",
     )
 
     default_options = {
@@ -61,4 +62,9 @@ class PjOfficialPluginsConan(ConanFile):
         # Tkinter requires X11 system libs (libx11-dev, libxcb-*-dev) which are not
         # available on CI runners. We do not need Tkinter for scripting.
         "cpython/*:with_tkinter": False,
+        # WebRTC streaming client (data_stream_webrtc): media/SRTP/WebSocket on,
+        # libnice off (use the bundled libjuice ICE agent).
+        "libdatachannel/*:with_websocket": True,
+        "libdatachannel/*:with_nice": False,
+        "libdatachannel/*:with_ssl": "openssl",
     }

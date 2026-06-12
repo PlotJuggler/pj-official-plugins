@@ -75,7 +75,7 @@ jobs:
         run: pip install cmake ninja
 
       - name: Configure plotjuggler cloudsmith Conan remote
-        # plotjuggler_core is consumed from the plotjuggler cloudsmith Conan
+        # plotjuggler_sdk is consumed from the plotjuggler cloudsmith Conan
         # repo. Configured before build.sh runs `conan install`.
         env:
           CLOUDSMITH_USER: ${{ secrets.CLOUDSMITH_USER }}

@@ -1377,7 +1377,7 @@ def cmd_resolve_build_scope(args) -> int:
                 )
                 return 1
 
-    # Every recipe derives its plotjuggler_core pin from SDK_VERSION, so a core bump
+    # Every recipe derives its plotjuggler_sdk pin from SDK_VERSION, so a core bump
     # must invalidate the cache even though the recipe's own bytes are unchanged.
     _conan_hash = hashlib.sha256()
     _conan_hash.update(conan_hash_path.read_bytes())
