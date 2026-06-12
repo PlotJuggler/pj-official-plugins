@@ -14,6 +14,7 @@
 #include <pj_base/builtin/point_cloud.hpp>
 #include <pj_base/builtin/video_frame_codec.hpp>
 #include <pj_base64/base64.hpp>
+#include <pj_laser_scan/laser_scan_projector.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <string>
@@ -304,6 +305,19 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::okStatus();
     }
 
+    // Canonical-object fast path for foxglove.LaserScan -> kPointCloud. The
+    // scan is eagerly projected into cartesian x/y/z(/intensity) points by the
+    // shared pj_laser_scan projector (cos/sin LUT cached per scanner config),
+    // exactly mirroring how parser_ros promotes sensor_msgs/LaserScan. The
+    // schema bytes are intentionally ignored: the layout is known.
+    if (type_name == "foxglove.LaserScan") {
+      if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
+        return status;
+      }
+      registerFoxgloveLaserScanHandler(type_name);
+      return PJ::okStatus();
+    }
+
     // Other well-known Foxglove schemas -> their canonical builtin objects.
     // Same rationale as PointCloud: the wire layout is known, so we decode it
     // directly and bypass the descriptor pool. Crucially, promoting these stops
@@ -558,6 +572,61 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     registerSchemaHandler(type_name, std::move(handler));
   }
 
+  // Register the SchemaHandler for foxglove.LaserScan. The object route decodes
+  // + eagerly projects one scan per message into an OWNED point buffer (no
+  // zero-copy by design: the wire carries polar ranges, the cloud carries
+  // newly generated cartesian points, anchored by the projector). The scalar
+  // route emits a slim metadata row (frame_id / start_angle / end_angle /
+  // num_ranges) from a header-only walk — no LUT and no O(N) projection —
+  // mirroring the lightweight foxglove.PointCloud scalar path above.
+  void registerFoxgloveLaserScanHandler(std::string_view type_name) {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kPointCloud;
+
+    handler.parse_scalars =
+        [this](PJ::Timestamp /*ts*/, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+      auto info = pj_protobuf::readFoxgloveLaserScanInfo(payload.data(), payload.size());
+      if (!info) {
+        return PJ::unexpected(std::move(info).error());
+      }
+      laserscan_frame_id_ = std::move(info->frame_id);  // keep alive for the string_view below.
+      PJ::sdk::ScalarRecord record;
+      if (use_embedded_timestamp_ && info->timestamp_ns > 0) {
+        record.ts = info->timestamp_ns;
+      }
+      // Flat metadata names (no '/' prefix), matching the PointCloud handler convention.
+      record.fields.push_back({.name = "frame_id", .value = PJ::sdk::ValueRef{std::string_view(laserscan_frame_id_)}});
+      record.fields.push_back({.name = "start_angle", .value = PJ::sdk::ValueRef{info->start_angle}});
+      record.fields.push_back({.name = "end_angle", .value = PJ::sdk::ValueRef{info->end_angle}});
+      record.fields.push_back({.name = "num_ranges", .value = PJ::sdk::ValueRef{info->num_ranges}});
+      return record;
+    };
+
+    handler.parse_object =
+        [this](PJ::Timestamp /*ts*/, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      auto decoded =
+          pj_protobuf::deserializeFoxgloveLaserScan(payload.bytes.data(), payload.bytes.size(), laserscan_projector_);
+      if (!decoded) {
+        return PJ::unexpected(std::move(decoded).error());
+      }
+      // Same policy as foxglove.PointCloud above: sdk::PointCloud has no pose
+      // (geometry lives in frame_id + the TF tree), so a non-identity pose is
+      // dropped — warn once so it is not a silent mislocation.
+      if (decoded->has_pose && !decoded->pose_is_identity && !laserscan_pose_warned_) {
+        laserscan_pose_warned_ = true;
+        std::cerr << "[protobuf_parser] foxglove.LaserScan carries a non-identity pose; it is dropped "
+                     "(points kept in frame_id). Provide the matching /tf transform for correct 3D placement.\n";
+      }
+      std::optional<PJ::Timestamp> ts;
+      if (use_embedded_timestamp_ && decoded->cloud.timestamp_ns > 0) {
+        ts = decoded->cloud.timestamp_ns;
+      }
+      return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(decoded->cloud)}};
+    };
+
+    registerSchemaHandler(type_name, std::move(handler));
+  }
+
   // Register a SchemaHandler for one of the well-known Foxglove scene/image
   // schemas. parse_object decodes the canonical builtin object; parse_scalars
   // emits a slim, BOUNDED metadata row (counts/sizes only) so promoted topics
@@ -734,6 +803,13 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   // a latch so the dropped-pose warning fires only once per parser instance.
   std::string pointcloud_frame_id_;
   bool pointcloud_pose_warned_ = false;
+
+  // foxglove.LaserScan: the shared projector (one per parser instance = per
+  // topic, so the cos/sin LUT is computed once per scanner config), the
+  // scalar-route frame_id storage, and the warn-once dropped-pose latch.
+  PJ::laser_scan::LaserScanProjector laserscan_projector_;
+  std::string laserscan_frame_id_;
+  bool laserscan_pose_warned_ = false;
 };
 
 }  // namespace

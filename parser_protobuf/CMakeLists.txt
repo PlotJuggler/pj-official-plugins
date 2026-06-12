@@ -8,7 +8,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 add_library(parser_protobuf_plugin SHARED protobuf_parser.cpp foxglove_pointcloud_codec.cpp foxglove_object_codecs.cpp)
 target_compile_features(parser_protobuf_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_protobuf_plugin PRIVATE ${PJ_WARNING_FLAGS})
-target_link_libraries(parser_protobuf_plugin PRIVATE plotjuggler_sdk::plugin_sdk protobuf::libprotobuf protobuf::libprotoc nlohmann_json::nlohmann_json pj_base64 pj_array_policy)
+target_link_libraries(parser_protobuf_plugin PRIVATE plotjuggler_sdk::plugin_sdk protobuf::libprotobuf protobuf::libprotoc nlohmann_json::nlohmann_json pj_base64 pj_array_policy pj_laser_scan)
 
 pj_embed_ui(parser_protobuf_plugin
   UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/protobuf_parser_options.ui
@@ -53,6 +53,7 @@ target_link_libraries(protobuf_parser_test PRIVATE
   plotjuggler_sdk::plugin_sdk
   plotjuggler_sdk::plugin_host
   protobuf::protobuf
+  pj_laser_scan
   GTest::gtest_main
 )
 add_test(NAME protobuf_parser_test COMMAND protobuf_parser_test)

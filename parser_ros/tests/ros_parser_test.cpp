@@ -5,6 +5,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <numbers>
 #include <rosx_introspection/ros_parser.hpp>
@@ -2416,6 +2419,230 @@ TEST(RosParserTest, PointsMarkerSkipped) {
   ASSERT_NE(se, nullptr);
   EXPECT_TRUE(se->entities.empty());
   EXPECT_TRUE(se->deletions.empty());
+}
+
+// ===== sensor_msgs/LaserScan -> sdk::PointCloud (eager projection) =====
+
+static const char* kLaserScanDef =
+    "std_msgs/Header header\n"
+    "float32 angle_min\nfloat32 angle_max\nfloat32 angle_increment\n"
+    "float32 time_increment\nfloat32 scan_time\n"
+    "float32 range_min\nfloat32 range_max\n"
+    "float32[] ranges\nfloat32[] intensities\n"
+    "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+    "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+// Serializes the LaserScan body after the header: the 7 float32 params plus
+// the two variable-length float32 arrays.
+void serializeLaserScanBody(
+    RosMsgParser::NanoCDR_Serializer& enc, float angle_min, float angle_increment, float range_min, float range_max,
+    const std::vector<float>& ranges, const std::vector<float>& intensities) {
+  enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(angle_min));
+  const float angle_max = angle_min + angle_increment * static_cast<float>(ranges.empty() ? 0 : ranges.size() - 1);
+  enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(angle_max));
+  enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(angle_increment));
+  enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(0.0f));  // time_increment
+  enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(0.1f));  // scan_time
+  enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(range_min));
+  enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(range_max));
+  enc.serializeUInt32(static_cast<uint32_t>(ranges.size()));
+  for (float r : ranges) {
+    enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(r));
+  }
+  enc.serializeUInt32(static_cast<uint32_t>(intensities.size()));
+  for (float v : intensities) {
+    enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(v));
+  }
+}
+
+// Reads the float32 at byte offset `off` of point `index` in a packed cloud.
+float laserCloudFloat(const PJ::sdk::PointCloud& cloud, uint32_t index, uint32_t off) {
+  float v = 0.0f;
+  std::memcpy(&v, cloud.data.data() + static_cast<size_t>(index) * cloud.point_step + off, sizeof(float));
+  return v;
+}
+
+TEST(RosParserTest, LaserScanProducesPointCloudObject) {
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kLaserScanDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/LaserScan", kLaserScanDef));
+  EXPECT_EQ(f.handle.classifySchema("sensor_msgs/LaserScan", def_span), PJ::sdk::BuiltinObjectType::kPointCloud);
+
+  // 5 rays; NaN (i=1), below-min (i=2) and above-max (i=3) must drop.
+  const std::vector<float> ranges = {1.0f, std::numeric_limits<float>::quiet_NaN(), 0.2f, 11.0f, 2.0f};
+  auto payload = serializeCdr([&ranges](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 11, 22, "laser");
+    serializeLaserScanBody(enc, /*angle_min=*/-1.0f, /*angle_increment=*/0.5f, 0.5f, 10.0f, ranges, {});
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  EXPECT_FALSE(rec->ts.has_value());  // embedded ts disabled by default
+
+  const auto* pc = std::any_cast<PJ::sdk::PointCloud>(&rec->object);
+  ASSERT_NE(pc, nullptr);
+  EXPECT_EQ(pc->frame_id, "laser");
+  EXPECT_EQ(pc->timestamp_ns, 1234);
+  EXPECT_EQ(pc->height, 1u);
+  EXPECT_EQ(pc->width, 2u);  // rays 0 and 4 kept
+  EXPECT_EQ(pc->point_step, 12u);
+  EXPECT_EQ(pc->row_step, 2u * 12u);
+  EXPECT_TRUE(pc->is_dense);
+  ASSERT_EQ(pc->fields.size(), 3u);
+  EXPECT_EQ(pc->fields[0].name, "x");
+  EXPECT_EQ(pc->fields[1].name, "y");
+  EXPECT_EQ(pc->fields[2].name, "z");
+
+  // Ray 0: theta = -1.0; ray 4: theta = -1.0 + 4*0.5 = 1.0 (double math, float output).
+  EXPECT_EQ(laserCloudFloat(*pc, 0, 0), 1.0f * static_cast<float>(std::cos(-1.0)));
+  EXPECT_EQ(laserCloudFloat(*pc, 0, 4), 1.0f * static_cast<float>(std::sin(-1.0)));
+  EXPECT_EQ(laserCloudFloat(*pc, 0, 8), 0.0f);
+  EXPECT_EQ(laserCloudFloat(*pc, 1, 0), 2.0f * static_cast<float>(std::cos(1.0)));
+  EXPECT_EQ(laserCloudFloat(*pc, 1, 4), 2.0f * static_cast<float>(std::sin(1.0)));
+}
+
+TEST(RosParserTest, LaserScanIntensitiesPassThrough) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/LaserScan", kLaserScanDef));
+
+  const std::vector<float> ranges = {1.0f, std::numeric_limits<float>::infinity(), 3.0f};
+  const std::vector<float> intensities = {10.0f, 20.0f, 30.0f};
+  auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 1, 0, "laser");
+    serializeLaserScanBody(enc, 0.0f, 0.1f, 0.5f, 10.0f, ranges, intensities);
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* pc = std::any_cast<PJ::sdk::PointCloud>(&rec->object);
+  ASSERT_NE(pc, nullptr);
+  EXPECT_EQ(pc->width, 2u);  // Inf ray dropped
+  EXPECT_EQ(pc->point_step, 16u);
+  ASSERT_EQ(pc->fields.size(), 4u);
+  EXPECT_EQ(pc->fields[3].name, "intensity");
+  EXPECT_EQ(pc->fields[3].offset, 12u);
+  // Intensity follows its ray through the drop filter.
+  EXPECT_EQ(laserCloudFloat(*pc, 0, 12), 10.0f);
+  EXPECT_EQ(laserCloudFloat(*pc, 1, 12), 30.0f);
+}
+
+TEST(RosParserTest, LaserScanEmptyScanProducesEmptyCloud) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/LaserScan", kLaserScanDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 1, 0, "laser");
+    serializeLaserScanBody(enc, 0.0f, 0.1f, 0.5f, 10.0f, {}, {});
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* pc = std::any_cast<PJ::sdk::PointCloud>(&rec->object);
+  ASSERT_NE(pc, nullptr);
+  EXPECT_EQ(pc->width, 0u);
+  EXPECT_EQ(pc->data.size(), 0u);
+  EXPECT_TRUE(pc->is_dense);
+}
+
+// The catalog entry must keep the scalar route on the generic flatten (the
+// pre-existing behavior for LaserScan): angle params and ranges[i] columns
+// still appear, subject to the user-configured array policy.
+TEST(RosParserTest, LaserScanScalarRouteKeepsGenericFlatten) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/LaserScan", kLaserScanDef));
+
+  const std::vector<float> ranges = {1.5f, 2.5f};
+  auto payload = serializeCdr([&ranges](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 1, 0, "laser");
+    serializeLaserScanBody(enc, -0.5f, 0.25f, 0.1f, 20.0f, ranges, {});
+  });
+
+  ASSERT_TRUE(f.parse(payload, 99));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+
+  const auto* angle_min = PJ::sdk::testing::ParserWriteRecorder::findField(row, "/angle_min");
+  ASSERT_NE(angle_min, nullptr);
+  EXPECT_FLOAT_EQ(static_cast<float>(angle_min->numeric), -0.5f);
+
+  const auto* range0 = PJ::sdk::testing::ParserWriteRecorder::findField(row, "/ranges[0]");
+  ASSERT_NE(range0, nullptr);
+  EXPECT_FLOAT_EQ(static_cast<float>(range0->numeric), 1.5f);
+
+  const auto* frame_id = PJ::sdk::testing::ParserWriteRecorder::findField(row, "/header/frame_id");
+  ASSERT_NE(frame_id, nullptr);
+  EXPECT_EQ(frame_id->string_value, "laser");
+}
+
+// Golden fixture: one real CDR sensor_msgs/msg/LaserScan message captured from
+// a ROS 2 recording (1440 rays, range [0.3, 40.0], empty intensities,
+// frame_id "base_link", header stamp 1779975681.103199244). Exercises the real
+// wire alignment end to end.
+TEST(RosParserTest, LaserScanRealCdrMessageFromBag) {
+  std::ifstream in(std::string(PJ_ROS_PARSER_TEST_DATA_DIR) + "/laserscan_real_scan.cdr", std::ios::binary);
+  ASSERT_TRUE(in.is_open());
+  const std::vector<uint8_t> payload((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  ASSERT_EQ(payload.size(), 5824u);
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/msg/LaserScan", kLaserScanDef));
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1000, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  // Embedded Header stamp drives the record time when the option is on.
+  ASSERT_TRUE(rec->ts.has_value());
+  EXPECT_EQ(*rec->ts, 1'779'975'681'103'199'244LL);
+
+  const auto* pc = std::any_cast<PJ::sdk::PointCloud>(&rec->object);
+  ASSERT_NE(pc, nullptr);
+  EXPECT_EQ(pc->frame_id, "base_link");
+  EXPECT_EQ(pc->timestamp_ns, 1'779'975'681'103'199'244LL);
+  // 1440 rays; 1041 are finite and inside [0.3, 40.0].
+  EXPECT_EQ(pc->width, 1041u);
+  EXPECT_EQ(pc->point_step, 12u);  // intensities[] is empty in this scan
+  EXPECT_EQ(pc->row_step, pc->width * 12u);
+  ASSERT_EQ(pc->data.size(), static_cast<size_t>(pc->width) * 12u);
+  EXPECT_TRUE(pc->is_dense);
+
+  // First kept ray is wire index 1: range 8.182730674743652 at
+  // theta = angle_min + 1 * angle_increment (float wire values widened).
+  const double kAngleMin = -3.1415927410125732;
+  const double kAngleInc = 0.0043633198365569115;
+  const double theta = kAngleMin + kAngleInc;
+  EXPECT_NEAR(laserCloudFloat(*pc, 0, 0), 8.182730674743652 * std::cos(theta), 1e-4);
+  EXPECT_NEAR(laserCloudFloat(*pc, 0, 4), 8.182730674743652 * std::sin(theta), 1e-4);
+
+  // Every emitted point honors the wire's range bounds (dense output).
+  for (uint32_t i = 0; i < pc->width; ++i) {
+    const float x = laserCloudFloat(*pc, i, 0);
+    const float y = laserCloudFloat(*pc, i, 4);
+    const double r = std::sqrt(static_cast<double>(x) * x + static_cast<double>(y) * y);
+    ASSERT_TRUE(std::isfinite(r));
+    ASSERT_GE(r, 0.29);
+    ASSERT_LE(r, 40.01);
+  }
 }
 
 }  // namespace
