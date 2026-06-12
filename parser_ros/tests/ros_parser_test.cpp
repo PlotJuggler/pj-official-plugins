@@ -2303,6 +2303,46 @@ TEST(RosParserTest, MeshFileAndUrlMarkerKeepsBoth) {
   EXPECT_EQ(model.url, "package://robot/meshes/arm.stl");
 }
 
+// A non-mesh marker may still carry non-empty mesh_file bytes (nonconforming
+// publisher). The parser must consume them for wire alignment without copying
+// or attaching them to anything, and the NEXT marker in the array must decode
+// intact. Guards the gating of the mesh_file copy to MESH_RESOURCE markers.
+TEST(RosParserTest, NonMeshMarkerWithMeshFileBytesStaysAligned) {
+  RosParserFixture f;
+  f.setUp();
+  const std::string def = markerArrayDef(/*humble=*/true);
+  ASSERT_TRUE(f.bindSchema("visualization_msgs/MarkerArray", def));
+
+  MarkerWire cube;
+  cube.ns = "a";
+  cube.id = 1;
+  cube.type = 1;  // CUBE — not MESH_RESOURCE...
+  cube.scale = {2.0, 3.0, 4.0};
+  cube.mesh_filename = "ignored.glb";
+  cube.mesh_file_data = {0xDE, 0xAD, 0xBE, 0xEF};  // ...yet mesh_file is non-empty
+
+  MarkerWire sphere;
+  sphere.ns = "a";
+  sphere.id = 2;
+  sphere.type = 2;  // SPHERE
+  sphere.scale = {0.5, 0.5, 0.5};
+
+  auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serializeUInt32(2);
+    serializeMarker(enc, cube, true, true);
+    serializeMarker(enc, sphere, true, true);
+  });
+
+  std::any hold;
+  const auto* se = parseSceneEntities(f, payload, hold);
+  ASSERT_NE(se, nullptr);
+  ASSERT_EQ(se->entities.size(), 2u);
+  ASSERT_EQ(se->entities[0].cubes.size(), 1u);
+  EXPECT_TRUE(se->entities[0].models.empty());    // stray bytes not attached to the cube
+  ASSERT_EQ(se->entities[1].spheres.size(), 1u);  // next marker stayed aligned
+  EXPECT_DOUBLE_EQ(se->entities[1].spheres[0].size.x, 0.5);
+}
+
 TEST(RosParserTest, MarkerDeleteAndDeleteAll) {
   RosParserFixture f;
   f.setUp();

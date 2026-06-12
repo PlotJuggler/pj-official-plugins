@@ -182,8 +182,13 @@ void RosParser::decodeOneMarker(PJ::sdk::SceneEntities& out) {
   std::vector<uint8_t> mesh_file_data;
   if (marker_has_mesh_file_) {
     deserializer_->deserializeString(mesh_filename);
+    // The byte sequence must be consumed unconditionally to keep the wire
+    // aligned, but only a MESH_RESOURCE marker uses it — skip the copy of a
+    // potentially multi-MB payload for every other marker type.
     const auto bytes = deserializer_->deserializeByteSequence();  // mesh_file.data
-    mesh_file_data.assign(bytes.begin(), bytes.end());
+    if (type == marker_type::kMeshResource) {
+      mesh_file_data.assign(bytes.begin(), bytes.end());
+    }
   }
   const bool mesh_use_embedded = readU8(*deserializer_) != 0;
 
