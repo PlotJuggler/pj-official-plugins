@@ -86,6 +86,13 @@ shipped in the `PayloadView`:
 The canonical object's lifetime is tied to the input payload — the host
 copies into the `ObjectStore` only when policy demands materialization.
 
+One schema is promoted **eagerly instead of zero-copy** — the wire carries
+polar ranges, so cartesian points must be generated:
+
+| Schema | `BuiltinObjectType` | Handler |
+|--------|-----------------------|---------|
+| `sensor_msgs/msg/LaserScan` | `kPointCloud` | `parseLaserScan` — projects rays to x/y/z (+`intensity` when present) FLOAT32 points via the shared `pj_laser_scan` projector (cos/sin LUT cached per scanner config); non-finite and out-of-`[range_min, range_max]` rays are dropped, so the cloud is unorganized and dense. The point buffer is newly generated and owned via the cloud's `BufferAnchor`. The scalar route stays on the generic flatten (`angle_*`, `ranges[i]`, … columns). |
+
 ## Scalar handlers
 
 Specialized handlers (registered through `wrapVoidHandler<>`) extract

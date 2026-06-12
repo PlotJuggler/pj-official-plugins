@@ -157,6 +157,15 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kPointCloud,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parsePointCloud}},
+      // sensor_msgs/LaserScan — eagerly projected to a canonical PointCloud via
+      // the shared pj_laser_scan projector (cos/sin LUT cached per scanner
+      // config, so the trig runs once per recording). The scalar route keeps
+      // the pre-promotion generic flatten: angle_*/ranges[i] columns still
+      // appear, subject to the user-configured array policy.
+      {"sensor_msgs/LaserScan",
+       {.object_type = ObjectType::kPointCloud,
+        .parse_scalars = &RosParser::parseScalarsGeneric,
+        .parse_object = &RosParser::parseLaserScan}},
       // foxglove_msgs/CompressedPointCloud — opaque compressed cloud (draco/cloudini/…).
       // The parser repackages the blob + format; it does not decode. The scalar
       // route keeps frame_id / format plottable while discarding the data[] blob.
