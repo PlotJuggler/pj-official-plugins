@@ -70,13 +70,25 @@ bool readString(CodedInputStream& in, std::string& out) {
 // A length-delimited `bytes` field straight into a uint8 vector. ReadRaw copies
 // once into the resized buffer (vs the double copy of reading to a std::string
 // then assigning) — matters for large inline payloads like an embedded glTF.
+// The declared length is checked against the bytes remaining before the
+// enclosing SubMessage limit, so a corrupt varint cannot drive the allocation
+// (ReadString gets the same bound internally from CodedInputStream). On any
+// failure `out` is left empty rather than zero-filled to the declared size.
 bool readBytes(CodedInputStream& in, std::vector<uint8_t>& out) {
   uint32_t len = 0;
   if (!in.ReadVarint32(&len)) {
     return false;
   }
+  const int remaining = in.BytesUntilLimit();
+  if (remaining < 0 || static_cast<uint32_t>(remaining) < len) {
+    return false;
+  }
   out.resize(len);
-  return len == 0 || in.ReadRaw(out.data(), static_cast<int>(len));
+  if (len != 0 && !in.ReadRaw(out.data(), static_cast<int>(len))) {
+    out.clear();
+    return false;
+  }
+  return true;
 }
 
 /// foxglove Color (double r/g/b/a in [0,1]) -> sdk::ColorRGBA (uint8 0..255).

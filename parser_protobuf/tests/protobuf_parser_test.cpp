@@ -1344,6 +1344,34 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodesCubeAndModelTogether) {
   EXPECT_EQ(e.models[0].data, glb);
 }
 
+// A corrupt `data` length must not be trusted: the varint declares 1000 bytes
+// but only 5 exist in the submessage. Pre-fix, readBytes resized to the
+// declared length BEFORE checking availability, so the model came back with a
+// 1000-byte zero-filled buffer presented as successfully decoded (and a
+// declared 4 GiB length would have allocated 4 GiB on a few bytes of input).
+// The length must be validated against the bytes remaining; on mismatch the
+// model decodes with empty data.
+TEST(ProtobufParserTest, FoxgloveSceneUpdateRejectsOverdeclaredModelData) {
+  PW model;  // ModelPrimitive { media_type=6, data=7 (malformed) }
+  model.str(6, "model/gltf-binary");
+  model.tag(7, 2);        // data: length-delimited...
+  model.rawVarint(1000);  // ...declaring 1000 payload bytes...
+  const std::vector<uint8_t> partial = {'g', 'l', 'T', 'F', 0x02};
+  model.b.insert(model.b.end(), partial.begin(), partial.end());  // ...with only 5 present
+  PW entity;
+  entity.str(3, "corrupt");
+  entity.sub(14, model);  // submessage length is honest; the lie is inside
+  PW scene;
+  scene.sub(2, entity);
+  const auto& w = scene.b;
+
+  auto r = pj_protobuf::deserializeFoxgloveSceneUpdate(w.data(), w.size());
+  ASSERT_TRUE(r) << r.error();
+  ASSERT_EQ(r->entities.size(), 1u);
+  ASSERT_EQ(r->entities[0].models.size(), 1u);
+  EXPECT_TRUE(r->entities[0].models[0].data.empty());  // not a zero-filled 1000-byte buffer
+}
+
 // proto3 omits a 0.0 scale; foxglove reads an omitted scale as 0 (collapsed
 // face), so the decoder must override the SDK's ergonomic 1.0 default. Without
 // the fix these decode to 1.0.
