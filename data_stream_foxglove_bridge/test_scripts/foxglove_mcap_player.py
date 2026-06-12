@@ -162,7 +162,20 @@ class FoxgloveMcapPlayer:
                     if wait > 0:
                         await asyncio.sleep(wait)
 
-                # Send to all subscribed clients
+                # Stamp the frame with wall-clock now: this simulates a live
+                # robot whose time always grows, so the bag can loop forever and
+                # the PlotJuggler timeline keeps advancing (sending the bag's own
+                # log_time instead would replay a fixed window and stall on loop 2,
+                # since the re-sent timestamps fall before the last ingested one).
+                #
+                # IMPORTANT: in the Foxglove Bridge connection dialog, leave
+                # "Use the timestamp in the message (if present)" UNCHECKED. The
+                # protobuf parser only honors the message's embedded timestamp when
+                # that box is checked; with it checked, messages whose embedded
+                # stamp is 0/absent fall back to this wall-clock value while the
+                # rest keep their (old) embedded stamp, mixing two epochs and
+                # blowing the timeline span out to years (slider collapses to
+                # start/end). Unchecked, every object uses this growing host clock.
                 now_ns = int(time.time() * 1e9)
                 for websocket, subscriptions in list(self.clients.items()):
                     sub_id = subscriptions.get(ch_id)
