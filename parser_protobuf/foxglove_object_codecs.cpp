@@ -132,24 +132,85 @@ struct SubMessage {
 // indices) as untrusted and bounds-check against the sibling arrays.
 // ---------------------------------------------------------------------------
 
+// --- field-loop sugar ------------------------------------------------------
+// scanSubMessage drives the loop the lenient readers share; the field* helpers
+// claim one field or decline so the scanner skips it. A helper returns false for
+// both a wrong wire type and a failed read; the scanner then skips, which
+// succeeds on a wrong-wire field (decode continues) and fails on a truncated
+// stream (decode stops) — the hand-written lenient contract, in one place.
+
+template <typename Handle>
+void scanSubMessage(CodedInputStream& in, uint32_t len, Handle&& handle) {
+  SubMessage sub(in, len);
+  uint32_t tag = 0;
+  while ((tag = in.ReadTag()) != 0) {
+    if (!handle(fieldOf(tag), wireOf(tag)) && !skipField(in, wireOf(tag))) {
+      break;
+    }
+  }
+}
+
+// Length-delimited submessage -> out = reader(in, sublen).
+template <typename T, typename Reader>
+bool fieldMessage(CodedInputStream& in, uint32_t wire, T& out, Reader&& reader) {
+  uint32_t sl = 0;
+  if (wire != kWireLen || !in.ReadVarint32(&sl)) {
+    return false;
+  }
+  out = reader(in, sl);
+  return true;
+}
+
+// Repeated length-delimited submessage -> vec.push_back(reader(in, sublen)).
+template <typename T, typename Reader>
+bool fieldRepeated(CodedInputStream& in, uint32_t wire, std::vector<T>& vec, Reader&& reader) {
+  uint32_t sl = 0;
+  if (wire != kWireLen || !in.ReadVarint32(&sl)) {
+    return false;
+  }
+  vec.push_back(reader(in, sl));
+  return true;
+}
+
+// Packed length-delimited block -> reader(in, sublen, out) (void out-param).
+template <typename T, typename PackedReader>
+bool fieldPacked(CodedInputStream& in, uint32_t wire, std::vector<T>& out, PackedReader&& reader) {
+  uint32_t sl = 0;
+  if (wire != kWireLen || !in.ReadVarint32(&sl)) {
+    return false;
+  }
+  reader(in, sl, out);
+  return true;
+}
+
+bool fieldDouble(CodedInputStream& in, uint32_t wire, double& out) {
+  return wire == kWireI64 && readDouble(in, out);
+}
+
+bool fieldVarint(CodedInputStream& in, uint32_t wire, uint64_t& out) {  // caller casts to enum/bool/int
+  return wire == kWireVarint && in.ReadVarint64(&out);
+}
+
+bool fieldString(CodedInputStream& in, uint32_t wire, std::string& out) {
+  return wire == kWireLen && readString(in, out);
+}
+
+bool fieldBytes(CodedInputStream& in, uint32_t wire, std::vector<uint8_t>& out) {
+  return wire == kWireLen && readBytes(in, out);
+}
+
 // --- nested geometry readers (each consumes exactly `len` bytes) ---
 
 PJ::sdk::Vector3 readVector3(CodedInputStream& in, uint32_t len) {
   PJ::sdk::Vector3 v;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    if (wireOf(tag) == kWireI64 && f >= 1 && f <= 3) {
-      double d = 0;
-      if (!readDouble(in, d)) {
-        break;
-      }
-      (f == 1 ? v.x : f == 2 ? v.y : v.z) = d;
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    double d = 0;
+    if (f < 1 || f > 3 || !fieldDouble(in, w, d)) {
+      return false;
     }
-  }
+    (f == 1 ? v.x : f == 2 ? v.y : v.z) = d;
+    return true;
+  });
   return v;
 }
 
@@ -162,119 +223,86 @@ PJ::sdk::Quaternion readQuaternion(CodedInputStream& in, uint32_t len) {
   // field keeps readPose's identity default, since readQuaternion isn't called.)
   PJ::sdk::Quaternion q;
   q.w = 0.0;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    if (wireOf(tag) == kWireI64 && f >= 1 && f <= 4) {
-      double d = 0;
-      if (!readDouble(in, d)) {
-        break;
-      }
-      (f == 1 ? q.x : f == 2 ? q.y : f == 3 ? q.z : q.w) = d;
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    double d = 0;
+    if (f < 1 || f > 4 || !fieldDouble(in, w, d)) {
+      return false;
     }
-  }
+    (f == 1 ? q.x : f == 2 ? q.y : f == 3 ? q.z : q.w) = d;
+    return true;
+  });
   return q;
 }
 
 PJ::sdk::ColorRGBA readColor(CodedInputStream& in, uint32_t len) {
   double r = 0, g = 0, b = 0, a = 0;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    if (wireOf(tag) == kWireI64 && f >= 1 && f <= 4) {
-      double d = 0;
-      if (!readDouble(in, d)) {
-        break;
-      }
-      (f == 1 ? r : f == 2 ? g : f == 3 ? b : a) = d;
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    double d = 0;
+    if (f < 1 || f > 4 || !fieldDouble(in, w, d)) {
+      return false;
     }
-  }
+    (f == 1 ? r : f == 2 ? g : f == 3 ? b : a) = d;
+    return true;
+  });
   return PJ::sdk::ColorRGBA{toU8(r), toU8(g), toU8(b), toU8(a)};
 }
 
 PJ::sdk::Pose readPose(CodedInputStream& in, uint32_t len) {
   PJ::sdk::Pose pose;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    uint32_t sub_len = 0;
-    if (wireOf(tag) == kWireLen && f == 1 && in.ReadVarint32(&sub_len)) {
-      pose.position = readVector3(in, sub_len);
-    } else if (wireOf(tag) == kWireLen && f == 2 && in.ReadVarint32(&sub_len)) {
-      pose.orientation = readQuaternion(in, sub_len);
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    switch (f) {
+      case 1:
+        return fieldMessage(in, w, pose.position, readVector3);
+      case 2:
+        return fieldMessage(in, w, pose.orientation, readQuaternion);
+      default:
+        return false;
     }
-  }
+  });
   return pose;
 }
 
 template <typename Point>
 Point readPointXY(CodedInputStream& in, uint32_t len) {  // Point2: x=1,y=2
   Point p;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    if (wireOf(tag) == kWireI64 && f >= 1 && f <= 2) {
-      double d = 0;
-      if (!readDouble(in, d)) {
-        break;
-      }
-      (f == 1 ? p.x : p.y) = d;
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    double d = 0;
+    if (f < 1 || f > 2 || !fieldDouble(in, w, d)) {
+      return false;
     }
-  }
+    (f == 1 ? p.x : p.y) = d;
+    return true;
+  });
   return p;
 }
 
 PJ::sdk::Point3 readPoint3(CodedInputStream& in, uint32_t len) {  // x=1,y=2,z=3
   PJ::sdk::Point3 p;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    if (wireOf(tag) == kWireI64 && f >= 1 && f <= 3) {
-      double d = 0;
-      if (!readDouble(in, d)) {
-        break;
-      }
-      (f == 1 ? p.x : f == 2 ? p.y : p.z) = d;
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    double d = 0;
+    if (f < 1 || f > 3 || !fieldDouble(in, w, d)) {
+      return false;
     }
-  }
+    (f == 1 ? p.x : f == 2 ? p.y : p.z) = d;
+    return true;
+  });
   return p;
 }
 
 int64_t readTimestampNs(CodedInputStream& in, uint32_t len) {  // seconds=1, nanos=2
   int64_t seconds = 0, nanos = 0;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    if (wireOf(tag) == kWireVarint && (f == 1 || f == 2)) {
-      uint64_t v = 0;
-      if (!in.ReadVarint64(&v)) {
-        break;
-      }
-      if (f == 1) {
-        seconds = static_cast<int64_t>(v);
-      } else {
-        nanos = static_cast<int64_t>(static_cast<int32_t>(v));
-      }
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    uint64_t v = 0;
+    if ((f != 1 && f != 2) || !fieldVarint(in, w, v)) {
+      return false;
     }
-  }
+    if (f == 1) {
+      seconds = static_cast<int64_t>(v);
+    } else {
+      nanos = static_cast<int64_t>(static_cast<int32_t>(v));
+    }
+    return true;
+  });
   return seconds * 1'000'000'000LL + nanos;
 }
 
@@ -607,31 +635,36 @@ namespace {
 PJ::sdk::CircleAnnotation readCircle(CodedInputStream& in, uint32_t len, int64_t& timestamp_out) {
   // { timestamp=1, position=2 Point2, diameter=3, thickness=4, fill_color=5, outline_color=6 }
   PJ::sdk::CircleAnnotation c;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    uint32_t sl = 0;
-    if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      timestamp_out = readTimestampNs(in, sl);
-    } else if (f == 2 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      c.center = readPointXY<PJ::sdk::Point2>(in, sl);
-    } else if (f == 3 && wireOf(tag) == kWireI64) {
-      double d = 0;
-      readDouble(in, d);
-      c.radius = d / 2.0;  // foxglove diameter -> sdk radius
-    } else if (f == 4 && wireOf(tag) == kWireI64) {
-      double d = 0;
-      readDouble(in, d);
-      c.thickness = d;
-    } else if (f == 5 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      c.fill_color = readColor(in, sl);
-    } else if (f == 6 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      c.color = readColor(in, sl);  // outline_color -> color
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    switch (f) {
+      case 1:
+        return fieldMessage(in, w, timestamp_out, readTimestampNs);
+      case 2:
+        return fieldMessage(in, w, c.center, readPointXY<PJ::sdk::Point2>);
+      case 5:
+        return fieldMessage(in, w, c.fill_color, readColor);
+      case 6:
+        return fieldMessage(in, w, c.color, readColor);  // outline_color -> color
+      case 3: {
+        double d = 0;
+        if (!fieldDouble(in, w, d)) {
+          return false;
+        }
+        c.radius = d / 2.0;  // foxglove diameter -> sdk radius
+        return true;
+      }
+      case 4: {
+        double d = 0;
+        if (!fieldDouble(in, w, d)) {
+          return false;
+        }
+        c.thickness = d;
+        return true;
+      }
+      default:
+        return false;
     }
-  }
+  });
   return c;
 }
 
@@ -639,64 +672,70 @@ PJ::sdk::PointsAnnotation readPointsAnnotation(CodedInputStream& in, uint32_t le
   // { timestamp=1, type=2 enum, points=3 Point2[], outline_color=4, outline_colors=5, fill_color=6, thickness=7 }
   // foxglove type: UNKNOWN=0, POINTS=1, LINE_LOOP=2, LINE_STRIP=3, LINE_LIST=4
   PJ::sdk::PointsAnnotation pa;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    uint32_t sl = 0;
-    if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      timestamp_out = readTimestampNs(in, sl);
-    } else if (f == 2 && wireOf(tag) == kWireVarint) {
-      uint64_t t = 0;
-      in.ReadVarint64(&t);
-      using Topo = PJ::sdk::AnnotationTopology;
-      pa.topology = t == 2   ? Topo::kLineLoop
-                    : t == 3 ? Topo::kLineStrip
-                    : t == 4 ? Topo::kLineList
-                             : Topo::kPoints;  // 0/1 -> points
-    } else if (f == 3 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      pa.points.push_back(readPointXY<PJ::sdk::Point2>(in, sl));
-    } else if (f == 4 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      pa.color = readColor(in, sl);  // outline_color -> color
-    } else if (f == 5 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      pa.colors.push_back(readColor(in, sl));
-    } else if (f == 6 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      pa.fill_color = readColor(in, sl);
-    } else if (f == 7 && wireOf(tag) == kWireI64) {
-      double d = 0;
-      readDouble(in, d);
-      pa.thickness = d;
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    switch (f) {
+      case 1:
+        return fieldMessage(in, w, timestamp_out, readTimestampNs);
+      case 3:
+        return fieldRepeated(in, w, pa.points, readPointXY<PJ::sdk::Point2>);
+      case 4:
+        return fieldMessage(in, w, pa.color, readColor);  // outline_color -> color
+      case 5:
+        return fieldRepeated(in, w, pa.colors, readColor);
+      case 6:
+        return fieldMessage(in, w, pa.fill_color, readColor);
+      case 2: {
+        uint64_t t = 0;
+        if (!fieldVarint(in, w, t)) {
+          return false;
+        }
+        using Topo = PJ::sdk::AnnotationTopology;
+        pa.topology = t == 2   ? Topo::kLineLoop
+                      : t == 3 ? Topo::kLineStrip
+                      : t == 4 ? Topo::kLineList
+                               : Topo::kPoints;  // 0/1 -> points
+        return true;
+      }
+      case 7: {
+        double d = 0;
+        if (!fieldDouble(in, w, d)) {
+          return false;
+        }
+        pa.thickness = d;
+        return true;
+      }
+      default:
+        return false;
     }
-  }
+  });
   return pa;
 }
 
 PJ::sdk::TextAnnotation readTextAnnotation(CodedInputStream& in, uint32_t len, int64_t& timestamp_out) {
   // { timestamp=1, position=2 Point2, text=3, font_size=4, text_color=5, background_color=6 }
   PJ::sdk::TextAnnotation t;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    uint32_t sl = 0;
-    if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      timestamp_out = readTimestampNs(in, sl);
-    } else if (f == 2 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      t.position = readPointXY<PJ::sdk::Point2>(in, sl);
-    } else if (f == 3 && wireOf(tag) == kWireLen) {
-      readString(in, t.text);
-    } else if (f == 4 && wireOf(tag) == kWireI64) {
-      double d = 0;
-      readDouble(in, d);
-      t.font_size = d;
-    } else if (f == 5 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      t.color = readColor(in, sl);  // text_color -> color (background_color dropped)
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    switch (f) {
+      case 1:
+        return fieldMessage(in, w, timestamp_out, readTimestampNs);
+      case 2:
+        return fieldMessage(in, w, t.position, readPointXY<PJ::sdk::Point2>);
+      case 3:
+        return fieldString(in, w, t.text);
+      case 5:
+        return fieldMessage(in, w, t.color, readColor);  // text_color -> color (background_color dropped)
+      case 4: {
+        double d = 0;
+        if (!fieldDouble(in, w, d)) {
+          return false;
+        }
+        t.font_size = d;
+        return true;
+      }
+      default:
+        return false;
     }
-  }
+  });
   return t;
 }
 
@@ -744,23 +783,27 @@ namespace {
 PJ::sdk::ArrowPrimitive readArrow(CodedInputStream& in, uint32_t len) {
   // { pose=1, shaft_length=2, shaft_diameter=3, head_length=4, head_diameter=5, color=6 }
   PJ::sdk::ArrowPrimitive a;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    uint32_t sl = 0;
-    if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      a.pose = readPose(in, sl);
-    } else if (f >= 2 && f <= 5 && wireOf(tag) == kWireI64) {
-      double d = 0;
-      readDouble(in, d);
-      (f == 2 ? a.shaft_length : f == 3 ? a.shaft_diameter : f == 4 ? a.head_length : a.head_diameter) = d;
-    } else if (f == 6 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      a.color = readColor(in, sl);
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    switch (f) {
+      case 1:
+        return fieldMessage(in, w, a.pose, readPose);
+      case 6:
+        return fieldMessage(in, w, a.color, readColor);
+      case 2:
+      case 3:
+      case 4:
+      case 5: {
+        double d = 0;
+        if (!fieldDouble(in, w, d)) {
+          return false;
+        }
+        (f == 2 ? a.shaft_length : f == 3 ? a.shaft_diameter : f == 4 ? a.head_length : a.head_diameter) = d;
+        return true;
+      }
+      default:
+        return false;
     }
-  }
+  });
   return a;
 }
 
@@ -768,21 +811,18 @@ PJ::sdk::ArrowPrimitive readArrow(CodedInputStream& in, uint32_t len) {
 template <typename Prim>
 Prim readBoxLike(CodedInputStream& in, uint32_t len) {
   Prim p;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    uint32_t sl = 0;
-    if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      p.pose = readPose(in, sl);
-    } else if (f == 2 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      p.size = readVector3(in, sl);
-    } else if (f == 3 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      p.color = readColor(in, sl);
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    switch (f) {
+      case 1:
+        return fieldMessage(in, w, p.pose, readPose);
+      case 2:
+        return fieldMessage(in, w, p.size, readVector3);
+      case 3:
+        return fieldMessage(in, w, p.color, readColor);
+      default:
+        return false;
     }
-  }
+  });
   return p;
 }
 
@@ -795,124 +835,130 @@ PJ::sdk::CylinderPrimitive readCylinder(CodedInputStream& in, uint32_t len) {
   PJ::sdk::CylinderPrimitive c;
   c.bottom_scale = 0.0;
   c.top_scale = 0.0;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    uint32_t sl = 0;
-    if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      c.pose = readPose(in, sl);
-    } else if (f == 2 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      c.size = readVector3(in, sl);
-    } else if (f == 3 && wireOf(tag) == kWireI64) {
-      double d = 0;
-      readDouble(in, d);
-      c.bottom_scale = d;
-    } else if (f == 4 && wireOf(tag) == kWireI64) {
-      double d = 0;
-      readDouble(in, d);
-      c.top_scale = d;
-    } else if (f == 5 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      c.color = readColor(in, sl);
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    switch (f) {
+      case 1:
+        return fieldMessage(in, w, c.pose, readPose);
+      case 2:
+        return fieldMessage(in, w, c.size, readVector3);
+      case 5:
+        return fieldMessage(in, w, c.color, readColor);
+      case 3:
+      case 4: {
+        double d = 0;
+        if (!fieldDouble(in, w, d)) {
+          return false;
+        }
+        (f == 3 ? c.bottom_scale : c.top_scale) = d;
+        return true;
+      }
+      default:
+        return false;
     }
-  }
+  });
   return c;
 }
 
 PJ::sdk::LinePrimitive readLine(CodedInputStream& in, uint32_t len) {
   // { type=1 enum, pose=2, thickness=3, scale_invariant=4, points=5, color=6, colors=7, indices=8 fixed32[] }
   PJ::sdk::LinePrimitive l;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    uint32_t sl = 0;
-    if (f == 1 && wireOf(tag) == kWireVarint) {
-      uint64_t t = 0;
-      in.ReadVarint64(&t);
-      l.type = static_cast<PJ::sdk::LineType>(t);  // values match (0/1/2)
-    } else if (f == 2 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      l.pose = readPose(in, sl);
-    } else if (f == 3 && wireOf(tag) == kWireI64) {
-      double d = 0;
-      readDouble(in, d);
-      l.thickness = d;
-    } else if (f == 4 && wireOf(tag) == kWireVarint) {
-      uint64_t v = 0;
-      in.ReadVarint64(&v);
-      l.scale_invariant = (v != 0);
-    } else if (f == 5 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      l.points.push_back(readPoint3(in, sl));
-    } else if (f == 6 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      l.color = readColor(in, sl);
-    } else if (f == 7 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      l.colors.push_back(readColor(in, sl));
-    } else if (f == 8 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      readPackedFixed32(in, sl, l.indices);
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    switch (f) {
+      case 2:
+        return fieldMessage(in, w, l.pose, readPose);
+      case 5:
+        return fieldRepeated(in, w, l.points, readPoint3);
+      case 6:
+        return fieldMessage(in, w, l.color, readColor);
+      case 7:
+        return fieldRepeated(in, w, l.colors, readColor);
+      case 8:
+        return fieldPacked(in, w, l.indices, readPackedFixed32);
+      case 1: {
+        uint64_t t = 0;
+        if (!fieldVarint(in, w, t)) {
+          return false;
+        }
+        l.type = static_cast<PJ::sdk::LineType>(t);  // values match (0/1/2)
+        return true;
+      }
+      case 3: {
+        double d = 0;
+        if (!fieldDouble(in, w, d)) {
+          return false;
+        }
+        l.thickness = d;
+        return true;
+      }
+      case 4: {
+        uint64_t v = 0;
+        if (!fieldVarint(in, w, v)) {
+          return false;
+        }
+        l.scale_invariant = (v != 0);
+        return true;
+      }
+      default:
+        return false;
     }
-  }
+  });
   return l;
 }
 
 PJ::sdk::TrianglePrimitive readTriangle(CodedInputStream& in, uint32_t len) {
   // { pose=1, points=2, color=3, colors=4, indices=5 fixed32[] }
   PJ::sdk::TrianglePrimitive t;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    uint32_t sl = 0;
-    if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      t.pose = readPose(in, sl);
-    } else if (f == 2 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      t.points.push_back(readPoint3(in, sl));
-    } else if (f == 3 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      t.color = readColor(in, sl);
-    } else if (f == 4 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      t.colors.push_back(readColor(in, sl));
-    } else if (f == 5 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      readPackedFixed32(in, sl, t.indices);
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    switch (f) {
+      case 1:
+        return fieldMessage(in, w, t.pose, readPose);
+      case 2:
+        return fieldRepeated(in, w, t.points, readPoint3);
+      case 3:
+        return fieldMessage(in, w, t.color, readColor);
+      case 4:
+        return fieldRepeated(in, w, t.colors, readColor);
+      case 5:
+        return fieldPacked(in, w, t.indices, readPackedFixed32);
+      default:
+        return false;
     }
-  }
+  });
   return t;
 }
 
 PJ::sdk::TextPrimitive readText(CodedInputStream& in, uint32_t len) {
   // { pose=1, billboard=2, font_size=3, scale_invariant=4, color=5, text=6 }
   PJ::sdk::TextPrimitive t;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    uint32_t sl = 0;
-    if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      t.pose = readPose(in, sl);
-    } else if (f == 2 && wireOf(tag) == kWireVarint) {
-      uint64_t v = 0;
-      in.ReadVarint64(&v);
-      t.billboard = (v != 0);
-    } else if (f == 3 && wireOf(tag) == kWireI64) {
-      double d = 0;
-      readDouble(in, d);
-      t.font_size = d;
-    } else if (f == 4 && wireOf(tag) == kWireVarint) {
-      uint64_t v = 0;
-      in.ReadVarint64(&v);
-      t.scale_invariant = (v != 0);
-    } else if (f == 5 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      t.color = readColor(in, sl);
-    } else if (f == 6 && wireOf(tag) == kWireLen) {
-      readString(in, t.text);
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    switch (f) {
+      case 1:
+        return fieldMessage(in, w, t.pose, readPose);
+      case 5:
+        return fieldMessage(in, w, t.color, readColor);
+      case 6:
+        return fieldString(in, w, t.text);
+      case 3: {
+        double d = 0;
+        if (!fieldDouble(in, w, d)) {
+          return false;
+        }
+        t.font_size = d;
+        return true;
+      }
+      case 2:
+      case 4: {
+        uint64_t v = 0;
+        if (!fieldVarint(in, w, v)) {
+          return false;
+        }
+        (f == 2 ? t.billboard : t.scale_invariant) = (v != 0);
+        return true;
+      }
+      default:
+        return false;
     }
-  }
+  });
   return t;
 }
 
@@ -923,31 +969,32 @@ PJ::sdk::TextPrimitive readText(CodedInputStream& in, uint32_t len) {
 PJ::sdk::ModelPrimitive readModel(CodedInputStream& in, uint32_t len) {
   // { pose=1, scale=2, color=3, override_color=4, url=5, media_type=6, data=7 (bytes) }
   PJ::sdk::ModelPrimitive m;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    uint32_t sl = 0;
-    if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      m.pose = readPose(in, sl);
-    } else if (f == 2 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      m.scale = readVector3(in, sl);
-    } else if (f == 3 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      m.color = readColor(in, sl);
-    } else if (f == 4 && wireOf(tag) == kWireVarint) {
-      uint64_t v = 0;
-      in.ReadVarint64(&v);
-      m.override_color = (v != 0);
-    } else if (f == 5 && wireOf(tag) == kWireLen) {
-      readString(in, m.url);
-    } else if (f == 6 && wireOf(tag) == kWireLen) {
-      readString(in, m.media_type);
-    } else if (f == 7 && wireOf(tag) == kWireLen) {
-      readBytes(in, m.data);
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    switch (f) {
+      case 1:
+        return fieldMessage(in, w, m.pose, readPose);
+      case 2:
+        return fieldMessage(in, w, m.scale, readVector3);
+      case 3:
+        return fieldMessage(in, w, m.color, readColor);
+      case 5:
+        return fieldString(in, w, m.url);
+      case 6:
+        return fieldString(in, w, m.media_type);
+      case 7:
+        return fieldBytes(in, w, m.data);
+      case 4: {
+        uint64_t v = 0;
+        if (!fieldVarint(in, w, v)) {
+          return false;
+        }
+        m.override_color = (v != 0);
+        return true;
+      }
+      default:
+        return false;
     }
-  }
+  });
   return m;
 }
 
@@ -955,45 +1002,46 @@ PJ::sdk::SceneEntity readSceneEntity(CodedInputStream& in, uint32_t len) {
   // { timestamp=1, frame_id=2, id=3, lifetime=4 Duration, frame_locked=5, metadata=6,
   //   arrows=7, cubes=8, spheres=9, cylinders=10, lines=11, triangles=12, texts=13, models=14 }
   PJ::sdk::SceneEntity e;
-  SubMessage sub(in, len);
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int f = fieldOf(tag);
-    uint32_t sl = 0;
-    // metadata(6), unknowns and any wrong-wire-type field fall through
-    // to the trailing skipField; a failed skip leaves the stream desynced, so stop.
-    if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      e.timestamp = readTimestampNs(in, sl);
-    } else if (f == 2 && wireOf(tag) == kWireLen) {
-      readString(in, e.frame_id);
-    } else if (f == 3 && wireOf(tag) == kWireLen) {
-      readString(in, e.id);
-    } else if (f == 4 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      e.lifetime_ns = readTimestampNs(in, sl);  // Duration has the same {sec, nanos} layout
-    } else if (f == 5 && wireOf(tag) == kWireVarint) {
-      uint64_t v = 0;
-      in.ReadVarint64(&v);
-      e.frame_locked = (v != 0);
-    } else if (f == 7 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      e.arrows.push_back(readArrow(in, sl));
-    } else if (f == 8 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      e.cubes.push_back(readBoxLike<PJ::sdk::CubePrimitive>(in, sl));
-    } else if (f == 9 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      e.spheres.push_back(readBoxLike<PJ::sdk::SpherePrimitive>(in, sl));
-    } else if (f == 10 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      e.cylinders.push_back(readCylinder(in, sl));
-    } else if (f == 11 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      e.lines.push_back(readLine(in, sl));
-    } else if (f == 12 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      e.triangles.push_back(readTriangle(in, sl));
-    } else if (f == 13 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      e.texts.push_back(readText(in, sl));
-    } else if (f == 14 && wireOf(tag) == kWireLen && in.ReadVarint32(&sl)) {
-      e.models.push_back(readModel(in, sl));
-    } else if (!skipField(in, wireOf(tag))) {
-      break;
+  // metadata(6), unknowns and any wrong-wire-type field decline below and fall
+  // through to the scanner's skipField; a failed skip ends the loop.
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    switch (f) {
+      case 1:
+        return fieldMessage(in, w, e.timestamp, readTimestampNs);
+      case 2:
+        return fieldString(in, w, e.frame_id);
+      case 3:
+        return fieldString(in, w, e.id);
+      case 4:
+        return fieldMessage(in, w, e.lifetime_ns, readTimestampNs);  // Duration shares {sec, nanos}
+      case 7:
+        return fieldRepeated(in, w, e.arrows, readArrow);
+      case 8:
+        return fieldRepeated(in, w, e.cubes, readBoxLike<PJ::sdk::CubePrimitive>);
+      case 9:
+        return fieldRepeated(in, w, e.spheres, readBoxLike<PJ::sdk::SpherePrimitive>);
+      case 10:
+        return fieldRepeated(in, w, e.cylinders, readCylinder);
+      case 11:
+        return fieldRepeated(in, w, e.lines, readLine);
+      case 12:
+        return fieldRepeated(in, w, e.triangles, readTriangle);
+      case 13:
+        return fieldRepeated(in, w, e.texts, readText);
+      case 14:
+        return fieldRepeated(in, w, e.models, readModel);
+      case 5: {
+        uint64_t v = 0;
+        if (!fieldVarint(in, w, v)) {
+          return false;
+        }
+        e.frame_locked = (v != 0);
+        return true;
+      }
+      default:
+        return false;
     }
-  }
+  });
   return e;
 }
 
