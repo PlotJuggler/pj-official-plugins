@@ -1263,6 +1263,119 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodesCubeColorAndCylinderScales) {
   EXPECT_EQ(e.cylinders[0].color, (PJ::sdk::ColorRGBA{255, 128, 0, 255}));
 }
 
+// SceneEntity.models (field 14) carries mesh assets. Pre-fix readSceneEntity let
+// field 14 fall through to skipField, so an inline glTF model was silently
+// dropped and never rendered. An inline model provides `data` tagged by
+// `media_type`; `url` stays empty (mirrors the real Waymo /marker/car entity).
+TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodesInlineModel) {
+  PW scale;  // Vector3 (2.14, 2.1, 2.1)
+  scale.dbl(1, 2.14);
+  scale.dbl(2, 2.1);
+  scale.dbl(3, 2.1);
+  const std::vector<uint8_t> glb = {'g', 'l', 'T', 'F', 0x02, 0x00, 0xAB, 0xCD, 0xEF};
+  PW model;  // ModelPrimitive { scale=2, media_type=6, data=7 }
+  model.sub(2, scale);
+  model.str(6, "model/gltf-binary");
+  model.bytesField(7, glb);
+  PW entity;
+  entity.str(2, "base_link");  // frame_id
+  entity.str(3, "waymo_car");  // id
+  entity.sub(14, model);       // models[0]
+  PW scene;
+  scene.sub(2, entity);
+  const auto& w = scene.b;
+
+  auto r = pj_protobuf::deserializeFoxgloveSceneUpdate(w.data(), w.size());
+  ASSERT_TRUE(r) << r.error();
+  ASSERT_EQ(r->entities.size(), 1u);
+  const auto& e = r->entities[0];
+  ASSERT_EQ(e.models.size(), 1u);
+  EXPECT_EQ(e.models[0].media_type, "model/gltf-binary");
+  EXPECT_EQ(e.models[0].data, glb);  // full bytes, not truncated
+  EXPECT_DOUBLE_EQ(e.models[0].scale.x, 2.14);
+  EXPECT_TRUE(e.models[0].url.empty());
+}
+
+// A model can instead reference an external resource via `url`, leaving `data`
+// empty. Confirms both source branches of ModelPrimitive decode.
+TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodesUrlModel) {
+  PW model;  // ModelPrimitive { url=5 }
+  model.str(5, "package://meshes/car.glb");
+  PW entity;
+  entity.sub(14, model);
+  PW scene;
+  scene.sub(2, entity);
+  const auto& w = scene.b;
+
+  auto r = pj_protobuf::deserializeFoxgloveSceneUpdate(w.data(), w.size());
+  ASSERT_TRUE(r) << r.error();
+  ASSERT_EQ(r->entities.size(), 1u);
+  ASSERT_EQ(r->entities[0].models.size(), 1u);
+  EXPECT_EQ(r->entities[0].models[0].url, "package://meshes/car.glb");
+  EXPECT_TRUE(r->entities[0].models[0].data.empty());
+}
+
+// Regression for the field-14 fall-through: an entity carrying BOTH a cube
+// (field 8) and a model (field 14) must emit both. Proves wiring models does
+// not steal/skip the geometry and vice versa.
+TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodesCubeAndModelTogether) {
+  PW cube_size;  // Vector3
+  cube_size.dbl(1, 1.0);
+  cube_size.dbl(2, 1.0);
+  cube_size.dbl(3, 1.0);
+  PW cube;  // CubePrimitive { size=2 }
+  cube.sub(2, cube_size);
+
+  const std::vector<uint8_t> glb = {'g', 'l', 'T', 'F', 0x01};
+  PW model;  // ModelPrimitive { media_type=6, data=7 }
+  model.str(6, "model/gltf-binary");
+  model.bytesField(7, glb);
+
+  PW entity;
+  entity.str(3, "mixed");
+  entity.sub(8, cube);    // cubes[0]
+  entity.sub(14, model);  // models[0]
+  PW scene;
+  scene.sub(2, entity);
+  const auto& w = scene.b;
+
+  auto r = pj_protobuf::deserializeFoxgloveSceneUpdate(w.data(), w.size());
+  ASSERT_TRUE(r) << r.error();
+  ASSERT_EQ(r->entities.size(), 1u);
+  const auto& e = r->entities[0];
+  EXPECT_EQ(e.cubes.size(), 1u);
+  EXPECT_EQ(e.models.size(), 1u);
+  EXPECT_EQ(e.models[0].data, glb);
+}
+
+// A corrupt `data` length must not be trusted: the varint declares 1000 bytes
+// but only 5 exist in the submessage. Pre-fix, readBytes resized to the
+// declared length BEFORE checking availability, so the model came back with a
+// 1000-byte zero-filled buffer presented as successfully decoded (and a
+// declared 4 GiB length would have allocated 4 GiB on a few bytes of input).
+// The length must be validated against the bytes remaining; on mismatch the
+// model decodes with empty data.
+TEST(ProtobufParserTest, FoxgloveSceneUpdateRejectsOverdeclaredModelData) {
+  PW model;  // ModelPrimitive { media_type=6, data=7 (malformed) }
+  model.str(6, "model/gltf-binary");
+  model.tag(7, 2);        // data: length-delimited...
+  model.rawVarint(1000);  // ...declaring 1000 payload bytes...
+  const std::vector<uint8_t> partial = {'g', 'l', 'T', 'F', 0x02};
+  model.b.insert(model.b.end(), partial.begin(), partial.end());  // ...with only 5 present
+  PW entity;
+  entity.str(3, "corrupt");
+  entity.sub(14, model);  // submessage length is honest; the lie is inside
+  PW scene;
+  scene.sub(2, entity);
+  const auto& w = scene.b;
+
+  auto r = pj_protobuf::deserializeFoxgloveSceneUpdate(w.data(), w.size());
+  ASSERT_TRUE(r) << r.error();
+  ASSERT_EQ(r->entities.size(), 1u);
+  ASSERT_EQ(r->entities[0].models.size(), 1u);
+  EXPECT_TRUE(r->entities[0].models[0].data.empty());  // not a zero-filled 1000-byte buffer
+}
+
 // proto3 omits a 0.0 scale; foxglove reads an omitted scale as 0 (collapsed
 // face), so the decoder must override the SDK's ergonomic 1.0 default. Without
 // the fix these decode to 1.0.
