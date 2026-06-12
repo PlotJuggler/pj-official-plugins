@@ -24,14 +24,16 @@
 #include "builtin_transforms.hpp"
 #include "filter_editor_dialog_ui.hpp"
 #include "filter_editor_manifest.hpp"
+#include "pj_plugins/sdk/filter_registry_service.hpp"
 
 namespace {
 
 using PJ::sdk::BinaryFilterTransform;
 using PJ::sdk::BinaryOp;
 using PJ::sdk::DerivativeTransform;
+using PJ::sdk::FilterRegistryService;
+using PJ::sdk::FilterRegistryView;
 using PJ::sdk::FilterTransform;
-using PJ::sdk::FilterTransformFactory;
 using PJ::sdk::IntegralTransform;
 using PJ::sdk::MovingAverageTransform;
 using PJ::sdk::MovingRMSTransform;
@@ -39,7 +41,6 @@ using PJ::sdk::MovingVarianceTransform;
 using PJ::sdk::NoneTransform;
 using PJ::sdk::OutlierRemovalTransform;
 using PJ::sdk::Point2;
-using PJ::sdk::registerAllTransforms;
 using PJ::sdk::SamplesCounterTransform;
 using PJ::sdk::ScaleTransform;
 using PJ::sdk::TimeSincePreviousTransform;
@@ -128,6 +129,13 @@ class FilterEditorDialog : public PJ::DialogPluginTyped {
  public:
   using ApplyFn = std::function<std::string()>;
 
+  // Wire the host's filter registry. Set by the toolbox after bind() so the
+  // dialog reaches the SAME factory the host's read path uses (preview and
+  // streaming render share one source of truth).
+  void setRegistry(FilterRegistryView view) {
+    registry_view_ = view;
+  }
+
   std::string manifest() const override {
     return kFilterEditorManifest;
   }
@@ -154,12 +162,12 @@ class FilterEditorDialog : public PJ::DialogPluginTyped {
 
     // Transform list — built from the factory registry (no hardcoded enum).
     {
-      const auto ids = FilterTransformFactory::instance().registeredIds();
+      const auto ids = registry_view_.registeredIds();
       std::vector<std::string> labels;
       labels.reserve(ids.size());
       std::string selected_label = transform_ ? std::string(transform_->label()) : "-- No Transform --";
       for (const auto& tid : ids) {
-        auto t = FilterTransformFactory::instance().create(tid);
+        auto t = registry_view_.create(tid);
         if (t) {
           labels.push_back(t->label());
         }
@@ -264,9 +272,9 @@ class FilterEditorDialog : public PJ::DialogPluginTyped {
       return true;
     }
     if (name == "transform_list" && !items.empty()) {
-      const auto ids = FilterTransformFactory::instance().registeredIds();
+      const auto ids = registry_view_.registeredIds();
       for (const auto& tid : ids) {
-        auto t = FilterTransformFactory::instance().create(tid);
+        auto t = registry_view_.create(tid);
         if (t && std::string(t->label()) == items.front()) {
           transform_ = std::move(t);
           break;
@@ -480,7 +488,7 @@ class FilterEditorDialog : public PJ::DialogPluginTyped {
       return true;
     }
     if (name == "reset_btn") {
-      transform_ = std::make_unique<NoneTransform>();
+      transform_ = std::make_shared<NoneTransform>();
       preview_dirty_ = true;
       status_msg_ = reset_fn_ ? reset_fn_() : std::string("Reset");
       return true;
@@ -526,7 +534,7 @@ class FilterEditorDialog : public PJ::DialogPluginTyped {
   }
 
   void resetToNoTransform() {
-    transform_ = std::make_unique<NoneTransform>();
+    transform_ = std::make_shared<NoneTransform>();
     alias_.clear();
     alias_edited_by_user_ = false;
     preview_dirty_ = true;
@@ -649,9 +657,9 @@ class FilterEditorDialog : public PJ::DialogPluginTyped {
     }
     {
       const std::string tid = j.value("transform", std::string{"none"});
-      transform_ = FilterTransformFactory::instance().create(tid);
+      transform_ = registry_view_.create(tid);
       if (!transform_) {
-        transform_ = std::make_unique<NoneTransform>();
+        transform_ = std::make_shared<NoneTransform>();
       }
       if (j.contains("transform_params")) {
         transform_->loadParams(j["transform_params"].dump());
@@ -824,8 +832,13 @@ class FilterEditorDialog : public PJ::DialogPluginTyped {
   std::vector<std::string> plot_curves_;
   // Colors of those curves: human_name -> "#rrggbb". Used in the preview.
   std::unordered_map<std::string, std::string> plot_colors_;
+  // Filter registry exposed by the host. Set by the toolbox after bind() so
+  // the dialog resolves transforms by id through the same factory the host
+  // read path uses. Invalid before bind — early code paths defend with NULL
+  // checks and fall back to local NoneTransform construction.
+  FilterRegistryView registry_view_;
   // Current transform instance (owns its parameters). Never null.
-  std::unique_ptr<FilterTransform> transform_ = std::make_unique<NoneTransform>();
+  std::shared_ptr<FilterTransform> transform_ = std::make_shared<NoneTransform>();
   // Alias: custom legend name for the transformed curve (PJ3 lineEditAlias).
   // Auto-filled with "source[TransformName]"; user can override it.
   std::string alias_;
@@ -852,9 +865,42 @@ class FilterEditorToolbox : public PJ::ToolboxPluginBase {
     return PJ::kToolboxCapabilityHasDialog;
   }
 
+  PJ::Status bind(PJ::sdk::ServiceRegistry services) override {
+    auto base = PJ::ToolboxPluginBase::bind(services);
+    if (!base) {
+      return base;
+    }
+    // The host owns the FilterTransformFactory. We populate it with the 12
+    // builtin strategies (the math vendored in the SDK) so preview and the
+    // host's read path resolve to the same instances. library_owner is empty
+    // for this v1 cut — the PluginRuntimeCatalog already keeps the toolbox
+    // DSO loaded while it's a registered toolbox, which is the only window in
+    // which a created transform can be in flight (no orphaned instances after
+    // the toolbox unloads).
+    auto reg = services.require<FilterRegistryService>();
+    if (!reg) {
+      return PJ::unexpected(std::move(reg).error());
+    }
+    registry_view_ = *reg;
+    if (auto e = registry_view_.registerTransform<NoneTransform>("none", {}); !e) {
+      return PJ::unexpected(std::move(e).error());
+    }
+    (void)registry_view_.registerTransform<AbsoluteTransform>("absolute", {});
+    (void)registry_view_.registerTransform<ScaleTransform>("scale", {});
+    (void)registry_view_.registerTransform<DerivativeTransform>("derivative", {});
+    (void)registry_view_.registerTransform<IntegralTransform>("integral", {});
+    (void)registry_view_.registerTransform<MovingAverageTransform>("moving_average", {});
+    (void)registry_view_.registerTransform<MovingRMSTransform>("moving_rms", {});
+    (void)registry_view_.registerTransform<MovingVarianceTransform>("moving_variance", {});
+    (void)registry_view_.registerTransform<OutlierRemovalTransform>("outlier_removal", {});
+    (void)registry_view_.registerTransform<SamplesCounterTransform>("samples_counter", {});
+    (void)registry_view_.registerTransform<BinaryFilterTransform>("binary_filter", {});
+    (void)registry_view_.registerTransform<TimeSincePreviousTransform>("time_since_previous", {});
+    dialog_.setRegistry(registry_view_);
+    return PJ::okStatus();
+  }
+
   PJ_borrowed_dialog_t getDialog() override {
-    // Ensure all transforms are registered before the dialog is shown.
-    registerAllTransforms();
     if (toolboxHostBound()) {
       std::vector<std::string> names;
       std::unordered_map<std::string, SeriesAccessor> data;
@@ -1146,6 +1192,7 @@ class FilterEditorToolbox : public PJ::ToolboxPluginBase {
   }
 
   FilterEditorDialog dialog_;
+  FilterRegistryView registry_view_;
   bool created_ = false;
   std::string config_at_open_;
   std::string last_applied_config_;
