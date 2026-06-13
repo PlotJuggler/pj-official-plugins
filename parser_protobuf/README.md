@@ -29,6 +29,7 @@ objects (instead of flattened scalars), so PlotJuggler can render them:
 | Schema | Builtin object |
 |--------|----------------|
 | `PJ.VideoFrame` / `foxglove.CompressedVideo` | `kVideoFrame` (scene2D) |
+| `PJ.PosesInFrame` / `foxglove.PosesInFrame` | `kPosesInFrame` (3D poses) |
 | `foxglove.PointCloud` | `kPointCloud` (3D point cloud) |
 | `foxglove.LaserScan` | `kPointCloud` (3D point cloud, eagerly projected) |
 
@@ -46,6 +47,12 @@ dropped (Foxglove carries no range bounds), and the generated point buffer is
 owned via the cloud's `BufferAnchor`. The same non-identity-`pose` drop policy
 as `foxglove.PointCloud` applies. Its scalar route never projects: a header-only
 walk emits `frame_id`, `start_angle`, `end_angle` and `num_ranges`.
+
+`PJ.PosesInFrame` and `foxglove.PosesInFrame` are wire-identical (the SDK proto
+mirrors Foxglove field-for-field), so both names bind to the same SDK codec
+(`deserializePosesInFrame`) — no plugin-local decoder, mirroring the
+`VideoFrame` fast path. The message is small (scalars + a `frame_id`), so the
+decode is owning rather than zero-copy; the scalar route emits `num_poses`.
 
 `foxglove.PointCloud` mirrors how the ROS parser handles
 `sensor_msgs/PointCloud2`: geometry is kept in `frame_id` and resolved through

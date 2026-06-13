@@ -93,6 +93,20 @@ polar ranges, so cartesian points must be generated:
 |--------|-----------------------|---------|
 | `sensor_msgs/msg/LaserScan` | `kPointCloud` | `parseLaserScan` — projects rays to x/y/z (+`intensity` when present) FLOAT32 points via the shared `pj_laser_scan` projector (cos/sin LUT cached per scanner config); non-finite and out-of-`[range_min, range_max]` rays are dropped, so the cloud is unorganized and dense. The point buffer is newly generated and owned via the cloud's `BufferAnchor`. The scalar route stays on the generic flatten (`angle_*`, `ranges[i]`, … columns). |
 
+Four pose schemas are promoted to the canonical `kPosesInFrame` object (owned —
+the message carries only scalars, no byte blob). The shared `readPose()` helper
+reads each `geometry_msgs/Pose` (7 `float64`). Pose arrays can be huge (an AMCL
+particle cloud), so the scalar route uses the large-array discard policy; only
+`PoseStamped` keeps its per-axis scalar flatten (dual route, like
+`TransformStamped`):
+
+| Schema | `BuiltinObjectType` | Handler |
+|--------|-----------------------|---------|
+| `geometry_msgs/msg/PoseArray` | `kPosesInFrame` | `parsePoseArray` — Header frame + `Pose[]` |
+| `foxglove_msgs/msg/PosesInFrame` | `kPosesInFrame` | `parseFoxglovePosesInFrame` — bare `Time` + `frame_id` + `Pose[]` |
+| `geometry_msgs/msg/PoseStamped` | `kPosesInFrame` | `parsePoseStampedObject` — single pose; keeps `handlePoseStamped` scalars |
+| `nav_msgs/msg/Path` | `kPosesInFrame` | `parsePath` — path-frame poses; per-pose stamps dropped (one frame at one instant) |
+
 ## Scalar handlers
 
 Specialized handlers (registered through `wrapVoidHandler<>`) extract

@@ -1802,3 +1802,205 @@ TEST(ProtobufParserTest, FoxgloveLaserScanCorruptRangesLengthFailsCleanly) {
   auto info = pj_protobuf::readFoxgloveLaserScanInfo(wire.data(), wire.size());
   EXPECT_FALSE(info.has_value());  // scalar-route walk rejects it too
 }
+
+// ---------------------------------------------------------------------------
+// foxglove.PosesInFrame / PJ.PosesInFrame -> kPosesInFrame
+//
+// foxglove.PosesInFrame is wire-identical to the canonical PJ.PosesInFrame
+// (the SDK proto mirrors it field-for-field), so the parser binds both names
+// to the same SDK codec — exactly the VideoFrame precedent. We build a genuine
+// payload with the real protobuf serializer and exercise the parser's object
+// route. Wire layout:
+//   PosesInFrame { timestamp=1 (Timestamp), frame_id=2 (string),
+//                  poses=3 (repeated Pose) }
+//   Pose { position=1 (Vector3 x/y/z), orientation=2 (Quaternion x/y/z/w) }
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct PoseValues {
+  double px, py, pz;      // position
+  double qx, qy, qz, qw;  // orientation
+};
+
+std::vector<uint8_t> buildPosesInFrameWire(
+    int64_t ts_sec, int32_t ts_nanos, const std::string& frame_id, const std::vector<PoseValues>& poses) {
+  gp::FileDescriptorProto file;
+  file.set_name("pif.proto");
+  file.set_syntax("proto3");
+  file.set_package("test");
+
+  auto add_field = [](gp::DescriptorProto* m, const char* name, int num, gp::FieldDescriptorProto::Type type,
+                      const char* type_name = nullptr, bool repeated = false) {
+    auto* f = m->add_field();
+    f->set_name(name);
+    f->set_number(num);
+    f->set_type(type);
+    f->set_label(repeated ? gp::FieldDescriptorProto::LABEL_REPEATED : gp::FieldDescriptorProto::LABEL_OPTIONAL);
+    if (type_name != nullptr) {
+      f->set_type_name(type_name);
+    }
+  };
+
+  auto* ts = file.add_message_type();
+  ts->set_name("Timestamp");
+  add_field(ts, "seconds", 1, gp::FieldDescriptorProto::TYPE_INT64);
+  add_field(ts, "nanos", 2, gp::FieldDescriptorProto::TYPE_INT32);
+
+  auto* vec = file.add_message_type();
+  vec->set_name("Vector3");
+  add_field(vec, "x", 1, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(vec, "y", 2, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(vec, "z", 3, gp::FieldDescriptorProto::TYPE_DOUBLE);
+
+  auto* quat = file.add_message_type();
+  quat->set_name("Quaternion");
+  add_field(quat, "x", 1, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(quat, "y", 2, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(quat, "z", 3, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(quat, "w", 4, gp::FieldDescriptorProto::TYPE_DOUBLE);
+
+  auto* pose = file.add_message_type();
+  pose->set_name("Pose");
+  add_field(pose, "position", 1, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Vector3");
+  add_field(pose, "orientation", 2, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Quaternion");
+
+  auto* pif = file.add_message_type();
+  pif->set_name("PosesInFrame");
+  add_field(pif, "timestamp", 1, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Timestamp");
+  add_field(pif, "frame_id", 2, gp::FieldDescriptorProto::TYPE_STRING);
+  add_field(pif, "poses", 3, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Pose", true);
+
+  gp::DescriptorPool pool;
+  const gp::FileDescriptor* fd = pool.BuildFile(file);
+  const gp::Descriptor* pif_desc = fd->FindMessageTypeByName("PosesInFrame");
+  gp::DynamicMessageFactory factory;
+  std::unique_ptr<gp::Message> msg(factory.GetPrototype(pif_desc)->New());
+  const gp::Reflection* ref = msg->GetReflection();
+
+  gp::Message* tsm = ref->MutableMessage(msg.get(), pif_desc->FindFieldByName("timestamp"), &factory);
+  const gp::Descriptor* tsd = tsm->GetDescriptor();
+  tsm->GetReflection()->SetInt64(tsm, tsd->FindFieldByName("seconds"), ts_sec);
+  tsm->GetReflection()->SetInt32(tsm, tsd->FindFieldByName("nanos"), ts_nanos);
+
+  ref->SetString(msg.get(), pif_desc->FindFieldByName("frame_id"), frame_id);
+
+  const gp::FieldDescriptor* poses_f = pif_desc->FindFieldByName("poses");
+  for (const auto& pv : poses) {
+    gp::Message* pm = ref->AddMessage(msg.get(), poses_f, &factory);
+    const gp::Descriptor* pd = pm->GetDescriptor();
+    gp::Message* pos = pm->GetReflection()->MutableMessage(pm, pd->FindFieldByName("position"), &factory);
+    const gp::Descriptor* vd = pos->GetDescriptor();
+    pos->GetReflection()->SetDouble(pos, vd->FindFieldByName("x"), pv.px);
+    pos->GetReflection()->SetDouble(pos, vd->FindFieldByName("y"), pv.py);
+    pos->GetReflection()->SetDouble(pos, vd->FindFieldByName("z"), pv.pz);
+    gp::Message* ori = pm->GetReflection()->MutableMessage(pm, pd->FindFieldByName("orientation"), &factory);
+    const gp::Descriptor* qd = ori->GetDescriptor();
+    ori->GetReflection()->SetDouble(ori, qd->FindFieldByName("x"), pv.qx);
+    ori->GetReflection()->SetDouble(ori, qd->FindFieldByName("y"), pv.qy);
+    ori->GetReflection()->SetDouble(ori, qd->FindFieldByName("z"), pv.qz);
+    ori->GetReflection()->SetDouble(ori, qd->FindFieldByName("w"), pv.qw);
+  }
+
+  std::string out;
+  msg->SerializeToString(&out);
+  return std::vector<uint8_t>(out.begin(), out.end());
+}
+
+void expectTwoPosesDecoded(const PJ::sdk::PosesInFrame& pf, double half_sqrt2) {
+  ASSERT_EQ(pf.poses.size(), 2u);
+  EXPECT_DOUBLE_EQ(pf.poses[0].position.x, 1.0);
+  EXPECT_DOUBLE_EQ(pf.poses[0].position.y, 2.0);
+  EXPECT_DOUBLE_EQ(pf.poses[0].position.z, 0.0);
+  EXPECT_DOUBLE_EQ(pf.poses[0].orientation.x, 0.0);
+  EXPECT_DOUBLE_EQ(pf.poses[0].orientation.y, 0.0);
+  EXPECT_DOUBLE_EQ(pf.poses[0].orientation.z, 0.0);
+  EXPECT_DOUBLE_EQ(pf.poses[0].orientation.w, 1.0);
+  EXPECT_DOUBLE_EQ(pf.poses[1].position.x, 0.0);
+  EXPECT_DOUBLE_EQ(pf.poses[1].position.y, 0.0);
+  EXPECT_DOUBLE_EQ(pf.poses[1].position.z, 1.0);
+  EXPECT_DOUBLE_EQ(pf.poses[1].orientation.x, 0.0);
+  EXPECT_DOUBLE_EQ(pf.poses[1].orientation.y, 0.0);
+  EXPECT_DOUBLE_EQ(pf.poses[1].orientation.z, half_sqrt2);
+  EXPECT_DOUBLE_EQ(pf.poses[1].orientation.w, half_sqrt2);
+}
+
+const std::vector<PoseValues>& twoSamplePoses() {
+  static const double half_sqrt2 = 0.7071067811865476;  // sin/cos(45°): a 90° yaw quaternion
+  static const std::vector<PoseValues> poses = {
+      {.px = 1.0, .py = 2.0, .pz = 0.0, .qx = 0.0, .qy = 0.0, .qz = 0.0, .qw = 1.0},
+      {.px = 0.0, .py = 0.0, .pz = 1.0, .qx = 0.0, .qy = 0.0, .qz = half_sqrt2, .qw = half_sqrt2},
+  };
+  return poses;
+}
+
+}  // namespace
+
+TEST(ProtobufParserTest, FoxglovePosesInFrameObjectRoute) {
+  ProtobufParserFixture f;
+  f.setUp();
+
+  // Empty schema bytes: the well-known fast path keys off the type name only.
+  ASSERT_TRUE(f.bindSchema("foxglove.PosesInFrame", std::string{}));
+  const PJ::Span<const uint8_t> empty_schema{};
+  EXPECT_EQ(f.handle.classifySchema("foxglove.PosesInFrame", empty_schema), PJ::sdk::BuiltinObjectType::kPosesInFrame);
+
+  const auto wire = buildPosesInFrameWire(9, 500, "map", twoSamplePoses());
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(wire.data(), wire.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  ASSERT_NE(pf, nullptr);
+  EXPECT_EQ(pf->frame_id, "map");
+  EXPECT_EQ(pf->timestamp_ns, 9'000'000'500LL);  // decoded from the wire timestamp
+  EXPECT_FALSE(rec->ts.has_value());             // embedded-ts option off by default
+  expectTwoPosesDecoded(*pf, 0.7071067811865476);
+}
+
+TEST(ProtobufParserTest, FoxglovePosesInFrameScalarRoute) {
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("foxglove.PosesInFrame", std::string{}));
+
+  const auto wire = buildPosesInFrameWire(9, 500, "map", twoSamplePoses());
+  ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(wire.data()), wire.size()), 555));
+
+  // Slim metadata row: a pose array can be huge, so the scalar route emits only
+  // a bounded count (mirroring foxglove.FrameTransform's num_transforms), never
+  // per-pose columns.
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+  const auto* num_poses = PJ::sdk::testing::ParserWriteRecorder::findField(row, "num_poses");
+  ASSERT_NE(num_poses, nullptr);
+  EXPECT_DOUBLE_EQ(num_poses->numeric, 2.0);
+}
+
+// The canonical PJ.PosesInFrame schema name binds to the same SDK codec as the
+// foxglove name (the protos are wire-identical), so a PlotJuggler-native source
+// promotes to kPosesInFrame too.
+TEST(ProtobufParserTest, PjPosesInFrameObjectRoute) {
+  ProtobufParserFixture f;
+  f.setUp();
+
+  ASSERT_TRUE(f.bindSchema("PJ.PosesInFrame", std::string{}));  // == kSchemaPosesInFrame
+  const PJ::Span<const uint8_t> empty_schema{};
+  EXPECT_EQ(f.handle.classifySchema("PJ.PosesInFrame", empty_schema), PJ::sdk::BuiltinObjectType::kPosesInFrame);
+
+  const auto wire = buildPosesInFrameWire(9, 500, "map", twoSamplePoses());
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(wire.data(), wire.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  ASSERT_NE(pf, nullptr);
+  EXPECT_EQ(pf->frame_id, "map");
+  EXPECT_EQ(pf->timestamp_ns, 9'000'000'500LL);
+  expectTwoPosesDecoded(*pf, 0.7071067811865476);
+}

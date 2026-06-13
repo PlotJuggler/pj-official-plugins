@@ -2645,4 +2645,208 @@ TEST(RosParserTest, LaserScanRealCdrMessageFromBag) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// PosesInFrame object route — geometry_msgs/PoseArray, foxglove_msgs/
+// PosesInFrame, geometry_msgs/PoseStamped (single), nav_msgs/Path.
+// ---------------------------------------------------------------------------
+
+// Shared message-definition fragments (the leaf geometry types are identical
+// across all four schemas).
+static const char* kGeometryLeavesDef =
+    "================\nMSG: geometry_msgs/Pose\n"
+    "geometry_msgs/Point position\ngeometry_msgs/Quaternion orientation\n"
+    "================\nMSG: geometry_msgs/Point\nfloat64 x\nfloat64 y\nfloat64 z\n"
+    "================\nMSG: geometry_msgs/Quaternion\nfloat64 x\nfloat64 y\nfloat64 z\nfloat64 w\n";
+
+static const char* kHeaderDef =
+    "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+    "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+TEST(RosParserTest, PoseArrayProducesPosesInFrameObject) {
+  const std::string def =
+      std::string("std_msgs/Header header\ngeometry_msgs/Pose[] poses\n") + kHeaderDef + kGeometryLeavesDef;
+
+  RosParserFixture f;
+  f.setUp();
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("geometry_msgs/PoseArray", def));
+  EXPECT_EQ(f.handle.classifySchema("geometry_msgs/PoseArray", def_span), PJ::sdk::BuiltinObjectType::kPosesInFrame);
+
+  const double half_sqrt2 = 0.7071067811865476;  // sin/cos(45°): a 90° yaw quaternion
+  auto payload = serializeCdr([half_sqrt2](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 10, 500, "map");
+    enc.serializeUInt32(2);                                      // poses[] count
+    serializeVector3(enc, 1.0, 2.0, 0.0);                        // poses[0].position
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);                // poses[0].orientation (identity)
+    serializeVector3(enc, 0.0, 0.0, 1.0);                        // poses[1].position
+    serializeQuaternion(enc, 0.0, 0.0, half_sqrt2, half_sqrt2);  // poses[1].orientation (90° yaw)
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1000, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  ASSERT_NE(pf, nullptr);
+  EXPECT_EQ(pf->frame_id, "map");
+  // use_embedded_timestamp_ is off by default: the object keeps the message
+  // receive time and the record's ts override stays unset (same convention as
+  // the other Header-bearing object handlers, e.g. Image / OccupancyGrid).
+  EXPECT_EQ(pf->timestamp_ns, 1000);
+  EXPECT_FALSE(rec->ts.has_value());
+
+  ASSERT_EQ(pf->poses.size(), 2u);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.x, 1.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.y, 2.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.z, 0.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].orientation.w, 1.0);
+  EXPECT_DOUBLE_EQ(pf->poses[1].position.z, 1.0);
+  EXPECT_DOUBLE_EQ(pf->poses[1].orientation.z, half_sqrt2);
+  EXPECT_DOUBLE_EQ(pf->poses[1].orientation.w, half_sqrt2);
+
+  // End-to-end ingest must succeed: an object-bearing entry whose parse_scalars
+  // fails would abort the message push and silently drop the object. The
+  // large-array discard route returns a (possibly empty) row, so parse() is ok.
+  ASSERT_TRUE(f.parse(payload, 1000));
+}
+
+TEST(RosParserTest, FoxglovePosesInFrameProducesPosesInFrameObject) {
+  // Foxglove's ROS variant leads with a BARE builtin_interfaces/Time (not a
+  // std_msgs/Header) and an explicit frame_id, then the poses.
+  const std::string def =
+      std::string("builtin_interfaces/Time timestamp\nstring frame_id\ngeometry_msgs/Pose[] poses\n") +
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n" + kGeometryLeavesDef;
+
+  RosParserFixture f;
+  f.setUp();
+  // Enable embedded timestamps (before bindSchema, like the other bare-Time
+  // tests) so we also prove the bare Time is decoded — NOT misread as a Header —
+  // and adopted as the object time.
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("foxglove_msgs/PosesInFrame", def));
+  EXPECT_EQ(f.handle.classifySchema("foxglove_msgs/PosesInFrame", def_span), PJ::sdk::BuiltinObjectType::kPosesInFrame);
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(int32_t{7}));     // timestamp.sec
+    enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(uint32_t{42}));  // timestamp.nanosec
+    enc.serializeString("odom");
+    enc.serializeUInt32(1);                        // poses[] count
+    serializeVector3(enc, 5.0, 6.0, 7.0);          // poses[0].position
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);  // poses[0].orientation
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1000, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  ASSERT_NE(pf, nullptr);
+  EXPECT_EQ(pf->frame_id, "odom");
+  EXPECT_EQ(pf->timestamp_ns, 7'000'000'042LL);  // bare Time decoded, embedded ts on
+  ASSERT_TRUE(rec->ts.has_value());
+  EXPECT_EQ(*rec->ts, 7'000'000'042LL);
+  ASSERT_EQ(pf->poses.size(), 1u);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.x, 5.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.z, 7.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].orientation.w, 1.0);
+}
+
+TEST(RosParserTest, PoseStampedProducesSinglePosePosesInFrameObject) {
+  const std::string def =
+      std::string("std_msgs/Header header\ngeometry_msgs/Pose pose\n") + kHeaderDef + kGeometryLeavesDef;
+
+  RosParserFixture f;
+  f.setUp();
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("geometry_msgs/PoseStamped", def));
+  // Dual route: PoseStamped advertises the canonical object alongside its
+  // existing per-axis scalar flatten (handlePoseStamped), exactly like
+  // TransformStamped does for FrameTransforms.
+  EXPECT_EQ(f.handle.classifySchema("geometry_msgs/PoseStamped", def_span), PJ::sdk::BuiltinObjectType::kPosesInFrame);
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 3, 0, "base_link");
+    serializeVector3(enc, 9.0, 8.0, 7.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1000, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  ASSERT_NE(pf, nullptr);
+  EXPECT_EQ(pf->frame_id, "base_link");
+  ASSERT_EQ(pf->poses.size(), 1u);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.x, 9.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.y, 8.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.z, 7.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].orientation.w, 1.0);
+
+  // The scalar route still runs: the per-axis pose columns remain plottable.
+  f.recorder.clear();
+  ASSERT_TRUE(f.parse(payload, 1000));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+  const auto* pos_x = PJ::sdk::testing::ParserWriteRecorder::findField(row, "/pose/position/x");
+  ASSERT_NE(pos_x, nullptr);
+  EXPECT_DOUBLE_EQ(pos_x->numeric, 9.0);
+}
+
+TEST(RosParserTest, PathProducesPosesInFrameObject) {
+  // nav_msgs/Path: a path-level Header, then an array of PoseStamped (each with
+  // its OWN Header). PosesInFrame is "poses in one frame at one instant", so the
+  // object takes the PATH header's frame_id + stamp; the per-pose stamps and
+  // frames are read and dropped.
+  const std::string def = std::string("std_msgs/Header header\ngeometry_msgs/PoseStamped[] poses\n") + kHeaderDef +
+                          "================\nMSG: geometry_msgs/PoseStamped\n"
+                          "std_msgs/Header header\ngeometry_msgs/Pose pose\n" +
+                          kGeometryLeavesDef;
+
+  RosParserFixture f;
+  f.setUp();
+  // Embedded ts on so we can prove the object adopts the PATH stamp, not the
+  // last per-pose stamp.
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("nav_msgs/Path", def));
+  EXPECT_EQ(f.handle.classifySchema("nav_msgs/Path", def_span), PJ::sdk::BuiltinObjectType::kPosesInFrame);
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 20, 0, "map");  // PATH header: stamp = 20 s, frame "map"
+    enc.serializeUInt32(2);              // poses[] count
+    // poses[0]: own header (different stamp + frame — both must be ignored)
+    serializeHeader(enc, 21, 0, "ignored_inner_0");
+    serializeVector3(enc, 1.0, 0.0, 0.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+    // poses[1]
+    serializeHeader(enc, 22, 0, "ignored_inner_1");
+    serializeVector3(enc, 2.0, 0.0, 0.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1000, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  ASSERT_NE(pf, nullptr);
+  EXPECT_EQ(pf->frame_id, "map");                 // PATH frame, not an inner one
+  EXPECT_EQ(pf->timestamp_ns, 20'000'000'000LL);  // PATH stamp, not 21/22 s
+  ASSERT_TRUE(rec->ts.has_value());
+  EXPECT_EQ(*rec->ts, 20'000'000'000LL);
+  ASSERT_EQ(pf->poses.size(), 2u);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.x, 1.0);
+  EXPECT_DOUBLE_EQ(pf->poses[1].position.x, 2.0);
+}
+
 }  // namespace

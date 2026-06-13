@@ -224,13 +224,40 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kImageAnnotations,
         .parse_scalars = &RosParser::parseYoloScalars,
         .parse_object = &RosParser::parseYoloDetectionArray}},
+      // A pose array becomes a canonical PosesInFrame object (poses only —
+      // rendering style is viewer-side). Pose arrays can be huge (an AMCL
+      // particle cloud carries 1000s of poses), so the scalar route applies the
+      // large-array discard policy: small arrays stay plottable, big ones don't
+      // explode into thousands of columns.
+      {"geometry_msgs/PoseArray",
+       {.object_type = ObjectType::kPosesInFrame,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parsePoseArray}},
+      // Foxglove's own ROS message: a bare Time + frame_id + Pose[]. Same
+      // canonical target and large-array scalar policy as PoseArray.
+      {"foxglove_msgs/PosesInFrame",
+       {.object_type = ObjectType::kPosesInFrame,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseFoxglovePosesInFrame}},
+      // A path is a trajectory of stamped poses; emit them as one PosesInFrame
+      // in the path's frame (per-pose stamps dropped — see parsePath).
+      {"nav_msgs/Path",
+       {.object_type = ObjectType::kPosesInFrame,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parsePath}},
 
       // ----- Specialized scalar schemas -----
       // wrapVoidHandler<Handler> is a member-fn-template; its address is a
       // member-fn-ptr matching parse_scalars, so it slots in directly.
       {"std_msgs/Empty", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleEmpty>}},
       {"geometry_msgs/Pose", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePose>}},
-      {"geometry_msgs/PoseStamped", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePoseStamped>}},
+      // Dual route: a single stamped pose flattens to per-axis scalars AND
+      // emits a one-element PosesInFrame object (like TransformStamped does for
+      // FrameTransforms).
+      {"geometry_msgs/PoseStamped",
+       {.object_type = ObjectType::kPosesInFrame,
+        .parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePoseStamped>,
+        .parse_object = &RosParser::parsePoseStampedObject}},
       {"geometry_msgs/Transform", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTransform>}},
       {"geometry_msgs/TransformStamped",
        {.object_type = ObjectType::kFrameTransforms,
