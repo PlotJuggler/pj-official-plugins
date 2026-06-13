@@ -39,6 +39,7 @@
 #include <unordered_map>
 
 #include "pj_base/builtin/camera_info.hpp"
+#include "pj_base/builtin/poses_in_frame.hpp"
 #include "ros_parser_internal.hpp"
 
 namespace ros_parser_detail {
@@ -674,6 +675,22 @@ PJ::sdk::FrameTransform RosParser::readStampedTransform() {
   return tf;
 }
 
+// geometry_msgs/Pose on the wire: position (Point: x/y/z f64) then orientation
+// (Quaternion: x/y/z/w f64) — 7 doubles, no header.
+PJ::sdk::Pose RosParser::readPose() {
+  const double px = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+  const double py = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+  const double pz = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+  const double ox = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+  const double oy = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+  const double oz = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+  const double ow = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
+  return PJ::sdk::Pose{
+      .position = {.x = px, .y = py, .z = pz},
+      .orientation = {.x = ox, .y = oy, .z = oz, .w = ow},
+  };
+}
+
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFrameTransforms(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
@@ -714,6 +731,181 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseTransformStampedObject(
         .object = PJ::sdk::BuiltinObject{std::move(transforms)}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("TransformStamped: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// geometry_msgs/PoseArray
+//
+// Wire layout:
+//   header        std_msgs/Header       (sec, nanosec, frame_id — readHeader())
+//   poses         geometry_msgs/Pose[]  (uint32 count + N poses)
+//
+// Emitted as a canonical sdk::PosesInFrame (owned — no byte blob). The
+// canonical type stores ONLY poses: rendering style (arrow vs triad, size,
+// color) is chosen by the viewer at draw time.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePoseArray(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    HeaderData header = readHeader();
+
+    const uint32_t pose_count = deserializer_->deserializeUInt32();
+    // Corrupt-count guard: 7 float64 = 56 bytes is the minimum wire size per
+    // pose; XCDR1 alignment padding only makes valid messages larger, so this
+    // lower bound never rejects a valid message. The surrounding try/catch is
+    // the authoritative failure mode for truncation.
+    constexpr size_t kPoseWireBytes = 7 * sizeof(double);
+    if (static_cast<size_t>(pose_count) * kPoseWireBytes > deserializer_->bytesLeft()) {
+      return PJ::unexpected(std::string("PoseArray: pose count exceeds payload size"));
+    }
+
+    PJ::sdk::PosesInFrame result;
+    result.timestamp_ns = current_timestamp_;
+    result.frame_id = std::move(header.frame_id);
+    result.poses.reserve(pose_count);
+    for (uint32_t i = 0; i < pose_count; ++i) {
+      result.poses.push_back(readPose());
+    }
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(result)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("PoseArray: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// foxglove_msgs/PosesInFrame
+//
+// Wire layout (ROS2 CDR):
+//   timestamp     builtin_interfaces/Time  (sec int32, nanosec uint32)
+//   frame_id      string
+//   poses         geometry_msgs/Pose[]     (uint32 count + N poses)
+//
+// Like foxglove_msgs/CompressedVideo, the first field is a BARE
+// builtin_interfaces/Time, not a std_msgs/Header — so readHeader() must NOT be
+// used (it would consume the wrong fields). We read the two Time words directly.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxglovePosesInFrame(
+    PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+
+    // builtin_interfaces/Time timestamp — bare, not wrapped in a Header.
+    const uint32_t sec = deserializer_->deserializeUInt32();
+    const uint32_t nsec = deserializer_->deserializeUInt32();
+    const int64_t embedded_ts_ns = static_cast<int64_t>(sec) * 1000000000LL + static_cast<int64_t>(nsec);
+    if (use_embedded_timestamp_ && embedded_ts_ns > 0) {
+      current_timestamp_ = embedded_ts_ns;
+    }
+
+    std::string frame_id;
+    deserializer_->deserializeString(frame_id);
+
+    const uint32_t pose_count = deserializer_->deserializeUInt32();
+    constexpr size_t kPoseWireBytes = 7 * sizeof(double);
+    if (static_cast<size_t>(pose_count) * kPoseWireBytes > deserializer_->bytesLeft()) {
+      return PJ::unexpected(std::string("PosesInFrame: pose count exceeds payload size"));
+    }
+
+    PJ::sdk::PosesInFrame result;
+    result.timestamp_ns = current_timestamp_;
+    result.frame_id = std::move(frame_id);
+    result.poses.reserve(pose_count);
+    for (uint32_t i = 0; i < pose_count; ++i) {
+      result.poses.push_back(readPose());
+    }
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(result)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("PosesInFrame: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// geometry_msgs/PoseStamped — a single stamped pose, surfaced as a one-element
+// PosesInFrame so it feeds the same 3D pose view as PoseArray. The scalar
+// handler (handlePoseStamped) still runs in parallel for per-axis plotting.
+//
+// Wire layout:
+//   header   std_msgs/Header       (sec, nanosec, frame_id — readHeader())
+//   pose     geometry_msgs/Pose    (position xyz + orientation xyzw)
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePoseStampedObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    HeaderData header = readHeader();
+
+    PJ::sdk::PosesInFrame result;
+    result.timestamp_ns = current_timestamp_;
+    result.frame_id = std::move(header.frame_id);
+    result.poses.push_back(readPose());
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(result)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("PoseStamped: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// nav_msgs/Path
+//
+// Wire layout:
+//   header   std_msgs/Header               (path frame_id + stamp)
+//   poses    geometry_msgs/PoseStamped[]    (uint32 count + N)
+//     each PoseStamped: std_msgs/Header header; geometry_msgs/Pose pose
+//
+// A PosesInFrame is an array of poses in ONE frame at ONE instant, so the
+// object adopts the PATH header's frame_id + stamp. Each PoseStamped's own
+// Header is read and dropped (readHeader advances the cursor; its
+// current_timestamp_ side-effect is overwritten by the path stamp captured up
+// front). Per-pose stamps/frames remain available via the generic scalar route.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePath(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    HeaderData path_header = readHeader();
+    // Capture the path-level time before the per-pose readHeader() calls below
+    // overwrite current_timestamp_ with each pose's own stamp.
+    const PJ::Timestamp object_ts = current_timestamp_;
+
+    const uint32_t pose_count = deserializer_->deserializeUInt32();
+    // Corrupt-count guard: each PoseStamped is at minimum a 12-byte Header
+    // (sec + nanosec + empty frame_id) plus a 56-byte Pose. CDR alignment only
+    // adds bytes, so this lower bound never rejects a valid message.
+    constexpr size_t kPoseStampedMinBytes = 12 + 7 * sizeof(double);
+    if (static_cast<size_t>(pose_count) * kPoseStampedMinBytes > deserializer_->bytesLeft()) {
+      return PJ::unexpected(std::string("Path: pose count exceeds payload size"));
+    }
+
+    PJ::sdk::PosesInFrame result;
+    result.timestamp_ns = object_ts;
+    result.frame_id = std::move(path_header.frame_id);
+    result.poses.reserve(pose_count);
+    for (uint32_t i = 0; i < pose_count; ++i) {
+      readHeader();  // per-pose Header — read and dropped
+      result.poses.push_back(readPose());
+    }
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{object_ts} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(result)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("Path: CDR read error: ") + e.what());
   }
 }
 

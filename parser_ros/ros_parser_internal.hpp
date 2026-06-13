@@ -355,6 +355,23 @@ class RosParser : public PJ::MessageParserPluginBase {
   // geometry_msgs/TransformStamped -> sdk::FrameTransforms (single element)
   PJ::Expected<PJ::sdk::ObjectRecord> parseTransformStampedObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
+  // geometry_msgs/PoseArray -> sdk::PosesInFrame (poses only; rendering style is
+  // a viewer-side concern).
+  PJ::Expected<PJ::sdk::ObjectRecord> parsePoseArray(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // foxglove_msgs/PosesInFrame -> sdk::PosesInFrame. Leads with a BARE
+  // builtin_interfaces/Time (not a Header), then frame_id, then the poses.
+  PJ::Expected<PJ::sdk::ObjectRecord> parseFoxglovePosesInFrame(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // geometry_msgs/PoseStamped -> sdk::PosesInFrame (single element). Dual route:
+  // keeps its per-axis scalar flatten (handlePoseStamped) alongside the object.
+  PJ::Expected<PJ::sdk::ObjectRecord> parsePoseStampedObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // nav_msgs/Path -> sdk::PosesInFrame. The object takes the PATH header's
+  // frame_id + stamp; each PoseStamped's own header is read and dropped (a
+  // PosesInFrame is one frame at one instant).
+  PJ::Expected<PJ::sdk::ObjectRecord> parsePath(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
   // nav_msgs/OccupancyGrid -> sdk::OccupancyGrid (byte-backed, zero-copy cells)
   PJ::Expected<PJ::sdk::ObjectRecord> parseOccupancyGrid(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
@@ -390,6 +407,11 @@ class RosParser : public PJ::MessageParserPluginBase {
   // Reads one geometry_msgs/TransformStamped from the deserializer into a
   // FrameTransform. Shared by parseFrameTransforms and parseTransformStampedObject.
   PJ::sdk::FrameTransform readStampedTransform();
+
+  // Reads one geometry_msgs/Pose (7 float64: position xyz + orientation xyzw)
+  // from the deserializer at the current cursor. Shared by all the PosesInFrame
+  // object handlers (PoseArray / foxglove PosesInFrame / PoseStamped / Path).
+  PJ::sdk::Pose readPose();
 
   // ----- Specialized scalar handlers -----
   //

@@ -12,6 +12,7 @@
 #include <pj_array_policy/array_policy.hpp>
 #include <pj_base/builtin/builtin_object.hpp>
 #include <pj_base/builtin/point_cloud.hpp>
+#include <pj_base/builtin/poses_in_frame_codec.hpp>
 #include <pj_base/builtin/video_frame_codec.hpp>
 #include <pj_base64/base64.hpp>
 #include <pj_laser_scan/laser_scan_projector.hpp>
@@ -318,6 +319,18 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::okStatus();
     }
 
+    // Canonical-object fast path for PosesInFrame. Like VideoFrame, the
+    // canonical PJ.PosesInFrame and foxglove.PosesInFrame are wire-identical
+    // (the SDK proto mirrors foxglove field-for-field), so the SDK codec
+    // (deserializePosesInFrame) serves both names — no plugin-local decoder.
+    if (type_name == PJ::kSchemaPosesInFrame || type_name == "foxglove.PosesInFrame") {
+      if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
+        return status;
+      }
+      registerPosesInFrameHandler(type_name);
+      return PJ::okStatus();
+    }
+
     // Other well-known Foxglove schemas -> their canonical builtin objects.
     // Same rationale as PointCloud: the wire layout is known, so we decode it
     // directly and bypass the descriptor pool. Crucially, promoting these stops
@@ -508,6 +521,55 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         ts = frame->timestamp_ns;
       }
       return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*frame)}};
+    };
+
+    registerSchemaHandler(type_name, std::move(handler));
+  }
+
+  // Register the SchemaHandler for the canonical PosesInFrame fast path. The
+  // object route decodes one PJ.PosesInFrame / foxglove.PosesInFrame per
+  // message with the SDK codec (owning — the message carries no byte blob, only
+  // scalars + a frame_id string, so there is nothing to alias zero-copy).
+  void registerPosesInFrameHandler(std::string_view type_name) {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kPosesInFrame;
+
+    handler.parse_scalars =
+        [this](PJ::Timestamp /*ts*/, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+      // Slim metadata row: a pose array can be huge (e.g. an AMCL particle
+      // cloud), so the scalar route emits only a bounded count, never per-pose
+      // columns — mirroring foxglove.FrameTransform's num_transforms. The
+      // object-bearing entry also needs a parse_scalars at all: without one the
+      // host's eager-scalar ingest aborts the push and drops the object.
+      auto poses = PJ::deserializePosesInFrame(payload.data(), payload.size());
+      if (!poses) {
+        return PJ::unexpected(std::move(poses).error());  // surface, don't drop silently
+      }
+      PJ::sdk::ScalarRecord record;
+      // Match the object route's timestamp policy so the scalar columns and the
+      // object entry land on the same timeline.
+      if (use_embedded_timestamp_ && poses->timestamp_ns > 0) {
+        record.ts = poses->timestamp_ns;
+      }
+      record.fields.push_back(
+          {.name = "num_poses", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(poses->poses.size())}});
+      return record;
+    };
+
+    handler.parse_object =
+        [this](PJ::Timestamp /*ts*/, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      auto poses = PJ::deserializePosesInFrame(payload.bytes.data(), payload.bytes.size());
+      if (!poses) {
+        return PJ::unexpected(std::move(poses).error());
+      }
+      // Embedded-timestamp policy mirrors the other foxglove object handlers:
+      // when enabled, the proto Timestamp drives the record time; otherwise the
+      // host's receive time is used.
+      std::optional<PJ::Timestamp> ts;
+      if (use_embedded_timestamp_ && poses->timestamp_ns > 0) {
+        ts = poses->timestamp_ns;
+      }
+      return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*poses)}};
     };
 
     registerSchemaHandler(type_name, std::move(handler));
