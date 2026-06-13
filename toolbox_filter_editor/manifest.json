@@ -1,0 +1,23 @@
+{
+  "id": "toolbox-filter-editor",
+  "name": "Filter Editor",
+  "version": "0.2.0",
+  "description": "Apply predefined filters (Moving Average, Derivative, Integral, ...) to curves in a plot. Invoked via right-click on a plot or from the toolbox launcher. Port of PlotJuggler 3's 'Apply filter to data' dialog.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MPL-2.0",
+  "icon_url": "",
+  "category": "toolbox",
+  "tags": [
+    "filter",
+    "moving-average",
+    "derivative",
+    "integral",
+    "predefined",
+    "toolbox",
+    "plot_action"
+  ],
+  "min_plotjuggler_version": "4.0.0"
+}
