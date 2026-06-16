@@ -1,0 +1,9 @@
+{
+  "id": "toolbox-markers",
+  "name": "Plot Markers",
+  "version": "1.0.0",
+  "description": "Demo producer that creates plot markers (shaded regions and point events) on the loaded data via the marker-store service.",
+  "author": "PlotJuggler",
+  "category": "toolbox",
+  "min_plotjuggler_version": "4.0.0"
+}

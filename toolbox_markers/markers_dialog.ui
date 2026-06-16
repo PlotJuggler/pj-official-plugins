@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MarkersDialog</class>
+ <widget class="QWidget" name="MarkersDialog">
+  <property name="windowTitle">
+   <string>Plot Markers (demo producer)</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <item>
+    <widget class="QLabel" name="status_label">
+     <property name="text">
+      <string>Load data, then add markers to the plots.</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QPushButton" name="add_region">
+     <property name="text">
+      <string>Add Region marker</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QPushButton" name="add_event">
+     <property name="text">
+      <string>Add Event marker</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QPushButton" name="clear_markers">
+     <property name="text">
+      <string>Clear markers</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Close</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>
