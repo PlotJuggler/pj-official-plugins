@@ -46,62 +46,46 @@ struct SnippetData {
   std::string function_name;
 };
 
-std::filesystem::path luaEditorLibraryPath() {
-  return PJ::sdk::userDataDir() / "toolbox_reactive_scripts_editor" / "library.json";
+std::filesystem::path luaEditorRecentPath() {
+  return PJ::sdk::userDataDir() / "toolbox_reactive_scripts_editor" / "recent.json";
 }
 
-// ---------------------------------------------------------------------------
-// Library disk I/O
-//
-// Returns empty string on success, or a human-readable error on failure.
-// ---------------------------------------------------------------------------
-
-std::string persistLibraryToDisk(
-    const std::filesystem::path& path, const std::map<std::string, SnippetData>& snippets) {
+void persistRecentToDisk(const std::filesystem::path& path, const std::vector<SnippetData>& recent) {
   try {
     std::filesystem::create_directories(path.parent_path());
-    nlohmann::json j = nlohmann::json::object();
-    for (const auto& [name, snippet] : snippets) {
-      j[name] = {
-          {"code", snippet.code},
-          {"global_code", snippet.global_code},
-          {"function_name", snippet.function_name},
-      };
+    nlohmann::json j = nlohmann::json::array();
+    for (const auto& s : recent) {
+      j.push_back({{"code", s.code}, {"global_code", s.global_code}, {"function_name", s.function_name}});
     }
     std::ofstream out(path);
-    if (!out) {
-      return "cannot open " + path.string() + " for writing";
+    if (out) {
+      out << j.dump(2);
     }
-    out << j.dump(2);
-    return "";
-  } catch (const std::exception& e) {
-    return std::string("library write failed: ") + e.what();
-  }
+  } catch (...) {}
 }
 
-std::map<std::string, SnippetData> loadLibraryFromDisk(const std::filesystem::path& path) {
-  std::map<std::string, SnippetData> result;
+std::vector<SnippetData> loadRecentFromDisk(const std::filesystem::path& path) {
+  std::vector<SnippetData> result;
   std::ifstream in(path);
   if (!in) {
-    return result;  // Missing file is fine: no snippets yet.
+    return result;
   }
-
   std::stringstream buf;
   buf << in.rdbuf();
   auto j = nlohmann::json::parse(buf.str(), nullptr, false);
-  if (j.is_discarded() || !j.is_object()) {
+  if (!j.is_array()) {
     return result;
   }
-
-  for (auto& [key, val] : j.items()) {
-    if (!val.is_object()) {
+  for (auto& item : j) {
+    if (!item.is_object()) {
       continue;
     }
-    result[key] = SnippetData{
-        val.value("code", std::string{}),
-        val.value("global_code", std::string{}),
-        val.value("function_name", key),
-    };
+    result.push_back(
+        SnippetData{
+            item.value("code", std::string{}),
+            item.value("global_code", std::string{}),
+            item.value("function_name", std::string{}),
+        });
   }
   return result;
 }
@@ -245,8 +229,19 @@ class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    // -- Timeseries list (left panel) --
-    wd.setListItems("series_list", series_names_);
+    // -- Active Scripts: in-memory only, empty on restart (matches PJ3)
+    std::vector<std::string> active_names;
+    for (const auto& s : active_scripts_) {
+      active_names.push_back(s.function_name);
+    }
+    wd.setListItems("series_list", active_names);
+
+    // -- Recent scripts (independent history with full data copies, matches PJ3 listWidgetRecent)
+    std::vector<std::string> recent_names;
+    for (const auto& s : recent_snippets_) {
+      recent_names.push_back(s.function_name);
+    }
+    wd.setListItems("recent_list", recent_names);
 
     // -- Language selector --
     bool is_lua = (language_ == "lua");
@@ -265,7 +260,8 @@ class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
         .setCodeLanguage("code_editor", language_)
         .setText("function_name", function_name_)
         .setEnabled("save_button", !function_name_.empty() && !code_.empty())
-        .setEnabled("run_button", !function_name_.empty() && !code_.empty() && !has_syntax_error_);
+        .setEnabled("run_button", !function_name_.empty() && !code_.empty() && !has_syntax_error_)
+        .setEnabled("deleteButton", !active_selected_.empty());
 
     // -- Dynamic labels based on language --
     if (is_lua) {
@@ -283,32 +279,15 @@ class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
       wd.setPlainText("terminal_output", terminal_text_);
     }
 
-    // -- Library tab --
-    std::vector<std::string> visible_names;
-    for (const auto& [name, snippet] : saved_snippets_) {
-      if (library_search_.empty() || name.find(library_search_) != std::string::npos) {
-        visible_names.push_back(name);
-      }
-    }
-    wd.setListItems("library_list", visible_names);
-    wd.setEnabled("library_use", !library_selected_.empty());
-    wd.setEnabled("library_delete", !library_selected_.empty());
+    // -- Library tab (matches PJ3 textLibrary) --
+    wd.setCodeContent("library_editor", library_code_).setCodeLanguage("library_editor", "lua");
+    wd.setEnabled("library_apply", !library_valid_);
 
-    // Library preview
-    if (!library_selected_.empty()) {
-      auto it = saved_snippets_.find(library_selected_);
-      if (it != saved_snippets_.end()) {
-        std::string preview;
-        if (!it->second.global_code.empty()) {
-          preview += it->second.global_code + "\n\n";
-        }
-        preview += "function " + it->second.function_name + "(tracker_time)\n";
-        preview += it->second.code;
-        preview += "\nend";
-        wd.setPlainText("library_preview", preview);
-      }
+    // Semaphore: green = library OK, red = syntax error
+    if (library_valid_) {
+      wd.setText("labelSemaphore", "<html><body><span style='color:#00aa00; font-size:22px;'>⬤</span></body></html>");
     } else {
-      wd.setPlainText("library_preview", "");
+      wd.setText("labelSemaphore", "<html><body><span style='color:#cc0000; font-size:22px;'>⬤</span></body></html>");
     }
 
     // Tab control (switch to Editor when loading snippet from Library)
@@ -335,17 +314,18 @@ class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
       terminal_sticky_ = false;
       return true;
     }
+    if (name == "library_editor") {
+      library_code_ = std::string(code);
+      // Validate library Lua syntax — pass as global code, empty function body
+      library_valid_ = validateLuaSyntax(library_code_, "").empty();
+      return true;
+    }
     return false;
   }
 
   bool onTextChanged(std::string_view name, std::string_view text) override {
     if (name == "function_name") {
       function_name_ = std::string(text);
-      return true;
-    }
-    if (name == "library_search") {
-      library_search_ = std::string(text);
-      library_selected_.clear();
       return true;
     }
     return false;
@@ -375,9 +355,16 @@ class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
 
   bool onClicked(std::string_view name) override {
     if (name == "save_button" && !function_name_.empty() && !code_.empty()) {
-      // Save current code to the library (does NOT execute)
-      saved_snippets_[function_name_] = SnippetData{code_, global_code_, function_name_};
-      requestLibraryPersist();
+      SnippetData snippet{code_, global_code_, function_name_};
+      // Add to Active Scripts (in-memory, matches PJ3 listWidgetFunctions)
+      active_scripts_.erase(
+          std::remove_if(
+              active_scripts_.begin(), active_scripts_.end(),
+              [&](const SnippetData& s) { return s.function_name == function_name_; }),
+          active_scripts_.end());
+      active_scripts_.push_back(snippet);
+      // Add to Recent scripts (persisted, matches PJ3 listWidgetRecent)
+      addToRecent(snippet);
       return true;
     }
     if (name == "run_button" && !function_name_.empty() && !code_.empty()) {
@@ -395,29 +382,49 @@ class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
       terminal_sticky_ = true;
       return true;
     }
-    if (name == "library_use") {
-      return loadSelectedSnippet();
+    // Delete button in Active Scripts (in-memory only, matches PJ3 pushButtonDelete)
+    if (name == "deleteButton" && !active_selected_.empty()) {
+      active_scripts_.erase(
+          std::remove_if(
+              active_scripts_.begin(), active_scripts_.end(),
+              [&](const SnippetData& s) { return s.function_name == active_selected_; }),
+          active_scripts_.end());
+      active_selected_.clear();
+      return true;
     }
-    if (name == "library_delete" && !library_selected_.empty()) {
-      saved_snippets_.erase(library_selected_);
-      library_selected_.clear();
-      requestLibraryPersist();
+    // Restore default library code (matches PJ3 pushButtonDefaultLibrary)
+    if (name == "library_restore") {
+      library_code_ = kDefaultLibraryCode;
+      library_valid_ = true;
+      return true;
+    }
+    // Apply changes — mark library as applied (matches PJ3 pushButtonApplyLibrary)
+    if (name == "library_apply") {
+      library_valid_ = true;
       return true;
     }
     return false;
   }
 
   bool onSelectionChanged(std::string_view name, const std::vector<std::string>& items) override {
-    if (name == "library_list") {
-      library_selected_ = items.empty() ? "" : items.front();
+    // Selecting in either Active Scripts or Recent scripts selects the same snippet
+    if (name == "series_list" || name == "recent_list") {
+      active_selected_ = items.empty() ? "" : items.front();
       return true;
     }
     return false;
   }
 
-  bool onItemDoubleClicked(std::string_view name, int /*index*/) override {
-    if (name == "library_list") {
-      return loadSelectedSnippet();
+  bool onItemDoubleClicked(std::string_view name, int index) override {
+    // Double-click on Active Scripts (in-memory) or Recent scripts (PJ3 restoreRecent)
+    // loads that snippet into the editor.
+    if (name == "series_list" && index >= 0 && index < static_cast<int>(active_scripts_.size())) {
+      applySnippet(active_scripts_[static_cast<size_t>(index)]);
+      return true;
+    }
+    if (name == "recent_list" && index >= 0 && index < static_cast<int>(recent_snippets_.size())) {
+      applySnippet(recent_snippets_[static_cast<size_t>(index)]);
+      return true;
     }
     return false;
   }
@@ -492,33 +499,11 @@ class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
       global_code_.clear();
     }
 
-    // Migration path: legacy workspaces embedded the library inline. Surface
-    // those snippets via `legacyLibrarySnippets()` so the toolbox can merge
-    // them into the on-disk library exactly once.
-    legacy_library_snippets_.clear();
-    if (j.contains("library") && j["library"].is_object()) {
-      for (auto& [key, val] : j["library"].items()) {
-        legacy_library_snippets_[key] = SnippetData{
-            val.value("code", ""),
-            val.value("global_code", ""),
-            val.value("function_name", key),
-        };
-      }
-    }
-
     terminal_visible_ = false;
     terminal_text_.clear();
     validation_pending_ = false;
-    library_selected_.clear();
-    library_search_.clear();
     switch_to_tab_ = -1;
     return true;
-  }
-
-  // One-shot accessor for migration: returns inline-library snippets parsed
-  // from a legacy workspace config and clears them. Empty after the first call.
-  std::map<std::string, SnippetData> takeLegacyLibrarySnippets() {
-    return std::exchange(legacy_library_snippets_, {});
   }
 
   [[nodiscard]] const std::string& code() const {
@@ -544,56 +529,81 @@ class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
     run_callback_ = std::move(cb);
   }
 
-  // Library injection: called by the toolbox after loading from disk.
-  void setLibrary(std::map<std::string, SnippetData> snippets) {
-    saved_snippets_ = std::move(snippets);
+  void setRecentSnippets(std::vector<SnippetData> recent) {
+    recent_snippets_ = std::move(recent);
   }
 
-  // Persistence callback: called by the dialog after a save/delete in the library.
-  // The toolbox provides this to flush the library to disk and surface errors via the runtime host.
-  using LibrarySaveCallback = std::function<void(const std::map<std::string, SnippetData>&)>;
-  void setLibrarySaveCallback(LibrarySaveCallback cb) {
-    library_save_callback_ = std::move(cb);
-  }
-
-  [[nodiscard]] const std::map<std::string, SnippetData>& library() const {
-    return saved_snippets_;
+  void addToRecent(const SnippetData& snippet) {
+    recent_snippets_.erase(
+        std::remove_if(
+            recent_snippets_.begin(), recent_snippets_.end(),
+            [&](const SnippetData& s) { return s.function_name == snippet.function_name; }),
+        recent_snippets_.end());
+    recent_snippets_.insert(recent_snippets_.begin(), snippet);
+    if (recent_snippets_.size() > 10) {
+      recent_snippets_.resize(10);
+    }
+    persistRecentToDisk(luaEditorRecentPath(), recent_snippets_);
   }
 
  private:
-  void requestLibraryPersist() {
-    if (library_save_callback_) {
-      library_save_callback_(saved_snippets_);
-    }
-  }
-
-  bool loadSelectedSnippet() {
-    if (library_selected_.empty()) {
-      return false;
-    }
-    auto it = saved_snippets_.find(library_selected_);
-    if (it == saved_snippets_.end()) {
-      return false;
-    }
-
-    code_ = it->second.code;
-    global_code_ = it->second.global_code;
-    function_name_ = it->second.function_name;
-    switch_to_tab_ = 0;  // Switch back to Editor tab
+  // Load a snippet's code/global/name into the editor and switch to the Editor tab.
+  void applySnippet(const SnippetData& s) {
+    code_ = s.code;
+    global_code_ = s.global_code;
+    function_name_ = s.function_name;
+    switch_to_tab_ = 0;
     validation_pending_ = true;
     validation_tick_counter_ = 0;
-    return true;
   }
 
-  std::string code_ =
-      "-- Write your Lua function body here.\n"
-      "-- It receives tracker_time as parameter.\n"
-      "-- Example:\n"
-      "--   local series = TimeseriesView(\"my_field\")\n"
-      "--   local val = series:atTime(tracker_time)\n";
+  std::string code_;
   std::string global_code_;
   std::string function_name_;
   std::string language_ = "lua";
+
+  // Library code (matches PJ3 textLibrary) — editable block of Lua helper functions
+  static constexpr const char* kDefaultLibraryCode =
+      "-- Helper functions usable in your reactive scripts\n"
+      "\n"
+      "function CreateSeriesFromArray(new_series, prefix, suffix_X, suffix_Y, timestamp)\n"
+      "  new_series:clear()\n"
+      "  local index = 0\n"
+      "  while true do\n"
+      "    local x = index\n"
+      "    if suffix_X ~= nil then\n"
+      "      local series_x = TimeseriesView.find(string.format(\"%s.%d/%s\", prefix, index, suffix_X))\n"
+      "      if series_x == nil then break end\n"
+      "      x = series_x:atTime(timestamp)\n"
+      "    end\n"
+      "    local series_y = TimeseriesView.find(string.format(\"%s.%d/%s\", prefix, index, suffix_Y))\n"
+      "    if series_y == nil then break end\n"
+      "    local y = series_y:atTime(timestamp)\n"
+      "    new_series:push_back(x, y)\n"
+      "    index = index + 1\n"
+      "  end\n"
+      "end\n"
+      "\n"
+      "function GetSeriesNamesByPrefix(prefix)\n"
+      "  local all_names = GetSeriesNames()\n"
+      "  local filtered = {}\n"
+      "  for i, name in ipairs(all_names) do\n"
+      "    if name:find(prefix, 1, #prefix) then\n"
+      "      table.insert(filtered, name)\n"
+      "    end\n"
+      "  end\n"
+      "  return filtered\n"
+      "end\n"
+      "\n"
+      "function ApplyOffsetInPlace(series, delta_x, delta_y)\n"
+      "  for index=0, series:size()-1 do\n"
+      "    local x, y = series:at(index)\n"
+      "    series:set(index, x + delta_x, y + delta_y)\n"
+      "  end\n"
+      "end\n";
+
+  std::string library_code_ = kDefaultLibraryCode;
+  bool library_valid_ = true;  // true when library_code_ compiles without errors
 
   // Terminal / validation
   std::string terminal_text_;
@@ -610,12 +620,11 @@ class ReactiveScriptEditorDialog : public PJ::DialogPluginTyped {
   // Timeseries (populated by toolbox before dialog opens)
   std::vector<std::string> series_names_;
 
-  // Library
-  std::map<std::string, SnippetData> saved_snippets_;
-  std::map<std::string, SnippetData> legacy_library_snippets_;  // Set by loadConfig() for one-shot migration.
-  std::string library_search_;
-  std::string library_selected_;
-  LibrarySaveCallback library_save_callback_;
+  std::string active_selected_;  // selected in series_list or recent_list
+  // Active Scripts: in-memory only, empty on restart (matches PJ3 listWidgetFunctions)
+  std::vector<SnippetData> active_scripts_;
+  // Recent history: persisted, survives restart (matches PJ3 listWidgetRecent)
+  std::vector<SnippetData> recent_snippets_;
   int switch_to_tab_ = -1;  // -1 = no programmatic switch
 };
 
@@ -775,11 +784,9 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
       }
       dialog_.setSeriesNames(series_names_);
     }
-    ensureLibraryLoaded();
+    ensureRecentLoaded();
     dialog_.setRunCallback(
         [this](const std::string& c, const std::string& g, const std::string& n) { return executeScript(c, g, n); });
-    dialog_.setLibrarySaveCallback(
-        [this](const std::map<std::string, SnippetData>& snippets) { writeLibrary(snippets); });
     return PJ::borrowDialog(dialog_);
   }
 
@@ -790,24 +797,6 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
   PJ::Status loadConfig(std::string_view config_json) override {
     if (!dialog_.loadConfig(config_json)) {
       return PJ::unexpected("invalid config JSON");
-    }
-
-    // Migrate inline library from a legacy workspace into the on-disk store
-    // (one-shot; the dialog only surfaces these once after each loadConfig).
-    auto legacy = dialog_.takeLegacyLibrarySnippets();
-    if (!legacy.empty()) {
-      ensureLibraryLoaded();
-      auto merged = dialog_.library();
-      for (auto& [k, v] : legacy) {
-        merged.try_emplace(k, std::move(v));  // Disk wins on conflict.
-      }
-      dialog_.setLibrary(merged);
-      writeLibrary(merged);
-      if (runtimeHostBound()) {
-        runtimeHost().reportMessage(
-            PJ::ToolboxMessageLevel::kInfo,
-            "Migrated " + std::to_string(legacy.size()) + " legacy library snippet(s) to disk");
-      }
     }
 
     if (auto_run_pending_ && !dialog_.code().empty() && !dialog_.functionName().empty() && toolboxHostBound() &&
@@ -1053,27 +1042,20 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
   }
 #endif  // PJ_REACTIVE_HAS_PYTHON
 
-  // Loads the on-disk library into the dialog the first time it's needed.
-  void ensureLibraryLoaded() {
-    if (library_loaded_) {
+  // Loads the persisted Recent-scripts history into the dialog the first time it's
+  // needed. Active Scripts are in-memory only (empty on startup, like PJ3).
+  void ensureRecentLoaded() {
+    if (recent_loaded_) {
       return;
     }
-    dialog_.setLibrary(loadLibraryFromDisk(luaEditorLibraryPath()));
-    library_loaded_ = true;
-  }
-
-  // Persists the library to disk; surfaces failures via the runtime host.
-  void writeLibrary(const std::map<std::string, SnippetData>& snippets) {
-    std::string err = persistLibraryToDisk(luaEditorLibraryPath(), snippets);
-    if (!err.empty() && runtimeHostBound()) {
-      runtimeHost().reportMessage(PJ::ToolboxMessageLevel::kWarning, "Lua editor library: " + err);
-    }
+    dialog_.setRecentSnippets(loadRecentFromDisk(luaEditorRecentPath()));
+    recent_loaded_ = true;
   }
 
   ReactiveScriptEditorDialog dialog_;
   std::unordered_map<std::string, SeriesAccessor> series_map_;
   std::vector<std::string> series_names_;
-  bool library_loaded_ = false;
+  bool recent_loaded_ = false;
   bool auto_run_pending_ = true;
 };
 

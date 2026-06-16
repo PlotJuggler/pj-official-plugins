@@ -3,194 +3,224 @@
  <class>ReactiveScriptEditorDialog</class>
  <widget class="QWidget" name="ReactiveScriptEditorDialog">
   <property name="windowTitle">
-   <string>Reactive Script Editor</string>
+   <string>Script Editor</string>
   </property>
   <property name="minimumSize">
-   <size><width>800</width><height>550</height></size>
+   <size><width>900</width><height>600</height></size>
   </property>
   <layout class="QVBoxLayout" name="mainLayout">
    <property name="spacing"><number>4</number></property>
 
+   <!-- Description label at the top (matches PJ3) -->
+   <item>
+    <widget class="QLabel" name="descriptionLabel">
+     <property name="font">
+      <font><pointsize>12</pointsize></font>
+     </property>
+     <property name="text">
+      <string>The &lt;span style=&quot; font-weight:600;&quot;&gt;Script Editor &lt;/span&gt;is an advanced Lua editor that allows the user to create new series (ScatterXY or Timeseries) which are updated when the timetracker slider is moved or new data is received. &lt;a href=&quot;https://slides.com/davidefaconti/plotjuggler-reactive-scripts/fullscreen&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#0000ff;&quot;&gt;Tutorial link&lt;/span&gt;&lt;/a&gt;.</string>
+     </property>
+     <property name="wordWrap"><bool>true</bool></property>
+     <property name="openExternalLinks"><bool>true</bool></property>
+    </widget>
+   </item>
+
+   <item>
+    <widget class="Line" name="line">
+     <property name="frameShadow"><enum>QFrame::Plain</enum></property>
+     <property name="orientation"><enum>Qt::Horizontal</enum></property>
+    </widget>
+   </item>
+
+   <!-- Tab widget -->
    <item>
     <widget class="QTabWidget" name="main_tabs">
      <property name="currentIndex"><number>0</number></property>
+     <property name="styleSheet">
+      <string notr="true">
+QTabWidget::pane {
+    border: 1px solid #888;
+    top: -1px;
+    border-radius: 2px;
+    border-top-left-radius: 0px;
+}
+QTabBar::tab {
+    padding: 4px 12px;
+    border: 1px solid #888;
+    border-bottom: none;
+    border-top-left-radius: 2px;
+    border-top-right-radius: 2px;
+    min-width: 10ex;
+}
+QTabBar::tab:selected {
+    background: palette(window);
+}
+QTabBar::tab:!selected {
+    background: transparent;
+    border-bottom: 1px solid #888;
+}
+      </string>
+     </property>
 
-     <!-- ==================== Tab 0: Editor ==================== -->
+     <!-- ==================== Tab 0: Script Editor ==================== -->
      <widget class="QWidget" name="editorTab">
-      <attribute name="title"><string>Editor</string></attribute>
+      <attribute name="title"><string>Script Editor</string></attribute>
       <layout class="QVBoxLayout" name="editorTabLayout">
        <property name="spacing"><number>4</number></property>
 
-       <!-- Terminal output (dark, full width, top) -->
-       <item>
-        <widget class="QPlainTextEdit" name="terminal_output">
-         <property name="sizePolicy">
-          <sizepolicy hsizetype="Expanding" vsizetype="Maximum">
-           <horstretch>0</horstretch><verstretch>0</verstretch>
-          </sizepolicy>
-         </property>
-         <property name="minimumSize">
-          <size><width>0</width><height>12</height></size>
-         </property>
-         <property name="maximumSize">
-          <size><width>16777215</width><height>80</height></size>
-         </property>
-         <property name="font">
-          <font><family>Monospace</family><pointsize>10</pointsize></font>
-         </property>
-         <property name="styleSheet">
-          <string notr="true">QPlainTextEdit {
-    background-color: #4a4a4a;
-    color: #f0f0f0;
-    border: 1px solid #666;
-    font-family: "Monospace";
-}
-QScrollBar:vertical {
-    background: #2b2b2b;
-    width: 10px;
-}
-QScrollBar::handle:vertical {
-    background: #555;
-    border-radius: 4px;
-}</string>
-         </property>
-         <property name="readOnly"><bool>true</bool></property>
-         <property name="maximumBlockCount"><number>500</number></property>
-        </widget>
-       </item>
-
-       <!-- Two-column layout -->
+       <!-- Two-column layout matching PJ3 -->
        <item>
         <layout class="QHBoxLayout" name="columnsLayout">
          <property name="spacing"><number>8</number></property>
 
-         <!-- Left column: Timeseries + Global variables -->
+         <!-- Left column: Global code + function editor -->
          <item>
-          <widget class="QWidget" name="leftPanel" native="true">
-           <property name="minimumSize">
-            <size><width>200</width><height>0</height></size>
-           </property>
-           <property name="maximumSize">
-            <size><width>300</width><height>16777215</height></size>
-           </property>
-           <layout class="QVBoxLayout" name="leftLayout">
-            <property name="leftMargin"><number>0</number></property>
-            <property name="topMargin"><number>0</number></property>
-            <property name="rightMargin"><number>0</number></property>
-            <property name="bottomMargin"><number>0</number></property>
+          <layout class="QVBoxLayout" name="leftLayout">
+           <property name="spacing"><number>4</number></property>
 
-            <item>
-             <widget class="QLabel" name="seriesTitle">
-              <property name="text"><string>Timeseries:</string></property>
-              <property name="font"><font><bold>true</bold></font></property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QListWidget" name="series_list">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-                <horstretch>0</horstretch><verstretch>3</verstretch>
-               </sizepolicy>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLabel" name="globalLabel">
-              <property name="text"><string>Global variables:</string></property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QPlainTextEdit" name="global_editor">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-                <horstretch>0</horstretch><verstretch>1</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="font">
-               <font><family>Monospace</family><pointsize>11</pointsize></font>
-              </property>
-              <property name="placeholderText">
-               <string>Add your global variables here</string>
-              </property>
-             </widget>
-            </item>
+           <item>
+            <widget class="QLabel" name="globalLabel">
+             <property name="text"><string>Global code, execute once:</string></property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPlainTextEdit" name="global_editor">
+             <property name="font">
+              <font><family>Monospace</family><pointsize>12</pointsize></font>
+             </property>
+             <property name="styleSheet">
+              <string notr="true">QPlainTextEdit { border: 1px solid #888; }</string>
+             </property>
+             <property name="placeholderText">
+              <string>define here your global variables</string>
+             </property>
+            </widget>
+           </item>
 
-           </layout>
-          </widget>
+           <item>
+            <widget class="QLabel" name="functionDescLabel">
+             <property name="text"><string>The following function is called every time the time tracker is moved or new data is received.</string></property>
+             <property name="wordWrap"><bool>true</bool></property>
+            </widget>
+           </item>
+
+           <item>
+            <widget class="QLabel" name="funcHeaderLabel">
+             <property name="font"><font><bold>true</bold></font></property>
+             <property name="text"><string>function(tracker_time)</string></property>
+            </widget>
+           </item>
+
+           <item>
+            <widget class="QPlainTextEdit" name="code_editor">
+             <property name="sizePolicy">
+              <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+               <horstretch>0</horstretch><verstretch>2</verstretch>
+              </sizepolicy>
+             </property>
+             <property name="font">
+              <font><family>Monospace</family><pointsize>12</pointsize></font>
+             </property>
+             <property name="styleSheet">
+              <string notr="true">QPlainTextEdit { border: 1px solid #888; }</string>
+             </property>
+             <property name="placeholderText">
+              <string>body of the function. tracker_time is the value of the time slider</string>
+             </property>
+            </widget>
+           </item>
+
+          </layout>
          </item>
 
-         <!-- Right column: Code editor -->
+         <!-- Right column: Name + Save + Active Scripts + Recent scripts -->
          <item>
-          <widget class="QWidget" name="rightPanel" native="true">
-           <layout class="QVBoxLayout" name="rightLayout">
-            <property name="leftMargin"><number>0</number></property>
-            <property name="topMargin"><number>0</number></property>
-            <property name="rightMargin"><number>0</number></property>
-            <property name="bottomMargin"><number>0</number></property>
+          <layout class="QVBoxLayout" name="rightLayout">
+           <property name="spacing"><number>4</number></property>
 
-            <!-- Function header: label + language radios + save to library button -->
-            <item>
-             <layout class="QHBoxLayout" name="funcHeaderLayout">
-              <item>
-               <widget class="QLabel" name="funcLabel">
-                <property name="text"><string>function(tracker_time)</string></property>
-                <property name="font"><font><bold>true</bold></font></property>
-               </widget>
-              </item>
-              <item>
-               <spacer name="funcHeaderSpacer">
-                <property name="orientation"><enum>Qt::Horizontal</enum></property>
-                <property name="sizeHint" stdset="0">
-                 <size><width>40</width><height>20</height></size>
-                </property>
-               </spacer>
-              </item>
-              <item>
-               <widget class="QRadioButton" name="radio_lua">
-                <property name="text"><string>Lua</string></property>
-                <property name="checked"><bool>true</bool></property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QRadioButton" name="radio_python">
-                <property name="text"><string>Python</string></property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QPushButton" name="save_button">
-                <property name="text"><string>Save to Library</string></property>
-               </widget>
-              </item>
-             </layout>
-            </item>
+           <!-- Name + Save row -->
+           <item>
+            <layout class="QHBoxLayout" name="nameSaveLayout">
+             <item>
+              <widget class="QLabel" name="nameLabel">
+               <property name="text"><string>Name:</string></property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLineEdit" name="function_name">
+               <property name="placeholderText"><string>name the new function</string></property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="save_button">
+               <property name="enabled"><bool>false</bool></property>
+               <property name="text"><string>Save</string></property>
+              </widget>
+             </item>
+            </layout>
+           </item>
 
-            <!-- Main code editor -->
-            <item>
-             <widget class="QPlainTextEdit" name="code_editor">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-                <horstretch>0</horstretch><verstretch>1</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="font">
-               <font><family>Monospace</family><pointsize>11</pointsize></font>
-              </property>
-              <property name="placeholderText">
-               <string>Write your function implementation here</string>
-              </property>
-             </widget>
-            </item>
+           <!-- Active Scripts label + delete button -->
+           <item>
+            <layout class="QHBoxLayout" name="activeScriptsLayout">
+             <property name="topMargin"><number>11</number></property>
+             <item>
+              <widget class="QLabel" name="activeScriptsLabel">
+               <property name="text"><string>Active Scripts:</string></property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="deleteButton">
+               <property name="enabled"><bool>false</bool></property>
+               <property name="minimumSize"><size><width>28</width><height>28</height></size></property>
+               <property name="maximumSize"><size><width>28</width><height>28</height></size></property>
+               <property name="toolTip">
+                <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Remove selected script&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+               </property>
+               <property name="text"><string/></property>
+               <property name="icon">
+                <iconset>
+                 <normaloff>:/resources/svg/trash.svg</normaloff>:/resources/svg/trash.svg
+                </iconset>
+               </property>
+               <property name="iconSize">
+                <size><width>25</width><height>25</height></size>
+               </property>
+               <property name="flat"><bool>true</bool></property>
+              </widget>
+             </item>
+            </layout>
+           </item>
 
-            <!-- end label -->
-            <item>
-             <widget class="QLabel" name="endLabel">
-              <property name="text"><string>end</string></property>
-              <property name="font"><font><bold>true</bold></font></property>
-             </widget>
-            </item>
+           <!-- Active scripts list -->
+           <item>
+            <widget class="QListWidget" name="series_list">
+             <property name="styleSheet">
+              <string notr="true">QListWidget { border: 1px solid #888; }</string>
+             </property>
+            </widget>
+           </item>
 
-           </layout>
-          </widget>
+           <!-- Recent scripts label -->
+           <item>
+            <widget class="QLabel" name="recentLabel">
+             <property name="text">
+              <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Recent scripts (double-click to load):&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+             </property>
+             <property name="wordWrap"><bool>true</bool></property>
+            </widget>
+           </item>
+
+           <!-- Recent scripts list -->
+           <item>
+            <widget class="QListWidget" name="recent_list">
+             <property name="styleSheet">
+              <string notr="true">QListWidget { border: 1px solid #888; }</string>
+             </property>
+            </widget>
+           </item>
+
+          </layout>
          </item>
 
         </layout>
@@ -199,50 +229,53 @@ QScrollBar::handle:vertical {
       </layout>
      </widget>
 
-     <!-- ==================== Tab 1: Library ==================== -->
+     <!-- ==================== Tab 1: Function Library ==================== -->
      <widget class="QWidget" name="libraryTab">
-      <attribute name="title"><string>Library</string></attribute>
+      <attribute name="title"><string>Function Library</string></attribute>
       <layout class="QVBoxLayout" name="libraryTabLayout">
 
+       <!-- Description + semaphore row -->
        <item>
-        <widget class="QLineEdit" name="library_search">
-         <property name="placeholderText"><string>Search snippets...</string></property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QListWidget" name="library_list">
-         <property name="minimumSize">
-          <size><width>0</width><height>150</height></size>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QLabel" name="previewLabel">
-         <property name="text"><string>Preview:</string></property>
-         <property name="font"><font><bold>true</bold></font></property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QPlainTextEdit" name="library_preview">
-         <property name="minimumSize">
-          <size><width>0</width><height>120</height></size>
-         </property>
-         <property name="font">
-          <font><family>Monospace</family><pointsize>10</pointsize></font>
-         </property>
-         <property name="readOnly"><bool>true</bool></property>
-        </widget>
-       </item>
-       <item>
-        <layout class="QHBoxLayout" name="libraryButtonLayout">
+        <layout class="QHBoxLayout" name="libraryTopLayout">
+         <property name="topMargin"><number>10</number></property>
          <item>
-          <widget class="QPushButton" name="library_use">
-           <property name="text"><string>Use</string></property>
+          <widget class="QLabel" name="libraryDescLabel">
+           <property name="text"><string>Add here your helper functions, which can be used in your script. Useful to make your scripts less verbose.</string></property>
+           <property name="wordWrap"><bool>true</bool></property>
           </widget>
          </item>
          <item>
-          <widget class="QPushButton" name="library_delete">
-           <property name="text"><string>Delete</string></property>
+          <widget class="QLabel" name="labelSemaphore">
+           <property name="minimumSize"><size><width>32</width><height>32</height></size></property>
+           <property name="maximumSize"><size><width>32</width><height>32</height></size></property>
+           <property name="alignment"><set>Qt::AlignCenter</set></property>
+           <property name="text"><string/></property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+
+       <!-- Restore default + Apply changes buttons -->
+       <item>
+        <layout class="QHBoxLayout" name="libraryButtonLayout">
+         <property name="topMargin"><number>5</number></property>
+         <item>
+          <widget class="QPushButton" name="library_restore">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+             <horstretch>0</horstretch><verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
+           <property name="text"><string>Restore default</string></property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="library_apply">
+           <property name="enabled"><bool>false</bool></property>
+           <property name="toolTip">
+            <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;If you have already created one or more reactive series, reload them with the new library.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+           </property>
+           <property name="text"><string>Apply changes</string></property>
           </widget>
          </item>
          <item>
@@ -256,44 +289,25 @@ QScrollBar::handle:vertical {
         </layout>
        </item>
 
+       <!-- Library code editor (matches PJ3 textLibrary) -->
+       <item>
+        <widget class="QPlainTextEdit" name="library_editor">
+         <property name="font">
+          <font><family>Monospace</family><pointsize>12</pointsize></font>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPlainTextEdit { border: 1px solid #888; }</string>
+         </property>
+        </widget>
+       </item>
+
       </layout>
      </widget>
 
     </widget>
    </item>
 
-   <!-- Bottom bar: Name + Run + Close -->
-   <item>
-    <layout class="QHBoxLayout" name="bottomBarLayout">
-     <item>
-      <spacer name="bottomLeftSpacer">
-       <property name="orientation"><enum>Qt::Horizontal</enum></property>
-       <property name="sizeHint" stdset="0">
-        <size><width>40</width><height>20</height></size>
-       </property>
-      </spacer>
-     </item>
-     <item>
-      <widget class="QLabel" name="nameLabel">
-       <property name="text"><string>Name:</string></property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QLineEdit" name="function_name">
-       <property name="minimumSize">
-        <size><width>200</width><height>0</height></size>
-       </property>
-       <property name="placeholderText"><string>name the new function</string></property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QPushButton" name="run_button">
-       <property name="text"><string>Run</string></property>
-      </widget>
-     </item>
-    </layout>
-   </item>
-
+   <!-- Bottom bar: Close -->
    <item>
     <widget class="QDialogButtonBox" name="buttonBox">
      <property name="standardButtons">
