@@ -3,13 +3,13 @@
  <class>MarkersDialog</class>
  <widget class="QWidget" name="MarkersDialog">
   <property name="windowTitle">
-   <string>Plot Markers (demo producer)</string>
+   <string>Plot Markers</string>
   </property>
   <layout class="QVBoxLayout" name="mainLayout">
    <item>
-    <widget class="QLabel" name="status_label">
+    <widget class="QLabel" name="help_label">
      <property name="text">
-      <string>Load data, then add markers to the plots.</string>
+      <string>Drag timeseries from the panel into the table below (or tick "whole dataset"), set the marker's time range with the slider, then Add.</string>
      </property>
      <property name="wordWrap">
       <bool>true</bool>
@@ -17,23 +17,87 @@
     </widget>
    </item>
    <item>
-    <widget class="QPushButton" name="add_region">
+    <widget class="QFrame" name="inputFrame">
+     <property name="frameShape">
+      <enum>QFrame::StyledPanel</enum>
+     </property>
+     <layout class="QVBoxLayout" name="inputLayout">
+      <item>
+       <widget class="QTableWidget" name="tableSeries">
+        <property name="selectionBehavior">
+         <enum>QAbstractItemView::SelectRows</enum>
+        </property>
+        <property name="editTriggers">
+         <set>QAbstractItemView::NoEditTriggers</set>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QCheckBox" name="apply_global">
      <property name="text">
-      <string>Add Region marker</string>
+      <string>Apply to whole dataset (global marker)</string>
      </property>
     </widget>
    </item>
    <item>
-    <widget class="QPushButton" name="add_event">
+    <layout class="QHBoxLayout" name="datasetLayout">
+     <item>
+      <widget class="QLabel" name="dataset_label">
+       <property name="text">
+        <string>Global target:</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="dataset_combo"/>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QLabel" name="range_label">
      <property name="text">
-      <string>Add Event marker</string>
+      <string>Marker time range</string>
      </property>
     </widget>
    </item>
    <item>
-    <widget class="QPushButton" name="clear_markers">
+    <widget class="RangeSlider" name="time_range"/>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="buttonsLayout">
+     <item>
+      <widget class="QPushButton" name="add_region">
+       <property name="text">
+        <string>Add Region</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="add_event">
+       <property name="text">
+        <string>Add Event</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="clear_markers">
+       <property name="text">
+        <string>Clear</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QLabel" name="status_label">
      <property name="text">
-      <string>Clear markers</string>
+      <string>Load data, then add markers to the plots.</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
      </property>
     </widget>
    </item>
