@@ -2,27 +2,35 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Plot Markers demo producer toolbox. Reads the loaded series via the toolbox
-// catalog, then creates markers through the pj.marker_store.v1 service. This is
-// the "simulator" producer: it hardcodes marker creation behind dialog buttons,
+// catalog, then publishes markers as a serialized PlotMarkers object on the
+// dataset's global marker object topic, through the generic toolbox object-write
+// surface (registerObjectTopicOnDataset + pushOwnedObject). The producer owns its
+// marker set and republishes the WHOLE set on every change (last-writer-publish):
+// there is no per-marker store mutation. This is the "simulator" producer,
 // standing in for the future Lua scripting / detector library that will emit
-// markers through the exact same MarkerStoreHostView API.
+// markers the same way.
 
+#include <cstdint>
 #include <functional>
+#include <pj_base/builtin/plot_markers.hpp>
+#include <pj_base/builtin/plot_markers_codec.hpp>
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
+#include <pj_base/span.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "markers_dialog_ui.hpp"
 #include "markers_manifest.hpp"
 
 namespace {
 
-// Reserved dataset-global marker topic (matches kGlobalMarkerTopic in the PJ4
-// PlotMarkersItem overlay): markers here render on every plot of the dataset.
-constexpr const char* kGlobalTopic = "__global__";
+// Opaque metadata tagging the object topic as a marker set (viewers/overlay may
+// read it; the overlay locates the topic by name convention regardless).
+constexpr const char* kMarkerMetadata = R"({"object_type":"plot_markers"})";
 
 class MarkersDialog : public PJ::DialogPluginTyped {
  public:
@@ -120,12 +128,33 @@ class MarkersToolbox : public PJ::ToolboxPluginBase {
     return false;
   }
 
-  void addMarker(PJ::sdk::MarkerKind kind) {
-    auto marker_host = services().get<PJ::sdk::MarkerStoreService>();
-    if (!marker_host) {
-      dialog_.setStatus("marker service unavailable");
+  // Republish the producer's whole marker set onto the dataset's global marker
+  // object topic. The object-write surface registers the topic idempotently, so
+  // re-resolving the handle on every publish is cheap; pushing the full set is
+  // the intended operation (no per-marker mutation).
+  void publish(PJ::DatasetId dataset) {
+    auto host = toolboxHost();
+    const std::string topic = PJ::sdk::markerObjectTopicName(PJ::sdk::kGlobalMarkerTopic);
+    auto handle = host.registerObjectTopicOnDataset(dataset, topic, kMarkerMetadata);
+    if (!handle) {
+      dialog_.setStatus("register failed: " + handle.error());
       return;
     }
+    PJ::sdk::PlotMarkers set;
+    set.markers = markers_;
+    const std::vector<uint8_t> bytes = PJ::serializePlotMarkers(set);
+    // Sentinel timestamp 0: markers are not playback-time state; the overlay
+    // reads the latest entry regardless of the cursor position.
+    auto status = host.pushOwnedObject(*handle, PJ::Timestamp{0}, PJ::Span<const uint8_t>{bytes.data(), bytes.size()});
+    if (!status) {
+      dialog_.setStatus("push failed: " + status.error());
+      return;
+    }
+    dialog_.setStatus(std::to_string(markers_.size()) + " marker(s)");
+    runtimeHost().notifyDataChanged();
+  }
+
+  void addMarker(PJ::sdk::MarkerKind kind) {
     PJ::DatasetId dataset = 0;
     PJ::Timestamp t0 = 0;
     PJ::Timestamp t1 = 0;
@@ -149,33 +178,24 @@ class MarkersToolbox : public PJ::ToolboxPluginBase {
       marker.category = "demo";
       marker.label = "event";
     }
-
-    auto id = marker_host->add(dataset, kGlobalTopic, marker);
-    dialog_.setStatus(id.has_value() ? "marker added" : ("add failed: " + id.error()));
-    runtimeHost().notifyDataChanged();
+    markers_.push_back(std::move(marker));
+    publish(dataset);
   }
 
   void clearMarkers() {
-    auto marker_host = services().get<PJ::sdk::MarkerStoreService>();
-    if (!marker_host) {
-      return;
-    }
     PJ::DatasetId dataset = 0;
     PJ::Timestamp t0 = 0;
     PJ::Timestamp t1 = 0;
     if (!firstSeries(dataset, t0, t1)) {
       return;
     }
-    if (auto markers = marker_host->query(dataset, kGlobalTopic)) {
-      for (const auto& entry : *markers) {
-        (void)marker_host->remove(dataset, kGlobalTopic, entry.id);
-      }
-    }
-    dialog_.setStatus("cleared");
-    runtimeHost().notifyDataChanged();
+    markers_.clear();
+    publish(dataset);  // republish the now-empty set
   }
 
   MarkersDialog dialog_;
+  // The producer's authoritative marker set, republished wholesale on each change.
+  std::vector<PJ::sdk::PlotMarker> markers_;
 };
 
 }  // namespace
