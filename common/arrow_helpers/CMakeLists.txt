@@ -9,12 +9,10 @@
 # find_package(Arrow REQUIRED), so a real consumer never silently runs
 # without the target — it errors at the consumer's own find_package.
 
-if(NOT TARGET Arrow::arrow_static)
-  find_package(Arrow QUIET CONFIG)
-  if(NOT TARGET Arrow::arrow_static)
-    message(STATUS "pj_arrow_helpers: Arrow not found, skipping shared helper library")
-    return()
-  endif()
+pj_arrow_available(_pj_have_arrow)
+if(NOT _pj_have_arrow)
+  message(STATUS "pj_arrow_helpers: Arrow not found, skipping shared helper library")
+  return()
 endif()
 
 add_library(pj_arrow_helpers STATIC arrow_helpers.cpp)
@@ -31,7 +29,5 @@ target_include_directories(pj_arrow_helpers PUBLIC
 )
 
 # Arrow types appear in the public API; plugin_sdk supplies PJ::sdk::ValueRef.
-target_link_libraries(pj_arrow_helpers PUBLIC
-  plotjuggler_sdk::plugin_sdk
-  Arrow::arrow_static
-)
+target_link_libraries(pj_arrow_helpers PUBLIC plotjuggler_sdk::plugin_sdk)
+pj_target_link_arrow(pj_arrow_helpers PUBLIC)
