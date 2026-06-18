@@ -14,6 +14,7 @@ find_package(sol2 REQUIRED)
 # same as PJ3 — instead of failing the whole build.
 set(MOSAICO_ARROW_FLIGHT_TARGET "")
 foreach(_candidate
+        ArrowFlight::arrow_flight_shared
         ArrowFlight::arrow_flight_static
         arrow::arrow_flight
         ArrowFlight::arrow_flight
