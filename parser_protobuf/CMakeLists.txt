@@ -52,7 +52,7 @@ target_compile_definitions(protobuf_parser_test PRIVATE
 target_link_libraries(protobuf_parser_test PRIVATE
   plotjuggler_sdk::plugin_sdk
   plotjuggler_sdk::plugin_host
-  protobuf::protobuf
+  protobuf::libprotobuf protobuf::libprotoc
   pj_laser_scan
   GTest::gtest_main
 )
