@@ -42,9 +42,20 @@ sol2 = "3.5.*"
 # ixwebsocket::ixwebsocket target Conan uses, so no normalization helper is needed.
 [feature.bridge.dependencies]
 ixwebsocket = "11.4.*"
+# toolbox_mosaico: Arrow Flight client (mosaico-cpp-sdk fetched via CPM). Under
+# Conan, arrow:with_flight_rpc dragged in protobuf 3.21 which collided with the
+# repo's 6.33 -> mosaico was exiled from CI. conda-forge's libarrow-flight 23
+# pulls libgrpc + libprotobuf 6.33 (the SAME protobuf already in the protobuf
+# feature), so the whole graph solves to ONE libprotobuf and mosaico rejoins the
+# unified build. fmt is mosaico's only extra direct dep (find_package(fmt)).
+[feature.mosaico.dependencies]
+libarrow-flight = ">=23,<24"
+fmt = "*"
 
 [environments]
-default = { features = ["datetime", "serialization", "compression", "protobuf", "mqtt", "zmq", "udp", "scripting", "bridge"], solve-group = "main" }
+default = { features = ["datetime", "serialization", "compression", "protobuf", "mqtt", "zmq", "udp", "scripting", "bridge", "mosaico"], solve-group = "main" }
 
 [tasks]
-plugin = "cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$CONDA_PREFIX -DPJ_BUILD_PLUGIN=$PJ_PLUGIN && cmake --build build && ctest --test-dir build --output-on-failure"
+# BUILD_TESTING=ON so plugins that gate their tests on it (toolbox_mosaico) still
+# run them under ctest; all other plugins register tests unconditionally.
+plugin = "cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$CONDA_PREFIX -DBUILD_TESTING=ON -DPJ_BUILD_PLUGIN=$PJ_PLUGIN && cmake --build build && ctest --test-dir build --output-on-failure"

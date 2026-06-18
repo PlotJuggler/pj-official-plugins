@@ -1,8 +1,10 @@
 find_package(nlohmann_json REQUIRED)
 find_package(Arrow CONFIG REQUIRED)
 find_package(fmt REQUIRED)
-find_package(lua REQUIRED)
 find_package(sol2 REQUIRED)
+# lua is linked via pj_target_link_lua, not find_package(lua): conda-forge's lua
+# ships only the builtin FindLua module (no lua::lua config target), whereas Conan
+# provides lua::lua. The helper bridges both — see cmake/PjDependencyTargets.cmake.
 
 # Probe for a real Arrow Flight target (the candidate set must match the SDK's
 # in mosaico-cpp-sdk). Crucially this does NOT fall back to plain arrow::arrow:
@@ -12,6 +14,26 @@ find_package(sol2 REQUIRED)
 # FATAL_ERROR'd on the missing Flight target. With a strict probe, Flight-less
 # platforms fall through to the skip below — Mosaico is Linux-only for Flight,
 # same as PJ3 — instead of failing the whole build.
+#
+# conda-forge ships Arrow Flight as a SEPARATE config package (libarrow-flight ->
+# ArrowFlight::arrow_flight_shared); the target only exists once find_package is
+# called for it. QUIET + no REQUIRED keeps Flight-less platforms on the skip path
+# below. Under Conan the Flight target is created transitively by find_package(Arrow),
+# so this is a harmless no-op (the config-file include guards against re-definition).
+find_package(ArrowFlight CONFIG QUIET)
+
+# Bridge for the vendored mosaico-cpp-sdk: its internal Flight probe predates
+# shared-Arrow distros and only checks ArrowFlight::arrow_flight_static /
+# arrow::arrow_flight, NOT ArrowFlight::arrow_flight_shared (conda-forge's name).
+# Expose the shared target under arrow::arrow_flight (a name the SDK DOES probe)
+# so the CPM-fetched SDK configures. Guarded by NOT TARGET, so it is a no-op under
+# Conan and the day mosaico-cpp-sdk's probe learns the shared name. (Proper fix:
+# add ArrowFlight::arrow_flight_shared to that SDK's probe upstream.)
+if(TARGET ArrowFlight::arrow_flight_shared AND NOT TARGET arrow::arrow_flight)
+  set_target_properties(ArrowFlight::arrow_flight_shared PROPERTIES IMPORTED_GLOBAL TRUE)
+  add_library(arrow::arrow_flight ALIAS ArrowFlight::arrow_flight_shared)
+endif()
+
 set(MOSAICO_ARROW_FLIGHT_TARGET "")
 foreach(_candidate
         ArrowFlight::arrow_flight_shared
@@ -95,9 +117,9 @@ target_link_libraries(toolbox_mosaico_plugin PRIVATE
   fmt::fmt
   nlohmann_json::nlohmann_json
   mosaico_sdk
-  lua::lua
   sol2::sol2
 )
+pj_target_link_lua(toolbox_mosaico_plugin PRIVATE)
 
 # gRPC++ is optional at find-package time; link only if probed.
 if(MOSAICO_GRPCPP_TARGET)
@@ -276,8 +298,9 @@ if(BUILD_TESTING)
     tests/query_engine_test.cpp
   )
   target_link_libraries(toolbox_mosaico_query_engine_test PRIVATE
-    lua::lua sol2::sol2 GTest::gtest_main
+    sol2::sol2 GTest::gtest_main
   )
+  pj_target_link_lua(toolbox_mosaico_query_engine_test PRIVATE)
   target_compile_features(toolbox_mosaico_query_engine_test PRIVATE cxx_std_20)
   # Match the plugin's relaxed flags: the vendored PJ3 query/* headers and sol2
   # trip -Wconversion / -Wunused-parameter under -Werror.
@@ -297,8 +320,9 @@ if(BUILD_TESTING)
     tests/query_filter_test.cpp
   )
   target_link_libraries(toolbox_mosaico_query_filter_test PRIVATE
-    lua::lua sol2::sol2 GTest::gtest_main
+    sol2::sol2 GTest::gtest_main
   )
+  pj_target_link_lua(toolbox_mosaico_query_filter_test PRIVATE)
   target_compile_features(toolbox_mosaico_query_filter_test PRIVATE cxx_std_20)
   target_compile_options(toolbox_mosaico_query_filter_test PRIVATE
     -Wall -Wextra -Werror
