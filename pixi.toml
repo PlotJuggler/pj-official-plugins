@@ -1,0 +1,49 @@
+[workspace]
+name = "pj-official-plugins"
+# NOTE: switch the SDK channel to "https://prefix.dev/plotjuggler" once the SDK
+# conda package is published (Phase 1 Task 5). Local channel for pre-publish dev:
+channels = [
+  "conda-forge",
+  "file:///home/davide/ws_plotjuggler/plotjuggler_sdk/.worktrees/conda-output",
+]
+platforms = ["linux-64"]
+
+[dependencies]
+cmake = ">=3.22"
+ninja = "*"
+cxx-compiler = "*"
+# CRITICAL: conda libstdcxx 15 references __libc_single_threaded (glibc 2.32+);
+# the default sysroot 2.28 lacks it -> message-parser plugins fail to link.
+sysroot_linux-64 = ">=2.34"
+plotjuggler_sdk = "0.8.*"
+gtest = "1.17.*"
+nlohmann_json = "3.12.*"
+
+[feature.datetime.dependencies]
+howardhinnant_date = "3.0.*"
+[feature.serialization.dependencies]
+libarrow = ">=23,<24"
+libparquet = ">=23,<24"
+[feature.compression.dependencies]
+zstd = "1.5.*"
+lz4-c = "1.10.*"
+[feature.protobuf.dependencies]
+libprotobuf = "6.33.*"
+protobuf = "6.33.*"
+[feature.mqtt.dependencies]
+paho-mqtt-cpp = ">=1.6,<1.7"
+[feature.zmq.dependencies]
+cppzmq = "4.11.*"
+zeromq = "4.3.*"
+libsodium = ">=1.0.20"
+[feature.udp.dependencies]
+asio = ">=1.28"
+[feature.scripting.dependencies]
+lua = ">=5.4,<5.5"
+sol2 = "3.5.*"
+
+[environments]
+default = { features = ["datetime", "serialization", "compression", "protobuf", "mqtt", "zmq", "udp", "scripting"], solve-group = "main" }
+
+[tasks]
+plugin = "cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$CONDA_PREFIX -DPJ_BUILD_PLUGIN=$PJ_PLUGIN && cmake --build build && ctest --test-dir build --output-on-failure"
