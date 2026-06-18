@@ -60,6 +60,10 @@ std::vector<uint8_t> buildTestFrame(const std::vector<RawMessage>& messages) {
 
   // Build header: magic(4) + msg_count(4) + uncompressed_size(4) + flags(4)
   std::vector<uint8_t> frame;
+  // Reserve the exact final size (16-byte header + payload) up front. Besides
+  // avoiding reallocations, this silences a GCC-14 -Wstringop-overflow false
+  // positive at -O3, where the analyzer mis-sizes the incrementally grown vector.
+  frame.reserve(16 + compressed.size());
 
   uint32_t magic = kMagic;
   frame.insert(frame.end(), reinterpret_cast<uint8_t*>(&magic), reinterpret_cast<uint8_t*>(&magic) + 4);

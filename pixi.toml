@@ -36,9 +36,15 @@ asio = ">=1.28"
 [feature.scripting.dependencies]
 lua = ">=5.4,<5.5"
 sol2 = "3.5.*"
+# foxglove_bridge + pj_bridge: this SDK port replaced the original's Qt WebSockets
+# with ixwebsocket (no Qt at build — the .ui is embedded as a constexpr char[] by
+# pj_embed_ui). conda-forge ships ixwebsocket 11.4.6 with the same
+# ixwebsocket::ixwebsocket target Conan uses, so no normalization helper is needed.
+[feature.bridge.dependencies]
+ixwebsocket = "11.4.*"
 
 [environments]
-default = { features = ["datetime", "serialization", "compression", "protobuf", "mqtt", "zmq", "udp", "scripting"], solve-group = "main" }
+default = { features = ["datetime", "serialization", "compression", "protobuf", "mqtt", "zmq", "udp", "scripting", "bridge"], solve-group = "main" }
 
 [tasks]
 plugin = "cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$CONDA_PREFIX -DPJ_BUILD_PLUGIN=$PJ_PLUGIN && cmake --build build && ctest --test-dir build --output-on-failure"
