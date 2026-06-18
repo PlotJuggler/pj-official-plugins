@@ -100,6 +100,26 @@ function(pj_target_link_paho_mqtt tgt vis)
   endif()
 endfunction()
 
+function(pj_target_link_lua tgt vis)
+  if(NOT TARGET lua::lua)
+    find_package(lua QUIET CONFIG)   # Conan provides lua::lua
+  endif()
+  if(TARGET lua::lua)
+    target_link_libraries(${tgt} ${vis} lua::lua)             # Conan
+    return()
+  endif()
+  # conda-forge lua ships only the builtin FindLua module (LUA_LIBRARIES /
+  # LUA_INCLUDE_DIR) with no namespaced target — wrap it in an imported target.
+  if(NOT TARGET pj_lua)
+    find_package(Lua REQUIRED)
+    add_library(pj_lua INTERFACE IMPORTED GLOBAL)
+    set_target_properties(pj_lua PROPERTIES
+      INTERFACE_LINK_LIBRARIES "${LUA_LIBRARIES}"
+      INTERFACE_INCLUDE_DIRECTORIES "${LUA_INCLUDE_DIR}")
+  endif()
+  target_link_libraries(${tgt} ${vis} pj_lua)
+endfunction()
+
 # Availability probe for the graceful-skip in common/arrow_helpers (some build
 # configs, e.g. the ROS2 proxy leg, have no Arrow dep at all).
 function(pj_arrow_available out)
