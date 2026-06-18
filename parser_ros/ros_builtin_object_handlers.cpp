@@ -177,20 +177,36 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestam
     uint32_t blob_size = data_len;
 
     if (format.find("compressedDepth") != std::string::npos) {
-      if (data_len < 12) {
-        return PJ::unexpected(std::string("compressedDepth data[] too short for header"));
+      out_encoding = "compressedDepth";  // PNG/RVL payload (+ optional quantization range).
+      // compressedDepth normally prefixes the PNG/RVL blob with a 12-byte
+      // ConfigHeader (uint32 format, float depthQuantA, float depthQuantB). But
+      // some recorders emit a BARE PNG with no ConfigHeader (seen in RealSense
+      // bags); stripping 12 bytes there chops the PNG's 8-byte signature + part
+      // of the IHDR length and corrupts it. A leading PNG signature therefore
+      // means "headerless" — pass the blob through untouched.
+      static constexpr uint8_t kPngSignature[8] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+      const bool headerless_png =
+          data_len >= sizeof(kPngSignature) && std::memcmp(src, kPngSignature, sizeof(kPngSignature)) == 0;
+      if (headerless_png) {
+        // No ConfigHeader -> no quantization range. 16UC1 PNG depth is raw
+        // millimetres, which the consumer reads directly; depth_min/max stay unset.
+        blob_offset = 0;
+        blob_size = data_len;
+      } else {
+        if (data_len < 12) {
+          return PJ::unexpected(std::string("compressedDepth data[] too short for header"));
+        }
+        // Mini-header: uint32 format (ignored), float depth_min, float depth_max.
+        // This is inside a uint8[] body, so it is byte-packed — no CDR alignment.
+        float dmin = 0.0f;
+        float dmax = 0.0f;
+        std::memcpy(&dmin, src + 4, sizeof(float));
+        std::memcpy(&dmax, src + 8, sizeof(float));
+        depth_min = dmin;
+        depth_max = dmax;
+        blob_offset = 12;
+        blob_size = data_len - 12;
       }
-      // Mini-header: uint32 format (ignored), float depth_min, float depth_max.
-      // This is inside a uint8[] body, so it is byte-packed — no CDR alignment.
-      float dmin = 0.0f;
-      float dmax = 0.0f;
-      std::memcpy(&dmin, src + 4, sizeof(float));
-      std::memcpy(&dmax, src + 8, sizeof(float));
-      depth_min = dmin;
-      depth_max = dmax;
-      out_encoding = "compressedDepth";  // PNG payload + depth quantization range.
-      blob_offset = 12;
-      blob_size = data_len - 12;
     } else if (format.find("jpeg") != std::string::npos) {
       out_encoding = "jpeg";
     } else if (format == "png") {

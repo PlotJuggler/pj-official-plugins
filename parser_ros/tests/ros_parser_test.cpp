@@ -1562,6 +1562,101 @@ TEST(RosParserTest, ImageObjectCarriesFrameId) {
   EXPECT_EQ(img->encoding, "mono8");
 }
 
+// compressedDepth schema: header + format string + uint8[] data. The data may or
+// may not carry a leading 12-byte ConfigHeader (see parseCompressedImage).
+static const char* kCompressedImageDef =
+    "std_msgs/Header header\nstring format\nuint8[] data\n"
+    "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+    "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+TEST(RosParserTest, CompressedDepthBarePngHasNoConfigHeader) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/CompressedImage", kCompressedImageDef));
+
+  // A BARE PNG: the 8-byte signature + a token IHDR length/type. Some recorders
+  // (e.g. RealSense bags) emit compressedDepth with no 12-byte ConfigHeader, so
+  // the parser must pass the blob through untouched — stripping 12 bytes here
+  // would chop the signature + part of the IHDR length and corrupt the PNG. The
+  // bytes are never decoded by the parser; only the offset/length pass-through
+  // is under test.
+  const std::vector<uint8_t> bare_png = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+                                         0x00, 0x00, 0x00, 0x0D, 'I',  'H',  'D',  'R'};
+  auto payload = serializeCdr([&bare_png](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 7, 0, "depth_optical");
+    enc.serializeString("16UC1; compressedDepth png");
+    enc.serializeUInt32(static_cast<uint32_t>(bare_png.size()));
+    for (uint8_t b : bare_png) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* img = std::any_cast<PJ::sdk::Image>(&rec->object);
+  ASSERT_NE(img, nullptr);
+  EXPECT_EQ(img->encoding, "compressedDepth");
+  EXPECT_EQ(img->frame_id, "depth_optical");
+  // Nothing stripped: the whole blob survives and still begins with the PNG
+  // signature, so QImage can decode it downstream.
+  ASSERT_EQ(img->data.size(), bare_png.size());
+  for (size_t i = 0; i < bare_png.size(); ++i) {
+    EXPECT_EQ(img->data.data()[i], bare_png[i]);
+  }
+  // No ConfigHeader => no quantization range.
+  EXPECT_FALSE(img->compressed_depth_min.has_value());
+  EXPECT_FALSE(img->compressed_depth_max.has_value());
+}
+
+TEST(RosParserTest, CompressedDepthWithConfigHeaderIsStripped) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/CompressedImage", kCompressedImageDef));
+
+  // A normal payload: 12-byte ConfigHeader (uint32 format, float depthQuantA,
+  // float depthQuantB) ahead of the PNG. The header must be stripped and its
+  // floats surfaced as the quantization range.
+  const float kDepthMin = 0.5f;
+  const float kDepthMax = 8.0f;
+  std::vector<uint8_t> data(12, 0);
+  std::memcpy(data.data() + 4, &kDepthMin, sizeof(float));
+  std::memcpy(data.data() + 8, &kDepthMax, sizeof(float));
+  const std::vector<uint8_t> png_sig = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+  data.insert(data.end(), png_sig.begin(), png_sig.end());
+
+  auto payload = serializeCdr([&data](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 7, 0, "depth_optical");
+    enc.serializeString("16UC1; compressedDepth png");
+    enc.serializeUInt32(static_cast<uint32_t>(data.size()));
+    for (uint8_t b : data) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* img = std::any_cast<PJ::sdk::Image>(&rec->object);
+  ASSERT_NE(img, nullptr);
+  EXPECT_EQ(img->encoding, "compressedDepth");
+  // The 12-byte header was stripped: the blob now starts at the PNG signature.
+  ASSERT_EQ(img->data.size(), png_sig.size());
+  for (size_t i = 0; i < png_sig.size(); ++i) {
+    EXPECT_EQ(img->data.data()[i], png_sig[i]);
+  }
+  ASSERT_TRUE(img->compressed_depth_min.has_value());
+  ASSERT_TRUE(img->compressed_depth_max.has_value());
+  EXPECT_FLOAT_EQ(*img->compressed_depth_min, kDepthMin);
+  EXPECT_FLOAT_EQ(*img->compressed_depth_max, kDepthMax);
+}
+
 TEST(RosParserTest, CompressedVideoProducesObject) {
   // foxglove_msgs/CompressedVideo. The first field is a BARE
   // builtin_interfaces/Time (sec, nanosec) — NOT a std_msgs/Header — followed
