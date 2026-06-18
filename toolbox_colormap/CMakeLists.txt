@@ -1,5 +1,4 @@
 find_package(nlohmann_json REQUIRED)
-find_package(lua REQUIRED)
 find_package(sol2 REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
@@ -12,9 +11,9 @@ target_compile_options(toolbox_colormap_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(toolbox_colormap_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk
   nlohmann_json::nlohmann_json
-  lua::lua
   sol2::sol2
 )
+pj_target_link_lua(toolbox_colormap_plugin PRIVATE)
 
 pj_embed_ui(toolbox_colormap_plugin
   UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/colormap_dialog.ui
