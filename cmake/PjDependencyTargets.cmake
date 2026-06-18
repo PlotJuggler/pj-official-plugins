@@ -47,6 +47,11 @@ function(pj_target_link_zstd tgt vis)
 endfunction()
 
 function(pj_target_link_lz4 tgt vis)
+  # Conan ships an lz4 CMake config (LZ4::lz4_static); conda-forge lz4-c ships none.
+  # Find it here (QUIET, not REQUIRED) so plugins don't need their own find_package.
+  if(NOT TARGET LZ4::lz4_static AND NOT TARGET lz4::lz4)
+    find_package(lz4 QUIET CONFIG)
+  endif()
   if(TARGET LZ4::lz4_static)
     target_link_libraries(${tgt} ${vis} LZ4::lz4_static)        # Conan
     return()
@@ -66,6 +71,11 @@ function(pj_target_link_lz4 tgt vis)
 endfunction()
 
 function(pj_target_link_asio tgt vis)
+  # Conan ships an asio CMake config (asio::asio); conda-forge asio is header-only
+  # with none. Find it here (QUIET) so plugins don't need their own find_package.
+  if(NOT TARGET asio::asio)
+    find_package(asio QUIET CONFIG)
+  endif()
   if(TARGET asio::asio)
     target_link_libraries(${tgt} ${vis} asio::asio)             # Conan
     return()
