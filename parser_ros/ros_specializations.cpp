@@ -186,9 +186,12 @@ void RosParser::handleDiagnosticArray() {
 
   size_t status_count = deserializer_->deserializeUInt32();
   for (size_t st = 0; st < status_count; st++) {
-    uint8_t level = deserializer_->deserialize(RosMsgParser::BYTE).convert<uint8_t>();
+    // diagnostic_msgs/DiagnosticStatus wire order: name, level, message,
+    // hardware_id, values[] (the OK/WARN/ERROR/STALE byte constants are not
+    // serialized). Read in exactly this order or the CDR cursor desyncs.
     std::string name;
     deserializer_->deserializeString(name);
+    uint8_t level = deserializer_->deserialize(RosMsgParser::BYTE).convert<uint8_t>();
     std::string message;
     deserializer_->deserializeString(message);
     std::string hardware_id;
