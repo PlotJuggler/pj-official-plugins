@@ -42,7 +42,7 @@ function(pj_target_link_zstd tgt vis)
   elseif(TARGET zstd::libzstd)
     target_link_libraries(${tgt} ${vis} zstd::libzstd)          # conda-forge (alias -> shared)
   else()
-    target_link_libraries(${tgt} ${vis} zstd::libzstd_shared)
+    target_link_libraries(${tgt} ${vis} zstd::libzstd_shared)   # custom/distro zstd (shared only)
   endif()
 endfunction()
 
@@ -55,9 +55,13 @@ function(pj_target_link_lz4 tgt vis)
     target_link_libraries(${tgt} ${vis} lz4::lz4)
     return()
   endif()
-  # conda-forge lz4-c ships no CMake config — consume via pkg-config.
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(PJ_LZ4 REQUIRED IMPORTED_TARGET liblz4)
+  # conda-forge lz4-c ships no CMake config — consume via pkg-config. Guard the
+  # imported-target creation so repeated calls (e.g. mcap links lz4 thrice) and
+  # calls from multiple subdirectories don't re-create PkgConfig::PJ_LZ4.
+  if(NOT TARGET PkgConfig::PJ_LZ4)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(PJ_LZ4 REQUIRED IMPORTED_TARGET liblz4)
+  endif()
   target_link_libraries(${tgt} ${vis} PkgConfig::PJ_LZ4)
 endfunction()
 
@@ -66,9 +70,12 @@ function(pj_target_link_asio tgt vis)
     target_link_libraries(${tgt} ${vis} asio::asio)             # Conan
     return()
   endif()
-  # conda-forge asio is header-only with no CMake target — pkg-config supplies the include dir.
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(PJ_ASIO REQUIRED IMPORTED_TARGET asio)
+  # conda-forge asio is header-only with no CMake target — pkg-config supplies the
+  # include dir. Guard the imported-target creation against repeated/cross-subdir calls.
+  if(NOT TARGET PkgConfig::PJ_ASIO)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(PJ_ASIO REQUIRED IMPORTED_TARGET asio)
+  endif()
   target_link_libraries(${tgt} ${vis} PkgConfig::PJ_ASIO)
 endfunction()
 
