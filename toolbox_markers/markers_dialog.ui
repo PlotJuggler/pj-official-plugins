@@ -9,7 +9,7 @@
    <item>
     <widget class="QLabel" name="help_label">
      <property name="text">
-      <string>Drag timeseries from the panel into the table below (or tick "whole dataset"), set the marker's time range with the slider, then Add.</string>
+      <string>Drag timeseries into the list (or tick "whole dataset"). Add time ranges / events, drag and resize them on the timeline, then Save to apply them to the plots.</string>
      </property>
      <property name="wordWrap">
       <bool>true</bool>
@@ -23,6 +23,89 @@
      </property>
      <layout class="QVBoxLayout" name="inputLayout">
       <item>
+       <widget class="QFrame" name="seriesTopLine">
+        <property name="minimumSize">
+         <size>
+          <width>0</width>
+          <height>1</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>16777215</width>
+          <height>1</height>
+         </size>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">background-color: #b0b0bf;</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="seriesHeaderLayout">
+        <item>
+         <widget class="QLabel" name="series_title">
+          <property name="text">
+           <string>Series</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignCenter</set>
+          </property>
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+            <horstretch>0</horstretch>
+            <verstretch>0</verstretch>
+           </sizepolicy>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="delete_series">
+          <property name="text">
+           <string/>
+          </property>
+          <property name="toolTip">
+           <string>Remove the selected series from the list</string>
+          </property>
+          <property name="iconSize">
+           <size>
+            <width>18</width>
+            <height>18</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>28</width>
+            <height>28</height>
+           </size>
+          </property>
+          <property name="flat">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QFrame" name="seriesHeaderLine">
+        <property name="minimumSize">
+         <size>
+          <width>0</width>
+          <height>1</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>16777215</width>
+          <height>1</height>
+         </size>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">background-color: #b0b0bf;</string>
+        </property>
+       </widget>
+      </item>
+      <item>
        <widget class="QTableWidget" name="tableSeries">
         <property name="selectionBehavior">
          <enum>QAbstractItemView::SelectRows</enum>
@@ -30,6 +113,9 @@
         <property name="editTriggers">
          <set>QAbstractItemView::NoEditTriggers</set>
         </property>
+        <attribute name="horizontalHeaderVisible">
+         <bool>false</bool>
+        </attribute>
        </widget>
       </item>
      </layout>
@@ -59,33 +145,71 @@
    <item>
     <widget class="QLabel" name="range_label">
      <property name="text">
-      <string>Marker time range</string>
+      <string>Marker timeline</string>
      </property>
     </widget>
    </item>
    <item>
-    <widget class="RangeSlider" name="time_range"/>
+    <widget class="MarkerTimeline" name="markers_timeline"/>
    </item>
    <item>
-    <layout class="QHBoxLayout" name="buttonsLayout">
+    <layout class="QHBoxLayout" name="addButtonsLayout">
      <item>
-      <widget class="QPushButton" name="add_region">
+      <widget class="QLabel" name="add_region_label">
        <property name="text">
-        <string>Add Region</string>
+        <string>Add time range</string>
        </property>
       </widget>
      </item>
      <item>
-      <widget class="QPushButton" name="add_event">
+      <widget class="QPushButton" name="add_range_btn">
        <property name="text">
-        <string>Add Event</string>
+        <string>+</string>
+       </property>
+       <property name="maximumSize">
+        <size>
+         <width>36</width>
+         <height>16777215</height>
+        </size>
+       </property>
+       <property name="toolTip">
+        <string>Add a resizable time-range marker to the timeline</string>
        </property>
       </widget>
      </item>
      <item>
-      <widget class="QPushButton" name="clear_markers">
+      <spacer name="addSpacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QLabel" name="add_event_label">
        <property name="text">
-        <string>Clear</string>
+        <string>Add time event</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="add_event_btn">
+       <property name="text">
+        <string>+</string>
+       </property>
+       <property name="maximumSize">
+        <size>
+         <width>36</width>
+         <height>16777215</height>
+        </size>
+       </property>
+       <property name="toolTip">
+        <string>Add a single-point event marker to the timeline</string>
        </property>
       </widget>
      </item>
@@ -94,7 +218,7 @@
    <item>
     <widget class="QLabel" name="status_label">
      <property name="text">
-      <string>Load data, then add markers to the plots.</string>
+      <string>Load data, then add markers and press Save.</string>
      </property>
      <property name="wordWrap">
       <bool>true</bool>
@@ -102,11 +226,54 @@
     </widget>
    </item>
    <item>
-    <widget class="QDialogButtonBox" name="buttonBox">
-     <property name="standardButtons">
-      <set>QDialogButtonBox::Close</set>
-     </property>
-    </widget>
+    <layout class="QHBoxLayout" name="bottomBarLayout">
+     <item>
+      <widget class="QPushButton" name="clear_markers">
+       <property name="text">
+        <string>Clear</string>
+       </property>
+       <property name="toolTip">
+        <string>Remove all markers this toolbox has added (listed series + whole-dataset)</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="bottomSpacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="save_btn">
+       <property name="text">
+        <string>Save</string>
+       </property>
+       <property name="toolTip">
+        <string>Publish all markers to the plots</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QDialogButtonBox" name="buttonBox">
+       <property name="standardButtons">
+        <set>QDialogButtonBox::Close</set>
+       </property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+      </widget>
+     </item>
+    </layout>
    </item>
   </layout>
  </widget>
