@@ -18,6 +18,5 @@ class ToolboxFftConan(ConanFile):
         f"plotjuggler_sdk/{_SDK_VERSION}",
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
-        "kissfft/131.1.0",
     )
     default_options = {"*:shared": False}
