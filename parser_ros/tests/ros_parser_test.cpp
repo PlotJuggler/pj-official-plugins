@@ -684,7 +684,10 @@ static const char* kDiagnosticArrayDef =
     "int32 sec\nuint32 nanosec\n"
     "================\n"
     "MSG: diagnostic_msgs/DiagnosticStatus\n"
-    "uint8 level\nstring name\nstring message\nstring hardware_id\n"
+    // Canonical field order (matches diagnostic_msgs/msg/DiagnosticStatus): the
+    // byte constants are NOT serialized, then `name` precedes `level` on the wire.
+    "byte OK=0\nbyte WARN=1\nbyte ERROR=2\nbyte STALE=3\n"
+    "string name\nbyte level\nstring message\nstring hardware_id\n"
     "diagnostic_msgs/KeyValue[] values\n"
     "================\n"
     "MSG: diagnostic_msgs/KeyValue\n"
@@ -1001,21 +1004,21 @@ TEST(RosParserTest, DiagnosticArray) {
     // 2 statuses
     enc.serializeUInt32(2);
 
-    // Status 1: with hardware_id
+    // Status 1: with hardware_id. Wire order is name, level, message, hardware_id.
+    enc.serializeString("CPU Temperature");                                             // name
     enc.serialize(RosMsgParser::BYTE, RosMsgParser::Variant(static_cast<uint8_t>(0)));  // level OK
-    enc.serializeString("CPU Temperature");
-    enc.serializeString("OK");
-    enc.serializeString("cpu0");
+    enc.serializeString("OK");                                                          // message
+    enc.serializeString("cpu0");                                                        // hardware_id
     // 1 key-value pair
     enc.serializeUInt32(1);
     enc.serializeString("temperature");
     enc.serializeString("65.5");
 
     // Status 2: no hardware_id
+    enc.serializeString("Battery");                                                     // name
     enc.serialize(RosMsgParser::BYTE, RosMsgParser::Variant(static_cast<uint8_t>(1)));  // level WARN
-    enc.serializeString("Battery");
-    enc.serializeString("Low");
-    enc.serializeString("");
+    enc.serializeString("Low");                                                         // message
+    enc.serializeString("");                                                            // hardware_id
     enc.serializeUInt32(1);
     enc.serializeString("voltage");
     enc.serializeString("11.2");
