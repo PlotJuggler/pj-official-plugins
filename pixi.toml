@@ -1,11 +1,6 @@
 [workspace]
 name = "pj-official-plugins"
-# NOTE: switch the SDK channel to "https://prefix.dev/plotjuggler" once the SDK
-# conda package is published (Phase 1 Task 5). Local channel for pre-publish dev:
-channels = [
-  "conda-forge",
-  "file:///home/davide/ws_plotjuggler/plotjuggler_sdk/.worktrees/conda-output",
-]
+channels = ["conda-forge", "https://prefix.dev/plotjuggler"]
 platforms = ["linux-64"]
 
 [dependencies]

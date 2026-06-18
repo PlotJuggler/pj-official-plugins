@@ -5,10 +5,9 @@ environments:
   default:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
-    - url: file:///home/davide/ws_plotjuggler/plotjuggler_sdk/.worktrees/conda-output/
+    - url: https://prefix.dev/plotjuggler/
     packages:
       linux-64:
-      - conda: /home/davide/ws_plotjuggler/plotjuggler_sdk/.worktrees/conda-output/linux-64/plotjuggler_sdk-0.8.0-hd570aad_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/asio-1.36.0-hecca717_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/aws-c-auth-0.10.3-hea842a7_2.conda
@@ -120,19 +119,8 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-8_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/sysroot_linux-64-2.39-he3f20f0_6.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2025c-hc9c84f9_1.conda
+      - conda: https://prefix.dev/plotjuggler/linux-64/plotjuggler_sdk-0.8.1-hb0f4dca_0.conda
 packages:
-- conda: /home/davide/ws_plotjuggler/plotjuggler_sdk/.worktrees/conda-output/linux-64/plotjuggler_sdk-0.8.0-hd570aad_0.conda
-  subdir: linux-64
-  sha256: 552389bb761b267afe2a759760b2fa1558a3e2f8be7687404d6b6bee57251672
-  md5: 11272f4cec46e791c61923dcaea26855
-  depends:
-  - nlohmann_json >=3.12,<4
-  - libstdcxx >=14
-  - libgcc >=14
-  channel: file:///home/davide/ws_plotjuggler/plotjuggler_sdk/.worktrees/conda-output
-  license: Apache-2.0
-  size: 795536
-  timestamp: 1781804271304
 - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
   build_number: 20
   sha256: 1dd3fffd892081df9726d7eb7e0dea6198962ba775bd88842135a4ddb4deb3c9
@@ -1798,3 +1786,14 @@ packages:
   run_exports: {}
   size: 119135
   timestamp: 1767016325805
+- conda: https://prefix.dev/plotjuggler/linux-64/plotjuggler_sdk-0.8.1-hb0f4dca_0.conda
+  sha256: ef7f036f7b0043c359b4a9dd74050fa3cb5df3ba9100809bee8f49f58ee4cc56
+  md5: 5e44370c1837156def3935b6d3d9be83
+  depends:
+  - nlohmann_json >=3.12,<4
+  - libstdcxx >=15
+  - libgcc >=15
+  license: Apache-2.0
+  run_exports: {}
+  size: 798312
+  timestamp: 1781814045727
