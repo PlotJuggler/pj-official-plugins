@@ -9,12 +9,10 @@
 # does its own find_package(ffmpeg REQUIRED), so it never silently runs without
 # the target.
 
-if(NOT TARGET ffmpeg::avformat)
-  find_package(ffmpeg QUIET CONFIG)
-  if(NOT TARGET ffmpeg::avformat)
-    message(STATUS "pj_video_demux: ffmpeg not found, skipping shared helper library")
-    return()
-  endif()
+pj_ffmpeg_available(_pj_have_ffmpeg)
+if(NOT _pj_have_ffmpeg)
+  message(STATUS "pj_video_demux: ffmpeg not found, skipping shared helper library")
+  return()
 endif()
 
 add_library(pj_video_demux STATIC video_demux.cpp)
@@ -31,12 +29,8 @@ target_include_directories(pj_video_demux PUBLIC
 )
 
 # PJ::Span / PJ::Expected come from plugin_sdk; libav* used only for indexing.
-target_link_libraries(pj_video_demux PUBLIC
-  plotjuggler_sdk::plugin_sdk
-  ffmpeg::avformat
-  ffmpeg::avcodec
-  ffmpeg::avutil
-)
+target_link_libraries(pj_video_demux PUBLIC plotjuggler_sdk::plugin_sdk)
+pj_target_link_ffmpeg(pj_video_demux PUBLIC avformat avcodec avutil)
 
 # --- Unit tests: pure byte-rewrite cases + committed h264/hevc/av1 fixtures
 #     (+ an env-gated external e2e via PJ_TEST_VIDEO) ---

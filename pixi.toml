@@ -51,9 +51,15 @@ ixwebsocket = "11.4.*"
 [feature.mosaico.dependencies]
 libarrow-flight = ">=23,<24"
 fmt = "*"
+# data_load_mp4 + data_load_lerobot (via common/pj_video_demux): walk MP4/video
+# containers for per-frame indexing. conda-forge ffmpeg is pkg-config only (no
+# CMake config), consumed via pj_target_link_ffmpeg; pkg-config drives the probe.
+[feature.media.dependencies]
+ffmpeg = ">=6,<9"
+pkg-config = "*"
 
 [environments]
-default = { features = ["datetime", "serialization", "compression", "protobuf", "mqtt", "zmq", "udp", "scripting", "bridge", "mosaico"], solve-group = "main" }
+default = { features = ["datetime", "serialization", "compression", "protobuf", "mqtt", "zmq", "udp", "scripting", "bridge", "mosaico", "media"], solve-group = "main" }
 
 [tasks]
 # BUILD_TESTING=ON so plugins that gate their tests on it (toolbox_mosaico) still

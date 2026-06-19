@@ -120,6 +120,64 @@ function(pj_target_link_lua tgt vis)
   target_link_libraries(${tgt} ${vis} pj_lua)
 endfunction()
 
+# Link FFmpeg libav* components by name, e.g.
+#   pj_target_link_ffmpeg(my_target PRIVATE avformat avutil)
+# Conan ships an ffmpeg CMake config (ffmpeg::avformat, ffmpeg::avcodec, ...);
+# conda-forge ffmpeg ships pkg-config (.pc) ONLY, no CMake config. The helper
+# links the Conan targets when present, else builds IMPORTED targets from the
+# libav<component> pkg-config modules. GLOBAL + a per-component TARGET guard make
+# this safe when several subdirectories link the same component (e.g. data_load_mp4
+# and common/pj_video_demux both link avformat/avutil in one build).
+function(pj_target_link_ffmpeg tgt vis)
+  if(NOT TARGET ffmpeg::avutil)
+    find_package(ffmpeg QUIET CONFIG)
+  endif()
+  if(TARGET ffmpeg::avutil)
+    foreach(_c ${ARGN})
+      target_link_libraries(${tgt} ${vis} ffmpeg::${_c})            # Conan
+    endforeach()
+    return()
+  endif()
+  find_package(PkgConfig REQUIRED)
+  foreach(_c ${ARGN})
+    if(NOT TARGET PkgConfig::PJ_FF_${_c})
+      pkg_check_modules(PJ_FF_${_c} REQUIRED IMPORTED_TARGET GLOBAL lib${_c})
+    endif()
+    target_link_libraries(${tgt} ${vis} PkgConfig::PJ_FF_${_c})     # conda-forge
+  endforeach()
+endfunction()
+
+# Availability probe for the graceful-skip in common/pj_video_demux (builds that
+# exercise only non-ffmpeg plugins have no ffmpeg dep at all). Detects ffmpeg under
+# BOTH providers — Conan's CMake config OR conda-forge's pkg-config — so the skip
+# fires only when ffmpeg is genuinely absent, not merely missing a CMake config.
+function(pj_ffmpeg_available out)
+  if(TARGET ffmpeg::avutil)
+    set(${out} TRUE PARENT_SCOPE)
+    return()
+  endif()
+  find_package(ffmpeg QUIET CONFIG)
+  if(TARGET ffmpeg::avutil)
+    set(${out} TRUE PARENT_SCOPE)
+    return()
+  endif()
+  # pkg-config fallback (conda-forge ffmpeg has no CMake config). Gated on an active
+  # conda environment so the Conan aggregate build — which has NO ffmpeg dep and must
+  # SKIP pj_video_demux — never silently picks up a SYSTEM ffmpeg from the host's
+  # pkg-config. Under Conan, ffmpeg arrives only as a CMake config (handled above).
+  if(DEFINED ENV{CONDA_PREFIX})
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+      pkg_check_modules(PJ_FF_PROBE QUIET libavutil)
+      if(PJ_FF_PROBE_FOUND)
+        set(${out} TRUE PARENT_SCOPE)
+        return()
+      endif()
+    endif()
+  endif()
+  set(${out} FALSE PARENT_SCOPE)
+endfunction()
+
 # Availability probe for the graceful-skip in common/arrow_helpers (some build
 # configs, e.g. the ROS2 proxy leg, have no Arrow dep at all).
 function(pj_arrow_available out)
