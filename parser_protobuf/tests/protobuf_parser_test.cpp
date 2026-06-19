@@ -2698,3 +2698,175 @@ TEST(ProtobufParserTest, PjPosesInFrameObjectRoute) {
   EXPECT_EQ(pf->timestamp_ns, 9'000'000'500LL);
   expectTwoPosesDecoded(*pf, 0.7071067811865476);
 }
+
+// ---------------------------------------------------------------------------
+// foxglove.PoseInFrame (singular) -> kPosesInFrame (one pose)
+//
+// PoseInFrame { timestamp=1, frame_id=2, pose=3 (single Pose) } is wire-identical
+// to a one-element PosesInFrame (field 3, length-delimited submessage), so the
+// parser binds it to the same SDK codec — the protobuf analog of ROS PoseStamped.
+// ---------------------------------------------------------------------------
+
+TEST(ProtobufParserTest, FoxglovePoseInFrameObjectRoute) {
+  ProtobufParserFixture f;
+  f.setUp();
+
+  ASSERT_TRUE(f.bindSchema("foxglove.PoseInFrame", std::string{}));
+  const PJ::Span<const uint8_t> empty_schema{};
+  EXPECT_EQ(f.handle.classifySchema("foxglove.PoseInFrame", empty_schema), PJ::sdk::BuiltinObjectType::kPosesInFrame);
+
+  // One pose: the wire bytes are exactly what a foxglove.PoseInFrame produces.
+  const std::vector<PoseValues> one = {{.px = 9.0, .py = 8.0, .pz = 7.0, .qx = 0.0, .qy = 0.0, .qz = 0.0, .qw = 1.0}};
+  const auto wire = buildPosesInFrameWire(3, 0, "base_link", one);
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(wire.data(), wire.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  ASSERT_NE(pf, nullptr);
+  EXPECT_EQ(pf->frame_id, "base_link");
+  EXPECT_EQ(pf->timestamp_ns, 3'000'000'000LL);
+  EXPECT_FALSE(rec->ts.has_value());  // embedded-ts off by default
+  ASSERT_EQ(pf->poses.size(), 1u);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.x, 9.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.y, 8.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.z, 7.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].orientation.w, 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// foxglove.Odometry -> kPosesInFrame (one pose, the protobuf analog of ROS
+// nav_msgs/Odometry).
+//
+// Odometry { timestamp=1, frame_id=2, body_frame_id=3, pose=4 Pose,
+//   linear_velocity=5, angular_velocity=6, pose_covariance=7 (repeated double),
+//   velocity_covariance=8, metadata=9 }. Unlike PoseInFrame the pose sits at
+//   field 4 (field 3 is a string), so the PosesInFrame codec cannot be reused —
+//   a dedicated decoder reads timestamp/frame_id/pose and skips the rest.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// foxglove.Pose { position=1 Vector3 (x/y/z), orientation=2 Quaternion (x/y/z/w) }.
+PW buildPoseSubmessage(const PoseValues& pv) {
+  PW position;
+  position.dbl(1, pv.px);
+  position.dbl(2, pv.py);
+  position.dbl(3, pv.pz);
+  PW orientation;
+  orientation.dbl(1, pv.qx);
+  orientation.dbl(2, pv.qy);
+  orientation.dbl(3, pv.qz);
+  orientation.dbl(4, pv.qw);
+  PW pose;
+  pose.sub(1, position);
+  pose.sub(2, orientation);
+  return pose;
+}
+
+// Build a foxglove.Odometry message with velocities + a 36-element pose_covariance
+// present, so the decoder is proven to skip every field that is not the pose.
+PW buildOdometryWire(
+    int64_t sec, int32_t ns, const std::string& frame_id, const std::string& body_frame_id, const PoseValues& pv) {
+  PW linear_velocity;
+  linear_velocity.dbl(1, 1.5);
+  linear_velocity.dbl(2, 0.0);
+  linear_velocity.dbl(3, 0.0);
+
+  PW odom;
+  odom.sub(1, foxgloveTimestamp(sec, ns));
+  odom.str(2, frame_id);
+  odom.str(3, body_frame_id);
+  odom.sub(4, buildPoseSubmessage(pv));
+  odom.sub(5, linear_velocity);                         // skipped (submessage)
+  odom.packedDoubles(7, std::vector<double>(36, 0.0));  // skipped (packed repeated double)
+  return odom;
+}
+
+}  // namespace
+
+TEST(ProtobufParserTest, FoxgloveOdometryObjectRoute) {
+  ProtobufParserFixture f;
+  f.setUp();
+
+  ASSERT_TRUE(f.bindSchema("foxglove.Odometry", std::string{}));
+  const PJ::Span<const uint8_t> empty_schema{};
+  EXPECT_EQ(f.handle.classifySchema("foxglove.Odometry", empty_schema), PJ::sdk::BuiltinObjectType::kPosesInFrame);
+
+  const PoseValues pv{.px = 1.0, .py = 2.0, .pz = 3.0, .qx = 0.0, .qy = 0.0, .qz = 0.0, .qw = 1.0};
+  const auto wire = buildOdometryWire(5, 0, "odom", "base_link", pv);
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(wire.b.data(), wire.b.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  ASSERT_NE(pf, nullptr);
+  EXPECT_EQ(pf->frame_id, "odom");  // reference frame (field 2), NOT body_frame_id
+  EXPECT_EQ(pf->timestamp_ns, 5'000'000'000LL);
+  EXPECT_FALSE(rec->ts.has_value());
+  ASSERT_EQ(pf->poses.size(), 1u);  // pose at field 4; velocities + covariance skipped
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.x, 1.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.y, 2.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.z, 3.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].orientation.w, 1.0);
+}
+
+TEST(ProtobufParserTest, FoxgloveOdometryScalarRoute) {
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("foxglove.Odometry", std::string{}));
+
+  const PoseValues pv{.px = 1.0, .py = 2.0, .pz = 3.0, .qx = 0.0, .qy = 0.0, .qz = 0.0, .qw = 1.0};
+  const auto wire = buildOdometryWire(5, 0, "odom", "base_link", pv);
+  ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(wire.b.data()), wire.b.size()), 555));
+
+  // The scalar route keeps the single pose plottable as bounded per-axis columns
+  // (mirroring the ROS Odometry scalar flatten); it never emits the velocities or
+  // the 36-element covariances.
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+  const auto* px = PJ::sdk::testing::ParserWriteRecorder::findField(row, "pose/position/x");
+  ASSERT_NE(px, nullptr);
+  EXPECT_DOUBLE_EQ(px->numeric, 1.0);
+  const auto* qw = PJ::sdk::testing::ParserWriteRecorder::findField(row, "pose/orientation/w");
+  ASSERT_NE(qw, nullptr);
+  EXPECT_DOUBLE_EQ(qw->numeric, 1.0);
+}
+
+// foxglove.Odometry with a NON-default numbering: official is { frame_id=2,
+// body_frame_id=3, pose=4 }; here { pose=2, body_frame_id=3, frame_id=9 }. The
+// decoder must follow the embedded descriptor, not the hardcoded numbers.
+TEST(ProtobufParserTest, FoxgloveOdometryHonorsVariantSchemaFieldNumbers) {
+  ProtobufParserFixture f;
+  f.setUp();
+  const std::string schema =
+      buildFoxgloveSchema("Odometry", {{"timestamp", 1}, {"pose", 2}, {"body_frame_id", 3}, {"frame_id", 9}});
+  ASSERT_TRUE(f.bindSchema("foxglove.Odometry", schema));
+
+  const PoseValues pv{.px = 4.0, .py = 5.0, .pz = 6.0, .qx = 0.0, .qy = 0.0, .qz = 0.0, .qw = 1.0};
+  PW odom;
+  odom.sub(1, foxgloveTimestamp(7, 0));
+  odom.sub(2, buildPoseSubmessage(pv));  // pose (variant number)
+  odom.str(3, "base_link");              // body_frame_id (variant number)
+  odom.str(9, "world");                  // frame_id (variant number)
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(odom.b.data(), odom.b.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  ASSERT_NE(pf, nullptr);
+  EXPECT_EQ(pf->frame_id, "world");  // resolved from descriptor (field 9), not the default field 2
+  ASSERT_EQ(pf->poses.size(), 1u);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.x, 4.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.z, 6.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].orientation.w, 1.0);
+}

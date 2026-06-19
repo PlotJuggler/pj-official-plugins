@@ -374,6 +374,14 @@ FrameTransformFieldNumbers resolveFrameTransformFieldNumbers(const google::proto
   return n;
 }
 
+OdometryFieldNumbers resolveOdometryFieldNumbers(const google::protobuf::Descriptor* descriptor) {
+  OdometryFieldNumbers n;  // official defaults
+  n.timestamp = fieldNumberOr(descriptor, "timestamp", n.timestamp);
+  n.frame_id = fieldNumberOr(descriptor, "frame_id", n.frame_id);
+  n.pose = fieldNumberOr(descriptor, "pose", n.pose);
+  return n;
+}
+
 ImageAnnotationsFieldNumbers resolveImageAnnotationsFieldNumbers(const google::protobuf::Descriptor* descriptor) {
   ImageAnnotationsFieldNumbers n;  // official defaults
   n.circles = fieldNumberOr(descriptor, "circles", n.circles);
@@ -451,6 +459,50 @@ PJ::Expected<PJ::sdk::FrameTransforms> deserializeFoxgloveFrameTransform(
   }
   PJ::sdk::FrameTransforms out;
   out.transforms.push_back(std::move(tf));
+  return out;
+}
+
+// ===========================================================================
+// foxglove.Odometry -> sdk::PosesInFrame (single pose)
+// { timestamp=1, frame_id=2, body_frame_id=3, pose=4 Pose, linear_velocity=5,
+//   angular_velocity=6, pose_covariance=7, velocity_covariance=8, metadata=9 }
+// Only timestamp / frame_id / pose are decoded; every other field is skipped.
+// The pose is "body_frame_id expressed in frame_id", so frame_id is the reference
+// frame of the emitted PosesInFrame — mirroring nav_msgs/Odometry.
+// ===========================================================================
+PJ::Expected<PJ::sdk::PosesInFrame> deserializeFoxgloveOdometry(
+    const uint8_t* data, size_t size, const OdometryFieldNumbers& fields) {
+  if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return PJ::unexpected(std::string("foxglove.Odometry: too large"));
+  }
+  CodedInputStream in(data, static_cast<int>(size));
+  PJ::sdk::PosesInFrame out;
+  PJ::sdk::Pose pose;  // origin + identity orientation if the wire omits the pose
+  uint32_t tag = 0;
+  while ((tag = in.ReadTag()) != 0) {
+    const int f = fieldOf(tag);
+    uint32_t len = 0;
+    if (f == fields.timestamp) {
+      if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.Odometry: bad timestamp"));
+      }
+      out.timestamp_ns = readTimestampNs(in, len);
+    } else if (f == fields.frame_id) {
+      if (wireOf(tag) != kWireLen || !readString(in, out.frame_id)) {
+        return PJ::unexpected(std::string("foxglove.Odometry: bad frame_id"));
+      }
+    } else if (f == fields.pose) {
+      if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.Odometry: bad pose"));
+      }
+      pose = readPose(in, len);
+    } else if (!skipField(in, wireOf(tag))) {
+      return PJ::unexpected(std::string("foxglove.Odometry: malformed"));
+    }
+  }
+  // Odometry always represents exactly one pose; emit it even if the wire omitted
+  // the (all-default) pose submessage, so the topic still renders at the origin.
+  out.poses.push_back(pose);
   return out;
 }
 
