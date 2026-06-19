@@ -5,7 +5,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 # --- Plugin shared library ---
-add_library(parser_protobuf_plugin SHARED protobuf_parser.cpp foxglove_pointcloud_codec.cpp foxglove_object_codecs.cpp)
+add_library(parser_protobuf_plugin SHARED protobuf_parser.cpp foxglove_pointcloud_codec.cpp foxglove_object_codecs.cpp foxglove_voxelgrid_codec.cpp)
 target_compile_features(parser_protobuf_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_protobuf_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(parser_protobuf_plugin PRIVATE plotjuggler_sdk::plugin_sdk protobuf::libprotobuf protobuf::libprotoc nlohmann_json::nlohmann_json pj_base64 pj_array_policy pj_laser_scan)
@@ -43,7 +43,7 @@ if(APPLE)
 endif()
 
 # --- Integration test (loads plugin .so via host library) ---
-add_executable(protobuf_parser_test tests/protobuf_parser_test.cpp foxglove_pointcloud_codec.cpp foxglove_object_codecs.cpp)
+add_executable(protobuf_parser_test tests/protobuf_parser_test.cpp foxglove_pointcloud_codec.cpp foxglove_object_codecs.cpp foxglove_voxelgrid_codec.cpp)
 target_compile_features(protobuf_parser_test PRIVATE cxx_std_20)
 target_compile_options(protobuf_parser_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(protobuf_parser_test PRIVATE
