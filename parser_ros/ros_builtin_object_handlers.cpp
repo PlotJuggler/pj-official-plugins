@@ -49,9 +49,12 @@ namespace {
 // Bytes per pixel for the raw ROS image encodings parser_ros consumes. Used
 // only to validate that row_step >= width * bpp. Encoding strings are
 // emitted into Image::encoding verbatim — the consumer routes by string.
+// Bayer CFA encodings (bayer_*8) carry one raw mosaic sample per pixel, so they
+// are 1 byte/pixel here; demosaicing to RGB happens downstream in the viewer.
 const std::unordered_map<std::string, uint32_t>& kRosImageBytesPerPixel() {
   static const std::unordered_map<std::string, uint32_t> kMap = {
-      {"rgb8", 3}, {"rgba8", 4}, {"bgr8", 3}, {"bgra8", 4}, {"mono8", 1}, {"mono16", 2}, {"16UC1", 2},
+      {"rgb8", 3},  {"rgba8", 4},       {"bgr8", 3},        {"bgra8", 4},       {"mono8", 1},       {"mono16", 2},
+      {"16UC1", 2}, {"bayer_rggb8", 1}, {"bayer_grbg8", 1}, {"bayer_gbrg8", 1}, {"bayer_bggr8", 1},
   };
   return kMap;
 }
@@ -92,7 +95,7 @@ inline uint8_t readU8(RosMsgParser::Deserializer& d) {
 //   header                  std_msgs/Header  (handled by readHeader())
 //   height                  uint32
 //   width                   uint32
-//   encoding                string (e.g. "rgb8", "bgr8", "mono8", "mono16", "16UC1", …)
+//   encoding                string (e.g. "rgb8", "bgr8", "mono8", "mono16", "16UC1", "bayer_rggb8", …)
 //   is_bigendian            uint8
 //   step                    uint32
 //   data                    uint8[height*step]
