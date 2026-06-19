@@ -1153,6 +1153,38 @@ TEST(ProtobufParserTest, FoxglovePointCloudCodecDecodesAndSynthesizes) {
   EXPECT_FALSE(decoded->has_pose);
 }
 
+// Foxglove stores colour as four separate uint8 channels (red/green/blue/alpha).
+// They describe one per-point colour, so the codec normalizes them to a single
+// canonical packed 'rgba' uint32 field (R,G,B,A increasing-address) — metadata only,
+// the bytes are already in canonical order, so the zero-copy span is untouched.
+const std::vector<FoxgloveField> kColorCloudFields = {{"x", 0, 7},          {"y", 4, 7},     {"z", 8, 7},
+                                                      {"intensity", 12, 7}, {"red", 16, 1},  {"green", 17, 1},
+                                                      {"blue", 18, 1},      {"alpha", 19, 1}};
+
+TEST(ProtobufParserTest, FoxglovePointCloudColorChannelsCollapseToRgba) {
+  const std::vector<uint8_t> blob(40, 0);  // 2 points * 20-byte stride
+  const auto wire = buildFoxglovePointCloudWire(0, 0, "lidar", 20, kColorCloudFields, blob, false, 0.0);
+
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  auto decoded = pj_protobuf::deserializeFoxglovePointCloudView(wire.data(), wire.size(), anchor);
+  ASSERT_TRUE(decoded.has_value()) << decoded.error();
+  const auto& cloud = decoded->cloud;
+  using DT = PJ::sdk::PointField::Datatype;
+
+  // x, y, z, intensity, rgba — the 4 colour channels became one packed field.
+  ASSERT_EQ(cloud.fields.size(), 5u);
+  EXPECT_EQ(cloud.fields[0].name, "x");
+  EXPECT_EQ(cloud.fields[3].name, "intensity");
+  EXPECT_EQ(cloud.fields[4].name, "rgba");
+  EXPECT_EQ(cloud.fields[4].offset, 16u);  // = the red channel's offset (bytes unchanged)
+  EXPECT_EQ(cloud.fields[4].datatype, DT::kUint32);
+  EXPECT_EQ(cloud.fields[4].count, 1u);
+
+  // Zero-copy is preserved: collapsing is a pure metadata rewrite.
+  EXPECT_EQ(cloud.point_step, 20u);
+  EXPECT_GE(cloud.data.data(), wire.data());
+}
+
 TEST(ProtobufParserTest, FoxglovePointCloudCodecFlagsNonIdentityPose) {
   const auto wire = buildFoxglovePointCloudWire(0, 0, "lidar", 16, kCloudFields, kCloudBlob, true, 3.5);
   auto decoded = pj_protobuf::deserializeFoxglovePointCloudView(wire.data(), wire.size(), nullptr);

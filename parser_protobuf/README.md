@@ -61,6 +61,16 @@ the TF tree. Foxglove's inline `pose` field has no slot in the canonical
 logged). For correct multi-sensor placement, provide the matching
 `foxglove.FrameTransform` (`/tf`) stream.
 
+Per-point colour is normalized to the canonical packed field via the shared
+`pj_pointcloud_color` helper (`common/pointcloud_color`): foxglove's separate
+`red`/`green`/`blue`/`alpha` `uint8` channels collapse into a single
+`PointField{ name:"rgba", datatype:kUint32 }` whose 4 bytes are R, G, B, A in
+increasing-address order. The bytes are already in that order, so the collapse is a
+**pure metadata rewrite that keeps the zero-copy span**. The host then renders one
+per-point colour (its "RGB" colour mode) instead of treating each channel as a
+separate colormap source. `parser_ros` produces the **same** canonical `rgba` field
+(repacking a PCL `0x00RRGGBB` packed colour), so the host has one colour rule.
+
 ## Known Limitations
 
 - Embedded timestamp extraction not implemented (original auto-detects

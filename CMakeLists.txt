@@ -17,6 +17,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/pj_video_demux)
   add_subdirectory(common/array_policy)
   add_subdirectory(common/laser_scan)
+  add_subdirectory(common/pointcloud_color)
 
   # Enabled entries track the v4 ABI (PJ_ABI_VERSION == 4): service-
   # registry API, Arrow C Data Interface at the write boundary, and the
@@ -121,6 +122,7 @@ add_subdirectory(common/base64)
 add_subdirectory(common/pj_video_demux)
 add_subdirectory(common/array_policy)
 add_subdirectory(common/laser_scan)
+add_subdirectory(common/pointcloud_color)
 
 # ---------------------------------------------------------------------------
 # Plugins — use -DPJ_BUILD_PLUGIN=<dir> to build a single plugin (CI mode),
