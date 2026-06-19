@@ -1565,6 +1565,54 @@ TEST(RosParserTest, ImageObjectCarriesFrameId) {
   EXPECT_EQ(img->encoding, "mono8");
 }
 
+// Regression: ROS Bayer CFA images (bayer_rggb8 and friends) carry one raw mosaic
+// sample per pixel (1 byte/pixel). parseImage must ACCEPT them and pass the encoding
+// through verbatim — the viewer demosaics downstream. Previously these were rejected
+// as "unsupported ROS encoding", so bayer camera topics produced no frame at all
+// (the solid red/black tiles seen on real ugv recordings).
+TEST(RosParserTest, ImageBayerRggb8IsAccepted) {
+  static const char* kImageDef =
+      "std_msgs/Header header\nuint32 height\nuint32 width\nstring encoding\n"
+      "uint8 is_bigendian\nuint32 step\nuint8[] data\n"
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/Image", kImageDef));
+
+  // 2x2 single-channel CFA mosaic: step(2) * height(2) == 4 bytes, bpp == 1.
+  const std::vector<uint8_t> pixels = {0x11, 0x22, 0x33, 0x44};
+  auto payload = serializeCdr([&pixels](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 7, 0, "rgb_camera");
+    enc.serializeUInt32(2);  // height
+    enc.serializeUInt32(2);  // width
+    enc.serializeString("bayer_rggb8");
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(0)));  // is_bigendian
+    enc.serializeUInt32(2);                                                              // step
+    enc.serializeUInt32(static_cast<uint32_t>(pixels.size()));                           // uint8[] data: count
+    for (uint8_t b : pixels) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* img = std::any_cast<PJ::sdk::Image>(&rec->object);
+  ASSERT_NE(img, nullptr);
+  EXPECT_EQ(img->encoding, "bayer_rggb8");  // emitted verbatim for the viewer to demosaic
+  EXPECT_EQ(img->width, 2u);
+  EXPECT_EQ(img->height, 2u);
+  EXPECT_EQ(img->row_step, 2u);
+  ASSERT_EQ(img->data.size(), pixels.size());
+  EXPECT_EQ(img->data[0], 0x11);
+  EXPECT_EQ(img->data[3], 0x44);
+}
+
 // compressedDepth schema: header + format string + uint8[] data. The data may or
 // may not carry a leading 12-byte ConfigHeader (see parseCompressedImage).
 static const char* kCompressedImageDef =
