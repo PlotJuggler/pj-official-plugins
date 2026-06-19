@@ -326,11 +326,27 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     // canonical PJ.PosesInFrame and foxglove.PosesInFrame are wire-identical
     // (the SDK proto mirrors foxglove field-for-field), so the SDK codec
     // (deserializePosesInFrame) serves both names — no plugin-local decoder.
-    if (type_name == PJ::kSchemaPosesInFrame || type_name == "foxglove.PosesInFrame") {
+    // foxglove.PoseInFrame (a SINGLE pose at field 3) is wire-identical to a
+    // one-element PosesInFrame, so the same codec decodes it into one pose.
+    if (type_name == PJ::kSchemaPosesInFrame || type_name == "foxglove.PosesInFrame" ||
+        type_name == "foxglove.PoseInFrame") {
       if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
         return status;
       }
       registerPosesInFrameHandler(type_name);
+      return PJ::okStatus();
+    }
+
+    // Canonical-object fast path for foxglove.Odometry -> kPosesInFrame (one
+    // pose). Unlike PoseInFrame the pose is at field 4 (field 3 is a string), so
+    // the PosesInFrame codec cannot be reused — a dedicated decoder reads the
+    // single pose and skips the velocities, covariances and metadata.
+    if (type_name == "foxglove.Odometry") {
+      if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
+        return status;
+      }
+      resolveFoxgloveFieldNumbers(type_name, schema);
+      registerFoxgloveOdometryHandler(type_name);
       return PJ::okStatus();
     }
 
@@ -580,6 +596,60 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     registerSchemaHandler(type_name, std::move(handler));
   }
 
+  // Register the SchemaHandler for foxglove.Odometry -> kPosesInFrame (one pose).
+  // The object route decodes the single pose (of body_frame_id, in frame_id).
+  //
+  // The scalar route deliberately departs from the sibling slim-count handlers
+  // (PosesInFrame/FrameTransform emit num_poses/num_transforms): an Odometry
+  // always carries exactly ONE pose, so a count would be a useless constant. We
+  // instead emit the 7 bounded per-axis pose columns — the values people actually
+  // plot from odometry — matching the ROS nav_msgs/Odometry dual route. The
+  // velocities and 6x6 covariances are still left out (not a per-element blow-up
+  // risk, just not promoted here).
+  void registerFoxgloveOdometryHandler(std::string_view type_name) {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kPosesInFrame;
+
+    handler.parse_scalars =
+        [this](PJ::Timestamp /*ts*/, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+      auto poses = pj_protobuf::deserializeFoxgloveOdometry(payload.data(), payload.size(), odometry_fields_);
+      if (!poses) {
+        return PJ::unexpected(std::move(poses).error());  // surface, don't drop silently
+      }
+      PJ::sdk::ScalarRecord record;
+      if (use_embedded_timestamp_ && poses->timestamp_ns > 0) {
+        record.ts = poses->timestamp_ns;
+      }
+      if (!poses->poses.empty()) {
+        const auto& p = poses->poses.front();
+        record.fields.push_back({.name = "pose/position/x", .value = PJ::sdk::ValueRef{p.position.x}});
+        record.fields.push_back({.name = "pose/position/y", .value = PJ::sdk::ValueRef{p.position.y}});
+        record.fields.push_back({.name = "pose/position/z", .value = PJ::sdk::ValueRef{p.position.z}});
+        record.fields.push_back({.name = "pose/orientation/x", .value = PJ::sdk::ValueRef{p.orientation.x}});
+        record.fields.push_back({.name = "pose/orientation/y", .value = PJ::sdk::ValueRef{p.orientation.y}});
+        record.fields.push_back({.name = "pose/orientation/z", .value = PJ::sdk::ValueRef{p.orientation.z}});
+        record.fields.push_back({.name = "pose/orientation/w", .value = PJ::sdk::ValueRef{p.orientation.w}});
+      }
+      return record;
+    };
+
+    handler.parse_object =
+        [this](PJ::Timestamp /*ts*/, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      auto poses =
+          pj_protobuf::deserializeFoxgloveOdometry(payload.bytes.data(), payload.bytes.size(), odometry_fields_);
+      if (!poses) {
+        return PJ::unexpected(std::move(poses).error());
+      }
+      std::optional<PJ::Timestamp> ts;
+      if (use_embedded_timestamp_ && poses->timestamp_ns > 0) {
+        ts = poses->timestamp_ns;
+      }
+      return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*poses)}};
+    };
+
+    registerSchemaHandler(type_name, std::move(handler));
+  }
+
   // Register the SchemaHandler for foxglove.PointCloud. The object route decodes
   // one cloud per message zero-copy (the packed-point span aliases the payload);
   // the scalar route emits a slim metadata row (frame_id / point_count /
@@ -732,6 +802,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       camera_calibration_fields_ = pj_protobuf::resolveCameraCalibrationFieldNumbers(descriptor);
     } else if (type_name == "foxglove.FrameTransform") {
       frame_transform_fields_ = pj_protobuf::resolveFrameTransformFieldNumbers(descriptor);
+    } else if (type_name == "foxglove.Odometry") {
+      odometry_fields_ = pj_protobuf::resolveOdometryFieldNumbers(descriptor);
     } else if (type_name == "foxglove.ImageAnnotations") {
       image_annotations_fields_ = pj_protobuf::resolveImageAnnotationsFieldNumbers(descriptor);
     } else if (type_name == "foxglove.SceneUpdate") {
@@ -955,6 +1027,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   pj_protobuf::CompressedImageFieldNumbers compressed_image_fields_;
   pj_protobuf::CameraCalibrationFieldNumbers camera_calibration_fields_;
   pj_protobuf::FrameTransformFieldNumbers frame_transform_fields_;
+  pj_protobuf::OdometryFieldNumbers odometry_fields_;
   pj_protobuf::ImageAnnotationsFieldNumbers image_annotations_fields_;
   pj_protobuf::SceneUpdateFieldNumbers scene_update_fields_;
   pj_protobuf::PointCloudFieldNumbers pointcloud_fields_;

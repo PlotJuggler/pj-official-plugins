@@ -26,6 +26,7 @@
 #include <pj_base/builtin/frame_transforms.hpp>
 #include <pj_base/builtin/image.hpp>
 #include <pj_base/builtin/image_annotations.hpp>
+#include <pj_base/builtin/poses_in_frame.hpp>
 #include <pj_base/builtin/scene_entities.hpp>
 #include <pj_base/expected.hpp>
 
@@ -103,6 +104,19 @@ struct FrameTransformFieldNumbers {
 [[nodiscard]] FrameTransformFieldNumbers resolveFrameTransformFieldNumbers(
     const google::protobuf::Descriptor* descriptor);
 
+/// Field numbers for foxglove.Odometry. Only the fields needed for the canonical
+/// single-pose object are tracked: the reference frame (`frame_id`) and the
+/// `pose` (the velocities, covariances, body_frame_id and metadata are skipped).
+/// Defaults = official Foxglove numbering. NOTE: `pose` is field 4, not 3 — field
+/// 3 is body_frame_id (a string) — so unlike PoseInFrame this cannot reuse the
+/// PosesInFrame codec, which expects the pose(s) at field 3.
+struct OdometryFieldNumbers {
+  int timestamp = 1;
+  int frame_id = 2;
+  int pose = 4;
+};
+[[nodiscard]] OdometryFieldNumbers resolveOdometryFieldNumbers(const google::protobuf::Descriptor* descriptor);
+
 /// Field numbers for foxglove.ImageAnnotations (top level). Defaults = official.
 /// Its nested annotation sub-messages carry no `frame_id`, so their fields are
 /// not reached by the converters that renumber frame_id-bearing messages; those
@@ -148,6 +162,12 @@ struct SceneUpdateFieldNumbers {
 /// vector, so the result holds exactly one element.
 [[nodiscard]] PJ::Expected<PJ::sdk::FrameTransforms> deserializeFoxgloveFrameTransform(
     const uint8_t* data, size_t size, const FrameTransformFieldNumbers& fields = {});
+
+/// foxglove.Odometry -> sdk::PosesInFrame holding exactly one pose (the pose of
+/// body_frame_id expressed in frame_id). The velocities, covariances and metadata
+/// are read past and dropped — only the single pose feeds the 3D view.
+[[nodiscard]] PJ::Expected<PJ::sdk::PosesInFrame> deserializeFoxgloveOdometry(
+    const uint8_t* data, size_t size, const OdometryFieldNumbers& fields = {});
 
 /// Zero-copy: the returned Image's `data` span ALIASES `[data, data+size)` and
 /// its `anchor` is set to the supplied anchor (the compressed payload — JPEG/PNG
