@@ -18,6 +18,7 @@
 
 #include "../foxglove_object_codecs.hpp"
 #include "../foxglove_pointcloud_codec.hpp"
+#include "../foxglove_voxelgrid_codec.hpp"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/video_frame_codec.hpp"
 #include "pj_base/sdk/service_traits.hpp"
@@ -875,7 +876,245 @@ const std::vector<FoxgloveField> kCloudFields = {
     {"ring", 9, 2},       // INT8   → kInt8
 };
 
+// --- foxglove.VoxelGrid wire builder -------------------------------------
+// Builds an authentic foxglove.VoxelGrid message (counts/strides are fixed32,
+// cell_size/pose are nested messages) via DynamicMessageFactory, mirroring
+// buildFoxglovePointCloudWire.
+struct FoxgloveVoxelGridParams {
+  int64_t ts_sec = 0;
+  int32_t ts_nanos = 0;
+  std::string frame_id;
+  double origin_x = 0, origin_y = 0, origin_z = 0;  // pose.position
+  double orient_z = 0;                              // pose.orientation.z (exercises the quaternion sub-parse)
+  double cell_x = 0, cell_y = 0, cell_z = 0;        // cell_size
+  uint32_t row_count = 0;
+  uint32_t column_count = 0;
+  uint32_t slice_stride = 0;
+  uint32_t row_stride = 0;
+  uint32_t cell_stride = 0;
+  std::vector<FoxgloveField> fields;
+  std::vector<uint8_t> data;
+};
+
+std::vector<uint8_t> buildFoxgloveVoxelGridWire(const FoxgloveVoxelGridParams& p) {
+  gp::FileDescriptorProto file;
+  file.set_name("foxglove_vg.proto");
+  file.set_syntax("proto3");
+  file.set_package("test");
+
+  auto add_field = [](gp::DescriptorProto* m, const char* name, int num, gp::FieldDescriptorProto::Type type,
+                      const char* type_name = nullptr, bool repeated = false) {
+    auto* f = m->add_field();
+    f->set_name(name);
+    f->set_number(num);
+    f->set_type(type);
+    f->set_label(repeated ? gp::FieldDescriptorProto::LABEL_REPEATED : gp::FieldDescriptorProto::LABEL_OPTIONAL);
+    if (type_name != nullptr) {
+      f->set_type_name(type_name);
+    }
+  };
+
+  auto* ts = file.add_message_type();
+  ts->set_name("Timestamp");
+  add_field(ts, "seconds", 1, gp::FieldDescriptorProto::TYPE_INT64);
+  add_field(ts, "nanos", 2, gp::FieldDescriptorProto::TYPE_INT32);
+
+  auto* vec = file.add_message_type();
+  vec->set_name("Vec3");
+  add_field(vec, "x", 1, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(vec, "y", 2, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(vec, "z", 3, gp::FieldDescriptorProto::TYPE_DOUBLE);
+
+  auto* quat = file.add_message_type();
+  quat->set_name("Quat");
+  add_field(quat, "x", 1, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(quat, "y", 2, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(quat, "z", 3, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(quat, "w", 4, gp::FieldDescriptorProto::TYPE_DOUBLE);
+
+  auto* pose = file.add_message_type();
+  pose->set_name("Pose");
+  add_field(pose, "position", 1, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Vec3");
+  add_field(pose, "orientation", 2, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Quat");
+
+  auto* pef = file.add_message_type();
+  pef->set_name("PackedElementField");
+  add_field(pef, "name", 1, gp::FieldDescriptorProto::TYPE_STRING);
+  add_field(pef, "offset", 2, gp::FieldDescriptorProto::TYPE_FIXED32);
+  add_field(pef, "type", 3, gp::FieldDescriptorProto::TYPE_INT32);  // enum on the wire == varint == int32
+
+  auto* vg = file.add_message_type();
+  vg->set_name("VoxelGrid");
+  add_field(vg, "timestamp", 1, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Timestamp");
+  add_field(vg, "frame_id", 2, gp::FieldDescriptorProto::TYPE_STRING);
+  add_field(vg, "pose", 3, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Pose");
+  add_field(vg, "row_count", 4, gp::FieldDescriptorProto::TYPE_FIXED32);
+  add_field(vg, "column_count", 5, gp::FieldDescriptorProto::TYPE_FIXED32);
+  add_field(vg, "cell_size", 6, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Vec3");
+  add_field(vg, "slice_stride", 7, gp::FieldDescriptorProto::TYPE_FIXED32);
+  add_field(vg, "row_stride", 8, gp::FieldDescriptorProto::TYPE_FIXED32);
+  add_field(vg, "cell_stride", 9, gp::FieldDescriptorProto::TYPE_FIXED32);
+  add_field(vg, "fields", 10, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.PackedElementField", true);
+  add_field(vg, "data", 11, gp::FieldDescriptorProto::TYPE_BYTES);
+
+  gp::DescriptorPool pool;
+  const gp::FileDescriptor* fd = pool.BuildFile(file);
+  const gp::Descriptor* vg_desc = fd->FindMessageTypeByName("VoxelGrid");
+  gp::DynamicMessageFactory factory;
+  std::unique_ptr<gp::Message> msg(factory.GetPrototype(vg_desc)->New());
+  const gp::Reflection* ref = msg->GetReflection();
+
+  gp::Message* tsm = ref->MutableMessage(msg.get(), vg_desc->FindFieldByName("timestamp"), &factory);
+  const gp::Descriptor* tsd = tsm->GetDescriptor();
+  tsm->GetReflection()->SetInt64(tsm, tsd->FindFieldByName("seconds"), p.ts_sec);
+  tsm->GetReflection()->SetInt32(tsm, tsd->FindFieldByName("nanos"), p.ts_nanos);
+
+  ref->SetString(msg.get(), vg_desc->FindFieldByName("frame_id"), p.frame_id);
+  ref->SetUInt32(msg.get(), vg_desc->FindFieldByName("row_count"), p.row_count);
+  ref->SetUInt32(msg.get(), vg_desc->FindFieldByName("column_count"), p.column_count);
+  ref->SetUInt32(msg.get(), vg_desc->FindFieldByName("slice_stride"), p.slice_stride);
+  ref->SetUInt32(msg.get(), vg_desc->FindFieldByName("row_stride"), p.row_stride);
+  ref->SetUInt32(msg.get(), vg_desc->FindFieldByName("cell_stride"), p.cell_stride);
+  ref->SetString(
+      msg.get(), vg_desc->FindFieldByName("data"),
+      std::string(reinterpret_cast<const char*>(p.data.data()), p.data.size()));
+
+  gp::Message* pm = ref->MutableMessage(msg.get(), vg_desc->FindFieldByName("pose"), &factory);
+  const gp::Descriptor* pd = pm->GetDescriptor();
+  gp::Message* posm = pm->GetReflection()->MutableMessage(pm, pd->FindFieldByName("position"), &factory);
+  const gp::Descriptor* vd = posm->GetDescriptor();
+  posm->GetReflection()->SetDouble(posm, vd->FindFieldByName("x"), p.origin_x);
+  posm->GetReflection()->SetDouble(posm, vd->FindFieldByName("y"), p.origin_y);
+  posm->GetReflection()->SetDouble(posm, vd->FindFieldByName("z"), p.origin_z);
+  gp::Message* orm = pm->GetReflection()->MutableMessage(pm, pd->FindFieldByName("orientation"), &factory);
+  const gp::Descriptor* qd = orm->GetDescriptor();
+  orm->GetReflection()->SetDouble(orm, qd->FindFieldByName("z"), p.orient_z);
+
+  gp::Message* cm = ref->MutableMessage(msg.get(), vg_desc->FindFieldByName("cell_size"), &factory);
+  const gp::Descriptor* cd = cm->GetDescriptor();
+  cm->GetReflection()->SetDouble(cm, cd->FindFieldByName("x"), p.cell_x);
+  cm->GetReflection()->SetDouble(cm, cd->FindFieldByName("y"), p.cell_y);
+  cm->GetReflection()->SetDouble(cm, cd->FindFieldByName("z"), p.cell_z);
+
+  const gp::FieldDescriptor* fields_f = vg_desc->FindFieldByName("fields");
+  for (const auto& ff : p.fields) {
+    gp::Message* fm = ref->AddMessage(msg.get(), fields_f, &factory);
+    const gp::Descriptor* fdesc = fm->GetDescriptor();
+    fm->GetReflection()->SetString(fm, fdesc->FindFieldByName("name"), ff.name);
+    fm->GetReflection()->SetUInt32(fm, fdesc->FindFieldByName("offset"), ff.offset);
+    fm->GetReflection()->SetInt32(fm, fdesc->FindFieldByName("type"), ff.numeric_type);
+  }
+
+  std::string out;
+  msg->SerializeToString(&out);
+  return std::vector<uint8_t>(out.begin(), out.end());
+}
+
+// 2*2*2 voxels, one occupancy byte each (8 bytes), Z-Y-X order.
+const std::vector<uint8_t> kVoxelData = {0, 100, 50, 0xFF, 10, 20, 30, 40};
+const std::vector<FoxgloveField> kVoxelFields = {{"occupancy", 0, 1}};  // UINT8 -> kUint8
+
 }  // namespace
+
+TEST(ProtobufParserTest, FoxgloveVoxelGridCodecDecodesAndDerivesSliceCount) {
+  FoxgloveVoxelGridParams p;
+  p.ts_sec = 7;
+  p.ts_nanos = 250;
+  p.frame_id = "map";
+  p.origin_x = 1.0;
+  p.origin_y = 2.0;
+  p.origin_z = 3.0;
+  p.orient_z = 1.0;  // exercises the quaternion sub-parse
+  p.cell_x = 0.1;
+  p.cell_y = 0.2;
+  p.cell_z = 0.3;
+  p.row_count = 2;
+  p.column_count = 2;
+  p.cell_stride = 1;   // one occupancy byte per voxel
+  p.row_stride = 2;    // column_count * cell_stride
+  p.slice_stride = 4;  // row_count * row_stride
+  p.fields = kVoxelFields;
+  p.data = kVoxelData;
+  const auto wire = buildFoxgloveVoxelGridWire(p);
+
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  auto decoded = pj_protobuf::deserializeFoxgloveVoxelGridView(wire.data(), wire.size(), anchor);
+  ASSERT_TRUE(decoded.has_value()) << decoded.error();
+  const auto& grid = *decoded;
+
+  EXPECT_EQ(grid.frame_id, "map");
+  EXPECT_EQ(grid.timestamp_ns, 7'000'000'250LL);  // 7s + 250ns
+  EXPECT_DOUBLE_EQ(grid.origin.position.x, 1.0);
+  EXPECT_DOUBLE_EQ(grid.origin.position.y, 2.0);
+  EXPECT_DOUBLE_EQ(grid.origin.position.z, 3.0);
+  EXPECT_DOUBLE_EQ(grid.origin.orientation.z, 1.0);
+  EXPECT_DOUBLE_EQ(grid.origin.orientation.w, 1.0);  // w omitted on the wire -> identity default
+  EXPECT_DOUBLE_EQ(grid.cell_size.x, 0.1);
+  EXPECT_DOUBLE_EQ(grid.cell_size.y, 0.2);
+  EXPECT_DOUBLE_EQ(grid.cell_size.z, 0.3);
+  EXPECT_EQ(grid.row_count, 2u);
+  EXPECT_EQ(grid.column_count, 2u);
+  EXPECT_EQ(grid.cell_stride, 1u);
+  EXPECT_EQ(grid.row_stride, 2u);
+  EXPECT_EQ(grid.slice_stride, 4u);
+  EXPECT_EQ(grid.slice_count, 2u);  // derived: data.size()(8) / slice_stride(4)
+
+  ASSERT_EQ(grid.fields.size(), 1u);
+  EXPECT_EQ(grid.fields[0].name, "occupancy");
+  EXPECT_EQ(grid.fields[0].offset, 0u);
+  EXPECT_EQ(grid.fields[0].datatype, PJ::sdk::PointField::Datatype::kUint8);
+  EXPECT_EQ(grid.fields[0].count, 1u);
+
+  // Zero-copy: the voxel span must alias the wire buffer, not a copy.
+  ASSERT_EQ(grid.data.size(), kVoxelData.size());
+  EXPECT_GE(grid.data.data(), wire.data());
+  EXPECT_LE(grid.data.data() + grid.data.size(), wire.data() + wire.size());
+  EXPECT_EQ(grid.anchor, anchor);
+}
+
+TEST(ProtobufParserTest, FoxgloveVoxelGridObjectRoute) {
+  ProtobufParserFixture f;
+  f.setUp();
+
+  // Empty schema bytes: the canonical fast path keys off the type name only.
+  ASSERT_TRUE(f.bindSchema("foxglove.VoxelGrid", std::string{}));
+  const PJ::Span<const uint8_t> empty_schema{};
+  EXPECT_EQ(f.handle.classifySchema("foxglove.VoxelGrid", empty_schema), PJ::sdk::BuiltinObjectType::kVoxelGrid);
+
+  FoxgloveVoxelGridParams p;
+  p.frame_id = "map";
+  p.cell_x = 0.05;
+  p.cell_y = 0.05;
+  p.cell_z = 0.05;
+  p.row_count = 2;
+  p.column_count = 2;
+  p.cell_stride = 1;
+  p.row_stride = 2;
+  p.slice_stride = 4;
+  p.fields = kVoxelFields;
+  p.data = kVoxelData;
+  const auto wire = buildFoxgloveVoxelGridWire(p);
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(wire.data(), wire.size()), anchor};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* vg = std::any_cast<PJ::sdk::VoxelGrid>(&rec->object);
+  ASSERT_NE(vg, nullptr);
+  EXPECT_EQ(vg->frame_id, "map");
+  EXPECT_EQ(vg->column_count, 2u);
+  EXPECT_EQ(vg->row_count, 2u);
+  EXPECT_EQ(vg->slice_count, 2u);
+  ASSERT_EQ(vg->fields.size(), 1u);
+  EXPECT_EQ(vg->fields[0].datatype, PJ::sdk::PointField::Datatype::kUint8);
+  // Zero-copy + anchor forwarding across the in-process object route.
+  EXPECT_GE(vg->data.data(), wire.data());
+  EXPECT_LE(vg->data.data() + vg->data.size(), wire.data() + wire.size());
+  EXPECT_EQ(vg->anchor, anchor);
+}
 
 TEST(ProtobufParserTest, FoxglovePointCloudCodecDecodesAndSynthesizes) {
   const auto wire = buildFoxglovePointCloudWire(7, 250, "lidar_top", 16, kCloudFields, kCloudBlob, false, 0.0);

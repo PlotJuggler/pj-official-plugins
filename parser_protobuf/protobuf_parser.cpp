@@ -24,6 +24,7 @@
 
 #include "foxglove_object_codecs.hpp"
 #include "foxglove_pointcloud_codec.hpp"
+#include "foxglove_voxelgrid_codec.hpp"
 #include "protobuf_manifest.hpp"
 #include "protobuf_parser_dialog.hpp"
 
@@ -340,7 +341,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     // / annotation message flattens to a pathological number of scalar series).
     if (type_name == "foxglove.FrameTransform" || type_name == "foxglove.CompressedImage" ||
         type_name == "foxglove.RawImage" || type_name == "foxglove.CameraCalibration" ||
-        type_name == "foxglove.ImageAnnotations" || type_name == "foxglove.SceneUpdate") {
+        type_name == "foxglove.ImageAnnotations" || type_name == "foxglove.SceneUpdate" ||
+        type_name == "foxglove.VoxelGrid") {
       if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
         return status;
       }
@@ -738,6 +740,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       pointcloud_fields_ = pj_protobuf::resolvePointCloudFieldNumbers(descriptor);
     } else if (type_name == "foxglove.LaserScan") {
       laserscan_fields_ = pj_protobuf::resolveLaserScanFieldNumbers(descriptor);
+    } else if (type_name == "foxglove.VoxelGrid") {
+      voxelgrid_fields_ = pj_protobuf::resolveVoxelGridFieldNumbers(descriptor);
     }
   }
 
@@ -876,6 +880,36 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         r.fields.push_back({.name = "data_size", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->data.size())}});
         return r;
       };
+    } else if (name == "foxglove.VoxelGrid") {
+      handler.object_type = PJ::sdk::BuiltinObjectType::kVoxelGrid;
+      handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+        auto obj =
+            pj_protobuf::deserializeFoxgloveVoxelGridView(p.bytes.data(), p.bytes.size(), p.anchor, voxelgrid_fields_);
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());
+        }
+        std::optional<PJ::Timestamp> ts;
+        if (use_embedded_timestamp_ && obj->timestamp_ns > 0) {
+          ts = obj->timestamp_ns;
+        }
+        return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
+      };
+      handler.parse_scalars =
+          [this](PJ::Timestamp, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+        auto obj =
+            pj_protobuf::deserializeFoxgloveVoxelGridView(payload.data(), payload.size(), nullptr, voxelgrid_fields_);
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
+        }
+        PJ::sdk::ScalarRecord r;
+        r.fields.push_back(
+            {.name = "column_count", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->column_count)}});
+        r.fields.push_back({.name = "row_count", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->row_count)}});
+        r.fields.push_back(
+            {.name = "slice_count", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->slice_count)}});
+        r.fields.push_back({.name = "data_size", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->data.size())}});
+        return r;
+      };
     } else {  // foxglove.SceneUpdate
       handler.object_type = PJ::sdk::BuiltinObjectType::kSceneEntities;
       handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
@@ -925,6 +959,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   pj_protobuf::SceneUpdateFieldNumbers scene_update_fields_;
   pj_protobuf::PointCloudFieldNumbers pointcloud_fields_;
   pj_protobuf::LaserScanFieldNumbers laserscan_fields_;
+  pj_protobuf::VoxelGridFieldNumbers voxelgrid_fields_;
 
   std::unordered_map<std::string, PJ::sdk::FieldHandle> field_cache_;
   std::vector<FlattenedField> owned_fields_;
