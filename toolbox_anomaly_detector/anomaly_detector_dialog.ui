@@ -6,202 +6,158 @@
    <string>Anomaly Detector</string>
   </property>
   <layout class="QVBoxLayout" name="mainLayout">
+   <property name="spacing"><number>8</number></property>
+   <property name="leftMargin"><number>10</number></property>
+   <property name="topMargin"><number>10</number></property>
+   <property name="rightMargin"><number>10</number></property>
+   <property name="bottomMargin"><number>10</number></property>
+
+   <!-- Preview header -->
    <item>
-    <widget class="QLabel" name="preview_title">
-     <property name="text">
-      <string>Preview</string>
-     </property>
-    </widget>
-   </item>
-   <item>
-    <widget class="QFrame" name="preview_chart">
-     <property name="frameShape">
-      <enum>QFrame::StyledPanel</enum>
-     </property>
-     <property name="minimumSize">
-      <size>
-       <width>0</width>
-       <height>220</height>
-      </size>
-     </property>
-    </widget>
-   </item>
-   <item>
-    <layout class="QHBoxLayout" name="bodyLayout">
+    <layout class="QHBoxLayout" name="previewHeaderRow">
      <item>
-      <layout class="QVBoxLayout" name="sourceColumn">
-       <item>
-        <widget class="QLabel" name="source_title">
-         <property name="text">
-          <string>Source curve:</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QListWidget" name="source_list">
-         <property name="sizePolicy">
-          <sizepolicy hsizetype="Maximum" vsizetype="Expanding">
-           <horstretch>0</horstretch>
-           <verstretch>0</verstretch>
-          </sizepolicy>
-         </property>
-         <property name="minimumSize">
-          <size>
-           <width>200</width>
-           <height>0</height>
-          </size>
-         </property>
-         <property name="maximumSize">
-          <size>
-           <width>240</width>
-           <height>16777215</height>
-          </size>
-         </property>
-        </widget>
-       </item>
-      </layout>
+      <widget class="QLabel" name="preview_title">
+       <property name="text"><string>&lt;b&gt;Preview&lt;/b&gt;</string></property>
+      </widget>
      </item>
      <item>
-      <layout class="QVBoxLayout" name="functionColumn">
-       <item>
-        <widget class="QLabel" name="function_title">
-         <property name="text">
-          <string>Function:</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QListWidget" name="function_list">
-         <property name="sizePolicy">
-          <sizepolicy hsizetype="Maximum" vsizetype="Expanding">
-           <horstretch>0</horstretch>
-           <verstretch>0</verstretch>
-          </sizepolicy>
-         </property>
-         <property name="minimumSize">
-          <size>
-           <width>200</width>
-           <height>0</height>
-          </size>
-         </property>
-         <property name="maximumSize">
-          <size>
-           <width>240</width>
-           <height>16777215</height>
-          </size>
-         </property>
-        </widget>
-       </item>
-      </layout>
-     </item>
-     <item>
-      <layout class="QVBoxLayout" name="editorColumn">
-       <item>
-        <widget class="QLabel" name="rule_title">
-         <property name="text">
-          <string>Lua function:</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QPlainTextEdit" name="code_editor"/>
-       </item>
-      </layout>
+      <spacer name="previewHeaderSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
      </item>
     </layout>
    </item>
+
+   <!-- Preview chart (top) and controls (bottom) in a user-resizable vertical splitter -->
+   <item>
+    <widget class="QSplitter" name="previewSplitter">
+     <property name="orientation"><enum>Qt::Vertical</enum></property>
+     <property name="childrenCollapsible"><bool>false</bool></property>
+     <widget class="QFrame" name="preview_chart">
+      <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+      <property name="sizePolicy">
+       <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+        <horstretch>0</horstretch><verstretch>2</verstretch>
+       </sizepolicy>
+      </property>
+      <property name="minimumSize"><size><width>0</width><height>200</height></size></property>
+     </widget>
+     <widget class="QWidget" name="controlsPane" native="true">
+      <layout class="QVBoxLayout" name="controlsVLayout">
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>4</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
+       <item>
+        <layout class="QHBoxLayout" name="columnsLayout">
+         <property name="spacing"><number>8</number></property>
+
+         <!-- Source curve -->
+         <item>
+          <widget class="QGroupBox" name="sourceGroup">
+           <property name="title"><string>Source curve</string></property>
+           <property name="minimumSize"><size><width>200</width><height>0</height></size></property>
+           <property name="maximumSize"><size><width>280</width><height>16777215</height></size></property>
+           <layout class="QVBoxLayout" name="sourceLayout">
+            <item>
+             <widget class="QListWidget" name="source_list">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+                <horstretch>0</horstretch><verstretch>1</verstretch>
+               </sizepolicy>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </item>
+
+         <!-- Function -->
+         <item>
+          <widget class="QGroupBox" name="functionGroup">
+           <property name="title"><string>Function</string></property>
+           <property name="minimumSize"><size><width>200</width><height>0</height></size></property>
+           <property name="maximumSize"><size><width>280</width><height>16777215</height></size></property>
+           <layout class="QVBoxLayout" name="functionLayout">
+            <item>
+             <widget class="QListWidget" name="function_list">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+                <horstretch>0</horstretch><verstretch>1</verstretch>
+               </sizepolicy>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </item>
+
+         <!-- Lua rule editor -->
+         <item>
+          <widget class="QGroupBox" name="editorGroup">
+           <property name="title"><string>Lua rule</string></property>
+           <layout class="QVBoxLayout" name="editorLayout">
+            <item>
+             <widget class="QPlainTextEdit" name="code_editor"/>
+            </item>
+           </layout>
+          </widget>
+         </item>
+        </layout>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+
+   <!-- Status line -->
    <item>
     <widget class="QLabel" name="status_label">
-     <property name="text">
-      <string>Pick a source curve and a function (or write your own), then Apply.</string>
-     </property>
-     <property name="wordWrap">
-      <bool>true</bool>
-     </property>
+     <property name="text"><string>Pick a source curve and a function (or write your own), then Apply.</string></property>
+     <property name="wordWrap"><bool>true</bool></property>
     </widget>
    </item>
-   <item>
-    <layout class="QHBoxLayout" name="ruleBar">
-     <item>
-      <widget class="QLabel" name="rule_label">
-       <property name="text">
-        <string>Rule file:</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QLineEdit" name="rule_path">
-       <property name="placeholderText">
-        <string>/path/to/rule.json</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QPushButton" name="save_rule_button">
-       <property name="text">
-        <string>Save rule</string>
-       </property>
-       <property name="toolTip">
-        <string>Write the current rule (script + source + fail-on) to the path above as a portable JSON file</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QPushButton" name="load_rule_button">
-       <property name="text">
-        <string>Load rule...</string>
-       </property>
-       <property name="toolTip">
-        <string>Open a rule JSON file and load it into the editor</string>
-       </property>
-      </widget>
-     </item>
-    </layout>
-   </item>
+
+   <!-- Global toggle (left) + rule file + Apply / Close (right) -->
    <item>
     <layout class="QHBoxLayout" name="bottomBar">
      <item>
       <widget class="QCheckBox" name="global_marker">
-       <property name="text">
-        <string>Global marker</string>
-       </property>
-       <property name="toolTip">
-        <string>Apply the markers to every plot (whole dataset). Unchecked: only the selected source curve.</string>
-       </property>
+       <property name="text"><string>Global marker</string></property>
+       <property name="toolTip"><string>Apply the markers to every plot (whole dataset). Unchecked: only the selected source curve.</string></property>
       </widget>
      </item>
      <item>
       <spacer name="bottomSpacer">
-       <property name="orientation">
-        <enum>Qt::Horizontal</enum>
-       </property>
-       <property name="sizeHint" stdset="0">
-        <size>
-         <width>40</width>
-         <height>20</height>
-        </size>
-       </property>
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
       </spacer>
      </item>
      <item>
+      <widget class="QPushButton" name="save_rule_button">
+       <property name="text"><string>Save rule as...</string></property>
+       <property name="toolTip"><string>Save the current rule (script + source) as a portable JSON file</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="load_rule_button">
+       <property name="text"><string>Load rule...</string></property>
+       <property name="toolTip"><string>Open a rule JSON file and load it into the editor</string></property>
+      </widget>
+     </item>
+     <item>
       <widget class="QPushButton" name="apply_button">
-       <property name="text">
-        <string>Apply</string>
-       </property>
-       <property name="toolTip">
-        <string>Run the Lua function and apply the emitted markers to the plots</string>
-       </property>
+       <property name="text"><string>Apply</string></property>
+       <property name="toolTip"><string>Run the Lua rule and apply the emitted markers to the plots</string></property>
       </widget>
      </item>
      <item>
       <widget class="QDialogButtonBox" name="buttonBox">
-       <property name="standardButtons">
-        <set>QDialogButtonBox::Close</set>
-       </property>
+       <property name="standardButtons"><set>QDialogButtonBox::Close</set></property>
        <property name="sizePolicy">
         <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
+         <horstretch>0</horstretch><verstretch>0</verstretch>
         </sizepolicy>
        </property>
       </widget>

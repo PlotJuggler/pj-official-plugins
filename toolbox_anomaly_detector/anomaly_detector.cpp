@@ -16,6 +16,7 @@
 // GUI-free and lives in anomaly_core; this file is only the host + dialog wiring.
 
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -41,6 +42,45 @@ namespace {
 
 // Opaque metadata tagging the object topic as a marker set (same as toolbox_markers).
 constexpr const char* kMarkerMetadata = R"({"object_type":"plot_markers"})";
+
+// --- PlotMarker -> chart-preview marker conversion --------------------------
+// Mirrors PlotMarkersItem's severity palette so the preview matches the plot.
+std::string colorHex(int r, int g, int b) {
+  char buf[8];
+  std::snprintf(buf, sizeof(buf), "#%02x%02x%02x", r, g, b);
+  return std::string(buf);
+}
+
+std::string markerColorHex(const PJ::sdk::PlotMarker& m) {
+  if (m.color.a != 0) {
+    return colorHex(m.color.r, m.color.g, m.color.b);
+  }
+  switch (m.severity) {
+    case PJ::sdk::MarkerSeverity::kInfo:
+      return colorHex(80, 140, 255);
+    case PJ::sdk::MarkerSeverity::kWarning:
+      return colorHex(240, 180, 40);
+    case PJ::sdk::MarkerSeverity::kError:
+      return colorHex(230, 70, 60);
+    case PJ::sdk::MarkerSeverity::kCritical:
+      return colorHex(170, 30, 160);
+  }
+  return colorHex(80, 140, 255);
+}
+
+const char* markerKindName(PJ::sdk::MarkerKind k) {
+  switch (k) {
+    case PJ::sdk::MarkerKind::kRegion:
+      return "region";
+    case PJ::sdk::MarkerKind::kEvent:
+      return "event";
+    case PJ::sdk::MarkerKind::kValueBand:
+      return "value_band";
+    case PJ::sdk::MarkerKind::kLabel:
+      return "label";
+  }
+  return "event";
+}
 
 // ---------------------------------------------------------------------------
 // AnomalyDetectorDialog — Filter-Editor-style UI (preview / source / function / editor).
@@ -70,18 +110,24 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     }
     wd.setCodeContent("code_editor", code_).setCodeLanguage("code_editor", "lua");
     wd.setChecked("global_marker", global_);
-    wd.setText("rule_path", rule_path_);
-    // Load is a file-picker button; Save writes to the rule_path field.
+    // Save and Load are both native file pickers; onFileSelected tells them apart
+    // by widget name. Save-as lets the user create a new file anywhere.
+    wd.setSaveFilePicker("save_rule_button", "Save rule as...", "*.json", "Save detection rule");
     wd.setFilePicker("load_rule_button", "Load rule...", "*.json", "Load detection rule");
     wd.setText("status_label", status_);
     wd.setEnabled("apply_button", !code_.empty());
 
-    // Preview: the selected source curve.
+    // Preview: the selected source curve, with the rule's detected markers overlaid.
     if (!selected_source_.empty() && preview_provider_) {
       PJ::ChartSeries cs;
       cs.label = selected_source_;
       cs.points = preview_provider_(selected_source_);
       wd.setChartSeries("preview_chart", std::vector<PJ::ChartSeries>{cs});
+      // Always push markers (empty when the rule yields none) so a source/rule change
+      // clears the previous overlay instead of leaving stale markers behind.
+      if (marker_provider_) {
+        wd.setChartMarkers("preview_chart", marker_provider_(code_, selected_source_));
+      }
     }
     return wd.toJson();
   }
@@ -89,12 +135,19 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
   bool onSelectionChanged(std::string_view name, const std::vector<std::string>& items) override {
     if (name == "source_list") {
       selected_source_ = items.empty() ? "" : items.front();
-      return true;  // refresh preview
+      // Re-target the rule at the new source so the preview recomputes for it (and
+      // stale markers from the previous series don't linger). Manual edits are kept.
+      if (!current_template_.empty() && !user_edited_) {
+        code_ = anomaly_core::substituteSource(current_template_, selected_source_);
+      }
+      return true;  // refresh preview + markers
     }
     if (name == "function_list") {
       const std::string fn = items.empty() ? "" : items.front();
       for (const auto& f : anomaly_core::builtinFunctions()) {
         if (fn == f.name) {
+          current_template_ = f.code;
+          user_edited_ = false;
           code_ = anomaly_core::substituteSource(f.code, selected_source_);
           break;
         }
@@ -107,20 +160,23 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
   bool onCodeChanged(std::string_view name, std::string_view code) override {
     if (name == "code_editor") {
       code_ = std::string(code);  // user edits win over the template
+      user_edited_ = true;        // ...and survive a later source change
     }
     return false;  // no widget_data re-read while typing
+  }
+
+  // Called by the panel host ~20Hz; lets the toolbox refresh its catalog so a
+  // dataset loaded after the panel opened shows up in the source list live.
+  bool onTick() override {
+    if (on_tick_) {
+      on_tick_();
+    }
+    return false;  // the panel byte-diffs widget_data(); no forced re-read needed
   }
 
   bool onToggled(std::string_view name, bool checked) override {
     if (name == "global_marker") {
       global_ = checked;
-    }
-    return false;
-  }
-
-  bool onTextChanged(std::string_view name, std::string_view text) override {
-    if (name == "rule_path") {
-      rule_path_ = std::string(text);
     }
     return false;
   }
@@ -136,20 +192,20 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
       }
       return true;
     }
-    if (name == "save_rule_button") {
-      status_ = saveRuleToPath();
-      return true;
-    }
     return false;
   }
 
-  // Load is wired as a file picker (setFilePicker); the host returns the chosen path here.
+  // Save and Load are both native file pickers (setSaveFilePicker / setFilePicker);
+  // the host returns the chosen path here, and we branch on the widget name.
   bool onFileSelected(std::string_view name, std::string_view path) override {
+    if (name == "save_rule_button") {
+      status_ = saveRuleTo(std::string(path));
+      return true;
+    }
     if (name == "load_rule_button") {
-      rule_path_ = std::string(path);
-      std::ifstream in(rule_path_);
+      std::ifstream in(std::string{path});
       if (!in) {
-        status_ = "Error: cannot read " + rule_path_;
+        status_ = "Error: cannot read " + std::string(path);
         return true;
       }
       std::stringstream ss;
@@ -162,7 +218,7 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
       }
       code_ = rule->code;
       selected_source_ = rule->source;
-      status_ = "Loaded rule from " + rule_path_;
+      status_ = "Loaded rule from " + std::string(path);
       return true;
     }
     return false;
@@ -175,7 +231,6 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     j["code"] = code_;
     j["source"] = selected_source_;
     j["global"] = global_;
-    j["rule_path"] = rule_path_;
     return j.dump();
   }
 
@@ -187,7 +242,6 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     code_ = j.value("code", code_);
     selected_source_ = j.value("source", selected_source_);
     global_ = j.value("global", global_);
-    rule_path_ = j.value("rule_path", rule_path_);
     return true;
   }
 
@@ -197,6 +251,11 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     // Editor, which is launched with a source curve already selected).
     if (selected_source_.empty() && !series_names_.empty()) {
       selected_source_ = series_names_.front();
+      // Target the pristine template at the auto-selected source so the first preview
+      // is correct (not left pointing at an empty --SOURCE-- substitution).
+      if (!current_template_.empty() && !user_edited_) {
+        code_ = anomaly_core::substituteSource(current_template_, selected_source_);
+      }
     }
   }
 
@@ -210,32 +269,54 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     preview_provider_ = std::move(cb);
   }
 
+  // Runs the current rule and returns the detected markers, rebased to the preview's
+  // X units, so the preview can overlay what Apply would publish.
+  using MarkerProvider =
+      std::function<std::vector<PJ::ChartMarker>(const std::string& code, const std::string& source)>;
+  void setMarkerProvider(MarkerProvider cb) {
+    marker_provider_ = std::move(cb);
+  }
+
+  void setOnTick(std::function<void()> cb) {
+    on_tick_ = std::move(cb);
+  }
+
  private:
-  // Write the current rule (script + source) to rule_path_ as a portable JSON file.
-  std::string saveRuleToPath() const {
-    if (rule_path_.empty()) {
-      return "Error: enter a rule file path first";
+  // Write the current rule (script + source) to the chosen path as a portable JSON
+  // file. The Save-as picker already let the user create/select the file; we just
+  // ensure a .json extension.
+  std::string saveRuleTo(std::string path) const {
+    if (path.empty()) {
+      return "Error: no file selected";
+    }
+    if (path.size() < 5 || path.substr(path.size() - 5) != ".json") {
+      path += ".json";
     }
     anomaly_core::Rule rule;
     rule.code = code_;
     rule.source = selected_source_;
-    std::ofstream out(rule_path_);
+    std::ofstream out(path);
     if (!out) {
-      return "Error: cannot write " + rule_path_;
+      return "Error: cannot write " + path;
     }
     out << anomaly_core::ruleToJson(rule);
-    return "Saved rule to " + rule_path_;
+    return "Saved rule to " + path;
   }
 
   // "-- No function --" guidance is builtin function index 0.
   std::string code_ = anomaly_core::substituteSource(anomaly_core::builtinFunctions().front().code, "");
   std::string status_ = "Pick a source curve and a function (or write your own), then Apply.";
   std::string selected_source_;
-  std::string rule_path_;
+  // Raw builtin code (still containing --SOURCE--) of the active function, so a source
+  // change can re-target the rule; user_edited_ guards manual edits from being clobbered.
+  std::string current_template_ = anomaly_core::builtinFunctions().front().code;
+  bool user_edited_ = false;
   bool global_ = false;
   std::vector<std::string> series_names_;
   RunCallback run_callback_;
   PreviewProvider preview_provider_;
+  MarkerProvider marker_provider_;
+  std::function<void()> on_tick_;
 };
 
 // ---------------------------------------------------------------------------
@@ -249,11 +330,16 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase {
   }
 
   PJ_borrowed_dialog_t getDialog() override {
-    refreshCatalog();
     dialog_.setRunCallback([this](const std::string& code, const std::string& source, bool global) {
       return runScript(code, source, global);
     });
     dialog_.setPreviewProvider([this](const std::string& name) { return previewPoints(name); });
+    dialog_.setMarkerProvider(
+        [this](const std::string& code, const std::string& source) { return previewMarkers(code, source); });
+    // Refresh the catalog on every panel tick (cheap unless the catalog changed) so a
+    // dataset loaded after the panel opened appears in the source list without reopening.
+    dialog_.setOnTick([this]() { refreshCatalogIfChanged(); });
+    refreshCatalogIfChanged();  // initial fill
     return PJ::borrowDialog(dialog_);
   }
 
@@ -267,6 +353,31 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase {
   }
 
  private:
+  // Cheap guard around the expensive refreshCatalog(): only re-read all series when
+  // the catalog metadata actually changed (dataset/series added or removed). Safe to
+  // call every panel tick. catalogSnapshot() is a zero-copy metadata view.
+  void refreshCatalogIfChanged() {
+    if (!toolboxHostBound()) {
+      return;
+    }
+    auto catalog = toolboxHost().catalogSnapshot();
+    if (!catalog) {
+      return;
+    }
+    std::uint64_t sig = 1469598103934665603ull;  // FNV offset basis as a seed
+    for (const auto& ds : catalog->dataSources()) {
+      sig = (sig ^ ds.handle.id) * 1099511628211ull;
+    }
+    for (const auto& topic : catalog->topics()) {
+      sig = (sig ^ (static_cast<std::uint64_t>(topic.source.id) << 32 | topic.field_count)) * 1099511628211ull;
+    }
+    if (sig == last_catalog_sig_) {
+      return;
+    }
+    last_catalog_sig_ = sig;
+    refreshCatalog();
+  }
+
   void refreshCatalog() {
     if (!toolboxHostBound()) {
       return;
@@ -333,6 +444,52 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase {
     return pts;
   }
 
+  // A SeriesProvider backed by the current series_map_. The get-lambda captures this,
+  // so the result must be used synchronously (while series_map_ stays stable).
+  anomaly_core::SeriesProvider makeSeriesProvider() const {
+    anomaly_core::SeriesProvider provider;
+    provider.names = series_names_;
+    provider.get = [this](const std::string& name) -> const anomaly_core::SeriesAccessor* {
+      auto it = series_map_.find(name);
+      return it == series_map_.end() ? nullptr : &it->second;
+    };
+    return provider;
+  }
+
+  // Run the current rule and return its markers in the preview's X units (seconds-
+  // from-start, the same t0 as previewPoints) so they overlay the curve. A bad rule
+  // (or a source with no data) yields no overlay — the preview just shows the curve.
+  std::vector<PJ::ChartMarker> previewMarkers(const std::string& code, const std::string& source) {
+    std::vector<PJ::ChartMarker> out;
+    auto it = series_map_.find(source);
+    if (code.empty() || it == series_map_.end() || it->second.timestamps.empty()) {
+      return out;
+    }
+    const double t0 = it->second.timestamps.front();
+
+    const anomaly_core::SeriesProvider provider = makeSeriesProvider();
+    std::string err;
+    const std::vector<PJ::sdk::PlotMarker> markers = anomaly_core::runAnomalyScript(code, provider, &err);
+    if (!err.empty()) {
+      return out;
+    }
+
+    out.reserve(markers.size());
+    for (const auto& m : markers) {
+      PJ::ChartMarker cm;
+      cm.kind = markerKindName(m.kind);
+      cm.x0 = (static_cast<double>(m.t_start) - t0) / 1e9;
+      cm.x1 = (static_cast<double>(m.t_end) - t0) / 1e9;
+      cm.y0 = m.value_low;
+      cm.y1 = m.value_high;
+      cm.has_value = m.has_value;
+      cm.color = markerColorHex(m);
+      cm.label = m.label;
+      out.push_back(std::move(cm));
+    }
+    return out;
+  }
+
   // Refresh series, run the rule through the shared engine, publish the markers.
   std::string runScript(const std::string& code, const std::string& source, bool global) {
     if (code.empty()) {
@@ -343,13 +500,7 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase {
     }
     refreshCatalog();
 
-    anomaly_core::SeriesProvider provider;
-    provider.names = series_names_;
-    provider.get = [this](const std::string& name) -> const anomaly_core::SeriesAccessor* {
-      auto it = series_map_.find(name);
-      return it == series_map_.end() ? nullptr : &it->second;
-    };
-
+    const anomaly_core::SeriesProvider provider = makeSeriesProvider();
     std::string err;
     const std::vector<PJ::sdk::PlotMarker> markers = anomaly_core::runAnomalyScript(code, provider, &err);
     if (!err.empty()) {
@@ -412,6 +563,7 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase {
   std::vector<std::string> series_names_;
   std::map<std::string, PJ::DatasetId> series_dataset_;  // markerSeriesKey -> owning dataset
   std::vector<PJ::DatasetId> dataset_ids_;
+  std::uint64_t last_catalog_sig_ = UINT64_MAX;  // forces the first refresh; guards live ticks
 };
 
 }  // namespace

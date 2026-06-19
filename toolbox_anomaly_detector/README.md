@@ -1,54 +1,39 @@
 # Anomaly Detector
 
-Author **anomaly-detection rules in Lua** over your timeseries and visualize the results as
-**plot markers** (regions, events, value bands) directly on PlotJuggler plots. The same rule
-runs unchanged, with no GUI, on a server or in CI via the headless
-[`anomaly_runner`](../tools/anomaly_runner/README.md) CLI.
+Detect anomalies in your timeseries with small **Lua rules** that emit **plot markers**
+(events, regions, value bands). The detection engine (`core/anomaly_core`) is shared by this
+GUI toolbox and the headless [`anomaly_runner`](../tools/anomaly_runner/README.md) CLI, so a
+rule you author and test here runs **identically** on a server or in CI. Rules are saved as
+portable JSON.
 
-GUI and runner share one engine (`core/anomaly_core`): a rule that fires in the editor
-produces the **identical** markers headless. Rules are saved as portable JSON, so you author
-and test interactively, then gate every uploaded log on the exact same rule in your pipeline.
-
-## What it is
-
-Two surfaces over one engine:
-
-- **GUI toolbox** (this plugin) — a Filter-Editor-style dialog: preview chart, source-curve
-  list, builtin-function list, and a Lua editor. Pick a builtin or write your own, **Apply**,
-  and the emitted markers are published onto the plots.
-- **`anomaly_core`** (`core/anomaly_core.{hpp,cpp}`) — a GUI-free static lib that runs the Lua
-  rule against a series provider and returns `PlotMarker`s, plus the JSON report and the
-  portable-rule (de)serialization. Linked by both the plugin and the CLI.
-
-## Using the GUI
+## Using it
 
 1. Open **Toolbox → Anomaly Detector** (it reads the loaded timeseries).
-2. **Select a source curve first** in the source list. The preview chart fills with it.
-3. Pick a **builtin function** (fills the editor with its Lua, targeting the selected source),
-   or write your own rule in the editor.
-4. Click **Apply** — the rule runs and its markers appear on every plot of that curve.
-   The status line shows `Done: N marker(s)` or `Error: …`.
-5. **Save rule** / **Load rule** export and restore the rule as a portable JSON file — the
-   same file the CLI consumes with `--rule`.
-6. **Global marker** checkbox: when ticked, markers publish to the dataset-global topic (drawn
-   on every plot); otherwise they publish under the selected curve (drawn only on its plots).
+2. Pick a **source curve** in the source list — the preview chart fills with it.
+3. Pick a **builtin function** (loads its Lua, targeting the selected curve) or write your own
+   rule in the editor. The preview overlays the rule's **detected markers** live, so you see
+   what Apply will publish before committing.
+4. **Apply** — the markers are published onto every plot of that curve. The status line shows
+   `Done: N marker(s)` or `Error: …`.
+5. **Save rule as… / Load rule…** — native file dialogs for the portable rule JSON (the same
+   file the CLI consumes with `--rule`).
+6. **Global marker** — when ticked, markers publish to the dataset-global topic (drawn on every
+   plot); otherwise only under the selected curve.
 
-> **Order matters: select the source before picking a function.** A builtin template targets
-> the source that is selected *at the moment you pick the function* (its `--SOURCE--`
-> placeholder is substituted then). Changing the source afterward does **not** rewrite the
-> editor — re-pick the function, or edit the `series("…")` line, so the rule targets the curve
-> you intend.
+Changing the source re-targets a builtin rule to the new curve automatically (the preview
+recomputes). If you hand-edit the Lua, your edits are kept — adjust the `series("…")` line
+yourself.
 
 ## Builtin functions
 
-The function list (same set as the CLI's `--list-functions`). "Kind" is the marker type each
-template emits; the listed constant is the threshold you typically tune.
+Same set as the CLI's `--list-functions`. "Kind" is the marker type the template emits; the
+constant is the threshold you typically tune.
 
 | Function | Marker kind | Detects | Tunable |
 |---|---|---|---|
 | `-- No function --` | — | Empty template — write your own rule | — |
 | `Showcase (all markers)` | all | One of every marker kind, each colored + labelled (visual check) | — |
-| `Severity colors (lines)` | value band | Four horizontal lines using the builtin info/warning/error/critical palette | — |
+| `Severity colors (lines)` | value band | Four horizontal lines in the info/warning/error/critical palette | — |
 | `Threshold (line)` | event (vline) | A vertical line at every sample above a threshold | `TH = 0.5` |
 | `Out of range (region)` | region | Shades the span while the value is outside `[LO, HI]` | `LO,HI = -0.5,0.5` |
 | `Spike (point)` | event (point) | A point at a sudden jump between consecutive samples | `JUMP = 0.8` |
@@ -62,9 +47,9 @@ template emits; the listed constant is the threshold you typically tune.
 
 ## Lua API
 
-Rules run in a sandboxed Lua VM (sol2). Series are read-only; markers are emitted by calling
-the creation functions. `--SOURCE--` in a builtin template is replaced with the selected
-source name (CLI: with `--source`).
+Rules run in a sandboxed Lua VM. Series are read-only; markers are emitted by calling the
+creation functions. `--SOURCE--` in a builtin template is replaced with the selected source
+(CLI: with `--source`).
 
 ```lua
 -- Series accessor
@@ -86,50 +71,34 @@ bandPower(s, fLo, fHi)            -- summed FFT power in [fLo,fHi] Hz, DC-remove
 GetSeriesNames()                  -- list of all available series names
 ```
 
-### Marker options (`opts` table)
-
-Every field is optional:
+**Marker options (`opts` table, all optional):**
 
 | Key | Type | Effect |
 |---|---|---|
-| `label` | string | Pill text drawn on the plot (and the report `label`). No pill if unset. |
-| `severity` | `"info"`/`"warning"`/`"error"`/`"critical"` | Drives the default color and the report severity (and the CLI `--fail-on` gate). |
-| `color` | `"#rrggbb"` | Explicit color override; if unset, color derives from `severity`. |
-| `status` | `"none"`/`"pass"`/`"fail"` | Verdict; a `fail` makes the CLI run fail regardless of severity. |
+| `label` | string | Pill text on the plot (and the report `label`). No pill if unset. |
+| `severity` | `"info"`/`"warning"`/`"error"`/`"critical"` | Default color + report severity (and the CLI `--fail-on` gate). |
+| `color` | `"#rrggbb"` | Explicit color override; defaults from `severity`. |
+| `status` | `"none"`/`"pass"`/`"fail"` | Verdict; a `fail` fails the CLI run regardless of severity. |
 | `category` | string | Free-form class, e.g. `"spectral"`, `"flag"`, `"overspeed"`. |
 | `description` | string | Optional longer text carried into the report. |
 
-## Marker visuals
+## Sharing & headless runs
 
-The PJ4 renderer (`pj_plotting/widget/.../PlotMarkersItem.cpp`) draws each kind as: colored
-**pill** label badges (white text; vertical-line labels rotated 90°), point events as a
-**hollow ring** (transparent centre) on the sample, value bands / horizontal lines as shaded
-bands, and time regions as shaded spans. Markers whose anchor falls outside the visible canvas
-are **culled** (so pills don't leak onto the plot border when zoomed).
+**Save rule as…** writes a portable JSON document (`version`, `name`, `description`, and a
+`rule` of `code` / `source` / `fail_on`). Version-control it and run it unchanged on a server
+or in CI — same engine, same markers:
 
-## Build & deploy
+```bash
+anomaly_runner --rule rule.json --data run.mcap
+```
+
+The runner reads CSV/MCAP, emits a structured JSON report, and exits `0` pass / `1` fail / `2`
+usage-error for pipeline gating. See [`tools/anomaly_runner`](../tools/anomaly_runner/README.md).
+
+## Build
 
 ```bash
 cd ~/Work/pj-official-plugins
-./build.sh toolbox_anomaly_detector
-cp build/toolbox_anomaly_detector/Release/bin/libtoolbox_anomaly_detector_plugin.so build/all/Release/bin/
+./build.sh toolbox_anomaly_detector   # the GUI plugin
+./build.sh tools/anomaly_runner       # the headless CLI (same anomaly_core)
 ```
-
-The headless CLI builds from the same `anomaly_core`:
-
-```bash
-./build.sh tools/anomaly_runner
-cp build/tools/anomaly_runner/Release/bin/anomaly_runner build/all/Release/bin/
-```
-
-## Feature coverage
-
-- **GUI** — source/function/editor dialog, live preview, Apply, Save/Load portable rule,
-  Global-marker toggle, error/status line (`anomaly_detector.cpp`).
-- **Core** — sol2 Lua engine, series + marker primitives, `bandPower` (kissfft), 13 builtins,
-  JSON report, portable-rule (de)serialization (`core/anomaly_core.{hpp,cpp}`).
-- **CLI** — headless `anomaly_runner`: CSV + MCAP ingest, exit-code gate, JSON report
-  (`../tools/anomaly_runner/`).
-- **Rendering** — pills, hollow points, bands, regions, off-screen culling
-  (PJ4 `pj_plotting`).
-- **SDK** — `PlotMarkers` builtin object + codec, marker object-write surface (`plotjuggler_sdk`).
