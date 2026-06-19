@@ -148,7 +148,9 @@ CI to the `badges` branch; see [Per-plugin status badges](#per-plugin-status-bad
 
 In addition to the plugins above, [`tools/anomaly_runner`](tools/anomaly_runner/) is a
 standalone **headless CLI** that runs the same anomaly-detection rules without a GUI (CSV/MCAP
-in, JSON report + exit code out) for CI and data pipelines.
+in, JSON report + exit code out) for CI and data pipelines. It can also **notify** on a bad log
+(webhook / email / command via `--notify`), and a bundled watcher screens every upload
+automatically — see its [README](tools/anomaly_runner/README.md).
 
 ### Per-plugin status badges
 

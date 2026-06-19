@@ -24,6 +24,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_base/builtin/plot_markers.hpp>
 #include <pj_base/sdk/service_traits.hpp>
@@ -37,6 +38,7 @@
 #include <vector>
 
 #include "anomaly_core.hpp"
+#include "notify.hpp"
 
 namespace {
 
@@ -343,7 +345,9 @@ struct Args {
   std::string source;
   std::string out;
   std::string plugin;
-  std::string rule_file;  // portable rule JSON (--rule); its fields are flag defaults
+  std::string rule_file;       // portable rule JSON (--rule); its fields are flag defaults
+  std::string notify_file;     // notification config JSON (--notify); deploy concern, kept out of the rule
+  bool notify_strict = false;  // --notify-strict: a delivery failure forces exit 3
   PJ::sdk::MarkerSeverity fail_on = PJ::sdk::MarkerSeverity::kError;
   bool fail_on_set = false;
   int csv_time_column = -1;  // >=0: use this CSV column as the time axis (else row number)
@@ -354,6 +358,7 @@ void printUsage(const char* argv0) {
   std::cerr << "Usage: " << argv0 << " --data <file> (--script <name|file.lua> | --rule <rule.json>)\n"
             << "                     [--source <topic/field>] [--out <report.json>]\n"
             << "                     [--fail-on info|warning|error|critical]\n"
+            << "                     [--notify <config.json>] [--notify-strict]\n"
             << "                     [--csv-time-column <index>] [--plugin <datasource.so>]\n"
             << "       " << argv0 << " --list-functions\n";
 }
@@ -398,6 +403,10 @@ int main(int argc, char* argv[]) {
       args.source = next("--source");
     } else if (a == "--out") {
       args.out = next("--out");
+    } else if (a == "--notify") {
+      args.notify_file = next("--notify");
+    } else if (a == "--notify-strict") {
+      args.notify_strict = true;
     } else if (a == "--plugin") {
       args.plugin = next("--plugin");
     } else if (a == "--csv-time-column") {
@@ -454,6 +463,25 @@ int main(int argc, char* argv[]) {
   const std::string source = !args.source.empty() ? args.source : (rule ? rule->source : std::string{});
   const PJ::sdk::MarkerSeverity fail_on =
       args.fail_on_set ? args.fail_on : (rule ? rule->fail_on : PJ::sdk::MarkerSeverity::kError);
+
+  // Notification config (--notify) is validated UP FRONT so a typo fails fast (exit 2)
+  // instead of after a full analysis. It is a deploy concern, separate from the rule.
+  std::optional<anomaly_notify::NotifyConfig> notify_cfg;
+  if (!args.notify_file.empty()) {
+    std::ifstream nf(args.notify_file);
+    if (!nf) {
+      std::cerr << "Error: cannot read notify config '" << args.notify_file << "'\n";
+      return 2;
+    }
+    std::stringstream ss;
+    ss << nf.rdbuf();
+    std::string nerr;
+    notify_cfg = anomaly_notify::parseConfig(ss.str(), &nerr);
+    if (!notify_cfg) {
+      std::cerr << "Error: notify config '" << args.notify_file << "': " << nerr << "\n";
+      return 2;
+    }
+  }
 
   // Pick the DataSource plugin by file extension (.mcap is delegated-ingest and
   // needs the parser routing below; everything else goes through CSV direct ingest).
@@ -564,5 +592,27 @@ int main(int argc, char* argv[]) {
     std::cout << report.json << "\n";
   }
 
+  // 5) Notifications (opt-in). The detection verdict (exit 0/1) is unchanged; a
+  // delivery failure is only fatal under --notify-strict, where it maps to exit 3
+  // (overriding 0/1) so a pipeline can detect that an alert never went out.
+  bool notify_delivery_failed = false;
+  if (notify_cfg) {
+    const nlohmann::json report_doc = nlohmann::json::parse(report.json, nullptr, /*allow_exceptions=*/false);
+    const anomaly_notify::DispatchResult dr = anomaly_notify::dispatch(report.json, report_doc, *notify_cfg);
+    for (const auto& e : dr.errors) {
+      std::cerr << "Notify error: " << e << "\n";
+    }
+    if (dr.policyFired()) {
+      std::cerr << "Notify: " << dr.succeeded << "/" << dr.fired << " sink(s) delivered\n";
+    }
+    notify_delivery_failed = !dr.allOk();
+  }
+
+  // --notify-strict makes an undelivered alert OVERRIDE the pass/fail verdict: on the
+  // common notify_on="fail" policy the alert fires precisely when the run fails, so
+  // "anomaly found but nobody was told" is the case strict exists to surface.
+  if (args.notify_strict && notify_delivery_failed) {
+    return 3;
+  }
   return report.failed ? 1 : 0;
 }

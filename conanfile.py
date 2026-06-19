@@ -39,6 +39,10 @@ class PjOfficialPluginsConan(ConanFile):
         "kissfft/131.1.0",
         "lua/5.4.6",
         "sol2/3.5.0",
+        # Shared Luau marker engine for the Anomaly Detector toolbox + anomaly_runner
+        # (carries Luau + kissfft). libcurl powers anomaly_runner's notification sinks.
+        "pj_scripting_core/0.1.0",
+        "libcurl/8.10.1",
         # Pin libsodium to 1.0.20: 1.0.21 has broken ARM NEON code that fails with
         # GCC on aarch64.
         "libsodium/1.0.20",

@@ -93,7 +93,10 @@ anomaly_runner --rule rule.json --data run.mcap
 ```
 
 The runner reads CSV/MCAP, emits a structured JSON report, and exits `0` pass / `1` fail / `2`
-usage-error for pipeline gating. See [`tools/anomaly_runner`](../tools/anomaly_runner/README.md).
+usage-error for pipeline gating. On a server it can also **notify** on a bad log (webhook /
+email / command) via `--notify`, and a bundled watcher screens every upload automatically —
+see [*Configuring notifications*](../tools/anomaly_runner/README.md#configuring-notifications)
+and [*Deploying the batch watcher*](../tools/anomaly_runner/README.md#deploying-the-batch-watcher).
 
 ## Build
 

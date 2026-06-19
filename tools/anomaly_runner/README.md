@@ -29,6 +29,7 @@ implements the DataSource write ABI directly.
 anomaly_runner --data <file> (--script <name|file.lua> | --rule <rule.json>)
                [--source <topic/field>] [--out <report.json>]
                [--fail-on info|warning|error|critical]
+               [--notify <config.json>] [--notify-strict]
                [--csv-time-column <index>] [--plugin <datasource.so>]
 anomaly_runner --list-functions
 ```
@@ -44,9 +45,17 @@ anomaly_runner --list-functions
 - `--out`      write the JSON to a file (default: stdout). A one-line `PASS/FAIL`
                summary goes to stderr.
 - `--fail-on`  severity at/above which the run is a **fail** (default `error`).
+- `--notify <config.json>`  deliver the report to webhook / email / command sinks (see
+               *Configuring notifications*). Off by default — without it the runner behaves
+               exactly as before.
+- `--notify-strict`  treat a failed notification delivery as fatal: **exit `3`** (overriding
+               the pass/fail verdict) so a pipeline can detect that an alert never went out.
 - `--csv-time-column <i>`  use CSV column `i` as the time axis (else row number).
 - `--plugin`   the DataSource plugin `.so` (default: `libcsv_source_plugin.so` next
                to the executable).
+
+**Exit codes:** `0` pass · `1` fail (anomalies at/above `--fail-on`) · `2` usage/config error ·
+`3` notification delivery failed (only with `--notify-strict`).
 
 ### Examples
 
@@ -189,8 +198,92 @@ to interpret them identically (both use the same `anomaly_core` engine).
   field `/data` under topic `/sensor/value` is `/sensor/value/data`, not `…//data`). If a
   `--source` isn't found, the runner prints the available series names to help you correct it.
 
-## Notifications / pipeline integration
+## Pipeline integration (stdout / exit code)
 
-The JSON-to-stdout-or-file + the `0`/`1` exit code are the "stdout for CI/data
-pipelines" integration path. A server-side watcher or cron job runs the binary per
-upload and gates on the exit code; webhook/email delivery can wrap that.
+The JSON-to-stdout-or-file + the exit code are the "stdout for CI/data pipelines"
+integration path: a CI step or pipeline gates on the exit code and consumes the JSON.
+This needs no configuration — it is how the runner behaves by default.
+
+## Configuring notifications
+
+For "tell someone when a log is bad" (rather than gating a pipeline), pass
+`--notify <config.json>`. After the analysis the report is delivered to one or more
+**sinks**. Notifications are a **deployment** concern, kept **out of the rule file** — so a
+rule stays portable/shareable and the webhook token / SMTP password live only on the server.
+
+```jsonc
+{
+  // when to deliver: "fail" (status==fail) | "always" | "severity>=<info|warning|error|critical>"
+  "notify_on": "fail",
+  "sinks": [
+    // 1) webhook — HTTP(S) POST the report JSON (Content-Type: application/json)
+    { "type": "webhook",
+      "url": "https://hooks.example.com/anomaly",
+      "headers": { "Authorization": "Bearer ${ALERT_TOKEN}" } },
+
+    // 2) email — SMTP (STARTTLS when offered; use smtps:// for implicit TLS)
+    { "type": "email",
+      "smtp_url": "smtp://mail.example.com:587",
+      "from": "anomaly-bot@example.com",
+      "to": ["oncall@example.com", "qa@example.com"],
+      "subject": "Surgical log anomaly",       // optional; a default is built if omitted
+      "username": "anomaly-bot@example.com",    // optional SMTP-AUTH
+      "password": "${SMTP_PASSWORD}" },
+
+    // 3) command — exec a program with the report JSON on stdin (integrate with any
+    //    existing alerting infra: Slack CLI, msmtp, a custom script, …)
+    { "type": "command", "exec": ["/usr/local/bin/alert-to-slack"] }
+  ]
+}
+```
+
+- **`notify_on`** gates *all* sinks at once. With `"fail"` (the default) an alert goes out
+  precisely when the run fails — so you are not paged on clean logs.
+- **`${ENV_VAR}`** is expanded from the environment in every string value, so secrets are
+  **never** committed in the config file. `$$` is a literal `$`.
+- **Delivery failures don't change the verdict** (exit stays `0`/`1`) — they are logged to
+  stderr. Add `--notify-strict` to make an undelivered alert **exit `3`** instead, so a
+  scheduler can retry or page when "anomaly found but nobody was told".
+- The **webhook** body is the exact JSON report. The **email** body is the report JSON under
+  a short subject. The **command** sink receives the report JSON on stdin.
+
+```bash
+# Run a saved rule and alert on failure
+anomaly_runner --data run.mcap --rule spike.json --notify notify.json
+```
+
+## Deploying the batch watcher
+
+To screen **every uploaded MCAP automatically**, point the bundled watcher at the upload
+directory. It runs the runner once per new file (atomic, de-duped) and lets the runner
+dispatch notifications — no daemon to maintain.
+
+```bash
+# tools/anomaly_runner/deploy/watch.sh <watch_dir> <rule.json> <notify.json> [source] [runner_path]
+deploy/watch.sh /srv/uploads spike.json notify.json /sensor/value/data \
+                /opt/anomaly/bin/anomaly_runner
+```
+
+It records processed files under `<watch_dir>/.anomaly_done/` and per-file reports under
+`<watch_dir>/.anomaly_reports/`. Delete a `.done` marker to re-process a file. Wire it to
+fire on each upload with whichever scheduler you run:
+
+```cron
+# cron — scan once a minute
+* * * * * /opt/anomaly/deploy/watch.sh /srv/uploads /opt/anomaly/spike.json /opt/anomaly/notify.json /sensor/value/data /opt/anomaly/bin/anomaly_runner >> /var/log/anomaly-watch.log 2>&1
+```
+
+```ini
+# systemd .path — trigger the moment a file lands (anomaly-watch.path + anomaly-watch.service)
+[Path]
+PathModified=/srv/uploads
+```
+
+```bash
+# inotify one-liner — event-driven, no polling
+inotifywait -m -e close_write --format '%f' /srv/uploads | while read _; do \
+  deploy/watch.sh /srv/uploads spike.json notify.json /sensor/value/data; done
+```
+
+> Secrets (`${ALERT_TOKEN}`, `${SMTP_PASSWORD}`) come from the watcher's environment — set
+> them in the cron/systemd unit, not in `notify.json`.

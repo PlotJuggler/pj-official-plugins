@@ -20,10 +20,14 @@ class AnomalyRunnerConan(ConanFile):
     generators = "CMakeDeps", "CMakeToolchain"
     # The runner compiles anomaly_core, which delegates detection to the shared Luau
     # engine pj_scripting_core (Luau/kissfft are absorbed into it, not direct deps).
+    # libcurl powers the opt-in notification sinks (webhook HTTP POST + email SMTP);
+    # gtest builds the notify unit tests.
     requires = (
         f"plotjuggler_sdk/{_SDK_VERSION}",
         "pj_scripting_core/0.1.0",
         "nlohmann_json/3.12.0",
+        "libcurl/8.10.1",
+        "gtest/1.17.0",
     )
     default_options = {
         "*:shared": False,
