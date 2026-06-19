@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <bit>
 #include <limits>
+#include <pj_pointcloud_color/pointcloud_color.hpp>
 #include <string>
 #include <vector>
 
@@ -390,6 +391,12 @@ PJ::Expected<FoxglovePointCloudDecode> deserializeFoxglovePointCloudView(
   cloud.data = data_span;
   cloud.anchor = std::move(anchor);
   cloud.timestamp_ns = ts_ns;
+
+  // Normalize foxglove's separate red/green/blue/alpha uint8 channels into a single
+  // canonical packed "rgba" field so the host renders one per-point colour instead of
+  // offering each channel as a separate colormap source. Pure metadata rewrite — the
+  // bytes are already R,G,B,A in increasing address, so the zero-copy span is untouched.
+  pj::pointcloud_color::collapseSeparateColorChannels(cloud);
 
   return result;
 }

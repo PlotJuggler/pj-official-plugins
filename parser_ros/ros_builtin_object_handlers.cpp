@@ -35,6 +35,7 @@
  */
 
 #include <cstring>
+#include <pj_pointcloud_color/pointcloud_color.hpp>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -416,24 +417,31 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePointCloud(PJ::Timestamp ts,
       is_dense = (readU8(*deserializer_) != 0);
     }
 
-    // Zero-copy: data_span is a slice of the payload. For a PointCloud2 with
-    // a few MB of points this is the win — no per-message alloc/copy on the
-    // hot path.
+    // Zero-copy by default: data_span is a slice of the payload. For a PointCloud2 with
+    // a few MB of points this is the win — no per-message alloc/copy on the hot path.
+    PJ::sdk::PointCloud cloud{
+        .width = width,
+        .height = height,
+        .point_step = point_step,
+        .row_step = row_step,
+        .is_bigendian = (is_be != 0),
+        .is_dense = is_dense,
+        .frame_id = std::move(header.frame_id),
+        .fields = std::move(fields),
+        .data = PJ::Span<const uint8_t>(data_span.data(), data_span.size()),
+        .anchor = payload.anchor,
+        .timestamp_ns = current_timestamp_,
+    };
+    // Normalize colour to the canonical packed "rgba" field so the host renders one
+    // per-point colour instead of offering each channel as a separate colormap source.
+    // A PCL packed rgb/rgba (0x00RRGGBB) is repacked into canonical R,G,B,A order in a
+    // fresh owned buffer (zero-copy given up only for colour clouds); separate
+    // red/green/blue/alpha channels collapse zero-copy; plain XYZI clouds are untouched.
+    pj::pointcloud_color::normalizeCanonicalColor(cloud);
+
     return PJ::sdk::ObjectRecord{
         .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
-        .object = PJ::sdk::BuiltinObject{PJ::sdk::PointCloud{
-            .width = width,
-            .height = height,
-            .point_step = point_step,
-            .row_step = row_step,
-            .is_bigendian = (is_be != 0),
-            .is_dense = is_dense,
-            .frame_id = std::move(header.frame_id),
-            .fields = std::move(fields),
-            .data = PJ::Span<const uint8_t>(data_span.data(), data_span.size()),
-            .anchor = payload.anchor,
-            .timestamp_ns = current_timestamp_,
-        }}};
+        .object = PJ::sdk::BuiltinObject{std::move(cloud)}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("PointCloud2: CDR read error: ") + e.what());
   }
