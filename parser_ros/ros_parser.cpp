@@ -264,7 +264,13 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
         .parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTransformStamped>,
         .parse_object = &RosParser::parseTransformStampedObject}},
       {"sensor_msgs/Imu", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleImu>}},
-      {"nav_msgs/Odometry", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleOdometry>}},
+      // Dual route: the pose (of child_frame_id, in the header frame) emits a
+      // one-element PosesInFrame for the 3D view, alongside the per-axis scalar
+      // flatten (handleOdometry) of pose + twist + covariances.
+      {"nav_msgs/Odometry",
+       {.object_type = ObjectType::kPosesInFrame,
+        .parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleOdometry>,
+        .parse_object = &RosParser::parseOdometryObject}},
       {"sensor_msgs/JointState", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleJointState>}},
       {"diagnostic_msgs/DiagnosticArray",
        {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleDiagnosticArray>}},
