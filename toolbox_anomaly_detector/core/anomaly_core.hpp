@@ -1,21 +1,25 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: Apache-2.0
 //
-// anomaly_core — the GUI-free heart of the Anomaly Detector. It owns the sol2 Lua
-// runtime, the read-only series accessor, the marker-emitting primitives, and the
-// predefined detection-function library. Both the GUI toolbox plugin and the
-// headless CLI runner link this library and run the SAME script through
-// runAnomalyScript(): the only difference is where the series come from (the live
-// toolbox host vs. a file loaded by the runner) and where the markers go (the
-// ObjectStore vs. a JSON report).
+// anomaly_core — the GUI-free heart of the Anomaly Detector. It owns the
+// predefined detection-function library and the JSON report/rule helpers, and
+// delegates script execution to the SHARED Luau engine (pj_scripting_core's
+// runMarkerScript) — the same engine PlotJuggler itself uses for filters, so the
+// GUI toolbox and the headless CLI run rules through one Luau VM, not a bundled
+// sol2 runtime. Both consumers link this library and call runAnomalyScript(): the
+// only difference is where the series come from (the live toolbox host vs. a file
+// loaded by the runner) and where the markers go (the ObjectStore vs. a JSON
+// report).
 //
-// No Qt, no plugin host, no GUI. Depends only on pj_base (PlotMarker) + sol2.
+// No Qt, no plugin host, no GUI. Depends only on pj_base (PlotMarker) +
+// pj_scripting_core (which carries Luau + kissfft).
 
 #pragma once
 
+#include <pj_scripting/marker_engine.h>
+
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <optional>
 #include <pj_base/builtin/plot_markers.hpp>
 #include <string>
@@ -23,30 +27,14 @@
 
 namespace anomaly_core {
 
-/// One sample: timestamp in nanoseconds (as double) and value.
-struct TimePoint {
-  double t;
-  double v;
-};
-
-/// Read-only access to a float series' samples. Timestamps are nanoseconds.
-struct SeriesAccessor {
-  std::vector<double> timestamps;
-  std::vector<double> values;
-
-  [[nodiscard]] std::size_t size() const;
-  /// Sample at index, or nullopt if out of range.
-  [[nodiscard]] std::optional<TimePoint> at(std::size_t index) const;
-  /// Linearly interpolated value at time t (clamped to the endpoints).
-  [[nodiscard]] double atTime(double t) const;
-};
-
-/// How the Lua `series("name")` accessor resolves names to data. The runner and
-/// the plugin each supply their own backing store; the engine stays agnostic.
-struct SeriesProvider {
-  std::vector<std::string> names;                                ///< for GetSeriesNames()
-  std::function<const SeriesAccessor*(const std::string&)> get;  ///< name -> series or nullptr
-};
+/// The detection engine now lives in the shared pj_scripting_core (Luau), linked by
+/// both the GUI plugin and the headless runner so a rule runs identically GUI <->
+/// headless. These aliases keep the long-standing anomaly_core surface (the series
+/// accessor + provider) pointing at the shared engine's types, so callers are
+/// unchanged. anomaly_core itself keeps only the GUI-free helpers below: the builtin
+/// rule library, the JSON report, and the portable-rule (de)serialization.
+using SeriesAccessor = PJ::scripting::SeriesView;
+using SeriesProvider = PJ::scripting::SeriesProvider;
 
 /// A named predefined detection function (template Lua). "--SOURCE--" is the
 /// placeholder substituted with the selected source-series name.

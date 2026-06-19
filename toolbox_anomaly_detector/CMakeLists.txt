@@ -3,8 +3,9 @@ find_package(nlohmann_json REQUIRED)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 
-# Shared GUI-free detection engine (sol2 Lua + marker primitives + JSON report),
-# linked by both this plugin and the headless anomaly_runner CLI.
+# Shared GUI-free detection engine (builtins + JSON report/rule helpers; script
+# execution delegated to the shared Luau engine pj_scripting_core), linked by both
+# this plugin and the headless anomaly_runner CLI.
 add_subdirectory(core)
 
 add_library(toolbox_anomaly_detector_plugin SHARED anomaly_detector.cpp)

@@ -5,8 +5,9 @@
 // chart on top, then Source curve | Function | Lua editor. Picking a predefined
 // Function fills the editor with its Lua (targeting the selected source); the
 // "-- No function --" entry leaves a blank template to write your own. Apply runs
-// the Lua via the shared `anomaly_core` engine (sol2 + marker primitives) — the
-// SAME engine the headless anomaly_runner CLI uses — and publishes the emitted set
+// the script via the shared `anomaly_core` engine, which delegates to the Luau
+// marker engine in pj_scripting_core — the SAME engine PlotJuggler uses for filters
+// and the headless anomaly_runner CLI uses — and publishes the emitted set
 // as a PlotMarkers object via the toolbox object-write surface (per-series under the
 // selected source, or dataset-global when "Global marker" is ticked). The status
 // shows "Done: N marker(s)" or "Error".

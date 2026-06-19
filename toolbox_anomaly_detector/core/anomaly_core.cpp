@@ -3,52 +3,10 @@
 
 #include "anomaly_core.hpp"
 
-#include <kissfft/kiss_fftr.h>
-
-#include <algorithm>
-#include <cmath>
 #include <cstdio>
 #include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 
 namespace anomaly_core {
-
-// ---------------------------------------------------------------------------
-// SeriesAccessor
-// ---------------------------------------------------------------------------
-
-std::size_t SeriesAccessor::size() const {
-  return timestamps.size();
-}
-
-std::optional<TimePoint> SeriesAccessor::at(std::size_t index) const {
-  if (index >= timestamps.size()) {
-    return std::nullopt;
-  }
-  return TimePoint{timestamps[index], values[index]};
-}
-
-double SeriesAccessor::atTime(double t) const {
-  if (timestamps.empty()) {
-    return 0.0;
-  }
-  auto it = std::lower_bound(timestamps.begin(), timestamps.end(), t);
-  if (it == timestamps.end()) {
-    return values.back();
-  }
-  if (it == timestamps.begin()) {
-    return values.front();
-  }
-  const std::size_t idx = static_cast<std::size_t>(it - timestamps.begin());
-  const double t0 = timestamps[idx - 1];
-  const double t1 = timestamps[idx];
-  const double v0 = values[idx - 1];
-  const double v1 = values[idx];
-  if (t1 == t0) {
-    return v0;
-  }
-  return v0 + (t - t0) / (t1 - t0) * (v1 - v0);
-}
 
 // ---------------------------------------------------------------------------
 // Predefined function library
@@ -209,256 +167,13 @@ std::string substituteSource(std::string tmpl, const std::string& source) {
 }
 
 // ---------------------------------------------------------------------------
-// Optional marker fields (opts table) — label / color / severity / ...
-// ---------------------------------------------------------------------------
-
-namespace {
-
-// Parse "#rrggbb" (or "rrggbb") into an opaque ColorRGBA (a=255 -> renderer uses it
-// as an override instead of deriving the color from severity).
-std::optional<PJ::sdk::ColorRGBA> parseHexColor(std::string h) {
-  if (!h.empty() && h.front() == '#') {
-    h.erase(0, 1);
-  }
-  if (h.size() != 6) {
-    return std::nullopt;
-  }
-  const auto nibble = [](char c) -> int {
-    if (c >= '0' && c <= '9') {
-      return c - '0';
-    }
-    if (c >= 'a' && c <= 'f') {
-      return c - 'a' + 10;
-    }
-    if (c >= 'A' && c <= 'F') {
-      return c - 'A' + 10;
-    }
-    return -1;
-  };
-  int comp[3] = {0, 0, 0};
-  for (int i = 0; i < 3; ++i) {
-    const int hi = nibble(h[static_cast<std::size_t>(i) * 2]);
-    const int lo = nibble(h[static_cast<std::size_t>(i) * 2 + 1]);
-    if (hi < 0 || lo < 0) {
-      return std::nullopt;
-    }
-    comp[i] = hi * 16 + lo;
-  }
-  return PJ::sdk::ColorRGBA{
-      static_cast<uint8_t>(comp[0]), static_cast<uint8_t>(comp[1]), static_cast<uint8_t>(comp[2]), 255};
-}
-
-PJ::sdk::MarkerSeverity parseSeverity(const std::string& s) {
-  return severityFromString(s).value_or(PJ::sdk::MarkerSeverity::kInfo);
-}
-
-PJ::sdk::MarkerStatus parseStatus(const std::string& s) {
-  if (s == "pass") {
-    return PJ::sdk::MarkerStatus::kPass;
-  }
-  if (s == "fail") {
-    return PJ::sdk::MarkerStatus::kFail;
-  }
-  return PJ::sdk::MarkerStatus::kNone;
-}
-
-// Apply an optional Lua opts table { label, description, category, color, severity,
-// status } onto a marker. Unknown / missing keys are left at the marker's default.
-void applyOpts(PJ::sdk::PlotMarker& m, const sol::optional<sol::table>& opts) {
-  if (!opts) {
-    return;
-  }
-  const sol::table& t = *opts;
-  if (const sol::optional<std::string> label = t["label"]) {
-    m.label = *label;
-  }
-  if (const sol::optional<std::string> desc = t["description"]) {
-    m.description = *desc;
-  }
-  if (const sol::optional<std::string> cat = t["category"]) {
-    m.category = *cat;
-  }
-  if (const sol::optional<std::string> color = t["color"]) {
-    if (const auto rgba = parseHexColor(*color)) {
-      m.color = *rgba;
-    }
-  }
-  if (const sol::optional<std::string> sev = t["severity"]) {
-    m.severity = parseSeverity(*sev);
-  }
-  if (const sol::optional<std::string> st = t["status"]) {
-    m.status = parseStatus(*st);
-  }
-}
-
-// Summed FFT power in the band [fLo, fHi] Hz, DC-removed. Sampling interval is
-// derived from the series timestamps (assumed ~uniform). Returns 0 for series too
-// short or with non-positive dt. Mirrors toolbox_fft's real-FFT path (kissfft).
-double computeBandPower(const SeriesAccessor& sa, double fLo, double fHi) {
-  std::size_t n = sa.values.size();
-  if (n < 4 || sa.timestamps.size() != n) {
-    return 0.0;
-  }
-  if (n % 2 != 0) {
-    --n;  // kiss_fftr needs an even length
-  }
-  const double dt_seconds =
-      static_cast<double>(sa.timestamps[n - 1] - sa.timestamps[0]) / (static_cast<double>(n - 1) * 1e9);
-  if (dt_seconds <= 0.0) {
-    return 0.0;
-  }
-  double mean = 0.0;
-  for (std::size_t i = 0; i < n; ++i) {
-    mean += sa.values[i];
-  }
-  mean /= static_cast<double>(n);
-
-  std::vector<kiss_fft_scalar> input(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    input[i] = static_cast<kiss_fft_scalar>(sa.values[i] - mean);
-  }
-  std::vector<kiss_fft_cpx> out(n / 2 + 1);
-  kiss_fftr_cfg cfg = kiss_fftr_alloc(static_cast<int>(n), 0, nullptr, nullptr);
-  if (cfg == nullptr) {
-    return 0.0;
-  }
-  kiss_fftr(cfg, input.data(), out.data());
-  KISS_FFT_FREE(cfg);
-
-  const double nd = static_cast<double>(n);
-  double power = 0.0;
-  for (std::size_t i = 0; i < n / 2; ++i) {
-    const double f = static_cast<double>(i) * (1.0 / dt_seconds) / nd;
-    if (f >= fLo && f <= fHi) {
-      const double amp = std::hypot(static_cast<double>(out[i].r), static_cast<double>(out[i].i)) / nd;
-      power += amp * amp;
-    }
-  }
-  return power;
-}
-
-}  // namespace
-
-// ---------------------------------------------------------------------------
-// runAnomalyScript — the shared Lua engine
+// runAnomalyScript — delegates to the shared Luau engine (pj_scripting_core), so a
+// rule runs identically here and in the headless runner.
 // ---------------------------------------------------------------------------
 
 std::vector<PJ::sdk::PlotMarker> runAnomalyScript(
     const std::string& code, const SeriesProvider& provider, std::string* error) {
-  std::vector<PJ::sdk::PlotMarker> emitted;
-  if (error != nullptr) {
-    error->clear();
-  }
-  if (code.empty()) {
-    if (error != nullptr) {
-      *error = "empty rule";
-    }
-    return emitted;
-  }
-
-  sol::state lua;
-  lua.open_libraries(sol::lib::base, sol::lib::string, sol::lib::math, sol::lib::table);
-
-  lua["series"] = [&provider, &lua](const std::string& name) -> sol::object {
-    const SeriesAccessor* sa = provider.get ? provider.get(name) : nullptr;
-    if (sa == nullptr) {
-      return sol::make_object(lua, sol::lua_nil);
-    }
-    // Hand Lua a non-owning pointer to the accessor (the provider owns it and it
-    // outlives the script run), so repeated series() calls don't copy the vectors.
-    return sol::make_object(lua, sa);
-  };
-  lua["GetSeriesNames"] = [&provider]() -> std::vector<std::string> { return provider.names; };
-
-  auto sa_type = lua.new_usertype<SeriesAccessor>("_SeriesAccessor");
-  sa_type["size"] = &SeriesAccessor::size;
-  sa_type["at"] = [](const SeriesAccessor& sa, std::size_t index, sol::this_state s) -> sol::object {
-    auto pt = sa.at(index);
-    if (!pt) {
-      return sol::make_object(s, sol::lua_nil);
-    }
-    sol::state_view lv(s);
-    sol::table r = lv.create_table();
-    r["t"] = pt->t;
-    r["v"] = pt->v;
-    return r;
-  };
-  sa_type["atTime"] = &SeriesAccessor::atTime;
-
-  // Spectral helper: summed FFT power in [fLo, fHi] Hz (DC-removed) — vibration.
-  lua["bandPower"] = [](const SeriesAccessor& sa, double fLo, double fHi) -> double {
-    return computeBandPower(sa, fLo, fHi);
-  };
-
-  std::optional<std::int64_t> open_region;
-
-  // Time region: startMarker(t) opens, closeMarker(t, opts?) commits.
-  lua["startMarker"] = [&open_region](double t) { open_region = static_cast<std::int64_t>(t); };
-  lua["closeMarker"] = [&emitted, &open_region](double t, sol::optional<sol::table> opts) {
-    if (!open_region) {
-      return;
-    }
-    const auto a = *open_region;
-    const auto b = static_cast<std::int64_t>(t);
-    PJ::sdk::PlotMarker m;
-    m.kind = PJ::sdk::MarkerKind::kRegion;
-    m.t_start = std::min(a, b);
-    m.t_end = std::max(a, b);
-    m.severity = PJ::sdk::MarkerSeverity::kWarning;
-    m.category = "anomaly";
-    applyOpts(m, opts);  // label is opt-in (only drawn as a pill when opts.label is set)
-    emitted.push_back(std::move(m));
-    open_region.reset();
-  };
-
-  // Unified event: only x -> vertical line; only y -> horizontal line; both -> point.
-  lua["createEvent"] = [&emitted](sol::optional<double> x, sol::optional<double> y, sol::optional<sol::table> opts) {
-    PJ::sdk::PlotMarker m;
-    m.category = "anomaly";
-    if (x && y) {
-      m.kind = PJ::sdk::MarkerKind::kEvent;  // point at (t, value)
-      m.t_start = static_cast<std::int64_t>(*x);
-      m.value_low = *y;
-      m.has_value = true;
-      m.severity = PJ::sdk::MarkerSeverity::kError;
-    } else if (x) {
-      m.kind = PJ::sdk::MarkerKind::kEvent;  // vertical line at time x (no value)
-      m.t_start = static_cast<std::int64_t>(*x);
-      m.severity = PJ::sdk::MarkerSeverity::kError;
-    } else if (y) {
-      m.kind = PJ::sdk::MarkerKind::kValueBand;  // horizontal line at value y (zero-height band)
-      m.value_low = *y;
-      m.value_high = *y;
-      m.severity = PJ::sdk::MarkerSeverity::kWarning;
-    } else {
-      return;  // neither x nor y -> nothing to draw
-    }
-    applyOpts(m, opts);
-    emitted.push_back(std::move(m));
-  };
-
-  // Value band: a shaded horizontal region [low, high].
-  lua["createDataEvent"] = [&emitted](double low, double high, sol::optional<sol::table> opts) {
-    PJ::sdk::PlotMarker m;
-    m.kind = PJ::sdk::MarkerKind::kValueBand;
-    m.value_low = low;
-    m.value_high = high;
-    m.severity = PJ::sdk::MarkerSeverity::kInfo;
-    m.category = "anomaly";
-    applyOpts(m, opts);
-    emitted.push_back(std::move(m));
-  };
-
-  auto result = lua.safe_script(code, sol::script_pass_on_error);
-  if (!result.valid()) {
-    const sol::error err = result;
-    if (error != nullptr) {
-      *error = err.what();
-    }
-    emitted.clear();
-    return emitted;
-  }
-  return emitted;
+  return PJ::scripting::runMarkerScript(code, provider, error);
 }
 
 // ---------------------------------------------------------------------------
@@ -622,7 +337,7 @@ std::optional<Rule> ruleFromJson(const std::string& json, std::string* error) {
   const nlohmann::json& r = (doc.contains("rule") && doc["rule"].is_object()) ? doc["rule"] : doc;
   rule.code = r.value("code", std::string{});
   rule.source = r.value("source", std::string{});
-  rule.fail_on = parseSeverity(r.value("fail_on", std::string("error")));
+  rule.fail_on = severityFromString(r.value("fail_on", std::string("error"))).value_or(PJ::sdk::MarkerSeverity::kError);
   if (rule.code.empty()) {
     if (error != nullptr) {
       *error = "rule has no 'code'";

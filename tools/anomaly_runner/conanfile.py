@@ -18,16 +18,15 @@ class AnomalyRunnerConan(ConanFile):
     version = "0"
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain"
-    # The runner compiles anomaly_core, so it needs the engine's deps too.
+    # The runner compiles anomaly_core, which delegates detection to the shared Luau
+    # engine pj_scripting_core (Luau/kissfft are absorbed into it, not direct deps).
     requires = (
         f"plotjuggler_sdk/{_SDK_VERSION}",
-        "lua/5.4.6",
-        "sol2/3.5.0",
-        "kissfft/131.1.0",
+        "pj_scripting_core/0.1.0",
         "nlohmann_json/3.12.0",
     )
     default_options = {
         "*:shared": False,
-        # sol2 needs Lua built with C++ linkage.
-        "lua/*:compile_as_cpp": True,
+        # Keep the Luau binary id consistent with the (PIC) plugin build.
+        "luau/*:fPIC": True,
     }
