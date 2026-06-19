@@ -144,6 +144,11 @@ CI to the `badges` branch; see [Per-plugin status badges](#per-plugin-status-bad
 | toolbox_quaternion | Toolbox | Quaternion → roll/pitch/yaw | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_quaternion.json)](toolbox_quaternion/) |
 | toolbox_colormap | Toolbox | Lua colormap editor | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_colormap.json)](toolbox_colormap/) |
 | toolbox_reactive_scripts_editor | Toolbox | Reactive Lua/Python script editor | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_reactive_scripts_editor.json)](toolbox_reactive_scripts_editor/) |
+| [toolbox_anomaly_detector](toolbox_anomaly_detector/) | Toolbox | Lua anomaly detection → plot markers (shares its engine with the headless runner) | _new_ |
+
+In addition to the plugins above, [`tools/anomaly_runner`](tools/anomaly_runner/) is a
+standalone **headless CLI** that runs the same anomaly-detection rules without a GUI (CSV/MCAP
+in, JSON report + exit code out) for CI and data pipelines.
 
 ### Per-plugin status badges
 

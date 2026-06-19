@@ -1,0 +1,15 @@
+{
+  "id": "toolbox-anomaly-detector",
+  "name": "Anomaly Detector",
+  "version": "0.1.0",
+  "description": "Write Lua anomaly rules over time series and emit plot markers (regions / events) when a rule fires.",
+  "author": "PlotJuggler",
+  "category": "toolbox",
+  "tags": [
+    "lua",
+    "anomaly",
+    "markers",
+    "toolbox"
+  ],
+  "min_plotjuggler_version": "4.0.0"
+}

@@ -8,6 +8,8 @@ PlotJuggler official plugin collection — 12 plugins (CSV, Parquet, ULog, MCAP,
 
 **Before doing any work, read `porting_guide.md` in its entirety.** It defines the porting philosophy, mandatory workflow, and known pitfalls. The porting gap analysis is tracked in `PORTING_PLAN.md`.
 
+**Exception — `toolbox_anomaly_detector` + `tools/anomaly_runner` (Task F) are NEW, not ports.** They have no PJ3 equivalent, so the porting guide/plan don't apply to them. The Anomaly Detector is a GUI toolbox where engineers author Lua anomaly-detection rules that emit plot markers; `core/anomaly_core` is a GUI-free static lib (Lua via sol2, `bandPower` via kissfft) shared with the headless `anomaly_runner` CLI, so the same rule runs identically in the GUI and in CI (CSV/MCAP in, JSON report + exit code out). See `toolbox_anomaly_detector/README.md` and `tools/anomaly_runner/README.md`. Build: `./build.sh toolbox_anomaly_detector` and `./build.sh tools/anomaly_runner`, then copy the artifacts into `build/all/Release/bin/`.
+
 ## Build Commands
 
 ### Standalone (requires Conan 2.x)
