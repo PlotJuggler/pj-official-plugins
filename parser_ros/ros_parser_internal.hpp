@@ -367,6 +367,11 @@ class RosParser : public PJ::MessageParserPluginBase {
   // keeps its per-axis scalar flatten (handlePoseStamped) alongside the object.
   PJ::Expected<PJ::sdk::ObjectRecord> parsePoseStampedObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
+  // nav_msgs/Odometry -> sdk::PosesInFrame (single element: the pose in the
+  // header frame). Dual route: keeps its per-axis scalar flatten
+  // (handleOdometry) alongside the object.
+  PJ::Expected<PJ::sdk::ObjectRecord> parseOdometryObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
   // nav_msgs/Path -> sdk::PosesInFrame. The object takes the PATH header's
   // frame_id + stamp; each PoseStamped's own header is read and dropped (a
   // PosesInFrame is one frame at one instant).

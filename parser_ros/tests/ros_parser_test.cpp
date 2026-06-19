@@ -2995,4 +2995,78 @@ TEST(RosParserTest, PathProducesPosesInFrameObject) {
   EXPECT_DOUBLE_EQ(pf->poses[1].position.x, 2.0);
 }
 
+TEST(RosParserTest, OdometryProducesSinglePosePosesInFrameObject) {
+  // nav_msgs/Odometry carries the pose of child_frame_id expressed in the
+  // header frame. Dual route: it advertises the canonical PosesInFrame object
+  // (a one-element pose in the header frame) alongside its existing per-axis
+  // scalar flatten (handleOdometry), exactly like PoseStamped does.
+  //
+  // Wire layout:
+  //   header        std_msgs/Header
+  //   child_frame_id string
+  //   pose          geometry_msgs/PoseWithCovariance  (Pose + float64[36])
+  //   twist         geometry_msgs/TwistWithCovariance (Twist + float64[36])
+  const std::string def = std::string(
+                              "std_msgs/Header header\nstring child_frame_id\n"
+                              "geometry_msgs/PoseWithCovariance pose\n"
+                              "geometry_msgs/TwistWithCovariance twist\n") +
+                          kHeaderDef + kGeometryLeavesDef +
+                          "================\nMSG: geometry_msgs/PoseWithCovariance\n"
+                          "geometry_msgs/Pose pose\nfloat64[36] covariance\n"
+                          "================\nMSG: geometry_msgs/TwistWithCovariance\n"
+                          "geometry_msgs/Twist twist\nfloat64[36] covariance\n"
+                          "================\nMSG: geometry_msgs/Twist\n"
+                          "geometry_msgs/Vector3 linear\ngeometry_msgs/Vector3 angular\n"
+                          "================\nMSG: geometry_msgs/Vector3\nfloat64 x\nfloat64 y\nfloat64 z\n";
+
+  RosParserFixture f;
+  f.setUp();
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("nav_msgs/Odometry", def));
+  EXPECT_EQ(f.handle.classifySchema("nav_msgs/Odometry", def_span), PJ::sdk::BuiltinObjectType::kPosesInFrame);
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 5, 0, "odom");
+    enc.serializeString("base_link");
+    // pose.pose
+    serializeVector3(enc, 1.0, 2.0, 3.0);          // position
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);  // orientation (identity)
+    for (int i = 0; i < 36; i++) {                 // pose.covariance[36]
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(0.0));
+    }
+    // twist.twist
+    serializeVector3(enc, 0.5, 0.0, 0.0);  // linear
+    serializeVector3(enc, 0.0, 0.0, 0.1);  // angular
+    for (int i = 0; i < 36; i++) {         // twist.covariance[36]
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(0.0));
+    }
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1000, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  ASSERT_NE(pf, nullptr);
+  EXPECT_EQ(pf->frame_id, "odom");  // header frame, NOT child_frame_id
+  EXPECT_EQ(pf->timestamp_ns, 1000);
+  EXPECT_FALSE(rec->ts.has_value());
+  ASSERT_EQ(pf->poses.size(), 1u);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.x, 1.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.y, 2.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.z, 3.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].orientation.w, 1.0);
+
+  // The scalar route still runs: the per-axis pose columns remain plottable.
+  f.recorder.clear();
+  ASSERT_TRUE(f.parse(payload, 1000));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+  const auto* pos_x = PJ::sdk::testing::ParserWriteRecorder::findField(row, "/pose/pose/position/x");
+  ASSERT_NE(pos_x, nullptr);
+  EXPECT_DOUBLE_EQ(pos_x->numeric, 1.0);
+}
+
 }  // namespace

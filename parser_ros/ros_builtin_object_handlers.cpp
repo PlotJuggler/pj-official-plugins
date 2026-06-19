@@ -887,6 +887,45 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePoseStampedObject(PJ::Timest
 }
 
 // ---------------------------------------------------------------------------
+// nav_msgs/Odometry — the pose of child_frame_id expressed in the header frame,
+// surfaced as a one-element PosesInFrame so it feeds the same 3D pose view as
+// PoseStamped. The scalar handler (handleOdometry) still runs in parallel for
+// per-axis plotting of the pose, twist and covariances.
+//
+// Wire layout:
+//   header         std_msgs/Header                   (sec, nanosec, frame_id)
+//   child_frame_id string
+//   pose           geometry_msgs/PoseWithCovariance  (Pose then float64[36])
+//   twist          geometry_msgs/TwistWithCovariance
+//
+// Only the Header + child_frame_id + Pose are consumed: the pose is the last
+// field the object needs, so the covariance and twist are left unread. The
+// object adopts the HEADER frame_id (the reference frame), not child_frame_id.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOdometryObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    HeaderData header = readHeader();
+
+    std::string child_frame_id;
+    deserializer_->deserializeString(child_frame_id);  // read + dropped (object uses the header frame)
+
+    PJ::sdk::PosesInFrame result;
+    result.timestamp_ns = current_timestamp_;
+    result.frame_id = std::move(header.frame_id);
+    result.poses.push_back(readPose());
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(result)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("Odometry: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
 // nav_msgs/Path
 //
 // Wire layout:
