@@ -684,7 +684,10 @@ static const char* kDiagnosticArrayDef =
     "int32 sec\nuint32 nanosec\n"
     "================\n"
     "MSG: diagnostic_msgs/DiagnosticStatus\n"
-    "uint8 level\nstring name\nstring message\nstring hardware_id\n"
+    // Canonical field order (matches diagnostic_msgs/msg/DiagnosticStatus): the
+    // byte constants are NOT serialized, then `name` precedes `level` on the wire.
+    "byte OK=0\nbyte WARN=1\nbyte ERROR=2\nbyte STALE=3\n"
+    "string name\nbyte level\nstring message\nstring hardware_id\n"
     "diagnostic_msgs/KeyValue[] values\n"
     "================\n"
     "MSG: diagnostic_msgs/KeyValue\n"
@@ -1001,21 +1004,21 @@ TEST(RosParserTest, DiagnosticArray) {
     // 2 statuses
     enc.serializeUInt32(2);
 
-    // Status 1: with hardware_id
+    // Status 1: with hardware_id. Wire order is name, level, message, hardware_id.
+    enc.serializeString("CPU Temperature");                                             // name
     enc.serialize(RosMsgParser::BYTE, RosMsgParser::Variant(static_cast<uint8_t>(0)));  // level OK
-    enc.serializeString("CPU Temperature");
-    enc.serializeString("OK");
-    enc.serializeString("cpu0");
+    enc.serializeString("OK");                                                          // message
+    enc.serializeString("cpu0");                                                        // hardware_id
     // 1 key-value pair
     enc.serializeUInt32(1);
     enc.serializeString("temperature");
     enc.serializeString("65.5");
 
     // Status 2: no hardware_id
+    enc.serializeString("Battery");                                                     // name
     enc.serialize(RosMsgParser::BYTE, RosMsgParser::Variant(static_cast<uint8_t>(1)));  // level WARN
-    enc.serializeString("Battery");
-    enc.serializeString("Low");
-    enc.serializeString("");
+    enc.serializeString("Low");                                                         // message
+    enc.serializeString("");                                                            // hardware_id
     enc.serializeUInt32(1);
     enc.serializeString("voltage");
     enc.serializeString("11.2");
@@ -1560,6 +1563,149 @@ TEST(RosParserTest, ImageObjectCarriesFrameId) {
   EXPECT_EQ(img->width, 2u);
   EXPECT_EQ(img->height, 2u);
   EXPECT_EQ(img->encoding, "mono8");
+}
+
+// Regression: ROS Bayer CFA images (bayer_rggb8 and friends) carry one raw mosaic
+// sample per pixel (1 byte/pixel). parseImage must ACCEPT them and pass the encoding
+// through verbatim — the viewer demosaics downstream. Previously these were rejected
+// as "unsupported ROS encoding", so bayer camera topics produced no frame at all
+// (the solid red/black tiles seen on real ugv recordings).
+TEST(RosParserTest, ImageBayerRggb8IsAccepted) {
+  static const char* kImageDef =
+      "std_msgs/Header header\nuint32 height\nuint32 width\nstring encoding\n"
+      "uint8 is_bigendian\nuint32 step\nuint8[] data\n"
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/Image", kImageDef));
+
+  // 2x2 single-channel CFA mosaic: step(2) * height(2) == 4 bytes, bpp == 1.
+  const std::vector<uint8_t> pixels = {0x11, 0x22, 0x33, 0x44};
+  auto payload = serializeCdr([&pixels](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 7, 0, "rgb_camera");
+    enc.serializeUInt32(2);  // height
+    enc.serializeUInt32(2);  // width
+    enc.serializeString("bayer_rggb8");
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(0)));  // is_bigendian
+    enc.serializeUInt32(2);                                                              // step
+    enc.serializeUInt32(static_cast<uint32_t>(pixels.size()));                           // uint8[] data: count
+    for (uint8_t b : pixels) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* img = std::any_cast<PJ::sdk::Image>(&rec->object);
+  ASSERT_NE(img, nullptr);
+  EXPECT_EQ(img->encoding, "bayer_rggb8");  // emitted verbatim for the viewer to demosaic
+  EXPECT_EQ(img->width, 2u);
+  EXPECT_EQ(img->height, 2u);
+  EXPECT_EQ(img->row_step, 2u);
+  ASSERT_EQ(img->data.size(), pixels.size());
+  EXPECT_EQ(img->data[0], 0x11);
+  EXPECT_EQ(img->data[3], 0x44);
+}
+
+// compressedDepth schema: header + format string + uint8[] data. The data may or
+// may not carry a leading 12-byte ConfigHeader (see parseCompressedImage).
+static const char* kCompressedImageDef =
+    "std_msgs/Header header\nstring format\nuint8[] data\n"
+    "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+    "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+TEST(RosParserTest, CompressedDepthBarePngHasNoConfigHeader) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/CompressedImage", kCompressedImageDef));
+
+  // A BARE PNG: the 8-byte signature + a token IHDR length/type. Some recorders
+  // (e.g. RealSense bags) emit compressedDepth with no 12-byte ConfigHeader, so
+  // the parser must pass the blob through untouched — stripping 12 bytes here
+  // would chop the signature + part of the IHDR length and corrupt the PNG. The
+  // bytes are never decoded by the parser; only the offset/length pass-through
+  // is under test.
+  const std::vector<uint8_t> bare_png = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+                                         0x00, 0x00, 0x00, 0x0D, 'I',  'H',  'D',  'R'};
+  auto payload = serializeCdr([&bare_png](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 7, 0, "depth_optical");
+    enc.serializeString("16UC1; compressedDepth png");
+    enc.serializeUInt32(static_cast<uint32_t>(bare_png.size()));
+    for (uint8_t b : bare_png) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* img = std::any_cast<PJ::sdk::Image>(&rec->object);
+  ASSERT_NE(img, nullptr);
+  EXPECT_EQ(img->encoding, "compressedDepth");
+  EXPECT_EQ(img->frame_id, "depth_optical");
+  // Nothing stripped: the whole blob survives and still begins with the PNG
+  // signature, so QImage can decode it downstream.
+  ASSERT_EQ(img->data.size(), bare_png.size());
+  for (size_t i = 0; i < bare_png.size(); ++i) {
+    EXPECT_EQ(img->data.data()[i], bare_png[i]);
+  }
+  // No ConfigHeader => no quantization range.
+  EXPECT_FALSE(img->compressed_depth_min.has_value());
+  EXPECT_FALSE(img->compressed_depth_max.has_value());
+}
+
+TEST(RosParserTest, CompressedDepthWithConfigHeaderIsStripped) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/CompressedImage", kCompressedImageDef));
+
+  // A normal payload: 12-byte ConfigHeader (uint32 format, float depthQuantA,
+  // float depthQuantB) ahead of the PNG. The header must be stripped and its
+  // floats surfaced as the quantization range.
+  const float kDepthMin = 0.5f;
+  const float kDepthMax = 8.0f;
+  std::vector<uint8_t> data(12, 0);
+  std::memcpy(data.data() + 4, &kDepthMin, sizeof(float));
+  std::memcpy(data.data() + 8, &kDepthMax, sizeof(float));
+  const std::vector<uint8_t> png_sig = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+  data.insert(data.end(), png_sig.begin(), png_sig.end());
+
+  auto payload = serializeCdr([&data](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 7, 0, "depth_optical");
+    enc.serializeString("16UC1; compressedDepth png");
+    enc.serializeUInt32(static_cast<uint32_t>(data.size()));
+    for (uint8_t b : data) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* img = std::any_cast<PJ::sdk::Image>(&rec->object);
+  ASSERT_NE(img, nullptr);
+  EXPECT_EQ(img->encoding, "compressedDepth");
+  // The 12-byte header was stripped: the blob now starts at the PNG signature.
+  ASSERT_EQ(img->data.size(), png_sig.size());
+  for (size_t i = 0; i < png_sig.size(); ++i) {
+    EXPECT_EQ(img->data.data()[i], png_sig[i]);
+  }
+  ASSERT_TRUE(img->compressed_depth_min.has_value());
+  ASSERT_TRUE(img->compressed_depth_max.has_value());
+  EXPECT_FLOAT_EQ(*img->compressed_depth_min, kDepthMin);
+  EXPECT_FLOAT_EQ(*img->compressed_depth_max, kDepthMax);
 }
 
 TEST(RosParserTest, CompressedVideoProducesObject) {
@@ -2847,6 +2993,80 @@ TEST(RosParserTest, PathProducesPosesInFrameObject) {
   ASSERT_EQ(pf->poses.size(), 2u);
   EXPECT_DOUBLE_EQ(pf->poses[0].position.x, 1.0);
   EXPECT_DOUBLE_EQ(pf->poses[1].position.x, 2.0);
+}
+
+TEST(RosParserTest, OdometryProducesSinglePosePosesInFrameObject) {
+  // nav_msgs/Odometry carries the pose of child_frame_id expressed in the
+  // header frame. Dual route: it advertises the canonical PosesInFrame object
+  // (a one-element pose in the header frame) alongside its existing per-axis
+  // scalar flatten (handleOdometry), exactly like PoseStamped does.
+  //
+  // Wire layout:
+  //   header        std_msgs/Header
+  //   child_frame_id string
+  //   pose          geometry_msgs/PoseWithCovariance  (Pose + float64[36])
+  //   twist         geometry_msgs/TwistWithCovariance (Twist + float64[36])
+  const std::string def = std::string(
+                              "std_msgs/Header header\nstring child_frame_id\n"
+                              "geometry_msgs/PoseWithCovariance pose\n"
+                              "geometry_msgs/TwistWithCovariance twist\n") +
+                          kHeaderDef + kGeometryLeavesDef +
+                          "================\nMSG: geometry_msgs/PoseWithCovariance\n"
+                          "geometry_msgs/Pose pose\nfloat64[36] covariance\n"
+                          "================\nMSG: geometry_msgs/TwistWithCovariance\n"
+                          "geometry_msgs/Twist twist\nfloat64[36] covariance\n"
+                          "================\nMSG: geometry_msgs/Twist\n"
+                          "geometry_msgs/Vector3 linear\ngeometry_msgs/Vector3 angular\n"
+                          "================\nMSG: geometry_msgs/Vector3\nfloat64 x\nfloat64 y\nfloat64 z\n";
+
+  RosParserFixture f;
+  f.setUp();
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("nav_msgs/Odometry", def));
+  EXPECT_EQ(f.handle.classifySchema("nav_msgs/Odometry", def_span), PJ::sdk::BuiltinObjectType::kPosesInFrame);
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 5, 0, "odom");
+    enc.serializeString("base_link");
+    // pose.pose
+    serializeVector3(enc, 1.0, 2.0, 3.0);          // position
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);  // orientation (identity)
+    for (int i = 0; i < 36; i++) {                 // pose.covariance[36]
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(0.0));
+    }
+    // twist.twist
+    serializeVector3(enc, 0.5, 0.0, 0.0);  // linear
+    serializeVector3(enc, 0.0, 0.0, 0.1);  // angular
+    for (int i = 0; i < 36; i++) {         // twist.covariance[36]
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(0.0));
+    }
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1000, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  ASSERT_NE(pf, nullptr);
+  EXPECT_EQ(pf->frame_id, "odom");  // header frame, NOT child_frame_id
+  EXPECT_EQ(pf->timestamp_ns, 1000);
+  EXPECT_FALSE(rec->ts.has_value());
+  ASSERT_EQ(pf->poses.size(), 1u);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.x, 1.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.y, 2.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.z, 3.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].orientation.w, 1.0);
+
+  // The scalar route still runs: the per-axis pose columns remain plottable.
+  f.recorder.clear();
+  ASSERT_TRUE(f.parse(payload, 1000));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+  const auto* pos_x = PJ::sdk::testing::ParserWriteRecorder::findField(row, "/pose/pose/position/x");
+  ASSERT_NE(pos_x, nullptr);
+  EXPECT_DOUBLE_EQ(pos_x->numeric, 1.0);
 }
 
 }  // namespace

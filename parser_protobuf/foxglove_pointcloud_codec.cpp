@@ -3,13 +3,17 @@
 
 #include "foxglove_pointcloud_codec.hpp"
 
+#include <google/protobuf/descriptor.h>
 #include <google/protobuf/io/coded_stream.h>
 
 #include <algorithm>
 #include <bit>
 #include <limits>
+#include <pj_pointcloud_color/pointcloud_color.hpp>
 #include <string>
 #include <vector>
+
+#include "foxglove_descriptor_util.hpp"
 
 namespace pj_protobuf {
 namespace {
@@ -18,26 +22,9 @@ namespace gpio = google::protobuf::io;
 
 using Datatype = PJ::sdk::PointField::Datatype;
 
-// Field numbers of foxglove.PointCloud / PackedElementField (see header).
-constexpr int kFieldTimestamp = 1;
-constexpr int kFieldFrameId = 2;
-constexpr int kFieldPose = 3;
-constexpr int kFieldPointStride = 4;
-constexpr int kFieldFields = 5;
-constexpr int kFieldData = 6;
-
-constexpr int kPefName = 1;
-constexpr int kPefOffset = 2;
-constexpr int kPefType = 3;
-
-// Field numbers of foxglove.LaserScan (see header).
-constexpr int kLsTimestamp = 1;
-constexpr int kLsFrameId = 2;
-constexpr int kLsPose = 3;
-constexpr int kLsStartAngle = 4;
-constexpr int kLsEndAngle = 5;
-constexpr int kLsRanges = 6;
-constexpr int kLsIntensities = 7;
+// foxglove.PointCloud / PackedElementField / LaserScan field numbers now come
+// from the descriptor-driven PointCloudFieldNumbers / LaserScanFieldNumbers
+// structs (defaults = official numbering), so the hardcoded constants are gone.
 
 // Protobuf wire types.
 constexpr uint32_t kWireVarint = 0;
@@ -233,24 +220,25 @@ constexpr uint32_t kWireI32 = 5;
 }
 
 /// Parse one PackedElementField submessage of `len` bytes.
-[[nodiscard]] bool readPackedElementField(gpio::CodedInputStream& in, uint32_t len, PJ::sdk::PointField& out) {
+[[nodiscard]] bool readPackedElementField(
+    gpio::CodedInputStream& in, uint32_t len, PJ::sdk::PointField& out, const PointCloudFieldNumbers& fields) {
   const auto limit = in.PushLimit(static_cast<int>(len));
   uint32_t tag = 0;
   while ((tag = in.ReadTag()) != 0) {
     const int field = static_cast<int>(tag >> 3);
     const uint32_t wt = tag & 0x7u;
-    if (field == kPefName && wt == kWireLen) {
+    if (field == fields.pef_name && wt == kWireLen) {
       uint32_t s = 0;
       if (!in.ReadVarint32(&s) || !in.ReadString(&out.name, static_cast<int>(s))) {
         return false;
       }
-    } else if (field == kPefOffset && wt == kWireI32) {
+    } else if (field == fields.pef_offset && wt == kWireI32) {
       uint32_t off = 0;
       if (!in.ReadLittleEndian32(&off)) {
         return false;
       }
       out.offset = off;
-    } else if (field == kPefType && wt == kWireVarint) {
+    } else if (field == fields.pef_type && wt == kWireVarint) {
       uint64_t t = 0;
       if (!in.ReadVarint64(&t)) {
         return false;
@@ -267,8 +255,36 @@ constexpr uint32_t kWireI32 = 5;
 
 }  // namespace
 
+PointCloudFieldNumbers resolvePointCloudFieldNumbers(const google::protobuf::Descriptor* descriptor) {
+  PointCloudFieldNumbers n;  // official defaults
+  n.timestamp = fieldNumberOr(descriptor, "timestamp", n.timestamp);
+  n.frame_id = fieldNumberOr(descriptor, "frame_id", n.frame_id);
+  n.pose = fieldNumberOr(descriptor, "pose", n.pose);
+  n.point_stride = fieldNumberOr(descriptor, "point_stride", n.point_stride);
+  n.fields = fieldNumberOr(descriptor, "fields", n.fields);
+  n.data = fieldNumberOr(descriptor, "data", n.data);
+  // nested PackedElementField, the message type of the `fields` field.
+  const google::protobuf::Descriptor* pef = nestedDescriptor(descriptor, "fields");
+  n.pef_name = fieldNumberOr(pef, "name", n.pef_name);
+  n.pef_offset = fieldNumberOr(pef, "offset", n.pef_offset);
+  n.pef_type = fieldNumberOr(pef, "type", n.pef_type);
+  return n;
+}
+
+LaserScanFieldNumbers resolveLaserScanFieldNumbers(const google::protobuf::Descriptor* descriptor) {
+  LaserScanFieldNumbers n;  // official defaults
+  n.timestamp = fieldNumberOr(descriptor, "timestamp", n.timestamp);
+  n.frame_id = fieldNumberOr(descriptor, "frame_id", n.frame_id);
+  n.pose = fieldNumberOr(descriptor, "pose", n.pose);
+  n.start_angle = fieldNumberOr(descriptor, "start_angle", n.start_angle);
+  n.end_angle = fieldNumberOr(descriptor, "end_angle", n.end_angle);
+  n.ranges = fieldNumberOr(descriptor, "ranges", n.ranges);
+  n.intensities = fieldNumberOr(descriptor, "intensities", n.intensities);
+  return n;
+}
+
 PJ::Expected<FoxglovePointCloudDecode> deserializeFoxglovePointCloudView(
-    const uint8_t* data, size_t size, PJ::sdk::BufferAnchor anchor) {
+    const uint8_t* data, size_t size, PJ::sdk::BufferAnchor anchor, const PointCloudFieldNumbers& fields) {
   if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
     return PJ::unexpected(std::string("foxglove.PointCloud: message too large"));
   }
@@ -287,95 +303,79 @@ PJ::Expected<FoxglovePointCloudDecode> deserializeFoxglovePointCloudView(
   while ((tag = in.ReadTag()) != 0) {
     const int field = static_cast<int>(tag >> 3);
     const uint32_t wt = tag & 0x7u;
-    switch (field) {
-      case kFieldTimestamp: {
-        if (wt != kWireLen) {
-          return PJ::unexpected(std::string("foxglove.PointCloud: bad timestamp wire type"));
-        }
-        uint32_t len = 0;
-        if (!in.ReadVarint32(&len) || !readTimestampNs(in, len, ts_ns)) {
-          return PJ::unexpected(std::string("foxglove.PointCloud: failed to read timestamp"));
-        }
-        break;
+    if (field == fields.timestamp) {
+      if (wt != kWireLen) {
+        return PJ::unexpected(std::string("foxglove.PointCloud: bad timestamp wire type"));
       }
-      case kFieldFrameId: {
-        if (wt != kWireLen) {
-          return PJ::unexpected(std::string("foxglove.PointCloud: bad frame_id wire type"));
-        }
-        uint32_t len = 0;
-        if (!in.ReadVarint32(&len) || !in.ReadString(&cloud.frame_id, static_cast<int>(len))) {
-          return PJ::unexpected(std::string("foxglove.PointCloud: failed to read frame_id"));
-        }
-        break;
+      uint32_t len = 0;
+      if (!in.ReadVarint32(&len) || !readTimestampNs(in, len, ts_ns)) {
+        return PJ::unexpected(std::string("foxglove.PointCloud: failed to read timestamp"));
       }
-      case kFieldPose: {
-        if (wt != kWireLen) {
-          return PJ::unexpected(std::string("foxglove.PointCloud: bad pose wire type"));
-        }
-        uint32_t len = 0;
-        if (!in.ReadVarint32(&len)) {
-          return PJ::unexpected(std::string("foxglove.PointCloud: failed to read pose length"));
-        }
-        result.has_pose = true;
-        if (!readPoseIdentity(in, len, result.pose_is_identity)) {
-          return PJ::unexpected(std::string("foxglove.PointCloud: failed to read pose"));
-        }
-        break;
+    } else if (field == fields.frame_id) {
+      if (wt != kWireLen) {
+        return PJ::unexpected(std::string("foxglove.PointCloud: bad frame_id wire type"));
       }
-      case kFieldPointStride: {
-        if (wt != kWireI32) {
-          return PJ::unexpected(std::string("foxglove.PointCloud: bad point_stride wire type"));
-        }
-        if (!in.ReadLittleEndian32(&point_stride)) {
-          return PJ::unexpected(std::string("foxglove.PointCloud: failed to read point_stride"));
-        }
-        break;
+      uint32_t len = 0;
+      if (!in.ReadVarint32(&len) || !in.ReadString(&cloud.frame_id, static_cast<int>(len))) {
+        return PJ::unexpected(std::string("foxglove.PointCloud: failed to read frame_id"));
       }
-      case kFieldFields: {
-        if (wt != kWireLen) {
-          return PJ::unexpected(std::string("foxglove.PointCloud: bad fields wire type"));
-        }
-        uint32_t len = 0;
-        if (!in.ReadVarint32(&len)) {
-          return PJ::unexpected(std::string("foxglove.PointCloud: failed to read field length"));
-        }
-        PJ::sdk::PointField pf;
-        if (!readPackedElementField(in, len, pf)) {
-          return PJ::unexpected(std::string("foxglove.PointCloud: failed to read PackedElementField"));
-        }
-        cloud.fields.push_back(std::move(pf));
-        break;
+    } else if (field == fields.pose) {
+      if (wt != kWireLen) {
+        return PJ::unexpected(std::string("foxglove.PointCloud: bad pose wire type"));
       }
-      case kFieldData: {
-        if (wt != kWireLen) {
-          return PJ::unexpected(std::string("foxglove.PointCloud: bad data wire type"));
-        }
-        uint32_t len = 0;
-        if (!in.ReadVarint32(&len)) {
-          return PJ::unexpected(std::string("foxglove.PointCloud: failed to read data length"));
-        }
-        if (len > 0) {
-          // Zero-copy: alias the packed-point bytes in place instead of copying
-          // (a lidar scan is multi-MB). GetDirectBufferPointer hands back a
-          // pointer into the original `data` buffer; the BufferAnchor keeps it
-          // alive past this call.
-          const void* ptr = nullptr;
-          int avail = 0;
-          if (!in.GetDirectBufferPointer(&ptr, &avail) || avail < static_cast<int>(len)) {
-            return PJ::unexpected(std::string("foxglove.PointCloud: data not contiguous"));
-          }
-          data_span = PJ::Span<const uint8_t>(static_cast<const uint8_t*>(ptr), len);
-          if (!in.Skip(static_cast<int>(len))) {
-            return PJ::unexpected(std::string("foxglove.PointCloud: failed to skip data"));
-          }
-        }
-        break;
+      uint32_t len = 0;
+      if (!in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.PointCloud: failed to read pose length"));
       }
-      default:
-        if (!skipField(in, wt)) {
-          return PJ::unexpected(std::string("foxglove.PointCloud: malformed message"));
+      result.has_pose = true;
+      if (!readPoseIdentity(in, len, result.pose_is_identity)) {
+        return PJ::unexpected(std::string("foxglove.PointCloud: failed to read pose"));
+      }
+    } else if (field == fields.point_stride) {
+      if (wt != kWireI32) {
+        return PJ::unexpected(std::string("foxglove.PointCloud: bad point_stride wire type"));
+      }
+      if (!in.ReadLittleEndian32(&point_stride)) {
+        return PJ::unexpected(std::string("foxglove.PointCloud: failed to read point_stride"));
+      }
+    } else if (field == fields.fields) {
+      if (wt != kWireLen) {
+        return PJ::unexpected(std::string("foxglove.PointCloud: bad fields wire type"));
+      }
+      uint32_t len = 0;
+      if (!in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.PointCloud: failed to read field length"));
+      }
+      PJ::sdk::PointField pf;
+      if (!readPackedElementField(in, len, pf, fields)) {
+        return PJ::unexpected(std::string("foxglove.PointCloud: failed to read PackedElementField"));
+      }
+      cloud.fields.push_back(std::move(pf));
+    } else if (field == fields.data) {
+      if (wt != kWireLen) {
+        return PJ::unexpected(std::string("foxglove.PointCloud: bad data wire type"));
+      }
+      uint32_t len = 0;
+      if (!in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.PointCloud: failed to read data length"));
+      }
+      if (len > 0) {
+        // Zero-copy: alias the packed-point bytes in place instead of copying
+        // (a lidar scan is multi-MB). GetDirectBufferPointer hands back a
+        // pointer into the original `data` buffer; the BufferAnchor keeps it
+        // alive past this call.
+        const void* ptr = nullptr;
+        int avail = 0;
+        if (!in.GetDirectBufferPointer(&ptr, &avail) || avail < static_cast<int>(len)) {
+          return PJ::unexpected(std::string("foxglove.PointCloud: data not contiguous"));
         }
-        break;
+        data_span = PJ::Span<const uint8_t>(static_cast<const uint8_t*>(ptr), len);
+        if (!in.Skip(static_cast<int>(len))) {
+          return PJ::unexpected(std::string("foxglove.PointCloud: failed to skip data"));
+        }
+      }
+    } else if (!skipField(in, wt)) {
+      return PJ::unexpected(std::string("foxglove.PointCloud: malformed message"));
     }
   }
 
@@ -392,11 +392,18 @@ PJ::Expected<FoxglovePointCloudDecode> deserializeFoxglovePointCloudView(
   cloud.anchor = std::move(anchor);
   cloud.timestamp_ns = ts_ns;
 
+  // Normalize foxglove's separate red/green/blue/alpha uint8 channels into a single
+  // canonical packed "rgba" field so the host renders one per-point colour instead of
+  // offering each channel as a separate colormap source. Pure metadata rewrite — the
+  // bytes are already R,G,B,A in increasing address, so the zero-copy span is untouched.
+  pj::pointcloud_color::collapseSeparateColorChannels(cloud);
+
   return result;
 }
 
 PJ::Expected<FoxgloveLaserScanDecode> deserializeFoxgloveLaserScan(
-    const uint8_t* data, size_t size, PJ::laser_scan::LaserScanProjector& projector) {
+    const uint8_t* data, size_t size, PJ::laser_scan::LaserScanProjector& projector,
+    const LaserScanFieldNumbers& fields) {
   if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
     return PJ::unexpected(std::string("foxglove.LaserScan: message too large"));
   }
@@ -415,70 +422,52 @@ PJ::Expected<FoxgloveLaserScanDecode> deserializeFoxgloveLaserScan(
   while ((tag = in.ReadTag()) != 0) {
     const int field = static_cast<int>(tag >> 3);
     const uint32_t wt = tag & 0x7u;
-    switch (field) {
-      case kLsTimestamp: {
-        if (wt != kWireLen) {
-          return PJ::unexpected(std::string("foxglove.LaserScan: bad timestamp wire type"));
-        }
-        uint32_t len = 0;
-        if (!in.ReadVarint32(&len) || !readTimestampNs(in, len, ts_ns)) {
-          return PJ::unexpected(std::string("foxglove.LaserScan: failed to read timestamp"));
-        }
-        break;
+    if (field == fields.timestamp) {
+      if (wt != kWireLen) {
+        return PJ::unexpected(std::string("foxglove.LaserScan: bad timestamp wire type"));
       }
-      case kLsFrameId: {
-        if (wt != kWireLen) {
-          return PJ::unexpected(std::string("foxglove.LaserScan: bad frame_id wire type"));
-        }
-        uint32_t len = 0;
-        if (!in.ReadVarint32(&len) || !in.ReadString(&frame_id, static_cast<int>(len))) {
-          return PJ::unexpected(std::string("foxglove.LaserScan: failed to read frame_id"));
-        }
-        break;
+      uint32_t len = 0;
+      if (!in.ReadVarint32(&len) || !readTimestampNs(in, len, ts_ns)) {
+        return PJ::unexpected(std::string("foxglove.LaserScan: failed to read timestamp"));
       }
-      case kLsPose: {
-        if (wt != kWireLen) {
-          return PJ::unexpected(std::string("foxglove.LaserScan: bad pose wire type"));
-        }
-        uint32_t len = 0;
-        if (!in.ReadVarint32(&len)) {
-          return PJ::unexpected(std::string("foxglove.LaserScan: failed to read pose length"));
-        }
-        result.has_pose = true;
-        if (!readPoseIdentity(in, len, result.pose_is_identity)) {
-          return PJ::unexpected(std::string("foxglove.LaserScan: failed to read pose"));
-        }
-        break;
+    } else if (field == fields.frame_id) {
+      if (wt != kWireLen) {
+        return PJ::unexpected(std::string("foxglove.LaserScan: bad frame_id wire type"));
       }
-      case kLsStartAngle: {
-        if (wt != kWireI64 || !readDouble(in, result.start_angle)) {
-          return PJ::unexpected(std::string("foxglove.LaserScan: failed to read start_angle"));
-        }
-        break;
+      uint32_t len = 0;
+      if (!in.ReadVarint32(&len) || !in.ReadString(&frame_id, static_cast<int>(len))) {
+        return PJ::unexpected(std::string("foxglove.LaserScan: failed to read frame_id"));
       }
-      case kLsEndAngle: {
-        if (wt != kWireI64 || !readDouble(in, result.end_angle)) {
-          return PJ::unexpected(std::string("foxglove.LaserScan: failed to read end_angle"));
-        }
-        break;
+    } else if (field == fields.pose) {
+      if (wt != kWireLen) {
+        return PJ::unexpected(std::string("foxglove.LaserScan: bad pose wire type"));
       }
-      case kLsRanges: {
-        if (!readRepeatedDouble(in, wt, ranges)) {
-          return PJ::unexpected(std::string("foxglove.LaserScan: failed to read ranges"));
-        }
-        break;
+      uint32_t len = 0;
+      if (!in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.LaserScan: failed to read pose length"));
       }
-      case kLsIntensities: {
-        if (!readRepeatedDouble(in, wt, intensities)) {
-          return PJ::unexpected(std::string("foxglove.LaserScan: failed to read intensities"));
-        }
-        break;
+      result.has_pose = true;
+      if (!readPoseIdentity(in, len, result.pose_is_identity)) {
+        return PJ::unexpected(std::string("foxglove.LaserScan: failed to read pose"));
       }
-      default:
-        if (!skipField(in, wt)) {
-          return PJ::unexpected(std::string("foxglove.LaserScan: malformed message"));
-        }
-        break;
+    } else if (field == fields.start_angle) {
+      if (wt != kWireI64 || !readDouble(in, result.start_angle)) {
+        return PJ::unexpected(std::string("foxglove.LaserScan: failed to read start_angle"));
+      }
+    } else if (field == fields.end_angle) {
+      if (wt != kWireI64 || !readDouble(in, result.end_angle)) {
+        return PJ::unexpected(std::string("foxglove.LaserScan: failed to read end_angle"));
+      }
+    } else if (field == fields.ranges) {
+      if (!readRepeatedDouble(in, wt, ranges)) {
+        return PJ::unexpected(std::string("foxglove.LaserScan: failed to read ranges"));
+      }
+    } else if (field == fields.intensities) {
+      if (!readRepeatedDouble(in, wt, intensities)) {
+        return PJ::unexpected(std::string("foxglove.LaserScan: failed to read intensities"));
+      }
+    } else if (!skipField(in, wt)) {
+      return PJ::unexpected(std::string("foxglove.LaserScan: malformed message"));
     }
   }
 
@@ -501,7 +490,8 @@ PJ::Expected<FoxgloveLaserScanDecode> deserializeFoxgloveLaserScan(
   return result;
 }
 
-PJ::Expected<FoxgloveLaserScanInfo> readFoxgloveLaserScanInfo(const uint8_t* data, size_t size) {
+PJ::Expected<FoxgloveLaserScanInfo> readFoxgloveLaserScanInfo(
+    const uint8_t* data, size_t size, const LaserScanFieldNumbers& fields) {
   if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
     return PJ::unexpected(std::string("foxglove.LaserScan: message too large"));
   }
@@ -514,31 +504,31 @@ PJ::Expected<FoxgloveLaserScanInfo> readFoxgloveLaserScanInfo(const uint8_t* dat
   while ((tag = in.ReadTag()) != 0) {
     const int field = static_cast<int>(tag >> 3);
     const uint32_t wt = tag & 0x7u;
-    if (field == kLsTimestamp && wt == kWireLen) {
+    if (field == fields.timestamp && wt == kWireLen) {
       uint32_t len = 0;
       if (!in.ReadVarint32(&len) || !readTimestampNs(in, len, info.timestamp_ns)) {
         return PJ::unexpected(std::string("foxglove.LaserScan: failed to read timestamp"));
       }
-    } else if (field == kLsFrameId && wt == kWireLen) {
+    } else if (field == fields.frame_id && wt == kWireLen) {
       uint32_t len = 0;
       if (!in.ReadVarint32(&len) || !in.ReadString(&info.frame_id, static_cast<int>(len))) {
         return PJ::unexpected(std::string("foxglove.LaserScan: failed to read frame_id"));
       }
-    } else if (field == kLsStartAngle && wt == kWireI64) {
+    } else if (field == fields.start_angle && wt == kWireI64) {
       if (!readDouble(in, info.start_angle)) {
         return PJ::unexpected(std::string("foxglove.LaserScan: failed to read start_angle"));
       }
-    } else if (field == kLsEndAngle && wt == kWireI64) {
+    } else if (field == fields.end_angle && wt == kWireI64) {
       if (!readDouble(in, info.end_angle)) {
         return PJ::unexpected(std::string("foxglove.LaserScan: failed to read end_angle"));
       }
-    } else if (field == kLsRanges && wt == kWireI64) {
+    } else if (field == fields.ranges && wt == kWireI64) {
       // Unpacked encoding: one I64 record per ray.
       if (!skipField(in, wt)) {
         return PJ::unexpected(std::string("foxglove.LaserScan: failed to read ranges"));
       }
       ++info.num_ranges;
-    } else if (field == kLsRanges && wt == kWireLen) {
+    } else if (field == fields.ranges && wt == kWireLen) {
       // Packed encoding: the LEN alone gives the ray count; skip the bytes.
       uint32_t len = 0;
       if (!in.ReadVarint32(&len) || (len % sizeof(double)) != 0 || !in.Skip(static_cast<int>(len))) {

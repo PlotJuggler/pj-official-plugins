@@ -33,7 +33,43 @@
 #include <pj_laser_scan/laser_scan_projector.hpp>
 #include <string>
 
+namespace google::protobuf {
+class Descriptor;
+}  // namespace google::protobuf
+
 namespace pj_protobuf {
+
+// Descriptor-driven field numbers (see foxglove_object_codecs.hpp for the full
+// rationale): a self-describing .mcap may embed a schema that renumbers these,
+// so resolve them by NAME from the embedded descriptor. Defaults = official
+// Foxglove numbering, so schemaless streams behave exactly as before.
+
+/// Field numbers for foxglove.PointCloud and its nested PackedElementField (pef_*).
+struct PointCloudFieldNumbers {
+  int timestamp = 1;
+  int frame_id = 2;
+  int pose = 3;
+  int point_stride = 4;
+  int fields = 5;
+  int data = 6;
+  // nested PackedElementField { name=1, offset=2, type=3 }
+  int pef_name = 1;
+  int pef_offset = 2;
+  int pef_type = 3;
+};
+[[nodiscard]] PointCloudFieldNumbers resolvePointCloudFieldNumbers(const google::protobuf::Descriptor* descriptor);
+
+/// Field numbers for foxglove.LaserScan.
+struct LaserScanFieldNumbers {
+  int timestamp = 1;
+  int frame_id = 2;
+  int pose = 3;
+  int start_angle = 4;
+  int end_angle = 5;
+  int ranges = 6;
+  int intensities = 7;
+};
+[[nodiscard]] LaserScanFieldNumbers resolveLaserScanFieldNumbers(const google::protobuf::Descriptor* descriptor);
 
 /// Result of decoding a foxglove.PointCloud message. The `pose` field has no
 /// home in sdk::PointCloud (which expresses geometry in `frame_id` and relies
@@ -53,7 +89,7 @@ struct FoxglovePointCloudDecode {
 /// used. `width`/`height`/`row_step`/`is_bigendian`/`is_dense` are synthesized
 /// (Foxglove omits them: it is always a flat, little-endian, dense point list).
 [[nodiscard]] PJ::Expected<FoxglovePointCloudDecode> deserializeFoxglovePointCloudView(
-    const uint8_t* data, size_t size, PJ::sdk::BufferAnchor anchor);
+    const uint8_t* data, size_t size, PJ::sdk::BufferAnchor anchor, const PointCloudFieldNumbers& fields = {});
 
 /// Result of decoding a foxglove.LaserScan message into an eagerly projected
 /// point cloud. As with PointCloud above, the inline `pose` has no home in
@@ -87,7 +123,8 @@ struct FoxgloveLaserScanDecode {
 /// The caller keeps `projector` alive across messages so its cos/sin LUT is
 /// reused for a fixed scanner configuration.
 [[nodiscard]] PJ::Expected<FoxgloveLaserScanDecode> deserializeFoxgloveLaserScan(
-    const uint8_t* data, size_t size, PJ::laser_scan::LaserScanProjector& projector);
+    const uint8_t* data, size_t size, PJ::laser_scan::LaserScanProjector& projector,
+    const LaserScanFieldNumbers& fields = {});
 
 /// Slim foxglove.LaserScan metadata for the scalar route.
 struct FoxgloveLaserScanInfo {
@@ -102,6 +139,7 @@ struct FoxgloveLaserScanInfo {
 /// angles, and derives `num_ranges` from the LEN of the packed `ranges` field —
 /// no LUT, no cartesian projection, no ranges materialization. Use this for
 /// per-message scalar metadata; the O(N) projection stays on the object route.
-[[nodiscard]] PJ::Expected<FoxgloveLaserScanInfo> readFoxgloveLaserScanInfo(const uint8_t* data, size_t size);
+[[nodiscard]] PJ::Expected<FoxgloveLaserScanInfo> readFoxgloveLaserScanInfo(
+    const uint8_t* data, size_t size, const LaserScanFieldNumbers& fields = {});
 
 }  // namespace pj_protobuf

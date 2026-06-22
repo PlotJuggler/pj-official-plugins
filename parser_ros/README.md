@@ -81,10 +81,22 @@ shipped in the `PayloadView`:
 |--------|-----------------------|---------|
 | `sensor_msgs/msg/Image` | `kImage` | `parseImage` — populates `sdk::Image` (width, height, encoding string, `row_step`, `data`) |
 | `sensor_msgs/msg/CompressedImage` | `kImage` | `parseCompressedImage` — returns unified `sdk::Image` with `jpeg`, `png`, or `compressedDepth` encoding and detects compressed-depth extras |
-| `sensor_msgs/msg/PointCloud2` | `kPointCloud` | `parsePointCloud2` — fills `sdk::PointCloud` with point step, row step, and the raw `data` span |
+| `sensor_msgs/msg/PointCloud2` | `kPointCloud` | `parsePointCloud2` — fills `sdk::PointCloud` with point step, row step, and the raw `data` span. Per-point colour is normalized to the canonical packed `rgba` field (see below). |
 
 The canonical object's lifetime is tied to the input payload — the host
 copies into the `ObjectStore` only when policy demands materialization.
+
+`parsePointCloud2` normalizes per-point colour to the canonical packed field via
+the shared `pj_pointcloud_color` helper (`common/pointcloud_color`), the **same**
+helper `parser_protobuf` uses, so both parsers emit one colour representation and
+the host has a single colour rule. A PCL-style packed colour — a `FLOAT32 rgb` or
+`UINT32 rgba` field whose bytes are `0x00RRGGBB` (B in the low byte) — is repacked
+into canonical R, G, B, A increasing-address order, becoming a single
+`PointField{ name:"rgba", datatype:kUint32 }`. Because that reorders bytes, the
+repack allocates a fresh buffer that the cloud's `BufferAnchor` owns (zero-copy is
+given up **only** for colour clouds; plain XYZI clouds keep the zero-copy span).
+Separate `red`/`green`/`blue`/`alpha` channels, if present, collapse zero-copy
+instead. The host then renders one per-point colour (its "RGB" colour mode).
 
 One schema is promoted **eagerly instead of zero-copy** — the wire carries
 polar ranges, so cartesian points must be generated:

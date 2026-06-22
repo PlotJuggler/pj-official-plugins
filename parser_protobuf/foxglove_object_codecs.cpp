@@ -3,6 +3,7 @@
 
 #include "foxglove_object_codecs.hpp"
 
+#include <google/protobuf/descriptor.h>
 #include <google/protobuf/io/coded_stream.h>
 
 #include <algorithm>
@@ -11,6 +12,8 @@
 #include <limits>
 #include <string>
 #include <vector>
+
+#include "foxglove_descriptor_util.hpp"
 
 namespace pj_protobuf {
 namespace {
@@ -326,12 +329,96 @@ void readPackedFixed32(CodedInputStream& in, uint32_t len, std::vector<uint32_t>
 
 }  // namespace
 
+RawImageFieldNumbers resolveRawImageFieldNumbers(const google::protobuf::Descriptor* descriptor) {
+  RawImageFieldNumbers n;  // official defaults
+  n.timestamp = fieldNumberOr(descriptor, "timestamp", n.timestamp);
+  n.frame_id = fieldNumberOr(descriptor, "frame_id", n.frame_id);
+  n.width = fieldNumberOr(descriptor, "width", n.width);
+  n.height = fieldNumberOr(descriptor, "height", n.height);
+  n.encoding = fieldNumberOr(descriptor, "encoding", n.encoding);
+  n.step = fieldNumberOr(descriptor, "step", n.step);
+  n.data = fieldNumberOr(descriptor, "data", n.data);
+  return n;
+}
+
+CompressedImageFieldNumbers resolveCompressedImageFieldNumbers(const google::protobuf::Descriptor* descriptor) {
+  CompressedImageFieldNumbers n;  // official defaults
+  n.timestamp = fieldNumberOr(descriptor, "timestamp", n.timestamp);
+  n.data = fieldNumberOr(descriptor, "data", n.data);
+  n.format = fieldNumberOr(descriptor, "format", n.format);
+  n.frame_id = fieldNumberOr(descriptor, "frame_id", n.frame_id);
+  return n;
+}
+
+CameraCalibrationFieldNumbers resolveCameraCalibrationFieldNumbers(const google::protobuf::Descriptor* descriptor) {
+  CameraCalibrationFieldNumbers n;  // historical-hardcoded defaults (frame_id last)
+  n.timestamp = fieldNumberOr(descriptor, "timestamp", n.timestamp);
+  n.width = fieldNumberOr(descriptor, "width", n.width);
+  n.height = fieldNumberOr(descriptor, "height", n.height);
+  n.distortion_model = fieldNumberOr(descriptor, "distortion_model", n.distortion_model);
+  n.D = fieldNumberOr(descriptor, "D", n.D);
+  n.K = fieldNumberOr(descriptor, "K", n.K);
+  n.R = fieldNumberOr(descriptor, "R", n.R);
+  n.P = fieldNumberOr(descriptor, "P", n.P);
+  n.frame_id = fieldNumberOr(descriptor, "frame_id", n.frame_id);
+  return n;
+}
+
+FrameTransformFieldNumbers resolveFrameTransformFieldNumbers(const google::protobuf::Descriptor* descriptor) {
+  FrameTransformFieldNumbers n;  // official defaults
+  n.timestamp = fieldNumberOr(descriptor, "timestamp", n.timestamp);
+  n.parent_frame_id = fieldNumberOr(descriptor, "parent_frame_id", n.parent_frame_id);
+  n.child_frame_id = fieldNumberOr(descriptor, "child_frame_id", n.child_frame_id);
+  n.translation = fieldNumberOr(descriptor, "translation", n.translation);
+  n.rotation = fieldNumberOr(descriptor, "rotation", n.rotation);
+  return n;
+}
+
+OdometryFieldNumbers resolveOdometryFieldNumbers(const google::protobuf::Descriptor* descriptor) {
+  OdometryFieldNumbers n;  // official defaults
+  n.timestamp = fieldNumberOr(descriptor, "timestamp", n.timestamp);
+  n.frame_id = fieldNumberOr(descriptor, "frame_id", n.frame_id);
+  n.pose = fieldNumberOr(descriptor, "pose", n.pose);
+  return n;
+}
+
+ImageAnnotationsFieldNumbers resolveImageAnnotationsFieldNumbers(const google::protobuf::Descriptor* descriptor) {
+  ImageAnnotationsFieldNumbers n;  // official defaults
+  n.circles = fieldNumberOr(descriptor, "circles", n.circles);
+  n.points = fieldNumberOr(descriptor, "points", n.points);
+  n.texts = fieldNumberOr(descriptor, "texts", n.texts);
+  return n;
+}
+
+SceneUpdateFieldNumbers resolveSceneUpdateFieldNumbers(const google::protobuf::Descriptor* descriptor) {
+  SceneUpdateFieldNumbers n;  // official defaults
+  n.entities = fieldNumberOr(descriptor, "entities", n.entities);
+  // SceneEntity is the message type of the `entities` field; resolve its numbers
+  // from the nested descriptor (it carries `frame_id`, so renumbering files renumber it).
+  const google::protobuf::Descriptor* entity_desc = nestedDescriptor(descriptor, "entities");
+  n.entity.timestamp = fieldNumberOr(entity_desc, "timestamp", n.entity.timestamp);
+  n.entity.frame_id = fieldNumberOr(entity_desc, "frame_id", n.entity.frame_id);
+  n.entity.id = fieldNumberOr(entity_desc, "id", n.entity.id);
+  n.entity.lifetime = fieldNumberOr(entity_desc, "lifetime", n.entity.lifetime);
+  n.entity.frame_locked = fieldNumberOr(entity_desc, "frame_locked", n.entity.frame_locked);
+  n.entity.arrows = fieldNumberOr(entity_desc, "arrows", n.entity.arrows);
+  n.entity.cubes = fieldNumberOr(entity_desc, "cubes", n.entity.cubes);
+  n.entity.spheres = fieldNumberOr(entity_desc, "spheres", n.entity.spheres);
+  n.entity.cylinders = fieldNumberOr(entity_desc, "cylinders", n.entity.cylinders);
+  n.entity.lines = fieldNumberOr(entity_desc, "lines", n.entity.lines);
+  n.entity.triangles = fieldNumberOr(entity_desc, "triangles", n.entity.triangles);
+  n.entity.texts = fieldNumberOr(entity_desc, "texts", n.entity.texts);
+  n.entity.models = fieldNumberOr(entity_desc, "models", n.entity.models);
+  return n;
+}
+
 // ===========================================================================
 // foxglove.FrameTransform -> sdk::FrameTransforms
 // { timestamp=1, parent_frame_id=2, child_frame_id=3, translation=4 Vector3,
 //   rotation=5 Quaternion }
 // ===========================================================================
-PJ::Expected<PJ::sdk::FrameTransforms> deserializeFoxgloveFrameTransform(const uint8_t* data, size_t size) {
+PJ::Expected<PJ::sdk::FrameTransforms> deserializeFoxgloveFrameTransform(
+    const uint8_t* data, size_t size, const FrameTransformFieldNumbers& fields) {
   if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
     return PJ::unexpected(std::string("foxglove.FrameTransform: too large"));
   }
@@ -341,39 +428,33 @@ PJ::Expected<PJ::sdk::FrameTransforms> deserializeFoxgloveFrameTransform(const u
   while ((tag = in.ReadTag()) != 0) {
     const int f = fieldOf(tag);
     uint32_t len = 0;
-    switch (f) {
-      case 1:
-        if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
-          return PJ::unexpected(std::string("foxglove.FrameTransform: bad timestamp"));
-        }
-        tf.timestamp = readTimestampNs(in, len);
-        break;
-      case 2:
-        if (wireOf(tag) != kWireLen || !readString(in, tf.parent_frame_id)) {
-          return PJ::unexpected(std::string("foxglove.FrameTransform: bad parent_frame_id"));
-        }
-        break;
-      case 3:
-        if (wireOf(tag) != kWireLen || !readString(in, tf.child_frame_id)) {
-          return PJ::unexpected(std::string("foxglove.FrameTransform: bad child_frame_id"));
-        }
-        break;
-      case 4:
-        if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
-          return PJ::unexpected(std::string("foxglove.FrameTransform: bad translation"));
-        }
-        tf.translation = readVector3(in, len);
-        break;
-      case 5:
-        if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
-          return PJ::unexpected(std::string("foxglove.FrameTransform: bad rotation"));
-        }
-        tf.rotation = readQuaternion(in, len);
-        break;
-      default:
-        if (!skipField(in, wireOf(tag))) {
-          return PJ::unexpected(std::string("foxglove.FrameTransform: malformed"));
-        }
+    if (f == fields.timestamp) {
+      if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.FrameTransform: bad timestamp"));
+      }
+      tf.timestamp = readTimestampNs(in, len);
+    } else if (f == fields.parent_frame_id) {
+      if (wireOf(tag) != kWireLen || !readString(in, tf.parent_frame_id)) {
+        return PJ::unexpected(std::string("foxglove.FrameTransform: bad parent_frame_id"));
+      }
+    } else if (f == fields.child_frame_id) {
+      if (wireOf(tag) != kWireLen || !readString(in, tf.child_frame_id)) {
+        return PJ::unexpected(std::string("foxglove.FrameTransform: bad child_frame_id"));
+      }
+    } else if (f == fields.translation) {
+      if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.FrameTransform: bad translation"));
+      }
+      tf.translation = readVector3(in, len);
+    } else if (f == fields.rotation) {
+      if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.FrameTransform: bad rotation"));
+      }
+      tf.rotation = readQuaternion(in, len);
+    } else {
+      if (!skipField(in, wireOf(tag))) {
+        return PJ::unexpected(std::string("foxglove.FrameTransform: malformed"));
+      }
     }
   }
   PJ::sdk::FrameTransforms out;
@@ -382,11 +463,55 @@ PJ::Expected<PJ::sdk::FrameTransforms> deserializeFoxgloveFrameTransform(const u
 }
 
 // ===========================================================================
+// foxglove.Odometry -> sdk::PosesInFrame (single pose)
+// { timestamp=1, frame_id=2, body_frame_id=3, pose=4 Pose, linear_velocity=5,
+//   angular_velocity=6, pose_covariance=7, velocity_covariance=8, metadata=9 }
+// Only timestamp / frame_id / pose are decoded; every other field is skipped.
+// The pose is "body_frame_id expressed in frame_id", so frame_id is the reference
+// frame of the emitted PosesInFrame — mirroring nav_msgs/Odometry.
+// ===========================================================================
+PJ::Expected<PJ::sdk::PosesInFrame> deserializeFoxgloveOdometry(
+    const uint8_t* data, size_t size, const OdometryFieldNumbers& fields) {
+  if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return PJ::unexpected(std::string("foxglove.Odometry: too large"));
+  }
+  CodedInputStream in(data, static_cast<int>(size));
+  PJ::sdk::PosesInFrame out;
+  PJ::sdk::Pose pose;  // origin + identity orientation if the wire omits the pose
+  uint32_t tag = 0;
+  while ((tag = in.ReadTag()) != 0) {
+    const int f = fieldOf(tag);
+    uint32_t len = 0;
+    if (f == fields.timestamp) {
+      if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.Odometry: bad timestamp"));
+      }
+      out.timestamp_ns = readTimestampNs(in, len);
+    } else if (f == fields.frame_id) {
+      if (wireOf(tag) != kWireLen || !readString(in, out.frame_id)) {
+        return PJ::unexpected(std::string("foxglove.Odometry: bad frame_id"));
+      }
+    } else if (f == fields.pose) {
+      if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.Odometry: bad pose"));
+      }
+      pose = readPose(in, len);
+    } else if (!skipField(in, wireOf(tag))) {
+      return PJ::unexpected(std::string("foxglove.Odometry: malformed"));
+    }
+  }
+  // Odometry always represents exactly one pose; emit it even if the wire omitted
+  // the (all-default) pose submessage, so the topic still renders at the origin.
+  out.poses.push_back(pose);
+  return out;
+}
+
+// ===========================================================================
 // foxglove.CompressedImage -> sdk::Image  (zero-copy data)
 // { timestamp=1, data=2 bytes, format=3 string, frame_id=4 string }
 // ===========================================================================
 PJ::Expected<PJ::sdk::Image> deserializeFoxgloveCompressedImageView(
-    const uint8_t* data, size_t size, PJ::sdk::BufferAnchor anchor) {
+    const uint8_t* data, size_t size, PJ::sdk::BufferAnchor anchor, const CompressedImageFieldNumbers& fields) {
   if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
     return PJ::unexpected(std::string("foxglove.CompressedImage: too large"));
   }
@@ -398,44 +523,38 @@ PJ::Expected<PJ::sdk::Image> deserializeFoxgloveCompressedImageView(
   while ((tag = in.ReadTag()) != 0) {
     const int f = fieldOf(tag);
     uint32_t len = 0;
-    switch (f) {
-      case 1:
-        if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
-          return PJ::unexpected(std::string("foxglove.CompressedImage: bad timestamp"));
-        }
-        img.timestamp_ns = readTimestampNs(in, len);
-        break;
-      case 2: {  // data (bytes) — zero-copy
-        if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
-          return PJ::unexpected(std::string("foxglove.CompressedImage: bad data"));
-        }
-        if (len > 0) {
-          const void* ptr = nullptr;
-          int avail = 0;
-          if (!in.GetDirectBufferPointer(&ptr, &avail) || avail < static_cast<int>(len)) {
-            return PJ::unexpected(std::string("foxglove.CompressedImage: data not contiguous"));
-          }
-          data_span = PJ::Span<const uint8_t>(static_cast<const uint8_t*>(ptr), len);
-          if (!in.Skip(static_cast<int>(len))) {
-            return PJ::unexpected(std::string("foxglove.CompressedImage: failed to skip data"));
-          }
-        }
-        break;
+    if (f == fields.timestamp) {
+      if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.CompressedImage: bad timestamp"));
       }
-      case 3:
-        if (wireOf(tag) != kWireLen || !readString(in, img.encoding)) {  // foxglove `format` -> sdk `encoding`
-          return PJ::unexpected(std::string("foxglove.CompressedImage: bad format"));
+      img.timestamp_ns = readTimestampNs(in, len);
+    } else if (f == fields.data) {  // data (bytes) — zero-copy
+      if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.CompressedImage: bad data"));
+      }
+      if (len > 0) {
+        const void* ptr = nullptr;
+        int avail = 0;
+        if (!in.GetDirectBufferPointer(&ptr, &avail) || avail < static_cast<int>(len)) {
+          return PJ::unexpected(std::string("foxglove.CompressedImage: data not contiguous"));
         }
-        break;
-      case 4:  // frame_id -> sdk::Image.frame_id (lets the consumer match CameraInfo / place in 3D).
-        if (wireOf(tag) != kWireLen || !readString(in, img.frame_id)) {
-          return PJ::unexpected(std::string("foxglove.CompressedImage: bad frame_id"));
+        data_span = PJ::Span<const uint8_t>(static_cast<const uint8_t*>(ptr), len);
+        if (!in.Skip(static_cast<int>(len))) {
+          return PJ::unexpected(std::string("foxglove.CompressedImage: failed to skip data"));
         }
-        break;
-      default:
-        if (!skipField(in, wireOf(tag))) {
-          return PJ::unexpected(std::string("foxglove.CompressedImage: malformed"));
-        }
+      }
+    } else if (f == fields.format) {
+      if (wireOf(tag) != kWireLen || !readString(in, img.encoding)) {  // foxglove `format` -> sdk `encoding`
+        return PJ::unexpected(std::string("foxglove.CompressedImage: bad format"));
+      }
+    } else if (f == fields.frame_id) {  // -> sdk::Image.frame_id (match CameraInfo / place in 3D).
+      if (wireOf(tag) != kWireLen || !readString(in, img.frame_id)) {
+        return PJ::unexpected(std::string("foxglove.CompressedImage: bad frame_id"));
+      }
+    } else {
+      if (!skipField(in, wireOf(tag))) {
+        return PJ::unexpected(std::string("foxglove.CompressedImage: malformed"));
+      }
     }
   }
   // Compressed payload: width/height/row_step unknown (the decoder reads them
@@ -447,14 +566,16 @@ PJ::Expected<PJ::sdk::Image> deserializeFoxgloveCompressedImageView(
 
 // ===========================================================================
 // foxglove.RawImage -> sdk::Image  (zero-copy data, UNCOMPRESSED pixels)
-// { timestamp=1, frame_id=2 string, width=3 fixed32, height=4 fixed32,
-//   encoding=5 string, step=6 fixed32, data=7 bytes }
+// Official numbering { timestamp=1, frame_id=2 string, width=3 fixed32,
+//   height=4 fixed32, encoding=5 string, step=6 fixed32, data=7 bytes }, but the
+// `fields` (resolved from the embedded descriptor) drive the scan so a renumbered
+// self-describing file decodes too.
 // Unlike CompressedImage, the pixels are raw, so width/height/encoding/row_step
 // MUST be carried through for the consumer to interpret `data` (same contract as
 // a ROS sensor_msgs/Image — the encoding string drives the renderer).
 // ===========================================================================
 PJ::Expected<PJ::sdk::Image> deserializeFoxgloveRawImageView(
-    const uint8_t* data, size_t size, PJ::sdk::BufferAnchor anchor) {
+    const uint8_t* data, size_t size, PJ::sdk::BufferAnchor anchor, const RawImageFieldNumbers& fields) {
   if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
     return PJ::unexpected(std::string("foxglove.RawImage: too large"));
   }
@@ -466,68 +587,56 @@ PJ::Expected<PJ::sdk::Image> deserializeFoxgloveRawImageView(
   while ((tag = in.ReadTag()) != 0) {
     const int f = fieldOf(tag);
     uint32_t len = 0;
-    switch (f) {
-      case 1:
-        if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
-          return PJ::unexpected(std::string("foxglove.RawImage: bad timestamp"));
-        }
-        img.timestamp_ns = readTimestampNs(in, len);
-        break;
-      case 2:
-        if (wireOf(tag) != kWireLen || !readString(in, img.frame_id)) {
-          return PJ::unexpected(std::string("foxglove.RawImage: bad frame_id"));
-        }
-        break;
-      case 3: {
-        uint32_t width = 0;
-        if (wireOf(tag) != kWireI32 || !in.ReadLittleEndian32(&width)) {
-          return PJ::unexpected(std::string("foxglove.RawImage: bad width"));
-        }
-        img.width = width;
-        break;
+    if (f == fields.timestamp) {
+      if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.RawImage: bad timestamp"));
       }
-      case 4: {
-        uint32_t height = 0;
-        if (wireOf(tag) != kWireI32 || !in.ReadLittleEndian32(&height)) {
-          return PJ::unexpected(std::string("foxglove.RawImage: bad height"));
-        }
-        img.height = height;
-        break;
+      img.timestamp_ns = readTimestampNs(in, len);
+    } else if (f == fields.frame_id) {
+      if (wireOf(tag) != kWireLen || !readString(in, img.frame_id)) {
+        return PJ::unexpected(std::string("foxglove.RawImage: bad frame_id"));
       }
-      case 5:
-        if (wireOf(tag) != kWireLen || !readString(in, img.encoding)) {
-          return PJ::unexpected(std::string("foxglove.RawImage: bad encoding"));
-        }
-        break;
-      case 6: {
-        uint32_t step = 0;
-        if (wireOf(tag) != kWireI32 || !in.ReadLittleEndian32(&step)) {
-          return PJ::unexpected(std::string("foxglove.RawImage: bad step"));
-        }
-        img.row_step = step;
-        break;
+    } else if (f == fields.width) {
+      uint32_t width = 0;
+      if (wireOf(tag) != kWireI32 || !in.ReadLittleEndian32(&width)) {
+        return PJ::unexpected(std::string("foxglove.RawImage: bad width"));
       }
-      case 7: {  // data (bytes) — zero-copy
-        if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
-          return PJ::unexpected(std::string("foxglove.RawImage: bad data"));
-        }
-        if (len > 0) {
-          const void* ptr = nullptr;
-          int avail = 0;
-          if (!in.GetDirectBufferPointer(&ptr, &avail) || avail < static_cast<int>(len)) {
-            return PJ::unexpected(std::string("foxglove.RawImage: data not contiguous"));
-          }
-          data_span = PJ::Span<const uint8_t>(static_cast<const uint8_t*>(ptr), len);
-          if (!in.Skip(static_cast<int>(len))) {
-            return PJ::unexpected(std::string("foxglove.RawImage: failed to skip data"));
-          }
-        }
-        break;
+      img.width = width;
+    } else if (f == fields.height) {
+      uint32_t height = 0;
+      if (wireOf(tag) != kWireI32 || !in.ReadLittleEndian32(&height)) {
+        return PJ::unexpected(std::string("foxglove.RawImage: bad height"));
       }
-      default:
-        if (!skipField(in, wireOf(tag))) {
-          return PJ::unexpected(std::string("foxglove.RawImage: malformed"));
+      img.height = height;
+    } else if (f == fields.encoding) {
+      if (wireOf(tag) != kWireLen || !readString(in, img.encoding)) {
+        return PJ::unexpected(std::string("foxglove.RawImage: bad encoding"));
+      }
+    } else if (f == fields.step) {
+      uint32_t step = 0;
+      if (wireOf(tag) != kWireI32 || !in.ReadLittleEndian32(&step)) {
+        return PJ::unexpected(std::string("foxglove.RawImage: bad step"));
+      }
+      img.row_step = step;
+    } else if (f == fields.data) {  // data (bytes) — zero-copy
+      if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.RawImage: bad data"));
+      }
+      if (len > 0) {
+        const void* ptr = nullptr;
+        int avail = 0;
+        if (!in.GetDirectBufferPointer(&ptr, &avail) || avail < static_cast<int>(len)) {
+          return PJ::unexpected(std::string("foxglove.RawImage: data not contiguous"));
         }
+        data_span = PJ::Span<const uint8_t>(static_cast<const uint8_t*>(ptr), len);
+        if (!in.Skip(static_cast<int>(len))) {
+          return PJ::unexpected(std::string("foxglove.RawImage: failed to skip data"));
+        }
+      }
+    } else {
+      if (!skipField(in, wireOf(tag))) {
+        return PJ::unexpected(std::string("foxglove.RawImage: malformed"));
+      }
     }
   }
   img.data = data_span;
@@ -540,7 +649,8 @@ PJ::Expected<PJ::sdk::Image> deserializeFoxgloveRawImageView(
 // { timestamp=1, width=2 fixed32, height=3 fixed32, distortion_model=4,
 //   D=5 repeated double, K=6, R=7, P=8, frame_id=9 }
 // ===========================================================================
-PJ::Expected<PJ::sdk::CameraInfo> deserializeFoxgloveCameraCalibration(const uint8_t* data, size_t size) {
+PJ::Expected<PJ::sdk::CameraInfo> deserializeFoxgloveCameraCalibration(
+    const uint8_t* data, size_t size, const CameraCalibrationFieldNumbers& fields) {
   if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
     return PJ::unexpected(std::string("foxglove.CameraCalibration: too large"));
   }
@@ -551,67 +661,55 @@ PJ::Expected<PJ::sdk::CameraInfo> deserializeFoxgloveCameraCalibration(const uin
   while ((tag = in.ReadTag()) != 0) {
     const int f = fieldOf(tag);
     uint32_t len = 0;
-    switch (f) {
-      case 1:
-        if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
-          return PJ::unexpected(std::string("foxglove.CameraCalibration: bad timestamp"));
-        }
-        ci.timestamp_ns = readTimestampNs(in, len);
-        break;
-      case 2: {
-        uint32_t w = 0;
-        if (wireOf(tag) != kWireI32 || !in.ReadLittleEndian32(&w)) {
-          return PJ::unexpected(std::string("foxglove.CameraCalibration: bad width"));
-        }
-        ci.width = w;
-        break;
+    if (f == fields.timestamp) {
+      if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.CameraCalibration: bad timestamp"));
       }
-      case 3: {
-        uint32_t h = 0;
-        if (wireOf(tag) != kWireI32 || !in.ReadLittleEndian32(&h)) {
-          return PJ::unexpected(std::string("foxglove.CameraCalibration: bad height"));
-        }
-        ci.height = h;
-        break;
+      ci.timestamp_ns = readTimestampNs(in, len);
+    } else if (f == fields.width) {
+      uint32_t w = 0;
+      if (wireOf(tag) != kWireI32 || !in.ReadLittleEndian32(&w)) {
+        return PJ::unexpected(std::string("foxglove.CameraCalibration: bad width"));
       }
-      case 4:
-        if (wireOf(tag) != kWireLen || !readString(in, ci.distortion_model)) {
-          return PJ::unexpected(std::string("foxglove.CameraCalibration: bad distortion_model"));
-        }
-        break;
-      case 5:
-        if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
-          return PJ::unexpected(std::string("foxglove.CameraCalibration: bad D"));
-        }
-        readPackedDoubles(in, len, ci.D);
-        break;
-      case 6:
-        if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
-          return PJ::unexpected(std::string("foxglove.CameraCalibration: bad K"));
-        }
-        readPackedDoubles(in, len, kmat);
-        break;
-      case 7:
-        if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
-          return PJ::unexpected(std::string("foxglove.CameraCalibration: bad R"));
-        }
-        readPackedDoubles(in, len, rmat);
-        break;
-      case 8:
-        if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
-          return PJ::unexpected(std::string("foxglove.CameraCalibration: bad P"));
-        }
-        readPackedDoubles(in, len, pmat);
-        break;
-      case 9:
-        if (wireOf(tag) != kWireLen || !readString(in, ci.frame_id)) {
-          return PJ::unexpected(std::string("foxglove.CameraCalibration: bad frame_id"));
-        }
-        break;
-      default:
-        if (!skipField(in, wireOf(tag))) {
-          return PJ::unexpected(std::string("foxglove.CameraCalibration: malformed"));
-        }
+      ci.width = w;
+    } else if (f == fields.height) {
+      uint32_t h = 0;
+      if (wireOf(tag) != kWireI32 || !in.ReadLittleEndian32(&h)) {
+        return PJ::unexpected(std::string("foxglove.CameraCalibration: bad height"));
+      }
+      ci.height = h;
+    } else if (f == fields.distortion_model) {
+      if (wireOf(tag) != kWireLen || !readString(in, ci.distortion_model)) {
+        return PJ::unexpected(std::string("foxglove.CameraCalibration: bad distortion_model"));
+      }
+    } else if (f == fields.D) {
+      if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.CameraCalibration: bad D"));
+      }
+      readPackedDoubles(in, len, ci.D);
+    } else if (f == fields.K) {
+      if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.CameraCalibration: bad K"));
+      }
+      readPackedDoubles(in, len, kmat);
+    } else if (f == fields.R) {
+      if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.CameraCalibration: bad R"));
+      }
+      readPackedDoubles(in, len, rmat);
+    } else if (f == fields.P) {
+      if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
+        return PJ::unexpected(std::string("foxglove.CameraCalibration: bad P"));
+      }
+      readPackedDoubles(in, len, pmat);
+    } else if (f == fields.frame_id) {
+      if (wireOf(tag) != kWireLen || !readString(in, ci.frame_id)) {
+        return PJ::unexpected(std::string("foxglove.CameraCalibration: bad frame_id"));
+      }
+    } else {
+      if (!skipField(in, wireOf(tag))) {
+        return PJ::unexpected(std::string("foxglove.CameraCalibration: malformed"));
+      }
     }
   }
   for (size_t i = 0; i < kmat.size() && i < ci.K.size(); ++i) {
@@ -741,7 +839,8 @@ PJ::sdk::TextAnnotation readTextAnnotation(CodedInputStream& in, uint32_t len, i
 
 }  // namespace
 
-PJ::Expected<PJ::sdk::ImageAnnotations> deserializeFoxgloveImageAnnotations(const uint8_t* data, size_t size) {
+PJ::Expected<PJ::sdk::ImageAnnotations> deserializeFoxgloveImageAnnotations(
+    const uint8_t* data, size_t size, const ImageAnnotationsFieldNumbers& fields) {
   if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
     return PJ::unexpected(std::string("foxglove.ImageAnnotations: too large"));
   }
@@ -757,11 +856,11 @@ PJ::Expected<PJ::sdk::ImageAnnotations> deserializeFoxgloveImageAnnotations(cons
     const int f = fieldOf(tag);
     uint32_t len = 0;
     int64_t ts = 0;
-    if (f == 1 && wireOf(tag) == kWireLen && in.ReadVarint32(&len)) {
+    if (f == fields.circles && wireOf(tag) == kWireLen && in.ReadVarint32(&len)) {
       ann.circles.push_back(readCircle(in, len, ts));
-    } else if (f == 2 && wireOf(tag) == kWireLen && in.ReadVarint32(&len)) {
+    } else if (f == fields.points && wireOf(tag) == kWireLen && in.ReadVarint32(&len)) {
       ann.points.push_back(readPointsAnnotation(in, len, ts));
-    } else if (f == 3 && wireOf(tag) == kWireLen && in.ReadVarint32(&len)) {
+    } else if (f == fields.texts && wireOf(tag) == kWireLen && in.ReadVarint32(&len)) {
       ann.texts.push_back(readTextAnnotation(in, len, ts));
     } else if (!skipField(in, wireOf(tag))) {
       return PJ::unexpected(std::string("foxglove.ImageAnnotations: malformed"));
@@ -998,56 +1097,68 @@ PJ::sdk::ModelPrimitive readModel(CodedInputStream& in, uint32_t len) {
   return m;
 }
 
-PJ::sdk::SceneEntity readSceneEntity(CodedInputStream& in, uint32_t len) {
-  // { timestamp=1, frame_id=2, id=3, lifetime=4 Duration, frame_locked=5, metadata=6,
-  //   arrows=7, cubes=8, spheres=9, cylinders=10, lines=11, triangles=12, texts=13, models=14 }
+PJ::sdk::SceneEntity readSceneEntity(CodedInputStream& in, uint32_t len, const SceneEntityFieldNumbers& fields) {
+  // Official numbering { timestamp=1, frame_id=2, id=3, lifetime=4 Duration,
+  //   frame_locked=5, metadata=6, arrows=7, cubes=8, spheres=9, cylinders=10,
+  //   lines=11, triangles=12, texts=13, models=14 }, but `fields` (resolved from
+  //   the nested descriptor) drive the scan so a renumbered SceneEntity decodes.
   PJ::sdk::SceneEntity e;
-  // metadata(6), unknowns and any wrong-wire-type field decline below and fall
+  // metadata, unknowns and any wrong-wire-type field decline below and fall
   // through to the scanner's skipField; a failed skip ends the loop.
   scanSubMessage(in, len, [&](int f, uint32_t w) {
-    switch (f) {
-      case 1:
-        return fieldMessage(in, w, e.timestamp, readTimestampNs);
-      case 2:
-        return fieldString(in, w, e.frame_id);
-      case 3:
-        return fieldString(in, w, e.id);
-      case 4:
-        return fieldMessage(in, w, e.lifetime_ns, readTimestampNs);  // Duration shares {sec, nanos}
-      case 7:
-        return fieldRepeated(in, w, e.arrows, readArrow);
-      case 8:
-        return fieldRepeated(in, w, e.cubes, readBoxLike<PJ::sdk::CubePrimitive>);
-      case 9:
-        return fieldRepeated(in, w, e.spheres, readBoxLike<PJ::sdk::SpherePrimitive>);
-      case 10:
-        return fieldRepeated(in, w, e.cylinders, readCylinder);
-      case 11:
-        return fieldRepeated(in, w, e.lines, readLine);
-      case 12:
-        return fieldRepeated(in, w, e.triangles, readTriangle);
-      case 13:
-        return fieldRepeated(in, w, e.texts, readText);
-      case 14:
-        return fieldRepeated(in, w, e.models, readModel);
-      case 5: {
-        uint64_t v = 0;
-        if (!fieldVarint(in, w, v)) {
-          return false;
-        }
-        e.frame_locked = (v != 0);
-        return true;
-      }
-      default:
-        return false;
+    if (f == fields.timestamp) {
+      return fieldMessage(in, w, e.timestamp, readTimestampNs);
     }
+    if (f == fields.frame_id) {
+      return fieldString(in, w, e.frame_id);
+    }
+    if (f == fields.id) {
+      return fieldString(in, w, e.id);
+    }
+    if (f == fields.lifetime) {
+      return fieldMessage(in, w, e.lifetime_ns, readTimestampNs);  // Duration shares {sec, nanos}
+    }
+    if (f == fields.arrows) {
+      return fieldRepeated(in, w, e.arrows, readArrow);
+    }
+    if (f == fields.cubes) {
+      return fieldRepeated(in, w, e.cubes, readBoxLike<PJ::sdk::CubePrimitive>);
+    }
+    if (f == fields.spheres) {
+      return fieldRepeated(in, w, e.spheres, readBoxLike<PJ::sdk::SpherePrimitive>);
+    }
+    if (f == fields.cylinders) {
+      return fieldRepeated(in, w, e.cylinders, readCylinder);
+    }
+    if (f == fields.lines) {
+      return fieldRepeated(in, w, e.lines, readLine);
+    }
+    if (f == fields.triangles) {
+      return fieldRepeated(in, w, e.triangles, readTriangle);
+    }
+    if (f == fields.texts) {
+      return fieldRepeated(in, w, e.texts, readText);
+    }
+    if (f == fields.models) {
+      return fieldRepeated(in, w, e.models, readModel);
+    }
+    if (f == fields.frame_locked) {
+      uint64_t v = 0;
+      if (!fieldVarint(in, w, v)) {
+        return false;
+      }
+      e.frame_locked = (v != 0);
+      return true;
+    }
+    return false;
   });
   return e;
 }
 
 }  // namespace
 
-PJ::Expected<PJ::sdk::SceneEntities> deserializeFoxgloveSceneUpdate(const uint8_t* data, size_t size) {
+PJ::Expected<PJ::sdk::SceneEntities> deserializeFoxgloveSceneUpdate(
+    const uint8_t* data, size_t size, const SceneUpdateFieldNumbers& fields) {
   if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
     return PJ::unexpected(std::string("foxglove.SceneUpdate: too large"));
   }
@@ -1058,9 +1169,9 @@ PJ::Expected<PJ::sdk::SceneEntities> deserializeFoxgloveSceneUpdate(const uint8_
   while ((tag = in.ReadTag()) != 0) {
     const int f = fieldOf(tag);
     uint32_t len = 0;
-    if (f == 2 && wireOf(tag) == kWireLen && in.ReadVarint32(&len)) {
-      scene.entities.push_back(readSceneEntity(in, len));
-    } else if (!skipField(in, wireOf(tag))) {  // deletions(1) skipped — nothing to render
+    if (f == fields.entities && wireOf(tag) == kWireLen && in.ReadVarint32(&len)) {
+      scene.entities.push_back(readSceneEntity(in, len, fields.entity));
+    } else if (!skipField(in, wireOf(tag))) {  // deletions skipped — nothing to render
       return PJ::unexpected(std::string("foxglove.SceneUpdate: malformed"));
     }
   }

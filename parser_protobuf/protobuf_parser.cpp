@@ -24,6 +24,7 @@
 
 #include "foxglove_object_codecs.hpp"
 #include "foxglove_pointcloud_codec.hpp"
+#include "foxglove_voxelgrid_codec.hpp"
 #include "protobuf_manifest.hpp"
 #include "protobuf_parser_dialog.hpp"
 
@@ -302,6 +303,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
         return status;
       }
+      resolveFoxgloveFieldNumbers(type_name, schema);
       registerFoxglovePointCloudHandler(type_name);
       return PJ::okStatus();
     }
@@ -315,6 +317,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
         return status;
       }
+      resolveFoxgloveFieldNumbers(type_name, schema);
       registerFoxgloveLaserScanHandler(type_name);
       return PJ::okStatus();
     }
@@ -323,11 +326,27 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     // canonical PJ.PosesInFrame and foxglove.PosesInFrame are wire-identical
     // (the SDK proto mirrors foxglove field-for-field), so the SDK codec
     // (deserializePosesInFrame) serves both names — no plugin-local decoder.
-    if (type_name == PJ::kSchemaPosesInFrame || type_name == "foxglove.PosesInFrame") {
+    // foxglove.PoseInFrame (a SINGLE pose at field 3) is wire-identical to a
+    // one-element PosesInFrame, so the same codec decodes it into one pose.
+    if (type_name == PJ::kSchemaPosesInFrame || type_name == "foxglove.PosesInFrame" ||
+        type_name == "foxglove.PoseInFrame") {
       if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
         return status;
       }
       registerPosesInFrameHandler(type_name);
+      return PJ::okStatus();
+    }
+
+    // Canonical-object fast path for foxglove.Odometry -> kPosesInFrame (one
+    // pose). Unlike PoseInFrame the pose is at field 4 (field 3 is a string), so
+    // the PosesInFrame codec cannot be reused — a dedicated decoder reads the
+    // single pose and skips the velocities, covariances and metadata.
+    if (type_name == "foxglove.Odometry") {
+      if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
+        return status;
+      }
+      resolveFoxgloveFieldNumbers(type_name, schema);
+      registerFoxgloveOdometryHandler(type_name);
       return PJ::okStatus();
     }
 
@@ -338,10 +357,12 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     // / annotation message flattens to a pathological number of scalar series).
     if (type_name == "foxglove.FrameTransform" || type_name == "foxglove.CompressedImage" ||
         type_name == "foxglove.RawImage" || type_name == "foxglove.CameraCalibration" ||
-        type_name == "foxglove.ImageAnnotations" || type_name == "foxglove.SceneUpdate") {
+        type_name == "foxglove.ImageAnnotations" || type_name == "foxglove.SceneUpdate" ||
+        type_name == "foxglove.VoxelGrid") {
       if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
         return status;
       }
+      resolveFoxgloveFieldNumbers(type_name, schema);
       registerFoxgloveObjectHandler(type_name);
       return PJ::okStatus();
     }
@@ -575,6 +596,60 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     registerSchemaHandler(type_name, std::move(handler));
   }
 
+  // Register the SchemaHandler for foxglove.Odometry -> kPosesInFrame (one pose).
+  // The object route decodes the single pose (of body_frame_id, in frame_id).
+  //
+  // The scalar route deliberately departs from the sibling slim-count handlers
+  // (PosesInFrame/FrameTransform emit num_poses/num_transforms): an Odometry
+  // always carries exactly ONE pose, so a count would be a useless constant. We
+  // instead emit the 7 bounded per-axis pose columns — the values people actually
+  // plot from odometry — matching the ROS nav_msgs/Odometry dual route. The
+  // velocities and 6x6 covariances are still left out (not a per-element blow-up
+  // risk, just not promoted here).
+  void registerFoxgloveOdometryHandler(std::string_view type_name) {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kPosesInFrame;
+
+    handler.parse_scalars =
+        [this](PJ::Timestamp /*ts*/, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+      auto poses = pj_protobuf::deserializeFoxgloveOdometry(payload.data(), payload.size(), odometry_fields_);
+      if (!poses) {
+        return PJ::unexpected(std::move(poses).error());  // surface, don't drop silently
+      }
+      PJ::sdk::ScalarRecord record;
+      if (use_embedded_timestamp_ && poses->timestamp_ns > 0) {
+        record.ts = poses->timestamp_ns;
+      }
+      if (!poses->poses.empty()) {
+        const auto& p = poses->poses.front();
+        record.fields.push_back({.name = "pose/position/x", .value = PJ::sdk::ValueRef{p.position.x}});
+        record.fields.push_back({.name = "pose/position/y", .value = PJ::sdk::ValueRef{p.position.y}});
+        record.fields.push_back({.name = "pose/position/z", .value = PJ::sdk::ValueRef{p.position.z}});
+        record.fields.push_back({.name = "pose/orientation/x", .value = PJ::sdk::ValueRef{p.orientation.x}});
+        record.fields.push_back({.name = "pose/orientation/y", .value = PJ::sdk::ValueRef{p.orientation.y}});
+        record.fields.push_back({.name = "pose/orientation/z", .value = PJ::sdk::ValueRef{p.orientation.z}});
+        record.fields.push_back({.name = "pose/orientation/w", .value = PJ::sdk::ValueRef{p.orientation.w}});
+      }
+      return record;
+    };
+
+    handler.parse_object =
+        [this](PJ::Timestamp /*ts*/, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      auto poses =
+          pj_protobuf::deserializeFoxgloveOdometry(payload.bytes.data(), payload.bytes.size(), odometry_fields_);
+      if (!poses) {
+        return PJ::unexpected(std::move(poses).error());
+      }
+      std::optional<PJ::Timestamp> ts;
+      if (use_embedded_timestamp_ && poses->timestamp_ns > 0) {
+        ts = poses->timestamp_ns;
+      }
+      return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*poses)}};
+    };
+
+    registerSchemaHandler(type_name, std::move(handler));
+  }
+
   // Register the SchemaHandler for foxglove.PointCloud. The object route decodes
   // one cloud per message zero-copy (the packed-point span aliases the payload);
   // the scalar route emits a slim metadata row (frame_id / point_count /
@@ -588,7 +663,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         [this](PJ::Timestamp /*ts*/, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
       // No anchor needed: the scalar route reads only metadata and never retains
       // the aliased point buffer past this call.
-      auto decoded = pj_protobuf::deserializeFoxglovePointCloudView(payload.data(), payload.size(), nullptr);
+      auto decoded =
+          pj_protobuf::deserializeFoxglovePointCloudView(payload.data(), payload.size(), nullptr, pointcloud_fields_);
       if (!decoded) {
         return PJ::unexpected(std::move(decoded).error());
       }
@@ -609,8 +685,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
 
     handler.parse_object =
         [this](PJ::Timestamp /*ts*/, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
-      auto decoded =
-          pj_protobuf::deserializeFoxglovePointCloudView(payload.bytes.data(), payload.bytes.size(), payload.anchor);
+      auto decoded = pj_protobuf::deserializeFoxglovePointCloudView(
+          payload.bytes.data(), payload.bytes.size(), payload.anchor, pointcloud_fields_);
       if (!decoded) {
         return PJ::unexpected(std::move(decoded).error());
       }
@@ -647,7 +723,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
 
     handler.parse_scalars =
         [this](PJ::Timestamp /*ts*/, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
-      auto info = pj_protobuf::readFoxgloveLaserScanInfo(payload.data(), payload.size());
+      auto info = pj_protobuf::readFoxgloveLaserScanInfo(payload.data(), payload.size(), laserscan_fields_);
       if (!info) {
         return PJ::unexpected(std::move(info).error());
       }
@@ -666,8 +742,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
 
     handler.parse_object =
         [this](PJ::Timestamp /*ts*/, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
-      auto decoded =
-          pj_protobuf::deserializeFoxgloveLaserScan(payload.bytes.data(), payload.bytes.size(), laserscan_projector_);
+      auto decoded = pj_protobuf::deserializeFoxgloveLaserScan(
+          payload.bytes.data(), payload.bytes.size(), laserscan_projector_, laserscan_fields_);
       if (!decoded) {
         return PJ::unexpected(std::move(decoded).error());
       }
@@ -689,6 +765,58 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     registerSchemaHandler(type_name, std::move(handler));
   }
 
+  // Resolve the field numbers of a well-known Foxglove schema from the bound
+  // topic's embedded FileDescriptorSet, so the hand-rolled zero-copy decoders
+  // honor a self-describing file that renumbered the schema (the dispatcher keys
+  // off the schema NAME only). Builds a throwaway pool just to read field numbers
+  // by NAME; leaves each codec's default numbering in place when there is no
+  // schema (streaming) or it cannot be parsed/built.
+  void resolveFoxgloveFieldNumbers(std::string_view type_name, PJ::Span<const uint8_t> schema) {
+    if (schema.empty()) {
+      return;
+    }
+    gp::FileDescriptorSet fd_set;
+    if (!fd_set.ParseFromArray(schema.data(), static_cast<int>(schema.size()))) {
+      return;
+    }
+    gp::DescriptorPool pool;
+    for (int i = 0; i < fd_set.file_size(); ++i) {
+      pool.BuildFile(fd_set.file(i));
+    }
+    const gp::Descriptor* descriptor = pool.FindMessageTypeByName(std::string(type_name));
+    if (descriptor == nullptr) {
+      // The schema was present but unbuildable (e.g. a dependency like
+      // google.protobuf.Timestamp missing or out of order in the set). We fall
+      // back to the official field numbers — but make that visible, because the
+      // bug this whole path fixes is a SILENT misparse of a renumbered schema.
+      std::cerr << "[protobuf_parser] could not resolve a descriptor for " << type_name
+                << " from its embedded schema; assuming official foxglove field numbers "
+                   "(a renumbered schema would misparse).\n";
+      return;
+    }
+    if (type_name == "foxglove.RawImage") {
+      raw_image_fields_ = pj_protobuf::resolveRawImageFieldNumbers(descriptor);
+    } else if (type_name == "foxglove.CompressedImage") {
+      compressed_image_fields_ = pj_protobuf::resolveCompressedImageFieldNumbers(descriptor);
+    } else if (type_name == "foxglove.CameraCalibration") {
+      camera_calibration_fields_ = pj_protobuf::resolveCameraCalibrationFieldNumbers(descriptor);
+    } else if (type_name == "foxglove.FrameTransform") {
+      frame_transform_fields_ = pj_protobuf::resolveFrameTransformFieldNumbers(descriptor);
+    } else if (type_name == "foxglove.Odometry") {
+      odometry_fields_ = pj_protobuf::resolveOdometryFieldNumbers(descriptor);
+    } else if (type_name == "foxglove.ImageAnnotations") {
+      image_annotations_fields_ = pj_protobuf::resolveImageAnnotationsFieldNumbers(descriptor);
+    } else if (type_name == "foxglove.SceneUpdate") {
+      scene_update_fields_ = pj_protobuf::resolveSceneUpdateFieldNumbers(descriptor);
+    } else if (type_name == "foxglove.PointCloud") {
+      pointcloud_fields_ = pj_protobuf::resolvePointCloudFieldNumbers(descriptor);
+    } else if (type_name == "foxglove.LaserScan") {
+      laserscan_fields_ = pj_protobuf::resolveLaserScanFieldNumbers(descriptor);
+    } else if (type_name == "foxglove.VoxelGrid") {
+      voxelgrid_fields_ = pj_protobuf::resolveVoxelGridFieldNumbers(descriptor);
+    }
+  }
+
   // Register a SchemaHandler for one of the well-known Foxglove scene/image
   // schemas. parse_object decodes the canonical builtin object; parse_scalars
   // emits a slim, BOUNDED metadata row (counts/sizes only) so promoted topics
@@ -701,7 +829,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     if (name == "foxglove.FrameTransform") {
       handler.object_type = PJ::sdk::BuiltinObjectType::kFrameTransforms;
       handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
-        auto obj = pj_protobuf::deserializeFoxgloveFrameTransform(p.bytes.data(), p.bytes.size());
+        auto obj =
+            pj_protobuf::deserializeFoxgloveFrameTransform(p.bytes.data(), p.bytes.size(), frame_transform_fields_);
         if (!obj) {
           return PJ::unexpected(std::move(obj).error());
         }
@@ -719,7 +848,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     } else if (name == "foxglove.CompressedImage") {
       handler.object_type = PJ::sdk::BuiltinObjectType::kImage;
       handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
-        auto obj = pj_protobuf::deserializeFoxgloveCompressedImageView(p.bytes.data(), p.bytes.size(), p.anchor);
+        auto obj = pj_protobuf::deserializeFoxgloveCompressedImageView(
+            p.bytes.data(), p.bytes.size(), p.anchor, compressed_image_fields_);
         if (!obj) {
           return PJ::unexpected(std::move(obj).error());
         }
@@ -729,9 +859,10 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         }
         return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
       };
-      handler.parse_scalars = [](PJ::Timestamp,
-                                 PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
-        auto obj = pj_protobuf::deserializeFoxgloveCompressedImageView(payload.data(), payload.size(), nullptr);
+      handler.parse_scalars =
+          [this](PJ::Timestamp, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+        auto obj = pj_protobuf::deserializeFoxgloveCompressedImageView(
+            payload.data(), payload.size(), nullptr, compressed_image_fields_);
         if (!obj) {
           return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
         }
@@ -742,7 +873,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     } else if (name == "foxglove.CameraCalibration") {
       handler.object_type = PJ::sdk::BuiltinObjectType::kCameraInfo;
       handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
-        auto obj = pj_protobuf::deserializeFoxgloveCameraCalibration(p.bytes.data(), p.bytes.size());
+        auto obj = pj_protobuf::deserializeFoxgloveCameraCalibration(
+            p.bytes.data(), p.bytes.size(), camera_calibration_fields_);
         if (!obj) {
           return PJ::unexpected(std::move(obj).error());
         }
@@ -752,9 +884,10 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         }
         return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
       };
-      handler.parse_scalars = [](PJ::Timestamp,
-                                 PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
-        auto obj = pj_protobuf::deserializeFoxgloveCameraCalibration(payload.data(), payload.size());
+      handler.parse_scalars =
+          [this](PJ::Timestamp, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+        auto obj = pj_protobuf::deserializeFoxgloveCameraCalibration(
+            payload.data(), payload.size(), camera_calibration_fields_);
         if (!obj) {
           return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
         }
@@ -766,7 +899,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     } else if (name == "foxglove.ImageAnnotations") {
       handler.object_type = PJ::sdk::BuiltinObjectType::kImageAnnotations;
       handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
-        auto obj = pj_protobuf::deserializeFoxgloveImageAnnotations(p.bytes.data(), p.bytes.size());
+        auto obj =
+            pj_protobuf::deserializeFoxgloveImageAnnotations(p.bytes.data(), p.bytes.size(), image_annotations_fields_);
         if (!obj) {
           return PJ::unexpected(std::move(obj).error());
         }
@@ -776,9 +910,10 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         }
         return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
       };
-      handler.parse_scalars = [](PJ::Timestamp,
-                                 PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
-        auto obj = pj_protobuf::deserializeFoxgloveImageAnnotations(payload.data(), payload.size());
+      handler.parse_scalars =
+          [this](PJ::Timestamp, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+        auto obj =
+            pj_protobuf::deserializeFoxgloveImageAnnotations(payload.data(), payload.size(), image_annotations_fields_);
         if (!obj) {
           return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
         }
@@ -793,7 +928,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     } else if (name == "foxglove.RawImage") {
       handler.object_type = PJ::sdk::BuiltinObjectType::kImage;
       handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
-        auto obj = pj_protobuf::deserializeFoxgloveRawImageView(p.bytes.data(), p.bytes.size(), p.anchor);
+        auto obj =
+            pj_protobuf::deserializeFoxgloveRawImageView(p.bytes.data(), p.bytes.size(), p.anchor, raw_image_fields_);
         if (!obj) {
           return PJ::unexpected(std::move(obj).error());
         }
@@ -803,9 +939,10 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         }
         return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
       };
-      handler.parse_scalars = [](PJ::Timestamp,
-                                 PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
-        auto obj = pj_protobuf::deserializeFoxgloveRawImageView(payload.data(), payload.size(), nullptr);
+      handler.parse_scalars =
+          [this](PJ::Timestamp, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+        auto obj =
+            pj_protobuf::deserializeFoxgloveRawImageView(payload.data(), payload.size(), nullptr, raw_image_fields_);
         if (!obj) {
           return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
         }
@@ -815,10 +952,40 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         r.fields.push_back({.name = "data_size", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->data.size())}});
         return r;
       };
+    } else if (name == "foxglove.VoxelGrid") {
+      handler.object_type = PJ::sdk::BuiltinObjectType::kVoxelGrid;
+      handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+        auto obj =
+            pj_protobuf::deserializeFoxgloveVoxelGridView(p.bytes.data(), p.bytes.size(), p.anchor, voxelgrid_fields_);
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());
+        }
+        std::optional<PJ::Timestamp> ts;
+        if (use_embedded_timestamp_ && obj->timestamp_ns > 0) {
+          ts = obj->timestamp_ns;
+        }
+        return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
+      };
+      handler.parse_scalars =
+          [this](PJ::Timestamp, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+        auto obj =
+            pj_protobuf::deserializeFoxgloveVoxelGridView(payload.data(), payload.size(), nullptr, voxelgrid_fields_);
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
+        }
+        PJ::sdk::ScalarRecord r;
+        r.fields.push_back(
+            {.name = "column_count", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->column_count)}});
+        r.fields.push_back({.name = "row_count", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->row_count)}});
+        r.fields.push_back(
+            {.name = "slice_count", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->slice_count)}});
+        r.fields.push_back({.name = "data_size", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->data.size())}});
+        return r;
+      };
     } else {  // foxglove.SceneUpdate
       handler.object_type = PJ::sdk::BuiltinObjectType::kSceneEntities;
       handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
-        auto obj = pj_protobuf::deserializeFoxgloveSceneUpdate(p.bytes.data(), p.bytes.size());
+        auto obj = pj_protobuf::deserializeFoxgloveSceneUpdate(p.bytes.data(), p.bytes.size(), scene_update_fields_);
         if (!obj) {
           return PJ::unexpected(std::move(obj).error());
         }
@@ -828,9 +995,9 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         }
         return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
       };
-      handler.parse_scalars = [](PJ::Timestamp,
-                                 PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
-        auto obj = pj_protobuf::deserializeFoxgloveSceneUpdate(payload.data(), payload.size());
+      handler.parse_scalars =
+          [this](PJ::Timestamp, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+        auto obj = pj_protobuf::deserializeFoxgloveSceneUpdate(payload.data(), payload.size(), scene_update_fields_);
         if (!obj) {
           return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
         }
@@ -851,6 +1018,21 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   bool use_embedded_timestamp_ = false;
   std::string timestamp_field_name_;  // empty = fallback chain ("timestamp" → "ts")
   pj::array_policy::ArrayLimit array_limit_;
+
+  // Field numbers for the well-known Foxglove schemas, resolved from the bound
+  // topic's embedded descriptor in bindSchema(). Default to each codec's historical
+  // numbering so schemaless streams (no descriptor) decode exactly as before; a
+  // self-describing .mcap that renumbered a schema overrides only the named fields.
+  pj_protobuf::RawImageFieldNumbers raw_image_fields_;
+  pj_protobuf::CompressedImageFieldNumbers compressed_image_fields_;
+  pj_protobuf::CameraCalibrationFieldNumbers camera_calibration_fields_;
+  pj_protobuf::FrameTransformFieldNumbers frame_transform_fields_;
+  pj_protobuf::OdometryFieldNumbers odometry_fields_;
+  pj_protobuf::ImageAnnotationsFieldNumbers image_annotations_fields_;
+  pj_protobuf::SceneUpdateFieldNumbers scene_update_fields_;
+  pj_protobuf::PointCloudFieldNumbers pointcloud_fields_;
+  pj_protobuf::LaserScanFieldNumbers laserscan_fields_;
+  pj_protobuf::VoxelGridFieldNumbers voxelgrid_fields_;
 
   std::unordered_map<std::string, PJ::sdk::FieldHandle> field_cache_;
   std::vector<FlattenedField> owned_fields_;

@@ -35,6 +35,7 @@
  */
 
 #include <cstring>
+#include <pj_pointcloud_color/pointcloud_color.hpp>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -49,9 +50,12 @@ namespace {
 // Bytes per pixel for the raw ROS image encodings parser_ros consumes. Used
 // only to validate that row_step >= width * bpp. Encoding strings are
 // emitted into Image::encoding verbatim — the consumer routes by string.
+// Bayer CFA encodings (bayer_*8) carry one raw mosaic sample per pixel, so they
+// are 1 byte/pixel here; demosaicing to RGB happens downstream in the viewer.
 const std::unordered_map<std::string, uint32_t>& kRosImageBytesPerPixel() {
   static const std::unordered_map<std::string, uint32_t> kMap = {
-      {"rgb8", 3}, {"rgba8", 4}, {"bgr8", 3}, {"bgra8", 4}, {"mono8", 1}, {"mono16", 2}, {"16UC1", 2},
+      {"rgb8", 3},  {"rgba8", 4},       {"bgr8", 3},        {"bgra8", 4},       {"mono8", 1},       {"mono16", 2},
+      {"16UC1", 2}, {"bayer_rggb8", 1}, {"bayer_grbg8", 1}, {"bayer_gbrg8", 1}, {"bayer_bggr8", 1},
   };
   return kMap;
 }
@@ -92,7 +96,7 @@ inline uint8_t readU8(RosMsgParser::Deserializer& d) {
 //   header                  std_msgs/Header  (handled by readHeader())
 //   height                  uint32
 //   width                   uint32
-//   encoding                string (e.g. "rgb8", "bgr8", "mono8", "mono16", "16UC1", …)
+//   encoding                string (e.g. "rgb8", "bgr8", "mono8", "mono16", "16UC1", "bayer_rggb8", …)
 //   is_bigendian            uint8
 //   step                    uint32
 //   data                    uint8[height*step]
@@ -177,20 +181,36 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestam
     uint32_t blob_size = data_len;
 
     if (format.find("compressedDepth") != std::string::npos) {
-      if (data_len < 12) {
-        return PJ::unexpected(std::string("compressedDepth data[] too short for header"));
+      out_encoding = "compressedDepth";  // PNG/RVL payload (+ optional quantization range).
+      // compressedDepth normally prefixes the PNG/RVL blob with a 12-byte
+      // ConfigHeader (uint32 format, float depthQuantA, float depthQuantB). But
+      // some recorders emit a BARE PNG with no ConfigHeader (seen in RealSense
+      // bags); stripping 12 bytes there chops the PNG's 8-byte signature + part
+      // of the IHDR length and corrupts it. A leading PNG signature therefore
+      // means "headerless" — pass the blob through untouched.
+      static constexpr uint8_t kPngSignature[8] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+      const bool headerless_png =
+          data_len >= sizeof(kPngSignature) && std::memcmp(src, kPngSignature, sizeof(kPngSignature)) == 0;
+      if (headerless_png) {
+        // No ConfigHeader -> no quantization range. 16UC1 PNG depth is raw
+        // millimetres, which the consumer reads directly; depth_min/max stay unset.
+        blob_offset = 0;
+        blob_size = data_len;
+      } else {
+        if (data_len < 12) {
+          return PJ::unexpected(std::string("compressedDepth data[] too short for header"));
+        }
+        // Mini-header: uint32 format (ignored), float depth_min, float depth_max.
+        // This is inside a uint8[] body, so it is byte-packed — no CDR alignment.
+        float dmin = 0.0f;
+        float dmax = 0.0f;
+        std::memcpy(&dmin, src + 4, sizeof(float));
+        std::memcpy(&dmax, src + 8, sizeof(float));
+        depth_min = dmin;
+        depth_max = dmax;
+        blob_offset = 12;
+        blob_size = data_len - 12;
       }
-      // Mini-header: uint32 format (ignored), float depth_min, float depth_max.
-      // This is inside a uint8[] body, so it is byte-packed — no CDR alignment.
-      float dmin = 0.0f;
-      float dmax = 0.0f;
-      std::memcpy(&dmin, src + 4, sizeof(float));
-      std::memcpy(&dmax, src + 8, sizeof(float));
-      depth_min = dmin;
-      depth_max = dmax;
-      out_encoding = "compressedDepth";  // PNG payload + depth quantization range.
-      blob_offset = 12;
-      blob_size = data_len - 12;
     } else if (format.find("jpeg") != std::string::npos) {
       out_encoding = "jpeg";
     } else if (format == "png") {
@@ -397,24 +417,31 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePointCloud(PJ::Timestamp ts,
       is_dense = (readU8(*deserializer_) != 0);
     }
 
-    // Zero-copy: data_span is a slice of the payload. For a PointCloud2 with
-    // a few MB of points this is the win — no per-message alloc/copy on the
-    // hot path.
+    // Zero-copy by default: data_span is a slice of the payload. For a PointCloud2 with
+    // a few MB of points this is the win — no per-message alloc/copy on the hot path.
+    PJ::sdk::PointCloud cloud{
+        .width = width,
+        .height = height,
+        .point_step = point_step,
+        .row_step = row_step,
+        .is_bigendian = (is_be != 0),
+        .is_dense = is_dense,
+        .frame_id = std::move(header.frame_id),
+        .fields = std::move(fields),
+        .data = PJ::Span<const uint8_t>(data_span.data(), data_span.size()),
+        .anchor = payload.anchor,
+        .timestamp_ns = current_timestamp_,
+    };
+    // Normalize colour to the canonical packed "rgba" field so the host renders one
+    // per-point colour instead of offering each channel as a separate colormap source.
+    // A PCL packed rgb/rgba (0x00RRGGBB) is repacked into canonical R,G,B,A order in a
+    // fresh owned buffer (zero-copy given up only for colour clouds); separate
+    // red/green/blue/alpha channels collapse zero-copy; plain XYZI clouds are untouched.
+    pj::pointcloud_color::normalizeCanonicalColor(cloud);
+
     return PJ::sdk::ObjectRecord{
         .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
-        .object = PJ::sdk::BuiltinObject{PJ::sdk::PointCloud{
-            .width = width,
-            .height = height,
-            .point_step = point_step,
-            .row_step = row_step,
-            .is_bigendian = (is_be != 0),
-            .is_dense = is_dense,
-            .frame_id = std::move(header.frame_id),
-            .fields = std::move(fields),
-            .data = PJ::Span<const uint8_t>(data_span.data(), data_span.size()),
-            .anchor = payload.anchor,
-            .timestamp_ns = current_timestamp_,
-        }}};
+        .object = PJ::sdk::BuiltinObject{std::move(cloud)}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("PointCloud2: CDR read error: ") + e.what());
   }
@@ -856,6 +883,45 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePoseStampedObject(PJ::Timest
         .object = PJ::sdk::BuiltinObject{std::move(result)}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("PoseStamped: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// nav_msgs/Odometry — the pose of child_frame_id expressed in the header frame,
+// surfaced as a one-element PosesInFrame so it feeds the same 3D pose view as
+// PoseStamped. The scalar handler (handleOdometry) still runs in parallel for
+// per-axis plotting of the pose, twist and covariances.
+//
+// Wire layout:
+//   header         std_msgs/Header                   (sec, nanosec, frame_id)
+//   child_frame_id string
+//   pose           geometry_msgs/PoseWithCovariance  (Pose then float64[36])
+//   twist          geometry_msgs/TwistWithCovariance
+//
+// Only the Header + child_frame_id + Pose are consumed: the pose is the last
+// field the object needs, so the covariance and twist are left unread. The
+// object adopts the HEADER frame_id (the reference frame), not child_frame_id.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOdometryObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    HeaderData header = readHeader();
+
+    std::string child_frame_id;
+    deserializer_->deserializeString(child_frame_id);  // read + dropped (object uses the header frame)
+
+    PJ::sdk::PosesInFrame result;
+    result.timestamp_ns = current_timestamp_;
+    result.frame_id = std::move(header.frame_id);
+    result.poses.push_back(readPose());
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(result)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("Odometry: CDR read error: ") + e.what());
   }
 }
 
