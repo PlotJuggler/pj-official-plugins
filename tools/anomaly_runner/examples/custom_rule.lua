@@ -7,6 +7,6 @@ local LO, HI = -1.0, 2.0
 for i = 0, s:size() - 1 do
   local p = s:at(i)
   if p.v < LO or p.v > HI then
-    createEvent(p.t, p.v, {label = "out-of-window", severity = "warning", color = "#e08020"})
+    createPointMarker(p.t, p.v, {label = "out-of-window", severity = "warning", color = "#e08020"})
   end
 end

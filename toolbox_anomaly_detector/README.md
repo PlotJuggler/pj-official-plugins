@@ -123,8 +123,11 @@ s:atTime(t)                       -- value linearly interpolated at time t (ns)
 -- Marker creation
 startMarker(t)                    -- open a time region at t (ns)
 closeMarker(t, opts?)             -- close the open region at t, apply opts
-createEvent(x?, y?, opts?)        -- x only = vertical line | y only = horizontal line | both = point
-createDataEvent(low, high, opts?) -- a shaded value band [low, high]
+createMarker(x?, y?, opts?)       -- x only = vertical line | y only = horizontal line | both = point
+createVerticalMarker(x, opts?)    -- a vertical line at x      (shortcut for createMarker(x))
+createHorizontalMarker(y, opts?)  -- a horizontal line at y    (shortcut for createMarker(nil, y))
+createPointMarker(x, y, opts?)    -- a point at (x, y)         (shortcut for createMarker(x, y))
+createBandMarker(low, high, opts?) -- a shaded value band [low, high]
 
 -- Spectral helper
 bandPower(s, fLo, fHi)            -- summed FFT power in [fLo,fHi] Hz, DC-removed (needs a real time axis)

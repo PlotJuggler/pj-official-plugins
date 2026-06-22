@@ -17,8 +17,9 @@ const std::vector<NamedFunction>& builtinFunctions() {
       {"-- No function --",
        "-- Write your own Lua rule.\n"
        "-- series(\"topic/field\"):size() / :at(i) -> {t=.., v=..} / :atTime(t)\n"
-       "-- startMarker(t) / closeMarker(t, opts)   createDataEvent(low, high, opts)\n"
-       "-- createEvent(x, y, opts): only x = Vline | only y = Hline | both = point\n"
+       "-- startMarker(t) / closeMarker(t, opts)   createBandMarker(low, high, opts)\n"
+       "-- createMarker(x, y, opts): only x = Vline | only y = Hline | both = point\n"
+       "--   or: createVerticalMarker(x) / createHorizontalMarker(y) / createPointMarker(x, y)\n"
        "-- opts (optional table) = {label=.., color=\"#rrggbb\", severity=\"info|warning|error|critical\"}\n"
        "local s = series(\"--SOURCE--\")\n"},
       {"Showcase (all markers)",
@@ -30,28 +31,28 @@ const std::vector<NamedFunction>& builtinFunctions() {
        "startMarker(t(math.floor(n * 0.10)))\n"
        "closeMarker(t(math.floor(n * 0.22)), {label=\"region\", color=\"#42a5f5\", severity=\"info\"})\n"
        "-- Vertical line (purple)\n"
-       "createEvent(t(math.floor(n * 0.34)), nil, {label=\"vline\", color=\"#7e57c2\"})\n"
+       "createVerticalMarker(t(math.floor(n * 0.34)), {label=\"vline\", color=\"#7e57c2\"})\n"
        "-- Point (red) sitting on the real sample\n"
        "local pi = math.floor(n * 0.46)\n"
-       "createEvent(s:at(pi).t, s:at(pi).v, {label=\"point\", color=\"#e6463c\", severity=\"error\"})\n"
+       "createPointMarker(s:at(pi).t, s:at(pi).v, {label=\"point\", color=\"#e6463c\", severity=\"error\"})\n"
        "-- Horizontal line (teal) at y = 0.8\n"
-       "createEvent(nil, 0.8, {label=\"hline\", color=\"#26a69a\"})\n"
+       "createHorizontalMarker(0.8, {label=\"hline\", color=\"#26a69a\"})\n"
        "-- Value band (orange) over [-0.5, 0.5]\n"
-       "createDataEvent(-0.5, 0.5, {label=\"band\", color=\"#ffa726\", severity=\"warning\"})\n"},
+       "createBandMarker(-0.5, 0.5, {label=\"band\", color=\"#ffa726\", severity=\"warning\"})\n"},
       {"Severity colors (lines)",
        "-- Four horizontal lines using the BUILT-IN severity colours (no color override),\n"
        "-- so you can check the info/warning/error/critical palette + label pills.\n"
-       "createEvent(nil, 1.2, {label=\"critical\", severity=\"critical\"})\n"
-       "createEvent(nil, 0.8, {label=\"error\",    severity=\"error\"})\n"
-       "createEvent(nil, 0.4, {label=\"warning\",  severity=\"warning\"})\n"
-       "createEvent(nil, 0.0, {label=\"info\",     severity=\"info\"})\n"},
+       "createHorizontalMarker(1.2, {label=\"critical\", severity=\"critical\"})\n"
+       "createHorizontalMarker(0.8, {label=\"error\",    severity=\"error\"})\n"
+       "createHorizontalMarker(0.4, {label=\"warning\",  severity=\"warning\"})\n"
+       "createHorizontalMarker(0.0, {label=\"info\",     severity=\"info\"})\n"},
       {"Threshold (line)",
        "-- A vertical line at every point above a threshold.\n"
        "local s = series(\"--SOURCE--\")\n"
        "local TH = 0.5\n"
        "for i = 0, s:size() - 1 do\n"
        "  local p = s:at(i)\n"
-       "  if p.v > TH then createEvent(p.t) end\n"
+       "  if p.v > TH then createVerticalMarker(p.t) end\n"
        "end\n"},
       {"Out of range (region)",
        "-- Shade a region while the value is outside [LO, HI].\n"
@@ -73,7 +74,7 @@ const std::vector<NamedFunction>& builtinFunctions() {
        "  local a = s:at(i - 1)\n"
        "  local b = s:at(i)\n"
        "  if math.abs(b.v - a.v) > JUMP then\n"
-       "    createEvent(b.t, b.v, {label=\"spike\", severity=\"error\"})\n"
+       "    createPointMarker(b.t, b.v, {label=\"spike\", severity=\"error\"})\n"
        "  end\n"
        "end\n"},
       {"Incoherent point",
@@ -85,7 +86,7 @@ const std::vector<NamedFunction>& builtinFunctions() {
        "  local b = s:at(i)\n"
        "  local c = s:at(i + 1)\n"
        "  if math.abs(b.v - a.v) > DEV and math.abs(b.v - c.v) > DEV then\n"
-       "    createEvent(b.t, b.v, {label=\"incoherent\", color=\"#aa1ea0\"})\n"
+       "    createPointMarker(b.t, b.v, {label=\"incoherent\", color=\"#aa1ea0\"})\n"
        "  end\n"
        "end\n"},
       {"Flatline (region)",
@@ -109,17 +110,17 @@ const std::vector<NamedFunction>& builtinFunctions() {
        "  local a = s:at(i - 1)\n"
        "  local b = s:at(i)\n"
        "  local dt = (b.t - a.t) * 1e-9\n"
-       "  if dt > 0 and math.abs(b.v - a.v) / dt > RATE then createEvent(b.t) end\n"
+       "  if dt > 0 and math.abs(b.v - a.v) / dt > RATE then createVerticalMarker(b.t) end\n"
        "end\n"},
       {"Limit lines (horizontal)",
        "-- Two horizontal lines at the allowed limits LO and HI.\n"
        "local LO, HI = -0.5, 0.5\n"
-       "createEvent(nil, HI, {label=\"max\", color=\"#e6463c\"})\n"
-       "createEvent(nil, LO, {label=\"min\", color=\"#e6463c\"})\n"},
+       "createHorizontalMarker(HI, {label=\"max\", color=\"#e6463c\"})\n"
+       "createHorizontalMarker(LO, {label=\"min\", color=\"#e6463c\"})\n"},
       {"Limit band",
        "-- Draw the allowed value band [LO, HI] as a shaded horizontal band.\n"
        "local LO, HI = -0.5, 0.5\n"
-       "createDataEvent(LO, HI, {label=\"allowed\", severity=\"info\"})\n"},
+       "createBandMarker(LO, HI, {label=\"allowed\", severity=\"info\"})\n"},
       {"Spectral band power (vibration)",
        "-- Flag excessive vibration energy in a frequency band [F_LO, F_HI] Hz.\n"
        "-- bandPower(series, fLo, fHi) runs an FFT (DC-removed) and sums the band power.\n"
@@ -142,7 +143,7 @@ const std::vector<NamedFunction>& builtinFunctions() {
        "  local p = s:at(i)\n"
        "  local on = p.v ~= 0\n"
        "  if on and not raised then\n"
-       "    createEvent(p.t, p.v, {label=\"flag\", severity=\"warning\", category=\"flag\"})\n"
+       "    createPointMarker(p.t, p.v, {label=\"flag\", severity=\"warning\", category=\"flag\"})\n"
        "    startMarker(p.t); raised = true\n"
        "  elseif (not on) and raised then\n"
        "    closeMarker(p.t, {severity=\"warning\", category=\"flag\"}); raised = false\n"

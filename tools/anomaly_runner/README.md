@@ -96,8 +96,11 @@ s:atTime(t)    -> interpolated value
 -- markers (opts is an optional table: {label, color="#rrggbb",
 --          severity="info|warning|error|critical", status, category, description})
 startMarker(t);  closeMarker(t, opts)        -- a time region
-createEvent(x, y, opts)                       -- x only=Vline | y only=Hline | both=point
-createDataEvent(low, high, opts)              -- a value band
+createMarker(x, y, opts)                      -- x only=Vline | y only=Hline | both=point
+createVerticalMarker(x, opts)                 -- a vertical line at x
+createHorizontalMarker(y, opts)               -- a horizontal line at y
+createPointMarker(x, y, opts)                 -- a point at (x, y)
+createBandMarker(low, high, opts)             -- a value band [low, high]
 bandPower(series, fLo, fHi)  -> number        -- FFT power in [fLo,fHi] Hz (vibration)
 ```
 
@@ -171,7 +174,7 @@ and run unchanged here with `--rule`:
   "name": "spike check",
   "description": "flags sudden jumps",
   "rule": {
-    "code": "local s = series(\"--SOURCE--\")\n...createEvent(...)...",
+    "code": "local s = series(\"--SOURCE--\")\n...createMarker(...)...",
     "source": "anomaly_demo/value",
     "fail_on": "error"
   }
