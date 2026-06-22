@@ -3,9 +3,10 @@ find_package(nlohmann_json REQUIRED)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 
-# Shared GUI-free detection engine (builtins + JSON report/rule helpers; script
-# execution delegated to the shared Luau engine pj_scripting_core), linked by both
-# this plugin and the headless anomaly_runner CLI.
+# Two-layer detection core: anomaly_helpers (Luau-FREE: builtins + JSON report/rule
+# helpers) and anomaly_core (adds the engine). The plugin links ONLY anomaly_helpers —
+# it submits rules to the host (pj.markers.v1), which executes them, so the plugin
+# carries NO script engine. The headless anomaly_runner links anomaly_core (engine).
 add_subdirectory(core)
 
 add_library(toolbox_anomaly_detector_plugin SHARED anomaly_detector.cpp)
@@ -14,7 +15,7 @@ target_compile_options(toolbox_anomaly_detector_plugin PRIVATE ${PJ_WARNING_FLAG
 
 target_link_libraries(toolbox_anomaly_detector_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk
-  anomaly_core
+  anomaly_helpers
   nlohmann_json::nlohmann_json
   ${CMAKE_DL_LIBS}
 )

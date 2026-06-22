@@ -37,12 +37,9 @@
 
 #include "anomaly_detector_dialog_ui.hpp"
 #include "anomaly_detector_manifest.hpp"
-#include "core/anomaly_core.hpp"
+#include "core/anomaly_helpers.hpp"
 
 namespace {
-
-// Opaque metadata tagging the object topic as a marker set.
-constexpr const char* kMarkerMetadata = R"({"object_type":"plot_markers"})";
 
 // --- PlotMarker -> chart-preview marker conversion --------------------------
 // Mirrors PlotMarkersItem's severity palette so the preview matches the plot.
@@ -111,14 +108,17 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     }
     wd.setCodeContent("code_editor", code_).setCodeLanguage("code_editor", "lua");
     wd.setChecked("global_marker", global_);
+    // "All datasets" only applies to a global marker — enabled when Global is ticked.
+    wd.setChecked("all_datasets_marker", all_datasets_);
+    wd.setEnabled("all_datasets_marker", global_);
     // Save and Load are both native file pickers; onFileSelected tells them apart
     // by widget name. Save-as lets the user create a new file anywhere.
     wd.setSaveFilePicker("save_rule_button", "Save rule as...", "*.json", "Save detection rule");
     wd.setFilePicker("load_rule_button", "Load rule...", "*.json", "Load detection rule");
-    wd.setText("status_label", status_);
     wd.setEnabled("apply_button", !code_.empty());
 
     // Preview: the selected source curve, with the rule's detected markers overlaid.
+    std::string status_line = status_;
     if (!selected_source_.empty() && preview_provider_) {
       PJ::ChartSeries cs;
       cs.label = selected_source_;
@@ -127,9 +127,16 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
       // Always push markers (empty when the rule yields none) so a source/rule change
       // clears the previous overlay instead of leaving stale markers behind.
       if (marker_provider_) {
-        wd.setChartMarkers("preview_chart", marker_provider_(code_, selected_source_));
+        std::string preview_error;
+        wd.setChartMarkers("preview_chart", marker_provider_(code_, selected_source_, preview_error));
+        // Surface a rule compile/runtime error so a blank overlay isn't mistaken for
+        // "no anomalies found".
+        if (!preview_error.empty()) {
+          status_line = "Rule error: " + preview_error;
+        }
       }
     }
+    wd.setText("status_label", status_line);
     return wd.toJson();
   }
 
@@ -178,6 +185,10 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
   bool onToggled(std::string_view name, bool checked) override {
     if (name == "global_marker") {
       global_ = checked;
+      return true;  // re-render to enable/disable the "all datasets" sub-option
+    }
+    if (name == "all_datasets_marker") {
+      all_datasets_ = checked;
     }
     return false;
   }
@@ -185,7 +196,7 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
   bool onClicked(std::string_view name) override {
     if (name == "apply_button" && !code_.empty() && run_callback_) {
       try {
-        status_ = run_callback_(code_, selected_source_, global_);
+        status_ = run_callback_(code_, selected_source_, global_, all_datasets_);
       } catch (const std::exception& e) {
         status_ = std::string("Error: ") + e.what();
       } catch (...) {
@@ -232,6 +243,7 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     j["code"] = code_;
     j["source"] = selected_source_;
     j["global"] = global_;
+    j["all_datasets"] = all_datasets_;
     return j.dump();
   }
 
@@ -243,6 +255,7 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     code_ = j.value("code", code_);
     selected_source_ = j.value("source", selected_source_);
     global_ = j.value("global", global_);
+    all_datasets_ = j.value("all_datasets", all_datasets_);
     return true;
   }
 
@@ -260,7 +273,8 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     }
   }
 
-  using RunCallback = std::function<std::string(const std::string& code, const std::string& source, bool global)>;
+  using RunCallback =
+      std::function<std::string(const std::string& code, const std::string& source, bool global, bool all_datasets)>;
   void setRunCallback(RunCallback cb) {
     run_callback_ = std::move(cb);
   }
@@ -271,9 +285,10 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
   }
 
   // Runs the current rule and returns the detected markers, rebased to the preview's
-  // X units, so the preview can overlay what Apply would publish.
-  using MarkerProvider =
-      std::function<std::vector<PJ::ChartMarker>(const std::string& code, const std::string& source)>;
+  // X units, so the preview can overlay what Apply would publish. `error` is set to a
+  // rule compile/runtime error (empty on success) so the dialog can surface it.
+  using MarkerProvider = std::function<std::vector<PJ::ChartMarker>(
+      const std::string& code, const std::string& source, std::string& error)>;
   void setMarkerProvider(MarkerProvider cb) {
     marker_provider_ = std::move(cb);
   }
@@ -313,6 +328,7 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
   std::string current_template_ = anomaly_core::builtinFunctions().front().code;
   bool user_edited_ = false;
   bool global_ = false;
+  bool all_datasets_ = false;  // global marker spans every dataset (only meaningful with global_)
   std::vector<std::string> series_names_;
   RunCallback run_callback_;
   PreviewProvider preview_provider_;
@@ -326,17 +342,29 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
 
 class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase {
  public:
+  // Tear down the live preview's ephemeral object topic on unload. The host (and its
+  // markers service) outlives the plugin instance during teardown, so this is safe; a
+  // torn-down/unbound service simply yields no view and the call is skipped.
+  ~AnomalyDetectorToolbox() override {
+    if (auto markers = services().get<PJ::sdk::MarkersHostService>()) {
+      (void)markers->clearPreview();
+    }
+  }
+
   uint64_t capabilities() const override {
     return PJ::kToolboxCapabilityHasDialog | PJ::kToolboxCapabilityNonModalDialog;
   }
 
   PJ_borrowed_dialog_t getDialog() override {
-    dialog_.setRunCallback([this](const std::string& code, const std::string& source, bool global) {
-      return runScript(code, source, global);
+    dialog_.setRunCallback([this](const std::string& code, const std::string& source, bool global, bool all_datasets) {
+      return runScript(code, source, global, all_datasets);
     });
     dialog_.setPreviewProvider([this](const std::string& name) { return previewPoints(name); });
-    dialog_.setMarkerProvider(
-        [this](const std::string& code, const std::string& source) { return previewMarkers(code, source); });
+    dialog_.setMarkerProvider([this](const std::string& code, const std::string& source, std::string& error) {
+      std::vector<PJ::ChartMarker> markers = previewMarkers(code, source);
+      error = preview_error_;
+      return markers;
+    });
     // Refresh the catalog on every panel tick (cheap unless the catalog changed) so a
     // dataset loaded after the panel opened appears in the source list without reopening.
     dialog_.setOnTick([this]() { refreshCatalogIfChanged(); });
@@ -390,11 +418,6 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase {
     }
     series_map_.clear();
     series_names_.clear();
-    series_dataset_.clear();
-    dataset_ids_.clear();
-    for (const auto& ds : catalog->dataSources()) {
-      dataset_ids_.push_back(ds.handle.id);
-    }
     const auto all_fields = catalog->fields();
     for (const auto& topic : catalog->topics()) {
       const std::string topic_name(PJ::sdk::toStringView(topic.name));
@@ -404,14 +427,13 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase {
         // per-series key exactly (so per-series markers land on the right curve).
         std::string name = PJ::sdk::markerSeriesKey(topic_name, PJ::sdk::toStringView(f.name));
         series_names_.push_back(name);
-        series_dataset_[name] = topic.source.id;
         auto series = host.readSeries(f.handle);
         if (series && series->type() == PJ::PrimitiveType::kFloat64) {
           const auto ts = series->timestamps();
           const double* values = series->valuesAsFloat64();
           const size_t count = ts.size();
           if (values != nullptr) {
-            anomaly_core::SeriesAccessor sa;
+            SeriesData sa;
             sa.timestamps.resize(count);
             for (size_t i = 0; i < count; ++i) {
               sa.timestamps[i] = static_cast<double>(ts[i]);  // int64 ns -> double
@@ -445,22 +467,14 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase {
     return pts;
   }
 
-  // A SeriesProvider backed by the current series_map_. The get-lambda captures this,
-  // so the result must be used synchronously (while series_map_ stays stable).
-  anomaly_core::SeriesProvider makeSeriesProvider() const {
-    anomaly_core::SeriesProvider provider;
-    provider.names = series_names_;
-    provider.get = [this](const std::string& name) -> const anomaly_core::SeriesAccessor* {
-      auto it = series_map_.find(name);
-      return it == series_map_.end() ? nullptr : &it->second;
-    };
-    return provider;
-  }
-
-  // Run the current rule and return its markers in the preview's X units (seconds-
-  // from-start, the same t0 as previewPoints) so they overlay the curve. A bad rule
-  // (or a source with no data) yields no overlay — the preview just shows the curve.
+  // HOST-DRIVEN preview: submit the rule to the host as an EPHEMERAL generator, the
+  // host runs it (the SAME engine the committed path + the headless runner use) and we
+  // read the resulting markers back from the preview object topic. No Lua in the
+  // plugin → preview and commit are identical by construction. Markers are returned in
+  // the preview's X units (seconds-from-start, same t0 as previewPoints). A bad rule /
+  // unavailable service yields no overlay — the preview just shows the curve.
   std::vector<PJ::ChartMarker> previewMarkers(const std::string& code, const std::string& source) {
+    preview_error_.clear();
     std::vector<PJ::ChartMarker> out;
     auto it = series_map_.find(source);
     if (code.empty() || it == series_map_.end() || it->second.timestamps.empty()) {
@@ -468,15 +482,38 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase {
     }
     const double t0 = it->second.timestamps.front();
 
-    const anomaly_core::SeriesProvider provider = makeSeriesProvider();
-    std::string err;
-    const std::vector<PJ::sdk::PlotMarker> markers = anomaly_core::runAnomalyScript(code, provider, &err);
-    if (!err.empty()) {
+    auto markers_service = services().get<PJ::sdk::MarkersHostService>();
+    const PJ::sdk::ToolboxObjectReadHostView* reader = objectReadHost();
+    if (!markers_service || reader == nullptr) {
+      return out;
+    }
+    std::vector<std::string_view> inputs;
+    inputs.reserve(series_names_.size());
+    for (const std::string& name : series_names_) {
+      inputs.push_back(name);
+    }
+    const PJ::Expected<std::string> preview_topic =
+        markers_service->setPreview(PJ::Span<const std::string_view>(inputs), code, "{}");
+    if (!preview_topic) {
+      preview_error_ = preview_topic.error();  // compile/runtime rule error → surface it
+      return out;
+    }
+    const std::optional<PJ::sdk::ObjectTopicHandle> handle = reader->lookupTopic(*preview_topic);
+    if (!handle) {
+      return out;
+    }
+    const PJ::Expected<PJ::sdk::ObjectBytes> bytes = reader->readLatestAt(*handle, PJ::Timestamp{0});
+    if (!bytes || bytes->empty()) {
+      return out;
+    }
+    const PJ::Span<const uint8_t> view = bytes->view();
+    const PJ::Expected<PJ::sdk::PlotMarkers> decoded = PJ::deserializePlotMarkers(view.data(), view.size());
+    if (!decoded) {
       return out;
     }
 
-    out.reserve(markers.size());
-    for (const auto& m : markers) {
+    out.reserve(decoded->markers.size());
+    for (const auto& m : decoded->markers) {
       PJ::ChartMarker cm;
       cm.kind = markerKindName(m.kind);
       cm.x0 = (static_cast<double>(m.t_start) - t0) / 1e9;
@@ -491,79 +528,74 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase {
     return out;
   }
 
-  // Refresh series, run the rule through the shared engine, publish the markers.
-  std::string runScript(const std::string& code, const std::string& source, bool global) {
+  // Submit the rule to the HOST as a marker generator (pj.markers.v1). The host owns
+  // execution: it runs the script over the requested inputs, publishes the resulting
+  // PlotMarkers, and re-runs them when data changes — so markers recompute live and
+  // survive this plugin's unload. The live preview is ALSO host-driven (an ephemeral
+  // generator via setPreview, read back through the object store), so the plugin runs
+  // NO Lua at all; the headless anomaly_runner keeps its own engine, and all three run
+  // the same rule identically ("GUI == headless").
+  //
+  // `all_datasets` (only meaningful with `global`) publishes the global markers across
+  // EVERY loaded dataset; otherwise on the active dataset only.
+  std::string runScript(const std::string& code, const std::string& source, bool global, bool all_datasets) {
     if (code.empty()) {
       return "Error: empty rule";
     }
-    if (!toolboxHostBound() || !runtimeHostBound()) {
-      return "Error: toolbox/runtime host not bound";
+    if (!toolboxHostBound()) {
+      return "Error: toolbox host not bound";
     }
-    refreshCatalog();
+    refreshCatalog();  // populate series_names_ so the host can resolve the inputs
 
-    const anomaly_core::SeriesProvider provider = makeSeriesProvider();
-    std::string err;
-    const std::vector<PJ::sdk::PlotMarker> markers = anomaly_core::runAnomalyScript(code, provider, &err);
-    if (!err.empty()) {
-      return "Error: " + err;
+    auto markers_service = services().get<PJ::sdk::MarkersHostService>();
+    if (!markers_service) {
+      return "Error: host markers service (pj.markers.v1) is unavailable";
     }
-    return publishMarkers(markers, source, global);
-  }
+    const PJ::sdk::MarkersHostView markers = *markers_service;
 
-  // Publish the emitted set. Global: a dataset-global topic on every loaded dataset
-  // (shows on all plots). Per-series: under the selected source curve's own key on its
-  // dataset (shows only on plots of that curve). Keep-latest retention either way.
-  std::string publishMarkers(const std::vector<PJ::sdk::PlotMarker>& markers, const std::string& source, bool global) {
-    if (dataset_ids_.empty()) {
-      return "Error: no dataset loaded";
+    if (!global && source.empty()) {
+      return "Error: select a source curve, or tick Global marker";
     }
-    auto host = toolboxHost();
-    PJ::sdk::PlotMarkers set;
-    set.markers = markers;
-    const std::vector<uint8_t> bytes = PJ::serializePlotMarkers(set);
+    const std::string target = global ? std::string(PJ::sdk::kGlobalMarkerTopic) : source;
 
-    // Resolve (dataset, topic-key) targets.
-    std::vector<std::pair<PJ::DatasetId, std::string>> targets;
-    if (global) {
-      const std::string key(PJ::sdk::kGlobalMarkerTopic);
-      for (const PJ::DatasetId did : dataset_ids_) {
-        targets.emplace_back(did, key);
-      }
-    } else {
-      if (source.empty()) {
-        return "Error: select a source curve, or tick Global marker";
-      }
-      PJ::DatasetId did = dataset_ids_.front();
-      if (const auto it = series_dataset_.find(source); it != series_dataset_.end()) {
-        did = it->second;
-      }
-      targets.emplace_back(did, source);
+    // Expose every known series as an input so a rule may reference any of them via
+    // series("..."), matching the in-process provider's whole-catalog visibility.
+    std::vector<std::string_view> inputs;
+    inputs.reserve(series_names_.size());
+    for (const std::string& name : series_names_) {
+      inputs.push_back(name);
     }
 
-    for (const auto& [did, key] : targets) {
-      const std::string topic = PJ::sdk::markerObjectTopicName(key);
-      auto handle = host.registerObjectTopicOnDataset(did, topic, kMarkerMetadata);
-      if (!handle) {
-        return "Error: register: " + handle.error();
-      }
-      (void)host.setObjectTopicRetention(*handle, 1);
-      auto status =
-          host.pushOwnedObject(*handle, PJ::Timestamp{0}, PJ::Span<const uint8_t>{bytes.data(), bytes.size()});
-      if (!status) {
-        return "Error: push: " + status.error();
-      }
+    // {"scope":"all"} tells the host to publish a global marker across every dataset.
+    const bool global_all = global && all_datasets;
+    const std::string params = global_all ? R"({"scope":"all"})" : "{}";
+
+    // Stable per-target id: re-Save upserts (replaces) the generator for that target.
+    const std::string id = "rule/" + target;
+    const PJ::Status submitted =
+        markers.createMarkerGenerator(id, PJ::Span<const std::string_view>(inputs), target, code, params);
+    if (!submitted) {
+      return "Error: " + submitted.error();
     }
     if (runtimeHostBound()) {
-      runtimeHost().notifyDataChanged();
+      runtimeHost().notifyDataChanged();  // repaint overlays with the host-published set
     }
-    return "Done: " + std::to_string(markers.size()) + " marker(s)" + (global ? " (global)" : " on " + source);
+    const std::string scope = global ? (global_all ? " (global, all datasets)" : " (global)") : " on " + source;
+    return "Done: host generator '" + id + "' submitted" + scope;
   }
 
   AnomalyDetectorDialog dialog_;
-  std::unordered_map<std::string, anomaly_core::SeriesAccessor> series_map_;
+  // One source series' samples (timestamps in ns + values), read from the toolbox
+  // host for the preview's BACKGROUND CURVE only. The plugin no longer runs scripts,
+  // so this is a plain data struct — not the engine's SeriesView (which lived in the
+  // now-unlinked pj_scripting_core).
+  struct SeriesData {
+    std::vector<double> timestamps;
+    std::vector<double> values;
+  };
+  std::unordered_map<std::string, SeriesData> series_map_;
   std::vector<std::string> series_names_;
-  std::map<std::string, PJ::DatasetId> series_dataset_;  // markerSeriesKey -> owning dataset
-  std::vector<PJ::DatasetId> dataset_ids_;
+  std::string preview_error_;                    // last preview rule error (empty on success), shown in the status
   std::uint64_t last_catalog_sig_ = UINT64_MAX;  // forces the first refresh; guards live ticks
 };
 

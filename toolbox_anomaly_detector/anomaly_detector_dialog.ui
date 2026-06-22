@@ -125,7 +125,13 @@
      <item>
       <widget class="QCheckBox" name="global_marker">
        <property name="text"><string>Global marker</string></property>
-       <property name="toolTip"><string>Apply the markers to every plot (whole dataset). Unchecked: only the selected source curve.</string></property>
+       <property name="toolTip"><string>Apply the markers to every plot of the dataset. Unchecked: only the selected source curve.</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QCheckBox" name="all_datasets_marker">
+       <property name="text"><string>All datasets</string></property>
+       <property name="toolTip"><string>For a global marker: publish it across every loaded dataset, not just the active one.</string></property>
       </widget>
      </item>
      <item>

@@ -1,28 +1,90 @@
 # Anomaly Detector
 
 Detect anomalies in your timeseries with small **Lua rules** that emit **plot markers**
-(events, regions, value bands). The detection engine (`core/anomaly_core`) is shared by this
-GUI toolbox and the headless [`anomaly_runner`](../tools/anomaly_runner/README.md) CLI, so a
-rule you author and test here runs **identically** on a server or in CI. Rules are saved as
-portable JSON.
+(events, regions, value bands). Author and test a rule interactively in the **PlotJuggler
+GUI**, then run that exact same rule **headless** on a server / in CI. Rules are saved as a
+portable JSON file that both sides consume.
 
-## Using it
+```
+            author + test                          run unattended
+   ┌──────────────────────────┐   rule.json   ┌──────────────────────────┐
+   │  GUI: Anomaly Detector   │ ────────────▶ │  CLI: anomaly_runner     │
+   │  (host runs the rule)    │               │  (runs the rule itself)  │
+   └──────────────────────────┘               └──────────────────────────┘
+              same Lua rule  ·  same PlotMarkers  ·  same result
+```
 
-1. Open **Toolbox → Anomaly Detector** (it reads the loaded timeseries).
+### How it runs (one paragraph)
+
+The **GUI toolbox is host-driven and carries no script engine**: it submits the rule to
+PlotJuggler via the `pj.markers.v1` SDK service, and the host runs it, publishes the markers,
+and re-runs them as data changes (the live preview is host-driven too). The **headless
+`anomaly_runner` is standalone**: it links the engine and runs the rule itself, so it needs no
+GUI. Both run the rule through the **same `runMarkerScript` core**, so a rule authored in the
+GUI produces identical markers in CI — only *who invokes the engine* differs.
+
+---
+
+## Using the GUI
+
+1. Open **Toolbox → Anomaly Detector** (it reads the currently loaded timeseries).
 2. Pick a **source curve** in the source list — the preview chart fills with it.
 3. Pick a **builtin function** (loads its Lua, targeting the selected curve) or write your own
-   rule in the editor. The preview overlays the rule's **detected markers** live, so you see
-   what Apply will publish before committing.
-4. **Apply** — the markers are published onto every plot of that curve. The status line shows
-   `Done: N marker(s)` or `Error: …`.
-5. **Save rule as… / Load rule…** — native file dialogs for the portable rule JSON (the same
+   rule in the editor. The preview overlays the rule's **detected markers live** (computed by
+   the host). A rule error shows in the status line as `Rule error: …` so a blank overlay is
+   never mistaken for "no anomalies".
+4. Choose where the markers land:
+   - **default (per-series):** under the selected source curve only.
+   - **Global marker:** on the dataset-global topic — drawn on *every* plot of the dataset.
+   - **Global marker + All datasets:** global on *every loaded dataset* (handy when several
+     logs are open at once).
+5. **Apply** — submits the rule to the host as a live generator. It recomputes automatically
+   when the data changes/reloads. The status shows `Done: …` or `Error: …`.
+6. **Save rule as… / Load rule…** — native file dialogs for the portable rule JSON (the same
    file the CLI consumes with `--rule`).
-6. **Global marker** — when ticked, markers publish to the dataset-global topic (drawn on every
-   plot); otherwise only under the selected curve.
 
 Changing the source re-targets a builtin rule to the new curve automatically (the preview
 recomputes). If you hand-edit the Lua, your edits are kept — adjust the `series("…")` line
 yourself.
+
+---
+
+## Using the headless runner
+
+The `anomaly_runner` CLI runs the same rules on a file (CSV/MCAP) with no GUI, prints a
+**structured JSON report**, and sets the **process exit code** for pipeline gating:
+`0` = pass, `1` = fail (anomalies at/above the fail threshold), `2` = usage error.
+
+Standing in the build output dir (`build/all/Release/bin/`):
+
+```bash
+# List the builtin functions (names match the GUI dropdown)
+./anomaly_runner --list-functions
+
+# Run a builtin rule on a series (prints the JSON report to stdout)
+./anomaly_runner --data run.mcap --script "Spike (point)" --source "imu/accel/x"
+
+# Run a portable rule .json (what the GUI's "Save rule as…" produces) — the CI flow
+./anomaly_runner --data run.mcap --rule rule.json --out report.json
+echo $?        # 0 = clean, 1 = anomalies → block the upload
+
+# Tune the fail threshold (only fail at critical), and save the report
+./anomaly_runner --data run.mcap --rule rule.json --fail-on critical --out report.json
+
+# Load a non-default DataSource plugin explicitly (e.g. for MCAP)
+./anomaly_runner --plugin ./libmcap_source_plugin.so --data run.mcap --rule rule.json
+```
+
+> ⚠️ **Exit-code gotcha:** `./anomaly_runner … | grep …` makes `echo $?` report **grep's**
+> exit, not the runner's. To gate on the runner, redirect (`> report.json`) and then
+> `echo $?`, or use `echo ${PIPESTATUS[0]}`.
+
+**Notifications & batch screening (Task F):** on a server the runner can deliver the report to
+a webhook / email / command on a bad log via `--notify config.json`, and
+`tools/anomaly_runner/deploy/watch.sh` screens every uploaded MCAP automatically. Full CLI
+reference (report JSON schema, notify config, watcher): **[`tools/anomaly_runner/README.md`](../tools/anomaly_runner/README.md)**.
+
+---
 
 ## Builtin functions
 
@@ -49,7 +111,7 @@ constant is the threshold you typically tune.
 
 Rules run in a sandboxed Lua VM. Series are read-only; markers are emitted by calling the
 creation functions. `--SOURCE--` in a builtin template is replaced with the selected source
-(CLI: with `--source`).
+(GUI: the source list; CLI: `--source`).
 
 ```lua
 -- Series accessor
@@ -82,26 +144,20 @@ GetSeriesNames()                  -- list of all available series names
 | `category` | string | Free-form class, e.g. `"spectral"`, `"flag"`, `"overspeed"`. |
 | `description` | string | Optional longer text carried into the report. |
 
-## Sharing & headless runs
+## Portable rule file
 
-**Save rule as…** writes a portable JSON document (`version`, `name`, `description`, and a
-`rule` of `code` / `source` / `fail_on`). Version-control it and run it unchanged on a server
-or in CI — same engine, same markers:
-
-```bash
-anomaly_runner --rule rule.json --data run.mcap
-```
-
-The runner reads CSV/MCAP, emits a structured JSON report, and exits `0` pass / `1` fail / `2`
-usage-error for pipeline gating. On a server it can also **notify** on a bad log (webhook /
-email / command) via `--notify`, and a bundled watcher screens every upload automatically —
-see [*Configuring notifications*](../tools/anomaly_runner/README.md#configuring-notifications)
-and [*Deploying the batch watcher*](../tools/anomaly_runner/README.md#deploying-the-batch-watcher).
+**Save rule as…** writes a self-contained JSON document — `version`, `name`, `description`, and
+a `rule` of `code` / `source` / `fail_on`. The GUI saves it and the runner consumes it with
+`--rule`, so a rule authored interactively runs unchanged on a server. Version-control it like
+any other config.
 
 ## Build
 
 ```bash
 cd ~/Work/pj-official-plugins
-./build.sh toolbox_anomaly_detector   # the GUI plugin
-./build.sh tools/anomaly_runner       # the headless CLI (same anomaly_core)
+./build.sh toolbox_anomaly_detector   # the GUI plugin (Luau-free; host-driven)
+./build.sh tools/anomaly_runner       # the headless CLI (standalone engine)
 ```
+
+The two-layer core (`core/anomaly_helpers`, Luau-free, linked by the plugin; `core/anomaly_core`,
+the engine, linked by the runner) is what lets the GUI plugin ship without a script engine.

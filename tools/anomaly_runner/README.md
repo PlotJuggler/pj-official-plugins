@@ -3,12 +3,17 @@
 A standalone CLI that runs the **same** Lua anomaly-detection rules you author and
 test in the PlotJuggler GUI (the *Anomaly Detector* toolbox), but with **no GUI** —
 against a data file on a server / in CI. It loads the file through a PlotJuggler
-DataSource plugin, runs the rule via the shared `anomaly_core` engine, and prints a
-**structured JSON report** (pass/fail + anomalies + severities). The process **exit
-code is `0` on pass and `1` on fail**, so it slots straight into pipelines.
+DataSource plugin, runs the rule **in-process** via the `anomaly_core` engine, and
+prints a **structured JSON report** (pass/fail + anomalies + severities). The process
+**exit code is `0` on pass and `1` on fail**, so it slots straight into pipelines.
 
-GUI and runner share one engine (`toolbox_anomaly_detector/core/anomaly_core`): a
-rule that works in the editor runs unchanged here.
+> **GUI vs. runner.** The GUI plugin is host-driven and Luau-free — it submits rules
+> to the PlotJuggler host, which runs them. This runner is **standalone**: it links
+> the `anomaly_core` engine and runs rules itself, so it needs no PlotJuggler host.
+> Both run the rule through the **same `runMarkerScript` core**, so a rule authored
+> in the GUI produces identical markers here. Author rules in the GUI; run them here
+> in CI. For the full picture (GUI + headless), see
+> [`toolbox_anomaly_detector/README.md`](../../toolbox_anomaly_detector/README.md).
 
 ## Build
 
