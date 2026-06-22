@@ -1,9 +1,0 @@
-{
-  "id": "toolbox-markers",
-  "name": "Plot Markers",
-  "version": "1.0.0",
-  "description": "Create plot markers (shaded regions and point events) on dragged timeseries or the whole dataset, edited on an interactive timeline and applied with Save.",
-  "author": "PlotJuggler",
-  "category": "toolbox",
-  "min_plotjuggler_version": "4.0.0"
-}

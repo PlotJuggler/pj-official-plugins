@@ -41,7 +41,7 @@
 
 namespace {
 
-// Opaque metadata tagging the object topic as a marker set (same as toolbox_markers).
+// Opaque metadata tagging the object topic as a marker set.
 constexpr const char* kMarkerMetadata = R"({"object_type":"plot_markers"})";
 
 // --- PlotMarker -> chart-preview marker conversion --------------------------
