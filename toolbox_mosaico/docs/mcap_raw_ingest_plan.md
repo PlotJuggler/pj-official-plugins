@@ -47,21 +47,39 @@ enough.
 proper descriptor bytes. Some well-known protobuf schemas may not require schema
 bytes, but the raw path should still forward them when Mosaico has them.
 
-## Current Gap
+## PJ4 Runtime Support
 
-The current PJ4 SDK exposes delegated parser ingest on DataSource runtime hosts,
-not Toolbox runtime hosts:
+PJ4 commit `4671b70d2ca40140a2699b5d6578ebb41d0e6e7d` added the toolbox-side
+parser ingest API needed here. It does not expose `ensureParserBinding()` and
+`pushMessage()` directly on `ToolboxRuntimeHostView`; instead it adds a
+toolbox-runtime tail-slot pair:
 
-- DataSource: `DataSourceRuntimeHostView::ensureParserBinding()` and
-  `DataSourceRuntimeHostView::pushMessage()`.
-- Toolbox: `ToolboxRuntimeHostView` currently exposes only `reportMessage()` and
-  `notifyDataChanged()`.
+- `create_parser_ingest(data_source_id, out_host, out_error)`
+- `release_parser_ingest(data_source_id, out_error)`
 
-`toolbox_mosaico` is a Toolbox plugin. It can write scalar Arrow streams and
-eager object payloads through `ToolboxHostView`, but it cannot currently ask the
-host to bind a parser or push raw messages through that parser. Adding raw MCAP
-support to `toolbox_mosaico` therefore requires one host/API change in
-PlotJuggler, unless the plugin is redesigned as a DataSource.
+The C++ wrapper is:
+
+```cpp
+auto ingest = runtimeHost().createParserIngest(ds.id);
+auto binding = ingest->ensureParserBinding(request);
+auto status = ingest->pushMessage(*binding, timestamp_ns, fetcher);
+auto release = runtimeHost().releaseParserIngest(ds.id);
+```
+
+The returned `ParserIngestHostView` reuses the same delegated-ingest surface as
+DataSource plugins. The host binds parser output to the toolbox-created data
+source id, so parser-produced scalars and canonical ObjectStore topics land
+under the same dataset as the rest of the Mosaico download.
+
+The remaining PJ-side requirement is dependency alignment: `toolbox_mosaico`
+must build and run against a PJ SDK/runtime that includes the commit above. In
+the current `pj-official-plugins` checkout this is not true yet:
+
+- `SDK_VERSION` is `0.10.0`.
+- `extern/plotjuggler_core` is pinned at `v0.8.1-4-gdd126ed`.
+
+So no new PJ4 API design is required, but the plugin repo must be bumped to the
+SDK/runtime containing `createParserIngest()` before plugin code can call it.
 
 No Mosaico server change is needed for parsing itself. Mosaico only needs to
 preserve and expose the raw MCAP channel data and metadata so the PJ client can
@@ -115,39 +133,10 @@ Optional aliases and fields:
 This mirrors the MCAP model: channel/topic and schema are per-channel metadata,
 while each message contributes timestamp plus payload bytes.
 
-## Required PlotJuggler SDK Change
-
-Add a toolbox-visible delegated-ingest surface. The minimal option is extending
-`PJ_toolbox_runtime_host_vtable_t` with tail slots analogous to the DataSource
-runtime host:
-
-```cpp
-bool (*ensure_parser_binding)(
-    void* ctx,
-    const PJ_parser_binding_request_t* request,
-    PJ_parser_binding_handle_t* out_handle,
-    PJ_error_t* out_error) PJ_NOEXCEPT;
-
-bool (*push_message)(
-    void* ctx,
-    PJ_parser_binding_handle_t handle,
-    int64_t host_timestamp_ns,
-    PJ_message_data_fetcher_t fetch_message_data,
-    PJ_error_t* out_error) PJ_NOEXCEPT;
-```
-
-Then add typed wrappers on `PJ::ToolboxRuntimeHostView`, matching the
-DataSource API names and ownership rules:
-
-- `ensureParserBinding(const PJ::ParserBindingRequest&)`
-- `pushMessage(handle, timestamp_ns, fetch_message_data)`
-
-This is tail-slot compatible for older hosts: `toolbox_mosaico` can detect a
-missing slot and report that raw parser ingest requires a newer PJ runtime.
-
 ## Required `toolbox_mosaico` Change
 
-Once the toolbox runtime host exposes parser ingest:
+Once `pj-official-plugins` is aligned with the SDK/runtime containing
+`createParserIngest()`:
 
 1. In `FetchWorker`, add a runtime-host provider beside the existing toolbox
    write-host provider.
@@ -164,9 +153,15 @@ Once the toolbox runtime host exposes parser ingest:
      - `schema_encoding`
      - `serialization`
      - `topic_name`
+   - call `runtimeHost().createParserIngest(ds.id)` after creating/fetching the
+     download data source;
    - bind the parser once per topic;
-   - push every Arrow row as a raw parser message.
-6. Keep the existing image/object and scalar Arrow paths unchanged for
+   - push every Arrow row as a raw parser message;
+   - call `runtimeHost().releaseParserIngest(ds.id)` once all raw rows for that
+     dataset have been pushed.
+6. Call `notifyDataChanged()` after release so parser-produced rows and object
+   topics are flushed and visible.
+7. Keep the existing image/object and scalar Arrow paths unchanged for
    ontology-backed topics.
 
 Important: raw topics must bypass `flattenStructColumns()` and
@@ -217,8 +212,8 @@ should preserve the original schema name.
 
 ## Fallback Behavior
 
-If a raw topic is present but the PJ runtime does not expose toolbox delegated
-ingest:
+If a raw topic is present but the PJ runtime does not expose
+`create_parser_ingest`:
 
 1. Do not import the payload column as scalar data.
 2. Mark the topic failed with:
@@ -234,19 +229,20 @@ If a parser binding fails:
 
 ## Implementation Order
 
-1. Add the PJ toolbox runtime tail slots and C++ wrappers.
-2. Add unit tests for unbound/older-host behavior and `pushMessage()` closure
-   lifetime, mirroring DataSource runtime tests.
-3. Add `toolbox_mosaico` metadata extraction tests for raw MCAP topic metadata.
-4. Add the `FetchWorker` raw branch and row-push helper.
-5. Add an uploader/server-side raw-preservation path.
-6. Run the tomato validation plan against a local Mosaico server.
+1. Bump `pj-official-plugins` to the PJ SDK/runtime containing
+   `createParserIngest()` (`4671b70d2ca40140a2699b5d6578ebb41d0e6e7d` or the
+   corresponding released SDK).
+2. Add `toolbox_mosaico` metadata extraction tests for raw MCAP topic metadata.
+3. Add the `FetchWorker` raw branch and row-push helper using
+   `ParserIngestHostView`.
+4. Add an uploader/server-side raw-preservation path.
+5. Run the tomato validation plan against a local Mosaico server.
 
 ## Decision
 
-Maximum compatibility requires preserving raw MCAP messages in Mosaico and
-adding delegated parser ingest to the PJ toolbox runtime. Without the PJ runtime
-tail slots, `toolbox_mosaico` cannot correctly route raw ROS2 CDR/protobuf
-payloads to `parser_ros` or `parser_protobuf`; implementing a second ROS/protobuf
-decoder in the toolbox would duplicate parser logic and still miss future parser
-plugins.
+Maximum compatibility requires preserving raw MCAP messages in Mosaico and using
+the PJ4 toolbox parser-ingest API added in
+`4671b70d2ca40140a2699b5d6578ebb41d0e6e7d`. No further PJ4 API change should be
+needed if `toolbox_mosaico` builds against that SDK/runtime. Implementing a
+second ROS/protobuf decoder in the toolbox would duplicate parser logic and still
+miss future parser plugins.
