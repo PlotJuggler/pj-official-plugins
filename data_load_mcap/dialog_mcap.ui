@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>767</width>
-    <height>637</height>
+    <width>889</width>
+    <height>732</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -19,7 +19,7 @@
      <item>
       <widget class="QLabel" name="label_2">
        <property name="text">
-        <string>When an array size exceeds:</string>
+        <string>If an array size exceeds:</string>
        </property>
       </widget>
      </item>
@@ -37,17 +37,11 @@
       </widget>
      </item>
      <item>
-      <spacer name="horizontalSpacer">
-       <property name="orientation">
-        <enum>Qt::Orientation::Horizontal</enum>
+      <widget class="QLabel" name="label_4">
+       <property name="text">
+        <string>then:</string>
        </property>
-       <property name="sizeHint" stdset="0">
-        <size>
-         <width>40</width>
-         <height>20</height>
-        </size>
-       </property>
-      </spacer>
+      </widget>
      </item>
      <item>
       <widget class="QRadioButton" name="radioClamp">
@@ -71,6 +65,19 @@
         <string notr="true">buttonGroupArrayPolicy</string>
        </attribute>
       </widget>
+     </item>
+     <item>
+      <spacer name="horizontalSpacer">
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
      </item>
     </layout>
    </item>
@@ -128,7 +135,7 @@
      <item>
       <widget class="QCheckBox" name="checkBoxUseTimestamp">
        <property name="text">
-        <string>Use timestamp inside message (header)</string>
+        <string>Override with the message header timestamp (if present)</string>
        </property>
       </widget>
      </item>
@@ -368,7 +375,7 @@ QLineEdit#lineEditFilter:focus {
   </connection>
  </connections>
  <buttongroups>
-  <buttongroup name="buttonGroupArrayPolicy"/>
   <buttongroup name="buttonGroupTimestamp"/>
+  <buttongroup name="buttonGroupArrayPolicy"/>
  </buttongroups>
 </ui>
