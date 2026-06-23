@@ -53,8 +53,13 @@ jobs:
       - name: Build & Test
         shell: bash
         run: |
+          # -s:b compiler.cppstd=20: the root recipe's protobuf tool_requires lives
+          # in the BUILD context. protobuf 6.x needs C++17, but MSVC's default build
+          # profile is cppstd=14, so its validate() rejects the package. Host -s only
+          # covers the host context.
           conan install . --output-folder=build --build=missing -s build_type=Release \
-            -s compiler.cppstd=20 -c tools.cmake.cmaketoolchain:generator=Ninja \
+            -s compiler.cppstd=20 -s:b compiler.cppstd=20 \
+            -c tools.cmake.cmaketoolchain:generator=Ninja \
             -o "cpython/*:shared=True"
 
           cmake -S . -B build/Release -G Ninja \
