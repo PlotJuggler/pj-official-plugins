@@ -417,7 +417,8 @@ void MosaicoDialog::setHostProvider(std::function<PJ::sdk::ToolboxHostView()> pr
 }
 
 void MosaicoDialog::setRuntimeHostProvider(std::function<PJ::ToolboxRuntimeHostView()> provider) {
-  runtime_host_provider_ = std::move(provider);
+  runtime_host_provider_ = provider;
+  worker_->setRuntimeHostProvider(std::move(provider));
 }
 
 std::string MosaicoDialog::widget_data() {

@@ -9,6 +9,7 @@
 #include <mutex>
 #include <optional>
 #include <pj_base/sdk/plugin_data_api.hpp>
+#include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -31,6 +32,10 @@ class FetchWorker {
   /// thread-safe or always return a stable view.
   void setHostProvider(std::function<PJ::sdk::ToolboxHostView()> provider) {
     host_provider_ = std::move(provider);
+  }
+
+  void setRuntimeHostProvider(std::function<PJ::ToolboxRuntimeHostView()> provider) {
+    runtime_host_provider_ = std::move(provider);
   }
 
   void requestCancel() {
@@ -111,6 +116,7 @@ class FetchWorker {
 
   std::unique_ptr<MosaicoClient> client_;
   std::function<PJ::sdk::ToolboxHostView()> host_provider_;
+  std::function<PJ::ToolboxRuntimeHostView()> runtime_host_provider_;
   std::atomic<bool> cancel_flag_{false};
   std::unordered_map<std::string, TopicInfo> topic_info_by_name_;
   std::optional<PJ::sdk::DataSourceHandle> fetch_dataset_;

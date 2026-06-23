@@ -65,6 +65,7 @@ set(MOSAICO_SOURCES
   src/mosaico_dialog.cpp
   src/fetch_worker.cpp
   src/arrow_ingest.cpp
+  src/raw_ingest.cpp
   src/settings_store.cpp
   src/server_history.cpp
   src/core/time_format.cpp
@@ -93,6 +94,7 @@ target_link_libraries(toolbox_mosaico_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk
   fmt::fmt
   nlohmann_json::nlohmann_json
+  pj_base64
   mosaico_sdk
   lua::lua
   sol2::sol2
@@ -219,6 +221,24 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
   add_test(NAME ToolboxMosaicoImageSerializeTest COMMAND toolbox_mosaico_image_serialize_test)
+
+  # Raw MCAP escape hatch: metadata -> parser binding, Arrow payload rows ->
+  # ParserIngestHostView messages. Uses a fake parser-ingest host, no Flight/gRPC.
+  add_executable(toolbox_mosaico_raw_ingest_test
+    tests/raw_ingest_test.cpp
+    src/raw_ingest.cpp
+  )
+  target_link_libraries(toolbox_mosaico_raw_ingest_test PRIVATE
+    plotjuggler_sdk::plugin_sdk
+    ${_test_arrow_target}
+    nlohmann_json::nlohmann_json
+    pj_base64
+    GTest::gtest_main
+  )
+  target_include_directories(toolbox_mosaico_raw_ingest_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  add_test(NAME ToolboxMosaicoRawIngestTest COMMAND toolbox_mosaico_raw_ingest_test)
 
   # Real-server regression: replays the captured jai/rgb Arrow batch (PNG-wrapped
   # Bayer, BINARY_VIEW/STRING_VIEW columns) through the real producer and checks

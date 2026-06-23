@@ -23,6 +23,7 @@
 #include <chrono>
 #include <initializer_list>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -31,6 +32,7 @@
 #include "arrow_ingest.hpp"
 #include "flight/metadata.hpp"
 #include "ontology_routing.h"
+#include "raw_ingest.hpp"
 
 namespace mosaico {
 
@@ -327,8 +329,10 @@ void FetchWorker::pullTopicsAsync(
   for (const auto& t : topic_names_std) {
     (*state)[t] = PerTopic{};
   }
+  auto raw_parser_source_id = std::make_shared<std::optional<std::uint32_t>>();
 
-  auto on_done = [this, sequence_name, state](const std::string& topic_name, arrow::Result<PullResult> result) {
+  auto on_done = [this, sequence_name, state, raw_parser_source_id](
+                     const std::string& topic_name, arrow::Result<PullResult> result) {
     auto it = state->find(topic_name);
     if (it == state->end()) {
       return;
@@ -353,6 +357,61 @@ void FetchWorker::pullTopicsAsync(
       return;
     }
     std::shared_ptr<arrow::Table> table = table_result.ValueOrDie();
+
+    std::unordered_map<std::string, std::string> raw_metadata;
+    if (table->schema() && table->schema()->metadata()) {
+      raw_metadata = extractUserMetadata(std::const_pointer_cast<arrow::KeyValueMetadata>(table->schema()->metadata()));
+    }
+    if (auto info_it = topic_info_by_name_.find(topic_name); info_it != topic_info_by_name_.end()) {
+      for (const auto& [key, value] : info_it->second.user_metadata) {
+        raw_metadata[key] = value;
+      }
+    }
+
+    if (isRawMcapMetadata(raw_metadata)) {
+      auto raw_config = rawParserTopicConfig(topic_name, raw_metadata);
+      if (!raw_config) {
+        finish(false, raw_config.error());
+        return;
+      }
+      if (!host_provider_) {
+        finish(false, "host not bound");
+        return;
+      }
+      if (!runtime_host_provider_) {
+        finish(false, "raw parser ingest requires a PlotJuggler toolbox runtime with parser delegation");
+        return;
+      }
+      auto host = host_provider_();
+      auto runtime = runtime_host_provider_();
+      if (!runtime.valid()) {
+        finish(false, "raw parser ingest requires a PlotJuggler toolbox runtime with parser delegation");
+        return;
+      }
+      std::lock_guard<std::mutex> write_lock(host_write_mu_);
+      auto ds = datasetForFetch(host, sequence_name);
+      if (!ds) {
+        finish(false, ds.error());
+        return;
+      }
+      auto ingest = runtime.createParserIngest(ds->id);
+      if (!ingest) {
+        finish(false, ingest.error());
+        return;
+      }
+      *raw_parser_source_id = ds->id;
+      auto pushed = pushRawRowsToParser(*ingest, *raw_config, table);
+      if (!pushed) {
+        finish(false, pushed.error());
+        return;
+      }
+      if (pushed->pushed == 0) {
+        finish(false, pushed->first_error.empty() ? std::string("no raw messages") : pushed->first_error);
+        return;
+      }
+      finish(true, {});
+      return;
+    }
 
     // PJ3-parity: explode struct columns (e.g. nav_msgs/Odometry's pose +
     // twist) into individual primitive columns before handing the stream to
@@ -547,6 +606,16 @@ void FetchWorker::pullTopicsAsync(
   } catch (...) {
     if (pullFinished) {
       pullFinished(sequence_name, {}, false, "pull failed: unknown error");
+    }
+  }
+  if (raw_parser_source_id->has_value() && runtime_host_provider_) {
+    auto runtime = runtime_host_provider_();
+    if (runtime.valid()) {
+      std::lock_guard<std::mutex> write_lock(host_write_mu_);
+      auto release = runtime.releaseParserIngest(**raw_parser_source_id);
+      if (!release && errorOccurred) {
+        errorOccurred(fmt::format("release raw parser ingest: {}", release.error()));
+      }
     }
   }
   if (allFetchesComplete) {

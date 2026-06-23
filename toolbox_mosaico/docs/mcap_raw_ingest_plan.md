@@ -72,14 +72,15 @@ source id, so parser-produced scalars and canonical ObjectStore topics land
 under the same dataset as the rest of the Mosaico download.
 
 The remaining PJ-side requirement is dependency alignment: `toolbox_mosaico`
-must build and run against a PJ SDK/runtime that includes the commit above. In
-the current `pj-official-plugins` checkout this is not true yet:
+must build and run against a PJ SDK/runtime that includes the commit above. This
+PR aligns the plugin checkout with that SDK:
 
-- `SDK_VERSION` is `0.10.0`.
-- `extern/plotjuggler_core` is pinned at `v0.8.1-4-gdd126ed`.
+- `SDK_VERSION` is `0.11.0`.
+- `extern/plotjuggler_core` is pinned at `v0.11.0`.
 
 So no new PJ4 API design is required, but the plugin repo must be bumped to the
-SDK/runtime containing `createParserIngest()` before plugin code can call it.
+SDK/runtime containing `createParserIngest()` before older checkouts can call
+it.
 
 No Mosaico server change is needed for parsing itself. Mosaico only needs to
 preserve and expose the raw MCAP channel data and metadata so the PJ client can
@@ -227,16 +228,20 @@ If a parser binding fails:
 3. Keep `/tf` and `/tf_static` failures prominent because Scene3D depends on
    them for pointcloud placement.
 
-## Implementation Order
+## Implementation Status
 
-1. Bump `pj-official-plugins` to the PJ SDK/runtime containing
-   `createParserIngest()` (`4671b70d2ca40140a2699b5d6578ebb41d0e6e7d` or the
-   corresponding released SDK).
+Done in this PR:
+
+1. Bump `pj-official-plugins` to SDK `0.11.0`, which contains
+   `createParserIngest()`.
 2. Add `toolbox_mosaico` metadata extraction tests for raw MCAP topic metadata.
 3. Add the `FetchWorker` raw branch and row-push helper using
    `ParserIngestHostView`.
-4. Add an uploader/server-side raw-preservation path.
-5. Run the tomato validation plan against a local Mosaico server.
+
+Still required outside this plugin PR:
+
+1. Add an uploader/server-side raw-preservation path.
+2. Run the tomato validation plan against a local Mosaico server.
 
 ## Decision
 
