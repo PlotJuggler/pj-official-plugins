@@ -19,9 +19,10 @@
 #include "mcap_manifest.hpp"
 
 // Vendored parallel-reader fork (contrib/mcap/). Pulled in after reader.hpp
-// so MCAP_IMPLEMENTATION already lit up reader.inl; parallel reader is fully
-// inline and stacks on top. message_byte_store.hpp adds the optional
-// deferred-byte (hot/cold lazy) layer on top of the parallel reader.
+// with MCAP_IMPLEMENTATION already defined, so parallel_reader.hpp's trailing
+// #include "parallel_reader.inl" compiles the parallel-reader bodies here (the
+// same .hpp/.inl split the rest of the library uses). message_byte_store.hpp
+// adds the optional deferred-byte (hot/cold lazy) layer on top.
 #include <mcap/message_byte_store.hpp>  // NOLINT(build/include_order)
 #include <mcap/parallel_reader.hpp>     // NOLINT(build/include_order)
 
