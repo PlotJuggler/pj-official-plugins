@@ -40,12 +40,6 @@ namespace mosaico {
 
 namespace {
 
-struct ServerCredentials {
-  std::string cert_path;
-  std::string api_key;
-  bool allow_insecure = false;
-};
-
 std::string credentialsSettingsPrefix(const std::string& uri) {
   return "mosaico/server_cache/" + normalizeServerKey(uri) + "/";
 }
@@ -245,10 +239,8 @@ std::string buildTopicInfoText(const TopicInfo& info) {
 }  // namespace
 
 MosaicoDialog::MosaicoDialog() : worker_(std::make_unique<FetchWorker>()) {
-  worker_->connectFinished = [this](bool ok, std::string status, std::string err) {
-    postEvent([this, ok, status = std::move(status), err = std::move(err)]() mutable {
-      onConnectFinished(ok, std::move(status), std::move(err));
-    });
+  worker_->connectFinished = [this](ConnectResult result) {
+    postEvent([this, result = std::move(result)]() mutable { onConnectFinished(std::move(result)); });
   };
   worker_->sequencesReady = [this](std::vector<SequenceInfo> sequences) {
     postEvent([this, sequences = std::move(sequences)]() mutable { onSequencesReady(std::move(sequences)); });
@@ -269,21 +261,17 @@ MosaicoDialog::MosaicoDialog() : worker_(std::make_unique<FetchWorker>()) {
       onTopicInfosReady(std::move(sequence_name), std::move(topics));
     });
   };
-  worker_->topicMetadataReady = [this](std::string sequence_name, std::string topic_name, TopicInfo info) {
-    postEvent([this, sequence_name = std::move(sequence_name), topic_name = std::move(topic_name),
-               info = std::move(info)]() mutable {
-      onTopicMetadataReady(std::move(sequence_name), std::move(topic_name), std::move(info));
+  worker_->topicMetadataReady = [this](TopicRef topic, TopicInfo info) {
+    postEvent([this, topic = std::move(topic), info = std::move(info)]() mutable {
+      onTopicMetadataReady(std::move(topic), std::move(info));
     });
   };
   worker_->pullProgress = [this](std::string topic_name, std::int64_t bytes) {
     postEvent(
         [this, topic_name = std::move(topic_name), bytes]() mutable { onPullProgress(std::move(topic_name), bytes); });
   };
-  worker_->pullFinished = [this](std::string sequence_name, std::string topic_name, bool ok, std::string error) {
-    postEvent([this, sequence_name = std::move(sequence_name), topic_name = std::move(topic_name), ok,
-               error = std::move(error)]() mutable {
-      onPullFinished(std::move(sequence_name), std::move(topic_name), ok, std::move(error));
-    });
+  worker_->pullFinished = [this](PullResultEvent result) {
+    postEvent([this, result = std::move(result)]() mutable { onPullFinished(std::move(result)); });
   };
   worker_->allFetchesComplete = [this](std::string sequence_name) {
     postEvent(
@@ -331,9 +319,7 @@ void MosaicoDialog::initFromSettings() {
     if (isPrintableAscii(uri) && isPrintableAscii(creds.cert_path) && isPrintableAscii(creds.api_key)) {
       state_.connecting = true;
       state_.suppress_connect_error = true;  // PJ3 AutoConnect: no error notification on failure.
-      postCommand(
-          [w = worker_.get(), uri, cert_path = creds.cert_path, api_key = creds.api_key,
-           allow_insecure = creds.allow_insecure] { w->connectAsync(uri, cert_path, api_key, allow_insecure); });
+      postCommand([w = worker_.get(), uri, creds] { w->connectAsync(uri, creds); });
     }
   }
 }
@@ -814,9 +800,6 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
   }
   if (widget_name == "buttonConnect") {
     std::string uri;
-    std::string cert_path;
-    std::string api_key;
-    bool allow_insecure = false;
     {
       std::lock_guard<std::mutex> lock(state_.mu);
       uri = state_.uri;
@@ -825,9 +808,6 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
     // dedupes "grpc+tls://X:6726", "GRPC+TLS://X:6726", and "x:6726" to the
     // same cache entry), with MOSAICO_API_KEY env fallback.
     auto creds = resolveCredentials(settings_, uri);
-    cert_path = creds.cert_path;
-    api_key = creds.api_key;
-    allow_insecure = creds.allow_insecure;
 
     // Printable-ASCII gate (PJ3 main_window.cpp:947-1013). The host/cert/api-key
     // are headers/URIs handed straight into gRPC, which asserts-and-aborts on
@@ -837,11 +817,11 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
       notify(PJ::ToolboxMessageLevel::kError, "Server URI contains invalid characters (control or non-ASCII bytes).");
       return true;
     }
-    if (!isPrintableAscii(cert_path)) {
+    if (!isPrintableAscii(creds.cert_path)) {
       notify(PJ::ToolboxMessageLevel::kError, "TLS certificate path contains invalid characters.");
       return true;
     }
-    if (!isPrintableAscii(api_key)) {
+    if (!isPrintableAscii(creds.api_key)) {
       notify(PJ::ToolboxMessageLevel::kError, "API key contains invalid characters (control or non-ASCII bytes).");
       return true;
     }
@@ -852,9 +832,7 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
       state_.suppress_connect_error = false;  // explicit Connect reports failures
     }
     notify(PJ::ToolboxMessageLevel::kInfo, fmt::format("Connecting to {}…", uri));
-    postCommand([w = worker_.get(), uri, cert_path, api_key, allow_insecure] {
-      w->connectAsync(uri, cert_path, api_key, allow_insecure);
-    });
+    postCommand([w = worker_.get(), uri, creds] { w->connectAsync(uri, creds); });
     return true;
   }
   if (widget_name == "buttonRefresh") {
@@ -1199,14 +1177,17 @@ bool MosaicoDialog::onSelectionChanged(std::string_view widget_name, const std::
       }
     }
     for (const std::string& topic : need_metadata) {
-      postCommand([w = worker_.get(), seq, topic] { w->fetchTopicMetadataAsync(seq, topic); });
+      postCommand([w = worker_.get(), seq, topic] { w->fetchTopicMetadataAsync({seq, topic}); });
     }
     return true;
   }
   return false;
 }
 
-void MosaicoDialog::onConnectFinished(bool ok, std::string status, std::string error) {
+void MosaicoDialog::onConnectFinished(ConnectResult result) {
+  const bool ok = result.ok;
+  const std::string& status = result.status;
+  const std::string& error = result.error;
   std::string uri;
   bool plaintext_retry_needed = false;
   std::string plaintext_uri;
@@ -1254,7 +1235,10 @@ void MosaicoDialog::onConnectFinished(bool ok, std::string status, std::string e
   }
 
   if (plaintext_retry_needed) {
-    postCommand([w = worker_.get(), plaintext_uri] { w->connectAsync(plaintext_uri, {}, {}, true); });
+    // Plaintext retry: no cert/key, insecure transport explicitly allowed.
+    ServerCredentials insecure_creds;
+    insecure_creds.allow_insecure = true;
+    postCommand([w = worker_.get(), plaintext_uri, insecure_creds] { w->connectAsync(plaintext_uri, insecure_creds); });
   } else if (!suppress_error) {
     // PJ3 AutoConnect context shows no popup; explicit connects do.
     notify(PJ::ToolboxMessageLevel::kError, fmt::format("Mosaico connection failed: {}", error));
@@ -1593,7 +1577,7 @@ void MosaicoDialog::onTopicsReady(std::string sequence_name, std::vector<std::st
     need_metadata = restoreSelectedTopicsLocked();
   }
   for (const std::string& topic : need_metadata) {
-    postCommand([w = worker_.get(), sequence_name, topic] { w->fetchTopicMetadataAsync(sequence_name, topic); });
+    postCommand([w = worker_.get(), sequence_name, topic] { w->fetchTopicMetadataAsync({sequence_name, topic}); });
   }
 }
 
@@ -1617,16 +1601,16 @@ void MosaicoDialog::onTopicInfosReady(std::string sequence_name, std::vector<Top
     need_metadata = restoreSelectedTopicsLocked();
   }
   for (const std::string& topic : need_metadata) {
-    postCommand([w = worker_.get(), sequence_name, topic] { w->fetchTopicMetadataAsync(sequence_name, topic); });
+    postCommand([w = worker_.get(), sequence_name, topic] { w->fetchTopicMetadataAsync({sequence_name, topic}); });
   }
 }
 
-void MosaicoDialog::onTopicMetadataReady(std::string sequence_name, std::string topic_name, TopicInfo info) {
+void MosaicoDialog::onTopicMetadataReady(TopicRef topic, TopicInfo info) {
   std::lock_guard<std::mutex> lock(state_.mu);
-  if (sequence_name != state_.selected_sequence) {
+  if (topic.sequence_name != state_.selected_sequence) {
     return;  // user moved on
   }
-  state_.topic_meta[std::move(topic_name)] = std::move(info);
+  state_.topic_meta[std::move(topic.topic_name)] = std::move(info);
 }
 
 void MosaicoDialog::onPullProgress(std::string topic_name, std::int64_t bytes) {
@@ -1675,8 +1659,10 @@ void MosaicoDialog::onPullProgress(std::string topic_name, std::int64_t bytes) {
   }
 }
 
-void MosaicoDialog::onPullFinished(std::string /*sequence_name*/, std::string topic_name, bool ok, std::string error) {
+void MosaicoDialog::onPullFinished(PullResultEvent result) {
   std::lock_guard<std::mutex> lock(state_.mu);
+  const std::string& topic_name = result.topic.topic_name;
+  const bool ok = result.ok;
   // PJ3 parity: tally per-topic results into the batch ledger. The panel does
   // NOT close here — that happens once in onAllFetchesComplete after the whole
   // batch lands. Closing on the first topic (the old behaviour) tore down the
@@ -1694,7 +1680,7 @@ void MosaicoDialog::onPullFinished(std::string /*sequence_name*/, std::string to
     ++state_.fetch_failed;
     state_.topic_fetch_status[topic_name] = "Failed";
     // Collapse identical messages so "[3x] no data" reads once, not thrice.
-    ++state_.error_counts[std::move(error)];
+    ++state_.error_counts[std::move(result.error)];
   }
 }
 

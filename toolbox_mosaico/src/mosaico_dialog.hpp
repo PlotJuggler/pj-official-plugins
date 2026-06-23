@@ -19,6 +19,7 @@
 
 #include "core/types.h"
 #include "flight/types.hpp"  // mosaico::SequenceInfo
+#include "worker_types.h"    // ServerCredentials, ConnectResult, TopicRef, PullResultEvent
 
 namespace mosaico {
 
@@ -239,7 +240,7 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   // settings view is bound, before the tick loop.
   void initFromSettings();
 
-  void onConnectFinished(bool ok, std::string status, std::string error);
+  void onConnectFinished(ConnectResult result);
   void onSequencesReady(std::vector<SequenceInfo> sequences);
   // Progressive discovery (PJ3 parity): populate the table from the initial
   // list as soon as it arrives, then fill each row's Date/Size as the server
@@ -248,9 +249,9 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   void onSequenceInfoReady(SequenceInfo sequence);
   void onTopicsReady(std::string sequence_name, std::vector<std::string> topic_names);
   void onTopicInfosReady(std::string sequence_name, std::vector<TopicInfo> topics);
-  void onTopicMetadataReady(std::string sequence_name, std::string topic_name, TopicInfo info);
+  void onTopicMetadataReady(TopicRef topic, TopicInfo info);
   void onPullProgress(std::string topic_name, std::int64_t bytes);
-  void onPullFinished(std::string sequence_name, std::string topic_name, bool ok, std::string error);
+  void onPullFinished(PullResultEvent result);
   void onAllFetchesComplete(std::string sequence_name);
 
   void workerLoop();

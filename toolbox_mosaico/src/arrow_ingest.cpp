@@ -5,6 +5,7 @@
 #include <arrow/api.h>
 #include <arrow/array.h>
 #include <arrow/array/array_binary.h>
+#include <arrow/array/array_nested.h>
 #include <arrow/array/array_primitive.h>
 #include <arrow/compute/api.h>
 #include <arrow/table.h>
@@ -19,8 +20,14 @@
 #include <vector>
 
 #include "image_metadata.hpp"
+#include "object_metadata.hpp"
+#include "pj_base/builtin/frame_transforms.hpp"  // Vector3 / Quaternion / Pose
 #include "pj_base/builtin/image.hpp"
 #include "pj_base/builtin/image_codec.hpp"
+#include "pj_base/builtin/point_cloud.hpp"
+#include "pj_base/builtin/point_cloud_codec.hpp"
+#include "pj_base/builtin/poses_in_frame.hpp"
+#include "pj_base/builtin/poses_in_frame_codec.hpp"
 
 namespace mosaico {
 
@@ -210,6 +217,91 @@ namespace {
   return nullptr;
 }
 
+// Read a scalar as double, handling DOUBLE / FLOAT / INT64 / INT32. Returns 0.0
+// on null/missing/other type. Used for the per-row pose/transform struct-child
+// columns (translation/x, rotation/w, …) after flattenStructColumns.
+[[nodiscard]] double arrowDoubleAt(const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row) {
+  if (!col || row < 0 || row >= col->length()) {
+    return 0.0;
+  }
+  std::int64_t chunk_row = row;
+  for (int i = 0; i < col->num_chunks(); ++i) {
+    const auto& chunk = col->chunk(i);
+    if (chunk_row < chunk->length()) {
+      if (chunk->IsNull(chunk_row)) {
+        return 0.0;
+      }
+      switch (chunk->type_id()) {
+        case arrow::Type::DOUBLE:
+          return std::static_pointer_cast<arrow::DoubleArray>(chunk)->Value(chunk_row);
+        case arrow::Type::FLOAT:
+          return static_cast<double>(std::static_pointer_cast<arrow::FloatArray>(chunk)->Value(chunk_row));
+        case arrow::Type::INT64:
+          return static_cast<double>(std::static_pointer_cast<arrow::Int64Array>(chunk)->Value(chunk_row));
+        case arrow::Type::INT32:
+          return static_cast<double>(std::static_pointer_cast<arrow::Int32Array>(chunk)->Value(chunk_row));
+        default:
+          return 0.0;
+      }
+    }
+    chunk_row -= chunk->length();
+  }
+  return 0.0;
+}
+
+// Read one row of the ROS-PointCloud2 `fields` column —
+// list<struct<name:string, offset:uint32, datatype:int64, count:uint32>> — into
+// canonical sdk::PointField records. Mosaico's `datatype` shares ROS PointField's
+// numbering, which equals sdk::PointField::Datatype (kInt8=1 … kFloat64=8), so the
+// value maps verbatim (out-of-range -> kUnknown). Returns empty on
+// null/missing/wrong-shape.
+[[nodiscard]] std::vector<PJ::sdk::PointField> readPointFields(
+    const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row) {
+  std::vector<PJ::sdk::PointField> out;
+  if (!col || row < 0 || row >= col->length()) {
+    return out;
+  }
+  std::int64_t chunk_row = row;
+  for (int i = 0; i < col->num_chunks(); ++i) {
+    const auto& chunk = col->chunk(i);
+    if (chunk_row < chunk->length()) {
+      if (chunk->IsNull(chunk_row)) {
+        return out;
+      }
+      const auto list = std::dynamic_pointer_cast<arrow::ListArray>(chunk);
+      if (!list) {
+        return out;
+      }
+      const auto items = std::dynamic_pointer_cast<arrow::StructArray>(list->values());
+      if (!items) {
+        return out;
+      }
+      const auto names = std::dynamic_pointer_cast<arrow::StringArray>(items->GetFieldByName("name"));
+      const auto offsets = std::dynamic_pointer_cast<arrow::UInt32Array>(items->GetFieldByName("offset"));
+      const auto datatypes = std::dynamic_pointer_cast<arrow::Int64Array>(items->GetFieldByName("datatype"));
+      const auto counts = std::dynamic_pointer_cast<arrow::UInt32Array>(items->GetFieldByName("count"));
+      const std::int64_t begin = list->value_offset(chunk_row);
+      const std::int64_t len = list->value_length(chunk_row);
+      out.reserve(static_cast<std::size_t>(len));
+      for (std::int64_t k = begin; k < begin + len; ++k) {
+        PJ::sdk::PointField field;
+        if (names && !names->IsNull(k)) {
+          field.name = names->GetString(k);
+        }
+        field.offset = offsets ? offsets->Value(k) : 0U;
+        const std::int64_t dt = datatypes ? datatypes->Value(k) : 0;
+        field.datatype = (dt >= 1 && dt <= 8) ? static_cast<PJ::sdk::PointField::Datatype>(dt)
+                                              : PJ::sdk::PointField::Datatype::kUnknown;
+        field.count = (counts && counts->Value(k) > 0) ? counts->Value(k) : 1U;
+        out.push_back(std::move(field));
+      }
+      return out;
+    }
+    chunk_row -= chunk->length();
+  }
+  return out;
+}
+
 }  // namespace
 
 std::string detectTimestampColumn(const ArrowSchema* schema) {
@@ -357,9 +449,13 @@ PJ::Status pumpStreamToHost(
 }
 
 PJ::Expected<ImagePushOutcome> pushImageRowsToHost(
-    const PJ::sdk::ToolboxHostView& host, PJ::sdk::DataSourceHandle source, const std::string& topic_name,
-    const std::shared_ptr<arrow::Table>& table, const std::string& ts_field, std::int64_t synth_anchor_ns,
-    std::int64_t synth_interval_ns) {
+    const ObjectIngestContext& ctx, const std::shared_ptr<arrow::Table>& table) {
+  const PJ::sdk::ToolboxHostView& host = ctx.host;
+  const PJ::sdk::DataSourceHandle source = ctx.source;
+  const std::string& topic_name = ctx.topic_name;
+  const std::string& ts_field = ctx.ts_field;
+  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
+  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
   if (!host.valid()) {
     return PJ::unexpected(std::string("toolbox host not bound"));
   }
@@ -454,6 +550,161 @@ PJ::Expected<ImagePushOutcome> pushImageRowsToHost(
     img.data = bytes_span;  // borrowed; serializeImage copies the bytes.
 
     const std::vector<std::uint8_t> blob = PJ::serializeImage(img);
+    auto status = host.pushOwnedObject(*topic_handle, ts_ns, PJ::Span<const std::uint8_t>(blob.data(), blob.size()));
+    if (!status) {
+      return PJ::unexpected(std::move(status).error());
+    }
+    ++outcome.pushed;
+  }
+  return outcome;
+}
+
+PJ::Expected<ObjectPushOutcome> pushPointCloudRowsToHost(
+    const ObjectIngestContext& ctx, const std::shared_ptr<arrow::Table>& table) {
+  const PJ::sdk::ToolboxHostView& host = ctx.host;
+  const PJ::sdk::DataSourceHandle source = ctx.source;
+  const std::string& topic_name = ctx.topic_name;
+  const std::string& ts_field = ctx.ts_field;
+  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
+  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
+  if (!host.valid()) {
+    return PJ::unexpected(std::string("toolbox host not bound"));
+  }
+  if (!table) {
+    return PJ::unexpected(std::string("point_cloud topic '") + topic_name + "': null table");
+  }
+  // The Mosaico `point_cloud2` ontology is ROS PointCloud2-shaped: a single
+  // packed `data` blob plus a `fields` channel descriptor and
+  // point_step/row_step/width/height — which IS the canonical sdk::PointCloud
+  // layout. So this copies the fields through verbatim: no point packing and,
+  // crucially, no decode/decompression (the bytes are already the canonical
+  // point buffer; host-side coloring/conversion happens in pj_scene3D).
+  const auto data_col = table->GetColumnByName("data");
+  const auto fields_col = table->GetColumnByName("fields");
+  if (!data_col || !fields_col) {
+    return PJ::unexpected(std::string("point_cloud topic '") + topic_name + "' missing 'data' or 'fields' column");
+  }
+  const auto width_col = table->GetColumnByName("width");
+  const auto height_col = table->GetColumnByName("height");
+  const auto point_step_col = table->GetColumnByName("point_step");
+  const auto row_step_col = table->GetColumnByName("row_step");
+  const auto bigendian_col = table->GetColumnByName("is_bigendian");
+  const auto dense_col = table->GetColumnByName("is_dense");
+  const auto frame_col = table->GetColumnByName("frame_id");
+  const auto ts_col = ts_field.empty() ? nullptr : table->GetColumnByName(ts_field);
+
+  auto topic_handle = host.registerObjectTopic(source, topic_name, kCanonicalPointCloudMetadata);
+  if (!topic_handle) {
+    return PJ::unexpected(std::move(topic_handle).error());
+  }
+
+  ObjectPushOutcome outcome;
+  const std::int64_t num_rows = table->num_rows();
+  for (std::int64_t row = 0; row < num_rows; ++row) {
+    const auto bytes_span = arrowBinaryAt(data_col, row);
+    std::vector<PJ::sdk::PointField> fields = readPointFields(fields_col, row);
+    if (bytes_span.empty() || fields.empty()) {
+      ++outcome.skipped;
+      if (outcome.first_error.empty()) {
+        outcome.first_error = std::string("point_cloud topic '") + topic_name + "' row " + std::to_string(row) +
+                              ": empty 'data' or 'fields'";
+      }
+      continue;
+    }
+    const std::int64_t ts_ns = ts_col ? arrowI64At(ts_col, row) : (synth_anchor_ns + row * synth_interval_ns);
+    const std::int32_t width = arrowI32At(width_col, row);
+    const std::int32_t point_step = arrowI32At(point_step_col, row);
+    const std::int32_t row_step = arrowI32At(row_step_col, row);
+
+    PJ::sdk::PointCloud cloud;
+    cloud.width = width > 0 ? static_cast<std::uint32_t>(width) : 0U;
+    cloud.height = static_cast<std::uint32_t>(std::max<std::int32_t>(arrowI32At(height_col, row), 1));
+    cloud.point_step = point_step > 0 ? static_cast<std::uint32_t>(point_step) : 0U;
+    cloud.row_step = row_step > 0 ? static_cast<std::uint32_t>(row_step) : cloud.point_step * cloud.width;
+    cloud.is_bigendian = arrowBoolAt(bigendian_col, row, /*fallback=*/false);
+    cloud.is_dense = arrowBoolAt(dense_col, row, /*fallback=*/true);
+    cloud.frame_id = frame_col ? arrowStringAt(frame_col, row) : std::string{};
+    cloud.fields = std::move(fields);
+    cloud.data = bytes_span;  // borrowed; serializePointCloud copies the bytes.
+    cloud.timestamp_ns = ts_ns;
+
+    const std::vector<std::uint8_t> blob = PJ::serializePointCloud(cloud);
+    auto status = host.pushOwnedObject(*topic_handle, ts_ns, PJ::Span<const std::uint8_t>(blob.data(), blob.size()));
+    if (!status) {
+      return PJ::unexpected(std::move(status).error());
+    }
+    ++outcome.pushed;
+  }
+  return outcome;
+}
+
+PJ::Expected<ObjectPushOutcome> pushPoseRowsToHost(
+    const ObjectIngestContext& ctx, const std::shared_ptr<arrow::Table>& table) {
+  const PJ::sdk::ToolboxHostView& host = ctx.host;
+  const PJ::sdk::DataSourceHandle source = ctx.source;
+  const std::string& topic_name = ctx.topic_name;
+  const std::string& ts_field = ctx.ts_field;
+  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
+  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
+  if (!host.valid()) {
+    return PJ::unexpected(std::string("toolbox host not bound"));
+  }
+  if (!table) {
+    return PJ::unexpected(std::string("pose topic '") + topic_name + "': null table");
+  }
+  // position/orientation arrive as struct columns; flatten to position/x …. The
+  // `pose` ontology nests them at the top level (position/*); `motion_state`
+  // (odometry) nests them under pose/* (pose/position/*) — accept either prefix.
+  auto flat_res = flattenStructColumns(table);
+  if (!flat_res.ok()) {
+    return PJ::unexpected(
+        std::string("pose topic '") + topic_name + "': flatten failed: " + flat_res.status().ToString());
+  }
+  const std::shared_ptr<arrow::Table> flat = *flat_res;
+  std::string prefix;
+  if (flat->GetColumnByName("position/x")) {
+    prefix = "";
+  } else if (flat->GetColumnByName("pose/position/x")) {
+    prefix = "pose/";  // motion_state (odometry) nests the pose under pose/*
+  } else {
+    return PJ::unexpected(std::string("pose topic '") + topic_name + "' missing position/* columns");
+  }
+  const auto px = flat->GetColumnByName(prefix + "position/x");
+  const auto py = flat->GetColumnByName(prefix + "position/y");
+  const auto pz = flat->GetColumnByName(prefix + "position/z");
+  const auto ox = flat->GetColumnByName(prefix + "orientation/x");
+  const auto oy = flat->GetColumnByName(prefix + "orientation/y");
+  const auto oz = flat->GetColumnByName(prefix + "orientation/z");
+  const auto ow = flat->GetColumnByName(prefix + "orientation/w");
+  if (!px || !py || !pz || !ox || !oy || !oz || !ow) {
+    return PJ::unexpected(std::string("pose topic '") + topic_name + "' missing position/* or orientation/* columns");
+  }
+  const auto frame_col = flat->GetColumnByName("frame_id");
+  const auto ts_col = ts_field.empty() ? nullptr : flat->GetColumnByName(ts_field);
+
+  auto topic_handle = host.registerObjectTopic(source, topic_name, kCanonicalPosesInFrameMetadata);
+  if (!topic_handle) {
+    return PJ::unexpected(std::move(topic_handle).error());
+  }
+
+  ObjectPushOutcome outcome;
+  const std::int64_t num_rows = flat->num_rows();
+  for (std::int64_t row = 0; row < num_rows; ++row) {
+    const std::int64_t ts_ns = ts_col ? arrowI64At(ts_col, row) : (synth_anchor_ns + row * synth_interval_ns);
+    PJ::sdk::Pose pose;
+    pose.position =
+        PJ::sdk::Vector3{.x = arrowDoubleAt(px, row), .y = arrowDoubleAt(py, row), .z = arrowDoubleAt(pz, row)};
+    pose.orientation = PJ::sdk::Quaternion{
+        .x = arrowDoubleAt(ox, row),
+        .y = arrowDoubleAt(oy, row),
+        .z = arrowDoubleAt(oz, row),
+        .w = arrowDoubleAt(ow, row)};
+
+    PJ::sdk::PosesInFrame poses;
+    poses.timestamp_ns = ts_ns;
+    poses.frame_id = frame_col ? arrowStringAt(frame_col, row) : std::string{};
+    poses.poses.push_back(pose);
+    const std::vector<std::uint8_t> blob = PJ::serializePosesInFrame(poses);
     auto status = host.pushOwnedObject(*topic_handle, ts_ns, PJ::Span<const std::uint8_t>(blob.data(), blob.size()));
     if (!status) {
       return PJ::unexpected(std::move(status).error());
