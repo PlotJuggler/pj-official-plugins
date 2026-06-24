@@ -1,3 +1,4 @@
+#include <pj_array_policy/array_policy.hpp>
 #include <pj_base/builtin/builtin_object.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 
@@ -19,9 +20,10 @@
 #include "mcap_manifest.hpp"
 
 // Vendored parallel-reader fork (contrib/mcap/). Pulled in after reader.hpp
-// so MCAP_IMPLEMENTATION already lit up reader.inl; parallel reader is fully
-// inline and stacks on top. message_byte_store.hpp adds the optional
-// deferred-byte (hot/cold lazy) layer on top of the parallel reader.
+// with MCAP_IMPLEMENTATION already defined, so parallel_reader.hpp's trailing
+// #include "parallel_reader.inl" compiles the parallel-reader bodies here (the
+// same .hpp/.inl split the rest of the library uses). message_byte_store.hpp
+// adds the optional deferred-byte (hot/cold lazy) layer on top.
 #include <mcap/message_byte_store.hpp>  // NOLINT(build/include_order)
 #include <mcap/parallel_reader.hpp>     // NOLINT(build/include_order)
 
@@ -127,9 +129,9 @@ class McapSource : public PJ::FileSourceBase {
     }
     (void)runtimeHost().progressStart("Importing MCAP", total_messages, true);
 
-    // Parser config comes entirely from the embedded parser dialog
-    // (pj_parser_slot). Empty when no override is set (first run / old config),
-    // so the parser falls back to its own defaults.
+    // Parser config starts with the embedded parser dialog (pj_parser_slot) when
+    // present, then MCAP-level controls apply consistently to every selected
+    // channel.
     nlohmann::json parser_config = nlohmann::json::object();
     if (!parser_config_override_.empty()) {
       auto parsed_config = nlohmann::json::parse(parser_config_override_, nullptr, false);
@@ -137,6 +139,9 @@ class McapSource : public PJ::FileSourceBase {
         parser_config = std::move(parsed_config);
       }
     }
+    pj::array_policy::arrayLimitToJson(
+        parser_config, static_cast<uint32_t>(dialog_.maxArraySize()), dialog_.clampLargeArrays());
+    parser_config["use_embedded_timestamp"] = dialog_.useHeaderTimestamp();
 
     // --- Ensure parser bindings for selected channels ---
     const auto& selected = dialog_.selectedTopics();
@@ -235,7 +240,7 @@ class McapSource : public PJ::FileSourceBase {
 
     uint64_t msg_count = 0;
     uint64_t consecutive_push_failures = 0;
-    const bool use_log_time = dialog_.useTimestamp();
+    const bool use_log_time = dialog_.useLogTime();
 
     // Authoritative recording window (log-time envelope) from the MCAP summary,
     // already read by parallel_reader.open(). Header (publishTime) stamps that
@@ -284,7 +289,7 @@ class McapSource : public PJ::FileSourceBase {
           // a latched / long-running publisher (static TF, robot_description, a map
           // computed hours/days earlier); pin those to the recording's first
           // timestamp (log_window_min) so the data is valid from the very start of
-          // playback rather than at its own arrival offset. useTimestamp() forces
+          // playback rather than at its own arrival offset. useLogTime() forces
           // the message's own logTime unconditionally.
           const uint64_t pub_time = mv.message.publishTime;
           const bool header_in_window = pub_time >= log_window_min && pub_time <= log_window_max;
