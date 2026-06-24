@@ -51,6 +51,12 @@ class PjOfficialPluginsConan(ConanFile):
         f"plotjuggler_sdk/{_SDK_VERSION}",
     )
 
+    # Build-context protobuf so the Conan protoc (6.33.5) lands on the build
+    # PATH and protobuf_generate()'s find_program(protoc) in parser_protobuf
+    # resolves to it, NOT the system /usr/bin/protoc (3.21) — whose generated C++
+    # is ABI-incompatible with the libprotobuf 6.x headers we link against.
+    tool_requires = ("protobuf/6.33.5",)
+
     default_options = {
         "*:shared": False,
         "arrow/*:parquet": True,
