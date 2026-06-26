@@ -31,4 +31,16 @@ inline constexpr std::string_view kCanonicalPointCloudMetadata = R"({"builtin_ob
 // `motion_state` (odometry) ontologies.
 inline constexpr std::string_view kCanonicalPosesInFrameMetadata = R"({"builtin_object_type":"kPosesInFrame"})";
 
+// sdk::FrameTransforms — TF-style frame relationships. The Mosaico `transform`
+// and `frame_transform` ontologies.
+inline constexpr std::string_view kCanonicalFrameTransformsMetadata = R"({"builtin_object_type":"kFrameTransforms"})";
+
+// sdk::OccupancyGrid — 2D metric map/costmap. The Mosaico `occupancy_grid`
+// ontology (same builtin the ROS/MCAP path uses for nav_msgs/OccupancyGrid).
+inline constexpr std::string_view kCanonicalOccupancyGridMetadata = R"({"builtin_object_type":"kOccupancyGrid"})";
+
+// sdk::SceneEntities — procedural 3D primitives. The Mosaico `grid_cells`
+// ontology renders each marked cell as one flat cube.
+inline constexpr std::string_view kCanonicalSceneEntitiesMetadata = R"({"builtin_object_type":"kSceneEntities"})";
+
 }  // namespace mosaico

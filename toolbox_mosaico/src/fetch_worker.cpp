@@ -388,9 +388,14 @@ void FetchWorker::pullTopicsAsync(
     const bool is_image = isImageOntology(ontology_tag);
     const bool is_point_cloud = isPointCloudOntology(ontology_tag);
     const bool is_pose = isPoseOntology(ontology_tag);
+    const bool is_transform = isTransformOntology(ontology_tag);
+    const bool is_occupancy_grid = isOccupancyGridOntology(ontology_tag);
+    const bool is_laser_scan = isLaserScanOntology(ontology_tag);
+    const bool is_grid_cells = isGridCellsOntology(ontology_tag);
+    const bool is_futures_cloud = isFuturesPointCloudOntology(ontology_tag);
     // Canonicalized into a pj_base builtin object (ObjectStore route) instead of
     // scalar columns. These share the single object-push critical section below.
-    const bool is_object = is_image || is_point_cloud || is_pose;
+    const bool is_object = isCanonicalObjectOntology(ontology_tag);
 
     // Determine the timestamp column. Image (and similar media) ontologies
     // ship without per-row timestamps on the wire — the server uses the
@@ -460,7 +465,28 @@ void FetchWorker::pullTopicsAsync(
         if (is_point_cloud) {
           return pushPointCloudRowsToHost(ctx, table);
         }
-        return pushPoseRowsToHost(ctx, table);
+        if (is_pose) {
+          return pushPoseRowsToHost(ctx, table);
+        }
+        if (is_transform) {
+          return pushFrameTransformsRowsToHost(ctx, table);
+        }
+        if (is_occupancy_grid) {
+          return pushOccupancyGridRowsToHost(ctx, table);
+        }
+        if (is_laser_scan) {
+          return pushLaserScanRowsToHost(ctx, table);
+        }
+        if (is_grid_cells) {
+          return pushGridCellsRowsToHost(ctx, table);
+        }
+        if (is_futures_cloud) {
+          return pushColumnarPointCloudRowsToHost(ctx, table);
+        }
+        // Unreachable: is_object (isCanonicalObjectOntology) gates entry, so one
+        // branch above always matches. Defensive fallback for a canonical tag
+        // added to the routing predicates but not wired to a push helper here.
+        return PJ::unexpected(std::string("unhandled canonical ontology '") + ontology_tag + "'");
       }();
       if (!pushed) {
         finish(false, pushed.error());

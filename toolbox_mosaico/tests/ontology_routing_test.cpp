@@ -16,7 +16,15 @@
 
 namespace {
 
+using mosaico::isCanonicalObjectOntology;
+using mosaico::isFuturesPointCloudOntology;
+using mosaico::isGridCellsOntology;
 using mosaico::isImageOntology;
+using mosaico::isLaserScanOntology;
+using mosaico::isOccupancyGridOntology;
+using mosaico::isPointCloudOntology;
+using mosaico::isPoseOntology;
+using mosaico::isTransformOntology;
 using mosaico::resolveOntologyTag;
 
 // A schema carrying a server ontology tag in mosaico:properties.
@@ -68,6 +76,38 @@ TEST(OntologyRouting, RawVsCompressedDistinguishedByTag) {
 TEST(OntologyRouting, NullSchemaAndEmptyTagYieldEmpty) {
   EXPECT_EQ(resolveOntologyTag(nullptr, ""), "");
   EXPECT_FALSE(isImageOntology(resolveOntologyTag(nullptr, "")));
+}
+
+// The 3D-object ontologies each route to exactly one classifier, and all of
+// them count as canonical objects (vs falling through to the scalar pipeline).
+TEST(OntologyRouting, NewObjectOntologiesClassify) {
+  EXPECT_TRUE(isTransformOntology("transform"));
+  EXPECT_TRUE(isTransformOntology("frame_transform"));
+  EXPECT_TRUE(isOccupancyGridOntology("occupancy_grid"));
+  EXPECT_TRUE(isLaserScanOntology("laser_scan"));
+  EXPECT_TRUE(isGridCellsOntology("grid_cells"));
+  for (const std::string tag : {"lidar", "radar", "rgbd_camera", "tof_camera", "stereo_camera"}) {
+    EXPECT_TRUE(isFuturesPointCloudOntology(tag)) << tag;
+    EXPECT_TRUE(isCanonicalObjectOntology(tag)) << tag;
+  }
+  for (const std::string tag : {"transform", "frame_transform", "occupancy_grid", "laser_scan", "grid_cells"}) {
+    EXPECT_TRUE(isCanonicalObjectOntology(tag)) << tag;
+  }
+}
+
+// The classifiers are mutually exclusive and don't bleed into the existing
+// image/point_cloud/pose routes (or vice-versa).
+TEST(OntologyRouting, NewObjectOntologiesAreDisjoint) {
+  EXPECT_FALSE(isTransformOntology("occupancy_grid"));
+  EXPECT_FALSE(isOccupancyGridOntology("grid_cells"));
+  EXPECT_FALSE(isLaserScanOntology("lidar"));  // futures cloud, not a scan
+  EXPECT_FALSE(isFuturesPointCloudOntology("point_cloud2"));
+  EXPECT_FALSE(isPointCloudOntology("laser_scan"));  // packed vs polar-expanded
+  EXPECT_FALSE(isPoseOntology("transform"));
+  EXPECT_FALSE(isImageOntology("occupancy_grid"));
+  // Unknown tags stay scalar.
+  EXPECT_FALSE(isCanonicalObjectOntology("imu"));
+  EXPECT_FALSE(isCanonicalObjectOntology(""));
 }
 
 }  // namespace
