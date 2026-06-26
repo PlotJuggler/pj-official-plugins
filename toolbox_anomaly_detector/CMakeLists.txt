@@ -16,6 +16,7 @@ target_compile_options(toolbox_anomaly_detector_plugin PRIVATE ${PJ_WARNING_FLAG
 target_link_libraries(toolbox_anomaly_detector_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk
   anomaly_helpers
+  pj_toolbox_preview
   nlohmann_json::nlohmann_json
   ${CMAKE_DL_LIBS}
 )

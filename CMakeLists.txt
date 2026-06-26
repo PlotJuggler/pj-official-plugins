@@ -18,6 +18,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/array_policy)
   add_subdirectory(common/laser_scan)
   add_subdirectory(common/pointcloud_color)
+  add_subdirectory(common/toolbox_preview)
 
   # Enabled entries track the v4 ABI (PJ_ABI_VERSION == 4): service-
   # registry API, Arrow C Data Interface at the write boundary, and the
@@ -149,6 +150,17 @@ add_subdirectory(common/pj_video_demux)
 add_subdirectory(common/array_policy)
 add_subdirectory(common/laser_scan)
 add_subdirectory(common/pointcloud_color)
+
+# Shared toolbox-preview engine: only the generator toolboxes consume it, so in
+# single-plugin (CI) mode add it only when building one of those plugins.
+set(PJ_TOOLBOX_PREVIEW_CONSUMERS toolbox_anomaly_detector)
+if(DEFINED PJ_BUILD_PLUGIN)
+  if(PJ_BUILD_PLUGIN IN_LIST PJ_TOOLBOX_PREVIEW_CONSUMERS)
+    add_subdirectory(common/toolbox_preview)
+  endif()
+else()
+  add_subdirectory(common/toolbox_preview)
+endif()
 
 # ---------------------------------------------------------------------------
 # Plugins — use -DPJ_BUILD_PLUGIN=<dir> to build a single plugin (CI mode),

@@ -16,6 +16,7 @@
 // (catalogSnapshot + readSeries) and write objects. The detection logic itself is
 // GUI-free and lives in anomaly_core; this file is only the host + dialog wiring.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -38,17 +39,27 @@
 #include "anomaly_detector_dialog_ui.hpp"
 #include "anomaly_detector_manifest.hpp"
 #include "core/anomaly_helpers.hpp"
+#include "toolbox_preview/ephemeral_preview.hpp"  // PreviewBackend, EphemeralPreview, PreviewOverlay
+#include "toolbox_preview/series_catalog.hpp"     // SeriesCatalog
 
 namespace {
 
-// --- PlotMarker -> chart-preview marker conversion --------------------------
-// Mirrors PlotMarkersItem's severity palette so the preview matches the plot.
+// --- PlotMarkers -> chart overlay (this plugin's "render the generator's output") ---
+// The generic toolbox_preview lib renders the INPUT source curve; rendering the OUTPUT is
+// the backend's job, so the markers-specific mapping lives here, not in the shared lib.
+
+// Upper bound on markers drawn in the LIVE preview. A noisy rule can emit one marker per
+// sample; the panel re-serializes the overlay to JSON every 20 Hz tick, so an unbounded set
+// pegs the UI. The committed (Apply) markers are NOT capped — only this in-dialog preview.
+constexpr std::size_t kPreviewMarkerCap = 2000;
+
 std::string colorHex(int r, int g, int b) {
   char buf[8];
   std::snprintf(buf, sizeof(buf), "#%02x%02x%02x", r, g, b);
   return std::string(buf);
 }
 
+// Mirrors PlotMarkersItem's severity palette so the preview matches the plot overlay.
 std::string markerColorHex(const PJ::sdk::PlotMarker& m) {
   if (m.color.a != 0) {
     return colorHex(m.color.r, m.color.g, m.color.b);
@@ -78,6 +89,63 @@ const char* markerKindName(PJ::sdk::MarkerKind k) {
       return "label";
   }
   return "event";
+}
+
+// Convert a host-published PlotMarkers set into chart-overlay markers, rebased to
+// seconds-from-`t0_ns`. Over `max_markers`, stride-decimate (same approach as the source
+// curve's downsampleToChart) to keep the per-tick serialization bounded.
+std::vector<PJ::ChartMarker> markersToChart(
+    const PJ::sdk::PlotMarkers& markers, double t0_ns, std::size_t max_markers = kPreviewMarkerCap) {
+  const std::size_t n = markers.markers.size();
+  const std::size_t stride = (max_markers > 0 && n > max_markers) ? (n / max_markers) : 1;
+  std::vector<PJ::ChartMarker> out;
+  out.reserve(n / stride + 1);
+  for (std::size_t i = 0; i < n; i += stride) {
+    const auto& m = markers.markers[i];
+    PJ::ChartMarker cm;
+    cm.kind = markerKindName(m.kind);
+    cm.x0 = (static_cast<double>(m.t_start) - t0_ns) / 1e9;
+    cm.x1 = (static_cast<double>(m.t_end) - t0_ns) / 1e9;
+    cm.y0 = m.value_low;
+    cm.y1 = m.value_high;
+    cm.has_value = m.has_value;
+    cm.color = markerColorHex(m);
+    cm.label = m.label;
+    out.push_back(std::move(cm));
+  }
+  return out;
+}
+
+// The series a rule reads, parsed from its literal series("...") / series('...') calls.
+// The host materializes EVERY declared generator input whole-series on each run, so a
+// generator must declare only what the rule actually touches — declaring the whole catalog
+// re-materializes the entire dataset on the GUI thread (the preview-freeze cause). Dynamic
+// names (series("x"..var)) aren't seen; anomaly rules use literal keys.
+std::vector<std::string> parseSeriesRefs(const std::string& code) {
+  std::vector<std::string> refs;
+  const std::string token = "series(";
+  std::size_t pos = 0;
+  while ((pos = code.find(token, pos)) != std::string::npos) {
+    pos += token.size();
+    while (pos < code.size() && (code[pos] == ' ' || code[pos] == '\t')) {
+      ++pos;
+    }
+    if (pos >= code.size() || (code[pos] != '"' && code[pos] != '\'')) {
+      continue;  // not a string-literal argument
+    }
+    const char quote = code[pos++];
+    const std::size_t start = pos;
+    while (pos < code.size() && code[pos] != quote) {
+      ++pos;
+    }
+    if (pos > start && pos < code.size()) {
+      std::string name = code.substr(start, pos - start);
+      if (std::find(refs.begin(), refs.end(), name) == refs.end()) {
+        refs.push_back(std::move(name));  // dedup so the host materializes each series once
+      }
+    }
+  }
+  return refs;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +192,9 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
       cs.label = selected_source_;
       cs.points = preview_provider_(selected_source_);
       wd.setChartSeries("preview_chart", std::vector<PJ::ChartSeries>{cs});
+      // Interactive zoom (rubber band + mouse wheel) on the host ChartPreviewWidget; off by
+      // default, so it must be re-declared each tick while the chart is shown.
+      wd.setChartZoomEnabled("preview_chart", true);
       // Always push markers (empty when the rule yields none) so a source/rule change
       // clears the previous overlay instead of leaving stale markers behind.
       if (marker_provider_) {
@@ -297,6 +368,12 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     on_tick_ = std::move(cb);
   }
 
+  // The source curve currently selected in the panel — read by the toolbox's tick
+  // handler so it can live-refresh just that one series while streaming.
+  const std::string& selectedSource() const {
+    return selected_source_;
+  }
+
  private:
   // Write the current rule (script + source) to the chosen path as a portable JSON
   // file. The Save-as picker already let the user create/select the file; we just
@@ -344,15 +421,16 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
 // torn down with remove()). The host namespaces it under this plugin.
 constexpr std::string_view kPreviewId = "preview";
 
-class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase {
+// The toolbox IS the preview's `PreviewBackend`: the shared `EphemeralPreview` calls
+// back into submitPreview/readPreviewOverlay/removePreview (the only marker-specific part
+// of the preview — which host service, and how the output renders).
+class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_preview::PreviewBackend {
  public:
   // Tear down the live preview's ephemeral object topic on unload. The host (and its
   // markers service) outlives the plugin instance during teardown, so this is safe; a
   // torn-down/unbound service simply yields no view and the call is skipped.
   ~AnomalyDetectorToolbox() override {
-    if (auto gens = services().get<PJ::sdk::GeneratorsHostService>()) {
-      (void)gens->remove(kPreviewId);  // tear down the ephemeral preview generator
-    }
+    removePreview();  // tear down the ephemeral preview generator
   }
 
   uint64_t capabilities() const override {
@@ -363,16 +441,17 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase {
     dialog_.setRunCallback([this](const std::string& code, const std::string& source, bool global, bool all_datasets) {
       return runScript(code, source, global, all_datasets);
     });
-    dialog_.setPreviewProvider([this](const std::string& name) { return previewPoints(name); });
+    dialog_.setPreviewProvider([this](const std::string& name) { return catalog_.points(name); });
     dialog_.setMarkerProvider([this](const std::string& code, const std::string& source, std::string& error) {
       std::vector<PJ::ChartMarker> markers = previewMarkers(code, source);
       error = preview_error_;
       return markers;
     });
-    // Refresh the catalog on every panel tick (cheap unless the catalog changed) so a
-    // dataset loaded after the panel opened appears in the source list without reopening.
-    dialog_.setOnTick([this]() { refreshCatalogIfChanged(); });
-    refreshCatalogIfChanged();  // initial fill
+    // Refresh the catalog on every panel tick (cheap unless the structure changed) so a
+    // dataset loaded after the panel opened appears in the source list without reopening,
+    // then live-refresh the selected source's samples so the streaming preview follows.
+    dialog_.setOnTick([this]() { onTick(); });
+    onTick();  // initial fill
     return PJ::borrowDialog(dialog_);
   }
 
@@ -386,158 +465,91 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase {
   }
 
  private:
-  // Cheap guard around the expensive refreshCatalog(): only re-read all series when
-  // the catalog metadata actually changed (dataset/series added or removed). Safe to
-  // call every panel tick. catalogSnapshot() is a zero-copy metadata view.
-  void refreshCatalogIfChanged() {
+  // Panel tick (~20 Hz): keep the source list current when the catalog STRUCTURE
+  // changes, and live-refresh the selected source's samples so the streaming preview
+  // follows the window. Both are cheap no-ops when nothing changed.
+  void onTick() {
     if (!toolboxHostBound()) {
       return;
     }
-    auto catalog = toolboxHost().catalogSnapshot();
-    if (!catalog) {
-      return;
+    if (catalog_.refreshStructureIfChanged(toolboxHost())) {
+      dialog_.setSeriesNames(catalog_.names());
+      preview_.markDirty();  // a new series the rule references may have appeared
     }
-    std::uint64_t sig = 1469598103934665603ull;  // FNV offset basis as a seed
-    for (const auto& ds : catalog->dataSources()) {
-      sig = (sig ^ ds.handle.id) * 1099511628211ull;
-    }
-    for (const auto& topic : catalog->topics()) {
-      sig = (sig ^ (static_cast<std::uint64_t>(topic.source.id) << 32 | topic.field_count)) * 1099511628211ull;
-    }
-    if (sig == last_catalog_sig_) {
-      return;
-    }
-    last_catalog_sig_ = sig;
-    refreshCatalog();
+    catalog_.refreshSelectedSourceData(toolboxHost(), dialog_.selectedSource());
   }
 
-  void refreshCatalog() {
-    if (!toolboxHostBound()) {
-      return;
-    }
-    auto host = toolboxHost();
-    auto catalog = host.catalogSnapshot();
-    if (!catalog) {
-      return;
-    }
-    series_map_.clear();
-    series_names_.clear();
-    const auto all_fields = catalog->fields();
-    for (const auto& topic : catalog->topics()) {
-      const std::string topic_name(PJ::sdk::toStringView(topic.name));
-      for (uint32_t fi = topic.first_field; fi < topic.first_field + topic.field_count; ++fi) {
-        const auto& f = all_fields[fi];
-        // Build the key with markerSeriesKey so it matches the plot overlay's
-        // per-series key exactly (so per-series markers land on the right curve).
-        std::string name = PJ::sdk::markerSeriesKey(topic_name, PJ::sdk::toStringView(f.name));
-        series_names_.push_back(name);
-        auto series = host.readSeries(f.handle);
-        if (series && series->type() == PJ::PrimitiveType::kFloat64) {
-          const auto ts = series->timestamps();
-          const double* values = series->valuesAsFloat64();
-          const size_t count = ts.size();
-          if (values != nullptr) {
-            SeriesData sa;
-            sa.timestamps.resize(count);
-            for (size_t i = 0; i < count; ++i) {
-              sa.timestamps[i] = static_cast<double>(ts[i]);  // int64 ns -> double
-            }
-            sa.values.assign(values, values + count);  // already double: bulk copy
-            series_map_[name] = std::move(sa);
-          }
-        }
-      }
-    }
-    dialog_.setSeriesNames(series_names_);
-  }
-
-  // Preview points for a series: time rebased to seconds-from-start, downsampled
-  // to a manageable count for the chart.
-  std::vector<PJ::ChartPoint> previewPoints(const std::string& name) {
-    std::vector<PJ::ChartPoint> pts;
-    auto it = series_map_.find(name);
-    if (it == series_map_.end() || it->second.timestamps.empty()) {
-      return pts;
-    }
-    const auto& sa = it->second;
-    const double t0 = sa.timestamps.front();
-    const size_t n = sa.timestamps.size();
-    constexpr size_t kMaxPoints = 2000;
-    const size_t stride = (n > kMaxPoints) ? (n / kMaxPoints) : 1;
-    pts.reserve(n / stride + 1);
-    for (size_t i = 0; i < n; i += stride) {
-      pts.push_back(PJ::ChartPoint{(sa.timestamps[i] - t0) / 1e9, sa.values[i]});
-    }
-    return pts;
-  }
-
-  // HOST-DRIVEN preview: submit the rule to the host as an EPHEMERAL generator, the
-  // host runs it (the SAME engine the committed path + the headless runner use) and we
-  // read the resulting markers back from the preview object topic. No Lua in the
-  // plugin → preview and commit are identical by construction. Markers are returned in
-  // the preview's X units (seconds-from-start, same t0 as previewPoints). A bad rule /
-  // unavailable service yields no overlay — the preview just shows the curve.
+  // The dialog's marker overlay: run the rule as an ephemeral generator (change-gated by
+  // EphemeralPreview) and read the host-published markers back, rebased to the source's
+  // t0. `preview_error_` carries a rule compile/runtime error for the status line.
   std::vector<PJ::ChartMarker> previewMarkers(const std::string& code, const std::string& source) {
-    preview_error_.clear();
-    std::vector<PJ::ChartMarker> out;
-    auto it = series_map_.find(source);
-    if (code.empty() || it == series_map_.end() || it->second.timestamps.empty()) {
-      return out;
+    if (code.empty() || !catalog_.has(source)) {
+      preview_error_.clear();
+      return {};
     }
-    const double t0 = it->second.timestamps.front();
+    toolbox_preview::PreviewOverlay overlay =
+        preview_.refresh(*this, code, source, catalog_.t0(source), catalog_.dataRevision(), &preview_error_);
+    return std::move(overlay.markers);
+  }
 
-    auto gens_service = services().get<PJ::sdk::GeneratorsHostService>();
+  // --- toolbox_preview::PreviewBackend (the marker-specific "what it generates / where") ---
+
+  // Submit/replace the ephemeral marker generator (kind=markers, EPHEMERAL): the host
+  // runs the rule, auto-names a preview marker object topic, and returns it. An empty
+  // string means "not available right now" (host service unbound) — retried next tick.
+  PJ::Expected<std::string> submitPreview(const std::string& code) override {
+    auto gens = services().get<PJ::sdk::GeneratorsHostService>();
+    if (!gens) {
+      return std::string{};
+    }
+    // Declare ONLY the series the rule reads (parsed from its series("...") calls), not the
+    // whole catalog: the host materializes every declared input whole-series on each run, so
+    // declaring all N would re-materialize the entire dataset on the GUI thread (the freeze).
+    // Built here (only on a re-submit), not every tick.
+    const std::vector<std::string> refs = parseSeriesRefs(code);
+    const std::vector<std::string_view> inputs(refs.begin(), refs.end());
+    const PJ::Expected<std::vector<std::string>> topics = gens->createMarkerGenerator(
+        kPreviewId, inputs, /*output_marker_topic=*/"", code, "{}", PJ_GENERATOR_FLAG_EPHEMERAL);
+    if (!topics) {
+      return PJ::unexpected(topics.error());  // compile/runtime rule error → surfaced
+    }
+    if (topics->empty()) {
+      return std::string{};
+    }
+    return topics->front();
+  }
+
+  // Read the latest PlotMarkers from the preview object topic and render them as chart
+  // markers. The host keeps this topic fresh on every commit, so between rule edits the
+  // overlay just follows the stream (no script re-run here).
+  toolbox_preview::PreviewOverlay readPreviewOverlay(const std::string& topic, double t0_ns) override {
+    toolbox_preview::PreviewOverlay overlay;
     const PJ::sdk::ToolboxObjectReadHostView* reader = objectReadHost();
-    if (!gens_service || reader == nullptr) {
-      return out;
+    if (reader == nullptr) {
+      return overlay;
     }
-    std::vector<std::string_view> inputs;
-    inputs.reserve(series_names_.size());
-    for (const std::string& name : series_names_) {
-      inputs.push_back(name);
-    }
-    // Ephemeral preview generator (kind=markers, EPHEMERAL flag): the host runs the
-    // rule, auto-names a preview marker object topic, and returns it — read back below.
-    // Replaces the old dedicated setPreview verb with the unified create + flag.
-    const PJ::Expected<std::vector<std::string>> preview_topics = gens_service->createMarkerGenerator(
-        kPreviewId, PJ::Span<const std::string_view>(inputs), /*output_marker_topic=*/"", code, "{}",
-        PJ_GENERATOR_FLAG_EPHEMERAL);
-    if (!preview_topics) {
-      preview_error_ = preview_topics.error();  // compile/runtime rule error → surface it
-      return out;
-    }
-    if (preview_topics->empty()) {
-      return out;
-    }
-    const std::string& preview_topic = preview_topics->front();
-    const std::optional<PJ::sdk::ObjectTopicHandle> handle = reader->lookupTopic(preview_topic);
+    const std::optional<PJ::sdk::ObjectTopicHandle> handle = reader->lookupTopic(topic);
     if (!handle) {
-      return out;
+      return overlay;
     }
     const PJ::Expected<PJ::sdk::ObjectBytes> bytes = reader->readLatestAt(*handle, PJ::Timestamp{0});
     if (!bytes || bytes->empty()) {
-      return out;
+      return overlay;
     }
     const PJ::Span<const uint8_t> view = bytes->view();
     const PJ::Expected<PJ::sdk::PlotMarkers> decoded = PJ::deserializePlotMarkers(view.data(), view.size());
     if (!decoded) {
-      return out;
+      return overlay;
     }
+    overlay.markers = markersToChart(*decoded, t0_ns);
+    return overlay;
+  }
 
-    out.reserve(decoded->markers.size());
-    for (const auto& m : decoded->markers) {
-      PJ::ChartMarker cm;
-      cm.kind = markerKindName(m.kind);
-      cm.x0 = (static_cast<double>(m.t_start) - t0) / 1e9;
-      cm.x1 = (static_cast<double>(m.t_end) - t0) / 1e9;
-      cm.y0 = m.value_low;
-      cm.y1 = m.value_high;
-      cm.has_value = m.has_value;
-      cm.color = markerColorHex(m);
-      cm.label = m.label;
-      out.push_back(std::move(cm));
+  // Tear down the ephemeral preview generator (dialog/toolbox teardown).
+  void removePreview() override {
+    if (auto gens = services().get<PJ::sdk::GeneratorsHostService>()) {
+      (void)gens->remove(kPreviewId);
     }
-    return out;
   }
 
   // Submit the rule to the HOST as a marker generator (pj.generators.v1, kind=markers).
@@ -557,7 +569,7 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase {
     if (!toolboxHostBound()) {
       return "Error: toolbox host not bound";
     }
-    refreshCatalog();  // populate series_names_ so the host can resolve the inputs
+    catalog_.refresh(toolboxHost());  // populate the series list so the host can resolve the inputs
 
     auto gens_service = services().get<PJ::sdk::GeneratorsHostService>();
     if (!gens_service) {
@@ -570,13 +582,11 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase {
     }
     const std::string target = global ? std::string(PJ::sdk::kGlobalMarkerTopic) : source;
 
-    // Expose every known series as an input so a rule may reference any of them via
-    // series("..."), matching the in-process provider's whole-catalog visibility.
-    std::vector<std::string_view> inputs;
-    inputs.reserve(series_names_.size());
-    for (const std::string& name : series_names_) {
-      inputs.push_back(name);
-    }
+    // Declare ONLY the series the rule reads (see parseSeriesRefs), same as the preview, so
+    // Apply and preview stay identical AND the host doesn't materialize the whole dataset
+    // whole-series on every run/commit-recompute.
+    const std::vector<std::string> refs = parseSeriesRefs(code);
+    std::vector<std::string_view> inputs(refs.begin(), refs.end());
 
     // {"scope":"all"} tells the host to publish a global marker across every dataset.
     const bool global_all = global && all_datasets;
@@ -597,18 +607,13 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase {
   }
 
   AnomalyDetectorDialog dialog_;
-  // One source series' samples (timestamps in ns + values), read from the toolbox
-  // host for the preview's BACKGROUND CURVE only. The plugin no longer runs scripts,
-  // so this is a plain data struct — not the engine's SeriesView (which lived in the
-  // now-unlinked pj_scripting_core).
-  struct SeriesData {
-    std::vector<double> timestamps;
-    std::vector<double> values;
-  };
-  std::unordered_map<std::string, SeriesData> series_map_;
-  std::vector<std::string> series_names_;
-  std::string preview_error_;                    // last preview rule error (empty on success), shown in the status
-  std::uint64_t last_catalog_sig_ = UINT64_MAX;  // forces the first refresh; guards live ticks
+  // Generic "preview a plot" engine, shared with other generator toolboxes: the source
+  // list + cached samples + streaming live-refresh, and the change-gated ephemeral
+  // generator submit/read-back. Only the marker-specific render (this class's
+  // PreviewBackend overrides) stays here.
+  toolbox_preview::SeriesCatalog catalog_;
+  toolbox_preview::EphemeralPreview preview_;
+  std::string preview_error_;  // last preview rule error (empty on success), shown in the status
 };
 
 }  // namespace
