@@ -17,7 +17,7 @@ portable JSON file that both sides consume.
 ### How it runs (one paragraph)
 
 The **GUI toolbox is host-driven and carries no script engine**: it submits the rule to
-PlotJuggler via the `pj.markers.v1` SDK service, and the host runs it, publishes the markers,
+PlotJuggler via the unified `pj.data_processors.v1` SDK service (`kind="markers"`), and the host runs it, publishes the markers,
 and re-runs them as data changes (the live preview is host-driven too). The **headless
 `anomaly_runner` is standalone**: it links the engine and runs the rule itself, so it needs no
 GUI. Both run the rule through the **same `runMarkerScript` core**, so a rule authored in the

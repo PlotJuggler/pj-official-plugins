@@ -498,7 +498,7 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
   // runs the rule, auto-names a preview marker object topic, and returns it. An empty
   // string means "not available right now" (host service unbound) — retried next tick.
   PJ::Expected<std::string> submitPreview(const std::string& code) override {
-    auto gens = services().get<PJ::sdk::GeneratorsHostService>();
+    auto gens = services().get<PJ::sdk::DataProcessorsHostService>();
     if (!gens) {
       return std::string{};
     }
@@ -508,8 +508,8 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
     // Built here (only on a re-submit), not every tick.
     const std::vector<std::string> refs = parseSeriesRefs(code);
     const std::vector<std::string_view> inputs(refs.begin(), refs.end());
-    const PJ::Expected<std::vector<std::string>> topics = gens->createMarkerGenerator(
-        kPreviewId, inputs, /*output_marker_topic=*/"", code, "{}", PJ_GENERATOR_FLAG_EPHEMERAL);
+    const PJ::Expected<std::vector<std::string>> topics = gens->createMarkers(
+        kPreviewId, inputs, /*output_marker_topic=*/"", code, "{}", PJ_DATA_PROCESSOR_FLAG_EPHEMERAL);
     if (!topics) {
       return PJ::unexpected(topics.error());  // compile/runtime rule error → surfaced
     }
@@ -547,16 +547,16 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
 
   // Tear down the ephemeral preview generator (dialog/toolbox teardown).
   void removePreview() override {
-    if (auto gens = services().get<PJ::sdk::GeneratorsHostService>()) {
+    if (auto gens = services().get<PJ::sdk::DataProcessorsHostService>()) {
       (void)gens->remove(kPreviewId);
     }
   }
 
-  // Submit the rule to the HOST as a marker generator (pj.generators.v1, kind=markers).
+  // Submit the rule to the HOST as a marker data processor (pj.data_processors.v1, kind=markers).
   // The host owns execution: it runs the script over the requested inputs, publishes the
   // resulting PlotMarkers, and re-runs them when data changes — so markers recompute live
   // and survive this plugin's unload. The live preview is ALSO host-driven (an ephemeral
-  // generator via createMarkerGenerator(..., EPHEMERAL), read back through the object
+  // generator via createMarkers(..., EPHEMERAL), read back through the object
   // store), so the plugin runs NO Lua at all; the headless anomaly_runner keeps its own
   // engine, and all three run the same rule identically ("GUI == headless").
   //
@@ -571,11 +571,11 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
     }
     catalog_.refresh(toolboxHost());  // populate the series list so the host can resolve the inputs
 
-    auto gens_service = services().get<PJ::sdk::GeneratorsHostService>();
+    auto gens_service = services().get<PJ::sdk::DataProcessorsHostService>();
     if (!gens_service) {
-      return "Error: host generators service (pj.generators.v1) is unavailable";
+      return "Error: host data-processors service (pj.data_processors.v1) is unavailable";
     }
-    const PJ::sdk::GeneratorsHostView gens = *gens_service;
+    const PJ::sdk::DataProcessorsHostView gens = *gens_service;
 
     if (!global && source.empty()) {
       return "Error: select a source curve, or tick Global marker";
@@ -595,7 +595,7 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
     // Stable per-target id: re-Save upserts (replaces) the generator for that target.
     const std::string id = "rule/" + target;
     const PJ::Expected<std::vector<std::string>> submitted =
-        gens.createMarkerGenerator(id, PJ::Span<const std::string_view>(inputs), target, code, params);
+        gens.createMarkers(id, PJ::Span<const std::string_view>(inputs), target, code, params);
     if (!submitted) {
       return "Error: " + submitted.error();
     }
