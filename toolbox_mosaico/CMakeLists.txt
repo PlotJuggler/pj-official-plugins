@@ -328,6 +328,24 @@ if(BUILD_TESTING)
   )
   add_test(NAME ToolboxMosaicoQueryFilterTest COMMAND toolbox_mosaico_query_filter_test)
 
+  # Assist model: the Key/Op/Value dropdown + PLUS state machine for the metadata
+  # filter, encoding the lua.txt contract (replace-at-caret vs stage-then-PLUS).
+  # Pure header logic (query/assist.h) — no Lua, no Arrow/Flight.
+  add_executable(toolbox_mosaico_assist_test
+    tests/assist_test.cpp
+  )
+  target_link_libraries(toolbox_mosaico_assist_test PRIVATE GTest::gtest_main)
+  target_compile_features(toolbox_mosaico_assist_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_mosaico_assist_test PRIVATE
+    -Wall -Wextra -Werror
+    -Wno-conversion -Wno-unused-parameter -Wno-unused-function
+  )
+  target_include_directories(toolbox_mosaico_assist_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+  )
+  add_test(NAME ToolboxMosaicoAssistTest COMMAND toolbox_mosaico_assist_test)
+
   # Column-sort permutation (numeric vs lexicographic, stability). Header-only.
   add_executable(toolbox_mosaico_table_sort_test
     tests/table_sort_test.cpp

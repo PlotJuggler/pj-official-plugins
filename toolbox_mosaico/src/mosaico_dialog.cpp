@@ -27,6 +27,7 @@
 #include "mosaico_panel_manifest.hpp"
 #include "mosaico_panel_ui.hpp"
 #include "name_filter.h"
+#include "query/assist.h"
 #include "query/edit.h"
 #include "query/engine.h"
 #include "query/query.h"
@@ -102,7 +103,8 @@ std::string dateTimeUtc(std::int64_t ts_ns) {
 
 // --- Query-assist helpers (Key/Op/Value dropdowns) ---
 
-// Clamp a (possibly stale or -1) caret offset into [0, len].
+// Clamp a (possibly -1 / unset) caret offset into [0, text.size()]; a negative
+// value means "end of text".
 int clampQueryCursor(int cursor, const std::string& text) {
   const int n = static_cast<int>(text.size());
   return cursor < 0 ? n : (cursor > n ? n : cursor);
@@ -128,6 +130,20 @@ std::vector<std::string> schemaValues(const Schema& schema, const std::string& k
   std::sort(values.begin(), values.end());
   values.erase(std::unique(values.begin(), values.end()), values.end());
   return values;
+}
+
+// Index of `title` in `items`, or -1 (no selection / placeholder) when it is
+// empty or absent. Maps an AssistDropdown title onto a QComboBox currentIndex.
+int indexOf(const std::vector<std::string>& items, const std::string& title) {
+  if (title.empty()) {
+    return -1;
+  }
+  for (std::size_t i = 0; i < items.size(); ++i) {
+    if (items[i] == title) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
 }
 
 template <typename MapType>
@@ -448,10 +464,7 @@ std::string MosaicoDialog::widget_data() {
       state_.query_push_pending = false;
     }
     wd.setCodeLanguage("lua_queryBar", "lua");  // Lua syntax highlighting + code-editor wiring
-    // Opt into caret tracking: the Key/Op/Value dropdowns re-analyze at the
-    // caret, so we need cursor moves (not just edits) reported via
-    // onCodeChangedWithCursor. Other code editors don't opt in and so aren't
-    // re-run on every cursor move.
+    // Opt into caret tracking so direct editor changes keep query_cursor current.
     wd.setCodeCaretTracking("lua_queryBar");
 
     // Validity feedback via the plugin's Lua engine. An empty query is valid (no
@@ -463,25 +476,39 @@ std::string MosaicoDialog::widget_data() {
       wd.setFieldValid("lua_queryBar", valid, valid ? "" : "invalid syntax");
     }
 
-    // Cursor-aware Key/Op/Value assist dropdowns. analyze() the query at the
-    // caret to decide what each dropdown would insert/replace and whether it is
-    // actionable; the value list is the distinct values of the key in context.
-    // Each is reset to no-selection so picking the same item again re-fires.
+    // Key/Op/Value assist dropdowns + PLUS, driven entirely by the pure
+    // computeAssist() model (query/assist.h) against the lua.txt contract:
+    //   REPLACE — caret ON a token: that ONE dropdown is active and edits the
+    //     token in place, live, no PLUS; its title syncs to the token.
+    //   ADD — caret off a token: the dropdowns STAGE a clause (staged_*); the
+    //     Key disables once picked, Op pre-shows "==", and PLUS is the ONLY way
+    //     the staged clause reaches the editor.
+    // Each dropdown's title becomes a currentIndex into its item list (signals
+    // are blocked while widget_data is applied, so this never re-fires a pick).
     ensureQuerySchemaLocked();
     const int cursor = clampQueryCursor(state_.query_cursor, state_.query_text);
-    const CursorContext ctx = analyze(state_.query_text, cursor, state_.query_schema);
+    const AssistView assist = computeAssist(
+        state_.query_text, cursor, state_.query_schema, state_.staged_key, state_.staged_op, state_.staged_value);
 
-    wd.setItems("keyCombo", schemaKeys(state_.query_schema));
-    wd.setEnabled("keyCombo", ctx.can_pick_key());
-    wd.setCurrentIndex("keyCombo", -1);
+    const auto key_items = schemaKeys(state_.query_schema);
+    wd.setItems("keyCombo", key_items);
+    wd.setEnabled("keyCombo", assist.key.enabled);
+    wd.setCurrentIndex("keyCombo", indexOf(key_items, assist.key.title));
 
-    wd.setItems("opCombo", operators());
-    wd.setEnabled("opCombo", ctx.can_pick_op());
-    wd.setCurrentIndex("opCombo", -1);
+    const auto op_items = operators();
+    wd.setItems("opCombo", op_items);
+    wd.setEnabled("opCombo", assist.op.enabled);
+    wd.setCurrentIndex("opCombo", indexOf(op_items, assist.op.title));
 
-    wd.setItems("valCombo", schemaValues(state_.query_schema, ctx.context_key));
-    wd.setEnabled("valCombo", ctx.can_pick_value());
-    wd.setCurrentIndex("valCombo", -1);
+    const auto val_items = schemaValues(state_.query_schema, assist.value_key);
+    wd.setItems("valCombo", val_items);
+    wd.setEnabled("valCombo", assist.value.enabled);
+    wd.setCurrentIndex("valCombo", indexOf(val_items, assist.value.title));
+
+    // PLUS is the sole entry point that inserts a NEW clause (lua.txt 9): live
+    // only when a Key + Value are staged (Op defaults to "==").
+    wd.setButtonIconNamed("buttonAddClause", "add");
+    wd.setEnabled("buttonAddClause", assist.plus_enabled);
   }
 
   // RangeSlider: bounds + handle values. Once a sequence with a known time
@@ -519,9 +546,12 @@ std::string MosaicoDialog::widget_data() {
   wd.setEnabled(
       "buttonFetch", state_.connected && !state_.selected_sequence.empty() && !state_.topic_selected_rows.empty() &&
                          !state_.fetch_active);
-  // Refresh re-lists sequences without a disconnect/reconnect (PJ3
-  // main_window.cpp:933-945): live only while connected and idle.
-  wd.setEnabled("buttonRefresh", state_.connected && !state_.connecting && !state_.fetch_active);
+  // Per-column reload buttons re-list without a disconnect/reconnect (PJ3
+  // main_window.cpp:933-945): live only while connected and idle. The topic
+  // reload additionally needs a selected sequence (its topics are what reload).
+  const bool reload_live = state_.connected && !state_.connecting && !state_.fetch_active;
+  wd.setEnabled("buttonReloadSeq", reload_live);
+  wd.setEnabled("buttonReloadTopic", reload_live && !state_.selected_sequence.empty());
   wd.setEnabled("buttonCancel", state_.fetch_active);
   // Closing mid-fetch tears the worker down before allFetchesComplete runs,
   // stranding the topics that already wrote into the shared store. Force the
@@ -533,10 +563,15 @@ std::string MosaicoDialog::widget_data() {
   // back to no icon.
   wd.setButtonIconNamed("buttonConnect", "plug_connect");
   wd.setButtonIconNamed("buttonCert", "contract");
-  // Refresh uses the host's themed named-icon path (Material "Refresh"), which
-  // rasterizes via LoadSvg to a high-res master — crisp on HiDPI, unlike an
-  // inline SVG rendered to a logical-size pixmap.
-  wd.setButtonIconNamed("buttonRefresh", "refresh");
+  // Per-column reload buttons use the host's themed named-icon path (Material
+  // "Refresh"), which rasterizes via LoadSvg to a high-res master — crisp on
+  // HiDPI, unlike an inline SVG rendered to a logical-size pixmap.
+  wd.setButtonIconNamed("buttonReloadSeq", "refresh");
+  wd.setButtonIconNamed("buttonReloadTopic", "refresh");
+  // Leading magnifying-glass on the Sequences / Topics filter rows, matching
+  // the LHS "Datasets" search button (host themes it per the active palette).
+  wd.setButtonIconNamed("buttonSearchSeq", "search");
+  wd.setButtonIconNamed("buttonSearchTopic", "search");
 
   // Sequence table — Lua predicate filter + name-substring filter combine
   // to produce the visible-row set. Empty query + empty filter ⇒ all rows
@@ -603,7 +638,7 @@ std::string MosaicoDialog::widget_data() {
     if (state_.seq_selected_row >= 0) {
       wd.setSelectedRows("seqTable", {state_.seq_selected_row});
     }
-    wd.setLabel("seqHeader", fmt::format("Sequences ({}/{})", cache.visible.size(), state_.sequences.size()));
+    wd.setLabel("seqHeader", "Sequences");
   }
 
   // Topic table — name-substring filter via visible_rows. Multi-select
@@ -631,10 +666,8 @@ std::string MosaicoDialog::widget_data() {
     }
     if (state_.topics_loading) {
       wd.setLabel("topicHeader", "Topics — loading…");
-    } else if (state_.topic_names.empty()) {
-      wd.setLabel("topicHeader", "Topics");
     } else {
-      wd.setLabel("topicHeader", fmt::format("Topics ({})", state_.topic_names.size()));
+      wd.setLabel("topicHeader", "Topics");
     }
   }
 
@@ -835,22 +868,70 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
     postCommand([w = worker_.get(), uri, creds] { w->connectAsync(uri, creds); });
     return true;
   }
-  if (widget_name == "buttonRefresh") {
+  if (widget_name == "buttonReloadSeq") {
     // Re-list sequences without a disconnect/reconnect (PJ3 onRefreshClicked,
-    // main_window.cpp:933-945). No-op unless connected and idle.
+    // main_window.cpp:933-945). When a sequence is selected (its topics are
+    // showing), also re-list that sequence's topics so the right column refreshes
+    // alongside the left. No-op unless connected and idle.
+    std::string seq;
     {
       std::lock_guard<std::mutex> lock(state_.mu);
       if (!state_.connected || state_.connecting || state_.fetch_active) {
         return true;
       }
+      seq = state_.selected_sequence;
+      if (!seq.empty()) {
+        state_.topics_loading = true;  // header shows "loading…" until topicsReady
+      }
     }
-    notify(PJ::ToolboxMessageLevel::kInfo, "Refreshing sequences…");
+    notify(PJ::ToolboxMessageLevel::kInfo, "Reloading sequences…");
     postCommand([w = worker_.get()] { w->listSequencesAsync(); });
+    if (!seq.empty()) {
+      postCommand([w = worker_.get(), seq] { w->listTopicsAsync(seq); });
+    }
+    return true;
+  }
+  if (widget_name == "buttonReloadTopic") {
+    // Re-list only the selected sequence's topics. No-op unless connected, idle,
+    // and a sequence is selected.
+    std::string seq;
+    {
+      std::lock_guard<std::mutex> lock(state_.mu);
+      if (!state_.connected || state_.connecting || state_.fetch_active) {
+        return true;
+      }
+      seq = state_.selected_sequence;
+      if (seq.empty()) {
+        return true;
+      }
+      state_.topics_loading = true;  // header shows "loading…" until topicsReady
+    }
+    notify(PJ::ToolboxMessageLevel::kInfo, "Reloading topics…");
+    postCommand([w = worker_.get(), seq] { w->listTopicsAsync(seq); });
     return true;
   }
   if (widget_name == "buttonCert") {
     std::lock_guard<std::mutex> lock(state_.mu);
     state_.open_cert_pending = true;
+    return true;
+  }
+  if (widget_name == "buttonAddClause") {
+    // PLUS is the SOLE entry that inserts a NEW clause (lua.txt 3,9). It commits
+    // the staged Key/Op/Value triple: build `key op "value"` and append it to the
+    // current query, joined with " and " when a filter is already present. Op
+    // defaults to "==" when the user never overrode it. After committing, the
+    // staged slots reset and the caret lands at the end (a fresh ADD position).
+    std::lock_guard<std::mutex> lock(state_.mu);
+    if (state_.staged_key.empty() || state_.staged_value.empty()) {
+      return true;  // PLUS only fires with a complete staged clause (mirrors plus_enabled)
+    }
+    const std::string op = state_.staged_op.empty() ? std::string(kDefaultOp) : state_.staged_op;
+    state_.query_text = commitClause(state_.query_text, state_.staged_key, op, state_.staged_value);
+    state_.query_cursor = static_cast<int>(state_.query_text.size());
+    state_.query_push_pending = true;  // push the rewritten text + caret back to the editor
+    state_.staged_key.clear();
+    state_.staged_op.clear();
+    state_.staged_value.clear();
     return true;
   }
   // Regex-mode toggles (checkable PushButtons): one click = one toggle, so the
@@ -1078,46 +1159,66 @@ bool MosaicoDialog::onIndexChanged(std::string_view widget_name, int index) {
   std::lock_guard<std::mutex> lock(state_.mu);
   ensureQuerySchemaLocked();
   const int cursor = clampQueryCursor(state_.query_cursor, state_.query_text);
-  const CursorContext ctx = analyze(state_.query_text, cursor, state_.query_schema);
+  const AssistView assist = computeAssist(
+      state_.query_text, cursor, state_.query_schema, state_.staged_key, state_.staged_op, state_.staged_value);
 
-  // Resolve the picked item and the action for this dropdown. The item lists
-  // mirror what widget_data() populated from the same (text, cursor, schema).
+  // Resolve the picked item against the SAME list widget_data() populated for this
+  // dropdown. The value list follows assist.value_key in BOTH modes (the staged key
+  // in ADD, the clause's key in value-REPLACE), so resolve it the same way here.
   std::string item;
-  Action action = Action::Disabled;
+  const AssistDropdown* slot = nullptr;
   if (which == Which::kKey) {
     const auto keys = schemaKeys(state_.query_schema);
     if (index >= static_cast<int>(keys.size())) {
       return true;
     }
     item = keys[static_cast<std::size_t>(index)];
-    action = ctx.key_action;
+    slot = &assist.key;
   } else if (which == Which::kOp) {
     const auto& ops = operators();
     if (index >= static_cast<int>(ops.size())) {
       return true;
     }
     item = ops[static_cast<std::size_t>(index)];
-    action = ctx.op_action;
+    slot = &assist.op;
   } else {
-    const auto values = schemaValues(state_.query_schema, ctx.context_key);
+    const auto values = schemaValues(state_.query_schema, assist.value_key);
     if (index >= static_cast<int>(values.size())) {
       return true;
     }
     item = values[static_cast<std::size_t>(index)];
-    action = ctx.val_action;
+    slot = &assist.value;
   }
-  if (action == Action::Disabled) {
-    return true;  // dropdown wasn't actionable at this cursor position
+  if (!slot->enabled) {
+    return true;  // a disabled dropdown is not pickable; ignore any stale event
   }
 
-  // A value is a Lua literal: string values must be quoted so they lex as a
-  // Value, not a bare Key (keys/operators are inserted verbatim).
-  const std::string insert_text = (which == Which::kVal) ? quoteValueForQuery(item) : item;
-  const EditResult result = applyCompletion(state_.query_text, ctx, action, insert_text);
+  if (slot->replaces) {
+    // REPLACE mode (lua.txt 4-7): edit the token under the caret in place, live,
+    // with NO PLUS. Values are quoted as Lua literals; keys/ops go in verbatim.
+    const CursorContext ctx = analyze(state_.query_text, cursor, state_.query_schema);
+    const Action action =
+        (which == Which::kKey) ? ctx.key_action : (which == Which::kOp ? ctx.op_action : ctx.val_action);
+    if (action != Action::Replace) {
+      return true;  // defensive: assist said replace but analyze disagrees
+    }
+    const std::string insert_text = (which == Which::kVal) ? quoteValueForQuery(item) : item;
+    const EditResult result = applyCompletion(state_.query_text, ctx, action, insert_text);
+    state_.query_text = result.text;
+    state_.query_cursor = result.cursor;
+    state_.query_push_pending = true;  // push the rewritten text + caret back to the editor
+    return true;
+  }
 
-  state_.query_text = result.text;
-  state_.query_cursor = result.cursor;
-  state_.query_push_pending = true;  // push the rewritten text + caret back to the editor
+  // ADD mode (lua.txt 1-3,9): STAGE the pick. The clause reaches the editor only
+  // when PLUS commits it (onClicked "buttonAddClause"); nothing is written here.
+  if (which == Which::kKey) {
+    state_.staged_key = item;
+  } else if (which == Which::kOp) {
+    state_.staged_op = item;
+  } else {
+    state_.staged_value = item;
+  }
   return true;
 }
 
