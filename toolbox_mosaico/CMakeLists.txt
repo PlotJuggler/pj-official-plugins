@@ -220,6 +220,25 @@ if(BUILD_TESTING)
   )
   add_test(NAME ToolboxMosaicoImageSerializeTest COMMAND toolbox_mosaico_image_serialize_test)
 
+  # Per-row canonicalization of the 3D-object ontologies (point_cloud / transform
+  # / pose) -> one canonical PJ.{PointCloud,FrameTransforms,PosesInFrame} blob per
+  # row (pj_base codec), driven against a recording fake toolbox host (no
+  # Flight/gRPC). Builds synthetic list<float32> / struct tables matching the
+  # server shapes and asserts each pushed blob round-trips.
+  add_executable(toolbox_mosaico_object_serialize_test
+    tests/object_serialize_test.cpp
+    src/arrow_ingest.cpp
+  )
+  target_link_libraries(toolbox_mosaico_object_serialize_test PRIVATE
+    plotjuggler_sdk::plugin_sdk
+    ${_test_arrow_target}
+    GTest::gtest_main
+  )
+  target_include_directories(toolbox_mosaico_object_serialize_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  add_test(NAME ToolboxMosaicoObjectSerializeTest COMMAND toolbox_mosaico_object_serialize_test)
+
   # Real-server regression: replays the captured jai/rgb Arrow batch (PNG-wrapped
   # Bayer, BINARY_VIEW/STRING_VIEW columns) through the real producer and checks
   # every blob round-trips to a valid per-frame PJ::Image. SKIPS if the (~31 MB,
@@ -308,6 +327,24 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core
   )
   add_test(NAME ToolboxMosaicoQueryFilterTest COMMAND toolbox_mosaico_query_filter_test)
+
+  # Assist model: the Key/Op/Value dropdown + PLUS state machine for the metadata
+  # filter, encoding the lua.txt contract (replace-at-caret vs stage-then-PLUS).
+  # Pure header logic (query/assist.h) — no Lua, no Arrow/Flight.
+  add_executable(toolbox_mosaico_assist_test
+    tests/assist_test.cpp
+  )
+  target_link_libraries(toolbox_mosaico_assist_test PRIVATE GTest::gtest_main)
+  target_compile_features(toolbox_mosaico_assist_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_mosaico_assist_test PRIVATE
+    -Wall -Wextra -Werror
+    -Wno-conversion -Wno-unused-parameter -Wno-unused-function
+  )
+  target_include_directories(toolbox_mosaico_assist_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+  )
+  add_test(NAME ToolboxMosaicoAssistTest COMMAND toolbox_mosaico_assist_test)
 
   # Column-sort permutation (numeric vs lexicographic, stability). Header-only.
   add_executable(toolbox_mosaico_table_sort_test
