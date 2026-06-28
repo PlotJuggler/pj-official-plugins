@@ -122,10 +122,10 @@ std::string supportedDistrosList() {
   return out;
 }
 
-// Called exactly once. Resolves the distro, loads the inner library, captures
-// its data-source and dialog vtables. On failure populates g_last_error and
-// leaves the cached vtables null.
-void loadInnerOnce() {
+// Resolves the distro, loads the inner library, captures its data-source and
+// dialog vtables. On failure populates g_last_error and leaves the cached
+// vtables null. Run exactly once via loadInnerOnce().
+void loadInnerImpl() {
   auto distro = detectRosDistro();
   if (!distro.has_value()) {
     g_last_error =
@@ -201,6 +201,17 @@ void loadInnerOnce() {
   g_dialog_vtable = dlg_vt;
 }
 
+// Runs loadInnerImpl exactly once and mirrors any failure reason to stderr. The
+// host may surface g_last_error via the optional PJ_get_proxy_last_error symbol,
+// but a host that doesn't know it would otherwise see a failed load as complete
+// silence — so always log it once here.
+void loadInnerOnce() {
+  loadInnerImpl();
+  if (g_data_source_vtable == nullptr && !g_last_error.empty()) {
+    std::fprintf(stderr, "[ros2.proxy] %s\n", g_last_error.c_str());
+  }
+}
+
 // Ensure the inner library is resolved (once), then hand back its data-source
 // vtable. Returns null when no ROS distro / inner binary is available; the
 // reason is in g_last_error (surfaced via PJ_get_proxy_last_error).
@@ -235,7 +246,17 @@ void fillProxyError(PJ_error_t* out_error) {
 
 void* proxyCreate() noexcept {
   const auto* inner = innerDataSource();
-  return inner != nullptr ? inner->create() : nullptr;
+  if (inner == nullptr) {
+    return nullptr;  // inner unavailable; g_last_error already set + logged by loadInnerOnce
+  }
+  void* ctx = inner->create();
+  if (ctx == nullptr) {
+    // The inner loaded but its create() failed (e.g. OOM). loadInnerOnce left no
+    // reason, so capture one here rather than report a stale/empty message.
+    g_last_error = "ROS 2 inner library loaded but failed to instantiate the data source.";
+    std::fprintf(stderr, "[ros2.proxy] %s\n", g_last_error.c_str());
+  }
+  return ctx;
 }
 
 void proxyDestroy(void* ctx) noexcept {
@@ -311,7 +332,12 @@ bool proxyPoll(void* ctx, PJ_error_t* out_error) noexcept {
 }
 
 PJ_data_source_state_t proxyCurrentState(void* ctx) noexcept {
-  return g_data_source_vtable != nullptr ? g_data_source_vtable->current_state(ctx) : PJ_DATA_SOURCE_STATE_FAILED;
+  // [thread-safe] slot: the host may call it from a thread other than the one
+  // that ran create(). Go through innerDataSource() (std::call_once) so that
+  // thread gets the acquire edge on the published vtable rather than reading the
+  // global directly. Reachable only with a live ctx, so the load already ran.
+  const auto* inner = innerDataSource();
+  return inner != nullptr ? inner->current_state(ctx) : PJ_DATA_SOURCE_STATE_FAILED;
 }
 
 PJ_borrowed_dialog_t proxyGetDialog(void* ctx) noexcept {
@@ -320,7 +346,10 @@ PJ_borrowed_dialog_t proxyGetDialog(void* ctx) noexcept {
 }
 
 const void* proxyGetPluginExtension(void* ctx, PJ_string_view_t id) noexcept {
-  return g_data_source_vtable != nullptr ? g_data_source_vtable->get_plugin_extension(ctx, id) : nullptr;
+  // [thread-safe] slot (see proxyCurrentState): route through innerDataSource()
+  // for the std::call_once acquire edge. Reachable only with a live ctx.
+  const auto* inner = innerDataSource();
+  return inner != nullptr ? inner->get_plugin_extension(ctx, id) : nullptr;
 }
 
 // Self-describing proxy vtable. Carries the extension's embedded manifest so
