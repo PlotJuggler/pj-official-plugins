@@ -81,9 +81,10 @@
    <item>
     <widget class="QWidget" name="mosaicoBody" native="true">
      <layout class="QVBoxLayout" name="bodyLayout">
-      <!-- Tight like the rest of the app (LHS panels use spacing 0-2, margins 0)
-           so the content fills the panel instead of floating in padding. -->
-      <property name="spacing"><number>2</number></property>
+      <!-- spacing 0 so the splitter's vertical column handles meet the bottom
+           separator (and the separator the duration row) flush: a 2px gap here
+           left the handles a couple of pixels short of the separator. -->
+      <property name="spacing"><number>0</number></property>
       <property name="leftMargin"><number>0</number></property>
       <property name="topMargin"><number>0</number></property>
       <property name="rightMargin"><number>0</number></property>
@@ -92,6 +93,11 @@
    <!-- Three-column splitter: Sequences | Topics | Info -->
    <item>
     <widget class="QSplitter" name="mainSplitter">
+     <!-- Fill the body's vertical space (verstretch) so the duration row below stays a
+          compact strip pinned to the bottom instead of the row absorbing the slack. -->
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding"><horstretch>0</horstretch><verstretch>1</verstretch></sizepolicy>
+     </property>
      <property name="orientation"><enum>Qt::Horizontal</enum></property>
      <property name="childrenCollapsible"><bool>false</bool></property>
 
@@ -286,7 +292,9 @@
               <sizepolicy hsizetype="Expanding" vsizetype="Expanding"><horstretch>0</horstretch><verstretch>1</verstretch></sizepolicy>
              </property>
              <property name="minimumSize"><size><width>0</width><height>72</height></size></property>
-             <property name="styleSheet"><string notr="true">QPlainTextEdit { background-color: #ffffff; }</string></property>
+             <!-- Background is themed from the host QSS (QPlainTextEdit#lua_queryBar):
+                  white in light, ${dark_background} in dark. An inline #ffffff here
+                  would override the QSS and render white in dark mode. -->
              <property name="placeholderText"><string>&lt;your_filter_key&gt; &lt;operation&gt; &lt;filter_value&gt;</string></property>
             </widget>
            </item>
@@ -434,34 +442,48 @@
     </widget>
    </item>
 
+   <!-- 1px divider between the tables/columns above and the duration row below
+        (QFrame#rangeSeparator -> border_default in the QSS, like serverSeparator). -->
+   <item>
+    <widget class="QFrame" name="rangeSeparator">
+     <property name="minimumSize"><size><width>0</width><height>1</height></size></property>
+     <property name="maximumSize"><size><width>16777215</width><height>1</height></size></property>
+    </widget>
+   </item>
+
    <!-- Two-handle time range slider + Download button (PJ3 RangeSlider) -->
    <item>
     <layout class="QHBoxLayout" name="rangeRow">
-     <!-- The columns above go full-width (bodyLayout L/R = 0); keep the slider
-          + buttons row inset so they don't butt against the panel edges. -->
-     <property name="leftMargin"><number>10</number></property>
-     <property name="rightMargin"><number>10</number></property>
+     <!-- Full-bleed like the columns above (bodyLayout L/R = 0): the slider spreads
+          edge-to-edge, matching the app's playback bar. -->
+     <property name="leftMargin"><number>0</number></property>
+     <property name="rightMargin"><number>0</number></property>
      <item>
       <widget class="RangeSlider" name="rangeSlider">
+       <!-- Full-bleed. The track is the playback scrubber's 24px height; the host
+            binding grows the widget by one row for the always-on handle labels above
+            it (see widget_binding RangeSlider time-span). -->
        <property name="sizePolicy">
         <sizepolicy hsizetype="Expanding" vsizetype="Preferred"><horstretch>1</horstretch><verstretch>0</verstretch></sizepolicy>
        </property>
-       <property name="minimumSize"><size><width>0</width><height>52</height></size></property>
        <property name="enabled"><bool>false</bool></property>
       </widget>
      </item>
-     <item>
+     <!-- Buttons bottom-aligned to the duration widget: the slider is taller (one
+          label row above its 24px track), so AlignBottom lines the buttons up with
+          the track at the bottom instead of floating them in the row's center. -->
+     <item alignment="Qt::AlignBottom">
       <widget class="QPushButton" name="buttonFetch">
        <property name="text"><string>Download</string></property>
        <property name="minimumSize"><size><width>90</width><height>0</height></size></property>
       </widget>
      </item>
-     <item>
+     <item alignment="Qt::AlignBottom">
       <widget class="QPushButton" name="buttonCancel">
        <property name="text"><string>Cancel</string></property>
       </widget>
      </item>
-     <item>
+     <item alignment="Qt::AlignBottom">
       <widget class="QPushButton" name="buttonClose">
        <property name="text"><string>Close</string></property>
       </widget>
