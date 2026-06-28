@@ -285,7 +285,7 @@ void FetchWorker::pullTopicsAsync(
   if (!client_) {
     for (const auto& t : topic_names) {
       if (pullFinished) {
-        pullFinished({{sequence_name, t}, false, "not connected"});
+        pullFinished({{sequence_name, t}, false, "not connected", {}});
       }
     }
     if (allFetchesComplete) {
@@ -335,9 +335,9 @@ void FetchWorker::pullTopicsAsync(
     if (it == state->end()) {
       return;
     }
-    auto finish = [this, &sequence_name, &topic_name](bool ok, std::string error) {
+    auto finish = [this, &sequence_name, &topic_name](bool ok, std::string error, std::string warning = {}) {
       if (pullFinished) {
-        pullFinished({{sequence_name, topic_name}, ok, std::move(error)});
+        pullFinished({{sequence_name, topic_name}, ok, std::move(error), std::move(warning)});
       }
     };
     if (!result.ok()) {
@@ -496,7 +496,16 @@ void FetchWorker::pullTopicsAsync(
         finish(false, pushed->first_error.empty() ? ("no " + ontology_tag + " rows") : pushed->first_error);
         return;
       }
-      finish(true, {});
+      // The topic succeeded, but per-row skips are silent in the ObjectPushOutcome
+      // — surface them as a non-fatal warning so a partial import (1 good row,
+      // N silently dropped) is visible rather than presenting as a clean success.
+      std::string warning;
+      if (pushed->skipped > 0) {
+        warning = ontology_tag + " topic '" + topic_name + "': skipped " + std::to_string(pushed->skipped) + " of " +
+                  std::to_string(pushed->pushed + pushed->skipped) + " rows" +
+                  (pushed->first_error.empty() ? "" : (" (first: " + pushed->first_error + ")"));
+      }
+      finish(true, {}, std::move(warning));
       return;
     }
 
@@ -587,11 +596,11 @@ void FetchWorker::pullTopicsAsync(
         /*retain_batches=*/false);
   } catch (const std::exception& e) {
     if (pullFinished) {
-      pullFinished({{sequence_name, {}}, false, fmt::format("pull failed: {}", e.what())});
+      pullFinished({{sequence_name, {}}, false, fmt::format("pull failed: {}", e.what()), {}});
     }
   } catch (...) {
     if (pullFinished) {
-      pullFinished({{sequence_name, {}}, false, "pull failed: unknown error"});
+      pullFinished({{sequence_name, {}}, false, "pull failed: unknown error", {}});
     }
   }
   if (allFetchesComplete) {

@@ -17,6 +17,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -83,16 +84,21 @@ namespace {
   return 0;
 }
 
-[[nodiscard]] std::int64_t arrowI64At(const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row) {
+// Read an int64-compatible scalar, returning std::nullopt on
+// null/missing/out-of-range/unexpected-type so a caller can distinguish a real
+// 0 from "no value" (e.g. a present-but-null timestamp cell, which must fall
+// back to the synthetic timestamp rather than land the sample at epoch 0).
+[[nodiscard]] std::optional<std::int64_t> arrowI64Opt(
+    const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row) {
   if (!col || row < 0 || row >= col->length()) {
-    return 0;
+    return std::nullopt;
   }
   std::int64_t chunk_row = row;
   for (int i = 0; i < col->num_chunks(); ++i) {
     const auto& chunk = col->chunk(i);
     if (chunk_row < chunk->length()) {
       if (chunk->IsNull(chunk_row)) {
-        return 0;
+        return std::nullopt;
       }
       switch (chunk->type_id()) {
         case arrow::Type::INT64:
@@ -106,12 +112,18 @@ namespace {
         case arrow::Type::TIMESTAMP:
           return std::static_pointer_cast<arrow::TimestampArray>(chunk)->Value(chunk_row);
         default:
-          return 0;
+          return std::nullopt;
       }
     }
     chunk_row -= chunk->length();
   }
-  return 0;
+  return std::nullopt;
+}
+
+// Convenience wrapper: 0 on null/missing/unexpected-type. Use only where 0 is a
+// safe default (geometry); for timestamps prefer arrowI64Opt + a synth fallback.
+[[nodiscard]] std::int64_t arrowI64At(const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row) {
+  return arrowI64Opt(col, row).value_or(0);
 }
 
 // Read a UTF-8 string handling STRING / LARGE_STRING / STRING_VIEW.
@@ -257,6 +269,12 @@ namespace {
   return 0.0;
 }
 
+// Forward declarations: readPointFields (next) reads the `fields` struct
+// children through these type-flexible absolute-index helpers, which are defined
+// further down with the other list/struct readers.
+[[nodiscard]] std::string arrayStringAt(const std::shared_ptr<arrow::Array>& arr, std::int64_t idx);
+[[nodiscard]] std::optional<std::int64_t> arrayIntAt(const std::shared_ptr<arrow::Array>& arr, std::int64_t idx);
+
 // Read one row of the ROS-PointCloud2 `fields` column —
 // list<struct<name:string, offset:uint32, datatype:int64, count:uint32>> — into
 // canonical sdk::PointField records. Mosaico's `datatype` shares ROS PointField's
@@ -284,23 +302,29 @@ namespace {
       if (!items) {
         return out;
       }
-      const auto names = std::dynamic_pointer_cast<arrow::StringArray>(items->GetFieldByName("name"));
-      const auto offsets = std::dynamic_pointer_cast<arrow::UInt32Array>(items->GetFieldByName("offset"));
-      const auto datatypes = std::dynamic_pointer_cast<arrow::Int64Array>(items->GetFieldByName("datatype"));
-      const auto counts = std::dynamic_pointer_cast<arrow::UInt32Array>(items->GetFieldByName("count"));
+      // Read each child through a type-flexible helper rather than a single
+      // fixed cast: the `fields` column is a list<struct> that bypasses both
+      // flattenStructColumns and normalizeViewColumns, so the server is free to
+      // emit `name` as Utf8/LargeUtf8/Utf8View and offset/datatype/count at any
+      // integer width. A fixed cast would null out and silently yield empty
+      // names / offset 0 (every channel aliasing byte 0) — the exact view-type
+      // failure this plugin already guards against on the scalar columns.
+      const auto names = items->GetFieldByName("name");
+      const auto offsets = items->GetFieldByName("offset");
+      const auto datatypes = items->GetFieldByName("datatype");
+      const auto counts = items->GetFieldByName("count");
       const std::int64_t begin = list->value_offset(chunk_row);
       const std::int64_t len = list->value_length(chunk_row);
       out.reserve(static_cast<std::size_t>(len));
       for (std::int64_t k = begin; k < begin + len; ++k) {
         PJ::sdk::PointField field;
-        if (names && !names->IsNull(k)) {
-          field.name = names->GetString(k);
-        }
-        field.offset = offsets ? offsets->Value(k) : 0U;
-        const std::int64_t dt = datatypes ? datatypes->Value(k) : 0;
+        field.name = arrayStringAt(names, k);
+        field.offset = static_cast<std::uint32_t>(arrayIntAt(offsets, k).value_or(0));
+        const std::int64_t dt = arrayIntAt(datatypes, k).value_or(0);
         field.datatype = (dt >= 1 && dt <= 8) ? static_cast<PJ::sdk::PointField::Datatype>(dt)
                                               : PJ::sdk::PointField::Datatype::kUnknown;
-        field.count = (counts && counts->Value(k) > 0) ? counts->Value(k) : 1U;
+        const std::int64_t count = arrayIntAt(counts, k).value_or(1);
+        field.count = count > 0 ? static_cast<std::uint32_t>(count) : 1U;
         out.push_back(std::move(field));
       }
       return out;
@@ -334,6 +358,50 @@ namespace {
     default:
       return {};
   }
+}
+
+// Read an integer Array child at an ABSOLUTE index, handling every signed /
+// unsigned width (8..64). Returns std::nullopt on null/missing/non-integer so
+// the caller can tell "absent" from a real 0. Used for the PointCloud2 `fields`
+// descriptor children (offset / datatype / count), whose Arrow width the server
+// is free to choose — a single fixed cast would silently yield 0 for any other
+// width.
+[[nodiscard]] std::optional<std::int64_t> arrayIntAt(const std::shared_ptr<arrow::Array>& arr, std::int64_t idx) {
+  if (!arr || idx < 0 || idx >= arr->length() || arr->IsNull(idx)) {
+    return std::nullopt;
+  }
+  switch (arr->type_id()) {
+    case arrow::Type::INT8:
+      return std::static_pointer_cast<arrow::Int8Array>(arr)->Value(idx);
+    case arrow::Type::UINT8:
+      return std::static_pointer_cast<arrow::UInt8Array>(arr)->Value(idx);
+    case arrow::Type::INT16:
+      return std::static_pointer_cast<arrow::Int16Array>(arr)->Value(idx);
+    case arrow::Type::UINT16:
+      return std::static_pointer_cast<arrow::UInt16Array>(arr)->Value(idx);
+    case arrow::Type::INT32:
+      return std::static_pointer_cast<arrow::Int32Array>(arr)->Value(idx);
+    case arrow::Type::UINT32:
+      return std::static_pointer_cast<arrow::UInt32Array>(arr)->Value(idx);
+    case arrow::Type::INT64:
+      return std::static_pointer_cast<arrow::Int64Array>(arr)->Value(idx);
+    case arrow::Type::UINT64:
+      return static_cast<std::int64_t>(std::static_pointer_cast<arrow::UInt64Array>(arr)->Value(idx));
+    default:
+      return std::nullopt;
+  }
+}
+
+// A rotation quaternion whose components all defaulted to 0 (missing/null/typed
+// unexpectedly so every read fell back to 0.0) is not a valid rotation — its
+// norm is 0 and downstream TF/pose math would divide by it. Substitute identity
+// (w=1) so a server schema surprise degrades to "no rotation" rather than NaNs.
+[[nodiscard]] PJ::sdk::Quaternion sanitizeQuaternion(PJ::sdk::Quaternion q) {
+  const double norm2 = (q.x * q.x) + (q.y * q.y) + (q.z * q.z) + (q.w * q.w);
+  if (!std::isfinite(norm2) || norm2 < 1e-12) {
+    return PJ::sdk::Quaternion{.x = 0.0, .y = 0.0, .z = 0.0, .w = 1.0};
+  }
+  return q;
 }
 
 // Read a struct child as double at an ABSOLUTE index, handling DOUBLE / FLOAT /
@@ -577,11 +645,12 @@ void copyListElems(
         .x = structChildDoubleAt(translation, "x", k),
         .y = structChildDoubleAt(translation, "y", k),
         .z = structChildDoubleAt(translation, "z", k)};
-    ft.rotation = PJ::sdk::Quaternion{
-        .x = structChildDoubleAt(rotation, "x", k),
-        .y = structChildDoubleAt(rotation, "y", k),
-        .z = structChildDoubleAt(rotation, "z", k),
-        .w = structChildDoubleAt(rotation, "w", k)};
+    ft.rotation = sanitizeQuaternion(
+        PJ::sdk::Quaternion{
+            .x = structChildDoubleAt(rotation, "x", k),
+            .y = structChildDoubleAt(rotation, "y", k),
+            .z = structChildDoubleAt(rotation, "z", k),
+            .w = structChildDoubleAt(rotation, "w", k)});
     ft.child_frame_id = arrayStringAt(target, k);
     ft.parent_frame_id = structChildStringAt(header, "frame_id", k);
     out.push_back(std::move(ft));
@@ -745,7 +814,12 @@ arrow::Result<std::shared_ptr<arrow::Table>> flattenStructColumns(std::shared_pt
     renamed_fields.push_back(arrow::field(new_name, field->type(), field->nullable(), field->metadata()));
   }
   if (needs_rename) {
-    auto renamed_schema = std::make_shared<arrow::Schema>(renamed_fields);
+    // Carry the original table-level metadata onto the rebuilt schema. It holds
+    // `mosaico:properties` (the ontology_tag) that resolveOntologyTag falls back
+    // on; the default Schema ctor would drop it, silently routing struct-bearing
+    // ontologies (pose/transform/occupancy_grid) to the scalar path whenever the
+    // cached tag is unavailable.
+    auto renamed_schema = std::make_shared<arrow::Schema>(renamed_fields, current->schema()->metadata());
     current = arrow::Table::Make(renamed_schema, current->columns(), current->num_rows());
   }
 
@@ -865,7 +939,8 @@ PJ::Expected<ImagePushOutcome> pushImageRowsToHost(
       continue;
     }
 
-    std::int64_t ts_ns = ts_col ? arrowI64At(ts_col, row) : (synth_anchor_ns + row * synth_interval_ns);
+    std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
+                                : (synth_anchor_ns + row * synth_interval_ns);
 
     PJ::sdk::Image img;
     img.width = width > 0 ? static_cast<std::uint32_t>(width) : 0U;
@@ -943,7 +1018,8 @@ PJ::Expected<ObjectPushOutcome> pushPointCloudRowsToHost(
       }
       continue;
     }
-    const std::int64_t ts_ns = ts_col ? arrowI64At(ts_col, row) : (synth_anchor_ns + row * synth_interval_ns);
+    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
+                                      : (synth_anchor_ns + row * synth_interval_ns);
     const std::int32_t width = arrowI32At(width_col, row);
     const std::int32_t point_step = arrowI32At(point_step_col, row);
     const std::int32_t row_step = arrowI32At(row_step_col, row);
@@ -1022,15 +1098,17 @@ PJ::Expected<ObjectPushOutcome> pushPoseRowsToHost(
   ObjectPushOutcome outcome;
   const std::int64_t num_rows = flat->num_rows();
   for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64At(ts_col, row) : (synth_anchor_ns + row * synth_interval_ns);
+    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
+                                      : (synth_anchor_ns + row * synth_interval_ns);
     PJ::sdk::Pose pose;
     pose.position =
         PJ::sdk::Vector3{.x = arrowDoubleAt(px, row), .y = arrowDoubleAt(py, row), .z = arrowDoubleAt(pz, row)};
-    pose.orientation = PJ::sdk::Quaternion{
-        .x = arrowDoubleAt(ox, row),
-        .y = arrowDoubleAt(oy, row),
-        .z = arrowDoubleAt(oz, row),
-        .w = arrowDoubleAt(ow, row)};
+    pose.orientation = sanitizeQuaternion(
+        PJ::sdk::Quaternion{
+            .x = arrowDoubleAt(ox, row),
+            .y = arrowDoubleAt(oy, row),
+            .z = arrowDoubleAt(oz, row),
+            .w = arrowDoubleAt(ow, row)});
 
     PJ::sdk::PosesInFrame poses;
     poses.timestamp_ns = ts_ns;
@@ -1072,7 +1150,8 @@ PJ::Expected<ObjectPushOutcome> pushFrameTransformsRowsToHost(
     const auto ts_col = ts_field.empty() ? nullptr : table->GetColumnByName(ts_field);
     const std::int64_t num_rows = table->num_rows();
     for (std::int64_t row = 0; row < num_rows; ++row) {
-      const std::int64_t ts_ns = ts_col ? arrowI64At(ts_col, row) : (synth_anchor_ns + row * synth_interval_ns);
+      const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
+                                        : (synth_anchor_ns + row * synth_interval_ns);
       std::vector<PJ::sdk::FrameTransform> transforms = readTransformList(transforms_col, row);
       if (transforms.empty()) {
         ++outcome.skipped;
@@ -1123,18 +1202,20 @@ PJ::Expected<ObjectPushOutcome> pushFrameTransformsRowsToHost(
 
   const std::int64_t num_rows = flat->num_rows();
   for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64At(ts_col, row) : (synth_anchor_ns + row * synth_interval_ns);
+    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
+                                      : (synth_anchor_ns + row * synth_interval_ns);
     PJ::sdk::FrameTransform ft;
     ft.timestamp = ts_ns;
     ft.parent_frame_id = parent_col ? arrowStringAt(parent_col, row) : std::string{};
     ft.child_frame_id = child_col ? arrowStringAt(child_col, row) : std::string{};
     ft.translation =
         PJ::sdk::Vector3{.x = arrowDoubleAt(tx, row), .y = arrowDoubleAt(ty, row), .z = arrowDoubleAt(tz, row)};
-    ft.rotation = PJ::sdk::Quaternion{
-        .x = arrowDoubleAt(rx, row),
-        .y = arrowDoubleAt(ry, row),
-        .z = arrowDoubleAt(rz, row),
-        .w = arrowDoubleAt(rw, row)};
+    ft.rotation = sanitizeQuaternion(
+        PJ::sdk::Quaternion{
+            .x = arrowDoubleAt(rx, row),
+            .y = arrowDoubleAt(ry, row),
+            .z = arrowDoubleAt(rz, row),
+            .w = arrowDoubleAt(rw, row)});
     PJ::sdk::FrameTransforms batch;
     batch.transforms.push_back(std::move(ft));
     const std::vector<std::uint8_t> blob = PJ::serializeFrameTransforms(batch);
@@ -1194,23 +1275,28 @@ PJ::Expected<ObjectPushOutcome> pushOccupancyGridRowsToHost(
   ObjectPushOutcome outcome;
   const std::int64_t num_rows = flat->num_rows();
   for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64At(ts_col, row) : (synth_anchor_ns + row * synth_interval_ns);
+    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
+                                      : (synth_anchor_ns + row * synth_interval_ns);
     const std::int32_t w = arrowI32At(width_col, row);
     const std::int32_t h = arrowI32At(height_col, row);
+    const double resolution = arrowDoubleAt(resolution_col, row);
     const NumericList data = readNumericList(data_col, row);
     const std::int64_t cells = static_cast<std::int64_t>(w) * static_cast<std::int64_t>(h);
-    if (w <= 0 || h <= 0 || !data.valid() || data.count < cells) {
+    // A zero/negative/non-finite resolution is geometrically meaningless (cells
+    // collapse to a point); reject it alongside bad geometry rather than push a
+    // degenerate map that masks a server schema mismatch.
+    if (w <= 0 || h <= 0 || !std::isfinite(resolution) || resolution <= 0.0 || !data.valid() || data.count < cells) {
       ++outcome.skipped;
       if (outcome.first_error.empty()) {
         outcome.first_error = std::string("occupancy_grid topic '") + topic_name + "' row " + std::to_string(row) +
-                              ": bad geometry or short 'data'";
+                              ": bad geometry/resolution or short 'data'";
       }
       continue;
     }
     PJ::sdk::OccupancyGrid grid;
     grid.timestamp_ns = ts_ns;
     grid.frame_id = frame_col ? arrowStringAt(frame_col, row) : std::string{};
-    grid.resolution = arrowDoubleAt(resolution_col, row);
+    grid.resolution = resolution;
     grid.width = static_cast<std::uint32_t>(w);
     grid.height = static_cast<std::uint32_t>(h);
     grid.origin.position =
@@ -1273,7 +1359,8 @@ PJ::Expected<ObjectPushOutcome> pushLaserScanRowsToHost(
   ObjectPushOutcome outcome;
   const std::int64_t num_rows = flat->num_rows();
   for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64At(ts_col, row) : (synth_anchor_ns + row * synth_interval_ns);
+    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
+                                      : (synth_anchor_ns + row * synth_interval_ns);
     const double angle_min = arrowDoubleAt(angle_min_col, row);
     const double angle_inc = arrowDoubleAt(angle_inc_col, row);
     const double range_min = range_min_col ? arrowDoubleAt(range_min_col, row) : 0.0;
@@ -1400,7 +1487,8 @@ PJ::Expected<ObjectPushOutcome> pushGridCellsRowsToHost(
   ObjectPushOutcome outcome;
   const std::int64_t num_rows = flat->num_rows();
   for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64At(ts_col, row) : (synth_anchor_ns + row * synth_interval_ns);
+    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
+                                      : (synth_anchor_ns + row * synth_interval_ns);
     const double cw = cw_col ? arrowDoubleAt(cw_col, row) : 0.0;
     const double ch = ch_col ? arrowDoubleAt(ch_col, row) : 0.0;
     const std::vector<std::array<double, 3>> cells = readXyzStructList(cells_col, row);
@@ -1502,7 +1590,8 @@ PJ::Expected<ObjectPushOutcome> pushColumnarPointCloudRowsToHost(
   ObjectPushOutcome outcome;
   const std::int64_t num_rows = flat->num_rows();
   for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64At(ts_col, row) : (synth_anchor_ns + row * synth_interval_ns);
+    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
+                                      : (synth_anchor_ns + row * synth_interval_ns);
     // Reserve so the NumericList storage never reallocates — PackAttr holds
     // pointers into it.
     std::vector<NumericList> lists;

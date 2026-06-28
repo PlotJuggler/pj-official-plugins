@@ -1772,6 +1772,11 @@ void MosaicoDialog::onPullFinished(PullResultEvent result) {
   if (ok) {
     state_.imported_any = true;
     state_.topic_fetch_status[topic_name] = "Done";
+    // A successful topic may still have dropped rows; surface that as a warning
+    // (notify does not take state_.mu, so calling it under the lock is safe).
+    if (!result.warning.empty()) {
+      notify(PJ::ToolboxMessageLevel::kWarning, result.warning);
+    }
   } else if (state_.cancelling) {
     // Interrupted by the user's Cancel, not a real failure: label it
     // "Cancelled" and keep it OUT of the error tally so a cancel doesn't

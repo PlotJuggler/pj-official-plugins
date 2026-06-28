@@ -46,6 +46,12 @@ struct PullResultEvent {
   TopicRef topic;
   bool ok = false;
   std::string error;
+  /// Non-fatal warning for a topic that otherwise succeeded (`ok == true`) —
+  /// e.g. a canonical-object pull that imported some rows but silently skipped
+  /// others (malformed geometry, empty payload, …). Empty when there is nothing
+  /// to report. The dialog surfaces it as a warning so partial loss is visible
+  /// instead of presenting as a clean success.
+  std::string warning;
 };
 
 }  // namespace mosaico
