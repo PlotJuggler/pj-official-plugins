@@ -39,6 +39,17 @@ set_target_properties(ros2_stream_plugin PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 
+# Embed the manifest into the proxy itself so the host plugin scanner can
+# discover and describe this extension without ROS installed. The proxy's
+# data-source vtable advertises this manifest; the inner per-distro binary is
+# only dlopen-ed when the source is actually instantiated.
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
+pj_embed_manifest(ros2_stream_plugin
+  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
+  HEADER        ${CMAKE_CURRENT_BINARY_DIR}/generated/proxy/ros2_manifest.hpp
+  VAR_NAME      kRos2ProxyManifest
+)
+
 pj_emit_plugin_manifest(ros2_stream_plugin
   FAMILY        data_source
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json

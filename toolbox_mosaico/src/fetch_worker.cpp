@@ -109,34 +109,36 @@ PJ::Expected<PJ::sdk::DataSourceHandle> FetchWorker::datasetForFetch(
   return *fetch_dataset_;
 }
 
-void FetchWorker::connectAsync(std::string uri, std::string cert_path, std::string api_key, bool allow_insecure) {
-  (void)allow_insecure;  // Plaintext fallback handled by caller (Step 10.1) — left here for ABI parity.
+void FetchWorker::connectAsync(std::string uri, ServerCredentials creds) {
+  // creds.allow_insecure is intentionally not consulted here: the plaintext
+  // fallback is driven by the caller (onConnectFinished, Step 10.1), which
+  // retries with a grpc:// URI. connectAsync always honors the scheme it is given.
   try {
     client_ = std::make_unique<MosaicoClient>(
         uri,
         // PJ3 parity (main_window.cpp:48): 30 s connection timeout for slow links.
         /*timeout_seconds=*/30,
-        /*pool_size=*/4, cert_path, api_key);
+        /*pool_size=*/4, creds.cert_path, creds.api_key);
     auto v = client_->version();
     if (!v.ok()) {
       if (connectFinished) {
-        connectFinished(false, {}, v.status().message());
+        connectFinished({false, {}, v.status().message()});
       }
       client_.reset();
       return;
     }
     if (connectFinished) {
-      connectFinished(true, fmt::format("Connected — server {}", v.ValueOrDie().version), {});
+      connectFinished({true, fmt::format("Connected — server {}", v.ValueOrDie().version), {}});
     }
   } catch (const std::exception& e) {
     client_.reset();
     if (connectFinished) {
-      connectFinished(false, {}, e.what());
+      connectFinished({false, {}, e.what()});
     }
   } catch (...) {
     client_.reset();
     if (connectFinished) {
-      connectFinished(false, {}, "Unknown error");
+      connectFinished({false, {}, "Unknown error"});
     }
   }
 }
@@ -239,11 +241,11 @@ void FetchWorker::listTopicsAsync(std::string sequence_name) {
   }
 }
 
-void FetchWorker::fetchTopicMetadataAsync(std::string sequence_name, std::string topic_name) {
+void FetchWorker::fetchTopicMetadataAsync(TopicRef topic) {
   if (!client_) {
     return;
   }
-  auto result = client_->getTopicMetadata(sequence_name, topic_name);
+  auto result = client_->getTopicMetadata(topic.sequence_name, topic.topic_name);
   if (!result.ok()) {
     return;
   }
@@ -251,7 +253,7 @@ void FetchWorker::fetchTopicMetadataAsync(std::string sequence_name, std::string
   // Merge the size/created/locked fields cached from listTopics — getTopicMetadata
   // only fills schema/ontology/user_metadata/timestamps, not total_size_bytes
   // or chunks_number.
-  if (auto it = topic_info_by_name_.find(topic_name); it != topic_info_by_name_.end()) {
+  if (auto it = topic_info_by_name_.find(topic.topic_name); it != topic_info_by_name_.end()) {
     if (info.total_size_bytes == 0) {
       info.total_size_bytes = it->second.total_size_bytes;
     }
@@ -274,7 +276,7 @@ void FetchWorker::fetchTopicMetadataAsync(std::string sequence_name, std::string
     it->second = info;
   }
   if (topicMetadataReady) {
-    topicMetadataReady(std::move(sequence_name), std::move(topic_name), std::move(info));
+    topicMetadataReady(std::move(topic), std::move(info));
   }
 }
 
@@ -283,7 +285,7 @@ void FetchWorker::pullTopicsAsync(
   if (!client_) {
     for (const auto& t : topic_names) {
       if (pullFinished) {
-        pullFinished(sequence_name, t, false, "not connected");
+        pullFinished({{sequence_name, t}, false, "not connected", {}});
       }
     }
     if (allFetchesComplete) {
@@ -333,9 +335,9 @@ void FetchWorker::pullTopicsAsync(
     if (it == state->end()) {
       return;
     }
-    auto finish = [this, &sequence_name, &topic_name](bool ok, std::string error) {
+    auto finish = [this, &sequence_name, &topic_name](bool ok, std::string error, std::string warning = {}) {
       if (pullFinished) {
-        pullFinished(sequence_name, topic_name, ok, std::move(error));
+        pullFinished({{sequence_name, topic_name}, ok, std::move(error), std::move(warning)});
       }
     };
     if (!result.ok()) {
@@ -384,6 +386,16 @@ void FetchWorker::pullTopicsAsync(
     }
     const std::string ontology_tag = resolveOntologyTag(table->schema(), cached_tag);
     const bool is_image = isImageOntology(ontology_tag);
+    const bool is_point_cloud = isPointCloudOntology(ontology_tag);
+    const bool is_pose = isPoseOntology(ontology_tag);
+    const bool is_transform = isTransformOntology(ontology_tag);
+    const bool is_occupancy_grid = isOccupancyGridOntology(ontology_tag);
+    const bool is_laser_scan = isLaserScanOntology(ontology_tag);
+    const bool is_grid_cells = isGridCellsOntology(ontology_tag);
+    const bool is_futures_cloud = isFuturesPointCloudOntology(ontology_tag);
+    // Canonicalized into a pj_base builtin object (ObjectStore route) instead of
+    // scalar columns. These share the single object-push critical section below.
+    const bool is_object = isCanonicalObjectOntology(ontology_tag);
 
     // Determine the timestamp column. Image (and similar media) ontologies
     // ship without per-row timestamps on the wire — the server uses the
@@ -404,9 +416,10 @@ void FetchWorker::pullTopicsAsync(
       if (table->num_rows() > 1 && span_ns > 0) {
         synth_interval_ns = span_ns / (table->num_rows() - 1);
       }
-      // Only augment the table when we'll feed it to the scalar pipeline;
-      // the image path computes timestamps inline from synth_* directly.
-      if (!is_image) {
+      // Only augment the table when we'll feed it to the scalar pipeline; the
+      // object-push paths (image / point cloud / transform / pose) compute
+      // timestamps inline from synth_* directly.
+      if (!is_object) {
         auto augmented = prependSyntheticTimestamp(std::move(table), synth_anchor_ns, synth_interval_ns);
         if (!augmented.ok()) {
           finish(false, stringFromArrow(augmented.status()));
@@ -417,11 +430,13 @@ void FetchWorker::pullTopicsAsync(
       }
     }
 
-    // Image ontologies route into ObjectStore: each row becomes one
-    // PJ::sdk::Image blob keyed by timestamp. We deliberately skip
-    // pumpStreamToHost for these so the binary 'data' column doesn't also
-    // land as an opaque scalar series in the datastore.
-    if (is_image) {
+    // Canonical-object ontologies route into the ObjectStore: each row becomes
+    // one serialized pj_base builtin object (Image / PointCloud / FrameTransforms
+    // / PosesInFrame) keyed by timestamp. We deliberately skip pumpStreamToHost
+    // for these so the raw payload columns don't ALSO land as opaque scalar
+    // series in the datastore. The HOST decodes each blob (the toolbox never
+    // decodes/decompresses — see the per-ontology push helpers).
+    if (is_object) {
       if (!host_provider_) {
         finish(false, "host not bound");
         return;
@@ -442,16 +457,55 @@ void FetchWorker::pullTopicsAsync(
         finish(false, ds.error());
         return;
       }
-      auto pushed = pushImageRowsToHost(host, *ds, topic_name, table, ts_field, synth_anchor_ns, synth_interval_ns);
+      const ObjectIngestContext ctx{host, *ds, topic_name, ts_field, synth_anchor_ns, synth_interval_ns};
+      auto pushed = [&]() -> PJ::Expected<ObjectPushOutcome> {
+        if (is_image) {
+          return pushImageRowsToHost(ctx, table);
+        }
+        if (is_point_cloud) {
+          return pushPointCloudRowsToHost(ctx, table);
+        }
+        if (is_pose) {
+          return pushPoseRowsToHost(ctx, table);
+        }
+        if (is_transform) {
+          return pushFrameTransformsRowsToHost(ctx, table);
+        }
+        if (is_occupancy_grid) {
+          return pushOccupancyGridRowsToHost(ctx, table);
+        }
+        if (is_laser_scan) {
+          return pushLaserScanRowsToHost(ctx, table);
+        }
+        if (is_grid_cells) {
+          return pushGridCellsRowsToHost(ctx, table);
+        }
+        if (is_futures_cloud) {
+          return pushColumnarPointCloudRowsToHost(ctx, table);
+        }
+        // Unreachable: is_object (isCanonicalObjectOntology) gates entry, so one
+        // branch above always matches. Defensive fallback for a canonical tag
+        // added to the routing predicates but not wired to a push helper here.
+        return PJ::unexpected(std::string("unhandled canonical ontology '") + ontology_tag + "'");
+      }();
       if (!pushed) {
         finish(false, pushed.error());
         return;
       }
       if (pushed->pushed == 0) {
-        finish(false, pushed->first_error.empty() ? std::string("no image rows") : pushed->first_error);
+        finish(false, pushed->first_error.empty() ? ("no " + ontology_tag + " rows") : pushed->first_error);
         return;
       }
-      finish(true, {});
+      // The topic succeeded, but per-row skips are silent in the ObjectPushOutcome
+      // — surface them as a non-fatal warning so a partial import (1 good row,
+      // N silently dropped) is visible rather than presenting as a clean success.
+      std::string warning;
+      if (pushed->skipped > 0) {
+        warning = ontology_tag + " topic '" + topic_name + "': skipped " + std::to_string(pushed->skipped) + " of " +
+                  std::to_string(pushed->pushed + pushed->skipped) + " rows" +
+                  (pushed->first_error.empty() ? "" : (" (first: " + pushed->first_error + ")"));
+      }
+      finish(true, {}, std::move(warning));
       return;
     }
 
@@ -542,11 +596,11 @@ void FetchWorker::pullTopicsAsync(
         /*retain_batches=*/false);
   } catch (const std::exception& e) {
     if (pullFinished) {
-      pullFinished(sequence_name, {}, false, fmt::format("pull failed: {}", e.what()));
+      pullFinished({{sequence_name, {}}, false, fmt::format("pull failed: {}", e.what()), {}});
     }
   } catch (...) {
     if (pullFinished) {
-      pullFinished(sequence_name, {}, false, "pull failed: unknown error");
+      pullFinished({{sequence_name, {}}, false, "pull failed: unknown error", {}});
     }
   }
   if (allFetchesComplete) {

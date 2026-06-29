@@ -19,6 +19,7 @@
 
 #include "core/types.h"
 #include "flight/types.hpp"  // mosaico::SequenceInfo
+#include "worker_types.h"    // ServerCredentials, ConnectResult, TopicRef, PullResultEvent
 
 namespace mosaico {
 
@@ -122,13 +123,22 @@ struct DialogState {
   // own edits (the bug this design fixes). Edits flow back via onCodeChanged.
   std::string query_text;
   bool query_text_pushed = false;
-  // Caret offset (bytes) in the query editor, delivered by onCodeChangedWithCursor;
-  // drives the cursor-aware Key/Op/Value assist dropdowns and completion inserts.
+  // Caret offset (bytes) in the query editor, delivered by onCodeChangedWithCursor.
   int query_cursor = 0;
-  // Set when the plugin programmatically rewrites query_text (a dropdown insert)
+  // Set when the plugin programmatically rewrites query_text (the + clause button)
   // and the new text+caret must be pushed back to the editor on the next tick.
   // User keystrokes do NOT set this, so the editor keeps owning its own text.
   bool query_push_pending = false;
+
+  // Staged clause being assembled in ADD mode (lua.txt 1-3,9): the dropdown
+  // picks accumulate here and reach the editor ONLY when PLUS commits them
+  // (commitClause). Empty == that slot not yet picked. Cleared after a commit,
+  // and ignored while the caret is ON a token (REPLACE mode edits in place).
+  // staged_op empty == the "==" default (shown but not yet explicitly chosen).
+  std::string staged_key;
+  std::string staged_op;
+  std::string staged_value;
+
   // Metadata schema (key → distinct values) for the query assist, cached by
   // seq_epoch so it rebuilds only when the sequence set changes.
   Schema query_schema;
@@ -239,7 +249,7 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   // settings view is bound, before the tick loop.
   void initFromSettings();
 
-  void onConnectFinished(bool ok, std::string status, std::string error);
+  void onConnectFinished(ConnectResult result);
   void onSequencesReady(std::vector<SequenceInfo> sequences);
   // Progressive discovery (PJ3 parity): populate the table from the initial
   // list as soon as it arrives, then fill each row's Date/Size as the server
@@ -248,9 +258,9 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   void onSequenceInfoReady(SequenceInfo sequence);
   void onTopicsReady(std::string sequence_name, std::vector<std::string> topic_names);
   void onTopicInfosReady(std::string sequence_name, std::vector<TopicInfo> topics);
-  void onTopicMetadataReady(std::string sequence_name, std::string topic_name, TopicInfo info);
+  void onTopicMetadataReady(TopicRef topic, TopicInfo info);
   void onPullProgress(std::string topic_name, std::int64_t bytes);
-  void onPullFinished(std::string sequence_name, std::string topic_name, bool ok, std::string error);
+  void onPullFinished(PullResultEvent result);
   void onAllFetchesComplete(std::string sequence_name);
 
   void workerLoop();

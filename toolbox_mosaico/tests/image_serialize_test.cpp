@@ -262,7 +262,7 @@ TEST(ImageSerialize, PerRowGeometryRoundTripsThroughCanonicalCodec) {
   auto ds = host.createDataSource("seq");
   ASSERT_TRUE(ds) << ds.error();
 
-  auto pushed = mosaico::pushImageRowsToHost(host, *ds, "/camera/jai/rgb/image", table, "timestamp_ns", 0, 0);
+  auto pushed = mosaico::pushImageRowsToHost({host, *ds, "/camera/jai/rgb/image", "timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 2);
   EXPECT_EQ(pushed->skipped, 0);
@@ -311,7 +311,7 @@ TEST(ImageSerialize, FallsBackToFormatWhenEncodingEmpty) {
   auto ds = host.createDataSource("seq");
   ASSERT_TRUE(ds) << ds.error();
 
-  auto pushed = mosaico::pushImageRowsToHost(host, *ds, "/cam/compressed", table, "timestamp_ns", 0, 0);
+  auto pushed = mosaico::pushImageRowsToHost({host, *ds, "/cam/compressed", "timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   ASSERT_EQ(fake.pushes.size(), 1u);
@@ -334,7 +334,7 @@ TEST(ImageSerialize, BigEndianRoundTrips) {
   auto ds = host.createDataSource("seq");
   ASSERT_TRUE(ds) << ds.error();
 
-  auto pushed = mosaico::pushImageRowsToHost(host, *ds, "/cam/depth", table, "timestamp_ns", 0, 0);
+  auto pushed = mosaico::pushImageRowsToHost({host, *ds, "/cam/depth", "timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   ASSERT_EQ(fake.pushes.size(), 1u);
@@ -360,7 +360,7 @@ TEST(ImageSerialize, NullBigEndianDefaultsToHostEndianness) {
   auto ds = host.createDataSource("seq");
   ASSERT_TRUE(ds) << ds.error();
 
-  auto pushed = mosaico::pushImageRowsToHost(host, *ds, "/cam/depth", table, "timestamp_ns", 0, 0);
+  auto pushed = mosaico::pushImageRowsToHost({host, *ds, "/cam/depth", "timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   ASSERT_EQ(fake.pushes.size(), 1u);
@@ -389,7 +389,7 @@ TEST(ImageSerialize, EmptyEncodingWithFormatIsCompressedAndKeepsZeroGeometry) {
   auto ds = host.createDataSource("seq");
   ASSERT_TRUE(ds) << ds.error();
 
-  auto pushed = mosaico::pushImageRowsToHost(host, *ds, "/cam/png", table, "timestamp_ns", 0, 0);
+  auto pushed = mosaico::pushImageRowsToHost({host, *ds, "/cam/png", "timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);  // compressed -> NOT skipped despite 0 geometry.
   EXPECT_EQ(pushed->skipped, 0);
@@ -413,7 +413,7 @@ TEST(ImageSerialize, MissingDataRowSkippedOthersPushed) {
   auto ds = host.createDataSource("seq");
   ASSERT_TRUE(ds) << ds.error();
 
-  auto pushed = mosaico::pushImageRowsToHost(host, *ds, "/cam/raw", table, "timestamp_ns", 0, 0);
+  auto pushed = mosaico::pushImageRowsToHost({host, *ds, "/cam/raw", "timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   // The two good rows pushed; the null-data row skipped.
   EXPECT_EQ(pushed->pushed, 2);
