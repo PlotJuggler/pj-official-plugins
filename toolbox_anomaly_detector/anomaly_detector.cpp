@@ -181,7 +181,7 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     wd.setEnabled("all_datasets_marker", global_);
     // Save and Load are both native file pickers; onFileSelected tells them apart
     // by widget name. Save-as lets the user create a new file anywhere.
-    wd.setSaveFilePicker("save_rule_button", "Save rule as...", "*.json", "Save detection rule");
+    wd.setSaveFilePicker("save_rule_button", "Save rule as...", "*.json", "Save detection rule", "json");
     wd.setFilePicker("load_rule_button", "Load rule...", "*.json", "Load detection rule");
     wd.setEnabled("apply_button", !code_.empty());
 
@@ -376,14 +376,12 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
 
  private:
   // Write the current rule (script + source) to the chosen path as a portable JSON
-  // file. The Save-as picker already let the user create/select the file; we just
-  // ensure a .json extension.
+  // file. The Save-as picker already let the user create/select the file; the host
+  // guarantees the ".json" extension via the save-file-picker default_suffix contract
+  // (setSaveFilePicker(..., "json")), so no manual extension handling is needed here.
   std::string saveRuleTo(std::string path) const {
     if (path.empty()) {
       return "Error: no file selected";
-    }
-    if (path.size() < 5 || path.substr(path.size() - 5) != ".json") {
-      path += ".json";
     }
     anomaly_core::Rule rule;
     rule.code = code_;
