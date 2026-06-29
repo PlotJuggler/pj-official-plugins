@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>767</width>
-    <height>637</height>
+    <width>889</width>
+    <height>732</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -19,14 +19,14 @@
      <item>
       <widget class="QLabel" name="label_2">
        <property name="text">
-        <string>When an array size exceeds:</string>
+        <string>If an array size exceeds:</string>
        </property>
       </widget>
      </item>
      <item>
       <widget class="QSpinBox" name="spinBox">
        <property name="focusPolicy">
-        <enum>Qt::ClickFocus</enum>
+        <enum>Qt::FocusPolicy::ClickFocus</enum>
        </property>
        <property name="minimum">
         <number>0</number>
@@ -37,9 +37,92 @@
       </widget>
      </item>
      <item>
+      <widget class="QLabel" name="label_4">
+       <property name="text">
+        <string>then:</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QRadioButton" name="radioClamp">
+       <property name="text">
+        <string>Clamp</string>
+       </property>
+       <property name="checked">
+        <bool>true</bool>
+       </property>
+       <attribute name="buttonGroup">
+        <string notr="true">buttonGroupArrayPolicy</string>
+       </attribute>
+      </widget>
+     </item>
+     <item>
+      <widget class="QRadioButton" name="radioSkip">
+       <property name="text">
+        <string>Skip</string>
+       </property>
+       <attribute name="buttonGroup">
+        <string notr="true">buttonGroupArrayPolicy</string>
+       </attribute>
+      </widget>
+     </item>
+     <item>
       <spacer name="horizontalSpacer">
        <property name="orientation">
-        <enum>Qt::Horizontal</enum>
+        <enum>Qt::Orientation::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_2">
+     <property name="leftMargin">
+      <number>0</number>
+     </property>
+     <property name="topMargin">
+      <number>11</number>
+     </property>
+     <item>
+      <widget class="QLabel" name="label_3">
+       <property name="text">
+        <string>Timestamp:</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QRadioButton" name="radioPublishTime">
+       <property name="text">
+        <string>publish</string>
+       </property>
+       <property name="checked">
+        <bool>true</bool>
+       </property>
+       <attribute name="buttonGroup">
+        <string notr="true">buttonGroupTimestamp</string>
+       </attribute>
+      </widget>
+     </item>
+     <item>
+      <widget class="QRadioButton" name="radioLogTime">
+       <property name="text">
+        <string>log</string>
+       </property>
+       <attribute name="buttonGroup">
+        <string notr="true">buttonGroupTimestamp</string>
+       </attribute>
+      </widget>
+     </item>
+     <item>
+      <spacer name="horizontalSpacer_2">
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
        </property>
        <property name="sizeHint" stdset="0">
         <size>
@@ -50,30 +133,13 @@
       </spacer>
      </item>
      <item>
-      <widget class="QRadioButton" name="radioClamp">
+      <widget class="QCheckBox" name="checkBoxUseTimestamp">
        <property name="text">
-        <string>Clamp</string>
-       </property>
-       <property name="checked">
-        <bool>true</bool>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QRadioButton" name="radioSkip">
-       <property name="text">
-        <string>Skip</string>
+        <string>Override with the message header timestamp (if present)</string>
        </property>
       </widget>
      </item>
     </layout>
-   </item>
-   <item>
-    <widget class="QCheckBox" name="checkBoxUseTimestamp">
-     <property name="text">
-      <string>Use message timestamp if present (fallback: publish time)</string>
-     </property>
-    </widget>
    </item>
    <item>
     <widget class="QFrame" name="line">
@@ -93,7 +159,7 @@
       <string notr="true">background-color: palette(shadow);</string>
      </property>
      <property name="frameShape">
-      <enum>QFrame::NoFrame</enum>
+      <enum>QFrame::Shape::NoFrame</enum>
      </property>
     </widget>
    </item>
@@ -105,8 +171,7 @@
         <widget class="QLabel" name="label">
          <property name="font">
           <font>
-           <weight>75</weight>
-           <bold>true</bold>
+           <fontweight>DemiBold</fontweight>
           </font>
          </property>
          <property name="text">
@@ -133,7 +198,13 @@
          <item>
           <spacer name="selectButtonsSpacer">
            <property name="orientation">
-            <enum>Qt::Horizontal</enum>
+            <enum>Qt::Orientation::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>0</width>
+             <height>0</height>
+            </size>
            </property>
           </spacer>
          </item>
@@ -147,8 +218,7 @@
         <widget class="QLabel" name="labelFilter">
          <property name="font">
           <font>
-           <weight>75</weight>
-           <bold>true</bold>
+           <fontweight>DemiBold</fontweight>
           </font>
          </property>
          <property name="text">
@@ -175,7 +245,7 @@ QLineEdit#lineEditFilter:focus {
   border-bottom: 2px solid palette(highlight);
 }</string>
          </property>
-<property name="clearButtonEnabled">
+         <property name="clearButtonEnabled">
           <bool>true</bool>
          </property>
         </widget>
@@ -190,13 +260,13 @@ QLineEdit#lineEditFilter:focus {
       <string>QHeaderView::section { height: 24px; }</string>
      </property>
      <property name="editTriggers">
-      <set>QAbstractItemView::NoEditTriggers</set>
+      <set>QAbstractItemView::EditTrigger::NoEditTriggers</set>
      </property>
      <property name="selectionMode">
-      <enum>QAbstractItemView::MultiSelection</enum>
+      <enum>QAbstractItemView::SelectionMode::MultiSelection</enum>
      </property>
      <property name="selectionBehavior">
-      <enum>QAbstractItemView::SelectRows</enum>
+      <enum>QAbstractItemView::SelectionBehavior::SelectRows</enum>
      </property>
      <property name="sortingEnabled">
       <bool>true</bool>
@@ -204,26 +274,14 @@ QLineEdit#lineEditFilter:focus {
      <property name="columnCount">
       <number>4</number>
      </property>
+     <attribute name="horizontalHeaderMinimumSectionSize">
+      <number>40</number>
+     </attribute>
+     <attribute name="horizontalHeaderDefaultSectionSize">
+      <number>40</number>
+     </attribute>
      <attribute name="horizontalHeaderHighlightSections">
       <bool>false</bool>
-     </attribute>
-     <attribute name="horizontalHeaderMinimumSectionSize">
-      <number>40</number>
-     </attribute>
-     <attribute name="horizontalHeaderDefaultSectionSize">
-      <number>24</number>
-     </attribute>
-     <attribute name="horizontalHeaderStretchLastSection">
-      <bool>false</bool>
-     </attribute>
-     <property name="styleSheet">
-      <string>QHeaderView::section { height: 24px; }</string>
-     </property>
-     <attribute name="horizontalHeaderMinimumSectionSize">
-      <number>40</number>
-     </attribute>
-     <attribute name="horizontalHeaderDefaultSectionSize">
-      <number>24</number>
      </attribute>
      <attribute name="horizontalHeaderStretchLastSection">
       <bool>false</bool>
@@ -253,7 +311,6 @@ QLineEdit#lineEditFilter:focus {
      </column>
     </widget>
    </item>
-
    <item>
     <layout class="QHBoxLayout" name="bottomBar">
      <item>
@@ -271,10 +328,10 @@ QLineEdit#lineEditFilter:focus {
      <item>
       <widget class="QDialogButtonBox" name="buttonBox">
        <property name="orientation">
-        <enum>Qt::Horizontal</enum>
+        <enum>Qt::Orientation::Horizontal</enum>
        </property>
        <property name="standardButtons">
-        <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+        <set>QDialogButtonBox::StandardButton::Cancel|QDialogButtonBox::StandardButton::Ok</set>
        </property>
       </widget>
      </item>
@@ -318,6 +375,7 @@ QLineEdit#lineEditFilter:focus {
   </connection>
  </connections>
  <buttongroups>
-  <buttongroup name="buttonGroup"/>
+  <buttongroup name="buttonGroupTimestamp"/>
+  <buttongroup name="buttonGroupArrayPolicy"/>
  </buttongroups>
 </ui>

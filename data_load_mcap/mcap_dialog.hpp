@@ -38,9 +38,14 @@ class McapDialog : public PJ::DialogPluginTyped {
   bool clampLargeArrays() const {
     return clamp_large_arrays_;
   }
-  /// When true, use the message timestamp if present; fallback to publish time.
-  bool useTimestamp() const {
-    return use_timestamp_;
+  /// When true, use logTime from the MCAP envelope; otherwise use publishTime.
+  bool useLogTime() const {
+    return use_log_time_;
+  }
+  /// When true, the parser should extract the timestamp from inside the message
+  /// payload (e.g. ROS Header.stamp) via use_embedded_timestamp in parser config.
+  bool useHeaderTimestamp() const {
+    return use_header_timestamp_;
   }
   const std::unordered_set<std::string>& selectedTopics() const {
     return selected_topics_;
@@ -73,8 +78,10 @@ class McapDialog : public PJ::DialogPluginTyped {
     wd.setChecked("radioClamp", clamp_large_arrays_);
     wd.setChecked("radioSkip", !clamp_large_arrays_);
 
-    // Timestamp checkbox
-    wd.setChecked("checkBoxUseTimestamp", use_timestamp_);
+    // Timestamp row
+    wd.setChecked("radioPublishTime", !use_log_time_);
+    wd.setChecked("radioLogTime", use_log_time_);
+    wd.setChecked("checkBoxUseTimestamp", use_header_timestamp_);
 
     // Filter
     wd.setText("lineEditFilter", filter_text_);
@@ -139,8 +146,8 @@ class McapDialog : public PJ::DialogPluginTyped {
 
   bool onToggled(std::string_view widget_name, bool checked) override {
     if (widget_name == "checkBoxUseTimestamp") {
-      use_timestamp_ = checked;
-      return true;
+      use_header_timestamp_ = checked;
+      return false;
     }
     if (!checked) {
       return false;
@@ -152,6 +159,14 @@ class McapDialog : public PJ::DialogPluginTyped {
     if (widget_name == "radioSkip") {
       clamp_large_arrays_ = false;
       return true;
+    }
+    if (widget_name == "radioPublishTime") {
+      use_log_time_ = false;
+      return false;
+    }
+    if (widget_name == "radioLogTime") {
+      use_log_time_ = true;
+      return false;
     }
     return false;
   }
@@ -200,7 +215,8 @@ class McapDialog : public PJ::DialogPluginTyped {
     cfg["filepath"] = filepath_;
     cfg["max_array_size"] = max_array_size_;
     cfg["clamp_large_arrays"] = clamp_large_arrays_;
-    cfg["use_timestamp"] = use_timestamp_;
+    cfg["use_log_time"] = use_log_time_;
+    cfg["use_header_timestamp"] = use_header_timestamp_;
     cfg["selected_topics"] = std::vector<std::string>(selected_topics_.begin(), selected_topics_.end());
     return cfg.dump();
   }
@@ -214,7 +230,10 @@ class McapDialog : public PJ::DialogPluginTyped {
     filepath_ = cfg.value("filepath", std::string{});
     max_array_size_ = cfg.value("max_array_size", 500u);
     clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
-    use_timestamp_ = cfg.value("use_timestamp", false);
+    use_log_time_ = cfg.value("use_log_time", cfg.value("use_mcap_log_time", false));
+    // Backward compatibility: old MCAP configs used "use_timestamp" for the
+    // parser-level embedded timestamp option before the controls were split.
+    use_header_timestamp_ = cfg.value("use_header_timestamp", cfg.value("use_timestamp", false));
 
     selected_topics_.clear();
     if (auto it = cfg.find("selected_topics"); it != cfg.end() && it->is_array()) {
@@ -370,7 +389,8 @@ class McapDialog : public PJ::DialogPluginTyped {
   std::string filepath_;
   unsigned max_array_size_ = 500;
   bool clamp_large_arrays_ = true;
-  bool use_timestamp_ = false;
+  bool use_log_time_ = false;
+  bool use_header_timestamp_ = false;
   std::unordered_set<std::string> selected_topics_;
   std::string filter_text_;
 

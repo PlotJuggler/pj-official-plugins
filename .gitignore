@@ -10,6 +10,7 @@ __pycache__/
 /conanrunenv-*.sh
 /deactivate_conanbuild.sh
 /deactivate_conanrun.sh
+/build_*
 
 # Conan/CMake generated, any depth
 **/CMakeUserPresets.json
