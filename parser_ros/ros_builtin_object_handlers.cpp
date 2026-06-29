@@ -54,8 +54,8 @@ namespace {
 // are 1 byte/pixel here; demosaicing to RGB happens downstream in the viewer.
 const std::unordered_map<std::string, uint32_t>& kRosImageBytesPerPixel() {
   static const std::unordered_map<std::string, uint32_t> kMap = {
-      {"rgb8", 3},  {"rgba8", 4},       {"bgr8", 3},        {"bgra8", 4},       {"mono8", 1},       {"mono16", 2},
-      {"16UC1", 2}, {"bayer_rggb8", 1}, {"bayer_grbg8", 1}, {"bayer_gbrg8", 1}, {"bayer_bggr8", 1},
+      {"rgb8", 3},  {"rgba8", 4}, {"bgr8", 3},        {"bgra8", 4},       {"mono8", 1},       {"mono16", 2},
+      {"16UC1", 2}, {"32FC1", 4}, {"bayer_rggb8", 1}, {"bayer_grbg8", 1}, {"bayer_gbrg8", 1}, {"bayer_bggr8", 1},
   };
   return kMap;
 }
