@@ -996,9 +996,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   // Build the editor config for ONE batch-created series so that editing it later
   // reopens the BATCH tab (PJ3 parity), repopulated with this series' source,
   // prefix/suffix, global, body and language.
-  static std::string makeBatchConfig(const std::string& name, const std::string& global, const std::string& body,
-                                     const std::string& source, const std::string& language, const std::string& suffix,
-                                     bool use_prefix) {
+  static std::string makeBatchConfig(
+      const std::string& name, const std::string& global, const std::string& body, const std::string& source,
+      const std::string& language, const std::string& suffix, bool use_prefix) {
     nlohmann::json cfg;
     cfg["mode"] = "batch";
     cfg["output_name"] = name;
@@ -1028,7 +1028,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       if (cfg.contains("sources") && cfg["sources"].is_array()) {
         batch_selected_ = cfg["sources"].get<std::vector<std::string>>();
       }
-      current_tab_ = 1;          // open on the Batch tab
+      current_tab_ = 1;             // open on the Batch tab
       pending_tab_restore_ = true;  // one-shot: push the tab + selection to the UI
       batch_dirty_ = true;
       edit_mode_ = true;
