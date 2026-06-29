@@ -215,8 +215,23 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
 
   std::string saveConfig() const override {
     nlohmann::json arr = nlohmann::json::array();
-    for (const auto& [name, type] : selected_topics_) {
-      arr.push_back({{"name", name}, {"type", type}});
+    {
+      // Emit (and persist) a selection only while its topic is still being
+      // advertised. A restored selection (loadConfig) for a topic that is no
+      // longer published would otherwise be subscribed silently — no publisher,
+      // no data — and never appears as a table row, so the user could not
+      // deselect it; it also leaks back into the next session's config. A
+      // still-advertised restored topic is kept, preserving last-selection
+      // recall. Before discovery has populated, emit as-is rather than drop
+      // every selection.
+      std::lock_guard<std::mutex> lock(topics_mutex_);
+      const bool have_discovery = !discovered_topics_.empty();
+      for (const auto& [name, type] : selected_topics_) {
+        if (have_discovery && discovered_topics_.find(name) == discovered_topics_.end()) {
+          continue;
+        }
+        arr.push_back({{"name", name}, {"type", type}});
+      }
     }
     nlohmann::json cfg;
     cfg["selected_topics"] = arr;
@@ -355,7 +370,7 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   std::atomic<bool> topics_dirty_{false};
   std::chrono::steady_clock::time_point last_refresh_{};
 
-  std::mutex topics_mutex_;
+  mutable std::mutex topics_mutex_;
   std::map<std::string, std::string> discovered_topics_;
   std::vector<std::pair<std::string, std::string>> selected_topics_;
 
