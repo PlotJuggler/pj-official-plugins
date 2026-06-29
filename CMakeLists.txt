@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
 
+# The headless anomaly_runner CLI (and its Luau engine layer: anomaly_core +
+# pj_scripting_core) is OFF by default. The cross-platform plugin CI builds only the
+# host-driven, Luau-FREE GUI plugins (the GUI Anomaly Detector submits rules to the host,
+# which runs Lua), so it does NOT need the private pj_scripting_core package. Build the
+# runner with `./build.sh tools/anomaly_runner` (its recipe provides pj_scripting_core)
+# or pass -DPJ_BUILD_ANOMALY_RUNNER=ON.
+option(PJ_BUILD_ANOMALY_RUNNER "Build the headless anomaly_runner CLI (needs pj_scripting_core)" OFF)
+
 # ---------------------------------------------------------------------------
 # Dual-mode: standalone project OR subdirectory of plotjuggler_sdk.
 #
@@ -50,7 +58,9 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(toolbox_quaternion)
   add_subdirectory(toolbox_reactive_scripts_editor)
   add_subdirectory(toolbox_anomaly_detector)
-  add_subdirectory(tools/anomaly_runner)
+  if(PJ_BUILD_ANOMALY_RUNNER)
+    add_subdirectory(tools/anomaly_runner)
+  endif()
   add_subdirectory(toolbox_mosaico)
   return()
 endif()
@@ -194,6 +204,8 @@ else()
   add_subdirectory(toolbox_colormap)
   add_subdirectory(toolbox_quaternion)
   add_subdirectory(toolbox_anomaly_detector)
-  add_subdirectory(tools/anomaly_runner)
+  if(PJ_BUILD_ANOMALY_RUNNER)
+    add_subdirectory(tools/anomaly_runner)
+  endif()
   add_subdirectory(toolbox_mosaico)
 endif()

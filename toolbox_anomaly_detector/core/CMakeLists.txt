@@ -25,17 +25,23 @@ target_link_libraries(anomaly_helpers
     nlohmann_json::nlohmann_json
 )
 
-find_package(pj_scripting_core REQUIRED)
+# anomaly_core (the Luau engine layer) is built ONLY for the headless anomaly_runner
+# (gated by PJ_BUILD_ANOMALY_RUNNER, which the runner's CMakeLists enables). The GUI
+# plugin links anomaly_helpers and stays Luau-free, so the default/aggregate build never
+# needs pj_scripting_core — that is what keeps the cross-platform plugin CI green.
+if(PJ_BUILD_ANOMALY_RUNNER)
+  find_package(pj_scripting_core REQUIRED)
 
-add_library(anomaly_core STATIC anomaly_core.cpp)
-target_compile_features(anomaly_core PUBLIC cxx_std_20)
-target_include_directories(anomaly_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-set_target_properties(anomaly_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_compile_options(anomaly_core PRIVATE ${PJ_WARNING_FLAGS})
-# anomaly_helpers (re-exported helpers) + pj_scripting_core (the engine that
-# runAnomalyScript delegates to) are PUBLIC, so the runner gets both.
-target_link_libraries(anomaly_core
-  PUBLIC
-    anomaly_helpers
-    pj_scripting_core::pj_scripting_core
-)
+  add_library(anomaly_core STATIC anomaly_core.cpp)
+  target_compile_features(anomaly_core PUBLIC cxx_std_20)
+  target_include_directories(anomaly_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+  set_target_properties(anomaly_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  target_compile_options(anomaly_core PRIVATE ${PJ_WARNING_FLAGS})
+  # anomaly_helpers (re-exported helpers) + pj_scripting_core (the engine that
+  # runAnomalyScript delegates to) are PUBLIC, so the runner gets both.
+  target_link_libraries(anomaly_core
+    PUBLIC
+      anomaly_helpers
+      pj_scripting_core::pj_scripting_core
+  )
+endif()

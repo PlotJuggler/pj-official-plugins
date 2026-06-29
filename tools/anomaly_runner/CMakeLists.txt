@@ -4,6 +4,9 @@
 
 # Pull in the shared engine, which lives under the sibling toolbox plugin. Guarded
 # so the aggregate build (where the toolbox already added it) doesn't add it twice.
+# Building the runner implies the engine layer, so enable it for the core subdir below
+# (the GUI-only / aggregate build leaves PJ_BUILD_ANOMALY_RUNNER OFF and stays Luau-free).
+set(PJ_BUILD_ANOMALY_RUNNER ON)
 if(NOT TARGET anomaly_core)
   add_subdirectory(
     ${CMAKE_CURRENT_SOURCE_DIR}/../../toolbox_anomaly_detector/core
