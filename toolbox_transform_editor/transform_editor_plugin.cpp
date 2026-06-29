@@ -225,6 +225,7 @@ struct Snippet {
   std::string name;
   std::string global_code;
   std::string function_body;
+  std::string language = "luau";  // "luau" | "python"; legacy/builtin snippets are Luau
 };
 
 std::filesystem::path snippetLibraryPath() {
@@ -240,7 +241,11 @@ bool saveSnippetsToPath(const std::vector<Snippet>& snippets, const std::filesys
     std::filesystem::create_directories(path.parent_path());
     nlohmann::json j = nlohmann::json::array();
     for (const auto& s : snippets) {
-      j.push_back({{"name", s.name}, {"global_code", s.global_code}, {"function_body", s.function_body}});
+      j.push_back(
+          {{"name", s.name},
+           {"global_code", s.global_code},
+           {"function_body", s.function_body},
+           {"language", s.language}});
     }
     std::ofstream out(path);
     if (!out) {
@@ -309,7 +314,7 @@ std::optional<std::vector<Snippet>> loadSnippetsFromPath(const std::filesystem::
     }
     result.push_back(
         {item.value("name", std::string{}), item.value("global_code", std::string{}),
-         item.value("function_body", std::string{})});
+         item.value("function_body", std::string{}), item.value("language", std::string{"luau"})});
   }
   return result;
 }
@@ -368,9 +373,44 @@ inline std::string buildTransformScript(
   for (std::size_t k = 0; k < num_extra; ++k) {
     params += ", v" + std::to_string(k + 1);
   }
+
+  // Python backend: emit a module with a top-level class `T` (see pj_scripting's
+  // python_engine.h). The global section runs once at module level (so `global`
+  // persistent state works, PJ3-style); the body becomes the function. Python is
+  // whitespace-sensitive, so every body line is indented one level.
+  if (language == "python") {
+    const auto indent_block = [](const std::string& code) {
+      std::string out;
+      std::size_t start = 0;
+      while (start <= code.size()) {
+        const std::size_t nl = code.find('\n', start);
+        const std::string line = code.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+        out += "    " + line + "\n";
+        if (nl == std::string::npos) {
+          break;
+        }
+        start = nl + 1;
+      }
+      return out;
+    };
+    std::string src = "# pj-script: python\n";
+    if (!global_code.empty()) {
+      src += global_code + "\n\n";
+    }
+    src += "def _pj_fn(" + params + "):\n";
+    src += indent_block(body.empty() ? "return value" : body);
+    src += "\n";
+    src += "class T:\n";
+    src += "    id = \"" + id + "\"\n";
+    src += "    name = \"" + name + "\"\n";
+    src += "    output = \"double\"\n";
+    src += "    @staticmethod\n";
+    src += "    def create(params):\n        return T()\n";
+    src += "    def calculate(self, time, value, *args):\n        return _pj_fn(time, value, *args)\n";
+    return src;
+  }
+
   // The header declares the backend; the host's inferTransformBackend reads it.
-  // PJ4 only has a Luau backend today, so "python" is accepted by the UI but the
-  // host rejects it on create/validate (no Python backend yet).
   std::string src = "-- pj-script: " + language + "\n";
   src += "local function _pj_make()\n";
   src += global_code + "\n";
@@ -404,6 +444,17 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   PJ::WidgetData buildWidgetData() {
     PJ::WidgetData wd;
 
+    // One-shot after loadConfig (Modify): force the editor onto the tab the series
+    // was created from, and (for batch) re-select its source. Only once, so the
+    // user can freely switch tabs / change the selection afterwards.
+    if (pending_tab_restore_) {
+      wd.setTabIndex("tabWidget", current_tab_);
+      if (current_tab_ == 1) {
+        wd.setSelectedItems("listBatchSources", batch_selected_);
+      }
+      pending_tab_restore_ = false;
+    }
+
     // Single function tab — one table of inputs (drop target). Col 0 is the radio
     // marking which row provides `value`; col 1 is the series path the trash button
     // acts on; col 2 is the bound variable. The host emits row selection from the
@@ -435,8 +486,13 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     signature += " )";
     wd.setText("labelFunction", signature);
 
-    wd.setCodeContent("globalVarsText", global_code_).setCodeLanguage("globalVarsText", "lua");
-    wd.setCodeContent("functionText", function_body_).setCodeLanguage("functionText", "lua");
+    const char* single_lang = (language_ == "python") ? "python" : "lua";
+    wd.setCodeContent("globalVarsText", global_code_).setCodeLanguage("globalVarsText", single_lang);
+    wd.setCodeContent("functionText", function_body_).setCodeLanguage("functionText", single_lang);
+    // Reflect the active language on the radios (so loading a library snippet flips
+    // them, not just the user clicking). Pushed every tick; matches language_.
+    wd.setChecked("luaButton", language_ != "python");
+    wd.setChecked("pythonButton", language_ == "python");
 
     // Function Library sub-panel (cloned from PJ3's buttonLibraryBox dialog).
     // One-shot open/close commands, then live population while it is open.
@@ -461,11 +517,13 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     }
     if (library_open_) {
       const std::vector<std::string> names = filteredSnippetNames();
-      wd.setTableHeaders("tableFunctions", {"Function"});
+      wd.setTableHeaders("tableFunctions", {"Function", "Language"});
       std::vector<std::vector<std::string>> lib_rows;
       lib_rows.reserve(names.size());
       for (const auto& n : names) {
-        lib_rows.push_back({n});
+        auto it = std::find_if(snippets_.begin(), snippets_.end(), [&](const Snippet& s) { return s.name == n; });
+        const std::string lang = (it != snippets_.end() && it->language == "python") ? "Python" : "Lua";
+        lib_rows.push_back({n, lang});
       }
       wd.setTableRows("tableFunctions", lib_rows);
       wd.setPlainText("previewPlainText", combinedSnippetText(library_selected_));
@@ -516,8 +574,11 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // Batch tab content (set first so the validation terminal + Create gating below
     // see the current state).
     wd.setListItems("listBatchSources", batch_filtered_sources_);
-    wd.setCodeContent("globalVarsTextBatch", batch_global_code_).setCodeLanguage("globalVarsTextBatch", "lua");
-    wd.setCodeContent("functionTextBatch", batch_function_body_).setCodeLanguage("functionTextBatch", "lua");
+    const char* batch_lang = (batch_language_ == "python") ? "python" : "lua";
+    wd.setCodeContent("globalVarsTextBatch", batch_global_code_).setCodeLanguage("globalVarsTextBatch", batch_lang);
+    wd.setCodeContent("functionTextBatch", batch_function_body_).setCodeLanguage("functionTextBatch", batch_lang);
+    wd.setChecked("luaBatchButton", batch_language_ != "python");
+    wd.setChecked("pythonBatchButton", batch_language_ == "python");
 
     // Batch validation terminal — same messages and behaviour as PJ3's
     // onUpdatePreviewBatch (function_editor.cpp): list every blocking problem; the
@@ -545,12 +606,19 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // empty prefix/suffix now blocks creation.
     const bool can_create = (current_tab_ == 0) ? single_term.empty() : batch_term.empty();
     wd.setEnabled("pushButtonCreate", can_create);
-    // Create vs Modify (PJ3 parity): in explicit edit mode, or when the Single-tab
-    // output name already exists as a series, the button reads "Modify Time Series".
-    const bool is_modify = current_tab_ == 0 && (edit_mode_ || outputNameExists(output_name_));
+    // Create vs Modify (PJ3 parity): in explicit edit mode (single OR batch), or
+    // when the Single-tab output name already exists, the button reads "Modify".
+    const bool is_modify = edit_mode_ || (current_tab_ == 0 && outputNameExists(output_name_));
     wd.setButtonText("pushButtonCreate", is_modify ? "Modify Time Series" : "Create New Time Series");
-    // Lock the name while editing so a rename can't fork a new series (PJ3 parity).
+    // Lock the identity while editing so a rename can't fork a new series (PJ3
+    // parity). Single: the name field. Batch: the inputs that form the name —
+    // source selection + filter + prefix/suffix.
     wd.setEnabled("nameLineEdit", !edit_mode_);
+    wd.setEnabled("listBatchSources", !edit_mode_);
+    wd.setEnabled("lineEditTab2Filter", !edit_mode_);
+    wd.setEnabled("suffixLineEdit", !edit_mode_);
+    wd.setEnabled("radioButtonPrefix", !edit_mode_);
+    wd.setEnabled("radioButtonSuffix", !edit_mode_);
 
     // Preview chart — always set (even if empty) so ChartPreviewWidget is
     // instantiated from the start, matching PJ3 behaviour where the empty
@@ -916,10 +984,30 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     cfg["function_body"] = function_body_;
     cfg["sources"] = sources_;
     cfg["primary_index"] = primaryIndex();
+    cfg["language"] = language_;  // restore the Lua/Python radio on Modify
+    cfg["mode"] = "single";       // reopen on the Single tab when modified (PJ3 parity)
     // Back-compat mirror: an older editor reads source_series + extra_sources, so
     // expose the primary as the source and the rest as extras in order.
     cfg["source_series"] = primarySource();
     cfg["extra_sources"] = orderedExtras();
+    return cfg.dump();
+  }
+
+  // Build the editor config for ONE batch-created series so that editing it later
+  // reopens the BATCH tab (PJ3 parity), repopulated with this series' source,
+  // prefix/suffix, global, body and language.
+  static std::string makeBatchConfig(const std::string& name, const std::string& global, const std::string& body,
+                                     const std::string& source, const std::string& language, const std::string& suffix,
+                                     bool use_prefix) {
+    nlohmann::json cfg;
+    cfg["mode"] = "batch";
+    cfg["output_name"] = name;
+    cfg["global_code"] = global;
+    cfg["function_body"] = body;
+    cfg["language"] = language;
+    cfg["suffix"] = suffix;
+    cfg["use_prefix"] = use_prefix;
+    cfg["sources"] = std::vector<std::string>{source};
     return cfg.dump();
   }
 
@@ -928,9 +1016,30 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     if (cfg.is_discarded()) {
       return false;
     }
+    // A batch-created series reopens the BATCH tab (PJ3 parity), repopulated with
+    // its source, prefix/suffix, global, body and language.
+    if (cfg.value("mode", std::string{}) == "batch") {
+      batch_global_code_ = cfg.value("global_code", std::string{});
+      batch_function_body_ = cfg.value("function_body", std::string{});
+      batch_language_ = cfg.value("language", std::string{"luau"});
+      batch_suffix_ = cfg.value("suffix", std::string{});
+      batch_use_prefix_ = cfg.value("use_prefix", false);
+      batch_selected_.clear();
+      if (cfg.contains("sources") && cfg["sources"].is_array()) {
+        batch_selected_ = cfg["sources"].get<std::vector<std::string>>();
+      }
+      current_tab_ = 1;          // open on the Batch tab
+      pending_tab_restore_ = true;  // one-shot: push the tab + selection to the UI
+      batch_dirty_ = true;
+      edit_mode_ = true;
+      return true;
+    }
     output_name_ = cfg.value("output_name", std::string{});
     global_code_ = cfg.value("global_code", std::string{});
     function_body_ = cfg.value("function_body", std::string{});
+    language_ = cfg.value("language", std::string{"luau"});
+    current_tab_ = 0;             // open on the Single tab
+    pending_tab_restore_ = true;  // one-shot: push the tab to the UI
     sources_.clear();
     primary_index_ = -1;
     if (cfg.contains("sources") && cfg["sources"].is_array()) {
@@ -980,7 +1089,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   // then persist the library to disk. The name prompt + overwrite warning are
   // handled by the caller (the save state machine), mirroring PJ3.
   void doSaveSnippet(const std::string& snippet_name) {
-    Snippet sn{snippet_name, global_code_, function_body_};
+    Snippet sn{snippet_name, global_code_, function_body_, language_};
     auto it =
         std::find_if(snippets_.begin(), snippets_.end(), [&](const Snippet& s) { return s.name == snippet_name; });
     if (it != snippets_.end()) {
@@ -1047,10 +1156,17 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     }
     std::string globals;
     std::string body;
+    bool language_set = false;
     for (const auto& n : names) {
       auto it = std::find_if(snippets_.begin(), snippets_.end(), [&](const Snippet& s) { return s.name == n; });
       if (it == snippets_.end()) {
         continue;
+      }
+      // Adopt the first snippet's language so the editor interprets it correctly
+      // (and flips the Lua/Python radio). A multi-select combine uses the first.
+      if (!language_set) {
+        language_ = it->language.empty() ? "luau" : it->language;
+        language_set = true;
       }
       if (!it->global_code.empty()) {
         if (!globals.empty()) {
@@ -1252,6 +1368,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   std::string batch_filter_;
   std::string batch_suffix_;
   int current_tab_ = 0;                      // active tab (0 = Single, 1 = Batch)
+  bool pending_tab_restore_ = false;         // one-shot: push tab+selection after loadConfig
   std::vector<std::string> batch_selected_;  // full paths selected in listBatchSources
   bool batch_use_prefix_ = false;            // Prefix vs Suffix radio (default Suffix)
   std::vector<std::string> all_series_;
@@ -1465,9 +1582,13 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       const std::string script = buildTransformScript(name, name, global, body, 0, dialog_.batchLanguage());
       std::vector<std::string_view> ins{source_display};
       std::vector<std::string_view> outs{name};
+      // Persist this series' editor state (single-tab shape) so the Edit (pencil)
+      // button can Modify it just like a single-created series — PJ3 parity.
+      const std::string editor_params = TransformEditorDialog::makeBatchConfig(
+          name, global, body, source_display, dialog_.batchLanguage(), suffix, use_prefix);
       auto status = dp_view_.createTransform(
           name, PJ::Span<const std::string_view>(ins.data(), ins.size()),
-          PJ::Span<const std::string_view>(outs.data(), outs.size()), script, "{}");
+          PJ::Span<const std::string_view>(outs.data(), outs.size()), script, editor_params);
       if (!status) {
         report(
             PJ::ToolboxMessageLevel::kError,
@@ -1618,7 +1739,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     // preview/create script keeps preview_id for the upsert).
     const std::string validate_script =
         buildTransformScript("__validate__", "__validate__", global, body, num_extra, dialog_.language());
-    auto validation = dp_view_.validateScript(validate_script, dialog_.language());
+    auto validation = dp_view_.validateScript("transform", dialog_.language(), validate_script);
     dialog_.setValidationError(validation ? "" : std::string(validation.error()));
     if (!validation) {
       tearDownPreview();
@@ -1701,7 +1822,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     }
     const std::string script = buildTransformScript(
         "__validate__", "__validate__", dialog_.batchGlobalCode(), body, 0, dialog_.batchLanguage());
-    auto status = dp_view_.validateScript(script, dialog_.batchLanguage());
+    auto status = dp_view_.validateScript("transform", dialog_.batchLanguage(), script);
     dialog_.setBatchValidationError(status ? "" : std::string(status.error()));
   }
 
