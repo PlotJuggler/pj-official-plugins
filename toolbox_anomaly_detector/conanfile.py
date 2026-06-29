@@ -21,6 +21,9 @@ class ToolboxAnomalyDetectorConan(ConanFile):
     requires = (
         f"plotjuggler_sdk/{_SDK_VERSION}",
         "nlohmann_json/3.12.0",
+        # GTest backs the plugin's unit tests; the root CMakeLists' find_package(GTest)
+        # runs for every per-plugin build, so each plugin's recipe must provide it.
+        "gtest/1.17.0",
     )
     default_options = {
         "*:shared": False,
