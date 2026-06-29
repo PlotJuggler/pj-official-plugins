@@ -49,6 +49,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(toolbox_quaternion)
   add_subdirectory(toolbox_reactive_scripts_editor)
   add_subdirectory(toolbox_mosaico)
+  add_subdirectory(toolbox_transform_editor)
   return()
 endif()
 
