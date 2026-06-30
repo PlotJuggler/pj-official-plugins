@@ -40,6 +40,7 @@
      <property name="currentIndex">
       <number>0</number>
      </property>
+     <property name="framed" stdset="0"><bool>true</bool></property>
      <!-- Tab: Proto File -->
      <widget class="QWidget" name="tabProtoFile">
       <attribute name="title">
