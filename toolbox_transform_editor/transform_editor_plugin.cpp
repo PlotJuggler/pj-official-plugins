@@ -121,7 +121,6 @@ constexpr const char* kFunctionLibraryUi = R"PJLIB(<?xml version="1.0" encoding=
    </item>
    <item>
     <widget class="QTableWidget" name="tableFunctions">
-     <property name="styleSheet"><string notr="true">QTableWidget { border: 1px solid #888; }</string></property>
      <property name="selectionBehavior"><enum>QAbstractItemView::SelectRows</enum></property>
      <property name="selectionMode"><enum>QAbstractItemView::ExtendedSelection</enum></property>
      <property name="editTriggers"><set>QAbstractItemView::NoEditTriggers</set></property>

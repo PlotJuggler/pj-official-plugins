@@ -17,6 +17,7 @@
      <property name="currentIndex">
       <number>0</number>
      </property>
+     <property name="framed" stdset="0"><bool>true</bool></property>
      <widget class="QWidget" name="tabInfo">
       <attribute name="title">
        <string>Info</string>
