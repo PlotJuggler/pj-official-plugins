@@ -108,6 +108,9 @@ QTabBar::tab:!selected {
            <property name="minimumSize"><size><width>295</width><height>0</height></size></property>
            <layout class="QVBoxLayout" name="leftLayout">
             <property name="rightMargin"><number>8</number></property>
+            <!-- Match the right column (verticalLayout, bottomMargin 0) so the
+                 Timeseries table and the function editor share a flush bottom edge. -->
+            <property name="bottomMargin"><number>0</number></property>
 
             <!-- Name row: label + name field + Help (left column) -->
             <item>
