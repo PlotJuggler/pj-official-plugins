@@ -116,7 +116,31 @@ against both real fixtures. **Results (all recorded facts now):**
 parser (`dbc_parser_cpp` vs `dbcppp`) after reading its decode headers; copy writer call sequences from
 `mdflib_test/src/{testmdfwriter,testwrite,testcanbusobserver}.cpp`.
 
-## Phase 1 — Scaffolding + committed build plumbing (Codex #12: before any tests)
+## Phase 1 — Scaffolding + committed build plumbing ✅ DONE (2026-07-01)
+
+Built green as a single plugin (`PJ_BUILD_PLUGIN=data_load_mf4`, Conan + CMake, gcc 15):
+`libmf4_source_plugin.so` (3.5 MB) `-Werror`-clean; `mf4_source_test` passes. Files:
+`data_load_mf4/{manifest.json,conanfile.py,CMakeLists.txt,mf4_source.cpp,tests/mf4_source_test.cpp}`.
+Wired into both root CMake blocks + root `conanfile.py` (`zlib/1.3.1`+`expat/2.6.4`; zlib matches
+arrow/23.0.1 → no conflict). **Implementation decisions/findings (all verified):**
+
+- **mdflib via CPM `DOWNLOAD_ONLY` + self-built `mdf` target** from `file(GLOB .../mdflib/src/*.cpp)` —
+  sidesteps the `${CMAKE_SOURCE_DIR}` breakage entirely (no mdflib-CMake patch needed after all). Pinned to
+  commit `5ad85af` via the GitHub archive tarball.
+- **gcc-15 fix must use CMake `"SHELL:-include algorithm" "SHELL:-include cstdint"`** — plain
+  `-include algorithm -include cstdint` gets de-duplicated by CMake (drops a `-include`, turning `cstdint`
+  into a stray linker input). Applied to `mdf` + plugin + test targets (GNU only).
+- **Conan exposes expat as `expat::expat`** (config mode), not `EXPAT::EXPAT` → alias shim added
+  (defensively for zlib too).
+- **Self-containment verified:** `DT_NEEDED` = only libstdc++/libm/libgcc/libc (zlib/expat/mdflib statically
+  bundled, no external runtime dep); plugin's own `Mf4Source` symbol hidden; `-Wl,-Bsymbolic-functions`
+  applied by `pj_emit_plugin_manifest`; boot exports (`PJ_get_data_source_vtable`, `pj_plugin_abi_version`)
+  present. Exported bundled-dep symbols match the shipped ulog plugin's norm (isolation is via
+  -Bsymbolic-functions + host `RTLD_LOCAL`, not symbol hiding).
+- **Only the single-plugin build is verified**; the full aggregate build (all plugins) was not run here — it
+  is CI's per-plugin `PJ_BUILD_PLUGIN` matrix that matters.
+
+### Original prescriptive plan (for reference)
 
 `data_load_mf4/`: `manifest.json` (`.mf4/.MF4/.mdf/.dat`), `conanfile.py` (mirror ulog + chosen
 CAN lib + `zlib` + `expat`), `CMakeLists.txt` (mirror ulog: find_package ZLIB/EXPAT/CAN-lib;

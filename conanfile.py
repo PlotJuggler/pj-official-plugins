@@ -54,6 +54,10 @@ class PjOfficialPluginsConan(ConanFile):
         "libsodium/1.0.20",
         "pybind11/2.13.6",
         "cpython/3.12.7",
+        # data_load_mf4: mdflib (vendored via CPM) links zlib + expat, provided
+        # here from Conan. zlib/1.3.1 matches arrow/23.0.1's pin (no conflict).
+        "zlib/1.3.1",
+        "expat/2.6.4",
         f"plotjuggler_sdk/{_SDK_VERSION}",
     )
 
