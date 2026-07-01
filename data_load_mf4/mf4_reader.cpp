@@ -105,6 +105,13 @@ PJ::Status Mf4Reader::readGroup(std::size_t group_index, const RowCallback& cb) 
   std::vector<mdf::IChannelObserver*> value_obs;
   std::vector<PJ::PrimitiveType> value_types;
   for (auto& obs : observers) {
+    // mdflib returns a null observer for channel data types it cannot decode
+    // (e.g. Complex). Those map to kUnspecified and are skipped by
+    // valueChannelNames() too, so skipping them here keeps `value_obs` aligned
+    // with the field-name list (and avoids a null dereference).
+    if (obs == nullptr) {
+      continue;
+    }
     const mdf::IChannel& ch = obs->Channel();
     if (isMaster(ch.Type())) {
       if (master == nullptr) {
@@ -125,6 +132,13 @@ PJ::Status Mf4Reader::readGroup(std::size_t group_index, const RowCallback& cb) 
     return PJ::unexpected(std::string("mf4: channel group has no master channel"));
   }
 
+  // Absolute time = file HD start + the master channel's relative seconds. This
+  // is correct for single-measurement files (the common case: ASAP2, CANedge).
+  // KNOWN v1 LIMITATION: for *appended* files with multiple measurements at
+  // distinct start times, mdflib rewrites each measurement's master relative to
+  // its own StartMeasurement origin while GetStartTime() reflects only the first
+  // measurement, so later data groups would be anchored to the first epoch.
+  // mdflib exposes no per-DG epoch to correct this; revisit if such files appear.
   const std::uint64_t n = cg->NofSamples();
   std::vector<SampleValue> row(value_obs.size());
   for (std::uint64_t i = 0; i < n; ++i) {

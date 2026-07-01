@@ -113,6 +113,8 @@ TEST(Mf4Reader, SingleScalarGroup) {
 
   const auto rows = readAll(reader, 0);
   ASSERT_EQ(rows.size(), 5u);
+  // Absolute epoch: first sample sits exactly at the header start time.
+  EXPECT_EQ(rows[0].ts, static_cast<std::int64_t>(kStartNs));
   for (std::size_t i = 0; i < rows.size(); ++i) {
     EXPECT_EQ(rows[i].ts - rows[0].ts, static_cast<std::int64_t>(i) * static_cast<std::int64_t>(kPeriodNs));
     ASSERT_EQ(rows[i].values.size(), 1u);
@@ -249,6 +251,33 @@ TEST(Mf4Reader, GroupWithoutMasterIsRejected) {
   // readGroup must reject a masterless group rather than emit misaligned rows.
   const auto status = reader.readGroup(0, [](std::int64_t, const std::vector<SampleValue>&) {});
   EXPECT_FALSE(status.has_value());
+}
+
+TEST(Mf4Reader, UnsupportedChannelIsSkippedWithoutCrash) {
+  const std::string path = tempPath("unsupported");
+  writeSingleGroup(
+      path, 2,
+      [](mdf::IChannelGroup* cg) {
+        auto* ok = addChannel(cg, "ok", mdf::ChannelDataType::FloatLe, 8);
+        // Complex is unsupported in v1; mdflib returns a null observer for it,
+        // which the reader must skip (not dereference).
+        addChannel(cg, "cplx", mdf::ChannelDataType::ComplexLe, 16);
+        return std::vector<mdf::IChannel*>{ok};
+      },
+      [](const std::vector<mdf::IChannel*>& ch, std::size_t i) {
+        ch[0]->SetChannelValue(static_cast<double>(i) + 7.0);
+      });
+
+  Mf4Reader reader;
+  ASSERT_TRUE(reader.open(path).has_value());
+  ASSERT_EQ(reader.groups().size(), 1u);
+  EXPECT_EQ(reader.groups()[0].channels.size(), 3u);  // master + ok + cplx
+  EXPECT_EQ(reader.valueChannelNames(0), (std::vector<std::string>{"ok"}));
+
+  const auto rows = readAll(reader, 0);  // must not crash on the null observer
+  ASSERT_EQ(rows.size(), 2u);
+  ASSERT_EQ(rows[0].values.size(), 1u);
+  EXPECT_DOUBLE_EQ(rows[1].values[0].number, 8.0);
 }
 
 }  // namespace
