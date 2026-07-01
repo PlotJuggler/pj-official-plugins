@@ -18,6 +18,12 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/array_policy)
   add_subdirectory(common/laser_scan)
   add_subdirectory(common/pointcloud_color)
+  # common/can_dbc has a CPM download side-effect, so configure it only for its
+  # consumers (skipped when building an unrelated single plugin).
+  set(PJ_CAN_DBC_CONSUMERS data_load_mf4 data_load_blf)
+  if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_CAN_DBC_CONSUMERS)
+    add_subdirectory(common/can_dbc)
+  endif()
 
   # Enabled entries track the v4 ABI (PJ_ABI_VERSION == 4): service-
   # registry API, Arrow C Data Interface at the write boundary, and the
@@ -149,6 +155,12 @@ add_subdirectory(common/pj_video_demux)
 add_subdirectory(common/array_policy)
 add_subdirectory(common/laser_scan)
 add_subdirectory(common/pointcloud_color)
+# common/can_dbc has a CPM download side-effect, so configure it only for its
+# consumers (skipped when building an unrelated single plugin).
+set(PJ_CAN_DBC_CONSUMERS data_load_mf4 data_load_blf)
+if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_CAN_DBC_CONSUMERS)
+  add_subdirectory(common/can_dbc)
+endif()
 
 # ---------------------------------------------------------------------------
 # Plugins — use -DPJ_BUILD_PLUGIN=<dir> to build a single plugin (CI mode),

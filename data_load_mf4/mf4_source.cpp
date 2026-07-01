@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
+#include <pj_can_dbc/can_decoder.hpp>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -9,7 +10,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include "can_decoder.hpp"
 #include "mf4_dialog.hpp"
 #include "mf4_manifest.hpp"
 #include "mf4_reader.hpp"
