@@ -280,4 +280,38 @@ TEST(Mf4Reader, UnsupportedChannelIsSkippedWithoutCrash) {
   EXPECT_DOUBLE_EQ(rows[1].values[0].number, 8.0);
 }
 
+TEST(Mf4Reader, ReadsMdf3File) {
+  // Older MDF v3 (.mf3) via the same mdflib reader API. mdflib supports v3;
+  // this guards that the version-agnostic Mf4Reader path handles it too.
+  const auto p = std::filesystem::temp_directory_path() / "mf4rtest_v3.mf3";
+  std::error_code ec;
+  std::filesystem::remove(p, ec);
+  const std::string path = p.string();
+
+  auto writer = mdf::MdfFactory::CreateMdfWriter(mdf::MdfWriterType::Mdf3Basic);
+  ASSERT_TRUE(writer->Init(path));
+  writer->Header()->StartTime(kStartNs);
+  auto* dg = writer->CreateDataGroup();
+  auto* cg = mdf::MdfWriter::CreateChannelGroup(dg);
+  addMaster(cg);
+  auto* speed = addChannel(cg, "speed", mdf::ChannelDataType::FloatLe, 8, "m/s");
+  ASSERT_TRUE(writer->InitMeasurement());
+  writer->StartMeasurement(kStartNs);
+  for (std::size_t i = 0; i < 5; ++i) {
+    speed->SetChannelValue(static_cast<double>(i) * 3.0);
+    writer->SaveSample(*cg, kStartNs + static_cast<std::uint64_t>(i) * kPeriodNs);
+  }
+  writer->StopMeasurement(kStartNs + 5 * kPeriodNs);
+  writer->FinalizeMeasurement();
+
+  Mf4Reader reader;
+  ASSERT_TRUE(reader.open(path).has_value());
+  ASSERT_EQ(reader.groups().size(), 1u);
+  EXPECT_EQ(reader.valueChannelNames(0), (std::vector<std::string>{"speed"}));
+  const auto rows = readAll(reader, 0);
+  ASSERT_EQ(rows.size(), 5u);
+  EXPECT_DOUBLE_EQ(rows[2].values[0].number, 6.0);
+  EXPECT_EQ(rows[4].ts - rows[0].ts, 4 * static_cast<std::int64_t>(kPeriodNs));
+}
+
 }  // namespace
