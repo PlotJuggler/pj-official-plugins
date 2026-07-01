@@ -82,13 +82,17 @@ pj_emit_plugin_manifest(mf4_source_plugin
 # ---------------------------------------------------------------------------
 # Tests (Phase 1: scaffold link check; real module tests land in Phases 2-4)
 # ---------------------------------------------------------------------------
-add_executable(mf4_source_test tests/mf4_source_test.cpp)
+add_executable(mf4_source_test
+  tests/mf4_source_test.cpp
+  tests/mf4_value_test.cpp
+)
 target_compile_features(mf4_source_test PRIVATE cxx_std_20)
 target_compile_options(mf4_source_test PRIVATE ${PJ_WARNING_FLAGS})
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   target_compile_options(mf4_source_test PRIVATE "SHELL:-include algorithm" "SHELL:-include cstdint")
 endif()
 target_link_libraries(mf4_source_test PRIVATE
+  plotjuggler_sdk::base
   mdf
   ZLIB::ZLIB
   EXPAT::EXPAT
