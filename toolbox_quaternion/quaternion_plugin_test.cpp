@@ -47,9 +47,10 @@ struct FakeDataProcessorsHost {
   }
 
   static bool createImpl(
-      void* ctx, PJ_string_view_t id, const PJ_string_view_t* inputs, uint64_t input_count,
-      const PJ_string_view_t* outputs, uint64_t output_count, PJ_string_view_t script, PJ_string_view_t params,
-      PJ_error_t* /*out_error*/) noexcept {
+      void* ctx, PJ_string_view_t id, PJ_string_view_t /*kind*/, PJ_string_view_t /*language*/,
+      const PJ_string_view_t* inputs, uint64_t input_count, const PJ_string_view_t* outputs, uint64_t output_count,
+      PJ_string_view_t script, PJ_string_view_t params, uint32_t /*flags*/, PJ_string_view_t* /*out_topics*/,
+      uint64_t /*out_topics_capacity*/, uint64_t* out_topics_count, PJ_error_t* /*out_error*/) noexcept {
     auto* self = static_cast<FakeDataProcessorsHost*>(ctx);
     self->create_calls++;
     if (self->fail) {
@@ -68,6 +69,9 @@ struct FakeDataProcessorsHost {
     }
     if (std::find(self->live_ids.begin(), self->live_ids.end(), self->id) == self->live_ids.end()) {
       self->live_ids.push_back(self->id);  // upsert by id
+    }
+    if (out_topics_count != nullptr) {
+      *out_topics_count = self->outputs.size();
     }
     return true;
   }
