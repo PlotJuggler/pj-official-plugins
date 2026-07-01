@@ -9,16 +9,10 @@
    <item>
     <layout class="QHBoxLayout" name="topLayout">
      <property name="spacing"><number>6</number></property>
-     <item alignment="Qt::AlignTop">
+     <item>
       <widget class="QFrame" name="inputFrame">
        <property name="frameShape"><enum>QFrame::Box</enum></property>
        <property name="frameShadow"><enum>QFrame::Plain</enum></property>
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Preferred" vsizetype="Maximum">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
        <layout class="QVBoxLayout">
         <property name="spacing"><number>4</number></property>
         <property name="leftMargin"><number>6</number></property>
@@ -48,16 +42,10 @@
        </layout>
       </widget>
      </item>
-     <item alignment="Qt::AlignTop">
+     <item>
       <widget class="QFrame" name="optionsFrame">
        <property name="frameShape"><enum>QFrame::Box</enum></property>
        <property name="frameShadow"><enum>QFrame::Plain</enum></property>
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Preferred" vsizetype="Maximum">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
        <layout class="QVBoxLayout">
         <property name="spacing"><number>4</number></property>
         <property name="leftMargin"><number>6</number></property>
