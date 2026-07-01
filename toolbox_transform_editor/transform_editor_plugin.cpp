@@ -1615,41 +1615,9 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   // preview. The ephemeral transform output lives in the engine's topic list (and
   // hence in catalogSnapshot) even though it is kept out of the UI catalog, so this
   // resolves both the source AND the transformed result by name.
-  std::vector<std::pair<int64_t, double>> readRawSamples(const std::string& field_name) {
+  // Decimated (timestamp, value) samples for one already-resolved field handle.
+  std::vector<std::pair<int64_t, double>> samplesFromHandle(PJ::sdk::FieldHandle handle) {
     std::vector<std::pair<int64_t, double>> out;
-    auto catalog = toolboxHost().catalogSnapshot();
-    if (!catalog) {
-      return out;
-    }
-    // Resolve `field_name` (a full "topic/field" path, OR a bare topic name for a
-    // single-field derived output) to a field handle. Field paths in the snapshot
-    // are RELATIVE to their topic, so reconstruct the full "topic/field" name the
-    // same way CatalogModel does, instead of fragile substring matching.
-    const auto fields = catalog->fields();
-    const auto topics = catalog->topics();
-    PJ::sdk::FieldHandle handle{};
-    bool found = false;
-    for (const auto& t : topics) {
-      const std::string tname(t.name.data, t.name.size);
-      const bool topic_is_target = (tname == field_name);
-      const uint32_t end = t.first_field + t.field_count;
-      for (uint32_t fi = t.first_field; fi < end && fi < fields.size(); ++fi) {
-        const auto& f = fields[fi];
-        const std::string fname(f.name.data, f.name.size);
-        const std::string full = tname.empty() ? fname : (tname + "/" + fname);
-        if (topic_is_target || full == field_name || fname == field_name) {
-          handle = PJ::sdk::FieldHandle{f.handle};
-          found = true;
-          break;
-        }
-      }
-      if (found) {
-        break;
-      }
-    }
-    if (!found) {
-      return out;
-    }
     auto read = toolboxHost().readSeries(handle);
     if (!read || read->rowCount() == 0 || read->valuesAsFloat64() == nullptr) {
       return out;
@@ -1661,6 +1629,54 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     out.reserve(n / step + 1);
     for (size_t i = 0; i < n; i += step) {
       out.emplace_back(ts[i], vals[i]);
+    }
+    return out;
+  }
+
+  // Resolve several "topic/field" names (or a bare topic / bare field) against ONE
+  // catalog snapshot in a single nested pass, returning decimated samples per name
+  // (empty if a name did not resolve). The MIMO preview reads the source ghost + M
+  // outputs every tick; a per-name readRawSamples would re-acquire the snapshot and
+  // re-scan the whole catalog M+1 times. Field paths in the snapshot are RELATIVE to
+  // their topic and a ROS leaf carries a leading '/', so reconstruct "topic/field"
+  // WITHOUT doubling the slash (matching the host's joinTopicField) — a naive
+  // `tname + "/" + fname` would rebuild the old "topic//field" and fail to match.
+  std::vector<std::vector<std::pair<int64_t, double>>> readManyRawSamples(const std::vector<std::string>& names) {
+    std::vector<std::vector<std::pair<int64_t, double>>> out(names.size());
+    auto catalog = toolboxHost().catalogSnapshot();
+    if (!catalog) {
+      return out;
+    }
+    const auto fields = catalog->fields();
+    const auto topics = catalog->topics();
+    std::vector<PJ::sdk::FieldHandle> handles(names.size());
+    std::vector<bool> found(names.size(), false);
+    std::size_t remaining = names.size();
+    for (const auto& t : topics) {
+      if (remaining == 0) {
+        break;
+      }
+      const std::string tname(t.name.data, t.name.size);
+      const uint32_t end = t.first_field + t.field_count;
+      for (uint32_t fi = t.first_field; fi < end && fi < fields.size(); ++fi) {
+        const auto& f = fields[fi];
+        const std::string fname(f.name.data, f.name.size);
+        const std::string leaf = (!fname.empty() && fname.front() == '/') ? fname.substr(1) : fname;
+        const std::string full = tname.empty() ? leaf : (tname + "/" + leaf);
+        for (std::size_t i = 0; i < names.size(); ++i) {
+          if (found[i] || (tname != names[i] && full != names[i] && fname != names[i] && leaf != names[i])) {
+            continue;
+          }
+          handles[i] = PJ::sdk::FieldHandle{f.handle};
+          found[i] = true;
+          --remaining;
+        }
+      }
+    }
+    for (std::size_t i = 0; i < names.size(); ++i) {
+      if (found[i]) {
+        out[i] = samplesFromHandle(handles[i]);
+      }
     }
     return out;
   }
@@ -1726,8 +1742,19 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       input_topics.push_back(extra);
     }
 
-    const std::string preview_output = "__te_preview__";
+    // Declare the SAME output topics the real Create path uses (splitOutputNames of
+    // the comma-separated name field) so a MIMO body returning M values matches the
+    // node's arity — a single-output preview node drops every row of an M-output
+    // function and falsely reports "no output". Each slot gets a unique ephemeral
+    // name; fall back to one slot while the name field is still empty (mid-typing).
     const std::string preview_id(kPreviewId);
+    std::vector<std::string> output_names = splitOutputNames(dialog_.outputName());
+    const std::size_t num_outputs = output_names.empty() ? 1 : output_names.size();
+    std::vector<std::string> preview_outputs;
+    preview_outputs.reserve(num_outputs);
+    for (std::size_t k = 0; k < num_outputs; ++k) {
+      preview_outputs.push_back(preview_id + "_" + std::to_string(k));
+    }
     const std::string script =
         buildTransformScript(preview_id, preview_id, global, body, num_extra, dialog_.language());
 
@@ -1747,7 +1774,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     }
 
     std::vector<std::string_view> inputs_sv(input_topics.begin(), input_topics.end());
-    std::vector<std::string_view> outputs_sv{preview_output};
+    std::vector<std::string_view> outputs_sv(preview_outputs.begin(), preview_outputs.end());
 
     tearDownPreview();
     auto status = dp_view_.createEphemeralTransform(
@@ -1761,18 +1788,41 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     }
     preview_key_ = preview_id;
 
-    // Read the source (ghost) and the freshly-materialised transform output back
-    // from the datastore, and hand the host explicit points to plot. Both share a
-    // common t0 (the earliest sample) so they align on the time axis.
-    auto ghost_raw = readRawSamples(source);
-    auto result_raw = readRawSamples(preview_output);
+    // Read the source (ghost) and each materialised output back from the datastore,
+    // and hand the host explicit points to plot. Resolve all of them in ONE catalog
+    // pass (readManyRawSamples) — a per-series read would re-scan the whole catalog
+    // M+1 times per tick. All share a common t0 (the earliest sample across ghost +
+    // outputs) so they align on the time axis.
+    std::vector<std::string> read_names;
+    read_names.reserve(1 + preview_outputs.size());
+    read_names.push_back(source);
+    read_names.insert(read_names.end(), preview_outputs.begin(), preview_outputs.end());
+    auto samples = readManyRawSamples(read_names);
 
-    // The script compiled, but if the real node produced NO output while the source
-    // has data, the function returns nil/non-numeric (e.g. `return valu`) — flag it.
-    // This catches the runtime case that validateScript (compile-only) cannot, using
-    // the real inputs (so a valid multi-input function is NOT falsely flagged).
-    if (!ghost_raw.empty() && result_raw.empty()) {
-      dialog_.setValidationError("function produced no output — it must return a number");
+    auto ghost_raw = std::move(samples[0]);
+    std::vector<std::vector<std::pair<int64_t, double>>> results(
+        std::make_move_iterator(samples.begin() + 1), std::make_move_iterator(samples.end()));
+    bool any_result = false;
+    for (const auto& r : results) {
+      any_result = any_result || !r.empty();
+    }
+
+    // The script compiled, but if the source has data and NONE of the M declared
+    // outputs produced a row, the function never returns numbers (e.g. `return valu`)
+    // — flag it. Fire ONLY when every output is empty: one empty channel among several
+    // is legitimate (a suppressed output). validateScript (compile-only) can't catch
+    // this runtime case; real inputs are used, so a valid MIMO is not falsely flagged.
+    if (!ghost_raw.empty() && !any_result) {
+      // The output-name field declares N outputs; the body must return EXACTLY N
+      // values per point (positional). A silent MIMO no-op is almost always this
+      // arity mismatch — in EITHER direction (too few OR too many returns) — or a
+      // body that returns nothing. State the declared count symmetrically rather
+      // than a misleading "must return a number" (the user may have returned several).
+      const std::string n = std::to_string(num_outputs);
+      const std::string plural = num_outputs == 1 ? "" : "s";
+      const std::string msg = "function produced no output — declared " + n + " output" + plural +
+                              ", so it must return exactly " + n + " value" + plural + " per point";
+      dialog_.setValidationError(msg);
     }
 
     int64_t t0 = 0;
@@ -1781,9 +1831,11 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       t0 = ghost_raw.front().first;
       have_t0 = true;
     }
-    if (!result_raw.empty() && (!have_t0 || result_raw.front().first < t0)) {
-      t0 = result_raw.front().first;
-      have_t0 = true;
+    for (const auto& raw : results) {
+      if (!raw.empty() && (!have_t0 || raw.front().first < t0)) {
+        t0 = raw.front().first;
+        have_t0 = true;
+      }
     }
 
     const auto to_points = [t0](const std::vector<std::pair<int64_t, double>>& raw) {
@@ -1796,12 +1848,24 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     };
 
     std::vector<PJ::ChartSeries> series;
-    // Ghost (original): faded blue + dashed, distinct from the solid orange result
+    // Ghost (original): faded blue + dashed, distinct from the solid result curves
     // — same styling as the native TransformEditorPanel. Color hex is #AARRGGBB.
     series.push_back({source, to_points(ghost_raw), "#5A4488ff", /*dashed=*/true});
-    if (!result_raw.empty()) {
-      const std::string label = dialog_.outputName().empty() ? "result" : dialog_.outputName();
-      series.push_back({label, to_points(result_raw), "#ff8800", /*dashed=*/false});
+    // One solid curve per declared output, cycling a small palette so parallel MIMO
+    // outputs stay visually distinct; labelled by the user's output name.
+    static constexpr const char* kResultColors[] = {"#ff8800", "#0088ff", "#22aa22", "#cc2222", "#9933cc", "#00a0a0"};
+    static constexpr std::size_t kNumColors = sizeof(kResultColors) / sizeof(kResultColors[0]);
+    for (std::size_t k = 0; k < results.size(); ++k) {
+      if (results[k].empty()) {
+        continue;
+      }
+      std::string label;
+      if (k < output_names.size() && !output_names[k].empty()) {
+        label = output_names[k];
+      } else {
+        label = results.size() > 1 ? ("result" + std::to_string(k)) : std::string("result");
+      }
+      series.push_back({label, to_points(results[k]), kResultColors[k % kNumColors], /*dashed=*/false});
     }
     dialog_.setPreviewSeries(std::move(series));
   }
