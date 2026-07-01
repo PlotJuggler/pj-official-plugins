@@ -26,7 +26,8 @@ struct CanFrame {
   std::vector<std::uint8_t> data;
 };
 
-using CanFrameCallback = std::function<void(const CanFrame&)>;
+/// Per-frame callback; return false to stop reading early (e.g. on cancel).
+using CanFrameCallback = std::function<bool(const CanFrame&)>;
 
 struct BlfStats {
   std::uint64_t can_frames = 0;       ///< classic-CAN frames emitted

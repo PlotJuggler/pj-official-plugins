@@ -76,5 +76,5 @@ target_compile_features(blf_source_test PRIVATE cxx_std_20)
 target_compile_options(blf_source_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(blf_source_test PRIVATE
   BLF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data")
-target_link_libraries(blf_source_test PRIVATE blf_core GTest::gtest_main)
+target_link_libraries(blf_source_test PRIVATE blf_core pj_can_dbc GTest::gtest_main)
 add_test(NAME blf_source_test COMMAND blf_source_test)

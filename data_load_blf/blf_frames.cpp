@@ -60,20 +60,21 @@ PJ::Status readCanFrames(const std::string& path, const CanFrameCallback& cb, Bl
   try {
     lblf::blf_reader reader(path);
     const std::int64_t start_ns = sysTimeToNs(reader.getfileStatistics().meas_start_time);
-    while (reader.next()) {
+    bool keep_going = true;
+    while (keep_going && reader.next()) {
       const auto data = reader.data();
       switch (data.base_header.objectType) {
         case lblf::ObjectType_e::CAN_MESSAGE: {
           lblf::blf_struct::CanMessage_obh can{};
           lblf::read_blf_struct(data, can);
-          cb(toFrame(can, start_ns));
+          keep_going = cb(toFrame(can, start_ns));
           ++stats.can_frames;
           break;
         }
         case lblf::ObjectType_e::CAN_MESSAGE2: {
           lblf::blf_struct::CanMessage2_obh can{};
           lblf::read_blf_struct(data, can);
-          cb(toFrame(can, start_ns));
+          keep_going = cb(toFrame(can, start_ns));
           ++stats.can_frames;
           break;
         }
