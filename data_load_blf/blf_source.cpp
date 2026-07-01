@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "blf_dialog.hpp"
 #include "blf_frames.hpp"
 #include "blf_manifest.hpp"
 
@@ -36,7 +37,11 @@ std::string hexId(std::uint32_t id) {
 class BlfSource : public PJ::FileSourceBase {
  public:
   uint64_t extraCapabilities() const override {
-    return PJ::kCapabilityDirectIngest;
+    return PJ::kCapabilityDirectIngest | PJ::kCapabilityHasDialog;
+  }
+
+  PJ_borrowed_dialog_t getDialog() override {
+    return PJ::borrowDialog(dialog_);
   }
 
   std::string saveConfig() const override {
@@ -70,6 +75,9 @@ class BlfSource : public PJ::FileSourceBase {
           }
         }
       }
+    }
+    if (!filepath_.empty()) {
+      dialog_.setFilePath(filepath_);
     }
     return PJ::okStatus();
   }
@@ -177,8 +185,10 @@ class BlfSource : public PJ::FileSourceBase {
  private:
   std::string filepath_;
   std::unordered_map<std::uint16_t, std::vector<std::string>> channel_dbcs_;
+  blf_detail::BlfDialog dialog_;
 };
 
 }  // namespace
 
+PJ_DIALOG_PLUGIN(blf_detail::BlfDialog)
 PJ_DATA_SOURCE_PLUGIN(BlfSource, kBlfManifest)

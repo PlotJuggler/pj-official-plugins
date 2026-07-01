@@ -49,7 +49,7 @@ target_link_libraries(blf_core PUBLIC plotjuggler_sdk::base PRIVATE blf)
 # ---------------------------------------------------------------------------
 # Plugin shared library (orchestrator lands in Phase 4)
 # ---------------------------------------------------------------------------
-add_library(blf_source_plugin SHARED blf_source.cpp)
+add_library(blf_source_plugin SHARED blf_source.cpp blf_dialog.cpp)
 target_compile_features(blf_source_plugin PRIVATE cxx_std_20)
 target_compile_options(blf_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(blf_source_plugin PRIVATE
@@ -66,6 +66,12 @@ pj_embed_manifest(blf_source_plugin
 pj_emit_plugin_manifest(blf_source_plugin
   FAMILY        data_source
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
+)
+
+pj_embed_ui(blf_source_plugin
+  UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/blf_dialog.ui
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/blf_dialog_ui.hpp
+  VAR_NAME kBlfDialogUi
 )
 
 # ---------------------------------------------------------------------------
