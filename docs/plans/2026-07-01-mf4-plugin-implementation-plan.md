@@ -90,18 +90,31 @@ that is the PARENT project → **hard failure**. **Mandatory Phase-1 patch:** re
 
 ---
 
-## Phase 0 — Build-integration spike (throwaway, gates everything)
+## Phase 0 — Build-integration spike ✅ DONE (2026-07-01)
 
-1. Scratch `spike/` (git-ignored): `find_package(ZLIB/EXPAT)` → `CPMAddPackage(mdflib @ pinned tag)`
-   **with the mandatory `${CMAKE_SOURCE_DIR}` patch** → link `mdf`. Open BOTH `/tmp/mf4_samples/*.mf4`;
-   print `IsOk/IsFinalized/GetStartTime`, group/channel counts, a master+value; run `CanBusObserver` on
-   the canedge file printing `CanId/Timestamp`.
-2. Evaluate the CAN parser: try `dbc_parser_cpp` first; confirm it links with NO boost and read its decode
-   API from headers. If unusable, fall back to `dbcppp/3.2.6` and record the boost/1.80 aggregate impact.
-3. Read `mdflib_test/src/{testmdfwriter,testwrite,testcanbusobserver}.cpp`; copy exact writer/observer
-   call sequences into a scratch note the later phases reuse.
-4. **Verify:** spike compiles; both files read without crash; record whether canedge (`UnFinMF`) reads or
-   needs finalization; record the exact mdflib CMake patch. Delete spike after.
+Ran a throwaway `g++` spike (`/tmp/mf4_spike/spike.cpp`) linking a standalone-built `libmdf.a`
+against both real fixtures. **Results (all recorded facts now):**
+
+- ✅ **ASAP2_Demo (finalized):** `IsOk=1`, `IsFinalized=1`, `GetStartTime()=1542896795439737199` ns
+  (absolute epoch ns confirmed). 7 data groups (`100ms_sync`/`10ms_sync`/`Engine_1..3`/`Leading_All`/…),
+  named channels + units (`'time' [s]`), `GetEngValue(0,double)` returns real values. Measurement path proven.
+- ✅ **canedge (was `UnFinMF`, unfinalized):** `IsOk=1`, **`IsFinalized=1` — mdflib reads it transparently,
+  no finalize dance needed → Risk "unfinalized" RESOLVED.** 139k+ CAN frames present.
+- ✅ **CAN path:** `CanBusObserver(dg,cg)` + `OnCanMessage(sample,CanMessage&)` extracted 11 275 frames
+  (`CAN9_Rx`) + 139 136 (`CAN1_Rx_IDE`); `CanId()` (0x65, 0x18f75e89…), `ExtendedId()`, `Dlc()`,
+  `DataBytes()` all correct; `CanMessage::Timestamp()` = relative seconds (double), verified at
+  `canmessage.h:181`.
+- ⚠️ **CANedge emits ~40 channel groups, most empty, several with EMPTY or duplicate names** → skip-empty +
+  topic/field de-dup (Hard Rule 8) is mandatory, not theoretical.
+- 🔴 **NEW gcc-15 finding:** mdflib does NOT compile on gcc 15 — its **public** header `idatawriter.h`
+  (`std::reverse`) and internal `sr4block.h` (`std::copy_n`) rely on transitive `<algorithm>`/`<cstdint>`
+  that gcc 15 dropped. Every consumer is hit. **Mandatory patch:** add `#include <algorithm>`+`<cstdint>`
+  to the offending mdflib headers (via CPM `PATCH_COMMAND`), alongside the `${CMAKE_SOURCE_DIR}` patch.
+- ✅ zlib 1.3.1 + expat 2.7.4 (system/Conan static) link fine; `libmdf.a` ≈ 7.7 MB.
+
+**Still TODO in Phase 1:** validate the two patches under real CPM/`add_subdirectory` embedding; pick the CAN
+parser (`dbc_parser_cpp` vs `dbcppp`) after reading its decode headers; copy writer call sequences from
+`mdflib_test/src/{testmdfwriter,testwrite,testcanbusobserver}.cpp`.
 
 ## Phase 1 — Scaffolding + committed build plumbing (Codex #12: before any tests)
 
@@ -161,6 +174,7 @@ smoke on ASAP2 demo; `ctest -R mf4` green.
 | # | Risk | Mitigation | Phase |
 |---|---|---|---|
 | 1 | mdflib `${CMAKE_SOURCE_DIR}` breaks under CPM | **mandatory** patch → `${mdflib_SOURCE_DIR}` | 0/1 |
+| 1b | mdflib won't compile on gcc 15 (missing `<algorithm>`/`<cstdint>`) | **mandatory** header patch via CPM `PATCH_COMMAND` (proven in Phase 0) | 0/1 |
 | 8 | dbcppp static-lib pins boost/1.80 → aggregate Arrow conflict | prefer `dbc_parser_cpp` (no boost); else exclude from aggregate | 0/1 |
 | 4 | `ReadData` materializes whole group (>1GB warn) | per-group read + `ClearData()`; ReadPartialData later | 3/5 |
 | 2 | CAN timestamp | `m.Timestamp()` + start time | 5 |
