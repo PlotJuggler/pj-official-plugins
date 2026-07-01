@@ -35,15 +35,27 @@ target_include_directories(blf SYSTEM PUBLIC ${lblf_SOURCE_DIR})
 target_link_libraries(blf PRIVATE ZLIB::ZLIB)
 
 # ---------------------------------------------------------------------------
-# Plugin shared library (Phase 2 scaffold; adapter + orchestrator: Phases 3-4)
+# Internal static lib: BLF -> CanFrame adapter, shared by the plugin + tests.
+# blf is PRIVATE so lblf headers stay out of consumers (blf_frames.hpp is
+# lblf-free).
+# ---------------------------------------------------------------------------
+add_library(blf_core STATIC blf_frames.cpp)
+set_target_properties(blf_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_features(blf_core PUBLIC cxx_std_20)
+target_compile_options(blf_core PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(blf_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(blf_core PUBLIC plotjuggler_sdk::base PRIVATE blf)
+
+# ---------------------------------------------------------------------------
+# Plugin shared library (orchestrator lands in Phase 4)
 # ---------------------------------------------------------------------------
 add_library(blf_source_plugin SHARED blf_source.cpp)
 target_compile_features(blf_source_plugin PRIVATE cxx_std_20)
 target_compile_options(blf_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(blf_source_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk
+  blf_core
   pj_can_dbc
-  blf
   nlohmann_json::nlohmann_json)
 
 pj_embed_manifest(blf_source_plugin
@@ -59,10 +71,10 @@ pj_emit_plugin_manifest(blf_source_plugin
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-add_executable(blf_source_test tests/blf_source_test.cpp)
+add_executable(blf_source_test tests/blf_frames_test.cpp)
 target_compile_features(blf_source_test PRIVATE cxx_std_20)
 target_compile_options(blf_source_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(blf_source_test PRIVATE
   BLF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data")
-target_link_libraries(blf_source_test PRIVATE blf ZLIB::ZLIB GTest::gtest_main)
+target_link_libraries(blf_source_test PRIVATE blf_core GTest::gtest_main)
 add_test(NAME blf_source_test COMMAND blf_source_test)
