@@ -35,11 +35,22 @@ class CanDecoder {
   /// Number of message definitions currently loaded.
   std::size_t messageCount() const;
 
-  /// Decode one CAN frame. `can_id` is the raw 11/29-bit id (mdf CanMessage::CanId());
-  /// matching ignores the extended-id flag bit. Sets `matched` to true iff a
-  /// message with this id exists in a loaded DBC. Returns the decoded signals
-  /// (empty if unmatched, or if the matched message failed to decode).
-  std::vector<DecodedSignal> decode(std::uint32_t can_id, const std::vector<std::uint8_t>& data, bool& matched) const;
+  /// Decode one CAN frame. `can_id` is the raw 11/29-bit identifier
+  /// (mdf CanMessage::CanId()); `extended` is its frame format
+  /// (CanMessage::ExtendedId()). Matching tries the raw id first, then — for
+  /// extended frames — the id with the DBC extended-frame flag (0x80000000) set,
+  /// so databases following the Vector convention (bit 31 set on extended
+  /// messages) match without confusing a standard and an extended message that
+  /// share a numeric id. Sets `matched` to true iff a message with this id
+  /// exists. Returns the decoded signals (empty if unmatched, if the frame is
+  /// shorter than the message, or if decoding fails).
+  ///
+  /// Known dbc_parser_cpp limitations: multiplexed signals are silently skipped
+  /// (only non-multiplexed signals in a message decode); signals wider than
+  /// 32 bits may be imprecise. A standard and an extended message that share a
+  /// numeric id in an ambiguous DBC (extended flag not set) cannot be told apart.
+  std::vector<DecodedSignal> decode(
+      std::uint32_t can_id, bool extended, const std::vector<std::uint8_t>& data, bool& matched) const;
 
  private:
   struct Impl;

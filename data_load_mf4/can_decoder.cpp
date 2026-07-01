@@ -9,22 +9,36 @@
 namespace mf4_detail {
 
 namespace {
-/// CAN identifiers are matched on their raw 11/29-bit value; the DBC
-/// extended-frame flag (bit 31) and any stray high bits are masked off both
-/// here and when indexing loaded messages.
-constexpr std::uint32_t kCanIdMask = 0x1FFF'FFFFu;
+/// DBC extended-frame flag (Vector convention: bit 31 set on 29-bit messages).
+constexpr std::uint32_t kExtendedFlag = 0x8000'0000u;
 }  // namespace
 
 struct CanDecoder::Impl {
   std::vector<Libdbc::Message> messages;
-  std::unordered_map<std::uint32_t, std::size_t> id_to_index;  // masked id -> messages index
+  // Keyed by the DBC message id exactly as stored (raw, possibly with the
+  // extended flag). Lookup handles both the raw and Vector-flagged forms.
+  std::unordered_map<std::uint32_t, std::size_t> id_to_index;
 
   void addFrom(const Libdbc::DbcParser& parser) {
     for (const auto& msg : parser.get_messages()) {
-      const std::uint32_t key = msg.id() & kCanIdMask;
-      id_to_index[key] = messages.size();
+      id_to_index[msg.id()] = messages.size();
       messages.push_back(msg);
     }
+  }
+
+  const Libdbc::Message* find(std::uint32_t can_id, bool extended) const {
+    if (extended) {
+      // Prefer the Vector-flagged 29-bit message so an extended frame is not
+      // shadowed by a standard message sharing the same numeric id; fall back to
+      // the raw id for DBCs that store extended messages without the flag.
+      auto it = id_to_index.find(can_id | kExtendedFlag);
+      if (it == id_to_index.end()) {
+        it = id_to_index.find(can_id);
+      }
+      return it == id_to_index.end() ? nullptr : &messages[it->second];
+    }
+    const auto it = id_to_index.find(can_id);
+    return it == id_to_index.end() ? nullptr : &messages[it->second];
   }
 };
 
@@ -59,20 +73,26 @@ std::size_t CanDecoder::messageCount() const {
 }
 
 std::vector<DecodedSignal> CanDecoder::decode(
-    std::uint32_t can_id, const std::vector<std::uint8_t>& data, bool& matched) const {
+    std::uint32_t can_id, bool extended, const std::vector<std::uint8_t>& data, bool& matched) const {
   matched = false;
   std::vector<DecodedSignal> out;
 
-  const auto it = impl_->id_to_index.find(can_id & kCanIdMask);
-  if (it == impl_->id_to_index.end()) {
+  const Libdbc::Message* msg_ptr = impl_->find(can_id, extended);
+  if (msg_ptr == nullptr) {
     return out;
   }
   matched = true;
+  const Libdbc::Message& msg = *msg_ptr;
 
-  const Libdbc::Message& msg = impl_->messages[it->second];
+  // Reject frames shorter than the message: dbc_parser_cpp would zero-fill the
+  // missing bytes and return "success" with silently wrong signal values.
+  if (data.size() < static_cast<std::size_t>(msg.size())) {
+    return out;  // matched, but the frame is truncated -> cannot decode
+  }
+
   std::vector<double> values;
   if (msg.parse_signals(data, values) != Libdbc::Message::ParseSignalsStatus::Success) {
-    return out;  // matched but undecodable (e.g. length mismatch)
+    return out;  // matched but undecodable
   }
 
   const std::vector<Libdbc::Signal> signals = msg.get_signals();
