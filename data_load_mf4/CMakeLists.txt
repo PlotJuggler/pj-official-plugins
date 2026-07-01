@@ -95,7 +95,7 @@ target_link_libraries(mf4_core PUBLIC plotjuggler_sdk::base mdf PRIVATE dbc)
 # ---------------------------------------------------------------------------
 # Plugin shared library
 # ---------------------------------------------------------------------------
-add_library(mf4_source_plugin SHARED mf4_source.cpp)
+add_library(mf4_source_plugin SHARED mf4_source.cpp mf4_dialog.cpp)
 target_compile_features(mf4_source_plugin PRIVATE cxx_std_20)
 target_compile_options(mf4_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -119,6 +119,12 @@ pj_embed_manifest(mf4_source_plugin
 pj_emit_plugin_manifest(mf4_source_plugin
   FAMILY        data_source
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
+)
+
+pj_embed_ui(mf4_source_plugin
+  UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/mf4_dialog.ui
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/mf4_dialog_ui.hpp
+  VAR_NAME kMf4DialogUi
 )
 
 # ---------------------------------------------------------------------------

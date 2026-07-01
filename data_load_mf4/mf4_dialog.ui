@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Mf4DialogForm</class>
+ <widget class="QWidget" name="Mf4DialogForm">
+  <property name="windowTitle">
+   <string>MF4 / MDF File</string>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>640</width>
+    <height>460</height>
+   </size>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QLabel" name="labelSummary">
+     <property name="text">
+      <string>MF4 / MDF file</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="tableGroups">
+     <property name="editTriggers">
+      <set>QAbstractItemView::NoEditTriggers</set>
+     </property>
+     <property name="selectionBehavior">
+      <enum>QAbstractItemView::SelectRows</enum>
+     </property>
+     <property name="sortingEnabled">
+      <bool>true</bool>
+     </property>
+     <column>
+      <property name="text"><string>Channel Group</string></property>
+     </column>
+     <column>
+      <property name="text"><string>Samples</string></property>
+     </column>
+     <column>
+      <property name="text"><string>Channels</string></property>
+     </column>
+     <column>
+      <property name="text"><string>Bus</string></property>
+     </column>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Ok|QDialogButtonBox::Cancel</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>

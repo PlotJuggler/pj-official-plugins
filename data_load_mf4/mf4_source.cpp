@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "can_decoder.hpp"
+#include "mf4_dialog.hpp"
 #include "mf4_manifest.hpp"
 #include "mf4_reader.hpp"
 
@@ -54,7 +55,11 @@ std::string hexId(std::uint32_t id) {
 class Mf4Source : public PJ::FileSourceBase {
  public:
   uint64_t extraCapabilities() const override {
-    return PJ::kCapabilityDirectIngest;
+    return PJ::kCapabilityDirectIngest | PJ::kCapabilityHasDialog;
+  }
+
+  PJ_borrowed_dialog_t getDialog() override {
+    return PJ::borrowDialog(dialog_);
   }
 
   std::string saveConfig() const override {
@@ -77,6 +82,9 @@ class Mf4Source : public PJ::FileSourceBase {
           dbc_paths_.push_back(entry.get<std::string>());
         }
       }
+    }
+    if (!filepath_.empty()) {
+      dialog_.setFilePath(filepath_);
     }
     return PJ::okStatus();
   }
@@ -240,8 +248,10 @@ class Mf4Source : public PJ::FileSourceBase {
  private:
   std::string filepath_;
   std::vector<std::string> dbc_paths_;
+  mf4_detail::Mf4Dialog dialog_;
 };
 
 }  // namespace
 
+PJ_DIALOG_PLUGIN(mf4_detail::Mf4Dialog)
 PJ_DATA_SOURCE_PLUGIN(Mf4Source, kMf4Manifest)
