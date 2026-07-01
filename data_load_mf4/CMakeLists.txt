@@ -53,6 +53,20 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
+# Internal static lib: format logic (reader, later can_decoder) shared by the
+# plugin .so and the test executable. PUBLIC-links the SDK base (Status,
+# PrimitiveType) and mdf so consumers inherit their include paths.
+# ---------------------------------------------------------------------------
+add_library(mf4_core STATIC mf4_reader.cpp)
+set_target_properties(mf4_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_features(mf4_core PRIVATE cxx_std_20)
+target_compile_options(mf4_core PRIVATE ${PJ_WARNING_FLAGS})
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(mf4_core PRIVATE "SHELL:-include algorithm" "SHELL:-include cstdint")
+endif()
+target_link_libraries(mf4_core PUBLIC plotjuggler_sdk::base mdf)
+
+# ---------------------------------------------------------------------------
 # Plugin shared library
 # ---------------------------------------------------------------------------
 add_library(mf4_source_plugin SHARED mf4_source.cpp)
@@ -64,6 +78,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 target_link_libraries(mf4_source_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk
+  mf4_core
   mdf
   ZLIB::ZLIB
   EXPAT::EXPAT
@@ -86,6 +101,7 @@ pj_emit_plugin_manifest(mf4_source_plugin
 add_executable(mf4_source_test
   tests/mf4_source_test.cpp
   tests/mf4_value_test.cpp
+  tests/mf4_reader_test.cpp
 )
 target_compile_features(mf4_source_test PRIVATE cxx_std_20)
 target_compile_options(mf4_source_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -94,6 +110,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 target_link_libraries(mf4_source_test PRIVATE
   plotjuggler_sdk::base
+  mf4_core
   mdf
   ZLIB::ZLIB
   EXPAT::EXPAT

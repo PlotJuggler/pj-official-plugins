@@ -1,0 +1,95 @@
+#pragma once
+
+// Mf4Reader: a thin wrapper over mdflib that exposes an MDF file as a flat list
+// of channel groups (topics) and streams a group's records as rows.
+//
+// Memory model (verified against mdflib): MdfReader::ReadData(dg) materializes a
+// whole *data group* into memory, so readGroup() reads one group, emits its rows
+// through a callback, then calls ClearData() to release it before the next group.
+// Bounded per-data-group, not per-sample. Observers live only for the duration of
+// one readGroup() call.
+
+#include <mdf/mdfreader.h>
+
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <pj_base/expected.hpp>
+#include <pj_base/type_tree.hpp>
+#include <string>
+#include <vector>
+
+#include "mf4_value.hpp"
+
+namespace mf4_detail {
+
+/// Metadata for one channel of a group.
+struct ChannelInfo {
+  std::string name;
+  std::string unit;
+  PJ::PrimitiveType type = PJ::PrimitiveType::kUnspecified;
+  bool is_master = false;
+};
+
+/// Metadata for one channel group (maps to one PlotJuggler topic).
+struct GroupInfo {
+  std::size_t dg_index = 0;
+  std::string name;  ///< raw MDF channel-group name (may be empty)
+  std::uint64_t sample_count = 0;
+  int bus_type = 0;  ///< mdf::BusType as int (0 = none, 2 = CAN, ...)
+  bool has_master = false;
+  std::vector<ChannelInfo> channels;
+};
+
+/// One decoded value for a value channel in one record.
+struct SampleValue {
+  PJ::PrimitiveType type = PJ::PrimitiveType::kFloat64;
+  double number = 0.0;  ///< valid when type == kFloat64
+  std::string text;     ///< valid when type == kString
+  bool valid = true;    ///< false -> null (mdflib reported an invalid sample)
+};
+
+/// Per-record callback. `ts_ns` is absolute nanoseconds; `values` holds one
+/// SampleValue per supported non-master channel, in the order returned by
+/// valueChannelNames(). The vector is reused across records — consume it (copy
+/// or appendRecord) synchronously; do not retain references past the call.
+using RowCallback = std::function<void(std::int64_t ts_ns, const std::vector<SampleValue>& values)>;
+
+class Mf4Reader {
+ public:
+  Mf4Reader() = default;
+  Mf4Reader(const Mf4Reader&) = delete;
+  Mf4Reader& operator=(const Mf4Reader&) = delete;
+
+  /// Open the file and read all metadata blocks (no sample data).
+  PJ::Status open(const std::string& path);
+
+  const std::vector<GroupInfo>& groups() const {
+    return groups_;
+  }
+  std::int64_t startTimeNs() const {
+    return start_time_ns_;
+  }
+  bool finalized() const {
+    return finalized_;
+  }
+
+  /// Field names for a group's supported non-master value channels, in row
+  /// order, de-duplicated (`name`, then `name#1`, ... on collision; empty names
+  /// become `chan{N}`). Parallel to the `values` vector passed to readGroup().
+  std::vector<std::string> valueChannelNames(std::size_t group_index) const;
+
+  /// Stream every record of a measurement group through `cb`. Returns an error
+  /// if the group has no master channel.
+  PJ::Status readGroup(std::size_t group_index, const RowCallback& cb);
+
+ private:
+  std::unique_ptr<mdf::MdfReader> reader_;
+  std::vector<GroupInfo> groups_;
+  std::vector<mdf::IDataGroup*> data_groups_;        // parallel to groups_
+  std::vector<mdf::IChannelGroup*> channel_groups_;  // parallel to groups_
+  std::int64_t start_time_ns_ = 0;
+  bool finalized_ = false;
+};
+
+}  // namespace mf4_detail
