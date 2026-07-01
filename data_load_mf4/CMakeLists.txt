@@ -129,6 +129,7 @@ add_executable(mf4_source_test
   tests/mf4_value_test.cpp
   tests/mf4_reader_test.cpp
   tests/can_decoder_test.cpp
+  tests/mf4_integration_test.cpp
 )
 target_compile_features(mf4_source_test PRIVATE cxx_std_20)
 target_compile_options(mf4_source_test PRIVATE ${PJ_WARNING_FLAGS})
