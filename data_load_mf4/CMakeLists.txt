@@ -32,6 +32,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 CPMAddPackage(
   NAME mdflib
   URL https://github.com/ihedvall/mdflib/archive/5ad85af2c943a1ab810d0768d3873246a3920ebf.tar.gz
+  URL_HASH SHA256=700e11196d570cb480cddc0258d7a1e74adc0562f2d2dfb3ee60f124f79c8cd4
   DOWNLOAD_ONLY YES
 )
 
@@ -43,7 +44,7 @@ target_compile_features(mdf PRIVATE cxx_std_17)
 target_include_directories(mdf SYSTEM PUBLIC ${mdflib_SOURCE_DIR}/include)
 target_include_directories(mdf PRIVATE ${mdflib_SOURCE_DIR}/mdflib/src)
 target_link_libraries(mdf PRIVATE ZLIB::ZLIB EXPAT::EXPAT)
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   # gcc-15 transitive-include workaround (see note above).
   target_compile_options(mdf PRIVATE "SHELL:-include algorithm" "SHELL:-include cstdint")
 endif()
@@ -57,7 +58,7 @@ endif()
 add_library(mf4_source_plugin SHARED mf4_source.cpp)
 target_compile_features(mf4_source_plugin PRIVATE cxx_std_20)
 target_compile_options(mf4_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   # Our TUs include mdflib public headers (idatawriter.h) — same gcc-15 fix.
   target_compile_options(mf4_source_plugin PRIVATE "SHELL:-include algorithm" "SHELL:-include cstdint")
 endif()
@@ -88,7 +89,7 @@ add_executable(mf4_source_test
 )
 target_compile_features(mf4_source_test PRIVATE cxx_std_20)
 target_compile_options(mf4_source_test PRIVATE ${PJ_WARNING_FLAGS})
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(mf4_source_test PRIVATE "SHELL:-include algorithm" "SHELL:-include cstdint")
 endif()
 target_link_libraries(mf4_source_test PRIVATE
