@@ -218,3 +218,23 @@ de-dup within group · 6 no-master group behavior defined · 7 observer sample t
 dbcppp = static lib + boost/1.80 → `dbc_parser_cpp` preferred · 9 `StartMeasurement(start_ns)` arg · 10
 string lifetime through appendRecord return · 11 broadened `-Wconversion` discipline · 12 commit build
 plumbing before tests · 13 pin mdflib tag+SHA. SDK/writeHost/ValueRef/appendRecord shapes CONFIRMED correct.
+
+---
+
+## v1 COMPLETE (2026-07-01)
+
+All 8 phases done and committed on `feat/mf4-plugin`. Modules: `mf4_value` (type map), `mf4_reader`
+(mdflib wrapper: measurement rows + CAN frames), `can_decoder` (DBC via dbc_parser_cpp behind pImpl),
+`mf4_source` (orchestrator), `mf4_dialog` (metadata preview). **19 tests** (7 can_decoder, 6 reader,
+3 value, 2 integration, 1 scaffold; +2 integration skip without `MF4_TEST_DATA_DIR`).
+
+Verification: `-Werror` clean on gcc 15; **ASAN-clean** (leak detection on) across all tests incl. the
+real ASAP2 + unfinalized-CANedge fixtures; self-contained `.so` (only libc/libstdc++/libm/libgcc in
+`DT_NEEDED`; own symbols hidden; both data_source + dialog vtables exported). Every phase was Codex-reviewed
+and its findings folded in (Clang force-include, URL_HASH, null-observer crash, absolute-epoch tests,
+CAN id disambiguation + truncation; final orchestrator/dialog review found no high-confidence bugs).
+
+**Not done here (follow-ups):** full aggregate build (only single-plugin `PJ_BUILD_PLUGIN` path verified);
+`pj_proto_app` end-to-end smoke (binary not in this env — CI/manual); interactive channel-selection +
+DBC-file-picker dialog; enum→text, channel arrays, multiplexed CAN signals, appended multi-measurement
+epochs (all documented v1 limitations). PR-ready pending those CI checks.
