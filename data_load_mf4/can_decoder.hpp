@@ -35,6 +35,10 @@ class CanDecoder {
   /// Number of message definitions currently loaded.
   std::size_t messageCount() const;
 
+  /// Name of the message matching `can_id`/`extended` (same rules as decode()),
+  /// or an empty string if none matches. Used to name the output topic.
+  std::string messageName(std::uint32_t can_id, bool extended) const;
+
   /// Decode one CAN frame. `can_id` is the raw 11/29-bit identifier
   /// (mdf CanMessage::CanId()); `extended` is its frame format
   /// (CanMessage::ExtendedId()). Matching tries the raw id first, then — for

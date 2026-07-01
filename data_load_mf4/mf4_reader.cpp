@@ -1,11 +1,14 @@
 #include "mf4_reader.hpp"
 
+#include <mdf/canbusobserver.h>
+#include <mdf/canmessage.h>
 #include <mdf/ichannel.h>
 #include <mdf/ichannelgroup.h>
 #include <mdf/idatagroup.h>
 #include <mdf/mdffile.h>
 
 #include <cmath>
+#include <memory>
 #include <unordered_set>
 #include <utility>
 
@@ -161,6 +164,24 @@ PJ::Status Mf4Reader::readGroup(std::size_t group_index, const RowCallback& cb) 
     cb(ts_ns, row);
   }
 
+  dg->ClearData();
+  return PJ::okStatus();
+}
+
+PJ::Status Mf4Reader::readCanGroup(std::size_t group_index, const CanFrameCallback& cb) {
+  if (group_index >= groups_.size()) {
+    return PJ::unexpected(std::string("mf4: group index out of range"));
+  }
+  auto* dg = data_groups_[group_index];
+  auto* cg = channel_groups_[group_index];
+
+  auto observer = std::make_unique<mdf::CanBusObserver>(*dg, *cg);
+  observer->OnCanMessage = [&](std::uint64_t /*sample*/, const mdf::CanMessage& msg) -> bool {
+    const std::int64_t ts_ns = start_time_ns_ + static_cast<std::int64_t>(std::llround(msg.Timestamp() * 1.0e9));
+    cb(ts_ns, msg.CanId(), msg.ExtendedId(), msg.DataBytes());
+    return true;
+  };
+  reader_->ReadData(*dg);
   dg->ClearData();
   return PJ::okStatus();
 }

@@ -72,6 +72,11 @@ std::size_t CanDecoder::messageCount() const {
   return impl_->messages.size();
 }
 
+std::string CanDecoder::messageName(std::uint32_t can_id, bool extended) const {
+  const Libdbc::Message* msg = impl_->find(can_id, extended);
+  return msg != nullptr ? msg->name() : std::string{};
+}
+
 std::vector<DecodedSignal> CanDecoder::decode(
     std::uint32_t can_id, bool extended, const std::vector<std::uint8_t>& data, bool& matched) const {
   matched = false;

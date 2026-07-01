@@ -55,6 +55,12 @@ struct SampleValue {
 /// or appendRecord) synchronously; do not retain references past the call.
 using RowCallback = std::function<void(std::int64_t ts_ns, const std::vector<SampleValue>& values)>;
 
+/// Per-frame callback for a CAN bus-logging group. `ts_ns` is absolute
+/// nanoseconds; `can_id` is the raw 11/29-bit id; `extended` is the frame
+/// format; `data` are the payload bytes.
+using CanFrameCallback =
+    std::function<void(std::int64_t ts_ns, std::uint32_t can_id, bool extended, const std::vector<std::uint8_t>& data)>;
+
 class Mf4Reader {
  public:
   Mf4Reader() = default;
@@ -82,6 +88,10 @@ class Mf4Reader {
   /// Stream every record of a measurement group through `cb`. Returns an error
   /// if the group has no master channel.
   PJ::Status readGroup(std::size_t group_index, const RowCallback& cb);
+
+  /// Stream every CAN frame of a bus-logging group through `cb`. Use for groups
+  /// whose bus_type is CAN. Frame time = start time + CanMessage::Timestamp().
+  PJ::Status readCanGroup(std::size_t group_index, const CanFrameCallback& cb);
 
  private:
   std::unique_ptr<mdf::MdfReader> reader_;
