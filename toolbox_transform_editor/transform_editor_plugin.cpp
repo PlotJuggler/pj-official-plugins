@@ -365,9 +365,48 @@ inline std::vector<std::string> splitOutputNames(const std::string& field) {
 // body the v1..vN identifiers. Output count is decided host-side by the `outputs`
 // passed to createTransform — `:calculate` returns the body's results unchanged
 // (MULTRET), so a body that `return`s M values feeds M output topics.
+// Escape a string so it is safe to embed inside a DOUBLE-QUOTED Lua or Python string
+// literal. Without this, a user-controlled id/name containing a quote (or backslash /
+// newline) closes the literal early and the rest is parsed as CODE — i.e. a nickname
+// like `a"; import os; os.system(...) ; z="` would execute arbitrary code when the
+// generated script is compiled/run. Both languages accept the same C-style escapes for
+// these characters, so one routine covers both backends.
+inline std::string escapeForStringLiteral(const std::string& in) {
+  std::string out;
+  out.reserve(in.size() + 8);
+  for (const char c : in) {
+    switch (c) {
+      case '\\':
+        out += "\\\\";
+        break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        out += c;
+        break;
+    }
+  }
+  return out;
+}
+
 inline std::string buildTransformScript(
-    const std::string& id, const std::string& name, const std::string& global_code, const std::string& body,
+    const std::string& raw_id, const std::string& raw_name, const std::string& global_code, const std::string& body,
     std::size_t num_extra, const std::string& language = "luau") {
+  // Escape id/name before they are concatenated into the generated script's string
+  // literals — they are user-controlled (the output-name field) and would otherwise
+  // allow code injection. See escapeForStringLiteral.
+  const std::string id = escapeForStringLiteral(raw_id);
+  const std::string name = escapeForStringLiteral(raw_name);
   std::string params = "time, value";
   for (std::size_t k = 0; k < num_extra; ++k) {
     params += ", v" + std::to_string(k + 1);
