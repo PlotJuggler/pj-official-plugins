@@ -52,12 +52,12 @@ TEST(CloudCommon, BuildFromBinaryLittleEndian) {
       xyziFields(), 2, 1, true, "test", DataFormat::kBinaryLittleEndian,
       PJ::Span<const uint8_t>(body.data(), body.size()));
   ASSERT_TRUE(built);
-  EXPECT_EQ(built->cloud.width, 2u);
-  EXPECT_EQ(built->cloud.point_step, 16u);
-  EXPECT_FALSE(built->cloud.is_bigendian);
+  EXPECT_EQ(built->width, 2u);
+  EXPECT_EQ(built->point_step, 16u);
+  EXPECT_FALSE(built->is_bigendian);
 
   // Round-trip through the canonical codec, then read point 1's intensity.
-  auto bytes = PJ::serializePointCloud(built->cloud);
+  auto bytes = PJ::serializePointCloud(*built);
   auto pc = PJ::deserializePointCloud(bytes.data(), bytes.size());
   ASSERT_TRUE(pc);
   float intensity1 = 0.0f;
@@ -71,8 +71,8 @@ TEST(CloudCommon, BuildFromAsciiMatchesBinary) {
   auto built = pj3d::buildPointCloud(xyziFields(), 2, 1, true, "test", DataFormat::kAscii, body);
   ASSERT_TRUE(built);
   float x1 = 0.0f, z0 = 0.0f;
-  std::memcpy(&x1, built->cloud.data.data() + 16u + 0u, 4);
-  std::memcpy(&z0, built->cloud.data.data() + 8u, 4);
+  std::memcpy(&x1, built->data.data() + 16u + 0u, 4);
+  std::memcpy(&z0, built->data.data() + 8u, 4);
   EXPECT_FLOAT_EQ(x1, 4.0f);
   EXPECT_FLOAT_EQ(z0, 3.0f);
 }
@@ -87,7 +87,7 @@ TEST(CloudCommon, BuildFromBinaryBigEndianByteSwaps) {
       xyziFields(), 1, 1, true, "t", DataFormat::kBinaryBigEndian, PJ::Span<const uint8_t>(body.data(), body.size()));
   ASSERT_TRUE(built);
   float x = 0.0f;
-  std::memcpy(&x, built->cloud.data.data() + 0u, 4);
+  std::memcpy(&x, built->data.data() + 0u, 4);
   EXPECT_FLOAT_EQ(x, 1.0f);
 }
 
@@ -105,7 +105,7 @@ TEST(CloudCommon, Centroid) {
       xyziFields(), 2, 1, true, "t", DataFormat::kBinaryLittleEndian,
       PJ::Span<const uint8_t>(body.data(), body.size()));
   ASSERT_TRUE(built);
-  auto c = pj3d::computeCentroid(built->cloud);
+  auto c = pj3d::computeCentroid(*built);
   ASSERT_TRUE(c.has_value());
   EXPECT_DOUBLE_EQ((*c)[0], 1.0);
   EXPECT_DOUBLE_EQ((*c)[1], 2.0);
@@ -117,6 +117,100 @@ TEST(CloudCommon, SizeMismatchIsError) {
   auto built = pj3d::buildPointCloud(
       xyziFields(), 2, 1, true, "t", DataFormat::kBinaryLittleEndian,
       PJ::Span<const uint8_t>(body.data(), body.size()));
+  EXPECT_FALSE(built);
+}
+
+TEST(CloudCommon, OverflowingDimensionsAreRejected) {
+  // width*height*point_step vastly exceeds kMaxCloudBytes (and would overflow
+  // a 32-bit byte count outright). Must be rejected before any allocation.
+  auto built = pj3d::buildPointCloud(
+      xyziFields(), 0xFFFFFFFFu, 0xFFFFFFFFu, true, "t", DataFormat::kBinaryLittleEndian, PJ::Span<const uint8_t>());
+  EXPECT_FALSE(built);
+}
+
+TEST(CloudCommon, ComputeLayoutUnknownDatatypeIsError) {
+  std::vector<ParsedField> fields = {{"x", Datatype::kFloat32, 1}, {"bad", Datatype::kUnknown, 1}};
+  auto layout = pj3d::computeLayout(fields);
+  EXPECT_FALSE(layout);
+}
+
+TEST(CloudCommon, AsciiNotEnoughTokensIsError) {
+  const char* text = "1 2 3\n";  // missing the 4th (intensity) token
+  PJ::Span<const uint8_t> body(reinterpret_cast<const uint8_t*>(text), std::strlen(text));
+  auto built = pj3d::buildPointCloud(xyziFields(), 1, 1, true, "t", DataFormat::kAscii, body);
+  EXPECT_FALSE(built);
+}
+
+std::vector<ParsedField> countThreeFields() {
+  return {{"vec", Datatype::kFloat32, 3}};
+}
+
+TEST(CloudCommon, CountFieldBinaryBigEndianByteSwapsEachElement) {
+  // One point, a single field with count=3: vec = [1.0f, 2.0f, 3.0f], each
+  // encoded big-endian in the body.
+  std::vector<uint8_t> body = {0x3F, 0x80, 0x00, 0x00,   // 1.0f BE
+                               0x40, 0x00, 0x00, 0x00,   // 2.0f BE
+                               0x40, 0x40, 0x00, 0x00};  // 3.0f BE
+  auto built = pj3d::buildPointCloud(
+      countThreeFields(), 1, 1, true, "t", DataFormat::kBinaryBigEndian,
+      PJ::Span<const uint8_t>(body.data(), body.size()));
+  ASSERT_TRUE(built);
+  float v0 = 0.0f, v1 = 0.0f, v2 = 0.0f;
+  std::memcpy(&v0, built->data.data() + 0u, 4);
+  std::memcpy(&v1, built->data.data() + 4u, 4);
+  std::memcpy(&v2, built->data.data() + 8u, 4);
+  EXPECT_FLOAT_EQ(v0, 1.0f);
+  EXPECT_FLOAT_EQ(v1, 2.0f);
+  EXPECT_FLOAT_EQ(v2, 3.0f);
+}
+
+TEST(CloudCommon, CountFieldAsciiPacksEachElement) {
+  const char* text = "1 2 3\n";
+  PJ::Span<const uint8_t> body(reinterpret_cast<const uint8_t*>(text), std::strlen(text));
+  auto built = pj3d::buildPointCloud(countThreeFields(), 1, 1, true, "t", DataFormat::kAscii, body);
+  ASSERT_TRUE(built);
+  float v0 = 0.0f, v1 = 0.0f, v2 = 0.0f;
+  std::memcpy(&v0, built->data.data() + 0u, 4);
+  std::memcpy(&v1, built->data.data() + 4u, 4);
+  std::memcpy(&v2, built->data.data() + 8u, 4);
+  EXPECT_FLOAT_EQ(v0, 1.0f);
+  EXPECT_FLOAT_EQ(v1, 2.0f);
+  EXPECT_FLOAT_EQ(v2, 3.0f);
+}
+
+TEST(CloudCommon, CopySurvivesOriginalExpectedDestruction) {
+  // Proves the BufferAnchor pattern: build inside a scope, copy the
+  // PointCloud out, let the original Expected<PointCloud> (and its shared_ptr
+  // reference) be destroyed, then verify the copy's data span still reads
+  // correctly.
+  PJ::sdk::PointCloud copy;
+  {
+    std::vector<uint8_t> body;
+    putF32LE(body, 1.0f);
+    putF32LE(body, 2.0f);
+    putF32LE(body, 3.0f);
+    putF32LE(body, 100.0f);
+    auto built = pj3d::buildPointCloud(
+        xyziFields(), 1, 1, true, "t", DataFormat::kBinaryLittleEndian,
+        PJ::Span<const uint8_t>(body.data(), body.size()));
+    ASSERT_TRUE(built);
+    copy = *built;  // shares ownership of the backing buffer via `anchor`
+  }  // `built` destroyed here; `copy` must keep the bytes alive
+  ASSERT_EQ(copy.data.size(), 16u);
+  float x = 0.0f, intensity = 0.0f;
+  std::memcpy(&x, copy.data.data() + 0u, 4);
+  std::memcpy(&intensity, copy.data.data() + 12u, 4);
+  EXPECT_FLOAT_EQ(x, 1.0f);
+  EXPECT_FLOAT_EQ(intensity, 100.0f);
+}
+
+TEST(CloudCommon, PointsWithNoFieldsIsError) {
+  // Zero fields => point_step 0. A positive point count is malformed and must
+  // be rejected, not spin the ascii fill loop num_points times.
+  std::vector<ParsedField> no_fields;
+  const char* text = "1 2 3\n";
+  PJ::Span<const uint8_t> body(reinterpret_cast<const uint8_t*>(text), std::strlen(text));
+  auto built = pj3d::buildPointCloud(no_fields, 1000000, 1000000, true, "t", DataFormat::kAscii, body);
   EXPECT_FALSE(built);
 }
 
