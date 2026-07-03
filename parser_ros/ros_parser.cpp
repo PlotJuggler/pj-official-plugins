@@ -1,7 +1,9 @@
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <functional>
 #include <pj_array_policy/array_policy.hpp>
+#include <stdexcept>
 #include <string>
 
 #include "ros_parser_internal.hpp"
@@ -624,6 +626,21 @@ void RosParser::ensureDeserializer() {
       deserializer_ = std::make_unique<RosMsgParser::NanoCDR_Deserializer>();
     }
   }
+}
+
+RosMsgParser::Span<const uint8_t> RosParser::readByteSequence() {
+  // Bytes available at the cursor, captured before the read (the 4-byte length
+  // prefix and any trailing fields are included, so the bound is conservative:
+  // it can only over-accept by that slack, never falsely reject a full message).
+  const size_t available = deserializer_->bytesLeft();
+  const auto span = deserializer_->deserializeByteSequence();
+  if (available < sizeof(uint32_t) || span.size() > available - sizeof(uint32_t)) {
+    // The declared length ran past the payload. deserializeByteSequence has already
+    // advanced the cursor past the end, so both this span AND any field the handler
+    // reads next would be out of bounds; abort now (caught upstream -> Expected error).
+    throw std::runtime_error("CDR byte sequence length exceeds message payload (truncated or corrupt message)");
+  }
+  return span;
 }
 
 void RosParser::detectSchemaFeatures() {
