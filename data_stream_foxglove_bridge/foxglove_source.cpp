@@ -133,14 +133,23 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       install_message_callback(*socket_);
       socket_->start();
 
+      // start() is asynchronous AND the socket reports Closed until its
+      // background thread begins the attempt — so an early Closed reading means
+      // "not started yet", not "failed". Treat Closed as terminal only after the
+      // attempt was observed Connecting; otherwise a fast first poll of the
+      // state races the thread and start() fails against a perfectly good
+      // server.
       auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      bool attempt_started = false;
       while (std::chrono::steady_clock::now() < deadline) {
         auto state = socket_->getReadyState();
         if (state == ix::ReadyState::Open) {
           break;
         }
-        if (state == ix::ReadyState::Closed) {
-          break;
+        if (state == ix::ReadyState::Connecting) {
+          attempt_started = true;
+        } else if (state == ix::ReadyState::Closed && attempt_started) {
+          break;  // the attempt ran and failed (refused / handshake error)
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
       }

@@ -48,7 +48,9 @@ def load_mcap_channels(path: str):
                     "encoding": ch.message_encoding,
                     "schemaName": sch.name if sch else "",
                     "schema": sch.data.decode("utf-8", errors="replace") if sch and sch.data else "",
-                    "schemaEncoding": sch.encoding if sch else "",
+                    # MCAP writers use "proto"/"protobuf" interchangeably; the ws-protocol
+                    # vocabulary is "protobuf" and clients classify by it.
+                    "schemaEncoding": ("protobuf" if sch and sch.encoding == "proto" else (sch.encoding if sch else "")),
                 }
         return channels
 
