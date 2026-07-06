@@ -14,47 +14,68 @@ The plugin is meant to be format-agnostic — it must not simply hardcode
 `if topic == "/tf"` as a ROS special case baked into otherwise-generic
 loading logic.
 
-## Mechanism: generic always-include whitelist, keyed by (topic, encoding)
+## Mechanism: generic always-include whitelist, keyed by (schema name, encoding)
 
-A small static table of `{topic, encoding}` pairs, matched against
-`ChannelInfo{topic, encoding}` — fields already populated in `analyzeFile()`
-directly from the MCAP channel summary (`channel_ptr->topic`,
-`channel_ptr->messageEncoding`). No parser instantiation, no schema
-introspection, no ROS awareness in the mechanism itself:
+A small static table of `{schema_name, encoding}` pairs, matched against
+`ChannelInfo{schema, encoding}` — fields already populated in `analyzeFile()`
+directly from the MCAP channel/schema summary (`schema_it->second->name`,
+`channel_ptr->messageEncoding`). No parser instantiation, no ROS awareness in
+the mechanism itself — just the two fields the dialog already reads per
+channel:
 
 ```cpp
 struct AlwaysIncludeRule {
-  std::string topic;
+  std::string schema_name;
   std::string encoding;
 };
 
 const std::vector<AlwaysIncludeRule> kAlwaysIncludeRules = {
-  {"/tf", "cdr"},
-  {"/tf_static", "cdr"},
+  {"tf2_msgs/msg/TFMessage", "cdr"},        // ROS 2 transform tree
+  {"foxglove.FrameTransform", "protobuf"},  // Foxglove-style transform tree
 };
 ```
 
-**Encoding value, verified against real ROS 2 bags:** MCAP's `Channel`
-record carries `message_encoding` (the wire/serialization format of the
-message bytes) separately from the `Schema` record's `encoding` (the
-schema-definition language). For `tf2_msgs/msg/TFMessage` on real rosbag2
-mcap recordings (checked with the `mcap` CLI against
-`~/ws_plotjuggler/DATA/amcl_test_bag.mcap` and others):
+**Why schema (message type), not topic name.** The initial draft of this
+design keyed on topic name (`/tf`, `/tf_static`) + encoding. Two pieces of
+evidence overturned that:
 
-- Channel `messageEncoding` = `cdr` — this is what `ChannelInfo.encoding`
-  actually stores (`mcap_dialog.hpp` prefers `channel_ptr->messageEncoding`
-  over the schema's encoding whenever the channel's own field is non-empty).
-- Schema `encoding` = `ros2msg` — the message-definition-language tag shown
-  by `mcap info`'s bracketed suffix; not what `ChannelInfo.encoding` holds
-  for a normally-written ROS 2 bag.
+1. Foxglove's own transform message, `foxglove.FrameTransform`
+   (`parser_protobuf/foxglove_object_codecs.hpp`, already classified as
+   `kFrameTransforms` in `parser_protobuf/protobuf_parser.cpp:829-830`), is
+   explicitly designed to be published under *any* topic name — there is no
+   fixed convention the way ROS fixes `/tf`.
+2. Checked with the `mcap` CLI against real Foxglove-recorded files
+   (`~/ws_plotjuggler/DATA/example-023-av-argo-2.mcap`): its transform
+   channel is topic `tf` — no leading slash — schema `foxglove.FrameTransform`,
+   channel `messageEncoding` = `protobuf`. A topic-name-based rule (`/tf`)
+   would have silently missed this real file. Matching on schema name sidesteps
+   topic-naming variance entirely.
 
-So the whitelist rule matches on `"cdr"`, not `"ros2msg"`.
+**Encoding values, verified against real bags with the `mcap` CLI:** MCAP's
+`Channel` record carries `message_encoding` (the wire/serialization format of
+the message bytes) separately from the `Schema` record's `encoding` (the
+schema-definition language) — these are two different fields, and it's easy
+to reach for the wrong one:
 
-The mechanism itself is generic: `kAlwaysIncludeRules` is just data. A
-future convention (a different middleware's own transform-tree topic, or
-some other rendering-dependency) could add a row without touching the
-enforcement logic below. ROS's `/tf`/`/tf_static` are simply the first (and
-for now, only) entries.
+- ROS 2 (`~/ws_plotjuggler/DATA/amcl_test_bag.mcap` and others): schema
+  `tf2_msgs/msg/TFMessage` has channel `messageEncoding` = `cdr` (what
+  `ChannelInfo.encoding` actually stores — `mcap_dialog.hpp` prefers
+  `channel_ptr->messageEncoding` over the schema's encoding whenever the
+  channel's own field is non-empty) and schema `encoding` = `ros2msg` (the
+  bracketed tag `mcap info` displays, and *not* what `ChannelInfo.encoding`
+  holds).
+- Foxglove (`~/ws_plotjuggler/DATA/example-012-av-ds.mcap`,
+  `example-016-av-waymo-ds.mcap`, `example-023-av-argo-2.mcap`): schema
+  `foxglove.FrameTransform` has channel `messageEncoding` = `protobuf`.
+
+So the whitelist rules match on `"cdr"` and `"protobuf"` respectively, not
+on `"ros2msg"`.
+
+The mechanism itself is generic: `kAlwaysIncludeRules` is just data, keyed
+by message type rather than any particular naming convention. A future
+message type with the same rendering-dependency problem could add a row
+without touching the enforcement logic below. ROS's `tf2_msgs/msg/TFMessage`
+and Foxglove's `foxglove.FrameTransform` are simply the first two entries.
 
 ## Enforcement: pre-checked, cannot uncheck
 
