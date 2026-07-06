@@ -323,15 +323,38 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
     return status;
   }
 
-  // Runtime hosts in PJ4 call bindSchema() before loadConfig(). The selected
-  // schema encoding therefore arrives later through parser_config_json. Keep a
-  // generic scalar handler available immediately, then replace it with the
-  // schema-specific handler once loadConfig() has selected ros2msg/omgidl.
+  // Generic scalar handler first, so a schema that fails to compile below
+  // still binds; the compile error then resurfaces through loadConfig() or the
+  // first parse, which recompile — exactly the pre-existing failure surface.
   registerBoundSchemaHandler(catalog().at(CatalogEntry::kDefault));
 
   if (schema_format_configured_) {
     return compileBoundSchema(true);
   }
+
+  // No config yet — but classify_schema must already be correct right after
+  // bind_schema (see message_parser_protocol.h; the demand-subscription host
+  // classifies advertised topics through a throwaway bind→classify handle with
+  // no parser_config_json). The schema encoding only travels in loadConfig(),
+  // so infer the format from the inputs' shape — OMG IDL uses scoped
+  // "pkg::Type" names and `module` blocks — and compile eagerly, best-effort:
+  // try the inferred format, then the other. If both fail, stay bound on the
+  // generic handler. A later loadConfig() with a different explicit encoding
+  // recompiles via its format_changed path, so a mis-inference self-corrects
+  // before any payload is parsed.
+  const bool looks_idl =
+      type_name_.find("::") != std::string::npos || schema_definition_.find("module ") != std::string::npos;
+  const RosMsgParser::SchemaFormat first = looks_idl ? RosMsgParser::DDS_IDL : RosMsgParser::ROS_MSG;
+  const RosMsgParser::SchemaFormat second = looks_idl ? RosMsgParser::ROS_MSG : RosMsgParser::DDS_IDL;
+  for (const RosMsgParser::SchemaFormat format : {first, second}) {
+    schema_format_ = format;
+    schema_encoding_ = (format == RosMsgParser::DDS_IDL) ? "omgidl" : "ros2msg";
+    if (compileBoundSchema(true)) {
+      return PJ::okStatus();
+    }
+  }
+  schema_format_ = RosMsgParser::ROS_MSG;
+  schema_encoding_ = "ros2msg";
   return PJ::okStatus();
 }
 

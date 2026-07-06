@@ -340,6 +340,71 @@ TEST(RosParserTest, OmgIdlSchemaParsesCdrPayload) {
   EXPECT_TRUE(found_active);
 }
 
+// --- Advertise-time classification: bindSchema() with NO loadConfig() ---
+//
+// The demand-subscription host classifies advertised topics through a
+// throwaway handle via bindSchema() -> classifySchema(); the schema encoding
+// only travels later in the binding request's parser_config_json. Per the SDK
+// contract (message_parser_protocol.h) classify_schema must be correct right
+// after bind_schema, so the parser infers the format from the inputs' shape
+// and compiles eagerly.
+
+TEST(RosParserTest, ClassifiesPointCloud2WithoutLoadConfig) {
+  RosParserFixture f;
+  f.setUp();
+
+  // Classification is a catalog lookup by (normalized) type name; the field
+  // list only has to compile, so a minimal definition is enough here.
+  const std::string def = "uint32 height\nuint32 width\n";
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchemaRaw("sensor_msgs/msg/PointCloud2", def));
+  EXPECT_EQ(f.handle.classifySchema("sensor_msgs/msg/PointCloud2", def_span), PJ::sdk::BuiltinObjectType::kPointCloud);
+}
+
+TEST(RosParserTest, ClassifiesOmgIdlSchemaWithoutLoadConfig) {
+  RosParserFixture f;
+  f.setUp();
+
+  static const char* kPointCloud2IdlDef = R"(
+module sensor_msgs {
+  struct PointCloud2 {
+    unsigned long height;
+    unsigned long width;
+  };
+};
+)";
+  const std::string def(kPointCloud2IdlDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchemaRaw("sensor_msgs::PointCloud2", def));
+  EXPECT_EQ(f.handle.classifySchema("sensor_msgs::PointCloud2", def_span), PJ::sdk::BuiltinObjectType::kPointCloud);
+}
+
+TEST(RosParserTest, ParsesOmgIdlCdrWithoutLoadConfig) {
+  RosParserFixture f;
+  f.setUp();
+
+  // The IDL format is inferred from the scoped name / `module` block, so the
+  // eager compile at bind time must already produce a working parser.
+  ASSERT_TRUE(f.bindSchemaRaw("pkg::SimpleIdl", kSimpleIdlDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(42)));
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(23.5));
+    enc.serialize(RosMsgParser::BOOL, RosMsgParser::Variant(static_cast<uint8_t>(1)));
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  bool found_temp = false;
+  for (const auto& field : f.recorder.rows()[0].fields) {
+    if (field.name == "/temperature") {
+      EXPECT_DOUBLE_EQ(field.numeric, 23.5);
+      found_temp = true;
+    }
+  }
+  EXPECT_TRUE(found_temp);
+}
+
 TEST(RosParserTest, FixedSizeArray) {
   RosParserFixture f;
   f.setUp();
@@ -1152,6 +1217,18 @@ TEST(RosParserTest, TFMessageProducesFrameTransformsObject) {
   EXPECT_EQ(ft->transforms[1].timestamp, 2'000'000'000);
   EXPECT_DOUBLE_EQ(ft->transforms[1].translation.y, 5.0);
   EXPECT_DOUBLE_EQ(ft->transforms[1].rotation.z, 0.707);
+}
+
+TEST(RosParserTest, ClassifiesTFMessageWithoutLoadConfig) {
+  RosParserFixture f;
+  f.setUp();
+
+  // The advertise-time shape end to end: real ROS 2 definition, "/msg/" type
+  // name, and no loadConfig() before classification.
+  const std::string def(kTFMessageDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchemaRaw("tf2_msgs/msg/TFMessage", def));
+  EXPECT_EQ(f.handle.classifySchema("tf2_msgs/msg/TFMessage", def_span), PJ::sdk::BuiltinObjectType::kFrameTransforms);
 }
 
 TEST(RosParserTest, TransformStampedProducesFrameTransformsObject) {
