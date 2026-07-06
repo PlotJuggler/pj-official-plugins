@@ -129,8 +129,13 @@ class McapDialog : public PJ::DialogPluginTyped {
       if (selected_topics_.count(ch.topic) > 0) {
         selected_topic_names.push_back(ch.topic);
       }
-      if (ch.msg_count == 0) {
+      bool locked_always_included = ch.msg_count > 0 && isAlwaysIncluded(ch);
+      if (ch.msg_count == 0 || locked_always_included) {
         disabled_row_indices.push_back(static_cast<int>(i));
+      }
+      if (locked_always_included) {
+        wd.setCellTooltip(
+            "tableWidget", static_cast<int>(i), 0, "Always loaded — required for 3D transform rendering.");
       }
     }
     wd.setTableRows("tableWidget", rows);

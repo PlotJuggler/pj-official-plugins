@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <nlohmann/json.hpp>
 #include <string>
 
@@ -83,6 +84,37 @@ TEST(McapDialogTest, ForceIncludesOnlyWhitelistedNonEmptyChannels) {
   EXPECT_EQ(selected.count("/tf_static"), 0u);           // whitelisted schema/encoding, zero messages -> NOT forced
   EXPECT_EQ(selected.count("/near_miss_encoding"), 0u);  // right schema, wrong encoding -> NOT forced
   EXPECT_TRUE(selected.count("/sensor/value2") > 0);     // explicitly saved by the user -> stays
+}
+
+TEST(McapDialogTest, WhitelistedRowsAreDisabledAndTooltippedInWidgetData) {
+  McapDialog dialog;
+  nlohmann::json cfg;
+  cfg["filepath"] = std::string(MCAP_TEST_DATA_DIR) + "/test_dialog_whitelist.mcap";
+  ASSERT_TRUE(dialog.loadConfig(cfg.dump()));
+
+  const auto data = nlohmann::json::parse(dialog.widget_data());
+  const auto& rows = data["tableWidget"]["rows"];
+
+  int tf_row = -1;
+  int ordinary_row = -1;
+  for (size_t i = 0; i < rows.size(); ++i) {
+    if (rows[i][0] == "/tf") {
+      tf_row = static_cast<int>(i);
+    }
+    if (rows[i][0] == "/sensor/value2") {
+      ordinary_row = static_cast<int>(i);
+    }
+  }
+  ASSERT_NE(tf_row, -1);
+  ASSERT_NE(ordinary_row, -1);
+
+  const auto& disabled = data["tableWidget"]["disabled_rows"];
+  EXPECT_NE(std::find(disabled.begin(), disabled.end(), tf_row), disabled.end());
+  EXPECT_EQ(std::find(disabled.begin(), disabled.end(), ordinary_row), disabled.end());
+
+  ASSERT_TRUE(data["tableWidget"].contains("cell_tooltips"));
+  const auto& tooltips = data["tableWidget"]["cell_tooltips"];
+  EXPECT_TRUE(tooltips.contains(std::to_string(tf_row) + ",0"));
 }
 
 }  // namespace
