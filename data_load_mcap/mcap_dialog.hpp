@@ -220,6 +220,7 @@ class McapDialog : public PJ::DialogPluginTyped {
       for (const auto& topic : selected) {
         selected_topics_.insert(topic);
       }
+      reassertAlwaysIncluded();
       return true;  // update OK button state
     }
     return false;
@@ -237,6 +238,7 @@ class McapDialog : public PJ::DialogPluginTyped {
     }
     if (widget_name == "btnDeselectAll") {
       selected_topics_.clear();
+      reassertAlwaysIncluded();
       return true;
     }
     return false;

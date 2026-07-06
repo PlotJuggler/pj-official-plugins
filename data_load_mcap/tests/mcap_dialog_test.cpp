@@ -117,4 +117,34 @@ TEST(McapDialogTest, WhitelistedRowsAreDisabledAndTooltippedInWidgetData) {
   EXPECT_TRUE(tooltips.contains(std::to_string(tf_row) + ",0"));
 }
 
+TEST(McapDialogTest, DeselectAllKeepsWhitelistedTopicsSelected) {
+  McapDialog dialog;
+  nlohmann::json cfg;
+  cfg["filepath"] = std::string(MCAP_TEST_DATA_DIR) + "/test_dialog_whitelist.mcap";
+  ASSERT_TRUE(dialog.loadConfig(cfg.dump()));
+
+  EXPECT_TRUE(dialog.onClicked("btnDeselectAll"));
+
+  const auto& selected = dialog.selectedTopics();
+  EXPECT_TRUE(selected.count("/tf") > 0);
+  EXPECT_TRUE(selected.count("transforms") > 0);
+  EXPECT_EQ(selected.count("/sensor/value2"), 0u);
+}
+
+TEST(McapDialogTest, HostReportedSelectionOmittingWhitelistIsOverridden) {
+  McapDialog dialog;
+  nlohmann::json cfg;
+  cfg["filepath"] = std::string(MCAP_TEST_DATA_DIR) + "/test_dialog_whitelist.mcap";
+  ASSERT_TRUE(dialog.loadConfig(cfg.dump()));
+
+  // Simulate the host reporting a selection that omits /tf and transforms --
+  // the dialog must add them back regardless.
+  EXPECT_TRUE(dialog.onSelectionChanged("tableWidget", {"/sensor/value2"}));
+
+  const auto& selected = dialog.selectedTopics();
+  EXPECT_TRUE(selected.count("/tf") > 0);
+  EXPECT_TRUE(selected.count("transforms") > 0);
+  EXPECT_TRUE(selected.count("/sensor/value2") > 0);
+}
+
 }  // namespace
