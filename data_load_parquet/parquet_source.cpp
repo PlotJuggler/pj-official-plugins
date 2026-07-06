@@ -266,7 +266,10 @@ class ParquetSource : public PJ::FileSourceBase {
       rows_processed += batch_rows;
 
       if (runtimeHost().isStopRequested()) {
-        return PJ::unexpected(std::string("import cancelled"));
+        // Stop but KEEP the rows written so far: break instead of returning an error,
+        // so the host's "Stop and Keep" flushes the partial data (returning unexpected
+        // makes the multi-file/fanout path treat it as a failure and drop it).
+        break;
       }
       (void)runtimeHost().progressUpdate(static_cast<uint64_t>(rows_processed));
     }

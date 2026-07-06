@@ -3,6 +3,11 @@
 Systematic comparison of all 12 ported plugins against their original reference
 implementations in `~/ws_plotjuggler/src/PlotJuggler/plotjuggler_plugins/`.
 
+> **New plugins (not ports, so out of scope for this gap analysis):**
+> `data_load_3d` — static PLY/PCD 3D loader. `.pcd` and vertex-only `.ply` load as
+> an `sdk::PointCloud`; `.ply` with faces loads as an `sdk::Mesh3D`; one snapshot
+> at t=0 plus a scalar summary. See `data_load_3d/README.md`.
+
 Severity levels:
 - **CRITICAL** — breaks wire compatibility, data correctness, or removes a major user-visible workflow
 - **HIGH** — removes a feature users rely on regularly
