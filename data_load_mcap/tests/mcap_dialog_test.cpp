@@ -67,4 +67,22 @@ TEST(AlwaysIncludeRuleTest, RejectsRightEncodingWrongSchema) {
   EXPECT_FALSE(isAlwaysIncluded(ch));
 }
 
+TEST(McapDialogTest, ForceIncludesOnlyWhitelistedNonEmptyChannels) {
+  McapDialog dialog;
+  nlohmann::json cfg;
+  cfg["filepath"] = std::string(MCAP_TEST_DATA_DIR) + "/test_dialog_whitelist.mcap";
+  // Saved selection predates this feature and omits everything except one
+  // ordinary topic -- as if loading an old layout.
+  cfg["selected_topics"] = std::vector<std::string>{"/sensor/value2"};
+
+  ASSERT_TRUE(dialog.loadConfig(cfg.dump()));
+
+  const auto& selected = dialog.selectedTopics();
+  EXPECT_TRUE(selected.count("/tf") > 0);                // whitelisted, has messages -> forced back in
+  EXPECT_TRUE(selected.count("transforms") > 0);         // whitelisted (any topic name) -> forced back in
+  EXPECT_EQ(selected.count("/tf_static"), 0u);           // whitelisted schema/encoding, zero messages -> NOT forced
+  EXPECT_EQ(selected.count("/near_miss_encoding"), 0u);  // right schema, wrong encoding -> NOT forced
+  EXPECT_TRUE(selected.count("/sensor/value2") > 0);     // explicitly saved by the user -> stays
+}
+
 }  // namespace

@@ -42,7 +42,7 @@ const std::vector<AlwaysIncludeRule> kAlwaysIncludeRules = {
     {"foxglove.FrameTransform", "protobuf"},
 };
 
-[[maybe_unused]] bool isAlwaysIncluded(const ChannelInfo& ch) {
+bool isAlwaysIncluded(const ChannelInfo& ch) {
   for (const auto& rule : kAlwaysIncludeRules) {
     if (ch.schema == rule.schema_name && ch.encoding == rule.encoding) {
       return true;
@@ -360,6 +360,20 @@ class McapDialog : public PJ::DialogPluginTyped {
         if (ch.msg_count > 0) {
           selected_topics_.insert(ch.topic);
         }
+      }
+    }
+
+    reassertAlwaysIncluded();
+  }
+
+  /// Channels matching kAlwaysIncludeRules are always loaded: 3D rendering
+  /// depends on them even when the user narrows their selection to a handful
+  /// of unrelated topics. Idempotent -- safe to call after any mutation of
+  /// selected_topics_.
+  void reassertAlwaysIncluded() {
+    for (const auto& ch : all_channels_) {
+      if (ch.msg_count > 0 && isAlwaysIncluded(ch)) {
+        selected_topics_.insert(ch.topic);
       }
     }
   }
