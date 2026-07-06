@@ -153,6 +153,15 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     // host the advertise fails with a distinct error and we fall back to the
     // eager subscribe-selected behavior unchanged.
     lazy_mode_ = advertiseCatalogToHost();
+    if (!lazy_mode_ && selected_channels_.empty()) {
+      // Old host without lazy-mode support and no dialog-selected channels —
+      // there is nothing to subscribe to and nothing will ever appear later,
+      // so fail loudly here instead of streaming nothing forever. Mirrors
+      // the ROS 2 source's `!lazy_mode_ && selected_topics_.empty()` guard.
+      socket_->stop();
+      socket_.reset();
+      return PJ::unexpected("no Foxglove channels selected");
+    }
     if (lazy_mode_) {
       reconcileSubscriptions();
     } else {

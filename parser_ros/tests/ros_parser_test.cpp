@@ -218,6 +218,58 @@ TEST(RosParserTest, DescribeSchemaColumnsStandsDownForSpecializedSchemas) {
   EXPECT_FALSE(status);
 }
 
+TEST(RosParserTest, DescribeSchemaColumnsOmitsStringsWhenStringToNumberToggleOn) {
+  // With either string-to-number toggle enabled, parse() may emit a STRING
+  // field as float64 depending on the runtime value — so its manifest type
+  // can't be pre-declared, and the column must be omitted entirely rather
+  // than published with a possibly-wrong type. Numeric-only siblings must
+  // still be present.
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("pkg/Nested", kNestedDef));
+  ASSERT_TRUE(f.handle.loadConfig(R"({"boolean_strings_to_number":true})"));
+
+  const std::string def(kNestedDef);
+  std::string manifest_json;
+  auto status = f.handle.describeSchemaColumns(
+      "pkg/Nested", PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(def.data()), def.size()), manifest_json);
+  ASSERT_TRUE(status) << status.error();
+
+  auto manifest = nlohmann::json::parse(manifest_json);
+  ASSERT_TRUE(manifest.is_array());
+
+  bool found_frame_id = false;
+  bool found_value = false;
+  for (const auto& entry : manifest) {
+    const auto path = entry["path"].get<std::string>();
+    if (path == "/header/frame_id") {
+      found_frame_id = true;
+    } else if (path == "/value") {
+      found_value = true;
+    }
+  }
+  EXPECT_FALSE(found_frame_id) << "value-dependent string column must be omitted from the manifest";
+  EXPECT_TRUE(found_value) << "numeric column must still be present";
+}
+
+TEST(RosParserTest, DescribeSchemaColumnsStandsDownForRobotDescriptionTopic) {
+  // std_msgs/String isn't a catalog key by itself, but on a robot_description
+  // topic selectCatalogEntry() overrides it to an object-only entry with no
+  // parse_scalars — no scalars are ever emitted, so the manifest must stand
+  // down too, not just publish an empty/misleading column list.
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"topic_name":"robot_description"})"));
+  ASSERT_TRUE(f.bindSchema("std_msgs/String", kStringDef));
+
+  const std::string def(kStringDef);
+  std::string manifest_json;
+  auto status = f.handle.describeSchemaColumns(
+      "std_msgs/String", PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(def.data()), def.size()),
+      manifest_json);
+  EXPECT_FALSE(status);
+}
+
 TEST(RosParserTest, NestedMessage) {
   RosParserFixture f;
   f.setUp();

@@ -465,8 +465,16 @@ namespace {
 // the schema alone, typed exactly as variantToValueRef will emit them. Arrays
 // (fixed AND dynamic) are omitted — their columns appear on first data, which
 // the manifest contract allows. Constants never flatten.
+//
+// `include_strings` gates BT::STRING leaves: when either string-to-number
+// toggle (boolean_strings_to_number_ / remove_suffix_from_strings_) is on,
+// flattenGeneric's parse()-time decision to emit a STRING field as float64
+// (or leave it as a string) depends on each value, not the schema alone — so
+// the column's type cannot be pre-declared and the column must be omitted
+// from the manifest entirely (it still materializes correctly on first data).
 void collectManifestColumns(
-    const RosMsgParser::FieldTreeNode* node, const std::string& prefix, std::vector<PJ::sdk::ColumnSpec>& out) {
+    const RosMsgParser::FieldTreeNode* node, const std::string& prefix, bool include_strings,
+    std::vector<PJ::sdk::ColumnSpec>& out) {
   using BT = RosMsgParser::BuiltinType;
   for (const auto& child : node->children()) {
     const RosMsgParser::ROSField* field = child.value();
@@ -476,7 +484,10 @@ void collectManifestColumns(
     const std::string path = prefix + "/" + field->name();
     const BT type_id = field->type().typeID();
     if (type_id == BT::OTHER) {
-      collectManifestColumns(&child, path, out);
+      collectManifestColumns(&child, path, include_strings, out);
+      continue;
+    }
+    if (type_id == BT::STRING && !include_strings) {
       continue;
     }
     PJ::PrimitiveType column_type = PJ::PrimitiveType::kFloat64;
@@ -538,7 +549,16 @@ PJ::Expected<std::vector<PJ::sdk::ColumnSpec>> RosParser::describeSchemaColumns(
   // anyway. classifySchema-style: query the catalog and stand down for any
   // schema with a specialized scalar handler.
   const std::string msg_type = normalizedMessageType(type_name, schema_format_);
-  if (catalog().find(msg_type) != catalog().end()) {
+  // Stand down for any msg_type that is itself a catalog key (specialized
+  // scalar/object handler picked purely by type), AND for any msg_type whose
+  // selectCatalogEntry() resolution differs from the kDefault (generic
+  // flatten) entry — this also covers the topic-conditional override (e.g.
+  // std_msgs/String on a robot_description topic), which is not a catalog
+  // key by itself but resolves to an object-only entry with no parse_scalars,
+  // so it emits no scalars and the manifest must stand down too.
+  const CatalogEntry selected_entry = selectCatalogEntry(msg_type);
+  const CatalogEntry& default_entry = catalog().at(CatalogEntry::kDefault);
+  if (catalog().find(msg_type) != catalog().end() || selected_entry.parse_scalars != default_entry.parse_scalars) {
     return PJ::unexpected(std::string("specialized handler — no static column manifest for ") + msg_type);
   }
 
@@ -555,7 +575,11 @@ PJ::Expected<std::vector<PJ::sdk::ColumnSpec>> RosParser::describeSchemaColumns(
   if (message_schema == nullptr || message_schema->field_tree.croot() == nullptr) {
     return PJ::unexpected(std::string("empty schema tree for ") + msg_type);
   }
-  collectManifestColumns(message_schema->field_tree.croot(), "", columns);
+  // See the comment on collectManifestColumns: when a string-to-number
+  // toggle is enabled, a STRING leaf's manifest type is value-dependent and
+  // therefore cannot be pre-declared, so string columns are omitted.
+  const bool include_strings = !(boolean_strings_to_number_ || remove_suffix_from_strings_);
+  collectManifestColumns(message_schema->field_tree.croot(), "", include_strings, columns);
   return columns;
 }
 

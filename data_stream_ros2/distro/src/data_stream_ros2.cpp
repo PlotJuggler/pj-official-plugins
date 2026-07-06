@@ -370,6 +370,17 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
       }
     }
 
+    // Concurrency contract to verify: reconcileSubscriptions() runs on the
+    // poll thread (called from onPoll() and onActiveTopicsChanged()), while
+    // executor_ spins concurrently on spinner_ (a MultiThreadedExecutor).
+    // Erasing a subscriptions_ entry here destroys the shared_ptr<
+    // GenericSubscription> — possibly the last reference — which tears down
+    // the underlying rcl subscription and its DDS entity while the executor
+    // may be mid-spin. This relies on rclcpp's guard-condition handling of
+    // dynamic entity removal (the executor's wait-set is expected to be
+    // notified and rebuilt safely without a data race or use-after-free on
+    // the subscription being spun). Flagged for per-distro stress
+    // verification (Humble/Iron/Jazzy) rather than assumed correct here.
     for (auto it = subscriptions_.begin(); it != subscriptions_.end();) {
       if (desired.count(it->first) == 0) {
         it = subscriptions_.erase(it);
