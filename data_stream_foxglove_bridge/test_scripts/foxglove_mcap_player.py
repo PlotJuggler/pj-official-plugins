@@ -98,6 +98,9 @@ class FoxgloveMcapPlayer:
     # log transient_local topics (/tf_static, /map) at open, often tens of
     # seconds before the data burst; without this the player would sleep through
     # that whole gap and a client would see nothing after the latched replay.
+    # This compresses ANY idle gap past the threshold, not just the leading one —
+    # a deliberate test-player choice (skip dead air); it is not a precise pause
+    # boundary, so an intentional multi-second pause in a bag is skipped too.
     _MAX_IDLE_GAP_S = 1.0
 
     def __init__(self, mcap_path: str, speed: float, loop: bool, extra_latched: set):
