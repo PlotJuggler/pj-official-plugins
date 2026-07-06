@@ -473,11 +473,15 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
     marker_has_texture_block_ = schema_definition_.find("uv_coordinates") != std::string::npos;
     marker_has_mesh_file_ = schema_definition_.find("mesh_file") != std::string::npos;
   }
-  schema_compiled_ = true;
-
   if (register_specialized_handler) {
     registerBoundSchemaHandler(selectCatalogEntry(msg_type));
   }
+
+  // Flip the flag only after the handler is registered: if registration throws
+  // (e.g. bad_alloc), schema_compiled_ stays false so the next compile — the
+  // eager-inference loop's second format, or a later loadConfig()/parse —
+  // recompiles cleanly instead of early-returning on a half-compiled schema.
+  schema_compiled_ = true;
 
   return PJ::okStatus();
 }

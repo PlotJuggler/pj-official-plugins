@@ -405,6 +405,48 @@ TEST(RosParserTest, ParsesOmgIdlCdrWithoutLoadConfig) {
   EXPECT_TRUE(found_temp);
 }
 
+TEST(RosParserTest, EagerInferenceSurvivesLaterLoadConfig) {
+  // Advertise-time bind eagerly infers ROS_MSG and compiles the typed handler.
+  // A later loadConfig() supplying the SAME encoding must not break it (the
+  // format_changed path is a no-op, no half-compiled state), and parsing keeps
+  // working before AND after the config arrives.
+  RosParserFixture f;
+  f.setUp();
+
+  const std::string def = "int32 status\nfloat64 temperature\n";
+  ASSERT_TRUE(f.bindSchemaRaw("pkg/msg/Simple", def));  // eager compile, no config yet
+  ASSERT_TRUE(f.loadSchemaEncoding("ros2msg"));         // same format arrives later
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(7)));
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(19.5));
+  });
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  bool found_temp = false;
+  for (const auto& field : f.recorder.rows()[0].fields) {
+    if (field.name == "/temperature") {
+      EXPECT_DOUBLE_EQ(field.numeric, 19.5);
+      found_temp = true;
+    }
+  }
+  EXPECT_TRUE(found_temp);
+}
+
+TEST(RosParserTest, EagerBindWithUncompilableSchemaStaysBoundOnGenericHandler) {
+  // Both formats fail to compile at eager bind time; bindSchema must still
+  // succeed on the generic handler (the compile error resurfaces at
+  // loadConfig()/first parse, unchanged), and classification is kNone rather
+  // than a crash. Mirrors the demand-subscription advertise-time contract.
+  RosParserFixture f;
+  f.setUp();
+
+  const std::string bad_def = "this is not a valid ROS or IDL schema {{{ <<< ";
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(bad_def.data()), bad_def.size());
+  ASSERT_TRUE(f.bindSchemaRaw("pkg/Garbage", bad_def));
+  EXPECT_EQ(f.handle.classifySchema("pkg/Garbage", def_span), PJ::sdk::BuiltinObjectType::kNone);
+}
+
 TEST(RosParserTest, FixedSizeArray) {
   RosParserFixture f;
   f.setUp();
