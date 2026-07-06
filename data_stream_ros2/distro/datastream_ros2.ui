@@ -151,7 +151,7 @@ QLineEdit:focus { border-bottom: 2px solid palette(highlight); }</string>
        <item>
         <widget class="QTableWidget" name="listRosTopics">
          <property name="selectionMode">
-          <enum>QAbstractItemView::ExtendedSelection</enum>
+          <enum>QAbstractItemView::MultiSelection</enum>
          </property>
          <property name="selectionBehavior">
           <enum>QAbstractItemView::SelectRows</enum>

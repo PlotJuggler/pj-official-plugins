@@ -392,7 +392,7 @@
               (interior column dividers + a bottom rule under every row, no outer-left/right
               line); #topicTable QSS themes the dividers and drops the frame. -->
          <property name="pjInteriorGrid" stdset="0"><bool>true</bool></property>
-         <property name="selectionMode"><enum>QAbstractItemView::ExtendedSelection</enum></property>
+         <property name="selectionMode"><enum>QAbstractItemView::MultiSelection</enum></property>
          <property name="selectionBehavior"><enum>QAbstractItemView::SelectRows</enum></property>
          <property name="editTriggers"><set>QAbstractItemView::NoEditTriggers</set></property>
          <attribute name="verticalHeaderVisible"><bool>false</bool></attribute>
