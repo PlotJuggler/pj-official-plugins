@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <nlohmann/json.hpp>
+#include <set>
 #include <string>
 
 namespace {
@@ -77,6 +78,16 @@ TEST(McapDialogTest, ForceIncludesOnlyWhitelistedNonEmptyChannels) {
   cfg["selected_topics"] = std::vector<std::string>{"/sensor/value2"};
 
   ASSERT_TRUE(dialog.loadConfig(cfg.dump()));
+
+  // Pin the fixture: all five channels must be present in the analyzed table,
+  // otherwise the negative assertions below would pass vacuously.
+  const auto data = nlohmann::json::parse(dialog.widget_data());
+  std::set<std::string> row_topics;
+  for (const auto& row : data["tableWidget"]["rows"]) {
+    row_topics.insert(row[0].get<std::string>());
+  }
+  EXPECT_EQ(
+      row_topics, (std::set<std::string>{"/near_miss_encoding", "/sensor/value2", "/tf", "/tf_static", "transforms"}));
 
   const auto& selected = dialog.selectedTopics();
   EXPECT_TRUE(selected.count("/tf") > 0);                // whitelisted, has messages -> forced back in
