@@ -267,8 +267,8 @@ void RosParser::handleDataTamerSnapshot() {
   uint64_t timestamp = deserializer_->deserialize(RosMsgParser::UINT64).convert<uint64_t>();
   uint64_t schema_hash = deserializer_->deserialize(RosMsgParser::UINT64).convert<uint64_t>();
 
-  auto active_mask = deserializer_->deserializeByteSequence();
-  auto payload = deserializer_->deserializeByteSequence();
+  auto active_mask = readByteSequence();
+  auto payload = readByteSequence();
 
   auto it = g_data_tamer_schemas.find(schema_hash);
   if (it == g_data_tamer_schemas.end()) {

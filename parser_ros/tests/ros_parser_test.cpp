@@ -779,6 +779,24 @@ TEST(RosParserTest, PoseWithRPY) {
   EXPECT_NE(findField(f.recorder.rows()[0], "/orientation/pitch"), nullptr);
 }
 
+// Regression (scalar route): a truncated message whose scalar (void) handler reads
+// past the end must fail cleanly, not std::terminate. The void handlers run through
+// wrapVoidHandler(), which — unlike the object handlers — is the C-ABI-facing entry
+// for the scalar route, so it must catch the CDR decode throw before it crosses the
+// noexcept trampoline. Here geometry_msgs/Pose carries only position (3 doubles);
+// handlePose throws reading the missing orientation.
+TEST(RosParserTest, TruncatedScalarMessageDoesNotTerminate) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("geometry_msgs/Pose", kPoseDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeVector3(enc, 1.0, 2.0, 3.0);  // position only; orientation truncated away
+  });
+
+  EXPECT_FALSE(f.parse(payload)) << "truncated scalar message must fail cleanly, not terminate";
+}
+
 TEST(RosParserTest, ImuRPY) {
   RosParserFixture f;
   f.setUp();
@@ -1563,6 +1581,45 @@ TEST(RosParserTest, ImageObjectCarriesFrameId) {
   EXPECT_EQ(img->width, 2u);
   EXPECT_EQ(img->height, 2u);
   EXPECT_EQ(img->encoding, "mono8");
+}
+
+// Regression: a truncated sensor_msgs/Image whose data[] declares more bytes than
+// the message carries must be REJECTED, not decoded into a span that runs past the
+// payload. NanoCDR's byte-sequence reader does not clamp the declared length to the
+// buffer, so readByteSequence() adds the bound check the ROS1 path already has.
+// Without the fix, parseImage would emit an Image whose data span extends ~82 MB
+// past a 48-byte payload and the 2D viewer's copy would read off the end (SIGSEGV).
+TEST(RosParserTest, ImageWithTruncatedDataIsRejected) {
+  static const char* kImageDef =
+      "std_msgs/Header header\nuint32 height\nuint32 width\nstring encoding\n"
+      "uint8 is_bigendian\nuint32 step\nuint8[] data\n"
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/Image", kImageDef));
+
+  // Declare a data[] of step*height bytes but write NONE of them: the message ends
+  // right after the count. Mirrors a partially-written / corrupt bag.
+  constexpr uint32_t kHeight = 20000;
+  constexpr uint32_t kWidth = 4096;
+  constexpr uint32_t kStep = 4096;  // mono8 -> step == width*bpp
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 7, 0, "camera_link");
+    enc.serializeUInt32(kHeight);
+    enc.serializeUInt32(kWidth);
+    enc.serializeString("mono8");
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(0)));  // is_bigendian
+    enc.serializeUInt32(kStep);
+    enc.serializeUInt32(kStep * kHeight);  // data[] count -- but no bytes follow
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  EXPECT_FALSE(rec.has_value()) << "truncated Image must be rejected, not decoded into an out-of-bounds span";
 }
 
 // Regression: ROS Bayer CFA images (bayer_rggb8 and friends) carry one raw mosaic
