@@ -155,6 +155,10 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
         for (const auto& [name, type] : selected_topics_) {
           discovered_topics_[name] = type;
         }
+        // Seeded entries are ADVERTISE-ONLY: no publisher is discoverable yet,
+        // so subscribing now would lock in an unadaptable default QoS (see
+        // reconcileSubscriptions). Cleared by the first genuine graph scan.
+        discovery_seeded_from_selection_ = !discovered_topics_.empty();
       }
 
       // Demand mode is decided ONCE per start, by the very first advertise
@@ -277,14 +281,24 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
   }
 
   PJ::ParserBindingHandle* ensureBinding(const std::string& topic) {
-    auto it = binding_cache_.find(topic);
-    if (it != binding_cache_.end()) {
-      return &it->second;
-    }
-
     const std::string type_name = resolveTypeForTopic(topic);
     if (type_name.empty()) {
       return nullptr;
+    }
+
+    auto it = binding_cache_.find(topic);
+    if (it != binding_cache_.end()) {
+      // Reuse only while the live subscription's type still matches the type
+      // the cached binding was created for. A topic can be unsubscribed,
+      // re-typed on the graph, and re-subscribed within one session — pushing
+      // the new type's CDR bytes through the old parser binding would decode
+      // garbage. There is no unbind ABI: the superseded binding stays alive
+      // host-side but idle (same contract as any unsubscribed topic), and a
+      // fresh binding replaces it in the cache below.
+      if (binding_type_by_topic_[topic] == type_name) {
+        return &it->second;
+      }
+      binding_cache_.erase(it);
     }
 
     const std::string* schema = ensureSchemaForType(type_name);
@@ -317,6 +331,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
       return nullptr;
     }
     auto [iter, _] = binding_cache_.emplace(topic, *binding);
+    binding_type_by_topic_[topic] = type_name;
     return &iter->second;
   }
 
@@ -457,12 +472,21 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
       return;
     }
 
-    if (topics == discovered_topics_) {
+    // The first genuine scan replaces any advertise-only seed (see onStart) and
+    // unblocks subscribing — reconcile MUST run even when the scan happens to
+    // equal the seeded map, or a desired seeded topic never subscribes.
+    const bool was_seeded = discovery_seeded_from_selection_;
+    discovery_seeded_from_selection_ = false;
+
+    if (!was_seeded && topics == discovered_topics_) {
       return;  // nothing changed — skip the re-advertise + reconcile
     }
+    const bool advertise_changed = topics != discovered_topics_;
     discovered_topics_ = std::move(topics);
 
-    refreshAdvertisedTopicsAndWarn();
+    if (advertise_changed) {
+      refreshAdvertisedTopicsAndWarn();
+    }
     reconcileSubscriptions();
   }
 
@@ -475,17 +499,24 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
   // desired-then-discovered and discovered-then-desired converge on this one
   // code path instead of two.
   void reconcileSubscriptions() {
+    // Never subscribe off the saved-selection SEED (see onStart): its QoS
+    // cannot be adapted yet — no publisher is discoverable, so qos_wait=0
+    // would silently create a default-QoS subscription that a BEST_EFFORT /
+    // TRANSIENT_LOCAL publisher never matches, and nothing would ever
+    // recreate it. The seed exists only so the very first advertise isn't
+    // empty; real subscriptions wait for the first genuine graph scan (~1s).
+    if (discovery_seeded_from_selection_) {
+      return;
+    }
+
     // Filter-aware: a topic the advertise filter hides from the host must not
     // be subscribed either (see filteredDiscoveredTopics) — and a live
     // subscription to a now-filtered topic is dropped by the same diff.
     const auto subscribable = ros2_streamer::filteredDiscoveredTopics(discovered_topics_, selected_topics_);
 
-    std::set<std::string> current;
-    for (const auto& [topic, subscription] : subscriptions_) {
-      (void)subscription;
-      current.insert(topic);
-    }
-
+    // Keyed topic -> created-with type: the diff recreates a subscription
+    // whose discovered type changed (it appears in both lists).
+    const std::map<std::string, std::string> current(subscription_types_.begin(), subscription_types_.end());
     const auto diff = ros2_streamer::computeRos2SubscriptionDiff(current, subscribable, last_applied_desired_);
 
     for (const auto& topic : diff.to_unsubscribe) {
@@ -551,6 +582,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
       context_.reset();
     }
     binding_cache_.clear();
+    binding_type_by_topic_.clear();
     {
       std::lock_guard<std::mutex> lock(queue_mutex_);
       std::queue<PendingMessage> empty;
@@ -561,6 +593,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
     demand_mode_ = false;
     last_applied_desired_.clear();
     discovered_topics_.clear();
+    discovery_seeded_from_selection_ = false;
     last_discovery_refresh_ = {};
     schema_by_type_.clear();
     warned_multi_type_topics_.clear();
@@ -602,6 +635,11 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
   std::mutex queue_mutex_;
   std::queue<PendingMessage> message_queue_;
   std::unordered_map<std::string, PJ::ParserBindingHandle> binding_cache_;
+  // topic -> the ROS 2 type its cached binding_cache_ entry was created for;
+  // ensureBinding() invalidates the cache when the live subscription's type no
+  // longer matches (topic re-typed between unsubscribe and re-subscribe).
+  // Poll-thread-only, lockstep with binding_cache_.
+  std::unordered_map<std::string, std::string> binding_type_by_topic_;
 
   // --- Demand-driven per-topic subscription (pj.topic_subscription.v1) ---
 
@@ -625,6 +663,14 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
   // refreshDiscoveryAndAdvertise) plus once synchronously in onStart to seed
   // the very first advertise. Poll-thread-only.
   std::map<std::string, std::string> discovered_topics_;
+
+  // True while discovered_topics_ holds the ADVERTISE-ONLY fallback seeded from
+  // the saved selection in onStart (fresh Context, no DDS discovery yet).
+  // Seeded entries must never be subscribed — their publishers' QoS is not yet
+  // adaptable (see reconcileSubscriptions). Cleared by the first genuine scan
+  // in refreshDiscoveryAndAdvertise, which then reconciles unconditionally.
+  // Poll-thread-only.
+  bool discovery_seeded_from_selection_ = false;
 
   // Throttle gate for the streamer's discovery scan — get_topic_names_and_types()
   // walks the whole ROS graph and is too heavy to run on every ~50ms poll

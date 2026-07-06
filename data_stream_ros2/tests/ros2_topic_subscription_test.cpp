@@ -87,7 +87,7 @@ TEST(ComputeRos2SubscriptionDiffTest, EmptyEverythingIsANoOp) {
 }
 
 TEST(ComputeRos2SubscriptionDiffTest, SubscribesNewlyDesiredDiscoveredTopic) {
-  const std::set<std::string> current;  // nothing subscribed yet
+  const std::map<std::string, std::string> current;  // nothing subscribed yet
   const std::map<std::string, std::string> subscribable{{"/camera/image", "sensor_msgs/msg/Image"}};
   const std::set<std::string> desired{"/camera/image"};
 
@@ -98,7 +98,7 @@ TEST(ComputeRos2SubscriptionDiffTest, SubscribesNewlyDesiredDiscoveredTopic) {
 }
 
 TEST(ComputeRos2SubscriptionDiffTest, UnsubscribesNoLongerDesiredTopic) {
-  const std::set<std::string> current{"/camera/image"};
+  const std::map<std::string, std::string> current{{"/camera/image", "sensor_msgs/msg/Image"}};
   const std::map<std::string, std::string> subscribable{{"/camera/image", "sensor_msgs/msg/Image"}};
   const std::set<std::string> desired;  // host paused everything
 
@@ -109,7 +109,7 @@ TEST(ComputeRos2SubscriptionDiffTest, UnsubscribesNoLongerDesiredTopic) {
 }
 
 TEST(ComputeRos2SubscriptionDiffTest, AlreadySubscribedDesiredTopicIsUntouched) {
-  const std::set<std::string> current{"/camera/image"};
+  const std::map<std::string, std::string> current{{"/camera/image", "sensor_msgs/msg/Image"}};
   const std::map<std::string, std::string> subscribable{{"/camera/image", "sensor_msgs/msg/Image"}};
   const std::set<std::string> desired{"/camera/image"};
 
@@ -122,7 +122,7 @@ TEST(ComputeRos2SubscriptionDiffTest, DesiredTopicNotYetDiscoveredIsIgnored) {
   // /odom is desired but not (yet) discovered on the ROS graph — nothing to
   // subscribe to; the caller is expected to remember it (last_applied_desired_)
   // and retry once the topic becomes discoverable.
-  const std::set<std::string> current;
+  const std::map<std::string, std::string> current;
   const std::map<std::string, std::string> subscribable{{"/camera/image", "sensor_msgs/msg/Image"}};
   const std::set<std::string> desired{"/odom"};
 
@@ -133,7 +133,7 @@ TEST(ComputeRos2SubscriptionDiffTest, DesiredTopicNotYetDiscoveredIsIgnored) {
 
 TEST(ComputeRos2SubscriptionDiffTest, DiscoveredButNotDesiredTopicIsNotSubscribed) {
   // /odom is discovered (and passes the filter) but the host never asked for it.
-  const std::set<std::string> current;
+  const std::map<std::string, std::string> current;
   const std::map<std::string, std::string> subscribable{{"/odom", "nav_msgs/msg/Odometry"}};
   const std::set<std::string> desired;
 
@@ -146,7 +146,7 @@ TEST(ComputeRos2SubscriptionDiffTest, SubscribedTopicNoLongerDiscoveredIsUnsubsc
   // /camera/image dropped out of the discovered set (publisher went away) but the
   // subscription bookkeeping hasn't caught up yet — still must be dropped, even
   // though it is still nominally desired.
-  const std::set<std::string> current{"/camera/image"};
+  const std::map<std::string, std::string> current{{"/camera/image", "sensor_msgs/msg/Image"}};
   const std::map<std::string, std::string> subscribable;  // no longer discovered
   const std::set<std::string> desired{"/camera/image"};
 
@@ -159,7 +159,7 @@ TEST(ComputeRos2SubscriptionDiffTest, SubscribedTopicNoLongerDiscoveredIsUnsubsc
 TEST(ComputeRos2SubscriptionDiffTest, MixedAddAndDropInOneDiff) {
   // Currently subscribed: /a, /b. Desired now: /b, /c (both discovered).
   // Expect: unsubscribe /a (dropped), subscribe /c (newly added).
-  const std::set<std::string> current{"/a", "/b"};
+  const std::map<std::string, std::string> current{{"/a", "std_msgs/msg/String"}, {"/b", "std_msgs/msg/String"}};
   const std::map<std::string, std::string> subscribable{
       {"/a", "std_msgs/msg/String"}, {"/b", "std_msgs/msg/String"}, {"/c", "std_msgs/msg/String"}};
   const std::set<std::string> desired{"/b", "/c"};
@@ -169,6 +169,20 @@ TEST(ComputeRos2SubscriptionDiffTest, MixedAddAndDropInOneDiff) {
   EXPECT_EQ(diff.to_unsubscribe[0], "/a");
   ASSERT_EQ(diff.to_subscribe.size(), 1U);
   EXPECT_EQ(diff.to_subscribe[0], "/c");
+}
+
+TEST(ComputeRos2SubscriptionDiffTest, TypeChangeForcesResubscribe) {
+  // /foo is subscribed as std_msgs/String but the graph now publishes it as
+  // std_msgs/Int32 — CDR decoding is type-specific, so the stale subscription
+  // must be dropped AND the topic re-subscribed under the new type (it lands
+  // in BOTH lists; the caller unsubscribes first).
+  const std::map<std::string, std::string> current{{"/foo", "std_msgs/msg/String"}};
+  const std::map<std::string, std::string> subscribable{{"/foo", "std_msgs/msg/Int32"}};
+  const std::set<std::string> desired{"/foo"};
+
+  auto diff = computeRos2SubscriptionDiff(current, subscribable, desired);
+  EXPECT_EQ(diff.to_unsubscribe, (std::vector<std::string>{"/foo"}));
+  EXPECT_EQ(diff.to_subscribe, (std::vector<std::string>{"/foo"}));
 }
 
 // --- passesAdvertiseFilter ---
@@ -208,7 +222,7 @@ TEST(FilteredDiscoveredTopicsTest, LiveSubscriptionToNewlyFilteredTopicIsDropped
   const auto subscribable = filteredDiscoveredTopics(discovered, selection);
   EXPECT_TRUE(subscribable.empty());
 
-  const std::set<std::string> current{"/odom"};
+  const std::map<std::string, std::string> current{{"/odom", "nav_msgs/msg/Odometry"}};
   const auto diff = computeRos2SubscriptionDiff(current, subscribable, {"/odom"});
   EXPECT_EQ(diff.to_unsubscribe, (std::vector<std::string>{"/odom"}));
   EXPECT_TRUE(diff.to_subscribe.empty());

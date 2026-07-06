@@ -73,8 +73,14 @@ struct SubscriptionDiff {
 /// logic in Ros2StreamSource::onPoll is unit-testable through this without a
 /// live ROS graph.
 ///
-/// @param current_subscriptions  topic names the source is currently
-///        subscribed to (the keys of `subscriptions_`).
+/// A live subscription whose DISCOVERED type no longer matches the type it was
+/// created with lands in BOTH lists (unsubscribe the stale one, subscribe the
+/// new type) — CDR decoding is type-specific, so a re-typed topic must be
+/// recreated, never silently kept. The caller applies to_unsubscribe first.
+///
+/// @param current_subscriptions  topic -> the type each live subscription was
+///        CREATED with (the source's `subscription_types_`, lockstep with
+///        `subscriptions_`).
 /// @param subscribable  topic -> type, restricted to topics BOTH currently
 ///        discovered on the ROS graph AND passing the advertise filter (see
 ///        filteredDiscoveredTopics). A desired topic with no entry here
@@ -83,20 +89,24 @@ struct SubscriptionDiff {
 ///        discoverable.
 /// @param desired_topics  the full active-topic set the host wants live right now.
 [[nodiscard]] inline SubscriptionDiff computeRos2SubscriptionDiff(
-    const std::set<std::string>& current_subscriptions, const std::map<std::string, std::string>& subscribable,
-    const std::set<std::string>& desired_topics) {
+    const std::map<std::string, std::string>& current_subscriptions,
+    const std::map<std::string, std::string>& subscribable, const std::set<std::string>& desired_topics) {
   SubscriptionDiff diff;
 
-  for (const auto& topic : current_subscriptions) {
-    const bool keep = desired_topics.count(topic) > 0 && subscribable.count(topic) > 0;
+  for (const auto& [topic, subscribed_type] : current_subscriptions) {
+    const auto it = subscribable.find(topic);
+    const bool keep = desired_topics.count(topic) > 0 && it != subscribable.end() && it->second == subscribed_type;
     if (!keep) {
       diff.to_unsubscribe.push_back(topic);
     }
   }
 
   for (const auto& [topic, type] : subscribable) {
-    (void)type;
-    if (desired_topics.count(topic) > 0 && current_subscriptions.count(topic) == 0) {
+    if (desired_topics.count(topic) == 0) {
+      continue;
+    }
+    const auto it = current_subscriptions.find(topic);
+    if (it == current_subscriptions.end() || it->second != type) {
       diff.to_subscribe.push_back(topic);
     }
   }
