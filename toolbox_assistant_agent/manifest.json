@@ -1,0 +1,22 @@
+{
+  "id": "toolbox-assistant-agent",
+  "name": "Assistant Agent",
+  "version": "0.1.0",
+  "description": "An LLM assistant that drives PlotJuggler through the plugin SDK: list/describe topics, read series statistics, and create derived timeseries and markers. Local (Ollama) or Claude Code backend. Non-destructive by construction.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "toolbox",
+  "presentation": "floating",
+  "tags": [
+    "llm",
+    "assistant",
+    "agent",
+    "ollama",
+    "claude"
+  ],
+  "min_plotjuggler_version": "4.0.0"
+}
