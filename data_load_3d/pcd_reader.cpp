@@ -2,10 +2,15 @@
 #include "pcd_reader.hpp"
 
 #include <charconv>
+#include <cstring>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
+
+extern "C" {
+#include "lzf.h"
+}
 
 namespace pj3d {
 namespace {
@@ -69,6 +74,74 @@ std::vector<std::string> tokenize(const std::string& line) {
     out.push_back(tok);
   }
   return out;
+}
+
+// Decode a PCD binary_compressed body (uint32 compressed_size, uint32
+// uncompressed_size, then the LZF blob). `body` is the bytes at/after the DATA
+// line. Validates the declared uncompressed size against the layout BEFORE
+// allocating (decompression-bomb guard), then transposes SoA -> AoS.
+PJ::Expected<PJ::sdk::PointCloud> decodeBinaryCompressed(
+    const std::vector<ParsedField>& fields, uint32_t width, uint32_t height, std::string frame_id,
+    PJ::Span<const uint8_t> body) {
+  constexpr size_t kU32 = 4;                     // one little-endian uint32
+  constexpr size_t kSizeHeaderBytes = 2 * kU32;  // compressed_size + uncompressed_size
+
+  auto layout_or = computeLayout(fields);
+  if (!layout_or) {
+    return PJ::unexpected(layout_or.error());
+  }
+  const uint32_t point_step = layout_or->point_step;
+  const uint64_t n = static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
+  // A positive point count with zero stride (e.g. an all-COUNT-0 field set)
+  // is malformed. buildPointCloud rejects it, but only AFTER our transpose
+  // loop would spin width*height times — reject it here first.
+  if (point_step == 0 && n > 0) {
+    return PJ::unexpected("PCD binary_compressed: points but zero stride (no fields)");
+  }
+  // Bound the expected packed size BEFORE trusting the header (guards the alloc).
+  if (point_step != 0 && n > kMaxCloudBytes / static_cast<uint64_t>(point_step)) {
+    return PJ::unexpected("PCD binary_compressed: cloud too large");
+  }
+  const uint64_t expected = n * static_cast<uint64_t>(point_step);
+
+  const uint8_t* p = body.data();
+  const size_t avail = body.size();
+  if (avail < kSizeHeaderBytes) {
+    return PJ::unexpected("PCD binary_compressed: truncated size header");
+  }
+  uint32_t comp_size = 0;
+  uint32_t uncomp_size = 0;
+  std::memcpy(&comp_size, p, kU32);
+  std::memcpy(&uncomp_size, p + kU32, kU32);
+  // Reject a declared uncompressed size that disagrees with the layout BEFORE
+  // allocating, so a hostile header can't force a huge allocation.
+  if (static_cast<uint64_t>(uncomp_size) != expected) {
+    return PJ::unexpected("PCD binary_compressed: uncompressed size mismatch");
+  }
+  if (static_cast<uint64_t>(avail) < static_cast<uint64_t>(comp_size) + kSizeHeaderBytes) {
+    return PJ::unexpected("PCD binary_compressed: truncated blob");
+  }
+  std::vector<uint8_t> soa(static_cast<size_t>(uncomp_size));
+  const unsigned int got = lzf_decompress(p + kSizeHeaderBytes, comp_size, soa.data(), uncomp_size);
+  if (got != uncomp_size) {
+    return PJ::unexpected("PCD binary_compressed: LZF decompress failed");
+  }
+  // Transpose SoA (field-major) -> AoS packed points.
+  std::vector<uint8_t> aos(static_cast<size_t>(expected));
+  size_t soa_off = 0;
+  for (const auto& pf : layout_or->fields) {
+    const uint64_t fsize =
+        static_cast<uint64_t>(PJ::sdk::bytesPerElement(pf.datatype)) * static_cast<uint64_t>(pf.count);
+    for (uint64_t pt = 0; pt < n; ++pt) {
+      std::memcpy(
+          aos.data() + pt * static_cast<uint64_t>(point_step) + pf.offset, soa.data() + soa_off,
+          static_cast<size_t>(fsize));
+      soa_off += static_cast<size_t>(fsize);
+    }
+  }
+  return buildPointCloud(
+      fields, width, height, /*is_dense=*/true, std::move(frame_id), DataFormat::kBinaryLittleEndian,
+      PJ::Span<const uint8_t>(aos.data(), aos.size()));
 }
 
 }  // namespace
@@ -143,10 +216,7 @@ PJ::Expected<PJ::sdk::PointCloud> readPcd(PJ::Span<const uint8_t> file_bytes, st
   if (!have_width || !have_height) {
     return PJ::unexpected("PCD header: WIDTH/HEIGHT missing");
   }
-  if (data_mode == "binary_compressed") {
-    return PJ::unexpected("PCD DATA binary_compressed is not yet supported");
-  }
-  if (data_mode != "ascii" && data_mode != "binary") {
+  if (data_mode != "ascii" && data_mode != "binary" && data_mode != "binary_compressed") {
     return PJ::unexpected("PCD DATA mode not recognized: " + data_mode);
   }
 
@@ -181,6 +251,11 @@ PJ::Expected<PJ::sdk::PointCloud> readPcd(PJ::Span<const uint8_t> file_bytes, st
       return PJ::unexpected("PCD field '" + names[i] + "': unsupported TYPE/SIZE " + types_tok[i] + "/" + sizes_tok[i]);
     }
     fields.push_back(ParsedField{names[i], dt, count});
+  }
+
+  if (data_mode == "binary_compressed") {
+    PJ::Span<const uint8_t> body(file_bytes.data() + body_offset, total - body_offset);
+    return decodeBinaryCompressed(fields, width, height, std::move(frame_id), body);
   }
 
   const DataFormat fmt = (data_mode == "ascii") ? DataFormat::kAscii : DataFormat::kBinaryLittleEndian;

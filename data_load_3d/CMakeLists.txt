@@ -3,6 +3,16 @@ find_package(nlohmann_json REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
+# Vendored LZF codec (BSD-2-Clause) — C sources, kept out of the C++ -Werror wall.
+enable_language(C)
+add_library(pj_lzf_d STATIC contrib/liblzf/lzf_d.c)   # decompressor (used by the reader)
+set_target_properties(pj_lzf_d PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(pj_lzf_d PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/contrib/liblzf)
+
+add_library(pj_lzf_c STATIC contrib/liblzf/lzf_c.c)   # compressor (used only by the test fixture)
+set_target_properties(pj_lzf_c PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(pj_lzf_c PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/contrib/liblzf)
+
 # --- Reader library (pure C++, no host/Qt deps) ---
 add_library(pj_3d_readers STATIC
   cloud_common.cpp
@@ -13,7 +23,7 @@ set_target_properties(pj_3d_readers PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(pj_3d_readers PUBLIC cxx_std_20)
 target_compile_options(pj_3d_readers PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(pj_3d_readers PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(pj_3d_readers PUBLIC plotjuggler_sdk::plugin_sdk)
+target_link_libraries(pj_3d_readers PUBLIC plotjuggler_sdk::plugin_sdk pj_lzf_d)
 
 # --- Plugin shared library ---
 add_library(data_load_3d_plugin SHARED loader_3d.cpp)
@@ -41,7 +51,7 @@ add_executable(pcd_reader_test tests/pcd_reader_test.cpp)
 target_compile_features(pcd_reader_test PRIVATE cxx_std_20)
 target_compile_options(pcd_reader_test PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(pcd_reader_test PRIVATE
-  pj_3d_readers GTest::gtest_main ${CMAKE_DL_LIBS})
+  pj_3d_readers pj_lzf_c GTest::gtest_main ${CMAKE_DL_LIBS})
 add_test(NAME pcd_reader_test COMMAND pcd_reader_test)
 
 add_executable(ply_reader_test tests/ply_reader_test.cpp)

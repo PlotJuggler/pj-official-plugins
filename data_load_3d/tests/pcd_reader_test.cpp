@@ -6,6 +6,10 @@
 #include <cstring>
 #include <string>
 
+extern "C" {
+#include "lzf.h"
+}
+
 namespace {
 
 PJ::Span<const uint8_t> asSpan(const std::string& s) {
@@ -70,13 +74,148 @@ TEST(PcdReader, OrganizedKeepsWidthHeight) {
   EXPECT_EQ(built->height, 2u);
 }
 
-TEST(PcdReader, BinaryCompressedIsCleanErrorForNow) {
+TEST(PcdReader, BinaryCompressedRoundTrip) {
+  // Two xyz points; build the SoA (field-major) uncompressed buffer PCD expects.
+  const uint32_t num_points = 2, point_step = 12;
+  float pts[2][3] = {{1, 2, 3}, {4, 5, 6}};
+  std::string soa;  // field-major: x0 x1 | y0 y1 | z0 z1
+  for (int f = 0; f < 3; ++f) {
+    for (uint32_t p = 0; p < num_points; ++p) {
+      putF32LE(soa, pts[p][f]);
+    }
+  }
+  std::string comp(soa.size() * 2 + 64, '\0');
+  unsigned int clen = lzf_compress(
+      soa.data(), static_cast<unsigned int>(soa.size()), comp.data(), static_cast<unsigned int>(comp.size()));
+  ASSERT_GT(clen, 0u);
+
+  std::string pcd =
+      "VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\n"
+      "WIDTH 2\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS 2\nDATA binary_compressed\n";
+  uint32_t clen32 = clen, ulen32 = static_cast<uint32_t>(soa.size());
+  char hdr[8];
+  std::memcpy(hdr, &clen32, 4);
+  std::memcpy(hdr + 4, &ulen32, 4);
+  pcd.append(hdr, 8);
+  pcd.append(comp.data(), clen);
+
+  auto built = pj3d::readPcd(asSpan(pcd), "c");
+  ASSERT_TRUE(built) << (built ? "" : built.error());
+  EXPECT_EQ(built->point_step, point_step);
+  float z1 = 0.0f;
+  std::memcpy(&z1, built->data.data() + point_step + 8u, 4);  // point 1, z
+  EXPECT_FLOAT_EQ(z1, 6.0f);
+  float x0 = 0.0f;
+  std::memcpy(&x0, built->data.data() + 0u, 4);
+  EXPECT_FLOAT_EQ(x0, 1.0f);
+}
+
+// A truncated size header must be a clean error, not a crash.
+TEST(PcdReader, BinaryCompressedTruncatedHeaderIsCleanError) {
+  std::string pcd =
+      "VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\n"
+      "WIDTH 1\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS 1\nDATA binary_compressed\n"
+      "\x01\x02";  // only 2 bytes where 8 (two uint32) are required
+  auto built = pj3d::readPcd(asSpan(pcd), "c");
+  EXPECT_FALSE(built);
+}
+
+// A declared uncompressed_size that disagrees with width*height*point_step must
+// be rejected BEFORE allocating (decompression-bomb guard).
+TEST(PcdReader, BinaryCompressedSizeMismatchIsCleanError) {
   std::string pcd =
       "VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\n"
       "WIDTH 1\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS 1\nDATA binary_compressed\n";
+  uint32_t clen32 = 4, ulen32 = 0xFFFFFF00u;  // absurd uncompressed size vs expected 12
+  char hdr[8];
+  std::memcpy(hdr, &clen32, 4);
+  std::memcpy(hdr + 4, &ulen32, 4);
+  pcd.append(hdr, 8);
+  pcd.append("\x00\x00\x00\x00", 4);
   auto built = pj3d::readPcd(asSpan(pcd), "c");
-  ASSERT_FALSE(built);
-  EXPECT_NE(built.error().find("binary_compressed"), std::string::npos);
+  EXPECT_FALSE(built);
+}
+
+TEST(PcdReader, BinaryCompressedMixedFieldWidths) {
+  // Heterogeneous widths (F32 x/y/z + U8 intensity, point_step=13) stress the
+  // SoA->AoS transpose with non-uniform field offsets/sizes.
+  const uint32_t num_points = 2;
+  float xyz[2][3] = {{1, 2, 3}, {4, 5, 6}};
+  uint8_t intensity[2] = {10, 20};
+  std::string soa;  // field-major: x0 x1 | y0 y1 | z0 z1 | i0 i1
+  for (int f = 0; f < 3; ++f) {
+    for (uint32_t p = 0; p < num_points; ++p) {
+      putF32LE(soa, xyz[p][f]);
+    }
+  }
+  for (uint32_t p = 0; p < num_points; ++p) {
+    soa.push_back(static_cast<char>(intensity[p]));
+  }
+  std::string comp(soa.size() * 2 + 64, '\0');
+  unsigned int clen = lzf_compress(
+      soa.data(), static_cast<unsigned int>(soa.size()), comp.data(), static_cast<unsigned int>(comp.size()));
+  ASSERT_GT(clen, 0u);
+  std::string pcd =
+      "VERSION 0.7\nFIELDS x y z intensity\nSIZE 4 4 4 1\nTYPE F F F U\nCOUNT 1 1 1 1\n"
+      "WIDTH 2\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS 2\nDATA binary_compressed\n";
+  uint32_t clen32 = clen, ulen32 = static_cast<uint32_t>(soa.size());
+  char hdr[8];
+  std::memcpy(hdr, &clen32, 4);
+  std::memcpy(hdr + 4, &ulen32, 4);
+  pcd.append(hdr, 8);
+  pcd.append(comp.data(), clen);
+  auto built = pj3d::readPcd(asSpan(pcd), "c");
+  ASSERT_TRUE(built) << (built ? "" : built.error());
+  EXPECT_EQ(built->point_step, 13u);
+  float z1 = 0.0f;
+  std::memcpy(&z1, built->data.data() + 13u + 8u, 4);  // point 1, z (offset 8)
+  EXPECT_FLOAT_EQ(z1, 6.0f);
+  EXPECT_EQ(built->data.data()[12u], 10u);        // point 0 intensity (offset 12)
+  EXPECT_EQ(built->data.data()[13u + 12u], 20u);  // point 1 intensity
+}
+
+TEST(PcdReader, BinaryCompressedTruncatedBlobIsCleanError) {
+  // comp_size claims more bytes than are actually present after the 8-byte header.
+  std::string pcd =
+      "VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\n"
+      "WIDTH 1\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS 1\nDATA binary_compressed\n";
+  uint32_t clen32 = 100, ulen32 = 12;  // claims 100 compressed bytes; supply only 2
+  char hdr[8];
+  std::memcpy(hdr, &clen32, 4);
+  std::memcpy(hdr + 4, &ulen32, 4);
+  pcd.append(hdr, 8);
+  pcd.append("\x01\x02", 2);
+  auto built = pj3d::readPcd(asSpan(pcd), "c");
+  EXPECT_FALSE(built);
+}
+
+TEST(PcdReader, BinaryCompressedCorruptBlobIsCleanError) {
+  // Header size matches the layout (12), but the blob is not valid LZF -> decode fails cleanly.
+  std::string pcd =
+      "VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\n"
+      "WIDTH 1\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS 1\nDATA binary_compressed\n";
+  uint32_t clen32 = 6, ulen32 = 12;  // expected == 12 (passes size guard), blob is garbage
+  char hdr[8];
+  std::memcpy(hdr, &clen32, 4);
+  std::memcpy(hdr + 4, &ulen32, 4);
+  pcd.append(hdr, 8);
+  const unsigned char junk[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  pcd.append(reinterpret_cast<const char*>(junk), 6);
+  auto built = pj3d::readPcd(asSpan(pcd), "c");
+  EXPECT_FALSE(built);
+}
+
+TEST(PcdReader, BinaryCompressedZeroStridePositivePointsIsCleanError) {
+  // COUNT 0 -> point_step 0. A positive point count must be rejected BEFORE the
+  // transpose loop (which would otherwise spin width*height times). Huge dims
+  // make a hang obvious if the guard is missing; the test must return quickly.
+  std::string pcd =
+      "VERSION 0.7\nFIELDS x\nSIZE 4\nTYPE F\nCOUNT 0\n"
+      "WIDTH 1000000\nHEIGHT 1000000\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS 1\nDATA binary_compressed\n";
+  const char hdr[8] = {0, 0, 0, 0, 0, 0, 0, 0};  // comp_size 0, uncomp_size 0
+  pcd.append(hdr, 8);
+  auto built = pj3d::readPcd(asSpan(pcd), "c");
+  EXPECT_FALSE(built);
 }
 
 TEST(PcdReader, RgbFieldMappedAsUint32) {
