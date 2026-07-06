@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT
-#include <algorithm>
 #include <array>
-#include <cctype>
 #include <cstdint>
 #include <fstream>
 #include <iterator>
@@ -16,41 +14,11 @@
 
 #include "cloud_common.hpp"
 #include "data_load_3d_manifest.hpp"
+#include "loader_helpers.hpp"
 #include "pcd_reader.hpp"
 #include "ply_reader.hpp"
 
 namespace {
-
-// {"builtin_object_type":"kPointCloud"} / {"builtin_object_type":"kMesh3D"} —
-// PJ4 classifies an ObjectStore topic for rendering by this key (NOT media_class).
-std::string builtinObjectMetadata(PJ::sdk::BuiltinObjectType type) {
-  return std::string(R"({"builtin_object_type":")") + std::string(PJ::sdk::name(type)) + R"("})";
-}
-
-// Lowercased extension including the dot, e.g. ".pcd". Empty if none.
-std::string lowerExtension(const std::string& path) {
-  const size_t slash = path.find_last_of("/\\");
-  const size_t dot = path.find_last_of('.');
-  if (dot == std::string::npos || (slash != std::string::npos && dot < slash)) {
-    return {};
-  }
-  std::string ext = path.substr(dot);
-  std::transform(
-      ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return ext;
-}
-
-// File stem: base name without directory or extension.
-std::string fileStem(const std::string& path) {
-  const size_t slash = path.find_last_of("/\\");
-  const size_t start = (slash == std::string::npos) ? 0 : slash + 1;
-  const size_t dot = path.find_last_of('.');
-  size_t end = (dot == std::string::npos || dot < start) ? path.size() : dot;
-  if (end == start) {  // dotfile like ".pcd" -> use the whole basename, not ""
-    end = path.size();
-  }
-  return path.substr(start, end - start);
-}
 
 class Load3dSource : public PJ::FileSourceBase {
  public:
@@ -87,8 +55,8 @@ class Load3dSource : public PJ::FileSourceBase {
     if (raw.empty()) {
       return PJ::unexpected("file is empty: " + filepath_);
     }
-    const std::string stem = fileStem(filepath_);
-    const std::string ext = lowerExtension(filepath_);
+    const std::string stem = pj3d::fileStem(filepath_);
+    const std::string ext = pj3d::lowerExtension(filepath_);
     PJ::Span<const uint8_t> bytes(raw.data(), raw.size());
 
     if (ext == ".pcd") {
@@ -121,7 +89,7 @@ class Load3dSource : public PJ::FileSourceBase {
       warnNoObjectHost();
       return PJ::okStatus();
     }
-    auto handle = owh->registerTopic(stem, builtinObjectMetadata(type));
+    auto handle = owh->registerTopic(stem, pj3d::builtinObjectMetadata(type));
     if (!handle) {
       return PJ::unexpected(handle.error());
     }
