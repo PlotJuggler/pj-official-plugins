@@ -189,8 +189,11 @@ class FoxgloveImageServer:
                 channel_id = sub.get("channelId")
                 if sub_id is not None and channel_id in CHANNEL_BY_ID:
                     self.clients[websocket][channel_id] = sub_id
-            print(f"    subscribe → channel ids {list(self.clients[websocket].keys())}")
+            import time as _time
+            print(f"\n    SUBSCRIBE → channel ids {list(self.clients[websocket].keys())} at wallclock {_time.strftime('%H:%M:%S')}")
         elif op == "unsubscribe":
+            import time as _time
+            print(f"\n    UNSUBSCRIBE → subscription ids {msg.get('subscriptionIds', [])} at wallclock {_time.strftime('%H:%M:%S')}")
             for sub_id in msg.get("subscriptionIds", []):
                 self.clients[websocket] = {
                     ch_id: s_id
