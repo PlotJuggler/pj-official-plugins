@@ -48,31 +48,25 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
 
     auto visible = visibleTopics();
     std::vector<std::vector<std::string>> rows;
-    std::vector<std::string> ordered_names;
     rows.reserve(visible.size());
-    ordered_names.reserve(visible.size());
     for (const auto& [name, type] : visible) {
       rows.push_back({name, type});
-      ordered_names.push_back(name);
     }
     wd.setTableHeaders("listRosTopics", {"Topic", "Datatype"});
     wd.setTableRows("listRosTopics", rows);
 
-    // Translate the name-keyed selection set into the row indices the host
-    // uses to restore selection on a QTableWidget. Single pass over both
-    // vectors is fine — selections are tiny in practice.
-    std::vector<int> selected_rows;
-    selected_rows.reserve(selected_topics_.size());
+    // Restore selection by first-column text (the topic name), not row index:
+    // the host matches items by text, which is sort-agnostic, so the selection
+    // survives the table's built-in column sorting. Row indices would desync the
+    // moment the user sorts by a different column (the topic vector stays in its
+    // own order while the widget re-orders).
+    std::vector<std::string> selected_names;
+    selected_names.reserve(selected_topics_.size());
     for (const auto& [sel_name, sel_type] : selected_topics_) {
       (void)sel_type;
-      for (std::size_t i = 0; i < ordered_names.size(); ++i) {
-        if (ordered_names[i] == sel_name) {
-          selected_rows.push_back(static_cast<int>(i));
-          break;
-        }
-      }
+      selected_names.push_back(sel_name);
     }
-    wd.setSelectedRows("listRosTopics", selected_rows);
+    wd.setSelectedItems("listRosTopics", selected_names);
 
     if (rows.empty()) {
       wd.setText("labelStatus", "Scanning ROS 2 topics...");

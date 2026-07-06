@@ -117,7 +117,7 @@ Add `setColumnResizeMode` calls next to each picker's existing `setTableHeaders`
 | Picker (objectName) | Column resize layout |
 |---|---|
 | mcap `tableWidget` | 0 Channel name = **Stretch**; 1 Schema, 2 Encoding, 3 Msg Count = **ResizeToContents** |
-| foxglove `topicsList` | 0 Topic Name = **Stretch**; 1 DataType = **ResizeToContents** |
+| foxglove `topicsList` | 0 Topic Name = **Stretch**; 1 DataType, 2 Encoding = **ResizeToContents** (3 cols, set in code) |
 | pj_bridge `topicsList` | 0 Topic Name = **Stretch**; 1 DataType = **ResizeToContents** |
 | ros2 `listRosTopics` | 0 Topic = **Stretch**; 1 Datatype = **ResizeToContents** |
 | webrtc `camerasList` | 0 Camera = **Stretch**; 1 Codec, 2 Resolution = **ResizeToContents** |

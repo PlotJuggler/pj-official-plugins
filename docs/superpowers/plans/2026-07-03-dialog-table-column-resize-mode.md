@@ -109,7 +109,8 @@ design's column-layout table. Bump `SDK_VERSION` + submodule via
 - 0 Channel name = **Stretch**; 1 Schema, 2 Encoding, 3 Msg Count = **ResizeToContents**.
 
 ### C2. foxglove `topicsList` / pj_bridge `topicsList`
-- 0 Topic Name = **Stretch**; 1 DataType = **ResizeToContents**.
+- foxglove (3 cols, set in code): 0 Topic Name = **Stretch**; 1 DataType, 2 Encoding = **ResizeToContents**.
+- pj_bridge (2 cols): 0 Topic Name = **Stretch**; 1 DataType = **ResizeToContents**.
 
 ### C3. ros2 `listRosTopics`
 - 0 Topic = **Stretch**; 1 Datatype = **ResizeToContents**.
