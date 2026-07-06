@@ -379,6 +379,17 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     return true;
   }
 
+  // True when a channel's topic was explicitly selected in the dialog — the
+  // eager floor, always subscribed regardless of host demand.
+  bool isEagerTopic(const std::string& topic) const {
+    for (const auto& sel : selected_channels_) {
+      if (sel.topic == topic) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // Declarative reconcile: desired = dialog-selected eager floor ∪ the
   // host's active set, mapped to supported catalog channels. Newly desired
   // channels get bound + subscribed; no-longer-desired ones unsubscribed
@@ -389,16 +400,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       if (!classifyChannel(ch).supported) {
         continue;
       }
-      bool desired = host_active_.count(ch.topic) > 0;
-      if (!desired) {
-        for (const auto& sel : selected_channels_) {
-          if (sel.topic == ch.topic) {
-            desired = true;
-            break;
-          }
-        }
-      }
-      if (desired) {
+      if (host_active_.count(ch.topic) > 0 || isEagerTopic(ch.topic)) {
         desired_channels.insert(channel_id);
       }
     }
@@ -497,14 +499,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
         }
 
         // Only subscribe to channels that were selected in the dialog
-        bool user_selected = false;
-        for (const auto& sel : selected_channels_) {
-          if (sel.topic == ch.topic) {
-            user_selected = true;
-            break;
-          }
-        }
-        if (!user_selected) {
+        if (!isEagerTopic(ch.topic)) {
           continue;
         }
         if (!classifyChannel(ch).supported) {
