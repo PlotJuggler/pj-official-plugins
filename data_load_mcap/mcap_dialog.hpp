@@ -24,6 +24,33 @@ struct ChannelInfo {
   uint64_t msg_count = 0;
 };
 
+struct AlwaysIncludeRule {
+  std::string schema_name;
+  std::string encoding;
+};
+
+/// Channels whose (schema, encoding) match a rule here are always loaded,
+/// regardless of user selection -- 3D rendering (Scene3D's transform tree)
+/// silently breaks without them. Keyed on message type rather than topic
+/// name because topic naming isn't consistent across producers: Foxglove's
+/// own foxglove.FrameTransform has no fixed topic-name convention the way
+/// ROS fixes /tf (real Foxglove-recorded files use topic names like plain
+/// "tf", no leading slash, or something else entirely). The mechanism here
+/// is generic -- this table is just its (currently two-entry) data.
+const std::vector<AlwaysIncludeRule> kAlwaysIncludeRules = {
+    {"tf2_msgs/msg/TFMessage", "cdr"},
+    {"foxglove.FrameTransform", "protobuf"},
+};
+
+[[maybe_unused]] bool isAlwaysIncluded(const ChannelInfo& ch) {
+  for (const auto& rule : kAlwaysIncludeRules) {
+    if (ch.schema == rule.schema_name && ch.encoding == rule.encoding) {
+      return true;
+    }
+  }
+  return false;
+}
+
 class McapDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 

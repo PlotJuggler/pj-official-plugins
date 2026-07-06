@@ -31,4 +31,40 @@ TEST(McapDialogTest, WidgetDataSelectsRowsByTextNotIndex) {
   EXPECT_FALSE(tbl.contains("selected_rows"));
 }
 
+TEST(AlwaysIncludeRuleTest, MatchesRos2Tf) {
+  ChannelInfo ch;
+  ch.topic = "/tf";
+  ch.schema = "tf2_msgs/msg/TFMessage";
+  ch.encoding = "cdr";
+  ch.msg_count = 10;
+  EXPECT_TRUE(isAlwaysIncluded(ch));
+}
+
+TEST(AlwaysIncludeRuleTest, MatchesFoxgloveFrameTransformUnderAnyTopicName) {
+  ChannelInfo ch;
+  ch.topic = "transforms";  // deliberately not "/tf"
+  ch.schema = "foxglove.FrameTransform";
+  ch.encoding = "protobuf";
+  ch.msg_count = 10;
+  EXPECT_TRUE(isAlwaysIncluded(ch));
+}
+
+TEST(AlwaysIncludeRuleTest, RejectsRightSchemaWrongEncoding) {
+  ChannelInfo ch;
+  ch.topic = "/tf";
+  ch.schema = "tf2_msgs/msg/TFMessage";
+  ch.encoding = "json";
+  ch.msg_count = 10;
+  EXPECT_FALSE(isAlwaysIncluded(ch));
+}
+
+TEST(AlwaysIncludeRuleTest, RejectsRightEncodingWrongSchema) {
+  ChannelInfo ch;
+  ch.topic = "/sensor/value";
+  ch.schema = "std_msgs/Float64";
+  ch.encoding = "cdr";
+  ch.msg_count = 10;
+  EXPECT_FALSE(isAlwaysIncluded(ch));
+}
+
 }  // namespace
