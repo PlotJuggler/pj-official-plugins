@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import asyncio
+import collections
 import json
 import re
 import struct
@@ -81,15 +82,23 @@ def is_latched_channel(ch: dict, extra_latched: set) -> bool:
         return True
     if topic in ("/map", "/robot_description"):
         return True
-    qos = ch.get("metadata", {}).get("offered_qos_profiles", "")
-    # Covers both YAML vocabularies: "durability: 1" (old) and
-    # "durability: transient_local" (jazzy+).
-    return "transient_local" in qos or re.search(r"durability:\s*1\b", qos) is not None
+    qos = ch.get("metadata", {}).get("offered_qos_profiles", "").lower()
+    # Covers both YAML vocabularies: "durability: 1" (old enum) and
+    # "durability: transient_local" (jazzy+). The leading word boundary keeps
+    # "durability: 1" from also matching "max_durability: 1".
+    return "transient_local" in qos or re.search(r"\bdurability:\s*1\b", qos) is not None
 
 
 class FoxgloveMcapPlayer:
     # Cap on the latched-message replay cache per channel.
     _LATCH_CAP = 16
+
+    # Wall-clock seconds above which an inter-message gap is treated as dead air
+    # and skipped (pacing re-anchors to now) instead of slept through. Real bags
+    # log transient_local topics (/tf_static, /map) at open, often tens of
+    # seconds before the data burst; without this the player would sleep through
+    # that whole gap and a client would see nothing after the latched replay.
+    _MAX_IDLE_GAP_S = 1.0
 
     def __init__(self, mcap_path: str, speed: float, loop: bool, extra_latched: set):
         self.mcap_path = mcap_path
@@ -163,9 +172,12 @@ class FoxgloveMcapPlayer:
                 ch_id = sub.get("channelId")
                 if sub_id is not None and ch_id in self.channels:
                     self.clients[websocket][ch_id] = sub_id
-                    # Replay latched messages (tf_static) that streamed past
-                    # before this subscription existed.
-                    for log_time_ns, data in self.latched.get(ch_id, []):
+                    # Replay latched messages (tf_static, /map) that streamed
+                    # past before this subscription existed. Snapshot the deque
+                    # first: play_loop may append to it at the await below, and
+                    # we only want messages latched up to now, not ones that
+                    # arrive mid-replay.
+                    for log_time_ns, data in list(self.latched.get(ch_id, ())):
                         try:
                             await websocket.send(build_binary_frame(sub_id, log_time_ns, data))
                         except websockets.exceptions.ConnectionClosed:
@@ -188,6 +200,13 @@ class FoxgloveMcapPlayer:
             # at once — tens of GiB for a real robot bag — and delays playback
             # until the whole file has been read. Memory now stays bounded by
             # one chunk, and the first message plays immediately.
+            # Don't consume the file until a client is connected — otherwise the
+            # single pass streams past (advancing the generator) with nobody
+            # listening, and a client that connects a moment later gets only
+            # advertisements + latched replay, never the live data.
+            while not self.clients:
+                await asyncio.sleep(0.05)
+
             first_ts = None
             wall_start = time.monotonic()
 
@@ -196,12 +215,17 @@ class FoxgloveMcapPlayer:
                     first_ts = log_time_ns
                     wall_start = time.monotonic()
 
-                # Latched channels (tf_static, /map, ...): keep every message
-                # so a late subscriber can be caught up (see _on_text "subscribe").
+                # Latched channels (tf_static, /map, ...): keep the most recent
+                # messages so a late subscriber can be caught up (see _on_text
+                # "subscribe"). A bounded deque keeps the LATEST — transient_local
+                # semantics are last-value-wins, so a re-latched /map replays its
+                # newest state, not its first.
                 if ch_id in self.latched_channel_ids:
-                    cache = self.latched.setdefault(ch_id, [])
-                    if len(cache) < self._LATCH_CAP:
-                        cache.append((log_time_ns, data))
+                    cache = self.latched.get(ch_id)
+                    if cache is None:
+                        cache = collections.deque(maxlen=self._LATCH_CAP)
+                        self.latched[ch_id] = cache
+                    cache.append((log_time_ns, data))
 
                 if not self.clients:
                     await asyncio.sleep(0.01)
@@ -212,7 +236,13 @@ class FoxgloveMcapPlayer:
                     bag_elapsed = (log_time_ns - first_ts) / 1e9
                     wall_elapsed = time.monotonic() - wall_start
                     wait = bag_elapsed / self.speed - wall_elapsed
-                    if wait > 0:
+                    if wait > self._MAX_IDLE_GAP_S:
+                        # Long idle gap (a transient_local topic logged at open,
+                        # a recording pause): re-anchor pacing to now so the next
+                        # message streams immediately instead of stalling.
+                        first_ts = log_time_ns
+                        wall_start = time.monotonic()
+                    elif wait > 0:
                         await asyncio.sleep(wait)
 
                 # Send to all subscribed clients, with the ORIGINAL log time.
