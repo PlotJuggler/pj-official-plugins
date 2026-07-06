@@ -459,6 +459,106 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
   return PJ::okStatus();
 }
 
+namespace {
+
+// The subset of schema leaves whose flattened columns are fully determined by
+// the schema alone, typed exactly as variantToValueRef will emit them. Arrays
+// (fixed AND dynamic) are omitted — their columns appear on first data, which
+// the manifest contract allows. Constants never flatten.
+void collectManifestColumns(
+    const RosMsgParser::FieldTreeNode* node, const std::string& prefix, std::vector<PJ::sdk::ColumnSpec>& out) {
+  using BT = RosMsgParser::BuiltinType;
+  for (const auto& child : node->children()) {
+    const RosMsgParser::ROSField* field = child.value();
+    if (field == nullptr || field->isConstant() || field->isArray()) {
+      continue;
+    }
+    const std::string path = prefix + "/" + field->name();
+    const BT type_id = field->type().typeID();
+    if (type_id == BT::OTHER) {
+      collectManifestColumns(&child, path, out);
+      continue;
+    }
+    PJ::PrimitiveType column_type = PJ::PrimitiveType::kFloat64;
+    switch (type_id) {
+      case BT::BOOL:
+        column_type = PJ::PrimitiveType::kBool;
+        break;
+      case BT::CHAR:
+      case BT::INT8:
+        column_type = PJ::PrimitiveType::kInt8;
+        break;
+      case BT::BYTE:
+      case BT::UINT8:
+        column_type = PJ::PrimitiveType::kUint8;
+        break;
+      case BT::INT16:
+        column_type = PJ::PrimitiveType::kInt16;
+        break;
+      case BT::UINT16:
+        column_type = PJ::PrimitiveType::kUint16;
+        break;
+      case BT::INT32:
+        column_type = PJ::PrimitiveType::kInt32;
+        break;
+      case BT::UINT32:
+        column_type = PJ::PrimitiveType::kUint32;
+        break;
+      case BT::INT64:
+        column_type = PJ::PrimitiveType::kInt64;
+        break;
+      case BT::UINT64:
+        column_type = PJ::PrimitiveType::kUint64;
+        break;
+      case BT::FLOAT32:
+        column_type = PJ::PrimitiveType::kFloat32;
+        break;
+      case BT::FLOAT64:
+      case BT::TIME:      // variantToValueRef converts to double
+      case BT::DURATION:  // variantToValueRef converts to double
+        column_type = PJ::PrimitiveType::kFloat64;
+        break;
+      case BT::STRING:
+        column_type = PJ::PrimitiveType::kString;
+        break;
+      default:
+        continue;  // Unknown builtin — leave it to first-data discovery.
+    }
+    out.push_back({path, column_type});
+  }
+}
+
+}  // namespace
+
+PJ::Expected<std::vector<PJ::sdk::ColumnSpec>> RosParser::describeSchemaColumns(
+    std::string_view type_name, PJ::Span<const uint8_t> schema) const {
+  // Only .msg-style generic flattening is pre-describable; specialized
+  // builtin-object handlers (images, pointclouds, markers) produce their
+  // scalar side dynamically and their topics are visible as object topics
+  // anyway. classifySchema-style: query the catalog and stand down for any
+  // schema with a specialized scalar handler.
+  const std::string msg_type = normalizedMessageType(type_name, schema_format_);
+  if (catalog().find(msg_type) != catalog().end()) {
+    return PJ::unexpected(std::string("specialized handler — no static column manifest for ") + msg_type);
+  }
+
+  const std::string schema_str(reinterpret_cast<const char*>(schema.data()), schema.size());
+  std::optional<RosMsgParser::Parser> schema_parser;
+  try {
+    schema_parser.emplace("", RosMsgParser::ROSType(msg_type), schema_str, schema_format_);
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("cannot pre-describe schema for ") + msg_type + ": " + e.what());
+  }
+
+  std::vector<PJ::sdk::ColumnSpec> columns;
+  const auto& message_schema = schema_parser->getSchema();
+  if (message_schema == nullptr || message_schema->field_tree.croot() == nullptr) {
+    return PJ::unexpected(std::string("empty schema tree for ") + msg_type);
+  }
+  collectManifestColumns(message_schema->field_tree.croot(), "", columns);
+  return columns;
+}
+
 std::string RosParser::saveConfig() const {
   nlohmann::json cfg;
   pj::array_policy::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), !discard_large_arrays_);

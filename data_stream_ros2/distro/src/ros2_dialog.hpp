@@ -91,7 +91,11 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     // companion deselect-all shortcut to the button (PJ3 parity).
     wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
 
-    wd.setOkEnabled(!selected_topics_.empty());
+    // Selecting topics is optional: selected ones are always subscribed (the
+    // eager floor); on a lazy-subscription host the rest of the graph
+    // subscribes on demand as curves are dropped. On an older host the
+    // source still errors out when the selection is empty.
+    wd.setOkEnabled(true);
     return wd.toJson();
   }
 

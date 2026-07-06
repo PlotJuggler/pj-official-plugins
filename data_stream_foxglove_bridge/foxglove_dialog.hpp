@@ -106,8 +106,11 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
       wd.setSelectedItems("topicsList", selected_topic_names_);
     }
 
-    // OK button: enabled only when connected and channels are selected
-    wd.setOkEnabled(connected_ && !selected_topic_names_.empty());
+    // OK button: enabled when connected. Selecting channels is optional —
+    // selected ones are always subscribed (the eager floor); on a
+    // lazy-subscription host the remaining channels subscribe on demand as
+    // curves are dropped.
+    wd.setOkEnabled(connected_.load());
 
     return wd.toJson();
   }
@@ -188,6 +191,13 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   void onAccepted(std::string_view /*json*/) override {
     // Do NOT disconnect — the source's onStart() will steal the socket.
     snapshotSelectedChannels();
+    // Snapshot the FULL catalog too: the stolen socket never re-receives the
+    // advertise burst, and the lazy-subscription source advertises all
+    // channels to the host from this snapshot (config key "all_channels").
+    {
+      std::lock_guard<std::mutex> lock(channels_mutex_);
+      all_channels_snapshot_ = channels_;
+    }
   }
   void onRejected() override {
     disconnect();
@@ -200,19 +210,28 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     pj::array_policy::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), clamp_large_arrays_);
     cfg["use_timestamp"] = use_timestamp_;
 
-    // Use the snapshot — channels_ may be cleared by disconnect()
-    nlohmann::json channels_json = nlohmann::json::array();
-    for (const auto& ch : selected_channels_snapshot_) {
-      channels_json.push_back({
+    // Use the snapshots — channels_ may be cleared by disconnect()
+    const auto to_json = [](const DiscoveredChannel& ch) {
+      return nlohmann::json{
           {"id", ch.id},
           {"topic", ch.topic},
           {"encoding", ch.encoding},
           {"schema_name", ch.schema_name},
           {"schema", ch.schema},
           {"schema_encoding", ch.schema_encoding},
-      });
+      };
+    };
+    nlohmann::json channels_json = nlohmann::json::array();
+    for (const auto& ch : selected_channels_snapshot_) {
+      channels_json.push_back(to_json(ch));
     }
     cfg["channels"] = channels_json;
+
+    nlohmann::json all_channels_json = nlohmann::json::array();
+    for (const auto& ch : all_channels_snapshot_) {
+      all_channels_json.push_back(to_json(ch));
+    }
+    cfg["all_channels"] = all_channels_json;
 
     return cfg.dump();
   }
@@ -229,21 +248,32 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     clamp_large_arrays_ = array_limit.clamp();
     use_timestamp_ = cfg.value("use_timestamp", false);
 
-    // Restore previously selected topic names and snapshot
+    // Restore previously selected topic names and snapshots
+    const auto from_json = [](const nlohmann::json& ch_json) {
+      DiscoveredChannel ch;
+      ch.id = ch_json.value("id", uint64_t{0});
+      ch.topic = ch_json.value("topic", std::string{});
+      ch.encoding = ch_json.value("encoding", std::string{});
+      ch.schema_name = ch_json.value("schema_name", std::string{});
+      ch.schema = ch_json.value("schema", std::string{});
+      ch.schema_encoding = ch_json.value("schema_encoding", std::string{});
+      return ch;
+    };
     if (cfg.contains("channels") && cfg["channels"].is_array()) {
       selected_topic_names_.clear();
       selected_channels_snapshot_.clear();
       for (const auto& ch_json : cfg["channels"]) {
         if (ch_json.contains("topic") && ch_json["topic"].is_string()) {
           selected_topic_names_.push_back(ch_json["topic"].get<std::string>());
-          DiscoveredChannel ch;
-          ch.id = ch_json.value("id", uint64_t{0});
-          ch.topic = ch_json.value("topic", std::string{});
-          ch.encoding = ch_json.value("encoding", std::string{});
-          ch.schema_name = ch_json.value("schema_name", std::string{});
-          ch.schema = ch_json.value("schema", std::string{});
-          ch.schema_encoding = ch_json.value("schema_encoding", std::string{});
-          selected_channels_snapshot_.push_back(std::move(ch));
+          selected_channels_snapshot_.push_back(from_json(ch_json));
+        }
+      }
+    }
+    if (cfg.contains("all_channels") && cfg["all_channels"].is_array()) {
+      all_channels_snapshot_.clear();
+      for (const auto& ch_json : cfg["all_channels"]) {
+        if (ch_json.contains("topic") && ch_json["topic"].is_string()) {
+          all_channels_snapshot_.push_back(from_json(ch_json));
         }
       }
     }
@@ -355,6 +385,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   std::vector<DiscoveredChannel> channels_;
   std::vector<std::string> selected_topic_names_;
   std::vector<DiscoveredChannel> selected_channels_snapshot_;
+  std::vector<DiscoveredChannel> all_channels_snapshot_;
   bool channels_dirty_ = true;
   std::atomic<bool> tick_dirty_ = false;
 };

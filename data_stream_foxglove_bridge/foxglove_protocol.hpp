@@ -2,7 +2,10 @@
 
 #include <cstdint>
 #include <cstring>
+#include <map>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace PJ::FoxgloveProtocol {
@@ -113,6 +116,35 @@ inline ChannelRoute classifyChannel(const ChannelInfo& ch) {
 /// Convenience predicate retained for call sites that only need yes/no.
 inline bool isUsableChannel(const ChannelInfo& ch) {
   return classifyChannel(ch).supported;
+}
+
+/// Result of one declarative subscription reconcile (lazy subscription).
+struct SubscriptionOps {
+  std::vector<std::pair<uint32_t, uint64_t>> to_subscribe;  ///< (fresh sub_id, channel_id)
+  std::vector<uint32_t> to_unsubscribe;                     ///< sub ids to drop
+};
+
+/// Pure diff between the live subscription map (sub_id -> channel_id) and the
+/// DESIRED channel-id set: channels newly desired get fresh sub ids from
+/// `next_sub_id`; subscriptions whose channel is no longer desired are
+/// dropped. Idempotent: an empty diff yields empty ops.
+inline SubscriptionOps computeSubscriptionOps(
+    const std::map<uint32_t, uint64_t>& current, const std::set<uint64_t>& desired_channels, uint32_t& next_sub_id) {
+  SubscriptionOps ops;
+  std::set<uint64_t> covered;
+  for (const auto& [sub_id, channel_id] : current) {
+    if (desired_channels.count(channel_id) == 0) {
+      ops.to_unsubscribe.push_back(sub_id);
+    } else {
+      covered.insert(channel_id);
+    }
+  }
+  for (const uint64_t channel_id : desired_channels) {
+    if (covered.count(channel_id) == 0) {
+      ops.to_subscribe.emplace_back(next_sub_id++, channel_id);
+    }
+  }
+  return ops;
 }
 
 }  // namespace PJ::FoxgloveProtocol

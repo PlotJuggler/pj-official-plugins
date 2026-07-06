@@ -159,6 +159,8 @@ class RosParser : public PJ::MessageParserPluginBase {
   std::string saveConfig() const override;
   PJ::Status loadConfig(std::string_view config_json) override;
   PJ::Status parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> payload) override;
+  PJ::Expected<std::vector<PJ::sdk::ColumnSpec>> describeSchemaColumns(
+      std::string_view type_name, PJ::Span<const uint8_t> schema) const override;
 
   // ----- Class-level schema catalog -----
   //

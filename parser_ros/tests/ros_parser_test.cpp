@@ -167,6 +167,57 @@ TEST(RosParserTest, SimpleScalarMessage) {
   EXPECT_TRUE(found_active);
 }
 
+TEST(RosParserTest, DescribeSchemaColumnsMatchesParseEmission) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("pkg/Nested", kNestedDef));
+
+  const std::string def(kNestedDef);
+  std::string manifest_json;
+  auto status = f.handle.describeSchemaColumns(
+      "pkg/Nested", PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(def.data()), def.size()), manifest_json);
+  ASSERT_TRUE(status) << status.error();
+
+  auto manifest = nlohmann::json::parse(manifest_json);
+  ASSERT_TRUE(manifest.is_array());
+  ASSERT_FALSE(manifest.empty());
+
+  // Parse one fully-populated message and compare STRICTLY: every manifest
+  // column must be emitted with the same name and type. (The reverse need
+  // not hold — arrays and derived RPY columns are legitimately absent from
+  // the manifest and appear on first data.)
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(1234)));
+    enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(static_cast<uint32_t>(567)));
+    enc.serializeString("map");
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(1.5));
+  });
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+
+  for (const auto& entry : manifest) {
+    const auto path = entry["path"].get<std::string>();
+    const auto type = PJ::sdk::primitiveTypeFromJsonName(entry["type"].get<std::string>());
+    ASSERT_TRUE(type.has_value()) << path;
+    const auto* field = PJ::sdk::testing::ParserWriteRecorder::findField(row, path);
+    ASSERT_NE(field, nullptr) << "manifest column not emitted by parse(): " << path;
+    EXPECT_EQ(field->type, *type) << path;
+  }
+}
+
+TEST(RosParserTest, DescribeSchemaColumnsStandsDownForSpecializedSchemas) {
+  RosParserFixture f;
+  f.setUp();
+  const std::string def = "byte[] data\n";
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/CompressedImage", def));
+  std::string manifest_json;
+  auto status = f.handle.describeSchemaColumns(
+      "sensor_msgs/CompressedImage", PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(def.data()), def.size()),
+      manifest_json);
+  EXPECT_FALSE(status);
+}
+
 TEST(RosParserTest, NestedMessage) {
   RosParserFixture f;
   f.setUp();

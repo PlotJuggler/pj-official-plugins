@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -26,9 +27,12 @@
 #include <rclcpp/generic_subscription.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/serialized_message.hpp>
+#include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -55,7 +59,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
   }
 
   uint64_t extraCapabilities() const override {
-    return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;
+    return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog | PJ::kCapabilityLazySubscription;
   }
 
   std::string saveConfig() const override {
@@ -96,10 +100,6 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
         }
       }
     }
-    if (selected_topics_.empty()) {
-      return PJ::unexpected("no ROS 2 topics selected");
-    }
-
     // Stash the parser_config sub-object as a string for every ensureBinding
     // call. parser_ros::loadConfig accepts unknown keys silently, so unknown
     // future options pass through harmlessly.
@@ -121,20 +121,20 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
       executor_ = std::make_unique<rclcpp::executors::MultiThreadedExecutor>(exec_opts, 2);
       executor_->add_node(node_);
 
+      // Lazy mode: advertise the whole ROS graph to the host without
+      // subscribing; the host drives per-topic subscriptions from consumer
+      // demand, with the dialog selection as an always-on eager floor. On a
+      // pre-0.15 host the advertise fails with a distinct error and we keep
+      // today's eager subscribe-selected behavior — where an empty selection
+      // remains an error.
+      lazy_mode_ = advertiseGraphToHost(/*force=*/true);
+      if (!lazy_mode_ && selected_topics_.empty()) {
+        teardown();
+        return PJ::unexpected("no ROS 2 topics selected");
+      }
+
       for (const auto& [topic, type] : selected_topics_) {
-        const auto qos = ros2_streamer::adaptQosWaitingForPublishers(*node_, topic);
-        if (node_->count_publishers(topic) == 0) {
-          runtimeHost().reportMessage(
-              PJ::DataSourceMessageLevel::kWarning,
-              "No publishers visible for " + topic + " within discovery timeout — using default QoS");
-        }
-
-        auto callback = [this, topic](std::shared_ptr<rclcpp::SerializedMessage> msg) {
-          enqueueMessage(topic, std::move(msg));
-        };
-
-        auto subscription = node_->create_generic_subscription(topic, type, qos, callback);
-        subscriptions_.emplace(topic, std::move(subscription));
+        subscribeTopic(topic, type);
       }
 
       running_ = true;
@@ -151,7 +151,29 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
     return PJ::okStatus();
   }
 
+  PJ::Status onActiveTopicsChanged(PJ::Span<const std::string_view> active_topics) override {
+    host_active_.clear();
+    for (const std::string_view name : active_topics) {
+      host_active_.insert(std::string(name));
+    }
+    if (lazy_mode_ && node_ != nullptr) {
+      reconcileSubscriptions();
+    }
+    return PJ::okStatus();
+  }
+
   PJ::Status onPoll() override {
+    // Lazy mode: refresh graph discovery ~1 Hz (the dialog's cadence). A
+    // changed graph re-advertises the full topic set to the host and
+    // reconciles — a topic the host already wants (e.g. a restored layout
+    // curve) subscribes the moment its publisher appears.
+    if (lazy_mode_ && node_ != nullptr && ++discovery_tick_ >= kDiscoveryPollTicks) {
+      discovery_tick_ = 0;
+      if (advertiseGraphToHost(/*force=*/false)) {
+        reconcileSubscriptions();
+      }
+    }
+
     std::queue<PendingMessage> batch;
     {
       std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -208,33 +230,41 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
     message_queue_.push(std::move(pending));
   }
 
-  PJ::ParserBindingHandle* ensureBinding(const std::string& topic) {
-    auto it = binding_cache_.find(topic);
-    if (it != binding_cache_.end()) {
-      return &it->second;
-    }
-
-    std::string type_name;
+  // Message type for a topic: the dialog selection wins (it may pin one of
+  // several advertised types), else the discovered graph.
+  std::string typeFor(const std::string& topic) const {
     for (const auto& [t, ty] : selected_topics_) {
       if (t == topic) {
-        type_name = ty;
-        break;
+        return ty;
       }
     }
-    if (type_name.empty()) {
-      return nullptr;
+    if (auto it = advertised_types_.find(topic); it != advertised_types_.end()) {
+      return it->second;
     }
+    return {};
+  }
 
-    std::string schema;
+  // Cached buildRos2Schema per type (typesupport introspection is not cheap
+  // and the advertise path touches every graph type). nullptr when the type's
+  // schema cannot be built; reported once per type. Cache entries are stable
+  // references for the life of the source (unordered_map never invalidates
+  // element references), so advertise spans can point straight into it.
+  const std::string* schemaFor(const std::string& type_name) {
+    if (auto it = schema_cache_.find(type_name); it != schema_cache_.end()) {
+      return it->second.empty() ? nullptr : &it->second;
+    }
     try {
-      schema = ros2_streamer::buildRos2Schema(type_name);
+      auto [it, _] = schema_cache_.emplace(type_name, ros2_streamer::buildRos2Schema(type_name));
+      return &it->second;
     } catch (const std::exception& e) {
+      schema_cache_.emplace(type_name, std::string{});
       runtimeHost().reportMessage(
-          PJ::DataSourceMessageLevel::kWarning,
-          "Failed to build schema for " + topic + " (" + type_name + "): " + e.what());
+          PJ::DataSourceMessageLevel::kWarning, "Failed to build schema for type " + type_name + ": " + e.what());
       return nullptr;
     }
+  }
 
+  std::string buildParserConfigString() const {
     nlohmann::json parser_config = nlohmann::json::object();
     const std::string& base_parser_config =
         !parser_config_override_.empty() ? parser_config_override_ : parser_config_json_;
@@ -245,14 +275,142 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
       }
     }
     parser_config["schema_encoding"] = "ros2msg";
-    const std::string parser_config_str = parser_config.dump();
+    return parser_config.dump();
+  }
+
+  // Query the graph and, when it changed (or `force`), advertise the FULL
+  // topic set to the host. Returns true iff an advertise was sent and the
+  // host accepted it — false both for "no change" and for "host predates
+  // lazy subscription" (onStart's `force` call is what distinguishes the
+  // latter and decides lazy_mode_).
+  bool advertiseGraphToHost(bool force) {
+    std::map<std::string, std::string> next_types;
+    try {
+      for (const auto& [topic, types] : node_->get_topic_names_and_types()) {
+        if (!types.empty()) {
+          next_types.emplace(topic, types.front());
+        }
+      }
+    } catch (const std::exception& e) {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kWarning, std::string("ROS 2 graph discovery failed: ") + e.what());
+      return false;
+    }
+    if (!force && next_types == advertised_types_) {
+      return false;
+    }
+    advertised_types_ = std::move(next_types);
+
+    std::vector<PJ::ParserBindingRequest> requests;
+    std::vector<std::string> config_storage;
+    requests.reserve(advertised_types_.size());
+    config_storage.reserve(advertised_types_.size());
+    for (const auto& [topic, type] : advertised_types_) {
+      const std::string* schema = schemaFor(type);
+      if (schema == nullptr) {
+        continue;
+      }
+      config_storage.push_back(buildParserConfigString());
+      requests.push_back(
+          PJ::ParserBindingRequest{
+              .topic_name = topic,
+              .parser_encoding = "ros2msg",
+              .type_name = type,
+              .schema = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(schema->data()), schema->size()),
+              .parser_config_json = config_storage.back(),
+          });
+    }
+
+    auto status =
+        runtimeHost().setAdvertisedTopics(PJ::Span<const PJ::ParserBindingRequest>(requests.data(), requests.size()));
+    if (!status) {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kInfo, "Lazy subscription unavailable (" + status.error() +
+                                                 ") — falling back to eager subscription of selected topics");
+      return false;
+    }
+    return true;
+  }
+
+  // Create one GenericSubscription (poll/start thread). Failures are
+  // reported, not fatal — the topic simply produces nothing.
+  void subscribeTopic(const std::string& topic, const std::string& type) {
+    if (subscriptions_.count(topic) != 0) {
+      return;
+    }
+    try {
+      const auto qos = ros2_streamer::adaptQosWaitingForPublishers(*node_, topic);
+      if (node_->count_publishers(topic) == 0) {
+        runtimeHost().reportMessage(
+            PJ::DataSourceMessageLevel::kWarning,
+            "No publishers visible for " + topic + " within discovery timeout — using default QoS");
+      }
+      auto callback = [this, topic](std::shared_ptr<rclcpp::SerializedMessage> msg) {
+        enqueueMessage(topic, std::move(msg));
+      };
+      subscriptions_.emplace(topic, node_->create_generic_subscription(topic, type, qos, callback));
+    } catch (const std::exception& e) {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kWarning, "Failed to subscribe " + topic + ": " + e.what());
+    }
+  }
+
+  // Declarative reconcile: desired = dialog-selected eager floor ∪ the
+  // host's active set, limited to currently-advertised topics. Dropping a
+  // GenericSubscription genuinely stops DDS delivery — unsubscribed topics
+  // cost zero on the wire.
+  void reconcileSubscriptions() {
+    std::set<std::string> desired;
+    for (const auto& [topic, type] : selected_topics_) {
+      desired.insert(topic);
+    }
+    for (const std::string& topic : host_active_) {
+      if (advertised_types_.count(topic) != 0) {
+        desired.insert(topic);
+      }
+    }
+
+    for (auto it = subscriptions_.begin(); it != subscriptions_.end();) {
+      if (desired.count(it->first) == 0) {
+        it = subscriptions_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    for (const std::string& topic : desired) {
+      if (subscriptions_.count(topic) != 0) {
+        continue;
+      }
+      const std::string type = typeFor(topic);
+      if (type.empty()) {
+        continue;  // Not currently advertised — subscribes when it appears.
+      }
+      subscribeTopic(topic, type);
+    }
+  }
+
+  PJ::ParserBindingHandle* ensureBinding(const std::string& topic) {
+    auto it = binding_cache_.find(topic);
+    if (it != binding_cache_.end()) {
+      return &it->second;
+    }
+
+    const std::string type_name = typeFor(topic);
+    if (type_name.empty()) {
+      return nullptr;
+    }
+
+    const std::string* schema = schemaFor(type_name);
+    if (schema == nullptr) {
+      return nullptr;
+    }
 
     auto binding = runtimeHost().ensureParserBinding({
         .topic_name = topic,
         .parser_encoding = "ros2msg",
         .type_name = type_name,
-        .schema = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(schema.data()), schema.size()),
-        .parser_config_json = parser_config_str,
+        .schema = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(schema->data()), schema->size()),
+        .parser_config_json = buildParserConfigString(),
     });
     if (!binding) {
       runtimeHost().reportMessage(
@@ -284,6 +442,11 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
       context_.reset();
     }
     binding_cache_.clear();
+    advertised_types_.clear();
+    schema_cache_.clear();
+    host_active_.clear();
+    lazy_mode_ = false;
+    discovery_tick_ = 0;
     {
       std::lock_guard<std::mutex> lock(queue_mutex_);
       std::queue<PendingMessage> empty;
@@ -291,9 +454,19 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
     }
   }
 
+  // ~1 s at the host's 50 ms poll cadence — matches the dialog's discovery rate.
+  static constexpr int kDiscoveryPollTicks = 20;
+
   Ros2Dialog dialog_;
   std::vector<std::pair<std::string, std::string>> selected_topics_;
   std::string parser_config_json_;
+
+  // Lazy subscription state — poll/start thread only (extension contract).
+  std::map<std::string, std::string> advertised_types_;        // topic -> first advertised type
+  std::unordered_map<std::string, std::string> schema_cache_;  // type -> schema ("" = unbuildable)
+  std::set<std::string> host_active_;
+  bool lazy_mode_ = false;
+  int discovery_tick_ = 0;
 
   std::shared_ptr<rclcpp::Context> context_;
   std::shared_ptr<rclcpp::Node> node_;

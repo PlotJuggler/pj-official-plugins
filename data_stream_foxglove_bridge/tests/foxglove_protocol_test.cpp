@@ -245,4 +245,41 @@ TEST(Base64Test, BinarySafe) {
   EXPECT_EQ(static_cast<uint8_t>(decoded[3]), 0x00);
 }
 
+// --- computeSubscriptionOps (lazy-subscription reconcile diff) ---
+
+TEST(SubscriptionOpsTest, EmptyToDesiredSubscribesAll) {
+  uint32_t next_id = 1;
+  const auto ops = computeSubscriptionOps({}, {10, 20}, next_id);
+  ASSERT_EQ(ops.to_subscribe.size(), 2u);
+  EXPECT_TRUE(ops.to_unsubscribe.empty());
+  EXPECT_EQ(ops.to_subscribe[0].first, 1u);
+  EXPECT_EQ(ops.to_subscribe[1].first, 2u);
+  EXPECT_EQ(next_id, 3u);
+}
+
+TEST(SubscriptionOpsTest, NoChangeYieldsEmptyOps) {
+  uint32_t next_id = 5;
+  const auto ops = computeSubscriptionOps({{1, 10}, {2, 20}}, {10, 20}, next_id);
+  EXPECT_TRUE(ops.to_subscribe.empty());
+  EXPECT_TRUE(ops.to_unsubscribe.empty());
+  EXPECT_EQ(next_id, 5u);
+}
+
+TEST(SubscriptionOpsTest, MixedAddAndRemove) {
+  uint32_t next_id = 3;
+  // Subscribed to 10 and 20; host now wants 20 and 30.
+  const auto ops = computeSubscriptionOps({{1, 10}, {2, 20}}, {20, 30}, next_id);
+  ASSERT_EQ(ops.to_unsubscribe.size(), 1u);
+  EXPECT_EQ(ops.to_unsubscribe[0], 1u);
+  ASSERT_EQ(ops.to_subscribe.size(), 1u);
+  EXPECT_EQ(ops.to_subscribe[0], (std::pair<uint32_t, uint64_t>{3u, 30u}));
+}
+
+TEST(SubscriptionOpsTest, DesiredEmptyUnsubscribesAll) {
+  uint32_t next_id = 7;
+  const auto ops = computeSubscriptionOps({{1, 10}, {2, 20}}, {}, next_id);
+  EXPECT_TRUE(ops.to_subscribe.empty());
+  ASSERT_EQ(ops.to_unsubscribe.size(), 2u);
+}
+
 }  // namespace
