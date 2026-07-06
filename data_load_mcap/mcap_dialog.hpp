@@ -92,7 +92,7 @@ class McapDialog : public PJ::DialogPluginTyped {
     wd.setTableHeaders("tableWidget", headers);
 
     std::vector<std::vector<std::string>> rows;
-    std::vector<int> selected_row_indices;
+    std::vector<std::string> selected_topic_names;
     std::vector<int> disabled_row_indices;
     rows.reserve(filtered.size());
 
@@ -100,7 +100,7 @@ class McapDialog : public PJ::DialogPluginTyped {
       const auto& ch = *filtered[i];
       rows.push_back({ch.topic, ch.schema, ch.encoding, std::to_string(ch.msg_count)});
       if (selected_topics_.count(ch.topic) > 0) {
-        selected_row_indices.push_back(static_cast<int>(i));
+        selected_topic_names.push_back(ch.topic);
       }
       if (ch.msg_count == 0) {
         disabled_row_indices.push_back(static_cast<int>(i));
@@ -108,7 +108,10 @@ class McapDialog : public PJ::DialogPluginTyped {
     }
     wd.setTableRows("tableWidget", rows);
     wd.setDisabledRows("tableWidget", disabled_row_indices);
-    wd.setSelectedRows("tableWidget", selected_row_indices);
+    // Restore selection by first-column text (the topic name), not row index:
+    // the host matches items by text, which is sort-agnostic, so the selection
+    // survives the table's built-in column sorting (sortingEnabled=true).
+    wd.setSelectedItems("tableWidget", selected_topic_names);
 
     wd.setShortcut("btnSelectAll", "Ctrl+A");
     wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
