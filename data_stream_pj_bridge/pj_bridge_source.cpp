@@ -498,9 +498,13 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       return;
     }
 
-    const auto status = json.value("status", std::string{});
-
-    if (json.contains("schemas") && (status == "success" || status == "partial_success")) {
+    // Any response carrying "schemas" is a subscribe response — INCLUDING the
+    // all-failed shape (status "error" + ALL_SUBSCRIPTIONS_FAILED, schemas:{}),
+    // whose failures must still strip applied_, or the rejected topics stay
+    // "applied" forever and are never retried. Binding is gated on applied_
+    // membership and failures on staleness, so processing is safe for every
+    // status.
+    if (json.contains("schemas")) {
       handleSubscribeResponse(json);
       return;
     }
