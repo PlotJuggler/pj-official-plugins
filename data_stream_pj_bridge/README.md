@@ -89,6 +89,11 @@ channel metadata when present, a name heuristic otherwise, plus the players'
 
 ## Test scripts
 
+> The mcap player defaults to a SINGLE pass (looping rewinds bag time,
+> which live consumers see as non-monotonic). Run selftest data-flow checks
+> against it with `--loop`, or use a bag longer than the check run.
+
+
 `test_scripts/` holds standalone Python servers that speak the PJ Bridge wire
 protocol so the plugin (and the self-test below) can be exercised without a real
 ROS/DDS bridge. Their JSON control plane mirrors the **production** server

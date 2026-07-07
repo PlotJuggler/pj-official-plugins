@@ -176,9 +176,10 @@ def build_binary_frame(messages: list) -> bytes:
 
 
 class PjBridgeMcapPlayer:
-    def __init__(self, mcap_path: str, speed: float, extra_latched: frozenset = frozenset()):
+    def __init__(self, mcap_path: str, speed: float, loop: bool = False, extra_latched: frozenset = frozenset()):
         self.mcap_path = mcap_path
         self.speed = speed
+        self.loop = loop
         self.channels = load_mcap_metadata(mcap_path, extra_latched)
         latch_topics = {ch["name"] for ch in self.channels.values() if ch["latched"]}
         self.latched = load_latched_messages(mcap_path, latch_topics)
@@ -311,6 +312,11 @@ class PjBridgeMcapPlayer:
         while True:
             loop_count += 1
             print(f"\n→ Loop {loop_count} — reading {Path(self.mcap_path).name}")
+            if loop_count > 1:
+                # Opt-in only: replaying rewinds the ORIGINAL bag timestamps to
+                # the start, which live consumers see as non-monotonic time —
+                # fine for protocol tests, wrong for TF/3D rendering.
+                print("   (looping rewinds bag time — non-monotonic for live consumers)")
 
             # STREAM the bag through a bounded producer thread — never
             # materialize it (list(read_messages(...)) on a 17 GB bag OOM-killed
@@ -383,6 +389,17 @@ class PjBridgeMcapPlayer:
                 await asyncio.sleep(1.0)
                 continue
 
+            if not self.loop:
+                # Single pass by default (foxglove-player parity): keep SERVING
+                # (control plane + latched replay stay live) but stop the data
+                # stream — looping would rewind bag time (see above). The
+                # notice below is deliberately loud: a quiet wire here has
+                # repeatedly been mistaken for a client bug.
+                print(f"\n■ Bag finished ({messages_seen} msgs) — data stream ended.")
+                print("  Restart the player to replay, or pass --loop for wrap-around replay.")
+                while True:
+                    await asyncio.sleep(3600)
+
             print(f"    loop {loop_count} done, restarting...")
 
     async def _send_bucket(self, bucket: list):
@@ -403,8 +420,9 @@ class PjBridgeMcapPlayer:
                 pass
 
 
-async def main(mcap_path: str, host: str, port: int, speed: float, extra_latched: frozenset = frozenset()):
-    player = PjBridgeMcapPlayer(mcap_path, speed, extra_latched)
+async def main(mcap_path: str, host: str, port: int, speed: float, loop: bool = False,
+               extra_latched: frozenset = frozenset()):
+    player = PjBridgeMcapPlayer(mcap_path, speed, loop, extra_latched)
     topics = [ch["name"] for ch in player.channels.values()]
     print(f"PJ Bridge MCAP player — {Path(mcap_path).name}")
     print(f"Listening on ws://{host}:{port}")
@@ -421,6 +439,8 @@ if __name__ == "__main__":
     parser.add_argument("mcap", help="Path to MCAP file")
     parser.add_argument("--host", default=HOST)
     parser.add_argument("--port", type=int, default=PORT)
+    parser.add_argument("--loop", action="store_true",
+                        help="replay the bag forever (rewinds bag time each pass; default: single pass)")
     parser.add_argument("--latch", action="append", default=[],
                         help="extra topic to treat as transient-local (repeatable)")
     parser.add_argument("--speed", type=float, default=1.0,
@@ -428,6 +448,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     try:
-        asyncio.run(main(args.mcap, args.host, args.port, args.speed, frozenset(args.latch)))
+        asyncio.run(main(args.mcap, args.host, args.port, args.speed, args.loop, frozenset(args.latch)))
     except KeyboardInterrupt:
         print("\nStopped.")

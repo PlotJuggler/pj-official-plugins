@@ -284,15 +284,18 @@ async def check_latched_replay(conn, ctx):
     if not latched:
         raise SkipCheck("no latched topics advertised")
     topic = latched[0]
+    # Snapshot BEFORE subscribing: the count is cumulative, and a latched topic
+    # touched by an earlier check must not make this one pass vacuously.
+    before = conn.topic_count.get(topic, 0)
     resp = await conn.request({"command": "subscribe", "id": "sub-latch", "topics": [topic]})
     assert_response_envelope(resp, "sub-latch")
     need(resp.get("status") in ("success", "partial_success"), f"subscribe failed: {resp}")
     deadline = time.monotonic() + 3.0
     while time.monotonic() < deadline:
-        if conn.topic_count.get(topic, 0) > 0:
+        if conn.topic_count.get(topic, 0) > before:
             break
         await asyncio.sleep(0.05)
-    need(conn.topic_count.get(topic, 0) > 0,
+    need(conn.topic_count.get(topic, 0) > before,
          f"no retained frame for latched topic {topic} within 3s of subscribe")
     # cleanup so later checks see a quiet wire
     await conn.request({"command": "unsubscribe", "id": "unsub-latch", "topics": [topic]})
