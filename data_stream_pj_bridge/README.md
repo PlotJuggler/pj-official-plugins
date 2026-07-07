@@ -65,6 +65,66 @@ so parser bindings are only ever created and read from the poll thread. Binary
 data frames are queued the same way. The desired-topic set from the host is held
 in a mutex-protected latest-wins slot and drained on the poll thread.
 
+## Test scripts
+
+`test_scripts/` holds standalone Python servers that speak the PJ Bridge wire
+protocol so the plugin (and the self-test below) can be exercised without a real
+ROS/DDS bridge. Their JSON control plane mirrors the **production** server
+semantics (`github.com/PlotJuggler/plotjuggler_bridge`), so demand-driven
+per-topic subscriptions behave identically here and against the real bridge. All
+three share the same control-plane rules:
+
+- **`subscribe` is additive** — requested topics are merged into the session's
+  subscription set; already-subscribed topics are a no-op (no schema re-echoed).
+  Response: `{"status": "success"|"partial_success", "schemas":
+  {topic: {encoding, definition}}, "failures": [{topic, reason}]}`. An unknown
+  topic fails per-topic with `"Topic does not exist"` (and is forgotten, no
+  sticky retry); if **every** requested topic fails the response is
+  `{"status": "error", "error_code": "ALL_SUBSCRIPTIONS_FAILED"}`.
+- **`unsubscribe`** removes topics from the session set and replies
+  `{"status": "success", "removed": [names actually removed]}` (unknown names
+  are silently ignored); data for unsubscribed topics stops flowing.
+- **`get_topics` honors `include_schemas`** — default (absent/false) entries carry
+  only `{name, type}`; `include_schemas: true` adds `{encoding, definition}`.
+  (Production always returns name+type only; the servers make schemas *opt-in* so
+  both the schema-present and graceful-degradation paths are exercised.)
+- **`subscribe_topic_updates` / `unsubscribe_topic_updates`** opt a session in/out
+  of `{"notification": "topics_changed", "added": [...], "removed": [...]}`
+  pushes (no `id` on notifications; `added` entry shape honors the
+  `include_schemas` flag from the opt-in request).
+- **`heartbeat`** replies `{"status": "ok"}`; **`pause`/`resume`** reply
+  `{"status": "ok", "paused": bool}`.
+- Every response echoes the request's `id` (when it is a string) and carries
+  `protocol_version: 1`.
+
+Servers:
+
+- **`pj_bridge_test_server.py`** — three synthetic scalars (`/test/sine`,
+  `/test/cosine`, `/test/sawtooth`, `json`). `--late-topic NAME:SECONDS`
+  advertises one extra topic `SECONDS` after startup and pushes `topics_changed`
+  to opted-in sessions (exercises the pushed-advertisement path).
+- **`pj_bridge_mixed_server.py`** — scalars plus a `sensor_msgs/CompressedImage`
+  JPEG topic (`cdr`). Static topic set: it implements the topic-updates opt-in but
+  never pushes (nothing changes).
+- **`pj_bridge_mcap_player.py`** — replays any `.mcap` file. Its channel set is
+  fully known at open, so it likewise opts in but pushes nothing. The wire
+  `encoding` is the channel's `message_encoding` (`cdr`, `json`, …).
+
+**`protocol_selftest.py`** is a standalone WebSocket client that asserts all of
+the above end-to-end against a running server and prints a per-check PASS/FAIL/SKIP
+matrix (exit nonzero on any failure). It is server-agnostic — it discovers topics
+via `get_topics` and exercises the protocol against whatever is advertised:
+
+```bash
+# terminal 1
+python3 test_scripts/pj_bridge_test_server.py --port 9877 --late-topic /test/late:3
+# terminal 2
+python3 test_scripts/protocol_selftest.py --port 9877 --expect-late-topic /test/late
+```
+
+Without `--expect-late-topic` the `topics_changed` leg reports SKIP (for the
+mixed server and the mcap player, which advertise a fixed topic set).
+
 ## Known Limitations
 
 - No per-topic rate limiting (`max_rate_hz`) — the wire protocol supports it, but

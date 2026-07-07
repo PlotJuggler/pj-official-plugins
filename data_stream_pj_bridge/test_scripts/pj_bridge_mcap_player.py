@@ -5,6 +5,14 @@ PJ Bridge MCAP player — replays an MCAP file via the PJ Bridge WebSocket proto
 Reads any MCAP file and republishes its messages continuously using the
 PlotJuggler Bridge binary protocol (PJRB + zstd).
 
+The JSON control plane mirrors the PRODUCTION server semantics
+(github.com/PlotJuggler/plotjuggler_bridge): additive subscribe, unsubscribe
+with a `removed` list, include_schemas on get_topics, subscribe_topic_updates
+opt-in, and `id` + `protocol_version` echoed on every response. An MCAP file's
+channel set is fully known at open, so this player implements the topic_updates
+opt-in but never pushes a topics_changed notification — there is nothing that
+materializes over time to announce.
+
 Usage:
     pip install websockets zstandard mcap
     python3 pj_bridge_mcap_player.py path/to/file.mcap [--port PORT] [--speed SPEED]
@@ -27,10 +35,48 @@ from mcap.reader import make_reader
 PORT = 9871
 HOST = "localhost"
 MAGIC = 0x42524A50  # "PJRB" LE
+PROTOCOL_VERSION = 1
+
+
+# ---------------------------------------------------------------------------
+# Protocol helpers (identical across all three test servers)
+# ---------------------------------------------------------------------------
+
+def inject_response_fields(response: dict, request: dict) -> dict:
+    """Attach protocol_version and echo the request's `id` when it is a string."""
+    response["protocol_version"] = PROTOCOL_VERSION
+    rid = request.get("id")
+    if isinstance(rid, str):
+        response["id"] = rid
+    return response
+
+
+def parse_topic_names(topics) -> list:
+    """Extract topic names from a subscribe/unsubscribe `topics` array (mixed
+    strings and {"name": ...} objects; rate limits ignored)."""
+    names = []
+    if isinstance(topics, list):
+        for item in topics:
+            if isinstance(item, str):
+                names.append(item)
+            elif isinstance(item, dict) and isinstance(item.get("name"), str):
+                names.append(item["name"])
+    return names
+
+
+def topic_entry(channel: dict, include_schemas: bool) -> dict:
+    """{name, type} by default; adds {encoding, definition} when requested."""
+    entry = {"name": channel["name"], "type": channel["type"]}
+    if include_schemas:
+        entry["encoding"] = channel["encoding"]
+        entry["definition"] = channel["definition"]
+    return entry
 
 
 def load_mcap_metadata(path: str):
-    """Load channels and schemas from MCAP summary."""
+    """Load channels and schemas from the MCAP summary. The wire `encoding` is the
+    channel's message_encoding (e.g. "cdr" for ROS2, "json" for JSON channels) —
+    the serialization the plugin's parser needs — not the schema language."""
     with open(path, "rb") as f:
         r = make_reader(f)
         s = r.get_summary()
@@ -42,8 +88,7 @@ def load_mcap_metadata(path: str):
                 channels[ch_id] = {
                     "name": ch.topic,
                     "type": sch.name if sch else "",
-                    "schema_name": sch.name if sch else "",
-                    "encoding": sch.encoding if sch else "cdr",
+                    "encoding": ch.message_encoding or "cdr",
                     "definition": sch.data.decode("utf-8", errors="replace") if sch and sch.data else "",
                 }
         return channels
@@ -74,22 +119,15 @@ class PjBridgeMcapPlayer:
         self.mcap_path = mcap_path
         self.speed = speed
         self.channels = load_mcap_metadata(mcap_path)
-        self.clients: dict = {}  # websocket → {paused, subscribed_topics}
-
-    def _topics_list(self):
-        return [
-            {
-                "name": ch["name"],
-                "type": ch["type"],
-                "schema_name": ch["schema_name"],
-                "encoding": "cdr",
-                "definition": ch["definition"],
-            }
-            for ch in self.channels.values()
-        ]
+        self.clients: dict = {}  # websocket → {paused, subscribed, topic_updates, tu_include_schemas}
 
     async def handler(self, websocket):
-        self.clients[websocket] = {"paused": False, "subscribed_topics": set()}
+        self.clients[websocket] = {
+            "paused": False,
+            "subscribed": set(),
+            "topic_updates": False,
+            "tu_include_schemas": False,
+        }
         print(f"[+] Client connected")
         try:
             async for message in websocket:
@@ -107,34 +145,85 @@ class PjBridgeMcapPlayer:
             msg = json.loads(raw)
         except json.JSONDecodeError:
             return
+        if not isinstance(msg, dict):
+            return
+
         cmd = msg.get("command", "")
+        state = self.clients[websocket]
 
         if cmd == "get_topics":
-            await websocket.send(json.dumps({
-                "status": "success",
-                "topics": self._topics_list(),
-            }))
-            print(f"    get_topics → {[ch['name'] for ch in self.channels.values()]}")
+            include = bool(msg.get("include_schemas", False))
+            resp = {"status": "success",
+                    "topics": [topic_entry(ch, include) for ch in self.channels.values()]}
+            await websocket.send(json.dumps(inject_response_fields(resp, msg)))
+            print(f"    get_topics (include_schemas={include}) → {len(self.channels)} topics")
 
         elif cmd == "subscribe":
-            requested = set(msg.get("topics", []))
-            self.clients[websocket]["subscribed_topics"] = requested
+            await self._handle_subscribe(websocket, msg, state)
 
-            schemas = {}
-            for ch in self.channels.values():
-                if ch["name"] in requested:
-                    schemas[ch["name"]] = {
-                        "encoding": "cdr",
-                        "definition": ch["definition"],
-                        "schema_name": ch["schema_name"],
-                    }
-            await websocket.send(json.dumps({"status": "success", "schemas": schemas}))
-            print(f"    subscribe → {sorted(requested)}")
+        elif cmd == "unsubscribe":
+            requested = parse_topic_names(msg.get("topics", []))
+            removed = [n for n in requested if n in state["subscribed"]]
+            for n in removed:
+                state["subscribed"].discard(n)
+            resp = {"status": "success", "removed": removed}
+            await websocket.send(json.dumps(inject_response_fields(resp, msg)))
+            print(f"    unsubscribe → removed {removed}")
+
+        elif cmd == "subscribe_topic_updates":
+            state["topic_updates"] = True
+            state["tu_include_schemas"] = bool(msg.get("include_schemas", False))
+            resp = {"status": "ok", "topic_updates": True}
+            await websocket.send(json.dumps(inject_response_fields(resp, msg)))
+
+        elif cmd == "unsubscribe_topic_updates":
+            state["topic_updates"] = False
+            resp = {"status": "ok", "topic_updates": False}
+            await websocket.send(json.dumps(inject_response_fields(resp, msg)))
+
+        elif cmd == "heartbeat":
+            await websocket.send(json.dumps(inject_response_fields({"status": "ok"}, msg)))
 
         elif cmd == "pause":
-            self.clients[websocket]["paused"] = True
+            state["paused"] = True
+            await websocket.send(json.dumps(inject_response_fields({"status": "ok", "paused": True}, msg)))
+
         elif cmd == "resume":
-            self.clients[websocket]["paused"] = False
+            state["paused"] = False
+            await websocket.send(json.dumps(inject_response_fields({"status": "ok", "paused": False}, msg)))
+
+    async def _handle_subscribe(self, websocket, msg, state):
+        """ADDITIVE subscribe — merge newly-requested topics; already-subscribed
+        topics are a no-op (no schema echoed), matching production."""
+        requested = parse_topic_names(msg.get("topics", []))
+        known = {ch["name"]: ch for ch in self.channels.values()}
+        schemas = {}
+        failures = []
+        for name in requested:
+            if name in state["subscribed"]:
+                continue
+            ch = known.get(name)
+            if ch is None:
+                failures.append({"topic": name, "reason": "Topic does not exist"})
+                continue
+            state["subscribed"].add(name)
+            schemas[name] = {"encoding": ch["encoding"], "definition": ch["definition"]}
+
+        resp: dict = {}
+        if not failures:
+            resp["status"] = "success"
+        elif not schemas:
+            resp["status"] = "error"
+            resp["error_code"] = "ALL_SUBSCRIPTIONS_FAILED"
+            resp["message"] = "Failed to subscribe to all requested topics"
+        else:
+            resp["status"] = "partial_success"
+            resp["message"] = "Some subscriptions failed"
+        resp["schemas"] = schemas
+        if failures:
+            resp["failures"] = failures
+        await websocket.send(json.dumps(inject_response_fields(resp, msg)))
+        print(f"    subscribe → {resp['status']}; schemas={sorted(schemas)}; failures={[f['topic'] for f in failures]}")
 
     async def play_loop(self):
         # Build topic name lookup
@@ -193,7 +282,7 @@ class PjBridgeMcapPlayer:
         for websocket, state in list(self.clients.items()):
             if state["paused"]:
                 continue
-            subscribed = state["subscribed_topics"]
+            subscribed = state["subscribed"]
             msgs = [(t, ts, d) for t, ts, d in bucket if t in subscribed]
             if not msgs:
                 continue
