@@ -481,7 +481,12 @@ void collectManifestColumns(
     if (field == nullptr || field->isConstant() || field->isArray()) {
       continue;
     }
-    const std::string path = prefix + "/" + field->name();
+    // Topic-relative path: no leading '/' for a top-level field, so it matches the
+    // flat field name live ingest (flattenGeneric/variantToValueRef) produces — the
+    // datastore's ensureField() strips a leading '/' from a manifest-supplied path,
+    // so a top-level field emitted here as "/data" would pre-create an orphan
+    // column distinct from the "data" column live data actually lands on.
+    const std::string path = prefix.empty() ? field->name() : prefix + "/" + field->name();
     const BT type_id = field->type().typeID();
     if (type_id == BT::OTHER) {
       collectManifestColumns(&child, path, include_strings, out);

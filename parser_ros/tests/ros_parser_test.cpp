@@ -84,6 +84,32 @@ std::vector<uint8_t> serializeCdr(const std::function<void(RosMsgParser::NanoCDR
   return std::vector<uint8_t>(encoder.getBufferData(), encoder.getBufferData() + encoder.getBufferSize());
 }
 
+// Mirrors PJ::normalizeFieldPath (pj_datastore/include/pj_datastore/plugin_data_host.hpp):
+// the datastore's ensureField() collapses internal "//" runs to "/" and drops a single
+// leading '/' before using a field name as a storage key. RosMsgParser's own flat-key
+// convention (used by the LIVE parse path, e.g. RosParser::flattenGeneric) always
+// prefixes a top-level field with '/' (its root node's cached path is the empty schema
+// "topic name"), so a raw parseScalars-emitted name and a topic-relative manifest path
+// (no leading slash, see collectManifestColumns) only agree once both go through this
+// normalization — exactly as they do at the real ensureField() call site. parser_ros
+// has no dependency on pj_datastore, hence this small parallel implementation for tests.
+std::string normalizeLikeDatastore(std::string_view name) {
+  std::string out;
+  out.reserve(name.size());
+  bool prev_slash = false;
+  for (const char c : name) {
+    if (c == '/' && prev_slash) {
+      continue;
+    }
+    prev_slash = (c == '/');
+    out.push_back(c);
+  }
+  if (!out.empty() && out.front() == '/') {
+    out.erase(0, 1);
+  }
+  return out;
+}
+
 // --- ROS message definitions (text format) ---
 
 // Simple scalar message: int32 + float64 + bool
@@ -198,12 +224,66 @@ TEST(RosParserTest, DescribeSchemaColumnsMatchesParseEmission) {
 
   for (const auto& entry : manifest) {
     const auto path = entry["path"].get<std::string>();
+    // Manifest paths are topic-relative: never a leading '/', even for a
+    // top-level field (see collectManifestColumns). This is what makes the
+    // pre-created column agree with the live column ensureField() lands
+    // data on, closing the lazy-subscription orphan-column bug.
+    ASSERT_FALSE(path.empty());
+    EXPECT_NE(path.front(), '/') << "manifest path must be topic-relative (no leading '/'): " << path;
     const auto type = PJ::sdk::primitiveTypeFromJsonName(entry["type"].get<std::string>());
     ASSERT_TRUE(type.has_value()) << path;
-    const auto* field = PJ::sdk::testing::ParserWriteRecorder::findField(row, path);
+    // The raw field name parseScalars/append_record hands the write host may
+    // still carry RosMsgParser's own leading '/' convention (see
+    // normalizeLikeDatastore) — ensureField() normalizes it the same way
+    // before it becomes a storage key, so comparing post-normalization is
+    // what actually proves "same field, no duplicate column", matching what
+    // the real datastore does.
+    const PJ::sdk::testing::RecordedField* field = nullptr;
+    for (const auto& candidate : row.fields) {
+      if (normalizeLikeDatastore(candidate.name) == path) {
+        field = &candidate;
+        break;
+      }
+    }
     ASSERT_NE(field, nullptr) << "manifest column not emitted by parse(): " << path;
     EXPECT_EQ(field->type, *type) << path;
   }
+}
+
+TEST(RosParserTest, DescribeSchemaColumnsTopLevelFieldMatchesLiveFieldAfterNormalization) {
+  // Regression test for the lazy-subscription orphan-column bug: a manifest
+  // column for a top-level scalar field (e.g. std_msgs/Float64's "data") must
+  // resolve to the SAME datastore key as the live-ingested field, not a
+  // second, never-updated column. collectManifestColumns emits a bare
+  // top-level path ("data", no leading slash); RosMsgParser's own live parse
+  // path emits "/data" (its flat-key convention); both must normalize
+  // (normalizeLikeDatastore / PJ::normalizeFieldPath) to the identical key.
+  RosParserFixture f;
+  f.setUp();
+  const std::string def = "float64 data\n";
+  ASSERT_TRUE(f.bindSchema("std_msgs/Float64", def));
+
+  std::string manifest_json;
+  auto status = f.handle.describeSchemaColumns(
+      "std_msgs/Float64", PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(def.data()), def.size()),
+      manifest_json);
+  ASSERT_TRUE(status) << status.error();
+
+  auto manifest = nlohmann::json::parse(manifest_json);
+  ASSERT_TRUE(manifest.is_array());
+  ASSERT_EQ(manifest.size(), 1u);
+  EXPECT_EQ(manifest[0]["path"].get<std::string>(), "data");
+
+  auto payload = serializeCdr(
+      [](RosMsgParser::NanoCDR_Serializer& enc) { enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(2.5)); });
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 1u);
+
+  const auto& live_field = f.recorder.rows()[0].fields[0];
+  EXPECT_EQ(live_field.name, "/data") << "sanity check on RosMsgParser's own flat-key convention";
+  EXPECT_EQ(normalizeLikeDatastore(live_field.name), manifest[0]["path"].get<std::string>())
+      << "manifest key and normalized live key must be exactly the same field";
 }
 
 TEST(RosParserTest, DescribeSchemaColumnsStandsDownForSpecializedSchemas) {
@@ -242,9 +322,9 @@ TEST(RosParserTest, DescribeSchemaColumnsOmitsStringsWhenStringToNumberToggleOn)
   bool found_value = false;
   for (const auto& entry : manifest) {
     const auto path = entry["path"].get<std::string>();
-    if (path == "/header/frame_id") {
+    if (path == "header/frame_id") {
       found_frame_id = true;
-    } else if (path == "/value") {
+    } else if (path == "value") {
       found_value = true;
     }
   }
