@@ -88,6 +88,31 @@ def wire_encoding(message_encoding: str, schema_encoding: str) -> str:
     return message_encoding
 
 
+def is_latched_topic(name: str) -> bool:
+    """Transient-local heuristic (mcap carries no QoS): topics whose single
+    retained message late subscribers depend on. Mirrors the production
+    server's latched replay and the foxglove player's list."""
+    return name == "/tf_static" or name.endswith("_static") or name == "/map"
+
+
+def load_latched_messages(path: str, topic_names: set) -> dict:
+    """Pre-seed the latch cache from the bag via the mcap index (fast even on a
+    multi-GB file): topic -> list of (topic, log_time_ns, data). /tf_static
+    typically has exactly ONE message at bag start — without replaying it on
+    subscribe, any client arriving later can never resolve the static frames."""
+    latched: dict = {}
+    if not topic_names:
+        return latched
+    with open(path, "rb") as f:
+        r = make_reader(f)
+        for _schema, channel, message in r.iter_messages(topics=list(topic_names)):
+            latched.setdefault(channel.topic, []).append((channel.topic, message.log_time, message.data))
+            # last-value-wins per transient_local; keep a small tail in case a
+            # topic republishes (e.g. several static broadcasters).
+            latched[channel.topic] = latched[channel.topic][-16:]
+    return latched
+
+
 def load_mcap_metadata(path: str):
     """Load channels and schemas from the MCAP summary."""
     with open(path, "rb") as f:
@@ -150,6 +175,11 @@ class PjBridgeMcapPlayer:
         self.mcap_path = mcap_path
         self.speed = speed
         self.channels = load_mcap_metadata(mcap_path)
+        latch_topics = {ch["name"] for ch in self.channels.values() if is_latched_topic(ch["name"])}
+        self.latched = load_latched_messages(mcap_path, latch_topics)
+        if self.latched:
+            counts = {t: len(m) for t, m in self.latched.items()}
+            print(f"Latched topics (replayed on subscribe): {counts}")
         self.clients: dict = {}  # websocket → {paused, subscribed, topic_updates, tu_include_schemas}
 
     async def handler(self, websocket):
@@ -255,6 +285,16 @@ class PjBridgeMcapPlayer:
             resp["failures"] = failures
         await websocket.send(json.dumps(inject_response_fields(resp, msg)))
         print(f"    subscribe → {resp['status']}; schemas={sorted(schemas)}; failures={[f['topic'] for f in failures]}")
+
+        # Latched replay, strictly AFTER the subscribe response (the client
+        # needs the schema first) — same ordering as the production server.
+        replay = [m for name in schemas for m in self.latched.get(name, [])]
+        if replay:
+            try:
+                await websocket.send(build_binary_frame(replay))
+                print(f"    latched replay → {[m[0] for m in replay]}")
+            except websockets.exceptions.ConnectionClosed:
+                pass
 
     async def play_loop(self):
         # Build topic name lookup
