@@ -258,6 +258,22 @@ async def check_unsubscribe_stops_flow(conn, ctx):
     return f"{t0} stopped; {t1} still flowing"
 
 
+async def check_server_info(conn, ctx):
+    """get_topics carries the server identity + capability list (feature
+    detection by NAME — the client's soft gate; protocol_version is the hard
+    one and is asserted by every envelope check)."""
+    resp = await conn.request({"command": "get_topics", "id": "gt-info"})
+    assert_response_envelope(resp, "gt-info")
+    info = resp.get("server")
+    need(isinstance(info, dict), f"server object missing/typed wrong: {info!r}")
+    need(info.get("name"), "server.name missing")
+    need(info.get("version"), "server.version missing")
+    caps = info.get("capabilities")
+    need(isinstance(caps, list) and caps, f"capabilities missing/empty: {caps!r}")
+    need("include_schemas" in caps, "include_schemas capability not advertised")
+    return f"{info['name']} {info['version']} caps={sorted(caps)}"
+
+
 async def check_latched_replay(conn, ctx):
     """A topic advertised `latched: true` must replay its retained sample(s)
     right after the subscribe response — even though this client subscribed
@@ -348,6 +364,7 @@ CHECKS = [
     ("subscribe_additive", check_subscribe_additive),
     ("additive_data_flow", check_additive_data_flow),
     ("unsubscribe_stops_flow", check_unsubscribe_stops_flow),
+    ("server_info", check_server_info),
     ("latched_replay", check_latched_replay),
     ("unknown_topic_partial_success", check_unknown_topic_partial_success),
     ("all_failed_error", check_all_failed_error),

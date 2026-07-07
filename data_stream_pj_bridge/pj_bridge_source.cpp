@@ -220,6 +220,9 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
+    if (!fatal_protocol_error_.empty()) {
+      return PJ::unexpected(fatal_protocol_error_);
+    }
     if (!subscribe_response_received_) {
       runtimeHost().reportMessage(
           PJ::DataSourceMessageLevel::kWarning, "Subscribe response not received; parsers may lack schemas");
@@ -229,6 +232,9 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   }
 
   PJ::Status onPoll() override {
+    if (!fatal_protocol_error_.empty()) {
+      return PJ::unexpected(fatal_protocol_error_);  // stops the stream (see onTextMessage)
+    }
     // Heartbeat: send every ~1s (30 polls at 33ms each)
     if (socket_ && ++heartbeat_tick_ >= 30) {
       heartbeat_tick_ = 0;
@@ -304,6 +310,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     last_applied_desired_.clear();
     demand_mode_ = false;
     advertise_dirty_ = false;
+    fatal_protocol_error_.clear();
+    server_info_logged_ = false;
     (void)text_frames_.drain();         // drop any un-processed inbound frames
     (void)desired_topics_slot_.take();  // drop any pending host command so it can't leak into the next start
   }
@@ -491,6 +499,18 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       return;
     }
 
+    // The ONE hard compatibility gate: a response from a KNOWN-newer protocol
+    // may carry semantics this client cannot interpret, so stop the stream
+    // instead of guessing. Everything additive is feature-detected via the
+    // `server` capability list instead (see handleGetTopicsResponse).
+    if (const auto newer = unsupportedProtocolVersion(json, kSupportedProtocolVersion)) {
+      fatal_protocol_error_ = "server speaks protocol_version " + std::to_string(*newer) +
+                              " but this plugin supports " + std::to_string(kSupportedProtocolVersion) +
+                              " — upgrade PlotJuggler (or run an older plotjuggler_bridge)";
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, fatal_protocol_error_);
+      return;  // do not interpret the frame
+    }
+
     if (json.contains("notification")) {
       if (json["notification"] == "topics_changed") {
         handleTopicsChanged(json);
@@ -619,7 +639,31 @@ class PjBridgeSource : public PJ::StreamSourceBase {
 
   // get_topics response: the authoritative FULL current topic set. Replace the
   // advertise catalog wholesale; a real change arms a re-advertise + reconcile.
+  // Also the server-identity touchpoint: log who we're talking to ONCE and
+  // warn (once) when a capability the demand UX relies on is missing.
   void handleGetTopicsResponse(const nlohmann::json& json) {
+    if (!server_info_logged_) {
+      server_info_logged_ = true;
+      const auto info = parseServerInfo(json);
+      if (info) {
+        std::string caps;
+        for (const auto& capability : info->capabilities) {
+          caps += (caps.empty() ? "" : ", ") + capability;
+        }
+        runtimeHost().reportMessage(
+            PJ::DataSourceMessageLevel::kInfo,
+            "Connected to " + info->name + " " + info->version + " (capabilities: " + caps + ")");
+      }
+      // Feature-detect by capability NAME; a pre-capability server (no
+      // `server` object) is treated as having none. Never compare versions.
+      if (demand_mode_ && (!info || !info->hasCapability("include_schemas"))) {
+        runtimeHost().reportMessage(
+            PJ::DataSourceMessageLevel::kWarning,
+            "Server does not support schema advertisement (include_schemas): topic classification is "
+            "degraded — TF may not auto-subscribe and 3D topics lose their icons until first subscribe. "
+            "Upgrade plotjuggler_bridge to restore full functionality.");
+      }
+    }
     std::map<std::string, TopicInfo> fresh;
     for (const auto& entry : json["topics"]) {
       if (auto info = parseTopicEntry(entry)) {
@@ -703,6 +747,12 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   // Topics with a live subscription right now. Poll-thread-only. Grown
   // optimistically at subscribe, shrunk by unsubscribe and per-topic failures.
   std::set<std::string> applied_;
+
+  // Set on a response from a KNOWN-newer protocol; onPoll turns it into a
+  // stream-stopping error. Cleared on stop.
+  std::string fatal_protocol_error_;
+  // One server-identity log + capability warning per start.
+  bool server_info_logged_ = false;
 
   // The id of the LAST subscribe request naming each topic — lets a stale
   // per-topic failure (from a superseded request) be ignored instead of

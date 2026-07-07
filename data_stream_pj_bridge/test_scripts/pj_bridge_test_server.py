@@ -179,6 +179,8 @@ class PjBridgeServer:
         if command == "get_topics":
             include = bool(cmd.get("include_schemas", False))
             resp = {"status": "success",
+                    "server": {"name": "pj_bridge_test_server", "version": "test",
+                               "capabilities": ["include_schemas", "topics_changed", "latched_badge"]},
                     "topics": [topic_entry(t, include) for t in self.topics]}
             await websocket.send(json.dumps(inject_response_fields(resp, cmd)))
             print(f"    get_topics (include_schemas={include}) → {len(self.topics)} topics")

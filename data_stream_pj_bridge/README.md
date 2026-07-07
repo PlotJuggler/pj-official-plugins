@@ -65,6 +65,15 @@ so parser bindings are only ever created and read from the poll thread. Binary
 data frames are queued the same way. The desired-topic set from the host is held
 in a mutex-protected latest-wins slot and drained on the poll thread.
 
+## Compatibility policy
+
+`protocol_version` (currently 1, stamped on every response) is the ONLY hard
+gate: a response from a KNOWN-newer protocol stops the stream with an upgrade
+message. Everything additive is feature-detected through the `server`
+capability list in the `get_topics` response — a missing capability degrades
+that one feature with a precise warning (e.g. no `include_schemas` → topic
+classification degraded). Version strings are never compared.
+
 ## Latched (transient-local) topics
 
 Latched topics (`/tf_static`, `/map`, …) publish a retained sample that late

@@ -220,6 +220,8 @@ class PjBridgeMcapPlayer:
         if cmd == "get_topics":
             include = bool(msg.get("include_schemas", False))
             resp = {"status": "success",
+                    "server": {"name": "pj_bridge_mcap_player", "version": "test",
+                               "capabilities": ["include_schemas", "topics_changed", "latched_badge", "latched_replay"]},
                     "topics": [topic_entry(ch, include) for ch in self.channels.values()]}
             await websocket.send(json.dumps(inject_response_fields(resp, msg)))
             print(f"    get_topics (include_schemas={include}) → {len(self.channels)} topics")

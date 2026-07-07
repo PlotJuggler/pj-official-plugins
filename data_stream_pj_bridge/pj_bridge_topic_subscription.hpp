@@ -230,6 +230,59 @@ struct SubscriptionDiff {
   return retyped;
 }
 
+/// The protocol version this plugin speaks. The ONLY hard compatibility gate:
+/// a response carrying a HIGHER version means breaking changes this client
+/// cannot interpret, so the stream stops with an upgrade message. Additive
+/// server features never bump it — they are feature-detected via ServerInfo.
+inline constexpr int kSupportedProtocolVersion = 1;
+
+/// Returns the response's protocol_version when it is above `supported` —
+/// the caller turns that into a fatal stream error. Absent or non-integer
+/// versions yield nullopt (old/test servers predate the field; tolerance is
+/// the compatibility policy for everything except a KNOWN-newer protocol).
+[[nodiscard]] inline std::optional<int> unsupportedProtocolVersion(const nlohmann::json& response, int supported) {
+  const auto it = response.find("protocol_version");
+  if (it == response.end() || !it->is_number_integer()) {
+    return std::nullopt;
+  }
+  const int version = it->get<int>();
+  return version > supported ? std::optional<int>(version) : std::nullopt;
+}
+
+/// Server identity + capability list from a get_topics response's `server`
+/// object. Clients feature-detect by capability NAME and degrade per-feature;
+/// `version` is for humans/bug reports, never compared.
+struct ServerInfo {
+  std::string name;
+  std::string version;
+  std::set<std::string> capabilities;
+
+  [[nodiscard]] bool hasCapability(const std::string& capability) const {
+    return capabilities.count(capability) > 0;
+  }
+};
+
+/// nullopt when the response has no `server` object (a pre-capability server:
+/// treat every capability as absent). Wrong-typed fields degrade to empty.
+[[nodiscard]] inline std::optional<ServerInfo> parseServerInfo(const nlohmann::json& response) {
+  const auto it = response.find("server");
+  if (it == response.end() || !it->is_object()) {
+    return std::nullopt;
+  }
+  ServerInfo info;
+  info.name = stringField(*it, "name");
+  info.version = stringField(*it, "version");
+  const auto caps = it->find("capabilities");
+  if (caps != it->end() && caps->is_array()) {
+    for (const auto& capability : *caps) {
+      if (capability.is_string()) {
+        info.capabilities.insert(capability.get<std::string>());
+      }
+    }
+  }
+  return info;
+}
+
 /// Whether a per-topic failure in a subscribe RESPONSE is stale: the response
 /// id (echoed by the server) predates the LAST subscribe we sent for that
 /// topic, so the failure describes a request that a newer subscribe already

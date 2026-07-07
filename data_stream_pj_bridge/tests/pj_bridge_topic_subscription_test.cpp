@@ -286,6 +286,38 @@ TEST(BridgeRetypedTopicsTest, AddedAndRemovedTopicsAreNotRetyped) {
   EXPECT_TRUE(retypedTopics(before, after, {"/gone", "/new"}).empty());
 }
 
+TEST(BridgeProtocolVersionTest, OnlyAKnownNewerVersionIsUnsupported) {
+  using PJ::BridgeProtocol::kSupportedProtocolVersion;
+  using PJ::BridgeProtocol::unsupportedProtocolVersion;
+  // Same version: fine.
+  EXPECT_EQ(unsupportedProtocolVersion(nlohmann::json{{"protocol_version", 1}}, 1), std::nullopt);
+  // Newer version: the one hard-fail.
+  EXPECT_EQ(unsupportedProtocolVersion(nlohmann::json{{"protocol_version", 2}}, 1), std::optional<int>(2));
+  // Absent (pre-versioning server) or wrong-typed: tolerated.
+  EXPECT_EQ(unsupportedProtocolVersion(nlohmann::json::object(), 1), std::nullopt);
+  EXPECT_EQ(unsupportedProtocolVersion(nlohmann::json{{"protocol_version", "2"}}, 1), std::nullopt);
+  EXPECT_EQ(kSupportedProtocolVersion, 1);
+}
+
+TEST(BridgeServerInfoTest, ParsesCapabilitiesAndToleratesAbsence) {
+  using PJ::BridgeProtocol::parseServerInfo;
+  const auto full = parseServerInfo(
+      nlohmann::json::parse(
+          R"({"server": {"name": "pj_bridge", "version": "0.6.0",
+                     "capabilities": ["include_schemas", "latched_replay", 7]}})"));
+  ASSERT_TRUE(full.has_value());
+  EXPECT_EQ(full->name, "pj_bridge");
+  EXPECT_EQ(full->version, "0.6.0");
+  EXPECT_TRUE(full->hasCapability("include_schemas"));
+  EXPECT_TRUE(full->hasCapability("latched_replay"));
+  EXPECT_FALSE(full->hasCapability("7"));  // non-string entries dropped
+
+  // Pre-capability server: no object at all.
+  EXPECT_EQ(parseServerInfo(nlohmann::json::object()), std::nullopt);
+  // Wrong-typed object tolerated as absent.
+  EXPECT_EQ(parseServerInfo(nlohmann::json{{"server", "pj_bridge"}}), std::nullopt);
+}
+
 TEST(BridgeFailureIsStaleTest, StaleOnlyWhenIdsDisagree) {
   const std::map<std::string, std::string> last_ids{{"/a", "req-2"}};
   // Failure from the superseded req-1: stale -> ignore, applied_ keeps truth.
