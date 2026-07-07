@@ -1,6 +1,5 @@
 #include <ixwebsocket/IXWebSocket.h>
 
-#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -98,7 +97,6 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     // set (exactly as before); on a demand-capable host it is only an OPTIONAL
     // advertise filter (empty = advertise everything).
     selected_topics_.clear();
-    advertise_filter_.clear();
     if (cfg.contains("topics") && cfg["topics"].is_array()) {
       for (const auto& t : cfg["topics"]) {
         TopicInfo info;
@@ -107,7 +105,6 @@ class PjBridgeSource : public PJ::StreamSourceBase {
         info.schema_name = t.value("schema_name", "");
         info.schema = t.value("schema_definition", "");
         if (!info.name.empty()) {
-          advertise_filter_.push_back(info.name);
           selected_topics_.push_back(std::move(info));
         }
       }
@@ -303,7 +300,6 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     }
     bindings_.clear();
     selected_topics_.clear();
-    advertise_filter_.clear();
     advertised_topics_.clear();
     applied_.clear();
     last_subscribe_id_by_topic_.clear();
@@ -389,6 +385,18 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     }
   }
 
+  // The advertise filter: just the names of the saved selection (empty = no
+  // filter, advertise everything). Derived from selected_topics_ so the two
+  // can't drift; recomputed per advertise/reconcile, both cold paths.
+  std::vector<std::string> advertiseFilter() const {
+    std::vector<std::string> names;
+    names.reserve(selected_topics_.size());
+    for (const auto& info : selected_topics_) {
+      names.push_back(info.name);
+    }
+    return names;
+  }
+
   // Build the AvailableTopic list for notify_available_topics from the advertise
   // catalog, restricted by the (optional) advertise filter. Schema bytes alias
   // the TopicInfo::schema strings held in advertised_topics_, which outlive the
@@ -398,7 +406,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     std::vector<PJ::AvailableTopic> topics;
     topics.reserve(advertised_topics_.size());
     for (const auto& [name, info] : advertised_topics_) {
-      if (!passesAdvertiseFilter(name, advertise_filter_)) {
+      if (!passesAdvertiseFilter(name, advertiseFilter())) {
         continue;
       }
       const auto schema_bytes = reinterpret_cast<const uint8_t*>(info.schema.data());
@@ -434,7 +442,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   // (applyDesiredTopics) — so desired-then-advertised and advertised-then-desired
   // converge on one code path. Empty send lists are suppressed.
   void reconcileSubscriptions() {
-    const auto advertised = filteredAdvertisedTopics(advertised_topics_, advertise_filter_);
+    const auto advertised = filteredAdvertisedTopics(advertised_topics_, advertiseFilter());
     const auto diff = computeSubscriptionDiff(applied_, advertised, last_applied_desired_);
 
     if (!diff.to_unsubscribe.empty()) {
@@ -630,9 +638,17 @@ class PjBridgeSource : public PJ::StreamSourceBase {
         }
       }
     }
-    const auto before = advertised_topics_;
+    // retypedTopics only inspects entries whose name is in applied_, so snapshot
+    // just those — copying the whole catalog would clone every topic's multi-KB
+    // schema definition to compare a handful of subscribed ones.
+    std::map<std::string, TopicInfo> before_applied;
+    for (const auto& name : applied_) {
+      if (const auto it = advertised_topics_.find(name); it != advertised_topics_.end()) {
+        before_applied[name] = it->second;
+      }
+    }
     if (applyAdvertiseDelta(advertised_topics_, added, removed)) {
-      dropRetypedApplied(before);
+      dropRetypedApplied(before_applied);
       advertise_dirty_ = true;
     }
   }
@@ -710,10 +726,9 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   bool use_timestamp_ = false;
 
   // Saved topic selection: the legacy subscribe list AND the demand-mode advertise
-  // filter (see onStart). selected_topics_ keeps per-topic schema info for the
-  // legacy schema_name lookup; advertise_filter_ is just the names.
+  // filter (see onStart). Keeps per-topic schema info for the legacy schema_name
+  // lookup; the advertise filter is just its names, derived on demand.
   std::vector<TopicInfo> selected_topics_;
-  std::vector<std::string> advertise_filter_;
 
   std::unique_ptr<ix::WebSocket> socket_;
   std::map<std::string, PJ::ParserBindingHandle> bindings_;  // poll-thread-only
@@ -723,7 +738,9 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   std::vector<uint8_t> decompress_buffer_;
   int heartbeat_tick_ = 0;
   bool paused_ = false;
-  std::atomic<bool> subscribe_response_received_ = false;
+  // Poll-thread-only since the text-frame queue moved all response handling
+  // off the socket thread (onStart pumps the queue on its own thread).
+  bool subscribe_response_received_ = false;
 
   // --- Demand-driven per-topic subscription (pj.topic_subscription.v1) ---
 

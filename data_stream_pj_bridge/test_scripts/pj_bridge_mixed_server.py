@@ -33,10 +33,20 @@ import websockets
 import zstandard as zstd
 from PIL import Image, ImageDraw
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common" / "test_support"))
+from pj_bridge_protocol import (  # noqa: E402
+    PROTOCOL_VERSION,
+    build_subscribe_response,
+    inject_response_fields,
+    parse_topic_names,
+    topic_entry,
+)
+
 PORT = 9871
 HOST = "localhost"
 MAGIC = 0x42524A50  # "PJRB" LE
-PROTOCOL_VERSION = 1
 
 COMPRESSED_IMAGE_SCHEMA = """\
 std_msgs/Header header
@@ -69,41 +79,6 @@ TOPICS = [
 WIDTH, HEIGHT = 320, 240
 
 
-# ---------------------------------------------------------------------------
-# Protocol helpers (identical across all three test servers)
-# ---------------------------------------------------------------------------
-
-def inject_response_fields(response: dict, request: dict) -> dict:
-    """Attach protocol_version and echo the request's `id` when it is a string."""
-    response["protocol_version"] = PROTOCOL_VERSION
-    rid = request.get("id")
-    if isinstance(rid, str):
-        response["id"] = rid
-    return response
-
-
-def parse_topic_names(topics) -> list:
-    """Extract topic names from a subscribe/unsubscribe `topics` array (mixed
-    strings and {"name": ...} objects; rate limits ignored)."""
-    names = []
-    if isinstance(topics, list):
-        for item in topics:
-            if isinstance(item, str):
-                names.append(item)
-            elif isinstance(item, dict) and isinstance(item.get("name"), str):
-                names.append(item["name"])
-    return names
-
-
-def topic_entry(topic: dict, include_schemas: bool) -> dict:
-    """{name, type} by default; adds {encoding, definition} when requested."""
-    entry = {"name": topic["name"], "type": topic["type"]}
-    if topic.get("latched"):
-        entry["latched"] = True  # explicit per-topic flag in the table (production badge)
-    if include_schemas:
-        entry["encoding"] = topic["encoding"]
-        entry["definition"] = topic["definition"]
-    return entry
 
 
 # ---------------------------------------------------------------------------
@@ -246,35 +221,10 @@ class PjBridgeMixedServer:
     async def _handle_subscribe(self, websocket, msg, state):
         """ADDITIVE subscribe — merge newly-requested topics; already-subscribed
         topics are a no-op (no schema echoed), matching production."""
-        requested = parse_topic_names(msg.get("topics", []))
-        known = {t["name"]: t for t in TOPICS}
-        schemas = {}
-        failures = []
-        for name in requested:
-            if name in state["subscribed"]:
-                continue
-            topic = known.get(name)
-            if topic is None:
-                failures.append({"topic": name, "reason": "Topic does not exist"})
-                continue
-            state["subscribed"].add(name)
-            schemas[name] = {"encoding": topic["encoding"], "definition": topic["definition"]}
-
-        resp: dict = {}
-        if not failures:
-            resp["status"] = "success"
-        elif not schemas:
-            resp["status"] = "error"
-            resp["error_code"] = "ALL_SUBSCRIPTIONS_FAILED"
-            resp["message"] = "Failed to subscribe to all requested topics"
-        else:
-            resp["status"] = "partial_success"
-            resp["message"] = "Some subscriptions failed"
-        resp["schemas"] = schemas
-        if failures:
-            resp["failures"] = failures
+        resp, _newly = build_subscribe_response(msg.get("topics", []), {t["name"]: t for t in TOPICS}, state["subscribed"])
         await websocket.send(json.dumps(inject_response_fields(resp, msg)))
-        print(f"    subscribe → {resp['status']}; schemas={sorted(schemas)}; failures={[f['topic'] for f in failures]}")
+        print(f"    subscribe → {resp['status']}; schemas={sorted(resp['schemas'])}; "
+              f"failures={[f['topic'] for f in resp.get('failures', [])]}")
 
     async def emit_loop(self):
         t = 0.0

@@ -38,46 +38,8 @@ from mcap.reader import make_reader
 PORT = 9871
 HOST = "localhost"
 MAGIC = 0x42524A50  # "PJRB" LE
-PROTOCOL_VERSION = 1
 
 
-# ---------------------------------------------------------------------------
-# Protocol helpers (identical across all three test servers)
-# ---------------------------------------------------------------------------
-
-def inject_response_fields(response: dict, request: dict) -> dict:
-    """Attach protocol_version and echo the request's `id` when it is a string."""
-    response["protocol_version"] = PROTOCOL_VERSION
-    rid = request.get("id")
-    if isinstance(rid, str):
-        response["id"] = rid
-    return response
-
-
-def parse_topic_names(topics) -> list:
-    """Extract topic names from a subscribe/unsubscribe `topics` array (mixed
-    strings and {"name": ...} objects; rate limits ignored)."""
-    names = []
-    if isinstance(topics, list):
-        for item in topics:
-            if isinstance(item, str):
-                names.append(item)
-            elif isinstance(item, dict) and isinstance(item.get("name"), str):
-                names.append(item["name"])
-    return names
-
-
-def topic_entry(channel: dict, include_schemas: bool) -> dict:
-    """{name, type} by default; adds {encoding, definition} when requested;
-    `latched: true` for transient-local channels (production badge — absent
-    means not latched or unknown)."""
-    entry = {"name": channel["name"], "type": channel["type"]}
-    if channel.get("latched"):
-        entry["latched"] = True
-    if include_schemas:
-        entry["encoding"] = channel["encoding"]
-        entry["definition"] = channel["definition"]
-    return entry
 
 
 def wire_encoding(message_encoding: str, schema_encoding: str) -> str:
@@ -97,6 +59,13 @@ def wire_encoding(message_encoding: str, schema_encoding: str) -> str:
 # fallback) — one implementation for both bridge test players.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common" / "test_support"))
 import mcap_qos  # noqa: E402
+from pj_bridge_protocol import (  # noqa: E402
+    PROTOCOL_VERSION,
+    build_subscribe_response,
+    inject_response_fields,
+    parse_topic_names,
+    topic_entry,
+)
 
 
 def load_latched_messages(path: str, topic_names: set) -> dict:
@@ -264,39 +233,15 @@ class PjBridgeMcapPlayer:
     async def _handle_subscribe(self, websocket, msg, state):
         """ADDITIVE subscribe — merge newly-requested topics; already-subscribed
         topics are a no-op (no schema echoed), matching production."""
-        requested = parse_topic_names(msg.get("topics", []))
         known = {ch["name"]: ch for ch in self.channels.values()}
-        schemas = {}
-        failures = []
-        for name in requested:
-            if name in state["subscribed"]:
-                continue
-            ch = known.get(name)
-            if ch is None:
-                failures.append({"topic": name, "reason": "Topic does not exist"})
-                continue
-            state["subscribed"].add(name)
-            schemas[name] = {"encoding": ch["encoding"], "definition": ch["definition"]}
-
-        resp: dict = {}
-        if not failures:
-            resp["status"] = "success"
-        elif not schemas:
-            resp["status"] = "error"
-            resp["error_code"] = "ALL_SUBSCRIPTIONS_FAILED"
-            resp["message"] = "Failed to subscribe to all requested topics"
-        else:
-            resp["status"] = "partial_success"
-            resp["message"] = "Some subscriptions failed"
-        resp["schemas"] = schemas
-        if failures:
-            resp["failures"] = failures
+        resp, newly_subscribed = build_subscribe_response(msg.get("topics", []), known, state["subscribed"])
         await websocket.send(json.dumps(inject_response_fields(resp, msg)))
-        print(f"    subscribe → {resp['status']}; schemas={sorted(schemas)}; failures={[f['topic'] for f in failures]}")
+        print(f"    subscribe → {resp['status']}; schemas={sorted(resp['schemas'])}; "
+              f"failures={[f['topic'] for f in resp.get('failures', [])]}")
 
         # Latched replay, strictly AFTER the subscribe response (the client
         # needs the schema first) — same ordering as the production server.
-        replay = [m for name in schemas for m in self.latched.get(name, [])]
+        replay = [m for name in newly_subscribed for m in self.latched.get(name, [])]
         if replay:
             try:
                 await websocket.send(build_binary_frame(replay))

@@ -35,9 +35,19 @@ import time
 import websockets
 import zstandard as zstd
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common" / "test_support"))
+from pj_bridge_protocol import (  # noqa: E402
+    PROTOCOL_VERSION,
+    build_subscribe_response,
+    inject_response_fields,
+    parse_topic_names,
+    topic_entry,
+)
+
 PORT = 9871
 HOST = "localhost"
-PROTOCOL_VERSION = 1
 
 # Topics advertised to the connecting plugin.
 # encoding="json" means CDR payload is raw JSON bytes — decoded by parser_json.
@@ -51,44 +61,6 @@ BASE_TOPICS = [
 MAGIC = 0x42524A50
 
 
-# ---------------------------------------------------------------------------
-# Protocol helpers (identical across all three test servers)
-# ---------------------------------------------------------------------------
-
-def inject_response_fields(response: dict, request: dict) -> dict:
-    """Mirror production BridgeServer::inject_response_fields: always attach
-    protocol_version, and echo the request's `id` when it is a string."""
-    response["protocol_version"] = PROTOCOL_VERSION
-    rid = request.get("id")
-    if isinstance(rid, str):
-        response["id"] = rid
-    return response
-
-
-def parse_topic_names(topics) -> list[str]:
-    """Extract topic names from a subscribe/unsubscribe `topics` array, which may
-    mix plain strings and {"name": ..., "max_rate_hz": ...} objects (production
-    accepts both; we ignore rate limits)."""
-    names = []
-    if isinstance(topics, list):
-        for item in topics:
-            if isinstance(item, str):
-                names.append(item)
-            elif isinstance(item, dict) and isinstance(item.get("name"), str):
-                names.append(item["name"])
-    return names
-
-
-def topic_entry(topic: dict, include_schemas: bool) -> dict:
-    """One get_topics / topics_changed entry: {name, type} by default;
-    {name, type, encoding, definition} when include_schemas was requested."""
-    entry = {"name": topic["name"], "type": topic["type"]}
-    if topic.get("latched"):
-        entry["latched"] = True  # explicit per-topic flag in the table (production badge)
-    if include_schemas:
-        entry["encoding"] = topic["encoding"]
-        entry["definition"] = topic["definition"]
-    return entry
 
 
 def build_binary_frame(messages: list[tuple[str, int, bytes]]) -> bytes:
@@ -230,35 +202,10 @@ class PjBridgeServer:
         """ADDITIVE subscribe: merge newly-requested topics into the session set.
         Already-subscribed topics are a no-op (no schema echoed) — matching
         production's topics_to_add = requested − current."""
-        requested = parse_topic_names(cmd.get("topics", []))
-        known = {t["name"]: t for t in self.topics}
-        schemas = {}
-        failures = []
-        for name in requested:
-            if name in state["subscribed"]:
-                continue
-            topic = known.get(name)
-            if topic is None:
-                failures.append({"topic": name, "reason": "Topic does not exist"})
-                continue
-            state["subscribed"].add(name)
-            schemas[name] = {"encoding": topic["encoding"], "definition": topic["definition"]}
-
-        resp: dict = {}
-        if not failures:
-            resp["status"] = "success"
-        elif not schemas:
-            resp["status"] = "error"
-            resp["error_code"] = "ALL_SUBSCRIPTIONS_FAILED"
-            resp["message"] = "Failed to subscribe to all requested topics"
-        else:
-            resp["status"] = "partial_success"
-            resp["message"] = "Some subscriptions failed"
-        resp["schemas"] = schemas
-        if failures:
-            resp["failures"] = failures
+        resp, _newly = build_subscribe_response(cmd.get("topics", []), {t["name"]: t for t in self.topics}, state["subscribed"])
         await websocket.send(json.dumps(inject_response_fields(resp, cmd)))
-        print(f"    subscribe → {resp['status']}; schemas={list(schemas)}; failures={[f['topic'] for f in failures]}")
+        print(f"    subscribe → {resp['status']}; schemas={sorted(resp['schemas'])}; "
+              f"failures={[f['topic'] for f in resp.get('failures', [])]}")
 
     async def schedule_late_topic(self):
         """Advertise one extra topic `late_delay` seconds after startup and push a
