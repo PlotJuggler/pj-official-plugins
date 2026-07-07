@@ -65,6 +65,19 @@ so parser bindings are only ever created and read from the poll thread. Binary
 data frames are queued the same way. The desired-topic set from the host is held
 in a mutex-protected latest-wins slot and drained on the poll thread.
 
+## Latched (transient-local) topics
+
+Latched topics (`/tf_static`, `/map`, …) publish a retained sample that late
+subscribers depend on — and under demand-driven subscriptions every subscriber
+is late by construction. The protocol makes this the SERVER's job: retained
+samples are replayed right after the subscribe response that adds the topic
+(the client just ingests them), and topic entries carry an optional
+`latched: true` badge when the server knows a topic is transient-local (see
+the plotjuggler_bridge docs/API.md contract). Detection in the test servers is
+shared (`common/test_support/mcap_qos.py`): recorded `offered_qos_profiles`
+channel metadata when present, a name heuristic otherwise, plus the players'
+`--latch` override.
+
 ## Test scripts
 
 `test_scripts/` holds standalone Python servers that speak the PJ Bridge wire

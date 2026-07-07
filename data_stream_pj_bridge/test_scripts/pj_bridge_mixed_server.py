@@ -98,6 +98,8 @@ def parse_topic_names(topics) -> list:
 def topic_entry(topic: dict, include_schemas: bool) -> dict:
     """{name, type} by default; adds {encoding, definition} when requested."""
     entry = {"name": topic["name"], "type": topic["type"]}
+    if topic.get("latched"):
+        entry["latched"] = True  # explicit per-topic flag in the table (production badge)
     if include_schemas:
         entry["encoding"] = topic["encoding"]
         entry["definition"] = topic["definition"]

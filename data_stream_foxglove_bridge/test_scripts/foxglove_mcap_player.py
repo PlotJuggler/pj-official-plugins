@@ -21,10 +21,14 @@ import collections
 import json
 import re
 import struct
+import sys
 import time
 from pathlib import Path
 
 import websockets
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common" / "test_support"))
+import mcap_qos  # noqa: E402  (shared latched-topic detection)
 from mcap.reader import make_reader
 
 PORT = 8765
@@ -71,22 +75,8 @@ def build_binary_frame(subscription_id: int, log_time_ns: int, data: bytes) -> b
 
 
 def is_latched_channel(ch: dict, extra_latched: set) -> bool:
-    """transient_local emulation: which channels replay to late subscribers.
-
-    Preferred signal: rosbag2's offered_qos_profiles channel metadata (absent in
-    many bags). Fallback: conventional latched topics — *_static (tf_static),
-    /map, /robot_description — plus any --latch override.
-    """
-    topic = ch["topic"]
-    if topic in extra_latched or topic.endswith("_static"):
-        return True
-    if topic in ("/map", "/robot_description"):
-        return True
-    qos = ch.get("metadata", {}).get("offered_qos_profiles", "").lower()
-    # Covers both YAML vocabularies: "durability: 1" (old enum) and
-    # "durability: transient_local" (jazzy+). The leading word boundary keeps
-    # "durability: 1" from also matching "max_durability: 1".
-    return "transient_local" in qos or re.search(r"\bdurability:\s*1\b", qos) is not None
+    """transient_local emulation — shared detection (common/test_support)."""
+    return mcap_qos.is_latched_channel(ch["topic"], ch.get("metadata", {}), extra_latched)
 
 
 class FoxgloveMcapPlayer:

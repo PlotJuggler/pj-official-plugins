@@ -26,6 +26,7 @@ import asyncio
 import json
 import queue
 import struct
+import sys
 import threading
 import time
 from pathlib import Path
@@ -67,8 +68,12 @@ def parse_topic_names(topics) -> list:
 
 
 def topic_entry(channel: dict, include_schemas: bool) -> dict:
-    """{name, type} by default; adds {encoding, definition} when requested."""
+    """{name, type} by default; adds {encoding, definition} when requested;
+    `latched: true` for transient-local channels (production badge — absent
+    means not latched or unknown)."""
     entry = {"name": channel["name"], "type": channel["type"]}
+    if channel.get("latched"):
+        entry["latched"] = True
     if include_schemas:
         entry["encoding"] = channel["encoding"]
         entry["definition"] = channel["definition"]
@@ -88,11 +93,10 @@ def wire_encoding(message_encoding: str, schema_encoding: str) -> str:
     return message_encoding
 
 
-def is_latched_topic(name: str) -> bool:
-    """Transient-local heuristic (mcap carries no QoS): topics whose single
-    retained message late subscribers depend on. Mirrors the production
-    server's latched replay and the foxglove player's list."""
-    return name == "/tf_static" or name.endswith("_static") or name == "/map"
+# Shared latched-topic detection (recorded QoS metadata first, name heuristic
+# fallback) — one implementation for both bridge test players.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common" / "test_support"))
+import mcap_qos  # noqa: E402
 
 
 def load_latched_messages(path: str, topic_names: set) -> dict:
@@ -113,7 +117,7 @@ def load_latched_messages(path: str, topic_names: set) -> dict:
     return latched
 
 
-def load_mcap_metadata(path: str):
+def load_mcap_metadata(path: str, extra_latched: frozenset = frozenset()):
     """Load channels and schemas from the MCAP summary."""
     with open(path, "rb") as f:
         r = make_reader(f)
@@ -128,6 +132,7 @@ def load_mcap_metadata(path: str):
                     "type": sch.name if sch else "",
                     "encoding": wire_encoding(ch.message_encoding or "", sch.encoding if sch else ""),
                     "definition": sch.data.decode("utf-8", errors="replace") if sch and sch.data else "",
+                    "latched": mcap_qos.is_latched_channel(ch.topic, dict(ch.metadata or {}), extra_latched),
                 }
         return channels
 
@@ -171,11 +176,11 @@ def build_binary_frame(messages: list) -> bytes:
 
 
 class PjBridgeMcapPlayer:
-    def __init__(self, mcap_path: str, speed: float):
+    def __init__(self, mcap_path: str, speed: float, extra_latched: frozenset = frozenset()):
         self.mcap_path = mcap_path
         self.speed = speed
-        self.channels = load_mcap_metadata(mcap_path)
-        latch_topics = {ch["name"] for ch in self.channels.values() if is_latched_topic(ch["name"])}
+        self.channels = load_mcap_metadata(mcap_path, extra_latched)
+        latch_topics = {ch["name"] for ch in self.channels.values() if ch["latched"]}
         self.latched = load_latched_messages(mcap_path, latch_topics)
         if self.latched:
             counts = {t: len(m) for t, m in self.latched.items()}
@@ -396,8 +401,8 @@ class PjBridgeMcapPlayer:
                 pass
 
 
-async def main(mcap_path: str, host: str, port: int, speed: float):
-    player = PjBridgeMcapPlayer(mcap_path, speed)
+async def main(mcap_path: str, host: str, port: int, speed: float, extra_latched: frozenset = frozenset()):
+    player = PjBridgeMcapPlayer(mcap_path, speed, extra_latched)
     topics = [ch["name"] for ch in player.channels.values()]
     print(f"PJ Bridge MCAP player — {Path(mcap_path).name}")
     print(f"Listening on ws://{host}:{port}")
@@ -414,11 +419,13 @@ if __name__ == "__main__":
     parser.add_argument("mcap", help="Path to MCAP file")
     parser.add_argument("--host", default=HOST)
     parser.add_argument("--port", type=int, default=PORT)
+    parser.add_argument("--latch", action="append", default=[],
+                        help="extra topic to treat as transient-local (repeatable)")
     parser.add_argument("--speed", type=float, default=1.0,
                         help="Playback speed (1.0=real-time, 0=max)")
     args = parser.parse_args()
 
     try:
-        asyncio.run(main(args.mcap, args.host, args.port, args.speed))
+        asyncio.run(main(args.mcap, args.host, args.port, args.speed, frozenset(args.latch)))
     except KeyboardInterrupt:
         print("\nStopped.")

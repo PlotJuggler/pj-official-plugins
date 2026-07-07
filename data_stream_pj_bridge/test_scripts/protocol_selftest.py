@@ -258,6 +258,31 @@ async def check_unsubscribe_stops_flow(conn, ctx):
     return f"{t0} stopped; {t1} still flowing"
 
 
+async def check_latched_replay(conn, ctx):
+    """A topic advertised `latched: true` must replay its retained sample(s)
+    right after the subscribe response — even though this client subscribed
+    long after the sample was published (under demand subscriptions, every
+    subscriber is late). SKIPs when the server advertises no latched topic."""
+    resp = await conn.request({"command": "get_topics", "id": "gt-latch"})
+    latched = [e["name"] for e in resp.get("topics") or [] if e.get("latched") is True]
+    if not latched:
+        raise SkipCheck("no latched topics advertised")
+    topic = latched[0]
+    resp = await conn.request({"command": "subscribe", "id": "sub-latch", "topics": [topic]})
+    assert_response_envelope(resp, "sub-latch")
+    need(resp.get("status") in ("success", "partial_success"), f"subscribe failed: {resp}")
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        if conn.topic_count.get(topic, 0) > 0:
+            break
+        await asyncio.sleep(0.05)
+    need(conn.topic_count.get(topic, 0) > 0,
+         f"no retained frame for latched topic {topic} within 3s of subscribe")
+    # cleanup so later checks see a quiet wire
+    await conn.request({"command": "unsubscribe", "id": "unsub-latch", "topics": [topic]})
+    return f"{topic} replayed {conn.topic_count.get(topic)} retained frame(s) to a late subscriber"
+
+
 async def check_unknown_topic_partial_success(conn, ctx):
     t0 = ctx.get("t0")
     need(t0, "prior checks did not establish a known topic")
@@ -323,6 +348,7 @@ CHECKS = [
     ("subscribe_additive", check_subscribe_additive),
     ("additive_data_flow", check_additive_data_flow),
     ("unsubscribe_stops_flow", check_unsubscribe_stops_flow),
+    ("latched_replay", check_latched_replay),
     ("unknown_topic_partial_success", check_unknown_topic_partial_success),
     ("all_failed_error", check_all_failed_error),
 ]

@@ -83,6 +83,8 @@ def topic_entry(topic: dict, include_schemas: bool) -> dict:
     """One get_topics / topics_changed entry: {name, type} by default;
     {name, type, encoding, definition} when include_schemas was requested."""
     entry = {"name": topic["name"], "type": topic["type"]}
+    if topic.get("latched"):
+        entry["latched"] = True  # explicit per-topic flag in the table (production badge)
     if include_schemas:
         entry["encoding"] = topic["encoding"]
         entry["definition"] = topic["definition"]
