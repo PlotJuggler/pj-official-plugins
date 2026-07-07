@@ -76,7 +76,7 @@ TEST(McpServer, ToolsList) {
       rpc(fx.server.url(), fx.server.token(), {{"jsonrpc", "2.0"}, {"id", 2}, {"method", "tools/list"}});
   EXPECT_EQ(status, 200);
   ASSERT_TRUE(body.contains("result"));
-  EXPECT_EQ(body["result"]["tools"].size(), 7u);
+  EXPECT_EQ(body["result"]["tools"].size(), 14u);
 }
 
 TEST(McpServer, ToolsCallRunsTool) {

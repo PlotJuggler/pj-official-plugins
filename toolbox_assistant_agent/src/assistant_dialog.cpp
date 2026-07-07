@@ -99,6 +99,14 @@ void AssistantDialog::setDataProcessorsProvider(std::function<PJ::sdk::DataProce
   dp_provider_ = std::move(provider);
 }
 
+void AssistantDialog::setPlaybackProvider(std::function<PJ::sdk::PlaybackHostView()> provider) {
+  playback_provider_ = std::move(provider);
+}
+
+void AssistantDialog::setViewportProvider(std::function<PJ::sdk::ViewportHostView()> provider) {
+  viewport_provider_ = std::move(provider);
+}
+
 void AssistantDialog::setSettings(PJ::sdk::SettingsView settings) {
   settings_ = settings;
   rebuildBackend();
@@ -111,6 +119,12 @@ ToolContext AssistantDialog::makeToolContext() {
   }
   if (dp_provider_) {
     ctx.dp = dp_provider_();
+  }
+  if (playback_provider_) {
+    ctx.playback = playback_provider_();
+  }
+  if (viewport_provider_) {
+    ctx.viewport = viewport_provider_();
   }
   if (runtime_host_provider_) {
     const PJ::ToolboxRuntimeHostView rt = runtime_host_provider_();

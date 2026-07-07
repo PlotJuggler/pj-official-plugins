@@ -25,41 +25,49 @@
      </item>
      <item row="1" column="0">
       <widget class="QLabel" name="ollamaUrlLabel">
+       <property name="pj_enable_when" stdset="0"><string>backendCombo:0</string></property>
        <property name="text"><string>Ollama URL</string></property>
       </widget>
      </item>
      <item row="1" column="1">
       <widget class="QLineEdit" name="ollamaUrlEdit">
+       <property name="pj_enable_when" stdset="0"><string>backendCombo:0</string></property>
        <property name="placeholderText"><string>http://localhost:11434</string></property>
       </widget>
      </item>
      <item row="2" column="0">
       <widget class="QLabel" name="ollamaModelLabel">
+       <property name="pj_enable_when" stdset="0"><string>backendCombo:0</string></property>
        <property name="text"><string>Ollama model</string></property>
       </widget>
      </item>
      <item row="2" column="1">
       <widget class="QLineEdit" name="ollamaModelEdit">
+       <property name="pj_enable_when" stdset="0"><string>backendCombo:0</string></property>
        <property name="placeholderText"><string>qwen2.5 / llama3.1</string></property>
       </widget>
      </item>
      <item row="3" column="0">
       <widget class="QLabel" name="claudeModelLabel">
+       <property name="pj_enable_when" stdset="0"><string>backendCombo:1</string></property>
        <property name="text"><string>Claude model</string></property>
       </widget>
      </item>
      <item row="3" column="1">
       <widget class="QLineEdit" name="claudeModelEdit">
+       <property name="pj_enable_when" stdset="0"><string>backendCombo:1</string></property>
        <property name="placeholderText"><string>(default - leave blank)</string></property>
       </widget>
      </item>
      <item row="4" column="0">
       <widget class="QLabel" name="claudeCliPathLabel">
+       <property name="pj_enable_when" stdset="0"><string>backendCombo:1</string></property>
        <property name="text"><string>claude CLI path</string></property>
       </widget>
      </item>
      <item row="4" column="1">
       <widget class="QLineEdit" name="claudeCliPathEdit">
+       <property name="pj_enable_when" stdset="0"><string>backendCombo:1</string></property>
        <property name="placeholderText"><string>claude (on PATH) or /full/path/to/claude</string></property>
       </widget>
      </item>

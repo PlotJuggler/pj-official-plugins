@@ -36,6 +36,13 @@ class AssistantToolbox : public PJ::ToolboxPluginBase {
     // clean "service unavailable" to the model instead of failing to bind.
     dp_view_ = services.get<PJ::sdk::DataProcessorsHostService>().value_or(PJ::sdk::DataProcessorsHostView{});
     dialog_.setDataProcessorsProvider([this]() { return dp_view_; });
+    // App-control path: pj.playback.v1 (play/pause/seek/rate/state) and
+    // pj.viewport.v1 (zoom). Optional on the same terms — the transport/zoom
+    // tools degrade to a clean "host did not expose" failure the model reads.
+    playback_view_ = services.get<PJ::sdk::PlaybackHostService>().value_or(PJ::sdk::PlaybackHostView{});
+    dialog_.setPlaybackProvider([this]() { return playback_view_; });
+    viewport_view_ = services.get<PJ::sdk::ViewportHostService>().value_or(PJ::sdk::ViewportHostView{});
+    dialog_.setViewportProvider([this]() { return viewport_view_; });
     // Optional pj.settings.v1 store (QSettings-like persistence). An unbound
     // view reads defaults / drops writes, so this is safe when the host omits it.
     dialog_.setSettings(services.get<PJ::sdk::SettingsStoreService>().value_or(PJ::sdk::SettingsView{}));
@@ -49,6 +56,8 @@ class AssistantToolbox : public PJ::ToolboxPluginBase {
  private:
   AssistantDialog dialog_;
   PJ::sdk::DataProcessorsHostView dp_view_;
+  PJ::sdk::PlaybackHostView playback_view_;
+  PJ::sdk::ViewportHostView viewport_view_;
 };
 
 }  // namespace assistant_agent

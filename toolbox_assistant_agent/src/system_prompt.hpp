@@ -20,6 +20,12 @@ inline constexpr const char* kSystemPrompt =
     "drag it onto a plot. "
     "You can only read data and create new derived series/markers; you cannot delete or modify "
     "existing data — do not claim otherwise. "
+    "When the host exposes them, you can also drive the app like a user: play/pause/seek/"
+    "set_playback_rate move the time cursor, and zoom_to_time_range/zoom_reset frame the plots. "
+    "All of those speak DISPLAY-AXIS SECONDS — the numbers on the plot X axes and in "
+    "get_playback_state's range. To seek or zoom to a feature you found with read_series buckets, "
+    "compute: display time = stats.t_start_display_s + bucket.t. Display times can shift if the "
+    "user edits source time offsets, so re-read state rather than reusing old numbers. "
     "Always call a tool to get real data rather than guessing, and give the user a short, plain "
     "summary of what you did.";
 

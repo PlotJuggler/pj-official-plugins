@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
@@ -108,6 +109,102 @@ struct RecordingDpHost {
   }
 };
 
+// Fake pj.playback.v1 host: records the last call, serves a settable state,
+// and converts absolute ns -> display seconds with a fixed offset so the
+// read_series enrichment is observable.
+struct FakePlaybackHost {
+  bool play_called = false;
+  bool pause_called = false;
+  double last_seek_s = -1.0;
+  double last_rate = -1.0;
+  PJ_playback_state_t state{
+      .is_playing = false, .current_time_s = 3.0, .range_min_s = 0.0, .range_max_s = 10.0, .playback_rate = 1.0};
+  bool fail_state = false;
+  std::string last_topic;
+  std::int64_t display_offset_ns = 0;
+
+  static bool tPlay(void* ctx, PJ_error_t*) noexcept {
+    static_cast<FakePlaybackHost*>(ctx)->play_called = true;
+    return true;
+  }
+  static bool tPause(void* ctx, PJ_error_t*) noexcept {
+    static_cast<FakePlaybackHost*>(ctx)->pause_called = true;
+    return true;
+  }
+  static bool tSeek(void* ctx, double time_s, PJ_error_t*) noexcept {
+    auto* self = static_cast<FakePlaybackHost*>(ctx);
+    self->last_seek_s = time_s;
+    // Mirror the real host: clamp into range and reflect it in the state the
+    // subsequent get_state echo reads.
+    self->state.current_time_s = std::clamp(time_s, self->state.range_min_s, self->state.range_max_s);
+    return true;
+  }
+  static bool tSetRate(void* ctx, double rate, PJ_error_t*) noexcept {
+    static_cast<FakePlaybackHost*>(ctx)->last_rate = rate;
+    return true;
+  }
+  static bool tGetState(void* ctx, PJ_playback_state_t* out_state, PJ_error_t* err) noexcept {
+    auto* self = static_cast<FakePlaybackHost*>(ctx);
+    if (self->fail_state) {
+      PJ::sdk::fillError(err, 2, "fake", "state boom");
+      return false;
+    }
+    *out_state = self->state;
+    return true;
+  }
+  static bool tToDisplayTime(
+      void* ctx, PJ_string_view_t topic, std::int64_t absolute_ns, double* out_display_s, PJ_error_t*) noexcept {
+    auto* self = static_cast<FakePlaybackHost*>(ctx);
+    self->last_topic = std::string(PJ::sdk::toStringView(topic));
+    *out_display_s = static_cast<double>(absolute_ns - self->display_offset_ns) * 1e-9;
+    return true;
+  }
+
+  PJ::sdk::PlaybackHostView view() {
+    static const PJ_playback_host_vtable_t vtable = {
+        .protocol_version = 1,
+        .struct_size = sizeof(PJ_playback_host_vtable_t),
+        .play = &FakePlaybackHost::tPlay,
+        .pause = &FakePlaybackHost::tPause,
+        .seek = &FakePlaybackHost::tSeek,
+        .set_playback_rate = &FakePlaybackHost::tSetRate,
+        .get_state = &FakePlaybackHost::tGetState,
+        .to_display_time = &FakePlaybackHost::tToDisplayTime,
+    };
+    return PJ::sdk::PlaybackHostView(PJ_playback_host_t{this, &vtable});
+  }
+};
+
+// Fake pj.viewport.v1 host: records the last zoom call.
+struct FakeViewportHost {
+  int zoom_calls = 0;
+  double last_t0_s = 0.0;
+  double last_t1_s = 0.0;
+  bool reset_called = false;
+
+  static bool tZoom(void* ctx, double t0_s, double t1_s, PJ_error_t*) noexcept {
+    auto* self = static_cast<FakeViewportHost*>(ctx);
+    ++self->zoom_calls;
+    self->last_t0_s = t0_s;
+    self->last_t1_s = t1_s;
+    return true;
+  }
+  static bool tReset(void* ctx, PJ_error_t*) noexcept {
+    static_cast<FakeViewportHost*>(ctx)->reset_called = true;
+    return true;
+  }
+
+  PJ::sdk::ViewportHostView view() {
+    static const PJ_viewport_host_vtable_t vtable = {
+        .protocol_version = 1,
+        .struct_size = sizeof(PJ_viewport_host_vtable_t),
+        .zoom_to_time_range = &FakeViewportHost::tZoom,
+        .zoom_reset = &FakeViewportHost::tReset,
+    };
+    return PJ::sdk::ViewportHostView(PJ_viewport_host_t{this, &vtable});
+  }
+};
+
 // Populate a small catalog: /imu with fields x (0..4) and y (constant 2).
 // ToolboxTestStore is non-movable (it hands out pointers into itself), so
 // callers construct it locally and pass it here by reference.
@@ -128,11 +225,13 @@ ToolContext makeCtx(PJ::testing::ToolboxTestStore& store, RecordingDpHost* dp) {
 
 TEST(ToolRegistry, ListsAllToolsAndSchemas) {
   ToolRegistry reg;
-  EXPECT_EQ(reg.tools().size(), 7u);
+  EXPECT_EQ(reg.tools().size(), 14u);
   // Both serializations expose every tool by name.
-  EXPECT_EQ(reg.toOllamaTools().size(), 7u);
-  EXPECT_EQ(reg.toMcpToolsList().size(), 7u);
+  EXPECT_EQ(reg.toOllamaTools().size(), 14u);
+  EXPECT_EQ(reg.toMcpToolsList().size(), 14u);
   EXPECT_NE(reg.find("create_derived_series"), nullptr);
+  EXPECT_NE(reg.find("seek"), nullptr);
+  EXPECT_NE(reg.find("zoom_to_time_range"), nullptr);
   // remove_markers exists but is scoped to the assistant's own marker set;
   // no tool can touch user data destructively.
   EXPECT_NE(reg.find("remove_markers"), nullptr);
@@ -355,6 +454,200 @@ TEST(ToolRegistry, CreateMarkersDegradesOnHostRejection) {
   auto r = reg.execute("create_markers", {{"series", "/imu/x"}, {"comparison", ">"}, {"threshold", 1.0}}, ctx);
   EXPECT_FALSE(r.ok);
   EXPECT_NE(r.content.find("rejected"), std::string::npos);
+}
+
+// --- playback / viewport tools ----------------------------------------------
+
+TEST(ToolRegistry, PlaybackToolsEchoFullState) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlaybackHost pb;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  for (const char* tool : {"play", "pause", "get_playback_state"}) {
+    auto r = reg.execute(tool, json::object(), ctx);
+    ASSERT_TRUE(r.ok) << tool << ": " << r.content;
+    auto j = json::parse(r.content);
+    EXPECT_EQ(j["playing"], false) << tool;
+    EXPECT_DOUBLE_EQ(j["current_time_s"].get<double>(), 3.0) << tool;
+    EXPECT_DOUBLE_EQ(j["range"]["min_s"].get<double>(), 0.0) << tool;
+    EXPECT_DOUBLE_EQ(j["range"]["max_s"].get<double>(), 10.0) << tool;
+    EXPECT_DOUBLE_EQ(j["rate"].get<double>(), 1.0) << tool;
+  }
+  EXPECT_TRUE(pb.play_called);
+  EXPECT_TRUE(pb.pause_called);
+}
+
+TEST(ToolRegistry, SeekForwardsTimeAndValidatesArgs) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlaybackHost pb;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  auto r = reg.execute("seek", {{"time_s", 7.25}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_DOUBLE_EQ(pb.last_seek_s, 7.25);
+
+  // Missing / wrong-typed time_s -> clean failure, host untouched.
+  pb.last_seek_s = -1.0;
+  EXPECT_FALSE(reg.execute("seek", json::object(), ctx).ok);
+  EXPECT_FALSE(reg.execute("seek", {{"time_s", "later"}}, ctx).ok);
+  EXPECT_DOUBLE_EQ(pb.last_seek_s, -1.0);
+
+  // Out-of-range seek: the echoed current_time_s is where the cursor LANDED
+  // (the host clamps) — the contract the tool description promises.
+  r = reg.execute("seek", {{"time_s", 999.0}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_DOUBLE_EQ(json::parse(r.content)["current_time_s"].get<double>(), 10.0);
+}
+
+TEST(ToolRegistry, SetPlaybackRateValidatesArgs) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlaybackHost pb;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  EXPECT_FALSE(reg.execute("set_playback_rate", json::object(), ctx).ok);
+  EXPECT_FALSE(reg.execute("set_playback_rate", {{"rate", "fast"}}, ctx).ok);
+  EXPECT_DOUBLE_EQ(pb.last_rate, -1.0);  // host untouched
+}
+
+TEST(ToolRegistry, StateReadFailureDegradesCleanly) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlaybackHost pb;
+  pb.fail_state = true;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  // get_playback_state converts the failed read into a tool failure.
+  auto r = reg.execute("get_playback_state", json::object(), ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("state boom"), std::string::npos);
+
+  // A mutation still succeeds; the echo self-describes the missing state.
+  r = reg.execute("play", json::object(), ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_TRUE(pb.play_called);
+  EXPECT_NE(r.content.find("state_unavailable"), std::string::npos);
+}
+
+TEST(ToolRegistry, SetPlaybackRateClampsPluginSide) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlaybackHost pb;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  ASSERT_TRUE(reg.execute("set_playback_rate", {{"rate", 0.25}}, ctx).ok);
+  EXPECT_DOUBLE_EQ(pb.last_rate, 0.25);
+  ASSERT_TRUE(reg.execute("set_playback_rate", {{"rate", 10000.0}}, ctx).ok);
+  EXPECT_DOUBLE_EQ(pb.last_rate, 20.0);  // clamped high
+  ASSERT_TRUE(reg.execute("set_playback_rate", {{"rate", 0.0}}, ctx).ok);
+  EXPECT_DOUBLE_EQ(pb.last_rate, 0.05);  // clamped low (never 0 -> host reject loop)
+}
+
+TEST(ToolRegistry, PlaybackToolsDegradeWithoutHost) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);  // no playback host bound
+
+  for (const char* tool : {"play", "pause", "get_playback_state"}) {
+    auto r = reg.execute(tool, json::object(), ctx);
+    EXPECT_FALSE(r.ok) << tool;
+    EXPECT_NE(r.content.find("pj.playback.v1"), std::string::npos) << tool;
+  }
+  EXPECT_FALSE(reg.execute("seek", {{"time_s", 1.0}}, ctx).ok);
+}
+
+TEST(ToolRegistry, ZoomForwardsRangeAndValidates) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakeViewportHost vp;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.viewport = vp.view();
+
+  auto r = reg.execute("zoom_to_time_range", {{"start_s", 2.0}, {"end_s", 8.5}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(vp.zoom_calls, 1);
+  EXPECT_DOUBLE_EQ(vp.last_t0_s, 2.0);
+  EXPECT_DOUBLE_EQ(vp.last_t1_s, 8.5);
+  auto j = json::parse(r.content);
+  EXPECT_DOUBLE_EQ(j["zoomed"]["start_s"].get<double>(), 2.0);
+
+  // start >= end is rejected BEFORE the host sees it.
+  EXPECT_FALSE(reg.execute("zoom_to_time_range", {{"start_s", 9.0}, {"end_s", 1.0}}, ctx).ok);
+  EXPECT_FALSE(reg.execute("zoom_to_time_range", {{"start_s", 5.0}, {"end_s", 5.0}}, ctx).ok);
+  EXPECT_FALSE(reg.execute("zoom_to_time_range", {{"start_s", 1.0}}, ctx).ok);  // missing end_s
+  EXPECT_EQ(vp.zoom_calls, 1);
+}
+
+TEST(ToolRegistry, ZoomResetForwardsAndDegrades) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakeViewportHost vp;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.viewport = vp.view();
+
+  ASSERT_TRUE(reg.execute("zoom_reset", json::object(), ctx).ok);
+  EXPECT_TRUE(vp.reset_called);
+
+  auto unbound = makeCtx(store, nullptr);
+  auto r = reg.execute("zoom_reset", json::object(), unbound);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("pj.viewport.v1"), std::string::npos);
+}
+
+TEST(ToolRegistry, ZoomEchoesPlaybackStateWhenBound) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlaybackHost pb;
+  FakeViewportHost vp;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+  ctx.viewport = vp.view();
+
+  auto r = reg.execute("zoom_to_time_range", {{"start_s", 0.0}, {"end_s", 1.0}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  ASSERT_TRUE(j.contains("playback"));
+  EXPECT_DOUBLE_EQ(j["playback"]["current_time_s"].get<double>(), 3.0);
+}
+
+TEST(ToolRegistry, ReadSeriesStatsGainDisplayStartWhenPlaybackBound) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlaybackHost pb;
+  pb.display_offset_ns = -2'000'000'000;  // display = absolute + 2 s
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  auto r = reg.execute("read_series", {{"series", "/imu/x"}, {"mode", "stats"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  ASSERT_TRUE(j["stats"].contains("t_start_display_s")) << r.content;
+  // /imu/x starts at absolute 0 ns -> display 2.0 s under the fake offset.
+  EXPECT_DOUBLE_EQ(j["stats"]["t_start_display_s"].get<double>(), 2.0);
+  EXPECT_EQ(pb.last_topic, "/imu");  // converted against the OWNING topic
+
+  // Without a playback host the field is absent (not an error).
+  auto plain = makeCtx(store, nullptr);
+  r = reg.execute("read_series", {{"series", "/imu/x"}, {"mode", "stats"}}, plain);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_FALSE(json::parse(r.content)["stats"].contains("t_start_display_s"));
 }
 
 TEST(ToolRegistry, ReportStatus) {

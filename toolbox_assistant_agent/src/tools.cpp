@@ -88,11 +88,17 @@ std::string canonicalSeriesPath(std::string_view s) {
   return out;
 }
 
+// A resolved "topic/field" curve path: the field handle plus the owning topic
+// name (the key the playback host's display-time conversion wants).
+struct ResolvedSeries {
+  PJ::sdk::FieldHandle handle;
+  std::string topic;
+};
+
 // Resolve one "topic/field" curve path (joinSeriesPath convention, the same
-// the rest of PJ4 uses) to its handle by scanning the catalog — models call
-// read_series repeatedly per turn, so avoid materializing a full path index.
-std::optional<PJ::sdk::FieldHandle> resolveSeriesPath(
-    const PJ::sdk::CatalogSnapshot& catalog, const std::string& series) {
+// the rest of PJ4 uses) by scanning the catalog — models call read_series
+// repeatedly per turn, so avoid materializing a full path index.
+std::optional<ResolvedSeries> resolveSeriesPath(const PJ::sdk::CatalogSnapshot& catalog, const std::string& series) {
   auto topics = catalog.topics();
   auto fields = catalog.fields();
   for (const auto& topic : topics) {
@@ -103,7 +109,7 @@ std::optional<PJ::sdk::FieldHandle> resolveSeriesPath(
         break;
       }
       if (joinSeriesPath(topic_name, PJ::sdk::toStringView(fields[idx].name)) == series) {
-        return fields[idx].handle;
+        return ResolvedSeries{fields[idx].handle, std::string(topic_name)};
       }
     }
   }
@@ -241,11 +247,11 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
   if (!catalog) {
     return ToolResult::failure("catalog unavailable: " + catalog.error());
   }
-  auto handle = resolveSeriesPath(*catalog, series);
-  if (!handle) {
+  auto resolved = resolveSeriesPath(*catalog, series);
+  if (!resolved) {
     return ToolResult::failure("no series '" + series + "' (use list_topics / describe_topic)");
   }
-  auto view = ctx.host.readSeries(*handle);
+  auto view = ctx.host.readSeries(resolved->handle);
   if (!view) {
     return ToolResult::failure("read failed for '" + series + "': " + view.error());
   }
@@ -256,8 +262,18 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
   }
 
   const SeriesStats stats = computeStats(ts, vals);
+  json stats_json = statsToJson(stats);
+  // With a playback host bound, report where this series STARTS on the plot
+  // axis, so the model can turn bucket-relative times into seek/zoom targets:
+  // display time of a bucket = t_start_display_s + bucket.t. Best-effort — the
+  // conversion is frame-dependent (user-editable offsets), never an error here.
+  if (ctx.playback.valid() && stats.count > 0) {
+    if (auto display_s = ctx.playback.toDisplayTime(resolved->topic, stats.t_start_ns)) {
+      stats_json["t_start_display_s"] = *display_s;
+    }
+  }
   if (mode == "stats") {
-    return ToolResult::success(json({{"series", series}, {"stats", statsToJson(stats)}}).dump());
+    return ToolResult::success(json({{"series", series}, {"stats", stats_json}}).dump());
   }
   if (mode == "buckets") {
     // Coarsen until the serialized payload fits the response cap so spiky data
@@ -269,7 +285,7 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
       for (const auto& b : buckets) {
         arr.push_back({{"t", b.t_rel_s}, {"min", b.min}, {"max", b.max}, {"mean", b.mean}, {"n", b.count}});
       }
-      json out = {{"series", series}, {"stats", statsToJson(stats)}, {"buckets", arr}};
+      json out = {{"series", series}, {"stats", stats_json}, {"buckets", arr}};
       std::string dumped = out.dump();
       if (dumped.size() <= kMaxResponseBytes || max_points <= 16) {
         if (dumped.size() > kMaxResponseBytes) {
@@ -491,6 +507,119 @@ ToolResult removeMarkers(const json& /*args*/, ToolContext& ctx) {
   return ToolResult::success(json({{"removed", "assistant_markers"}}).dump());
 }
 
+// --- playback / viewport executors ------------------------------------------
+
+constexpr const char* kNoPlayback = "the host did not expose pj.playback.v1 (cannot control playback)";
+constexpr const char* kNoViewport = "the host did not expose pj.viewport.v1 (cannot zoom plots)";
+
+json stateToJson(const PJ::sdk::PlaybackState& state) {
+  return {
+      {"playing", state.is_playing},
+      {"current_time_s", state.current_time_s},
+      {"range", {{"min_s", state.range_min_s}, {"max_s", state.range_max_s}}},
+      {"rate", state.playback_rate}};
+}
+
+// Full transport snapshot, echoed by every playback mutation so the model sees
+// the effect (e.g. a clamped seek) without a follow-up call. Best-effort: a
+// failed state read after a SUCCESSFUL mutation self-describes instead of
+// failing the tool. All times are display-axis seconds — the numbers on the
+// plot X axes.
+json playbackStateJson(ToolContext& ctx) {
+  auto state = ctx.playback.state();
+  if (!state) {
+    return {{"state_unavailable", state.error()}};
+  }
+  return stateToJson(*state);
+}
+
+// Shared shell of the playback mutation tools: valid() gate, the host call,
+// error wrapping, and the state echo. Arg validation stays per-tool, above.
+template <class Op>
+ToolResult runPlaybackOp(ToolContext& ctx, const char* verb, Op&& op) {
+  if (!ctx.playback.valid()) {
+    return ToolResult::failure(kNoPlayback);
+  }
+  if (auto status = op(); !status) {
+    return ToolResult::failure(std::string(verb) + " failed: " + status.error());
+  }
+  return ToolResult::success(playbackStateJson(ctx).dump());
+}
+
+ToolResult playbackPlay(const json& /*args*/, ToolContext& ctx) {
+  return runPlaybackOp(ctx, "play", [&] { return ctx.playback.play(); });
+}
+
+ToolResult playbackPause(const json& /*args*/, ToolContext& ctx) {
+  return runPlaybackOp(ctx, "pause", [&] { return ctx.playback.pause(); });
+}
+
+ToolResult playbackSeek(const json& args, ToolContext& ctx) {
+  if (!args.contains("time_s") || !args["time_s"].is_number()) {
+    return ToolResult::failure("seek requires a numeric 'time_s' (display-axis seconds)");
+  }
+  // The echoed current_time_s shows the host's clamp into the playback range.
+  return runPlaybackOp(ctx, "seek", [&] { return ctx.playback.seek(args["time_s"].get<double>()); });
+}
+
+ToolResult playbackSetRate(const json& args, ToolContext& ctx) {
+  if (!args.contains("rate") || !args["rate"].is_number()) {
+    return ToolResult::failure("set_playback_rate requires a numeric 'rate' (> 0; 1.0 = real time)");
+  }
+  // Bound the blast radius before the host sees it: a model asking for 0 or
+  // 10000x gets the nearest sane speed instead of an error loop.
+  const double rate = std::clamp(args["rate"].get<double>(), 0.05, 20.0);
+  return runPlaybackOp(ctx, "set_playback_rate", [&] { return ctx.playback.setPlaybackRate(rate); });
+}
+
+ToolResult playbackGetState(const json& /*args*/, ToolContext& ctx) {
+  if (!ctx.playback.valid()) {
+    return ToolResult::failure(kNoPlayback);
+  }
+  auto state = ctx.playback.state();
+  if (!state) {
+    return ToolResult::failure(state.error());
+  }
+  return ToolResult::success(stateToJson(*state).dump());
+}
+
+ToolResult zoomToTimeRange(const json& args, ToolContext& ctx) {
+  if (!ctx.viewport.valid()) {
+    return ToolResult::failure(kNoViewport);
+  }
+  if (!args.contains("start_s") || !args["start_s"].is_number() || !args.contains("end_s") ||
+      !args["end_s"].is_number()) {
+    return ToolResult::failure("zoom_to_time_range requires numeric 'start_s' and 'end_s' (display-axis seconds)");
+  }
+  const double start_s = args["start_s"].get<double>();
+  const double end_s = args["end_s"].get<double>();
+  if (start_s >= end_s) {
+    return ToolResult::failure("'start_s' must be less than 'end_s'");
+  }
+  if (auto status = ctx.viewport.zoomToTimeRange(start_s, end_s); !status) {
+    return ToolResult::failure("zoom failed: " + status.error());
+  }
+  json out = {{"zoomed", {{"start_s", start_s}, {"end_s", end_s}}}};
+  if (ctx.playback.valid()) {
+    out["playback"] = playbackStateJson(ctx);
+  }
+  return ToolResult::success(out.dump());
+}
+
+ToolResult zoomReset(const json& /*args*/, ToolContext& ctx) {
+  if (!ctx.viewport.valid()) {
+    return ToolResult::failure(kNoViewport);
+  }
+  if (auto status = ctx.viewport.zoomReset(); !status) {
+    return ToolResult::failure("zoom_reset failed: " + status.error());
+  }
+  json out = {{"zoom", "reset"}};
+  if (ctx.playback.valid()) {
+    out["playback"] = playbackStateJson(ctx);
+  }
+  return ToolResult::success(out.dump());
+}
+
 ToolResult reportStatus(const json& /*args*/, ToolContext& ctx) {
   auto catalog = ctx.host.catalogSnapshot();
   if (!catalog) {
@@ -535,7 +664,10 @@ ToolRegistry::ToolRegistry() {
   add(
       {"read_series",
        "Read summary statistics ('stats') or a min/max-preserving downsample ('buckets') of one "
-       "series. Never returns raw samples. Use the full 'topic/field' path.",
+       "series. Never returns raw samples. Use the full 'topic/field' path. Bucket times 't' are "
+       "seconds relative to the series start; when the host supports playback control (and the "
+       "topic's display offset resolves), stats also carry 't_start_display_s' (where the series "
+       "starts on the plot axis), so a bucket's display/seek time = t_start_display_s + t.",
        {{"type", "object"},
         {"properties",
          {{"series", {{"type", "string"}, {"description", "topic/field path (see describe_topic)"}}},
@@ -610,6 +742,59 @@ ToolRegistry::ToolRegistry() {
        "Remove the assistant-created marker set from all plots. Only affects markers this "
        "assistant created; cannot delete user data.",
        empty_obj, &removeMarkers});
+
+  add(
+      {"play",
+       "Start playback (the time cursor advances across all plots). Idempotent. Returns the full "
+       "playback state; all times are display-axis seconds — the numbers on the plot X axes.",
+       empty_obj, &playbackPlay});
+
+  add(
+      {"pause",
+       "Pause/stop playback (the time cursor stops where it is). Idempotent. Returns the full "
+       "playback state.",
+       empty_obj, &playbackPause});
+
+  add(
+      {"seek",
+       "Move the playback cursor to a time, in display-axis seconds (the numbers on the plot X "
+       "axes and in the playback state's 'range'). The host clamps into the range — the returned "
+       "'current_time_s' is where the cursor actually landed. To seek to a feature found via "
+       "read_series buckets: time = stats.t_start_display_s + bucket.t.",
+       {{"type", "object"},
+        {"properties", {{"time_s", {{"type", "number"}, {"description", "target time in display-axis seconds"}}}}},
+        {"required", json::array({"time_s"})}},
+       &playbackSeek});
+
+  add(
+      {"set_playback_rate",
+       "Set the playback speed multiplier (1.0 = real time, 0.25 = quarter speed, 2.0 = double). "
+       "Clamped to [0.05, 20]. Returns the full playback state.",
+       {{"type", "object"},
+        {"properties", {{"rate", {{"type", "number"}, {"description", "speed multiplier, > 0"}}}}},
+        {"required", json::array({"rate"})}},
+       &playbackSetRate});
+
+  add(
+      {"get_playback_state",
+       "Read the playback state: playing, current_time_s, range {min_s, max_s}, rate. All times "
+       "are display-axis seconds. During live streaming the range grows on every ingest tick.",
+       empty_obj, &playbackGetState});
+
+  add(
+      {"zoom_to_time_range",
+       "Zoom every open time-series plot to the X window [start_s, end_s], in display-axis "
+       "seconds (each plot keeps its own Y range). To frame a feature found via read_series "
+       "buckets: start/end = stats.t_start_display_s + bucket.t of the buckets around it. Use "
+       "zoom_reset to go back to the full view.",
+       {{"type", "object"},
+        {"properties",
+         {{"start_s", {{"type", "number"}, {"description", "left edge, display-axis seconds"}}},
+          {"end_s", {{"type", "number"}, {"description", "right edge, display-axis seconds"}}}}},
+        {"required", json::array({"start_s", "end_s"})}},
+       &zoomToTimeRange});
+
+  add({"zoom_reset", "Reset every open plot to fit its data (undo any zoom_to_time_range).", empty_obj, &zoomReset});
 
   add(
       {"report_status", "Report a compact summary of the loaded data (source/topic/field counts).", empty_obj,

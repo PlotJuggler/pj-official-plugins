@@ -30,6 +30,8 @@ struct ToolResult {
 struct ToolContext {
   PJ::sdk::ToolboxHostView host;              // catalog snapshot + readSeries
   PJ::sdk::DataProcessorsHostView dp;         // createTransform / createMarkers / validateScript
+  PJ::sdk::PlaybackHostView playback;         // play/pause/seek/rate/state + ns->display-seconds
+  PJ::sdk::ViewportHostView viewport;         // zoom plots to a time range / reset to fit
   std::function<void()> notify_data_changed;  // runtimeHost().notifyDataChanged() after a create
   std::string language = "luau";              // transform/marker script backend
 };

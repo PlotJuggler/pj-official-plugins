@@ -83,6 +83,8 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   void setHostProvider(std::function<PJ::sdk::ToolboxHostView()> provider);
   void setRuntimeHostProvider(std::function<PJ::ToolboxRuntimeHostView()> provider);
   void setDataProcessorsProvider(std::function<PJ::sdk::DataProcessorsHostView()> provider);
+  void setPlaybackProvider(std::function<PJ::sdk::PlaybackHostView()> provider);
+  void setViewportProvider(std::function<PJ::sdk::ViewportHostView()> provider);
   void setSettings(PJ::sdk::SettingsView settings);
 
  private:
@@ -128,6 +130,8 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   std::function<PJ::sdk::ToolboxHostView()> host_provider_;
   std::function<PJ::ToolboxRuntimeHostView()> runtime_host_provider_;
   std::function<PJ::sdk::DataProcessorsHostView()> dp_provider_;
+  std::function<PJ::sdk::PlaybackHostView()> playback_provider_;
+  std::function<PJ::sdk::ViewportHostView()> viewport_provider_;
   PJ::sdk::SettingsView settings_;
 };
 
