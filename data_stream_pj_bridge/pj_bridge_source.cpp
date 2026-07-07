@@ -521,11 +521,6 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   void handleSubscribeResponse(const nlohmann::json& json) {
     const auto& schemas = json["schemas"];
     if (schemas.is_object()) {
-      nlohmann::json parser_cfg;
-      pj::array_policy::arrayLimitToJson(parser_cfg, array_limit_);
-      parser_cfg["use_timestamp"] = use_timestamp_;
-      const std::string parser_cfg_str = parser_cfg.dump();
-
       for (auto it = schemas.begin(); it != schemas.end(); ++it) {
         const std::string& topic_name = it.key();
         // A LATE response for a topic the host has since paused must not
@@ -539,6 +534,19 @@ class PjBridgeSource : public PJ::StreamSourceBase {
         const std::string encoding = stringFieldOr(schema_obj, "encoding", "cdr");
         const std::string definition = stringField(schema_obj, "definition");
         const std::string schema_name = resolveSchemaName(topic_name);
+
+        // Per-topic parser config, mirroring the foxglove source: parser_ros
+        // needs schema_encoding to compile with the RIGHT schema language —
+        // without it, it falls back to its ros2msg default, which happens to
+        // work for the ROS2 backend but miscompiles the FastDDS backend's
+        // omgidl schemas. use_embedded_timestamp is the key parser_ros reads
+        // (use_timestamp kept for parsers using the older name).
+        nlohmann::json parser_cfg;
+        pj::array_policy::arrayLimitToJson(parser_cfg, array_limit_);
+        parser_cfg["use_timestamp"] = use_timestamp_;
+        parser_cfg["use_embedded_timestamp"] = use_timestamp_;
+        parser_cfg["schema_encoding"] = encoding;
+        const std::string parser_cfg_str = parser_cfg.dump();
 
         const auto schema_bytes = reinterpret_cast<const uint8_t*>(definition.data());
         auto binding = runtimeHost().ensureParserBinding({

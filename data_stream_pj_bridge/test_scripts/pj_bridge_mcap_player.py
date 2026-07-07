@@ -317,7 +317,11 @@ class PjBridgeMcapPlayer:
                         if wait > 0:
                             await asyncio.sleep(wait)
 
-                    bucket.append((topic, int(time.time() * 1e9), data))
+                    # ORIGINAL bag timestamp, never wall clock: the CDR payloads
+                    # (TF stamps, headers) carry bag time, so a wall-clock wire
+                    # stamp puts every sample months away from its own TF and
+                    # scene lookups fail (same fix as the foxglove player).
+                    bucket.append((topic, log_time_ns, data))
 
                     # Flush bucket every 100ms of bag time
                     if (log_time_ns - bucket_ts) >= bucket_ms * 1_000_000 or len(bucket) >= 50:
