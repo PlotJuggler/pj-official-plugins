@@ -24,7 +24,9 @@ Usage:
 import argparse
 import asyncio
 import json
+import queue
 import struct
+import threading
 import time
 from pathlib import Path
 
@@ -111,6 +113,24 @@ def read_messages(path: str):
         r = make_reader(f)
         for schema, channel, message in r.iter_messages():
             yield channel.id, message.log_time, message.data
+
+
+def read_message_chunks(path: str, max_msgs: int = 200, max_bytes: int = 32 * 1024 * 1024):
+    """Generator: yields read_messages() output in lists bounded by message
+    count AND payload bytes. The play loop streams these through a small queue
+    so a multi-gigabyte mcap never materializes in RAM (a 17 GB bag as one
+    list() OOM-killed an entire session)."""
+    chunk: list = []
+    chunk_bytes = 0
+    for item in read_messages(path):
+        chunk.append(item)
+        chunk_bytes += len(item[2])
+        if len(chunk) >= max_msgs or chunk_bytes >= max_bytes:
+            yield chunk
+            chunk = []
+            chunk_bytes = 0
+    if chunk:
+        yield chunk
 
 
 def build_binary_frame(messages: list) -> bytes:
@@ -244,49 +264,73 @@ class PjBridgeMcapPlayer:
         while True:
             loop_count += 1
             print(f"\n→ Loop {loop_count} — reading {Path(self.mcap_path).name}")
-            # Full-file read in a worker thread: a large mcap would otherwise
-            # block the event loop long enough for control-plane requests
-            # (subscribe/unsubscribe/heartbeat) to time out.
-            messages = await asyncio.to_thread(lambda: list(read_messages(self.mcap_path)))
-            if not messages:
-                await asyncio.sleep(1.0)
-                continue
 
-            first_ts = messages[0][1]
+            # STREAM the bag through a bounded producer thread — never
+            # materialize it (list(read_messages(...)) on a 17 GB bag OOM-killed
+            # the whole session). The queue bounds memory to
+            # ~maxsize × max_bytes (~128 MB) and the thread keeps file I/O +
+            # decompression off the event loop so control-plane requests
+            # (subscribe/unsubscribe/heartbeat) stay responsive.
+            chunk_queue: queue.Queue = queue.Queue(maxsize=4)
+
+            def produce(q=chunk_queue):
+                try:
+                    for chunk in read_message_chunks(self.mcap_path):
+                        q.put(chunk)
+                finally:
+                    q.put(None)  # end-of-bag sentinel (also on read error)
+
+            threading.Thread(target=produce, daemon=True).start()
+
+            first_ts = None
             wall_start = time.monotonic()
+            messages_seen = 0
 
             # Group messages by timestamp bucket (~100ms) for efficient frames
             bucket_ms = 100
             bucket: list = []
-            bucket_ts = first_ts
+            bucket_ts = 0
 
-            for ch_id, log_time_ns, data in messages:
-                if not self.clients:
-                    await asyncio.sleep(0.01)
-                    continue
+            while True:
+                chunk = await asyncio.to_thread(chunk_queue.get)
+                if chunk is None:
+                    break
+                for ch_id, log_time_ns, data in chunk:
+                    messages_seen += 1
+                    if first_ts is None:
+                        first_ts = log_time_ns
+                        bucket_ts = first_ts
 
-                topic = ch_topic.get(ch_id)
-                if topic is None:
-                    continue
+                    if not self.clients:
+                        await asyncio.sleep(0.01)
+                        continue
 
-                # Timing
-                if self.speed > 0:
-                    bag_elapsed = (log_time_ns - first_ts) / 1e9
-                    wall_elapsed = time.monotonic() - wall_start
-                    wait = bag_elapsed / self.speed - wall_elapsed
-                    if wait > 0:
-                        await asyncio.sleep(wait)
+                    topic = ch_topic.get(ch_id)
+                    if topic is None:
+                        continue
 
-                bucket.append((topic, int(time.time() * 1e9), data))
+                    # Timing
+                    if self.speed > 0:
+                        bag_elapsed = (log_time_ns - first_ts) / 1e9
+                        wall_elapsed = time.monotonic() - wall_start
+                        wait = bag_elapsed / self.speed - wall_elapsed
+                        if wait > 0:
+                            await asyncio.sleep(wait)
 
-                # Flush bucket every 100ms of bag time
-                if (log_time_ns - bucket_ts) >= bucket_ms * 1_000_000 or len(bucket) >= 50:
-                    await self._send_bucket(bucket)
-                    bucket = []
-                    bucket_ts = log_time_ns
+                    bucket.append((topic, int(time.time() * 1e9), data))
+
+                    # Flush bucket every 100ms of bag time
+                    if (log_time_ns - bucket_ts) >= bucket_ms * 1_000_000 or len(bucket) >= 50:
+                        await self._send_bucket(bucket)
+                        bucket = []
+                        bucket_ts = log_time_ns
 
             if bucket:
                 await self._send_bucket(bucket)
+
+            if messages_seen == 0:
+                await asyncio.sleep(1.0)
+                continue
 
             print(f"    loop {loop_count} done, restarting...")
 
