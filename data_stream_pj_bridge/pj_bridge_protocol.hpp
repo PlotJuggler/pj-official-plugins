@@ -15,6 +15,11 @@ struct TopicInfo {
   std::string encoding;
   std::string schema_name;
   std::string schema;
+
+  /// Value equality over all fields — lets the advertise catalog detect a real
+  /// change (schema/type edit, not just a re-notification) so the source
+  /// re-advertises to the host only on a genuine delta. See applyAdvertiseDelta.
+  friend bool operator==(const TopicInfo&, const TopicInfo&) = default;
 };
 
 struct RawMessage {
