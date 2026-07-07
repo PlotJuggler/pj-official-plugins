@@ -173,10 +173,17 @@ async def check_get_topics_with_schemas(conn, ctx):
     need(resp.get("status") == "success", f"status != success: {resp.get('status')!r}")
     topics = resp.get("topics") or []
     need(topics, "topics missing/empty")
+    # Encodings a PlotJuggler parser actually registers (union of the
+    # parser_ros + parser_json manifests). "cdr" is deliberately NOT here: it is
+    # a payload serialization, resolves no parser, and advertising it means the
+    # plugin subscribes but can never bind — a bug presence-checks would miss.
+    bindable = {"ros2msg", "omgidl", "ros1msg", "ros1", "ros2", "json", "cbor", "msgpack", "bson"}
     for e in topics:
         need("encoding" in e and "definition" in e,
              f"include_schemas entry missing encoding/definition: {e}")
-    return f"{len(topics)} topics carry encoding+definition"
+        need(e["encoding"] in bindable,
+             f"{e['name']}: encoding {e['encoding']!r} resolves no PlotJuggler parser")
+    return f"{len(topics)} topics carry bindable encoding+definition"
 
 
 async def check_heartbeat_echo(conn, ctx):

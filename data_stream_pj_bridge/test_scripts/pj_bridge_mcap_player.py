@@ -73,10 +73,21 @@ def topic_entry(channel: dict, include_schemas: bool) -> dict:
     return entry
 
 
+def wire_encoding(message_encoding: str, schema_encoding: str) -> str:
+    """The control-plane `encoding` field is what PlotJuggler resolves a PARSER
+    with (production sends schema_encoding(): "ros2msg"/"omgidl") — NOT the
+    payload serialization. "cdr" resolves no parser at all (parser_ros registers
+    ros2msg/omgidl/ros1msg; parser_json registers json/cbor/msgpack/bson): a CDR
+    channel must advertise its SCHEMA language, a JSON channel "json"."""
+    if message_encoding == "json" or schema_encoding == "jsonschema":
+        return "json"
+    if schema_encoding:
+        return schema_encoding
+    return message_encoding
+
+
 def load_mcap_metadata(path: str):
-    """Load channels and schemas from the MCAP summary. The wire `encoding` is the
-    channel's message_encoding (e.g. "cdr" for ROS2, "json" for JSON channels) —
-    the serialization the plugin's parser needs — not the schema language."""
+    """Load channels and schemas from the MCAP summary."""
     with open(path, "rb") as f:
         r = make_reader(f)
         s = r.get_summary()
@@ -88,7 +99,7 @@ def load_mcap_metadata(path: str):
                 channels[ch_id] = {
                     "name": ch.topic,
                     "type": sch.name if sch else "",
-                    "encoding": ch.message_encoding or "cdr",
+                    "encoding": wire_encoding(ch.message_encoding or "", sch.encoding if sch else ""),
                     "definition": sch.data.decode("utf-8", errors="replace") if sch and sch.data else "",
                 }
         return channels
@@ -233,7 +244,10 @@ class PjBridgeMcapPlayer:
         while True:
             loop_count += 1
             print(f"\n→ Loop {loop_count} — reading {Path(self.mcap_path).name}")
-            messages = list(read_messages(self.mcap_path))
+            # Full-file read in a worker thread: a large mcap would otherwise
+            # block the event loop long enough for control-plane requests
+            # (subscribe/unsubscribe/heartbeat) to time out.
+            messages = await asyncio.to_thread(lambda: list(read_messages(self.mcap_path)))
             if not messages:
                 await asyncio.sleep(1.0)
                 continue

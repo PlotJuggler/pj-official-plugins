@@ -59,7 +59,9 @@ TOPICS = [
     {
         "name": "/camera/image",
         "type": "sensor_msgs/msg/CompressedImage",
-        "encoding": "cdr",
+        # PARSER encoding (what production's schema_encoding() sends): the
+        # definition below is a ROS .msg, so ros2msg — "cdr" resolves no parser.
+        "encoding": "ros2msg",
         "definition": COMPRESSED_IMAGE_SCHEMA,
     },
 ]
