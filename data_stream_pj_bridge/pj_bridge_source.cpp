@@ -177,8 +177,13 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       // opt into topics_changed pushes (also WITH schemas). Old servers ignore
       // include_schemas and just answer name+type — the subscribe response is
       // still the authoritative schema source, so binding works regardless.
-      socket_->sendText(buildDiscoveryRequest("get_topics"));
+      // Order matters: opt into topics_changed pushes BEFORE taking the
+      // snapshot. The reverse leaves a gap — a topic appearing between the
+      // snapshot and the opt-in is folded into the server's baseline without
+      // ever being pushed to us. A duplicate (pushed AND in the snapshot) is
+      // harmless: applyAdvertiseDelta upserts.
       socket_->sendText(buildDiscoveryRequest("subscribe_topic_updates"));
+      socket_->sendText(buildDiscoveryRequest("get_topics"));
       return PJ::okStatus();
     }
 
@@ -201,7 +206,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     for (const auto& info : selected_topics_) {
       names.push_back(info.name);
     }
-    socket_->sendText(buildSubscribeMessage(names));
+    socket_->sendText(buildSubscribeMessage(names, generateRequestId()));
 
     // Wait for the subscribe response (contains schemas). Pump the text queue
     // ourselves while waiting — the response now lands in text_frames_, and
@@ -295,6 +300,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     advertise_filter_.clear();
     advertised_topics_.clear();
     applied_.clear();
+    last_subscribe_id_by_topic_.clear();
     last_applied_desired_.clear();
     demand_mode_ = false;
     advertise_dirty_ = false;
@@ -305,10 +311,12 @@ class PjBridgeSource : public PJ::StreamSourceBase {
  private:
   // Build a subscribe frame for a set of topic names. `subscribe` is ADDITIVE:
   // the server merges these into the session's set without disturbing the rest.
-  std::string buildSubscribeMessage(const std::vector<std::string>& topics) const {
+  // The caller supplies the request id so it can remember which subscribe was
+  // the LAST one sent per topic (see failureIsStale).
+  std::string buildSubscribeMessage(const std::vector<std::string>& topics, const std::string& request_id) const {
     nlohmann::json cmd;
     cmd["command"] = "subscribe";
-    cmd["id"] = generateRequestId();
+    cmd["id"] = request_id;
     cmd["protocol_version"] = 1;
     cmd["topics"] = topics;
     return cmd.dump();
@@ -350,6 +358,27 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       }
     }
     return {};
+  }
+
+  // stringField with a non-empty fallback (wire fields default like json::value
+  // used to, but wrong-typed values degrade instead of throwing).
+  static std::string stringFieldOr(const nlohmann::json& entry, const char* key, const char* fallback) {
+    std::string value = stringField(entry, key);
+    return value.empty() ? std::string(fallback) : value;
+  }
+
+  // [poll thread] An applied topic whose advertised type/schema CHANGED keeps
+  // streaming bytes the old parser binding would misparse. Drop it from
+  // applied_/bindings_ so the reconcile armed by this catalog change
+  // re-subscribes it: the fresh subscribe response re-binds with the new schema
+  // (the host mints a fresh binding when the signature changed). The server
+  // treats the re-subscribe of a still-live topic idempotently.
+  void dropRetypedApplied(const std::map<std::string, TopicInfo>& before) {
+    for (const auto& topic : retypedTopics(before, advertised_topics_, applied_)) {
+      applied_.erase(topic);
+      bindings_.erase(topic);
+      last_subscribe_id_by_topic_.erase(topic);
+    }
   }
 
   // Build the AvailableTopic list for notify_available_topics from the advertise
@@ -405,16 +434,21 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       for (const auto& topic : diff.to_unsubscribe) {
         applied_.erase(topic);
         bindings_.erase(topic);
+        last_subscribe_id_by_topic_.erase(topic);
       }
     }
 
     if (!diff.to_subscribe.empty()) {
-      socket_->sendText(buildSubscribeMessage(diff.to_subscribe));
+      const std::string request_id = generateRequestId();
+      socket_->sendText(buildSubscribeMessage(diff.to_subscribe, request_id));
       // Optimistically mark applied; a per-topic failure in the subscribe
       // response strips it back off (see handleSubscribeResponse), and it
       // retries on the next advertise delta rather than in a tight loop.
+      // Remember the id so a STALE failure (from a subscribe this one
+      // superseded) cannot erase applied_'s truth for the live subscription.
       for (const auto& topic : diff.to_subscribe) {
         applied_.insert(topic);
+        last_subscribe_id_by_topic_[topic] = request_id;
       }
     }
   }
@@ -431,10 +465,18 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   }
 
   // [poll thread] Drain and process every queued inbound text frame in order.
+  // A frame that throws (wire data can be arbitrarily malformed — nlohmann
+  // accessors throw on wrong-typed fields) is dropped with a warning; it must
+  // never fail the host's poll.
   void pumpTextQueue() {
     auto batch = text_frames_.drain();
     while (!batch.empty()) {
-      onTextMessage(batch.front());
+      try {
+        onTextMessage(batch.front());
+      } catch (const std::exception& e) {
+        runtimeHost().reportMessage(
+            PJ::DataSourceMessageLevel::kWarning, std::string("Dropped malformed control frame: ") + e.what());
+      }
       batch.pop();
     }
   }
@@ -482,9 +524,16 @@ class PjBridgeSource : public PJ::StreamSourceBase {
 
       for (auto it = schemas.begin(); it != schemas.end(); ++it) {
         const std::string& topic_name = it.key();
+        // A LATE response for a topic the host has since paused must not
+        // resurrect its binding — in-flight frames would ingest into an
+        // inactive topic. (Legacy mode never populates applied_, so the gate
+        // only applies in demand mode.)
+        if (demand_mode_ && applied_.count(topic_name) == 0) {
+          continue;
+        }
         const auto& schema_obj = it.value();
-        const std::string encoding = schema_obj.value("encoding", std::string("cdr"));
-        const std::string definition = schema_obj.value("definition", std::string{});
+        const std::string encoding = stringFieldOr(schema_obj, "encoding", "cdr");
+        const std::string definition = stringField(schema_obj, "definition");
         const std::string schema_name = resolveSchemaName(topic_name);
 
         const auto schema_bytes = reinterpret_cast<const uint8_t*>(definition.data());
@@ -507,13 +556,23 @@ class PjBridgeSource : public PJ::StreamSourceBase {
 
     // Per-topic failures: the server forgets a failed subscribe (no sticky
     // retry), so drop it from applied_ — the next advertise delta re-proposes it.
+    // Unless the failure is STALE (its request id predates the last subscribe we
+    // sent for that topic): a newer subscribe superseded it, and erasing
+    // applied_ would leave a live server-side subscription no pause can stop.
     if (json.contains("failures") && json["failures"].is_array()) {
+      const std::string response_id = stringField(json, "id");
       for (const auto& f : json["failures"]) {
-        const std::string topic = f.value("topic", std::string{"?"});
+        if (!f.is_object()) {
+          continue;
+        }
+        const std::string topic = stringField(f, "topic");
+        if (topic.empty() || failureIsStale(last_subscribe_id_by_topic_, topic, response_id)) {
+          continue;
+        }
         applied_.erase(topic);
         runtimeHost().reportMessage(
             PJ::DataSourceMessageLevel::kWarning,
-            "Subscription failed: " + topic + " — " + f.value("reason", std::string{"unknown"}));
+            "Subscription failed: " + topic + " — " + stringFieldOr(f, "reason", "unknown"));
       }
     }
 
@@ -539,7 +598,9 @@ class PjBridgeSource : public PJ::StreamSourceBase {
         }
       }
     }
+    const auto before = advertised_topics_;
     if (applyAdvertiseDelta(advertised_topics_, added, removed)) {
+      dropRetypedApplied(before);
       advertise_dirty_ = true;
     }
   }
@@ -554,7 +615,9 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       }
     }
     if (fresh != advertised_topics_) {
+      const auto before = std::move(advertised_topics_);
       advertised_topics_ = std::move(fresh);
+      dropRetypedApplied(before);
       advertise_dirty_ = true;
     }
   }
@@ -628,6 +691,11 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   // Topics with a live subscription right now. Poll-thread-only. Grown
   // optimistically at subscribe, shrunk by unsubscribe and per-topic failures.
   std::set<std::string> applied_;
+
+  // The id of the LAST subscribe request naming each topic — lets a stale
+  // per-topic failure (from a superseded request) be ignored instead of
+  // erasing applied_'s truth. Pruned on unsubscribe/retype; cleared in onStop.
+  std::map<std::string, std::string> last_subscribe_id_by_topic_;
 
   // Most recent desired-topic set from the host (via applyDesiredTopics).
   // Poll-thread-only. Retained so a topic advertised AFTER the host asked for it

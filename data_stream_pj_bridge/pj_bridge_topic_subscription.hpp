@@ -185,21 +185,65 @@ struct SubscriptionDiff {
 ///
 /// `type` is the ROS 2 message type; the parser binding uses it as `type_name`.
 /// An explicit `schema_name`, if present, wins over `type`.
+/// json::value() THROWS when the key exists with a non-string type, and these
+/// entries come straight off the wire — a malformed field must degrade to
+/// "absent", never throw into the poll loop.
+[[nodiscard]] inline std::string stringField(const nlohmann::json& entry, const char* key) {
+  const auto it = entry.find(key);
+  return it != entry.end() && it->is_string() ? it->get<std::string>() : std::string{};
+}
+
 [[nodiscard]] inline std::optional<TopicInfo> parseTopicEntry(const nlohmann::json& entry) {
   if (!entry.is_object()) {
     return std::nullopt;
   }
-  std::string name = entry.value("name", std::string{});
+  std::string name = stringField(entry, "name");
   if (name.empty()) {
     return std::nullopt;
   }
   TopicInfo info;
   info.name = std::move(name);
-  const std::string type = entry.value("type", std::string{});
-  info.schema_name = entry.value("schema_name", type);
-  info.encoding = entry.value("encoding", std::string{});
-  info.schema = entry.value("definition", std::string{});
+  const std::string schema_name = stringField(entry, "schema_name");
+  info.schema_name = schema_name.empty() ? stringField(entry, "type") : schema_name;
+  info.encoding = stringField(entry, "encoding");
+  info.schema = stringField(entry, "definition");
   return info;
+}
+
+/// Names in `applied` whose catalog entry CHANGED between two advertise states
+/// (present in both, fields differ). A retyped/re-schemaed topic that is
+/// currently subscribed keeps flowing bytes the OLD parser binding would
+/// misparse — the caller drops these from applied_/bindings_ so the next
+/// reconcile re-subscribes and the fresh subscribe response re-binds with the
+/// new schema (the host mints a fresh binding when the signature changed).
+[[nodiscard]] inline std::vector<std::string> retypedTopics(
+    const std::map<std::string, TopicInfo>& before, const std::map<std::string, TopicInfo>& after,
+    const std::set<std::string>& applied) {
+  std::vector<std::string> retyped;
+  for (const auto& name : applied) {
+    const auto old_it = before.find(name);
+    const auto new_it = after.find(name);
+    if (old_it != before.end() && new_it != after.end() && !(old_it->second == new_it->second)) {
+      retyped.push_back(name);
+    }
+  }
+  return retyped;
+}
+
+/// Whether a per-topic failure in a subscribe RESPONSE is stale: the response
+/// id (echoed by the server) predates the LAST subscribe we sent for that
+/// topic, so the failure describes a request that a newer subscribe already
+/// superseded — acting on it would erase applied_'s truth for a live
+/// subscription (a later pause would then never send the unsubscribe).
+/// A response without an id (older/test servers) is never treated as stale.
+[[nodiscard]] inline bool failureIsStale(
+    const std::map<std::string, std::string>& last_subscribe_id_by_topic, const std::string& topic,
+    const std::string& response_id) {
+  if (response_id.empty()) {
+    return false;
+  }
+  const auto it = last_subscribe_id_by_topic.find(topic);
+  return it != last_subscribe_id_by_topic.end() && it->second != response_id;
 }
 
 /// Apply a topics_changed (or initial get_topics) delta to the advertised

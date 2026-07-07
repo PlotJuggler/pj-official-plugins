@@ -249,6 +249,55 @@ TEST(BridgeFilteredAdvertisedTopicsTest, EmptySelectionAdvertisesAll) {
 
 // --- parseTopicEntry: get_topics / topics_changed.added entry parsing ---
 
+TEST(BridgeParseTopicEntryTest, WrongTypedFieldsDegradeToAbsentInsteadOfThrowing) {
+  // Off-the-wire malice/corruption: present-but-wrong-typed keys. json::value()
+  // would THROW here and escape into the poll loop; stringField must not.
+  const auto entry = nlohmann::json::parse(R"({"name": 42})");
+  EXPECT_EQ(parseTopicEntry(entry), std::nullopt);
+
+  const auto entry2 = nlohmann::json::parse(R"({"name": "/a", "type": 7, "definition": ["x"]})");
+  const auto info = parseTopicEntry(entry2);
+  ASSERT_TRUE(info.has_value());
+  EXPECT_EQ(info->name, "/a");
+  EXPECT_TRUE(info->schema_name.empty());
+  EXPECT_TRUE(info->schema.empty());
+}
+
+TEST(BridgeRetypedTopicsTest, AppliedTopicWithChangedInfoIsReported) {
+  std::map<std::string, PJ::BridgeProtocol::TopicInfo> before;
+  before["/a"] = {"/a", "cdr", "pkg/msg/Old", "old-schema"};
+  before["/b"] = {"/b", "cdr", "pkg/msg/Same", "same"};
+  auto after = before;
+  after["/a"].schema_name = "pkg/msg/New";
+  after["/a"].schema = "new-schema";
+
+  // /a changed and is applied -> re-subscribe it; /b unchanged -> untouched;
+  // a changed-but-not-applied topic must not appear.
+  after["/c"] = {"/c", "cdr", "pkg/msg/C", "c"};
+  const auto retyped = retypedTopics(before, after, {"/a", "/b"});
+  EXPECT_EQ(retyped, std::vector<std::string>{"/a"});
+}
+
+TEST(BridgeRetypedTopicsTest, AddedAndRemovedTopicsAreNotRetyped) {
+  std::map<std::string, PJ::BridgeProtocol::TopicInfo> before;
+  before["/gone"] = {"/gone", "cdr", "pkg/msg/G", "g"};
+  std::map<std::string, PJ::BridgeProtocol::TopicInfo> after;
+  after["/new"] = {"/new", "cdr", "pkg/msg/N", "n"};
+  EXPECT_TRUE(retypedTopics(before, after, {"/gone", "/new"}).empty());
+}
+
+TEST(BridgeFailureIsStaleTest, StaleOnlyWhenIdsDisagree) {
+  const std::map<std::string, std::string> last_ids{{"/a", "req-2"}};
+  // Failure from the superseded req-1: stale -> ignore, applied_ keeps truth.
+  EXPECT_TRUE(failureIsStale(last_ids, "/a", "req-1"));
+  // Failure from the live request: act on it.
+  EXPECT_FALSE(failureIsStale(last_ids, "/a", "req-2"));
+  // No id echoed (older/test servers): never stale.
+  EXPECT_FALSE(failureIsStale(last_ids, "/a", ""));
+  // Topic we never subscribed (or already cleaned up): not stale.
+  EXPECT_FALSE(failureIsStale(last_ids, "/unknown", "req-9"));
+}
+
 TEST(BridgeParseTopicEntryTest, FullEntryWithSchemaFields) {
   const auto entry = nlohmann::json{
       {"name", "/camera/image"},
