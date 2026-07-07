@@ -14,6 +14,7 @@
 
 #include "foxglove_client_ui.hpp"
 #include "foxglove_manifest.hpp"
+#include "foxglove_protocol.hpp"
 
 namespace {
 
@@ -42,6 +43,22 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   std::unique_ptr<ix::WebSocket> takeSocket() {
     connected_ = false;
     return std::move(socket_);
+  }
+
+  /// Full catalog of channels discovered so far during this dialog's connection
+  /// session (thread-safe snapshot), regardless of what the user selected. When
+  /// the source steals an already-open socket (see takeSocket()), the server's
+  /// one-time "advertise" burst has already happened and will not repeat — this
+  /// is the only way the source learns about topics the user did NOT select, so
+  /// it can advertise the full set to the host instead of just the selection.
+  std::vector<PJ::FoxgloveProtocol::ChannelInfo> allDiscoveredChannels() const {
+    std::lock_guard<std::mutex> lock(channels_mutex_);
+    std::vector<PJ::FoxgloveProtocol::ChannelInfo> out;
+    out.reserve(channels_.size());
+    for (const auto& ch : channels_) {
+      out.push_back({ch.id, ch.topic, ch.encoding, ch.schema_name, ch.schema, ch.schema_encoding});
+    }
+    return out;
   }
 
   // --- Dialog protocol ---
@@ -106,8 +123,13 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
       wd.setSelectedItems("topicsList", selected_topic_names_);
     }
 
-    // OK button: enabled only when connected and channels are selected
-    wd.setOkEnabled(connected_ && !selected_topic_names_.empty());
+    // OK button: connected-only. The channel selection below is no longer a
+    // subscribe requirement — see the "channels" config key's dual role in
+    // FoxgloveSource (buildAvailableTopics): on a host that supports demand
+    // subscriptions it becomes an OPTIONAL advertise filter (empty = advertise
+    // everything); on a legacy host it keeps its original meaning, the
+    // subscribe list.
+    wd.setOkEnabled(connected_);
 
     return wd.toJson();
   }

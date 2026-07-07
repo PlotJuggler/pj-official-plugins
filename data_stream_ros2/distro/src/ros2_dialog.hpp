@@ -91,7 +91,12 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     // companion deselect-all shortcut to the button (PJ3 parity).
     wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
 
-    wd.setOkEnabled(!selected_topics_.empty());
+    // OK button: discovery-running-only. Topic selection is no longer a hard
+    // requirement — see selected_topics_'s dual role in Ros2StreamSource
+    // (buildAvailableTopics): on a host that supports demand subscriptions it
+    // becomes an OPTIONAL advertise filter (empty = advertise everything); on
+    // a legacy host it keeps its original meaning, the subscribe list.
+    wd.setOkEnabled(discovery_running_);
     return wd.toJson();
   }
 
@@ -214,6 +219,12 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   }
 
   std::string saveConfig() const override {
+    // "selected_topics" is dual-purpose (see the OK-gate comment in
+    // widget_data() above and Ros2StreamSource::buildAvailableTopics): a
+    // legacy host subscribes exactly this list; a demand-subscription host
+    // treats it as an OPTIONAL advertise filter (empty = advertise
+    // everything) and asks for what it actually wants via set_active_topics.
+    // The format itself is unchanged by that dual role.
     nlohmann::json arr = nlohmann::json::array();
     {
       // Emit (and persist) a selection only while its topic is still being

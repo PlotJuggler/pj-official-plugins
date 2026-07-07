@@ -55,6 +55,17 @@ pj_emit_plugin_manifest(ros2_stream_plugin
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
+# --- Unit test for the demand-subscription control plane (header-only, no ROS) ---
+# ros2_topic_subscription.hpp has no rclcpp dependency, so this target builds
+# unconditionally (like the proxy above) — it does NOT require
+# PJ_BUILD_ROS2_DISTRO or a sourced ROS 2 environment.
+add_executable(ros2_topic_subscription_test tests/ros2_topic_subscription_test.cpp)
+target_compile_features(ros2_topic_subscription_test PRIVATE cxx_std_20)
+target_compile_options(ros2_topic_subscription_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(ros2_topic_subscription_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(ros2_topic_subscription_test PRIVATE GTest::gtest_main)
+add_test(NAME ros2_topic_subscription_test COMMAND ros2_topic_subscription_test)
+
 # ---------------------------------------------------------------------------
 # Per-distro target — per-distro ROS 2 subscriber, opt-in
 # ---------------------------------------------------------------------------
