@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "pj_bridge_manifest.hpp"
+#include "pj_bridge_protocol.hpp"
 #include "websocket_client_ui.hpp"
 
 namespace {
@@ -52,6 +53,24 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   std::unique_ptr<ix::WebSocket> takeSocket() {
     connected_ = false;
     return std::move(socket_);
+  }
+
+  /// Full catalog of topics discovered during this dialog's connection session
+  /// (thread-safe snapshot), regardless of what the user selected. When the
+  /// source steals an already-open socket (see takeSocket()), this seeds the
+  /// source's advertise catalog immediately so the host can list every topic on
+  /// demand — not just the user's (now optional) filter selection — while the
+  /// source's own get_topics round-trip is still in flight. `TopicInfo::encoding`
+  /// carries the schema encoding and `schema` the schema text (both may be empty
+  /// until the source re-fetches with include_schemas).
+  std::vector<PJ::BridgeProtocol::TopicInfo> allDiscoveredTopics() const {
+    std::lock_guard<std::mutex> lock(topics_mutex_);
+    std::vector<PJ::BridgeProtocol::TopicInfo> out;
+    out.reserve(topics_.size());
+    for (const auto& t : topics_) {
+      out.push_back({t.name, t.schema_encoding, t.schema_name, t.schema_definition});
+    }
+    return out;
   }
 
   // --- Dialog protocol ---
@@ -94,8 +113,12 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       wd.setSelectedItems("topicsList", selected_topic_names_);
     }
 
-    // OK button: enabled only when connected and topics are selected
-    wd.setOkEnabled(connected_ && !selected_topic_names_.empty());
+    // OK button: connected-only. The topic selection below is no longer a
+    // subscribe requirement — see the "topics" config key's dual role in
+    // PjBridgeSource: on a host that supports demand subscriptions it becomes an
+    // OPTIONAL advertise filter (empty = advertise everything); on a legacy host
+    // it keeps its original meaning, the subscribe list.
+    wd.setOkEnabled(connected_);
 
     return wd.toJson();
   }

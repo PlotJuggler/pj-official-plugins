@@ -340,6 +340,113 @@ TEST(RosParserTest, OmgIdlSchemaParsesCdrPayload) {
   EXPECT_TRUE(found_active);
 }
 
+// --- Advertise-time classification: bindSchema() with NO loadConfig() ---
+//
+// The demand-subscription host classifies advertised topics through a
+// throwaway handle via bindSchema() -> classifySchema(); the schema encoding
+// only travels later in the binding request's parser_config_json. Per the SDK
+// contract (message_parser_protocol.h) classify_schema must be correct right
+// after bind_schema, so the parser infers the format from the inputs' shape
+// and compiles eagerly.
+
+TEST(RosParserTest, ClassifiesPointCloud2WithoutLoadConfig) {
+  RosParserFixture f;
+  f.setUp();
+
+  // Classification is a catalog lookup by (normalized) type name; the field
+  // list only has to compile, so a minimal definition is enough here.
+  const std::string def = "uint32 height\nuint32 width\n";
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchemaRaw("sensor_msgs/msg/PointCloud2", def));
+  EXPECT_EQ(f.handle.classifySchema("sensor_msgs/msg/PointCloud2", def_span), PJ::sdk::BuiltinObjectType::kPointCloud);
+}
+
+TEST(RosParserTest, ClassifiesOmgIdlSchemaWithoutLoadConfig) {
+  RosParserFixture f;
+  f.setUp();
+
+  static const char* kPointCloud2IdlDef = R"(
+module sensor_msgs {
+  struct PointCloud2 {
+    unsigned long height;
+    unsigned long width;
+  };
+};
+)";
+  const std::string def(kPointCloud2IdlDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchemaRaw("sensor_msgs::PointCloud2", def));
+  EXPECT_EQ(f.handle.classifySchema("sensor_msgs::PointCloud2", def_span), PJ::sdk::BuiltinObjectType::kPointCloud);
+}
+
+TEST(RosParserTest, ParsesOmgIdlCdrWithoutLoadConfig) {
+  RosParserFixture f;
+  f.setUp();
+
+  // The IDL format is inferred from the scoped name / `module` block, so the
+  // eager compile at bind time must already produce a working parser.
+  ASSERT_TRUE(f.bindSchemaRaw("pkg::SimpleIdl", kSimpleIdlDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(42)));
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(23.5));
+    enc.serialize(RosMsgParser::BOOL, RosMsgParser::Variant(static_cast<uint8_t>(1)));
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  bool found_temp = false;
+  for (const auto& field : f.recorder.rows()[0].fields) {
+    if (field.name == "/temperature") {
+      EXPECT_DOUBLE_EQ(field.numeric, 23.5);
+      found_temp = true;
+    }
+  }
+  EXPECT_TRUE(found_temp);
+}
+
+TEST(RosParserTest, EagerInferenceSurvivesLaterLoadConfig) {
+  // Advertise-time bind eagerly infers ROS_MSG and compiles the typed handler.
+  // A later loadConfig() supplying the SAME encoding must not break it (the
+  // format_changed path is a no-op, no half-compiled state), and parsing keeps
+  // working before AND after the config arrives.
+  RosParserFixture f;
+  f.setUp();
+
+  const std::string def = "int32 status\nfloat64 temperature\n";
+  ASSERT_TRUE(f.bindSchemaRaw("pkg/msg/Simple", def));  // eager compile, no config yet
+  ASSERT_TRUE(f.loadSchemaEncoding("ros2msg"));         // same format arrives later
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(7)));
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(19.5));
+  });
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  bool found_temp = false;
+  for (const auto& field : f.recorder.rows()[0].fields) {
+    if (field.name == "/temperature") {
+      EXPECT_DOUBLE_EQ(field.numeric, 19.5);
+      found_temp = true;
+    }
+  }
+  EXPECT_TRUE(found_temp);
+}
+
+TEST(RosParserTest, EagerBindWithUncompilableSchemaStaysBoundOnGenericHandler) {
+  // Both formats fail to compile at eager bind time; bindSchema must still
+  // succeed on the generic handler (the compile error resurfaces at
+  // loadConfig()/first parse, unchanged), and classification is kNone rather
+  // than a crash. Mirrors the demand-subscription advertise-time contract.
+  RosParserFixture f;
+  f.setUp();
+
+  const std::string bad_def = "this is not a valid ROS or IDL schema {{{ <<< ";
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(bad_def.data()), bad_def.size());
+  ASSERT_TRUE(f.bindSchemaRaw("pkg/Garbage", bad_def));
+  EXPECT_EQ(f.handle.classifySchema("pkg/Garbage", def_span), PJ::sdk::BuiltinObjectType::kNone);
+}
+
 TEST(RosParserTest, FixedSizeArray) {
   RosParserFixture f;
   f.setUp();
@@ -779,6 +886,24 @@ TEST(RosParserTest, PoseWithRPY) {
   EXPECT_NE(findField(f.recorder.rows()[0], "/orientation/pitch"), nullptr);
 }
 
+// Regression (scalar route): a truncated message whose scalar (void) handler reads
+// past the end must fail cleanly, not std::terminate. The void handlers run through
+// wrapVoidHandler(), which — unlike the object handlers — is the C-ABI-facing entry
+// for the scalar route, so it must catch the CDR decode throw before it crosses the
+// noexcept trampoline. Here geometry_msgs/Pose carries only position (3 doubles);
+// handlePose throws reading the missing orientation.
+TEST(RosParserTest, TruncatedScalarMessageDoesNotTerminate) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("geometry_msgs/Pose", kPoseDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeVector3(enc, 1.0, 2.0, 3.0);  // position only; orientation truncated away
+  });
+
+  EXPECT_FALSE(f.parse(payload)) << "truncated scalar message must fail cleanly, not terminate";
+}
+
 TEST(RosParserTest, ImuRPY) {
   RosParserFixture f;
   f.setUp();
@@ -1134,6 +1259,18 @@ TEST(RosParserTest, TFMessageProducesFrameTransformsObject) {
   EXPECT_EQ(ft->transforms[1].timestamp, 2'000'000'000);
   EXPECT_DOUBLE_EQ(ft->transforms[1].translation.y, 5.0);
   EXPECT_DOUBLE_EQ(ft->transforms[1].rotation.z, 0.707);
+}
+
+TEST(RosParserTest, ClassifiesTFMessageWithoutLoadConfig) {
+  RosParserFixture f;
+  f.setUp();
+
+  // The advertise-time shape end to end: real ROS 2 definition, "/msg/" type
+  // name, and no loadConfig() before classification.
+  const std::string def(kTFMessageDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchemaRaw("tf2_msgs/msg/TFMessage", def));
+  EXPECT_EQ(f.handle.classifySchema("tf2_msgs/msg/TFMessage", def_span), PJ::sdk::BuiltinObjectType::kFrameTransforms);
 }
 
 TEST(RosParserTest, TransformStampedProducesFrameTransformsObject) {
@@ -1563,6 +1700,45 @@ TEST(RosParserTest, ImageObjectCarriesFrameId) {
   EXPECT_EQ(img->width, 2u);
   EXPECT_EQ(img->height, 2u);
   EXPECT_EQ(img->encoding, "mono8");
+}
+
+// Regression: a truncated sensor_msgs/Image whose data[] declares more bytes than
+// the message carries must be REJECTED, not decoded into a span that runs past the
+// payload. NanoCDR's byte-sequence reader does not clamp the declared length to the
+// buffer, so readByteSequence() adds the bound check the ROS1 path already has.
+// Without the fix, parseImage would emit an Image whose data span extends ~82 MB
+// past a 48-byte payload and the 2D viewer's copy would read off the end (SIGSEGV).
+TEST(RosParserTest, ImageWithTruncatedDataIsRejected) {
+  static const char* kImageDef =
+      "std_msgs/Header header\nuint32 height\nuint32 width\nstring encoding\n"
+      "uint8 is_bigendian\nuint32 step\nuint8[] data\n"
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/Image", kImageDef));
+
+  // Declare a data[] of step*height bytes but write NONE of them: the message ends
+  // right after the count. Mirrors a partially-written / corrupt bag.
+  constexpr uint32_t kHeight = 20000;
+  constexpr uint32_t kWidth = 4096;
+  constexpr uint32_t kStep = 4096;  // mono8 -> step == width*bpp
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 7, 0, "camera_link");
+    enc.serializeUInt32(kHeight);
+    enc.serializeUInt32(kWidth);
+    enc.serializeString("mono8");
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(0)));  // is_bigendian
+    enc.serializeUInt32(kStep);
+    enc.serializeUInt32(kStep * kHeight);  // data[] count -- but no bytes follow
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  EXPECT_FALSE(rec.has_value()) << "truncated Image must be rejected, not decoded into an out-of-bounds span";
 }
 
 // Regression: ROS Bayer CFA images (bayer_rggb8 and friends) carry one raw mosaic

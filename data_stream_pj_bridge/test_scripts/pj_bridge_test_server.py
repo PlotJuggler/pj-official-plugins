@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
 """
-PJ Bridge test server — emits synthetic time series to pj_proto_app.
+PJ Bridge test server — emits synthetic time series to PlotJuggler.
 
-Implements the server side of the PJ Bridge WebSocket protocol so that
-the data_stream_pj_bridge plugin can connect and receive data.
+Implements the server side of the PJ Bridge WebSocket protocol so that the
+data_stream_pj_bridge plugin can connect and receive data. The JSON control
+plane mirrors the PRODUCTION server semantics
+(github.com/PlotJuggler/plotjuggler_bridge) so demand-driven per-topic
+subscriptions behave identically here and against the real bridge.
 
 Usage:
     pip install websockets zstandard
     python3 pj_bridge_test_server.py [--port PORT] [--host HOST]
+                                     [--late-topic NAME:SECONDS]
 
-Protocol summary:
-    Client → Server  JSON: {"command": "get_topics", ...}
-    Server → Client  JSON: {"status": "success", "topics": [...]}
-    Client → Server  JSON: {"command": "subscribe", "topics": [...]}
-    Server → Client  JSON: {"status": "success", "schemas": {...}}
-    Server → Client  Binary frames (see build_binary_frame)
-    Client → Server  JSON: {"command": "heartbeat"} (ignored)
-    Client → Server  JSON: {"command": "pause" / "resume"}
+Protocol summary (JSON control plane, see production docs/API.md):
+    get_topics                → {status:success, topics:[{name,type[,encoding,definition]}]}
+    subscribe (ADDITIVE)      → {status, schemas:{topic:{encoding,definition}}, failures:[...]}
+    unsubscribe               → {status:success, removed:[names]}
+    subscribe_topic_updates   → {status:ok, topic_updates:true}   (+ topics_changed pushes)
+    unsubscribe_topic_updates → {status:ok, topic_updates:false}
+    heartbeat                 → {status:ok}
+    pause / resume            → {status:ok, paused:bool}
+Every response echoes the request's `id` (when a string) and carries
+`protocol_version: 1`. Binary data frames are unchanged (see build_binary_frame).
 """
 
 import argparse
@@ -29,37 +35,32 @@ import time
 import websockets
 import zstandard as zstd
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common" / "test_support"))
+from pj_bridge_protocol import (  # noqa: E402
+    PROTOCOL_VERSION,
+    build_subscribe_response,
+    inject_response_fields,
+    parse_topic_names,
+    topic_entry,
+)
+
 PORT = 9871
 HOST = "localhost"
 
 # Topics advertised to the connecting plugin.
 # encoding="json" means CDR payload is raw JSON bytes — decoded by parser_json.
-TOPICS = [
-    {
-        "name": "/test/sine",
-        "type": "Float64",
-        "schema_name": "Float64",
-        "encoding": "json",
-        "definition": "",
-    },
-    {
-        "name": "/test/cosine",
-        "type": "Float64",
-        "schema_name": "Float64",
-        "encoding": "json",
-        "definition": "",
-    },
-    {
-        "name": "/test/sawtooth",
-        "type": "Float64",
-        "schema_name": "Float64",
-        "encoding": "json",
-        "definition": "",
-    },
+BASE_TOPICS = [
+    {"name": "/test/sine",     "type": "Float64", "encoding": "json", "definition": ""},
+    {"name": "/test/cosine",   "type": "Float64", "encoding": "json", "definition": ""},
+    {"name": "/test/sawtooth", "type": "Float64", "encoding": "json", "definition": ""},
 ]
 
 # Magic: "PJRB" in little-endian = 0x42524A50
 MAGIC = 0x42524A50
+
+
 
 
 def build_binary_frame(messages: list[tuple[str, int, bytes]]) -> bytes:
@@ -97,16 +98,38 @@ def build_binary_frame(messages: list[tuple[str, int, bytes]]) -> bytes:
     return header + compressed
 
 
+def value_for(name: str, t: float) -> float:
+    """Synthetic value for a subscribed topic. Known base topics get their named
+    waveform; any other (e.g. a --late-topic) gets a default wave so it still
+    streams once subscribed."""
+    return {
+        "/test/sine": math.sin(t),
+        "/test/cosine": math.cos(t),
+        "/test/sawtooth": (t % (2 * math.pi)) / (2 * math.pi),
+    }.get(name, math.sin(t * 2.0))
+
+
 class PjBridgeServer:
-    def __init__(self):
-        self.clients: dict = {}  # ws -> {"paused": bool, "subscribed_topics": list}
+    def __init__(self, late_topic: dict | None = None, late_delay: float = 0.0):
+        # ws -> {"paused", "subscribed" (set), "topic_updates", "tu_include_schemas"}
+        self.clients: dict = {}
+        self.topics = list(BASE_TOPICS)          # mutable — may grow via --late-topic
+        self.late_topic = late_topic
+        self.late_delay = late_delay
 
     async def handler(self, websocket):
         client_id = id(websocket)
-        self.clients[websocket] = {"paused": False, "subscribed_topics": []}
+        self.clients[websocket] = {
+            "paused": False,
+            "subscribed": set(),
+            "topic_updates": False,
+            "tu_include_schemas": False,
+        }
         print(f"[+] Client connected: {client_id}")
         try:
             async for message in websocket:
+                if isinstance(message, (bytes, bytearray)):
+                    continue
                 await self.on_message(websocket, message)
         except websockets.exceptions.ConnectionClosed:
             pass
@@ -119,40 +142,93 @@ class PjBridgeServer:
             cmd = json.loads(message)
         except json.JSONDecodeError:
             return
+        if not isinstance(cmd, dict):
+            return
 
         command = cmd.get("command", "")
+        state = self.clients[websocket]
 
         if command == "get_topics":
-            await websocket.send(json.dumps({"status": "success", "topics": TOPICS}))
-            print(f"    get_topics → sent {len(TOPICS)} topics")
+            include = bool(cmd.get("include_schemas", False))
+            resp = {"status": "success",
+                    "server": {"name": "pj_bridge_test_server", "version": "test",
+                               "capabilities": ["include_schemas", "topics_changed", "latched_badge"]},
+                    "topics": [topic_entry(t, include) for t in self.topics]}
+            await websocket.send(json.dumps(inject_response_fields(resp, cmd)))
+            print(f"    get_topics (include_schemas={include}) → {len(self.topics)} topics")
 
         elif command == "subscribe":
-            requested = cmd.get("topics", [])
-            schemas = {}
-            for topic_name in requested:
-                for t in TOPICS:
-                    if t["name"] == topic_name:
-                        schemas[topic_name] = {
-                            "encoding": t["encoding"],
-                            "definition": t["definition"],
-                        }
-                        break
-            self.clients[websocket]["subscribed_topics"] = requested
-            response = json.dumps({"status": "success", "schemas": schemas})
-            await websocket.send(response)
-            print(f"    subscribe → {requested}")
-            print(f"    schemas sent → {schemas}")
+            await self._handle_subscribe(websocket, cmd, state)
+
+        elif command == "unsubscribe":
+            requested = parse_topic_names(cmd.get("topics", []))
+            removed = [n for n in requested if n in state["subscribed"]]
+            for n in removed:
+                state["subscribed"].discard(n)
+            resp = {"status": "success", "removed": removed}
+            await websocket.send(json.dumps(inject_response_fields(resp, cmd)))
+            print(f"    unsubscribe → removed {removed}")
+
+        elif command == "subscribe_topic_updates":
+            state["topic_updates"] = True
+            state["tu_include_schemas"] = bool(cmd.get("include_schemas", False))
+            resp = {"status": "ok", "topic_updates": True}
+            await websocket.send(json.dumps(inject_response_fields(resp, cmd)))
+            print(f"    subscribe_topic_updates (include_schemas={state['tu_include_schemas']})")
+
+        elif command == "unsubscribe_topic_updates":
+            state["topic_updates"] = False
+            resp = {"status": "ok", "topic_updates": False}
+            await websocket.send(json.dumps(inject_response_fields(resp, cmd)))
+            print("    unsubscribe_topic_updates")
+
+        elif command == "heartbeat":
+            resp = {"status": "ok"}
+            await websocket.send(json.dumps(inject_response_fields(resp, cmd)))
 
         elif command == "pause":
-            self.clients[websocket]["paused"] = True
+            state["paused"] = True
+            resp = {"status": "ok", "paused": True}
+            await websocket.send(json.dumps(inject_response_fields(resp, cmd)))
             print("    paused")
 
         elif command == "resume":
-            self.clients[websocket]["paused"] = False
+            state["paused"] = False
+            resp = {"status": "ok", "paused": False}
+            await websocket.send(json.dumps(inject_response_fields(resp, cmd)))
             print("    resumed")
 
-        elif command == "heartbeat":
-            pass  # heartbeat acknowledged silently
+    async def _handle_subscribe(self, websocket, cmd, state):
+        """ADDITIVE subscribe: merge newly-requested topics into the session set.
+        Already-subscribed topics are a no-op (no schema echoed) — matching
+        production's topics_to_add = requested − current."""
+        resp, _newly = build_subscribe_response(cmd.get("topics", []), {t["name"]: t for t in self.topics}, state["subscribed"])
+        await websocket.send(json.dumps(inject_response_fields(resp, cmd)))
+        print(f"    subscribe → {resp['status']}; schemas={sorted(resp['schemas'])}; "
+              f"failures={[f['topic'] for f in resp.get('failures', [])]}")
+
+    async def schedule_late_topic(self):
+        """Advertise one extra topic `late_delay` seconds after startup and push a
+        topics_changed notification to every opted-in session (exercises
+        subscribe_topic_updates end-to-end for the static server)."""
+        if not self.late_topic:
+            return
+        await asyncio.sleep(self.late_delay)
+        self.topics.append(self.late_topic)
+        print(f"[*] late topic advertised: {self.late_topic['name']}")
+        for websocket, state in list(self.clients.items()):
+            if not state["topic_updates"]:
+                continue
+            note = {
+                "notification": "topics_changed",
+                "added": [topic_entry(self.late_topic, state["tu_include_schemas"])],
+                "removed": [],
+                "protocol_version": PROTOCOL_VERSION,
+            }
+            try:
+                await websocket.send(json.dumps(note))
+            except websockets.exceptions.ConnectionClosed:
+                pass
 
     async def emit_loop(self):
         """Send data frames to all subscribed, non-paused clients at ~10 Hz."""
@@ -166,24 +242,17 @@ class PjBridgeServer:
 
             ts_ns = int(time.time() * 1e9)
 
-            values = {
-                "/test/sine": math.sin(t),
-                "/test/cosine": math.cos(t),
-                "/test/sawtooth": (t % (2 * math.pi)) / (2 * math.pi),
-            }
-
             for websocket, state in list(self.clients.items()):
                 if state["paused"]:
                     continue
-                subscribed = state["subscribed_topics"]
+                subscribed = state["subscribed"]
                 if not subscribed:
                     continue
 
                 messages = []
-                for topic_name in subscribed:
-                    if topic_name in values:
-                        cdr = json.dumps({"value": values[topic_name]}).encode()
-                        messages.append((topic_name, ts_ns, cdr))
+                for name in subscribed:
+                    cdr = json.dumps({"value": value_for(name, t)}).encode()
+                    messages.append((name, ts_ns, cdr))
 
                 if messages:
                     frame = build_binary_frame(messages)
@@ -196,23 +265,45 @@ class PjBridgeServer:
                         print(f"\n[!] emit_loop unexpected error: {exc!r}")
 
 
-async def main(host: str, port: int):
-    server = PjBridgeServer()
+def parse_late_topic(spec: str) -> tuple[dict, float]:
+    """Parse a --late-topic NAME:SECONDS spec into (topic_entry, delay)."""
+    name, sep, secs = spec.rpartition(":")
+    if not sep or not name:
+        raise argparse.ArgumentTypeError("expected NAME:SECONDS, e.g. /test/late:3")
+    try:
+        delay = float(secs)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid seconds in --late-topic: {secs!r}") from exc
+    entry = {"name": name, "type": "Float64", "encoding": "json", "definition": ""}
+    return entry, delay
+
+
+async def main(host: str, port: int, late_topic, late_delay):
+    server = PjBridgeServer(late_topic, late_delay)
     print(f"PJ Bridge test server listening on ws://{host}:{port}")
-    print(f"Topics: {[t['name'] for t in TOPICS]}")
+    print(f"Topics: {[t['name'] for t in server.topics]}")
+    if late_topic:
+        print(f"Late topic: {late_topic['name']} advertised after {late_delay}s")
     print("Ctrl+C to stop\n")
 
     async with websockets.serve(server.handler, host, port):
-        await server.emit_loop()
+        await asyncio.gather(server.emit_loop(), server.schedule_late_topic())
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PJ Bridge test server")
     parser.add_argument("--host", default=HOST, help=f"Bind address (default: {HOST})")
     parser.add_argument("--port", type=int, default=PORT, help=f"Port (default: {PORT})")
+    parser.add_argument("--late-topic", metavar="NAME:SECONDS", default=None,
+                        help="Advertise NAME this many SECONDS after startup, pushing "
+                             "topics_changed to opted-in sessions (e.g. /test/late:3)")
     args = parser.parse_args()
 
+    late_topic, late_delay = (None, 0.0)
+    if args.late_topic:
+        late_topic, late_delay = parse_late_topic(args.late_topic)
+
     try:
-        asyncio.run(main(args.host, args.port))
+        asyncio.run(main(args.host, args.port, late_topic, late_delay))
     except KeyboardInterrupt:
         print("\nStopped.")

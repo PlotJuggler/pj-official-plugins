@@ -163,7 +163,7 @@ void RosParser::decodeOneMarker(PJ::sdk::SceneEntities& out) {
     deserializer_->deserializeString(texture_frame);
     std::string texture_format;
     deserializer_->deserializeString(texture_format);
-    (void)deserializer_->deserializeByteSequence();  // texture.data
+    (void)readByteSequence();  // texture.data
     const uint32_t num_uv = deserializer_->deserializeUInt32();
     if (num_uv > kMaxMarkerVertices) {
       throw std::runtime_error("Marker uv_coordinates[] exceeds sanity cap");
@@ -185,7 +185,7 @@ void RosParser::decodeOneMarker(PJ::sdk::SceneEntities& out) {
     // The byte sequence must be consumed unconditionally to keep the wire
     // aligned, but only a MESH_RESOURCE marker uses it — skip the copy of a
     // potentially multi-MB payload for every other marker type.
-    const auto bytes = deserializer_->deserializeByteSequence();  // mesh_file.data
+    const auto bytes = readByteSequence();  // mesh_file.data
     if (type == marker_type::kMeshResource) {
       mesh_file_data.assign(bytes.begin(), bytes.end());
     }

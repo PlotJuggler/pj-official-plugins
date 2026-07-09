@@ -24,6 +24,33 @@ struct ChannelInfo {
   uint64_t msg_count = 0;
 };
 
+struct AlwaysIncludeRule {
+  std::string schema_name;
+  std::string encoding;
+};
+
+/// Channels whose (schema, encoding) match a rule here are always loaded,
+/// regardless of user selection -- 3D rendering (Scene3D's transform tree)
+/// silently breaks without them. Keyed on message type rather than topic
+/// name because topic naming isn't consistent across producers: Foxglove's
+/// own foxglove.FrameTransform has no fixed topic-name convention the way
+/// ROS fixes /tf (real Foxglove-recorded files use topic names like plain
+/// "tf", no leading slash, or something else entirely). The mechanism here
+/// is generic -- this table is just its (currently two-entry) data.
+const std::vector<AlwaysIncludeRule> kAlwaysIncludeRules = {
+    {"tf2_msgs/msg/TFMessage", "cdr"},
+    {"foxglove.FrameTransform", "protobuf"},
+};
+
+bool isAlwaysIncluded(const ChannelInfo& ch) {
+  for (const auto& rule : kAlwaysIncludeRules) {
+    if (ch.schema == rule.schema_name && ch.encoding == rule.encoding) {
+      return true;
+    }
+  }
+  return false;
+}
+
 class McapDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
@@ -92,7 +119,7 @@ class McapDialog : public PJ::DialogPluginTyped {
     wd.setTableHeaders("tableWidget", headers);
 
     std::vector<std::vector<std::string>> rows;
-    std::vector<int> selected_row_indices;
+    std::vector<std::string> selected_topic_names;
     std::vector<int> disabled_row_indices;
     rows.reserve(filtered.size());
 
@@ -100,15 +127,23 @@ class McapDialog : public PJ::DialogPluginTyped {
       const auto& ch = *filtered[i];
       rows.push_back({ch.topic, ch.schema, ch.encoding, std::to_string(ch.msg_count)});
       if (selected_topics_.count(ch.topic) > 0) {
-        selected_row_indices.push_back(static_cast<int>(i));
+        selected_topic_names.push_back(ch.topic);
       }
-      if (ch.msg_count == 0) {
+      bool locked_always_included = ch.msg_count > 0 && isAlwaysIncluded(ch);
+      if (ch.msg_count == 0 || locked_always_included) {
         disabled_row_indices.push_back(static_cast<int>(i));
+      }
+      if (locked_always_included) {
+        wd.setCellTooltip(
+            "tableWidget", static_cast<int>(i), 0, "Always loaded — required for 3D transform rendering.");
       }
     }
     wd.setTableRows("tableWidget", rows);
     wd.setDisabledRows("tableWidget", disabled_row_indices);
-    wd.setSelectedRows("tableWidget", selected_row_indices);
+    // Restore selection by first-column text (the topic name), not row index:
+    // the host matches items by text, which is sort-agnostic, so the selection
+    // survives the table's built-in column sorting (sortingEnabled=true).
+    wd.setSelectedItems("tableWidget", selected_topic_names);
 
     wd.setShortcut("btnSelectAll", "Ctrl+A");
     wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
@@ -185,6 +220,7 @@ class McapDialog : public PJ::DialogPluginTyped {
       for (const auto& topic : selected) {
         selected_topics_.insert(topic);
       }
+      reassertAlwaysIncluded();
       return true;  // update OK button state
     }
     return false;
@@ -202,6 +238,7 @@ class McapDialog : public PJ::DialogPluginTyped {
     }
     if (widget_name == "btnDeselectAll") {
       selected_topics_.clear();
+      reassertAlwaysIncluded();
       return true;
     }
     return false;
@@ -330,6 +367,20 @@ class McapDialog : public PJ::DialogPluginTyped {
         if (ch.msg_count > 0) {
           selected_topics_.insert(ch.topic);
         }
+      }
+    }
+
+    reassertAlwaysIncluded();
+  }
+
+  /// Channels matching kAlwaysIncludeRules are always loaded: 3D rendering
+  /// depends on them even when the user narrows their selection to a handful
+  /// of unrelated topics. Idempotent -- safe to call after any mutation of
+  /// selected_topics_.
+  void reassertAlwaysIncluded() {
+    for (const auto& ch : all_channels_) {
+      if (ch.msg_count > 0 && isAlwaysIncluded(ch)) {
+        selected_topics_.insert(ch.topic);
       }
     }
   }

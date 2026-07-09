@@ -35,8 +35,11 @@ struct FakeDataProcessorsHost {
   int remove_calls = 0;
   bool fail = false;  // when set, create_data_processor reports failure (e.g. inputs unresolved)
   std::string id;
+  std::string kind;
+  std::string language;
   std::string script;
   std::string params;
+  uint32_t flags = 0;
   std::vector<std::string> inputs;
   std::vector<std::string> outputs;
   std::vector<std::string> live_ids;  // ids the host currently considers installed
@@ -47,17 +50,21 @@ struct FakeDataProcessorsHost {
   }
 
   static bool createImpl(
-      void* ctx, PJ_string_view_t id, const PJ_string_view_t* inputs, uint64_t input_count,
-      const PJ_string_view_t* outputs, uint64_t output_count, PJ_string_view_t script, PJ_string_view_t params,
-      PJ_error_t* /*out_error*/) noexcept {
+      void* ctx, PJ_string_view_t id, PJ_string_view_t kind, PJ_string_view_t language, const PJ_string_view_t* inputs,
+      uint64_t input_count, const PJ_string_view_t* outputs, uint64_t output_count, PJ_string_view_t script,
+      PJ_string_view_t params_json, uint32_t flags, PJ_string_view_t* out_topics, uint64_t out_topics_capacity,
+      uint64_t* out_topics_count, PJ_error_t* /*out_error*/) noexcept {
     auto* self = static_cast<FakeDataProcessorsHost*>(ctx);
     self->create_calls++;
     if (self->fail) {
       return false;
     }
     self->id.assign(id.data, id.size);
+    self->kind.assign(kind.data, kind.size);
+    self->language.assign(language.data, language.size);
     self->script.assign(script.data, script.size);
-    self->params.assign(params.data, params.size);
+    self->params.assign(params_json.data, params_json.size);
+    self->flags = flags;
     self->inputs.clear();
     for (uint64_t i = 0; i < input_count; ++i) {
       self->inputs.emplace_back(inputs[i].data, inputs[i].size);
@@ -65,6 +72,14 @@ struct FakeDataProcessorsHost {
     self->outputs.clear();
     for (uint64_t i = 0; i < output_count; ++i) {
       self->outputs.emplace_back(outputs[i].data, outputs[i].size);
+    }
+    // Resolved sink names: echo the caller-supplied outputs (count-then-fill).
+    if (out_topics_count != nullptr) {
+      *out_topics_count = self->outputs.size();
+    }
+    for (uint64_t i = 0; i < self->outputs.size() && i < out_topics_capacity; ++i) {
+      out_topics[i].data = self->outputs[i].data();
+      out_topics[i].size = self->outputs[i].size();
     }
     if (std::find(self->live_ids.begin(), self->live_ids.end(), self->id) == self->live_ids.end()) {
       self->live_ids.push_back(self->id);  // upsert by id
@@ -100,6 +115,7 @@ struct FakeDataProcessorsHost {
     vtable_.remove_data_processor = &removeImpl;
     vtable_.list_data_processor_ids = &listImpl;
     vtable_.data_processor_config = nullptr;
+    vtable_.validate_data_processor_script = nullptr;
     return PJ_data_processors_host_t{this, &vtable_};
   }
 
@@ -158,6 +174,10 @@ TEST(QuaternionPluginTest, InstallsDataProcessorWithFieldInputs) {
   ASSERT_EQ(dp.outputs.size(), 1u);
   EXPECT_EQ(dp.outputs[0], "rpy:roll,pitch,yaw");
   EXPECT_EQ(dp.id, "rpy");
+  // The node is a persistent (non-ephemeral) Luau transform.
+  EXPECT_EQ(dp.kind, "transform");
+  EXPECT_EQ(dp.language, "luau");
+  EXPECT_EQ(dp.flags, 0u);
   // The script ports the converter math and bakes degrees + unwrap.
   EXPECT_NE(dp.script.find("math.atan2"), std::string::npos);
   EXPECT_NE(dp.script.find("math.asin"), std::string::npos);

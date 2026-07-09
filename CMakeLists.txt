@@ -29,6 +29,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(data_load_mcap)
   add_subdirectory(data_load_parquet)
   add_subdirectory(data_load_ulog)
+  add_subdirectory(data_load_3d)
   # data_load_lerobot and data_load_mp4 are intentionally NOT in this aggregate
   # list: they depend on FFmpeg (via common/pj_video_demux), which this build
   # does not provide. Both build per-plugin against their own conanfile (CI's
@@ -167,6 +168,7 @@ else()
   add_subdirectory(data_load_mcap)
   add_subdirectory(data_load_parquet)
   add_subdirectory(data_load_ulog)
+  add_subdirectory(data_load_3d)
   # data_load_lerobot and data_load_mp4 are intentionally NOT in this aggregate
   # list: they depend on FFmpeg (via common/pj_video_demux), which this build
   # does not provide. Both build per-plugin against their own conanfile (CI's

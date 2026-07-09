@@ -75,6 +75,19 @@ so the user can select which topics to import. Per-import options:
 - **Embedded timestamp** — extract from message headers when supported
   by the parser (e.g. ROS `header.stamp`).
 
+## Always-included channels
+
+Channels whose `(schema name, encoding)` matches a small built-in whitelist
+are always loaded, pre-checked and locked in the picker, regardless of the
+user's selection — because PJ4's Scene3D needs them to place other 3D
+objects (`PointCloud`/`Mesh3D`) and silently breaks without them. Today the
+whitelist covers ROS 2's transform tree (`tf2_msgs/msg/TFMessage` over
+`cdr`) and Foxglove's (`foxglove.FrameTransform` over `protobuf`). The match
+is on message type, not topic name — Foxglove's convention has no fixed
+topic name the way ROS fixes `/tf`. This keeps the loader itself
+format-agnostic: the whitelist is just data (`kAlwaysIncludeRules` in
+`mcap_dialog.hpp`), not a ROS-specific code path.
+
 ## How parsers see this loader
 
 Because the loader speaks only `pushMessage` with a fetcher, any
