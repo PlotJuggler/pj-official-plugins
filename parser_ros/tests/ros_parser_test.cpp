@@ -1245,20 +1245,97 @@ TEST(RosParserTest, TFMessageProducesFrameTransformsObject) {
   ASSERT_NE(ft, nullptr);
   ASSERT_EQ(ft->transforms.size(), 2u);
 
-  // Each FrameTransform keeps its own Header.stamp — the per-sample time the 3D
-  // TF buffer needs — independent of the 1000 ns message receive time above.
+  // Both transforms carry a non-zero Header.stamp and the parser is in its default
+  // mode (use_embedded_timestamp OFF), so each per-sample timestamp is overridden
+  // onto the 1000 ns MCAP message clock the 3D scene scrubs on. The raw
+  // Header.stamps (1'000'000'500, 2'000'000'000) are intentionally not used here —
+  // a bag recorded across unsynchronized clocks would otherwise drift the TF buffer
+  // out of sync with point clouds.
   EXPECT_EQ(ft->transforms[0].parent_frame_id, "world");
   EXPECT_EQ(ft->transforms[0].child_frame_id, "base_link");
-  EXPECT_EQ(ft->transforms[0].timestamp, 1'000'000'500);
+  EXPECT_EQ(ft->transforms[0].timestamp, 1000);
   EXPECT_DOUBLE_EQ(ft->transforms[0].translation.x, 1.0);
   EXPECT_DOUBLE_EQ(ft->transforms[0].translation.z, 3.0);
   EXPECT_DOUBLE_EQ(ft->transforms[0].rotation.w, 1.0);
 
   EXPECT_EQ(ft->transforms[1].parent_frame_id, "base_link");
   EXPECT_EQ(ft->transforms[1].child_frame_id, "sensor");
-  EXPECT_EQ(ft->transforms[1].timestamp, 2'000'000'000);
+  EXPECT_EQ(ft->transforms[1].timestamp, 1000);
   EXPECT_DOUBLE_EQ(ft->transforms[1].translation.y, 5.0);
   EXPECT_DOUBLE_EQ(ft->transforms[1].rotation.z, 0.707);
+}
+
+// A single /tf message can batch a static edge (unset, zero Header.stamp) with a
+// dynamic one. The two are resolved independently, per transform: a zero stamp is
+// preserved (a single sample that must hold for every query time), a non-zero stamp
+// is overridden onto the message clock.
+TEST(RosParserTest, TFMessageZeroStampStaysStaticNonZeroOverridden) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("tf2_msgs/TFMessage", kTFMessageDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serializeUInt32(2);
+    serializeHeader(enc, 0, 0, "map");  // zero stamp -> static, kept as 0
+    enc.serializeString("odom");
+    serializeVector3(enc, 1.0, 2.0, 3.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+    serializeHeader(enc, 3, 0, "odom");  // non-zero -> overridden to message time
+    enc.serializeString("base_link");
+    serializeVector3(enc, 4.0, 5.0, 6.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(7777, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* ft = std::any_cast<PJ::sdk::FrameTransforms>(&rec->object);
+  ASSERT_NE(ft, nullptr);
+  ASSERT_EQ(ft->transforms.size(), 2u);
+  EXPECT_EQ(ft->transforms[0].timestamp, 0);     // static: zero stamp preserved
+  EXPECT_EQ(ft->transforms[1].timestamp, 7777);  // dynamic: message time
+}
+
+// With "use embedded timestamp" ON the toggle wins: every transform keeps its raw
+// Header.stamp, exactly as other message types honor the same option.
+TEST(RosParserTest, TFMessageEmbeddedTimestampKeepsHeaderStamp) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("tf2_msgs/TFMessage", kTFMessageDef));
+
+  // Enable use_embedded_timestamp while preserving the schema_encoding set above.
+  std::string cfg_json;
+  ASSERT_TRUE(f.handle.saveConfig(cfg_json));
+  auto cfg = nlohmann::json::parse(cfg_json);
+  cfg["use_embedded_timestamp"] = true;
+  ASSERT_TRUE(f.handle.loadConfig(cfg.dump()).has_value());
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serializeUInt32(2);
+    serializeHeader(enc, 1, 500, "world");  // stamp = 1 s + 500 ns
+    enc.serializeString("base_link");
+    serializeVector3(enc, 1.0, 2.0, 3.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+    serializeHeader(enc, 2, 0, "base_link");  // stamp = 2 s
+    enc.serializeString("sensor");
+    serializeVector3(enc, 4.0, 5.0, 6.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1000, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* ft = std::any_cast<PJ::sdk::FrameTransforms>(&rec->object);
+  ASSERT_NE(ft, nullptr);
+  ASSERT_EQ(ft->transforms.size(), 2u);
+  EXPECT_EQ(ft->transforms[0].timestamp, 1'000'000'500);  // header stamp preserved
+  EXPECT_EQ(ft->transforms[1].timestamp, 2'000'000'000);
 }
 
 TEST(RosParserTest, ClassifiesTFMessageWithoutLoadConfig) {
@@ -1310,7 +1387,9 @@ TEST(RosParserTest, TransformStampedProducesFrameTransformsObject) {
   ASSERT_EQ(ft->transforms.size(), 1u);
   EXPECT_EQ(ft->transforms[0].parent_frame_id, "odom");
   EXPECT_EQ(ft->transforms[0].child_frame_id, "base_link");
-  EXPECT_EQ(ft->transforms[0].timestamp, 5'000'000'000);
+  // Non-zero Header.stamp (5 s), default mode: overridden onto the 999 ns message
+  // clock (same resolution as /tf — parseTransformStampedObject shares the handler).
+  EXPECT_EQ(ft->transforms[0].timestamp, 999);
   EXPECT_DOUBLE_EQ(ft->transforms[0].translation.z, 3.0);
   EXPECT_DOUBLE_EQ(ft->transforms[0].rotation.w, 1.0);
 }
