@@ -799,6 +799,19 @@ void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
     }
   }
 
+  // Combined /header/stamp (seconds): every std_msgs/Header topic gets the single
+  // plottable stamp series the specialized handlers emit via emitHeader(), on top
+  // of the split sec/nanosec leaves added below. A diagnostic aid for clock
+  // offset/skew against the message (log/publish) time. Independent of the
+  // use_embedded_timestamp toggle. value[0]/value[1] are the header stamp leaves
+  // (ROS2: sec, nanosec; ROS1: seq, stamp) — same assumption as the block above.
+  if (has_header_ && flat_msg_.value.size() >= 2) {
+    const double stamp_sec = deserializer_->isROS2() ? flat_msg_.value[0].second.convert<double>() +
+                                                           1e-9 * flat_msg_.value[1].second.convert<double>()
+                                                     : flat_msg_.value[1].second.convert<double>();
+    addField("/header/stamp", stamp_sec);
+  }
+
   std::string field_name;
   for (const auto& [key, variant] : flat_msg_.value) {
     key.toStr(field_name);
