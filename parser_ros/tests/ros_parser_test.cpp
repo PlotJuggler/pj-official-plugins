@@ -2991,6 +2991,106 @@ TEST(RosParserTest, LaserScanScalarRouteKeepsGenericFlatten) {
   EXPECT_EQ(frame_id->string_value, "laser");
 }
 
+// ===== /header/stamp diagnostic timeseries =====
+
+// Any std_msgs/Header topic on the generic-flatten route gains a single combined
+// /header/stamp (seconds) alongside the split sec/nanosec leaves — a plottable
+// series for diagnosing clock offset/skew against the message (log/publish) time.
+TEST(RosParserTest, GenericHeaderedMessageEmitsCombinedHeaderStamp) {
+  static const char* kHeaderedDef =
+      "std_msgs/Header header\nfloat64 value\n"
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("diag_msgs/Headered", kHeaderedDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 2, 500000000, "odom");  // 2.5 s
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(1.0));
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+
+  const auto* stamp = findField(row, "/header/stamp");
+  ASSERT_NE(stamp, nullptr);
+  EXPECT_DOUBLE_EQ(stamp->numeric, 2.5);
+
+  // The split leaves still flow through the generic flatten (back-compat).
+  const auto* sec = findField(row, "/header/stamp/sec");
+  ASSERT_NE(sec, nullptr);
+  EXPECT_DOUBLE_EQ(sec->numeric, 2.0);
+  const auto* nsec = findField(row, "/header/stamp/nanosec");
+  ASSERT_NE(nsec, nullptr);
+  EXPECT_DOUBLE_EQ(nsec->numeric, 500000000.0);
+  const auto* frame = findField(row, "/header/frame_id");
+  ASSERT_NE(frame, nullptr);
+  EXPECT_EQ(frame->string_value, "odom");
+}
+
+// LaserScan flows through parseScalarsGeneric, so it gets the combined stamp too
+// — the specific gap that motivated this: /scan/header/stamp as a timeseries.
+TEST(RosParserTest, LaserScanScalarRouteEmitsCombinedHeaderStamp) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/LaserScan", kLaserScanDef));
+
+  const std::vector<float> ranges = {1.5f, 2.5f};
+  auto payload = serializeCdr([&ranges](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 11, 22, "laser");  // 11.000000022 s
+    serializeLaserScanBody(enc, -0.5f, 0.25f, 0.1f, 20.0f, ranges, {});
+  });
+
+  ASSERT_TRUE(f.parse(payload, 99));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+
+  const auto* stamp = findField(row, "/header/stamp");
+  ASSERT_NE(stamp, nullptr);
+  EXPECT_NEAR(stamp->numeric, 11.0 + 22e-9, 1e-9);
+}
+
+// TFMessage uses a specialized scalar handler (not the generic flatten), so it
+// emits the per-transform header stamp under each edge's own prefix, next to the
+// existing translation/rotation columns.
+TEST(RosParserTest, TFMessageScalarRouteEmitsPerTransformHeaderStamp) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("tf2_msgs/TFMessage", kTFMessageDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serializeUInt32(2);
+    serializeHeader(enc, 1, 500, "world");  // 1.0000005 s
+    enc.serializeString("base_link");
+    serializeVector3(enc, 1.0, 2.0, 3.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+    serializeHeader(enc, 2, 0, "base_link");  // 2.0 s
+    enc.serializeString("sensor");
+    serializeVector3(enc, 4.0, 5.0, 6.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+
+  const auto* s0 = findField(row, "/world/base_link/header/stamp");
+  ASSERT_NE(s0, nullptr);
+  EXPECT_NEAR(s0->numeric, 1.0 + 500e-9, 1e-9);
+
+  const auto* s1 = findField(row, "/base_link/sensor/header/stamp");
+  ASSERT_NE(s1, nullptr);
+  EXPECT_DOUBLE_EQ(s1->numeric, 2.0);
+
+  // Regression: the transform values are still emitted alongside the stamp.
+  const auto* tx = findField(row, "/world/base_link/translation/x");
+  ASSERT_NE(tx, nullptr);
+  EXPECT_DOUBLE_EQ(tx->numeric, 1.0);
+}
+
 // Golden fixture: one real CDR sensor_msgs/msg/LaserScan message captured from
 // a ROS 2 recording (1440 rays, range [0.3, 40.0], empty intensities,
 // frame_id "base_link", header stamp 1779975681.103199244). Exercises the real
