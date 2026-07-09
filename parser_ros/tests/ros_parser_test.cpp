@@ -1306,12 +1306,9 @@ TEST(RosParserTest, TFMessageEmbeddedTimestampKeepsHeaderStamp) {
   f.setUp();
   ASSERT_TRUE(f.bindSchema("tf2_msgs/TFMessage", kTFMessageDef));
 
-  // Enable use_embedded_timestamp while preserving the schema_encoding set above.
-  std::string cfg_json;
-  ASSERT_TRUE(f.handle.saveConfig(cfg_json));
-  auto cfg = nlohmann::json::parse(cfg_json);
-  cfg["use_embedded_timestamp"] = true;
-  ASSERT_TRUE(f.handle.loadConfig(cfg.dump()).has_value());
+  // Enable use_embedded_timestamp (schema_encoding falls back to ros2msg, matching
+  // the bindSchema above) — same idiom as LaserScanRealCdrMessageFromBag.
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})").has_value());
 
   auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
     enc.serializeUInt32(2);
