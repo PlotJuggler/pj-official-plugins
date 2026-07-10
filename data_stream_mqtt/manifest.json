@@ -1,7 +1,7 @@
 {
   "id": "mqtt-subscriber",
   "name": "MQTT Subscriber",
-  "version": "1.4.0",
+  "version": "0.99.0",
   "description": "Real-time data streaming via MQTT protocol. Subscribe to topics and visualize live data.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
@@ -17,5 +17,5 @@
     "iot",
     "subscriber"
   ],
-  "min_plotjuggler_version": "4.0.0"
+  "min_plotjuggler_version": "3.999.1"
 }

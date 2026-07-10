@@ -1,7 +1,7 @@
 {
   "id": "toolbox-colormap",
   "name": "ColorMap Editor",
-  "version": "1.4.0",
+  "version": "0.99.0",
   "description": "Lua-based colormap editor: write a ColorMap(v) function that maps a numeric value to a CSS color string. Includes validation, save/load of named colormaps in JSON config, and saved maps management.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
@@ -16,5 +16,5 @@
     "visualization",
     "toolbox"
   ],
-  "min_plotjuggler_version": "4.0.0"
+  "min_plotjuggler_version": "3.999.1"
 }
