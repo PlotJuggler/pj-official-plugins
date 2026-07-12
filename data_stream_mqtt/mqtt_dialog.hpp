@@ -92,16 +92,18 @@ class MqttDialog : public PJ::DialogPluginTyped {
       wd.setEnabled("comboBoxProtocol", false);
     }
 
-    // TLS certificate file pickers
-    wd.setFilePicker("buttonLoadServerCertificate", "...", "*.pem *.crt *.cer", "Select Server CA Certificate");
-    wd.setFilePicker("buttonLoadClientCertificate", "...", "*.pem *.crt *.cer", "Select Client Certificate");
-    wd.setFilePicker("buttonLoadPrivateKey", "...", "*.pem *.key", "Select Private Key");
-    wd.setText("labelServerCertificate", ca_cert_path_.empty() ? "(none)" : filenameFromPath(ca_cert_path_));
-    wd.setText("labelClientCertificate", client_cert_path_.empty() ? "(none)" : filenameFromPath(client_cert_path_));
-    wd.setText("labelPrivateKey", private_key_path_.empty() ? "(none)" : filenameFromPath(private_key_path_));
-    wd.setEnabled("buttonEraseServerCertificate", !ca_cert_path_.empty());
-    wd.setEnabled("buttonEraseClientCertificate", !client_cert_path_.empty());
-    wd.setEnabled("buttonErasePrivateKey", !private_key_path_.empty());
+    // TLS certificate file pickers. Icon-only browse buttons (empty label, the
+    // shared "contract" certificate glyph); the editable path fields double as
+    // the file-picked display and a manual-entry field.
+    wd.setFilePicker("buttonLoadServerCertificate", "", "*.pem *.crt *.cer", "Select Server CA Certificate");
+    wd.setFilePicker("buttonLoadClientCertificate", "", "*.pem *.crt *.cer", "Select Client Certificate");
+    wd.setFilePicker("buttonLoadPrivateKey", "", "*.pem *.key", "Select Private Key");
+    wd.setButtonIconNamed("buttonLoadServerCertificate", "contract");
+    wd.setButtonIconNamed("buttonLoadClientCertificate", "contract");
+    wd.setButtonIconNamed("buttonLoadPrivateKey", "contract");
+    wd.setText("lineEditServerCertificate", ca_cert_path_);
+    wd.setText("lineEditClientCertificate", client_cert_path_);
+    wd.setText("lineEditPrivateKey", private_key_path_);
 
     // Disable OK if no encodings available
     wd.setOkEnabled(has_encodings);
@@ -144,6 +146,19 @@ class MqttDialog : public PJ::DialogPluginTyped {
     }
     if (widget_name == "lineEditTopicFilter") {
       topic_filter_ = std::string(text);
+      return false;
+    }
+    // Certificate paths are editable: typing a path is equivalent to picking one.
+    if (widget_name == "lineEditServerCertificate") {
+      ca_cert_path_ = std::string(text);
+      return false;
+    }
+    if (widget_name == "lineEditClientCertificate") {
+      client_cert_path_ = std::string(text);
+      return false;
+    }
+    if (widget_name == "lineEditPrivateKey") {
+      private_key_path_ = std::string(text);
       return false;
     }
     return false;
@@ -204,18 +219,6 @@ class MqttDialog : public PJ::DialogPluginTyped {
       } else {
         connectBroker();
       }
-      return true;
-    }
-    if (widget_name == "buttonEraseServerCertificate") {
-      ca_cert_path_.clear();
-      return true;
-    }
-    if (widget_name == "buttonEraseClientCertificate") {
-      client_cert_path_.clear();
-      return true;
-    }
-    if (widget_name == "buttonErasePrivateKey") {
-      private_key_path_.clear();
       return true;
     }
     return false;
@@ -285,11 +288,6 @@ class MqttDialog : public PJ::DialogPluginTyped {
       return available_encodings_[static_cast<size_t>(idx)];
     }
     return available_encodings_.empty() ? "json" : available_encodings_[0];
-  }
-
-  static std::string filenameFromPath(const std::string& path) {
-    auto pos = path.find_last_of("/\\");
-    return (pos != std::string::npos) ? path.substr(pos + 1) : path;
   }
 
   void connectBroker() {

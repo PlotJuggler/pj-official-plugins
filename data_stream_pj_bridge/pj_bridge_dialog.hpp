@@ -108,6 +108,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       }
     }
     wd.setTableRows("topicsList", rows);
+    wd.setListPlaceholder("topicsList", "Click to select, Click+Drag to multi-select");
 
     if (!selected_topic_names_.empty()) {
       wd.setSelectedItems("topicsList", selected_topic_names_);

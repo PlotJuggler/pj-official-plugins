@@ -113,6 +113,9 @@ class FFTDialog : public PJ::DialogPluginTyped {
     // Input preview chart — interactive zoom enabled so the user can select a
     // time range for "Only data in zoomed area" mode (mirrors PJ 3.x behavior).
     wd.setChartZoomEnabled("chart_input");
+    wd.setChartPlaceholder("chart_input",
+        "Drag and Drop a timeseries here (from the left panel)\n\n"
+        "FFT expects a constant dt for accurate results. Resampling is not applied.");
     if (!input_series_.empty()) {
       wd.setChartSeries("chart_input", input_series_);
     } else {
@@ -213,12 +216,6 @@ class FFTDialog : public PJ::DialogPluginTyped {
     if (name == "btn_save") {
       save_requested_ = true;
       invokeSave();
-      return true;
-    }
-    if (name == "btn_clear") {
-      selected_fields_.clear();
-      clearFftOutput();
-      invokeRefreshPreview();
       return true;
     }
     return false;

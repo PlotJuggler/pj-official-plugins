@@ -8,32 +8,48 @@
   <property name="minimumSize"><size><width>620</width><height>560</height></size></property>
   <property name="windowTitle"><string>WebRTC Video Client</string></property>
   <layout class="QVBoxLayout" name="verticalLayout">
+   <property name="spacing"><number>0</number></property>
+   <property name="leftMargin"><number>0</number></property>
+   <property name="topMargin"><number>0</number></property>
+   <property name="rightMargin"><number>0</number></property>
+   <property name="bottomMargin"><number>0</number></property>
    <item>
-    <widget class="QLabel" name="labelSignaling">
-     <property name="font"><font><pointsize>12</pointsize><bold>true</bold></font></property>
-     <property name="text"><string>Signaling Server</string></property>
+    <widget class="SectionHeaderBand" name="connectionBanner">
+     <property name="text">
+      <string>Connection</string>
+     </property>
     </widget>
    </item>
    <item>
-    <layout class="QGridLayout" name="gridLayoutServer" columnstretch="0,2,0,1,0">
+    <widget class="QWidget" name="addressWrap" native="true">
+     <layout class="QVBoxLayout" name="addressWrapLayout">
+      <property name="leftMargin"><number>9</number></property>
+      <property name="topMargin"><number>6</number></property>
+      <property name="rightMargin"><number>9</number></property>
+      <property name="bottomMargin"><number>9</number></property>
+   <item>
+    <layout class="QGridLayout" name="gridLayoutServer" columnstretch="0,2,1,0">
+     <property name="spacing"><number>6</number></property>
      <item row="0" column="0">
-      <widget class="QLabel" name="labelScheme"><property name="text"><string>  ws://</string></property></widget>
+      <widget class="QLabel" name="labelTransport"><property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property><property name="text"><string>Transport</string></property></widget>
      </item>
      <item row="0" column="1">
-      <widget class="QLineEdit" name="lineEditAddress"><property name="placeholderText"><string>127.0.0.1</string></property></widget>
+      <widget class="QLabel" name="labelAddressHdr"><property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property><property name="text"><string>Address</string></property></widget>
      </item>
      <item row="0" column="2">
-      <widget class="QLabel" name="labelColon"><property name="text"><string> : </string></property></widget>
+      <widget class="QLabel" name="labelPortHdr"><property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property><property name="text"><string>Port</string></property></widget>
      </item>
-     <item row="0" column="3">
+     <item row="1" column="0">
+      <widget class="QComboBox" name="comboBoxTransport"><property name="enabled"><bool>false</bool></property><item><property name="text"><string>ws://</string></property></item></widget>
+     </item>
+     <item row="1" column="1">
+      <widget class="QLineEdit" name="lineEditAddress"><property name="placeholderText"><string>127.0.0.1</string></property></widget>
+     </item>
+     <item row="1" column="2">
       <widget class="QLineEdit" name="lineEditPort"><property name="placeholderText"><string>8443</string></property></widget>
      </item>
-     <item row="0" column="4">
-      <widget class="QPushButton" name="buttonConnect">
-       <property name="minimumSize"><size><width>110</width><height>25</height></size></property>
-       <property name="text"><string>Connect</string></property>
-       <property name="checkable"><bool>true</bool></property>
-      </widget>
+     <item row="1" column="3">
+      <widget class="QPushButton" name="buttonConnect"><property name="minimumSize"><size><width>110</width><height>25</height></size></property><property name="text"><string>Connect</string></property><property name="checkable"><bool>true</bool></property></widget>
      </item>
     </layout>
    </item>
@@ -57,26 +73,23 @@
      </item>
     </layout>
    </item>
-   <item><widget class="Line" name="lineSep1"><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
-   <item>
-    <layout class="QHBoxLayout" name="horizontalLayoutCamerasHeader">
-     <item>
-      <widget class="QLabel" name="labelCameras">
-       <property name="font"><font><pointsize>12</pointsize><bold>true</bold></font></property>
-       <property name="text"><string>Select one or multiple cameras:</string></property>
-      </widget>
-     </item>
-     <item><spacer name="horizontalSpacerCameras"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
-     <item><widget class="QLabel" name="labelFilter"><property name="text"><string>Filter: </string></property></widget></item>
-     <item>
-      <widget class="QLineEdit" name="lineEditFilter">
-       <property name="filterField" stdset="0"><bool>true</bool></property>
-       <property name="maximumSize"><size><width>300</width><height>16777215</height></size></property>
-       <property name="clearButtonEnabled"><bool>true</bool></property>
-      </widget>
-     </item>
-    </layout>
+     </layout>
+    </widget>
    </item>
+   <item>
+    <widget class="SectionHeaderBand" name="camerasBanner">
+     <property name="text"><string>Cameras</string></property>
+     <property name="filterFieldName"><string>lineEditFilter</string></property>
+     <property name="filterPlaceholder"><string>Filter</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="camerasListWrap" native="true">
+     <layout class="QVBoxLayout" name="camerasListWrapLayout">
+      <property name="leftMargin"><number>9</number></property>
+      <property name="topMargin"><number>6</number></property>
+      <property name="rightMargin"><number>9</number></property>
+      <property name="bottomMargin"><number>9</number></property>
    <item>
     <widget class="QTableWidget" name="camerasList">
      <property name="toolTip"><string>Cameras advertised by the peer. Select the ones you want; each becomes its own PJ.VideoFrame topic.</string></property>
@@ -87,12 +100,21 @@
      <column><property name="text"><string>Resolution</string></property></column>
     </widget>
    </item>
+     </layout>
+    </widget>
+   </item>
    <item>
-    <widget class="QLabel" name="labelIce">
-     <property name="font"><font><pointsize>12</pointsize><bold>true</bold></font></property>
+    <widget class="SectionHeaderBand" name="iceBanner">
      <property name="text"><string>ICE Servers (STUN / TURN)</string></property>
     </widget>
    </item>
+   <item>
+    <widget class="QWidget" name="iceWrap" native="true">
+     <layout class="QVBoxLayout" name="iceWrapLayout">
+      <property name="leftMargin"><number>9</number></property>
+      <property name="topMargin"><number>6</number></property>
+      <property name="rightMargin"><number>9</number></property>
+      <property name="bottomMargin"><number>9</number></property>
    <item>
     <widget class="QTableWidget" name="tableIceServers">
      <property name="toolTip"><string>STUN: fill URL only (e.g. stun:stun.l.google.com:19302). TURN: also fill Username and Credential (e.g. turn:turn.example.org:3478).</string></property>
@@ -107,6 +129,9 @@
     <widget class="QDialogButtonBox" name="buttonBox">
      <property name="orientation"><enum>Qt::Horizontal</enum></property>
      <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
+    </widget>
+   </item>
+     </layout>
     </widget>
    </item>
   </layout>
