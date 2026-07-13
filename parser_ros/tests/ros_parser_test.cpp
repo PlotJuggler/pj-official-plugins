@@ -1245,20 +1245,94 @@ TEST(RosParserTest, TFMessageProducesFrameTransformsObject) {
   ASSERT_NE(ft, nullptr);
   ASSERT_EQ(ft->transforms.size(), 2u);
 
-  // Each FrameTransform keeps its own Header.stamp — the per-sample time the 3D
-  // TF buffer needs — independent of the 1000 ns message receive time above.
+  // Both transforms carry a non-zero Header.stamp and the parser is in its default
+  // mode (use_embedded_timestamp OFF), so each per-sample timestamp is overridden
+  // onto the 1000 ns MCAP message clock the 3D scene scrubs on. The raw
+  // Header.stamps (1'000'000'500, 2'000'000'000) are intentionally not used here —
+  // a bag recorded across unsynchronized clocks would otherwise drift the TF buffer
+  // out of sync with point clouds.
   EXPECT_EQ(ft->transforms[0].parent_frame_id, "world");
   EXPECT_EQ(ft->transforms[0].child_frame_id, "base_link");
-  EXPECT_EQ(ft->transforms[0].timestamp, 1'000'000'500);
+  EXPECT_EQ(ft->transforms[0].timestamp, 1000);
   EXPECT_DOUBLE_EQ(ft->transforms[0].translation.x, 1.0);
   EXPECT_DOUBLE_EQ(ft->transforms[0].translation.z, 3.0);
   EXPECT_DOUBLE_EQ(ft->transforms[0].rotation.w, 1.0);
 
   EXPECT_EQ(ft->transforms[1].parent_frame_id, "base_link");
   EXPECT_EQ(ft->transforms[1].child_frame_id, "sensor");
-  EXPECT_EQ(ft->transforms[1].timestamp, 2'000'000'000);
+  EXPECT_EQ(ft->transforms[1].timestamp, 1000);
   EXPECT_DOUBLE_EQ(ft->transforms[1].translation.y, 5.0);
   EXPECT_DOUBLE_EQ(ft->transforms[1].rotation.z, 0.707);
+}
+
+// A single /tf message can batch a static edge (unset, zero Header.stamp) with a
+// dynamic one. The two are resolved independently, per transform: a zero stamp is
+// preserved (a single sample that must hold for every query time), a non-zero stamp
+// is overridden onto the message clock.
+TEST(RosParserTest, TFMessageZeroStampStaysStaticNonZeroOverridden) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("tf2_msgs/TFMessage", kTFMessageDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serializeUInt32(2);
+    serializeHeader(enc, 0, 0, "map");  // zero stamp -> static, kept as 0
+    enc.serializeString("odom");
+    serializeVector3(enc, 1.0, 2.0, 3.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+    serializeHeader(enc, 3, 0, "odom");  // non-zero -> overridden to message time
+    enc.serializeString("base_link");
+    serializeVector3(enc, 4.0, 5.0, 6.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(7777, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* ft = std::any_cast<PJ::sdk::FrameTransforms>(&rec->object);
+  ASSERT_NE(ft, nullptr);
+  ASSERT_EQ(ft->transforms.size(), 2u);
+  EXPECT_EQ(ft->transforms[0].timestamp, 0);     // static: zero stamp preserved
+  EXPECT_EQ(ft->transforms[1].timestamp, 7777);  // dynamic: message time
+}
+
+// With "use embedded timestamp" ON the toggle wins: every transform keeps its raw
+// Header.stamp, exactly as other message types honor the same option.
+TEST(RosParserTest, TFMessageEmbeddedTimestampKeepsHeaderStamp) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("tf2_msgs/TFMessage", kTFMessageDef));
+
+  // Enable use_embedded_timestamp (schema_encoding falls back to ros2msg, matching
+  // the bindSchema above) — same idiom as LaserScanRealCdrMessageFromBag.
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})").has_value());
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serializeUInt32(2);
+    serializeHeader(enc, 1, 500, "world");  // stamp = 1 s + 500 ns
+    enc.serializeString("base_link");
+    serializeVector3(enc, 1.0, 2.0, 3.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+    serializeHeader(enc, 2, 0, "base_link");  // stamp = 2 s
+    enc.serializeString("sensor");
+    serializeVector3(enc, 4.0, 5.0, 6.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+  });
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1000, view);
+  ASSERT_TRUE(rec.has_value());
+
+  const auto* ft = std::any_cast<PJ::sdk::FrameTransforms>(&rec->object);
+  ASSERT_NE(ft, nullptr);
+  ASSERT_EQ(ft->transforms.size(), 2u);
+  EXPECT_EQ(ft->transforms[0].timestamp, 1'000'000'500);  // header stamp preserved
+  EXPECT_EQ(ft->transforms[1].timestamp, 2'000'000'000);
 }
 
 TEST(RosParserTest, ClassifiesTFMessageWithoutLoadConfig) {
@@ -1310,7 +1384,9 @@ TEST(RosParserTest, TransformStampedProducesFrameTransformsObject) {
   ASSERT_EQ(ft->transforms.size(), 1u);
   EXPECT_EQ(ft->transforms[0].parent_frame_id, "odom");
   EXPECT_EQ(ft->transforms[0].child_frame_id, "base_link");
-  EXPECT_EQ(ft->transforms[0].timestamp, 5'000'000'000);
+  // Non-zero Header.stamp (5 s), default mode: overridden onto the 999 ns message
+  // clock (same resolution as /tf — parseTransformStampedObject shares the handler).
+  EXPECT_EQ(ft->transforms[0].timestamp, 999);
   EXPECT_DOUBLE_EQ(ft->transforms[0].translation.z, 3.0);
   EXPECT_DOUBLE_EQ(ft->transforms[0].rotation.w, 1.0);
 }
@@ -2910,6 +2986,106 @@ TEST(RosParserTest, LaserScanScalarRouteKeepsGenericFlatten) {
   const auto* frame_id = PJ::sdk::testing::ParserWriteRecorder::findField(row, "/header/frame_id");
   ASSERT_NE(frame_id, nullptr);
   EXPECT_EQ(frame_id->string_value, "laser");
+}
+
+// ===== /header/stamp diagnostic timeseries =====
+
+// Any std_msgs/Header topic on the generic-flatten route gains a single combined
+// /header/stamp (seconds) alongside the split sec/nanosec leaves — a plottable
+// series for diagnosing clock offset/skew against the message (log/publish) time.
+TEST(RosParserTest, GenericHeaderedMessageEmitsCombinedHeaderStamp) {
+  static const char* kHeaderedDef =
+      "std_msgs/Header header\nfloat64 value\n"
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("diag_msgs/Headered", kHeaderedDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 2, 500000000, "odom");  // 2.5 s
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(1.0));
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+
+  const auto* stamp = findField(row, "/header/stamp");
+  ASSERT_NE(stamp, nullptr);
+  EXPECT_DOUBLE_EQ(stamp->numeric, 2.5);
+
+  // The split leaves still flow through the generic flatten (back-compat).
+  const auto* sec = findField(row, "/header/stamp/sec");
+  ASSERT_NE(sec, nullptr);
+  EXPECT_DOUBLE_EQ(sec->numeric, 2.0);
+  const auto* nsec = findField(row, "/header/stamp/nanosec");
+  ASSERT_NE(nsec, nullptr);
+  EXPECT_DOUBLE_EQ(nsec->numeric, 500000000.0);
+  const auto* frame = findField(row, "/header/frame_id");
+  ASSERT_NE(frame, nullptr);
+  EXPECT_EQ(frame->string_value, "odom");
+}
+
+// LaserScan flows through parseScalarsGeneric, so it gets the combined stamp too
+// — the specific gap that motivated this: /scan/header/stamp as a timeseries.
+TEST(RosParserTest, LaserScanScalarRouteEmitsCombinedHeaderStamp) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/LaserScan", kLaserScanDef));
+
+  const std::vector<float> ranges = {1.5f, 2.5f};
+  auto payload = serializeCdr([&ranges](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 11, 22, "laser");  // 11.000000022 s
+    serializeLaserScanBody(enc, -0.5f, 0.25f, 0.1f, 20.0f, ranges, {});
+  });
+
+  ASSERT_TRUE(f.parse(payload, 99));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+
+  const auto* stamp = findField(row, "/header/stamp");
+  ASSERT_NE(stamp, nullptr);
+  EXPECT_NEAR(stamp->numeric, 11.0 + 22e-9, 1e-9);
+}
+
+// TFMessage uses a specialized scalar handler (not the generic flatten), so it
+// emits the per-transform header stamp under each edge's own prefix, next to the
+// existing translation/rotation columns.
+TEST(RosParserTest, TFMessageScalarRouteEmitsPerTransformHeaderStamp) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("tf2_msgs/TFMessage", kTFMessageDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serializeUInt32(2);
+    serializeHeader(enc, 1, 500, "world");  // 1.0000005 s
+    enc.serializeString("base_link");
+    serializeVector3(enc, 1.0, 2.0, 3.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+    serializeHeader(enc, 2, 0, "base_link");  // 2.0 s
+    enc.serializeString("sensor");
+    serializeVector3(enc, 4.0, 5.0, 6.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+
+  const auto* s0 = findField(row, "/world/base_link/header/stamp");
+  ASSERT_NE(s0, nullptr);
+  EXPECT_NEAR(s0->numeric, 1.0 + 500e-9, 1e-9);
+
+  const auto* s1 = findField(row, "/base_link/sensor/header/stamp");
+  ASSERT_NE(s1, nullptr);
+  EXPECT_DOUBLE_EQ(s1->numeric, 2.0);
+
+  // Regression: the transform values are still emitted alongside the stamp.
+  const auto* tx = findField(row, "/world/base_link/translation/x");
+  ASSERT_NE(tx, nullptr);
+  EXPECT_DOUBLE_EQ(tx->numeric, 1.0);
 }
 
 // Golden fixture: one real CDR sensor_msgs/msg/LaserScan message captured from

@@ -672,11 +672,13 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedPointCloud2(
 //         translation       Vector3     (x, y, z   : float64)
 //         rotation          Quaternion  (x, y, z, w: float64)
 //
-// Emitted as a canonical sdk::FrameTransforms (owned — no byte blob). Each
-// FrameTransform carries its OWN Header.stamp: that per-sample time is what the
-// 3D scene's TF buffer needs for zero-order-hold scrub lookups, independent of
-// the message receive time. The scalar handler (handleTFMessage) still runs in
-// parallel for users who want to plot the transforms as time series.
+// Emitted as a canonical sdk::FrameTransforms (owned — no byte blob). The 3D
+// scene's TF buffer keys each edge by FrameTransform::timestamp and scrubs it
+// with a zero-order hold at the playhead, which lives on the MCAP message clock
+// (log / publish time). readStampedTransform() therefore resolves the per-sample
+// timestamp so it lands on that same clock — see the three cases there. The
+// scalar handler (handleTFMessage) still runs in parallel for users who want to
+// plot the transforms as time series, and it always keeps the raw Header.stamp.
 // ---------------------------------------------------------------------------
 
 PJ::sdk::FrameTransform RosParser::readStampedTransform() {
@@ -692,9 +694,27 @@ PJ::sdk::FrameTransform RosParser::readStampedTransform() {
   const double qz = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   const double qw = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
 
+  const int64_t header_stamp_ns = static_cast<int64_t>(header.sec) * 1000000000LL + static_cast<int64_t>(header.nsec);
+
   PJ::sdk::FrameTransform tf;
-  tf.timestamp =
-      static_cast<PJ::Timestamp>(static_cast<int64_t>(header.sec) * 1000000000LL + static_cast<int64_t>(header.nsec));
+  // Timestamp resolution, so the TF buffer lands on the same clock the 3D scene
+  // scrubs on (see this section's header comment):
+  //   1. "use embedded timestamp" ON  -> the payload Header.stamp, honoring the
+  //      toggle exactly as every other message type does.
+  //   2. OFF + Header.stamp == 0       -> keep 0: a static transform (/tf_static
+  //      latched with an unset stamp) whose single sample must hold for every
+  //      query time via the buffer's zero-order hold.
+  //   3. OFF + Header.stamp != 0       -> current_timestamp_, the MCAP-resolved
+  //      message time (log / publish). A bag recorded across unsynchronized
+  //      clocks carries a Header.stamp on a different clock — in offset AND rate —
+  //      than the message time the playhead uses; keying the TF buffer by that
+  //      stamp drifts transforms out of sync with point clouds. Overriding onto
+  //      the message clock keeps them moving together.
+  if (use_embedded_timestamp_ || header_stamp_ns == 0) {
+    tf.timestamp = static_cast<PJ::Timestamp>(header_stamp_ns);
+  } else {
+    tf.timestamp = current_timestamp_;
+  }
   tf.parent_frame_id = std::move(header.frame_id);
   tf.child_frame_id = std::move(child_frame_id);
   tf.translation = {.x = tx, .y = ty, .z = tz};

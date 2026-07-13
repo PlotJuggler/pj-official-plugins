@@ -238,6 +238,13 @@ void RosParser::handleTFMessage() {
     } else {
       prefix = "/" + h.frame_id + "/" + child_frame_id;
     }
+    // Per-transform header (the batch has no single message-level Header). The
+    // parent frame_id is already the path prefix, so only the stamp (seconds) —
+    // and seq on ROS1 — are emitted, matching the /header/stamp series elsewhere.
+    addField(prefix + "/header/stamp", static_cast<double>(h.sec) + static_cast<double>(h.nsec) * 1e-9);
+    if (!deserializer_->isROS2()) {
+      addField(prefix + "/header/seq", static_cast<double>(h.seq));
+    }
     parseTransform(prefix);
   }
 }
