@@ -1,11 +1,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// WebRTC multi-camera streaming client DataSource. Thin wrapper over the Qt-free
-// cores (video_emit / webrtc_receiver / webrtc_signaling). One PeerConnection
-// carries N recvonly H.264 tracks; each selected camera becomes one canonical
-// PJ.VideoFrame topic. The dialog discovers a catalog and the source steals its
-// live signaling socket so it does not re-handshake.
+// WHEP multi-camera streaming client DataSource. Thin wrapper over the Qt-free
+// cores (video_emit / whep_connection / whep_client). Each selected mediamtx
+// path gets its OWN WhepConnection (one PC, one recvonly H.264 track) and one
+// canonical PJ.VideoFrame topic <prefix>/<path>. Per-camera reconnect with
+// exponential backoff; 401/403 is terminal for that camera until restart.
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
@@ -21,18 +21,10 @@
 #include "video_emit.hpp"
 #include "webrtc_dialog.hpp"
 #include "webrtc_manifest.hpp"
-#include "webrtc_receiver.hpp"
-#include "webrtc_signaling.hpp"
+#include "whep_client.hpp"
+#include "whep_connection.hpp"
 
 namespace {
-
-// Per-camera runtime record. Keyed by mid (== stream id).
-struct StreamBinding {
-  std::string mid;
-  std::string topic;
-  std::string frame_id;
-  PJ::ParserBindingHandle binding{};
-};
 
 class WebrtcSource : public PJ::StreamSourceBase {
  public:
@@ -57,34 +49,11 @@ class WebrtcSource : public PJ::StreamSourceBase {
     if (cfg.is_discarded()) {
       return PJ::unexpected("invalid dialog config");
     }
-    address_ = cfg.value("address", std::string("127.0.0.1"));
-    port_ = static_cast<uint16_t>(cfg.value("port", 8443));
-    our_id_ = cfg.value("our_id", std::string("receiver"));
+    server_url_ = cfg.value("server_url", std::string("http://127.0.0.1:8889"));
+    bearer_token_ = cfg.value("bearer_token", std::string());
     topic_prefix_ = cfg.value("topic_prefix", std::string("webrtc"));
-    manual_stream_ = cfg.value("manual_stream", std::string());
 
-    selected_.clear();
-    if (cfg.contains("selected") && cfg["selected"].is_array()) {
-      for (const auto& e : cfg["selected"]) {
-        SelStream s;
-        s.id = e.value("id", std::string());
-        s.name = e.value("name", std::string());
-        if (!s.id.empty()) {
-          selected_.push_back(std::move(s));
-        }
-      }
-    }
-    // A typed manual id is NOT a discovered stream: the legacy offerer assigns
-    // its OWN mid (e.g. "video0"), which the answerer cannot control. So we do
-    // NOT push it into selected_ (which feeds subscribe + the expected-mid set);
-    // that would pre-create a track keyed by the typed id, miss the real mid, and
-    // drop the legacy track (PROTOCOL.md §7.3). Keep the subscribe set empty
-    // (accept-any-track) and apply the manual string only as the topic-leaf
-    // override in bindingForMid(). (selected_.empty() && manual_stream_.empty())
-    // => legacy wait-for-offer: subscribe to nothing; bind lazily in onPoll.
-
-    webrtc_config_ = PJ::webrtc::WebrtcConfig{};
-    webrtc_config_.frame_id = topic_prefix_.empty() ? "webrtc" : topic_prefix_;
+    ice_servers_.clear();
     if (cfg.contains("ice_servers") && cfg["ice_servers"].is_array()) {
       for (const auto& e : cfg["ice_servers"]) {
         PJ::webrtc::IceServerConfig srv;
@@ -92,88 +61,114 @@ class WebrtcSource : public PJ::StreamSourceBase {
         srv.username = e.value("username", std::string());
         srv.credential = e.value("credential", std::string());
         if (!srv.url.empty()) {
-          webrtc_config_.ice_servers.push_back(std::move(srv));
+          ice_servers_.push_back(std::move(srv));
         }
       }
     }
 
-    stolen_signaling_ = dialog_.takeSignaling();
+    std::vector<std::string> paths;
+    if (cfg.contains("selected") && cfg["selected"].is_array()) {
+      for (const auto& e : cfg["selected"]) {
+        if (e.is_string() && !e.get<std::string>().empty()) {
+          paths.push_back(e.get<std::string>());
+        }
+      }
+    }
+    if (paths.empty()) {
+      return PJ::unexpected("no stream paths selected");
+    }
 
-    backoff_ms_ = kMinBackoffMs;
-    reconnect_at_poll_ = 0;
     poll_count_ = 0;
-    terminal_error_.store(false);
-    connect();
+    for (const auto& path : paths) {
+      if (cameras_.count(path) == 0) {
+        auto cam = std::make_unique<CameraRuntime>();
+        cam->path = path;
+        cam->topic = makeTopic(topic_prefix_, path);
+        cam->frame_id = path;
+        cameras_.emplace(path, std::move(cam));
+      }
+    }
+    for (auto& [path, cam] : cameras_) {
+      connectCamera(*cam);
+    }
     return PJ::okStatus();
   }
 
   PJ::Status onPoll() override {
     ++poll_count_;
-
     drainMessages();
 
-    if (receiver_) {
-      auto frames = receiver_->drainByStream();  // vector<pair<stream_id, EncodedFrame>>
-      for (auto& [stream_id, ef] : frames) {
-        StreamBinding* sb = bindingForMid(stream_id);  // lazily binds unknown mids
-        if (sb == nullptr) {
-          continue;
-        }
-        auto status = PJ::webrtc::pushVideoFrame(runtimeHost(), sb->binding, ef, sb->frame_id);
-        if (!status) {
-          runtimeHost().reportMessage(
-              PJ::DataSourceMessageLevel::kWarning, "video frame push failed (" + stream_id + "): " + status.error());
+    for (auto& [path, cam] : cameras_) {
+      if (cam->conn) {
+        for (auto& ef : cam->conn->drain()) {
+          if (!ensureBinding(*cam)) {
+            break;
+          }
+          auto status = PJ::webrtc::pushVideoFrame(runtimeHost(), cam->binding, ef, cam->frame_id);
+          if (!status) {
+            runtimeHost().reportMessage(
+                PJ::DataSourceMessageLevel::kWarning, "video frame push failed (" + cam->path + "): " + status.error());
+          }
         }
       }
-    }
 
-    if (connection_lost_.exchange(false)) {
-      const bool terminal = terminal_error_.load();
-      teardownConnection();
-      if (terminal) {
-        // A reconnect would re-subscribe the same bad ids / re-send the same
-        // version: stop and wait for the user to restart with a fixed selection.
-        reconnect_at_poll_ = 0;
-        runtimeHost().reportMessage(
-            PJ::DataSourceMessageLevel::kError,
-            "WebRTC streaming stopped: the streamer rejected the request. Reconnect halted; re-open the dialog and "
-            "adjust the selection, then Start again.");
-      } else {
-        reconnect_at_poll_ = poll_count_ + backoffPolls();
-        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, "WebRTC peer disconnected; reconnecting...");
+      if (cam->lost.exchange(false)) {
+        teardownCamera(*cam);
+        if (cam->terminal.load()) {
+          cam->reconnect_at_poll = 0;
+          runtimeHost().reportMessage(
+              PJ::DataSourceMessageLevel::kError,
+              "WHEP '" + cam->path + "' stopped: authorization rejected. Fix the Bearer token and Start again.");
+        } else {
+          cam->reconnect_at_poll = poll_count_ + backoffPolls(cam->backoff_ms);
+          runtimeHost().reportMessage(
+              PJ::DataSourceMessageLevel::kInfo, "WHEP '" + cam->path + "' disconnected; reconnecting...");
+        }
       }
-    }
-    bool signaling_gone = false;
-    {
-      std::lock_guard<std::mutex> lk(signaling_mutex_);
-      signaling_gone = (signaling_ == nullptr);
-    }
-    if (receiver_ == nullptr && signaling_gone && reconnect_at_poll_ != 0 && poll_count_ >= reconnect_at_poll_) {
-      reconnect_at_poll_ = 0;
-      backoff_ms_ = std::min(backoff_ms_ * 2, kMaxBackoffMs);
-      connect();
+
+      if (!cam->conn && cam->reconnect_at_poll != 0 && poll_count_ >= cam->reconnect_at_poll) {
+        cam->reconnect_at_poll = 0;
+        cam->backoff_ms = std::min(cam->backoff_ms * 2, kMaxBackoffMs);
+        connectCamera(*cam);
+      }
     }
     return PJ::okStatus();
   }
 
   void onStop() override {
-    teardownConnection();
-    streams_.clear();
-    reconnect_at_poll_ = 0;
+    for (auto& [path, cam] : cameras_) {
+      teardownCamera(*cam);
+      cam->reconnect_at_poll = 0;
+      cam->terminal.store(false);
+      cam->backoff_ms = kMinBackoffMs;
+    }
+    cameras_.clear();
   }
 
  private:
-  struct SelStream {
-    std::string id;
-    std::string name;
-  };
-
   static constexpr int kMinBackoffMs = 500;
   static constexpr int kMaxBackoffMs = 8000;
   static constexpr int kPollPeriodMs = 33;
 
-  uint64_t backoffPolls() const {
-    return static_cast<uint64_t>(std::max(1, backoff_ms_ / kPollPeriodMs));
+  // Per-camera runtime. Held by unique_ptr so the atomics stay put; the
+  // connection's callbacks capture the raw pointer, which stays valid because
+  // teardownCamera() closes the connection (joining its worker and detaching
+  // callbacks) before the CameraRuntime is ever destroyed.
+  struct CameraRuntime {
+    std::string path;
+    std::string topic;
+    std::string frame_id;
+    PJ::ParserBindingHandle binding{};
+    bool bound = false;
+    std::unique_ptr<PJ::webrtc::WhepConnection> conn;
+    int backoff_ms = kMinBackoffMs;
+    uint64_t reconnect_at_poll = 0;
+    std::atomic<bool> lost{false};
+    std::atomic<bool> terminal{false};
+  };
+
+  static uint64_t backoffPolls(int backoff_ms) {
+    return static_cast<uint64_t>(std::max(1, backoff_ms / kPollPeriodMs));
   }
 
   static std::string makeTopic(const std::string& prefix, const std::string& leaf) {
@@ -182,14 +177,6 @@ class WebrtcSource : public PJ::StreamSourceBase {
       p.pop_back();
     }
     return p.empty() ? leaf : (p + "/" + leaf);
-  }
-
-  // True for broker ERRORs whose cause a reconnect cannot clear (PROTOCOL.md
-  // §6.7): retrying just re-subscribes the same bad ids / re-sends the same
-  // version. Caller stops the reconnect loop so the user can fix the selection.
-  static bool isTerminalError(const std::string& reason) {
-    return reason.find("no valid streams") != std::string::npos ||
-           reason.find("unsupported protocol") != std::string::npos;
   }
 
   // Queue a diagnostic from a worker thread; drained in onPoll (the cores never
@@ -211,32 +198,12 @@ class WebrtcSource : public PJ::StreamSourceBase {
     }
   }
 
-  StreamBinding* bindingForMid(const std::string& mid) {
-    auto it = streams_.find(mid);
-    if (it != streams_.end()) {
-      return &it->second;
+  bool ensureBinding(CameraRuntime& cam) {
+    if (cam.bound) {
+      return true;
     }
-    std::string leaf = mid;
-    bool matched = false;
-    for (const auto& s : selected_) {
-      if (s.id == mid && !s.name.empty()) {
-        leaf = s.name;
-        matched = true;
-        break;
-      }
-    }
-    // Manual/legacy fallback: the typed id never matches the runtime mid the
-    // legacy offerer assigns, so apply it as the topic-leaf override here
-    // (PROTOCOL.md §7.3 — the manual id names the topic, not the stream).
-    if (!matched && !manual_stream_.empty()) {
-      leaf = manual_stream_;
-    }
-    StreamBinding sb;
-    sb.mid = mid;
-    sb.frame_id = leaf;
-    sb.topic = makeTopic(topic_prefix_, leaf);
     auto binding = runtimeHost().ensureParserBinding({
-        .topic_name = sb.topic,
+        .topic_name = cam.topic,
         .parser_encoding = "protobuf",
         .type_name = "PJ.VideoFrame",
         .schema = {},
@@ -245,186 +212,73 @@ class WebrtcSource : public PJ::StreamSourceBase {
     if (!binding) {
       runtimeHost().reportMessage(
           PJ::DataSourceMessageLevel::kWarning,
-          "failed to bind PJ.VideoFrame for stream '" + mid + "': " + binding.error());
-      return nullptr;
+          "failed to bind PJ.VideoFrame for '" + cam.path + "': " + binding.error());
+      return false;
     }
-    sb.binding = *binding;
-    auto [ins, _] = streams_.emplace(mid, std::move(sb));
-    return &ins->second;
+    cam.binding = *binding;
+    cam.bound = true;
+    return true;
   }
 
-  // Build the StreamSpec list the receiver pre-creates tracks from.
-  std::vector<PJ::webrtc::StreamSpec> streamSpecs() const {
-    std::vector<PJ::webrtc::StreamSpec> specs;
-    specs.reserve(selected_.size());
-    for (const auto& s : selected_) {
-      const std::string leaf = s.name.empty() ? s.id : s.name;
-      specs.push_back({s.id, leaf});  // frame_id == leaf
-    }
-    return specs;  // empty => receiver accepts any single track (manual/legacy)
-  }
-
-  std::vector<std::string> selectedMids() const {
-    std::vector<std::string> mids;
-    mids.reserve(selected_.size());
-    for (const auto& s : selected_) {
-      mids.push_back(s.id);
-    }
-    return mids;
-  }
-
-  void connect() {
-    receiver_ = std::make_unique<PJ::webrtc::WebrtcReceiver>();
-    {
-      std::lock_guard<std::mutex> lk(signaling_mutex_);
-      if (stolen_signaling_) {
-        signaling_ = std::move(stolen_signaling_);
-      } else {
-        signaling_ = std::make_unique<PJ::webrtc::WebrtcSignaling>();
-      }
-      pending_subscribe_ = selectedMids();
-    }
-
-    receiver_->setLocalDescriptionCallback([this](const std::string& type, const std::string& sdp) {
-      std::lock_guard<std::mutex> lk(signaling_mutex_);
-      if (signaling_) {
-        signaling_->sendSdp(type, sdp);
-      }
-    });
-    receiver_->setLocalCandidateCallback([this](const std::string& cand, int mline) {
-      std::lock_guard<std::mutex> lk(signaling_mutex_);
-      if (signaling_) {
-        signaling_->sendIce(cand, mline);
-      }
-    });
-    receiver_->setStateCallback([this](PJ::webrtc::ConnectionState s) {
+  void connectCamera(CameraRuntime& cam) {
+    cam.conn = std::make_unique<PJ::webrtc::WhepConnection>();
+    CameraRuntime* rt = &cam;
+    // Set BOTH callbacks BEFORE open(). They fire on internal/worker threads;
+    // they only flip atomics + queue diagnostics — never close()/reset the
+    // connection (that happens on the poll thread via teardownCamera()).
+    cam.conn->setStateCallback([rt](PJ::webrtc::ConnectionState s) {
       if (s == PJ::webrtc::ConnectionState::kDisconnected || s == PJ::webrtc::ConnectionState::kFailed ||
           s == PJ::webrtc::ConnectionState::kClosed) {
-        connection_lost_.store(true);
+        rt->lost.store(true);
       } else if (s == PJ::webrtc::ConnectionState::kConnected) {
-        backoff_ms_ = kMinBackoffMs;
+        rt->backoff_ms = kMinBackoffMs;
       }
     });
-    receiver_->setErrorCallback([this](const std::string& reason) {
-      queueMessage(reason);
-      connection_lost_.store(true);
-    });
-
-    signaling_->setSdpCallback(
-        [this](const std::string& type, const std::string& sdp) { receiver_->setRemoteDescription(type, sdp); });
-    signaling_->setIceCallback(
-        [this](const std::string& cand, int mline) { receiver_->addRemoteCandidate(cand, mline); });
-    signaling_->setClosedCallback([this]() { connection_lost_.store(true); });
-    signaling_->setErrorCallback([this](const std::string& reason) {
-      queueMessage("WebRTC signaling error: " + reason);
-      if (isTerminalError(reason)) {
-        terminal_error_.store(true);  // a reconnect would just repeat the same error
+    cam.conn->setErrorCallback([this, rt](PJ::webrtc::WhepErrorKind kind, const std::string& reason) {
+      queueMessage("WHEP '" + rt->path + "': " + reason);
+      // 401/403 is terminal for this camera until the user fixes the token.
+      // Latch terminal_ BEFORE lost_ so onPoll (which reads terminal_ only
+      // after lost_ fires the teardown) observes it; the two are independent
+      // atomics, and a connect-phase failure also sets state kFailed (which
+      // sets lost_ via the state callback) — order-independent either way.
+      if (kind == PJ::webrtc::WhepErrorKind::kUnauthorized) {
+        rt->terminal.store(true);
       }
+      rt->lost.store(true);
     });
 
-    // Subscribe must go out only once the WS is open. The dialog's stolen socket
-    // is already open (send inline below); a fresh socket fires this on connect.
-    signaling_->setConnectedCallback([this]() {
-      std::lock_guard<std::mutex> lk(signaling_mutex_);
-      if (!pending_subscribe_.empty() && signaling_) {
-        signaling_->subscribe(pending_subscribe_);
-        pending_subscribe_.clear();
-      }
-    });
-
-    auto status = receiver_->open(webrtc_config_, streamSpecs());
-    if (!status) {
-      runtimeHost().reportMessage(
-          PJ::DataSourceMessageLevel::kWarning, "WebRTC receiver open failed: " + status.error());
-      teardownConnection();
-      reconnect_at_poll_ = poll_count_ + backoffPolls();
-      return;
-    }
-
-    std::lock_guard<std::mutex> lk(signaling_mutex_);
-    if (!signaling_->isOpen()) {
-      PJ::webrtc::SignalingConfig sig;
-      sig.url = "ws://" + address_ + ":" + std::to_string(port_);
-      sig.our_id = our_id_.empty() ? "receiver" : our_id_;
-      sig.peer_id = "";
-      signaling_->open(sig);
-    } else if (!pending_subscribe_.empty()) {
-      // Reused (stolen) socket: already past onOpen, so the connected callback
-      // won't refire. Send the subscribe inline.
-      signaling_->subscribe(pending_subscribe_);
-      pending_subscribe_.clear();
+    PJ::webrtc::WhepConnectionConfig cfg;
+    cfg.whep_url = PJ::webrtc::buildWhepUrl(server_url_, cam.path);
+    cfg.bearer_token = bearer_token_;
+    cfg.ice_servers = ice_servers_;
+    if (auto st = cam.conn->open(cfg); !st) {
+      queueMessage("WHEP open failed ('" + cam.path + "'): " + st.error());
+      cam.conn.reset();
+      cam.reconnect_at_poll = poll_count_ + backoffPolls(cam.backoff_ms);
     }
   }
 
-  void teardownConnection() {
-    // The receiver and signaling are cross-wired: receiver callbacks call into
-    // signaling_ (onLocalDescription -> sendSdp, onLocalCandidate -> sendIce) and
-    // signaling callbacks call into receiver_ (on_sdp_ -> setRemoteDescription,
-    // on_ice_ -> addRemoteCandidate), each on its OWN libdatachannel worker
-    // thread. Resetting either object while the other's callback is mid-flight is
-    // a use-after-free. So DETACH every callback on both FIRST (quiescing both
-    // worker threads), THEN reset. detachCallbacks() drops both the user lambdas
-    // and the underlying libdatachannel callbacks, so neither direction can fire
-    // again regardless of teardown order.
-    if (receiver_) {
-      receiver_->detachCallbacks();
+  void teardownCamera(CameraRuntime& cam) {
+    if (cam.conn) {
+      cam.conn->close();  // joins the worker + detaches callbacks: rt* safe after
+      cam.conn.reset();
     }
-    std::unique_ptr<PJ::webrtc::WebrtcSignaling> signaling_to_close;
-    {
-      std::lock_guard<std::mutex> lk(signaling_mutex_);
-      if (signaling_) {
-        signaling_->detachCallbacks();
-      }
-      signaling_to_close = std::move(signaling_);
-      pending_subscribe_.clear();
-    }
-    if (receiver_) {
-      receiver_->close();
-      receiver_.reset();
-    }
-    if (signaling_to_close) {
-      signaling_to_close->close();
-      signaling_to_close.reset();
-    }
-    connection_lost_.store(false);
-    // Keep streams_ (bindings) across a reconnect — same topics resume.
+    cam.lost.store(false);
+    // Keep the binding across reconnects — same topic resumes.
   }
 
   webrtc_dialog_detail::WebrtcDialog dialog_;
 
-  std::string address_ = "127.0.0.1";
-  uint16_t port_ = 8443;
-  std::string our_id_ = "receiver";
+  std::string server_url_ = "http://127.0.0.1:8889";
+  std::string bearer_token_;
   std::string topic_prefix_ = "webrtc";
-  std::string manual_stream_;
-  std::vector<SelStream> selected_;
+  std::vector<PJ::webrtc::IceServerConfig> ice_servers_;
 
-  PJ::webrtc::WebrtcConfig webrtc_config_;
-  std::map<std::string, StreamBinding> streams_;
+  std::map<std::string, std::unique_ptr<CameraRuntime>> cameras_;
 
-  std::unique_ptr<PJ::webrtc::WebrtcSignaling> stolen_signaling_;
-  std::unique_ptr<PJ::webrtc::WebrtcReceiver> receiver_;
-
-  // signaling_ and pending_subscribe_ are touched both on the poll thread
-  // (connect/teardown) and on the libdatachannel WS worker thread (the
-  // connected-callback). signaling_mutex_ guards every access to them.
-  mutable std::mutex signaling_mutex_;
-  std::unique_ptr<PJ::webrtc::WebrtcSignaling> signaling_;
-  std::vector<std::string> pending_subscribe_;
-
-  std::atomic<bool> connection_lost_{false};
-  // Set by a terminal broker ERROR (PROTOCOL.md §6.7: no valid streams /
-  // unsupported protocol) or a rejected remote description: stop the silent
-  // reconnect loop until the user restarts with a corrected selection.
-  std::atomic<bool> terminal_error_{false};
-
-  // Diagnostics from the WS/PC worker threads, drained and reported on the poll
-  // thread (the cores never call host methods themselves — see their headers).
   std::mutex messages_mutex_;
   std::vector<std::string> pending_messages_;
-  int backoff_ms_ = kMinBackoffMs;
   uint64_t poll_count_ = 0;
-  uint64_t reconnect_at_poll_ = 0;
 };
 
 }  // namespace
