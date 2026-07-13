@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
 #include <mcap/reader.hpp>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
@@ -394,13 +395,21 @@ class McapDialog : public PJ::DialogPluginTyped {
       return result;
     }
 
-    // Split filter by spaces — AND logic (all words must match)
+    auto lower = [](std::string s) {
+      for (auto& c : s) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      }
+      return s;
+    };
+
+    // Split filter by spaces — AND logic (all words must match), matched
+    // case-insensitively like the streaming pickers' filters.
     std::vector<std::string> words;
     std::string word;
     for (char c : filter_text_) {
       if (c == ' ') {
         if (!word.empty()) {
-          words.push_back(word);
+          words.push_back(lower(word));
           word.clear();
         }
       } else {
@@ -408,13 +417,14 @@ class McapDialog : public PJ::DialogPluginTyped {
       }
     }
     if (!word.empty()) {
-      words.push_back(word);
+      words.push_back(lower(word));
     }
 
     for (const auto& ch : all_channels_) {
+      const std::string topic = lower(ch.topic);
       bool match = true;
       for (const auto& w : words) {
-        if (ch.topic.find(w) == std::string::npos) {
+        if (topic.find(w) == std::string::npos) {
           match = false;
           break;
         }
