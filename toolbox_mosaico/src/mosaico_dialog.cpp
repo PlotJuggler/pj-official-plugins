@@ -553,10 +553,6 @@ std::string MosaicoDialog::widget_data() {
   wd.setEnabled("buttonReloadSeq", reload_live);
   wd.setEnabled("buttonReloadTopic", reload_live && !state_.selected_sequence.empty());
   wd.setEnabled("buttonCancel", state_.fetch_active);
-  // Closing mid-fetch tears the worker down before allFetchesComplete runs,
-  // stranding the topics that already wrote into the shared store. Force the
-  // user to Cancel first (Cancel flushes/cleans up the batch deterministically).
-  wd.setEnabled("buttonClose", !state_.fetch_active);
 
   // Icon-only Connect / Cert buttons (the .ui clears their text + sets the
   // tooltips). Resolved by the host from its themed icon set; unknown ids fall
@@ -826,11 +822,6 @@ bool MosaicoDialog::onTextChanged(std::string_view widget_name, std::string_view
 }
 
 bool MosaicoDialog::onClicked(std::string_view widget_name) {
-  if (widget_name == "buttonClose") {
-    std::lock_guard<std::mutex> lock(state_.mu);
-    state_.close_pending = true;
-    return true;
-  }
   if (widget_name == "buttonConnect") {
     std::string uri;
     {
