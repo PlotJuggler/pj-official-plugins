@@ -146,17 +146,7 @@ class WebrtcSource : public PJ::StreamSourceBase {
               "WHEP '" + cam->path + "' stopped: authorization rejected. Fix the Bearer token and Start again.");
         } else {
           cam->reconnect_at_poll = poll_count_ + backoffPolls(cam->backoff_ms);
-          ++cam->failed_attempts;
-          if (cam->failed_attempts >= kEscalateAfterAttempts && !cam->escalated) {
-            cam->escalated = true;
-            runtimeHost().reportMessage(
-                PJ::DataSourceMessageLevel::kError, "WHEP '" + cam->path + "': still failing after " +
-                                                        std::to_string(cam->failed_attempts) +
-                                                        " attempts (check server URL / that the path is published).");
-          } else {
-            runtimeHost().reportMessage(
-                PJ::DataSourceMessageLevel::kInfo, "WHEP '" + cam->path + "' disconnected; reconnecting...");
-          }
+          noteFailedAttemptAndMaybeEscalate(*cam);
         }
       }
 
@@ -216,6 +206,24 @@ class WebrtcSource : public PJ::StreamSourceBase {
 
   static uint64_t backoffPolls(int backoff_ms) {
     return static_cast<uint64_t>(std::max(1, backoff_ms / kPollPeriodMs));
+  }
+
+  // Record one non-terminal connect failure and, once they pile up, report ONCE
+  // at kError. Both the async-loss teardown path and the synchronous open()
+  // failure path funnel through here so a persistently-failing sync open also
+  // reaches escalation (identical behavior to the async path).
+  void noteFailedAttemptAndMaybeEscalate(CameraRuntime& cam) {
+    ++cam.failed_attempts;
+    if (cam.failed_attempts >= kEscalateAfterAttempts && !cam.escalated) {
+      cam.escalated = true;
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kError, "WHEP '" + cam.path + "': still failing after " +
+                                                  std::to_string(cam.failed_attempts) +
+                                                  " attempts (check server URL / that the path is published).");
+    } else {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kInfo, "WHEP '" + cam.path + "' disconnected; reconnecting...");
+    }
   }
 
   static std::string makeTopic(const std::string& prefix, const std::string& leaf) {
@@ -283,11 +291,12 @@ class WebrtcSource : public PJ::StreamSourceBase {
     });
     cam.conn->setErrorCallback([this, rt](PJ::webrtc::WhepErrorKind kind, const std::string& reason) {
       queueMessage("WHEP '" + rt->path + "': " + reason);
-      // 401/403 is terminal for this camera until the user fixes the token.
-      // Latch terminal BEFORE lost so onPoll (which reads terminal only after
-      // lost fires the teardown) observes it; the two are independent atomics,
-      // and a connect-phase failure also sets state kFailed (which sets lost
-      // via the state callback) — order-independent either way.
+      // A connect-phase failure sets the connection's state to kFailed but
+      // notifies via THIS error callback (failConnect() does not fire the state
+      // callback). So we drive lost/terminal here: 401/403 is terminal for this
+      // camera until the user fixes the token. Latch terminal BEFORE lost so
+      // onPoll (which reads terminal only after lost fires the teardown)
+      // observes it; the two are independent atomics.
       if (kind == PJ::webrtc::WhepErrorKind::kUnauthorized) {
         rt->terminal.store(true);
       }
@@ -302,6 +311,9 @@ class WebrtcSource : public PJ::StreamSourceBase {
       queueMessage("WHEP open failed ('" + cam.path + "'): " + st.error());
       cam.conn.reset();
       cam.reconnect_at_poll = poll_count_ + backoffPolls(cam.backoff_ms);
+      // Count this like an async loss so a persistently-failing sync open()
+      // still reaches the kError escalation instead of retrying forever quietly.
+      noteFailedAttemptAndMaybeEscalate(cam);
     }
   }
 

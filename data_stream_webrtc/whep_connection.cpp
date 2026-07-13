@@ -196,6 +196,10 @@ void WhepConnection::close() {
   }
   if (track_) {
     try {
+      // Track::onFrame installs a SEPARATE frame callback (impl::Track) that
+      // Channel::resetCallbacks() does not clear; detach it explicitly first so
+      // no in-flight frame dispatch can call onFrame() after close() returns.
+      track_->onFrame(nullptr);
       track_->resetCallbacks();
     } catch (...) {}
   }

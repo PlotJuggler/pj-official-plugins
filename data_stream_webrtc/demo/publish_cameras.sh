@@ -34,7 +34,14 @@ if command -v ffmpeg >/dev/null 2>&1; then
   supervise
 elif command -v gst-launch-1.0 >/dev/null 2>&1; then
   # rtspclientsink is in the gstreamer1.0-rtsp package.
-  gst-launch-1.0 videotestsrc is-live=true \
+  # cam0 is a real webcam when a /dev/videoN arg was passed, else a test pattern
+  # (matches the ffmpeg branch).
+  if [[ -n "$DEVICE" ]]; then
+    CAM0_SRC="v4l2src device=$DEVICE"
+  else
+    CAM0_SRC="videotestsrc is-live=true"
+  fi
+  gst-launch-1.0 $CAM0_SRC \
     ! video/x-raw,width=640,height=480,framerate=30/1 ! videoconvert \
     ! x264enc tune=zerolatency key-int-max=30 ! h264parse \
     ! rtspclientsink location="$SERVER/cam0" &
