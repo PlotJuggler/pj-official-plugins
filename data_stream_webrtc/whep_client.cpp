@@ -6,15 +6,37 @@ namespace PJ {
 namespace webrtc {
 
 std::string buildWhepUrl(const std::string& server_url, const std::string& path) {
-  (void)server_url;
-  (void)path;
-  return {};
+  std::string base = server_url;
+  while (!base.empty() && base.back() == '/') {
+    base.pop_back();
+  }
+  std::string p = path;
+  while (!p.empty() && p.front() == '/') {
+    p.erase(p.begin());
+  }
+  return base + "/" + p + "/whep";
 }
 
 std::string resolveLocation(const std::string& request_url, const std::string& location) {
-  (void)request_url;
-  (void)location;
-  return {};
+  if (location.find("://") != std::string::npos) {
+    return location;  // already absolute
+  }
+  const size_t scheme_end = request_url.find("://");
+  if (scheme_end == std::string::npos) {
+    return location;  // malformed request url; nothing better to do
+  }
+  const size_t host_start = scheme_end + 3;
+  const size_t path_start = request_url.find('/', host_start);
+  if (!location.empty() && location.front() == '/') {
+    const std::string origin = (path_start == std::string::npos) ? request_url : request_url.substr(0, path_start);
+    return origin + location;
+  }
+  // Path-relative: replace the last segment of the request URL's path.
+  const size_t last_slash = request_url.rfind('/');
+  if (last_slash == std::string::npos || last_slash < host_start) {
+    return request_url + "/" + location;
+  }
+  return request_url.substr(0, last_slash + 1) + location;
 }
 
 WhepExpected<WhepResult> postOffer(
