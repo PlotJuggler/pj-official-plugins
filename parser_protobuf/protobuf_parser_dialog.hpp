@@ -185,10 +185,20 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     }
     if (widget_name == "lineEditProtoFile") {
       proto_file_path_ = std::string(text);
-      // Compile only once the typed path resolves to an existing file, so
-      // intermediate keystrokes don't flash "could not open" errors.
+      // Compile once the typed path resolves to an existing file. When it does
+      // NOT (cleared or mistyped), DROP the previously compiled schema/types/
+      // preview instead of keeping them: otherwise saveConfig() pairs the new
+      // invalid path with the stale schema. Clearing by hand (not via
+      // loadAndCompileProtoFile) avoids flashing "could not open" errors on
+      // intermediate keystrokes.
       if (std::ifstream(proto_file_path_).good()) {
         loadAndCompileProtoFile();
+      } else {
+        message_types_.clear();
+        proto_file_content_.clear();
+        compiled_schema_.clear();
+        compile_error_.clear();
+        selected_message_type_.clear();
       }
       return true;  // refresh message types + preview
     }

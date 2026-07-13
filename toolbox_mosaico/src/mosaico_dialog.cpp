@@ -356,6 +356,23 @@ MosaicoDialog::~MosaicoDialog() {
   if (worker_thread_.joinable()) {
     worker_thread_.join();
   }
+  // A close mid-fetch (the hosting banner's close — the only close path) skips
+  // onAllFetchesComplete, which owns the batch's notifyDataChanged. Topics that
+  // finished before the close have ALREADY written into the shared store (the
+  // [C1] streaming-write design), so flush them into the catalog here — the
+  // same "keep what landed" semantics as Cancel — instead of stranding data
+  // that exists in the store but never appears in the dataset tree.
+  bool flush_partial = false;
+  {
+    std::lock_guard<std::mutex> lock(state_.mu);
+    flush_partial = state_.fetch_active && state_.imported_any;
+  }
+  if (flush_partial && runtime_host_provider_) {
+    auto runtime = runtime_host_provider_();
+    if (runtime.valid()) {
+      runtime.notifyDataChanged();
+    }
+  }
   // onTick and this destructor both run on the single GUI thread, so no
   // this-capturing event closure can run during or after destruction; closures
   // left in evt_queue_ are destroyed un-run with the dialog.

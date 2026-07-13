@@ -149,20 +149,18 @@ class FFTDialog : public PJ::DialogPluginTyped {
     if (widget_name != "inputFrame") {
       return false;
     }
-    bool changed = false;
-    for (const auto& path : items) {
-      if (std::find(selected_fields_.begin(), selected_fields_.end(), path) != selected_fields_.end()) {
-        continue;  // already selected
-      }
-      selected_fields_.push_back(path);
-      changed = true;
+    if (items.empty() || selected_fields_ == items) {
+      return false;
     }
-    if (changed) {
-      clearFftOutput();
-      resetZoomRange();
-      invokeRefreshPreview();
-    }
-    return changed;
+    // A drop REPLACES the selection. The FFT computes a single input
+    // (selected_fields_.front()), so appending made every series dropped after
+    // the first unreachable — and with no clear affordance the first drop was
+    // locked in for the dialog's lifetime.
+    selected_fields_ = items;
+    clearFftOutput();
+    resetZoomRange();
+    invokeRefreshPreview();
+    return true;
   }
 
   bool onChartViewChanged(
