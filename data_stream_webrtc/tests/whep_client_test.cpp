@@ -230,6 +230,18 @@ TEST(WhepPost, WrongAnswerContentTypeIsBadResponse) {
   EXPECT_EQ(out.error().kind, WhepErrorKind::kBadResponse);
 }
 
+TEST(WhepPost, ContentTypeParamsAndCaseAreAccepted) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  ix::WebSocketHttpHeaders h;
+  h["Location"] = "/cam0/whep/s1";
+  h["Content-Type"] = "Application/SDP; charset=utf-8";
+  stub.setReply(201, h, "ANSWER");
+  auto out = postOffer(stub.baseUrl() + "/cam0/whep", "", "OFFER", std::chrono::seconds(5));
+  ASSERT_TRUE(out);  // media type matches modulo case/parameters
+  EXPECT_EQ(out->answer_sdp, "ANSWER");
+}
+
 TEST(WhepPost, ControlCharTokenRejectedBeforeSending) {
   StubWhepServer stub;
   ASSERT_TRUE(stub.listening());

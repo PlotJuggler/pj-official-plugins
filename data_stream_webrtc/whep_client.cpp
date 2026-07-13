@@ -5,6 +5,7 @@
 #include <ixwebsocket/IXHttpClient.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <nlohmann/json.hpp>
 #include <utility>
@@ -25,6 +26,22 @@ bool bearerTokenSane(const std::string& t) {
     const auto u = static_cast<unsigned char>(c);
     return u < 0x21 || u == 0x7F;
   });
+}
+
+// Media type of a Content-Type header value: everything before the first ';',
+// space-trimmed and lowercased (RFC 9110: type is case-insensitive and may
+// carry parameters like "; charset=utf-8").
+std::string mediaTypeOf(const std::string& content_type) {
+  std::string t = content_type.substr(0, content_type.find(';'));
+  const auto is_space = [](char c) { return c == ' ' || c == '\t'; };
+  while (!t.empty() && is_space(t.front())) {
+    t.erase(t.begin());
+  }
+  while (!t.empty() && is_space(t.back())) {
+    t.pop_back();
+  }
+  std::transform(t.begin(), t.end(), t.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return t;
 }
 
 // scheme://host[:port] — everything before the first '/' after "://".
@@ -129,9 +146,10 @@ PJ::Expected<WhepResult, WhepError> postOffer(
   if (res->body.size() > kMaxHttpResponseBytes) {  // belt-and-braces behind the makeArgs cap
     return PJ::unexpected(WhepError{WhepErrorKind::kBadResponse, "response body too large"});
   }
-  // Lenient on an ABSENT Content-Type (non-mediamtx servers), strict on a wrong one.
+  // Lenient on an ABSENT Content-Type (non-mediamtx servers), strict on a wrong
+  // one: exact media-type match, case-insensitive, parameters ignored.
   const auto ctype = res->headers.find("Content-Type");
-  if (ctype != res->headers.end() && ctype->second.find("application/sdp") == std::string::npos) {
+  if (ctype != res->headers.end() && mediaTypeOf(ctype->second) != "application/sdp") {
     return PJ::unexpected(WhepError{WhepErrorKind::kBadResponse, "unexpected answer Content-Type: " + ctype->second});
   }
   if (res->body.empty()) {
@@ -173,7 +191,11 @@ PJ::Expected<std::vector<WhepPathInfo>, WhepError> fetchPathsList(
   }
   const std::string list_url = base + "/v3/paths/list";
   // mediamtx paginates (100 items/page by default); page 0 tells us pageCount.
-  constexpr int kMaxPages = 50;
+  // Discovery is best-effort for a picker UI: bound both the page count and
+  // the cumulative item count — truncation is acceptable, unbounded fetching
+  // from a hostile/misconfigured server is not.
+  constexpr int kMaxPages = 10;
+  constexpr std::size_t kMaxTotalItems = 2000;
   int page_count = 1;
   std::vector<WhepPathInfo> paths;
   for (int page = 0; page < page_count && page < kMaxPages; ++page) {
@@ -194,6 +216,9 @@ PJ::Expected<std::vector<WhepPathInfo>, WhepError> fetchPathsList(
       page_count = doc["pageCount"].get<int>();
     }
     for (const auto& item : doc["items"]) {
+      if (paths.size() >= kMaxTotalItems) {
+        break;  // cumulative cap reached: stop collecting
+      }
       if (!item.is_object()) {
         continue;  // skip malformed entries rather than throwing (untrusted input)
       }
@@ -214,6 +239,9 @@ PJ::Expected<std::vector<WhepPathInfo>, WhepError> fetchPathsList(
       } catch (const nlohmann::json::exception&) {
         continue;  // wrong-typed field: skip this entry, keep the rest
       }
+    }
+    if (paths.size() >= kMaxTotalItems) {
+      break;  // cumulative cap reached: stop fetching further pages
     }
   }
   return paths;
