@@ -46,6 +46,17 @@ class MqttSource : public PJ::StreamSourceBase {
       (void)dialog_.loadConfig(config_json);  // Ignore errors, use defaults
     }
 
+    // Capture the parser configuration the app injects under "_parser_config"
+    // (e.g. the protobuf descriptor + message type). Streaming sources must
+    // forward it to ensureParserBinding, otherwise schema-based parsers bind
+    // with no schema and drop every message.
+    auto cfg = nlohmann::json::parse(config_json, nullptr, false);
+    if (!cfg.is_discarded() && cfg.contains("_parser_config")) {
+      parser_config_override_ = cfg["_parser_config"].get<std::string>();
+    } else {
+      parser_config_override_.clear();
+    }
+
     return PJ::okStatus();
   }
 
@@ -177,7 +188,7 @@ class MqttSource : public PJ::StreamSourceBase {
             .parser_encoding = default_encoding_,
             .type_name = {},
             .schema = {},
-            .parser_config_json = {},
+            .parser_config_json = parser_config_override_,
         });
         if (binding) {
           it = binding_cache_.emplace(msg.topic, *binding).first;
@@ -234,6 +245,7 @@ class MqttSource : public PJ::StreamSourceBase {
   std::string default_encoding_ = "json";
   int protocol_version_ = 1;
   std::vector<std::string> selected_topics_;
+  std::string parser_config_override_;
 
   std::unique_ptr<mqtt::async_client> client_;
   std::mutex queue_mutex_;
