@@ -246,6 +246,19 @@ TEST(WhepPathsList, NonObjectItemsAreSkippedNotFatal) {
   EXPECT_EQ((*out)[0].name, "cam0");
 }
 
+TEST(WhepPathsList, WrongTypedFieldsSkipTheItemNotFatal) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  stub.setReply(
+      200, {},
+      R"({"items":[{"name":"bad","ready":"yes","tracks":"H264"},)"
+      R"({"name":"cam0","ready":true,"tracks":["H264"]}]})");
+  auto out = fetchPathsList(stub.baseUrl(), "", std::chrono::seconds(5));
+  ASSERT_TRUE(out);
+  ASSERT_EQ(out->size(), 1u);
+  EXPECT_EQ((*out)[0].name, "cam0");
+}
+
 }  // namespace
 }  // namespace webrtc
 }  // namespace PJ

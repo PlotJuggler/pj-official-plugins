@@ -125,18 +125,22 @@ PJ::Expected<std::vector<WhepPathInfo>, WhepError> fetchPathsList(
     if (!item.is_object()) {
       continue;  // skip malformed entries rather than throwing (untrusted input)
     }
-    WhepPathInfo info;
-    info.name = item.value("name", std::string());
-    info.ready = item.value("ready", false);
-    if (item.contains("tracks") && item["tracks"].is_array()) {
-      for (const auto& t : item["tracks"]) {
-        if (t.is_string()) {
-          info.tracks.push_back(t.get<std::string>());
+    try {
+      WhepPathInfo info;
+      info.name = item.value("name", std::string());
+      info.ready = item.value("ready", false);
+      if (item.contains("tracks") && item["tracks"].is_array()) {
+        for (const auto& t : item["tracks"]) {
+          if (t.is_string()) {
+            info.tracks.push_back(t.get<std::string>());
+          }
         }
       }
-    }
-    if (!info.name.empty()) {
-      paths.push_back(std::move(info));
+      if (!info.name.empty()) {
+        paths.push_back(std::move(info));
+      }
+    } catch (const nlohmann::json::exception&) {
+      continue;  // wrong-typed field: skip this entry, keep the rest
     }
   }
   return paths;
