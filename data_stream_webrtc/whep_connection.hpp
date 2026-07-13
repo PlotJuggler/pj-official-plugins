@@ -85,7 +85,8 @@ class WhepConnection {
   }
 
   // Build the PC + track and start the connect worker. Set callbacks BEFORE
-  // open(). Idempotent teardown via close().
+  // open(). Idempotent teardown via close(). A failed open() leaves the
+  // object fully closed (safe to retry or destroy).
   [[nodiscard]] PJ::Status open(const WhepConnectionConfig& config);
   // Join worker, DELETE the session (best effort, bounded), drop callbacks,
   // close the PC, clear the queue. Safe to call twice / without open().

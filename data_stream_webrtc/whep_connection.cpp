@@ -66,6 +66,9 @@ void WhepConnection::reportState(ConnectionState s) {
 }
 
 PJ::Status WhepConnection::open(const WhepConnectionConfig& config) {
+  if (pc_ || worker_.joinable()) {
+    return PJ::unexpected("already open — call close() first");
+  }
   config_ = config;
   if (config_.whep_url.empty()) {
     return PJ::unexpected("empty WHEP URL");
@@ -122,6 +125,18 @@ PJ::Status WhepConnection::open(const WhepConnectionConfig& config) {
 
     pc_->setLocalDescription();  // builds the offer, starts ICE gathering
   } catch (const std::exception& e) {
+    if (track_) {
+      try {
+        track_->resetCallbacks();
+      } catch (...) {}
+    }
+    if (pc_) {
+      try {
+        pc_->resetCallbacks();
+      } catch (...) {}
+    }
+    pc_.reset();
+    track_.reset();
     return PJ::unexpected(std::string("offer setup failed: ") + e.what());
   }
 
@@ -243,15 +258,19 @@ void WhepConnection::runConnect() {
   }
 
   auto out = postOffer(config_.whep_url, config_.bearer_token, offer_sdp, config_.connect_timeout);
+  bool was_closing = false;
   {
     std::lock_guard<std::mutex> lk(gather_mutex_);
-    if (closing_) {
-      // close() raced the POST: if it succeeded, hang up the orphan session.
-      if (out) {
-        deleteSession(out->session_url, config_.bearer_token, config_.delete_timeout);
-      }
-      return;
+    was_closing = closing_;
+  }
+  if (was_closing) {
+    // close() raced the POST: if it succeeded, hang up the orphan session
+    // (outside every mutex — blocking HTTP must not stall gather_mutex_
+    // waiters, incl. libdatachannel pool threads in onGatheringStateChange).
+    if (out) {
+      deleteSession(out->session_url, config_.bearer_token, config_.delete_timeout);
     }
+    return;
   }
   if (!out) {
     if (on_error_) {
@@ -259,6 +278,10 @@ void WhepConnection::runConnect() {
     }
     return;
   }
+  // No closing_ re-check needed here: if close() set closing_ after the check
+  // above, it is now blocked in worker_.join() until this function returns,
+  // and only THEN swaps session_url_ out — so this store always
+  // happens-before close()'s DELETE. No session leaks.
   {
     std::lock_guard<std::mutex> lk(session_mutex_);
     session_url_ = out->session_url;
