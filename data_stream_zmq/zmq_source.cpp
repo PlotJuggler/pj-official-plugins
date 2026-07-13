@@ -37,6 +37,17 @@ class ZmqSource : public PJ::StreamSourceBase {
       (void)dialog_.loadConfig(config_json);  // Ignore errors, use defaults
     }
 
+    // Capture the parser configuration the app injects under "_parser_config"
+    // (e.g. the protobuf descriptor + message type). Streaming sources must
+    // forward it to ensureParserBinding, otherwise schema-based parsers bind
+    // with no schema and drop every message.
+    auto cfg = nlohmann::json::parse(config_json, nullptr, false);
+    if (!cfg.is_discarded() && cfg.contains("_parser_config")) {
+      parser_config_override_ = cfg["_parser_config"].get<std::string>();
+    } else {
+      parser_config_override_.clear();
+    }
+
     return PJ::okStatus();
   }
 
@@ -149,7 +160,7 @@ class ZmqSource : public PJ::StreamSourceBase {
             .parser_encoding = default_encoding_,
             .type_name = {},
             .schema = {},
-            .parser_config_json = {},
+            .parser_config_json = parser_config_override_,
         });
         if (binding) {
           it = binding_cache_.emplace(topic_name, *binding).first;
@@ -199,6 +210,7 @@ class ZmqSource : public PJ::StreamSourceBase {
   std::string topic_filter_;
   std::string default_encoding_ = "json";
   std::string endpoint_;
+  std::string parser_config_override_;
 
   std::unique_ptr<zmq::context_t> context_;
   std::unique_ptr<zmq::socket_t> socket_;
