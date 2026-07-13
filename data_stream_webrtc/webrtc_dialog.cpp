@@ -146,13 +146,17 @@ bool WebrtcDialog::onSelectionChanged(std::string_view widget_name, const std::v
     return false;
   }
   std::lock_guard<std::mutex> lock(catalog_mutex_);
-  // The host reports the selection of the currently rendered (filtered) rows
-  // only; keep selected-but-hidden paths. Only H.264-capable catalog rows and
-  // manual rows are accepted into the selection.
+  // The host reports the selection of the currently RENDERED rows only. A
+  // selected path drops out of the selection ONLY when the user deselects a row
+  // that is currently rendered; a selection that is merely not rendered right
+  // now (filter-hidden, OR gone from the catalog on a transient fetch failure)
+  // must survive. So: preserve every selected path that is not a rendered row,
+  // then re-add the rendered ones the host still reports (subject to the
+  // H.264/manual selectable check).
   std::vector<std::string> next;
   for (const auto& sel : selected_) {
-    if (!passesFilter(sel)) {
-      next.push_back(sel);  // hidden by the filter: preserve
+    if (!isRenderedLocked(sel)) {
+      next.push_back(sel);  // not a visible row: the host can't report it, keep it
     }
   }
   for (const auto& label : selected) {
@@ -199,6 +203,10 @@ std::string WebrtcDialog::saveConfig() const {
   cfg["server_url"] = server_url_;
   cfg["bearer_token"] = bearer_;
   cfg["api_url"] = api_url_;
+  // Persist the derive-vs-manual intent explicitly. saveConfig ALWAYS writes
+  // api_url, so keying "edited" off its presence would wrongly latch manual
+  // after any round-trip and stop server_url edits from re-deriving the host.
+  cfg["api_url_edited"] = api_url_edited_;
   cfg["topic_prefix"] = topic_prefix_;
   cfg["selected"] = selected_;
   cfg["manual_paths"] = manual_paths_;
@@ -220,7 +228,9 @@ bool WebrtcDialog::loadConfig(std::string_view config_json) {
   server_url_ = cfg.value("server_url", std::string("http://127.0.0.1:8889"));
   bearer_ = cfg.value("bearer_token", std::string());
   api_url_ = cfg.value("api_url", deriveApiUrl(server_url_));
-  api_url_edited_ = cfg.contains("api_url");
+  // Restore the explicit intent, NOT api_url presence: a never-edited api_url
+  // reloads as still-auto-derived so editing server_url re-derives the host.
+  api_url_edited_ = cfg.value("api_url_edited", false);
   topic_prefix_ = cfg.value("topic_prefix", std::string("webrtc"));
 
   selected_.clear();
@@ -287,12 +297,25 @@ std::string WebrtcDialog::deriveApiUrl(const std::string& server_url) {
     return "http://127.0.0.1:9997";
   }
   const size_t host_start = scheme_end + 3;
-  size_t host_end = server_url.find(':', host_start);
-  if (host_end == std::string::npos) {
-    host_end = server_url.find('/', host_start);
-  }
-  if (host_end == std::string::npos) {
-    host_end = server_url.size();
+  // Bracket-aware: for an IPv6 literal ("http://[::1]:8889") the host runs
+  // through the matching ']', and the port (if any) is a ':' AFTER that ']';
+  // splitting on the first ':' would slice the address itself.
+  size_t host_end;
+  if (host_start < server_url.size() && server_url[host_start] == '[') {
+    const size_t bracket_end = server_url.find(']', host_start);
+    if (bracket_end == std::string::npos) {
+      host_end = server_url.size();  // malformed; keep the whole authority
+    } else {
+      host_end = bracket_end + 1;  // include ']' in the host, drop any ":port" after
+    }
+  } else {
+    host_end = server_url.find(':', host_start);
+    if (host_end == std::string::npos) {
+      host_end = server_url.find('/', host_start);
+    }
+    if (host_end == std::string::npos) {
+      host_end = server_url.size();
+    }
   }
   return server_url.substr(0, scheme_end) + "://" + server_url.substr(host_start, host_end - host_start) + ":9997";
 }
@@ -306,6 +329,18 @@ bool WebrtcDialog::passesFilter(const std::string& path) const {
 
 bool WebrtcDialog::isSelected(const std::string& path) const {
   return std::find(selected_.begin(), selected_.end(), path) != selected_.end();
+}
+
+bool WebrtcDialog::isRenderedLocked(const std::string& path) const {
+  // Mirror widget_data()'s row set exactly: a catalog entry passing the filter,
+  // or a manual path (not shadowed by the catalog) passing the filter.
+  const bool in_catalog =
+      std::any_of(catalog_.begin(), catalog_.end(), [&path](const auto& p) { return p.name == path; });
+  if (in_catalog) {
+    return passesFilter(path);
+  }
+  const bool is_manual = std::find(manual_paths_.begin(), manual_paths_.end(), path) != manual_paths_.end();
+  return is_manual && passesFilter(path);
 }
 
 void WebrtcDialog::startFetch() {

@@ -28,6 +28,17 @@ namespace {
 
 class WebrtcSource : public PJ::StreamSourceBase {
  public:
+  // The host may destroy the source without a preceding onStop() (the SDK
+  // data_source_handle destroys without calling stop()). Tearing down here
+  // guarantees every WhepConnection is closed (workers joined, callbacks
+  // detached) while the atomics + message queue those callbacks capture are
+  // still alive — otherwise their destruction would race the teardown.
+  // Idempotent: onStop() clears cameras_, so a normal Stop leaves the map
+  // empty and this loop is a no-op.
+  ~WebrtcSource() override {
+    onStop();
+  }
+
   PJ_borrowed_dialog_t getDialog() override {
     return PJ::borrowDialog(dialog_);
   }

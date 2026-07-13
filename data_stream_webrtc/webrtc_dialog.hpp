@@ -55,6 +55,10 @@ class WebrtcDialog : public PJ::DialogPluginTyped {
 
   bool passesFilter(const std::string& path) const;
   bool isSelected(const std::string& path) const;
+  // True iff `path` is currently a visible row (catalog entry passing the
+  // filter, or a manual path not in the catalog passing the filter) — i.e. a
+  // row the host could report in onSelectionChanged. Caller holds catalog_mutex_.
+  bool isRenderedLocked(const std::string& path) const;
   void startFetch();    // spawn the worker if none in flight
   void harvestFetch();  // join a finished worker, publish results
 
