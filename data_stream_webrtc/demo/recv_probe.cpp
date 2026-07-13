@@ -62,8 +62,14 @@ int main(int argc, char** argv) {
   }
 
   PJ::webrtc::WhepConnection conn;
-  conn.setStateCallback(
-      [](PJ::webrtc::ConnectionState s) { std::fprintf(stderr, "[state] %d\n", static_cast<int>(s)); });
+  conn.setStateCallback([](PJ::webrtc::ConnectionState s) {
+    std::fprintf(stderr, "[state] %d\n", static_cast<int>(s));
+    // Terminal for a probe (no reconnect logic): stop the drain loop.
+    if (s == PJ::webrtc::ConnectionState::kFailed || s == PJ::webrtc::ConnectionState::kClosed ||
+        s == PJ::webrtc::ConnectionState::kDisconnected) {
+      g_stop.store(true);
+    }
+  });
   conn.setErrorCallback([](PJ::webrtc::WhepErrorKind k, const std::string& reason) {
     std::fprintf(stderr, "[error] kind=%d %s\n", static_cast<int>(k), reason.c_str());
     g_stop.store(true);
@@ -81,10 +87,17 @@ int main(int argc, char** argv) {
   std::uint64_t frames = 0;
   std::uint64_t keyframes = 0;
   std::uint64_t bytes = 0;
+  bool write_failed = false;
   auto last_print = std::chrono::steady_clock::now();
   while (!g_stop.load()) {
     for (auto& ef : conn.drain()) {
       out.write(reinterpret_cast<const char*>(ef.annexb.data()), static_cast<std::streamsize>(ef.annexb.size()));
+      if (!out) {
+        std::fprintf(stderr, "\noutput write failed: %s\n", out_path.c_str());
+        write_failed = true;
+        g_stop.store(true);
+        break;
+      }
       bytes += ef.annexb.size();
       ++frames;
       if (ef.keyframe) {
@@ -106,5 +119,8 @@ int main(int argc, char** argv) {
   std::fprintf(
       stderr, "\nDone: %llu frames (%llu keyframes), %llu bytes -> %s\n", static_cast<unsigned long long>(frames),
       static_cast<unsigned long long>(keyframes), static_cast<unsigned long long>(bytes), out_path.c_str());
+  if (write_failed || !out) {
+    return 1;  // write/close failure wins over the frames>0 exit logic
+  }
   return frames > 0 ? 0 : 2;
 }
