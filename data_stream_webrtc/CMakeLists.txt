@@ -21,6 +21,7 @@ add_library(webrtc_source_plugin SHARED
   webrtc_signaling.cpp
   video_emit.cpp
   whep_client.cpp
+  whep_connection.cpp
 )
 target_compile_features(webrtc_source_plugin PRIVATE cxx_std_20)
 target_compile_options(webrtc_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
@@ -100,6 +101,24 @@ target_link_libraries(whep_client_test PRIVATE
   GTest::gtest_main
 )
 add_test(NAME whep_client_test COMMAND whep_client_test)
+
+add_executable(whep_connection_test
+  tests/whep_connection_test.cpp
+  whep_connection.cpp
+  whep_client.cpp
+  video_emit.cpp
+)
+target_compile_features(whep_connection_test PRIVATE cxx_std_20)
+target_compile_options(whep_connection_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(whep_connection_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(whep_connection_test PRIVATE
+  plotjuggler_sdk::plugin_sdk
+  nlohmann_json::nlohmann_json
+  LibDataChannel::LibDataChannel
+  ixwebsocket::ixwebsocket
+  GTest::gtest_main
+)
+add_test(NAME whep_connection_test COMMAND whep_connection_test)
 
 # ---------------------------------------------------------------------------
 # Headless receiver probe (demo/dev tool): the answerer half of the demo/ rig
