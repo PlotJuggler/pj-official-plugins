@@ -1,5 +1,6 @@
 find_package(nlohmann_json REQUIRED)
 find_package(LibDataChannel REQUIRED)
+find_package(ixwebsocket REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
@@ -19,6 +20,7 @@ add_library(webrtc_source_plugin SHARED
   webrtc_receiver.cpp
   webrtc_signaling.cpp
   video_emit.cpp
+  whep_client.cpp
 )
 target_compile_features(webrtc_source_plugin PRIVATE cxx_std_20)
 target_compile_options(webrtc_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
@@ -27,6 +29,7 @@ target_link_libraries(webrtc_source_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk
   nlohmann_json::nlohmann_json
   LibDataChannel::LibDataChannel
+  ixwebsocket::ixwebsocket
 )
 
 pj_embed_ui(webrtc_source_plugin
@@ -82,6 +85,21 @@ target_link_libraries(webrtc_receiver_test PRIVATE
   GTest::gtest_main
 )
 add_test(NAME webrtc_receiver_test COMMAND webrtc_receiver_test)
+
+add_executable(whep_client_test
+  tests/whep_client_test.cpp
+  whep_client.cpp
+)
+target_compile_features(whep_client_test PRIVATE cxx_std_20)
+target_compile_options(whep_client_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(whep_client_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(whep_client_test PRIVATE
+  plotjuggler_sdk::plugin_sdk
+  nlohmann_json::nlohmann_json
+  ixwebsocket::ixwebsocket
+  GTest::gtest_main
+)
+add_test(NAME whep_client_test COMMAND whep_client_test)
 
 # ---------------------------------------------------------------------------
 # Headless receiver probe (demo/dev tool): the answerer half of the demo/ rig

@@ -19,6 +19,7 @@ class DataStreamWebrtcConan(ConanFile):
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
         "libdatachannel/0.24.0",
+        "ixwebsocket/11.4.6",
     )
     default_options = {
         "*:shared": False,
