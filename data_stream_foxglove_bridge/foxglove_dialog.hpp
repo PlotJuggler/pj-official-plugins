@@ -3,6 +3,7 @@
 #include <ixwebsocket/IXWebSocket.h>
 
 #include <atomic>
+#include <cctype>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -95,26 +96,9 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
       std::lock_guard<std::mutex> lock(channels_mutex_);
       rows.reserve(channels_.size());
       for (const auto& ch : channels_) {
-        // Apply filter
-        if (!filter_.empty()) {
-          std::string lower_topic = ch.topic;
-          std::string lower_type = ch.schema_name;
-          std::string lower_filter = filter_;
-          for (auto& c : lower_topic) {
-            c = static_cast<char>(std::tolower(c));
-          }
-          for (auto& c : lower_type) {
-            c = static_cast<char>(std::tolower(c));
-          }
-          for (auto& c : lower_filter) {
-            c = static_cast<char>(std::tolower(c));
-          }
-          if (lower_topic.find(lower_filter) == std::string::npos &&
-              lower_type.find(lower_filter) == std::string::npos) {
-            continue;
-          }
+        if (matchesFilter(ch)) {
+          rows.push_back({ch.topic, ch.schema_name, ch.schema_encoding});
         }
-        rows.push_back({ch.topic, ch.schema_name, ch.schema_encoding});
       }
     }
     wd.setTableRows("topicsList", rows);
@@ -192,7 +176,28 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
 
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name == "topicsList") {
-      selected_topic_names_ = selected;
+      // The host emits topic names only for the rows currently visible under
+      // the active filter. Preserve selections of channels filtered out of
+      // view; otherwise changing the visible selection while a filter hides a
+      // previously selected topic would silently drop it.
+      std::vector<std::string> next;
+      {
+        std::lock_guard<std::mutex> lock(channels_mutex_);
+        for (const auto& name : selected_topic_names_) {
+          bool visible = false;
+          for (const auto& ch : channels_) {
+            if (ch.topic == name && matchesFilter(ch)) {
+              visible = true;
+              break;
+            }
+          }
+          if (!visible) {
+            next.push_back(name);
+          }
+        }
+      }
+      next.insert(next.end(), selected.begin(), selected.end());
+      selected_topic_names_ = std::move(next);
       snapshotSelectedChannels();
       return true;
     }
@@ -273,6 +278,22 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   }
 
  private:
+  /// Case-insensitive substring match of the active filter against the topic
+  /// name and datatype. An empty filter matches everything.
+  bool matchesFilter(const DiscoveredChannel& ch) const {
+    if (filter_.empty()) {
+      return true;
+    }
+    auto lower = [](std::string s) {
+      for (auto& c : s) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      }
+      return s;
+    };
+    const std::string f = lower(filter_);
+    return lower(ch.topic).find(f) != std::string::npos || lower(ch.schema_name).find(f) != std::string::npos;
+  }
+
   void connectToServer() {
     socket_ = std::make_unique<ix::WebSocket>();
     socket_->setUrl("ws://" + address_ + ":" + std::to_string(port_));
