@@ -78,6 +78,14 @@ class WebrtcSource : public PJ::StreamSourceBase {
       return PJ::unexpected("no stream paths selected");
     }
 
+    // A restart must let the current selection win: drop any cameras left from a
+    // previous Start (teardownCamera is safe on a not-yet-connected camera) so
+    // stale paths don't linger and only the selected ones are rebuilt below.
+    for (auto& [path, cam] : cameras_) {
+      teardownCamera(*cam);
+    }
+    cameras_.clear();
+
     poll_count_ = 0;
     for (const auto& path : paths) {
       if (cameras_.count(path) == 0) {
@@ -99,6 +107,12 @@ class WebrtcSource : public PJ::StreamSourceBase {
     drainMessages();
 
     for (auto& [path, cam] : cameras_) {
+      if (cam->connected.exchange(false)) {
+        cam->backoff_ms = kMinBackoffMs;
+        cam->failed_attempts = 0;
+        cam->escalated = false;
+      }
+
       if (cam->conn) {
         for (auto& ef : cam->conn->drain()) {
           if (!ensureBinding(*cam)) {
@@ -121,8 +135,17 @@ class WebrtcSource : public PJ::StreamSourceBase {
               "WHEP '" + cam->path + "' stopped: authorization rejected. Fix the Bearer token and Start again.");
         } else {
           cam->reconnect_at_poll = poll_count_ + backoffPolls(cam->backoff_ms);
-          runtimeHost().reportMessage(
-              PJ::DataSourceMessageLevel::kInfo, "WHEP '" + cam->path + "' disconnected; reconnecting...");
+          ++cam->failed_attempts;
+          if (cam->failed_attempts >= kEscalateAfterAttempts && !cam->escalated) {
+            cam->escalated = true;
+            runtimeHost().reportMessage(
+                PJ::DataSourceMessageLevel::kError, "WHEP '" + cam->path + "': still failing after " +
+                                                        std::to_string(cam->failed_attempts) +
+                                                        " attempts (check server URL / that the path is published).");
+          } else {
+            runtimeHost().reportMessage(
+                PJ::DataSourceMessageLevel::kInfo, "WHEP '" + cam->path + "' disconnected; reconnecting...");
+          }
         }
       }
 
@@ -140,7 +163,10 @@ class WebrtcSource : public PJ::StreamSourceBase {
       teardownCamera(*cam);
       cam->reconnect_at_poll = 0;
       cam->terminal.store(false);
+      cam->connected.store(false);
       cam->backoff_ms = kMinBackoffMs;
+      cam->failed_attempts = 0;
+      cam->escalated = false;
     }
     cameras_.clear();
   }
@@ -163,9 +189,19 @@ class WebrtcSource : public PJ::StreamSourceBase {
     std::unique_ptr<PJ::webrtc::WhepConnection> conn;
     int backoff_ms = kMinBackoffMs;
     uint64_t reconnect_at_poll = 0;
+    // Consecutive non-terminal connect failures; drives a one-shot kError
+    // escalation so a persistent bad server_url is diagnosable without spam.
+    int failed_attempts = 0;
+    bool escalated = false;
     std::atomic<bool> lost{false};
     std::atomic<bool> terminal{false};
+    // Set by the state callback on kConnected (worker thread); the poll thread
+    // consumes it to clear the failure counters without racing them.
+    std::atomic<bool> connected{false};
   };
+
+  // After this many consecutive non-terminal failures, report ONCE at kError.
+  static constexpr int kEscalateAfterAttempts = 5;
 
   static uint64_t backoffPolls(int backoff_ms) {
     return static_cast<uint64_t>(std::max(1, backoff_ms / kPollPeriodMs));
@@ -231,16 +267,16 @@ class WebrtcSource : public PJ::StreamSourceBase {
           s == PJ::webrtc::ConnectionState::kClosed) {
         rt->lost.store(true);
       } else if (s == PJ::webrtc::ConnectionState::kConnected) {
-        rt->backoff_ms = kMinBackoffMs;
+        rt->connected.store(true);  // poll thread clears backoff + failure counters
       }
     });
     cam.conn->setErrorCallback([this, rt](PJ::webrtc::WhepErrorKind kind, const std::string& reason) {
       queueMessage("WHEP '" + rt->path + "': " + reason);
       // 401/403 is terminal for this camera until the user fixes the token.
-      // Latch terminal_ BEFORE lost_ so onPoll (which reads terminal_ only
-      // after lost_ fires the teardown) observes it; the two are independent
-      // atomics, and a connect-phase failure also sets state kFailed (which
-      // sets lost_ via the state callback) — order-independent either way.
+      // Latch terminal BEFORE lost so onPoll (which reads terminal only after
+      // lost fires the teardown) observes it; the two are independent atomics,
+      // and a connect-phase failure also sets state kFailed (which sets lost
+      // via the state callback) — order-independent either way.
       if (kind == PJ::webrtc::WhepErrorKind::kUnauthorized) {
         rt->terminal.store(true);
       }
