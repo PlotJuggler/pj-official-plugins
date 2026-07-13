@@ -89,7 +89,8 @@ class ColormapDialog : public PJ::DialogPluginTyped {
         .setText("name_edit", current_name_)
         .setListItems("saved_list", names)
         .setListItemsDeletable("saved_list", true)
-        .setListPlaceholder("saved_list",
+        .setListPlaceholder(
+            "saved_list",
             "For each value in the dataset, ColorMap must return a string containing a color, "
             "supported formats are hex (\"#98FB98\") or web-colors (\"palegreen\")")
         .setText("status_label", status_msg_);

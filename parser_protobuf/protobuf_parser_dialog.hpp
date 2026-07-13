@@ -196,8 +196,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
   }
 
   bool onItemDeleteRequested(std::string_view widget_name, int index) override {
-    if (widget_name == "listWidgetIncludeFolders" && index >= 0 &&
-        index < static_cast<int>(include_folders_.size())) {
+    if (widget_name == "listWidgetIncludeFolders" && index >= 0 && index < static_cast<int>(include_folders_.size())) {
       include_folders_.erase(include_folders_.begin() + index);
       // Re-compile with the updated include paths.
       if (!proto_file_path_.empty()) {
