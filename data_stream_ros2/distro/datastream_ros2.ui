@@ -38,11 +38,20 @@
       </attribute>
       <layout class="QVBoxLayout" name="layoutTopicSelector">
        <item>
-        <widget class="QGroupBox" name="groupParser">
-         <property name="title">
-          <string>Parser options</string>
-         </property>
+        <widget class="QWidget" name="groupParser" native="true">
          <layout class="QVBoxLayout" name="layoutParser">
+          <property name="leftMargin">
+           <number>0</number>
+          </property>
+          <property name="topMargin">
+           <number>0</number>
+          </property>
+          <property name="rightMargin">
+           <number>0</number>
+          </property>
+          <property name="bottomMargin">
+           <number>0</number>
+          </property>
           <item>
            <widget class="QCheckBox" name="checkBoxTimestamp">
             <property name="text">
@@ -80,6 +89,9 @@
               <property name="checked">
                <bool>true</bool>
               </property>
+              <attribute name="buttonGroup">
+               <string>arrayPolicyGroup</string>
+              </attribute>
              </widget>
             </item>
             <item>
@@ -87,6 +99,9 @@
               <property name="text">
                <string>discard</string>
               </property>
+              <attribute name="buttonGroup">
+               <string>arrayPolicyGroup</string>
+              </attribute>
              </widget>
             </item>
             <item>
@@ -267,4 +282,7 @@
  </widget>
  <resources/>
  <connections/>
+ <buttongroups>
+  <buttongroup name="arrayPolicyGroup"/>
+ </buttongroups>
 </ui>

@@ -356,6 +356,23 @@ MosaicoDialog::~MosaicoDialog() {
   if (worker_thread_.joinable()) {
     worker_thread_.join();
   }
+  // A close mid-fetch (the hosting banner's close — the only close path) skips
+  // onAllFetchesComplete, which owns the batch's notifyDataChanged. Topics that
+  // finished before the close have ALREADY written into the shared store (the
+  // [C1] streaming-write design), so flush them into the catalog here — the
+  // same "keep what landed" semantics as Cancel — instead of stranding data
+  // that exists in the store but never appears in the dataset tree.
+  bool flush_partial = false;
+  {
+    std::lock_guard<std::mutex> lock(state_.mu);
+    flush_partial = state_.fetch_active && state_.imported_any;
+  }
+  if (flush_partial && runtime_host_provider_) {
+    auto runtime = runtime_host_provider_();
+    if (runtime.valid()) {
+      runtime.notifyDataChanged();
+    }
+  }
   // onTick and this destructor both run on the single GUI thread, so no
   // this-capturing event closure can run during or after destruction; closures
   // left in evt_queue_ are destroyed un-run with the dialog.
@@ -553,10 +570,6 @@ std::string MosaicoDialog::widget_data() {
   wd.setEnabled("buttonReloadSeq", reload_live);
   wd.setEnabled("buttonReloadTopic", reload_live && !state_.selected_sequence.empty());
   wd.setEnabled("buttonCancel", state_.fetch_active);
-  // Closing mid-fetch tears the worker down before allFetchesComplete runs,
-  // stranding the topics that already wrote into the shared store. Force the
-  // user to Cancel first (Cancel flushes/cleans up the batch deterministically).
-  wd.setEnabled("buttonClose", !state_.fetch_active);
 
   // Icon-only Connect / Cert buttons (the .ui clears their text + sets the
   // tooltips). Resolved by the host from its themed icon set; unknown ids fall
@@ -826,11 +839,6 @@ bool MosaicoDialog::onTextChanged(std::string_view widget_name, std::string_view
 }
 
 bool MosaicoDialog::onClicked(std::string_view widget_name) {
-  if (widget_name == "buttonClose") {
-    std::lock_guard<std::mutex> lock(state_.mu);
-    state_.close_pending = true;
-    return true;
-  }
   if (widget_name == "buttonConnect") {
     std::string uri;
     {
