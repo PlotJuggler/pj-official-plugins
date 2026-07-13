@@ -27,6 +27,24 @@ std::string extractFirstSprop(const std::string& sdp) {
   return sdp.substr(value_start, value_end - value_start);
 }
 
+ConnectionState toConnectionState(rtc::PeerConnection::State s) {
+  switch (s) {
+    case rtc::PeerConnection::State::New:
+      return ConnectionState::kNew;
+    case rtc::PeerConnection::State::Connecting:
+      return ConnectionState::kConnecting;
+    case rtc::PeerConnection::State::Connected:
+      return ConnectionState::kConnected;
+    case rtc::PeerConnection::State::Disconnected:
+      return ConnectionState::kDisconnected;
+    case rtc::PeerConnection::State::Failed:
+      return ConnectionState::kFailed;
+    case rtc::PeerConnection::State::Closed:
+      return ConnectionState::kClosed;
+  }
+  return ConnectionState::kNew;
+}
+
 }  // namespace
 
 WhepConnection::WhepConnection() = default;
@@ -49,7 +67,67 @@ void WhepConnection::reportState(ConnectionState s) {
 
 PJ::Status WhepConnection::open(const WhepConnectionConfig& config) {
   config_ = config;
-  return PJ::unexpected("not implemented");  // Task 6
+  if (config_.whep_url.empty()) {
+    return PJ::unexpected("empty WHEP URL");
+  }
+
+  rtc::Configuration rtc_config;
+  for (const auto& srv : config_.ice_servers) {
+    if (srv.url.empty()) {
+      continue;
+    }
+    try {
+      if (!srv.username.empty() || !srv.credential.empty()) {
+        rtc::IceServer parsed(srv.url);
+        parsed.username = srv.username;
+        parsed.password = srv.credential;
+        rtc_config.iceServers.push_back(std::move(parsed));
+      } else {
+        rtc_config.iceServers.emplace_back(srv.url);
+      }
+    } catch (const std::exception&) {}
+  }
+
+  try {
+    pc_ = std::make_shared<rtc::PeerConnection>(rtc_config);
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("PeerConnection creation failed: ") + e.what());
+  }
+
+  pc_->onStateChange([this](rtc::PeerConnection::State s) { reportState(toConnectionState(s)); });
+
+  pc_->onGatheringStateChange([this](rtc::PeerConnection::GatheringState s) {
+    if (s == rtc::PeerConnection::GatheringState::Complete) {
+      {
+        std::lock_guard<std::mutex> lk(gather_mutex_);
+        gathering_done_ = true;
+      }
+      gather_cv_.notify_all();
+    }
+  });
+
+  // OFFERER (WHEP contract): add the single recvonly H.264 track ourselves;
+  // media arrives on it after the answer is applied. onTrack never fires.
+  try {
+    rtc::Description::Video media("video", rtc::Description::Direction::RecvOnly);
+    media.addH264Codec(config_.h264_payload_type);
+    track_ = pc_->addTrack(media);  // RETAIN
+
+    auto depacketizer = std::make_shared<rtc::H264RtpDepacketizer>(rtc::NalUnit::Separator::StartSequence);
+    depacketizer->addToChain(std::make_shared<rtc::RtcpReceivingSession>());
+    track_->setMediaHandler(depacketizer);
+    track_->onFrame([this](rtc::binary frame, rtc::FrameInfo /*info*/) {
+      onFrame(reinterpret_cast<const uint8_t*>(frame.data()), frame.size());
+    });
+
+    pc_->setLocalDescription();  // builds the offer, starts ICE gathering
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("offer setup failed: ") + e.what());
+  }
+
+  reportState(ConnectionState::kConnecting);
+  worker_ = std::thread([this]() { runConnect(); });
+  return PJ::okStatus();
 }
 
 void WhepConnection::close() {
@@ -132,7 +210,78 @@ std::vector<EncodedFrame> WhepConnection::drain() {
 }
 
 void WhepConnection::runConnect() {
-  // Implemented in Task 6.
+  {
+    std::unique_lock<std::mutex> lk(gather_mutex_);
+    const bool done =
+        gather_cv_.wait_for(lk, config_.connect_timeout, [this]() { return gathering_done_ || closing_; });
+    if (closing_) {
+      return;
+    }
+    if (!done || !gathering_done_) {
+      if (on_error_) {
+        on_error_(WhepErrorKind::kTimeout, "ICE gathering timed out");
+      }
+      return;
+    }
+  }
+
+  std::string offer_sdp;
+  try {
+    auto local = pc_->localDescription();
+    if (!local) {
+      if (on_error_) {
+        on_error_(WhepErrorKind::kBadResponse, "no local description after gathering");
+      }
+      return;
+    }
+    offer_sdp = std::string(*local);
+  } catch (const std::exception& e) {
+    if (on_error_) {
+      on_error_(WhepErrorKind::kBadResponse, std::string("local description: ") + e.what());
+    }
+    return;
+  }
+
+  auto out = postOffer(config_.whep_url, config_.bearer_token, offer_sdp, config_.connect_timeout);
+  {
+    std::lock_guard<std::mutex> lk(gather_mutex_);
+    if (closing_) {
+      // close() raced the POST: if it succeeded, hang up the orphan session.
+      if (out) {
+        deleteSession(out->session_url, config_.bearer_token, config_.delete_timeout);
+      }
+      return;
+    }
+  }
+  if (!out) {
+    if (on_error_) {
+      on_error_(out.error().kind, "WHEP POST failed: " + out.error().message);
+    }
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lk(session_mutex_);
+    session_url_ = out->session_url;
+  }
+
+  try {
+    pc_->setRemoteDescription(rtc::Description(out->answer_sdp, "answer"));
+  } catch (const std::exception& e) {
+    if (on_error_) {
+      on_error_(WhepErrorKind::kBadResponse, std::string("answer rejected: ") + e.what());
+    }
+    return;
+  }
+
+  // Prime SPS/PPS from the answer: the decoder needs them ahead of the first
+  // keyframe; some publishers only announce them in SDP. In-band parameter
+  // sets still pass through the normalizer untouched.
+  const std::string sprop = extractFirstSprop(out->answer_sdp);
+  if (!sprop.empty()) {
+    std::lock_guard<std::mutex> lk(frames_mutex_);
+    primeNormalizerFromSprop(normalizer_, sprop);
+  }
+  // Connected/Failed now arrives via pc_->onStateChange.
 }
 
 EncodedFrame WhepConnection::normalizeAccessUnit(
