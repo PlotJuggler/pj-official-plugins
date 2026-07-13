@@ -9,6 +9,8 @@
 // worker thread, never on the poll thread or a libdatachannel callback.
 #pragma once
 
+#include <chrono>
+#include <pj_base/expected.hpp>
 #include <string>
 #include <vector>
 
@@ -23,21 +25,10 @@ enum class WhepErrorKind {
   kBadResponse,   // unexpected status / missing Location / empty body
 };
 
+// Typed error payload for PJ::Expected so callers can classify retry-vs-terminal.
 struct WhepError {
   WhepErrorKind kind = WhepErrorKind::kNetwork;
   std::string message;
-};
-
-// Minimal expected-like carrier so the error stays typed (PJ::Status only
-// carries a string).
-template <typename T>
-struct WhepExpected {
-  T value{};
-  WhepError error{};
-  bool has_value = false;
-  explicit operator bool() const {
-    return has_value;
-  }
 };
 
 struct WhepResult {
@@ -60,16 +51,17 @@ std::string buildWhepUrl(const std::string& server_url, const std::string& path)
 // the last request-URL segment.
 std::string resolveLocation(const std::string& request_url, const std::string& location);
 
-WhepExpected<WhepResult> postOffer(
-    const std::string& whep_url, const std::string& bearer_token, const std::string& offer_sdp, int timeout_sec);
+[[nodiscard]] PJ::Expected<WhepResult, WhepError> postOffer(
+    const std::string& whep_url, const std::string& bearer_token, const std::string& offer_sdp,
+    std::chrono::seconds timeout);
 
 // Best-effort session teardown; errors are ignored (the server reaps stale
 // sessions on ICE timeout anyway).
-void deleteSession(const std::string& session_url, const std::string& bearer_token, int timeout_sec);
+void deleteSession(const std::string& session_url, const std::string& bearer_token, std::chrono::seconds timeout);
 
 // GET <api_url>/v3/paths/list and parse items[].{name,ready,tracks}.
-WhepExpected<std::vector<WhepPathInfo>> fetchPathsList(
-    const std::string& api_url, const std::string& bearer_token, int timeout_sec);
+[[nodiscard]] PJ::Expected<std::vector<WhepPathInfo>, WhepError> fetchPathsList(
+    const std::string& api_url, const std::string& bearer_token, std::chrono::seconds timeout);
 
 }  // namespace webrtc
 }  // namespace PJ

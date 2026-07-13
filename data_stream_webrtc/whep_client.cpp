@@ -39,27 +39,28 @@ std::string resolveLocation(const std::string& request_url, const std::string& l
   return request_url.substr(0, last_slash + 1) + location;
 }
 
-WhepExpected<WhepResult> postOffer(
-    const std::string& whep_url, const std::string& bearer_token, const std::string& offer_sdp, int timeout_sec) {
+PJ::Expected<WhepResult, WhepError> postOffer(
+    const std::string& whep_url, const std::string& bearer_token, const std::string& offer_sdp,
+    std::chrono::seconds timeout) {
   (void)whep_url;
   (void)bearer_token;
   (void)offer_sdp;
-  (void)timeout_sec;
-  return {};
+  (void)timeout;
+  return PJ::unexpected(WhepError{WhepErrorKind::kNetwork, "not implemented"});
 }
 
-void deleteSession(const std::string& session_url, const std::string& bearer_token, int timeout_sec) {
+void deleteSession(const std::string& session_url, const std::string& bearer_token, std::chrono::seconds timeout) {
   (void)session_url;
   (void)bearer_token;
-  (void)timeout_sec;
+  (void)timeout;
 }
 
-WhepExpected<std::vector<WhepPathInfo>> fetchPathsList(
-    const std::string& api_url, const std::string& bearer_token, int timeout_sec) {
+PJ::Expected<std::vector<WhepPathInfo>, WhepError> fetchPathsList(
+    const std::string& api_url, const std::string& bearer_token, std::chrono::seconds timeout) {
   (void)api_url;
   (void)bearer_token;
-  (void)timeout_sec;
-  return {};
+  (void)timeout;
+  return PJ::unexpected(WhepError{WhepErrorKind::kNetwork, "not implemented"});
 }
 
 }  // namespace webrtc
