@@ -199,4 +199,48 @@ TEST(DataTamerParserTest, EmptyPayload) {
   EXPECT_EQ(f.recorder.rows().size(), 0u);
 }
 
+// A mask_size larger than the remaining buffer used to underflow BufferSpan::size
+// and walk the read cursor off the end into a wild pointer (segfault on the next
+// Deserialize). It must now be rejected cleanly. Bare 0xFFFFFFFF is the minimal
+// reproducer: mask_size = 4 GiB with only the 4 header bytes present.
+TEST(DataTamerParserTest, OversizedMaskSizeIsRejected) {
+  DTFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("float64 x\n"));
+
+  std::vector<uint8_t> payload = {0xFF, 0xFF, 0xFF, 0xFF};  // mask_size = 0xFFFFFFFF
+  EXPECT_FALSE(f.parse(payload));
+  EXPECT_EQ(f.recorder.rows().size(), 0u);
+}
+
+// A payload shorter than the 4-byte mask_size header must be rejected before the
+// read (Deserialize<> memcpy's before it bounds-checks).
+TEST(DataTamerParserTest, TruncatedBeforeMaskSizeIsRejected) {
+  DTFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("float64 x\n"));
+
+  std::vector<uint8_t> payload = {0x00, 0x01};  // only 2 of the 4 header bytes
+  EXPECT_FALSE(f.parse(payload));
+  EXPECT_EQ(f.recorder.rows().size(), 0u);
+}
+
+// A payload_size larger than the bytes left after the mask must be rejected.
+TEST(DataTamerParserTest, OversizedPayloadSizeIsRejected) {
+  DTFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("float64 x\n"));
+
+  std::vector<uint8_t> payload;
+  auto push32 = [&](uint32_t val) {
+    auto* p = reinterpret_cast<const uint8_t*>(&val);
+    payload.insert(payload.end(), p, p + 4);
+  };
+  push32(1);                // mask_size = 1
+  payload.push_back(0xFF);  // mask byte
+  push32(0xFFFFFFFF);       // payload_size = 4 GiB, nothing follows
+  EXPECT_FALSE(f.parse(payload));
+  EXPECT_EQ(f.recorder.rows().size(), 0u);
+}
+
 }  // namespace
