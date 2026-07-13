@@ -1,0 +1,595 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>TransformEditorDialog</class>
+ <widget class="QWidget" name="TransformEditorDialog">
+  <property name="minimumSize">
+   <size><width>480</width><height>420</height></size>
+  </property>
+  <property name="windowTitle">
+   <string>Transform Editor</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_3">
+
+   <!-- ==================== Tab Widget ==================== -->
+   <item>
+    <widget class="QTabWidget" name="tabWidget">
+     <property name="currentIndex"><number>0</number></property>
+     <!-- Bordered tab look comes from the app theme's QTabWidget[framed="true"]
+          rule (single source of truth), not an inline stylesheet here. -->
+     <property name="framed" stdset="0"><bool>true</bool></property>
+
+     <!-- ==================== Tab 1: Single Function ==================== -->
+     <widget class="QWidget" name="tab">
+      <attribute name="title"><string>Single Function</string></attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_5">
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>0</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
+
+       <!-- Wrapped in a QScrollArea: PJ3 keeps this same preview/controls QSplitter
+            but floats the editor as a fixed-minimum dialog, so it can never be
+            squeezed small enough for the splitter panes to overlap. PJ4 hosts it as
+            an embedded panel that CAN be squeezed below its minimum, so the scroll
+            area gives the same guarantee: below the minimum, scrollbars appear instead
+            of the panes stacking; above it, the splitter is user-resizable as before. -->
+       <item>
+        <widget class="QScrollArea" name="scrollAreaSingle">
+         <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+         <property name="widgetResizable"><bool>true</bool></property>
+         <widget class="QWidget" name="scrollAreaSingleContents">
+          <layout class="QVBoxLayout" name="scrollAreaSingleLayout">
+           <property name="leftMargin"><number>0</number></property>
+           <property name="topMargin"><number>0</number></property>
+           <property name="rightMargin"><number>0</number></property>
+           <property name="bottomMargin"><number>0</number></property>
+           <item>
+        <widget class="QSplitter" name="previewSplitter">
+         <property name="orientation"><enum>Qt::Vertical</enum></property>
+         <property name="childrenCollapsible"><bool>false</bool></property>
+         <!-- Preview pane: the chart and the validation terminal share ONE splitter
+              panel (this container), so toggling between them keeps the area's size
+              fixed - resizing the splitter applies to both views identically. -->
+         <widget class="QWidget" name="previewContainer" native="true">
+          <property name="minimumSize"><size><width>0</width><height>80</height></size></property>
+          <layout class="QVBoxLayout" name="previewContainerLayout">
+           <property name="leftMargin"><number>0</number></property>
+           <property name="topMargin"><number>0</number></property>
+           <property name="rightMargin"><number>0</number></property>
+           <property name="bottomMargin"><number>0</number></property>
+           <item>
+            <widget class="QFrame" name="framePlotPreview">
+             <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+             <property name="frameShadow"><enum>QFrame::Sunken</enum></property>
+            </widget>
+           </item>
+           <item>
+            <!-- Validation terminal (PJ3 parity): mutually exclusive with the chart;
+                 shown only while there are blocking problems. -->
+            <widget class="QPlainTextEdit" name="terminalPlainText">
+             <property name="readOnly"><bool>true</bool></property>
+             <property name="styleSheet">
+              <string notr="true">QPlainTextEdit { background-color: #2b2b2b; color: #f0f0f0; border: 1px solid #555; }</string>
+             </property>
+             <property name="font"><font><family>DejaVu Sans Mono</family><pointsize>10</pointsize></font></property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+         <widget class="QWidget" name="controlsPane" native="true">
+          <layout class="QHBoxLayout" name="horizontalLayout_5" stretch="4,5">
+           <property name="spacing"><number>10</number></property>
+
+         <!-- LEFT COLUMN -->
+         <item>
+          <widget class="QWidget" name="leftWidget" native="true">
+           <property name="minimumSize"><size><width>295</width><height>0</height></size></property>
+           <layout class="QVBoxLayout" name="leftLayout">
+            <property name="rightMargin"><number>8</number></property>
+            <!-- Match the right column (verticalLayout, bottomMargin 0) so the
+                 Timeseries table and the function editor share a flush bottom edge. -->
+            <property name="bottomMargin"><number>0</number></property>
+
+            <!-- Name row: label + name field + Help (left column) -->
+            <item>
+             <layout class="QHBoxLayout" name="horizontalLayout_3" stretch="0,1,0">
+              <item>
+               <widget class="QLabel" name="label_name">
+                <property name="minimumSize"><size><width>0</width><height>25</height></size></property>
+                <property name="font"><font><weight>75</weight><bold>true</bold></font></property>
+                <property name="toolTip">
+                 <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Name of the new time series.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                </property>
+                <property name="text"><string>New series name:</string></property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QLineEdit" name="nameLineEdit">
+                <property name="minimumSize"><size><width>0</width><height>25</height></size></property>
+                <property name="placeholderText"><string>name the new timeseries</string></property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="pushButtonHelp">
+                <property name="maximumSize"><size><width>50</width><height>16777215</height></size></property>
+                <property name="text"><string>Help</string></property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+
+            <!-- Input timeseries label + delete button -->
+            <item>
+             <layout class="QHBoxLayout" name="horizontalLayout_4" stretch="1,0">
+              <property name="leftMargin"><number>0</number></property>
+              <property name="topMargin"><number>0</number></property>
+              <item>
+               <widget class="QLabel" name="label_linkeChannel">
+                <property name="minimumSize"><size><width>0</width><height>25</height></size></property>
+                <property name="text">
+                 <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;Timeseries&lt;/span&gt;: drag &amp;amp; drop the input timeseries here&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                </property>
+                <property name="wordWrap"><bool>false</bool></property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="pushButtonDeleteCurves">
+                <property name="minimumSize"><size><width>24</width><height>24</height></size></property>
+                <property name="maximumSize"><size><width>24</width><height>24</height></size></property>
+                <property name="toolTip">
+                 <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Remove the selected time series (or all, if none selected).&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                </property>
+                <property name="text"><string/></property>
+                <property name="icon">
+                 <iconset><normaloff>:/resources/svg/trash.svg</normaloff>:/resources/svg/trash.svg</iconset>
+                </property>
+                <property name="iconSize"><size><width>22</width><height>22</height></size></property>
+                <property name="flat"><bool>true</bool></property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+
+            <!-- Sources table: one row per dragged series; the radio marks which
+                 one provides "value", the rest become v1, v2, ... in order. -->
+            <item>
+             <widget class="QTableWidget" name="tableSources">
+             <property name="minimumSize"><size><width>0</width><height>40</height></size></property>
+              <property name="toolTip">
+               <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Drag &amp;amp; drop timeseries here. Pick the radio to set which one is &lt;span style=&quot; font-weight:600;&quot;&gt;value&lt;/span&gt;.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+              </property>
+              <property name="selectionBehavior"><enum>QAbstractItemView::SelectRows</enum></property>
+              <property name="editTriggers"><set>QAbstractItemView::NoEditTriggers</set></property>
+              <attribute name="horizontalHeaderVisible"><bool>false</bool></attribute>
+              <attribute name="verticalHeaderVisible"><bool>false</bool></attribute>
+             </widget>
+            </item>
+
+            <!-- The function library + preview now live in a dedicated dialog opened
+                 by the apps-box button in the function() row (cloned from PJ3's
+                 buttonLibraryBox); they no longer sit inline in this column. -->
+
+           </layout>
+          </widget>
+         </item>
+
+         <!-- RIGHT COLUMN -->
+         <item>
+          <widget class="QWidget" name="rightWidget" native="true">
+           <property name="minimumSize"><size><width>295</width><height>0</height></size></property>
+           <layout class="QVBoxLayout" name="verticalLayout">
+            <property name="leftMargin"><number>0</number></property>
+            <property name="topMargin"><number>0</number></property>
+            <property name="rightMargin"><number>0</number></property>
+            <property name="bottomMargin"><number>0</number></property>
+
+            <!-- Global vars label -->
+            <item>
+             <layout class="QHBoxLayout" name="horizontalLayout_6">
+              <property name="topMargin"><number>11</number></property>
+              <item>
+               <widget class="QLabel" name="label">
+                <property name="text">
+                 <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;Global:&lt;/span&gt; this code runs once before &amp;quot;function&amp;quot;. Initialize global, persistent variables here.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                </property>
+                <property name="wordWrap"><bool>false</bool></property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="horizontalSpacer_3">
+                <property name="orientation"><enum>Qt::Horizontal</enum></property>
+                <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+               </spacer>
+              </item>
+             </layout>
+            </item>
+
+            <!-- Code editors -->
+            <item>
+             <widget class="QWidget" name="widget_2" native="true">
+              <layout class="QVBoxLayout" name="verticalLayout_4" stretch="1,0,2">
+               <property name="leftMargin"><number>0</number></property>
+               <property name="topMargin"><number>0</number></property>
+               <property name="rightMargin"><number>0</number></property>
+               <property name="bottomMargin"><number>0</number></property>
+               <item>
+                <widget class="QPlainTextEdit" name="globalVarsText">
+                 <property name="toolTip">
+                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Portion of code outside the function.&lt;/p&gt;&lt;p&gt;Useful to add global variables.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                 </property>
+                 <property name="styleSheet">
+                  <string notr="true">QPlainTextEdit { border: 1px solid #888; }</string>
+                 </property>
+                 <property name="placeholderText"><string>Add your global variables here</string></property>
+                 <property name="font"><font><family>Monospace</family><pointsize>11</pointsize></font></property>
+                </widget>
+               </item>
+               <item>
+                <layout class="QHBoxLayout" name="functionLabelRow">
+                 <item>
+                  <widget class="QLabel" name="labelFunction">
+                   <property name="font"><font><weight>75</weight><bold>true</bold></font></property>
+                   <property name="text"><string>function( time, value )</string></property>
+                  </widget>
+                 </item>
+                 <item>
+                  <spacer name="functionLabelSpacer">
+                   <property name="orientation"><enum>Qt::Horizontal</enum></property>
+                   <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+                  </spacer>
+                 </item>
+                 <item>
+                  <widget class="QRadioButton" name="luaButton">
+                   <property name="text"><string>Lua</string></property>
+                   <property name="checked"><bool>true</bool></property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QRadioButton" name="pythonButton">
+                   <property name="text"><string>Python</string></property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="buttonLoadFunctions">
+                   <property name="minimumSize"><size><width>30</width><height>30</height></size></property>
+                   <property name="maximumSize"><size><width>30</width><height>30</height></size></property>
+                   <property name="toolTip">
+                    <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Import functions from a XML library.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                   </property>
+                   <property name="text"><string/></property>
+                   <property name="icon">
+                    <iconset><normaloff>:/resources/svg/import.svg</normaloff>:/resources/svg/import.svg</iconset>
+                   </property>
+                   <property name="iconSize"><size><width>26</width><height>26</height></size></property>
+                   <property name="flat"><bool>true</bool></property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="buttonSaveFunctions">
+                   <property name="minimumSize"><size><width>30</width><height>30</height></size></property>
+                   <property name="maximumSize"><size><width>30</width><height>30</height></size></property>
+                   <property name="toolTip">
+                    <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Export functions from a XML library.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                   </property>
+                   <property name="text"><string/></property>
+                   <property name="icon">
+                    <iconset><normaloff>:/resources/svg/export.svg</normaloff>:/resources/svg/export.svg</iconset>
+                   </property>
+                   <property name="iconSize"><size><width>26</width><height>26</height></size></property>
+                   <property name="flat"><bool>true</bool></property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="buttonSaveCurrent">
+                   <property name="minimumSize"><size><width>30</width><height>30</height></size></property>
+                   <property name="maximumSize"><size><width>30</width><height>30</height></size></property>
+                   <property name="toolTip">
+                    <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Save the current function in the library.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                   </property>
+                   <property name="text"><string/></property>
+                   <property name="icon">
+                    <iconset><normaloff>:/resources/svg/save.svg</normaloff>:/resources/svg/save.svg</iconset>
+                   </property>
+                   <property name="iconSize"><size><width>26</width><height>26</height></size></property>
+                   <property name="flat"><bool>true</bool></property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="buttonLibraryBox">
+                   <property name="minimumSize"><size><width>30</width><height>30</height></size></property>
+                   <property name="maximumSize"><size><width>30</width><height>30</height></size></property>
+                   <property name="toolTip">
+                    <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Browse and manage available functions.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                   </property>
+                   <property name="text"><string/></property>
+                   <property name="icon">
+                    <iconset><normaloff>:/resources/svg/apps_box.svg</normaloff>:/resources/svg/apps_box.svg</iconset>
+                   </property>
+                   <property name="iconSize"><size><width>26</width><height>26</height></size></property>
+                   <property name="flat"><bool>true</bool></property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+               <item>
+                <widget class="QPlainTextEdit" name="functionText">
+                 <property name="toolTip">
+                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Write your function implementation here. &lt;/p&gt;&lt;p&gt;It &lt;span style=&quot; font-weight:600;&quot;&gt;must&lt;/span&gt; return a new value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                 </property>
+                 <property name="styleSheet">
+                  <string notr="true">QPlainTextEdit { border: 1px solid #888; }</string>
+                 </property>
+                 <property name="placeholderText"><string>Write your function here</string></property>
+                 <property name="font"><font><family>Monospace</family><pointsize>11</pointsize></font></property>
+                </widget>
+               </item>
+              </layout>
+             </widget>
+            </item>
+
+           </layout>
+          </widget>
+         </item>
+
+          </layout>
+         </widget>
+        </widget>
+           </item>
+          </layout>
+         </widget>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- ==================== Tab 2: Batch Functions ==================== -->
+     <widget class="QWidget" name="tab_2">
+      <attribute name="title"><string>Batch Functions</string></attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_9">
+       <item>
+        <layout class="QHBoxLayout" name="batchColumnsLayout" stretch="4,5">
+         <property name="spacing"><number>10</number></property>
+
+         <!-- LEFT: source list -->
+         <item>
+          <layout class="QVBoxLayout" name="verticalLayout_6">
+           <property name="rightMargin"><number>10</number></property>
+           <item>
+            <widget class="QLabel" name="label_6">
+             <property name="text"><string>Input time series. Select them using the filter box.</string></property>
+             <property name="wordWrap"><bool>true</bool></property>
+            </widget>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="horizontalLayout_7">
+             <item>
+              <widget class="QLabel" name="label_3">
+               <property name="text"><string>Filter:</string></property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLineEdit" name="lineEditTab2Filter"/>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="horizontalLayout_10">
+             <property name="bottomMargin"><number>8</number></property>
+             <item>
+              <widget class="QRadioButton" name="radioButtonContains">
+               <property name="text"><string>Contains</string></property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QRadioButton" name="radioButtonWildcard">
+               <property name="text"><string>Wildcard</string></property>
+               <property name="checked"><bool>true</bool></property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QRadioButton" name="radioButtonRegExp">
+               <property name="text"><string>RegExp</string></property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="horizontalSpacer_5">
+               <property name="orientation"><enum>Qt::Horizontal</enum></property>
+               <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+              </spacer>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QListWidget" name="listBatchSources">
+             <property name="styleSheet">
+              <string notr="true">QListWidget { border: 1px solid #888; }</string>
+             </property>
+            </widget>
+           </item>
+           <!-- Validation terminal (PJ3 parity): under the input list. Shows the
+                blocking problems; hidden (setVisible false) once the batch is valid,
+                at which point Create is enabled. -->
+           <item>
+            <widget class="QPlainTextEdit" name="terminalBatchPlainText">
+             <property name="minimumSize"><size><width>0</width><height>90</height></size></property>
+             <property name="maximumSize"><size><width>16777215</width><height>140</height></size></property>
+             <property name="readOnly"><bool>true</bool></property>
+             <property name="styleSheet">
+              <string notr="true">QPlainTextEdit { background-color: #2b2b2b; color: #f0f0f0; border: 1px solid #555; }</string>
+             </property>
+             <property name="font"><font><family>DejaVu Sans Mono</family><pointsize>10</pointsize></font></property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+
+         <!-- RIGHT: batch function editor -->
+         <item>
+          <widget class="QWidget" name="rightWidget_2" native="true">
+           <property name="minimumSize"><size><width>295</width><height>0</height></size></property>
+           <layout class="QVBoxLayout" name="verticalLayout_7">
+            <property name="leftMargin"><number>10</number></property>
+            <property name="topMargin"><number>0</number></property>
+            <property name="rightMargin"><number>0</number></property>
+            <property name="bottomMargin"><number>0</number></property>
+
+            <item>
+             <widget class="QLabel" name="label_8">
+              <property name="text">
+               <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Apply the Lua function below to &lt;span style=&quot; font-weight:600;&quot;&gt;all &lt;/span&gt;the series on the left table.&lt;br/&gt;Specify the prefix/suffix to be added to the original name.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+              </property>
+              <property name="wordWrap"><bool>true</bool></property>
+             </widget>
+            </item>
+            <item>
+             <widget class="Line" name="line">
+              <property name="orientation"><enum>Qt::Horizontal</enum></property>
+             </widget>
+            </item>
+
+            <!-- Prefix/Suffix row -->
+            <item>
+             <layout class="QHBoxLayout" name="horizontalLayout_8">
+              <item>
+               <widget class="QRadioButton" name="radioButtonPrefix">
+                <property name="text"><string>Prefix</string></property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QRadioButton" name="radioButtonSuffix">
+                <property name="text"><string>Suffix</string></property>
+                <property name="checked"><bool>true</bool></property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QLineEdit" name="suffixLineEdit">
+                <property name="minimumSize"><size><width>0</width><height>25</height></size></property>
+                <property name="placeholderText"><string>prefix / suffix to add to the names</string></property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+
+            <!-- Global vars label -->
+            <item>
+             <layout class="QHBoxLayout" name="horizontalLayout_9">
+              <property name="topMargin"><number>11</number></property>
+              <item>
+               <widget class="QLabel" name="label_4">
+                <property name="text">
+                 <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;Global:&lt;/span&gt; this code runs once before &amp;quot;function&amp;quot;. Initialize global, persistent variables here.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                </property>
+                <property name="wordWrap"><bool>false</bool></property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="horizontalSpacer_4">
+                <property name="orientation"><enum>Qt::Horizontal</enum></property>
+                <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+               </spacer>
+              </item>
+             </layout>
+            </item>
+
+            <!-- Batch code editors -->
+            <item>
+             <widget class="QWidget" name="widget_3" native="true">
+              <layout class="QVBoxLayout" name="verticalLayout_8" stretch="1,0,2">
+               <property name="leftMargin"><number>0</number></property>
+               <property name="topMargin"><number>0</number></property>
+               <property name="rightMargin"><number>0</number></property>
+               <property name="bottomMargin"><number>0</number></property>
+               <item>
+                <widget class="QPlainTextEdit" name="globalVarsTextBatch">
+                 <property name="toolTip">
+                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Portion of code outside the function.&lt;/p&gt;&lt;p&gt;Useful to add global variables.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                 </property>
+                 <property name="styleSheet">
+                  <string notr="true">QPlainTextEdit { border: 1px solid #888; }</string>
+                 </property>
+                 <property name="placeholderText"><string>Add your global variables here</string></property>
+                 <property name="font"><font><family>Monospace</family><pointsize>11</pointsize></font></property>
+                </widget>
+               </item>
+               <item>
+                <layout class="QHBoxLayout" name="functionLabelRowBatch">
+                 <item>
+                  <widget class="QLabel" name="labelFunction_2">
+                   <property name="font"><font><weight>75</weight><bold>true</bold></font></property>
+                   <property name="text"><string>function( time, value )</string></property>
+                  </widget>
+                 </item>
+                 <item>
+                  <spacer name="functionLabelSpacerBatch">
+                   <property name="orientation"><enum>Qt::Horizontal</enum></property>
+                   <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+                  </spacer>
+                 </item>
+                 <item>
+                  <widget class="QRadioButton" name="luaBatchButton">
+                   <property name="text"><string>Lua</string></property>
+                   <property name="checked"><bool>true</bool></property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QRadioButton" name="pythonBatchButton">
+                   <property name="text"><string>Python</string></property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+               <item>
+                <widget class="QPlainTextEdit" name="functionTextBatch">
+                 <property name="toolTip">
+                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Write your function implementation here. &lt;/p&gt;&lt;p&gt;It &lt;span style=&quot; font-weight:600;&quot;&gt;must&lt;/span&gt; return a new value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                 </property>
+                 <property name="styleSheet">
+                  <string notr="true">QPlainTextEdit { border: 1px solid #888; }</string>
+                 </property>
+                 <property name="placeholderText"><string>Write your function here</string></property>
+                 <property name="font"><font><family>Monospace</family><pointsize>11</pointsize></font></property>
+                </widget>
+               </item>
+              </layout>
+             </widget>
+            </item>
+
+           </layout>
+          </widget>
+         </item>
+
+        </layout>
+       </item>
+      </layout>
+     </widget>
+
+    </widget>
+   </item>
+
+   <!-- ==================== Bottom buttons ==================== -->
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout">
+     <item>
+      <spacer name="horizontalSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="pushButtonCreate">
+       <property name="enabled"><bool>false</bool></property>
+       <property name="text"><string>Create New Time Series</string></property>
+       <property name="default"><bool>true</bool></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="pushButtonCancel">
+       <property name="text"><string>Close</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+
+  </layout>
+ </widget>
+</ui>

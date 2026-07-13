@@ -54,8 +54,8 @@ namespace {
 // are 1 byte/pixel here; demosaicing to RGB happens downstream in the viewer.
 const std::unordered_map<std::string, uint32_t>& kRosImageBytesPerPixel() {
   static const std::unordered_map<std::string, uint32_t> kMap = {
-      {"rgb8", 3},  {"rgba8", 4},       {"bgr8", 3},        {"bgra8", 4},       {"mono8", 1},       {"mono16", 2},
-      {"16UC1", 2}, {"bayer_rggb8", 1}, {"bayer_grbg8", 1}, {"bayer_gbrg8", 1}, {"bayer_bggr8", 1},
+      {"rgb8", 3},  {"rgba8", 4}, {"bgr8", 3},        {"bgra8", 4},       {"mono8", 1},       {"mono16", 2},
+      {"16UC1", 2}, {"32FC1", 4}, {"bayer_rggb8", 1}, {"bayer_grbg8", 1}, {"bayer_gbrg8", 1}, {"bayer_bggr8", 1},
   };
   return kMap;
 }
@@ -115,7 +115,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseImage(PJ::Timestamp ts, PJ::
     deserializer_->deserializeString(encoding);
     const uint8_t is_be = readU8(*deserializer_);
     const uint32_t step = deserializer_->deserializeUInt32();
-    const auto data_span = deserializer_->deserializeByteSequence();
+    const auto data_span = readByteSequence();
 
     auto it = kRosImageBytesPerPixel().find(encoding);
     if (it == kRosImageBytesPerPixel().end()) {
@@ -170,7 +170,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestam
 
     std::string format;
     deserializer_->deserializeString(format);
-    const auto data_span = deserializer_->deserializeByteSequence();
+    const auto data_span = readByteSequence();
     const uint8_t* src = data_span.data();
     const uint32_t data_len = static_cast<uint32_t>(data_span.size());
 
@@ -334,7 +334,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedVideo(PJ::Timestam
 
     std::string frame_id;
     deserializer_->deserializeString(frame_id);
-    const auto data_span = deserializer_->deserializeByteSequence();
+    const auto data_span = readByteSequence();
     std::string format;
     deserializer_->deserializeString(format);
 
@@ -408,7 +408,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePointCloud(PJ::Timestamp ts,
     const uint8_t is_be = readU8(*deserializer_);
     const uint32_t point_step = deserializer_->deserializeUInt32();
     const uint32_t row_step = deserializer_->deserializeUInt32();
-    const auto data_span = deserializer_->deserializeByteSequence();
+    const auto data_span = readByteSequence();
 
     // is_dense follows data[]. deserializeByteSequence advanced the cursor
     // past the body, so the next byte read is is_dense itself.
@@ -574,7 +574,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxgloveCompressedPointCloud
       (void)deserializer_->deserialize(RosMsgParser::FLOAT64);
     }
 
-    const auto data_span = deserializer_->deserializeByteSequence();
+    const auto data_span = readByteSequence();
     std::string format;
     deserializer_->deserializeString(format);
 
@@ -639,7 +639,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedPointCloud2(
     (void)readU8(*deserializer_);              // is_bigendian
     (void)deserializer_->deserializeUInt32();  // point_step
     (void)deserializer_->deserializeUInt32();  // row_step
-    const auto data_span = deserializer_->deserializeByteSequence();
+    const auto data_span = readByteSequence();
     (void)readU8(*deserializer_);  // is_dense
 
     std::string format;
@@ -1016,7 +1016,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOccupancyGrid(PJ::Timestamp 
     const double oz = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
     const double ow = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
 
-    const auto data_span = deserializer_->deserializeByteSequence();
+    const auto data_span = readByteSequence();
 
     PJ::sdk::OccupancyGrid grid;
     grid.timestamp_ns = current_timestamp_;
@@ -1066,7 +1066,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOccupancyGridUpdate(
     const int32_t y = deserializer_->deserialize(RosMsgParser::INT32).convert<int32_t>();
     const uint32_t width = deserializer_->deserializeUInt32();
     const uint32_t height = deserializer_->deserializeUInt32();
-    const auto data_span = deserializer_->deserializeByteSequence();
+    const auto data_span = readByteSequence();
 
     const size_t expected = static_cast<size_t>(width) * static_cast<size_t>(height);
     if (data_span.size() < expected) {

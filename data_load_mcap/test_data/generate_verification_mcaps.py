@@ -7,6 +7,9 @@ See: docs/claude_reports/plugins_analysis/data_load_mcap_verification.md
 Files generated:
   test_publish_vs_log_time.mcap  -- Test 1: publish_time != log_time (offset 500ms)
   test_embedded_timestamp.mcap   -- Test 2: Header.stamp differs from MCAP timestamp (+2s)
+  test_dialog_whitelist.mcap     -- Test: always-include whitelist (tf2_msgs/TFMessage +
+                                     foxglove.FrameTransform matches, empty channel, near
+                                     miss, and ordinary channel)
   test_large_arrays.mcap         -- Test 3: float64[1000] arrays for clamp/skip testing
   test_empty_channel.mcap        -- Test 6: one channel with 0 messages
   test_unsupported_encoding.mcap -- Test 7: channel with encoding "protobuf" (no parser)
@@ -67,6 +70,33 @@ SCHEMA_NESTED = (
     b"int32  sec\n"
     b"uint32 nanosec\n"
     b"string frame_id\n"
+)
+
+SCHEMA_TF2_MSGS = (
+    b"geometry_msgs/TransformStamped[] transforms\n"
+    b"================\n"
+    b"MSG: geometry_msgs/TransformStamped\n"
+    b"Header header\n"
+    b"string child_frame_id\n"
+    b"Transform transform\n"
+    b"================\n"
+    b"MSG: std_msgs/Header\n"
+    b"int32  sec\n"
+    b"uint32 nanosec\n"
+    b"string frame_id\n"
+    b"================\n"
+    b"MSG: geometry_msgs/Transform\n"
+    b"Vector3 translation\n"
+    b"Quaternion rotation\n"
+)
+
+SCHEMA_FOXGLOVE_FRAME_TRANSFORM_PROTO = (
+    b'syntax = "proto3";\n'
+    b"package foxglove;\n"
+    b"message FrameTransform {\n"
+    b"  string parent_frame_id = 2;\n"
+    b"  string child_frame_id = 3;\n"
+    b"}\n"
 )
 
 OUT = Path(__file__).parent
@@ -140,6 +170,72 @@ def gen_embedded_timestamp():
                 publish_time=mcap_ts,
                 data=cdr_header_float64(header_sec, header_nsec, "sensor", value),
             )
+
+        w.finish()
+    print(f"[OK] {path.name:45s} {path.stat().st_size:>8} bytes")
+
+
+# ---------------------------------------------------------------------------
+# Test: always-include whitelist (schema + encoding based, not topic name)
+# ---------------------------------------------------------------------------
+
+def gen_dialog_whitelist():
+    path = OUT / "test_dialog_whitelist.mcap"
+    n_msgs = 5
+    dt_ns = 100_000_000
+
+    with open(path, "wb") as f:
+        w = Writer(f)
+        w.start(profile="ros2", library="pj-verification")
+
+        # 1. ROS 2 /tf -- whitelisted (schema tf2_msgs/msg/TFMessage, encoding cdr).
+        schema_tf2 = w.register_schema(
+            name="tf2_msgs/msg/TFMessage", encoding="ros2msg", data=SCHEMA_TF2_MSGS,
+        )
+        ch_tf = w.register_channel(topic="/tf", message_encoding="cdr", schema_id=schema_tf2)
+
+        # 2. Foxglove transform under a non-conventional topic name -- whitelisted
+        #    (schema foxglove.FrameTransform, encoding protobuf). Proves the match
+        #    is on message type, not on topic naming: real Foxglove-recorded files
+        #    use topic names like plain "tf" (no leading slash) or arbitrary names.
+        schema_foxglove = w.register_schema(
+            name="foxglove.FrameTransform", encoding="protobuf",
+            data=SCHEMA_FOXGLOVE_FRAME_TRANSFORM_PROTO,
+        )
+        ch_foxglove = w.register_channel(
+            topic="transforms", message_encoding="protobuf", schema_id=schema_foxglove,
+        )
+
+        # 3. /tf_static -- same whitelisted schema/encoding, but zero messages:
+        #    must NOT be force-included (nothing to load).
+        _ = w.register_channel(topic="/tf_static", message_encoding="cdr", schema_id=schema_tf2)
+
+        # 4. Near miss: right schema name, wrong encoding -- must NOT be force-included.
+        schema_tf2_json = w.register_schema(
+            name="tf2_msgs/msg/TFMessage", encoding="jsonschema", data=SCHEMA_TF2_MSGS,
+        )
+        ch_near_miss_encoding = w.register_channel(
+            topic="/near_miss_encoding", message_encoding="json", schema_id=schema_tf2_json,
+        )
+
+        # 5. Ordinary channel, unaffected by the whitelist.
+        schema_float = w.register_schema(
+            name="std_msgs/Float64", encoding="ros2msg", data=SCHEMA_FLOAT64,
+        )
+        ch_ordinary = w.register_channel(
+            topic="/sensor/value2", message_encoding="cdr", schema_id=schema_float,
+        )
+
+        for i in range(n_msgs):
+            ts = i * dt_ns
+            w.add_message(channel_id=ch_tf, log_time=ts, publish_time=ts, data=cdr_float64(1.0))
+            # Dummy protobuf bytes -- doesn't need to be valid, the dialog never
+            # decodes message content, only reads channel/schema metadata.
+            w.add_message(channel_id=ch_foxglove, log_time=ts, publish_time=ts, data=b"\x00" * 8)
+            w.add_message(
+                channel_id=ch_near_miss_encoding, log_time=ts, publish_time=ts, data=b'{"x":1}',
+            )
+            w.add_message(channel_id=ch_ordinary, log_time=ts, publish_time=ts, data=cdr_float64(2.0))
 
         w.finish()
     print(f"[OK] {path.name:45s} {path.stat().st_size:>8} bytes")
@@ -354,6 +450,7 @@ if __name__ == "__main__":
 
     gen_publish_vs_log_time()
     gen_embedded_timestamp()
+    gen_dialog_whitelist()
     gen_large_arrays()
     gen_empty_channel()
     gen_unsupported_encoding()

@@ -8,6 +8,13 @@ Publishes at 10 Hz:
   /test/imu        (json)  — nested object: {accel:{x,y,z}, gyro:{x,y,z}}
   /camera/image    (cdr)   — sensor_msgs/msg/CompressedImage JPEG 320x240
 
+The JSON control plane mirrors the PRODUCTION server semantics
+(github.com/PlotJuggler/plotjuggler_bridge): additive subscribe, unsubscribe
+with a `removed` list, include_schemas on get_topics, subscribe_topic_updates
+opt-in, and `id` + `protocol_version` echoed on every response. This server's
+topic set is static, so it implements the topic_updates opt-in but never pushes
+a topics_changed notification (there is nothing to announce).
+
 Usage:
     pip install websockets zstandard pillow numpy
     python3 pj_bridge_mixed_server.py [--port PORT] [--host HOST]
@@ -25,6 +32,17 @@ import numpy as np
 import websockets
 import zstandard as zstd
 from PIL import Image, ImageDraw
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common" / "test_support"))
+from pj_bridge_protocol import (  # noqa: E402
+    PROTOCOL_VERSION,
+    build_subscribe_response,
+    inject_response_fields,
+    parse_topic_names,
+    topic_entry,
+)
 
 PORT = 9871
 HOST = "localhost"
@@ -45,19 +63,22 @@ uint32 nanosec
 """
 
 TOPICS = [
-    {"name": "/test/sine",    "type": "Float64",  "schema_name": "Float64",  "encoding": "json", "definition": ""},
-    {"name": "/test/cosine",  "type": "Float64",  "schema_name": "Float64",  "encoding": "json", "definition": ""},
-    {"name": "/test/imu",     "type": "Imu",      "schema_name": "Imu",      "encoding": "json", "definition": ""},
+    {"name": "/test/sine",   "type": "Float64", "encoding": "json", "definition": ""},
+    {"name": "/test/cosine", "type": "Float64", "encoding": "json", "definition": ""},
+    {"name": "/test/imu",    "type": "Imu",     "encoding": "json", "definition": ""},
     {
         "name": "/camera/image",
         "type": "sensor_msgs/msg/CompressedImage",
-        "schema_name": "sensor_msgs/msg/CompressedImage",
-        "encoding": "cdr",
+        # PARSER encoding (what production's schema_encoding() sends): the
+        # definition below is a ROS .msg, so ros2msg — "cdr" resolves no parser.
+        "encoding": "ros2msg",
         "definition": COMPRESSED_IMAGE_SCHEMA,
     },
 ]
 
 WIDTH, HEIGHT = 320, 240
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +146,12 @@ class PjBridgeMixedServer:
         self.clients: dict = {}
 
     async def handler(self, websocket):
-        self.clients[websocket] = {"paused": False, "subscribed_topics": set()}
+        self.clients[websocket] = {
+            "paused": False,
+            "subscribed": set(),
+            "topic_updates": False,
+            "tu_include_schemas": False,
+        }
         print(f"[+] Client connected")
         try:
             async for message in websocket:
@@ -143,40 +169,68 @@ class PjBridgeMixedServer:
             msg = json.loads(message)
         except json.JSONDecodeError:
             return
+        if not isinstance(msg, dict):
+            return
 
         cmd = msg.get("command", "")
+        state = self.clients[websocket]
 
         if cmd == "get_topics":
-            await websocket.send(json.dumps({"status": "success", "topics": TOPICS}))
-            print(f"    get_topics → {[t['name'] for t in TOPICS]}")
+            include = bool(msg.get("include_schemas", False))
+            resp = {"status": "success",
+                    "server": {"name": "pj_bridge_mixed_server", "version": "test",
+                               "capabilities": ["include_schemas", "topics_changed", "latched_badge"]},
+                    "topics": [topic_entry(t, include) for t in TOPICS]}
+            await websocket.send(json.dumps(inject_response_fields(resp, msg)))
+            print(f"    get_topics (include_schemas={include}) → {[t['name'] for t in TOPICS]}")
 
         elif cmd == "subscribe":
-            requested = set(msg.get("topics", []))
-            self.clients[websocket]["subscribed_topics"] = requested
+            await self._handle_subscribe(websocket, msg, state)
 
-            schemas = {}
-            for t in TOPICS:
-                if t["name"] in requested:
-                    schemas[t["name"]] = {
-                        "encoding":   t["encoding"],
-                        "definition": t["definition"],
-                        "schema_name": t["schema_name"],
-                    }
-            await websocket.send(json.dumps({"status": "success", "schemas": schemas}))
-            print(f"    subscribe → {sorted(requested)}")
+        elif cmd == "unsubscribe":
+            requested = parse_topic_names(msg.get("topics", []))
+            removed = [n for n in requested if n in state["subscribed"]]
+            for n in removed:
+                state["subscribed"].discard(n)
+            resp = {"status": "success", "removed": removed}
+            await websocket.send(json.dumps(inject_response_fields(resp, msg)))
+            print(f"    unsubscribe → removed {removed}")
+
+        elif cmd == "subscribe_topic_updates":
+            state["topic_updates"] = True
+            state["tu_include_schemas"] = bool(msg.get("include_schemas", False))
+            resp = {"status": "ok", "topic_updates": True}
+            await websocket.send(json.dumps(inject_response_fields(resp, msg)))
+
+        elif cmd == "unsubscribe_topic_updates":
+            state["topic_updates"] = False
+            resp = {"status": "ok", "topic_updates": False}
+            await websocket.send(json.dumps(inject_response_fields(resp, msg)))
+
+        elif cmd == "heartbeat":
+            await websocket.send(json.dumps(inject_response_fields({"status": "ok"}, msg)))
 
         elif cmd == "pause":
-            self.clients[websocket]["paused"] = True
+            state["paused"] = True
+            await websocket.send(json.dumps(inject_response_fields({"status": "ok", "paused": True}, msg)))
+
         elif cmd == "resume":
-            self.clients[websocket]["paused"] = False
+            state["paused"] = False
+            await websocket.send(json.dumps(inject_response_fields({"status": "ok", "paused": False}, msg)))
+
+    async def _handle_subscribe(self, websocket, msg, state):
+        """ADDITIVE subscribe — merge newly-requested topics; already-subscribed
+        topics are a no-op (no schema echoed), matching production."""
+        resp, _newly = build_subscribe_response(msg.get("topics", []), {t["name"]: t for t in TOPICS}, state["subscribed"])
+        await websocket.send(json.dumps(inject_response_fields(resp, msg)))
+        print(f"    subscribe → {resp['status']}; schemas={sorted(resp['schemas'])}; "
+              f"failures={[f['topic'] for f in resp.get('failures', [])]}")
 
     async def emit_loop(self):
         t = 0.0
-        img_tick = 0
         while True:
             await asyncio.sleep(0.1)
             t += 0.1
-            img_tick += 1
 
             if not self.clients:
                 continue
@@ -195,12 +249,12 @@ class PjBridgeMixedServer:
                               "z": round(0.01*math.sin(t*4), 4)},
                 }).encode(),
             }
-            image_cdr = encode_compressed_image_cdr(t) if img_tick % 1 == 0 else None
+            image_cdr = encode_compressed_image_cdr(t)
 
             for websocket, state in list(self.clients.items()):
                 if state["paused"]:
                     continue
-                subscribed = state["subscribed_topics"]
+                subscribed = state["subscribed"]
                 if not subscribed:
                     continue
 
@@ -208,7 +262,7 @@ class PjBridgeMixedServer:
                 for topic, cdr in scalar_payloads.items():
                     if topic in subscribed:
                         messages.append((topic, ts_ns, cdr))
-                if image_cdr and "/camera/image" in subscribed:
+                if "/camera/image" in subscribed:
                     messages.append(("/camera/image", ts_ns, image_cdr))
 
                 if messages:
