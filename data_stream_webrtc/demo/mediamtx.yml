@@ -1,0 +1,14 @@
+# Demo config for the data_stream_webrtc plugin (WHEP client).
+# Get mediamtx (single static binary, no deps):
+#   https://github.com/bluenviron/mediamtx/releases
+# Run:  ./mediamtx demo/mediamtx.yml
+api: yes           # Control API on :9997 (path discovery for the plugin dialog)
+rtsp: yes          # publisher ingest on :8554 (see publish_cameras.sh)
+webrtc: yes        # WHEP endpoint on :8889  -> http://<host>:8889/<path>/whep
+hls: no
+rtmp: no
+srt: no
+moq: no            # v1.19.x defaults MoQ (QUIC) on; unused here, and its startup
+                   # cert-gen drops auto.key/auto.crt in the run directory. Off.
+paths:
+  all_others:
