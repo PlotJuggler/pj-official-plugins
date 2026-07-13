@@ -7,6 +7,12 @@
 // DELETE the session URL to hang up. Also wraps the mediamtx Control API
 // (GET /v3/paths/list) for stream discovery. Blocking calls — run them on a
 // worker thread, never on the poll thread or a libdatachannel callback.
+//
+// Deliberate WHEP-scope limitations (documented, not bugs): no trickle-ICE
+// PATCH / 406 counter-offer flow, no redirect following, no Retry-After
+// parsing (callers just retry with backoff), RFC3986-lite Location
+// resolution, and Bearer-over-http is allowed (LAN use; prefer https where
+// tokens matter).
 #pragma once
 
 #include <chrono>

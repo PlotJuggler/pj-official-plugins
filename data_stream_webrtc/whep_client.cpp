@@ -5,6 +5,7 @@
 #include <ixwebsocket/IXHttpClient.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <nlohmann/json.hpp>
 #include <utility>
 
@@ -13,12 +14,49 @@ namespace webrtc {
 
 namespace {
 
+// DoS hardening: refuse to buffer more than this per HTTP response (SDP answers
+// and paths-list pages are tiny; anything bigger is not a WHEP/mediamtx peer).
+constexpr std::size_t kMaxHttpResponseBytes = 8 * 1024 * 1024;
+
+// Reject tokens carrying CR/LF/space/control bytes that could smuggle extra
+// HTTP headers into the Authorization line.
+bool bearerTokenSane(const std::string& t) {
+  return std::none_of(t.begin(), t.end(), [](char c) {
+    const auto u = static_cast<unsigned char>(c);
+    return u < 0x21 || u == 0x7F;
+  });
+}
+
+// scheme://host[:port] — everything before the first '/' after "://".
+// Empty string if the URL is not absolute.
+std::string originOf(const std::string& url) {
+  const size_t scheme_end = url.find("://");
+  if (scheme_end == std::string::npos) {
+    return std::string();
+  }
+  const size_t path_start = url.find('/', scheme_end + 3);
+  return (path_start == std::string::npos) ? url : url.substr(0, path_start);
+}
+
 ix::HttpRequestArgsPtr makeArgs(ix::HttpClient& client, const std::string& bearer_token, std::chrono::seconds timeout) {
   auto args = client.createRequest();
   const int secs = std::max(1, static_cast<int>(timeout.count()));
   args->connectTimeout = secs;
   args->transferTimeout = secs;
   args->followRedirects = false;
+  // Response size cap. ixwebsocket 11.4.6 IGNORES the callback's bool in the
+  // HTTP receive path (Socket::readBytes), so returning false alone would not
+  // stop anything: flip args->cancel, which the transfer loop's cancellation
+  // check does honor (surfaces as a transport error -> kNetwork). Raw pointer,
+  // not the shared_ptr, to avoid an args->callback->args ownership cycle.
+  ix::HttpRequestArgs* raw_args = args.get();
+  args->onProgressCallback = [raw_args](int current, int /*total*/) -> bool {
+    const bool within_cap = current >= 0 && static_cast<std::size_t>(current) <= kMaxHttpResponseBytes;
+    if (!within_cap) {
+      raw_args->cancel = true;
+    }
+    return within_cap;
+  };
   if (!bearer_token.empty()) {
     args->extraHeaders["Authorization"] = "Bearer " + bearer_token;
   }
@@ -78,12 +116,23 @@ std::string resolveLocation(const std::string& request_url, const std::string& l
 PJ::Expected<WhepResult, WhepError> postOffer(
     const std::string& whep_url, const std::string& bearer_token, const std::string& offer_sdp,
     std::chrono::seconds timeout) {
+  if (!bearer_token.empty() && !bearerTokenSane(bearer_token)) {
+    return PJ::unexpected(WhepError{WhepErrorKind::kUnauthorized, "invalid bearer token"});
+  }
   ix::HttpClient client;
   auto args = makeArgs(client, bearer_token, timeout);
   args->extraHeaders["Content-Type"] = "application/sdp";
   auto res = client.post(whep_url, offer_sdp, args);
   if (!res || res->errorCode != ix::HttpErrorCode::Ok || (res->statusCode != 201 && res->statusCode != 200)) {
     return PJ::unexpected(errorFromResponse(res));
+  }
+  if (res->body.size() > kMaxHttpResponseBytes) {  // belt-and-braces behind the makeArgs cap
+    return PJ::unexpected(WhepError{WhepErrorKind::kBadResponse, "response body too large"});
+  }
+  // Lenient on an ABSENT Content-Type (non-mediamtx servers), strict on a wrong one.
+  const auto ctype = res->headers.find("Content-Type");
+  if (ctype != res->headers.end() && ctype->second.find("application/sdp") == std::string::npos) {
+    return PJ::unexpected(WhepError{WhepErrorKind::kBadResponse, "unexpected answer Content-Type: " + ctype->second});
   }
   if (res->body.empty()) {
     return PJ::unexpected(WhepError{WhepErrorKind::kBadResponse, "empty answer SDP"});
@@ -92,6 +141,12 @@ PJ::Expected<WhepResult, WhepError> postOffer(
   if (loc == res->headers.end() || loc->second.empty()) {
     return PJ::unexpected(WhepError{WhepErrorKind::kBadResponse, "missing Location header"});
   }
+  // Same-origin guard: an absolute Location may only point back at the server
+  // we posted to; anything else smells like an open-redirect / token-stealing
+  // response (the bearer token would be sent to the session URL on DELETE).
+  if (loc->second.find("://") != std::string::npos && originOf(loc->second) != originOf(whep_url)) {
+    return PJ::unexpected(WhepError{WhepErrorKind::kBadResponse, "cross-origin session URL rejected"});
+  }
   WhepResult result;
   result.answer_sdp = res->body;
   result.session_url = resolveLocation(whep_url, loc->second);
@@ -99,6 +154,9 @@ PJ::Expected<WhepResult, WhepError> postOffer(
 }
 
 void deleteSession(const std::string& session_url, const std::string& bearer_token, std::chrono::seconds timeout) {
+  if (!bearer_token.empty() && !bearerTokenSane(bearer_token)) {
+    return;  // refuse to send a header-injecting token anywhere
+  }
   ix::HttpClient client;
   auto args = makeArgs(client, bearer_token, timeout);
   (void)client.request(session_url, "DELETE", "", args);
@@ -106,41 +164,56 @@ void deleteSession(const std::string& session_url, const std::string& bearer_tok
 
 PJ::Expected<std::vector<WhepPathInfo>, WhepError> fetchPathsList(
     const std::string& api_url, const std::string& bearer_token, std::chrono::seconds timeout) {
+  if (!bearer_token.empty() && !bearerTokenSane(bearer_token)) {
+    return PJ::unexpected(WhepError{WhepErrorKind::kUnauthorized, "invalid bearer token"});
+  }
   std::string base = api_url;
   while (!base.empty() && base.back() == '/') {
     base.pop_back();
   }
-  ix::HttpClient client;
-  auto args = makeArgs(client, bearer_token, timeout);
-  auto res = client.get(base + "/v3/paths/list", args);
-  if (!res || res->errorCode != ix::HttpErrorCode::Ok || res->statusCode != 200) {
-    return PJ::unexpected(errorFromResponse(res));
-  }
-  const auto doc = nlohmann::json::parse(res->body, nullptr, false);
-  if (doc.is_discarded() || !doc.contains("items") || !doc["items"].is_array()) {
-    return PJ::unexpected(WhepError{WhepErrorKind::kBadResponse, "unexpected /v3/paths/list JSON"});
-  }
+  const std::string list_url = base + "/v3/paths/list";
+  // mediamtx paginates (100 items/page by default); page 0 tells us pageCount.
+  constexpr int kMaxPages = 50;
+  int page_count = 1;
   std::vector<WhepPathInfo> paths;
-  for (const auto& item : doc["items"]) {
-    if (!item.is_object()) {
-      continue;  // skip malformed entries rather than throwing (untrusted input)
+  for (int page = 0; page < page_count && page < kMaxPages; ++page) {
+    ix::HttpClient client;
+    auto args = makeArgs(client, bearer_token, timeout);
+    auto res = client.get(list_url + "?page=" + std::to_string(page), args);
+    if (!res || res->errorCode != ix::HttpErrorCode::Ok || res->statusCode != 200) {
+      return PJ::unexpected(errorFromResponse(res));  // no partial results
     }
-    try {
-      WhepPathInfo info;
-      info.name = item.value("name", std::string());
-      info.ready = item.value("ready", false);
-      if (item.contains("tracks") && item["tracks"].is_array()) {
-        for (const auto& t : item["tracks"]) {
-          if (t.is_string()) {
-            info.tracks.push_back(t.get<std::string>());
+    if (res->body.size() > kMaxHttpResponseBytes) {  // belt-and-braces behind the makeArgs cap
+      return PJ::unexpected(WhepError{WhepErrorKind::kBadResponse, "response body too large"});
+    }
+    const auto doc = nlohmann::json::parse(res->body, nullptr, false);
+    if (doc.is_discarded() || !doc.contains("items") || !doc["items"].is_array()) {
+      return PJ::unexpected(WhepError{WhepErrorKind::kBadResponse, "unexpected /v3/paths/list JSON"});
+    }
+    if (page == 0 && doc.contains("pageCount") && doc["pageCount"].is_number_integer()) {
+      page_count = doc["pageCount"].get<int>();
+    }
+    for (const auto& item : doc["items"]) {
+      if (!item.is_object()) {
+        continue;  // skip malformed entries rather than throwing (untrusted input)
+      }
+      try {
+        WhepPathInfo info;
+        info.name = item.value("name", std::string());
+        info.ready = item.value("ready", false);
+        if (item.contains("tracks") && item["tracks"].is_array()) {
+          for (const auto& t : item["tracks"]) {
+            if (t.is_string()) {
+              info.tracks.push_back(t.get<std::string>());
+            }
           }
         }
+        if (!info.name.empty()) {
+          paths.push_back(std::move(info));
+        }
+      } catch (const nlohmann::json::exception&) {
+        continue;  // wrong-typed field: skip this entry, keep the rest
       }
-      if (!info.name.empty()) {
-        paths.push_back(std::move(info));
-      }
-    } catch (const nlohmann::json::exception&) {
-      continue;  // wrong-typed field: skip this entry, keep the rest
     }
   }
   return paths;

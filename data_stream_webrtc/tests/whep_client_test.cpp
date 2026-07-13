@@ -9,7 +9,9 @@
 #include <gtest/gtest.h>
 #include <ixwebsocket/IXHttpServer.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -53,6 +55,12 @@ class StubWhepServer {
     std::string content_type;
   };
 
+  struct Reply {
+    int status = 200;
+    ix::WebSocketHttpHeaders headers;
+    std::string body;
+  };
+
   // ixwebsocket 11.4.6's SocketServer::getPort() just echoes back the ctor
   // argument (no getsockname() to resolve an OS-assigned ephemeral port), so
   // port 0 would make baseUrl() point at ":0". Use a fixed high port instead;
@@ -61,19 +69,23 @@ class StubWhepServer {
   StubWhepServer() : server_(kFixedPort, "127.0.0.1") {
     server_.setOnConnectionCallback(
         [this](ix::HttpRequestPtr req, std::shared_ptr<ix::ConnectionState>) -> ix::HttpResponsePtr {
-          {
-            std::lock_guard<std::mutex> lk(mutex_);
-            Seen s;
-            s.method = req->method;
-            s.uri = req->uri;
-            s.body = req->body;
-            auto it = req->headers.find("Authorization");
-            s.authorization = (it != req->headers.end()) ? it->second : "";
-            it = req->headers.find("Content-Type");
-            s.content_type = (it != req->headers.end()) ? it->second : "";
-            seen_.push_back(std::move(s));
+          std::lock_guard<std::mutex> lk(mutex_);
+          Seen s;
+          s.method = req->method;
+          s.uri = req->uri;
+          s.body = req->body;
+          auto it = req->headers.find("Authorization");
+          s.authorization = (it != req->headers.end()) ? it->second : "";
+          it = req->headers.find("Content-Type");
+          s.content_type = (it != req->headers.end()) ? it->second : "";
+          seen_.push_back(std::move(s));
+          Reply reply;  // default 200/{}/"" when nothing was scripted
+          if (!replies_.empty()) {
+            reply = replies_[std::min(next_reply_, replies_.size() - 1)];
+            ++next_reply_;
           }
-          return std::make_shared<ix::HttpResponse>(status_, "status", ix::HttpErrorCode::Ok, headers_, body_);
+          return std::make_shared<ix::HttpResponse>(
+              reply.status, "status", ix::HttpErrorCode::Ok, reply.headers, reply.body);
         });
     auto res = server_.listen();
     listening_ = res.first;
@@ -90,9 +102,14 @@ class StubWhepServer {
     return "http://127.0.0.1:" + std::to_string(kFixedPort);
   }
   void setReply(int status, ix::WebSocketHttpHeaders headers, std::string body) {
-    status_ = status;
-    headers_ = std::move(headers);
-    body_ = std::move(body);
+    setReplies({Reply{status, std::move(headers), std::move(body)}});
+  }
+  // Scripted mode: replies are consumed in request order; once the script is
+  // exhausted, the LAST entry keeps being served (so setReply == a 1-entry script).
+  void setReplies(std::vector<Reply> replies) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    replies_ = std::move(replies);
+    next_reply_ = 0;
   }
   std::vector<Seen> seen() {
     std::lock_guard<std::mutex> lk(mutex_);
@@ -104,10 +121,9 @@ class StubWhepServer {
 
   ix::HttpServer server_;
   bool listening_ = false;
-  int status_ = 200;
-  ix::WebSocketHttpHeaders headers_;
-  std::string body_;
-  std::mutex mutex_;
+  std::mutex mutex_;  // guards replies_, next_reply_ and seen_ (test thread vs server thread)
+  std::vector<Reply> replies_;
+  std::size_t next_reply_ = 0;
   std::vector<Seen> seen_;
 };
 
@@ -180,6 +196,52 @@ TEST(WhepPost, ConnectionRefusedIsNetwork) {
   EXPECT_TRUE(out.error().kind == WhepErrorKind::kNetwork || out.error().kind == WhepErrorKind::kTimeout);
 }
 
+TEST(WhepPost, CrossOriginAbsoluteLocationRejected) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  ix::WebSocketHttpHeaders h;
+  h["Location"] = "http://evil.example:9/steal";
+  stub.setReply(201, h, "ANSWER");
+  auto out = postOffer(stub.baseUrl() + "/cam0/whep", "", "OFFER", std::chrono::seconds(5));
+  ASSERT_FALSE(out);
+  EXPECT_EQ(out.error().kind, WhepErrorKind::kBadResponse);
+}
+
+TEST(WhepPost, SameOriginAbsoluteLocationAccepted) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  ix::WebSocketHttpHeaders h;
+  h["Location"] = stub.baseUrl() + "/cam0/whep/s1";
+  stub.setReply(201, h, "ANSWER");
+  auto out = postOffer(stub.baseUrl() + "/cam0/whep", "", "OFFER", std::chrono::seconds(5));
+  ASSERT_TRUE(out);
+  EXPECT_EQ(out->session_url, stub.baseUrl() + "/cam0/whep/s1");
+}
+
+TEST(WhepPost, WrongAnswerContentTypeIsBadResponse) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  ix::WebSocketHttpHeaders h;
+  h["Location"] = "/cam0/whep/s1";
+  h["Content-Type"] = "text/html";
+  stub.setReply(201, h, "<html>login page</html>");
+  auto out = postOffer(stub.baseUrl() + "/cam0/whep", "", "OFFER", std::chrono::seconds(5));
+  ASSERT_FALSE(out);
+  EXPECT_EQ(out.error().kind, WhepErrorKind::kBadResponse);
+}
+
+TEST(WhepPost, ControlCharTokenRejectedBeforeSending) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  ix::WebSocketHttpHeaders h;
+  h["Location"] = "/s/1";
+  stub.setReply(201, h, "ANSWER");
+  auto out = postOffer(stub.baseUrl() + "/cam0/whep", "tok\r\nX-Evil: 1", "OFFER", std::chrono::seconds(5));
+  ASSERT_FALSE(out);
+  EXPECT_EQ(out.error().kind, WhepErrorKind::kUnauthorized);
+  EXPECT_TRUE(stub.seen().empty());  // rejected before any request went out
+}
+
 TEST(WhepDelete, SendsDeleteWithBearer) {
   StubWhepServer stub;
   ASSERT_TRUE(stub.listening());
@@ -214,7 +276,7 @@ TEST(WhepPathsList, ParsesNameReadyTracks) {
   auto seen = stub.seen();
   ASSERT_EQ(seen.size(), 1u);
   EXPECT_EQ(seen[0].method, "GET");
-  EXPECT_EQ(seen[0].uri, "/v3/paths/list");
+  EXPECT_EQ(seen[0].uri, "/v3/paths/list?page=0");
   EXPECT_EQ(seen[0].authorization, "Bearer tokX");
 }
 
@@ -257,6 +319,26 @@ TEST(WhepPathsList, WrongTypedFieldsSkipTheItemNotFatal) {
   ASSERT_TRUE(out);
   ASSERT_EQ(out->size(), 1u);
   EXPECT_EQ((*out)[0].name, "cam0");
+}
+
+TEST(WhepPathsList, FollowsPagination) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  stub.setReplies({
+      {200, {}, R"({"pageCount":2,"items":[{"name":"cam0","ready":true,"tracks":["H264"]}]})"},
+      {200, {}, R"({"pageCount":2,"items":[{"name":"cam1","ready":true,"tracks":["H264"]}]})"},
+  });
+  auto out = fetchPathsList(stub.baseUrl(), "", std::chrono::seconds(5));
+  ASSERT_TRUE(out);
+  ASSERT_EQ(out->size(), 2u);
+  EXPECT_EQ((*out)[0].name, "cam0");
+  EXPECT_EQ((*out)[1].name, "cam1");
+
+  auto seen = stub.seen();
+  ASSERT_EQ(seen.size(), 2u);
+  EXPECT_EQ(seen[0].method, "GET");
+  EXPECT_EQ(seen[0].uri, "/v3/paths/list?page=0");
+  EXPECT_EQ(seen[1].uri, "/v3/paths/list?page=1");
 }
 
 }  // namespace
