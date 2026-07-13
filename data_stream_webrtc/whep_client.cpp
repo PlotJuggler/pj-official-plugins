@@ -4,6 +4,8 @@
 
 #include <ixwebsocket/IXHttpClient.h>
 
+#include <algorithm>
+#include <nlohmann/json.hpp>
 #include <utility>
 
 namespace PJ {
@@ -13,8 +15,9 @@ namespace {
 
 ix::HttpRequestArgsPtr makeArgs(ix::HttpClient& client, const std::string& bearer_token, std::chrono::seconds timeout) {
   auto args = client.createRequest();
-  args->connectTimeout = static_cast<int>(timeout.count());
-  args->transferTimeout = static_cast<int>(timeout.count());
+  const int secs = std::max(1, static_cast<int>(timeout.count()));
+  args->connectTimeout = secs;
+  args->transferTimeout = secs;
   args->followRedirects = false;
   if (!bearer_token.empty()) {
     args->extraHeaders["Authorization"] = "Bearer " + bearer_token;
@@ -103,10 +106,37 @@ void deleteSession(const std::string& session_url, const std::string& bearer_tok
 
 PJ::Expected<std::vector<WhepPathInfo>, WhepError> fetchPathsList(
     const std::string& api_url, const std::string& bearer_token, std::chrono::seconds timeout) {
-  (void)api_url;
-  (void)bearer_token;
-  (void)timeout;
-  return PJ::unexpected(WhepError{WhepErrorKind::kNetwork, "not implemented"});
+  std::string base = api_url;
+  while (!base.empty() && base.back() == '/') {
+    base.pop_back();
+  }
+  ix::HttpClient client;
+  auto args = makeArgs(client, bearer_token, timeout);
+  auto res = client.get(base + "/v3/paths/list", args);
+  if (!res || res->errorCode != ix::HttpErrorCode::Ok || res->statusCode != 200) {
+    return PJ::unexpected(errorFromResponse(res));
+  }
+  const auto doc = nlohmann::json::parse(res->body, nullptr, false);
+  if (doc.is_discarded() || !doc.contains("items") || !doc["items"].is_array()) {
+    return PJ::unexpected(WhepError{WhepErrorKind::kBadResponse, "unexpected /v3/paths/list JSON"});
+  }
+  std::vector<WhepPathInfo> paths;
+  for (const auto& item : doc["items"]) {
+    WhepPathInfo info;
+    info.name = item.value("name", std::string());
+    info.ready = item.value("ready", false);
+    if (item.contains("tracks") && item["tracks"].is_array()) {
+      for (const auto& t : item["tracks"]) {
+        if (t.is_string()) {
+          info.tracks.push_back(t.get<std::string>());
+        }
+      }
+    }
+    if (!info.name.empty()) {
+      paths.push_back(std::move(info));
+    }
+  }
+  return paths;
 }
 
 }  // namespace webrtc

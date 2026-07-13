@@ -192,6 +192,50 @@ TEST(WhepDelete, SendsDeleteWithBearer) {
   EXPECT_EQ(seen[0].authorization, "Bearer tok123");
 }
 
+TEST(WhepPathsList, ParsesNameReadyTracks) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  stub.setReply(
+      200, {},
+      R"({"itemCount":2,"pageCount":1,"items":[)"
+      R"({"name":"cam0","ready":true,"tracks":["H264"]},)"
+      R"({"name":"cams/front","ready":false,"tracks":["H264","MPEG-4 Audio"]}]})");
+  auto out = fetchPathsList(stub.baseUrl(), "tokX", std::chrono::seconds(5));
+  ASSERT_TRUE(out);
+  ASSERT_EQ(out->size(), 2u);
+  EXPECT_EQ((*out)[0].name, "cam0");
+  EXPECT_TRUE((*out)[0].ready);
+  ASSERT_EQ((*out)[0].tracks.size(), 1u);
+  EXPECT_EQ((*out)[0].tracks[0], "H264");
+  EXPECT_EQ((*out)[1].name, "cams/front");
+  EXPECT_FALSE((*out)[1].ready);
+  EXPECT_EQ((*out)[1].tracks.size(), 2u);
+
+  auto seen = stub.seen();
+  ASSERT_EQ(seen.size(), 1u);
+  EXPECT_EQ(seen[0].method, "GET");
+  EXPECT_EQ(seen[0].uri, "/v3/paths/list");
+  EXPECT_EQ(seen[0].authorization, "Bearer tokX");
+}
+
+TEST(WhepPathsList, MalformedJsonIsBadResponse) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  stub.setReply(200, {}, "not json");
+  auto out = fetchPathsList(stub.baseUrl(), "", std::chrono::seconds(5));
+  ASSERT_FALSE(out);
+  EXPECT_EQ(out.error().kind, WhepErrorKind::kBadResponse);
+}
+
+TEST(WhepPathsList, Unauthorized401IsTyped) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  stub.setReply(401, {}, "");
+  auto out = fetchPathsList(stub.baseUrl(), "", std::chrono::seconds(5));
+  ASSERT_FALSE(out);
+  EXPECT_EQ(out.error().kind, WhepErrorKind::kUnauthorized);
+}
+
 }  // namespace
 }  // namespace webrtc
 }  // namespace PJ

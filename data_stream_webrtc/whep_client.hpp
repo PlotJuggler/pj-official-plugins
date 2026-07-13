@@ -51,15 +51,16 @@ std::string buildWhepUrl(const std::string& server_url, const std::string& path)
 // the last request-URL segment.
 std::string resolveLocation(const std::string& request_url, const std::string& location);
 
+// Timeout is clamped to >= 1s.
 [[nodiscard]] PJ::Expected<WhepResult, WhepError> postOffer(
     const std::string& whep_url, const std::string& bearer_token, const std::string& offer_sdp,
     std::chrono::seconds timeout);
 
 // Best-effort session teardown; errors are ignored (the server reaps stale
-// sessions on ICE timeout anyway).
+// sessions on ICE timeout anyway). Timeout is clamped to >= 1s.
 void deleteSession(const std::string& session_url, const std::string& bearer_token, std::chrono::seconds timeout);
 
-// GET <api_url>/v3/paths/list and parse items[].{name,ready,tracks}.
+// GET <api_url>/v3/paths/list and parse items[].{name,ready,tracks}. Timeout is clamped to >= 1s.
 [[nodiscard]] PJ::Expected<std::vector<WhepPathInfo>, WhepError> fetchPathsList(
     const std::string& api_url, const std::string& bearer_token, std::chrono::seconds timeout);
 
