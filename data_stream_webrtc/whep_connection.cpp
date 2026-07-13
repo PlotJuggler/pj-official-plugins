@@ -69,6 +69,11 @@ void WhepConnection::close() {
   if (!session.empty()) {
     deleteSession(session, config_.bearer_token, config_.delete_timeout);
   }
+  if (track_) {
+    try {
+      track_->resetCallbacks();
+    } catch (...) {}
+  }
   if (pc_) {
     try {
       pc_->resetCallbacks();
