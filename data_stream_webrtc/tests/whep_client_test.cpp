@@ -7,6 +7,13 @@
 #include "whep_client.hpp"
 
 #include <gtest/gtest.h>
+#include <ixwebsocket/IXHttpServer.h>
+
+#include <chrono>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
 
 namespace PJ {
 namespace webrtc {
@@ -32,6 +39,157 @@ TEST(WhepUrl, ResolveLocationHostRelative) {
 
 TEST(WhepUrl, ResolveLocationPathRelative) {
   EXPECT_EQ(resolveLocation("http://h:8889/cam0/whep", "abc-123"), "http://h:8889/cam0/abc-123");
+}
+
+// Records every request; replies with a configurable canned response.
+// Loopback-only.
+class StubWhepServer {
+ public:
+  struct Seen {
+    std::string method;
+    std::string uri;
+    std::string body;
+    std::string authorization;
+    std::string content_type;
+  };
+
+  // ixwebsocket 11.4.6's SocketServer::getPort() just echoes back the ctor
+  // argument (no getsockname() to resolve an OS-assigned ephemeral port), so
+  // port 0 would make baseUrl() point at ":0". Use a fixed high port instead;
+  // SO_REUSEADDR + synchronous stop() in the dtor make same-port reuse across
+  // tests in this single-process, sequential gtest binary safe.
+  StubWhepServer() : server_(kFixedPort, "127.0.0.1") {
+    server_.setOnConnectionCallback(
+        [this](ix::HttpRequestPtr req, std::shared_ptr<ix::ConnectionState>) -> ix::HttpResponsePtr {
+          {
+            std::lock_guard<std::mutex> lk(mutex_);
+            Seen s;
+            s.method = req->method;
+            s.uri = req->uri;
+            s.body = req->body;
+            auto it = req->headers.find("Authorization");
+            s.authorization = (it != req->headers.end()) ? it->second : "";
+            it = req->headers.find("Content-Type");
+            s.content_type = (it != req->headers.end()) ? it->second : "";
+            seen_.push_back(std::move(s));
+          }
+          return std::make_shared<ix::HttpResponse>(status_, "status", ix::HttpErrorCode::Ok, headers_, body_);
+        });
+    auto res = server_.listen();
+    listening_ = res.first;
+    server_.start();
+  }
+  ~StubWhepServer() {
+    server_.stop();
+  }
+
+  bool listening() const {
+    return listening_;
+  }
+  std::string baseUrl() const {
+    return "http://127.0.0.1:" + std::to_string(kFixedPort);
+  }
+  void setReply(int status, ix::WebSocketHttpHeaders headers, std::string body) {
+    status_ = status;
+    headers_ = std::move(headers);
+    body_ = std::move(body);
+  }
+  std::vector<Seen> seen() {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return seen_;
+  }
+
+ private:
+  static constexpr int kFixedPort = 18889;
+
+  ix::HttpServer server_;
+  bool listening_ = false;
+  int status_ = 200;
+  ix::WebSocketHttpHeaders headers_;
+  std::string body_;
+  std::mutex mutex_;
+  std::vector<Seen> seen_;
+};
+
+TEST(WhepPost, HappyPath201RelativeLocation) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  ix::WebSocketHttpHeaders h;
+  h["Location"] = "/cam0/whep/session-1";
+  stub.setReply(201, h, "v=0\r\nANSWER");
+
+  const std::string url = stub.baseUrl() + "/cam0/whep";
+  auto out = postOffer(url, "tok123", "v=0\r\nOFFER", std::chrono::seconds(5));
+  ASSERT_TRUE(out);
+  EXPECT_EQ(out->answer_sdp, "v=0\r\nANSWER");
+  EXPECT_EQ(out->session_url, stub.baseUrl() + "/cam0/whep/session-1");
+
+  auto seen = stub.seen();
+  ASSERT_EQ(seen.size(), 1u);
+  EXPECT_EQ(seen[0].method, "POST");
+  EXPECT_EQ(seen[0].uri, "/cam0/whep");
+  EXPECT_EQ(seen[0].body, "v=0\r\nOFFER");
+  EXPECT_EQ(seen[0].authorization, "Bearer tok123");
+  EXPECT_EQ(seen[0].content_type, "application/sdp");
+}
+
+TEST(WhepPost, NoTokenMeansNoAuthorizationHeader) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  ix::WebSocketHttpHeaders h;
+  h["Location"] = "/s/1";
+  stub.setReply(201, h, "ANSWER");
+  auto out = postOffer(stub.baseUrl() + "/cam0/whep", "", "OFFER", std::chrono::seconds(5));
+  ASSERT_TRUE(out);
+  auto seen = stub.seen();
+  ASSERT_EQ(seen.size(), 1u);
+  EXPECT_EQ(seen[0].authorization, "");
+}
+
+TEST(WhepPost, Unauthorized401IsTyped) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  stub.setReply(401, {}, "");
+  auto out = postOffer(stub.baseUrl() + "/cam0/whep", "bad", "OFFER", std::chrono::seconds(5));
+  ASSERT_FALSE(out);
+  EXPECT_EQ(out.error().kind, WhepErrorKind::kUnauthorized);
+}
+
+TEST(WhepPost, NotFound404IsTyped) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  stub.setReply(404, {}, "path not ready");
+  auto out = postOffer(stub.baseUrl() + "/cam0/whep", "", "OFFER", std::chrono::seconds(5));
+  ASSERT_FALSE(out);
+  EXPECT_EQ(out.error().kind, WhepErrorKind::kNotFound);
+}
+
+TEST(WhepPost, MissingLocationIsBadResponse) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  stub.setReply(201, {}, "ANSWER");
+  auto out = postOffer(stub.baseUrl() + "/cam0/whep", "", "OFFER", std::chrono::seconds(5));
+  ASSERT_FALSE(out);
+  EXPECT_EQ(out.error().kind, WhepErrorKind::kBadResponse);
+}
+
+TEST(WhepPost, ConnectionRefusedIsNetwork) {
+  // Port 9 (discard) on loopback is closed; connect fails fast.
+  auto out = postOffer("http://127.0.0.1:9/cam0/whep", "", "OFFER", std::chrono::seconds(2));
+  ASSERT_FALSE(out);
+  EXPECT_TRUE(out.error().kind == WhepErrorKind::kNetwork || out.error().kind == WhepErrorKind::kTimeout);
+}
+
+TEST(WhepDelete, SendsDeleteWithBearer) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  stub.setReply(200, {}, "");
+  deleteSession(stub.baseUrl() + "/cam0/whep/session-1", "tok123", std::chrono::seconds(5));
+  auto seen = stub.seen();
+  ASSERT_EQ(seen.size(), 1u);
+  EXPECT_EQ(seen[0].method, "DELETE");
+  EXPECT_EQ(seen[0].uri, "/cam0/whep/session-1");
+  EXPECT_EQ(seen[0].authorization, "Bearer tok123");
 }
 
 }  // namespace
