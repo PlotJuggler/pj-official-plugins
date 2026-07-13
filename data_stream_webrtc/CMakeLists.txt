@@ -9,7 +9,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 # Plugin shared library.
 #
 # Source split mirrors the project's core-vs-Qt convention:
-#   * video_emit / webrtc_receiver / webrtc_signaling are Qt-FREE and only use
+#   * video_emit / whep_client / whep_connection are Qt-FREE and only use
 #     libdatachannel + the plugin SDK host views (no Qt6::Widgets).
 #   * webrtc_source.cpp holds the StreamSourceBase subclass + the (Qt) dialog
 #     plumbing and the plugin export macros.
@@ -17,8 +17,6 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 add_library(webrtc_source_plugin SHARED
   webrtc_dialog.cpp
   webrtc_source.cpp
-  webrtc_receiver.cpp
-  webrtc_signaling.cpp
   video_emit.cpp
   whep_client.cpp
   whep_connection.cpp
@@ -53,9 +51,7 @@ pj_emit_plugin_manifest(webrtc_source_plugin
 
 # ---------------------------------------------------------------------------
 # Tests (Qt-free). Each test links the Qt-free cores directly and the SDK
-# (for serializeVideoFrame / PayloadView). No libdatachannel network use:
-# webrtc_receiver_test exercises only the depacketized-AU normalize path via
-# the receiver's static helper, not a live PeerConnection.
+# (for serializeVideoFrame / PayloadView). No libdatachannel network use.
 # ---------------------------------------------------------------------------
 add_executable(webrtc_video_emit_test
   tests/video_emit_test.cpp
@@ -70,22 +66,6 @@ target_link_libraries(webrtc_video_emit_test PRIVATE
   GTest::gtest_main
 )
 add_test(NAME webrtc_video_emit_test COMMAND webrtc_video_emit_test)
-
-add_executable(webrtc_receiver_test
-  tests/webrtc_receiver_test.cpp
-  webrtc_receiver.cpp
-  video_emit.cpp
-)
-target_compile_features(webrtc_receiver_test PRIVATE cxx_std_20)
-target_compile_options(webrtc_receiver_test PRIVATE ${PJ_WARNING_FLAGS})
-target_include_directories(webrtc_receiver_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(webrtc_receiver_test PRIVATE
-  plotjuggler_sdk::plugin_sdk
-  nlohmann_json::nlohmann_json
-  LibDataChannel::LibDataChannel
-  GTest::gtest_main
-)
-add_test(NAME webrtc_receiver_test COMMAND webrtc_receiver_test)
 
 add_executable(whep_client_test
   tests/whep_client_test.cpp
