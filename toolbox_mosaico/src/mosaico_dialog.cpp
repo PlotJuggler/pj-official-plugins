@@ -14,7 +14,6 @@
 #include <algorithm>
 #include <chrono>
 #include <pj_base/sdk/platform.hpp>
-#include <set>
 #include <string_view>
 #include <utility>
 
@@ -32,6 +31,7 @@
 #include "query/engine.h"
 #include "query/query.h"
 #include "query_filter.h"
+#include "selection_merge.h"
 #include "server_history.h"
 #include "settings_store.hpp"
 #include "table_sort.h"
@@ -544,8 +544,8 @@ std::string MosaicoDialog::widget_data() {
   // worker; Cancel is live only during a fetch.
   wd.setEnabled("buttonConnect", !state_.connecting && !state_.fetch_active);
   wd.setEnabled(
-      "buttonFetch", state_.connected && !state_.selected_sequence.empty() && !state_.topic_selected_rows.empty() &&
-                         !state_.fetch_active);
+      "buttonFetch",
+      state_.connected && !state_.selected_sequence.empty() && !state_.selected_topics.empty() && !state_.fetch_active);
   // Per-column reload buttons re-list without a disconnect/reconnect (PJ3
   // main_window.cpp:933-945): live only while connected and idle. The topic
   // reload additionally needs a selected sequence (its topics are what reload).
@@ -635,8 +635,10 @@ std::string MosaicoDialog::widget_data() {
     wd.setTableHeaders("seqTable", {"Name", "Date", "Size"});
     wd.setTableRows("seqTable", cache.rows);
     wd.setVisibleRows("seqTable", cache.visible);
-    if (state_.seq_selected_row >= 0) {
-      wd.setSelectedRows("seqTable", {state_.seq_selected_row});
+    if (!state_.selected_sequence.empty()) {
+      // Text-keyed (column-0 name match): survives the plugin-side re-sorts
+      // that shuffle row positions.
+      wd.setSelectedItems("seqTable", {state_.selected_sequence});
     }
     wd.setLabel("seqHeader", "Sequences");
   }
@@ -661,8 +663,8 @@ std::string MosaicoDialog::widget_data() {
     wd.setTableHeaders("topicTable", {"Name", "Size"});
     wd.setTableRows("topicTable", rows);
     wd.setVisibleRows("topicTable", visible);
-    if (!state_.topic_selected_rows.empty()) {
-      wd.setSelectedRows("topicTable", state_.topic_selected_rows);
+    if (!state_.selected_topics.empty()) {
+      wd.setSelectedItems("topicTable", state_.selected_topics);
     }
     if (state_.topics_loading) {
       wd.setLabel("topicHeader", "Topics — loading…");
@@ -683,11 +685,7 @@ std::string MosaicoDialog::widget_data() {
     if (state_.fetch_active) {
       header = "Download progress";
       info_text += state_.fetch_status + "\n\n";
-      for (int row : state_.topic_selected_rows) {
-        if (row < 0 || row >= static_cast<int>(state_.topic_names.size())) {
-          continue;
-        }
-        const std::string& tname = state_.topic_names[static_cast<size_t>(row)];
+      for (const std::string& tname : state_.selected_topics) {
         std::int64_t bytes = 0;
         if (auto it = state_.bytes_by_topic.find(tname); it != state_.bytes_by_topic.end()) {
           bytes = it->second;
@@ -733,19 +731,20 @@ std::string MosaicoDialog::widget_data() {
         info_text += buildSequenceInfoText(*seq_rec);
         header = fmt::format("Info — {}", seq_rec->name);
       }
-      for (int row : state_.topic_selected_rows) {
-        if (row < 0 || row >= static_cast<int>(state_.topic_names.size())) {
-          continue;
-        }
-        const std::string& tname = state_.topic_names[static_cast<size_t>(row)];
+      for (const std::string& tname : state_.selected_topics) {
         info_text += "\n";
         info_text += std::string(40, '-');
         info_text += "\n\n";
         if (auto it = state_.topic_meta.find(tname); it != state_.topic_meta.end()) {
           info_text += buildTopicInfoText(it->second);
-        } else if (row < static_cast<int>(state_.topic_infos.size())) {
-          info_text += buildTopicInfoText(state_.topic_infos[static_cast<size_t>(row)]);
-          info_text += "  (loading schema…)\n";
+        } else if (
+            auto pos = std::find(state_.topic_names.begin(), state_.topic_names.end(), tname);
+            pos != state_.topic_names.end()) {
+          const auto idx = static_cast<std::size_t>(pos - state_.topic_names.begin());
+          if (idx < state_.topic_infos.size()) {
+            info_text += buildTopicInfoText(state_.topic_infos[idx]);
+            info_text += "  (loading schema…)\n";
+          }
         }
       }
       wd.setPlainText("dataView", info_text);
@@ -991,9 +990,11 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
         return true;
       }
       seq = state_.selected_sequence;
-      for (int row : state_.topic_selected_rows) {
-        if (row >= 0 && row < static_cast<int>(state_.topic_names.size())) {
-          topics.push_back(state_.topic_names[row]);
+      // Only fetch topics that still exist in the current listing — a selection
+      // preserved across a filter or re-list may reference a topic that's gone.
+      for (const std::string& tname : state_.selected_topics) {
+        if (std::find(state_.topic_names.begin(), state_.topic_names.end(), tname) != state_.topic_names.end()) {
+          topics.push_back(tname);
         }
       }
       // Step 7: convert proportional 0..100 % into absolute nanoseconds
@@ -1054,11 +1055,7 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
       // mark every not-yet-finished topic "Cancelling…" so the per-topic view
       // updates without waiting for allFetchesComplete (PJ3 parity).
       state_.fetch_status = "Cancelling…";
-      for (int row : state_.topic_selected_rows) {
-        if (row < 0 || row >= static_cast<int>(state_.topic_names.size())) {
-          continue;
-        }
-        const std::string& tname = state_.topic_names[static_cast<size_t>(row)];
+      for (const std::string& tname : state_.selected_topics) {
         auto it = state_.topic_fetch_status.find(tname);
         if (it == state_.topic_fetch_status.end() || it->second.empty() || it->second == "downloading…") {
           state_.topic_fetch_status[tname] = "Cancelling…";
@@ -1226,10 +1223,9 @@ bool MosaicoDialog::onSelectionChanged(std::string_view widget_name, const std::
   if (widget_name == "seqTable") {
     if (selected.empty()) {
       std::lock_guard<std::mutex> lock(state_.mu);
-      state_.seq_selected_row = -1;
       state_.selected_sequence.clear();
       state_.topic_names.clear();
-      state_.topic_selected_rows.clear();
+      state_.selected_topics.clear();
       state_.topics_loading = false;
       return true;
     }
@@ -1242,15 +1238,8 @@ bool MosaicoDialog::onSelectionChanged(std::string_view widget_name, const std::
       // persisted names.
       state_.restore_selected_sequence.clear();
       state_.restore_selected_topics.clear();
-      // Map the name back to a row index for the visible-row highlight.
-      for (size_t i = 0; i < state_.sequence_names.size(); ++i) {
-        if (state_.sequence_names[i] == selected.front()) {
-          state_.seq_selected_row = static_cast<int>(i);
-          break;
-        }
-      }
       state_.topic_names.clear();
-      state_.topic_selected_rows.clear();
+      state_.selected_topics.clear();
       state_.topics_loading = true;  // header shows "loading…" until topicsReady
     }
     postCommand([w = worker_.get(), seq] { w->listTopicsAsync(seq); });
@@ -1261,19 +1250,15 @@ bool MosaicoDialog::onSelectionChanged(std::string_view widget_name, const std::
     std::vector<std::string> need_metadata;
     {
       std::lock_guard<std::mutex> lock(state_.mu);
-      state_.topic_selected_rows.clear();
       seq = state_.selected_sequence;
-      for (const auto& sel : selected) {
-        for (size_t i = 0; i < state_.topic_names.size(); ++i) {
-          if (state_.topic_names[i] == sel) {
-            state_.topic_selected_rows.push_back(static_cast<int>(i));
-            // Kick off a one-shot metadata fetch (Arrow schema + tag) for the
-            // Info panel if we don't already have the full record cached.
-            if (state_.topic_meta.find(sel) == state_.topic_meta.end()) {
-              need_metadata.push_back(sel);
-            }
-            break;
-          }
+      state_.selected_topics = mosaico::mergeReportedSelection(
+          state_.selected_topics, selected, state_.topic_names,
+          [&](const std::string& n) { return !nameMatches(n, state_.topic_filter, state_.topic_filter_regex); });
+      // Kick off a one-shot metadata fetch (Arrow schema + tag) for the Info
+      // panel for any newly selected topic without the full record cached.
+      for (const std::string& tname : state_.selected_topics) {
+        if (state_.topic_meta.find(tname) == state_.topic_meta.end()) {
+          need_metadata.push_back(tname);
         }
       }
     }
@@ -1358,14 +1343,10 @@ void MosaicoDialog::persistState() {
     lower = state_.range_lower;
     upper = state_.range_upper;
     // PJ3 parity: remember the last selection so the next connect can re-select
-    // it. Resolve the selected topic ROW indices back to names (names are
-    // stable across re-fetch; row indices are not).
+    // it (selection state is already name-keyed; names are stable across
+    // re-fetch).
     selected_sequence = state_.selected_sequence;
-    for (int row : state_.topic_selected_rows) {
-      if (row >= 0 && row < static_cast<int>(state_.topic_names.size())) {
-        selected_topics.push_back(state_.topic_names[static_cast<std::size_t>(row)]);
-      }
-    }
+    selected_topics = state_.selected_topics;
   }
   SettingsStore settings(settings_);
   settings.setString("mosaico/metadata_query", query);
@@ -1473,16 +1454,6 @@ void MosaicoDialog::sortSequencesLocked() {
   for (const auto& s : state_.sequences) {
     state_.sequence_names.push_back(s.name);
   }
-  // Re-map the selected row to the selected sequence's new position.
-  state_.seq_selected_row = -1;
-  if (!state_.selected_sequence.empty()) {
-    for (std::size_t i = 0; i < state_.sequence_names.size(); ++i) {
-      if (state_.sequence_names[i] == state_.selected_sequence) {
-        state_.seq_selected_row = static_cast<int>(i);
-        break;
-      }
-    }
-  }
   ++state_.seq_epoch;  // row order changed → invalidate the seqTable view cache
 }
 
@@ -1494,15 +1465,8 @@ void MosaicoDialog::sortTopicsLocked() {
   const bool asc = state_.topic_sort_asc;
   const bool have_infos = state_.topic_infos.size() == state_.topic_names.size();
 
-  // Capture the selected topics by name so selection survives the reorder.
-  std::set<std::string> selected;
-  for (int r : state_.topic_selected_rows) {
-    if (r >= 0 && r < static_cast<int>(state_.topic_names.size())) {
-      selected.insert(state_.topic_names[static_cast<std::size_t>(r)]);
-    }
-  }
-
   // Sort an index permutation, then apply it to the parallel name/info vectors.
+  // Selection is name-keyed, so the reorder can't desync it.
   std::vector<std::size_t> perm;
   if (col == 1 && have_infos) {  // Size — numeric
     std::vector<std::int64_t> keys;
@@ -1531,14 +1495,6 @@ void MosaicoDialog::sortTopicsLocked() {
   if (have_infos) {
     state_.topic_infos = std::move(new_infos);
   }
-
-  // Re-map index-based selection from the captured names.
-  state_.topic_selected_rows.clear();
-  for (std::size_t i = 0; i < state_.topic_names.size(); ++i) {
-    if (selected.count(state_.topic_names[i]) > 0) {
-      state_.topic_selected_rows.push_back(static_cast<int>(i));
-    }
-  }
 }
 
 std::vector<std::string> MosaicoDialog::restoreSelectedTopicsLocked() {
@@ -1551,17 +1507,14 @@ std::vector<std::string> MosaicoDialog::restoreSelectedTopicsLocked() {
   const std::vector<std::string> wanted = std::move(state_.restore_selected_topics);
   state_.restore_selected_topics.clear();
 
-  state_.topic_selected_rows.clear();
-  for (std::size_t i = 0; i < state_.topic_names.size(); ++i) {
-    for (const std::string& name : wanted) {
-      if (state_.topic_names[i] == name) {
-        state_.topic_selected_rows.push_back(static_cast<int>(i));
-        // Fetch full metadata (Arrow schema + tag) for the Info panel, same as
-        // the manual topic-selection path, when not already cached.
-        if (state_.topic_meta.find(name) == state_.topic_meta.end()) {
-          need_metadata.push_back(name);
-        }
-        break;
+  state_.selected_topics.clear();
+  for (const std::string& name : wanted) {
+    if (std::find(state_.topic_names.begin(), state_.topic_names.end(), name) != state_.topic_names.end()) {
+      state_.selected_topics.push_back(name);
+      // Fetch full metadata (Arrow schema + tag) for the Info panel, same as
+      // the manual topic-selection path, when not already cached.
+      if (state_.topic_meta.find(name) == state_.topic_meta.end()) {
+        need_metadata.push_back(name);
       }
     }
   }
@@ -1639,14 +1592,11 @@ void MosaicoDialog::onSequencesReady(std::vector<SequenceInfo> seqs) {
     // session. One-shot — clear the restore slot once consumed so a later
     // manual selection / refresh doesn't snap back.
     if (!state_.restore_selected_sequence.empty() && state_.selected_sequence.empty()) {
-      for (std::size_t i = 0; i < state_.sequence_names.size(); ++i) {
-        if (state_.sequence_names[i] == state_.restore_selected_sequence) {
-          state_.selected_sequence = state_.restore_selected_sequence;
-          state_.seq_selected_row = static_cast<int>(i);
-          state_.topics_loading = true;  // header shows "loading…" until topicsReady
-          reselect_sequence = state_.selected_sequence;
-          break;
-        }
+      if (std::find(state_.sequence_names.begin(), state_.sequence_names.end(), state_.restore_selected_sequence) !=
+          state_.sequence_names.end()) {
+        state_.selected_sequence = state_.restore_selected_sequence;
+        state_.topics_loading = true;  // header shows "loading…" until topicsReady
+        reselect_sequence = state_.selected_sequence;
       }
       state_.restore_selected_sequence.clear();
       if (reselect_sequence.empty()) {

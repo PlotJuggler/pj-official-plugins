@@ -70,7 +70,7 @@ struct DialogState {
   bool seq_filter_regex = false;
   bool topic_filter_regex = false;
   // Column sort state — the plugin owns row ordering (built-in table widget
-  // sorting would desync the index-based selection/visibility). -1 = unsorted
+  // sorting would desync the index-based visibility filter). -1 = unsorted
   // (server/load order). seqTable cols: 0=Name 1=Date 2=Size; topicTable: 0=Name 1=Size.
   // PJ3 parity: both tables default to Name ascending (column 0) because the
   // server's iteration order is unstable — without a deterministic sort, rows
@@ -80,8 +80,10 @@ struct DialogState {
   bool seq_sort_asc = true;
   int topic_sort_col = 0;
   bool topic_sort_asc = true;
-  int seq_selected_row = -1;
-  std::vector<int> topic_selected_rows;
+  // Selection is keyed by NAME, not row index: names survive the plugin-side
+  // re-sorts and list refreshes that shuffle row positions (same text-keyed
+  // convention as the mcap/ros2/webrtc pickers).
+  std::vector<std::string> selected_topics;
   std::string selected_sequence;
 
   // PJ3 parity (main_window.cpp:1051-1052,1064-1065): the last sequence + topic
