@@ -86,6 +86,20 @@ TEST(WhepConnection, ExtractSpropFindsFirstVideoFmtp) {
       "a=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0I=,aM4=\r\n";
   EXPECT_EQ(WhepConnection::extractSpropForTest(sdp), "Z0I=,aM4=");
   EXPECT_EQ(WhepConnection::extractSpropForTest("v=0\r\nm=video 9\r\n"), "");
+  // Video-scoped: a sprop outside any m=video section must be ignored.
+  EXPECT_EQ(
+      WhepConnection::extractSpropForTest("v=0\r\nm=audio 9 RTP/AVP 0\r\na=fmtp:0 sprop-parameter-sets=Z0I=,aM4=\r\n"),
+      "");
+}
+
+TEST(WhepConnection, QueueIsBoundedDropOldest) {
+  WhepConnection conn;  // nothing primed: non-IDR AUs pass through unchanged
+  auto au = avcc({kNonIdr});
+  for (int i = 0; i < 300; ++i) {
+    conn.feedAccessUnitForTest(au.data(), au.size());
+  }
+  auto frames = conn.drain();
+  EXPECT_EQ(frames.size(), 256u);  // kMaxQueuedFrames — oldest 44 dropped
 }
 
 TEST(WhepConnection, PrimedConnectionInjectsSpsBeforeIdrAndDrains) {

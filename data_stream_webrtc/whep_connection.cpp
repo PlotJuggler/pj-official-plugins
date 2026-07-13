@@ -10,11 +10,16 @@ namespace PJ {
 namespace webrtc {
 namespace {
 
-// First "sprop-parameter-sets=<b64,b64>" value in the given text. Empty if
-// absent. (The answer has a single video m-line, so first match wins.)
+// First "sprop-parameter-sets=<b64,b64>" value at or after the first video
+// m-line. Empty if absent. (The answer has a single video m-line, so first
+// match wins; scoping to m=video ignores stray sprops in other sections.)
 std::string extractFirstSprop(const std::string& sdp) {
+  const size_t vpos = sdp.find("m=video");
+  if (vpos == std::string::npos) {
+    return {};
+  }
   const std::string key = "sprop-parameter-sets=";
-  const size_t kpos = sdp.find(key);
+  const size_t kpos = sdp.find(key, vpos);
   if (kpos == std::string::npos) {
     return {};
   }
@@ -62,6 +67,15 @@ void WhepConnection::reportState(ConnectionState s) {
   state_.store(s);
   if (on_state_) {
     on_state_(s);
+  }
+}
+
+void WhepConnection::failConnect(WhepErrorKind kind, const std::string& reason) {
+  // kFailed via plain store, not reportState — the error callback is the
+  // notification; firing on_state_ too would double-notify the owner.
+  state_.store(ConnectionState::kFailed);
+  if (on_error_) {
+    on_error_(kind, reason);
   }
 }
 
@@ -141,7 +155,25 @@ PJ::Status WhepConnection::open(const WhepConnectionConfig& config) {
   }
 
   reportState(ConnectionState::kConnecting);
-  worker_ = std::thread([this]() { runConnect(); });
+  try {
+    worker_ = std::thread([this]() { runConnect(); });
+  } catch (const std::exception& e) {
+    // Same self-clean as the offer-setup catch: a failed open() leaves the
+    // object fully closed and can never emit late state callbacks.
+    if (track_) {
+      try {
+        track_->resetCallbacks();
+      } catch (...) {}
+    }
+    if (pc_) {
+      try {
+        pc_->resetCallbacks();
+      } catch (...) {}
+    }
+    pc_.reset();
+    track_.reset();
+    return PJ::unexpected(std::string("worker start failed: ") + e.what());
+  }
   return PJ::okStatus();
 }
 
@@ -181,6 +213,7 @@ void WhepConnection::close() {
     std::lock_guard<std::mutex> lk(frames_mutex_);
     std::queue<EncodedFrame> empty;
     queue_.swap(empty);
+    normalizer_ = H264AnnexBNormalizer{};  // drop stale SPS/PPS across reopen
   }
   {
     std::lock_guard<std::mutex> lk(gather_mutex_);
@@ -211,6 +244,11 @@ void WhepConnection::onFrame(const uint8_t* data, size_t size) {
   ef.keyframe = keyframe;
   ef.annexb = std::move(annexb);
   std::lock_guard<std::mutex> lk(frames_mutex_);
+  // drop-oldest: a stalled poll thread must not grow memory; decoder recovers
+  // at the next IDR
+  while (queue_.size() >= kMaxQueuedFrames) {
+    queue_.pop();
+  }
   queue_.push(std::move(ef));
 }
 
@@ -233,9 +271,11 @@ void WhepConnection::runConnect() {
       return;
     }
     if (!done || !gathering_done_) {
-      if (on_error_) {
-        on_error_(WhepErrorKind::kTimeout, "ICE gathering timed out");
-      }
+      // Never invoke user callbacks while holding gather_mutex_ (they may
+      // block; libdatachannel pool threads contend on it in
+      // onGatheringStateChange).
+      lk.unlock();
+      failConnect(WhepErrorKind::kTimeout, "ICE gathering timed out");
       return;
     }
   }
@@ -244,16 +284,12 @@ void WhepConnection::runConnect() {
   try {
     auto local = pc_->localDescription();
     if (!local) {
-      if (on_error_) {
-        on_error_(WhepErrorKind::kBadResponse, "no local description after gathering");
-      }
+      failConnect(WhepErrorKind::kBadResponse, "no local description after gathering");
       return;
     }
     offer_sdp = std::string(*local);
   } catch (const std::exception& e) {
-    if (on_error_) {
-      on_error_(WhepErrorKind::kBadResponse, std::string("local description: ") + e.what());
-    }
+    failConnect(WhepErrorKind::kBadResponse, std::string("local description: ") + e.what());
     return;
   }
 
@@ -273,9 +309,7 @@ void WhepConnection::runConnect() {
     return;
   }
   if (!out) {
-    if (on_error_) {
-      on_error_(out.error().kind, "WHEP POST failed: " + out.error().message);
-    }
+    failConnect(out.error().kind, "WHEP POST failed: " + out.error().message);
     return;
   }
   // No closing_ re-check needed here: if close() set closing_ after the check
@@ -287,22 +321,23 @@ void WhepConnection::runConnect() {
     session_url_ = out->session_url;
   }
 
-  try {
-    pc_->setRemoteDescription(rtc::Description(out->answer_sdp, "answer"));
-  } catch (const std::exception& e) {
-    if (on_error_) {
-      on_error_(WhepErrorKind::kBadResponse, std::string("answer rejected: ") + e.what());
-    }
-    return;
-  }
-
-  // Prime SPS/PPS from the answer: the decoder needs them ahead of the first
-  // keyframe; some publishers only announce them in SDP. In-band parameter
-  // sets still pass through the normalizer untouched.
+  // Prime SPS/PPS from the answer BEFORE activating it: media can start the
+  // instant setRemoteDescription returns, and the decoder needs the parameter
+  // sets ahead of the first keyframe (some publishers only announce them in
+  // SDP). In-band parameter sets still pass through the normalizer untouched.
+  // If setRemoteDescription then throws, failConnect covers state (a retry
+  // re-primes a fresh object).
   const std::string sprop = extractFirstSprop(out->answer_sdp);
   if (!sprop.empty()) {
     std::lock_guard<std::mutex> lk(frames_mutex_);
     primeNormalizerFromSprop(normalizer_, sprop);
+  }
+
+  try {
+    pc_->setRemoteDescription(rtc::Description(out->answer_sdp, "answer"));
+  } catch (const std::exception& e) {
+    failConnect(WhepErrorKind::kBadResponse, std::string("answer rejected: ") + e.what());
+    return;
   }
   // Connected/Failed now arrives via pc_->onStateChange.
 }

@@ -75,11 +75,16 @@ class WhepConnection {
   WhepConnection(const WhepConnection&) = delete;
   WhepConnection& operator=(const WhepConnection&) = delete;
 
+  // Callbacks fire on internal threads (worker / libdatachannel pool). Do NOT
+  // call close() or destroy this object from inside a callback — set a flag
+  // and act from your own thread.
   void setStateCallback(StateCallback cb) {
     on_state_ = std::move(cb);
   }
   // Fired once per failed connect attempt (HTTP error, gathering timeout,
   // rejected answer). The owner classifies terminal (kUnauthorized) vs retry.
+  // Same threading rule as setStateCallback: never close()/destroy from
+  // inside the callback.
   void setErrorCallback(ErrorCallback cb) {
     on_error_ = std::move(cb);
   }
@@ -114,9 +119,17 @@ class WhepConnection {
   void primeFromAnswerForTest(const std::string& answer_sdp);
 
  private:
+  // Bound on the reassembled-frame queue: a stalled consumer must not grow
+  // memory without limit (onFrame drops oldest beyond this).
+  static constexpr size_t kMaxQueuedFrames = 256;
+
   void onFrame(const uint8_t* data, size_t size);
   void runConnect();  // worker thread body
   void reportState(ConnectionState s);
+  // Finalize a failed connect attempt: state -> kFailed (plain store — the
+  // error callback IS the notification; reportState would double-notify) and
+  // fire on_error_.
+  void failConnect(WhepErrorKind kind, const std::string& reason);
   static int64_t wallClockNs();
 
   std::shared_ptr<rtc::PeerConnection> pc_;
