@@ -55,6 +55,12 @@ int main(int argc, char** argv) {
       : rtc_log == "info" ? rtc::LogLevel::Info
                           : rtc::LogLevel::Warning);
 
+  std::ofstream out(out_path, std::ios::binary);
+  if (!out) {
+    std::fprintf(stderr, "cannot open output file: %s\n", out_path.c_str());
+    return 1;
+  }
+
   PJ::webrtc::WhepConnection conn;
   conn.setStateCallback(
       [](PJ::webrtc::ConnectionState s) { std::fprintf(stderr, "[state] %d\n", static_cast<int>(s)); });
@@ -72,7 +78,6 @@ int main(int argc, char** argv) {
   }
   std::fprintf(stderr, "WHEP %s (Ctrl-C to stop). Writing %s\n", whep_url.c_str(), out_path.c_str());
 
-  std::ofstream out(out_path, std::ios::binary);
   std::uint64_t frames = 0;
   std::uint64_t keyframes = 0;
   std::uint64_t bytes = 0;
