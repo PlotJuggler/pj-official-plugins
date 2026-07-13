@@ -234,17 +234,7 @@
            <height>16777215</height>
           </size>
          </property>
-         <property name="styleSheet">
-          <string notr="true">QLineEdit#lineEditFilter {
-  background-color: transparent;
-  border: 0px;
-  border-radius: 0px;
-  border-bottom: 2px solid palette(mid);
-}
-QLineEdit#lineEditFilter:focus {
-  border-bottom: 2px solid palette(highlight);
-}</string>
-         </property>
+         <property name="filterField" stdset="0"><bool>true</bool></property>
          <property name="clearButtonEnabled">
           <bool>true</bool>
          </property>

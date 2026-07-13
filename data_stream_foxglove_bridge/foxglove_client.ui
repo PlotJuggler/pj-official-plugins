@@ -225,6 +225,7 @@
      </item>
      <item>
       <widget class="QLineEdit" name="lineEditFilter">
+       <property name="filterField" stdset="0"><bool>true</bool></property>
        <property name="maximumSize">
         <size>
          <width>300</width>

@@ -70,6 +70,7 @@
      <item><widget class="QLabel" name="labelFilter"><property name="text"><string>Filter: </string></property></widget></item>
      <item>
       <widget class="QLineEdit" name="lineEditFilter">
+       <property name="filterField" stdset="0"><bool>true</bool></property>
        <property name="maximumSize"><size><width>300</width><height>16777215</height></size></property>
        <property name="clearButtonEnabled"><bool>true</bool></property>
       </widget>

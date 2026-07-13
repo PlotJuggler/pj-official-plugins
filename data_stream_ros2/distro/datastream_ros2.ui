@@ -32,7 +32,6 @@
      <property name="currentIndex">
       <number>0</number>
      </property>
-     <property name="framed" stdset="0"><bool>true</bool></property>
      <widget class="QWidget" name="tabTopicSelector">
       <attribute name="title">
        <string>Topic Selector</string>
@@ -141,10 +140,7 @@
            <property name="clearButtonEnabled">
             <bool>true</bool>
            </property>
-           <property name="styleSheet">
-            <string notr="true">QLineEdit { background-color: transparent; border: 0px; border-radius: 0px; border-bottom: 2px solid palette(highlight); }
-QLineEdit:focus { border-bottom: 2px solid palette(highlight); }</string>
-           </property>
+           <property name="filterField" stdset="0"><bool>true</bool></property>
           </widget>
          </item>
         </layout>
