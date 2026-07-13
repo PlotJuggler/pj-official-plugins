@@ -236,6 +236,16 @@ TEST(WhepPathsList, Unauthorized401IsTyped) {
   EXPECT_EQ(out.error().kind, WhepErrorKind::kUnauthorized);
 }
 
+TEST(WhepPathsList, NonObjectItemsAreSkippedNotFatal) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  stub.setReply(200, {}, R"({"items":[42,{"name":"cam0","ready":true,"tracks":["H264"]},null,"junk"]})");
+  auto out = fetchPathsList(stub.baseUrl(), "", std::chrono::seconds(5));
+  ASSERT_TRUE(out);
+  ASSERT_EQ(out->size(), 1u);
+  EXPECT_EQ((*out)[0].name, "cam0");
+}
+
 }  // namespace
 }  // namespace webrtc
 }  // namespace PJ
