@@ -121,14 +121,14 @@ target_link_libraries(whep_connection_test PRIVATE
 add_test(NAME whep_connection_test COMMAND whep_connection_test)
 
 # ---------------------------------------------------------------------------
-# Headless receiver probe (demo/dev tool): the answerer half of the demo/ rig
-# without PlotJuggler. Pairs with demo/stream_server.py to confirm the
-# camera -> WebRTC -> plugin receive path end-to-end. Not part of the plugin.
+# Headless receiver probe (demo/dev tool): a standalone WHEP client without
+# PlotJuggler. Pairs with the mediamtx rig / any WHEP endpoint to confirm the
+# WHEP -> plugin receive path end-to-end. Not part of the plugin.
 # ---------------------------------------------------------------------------
 add_executable(webrtc_recv_probe
   demo/recv_probe.cpp
-  webrtc_receiver.cpp
-  webrtc_signaling.cpp
+  whep_connection.cpp
+  whep_client.cpp
   video_emit.cpp
 )
 target_compile_features(webrtc_recv_probe PRIVATE cxx_std_20)
@@ -138,4 +138,5 @@ target_link_libraries(webrtc_recv_probe PRIVATE
   plotjuggler_sdk::plugin_sdk
   nlohmann_json::nlohmann_json
   LibDataChannel::LibDataChannel
+  ixwebsocket::ixwebsocket
 )
