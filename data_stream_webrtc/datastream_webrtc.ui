@@ -94,7 +94,10 @@
     <widget class="QTableWidget" name="camerasList">
      <property name="toolTip"><string>Cameras advertised by the peer. Select the ones you want; each becomes its own PJ.VideoFrame topic.</string></property>
      <property name="selectionMode"><enum>QAbstractItemView::MultiSelection</enum></property>
+     <property name="selectionBehavior"><enum>QAbstractItemView::SelectRows</enum></property>
+     <property name="sortingEnabled"><bool>true</bool></property>
      <property name="columnCount"><number>3</number></property>
+     <attribute name="verticalHeaderVisible"><bool>false</bool></attribute>
      <column><property name="text"><string>Camera</string></property></column>
      <column><property name="text"><string>Codec</string></property></column>
      <column><property name="text"><string>Resolution</string></property></column>
