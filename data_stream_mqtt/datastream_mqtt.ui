@@ -486,11 +486,12 @@
            </item>
            <!-- Connection status / error line: widget_data() routes connect
                 feedback (incl. exception text) to label_12 - without it,
-                connection failures have no visible diagnostic. -->
+                connection failures have no visible diagnostic. Empty while
+                idle; the plugin fills it on connect/error. -->
            <item>
             <widget class="QLabel" name="label_12">
              <property name="text">
-              <string>Select a specific topic:</string>
+              <string/>
              </property>
              <property name="wordWrap"><bool>true</bool></property>
             </widget>

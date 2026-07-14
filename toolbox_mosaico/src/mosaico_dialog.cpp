@@ -581,10 +581,6 @@ std::string MosaicoDialog::widget_data() {
   // HiDPI, unlike an inline SVG rendered to a logical-size pixmap.
   wd.setButtonIconNamed("buttonReloadSeq", "refresh");
   wd.setButtonIconNamed("buttonReloadTopic", "refresh");
-  // Leading magnifying-glass on the Sequences / Topics filter rows, matching
-  // the LHS "Datasets" search button (host themes it per the active palette).
-  wd.setButtonIconNamed("buttonSearchSeq", "search");
-  wd.setButtonIconNamed("buttonSearchTopic", "search");
 
   // Sequence table — Lua predicate filter + name-substring filter combine
   // to produce the visible-row set. Empty query + empty filter ⇒ all rows
