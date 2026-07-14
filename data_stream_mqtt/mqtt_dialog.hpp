@@ -405,6 +405,15 @@ class MqttDialog : public PJ::DialogPluginTyped {
       discovery_client_.reset();
     }
     connected_ = false;
+    // Drop the discovered catalog: it belongs to the broker we just left, and
+    // stale entries would show phantom topics (and count as "visible" for the
+    // selection merge) after reconnecting to a different broker. The user's
+    // selected_topics_ survive — they are restored/merged against whatever the
+    // next connection actually delivers (same policy as the foxglove picker).
+    {
+      std::lock_guard<std::mutex> lock(topics_mutex_);
+      discovered_topics_.clear();
+    }
   }
 
   std::vector<std::string> available_encodings_;
