@@ -2,6 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 // clang-format off
+// The query-engine headers declare a global `enum class TokenType`. On Windows
+// they MUST be included before anything that pulls in <windows.h> (Arrow's
+// windows_compatibility shim, the SDK's platform.hpp, ...): <winnt.h> defines an
+// unscoped enumerator `TokenType` (in TOKEN_INFORMATION_CLASS) that would
+// otherwise hide our scoped enum at global scope and make MSVC reject the query
+// headers ("'TokenType' is not a type"). Kept in clang-format off so include
+// sorting cannot reorder them after the Windows-pulling headers.
+#include "query/assist.h"
+#include "query/edit.h"
+#include "query/engine.h"
+#include "query/query.h"
+#include "query_filter.h"
+
 // Arrow headers must stay before the dialog header because the plugin data API
 // and Arrow C-data declarations have load-bearing include order.
 #include <arrow/api.h>
@@ -26,11 +39,6 @@
 #include "mosaico_panel_manifest.hpp"
 #include "mosaico_panel_ui.hpp"
 #include "name_filter.h"
-#include "query/assist.h"
-#include "query/edit.h"
-#include "query/engine.h"
-#include "query/query.h"
-#include "query_filter.h"
 #include "selection_merge.h"
 #include "server_history.h"
 #include "settings_store.hpp"
