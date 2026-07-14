@@ -54,12 +54,11 @@ class MqttDialog : public PJ::DialogPluginTyped {
     wd.setEnabled("lineEditHost", !connected_);
     wd.setEnabled("lineEditPort", !connected_);
 
-    // Connect button state + error feedback
+    // Connect button state + error feedback (label_12 stays empty while idle).
     wd.setButtonText("buttonConnect", connected_ ? "Disconnect" : "Connect");
     wd.setText(
-        "label_12", last_connect_error_.empty()
-                        ? (connected_ ? "Connected — select topics below" : "Select a specific topic:")
-                        : ("Connection error: " + last_connect_error_));
+        "label_12", last_connect_error_.empty() ? (connected_ ? "Connected — select topics below" : "")
+                                                : ("Connection error: " + last_connect_error_));
 
     // Protocol version combo
     wd.setCurrentIndex("comboBoxVersion", protocol_version_index_);
