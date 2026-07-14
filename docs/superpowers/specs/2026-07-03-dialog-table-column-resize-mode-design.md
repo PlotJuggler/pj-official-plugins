@@ -1,6 +1,6 @@
 # Design: per-column resize-mode hint for dialog tables
 
-- **Date:** 2026-07-03
+- **Date:** 2026-07-03 (facts refreshed 2026-07-14 after PJ4#356 and plugins #197/#199/#200 merged)
 - **Status:** Approved (design) — pending implementation plan
 - **Anchor repo:** `pj-official-plugins` (picker dialogs)
 - **Also touches:** `plotjuggler_sdk` (protocol), `PJ4` (dialog host)
@@ -8,8 +8,9 @@
 ## Problem
 
 The picker dialogs (topic / channel / camera / sequence selection tables) have been
-unified on selection model, edit-triggers, vertical-header visibility, and sorting via
-their `.ui` files. The one axis that **cannot** be expressed in a `.ui` file is
+unified on selection model, vertical-header visibility, and sorting via their `.ui`
+files (edit-triggers need no per-`.ui` copy: since PJ4#356 the host forces every
+protocol table read-only). The one axis that **cannot** be expressed in a `.ui` file is
 per-column resize behavior.
 
 Column sizing is owned entirely by the host: `PJ4/pj_dialog_host/src/widget_binding.cpp`
@@ -31,8 +32,10 @@ data columns **resize to their content**.
 
 - No vector-form convenience overload — per-column setter only.
 - No per-column min/max width control.
-- No change to mosaico sorting (deliberately left off; index-based `setVisibleRows`
-  filtering would desync under user re-sorting).
+- No change to mosaico sorting — scope decision: its tables already re-sort via the
+  plugin-owned `onHeaderClicked` sorter (`table_sort.h`), and since PJ4#356 the host
+  translates index-keyed state under built-in sort anyway, so switching mosaico to
+  `sortingEnabled` is possible but out of scope here.
 
 ## API decision
 
@@ -129,8 +132,9 @@ wide but non-stretching — accepted (approved in design review).
 
 ### 4. Rollout order & versioning
 
-1. Add enum + writer + reader to `plotjuggler_sdk` (additive, header-only); cut a new SDK
-   version tag.
+1. Add enum + writer + reader to `plotjuggler_sdk` (additive, header-only); goes out in
+   the next SDK release tag (0.17.0 at the time of this refresh — upstream took the
+   0.16.x range).
 2. `PJ4` host consumes the reader; bump PJ4's SDK pin.
 3. Plugins call the writer; bump this repo's `SDK_VERSION` + submodule via
    `scripts/bump_core_version.py`.

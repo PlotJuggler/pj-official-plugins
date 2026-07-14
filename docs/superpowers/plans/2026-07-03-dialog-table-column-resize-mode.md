@@ -1,6 +1,6 @@
 # Implementation plan: per-column resize-mode hint for dialog tables
 
-- **Date:** 2026-07-03
+- **Date:** 2026-07-03 (facts refreshed 2026-07-14 after PJ4#356 and plugins #197/#199/#200 merged)
 - **Design:** [`specs/2026-07-03-dialog-table-column-resize-mode-design.md`](../specs/2026-07-03-dialog-table-column-resize-mode-design.md)
 - **Repos, in order:** `plotjuggler_sdk` → `PJ4` → `pj-official-plugins`
 
@@ -26,9 +26,11 @@ the only real coupling is the SDK version pin that PJ4 and the plugins compile a
   `static json parse(const WidgetData& wd){ return json::parse(wd.toJson()); }`,
   `using PJ::WidgetData`.
 - Reader test idiom (`widget_data_view_test.cpp`): `PJ::WidgetDataView v(R"(json)")`.
-- Host: `PJ4/pj_dialog_host/src/widget_binding.cpp` — `installTreeLikeHeader()` at
-  lines 258–281; the `QTableWidget` branch sets headers + calls
-  `installTreeLikeHeader(tw)` around lines 516–533.
+- Host: `PJ4/pj_dialog_host/src/widget_binding.cpp` — free function
+  `installTreeLikeHeader(QTableWidget*)`; the `QTableWidget` branch of
+  `applyToWidget()` sets headers, forces `NoEditTriggers` (PJ4#356) and calls
+  `installTreeLikeHeader(tw)`. (Line numbers deliberately omitted — #356 reshuffled
+  the file; anchor by symbol.)
 - Enum wire values are fixed by design: `Interactive=0, Fixed=1, Stretch=2,
   ResizeToContents=3` (must match the reader/host switch; do not renumber).
 
@@ -66,7 +68,8 @@ Directory: `pj_plugins/dialog_protocol/include/pj_plugins/`.
 - **Verify:** `ctest --test-dir build -R widget_data` green.
 
 ### A4. Cut SDK version
-- Tag the additive release on the SDK repo (header-only; bump minor).
+- Ships with the next SDK release tag (0.17.0 line at the time of this refresh —
+  upstream took 0.16.x; coordinate the exact number with the SDK repo).
 
 ---
 
