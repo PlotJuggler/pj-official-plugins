@@ -70,17 +70,28 @@ set(MOSAICO_SOURCES
   src/core/time_format.cpp
 )
 
+# Arrow/Flight + Arrow-compute translation units (arrow_ingest.cpp, and the
+# Flight/serialize tests that compile it) instantiate enough templates to exceed
+# the COFF section limit without /bigobj (C1128). Apply it directory-wide on MSVC
+# so the plugin and every Arrow-linked test target below inherit it.
+if(MSVC)
+  add_compile_options(/bigobj)
+endif()
+
 add_library(toolbox_mosaico_plugin SHARED ${MOSAICO_SOURCES})
 
 target_compile_features(toolbox_mosaico_plugin PRIVATE cxx_std_20)
 # Don't apply ${PJ_WARNING_FLAGS} here — the vendored PJ3 query/* headers
 # and sol2 trigger -Wconversion and -Wunused-parameter under -Werror. The
 # core dialog/state-machine code is reviewed manually; this matches PJ3's
-# own build flags for its query/ subdir.
-target_compile_options(toolbox_mosaico_plugin PRIVATE
-  -Wall -Wextra -Werror
-  -Wno-conversion -Wno-unused-parameter -Wno-unused-function
-)
+# own build flags for its query/ subdir. These GNU flags are not valid for cl,
+# so gate them to non-MSVC compilers.
+if(NOT MSVC)
+  target_compile_options(toolbox_mosaico_plugin PRIVATE
+    -Wall -Wextra -Werror
+    -Wno-conversion -Wno-unused-parameter -Wno-unused-function
+  )
+endif()
 
 target_include_directories(toolbox_mosaico_plugin PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -130,6 +141,17 @@ pj_emit_plugin_manifest(toolbox_mosaico_plugin
 # ----------------------------------------------------------------------------
 if(BUILD_TESTING)
   find_package(GTest REQUIRED)
+
+  # The vendored PJ3 query/* tests below relax warnings with GNU flags. MSVC
+  # rejects those (e.g. /Wextra is a fatal command-line error D8021), so map the
+  # set to nothing on MSVC and to the GNU flags elsewhere.
+  if(MSVC)
+    set(MOSAICO_QUERY_TEST_WARNINGS "")
+  else()
+    set(MOSAICO_QUERY_TEST_WARNINGS
+      -Wall -Wextra -Werror
+      -Wno-conversion -Wno-unused-parameter -Wno-unused-function)
+  endif()
 
   # detectTimestampColumn over canned ArrowSchema fixtures.
   # Re-resolves the Arrow target name (Conan: arrow::arrow, upstream:
@@ -299,10 +321,14 @@ if(BUILD_TESTING)
   target_compile_features(toolbox_mosaico_query_engine_test PRIVATE cxx_std_20)
   # Match the plugin's relaxed flags: the vendored PJ3 query/* headers and sol2
   # trip -Wconversion / -Wunused-parameter under -Werror.
-  target_compile_options(toolbox_mosaico_query_engine_test PRIVATE
-    -Wall -Wextra -Werror
-    -Wno-conversion -Wno-unused-parameter -Wno-unused-function
-  )
+  target_compile_options(toolbox_mosaico_query_engine_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  if(MSVC)
+    # This test embeds raw string literals inside gtest EXPECT_EQ() macros. MSVC's
+    # traditional preprocessor mis-tokenizes raw strings in macro arguments
+    # (C2017 illegal escape sequence / C3688 bad literal suffix), so build it with
+    # the conforming preprocessor.
+    target_compile_options(toolbox_mosaico_query_engine_test PRIVATE /Zc:preprocessor)
+  endif()
   target_include_directories(toolbox_mosaico_query_engine_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core
@@ -318,10 +344,7 @@ if(BUILD_TESTING)
     lua::lua sol2::sol2 GTest::gtest_main
   )
   target_compile_features(toolbox_mosaico_query_filter_test PRIVATE cxx_std_20)
-  target_compile_options(toolbox_mosaico_query_filter_test PRIVATE
-    -Wall -Wextra -Werror
-    -Wno-conversion -Wno-unused-parameter -Wno-unused-function
-  )
+  target_compile_options(toolbox_mosaico_query_filter_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
   target_include_directories(toolbox_mosaico_query_filter_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core
@@ -336,10 +359,7 @@ if(BUILD_TESTING)
   )
   target_link_libraries(toolbox_mosaico_assist_test PRIVATE GTest::gtest_main)
   target_compile_features(toolbox_mosaico_assist_test PRIVATE cxx_std_20)
-  target_compile_options(toolbox_mosaico_assist_test PRIVATE
-    -Wall -Wextra -Werror
-    -Wno-conversion -Wno-unused-parameter -Wno-unused-function
-  )
+  target_compile_options(toolbox_mosaico_assist_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
   target_include_directories(toolbox_mosaico_assist_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core
@@ -461,5 +481,5 @@ if(BUILD_TESTING)
     ${mosaico_sdk_SOURCE_DIR}/src
   )
   target_compile_features(toolbox_mosaico_live_harness PRIVATE cxx_std_20)
-  target_compile_options(toolbox_mosaico_live_harness PRIVATE -Wall -Wextra)
+  target_compile_options(toolbox_mosaico_live_harness PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
 endif()
