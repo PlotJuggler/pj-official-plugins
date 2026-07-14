@@ -3,6 +3,7 @@
 #include <mqtt/async_client.h>
 
 #include <algorithm>
+#include <cctype>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
@@ -70,13 +71,22 @@ class MqttDialog : public PJ::DialogPluginTyped {
     // SSL checkbox
     wd.setChecked("checkBoxSecurity", use_ssl_);
 
-    // Topic filter
+    // MQTT subscription pattern (broker-side discovery filter, applied on connect)
     wd.setText("lineEditTopicFilter", topic_filter_);
 
-    // Discovered topic list (from live MQTT subscription)
+    // Discovered topic list (from live MQTT subscription), narrowed by the
+    // view filter. Selection is text-keyed with the FULL selected set: the
+    // host ignores names not currently listed, and onSelectionChanged merges
+    // them back, so filtered-out selections survive.
     {
       std::lock_guard<std::mutex> lock(topics_mutex_);
-      std::vector<std::string> topic_list(discovered_topics_.begin(), discovered_topics_.end());
+      std::vector<std::string> topic_list;
+      topic_list.reserve(discovered_topics_.size());
+      for (const auto& topic : discovered_topics_) {
+        if (matchesViewFilter(topic)) {
+          topic_list.push_back(topic);
+        }
+      }
       wd.setListItems("listWidget", topic_list);
       wd.setSelectedItems("listWidget", selected_topics_);
     }
@@ -105,8 +115,10 @@ class MqttDialog : public PJ::DialogPluginTyped {
     wd.setText("lineEditClientCertificate", client_cert_path_);
     wd.setText("lineEditPrivateKey", private_key_path_);
 
-    // Disable OK if no encodings available
-    wd.setOkEnabled(has_encodings);
+    // OK gating: connected-only, like every discovery-capable streamer
+    // (foxglove/pj_bridge/webrtc gate on connected_, ros2 on discovery).
+    // Encoding availability still matters: no parsers -> nothing can decode.
+    wd.setOkEnabled(connected_ && has_encodings);
 
     return wd.toJson();
   }
@@ -147,6 +159,10 @@ class MqttDialog : public PJ::DialogPluginTyped {
     if (widget_name == "lineEditTopicFilter") {
       topic_filter_ = std::string(text);
       return false;
+    }
+    if (widget_name == "lineEditFilter") {
+      view_filter_lower_ = toLowerAscii(std::string(text));
+      return true;  // re-render: the topic list narrows/expands live
     }
     // Certificate paths are editable: typing a path is equivalent to picking one.
     if (widget_name == "lineEditServerCertificate") {
@@ -206,7 +222,24 @@ class MqttDialog : public PJ::DialogPluginTyped {
 
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name == "listWidget") {
-      selected_topics_ = selected;
+      // The host reports only the VISIBLE selection under the active view
+      // filter. Preserve selections the filter currently hides; otherwise
+      // selecting while a filter hides a previously selected topic would
+      // silently drop the hidden one (same contract as the foxglove picker).
+      std::vector<std::string> next;
+      {
+        std::lock_guard<std::mutex> lock(topics_mutex_);
+        for (const auto& name : selected_topics_) {
+          // Not visible = filtered out OR not (yet) discovered — e.g. topics
+          // restored from a saved config before connecting. Both survive.
+          const bool visible = discovered_topics_.count(name) != 0 && matchesViewFilter(name);
+          if (!visible) {
+            next.push_back(name);
+          }
+        }
+      }
+      next.insert(next.end(), selected.begin(), selected.end());
+      selected_topics_ = std::move(next);
       return false;
     }
     return false;
@@ -278,6 +311,22 @@ class MqttDialog : public PJ::DialogPluginTyped {
   }
 
  private:
+  static std::string toLowerAscii(std::string s) {
+    for (auto& c : s) {
+      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return s;
+  }
+
+  /// Case-insensitive substring match of the active view filter against the
+  /// topic name. An empty filter matches everything. This is the band's
+  /// client-side list filter — unrelated to topic_filter_, the broker-side
+  /// MQTT subscription pattern. The filter is stored pre-lowercased, so only
+  /// the topic pays a lowercase pass here.
+  bool matchesViewFilter(const std::string& topic) const {
+    return view_filter_lower_.empty() || toLowerAscii(topic).find(view_filter_lower_) != std::string::npos;
+  }
+
   int encodingToIndex(const std::string& e) const {
     auto it = std::find(available_encodings_.begin(), available_encodings_.end(), e);
     return (it != available_encodings_.end()) ? static_cast<int>(std::distance(available_encodings_.begin(), it)) : 0;
@@ -367,6 +416,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
   int protocol_version_index_ = 1;  // MQTT 3.1.1
   int qos_ = 0;
   std::string topic_filter_ = "#";
+  std::string view_filter_lower_;
   std::string encoding_ = "json";
   bool use_ssl_ = false;
   std::string ca_cert_path_;

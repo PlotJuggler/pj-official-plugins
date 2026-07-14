@@ -523,12 +523,43 @@
            <string>Topics</string>
           </property>
           <property name="filterFieldName">
-           <string>lineEditTopicFilter</string>
+           <string>lineEditFilter</string>
           </property>
           <property name="filterPlaceholder">
            <string>Filter</string>
           </property>
          </widget>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="subscriptionRow">
+          <property name="spacing">
+           <number>6</number>
+          </property>
+          <property name="leftMargin">
+           <number>9</number>
+          </property>
+          <property name="topMargin">
+           <number>6</number>
+          </property>
+          <property name="rightMargin">
+           <number>9</number>
+          </property>
+          <property name="bottomMargin">
+           <number>6</number>
+          </property>
+          <item>
+           <widget class="QLabel" name="labelSubscriptionPattern">
+            <property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property>
+            <property name="text"><string>Subscription pattern</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="lineEditTopicFilter">
+            <property name="placeholderText"><string>#</string></property>
+            <property name="toolTip"><string>MQTT subscription filter used to discover topics (supports + and # wildcards). Applied on the next connect.</string></property>
+           </widget>
+          </item>
+         </layout>
         </item>
         <item>
     <widget class="QListWidget" name="listWidget">
