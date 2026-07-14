@@ -1,7 +1,7 @@
 {
   "id": "zmq-subscriber",
   "name": "ZMQ Subscriber",
-  "version": "1.4.1",
+  "version": "0.99.0",
   "description": "Real-time data streaming via ZeroMQ. High-performance messaging for distributed systems.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
@@ -17,5 +17,5 @@
     "realtime",
     "subscriber"
   ],
-  "min_plotjuggler_version": "4.0.0"
+  "min_plotjuggler_version": "3.999.1"
 }

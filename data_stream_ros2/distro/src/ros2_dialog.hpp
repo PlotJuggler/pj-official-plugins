@@ -55,11 +55,9 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     wd.setTableHeaders("listRosTopics", {"Topic", "Datatype"});
     wd.setTableRows("listRosTopics", rows);
 
-    // Restore selection by first-column text (the topic name), not row index:
-    // the host matches items by text, which is sort-agnostic, so the selection
-    // survives the table's built-in column sorting. Row indices would desync the
-    // moment the user sorts by a different column (the topic vector stays in its
-    // own order while the widget re-orders).
+    // Restore selection by topic name (setSelectedItems): the host matches
+    // rows by first-column text, which is sort-agnostic — listRosTopics has
+    // sortingEnabled, so the selection survives a user sort of the table.
     std::vector<std::string> selected_names;
     selected_names.reserve(selected_topics_.size());
     for (const auto& [sel_name, sel_type] : selected_topics_) {
@@ -85,7 +83,12 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     // companion deselect-all shortcut to the button (PJ3 parity).
     wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
 
-    wd.setOkEnabled(!selected_topics_.empty());
+    // OK button: discovery-running-only. Topic selection is no longer a hard
+    // requirement — see selected_topics_'s dual role in Ros2StreamSource
+    // (buildAvailableTopics): on a host that supports demand subscriptions it
+    // becomes an OPTIONAL advertise filter (empty = advertise everything); on
+    // a legacy host it keeps its original meaning, the subscribe list.
+    wd.setOkEnabled(discovery_running_);
     return wd.toJson();
   }
 
@@ -208,6 +211,12 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   }
 
   std::string saveConfig() const override {
+    // "selected_topics" is dual-purpose (see the OK-gate comment in
+    // widget_data() above and Ros2StreamSource::buildAvailableTopics): a
+    // legacy host subscribes exactly this list; a demand-subscription host
+    // treats it as an OPTIONAL advertise filter (empty = advertise
+    // everything) and asks for what it actually wants via set_active_topics.
+    // The format itself is unchanged by that dual role.
     nlohmann::json arr = nlohmann::json::array();
     {
       // Emit (and persist) a selection only while its topic is still being

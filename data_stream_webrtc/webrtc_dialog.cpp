@@ -62,11 +62,10 @@ std::string WebrtcDialog::widget_data() {
       }
       const std::string res =
           (s.width > 0 && s.height > 0) ? (std::to_string(s.width) + " x " + std::to_string(s.height)) : "-";
-      // Restore selection by the first-column text (the unique display label),
-      // not row index, so it survives the table's built-in column sorting: the
-      // host matches items by text (sort-agnostic), whereas row indices would
-      // desync the moment the user sorts by a different column. displayLabel is
-      // 1:1 with the stream id within a render, so the round-trip is lossless.
+      // Mark this row as selected if its stream id is in selected_. Selection
+      // is restored by label text (setSelectedItems): the host matches rows by
+      // first-column text, which stays correct however the table is sorted —
+      // labels are unique per catalog via displayLabel/buildBaseNameCounts.
       for (const auto& sel : selected_) {
         if (sel.id == s.id) {
           selected_labels.push_back(label);

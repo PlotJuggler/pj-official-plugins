@@ -451,13 +451,19 @@
     </widget>
    </item>
 
-   <!-- Two-handle time range slider + Download button (PJ3 RangeSlider) -->
+   <!-- Two-handle time range slider + Cancel / Download buttons (PJ3 RangeSlider).
+        No in-panel Close: the hosting toolbox banner's close button owns that. -->
    <item>
     <layout class="QHBoxLayout" name="rangeRow">
-     <!-- Full-bleed like the columns above (bodyLayout L/R = 0): the slider spreads
-          edge-to-edge, matching the app's playback bar. -->
-     <property name="leftMargin"><number>0</number></property>
-     <property name="rightMargin"><number>0</number></property>
+     <!-- The whole row (duration slider + buttons) floats inside the panel:
+          8 = the framework's space_comfortable on the sides/bottom, 4 =
+          space_snug on top (the slider's handle-label row already adds
+          headroom there). Plugin .ui files cannot reference ${tokens}. -->
+     <property name="spacing"><number>8</number></property>
+     <property name="leftMargin"><number>8</number></property>
+     <property name="topMargin"><number>4</number></property>
+     <property name="rightMargin"><number>8</number></property>
+     <property name="bottomMargin"><number>8</number></property>
      <item>
       <widget class="RangeSlider" name="rangeSlider">
        <!-- Full-bleed. The track is the playback scrubber's 24px height; the host
@@ -471,21 +477,26 @@
      </item>
      <!-- Buttons bottom-aligned to the duration widget: the slider is taller (one
           label row above its 24px track), so AlignBottom lines the buttons up with
-          the track at the bottom instead of floating them in the row's center. -->
-     <item alignment="Qt::AlignBottom">
-      <widget class="QPushButton" name="buttonFetch">
-       <property name="text"><string>Download</string></property>
-       <property name="minimumSize"><size><width>90</width><height>0</height></size></property>
-      </widget>
-     </item>
+          the track at the bottom. Fixed 24px height = the track height, so the
+          buttons read as the same strip as the slider. -->
+     <!-- Compact padding (2 = space_tight vertical, 8 = space_comfortable
+          horizontal) so the label fits the 24px track-height box - the app's
+          global QPushButton padding (8px all around) clips text at this height.
+          Colors/radius still come from the app stylesheet. -->
      <item alignment="Qt::AlignBottom">
       <widget class="QPushButton" name="buttonCancel">
        <property name="text"><string>Cancel</string></property>
+       <property name="minimumSize"><size><width>0</width><height>24</height></size></property>
+       <property name="maximumSize"><size><width>16777215</width><height>24</height></size></property>
+       <property name="styleSheet"><string notr="true">QPushButton { padding: 2px 8px; }</string></property>
       </widget>
      </item>
      <item alignment="Qt::AlignBottom">
-      <widget class="QPushButton" name="buttonClose">
-       <property name="text"><string>Close</string></property>
+      <widget class="QPushButton" name="buttonFetch">
+       <property name="text"><string>Download</string></property>
+       <property name="minimumSize"><size><width>90</width><height>24</height></size></property>
+       <property name="maximumSize"><size><width>16777215</width><height>24</height></size></property>
+       <property name="styleSheet"><string notr="true">QPushButton { padding: 2px 8px; }</string></property>
       </widget>
      </item>
     </layout>
