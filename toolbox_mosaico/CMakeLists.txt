@@ -356,6 +356,16 @@ if(BUILD_TESTING)
   )
   add_test(NAME ToolboxMosaicoTableSortTest COMMAND toolbox_mosaico_table_sort_test)
 
+  # Filter-exempt selection merge (text-keyed picker contract). Header-only.
+  add_executable(toolbox_mosaico_selection_merge_test
+    tests/selection_merge_test.cpp
+  )
+  target_link_libraries(toolbox_mosaico_selection_merge_test PRIVATE GTest::gtest_main)
+  target_include_directories(toolbox_mosaico_selection_merge_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  add_test(NAME ToolboxMosaicoSelectionMergeTest COMMAND toolbox_mosaico_selection_merge_test)
+
   # Human-readable byte formatting (1024-based, PJ3 parity). Header-only.
   add_executable(toolbox_mosaico_format_utils_test
     tests/format_utils_test.cpp
