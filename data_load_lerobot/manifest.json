@@ -1,7 +1,7 @@
 {
   "id": "lerobot-loader",
   "name": "LeRobot Loader",
-  "version": "0.99.0",
+  "version": "0.999.0",
   "description": "Data loader for LeRobot v2.x and v3.0 datasets: flattened numeric series + per-camera video on a shared timeline. v3.0 datasets use a consolidated per-shard Parquet/MP4 layout with relational metadata; the plugin reads meta/episodes/*.parquet to resolve each episode's row range and clip window.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",

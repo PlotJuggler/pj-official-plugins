@@ -1,7 +1,7 @@
 {
   "id": "mp4-loader",
   "name": "MP4 Loader",
-  "version": "0.99.0",
+  "version": "0.999.0",
   "description": "Data loader for .mp4 video files. Reads the container's creation_time tag (when present) so the host can anchor the video on a wall-clock timeline; supports multi-file selection via the standard File dialog.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
