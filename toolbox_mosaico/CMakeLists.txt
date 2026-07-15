@@ -457,6 +457,9 @@ if(BUILD_TESTING)
   target_include_directories(toolbox_mosaico_image_download_smoke PRIVATE
     ${mosaico_sdk_SOURCE_DIR}/src
   )
+  # MSVC deprecates ISO getenv (C4996) and /WX turns it into an error; the test
+  # reads opt-in env vars legitimately (MOSAICO_LIVE_SMOKE, MOSAICO_API_KEY).
+  target_compile_definitions(toolbox_mosaico_image_download_smoke PRIVATE _CRT_SECURE_NO_WARNINGS)
   add_test(NAME ToolboxMosaicoImageDownloadSmoke COMMAND toolbox_mosaico_image_download_smoke)
   set_tests_properties(ToolboxMosaicoImageDownloadSmoke PROPERTIES
     ENVIRONMENT "MOSAICO_LIVE_SMOKE=1"
@@ -482,4 +485,6 @@ if(BUILD_TESTING)
   )
   target_compile_features(toolbox_mosaico_live_harness PRIVATE cxx_std_20)
   target_compile_options(toolbox_mosaico_live_harness PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  # Same MSVC getenv/C4996 rationale as the smoke test above.
+  target_compile_definitions(toolbox_mosaico_live_harness PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()

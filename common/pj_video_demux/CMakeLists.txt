@@ -48,8 +48,11 @@ if(TARGET GTest::gtest_main)
     target_compile_options(pj_video_demux_test PRIVATE ${PJ_WARNING_FLAGS})
   endif()
   # Committed h264/hevc/av1 fixtures drive the per-codec index+read e2e tests.
+  # _CRT_SECURE_NO_WARNINGS: MSVC deprecates ISO getenv (C4996) and /WX turns it
+  # into an error; the test reads opt-in env vars legitimately (PJ_TEST_VIDEO).
   target_compile_definitions(pj_video_demux_test PRIVATE
-    PJ_VIDEO_DEMUX_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+    PJ_VIDEO_DEMUX_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+    _CRT_SECURE_NO_WARNINGS)
   target_link_libraries(pj_video_demux_test PRIVATE pj_video_demux GTest::gtest_main)
   add_test(NAME pj_video_demux_test COMMAND pj_video_demux_test)
 endif()
