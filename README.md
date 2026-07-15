@@ -7,7 +7,7 @@
 
 Plugin collection for PlotJuggler Core: message parsers (JSON, Protobuf, ROS,
 DataTamer), file loaders (CSV, MCAP, Parquet, ULog, MP4, LeRobot, 3D
-PLY/PCD, Rerun), streaming sources (ZMQ, MQTT, UDP, ROS 2, WebRTC, Foxglove
+PLY/PCD), streaming sources (ZMQ, MQTT, UDP, ROS 2, WebRTC, Foxglove
 and PlotJuggler bridges), and toolbox widgets (FFT, quaternion, colormap,
 reactive scripts, Mosaico cloud, transform editor). See the
 [Plugins](#plugins) table for the full list and per-plugin build status.
@@ -82,7 +82,6 @@ latest build on `main` passed CI (red if it failed); see
 | [![data_load_lerobot](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_lerobot.json)](data_load_lerobot/) | DataSource | LeRobot v2.1 dataset loading |
 | [![data_load_mp4](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mp4.json)](data_load_mp4/) | DataSource | MP4 video loading |
 | [![data_load_3d](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_3d.json)](data_load_3d/) | DataSource | PLY/PCD point cloud & mesh loading |
-| [![data_load_rerun](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_rerun.json)](data_load_rerun/) | DataSource | Rerun (.rrd) recording loading |
 | [![data_stream_zmq](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_zmq.json)](data_stream_zmq/) | DataSource | ZeroMQ streaming |
 | [![data_stream_mqtt](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_mqtt.json)](data_stream_mqtt/) | DataSource | MQTT streaming |
 | [![data_stream_foxglove_bridge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_foxglove_bridge.json)](data_stream_foxglove_bridge/) | DataSource | Foxglove WebSocket bridge |
