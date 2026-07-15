@@ -16,6 +16,8 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <thread>
 #include <vector>
 
 #include "video_emit.hpp"
@@ -61,6 +63,12 @@ class WebrtcSource : public PJ::StreamSourceBase {
       return PJ::unexpected("invalid dialog config");
     }
     server_url_ = cfg.value("server_url", std::string("http://127.0.0.1:8889"));
+    // Backstop for hand-edited configs (the dialog gates OK on this too): an
+    // empty URL would otherwise fail only deep in the HTTP layer — after a
+    // full ICE-gathering wait — because buildWhepUrl never returns empty.
+    if (server_url_.empty()) {
+      return PJ::unexpected("WHEP server URL is empty — set it in the connection dialog");
+    }
     bearer_token_ = cfg.value("bearer_token", std::string());
     topic_prefix_ = cfg.value("topic_prefix", std::string("webrtc"));
 
@@ -90,11 +98,9 @@ class WebrtcSource : public PJ::StreamSourceBase {
     }
 
     // A restart must let the current selection win: drop any cameras left from a
-    // previous Start (teardownCamera is safe on a not-yet-connected camera) so
-    // stale paths don't linger and only the selected ones are rebuilt below.
-    for (auto& [path, cam] : cameras_) {
-      teardownCamera(*cam);
-    }
+    // previous Start so stale paths don't linger and only the selected ones are
+    // rebuilt below.
+    closeAllCameras();
     cameras_.clear();
 
     poll_count_ = 0;
@@ -119,9 +125,17 @@ class WebrtcSource : public PJ::StreamSourceBase {
 
     for (auto& [path, cam] : cameras_) {
       if (cam->connected.exchange(false)) {
+        cam->connected_at_poll = poll_count_;  // start the stability window
+      }
+      // Only a connection that STAYED up clears the failure history: resetting
+      // on the mere kConnected edge would let a flapping server (connect,
+      // drop, repeat) retry at minimum backoff forever and never reach the
+      // kEscalateAfterAttempts kError diagnostic.
+      if (cam->connected_at_poll != 0 && poll_count_ - cam->connected_at_poll >= kStableConnectionPolls) {
         cam->backoff_ms = kMinBackoffMs;
         cam->failed_attempts = 0;
         cam->escalated = false;
+        cam->connected_at_poll = 0;
       }
 
       if (cam->conn) {
@@ -138,6 +152,7 @@ class WebrtcSource : public PJ::StreamSourceBase {
       }
 
       if (cam->lost.exchange(false)) {
+        cam->connected_at_poll = 0;  // the connection did not stay up
         teardownCamera(*cam);
         if (cam->terminal.load()) {
           cam->reconnect_at_poll = 0;
@@ -160,15 +175,7 @@ class WebrtcSource : public PJ::StreamSourceBase {
   }
 
   void onStop() override {
-    for (auto& [path, cam] : cameras_) {
-      teardownCamera(*cam);
-      cam->reconnect_at_poll = 0;
-      cam->terminal.store(false);
-      cam->connected.store(false);
-      cam->backoff_ms = kMinBackoffMs;
-      cam->failed_attempts = 0;
-      cam->escalated = false;
-    }
+    closeAllCameras();
     cameras_.clear();
   }
 
@@ -176,6 +183,9 @@ class WebrtcSource : public PJ::StreamSourceBase {
   static constexpr int kMinBackoffMs = 500;
   static constexpr int kMaxBackoffMs = 8000;
   static constexpr int kPollPeriodMs = 33;
+  // How long a connection must stay up before its failure counters reset
+  // (longer than kMaxBackoffMs so a flap cycle can never outrun escalation).
+  static constexpr uint64_t kStableConnectionPolls = 10000 / kPollPeriodMs;
 
   // Per-camera runtime. Held by unique_ptr so the atomics stay put; the
   // connection's callbacks capture the raw pointer, which stays valid because
@@ -190,6 +200,8 @@ class WebrtcSource : public PJ::StreamSourceBase {
     std::unique_ptr<PJ::webrtc::WhepConnection> conn;
     int backoff_ms = kMinBackoffMs;
     uint64_t reconnect_at_poll = 0;
+    // Poll at which the last kConnected was observed; 0 = no window pending.
+    uint64_t connected_at_poll = 0;
     // Consecutive non-terminal connect failures; drives a one-shot kError
     // escalation so a persistent bad server_url is diagnosable without spam.
     int failed_attempts = 0;
@@ -324,6 +336,32 @@ class WebrtcSource : public PJ::StreamSourceBase {
     }
     cam.lost.store(false);
     // Keep the binding across reconnects — same topic resumes.
+  }
+
+  // Close every camera's connection in parallel: each close() blocks on its
+  // worker join plus a bounded session DELETE, so closing N cameras serially
+  // would multiply the stop/restart latency by N.
+  void closeAllCameras() {
+    std::vector<std::thread> closers;
+    closers.reserve(cameras_.size());
+    for (auto& [path, cam] : cameras_) {
+      if (!cam->conn) {
+        continue;
+      }
+      PJ::webrtc::WhepConnection* conn = cam->conn.get();
+      try {
+        closers.emplace_back([conn]() { conn->close(); });
+      } catch (const std::system_error&) {
+        conn->close();  // thread spawn failed: fall back to closing inline
+      }
+    }
+    for (auto& t : closers) {
+      t.join();
+    }
+    for (auto& [path, cam] : cameras_) {
+      cam->conn.reset();
+      cam->lost.store(false);
+    }
   }
 
   webrtc_dialog_detail::WebrtcDialog dialog_;

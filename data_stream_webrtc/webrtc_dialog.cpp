@@ -19,6 +19,9 @@ constexpr std::chrono::seconds kAutoFetchPeriod{1};
 }  // namespace
 
 WebrtcDialog::~WebrtcDialog() {
+  if (fetch_abort_) {
+    fetch_abort_->abort();  // don't sit through the remaining pages' timeouts
+  }
   if (fetch_thread_.joinable()) {
     fetch_thread_.join();
   }
@@ -83,7 +86,9 @@ std::string WebrtcDialog::widget_data() {
   }
   wd.setTableRows("tableIceServers", ice_rows);
 
-  wd.setOkEnabled(!selected_.empty());
+  // Gate OK on the server URL too: an empty one would only fail at connect
+  // time, deep in the HTTP layer (onStart keeps a backstop check as well).
+  wd.setOkEnabled(!selected_.empty() && !server_url_.empty());
   return wd.toJson();
 }
 
@@ -93,12 +98,18 @@ bool WebrtcDialog::onClicked(std::string_view widget_name) {
     return true;
   }
   if (widget_name == "buttonAddPath") {
-    if (!manual_path_.empty()) {
-      if (std::find(manual_paths_.begin(), manual_paths_.end(), manual_path_) == manual_paths_.end()) {
-        manual_paths_.push_back(manual_path_);
+    // Validate at input time: a pasted path with stray whitespace would only
+    // fail at connect time with an opaque network error.
+    const std::string path = trimmedPath(manual_path_);
+    if (!path.empty() && hasSpaceOrControl(path)) {
+      std::lock_guard<std::mutex> lock(catalog_mutex_);
+      api_status_ = "path not added: whitespace/control characters are not allowed";
+    } else if (!path.empty()) {
+      if (std::find(manual_paths_.begin(), manual_paths_.end(), path) == manual_paths_.end()) {
+        manual_paths_.push_back(path);
       }
-      if (!isSelected(manual_path_)) {
-        selected_.push_back(manual_path_);
+      if (!isSelected(path)) {
+        selected_.push_back(path);
       }
       manual_path_.clear();
     }
@@ -164,7 +175,13 @@ bool WebrtcDialog::onSelectionChanged(std::string_view widget_name, const std::v
       continue;
     }
     const bool manual = std::find(manual_paths_.begin(), manual_paths_.end(), label) != manual_paths_.end();
-    bool selectable = manual;
+    // A label the user ALREADY selected must survive a catalog wobble:
+    // mediamtx transiently reports a path with no tracks while it
+    // (re)connects, and the 1 Hz auto-refresh re-applies the selection — a
+    // hasH264 re-check here would silently drop it with no user action. The
+    // host never reports a non-selectable row as selected, so re-admitting
+    // previously-selected labels lets nothing else through.
+    bool selectable = manual || isSelected(label);
     if (!selectable) {
       for (const auto& p : catalog_) {
         if (p.name == label) {
@@ -196,7 +213,12 @@ bool WebrtcDialog::onTick() {
 
 void WebrtcDialog::onAccepted(std::string_view /*json*/) {}
 
-void WebrtcDialog::onRejected() {}
+void WebrtcDialog::onRejected() {
+  // Start cancelling a fetch in flight now; the destructor joins the thread.
+  if (fetch_abort_) {
+    fetch_abort_->abort();
+  }
+}
 
 std::string WebrtcDialog::saveConfig() const {
   nlohmann::json cfg;
@@ -262,6 +284,24 @@ bool WebrtcDialog::loadConfig(std::string_view config_json) {
     }
   }
   return true;
+}
+
+std::string WebrtcDialog::trimmedPath(std::string s) {
+  const auto is_space = [](char c) { return std::isspace(static_cast<unsigned char>(c)) != 0; };
+  while (!s.empty() && is_space(s.back())) {
+    s.pop_back();
+  }
+  while (!s.empty() && is_space(s.front())) {
+    s.erase(s.begin());
+  }
+  return s;
+}
+
+bool WebrtcDialog::hasSpaceOrControl(const std::string& s) {
+  return std::any_of(s.begin(), s.end(), [](char c) {
+    const auto u = static_cast<unsigned char>(c);
+    return u <= 0x20 || u == 0x7F;
+  });
 }
 
 std::string WebrtcDialog::toLower(std::string s) {
@@ -355,8 +395,9 @@ void WebrtcDialog::startFetch() {
   last_fetch_ = std::chrono::steady_clock::now();
   const std::string url = api_url_;
   const std::string token = bearer_;
-  fetch_thread_ = std::thread([this, url, token]() {
-    auto out = PJ::webrtc::fetchPathsList(url, token, std::chrono::seconds(2));
+  fetch_abort_ = std::make_shared<PJ::webrtc::HttpAbort>();  // latched: fresh per fetch
+  fetch_thread_ = std::thread([this, url, token, abort_handle = fetch_abort_]() {
+    auto out = PJ::webrtc::fetchPathsList(url, token, std::chrono::seconds(2), abort_handle);
     {
       std::lock_guard<std::mutex> lock(catalog_mutex_);
       if (out) {

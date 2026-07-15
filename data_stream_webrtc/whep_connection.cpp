@@ -139,66 +139,32 @@ PJ::Status WhepConnection::open(const WhepConnectionConfig& config) {
 
     pc_->setLocalDescription();  // builds the offer, starts ICE gathering
   } catch (const std::exception& e) {
-    if (track_) {
-      try {
-        track_->resetCallbacks();
-      } catch (...) {}
-    }
-    if (pc_) {
-      try {
-        pc_->resetCallbacks();
-      } catch (...) {}
-    }
-    pc_.reset();
-    track_.reset();
+    teardownPeer();  // a failed open() leaves the object fully closed
     return PJ::unexpected(std::string("offer setup failed: ") + e.what());
   }
 
+  http_abort_ = std::make_shared<HttpAbort>();  // latched: fresh per open()
   reportState(ConnectionState::kConnecting);
   try {
     worker_ = std::thread([this]() { runConnect(); });
   } catch (const std::exception& e) {
     // Same self-clean as the offer-setup catch: a failed open() leaves the
     // object fully closed and can never emit late state callbacks.
-    if (track_) {
-      try {
-        track_->resetCallbacks();
-      } catch (...) {}
-    }
-    if (pc_) {
-      try {
-        pc_->resetCallbacks();
-      } catch (...) {}
-    }
-    pc_.reset();
-    track_.reset();
+    teardownPeer();
     return PJ::unexpected(std::string("worker start failed: ") + e.what());
   }
   return PJ::okStatus();
 }
 
-void WhepConnection::close() {
-  {
-    std::lock_guard<std::mutex> lk(gather_mutex_);
-    closing_ = true;
-  }
-  gather_cv_.notify_all();
-  if (worker_.joinable()) {
-    worker_.join();
-  }
-  std::string session;
-  {
-    std::lock_guard<std::mutex> lk(session_mutex_);
-    session.swap(session_url_);
-  }
-  if (!session.empty()) {
-    deleteSession(session, config_.bearer_token, config_.delete_timeout);
-  }
+// Detach every libdatachannel callback and drop the PC + track. The explicit
+// onFrame(nullptr) matters: Track::onFrame installs a SEPARATE frame callback
+// (impl::Track) that Channel::resetCallbacks() does not clear, so skipping it
+// would leave an in-flight frame dispatch able to call onFrame() after
+// teardown. One helper for open()'s failure paths and close() so the sequence
+// cannot drift between them.
+void WhepConnection::teardownPeer() {
   if (track_) {
     try {
-      // Track::onFrame installs a SEPARATE frame callback (impl::Track) that
-      // Channel::resetCallbacks() does not clear; detach it explicitly first so
-      // no in-flight frame dispatch can call onFrame() after close() returns.
       track_->onFrame(nullptr);
       track_->resetCallbacks();
     } catch (...) {}
@@ -211,6 +177,29 @@ void WhepConnection::close() {
     pc_.reset();
   }
   track_.reset();
+}
+
+void WhepConnection::close() {
+  {
+    std::lock_guard<std::mutex> lk(gather_mutex_);
+    closing_ = true;
+  }
+  gather_cv_.notify_all();
+  if (http_abort_) {
+    http_abort_->abort();  // unblock a POST in flight on the worker (connect phase too)
+  }
+  if (worker_.joinable()) {
+    worker_.join();
+  }
+  std::string session;
+  {
+    std::lock_guard<std::mutex> lk(session_mutex_);
+    session.swap(session_url_);
+  }
+  if (!session.empty()) {
+    deleteSession(session, config_.bearer_token, config_.delete_timeout);
+  }
+  teardownPeer();
   on_state_ = {};
   on_error_ = {};
   {
@@ -297,7 +286,7 @@ void WhepConnection::runConnect() {
     return;
   }
 
-  auto out = postOffer(config_.whep_url, config_.bearer_token, offer_sdp, config_.connect_timeout);
+  auto out = postOffer(config_.whep_url, config_.bearer_token, offer_sdp, config_.connect_timeout, http_abort_);
   bool was_closing = false;
   {
     std::lock_guard<std::mutex> lk(gather_mutex_);

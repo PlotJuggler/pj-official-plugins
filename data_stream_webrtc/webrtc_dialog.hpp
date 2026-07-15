@@ -53,6 +53,12 @@ class WebrtcDialog : public PJ::DialogPluginTyped {
   // "http://host:8889" -> "http://host:9997" (mediamtx Control API default).
   static std::string deriveApiUrl(const std::string& server_url);
 
+  // Whitespace-trimmed copy of a user-typed path.
+  static std::string trimmedPath(std::string s);
+  // True if the path still carries whitespace/control bytes that could only
+  // fail later as an opaque URL error — reject at input time instead.
+  static bool hasSpaceOrControl(const std::string& s);
+
   bool passesFilter(const std::string& path) const;
   bool isSelected(const std::string& path) const;
   // True iff `path` is currently a visible row (catalog entry passing the
@@ -79,6 +85,10 @@ class WebrtcDialog : public PJ::DialogPluginTyped {
   std::vector<PJ::webrtc::WhepPathInfo> fetch_result_;
   std::string fetch_status_;
   std::thread fetch_thread_;
+  // Abort handle for the fetch in flight (fresh per startFetch): flipping it
+  // on reject/destroy bounds the fetch_thread_ join to milliseconds instead
+  // of the remaining pages' HTTP timeouts.
+  PJ::webrtc::HttpAbortPtr fetch_abort_;
   std::atomic<bool> fetch_done_{false};
   bool fetch_in_flight_ = false;
   std::chrono::steady_clock::time_point last_fetch_{};

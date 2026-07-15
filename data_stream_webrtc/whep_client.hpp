@@ -16,12 +16,62 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
+#include <memory>
 #include <pj_base/expected.hpp>
 #include <string>
 #include <vector>
 
 namespace PJ {
 namespace webrtc {
+
+// Cumulative response-byte accounting across ixwebsocket progress callbacks.
+// Socket::readBytes reports (bytes read so far in THIS call, this call's read
+// length), and chunked transfers run one readBytes per chunk — so `current`
+// alone under-counts a chunked response (each chunk restarts from 0). A new
+// call is detected when `current` drops OR `total` changes; the previous
+// call's bytes are then banked. Equal-size chunks each delivered in a single
+// recv show neither signal and slip past this detector —
+// postOffer/fetchPathsList keep their post-hoc body-size check as the second
+// layer. accept() returns false, and stays false (latched), once the
+// cumulative total exceeds the cap.
+class ResponseByteCounter {
+ public:
+  explicit ResponseByteCounter(std::size_t cap) : cap_(cap) {}
+  bool accept(int current, int total);
+
+ private:
+  std::size_t cap_;
+  std::size_t banked_ = 0;  // bytes of completed readBytes calls (chunks)
+  std::size_t last_ = 0;    // last `current` seen, to detect the per-chunk reset
+  int last_total_ = -1;     // last `total` seen; a change also marks a new call
+  bool exceeded_ = false;
+};
+
+// Cross-thread cancellation handle for the blocking calls below: abort() makes
+// an in-flight postOffer/fetchPathsList return promptly with kNetwork (the
+// connect phase included — ixwebsocket polls the cancel flag there too), and
+// any later call passed the same handle fail fast. Latched: create a fresh one
+// per connect attempt / fetch session.
+class HttpAbort {
+ public:
+  HttpAbort();
+  ~HttpAbort();
+  HttpAbort(const HttpAbort&) = delete;
+  HttpAbort& operator=(const HttpAbort&) = delete;
+
+  void abort();
+  bool aborted() const;
+
+  struct Impl;  // internal to whep_client.cpp: tracks live ix request args
+  Impl& impl() {
+    return *impl_;
+  }
+
+ private:
+  std::unique_ptr<Impl> impl_;
+};
+using HttpAbortPtr = std::shared_ptr<HttpAbort>;
 
 enum class WhepErrorKind {
   kUnauthorized,  // HTTP 401/403 — terminal until the user fixes the token
@@ -60,15 +110,17 @@ std::string resolveLocation(const std::string& request_url, const std::string& l
 // Timeout is clamped to >= 1s.
 [[nodiscard]] PJ::Expected<WhepResult, WhepError> postOffer(
     const std::string& whep_url, const std::string& bearer_token, const std::string& offer_sdp,
-    std::chrono::seconds timeout);
+    std::chrono::seconds timeout, const HttpAbortPtr& abort = nullptr);
 
 // Best-effort session teardown; errors are ignored (the server reaps stale
 // sessions on ICE timeout anyway). Timeout is clamped to >= 1s.
 void deleteSession(const std::string& session_url, const std::string& bearer_token, std::chrono::seconds timeout);
 
 // GET <api_url>/v3/paths/list and parse items[].{name,ready,tracks}. Timeout is clamped to >= 1s.
+// The abort handle is also re-checked between pagination pages.
 [[nodiscard]] PJ::Expected<std::vector<WhepPathInfo>, WhepError> fetchPathsList(
-    const std::string& api_url, const std::string& bearer_token, std::chrono::seconds timeout);
+    const std::string& api_url, const std::string& bearer_token, std::chrono::seconds timeout,
+    const HttpAbortPtr& abort = nullptr);
 
 }  // namespace webrtc
 }  // namespace PJ

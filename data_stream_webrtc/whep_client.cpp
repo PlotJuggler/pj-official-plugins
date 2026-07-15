@@ -12,13 +12,46 @@
 #include <ixwebsocket/IXHttpClient.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstddef>
+#include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <utility>
+#include <vector>
 
 namespace PJ {
 namespace webrtc {
+
+struct HttpAbort::Impl {
+  std::atomic<bool> aborted{false};
+  std::mutex mutex;
+  // weak_ptr: an args object only stays reachable while its HTTP call runs;
+  // holding it strongly would leak the callback->args cycle makeArgs avoids.
+  std::vector<std::weak_ptr<ix::HttpRequestArgs>> live;
+
+  void registerArgs(const ix::HttpRequestArgsPtr& args) {
+    std::lock_guard<std::mutex> lk(mutex);
+    live.erase(std::remove_if(live.begin(), live.end(), [](const auto& w) { return w.expired(); }), live.end());
+    live.push_back(args);
+    if (aborted.load()) {
+      args->cancel = true;  // abort() raced this registration
+    }
+  }
+
+  void abortAll() {
+    aborted.store(true);
+    std::lock_guard<std::mutex> lk(mutex);
+    for (auto& w : live) {
+      if (auto args = w.lock()) {
+        // args->cancel is std::atomic<bool>, polled by ixwebsocket's connect
+        // AND transfer loops — safe and effective from any thread.
+        args->cancel = true;
+      }
+    }
+  }
+};
 
 namespace {
 
@@ -62,25 +95,32 @@ std::string originOf(const std::string& url) {
   return (path_start == std::string::npos) ? url : url.substr(0, path_start);
 }
 
-ix::HttpRequestArgsPtr makeArgs(ix::HttpClient& client, const std::string& bearer_token, std::chrono::seconds timeout) {
+ix::HttpRequestArgsPtr makeArgs(
+    ix::HttpClient& client, const std::string& bearer_token, std::chrono::seconds timeout, const HttpAbortPtr& abort) {
   auto args = client.createRequest();
   const int secs = std::max(1, static_cast<int>(timeout.count()));
   args->connectTimeout = secs;
   args->transferTimeout = secs;
   args->followRedirects = false;
-  // Response size cap. ixwebsocket 11.4.6 IGNORES the callback's bool in the
-  // HTTP receive path (Socket::readBytes), so returning false alone would not
-  // stop anything: flip args->cancel, which the transfer loop's cancellation
-  // check does honor (surfaces as a transport error -> kNetwork). Raw pointer,
-  // not the shared_ptr, to avoid an args->callback->args ownership cycle.
+  // Response size cap, cumulative across chunked reads (ResponseByteCounter:
+  // Socket::readBytes restarts `current` at every chunk). ixwebsocket 11.4.6
+  // IGNORES the callback's bool in the HTTP receive path, so returning false
+  // alone would not stop anything: flip args->cancel, which the transfer
+  // loop's cancellation check does honor (surfaces as a transport error ->
+  // kNetwork). Raw pointer, not the shared_ptr, to avoid an
+  // args->callback->args ownership cycle.
   ix::HttpRequestArgs* raw_args = args.get();
-  args->onProgressCallback = [raw_args](int current, int /*total*/) -> bool {
-    const bool within_cap = current >= 0 && static_cast<std::size_t>(current) <= kMaxHttpResponseBytes;
+  args->onProgressCallback = [raw_args, counter = ResponseByteCounter(kMaxHttpResponseBytes)](
+                                 int current, int total) mutable -> bool {
+    const bool within_cap = counter.accept(current, total);
     if (!within_cap) {
       raw_args->cancel = true;
     }
     return within_cap;
   };
+  if (abort) {
+    abort->impl().registerArgs(args);
+  }
   if (!bearer_token.empty()) {
     args->extraHeaders["Authorization"] = "Bearer " + bearer_token;
   }
@@ -102,6 +142,34 @@ WhepError errorFromResponse(const ix::HttpResponsePtr& res) {
 }
 
 }  // namespace
+
+bool ResponseByteCounter::accept(int current, int total) {
+  if (exceeded_ || current < 0) {
+    exceeded_ = true;
+    return false;
+  }
+  const auto cur = static_cast<std::size_t>(current);
+  // A new readBytes call (= next chunk) restarts `current` and usually changes
+  // `total` (this call's read length): either signal banks the previous call.
+  if (cur < last_ || total != last_total_) {
+    banked_ += last_;
+  }
+  last_ = cur;
+  last_total_ = total;
+  exceeded_ = banked_ + cur > cap_;
+  return !exceeded_;
+}
+
+HttpAbort::HttpAbort() : impl_(std::make_unique<Impl>()) {}
+HttpAbort::~HttpAbort() = default;
+
+void HttpAbort::abort() {
+  impl_->abortAll();
+}
+
+bool HttpAbort::aborted() const {
+  return impl_->aborted.load();
+}
 
 std::string buildWhepUrl(const std::string& server_url, const std::string& path) {
   std::string base = server_url;
@@ -139,12 +207,15 @@ std::string resolveLocation(const std::string& request_url, const std::string& l
 
 PJ::Expected<WhepResult, WhepError> postOffer(
     const std::string& whep_url, const std::string& bearer_token, const std::string& offer_sdp,
-    std::chrono::seconds timeout) {
+    std::chrono::seconds timeout, const HttpAbortPtr& abort) {
+  if (abort && abort->aborted()) {
+    return PJ::unexpected(WhepError{WhepErrorKind::kNetwork, "aborted"});
+  }
   if (!bearer_token.empty() && !bearerTokenSane(bearer_token)) {
     return PJ::unexpected(WhepError{WhepErrorKind::kUnauthorized, "invalid bearer token"});
   }
   ix::HttpClient client;
-  auto args = makeArgs(client, bearer_token, timeout);
+  auto args = makeArgs(client, bearer_token, timeout, abort);
   args->extraHeaders["Content-Type"] = "application/sdp";
   auto res = client.post(whep_url, offer_sdp, args);
   if (!res || res->errorCode != ix::HttpErrorCode::Ok || (res->statusCode != 201 && res->statusCode != 200)) {
@@ -183,12 +254,13 @@ void deleteSession(const std::string& session_url, const std::string& bearer_tok
     return;  // refuse to send a header-injecting token anywhere
   }
   ix::HttpClient client;
-  auto args = makeArgs(client, bearer_token, timeout);
+  auto args = makeArgs(client, bearer_token, timeout, nullptr);
   (void)client.request(session_url, "DELETE", "", args);
 }
 
 PJ::Expected<std::vector<WhepPathInfo>, WhepError> fetchPathsList(
-    const std::string& api_url, const std::string& bearer_token, std::chrono::seconds timeout) {
+    const std::string& api_url, const std::string& bearer_token, std::chrono::seconds timeout,
+    const HttpAbortPtr& abort) {
   if (!bearer_token.empty() && !bearerTokenSane(bearer_token)) {
     return PJ::unexpected(WhepError{WhepErrorKind::kUnauthorized, "invalid bearer token"});
   }
@@ -206,8 +278,13 @@ PJ::Expected<std::vector<WhepPathInfo>, WhepError> fetchPathsList(
   int page_count = 1;
   std::vector<WhepPathInfo> paths;
   for (int page = 0; page < page_count && page < kMaxPages; ++page) {
+    // Re-checked per page: a dialog closing mid-fetch must not sit through the
+    // remaining pages' connect/transfer timeouts.
+    if (abort && abort->aborted()) {
+      return PJ::unexpected(WhepError{WhepErrorKind::kNetwork, "aborted"});
+    }
     ix::HttpClient client;
-    auto args = makeArgs(client, bearer_token, timeout);
+    auto args = makeArgs(client, bearer_token, timeout, abort);
     auto res = client.get(list_url + "?page=" + std::to_string(page), args);
     if (!res || res->errorCode != ix::HttpErrorCode::Ok || res->statusCode != 200) {
       return PJ::unexpected(errorFromResponse(res));  // no partial results

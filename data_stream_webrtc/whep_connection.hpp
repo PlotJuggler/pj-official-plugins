@@ -10,9 +10,10 @@
 // THREADING: onFrame fires on a libdatachannel worker thread; the connect
 // sequence runs on this object's own worker thread (blocking HTTP must never
 // run on the poll thread or a libdatachannel callback). frames_mutex_ guards
-// the queue + normalizer. close() joins the worker, best-effort DELETEs the
-// session, and detaches every callback; it may block up to the in-flight HTTP
-// timeout (a few seconds worst case). This class never calls host methods.
+// the queue + normalizer. close() aborts any in-flight WHEP POST (connect
+// phase included), joins the worker, best-effort DELETEs the session (bounded
+// by delete_timeout), and detaches every callback. This class never calls
+// host methods.
 #pragma once
 
 #include <atomic>
@@ -124,7 +125,8 @@ class WhepConnection {
   static constexpr size_t kMaxQueuedFrames = 256;
 
   void onFrame(const uint8_t* data, size_t size);
-  void runConnect();  // worker thread body
+  void runConnect();    // worker thread body
+  void teardownPeer();  // detach all libdatachannel callbacks, drop PC + track
   void reportState(ConnectionState s);
   // Finalize a failed connect attempt: state -> kFailed (plain store — the
   // error callback IS the notification; reportState would double-notify) and
@@ -135,6 +137,7 @@ class WhepConnection {
   std::shared_ptr<rtc::PeerConnection> pc_;
   std::shared_ptr<rtc::Track> track_;  // RETAIN: libdatachannel keeps only a weak ref
   WhepConnectionConfig config_;
+  HttpAbortPtr http_abort_;  // fresh per open(); close() aborts the in-flight POST
 
   std::mutex frames_mutex_;
   H264AnnexBNormalizer normalizer_;

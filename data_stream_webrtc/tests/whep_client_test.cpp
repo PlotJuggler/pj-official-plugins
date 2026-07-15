@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -48,6 +49,44 @@ TEST(WhepUrl, ResolveLocationHostRelative) {
 
 TEST(WhepUrl, ResolveLocationPathRelative) {
   EXPECT_EQ(resolveLocation("http://h:8889/cam0/whep", "abc-123"), "http://h:8889/cam0/abc-123");
+}
+
+TEST(ResponseByteCounter, CumulativeCurrentWithinOneCallStaysUnderCap) {
+  ResponseByteCounter c(1000);
+  EXPECT_TRUE(c.accept(100, 1000));
+  EXPECT_TRUE(c.accept(1000, 1000));  // Socket::readBytes reports cumulative bytes per call
+}
+
+TEST(ResponseByteCounter, OverCapLatchesEvenAfterReset) {
+  ResponseByteCounter c(1000);
+  EXPECT_FALSE(c.accept(1001, 2000));
+  EXPECT_FALSE(c.accept(10, 2000));  // latched: a new small reading must not re-admit
+  ResponseByteCounter neg(1000);
+  EXPECT_FALSE(neg.accept(-1, 0));  // defensive: negative progress is never OK
+}
+
+TEST(ResponseByteCounter, PerChunkResetsAccumulateAcrossCalls) {
+  // Chunked transfers invoke readBytes once per chunk, so `current` restarts
+  // from 0 at every chunk: a drop below the previous value marks a new chunk
+  // whose predecessor's bytes must be banked.
+  ResponseByteCounter c(1000);
+  EXPECT_TRUE(c.accept(600, 600));   // chunk 1
+  EXPECT_TRUE(c.accept(300, 300));   // chunk 2: cumulative 900
+  EXPECT_FALSE(c.accept(200, 200));  // chunk 3: cumulative 1100 > cap
+}
+
+TEST(ResponseByteCounter, GrowingSingleRecvChunksDetectedViaTotal) {
+  // Chunks that GROW never make `current` drop; the change in `total` (the
+  // per-call read length) is what marks the boundary here.
+  ResponseByteCounter c(1000);
+  EXPECT_TRUE(c.accept(600, 600));   // chunk 1, one recv
+  EXPECT_FALSE(c.accept(800, 800));  // chunk 2, one recv: cumulative 1400 > cap
+}
+
+TEST(ResponseByteCounter, RepeatedSameValueDoesNotDoubleCount) {
+  ResponseByteCounter c(1000);
+  EXPECT_TRUE(c.accept(800, 1000));
+  EXPECT_TRUE(c.accept(800, 1000));  // waiting-for-data repeat within the same call
 }
 
 // Records every request; replies with a configurable canned response.
@@ -86,6 +125,9 @@ class StubWhepServer {
           it = req->headers.find("Content-Type");
           s.content_type = (it != req->headers.end()) ? it->second : "";
           seen_.push_back(std::move(s));
+          if (on_request_) {
+            on_request_();  // test hook (e.g. flip an HttpAbort mid-pagination)
+          }
           Reply reply;  // default 200/{}/"" when nothing was scripted
           if (!replies_.empty()) {
             reply = replies_[std::min(next_reply_, replies_.size() - 1)];
@@ -122,16 +164,23 @@ class StubWhepServer {
     std::lock_guard<std::mutex> lk(mutex_);
     return seen_;
   }
+  // Runs on the server thread after each request is recorded, before replying.
+  // Must not call back into the stub (would deadlock on mutex_).
+  void setOnRequest(std::function<void()> fn) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    on_request_ = std::move(fn);
+  }
 
  private:
   static constexpr int kFixedPort = 18889;
 
   ix::HttpServer server_;
   bool listening_ = false;
-  std::mutex mutex_;  // guards replies_, next_reply_ and seen_ (test thread vs server thread)
+  std::mutex mutex_;  // guards replies_, next_reply_, seen_ and on_request_ (test thread vs server thread)
   std::vector<Reply> replies_;
   std::size_t next_reply_ = 0;
   std::vector<Seen> seen_;
+  std::function<void()> on_request_;
 };
 
 TEST(WhepPost, HappyPath201RelativeLocation) {
@@ -358,6 +407,48 @@ TEST(WhepPathsList, FollowsPagination) {
   EXPECT_EQ(seen[0].method, "GET");
   EXPECT_EQ(seen[0].uri, "/v3/paths/list?page=0");
   EXPECT_EQ(seen[1].uri, "/v3/paths/list?page=1");
+}
+
+TEST(WhepPost, AbortPreSetSkipsRequest) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  ix::WebSocketHttpHeaders h;
+  h["Location"] = "/s/1";
+  stub.setReply(201, h, "ANSWER");
+  auto abort_handle = std::make_shared<HttpAbort>();
+  abort_handle->abort();
+  auto out = postOffer(stub.baseUrl() + "/cam0/whep", "", "OFFER", std::chrono::seconds(5), abort_handle);
+  ASSERT_FALSE(out);
+  EXPECT_EQ(out.error().kind, WhepErrorKind::kNetwork);
+  EXPECT_TRUE(stub.seen().empty());  // aborted before any request went out
+}
+
+TEST(WhepPathsList, AbortPreSetSkipsAllRequests) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  stub.setReply(200, {}, R"({"items":[]})");
+  auto abort_handle = std::make_shared<HttpAbort>();
+  abort_handle->abort();
+  auto out = fetchPathsList(stub.baseUrl(), "", std::chrono::seconds(5), abort_handle);
+  ASSERT_FALSE(out);
+  EXPECT_EQ(out.error().kind, WhepErrorKind::kNetwork);
+  EXPECT_TRUE(stub.seen().empty());
+}
+
+TEST(WhepPathsList, AbortDuringPaginationStopsFetching) {
+  StubWhepServer stub;
+  ASSERT_TRUE(stub.listening());
+  stub.setReplies({
+      {200, {}, R"({"pageCount":3,"items":[{"name":"cam0","ready":true,"tracks":["H264"]}]})"},
+      {200, {}, R"({"pageCount":3,"items":[{"name":"cam1","ready":true,"tracks":["H264"]}]})"},
+  });
+  auto abort_handle = std::make_shared<HttpAbort>();
+  // Flip the abort while page 0 is being served: the fetch must not request
+  // page 1 (checked between pages) and must return an error, not partials.
+  stub.setOnRequest([abort_handle]() { abort_handle->abort(); });
+  auto out = fetchPathsList(stub.baseUrl(), "", std::chrono::seconds(5), abort_handle);
+  ASSERT_FALSE(out);
+  EXPECT_EQ(stub.seen().size(), 1u);
 }
 
 }  // namespace
