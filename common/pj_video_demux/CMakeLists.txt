@@ -49,7 +49,11 @@ if(TARGET GTest::gtest_main)
   endif()
   # Committed h264/hevc/av1 fixtures drive the per-codec index+read e2e tests.
   target_compile_definitions(pj_video_demux_test PRIVATE
-    PJ_VIDEO_DEMUX_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+    PJ_VIDEO_DEMUX_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+    # MSVC flags std::getenv (used by the PJ_TEST_VIDEO env-gated test) as
+    # deprecated C4996 and -WX turns that into an error. Silence it for the
+    # test target only; production code paths never call getenv.
+    $<$<CXX_COMPILER_ID:MSVC>:_CRT_SECURE_NO_WARNINGS>)
   target_link_libraries(pj_video_demux_test PRIVATE pj_video_demux GTest::gtest_main)
   add_test(NAME pj_video_demux_test COMMAND pj_video_demux_test)
 endif()
