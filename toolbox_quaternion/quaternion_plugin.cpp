@@ -4,6 +4,8 @@
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <pj_base/sdk/plugin_data_api.hpp>
+#include <pj_base/sdk/service_traits.hpp>
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
@@ -48,6 +50,9 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
         .setChecked("radio_radians", !degrees_)
         .setText("status_label", status_msg_)
         .setEnabled("save_button", isValid());
+
+    // Empty-state hint shown as a centered overlay while the chart has no series.
+    wd.setChartPlaceholder("chart_preview", "Drag and Drop Quaternion values in the frames above.");
 
     // Compute and attach preview chart if inputs are valid.
     if (isValid()) {
@@ -320,16 +325,16 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
 class QuaternionToolbox : public PJ::ToolboxPluginBase {
  public:
   QuaternionToolbox() {
-    // Wire the dialog's Save button to the transform. Non-modal toolbox panels
-    // don't round-trip accept()/loadConfig() on Save, so this is the path that
-    // actually materializes the RPY series when the user clicks Save.
+    // Wire the dialog's Save button to (re)install the transform. Non-modal toolbox
+    // panels don't round-trip accept()/loadConfig() on Save, so this is the path
+    // that hands the host the Luau class when the user clicks Save.
     dialog_.setOnSave([this]() {
-      if (!dialog_.isValid() || !toolboxHostBound() || !runtimeHostBound()) {
+      if (!dialog_.isValid()) {
         return;
       }
+      created_ = false;  // an explicit Save always rebuilds with the current options
       if (auto status = applyTransform(); !status) {
-        runtimeHost().reportMessage(
-            PJ::ToolboxMessageLevel::kWarning, "quaternion save failed: " + std::string(status.error()));
+        reportWarning("quaternion save failed: " + std::string(status.error()));
       }
     });
 
@@ -344,11 +349,18 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
     return PJ::kToolboxCapabilityHasDialog | PJ::kToolboxCapabilityNonModalDialog;
   }
 
-  void resetIncrementalState() {
-    source_handle_ = std::nullopt;
-    topic_handle_ = std::nullopt;
-    processed_count_ = 0;
-    converter_.reset();
+  PJ::Status bind(PJ::sdk::ServiceRegistry services) override {
+    auto status = ToolboxPluginBase::bind(services);
+    if (!status) {
+      return status;
+    }
+    // Request the data-processors host bridge: the plugin hands the host a Luau
+    // class (4 inputs -> 3 outputs) run live as a DerivedEngine node instead of
+    // computing RPY itself. Optional — an older host simply won't expose it.
+    if (auto dp = services.get<PJ::sdk::DataProcessorsHostService>()) {
+      dp_view_ = *dp;
+    }
+    return PJ::okStatus();
   }
 
   PJ_borrowed_dialog_t getDialog() override {
@@ -368,26 +380,52 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
       return PJ::unexpected("invalid config JSON");
     }
     if (dialog_.saveConfig() != prev_config) {
-      resetIncrementalState();
+      created_ = false;  // options changed -> the node must be rebuilt
     }
-    if (dialog_.isValid() && toolboxHostBound() && runtimeHostBound()) {
-      return applyTransform();
+    if (dialog_.isValid() && dp_view_.valid()) {
+      // Best-effort: if the inputs are not resolvable yet (a layout restored before
+      // its data loaded), this is NOT a config-load failure — onDataChanged reinstalls
+      // once the data arrives (created_ stays false on a failed apply). Swallow the
+      // error so the layout still loads cleanly.
+      (void)applyTransform();
     }
     return PJ::okStatus();
   }
 
   void onDataChanged() override {
-    if (!toolboxHostBound() || !runtimeHostBound() || !dialog_.isValid()) {
+    if (!dialog_.isValid() || !dp_view_.valid()) {
       return;
     }
-    auto status = applyTransform();
-    if (!status) {
-      runtimeHost().reportMessage(
-          PJ::ToolboxMessageLevel::kWarning, "quaternion re-apply failed: " + std::string(status.error()));
+    // The host node recomputes live once installed, so usually there is nothing to
+    // do. Two cases still need a (re)install: the config arrived before the data (so
+    // the inputs could not be resolved at loadConfig time), and a session clear /
+    // dataset reload that tore the node down while created_ stayed set. Detect the
+    // latter by checking the node is still among the host's live processors.
+    if (created_ && nodeStillInstalled()) {
+      return;
+    }
+    if (auto status = applyTransform(); !status) {
+      reportWarning("quaternion apply failed: " + std::string(status.error()));
     }
   }
 
  private:
+  // True when the node we last installed is still among the host's live processors.
+  // Lets onDataChanged notice a teardown (session clear / dataset reload) and
+  // reinstall. list() is optional in the ABI; if the host does not expose it we
+  // cannot observe a teardown, so assume the node persists (the created_-only
+  // behavior) rather than rebuilding the script on every data change.
+  [[nodiscard]] bool nodeStillInstalled() const {
+    if (last_id_.empty()) {
+      return false;
+    }
+    auto ids = dp_view_.list();
+    if (!ids) {
+      return true;
+    }
+    return std::find(ids->begin(), ids->end(), last_id_) != ids->end();
+  }
+
   // Pull the catalog into the dialog: the field names it validates drops
   // against and the per-series data the preview chart plots. Called at two
   // discrete moments — when the dialog opens (getDialog) and when the user
@@ -440,145 +478,141 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
   }
 
   PJ::Status applyTransform() {
-    auto host = toolboxHost();
-
-    // 1. Discover fields from catalog.
-    auto catalog = host.catalogSnapshot();
-    if (!catalog) {
-      return PJ::unexpected("failed to acquire catalog: " + std::string(catalog.error()));
+    if (!dp_view_.valid()) {
+      return PJ::unexpected("host did not expose pj.data_processors.v1");
     }
 
-    auto find_field = [&](const std::string& full_name) -> PJ::Expected<PJ::sdk::FieldHandle> {
-      auto all_fields = catalog->fields();
-      for (const auto& topic : catalog->topics()) {
-        std::string topic_name(PJ::sdk::toStringView(topic.name));
-        for (uint32_t fi = topic.first_field; fi < topic.first_field + topic.field_count; ++fi) {
-          const auto& f = all_fields[fi];
-          std::string qualified = topic_name + "/" + std::string(PJ::sdk::toStringView(f.name));
-          if (qualified == full_name) {
-            return f.handle;
-          }
-        }
-      }
-      return PJ::unexpected("field not found: " + full_name);
-    };
+    // Inputs are FIELD names ("quat/w", "quat/x", ...); the host resolves each to a
+    // topic column (field-level binding). The order is w, x, y, z so the script's
+    // calculate(time, value, v1, v2, v3) reads value=w, v1=x, v2=y, v3=z.
+    const std::array<std::string, 4> input_names = {
+        dialog_.inputW(), dialog_.inputX(), dialog_.inputY(), dialog_.inputZ()};
 
-    auto field_x = find_field(dialog_.inputX());
-    auto field_y = find_field(dialog_.inputY());
-    auto field_z = find_field(dialog_.inputZ());
-    auto field_w = find_field(dialog_.inputW());
+    // Output: ONE topic with named columns roll/pitch/yaw (single-topic parity). The
+    // host's grouped-output convention is a single structured "<topic>:f1,f2,..."
+    // entry — the prefix (sans trailing '/') is the topic, the script returns the 3
+    // values that fill the 3 columns.
+    std::string topic = dialog_.outputPrefix();
+    while (!topic.empty() && topic.back() == '/') {
+      topic.pop_back();
+    }
+    // ':' separates topic from fields and ',' separates fields in the grouped-output
+    // spec; a topic containing either would corrupt the host's parse, so neutralize
+    // them (the prefix is free-form user text).
+    std::replace(topic.begin(), topic.end(), ':', '_');
+    std::replace(topic.begin(), topic.end(), ',', '_');
+    if (topic.empty()) {
+      topic = "rpy";
+    }
+    const std::string id = topic;  // host namespaces it under the plugin id
+    const std::string grouped_output = topic + ":roll,pitch,yaw";
 
-    if (!field_x || !field_y || !field_z || !field_w) {
-      std::string err = "Missing input fields:";
-      if (!field_x) {
-        err += " X(" + dialog_.inputX() + ")";
-      }
-      if (!field_y) {
-        err += " Y(" + dialog_.inputY() + ")";
-      }
-      if (!field_z) {
-        err += " Z(" + dialog_.inputZ() + ")";
-      }
-      if (!field_w) {
-        err += " W(" + dialog_.inputW() + ")";
-      }
-      dialog_.setStatus(err);
-      return PJ::unexpected(err);
+    // Re-target: drop a node whose id changed (the output prefix was edited) so the
+    // old output does not linger orphaned alongside the new one.
+    if (!last_id_.empty() && last_id_ != id) {
+      (void)dp_view_.remove(last_id_);
     }
 
-    // 2. Read input series.
-    auto series_x = host.readSeries(*field_x);
-    auto series_y = host.readSeries(*field_y);
-    auto series_z = host.readSeries(*field_z);
-    auto series_w = host.readSeries(*field_w);
+    const std::string script = buildScript(id, dialog_.degrees(), dialog_.unwrap());
+    const std::vector<std::string_view> inputs(input_names.begin(), input_names.end());
+    const std::vector<std::string_view> outputs = {grouped_output};
 
-    if (!series_x || !series_y || !series_z || !series_w) {
-      return PJ::unexpected("failed to read one or more input series");
+    auto status = dp_view_.createTransform(
+        id, PJ::Span<const std::string_view>(inputs.data(), inputs.size()),
+        PJ::Span<const std::string_view>(outputs.data(), outputs.size()), script, "{}");
+    if (!status) {
+      dialog_.setStatus("Create failed: " + std::string(status.error()));
+      return status;
     }
 
-    auto ts = series_x->timestamps();
-    size_t count = ts.size();
-    if (count == 0) {
-      dialog_.setStatus("Input series are empty");
-      return PJ::okStatus();
+    last_id_ = id;
+    created_ = true;
+    if (runtimeHostBound()) {
+      runtimeHost().notifyDataChanged();
     }
-
-    // Validate all series have the same length.
-    if (series_y->timestamps().size() != count || series_z->timestamps().size() != count ||
-        series_w->timestamps().size() != count) {
-      return PJ::unexpected("input series have different lengths");
-    }
-
-    // 3. Configure converter (reuse state for incremental processing).
-    converter_.setScale(dialog_.degrees() ? kDegPerRad : 1.0);
-    converter_.setUnwrap(dialog_.unwrap());
-
-    // Grab typed value pointers from the Arrow-backed series views.
-    const double* vals_x = series_x->valuesAsFloat64();
-    const double* vals_y = series_y->valuesAsFloat64();
-    const double* vals_z = series_z->valuesAsFloat64();
-    const double* vals_w = series_w->valuesAsFloat64();
-
-    if (vals_x == nullptr || vals_y == nullptr || vals_z == nullptr || vals_w == nullptr) {
-      return PJ::unexpected("input series must be float64");
-    }
-
-    // 4. Create data source and topic only on first invocation.
-    if (!source_handle_) {
-      auto source = host.createDataSource("quaternion_rpy");
-      if (!source) {
-        return PJ::unexpected("failed to create output data source");
-      }
-      source_handle_ = *source;
-    }
-
-    if (!topic_handle_) {
-      std::string prefix = dialog_.outputPrefix();
-      auto topic = host.ensureTopic(*source_handle_, prefix + "rpy");
-      if (!topic) {
-        return PJ::unexpected("failed to create output topic");
-      }
-      topic_handle_ = *topic;
-    }
-
-    // 5. Process only new points (incremental).
-    size_t start = processed_count_;
-    if (start >= count) {
-      dialog_.setStatus("No new samples to process");
-      return PJ::okStatus();
-    }
-
-    for (size_t i = start; i < count; ++i) {
-      std::array<double, 4> quat = {vals_x[i], vals_y[i], vals_z[i], vals_w[i]};
-
-      std::array<double, 3> rpy{};
-      converter_.convert(i, quat, rpy);
-
-      const PJ::sdk::NamedFieldValue fields[] = {
-          {.name = "roll", .value = rpy[0]},
-          {.name = "pitch", .value = rpy[1]},
-          {.name = "yaw", .value = rpy[2]},
-      };
-
-      auto status = host.appendRecord(*topic_handle_, ts[i], PJ::Span<const PJ::sdk::NamedFieldValue>(fields));
-      if (!status) {
-        return PJ::unexpected("failed to append record at index " + std::to_string(i));
-      }
-    }
-
-    processed_count_ = count;
-    runtimeHost().notifyDataChanged();
-    dialog_.setStatus("Converted " + std::to_string(count) + " samples (" + std::to_string(count - start) + " new)");
+    dialog_.setStatus("Created roll/pitch/yaw transform.");
     return PJ::okStatus();
   }
 
-  QuaternionDialog dialog_;
+  void reportWarning(const std::string& message) {
+    if (runtimeHostBound()) {
+      runtimeHost().reportMessage(PJ::ToolboxMessageLevel::kWarning, message);
+    }
+  }
 
-  // Incremental processing state — persists across applyTransform() calls.
-  QuaternionToRPYConverter converter_;
-  std::optional<PJ::sdk::DataSourceHandle> source_handle_;
-  std::optional<PJ::sdk::TopicHandle> topic_handle_;
-  size_t processed_count_ = 0;
+  // Build a self-describing Luau filter class (4 inputs -> 3 outputs) that the host
+  // compiles and runs live as a DerivedEngine node. It ports QuaternionToRPYConverter:
+  // normalize the quaternion, derive roll/pitch/yaw from the rotation matrix (asin
+  // clamped at the gimbal-lock poles), then optionally unwrap each angle into a
+  // continuous signal. The per-instance unwrap state lives in the factory closure,
+  // so it persists across the host's per-sample calculate() calls (the engine drives
+  // calculate in ascending timestamp order). `degrees` bakes the rad->deg scale into
+  // the script; `unwrap` toggles the +/-2*pi continuity correction.
+  static std::string buildScript(const std::string& id, bool degrees, bool unwrap) {
+    std::string s;
+    s += "-- pj-script: luau\n";
+    s += "local function _pj_make()\n";
+    s += "  local SCALE = ";
+    s += degrees ? "180.0 / math.pi" : "1.0";
+    s += "\n";
+    s += "  local UNWRAP = ";
+    s += unwrap ? "true" : "false";
+    s += "\n";
+    s += "  local WRAP = 2.0 * math.pi\n";
+    s += "  local THRESH = 1.95 * math.pi\n";
+    s += "  local prev = { 0.0, 0.0, 0.0 }\n";
+    s += "  local off = { 0.0, 0.0, 0.0 }\n";
+    s += "  local first = true\n";
+    s += "  local function unwrap_angle(cur, i)\n";
+    s += "    if (not first) and UNWRAP then\n";
+    s += "      if (cur - prev[i]) > THRESH then\n";
+    s += "        off[i] = off[i] - WRAP\n";
+    s += "      elseif (prev[i] - cur) > THRESH then\n";
+    s += "        off[i] = off[i] + WRAP\n";
+    s += "      end\n";
+    s += "    end\n";
+    s += "    prev[i] = cur\n";
+    s += "    return cur + off[i]\n";
+    s += "  end\n";
+    s += "  return function(time, value, v1, v2, v3)\n";
+    s += "    local qw, qx, qy, qz = value, v1, v2, v3\n";
+    s += "    local norm2 = qw*qw + qx*qx + qy*qy + qz*qz\n";
+    s += "    if math.abs(norm2 - 1.0) > 1e-12 then\n";
+    s += "      local inv = 1.0 / math.sqrt(norm2)\n";
+    s += "      qx, qy, qz, qw = qx*inv, qy*inv, qz*inv, qw*inv\n";
+    s += "    end\n";
+    s += "    local sinr = 2.0 * (qw*qx + qy*qz)\n";
+    s += "    local cosr = 1.0 - 2.0 * (qx*qx + qy*qy)\n";
+    s += "    local roll = math.atan2(sinr, cosr)\n";
+    s += "    local sinp = 2.0 * (qw*qy - qz*qx)\n";
+    s += "    local pitch\n";
+    s += "    if math.abs(sinp) >= 1.0 then\n";
+    s += "      pitch = (sinp >= 0.0 and 1.0 or -1.0) * (math.pi / 2.0)\n";
+    s += "    else\n";
+    s += "      pitch = math.asin(sinp)\n";
+    s += "    end\n";
+    s += "    local siny = 2.0 * (qw*qz + qx*qy)\n";
+    s += "    local cosy = 1.0 - 2.0 * (qy*qy + qz*qz)\n";
+    s += "    local yaw = math.atan2(siny, cosy)\n";
+    s += "    local r = unwrap_angle(roll, 1)\n";
+    s += "    local p = unwrap_angle(pitch, 2)\n";
+    s += "    local y = unwrap_angle(yaw, 3)\n";
+    s += "    first = false\n";
+    s += "    return SCALE*r, SCALE*p, SCALE*y\n";
+    s += "  end\n";
+    s += "end\n";
+    s += "local T = { id = \"" + id + "\", name = \"" + id + "\", output = \"double\" }\n";
+    s += "T.__index = T\n";
+    s += "function T.create(_) return setmetatable({ fn = _pj_make() }, T) end\n";
+    s += "function T:calculate(t, v, ...) return self.fn(t, v, ...) end\n";
+    s += "return T\n";
+    return s;
+  }
+
+  QuaternionDialog dialog_;
+  PJ::sdk::DataProcessorsHostView dp_view_;
+  std::string last_id_;   // id of the currently installed node (for re-target/remove)
+  bool created_ = false;  // a live host node currently exists for this config
 };
 
 }  // namespace

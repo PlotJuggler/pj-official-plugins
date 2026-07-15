@@ -35,6 +35,7 @@
  */
 
 #include <cstring>
+#include <pj_pointcloud_color/pointcloud_color.hpp>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -49,9 +50,12 @@ namespace {
 // Bytes per pixel for the raw ROS image encodings parser_ros consumes. Used
 // only to validate that row_step >= width * bpp. Encoding strings are
 // emitted into Image::encoding verbatim — the consumer routes by string.
+// Bayer CFA encodings (bayer_*8) carry one raw mosaic sample per pixel, so they
+// are 1 byte/pixel here; demosaicing to RGB happens downstream in the viewer.
 const std::unordered_map<std::string, uint32_t>& kRosImageBytesPerPixel() {
   static const std::unordered_map<std::string, uint32_t> kMap = {
-      {"rgb8", 3}, {"rgba8", 4}, {"bgr8", 3}, {"bgra8", 4}, {"mono8", 1}, {"mono16", 2}, {"16UC1", 2},
+      {"rgb8", 3},  {"rgba8", 4}, {"bgr8", 3},        {"bgra8", 4},       {"mono8", 1},       {"mono16", 2},
+      {"16UC1", 2}, {"32FC1", 4}, {"bayer_rggb8", 1}, {"bayer_grbg8", 1}, {"bayer_gbrg8", 1}, {"bayer_bggr8", 1},
   };
   return kMap;
 }
@@ -92,7 +96,7 @@ inline uint8_t readU8(RosMsgParser::Deserializer& d) {
 //   header                  std_msgs/Header  (handled by readHeader())
 //   height                  uint32
 //   width                   uint32
-//   encoding                string (e.g. "rgb8", "bgr8", "mono8", "mono16", "16UC1", …)
+//   encoding                string (e.g. "rgb8", "bgr8", "mono8", "mono16", "16UC1", "bayer_rggb8", …)
 //   is_bigendian            uint8
 //   step                    uint32
 //   data                    uint8[height*step]
@@ -111,7 +115,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseImage(PJ::Timestamp ts, PJ::
     deserializer_->deserializeString(encoding);
     const uint8_t is_be = readU8(*deserializer_);
     const uint32_t step = deserializer_->deserializeUInt32();
-    const auto data_span = deserializer_->deserializeByteSequence();
+    const auto data_span = readByteSequence();
 
     auto it = kRosImageBytesPerPixel().find(encoding);
     if (it == kRosImageBytesPerPixel().end()) {
@@ -166,7 +170,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestam
 
     std::string format;
     deserializer_->deserializeString(format);
-    const auto data_span = deserializer_->deserializeByteSequence();
+    const auto data_span = readByteSequence();
     const uint8_t* src = data_span.data();
     const uint32_t data_len = static_cast<uint32_t>(data_span.size());
 
@@ -330,7 +334,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedVideo(PJ::Timestam
 
     std::string frame_id;
     deserializer_->deserializeString(frame_id);
-    const auto data_span = deserializer_->deserializeByteSequence();
+    const auto data_span = readByteSequence();
     std::string format;
     deserializer_->deserializeString(format);
 
@@ -404,7 +408,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePointCloud(PJ::Timestamp ts,
     const uint8_t is_be = readU8(*deserializer_);
     const uint32_t point_step = deserializer_->deserializeUInt32();
     const uint32_t row_step = deserializer_->deserializeUInt32();
-    const auto data_span = deserializer_->deserializeByteSequence();
+    const auto data_span = readByteSequence();
 
     // is_dense follows data[]. deserializeByteSequence advanced the cursor
     // past the body, so the next byte read is is_dense itself.
@@ -413,24 +417,31 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePointCloud(PJ::Timestamp ts,
       is_dense = (readU8(*deserializer_) != 0);
     }
 
-    // Zero-copy: data_span is a slice of the payload. For a PointCloud2 with
-    // a few MB of points this is the win — no per-message alloc/copy on the
-    // hot path.
+    // Zero-copy by default: data_span is a slice of the payload. For a PointCloud2 with
+    // a few MB of points this is the win — no per-message alloc/copy on the hot path.
+    PJ::sdk::PointCloud cloud{
+        .width = width,
+        .height = height,
+        .point_step = point_step,
+        .row_step = row_step,
+        .is_bigendian = (is_be != 0),
+        .is_dense = is_dense,
+        .frame_id = std::move(header.frame_id),
+        .fields = std::move(fields),
+        .data = PJ::Span<const uint8_t>(data_span.data(), data_span.size()),
+        .anchor = payload.anchor,
+        .timestamp_ns = current_timestamp_,
+    };
+    // Normalize colour to the canonical packed "rgba" field so the host renders one
+    // per-point colour instead of offering each channel as a separate colormap source.
+    // A PCL packed rgb/rgba (0x00RRGGBB) is repacked into canonical R,G,B,A order in a
+    // fresh owned buffer (zero-copy given up only for colour clouds); separate
+    // red/green/blue/alpha channels collapse zero-copy; plain XYZI clouds are untouched.
+    pj::pointcloud_color::normalizeCanonicalColor(cloud);
+
     return PJ::sdk::ObjectRecord{
         .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
-        .object = PJ::sdk::BuiltinObject{PJ::sdk::PointCloud{
-            .width = width,
-            .height = height,
-            .point_step = point_step,
-            .row_step = row_step,
-            .is_bigendian = (is_be != 0),
-            .is_dense = is_dense,
-            .frame_id = std::move(header.frame_id),
-            .fields = std::move(fields),
-            .data = PJ::Span<const uint8_t>(data_span.data(), data_span.size()),
-            .anchor = payload.anchor,
-            .timestamp_ns = current_timestamp_,
-        }}};
+        .object = PJ::sdk::BuiltinObject{std::move(cloud)}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("PointCloud2: CDR read error: ") + e.what());
   }
@@ -563,7 +574,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxgloveCompressedPointCloud
       (void)deserializer_->deserialize(RosMsgParser::FLOAT64);
     }
 
-    const auto data_span = deserializer_->deserializeByteSequence();
+    const auto data_span = readByteSequence();
     std::string format;
     deserializer_->deserializeString(format);
 
@@ -628,7 +639,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedPointCloud2(
     (void)readU8(*deserializer_);              // is_bigendian
     (void)deserializer_->deserializeUInt32();  // point_step
     (void)deserializer_->deserializeUInt32();  // row_step
-    const auto data_span = deserializer_->deserializeByteSequence();
+    const auto data_span = readByteSequence();
     (void)readU8(*deserializer_);  // is_dense
 
     std::string format;
@@ -661,11 +672,13 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedPointCloud2(
 //         translation       Vector3     (x, y, z   : float64)
 //         rotation          Quaternion  (x, y, z, w: float64)
 //
-// Emitted as a canonical sdk::FrameTransforms (owned — no byte blob). Each
-// FrameTransform carries its OWN Header.stamp: that per-sample time is what the
-// 3D scene's TF buffer needs for zero-order-hold scrub lookups, independent of
-// the message receive time. The scalar handler (handleTFMessage) still runs in
-// parallel for users who want to plot the transforms as time series.
+// Emitted as a canonical sdk::FrameTransforms (owned — no byte blob). The 3D
+// scene's TF buffer keys each edge by FrameTransform::timestamp and scrubs it
+// with a zero-order hold at the playhead, which lives on the MCAP message clock
+// (log / publish time). readStampedTransform() therefore resolves the per-sample
+// timestamp so it lands on that same clock — see the three cases there. The
+// scalar handler (handleTFMessage) still runs in parallel for users who want to
+// plot the transforms as time series, and it always keeps the raw Header.stamp.
 // ---------------------------------------------------------------------------
 
 PJ::sdk::FrameTransform RosParser::readStampedTransform() {
@@ -681,9 +694,27 @@ PJ::sdk::FrameTransform RosParser::readStampedTransform() {
   const double qz = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   const double qw = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
 
+  const int64_t header_stamp_ns = static_cast<int64_t>(header.sec) * 1000000000LL + static_cast<int64_t>(header.nsec);
+
   PJ::sdk::FrameTransform tf;
-  tf.timestamp =
-      static_cast<PJ::Timestamp>(static_cast<int64_t>(header.sec) * 1000000000LL + static_cast<int64_t>(header.nsec));
+  // Timestamp resolution, so the TF buffer lands on the same clock the 3D scene
+  // scrubs on (see this section's header comment):
+  //   1. "use embedded timestamp" ON  -> the payload Header.stamp, honoring the
+  //      toggle exactly as every other message type does.
+  //   2. OFF + Header.stamp == 0       -> keep 0: a static transform (/tf_static
+  //      latched with an unset stamp) whose single sample must hold for every
+  //      query time via the buffer's zero-order hold.
+  //   3. OFF + Header.stamp != 0       -> current_timestamp_, the MCAP-resolved
+  //      message time (log / publish). A bag recorded across unsynchronized
+  //      clocks carries a Header.stamp on a different clock — in offset AND rate —
+  //      than the message time the playhead uses; keying the TF buffer by that
+  //      stamp drifts transforms out of sync with point clouds. Overriding onto
+  //      the message clock keeps them moving together.
+  if (use_embedded_timestamp_ || header_stamp_ns == 0) {
+    tf.timestamp = static_cast<PJ::Timestamp>(header_stamp_ns);
+  } else {
+    tf.timestamp = current_timestamp_;
+  }
   tf.parent_frame_id = std::move(header.frame_id);
   tf.child_frame_id = std::move(child_frame_id);
   tf.translation = {.x = tx, .y = ty, .z = tz};
@@ -876,6 +907,45 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePoseStampedObject(PJ::Timest
 }
 
 // ---------------------------------------------------------------------------
+// nav_msgs/Odometry — the pose of child_frame_id expressed in the header frame,
+// surfaced as a one-element PosesInFrame so it feeds the same 3D pose view as
+// PoseStamped. The scalar handler (handleOdometry) still runs in parallel for
+// per-axis plotting of the pose, twist and covariances.
+//
+// Wire layout:
+//   header         std_msgs/Header                   (sec, nanosec, frame_id)
+//   child_frame_id string
+//   pose           geometry_msgs/PoseWithCovariance  (Pose then float64[36])
+//   twist          geometry_msgs/TwistWithCovariance
+//
+// Only the Header + child_frame_id + Pose are consumed: the pose is the last
+// field the object needs, so the covariance and twist are left unread. The
+// object adopts the HEADER frame_id (the reference frame), not child_frame_id.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOdometryObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    HeaderData header = readHeader();
+
+    std::string child_frame_id;
+    deserializer_->deserializeString(child_frame_id);  // read + dropped (object uses the header frame)
+
+    PJ::sdk::PosesInFrame result;
+    result.timestamp_ns = current_timestamp_;
+    result.frame_id = std::move(header.frame_id);
+    result.poses.push_back(readPose());
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(result)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("Odometry: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
 // nav_msgs/Path
 //
 // Wire layout:
@@ -966,7 +1036,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOccupancyGrid(PJ::Timestamp 
     const double oz = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
     const double ow = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
 
-    const auto data_span = deserializer_->deserializeByteSequence();
+    const auto data_span = readByteSequence();
 
     PJ::sdk::OccupancyGrid grid;
     grid.timestamp_ns = current_timestamp_;
@@ -1016,7 +1086,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOccupancyGridUpdate(
     const int32_t y = deserializer_->deserialize(RosMsgParser::INT32).convert<int32_t>();
     const uint32_t width = deserializer_->deserializeUInt32();
     const uint32_t height = deserializer_->deserializeUInt32();
-    const auto data_span = deserializer_->deserializeByteSequence();
+    const auto data_span = readByteSequence();
 
     const size_t expected = static_cast<size_t>(width) * static_cast<size_t>(height);
     if (data_span.size() < expected) {

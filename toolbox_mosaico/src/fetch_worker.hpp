@@ -15,6 +15,7 @@
 
 #include "flight/mosaico_client.hpp"
 #include "flight/types.hpp"
+#include "worker_types.h"
 
 namespace mosaico {
 
@@ -50,8 +51,9 @@ class FetchWorker {
     topic_info_by_name_ = std::move(by_name);
   }
 
-  /// Connect (or reconnect) to the given URI. Calls connectFinished on completion.
-  void connectAsync(std::string uri, std::string cert_path, std::string api_key, bool allow_insecure);
+  /// Connect (or reconnect) to the given URI with the per-server @p creds. Calls
+  /// connectFinished on completion.
+  void connectAsync(std::string uri, ServerCredentials creds);
 
   /// List all sequences from the connected server.
   void listSequencesAsync();
@@ -61,7 +63,7 @@ class FetchWorker {
 
   /// Fetch full per-topic metadata (Arrow schema, ontology tag, user
   /// metadata) on demand for the Info panel. Calls topicMetadataReady.
-  void fetchTopicMetadataAsync(std::string sequence_name, std::string topic_name);
+  void fetchTopicMetadataAsync(TopicRef topic);
 
   /// Pull several topics of the same sequence in parallel via the SDK's
   /// connection pool. Each topic emits its own pullProgress / pullFinished
@@ -71,7 +73,7 @@ class FetchWorker {
   void pullTopicsAsync(
       std::string sequence_name, std::vector<std::string> topic_names, std::int64_t start_ns, std::int64_t end_ns);
 
-  std::function<void(bool ok, std::string status, std::string error)> connectFinished;
+  std::function<void(ConnectResult result)> connectFinished;
   /// Full SequenceInfo entries, including user_metadata (used by the Lua
   /// metadata filter). The name-only callback is kept
   /// for code paths that only want names.
@@ -90,9 +92,9 @@ class FetchWorker {
   /// here — those arrive via topicMetadataReady after fetchTopicMetadataAsync.
   std::function<void(std::string sequence_name, std::vector<TopicInfo> topics)> topicInfosReady;
   /// Full per-topic metadata (incl. Arrow schema) for the Info panel.
-  std::function<void(std::string sequence_name, std::string topic_name, TopicInfo info)> topicMetadataReady;
+  std::function<void(TopicRef topic, TopicInfo info)> topicMetadataReady;
   std::function<void(std::string topic_name, std::int64_t bytes)> pullProgress;
-  std::function<void(std::string sequence_name, std::string topic_name, bool ok, std::string error)> pullFinished;
+  std::function<void(PullResultEvent result)> pullFinished;
   std::function<void(std::string sequence_name)> allFetchesComplete;
   /// Surfaced for non-fatal RPC failures that don't map to a topic/pull
   /// callback (e.g. listTopics returning a real server error rather than

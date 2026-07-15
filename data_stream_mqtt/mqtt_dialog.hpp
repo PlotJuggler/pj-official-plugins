@@ -3,6 +3,7 @@
 #include <mqtt/async_client.h>
 
 #include <algorithm>
+#include <cctype>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
@@ -54,12 +55,11 @@ class MqttDialog : public PJ::DialogPluginTyped {
     wd.setEnabled("lineEditHost", !connected_);
     wd.setEnabled("lineEditPort", !connected_);
 
-    // Connect button state + error feedback
+    // Connect button state + error feedback (label_12 stays empty while idle).
     wd.setButtonText("buttonConnect", connected_ ? "Disconnect" : "Connect");
     wd.setText(
-        "label_12", last_connect_error_.empty()
-                        ? (connected_ ? "Connected — select topics below" : "Select a specific topic:")
-                        : ("Connection error: " + last_connect_error_));
+        "label_12", last_connect_error_.empty() ? (connected_ ? "Connected — select topics below" : "")
+                                                : ("Connection error: " + last_connect_error_));
 
     // Protocol version combo
     wd.setCurrentIndex("comboBoxVersion", protocol_version_index_);
@@ -70,13 +70,22 @@ class MqttDialog : public PJ::DialogPluginTyped {
     // SSL checkbox
     wd.setChecked("checkBoxSecurity", use_ssl_);
 
-    // Topic filter
+    // MQTT subscription pattern (broker-side discovery filter, applied on connect)
     wd.setText("lineEditTopicFilter", topic_filter_);
 
-    // Discovered topic list (from live MQTT subscription)
+    // Discovered topic list (from live MQTT subscription), narrowed by the
+    // view filter. Selection is text-keyed with the FULL selected set: the
+    // host ignores names not currently listed, and onSelectionChanged merges
+    // them back, so filtered-out selections survive.
     {
       std::lock_guard<std::mutex> lock(topics_mutex_);
-      std::vector<std::string> topic_list(discovered_topics_.begin(), discovered_topics_.end());
+      std::vector<std::string> topic_list;
+      topic_list.reserve(discovered_topics_.size());
+      for (const auto& topic : discovered_topics_) {
+        if (matchesViewFilter(topic)) {
+          topic_list.push_back(topic);
+        }
+      }
       wd.setListItems("listWidget", topic_list);
       wd.setSelectedItems("listWidget", selected_topics_);
     }
@@ -92,19 +101,23 @@ class MqttDialog : public PJ::DialogPluginTyped {
       wd.setEnabled("comboBoxProtocol", false);
     }
 
-    // TLS certificate file pickers
-    wd.setFilePicker("buttonLoadServerCertificate", "...", "*.pem *.crt *.cer", "Select Server CA Certificate");
-    wd.setFilePicker("buttonLoadClientCertificate", "...", "*.pem *.crt *.cer", "Select Client Certificate");
-    wd.setFilePicker("buttonLoadPrivateKey", "...", "*.pem *.key", "Select Private Key");
-    wd.setText("labelServerCertificate", ca_cert_path_.empty() ? "(none)" : filenameFromPath(ca_cert_path_));
-    wd.setText("labelClientCertificate", client_cert_path_.empty() ? "(none)" : filenameFromPath(client_cert_path_));
-    wd.setText("labelPrivateKey", private_key_path_.empty() ? "(none)" : filenameFromPath(private_key_path_));
-    wd.setEnabled("buttonEraseServerCertificate", !ca_cert_path_.empty());
-    wd.setEnabled("buttonEraseClientCertificate", !client_cert_path_.empty());
-    wd.setEnabled("buttonErasePrivateKey", !private_key_path_.empty());
+    // TLS certificate file pickers. Icon-only browse buttons (empty label, the
+    // shared "contract" certificate glyph); the editable path fields double as
+    // the file-picked display and a manual-entry field.
+    wd.setFilePicker("buttonLoadServerCertificate", "", "*.pem *.crt *.cer", "Select Server CA Certificate");
+    wd.setFilePicker("buttonLoadClientCertificate", "", "*.pem *.crt *.cer", "Select Client Certificate");
+    wd.setFilePicker("buttonLoadPrivateKey", "", "*.pem *.key", "Select Private Key");
+    wd.setButtonIconNamed("buttonLoadServerCertificate", "contract");
+    wd.setButtonIconNamed("buttonLoadClientCertificate", "contract");
+    wd.setButtonIconNamed("buttonLoadPrivateKey", "contract");
+    wd.setText("lineEditServerCertificate", ca_cert_path_);
+    wd.setText("lineEditClientCertificate", client_cert_path_);
+    wd.setText("lineEditPrivateKey", private_key_path_);
 
-    // Disable OK if no encodings available
-    wd.setOkEnabled(has_encodings);
+    // OK gating: connected-only, like every discovery-capable streamer
+    // (foxglove/pj_bridge/webrtc gate on connected_, ros2 on discovery).
+    // Encoding availability still matters: no parsers -> nothing can decode.
+    wd.setOkEnabled(connected_ && has_encodings);
 
     return wd.toJson();
   }
@@ -144,6 +157,23 @@ class MqttDialog : public PJ::DialogPluginTyped {
     }
     if (widget_name == "lineEditTopicFilter") {
       topic_filter_ = std::string(text);
+      return false;
+    }
+    if (widget_name == "lineEditFilter") {
+      view_filter_lower_ = toLowerAscii(std::string(text));
+      return true;  // re-render: the topic list narrows/expands live
+    }
+    // Certificate paths are editable: typing a path is equivalent to picking one.
+    if (widget_name == "lineEditServerCertificate") {
+      ca_cert_path_ = std::string(text);
+      return false;
+    }
+    if (widget_name == "lineEditClientCertificate") {
+      client_cert_path_ = std::string(text);
+      return false;
+    }
+    if (widget_name == "lineEditPrivateKey") {
+      private_key_path_ = std::string(text);
       return false;
     }
     return false;
@@ -191,7 +221,24 @@ class MqttDialog : public PJ::DialogPluginTyped {
 
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name == "listWidget") {
-      selected_topics_ = selected;
+      // The host reports only the VISIBLE selection under the active view
+      // filter. Preserve selections the filter currently hides; otherwise
+      // selecting while a filter hides a previously selected topic would
+      // silently drop the hidden one (same contract as the foxglove picker).
+      std::vector<std::string> next;
+      {
+        std::lock_guard<std::mutex> lock(topics_mutex_);
+        for (const auto& name : selected_topics_) {
+          // Not visible = filtered out OR not (yet) discovered — e.g. topics
+          // restored from a saved config before connecting. Both survive.
+          const bool visible = discovered_topics_.count(name) != 0 && matchesViewFilter(name);
+          if (!visible) {
+            next.push_back(name);
+          }
+        }
+      }
+      next.insert(next.end(), selected.begin(), selected.end());
+      selected_topics_ = std::move(next);
       return false;
     }
     return false;
@@ -204,18 +251,6 @@ class MqttDialog : public PJ::DialogPluginTyped {
       } else {
         connectBroker();
       }
-      return true;
-    }
-    if (widget_name == "buttonEraseServerCertificate") {
-      ca_cert_path_.clear();
-      return true;
-    }
-    if (widget_name == "buttonEraseClientCertificate") {
-      client_cert_path_.clear();
-      return true;
-    }
-    if (widget_name == "buttonErasePrivateKey") {
-      private_key_path_.clear();
       return true;
     }
     return false;
@@ -275,6 +310,22 @@ class MqttDialog : public PJ::DialogPluginTyped {
   }
 
  private:
+  static std::string toLowerAscii(std::string s) {
+    for (auto& c : s) {
+      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return s;
+  }
+
+  /// Case-insensitive substring match of the active view filter against the
+  /// topic name. An empty filter matches everything. This is the band's
+  /// client-side list filter — unrelated to topic_filter_, the broker-side
+  /// MQTT subscription pattern. The filter is stored pre-lowercased, so only
+  /// the topic pays a lowercase pass here.
+  bool matchesViewFilter(const std::string& topic) const {
+    return view_filter_lower_.empty() || toLowerAscii(topic).find(view_filter_lower_) != std::string::npos;
+  }
+
   int encodingToIndex(const std::string& e) const {
     auto it = std::find(available_encodings_.begin(), available_encodings_.end(), e);
     return (it != available_encodings_.end()) ? static_cast<int>(std::distance(available_encodings_.begin(), it)) : 0;
@@ -285,11 +336,6 @@ class MqttDialog : public PJ::DialogPluginTyped {
       return available_encodings_[static_cast<size_t>(idx)];
     }
     return available_encodings_.empty() ? "json" : available_encodings_[0];
-  }
-
-  static std::string filenameFromPath(const std::string& path) {
-    auto pos = path.find_last_of("/\\");
-    return (pos != std::string::npos) ? path.substr(pos + 1) : path;
   }
 
   void connectBroker() {
@@ -358,6 +404,15 @@ class MqttDialog : public PJ::DialogPluginTyped {
       discovery_client_.reset();
     }
     connected_ = false;
+    // Drop the discovered catalog: it belongs to the broker we just left, and
+    // stale entries would show phantom topics (and count as "visible" for the
+    // selection merge) after reconnecting to a different broker. The user's
+    // selected_topics_ survive — they are restored/merged against whatever the
+    // next connection actually delivers (same policy as the foxglove picker).
+    {
+      std::lock_guard<std::mutex> lock(topics_mutex_);
+      discovered_topics_.clear();
+    }
   }
 
   std::vector<std::string> available_encodings_;
@@ -369,6 +424,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
   int protocol_version_index_ = 1;  // MQTT 3.1.1
   int qos_ = 0;
   std::string topic_filter_ = "#";
+  std::string view_filter_lower_;
   std::string encoding_ = "json";
   bool use_ssl_ = false;
   std::string ca_cert_path_;

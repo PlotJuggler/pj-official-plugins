@@ -1,7 +1,10 @@
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <map>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <string>
@@ -9,53 +12,11 @@
 #include <ulog_cpp/reader.hpp>
 #include <vector>
 
+#include "ulog_flatten.hpp"
 #include "ulog_manifest.hpp"
 #include "ulog_params_dialog.hpp"
 
 namespace {
-
-/// Recursively collect flattened field names for a ulog_cpp MessageFormat.
-/// Skips the "timestamp" field and "_padding*" fields.
-/// Nested fields are separated by "." and array elements get ".00", ".01" etc.
-void collectFlatFieldNames(
-    const ulog_cpp::MessageFormat& format, const std::string& prefix, std::vector<std::string>& out) {
-  for (const auto& field_ptr : format.fields()) {
-    const auto& field = *field_ptr;
-    const std::string& name = field.name();
-
-    // Skip timestamp and padding fields.
-    if (name == "timestamp") {
-      continue;
-    }
-    if (name.substr(0, 8) == "_padding") {
-      continue;
-    }
-
-    std::string new_prefix = prefix.empty() ? name : prefix + "." + name;
-
-    int arr_len = field.arrayLength();
-    int count = (arr_len < 0) ? 1 : arr_len;
-    bool is_array = (arr_len > 0);
-
-    for (int i = 0; i < count; ++i) {
-      std::string elem_name = new_prefix;
-      if (is_array) {
-        char buf[16];
-        std::snprintf(buf, sizeof(buf), ".%02d", i);
-        elem_name += buf;
-      }
-
-      if (field.type().type == ulog_cpp::Field::BasicType::NESTED) {
-        auto nested_fmt = field.nestedFormat();
-        if (nested_fmt) {
-          collectFlatFieldNames(*nested_fmt, elem_name, out);
-        }
-      } else {
-        out.push_back(elem_name);
-      }
-    }
-  }
-}
 
 /// Map ULog BasicType to PJ::PrimitiveType.
 PJ::PrimitiveType ulogTypeToPrimitive(ulog_cpp::Field::BasicType type) {
@@ -86,30 +47,6 @@ PJ::PrimitiveType ulogTypeToPrimitive(ulog_cpp::Field::BasicType type) {
       return PJ::PrimitiveType::kUint8;
     default:
       return PJ::PrimitiveType::kFloat64;
-  }
-}
-
-/// Recursively collect flattened field types for a ulog_cpp MessageFormat,
-/// matching the order produced by collectFlatFieldNames.
-void collectFlatFieldTypes(const ulog_cpp::MessageFormat& format, std::vector<PJ::PrimitiveType>& out) {
-  for (const auto& field_ptr : format.fields()) {
-    const auto& field = *field_ptr;
-    const std::string& name = field.name();
-    if (name == "timestamp" || name.substr(0, 8) == "_padding") {
-      continue;
-    }
-    int arr_len = field.arrayLength();
-    int count = (arr_len < 0) ? 1 : arr_len;
-    for (int i = 0; i < count; ++i) {
-      if (field.type().type == ulog_cpp::Field::BasicType::NESTED) {
-        auto nested_fmt = field.nestedFormat();
-        if (nested_fmt) {
-          collectFlatFieldTypes(*nested_fmt, out);
-        }
-      } else {
-        out.push_back(ulogTypeToPrimitive(field.type().type));
-      }
-    }
   }
 }
 
@@ -170,42 +107,20 @@ PJ::sdk::ValueRef readPrimitiveValue(const uint8_t* data, size_t offset, ulog_cp
   }
 }
 
-/// Recursively extract numeric values from raw data bytes using resolved field offsets,
-/// matching the order produced by collectFlatFieldNames.
+/// Extract numeric values from a raw ULog record into `values`, in the same order
+/// as collectFlatFieldNames. Reads that would fall outside `raw_size` (a truncated
+/// or corrupt record) push a NullValue instead, preserving alignment with the
+/// field-name list rather than reading out of bounds.
 void extractFlatValues(
-    const uint8_t* raw_data, size_t base_offset, const ulog_cpp::MessageFormat& format,
+    const uint8_t* raw_data, size_t raw_size, const ulog_cpp::MessageFormat& format,
     std::vector<PJ::sdk::ValueRef>& values) {
-  for (const auto& field_ptr : format.fields()) {
-    const auto& field = *field_ptr;
-    const std::string& name = field.name();
-
-    if (name == "timestamp") {
-      continue;
-    }
-    if (name.substr(0, 8) == "_padding") {
-      continue;
-    }
-
-    int arr_len = field.arrayLength();
-    int count = (arr_len < 0) ? 1 : arr_len;
-    size_t field_offset = base_offset + static_cast<size_t>(field.offsetInMessage());
-
-    if (field.type().type == ulog_cpp::Field::BasicType::NESTED) {
-      auto nested_fmt = field.nestedFormat();
-      if (!nested_fmt) {
-        continue;
-      }
-      auto nested_size = nested_fmt->sizeBytes();
-      for (size_t i = 0; i < static_cast<size_t>(count); ++i) {
-        extractFlatValues(raw_data, field_offset + i * static_cast<size_t>(nested_size), *nested_fmt, values);
-      }
+  ulog_flatten::forEachFlatLeaf(format, 0, [&](size_t offset, ulog_cpp::Field::BasicType type, size_t elem_size) {
+    if (offset + elem_size <= raw_size) {
+      values.push_back(readPrimitiveValue(raw_data, offset, type));
     } else {
-      size_t elem_size = static_cast<size_t>(field.type().size);
-      for (size_t i = 0; i < static_cast<size_t>(count); ++i) {
-        values.push_back(readPrimitiveValue(raw_data, field_offset + i * elem_size, field.type().type));
-      }
+      values.push_back(PJ::NullValue{});
     }
-  }
+  });
 }
 
 class ULogSource : public PJ::FileSourceBase {
@@ -270,7 +185,11 @@ class ULogSource : public PJ::FileSourceBase {
       bytes_read += count;
 
       if (runtimeHost().isStopRequested()) {
-        return PJ::unexpected(std::string("import cancelled"));
+        // Stop reading but KEEP what's parsed: break out and fall through to the write
+        // path so the messages decoded so far are committed. The host's "Stop and Keep"
+        // then flushes them (Discard evicts the dataset host-side). Returning here would
+        // leave the dataset empty — the bug this fixes.
+        break;
       }
       (void)runtimeHost().progressUpdate(bytes_read);
     }
@@ -319,7 +238,7 @@ class ULogSource : public PJ::FileSourceBase {
 
       // Collect flattened field names.
       std::vector<std::string> field_names;
-      collectFlatFieldNames(*sub->format(), {}, field_names);
+      ulog_flatten::collectFlatFieldNames(*sub->format(), {}, field_names);
       if (field_names.empty()) {
         continue;
       }
@@ -331,7 +250,9 @@ class ULogSource : public PJ::FileSourceBase {
       }
 
       std::vector<PJ::PrimitiveType> field_types;
-      collectFlatFieldTypes(*sub->format(), field_types);
+      ulog_flatten::forEachFlatLeaf(*sub->format(), 0, [&](size_t, ulog_cpp::Field::BasicType type, size_t) {
+        field_types.push_back(ulogTypeToPrimitive(type));
+      });
 
       for (size_t fi = 0; fi < field_names.size() && fi < field_types.size(); ++fi) {
         auto field = writeHost().ensureField(*topic, field_names[fi], field_types[fi]);
@@ -359,7 +280,7 @@ class ULogSource : public PJ::FileSourceBase {
 
         // Extract all field values from raw bytes.
         values.clear();
-        extractFlatValues(raw.data(), 0, *sub->format(), values);
+        extractFlatValues(raw.data(), raw.size(), *sub->format(), values);
 
         // Build row.
         row_fields.clear();

@@ -18,6 +18,7 @@
 
 #include "../foxglove_object_codecs.hpp"
 #include "../foxglove_pointcloud_codec.hpp"
+#include "../foxglove_voxelgrid_codec.hpp"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/video_frame_codec.hpp"
 #include "pj_base/sdk/service_traits.hpp"
@@ -875,7 +876,245 @@ const std::vector<FoxgloveField> kCloudFields = {
     {"ring", 9, 2},       // INT8   → kInt8
 };
 
+// --- foxglove.VoxelGrid wire builder -------------------------------------
+// Builds an authentic foxglove.VoxelGrid message (counts/strides are fixed32,
+// cell_size/pose are nested messages) via DynamicMessageFactory, mirroring
+// buildFoxglovePointCloudWire.
+struct FoxgloveVoxelGridParams {
+  int64_t ts_sec = 0;
+  int32_t ts_nanos = 0;
+  std::string frame_id;
+  double origin_x = 0, origin_y = 0, origin_z = 0;  // pose.position
+  double orient_z = 0;                              // pose.orientation.z (exercises the quaternion sub-parse)
+  double cell_x = 0, cell_y = 0, cell_z = 0;        // cell_size
+  uint32_t row_count = 0;
+  uint32_t column_count = 0;
+  uint32_t slice_stride = 0;
+  uint32_t row_stride = 0;
+  uint32_t cell_stride = 0;
+  std::vector<FoxgloveField> fields;
+  std::vector<uint8_t> data;
+};
+
+std::vector<uint8_t> buildFoxgloveVoxelGridWire(const FoxgloveVoxelGridParams& p) {
+  gp::FileDescriptorProto file;
+  file.set_name("foxglove_vg.proto");
+  file.set_syntax("proto3");
+  file.set_package("test");
+
+  auto add_field = [](gp::DescriptorProto* m, const char* name, int num, gp::FieldDescriptorProto::Type type,
+                      const char* type_name = nullptr, bool repeated = false) {
+    auto* f = m->add_field();
+    f->set_name(name);
+    f->set_number(num);
+    f->set_type(type);
+    f->set_label(repeated ? gp::FieldDescriptorProto::LABEL_REPEATED : gp::FieldDescriptorProto::LABEL_OPTIONAL);
+    if (type_name != nullptr) {
+      f->set_type_name(type_name);
+    }
+  };
+
+  auto* ts = file.add_message_type();
+  ts->set_name("Timestamp");
+  add_field(ts, "seconds", 1, gp::FieldDescriptorProto::TYPE_INT64);
+  add_field(ts, "nanos", 2, gp::FieldDescriptorProto::TYPE_INT32);
+
+  auto* vec = file.add_message_type();
+  vec->set_name("Vec3");
+  add_field(vec, "x", 1, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(vec, "y", 2, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(vec, "z", 3, gp::FieldDescriptorProto::TYPE_DOUBLE);
+
+  auto* quat = file.add_message_type();
+  quat->set_name("Quat");
+  add_field(quat, "x", 1, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(quat, "y", 2, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(quat, "z", 3, gp::FieldDescriptorProto::TYPE_DOUBLE);
+  add_field(quat, "w", 4, gp::FieldDescriptorProto::TYPE_DOUBLE);
+
+  auto* pose = file.add_message_type();
+  pose->set_name("Pose");
+  add_field(pose, "position", 1, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Vec3");
+  add_field(pose, "orientation", 2, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Quat");
+
+  auto* pef = file.add_message_type();
+  pef->set_name("PackedElementField");
+  add_field(pef, "name", 1, gp::FieldDescriptorProto::TYPE_STRING);
+  add_field(pef, "offset", 2, gp::FieldDescriptorProto::TYPE_FIXED32);
+  add_field(pef, "type", 3, gp::FieldDescriptorProto::TYPE_INT32);  // enum on the wire == varint == int32
+
+  auto* vg = file.add_message_type();
+  vg->set_name("VoxelGrid");
+  add_field(vg, "timestamp", 1, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Timestamp");
+  add_field(vg, "frame_id", 2, gp::FieldDescriptorProto::TYPE_STRING);
+  add_field(vg, "pose", 3, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Pose");
+  add_field(vg, "row_count", 4, gp::FieldDescriptorProto::TYPE_FIXED32);
+  add_field(vg, "column_count", 5, gp::FieldDescriptorProto::TYPE_FIXED32);
+  add_field(vg, "cell_size", 6, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.Vec3");
+  add_field(vg, "slice_stride", 7, gp::FieldDescriptorProto::TYPE_FIXED32);
+  add_field(vg, "row_stride", 8, gp::FieldDescriptorProto::TYPE_FIXED32);
+  add_field(vg, "cell_stride", 9, gp::FieldDescriptorProto::TYPE_FIXED32);
+  add_field(vg, "fields", 10, gp::FieldDescriptorProto::TYPE_MESSAGE, ".test.PackedElementField", true);
+  add_field(vg, "data", 11, gp::FieldDescriptorProto::TYPE_BYTES);
+
+  gp::DescriptorPool pool;
+  const gp::FileDescriptor* fd = pool.BuildFile(file);
+  const gp::Descriptor* vg_desc = fd->FindMessageTypeByName("VoxelGrid");
+  gp::DynamicMessageFactory factory;
+  std::unique_ptr<gp::Message> msg(factory.GetPrototype(vg_desc)->New());
+  const gp::Reflection* ref = msg->GetReflection();
+
+  gp::Message* tsm = ref->MutableMessage(msg.get(), vg_desc->FindFieldByName("timestamp"), &factory);
+  const gp::Descriptor* tsd = tsm->GetDescriptor();
+  tsm->GetReflection()->SetInt64(tsm, tsd->FindFieldByName("seconds"), p.ts_sec);
+  tsm->GetReflection()->SetInt32(tsm, tsd->FindFieldByName("nanos"), p.ts_nanos);
+
+  ref->SetString(msg.get(), vg_desc->FindFieldByName("frame_id"), p.frame_id);
+  ref->SetUInt32(msg.get(), vg_desc->FindFieldByName("row_count"), p.row_count);
+  ref->SetUInt32(msg.get(), vg_desc->FindFieldByName("column_count"), p.column_count);
+  ref->SetUInt32(msg.get(), vg_desc->FindFieldByName("slice_stride"), p.slice_stride);
+  ref->SetUInt32(msg.get(), vg_desc->FindFieldByName("row_stride"), p.row_stride);
+  ref->SetUInt32(msg.get(), vg_desc->FindFieldByName("cell_stride"), p.cell_stride);
+  ref->SetString(
+      msg.get(), vg_desc->FindFieldByName("data"),
+      std::string(reinterpret_cast<const char*>(p.data.data()), p.data.size()));
+
+  gp::Message* pm = ref->MutableMessage(msg.get(), vg_desc->FindFieldByName("pose"), &factory);
+  const gp::Descriptor* pd = pm->GetDescriptor();
+  gp::Message* posm = pm->GetReflection()->MutableMessage(pm, pd->FindFieldByName("position"), &factory);
+  const gp::Descriptor* vd = posm->GetDescriptor();
+  posm->GetReflection()->SetDouble(posm, vd->FindFieldByName("x"), p.origin_x);
+  posm->GetReflection()->SetDouble(posm, vd->FindFieldByName("y"), p.origin_y);
+  posm->GetReflection()->SetDouble(posm, vd->FindFieldByName("z"), p.origin_z);
+  gp::Message* orm = pm->GetReflection()->MutableMessage(pm, pd->FindFieldByName("orientation"), &factory);
+  const gp::Descriptor* qd = orm->GetDescriptor();
+  orm->GetReflection()->SetDouble(orm, qd->FindFieldByName("z"), p.orient_z);
+
+  gp::Message* cm = ref->MutableMessage(msg.get(), vg_desc->FindFieldByName("cell_size"), &factory);
+  const gp::Descriptor* cd = cm->GetDescriptor();
+  cm->GetReflection()->SetDouble(cm, cd->FindFieldByName("x"), p.cell_x);
+  cm->GetReflection()->SetDouble(cm, cd->FindFieldByName("y"), p.cell_y);
+  cm->GetReflection()->SetDouble(cm, cd->FindFieldByName("z"), p.cell_z);
+
+  const gp::FieldDescriptor* fields_f = vg_desc->FindFieldByName("fields");
+  for (const auto& ff : p.fields) {
+    gp::Message* fm = ref->AddMessage(msg.get(), fields_f, &factory);
+    const gp::Descriptor* fdesc = fm->GetDescriptor();
+    fm->GetReflection()->SetString(fm, fdesc->FindFieldByName("name"), ff.name);
+    fm->GetReflection()->SetUInt32(fm, fdesc->FindFieldByName("offset"), ff.offset);
+    fm->GetReflection()->SetInt32(fm, fdesc->FindFieldByName("type"), ff.numeric_type);
+  }
+
+  std::string out;
+  msg->SerializeToString(&out);
+  return std::vector<uint8_t>(out.begin(), out.end());
+}
+
+// 2*2*2 voxels, one occupancy byte each (8 bytes), Z-Y-X order.
+const std::vector<uint8_t> kVoxelData = {0, 100, 50, 0xFF, 10, 20, 30, 40};
+const std::vector<FoxgloveField> kVoxelFields = {{"occupancy", 0, 1}};  // UINT8 -> kUint8
+
 }  // namespace
+
+TEST(ProtobufParserTest, FoxgloveVoxelGridCodecDecodesAndDerivesSliceCount) {
+  FoxgloveVoxelGridParams p;
+  p.ts_sec = 7;
+  p.ts_nanos = 250;
+  p.frame_id = "map";
+  p.origin_x = 1.0;
+  p.origin_y = 2.0;
+  p.origin_z = 3.0;
+  p.orient_z = 1.0;  // exercises the quaternion sub-parse
+  p.cell_x = 0.1;
+  p.cell_y = 0.2;
+  p.cell_z = 0.3;
+  p.row_count = 2;
+  p.column_count = 2;
+  p.cell_stride = 1;   // one occupancy byte per voxel
+  p.row_stride = 2;    // column_count * cell_stride
+  p.slice_stride = 4;  // row_count * row_stride
+  p.fields = kVoxelFields;
+  p.data = kVoxelData;
+  const auto wire = buildFoxgloveVoxelGridWire(p);
+
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  auto decoded = pj_protobuf::deserializeFoxgloveVoxelGridView(wire.data(), wire.size(), anchor);
+  ASSERT_TRUE(decoded.has_value()) << decoded.error();
+  const auto& grid = *decoded;
+
+  EXPECT_EQ(grid.frame_id, "map");
+  EXPECT_EQ(grid.timestamp_ns, 7'000'000'250LL);  // 7s + 250ns
+  EXPECT_DOUBLE_EQ(grid.origin.position.x, 1.0);
+  EXPECT_DOUBLE_EQ(grid.origin.position.y, 2.0);
+  EXPECT_DOUBLE_EQ(grid.origin.position.z, 3.0);
+  EXPECT_DOUBLE_EQ(grid.origin.orientation.z, 1.0);
+  EXPECT_DOUBLE_EQ(grid.origin.orientation.w, 1.0);  // w omitted on the wire -> identity default
+  EXPECT_DOUBLE_EQ(grid.cell_size.x, 0.1);
+  EXPECT_DOUBLE_EQ(grid.cell_size.y, 0.2);
+  EXPECT_DOUBLE_EQ(grid.cell_size.z, 0.3);
+  EXPECT_EQ(grid.row_count, 2u);
+  EXPECT_EQ(grid.column_count, 2u);
+  EXPECT_EQ(grid.cell_stride, 1u);
+  EXPECT_EQ(grid.row_stride, 2u);
+  EXPECT_EQ(grid.slice_stride, 4u);
+  EXPECT_EQ(grid.slice_count, 2u);  // derived: data.size()(8) / slice_stride(4)
+
+  ASSERT_EQ(grid.fields.size(), 1u);
+  EXPECT_EQ(grid.fields[0].name, "occupancy");
+  EXPECT_EQ(grid.fields[0].offset, 0u);
+  EXPECT_EQ(grid.fields[0].datatype, PJ::sdk::PointField::Datatype::kUint8);
+  EXPECT_EQ(grid.fields[0].count, 1u);
+
+  // Zero-copy: the voxel span must alias the wire buffer, not a copy.
+  ASSERT_EQ(grid.data.size(), kVoxelData.size());
+  EXPECT_GE(grid.data.data(), wire.data());
+  EXPECT_LE(grid.data.data() + grid.data.size(), wire.data() + wire.size());
+  EXPECT_EQ(grid.anchor, anchor);
+}
+
+TEST(ProtobufParserTest, FoxgloveVoxelGridObjectRoute) {
+  ProtobufParserFixture f;
+  f.setUp();
+
+  // Empty schema bytes: the canonical fast path keys off the type name only.
+  ASSERT_TRUE(f.bindSchema("foxglove.VoxelGrid", std::string{}));
+  const PJ::Span<const uint8_t> empty_schema{};
+  EXPECT_EQ(f.handle.classifySchema("foxglove.VoxelGrid", empty_schema), PJ::sdk::BuiltinObjectType::kVoxelGrid);
+
+  FoxgloveVoxelGridParams p;
+  p.frame_id = "map";
+  p.cell_x = 0.05;
+  p.cell_y = 0.05;
+  p.cell_z = 0.05;
+  p.row_count = 2;
+  p.column_count = 2;
+  p.cell_stride = 1;
+  p.row_stride = 2;
+  p.slice_stride = 4;
+  p.fields = kVoxelFields;
+  p.data = kVoxelData;
+  const auto wire = buildFoxgloveVoxelGridWire(p);
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(wire.data(), wire.size()), anchor};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* vg = std::any_cast<PJ::sdk::VoxelGrid>(&rec->object);
+  ASSERT_NE(vg, nullptr);
+  EXPECT_EQ(vg->frame_id, "map");
+  EXPECT_EQ(vg->column_count, 2u);
+  EXPECT_EQ(vg->row_count, 2u);
+  EXPECT_EQ(vg->slice_count, 2u);
+  ASSERT_EQ(vg->fields.size(), 1u);
+  EXPECT_EQ(vg->fields[0].datatype, PJ::sdk::PointField::Datatype::kUint8);
+  // Zero-copy + anchor forwarding across the in-process object route.
+  EXPECT_GE(vg->data.data(), wire.data());
+  EXPECT_LE(vg->data.data() + vg->data.size(), wire.data() + wire.size());
+  EXPECT_EQ(vg->anchor, anchor);
+}
 
 TEST(ProtobufParserTest, FoxglovePointCloudCodecDecodesAndSynthesizes) {
   const auto wire = buildFoxglovePointCloudWire(7, 250, "lidar_top", 16, kCloudFields, kCloudBlob, false, 0.0);
@@ -912,6 +1151,38 @@ TEST(ProtobufParserTest, FoxglovePointCloudCodecDecodesAndSynthesizes) {
   EXPECT_LE(cloud.data.data() + cloud.data.size(), wire.data() + wire.size());
   EXPECT_EQ(cloud.anchor, anchor);
   EXPECT_FALSE(decoded->has_pose);
+}
+
+// Foxglove stores colour as four separate uint8 channels (red/green/blue/alpha).
+// They describe one per-point colour, so the codec normalizes them to a single
+// canonical packed 'rgba' uint32 field (R,G,B,A increasing-address) — metadata only,
+// the bytes are already in canonical order, so the zero-copy span is untouched.
+const std::vector<FoxgloveField> kColorCloudFields = {{"x", 0, 7},          {"y", 4, 7},     {"z", 8, 7},
+                                                      {"intensity", 12, 7}, {"red", 16, 1},  {"green", 17, 1},
+                                                      {"blue", 18, 1},      {"alpha", 19, 1}};
+
+TEST(ProtobufParserTest, FoxglovePointCloudColorChannelsCollapseToRgba) {
+  const std::vector<uint8_t> blob(40, 0);  // 2 points * 20-byte stride
+  const auto wire = buildFoxglovePointCloudWire(0, 0, "lidar", 20, kColorCloudFields, blob, false, 0.0);
+
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  auto decoded = pj_protobuf::deserializeFoxglovePointCloudView(wire.data(), wire.size(), anchor);
+  ASSERT_TRUE(decoded.has_value()) << decoded.error();
+  const auto& cloud = decoded->cloud;
+  using DT = PJ::sdk::PointField::Datatype;
+
+  // x, y, z, intensity, rgba — the 4 colour channels became one packed field.
+  ASSERT_EQ(cloud.fields.size(), 5u);
+  EXPECT_EQ(cloud.fields[0].name, "x");
+  EXPECT_EQ(cloud.fields[3].name, "intensity");
+  EXPECT_EQ(cloud.fields[4].name, "rgba");
+  EXPECT_EQ(cloud.fields[4].offset, 16u);  // = the red channel's offset (bytes unchanged)
+  EXPECT_EQ(cloud.fields[4].datatype, DT::kUint32);
+  EXPECT_EQ(cloud.fields[4].count, 1u);
+
+  // Zero-copy is preserved: collapsing is a pure metadata rewrite.
+  EXPECT_EQ(cloud.point_step, 20u);
+  EXPECT_GE(cloud.data.data(), wire.data());
 }
 
 TEST(ProtobufParserTest, FoxglovePointCloudCodecFlagsNonIdentityPose) {
@@ -2426,4 +2697,176 @@ TEST(ProtobufParserTest, PjPosesInFrameObjectRoute) {
   EXPECT_EQ(pf->frame_id, "map");
   EXPECT_EQ(pf->timestamp_ns, 9'000'000'500LL);
   expectTwoPosesDecoded(*pf, 0.7071067811865476);
+}
+
+// ---------------------------------------------------------------------------
+// foxglove.PoseInFrame (singular) -> kPosesInFrame (one pose)
+//
+// PoseInFrame { timestamp=1, frame_id=2, pose=3 (single Pose) } is wire-identical
+// to a one-element PosesInFrame (field 3, length-delimited submessage), so the
+// parser binds it to the same SDK codec — the protobuf analog of ROS PoseStamped.
+// ---------------------------------------------------------------------------
+
+TEST(ProtobufParserTest, FoxglovePoseInFrameObjectRoute) {
+  ProtobufParserFixture f;
+  f.setUp();
+
+  ASSERT_TRUE(f.bindSchema("foxglove.PoseInFrame", std::string{}));
+  const PJ::Span<const uint8_t> empty_schema{};
+  EXPECT_EQ(f.handle.classifySchema("foxglove.PoseInFrame", empty_schema), PJ::sdk::BuiltinObjectType::kPosesInFrame);
+
+  // One pose: the wire bytes are exactly what a foxglove.PoseInFrame produces.
+  const std::vector<PoseValues> one = {{.px = 9.0, .py = 8.0, .pz = 7.0, .qx = 0.0, .qy = 0.0, .qz = 0.0, .qw = 1.0}};
+  const auto wire = buildPosesInFrameWire(3, 0, "base_link", one);
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(wire.data(), wire.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  ASSERT_NE(pf, nullptr);
+  EXPECT_EQ(pf->frame_id, "base_link");
+  EXPECT_EQ(pf->timestamp_ns, 3'000'000'000LL);
+  EXPECT_FALSE(rec->ts.has_value());  // embedded-ts off by default
+  ASSERT_EQ(pf->poses.size(), 1u);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.x, 9.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.y, 8.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.z, 7.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].orientation.w, 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// foxglove.Odometry -> kPosesInFrame (one pose, the protobuf analog of ROS
+// nav_msgs/Odometry).
+//
+// Odometry { timestamp=1, frame_id=2, body_frame_id=3, pose=4 Pose,
+//   linear_velocity=5, angular_velocity=6, pose_covariance=7 (repeated double),
+//   velocity_covariance=8, metadata=9 }. Unlike PoseInFrame the pose sits at
+//   field 4 (field 3 is a string), so the PosesInFrame codec cannot be reused —
+//   a dedicated decoder reads timestamp/frame_id/pose and skips the rest.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// foxglove.Pose { position=1 Vector3 (x/y/z), orientation=2 Quaternion (x/y/z/w) }.
+PW buildPoseSubmessage(const PoseValues& pv) {
+  PW position;
+  position.dbl(1, pv.px);
+  position.dbl(2, pv.py);
+  position.dbl(3, pv.pz);
+  PW orientation;
+  orientation.dbl(1, pv.qx);
+  orientation.dbl(2, pv.qy);
+  orientation.dbl(3, pv.qz);
+  orientation.dbl(4, pv.qw);
+  PW pose;
+  pose.sub(1, position);
+  pose.sub(2, orientation);
+  return pose;
+}
+
+// Build a foxglove.Odometry message with velocities + a 36-element pose_covariance
+// present, so the decoder is proven to skip every field that is not the pose.
+PW buildOdometryWire(
+    int64_t sec, int32_t ns, const std::string& frame_id, const std::string& body_frame_id, const PoseValues& pv) {
+  PW linear_velocity;
+  linear_velocity.dbl(1, 1.5);
+  linear_velocity.dbl(2, 0.0);
+  linear_velocity.dbl(3, 0.0);
+
+  PW odom;
+  odom.sub(1, foxgloveTimestamp(sec, ns));
+  odom.str(2, frame_id);
+  odom.str(3, body_frame_id);
+  odom.sub(4, buildPoseSubmessage(pv));
+  odom.sub(5, linear_velocity);                         // skipped (submessage)
+  odom.packedDoubles(7, std::vector<double>(36, 0.0));  // skipped (packed repeated double)
+  return odom;
+}
+
+}  // namespace
+
+TEST(ProtobufParserTest, FoxgloveOdometryObjectRoute) {
+  ProtobufParserFixture f;
+  f.setUp();
+
+  ASSERT_TRUE(f.bindSchema("foxglove.Odometry", std::string{}));
+  const PJ::Span<const uint8_t> empty_schema{};
+  EXPECT_EQ(f.handle.classifySchema("foxglove.Odometry", empty_schema), PJ::sdk::BuiltinObjectType::kPosesInFrame);
+
+  const PoseValues pv{.px = 1.0, .py = 2.0, .pz = 3.0, .qx = 0.0, .qy = 0.0, .qz = 0.0, .qw = 1.0};
+  const auto wire = buildOdometryWire(5, 0, "odom", "base_link", pv);
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(wire.b.data(), wire.b.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  ASSERT_NE(pf, nullptr);
+  EXPECT_EQ(pf->frame_id, "odom");  // reference frame (field 2), NOT body_frame_id
+  EXPECT_EQ(pf->timestamp_ns, 5'000'000'000LL);
+  EXPECT_FALSE(rec->ts.has_value());
+  ASSERT_EQ(pf->poses.size(), 1u);  // pose at field 4; velocities + covariance skipped
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.x, 1.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.y, 2.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.z, 3.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].orientation.w, 1.0);
+}
+
+TEST(ProtobufParserTest, FoxgloveOdometryScalarRoute) {
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("foxglove.Odometry", std::string{}));
+
+  const PoseValues pv{.px = 1.0, .py = 2.0, .pz = 3.0, .qx = 0.0, .qy = 0.0, .qz = 0.0, .qw = 1.0};
+  const auto wire = buildOdometryWire(5, 0, "odom", "base_link", pv);
+  ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(wire.b.data()), wire.b.size()), 555));
+
+  // The scalar route keeps the single pose plottable as bounded per-axis columns
+  // (mirroring the ROS Odometry scalar flatten); it never emits the velocities or
+  // the 36-element covariances.
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+  const auto* px = PJ::sdk::testing::ParserWriteRecorder::findField(row, "pose/position/x");
+  ASSERT_NE(px, nullptr);
+  EXPECT_DOUBLE_EQ(px->numeric, 1.0);
+  const auto* qw = PJ::sdk::testing::ParserWriteRecorder::findField(row, "pose/orientation/w");
+  ASSERT_NE(qw, nullptr);
+  EXPECT_DOUBLE_EQ(qw->numeric, 1.0);
+}
+
+// foxglove.Odometry with a NON-default numbering: official is { frame_id=2,
+// body_frame_id=3, pose=4 }; here { pose=2, body_frame_id=3, frame_id=9 }. The
+// decoder must follow the embedded descriptor, not the hardcoded numbers.
+TEST(ProtobufParserTest, FoxgloveOdometryHonorsVariantSchemaFieldNumbers) {
+  ProtobufParserFixture f;
+  f.setUp();
+  const std::string schema =
+      buildFoxgloveSchema("Odometry", {{"timestamp", 1}, {"pose", 2}, {"body_frame_id", 3}, {"frame_id", 9}});
+  ASSERT_TRUE(f.bindSchema("foxglove.Odometry", schema));
+
+  const PoseValues pv{.px = 4.0, .py = 5.0, .pz = 6.0, .qx = 0.0, .qy = 0.0, .qz = 0.0, .qw = 1.0};
+  PW odom;
+  odom.sub(1, foxgloveTimestamp(7, 0));
+  odom.sub(2, buildPoseSubmessage(pv));  // pose (variant number)
+  odom.str(3, "base_link");              // body_frame_id (variant number)
+  odom.str(9, "world");                  // frame_id (variant number)
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(odom.b.data(), odom.b.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  ASSERT_NE(pf, nullptr);
+  EXPECT_EQ(pf->frame_id, "world");  // resolved from descriptor (field 9), not the default field 2
+  ASSERT_EQ(pf->poses.size(), 1u);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.x, 4.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.z, 6.0);
+  EXPECT_DOUBLE_EQ(pf->poses[0].orientation.w, 1.0);
 }

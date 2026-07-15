@@ -254,6 +254,19 @@ class RosParser : public PJ::MessageParserPluginBase {
   // overrides (e.g. std_msgs/String on a robot_description topic -> RobotDescription).
   CatalogEntry selectCatalogEntry(const std::string& msg_type) const;
   void ensureDeserializer();
+  // Reads a CDR byte sequence (uint8[] / sequence<uint8>) and validates its
+  // wire-declared length against the bytes remaining in the message. NanoCDR's
+  // byte-sequence reader trusts the declared length and does not clamp it to the
+  // buffer (unlike the ROS1 deserializer and NanoCDR's own string reader): on a
+  // truncated/corrupt message it advances the cursor past the end and returns a span
+  // longer than the payload. Reading that span — or any field the handler reads
+  // after it, since the cursor is now past the end — is an out-of-bounds access.
+  // Throws std::runtime_error on overrun (matching the ROS1 reader) so the decode is
+  // aborted at once. Every object handler wraps its body in try/catch and the scalar
+  // void-handler path is guarded in wrapVoidHandler(), so the throw becomes an
+  // Expected error (no frame, no crash), never a std::terminate across the C ABI.
+  // Read all bulk uint8[] fields through this, never the deserializer directly.
+  RosMsgParser::Span<const uint8_t> readByteSequence();
   void detectSchemaFeatures();
   void findQuaternionPrefixes(
       const RosMsgParser::ROSMessage* msg, const std::string& prefix, const RosMsgParser::RosMessageLibrary& lib);
@@ -367,6 +380,11 @@ class RosParser : public PJ::MessageParserPluginBase {
   // keeps its per-axis scalar flatten (handlePoseStamped) alongside the object.
   PJ::Expected<PJ::sdk::ObjectRecord> parsePoseStampedObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
+  // nav_msgs/Odometry -> sdk::PosesInFrame (single element: the pose in the
+  // header frame). Dual route: keeps its per-axis scalar flatten
+  // (handleOdometry) alongside the object.
+  PJ::Expected<PJ::sdk::ObjectRecord> parseOdometryObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
   // nav_msgs/Path -> sdk::PosesInFrame. The object takes the PATH header's
   // frame_id + stamp; each PoseStamped's own header is read and dropped (a
   // PosesInFrame is one frame at one instant).
@@ -438,7 +456,15 @@ class RosParser : public PJ::MessageParserPluginBase {
     named_fields_.clear();
     current_timestamp_ = ts;
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()));
-    (this->*Handler)();
+    // The object handlers each carry their own try/catch; the scalar void handlers
+    // do not, and this wrapper is the C-ABI-facing entry for them. A CDR decode
+    // throw (e.g. readByteSequence / deserializeString on a truncated message) must
+    // become an Expected error here, never propagate into the noexcept trampoline.
+    try {
+      (this->*Handler)();
+    } catch (const std::exception& e) {
+      return PJ::unexpected(std::string("ROS scalar decode error: ") + e.what());
+    }
     std::vector<PJ::sdk::NamedFieldValue> out;
     out.reserve(owned_fields_.size());
     for (const auto& f : owned_fields_) {

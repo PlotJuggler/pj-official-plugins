@@ -186,9 +186,12 @@ void RosParser::handleDiagnosticArray() {
 
   size_t status_count = deserializer_->deserializeUInt32();
   for (size_t st = 0; st < status_count; st++) {
-    uint8_t level = deserializer_->deserialize(RosMsgParser::BYTE).convert<uint8_t>();
+    // diagnostic_msgs/DiagnosticStatus wire order: name, level, message,
+    // hardware_id, values[] (the OK/WARN/ERROR/STALE byte constants are not
+    // serialized). Read in exactly this order or the CDR cursor desyncs.
     std::string name;
     deserializer_->deserializeString(name);
+    uint8_t level = deserializer_->deserialize(RosMsgParser::BYTE).convert<uint8_t>();
     std::string message;
     deserializer_->deserializeString(message);
     std::string hardware_id;
@@ -235,6 +238,13 @@ void RosParser::handleTFMessage() {
     } else {
       prefix = "/" + h.frame_id + "/" + child_frame_id;
     }
+    // Per-transform header (the batch has no single message-level Header). The
+    // parent frame_id is already the path prefix, so only the stamp (seconds) —
+    // and seq on ROS1 — are emitted, matching the /header/stamp series elsewhere.
+    addField(prefix + "/header/stamp", static_cast<double>(h.sec) + static_cast<double>(h.nsec) * 1e-9);
+    if (!deserializer_->isROS2()) {
+      addField(prefix + "/header/seq", static_cast<double>(h.seq));
+    }
     parseTransform(prefix);
   }
 }
@@ -264,8 +274,8 @@ void RosParser::handleDataTamerSnapshot() {
   uint64_t timestamp = deserializer_->deserialize(RosMsgParser::UINT64).convert<uint64_t>();
   uint64_t schema_hash = deserializer_->deserialize(RosMsgParser::UINT64).convert<uint64_t>();
 
-  auto active_mask = deserializer_->deserializeByteSequence();
-  auto payload = deserializer_->deserializeByteSequence();
+  auto active_mask = readByteSequence();
+  auto payload = readByteSequence();
 
   auto it = g_data_tamer_schemas.find(schema_hash);
   if (it == g_data_tamer_schemas.end()) {

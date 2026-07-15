@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
 #include <mcap/reader.hpp>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
@@ -24,6 +25,33 @@ struct ChannelInfo {
   uint64_t msg_count = 0;
 };
 
+struct AlwaysIncludeRule {
+  std::string schema_name;
+  std::string encoding;
+};
+
+/// Channels whose (schema, encoding) match a rule here are always loaded,
+/// regardless of user selection -- 3D rendering (Scene3D's transform tree)
+/// silently breaks without them. Keyed on message type rather than topic
+/// name because topic naming isn't consistent across producers: Foxglove's
+/// own foxglove.FrameTransform has no fixed topic-name convention the way
+/// ROS fixes /tf (real Foxglove-recorded files use topic names like plain
+/// "tf", no leading slash, or something else entirely). The mechanism here
+/// is generic -- this table is just its (currently two-entry) data.
+const std::vector<AlwaysIncludeRule> kAlwaysIncludeRules = {
+    {"tf2_msgs/msg/TFMessage", "cdr"},
+    {"foxglove.FrameTransform", "protobuf"},
+};
+
+bool isAlwaysIncluded(const ChannelInfo& ch) {
+  for (const auto& rule : kAlwaysIncludeRules) {
+    if (ch.schema == rule.schema_name && ch.encoding == rule.encoding) {
+      return true;
+    }
+  }
+  return false;
+}
+
 class McapDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
@@ -38,9 +66,14 @@ class McapDialog : public PJ::DialogPluginTyped {
   bool clampLargeArrays() const {
     return clamp_large_arrays_;
   }
-  /// When true, use the message timestamp if present; fallback to publish time.
-  bool useTimestamp() const {
-    return use_timestamp_;
+  /// When true, use logTime from the MCAP envelope; otherwise use publishTime.
+  bool useLogTime() const {
+    return use_log_time_;
+  }
+  /// When true, the parser should extract the timestamp from inside the message
+  /// payload (e.g. ROS Header.stamp) via use_embedded_timestamp in parser config.
+  bool useHeaderTimestamp() const {
+    return use_header_timestamp_;
   }
   const std::unordered_set<std::string>& selectedTopics() const {
     return selected_topics_;
@@ -73,8 +106,10 @@ class McapDialog : public PJ::DialogPluginTyped {
     wd.setChecked("radioClamp", clamp_large_arrays_);
     wd.setChecked("radioSkip", !clamp_large_arrays_);
 
-    // Timestamp checkbox
-    wd.setChecked("checkBoxUseTimestamp", use_timestamp_);
+    // Timestamp row
+    wd.setChecked("radioPublishTime", !use_log_time_);
+    wd.setChecked("radioLogTime", use_log_time_);
+    wd.setChecked("checkBoxUseTimestamp", use_header_timestamp_);
 
     // Filter
     wd.setText("lineEditFilter", filter_text_);
@@ -85,7 +120,7 @@ class McapDialog : public PJ::DialogPluginTyped {
     wd.setTableHeaders("tableWidget", headers);
 
     std::vector<std::vector<std::string>> rows;
-    std::vector<int> selected_row_indices;
+    std::vector<std::string> selected_topic_names;
     std::vector<int> disabled_row_indices;
     rows.reserve(filtered.size());
 
@@ -93,15 +128,23 @@ class McapDialog : public PJ::DialogPluginTyped {
       const auto& ch = *filtered[i];
       rows.push_back({ch.topic, ch.schema, ch.encoding, std::to_string(ch.msg_count)});
       if (selected_topics_.count(ch.topic) > 0) {
-        selected_row_indices.push_back(static_cast<int>(i));
+        selected_topic_names.push_back(ch.topic);
       }
-      if (ch.msg_count == 0) {
+      bool locked_always_included = ch.msg_count > 0 && isAlwaysIncluded(ch);
+      if (ch.msg_count == 0 || locked_always_included) {
         disabled_row_indices.push_back(static_cast<int>(i));
+      }
+      if (locked_always_included) {
+        wd.setCellTooltip(
+            "tableWidget", static_cast<int>(i), 0, "Always loaded — required for 3D transform rendering.");
       }
     }
     wd.setTableRows("tableWidget", rows);
     wd.setDisabledRows("tableWidget", disabled_row_indices);
-    wd.setSelectedRows("tableWidget", selected_row_indices);
+    // Restore selection by first-column text (the topic name), not row index:
+    // the host matches items by text, which is sort-agnostic, so the selection
+    // survives the table's built-in column sorting (sortingEnabled=true).
+    wd.setSelectedItems("tableWidget", selected_topic_names);
 
     wd.setShortcut("btnSelectAll", "Ctrl+A");
     wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
@@ -139,8 +182,8 @@ class McapDialog : public PJ::DialogPluginTyped {
 
   bool onToggled(std::string_view widget_name, bool checked) override {
     if (widget_name == "checkBoxUseTimestamp") {
-      use_timestamp_ = checked;
-      return true;
+      use_header_timestamp_ = checked;
+      return false;
     }
     if (!checked) {
       return false;
@@ -152,6 +195,14 @@ class McapDialog : public PJ::DialogPluginTyped {
     if (widget_name == "radioSkip") {
       clamp_large_arrays_ = false;
       return true;
+    }
+    if (widget_name == "radioPublishTime") {
+      use_log_time_ = false;
+      return false;
+    }
+    if (widget_name == "radioLogTime") {
+      use_log_time_ = true;
+      return false;
     }
     return false;
   }
@@ -170,6 +221,7 @@ class McapDialog : public PJ::DialogPluginTyped {
       for (const auto& topic : selected) {
         selected_topics_.insert(topic);
       }
+      reassertAlwaysIncluded();
       return true;  // update OK button state
     }
     return false;
@@ -187,6 +239,7 @@ class McapDialog : public PJ::DialogPluginTyped {
     }
     if (widget_name == "btnDeselectAll") {
       selected_topics_.clear();
+      reassertAlwaysIncluded();
       return true;
     }
     return false;
@@ -200,7 +253,8 @@ class McapDialog : public PJ::DialogPluginTyped {
     cfg["filepath"] = filepath_;
     cfg["max_array_size"] = max_array_size_;
     cfg["clamp_large_arrays"] = clamp_large_arrays_;
-    cfg["use_timestamp"] = use_timestamp_;
+    cfg["use_log_time"] = use_log_time_;
+    cfg["use_header_timestamp"] = use_header_timestamp_;
     cfg["selected_topics"] = std::vector<std::string>(selected_topics_.begin(), selected_topics_.end());
     return cfg.dump();
   }
@@ -214,7 +268,10 @@ class McapDialog : public PJ::DialogPluginTyped {
     filepath_ = cfg.value("filepath", std::string{});
     max_array_size_ = cfg.value("max_array_size", 500u);
     clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
-    use_timestamp_ = cfg.value("use_timestamp", false);
+    use_log_time_ = cfg.value("use_log_time", cfg.value("use_mcap_log_time", false));
+    // Backward compatibility: old MCAP configs used "use_timestamp" for the
+    // parser-level embedded timestamp option before the controls were split.
+    use_header_timestamp_ = cfg.value("use_header_timestamp", cfg.value("use_timestamp", false));
 
     selected_topics_.clear();
     if (auto it = cfg.find("selected_topics"); it != cfg.end() && it->is_array()) {
@@ -313,6 +370,20 @@ class McapDialog : public PJ::DialogPluginTyped {
         }
       }
     }
+
+    reassertAlwaysIncluded();
+  }
+
+  /// Channels matching kAlwaysIncludeRules are always loaded: 3D rendering
+  /// depends on them even when the user narrows their selection to a handful
+  /// of unrelated topics. Idempotent -- safe to call after any mutation of
+  /// selected_topics_.
+  void reassertAlwaysIncluded() {
+    for (const auto& ch : all_channels_) {
+      if (ch.msg_count > 0 && isAlwaysIncluded(ch)) {
+        selected_topics_.insert(ch.topic);
+      }
+    }
   }
 
   std::vector<const ChannelInfo*> filteredChannels() const {
@@ -324,13 +395,21 @@ class McapDialog : public PJ::DialogPluginTyped {
       return result;
     }
 
-    // Split filter by spaces — AND logic (all words must match)
+    auto lower = [](std::string s) {
+      for (auto& c : s) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      }
+      return s;
+    };
+
+    // Split filter by spaces — AND logic (all words must match), matched
+    // case-insensitively like the streaming pickers' filters.
     std::vector<std::string> words;
     std::string word;
     for (char c : filter_text_) {
       if (c == ' ') {
         if (!word.empty()) {
-          words.push_back(word);
+          words.push_back(lower(word));
           word.clear();
         }
       } else {
@@ -338,13 +417,14 @@ class McapDialog : public PJ::DialogPluginTyped {
       }
     }
     if (!word.empty()) {
-      words.push_back(word);
+      words.push_back(lower(word));
     }
 
     for (const auto& ch : all_channels_) {
+      const std::string topic = lower(ch.topic);
       bool match = true;
       for (const auto& w : words) {
-        if (ch.topic.find(w) == std::string::npos) {
+        if (topic.find(w) == std::string::npos) {
           match = false;
           break;
         }
@@ -370,7 +450,8 @@ class McapDialog : public PJ::DialogPluginTyped {
   std::string filepath_;
   unsigned max_array_size_ = 500;
   bool clamp_large_arrays_ = true;
-  bool use_timestamp_ = false;
+  bool use_log_time_ = false;
+  bool use_header_timestamp_ = false;
   std::unordered_set<std::string> selected_topics_;
   std::string filter_text_;
 

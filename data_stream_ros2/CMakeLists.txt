@@ -39,10 +39,32 @@ set_target_properties(ros2_stream_plugin PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 
+# Embed the manifest into the proxy itself so the host plugin scanner can
+# discover and describe this extension without ROS installed. The proxy's
+# data-source vtable advertises this manifest; the inner per-distro binary is
+# only dlopen-ed when the source is actually instantiated.
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
+pj_embed_manifest(ros2_stream_plugin
+  MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
+  HEADER        ${CMAKE_CURRENT_BINARY_DIR}/generated/proxy/ros2_manifest.hpp
+  VAR_NAME      kRos2ProxyManifest
+)
+
 pj_emit_plugin_manifest(ros2_stream_plugin
   FAMILY        data_source
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
+
+# --- Unit test for the demand-subscription control plane (header-only, no ROS) ---
+# ros2_topic_subscription.hpp has no rclcpp dependency, so this target builds
+# unconditionally (like the proxy above) — it does NOT require
+# PJ_BUILD_ROS2_DISTRO or a sourced ROS 2 environment.
+add_executable(ros2_topic_subscription_test tests/ros2_topic_subscription_test.cpp)
+target_compile_features(ros2_topic_subscription_test PRIVATE cxx_std_20)
+target_compile_options(ros2_topic_subscription_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(ros2_topic_subscription_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(ros2_topic_subscription_test PRIVATE GTest::gtest_main)
+add_test(NAME ros2_topic_subscription_test COMMAND ros2_topic_subscription_test)
 
 # ---------------------------------------------------------------------------
 # Per-distro target — per-distro ROS 2 subscriber, opt-in

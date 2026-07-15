@@ -49,7 +49,7 @@ std::string WebrtcDialog::widget_data() {
 
   wd.setTableHeaders("camerasList", {"Camera", "Codec", "Resolution"});
   std::vector<std::vector<std::string>> rows;
-  std::vector<int> selected_rows;
+  std::vector<std::string> selected_labels;
   {
     std::lock_guard<std::mutex> lock(catalog_mutex_);
     rows.reserve(catalog_.size());
@@ -62,13 +62,13 @@ std::string WebrtcDialog::widget_data() {
       }
       const std::string res =
           (s.width > 0 && s.height > 0) ? (std::to_string(s.width) + " x " + std::to_string(s.height)) : "-";
-      // Mark this just-pushed row as selected if its stream id is in selected_.
-      // camerasList is a QTableWidget: the host restores selection from
-      // selected_rows (view.selectedRows()/selectRow), not selected_items, so
-      // we must hand it row indices computed against THIS filtered row set.
+      // Mark this row as selected if its stream id is in selected_. Selection
+      // is restored by label text (setSelectedItems): the host matches rows by
+      // first-column text, which stays correct however the table is sorted —
+      // labels are unique per catalog via displayLabel/buildBaseNameCounts.
       for (const auto& sel : selected_) {
         if (sel.id == s.id) {
-          selected_rows.push_back(static_cast<int>(rows.size()));
+          selected_labels.push_back(label);
           break;
         }
       }
@@ -77,8 +77,8 @@ std::string WebrtcDialog::widget_data() {
   }
   wd.setTableRows("camerasList", rows);
 
-  if (!selected_rows.empty()) {
-    wd.setSelectedRows("camerasList", selected_rows);
+  if (!selected_labels.empty()) {
+    wd.setSelectedItems("camerasList", selected_labels);
   }
 
   wd.setTableHeaders("tableIceServers", {"URL", "Username", "Credential"});

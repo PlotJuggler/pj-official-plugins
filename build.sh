@@ -66,9 +66,15 @@ fi
 echo "Conan recipe: $CONAN_RECIPE"
 echo "Build directory: $CMAKE_BUILD_DIR"
 
+# -s:b compiler.cppstd=20: the aggregate root recipe pulls protobuf into the
+# BUILD context (tool_requires, for the Conan protoc). protobuf 6.x requires
+# C++17, but a default build profile (e.g. MSVC's cppstd=14) fails its validate()
+# with "Current cppstd is lower than the required C++ standard". Host -s only
+# covers the host context, so the build context needs its own cppstd.
 conan install "$CONAN_RECIPE" --output-folder="$BUILD_DIR" --build=missing \
   -s build_type="$BUILD_TYPE" \
   -s compiler.cppstd=20 \
+  -s:b compiler.cppstd=20 \
   -c tools.cmake.cmaketoolchain:generator=Ninja \
   ${CONAN_ARGS[@]+"${CONAN_ARGS[@]}"}
 

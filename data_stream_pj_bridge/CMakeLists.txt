@@ -48,3 +48,13 @@ target_compile_features(pj_bridge_protocol_test PRIVATE cxx_std_20)
 target_compile_options(pj_bridge_protocol_test PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(pj_bridge_protocol_test PRIVATE pj_bridge_protocol_lib GTest::gtest_main)
 add_test(NAME pj_bridge_protocol_test COMMAND pj_bridge_protocol_test)
+
+# --- Unit test for the demand-subscription control plane (header-only, no sockets) ---
+add_executable(pj_bridge_topic_subscription_test tests/pj_bridge_topic_subscription_test.cpp)
+target_compile_features(pj_bridge_topic_subscription_test PRIVATE cxx_std_20)
+target_compile_options(pj_bridge_topic_subscription_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(pj_bridge_topic_subscription_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(pj_bridge_topic_subscription_test PRIVATE
+  pj_bridge_protocol_lib nlohmann_json::nlohmann_json GTest::gtest_main
+)
+add_test(NAME pj_bridge_topic_subscription_test COMMAND pj_bridge_topic_subscription_test)

@@ -17,6 +17,8 @@ class PjOfficialPluginsConan(ConanFile):
 
     Used by `build.sh` with no argument and by the scheduled/manual full builds.
     Per-plugin builds use each plugin's own conanfile.py instead.
+    On Linux the aggregate builds Arrow with the full Flight stack (see configure())
+    so toolbox_mosaico builds there too, not only via its own per-plugin recipe.
     """
 
     settings = "os", "compiler", "build_type", "arch"
@@ -29,7 +31,15 @@ class PjOfficialPluginsConan(ConanFile):
         "paho-mqtt-cpp/1.5.3",
         "cppzmq/4.11.0",
         "protobuf/6.33.5",
-        "lz4/1.10.0",
+        # Pinned to lz4/1.9.4 to match arrow/23.0.1's exact lz4 dependency: arrow's
+        # recipe hard-requires lz4/1.9.4 once with_lz4=True, which configure() turns
+        # on for the Linux Flight build. They MUST stay equal there — a newer lz4
+        # collides with arrow's pin (Conan version conflict) and re-splits Arrow into
+        # a second build. On non-Linux (Flight off) arrow pulls no lz4, so this pin is
+        # standalone for the lean plugins (e.g. data_load_mcap). data_load_mcap's OWN
+        # per-plugin recipe still pins lz4/1.10.0; that artifact is built separately
+        # and is unaffected. Bump only in lockstep with arrow's lz4 pin.
+        "lz4/1.9.4",
         "zstd/1.5.7",
         "date/3.0.4",
         "gtest/1.17.0",
@@ -46,6 +56,12 @@ class PjOfficialPluginsConan(ConanFile):
         "cpython/3.12.7",
         f"plotjuggler_sdk/{_SDK_VERSION}",
     )
+
+    # Build-context protobuf so the Conan protoc (6.33.5) lands on the build
+    # PATH and protobuf_generate()'s find_program(protoc) in parser_protobuf
+    # resolves to it, NOT the system /usr/bin/protoc (3.21) — whose generated C++
+    # is ABI-incompatible with the libprotobuf 6.x headers we link against.
+    tool_requires = ("protobuf/6.33.5",)
 
     default_options = {
         "*:shared": False,
@@ -68,3 +84,26 @@ class PjOfficialPluginsConan(ConanFile):
         "libdatachannel/*:with_nice": False,
         "libdatachannel/*:with_ssl": "openssl",
     }
+
+    def configure(self):
+        # Enable Arrow's Flight stack on Linux AND Windows. toolbox_mosaico's Arrow
+        # Flight client (the Mosaico server connection) needs a real Flight target or
+        # its CMakeLists self-skips. Turning Flight on for the single shared
+        # arrow/23.0.1 here is what lets toolbox_mosaico build inside the AGGREGATE
+        # (./build.sh with no arg) in ONE pass, instead of needing a second,
+        # standalone Arrow-with-Flight build. These options are a strict superset of
+        # the lean parquet/snappy options, so the other Arrow consumers
+        # (data_load_parquet/lerobot) are unaffected.
+        #
+        # Windows was validated to build the whole Flight/gRPC stack under MSVC
+        # (VS2022 / msvc194), so it now builds mosaico too rather than self-skipping.
+        # macOS stays lean (Flight off) until it is likewise validated.
+        if self.settings.os in ("Linux", "Windows"):
+            self.options["arrow"].with_flight_rpc = True
+            self.options["arrow"].with_grpc = True
+            self.options["arrow"].with_protobuf = True
+            self.options["arrow"].with_re2 = True
+            self.options["arrow"].with_thrift = True
+            # The Mosaico server streams RecordBatches compressed with LZ4/ZSTD.
+            self.options["arrow"].with_lz4 = True
+            self.options["arrow"].with_zstd = True

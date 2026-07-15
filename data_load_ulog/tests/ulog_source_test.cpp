@@ -1,11 +1,16 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>
 #include <ulog_cpp/data_container.hpp>
 #include <ulog_cpp/reader.hpp>
 #include <vector>
+
+#include "../ulog_flatten.hpp"
 
 namespace {
 
@@ -355,6 +360,151 @@ TEST(ULogSourceTest, AllNumericTypes) {
   EXPECT_FLOAT_EQ(sample["f32"].as<float>(), 3.14f);
   EXPECT_DOUBLE_EQ(sample["f64"].as<double>(), 2.71828);
   EXPECT_EQ(sample["flag"].as<bool>(), true);
+}
+
+// --- Tests for the plugin's own flatten/extract path (ulog_flatten.hpp) ---
+//
+// The tests above validate ulog_cpp's typed accessors. The importer does NOT use
+// those at runtime: it flattens the format and reads raw bytes at resolved
+// offsets. These tests drive that production path directly.
+
+// Decode a scalar leaf from raw bytes the same way the plugin does, returning a
+// double for comparison against known inputs.
+double decodeLeaf(const std::vector<uint8_t>& raw, size_t offset, ulog_cpp::Field::BasicType type) {
+  const uint8_t* p = raw.data() + offset;
+  switch (type) {
+    case ulog_cpp::Field::BasicType::INT8:
+      return static_cast<double>(*reinterpret_cast<const int8_t*>(p));
+    case ulog_cpp::Field::BasicType::UINT8:
+    case ulog_cpp::Field::BasicType::CHAR:
+      return static_cast<double>(*p);
+    case ulog_cpp::Field::BasicType::BOOL:
+      return static_cast<double>(*p != 0);
+    case ulog_cpp::Field::BasicType::INT16: {
+      int16_t v;
+      std::memcpy(&v, p, sizeof(v));
+      return v;
+    }
+    case ulog_cpp::Field::BasicType::UINT16: {
+      uint16_t v;
+      std::memcpy(&v, p, sizeof(v));
+      return v;
+    }
+    case ulog_cpp::Field::BasicType::INT32: {
+      int32_t v;
+      std::memcpy(&v, p, sizeof(v));
+      return v;
+    }
+    case ulog_cpp::Field::BasicType::UINT32: {
+      uint32_t v;
+      std::memcpy(&v, p, sizeof(v));
+      return v;
+    }
+    case ulog_cpp::Field::BasicType::INT64: {
+      int64_t v;
+      std::memcpy(&v, p, sizeof(v));
+      return static_cast<double>(v);
+    }
+    case ulog_cpp::Field::BasicType::UINT64: {
+      uint64_t v;
+      std::memcpy(&v, p, sizeof(v));
+      return static_cast<double>(v);
+    }
+    case ulog_cpp::Field::BasicType::FLOAT: {
+      float v;
+      std::memcpy(&v, p, sizeof(v));
+      return v;
+    }
+    case ulog_cpp::Field::BasicType::DOUBLE: {
+      double v;
+      std::memcpy(&v, p, sizeof(v));
+      return v;
+    }
+    default:
+      return 0.0;
+  }
+}
+
+// Build a message that exercises nesting + arrays + a scalar tail, then verify the
+// flattened names and the values decoded at the offsets forEachFlatLeaf reports.
+// This locks in the nested base-offset accumulation the importer relies on.
+TEST(ULogFlattenTest, NamesAndOffsetsMatchKnownRecord) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("vec3:float x;float y;float z");
+  builder.writeFormat("sample:uint64_t timestamp;vec3 pos;uint8_t mode;float[2] arr;int32_t code");
+  builder.writeSubscription(1, 0, "sample");
+
+  {
+    FieldDataBuilder fields;
+    fields.append<uint64_t>(7000000);  // timestamp (skipped)
+    fields.append<float>(1.0f);        // pos.x
+    fields.append<float>(2.0f);        // pos.y
+    fields.append<float>(3.0f);        // pos.z
+    fields.append<uint8_t>(42);        // mode
+    fields.append<float>(4.0f);        // arr.00
+    fields.append<float>(5.0f);        // arr.01
+    fields.append<int32_t>(-77);       // code
+    builder.writeData(1, fields.build());
+  }
+
+  auto container = parseBuilder(builder);
+  ASSERT_FALSE(container->hadFatalError());
+  auto sub = container->subscription("sample");
+  ASSERT_NE(sub, nullptr);
+  ASSERT_EQ(sub->size(), 1u);
+
+  // Names, in flattened order.
+  std::vector<std::string> names;
+  ulog_flatten::collectFlatFieldNames(*sub->format(), {}, names);
+  const std::vector<std::string> expected_names = {"pos.x", "pos.y", "pos.z", "mode", "arr.00", "arr.01", "code"};
+  EXPECT_EQ(names, expected_names);
+
+  // Values decoded at the offsets forEachFlatLeaf reports, in the same order.
+  const auto& raw = sub->rawSamples()[0].data();
+  std::vector<double> values;
+  size_t max_end = 0;
+  ulog_flatten::forEachFlatLeaf(
+      *sub->format(), 0, [&](size_t offset, ulog_cpp::Field::BasicType type, size_t elem_size) {
+        ASSERT_LE(offset + elem_size, raw.size());  // offsets stay inside the record
+        max_end = std::max(max_end, offset + elem_size);
+        values.push_back(decodeLeaf(raw, offset, type));
+      });
+
+  const std::vector<double> expected_values = {1.0, 2.0, 3.0, 42.0, 4.0, 5.0, -77.0};
+  ASSERT_EQ(values.size(), expected_values.size());
+  for (size_t i = 0; i < values.size(); ++i) {
+    EXPECT_DOUBLE_EQ(values[i], expected_values[i]) << "leaf " << i << " (" << names[i] << ")";
+  }
+
+  // The furthest byte any leaf reads must equal the record size, so a caller can
+  // bound-check with `offset + size <= raw_size` and a truncated record trips it.
+  EXPECT_EQ(max_end, raw.size());
+  EXPECT_EQ(max_end, static_cast<size_t>(sub->format()->sizeBytes()));
+}
+
+// Names and leaf count must stay in lockstep so the importer can zip them.
+TEST(ULogFlattenTest, NameAndLeafCountsAgree) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("vec3:float x;float y;float z");
+  builder.writeFormat("sample:uint64_t timestamp;vec3 pos;float[2] arr;int32_t code");
+  builder.writeSubscription(1, 0, "sample");
+
+  auto container = parseBuilder(builder);
+  ASSERT_FALSE(container->hadFatalError());
+  auto sub = container->subscription("sample");
+  ASSERT_NE(sub, nullptr);
+
+  std::vector<std::string> names;
+  ulog_flatten::collectFlatFieldNames(*sub->format(), {}, names);
+
+  size_t leaf_count = 0;
+  ulog_flatten::forEachFlatLeaf(*sub->format(), 0, [&](size_t, ulog_cpp::Field::BasicType, size_t) { ++leaf_count; });
+
+  EXPECT_EQ(names.size(), leaf_count);
 }
 
 }  // namespace

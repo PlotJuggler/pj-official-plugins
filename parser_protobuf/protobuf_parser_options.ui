@@ -6,14 +6,14 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>400</width>
-    <height>350</height>
+    <width>760</width>
+    <height>360</height>
    </rect>
   </property>
   <property name="minimumSize">
    <size>
-    <width>350</width>
-    <height>200</height>
+    <width>640</width>
+    <height>240</height>
    </size>
   </property>
   <property name="windowTitle">
@@ -24,77 +24,89 @@
     <number>6</number>
    </property>
    <property name="leftMargin">
-    <number>6</number>
+    <number>0</number>
    </property>
    <property name="topMargin">
-    <number>6</number>
+    <number>0</number>
    </property>
    <property name="rightMargin">
-    <number>6</number>
+    <number>0</number>
    </property>
    <property name="bottomMargin">
-    <number>6</number>
+    <number>0</number>
    </property>
    <item>
-    <widget class="QTabWidget" name="tabWidget">
-     <property name="currentIndex">
-      <number>0</number>
+    <widget class="QSplitter" name="twoColumnSplitter">
+     <property name="orientation">
+      <enum>Qt::Horizontal</enum>
      </property>
-     <!-- Tab: Proto File -->
-     <widget class="QWidget" name="tabProtoFile">
-      <attribute name="title">
-       <string>Proto File</string>
-      </attribute>
+     <property name="childrenCollapsible">
+      <bool>false</bool>
+     </property>
+     <!-- LEFT COLUMN: Proto File -->
+     <widget class="QWidget" name="protoFileColumn" native="true">
       <layout class="QVBoxLayout" name="verticalLayoutProtoFile">
        <property name="spacing">
         <number>8</number>
        </property>
-       <property name="leftMargin">
-        <number>8</number>
-       </property>
-       <property name="topMargin">
-        <number>8</number>
-       </property>
-       <property name="rightMargin">
-        <number>8</number>
-       </property>
-       <property name="bottomMargin">
-        <number>8</number>
-       </property>
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>0</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
        <item>
-        <widget class="QLabel" name="labelInstructions">
+        <widget class="SectionHeaderBand" name="bannerProtoFile">
          <property name="text">
-          <string>To parse a protobuf message, you need to load its definition from file and specify its type explicitly.</string>
-         </property>
-         <property name="wordWrap">
-          <bool>true</bool>
-         </property>
-         <property name="font">
-          <font>
-           <weight>50</weight>
-          </font>
+          <string>Protocol Buffer</string>
          </property>
         </widget>
        </item>
        <item>
         <layout class="QHBoxLayout" name="horizontalLayoutLoadProto">
          <item>
-          <widget class="QPushButton" name="buttonLoadProtoFile">
+          <widget class="QLabel" name="labelProtoFile">
            <property name="text">
-            <string>Load .proto file</string>
+            <string>Proto file:</string>
            </property>
           </widget>
          </item>
          <item>
-          <widget class="QLabel" name="labelProtoFilePath">
-           <property name="text">
-            <string>(no file selected)</string>
+          <widget class="QLineEdit" name="lineEditProtoFile">
+           <property name="clearButtonEnabled">
+            <bool>true</bool>
            </property>
-           <property name="sizePolicy">
-            <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
-             <horstretch>1</horstretch>
-             <verstretch>0</verstretch>
-            </sizepolicy>
+           <property name="placeholderText">
+            <string>Path to a .proto file</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="buttonLoadProtoFile">
+           <property name="toolTip">
+            <string>Browse for a .proto file</string>
+           </property>
+           <property name="minimumSize">
+            <size>
+             <width>24</width>
+             <height>24</height>
+            </size>
+           </property>
+           <property name="maximumSize">
+            <size>
+             <width>24</width>
+             <height>24</height>
+            </size>
+           </property>
+           <property name="text">
+            <string/>
+           </property>
+           <property name="iconSize">
+            <size>
+             <width>22</width>
+             <height>22</height>
+            </size>
+           </property>
+           <property name="flat">
+            <bool>true</bool>
            </property>
           </widget>
          </item>
@@ -190,6 +202,9 @@
            <property name="checked">
             <bool>true</bool>
            </property>
+           <attribute name="buttonGroup">
+            <string>arrayPolicyGroup</string>
+           </attribute>
           </widget>
          </item>
          <item>
@@ -197,6 +212,9 @@
            <property name="text">
             <string>discard</string>
            </property>
+           <attribute name="buttonGroup">
+            <string>arrayPolicyGroup</string>
+           </attribute>
           </widget>
          </item>
          <item>
@@ -244,75 +262,28 @@
        </item>
       </layout>
      </widget>
-     <!-- Tab: Include Folders -->
-     <widget class="QWidget" name="tabIncludeFolders">
-      <attribute name="title">
-       <string>Include Folders</string>
-      </attribute>
+     <!-- RIGHT COLUMN: Include Folders (the splitter handle between the panes is the movable separator) -->
+     <widget class="QWidget" name="includeFoldersColumn" native="true">
       <layout class="QVBoxLayout" name="verticalLayoutIncludeFolders">
        <property name="spacing">
-        <number>8</number>
+        <number>0</number>
        </property>
-       <property name="leftMargin">
-        <number>8</number>
-       </property>
-       <property name="topMargin">
-        <number>8</number>
-       </property>
-       <property name="rightMargin">
-        <number>8</number>
-       </property>
-       <property name="bottomMargin">
-        <number>8</number>
-       </property>
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>0</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
        <item>
-        <widget class="QLabel" name="labelIncludeInstructions">
+        <widget class="SectionHeaderBand" name="bannerIncludeFolders">
          <property name="text">
-          <string>Add folders where imported .proto files can be found:</string>
+          <string>Include Folders</string>
          </property>
-         <property name="wordWrap">
-          <bool>true</bool>
+         <property name="trailingButtonName">
+          <string>buttonAddIncludeFolder</string>
          </property>
-         <property name="font">
-          <font>
-           <weight>50</weight>
-          </font>
+         <property name="trailingButtonIcon">
+          <string>:/resources/svg/folder.svg</string>
          </property>
         </widget>
-       </item>
-       <item>
-        <layout class="QHBoxLayout" name="horizontalLayoutIncludeButtons">
-         <item>
-          <widget class="QPushButton" name="buttonAddIncludeFolder">
-           <property name="text">
-            <string>Add folder...</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QPushButton" name="buttonRemoveIncludeFolder">
-           <property name="text">
-            <string>Remove selected</string>
-           </property>
-           <property name="enabled">
-            <bool>false</bool>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <spacer name="horizontalSpacerInclude">
-           <property name="orientation">
-            <enum>Qt::Horizontal</enum>
-           </property>
-           <property name="sizeHint" stdset="0">
-            <size>
-             <width>40</width>
-             <height>20</height>
-            </size>
-           </property>
-          </spacer>
-         </item>
-        </layout>
        </item>
        <item>
         <widget class="QListWidget" name="listWidgetIncludeFolders">
@@ -332,4 +303,7 @@
  </widget>
  <resources/>
  <connections/>
+ <buttongroups>
+  <buttongroup name="arrayPolicyGroup"/>
+ </buttongroups>
 </ui>

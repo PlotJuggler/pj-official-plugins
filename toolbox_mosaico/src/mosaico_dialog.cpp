@@ -2,6 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 // clang-format off
+// The query-engine headers declare a global `enum class TokenType`. On Windows
+// they MUST be included before anything that pulls in <windows.h> (Arrow's
+// windows_compatibility shim, the SDK's platform.hpp, ...): <winnt.h> defines an
+// unscoped enumerator `TokenType` (in TOKEN_INFORMATION_CLASS) that would
+// otherwise hide our scoped enum at global scope and make MSVC reject the query
+// headers ("'TokenType' is not a type"). Kept in clang-format off so include
+// sorting cannot reorder them after the Windows-pulling headers.
+#include "query/assist.h"
+#include "query/edit.h"
+#include "query/engine.h"
+#include "query/query.h"
+#include "query_filter.h"
+
 // Arrow headers must stay before the dialog header because the plugin data API
 // and Arrow C-data declarations have load-bearing include order.
 #include <arrow/api.h>
@@ -14,7 +27,6 @@
 #include <algorithm>
 #include <chrono>
 #include <pj_base/sdk/platform.hpp>
-#include <set>
 #include <string_view>
 #include <utility>
 
@@ -27,10 +39,7 @@
 #include "mosaico_panel_manifest.hpp"
 #include "mosaico_panel_ui.hpp"
 #include "name_filter.h"
-#include "query/edit.h"
-#include "query/engine.h"
-#include "query/query.h"
-#include "query_filter.h"
+#include "selection_merge.h"
 #include "server_history.h"
 #include "settings_store.hpp"
 #include "table_sort.h"
@@ -39,12 +48,6 @@
 namespace mosaico {
 
 namespace {
-
-struct ServerCredentials {
-  std::string cert_path;
-  std::string api_key;
-  bool allow_insecure = false;
-};
 
 std::string credentialsSettingsPrefix(const std::string& uri) {
   return "mosaico/server_cache/" + normalizeServerKey(uri) + "/";
@@ -108,7 +111,8 @@ std::string dateTimeUtc(std::int64_t ts_ns) {
 
 // --- Query-assist helpers (Key/Op/Value dropdowns) ---
 
-// Clamp a (possibly stale or -1) caret offset into [0, len].
+// Clamp a (possibly -1 / unset) caret offset into [0, text.size()]; a negative
+// value means "end of text".
 int clampQueryCursor(int cursor, const std::string& text) {
   const int n = static_cast<int>(text.size());
   return cursor < 0 ? n : (cursor > n ? n : cursor);
@@ -134,6 +138,20 @@ std::vector<std::string> schemaValues(const Schema& schema, const std::string& k
   std::sort(values.begin(), values.end());
   values.erase(std::unique(values.begin(), values.end()), values.end());
   return values;
+}
+
+// Index of `title` in `items`, or -1 (no selection / placeholder) when it is
+// empty or absent. Maps an AssistDropdown title onto a QComboBox currentIndex.
+int indexOf(const std::vector<std::string>& items, const std::string& title) {
+  if (title.empty()) {
+    return -1;
+  }
+  for (std::size_t i = 0; i < items.size(); ++i) {
+    if (items[i] == title) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
 }
 
 template <typename MapType>
@@ -245,10 +263,8 @@ std::string buildTopicInfoText(const TopicInfo& info) {
 }  // namespace
 
 MosaicoDialog::MosaicoDialog() : worker_(std::make_unique<FetchWorker>()) {
-  worker_->connectFinished = [this](bool ok, std::string status, std::string err) {
-    postEvent([this, ok, status = std::move(status), err = std::move(err)]() mutable {
-      onConnectFinished(ok, std::move(status), std::move(err));
-    });
+  worker_->connectFinished = [this](ConnectResult result) {
+    postEvent([this, result = std::move(result)]() mutable { onConnectFinished(std::move(result)); });
   };
   worker_->sequencesReady = [this](std::vector<SequenceInfo> sequences) {
     postEvent([this, sequences = std::move(sequences)]() mutable { onSequencesReady(std::move(sequences)); });
@@ -269,21 +285,17 @@ MosaicoDialog::MosaicoDialog() : worker_(std::make_unique<FetchWorker>()) {
       onTopicInfosReady(std::move(sequence_name), std::move(topics));
     });
   };
-  worker_->topicMetadataReady = [this](std::string sequence_name, std::string topic_name, TopicInfo info) {
-    postEvent([this, sequence_name = std::move(sequence_name), topic_name = std::move(topic_name),
-               info = std::move(info)]() mutable {
-      onTopicMetadataReady(std::move(sequence_name), std::move(topic_name), std::move(info));
+  worker_->topicMetadataReady = [this](TopicRef topic, TopicInfo info) {
+    postEvent([this, topic = std::move(topic), info = std::move(info)]() mutable {
+      onTopicMetadataReady(std::move(topic), std::move(info));
     });
   };
   worker_->pullProgress = [this](std::string topic_name, std::int64_t bytes) {
     postEvent(
         [this, topic_name = std::move(topic_name), bytes]() mutable { onPullProgress(std::move(topic_name), bytes); });
   };
-  worker_->pullFinished = [this](std::string sequence_name, std::string topic_name, bool ok, std::string error) {
-    postEvent([this, sequence_name = std::move(sequence_name), topic_name = std::move(topic_name), ok,
-               error = std::move(error)]() mutable {
-      onPullFinished(std::move(sequence_name), std::move(topic_name), ok, std::move(error));
-    });
+  worker_->pullFinished = [this](PullResultEvent result) {
+    postEvent([this, result = std::move(result)]() mutable { onPullFinished(std::move(result)); });
   };
   worker_->allFetchesComplete = [this](std::string sequence_name) {
     postEvent(
@@ -331,9 +343,7 @@ void MosaicoDialog::initFromSettings() {
     if (isPrintableAscii(uri) && isPrintableAscii(creds.cert_path) && isPrintableAscii(creds.api_key)) {
       state_.connecting = true;
       state_.suppress_connect_error = true;  // PJ3 AutoConnect: no error notification on failure.
-      postCommand(
-          [w = worker_.get(), uri, cert_path = creds.cert_path, api_key = creds.api_key,
-           allow_insecure = creds.allow_insecure] { w->connectAsync(uri, cert_path, api_key, allow_insecure); });
+      postCommand([w = worker_.get(), uri, creds] { w->connectAsync(uri, creds); });
     }
   }
 }
@@ -353,6 +363,23 @@ MosaicoDialog::~MosaicoDialog() {
   cmd_cv_.notify_all();
   if (worker_thread_.joinable()) {
     worker_thread_.join();
+  }
+  // A close mid-fetch (the hosting banner's close — the only close path) skips
+  // onAllFetchesComplete, which owns the batch's notifyDataChanged. Topics that
+  // finished before the close have ALREADY written into the shared store (the
+  // [C1] streaming-write design), so flush them into the catalog here — the
+  // same "keep what landed" semantics as Cancel — instead of stranding data
+  // that exists in the store but never appears in the dataset tree.
+  bool flush_partial = false;
+  {
+    std::lock_guard<std::mutex> lock(state_.mu);
+    flush_partial = state_.fetch_active && state_.imported_any;
+  }
+  if (flush_partial && runtime_host_provider_) {
+    auto runtime = runtime_host_provider_();
+    if (runtime.valid()) {
+      runtime.notifyDataChanged();
+    }
   }
   // onTick and this destructor both run on the single GUI thread, so no
   // this-capturing event closure can run during or after destruction; closures
@@ -462,10 +489,7 @@ std::string MosaicoDialog::widget_data() {
       state_.query_push_pending = false;
     }
     wd.setCodeLanguage("lua_queryBar", "lua");  // Lua syntax highlighting + code-editor wiring
-    // Opt into caret tracking: the Key/Op/Value dropdowns re-analyze at the
-    // caret, so we need cursor moves (not just edits) reported via
-    // onCodeChangedWithCursor. Other code editors don't opt in and so aren't
-    // re-run on every cursor move.
+    // Opt into caret tracking so direct editor changes keep query_cursor current.
     wd.setCodeCaretTracking("lua_queryBar");
 
     // Validity feedback via the plugin's Lua engine. An empty query is valid (no
@@ -477,25 +501,39 @@ std::string MosaicoDialog::widget_data() {
       wd.setFieldValid("lua_queryBar", valid, valid ? "" : "invalid syntax");
     }
 
-    // Cursor-aware Key/Op/Value assist dropdowns. analyze() the query at the
-    // caret to decide what each dropdown would insert/replace and whether it is
-    // actionable; the value list is the distinct values of the key in context.
-    // Each is reset to no-selection so picking the same item again re-fires.
+    // Key/Op/Value assist dropdowns + PLUS, driven entirely by the pure
+    // computeAssist() model (query/assist.h) against the lua.txt contract:
+    //   REPLACE — caret ON a token: that ONE dropdown is active and edits the
+    //     token in place, live, no PLUS; its title syncs to the token.
+    //   ADD — caret off a token: the dropdowns STAGE a clause (staged_*); the
+    //     Key disables once picked, Op pre-shows "==", and PLUS is the ONLY way
+    //     the staged clause reaches the editor.
+    // Each dropdown's title becomes a currentIndex into its item list (signals
+    // are blocked while widget_data is applied, so this never re-fires a pick).
     ensureQuerySchemaLocked();
     const int cursor = clampQueryCursor(state_.query_cursor, state_.query_text);
-    const CursorContext ctx = analyze(state_.query_text, cursor, state_.query_schema);
+    const AssistView assist = computeAssist(
+        state_.query_text, cursor, state_.query_schema, state_.staged_key, state_.staged_op, state_.staged_value);
 
-    wd.setItems("keyCombo", schemaKeys(state_.query_schema));
-    wd.setEnabled("keyCombo", ctx.can_pick_key());
-    wd.setCurrentIndex("keyCombo", -1);
+    const auto key_items = schemaKeys(state_.query_schema);
+    wd.setItems("keyCombo", key_items);
+    wd.setEnabled("keyCombo", assist.key.enabled);
+    wd.setCurrentIndex("keyCombo", indexOf(key_items, assist.key.title));
 
-    wd.setItems("opCombo", operators());
-    wd.setEnabled("opCombo", ctx.can_pick_op());
-    wd.setCurrentIndex("opCombo", -1);
+    const auto op_items = operators();
+    wd.setItems("opCombo", op_items);
+    wd.setEnabled("opCombo", assist.op.enabled);
+    wd.setCurrentIndex("opCombo", indexOf(op_items, assist.op.title));
 
-    wd.setItems("valCombo", schemaValues(state_.query_schema, ctx.context_key));
-    wd.setEnabled("valCombo", ctx.can_pick_value());
-    wd.setCurrentIndex("valCombo", -1);
+    const auto val_items = schemaValues(state_.query_schema, assist.value_key);
+    wd.setItems("valCombo", val_items);
+    wd.setEnabled("valCombo", assist.value.enabled);
+    wd.setCurrentIndex("valCombo", indexOf(val_items, assist.value.title));
+
+    // PLUS is the sole entry point that inserts a NEW clause (lua.txt 9): live
+    // only when a Key + Value are staged (Op defaults to "==").
+    wd.setButtonIconNamed("buttonAddClause", "add");
+    wd.setEnabled("buttonAddClause", assist.plus_enabled);
   }
 
   // RangeSlider: bounds + handle values. Once a sequence with a known time
@@ -531,26 +569,26 @@ std::string MosaicoDialog::widget_data() {
   // worker; Cancel is live only during a fetch.
   wd.setEnabled("buttonConnect", !state_.connecting && !state_.fetch_active);
   wd.setEnabled(
-      "buttonFetch", state_.connected && !state_.selected_sequence.empty() && !state_.topic_selected_rows.empty() &&
-                         !state_.fetch_active);
-  // Refresh re-lists sequences without a disconnect/reconnect (PJ3
-  // main_window.cpp:933-945): live only while connected and idle.
-  wd.setEnabled("buttonRefresh", state_.connected && !state_.connecting && !state_.fetch_active);
+      "buttonFetch",
+      state_.connected && !state_.selected_sequence.empty() && !state_.selected_topics.empty() && !state_.fetch_active);
+  // Per-column reload buttons re-list without a disconnect/reconnect (PJ3
+  // main_window.cpp:933-945): live only while connected and idle. The topic
+  // reload additionally needs a selected sequence (its topics are what reload).
+  const bool reload_live = state_.connected && !state_.connecting && !state_.fetch_active;
+  wd.setEnabled("buttonReloadSeq", reload_live);
+  wd.setEnabled("buttonReloadTopic", reload_live && !state_.selected_sequence.empty());
   wd.setEnabled("buttonCancel", state_.fetch_active);
-  // Closing mid-fetch tears the worker down before allFetchesComplete runs,
-  // stranding the topics that already wrote into the shared store. Force the
-  // user to Cancel first (Cancel flushes/cleans up the batch deterministically).
-  wd.setEnabled("buttonClose", !state_.fetch_active);
 
   // Icon-only Connect / Cert buttons (the .ui clears their text + sets the
   // tooltips). Resolved by the host from its themed icon set; unknown ids fall
   // back to no icon.
   wd.setButtonIconNamed("buttonConnect", "plug_connect");
   wd.setButtonIconNamed("buttonCert", "contract");
-  // Refresh uses the host's themed named-icon path (Material "Refresh"), which
-  // rasterizes via LoadSvg to a high-res master — crisp on HiDPI, unlike an
-  // inline SVG rendered to a logical-size pixmap.
-  wd.setButtonIconNamed("buttonRefresh", "refresh");
+  // Per-column reload buttons use the host's themed named-icon path (Material
+  // "Refresh"), which rasterizes via LoadSvg to a high-res master — crisp on
+  // HiDPI, unlike an inline SVG rendered to a logical-size pixmap.
+  wd.setButtonIconNamed("buttonReloadSeq", "refresh");
+  wd.setButtonIconNamed("buttonReloadTopic", "refresh");
 
   // Sequence table — Lua predicate filter + name-substring filter combine
   // to produce the visible-row set. Empty query + empty filter ⇒ all rows
@@ -614,10 +652,12 @@ std::string MosaicoDialog::widget_data() {
     wd.setTableHeaders("seqTable", {"Name", "Date", "Size"});
     wd.setTableRows("seqTable", cache.rows);
     wd.setVisibleRows("seqTable", cache.visible);
-    if (state_.seq_selected_row >= 0) {
-      wd.setSelectedRows("seqTable", {state_.seq_selected_row});
+    if (!state_.selected_sequence.empty()) {
+      // Text-keyed (column-0 name match): survives the plugin-side re-sorts
+      // that shuffle row positions.
+      wd.setSelectedItems("seqTable", {state_.selected_sequence});
     }
-    wd.setLabel("seqHeader", fmt::format("Sequences ({}/{})", cache.visible.size(), state_.sequences.size()));
+    wd.setLabel("seqHeader", "Sequences");
   }
 
   // Topic table — name-substring filter via visible_rows. Multi-select
@@ -640,15 +680,13 @@ std::string MosaicoDialog::widget_data() {
     wd.setTableHeaders("topicTable", {"Name", "Size"});
     wd.setTableRows("topicTable", rows);
     wd.setVisibleRows("topicTable", visible);
-    if (!state_.topic_selected_rows.empty()) {
-      wd.setSelectedRows("topicTable", state_.topic_selected_rows);
+    if (!state_.selected_topics.empty()) {
+      wd.setSelectedItems("topicTable", state_.selected_topics);
     }
     if (state_.topics_loading) {
       wd.setLabel("topicHeader", "Topics — loading…");
-    } else if (state_.topic_names.empty()) {
-      wd.setLabel("topicHeader", "Topics");
     } else {
-      wd.setLabel("topicHeader", fmt::format("Topics ({})", state_.topic_names.size()));
+      wd.setLabel("topicHeader", "Topics");
     }
   }
 
@@ -664,11 +702,7 @@ std::string MosaicoDialog::widget_data() {
     if (state_.fetch_active) {
       header = "Download progress";
       info_text += state_.fetch_status + "\n\n";
-      for (int row : state_.topic_selected_rows) {
-        if (row < 0 || row >= static_cast<int>(state_.topic_names.size())) {
-          continue;
-        }
-        const std::string& tname = state_.topic_names[static_cast<size_t>(row)];
+      for (const std::string& tname : state_.selected_topics) {
         std::int64_t bytes = 0;
         if (auto it = state_.bytes_by_topic.find(tname); it != state_.bytes_by_topic.end()) {
           bytes = it->second;
@@ -714,19 +748,20 @@ std::string MosaicoDialog::widget_data() {
         info_text += buildSequenceInfoText(*seq_rec);
         header = fmt::format("Info — {}", seq_rec->name);
       }
-      for (int row : state_.topic_selected_rows) {
-        if (row < 0 || row >= static_cast<int>(state_.topic_names.size())) {
-          continue;
-        }
-        const std::string& tname = state_.topic_names[static_cast<size_t>(row)];
+      for (const std::string& tname : state_.selected_topics) {
         info_text += "\n";
         info_text += std::string(40, '-');
         info_text += "\n\n";
         if (auto it = state_.topic_meta.find(tname); it != state_.topic_meta.end()) {
           info_text += buildTopicInfoText(it->second);
-        } else if (row < static_cast<int>(state_.topic_infos.size())) {
-          info_text += buildTopicInfoText(state_.topic_infos[static_cast<size_t>(row)]);
-          info_text += "  (loading schema…)\n";
+        } else if (
+            auto pos = std::find(state_.topic_names.begin(), state_.topic_names.end(), tname);
+            pos != state_.topic_names.end()) {
+          const auto idx = static_cast<std::size_t>(pos - state_.topic_names.begin());
+          if (idx < state_.topic_infos.size()) {
+            info_text += buildTopicInfoText(state_.topic_infos[idx]);
+            info_text += "  (loading schema…)\n";
+          }
         }
       }
       wd.setPlainText("dataView", info_text);
@@ -807,16 +842,8 @@ bool MosaicoDialog::onTextChanged(std::string_view widget_name, std::string_view
 }
 
 bool MosaicoDialog::onClicked(std::string_view widget_name) {
-  if (widget_name == "buttonClose") {
-    std::lock_guard<std::mutex> lock(state_.mu);
-    state_.close_pending = true;
-    return true;
-  }
   if (widget_name == "buttonConnect") {
     std::string uri;
-    std::string cert_path;
-    std::string api_key;
-    bool allow_insecure = false;
     {
       std::lock_guard<std::mutex> lock(state_.mu);
       uri = state_.uri;
@@ -825,9 +852,6 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
     // dedupes "grpc+tls://X:6726", "GRPC+TLS://X:6726", and "x:6726" to the
     // same cache entry), with MOSAICO_API_KEY env fallback.
     auto creds = resolveCredentials(settings_, uri);
-    cert_path = creds.cert_path;
-    api_key = creds.api_key;
-    allow_insecure = creds.allow_insecure;
 
     // Printable-ASCII gate (PJ3 main_window.cpp:947-1013). The host/cert/api-key
     // are headers/URIs handed straight into gRPC, which asserts-and-aborts on
@@ -837,11 +861,11 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
       notify(PJ::ToolboxMessageLevel::kError, "Server URI contains invalid characters (control or non-ASCII bytes).");
       return true;
     }
-    if (!isPrintableAscii(cert_path)) {
+    if (!isPrintableAscii(creds.cert_path)) {
       notify(PJ::ToolboxMessageLevel::kError, "TLS certificate path contains invalid characters.");
       return true;
     }
-    if (!isPrintableAscii(api_key)) {
+    if (!isPrintableAscii(creds.api_key)) {
       notify(PJ::ToolboxMessageLevel::kError, "API key contains invalid characters (control or non-ASCII bytes).");
       return true;
     }
@@ -852,27 +876,73 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
       state_.suppress_connect_error = false;  // explicit Connect reports failures
     }
     notify(PJ::ToolboxMessageLevel::kInfo, fmt::format("Connecting to {}…", uri));
-    postCommand([w = worker_.get(), uri, cert_path, api_key, allow_insecure] {
-      w->connectAsync(uri, cert_path, api_key, allow_insecure);
-    });
+    postCommand([w = worker_.get(), uri, creds] { w->connectAsync(uri, creds); });
     return true;
   }
-  if (widget_name == "buttonRefresh") {
+  if (widget_name == "buttonReloadSeq") {
     // Re-list sequences without a disconnect/reconnect (PJ3 onRefreshClicked,
-    // main_window.cpp:933-945). No-op unless connected and idle.
+    // main_window.cpp:933-945). When a sequence is selected (its topics are
+    // showing), also re-list that sequence's topics so the right column refreshes
+    // alongside the left. No-op unless connected and idle.
+    std::string seq;
     {
       std::lock_guard<std::mutex> lock(state_.mu);
       if (!state_.connected || state_.connecting || state_.fetch_active) {
         return true;
       }
+      seq = state_.selected_sequence;
+      if (!seq.empty()) {
+        state_.topics_loading = true;  // header shows "loading…" until topicsReady
+      }
     }
-    notify(PJ::ToolboxMessageLevel::kInfo, "Refreshing sequences…");
+    notify(PJ::ToolboxMessageLevel::kInfo, "Reloading sequences…");
     postCommand([w = worker_.get()] { w->listSequencesAsync(); });
+    if (!seq.empty()) {
+      postCommand([w = worker_.get(), seq] { w->listTopicsAsync(seq); });
+    }
+    return true;
+  }
+  if (widget_name == "buttonReloadTopic") {
+    // Re-list only the selected sequence's topics. No-op unless connected, idle,
+    // and a sequence is selected.
+    std::string seq;
+    {
+      std::lock_guard<std::mutex> lock(state_.mu);
+      if (!state_.connected || state_.connecting || state_.fetch_active) {
+        return true;
+      }
+      seq = state_.selected_sequence;
+      if (seq.empty()) {
+        return true;
+      }
+      state_.topics_loading = true;  // header shows "loading…" until topicsReady
+    }
+    notify(PJ::ToolboxMessageLevel::kInfo, "Reloading topics…");
+    postCommand([w = worker_.get(), seq] { w->listTopicsAsync(seq); });
     return true;
   }
   if (widget_name == "buttonCert") {
     std::lock_guard<std::mutex> lock(state_.mu);
     state_.open_cert_pending = true;
+    return true;
+  }
+  if (widget_name == "buttonAddClause") {
+    // PLUS is the SOLE entry that inserts a NEW clause (lua.txt 3,9). It commits
+    // the staged Key/Op/Value triple: build `key op "value"` and append it to the
+    // current query, joined with " and " when a filter is already present. Op
+    // defaults to "==" when the user never overrode it. After committing, the
+    // staged slots reset and the caret lands at the end (a fresh ADD position).
+    std::lock_guard<std::mutex> lock(state_.mu);
+    if (state_.staged_key.empty() || state_.staged_value.empty()) {
+      return true;  // PLUS only fires with a complete staged clause (mirrors plus_enabled)
+    }
+    const std::string op = state_.staged_op.empty() ? std::string(kDefaultOp) : state_.staged_op;
+    state_.query_text = commitClause(state_.query_text, state_.staged_key, op, state_.staged_value);
+    state_.query_cursor = static_cast<int>(state_.query_text.size());
+    state_.query_push_pending = true;  // push the rewritten text + caret back to the editor
+    state_.staged_key.clear();
+    state_.staged_op.clear();
+    state_.staged_value.clear();
     return true;
   }
   // Regex-mode toggles (checkable PushButtons): one click = one toggle, so the
@@ -932,9 +1002,11 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
         return true;
       }
       seq = state_.selected_sequence;
-      for (int row : state_.topic_selected_rows) {
-        if (row >= 0 && row < static_cast<int>(state_.topic_names.size())) {
-          topics.push_back(state_.topic_names[row]);
+      // Only fetch topics that still exist in the current listing — a selection
+      // preserved across a filter or re-list may reference a topic that's gone.
+      for (const std::string& tname : state_.selected_topics) {
+        if (std::find(state_.topic_names.begin(), state_.topic_names.end(), tname) != state_.topic_names.end()) {
+          topics.push_back(tname);
         }
       }
       // Step 7: convert proportional 0..100 % into absolute nanoseconds
@@ -995,11 +1067,7 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
       // mark every not-yet-finished topic "Cancelling…" so the per-topic view
       // updates without waiting for allFetchesComplete (PJ3 parity).
       state_.fetch_status = "Cancelling…";
-      for (int row : state_.topic_selected_rows) {
-        if (row < 0 || row >= static_cast<int>(state_.topic_names.size())) {
-          continue;
-        }
-        const std::string& tname = state_.topic_names[static_cast<size_t>(row)];
+      for (const std::string& tname : state_.selected_topics) {
         auto it = state_.topic_fetch_status.find(tname);
         if (it == state_.topic_fetch_status.end() || it->second.empty() || it->second == "downloading…") {
           state_.topic_fetch_status[tname] = "Cancelling…";
@@ -1100,46 +1168,66 @@ bool MosaicoDialog::onIndexChanged(std::string_view widget_name, int index) {
   std::lock_guard<std::mutex> lock(state_.mu);
   ensureQuerySchemaLocked();
   const int cursor = clampQueryCursor(state_.query_cursor, state_.query_text);
-  const CursorContext ctx = analyze(state_.query_text, cursor, state_.query_schema);
+  const AssistView assist = computeAssist(
+      state_.query_text, cursor, state_.query_schema, state_.staged_key, state_.staged_op, state_.staged_value);
 
-  // Resolve the picked item and the action for this dropdown. The item lists
-  // mirror what widget_data() populated from the same (text, cursor, schema).
+  // Resolve the picked item against the SAME list widget_data() populated for this
+  // dropdown. The value list follows assist.value_key in BOTH modes (the staged key
+  // in ADD, the clause's key in value-REPLACE), so resolve it the same way here.
   std::string item;
-  Action action = Action::Disabled;
+  const AssistDropdown* slot = nullptr;
   if (which == Which::kKey) {
     const auto keys = schemaKeys(state_.query_schema);
     if (index >= static_cast<int>(keys.size())) {
       return true;
     }
     item = keys[static_cast<std::size_t>(index)];
-    action = ctx.key_action;
+    slot = &assist.key;
   } else if (which == Which::kOp) {
     const auto& ops = operators();
     if (index >= static_cast<int>(ops.size())) {
       return true;
     }
     item = ops[static_cast<std::size_t>(index)];
-    action = ctx.op_action;
+    slot = &assist.op;
   } else {
-    const auto values = schemaValues(state_.query_schema, ctx.context_key);
+    const auto values = schemaValues(state_.query_schema, assist.value_key);
     if (index >= static_cast<int>(values.size())) {
       return true;
     }
     item = values[static_cast<std::size_t>(index)];
-    action = ctx.val_action;
+    slot = &assist.value;
   }
-  if (action == Action::Disabled) {
-    return true;  // dropdown wasn't actionable at this cursor position
+  if (!slot->enabled) {
+    return true;  // a disabled dropdown is not pickable; ignore any stale event
   }
 
-  // A value is a Lua literal: string values must be quoted so they lex as a
-  // Value, not a bare Key (keys/operators are inserted verbatim).
-  const std::string insert_text = (which == Which::kVal) ? quoteValueForQuery(item) : item;
-  const EditResult result = applyCompletion(state_.query_text, ctx, action, insert_text);
+  if (slot->replaces) {
+    // REPLACE mode (lua.txt 4-7): edit the token under the caret in place, live,
+    // with NO PLUS. Values are quoted as Lua literals; keys/ops go in verbatim.
+    const CursorContext ctx = analyze(state_.query_text, cursor, state_.query_schema);
+    const Action action =
+        (which == Which::kKey) ? ctx.key_action : (which == Which::kOp ? ctx.op_action : ctx.val_action);
+    if (action != Action::Replace) {
+      return true;  // defensive: assist said replace but analyze disagrees
+    }
+    const std::string insert_text = (which == Which::kVal) ? quoteValueForQuery(item) : item;
+    const EditResult result = applyCompletion(state_.query_text, ctx, action, insert_text);
+    state_.query_text = result.text;
+    state_.query_cursor = result.cursor;
+    state_.query_push_pending = true;  // push the rewritten text + caret back to the editor
+    return true;
+  }
 
-  state_.query_text = result.text;
-  state_.query_cursor = result.cursor;
-  state_.query_push_pending = true;  // push the rewritten text + caret back to the editor
+  // ADD mode (lua.txt 1-3,9): STAGE the pick. The clause reaches the editor only
+  // when PLUS commits it (onClicked "buttonAddClause"); nothing is written here.
+  if (which == Which::kKey) {
+    state_.staged_key = item;
+  } else if (which == Which::kOp) {
+    state_.staged_op = item;
+  } else {
+    state_.staged_value = item;
+  }
   return true;
 }
 
@@ -1147,10 +1235,9 @@ bool MosaicoDialog::onSelectionChanged(std::string_view widget_name, const std::
   if (widget_name == "seqTable") {
     if (selected.empty()) {
       std::lock_guard<std::mutex> lock(state_.mu);
-      state_.seq_selected_row = -1;
       state_.selected_sequence.clear();
       state_.topic_names.clear();
-      state_.topic_selected_rows.clear();
+      state_.selected_topics.clear();
       state_.topics_loading = false;
       return true;
     }
@@ -1163,15 +1250,8 @@ bool MosaicoDialog::onSelectionChanged(std::string_view widget_name, const std::
       // persisted names.
       state_.restore_selected_sequence.clear();
       state_.restore_selected_topics.clear();
-      // Map the name back to a row index for the visible-row highlight.
-      for (size_t i = 0; i < state_.sequence_names.size(); ++i) {
-        if (state_.sequence_names[i] == selected.front()) {
-          state_.seq_selected_row = static_cast<int>(i);
-          break;
-        }
-      }
       state_.topic_names.clear();
-      state_.topic_selected_rows.clear();
+      state_.selected_topics.clear();
       state_.topics_loading = true;  // header shows "loading…" until topicsReady
     }
     postCommand([w = worker_.get(), seq] { w->listTopicsAsync(seq); });
@@ -1182,31 +1262,30 @@ bool MosaicoDialog::onSelectionChanged(std::string_view widget_name, const std::
     std::vector<std::string> need_metadata;
     {
       std::lock_guard<std::mutex> lock(state_.mu);
-      state_.topic_selected_rows.clear();
       seq = state_.selected_sequence;
-      for (const auto& sel : selected) {
-        for (size_t i = 0; i < state_.topic_names.size(); ++i) {
-          if (state_.topic_names[i] == sel) {
-            state_.topic_selected_rows.push_back(static_cast<int>(i));
-            // Kick off a one-shot metadata fetch (Arrow schema + tag) for the
-            // Info panel if we don't already have the full record cached.
-            if (state_.topic_meta.find(sel) == state_.topic_meta.end()) {
-              need_metadata.push_back(sel);
-            }
-            break;
-          }
+      state_.selected_topics = mosaico::mergeReportedSelection(
+          state_.selected_topics, selected, state_.topic_names,
+          [&](const std::string& n) { return !nameMatches(n, state_.topic_filter, state_.topic_filter_regex); });
+      // Kick off a one-shot metadata fetch (Arrow schema + tag) for the Info
+      // panel for any newly selected topic without the full record cached.
+      for (const std::string& tname : state_.selected_topics) {
+        if (state_.topic_meta.find(tname) == state_.topic_meta.end()) {
+          need_metadata.push_back(tname);
         }
       }
     }
     for (const std::string& topic : need_metadata) {
-      postCommand([w = worker_.get(), seq, topic] { w->fetchTopicMetadataAsync(seq, topic); });
+      postCommand([w = worker_.get(), seq, topic] { w->fetchTopicMetadataAsync({seq, topic}); });
     }
     return true;
   }
   return false;
 }
 
-void MosaicoDialog::onConnectFinished(bool ok, std::string status, std::string error) {
+void MosaicoDialog::onConnectFinished(ConnectResult result) {
+  const bool ok = result.ok;
+  const std::string& status = result.status;
+  const std::string& error = result.error;
   std::string uri;
   bool plaintext_retry_needed = false;
   std::string plaintext_uri;
@@ -1254,7 +1333,10 @@ void MosaicoDialog::onConnectFinished(bool ok, std::string status, std::string e
   }
 
   if (plaintext_retry_needed) {
-    postCommand([w = worker_.get(), plaintext_uri] { w->connectAsync(plaintext_uri, {}, {}, true); });
+    // Plaintext retry: no cert/key, insecure transport explicitly allowed.
+    ServerCredentials insecure_creds;
+    insecure_creds.allow_insecure = true;
+    postCommand([w = worker_.get(), plaintext_uri, insecure_creds] { w->connectAsync(plaintext_uri, insecure_creds); });
   } else if (!suppress_error) {
     // PJ3 AutoConnect context shows no popup; explicit connects do.
     notify(PJ::ToolboxMessageLevel::kError, fmt::format("Mosaico connection failed: {}", error));
@@ -1273,14 +1355,10 @@ void MosaicoDialog::persistState() {
     lower = state_.range_lower;
     upper = state_.range_upper;
     // PJ3 parity: remember the last selection so the next connect can re-select
-    // it. Resolve the selected topic ROW indices back to names (names are
-    // stable across re-fetch; row indices are not).
+    // it (selection state is already name-keyed; names are stable across
+    // re-fetch).
     selected_sequence = state_.selected_sequence;
-    for (int row : state_.topic_selected_rows) {
-      if (row >= 0 && row < static_cast<int>(state_.topic_names.size())) {
-        selected_topics.push_back(state_.topic_names[static_cast<std::size_t>(row)]);
-      }
-    }
+    selected_topics = state_.selected_topics;
   }
   SettingsStore settings(settings_);
   settings.setString("mosaico/metadata_query", query);
@@ -1388,16 +1466,6 @@ void MosaicoDialog::sortSequencesLocked() {
   for (const auto& s : state_.sequences) {
     state_.sequence_names.push_back(s.name);
   }
-  // Re-map the selected row to the selected sequence's new position.
-  state_.seq_selected_row = -1;
-  if (!state_.selected_sequence.empty()) {
-    for (std::size_t i = 0; i < state_.sequence_names.size(); ++i) {
-      if (state_.sequence_names[i] == state_.selected_sequence) {
-        state_.seq_selected_row = static_cast<int>(i);
-        break;
-      }
-    }
-  }
   ++state_.seq_epoch;  // row order changed → invalidate the seqTable view cache
 }
 
@@ -1409,15 +1477,8 @@ void MosaicoDialog::sortTopicsLocked() {
   const bool asc = state_.topic_sort_asc;
   const bool have_infos = state_.topic_infos.size() == state_.topic_names.size();
 
-  // Capture the selected topics by name so selection survives the reorder.
-  std::set<std::string> selected;
-  for (int r : state_.topic_selected_rows) {
-    if (r >= 0 && r < static_cast<int>(state_.topic_names.size())) {
-      selected.insert(state_.topic_names[static_cast<std::size_t>(r)]);
-    }
-  }
-
   // Sort an index permutation, then apply it to the parallel name/info vectors.
+  // Selection is name-keyed, so the reorder can't desync it.
   std::vector<std::size_t> perm;
   if (col == 1 && have_infos) {  // Size — numeric
     std::vector<std::int64_t> keys;
@@ -1446,14 +1507,6 @@ void MosaicoDialog::sortTopicsLocked() {
   if (have_infos) {
     state_.topic_infos = std::move(new_infos);
   }
-
-  // Re-map index-based selection from the captured names.
-  state_.topic_selected_rows.clear();
-  for (std::size_t i = 0; i < state_.topic_names.size(); ++i) {
-    if (selected.count(state_.topic_names[i]) > 0) {
-      state_.topic_selected_rows.push_back(static_cast<int>(i));
-    }
-  }
 }
 
 std::vector<std::string> MosaicoDialog::restoreSelectedTopicsLocked() {
@@ -1466,17 +1519,14 @@ std::vector<std::string> MosaicoDialog::restoreSelectedTopicsLocked() {
   const std::vector<std::string> wanted = std::move(state_.restore_selected_topics);
   state_.restore_selected_topics.clear();
 
-  state_.topic_selected_rows.clear();
-  for (std::size_t i = 0; i < state_.topic_names.size(); ++i) {
-    for (const std::string& name : wanted) {
-      if (state_.topic_names[i] == name) {
-        state_.topic_selected_rows.push_back(static_cast<int>(i));
-        // Fetch full metadata (Arrow schema + tag) for the Info panel, same as
-        // the manual topic-selection path, when not already cached.
-        if (state_.topic_meta.find(name) == state_.topic_meta.end()) {
-          need_metadata.push_back(name);
-        }
-        break;
+  state_.selected_topics.clear();
+  for (const std::string& name : wanted) {
+    if (std::find(state_.topic_names.begin(), state_.topic_names.end(), name) != state_.topic_names.end()) {
+      state_.selected_topics.push_back(name);
+      // Fetch full metadata (Arrow schema + tag) for the Info panel, same as
+      // the manual topic-selection path, when not already cached.
+      if (state_.topic_meta.find(name) == state_.topic_meta.end()) {
+        need_metadata.push_back(name);
       }
     }
   }
@@ -1554,14 +1604,11 @@ void MosaicoDialog::onSequencesReady(std::vector<SequenceInfo> seqs) {
     // session. One-shot — clear the restore slot once consumed so a later
     // manual selection / refresh doesn't snap back.
     if (!state_.restore_selected_sequence.empty() && state_.selected_sequence.empty()) {
-      for (std::size_t i = 0; i < state_.sequence_names.size(); ++i) {
-        if (state_.sequence_names[i] == state_.restore_selected_sequence) {
-          state_.selected_sequence = state_.restore_selected_sequence;
-          state_.seq_selected_row = static_cast<int>(i);
-          state_.topics_loading = true;  // header shows "loading…" until topicsReady
-          reselect_sequence = state_.selected_sequence;
-          break;
-        }
+      if (std::find(state_.sequence_names.begin(), state_.sequence_names.end(), state_.restore_selected_sequence) !=
+          state_.sequence_names.end()) {
+        state_.selected_sequence = state_.restore_selected_sequence;
+        state_.topics_loading = true;  // header shows "loading…" until topicsReady
+        reselect_sequence = state_.selected_sequence;
       }
       state_.restore_selected_sequence.clear();
       if (reselect_sequence.empty()) {
@@ -1593,7 +1640,7 @@ void MosaicoDialog::onTopicsReady(std::string sequence_name, std::vector<std::st
     need_metadata = restoreSelectedTopicsLocked();
   }
   for (const std::string& topic : need_metadata) {
-    postCommand([w = worker_.get(), sequence_name, topic] { w->fetchTopicMetadataAsync(sequence_name, topic); });
+    postCommand([w = worker_.get(), sequence_name, topic] { w->fetchTopicMetadataAsync({sequence_name, topic}); });
   }
 }
 
@@ -1617,16 +1664,16 @@ void MosaicoDialog::onTopicInfosReady(std::string sequence_name, std::vector<Top
     need_metadata = restoreSelectedTopicsLocked();
   }
   for (const std::string& topic : need_metadata) {
-    postCommand([w = worker_.get(), sequence_name, topic] { w->fetchTopicMetadataAsync(sequence_name, topic); });
+    postCommand([w = worker_.get(), sequence_name, topic] { w->fetchTopicMetadataAsync({sequence_name, topic}); });
   }
 }
 
-void MosaicoDialog::onTopicMetadataReady(std::string sequence_name, std::string topic_name, TopicInfo info) {
+void MosaicoDialog::onTopicMetadataReady(TopicRef topic, TopicInfo info) {
   std::lock_guard<std::mutex> lock(state_.mu);
-  if (sequence_name != state_.selected_sequence) {
+  if (topic.sequence_name != state_.selected_sequence) {
     return;  // user moved on
   }
-  state_.topic_meta[std::move(topic_name)] = std::move(info);
+  state_.topic_meta[std::move(topic.topic_name)] = std::move(info);
 }
 
 void MosaicoDialog::onPullProgress(std::string topic_name, std::int64_t bytes) {
@@ -1675,8 +1722,10 @@ void MosaicoDialog::onPullProgress(std::string topic_name, std::int64_t bytes) {
   }
 }
 
-void MosaicoDialog::onPullFinished(std::string /*sequence_name*/, std::string topic_name, bool ok, std::string error) {
+void MosaicoDialog::onPullFinished(PullResultEvent result) {
   std::lock_guard<std::mutex> lock(state_.mu);
+  const std::string& topic_name = result.topic.topic_name;
+  const bool ok = result.ok;
   // PJ3 parity: tally per-topic results into the batch ledger. The panel does
   // NOT close here — that happens once in onAllFetchesComplete after the whole
   // batch lands. Closing on the first topic (the old behaviour) tore down the
@@ -1685,6 +1734,11 @@ void MosaicoDialog::onPullFinished(std::string /*sequence_name*/, std::string to
   if (ok) {
     state_.imported_any = true;
     state_.topic_fetch_status[topic_name] = "Done";
+    // A successful topic may still have dropped rows; surface that as a warning
+    // (notify does not take state_.mu, so calling it under the lock is safe).
+    if (!result.warning.empty()) {
+      notify(PJ::ToolboxMessageLevel::kWarning, result.warning);
+    }
   } else if (state_.cancelling) {
     // Interrupted by the user's Cancel, not a real failure: label it
     // "Cancelled" and keep it OUT of the error tally so a cancel doesn't
@@ -1694,7 +1748,7 @@ void MosaicoDialog::onPullFinished(std::string /*sequence_name*/, std::string to
     ++state_.fetch_failed;
     state_.topic_fetch_status[topic_name] = "Failed";
     // Collapse identical messages so "[3x] no data" reads once, not thrice.
-    ++state_.error_counts[std::move(error)];
+    ++state_.error_counts[std::move(result.error)];
   }
 }
 

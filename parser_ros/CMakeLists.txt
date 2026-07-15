@@ -55,7 +55,7 @@ function(configure_parser_ros_target TARGET)
   target_compile_options(${TARGET} PRIVATE ${PJ_WARNING_FLAGS})
   target_link_libraries(${TARGET} PRIVATE
     plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json rosx_introspection data_tamer_parser pj_array_policy
-    pj_laser_scan)
+    pj_laser_scan pj_pointcloud_color)
 endfunction()
 
 # --- Plugin shared libraries ---

@@ -1,7 +1,9 @@
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <functional>
 #include <pj_array_policy/array_policy.hpp>
+#include <stdexcept>
 #include <string>
 
 #include "ros_parser_internal.hpp"
@@ -264,7 +266,13 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
         .parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTransformStamped>,
         .parse_object = &RosParser::parseTransformStampedObject}},
       {"sensor_msgs/Imu", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleImu>}},
-      {"nav_msgs/Odometry", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleOdometry>}},
+      // Dual route: the pose (of child_frame_id, in the header frame) emits a
+      // one-element PosesInFrame for the 3D view, alongside the per-axis scalar
+      // flatten (handleOdometry) of pose + twist + covariances.
+      {"nav_msgs/Odometry",
+       {.object_type = ObjectType::kPosesInFrame,
+        .parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleOdometry>,
+        .parse_object = &RosParser::parseOdometryObject}},
       {"sensor_msgs/JointState", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleJointState>}},
       {"diagnostic_msgs/DiagnosticArray",
        {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleDiagnosticArray>}},
@@ -315,15 +323,38 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
     return status;
   }
 
-  // Runtime hosts in PJ4 call bindSchema() before loadConfig(). The selected
-  // schema encoding therefore arrives later through parser_config_json. Keep a
-  // generic scalar handler available immediately, then replace it with the
-  // schema-specific handler once loadConfig() has selected ros2msg/omgidl.
+  // Generic scalar handler first, so a schema that fails to compile below
+  // still binds; the compile error then resurfaces through loadConfig() or the
+  // first parse, which recompile — exactly the pre-existing failure surface.
   registerBoundSchemaHandler(catalog().at(CatalogEntry::kDefault));
 
   if (schema_format_configured_) {
     return compileBoundSchema(true);
   }
+
+  // No config yet — but classify_schema must already be correct right after
+  // bind_schema (see message_parser_protocol.h; the demand-subscription host
+  // classifies advertised topics through a throwaway bind→classify handle with
+  // no parser_config_json). The schema encoding only travels in loadConfig(),
+  // so infer the format from the inputs' shape — OMG IDL uses scoped
+  // "pkg::Type" names and `module` blocks — and compile eagerly, best-effort:
+  // try the inferred format, then the other. If both fail, stay bound on the
+  // generic handler. A later loadConfig() with a different explicit encoding
+  // recompiles via its format_changed path, so a mis-inference self-corrects
+  // before any payload is parsed.
+  const bool looks_idl =
+      type_name_.find("::") != std::string::npos || schema_definition_.find("module ") != std::string::npos;
+  const RosMsgParser::SchemaFormat first = looks_idl ? RosMsgParser::DDS_IDL : RosMsgParser::ROS_MSG;
+  const RosMsgParser::SchemaFormat second = looks_idl ? RosMsgParser::ROS_MSG : RosMsgParser::DDS_IDL;
+  for (const RosMsgParser::SchemaFormat format : {first, second}) {
+    schema_format_ = format;
+    schema_encoding_ = (format == RosMsgParser::DDS_IDL) ? "omgidl" : "ros2msg";
+    if (compileBoundSchema(true)) {
+      return PJ::okStatus();
+    }
+  }
+  schema_format_ = RosMsgParser::ROS_MSG;
+  schema_encoding_ = "ros2msg";
   return PJ::okStatus();
 }
 
@@ -442,11 +473,15 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
     marker_has_texture_block_ = schema_definition_.find("uv_coordinates") != std::string::npos;
     marker_has_mesh_file_ = schema_definition_.find("mesh_file") != std::string::npos;
   }
-  schema_compiled_ = true;
-
   if (register_specialized_handler) {
     registerBoundSchemaHandler(selectCatalogEntry(msg_type));
   }
+
+  // Flip the flag only after the handler is registered: if registration throws
+  // (e.g. bad_alloc), schema_compiled_ stays false so the next compile — the
+  // eager-inference loop's second format, or a later loadConfig()/parse —
+  // recompiles cleanly instead of early-returning on a half-compiled schema.
+  schema_compiled_ = true;
 
   return PJ::okStatus();
 }
@@ -620,6 +655,21 @@ void RosParser::ensureDeserializer() {
   }
 }
 
+RosMsgParser::Span<const uint8_t> RosParser::readByteSequence() {
+  // Bytes available at the cursor, captured before the read (the 4-byte length
+  // prefix and any trailing fields are included, so the bound is conservative:
+  // it can only over-accept by that slack, never falsely reject a full message).
+  const size_t available = deserializer_->bytesLeft();
+  const auto span = deserializer_->deserializeByteSequence();
+  if (available < sizeof(uint32_t) || span.size() > available - sizeof(uint32_t)) {
+    // The declared length ran past the payload. deserializeByteSequence has already
+    // advanced the cursor past the end, so both this span AND any field the handler
+    // reads next would be out of bounds; abort now (caught upstream -> Expected error).
+    throw std::runtime_error("CDR byte sequence length exceeds message payload (truncated or corrupt message)");
+  }
+  return span;
+}
+
 void RosParser::detectSchemaFeatures() {
   const auto& schema = parser_->getSchema();
   const auto& root_fields = schema->root_msg->fields();
@@ -747,6 +797,19 @@ void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
     if (ts > 0) {
       current_timestamp_ = static_cast<int64_t>(ts * 1e9);
     }
+  }
+
+  // Combined /header/stamp (seconds): every std_msgs/Header topic gets the single
+  // plottable stamp series the specialized handlers emit via emitHeader(), on top
+  // of the split sec/nanosec leaves added below. A diagnostic aid for clock
+  // offset/skew against the message (log/publish) time. Independent of the
+  // use_embedded_timestamp toggle. value[0]/value[1] are the header stamp leaves
+  // (ROS2: sec, nanosec; ROS1: seq, stamp) — same assumption as the block above.
+  if (has_header_ && flat_msg_.value.size() >= 2) {
+    const double stamp_sec = deserializer_->isROS2() ? flat_msg_.value[0].second.convert<double>() +
+                                                           1e-9 * flat_msg_.value[1].second.convert<double>()
+                                                     : flat_msg_.value[1].second.convert<double>();
+    addField("/header/stamp", stamp_sec);
   }
 
   std::string field_name;

@@ -22,6 +22,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/pj_video_demux)
   add_subdirectory(common/array_policy)
   add_subdirectory(common/laser_scan)
+  add_subdirectory(common/pointcloud_color)
 
   # Enabled entries track the v4 ABI (PJ_ABI_VERSION == 4): service-
   # registry API, Arrow C Data Interface at the write boundary, and the
@@ -33,6 +34,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(data_load_mcap)
   add_subdirectory(data_load_parquet)
   add_subdirectory(data_load_ulog)
+  add_subdirectory(data_load_3d)
   # data_load_lerobot and data_load_mp4 are intentionally NOT in this aggregate
   # list: they depend on FFmpeg (via common/pj_video_demux), which this build
   # does not provide. Both build per-plugin against their own conanfile (CI's
@@ -53,6 +55,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(toolbox_quaternion)
   add_subdirectory(toolbox_reactive_scripts_editor)
   add_subdirectory(toolbox_mosaico)
+  add_subdirectory(toolbox_transform_editor)
   return()
 endif()
 
@@ -76,6 +79,14 @@ else()
     -Wall -Wextra -Werror -Wshadow -Wnon-virtual-dtor -Wold-style-cast
     -Wcast-qual -Wconversion -Woverloaded-virtual -Wpedantic
   )
+  # GCC's -O3 inliner produces well-known stringop-overflow / array-bounds
+  # FALSE positives on std::vector<byte> insert/append (e.g. data_stream_pj_bridge's
+  # buildTestFrame on GCC 13). These are vendored upstream plugins; demote those two
+  # classes to warnings so a compiler-version quirk can't break the aggregate build.
+  # Real overflows in first-party code still warn loudly.
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    list(APPEND PJ_WARNING_FLAGS -Wno-error=stringop-overflow -Wno-error=array-bounds)
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -119,13 +130,30 @@ enable_testing()
 # Internal helper libraries shared by several plugins.
 # Added before any plugin subdir so they are visible regardless of whether
 # the build picks a single plugin or all of them.
+#
+# EXCEPTION: common/arrow_helpers is configured in single-plugin
+# mode ONLY for its real consumers. Merely configuring it pulls in the SYSTEM
+# Arrow CMake config, whose FindProtobufAlt re-includes whatever Protobuf is on
+# CMAKE_PREFIX_PATH — colliding with the Conan protobuf (6.x + abseil) that a
+# non-Arrow plugin (e.g. parser_protobuf) legitimately requires. The other
+# helpers are safe to always configure (base64 header-only; pj_video_demux is
+# find_package(ffmpeg QUIET); array_policy needs nlohmann_json, which every
+# plugin already has; laser_scan is SDK-only).
 # ---------------------------------------------------------------------------
 
-add_subdirectory(common/arrow_helpers)
+set(PJ_ARROW_HELPER_CONSUMERS data_load_parquet data_load_lerobot)
+if(DEFINED PJ_BUILD_PLUGIN)
+  if(PJ_BUILD_PLUGIN IN_LIST PJ_ARROW_HELPER_CONSUMERS)
+    add_subdirectory(common/arrow_helpers)
+  endif()
+else()
+  add_subdirectory(common/arrow_helpers)
+endif()
 add_subdirectory(common/base64)
 add_subdirectory(common/pj_video_demux)
 add_subdirectory(common/array_policy)
 add_subdirectory(common/laser_scan)
+add_subdirectory(common/pointcloud_color)
 
 # ---------------------------------------------------------------------------
 # Plugins — use -DPJ_BUILD_PLUGIN=<dir> to build a single plugin (CI mode),
@@ -144,6 +172,7 @@ else()
   add_subdirectory(data_load_mcap)
   add_subdirectory(data_load_parquet)
   add_subdirectory(data_load_ulog)
+  add_subdirectory(data_load_3d)
   # data_load_lerobot and data_load_mp4 are intentionally NOT in this aggregate
   # list: they depend on FFmpeg (via common/pj_video_demux), which this build
   # does not provide. Both build per-plugin against their own conanfile (CI's
