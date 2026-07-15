@@ -74,3 +74,11 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
           cmake --build build/Release --config Release
           ctest --test-dir build/Release -V --output-on-failure
+
+      - name: Upload built Conan binaries to JFrog
+        # Publish every dependency compiled above (Windows binaries) so the next
+        # push/release run pulls them prebuilt instead of recompiling. Same guard
+        # as the remote-config step: never on pull requests, only on this repo.
+        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        shell: bash
+        run: scripts/upload_conan_artifacts.sh
