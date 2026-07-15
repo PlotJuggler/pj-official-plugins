@@ -1,16 +1,37 @@
-# PlotJuggler Ported Plugins
+# PlotJuggler Official Plugins
 
 [![CI Linux](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-linux.yml)
 [![CI Windows](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-windows.yml/badge.svg)](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-windows.yml)
 [![CI macOS](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-macos.yml)
 
 
-Plugin collection for PlotJuggler Core: message parsers (JSON, Protobuf, ROS,
-DataTamer), file loaders (CSV, MCAP, Parquet, ULog, MP4, LeRobot, 3D
-PLY/PCD), streaming sources (ZMQ, MQTT, UDP, ROS 2, WebRTC, Foxglove
-and PlotJuggler bridges), and toolbox widgets (FFT, quaternion, colormap,
-reactive scripts, Mosaico cloud, transform editor). See the
-[Plugins](#plugins) table for the full list and per-plugin build status.
+| Plugin | Type | Description |
+|--------|------|-------------|
+| [![parser_json](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_json.json)](parser_json/) | MessageParser | JSON message parsing |
+| [![parser_protobuf](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_protobuf.json)](parser_protobuf/) | MessageParser | Protobuf message parsing |
+| [![parser_ros](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_ros.json)](parser_ros/) | MessageParser | ROS 1/2 message parsing |
+| [![parser_data_tamer](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_data_tamer.json)](parser_data_tamer/) | MessageParser | DataTamer schema/snapshot parsing |
+| [![data_load_csv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_csv.json)](data_load_csv/) | DataSource | CSV file loading |
+| [![data_load_mcap](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mcap.json)](data_load_mcap/) | DataSource | MCAP file loading |
+| [![data_load_parquet](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_parquet.json)](data_load_parquet/) | DataSource | Parquet file loading |
+| [![data_load_ulog](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_ulog.json)](data_load_ulog/) | DataSource | ULog file loading |
+| [![data_load_lerobot](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_lerobot.json)](data_load_lerobot/) | DataSource | LeRobot v2.1 dataset loading |
+| [![data_load_mp4](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mp4.json)](data_load_mp4/) | DataSource | MP4 video loading |
+| [![data_load_3d](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_3d.json)](data_load_3d/) | DataSource | PLY/PCD point cloud & mesh loading |
+| [![data_stream_zmq](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_zmq.json)](data_stream_zmq/) | DataSource | ZeroMQ streaming |
+| [![data_stream_mqtt](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_mqtt.json)](data_stream_mqtt/) | DataSource | MQTT streaming |
+| [![data_stream_foxglove_bridge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_foxglove_bridge.json)](data_stream_foxglove_bridge/) | DataSource | Foxglove WebSocket bridge |
+| [![data_stream_pj_bridge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_pj_bridge.json)](data_stream_pj_bridge/) | DataSource | PlotJuggler WebSocket bridge |
+| [![data_stream_ros2](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_ros2.json)](data_stream_ros2/) | DataSource | ROS 2 topic streaming |
+| [![data_stream_udp](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_udp.json)](data_stream_udp/) | DataSource | UDP unicast/multicast streaming |
+| [![data_stream_webrtc](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_webrtc.json)](data_stream_webrtc/) | DataSource | WebRTC live H.264 video streaming |
+| [![data_stream_dummy](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_dummy.json)](data_stream_dummy/) | DataSource | Synthetic test-signal generator |
+| [![toolbox_fft](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_fft.json)](toolbox_fft/) | Toolbox | FFT frequency-domain transform |
+| [![toolbox_quaternion](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_quaternion.json)](toolbox_quaternion/) | Toolbox | Quaternion → roll/pitch/yaw |
+| [![toolbox_colormap](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_colormap.json)](toolbox_colormap/) | Toolbox | Lua colormap editor |
+| [![toolbox_reactive_scripts_editor](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_reactive_scripts_editor.json)](toolbox_reactive_scripts_editor/) | Toolbox | Reactive Lua/Python script editor |
+| [![toolbox_mosaico](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_mosaico.json)](toolbox_mosaico/) | Toolbox | Mosaico cloud server browsing (Arrow Flight) |
+| [![toolbox_transform_editor](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_transform_editor.json)](toolbox_transform_editor/) | Toolbox | Lua-based derived/custom series editor |
 
 ## Building
 
@@ -62,40 +83,6 @@ call in both modes):
 cd /path/to/plotjuggler_sdk
 ./build.sh
 ```
-
-## Plugins
-
-Each badge shows the plugin's released version and turns green when its
-latest build on `main` passed CI (red if it failed); see
-[Per-plugin status badges](#per-plugin-status-badges) for how it's published.
-
-| Plugin | Type | Description |
-|--------|------|-------------|
-| [![parser_json](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_json.json)](parser_json/) | MessageParser | JSON message parsing |
-| [![parser_protobuf](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_protobuf.json)](parser_protobuf/) | MessageParser | Protobuf message parsing |
-| [![parser_ros](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_ros.json)](parser_ros/) | MessageParser | ROS 1/2 message parsing |
-| [![parser_data_tamer](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_data_tamer.json)](parser_data_tamer/) | MessageParser | DataTamer schema/snapshot parsing |
-| [![data_load_csv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_csv.json)](data_load_csv/) | DataSource | CSV file loading |
-| [![data_load_mcap](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mcap.json)](data_load_mcap/) | DataSource | MCAP file loading |
-| [![data_load_parquet](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_parquet.json)](data_load_parquet/) | DataSource | Parquet file loading |
-| [![data_load_ulog](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_ulog.json)](data_load_ulog/) | DataSource | ULog file loading |
-| [![data_load_lerobot](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_lerobot.json)](data_load_lerobot/) | DataSource | LeRobot v2.1 dataset loading |
-| [![data_load_mp4](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mp4.json)](data_load_mp4/) | DataSource | MP4 video loading |
-| [![data_load_3d](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_3d.json)](data_load_3d/) | DataSource | PLY/PCD point cloud & mesh loading |
-| [![data_stream_zmq](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_zmq.json)](data_stream_zmq/) | DataSource | ZeroMQ streaming |
-| [![data_stream_mqtt](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_mqtt.json)](data_stream_mqtt/) | DataSource | MQTT streaming |
-| [![data_stream_foxglove_bridge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_foxglove_bridge.json)](data_stream_foxglove_bridge/) | DataSource | Foxglove WebSocket bridge |
-| [![data_stream_pj_bridge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_pj_bridge.json)](data_stream_pj_bridge/) | DataSource | PlotJuggler WebSocket bridge |
-| [![data_stream_ros2](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_ros2.json)](data_stream_ros2/) | DataSource | ROS 2 topic streaming |
-| [![data_stream_udp](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_udp.json)](data_stream_udp/) | DataSource | UDP unicast/multicast streaming |
-| [![data_stream_webrtc](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_webrtc.json)](data_stream_webrtc/) | DataSource | WebRTC live H.264 video streaming |
-| [![data_stream_dummy](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_dummy.json)](data_stream_dummy/) | DataSource | Synthetic test-signal generator |
-| [![toolbox_fft](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_fft.json)](toolbox_fft/) | Toolbox | FFT frequency-domain transform |
-| [![toolbox_quaternion](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_quaternion.json)](toolbox_quaternion/) | Toolbox | Quaternion → roll/pitch/yaw |
-| [![toolbox_colormap](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_colormap.json)](toolbox_colormap/) | Toolbox | Lua colormap editor |
-| [![toolbox_reactive_scripts_editor](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_reactive_scripts_editor.json)](toolbox_reactive_scripts_editor/) | Toolbox | Reactive Lua/Python script editor |
-| [![toolbox_mosaico](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_mosaico.json)](toolbox_mosaico/) | Toolbox | Mosaico cloud server browsing (Arrow Flight) |
-| [![toolbox_transform_editor](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_transform_editor.json)](toolbox_transform_editor/) | Toolbox | Lua-based derived/custom series editor |
 
 ### Per-plugin status badges
 
