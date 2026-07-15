@@ -78,7 +78,7 @@ target_link_libraries(whep_client_test PRIVATE
   plotjuggler_sdk::plugin_sdk
   nlohmann_json::nlohmann_json
   ixwebsocket::ixwebsocket
-  GTest::gtest_main
+  GTest::gtest
 )
 add_test(NAME whep_client_test COMMAND whep_client_test)
 

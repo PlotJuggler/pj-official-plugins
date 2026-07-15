@@ -15,6 +15,7 @@
 
 #include <gtest/gtest.h>
 #include <ixwebsocket/IXHttpServer.h>
+#include <ixwebsocket/IXNetSystem.h>
 
 #include <algorithm>
 #include <chrono>
@@ -454,3 +455,11 @@ TEST(WhepPathsList, AbortDuringPaginationStopsFetching) {
 }  // namespace
 }  // namespace webrtc
 }  // namespace PJ
+
+int main(int argc, char** argv) {
+  ix::initNetSystem();  // WSAStartup on Windows; no-op on Linux/macOS
+  ::testing::InitGoogleTest(&argc, argv);
+  const int rc = RUN_ALL_TESTS();
+  ix::uninitNetSystem();
+  return rc;
+}
