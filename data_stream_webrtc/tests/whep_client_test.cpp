@@ -4,6 +4,13 @@
 // whep_client tests. Pure URL helpers are tested directly; the HTTP functions
 // are tested against a local ix::HttpServer stub (loopback only — the single
 // deliberate exception to the no-network-in-tests policy).
+
+// Must precede any include that can pull in <windows.h> (ixwebsocket does on
+// MSVC): otherwise windows.h defines min/max macros that break std::min below.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include "whep_client.hpp"
 
 #include <gtest/gtest.h>
