@@ -99,7 +99,7 @@ endif()
 find_package(GTest REQUIRED)
 
 # ---------------------------------------------------------------------------
-# PlotJuggler Core SDK (Conan package, plotjuggler cloudsmith remote).
+# PlotJuggler Core SDK (Conan package, shared PlotJuggler JFrog remote).
 # The exact version is pinned by Conan (see conanfile.txt / each plugin's
 # conanfile.py) — CMakeDeps generates a config for precisely that version, so
 # no version is asserted here. Keeping the version out of find_package means a

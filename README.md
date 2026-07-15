@@ -37,13 +37,15 @@
 
 ### Standalone (requires Conan 2.x)
 
-Configure the plotjuggler cloudsmith Conan remote once per machine so
-`plotjuggler_sdk` resolves on `conan install`:
+Configure the shared PlotJuggler JFrog Conan remote once per machine. Keeping
+it at index 0 lets Conan try cached PlotJuggler and third-party binaries before
+falling back to ConanCenter:
 
 ```bash
-conan remote add plotjuggler-cloudsmith \
-  https://conan.cloudsmith.io/plotjuggler/plotjuggler
-conan remote login plotjuggler-cloudsmith <user> -p <api-key>
+conan remote add plotjuggler-conan \
+  https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan \
+  --force --index=0
+conan remote login plotjuggler-conan <user> -p <access-token>
 ```
 
 Then build:

@@ -29,12 +29,17 @@ jobs:
       - name: Install cmake and ninja
         run: pip install cmake ninja
 
+      - name: Configure PlotJuggler JFrog Conan remote
+        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        env:
+          JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
+          JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
+        shell: bash
+        run: scripts/configure_jfrog_conan.sh
+
       - name: Acquire plotjuggler_sdk
-        # Cloudsmith publishes only a Linux binary, so macOS always builds core from
-        # source. ensure_core.sh builds it from the pinned extern/plotjuggler_core
-        # submodule with no cloudsmith remote configured, so a cloudsmith outage can
-        # never break the macOS build (and the recipe-revision races that motivated
-        # the old `--update` flag are gone — the submodule is the source of truth).
+        # Prefer an exact JFrog binary; otherwise build from the pinned SDK
+        # submodule. The pinned submodule remains the source of truth.
         shell: bash
         run: |
           conan profile detect --force
