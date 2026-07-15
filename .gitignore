@@ -10,4 +10,6 @@ __pycache__/
 /conanrunenv-*.sh
 /deactivate_conanbuild.sh
 /deactivate_conanrun.sh
+/.pixi/
+/build/
 /build_*

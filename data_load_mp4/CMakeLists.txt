@@ -1,6 +1,7 @@
 find_package(nlohmann_json REQUIRED)
-find_package(ffmpeg REQUIRED)
 find_package(date REQUIRED)
+# ffmpeg linked via pj_target_link_ffmpeg below (conda-forge ffmpeg is pkg-config
+# only, no CMake config); see cmake/PjDependencyTargets.cmake.
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
@@ -10,9 +11,9 @@ target_compile_features(mp4_source_plugin PRIVATE cxx_std_20)
 target_compile_options(mp4_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(mp4_source_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json date::date
-  ffmpeg::avformat ffmpeg::avutil
   pj_video_demux
 )
+pj_target_link_ffmpeg(mp4_source_plugin PRIVATE avformat avutil)
 
 pj_embed_manifest(mp4_source_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/mp4_manifest.hpp

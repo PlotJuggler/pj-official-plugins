@@ -1,0 +1,42 @@
+schema_version: 1
+
+context:
+  version: "0.24.0"
+
+package:
+  name: libdatachannel
+  version: ${{ version }}
+
+# build-and-publish.sh clones libdatachannel v0.24.0 with --recurse-submodules
+# into ./src (libjuice/libsrtp/usrsctp/plog/json). rattler-build's git source
+# does not reliably check out a tag + submodules in one pass, so a pre-clone +
+# path source is used (the tag pins all submodule commits, so it is reproducible).
+source:
+  path: ./src
+
+build:
+  number: 0
+  script:
+    - cmake -G Ninja -B build -S . -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DUSE_GNUTLS=OFF -DUSE_NICE=OFF -DNO_WEBSOCKET=OFF -DNO_MEDIA=OFF -DCMAKE_INSTALL_PREFIX=$PREFIX -DCMAKE_INSTALL_LIBDIR=lib -DOPENSSL_ROOT_DIR=$PREFIX
+    - cmake --build build
+    - cmake --install build
+
+requirements:
+  build:
+    - ${{ compiler('c') }}
+    - ${{ compiler('cxx') }}
+    - cmake
+    - ninja
+  host:
+    - openssl <4
+
+tests:
+  - script:
+      - test -f $PREFIX/lib/cmake/LibDataChannel/LibDataChannelConfig.cmake
+      - test -f $PREFIX/lib/libdatachannel.so
+
+about:
+  homepage: https://github.com/paullouisageneau/libdatachannel
+  license: MPL-2.0
+  license_file: LICENSE
+  summary: C/C++ WebRTC Data Channels and Media Transport library (shared, OpenSSL, bundled libjuice)

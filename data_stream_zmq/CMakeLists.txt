@@ -1,3 +1,5 @@
+# cppzmq exports the bare `cppzmq` target under both Conan and conda-forge, and
+# libsodium is transitive via zeromq — no pj_target_link_* normalization needed.
 find_package(nlohmann_json REQUIRED)
 find_package(cppzmq REQUIRED)
 

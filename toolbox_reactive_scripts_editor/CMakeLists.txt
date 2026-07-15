@@ -1,6 +1,7 @@
-find_package(lua REQUIRED)
 find_package(sol2 REQUIRED)
 find_package(nlohmann_json REQUIRED)
+# lua via pj_target_link_lua below — conda lua ships only the builtin FindLua
+# (no lua::lua config target); the helper bridges Conan and conda.
 
 # Python embedding is gated behind an opt-in flag. Default OFF so Linux
 # marketplace artifacts ship without a NEEDED dependency on a libpython that
@@ -25,11 +26,11 @@ target_compile_options(toolbox_reactive_scripts_editor_plugin PRIVATE ${PJ_WARNI
 
 target_link_libraries(toolbox_reactive_scripts_editor_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk
-  lua::lua
   sol2::sol2
   nlohmann_json::nlohmann_json
   ${CMAKE_DL_LIBS}
 )
+pj_target_link_lua(toolbox_reactive_scripts_editor_plugin PRIVATE)
 
 if(PJ_REACTIVE_ENABLE_PYTHON)
   target_link_libraries(toolbox_reactive_scripts_editor_plugin PRIVATE pybind11::embed)

@@ -1,10 +1,4 @@
 find_package(nlohmann_json REQUIRED)
-if(NOT TARGET Arrow::arrow_static)
-  find_package(Arrow REQUIRED)
-endif()
-if(NOT TARGET Parquet::parquet_static)
-  find_package(Parquet REQUIRED)
-endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
@@ -21,10 +15,11 @@ target_compile_features(lerobot_source_plugin PRIVATE cxx_std_20)
 target_compile_options(lerobot_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(lerobot_source_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json
-  Arrow::arrow_static Parquet::parquet_static
   pj_arrow_helpers
   pj_video_demux  # lazy per-frame VideoFrame emission (pulls ffmpeg transitively)
 )
+pj_target_link_arrow(lerobot_source_plugin PRIVATE)
+pj_target_link_parquet(lerobot_source_plugin PRIVATE)
 pj_embed_ui(lerobot_source_plugin
   UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/dialog_lerobot.ui
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/dialog_lerobot_ui.hpp
@@ -53,8 +48,10 @@ target_compile_options(lerobot_dataset_model_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(lerobot_dataset_model_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lerobot_dataset_model_test PRIVATE
   plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json
-  Arrow::arrow_static Parquet::parquet_static GTest::gtest_main
+  GTest::gtest_main
 )
+pj_target_link_arrow(lerobot_dataset_model_test PRIVATE)
+pj_target_link_parquet(lerobot_dataset_model_test PRIVATE)
 add_test(NAME lerobot_dataset_model_test COMMAND lerobot_dataset_model_test)
 
 # v3.0 fixture test — exercises the Arrow-backed meta/episodes reader against
@@ -65,8 +62,10 @@ target_compile_options(lerobot_dataset_model_v3_test PRIVATE ${PJ_WARNING_FLAGS}
 target_include_directories(lerobot_dataset_model_v3_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lerobot_dataset_model_v3_test PRIVATE
   plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json
-  Arrow::arrow_static Parquet::parquet_static GTest::gtest_main
+  GTest::gtest_main
 )
+pj_target_link_arrow(lerobot_dataset_model_v3_test PRIVATE)
+pj_target_link_parquet(lerobot_dataset_model_v3_test PRIVATE)
 add_test(NAME lerobot_dataset_model_v3_test COMMAND lerobot_dataset_model_v3_test)
 
 add_executable(lerobot_flatten_plan_test tests/flatten_plan_test.cpp flatten_plan.cpp)
@@ -102,8 +101,10 @@ target_compile_options(lerobot_dialog_fanout_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(lerobot_dialog_fanout_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lerobot_dialog_fanout_test PRIVATE
   plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json
-  Arrow::arrow_static Parquet::parquet_static GTest::gtest_main
+  GTest::gtest_main
 )
+pj_target_link_arrow(lerobot_dialog_fanout_test PRIVATE)
+pj_target_link_parquet(lerobot_dialog_fanout_test PRIVATE)
 # Pull in the generated headers (dialog_lerobot_ui.hpp, lerobot_manifest.hpp)
 # that lerobot_dialog.hpp transitively includes.
 target_include_directories(lerobot_dialog_fanout_test PRIVATE

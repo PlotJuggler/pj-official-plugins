@@ -1,6 +1,4 @@
 find_package(nlohmann_json REQUIRED)
-find_package(lz4 REQUIRED)
-find_package(zstd REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
@@ -13,9 +11,11 @@ target_compile_features(mcap_source_plugin PRIVATE cxx_std_20)
 target_compile_options(mcap_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(mcap_source_plugin SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
 target_link_libraries(mcap_source_plugin PRIVATE
-  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json LZ4::lz4_static zstd::libzstd_static
+  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json
   pj_array_policy
 )
+pj_target_link_lz4(mcap_source_plugin PRIVATE)
+pj_target_link_zstd(mcap_source_plugin PRIVATE)
 
 pj_embed_ui(mcap_source_plugin
   UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/dialog_mcap.ui
@@ -41,7 +41,9 @@ target_compile_features(mcap_helpers_test PRIVATE cxx_std_20)
 target_compile_options(mcap_helpers_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(mcap_helpers_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(mcap_helpers_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
-target_link_libraries(mcap_helpers_test PRIVATE LZ4::lz4_static zstd::libzstd_static GTest::gtest_main)
+target_link_libraries(mcap_helpers_test PRIVATE GTest::gtest_main)
+pj_target_link_lz4(mcap_helpers_test PRIVATE)
+pj_target_link_zstd(mcap_helpers_test PRIVATE)
 add_test(NAME mcap_helpers_test COMMAND mcap_helpers_test)
 
 # --- Unit test for MCAP dialog model/config behavior ---
@@ -57,8 +59,10 @@ target_include_directories(mcap_dialog_test PRIVATE
 )
 target_include_directories(mcap_dialog_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
 target_link_libraries(mcap_dialog_test PRIVATE
-  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json LZ4::lz4_static zstd::libzstd_static GTest::gtest_main
+  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
 )
+pj_target_link_lz4(mcap_dialog_test PRIVATE)
+pj_target_link_zstd(mcap_dialog_test PRIVATE)
 add_test(NAME mcap_dialog_test COMMAND mcap_dialog_test)
 
 # --- Unit test for the MessageByteStore (hot/cold lazy byte layer) ---
@@ -69,6 +73,8 @@ target_compile_options(message_byte_store_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(message_byte_store_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(message_byte_store_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
 target_link_libraries(message_byte_store_test PRIVATE
-  LZ4::lz4_static zstd::libzstd_static GTest::gtest_main Threads::Threads
+  GTest::gtest_main Threads::Threads
 )
+pj_target_link_lz4(message_byte_store_test PRIVATE)
+pj_target_link_zstd(message_byte_store_test PRIVATE)
 add_test(NAME message_byte_store_test COMMAND message_byte_store_test)

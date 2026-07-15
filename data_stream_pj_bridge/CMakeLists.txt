@@ -1,5 +1,4 @@
 find_package(nlohmann_json REQUIRED)
-find_package(zstd REQUIRED)
 find_package(ixwebsocket REQUIRED)
 
 # Fix ixwebsocket include dirs when built inside the PJ4 tree without conan toolchain.
@@ -16,7 +15,7 @@ set_target_properties(pj_bridge_protocol_lib PROPERTIES POSITION_INDEPENDENT_COD
 target_compile_features(pj_bridge_protocol_lib PUBLIC cxx_std_20)
 target_compile_options(pj_bridge_protocol_lib PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(pj_bridge_protocol_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(pj_bridge_protocol_lib PUBLIC zstd::libzstd_static)
+pj_target_link_zstd(pj_bridge_protocol_lib PUBLIC)
 
 add_library(pj_bridge_source_plugin SHARED pj_bridge_source.cpp)
 target_compile_features(pj_bridge_source_plugin PRIVATE cxx_std_20)

@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.22)
 
+# Provider-agnostic dependency target helpers (pj_target_link_*). Defined at the
+# root so they are visible in every add_subdirectory() plugin. Defines functions
+# only — no find_package at include time — so it is safe before the mode branch.
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/PjDependencyTargets.cmake)
+
 # ---------------------------------------------------------------------------
 # Dual-mode: standalone project OR subdirectory of plotjuggler_sdk.
 #
