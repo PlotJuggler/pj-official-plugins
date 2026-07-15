@@ -1,5 +1,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
+
+// Must precede any include that can pull in <windows.h> (ixwebsocket does on
+// MSVC): otherwise windows.h defines min/max macros that break std::max below.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include "whep_client.hpp"
 
 #include <ixwebsocket/IXHttpClient.h>
