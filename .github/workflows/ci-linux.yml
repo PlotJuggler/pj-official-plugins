@@ -13,10 +13,9 @@ concurrency:
 
 jobs:
   # Acquire plotjuggler_sdk ONCE per run and hand it to every build leg as a Conan
-  # cache artifact. Cloudsmith is contacted only here (prebuilt-binary fast path); on
-  # a cloudsmith failure (e.g. HTTP 402 bandwidth exceeded) ensure_core.sh builds core
-  # from the pinned extern/plotjuggler_core submodule instead, so CI never hard-depends
-  # on cloudsmith. This is what collapses the old ~21 per-run cloudsmith pulls to 1.
+  # cache artifact. Trusted jobs try the shared JFrog remote first; if the exact
+  # prebuilt SDK is absent, ensure_core.sh builds it from the pinned
+  # extern/plotjuggler_core submodule. The matrix still receives one local artifact.
   acquire-core:
     runs-on: ubuntu-22.04
     steps:
@@ -33,22 +32,19 @@ jobs:
       - name: Install cmake and ninja
         run: pip install cmake ninja
 
-      - name: Configure plotjuggler cloudsmith Conan remote
-        env:
-          CLOUDSMITH_USER: ${{ secrets.CLOUDSMITH_USER }}
-          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+      - name: Detect Conan profile
         shell: bash
-        run: |
-          conan profile detect --force
-          conan remote add plotjuggler-cloudsmith \
-            https://conan.cloudsmith.io/plotjuggler/plotjuggler --force
-          # Non-fatal: if cloudsmith is down or over quota (HTTP 402), ensure_core.sh
-          # below still builds core from the submodule, so don't fail the job here.
-          conan remote login plotjuggler-cloudsmith \
-            "$CLOUDSMITH_USER" -p "$CLOUDSMITH_API_KEY" \
-            || echo "::warning::cloudsmith login failed; core will be built from the submodule"
+        run: conan profile detect --force
 
-      - name: Acquire plotjuggler_sdk (cloudsmith → submodule fallback)
+      - name: Configure PlotJuggler JFrog Conan remote
+        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        env:
+          JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
+          JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
+        shell: bash
+        run: scripts/configure_jfrog_conan.sh
+
+      - name: Acquire plotjuggler_sdk (JFrog → submodule fallback)
         shell: bash
         run: scripts/ensure_core.sh
 
@@ -66,12 +62,10 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Build every Arrow variant the repo needs from source ONCE per run and hand them to
-  # the arrow-consuming plugins as a Conan cache artifact, instead of compiling Arrow
-  # (and its heavy boost / grpc / protobuf deps) independently in each arrow plugin's
-  # leg. conancenter has no prebuilt binary for our profile — the repo forces
-  # compiler.cppstd=20 globally and Conan 2 cannot give Arrow a different cppstd than the
-  # consumer — so Arrow always builds from source.
+  # Acquire every Arrow variant the repo needs ONCE per run and hand them to the
+  # arrow-consuming plugins as a Conan cache artifact, instead of compiling Arrow
+  # (and its heavy boost / grpc / protobuf deps) independently in each plugin leg.
+  # JFrog is the preferred binary source; missing exact package IDs are built once.
   #
   # Two variants are primed, because Arrow's package_id depends on its options:
   #   * parquet/snappy  — shared by data_load_parquet + data_load_lerobot (~14 min)
@@ -107,10 +101,20 @@ jobs:
         id: arrow-cache
         uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}/.conan-arrow
+          # Cache packages only. Conan stores remote credentials elsewhere in
+          # CONAN_HOME, so no JFrog token is persisted in an Actions cache.
+          path: ${{ github.workspace }}/.conan-arrow/p
           # Bump the trailing -vN whenever either Arrow option set below changes, so a
           # stale immutable entry can't pin an old binary.
-          key: conan-arrow-23.0.1-cppstd20-parquet-flight-${{ runner.os }}-v2
+          key: conan-arrow-23.0.1-cppstd20-parquet-flight-${{ runner.os }}-v3
+
+      - name: Configure PlotJuggler JFrog Conan remote
+        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        env:
+          JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
+          JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
+        shell: bash
+        run: scripts/configure_jfrog_conan.sh
 
       - name: Build the Arrow variants (no-op on a cache hit)
         shell: bash
@@ -206,9 +210,8 @@ jobs:
 
   # Build each plugin in isolation against its own conanfile.py, matching the
   # path the release workflow takes. Catches per-plugin recipe gaps. Each leg
-  # restores plotjuggler_sdk from the acquire-core artifact (no cloudsmith remote
-  # is configured here), so the matrix fan-out costs zero cloudsmith bandwidth;
-  # conancenter still serves each plugin's other third-party deps.
+  # restores plotjuggler_sdk from the acquire-core artifact, then trusted jobs use
+  # JFrog before ConanCenter for each plugin's third-party dependencies.
   per-plugin-build:
     needs: [discover-plugins, acquire-core]
     runs-on: ubuntu-22.04
@@ -235,15 +238,22 @@ jobs:
         shell: bash
         run: conan profile detect --force
 
+      - name: Configure PlotJuggler JFrog Conan remote
+        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        env:
+          JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
+          JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
+        shell: bash
+        run: scripts/configure_jfrog_conan.sh
+
       - name: Download core cache artifact
         uses: actions/download-artifact@v4
         with:
           name: conan-core-cache
 
       - name: Restore plotjuggler_sdk into the Conan cache
-        # Core comes from the artifact primed by acquire-core. No cloudsmith remote is
-        # configured in this job, so a build leg can never pull core from cloudsmith.
-        # If the restore somehow misses, ensure_core.sh rebuilds it from the submodule.
+        # Core normally comes from the artifact primed by acquire-core. If the
+        # restore somehow misses, ensure_core.sh retries JFrog before the submodule.
         shell: bash
         run: conan cache restore core-cache.tgz || scripts/ensure_core.sh
 
@@ -307,6 +317,14 @@ jobs:
       - name: Detect Conan profile
         shell: bash
         run: conan profile detect --force
+
+      - name: Configure PlotJuggler JFrog Conan remote
+        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        env:
+          JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
+          JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
+        shell: bash
+        run: scripts/configure_jfrog_conan.sh
 
       - name: Download core cache artifact
         uses: actions/download-artifact@v4
