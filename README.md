@@ -15,13 +15,15 @@ widgets (FFT, quaternion, colormap, reactive scripts). See the
 
 ### Standalone (requires Conan 2.x)
 
-Configure the plotjuggler cloudsmith Conan remote once per machine so
-`plotjuggler_sdk` resolves on `conan install`:
+Configure the shared PlotJuggler JFrog Conan remote once per machine. Keeping
+it at index 0 lets Conan try cached PlotJuggler and third-party binaries before
+falling back to ConanCenter:
 
 ```bash
-conan remote add plotjuggler-cloudsmith \
-  https://conan.cloudsmith.io/plotjuggler/plotjuggler
-conan remote login plotjuggler-cloudsmith <user> -p <api-key>
+conan remote add plotjuggler-conan \
+  https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan \
+  --force --index=0
+conan remote login plotjuggler-conan <user> -p <access-token>
 ```
 
 Then build:
@@ -67,11 +69,11 @@ cd /path/to/plotjuggler_sdk
 ### Via Conan
 
 `plotjuggler_sdk` is consumed as a Conan package from the
-plotjuggler cloudsmith remote — no CPM source clone, no SSH deploy key, no
+PlotJuggler JFrog remote — no CPM source clone, no SSH deploy key, no
 subdirectory-mode fallback for standalone builds. Every per-plugin
 `conanfile.py` also lists it so single-plugin builds resolve it the same way.
 The version is pinned in one place — the top-level `SDK_VERSION` file — and CI
-builds core from the pinned `extern/plotjuggler_core` submodule when cloudsmith
+builds core from the pinned `extern/plotjuggler_core` submodule when JFrog
 is unavailable (`scripts/ensure_core.sh`).
 
 > **Repository & package rename:** the SDK source now lives in the
@@ -83,7 +85,7 @@ is unavailable (`scripts/ensure_core.sh`).
 
 | Package | Version | Used by |
 |---------|---------|---------|
-| **plotjuggler_sdk** (cloudsmith) | pinned via `SDK_VERSION` (exact) | **SDK + host loaders** (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
+| **plotjuggler_sdk** (JFrog) | pinned via `SDK_VERSION` (exact) | **SDK + host loaders** (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
 | nlohmann_json | 3.12.0 | Most plugins |
 | mcap | 2.1.1 | data_load_mcap |
 | arrow + parquet | 23.0.1 | data_load_parquet |
