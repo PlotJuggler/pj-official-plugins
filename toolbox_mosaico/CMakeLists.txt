@@ -453,6 +453,7 @@ if(BUILD_TESTING)
     mosaico_sdk
     ${_test_arrow_target}
     GTest::gtest_main
+    plotjuggler_sdk::plugin_sdk  # PJ::sdk::getEnv (header-only, portable env read)
   )
   target_include_directories(toolbox_mosaico_image_download_smoke PRIVATE
     ${mosaico_sdk_SOURCE_DIR}/src
@@ -476,6 +477,7 @@ if(BUILD_TESTING)
   target_link_libraries(toolbox_mosaico_live_harness PRIVATE
     mosaico_sdk
     ${_test_arrow_target}
+    plotjuggler_sdk::plugin_sdk  # PJ::sdk::getEnv (header-only, portable env read)
   )
   target_include_directories(toolbox_mosaico_live_harness PRIVATE
     ${mosaico_sdk_SOURCE_DIR}/src

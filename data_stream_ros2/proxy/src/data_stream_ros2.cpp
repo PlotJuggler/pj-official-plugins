@@ -37,7 +37,6 @@
 
 #include <array>
 #include <cstdio>
-#include <cstdlib>
 #include <filesystem>
 #include <mutex>
 #include <optional>
@@ -46,6 +45,7 @@
 
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/plugin_abi_export.hpp"
+#include "pj_base/sdk/platform.hpp"
 #include "pj_plugins/dialog_protocol.h"
 #include "ros2_manifest.hpp"
 
@@ -87,8 +87,8 @@ bool condaDistroDirectoryExists(const std::filesystem::path& conda_prefix, std::
 // rationale behind each.
 std::optional<std::string> detectRosDistro() {
   // 1. Explicit env var — set by setup.bash. Gold standard.
-  if (const char* env = std::getenv("ROS_DISTRO"); env != nullptr && *env != '\0') {
-    return std::string(env);
+  if (auto env = PJ::sdk::getEnv("ROS_DISTRO")) {
+    return env;
   }
 
   // 2. Standard apt/debian install: /opt/ros/<distro>/setup.bash
@@ -99,8 +99,8 @@ std::optional<std::string> detectRosDistro() {
   }
 
   // 3. RoboStack / conda overlay: $CONDA_PREFIX/share/<distro>
-  if (const char* prefix = std::getenv("CONDA_PREFIX"); prefix != nullptr && *prefix != '\0') {
-    const std::filesystem::path conda_prefix(prefix);
+  if (auto prefix = PJ::sdk::getEnv("CONDA_PREFIX")) {
+    const std::filesystem::path conda_prefix(*prefix);
     for (const auto& distro : kSupportedDistros) {
       if (condaDistroDirectoryExists(conda_prefix, distro)) {
         return std::string(distro);

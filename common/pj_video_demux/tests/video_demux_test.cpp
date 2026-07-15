@@ -9,7 +9,7 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstdlib>
+#include <pj_base/sdk/platform.hpp>
 #include <string>
 #include <vector>
 
@@ -109,15 +109,16 @@ TEST(VideoDemuxTest, IndexAndReadAv1Fixture) {
 }
 
 TEST(VideoDemuxTest, IndexAndReadExternalVideo) {
-  const char* path = std::getenv("PJ_TEST_VIDEO");
-  if (path == nullptr) {
+  const auto path = PJ::sdk::getEnv("PJ_TEST_VIDEO");
+  if (!path) {
     GTEST_SKIP() << "set PJ_TEST_VIDEO to an h264/h265/av1 .mp4 to run the external index+read test";
   }
-  auto idx = PJ::video_demux::indexFile(path);
+  auto idx = PJ::video_demux::indexFile(*path);
   ASSERT_TRUE(idx.has_value()) << idx.error();
   ASSERT_FALSE(idx->units.empty());
   EXPECT_TRUE(idx->units.front().keyframe) << "the first access unit should be a keyframe";
-  auto reader = PJ::video_demux::LazyAccessUnitReader::create(path, idx->format, idx->param_sets, idx->nal_length_size);
+  auto reader =
+      PJ::video_demux::LazyAccessUnitReader::create(*path, idx->format, idx->param_sets, idx->nal_length_size);
   auto bytes = reader->readUnit(idx->units.front());
   ASSERT_TRUE(bytes.has_value()) << bytes.error();
   EXPECT_FALSE(bytes->empty());
