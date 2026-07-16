@@ -48,6 +48,14 @@ jobs:
         shell: bash
         run: scripts/ensure_core.sh
 
+      - name: Upload plotjuggler_sdk to JFrog
+        # When ensure_core.sh built the SDK from the submodule (JFrog had no
+        # matching binary), publish it so the next run fetches it prebuilt. Scoped
+        # to the pinned ref, mirroring the Save step. No-op if it came from JFrog.
+        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        shell: bash
+        run: scripts/upload_conan_artifacts.sh "plotjuggler_sdk/$(cat SDK_VERSION)"
+
       - name: Save plotjuggler_sdk to a Conan cache artifact
         # Pin to the exact SDK_VERSION so a stale plotjuggler_sdk left in the
         # setup-conan package cache can never be shipped in the artifact.
@@ -145,6 +153,14 @@ jobs:
             -s build_type=Release -s compiler.cppstd=20 \
             -c tools.cmake.cmaketoolchain:generator=Ninja \
             --build=missing -of "$(mktemp -d)"
+
+      - name: Upload the Arrow closure to JFrog
+        # The isolated CONAN_HOME holds only Arrow + its from-source deps, so "*"
+        # publishes exactly that closure — priming JFrog so future runs skip the
+        # ~50 min Flight build. Idempotent: already-present revisions are skipped.
+        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        shell: bash
+        run: scripts/upload_conan_artifacts.sh
 
       - name: Pack the Arrow closure for the build legs
         shell: bash
@@ -265,6 +281,14 @@ jobs:
         shell: bash
         run: ctest --test-dir "build/${{ matrix.plugin }}/Release" --output-on-failure -V
 
+      - name: Upload built Conan binaries to JFrog
+        # Publish this plugin's third-party dependency binaries so later legs and
+        # future runs fetch them prebuilt. Parallel legs may upload overlapping
+        # deps; that is safe — Conan skips revisions already on the remote.
+        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        shell: bash
+        run: scripts/upload_conan_artifacts.sh
+
       # Emit this plugin's status badge JSON (version from manifest, color from
       # this leg's outcome) and hand it to the update-badges job as an artifact.
       # `always()` so a failed build still reports red instead of going stale.
@@ -353,6 +377,13 @@ jobs:
       - name: Test ${{ matrix.plugin }}
         shell: bash
         run: ctest --test-dir "build/${{ matrix.plugin }}/Release" --output-on-failure -V
+
+      - name: Upload built Conan binaries to JFrog
+        # Publish this plugin's dependency binaries (Arrow closure was already
+        # primed by acquire-arrow; re-uploads of present revisions are skipped).
+        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        shell: bash
+        run: scripts/upload_conan_artifacts.sh
 
       - name: Write status badge JSON
         if: always()
