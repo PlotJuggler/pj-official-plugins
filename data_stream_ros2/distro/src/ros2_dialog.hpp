@@ -48,31 +48,23 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
 
     auto visible = visibleTopics();
     std::vector<std::vector<std::string>> rows;
-    std::vector<std::string> ordered_names;
     rows.reserve(visible.size());
-    ordered_names.reserve(visible.size());
     for (const auto& [name, type] : visible) {
       rows.push_back({name, type});
-      ordered_names.push_back(name);
     }
     wd.setTableHeaders("listRosTopics", {"Topic", "Datatype"});
     wd.setTableRows("listRosTopics", rows);
 
-    // Translate the name-keyed selection set into the row indices the host
-    // uses to restore selection on a QTableWidget. Single pass over both
-    // vectors is fine — selections are tiny in practice.
-    std::vector<int> selected_rows;
-    selected_rows.reserve(selected_topics_.size());
+    // Restore selection by topic name (setSelectedItems): the host matches
+    // rows by first-column text, which is sort-agnostic — listRosTopics has
+    // sortingEnabled, so the selection survives a user sort of the table.
+    std::vector<std::string> selected_names;
+    selected_names.reserve(selected_topics_.size());
     for (const auto& [sel_name, sel_type] : selected_topics_) {
       (void)sel_type;
-      for (std::size_t i = 0; i < ordered_names.size(); ++i) {
-        if (ordered_names[i] == sel_name) {
-          selected_rows.push_back(static_cast<int>(i));
-          break;
-        }
-      }
+      selected_names.push_back(sel_name);
     }
-    wd.setSelectedRows("listRosTopics", selected_rows);
+    wd.setSelectedItems("listRosTopics", selected_names);
 
     if (rows.empty()) {
       wd.setText("labelStatus", "Scanning ROS 2 topics...");
@@ -91,7 +83,12 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     // companion deselect-all shortcut to the button (PJ3 parity).
     wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
 
-    wd.setOkEnabled(!selected_topics_.empty());
+    // OK button: discovery-running-only. Topic selection is no longer a hard
+    // requirement — see selected_topics_'s dual role in Ros2StreamSource
+    // (buildAvailableTopics): on a host that supports demand subscriptions it
+    // becomes an OPTIONAL advertise filter (empty = advertise everything); on
+    // a legacy host it keeps its original meaning, the subscribe list.
+    wd.setOkEnabled(discovery_running_);
     return wd.toJson();
   }
 
@@ -214,6 +211,12 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   }
 
   std::string saveConfig() const override {
+    // "selected_topics" is dual-purpose (see the OK-gate comment in
+    // widget_data() above and Ros2StreamSource::buildAvailableTopics): a
+    // legacy host subscribes exactly this list; a demand-subscription host
+    // treats it as an OPTIONAL advertise filter (empty = advertise
+    // everything) and asks for what it actually wants via set_active_topics.
+    // The format itself is unchanged by that dual role.
     nlohmann::json arr = nlohmann::json::array();
     {
       // Emit (and persist) a selection only while its topic is still being

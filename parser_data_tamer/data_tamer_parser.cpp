@@ -41,12 +41,31 @@ class DataTamerParserPlugin : public PJ::MessageParserPluginBase {
 
     DataTamerParser::BufferSpan msg_buffer = {payload.data(), payload.size()};
 
+    // Snapshot framing: uint32 mask_size | mask_size bytes | uint32 payload_size | payload_size bytes.
+    // Deserialize<> memcpy's before it bounds-checks, and BufferSpan::trimFront subtracts without a
+    // floor, so a length field larger than the bytes actually remaining walks the read cursor off the
+    // end (size_t underflow) into a wild pointer. Validate every length against what is left before
+    // consuming it — these are the only bounds checks between untrusted wire bytes and the readers.
+    constexpr size_t kU32 = sizeof(uint32_t);
+
+    if (msg_buffer.size < kU32) {
+      return PJ::unexpected(std::string("DataTamer snapshot truncated: missing active_mask size"));
+    }
     auto mask_size = DataTamerParser::Deserialize<uint32_t>(msg_buffer);
+    if (mask_size > msg_buffer.size) {
+      return PJ::unexpected(std::string("DataTamer snapshot: active_mask size exceeds remaining payload"));
+    }
     snapshot.active_mask.data = msg_buffer.data;
     snapshot.active_mask.size = mask_size;
     msg_buffer.trimFront(mask_size);
 
+    if (msg_buffer.size < kU32) {
+      return PJ::unexpected(std::string("DataTamer snapshot truncated: missing payload size"));
+    }
     auto payload_size = DataTamerParser::Deserialize<uint32_t>(msg_buffer);
+    if (payload_size > msg_buffer.size) {
+      return PJ::unexpected(std::string("DataTamer snapshot: payload size exceeds remaining buffer"));
+    }
     snapshot.payload.data = msg_buffer.data;
     snapshot.payload.size = payload_size;
 

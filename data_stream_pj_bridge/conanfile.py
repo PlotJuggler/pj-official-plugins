@@ -18,7 +18,7 @@ class DataStreamPjBridgeConan(ConanFile):
         f"plotjuggler_sdk/{_SDK_VERSION}",
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
-        "zstd/1.5.5",
+        "zstd/1.5.7",
         "ixwebsocket/11.4.6",
     )
     default_options = {"*:shared": False}

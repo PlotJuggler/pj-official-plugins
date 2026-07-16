@@ -368,7 +368,9 @@
               </widget>
              </item>
              <item>
-              <widget class="QLineEdit" name="lineEditTab2Filter"/>
+              <widget class="QLineEdit" name="lineEditTab2Filter">
+               <property name="filterField" stdset="0"><bool>true</bool></property>
+              </widget>
              </item>
             </layout>
            </item>

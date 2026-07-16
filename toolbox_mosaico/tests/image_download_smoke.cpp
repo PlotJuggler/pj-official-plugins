@@ -23,9 +23,9 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
-#include <cstdlib>
 #include <iostream>
 #include <map>
+#include <pj_base/sdk/platform.hpp>
 #include <string>
 
 #include "flight/mosaico_client.hpp"
@@ -36,8 +36,8 @@ namespace {
 constexpr const char* kDemoUri = "grpc+tls://demo.mosaico.dev:6726";
 
 bool liveSmokeRequested() {
-  const char* env = std::getenv("MOSAICO_LIVE_SMOKE");
-  return env != nullptr && env[0] != '\0' && std::string(env) != "0";
+  const auto env = PJ::sdk::getEnv("MOSAICO_LIVE_SMOKE");
+  return env.has_value() && *env != "0";
 }
 
 }  // namespace
@@ -48,8 +48,7 @@ TEST(MosaicoImageDownloadSmoke, FetchSequenceWithImageTopic) {
   }
 
   std::cerr << "[smoke] connecting to " << kDemoUri << "\n";
-  const char* api_key_env = std::getenv("MOSAICO_API_KEY");
-  std::string api_key = (api_key_env != nullptr && api_key_env[0] != '\0') ? api_key_env : std::string();
+  std::string api_key = PJ::sdk::getEnv("MOSAICO_API_KEY").value_or(std::string());
   if (api_key.empty()) {
     GTEST_SKIP() << "Set MOSAICO_API_KEY to authenticate against the demo server";
   }

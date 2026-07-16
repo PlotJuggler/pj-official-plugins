@@ -1,8 +1,8 @@
 {
   "id": "webrtc-client",
   "name": "WebRTC Video Client",
-  "version": "1.0.0",
-  "description": "Receives a live H.264 video stream from any WebRTC peer (browser, robot, or media server) via libdatachannel and feeds it to PlotJuggler as canonical PJ.VideoFrame messages. H.264 pass-through; no transcode.",
+  "version": "0.99.1",
+  "description": "Receives live H.264 video via standard WHEP (mediamtx, go2rtc, LiveKit, Cloudflare Stream...) and feeds each stream to PlotJuggler as canonical PJ.VideoFrame messages. One HTTP request per stream, per-camera reconnect, mediamtx Control API discovery. H.264 pass-through; no transcode.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
   "website": "https://github.com/PlotJuggler/pj-official-plugins",
@@ -12,11 +12,14 @@
   "category": "data_stream",
   "tags": [
     "webrtc",
+    "whep",
+    "mediamtx",
     "video",
     "h264",
-    "stream",
+    "camera",
+    "streaming",
     "realtime",
     "libdatachannel"
   ],
-  "min_plotjuggler_version": "4.0.0"
+  "min_plotjuggler_version": "3.999.1"
 }

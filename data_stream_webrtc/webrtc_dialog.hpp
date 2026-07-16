@@ -1,22 +1,23 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Smart discovery dialog for the multi-camera WebRTC client. Owns the signaling
-// socket during the dialog session for catalog discovery; on accept the source
-// steals it via takeSignaling() so the SDP handshake is not redone. The plugin
-// model is the single source of truth and round-trips via saveConfig/loadConfig.
+// Discovery dialog for the WHEP multi-camera client. Polls the mediamtx
+// Control API (/v3/paths/list) on a worker thread while open (~1 Hz + manual
+// Refresh); manual path entry covers servers without the API. Selection is
+// restored by TEXT (path name) so the sortable table stays consistent. The
+// plugin model is the single source of truth via saveConfig/loadConfig.
 #pragma once
 
 #include <atomic>
-#include <memory>
+#include <chrono>
 #include <mutex>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <string>
 #include <string_view>
-#include <unordered_map>
+#include <thread>
 #include <vector>
 
-#include "webrtc_signaling.hpp"
+#include "whep_client.hpp"
 
 namespace webrtc_dialog_detail {
 
@@ -26,21 +27,9 @@ struct IceRow {
   std::string credential;
 };
 
-// A camera the user picked, captured so the source can subscribe even after the
-// live catalog is gone (saved-layout reload). Only id (== mid contract) and name
-// (topic leaf) are needed downstream; codec/resolution come from the live
-// catalog at render time, so they are not persisted here.
-struct SelectedStream {
-  std::string id;    // == mid contract
-  std::string name;  // topic leaf
-};
-
 class WebrtcDialog : public PJ::DialogPluginTyped {
  public:
   ~WebrtcDialog() override;
-
-  // Transfer the live signaling connection to the source (do NOT close it).
-  std::unique_ptr<PJ::webrtc::WebrtcSignaling> takeSignaling();
 
   std::string manifest() const override;
   std::string ui_content() const override;
@@ -59,33 +48,53 @@ class WebrtcDialog : public PJ::DialogPluginTyped {
 
  private:
   static std::string toLower(std::string s);
-  static std::string baseLabel(const PJ::webrtc::DiscoveredStream& s);
-  static std::unordered_map<std::string, int> buildBaseNameCounts(
-      const std::vector<PJ::webrtc::DiscoveredStream>& catalog);
-  static std::string displayLabel(
-      const PJ::webrtc::DiscoveredStream& s, const std::unordered_map<std::string, int>& counts);
+  static bool hasH264(const std::vector<std::string>& tracks);
+  static std::string joinTracks(const std::vector<std::string>& tracks);
+  // "http://host:8889" -> "http://host:9997" (mediamtx Control API default).
+  static std::string deriveApiUrl(const std::string& server_url);
 
-  bool passesFilter(const std::string& label, const std::string& codec_in) const;
-  bool catalogEmpty() const;
-  void reconcileSelectedWithCatalogLocked();
-  void connect();
-  void disconnect();
+  // Whitespace-trimmed copy of a user-typed path.
+  static std::string trimmedPath(std::string s);
+  // True if the path still carries whitespace/control bytes that could only
+  // fail later as an opaque URL error — reject at input time instead.
+  static bool hasSpaceOrControl(const std::string& s);
 
-  std::string address_ = "127.0.0.1";
-  int port_ = 8443;
-  std::string our_id_ = "receiver";
+  bool passesFilter(const std::string& path) const;
+  bool isSelected(const std::string& path) const;
+  // True iff `path` is currently a visible row (catalog entry passing the
+  // filter, or a manual path not in the catalog passing the filter) — i.e. a
+  // row the host could report in onSelectionChanged. Caller holds catalog_mutex_.
+  bool isRenderedLocked(const std::string& path) const;
+  void startFetch();    // spawn the worker if none in flight
+  void harvestFetch();  // join a finished worker, publish results
+
+  std::string server_url_ = "http://127.0.0.1:8889";
+  std::string bearer_;
+  std::string api_url_ = "http://127.0.0.1:9997";
+  bool api_url_edited_ = false;  // stop auto-deriving once the user typed one
   std::string topic_prefix_ = "webrtc";
-  std::string manual_stream_;
+  std::string manual_path_;
   std::string filter_;
-  std::string filter_lower_;  // cached toLower(filter_); kept in sync in onTextChanged
+  std::string filter_lower_;
 
-  std::atomic<bool> connected_ = false;
-  std::atomic<bool> catalog_dirty_ = false;
-  std::unique_ptr<PJ::webrtc::WebrtcSignaling> signaling_;
-
+  // Catalog fetched from the Control API + fetch machinery. The worker thread
+  // writes fetch_* under catalog_mutex_ and sets fetch_done_; onTick harvests.
   mutable std::mutex catalog_mutex_;
-  std::vector<PJ::webrtc::DiscoveredStream> catalog_;
-  std::vector<SelectedStream> selected_;
+  std::vector<PJ::webrtc::WhepPathInfo> catalog_;
+  std::string api_status_;
+  std::vector<PJ::webrtc::WhepPathInfo> fetch_result_;
+  std::string fetch_status_;
+  std::thread fetch_thread_;
+  // Abort handle for the fetch in flight (fresh per startFetch): flipping it
+  // on reject/destroy bounds the fetch_thread_ join to milliseconds instead
+  // of the remaining pages' HTTP timeouts.
+  PJ::webrtc::HttpAbortPtr fetch_abort_;
+  std::atomic<bool> fetch_done_{false};
+  bool fetch_in_flight_ = false;
+  std::chrono::steady_clock::time_point last_fetch_{};
+
+  std::vector<std::string> selected_;      // path names (text-keyed)
+  std::vector<std::string> manual_paths_;  // user-added rows, persisted
   std::vector<IceRow> ice_servers_;
 };
 

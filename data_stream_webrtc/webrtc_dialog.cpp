@@ -3,26 +3,28 @@
 
 #include "webrtc_dialog.hpp"
 
+#include <algorithm>
 #include <cctype>
-#include <cstdlib>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
-#include <string>
 #include <utility>
-#include <vector>
 
 #include "datastream_webrtc_ui.hpp"
 #include "webrtc_manifest.hpp"
 
 namespace webrtc_dialog_detail {
 
-WebrtcDialog::~WebrtcDialog() {
-  disconnect();
-}
+namespace {
+constexpr std::chrono::seconds kAutoFetchPeriod{1};
+}  // namespace
 
-std::unique_ptr<PJ::webrtc::WebrtcSignaling> WebrtcDialog::takeSignaling() {
-  connected_ = false;
-  return std::move(signaling_);
+WebrtcDialog::~WebrtcDialog() {
+  if (fetch_abort_) {
+    fetch_abort_->abort();  // don't sit through the remaining pages' timeouts
+  }
+  if (fetch_thread_.joinable()) {
+    fetch_thread_.join();
+  }
 }
 
 std::string WebrtcDialog::manifest() const {
@@ -36,49 +38,45 @@ std::string WebrtcDialog::ui_content() const {
 std::string WebrtcDialog::widget_data() {
   PJ::WidgetData wd;
 
-  wd.setText("lineEditAddress", address_);
-  wd.setText("lineEditPort", std::to_string(port_));
-  wd.setText("lineEditOurId", our_id_);
-  wd.setEnabled("lineEditAddress", !connected_);
-  wd.setEnabled("lineEditPort", !connected_);
-  wd.setButtonText("buttonConnect", connected_ ? "Connected" : "Connect");
-  wd.setChecked("buttonConnect", connected_.load());
-
+  wd.setText("lineEditServerUrl", server_url_);
+  wd.setText("lineEditBearer", bearer_);
+  wd.setText("lineEditApiUrl", api_url_);
   wd.setText("lineEditTopicPrefix", topic_prefix_);
-  wd.setText("lineEditManualStream", manual_stream_);
+  wd.setText("lineEditManualPath", manual_path_);
 
-  wd.setTableHeaders("camerasList", {"Camera", "Codec", "Resolution"});
+  wd.setTableHeaders("camerasList", {"Path", "Tracks", "Ready"});
   std::vector<std::vector<std::string>> rows;
-  std::vector<int> selected_rows;
+  std::vector<std::string> selected_labels;
   {
     std::lock_guard<std::mutex> lock(catalog_mutex_);
-    rows.reserve(catalog_.size());
-    const auto base_counts = buildBaseNameCounts(catalog_);
-    for (const auto& s : catalog_) {
-      const std::string label = displayLabel(s, base_counts);
-      const std::string codec = s.codec.empty() ? "h264" : s.codec;
-      if (!passesFilter(label, codec)) {
+    wd.setText("labelApiStatus", api_status_);
+    rows.reserve(catalog_.size() + manual_paths_.size());
+    for (const auto& p : catalog_) {
+      if (!passesFilter(p.name)) {
         continue;
       }
-      const std::string res =
-          (s.width > 0 && s.height > 0) ? (std::to_string(s.width) + " x " + std::to_string(s.height)) : "-";
-      // Mark this just-pushed row as selected if its stream id is in selected_.
-      // camerasList is a QTableWidget: the host restores selection from
-      // selected_rows (view.selectedRows()/selectRow), not selected_items, so
-      // we must hand it row indices computed against THIS filtered row set.
-      for (const auto& sel : selected_) {
-        if (sel.id == s.id) {
-          selected_rows.push_back(static_cast<int>(rows.size()));
-          break;
-        }
+      if (isSelected(p.name)) {
+        selected_labels.push_back(p.name);
       }
-      rows.push_back({label, codec, res});
+      rows.push_back({p.name, joinTracks(p.tracks), p.ready ? "yes" : "no"});
+    }
+    for (const auto& m : manual_paths_) {
+      const bool in_catalog =
+          std::any_of(catalog_.begin(), catalog_.end(), [&m](const auto& p) { return p.name == m; });
+      if (in_catalog || !passesFilter(m)) {
+        continue;
+      }
+      if (isSelected(m)) {
+        selected_labels.push_back(m);
+      }
+      rows.push_back({m, "(manual)", "-"});
     }
   }
   wd.setTableRows("camerasList", rows);
-
-  if (!selected_rows.empty()) {
-    wd.setSelectedRows("camerasList", selected_rows);
+  if (!selected_labels.empty()) {
+    // Selection restored by first-column TEXT (setSelectedItems): stays
+    // correct however the sortable table is currently ordered.
+    wd.setSelectedItems("camerasList", selected_labels);
   }
 
   wd.setTableHeaders("tableIceServers", {"URL", "Username", "Credential"});
@@ -88,19 +86,32 @@ std::string WebrtcDialog::widget_data() {
   }
   wd.setTableRows("tableIceServers", ice_rows);
 
-  // OK: connected AND (>=1 camera selected OR a manual id typed OR the
-  // legacy empty-catalog single-offer path).
-  const bool has_target = !selected_.empty() || !manual_stream_.empty() || (connected_ && catalogEmpty());
-  wd.setOkEnabled(connected_ && has_target);
+  // Gate OK on the server URL too: an empty one would only fail at connect
+  // time, deep in the HTTP layer (onStart keeps a backstop check as well).
+  wd.setOkEnabled(!selected_.empty() && !server_url_.empty());
   return wd.toJson();
 }
 
 bool WebrtcDialog::onClicked(std::string_view widget_name) {
-  if (widget_name == "buttonConnect") {
-    if (!connected_) {
-      connect();
-    } else {
-      disconnect();
+  if (widget_name == "buttonRefresh") {
+    startFetch();
+    return true;
+  }
+  if (widget_name == "buttonAddPath") {
+    // Validate at input time: a pasted path with stray whitespace would only
+    // fail at connect time with an opaque network error.
+    const std::string path = trimmedPath(manual_path_);
+    if (!path.empty() && hasSpaceOrControl(path)) {
+      std::lock_guard<std::mutex> lock(catalog_mutex_);
+      api_status_ = "path not added: whitespace/control characters are not allowed";
+    } else if (!path.empty()) {
+      if (std::find(manual_paths_.begin(), manual_paths_.end(), path) == manual_paths_.end()) {
+        manual_paths_.push_back(path);
+      }
+      if (!isSelected(path)) {
+        selected_.push_back(path);
+      }
+      manual_path_.clear();
     }
     return true;
   }
@@ -108,28 +119,30 @@ bool WebrtcDialog::onClicked(std::string_view widget_name) {
 }
 
 bool WebrtcDialog::onTextChanged(std::string_view widget_name, std::string_view text) {
-  if (widget_name == "lineEditAddress") {
-    address_ = std::string(text);
-    return false;
-  }
-  if (widget_name == "lineEditPort") {
-    const int v = std::atoi(std::string(text).c_str());
-    if (v > 0 && v <= 65535) {
-      port_ = v;
+  if (widget_name == "lineEditServerUrl") {
+    server_url_ = std::string(text);
+    if (!api_url_edited_) {
+      api_url_ = deriveApiUrl(server_url_);
+      return true;
     }
     return false;
   }
-  if (widget_name == "lineEditOurId") {
-    our_id_ = std::string(text);
+  if (widget_name == "lineEditBearer") {
+    bearer_ = std::string(text);
+    return false;
+  }
+  if (widget_name == "lineEditApiUrl") {
+    api_url_ = std::string(text);
+    api_url_edited_ = true;
     return false;
   }
   if (widget_name == "lineEditTopicPrefix") {
     topic_prefix_ = std::string(text);
     return false;
   }
-  if (widget_name == "lineEditManualStream") {
-    manual_stream_ = std::string(text);
-    return true;
+  if (widget_name == "lineEditManualPath") {
+    manual_path_ = std::string(text);
+    return false;
   }
   if (widget_name == "lineEditFilter") {
     filter_ = std::string(text);
@@ -140,72 +153,85 @@ bool WebrtcDialog::onTextChanged(std::string_view widget_name, std::string_view 
 }
 
 bool WebrtcDialog::onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) {
-  if (widget_name == "camerasList") {
-    std::lock_guard<std::mutex> lock(catalog_mutex_);
-    const auto base_counts = buildBaseNameCounts(catalog_);
-    // The host reports the selection of the CURRENTLY rendered (filtered) table
-    // only, so a previously-picked camera that the active filter hides is
-    // absent here. Rebuilding from scratch would silently unselect it. Keep
-    // those still-selected-but-now-hidden entries (matched by id) and rebuild
-    // the visible portion from the reported labels.
-    std::vector<SelectedStream> preserved;
-    for (const auto& sel : selected_) {
-      bool visible = false;
-      for (const auto& s : catalog_) {
-        if (s.id == sel.id && passesFilter(displayLabel(s, base_counts), s.codec)) {
-          visible = true;
-          break;
-        }
-      }
-      if (!visible) {
-        preserved.push_back(sel);
-      }
-    }
-    selected_ = std::move(preserved);
-    // Resolve each reported label back to its id via the same unique label the
-    // rows were rendered with (1:1 even when names collide).
-    for (const auto& label : selected) {
-      for (const auto& s : catalog_) {
-        if (displayLabel(s, base_counts) == label) {
-          selected_.push_back({s.id, s.name});
-          break;
-        }
-      }
-    }
-    return true;
+  if (widget_name != "camerasList") {
+    return false;
   }
-  return false;
+  std::lock_guard<std::mutex> lock(catalog_mutex_);
+  // The host reports the selection of the currently RENDERED rows only. A
+  // selected path drops out of the selection ONLY when the user deselects a row
+  // that is currently rendered; a selection that is merely not rendered right
+  // now (filter-hidden, OR gone from the catalog on a transient fetch failure)
+  // must survive. So: preserve every selected path that is not a rendered row,
+  // then re-add the rendered ones the host still reports (subject to the
+  // H.264/manual selectable check).
+  std::vector<std::string> next;
+  for (const auto& sel : selected_) {
+    if (!isRenderedLocked(sel)) {
+      next.push_back(sel);  // not a visible row: the host can't report it, keep it
+    }
+  }
+  for (const auto& label : selected) {
+    if (std::find(next.begin(), next.end(), label) != next.end()) {
+      continue;
+    }
+    const bool manual = std::find(manual_paths_.begin(), manual_paths_.end(), label) != manual_paths_.end();
+    // A label the user ALREADY selected must survive a catalog wobble:
+    // mediamtx transiently reports a path with no tracks while it
+    // (re)connects, and the 1 Hz auto-refresh re-applies the selection — a
+    // hasH264 re-check here would silently drop it with no user action. The
+    // host never reports a non-selectable row as selected, so re-admitting
+    // previously-selected labels lets nothing else through.
+    bool selectable = manual || isSelected(label);
+    if (!selectable) {
+      for (const auto& p : catalog_) {
+        if (p.name == label) {
+          selectable = hasH264(p.tracks);
+          break;
+        }
+      }
+    }
+    if (selectable) {
+      next.push_back(label);
+    }
+  }
+  selected_ = std::move(next);
+  return true;
 }
 
 bool WebrtcDialog::onTick() {
-  if (catalog_dirty_.exchange(false)) {
-    return true;
+  bool dirty = false;
+  if (fetch_done_.load()) {
+    harvestFetch();
+    dirty = true;
   }
-  return false;
+  const auto now = std::chrono::steady_clock::now();
+  if (!fetch_in_flight_ && !api_url_.empty() && (now - last_fetch_) > kAutoFetchPeriod) {
+    startFetch();
+  }
+  return dirty;
 }
 
-void WebrtcDialog::onAccepted(std::string_view /*json*/) {
-  // Do NOT disconnect — the source's onStart() steals the signaling socket.
-}
+void WebrtcDialog::onAccepted(std::string_view /*json*/) {}
 
 void WebrtcDialog::onRejected() {
-  disconnect();
+  // Start cancelling a fetch in flight now; the destructor joins the thread.
+  if (fetch_abort_) {
+    fetch_abort_->abort();
+  }
 }
 
 std::string WebrtcDialog::saveConfig() const {
   nlohmann::json cfg;
-  cfg["address"] = address_;
-  cfg["port"] = port_;
-  cfg["our_id"] = our_id_;
+  cfg["server_url"] = server_url_;
+  cfg["bearer_token"] = bearer_;
+  cfg["api_url"] = api_url_;
+  // Persist the derive-vs-manual intent explicitly. saveConfig ALWAYS writes
+  // api_url, so keying "edited" off its presence would wrongly latch manual
+  // after any round-trip and stop server_url edits from re-deriving the host.
+  cfg["api_url_edited"] = api_url_edited_;
   cfg["topic_prefix"] = topic_prefix_;
-  cfg["manual_stream"] = manual_stream_;
-
-  nlohmann::json sel = nlohmann::json::array();
-  for (const auto& s : selected_) {
-    sel.push_back({{"id", s.id}, {"name", s.name}, {"mid", s.id}});
-  }
-  cfg["selected"] = sel;
-
+  cfg["selected"] = selected_;
+  cfg["manual_paths"] = manual_paths_;
   nlohmann::json ice = nlohmann::json::array();
   for (const auto& srv : ice_servers_) {
     ice.push_back({{"url", srv.url}, {"username", srv.username}, {"credential", srv.credential}});
@@ -219,20 +245,29 @@ bool WebrtcDialog::loadConfig(std::string_view config_json) {
   if (cfg.is_discarded()) {
     return false;
   }
-  address_ = cfg.value("address", std::string("127.0.0.1"));
-  port_ = cfg.value("port", 8443);
-  our_id_ = cfg.value("our_id", std::string("receiver"));
+  // Pre-WHEP configs (address/port/our_id/manual_stream) have no meaningful
+  // mapping and are ignored: unknown keys fall through to these defaults.
+  server_url_ = cfg.value("server_url", std::string("http://127.0.0.1:8889"));
+  bearer_ = cfg.value("bearer_token", std::string());
+  api_url_ = cfg.value("api_url", deriveApiUrl(server_url_));
+  // Restore the explicit intent, NOT api_url presence: a never-edited api_url
+  // reloads as still-auto-derived so editing server_url re-derives the host.
+  api_url_edited_ = cfg.value("api_url_edited", false);
   topic_prefix_ = cfg.value("topic_prefix", std::string("webrtc"));
-  manual_stream_ = cfg.value("manual_stream", std::string());
 
   selected_.clear();
   if (cfg.contains("selected") && cfg["selected"].is_array()) {
     for (const auto& e : cfg["selected"]) {
-      SelectedStream s;
-      s.id = e.value("id", std::string());
-      s.name = e.value("name", std::string());
-      if (!s.id.empty()) {
-        selected_.push_back(std::move(s));
+      if (e.is_string() && !e.get<std::string>().empty()) {
+        selected_.push_back(e.get<std::string>());
+      }
+    }
+  }
+  manual_paths_.clear();
+  if (cfg.contains("manual_paths") && cfg["manual_paths"].is_array()) {
+    for (const auto& e : cfg["manual_paths"]) {
+      if (e.is_string() && !e.get<std::string>().empty()) {
+        manual_paths_.push_back(e.get<std::string>());
       }
     }
   }
@@ -251,6 +286,24 @@ bool WebrtcDialog::loadConfig(std::string_view config_json) {
   return true;
 }
 
+std::string WebrtcDialog::trimmedPath(std::string s) {
+  const auto is_space = [](char c) { return std::isspace(static_cast<unsigned char>(c)) != 0; };
+  while (!s.empty() && is_space(s.back())) {
+    s.pop_back();
+  }
+  while (!s.empty() && is_space(s.front())) {
+    s.erase(s.begin());
+  }
+  return s;
+}
+
+bool WebrtcDialog::hasSpaceOrControl(const std::string& s) {
+  return std::any_of(s.begin(), s.end(), [](char c) {
+    const auto u = static_cast<unsigned char>(c);
+    return u <= 0x20 || u == 0x7F;
+  });
+}
+
 std::string WebrtcDialog::toLower(std::string s) {
   for (auto& c : s) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -258,94 +311,116 @@ std::string WebrtcDialog::toLower(std::string s) {
   return s;
 }
 
-std::string WebrtcDialog::baseLabel(const PJ::webrtc::DiscoveredStream& s) {
-  return s.name.empty() ? s.id : s.name;
-}
-
-std::unordered_map<std::string, int> WebrtcDialog::buildBaseNameCounts(
-    const std::vector<PJ::webrtc::DiscoveredStream>& catalog) {
-  std::unordered_map<std::string, int> counts;
-  counts.reserve(catalog.size());
-  for (const auto& s : catalog) {
-    ++counts[baseLabel(s)];
+bool WebrtcDialog::hasH264(const std::vector<std::string>& tracks) {
+  for (const auto& t : tracks) {
+    if (t.find("264") != std::string::npos) {
+      return true;
+    }
   }
-  return counts;
+  return false;
 }
 
-std::string WebrtcDialog::displayLabel(
-    const PJ::webrtc::DiscoveredStream& s, const std::unordered_map<std::string, int>& counts) {
-  const std::string base = baseLabel(s);
-  const auto it = counts.find(base);
-  const bool duplicate = it != counts.end() && it->second > 1;
-  return duplicate ? (base + " (" + s.id + ")") : base;
+std::string WebrtcDialog::joinTracks(const std::vector<std::string>& tracks) {
+  std::string out;
+  for (const auto& t : tracks) {
+    if (!out.empty()) {
+      out += ", ";
+    }
+    out += t;
+  }
+  return out.empty() ? "-" : out;
 }
 
-bool WebrtcDialog::passesFilter(const std::string& label, const std::string& codec_in) const {
+std::string WebrtcDialog::deriveApiUrl(const std::string& server_url) {
+  const size_t scheme_end = server_url.find("://");
+  if (scheme_end == std::string::npos) {
+    return "http://127.0.0.1:9997";
+  }
+  const size_t host_start = scheme_end + 3;
+  // Bracket-aware: for an IPv6 literal ("http://[::1]:8889") the host runs
+  // through the matching ']', and the port (if any) is a ':' AFTER that ']';
+  // splitting on the first ':' would slice the address itself.
+  size_t host_end;
+  if (host_start < server_url.size() && server_url[host_start] == '[') {
+    const size_t bracket_end = server_url.find(']', host_start);
+    if (bracket_end == std::string::npos) {
+      host_end = server_url.size();  // malformed; keep the whole authority
+    } else {
+      host_end = bracket_end + 1;  // include ']' in the host, drop any ":port" after
+    }
+  } else {
+    host_end = server_url.find(':', host_start);
+    if (host_end == std::string::npos) {
+      host_end = server_url.find('/', host_start);
+    }
+    if (host_end == std::string::npos) {
+      host_end = server_url.size();
+    }
+  }
+  return server_url.substr(0, scheme_end) + "://" + server_url.substr(host_start, host_end - host_start) + ":9997";
+}
+
+bool WebrtcDialog::passesFilter(const std::string& path) const {
   if (filter_lower_.empty()) {
     return true;
   }
-  const std::string codec = codec_in.empty() ? "h264" : codec_in;
-  return toLower(label).find(filter_lower_) != std::string::npos ||
-         toLower(codec).find(filter_lower_) != std::string::npos;
+  return toLower(path).find(filter_lower_) != std::string::npos;
 }
 
-bool WebrtcDialog::catalogEmpty() const {
-  std::lock_guard<std::mutex> lock(catalog_mutex_);
-  return catalog_.empty();
+bool WebrtcDialog::isSelected(const std::string& path) const {
+  return std::find(selected_.begin(), selected_.end(), path) != selected_.end();
 }
 
-void WebrtcDialog::reconcileSelectedWithCatalogLocked() {
-  for (auto& sel : selected_) {
-    for (const auto& s : catalog_) {
-      if (s.id == sel.id) {
-        sel.name = s.name;
-        break;
+bool WebrtcDialog::isRenderedLocked(const std::string& path) const {
+  // Mirror widget_data()'s row set exactly: a catalog entry passing the filter,
+  // or a manual path (not shadowed by the catalog) passing the filter.
+  const bool in_catalog =
+      std::any_of(catalog_.begin(), catalog_.end(), [&path](const auto& p) { return p.name == path; });
+  if (in_catalog) {
+    return passesFilter(path);
+  }
+  const bool is_manual = std::find(manual_paths_.begin(), manual_paths_.end(), path) != manual_paths_.end();
+  return is_manual && passesFilter(path);
+}
+
+void WebrtcDialog::startFetch() {
+  if (fetch_in_flight_) {
+    return;
+  }
+  if (fetch_thread_.joinable()) {
+    fetch_thread_.join();  // a finished-but-unharvested worker
+  }
+  fetch_in_flight_ = true;
+  fetch_done_.store(false);
+  last_fetch_ = std::chrono::steady_clock::now();
+  const std::string url = api_url_;
+  const std::string token = bearer_;
+  fetch_abort_ = std::make_shared<PJ::webrtc::HttpAbort>();  // latched: fresh per fetch
+  fetch_thread_ = std::thread([this, url, token, abort_handle = fetch_abort_]() {
+    auto out = PJ::webrtc::fetchPathsList(url, token, std::chrono::seconds(2), abort_handle);
+    {
+      std::lock_guard<std::mutex> lock(catalog_mutex_);
+      if (out) {
+        fetch_result_ = std::move(*out);
+        fetch_status_ = std::to_string(fetch_result_.size()) + " path(s) on the server";
+      } else {
+        fetch_result_.clear();
+        fetch_status_ = "Control API: " + out.error().message + " (manual paths still work)";
       }
     }
-  }
+    fetch_done_.store(true);
+  });
 }
 
-void WebrtcDialog::connect() {
-  signaling_ = std::make_unique<PJ::webrtc::WebrtcSignaling>();
-  signaling_->setCatalogCallback([this](std::vector<PJ::webrtc::DiscoveredStream> streams) {
-    {
-      std::lock_guard<std::mutex> lock(catalog_mutex_);
-      catalog_ = std::move(streams);
-      reconcileSelectedWithCatalogLocked();
-    }
-    catalog_dirty_.store(true);
-  });
-  signaling_->setConnectedCallback([this]() {
-    connected_ = true;
-    catalog_dirty_.store(true);
-    if (signaling_) {
-      // Ask for the catalog (the broker may also push it).
-      signaling_->requestList();
-    }
-  });
-  signaling_->setClosedCallback([this]() {
-    connected_ = false;
-    {
-      std::lock_guard<std::mutex> lock(catalog_mutex_);
-      catalog_.clear();
-    }
-    catalog_dirty_.store(true);
-  });
-
-  PJ::webrtc::SignalingConfig sig;
-  sig.url = "ws://" + address_ + ":" + std::to_string(port_);
-  sig.our_id = our_id_.empty() ? "receiver" : our_id_;
-  // Discovery: register and wait for the catalog.
-  sig.peer_id = "";
-  signaling_->open(sig);
-}
-
-void WebrtcDialog::disconnect() {
-  if (signaling_) {
-    signaling_->close();
-    signaling_.reset();
+void WebrtcDialog::harvestFetch() {
+  if (fetch_thread_.joinable()) {
+    fetch_thread_.join();
   }
-  connected_ = false;
+  fetch_in_flight_ = false;
+  fetch_done_.store(false);
+  std::lock_guard<std::mutex> lock(catalog_mutex_);
+  catalog_ = std::move(fetch_result_);
+  api_status_ = std::move(fetch_status_);
 }
 
 }  // namespace webrtc_dialog_detail

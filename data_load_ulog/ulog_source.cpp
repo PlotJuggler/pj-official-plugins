@@ -185,7 +185,11 @@ class ULogSource : public PJ::FileSourceBase {
       bytes_read += count;
 
       if (runtimeHost().isStopRequested()) {
-        return PJ::unexpected(std::string("import cancelled"));
+        // Stop reading but KEEP what's parsed: break out and fall through to the write
+        // path so the messages decoded so far are committed. The host's "Stop and Keep"
+        // then flushes them (Discard evicts the dataset host-side). Returning here would
+        // leave the dataset empty — the bug this fixes.
+        break;
       }
       (void)runtimeHost().progressUpdate(bytes_read);
     }
