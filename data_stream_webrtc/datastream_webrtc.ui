@@ -3,10 +3,10 @@
  <class>DataStreamWebRTC</class>
  <widget class="QDialog" name="DataStreamWebRTC">
   <property name="geometry">
-   <rect><x>0</x><y>0</y><width>620</width><height>560</height></rect>
+   <rect><x>0</x><y>0</y><width>620</width><height>600</height></rect>
   </property>
-  <property name="minimumSize"><size><width>620</width><height>560</height></size></property>
-  <property name="windowTitle"><string>WebRTC Video Client</string></property>
+  <property name="minimumSize"><size><width>620</width><height>600</height></size></property>
+  <property name="windowTitle"><string>WebRTC Video Client (WHEP)</string></property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <property name="spacing"><number>0</number></property>
    <property name="leftMargin"><number>0</number></property>
@@ -14,97 +14,112 @@
    <property name="rightMargin"><number>0</number></property>
    <property name="bottomMargin"><number>0</number></property>
    <item>
-    <widget class="SectionHeaderBand" name="connectionBanner">
-     <property name="text">
-      <string>Connection</string>
-     </property>
+    <widget class="SectionHeaderBand" name="serverBanner">
+     <property name="text"><string>WHEP Server</string></property>
     </widget>
    </item>
    <item>
-    <widget class="QWidget" name="addressWrap" native="true">
-     <layout class="QVBoxLayout" name="addressWrapLayout">
+    <widget class="QWidget" name="serverWrap" native="true">
+     <layout class="QVBoxLayout" name="serverWrapLayout">
       <property name="leftMargin"><number>9</number></property>
       <property name="topMargin"><number>6</number></property>
       <property name="rightMargin"><number>9</number></property>
       <property name="bottomMargin"><number>9</number></property>
-   <item>
-    <layout class="QGridLayout" name="gridLayoutServer" columnstretch="0,2,1,0">
-     <property name="spacing"><number>6</number></property>
-     <item row="0" column="0">
-      <widget class="QLabel" name="labelTransport"><property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property><property name="text"><string>Transport</string></property></widget>
-     </item>
-     <item row="0" column="1">
-      <widget class="QLabel" name="labelAddressHdr"><property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property><property name="text"><string>Address</string></property></widget>
-     </item>
-     <item row="0" column="2">
-      <widget class="QLabel" name="labelPortHdr"><property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property><property name="text"><string>Port</string></property></widget>
-     </item>
-     <item row="1" column="0">
-      <widget class="QComboBox" name="comboBoxTransport"><property name="enabled"><bool>false</bool></property><item><property name="text"><string>ws://</string></property></item></widget>
-     </item>
-     <item row="1" column="1">
-      <widget class="QLineEdit" name="lineEditAddress"><property name="placeholderText"><string>127.0.0.1</string></property></widget>
-     </item>
-     <item row="1" column="2">
-      <widget class="QLineEdit" name="lineEditPort"><property name="placeholderText"><string>8443</string></property></widget>
-     </item>
-     <item row="1" column="3">
-      <!-- min height 34 = text + the app QSS button padding (8px each side); keep
-           in step with the foxglove / pj_bridge Connect buttons. -->
-      <widget class="QPushButton" name="buttonConnect"><property name="minimumSize"><size><width>110</width><height>34</height></size></property><property name="text"><string>Connect</string></property><property name="checkable"><bool>true</bool></property></widget>
-     </item>
-    </layout>
-   </item>
-   <item>
-    <layout class="QFormLayout" name="formLayoutIds">
-     <item row="0" column="0"><widget class="QLabel" name="labelOurId"><property name="text"><string>Our peer id:</string></property></widget></item>
-     <item row="0" column="1"><widget class="QLineEdit" name="lineEditOurId"><property name="placeholderText"><string>receiver</string></property></widget></item>
-     <item row="1" column="0"><widget class="QLabel" name="labelTopicPrefix"><property name="text"><string>Topic prefix:</string></property></widget></item>
-     <item row="1" column="1">
-      <widget class="QLineEdit" name="lineEditTopicPrefix">
-       <property name="toolTip"><string>Each selected camera becomes the topic  &lt;prefix&gt;/&lt;camera name&gt;.</string></property>
-       <property name="placeholderText"><string>webrtc</string></property>
-      </widget>
-     </item>
-     <item row="2" column="0"><widget class="QLabel" name="labelManualStream"><property name="text"><string>Manual stream id:</string></property></widget></item>
-     <item row="2" column="1">
-      <widget class="QLineEdit" name="lineEditManualStream">
-       <property name="toolTip"><string>Fallback for peers that do not advertise a catalog. Type the stream id the peer offers (its a=mid), or leave empty to accept the peer's single offer as-is (legacy single-stream mode).</string></property>
-       <property name="placeholderText"><string>(optional) e.g. cam0  - used only when no camera is selected above</string></property>
-      </widget>
-     </item>
-    </layout>
-   </item>
+      <item>
+       <layout class="QFormLayout" name="formLayoutServer">
+        <item row="0" column="0"><widget class="QLabel" name="labelServerUrl"><property name="text"><string>Server URL:</string></property></widget></item>
+        <item row="0" column="1">
+         <widget class="QLineEdit" name="lineEditServerUrl">
+          <property name="toolTip"><string>Base URL of the WHEP server (e.g. mediamtx). Each selected path is read from &lt;url&gt;/&lt;path&gt;/whep.</string></property>
+          <property name="placeholderText"><string>http://127.0.0.1:8889</string></property>
+         </widget>
+        </item>
+        <item row="1" column="0"><widget class="QLabel" name="labelBearer"><property name="text"><string>Bearer token:</string></property></widget></item>
+        <item row="1" column="1">
+         <widget class="QLineEdit" name="lineEditBearer">
+          <property name="toolTip"><string>Optional. Sent as "Authorization: Bearer ..." on every WHEP and Control API request.</string></property>
+          <property name="echoMode"><enum>QLineEdit::Password</enum></property>
+          <property name="placeholderText"><string>(optional)</string></property>
+         </widget>
+        </item>
+        <item row="2" column="0"><widget class="QLabel" name="labelApiUrl"><property name="text"><string>Control API URL:</string></property></widget></item>
+        <item row="2" column="1">
+         <layout class="QHBoxLayout" name="horizontalLayoutApi">
+          <item>
+           <widget class="QLineEdit" name="lineEditApiUrl">
+            <property name="toolTip"><string>mediamtx Control API base URL, used only to list available paths (GET /v3/paths/list). Leave as derived default, or clear if the server has no API - manual paths still work.</string></property>
+            <property name="placeholderText"><string>http://127.0.0.1:9997</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="buttonRefresh">
+            <property name="minimumSize"><size><width>110</width><height>25</height></size></property>
+            <property name="text"><string>Refresh list</string></property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item row="3" column="0"><widget class="QLabel" name="labelTopicPrefix"><property name="text"><string>Topic prefix:</string></property></widget></item>
+        <item row="3" column="1">
+         <widget class="QLineEdit" name="lineEditTopicPrefix">
+          <property name="toolTip"><string>Each selected path becomes the topic &lt;prefix&gt;/&lt;path&gt;.</string></property>
+          <property name="placeholderText"><string>webrtc</string></property>
+         </widget>
+        </item>
+       </layout>
+      </item>
      </layout>
     </widget>
    </item>
    <item>
-    <widget class="SectionHeaderBand" name="camerasBanner">
-     <property name="text"><string>Cameras</string></property>
+    <widget class="SectionHeaderBand" name="streamsBanner">
+     <property name="text"><string>Streams</string></property>
      <property name="filterFieldName"><string>lineEditFilter</string></property>
      <property name="filterPlaceholder"><string>Filter</string></property>
     </widget>
    </item>
    <item>
-    <widget class="QWidget" name="camerasListWrap" native="true">
-     <layout class="QVBoxLayout" name="camerasListWrapLayout">
+    <widget class="QWidget" name="streamsWrap" native="true">
+     <layout class="QVBoxLayout" name="streamsWrapLayout">
       <property name="leftMargin"><number>9</number></property>
       <property name="topMargin"><number>6</number></property>
       <property name="rightMargin"><number>9</number></property>
       <property name="bottomMargin"><number>9</number></property>
-   <item>
-    <widget class="QTableWidget" name="camerasList">
-     <property name="toolTip"><string>Cameras advertised by the peer. Select the ones you want; each becomes its own PJ.VideoFrame topic.</string></property>
-     <property name="selectionMode"><enum>QAbstractItemView::MultiSelection</enum></property>
-     <property name="selectionBehavior"><enum>QAbstractItemView::SelectRows</enum></property>
-     <property name="sortingEnabled"><bool>true</bool></property>
-     <property name="columnCount"><number>3</number></property>
-     <attribute name="verticalHeaderVisible"><bool>false</bool></attribute>
-     <column><property name="text"><string>Camera</string></property></column>
-     <column><property name="text"><string>Codec</string></property></column>
-     <column><property name="text"><string>Resolution</string></property></column>
-    </widget>
-   </item>
+      <item>
+       <widget class="QLabel" name="labelApiStatus">
+        <property name="text"><string> </string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QTableWidget" name="camerasList">
+        <property name="toolTip"><string>Paths on the server (from the Control API) plus manually added ones. Select the streams you want; each becomes its own PJ.VideoFrame topic. Only H.264 streams are selectable.</string></property>
+        <property name="selectionMode"><enum>QAbstractItemView::MultiSelection</enum></property>
+        <property name="selectionBehavior"><enum>QAbstractItemView::SelectRows</enum></property>
+        <property name="sortingEnabled"><bool>true</bool></property>
+        <property name="columnCount"><number>3</number></property>
+        <attribute name="verticalHeaderVisible"><bool>false</bool></attribute>
+        <column><property name="text"><string>Path</string></property></column>
+        <column><property name="text"><string>Tracks</string></property></column>
+        <column><property name="text"><string>Ready</string></property></column>
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="horizontalLayoutManual">
+        <item><widget class="QLabel" name="labelManualPath"><property name="text"><string>Manual path:</string></property></widget></item>
+        <item>
+         <widget class="QLineEdit" name="lineEditManualPath">
+          <property name="toolTip"><string>Add a path the Control API did not list (API disabled, or a non-mediamtx WHEP server).</string></property>
+          <property name="placeholderText"><string>e.g. cam0</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="buttonAddPath">
+          <property name="minimumSize"><size><width>80</width><height>25</height></size></property>
+          <property name="text"><string>Add</string></property>
+         </widget>
+        </item>
+       </layout>
+      </item>
      </layout>
     </widget>
    </item>
@@ -120,22 +135,22 @@
       <property name="topMargin"><number>6</number></property>
       <property name="rightMargin"><number>9</number></property>
       <property name="bottomMargin"><number>9</number></property>
-   <item>
-    <widget class="QTableWidget" name="tableIceServers">
-     <property name="toolTip"><string>STUN: fill URL only (e.g. stun:stun.l.google.com:19302). TURN: also fill Username and Credential (e.g. turn:turn.example.org:3478).</string></property>
-     <property name="maximumSize"><size><width>16777215</width><height>120</height></size></property>
-     <property name="columnCount"><number>3</number></property>
-     <column><property name="text"><string>URL</string></property></column>
-     <column><property name="text"><string>Username</string></property></column>
-     <column><property name="text"><string>Credential</string></property></column>
-    </widget>
-   </item>
-   <item>
-    <widget class="QDialogButtonBox" name="buttonBox">
-     <property name="orientation"><enum>Qt::Horizontal</enum></property>
-     <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
-    </widget>
-   </item>
+      <item>
+       <widget class="QTableWidget" name="tableIceServers">
+        <property name="toolTip"><string>STUN: fill URL only (e.g. stun:stun.l.google.com:19302). TURN: also fill Username and Credential (e.g. turn:turn.example.org:3478).</string></property>
+        <property name="maximumSize"><size><width>16777215</width><height>120</height></size></property>
+        <property name="columnCount"><number>3</number></property>
+        <column><property name="text"><string>URL</string></property></column>
+        <column><property name="text"><string>Username</string></property></column>
+        <column><property name="text"><string>Credential</string></property></column>
+       </widget>
+      </item>
+      <item>
+       <widget class="QDialogButtonBox" name="buttonBox">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>
