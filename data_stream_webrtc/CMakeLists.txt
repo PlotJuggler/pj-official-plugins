@@ -29,6 +29,7 @@ target_link_libraries(webrtc_source_plugin PRIVATE
   nlohmann_json::nlohmann_json
   LibDataChannel::LibDataChannel
   ixwebsocket::ixwebsocket
+  pj_streaming_utils
 )
 
 pj_embed_ui(webrtc_source_plugin
@@ -99,6 +100,26 @@ target_link_libraries(whep_connection_test PRIVATE
   GTest::gtest_main
 )
 add_test(NAME whep_connection_test COMMAND whep_connection_test)
+
+add_executable(webrtc_dialog_test
+  tests/webrtc_dialog_test.cpp
+  webrtc_dialog.cpp
+  whep_client.cpp
+)
+target_compile_features(webrtc_dialog_test PRIVATE cxx_std_20)
+target_compile_options(webrtc_dialog_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(webrtc_dialog_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
+target_link_libraries(webrtc_dialog_test PRIVATE
+  plotjuggler_sdk::plugin_sdk
+  nlohmann_json::nlohmann_json
+  ixwebsocket::ixwebsocket
+  pj_streaming_utils
+  GTest::gtest_main
+)
+add_test(NAME webrtc_dialog_test COMMAND webrtc_dialog_test)
 
 # ---------------------------------------------------------------------------
 # Headless receiver probe (demo/dev tool): a standalone WHEP client without

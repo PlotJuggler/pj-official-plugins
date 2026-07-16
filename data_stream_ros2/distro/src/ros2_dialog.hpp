@@ -19,6 +19,7 @@
 #include <pj_array_policy/array_policy.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <pj_streaming/dialog_utils.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
 #include <string_view>
@@ -284,20 +285,14 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   // displays them. Locks the topics mutex briefly; callers must not already
   // hold it.
   std::vector<std::pair<std::string, std::string>> visibleTopics() {
-    std::string needle = filter_;
-    std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char c) {
-      return static_cast<char>(std::tolower(c));
-    });
+    const std::string needle = pj::streaming::lowerAscii(filter_);
 
     std::vector<std::pair<std::string, std::string>> out;
     std::lock_guard<std::mutex> lock(topics_mutex_);
     out.reserve(discovered_topics_.size());
     for (const auto& [name, type] : discovered_topics_) {
       if (!needle.empty()) {
-        std::string haystack = name;
-        std::transform(haystack.begin(), haystack.end(), haystack.begin(), [](unsigned char c) {
-          return static_cast<char>(std::tolower(c));
-        });
+        const std::string haystack = pj::streaming::lowerAscii(name);
         if (haystack.find(needle) == std::string::npos) {
           continue;
         }

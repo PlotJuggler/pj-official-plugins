@@ -4,12 +4,13 @@
 #include <cstdint>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_array_policy/array_policy.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
-#include <queue>
+#include <pj_streaming/drain_queue.hpp>
+#include <pj_streaming/endpoint.hpp>
+#include <pj_streaming/websocket_utils.hpp>
 #include <set>
 #include <string>
 #include <string_view>
@@ -117,26 +118,13 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     if (!socket_ || socket_->getReadyState() != ix::ReadyState::Open) {
       // Fallback: connect fresh (e.g. when started without dialog via saved config)
       socket_ = std::make_unique<ix::WebSocket>();
-      socket_->setUrl("ws://" + address_ + ":" + std::to_string(port_));
+      socket_->setUrl(pj::streaming::composeEndpoint("ws", address_, static_cast<uint16_t>(port_)));
       socket_->disableAutomaticReconnection();
-      socket_->start();
-
-      auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-      while (std::chrono::steady_clock::now() < deadline) {
-        auto state = socket_->getReadyState();
-        if (state == ix::ReadyState::Open) {
-          break;
-        }
-        if (state == ix::ReadyState::Closed) {
-          break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      }
-
-      if (socket_->getReadyState() != ix::ReadyState::Open) {
+      if (!pj::streaming::startAndWaitForOpen(*socket_, std::chrono::seconds(5))) {
         socket_->stop();
         return PJ::unexpected(
-            std::string("failed to connect to PJ bridge at ") + address_ + ":" + std::to_string(port_));
+            "failed to connect to PJ bridge at " +
+            pj::streaming::composeHostPort(address_, static_cast<uint16_t>(port_)));
       }
     } else {
       // Stolen socket: seed the advertise catalog from the topics the dialog
@@ -256,11 +244,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     }
 
     // Process queued binary frames
-    std::queue<QueuedFrame> batch;
-    {
-      std::lock_guard<std::mutex> lock(queue_mutex_);
-      std::swap(batch, frame_queue_);
-    }
+    auto batch = frame_queue_.drain();
 
     while (!batch.empty()) {
       auto& frame = batch.front();
@@ -699,7 +683,6 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     frame.data.assign(
         reinterpret_cast<const uint8_t*>(message.data()),
         reinterpret_cast<const uint8_t*>(message.data()) + message.size());
-    std::lock_guard<std::mutex> lock(queue_mutex_);
     frame_queue_.push(std::move(frame));
   }
 
@@ -710,11 +693,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   static bool setActiveTopicsThunk(
       void* ctx, const PJ_string_view_t* names, uint64_t count, PJ_error_t* /*out_error*/) noexcept {
     auto* self = static_cast<PjBridgeSource*>(ctx);
-    std::set<std::string> topics;
-    for (uint64_t i = 0; i < count; ++i) {
-      topics.emplace(names[i].data, names[i].size);
-    }
-    self->desired_topics_slot_.set(std::move(topics));
+    self->desired_topics_slot_.set(pj::streaming::stringSetFromViews(names, count));
     return true;
   }
 
@@ -733,8 +712,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   std::unique_ptr<ix::WebSocket> socket_;
   std::map<std::string, PJ::ParserBindingHandle> bindings_;  // poll-thread-only
 
-  std::mutex queue_mutex_;
-  std::queue<QueuedFrame> frame_queue_;
+  pj::streaming::DrainQueue<QueuedFrame> frame_queue_;
   std::vector<uint8_t> decompress_buffer_;
   int heartbeat_tick_ = 0;
   bool paused_ = false;
