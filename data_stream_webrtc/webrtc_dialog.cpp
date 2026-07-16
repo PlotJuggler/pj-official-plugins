@@ -38,9 +38,14 @@ std::string WebrtcDialog::ui_content() const {
 std::string WebrtcDialog::widget_data() {
   PJ::WidgetData wd;
 
-  wd.setText("lineEditServerUrl", server_url_);
+  const UrlParts parts = parseHttpUrl(server_url_);
+  wd.setText("lineEditAddress", parts.host);
+  wd.setText("lineEditPort", parts.port);
+  wd.setText("lineEditPath", parts.path);
   wd.setText("lineEditBearer", bearer_);
-  wd.setText("lineEditApiUrl", api_url_);
+  const UrlParts api_parts = parseHttpUrl(api_url_);
+  wd.setText("lineEditApiAddress", api_parts.host);
+  wd.setText("lineEditApiPort", api_parts.port);
   wd.setText("lineEditTopicPrefix", topic_prefix_);
   wd.setText("lineEditManualPath", manual_path_);
 
@@ -119,11 +124,21 @@ bool WebrtcDialog::onClicked(std::string_view widget_name) {
 }
 
 bool WebrtcDialog::onTextChanged(std::string_view widget_name, std::string_view text) {
-  if (widget_name == "lineEditServerUrl") {
-    server_url_ = std::string(text);
+  if (widget_name == "lineEditAddress" || widget_name == "lineEditPort" || widget_name == "lineEditPath") {
+    // The URL fields are split across Transport/Address/Port + Base path. Rebuild
+    // the canonical server_url_ from the current parts, swapping in the edited one.
+    UrlParts parts = parseHttpUrl(server_url_);
+    if (widget_name == "lineEditAddress") {
+      parts.host = std::string(text);
+    } else if (widget_name == "lineEditPort") {
+      parts.port = std::string(text);
+    } else {
+      parts.path = std::string(text);
+    }
+    server_url_ = composeHttpUrl(parts.host, parts.port, parts.path);
     if (!api_url_edited_) {
       api_url_ = deriveApiUrl(server_url_);
-      return true;
+      return true;  // the derived Control API URL field changed too
     }
     return false;
   }
@@ -131,8 +146,16 @@ bool WebrtcDialog::onTextChanged(std::string_view widget_name, std::string_view 
     bearer_ = std::string(text);
     return false;
   }
-  if (widget_name == "lineEditApiUrl") {
-    api_url_ = std::string(text);
+  if (widget_name == "lineEditApiAddress" || widget_name == "lineEditApiPort") {
+    UrlParts parts = parseHttpUrl(api_url_);
+    if (widget_name == "lineEditApiAddress") {
+      parts.host = std::string(text);
+    } else {
+      parts.port = std::string(text);
+    }
+    // An empty host disables Control API discovery (manual paths still work);
+    // otherwise rebuild the canonical api_url_ from the parts.
+    api_url_ = parts.host.empty() ? std::string() : composeHttpUrl(parts.host, parts.port, parts.path);
     api_url_edited_ = true;
     return false;
   }
@@ -358,6 +381,52 @@ std::string WebrtcDialog::deriveApiUrl(const std::string& server_url) {
     }
   }
   return server_url.substr(0, scheme_end) + "://" + server_url.substr(host_start, host_end - host_start) + ":9997";
+}
+
+WebrtcDialog::UrlParts WebrtcDialog::parseHttpUrl(const std::string& url) {
+  UrlParts parts;
+  const size_t scheme_end = url.find("://");
+  const size_t host_start = (scheme_end == std::string::npos) ? 0 : scheme_end + 3;
+  // Host: an IPv6 literal ("http://[::1]:8889") runs through its ']'; otherwise it
+  // ends at the first ':' (port) or '/' (path). Mirrors deriveApiUrl's bracket rule.
+  size_t host_end;
+  if (host_start < url.size() && url[host_start] == '[') {
+    const size_t bracket_end = url.find(']', host_start);
+    host_end = (bracket_end == std::string::npos) ? url.size() : bracket_end + 1;
+  } else {
+    host_end = host_start;
+    while (host_end < url.size() && url[host_end] != ':' && url[host_end] != '/') {
+      ++host_end;
+    }
+  }
+  parts.host = url.substr(host_start, host_end - host_start);
+  size_t cursor = host_end;
+  if (cursor < url.size() && url[cursor] == ':') {
+    size_t port_end = url.find('/', cursor + 1);
+    if (port_end == std::string::npos) {
+      port_end = url.size();
+    }
+    parts.port = url.substr(cursor + 1, port_end - (cursor + 1));
+    cursor = port_end;
+  }
+  if (cursor < url.size() && url[cursor] == '/') {
+    parts.path = url.substr(cursor);
+  }
+  return parts;
+}
+
+std::string WebrtcDialog::composeHttpUrl(const std::string& host, const std::string& port, const std::string& path) {
+  std::string url = "http://" + host;  // transport fixed http:// (HTTPS not wired in the build)
+  if (!port.empty()) {
+    url += ":" + port;
+  }
+  if (!path.empty()) {
+    if (path.front() != '/') {
+      url += '/';
+    }
+    url += path;
+  }
+  return url;
 }
 
 bool WebrtcDialog::passesFilter(const std::string& path) const {
