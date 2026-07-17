@@ -213,19 +213,39 @@
                <property name="rightMargin"><number>0</number></property>
                <property name="bottomMargin"><number>0</number></property>
                <item>
-                <widget class="QPlainTextEdit" name="globalVarsText">
-                 <property name="toolTip">
-                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Portion of code outside the function.&lt;/p&gt;&lt;p&gt;Useful to add global variables.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
-                 </property>
-                 <property name="styleSheet">
-                  <string notr="true">QPlainTextEdit { border: 1px solid #888; }</string>
-                 </property>
-                 <property name="placeholderText"><string>Add your global variables here</string></property>
-                 <property name="font"><font><family>Monospace</family><pointsize>11</pointsize></font></property>
+                <!-- Zero-margin pane around the code editor: the host tags a code
+                     editor's PARENT widget as the white "code surface"
+                     (_pj_code_editor_pane), so the pane must hug the editor -
+                     otherwise the function row below would be swallowed into the
+                     white surface instead of staying on the dialog background. -->
+                <widget class="QWidget" name="globalVarsPane" native="true">
+                 <layout class="QVBoxLayout" name="globalVarsPaneLayout">
+                  <property name="spacing"><number>0</number></property>
+                  <property name="leftMargin"><number>0</number></property>
+                  <property name="topMargin"><number>0</number></property>
+                  <property name="rightMargin"><number>0</number></property>
+                  <property name="bottomMargin"><number>0</number></property>
+                  <item>
+                   <widget class="QPlainTextEdit" name="globalVarsText">
+                    <property name="toolTip">
+                     <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Portion of code outside the function.&lt;/p&gt;&lt;p&gt;Useful to add global variables.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                    </property>
+                    <property name="styleSheet">
+                     <string notr="true">QPlainTextEdit { border: 1px solid #888; }</string>
+                    </property>
+                    <property name="placeholderText"><string>Add your global variables here</string></property>
+                    <property name="font"><font><family>Monospace</family><pointsize>11</pointsize></font></property>
+                   </widget>
+                  </item>
+                 </layout>
                 </widget>
                </item>
                <item>
                 <layout class="QHBoxLayout" name="functionLabelRow">
+                 <!-- spacing 0: the flat icon buttons pack edge-to-edge like the
+                      host's SectionHeaderBand affordances; explicit spacers below
+                      provide the only real gaps in this row. -->
+                 <property name="spacing"><number>0</number></property>
                  <item>
                   <widget class="QLabel" name="labelFunction">
                    <property name="font"><font><weight>75</weight><bold>true</bold></font></property>
@@ -238,16 +258,30 @@
                    <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
                   </spacer>
                  </item>
+                 <!-- Exclusive pair in an explicit two-button group: the host adapts
+                      it into a segmented DualOptionsWidget (matching the other
+                      toolbox dialogs). -->
                  <item>
                   <widget class="QRadioButton" name="luaButton">
                    <property name="text"><string>Lua</string></property>
                    <property name="checked"><bool>true</bool></property>
+                   <attribute name="buttonGroup"><string>languageGroup</string></attribute>
                   </widget>
                  </item>
                  <item>
                   <widget class="QRadioButton" name="pythonButton">
                    <property name="text"><string>Python</string></property>
+                   <attribute name="buttonGroup"><string>languageGroup</string></attribute>
                   </widget>
+                 </item>
+                 <item>
+                  <spacer name="functionButtonsSpacer">
+                   <property name="orientation"><enum>Qt::Horizontal</enum></property>
+                   <property name="sizeType"><enum>QSizePolicy::Fixed</enum></property>
+                   <!-- 8px = the theme's "comfortable" inset, separating the language
+                        selector from the icon-button cluster. -->
+                   <property name="sizeHint" stdset="0"><size><width>8</width><height>8</height></size></property>
+                  </spacer>
                  </item>
                  <item>
                   <widget class="QPushButton" name="buttonLoadFunctions">
@@ -312,15 +346,27 @@
                 </layout>
                </item>
                <item>
-                <widget class="QPlainTextEdit" name="functionText">
-                 <property name="toolTip">
-                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Write your function implementation here. &lt;/p&gt;&lt;p&gt;It &lt;span style=&quot; font-weight:600;&quot;&gt;must&lt;/span&gt; return a new value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
-                 </property>
-                 <property name="styleSheet">
-                  <string notr="true">QPlainTextEdit { border: 1px solid #888; }</string>
-                 </property>
-                 <property name="placeholderText"><string>Write your function here</string></property>
-                 <property name="font"><font><family>Monospace</family><pointsize>11</pointsize></font></property>
+                <!-- Same zero-margin code-surface pane as globalVarsPane above. -->
+                <widget class="QWidget" name="functionPane" native="true">
+                 <layout class="QVBoxLayout" name="functionPaneLayout">
+                  <property name="spacing"><number>0</number></property>
+                  <property name="leftMargin"><number>0</number></property>
+                  <property name="topMargin"><number>0</number></property>
+                  <property name="rightMargin"><number>0</number></property>
+                  <property name="bottomMargin"><number>0</number></property>
+                  <item>
+                   <widget class="QPlainTextEdit" name="functionText">
+                    <property name="toolTip">
+                     <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Write your function implementation here. &lt;/p&gt;&lt;p&gt;It &lt;span style=&quot; font-weight:600;&quot;&gt;must&lt;/span&gt; return a new value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                    </property>
+                    <property name="styleSheet">
+                     <string notr="true">QPlainTextEdit { border: 1px solid #888; }</string>
+                    </property>
+                    <property name="placeholderText"><string>Write your function here</string></property>
+                    <property name="font"><font><family>Monospace</family><pointsize>11</pointsize></font></property>
+                   </widget>
+                  </item>
+                 </layout>
                 </widget>
                </item>
               </layout>
@@ -455,12 +501,14 @@
               <item>
                <widget class="QRadioButton" name="radioButtonPrefix">
                 <property name="text"><string>Prefix</string></property>
+                <attribute name="buttonGroup"><string>affixGroup</string></attribute>
                </widget>
               </item>
               <item>
                <widget class="QRadioButton" name="radioButtonSuffix">
                 <property name="text"><string>Suffix</string></property>
                 <property name="checked"><bool>true</bool></property>
+                <attribute name="buttonGroup"><string>affixGroup</string></attribute>
                </widget>
               </item>
               <item>
@@ -502,15 +550,27 @@
                <property name="rightMargin"><number>0</number></property>
                <property name="bottomMargin"><number>0</number></property>
                <item>
-                <widget class="QPlainTextEdit" name="globalVarsTextBatch">
-                 <property name="toolTip">
-                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Portion of code outside the function.&lt;/p&gt;&lt;p&gt;Useful to add global variables.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
-                 </property>
-                 <property name="styleSheet">
-                  <string notr="true">QPlainTextEdit { border: 1px solid #888; }</string>
-                 </property>
-                 <property name="placeholderText"><string>Add your global variables here</string></property>
-                 <property name="font"><font><family>Monospace</family><pointsize>11</pointsize></font></property>
+                <!-- Zero-margin code-surface pane (see globalVarsPane in tab 1). -->
+                <widget class="QWidget" name="globalVarsPaneBatch" native="true">
+                 <layout class="QVBoxLayout" name="globalVarsPaneBatchLayout">
+                  <property name="spacing"><number>0</number></property>
+                  <property name="leftMargin"><number>0</number></property>
+                  <property name="topMargin"><number>0</number></property>
+                  <property name="rightMargin"><number>0</number></property>
+                  <property name="bottomMargin"><number>0</number></property>
+                  <item>
+                   <widget class="QPlainTextEdit" name="globalVarsTextBatch">
+                    <property name="toolTip">
+                     <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Portion of code outside the function.&lt;/p&gt;&lt;p&gt;Useful to add global variables.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                    </property>
+                    <property name="styleSheet">
+                     <string notr="true">QPlainTextEdit { border: 1px solid #888; }</string>
+                    </property>
+                    <property name="placeholderText"><string>Add your global variables here</string></property>
+                    <property name="font"><font><family>Monospace</family><pointsize>11</pointsize></font></property>
+                   </widget>
+                  </item>
+                 </layout>
                 </widget>
                </item>
                <item>
@@ -527,29 +587,45 @@
                    <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
                   </spacer>
                  </item>
+                 <!-- Exclusive pair in an explicit two-button group: the host adapts
+                      it into a segmented DualOptionsWidget (see functionLabelRow). -->
                  <item>
                   <widget class="QRadioButton" name="luaBatchButton">
                    <property name="text"><string>Lua</string></property>
                    <property name="checked"><bool>true</bool></property>
+                   <attribute name="buttonGroup"><string>languageBatchGroup</string></attribute>
                   </widget>
                  </item>
                  <item>
                   <widget class="QRadioButton" name="pythonBatchButton">
                    <property name="text"><string>Python</string></property>
+                   <attribute name="buttonGroup"><string>languageBatchGroup</string></attribute>
                   </widget>
                  </item>
                 </layout>
                </item>
                <item>
-                <widget class="QPlainTextEdit" name="functionTextBatch">
-                 <property name="toolTip">
-                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Write your function implementation here. &lt;/p&gt;&lt;p&gt;It &lt;span style=&quot; font-weight:600;&quot;&gt;must&lt;/span&gt; return a new value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
-                 </property>
-                 <property name="styleSheet">
-                  <string notr="true">QPlainTextEdit { border: 1px solid #888; }</string>
-                 </property>
-                 <property name="placeholderText"><string>Write your function here</string></property>
-                 <property name="font"><font><family>Monospace</family><pointsize>11</pointsize></font></property>
+                <!-- Zero-margin code-surface pane (see functionPane in tab 1). -->
+                <widget class="QWidget" name="functionPaneBatch" native="true">
+                 <layout class="QVBoxLayout" name="functionPaneBatchLayout">
+                  <property name="spacing"><number>0</number></property>
+                  <property name="leftMargin"><number>0</number></property>
+                  <property name="topMargin"><number>0</number></property>
+                  <property name="rightMargin"><number>0</number></property>
+                  <property name="bottomMargin"><number>0</number></property>
+                  <item>
+                   <widget class="QPlainTextEdit" name="functionTextBatch">
+                    <property name="toolTip">
+                     <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Write your function implementation here. &lt;/p&gt;&lt;p&gt;It &lt;span style=&quot; font-weight:600;&quot;&gt;must&lt;/span&gt; return a new value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                    </property>
+                    <property name="styleSheet">
+                     <string notr="true">QPlainTextEdit { border: 1px solid #888; }</string>
+                    </property>
+                    <property name="placeholderText"><string>Write your function here</string></property>
+                    <property name="font"><font><family>Monospace</family><pointsize>11</pointsize></font></property>
+                   </widget>
+                  </item>
+                 </layout>
                 </widget>
                </item>
               </layout>
@@ -589,4 +665,9 @@
 
   </layout>
  </widget>
+ <buttongroups>
+  <buttongroup name="languageGroup"/>
+  <buttongroup name="languageBatchGroup"/>
+  <buttongroup name="affixGroup"/>
+ </buttongroups>
 </ui>
