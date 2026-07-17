@@ -4,8 +4,9 @@
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_plugins/sdk/encoding_utils.hpp>
+#include <pj_streaming/delegated_ingest.hpp>
+#include <pj_streaming/endpoint.hpp>
 #include <string>
-#include <unordered_map>
 #include <vector>
 #include <zmq.hpp>
 
@@ -41,12 +42,7 @@ class ZmqSource : public PJ::StreamSourceBase {
     // (e.g. the protobuf descriptor + message type). Streaming sources must
     // forward it to ensureParserBinding, otherwise schema-based parsers bind
     // with no schema and drop every message.
-    auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-    if (!cfg.is_discarded() && cfg.contains("_parser_config")) {
-      parser_config_override_ = cfg["_parser_config"].get<std::string>();
-    } else {
-      parser_config_override_.clear();
-    }
+    parser_config_override_ = pj::streaming::parserConfigOverride(config_json);
 
     return PJ::okStatus();
   }
@@ -67,7 +63,9 @@ class ZmqSource : public PJ::StreamSourceBase {
     context_ = std::make_unique<zmq::context_t>();
     socket_ = std::make_unique<zmq::socket_t>(*context_, zmq::socket_type::sub);
 
-    endpoint_ = transport_ + address_ + ":" + std::to_string(port_);
+    endpoint_ = transport_ == "ipc://"
+                    ? transport_ + address_
+                    : pj::streaming::composeEndpoint(transport_, address_, static_cast<uint16_t>(port_));
 
     try {
       if (connect_mode_) {
@@ -153,32 +151,18 @@ class ZmqSource : public PJ::StreamSourceBase {
       // Delegated ingest: push raw payload to parser
       std::string topic_name = topic.empty() ? "zmq/data" : topic;
 
-      auto it = binding_cache_.find(topic_name);
-      if (it == binding_cache_.end()) {
-        auto binding = runtimeHost().ensureParserBinding({
-            .topic_name = topic_name,
-            .parser_encoding = default_encoding_,
-            .type_name = {},
-            .schema = {},
-            .parser_config_json = parser_config_override_,
-        });
-        if (binding) {
-          it = binding_cache_.emplace(topic_name, *binding).first;
-        }
-      }
-
-      if (it != binding_cache_.end()) {
-        // Copy the payload into a shared_ptr-owned buffer so the PayloadView
-        // fetcher remains valid after onPoll returns (ObjectIngestPolicy may
-        // defer dispatch beyond this call).
-        auto payload = std::make_shared<std::vector<uint8_t>>(payload_data, payload_data + payload_size);
-        auto status = runtimeHost().pushMessage(
-            it->second, PJ::Timestamp{timestamp_ns},
-            [payload]() -> PJ::sdk::PayloadView { return PJ::sdk::PayloadView{payload}; });
-        if (!status) {
-          runtimeHost().reportMessage(
-              PJ::DataSourceMessageLevel::kWarning, "Failed to push message: " + status.error());
-        }
+      auto status = ingest_.push(
+          runtimeHost(), topic_name,
+          {
+              .topic_name = topic_name,
+              .parser_encoding = default_encoding_,
+              .type_name = {},
+              .schema = {},
+              .parser_config_json = parser_config_override_,
+          },
+          PJ::Timestamp{timestamp_ns}, std::vector<uint8_t>(payload_data, payload_data + payload_size));
+      if (!status) {
+        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, "Failed to push message: " + status.error());
       }
     }
 
@@ -197,7 +181,7 @@ class ZmqSource : public PJ::StreamSourceBase {
       socket_.reset();
     }
     context_.reset();
-    binding_cache_.clear();
+    ingest_.clear();
   }
 
  private:
@@ -214,7 +198,7 @@ class ZmqSource : public PJ::StreamSourceBase {
 
   std::unique_ptr<zmq::context_t> context_;
   std::unique_ptr<zmq::socket_t> socket_;
-  std::unordered_map<std::string, PJ::ParserBindingHandle> binding_cache_;
+  pj::streaming::DelegatedIngestCache ingest_;
 };
 
 }  // namespace

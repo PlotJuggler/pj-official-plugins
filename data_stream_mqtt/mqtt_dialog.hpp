@@ -2,18 +2,19 @@
 
 #include <mqtt/async_client.h>
 
-#include <algorithm>
-#include <cctype>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <pj_streaming/dialog_utils.hpp>
+#include <pj_streaming/endpoint.hpp>
 #include <set>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "datastream_mqtt_ui.hpp"
+#include "mqtt_connection.hpp"
 #include "mqtt_manifest.hpp"
 
 namespace {
@@ -91,15 +92,8 @@ class MqttDialog : public PJ::DialogPluginTyped {
     }
 
     // Protocol combo — dynamically populated from available parsers
-    bool has_encodings = !available_encodings_.empty();
-    if (has_encodings) {
-      wd.setItems("comboBoxProtocol", available_encodings_);
-      wd.setCurrentIndex("comboBoxProtocol", encodingToIndex(encoding_));
-    } else {
-      wd.setItems("comboBoxProtocol", {"(no parsers available)"});
-      wd.setCurrentIndex("comboBoxProtocol", 0);
-      wd.setEnabled("comboBoxProtocol", false);
-    }
+    const bool has_encodings =
+        pj::streaming::writeEncodingSelector(wd, "comboBoxProtocol", available_encodings_, encoding_);
 
     // TLS certificate file pickers. Icon-only browse buttons (empty label, the
     // shared "contract" certificate glyph); the editable path fields double as
@@ -141,9 +135,8 @@ class MqttDialog : public PJ::DialogPluginTyped {
       return false;
     }
     if (widget_name == "lineEditPort") {
-      auto val = std::atoi(std::string(text).c_str());
-      if (val > 0 && val <= 65535) {
-        port_ = val;
+      if (const auto port = pj::streaming::parsePort(text)) {
+        port_ = *port;
       }
       return false;
     }
@@ -160,7 +153,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
       return false;
     }
     if (widget_name == "lineEditFilter") {
-      view_filter_lower_ = toLowerAscii(std::string(text));
+      view_filter_lower_ = pj::streaming::lowerAscii(std::string(text));
       return true;  // re-render: the topic list narrows/expands live
     }
     // Certificate paths are editable: typing a path is equivalent to picking one.
@@ -205,7 +198,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
       return false;
     }
     if (widget_name == "comboBoxProtocol") {
-      encoding_ = indexToEncoding(index);
+      encoding_ = pj::streaming::encodingAt(index, available_encodings_);
       return false;
     }
     return false;
@@ -225,20 +218,17 @@ class MqttDialog : public PJ::DialogPluginTyped {
       // filter. Preserve selections the filter currently hides; otherwise
       // selecting while a filter hides a previously selected topic would
       // silently drop the hidden one (same contract as the foxglove picker).
-      std::vector<std::string> next;
       {
         std::lock_guard<std::mutex> lock(topics_mutex_);
-        for (const auto& name : selected_topics_) {
-          // Not visible = filtered out OR not (yet) discovered — e.g. topics
-          // restored from a saved config before connecting. Both survive.
-          const bool visible = discovered_topics_.count(name) != 0 && matchesViewFilter(name);
-          if (!visible) {
-            next.push_back(name);
-          }
-        }
+        selected_topics_ = pj::streaming::mergeVisibleSelection(
+            selected_topics_, selected,
+            [this](const std::string& name) {
+              // Not visible = filtered out OR not (yet) discovered — e.g. a
+              // topic restored from saved config before connecting.
+              return discovered_topics_.count(name) != 0 && matchesViewFilter(name);
+            },
+            [](const std::string&) { return true; });
       }
-      next.insert(next.end(), selected.begin(), selected.end());
-      selected_topics_ = std::move(next);
       return false;
     }
     return false;
@@ -310,40 +300,31 @@ class MqttDialog : public PJ::DialogPluginTyped {
   }
 
  private:
-  static std::string toLowerAscii(std::string s) {
-    for (auto& c : s) {
-      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-    return s;
-  }
-
   /// Case-insensitive substring match of the active view filter against the
   /// topic name. An empty filter matches everything. This is the band's
   /// client-side list filter — unrelated to topic_filter_, the broker-side
   /// MQTT subscription pattern. The filter is stored pre-lowercased, so only
   /// the topic pays a lowercase pass here.
   bool matchesViewFilter(const std::string& topic) const {
-    return view_filter_lower_.empty() || toLowerAscii(topic).find(view_filter_lower_) != std::string::npos;
-  }
-
-  int encodingToIndex(const std::string& e) const {
-    auto it = std::find(available_encodings_.begin(), available_encodings_.end(), e);
-    return (it != available_encodings_.end()) ? static_cast<int>(std::distance(available_encodings_.begin(), it)) : 0;
-  }
-
-  std::string indexToEncoding(int idx) const {
-    if (idx >= 0 && idx < static_cast<int>(available_encodings_.size())) {
-      return available_encodings_[static_cast<size_t>(idx)];
-    }
-    return available_encodings_.empty() ? "json" : available_encodings_[0];
+    return view_filter_lower_.empty() || pj::streaming::lowerAscii(topic).find(view_filter_lower_) != std::string::npos;
   }
 
   void connectBroker() {
-    std::string scheme = use_ssl_ ? "ssl://" : "tcp://";
-    std::string uri = scheme + broker_address_ + ":" + std::to_string(port_);
+    const pj::mqtt_support::ConnectionSettings settings{
+        .address = broker_address_,
+        .port = port_,
+        .username = username_,
+        .password = password_,
+        .protocol_version = protocol_version_index_,
+        .use_ssl = use_ssl_,
+        .ca_cert_path = ca_cert_path_,
+        .client_cert_path = client_cert_path_,
+        .private_key_path = private_key_path_,
+    };
 
     try {
-      discovery_client_ = std::make_unique<mqtt::async_client>(uri, "pj_mqtt_discovery");
+      discovery_client_ =
+          std::make_unique<mqtt::async_client>(pj::mqtt_support::brokerUri(settings), "pj_mqtt_discovery");
 
       // Collect discovered topic names from incoming messages
       discovery_client_->set_message_callback([this](mqtt::const_message_ptr msg) {
@@ -353,35 +334,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
         }
       });
 
-      mqtt::connect_options opts;
-      opts.set_clean_session(true);
-      opts.set_connect_timeout(std::chrono::seconds(5));
-      if (protocol_version_index_ == 0) {
-        opts.set_mqtt_version(MQTTVERSION_3_1);
-      } else if (protocol_version_index_ == 2) {
-        opts.set_mqtt_version(MQTTVERSION_5);
-      } else {
-        opts.set_mqtt_version(MQTTVERSION_3_1_1);
-      }
-      if (!username_.empty()) {
-        opts.set_user_name(username_);
-        opts.set_password(password_);
-      }
-      if (use_ssl_) {
-        mqtt::ssl_options ssl_opts;
-        if (!ca_cert_path_.empty()) {
-          ssl_opts.set_trust_store(ca_cert_path_);
-        }
-        if (!client_cert_path_.empty()) {
-          ssl_opts.set_key_store(client_cert_path_);
-        }
-        if (!private_key_path_.empty()) {
-          ssl_opts.set_private_key(private_key_path_);
-        }
-        opts.set_ssl(ssl_opts);
-      }
-
-      discovery_client_->connect(opts)->wait();
+      discovery_client_->connect(pj::mqtt_support::makeConnectOptions(settings))->wait();
       // Subscribe to the user's topic filter to discover topics
       std::string sub_filter = topic_filter_.empty() ? "#" : topic_filter_;
       discovery_client_->subscribe(sub_filter, 0)->wait();
