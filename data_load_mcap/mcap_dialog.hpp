@@ -217,7 +217,21 @@ class McapDialog : public PJ::DialogPluginTyped {
 
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name == "tableWidget") {
-      selected_topics_.clear();
+      // The table only reports the rows currently visible under the filter, so a
+      // plain clear()+re-add would drop any selection the filter is hiding.
+      // Reconcile only the visible topics: forget the visible ones that are no
+      // longer selected, and leave everything the filter hides untouched.
+      std::unordered_set<std::string> visible;
+      for (const auto* ch : filteredChannels()) {
+        visible.insert(ch->topic);
+      }
+      for (auto it = selected_topics_.begin(); it != selected_topics_.end();) {
+        if (visible.count(*it) > 0) {
+          it = selected_topics_.erase(it);
+        } else {
+          ++it;
+        }
+      }
       for (const auto& topic : selected) {
         selected_topics_.insert(topic);
       }
