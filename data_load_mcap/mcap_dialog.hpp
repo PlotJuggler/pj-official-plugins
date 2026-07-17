@@ -119,14 +119,16 @@ class McapDialog : public PJ::DialogPluginTyped {
     std::vector<std::string> headers = {"Channel name", "Schema", "Encoding", "Msg Count"};
     wd.setTableHeaders("tableWidget", headers);
 
-    std::vector<std::vector<std::string>> rows;
+    std::vector<std::vector<PJ::TableItem>> rows;
     std::vector<std::string> selected_topic_names;
     std::vector<int> disabled_row_indices;
     rows.reserve(filtered.size());
 
     for (size_t i = 0; i < filtered.size(); ++i) {
       const auto& ch = *filtered[i];
-      rows.push_back({ch.topic, ch.schema, ch.encoding, std::to_string(ch.msg_count)});
+      // Msg Count carries its native uint64 so the column sorts numerically;
+      // without it the host could only compare the rendered digits.
+      rows.push_back({ch.topic, ch.schema, ch.encoding, PJ::TableItem(ch.msg_count)});
       if (selected_topics_.count(ch.topic) > 0) {
         selected_topic_names.push_back(ch.topic);
       }
