@@ -14,8 +14,8 @@
    <property name="rightMargin"><number>0</number></property>
    <property name="bottomMargin"><number>0</number></property>
    <item>
-    <widget class="SectionHeaderBand" name="serverBanner">
-     <property name="text"><string>WHEP Server</string></property>
+    <widget class="SectionHeaderBand" name="connectionBanner">
+     <property name="text"><string>Connection</string></property>
     </widget>
    </item>
    <item>
@@ -26,41 +26,81 @@
       <property name="rightMargin"><number>9</number></property>
       <property name="bottomMargin"><number>9</number></property>
       <item>
-       <layout class="QFormLayout" name="formLayoutServer">
-        <item row="0" column="0"><widget class="QLabel" name="labelServerUrl"><property name="text"><string>Server URL:</string></property></widget></item>
-        <item row="0" column="1">
-         <widget class="QLineEdit" name="lineEditServerUrl">
-          <property name="toolTip"><string>Base URL of the WHEP server (e.g. mediamtx). Each selected path is read from &lt;url&gt;/&lt;path&gt;/whep.</string></property>
-          <property name="placeholderText"><string>http://127.0.0.1:8889</string></property>
+       <layout class="QGridLayout" name="gridLayoutFields" columnstretch="0,0,2,1,0">
+        <property name="spacing"><number>6</number></property>
+        <item row="0" column="1"><widget class="QLabel" name="labelTransport"><property name="text"><string>Transport</string></property></widget></item>
+        <item row="0" column="2"><widget class="QLabel" name="labelAddress"><property name="text"><string>Address</string></property></widget></item>
+        <item row="0" column="3"><widget class="QLabel" name="labelPort"><property name="text"><string>Port</string></property></widget></item>
+        <item row="1" column="0"><widget class="QLabel" name="labelServerRow"><property name="text"><string>Server</string></property></widget></item>
+        <item row="1" column="1">
+         <widget class="QComboBox" name="comboBoxTransport">
+          <property name="enabled"><bool>false</bool></property>
+          <property name="toolTip"><string>WHEP signaling is HTTP. (HTTPS is not wired in this build.)</string></property>
+          <item><property name="text"><string>http://</string></property></item>
          </widget>
         </item>
-        <item row="1" column="0"><widget class="QLabel" name="labelBearer"><property name="text"><string>Bearer token:</string></property></widget></item>
-        <item row="1" column="1">
+        <item row="1" column="2">
+         <widget class="QLineEdit" name="lineEditAddress">
+          <property name="toolTip"><string>WHEP server host (mediamtx). Each selected path is read from http://&lt;address&gt;:&lt;port&gt;/&lt;path&gt;/whep.</string></property>
+          <property name="placeholderText"><string>127.0.0.1</string></property>
+         </widget>
+        </item>
+        <item row="1" column="3">
+         <widget class="QLineEdit" name="lineEditPort">
+          <property name="toolTip"><string>WHEP server port (mediamtx default 8889).</string></property>
+          <property name="placeholderText"><string>8889</string></property>
+         </widget>
+        </item>
+        <item row="2" column="0"><widget class="QLabel" name="labelApiRow"><property name="text"><string>Control API</string></property></widget></item>
+        <item row="2" column="1">
+         <widget class="QComboBox" name="comboBoxApiTransport">
+          <property name="enabled"><bool>false</bool></property>
+          <property name="toolTip"><string>Control API is HTTP. (HTTPS is not wired in this build.)</string></property>
+          <item><property name="text"><string>http://</string></property></item>
+         </widget>
+        </item>
+        <item row="2" column="2">
+         <widget class="QLineEdit" name="lineEditApiAddress">
+          <property name="toolTip"><string>mediamtx Control API host, used only to list paths (GET /v3/paths/list). Auto-derived from the server; edit to override, or clear to disable API discovery (manual paths still work).</string></property>
+          <property name="placeholderText"><string>127.0.0.1</string></property>
+         </widget>
+        </item>
+        <item row="2" column="3">
+         <widget class="QLineEdit" name="lineEditApiPort">
+          <property name="toolTip"><string>mediamtx Control API port (default 9997).</string></property>
+          <property name="placeholderText"><string>9997</string></property>
+         </widget>
+        </item>
+        <item row="2" column="4">
+         <widget class="QPushButton" name="buttonRefresh">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+            <horstretch>0</horstretch>
+            <verstretch>0</verstretch>
+           </sizepolicy>
+          </property>
+          <property name="minimumSize"><size><width>130</width><height>28</height></size></property>
+          <property name="maximumSize"><size><width>130</width><height>28</height></size></property>
+          <property name="text"><string>Refresh list</string></property>
+         </widget>
+        </item>
+        <item row="3" column="0"><widget class="QLabel" name="labelPath"><property name="text"><string>Base path</string></property></widget></item>
+        <item row="3" column="1" colspan="4">
+         <widget class="QLineEdit" name="lineEditPath">
+          <property name="toolTip"><string>Optional base path prefix on the server (most mediamtx setups leave this empty).</string></property>
+          <property name="placeholderText"><string>(optional)</string></property>
+         </widget>
+        </item>
+        <item row="4" column="0"><widget class="QLabel" name="labelBearer"><property name="text"><string>Bearer token</string></property></widget></item>
+        <item row="4" column="1" colspan="4">
          <widget class="QLineEdit" name="lineEditBearer">
           <property name="toolTip"><string>Optional. Sent as "Authorization: Bearer ..." on every WHEP and Control API request.</string></property>
           <property name="echoMode"><enum>QLineEdit::Password</enum></property>
           <property name="placeholderText"><string>(optional)</string></property>
          </widget>
         </item>
-        <item row="2" column="0"><widget class="QLabel" name="labelApiUrl"><property name="text"><string>Control API URL:</string></property></widget></item>
-        <item row="2" column="1">
-         <layout class="QHBoxLayout" name="horizontalLayoutApi">
-          <item>
-           <widget class="QLineEdit" name="lineEditApiUrl">
-            <property name="toolTip"><string>mediamtx Control API base URL, used only to list available paths (GET /v3/paths/list). Leave as derived default, or clear if the server has no API - manual paths still work.</string></property>
-            <property name="placeholderText"><string>http://127.0.0.1:9997</string></property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="buttonRefresh">
-            <property name="minimumSize"><size><width>110</width><height>25</height></size></property>
-            <property name="text"><string>Refresh list</string></property>
-           </widget>
-          </item>
-         </layout>
-        </item>
-        <item row="3" column="0"><widget class="QLabel" name="labelTopicPrefix"><property name="text"><string>Topic prefix:</string></property></widget></item>
-        <item row="3" column="1">
+        <item row="5" column="0"><widget class="QLabel" name="labelTopicPrefix"><property name="text"><string>Topic prefix</string></property></widget></item>
+        <item row="5" column="1" colspan="4">
          <widget class="QLineEdit" name="lineEditTopicPrefix">
           <property name="toolTip"><string>Each selected path becomes the topic &lt;prefix&gt;/&lt;path&gt;.</string></property>
           <property name="placeholderText"><string>webrtc</string></property>
@@ -88,6 +128,8 @@
       <item>
        <widget class="QLabel" name="labelApiStatus">
         <property name="text"><string> </string></property>
+        <property name="wordWrap"><bool>true</bool></property>
+        <property name="styleSheet"><string notr="true">color: #CC00CC; font-weight: 600;</string></property>
        </widget>
       </item>
       <item>
@@ -145,6 +187,17 @@
         <column><property name="text"><string>Credential</string></property></column>
        </widget>
       </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="buttonBoxWrap" native="true">
+     <layout class="QVBoxLayout" name="buttonBoxWrapLayout">
+      <property name="spacing"><number>0</number></property>
+      <property name="leftMargin"><number>9</number></property>
+      <property name="topMargin"><number>0</number></property>
+      <property name="rightMargin"><number>9</number></property>
+      <property name="bottomMargin"><number>9</number></property>
       <item>
        <widget class="QDialogButtonBox" name="buttonBox">
         <property name="orientation"><enum>Qt::Horizontal</enum></property>

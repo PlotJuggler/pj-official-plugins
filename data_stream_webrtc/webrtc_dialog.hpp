@@ -53,6 +53,19 @@ class WebrtcDialog : public PJ::DialogPluginTyped {
   // "http://host:8889" -> "http://host:9997" (mediamtx Control API default).
   static std::string deriveApiUrl(const std::string& server_url);
 
+  // Bridge server_url_ / api_url_ to/from their split Transport/Address/Port fields.
+  // Each stays the canonical value saveConfig persists; parse splits it for display,
+  // compose rebuilds it on edit. Transport is fixed http:// (HTTPS is not wired in
+  // this build), so compose always emits an http:// URL. Both are IPv6-literal aware
+  // ("http://[::1]:8889"), mirroring deriveApiUrl's authority parsing.
+  struct UrlParts {
+    std::string host;
+    std::string port;
+    std::string path;
+  };
+  static UrlParts parseHttpUrl(const std::string& url);
+  static std::string composeHttpUrl(const std::string& host, const std::string& port, const std::string& path);
+
   // Whitespace-trimmed copy of a user-typed path.
   static std::string trimmedPath(std::string s);
   // True if the path still carries whitespace/control bytes that could only
