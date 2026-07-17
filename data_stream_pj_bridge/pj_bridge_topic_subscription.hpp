@@ -112,7 +112,8 @@ struct SubscriptionDiff {
 /// filter, advertise everything" (the default when nothing is selected).
 /// Mirrors PJ::FoxgloveProtocol::passesAdvertiseFilter.
 [[nodiscard]] inline bool passesAdvertiseFilter(const std::string& topic, const std::vector<std::string>& selection) {
-  return pj::streaming::passesSelectionFilter(topic, selection, [](const std::string& value) { return value; });
+  return pj::streaming::passesSelectionFilter(
+      topic, selection, [](const std::string& value) -> const std::string& { return value; });
 }
 
 /// The set of topic names computeSubscriptionDiff() reconciles against:

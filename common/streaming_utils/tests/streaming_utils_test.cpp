@@ -63,4 +63,21 @@ TEST(DelegatedIngestTest, ReadsOnlyStringParserOverrides) {
   EXPECT_TRUE(pj::streaming::parserConfigOverride("not json").empty());
 }
 
+TEST(DelegatedIngestTest, BindingFailureIsANonFatalDisposition) {
+  pj::streaming::DelegatedIngestCache cache;
+  const PJ::DataSourceRuntimeHostView unbound_host;
+  const PJ::ParserBindingRequest request{
+      .topic_name = "topic",
+      .parser_encoding = "json",
+      .type_name = {},
+      .schema = {},
+      .parser_config_json = {},
+  };
+
+  const auto result = cache.push(unbound_host, "topic", request, PJ::Timestamp{0}, {1, 2, 3});
+
+  ASSERT_TRUE(result);
+  EXPECT_EQ(*result, pj::streaming::DelegatedIngestDisposition::kBindingUnavailable);
+}
+
 }  // namespace

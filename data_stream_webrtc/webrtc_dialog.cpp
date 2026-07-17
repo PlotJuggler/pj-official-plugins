@@ -20,6 +20,25 @@ namespace webrtc_dialog_detail {
 
 namespace {
 constexpr std::chrono::seconds kAutoFetchPeriod{1};
+
+bool authorityHasExplicitPort(std::string_view url) {
+  const size_t scheme_end = url.find("://");
+  if (scheme_end == std::string_view::npos) {
+    return false;
+  }
+  const size_t authority_start = scheme_end + 3;
+  const size_t authority_end = url.find_first_of("/?#", authority_start);
+  std::string_view authority = url.substr(authority_start, authority_end - authority_start);
+  if (const size_t user_info_end = authority.rfind('@'); user_info_end != std::string_view::npos) {
+    authority.remove_prefix(user_info_end + 1);
+  }
+  if (authority.starts_with('[')) {
+    const size_t bracket_end = authority.find(']');
+    return bracket_end != std::string_view::npos && bracket_end + 1 < authority.size() &&
+           authority[bracket_end + 1] == ':';
+  }
+  return authority.find(':') != std::string_view::npos;
+}
 }  // namespace
 
 WebrtcDialog::~WebrtcDialog() {
@@ -93,9 +112,12 @@ std::string WebrtcDialog::widget_data() {
   }
   wd.setTableRows("tableIceServers", ice_rows);
 
-  // Gate OK on the server URL too: an empty one would only fail at connect
-  // time, deep in the HTTP layer (onStart keeps a backstop check as well).
-  wd.setOkEnabled(!selected_.empty() && !server_parts_.host.empty());
+  const bool server_port_valid = isValidOptionalPort(server_parts_.port);
+  const bool api_port_valid = isValidOptionalPort(api_parts_.port);
+  wd.setEnabled("buttonRefresh", !api_parts_.host.empty() && api_port_valid);
+  // Invalid endpoint text remains visible in the editor, but cannot escape the
+  // dialog and fail later in the HTTP layer.
+  wd.setOkEnabled(!selected_.empty() && !server_parts_.host.empty() && server_port_valid && api_port_valid);
   return wd.toJson();
 }
 
@@ -127,8 +149,6 @@ bool WebrtcDialog::onClicked(std::string_view widget_name) {
 
 bool WebrtcDialog::onTextChanged(std::string_view widget_name, std::string_view text) {
   if (widget_name == "lineEditAddress" || widget_name == "lineEditPort" || widget_name == "lineEditPath") {
-    // The URL fields are split across Transport/Address/Port + Base path. Rebuild
-    // the canonical server_url_ from the current parts, swapping in the edited one.
     if (widget_name == "lineEditAddress") {
       server_parts_.host = std::string(text);
     } else if (widget_name == "lineEditPort") {
@@ -136,13 +156,10 @@ bool WebrtcDialog::onTextChanged(std::string_view widget_name, std::string_view 
     } else {
       server_parts_.path = std::string(text);
     }
-    server_url_ = composeHttpUrl(server_parts_.host, server_parts_.port, server_parts_.path);
     if (!api_url_edited_) {
-      api_url_ = deriveApiUrl(server_url_);
-      api_parts_ = api_url_.empty() ? UrlParts{"", "9997", {}} : parseHttpUrl(api_url_);
-      return true;  // the derived Control API URL field changed too
+      api_parts_ = deriveApiParts(server_parts_);
     }
-    return false;
+    return true;  // endpoint validity and possibly the derived API fields changed
   }
   if (widget_name == "lineEditBearer") {
     bearer_ = std::string(text);
@@ -154,12 +171,8 @@ bool WebrtcDialog::onTextChanged(std::string_view widget_name, std::string_view 
     } else {
       api_parts_.port = std::string(text);
     }
-    // An empty host disables Control API discovery (manual paths still work);
-    // otherwise rebuild the canonical api_url_ from the parts.
-    api_url_ =
-        api_parts_.host.empty() ? std::string() : composeHttpUrl(api_parts_.host, api_parts_.port, api_parts_.path);
     api_url_edited_ = true;
-    return false;
+    return true;  // endpoint validity / Refresh enabled state changed
   }
   if (widget_name == "lineEditTopicPrefix") {
     topic_prefix_ = std::string(text);
@@ -213,7 +226,8 @@ bool WebrtcDialog::onTick() {
     dirty = true;
   }
   const auto now = std::chrono::steady_clock::now();
-  if (!fetch_in_flight_ && !api_url_.empty() && (now - last_fetch_) > kAutoFetchPeriod) {
+  if (!fetch_in_flight_ && !api_parts_.host.empty() && isValidOptionalPort(api_parts_.port) &&
+      (now - last_fetch_) > kAutoFetchPeriod) {
     startFetch();
   }
   return dirty;
@@ -230,9 +244,9 @@ void WebrtcDialog::onRejected() {
 
 std::string WebrtcDialog::saveConfig() const {
   nlohmann::json cfg;
-  cfg["server_url"] = server_url_;
+  cfg["server_url"] = serverUrl();
   cfg["bearer_token"] = bearer_;
-  cfg["api_url"] = api_url_;
+  cfg["api_url"] = apiUrl();
   // Persist the derive-vs-manual intent explicitly. saveConfig ALWAYS writes
   // api_url, so keying "edited" off its presence would wrongly latch manual
   // after any round-trip and stop server_url edits from re-deriving the host.
@@ -255,11 +269,14 @@ bool WebrtcDialog::loadConfig(std::string_view config_json) {
   }
   // Pre-WHEP configs (address/port/our_id/manual_stream) have no meaningful
   // mapping and are ignored: unknown keys fall through to these defaults.
-  server_url_ = cfg.value("server_url", std::string("http://127.0.0.1:8889"));
-  server_parts_ = parseHttpUrl(server_url_);
+  server_parts_ = parseHttpUrl(cfg.value("server_url", std::string("http://127.0.0.1:8889")));
   bearer_ = cfg.value("bearer_token", std::string());
-  api_url_ = cfg.value("api_url", deriveApiUrl(server_url_));
-  api_parts_ = api_url_.empty() ? UrlParts{"", "9997", {}} : parseHttpUrl(api_url_);
+  if (cfg.contains("api_url")) {
+    const std::string api_url = cfg.value("api_url", std::string{});
+    api_parts_ = api_url.empty() ? UrlParts{server_parts_.scheme, "", "9997", {}} : parseHttpUrl(api_url);
+  } else {
+    api_parts_ = deriveApiParts(server_parts_);
+  }
   // Restore the explicit intent, NOT api_url presence: a never-edited api_url
   // reloads as still-auto-derived so editing server_url re-derives the host.
   api_url_edited_ = cfg.value("api_url_edited", false);
@@ -334,14 +351,6 @@ std::string WebrtcDialog::joinTracks(const std::vector<std::string>& tracks) {
   return out.empty() ? "-" : out;
 }
 
-std::string WebrtcDialog::deriveApiUrl(const std::string& server_url) {
-  if (server_url.find("://") == std::string::npos) {
-    return "http://127.0.0.1:9997";
-  }
-  const UrlParts parts = parseHttpUrl(server_url);
-  return parts.host.empty() ? std::string{} : composeHttpUrl(parts.host, "9997", {});
-}
-
 WebrtcDialog::UrlParts WebrtcDialog::parseHttpUrl(const std::string& url) {
   UrlParts parts;
   if (url.empty()) {
@@ -354,18 +363,44 @@ WebrtcDialog::UrlParts WebrtcDialog::parseHttpUrl(const std::string& url) {
   if (!ix::UrlParser::parse(url, protocol, parts.host, parts.path, query, port, default_port)) {
     return {};
   }
-  (void)protocol;
+  parts.scheme = protocol.empty() ? "http" : std::move(protocol);
   (void)query;
-  (void)default_port;
-  parts.port = std::to_string(port);
+  if (!default_port || authorityHasExplicitPort(url)) {
+    parts.port = std::to_string(port);
+  }
   if (parts.path == "/") {
     parts.path.clear();
   }
   return parts;
 }
 
-std::string WebrtcDialog::composeHttpUrl(const std::string& host, const std::string& port, const std::string& path) {
-  return pj::streaming::composeEndpoint("http", host, port, path);
+WebrtcDialog::UrlParts WebrtcDialog::deriveApiParts(const UrlParts& server_parts) {
+  return UrlParts{
+      server_parts.scheme.empty() ? "http" : server_parts.scheme,
+      server_parts.host,
+      "9997",
+      {},
+  };
+}
+
+std::string WebrtcDialog::composeUrl(const UrlParts& parts) {
+  if (parts.host.empty()) {
+    return {};
+  }
+  return pj::streaming::composeEndpoint(
+      parts.scheme.empty() ? "http" : parts.scheme, parts.host, parts.port, parts.path);
+}
+
+bool WebrtcDialog::isValidOptionalPort(std::string_view port) {
+  return port.empty() || pj::streaming::parsePort(port).has_value();
+}
+
+std::string WebrtcDialog::serverUrl() const {
+  return composeUrl(server_parts_);
+}
+
+std::string WebrtcDialog::apiUrl() const {
+  return composeUrl(api_parts_);
 }
 
 bool WebrtcDialog::passesFilter(const std::string& path) const {
@@ -392,7 +427,7 @@ bool WebrtcDialog::isRenderedLocked(const std::string& path) const {
 }
 
 void WebrtcDialog::startFetch() {
-  if (fetch_in_flight_) {
+  if (fetch_in_flight_ || api_parts_.host.empty() || !isValidOptionalPort(api_parts_.port)) {
     return;
   }
   if (fetch_thread_.joinable()) {
@@ -401,7 +436,7 @@ void WebrtcDialog::startFetch() {
   fetch_in_flight_ = true;
   fetch_done_.store(false);
   last_fetch_ = std::chrono::steady_clock::now();
-  const std::string url = api_url_;
+  const std::string url = apiUrl();
   const std::string token = bearer_;
   fetch_abort_ = std::make_shared<PJ::webrtc::HttpAbort>();  // latched: fresh per fetch
   fetch_thread_ = std::thread([this, url, token, abort_handle = fetch_abort_]() {

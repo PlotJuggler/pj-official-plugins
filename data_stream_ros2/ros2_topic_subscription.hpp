@@ -101,7 +101,8 @@ struct SubscriptionDiff {
 /// selected). Mirrors PJ::FoxgloveProtocol::passesAdvertiseFilter.
 [[nodiscard]] inline bool passesAdvertiseFilter(
     const std::string& topic, const std::vector<std::pair<std::string, std::string>>& selection) {
-  return pj::streaming::passesSelectionFilter(topic, selection, [](const auto& value) { return value.first; });
+  return pj::streaming::passesSelectionFilter(
+      topic, selection, [](const auto& value) -> const std::string& { return value.first; });
 }
 
 /// The topic -> type map computeRos2SubscriptionDiff() reconciles against:

@@ -71,7 +71,8 @@ struct SubscriptionDiff {
 /// allow-list rather than a subscribe list. An EMPTY selection means "no
 /// filter, advertise everything" (the default when nothing is selected).
 [[nodiscard]] inline bool passesAdvertiseFilter(const std::string& topic, const std::vector<ChannelInfo>& selection) {
-  return pj::streaming::passesSelectionFilter(topic, selection, [](const ChannelInfo& ch) { return ch.topic; });
+  return pj::streaming::passesSelectionFilter(
+      topic, selection, [](const ChannelInfo& ch) -> const std::string& { return ch.topic; });
 }
 
 /// The channel_id -> topic map computeSubscriptionDiff() reconciles against:
