@@ -584,11 +584,6 @@
        <property name="default"><bool>true</bool></property>
       </widget>
      </item>
-     <item>
-      <widget class="QPushButton" name="pushButtonCancel">
-       <property name="text"><string>Close</string></property>
-      </widget>
-     </item>
     </layout>
    </item>
 
