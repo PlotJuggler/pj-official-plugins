@@ -501,12 +501,14 @@
               <item>
                <widget class="QRadioButton" name="radioButtonPrefix">
                 <property name="text"><string>Prefix</string></property>
+                <attribute name="buttonGroup"><string>affixGroup</string></attribute>
                </widget>
               </item>
               <item>
                <widget class="QRadioButton" name="radioButtonSuffix">
                 <property name="text"><string>Suffix</string></property>
                 <property name="checked"><bool>true</bool></property>
+                <attribute name="buttonGroup"><string>affixGroup</string></attribute>
                </widget>
               </item>
               <item>
@@ -666,5 +668,6 @@
  <buttongroups>
   <buttongroup name="languageGroup"/>
   <buttongroup name="languageBatchGroup"/>
+  <buttongroup name="affixGroup"/>
  </buttongroups>
 </ui>
