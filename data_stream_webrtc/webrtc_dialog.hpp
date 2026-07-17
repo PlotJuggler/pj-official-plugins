@@ -47,11 +47,24 @@ class WebrtcDialog : public PJ::DialogPluginTyped {
   bool loadConfig(std::string_view config_json) override;
 
  private:
-  static std::string toLower(std::string s);
   static bool hasH264(const std::vector<std::string>& tracks);
   static std::string joinTracks(const std::vector<std::string>& tracks);
-  // "http://host:8889" -> "http://host:9997" (mediamtx Control API default).
-  static std::string deriveApiUrl(const std::string& server_url);
+
+  // Single source of truth for the split Transport/Address/Port/Path fields.
+  // Keeping the parsed scheme preserves pass-through HTTPS configurations even
+  // though the current dialog exposes HTTP as its only editable transport.
+  struct UrlParts {
+    std::string scheme;
+    std::string host;
+    std::string port;
+    std::string path;
+  };
+  static UrlParts parseHttpUrl(const std::string& url);
+  static UrlParts deriveApiParts(const UrlParts& server_parts);
+  static std::string composeUrl(const UrlParts& parts);
+  static bool isValidOptionalPort(std::string_view port);
+  std::string serverUrl() const;
+  std::string apiUrl() const;
 
   // Whitespace-trimmed copy of a user-typed path.
   static std::string trimmedPath(std::string s);
@@ -68,9 +81,9 @@ class WebrtcDialog : public PJ::DialogPluginTyped {
   void startFetch();    // spawn the worker if none in flight
   void harvestFetch();  // join a finished worker, publish results
 
-  std::string server_url_ = "http://127.0.0.1:8889";
+  UrlParts server_parts_{"http", "127.0.0.1", "8889", {}};
   std::string bearer_;
-  std::string api_url_ = "http://127.0.0.1:9997";
+  UrlParts api_parts_{"http", "127.0.0.1", "9997", {}};
   bool api_url_edited_ = false;  // stop auto-deriving once the user typed one
   std::string topic_prefix_ = "webrtc";
   std::string manual_path_;

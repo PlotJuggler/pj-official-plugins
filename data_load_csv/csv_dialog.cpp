@@ -267,6 +267,16 @@ bool CsvDialog::loadConfig(std::string_view config_json) {
 }
 
 void CsvDialog::analyzeFile() {
+  // Remember the selected time column by NAME so a delimiter change (which
+  // re-splits the header) can re-resolve it against the rebuilt columns below.
+  // Only meaningful on a RE-analyze: on the first analyze there are no columns
+  // yet, and selected_column_index_ may hold an index restored from saveConfig.
+  const bool had_columns = !column_names_.empty();
+  std::string previously_selected_column;
+  if (had_columns && selected_column_index_ >= 0 && selected_column_index_ < static_cast<int>(column_names_.size())) {
+    previously_selected_column = column_names_[static_cast<size_t>(selected_column_index_)];
+  }
+
   column_names_.clear();
   combined_pairs_.clear();
   preview_rows_.clear();
@@ -388,6 +398,25 @@ void CsvDialog::analyzeFile() {
   // Auto-select the first combined pair if none is selected yet.
   if (!combined_pairs_.empty() && combined_index_ < 0) {
     combined_index_ = 0;
+  }
+
+  // Re-validate the selected time column against the rebuilt columns so we never
+  // keep an index that points past the new column count (which would silently
+  // load the row number as the time axis). On a RE-analyze (delimiter change)
+  // re-resolve the previous column by name; otherwise just clamp the restored
+  // index. Dropping the selection to -1 disables OK until the user re-picks.
+  if (time_mode_ == TimeMode::Column) {
+    if (had_columns) {
+      selected_column_index_ = -1;
+      for (size_t i = 0; i < column_names_.size(); i++) {
+        if (column_names_[i] == previously_selected_column) {
+          selected_column_index_ = static_cast<int>(i);
+          break;
+        }
+      }
+    } else if (selected_column_index_ >= static_cast<int>(column_names_.size())) {
+      selected_column_index_ = -1;
+    }
   }
 }
 

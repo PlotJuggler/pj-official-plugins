@@ -2,14 +2,16 @@
 
 #include <ixwebsocket/IXWebSocket.h>
 
+#include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <pj_array_policy/array_policy.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <pj_streaming/dialog_utils.hpp>
+#include <pj_streaming/endpoint.hpp>
 #include <string>
 #include <vector>
 
@@ -124,9 +126,8 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
       return false;
     }
     if (widget_name == "lineEditPort") {
-      auto val = std::atoi(std::string(text).c_str());
-      if (val > 0 && val <= 65535) {
-        port_ = val;
+      if (const auto port = pj::streaming::parsePort(text)) {
+        port_ = *port;
       }
       return false;
     }
@@ -180,24 +181,17 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
       // the active filter. Preserve selections of channels filtered out of
       // view; otherwise changing the visible selection while a filter hides a
       // previously selected topic would silently drop it.
-      std::vector<std::string> next;
       {
         std::lock_guard<std::mutex> lock(channels_mutex_);
-        for (const auto& name : selected_topic_names_) {
-          bool visible = false;
-          for (const auto& ch : channels_) {
-            if (ch.topic == name && matchesFilter(ch)) {
-              visible = true;
-              break;
-            }
-          }
-          if (!visible) {
-            next.push_back(name);
-          }
-        }
+        selected_topic_names_ = pj::streaming::mergeVisibleSelection(
+            selected_topic_names_, selected,
+            [this](const std::string& name) {
+              return std::any_of(channels_.begin(), channels_.end(), [&](const auto& channel) {
+                return channel.topic == name && matchesFilter(channel);
+              });
+            },
+            [](const std::string&) { return true; });
       }
-      next.insert(next.end(), selected.begin(), selected.end());
-      selected_topic_names_ = std::move(next);
       snapshotSelectedChannels();
       return true;
     }
@@ -284,19 +278,14 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     if (filter_.empty()) {
       return true;
     }
-    auto lower = [](std::string s) {
-      for (auto& c : s) {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-      }
-      return s;
-    };
-    const std::string f = lower(filter_);
-    return lower(ch.topic).find(f) != std::string::npos || lower(ch.schema_name).find(f) != std::string::npos;
+    const std::string lowered_filter = pj::streaming::lowerAscii(filter_);
+    return pj::streaming::lowerAscii(ch.topic).find(lowered_filter) != std::string::npos ||
+           pj::streaming::lowerAscii(ch.schema_name).find(lowered_filter) != std::string::npos;
   }
 
   void connectToServer() {
     socket_ = std::make_unique<ix::WebSocket>();
-    socket_->setUrl("ws://" + address_ + ":" + std::to_string(port_));
+    socket_->setUrl(pj::streaming::composeEndpoint("ws", address_, static_cast<uint16_t>(port_)));
     socket_->addSubProtocol("foxglove.sdk.v1");
 
     socket_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {

@@ -18,10 +18,11 @@
 
 #include <algorithm>
 #include <map>
-#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
-#include <queue>
+#include <pj_streaming/dialog_utils.hpp>
+#include <pj_streaming/drain_queue.hpp>
+#include <pj_streaming/latest_value_slot.hpp>
 #include <set>
 #include <string>
 #include <utility>
@@ -41,27 +42,7 @@ namespace PJ::BridgeProtocol {
 /// only the MOST RECENT write matters. The poll thread drains it with take(),
 /// which atomically hands over whatever is pending and resets the slot to empty
 /// (nullopt), so a poll pass that finds nothing new is a cheap no-op.
-class DesiredTopicsSlot {
- public:
-  /// [any thread] Overwrite the desired set. Always replaces, never queues.
-  void set(std::set<std::string> topics) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    slot_ = std::move(topics);
-  }
-
-  /// [poll thread] Take whatever is pending, resetting the slot to empty.
-  /// Returns nullopt if nothing was written since the last take().
-  [[nodiscard]] std::optional<std::set<std::string>> take() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    std::optional<std::set<std::string>> result;
-    result.swap(slot_);
-    return result;
-  }
-
- private:
-  std::mutex mutex_;
-  std::optional<std::set<std::string>> slot_;
-};
+using DesiredTopicsSlot = pj::streaming::LatestValueSlot<std::set<std::string>>;
 
 /// Mutex-protected FIFO for the socket-thread → poll-thread handoff of inbound
 /// TEXT frames (subscribe responses, topics_changed, get_topics responses).
@@ -74,27 +55,7 @@ class DesiredTopicsSlot {
 /// does all binding work. push() is socket-thread; drain() is poll-thread.
 /// FIFO order is preserved so a topics_changed that supersedes an earlier one
 /// is applied last.
-class TextFrameQueue {
- public:
-  /// [socket thread] Enqueue one inbound text frame.
-  void push(std::string frame) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    queue_.push(std::move(frame));
-  }
-
-  /// [poll thread] Atomically swap out the pending frames for processing,
-  /// leaving the shared queue empty. Returned frames are in arrival order.
-  [[nodiscard]] std::queue<std::string> drain() {
-    std::queue<std::string> out;
-    std::lock_guard<std::mutex> lock(mutex_);
-    std::swap(out, queue_);
-    return out;
-  }
-
- private:
-  std::mutex mutex_;
-  std::queue<std::string> queue_;
-};
+using TextFrameQueue = pj::streaming::DrainQueue<std::string>;
 
 /// Result of computeSubscriptionDiff: which topics to newly subscribe and which
 /// to drop, to reconcile the source's current subscriptions with a desired
@@ -151,8 +112,8 @@ struct SubscriptionDiff {
 /// filter, advertise everything" (the default when nothing is selected).
 /// Mirrors PJ::FoxgloveProtocol::passesAdvertiseFilter.
 [[nodiscard]] inline bool passesAdvertiseFilter(const std::string& topic, const std::vector<std::string>& selection) {
-  return selection.empty() ||
-         std::any_of(selection.begin(), selection.end(), [&](const std::string& s) { return s == topic; });
+  return pj::streaming::passesSelectionFilter(
+      topic, selection, [](const std::string& value) -> const std::string& { return value; });
 }
 
 /// The set of topic names computeSubscriptionDiff() reconciles against:

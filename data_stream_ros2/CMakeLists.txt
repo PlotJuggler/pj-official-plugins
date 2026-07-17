@@ -63,7 +63,7 @@ add_executable(ros2_topic_subscription_test tests/ros2_topic_subscription_test.c
 target_compile_features(ros2_topic_subscription_test PRIVATE cxx_std_20)
 target_compile_options(ros2_topic_subscription_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(ros2_topic_subscription_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ros2_topic_subscription_test PRIVATE GTest::gtest_main)
+target_link_libraries(ros2_topic_subscription_test PRIVATE GTest::gtest_main pj_streaming_utils)
 add_test(NAME ros2_topic_subscription_test COMMAND ros2_topic_subscription_test)
 
 # ---------------------------------------------------------------------------
@@ -101,6 +101,7 @@ if(PJ_BUILD_ROS2_DISTRO)
       rosidl_typesupport_cpp::rosidl_typesupport_cpp
       rosidl_typesupport_introspection_cpp::rosidl_typesupport_introspection_cpp
       pj_array_policy
+      pj_streaming_utils
   )
 
   pj_embed_manifest(ros2_stream_plugin_distro
