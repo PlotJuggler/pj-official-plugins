@@ -769,4 +769,4 @@ class PjBridgeSource : public PJ::StreamSourceBase {
 
 PJ_DATA_SOURCE_PLUGIN(PjBridgeSource, kPjBridgeManifest)
 
-PJ_DIALOG_PLUGIN_WITH_MANIFEST(PjBridgeDialog, kPjBridgeManifest)
+PJ_DIALOG_PLUGIN(PjBridgeDialog, kPjBridgeManifest)

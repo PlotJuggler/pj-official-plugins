@@ -618,4 +618,4 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
 }  // namespace
 
 PJ_TOOLBOX_PLUGIN(QuaternionToolbox, kQuaternionManifest)
-PJ_DIALOG_PLUGIN_WITH_MANIFEST(QuaternionDialog, kQuaternionManifest)
+PJ_DIALOG_PLUGIN(QuaternionDialog, kQuaternionManifest)
