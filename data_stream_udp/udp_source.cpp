@@ -292,4 +292,4 @@ class UdpSource : public PJ::StreamSourceBase {
 
 PJ_DATA_SOURCE_PLUGIN(UdpSource, kUdpManifest)
 
-PJ_DIALOG_PLUGIN(UdpDialog, kUdpManifest)
+PJ_DIALOG_PLUGIN_WITH_MANIFEST(UdpDialog, kUdpManifest)

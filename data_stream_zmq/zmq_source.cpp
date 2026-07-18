@@ -205,4 +205,4 @@ class ZmqSource : public PJ::StreamSourceBase {
 
 PJ_DATA_SOURCE_PLUGIN(ZmqSource, kZmqManifest)
 
-PJ_DIALOG_PLUGIN(ZmqDialog, kZmqManifest)
+PJ_DIALOG_PLUGIN_WITH_MANIFEST(ZmqDialog, kZmqManifest)

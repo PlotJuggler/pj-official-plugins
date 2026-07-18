@@ -182,4 +182,4 @@ class MqttSource : public PJ::StreamSourceBase {
 
 PJ_DATA_SOURCE_PLUGIN(MqttSource, kMqttManifest)
 
-PJ_DIALOG_PLUGIN(MqttDialog, kMqttManifest)
+PJ_DIALOG_PLUGIN_WITH_MANIFEST(MqttDialog, kMqttManifest)

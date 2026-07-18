@@ -660,4 +660,4 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
 PJ_DATA_SOURCE_PLUGIN(FoxgloveSource, kFoxgloveManifest)
 
-PJ_DIALOG_PLUGIN(FoxgloveDialog, kFoxgloveManifest)
+PJ_DIALOG_PLUGIN_WITH_MANIFEST(FoxgloveDialog, kFoxgloveManifest)

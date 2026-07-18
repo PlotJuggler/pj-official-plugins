@@ -319,4 +319,4 @@ class ColormapToolbox : public PJ::ToolboxPluginBase {
 }  // namespace
 
 PJ_TOOLBOX_PLUGIN(ColormapToolbox, kColormapManifest)
-PJ_DIALOG_PLUGIN(ColormapDialog, kColormapManifest)
+PJ_DIALOG_PLUGIN_WITH_MANIFEST(ColormapDialog, kColormapManifest)
