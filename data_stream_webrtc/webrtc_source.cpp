@@ -381,4 +381,4 @@ class WebrtcSource : public PJ::StreamSourceBase {
 }  // namespace
 
 PJ_DATA_SOURCE_PLUGIN(WebrtcSource, kWebrtcManifest)
-PJ_DIALOG_PLUGIN(webrtc_dialog_detail::WebrtcDialog)
+PJ_DIALOG_PLUGIN(webrtc_dialog_detail::WebrtcDialog, kWebrtcManifest)
