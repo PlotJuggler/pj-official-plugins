@@ -218,4 +218,4 @@ class JsonParser : public PJ::MessageParserPluginBase {
 
 PJ_MESSAGE_PARSER_PLUGIN(JsonParser, kJsonManifest)
 
-PJ_DIALOG_PLUGIN(JsonParserDialog)
+PJ_DIALOG_PLUGIN_WITH_MANIFEST(JsonParserDialog, kJsonManifest)
