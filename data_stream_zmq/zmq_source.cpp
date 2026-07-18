@@ -144,7 +144,7 @@ class ZmqSource : public PJ::StreamSourceBase {
           (void)socket_->recv(ts_msg, zmq::recv_flags::dontwait);
         }
       } else {
-        auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+        auto now = std::chrono::system_clock::now().time_since_epoch();
         timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
       }
 
@@ -205,4 +205,4 @@ class ZmqSource : public PJ::StreamSourceBase {
 
 PJ_DATA_SOURCE_PLUGIN(ZmqSource, kZmqManifest)
 
-PJ_DIALOG_PLUGIN(ZmqDialog)
+PJ_DIALOG_PLUGIN_WITH_MANIFEST(ZmqDialog, kZmqManifest)

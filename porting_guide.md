@@ -151,7 +151,7 @@ kCapabilitySupportsPause    // must override pause()/resume()
 ```cpp
 PJ_DATA_SOURCE_PLUGIN(ClassName, R"({"name":"...","version":"1.0.0"})")
 PJ_MESSAGE_PARSER_PLUGIN(ClassName, R"({"name":"...","version":"1.0.0","encoding":"..."})")
-PJ_DIALOG_PLUGIN(DialogClassName)  // if plugin has a dialog
+PJ_DIALOG_PLUGIN_WITH_MANIFEST(DialogClassName, kMyManifest)  // if plugin has a dialog (explicit form: MSVC legacy-PP-safe)
 ```
 
 ---
@@ -388,7 +388,7 @@ When extending, modify these files:
    The DialogEngine searches for `findChild<QDialogButtonBox*>("buttonBox")` to wire accept/reject signals.
 4. DataSource owns dialog as member: `CsvDialog dialog_;`
 5. Override `dialogContext()`: `return &dialog_;`
-6. Export with `PJ_DIALOG_PLUGIN(CsvDialog)` alongside `PJ_DATA_SOURCE_PLUGIN`
+6. Export with `PJ_DIALOG_PLUGIN_WITH_MANIFEST(CsvDialog, kCsvManifest)` alongside `PJ_DATA_SOURCE_PLUGIN`
 
 ### Host Dialog Flow (how pj_proto_app uses it)
 

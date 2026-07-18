@@ -289,4 +289,4 @@ class ParquetSource : public PJ::FileSourceBase {
 
 PJ_DATA_SOURCE_PLUGIN(ParquetSource, kParquetManifest)
 
-PJ_DIALOG_PLUGIN(ParquetDialog)
+PJ_DIALOG_PLUGIN_WITH_MANIFEST(ParquetDialog, kParquetManifest)
