@@ -652,6 +652,11 @@ std::string MosaicoDialog::widget_data() {
     wd.setTableHeaders("seqTable", {"Name", "Date", "Size"});
     wd.setTableRows("seqTable", cache.rows);
     wd.setVisibleRows("seqTable", cache.visible);
+    // The rows arrive already sorted by sortSequencesLocked, so Qt's own sorting
+    // stays off and it paints no arrow — declare the indicator explicitly.
+    if (state_.seq_sort_col >= 0) {
+      wd.setTableSortIndicator("seqTable", state_.seq_sort_col, state_.seq_sort_asc);
+    }
     if (!state_.selected_sequence.empty()) {
       // Text-keyed (column-0 name match): survives the plugin-side re-sorts
       // that shuffle row positions.
@@ -680,6 +685,9 @@ std::string MosaicoDialog::widget_data() {
     wd.setTableHeaders("topicTable", {"Name", "Size"});
     wd.setTableRows("topicTable", rows);
     wd.setVisibleRows("topicTable", visible);
+    if (state_.topic_sort_col >= 0) {
+      wd.setTableSortIndicator("topicTable", state_.topic_sort_col, state_.topic_sort_asc);
+    }
     if (!state_.selected_topics.empty()) {
       wd.setSelectedItems("topicTable", state_.selected_topics);
     }

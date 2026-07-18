@@ -426,17 +426,20 @@
              <item>
               <widget class="QRadioButton" name="radioButtonContains">
                <property name="text"><string>Contains</string></property>
+               <attribute name="buttonGroup"><string>filterModeGroup</string></attribute>
               </widget>
              </item>
              <item>
               <widget class="QRadioButton" name="radioButtonWildcard">
                <property name="text"><string>Wildcard</string></property>
                <property name="checked"><bool>true</bool></property>
+               <attribute name="buttonGroup"><string>filterModeGroup</string></attribute>
               </widget>
              </item>
              <item>
               <widget class="QRadioButton" name="radioButtonRegExp">
                <property name="text"><string>RegExp</string></property>
+               <attribute name="buttonGroup"><string>filterModeGroup</string></attribute>
               </widget>
              </item>
              <item>
@@ -669,5 +672,6 @@
   <buttongroup name="languageGroup"/>
   <buttongroup name="languageBatchGroup"/>
   <buttongroup name="affixGroup"/>
+  <buttongroup name="filterModeGroup"/>
  </buttongroups>
 </ui>

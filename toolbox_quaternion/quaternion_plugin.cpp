@@ -29,7 +29,7 @@ constexpr double kDegPerRad = QuaternionToRPYConverter::kDegPerRad;
 class QuaternionDialog : public PJ::DialogPluginTyped {
  public:
   std::string manifest() const override {
-    return R"({"name":"Quaternion to RPY","version":"1.0.0"})";
+    return kQuaternionManifest;  // embedded manifest.json — carries the required "id"
   }
 
   std::string ui_content() const override {
@@ -618,4 +618,4 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
 }  // namespace
 
 PJ_TOOLBOX_PLUGIN(QuaternionToolbox, kQuaternionManifest)
-PJ_DIALOG_PLUGIN(QuaternionDialog)
+PJ_DIALOG_PLUGIN(QuaternionDialog, kQuaternionManifest)
