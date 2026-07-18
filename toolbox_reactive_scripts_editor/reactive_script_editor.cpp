@@ -1080,4 +1080,4 @@ class ReactiveScriptEditorToolbox : public PJ::ToolboxPluginBase {
 }  // namespace
 
 PJ_TOOLBOX_PLUGIN(ReactiveScriptEditorToolbox, kReactiveScriptEditorManifest)
-PJ_DIALOG_PLUGIN_WITH_MANIFEST(ReactiveScriptEditorDialog, kReactiveScriptEditorManifest)
+PJ_DIALOG_PLUGIN(ReactiveScriptEditorDialog, kReactiveScriptEditorManifest)
