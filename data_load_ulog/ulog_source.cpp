@@ -388,5 +388,5 @@ class ULogSource : public PJ::FileSourceBase {
 
 }  // namespace
 
-PJ_DIALOG_PLUGIN_WITH_MANIFEST(ulog_detail::ULogParamsDialog, kUlogManifest)
+PJ_DIALOG_PLUGIN(ulog_detail::ULogParamsDialog, kUlogManifest)
 PJ_DATA_SOURCE_PLUGIN(ULogSource, kUlogManifest)
