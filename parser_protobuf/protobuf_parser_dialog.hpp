@@ -55,6 +55,8 @@ class ProtoErrorCollector : public gp::compiler::MultiFileErrorCollector {
 /// Compiles the .proto file using google::protobuf::compiler::Importer and serializes
 /// the FileDescriptorSet for use by the parser.
 class ProtobufParserDialog : public PJ::DialogPluginTyped {
+  using PJ::DialogPluginTyped::onValueChanged;
+
  public:
   // --- Dialog protocol ---
 

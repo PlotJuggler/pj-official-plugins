@@ -3,4 +3,4 @@
 #include "ros_parser_internal.hpp"
 
 PJ_MESSAGE_PARSER_PLUGIN(ros_parser_detail::RosParser, kRosManifest)
-PJ_DIALOG_PLUGIN(RosParserDialog)
+PJ_DIALOG_PLUGIN_WITH_MANIFEST(RosParserDialog, kRosManifest)

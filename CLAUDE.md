@@ -61,7 +61,7 @@ Each plugin is a shared library (`.so`) loaded at runtime:
 - **DataSource plugins** — file importers (`FileSourceBase`) or streaming sources (`StreamSourceBase`)
 - **MessageParser plugins** — decode raw bytes into named fields (`MessageParserPluginBase`)
 
-Export macros: `PJ_DATA_SOURCE_PLUGIN(Class, manifest_json)`, `PJ_MESSAGE_PARSER_PLUGIN(Class, manifest_json)`, `PJ_DIALOG_PLUGIN(DialogClass)`.
+Export macros: `PJ_DATA_SOURCE_PLUGIN(Class, manifest_json)`, `PJ_MESSAGE_PARSER_PLUGIN(Class, manifest_json)`, `PJ_DIALOG_PLUGIN_WITH_MANIFEST(DialogClass, manifest_json)` (the variadic `PJ_DIALOG_PLUGIN(Class, manifest)` dispatch breaks under the MSVC legacy preprocessor — use the explicit form).
 
 ### Dual-mode CMake
 

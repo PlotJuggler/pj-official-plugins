@@ -1931,4 +1931,4 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
 }  // namespace
 
 PJ_TOOLBOX_PLUGIN(TransformEditorToolbox, kTransformEditorManifest)
-PJ_DIALOG_PLUGIN(TransformEditorDialog)
+PJ_DIALOG_PLUGIN_WITH_MANIFEST(TransformEditorDialog, kTransformEditorManifest)
