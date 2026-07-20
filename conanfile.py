@@ -67,6 +67,9 @@ class PjOfficialPluginsConan(ConanFile):
         "*:shared": False,
         "arrow/*:parquet": True,
         "arrow/*:with_snappy": True,
+        # mimalloc uses initial-exec TLS, making every .so linking it require static
+        # TLS and fail to dlopen once the process's static-TLS surplus is exhausted.
+        "arrow/*:with_mimalloc": False,
         "boost/*:without_test": True,
         "boost/*:without_cobalt": True,
         "lua/*:compile_as_cpp": True,
