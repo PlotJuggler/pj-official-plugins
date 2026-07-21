@@ -1,0 +1,166 @@
+#include <gtest/gtest.h>
+#include <lsl_cpp.h>
+
+#include <pj_base/sdk/plugin_data_api.hpp>
+#include <pj_base/type_tree.hpp>
+#include <variant>
+
+#include "lsl_conversions.hpp"
+
+using pj_lsl::TimestampMode;
+
+TEST(TimestampMode, ParseAndRoundTrip) {
+  EXPECT_EQ(pj_lsl::parseTimestampMode("sync"), TimestampMode::kSync);
+  EXPECT_EQ(pj_lsl::parseTimestampMode("raw"), TimestampMode::kRaw);
+  EXPECT_EQ(pj_lsl::parseTimestampMode("receiver"), TimestampMode::kReceiver);
+  EXPECT_EQ(pj_lsl::parseTimestampMode("bogus"), TimestampMode::kSync);  // default
+
+  EXPECT_STREQ(pj_lsl::toString(TimestampMode::kSync), "sync");
+  EXPECT_STREQ(pj_lsl::toString(TimestampMode::kRaw), "raw");
+  EXPECT_STREQ(pj_lsl::toString(TimestampMode::kReceiver), "receiver");
+}
+
+TEST(ChannelFormat, MapsEveryFormat) {
+  using PJ::PrimitiveType;
+  EXPECT_EQ(pj_lsl::mapChannelFormat(lsl::cf_float32), PrimitiveType::kFloat32);
+  EXPECT_EQ(pj_lsl::mapChannelFormat(lsl::cf_double64), PrimitiveType::kFloat64);
+  EXPECT_EQ(pj_lsl::mapChannelFormat(lsl::cf_int8), PrimitiveType::kInt8);
+  EXPECT_EQ(pj_lsl::mapChannelFormat(lsl::cf_int16), PrimitiveType::kInt16);
+  EXPECT_EQ(pj_lsl::mapChannelFormat(lsl::cf_int32), PrimitiveType::kInt32);
+  EXPECT_EQ(pj_lsl::mapChannelFormat(lsl::cf_int64), PrimitiveType::kInt64);
+  EXPECT_EQ(pj_lsl::mapChannelFormat(lsl::cf_string), PrimitiveType::kString);
+  EXPECT_EQ(pj_lsl::mapChannelFormat(lsl::cf_undefined), PrimitiveType::kUnspecified);
+
+  EXPECT_TRUE(pj_lsl::isStringFormat(lsl::cf_string));
+  EXPECT_FALSE(pj_lsl::isStringFormat(lsl::cf_float32));
+}
+
+TEST(ComputeTimestamp, AllModes) {
+  const double s = 100.0;                   // remote sample stamp (seconds)
+  const double tc = 0.5;                    // time_correction (seconds)
+  const int64_t off = 1'000'000'000'000LL;  // local_clock -> epoch offset (ns)
+  const int64_t now = 9'999'999'999LL;      // receiver clock (ns)
+
+  // sync: (s + tc) * 1e9 + off
+  EXPECT_EQ(
+      pj_lsl::computeTimestampNs(TimestampMode::kSync, s, tc, off, now), static_cast<int64_t>((s + tc) * 1e9) + off);
+  // sync with s == 0 -> receiver fallback
+  EXPECT_EQ(pj_lsl::computeTimestampNs(TimestampMode::kSync, 0.0, tc, off, now), now);
+  // raw: s * 1e9 (no offset, no correction)
+  EXPECT_EQ(pj_lsl::computeTimestampNs(TimestampMode::kRaw, s, tc, off, now), static_cast<int64_t>(s * 1e9));
+  // receiver: now, ignoring the stamp
+  EXPECT_EQ(pj_lsl::computeTimestampNs(TimestampMode::kReceiver, s, tc, off, now), now);
+}
+
+TEST(NumericValueRef, HoldsNativeType) {
+  using PJ::PrimitiveType;
+  EXPECT_TRUE(std::holds_alternative<float>(pj_lsl::numericValueRef(PrimitiveType::kFloat32, 1.5)));
+  EXPECT_TRUE(std::holds_alternative<double>(pj_lsl::numericValueRef(PrimitiveType::kFloat64, 1.5)));
+  EXPECT_TRUE(std::holds_alternative<int8_t>(pj_lsl::numericValueRef(PrimitiveType::kInt8, 5.0)));
+  EXPECT_TRUE(std::holds_alternative<int16_t>(pj_lsl::numericValueRef(PrimitiveType::kInt16, 5.0)));
+  EXPECT_TRUE(std::holds_alternative<int32_t>(pj_lsl::numericValueRef(PrimitiveType::kInt32, 5.0)));
+  EXPECT_TRUE(std::holds_alternative<int64_t>(pj_lsl::numericValueRef(PrimitiveType::kInt64, 5.0)));
+  EXPECT_EQ(std::get<int32_t>(pj_lsl::numericValueRef(PrimitiveType::kInt32, 42.0)), 42);
+}
+
+TEST(UniqueTopicNames, DisambiguatesCollisions) {
+  std::vector<pj_lsl::StreamKey> in = {{"EEG", "amp-01"}, {"EEG", "amp-02"}, {"Markers", ""}, {"Dup", ""}, {"Dup", ""}};
+  auto out = pj_lsl::uniqueTopicNames(in);
+  ASSERT_EQ(out.size(), 5u);
+  EXPECT_EQ(out[0], "EEG (amp-01)");
+  EXPECT_EQ(out[1], "EEG (amp-02)");
+  EXPECT_EQ(out[2], "Markers");  // unique name, unchanged
+  EXPECT_EQ(out[3], "Dup #0");   // empty source_id -> numeric suffix
+  EXPECT_EQ(out[4], "Dup #1");
+}
+
+TEST(UniqueTopicNames, GloballyUniqueAcrossGroups) {
+  // Two "A" (disambiguated to "A (x)"/"A (y)") plus a stream literally named
+  // "A (x)" must not produce two identical topic names.
+  std::vector<pj_lsl::StreamKey> in = {{"A", "x"}, {"A", "y"}, {"A (x)", "z"}};
+  auto out = pj_lsl::uniqueTopicNames(in);
+  ASSERT_EQ(out.size(), 3u);
+  EXPECT_EQ(out[0], "A (x)");
+  EXPECT_EQ(out[1], "A (y)");
+  EXPECT_EQ(out[2], "A (x) #1");  // collides with out[0] -> suffixed
+  // All distinct.
+  EXPECT_NE(out[0], out[2]);
+}
+
+TEST(ChannelLabels, EnforcesUniqueness) {
+  // Two channels share the label "sig"; the third is unlabeled and falls back
+  // to "channel_2", which happens to also be provided explicitly on channel 0
+  // of a second scenario. Here: duplicate explicit labels must be suffixed.
+  lsl::stream_info info("Dup", "EEG", 3, 100.0, lsl::cf_float32, "src");
+  lsl::xml_element channels = info.desc().append_child("channels");
+  channels.append_child("channel").append_child_value("label", "sig");
+  channels.append_child("channel").append_child_value("label", "sig");
+  channels.append_child("channel").append_child_value("label", "channel_2");
+
+  auto labels = pj_lsl::channelLabels(info);
+  ASSERT_EQ(labels.size(), 3u);
+  EXPECT_EQ(labels[0], "sig");
+  EXPECT_EQ(labels[1], "sig_1");      // duplicate -> suffixed
+  EXPECT_EQ(labels[2], "channel_2");  // distinct, unchanged
+  // All distinct.
+  EXPECT_NE(labels[0], labels[1]);
+}
+
+TEST(ChannelLabels, ReadsXmlWithFallback) {
+  // 3-channel float stream; give 2 of 3 channels labels, leave the 3rd blank.
+  lsl::stream_info info("TestStream", "EEG", 3, 100.0, lsl::cf_float32, "src-1");
+  lsl::xml_element channels = info.desc().append_child("channels");
+  channels.append_child("channel").append_child_value("label", "Fp1");
+  channels.append_child("channel").append_child_value("label", "Fp2");
+  channels.append_child("channel");  // no label -> fallback
+
+  auto labels = pj_lsl::channelLabels(info);
+  ASSERT_EQ(labels.size(), 3u);
+  EXPECT_EQ(labels[0], "Fp1");
+  EXPECT_EQ(labels[1], "Fp2");
+  EXPECT_EQ(labels[2], "channel_2");
+}
+
+TEST(ChannelLabels, NoDescAllFallback) {
+  lsl::stream_info info("Bare", "Misc", 2, 0.0, lsl::cf_double64, "src-2");
+  auto labels = pj_lsl::channelLabels(info);
+  ASSERT_EQ(labels.size(), 2u);
+  EXPECT_EQ(labels[0], "channel_0");
+  EXPECT_EQ(labels[1], "channel_1");
+}
+
+TEST(DialogConfig, RoundTrip) {
+  pj_lsl::DialogConfig cfg;
+  cfg.streams = {{"amp-01", "EEG", "float"}, {"", "Markers", "Markers"}};
+  cfg.mode = pj_lsl::TimestampMode::kReceiver;
+
+  const std::string json = pj_lsl::serializeConfig(cfg);
+  pj_lsl::DialogConfig back = pj_lsl::parseConfig(json);
+
+  ASSERT_EQ(back.streams.size(), 2u);
+  EXPECT_EQ(back.streams[0].source_id, "amp-01");
+  EXPECT_EQ(back.streams[0].name, "EEG");
+  EXPECT_EQ(back.streams[0].type, "float");
+  EXPECT_EQ(back.streams[1].name, "Markers");
+  EXPECT_EQ(back.mode, pj_lsl::TimestampMode::kReceiver);
+
+  // defaults: empty/garbage json -> sync mode, no streams
+  pj_lsl::DialogConfig def = pj_lsl::parseConfig("not json");
+  EXPECT_TRUE(def.streams.empty());
+  EXPECT_EQ(def.mode, pj_lsl::TimestampMode::kSync);
+}
+
+TEST(DialogConfig, MalformedInputsAreSafe) {
+  // Valid JSON but wrong root shape -> defaults, no throw.
+  auto arr = pj_lsl::parseConfig("[1,2,3]");
+  EXPECT_TRUE(arr.streams.empty());
+  EXPECT_EQ(arr.mode, pj_lsl::TimestampMode::kSync);
+
+  // Non-object stream entries are skipped; a numeric timestamp_mode is ignored;
+  // the one well-formed entry still parses. No nlohmann type_error escapes.
+  auto mixed =
+      pj_lsl::parseConfig(R"({"streams":[123,"x",{"name":"A","source_id":"s","type":"t"}],"timestamp_mode":7})");
+  ASSERT_EQ(mixed.streams.size(), 1u);
+  EXPECT_EQ(mixed.streams[0].name, "A");
+  EXPECT_EQ(mixed.mode, pj_lsl::TimestampMode::kSync);
+}
