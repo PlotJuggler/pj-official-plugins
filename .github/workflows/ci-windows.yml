@@ -43,7 +43,12 @@ jobs:
           cache_packages: false
 
       - name: Install cmake and ninja
-        run: pip install cmake ninja
+        # ninja 1.13.0 corrupts MSVC link response files: any rsp line over
+        # 16,383 chars has its leading characters stripped, so link.exe fails
+        # with LNK1181 on a truncated path of the line's first token (the
+        # object list + library line of every multi-object target). Pin the
+        # last good release — https://github.com/ninja-build/ninja/issues/2616
+        run: pip install cmake "ninja==1.12.1"
 
       - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1

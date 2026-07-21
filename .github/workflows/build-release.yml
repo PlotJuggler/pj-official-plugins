@@ -77,7 +77,10 @@ jobs:
             conan-${{ steps.setup-conan.outputs.conan-version }}-${{ runner.os }}-${{ matrix.arch }}-${{ steps.build-scope.outputs.scope }}-
 
       - name: Install cmake and ninja
-        run: pip install cmake ninja
+        # ninja 1.13.0 corrupts MSVC link response files (leading chars of
+        # >16,383-char rsp lines stripped -> LNK1181); pin the last good
+        # release — https://github.com/ninja-build/ninja/issues/2616
+        run: pip install cmake "ninja==1.12.1"
 
       - name: Set up MSVC environment (Windows)
         if: runner.os == 'Windows' && steps.build-scope.outputs.skip != 'true'

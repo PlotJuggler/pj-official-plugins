@@ -1,19 +1,3 @@
-if(MSVC)
-  # CI's MSVC linker mis-seeks by one byte per LF line when reading a
-  # newline-separated object list from a response file: the LAST object loses
-  # exactly N leading characters, N == number of preceding lines (verified via
-  # CI rsp dumps — the .rsp bytes are correct, the .obj exists, yet LNK1181
-  # quotes a truncated path). Objects fit on the command line here (testcore
-  # keeps every test at 1-2 objects), so bypass the object response file; the
-  # library response file is a single line and stays safe.
-  # Do NOT force response files globally: macOS BSD ar has no @rsp support.
-  # Both flags must be off — the ninja generator emits one combined rsp when
-  # either is on, and the combined file still newline-separates the objects.
-  # The full link line here is ~17k chars, comfortably under the 32k limit.
-  set(CMAKE_CXX_USE_RESPONSE_FILE_FOR_OBJECTS 0)
-  set(CMAKE_CXX_USE_RESPONSE_FILE_FOR_LIBRARIES 0)
-endif()
-
 find_package(nlohmann_json REQUIRED)
 if(NOT TARGET Arrow::arrow_static)
   find_package(Arrow REQUIRED)
