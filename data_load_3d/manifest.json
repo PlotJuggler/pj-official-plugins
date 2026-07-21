@@ -1,7 +1,7 @@
 {
   "id": "pointcloud-3d-loader",
   "name": "3D Loader (PLY/PCD)",
-  "version": "0.99.0",
+  "version": "1.0.0",
   "description": "Data loader for static 3D files: .pcd and vertex-only .ply load as a point cloud; .ply with faces loads as a 3D mesh. One snapshot at timestamp 0.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",

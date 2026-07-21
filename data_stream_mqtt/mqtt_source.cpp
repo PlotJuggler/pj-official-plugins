@@ -88,7 +88,7 @@ class MqttSource : public PJ::StreamSourceBase {
         m.payload.assign(
             reinterpret_cast<const uint8_t*>(payload.data()),
             reinterpret_cast<const uint8_t*>(payload.data()) + payload.size());
-        auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+        auto now = std::chrono::system_clock::now().time_since_epoch();
         m.timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
 
         message_queue_.push(std::move(m));
@@ -182,4 +182,4 @@ class MqttSource : public PJ::StreamSourceBase {
 
 PJ_DATA_SOURCE_PLUGIN(MqttSource, kMqttManifest)
 
-PJ_DIALOG_PLUGIN(MqttDialog)
+PJ_DIALOG_PLUGIN(MqttDialog, kMqttManifest)
