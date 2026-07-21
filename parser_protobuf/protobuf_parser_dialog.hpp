@@ -261,15 +261,52 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
       compiled_schema_ = PJ::base64::decode(cfg["compiled_schema_base64"].get<std::string>());
     }
 
-    // Reload and recompile proto file
+    // Restore the embedded descriptor first. The original .proto may have been
+    // moved, deleted, or browser-staged at a temporary path since this config
+    // was saved; the descriptor set is the portable source of truth in that
+    // case. Prefer a fresh compilation only when the configured source is still
+    // available.
+    restoreMessageTypesFromCompiledSchema();
     if (!proto_file_path_.empty()) {
-      loadAndCompileProtoFile();
+      std::ifstream proto_file(proto_file_path_);
+      if (proto_file.good()) {
+        proto_file.close();
+        loadAndCompileProtoFile();
+      }
     }
 
     return true;
   }
 
  private:
+  void restoreMessageTypesFromCompiledSchema() {
+    message_types_.clear();
+    if (compiled_schema_.empty()) {
+      return;
+    }
+    gp::FileDescriptorSet descriptors;
+    if (!descriptors.ParseFromString(compiled_schema_) || descriptors.file().empty()) {
+      return;
+    }
+    // buildFileDescriptorSet() appends dependencies first and the selected
+    // source file last. Match loadAndCompileProtoFile() by listing only that
+    // file's top-level messages, not every imported dependency.
+    const gp::FileDescriptorProto& source = descriptors.file(descriptors.file_size() - 1);
+    const std::string prefix = source.package().empty() ? std::string{} : source.package() + ".";
+    for (const gp::DescriptorProto& message : source.message_type()) {
+      message_types_.push_back(prefix + message.name());
+    }
+    // Match loadAndCompileProtoFile(): drop a saved selection that the restored
+    // schema no longer offers, then default to the first available type.
+    if (!selected_message_type_.empty() &&
+        std::find(message_types_.begin(), message_types_.end(), selected_message_type_) == message_types_.end()) {
+      selected_message_type_.clear();
+    }
+    if (selected_message_type_.empty() && !message_types_.empty()) {
+      selected_message_type_ = message_types_.front();
+    }
+  }
+
   static std::string filenameFromPath(const std::string& path) {
     auto pos = path.find_last_of("/\\");
     return (pos != std::string::npos) ? path.substr(pos + 1) : path;
