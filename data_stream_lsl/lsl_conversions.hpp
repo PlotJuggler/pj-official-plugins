@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_base/type_tree.hpp>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -115,26 +116,34 @@ struct StreamKey {
   std::string source_id;
 };
 
-/// Per-stream topic names, unique and order-preserving. Unique names pass
-/// through; collisions get " (source_id)", or " #<n>" when source_id is empty.
+/// Per-stream topic names, GLOBALLY unique and order-preserving. Unique names
+/// pass through; same-name collisions get " (source_id)", or " #<n>" when
+/// source_id is empty. A final pass guarantees uniqueness across the whole set,
+/// so a generated name can never collide with another group's name (or a stream
+/// literally named like the suffixed form) and merge unrelated inlets.
 inline std::vector<std::string> uniqueTopicNames(const std::vector<StreamKey>& streams) {
   std::map<std::string, int> name_counts;
   for (const auto& s : streams) {
     ++name_counts[s.name];
   }
   std::map<std::string, int> dup_index;
+  std::set<std::string> used;
   std::vector<std::string> out;
   out.reserve(streams.size());
   for (const auto& s : streams) {
+    std::string candidate;
     if (name_counts[s.name] <= 1) {
-      out.push_back(s.name);
-      continue;
-    }
-    if (!s.source_id.empty()) {
-      out.push_back(s.name + " (" + s.source_id + ")");
+      candidate = s.name;
+    } else if (!s.source_id.empty()) {
+      candidate = s.name + " (" + s.source_id + ")";
     } else {
-      out.push_back(s.name + " #" + std::to_string(dup_index[s.name]++));
+      candidate = s.name + " #" + std::to_string(dup_index[s.name]++);
     }
+    std::string unique = candidate;
+    for (int n = 1; !used.insert(unique).second; ++n) {
+      unique = candidate + " #" + std::to_string(n);
+    }
+    out.push_back(std::move(unique));
   }
   return out;
 }
@@ -163,6 +172,17 @@ inline std::vector<std::string> channelLabels(const lsl::stream_info& info) {
       label = "channel_" + std::to_string(i);
     }
     labels.push_back(std::move(label));
+  }
+  // Field names within a topic must be unique. Duplicate XML labels, or an
+  // explicit label colliding with a "channel_<i>" fallback, would otherwise
+  // register the same field twice and be rejected by the host. Suffix
+  // collisions deterministically, preserving channel order.
+  std::set<std::string> seen;
+  for (auto& label : labels) {
+    const std::string base = label;
+    for (int suffix = 1; !seen.insert(label).second; ++suffix) {
+      label = base + "_" + std::to_string(suffix);
+    }
   }
   return labels;
 }

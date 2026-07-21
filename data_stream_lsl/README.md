@@ -35,3 +35,6 @@ numeric EEG stream and a string marker stream.
 - No reconnection: a stream that is offline at start or drops mid-session is
   skipped (re-open the source to pick it up again).
 - Two streams with the identical `name` are selected together.
+- Each poll drains an inlet's full backlog (bounded by liblsl's 360 s buffer);
+  after a long stall one stream's catch-up can briefly delay the others. A
+  per-poll sample cap is a planned follow-up.

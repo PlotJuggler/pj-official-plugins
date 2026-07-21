@@ -74,6 +74,38 @@ TEST(UniqueTopicNames, DisambiguatesCollisions) {
   EXPECT_EQ(out[4], "Dup #1");
 }
 
+TEST(UniqueTopicNames, GloballyUniqueAcrossGroups) {
+  // Two "A" (disambiguated to "A (x)"/"A (y)") plus a stream literally named
+  // "A (x)" must not produce two identical topic names.
+  std::vector<pj_lsl::StreamKey> in = {{"A", "x"}, {"A", "y"}, {"A (x)", "z"}};
+  auto out = pj_lsl::uniqueTopicNames(in);
+  ASSERT_EQ(out.size(), 3u);
+  EXPECT_EQ(out[0], "A (x)");
+  EXPECT_EQ(out[1], "A (y)");
+  EXPECT_EQ(out[2], "A (x) #1");  // collides with out[0] -> suffixed
+  // All distinct.
+  EXPECT_NE(out[0], out[2]);
+}
+
+TEST(ChannelLabels, EnforcesUniqueness) {
+  // Two channels share the label "sig"; the third is unlabeled and falls back
+  // to "channel_2", which happens to also be provided explicitly on channel 0
+  // of a second scenario. Here: duplicate explicit labels must be suffixed.
+  lsl::stream_info info("Dup", "EEG", 3, 100.0, lsl::cf_float32, "src");
+  lsl::xml_element channels = info.desc().append_child("channels");
+  channels.append_child("channel").append_child_value("label", "sig");
+  channels.append_child("channel").append_child_value("label", "sig");
+  channels.append_child("channel").append_child_value("label", "channel_2");
+
+  auto labels = pj_lsl::channelLabels(info);
+  ASSERT_EQ(labels.size(), 3u);
+  EXPECT_EQ(labels[0], "sig");
+  EXPECT_EQ(labels[1], "sig_1");      // duplicate -> suffixed
+  EXPECT_EQ(labels[2], "channel_2");  // distinct, unchanged
+  // All distinct.
+  EXPECT_NE(labels[0], labels[1]);
+}
+
 TEST(ChannelLabels, ReadsXmlWithFallback) {
   // 3-channel float stream; give 2 of 3 channels labels, leave the 3rd blank.
   lsl::stream_info info("TestStream", "EEG", 3, 100.0, lsl::cf_float32, "src-1");

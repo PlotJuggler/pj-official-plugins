@@ -98,7 +98,11 @@ class LslDialog : public PJ::DialogPluginTyped {
         next.push_back(s);  // offline -> preserve
       }
     }
-    for (const auto& name : selected) {
+    // Dedupe the incoming names first: two duplicate-named rows both selected
+    // report the same name twice, and expanding each occurrence would multiply
+    // the matching identities (duplicate inlets/records downstream).
+    const std::set<std::string> selected_names(selected.begin(), selected.end());
+    for (const auto& name : selected_names) {
       for (const auto& s : snapshot) {
         if (s.name == name) {
           next.push_back({s.source_id, s.name, s.type});
