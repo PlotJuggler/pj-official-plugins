@@ -1,3 +1,9 @@
+# The milestone-4 test links every plugin TU plus static Arrow/Parquet; on
+# Windows the resulting link command exceeds the 32k CreateProcess limit and
+# MSVC's linker sees a truncated .obj path (LNK1181). Force ninja response
+# files for every target in this directory (harmless elsewhere).
+set(CMAKE_NINJA_FORCE_RESPONSE_FILE ON)
+
 find_package(nlohmann_json REQUIRED)
 if(NOT TARGET Arrow::arrow_static)
   find_package(Arrow REQUIRED)
