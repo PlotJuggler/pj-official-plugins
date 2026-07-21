@@ -117,3 +117,18 @@ TEST(DialogConfig, RoundTrip) {
   EXPECT_TRUE(def.streams.empty());
   EXPECT_EQ(def.mode, pj_lsl::TimestampMode::kSync);
 }
+
+TEST(DialogConfig, MalformedInputsAreSafe) {
+  // Valid JSON but wrong root shape -> defaults, no throw.
+  auto arr = pj_lsl::parseConfig("[1,2,3]");
+  EXPECT_TRUE(arr.streams.empty());
+  EXPECT_EQ(arr.mode, pj_lsl::TimestampMode::kSync);
+
+  // Non-object stream entries are skipped; a numeric timestamp_mode is ignored;
+  // the one well-formed entry still parses. No nlohmann type_error escapes.
+  auto mixed =
+      pj_lsl::parseConfig(R"({"streams":[123,"x",{"name":"A","source_id":"s","type":"t"}],"timestamp_mode":7})");
+  ASSERT_EQ(mixed.streams.size(), 1u);
+  EXPECT_EQ(mixed.streams[0].name, "A");
+  EXPECT_EQ(mixed.mode, pj_lsl::TimestampMode::kSync);
+}

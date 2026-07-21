@@ -192,17 +192,29 @@ inline std::string serializeConfig(const DialogConfig& cfg) {
 
 inline DialogConfig parseConfig(std::string_view json) {
   DialogConfig cfg;
-  auto j = nlohmann::json::parse(json, nullptr, false);
-  if (j.is_discarded()) {
-    return cfg;  // defaults: no streams, sync mode
-  }
-  if (j.contains("streams") && j["streams"].is_array()) {
-    for (const auto& e : j["streams"]) {
-      cfg.streams.push_back(
-          {e.value("source_id", std::string{}), e.value("name", std::string{}), e.value("type", std::string{})});
+  // Config comes from saved layouts and may be hand-edited/corrupted. Guard the
+  // shape explicitly and catch nlohmann type_errors so nothing propagates across
+  // the plugin's loadConfig() boundary; a malformed config just yields defaults.
+  try {
+    auto j = nlohmann::json::parse(json, nullptr, false);
+    if (j.is_discarded() || !j.is_object()) {
+      return {};  // defaults: no streams, sync mode
     }
+    if (j.contains("streams") && j["streams"].is_array()) {
+      for (const auto& e : j["streams"]) {
+        if (!e.is_object()) {
+          continue;
+        }
+        cfg.streams.push_back(
+            {e.value("source_id", std::string{}), e.value("name", std::string{}), e.value("type", std::string{})});
+      }
+    }
+    if (j.contains("timestamp_mode") && j["timestamp_mode"].is_string()) {
+      cfg.mode = parseTimestampMode(j["timestamp_mode"].get<std::string>());
+    }
+  } catch (const std::exception&) {
+    return {};  // any type/parse error -> safe defaults
   }
-  cfg.mode = parseTimestampMode(j.value("timestamp_mode", std::string("sync")));
   return cfg;
 }
 

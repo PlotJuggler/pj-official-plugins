@@ -61,6 +61,10 @@ class LslSource : public PJ::StreamSourceBase {
     }
     const std::vector<std::string> topic_names = pj_lsl::uniqueTopicNames(keys);
 
+    // Build into a local vector; only publish to inlets_ once the whole loop
+    // succeeds, so a mid-loop host error (ensureTopic/ensureField) leaves no
+    // half-opened inlets behind (startup is resource-transactional).
+    std::vector<Inlet> pending;
     for (size_t i = 0; i < cfg.streams.size(); ++i) {
       const auto& sel = cfg.streams[i];
       std::optional<lsl::stream_info> info_opt = resolveOne(sel);
@@ -82,7 +86,10 @@ class LslSource : public PJ::StreamSourceBase {
       inlet.is_string = pj_lsl::isStringFormat(inlet.format);
 
       try {
-        inlet.inlet = std::make_unique<lsl::stream_inlet>(info, kInletBufferSeconds, 0, true);
+        // recover=false: honor the no-reconnect design. A stream that drops is
+        // reported lost via pull_chunk (see drain*), marked dead, and skipped;
+        // it is not silently re-resolved.
+        inlet.inlet = std::make_unique<lsl::stream_inlet>(info, kInletBufferSeconds, 0, false);
       } catch (const std::exception& e) {
         runtimeHost().reportMessage(
             PJ::DataSourceMessageLevel::kWarning, std::string("failed to open LSL inlet: ") + e.what());
@@ -111,28 +118,37 @@ class LslSource : public PJ::StreamSourceBase {
         inlet.fields.push_back(*field);
       }
 
-      inlets_.push_back(std::move(inlet));
+      pending.push_back(std::move(inlet));
     }
 
-    if (inlets_.empty()) {
+    if (pending.empty()) {
       return PJ::unexpected("no selected LSL stream could be resolved");
     }
+    inlets_ = std::move(pending);
     runtimeHost().reportMessage(
         PJ::DataSourceMessageLevel::kInfo, "LSL: streaming " + std::to_string(inlets_.size()) + " stream(s)");
     return PJ::okStatus();
   }
 
+  // Drain every live inlet. A per-inlet stream loss marks that inlet dead and is
+  // skipped thereafter; the other streams keep flowing (a single drop must not
+  // stop the whole source). Only a host write failure is fatal.
   PJ::Status onPoll() override {
     const int64_t now_ns = nowEpochNs();
     for (auto& inlet : inlets_) {
+      if (inlet.dead) {
+        continue;
+      }
+      PJ::Status st = PJ::okStatus();
       if (inlet.is_string) {
-        if (auto st = drainString(inlet, now_ns); !st) {
-          return st;
-        }
+        st = drainString(inlet, now_ns);
+      } else if (inlet.format == lsl::cf_int64) {
+        st = drainInt64(inlet, now_ns);  // native path: double can't hold int64 losslessly
       } else {
-        if (auto st = drainNumeric(inlet, now_ns); !st) {
-          return st;
-        }
+        st = drainNumeric(inlet, now_ns);
+      }
+      if (!st) {
+        return st;  // host write failure -> fatal
       }
     }
     return PJ::okStatus();
@@ -150,8 +166,17 @@ class LslSource : public PJ::StreamSourceBase {
     lsl::channel_format_t format = lsl::cf_undefined;
     PJ::PrimitiveType field_type = PJ::PrimitiveType::kFloat64;
     bool is_string = false;
+    bool dead = false;  // stream lost -> stop draining this inlet, keep the rest
     double time_corr_s = 0.0;
   };
+
+  // A stream that dropped: report once, mark dead, and let onPoll skip it.
+  // Non-fatal to the source (the documented "dropped stream is skipped").
+  void markLost(Inlet& inlet, const char* what) {
+    inlet.dead = true;
+    runtimeHost().reportMessage(
+        PJ::DataSourceMessageLevel::kWarning, std::string("LSL stream lost, skipping: ") + what);
+  }
 
   static int64_t nowEpochNs() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
@@ -195,11 +220,11 @@ class LslSource : public PJ::StreamSourceBase {
     try {
       inlet.inlet->pull_chunk(chunk, stamps);  // two-arg overload: non-blocking drain
     } catch (const std::exception& e) {
-      const std::string msg = std::string("LSL pull error: ") + e.what();
-      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, msg);
-      return PJ::unexpected(msg);
+      markLost(inlet, e.what());
+      return PJ::okStatus();  // per-inlet loss is non-fatal
     }
-    for (size_t si = 0; si < chunk.size(); ++si) {
+    const size_t n = std::min(chunk.size(), stamps.size());
+    for (size_t si = 0; si < n; ++si) {
       const int64_t ts = pj_lsl::computeTimestampNs(mode_, stamps[si], inlet.time_corr_s, epoch_offset_ns_, now_ns);
       std::vector<PJ::sdk::BoundFieldValue> fields;
       fields.reserve(inlet.fields.size());
@@ -214,17 +239,44 @@ class LslSource : public PJ::StreamSourceBase {
     return PJ::okStatus();
   }
 
+  // cf_int64 has no lossless double representation; pull it natively so values
+  // are exact and there is no out-of-range double->int64 cast (UB).
+  PJ::Status drainInt64(Inlet& inlet, int64_t now_ns) {
+    std::vector<std::vector<int64_t>> chunk;
+    std::vector<double> stamps;
+    try {
+      inlet.inlet->pull_chunk(chunk, stamps);
+    } catch (const std::exception& e) {
+      markLost(inlet, e.what());
+      return PJ::okStatus();
+    }
+    const size_t n = std::min(chunk.size(), stamps.size());
+    for (size_t si = 0; si < n; ++si) {
+      const int64_t ts = pj_lsl::computeTimestampNs(mode_, stamps[si], inlet.time_corr_s, epoch_offset_ns_, now_ns);
+      std::vector<PJ::sdk::BoundFieldValue> fields;
+      fields.reserve(inlet.fields.size());
+      const size_t nch = std::min(inlet.fields.size(), chunk[si].size());
+      for (size_t ci = 0; ci < nch; ++ci) {
+        fields.push_back({inlet.fields[ci], PJ::sdk::ValueRef{chunk[si][ci]}});
+      }
+      if (auto st = writeHost().appendBoundRecord(inlet.topic, PJ::Timestamp{ts}, fields); !st) {
+        return st;
+      }
+    }
+    return PJ::okStatus();
+  }
+
   PJ::Status drainString(Inlet& inlet, int64_t now_ns) {
     std::vector<std::vector<std::string>> chunk;
     std::vector<double> stamps;
     try {
       inlet.inlet->pull_chunk(chunk, stamps);
     } catch (const std::exception& e) {
-      const std::string msg = std::string("LSL pull error: ") + e.what();
-      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, msg);
-      return PJ::unexpected(msg);
+      markLost(inlet, e.what());
+      return PJ::okStatus();
     }
-    for (size_t si = 0; si < chunk.size(); ++si) {
+    const size_t n = std::min(chunk.size(), stamps.size());
+    for (size_t si = 0; si < n; ++si) {
       const int64_t ts = pj_lsl::computeTimestampNs(mode_, stamps[si], inlet.time_corr_s, epoch_offset_ns_, now_ns);
       std::vector<PJ::sdk::BoundFieldValue> fields;
       fields.reserve(inlet.fields.size());

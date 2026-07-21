@@ -79,8 +79,19 @@ class LslDialog : public PJ::DialogPluginTyped {
     }
     // `selected` = column-0 names currently selected. Keep previously-selected
     // streams that are not currently listed (went offline) so their selection
-    // survives; replace the listed portion with the new selection.
-    const std::set<std::string> listed = listedNames();
+    // survives; replace the listed portion with the new selection. Take ONE
+    // consistent snapshot of discovered_ (the discovery thread can replace it
+    // between accesses), and rebuild the whole selection from that snapshot.
+    const bool was_empty = selected_.empty();
+    std::vector<DiscoveredStream> snapshot;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      snapshot = discovered_;
+    }
+    std::set<std::string> listed;
+    for (const auto& s : snapshot) {
+      listed.insert(s.name);
+    }
     std::vector<pj_lsl::SelectedStream> next;
     for (const auto& s : selected_) {
       if (listed.find(s.name) == listed.end()) {
@@ -88,12 +99,16 @@ class LslDialog : public PJ::DialogPluginTyped {
       }
     }
     for (const auto& name : selected) {
-      for (auto& id : identitiesForName(name)) {
-        next.push_back(std::move(id));
+      for (const auto& s : snapshot) {
+        if (s.name == name) {
+          next.push_back({s.source_id, s.name, s.type});
+        }
       }
     }
     selected_ = std::move(next);
-    return false;
+    // Re-render when the OK-enable state (selection emptiness) flips, so the OK
+    // button updates immediately rather than on the next onTick.
+    return was_empty != selected_.empty();
   }
 
   bool onClicked(std::string_view widget) override {
@@ -155,26 +170,6 @@ class LslDialog : public PJ::DialogPluginTyped {
       return "irregular";
     }
     return std::to_string(static_cast<long>(srate + 0.5));
-  }
-
-  std::set<std::string> listedNames() {
-    std::set<std::string> names;
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& s : discovered_) {
-      names.insert(s.name);
-    }
-    return names;
-  }
-
-  std::vector<pj_lsl::SelectedStream> identitiesForName(const std::string& name) {
-    std::vector<pj_lsl::SelectedStream> ids;
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& s : discovered_) {
-      if (s.name == name) {
-        ids.push_back({s.source_id, s.name, s.type});
-      }
-    }
-    return ids;
   }
 
   void ensureDiscovery() {
