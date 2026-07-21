@@ -18,6 +18,8 @@
 | [![data_load_lerobot](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_lerobot.json)](data_load_lerobot/) | DataSource | LeRobot v2.1 dataset loading |
 | [![data_load_mp4](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mp4.json)](data_load_mp4/) | DataSource | MP4 video loading |
 | [![data_load_3d](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_3d.json)](data_load_3d/) | DataSource | PLY/PCD point cloud & mesh loading |
+| [![data_load_mf4](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mf4.json)](data_load_mf4/) | DataSource | ASAM MF4/MDF loading (+ DBC CAN decode) |
+| [![data_load_blf](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_blf.json)](data_load_blf/) | DataSource | Vector BLF CAN-log loading (DBC decode) |
 | [![data_stream_zmq](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_zmq.json)](data_stream_zmq/) | DataSource | ZeroMQ streaming |
 | [![data_stream_mqtt](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_mqtt.json)](data_stream_mqtt/) | DataSource | MQTT streaming |
 | [![data_stream_foxglove_bridge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_foxglove_bridge.json)](data_stream_foxglove_bridge/) | DataSource | Foxglove WebSocket bridge |
@@ -232,6 +234,8 @@ is unavailable (`scripts/ensure_core.sh`).
 | cpython | 3.12.7 | toolbox_reactive_scripts_editor |
 | libdatachannel | 0.24.0 | data_stream_webrtc |
 | fmt | 12.1.0 | data_load_mp4, toolbox_mosaico |
+| zlib | 1.3.1 | data_load_mf4 (mdflib; matches arrow's pin) |
+| expat | 2.6.4 | data_load_mf4 (mdflib) |
 | gtest | 1.17.0 | All plugin tests |
 
 ### Via CPM (plugin-private deps only)
@@ -241,6 +245,9 @@ is unavailable (`scripts/ensure_core.sh`).
 | ulog_cpp | data_load_ulog |
 | rosx_introspection | parser_ros |
 | data_tamer | parser_ros, parser_data_tamer |
+| mdflib | data_load_mf4 |
+| dbc_parser_cpp + fast_float | data_load_mf4, data_load_blf (shared `common/can_dbc`) |
+| lblf | data_load_blf |
 
 ### Pinned transitive dependencies
 

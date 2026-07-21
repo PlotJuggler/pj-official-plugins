@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>BlfDialogForm</class>
+ <widget class="QWidget" name="BlfDialogForm">
+  <property name="windowTitle">
+   <string>BLF File - CAN channel DBCs</string>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>600</width>
+    <height>320</height>
+   </size>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QLabel" name="labelSummary">
+     <property name="text"><string>BLF file</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="labelInstructions">
+     <property name="text"><string>Assign a DBC database per CAN channel to decode its signals (channels 1-4; more via saved config):</string></property>
+     <property name="wordWrap"><bool>true</bool></property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="rowCh1">
+     <item><widget class="QLabel" name="labelCh1"><property name="text"><string>Channel 1</string></property></widget></item>
+     <item><widget class="QPushButton" name="buttonDbcCh1"><property name="text"><string>Select DBC...</string></property></widget></item>
+     <item><widget class="QLabel" name="labelDbcCh1"><property name="text"><string>(none)</string></property></widget></item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="rowCh2">
+     <item><widget class="QLabel" name="labelCh2"><property name="text"><string>Channel 2</string></property></widget></item>
+     <item><widget class="QPushButton" name="buttonDbcCh2"><property name="text"><string>Select DBC...</string></property></widget></item>
+     <item><widget class="QLabel" name="labelDbcCh2"><property name="text"><string>(none)</string></property></widget></item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="rowCh3">
+     <item><widget class="QLabel" name="labelCh3"><property name="text"><string>Channel 3</string></property></widget></item>
+     <item><widget class="QPushButton" name="buttonDbcCh3"><property name="text"><string>Select DBC...</string></property></widget></item>
+     <item><widget class="QLabel" name="labelDbcCh3"><property name="text"><string>(none)</string></property></widget></item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="rowCh4">
+     <item><widget class="QLabel" name="labelCh4"><property name="text"><string>Channel 4</string></property></widget></item>
+     <item><widget class="QPushButton" name="buttonDbcCh4"><property name="text"><string>Select DBC...</string></property></widget></item>
+     <item><widget class="QLabel" name="labelDbcCh4"><property name="text"><string>(none)</string></property></widget></item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>
