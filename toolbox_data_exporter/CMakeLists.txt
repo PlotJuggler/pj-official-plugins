@@ -7,7 +7,11 @@ if(MSVC)
   # keeps every test at 1-2 objects), so bypass the object response file; the
   # library response file is a single line and stays safe.
   # Do NOT force response files globally: macOS BSD ar has no @rsp support.
+  # Both flags must be off — the ninja generator emits one combined rsp when
+  # either is on, and the combined file still newline-separates the objects.
+  # The full link line here is ~17k chars, comfortably under the 32k limit.
   set(CMAKE_CXX_USE_RESPONSE_FILE_FOR_OBJECTS 0)
+  set(CMAKE_CXX_USE_RESPONSE_FILE_FOR_LIBRARIES 0)
 endif()
 
 find_package(nlohmann_json REQUIRED)
