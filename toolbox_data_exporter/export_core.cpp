@@ -28,7 +28,7 @@ std::string formatDouble(double value, const char* format) {
 #if defined(_WIN32)
   _locale_t c_locale = _create_locale(LC_NUMERIC, "C");
   if (c_locale != nullptr) {
-    (void)_snprintf_l(buffer, sizeof(buffer), format, c_locale, normalized_value);
+    (void)_snprintf_s_l(buffer, sizeof(buffer), _TRUNCATE, format, c_locale, normalized_value);
     _free_locale(c_locale);
   } else {
     (void)std::snprintf(buffer, sizeof(buffer), format, normalized_value);
@@ -117,8 +117,8 @@ arrow::Result<std::shared_ptr<arrow::Array>> makeStringArray(
 std::filesystem::path pathFromUtf8(std::string_view path) {
   std::u8string utf8;
   utf8.reserve(path.size());
-  for (const unsigned char byte : path) {
-    utf8.push_back(static_cast<char8_t>(byte));
+  for (const char character : path) {
+    utf8.push_back(static_cast<char8_t>(static_cast<unsigned char>(character)));
   }
   return std::filesystem::path(std::move(utf8));
 }
