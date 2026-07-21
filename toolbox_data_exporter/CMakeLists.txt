@@ -1,7 +1,8 @@
-# The milestone-4 test links every plugin TU plus static Arrow/Parquet; on
-# Windows the resulting link command exceeds the 32k CreateProcess limit and
-# MSVC's linker sees a truncated .obj path (LNK1181). Force ninja response
-# files for every target in this directory (harmless elsewhere).
+# MSVC's linker mis-tokenizes this directory's many-object test response
+# files (LNK1181 on a deterministically truncated .obj path even though the
+# .rsp content is byte-correct — verified via the CI rsp dump). Keep response
+# files forced AND keep every test's object list short by compiling the
+# production TUs once into data_exporter_testcore below.
 set(CMAKE_NINJA_FORCE_RESPONSE_FILE ON)
 
 find_package(nlohmann_json REQUIRED)
@@ -49,31 +50,47 @@ pj_emit_plugin_manifest(toolbox_data_exporter_plugin
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
+# --- Shared test library: the production TUs compiled once for all tests ---
+# The plugin target above keeps its own compilation of the same sources so the
+# pj_emit_plugin_manifest visibility/flags applied to the DSO stay untouched.
+add_library(data_exporter_testcore STATIC
+  arrow_series_reader.cpp
+  data_exporter.cpp
+  export_core.cpp
+  plugin_entry.cpp
+)
+target_compile_features(data_exporter_testcore PRIVATE cxx_std_20)
+target_compile_options(data_exporter_testcore PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(data_exporter_testcore PRIVATE
+  ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
+target_link_libraries(data_exporter_testcore PUBLIC
+  plotjuggler_sdk::plugin_sdk
+  nlohmann_json::nlohmann_json
+  Arrow::arrow_static
+  Parquet::parquet_static
+)
+# The generated ui/manifest headers are produced by custom commands attached to
+# the plugin target; order the shared test compilation after them.
+add_dependencies(data_exporter_testcore toolbox_data_exporter_plugin)
+
 # --- Unit test for the host-free export pipeline ---
-add_executable(data_exporter_core_test export_core_test.cpp export_core.cpp)
+add_executable(data_exporter_core_test export_core_test.cpp)
 target_compile_features(data_exporter_core_test PRIVATE cxx_std_20)
 target_compile_options(data_exporter_core_test PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(data_exporter_core_test PRIVATE
+  data_exporter_testcore
   GTest::gtest_main
-  Arrow::arrow_static
-  Parquet::parquet_static
 )
 add_test(NAME data_exporter_core_test COMMAND data_exporter_core_test)
 
 # --- Unit test for validity-aware Arrow series decoding ---
-add_executable(
-  data_exporter_arrow_reader_test
-  arrow_series_reader_test.cpp
-  arrow_series_reader.cpp
-  export_core.cpp
-)
+add_executable(data_exporter_arrow_reader_test arrow_series_reader_test.cpp)
 target_compile_features(data_exporter_arrow_reader_test PRIVATE cxx_std_20)
 target_compile_options(data_exporter_arrow_reader_test PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(data_exporter_arrow_reader_test PRIVATE
-  plotjuggler_sdk::plugin_sdk
+  data_exporter_testcore
   GTest::gtest_main
-  Arrow::arrow_static
-  Parquet::parquet_static
 )
 add_test(NAME data_exporter_arrow_reader_test COMMAND data_exporter_arrow_reader_test)
 
@@ -85,23 +102,13 @@ add_executable(
   data_exporter_milestone4_test
   data_exporter_dialog_test.cpp
   data_exporter_host_test.cpp
-  arrow_series_reader.cpp
-  data_exporter.cpp
-  export_core.cpp
-  plugin_entry.cpp
 )
 target_compile_features(data_exporter_milestone4_test PRIVATE cxx_std_20)
 target_compile_options(data_exporter_milestone4_test PRIVATE ${PJ_WARNING_FLAGS})
-target_include_directories(data_exporter_milestone4_test PRIVATE
-  ${CMAKE_CURRENT_BINARY_DIR}/generated
-)
 target_link_libraries(data_exporter_milestone4_test PRIVATE
+  data_exporter_testcore
   plotjuggler_sdk::plugin_host
-  plotjuggler_sdk::plugin_sdk
-  nlohmann_json::nlohmann_json
   GTest::gtest_main
-  Arrow::arrow_static
-  Parquet::parquet_static
 )
 add_test(
   NAME data_exporter_dialog_test
