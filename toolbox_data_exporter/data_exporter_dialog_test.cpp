@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "data_exporter.hpp"
+#include "exporter_icons.hpp"
 
 namespace {
 
@@ -52,6 +53,16 @@ TEST(DataExporterDialogTest, ClearLastRowKeepsRangeAndDisablesTimeControls) {
   EXPECT_FALSE(after["endTime"]["enabled"].get<bool>());
   EXPECT_FALSE(after["rangeSlider"]["enabled"].get<bool>());
   EXPECT_FALSE(after["saveButton"]["enabled"].get<bool>());
+}
+
+TEST(DataExporterDialogTest, UsesVerbatimPj3InlineSvgIcons) {
+  DataExporterDialog dialog;
+  const Json state = render(dialog);
+
+  EXPECT_EQ(state["clearButton"]["button_icon_svg"].get<std::string>(), kPj3ClearIconSvg);
+  EXPECT_EQ(state["saveButton"]["button_icon_svg"].get<std::string>(), kPj3SaveIconSvg);
+  EXPECT_FALSE(state["clearButton"].contains("button_icon_name"));
+  EXPECT_FALSE(state["saveButton"].contains("button_icon_name"));
 }
 
 TEST(DataExporterDialogTest, FilterIsTrimmedCaseInsensitiveAndClearingExplicitlyUnhidesAllRows) {

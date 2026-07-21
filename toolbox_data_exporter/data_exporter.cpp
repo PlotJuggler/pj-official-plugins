@@ -15,6 +15,7 @@
 
 #include "data_exporter_manifest.hpp"
 #include "exporter_dialog_ui.hpp"
+#include "exporter_icons.hpp"
 
 namespace {
 
@@ -117,10 +118,10 @@ std::string DataExporterDialog::widget_data() {
       .setEnabled("endTime", !topics_.empty())
       .setEnabled("rangeSlider", !topics_.empty())
       .setEnabled("saveButton", !topics_.empty())
-      // The current host exposes no broom/trash/save ids. "refresh" is its
-      // closest reset/clear action and "file" depicts an output document.
-      .setButtonIconNamed("clearButton", "refresh")
-      .setButtonIconNamed("saveButton", "file")
+      // PJ3 toolbox_ui.cpp:50-55 — clearButton/saveButton icon resources. Inline SVGs
+      // are rendered as authored by the PJ4 host, preserving the PJ3 glyphs.
+      .setButtonIcon("clearButton", kPj3ClearIconSvg)
+      .setButtonIcon("saveButton", kPj3SaveIconSvg)
       .setLabel("statusLabel", status_);
 
   if (multifile_) {
@@ -386,7 +387,6 @@ void DataExporterDialog::setDataRange(std::optional<std::pair<double, double>> r
   // PJ3 toolbox_csv.cpp:332-340 — an unresolved/empty selection leaves every
   // displayed bound and selected endpoint exactly as it was.
   if (!range.has_value()) {
-    has_data_range_ = false;
     return;
   }
 
@@ -394,7 +394,6 @@ void DataExporterDialog::setDataRange(std::optional<std::pair<double, double>> r
   if (minimum > maximum) {
     std::swap(minimum, maximum);
   }
-  has_data_range_ = true;
   data_tmin_s_ = minimum;
   data_tmax_s_ = maximum;
 

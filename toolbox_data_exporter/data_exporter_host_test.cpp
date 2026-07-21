@@ -15,6 +15,11 @@
 #include <system_error>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 #include "data_exporter.hpp"
 
 namespace {
@@ -49,6 +54,40 @@ std::string readFile(const std::filesystem::path& path) {
   contents << input.rdbuf();
   return contents.str();
 }
+
+nlohmann::json render(DataExporterDialog& dialog) {
+  return nlohmann::json::parse(dialog.widget_data());
+}
+
+std::string statusText(DataExporterDialog& dialog) {
+  return render(dialog)["statusLabel"]["label"].get<std::string>();
+}
+
+#if !defined(_WIN32)
+class DirectoryPermissionGuard {
+ public:
+  explicit DirectoryPermissionGuard(std::filesystem::path path) : path_(std::move(path)) {}
+
+  ~DirectoryPermissionGuard() {
+    if (!restored_) {
+      (void)::chmod(path_.c_str(), 0700);
+    }
+  }
+
+  DirectoryPermissionGuard(const DirectoryPermissionGuard&) = delete;
+  DirectoryPermissionGuard& operator=(const DirectoryPermissionGuard&) = delete;
+
+  int restore() {
+    const int result = ::chmod(path_.c_str(), 0700);
+    restored_ = (result == 0);
+    return result;
+  }
+
+ private:
+  std::filesystem::path path_;
+  bool restored_ = false;
+};
+#endif
 
 // SDK 0.18's ToolboxTestStore exports its root StructArray with n_buffers=0.
 // MaterializedSeriesView accepts that fixture, but Arrow's canonical C-data
@@ -162,6 +201,145 @@ TEST(DataExporterHostTest, AddAllExportsMergedSinglePerTopicMultiAndParquet) {
   ASSERT_NE(table, nullptr);
   EXPECT_EQ(table->num_rows(), 2);
   EXPECT_EQ(table->num_columns(), 3);
+}
+
+TEST(DataExporterHostTest, UnwritableDestinationReportsFailureWithoutAccepting) {
+#if defined(_WIN32)
+  GTEST_SKIP() << "This permission-mode test requires POSIX chmod semantics.";
+#else
+  if (::geteuid() == 0) {
+    GTEST_SKIP() << "root bypasses directory write permission checks";
+  }
+
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("topic").addField("topic", "value", {0, 1'000'000'000LL}, {1.0, 2.0});
+  DataExporterToolbox toolbox;
+  CanonicalStoreReadHost canonical_host(store.makeHost());
+  PJ::ServiceRegistryBuilder registry;
+  bindStore(toolbox, store, canonical_host, registry);
+  DataExporterDialog& dialog = toolbox.dialog();
+  ASSERT_TRUE(dialog.onClicked("buttonAddAllFiles"));
+
+  TempDirectory temp_directory;
+  const auto unwritable_directory = temp_directory.path() / "unwritable";
+  ASSERT_TRUE(std::filesystem::create_directory(unwritable_directory));
+  if (::chmod(unwritable_directory.c_str(), 0000) != 0) {
+    GTEST_SKIP() << "could not remove permissions from " << unwritable_directory;
+  }
+  DirectoryPermissionGuard permission_guard(unwritable_directory);
+  const auto output_path = unwritable_directory / "blocked.csv";
+
+  ASSERT_TRUE(dialog.onFileSelected("saveButton", output_path.string()));
+  ASSERT_EQ(permission_guard.restore(), 0);
+  const auto state = render(dialog);
+  EXPECT_EQ(state["statusLabel"]["label"].get<std::string>(), "Failed to write the output file.");
+  EXPECT_FALSE(state.contains("__request_accept"));
+  EXPECT_FALSE(std::filesystem::exists(output_path));
+#endif
+}
+
+TEST(DataExporterHostTest, SecondMultiFileFailureKeepsFirstFileAndAborts) {
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("alpha")
+      .addField("alpha", "value", {0, 1'000'000'000LL}, {1.0, 2.0})
+      .addTopic("zulu")
+      .addField("zulu", "value", {0, 1'000'000'000LL}, {3.0, 4.0});
+  DataExporterToolbox toolbox;
+  CanonicalStoreReadHost canonical_host(store.makeHost());
+  PJ::ServiceRegistryBuilder registry;
+  bindStore(toolbox, store, canonical_host, registry);
+  DataExporterDialog& dialog = toolbox.dialog();
+  ASSERT_TRUE(dialog.onClicked("buttonAddAllFiles"));
+  ASSERT_TRUE(dialog.onToggled("checkBoxMultifile", true));
+  EXPECT_FALSE(dialog.onTextChanged("lineEditPrefix", "partial"));
+
+  TempDirectory temp_directory;
+  const auto first_path = temp_directory.path() / "partial_alpha.csv";
+  const auto failing_path = temp_directory.path() / "partial_zulu.csv";
+  ASSERT_TRUE(std::filesystem::create_directory(failing_path));
+  ASSERT_TRUE(dialog.onFolderSelected("saveButton", temp_directory.path().string()));
+
+  const auto state = render(dialog);
+  EXPECT_TRUE(std::filesystem::is_regular_file(first_path));
+  EXPECT_TRUE(std::filesystem::is_directory(failing_path));
+  EXPECT_EQ(state["statusLabel"]["label"].get<std::string>(), "Failed to write file: " + failing_path.string());
+  EXPECT_FALSE(state.contains("__request_accept"));
+  EXPECT_EQ(state["statusLabel"]["label"].get<std::string>().find("Files saved"), std::string::npos);
+}
+
+TEST(DataExporterHostTest, UnresolvableFieldPathReportsNoSamples) {
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("known").addField("known", "value", {0}, {1.0});
+  DataExporterToolbox toolbox;
+  CanonicalStoreReadHost canonical_host(store.makeHost());
+  PJ::ServiceRegistryBuilder registry;
+  bindStore(toolbox, store, canonical_host, registry);
+  DataExporterDialog& dialog = toolbox.dialog();
+  ASSERT_TRUE(dialog.onItemsDropped("tableWidget", {"never_registered/value"}));
+
+  TempDirectory temp_directory;
+  const auto output_path = temp_directory.path() / "stale.csv";
+  ASSERT_TRUE(dialog.onFileSelected("saveButton", output_path.string()));
+
+  const auto state = render(dialog);
+  EXPECT_EQ(state["statusLabel"]["label"].get<std::string>(), "No samples found in the selected time range.");
+  EXPECT_FALSE(state.contains("__request_accept"));
+  EXPECT_FALSE(std::filesystem::exists(output_path));
+}
+
+TEST(DataExporterHostTest, UnicodeFilenameIsPreservedAndContainsValidCsv) {
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("topic").addField("topic", "value", {0, 1'000'000'000LL}, {1.25, 2.5});
+  DataExporterToolbox toolbox;
+  CanonicalStoreReadHost canonical_host(store.makeHost());
+  PJ::ServiceRegistryBuilder registry;
+  bindStore(toolbox, store, canonical_host, registry);
+  DataExporterDialog& dialog = toolbox.dialog();
+  ASSERT_TRUE(dialog.onClicked("buttonAddAllFiles"));
+
+  TempDirectory temp_directory;
+  const std::string unicode_filename = "übung_日本語.csv";
+  const auto output_path = temp_directory.path() / unicode_filename;
+  ASSERT_TRUE(dialog.onFileSelected("saveButton", output_path.string()));
+
+  ASSERT_TRUE(std::filesystem::is_regular_file(output_path)) << statusText(dialog);
+  EXPECT_EQ(output_path.filename().string(), unicode_filename);
+  EXPECT_EQ(
+      readFile(output_path),
+      "time,topic/value\n"
+      "0.000000,1.25\n"
+      "1.000000,2.5\n");
+  EXPECT_TRUE(render(dialog).value("__request_accept", false));
+}
+
+TEST(DataExporterHostTest, EmptyMultiFileGroupIsSkippedWhilePopulatedGroupSucceeds) {
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("alpha")
+      .addField("alpha", "value", {0, 1'000'000'000LL}, {1.0, 2.0})
+      .addTopic("zulu")
+      .addField("zulu", "value", {10'000'000'000LL, 11'000'000'000LL}, {3.0, 4.0});
+  DataExporterToolbox toolbox;
+  CanonicalStoreReadHost canonical_host(store.makeHost());
+  PJ::ServiceRegistryBuilder registry;
+  bindStore(toolbox, store, canonical_host, registry);
+  DataExporterDialog& dialog = toolbox.dialog();
+  ASSERT_TRUE(dialog.onClicked("buttonAddAllFiles"));
+  ASSERT_TRUE(dialog.onValueChanged("endTime", 1.0));
+  ASSERT_TRUE(dialog.onToggled("checkBoxMultifile", true));
+  EXPECT_FALSE(dialog.onTextChanged("lineEditPrefix", "range"));
+
+  TempDirectory temp_directory;
+  ASSERT_TRUE(dialog.onFolderSelected("saveButton", temp_directory.path().string()));
+  const auto populated_path = temp_directory.path() / "range_alpha.csv";
+  const auto empty_path = temp_directory.path() / "range_zulu.csv";
+
+  ASSERT_TRUE(std::filesystem::is_regular_file(populated_path)) << statusText(dialog);
+  EXPECT_FALSE(std::filesystem::exists(empty_path));
+  const auto state = render(dialog);
+  EXPECT_TRUE(state.value("__request_accept", false));
+  const std::string status = state["statusLabel"]["label"].get<std::string>();
+  EXPECT_NE(status.find("range_alpha.csv"), std::string::npos);
+  EXPECT_EQ(status.find("range_zulu.csv"), std::string::npos);
 }
 
 // ToolboxTestStore intentionally serves float64 only and has no validity or

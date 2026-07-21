@@ -105,3 +105,23 @@ add_test(
   NAME data_exporter_host_test
   COMMAND data_exporter_milestone4_test --gtest_filter=DataExporterHostTest.*
 )
+
+# --- Milestone 5 dual-plugin load / static-Arrow symbol-isolation test ---
+set(DATA_LOAD_PARQUET_PLUGIN_PATH
+  "${CMAKE_SOURCE_DIR}/build/data_load_parquet/${CMAKE_BUILD_TYPE}/bin/${CMAKE_SHARED_LIBRARY_PREFIX}parquet_source_plugin${CMAKE_SHARED_LIBRARY_SUFFIX}"
+  CACHE FILEPATH "Path to the separately built data_load_parquet plugin DSO"
+)
+add_executable(data_exporter_isolation_test data_exporter_isolation_test.cpp)
+target_compile_features(data_exporter_isolation_test PRIVATE cxx_std_20)
+target_compile_options(data_exporter_isolation_test PRIVATE ${PJ_WARNING_FLAGS})
+target_compile_definitions(data_exporter_isolation_test PRIVATE
+  DATA_EXPORTER_PLUGIN_PATH="$<TARGET_FILE:toolbox_data_exporter_plugin>"
+  DATA_LOAD_PARQUET_PLUGIN_PATH="${DATA_LOAD_PARQUET_PLUGIN_PATH}"
+)
+target_link_libraries(data_exporter_isolation_test PRIVATE
+  plotjuggler_sdk::plugin_sdk
+  GTest::gtest_main
+  ${CMAKE_DL_LIBS}
+)
+add_dependencies(data_exporter_isolation_test toolbox_data_exporter_plugin)
+add_test(NAME data_exporter_isolation_test COMMAND data_exporter_isolation_test)

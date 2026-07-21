@@ -78,7 +78,6 @@ class DataExporterDialog : public PJ::DialogPluginTyped {
   std::string last_directory_;
   std::string status_;
   bool pending_accept_ = false;
-  bool has_data_range_ = false;
   int slider_scale_ = 1000;
   int slider_max_ = 1000;
   bool dirty_ = true;
