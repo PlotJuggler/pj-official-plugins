@@ -109,6 +109,12 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
 
     // Include folders - folder picker
     // Icon-only affordance docked on the "Include Folders" banner (no button text).
+#ifdef PJ_TARGET_WASM
+    // Browser-staged files do not expose stable host directories that protoc
+    // can traverse. Keep the native include-path workflow available while
+    // making the unsupported browser controls explicitly inert.
+    wd.setEnabled("includeFoldersColumn", false);
+#endif
     wd.setFolderPicker("buttonAddIncludeFolder", "", "Select Include Folder");
 
     // Include folders list — empty-state hint shown as a centered overlay while
