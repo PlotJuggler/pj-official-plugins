@@ -143,6 +143,21 @@ jobs:
 
           ctest --test-dir build/Release -V --output-on-failure
 
+      - name: Dump linker response files on failure
+        # A LNK1181 with a truncated .obj path points at rsp corruption; the
+        # log never contains the rsp content, so surface it (plus the object
+        # dir) to make the failure diagnosable without a Windows machine.
+        if: failure()
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for rsp in build/Release/CMakeFiles/*.rsp; do
+            echo "===== $rsp ($(wc -c < "$rsp") bytes)"
+            cat -A "$rsp" | head -60
+          done
+          echo "===== objects"
+          ls -la build/Release/toolbox_data_exporter/CMakeFiles/*.dir/ 2>/dev/null || true
+
       - name: Trim Conan cache before saving
         # Drop build/source/temp trees so only recipes and package binaries
         # persist.
