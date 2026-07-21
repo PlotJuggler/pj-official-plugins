@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
-#include <cstdlib>
 #include <filesystem>
+#include <pj_base/sdk/platform.hpp>
 #include <string>
 #include <vector>
 
@@ -17,11 +17,11 @@ using mf4_detail::Mf4Reader;
 using mf4_detail::SampleValue;
 
 std::string fixture(const char* name) {
-  const char* dir = std::getenv("MF4_TEST_DATA_DIR");
-  if (dir == nullptr || *dir == '\0') {
+  const auto dir = PJ::sdk::getEnv("MF4_TEST_DATA_DIR");
+  if (!dir) {
     return {};
   }
-  const auto path = std::filesystem::path(dir) / name;
+  const auto path = std::filesystem::path(*dir) / name;
   std::error_code ec;
   return std::filesystem::exists(path, ec) ? path.string() : std::string{};
 }
