@@ -33,6 +33,19 @@ TEST(McapDialogTest, WidgetDataSelectsRowsByTextNotIndex) {
   EXPECT_FALSE(tbl.contains("selected_rows"));
 }
 
+TEST(McapDialogTest, DropsSelectionsThatDoNotExistInNewRecording) {
+  McapDialog dialog;
+  nlohmann::json cfg;
+  cfg["filepath"] = std::string(MCAP_TEST_DATA_DIR) + "/test_publish_vs_log_time.mcap";
+  cfg["selected_topics"] = std::vector<std::string>{"/topic/from/previous/file"};
+
+  ASSERT_TRUE(dialog.loadConfig(cfg.dump()));
+
+  EXPECT_EQ(dialog.selectedTopics(), (std::unordered_set<std::string>{"/sensor/value"}));
+  const auto data = nlohmann::json::parse(dialog.widget_data());
+  EXPECT_TRUE(data["buttonBox"]["ok_enabled"].get<bool>());
+}
+
 TEST(AlwaysIncludeRuleTest, MatchesRos2Tf) {
   ChannelInfo ch;
   ch.topic = "/tf";

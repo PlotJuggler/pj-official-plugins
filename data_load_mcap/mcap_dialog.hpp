@@ -378,7 +378,24 @@ class McapDialog : public PJ::DialogPluginTyped {
       }
     }
 
-    // If no previous selection, select all channels with messages
+    // Saved selections belong to the previously opened recording. Drop names
+    // that do not exist (or have no messages) in this one; otherwise a stale,
+    // non-empty set leaves the dialog with no selected rows and OK disabled.
+    std::unordered_set<std::string> selectable_topics;
+    for (const auto& ch : all_channels_) {
+      if (ch.msg_count > 0) {
+        selectable_topics.insert(ch.topic);
+      }
+    }
+    for (auto it = selected_topics_.begin(); it != selected_topics_.end();) {
+      if (selectable_topics.count(*it) == 0) {
+        it = selected_topics_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+    // If no previous selection survives, select all channels with messages.
     if (selected_topics_.empty()) {
       for (const auto& ch : all_channels_) {
         if (ch.msg_count > 0) {
