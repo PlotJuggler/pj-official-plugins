@@ -12,13 +12,6 @@ class DataExporterDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override;
 };
 
-namespace PJ {
-
-template <>
-PJ_borrowed_dialog_t borrowDialog<::DataExporterDialog>(::DataExporterDialog& dialog) noexcept;
-
-}  // namespace PJ
-
 class DataExporterToolbox : public PJ::ToolboxPluginBase {
  public:
   uint64_t capabilities() const override;

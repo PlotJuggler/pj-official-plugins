@@ -222,7 +222,7 @@
   background-color: palette(button);
   border: 1px solid palette(mid);
 }
-QHeaderView::section { font-weight: bold; }</string>
+QHeaderView::section:horizontal { font-weight: bold; }</string>
             </property>
             <property name="acceptDrops">
              <bool>true</bool>
