@@ -46,7 +46,10 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(data_stream_webrtc)
   add_subdirectory(data_stream_pj_bridge)
   add_subdirectory(data_stream_dummy)
-  add_subdirectory(data_stream_lsl)
+  # data_stream_lsl is intentionally NOT in this aggregate list: liblsl requires
+  # boost>=1.85, which conflicts with the boost/1.81.0 that Arrow's Flight thrift
+  # pins here. It builds per-plugin against its own conanfile (like
+  # data_load_lerobot/data_load_mp4).
   add_subdirectory(toolbox_fft)
   add_subdirectory(toolbox_colormap)
   add_subdirectory(toolbox_quaternion)
@@ -182,7 +185,10 @@ else()
   add_subdirectory(data_stream_webrtc)
   add_subdirectory(data_stream_pj_bridge)
   add_subdirectory(data_stream_dummy)
-  add_subdirectory(data_stream_lsl)
+  # data_stream_lsl is intentionally NOT in this aggregate list: liblsl requires
+  # boost>=1.85, which conflicts with the boost/1.81.0 that Arrow's Flight thrift
+  # pins here. It builds per-plugin against its own conanfile (like
+  # data_load_lerobot/data_load_mp4).
   add_subdirectory(toolbox_fft)
   add_subdirectory(toolbox_colormap)
   add_subdirectory(toolbox_quaternion)

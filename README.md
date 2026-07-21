@@ -26,6 +26,7 @@
 | [![data_stream_udp](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_udp.json)](data_stream_udp/) | DataSource | UDP unicast/multicast streaming |
 | [![data_stream_webrtc](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_webrtc.json)](data_stream_webrtc/) | DataSource | WebRTC live H.264 video streaming |
 | [![data_stream_dummy](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_dummy.json)](data_stream_dummy/) | DataSource | Synthetic test-signal generator |
+| [![data_stream_lsl](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_lsl.json)](data_stream_lsl/) | DataSource | Lab Streaming Layer (LSL) streaming |
 | [![toolbox_fft](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_fft.json)](toolbox_fft/) | Toolbox | FFT frequency-domain transform |
 | [![toolbox_quaternion](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_quaternion.json)](toolbox_quaternion/) | Toolbox | Quaternion → roll/pitch/yaw |
 | [![toolbox_colormap](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_colormap.json)](toolbox_colormap/) | Toolbox | Lua colormap editor |
@@ -223,6 +224,7 @@ is unavailable (`scripts/ensure_core.sh`).
 | ffmpeg | 8.1 | data_load_lerobot, data_load_mp4 |
 | ixwebsocket | 11.4.6 | data_stream_foxglove_bridge, data_stream_pj_bridge |
 | asio | 1.28.2 | data_stream_udp |
+| liblsl | 1.16.2 | data_stream_lsl |
 | kissfft | 131.1.0 | toolbox_fft |
 | lua | 5.4.6 | toolbox_colormap, toolbox_reactive_scripts_editor, toolbox_mosaico |
 | sol2 | 3.5.0 | toolbox_colormap, toolbox_reactive_scripts_editor, toolbox_mosaico |

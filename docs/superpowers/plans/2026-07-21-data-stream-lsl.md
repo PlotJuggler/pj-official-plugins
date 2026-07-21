@@ -157,20 +157,26 @@ target_link_libraries(lsl_source_test PRIVATE
 add_test(NAME lsl_source_test COMMAND lsl_source_test)
 ```
 
-- [ ] **Step 5: Wire into the root aggregate CMake**
+- [ ] **Step 5: Root CMake / aggregate — DO NOT add to the aggregate**
 
-In root `CMakeLists.txt`, in the aggregate `else()` branch (the one after `if(DEFINED PJ_BUILD_PLUGIN)` near the other `data_stream_*` entries, around line 181), add after `add_subdirectory(data_stream_dummy)`:
-```cmake
-  add_subdirectory(data_stream_lsl)
-```
-(The single-plugin path `add_subdirectory(${PJ_BUILD_PLUGIN})` needs no edit — `-DPJ_BUILD_PLUGIN=data_stream_lsl` picks it up directly.)
+**Correction (discovered during Task 11):** `data_stream_lsl` must **not** be added
+to the aggregate build. `liblsl/1.16.2` requires `boost/[>=1.85]`, which conflicts
+with the `boost/1.81.0` that Arrow's Flight stack pins via `thrift` in the aggregate
+`conanfile.py`. Adding it there fails Conan graph resolution
+(`Version conflict: boost/1.81.0 vs boost/1.90.0`).
 
-- [ ] **Step 6: Add liblsl to the aggregate Conan recipe**
+So leave both the root `CMakeLists.txt` aggregate lists and the root `conanfile.py`
+requires **unchanged** except for an explanatory comment where `data_stream_lsl`
+would otherwise go (mirroring the `data_load_lerobot`/`data_load_mp4` exclusion).
+The single-plugin path `add_subdirectory(${PJ_BUILD_PLUGIN})` needs no edit — the
+plugin builds per-plugin via `-DPJ_BUILD_PLUGIN=data_stream_lsl` against its own
+`conanfile.py` (which *does* require `liblsl`, with no Arrow/thrift in that lean
+graph, so no conflict).
 
-In root `conanfile.py`, add to the `requires` tuple (near `ixwebsocket`/`asio`):
-```python
-        "liblsl/1.16.2",
-```
+- [ ] **Step 6: (folded into Step 5 — no aggregate conanfile edit)**
+
+The per-plugin `data_stream_lsl/conanfile.py` (Step 1) is the only place `liblsl` is
+declared. Nothing to add to the root aggregate recipe.
 
 - [ ] **Step 7: Build and verify the test fails, then passes**
 
@@ -1549,12 +1555,22 @@ In `README.md` dependencies table (around line 225, near `asio`), add:
 | liblsl | 1.16.2 | data_stream_lsl |
 ```
 
-- [ ] **Step 3: Add to the CI build matrix**
+- [ ] **Step 3: CI — no edit needed (auto-discovered)**
 
-Find the per-plugin matrix in `.github/workflows/` (grep for `data_stream_udp` — the same workflow lists each plugin dir as a matrix entry). Add `data_stream_lsl` alongside the other `data_stream_*` entries in every matrix that enumerates plugins (Linux/Windows/macOS).
-Run: `grep -rn "data_stream_udp" .github/workflows/` to locate every place, and add `data_stream_lsl` next to each.
+**Correction:** `ci-linux.yml` has a `discover-plugins` job that auto-includes any
+directory with `conanfile.py` + `manifest.json` and no `release.sh`, partitioning by
+whether the recipe greps `"arrow/`. `data_stream_lsl` qualifies as a regular
+(non-Arrow) plugin, so Linux CI builds+tests it per-plugin with **no workflow edit**.
+`ci-macos.yml`/`ci-windows.yml` build the *aggregate* (which excludes LSL, per Task 5),
+so they do not build LSL in regular CI — but `build-release.yml` builds+tests the
+tagged plugin per-plugin across linux/macos/windows at release time, matching the
+coverage of the other aggregate-excluded plugins (lerobot/mp4).
 
-> `liblsl` publishes ConanCenter binaries for Linux/Windows/macOS (x86_64 + Apple Silicon). If the org's JFrog remote lacks a prebuilt `liblsl`, `--build=missing` (which build.sh uses) compiles it from source; note this may add a few minutes to the first CI run. Do not silently skip a platform — if a platform can't build liblsl, `log` it in the PR description.
+> `liblsl` publishes ConanCenter binaries for Linux/Windows/macOS (x86_64 + Apple
+> Silicon). If the org's JFrog remote lacks a prebuilt `liblsl`, `--build=missing`
+> (which build.sh uses) compiles it from source (a few minutes the first time). Also
+> note: the plugin recipe sets `boost/*:without_test` + `without_cobalt` so Boost.Test
+> is not dragged into the link.
 
 - [ ] **Step 4: Write the plugin README**
 
