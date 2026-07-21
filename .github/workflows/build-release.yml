@@ -79,8 +79,8 @@ jobs:
       - name: Install cmake and ninja
         # ninja 1.13.0 corrupts MSVC link response files (leading chars of
         # >16,383-char rsp lines stripped -> LNK1181); pin the last good
-        # release — https://github.com/ninja-build/ninja/issues/2616
-        run: pip install cmake "ninja==1.12.1"
+        # release on PyPI (1.12.x was never published there) — ninja-build/ninja#2616
+        run: pip install cmake "ninja==1.11.1.4"
 
       - name: Set up MSVC environment (Windows)
         if: runner.os == 'Windows' && steps.build-scope.outputs.skip != 'true'
