@@ -1,0 +1,15 @@
+{
+  "id": "lsl-streaming",
+  "name": "Lab Streaming Layer",
+  "version": "0.99.0",
+  "description": "Real-time streaming from Lab Streaming Layer (LSL) sources, including numeric and marker (string) streams.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "data_stream",
+  "tags": ["lsl", "lab streaming layer", "stream", "realtime", "eeg", "biosignals"],
+  "min_plotjuggler_version": "3.999.1"
+}
