@@ -1,8 +1,7 @@
-#include "../can_decoder.hpp"
-
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <pj_can_dbc/can_decoder.hpp>
 #include <string>
 #include <vector>
 

@@ -52,45 +52,22 @@ if(MSVC)
   target_compile_definitions(mdf PRIVATE _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS _CRT_SECURE_NO_WARNINGS)
 endif()
 
-# ---------------------------------------------------------------------------
-# dbc_parser_cpp (LinuxDevon/dbc_parser_cpp, MIT) via CPM — DOWNLOAD_ONLY.
-# DBC-based CAN signal decoding for can_decoder. Handles both little- and
-# big-endian signals; depends on the header-only fast_float. Built ourselves
-# (like mdf) to control flags and skip its tests/tooling. Pinned by commit+hash.
-# ---------------------------------------------------------------------------
-CPMAddPackage(
-  NAME fast_float
-  URL https://github.com/fastfloat/fast_float/archive/1ea4f27b2aeee2859a1354a3c24cff52a116cad1.tar.gz
-  URL_HASH SHA256=06f860e3adb994b9c8523bb53a76a335c4182e27fe5a077246146d283efdc9da
-  DOWNLOAD_ONLY YES
-)
-CPMAddPackage(
-  NAME dbc_parser_cpp
-  URL https://github.com/LinuxDevon/dbc_parser_cpp/archive/2c8acdbd2d1ea33545f99f9a0d23e10b7f8e0852.tar.gz
-  URL_HASH SHA256=91e12166d83c56f1ff945f6c94f14a7fe80e105219111f984645614ef8e09c57
-  DOWNLOAD_ONLY YES
-)
-file(GLOB _dbc_sources CONFIGURE_DEPENDS ${dbc_parser_cpp_SOURCE_DIR}/src/*.cpp)
-add_library(dbc STATIC ${_dbc_sources})
-set_target_properties(dbc PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_compile_features(dbc PRIVATE cxx_std_20)
-target_include_directories(dbc SYSTEM PUBLIC ${dbc_parser_cpp_SOURCE_DIR}/include)
-target_include_directories(dbc SYSTEM PRIVATE ${fast_float_SOURCE_DIR}/include)
+# The CAN/DBC decoder now lives in the shared common/can_dbc lib (target
+# pj_can_dbc), added by the root CMakeLists for its consumers.
 
 # ---------------------------------------------------------------------------
-# Internal static lib: format logic (reader, can_decoder) shared by the
-# plugin .so and the test executable. PUBLIC-links the SDK base (Status,
-# PrimitiveType) and mdf so consumers inherit their include paths.
+# Internal static lib: mdflib reader logic shared by the plugin .so and the
+# test executable. PUBLIC-links the SDK base (Status, PrimitiveType) and mdf so
+# consumers inherit their include paths.
 # ---------------------------------------------------------------------------
-add_library(mf4_core STATIC mf4_reader.cpp can_decoder.cpp)
+add_library(mf4_core STATIC mf4_reader.cpp)
 set_target_properties(mf4_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(mf4_core PRIVATE cxx_std_20)
 target_compile_options(mf4_core PRIVATE ${PJ_WARNING_FLAGS})
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(mf4_core PRIVATE "SHELL:-include algorithm" "SHELL:-include cstdint")
 endif()
-# dbc is PRIVATE: can_decoder.hpp hides it behind a pImpl (no dbc header leaks).
-target_link_libraries(mf4_core PUBLIC plotjuggler_sdk::base mdf PRIVATE dbc)
+target_link_libraries(mf4_core PUBLIC plotjuggler_sdk::base mdf)
 
 # ---------------------------------------------------------------------------
 # Plugin shared library
@@ -105,6 +82,7 @@ endif()
 target_link_libraries(mf4_source_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk
   mf4_core
+  pj_can_dbc
   mdf
   ZLIB::ZLIB
   EXPAT::EXPAT
@@ -134,7 +112,6 @@ add_executable(mf4_source_test
   tests/mf4_source_test.cpp
   tests/mf4_value_test.cpp
   tests/mf4_reader_test.cpp
-  tests/can_decoder_test.cpp
   tests/mf4_integration_test.cpp
 )
 target_compile_features(mf4_source_test PRIVATE cxx_std_20)

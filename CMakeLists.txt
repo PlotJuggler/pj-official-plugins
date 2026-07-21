@@ -19,6 +19,12 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/streaming_utils)
   add_subdirectory(common/laser_scan)
   add_subdirectory(common/pointcloud_color)
+  # common/can_dbc has a CPM download side-effect, so configure it only for its
+  # consumers (skipped when building an unrelated single plugin).
+  set(PJ_CAN_DBC_CONSUMERS data_load_mf4 data_load_blf)
+  if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_CAN_DBC_CONSUMERS)
+    add_subdirectory(common/can_dbc)
+  endif()
 
   # Enabled entries track the v4 ABI (PJ_ABI_VERSION == 4): service-
   # registry API, Arrow C Data Interface at the write boundary, and the
@@ -31,6 +37,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(data_load_parquet)
   add_subdirectory(data_load_ulog)
   add_subdirectory(data_load_mf4)
+  add_subdirectory(data_load_blf)
   add_subdirectory(data_load_3d)
   # data_load_lerobot and data_load_mp4 are intentionally NOT in this aggregate
   # list: they depend on FFmpeg (via common/pj_video_demux), which this build
@@ -152,6 +159,12 @@ add_subdirectory(common/array_policy)
 add_subdirectory(common/streaming_utils)
 add_subdirectory(common/laser_scan)
 add_subdirectory(common/pointcloud_color)
+# common/can_dbc has a CPM download side-effect, so configure it only for its
+# consumers (skipped when building an unrelated single plugin).
+set(PJ_CAN_DBC_CONSUMERS data_load_mf4 data_load_blf)
+if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_CAN_DBC_CONSUMERS)
+  add_subdirectory(common/can_dbc)
+endif()
 
 # ---------------------------------------------------------------------------
 # Plugins — use -DPJ_BUILD_PLUGIN=<dir> to build a single plugin (CI mode),
@@ -171,6 +184,7 @@ else()
   add_subdirectory(data_load_parquet)
   add_subdirectory(data_load_ulog)
   add_subdirectory(data_load_mf4)
+  add_subdirectory(data_load_blf)
   add_subdirectory(data_load_3d)
   # data_load_lerobot and data_load_mp4 are intentionally NOT in this aggregate
   # list: they depend on FFmpeg (via common/pj_video_demux), which this build
