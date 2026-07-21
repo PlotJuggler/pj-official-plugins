@@ -96,3 +96,24 @@ TEST(ChannelLabels, NoDescAllFallback) {
   EXPECT_EQ(labels[0], "channel_0");
   EXPECT_EQ(labels[1], "channel_1");
 }
+
+TEST(DialogConfig, RoundTrip) {
+  pj_lsl::DialogConfig cfg;
+  cfg.streams = {{"amp-01", "EEG", "float"}, {"", "Markers", "Markers"}};
+  cfg.mode = pj_lsl::TimestampMode::kReceiver;
+
+  const std::string json = pj_lsl::serializeConfig(cfg);
+  pj_lsl::DialogConfig back = pj_lsl::parseConfig(json);
+
+  ASSERT_EQ(back.streams.size(), 2u);
+  EXPECT_EQ(back.streams[0].source_id, "amp-01");
+  EXPECT_EQ(back.streams[0].name, "EEG");
+  EXPECT_EQ(back.streams[0].type, "float");
+  EXPECT_EQ(back.streams[1].name, "Markers");
+  EXPECT_EQ(back.mode, pj_lsl::TimestampMode::kReceiver);
+
+  // defaults: empty/garbage json -> sync mode, no streams
+  pj_lsl::DialogConfig def = pj_lsl::parseConfig("not json");
+  EXPECT_TRUE(def.streams.empty());
+  EXPECT_EQ(def.mode, pj_lsl::TimestampMode::kSync);
+}

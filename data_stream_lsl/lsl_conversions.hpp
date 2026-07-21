@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <map>
+#include <nlohmann/json.hpp>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_base/type_tree.hpp>
 #include <string>
@@ -164,6 +165,45 @@ inline std::vector<std::string> channelLabels(const lsl::stream_info& info) {
     labels.push_back(std::move(label));
   }
   return labels;
+}
+
+/// A user-selected stream's persistent identity (never the per-session uid).
+struct SelectedStream {
+  std::string source_id;
+  std::string name;
+  std::string type;
+};
+
+struct DialogConfig {
+  std::vector<SelectedStream> streams;
+  TimestampMode mode = TimestampMode::kSync;
+};
+
+inline std::string serializeConfig(const DialogConfig& cfg) {
+  nlohmann::json j;
+  nlohmann::json arr = nlohmann::json::array();
+  for (const auto& s : cfg.streams) {
+    arr.push_back({{"source_id", s.source_id}, {"name", s.name}, {"type", s.type}});
+  }
+  j["streams"] = arr;
+  j["timestamp_mode"] = toString(cfg.mode);
+  return j.dump();
+}
+
+inline DialogConfig parseConfig(std::string_view json) {
+  DialogConfig cfg;
+  auto j = nlohmann::json::parse(json, nullptr, false);
+  if (j.is_discarded()) {
+    return cfg;  // defaults: no streams, sync mode
+  }
+  if (j.contains("streams") && j["streams"].is_array()) {
+    for (const auto& e : j["streams"]) {
+      cfg.streams.push_back(
+          {e.value("source_id", std::string{}), e.value("name", std::string{}), e.value("type", std::string{})});
+    }
+  }
+  cfg.mode = parseTimestampMode(j.value("timestamp_mode", std::string("sync")));
+  return cfg;
 }
 
 }  // namespace pj_lsl
