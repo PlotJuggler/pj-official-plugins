@@ -63,7 +63,15 @@ class DataStreamLslConan(ConanFile):
         "nlohmann_json/3.12.0",
         "liblsl/1.16.2",
     )
-    default_options = {"*:shared": False}
+    # liblsl pulls in Boost. Disable Boost's test/cobalt modules (matching the
+    # aggregate root recipe): otherwise Boost.Test's test_exec_monitor static lib
+    # is dragged into every executable link and fails with an undefined
+    # `test_main` reference.
+    default_options = {
+        "*:shared": False,
+        "boost/*:without_test": True,
+        "boost/*:without_cobalt": True,
+    }
 ```
 
 - [ ] **Step 2: Create the pure-helper header (timestamp mode only for now)**
@@ -1367,8 +1375,10 @@ class LslSource : public PJ::StreamSourceBase {
 
 PJ_DATA_SOURCE_PLUGIN(LslSource, kLslManifest)
 
-PJ_DIALOG_PLUGIN(LslDialog)
+PJ_DIALOG_PLUGIN(LslDialog, kLslManifest)
 ```
+
+> SDK 0.18.0 uses the **two-arg** `PJ_DIALOG_PLUGIN(DialogClass, manifest)` form (see `data_stream_udp/udp_source.cpp`). The dialog still overrides `manifest()` and `ui_content()`.
 
 > `PJ::sdk::TopicHandle` / `PJ::sdk::FieldHandle` are the handle types returned by `ensureTopic`/`ensureField` (see `plugin_data_api.hpp`); `data_stream_dummy/dummy_stream.cpp` stores them the same way.
 

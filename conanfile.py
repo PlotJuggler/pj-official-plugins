@@ -46,6 +46,7 @@ class PjOfficialPluginsConan(ConanFile):
         "ixwebsocket/11.4.6",
         "libdatachannel/0.24.0",
         "asio/1.28.2",
+        "liblsl/1.16.2",
         "kissfft/131.1.0",
         "lua/5.4.6",
         "sol2/3.5.0",
