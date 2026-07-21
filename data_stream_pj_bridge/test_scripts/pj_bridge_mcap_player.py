@@ -5,6 +5,14 @@ PJ Bridge MCAP player — replays an MCAP file via the PJ Bridge WebSocket proto
 Reads any MCAP file and republishes its messages continuously using the
 PlotJuggler Bridge binary protocol (PJRB + zstd).
 
+The JSON control plane mirrors the PRODUCTION server semantics
+(github.com/PlotJuggler/plotjuggler_bridge): additive subscribe, unsubscribe
+with a `removed` list, include_schemas on get_topics, subscribe_topic_updates
+opt-in, and `id` + `protocol_version` echoed on every response. An MCAP file's
+channel set is fully known at open, so this player implements the topic_updates
+opt-in but never pushes a topics_changed notification — there is nothing that
+materializes over time to announce.
+
 Usage:
     pip install websockets zstandard mcap
     python3 pj_bridge_mcap_player.py path/to/file.mcap [--port PORT] [--speed SPEED]
@@ -16,7 +24,10 @@ Usage:
 import argparse
 import asyncio
 import json
+import queue
 import struct
+import sys
+import threading
 import time
 from pathlib import Path
 
@@ -29,8 +40,54 @@ HOST = "localhost"
 MAGIC = 0x42524A50  # "PJRB" LE
 
 
-def load_mcap_metadata(path: str):
-    """Load channels and schemas from MCAP summary."""
+
+
+def wire_encoding(message_encoding: str, schema_encoding: str) -> str:
+    """The control-plane `encoding` field is what PlotJuggler resolves a PARSER
+    with (production sends schema_encoding(): "ros2msg"/"omgidl") — NOT the
+    payload serialization. "cdr" resolves no parser at all (parser_ros registers
+    ros2msg/omgidl/ros1msg; parser_json registers json/cbor/msgpack/bson): a CDR
+    channel must advertise its SCHEMA language, a JSON channel "json"."""
+    if message_encoding == "json" or schema_encoding == "jsonschema":
+        return "json"
+    if schema_encoding:
+        return schema_encoding
+    return message_encoding
+
+
+# Shared latched-topic detection (recorded QoS metadata first, name heuristic
+# fallback) — one implementation for both bridge test players.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common" / "test_support"))
+import mcap_qos  # noqa: E402
+from pj_bridge_protocol import (  # noqa: E402
+    PROTOCOL_VERSION,
+    build_subscribe_response,
+    inject_response_fields,
+    parse_topic_names,
+    topic_entry,
+)
+
+
+def load_latched_messages(path: str, topic_names: set) -> dict:
+    """Pre-seed the latch cache from the bag via the mcap index (fast even on a
+    multi-GB file): topic -> list of (topic, log_time_ns, data). /tf_static
+    typically has exactly ONE message at bag start — without replaying it on
+    subscribe, any client arriving later can never resolve the static frames."""
+    latched: dict = {}
+    if not topic_names:
+        return latched
+    with open(path, "rb") as f:
+        r = make_reader(f)
+        for _schema, channel, message in r.iter_messages(topics=list(topic_names)):
+            latched.setdefault(channel.topic, []).append((channel.topic, message.log_time, message.data))
+            # last-value-wins per transient_local; keep a small tail in case a
+            # topic republishes (e.g. several static broadcasters).
+            latched[channel.topic] = latched[channel.topic][-16:]
+    return latched
+
+
+def load_mcap_metadata(path: str, extra_latched: frozenset = frozenset()):
+    """Load channels and schemas from the MCAP summary."""
     with open(path, "rb") as f:
         r = make_reader(f)
         s = r.get_summary()
@@ -42,9 +99,9 @@ def load_mcap_metadata(path: str):
                 channels[ch_id] = {
                     "name": ch.topic,
                     "type": sch.name if sch else "",
-                    "schema_name": sch.name if sch else "",
-                    "encoding": sch.encoding if sch else "cdr",
+                    "encoding": wire_encoding(ch.message_encoding or "", sch.encoding if sch else ""),
                     "definition": sch.data.decode("utf-8", errors="replace") if sch and sch.data else "",
+                    "latched": mcap_qos.is_latched_channel(ch.topic, dict(ch.metadata or {}), extra_latched),
                 }
         return channels
 
@@ -55,6 +112,24 @@ def read_messages(path: str):
         r = make_reader(f)
         for schema, channel, message in r.iter_messages():
             yield channel.id, message.log_time, message.data
+
+
+def read_message_chunks(path: str, max_msgs: int = 200, max_bytes: int = 32 * 1024 * 1024):
+    """Generator: yields read_messages() output in lists bounded by message
+    count AND payload bytes. The play loop streams these through a small queue
+    so a multi-gigabyte mcap never materializes in RAM (a 17 GB bag as one
+    list() OOM-killed an entire session)."""
+    chunk: list = []
+    chunk_bytes = 0
+    for item in read_messages(path):
+        chunk.append(item)
+        chunk_bytes += len(item[2])
+        if len(chunk) >= max_msgs or chunk_bytes >= max_bytes:
+            yield chunk
+            chunk = []
+            chunk_bytes = 0
+    if chunk:
+        yield chunk
 
 
 def build_binary_frame(messages: list) -> bytes:
@@ -70,26 +145,25 @@ def build_binary_frame(messages: list) -> bytes:
 
 
 class PjBridgeMcapPlayer:
-    def __init__(self, mcap_path: str, speed: float):
+    def __init__(self, mcap_path: str, speed: float, loop: bool = False, extra_latched: frozenset = frozenset()):
         self.mcap_path = mcap_path
         self.speed = speed
-        self.channels = load_mcap_metadata(mcap_path)
-        self.clients: dict = {}  # websocket → {paused, subscribed_topics}
-
-    def _topics_list(self):
-        return [
-            {
-                "name": ch["name"],
-                "type": ch["type"],
-                "schema_name": ch["schema_name"],
-                "encoding": "cdr",
-                "definition": ch["definition"],
-            }
-            for ch in self.channels.values()
-        ]
+        self.loop = loop
+        self.channels = load_mcap_metadata(mcap_path, extra_latched)
+        latch_topics = {ch["name"] for ch in self.channels.values() if ch["latched"]}
+        self.latched = load_latched_messages(mcap_path, latch_topics)
+        if self.latched:
+            counts = {t: len(m) for t, m in self.latched.items()}
+            print(f"Latched topics (replayed on subscribe): {counts}")
+        self.clients: dict = {}  # websocket → {paused, subscribed, topic_updates, tu_include_schemas}
 
     async def handler(self, websocket):
-        self.clients[websocket] = {"paused": False, "subscribed_topics": set()}
+        self.clients[websocket] = {
+            "paused": False,
+            "subscribed": set(),
+            "topic_updates": False,
+            "tu_include_schemas": False,
+        }
         print(f"[+] Client connected")
         try:
             async for message in websocket:
@@ -107,34 +181,73 @@ class PjBridgeMcapPlayer:
             msg = json.loads(raw)
         except json.JSONDecodeError:
             return
+        if not isinstance(msg, dict):
+            return
+
         cmd = msg.get("command", "")
+        state = self.clients[websocket]
 
         if cmd == "get_topics":
-            await websocket.send(json.dumps({
-                "status": "success",
-                "topics": self._topics_list(),
-            }))
-            print(f"    get_topics → {[ch['name'] for ch in self.channels.values()]}")
+            include = bool(msg.get("include_schemas", False))
+            resp = {"status": "success",
+                    "server": {"name": "pj_bridge_mcap_player", "version": "test",
+                               "capabilities": ["include_schemas", "topics_changed", "latched_badge", "latched_replay"]},
+                    "topics": [topic_entry(ch, include) for ch in self.channels.values()]}
+            await websocket.send(json.dumps(inject_response_fields(resp, msg)))
+            print(f"    get_topics (include_schemas={include}) → {len(self.channels)} topics")
 
         elif cmd == "subscribe":
-            requested = set(msg.get("topics", []))
-            self.clients[websocket]["subscribed_topics"] = requested
+            await self._handle_subscribe(websocket, msg, state)
 
-            schemas = {}
-            for ch in self.channels.values():
-                if ch["name"] in requested:
-                    schemas[ch["name"]] = {
-                        "encoding": "cdr",
-                        "definition": ch["definition"],
-                        "schema_name": ch["schema_name"],
-                    }
-            await websocket.send(json.dumps({"status": "success", "schemas": schemas}))
-            print(f"    subscribe → {sorted(requested)}")
+        elif cmd == "unsubscribe":
+            requested = parse_topic_names(msg.get("topics", []))
+            removed = [n for n in requested if n in state["subscribed"]]
+            for n in removed:
+                state["subscribed"].discard(n)
+            resp = {"status": "success", "removed": removed}
+            await websocket.send(json.dumps(inject_response_fields(resp, msg)))
+            print(f"    unsubscribe → removed {removed}")
+
+        elif cmd == "subscribe_topic_updates":
+            state["topic_updates"] = True
+            state["tu_include_schemas"] = bool(msg.get("include_schemas", False))
+            resp = {"status": "ok", "topic_updates": True}
+            await websocket.send(json.dumps(inject_response_fields(resp, msg)))
+
+        elif cmd == "unsubscribe_topic_updates":
+            state["topic_updates"] = False
+            resp = {"status": "ok", "topic_updates": False}
+            await websocket.send(json.dumps(inject_response_fields(resp, msg)))
+
+        elif cmd == "heartbeat":
+            await websocket.send(json.dumps(inject_response_fields({"status": "ok"}, msg)))
 
         elif cmd == "pause":
-            self.clients[websocket]["paused"] = True
+            state["paused"] = True
+            await websocket.send(json.dumps(inject_response_fields({"status": "ok", "paused": True}, msg)))
+
         elif cmd == "resume":
-            self.clients[websocket]["paused"] = False
+            state["paused"] = False
+            await websocket.send(json.dumps(inject_response_fields({"status": "ok", "paused": False}, msg)))
+
+    async def _handle_subscribe(self, websocket, msg, state):
+        """ADDITIVE subscribe — merge newly-requested topics; already-subscribed
+        topics are a no-op (no schema echoed), matching production."""
+        known = {ch["name"]: ch for ch in self.channels.values()}
+        resp, newly_subscribed = build_subscribe_response(msg.get("topics", []), known, state["subscribed"])
+        await websocket.send(json.dumps(inject_response_fields(resp, msg)))
+        print(f"    subscribe → {resp['status']}; schemas={sorted(resp['schemas'])}; "
+              f"failures={[f['topic'] for f in resp.get('failures', [])]}")
+
+        # Latched replay, strictly AFTER the subscribe response (the client
+        # needs the schema first) — same ordering as the production server.
+        replay = [m for name in newly_subscribed for m in self.latched.get(name, [])]
+        if replay:
+            try:
+                await websocket.send(build_binary_frame(replay))
+                print(f"    latched replay → {[m[0] for m in replay]}")
+            except websockets.exceptions.ConnectionClosed:
+                pass
 
     async def play_loop(self):
         # Build topic name lookup
@@ -144,46 +257,93 @@ class PjBridgeMcapPlayer:
         while True:
             loop_count += 1
             print(f"\n→ Loop {loop_count} — reading {Path(self.mcap_path).name}")
-            messages = list(read_messages(self.mcap_path))
-            if not messages:
-                await asyncio.sleep(1.0)
-                continue
+            if loop_count > 1:
+                # Opt-in only: replaying rewinds the ORIGINAL bag timestamps to
+                # the start, which live consumers see as non-monotonic time —
+                # fine for protocol tests, wrong for TF/3D rendering.
+                print("   (looping rewinds bag time — non-monotonic for live consumers)")
 
-            first_ts = messages[0][1]
+            # STREAM the bag through a bounded producer thread — never
+            # materialize it (list(read_messages(...)) on a 17 GB bag OOM-killed
+            # the whole session). The queue bounds memory to
+            # ~maxsize × max_bytes (~128 MB) and the thread keeps file I/O +
+            # decompression off the event loop so control-plane requests
+            # (subscribe/unsubscribe/heartbeat) stay responsive.
+            chunk_queue: queue.Queue = queue.Queue(maxsize=4)
+
+            def produce(q=chunk_queue):
+                try:
+                    for chunk in read_message_chunks(self.mcap_path):
+                        q.put(chunk)
+                finally:
+                    q.put(None)  # end-of-bag sentinel (also on read error)
+
+            threading.Thread(target=produce, daemon=True).start()
+
+            first_ts = None
             wall_start = time.monotonic()
+            messages_seen = 0
 
             # Group messages by timestamp bucket (~100ms) for efficient frames
             bucket_ms = 100
             bucket: list = []
-            bucket_ts = first_ts
+            bucket_ts = 0
 
-            for ch_id, log_time_ns, data in messages:
-                if not self.clients:
-                    await asyncio.sleep(0.01)
-                    continue
+            while True:
+                chunk = await asyncio.to_thread(chunk_queue.get)
+                if chunk is None:
+                    break
+                for ch_id, log_time_ns, data in chunk:
+                    messages_seen += 1
+                    if first_ts is None:
+                        first_ts = log_time_ns
+                        bucket_ts = first_ts
 
-                topic = ch_topic.get(ch_id)
-                if topic is None:
-                    continue
+                    if not self.clients:
+                        await asyncio.sleep(0.01)
+                        continue
 
-                # Timing
-                if self.speed > 0:
-                    bag_elapsed = (log_time_ns - first_ts) / 1e9
-                    wall_elapsed = time.monotonic() - wall_start
-                    wait = bag_elapsed / self.speed - wall_elapsed
-                    if wait > 0:
-                        await asyncio.sleep(wait)
+                    topic = ch_topic.get(ch_id)
+                    if topic is None:
+                        continue
 
-                bucket.append((topic, int(time.time() * 1e9), data))
+                    # Timing
+                    if self.speed > 0:
+                        bag_elapsed = (log_time_ns - first_ts) / 1e9
+                        wall_elapsed = time.monotonic() - wall_start
+                        wait = bag_elapsed / self.speed - wall_elapsed
+                        if wait > 0:
+                            await asyncio.sleep(wait)
 
-                # Flush bucket every 100ms of bag time
-                if (log_time_ns - bucket_ts) >= bucket_ms * 1_000_000 or len(bucket) >= 50:
-                    await self._send_bucket(bucket)
-                    bucket = []
-                    bucket_ts = log_time_ns
+                    # ORIGINAL bag timestamp, never wall clock: the CDR payloads
+                    # (TF stamps, headers) carry bag time, so a wall-clock wire
+                    # stamp puts every sample months away from its own TF and
+                    # scene lookups fail (same fix as the foxglove player).
+                    bucket.append((topic, log_time_ns, data))
+
+                    # Flush bucket every 100ms of bag time
+                    if (log_time_ns - bucket_ts) >= bucket_ms * 1_000_000 or len(bucket) >= 50:
+                        await self._send_bucket(bucket)
+                        bucket = []
+                        bucket_ts = log_time_ns
 
             if bucket:
                 await self._send_bucket(bucket)
+
+            if messages_seen == 0:
+                await asyncio.sleep(1.0)
+                continue
+
+            if not self.loop:
+                # Single pass by default (foxglove-player parity): keep SERVING
+                # (control plane + latched replay stay live) but stop the data
+                # stream — looping would rewind bag time (see above). The
+                # notice below is deliberately loud: a quiet wire here has
+                # repeatedly been mistaken for a client bug.
+                print(f"\n■ Bag finished ({messages_seen} msgs) — data stream ended.")
+                print("  Restart the player to replay, or pass --loop for wrap-around replay.")
+                while True:
+                    await asyncio.sleep(3600)
 
             print(f"    loop {loop_count} done, restarting...")
 
@@ -193,7 +353,7 @@ class PjBridgeMcapPlayer:
         for websocket, state in list(self.clients.items()):
             if state["paused"]:
                 continue
-            subscribed = state["subscribed_topics"]
+            subscribed = state["subscribed"]
             msgs = [(t, ts, d) for t, ts, d in bucket if t in subscribed]
             if not msgs:
                 continue
@@ -205,8 +365,9 @@ class PjBridgeMcapPlayer:
                 pass
 
 
-async def main(mcap_path: str, host: str, port: int, speed: float):
-    player = PjBridgeMcapPlayer(mcap_path, speed)
+async def main(mcap_path: str, host: str, port: int, speed: float, loop: bool = False,
+               extra_latched: frozenset = frozenset()):
+    player = PjBridgeMcapPlayer(mcap_path, speed, loop, extra_latched)
     topics = [ch["name"] for ch in player.channels.values()]
     print(f"PJ Bridge MCAP player — {Path(mcap_path).name}")
     print(f"Listening on ws://{host}:{port}")
@@ -223,11 +384,15 @@ if __name__ == "__main__":
     parser.add_argument("mcap", help="Path to MCAP file")
     parser.add_argument("--host", default=HOST)
     parser.add_argument("--port", type=int, default=PORT)
+    parser.add_argument("--loop", action="store_true",
+                        help="replay the bag forever (rewinds bag time each pass; default: single pass)")
+    parser.add_argument("--latch", action="append", default=[],
+                        help="extra topic to treat as transient-local (repeatable)")
     parser.add_argument("--speed", type=float, default=1.0,
                         help="Playback speed (1.0=real-time, 0=max)")
     args = parser.parse_args()
 
     try:
-        asyncio.run(main(args.mcap, args.host, args.port, args.speed))
+        asyncio.run(main(args.mcap, args.host, args.port, args.speed, args.loop, frozenset(args.latch)))
     except KeyboardInterrupt:
         print("\nStopped.")

@@ -35,6 +35,18 @@ BUILD_DIR="build_ros2_${ROS_DISTRO}"
 CMAKE_EXTRA_ARGS=()
 if [[ -d /core ]]; then
   CMAKE_EXTRA_ARGS+=(-DCPM_plotjuggler_core_SOURCE=/core)
+  # The data_stream_ros2 conanfile requires `plotjuggler_sdk/<SDK_VERSION>`
+  # (read from /workspace/SDK_VERSION). That package is not on conancenter,
+  # so unless it is exported to the container's Conan cache from the local
+  # /core checkout, the `conan install` below fails resolving the graph
+  # with `Package 'plotjuggler_sdk/…' not resolved`. Export it here.
+  if [[ -f /workspace/SDK_VERSION ]]; then
+    conan profile detect --force
+    conan export /core --version "$(cat /workspace/SDK_VERSION)"
+  else
+    conan profile detect --force
+    conan export /core
+  fi
 elif [[ -n "${CORE_REPO_URL:-}" ]]; then
   # Redirect the canonical plotjuggler_core URL to the user-supplied override.
   # NOTE: must use --add — plain `git config key value` replaces the value, so

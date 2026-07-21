@@ -1,27 +1,51 @@
-# PlotJuggler Ported Plugins
+# PlotJuggler Official Plugins
 
 [![CI Linux](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-linux.yml)
 [![CI Windows](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-windows.yml/badge.svg)](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-windows.yml)
 [![CI macOS](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/PlotJuggler/pj-official-plugins/actions/workflows/ci-macos.yml)
 
 
-Plugin collection for PlotJuggler Core: message parsers (JSON, Protobuf, ROS,
-DataTamer), file loaders (CSV, MCAP, Parquet, ULog, MP4, LeRobot), streaming
-sources (ZMQ, MQTT, UDP, ROS 2, Foxglove and PlotJuggler bridges), and toolbox
-widgets (FFT, quaternion, colormap, reactive scripts). See the
-[Plugins](#plugins) table for the full list and per-plugin build status.
+| Plugin | Type | Description |
+|--------|------|-------------|
+| [![parser_json](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_json.json)](parser_json/) | MessageParser | JSON message parsing |
+| [![parser_protobuf](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_protobuf.json)](parser_protobuf/) | MessageParser | Protobuf message parsing |
+| [![parser_ros](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_ros.json)](parser_ros/) | MessageParser | ROS 1/2 message parsing |
+| [![parser_data_tamer](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_data_tamer.json)](parser_data_tamer/) | MessageParser | DataTamer schema/snapshot parsing |
+| [![data_load_csv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_csv.json)](data_load_csv/) | DataSource | CSV file loading |
+| [![data_load_mcap](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mcap.json)](data_load_mcap/) | DataSource | MCAP file loading |
+| [![data_load_parquet](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_parquet.json)](data_load_parquet/) | DataSource | Parquet file loading |
+| [![data_load_ulog](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_ulog.json)](data_load_ulog/) | DataSource | ULog file loading |
+| [![data_load_lerobot](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_lerobot.json)](data_load_lerobot/) | DataSource | LeRobot v2.1 dataset loading |
+| [![data_load_mp4](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mp4.json)](data_load_mp4/) | DataSource | MP4 video loading |
+| [![data_load_3d](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_3d.json)](data_load_3d/) | DataSource | PLY/PCD point cloud & mesh loading |
+| [![data_stream_zmq](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_zmq.json)](data_stream_zmq/) | DataSource | ZeroMQ streaming |
+| [![data_stream_mqtt](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_mqtt.json)](data_stream_mqtt/) | DataSource | MQTT streaming |
+| [![data_stream_foxglove_bridge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_foxglove_bridge.json)](data_stream_foxglove_bridge/) | DataSource | Foxglove WebSocket bridge |
+| [![data_stream_pj_bridge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_pj_bridge.json)](data_stream_pj_bridge/) | DataSource | PlotJuggler WebSocket bridge |
+| [![data_stream_ros2](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_ros2.json)](data_stream_ros2/) | DataSource | ROS 2 topic streaming |
+| [![data_stream_udp](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_udp.json)](data_stream_udp/) | DataSource | UDP unicast/multicast streaming |
+| [![data_stream_webrtc](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_webrtc.json)](data_stream_webrtc/) | DataSource | WebRTC live H.264 video streaming |
+| [![data_stream_dummy](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_dummy.json)](data_stream_dummy/) | DataSource | Synthetic test-signal generator |
+| [![toolbox_fft](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_fft.json)](toolbox_fft/) | Toolbox | FFT frequency-domain transform |
+| [![toolbox_quaternion](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_quaternion.json)](toolbox_quaternion/) | Toolbox | Quaternion → roll/pitch/yaw |
+| [![toolbox_colormap](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_colormap.json)](toolbox_colormap/) | Toolbox | Lua colormap editor |
+| [![toolbox_reactive_scripts_editor](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_reactive_scripts_editor.json)](toolbox_reactive_scripts_editor/) | Toolbox | Reactive Lua/Python script editor |
+| [![toolbox_mosaico](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_mosaico.json)](toolbox_mosaico/) | Toolbox | Mosaico cloud server browsing (Arrow Flight) |
+| [![toolbox_transform_editor](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_transform_editor.json)](toolbox_transform_editor/) | Toolbox | Lua-based derived/custom series editor |
 
 ## Building
 
 ### Standalone (requires Conan 2.x)
 
-Configure the plotjuggler cloudsmith Conan remote once per machine so
-`plotjuggler_sdk` resolves on `conan install`:
+Configure the shared PlotJuggler JFrog Conan remote once per machine. Keeping
+it at index 0 lets Conan try cached PlotJuggler and third-party binaries before
+falling back to ConanCenter:
 
 ```bash
-conan remote add plotjuggler-cloudsmith \
-  https://conan.cloudsmith.io/plotjuggler/plotjuggler
-conan remote login plotjuggler-cloudsmith <user> -p <api-key>
+conan remote add plotjuggler-conan \
+  https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan \
+  --force --index=0
+conan remote login plotjuggler-conan <user> -p <access-token>
 ```
 
 Then build:
@@ -62,92 +86,9 @@ cd /path/to/plotjuggler_sdk
 ./build.sh
 ```
 
-## Dependencies
-
-### Via Conan
-
-`plotjuggler_sdk` is consumed as a Conan package from the
-plotjuggler cloudsmith remote — no CPM source clone, no SSH deploy key, no
-subdirectory-mode fallback for standalone builds. Every per-plugin
-`conanfile.py` also lists it so single-plugin builds resolve it the same way.
-The version is pinned in one place — the top-level `SDK_VERSION` file — and CI
-builds core from the pinned `extern/plotjuggler_core` submodule when cloudsmith
-is unavailable (`scripts/ensure_core.sh`).
-
-> **Repository & package rename:** the SDK source now lives in the
-> [**plotjuggler_sdk**](https://github.com/PlotJuggler/plotjuggler_sdk)
-> repository (formerly `plotjuggler_core`), and the Conan package and CMake
-> targets are renamed to match — recipes require `plotjuggler_sdk/<version>` and
-> link `plotjuggler_sdk::plugin_sdk` / `::plugin_host`. The only thing that keeps
-> the old name is the submodule mount point, `extern/plotjuggler_core`.
-
-| Package | Version | Used by |
-|---------|---------|---------|
-| **plotjuggler_sdk** (cloudsmith) | pinned via `SDK_VERSION` (exact) | **SDK + host loaders** (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
-| nlohmann_json | 3.12.0 | Most plugins |
-| mcap | 2.1.1 | data_load_mcap |
-| arrow + parquet | 23.0.1 | data_load_parquet |
-| paho-mqtt-cpp | 1.5.3 | data_stream_mqtt |
-| cppzmq | 4.11.0 | data_stream_zmq |
-| protobuf | 6.33.5 | parser_protobuf |
-| zstd | 1.5.5 | data_stream_pj_bridge |
-| date | 3.0.4 | data_load_csv |
-| ixwebsocket | 11.4.6 | data_stream_foxglove_bridge, data_stream_pj_bridge |
-| asio | 1.28.2 | data_stream_udp |
-| kissfft | 131.1.0 | toolbox_fft |
-| lua | 5.4.6 | toolbox_colormap, toolbox_reactive_scripts_editor |
-| sol2 | 3.5.0 | toolbox_colormap, toolbox_reactive_scripts_editor |
-| pybind11 | 2.13.6 | toolbox_reactive_scripts_editor |
-| cpython | 3.12.7 | toolbox_reactive_scripts_editor |
-| gtest | 1.17.0 | All plugin tests |
-
-### Via CPM (plugin-private deps only)
-
-| Package | Used by |
-|---------|---------|
-| ulog_cpp | data_load_ulog |
-| rosx_introspection | parser_ros |
-| data_tamer | parser_ros, parser_data_tamer |
-
-### Pinned transitive dependencies
-
-| Package | Version | Reason |
-|---------|---------|--------|
-| libsodium | 1.0.20 | 1.0.21 has broken ARM NEON code that fails with GCC on aarch64 |
-
-## Plugins
-
-The **Status** badge shows each plugin's released version and turns green when
-its latest build on `main` passed CI (red if it failed). It is published from
-CI to the `badges` branch; see [Per-plugin status badges](#per-plugin-status-badges).
-
-| Plugin | Type | Description | Status |
-|--------|------|-------------|--------|
-| parser_json | MessageParser | JSON message parsing | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_json.json)](parser_json/) |
-| parser_protobuf | MessageParser | Protobuf message parsing | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_protobuf.json)](parser_protobuf/) |
-| parser_ros | MessageParser | ROS 1/2 message parsing | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_ros.json)](parser_ros/) |
-| parser_data_tamer | MessageParser | DataTamer schema/snapshot parsing | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_data_tamer.json)](parser_data_tamer/) |
-| data_load_csv | DataSource | CSV file loading | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_csv.json)](data_load_csv/) |
-| data_load_mcap | DataSource | MCAP file loading | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mcap.json)](data_load_mcap/) |
-| data_load_parquet | DataSource | Parquet file loading | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_parquet.json)](data_load_parquet/) |
-| data_load_ulog | DataSource | ULog file loading | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_ulog.json)](data_load_ulog/) |
-| data_load_lerobot | DataSource | LeRobot v2.1 dataset loading | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_lerobot.json)](data_load_lerobot/) |
-| data_load_mp4 | DataSource | MP4 video loading | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mp4.json)](data_load_mp4/) |
-| data_stream_zmq | DataSource | ZeroMQ streaming | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_zmq.json)](data_stream_zmq/) |
-| data_stream_mqtt | DataSource | MQTT streaming | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_mqtt.json)](data_stream_mqtt/) |
-| data_stream_foxglove_bridge | DataSource | Foxglove WebSocket bridge | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_foxglove_bridge.json)](data_stream_foxglove_bridge/) |
-| data_stream_pj_bridge | DataSource | PlotJuggler WebSocket bridge | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_pj_bridge.json)](data_stream_pj_bridge/) |
-| data_stream_ros2 | DataSource | ROS 2 topic streaming | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_ros2.json)](data_stream_ros2/) |
-| data_stream_udp | DataSource | UDP unicast/multicast streaming | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_udp.json)](data_stream_udp/) |
-| data_stream_dummy | DataSource | Synthetic test-signal generator | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_dummy.json)](data_stream_dummy/) |
-| toolbox_fft | Toolbox | FFT frequency-domain transform | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_fft.json)](toolbox_fft/) |
-| toolbox_quaternion | Toolbox | Quaternion → roll/pitch/yaw | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_quaternion.json)](toolbox_quaternion/) |
-| toolbox_colormap | Toolbox | Lua colormap editor | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_colormap.json)](toolbox_colormap/) |
-| toolbox_reactive_scripts_editor | Toolbox | Reactive Lua/Python script editor | [![status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_reactive_scripts_editor.json)](toolbox_reactive_scripts_editor/) |
-
 ### Per-plugin status badges
 
-Each **Status** badge is a [shields.io endpoint badge](https://shields.io/badges/endpoint-badge)
+Each plugin badge is a [shields.io endpoint badge](https://shields.io/badges/endpoint-badge)
 backed by a small JSON file on the orphan `badges` branch — one
 `<plugin>.json` per plugin holding `{ label, message: version, color }`. A
 native GitHub Actions badge can only report pass/fail for a whole workflow, so
@@ -248,3 +189,60 @@ local standalone builds.
 | `release_tools.py` | Validation and packaging utilities |
 
 **Full documentation:** [`scripts/README.md`](scripts/README.md) — detailed pipeline diagram, CLI reference, troubleshooting.
+
+## Dependencies
+
+### Via Conan
+
+`plotjuggler_sdk` is consumed as a Conan package from the plotjuggler
+cloudsmith remote — no CPM source clone, no SSH deploy key, no
+subdirectory-mode fallback for standalone builds. Every per-plugin
+`conanfile.py` also lists it so single-plugin builds resolve it the same way.
+The version is pinned in one place — the top-level `SDK_VERSION` file — and CI
+builds core from the pinned `extern/plotjuggler_core` submodule when cloudsmith
+is unavailable (`scripts/ensure_core.sh`).
+
+> **Repository & package rename:** the SDK source now lives in the
+> [**plotjuggler_sdk**](https://github.com/PlotJuggler/plotjuggler_sdk)
+> repository (formerly `plotjuggler_core`), and the Conan package and CMake
+> targets are renamed to match — recipes require `plotjuggler_sdk/<version>` and
+> link `plotjuggler_sdk::plugin_sdk` / `::plugin_host`. The only thing that keeps
+> the old name is the submodule mount point, `extern/plotjuggler_core`.
+
+| Package | Version | Used by |
+|---------|---------|---------|
+| **plotjuggler_sdk** (cloudsmith) | pinned via `SDK_VERSION` (exact) | **SDK + host loaders** (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
+| nlohmann_json | 3.12.0 | Most plugins |
+| arrow + parquet | 23.0.1 | data_load_parquet, data_load_rerun, toolbox_mosaico |
+| paho-mqtt-cpp | 1.5.3 | data_stream_mqtt |
+| cppzmq | 4.11.0 | data_stream_zmq |
+| protobuf | 6.33.5 | parser_protobuf |
+| zstd | 1.5.7 | data_load_mcap, data_stream_pj_bridge |
+| lz4 | 1.10.0 | data_load_mcap |
+| date | 3.0.4 | data_load_csv, data_load_mp4, data_load_parquet |
+| ffmpeg | 8.1 | data_load_lerobot, data_load_mp4 |
+| ixwebsocket | 11.4.6 | data_stream_foxglove_bridge, data_stream_pj_bridge |
+| asio | 1.28.2 | data_stream_udp |
+| kissfft | 131.1.0 | toolbox_fft |
+| lua | 5.4.6 | toolbox_colormap, toolbox_reactive_scripts_editor, toolbox_mosaico |
+| sol2 | 3.5.0 | toolbox_colormap, toolbox_reactive_scripts_editor, toolbox_mosaico |
+| pybind11 | 2.13.6 | toolbox_reactive_scripts_editor |
+| cpython | 3.12.7 | toolbox_reactive_scripts_editor |
+| libdatachannel | 0.24.0 | data_stream_webrtc |
+| fmt | 12.1.0 | data_load_mp4, toolbox_mosaico |
+| gtest | 1.17.0 | All plugin tests |
+
+### Via CPM (plugin-private deps only)
+
+| Package | Used by |
+|---------|---------|
+| ulog_cpp | data_load_ulog |
+| rosx_introspection | parser_ros |
+| data_tamer | parser_ros, parser_data_tamer |
+
+### Pinned transitive dependencies
+
+| Package | Version | Reason |
+|---------|---------|--------|
+| libsodium | 1.0.20 | 1.0.21 has broken ARM NEON code that fails with GCC on aarch64 |
+| lz4 (root aggregate build only) | 1.9.4 | Must equal arrow/23.0.1's own lz4 pin on Linux (Flight build), or Conan splits Arrow into a second build; data_load_mcap's own standalone recipe still pins lz4/1.10.0 unaffected |

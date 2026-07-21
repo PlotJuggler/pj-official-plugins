@@ -29,7 +29,7 @@ constexpr double kDegPerRad = QuaternionToRPYConverter::kDegPerRad;
 class QuaternionDialog : public PJ::DialogPluginTyped {
  public:
   std::string manifest() const override {
-    return R"({"name":"Quaternion to RPY","version":"1.0.0"})";
+    return kQuaternionManifest;  // embedded manifest.json — carries the required "id"
   }
 
   std::string ui_content() const override {
@@ -50,6 +50,9 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
         .setChecked("radio_radians", !degrees_)
         .setText("status_label", status_msg_)
         .setEnabled("save_button", isValid());
+
+    // Empty-state hint shown as a centered overlay while the chart has no series.
+    wd.setChartPlaceholder("chart_preview", "Drag and Drop Quaternion values in the frames above.");
 
     // Compute and attach preview chart if inputs are valid.
     if (isValid()) {
@@ -615,4 +618,4 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
 }  // namespace
 
 PJ_TOOLBOX_PLUGIN(QuaternionToolbox, kQuaternionManifest)
-PJ_DIALOG_PLUGIN(QuaternionDialog)
+PJ_DIALOG_PLUGIN(QuaternionDialog, kQuaternionManifest)

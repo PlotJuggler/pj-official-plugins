@@ -377,4 +377,4 @@ class McapSource : public PJ::FileSourceBase {
 
 PJ_DATA_SOURCE_PLUGIN(McapSource, kMcapManifest)
 
-PJ_DIALOG_PLUGIN(McapDialog)
+PJ_DIALOG_PLUGIN(McapDialog, kMcapManifest)

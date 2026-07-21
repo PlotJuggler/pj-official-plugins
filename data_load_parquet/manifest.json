@@ -1,7 +1,7 @@
 {
   "id": "parquet-loader",
   "name": "Parquet Loader",
-  "version": "1.4.0",
+  "version": "1.0.0",
   "description": "Data loader for Apache Parquet files. Efficient columnar storage format.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
@@ -20,5 +20,5 @@
   "file_extensions": [
     ".parquet"
   ],
-  "min_plotjuggler_version": "4.0.0"
+  "min_plotjuggler_version": "3.999.1"
 }

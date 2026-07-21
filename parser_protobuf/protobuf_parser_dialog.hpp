@@ -55,6 +55,8 @@ class ProtoErrorCollector : public gp::compiler::MultiFileErrorCollector {
 /// Compiles the .proto file using google::protobuf::compiler::Importer and serializes
 /// the FileDescriptorSet for use by the parser.
 class ProtobufParserDialog : public PJ::DialogPluginTyped {
+  using PJ::DialogPluginTyped::onValueChanged;
+
  public:
   // --- Dialog protocol ---
 
@@ -69,12 +71,11 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    // Proto file path display
-    wd.setText(
-        "labelProtoFilePath", proto_file_path_.empty() ? "(no file selected)" : filenameFromPath(proto_file_path_));
-
-    // Proto file picker button
-    wd.setFilePicker("buttonLoadProtoFile", "Load .proto file", "*.proto", "Select Proto File");
+    // Proto file: editable path field (typing a path == picking one) + an
+    // icon-only browse button (the "file" glyph), matching the certificate rows.
+    wd.setText("lineEditProtoFile", proto_file_path_);
+    wd.setFilePicker("buttonLoadProtoFile", "", "*.proto", "Select Proto File");
+    wd.setButtonIconNamed("buttonLoadProtoFile", "file");
 
     // Message type combo
     bool has_file = !proto_file_path_.empty() && !message_types_.empty();
@@ -107,14 +108,16 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     wd.setChecked("radioMaxDiscard", !array_limit_.clamp());
 
     // Include folders - folder picker
-    wd.setFolderPicker("buttonAddIncludeFolder", "Add folder...", "Select Include Folder");
+    // Icon-only affordance docked on the "Include Folders" banner (no button text).
+    wd.setFolderPicker("buttonAddIncludeFolder", "", "Select Include Folder");
 
-    // Include folders list
+    // Include folders list — empty-state hint shown as a centered overlay while
+    // no folders are added (host hides it the moment items appear).
     wd.setListItems("listWidgetIncludeFolders", include_folders_);
-
-    // Enable remove button if there are folders and selection
-    bool can_remove = !include_folders_.empty() && !selected_include_folders_.empty();
-    wd.setEnabled("buttonRemoveIncludeFolder", can_remove);
+    wd.setListPlaceholder("listWidgetIncludeFolders", "Add folders where imported .proto files can be found:");
+    // Per-row trailing trash icon on each folder (replaces the "Remove selected"
+    // button); clicking it fires onItemDeleteRequested for that row.
+    wd.setListItemsDeletable("listWidgetIncludeFolders", true);
 
     return wd.toJson();
   }
@@ -182,32 +185,36 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
       timestamp_field_name_ = std::string(text);
       return false;
     }
-    return false;
-  }
-
-  bool onClicked(std::string_view widget_name) override {
-    if (widget_name == "buttonRemoveIncludeFolder") {
-      // Remove selected folders
-      for (const auto& sel : selected_include_folders_) {
-        auto it = std::find(include_folders_.begin(), include_folders_.end(), sel);
-        if (it != include_folders_.end()) {
-          include_folders_.erase(it);
-        }
-      }
-      selected_include_folders_.clear();
-      // Re-compile with updated include paths
-      if (!proto_file_path_.empty()) {
+    if (widget_name == "lineEditProtoFile") {
+      proto_file_path_ = std::string(text);
+      // Compile once the typed path resolves to an existing file. When it does
+      // NOT (cleared or mistyped), DROP the previously compiled schema/types/
+      // preview instead of keeping them: otherwise saveConfig() pairs the new
+      // invalid path with the stale schema. Clearing by hand (not via
+      // loadAndCompileProtoFile) avoids flashing "could not open" errors on
+      // intermediate keystrokes.
+      if (std::ifstream(proto_file_path_).good()) {
         loadAndCompileProtoFile();
+      } else {
+        message_types_.clear();
+        proto_file_content_.clear();
+        compiled_schema_.clear();
+        compile_error_.clear();
+        selected_message_type_.clear();
       }
-      return true;  // Refresh UI
+      return true;  // refresh message types + preview
     }
     return false;
   }
 
-  bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
-    if (widget_name == "listWidgetIncludeFolders") {
-      selected_include_folders_ = selected;
-      return true;  // Refresh UI to update remove button state
+  bool onItemDeleteRequested(std::string_view widget_name, int index) override {
+    if (widget_name == "listWidgetIncludeFolders" && index >= 0 && index < static_cast<int>(include_folders_.size())) {
+      include_folders_.erase(include_folders_.begin() + index);
+      // Re-compile with the updated include paths.
+      if (!proto_file_path_.empty()) {
+        loadAndCompileProtoFile();
+      }
+      return true;  // Refresh UI
     }
     return false;
   }
@@ -414,7 +421,6 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
   // Transient state (not saved to config)
   std::string proto_file_content_;
   std::vector<std::string> message_types_;
-  std::vector<std::string> selected_include_folders_;
   std::string compile_error_;
 };
 

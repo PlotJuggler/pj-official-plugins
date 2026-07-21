@@ -365,9 +365,48 @@ inline std::vector<std::string> splitOutputNames(const std::string& field) {
 // body the v1..vN identifiers. Output count is decided host-side by the `outputs`
 // passed to createTransform — `:calculate` returns the body's results unchanged
 // (MULTRET), so a body that `return`s M values feeds M output topics.
+// Escape a string so it is safe to embed inside a DOUBLE-QUOTED Lua or Python string
+// literal. Without this, a user-controlled id/name containing a quote (or backslash /
+// newline) closes the literal early and the rest is parsed as CODE — i.e. a nickname
+// like `a"; import os; os.system(...) ; z="` would execute arbitrary code when the
+// generated script is compiled/run. Both languages accept the same C-style escapes for
+// these characters, so one routine covers both backends.
+inline std::string escapeForStringLiteral(const std::string& in) {
+  std::string out;
+  out.reserve(in.size() + 8);
+  for (const char c : in) {
+    switch (c) {
+      case '\\':
+        out += "\\\\";
+        break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        out += c;
+        break;
+    }
+  }
+  return out;
+}
+
 inline std::string buildTransformScript(
-    const std::string& id, const std::string& name, const std::string& global_code, const std::string& body,
+    const std::string& raw_id, const std::string& raw_name, const std::string& global_code, const std::string& body,
     std::size_t num_extra, const std::string& language = "luau") {
+  // Escape id/name before they are concatenated into the generated script's string
+  // literals — they are user-controlled (the output-name field) and would otherwise
+  // allow code injection. See escapeForStringLiteral.
+  const std::string id = escapeForStringLiteral(raw_id);
+  const std::string name = escapeForStringLiteral(raw_name);
   std::string params = "time, value";
   for (std::size_t k = 0; k < num_extra; ++k) {
     params += ", v" + std::to_string(k + 1);
@@ -686,10 +725,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       save_requested_ = true;
       return true;
     }
-    if (name == "pushButtonCancel") {
-      close_requested_ = true;
-      return true;
-    }
     // Function library box (PJ3's buttonLibraryBox): open the interactive sub-panel.
     if (name == "buttonLibraryBox") {
       library_open_ = true;
@@ -781,13 +816,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
 
   bool onTick() override {
-    if (close_requested_) {
-      close_requested_ = false;
-      pending_close_ = true;
-      if (on_teardown_preview_) {
-        on_teardown_preview_();
-      }
-    }
     if (save_requested_) {
       save_requested_ = false;
       if (on_save_) {
@@ -1069,9 +1097,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
   void setOnRefreshPreview(std::function<void()> cb) {
     on_refresh_preview_ = std::move(cb);
-  }
-  void setOnTeardownPreview(std::function<void()> cb) {
-    on_teardown_preview_ = std::move(cb);
   }
   void setOnValidateBatch(std::function<void()> cb) {
     on_validate_batch_ = std::move(cb);
@@ -1392,13 +1417,11 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   std::string io_status_;  // one-shot Import/Export status line; consumed by the next widget_data()
 
   bool save_requested_ = false;
-  bool close_requested_ = false;
   bool pending_close_ = false;
   bool preview_dirty_ = false;
   bool help_requested_ = false;
   std::function<void()> on_save_;
   std::function<void()> on_refresh_preview_;
-  std::function<void()> on_teardown_preview_;
   std::function<void()> on_validate_batch_;
   std::vector<PJ::ChartSeries> preview_series_;
 };
@@ -1409,6 +1432,14 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
 class TransformEditorToolbox : public PJ::ToolboxPluginBase {
  public:
+  // The editor has no Close button; it is dismissed via the host panel chrome,
+  // which destroys this plugin instance. Remove the ephemeral live-preview node
+  // here so it cannot keep recomputing in the DerivedEngine after the editor is
+  // gone (tearDownPreview() is a no-op when no preview is live).
+  ~TransformEditorToolbox() override {
+    tearDownPreview();
+  }
+
   uint64_t capabilities() const override {
     return PJ::kToolboxCapabilityHasDialog;
   }
@@ -1417,7 +1448,6 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     if (!callbacks_wired_) {
       dialog_.setOnSave([this]() { onSave(); });
       dialog_.setOnRefreshPreview([this]() { refreshPreview(); });
-      dialog_.setOnTeardownPreview([this]() { tearDownPreview(); });
       dialog_.setOnValidateBatch([this]() { validateBatch(); });
       callbacks_wired_ = true;
     }
@@ -1901,4 +1931,4 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
 }  // namespace
 
 PJ_TOOLBOX_PLUGIN(TransformEditorToolbox, kTransformEditorManifest)
-PJ_DIALOG_PLUGIN(TransformEditorDialog)
+PJ_DIALOG_PLUGIN(TransformEditorDialog, kTransformEditorManifest)

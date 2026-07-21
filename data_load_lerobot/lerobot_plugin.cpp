@@ -273,7 +273,10 @@ class LeRobotSource : public PJ::FileSourceBase {
       return st;
     }
     if (runtimeHost().isStopRequested()) {
-      return PJ::unexpected(std::string("import cancelled"));
+      // Stop but KEEP: the scalar rows parsed so far are already written, so return OK
+      // (the host's "Stop and Keep" flushes them) and skip the remaining work (video
+      // frames). Returning an error would drop the partial data on the fanout path.
+      return PJ::okStatus();
     }
 
     auto vst = importVideoFrames(*model, ep);
@@ -503,7 +506,10 @@ class LeRobotSource : public PJ::FileSourceBase {
         break;
       }
       if (runtimeHost().isStopRequested()) {
-        return PJ::unexpected(std::string("import cancelled"));
+        // Stop but KEEP the rows written so far (break, not return-error), so the
+        // host's "Stop and Keep" flushes the partial data instead of dropping it on
+        // the multi-file/fanout path.
+        break;
       }
     }
     if (!read_st.ok()) {
@@ -617,4 +623,4 @@ class LeRobotSource : public PJ::FileSourceBase {
 
 PJ_DATA_SOURCE_PLUGIN(LeRobotSource, kLerobotManifest)
 
-PJ_DIALOG_PLUGIN(LeRobotDialog)
+PJ_DIALOG_PLUGIN(LeRobotDialog, kLerobotManifest)

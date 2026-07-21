@@ -40,10 +40,10 @@
 #include <atomic>
 #include <cctype>
 #include <cstdint>
-#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <optional>
+#include <pj_base/sdk/platform.hpp>
 #include <string>
 #include <vector>
 
@@ -493,9 +493,7 @@ int run(const std::string& api_key) {
 }  // namespace
 
 int main() {
-  const char* api_key_env = std::getenv("MOSAICO_API_KEY");
-  const std::string api_key =
-      (api_key_env != nullptr && api_key_env[0] != '\0') ? std::string(api_key_env) : std::string();
+  const std::string api_key = PJ::sdk::getEnv("MOSAICO_API_KEY").value_or(std::string());
   if (api_key.empty()) {
     std::cout << "SKIP: no MOSAICO_API_KEY\n";
     return 0;

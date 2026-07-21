@@ -1,10 +1,10 @@
 #pragma once
 
-#include <algorithm>
-#include <iterator>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <pj_streaming/dialog_utils.hpp>
+#include <pj_streaming/endpoint.hpp>
 #include <string>
 #include <vector>
 
@@ -54,16 +54,8 @@ class ZmqDialog : public PJ::DialogPluginTyped {
     wd.setEnabled("lineEditPort", !is_ipc);
 
     // Protocol combo — dynamically populated from available parsers
-    auto encodings = getAvailableEncodings();
-    bool has_encodings = !encodings.empty();
-    if (has_encodings) {
-      wd.setItems("comboBoxProtocol", encodings);
-      wd.setCurrentIndex("comboBoxProtocol", encodingToIndex(encoding_, encodings));
-    } else {
-      wd.setItems("comboBoxProtocol", {"(no parsers available)"});
-      wd.setCurrentIndex("comboBoxProtocol", 0);
-      wd.setEnabled("comboBoxProtocol", false);
-    }
+    const bool has_encodings =
+        pj::streaming::writeEncodingSelector(wd, "comboBoxProtocol", available_encodings_, encoding_);
 
     // Topic filter
     wd.setText("lineEditTopics", topic_filter_);
@@ -92,8 +84,7 @@ class ZmqDialog : public PJ::DialogPluginTyped {
       return true;  // refresh UI so port field enable/disable updates immediately
     }
     if (widget_name == "comboBoxProtocol") {
-      auto encodings = getAvailableEncodings();
-      encoding_ = indexToEncoding(index, encodings);
+      encoding_ = pj::streaming::encodingAt(index, available_encodings_);
       return false;
     }
     return false;
@@ -105,9 +96,8 @@ class ZmqDialog : public PJ::DialogPluginTyped {
       return false;
     }
     if (widget_name == "lineEditPort") {
-      auto val = std::atoi(std::string(text).c_str());
-      if (val > 0 && val <= 65535) {
-        port_ = val;
+      if (const auto port = pj::streaming::parsePort(text)) {
+        port_ = *port;
       }
       return false;
     }
@@ -166,24 +156,6 @@ class ZmqDialog : public PJ::DialogPluginTyped {
       default:
         return "tcp://";
     }
-  }
-
-  /// Get available encodings set by the owning DataSource.
-  /// Returns empty vector if no parsers are loaded or host doesn't support the method.
-  std::vector<std::string> getAvailableEncodings() const {
-    return available_encodings_;
-  }
-
-  static int encodingToIndex(const std::string& e, const std::vector<std::string>& encodings) {
-    auto it = std::find(encodings.begin(), encodings.end(), e);
-    return (it != encodings.end()) ? static_cast<int>(std::distance(encodings.begin(), it)) : 0;
-  }
-
-  static std::string indexToEncoding(int idx, const std::vector<std::string>& encodings) {
-    if (idx >= 0 && idx < static_cast<int>(encodings.size())) {
-      return encodings[static_cast<size_t>(idx)];
-    }
-    return encodings.empty() ? "json" : encodings[0];
   }
 
   std::vector<std::string> available_encodings_;

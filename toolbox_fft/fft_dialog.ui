@@ -13,294 +13,250 @@
   <property name="windowTitle">
    <string>FFT Toolbox</string>
   </property>
-  <layout class="QVBoxLayout" name="mainLayout" stretch="0,0,0,0,0,1,0,0">
-   <!-- Title -->
+  <layout class="QVBoxLayout" name="mainLayout" stretch="1">
+   <property name="leftMargin">
+    <number>0</number>
+   </property>
+   <property name="topMargin">
+    <number>0</number>
+   </property>
+   <property name="rightMargin">
+    <number>0</number>
+   </property>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
    <item>
-    <widget class="QLabel" name="title_label">
-     <property name="font">
-      <font>
-       <pointsize>11</pointsize>
-       <weight>75</weight>
-       <bold>true</bold>
-      </font>
+    <widget class="QSplitter" name="mainSplitter">
+     <property name="orientation">
+      <enum>Qt::Vertical</enum>
      </property>
-     <property name="text">
-      <string>FFT Toolbox</string>
-     </property>
-     <property name="alignment">
-      <set>Qt::AlignCenter</set>
-     </property>
-    </widget>
-   </item>
-
-   <!-- Input area: drop target frame wrapping label + chart + controls -->
-   <item>
-    <widget class="QFrame" name="inputFrame">
+     <!-- Input area: drop target frame wrapping label + chart + controls -->
+     <widget class="QFrame" name="inputFrame">
      <property name="frameShape">
-      <enum>QFrame::Box</enum>
+      <enum>QFrame::NoFrame</enum>
      </property>
      <property name="frameShadow">
       <enum>QFrame::Plain</enum>
      </property>
      <layout class="QVBoxLayout" name="inputFrameLayout">
+      <property name="leftMargin">
+       <number>0</number>
+      </property>
+      <property name="topMargin">
+       <number>0</number>
+      </property>
+      <property name="rightMargin">
+       <number>0</number>
+      </property>
+      <property name="bottomMargin">
+       <number>0</number>
+      </property>
       <item>
-       <layout class="QHBoxLayout" name="dragDropRow">
-        <item>
-         <widget class="QLabel" name="fields_label">
-          <property name="text">
-           <string>Drag and Drop a timeseries here (from the left panel):</string>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QPushButton" name="btn_clear">
-          <property name="minimumSize">
-           <size><width>24</width><height>24</height></size>
-          </property>
-          <property name="maximumSize">
-           <size><width>24</width><height>24</height></size>
-          </property>
-          <property name="toolTip">
-           <string>Remove all curves</string>
-          </property>
-          <property name="text">
-           <string>X</string>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <spacer name="dragDropSpacer">
-          <property name="orientation"><enum>Qt::Horizontal</enum></property>
-         </spacer>
-        </item>
-       </layout>
-      </item>
-      <item>
-       <layout class="QHBoxLayout" name="mainRow" stretch="3,0">
-        <item>
-         <widget class="QFrame" name="chart_input">
-          <property name="frameShape">
-           <enum>QFrame::NoFrame</enum>
-          </property>
-         </widget>
-        </item>
-     <item>
-      <layout class="QVBoxLayout" name="ctrlCol">
-       <property name="leftMargin">
-        <number>10</number>
-       </property>
-       <property name="rightMargin">
-        <number>10</number>
-       </property>
-       <item>
-        <widget class="QLabel" name="range_label">
-         <property name="text">
-          <string>Range of data to be processed:</string>
+       <widget class="QSplitter" name="inputSplitter">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <widget class="QFrame" name="chart_input">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+           <horstretch>3</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+         <property name="frameShape">
+          <enum>QFrame::NoFrame</enum>
          </property>
         </widget>
-       </item>
-       <item>
-        <widget class="QRadioButton" name="radio_all">
-         <property name="text">
-          <string>All Data</string>
-         </property>
-         <property name="checked">
-          <bool>true</bool>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QRadioButton" name="radio_zoomed">
-         <property name="text">
-          <string>Only data in zoomed area</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QCheckBox" name="check_dc_removal">
-         <property name="text">
-          <string>Remove Average (DC, 0 Hz)</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QPushButton" name="btn_compute">
-         <property name="enabled">
-          <bool>false</bool>
-         </property>
-         <property name="text">
-          <string>Calculate</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="Line" name="sep1">
-         <property name="orientation">
-          <enum>Qt::Horizontal</enum>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QLabel" name="warn_label">
-         <property name="maximumSize">
+        <widget class="QWidget" name="controlsPane">
+         <property name="minimumSize">
           <size>
-           <width>250</width>
-           <height>16777215</height>
+           <width>220</width>
+           <height>0</height>
           </size>
          </property>
-         <property name="text">
-          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;IMPORTANT&lt;/span&gt;: FFT expects data to be sampled with a constant dT.&lt;/p&gt;&lt;p&gt;If that is not the case, the results will be inaccurate.&lt;/p&gt;&lt;p&gt;This plugin will not apply any resampling to your data.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
          </property>
-         <property name="wordWrap">
-          <bool>true</bool>
+         <layout class="QVBoxLayout" name="ctrlCol">
+          <property name="leftMargin">
+           <number>4</number>
+          </property>
+          <property name="rightMargin">
+           <number>10</number>
+          </property>
+          <item>
+           <widget class="QLabel" name="range_label">
+            <property name="text">
+             <string>Range of data to be processed:</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QRadioButton" name="radio_all">
+            <property name="text">
+             <string>All Data</string>
+            </property>
+            <property name="checked">
+             <bool>true</bool>
+            </property>
+            <attribute name="buttonGroup">
+             <string>rangeGroup</string>
+            </attribute>
+           </widget>
+          </item>
+          <item>
+           <widget class="QRadioButton" name="radio_zoomed">
+            <property name="text">
+             <string>Only data in zoomed area</string>
+            </property>
+            <attribute name="buttonGroup">
+             <string>rangeGroup</string>
+            </attribute>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="check_dc_removal">
+            <property name="text">
+             <string>Remove Average (DC, 0 Hz)</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <layout class="QHBoxLayout" name="suffixRow">
+            <item>
+             <widget class="QLabel" name="suffix_label">
+              <property name="text">
+               <string>Add suffix:</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLineEdit" name="suffix_edit">
+              <property name="minimumSize">
+               <size>
+                <width>50</width>
+                <height>0</height>
+               </size>
+              </property>
+              <property name="maximumSize">
+               <size>
+                <width>150</width>
+                <height>16777215</height>
+               </size>
+              </property>
+              <property name="text">
+               <string>_FFT</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item>
+           <spacer name="ctrlSpacer">
+            <property name="orientation">
+             <enum>Qt::Vertical</enum>
+            </property>
+           </spacer>
+          </item>
+          <item>
+           <widget class="QLabel" name="status_label">
+            <property name="text">
+             <string></string>
+            </property>
+            <property name="wordWrap">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <layout class="QVBoxLayout" name="calcWrap">
+            <property name="leftMargin">
+             <number>8</number>
+            </property>
+            <property name="topMargin">
+             <number>8</number>
+            </property>
+            <property name="rightMargin">
+             <number>8</number>
+            </property>
+            <property name="bottomMargin">
+             <number>8</number>
+            </property>
+            <item>
+             <widget class="QPushButton" name="btn_compute">
+              <property name="enabled">
+               <bool>false</bool>
+              </property>
+              <property name="text">
+               <string>Calculate</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="btn_save">
+              <property name="enabled">
+               <bool>false</bool>
+              </property>
+              <property name="text">
+               <string>Save Curve</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+         </layout>
+        </widget>
+       </widget>
+      </item>
+  </layout>
+ </widget>
+     <widget class="QWidget" name="outputPane">
+      <layout class="QVBoxLayout" name="outputPaneLayout" stretch="0,1">
+       <property name="spacing">
+        <number>0</number>
+       </property>
+       <property name="leftMargin">
+        <number>0</number>
+       </property>
+       <property name="topMargin">
+        <number>0</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>0</number>
+       </property>
+       <item>
+        <widget class="SectionHeaderBand" name="freqBanner">
+         <property name="text">
+          <string>Frequencies</string>
          </property>
         </widget>
        </item>
+
+       <!-- FFT output chart -->
        <item>
-        <widget class="QLabel" name="status_label">
-         <property name="text">
-          <string></string>
+        <widget class="QFrame" name="chart_fft">
+         <property name="frameShape">
+          <enum>QFrame::NoFrame</enum>
          </property>
-         <property name="wordWrap">
-          <bool>true</bool>
+         <property name="frameShadow">
+          <enum>QFrame::Plain</enum>
          </property>
         </widget>
-       </item>
-       <item>
-        <spacer name="ctrlSpacer">
-         <property name="orientation">
-          <enum>Qt::Vertical</enum>
-         </property>
-        </spacer>
        </item>
       </layout>
-     </item>
-    </layout>
-   </item>
+     </widget>
+   </widget>
+  </item>
   </layout>
  </widget>
-</item>
-
-   <!-- Separator -->
-   <item>
-    <widget class="Line" name="sep2">
-     <property name="frameShadow">
-      <enum>QFrame::Plain</enum>
-     </property>
-     <property name="orientation">
-      <enum>Qt::Horizontal</enum>
-     </property>
-    </widget>
-   </item>
-
-   <!-- FFT Frequencies label -->
-   <item>
-    <layout class="QHBoxLayout" name="fftLabelRow">
-     <property name="topMargin">
-      <number>10</number>
-     </property>
-     <item>
-      <widget class="QLabel" name="fft_label">
-       <property name="font">
-        <font>
-         <weight>75</weight>
-         <bold>true</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>FFT: Frequencies</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <spacer name="fftLabelSpacer">
-       <property name="orientation">
-        <enum>Qt::Horizontal</enum>
-       </property>
-      </spacer>
-     </item>
-    </layout>
-   </item>
-
-   <!-- FFT output chart -->
-   <item>
-    <widget class="QFrame" name="chart_fft">
-     <property name="frameShape">
-      <enum>QFrame::Box</enum>
-     </property>
-     <property name="frameShadow">
-      <enum>QFrame::Plain</enum>
-     </property>
-    </widget>
-   </item>
-
-   <!-- Save row -->
-   <item>
-    <layout class="QHBoxLayout" name="saveRow">
-     <property name="bottomMargin">
-      <number>11</number>
-     </property>
-     <item>
-      <spacer name="saveSpacer1">
-       <property name="orientation">
-        <enum>Qt::Horizontal</enum>
-       </property>
-      </spacer>
-     </item>
-     <item>
-      <widget class="QPushButton" name="btn_save">
-       <property name="enabled">
-        <bool>false</bool>
-       </property>
-       <property name="text">
-        <string>Save Curve</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QLabel" name="suffix_label">
-       <property name="text">
-        <string>Add suffix:</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QLineEdit" name="suffix_edit">
-       <property name="minimumSize">
-        <size>
-         <width>50</width>
-         <height>0</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>150</width>
-         <height>16777215</height>
-        </size>
-       </property>
-       <property name="text">
-        <string>_FFT</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <spacer name="saveSpacer2">
-       <property name="orientation">
-        <enum>Qt::Horizontal</enum>
-       </property>
-      </spacer>
-     </item>
-    </layout>
-   </item>
-
-   <!-- Close button -->
-   <item>
-    <widget class="QDialogButtonBox" name="buttonBox">
-     <property name="standardButtons">
-      <set>QDialogButtonBox::Close</set>
-     </property>
-    </widget>
-   </item>
-  </layout>
- </widget>
+ <buttongroups>
+  <buttongroup name="rangeGroup"/>
+ </buttongroups>
 </ui>

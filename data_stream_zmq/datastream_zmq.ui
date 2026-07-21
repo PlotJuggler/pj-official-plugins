@@ -20,19 +20,26 @@
    <string>ZMQ Subscriber</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
+   <property name="spacing"><number>0</number></property>
+   <property name="leftMargin"><number>0</number></property>
+   <property name="topMargin"><number>0</number></property>
+   <property name="rightMargin"><number>0</number></property>
+   <property name="bottomMargin"><number>0</number></property>
    <item>
-    <widget class="QLabel" name="label">
-     <property name="font">
-      <font>
-       <pointsize>12</pointsize>
-       <bold>true</bold>
-      </font>
-     </property>
+    <widget class="SectionHeaderBand" name="connectionBanner">
      <property name="text">
-      <string>Connection (ZMQ_SUB)</string>
+      <string>Connection</string>
      </property>
     </widget>
    </item>
+   <item>
+    <widget class="QWidget" name="headerContent" native="true">
+     <layout class="QVBoxLayout" name="headerContentLayout">
+      <property name="spacing"><number>6</number></property>
+      <property name="leftMargin"><number>9</number></property>
+      <property name="topMargin"><number>6</number></property>
+      <property name="rightMargin"><number>9</number></property>
+      <property name="bottomMargin"><number>6</number></property>
    <item>
     <widget class="QRadioButton" name="radioConnect">
      <property name="text">
@@ -41,6 +48,9 @@
      <property name="checked">
       <bool>true</bool>
      </property>
+     <attribute name="buttonGroup">
+      <string>socketModeGroup</string>
+     </attribute>
     </widget>
    </item>
    <item>
@@ -48,6 +58,9 @@
      <property name="text">
       <string>Bind (accept connections)</string>
      </property>
+     <attribute name="buttonGroup">
+      <string>socketModeGroup</string>
+     </attribute>
     </widget>
    </item>
    <item>
@@ -118,21 +131,18 @@
      </item>
     </layout>
    </item>
-   <item>
-    <widget class="QLabel" name="label_6">
-     <property name="font">
-      <font>
-       <pointsize>12</pointsize>
-       <bold>true</bold>
-      </font>
-     </property>
-     <property name="text">
-      <string>Message Protocol:</string>
-     </property>
+     </layout>
     </widget>
    </item>
    <item>
-    <widget class="QComboBox" name="comboBoxProtocol"/>
+    <widget class="SectionHeaderBand" name="serializationBanner">
+     <property name="text">
+      <string>Message Serialization</string>
+     </property>
+     <property name="trailingComboName">
+      <string>comboBoxProtocol</string>
+     </property>
+    </widget>
    </item>
    <item>
     <widget class="QWidget" name="boxOptions" native="true">
@@ -150,18 +160,6 @@
        <number>6</number>
       </property>
       <item>
-       <widget class="QLabel" name="label_5">
-        <property name="font">
-         <font>
-          <bold>true</bold>
-         </font>
-        </property>
-        <property name="text">
-         <string>Protocol options:</string>
-        </property>
-       </widget>
-      </item>
-      <item>
        <widget class="QWidget" name="pj_parser_slot" native="true">
         <property name="minimumSize">
          <size>
@@ -175,19 +173,30 @@
     </widget>
    </item>
    <item>
-    <widget class="QLabel" name="label_7">
-     <property name="font">
-      <font>
-       <bold>true</bold>
-      </font>
-     </property>
-     <property name="text">
-      <string>Topics:</string>
-     </property>
+    <widget class="SectionHeaderBand" name="topicsBanner">
+     <property name="text"><string>Topics</string></property>
     </widget>
    </item>
    <item>
-    <widget class="QLineEdit" name="lineEditTopics"/>
+    <layout class="QHBoxLayout" name="subscriptionRow">
+     <property name="spacing"><number>6</number></property>
+     <property name="leftMargin"><number>9</number></property>
+     <property name="topMargin"><number>6</number></property>
+     <property name="rightMargin"><number>9</number></property>
+     <property name="bottomMargin"><number>6</number></property>
+     <item>
+      <widget class="QLabel" name="labelSubscriptionPrefixes">
+       <property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property>
+       <property name="text"><string>Subscription prefixes</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="lineEditTopics">
+       <property name="placeholderText"><string>empty = all topics</string></property>
+       <property name="toolTip"><string>ZMQ subscription prefixes, separated by comma/semicolon/whitespace. Leave empty to subscribe to everything.</string></property>
+      </widget>
+     </item>
+    </layout>
    </item>
    <item>
     <spacer name="verticalSpacer">
@@ -203,6 +212,14 @@
     </spacer>
    </item>
    <item>
+    <widget class="QWidget" name="buttonBoxWrap" native="true">
+     <layout class="QVBoxLayout" name="buttonBoxWrapLayout">
+      <property name="spacing"><number>0</number></property>
+      <property name="leftMargin"><number>9</number></property>
+      <property name="topMargin"><number>0</number></property>
+      <property name="rightMargin"><number>9</number></property>
+      <property name="bottomMargin"><number>9</number></property>
+   <item>
     <widget class="QDialogButtonBox" name="buttonBox">
      <property name="orientation">
       <enum>Qt::Horizontal</enum>
@@ -210,6 +227,9 @@
      <property name="standardButtons">
       <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
      </property>
+    </widget>
+   </item>
+     </layout>
     </widget>
    </item>
   </layout>
@@ -249,4 +269,7 @@
    </hints>
   </connection>
  </connections>
+ <buttongroups>
+  <buttongroup name="socketModeGroup"/>
+ </buttongroups>
 </ui>

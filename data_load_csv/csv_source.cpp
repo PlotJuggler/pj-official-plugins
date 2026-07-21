@@ -96,23 +96,31 @@ class CsvSource : public PJ::FileSourceBase {
       return runtimeHost().progressUpdate(static_cast<uint64_t>(current));
     });
 
-    if (!result.success) {
+    // ParseCsvData sets success=false either on a real parse error OR when the user
+    // stopped the load (the progress callback returned false). In the stop case the
+    // rows parsed so far are already in `result` — write them so the host's
+    // "Stop and Keep" can flush them (Discard evicts the dataset host-side anyway).
+    // Only a genuine failure (not a stop) aborts with no data.
+    const bool stopped_by_user = runtimeHost().isStopRequested();
+    if (!result.success && !stopped_by_user) {
       return PJ::unexpected(std::string("CSV parsing failed"));
     }
 
-    // --- Non-monotonic time warning ---
-    if (result.time_is_non_monotonic) {
-      if (!runtimeHost().askContinue(
-              "Non-monotonic Timestamps",
-              "The time column is not monotonically increasing.\n"
-              "Data will be sorted automatically after loading.\n\n"
-              "Continue?")) {
-        return PJ::unexpected(std::string("Loading aborted by user"));
+    // Interactive "continue?" prompts only make sense on a normal load. When the user
+    // already chose to stop, don't ask more questions — just keep what was parsed.
+    if (!stopped_by_user) {
+      // --- Non-monotonic time warning ---
+      if (result.time_is_non_monotonic) {
+        if (!runtimeHost().askContinue(
+                "Non-monotonic Timestamps",
+                "The time column is not monotonically increasing.\n"
+                "Data will be sorted automatically after loading.\n\n"
+                "Continue?")) {
+          return PJ::unexpected(std::string("Loading aborted by user"));
+        }
       }
-    }
 
-    // --- Skipped lines warning with detail ---
-    {
+      // --- Skipped lines warning with detail ---
       std::string detail;
       for (const auto& warn : result.warnings) {
         if (warn.type == PJ::CSV::CsvParseWarning::WRONG_COLUMN_COUNT ||
@@ -264,4 +272,4 @@ class CsvSource : public PJ::FileSourceBase {
 
 PJ_DATA_SOURCE_PLUGIN(CsvSource, kCsvManifest)
 
-PJ_DIALOG_PLUGIN(CsvDialog)
+PJ_DIALOG_PLUGIN(CsvDialog, kCsvManifest)

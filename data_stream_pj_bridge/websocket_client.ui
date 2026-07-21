@@ -14,20 +14,34 @@
    <string>PlotJuggler Bridge</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout_2">
+   <property name="spacing"><number>0</number></property>
+   <property name="leftMargin"><number>0</number></property>
+   <property name="topMargin"><number>0</number></property>
+   <property name="rightMargin"><number>0</number></property>
+   <property name="bottomMargin"><number>0</number></property>
+   <item>
+    <widget class="SectionHeaderBand" name="connectionBanner">
+     <property name="text"><string>Connection</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="addressWrap" native="true">
+     <layout class="QVBoxLayout" name="addressWrapLayout">
+      <property name="leftMargin"><number>9</number></property>
+      <property name="topMargin"><number>6</number></property>
+      <property name="rightMargin"><number>9</number></property>
+      <property name="bottomMargin"><number>9</number></property>
    <item>
     <layout class="QGridLayout" name="gridLayout" columnstretch="0,2,1,0">
      <item row="1" column="3">
+      <!-- min height 34 = text + the app QSS button padding (8px each side), so
+           a height-compressed layout can never squeeze the label into clipping;
+           no max cap, matching the WebRTC Connect button. -->
       <widget class="QPushButton" name="buttonConnect">
        <property name="minimumSize">
         <size>
          <width>110</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>16777215</width>
-         <height>25</height>
+         <height>34</height>
         </size>
        </property>
        <property name="text">
@@ -41,11 +55,7 @@
      <item row="0" column="1">
       <widget class="QLabel" name="label_3">
        <property name="font">
-        <font>
-         <pointsize>11</pointsize>
-         <weight>75</weight>
-         <bold>true</bold>
-        </font>
+        <font><pointsize>11</pointsize><bold>false</bold></font>
        </property>
        <property name="text">
         <string>Address</string>
@@ -55,11 +65,7 @@
      <item row="0" column="2">
       <widget class="QLabel" name="label_4">
        <property name="font">
-        <font>
-         <pointsize>11</pointsize>
-         <weight>75</weight>
-         <bold>true</bold>
-        </font>
+        <font><pointsize>11</pointsize><bold>false</bold></font>
        </property>
        <property name="text">
         <string>Port</string>
@@ -98,75 +104,28 @@
        </property>
       </widget>
      </item>
+     <item row="0" column="0">
+      <widget class="QLabel" name="labelTransport">
+       <property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property>
+       <property name="text"><string>Transport</string></property>
+      </widget>
+     </item>
      <item row="1" column="0">
-      <widget class="QLabel" name="label">
-       <property name="text">
-        <string>  ws://</string>
-       </property>
+      <widget class="QComboBox" name="comboBoxTransport">
+       <property name="enabled"><bool>false</bool></property>
+       <item><property name="text"><string>ws://</string></property></item>
       </widget>
      </item>
     </layout>
    </item>
-   <item>
-    <layout class="QHBoxLayout" name="horizontalLayout_5">
-     <item>
-      <widget class="QLabel" name="label_6">
-       <property name="font">
-        <font>
-         <weight>75</weight>
-         <bold>true</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>Select one or multiple topics:</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <spacer name="horizontalSpacer">
-       <property name="orientation">
-        <enum>Qt::Horizontal</enum>
-       </property>
-       <property name="sizeHint" stdset="0">
-        <size>
-         <width>40</width>
-         <height>20</height>
-        </size>
-       </property>
-      </spacer>
-     </item>
-     <item>
-      <widget class="QLabel" name="label_7">
-       <property name="text">
-        <string>Filter: </string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QLineEdit" name="lineEditFilter">
-       <property name="maximumSize">
-        <size>
-         <width>300</width>
-         <height>16777215</height>
-        </size>
-       </property>
-       <property name="clearButtonEnabled">
-        <bool>true</bool>
-       </property>
-      </widget>
-     </item>
-    </layout>
+     </layout>
+    </widget>
    </item>
    <item>
-    <widget class="QLabel" name="label_5">
-     <property name="font">
-      <font>
-       <pointsize>10</pointsize>
-      </font>
-     </property>
-     <property name="text">
-      <string>Tip: [CLICK] toggle select, [CLICK+DRAG] multiple select</string>
-     </property>
+    <widget class="SectionHeaderBand" name="topicsBanner">
+     <property name="text"><string>Topics</string></property>
+     <property name="filterFieldName"><string>lineEditFilter</string></property>
+     <property name="filterPlaceholder"><string>Filter</string></property>
     </widget>
    </item>
    <item>
@@ -174,9 +133,18 @@
      <property name="selectionMode">
       <enum>QAbstractItemView::MultiSelection</enum>
      </property>
+     <property name="selectionBehavior">
+      <enum>QAbstractItemView::SelectRows</enum>
+     </property>
+     <property name="sortingEnabled">
+      <bool>true</bool>
+     </property>
      <property name="columnCount">
       <number>2</number>
      </property>
+     <attribute name="verticalHeaderVisible">
+      <bool>false</bool>
+     </attribute>
      <column>
       <property name="text">
        <string>Topic Name</string>
@@ -189,6 +157,14 @@
      </column>
     </widget>
    </item>
+   <item>
+    <widget class="QWidget" name="buttonsWrap" native="true">
+     <layout class="QVBoxLayout" name="buttonsWrapLayout">
+      <property name="leftMargin"><number>9</number></property>
+      <property name="topMargin"><number>6</number></property>
+      <property name="rightMargin"><number>9</number></property>
+      <property name="bottomMargin"><number>9</number></property>
+
    <item>
     <layout class="QHBoxLayout" name="horizontalLayout" stretch="1,0">
      <property name="topMargin">
@@ -224,6 +200,8 @@
       </widget>
      </item>
     </layout>
+   </item>     </layout>
+    </widget>
    </item>
   </layout>
  </widget>

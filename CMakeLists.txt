@@ -16,6 +16,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/base64)
   add_subdirectory(common/pj_video_demux)
   add_subdirectory(common/array_policy)
+  add_subdirectory(common/streaming_utils)
   add_subdirectory(common/laser_scan)
   add_subdirectory(common/pointcloud_color)
   # common/can_dbc has a CPM download side-effect, so configure it only for its
@@ -37,6 +38,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(data_load_ulog)
   add_subdirectory(data_load_mf4)
   add_subdirectory(data_load_blf)
+  add_subdirectory(data_load_3d)
   # data_load_lerobot and data_load_mp4 are intentionally NOT in this aggregate
   # list: they depend on FFmpeg (via common/pj_video_demux), which this build
   # does not provide. Both build per-plugin against their own conanfile (CI's
@@ -106,7 +108,7 @@ endif()
 find_package(GTest REQUIRED)
 
 # ---------------------------------------------------------------------------
-# PlotJuggler Core SDK (Conan package, plotjuggler cloudsmith remote).
+# PlotJuggler Core SDK (Conan package, shared PlotJuggler JFrog remote).
 # The exact version is pinned by Conan (see conanfile.txt / each plugin's
 # conanfile.py) — CMakeDeps generates a config for precisely that version, so
 # no version is asserted here. Keeping the version out of find_package means a
@@ -154,6 +156,7 @@ endif()
 add_subdirectory(common/base64)
 add_subdirectory(common/pj_video_demux)
 add_subdirectory(common/array_policy)
+add_subdirectory(common/streaming_utils)
 add_subdirectory(common/laser_scan)
 add_subdirectory(common/pointcloud_color)
 # common/can_dbc has a CPM download side-effect, so configure it only for its
@@ -182,6 +185,7 @@ else()
   add_subdirectory(data_load_ulog)
   add_subdirectory(data_load_mf4)
   add_subdirectory(data_load_blf)
+  add_subdirectory(data_load_3d)
   # data_load_lerobot and data_load_mp4 are intentionally NOT in this aggregate
   # list: they depend on FFmpeg (via common/pj_video_demux), which this build
   # does not provide. Both build per-plugin against their own conanfile (CI's

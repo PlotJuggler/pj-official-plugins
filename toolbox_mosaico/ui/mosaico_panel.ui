@@ -9,62 +9,29 @@
    <property name="rightMargin"><number>0</number></property>
    <property name="bottomMargin"><number>0</number></property>
 
-   <!-- Server header band: a full-width chrome row in the title-bar tone with
-        flat icon buttons. 28px tall with 2px left padding so the "Server:" label
-        matches the Sequences/Topics/Info column headers (and the LHS Datasets
-        header) instead of looking small in a taller band. The band tone +
-        button padding come from the app QSS Mosaico section. -->
+   <!-- Server header band: the canonical SectionHeaderBand (host-promoted) in
+        "label + input" mode: the editable URL combo expands to fill the band,
+        with the Connect / Cert icon buttons docked on the right. Height +
+        paddings come from the framework (ChromeMetrics.bandHeight, wired to the
+        app's chrome-metrics broadcast by the host). -->
    <item>
-    <widget class="QFrame" name="serverHeaderBand">
-     <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
-     <property name="minimumSize"><size><width>0</width><height>28</height></size></property>
-     <property name="maximumSize"><size><width>16777215</width><height>28</height></size></property>
-     <layout class="QHBoxLayout" name="connectRow">
-      <property name="spacing"><number>4</number></property>
-      <property name="leftMargin"><number>2</number></property>
-      <property name="topMargin"><number>0</number></property>
-      <property name="rightMargin"><number>0</number></property>
-      <property name="bottomMargin"><number>0</number></property>
-      <item>
-       <widget class="QLabel" name="labelUri">
-        <property name="text"><string>Server:</string></property>
-        <property name="minimumSize"><size><width>50</width><height>0</height></size></property>
-       </widget>
-      </item>
-      <item>
-       <!-- App-canonical dropdown (PJ::ComboBox): gradient popup delegate +
-            popup-frame fixes. Promoted via the host PjUiLoader, same as
-            pj_app's LeftPanel.ui. -->
-       <widget class="PJ::ComboBox" name="comboUri">
-        <property name="editable"><bool>true</bool></property>
-        <property name="sizePolicy">
-         <sizepolicy hsizetype="Expanding" vsizetype="Fixed"><horstretch>1</horstretch><verstretch>0</verstretch></sizepolicy>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QPushButton" name="buttonConnect">
-        <property name="text"><string/></property>
-        <property name="toolTip"><string>Connect</string></property>
-        <property name="flat"><bool>true</bool></property>
-        <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
-        <property name="minimumSize"><size><width>28</width><height>28</height></size></property>
-        <property name="maximumSize"><size><width>28</width><height>28</height></size></property>
-        <property name="iconSize"><size><width>24</width><height>24</height></size></property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QPushButton" name="buttonCert">
-        <property name="text"><string/></property>
-        <property name="toolTip"><string>Cert / API Key&#8230;</string></property>
-        <property name="flat"><bool>true</bool></property>
-        <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
-        <property name="minimumSize"><size><width>28</width><height>28</height></size></property>
-        <property name="maximumSize"><size><width>28</width><height>28</height></size></property>
-        <property name="iconSize"><size><width>24</width><height>24</height></size></property>
-       </widget>
-      </item>
-     </layout>
+    <widget class="SectionHeaderBand" name="serverHeaderBand">
+     <property name="text"><string>Server:</string></property>
+     <property name="comboExpanding"><bool>true</bool></property>
+     <property name="comboEditable"><bool>true</bool></property>
+     <property name="trailingComboName"><string>comboUri</string></property>
+     <property name="trailingButtonNames">
+      <stringlist>
+       <string>buttonConnect</string>
+       <string>buttonCert</string>
+      </stringlist>
+     </property>
+     <property name="trailingButtonToolTips">
+      <stringlist>
+       <string>Connect</string>
+       <string>Cert / API Key&#8230;</string>
+      </stringlist>
+     </property>
     </widget>
    </item>
 
@@ -112,78 +79,28 @@
        <property name="rightMargin"><number>0</number></property>
        <property name="bottomMargin"><number>0</number></property>
        <item>
-        <!-- Title-bar-tone header band, just like the LHS "Datasets" header
-             (QFrame#seqHeaderBand gets ${titlebar_background} from the QSS; 28px
-             total height = the app's band_extent). -->
-        <widget class="QFrame" name="seqHeaderBand">
-         <property name="minimumSize"><size><width>0</width><height>28</height></size></property>
-         <property name="maximumSize"><size><width>16777215</width><height>28</height></size></property>
-         <layout class="QHBoxLayout" name="seqFilterRow">
-          <property name="spacing"><number>0</number></property>
-          <property name="leftMargin"><number>2</number></property>
-          <property name="topMargin"><number>0</number></property>
-          <property name="rightMargin"><number>0</number></property>
-          <property name="bottomMargin"><number>0</number></property>
-          <!-- Header label shares the row with the search bar (LHS "Datasets"
-               layout): [label][gap][magnifier][filter][regex]. -->
-         <item>
-          <widget class="QLabel" name="seqHeader">
-           <property name="text"><string>Sequences</string></property>
-          </widget>
-         </item>
-         <item>
-          <spacer name="seqHeaderGap">
-           <property name="orientation"><enum>Qt::Horizontal</enum></property>
-           <property name="sizeType"><enum>QSizePolicy::Fixed</enum></property>
-           <property name="sizeHint" stdset="0"><size><width>6</width><height>1</height></size></property>
-          </spacer>
-         </item>
-         <!-- Matches the LHS "Datasets" filter row: leading magnifying-glass,
-              borderless filter field, trailing regex toggle (where the LHS has
-              its kebab). 28px chrome height to line up with the app filters. -->
-         <item>
-          <widget class="QPushButton" name="buttonSearchSeq">
-           <property name="text"><string/></property>
-           <property name="flat"><bool>true</bool></property>
-           <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
-           <property name="minimumSize"><size><width>28</width><height>28</height></size></property>
-           <property name="maximumSize"><size><width>28</width><height>28</height></size></property>
-           <property name="iconSize"><size><width>24</width><height>24</height></size></property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QLineEdit" name="seqFilter">
-           <property name="placeholderText"><string>Filter&#8230;</string></property>
-           <property name="clearButtonEnabled"><bool>true</bool></property>
-           <property name="minimumSize"><size><width>0</width><height>28</height></size></property>
-           <property name="maximumSize"><size><width>16777215</width><height>28</height></size></property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QPushButton" name="seqRegexToggle">
-           <property name="text"><string>.*</string></property>
-           <property name="checkable"><bool>true</bool></property>
-           <property name="flat"><bool>true</bool></property>
-           <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
-           <property name="toolTip"><string>Use regular expression</string></property>
-           <property name="minimumSize"><size><width>28</width><height>28</height></size></property>
-           <property name="maximumSize"><size><width>28</width><height>28</height></size></property>
-          </widget>
-         </item>
-         <!-- Far-right reload: re-lists sequences (and the selected sequence's
-              topics, if one is showing). Moved here from the Server bar. -->
-         <item>
-          <widget class="QPushButton" name="buttonReloadSeq">
-           <property name="text"><string/></property>
-           <property name="toolTip"><string>Reload sequences</string></property>
-           <property name="flat"><bool>true</bool></property>
-           <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
-           <property name="minimumSize"><size><width>28</width><height>28</height></size></property>
-           <property name="maximumSize"><size><width>28</width><height>28</height></size></property>
-           <property name="iconSize"><size><width>24</width><height>24</height></size></property>
-          </widget>
-         </item>
-        </layout>
+        <!-- Canonical section band (host-promoted SectionHeaderBand): title +
+             inline canonical Search (inner edit named `seqFilter` for the host
+             textChanged binding) + regex toggle + far-right reload. Height and
+             paddings come from the framework chrome metrics. -->
+        <widget class="SectionHeaderBand" name="seqHeaderBand">
+         <property name="text"><string>Sequences</string></property>
+         <property name="titleObjectName"><string>seqHeader</string></property>
+         <property name="filterPlaceholder"><string>Filter&#8230;</string></property>
+         <property name="filterFieldName"><string>seqFilter</string></property>
+         <property name="trailingToggleName"><string>seqRegexToggle</string></property>
+         <property name="trailingToggleText"><string>.*</string></property>
+         <property name="trailingToggleToolTip"><string>Use regular expression</string></property>
+         <property name="trailingButtonNames">
+          <stringlist>
+           <string>buttonReloadSeq</string>
+          </stringlist>
+         </property>
+         <property name="trailingButtonToolTips">
+          <stringlist>
+           <string>Reload sequences</string>
+          </stringlist>
+         </property>
         </widget>
        </item>
        <!-- Generic date/time range picker: presets + from/to fields + calendar overlay -->
@@ -226,24 +143,9 @@
            <property name="bottomMargin"><number>0</number></property>
            <property name="spacing"><number>2</number></property>
            <item>
-            <!-- Title-bar-tone header band for the metadata-filter section,
-                 matching the Sequences/Topics/Info column headers (28px,
-                 ${titlebar_background} via QFrame#metadataFilterHeaderBand in the QSS). -->
-            <widget class="QFrame" name="metadataFilterHeaderBand">
-             <property name="minimumSize"><size><width>0</width><height>28</height></size></property>
-             <property name="maximumSize"><size><width>16777215</width><height>28</height></size></property>
-             <layout class="QHBoxLayout" name="metadataFilterHeaderLayout">
-              <property name="spacing"><number>0</number></property>
-              <property name="leftMargin"><number>2</number></property>
-              <property name="topMargin"><number>0</number></property>
-              <property name="rightMargin"><number>0</number></property>
-              <property name="bottomMargin"><number>0</number></property>
-              <item>
-               <widget class="QLabel" name="metadataFilterHeader">
-                <property name="text"><string>Metadata Filter</string></property>
-               </widget>
-              </item>
-             </layout>
+            <!-- Canonical section band for the metadata-filter section. -->
+            <widget class="SectionHeaderBand" name="metadataFilterHeaderBand">
+             <property name="text"><string>Metadata Filter</string></property>
             </widget>
            </item>
            <!-- Key/Op/Value assist dropdowns build one clause, committed by +. -->
@@ -315,75 +217,26 @@
        <property name="rightMargin"><number>0</number></property>
        <property name="bottomMargin"><number>0</number></property>
        <item>
-        <!-- Title-bar-tone header band, just like the LHS "Datasets" header. -->
-        <widget class="QFrame" name="topicHeaderBand">
-         <property name="minimumSize"><size><width>0</width><height>28</height></size></property>
-         <property name="maximumSize"><size><width>16777215</width><height>28</height></size></property>
-         <layout class="QHBoxLayout" name="topicFilterRow">
-          <property name="spacing"><number>0</number></property>
-          <property name="leftMargin"><number>2</number></property>
-          <property name="topMargin"><number>0</number></property>
-          <property name="rightMargin"><number>0</number></property>
-          <property name="bottomMargin"><number>0</number></property>
-          <!-- Header label shares the row with the search bar (LHS "Datasets"
-               layout): [label][gap][magnifier][filter][regex]. -->
-         <item>
-          <widget class="QLabel" name="topicHeader">
-           <property name="text"><string>Topics</string></property>
-          </widget>
-         </item>
-         <item>
-          <spacer name="topicHeaderGap">
-           <property name="orientation"><enum>Qt::Horizontal</enum></property>
-           <property name="sizeType"><enum>QSizePolicy::Fixed</enum></property>
-           <property name="sizeHint" stdset="0"><size><width>6</width><height>1</height></size></property>
-          </spacer>
-         </item>
-         <!-- Matches the LHS "Datasets" filter row: leading magnifying-glass,
-              borderless filter field, trailing regex toggle (where the LHS has
-              its kebab). 28px chrome height to line up with the app filters. -->
-         <item>
-          <widget class="QPushButton" name="buttonSearchTopic">
-           <property name="text"><string/></property>
-           <property name="flat"><bool>true</bool></property>
-           <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
-           <property name="minimumSize"><size><width>28</width><height>28</height></size></property>
-           <property name="maximumSize"><size><width>28</width><height>28</height></size></property>
-           <property name="iconSize"><size><width>24</width><height>24</height></size></property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QLineEdit" name="topicFilter">
-           <property name="placeholderText"><string>Filter&#8230;</string></property>
-           <property name="clearButtonEnabled"><bool>true</bool></property>
-           <property name="minimumSize"><size><width>0</width><height>28</height></size></property>
-           <property name="maximumSize"><size><width>16777215</width><height>28</height></size></property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QPushButton" name="topicRegexToggle">
-           <property name="text"><string>.*</string></property>
-           <property name="checkable"><bool>true</bool></property>
-           <property name="flat"><bool>true</bool></property>
-           <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
-           <property name="toolTip"><string>Use regular expression</string></property>
-           <property name="minimumSize"><size><width>28</width><height>28</height></size></property>
-           <property name="maximumSize"><size><width>28</width><height>28</height></size></property>
-          </widget>
-         </item>
-         <!-- Far-right reload: re-lists only the selected sequence's topics. -->
-         <item>
-          <widget class="QPushButton" name="buttonReloadTopic">
-           <property name="text"><string/></property>
-           <property name="toolTip"><string>Reload topics</string></property>
-           <property name="flat"><bool>true</bool></property>
-           <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
-           <property name="minimumSize"><size><width>28</width><height>28</height></size></property>
-           <property name="maximumSize"><size><width>28</width><height>28</height></size></property>
-           <property name="iconSize"><size><width>24</width><height>24</height></size></property>
-          </widget>
-         </item>
-        </layout>
+        <!-- Canonical section band, same shape as the Sequences band; the reload
+             re-lists only the selected sequence's topics. -->
+        <widget class="SectionHeaderBand" name="topicHeaderBand">
+         <property name="text"><string>Topics</string></property>
+         <property name="titleObjectName"><string>topicHeader</string></property>
+         <property name="filterPlaceholder"><string>Filter&#8230;</string></property>
+         <property name="filterFieldName"><string>topicFilter</string></property>
+         <property name="trailingToggleName"><string>topicRegexToggle</string></property>
+         <property name="trailingToggleText"><string>.*</string></property>
+         <property name="trailingToggleToolTip"><string>Use regular expression</string></property>
+         <property name="trailingButtonNames">
+          <stringlist>
+           <string>buttonReloadTopic</string>
+          </stringlist>
+         </property>
+         <property name="trailingButtonToolTips">
+          <stringlist>
+           <string>Reload topics</string>
+          </stringlist>
+         </property>
         </widget>
        </item>
        <item>
@@ -392,7 +245,7 @@
               (interior column dividers + a bottom rule under every row, no outer-left/right
               line); #topicTable QSS themes the dividers and drops the frame. -->
          <property name="pjInteriorGrid" stdset="0"><bool>true</bool></property>
-         <property name="selectionMode"><enum>QAbstractItemView::ExtendedSelection</enum></property>
+         <property name="selectionMode"><enum>QAbstractItemView::MultiSelection</enum></property>
          <property name="selectionBehavior"><enum>QAbstractItemView::SelectRows</enum></property>
          <property name="editTriggers"><set>QAbstractItemView::NoEditTriggers</set></property>
          <attribute name="verticalHeaderVisible"><bool>false</bool></attribute>
@@ -410,22 +263,10 @@
        <property name="rightMargin"><number>0</number></property>
        <property name="bottomMargin"><number>0</number></property>
        <item>
-        <!-- Title-bar-tone header band, just like the LHS "Datasets" header. -->
-        <widget class="QFrame" name="infoHeaderBand">
-         <property name="minimumSize"><size><width>0</width><height>28</height></size></property>
-         <property name="maximumSize"><size><width>16777215</width><height>28</height></size></property>
-         <layout class="QHBoxLayout" name="infoHeaderLayout">
-          <property name="spacing"><number>0</number></property>
-          <property name="leftMargin"><number>2</number></property>
-          <property name="topMargin"><number>0</number></property>
-          <property name="rightMargin"><number>0</number></property>
-          <property name="bottomMargin"><number>0</number></property>
-          <item>
-           <widget class="QLabel" name="dataViewHeader">
-            <property name="text"><string>Info</string></property>
-           </widget>
-          </item>
-         </layout>
+        <!-- Canonical section band for the Info column. -->
+        <widget class="SectionHeaderBand" name="infoHeaderBand">
+         <property name="text"><string>Info</string></property>
+         <property name="titleObjectName"><string>dataViewHeader</string></property>
         </widget>
        </item>
        <item>
@@ -451,13 +292,19 @@
     </widget>
    </item>
 
-   <!-- Two-handle time range slider + Download button (PJ3 RangeSlider) -->
+   <!-- Two-handle time range slider + Cancel / Download buttons (PJ3 RangeSlider).
+        No in-panel Close: the hosting toolbox banner's close button owns that. -->
    <item>
     <layout class="QHBoxLayout" name="rangeRow">
-     <!-- Full-bleed like the columns above (bodyLayout L/R = 0): the slider spreads
-          edge-to-edge, matching the app's playback bar. -->
-     <property name="leftMargin"><number>0</number></property>
-     <property name="rightMargin"><number>0</number></property>
+     <!-- The whole row (duration slider + buttons) floats inside the panel:
+          8 = the framework's space_comfortable on the sides/bottom, 4 =
+          space_snug on top (the slider's handle-label row already adds
+          headroom there). Plugin .ui files cannot reference ${tokens}. -->
+     <property name="spacing"><number>8</number></property>
+     <property name="leftMargin"><number>8</number></property>
+     <property name="topMargin"><number>4</number></property>
+     <property name="rightMargin"><number>8</number></property>
+     <property name="bottomMargin"><number>8</number></property>
      <item>
       <widget class="RangeSlider" name="rangeSlider">
        <!-- Full-bleed. The track is the playback scrubber's 24px height; the host
@@ -471,21 +318,26 @@
      </item>
      <!-- Buttons bottom-aligned to the duration widget: the slider is taller (one
           label row above its 24px track), so AlignBottom lines the buttons up with
-          the track at the bottom instead of floating them in the row's center. -->
-     <item alignment="Qt::AlignBottom">
-      <widget class="QPushButton" name="buttonFetch">
-       <property name="text"><string>Download</string></property>
-       <property name="minimumSize"><size><width>90</width><height>0</height></size></property>
-      </widget>
-     </item>
+          the track at the bottom. Fixed 24px height = the track height, so the
+          buttons read as the same strip as the slider. -->
+     <!-- Compact padding (2 = space_tight vertical, 8 = space_comfortable
+          horizontal) so the label fits the 24px track-height box - the app's
+          global QPushButton padding (8px all around) clips text at this height.
+          Colors/radius still come from the app stylesheet. -->
      <item alignment="Qt::AlignBottom">
       <widget class="QPushButton" name="buttonCancel">
        <property name="text"><string>Cancel</string></property>
+       <property name="minimumSize"><size><width>0</width><height>24</height></size></property>
+       <property name="maximumSize"><size><width>16777215</width><height>24</height></size></property>
+       <property name="styleSheet"><string notr="true">QPushButton { padding: 2px 8px; }</string></property>
       </widget>
      </item>
      <item alignment="Qt::AlignBottom">
-      <widget class="QPushButton" name="buttonClose">
-       <property name="text"><string>Close</string></property>
+      <widget class="QPushButton" name="buttonFetch">
+       <property name="text"><string>Download</string></property>
+       <property name="minimumSize"><size><width>90</width><height>24</height></size></property>
+       <property name="maximumSize"><size><width>16777215</width><height>24</height></size></property>
+       <property name="styleSheet"><string notr="true">QPushButton { padding: 2px 8px; }</string></property>
       </widget>
      </item>
     </layout>

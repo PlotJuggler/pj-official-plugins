@@ -2,19 +2,20 @@
 
 #include <ixwebsocket/IXWebSocket.h>
 
-#include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <pj_array_policy/array_policy.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <pj_streaming/dialog_utils.hpp>
+#include <pj_streaming/endpoint.hpp>
 #include <string>
 #include <vector>
 
 #include "pj_bridge_manifest.hpp"
+#include "pj_bridge_protocol.hpp"
 #include "websocket_client_ui.hpp"
 
 namespace {
@@ -54,6 +55,24 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     return std::move(socket_);
   }
 
+  /// Full catalog of topics discovered during this dialog's connection session
+  /// (thread-safe snapshot), regardless of what the user selected. When the
+  /// source steals an already-open socket (see takeSocket()), this seeds the
+  /// source's advertise catalog immediately so the host can list every topic on
+  /// demand — not just the user's (now optional) filter selection — while the
+  /// source's own get_topics round-trip is still in flight. `TopicInfo::encoding`
+  /// carries the schema encoding and `schema` the schema text (both may be empty
+  /// until the source re-fetches with include_schemas).
+  std::vector<PJ::BridgeProtocol::TopicInfo> allDiscoveredTopics() const {
+    std::lock_guard<std::mutex> lock(topics_mutex_);
+    std::vector<PJ::BridgeProtocol::TopicInfo> out;
+    out.reserve(topics_.size());
+    for (const auto& t : topics_) {
+      out.push_back({t.name, t.schema_encoding, t.schema_name, t.schema_definition});
+    }
+    return out;
+  }
+
   // --- Dialog protocol ---
 
   std::string manifest() const override {
@@ -89,13 +108,18 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       }
     }
     wd.setTableRows("topicsList", rows);
+    wd.setListPlaceholder("topicsList", "Click to select, Click+Drag to multi-select");
 
     if (!selected_topic_names_.empty()) {
       wd.setSelectedItems("topicsList", selected_topic_names_);
     }
 
-    // OK button: enabled only when connected and topics are selected
-    wd.setOkEnabled(connected_ && !selected_topic_names_.empty());
+    // OK button: connected-only. The topic selection below is no longer a
+    // subscribe requirement — see the "topics" config key's dual role in
+    // PjBridgeSource: on a host that supports demand subscriptions it becomes an
+    // OPTIONAL advertise filter (empty = advertise everything); on a legacy host
+    // it keeps its original meaning, the subscribe list.
+    wd.setOkEnabled(connected_);
 
     return wd.toJson();
   }
@@ -106,9 +130,8 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       return false;
     }
     if (widget_name == "lineEditPort") {
-      auto val = std::atoi(std::string(text).c_str());
-      if (val > 0 && val <= 65535) {
-        port_ = val;
+      if (const auto port = pj::streaming::parsePort(text)) {
+        port_ = *port;
       }
       return false;
     }
@@ -225,7 +248,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
  private:
   void connectToServer() {
     socket_ = std::make_unique<ix::WebSocket>();
-    socket_->setUrl("ws://" + address_ + ":" + std::to_string(port_));
+    socket_->setUrl(pj::streaming::composeEndpoint("ws", address_, static_cast<uint16_t>(port_)));
 
     socket_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
       if (msg->type == ix::WebSocketMessageType::Open) {
@@ -351,16 +374,9 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       }
     }
     // Case-insensitive search
-    std::string lower_filter = filter_;
-    std::transform(lower_filter.begin(), lower_filter.end(), lower_filter.begin(), [](unsigned char c) {
-      return std::tolower(c);
-    });
-    std::string lower_name = t.name;
-    std::transform(
-        lower_name.begin(), lower_name.end(), lower_name.begin(), [](unsigned char c) { return std::tolower(c); });
-    std::string lower_type = t.type;
-    std::transform(
-        lower_type.begin(), lower_type.end(), lower_type.begin(), [](unsigned char c) { return std::tolower(c); });
+    const std::string lower_filter = pj::streaming::lowerAscii(filter_);
+    const std::string lower_name = pj::streaming::lowerAscii(t.name);
+    const std::string lower_type = pj::streaming::lowerAscii(t.type);
     return lower_name.find(lower_filter) != std::string::npos || lower_type.find(lower_filter) != std::string::npos;
   }
 
