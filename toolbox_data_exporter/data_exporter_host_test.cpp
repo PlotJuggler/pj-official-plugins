@@ -21,6 +21,7 @@
 #endif
 
 #include "data_exporter.hpp"
+#include "export_core.hpp"
 
 namespace {
 
@@ -106,9 +107,16 @@ class CanonicalStoreReadHost {
     return PJ_toolbox_host_t{.ctx = this, .vtable = &vtable_};
   }
 
+  void setCatalogAvailable(bool available) {
+    catalog_available_ = available;
+  }
+
  private:
   static bool acquireCatalogSnapshot(void* context, PJ_catalog_snapshot_t* output, PJ_error_t* error) noexcept {
     auto* self = static_cast<CanonicalStoreReadHost*>(context);
+    if (!self->catalog_available_) {
+      return false;
+    }
     return self->store_host_.vtable->acquire_catalog_snapshot(self->store_host_.ctx, output, error);
   }
 
@@ -128,6 +136,7 @@ class CanonicalStoreReadHost {
 
   PJ_toolbox_host_t store_host_{};
   PJ_toolbox_host_vtable_t vtable_{};
+  bool catalog_available_ = true;
 };
 
 void bindStore(
@@ -287,6 +296,62 @@ TEST(DataExporterHostTest, UnresolvableFieldPathReportsNoSamples) {
   EXPECT_FALSE(std::filesystem::exists(output_path));
 }
 
+TEST(DataExporterHostTest, LateLoadedCurvesRefreshOnDropAndBothExportPaths) {
+  PJ::testing::ToolboxTestStore store;
+  DataExporterToolbox toolbox;
+  CanonicalStoreReadHost canonical_host(store.makeHost());
+  PJ::ServiceRegistryBuilder registry;
+  bindStore(toolbox, store, canonical_host, registry);
+  DataExporterDialog& dialog = toolbox.dialog();
+
+  store.addTopic("alpha").addField("alpha", "value", {5'000'000'000LL, 7'000'000'000LL}, {1.0, 2.0});
+  ASSERT_TRUE(dialog.onItemsDropped("tableWidget", {"alpha/value"}));
+  EXPECT_DOUBLE_EQ(render(dialog)["endTime"]["value"].get<double>(), 2.0);
+
+  ASSERT_TRUE(dialog.onItemsDropped("tableWidget", {"beta/value"}));
+  store.addTopic("beta").addField("beta", "value", {5'000'000'000LL, 7'000'000'000LL}, {3.0, 4.0});
+
+  TempDirectory temp_directory;
+  const auto single_path = temp_directory.path() / "late_single.csv";
+  ASSERT_TRUE(dialog.onFileSelected("saveButton", single_path.string()));
+  EXPECT_EQ(
+      readFile(single_path),
+      "time,alpha/value,beta/value\n"
+      "5.000000,1,3\n"
+      "7.000000,2,4\n");
+  dialog.onAccepted("{}");
+
+  ASSERT_TRUE(dialog.onItemsDropped("tableWidget", {"gamma/value"}));
+  store.addTopic("gamma").addField("gamma", "value", {5'000'000'000LL, 7'000'000'000LL}, {5.0, 6.0});
+  ASSERT_TRUE(dialog.onToggled("checkBoxMultifile", true));
+  EXPECT_FALSE(dialog.onTextChanged("lineEditPrefix", "late"));
+  ASSERT_TRUE(dialog.onFolderSelected("saveButton", temp_directory.path().string()));
+
+  const auto gamma_path = temp_directory.path() / "late_gamma.csv";
+  ASSERT_TRUE(std::filesystem::is_regular_file(gamma_path)) << statusText(dialog);
+  EXPECT_EQ(readFile(gamma_path), "time,value\n5.000000,5\n7.000000,6\n");
+}
+
+TEST(DataExporterHostTest, FailedCatalogRefreshRetainsLastSuccessfulSnapshot) {
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("topic").addField("topic", "value", {0, 1'000'000'000LL}, {1.0, 2.0});
+  DataExporterToolbox toolbox;
+  CanonicalStoreReadHost canonical_host(store.makeHost());
+  PJ::ServiceRegistryBuilder registry;
+  bindStore(toolbox, store, canonical_host, registry);
+  DataExporterDialog& dialog = toolbox.dialog();
+  ASSERT_TRUE(dialog.onClicked("buttonAddAllFiles"));
+
+  canonical_host.setCatalogAvailable(false);
+  ASSERT_TRUE(dialog.onItemsDropped("tableWidget", {"topic/value"}));
+  TempDirectory temp_directory;
+  const auto output_path = temp_directory.path() / "retained.csv";
+  ASSERT_TRUE(dialog.onFileSelected("saveButton", output_path.string()));
+
+  ASSERT_TRUE(std::filesystem::is_regular_file(output_path)) << statusText(dialog);
+  EXPECT_EQ(readFile(output_path), "time,topic/value\n0.000000,1\n1.000000,2\n");
+}
+
 TEST(DataExporterHostTest, UnicodeFilenameIsPreservedAndContainsValidCsv) {
   PJ::testing::ToolboxTestStore store;
   store.addTopic("topic").addField("topic", "value", {0, 1'000'000'000LL}, {1.25, 2.5});
@@ -299,17 +364,19 @@ TEST(DataExporterHostTest, UnicodeFilenameIsPreservedAndContainsValidCsv) {
 
   TempDirectory temp_directory;
   const std::string unicode_filename = "übung_日本語.csv";
-  const auto output_path = temp_directory.path() / unicode_filename;
-  ASSERT_TRUE(dialog.onFileSelected("saveButton", output_path.string()));
+  const auto output_path = temp_directory.path() / pathFromUtf8(unicode_filename);
+  ASSERT_TRUE(dialog.onFileSelected("saveButton", pathToUtf8(output_path)));
 
   ASSERT_TRUE(std::filesystem::is_regular_file(output_path)) << statusText(dialog);
-  EXPECT_EQ(output_path.filename().string(), unicode_filename);
+  EXPECT_EQ(pathToUtf8(output_path.filename()), unicode_filename);
   EXPECT_EQ(
       readFile(output_path),
       "time,topic/value\n"
       "0.000000,1.25\n"
       "1.000000,2.5\n");
-  EXPECT_TRUE(render(dialog).value("__request_accept", false));
+  const auto state = render(dialog);
+  EXPECT_TRUE(state.value("__request_accept", false));
+  EXPECT_EQ(state.value("__request_close", ""), "export_complete");
 }
 
 TEST(DataExporterHostTest, EmptyMultiFileGroupIsSkippedWhilePopulatedGroupSucceeds) {

@@ -94,17 +94,33 @@ TEST(DataExporterDialogTest, SelectionSurvivesRerenderAndHiddenRowsRemainInExpor
 }
 
 TEST(DataExporterDialogTest, AcceptRequestStaysStickyUntilHostAcknowledgesIt) {
-  DataExporterDialog dialog;
+  DataExporterToolbox toolbox;
+  DataExporterDialog& dialog = toolbox.dialog();
   (void)render(dialog);
   dialog.requestAcceptAfterExport();
 
-  EXPECT_TRUE(render(dialog).value("__request_accept", false));
-  EXPECT_TRUE(render(dialog).value("__request_accept", false));
+  // JSON-level coverage cannot execute the real PanelEngine teardown path, so
+  // assert both modal and non-modal close commands remain sticky until a callback.
+  const Json first = render(dialog);
+  const Json second = render(dialog);
+  EXPECT_TRUE(first.value("__request_accept", false));
+  EXPECT_EQ(first.value("__request_close", ""), "export_complete");
+  EXPECT_TRUE(second.value("__request_accept", false));
+  EXPECT_EQ(second.value("__request_close", ""), "export_complete");
   EXPECT_TRUE(dialog.onTick());
 
   dialog.onAccepted("{}");
-  EXPECT_FALSE(render(dialog).contains("__request_accept"));
+  Json cleared = render(dialog);
+  EXPECT_FALSE(cleared.contains("__request_accept"));
+  EXPECT_FALSE(cleared.contains("__request_close"));
   EXPECT_FALSE(dialog.onTick());
+
+  dialog.requestAcceptAfterExport();
+  ASSERT_TRUE(render(dialog).contains("__request_close"));
+  toolbox.prepareDialog();
+  cleared = render(dialog);
+  EXPECT_FALSE(cleared.contains("__request_accept"));
+  EXPECT_FALSE(cleared.contains("__request_close"));
 }
 
 TEST(DataExporterDialogTest, SuffixNormalizationMatchesPj3CanonicalSuffixCondition) {
@@ -187,6 +203,33 @@ TEST(DataExporterDialogTest, SliderHandlesNormalPrecisionZeroDurationAndEpochAbs
   EXPECT_EQ(state["rangeSlider"]["range_max"], 2000);
   EXPECT_DOUBLE_EQ(state["startTime"]["value"].get<double>(), 1'700'000'000.125);
   EXPECT_DOUBLE_EQ(state["endTime"]["value"].get<double>(), 1'700'000'002.125);
+}
+
+TEST(DataExporterDialogTest, SliderSaturatesAtIntMaxWhenScaleOneStillCannotRepresentSpan) {
+  DataExporterDialog dialog;
+  constexpr double span = 3'000'000'000.0;
+  static_assert(span > static_cast<double>(INT_MAX));
+  dialog.setDataRange(std::pair{10.0, 10.0 + span});
+
+  const Json state = render(dialog);
+  EXPECT_EQ(dialog.sliderScale(), 1);
+  EXPECT_EQ(state["rangeSlider"]["range_max"], INT_MAX);
+  EXPECT_EQ(state["rangeSlider"]["range_lower"], 0);
+  EXPECT_EQ(state["rangeSlider"]["range_upper"], INT_MAX);
+}
+
+TEST(DataExporterDialogTest, UiSpinboxesHaveWideStaticBounds) {
+  DataExporterDialog dialog;
+  const std::string ui = dialog.ui_content();
+  constexpr std::string_view minimum = "<double>-1000000000000000.000000000000000</double>";
+  constexpr std::string_view maximum = "<double>1000000000000000.000000000000000</double>";
+
+  const size_t first_minimum = ui.find(minimum);
+  const size_t first_maximum = ui.find(maximum);
+  ASSERT_NE(first_minimum, std::string::npos);
+  ASSERT_NE(first_maximum, std::string::npos);
+  EXPECT_NE(ui.find(minimum, first_minimum + minimum.size()), std::string::npos);
+  EXPECT_NE(ui.find(maximum, first_maximum + maximum.size()), std::string::npos);
 }
 
 TEST(DataExporterDialogTest, SpinboxCommitsClampToDisplayRangeAndKeepEndpointsOrdered) {

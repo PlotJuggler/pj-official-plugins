@@ -114,6 +114,20 @@ arrow::Result<std::shared_ptr<arrow::Array>> makeStringArray(
 
 }  // namespace
 
+std::filesystem::path pathFromUtf8(std::string_view path) {
+  std::u8string utf8;
+  utf8.reserve(path.size());
+  for (const unsigned char byte : path) {
+    utf8.push_back(static_cast<char8_t>(byte));
+  }
+  return std::filesystem::path(std::move(utf8));
+}
+
+std::string pathToUtf8(const std::filesystem::path& path) {
+  const std::u8string utf8 = path.u8string();
+  return std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size());
+}
+
 // PJ3 pj3_timeseries.h:151-175 — lower_bound plus strict nearest-neighbor selection.
 int indexFromTime(const std::vector<double>& t, double x) {
   if (t.empty()) {
@@ -349,7 +363,7 @@ bool serializeCSV(const ExportTable& table, const std::string& path) {
     return false;
   }
 
-  std::ofstream output(path);
+  std::ofstream output(pathFromUtf8(path));
   if (!output.is_open()) {
     return false;
   }
@@ -431,6 +445,8 @@ bool serializeParquet(const ExportTable& table, const std::string& path) {
   auto schema = std::make_shared<arrow::Schema>(fields);
   auto arrow_table = arrow::Table::Make(schema, arrays);
 
+  // Arrow documents its 8-bit Windows paths as UTF-8 (arrow/util/io_util.h:44-45),
+  // and FileOutputStream::Open routes this string through that platform adapter.
   auto output_result = arrow::io::FileOutputStream::Open(path);
   if (!output_result.ok()) {
     return false;

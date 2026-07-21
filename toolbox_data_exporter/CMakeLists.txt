@@ -111,12 +111,17 @@ set(DATA_LOAD_PARQUET_PLUGIN_PATH
   "${CMAKE_SOURCE_DIR}/build/data_load_parquet/${CMAKE_BUILD_TYPE}/bin/${CMAKE_SHARED_LIBRARY_PREFIX}parquet_source_plugin${CMAKE_SHARED_LIBRARY_SUFFIX}"
   CACHE FILEPATH "Path to the separately built data_load_parquet plugin DSO"
 )
+if(TARGET parquet_source_plugin)
+  set(DATA_LOAD_PARQUET_PLUGIN_TEST_PATH "$<TARGET_FILE:parquet_source_plugin>")
+else()
+  set(DATA_LOAD_PARQUET_PLUGIN_TEST_PATH "${DATA_LOAD_PARQUET_PLUGIN_PATH}")
+endif()
 add_executable(data_exporter_isolation_test data_exporter_isolation_test.cpp)
 target_compile_features(data_exporter_isolation_test PRIVATE cxx_std_20)
 target_compile_options(data_exporter_isolation_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(data_exporter_isolation_test PRIVATE
   DATA_EXPORTER_PLUGIN_PATH="$<TARGET_FILE:toolbox_data_exporter_plugin>"
-  DATA_LOAD_PARQUET_PLUGIN_PATH="${DATA_LOAD_PARQUET_PLUGIN_PATH}"
+  DATA_LOAD_PARQUET_PLUGIN_PATH="${DATA_LOAD_PARQUET_PLUGIN_TEST_PATH}"
 )
 target_link_libraries(data_exporter_isolation_test PRIVATE
   plotjuggler_sdk::plugin_sdk
@@ -124,4 +129,7 @@ target_link_libraries(data_exporter_isolation_test PRIVATE
   ${CMAKE_DL_LIBS}
 )
 add_dependencies(data_exporter_isolation_test toolbox_data_exporter_plugin)
+if(TARGET parquet_source_plugin)
+  add_dependencies(data_exporter_isolation_test parquet_source_plugin)
+endif()
 add_test(NAME data_exporter_isolation_test COMMAND data_exporter_isolation_test)

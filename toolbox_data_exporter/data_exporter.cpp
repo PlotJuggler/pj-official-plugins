@@ -45,11 +45,11 @@ bool isNumericType(PJ::PrimitiveType type) {
 std::string parentDirectory(const std::filesystem::path& path) {
   std::error_code error;
   const auto absolute_path = std::filesystem::absolute(path, error);
-  return (error ? path : absolute_path).parent_path().string();
+  return pathToUtf8((error ? path : absolute_path).parent_path());
 }
 
 std::string fileName(const std::filesystem::path& path) {
-  return path.filename().string();
+  return pathToUtf8(path.filename());
 }
 
 void stripGroupPrefix(std::vector<std::string>& names, const std::string& group_name) {
@@ -133,9 +133,10 @@ std::string DataExporterDialog::widget_data() {
   }
 
   // The host may consume one-shot commands while servicing a picker event.
-  // Keep requesting acceptance until the host confirms close/cancel.
+  // Keep requesting closure until the host confirms close/cancel. PanelEngine
+  // consumes requestClose(), while modal DialogEngine consumes requestAccept().
   if (pending_accept_) {
-    wd.requestAccept();
+    wd.requestClose("export_complete").requestAccept();
   }
 
   dirty_ = false;
@@ -308,7 +309,7 @@ bool DataExporterDialog::onFileSelected(std::string_view widget_name, std::strin
   if (!endsWithCaseInsensitive(normalized, suffix)) {
     normalized += suffix;
   }
-  last_directory_ = parentDirectory(std::filesystem::path(normalized));
+  last_directory_ = parentDirectory(pathFromUtf8(normalized));
   dirty_ = true;
   if (on_export_single_) {
     on_export_single_(export_csv_, normalized);
@@ -424,6 +425,10 @@ void DataExporterDialog::requestAcceptAfterExport() {
   dirty_ = true;
 }
 
+void DataExporterDialog::clearPendingAccept() {
+  pending_accept_ = false;
+}
+
 const std::vector<std::string>& DataExporterDialog::topics() const {
   return topics_;
 }
@@ -513,13 +518,17 @@ void DataExporterDialog::updateSliderMapping() {
   for (int index = 0; index < decimals; ++index) {
     slider_scale_ *= 10;
   }
-  slider_max_ = std::max(1, static_cast<int>(span * static_cast<double>(slider_scale_) + 0.5));
+  const double rounded_span = span * static_cast<double>(slider_scale_) + 0.5;
+  const double clamped_span = std::min(rounded_span, static_cast<double>(std::numeric_limits<int>::max()));
+  slider_max_ = std::max(1, static_cast<int>(clamped_span));
 }
 
 int DataExporterDialog::sliderPosition(double value) const {
   // PJ3 pj3_range_slider.cpp:662-673 — clamp, then positive-domain rounding via +0.5.
   value = std::clamp(value, display_min_s_, display_max_s_);
-  return static_cast<int>((value - display_min_s_) * static_cast<double>(slider_scale_) + 0.5);
+  const double rounded_position = (value - display_min_s_) * static_cast<double>(slider_scale_) + 0.5;
+  const double clamped_position = std::min(rounded_position, static_cast<double>(std::numeric_limits<int>::max()));
+  return static_cast<int>(clamped_position);
 }
 
 std::vector<int> DataExporterDialog::visibleRows() const {
@@ -571,6 +580,10 @@ PJ::Status DataExporterToolbox::loadConfig(std::string_view config_json) {
 }
 
 void DataExporterToolbox::prepareDialog() {
+  // PanelEngine::close() currently calls DialogHandle::reject(), which reaches
+  // onRejected(). Clear this one-shot state at every getDialog() boundary anyway
+  // as a backstop for a host that tears down without either result callback.
+  dialog_.clearPendingAccept();
   wireCallbacks();
   refreshCatalog();
   recomputeRange();
@@ -601,9 +614,6 @@ void DataExporterToolbox::wireCallbacks() {
 }
 
 void DataExporterToolbox::refreshCatalog() {
-  field_index_.clear();
-  field_topic_.clear();
-  field_type_.clear();
   if (!toolboxHostBound()) {
     return;
   }
@@ -613,6 +623,9 @@ void DataExporterToolbox::refreshCatalog() {
     return;
   }
 
+  std::map<std::string, PJ::sdk::FieldHandle> new_field_index;
+  std::map<std::string, std::string> new_field_topic;
+  std::map<std::string, PJ::PrimitiveType> new_field_type;
   const auto topics = catalog->topics();
   const auto fields = catalog->fields();
   for (size_t topic_index = 0; topic_index < topics.size(); ++topic_index) {
@@ -629,7 +642,7 @@ void DataExporterToolbox::refreshCatalog() {
         continue;
       }
       const std::string path = topic_name + "/" + std::string(PJ::sdk::toStringView(field.name));
-      const auto [iterator, inserted] = field_index_.emplace(path, field.handle);
+      const auto [iterator, inserted] = new_field_index.emplace(path, field.handle);
       (void)iterator;
       if (!inserted) {
         if (reported_duplicate_paths_.insert(path).second) {
@@ -637,10 +650,13 @@ void DataExporterToolbox::refreshCatalog() {
         }
         continue;
       }
-      field_topic_.emplace(path, topic_name);
-      field_type_.emplace(path, type);
+      new_field_topic.emplace(path, topic_name);
+      new_field_type.emplace(path, type);
     }
   }
+  field_index_.swap(new_field_index);
+  field_topic_.swap(new_field_topic);
+  field_type_.swap(new_field_type);
 }
 
 std::vector<std::string> DataExporterToolbox::allCatalogFields() {
@@ -655,6 +671,7 @@ std::vector<std::string> DataExporterToolbox::allCatalogFields() {
 }
 
 void DataExporterToolbox::recomputeRange() {
+  refreshCatalog();
   // PJ3 toolbox_csv.cpp:281-340 — timestamps (not value validity) define the
   // global range, and an entirely unresolved/empty set preserves the UI range.
   if (!toolboxHostBound()) {
@@ -705,6 +722,7 @@ void DataExporterToolbox::recomputeRange() {
 }
 
 void DataExporterToolbox::exportSingle(bool is_csv, const std::string& path) {
+  refreshCatalog();
   // PJ3 toolbox_csv.cpp:131-162 — all table rows form the export set; warning
   // paths stay open, while successful serialization closes after reporting.
   if (dialog_.topics().empty()) {
@@ -745,7 +763,7 @@ void DataExporterToolbox::exportSingle(bool is_csv, const std::string& path) {
     return;
   }
 
-  const std::filesystem::path output_path(path);
+  const std::filesystem::path output_path = pathFromUtf8(path);
   const std::string message =
       "File saved in folder:\n" + parentDirectory(output_path) + "\n\nFile name:\n" + fileName(output_path);
   report(PJ::ToolboxMessageLevel::kInfo, message);
@@ -753,6 +771,7 @@ void DataExporterToolbox::exportSingle(bool is_csv, const std::string& path) {
 }
 
 void DataExporterToolbox::exportMulti(bool is_csv, const std::string& directory, const std::string& prefix) {
+  refreshCatalog();
   // PJ3 toolbox_csv.cpp:164-274 — lexicographic groups, empty-group skips,
   // first-write-failure abort, and close only after at least one saved file.
   if (dialog_.topics().empty()) {
@@ -800,9 +819,10 @@ void DataExporterToolbox::exportMulti(bool is_csv, const std::string& directory,
 
     const std::string extension = is_csv ? "csv" : "parquet";
     const std::string output_name = prefix + "_" + sanitizeGroupName(group_name) + "." + extension;
-    const std::filesystem::path output_path = std::filesystem::path(directory) / output_name;
-    if (!(is_csv ? serializeCSV(table, output_path.string()) : serializeParquet(table, output_path.string()))) {
-      report(PJ::ToolboxMessageLevel::kWarning, "Failed to write file: " + output_path.string());
+    const std::filesystem::path output_path = pathFromUtf8(directory) / pathFromUtf8(output_name);
+    const std::string output_path_utf8 = pathToUtf8(output_path);
+    if (!(is_csv ? serializeCSV(table, output_path_utf8) : serializeParquet(table, output_path_utf8))) {
+      report(PJ::ToolboxMessageLevel::kWarning, "Failed to write file: " + output_path_utf8);
       return;
     }
     saved_files.push_back(output_name);
@@ -813,7 +833,7 @@ void DataExporterToolbox::exportMulti(bool is_csv, const std::string& directory,
     return;
   }
 
-  std::string message = "Files saved in folder:\n" + parentDirectory(std::filesystem::path(directory) / "entry");
+  std::string message = "Files saved in folder:\n" + parentDirectory(pathFromUtf8(directory) / "entry");
   message += saved_files.size() == 1 ? "\n\nFile name:\n" : "\n\nFile names:\n";
   for (size_t index = 0; index < saved_files.size(); ++index) {
     if (index != 0) {

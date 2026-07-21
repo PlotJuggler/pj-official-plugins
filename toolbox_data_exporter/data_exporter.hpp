@@ -47,6 +47,7 @@ class DataExporterDialog : public PJ::DialogPluginTyped {
   void setDataRange(std::optional<std::pair<double, double>> range);
   void setStatus(std::string status);
   void requestAcceptAfterExport();
+  void clearPendingAccept();
 
   [[nodiscard]] const std::vector<std::string>& topics() const;
   [[nodiscard]] std::pair<double, double> absoluteTimeRange() const;
