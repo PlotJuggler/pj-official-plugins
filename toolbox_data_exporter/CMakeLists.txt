@@ -70,3 +70,38 @@ target_link_libraries(data_exporter_arrow_reader_test PRIVATE
   Parquet::parquet_static
 )
 add_test(NAME data_exporter_arrow_reader_test COMMAND data_exporter_arrow_reader_test)
+
+# --- Milestone 4 dialog-state + bound-host integration tests ---
+# One binary is registered under two filtered ctest names so both required
+# targets are discoverable through `ctest -R data_exporter` without compiling
+# the Arrow-heavy production translation units twice.
+add_executable(
+  data_exporter_milestone4_test
+  data_exporter_dialog_test.cpp
+  data_exporter_host_test.cpp
+  arrow_series_reader.cpp
+  data_exporter.cpp
+  export_core.cpp
+  plugin_entry.cpp
+)
+target_compile_features(data_exporter_milestone4_test PRIVATE cxx_std_20)
+target_compile_options(data_exporter_milestone4_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(data_exporter_milestone4_test PRIVATE
+  ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
+target_link_libraries(data_exporter_milestone4_test PRIVATE
+  plotjuggler_sdk::plugin_host
+  plotjuggler_sdk::plugin_sdk
+  nlohmann_json::nlohmann_json
+  GTest::gtest_main
+  Arrow::arrow_static
+  Parquet::parquet_static
+)
+add_test(
+  NAME data_exporter_dialog_test
+  COMMAND data_exporter_milestone4_test --gtest_filter=DataExporterDialogTest.*
+)
+add_test(
+  NAME data_exporter_host_test
+  COMMAND data_exporter_milestone4_test --gtest_filter=DataExporterHostTest.*
+)
