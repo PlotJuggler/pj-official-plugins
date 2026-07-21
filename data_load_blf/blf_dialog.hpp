@@ -9,6 +9,7 @@
 #include <map>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <string>
+#include <vector>
 
 namespace blf_detail {
 
@@ -16,6 +17,12 @@ class BlfDialog : public PJ::DialogPluginTyped {
  public:
   /// Point the dialog at a file; scans it for the set of CAN channels present.
   void setFilePath(const std::string& filepath);
+
+  /// Per-channel DBC lists configured on the source. The single picker per
+  /// channel edits a channel's list as a whole, but an untouched channel must
+  /// round-trip unchanged: the host replaces the source config with this
+  /// dialog's saveConfig() after accept.
+  void setChannelDbcs(std::map<std::uint16_t, std::vector<std::string>> channel_dbcs);
 
   // --- Dialog protocol ---
   std::string manifest() const override;
@@ -34,7 +41,7 @@ class BlfDialog : public PJ::DialogPluginTyped {
 
   std::string filepath_;
   std::string summary_;
-  std::map<std::uint16_t, std::string> channel_dbc_;  ///< channel -> chosen .dbc path
+  std::map<std::uint16_t, std::vector<std::string>> channel_dbcs_;  ///< channel -> .dbc paths
 };
 
 }  // namespace blf_detail

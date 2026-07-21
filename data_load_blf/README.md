@@ -19,7 +19,8 @@ so the plugin `.so` has no extra runtime dependencies.
 - A dialog with a DBC file picker per channel (1-4) and a preview of which
   channels the file contains; more channels can be set via the saved config.
 - Standard and extended (29-bit / J1939) frames are disambiguated; unmatched
-  frames and channels without a DBC are counted and reported.
+  frames, matched-but-undecodable frames (e.g. truncated), and channels without
+  a DBC are each counted and reported.
 
 ## Timestamp Handling
 

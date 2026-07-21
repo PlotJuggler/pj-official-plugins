@@ -17,6 +17,11 @@ class Mf4Dialog : public PJ::DialogPluginTyped {
   /// Point the dialog at a file; (re)parses its metadata for the preview.
   void setFilePath(const std::string& filepath);
 
+  /// DBC databases configured on the source. The dialog does not edit them
+  /// (v1 has no DBC picker) but must carry them: the host replaces the source
+  /// config with this dialog's saveConfig() after accept.
+  void setDbcPaths(std::vector<std::string> dbc_paths);
+
   // --- Dialog protocol ---
   std::string manifest() const override;
   std::string ui_content() const override;
@@ -30,6 +35,7 @@ class Mf4Dialog : public PJ::DialogPluginTyped {
   void parseFile();
 
   std::string filepath_;
+  std::vector<std::string> dbc_paths_;
   std::string summary_;
   std::vector<std::vector<std::string>> group_rows_;
 };

@@ -20,13 +20,33 @@ CPMAddPackage(
   DOWNLOAD_ONLY YES
 )
 file(GLOB _dbc_sources CONFIGURE_DEPENDS ${dbc_parser_cpp_SOURCE_DIR}/src/*.cpp)
+
+# Vendored fix: upstream masks unsigned signals with a 32-bit `1 << size`,
+# which is UB for size >= 32 (an unsigned 32-bit signal decodes as 0 on x86).
+# Rewrite message.cpp with a 64-bit-safe mask and compile the patched copy.
+# Done via string(REPLACE) instead of CPM PATCHES so no `patch` executable is
+# needed (Windows CI). The FATAL_ERROR guard trips if the pin moves and the
+# upstream line changes, so the fix can never be dropped silently.
+set(_dbc_mask_bug "value = value & ((1 << signal.size) - 1); // masking")
+set(_dbc_mask_fix "value = (signal.size >= 64) ? value : (value & ((1ULL << signal.size) - 1)); // masking (PJ fix)")
+file(READ ${dbc_parser_cpp_SOURCE_DIR}/src/message.cpp _dbc_message_cpp)
+string(FIND "${_dbc_message_cpp}" "${_dbc_mask_bug}" _dbc_mask_pos)
+if(_dbc_mask_pos EQUAL -1)
+  message(FATAL_ERROR "can_dbc: dbc_parser_cpp mask patch no longer applies — re-check the unsigned-mask fix")
+endif()
+string(REPLACE "${_dbc_mask_bug}" "${_dbc_mask_fix}" _dbc_message_cpp "${_dbc_message_cpp}")
+set(_dbc_patched_dir ${CMAKE_CURRENT_BINARY_DIR}/dbc_patched)
+file(CONFIGURE OUTPUT ${_dbc_patched_dir}/message.cpp CONTENT "${_dbc_message_cpp}" @ONLY)
+list(REMOVE_ITEM _dbc_sources ${dbc_parser_cpp_SOURCE_DIR}/src/message.cpp)
+list(APPEND _dbc_sources ${_dbc_patched_dir}/message.cpp)
+
 add_library(dbc STATIC ${_dbc_sources})
 set_target_properties(dbc PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(dbc PRIVATE cxx_std_20)
 target_include_directories(dbc SYSTEM PUBLIC ${dbc_parser_cpp_SOURCE_DIR}/include)
 target_include_directories(dbc SYSTEM PRIVATE ${fast_float_SOURCE_DIR}/include)
 
-add_library(pj_can_dbc STATIC can_decoder.cpp)
+add_library(pj_can_dbc STATIC can_decoder.cpp can_topic.cpp)
 # Static lib goes inside SHARED plugin .so files -> must be position-independent.
 set_target_properties(pj_can_dbc PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(pj_can_dbc PUBLIC cxx_std_20)

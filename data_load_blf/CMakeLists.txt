@@ -24,8 +24,87 @@ CPMAddPackage(
   URL_HASH SHA256=1ed25162dcab2316d7d8b896ac6d85f9d2f97ca2bfdf40b32165c0e4405046ff
   DOWNLOAD_ONLY YES
 )
+# Vendored hardening: the pinned lblf computes a log container's blob size as
+# `objSize - headerSize - sizeof(LogContainer)`. A forged objSize below that
+# sum underflows to ~4 GB; a forged objSize far above the file makes the same
+# math (or unCompressedFileSize) resize() a multi-GB buffer before the short
+# read fails — an allocation DoS from a tiny file either way. Inject a bounds
+# check right after the container header is read: reject objSize outside
+# [header, fileLength]. `fileLength` is the reader's own member, set from the
+# real file size in the constructor. Done via string(REPLACE) (no `patch`
+# executable needed on Windows CI); the FATAL_ERROR guard trips if the pin moves.
+set(_lblf_anchor [==[            read_logcontainer(fileStream, lc, ohb);]==])
+set(_lblf_fixed [==[            if (ohb.objSize < ohb.headerSize + sizeof(blf_struct::LogContainer) || ohb.objSize > fileLength)
+                {
+                    throw std::runtime_error("lblf: log container size out of range (corrupt file)");
+                }
+            read_logcontainer(fileStream, lc, ohb);]==])
+file(READ ${lblf_SOURCE_DIR}/blf_reader.cc _lblf_reader_cc)
+string(FIND "${_lblf_reader_cc}" "${_lblf_anchor}" _lblf_anchor_pos)
+if(_lblf_anchor_pos EQUAL -1)
+  message(FATAL_ERROR "data_load_blf: lblf log-container guard no longer applies — re-check the size fix")
+endif()
+string(REPLACE "${_lblf_anchor}" "${_lblf_fixed}" _lblf_reader_cc "${_lblf_reader_cc}")
+
+# Second guard: the zlib output buffer is sized from the container's own
+# unCompressedFileSize field, which is independent of objSize. Cap it against
+# the compressed blob size (zlib's theoretical max expansion is ~1032:1) so a
+# forged value cannot resize() a multi-GB buffer.
+set(_lblf_zlib_anchor [==[                    uLong uncompressedFileSize = lc.unCompressedFileSize;
+                    std::vector<uint8_t> uncompressedData {};
+
+                    uncompressedData.resize(uncompressedFileSize);]==])
+set(_lblf_zlib_fixed [==[                    uLong uncompressedFileSize = lc.unCompressedFileSize;
+                    if (uncompressedFileSize > static_cast<uLong>(compressedBlobSize) * 1100 + 65536)
+                        {
+                            throw std::runtime_error("lblf: implausible uncompressed container size (corrupt file)");
+                        }
+                    std::vector<uint8_t> uncompressedData {};
+
+                    uncompressedData.resize(uncompressedFileSize);]==])
+string(FIND "${_lblf_reader_cc}" "${_lblf_zlib_anchor}" _lblf_zlib_pos)
+if(_lblf_zlib_pos EQUAL -1)
+  message(FATAL_ERROR "data_load_blf: lblf zlib-size guard no longer applies — re-check the fix")
+endif()
+string(REPLACE "${_lblf_zlib_anchor}" "${_lblf_zlib_fixed}" _lblf_reader_cc "${_lblf_reader_cc}")
+
+# Third guard: blf_reader::data() computes an inner object's payload length as
+# `objSize - sizeof(BaseHeader) + objSize % 4`. A forged inner objSize below
+# sizeof(BaseHeader) underflows that size_t, and the following pop loop then
+# reads past an emptied deque (front()/pop_front() on empty = undefined). Bail
+# to the end-of-stream sentinel (0x888, already used above) when the object is
+# undersized or the stream ran short.
+set(_lblf_data_anchor [==[    if (logcontainer_que.size() < size_of_data)
+        {
+            fill_deque();
+        }
+
+    result.payload.clear();
+    result.payload.reserve(size_of_data);]==])
+set(_lblf_data_fixed [==[    if (logcontainer_que.size() < size_of_data)
+        {
+            fill_deque();
+        }
+
+    if (result.base_header.objSize < sizeof(result.base_header) || logcontainer_que.size() < size_of_data)
+        {
+            result.base_header.objectType = static_cast<ObjectType_e>(0x888);
+            return result;
+        }
+
+    result.payload.clear();
+    result.payload.reserve(size_of_data);]==])
+string(FIND "${_lblf_reader_cc}" "${_lblf_data_anchor}" _lblf_data_pos)
+if(_lblf_data_pos EQUAL -1)
+  message(FATAL_ERROR "data_load_blf: lblf inner-object guard no longer applies — re-check the fix")
+endif()
+string(REPLACE "${_lblf_data_anchor}" "${_lblf_data_fixed}" _lblf_reader_cc "${_lblf_reader_cc}")
+
+set(_lblf_patched_dir ${CMAKE_CURRENT_BINARY_DIR}/lblf_patched)
+file(CONFIGURE OUTPUT ${_lblf_patched_dir}/blf_reader.cc CONTENT "${_lblf_reader_cc}" @ONLY)
+
 add_library(blf STATIC
-  ${lblf_SOURCE_DIR}/blf_reader.cc
+  ${_lblf_patched_dir}/blf_reader.cc
   ${lblf_SOURCE_DIR}/print.cc
 )
 set_target_properties(blf PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -47,7 +126,7 @@ target_include_directories(blf_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(blf_core PUBLIC plotjuggler_sdk::base PRIVATE blf)
 
 # ---------------------------------------------------------------------------
-# Plugin shared library (orchestrator lands in Phase 4)
+# Plugin shared library
 # ---------------------------------------------------------------------------
 add_library(blf_source_plugin SHARED blf_source.cpp blf_dialog.cpp)
 target_compile_features(blf_source_plugin PRIVATE cxx_std_20)
@@ -77,10 +156,21 @@ pj_embed_ui(blf_source_plugin
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-add_executable(blf_source_test tests/blf_frames_test.cpp)
+add_executable(blf_source_test
+  tests/blf_frames_test.cpp
+  tests/blf_dialog_test.cpp
+  blf_dialog.cpp
+)
 target_compile_features(blf_source_test PRIVATE cxx_std_20)
 target_compile_options(blf_source_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(blf_source_test PRIVATE
   BLF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data")
-target_link_libraries(blf_source_test PRIVATE blf_core pj_can_dbc GTest::gtest_main)
+# blf_dialog.cpp includes the headers generated for the plugin target above.
+target_include_directories(blf_source_test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_link_libraries(blf_source_test PRIVATE
+  plotjuggler_sdk::plugin_host
+  blf_core
+  pj_can_dbc
+  nlohmann_json::nlohmann_json
+  GTest::gtest_main)
 add_test(NAME blf_source_test COMMAND blf_source_test)

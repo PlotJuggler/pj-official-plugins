@@ -53,13 +53,24 @@ struct SampleValue {
 /// SampleValue per supported non-master channel, in the order returned by
 /// valueChannelNames(). The vector is reused across records — consume it (copy
 /// or appendRecord) synchronously; do not retain references past the call.
-using RowCallback = std::function<void(std::int64_t ts_ns, const std::vector<SampleValue>& values)>;
+/// Return false to stop reading early (e.g. on cancel).
+using RowCallback = std::function<bool(std::int64_t ts_ns, const std::vector<SampleValue>& values)>;
+
+/// Per-group read diagnostics.
+struct ReadGroupStats {
+  /// Samples dropped because the master (time) value was invalid — e.g. the
+  /// missing tail of a truncated file, or invalidation bits set by the logger.
+  std::uint64_t skipped_invalid_time = 0;
+};
 
 /// Per-frame callback for a CAN bus-logging group. `ts_ns` is absolute
-/// nanoseconds; `can_id` is the raw 11/29-bit id; `extended` is the frame
-/// format; `data` are the payload bytes.
-using CanFrameCallback =
-    std::function<void(std::int64_t ts_ns, std::uint32_t can_id, bool extended, const std::vector<std::uint8_t>& data)>;
+/// nanoseconds; `bus_channel` is CanMessage::BusChannel() (0 when the file
+/// does not record one); `can_id` is the raw 11/29-bit id; `extended` is the
+/// frame format; `data` are the payload bytes. Return false to stop reading
+/// early (e.g. on cancel).
+using CanFrameCallback = std::function<bool(
+    std::int64_t ts_ns, std::uint16_t bus_channel, std::uint32_t can_id, bool extended,
+    const std::vector<std::uint8_t>& data)>;
 
 class Mf4Reader {
  public:
@@ -85,17 +96,24 @@ class Mf4Reader {
   /// become `chan{N}`). Parallel to the `values` vector passed to readGroup().
   std::vector<std::string> valueChannelNames(std::size_t group_index) const;
 
-  /// Stream every record of a measurement group through `cb`. Returns an error
-  /// if the group has no master channel.
-  PJ::Status readGroup(std::size_t group_index, const RowCallback& cb);
+  /// Stream every record of a measurement group through `cb`. Records whose
+  /// master (time) value is invalid are skipped and counted in `stats`.
+  /// Returns an error if the group has no master channel or the sample data
+  /// cannot be read.
+  PJ::Status readGroup(std::size_t group_index, const RowCallback& cb, ReadGroupStats* stats = nullptr);
 
   /// Stream every CAN frame of a bus-logging group through `cb`. Use for groups
-  /// whose bus_type is CAN. Frame time = start time + CanMessage::Timestamp().
-  PJ::Status readCanGroup(std::size_t group_index, const CanFrameCallback& cb);
+  /// whose bus_type is CAN. Frame time = start time + CanMessage::Timestamp();
+  /// frames with an unusable timestamp are skipped and counted in `stats`.
+  PJ::Status readCanGroup(std::size_t group_index, const CanFrameCallback& cb, ReadGroupStats* stats = nullptr);
 
  private:
+  /// Rejects header sample counts that cannot fit in the file (allocation DoS).
+  PJ::Status checkSampleCount(std::size_t group_index) const;
+
   std::unique_ptr<mdf::MdfReader> reader_;
   std::vector<GroupInfo> groups_;
+  std::uint64_t file_size_bytes_ = 0;
   std::vector<mdf::IDataGroup*> data_groups_;        // parallel to groups_
   std::vector<mdf::IChannelGroup*> channel_groups_;  // parallel to groups_
   std::int64_t start_time_ns_ = 0;

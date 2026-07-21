@@ -18,8 +18,12 @@ dependencies.
   text channels as strings
 - **DBC-based CAN decoding**: bus-logging channel groups are decoded into named
   physical signals when one or more `.dbc` databases are supplied (via config;
-  see `dbc_paths`). One topic per CAN message (`CAN/<message>`), one field per
-  signal. Standard and extended (29-bit / J1939) frames are disambiguated.
+  see `dbc_paths`). One topic per CAN message, namespaced by the frame's bus
+  channel (`CAN/ch<N>/<message>`, or `CAN/<message>` when the file records no
+  bus channel), one field per signal. Standard and extended (29-bit / J1939)
+  frames are disambiguated. Frames that match a message id but cannot be decoded
+  (truncated, or a CAN FD payload > 8 bytes) are counted and reported, not
+  silently dropped.
 - Preview dialog listing the file's channel groups (name, sample count, channel
   count, bus type)
 
@@ -32,10 +36,11 @@ frame's own relative timestamp added to the header start time.
 ## Testing
 
 Unit tests are hermetic (they synthesize MF4 files in-memory with mdflib's
-writer and use an inline DBC), so they need no external files:
+writer and use an inline DBC), so they need no external files. Use a filter that
+covers both the MF4 reader tests and the shared CAN/DBC decoder tests:
 
 ```bash
-ctest --test-dir <build> -R mf4
+ctest --test-dir <build> -R "mf4|can_dbc"
 ```
 
 Two additional **integration tests** run against real files but are **skipped**

@@ -3,6 +3,10 @@
 #include <gtest/gtest.h>
 #include <mdf/ichannel.h>
 
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <optional>
 #include <pj_base/type_tree.hpp>
 
 using mdf::ChannelDataType;
@@ -45,3 +49,27 @@ TEST(Mf4Value, UnsupportedTypesMapToUnspecified) {
 }
 
 }  // namespace
+
+// File-controlled master times feed llround(t_sec * 1e9) + start_ns; NaN,
+// infinity, or out-of-range seconds must be rejected, never converted with UB.
+TEST(Mf4Value, RelativeSecondsToNsConvertsNormalValues) {
+  const auto ns = mf4_detail::relativeSecondsToNs(1'000, 1.5);
+  ASSERT_TRUE(ns.has_value());
+  EXPECT_EQ(*ns, 1'500'000'000 + 1'000);
+  const auto neg = mf4_detail::relativeSecondsToNs(0, -2.0);
+  ASSERT_TRUE(neg.has_value());
+  EXPECT_EQ(*neg, -2'000'000'000);
+}
+
+TEST(Mf4Value, RelativeSecondsToNsRejectsNonFiniteAndOutOfRange) {
+  EXPECT_EQ(mf4_detail::relativeSecondsToNs(0, std::nan("")), std::nullopt);
+  EXPECT_EQ(mf4_detail::relativeSecondsToNs(0, std::numeric_limits<double>::infinity()), std::nullopt);
+  EXPECT_EQ(mf4_detail::relativeSecondsToNs(0, -std::numeric_limits<double>::infinity()), std::nullopt);
+  EXPECT_EQ(mf4_detail::relativeSecondsToNs(0, 1.0e19), std::nullopt);  // > int64 ns range
+  EXPECT_EQ(mf4_detail::relativeSecondsToNs(0, -1.0e19), std::nullopt);
+}
+
+TEST(Mf4Value, RelativeSecondsToNsRejectsAdditionOverflow) {
+  // A start epoch near INT64_MAX plus a large-but-representable offset.
+  EXPECT_EQ(mf4_detail::relativeSecondsToNs(std::numeric_limits<std::int64_t>::max() - 5, 1.0), std::nullopt);
+}

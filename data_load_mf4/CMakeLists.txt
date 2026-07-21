@@ -106,24 +106,29 @@ pj_embed_ui(mf4_source_plugin
 )
 
 # ---------------------------------------------------------------------------
-# Tests (Phase 1: scaffold link check; real module tests land in Phases 2-4)
+# Tests
 # ---------------------------------------------------------------------------
 add_executable(mf4_source_test
   tests/mf4_source_test.cpp
   tests/mf4_value_test.cpp
   tests/mf4_reader_test.cpp
+  tests/mf4_dialog_test.cpp
   tests/mf4_integration_test.cpp
+  mf4_dialog.cpp
 )
 target_compile_features(mf4_source_test PRIVATE cxx_std_20)
 target_compile_options(mf4_source_test PRIVATE ${PJ_WARNING_FLAGS})
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(mf4_source_test PRIVATE "SHELL:-include algorithm" "SHELL:-include cstdint")
 endif()
+# mf4_dialog.cpp includes the headers generated for the plugin target above.
+target_include_directories(mf4_source_test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 target_link_libraries(mf4_source_test PRIVATE
-  plotjuggler_sdk::base
+  plotjuggler_sdk::plugin_host
   mf4_core
   mdf
   ZLIB::ZLIB
   EXPAT::EXPAT
+  nlohmann_json::nlohmann_json
   GTest::gtest_main)
 add_test(NAME mf4_source_test COMMAND mf4_source_test)

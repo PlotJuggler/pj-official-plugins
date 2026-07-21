@@ -46,7 +46,10 @@ TEST(Mf4Integration, ReadsFinalizedAsap2Demo) {
       continue;
     }
     total_series += reader.valueChannelNames(gi).size();
-    const auto status = reader.readGroup(gi, [&](std::int64_t, const std::vector<SampleValue>&) { ++total_rows; });
+    const auto status = reader.readGroup(gi, [&](std::int64_t, const std::vector<SampleValue>&) {
+      ++total_rows;
+      return true;
+    });
     EXPECT_TRUE(status.has_value());
   }
   EXPECT_GT(total_rows, 0u);
@@ -70,11 +73,12 @@ TEST(Mf4Integration, ReadsUnfinalizedCanedgeFrames) {
     if (g.bus_type != 2 || g.sample_count == 0) {  // 2 == CAN
       continue;
     }
-    const auto status =
-        reader.readCanGroup(gi, [&](std::int64_t, std::uint32_t, bool extended, const std::vector<std::uint8_t>& data) {
+    const auto status = reader.readCanGroup(
+        gi, [&](std::int64_t, std::uint16_t, std::uint32_t, bool extended, const std::vector<std::uint8_t>& data) {
           ++can_frames;
           saw_extended = saw_extended || extended;
           EXPECT_FALSE(data.empty());
+          return true;
         });
     EXPECT_TRUE(status.has_value());
   }

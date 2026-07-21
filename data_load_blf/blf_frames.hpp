@@ -11,8 +11,10 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <pj_base/expected.hpp>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace blf_detail {
@@ -32,10 +34,21 @@ using CanFrameCallback = std::function<bool(const CanFrame&)>;
 struct BlfStats {
   std::uint64_t can_frames = 0;       ///< classic-CAN frames emitted
   std::uint64_t skipped_objects = 0;  ///< non-classic-CAN objects (CAN FD, LIN, ...)
+  std::uint64_t total_objects = 0;    ///< object count from the file header (0 if absent)
 };
 
 /// Reads `path`, invoking `cb` for each classic-CAN frame. `stats` receives the
 /// frame/skip counts. Returns an error if the file cannot be opened/read.
 PJ::Status readCanFrames(const std::string& path, const CanFrameCallback& cb, BlfStats& stats);
+
+/// Parses a `channel_dbcs` map key ("1".."65535") from a saved config. Returns
+/// nullopt for non-numeric, negative, or out-of-range keys — hand-edited
+/// configs must not throw or silently wrap onto another channel.
+std::optional<std::uint16_t> parseChannelKey(std::string_view key);
+
+/// Relative BLF object timestamp in nanoseconds, honoring the TimeTenMics
+/// flag (10-µs ticks vs ns). The tick count is file-controlled: saturates at
+/// INT64_MAX instead of overflowing or wrapping negative.
+std::int64_t objectTimeNs(std::uint32_t object_flags, std::uint64_t ticks);
 
 }  // namespace blf_detail

@@ -19,12 +19,11 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/streaming_utils)
   add_subdirectory(common/laser_scan)
   add_subdirectory(common/pointcloud_color)
-  # common/can_dbc has a CPM download side-effect, so configure it only for its
-  # consumers (skipped when building an unrelated single plugin).
-  set(PJ_CAN_DBC_CONSUMERS data_load_mf4 data_load_blf)
-  if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_CAN_DBC_CONSUMERS)
-    add_subdirectory(common/can_dbc)
-  endif()
+  # This block always adds every plugin (no PJ_BUILD_PLUGIN filtering), so its
+  # consumers data_load_mf4/data_load_blf are always present — add their shared
+  # can_dbc unconditionally too. (The standalone block below, which DOES honor
+  # PJ_BUILD_PLUGIN, gates it to avoid the CPM download for unrelated plugins.)
+  add_subdirectory(common/can_dbc)
 
   # Enabled entries track the v4 ABI (PJ_ABI_VERSION == 4): service-
   # registry API, Arrow C Data Interface at the write boundary, and the

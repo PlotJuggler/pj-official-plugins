@@ -1,8 +1,10 @@
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_can_dbc/can_decoder.hpp>
+#include <pj_can_dbc/can_topic.hpp>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -14,22 +16,6 @@
 #include "blf_manifest.hpp"
 
 namespace {
-
-/// Hex "0xNN" rendering of a CAN id (fallback topic name when a message has no
-/// DBC name).
-std::string hexId(std::uint32_t id) {
-  static const char* const kHex = "0123456789ABCDEF";
-  std::string out = "0x";
-  bool started = false;
-  for (int shift = 28; shift >= 0; shift -= 4) {
-    const auto nibble = static_cast<std::size_t>((id >> shift) & 0xFu);
-    if (nibble != 0 || started || shift == 0) {
-      out.push_back(kHex[nibble]);
-      started = true;
-    }
-  }
-  return out;
-}
 
 // Imports Vector BLF CAN logs. Each CAN channel is decoded with its own DBC
 // database(s) (per-channel mapping); decoded signals become timeseries grouped
@@ -64,11 +50,11 @@ class BlfSource : public PJ::FileSourceBase {
     channel_dbcs_.clear();
     if (cfg.contains("channel_dbcs") && cfg["channel_dbcs"].is_object()) {
       for (const auto& [key, value] : cfg["channel_dbcs"].items()) {
-        if (!value.is_array()) {
-          continue;
+        const auto channel = blf_detail::parseChannelKey(key);
+        if (!channel || !value.is_array()) {
+          continue;  // hand-edited config: skip the bad entry, keep the rest
         }
-        const auto channel = static_cast<std::uint16_t>(std::stoul(key));
-        auto& paths = channel_dbcs_[channel];
+        auto& paths = channel_dbcs_[*channel];
         for (const auto& entry : value) {
           if (entry.is_string()) {
             paths.push_back(entry.get<std::string>());
@@ -79,6 +65,9 @@ class BlfSource : public PJ::FileSourceBase {
     if (!filepath_.empty()) {
       dialog_.setFilePath(filepath_);
     }
+    // The dialog's saveConfig() replaces this config after accept, so it must
+    // carry every channel's full DBC list, not just what the pickers edited.
+    dialog_.setChannelDbcs({channel_dbcs_.begin(), channel_dbcs_.end()});
     return PJ::okStatus();
   }
 
@@ -111,35 +100,53 @@ class BlfSource : public PJ::FileSourceBase {
     std::vector<PJ::sdk::NamedFieldValue> row_fields;
     std::uint64_t decoded_frames = 0;
     std::uint64_t unmatched = 0;
+    std::uint64_t undecodable = 0;
     std::uint64_t no_dbc_channel = 0;
     std::uint64_t seen = 0;
+    bool cancelled = false;
 
     blf_detail::BlfStats stats;
     const auto status = blf_detail::readCanFrames(
         filepath_,
         [&](const blf_detail::CanFrame& frame) -> bool {
-          if ((++seen % 4096) == 0 && runtimeHost().isStopRequested()) {
-            return false;  // stop reading; cancellation handled below
+          if ((++seen % 4096) == 0) {
+            if (runtimeHost().isStopRequested()) {
+              cancelled = true;
+              return false;  // stop reading; cancellation handled below
+            }
+            // Advance the byte-denominated bar via the header's object count
+            // (stats counts advance live during the read).
+            if (total > 0 && stats.total_objects > 0) {
+              const std::uint64_t done = seen + stats.skipped_objects;
+              const std::uint64_t scaled = total * std::min(done, stats.total_objects) / stats.total_objects;
+              if (!runtimeHost().progressUpdate(scaled)) {
+                cancelled = true;
+                return false;  // user cancelled from the progress dialog
+              }
+            }
           }
           const auto dit = decoders.find(frame.channel);
           if (dit == decoders.end()) {
             ++no_dbc_channel;
             return true;
           }
-          bool matched = false;
-          const auto signals = dit->second.decode(frame.can_id, frame.extended, frame.data, matched);
-          if (!matched) {
+          mf4_detail::DecodeResult result = mf4_detail::DecodeResult::kNoMatch;
+          const auto signals = dit->second.decode(frame.can_id, frame.extended, frame.data, result);
+          if (result == mf4_detail::DecodeResult::kNoMatch) {
             ++unmatched;
             return true;
           }
-          if (signals.empty()) {
+          if (result == mf4_detail::DecodeResult::kUndecodable) {
+            ++undecodable;
             return true;
+          }
+          if (signals.empty()) {
+            return true;  // decoded, but the message defines no plain signals
           }
           ++decoded_frames;
 
-          const std::string message = dit->second.messageName(frame.can_id, frame.extended);
-          const std::string topic_name =
-              "CAN/ch" + std::to_string(frame.channel) + "/" + (message.empty() ? hexId(frame.can_id) : message);
+          const std::string topic_name = mf4_detail::canTopicName(
+              frame.channel, dit->second.messageName(frame.can_id, frame.extended), frame.can_id);
           auto it = topics.find(topic_name);
           if (it == topics.end()) {
             auto topic = writeHost().ensureTopic(topic_name);
@@ -162,7 +169,7 @@ class BlfSource : public PJ::FileSourceBase {
     if (!status) {
       return status;
     }
-    if (runtimeHost().isStopRequested()) {
+    if (cancelled || runtimeHost().isStopRequested()) {
       return PJ::unexpected(std::string("import cancelled"));
     }
     (void)runtimeHost().progressUpdate(total);
@@ -171,6 +178,9 @@ class BlfSource : public PJ::FileSourceBase {
                           std::to_string(topics.size()) + " message topic(s)";
     if (unmatched > 0) {
       summary += "; " + std::to_string(unmatched) + " frame(s) had no DBC match";
+    }
+    if (undecodable > 0) {
+      summary += "; " + std::to_string(undecodable) + " matched frame(s) could not be decoded (truncated frame)";
     }
     if (no_dbc_channel > 0) {
       summary += "; " + std::to_string(no_dbc_channel) + " frame(s) on channels with no DBC";

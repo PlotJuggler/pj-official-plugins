@@ -41,6 +41,10 @@ void Mf4Dialog::setFilePath(const std::string& filepath) {
   parseFile();
 }
 
+void Mf4Dialog::setDbcPaths(std::vector<std::string> dbc_paths) {
+  dbc_paths_ = std::move(dbc_paths);
+}
+
 std::string Mf4Dialog::manifest() const {
   return kMf4Manifest;
 }
@@ -58,7 +62,7 @@ std::string Mf4Dialog::widget_data() {
 }
 
 std::string Mf4Dialog::saveConfig() const {
-  return nlohmann::json{{"filepath", filepath_}}.dump();
+  return nlohmann::json{{"filepath", filepath_}, {"dbc_paths", dbc_paths_}}.dump();
 }
 
 bool Mf4Dialog::loadConfig(std::string_view config_json) {
@@ -67,6 +71,14 @@ bool Mf4Dialog::loadConfig(std::string_view config_json) {
     return false;
   }
   filepath_ = cfg.value("filepath", std::string{});
+  dbc_paths_.clear();
+  if (cfg.contains("dbc_paths") && cfg["dbc_paths"].is_array()) {
+    for (const auto& entry : cfg["dbc_paths"]) {
+      if (entry.is_string()) {
+        dbc_paths_.push_back(entry.get<std::string>());
+      }
+    }
+  }
   if (!filepath_.empty()) {
     parseFile();
   }

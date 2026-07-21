@@ -2,7 +2,7 @@
 
 // Type mapping between mdflib channel data types and PlotJuggler column types.
 //
-// v1 policy (see docs/plans/2026-07-01-mf4-plugin-implementation-plan.md):
+// v1 policy:
 //   * numeric channels (integer/float, any endianness) import as CC-applied
 //     engineering doubles -> PrimitiveType::kFloat64. Reading integer channels
 //     as double via mdflib's GetEngValue is deliberate: it keeps a single read
@@ -18,9 +18,29 @@
 
 #include <mdf/ichannel.h>
 
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <optional>
 #include <pj_base/type_tree.hpp>
 
 namespace mf4_detail {
+
+/// start_ns + round(t_sec * 1e9), rejecting NaN/infinity, seconds outside the
+/// int64 nanosecond range, and additive overflow. Master and CAN timestamps
+/// come straight from the file, so they are untrusted input.
+inline std::optional<std::int64_t> relativeSecondsToNs(std::int64_t start_ns, double t_sec) {
+  // 2^63 ns is about 9.22e9 seconds; 9.0e9 keeps llround comfortably in range.
+  if (!(t_sec >= -9.0e9 && t_sec <= 9.0e9)) {  // NaN fails this too
+    return std::nullopt;
+  }
+  const auto rel = static_cast<std::int64_t>(std::llround(t_sec * 1.0e9));
+  if ((rel > 0 && start_ns > std::numeric_limits<std::int64_t>::max() - rel) ||
+      (rel < 0 && start_ns < std::numeric_limits<std::int64_t>::min() - rel)) {
+    return std::nullopt;
+  }
+  return start_ns + rel;
+}
 
 /// Map an mdflib ChannelDataType to the PlotJuggler column type used to import
 /// it. Returns kUnspecified for types not supported in v1.
