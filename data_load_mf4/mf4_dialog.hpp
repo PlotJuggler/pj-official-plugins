@@ -22,6 +22,14 @@ class Mf4Dialog : public PJ::DialogPluginTyped {
   /// config with this dialog's saveConfig() after accept.
   void setDbcPaths(std::vector<std::string> dbc_paths);
 
+  /// Config state the source reads back (the dialog owns the JSON round-trip).
+  const std::string& filePath() const {
+    return filepath_;
+  }
+  const std::vector<std::string>& dbcPaths() const {
+    return dbc_paths_;
+  }
+
   // --- Dialog protocol ---
   std::string manifest() const override;
   std::string ui_content() const override;

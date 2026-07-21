@@ -5,7 +5,7 @@
 #include <unordered_map>
 #include <utility>
 
-namespace mf4_detail {
+namespace pj_can_dbc {
 
 namespace {
 /// DBC extended-frame flag (Vector convention: bit 31 set on 29-bit messages).
@@ -32,8 +32,22 @@ bool messageLayoutInRange(const Libdbc::Message& msg) {
 }
 }  // namespace
 
+/// Name/unit of one signal, cached at DBC load. Libdbc::Message::get_signals()
+/// returns the whole Signal vector *by value* (each Signal owns strings plus
+/// unused receiver/value-description vectors), so calling it per frame would
+/// deep-copy on every decode; decode() only needs name + unit.
+struct SignalMeta {
+  std::string name;
+  std::string unit;
+};
+
+struct MessageEntry {
+  Libdbc::Message message;
+  std::vector<SignalMeta> signals;  // parallel to message.parse_signals() output
+};
+
 struct CanDecoder::Impl {
-  std::vector<Libdbc::Message> messages;
+  std::vector<MessageEntry> messages;
   // Keyed by the DBC message id exactly as stored (raw, possibly with the
   // extended flag). Lookup handles both the raw and Vector-flagged forms.
   std::unordered_map<std::uint32_t, std::size_t> id_to_index;
@@ -45,12 +59,19 @@ struct CanDecoder::Impl {
       if (!messageLayoutInRange(msg)) {
         continue;
       }
+      std::vector<SignalMeta> meta;
+      for (const auto& sig : msg.get_signals()) {
+        meta.push_back(SignalMeta{sig.name, sig.unit});
+      }
       id_to_index[msg.id()] = messages.size();
-      messages.push_back(msg);
+      messages.push_back(MessageEntry{msg, std::move(meta)});
     }
   }
 
-  const Libdbc::Message* find(std::uint32_t can_id, bool extended) const {
+  const MessageEntry* find(std::uint32_t can_id, bool extended) const {
+    const auto resolve = [this](std::unordered_map<std::uint32_t, std::size_t>::const_iterator it) {
+      return it == id_to_index.end() ? nullptr : &messages[it->second];
+    };
     if (extended) {
       // Prefer the Vector-flagged 29-bit message so an extended frame is not
       // shadowed by a standard message sharing the same numeric id. Fall back
@@ -61,10 +82,9 @@ struct CanDecoder::Impl {
       if (it == id_to_index.end() && can_id > kMaxStandardId) {
         it = id_to_index.find(can_id);
       }
-      return it == id_to_index.end() ? nullptr : &messages[it->second];
+      return resolve(it);
     }
-    const auto it = id_to_index.find(can_id);
-    return it == id_to_index.end() ? nullptr : &messages[it->second];
+    return resolve(id_to_index.find(can_id));
   }
 };
 
@@ -77,7 +97,7 @@ PJ::Status CanDecoder::loadDbcString(const std::string& dbc_text) {
   try {
     parser.parse_file(stream);
   } catch (const std::exception& err) {
-    return PJ::unexpected(std::string("mf4: DBC parse error: ") + err.what());
+    return PJ::unexpected(std::string("can_dbc: DBC parse error: ") + err.what());
   }
   impl_->addFrom(parser);
   return PJ::okStatus();
@@ -88,7 +108,7 @@ PJ::Status CanDecoder::loadDbcFile(const std::string& path) {
   try {
     parser.parse_file(path);
   } catch (const std::exception& err) {
-    return PJ::unexpected(std::string("mf4: DBC parse error (") + path + "): " + err.what());
+    return PJ::unexpected(std::string("can_dbc: DBC parse error (") + path + "): " + err.what());
   }
   impl_->addFrom(parser);
   return PJ::okStatus();
@@ -99,8 +119,8 @@ std::size_t CanDecoder::messageCount() const {
 }
 
 std::string CanDecoder::messageName(std::uint32_t can_id, bool extended) const {
-  const Libdbc::Message* msg = impl_->find(can_id, extended);
-  return msg != nullptr ? msg->name() : std::string{};
+  const MessageEntry* entry = impl_->find(can_id, extended);
+  return entry != nullptr ? entry->message.name() : std::string{};
 }
 
 std::vector<DecodedSignal> CanDecoder::decode(
@@ -108,12 +128,12 @@ std::vector<DecodedSignal> CanDecoder::decode(
   result = DecodeResult::kNoMatch;
   std::vector<DecodedSignal> out;
 
-  const Libdbc::Message* msg_ptr = impl_->find(can_id, extended);
-  if (msg_ptr == nullptr) {
+  const MessageEntry* entry = impl_->find(can_id, extended);
+  if (entry == nullptr) {
     return out;
   }
   result = DecodeResult::kUndecodable;
-  const Libdbc::Message& msg = *msg_ptr;
+  const Libdbc::Message& msg = entry->message;
 
   // Reject frames shorter than the message: dbc_parser_cpp would zero-fill the
   // missing bytes and return "success" with silently wrong signal values.
@@ -127,7 +147,7 @@ std::vector<DecodedSignal> CanDecoder::decode(
   }
   result = DecodeResult::kDecoded;
 
-  const std::vector<Libdbc::Signal> signals = msg.get_signals();
+  const auto& signals = entry->signals;  // cached name/unit, no per-frame copy
   const std::size_t count = signals.size() < values.size() ? signals.size() : values.size();
   out.reserve(count);
   for (std::size_t k = 0; k < count; ++k) {
@@ -136,4 +156,4 @@ std::vector<DecodedSignal> CanDecoder::decode(
   return out;
 }
 
-}  // namespace mf4_detail
+}  // namespace pj_can_dbc

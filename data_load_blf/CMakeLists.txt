@@ -32,19 +32,18 @@ CPMAddPackage(
 # check right after the container header is read: reject objSize outside
 # [header, fileLength]. `fileLength` is the reader's own member, set from the
 # real file size in the constructor. Done via string(REPLACE) (no `patch`
-# executable needed on Windows CI); the FATAL_ERROR guard trips if the pin moves.
+# executable needed on Windows CI); each pj_apply_vendored_patch FATAL_ERRORs if
+# its anchor moves, so a pin bump can never silently drop a guard.
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/VendoredPatch.cmake)
+file(READ ${lblf_SOURCE_DIR}/blf_reader.cc _lblf_reader_cc)
+
 set(_lblf_anchor [==[            read_logcontainer(fileStream, lc, ohb);]==])
 set(_lblf_fixed [==[            if (ohb.objSize < ohb.headerSize + sizeof(blf_struct::LogContainer) || ohb.objSize > fileLength)
                 {
                     throw std::runtime_error("lblf: log container size out of range (corrupt file)");
                 }
             read_logcontainer(fileStream, lc, ohb);]==])
-file(READ ${lblf_SOURCE_DIR}/blf_reader.cc _lblf_reader_cc)
-string(FIND "${_lblf_reader_cc}" "${_lblf_anchor}" _lblf_anchor_pos)
-if(_lblf_anchor_pos EQUAL -1)
-  message(FATAL_ERROR "data_load_blf: lblf log-container guard no longer applies — re-check the size fix")
-endif()
-string(REPLACE "${_lblf_anchor}" "${_lblf_fixed}" _lblf_reader_cc "${_lblf_reader_cc}")
+pj_apply_vendored_patch(_lblf_reader_cc _lblf_anchor _lblf_fixed "data_load_blf: lblf log-container size")
 
 # Second guard: the zlib output buffer is sized from the container's own
 # unCompressedFileSize field, which is independent of objSize. Cap it against
@@ -62,11 +61,7 @@ set(_lblf_zlib_fixed [==[                    uLong uncompressedFileSize = lc.unC
                     std::vector<uint8_t> uncompressedData {};
 
                     uncompressedData.resize(uncompressedFileSize);]==])
-string(FIND "${_lblf_reader_cc}" "${_lblf_zlib_anchor}" _lblf_zlib_pos)
-if(_lblf_zlib_pos EQUAL -1)
-  message(FATAL_ERROR "data_load_blf: lblf zlib-size guard no longer applies — re-check the fix")
-endif()
-string(REPLACE "${_lblf_zlib_anchor}" "${_lblf_zlib_fixed}" _lblf_reader_cc "${_lblf_reader_cc}")
+pj_apply_vendored_patch(_lblf_reader_cc _lblf_zlib_anchor _lblf_zlib_fixed "data_load_blf: lblf zlib output size")
 
 # Third guard: blf_reader::data() computes an inner object's payload length as
 # `objSize - sizeof(BaseHeader) + objSize % 4`. A forged inner objSize below
@@ -94,11 +89,7 @@ set(_lblf_data_fixed [==[    if (logcontainer_que.size() < size_of_data)
 
     result.payload.clear();
     result.payload.reserve(size_of_data);]==])
-string(FIND "${_lblf_reader_cc}" "${_lblf_data_anchor}" _lblf_data_pos)
-if(_lblf_data_pos EQUAL -1)
-  message(FATAL_ERROR "data_load_blf: lblf inner-object guard no longer applies — re-check the fix")
-endif()
-string(REPLACE "${_lblf_data_anchor}" "${_lblf_data_fixed}" _lblf_reader_cc "${_lblf_reader_cc}")
+pj_apply_vendored_patch(_lblf_reader_cc _lblf_data_anchor _lblf_data_fixed "data_load_blf: lblf inner-object size")
 
 set(_lblf_patched_dir ${CMAKE_CURRENT_BINARY_DIR}/lblf_patched)
 file(CONFIGURE OUTPUT ${_lblf_patched_dir}/blf_reader.cc CONTENT "${_lblf_reader_cc}" @ONLY)

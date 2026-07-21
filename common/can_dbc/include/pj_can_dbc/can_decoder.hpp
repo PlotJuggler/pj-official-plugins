@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace mf4_detail {
+namespace pj_can_dbc {
 
 /// One decoded signal from a CAN frame (physical/engineering value).
 struct DecodedSignal {
@@ -70,4 +70,4 @@ class CanDecoder {
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace mf4_detail
+}  // namespace pj_can_dbc

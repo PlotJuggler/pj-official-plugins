@@ -1,12 +1,9 @@
 #include <cstdint>
-#include <filesystem>
-#include <nlohmann/json.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_can_dbc/can_decoder.hpp>
 #include <pj_can_dbc/can_topic.hpp>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -24,14 +21,7 @@ constexpr int kCanBusType = 2;
 std::string uniqueTopicName(
     const mf4_detail::GroupInfo& group, std::size_t index, std::unordered_set<std::string>& used) {
   const std::string base = group.name.empty() ? (std::string("Group_") + std::to_string(index)) : group.name;
-  std::string name = base;
-  int suffix = 1;
-  while (used.count(name) != 0) {
-    name = base + "#" + std::to_string(suffix);
-    ++suffix;
-  }
-  used.insert(name);
-  return name;
+  return mf4_detail::dedupeName(base, used);
 }
 
 // The MF4 / MDF data source. Imports measurement channel groups as timeseries
@@ -47,43 +37,28 @@ class Mf4Source : public PJ::FileSourceBase {
     return PJ::borrowDialog(dialog_);
   }
 
+  // The dialog owns the config JSON round-trip; the host replaces the source
+  // config with the dialog's saveConfig() after accept, so delegating keeps a
+  // single source of truth (matches data_load_mcap/csv/parquet).
   std::string saveConfig() const override {
-    nlohmann::json cfg;
-    cfg["filepath"] = filepath_;
-    cfg["dbc_paths"] = dbc_paths_;
-    return cfg.dump();
+    return dialog_.saveConfig();
   }
 
   PJ::Status loadConfig(std::string_view config_json) override {
-    const auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-    if (cfg.is_discarded()) {
+    if (!dialog_.loadConfig(config_json)) {
       return PJ::unexpected(std::string("invalid config JSON"));
     }
-    filepath_ = cfg.value("filepath", std::string{});
-    dbc_paths_.clear();
-    if (cfg.contains("dbc_paths") && cfg["dbc_paths"].is_array()) {
-      for (const auto& entry : cfg["dbc_paths"]) {
-        if (entry.is_string()) {
-          dbc_paths_.push_back(entry.get<std::string>());
-        }
-      }
-    }
-    if (!filepath_.empty()) {
-      dialog_.setFilePath(filepath_);
-    }
-    // The dialog's saveConfig() replaces this config after accept, so it must
-    // carry the DBC list even though v1 cannot edit it.
-    dialog_.setDbcPaths(dbc_paths_);
     return PJ::okStatus();
   }
 
   PJ::Status importData() override {
-    if (filepath_.empty()) {
+    const std::string& filepath = dialog_.filePath();
+    if (filepath.empty()) {
       return PJ::unexpected(std::string("no filepath configured"));
     }
 
     mf4_detail::Mf4Reader reader;
-    if (auto status = reader.open(filepath_); !status) {
+    if (auto status = reader.open(filepath); !status) {
       return status;
     }
     if (!reader.finalized()) {
@@ -92,8 +67,8 @@ class Mf4Source : public PJ::FileSourceBase {
     }
 
     // Load DBC database(s) for CAN decoding.
-    mf4_detail::CanDecoder decoder;
-    for (const auto& dbc : dbc_paths_) {
+    pj_can_dbc::CanDecoder decoder;
+    for (const auto& dbc : dialog_.dbcPaths()) {
       if (auto status = decoder.loadDbcFile(dbc); !status) {
         runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, status.error());
       }
@@ -150,13 +125,13 @@ class Mf4Source : public PJ::FileSourceBase {
                 cancelled = true;
                 return false;  // abort mid-group
               }
-              mf4_detail::DecodeResult result = mf4_detail::DecodeResult::kNoMatch;
+              pj_can_dbc::DecodeResult result = pj_can_dbc::DecodeResult::kNoMatch;
               const auto signals = decoder.decode(id, extended, data, result);
-              if (result == mf4_detail::DecodeResult::kNoMatch) {
+              if (result == pj_can_dbc::DecodeResult::kNoMatch) {
                 ++unmatched_frames;
                 return true;
               }
-              if (result == mf4_detail::DecodeResult::kUndecodable) {
+              if (result == pj_can_dbc::DecodeResult::kUndecodable) {
                 ++undecodable_frames;
                 return true;
               }
@@ -168,7 +143,7 @@ class Mf4Source : public PJ::FileSourceBase {
               auto it = can_topics.find(key);
               if (it == can_topics.end()) {
                 const std::string topic_name =
-                    mf4_detail::canTopicName(bus_channel, decoder.messageName(id, extended), id);
+                    pj_can_dbc::canTopicName(bus_channel, decoder.messageName(id, extended), id);
                 auto topic = writeHost().ensureTopic(topic_name);
                 if (!topic) {
                   return true;  // best-effort within the frame callback
@@ -288,9 +263,7 @@ class Mf4Source : public PJ::FileSourceBase {
   }
 
  private:
-  std::string filepath_;
-  std::vector<std::string> dbc_paths_;
-  mf4_detail::Mf4Dialog dialog_;
+  mf4_detail::Mf4Dialog dialog_;  // owns the config (filepath + dbc_paths)
 };
 
 }  // namespace

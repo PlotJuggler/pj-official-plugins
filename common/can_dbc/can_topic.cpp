@@ -1,6 +1,6 @@
 #include <pj_can_dbc/can_topic.hpp>
 
-namespace mf4_detail {
+namespace pj_can_dbc {
 
 std::string hexId(std::uint32_t id) {
   static const char* const kHex = "0123456789ABCDEF";
@@ -25,4 +25,4 @@ std::string canTopicName(std::uint16_t bus_channel, const std::string& message_n
   return out;
 }
 
-}  // namespace mf4_detail
+}  // namespace pj_can_dbc

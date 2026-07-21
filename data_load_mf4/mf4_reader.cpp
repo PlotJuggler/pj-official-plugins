@@ -107,6 +107,18 @@ PJ::Status Mf4Reader::checkSampleCount(std::size_t group_index) const {
   return PJ::okStatus();
 }
 
+std::string dedupeName(const std::string& candidate, std::unordered_set<std::string>& used) {
+  if (used.insert(candidate).second) {
+    return candidate;
+  }
+  for (int suffix = 1;; ++suffix) {
+    std::string name = candidate + "#" + std::to_string(suffix);
+    if (used.insert(name).second) {
+      return name;
+    }
+  }
+}
+
 std::vector<std::string> Mf4Reader::valueChannelNames(std::size_t group_index) const {
   std::vector<std::string> names;
   if (group_index >= groups_.size()) {
@@ -117,17 +129,8 @@ std::vector<std::string> Mf4Reader::valueChannelNames(std::size_t group_index) c
     if (ch.is_master || ch.type == PJ::PrimitiveType::kUnspecified) {
       continue;
     }
-    std::string name = ch.name.empty() ? (std::string("chan") + std::to_string(names.size())) : ch.name;
-    if (used.count(name) != 0) {
-      const std::string base = name;
-      int suffix = 1;
-      do {
-        name = base + "#" + std::to_string(suffix);
-        ++suffix;
-      } while (used.count(name) != 0);
-    }
-    used.insert(name);
-    names.push_back(std::move(name));
+    const std::string candidate = ch.name.empty() ? (std::string("chan") + std::to_string(names.size())) : ch.name;
+    names.push_back(dedupeName(candidate, used));
   }
   return names;
 }
@@ -197,6 +200,10 @@ PJ::Status Mf4Reader::readGroup(std::size_t group_index, const RowCallback& cb, 
   // mdflib exposes no per-DG epoch to correct this; revisit if such files appear.
   const std::uint64_t n = cg->NofSamples();
   std::vector<SampleValue> row(value_obs.size());
+  // Column types are fixed for the whole group — set them once, not per sample.
+  for (std::size_t k = 0; k < value_obs.size(); ++k) {
+    row[k].type = value_types[k];
+  }
   for (std::uint64_t i = 0; i < n; ++i) {
     double t_sec = 0.0;
     const bool t_ok = master->GetEngValue(i, t_sec);
@@ -213,7 +220,6 @@ PJ::Status Mf4Reader::readGroup(std::size_t group_index, const RowCallback& cb, 
     const std::int64_t ts_ns = *ts;
 
     for (std::size_t k = 0; k < value_obs.size(); ++k) {
-      row[k].type = value_types[k];
       if (value_types[k] == PJ::PrimitiveType::kString) {
         std::string text;
         row[k].valid = value_obs[k]->GetChannelValue(i, text);

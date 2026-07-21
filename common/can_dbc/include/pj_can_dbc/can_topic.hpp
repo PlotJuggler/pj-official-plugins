@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <string>
 
-namespace mf4_detail {
+namespace pj_can_dbc {
 
 /// Hex "0xNN" rendering of a CAN id (fallback topic name when a message has no
 /// DBC name).
@@ -19,4 +19,4 @@ std::string hexId(std::uint32_t id);
 /// falls back to the hex id.
 std::string canTopicName(std::uint16_t bus_channel, const std::string& message_name, std::uint32_t can_id);
 
-}  // namespace mf4_detail
+}  // namespace pj_can_dbc

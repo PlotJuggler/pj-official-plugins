@@ -17,11 +17,17 @@
 #include <pj_base/expected.hpp>
 #include <pj_base/type_tree.hpp>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "mf4_value.hpp"
 
 namespace mf4_detail {
+
+/// Returns `candidate` if it is not already in `used`, otherwise the first of
+/// `candidate#1`, `candidate#2`, … that is free — and records the result in
+/// `used`. Shared by the group-topic and channel-field name de-duplication.
+std::string dedupeName(const std::string& candidate, std::unordered_set<std::string>& used);
 
 /// Metadata for one channel of a group.
 struct ChannelInfo {

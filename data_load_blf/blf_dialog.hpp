@@ -24,6 +24,14 @@ class BlfDialog : public PJ::DialogPluginTyped {
   /// dialog's saveConfig() after accept.
   void setChannelDbcs(std::map<std::uint16_t, std::vector<std::string>> channel_dbcs);
 
+  /// Config state the source reads back (the dialog owns the JSON round-trip).
+  const std::string& filePath() const {
+    return filepath_;
+  }
+  const std::map<std::uint16_t, std::vector<std::string>>& channelDbcs() const {
+    return channel_dbcs_;
+  }
+
   // --- Dialog protocol ---
   std::string manifest() const override;
   std::string ui_content() const override;

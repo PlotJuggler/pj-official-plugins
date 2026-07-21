@@ -8,9 +8,9 @@
 
 namespace {
 
-using mf4_detail::CanDecoder;
-using mf4_detail::DecodedSignal;
-using mf4_detail::DecodeResult;
+using pj_can_dbc::CanDecoder;
+using pj_can_dbc::DecodedSignal;
+using pj_can_dbc::DecodeResult;
 
 // A minimal but complete DBC with:
 //  - a standard 8-byte message id 256 (0x100): Speed (LE unsigned, x0.1 km/h),
@@ -257,20 +257,20 @@ TEST(CanDecoder, GarbageDbcYieldsNoMessages) {
 }
 
 TEST(CanTopic, RendersHexIds) {
-  EXPECT_EQ(mf4_detail::hexId(0x0u), "0x0");
-  EXPECT_EQ(mf4_detail::hexId(0x100u), "0x100");
-  EXPECT_EQ(mf4_detail::hexId(0x18FEF100u), "0x18FEF100");
-  EXPECT_EQ(mf4_detail::hexId(0xFFFFFFFFu), "0xFFFFFFFF");
+  EXPECT_EQ(pj_can_dbc::hexId(0x0u), "0x0");
+  EXPECT_EQ(pj_can_dbc::hexId(0x100u), "0x100");
+  EXPECT_EQ(pj_can_dbc::hexId(0x18FEF100u), "0x18FEF100");
+  EXPECT_EQ(pj_can_dbc::hexId(0xFFFFFFFFu), "0xFFFFFFFF");
 }
 
 // Shared topic naming for both CAN loaders: frames from different buses must
 // land in different topics ("CAN/ch<N>/..."), channel 0 (unknown bus) omits
 // the channel segment, and unnamed messages fall back to the hex id.
 TEST(CanTopic, NamesTopicsByChannelAndMessage) {
-  EXPECT_EQ(mf4_detail::canTopicName(1, "EngineData", 0x100u), "CAN/ch1/EngineData");
-  EXPECT_EQ(mf4_detail::canTopicName(2, "", 0x1ABu), "CAN/ch2/0x1AB");
-  EXPECT_EQ(mf4_detail::canTopicName(0, "EngineData", 0x100u), "CAN/EngineData");
-  EXPECT_EQ(mf4_detail::canTopicName(0, "", 0x7FFu), "CAN/0x7FF");
+  EXPECT_EQ(pj_can_dbc::canTopicName(1, "EngineData", 0x100u), "CAN/ch1/EngineData");
+  EXPECT_EQ(pj_can_dbc::canTopicName(2, "", 0x1ABu), "CAN/ch2/0x1AB");
+  EXPECT_EQ(pj_can_dbc::canTopicName(0, "EngineData", 0x100u), "CAN/EngineData");
+  EXPECT_EQ(pj_can_dbc::canTopicName(0, "", 0x7FFu), "CAN/0x7FF");
 }
 
 }  // namespace

@@ -85,15 +85,15 @@ BO_ 256 EngineData: 8 ECU
  SG_ Speed : 0|16@1+ (0.1,0) [0|6553.5] "km/h" ECU
 )DBC";
 
-  mf4_detail::CanDecoder decoder;
+  pj_can_dbc::CanDecoder decoder;
   ASSERT_TRUE(decoder.loadDbcString(kDbc).has_value());
 
   const auto frames = readFixtureFrames();
   ASSERT_EQ(frames.size(), 3u);
 
-  mf4_detail::DecodeResult result = mf4_detail::DecodeResult::kNoMatch;
+  pj_can_dbc::DecodeResult result = pj_can_dbc::DecodeResult::kNoMatch;
   const auto signals = decoder.decode(frames[0].can_id, frames[0].extended, frames[0].data, result);
-  EXPECT_EQ(result, mf4_detail::DecodeResult::kDecoded);
+  EXPECT_EQ(result, pj_can_dbc::DecodeResult::kDecoded);
   ASSERT_FALSE(signals.empty());
   EXPECT_EQ(signals[0].name, "Speed");
   EXPECT_DOUBLE_EQ(signals[0].value, 100.0);
