@@ -4,6 +4,8 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <nlohmann/json.hpp>
 #include <string>
 
@@ -52,6 +54,7 @@ TEST(ProtobufParserDialogTest, RestoresEmbeddedDescriptorWhenProtoPathIsUnavaila
   EXPECT_EQ(saved["message_type"], "example.telemetry.Status");
   EXPECT_EQ(saved["proto_file_path"], config["proto_file_path"]);
   EXPECT_EQ(saved["compiled_schema_base64"], config["compiled_schema_base64"]);
+  EXPECT_NE(dialog.widget_data().find("SOURCE NOTICE"), std::string::npos);
 }
 
 TEST(ProtobufParserDialogTest, DefaultsInvalidSavedTypeToFirstEmbeddedMessage) {
@@ -65,6 +68,35 @@ TEST(ProtobufParserDialogTest, DefaultsInvalidSavedTypeToFirstEmbeddedMessage) {
 
   const auto saved = nlohmann::json::parse(dialog.saveConfig());
   EXPECT_EQ(saved["message_type"], "example.telemetry.Sample");
+}
+
+TEST(ProtobufParserDialogTest, KeepsEmbeddedDescriptorWhenPresentSourceDoesNotCompile) {
+  const auto path = std::filesystem::temp_directory_path() / "pj_invalid_portable.proto";
+  struct Cleanup {
+    std::filesystem::path path;
+    ~Cleanup() {
+      std::error_code ec;
+      std::filesystem::remove(path, ec);
+    }
+  } cleanup{path};
+  {
+    std::ofstream source(path);
+    ASSERT_TRUE(source.is_open());
+    source << "this is not valid protobuf syntax";
+  }
+
+  nlohmann::json config;
+  config["proto_file_path"] = path.string();
+  config["message_type"] = "example.telemetry.Status";
+  config["compiled_schema_base64"] = encodeBase64(descriptorSetWithMessages());
+
+  ProtobufParserDialog dialog;
+  ASSERT_TRUE(dialog.loadConfig(config.dump()));
+
+  const auto saved = nlohmann::json::parse(dialog.saveConfig());
+  EXPECT_EQ(saved["message_type"], "example.telemetry.Status");
+  EXPECT_EQ(saved["compiled_schema_base64"], config["compiled_schema_base64"]);
+  EXPECT_NE(dialog.widget_data().find("SOURCE COMPILE ERROR (USING SAVED DESCRIPTOR)"), std::string::npos);
 }
 
 }  // namespace
