@@ -14,3 +14,6 @@ __pycache__/
 
 # Conan/CMake generated, any depth
 **/CMakeUserPresets.json
+
+# local MF4/BLF review build trees
+build-mf4/

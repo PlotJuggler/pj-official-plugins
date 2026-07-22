@@ -2,15 +2,15 @@
 
 #include <ixwebsocket/IXWebSocket.h>
 
-#include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <pj_array_policy/array_policy.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <pj_streaming/dialog_utils.hpp>
+#include <pj_streaming/endpoint.hpp>
 #include <string>
 #include <vector>
 
@@ -108,6 +108,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       }
     }
     wd.setTableRows("topicsList", rows);
+    wd.setListPlaceholder("topicsList", "Click to select, Click+Drag to multi-select");
 
     if (!selected_topic_names_.empty()) {
       wd.setSelectedItems("topicsList", selected_topic_names_);
@@ -129,9 +130,8 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       return false;
     }
     if (widget_name == "lineEditPort") {
-      auto val = std::atoi(std::string(text).c_str());
-      if (val > 0 && val <= 65535) {
-        port_ = val;
+      if (const auto port = pj::streaming::parsePort(text)) {
+        port_ = *port;
       }
       return false;
     }
@@ -248,7 +248,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
  private:
   void connectToServer() {
     socket_ = std::make_unique<ix::WebSocket>();
-    socket_->setUrl("ws://" + address_ + ":" + std::to_string(port_));
+    socket_->setUrl(pj::streaming::composeEndpoint("ws", address_, static_cast<uint16_t>(port_)));
 
     socket_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
       if (msg->type == ix::WebSocketMessageType::Open) {
@@ -374,16 +374,9 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       }
     }
     // Case-insensitive search
-    std::string lower_filter = filter_;
-    std::transform(lower_filter.begin(), lower_filter.end(), lower_filter.begin(), [](unsigned char c) {
-      return std::tolower(c);
-    });
-    std::string lower_name = t.name;
-    std::transform(
-        lower_name.begin(), lower_name.end(), lower_name.begin(), [](unsigned char c) { return std::tolower(c); });
-    std::string lower_type = t.type;
-    std::transform(
-        lower_type.begin(), lower_type.end(), lower_type.begin(), [](unsigned char c) { return std::tolower(c); });
+    const std::string lower_filter = pj::streaming::lowerAscii(filter_);
+    const std::string lower_name = pj::streaming::lowerAscii(t.name);
+    const std::string lower_type = pj::streaming::lowerAscii(t.type);
     return lower_name.find(lower_filter) != std::string::npos || lower_type.find(lower_filter) != std::string::npos;
   }
 

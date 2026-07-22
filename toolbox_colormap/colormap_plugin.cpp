@@ -16,16 +16,6 @@
 
 namespace {
 
-// Trash can icon (Feather Icons, MIT license)
-static constexpr const char* kTrashSvg =
-    R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24")"
-    R"( fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">)"
-    R"(<polyline points="3 6 5 6 21 6"/>)"
-    R"(<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>)"
-    R"(<line x1="10" y1="11" x2="10" y2="17"/>)"
-    R"(<line x1="14" y1="11" x2="14" y2="17"/>)"
-    R"(</svg>)";
-
 // ---------------------------------------------------------------------------
 // LuaColorMap — compiles and evaluates a Lua ColorMap(v) function.
 // Mirrors the PJ 3.x ColorMap class but lives entirely in the plugin.
@@ -98,8 +88,12 @@ class ColormapDialog : public PJ::DialogPluginTyped {
         .setCodeLanguage("code_editor", "lua")
         .setText("name_edit", current_name_)
         .setListItems("saved_list", names)
-        .setText("status_label", status_msg_)
-        .setButtonIcon("delete_btn", kTrashSvg);
+        .setListItemsDeletable("saved_list", true)
+        .setListPlaceholder(
+            "saved_list",
+            "For each value in the dataset, ColorMap must return a string containing a color, "
+            "supported formats are hex (\"#98FB98\") or web-colors (\"palegreen\")")
+        .setText("status_label", status_msg_);
 
     if (should_accept_) {
       should_accept_ = false;
@@ -158,21 +152,21 @@ class ColormapDialog : public PJ::DialogPluginTyped {
       status_msg_ = "Saved and registered: " + current_name_;
       return true;
     }
-    if (name == "delete_btn") {
-      if (!selected_name_.empty()) {
-        // Unregister from host
-        if (unregister_fn_) {
-          unregister_fn_(selected_name_);
-        }
-        saved_maps_.erase(
-            std::remove_if(
-                saved_maps_.begin(), saved_maps_.end(), [&](const SavedMap& m) { return m.name == selected_name_; }),
-            saved_maps_.end());
-        selected_name_.clear();
-        status_msg_.clear();
-        return true;
+    return false;
+  }
+
+  bool onItemDeleteRequested(std::string_view name, int index) override {
+    if (name == "saved_list" && index >= 0 && index < static_cast<int>(saved_maps_.size())) {
+      const std::string deleted = saved_maps_[static_cast<size_t>(index)].name;
+      if (unregister_fn_) {
+        unregister_fn_(deleted);
       }
-      return false;
+      if (selected_name_ == deleted) {
+        selected_name_.clear();
+      }
+      saved_maps_.erase(saved_maps_.begin() + index);
+      status_msg_.clear();
+      return true;
     }
     return false;
   }
@@ -325,4 +319,4 @@ class ColormapToolbox : public PJ::ToolboxPluginBase {
 }  // namespace
 
 PJ_TOOLBOX_PLUGIN(ColormapToolbox, kColormapManifest)
-PJ_DIALOG_PLUGIN(ColormapDialog)
+PJ_DIALOG_PLUGIN(ColormapDialog, kColormapManifest)

@@ -38,6 +38,19 @@ target_link_libraries(pj_video_demux PUBLIC
   ffmpeg::avutil
 )
 
+# ffmpeg/8.1's ConanCenter recipe compiles avformat with the udp/tcp protocol
+# and the Windows Schannel TLS backend unconditionally on Windows (the
+# `disable_all_protocols=True` option is honoured for the on-disk demuxer
+# selection but not for the linker symbol footprint). Consumers therefore
+# have to bring the Windows system libraries those objects reference:
+#   - avformat.lib(udp.o)         -> Winsock:            ws2_32
+#   - avformat.lib(tls_schannel.o) -> Schannel + CNG:     secur32, crypt32,
+#                                                        bcrypt, ncrypt
+# Link them explicitly on Windows; noop on other platforms.
+if(WIN32)
+  target_link_libraries(pj_video_demux PUBLIC ws2_32 secur32 crypt32 bcrypt ncrypt)
+endif()
+
 # --- Unit tests: pure byte-rewrite cases + committed h264/hevc/av1 fixtures
 #     (+ an env-gated external e2e via PJ_TEST_VIDEO) ---
 find_package(GTest QUIET CONFIG)

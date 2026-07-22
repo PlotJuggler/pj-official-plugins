@@ -725,10 +725,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       save_requested_ = true;
       return true;
     }
-    if (name == "pushButtonCancel") {
-      close_requested_ = true;
-      return true;
-    }
     // Function library box (PJ3's buttonLibraryBox): open the interactive sub-panel.
     if (name == "buttonLibraryBox") {
       library_open_ = true;
@@ -820,13 +816,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
 
   bool onTick() override {
-    if (close_requested_) {
-      close_requested_ = false;
-      pending_close_ = true;
-      if (on_teardown_preview_) {
-        on_teardown_preview_();
-      }
-    }
     if (save_requested_) {
       save_requested_ = false;
       if (on_save_) {
@@ -1108,9 +1097,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
   void setOnRefreshPreview(std::function<void()> cb) {
     on_refresh_preview_ = std::move(cb);
-  }
-  void setOnTeardownPreview(std::function<void()> cb) {
-    on_teardown_preview_ = std::move(cb);
   }
   void setOnValidateBatch(std::function<void()> cb) {
     on_validate_batch_ = std::move(cb);
@@ -1431,13 +1417,11 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   std::string io_status_;  // one-shot Import/Export status line; consumed by the next widget_data()
 
   bool save_requested_ = false;
-  bool close_requested_ = false;
   bool pending_close_ = false;
   bool preview_dirty_ = false;
   bool help_requested_ = false;
   std::function<void()> on_save_;
   std::function<void()> on_refresh_preview_;
-  std::function<void()> on_teardown_preview_;
   std::function<void()> on_validate_batch_;
   std::vector<PJ::ChartSeries> preview_series_;
 };
@@ -1448,6 +1432,14 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
 class TransformEditorToolbox : public PJ::ToolboxPluginBase {
  public:
+  // The editor has no Close button; it is dismissed via the host panel chrome,
+  // which destroys this plugin instance. Remove the ephemeral live-preview node
+  // here so it cannot keep recomputing in the DerivedEngine after the editor is
+  // gone (tearDownPreview() is a no-op when no preview is live).
+  ~TransformEditorToolbox() override {
+    tearDownPreview();
+  }
+
   uint64_t capabilities() const override {
     return PJ::kToolboxCapabilityHasDialog;
   }
@@ -1456,7 +1448,6 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     if (!callbacks_wired_) {
       dialog_.setOnSave([this]() { onSave(); });
       dialog_.setOnRefreshPreview([this]() { refreshPreview(); });
-      dialog_.setOnTeardownPreview([this]() { tearDownPreview(); });
       dialog_.setOnValidateBatch([this]() { validateBatch(); });
       callbacks_wired_ = true;
     }
@@ -1940,4 +1931,4 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
 }  // namespace
 
 PJ_TOOLBOX_PLUGIN(TransformEditorToolbox, kTransformEditorManifest)
-PJ_DIALOG_PLUGIN(TransformEditorDialog)
+PJ_DIALOG_PLUGIN(TransformEditorDialog, kTransformEditorManifest)

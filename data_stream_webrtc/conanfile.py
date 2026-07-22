@@ -19,15 +19,16 @@ class DataStreamWebrtcConan(ConanFile):
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
         "libdatachannel/0.24.0",
+        "ixwebsocket/11.4.6",
     )
     default_options = {
         "*:shared": False,
-        # libdatachannel media/SRTP path is always compiled in (no NO_MEDIA
-        # option in the recipe). These pin the transport stack we rely on:
-        #   * with_websocket=True  -> rtc::WebSocket for signaling
+        # libdatachannel media/SRTP path is always compiled in. These pin the
+        # transport stack we rely on:
+        #   * with_websocket=False -> no rtc::WebSocket (WHEP signaling is HTTP)
         #   * with_nice=False      -> use the bundled libjuice ICE agent
         #   * with_ssl=openssl     -> DTLS/SRTP backend
-        "libdatachannel/*:with_websocket": True,
+        "libdatachannel/*:with_websocket": False,
         "libdatachannel/*:with_nice": False,
         "libdatachannel/*:with_ssl": "openssl",
     }

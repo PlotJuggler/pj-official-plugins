@@ -16,6 +16,7 @@ Scripts for releasing PlotJuggler extensions and submitting them to the extensio
 |------|---------|
 | `release_extension.py` | Creates and pushes release tags with validation |
 | `submit_to_registry.py` | Submits extensions to registry via PR |
+| `build_local_registry.py` | Builds a local `file://` registry from compiled plugins (no release) |
 | `release_tools.py` | Library + CLI for validation and packaging |
 | `requirements.txt` | Python dependencies |
 
@@ -400,6 +401,83 @@ python3 scripts/release_tools.py generate-release-notes \
 ```
 
 By default the command diffs against the previous tag for the same source directory. Use `--previous-tag` to override that range when repairing or backfilling a release, and `--include-shared` only when shared build/runtime changes should be called out explicitly.
+
+---
+
+## Local registry (offline testing)
+
+`build_local_registry.py` is the offline counterpart of `submit_to_registry.py`. Instead of
+downloading release assets and opening a PR against the remote registry, it packages the plugin
+`.so`s already sitting in a local build directory into ZIPs on disk and writes a `registry.json`
+whose platform URLs are `file://` links to those ZIPs. The result loads directly in the PlotJuggler
+Marketplace (its registry URL accepts the `file` scheme), so you can exercise install / update /
+uninstall end-to-end **without cutting a release**.
+
+It reuses the same packaging and registry-entry logic as the release path (`release_tools.py` +
+`submit_to_registry.py`), so a locally produced ZIP has the same layout (`<extension_id>/` at the
+archive root) as a real release artifact.
+
+### Steps to reproduce a local registry
+
+```bash
+# 1. Build the plugins you want to serve (any normal build works; produces build/.../bin/*.so).
+./build.sh                       # or the standalone conan+cmake build
+
+# 2. Generate the registry from those binaries.
+#    Default: all plugins with a manifest.json, host platform only,
+#    output under build/local-registry/registry.json
+python3 scripts/build_local_registry.py
+
+# 3. Point the Marketplace at it (Marketplace → registry URL setting):
+#    file:///abs/path/to/build/local-registry/registry.json
+#    The script prints this exact URL when it finishes.
+```
+
+Verify the result with the same schema validator the CI uses (skip the URL check since the URLs are
+local `file://`):
+
+```bash
+python3 /path/to/pj-plugin-registry/scripts/validate_registry.py --skip-urls \
+    build/local-registry/registry.json
+```
+
+### Selecting plugins and output location
+
+```bash
+# Specific plugins (source dir or extension id), custom output path
+python3 scripts/build_local_registry.py csv-loader data_load_parquet \
+    --output /tmp/registry.json
+```
+
+### Multiple platforms
+
+By default only the host platform is packaged (`--host-platform`, default `linux-x86_64`) from
+`--build-dir`. Add other platforms — e.g. a Windows build cross-mounted from another machine — with
+the repeatable `--platform NAME=BUILDDIR` flag:
+
+```bash
+python3 scripts/build_local_registry.py --platform windows-x86_64=/mnt/win-build
+```
+
+A platform whose build directory is missing, or that has no matching binary, is skipped with a
+warning; coverage vs. the full platform set is reported at the end so the gaps are visible.
+
+### CLI reference
+
+```bash
+python3 scripts/build_local_registry.py [plugins...] [options]
+
+Arguments:
+  plugins                  Source dirs or extension ids to include (default: all with a manifest.json)
+
+Options:
+  --build-dir PATH         Host build directory to package binaries from (default: build)
+  --host-platform NAME     Registry platform key for --build-dir (default: linux-x86_64)
+  --platform NAME=BUILDDIR Additional platform from another build dir (repeatable)
+  --output PATH            registry.json path (default: <build-dir>/local-registry/registry.json)
+  --zip-dir PATH           Directory for the ZIP artifacts (default: <output-dir>/artifacts)
+  --keep-staging           Keep the intermediate staging tree instead of deleting it
+```
 
 ---
 

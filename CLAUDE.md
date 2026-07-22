@@ -68,19 +68,19 @@ Each plugin is a shared library (`.so`) loaded at runtime:
 - **DataSource plugins** — file importers (`FileSourceBase`) or streaming sources (`StreamSourceBase`)
 - **MessageParser plugins** — decode raw bytes into named fields (`MessageParserPluginBase`)
 
-Export macros: `PJ_DATA_SOURCE_PLUGIN(Class, manifest_json)`, `PJ_MESSAGE_PARSER_PLUGIN(Class, manifest_json)`, `PJ_DIALOG_PLUGIN(DialogClass)`.
+Export macros: `PJ_DATA_SOURCE_PLUGIN(Class, manifest_json)`, `PJ_MESSAGE_PARSER_PLUGIN(Class, manifest_json)`, `PJ_DIALOG_PLUGIN(DialogClass, manifest_json)` (two-arg form requires plotjuggler_sdk >= 0.18.0 on MSVC).
 
 ### Dual-mode CMake
 
 The top-level CMakeLists.txt supports two modes:
 1. **Subdirectory mode** — when `TARGET plotjuggler_sdk::plugin_sdk` already exists (built inside the plotjuggler_sdk repo, which provides the namespaced alias)
-2. **Standalone mode** — `find_package(plotjuggler_sdk CONFIG REQUIRED)` against the Conan package from the plotjuggler cloudsmith remote; all other deps via Conan
+2. **Standalone mode** — `find_package(plotjuggler_sdk CONFIG REQUIRED)` against the Conan package from the shared PlotJuggler JFrog remote; all other deps via Conan
 
 Plugin CMakeLists.txt files link `plotjuggler_sdk::plugin_sdk` (plugin .so) and `plotjuggler_sdk::plugin_host` (test executables) — same target names work in both modes.
 
 The core version is **not** pinned in CMake — `find_package` resolves whatever Conan installed. The requirement is pinned in **one** place: the top-level `SDK_VERSION` file (an exact version, e.g. `0.6.0`), which the root `conanfile.py` and every plugin's `conanfile.py` read live, and to which the `extern/plotjuggler_core` git submodule is pinned (`v<version>`). Retarget in one step: `python3 scripts/bump_core_version.py 0.6.1` (writes `SDK_VERSION` and moves the submodule); `python3 scripts/bump_core_version.py --check` guards that they agree in CI.
 
-**Repository & package rename (core `v0.6.0`):** the SDK was renamed `plotjuggler_core` → [`plotjuggler_sdk`](https://github.com/PlotJuggler/plotjuggler_sdk) — GitHub repo, Conan package, and CMake identity all move together. Recipes require `plotjuggler_sdk/<version>`; CMake uses `find_package(plotjuggler_sdk)` and links `plotjuggler_sdk::base|plugin_sdk|plugin_host`. The single thing that keeps the old name is the submodule mount point, `extern/plotjuggler_core` (a local directory, not the package). The upstream SDK recipe (`name`, `cmake_file_name`, `cmake_target_name`) and the cloudsmith package are renamed on the SDK side; this repo only consumes the new name.
+**Repository & package rename (core `v0.6.0`):** the SDK was renamed `plotjuggler_core` → [`plotjuggler_sdk`](https://github.com/PlotJuggler/plotjuggler_sdk) — GitHub repo, Conan package, and CMake identity all move together. Recipes require `plotjuggler_sdk/<version>`; CMake uses `find_package(plotjuggler_sdk)` and links `plotjuggler_sdk::base|plugin_sdk|plugin_host`. The single thing that keeps the old name is the submodule mount point, `extern/plotjuggler_core` (a local directory, not the package). The upstream SDK recipe (`name`, `cmake_file_name`, `cmake_target_name`) and the JFrog package are renamed on the SDK side; this repo only consumes the new name.
 
 ### Dialog System
 
@@ -98,11 +98,39 @@ Plugins with UI subclass `PJ::DialogPluginTyped` and use real `.ui` files (Qt Cr
 
 | Source | Packages |
 |--------|----------|
-| Conan (cloudsmith) + `extern/plotjuggler_core` submodule fallback | plotjuggler_sdk (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
-| Conan (conancenter) | nlohmann_json, mcap, arrow/parquet, paho-mqtt-cpp, cppzmq, protobuf, zstd, date, ixwebsocket, asio, libsodium, pybind11, cpython, gtest, libcurl (`anomaly_runner` webhook/email notifications) |
-| Conan (plotjuggler remote) | pj_scripting_core (the shared Luau marker engine; carries Luau + kissfft) — linked by the Anomaly Detector toolbox + `anomaly_runner` |
+| Conan (JFrog) + `extern/plotjuggler_core` submodule fallback | plotjuggler_sdk (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
+| Conan (JFrog cache → ConanCenter) | nlohmann_json, mcap, arrow/parquet, paho-mqtt-cpp, cppzmq, protobuf, zstd, date, ixwebsocket, asio, kissfft, lua, sol2, libsodium, pybind11, cpython, gtest, libcurl (`anomaly_runner` webhook/email notifications) |
+| Conan (JFrog) | pj_scripting_core (the shared Luau marker engine; carries Luau + kissfft) — linked by the Anomaly Detector toolbox + `anomaly_runner` |
 | CPM | ulog_cpp, rosx_introspection, data_tamer (plugin-private deps only) |
 | Optional | Qt 6 (WebSockets, Network) — only for foxglove_bridge and pj_bridge |
+
+## Release Process
+
+Each plugin's `manifest.json` `version` field is the single source of truth for its release
+version. Releases are **not** created manually on GitHub — pushing a tag creates them automatically.
+
+- **Cut a release:** `python3 scripts/release_extension.py <source_dir|extension_id> [--bump patch|minor|major | --version X.Y.Z] [--submit-to-registry]`.
+  It reads/updates `manifest.json`, commits the bump (`chore(<dir>): bump version to X.Y.Z`),
+  creates an **annotated** tag `<source_dir>/vX.Y.Z` whose message is JSON metadata
+  (`{"extension_id", "version", "auto_submit_to_registry"}`), and pushes both the commit and the tag.
+  The manifest-bump commit and the tag push are two separate git operations — if only the tag lands
+  upstream (e.g. a rejected/reverted commit push), the in-tree manifest silently drifts behind the
+  already-released version. Always confirm the bump commit is actually on the target branch, not
+  just the tag.
+- **What pushing the tag does:** any tag matching `*/v*` triggers `.github/workflows/build-release.yml`,
+  which resolves the specific plugin from the tag name (`scripts/release_tools.py resolve-build-scope`),
+  builds+tests just that plugin across linux/macos/windows (x86_64 + arm), verifies the built
+  artifact's version against the tag (`verify-version-consistency`), packages a zip + sha256, and
+  uploads them via `softprops/action-gh-release@v2` — **this step is what creates the GitHub Release**;
+  there is no separate manual release-creation step.
+- **Registry submission:** if the tag's annotation has `"auto_submit_to_registry": true`, a follow-up
+  `submit-to-registry` job runs `scripts/submit_to_registry.py` to open a PR against the extension
+  registry with the built artifact's checksums.
+- **Version format:** must be 3-part semver (`SEMVER_REGEX` in `scripts/release_tools.py`,
+  `^\d+\.\d+\.\d+(-pre)?(+build)?$`) — a two-part string like `"1.0"` fails manifest validation and
+  `release_extension.py` will refuse to tag it.
+- **Force-recreating a tag** (`--force`) invalidates existing registry checksums and breaks
+  installations pinned to the old artifact — treat as a last resort, not a routine fix.
 
 ## Porting Rules (Summary)
 

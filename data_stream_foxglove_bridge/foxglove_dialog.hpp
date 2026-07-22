@@ -2,6 +2,7 @@
 
 #include <ixwebsocket/IXWebSocket.h>
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -9,6 +10,8 @@
 #include <pj_array_policy/array_policy.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <pj_streaming/dialog_utils.hpp>
+#include <pj_streaming/endpoint.hpp>
 #include <string>
 #include <vector>
 
@@ -95,26 +98,9 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
       std::lock_guard<std::mutex> lock(channels_mutex_);
       rows.reserve(channels_.size());
       for (const auto& ch : channels_) {
-        // Apply filter
-        if (!filter_.empty()) {
-          std::string lower_topic = ch.topic;
-          std::string lower_type = ch.schema_name;
-          std::string lower_filter = filter_;
-          for (auto& c : lower_topic) {
-            c = static_cast<char>(std::tolower(c));
-          }
-          for (auto& c : lower_type) {
-            c = static_cast<char>(std::tolower(c));
-          }
-          for (auto& c : lower_filter) {
-            c = static_cast<char>(std::tolower(c));
-          }
-          if (lower_topic.find(lower_filter) == std::string::npos &&
-              lower_type.find(lower_filter) == std::string::npos) {
-            continue;
-          }
+        if (matchesFilter(ch)) {
+          rows.push_back({ch.topic, ch.schema_name, ch.schema_encoding});
         }
-        rows.push_back({ch.topic, ch.schema_name, ch.schema_encoding});
       }
     }
     wd.setTableRows("topicsList", rows);
@@ -140,9 +126,8 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
       return false;
     }
     if (widget_name == "lineEditPort") {
-      auto val = std::atoi(std::string(text).c_str());
-      if (val > 0 && val <= 65535) {
-        port_ = val;
+      if (const auto port = pj::streaming::parsePort(text)) {
+        port_ = *port;
       }
       return false;
     }
@@ -192,7 +177,21 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
 
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name == "topicsList") {
-      selected_topic_names_ = selected;
+      // The host emits topic names only for the rows currently visible under
+      // the active filter. Preserve selections of channels filtered out of
+      // view; otherwise changing the visible selection while a filter hides a
+      // previously selected topic would silently drop it.
+      {
+        std::lock_guard<std::mutex> lock(channels_mutex_);
+        selected_topic_names_ = pj::streaming::mergeVisibleSelection(
+            selected_topic_names_, selected,
+            [this](const std::string& name) {
+              return std::any_of(channels_.begin(), channels_.end(), [&](const auto& channel) {
+                return channel.topic == name && matchesFilter(channel);
+              });
+            },
+            [](const std::string&) { return true; });
+      }
       snapshotSelectedChannels();
       return true;
     }
@@ -273,9 +272,20 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   }
 
  private:
+  /// Case-insensitive substring match of the active filter against the topic
+  /// name and datatype. An empty filter matches everything.
+  bool matchesFilter(const DiscoveredChannel& ch) const {
+    if (filter_.empty()) {
+      return true;
+    }
+    const std::string lowered_filter = pj::streaming::lowerAscii(filter_);
+    return pj::streaming::lowerAscii(ch.topic).find(lowered_filter) != std::string::npos ||
+           pj::streaming::lowerAscii(ch.schema_name).find(lowered_filter) != std::string::npos;
+  }
+
   void connectToServer() {
     socket_ = std::make_unique<ix::WebSocket>();
-    socket_->setUrl("ws://" + address_ + ":" + std::to_string(port_));
+    socket_->setUrl(pj::streaming::composeEndpoint("ws", address_, static_cast<uint16_t>(port_)));
     socket_->addSubProtocol("foxglove.sdk.v1");
 
     socket_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {

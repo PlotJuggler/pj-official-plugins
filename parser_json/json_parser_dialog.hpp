@@ -14,6 +14,8 @@ namespace {
 /// Dialog plugin for the JSON Parser options.
 /// Allows users to configure embedded timestamp extraction.
 class JsonParserDialog : public PJ::DialogPluginTyped {
+  using PJ::DialogPluginTyped::onValueChanged;
+
  public:
   // --- Dialog protocol ---
 

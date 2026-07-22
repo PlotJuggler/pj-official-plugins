@@ -5,17 +5,17 @@
 #include <cstdint>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_array_policy/array_policy.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_base64/base64.hpp>
-#include <queue>
+#include <pj_streaming/drain_queue.hpp>
+#include <pj_streaming/endpoint.hpp>
+#include <pj_streaming/websocket_utils.hpp>
 #include <set>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 #include "foxglove_dialog.hpp"
@@ -110,7 +110,6 @@ class FoxgloveSource : public PJ::StreamSourceBase {
           if (msg->binary) {
             onBinaryMessage(msg->str);
           } else {
-            std::lock_guard<std::mutex> lock(text_queue_mutex_);
             text_queue_.push({msg->str});
           }
         } else if (msg->type == ix::WebSocketMessageType::Close) {
@@ -122,7 +121,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     if (!socket_ || socket_->getReadyState() != ix::ReadyState::Open) {
       // Fallback: connect fresh (e.g. when started without dialog via saved config)
       socket_ = std::make_unique<ix::WebSocket>();
-      socket_->setUrl("ws://" + address_ + ":" + std::to_string(port_));
+      socket_->setUrl(pj::streaming::composeEndpoint("ws", address_, static_cast<uint16_t>(port_)));
       socket_->addSubProtocol("foxglove.sdk.v1");
       socket_->disableAutomaticReconnection();
       // Install BEFORE start(): the server sends its one-shot serverInfo +
@@ -131,33 +130,11 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       // starts with an empty channel catalog it can never refill (the server
       // does not re-advertise on request).
       install_message_callback(*socket_);
-      socket_->start();
-
-      // start() is asynchronous AND the socket reports Closed until its
-      // background thread begins the attempt — so an early Closed reading means
-      // "not started yet", not "failed". Treat Closed as terminal only after the
-      // attempt was observed Connecting; otherwise a fast first poll of the
-      // state races the thread and start() fails against a perfectly good
-      // server.
-      auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-      bool attempt_started = false;
-      while (std::chrono::steady_clock::now() < deadline) {
-        auto state = socket_->getReadyState();
-        if (state == ix::ReadyState::Open) {
-          break;
-        }
-        if (state == ix::ReadyState::Connecting) {
-          attempt_started = true;
-        } else if (state == ix::ReadyState::Closed && attempt_started) {
-          break;  // the attempt ran and failed (refused / handshake error)
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      }
-
-      if (socket_->getReadyState() != ix::ReadyState::Open) {
+      if (!pj::streaming::startAndWaitForOpen(*socket_, std::chrono::seconds(5))) {
         socket_->stop();
         return PJ::unexpected(
-            std::string("failed to connect to Foxglove bridge at ") + address_ + ":" + std::to_string(port_));
+            "failed to connect to Foxglove bridge at " +
+            pj::streaming::composeHostPort(address_, static_cast<uint16_t>(port_)));
       }
     } else {
       // Stolen socket: re-register for the streaming source (the dialog's
@@ -236,11 +213,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
     // Drain text messages (advertise/unadvertise) queued from the WebSocket callback thread.
     // ensureParserBinding() must be called from the poll thread, not the callback thread.
-    std::queue<QueuedTextMessage> text_batch;
-    {
-      std::lock_guard<std::mutex> lock(text_queue_mutex_);
-      std::swap(text_batch, text_queue_);
-    }
+    auto text_batch = text_queue_.drain();
     while (!text_batch.empty()) {
       onTextMessage(text_batch.front().text);
       text_batch.pop();
@@ -256,11 +229,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       applyDesiredTopics();
     }
 
-    std::queue<QueuedBinaryMessage> batch;
-    {
-      std::lock_guard<std::mutex> lock(queue_mutex_);
-      std::swap(batch, message_queue_);
-    }
+    auto batch = message_queue_.drain();
 
     while (!batch.empty()) {
       auto& msg = batch.front();
@@ -633,7 +602,6 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     msg.timestamp_ns = static_cast<int64_t>(frame.log_time_ns);
     msg.payload.assign(frame.payload_data, frame.payload_data + frame.payload_size);
 
-    std::lock_guard<std::mutex> lock(queue_mutex_);
     message_queue_.push(std::move(msg));
   }
 
@@ -653,10 +621,8 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   std::map<uint64_t, ChannelInfo> advertised_channels_;  // channel_id -> full channel info (schema included)
   uint32_t next_subscription_id_ = 1;
 
-  std::mutex queue_mutex_;
-  std::queue<QueuedBinaryMessage> message_queue_;
-  std::mutex text_queue_mutex_;
-  std::queue<QueuedTextMessage> text_queue_;
+  pj::streaming::DrainQueue<QueuedBinaryMessage> message_queue_;
+  pj::streaming::DrainQueue<QueuedTextMessage> text_queue_;
   int reconnect_tick_ = 0;
   std::atomic<bool> reconnect_pending_ = false;
 
@@ -685,11 +651,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   static bool setActiveTopicsThunk(
       void* ctx, const PJ_string_view_t* names, uint64_t count, PJ_error_t* /*out_error*/) noexcept {
     auto* self = static_cast<FoxgloveSource*>(ctx);
-    std::set<std::string> topics;
-    for (uint64_t i = 0; i < count; ++i) {
-      topics.emplace(names[i].data, names[i].size);
-    }
-    self->desired_topics_slot_.set(std::move(topics));
+    self->desired_topics_slot_.set(pj::streaming::stringSetFromViews(names, count));
     return true;
   }
 };
@@ -698,4 +660,4 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
 PJ_DATA_SOURCE_PLUGIN(FoxgloveSource, kFoxgloveManifest)
 
-PJ_DIALOG_PLUGIN(FoxgloveDialog)
+PJ_DIALOG_PLUGIN(FoxgloveDialog, kFoxgloveManifest)

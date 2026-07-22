@@ -10,7 +10,9 @@
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_plugins/sdk/encoding_utils.hpp>
-#include <queue>
+#include <pj_streaming/delegated_ingest.hpp>
+#include <pj_streaming/drain_queue.hpp>
+#include <pj_streaming/endpoint.hpp>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -32,8 +34,7 @@ struct PendingDatagram {
 // Per-stream inbox. Each UdpSource owns one; the shared endpoint copies every
 // received datagram into every inbox so concurrent streams all see all data.
 struct UdpSubscriber {
-  std::mutex mutex;
-  std::queue<PendingDatagram> queue;
+  pj::streaming::DrainQueue<PendingDatagram> queue;
 };
 
 // One real UDP socket per "address:port", shared by every UdpSource bound to
@@ -69,7 +70,7 @@ class SharedUdpEndpoint : public std::enable_shared_from_this<SharedUdpEndpoint>
   // and binds the socket and starts the background io thread; later callers for
   // the same endpoint reuse it.
   static PJ::Expected<std::shared_ptr<SharedUdpEndpoint>> acquire(const std::string& address, uint16_t port) {
-    const std::string key = address + ":" + std::to_string(port);
+    const std::string key = pj::streaming::composeHostPort(address, port);
     std::lock_guard<std::mutex> lock(registryMutex());
     auto& reg = registry();
     if (auto it = reg.find(key); it != reg.end()) {
@@ -164,12 +165,11 @@ class SharedUdpEndpoint : public std::enable_shared_from_this<SharedUdpEndpoint>
     socket_->async_receive_from(
         asio::buffer(recv_buffer_), sender_endpoint_, [this](asio::error_code ec, std::size_t n) {
           if (!ec && n > 0) {
-            const auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+            const auto now = std::chrono::system_clock::now().time_since_epoch();
             const int64_t ts_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
 
             std::lock_guard<std::mutex> lock(subscribers_mutex_);
             for (auto& sub : subscribers_) {
-              std::lock_guard<std::mutex> qlock(sub->mutex);
               sub->queue.push({std::vector<uint8_t>(recv_buffer_.data(), recv_buffer_.data() + n), ts_ns});
             }
           }
@@ -211,12 +211,7 @@ class UdpSource : public PJ::StreamSourceBase {
       (void)dialog_.loadConfig(config_json);
     }
 
-    auto cfg = nlohmann::json::parse(config_json, nullptr, false);
-    if (!cfg.is_discarded() && cfg.contains("_parser_config")) {
-      parser_config_override_ = cfg["_parser_config"].get<std::string>();
-    } else {
-      parser_config_override_.clear();
-    }
+    parser_config_override_ = pj::streaming::parserConfigOverride(config_json);
 
     return PJ::okStatus();
   }
@@ -238,48 +233,31 @@ class UdpSource : public PJ::StreamSourceBase {
     endpoint_ = *endpoint;
     subscriber_ = endpoint_->subscribe();
 
-    binding_cache_.clear();
+    ingest_.clear();
     return PJ::okStatus();
   }
 
   // onPoll() drains this stream's own inbox — never touches the network.
   PJ::Status onPoll() override {
-    std::queue<PendingDatagram> batch;
-    {
-      std::lock_guard<std::mutex> lock(subscriber_->mutex);
-      std::swap(batch, subscriber_->queue);
-    }
+    auto batch = subscriber_->queue.drain();
 
     while (!batch.empty()) {
       auto& dgram = batch.front();
 
-      auto it = binding_cache_.find(default_encoding_);
-      if (it == binding_cache_.end()) {
-        auto binding = runtimeHost().ensureParserBinding({
-            .topic_name = "udp/data",
-            .parser_encoding = default_encoding_,
-            .type_name = {},
-            .schema = {},
-            .parser_config_json = parser_config_override_,
-        });
-        if (binding) {
-          it = binding_cache_.emplace(default_encoding_, *binding).first;
-        }
-      }
-
-      if (it != binding_cache_.end()) {
-        // Move the per-datagram bytes into a shared_ptr-owned buffer so the
-        // PayloadView fetcher remains valid after onPoll returns
-        // (ObjectIngestPolicy may defer dispatch beyond this call).
-        auto payload = std::make_shared<std::vector<uint8_t>>(std::move(dgram.data));
-        auto status = runtimeHost().pushMessage(
-            it->second, PJ::Timestamp{dgram.timestamp_ns},
-            [payload]() -> PJ::sdk::PayloadView { return PJ::sdk::PayloadView{payload}; });
-        if (!status) {
-          runtimeHost().reportMessage(
-              PJ::DataSourceMessageLevel::kError, "Parse error — stopping stream: " + status.error());
-          return PJ::unexpected(status.error());
-        }
+      auto status = ingest_.push(
+          runtimeHost(), "udp/data",
+          {
+              .topic_name = "udp/data",
+              .parser_encoding = default_encoding_,
+              .type_name = {},
+              .schema = {},
+              .parser_config_json = parser_config_override_,
+          },
+          PJ::Timestamp{dgram.timestamp_ns}, std::move(dgram.data));
+      if (!status) {
+        runtimeHost().reportMessage(
+            PJ::DataSourceMessageLevel::kError, "Parse error — stopping stream: " + status.error());
+        return PJ::unexpected(status.error());
       }
 
       batch.pop();
@@ -294,7 +272,7 @@ class UdpSource : public PJ::StreamSourceBase {
     }
     subscriber_.reset();
     endpoint_.reset();  // last ref → SharedUdpEndpoint tears down socket + io thread
-    binding_cache_.clear();
+    ingest_.clear();
   }
 
  private:
@@ -307,11 +285,11 @@ class UdpSource : public PJ::StreamSourceBase {
 
   std::shared_ptr<SharedUdpEndpoint> endpoint_;
   std::shared_ptr<UdpSubscriber> subscriber_;
-  std::unordered_map<std::string, PJ::ParserBindingHandle> binding_cache_;
+  pj::streaming::DelegatedIngestCache ingest_;
 };
 
 }  // namespace
 
 PJ_DATA_SOURCE_PLUGIN(UdpSource, kUdpManifest)
 
-PJ_DIALOG_PLUGIN(UdpDialog)
+PJ_DIALOG_PLUGIN(UdpDialog, kUdpManifest)

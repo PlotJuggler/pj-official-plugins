@@ -113,6 +113,10 @@ class FFTDialog : public PJ::DialogPluginTyped {
     // Input preview chart — interactive zoom enabled so the user can select a
     // time range for "Only data in zoomed area" mode (mirrors PJ 3.x behavior).
     wd.setChartZoomEnabled("chart_input");
+    wd.setChartPlaceholder(
+        "chart_input",
+        "Drag and Drop a timeseries here (from the left panel)\n\n"
+        "FFT expects a constant dt for accurate results. Resampling is not applied.");
     if (!input_series_.empty()) {
       wd.setChartSeries("chart_input", input_series_);
     } else {
@@ -145,20 +149,18 @@ class FFTDialog : public PJ::DialogPluginTyped {
     if (widget_name != "inputFrame") {
       return false;
     }
-    bool changed = false;
-    for (const auto& path : items) {
-      if (std::find(selected_fields_.begin(), selected_fields_.end(), path) != selected_fields_.end()) {
-        continue;  // already selected
-      }
-      selected_fields_.push_back(path);
-      changed = true;
+    if (items.empty() || selected_fields_ == items) {
+      return false;
     }
-    if (changed) {
-      clearFftOutput();
-      resetZoomRange();
-      invokeRefreshPreview();
-    }
-    return changed;
+    // A drop REPLACES the selection. The FFT computes a single input
+    // (selected_fields_.front()), so appending made every series dropped after
+    // the first unreachable — and with no clear affordance the first drop was
+    // locked in for the dialog's lifetime.
+    selected_fields_ = items;
+    clearFftOutput();
+    resetZoomRange();
+    invokeRefreshPreview();
+    return true;
   }
 
   bool onChartViewChanged(
@@ -213,12 +215,6 @@ class FFTDialog : public PJ::DialogPluginTyped {
     if (name == "btn_save") {
       save_requested_ = true;
       invokeSave();
-      return true;
-    }
-    if (name == "btn_clear") {
-      selected_fields_.clear();
-      clearFftOutput();
-      invokeRefreshPreview();
       return true;
     }
     return false;
@@ -669,4 +665,4 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
 }  // namespace
 
 PJ_TOOLBOX_PLUGIN(FFTToolbox, kFftManifest)
-PJ_DIALOG_PLUGIN(FFTDialog)
+PJ_DIALOG_PLUGIN(FFTDialog, kFftManifest)

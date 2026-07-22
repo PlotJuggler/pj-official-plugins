@@ -1,0 +1,29 @@
+{
+  "id": "mf4-loader",
+  "name": "MF4/MDF Loader",
+  "version": "0.1.0",
+  "description": "Data loader for ASAM MDF / MF4 measurement files (automotive, CAN/LIN bus logging).",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "data_loader",
+  "tags": [
+    "mf4",
+    "mdf",
+    "asam",
+    "file",
+    "loader",
+    "can",
+    "automotive"
+  ],
+  "file_extensions": [
+    ".mf4",
+    ".MF4",
+    ".mdf",
+    ".dat"
+  ],
+  "min_plotjuggler_version": "3.999.1"
+}

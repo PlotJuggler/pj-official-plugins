@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
 #include <mcap/reader.hpp>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
@@ -118,14 +119,16 @@ class McapDialog : public PJ::DialogPluginTyped {
     std::vector<std::string> headers = {"Channel name", "Schema", "Encoding", "Msg Count"};
     wd.setTableHeaders("tableWidget", headers);
 
-    std::vector<std::vector<std::string>> rows;
+    std::vector<std::vector<PJ::TableItem>> rows;
     std::vector<std::string> selected_topic_names;
     std::vector<int> disabled_row_indices;
     rows.reserve(filtered.size());
 
     for (size_t i = 0; i < filtered.size(); ++i) {
       const auto& ch = *filtered[i];
-      rows.push_back({ch.topic, ch.schema, ch.encoding, std::to_string(ch.msg_count)});
+      // Msg Count carries its native uint64 so the column sorts numerically;
+      // without it the host could only compare the rendered digits.
+      rows.push_back({ch.topic, ch.schema, ch.encoding, PJ::TableItem(ch.msg_count)});
       if (selected_topics_.count(ch.topic) > 0) {
         selected_topic_names.push_back(ch.topic);
       }
@@ -216,7 +219,21 @@ class McapDialog : public PJ::DialogPluginTyped {
 
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name == "tableWidget") {
-      selected_topics_.clear();
+      // The table only reports the rows currently visible under the filter, so a
+      // plain clear()+re-add would drop any selection the filter is hiding.
+      // Reconcile only the visible topics: forget the visible ones that are no
+      // longer selected, and leave everything the filter hides untouched.
+      std::unordered_set<std::string> visible;
+      for (const auto* ch : filteredChannels()) {
+        visible.insert(ch->topic);
+      }
+      for (auto it = selected_topics_.begin(); it != selected_topics_.end();) {
+        if (visible.count(*it) > 0) {
+          it = selected_topics_.erase(it);
+        } else {
+          ++it;
+        }
+      }
       for (const auto& topic : selected) {
         selected_topics_.insert(topic);
       }
@@ -394,13 +411,21 @@ class McapDialog : public PJ::DialogPluginTyped {
       return result;
     }
 
-    // Split filter by spaces — AND logic (all words must match)
+    auto lower = [](std::string s) {
+      for (auto& c : s) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      }
+      return s;
+    };
+
+    // Split filter by spaces — AND logic (all words must match), matched
+    // case-insensitively like the streaming pickers' filters.
     std::vector<std::string> words;
     std::string word;
     for (char c : filter_text_) {
       if (c == ' ') {
         if (!word.empty()) {
-          words.push_back(word);
+          words.push_back(lower(word));
           word.clear();
         }
       } else {
@@ -408,13 +433,14 @@ class McapDialog : public PJ::DialogPluginTyped {
       }
     }
     if (!word.empty()) {
-      words.push_back(word);
+      words.push_back(lower(word));
     }
 
     for (const auto& ch : all_channels_) {
+      const std::string topic = lower(ch.topic);
       bool match = true;
       for (const auto& w : words) {
-        if (ch.topic.find(w) == std::string::npos) {
+        if (topic.find(w) == std::string::npos) {
           match = false;
           break;
         }
