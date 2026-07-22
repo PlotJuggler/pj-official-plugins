@@ -29,6 +29,26 @@ std::string readFile(const std::string& path) {
   return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
+// serializeCSV writes in text mode on purpose (PJ3's QIODevice::Text parity):
+// on Windows every written \n becomes \r\n — including inside quoted cells —
+// while lone \r bytes pass through untouched. Mirror that in the goldens.
+std::string platformCsv(std::string expected) {
+#if defined(_WIN32)
+  std::string converted;
+  converted.reserve(expected.size());
+  for (const char character : expected) {
+    if (character == '\n') {
+      converted += "\r\n";
+    } else {
+      converted.push_back(character);
+    }
+  }
+  return converted;
+#else
+  return expected;
+#endif
+}
+
 TEST(Utf8Path, RoundTripsProtocolBytesThroughFilesystemPath) {
   constexpr std::string_view utf8 = "übung_日本語.csv";
   EXPECT_EQ(pathToUtf8(pathFromUtf8(utf8)), utf8);
@@ -239,7 +259,7 @@ TEST(SerializeCsv, QtVerifiedNumericGolden) {
       "9.000000,Inf\n"
       "10.000000,Inf\n"
       "11.000000,\n";
-  EXPECT_EQ(readFile(path), expected);
+  EXPECT_EQ(readFile(path), platformCsv(expected));
 }
 
 TEST(SerializeCsv, QtCompatibleStringQuotingGolden) {
@@ -261,7 +281,7 @@ TEST(SerializeCsv, QtCompatibleStringQuotingGolden) {
       "4.000000,\"carriage\rreturn\"\n"
       "5.000000,\n"
       "6.000000,\n";
-  EXPECT_EQ(readFile(path), expected);
+  EXPECT_EQ(readFile(path), platformCsv(expected));
 }
 
 TEST(SerializeCsv, HeaderNamesContainingCommasRemainUnquoted) {
@@ -276,7 +296,7 @@ TEST(SerializeCsv, HeaderNamesContainingCommasRemainUnquoted) {
 
   const std::string path = tempPath("data_exporter_unquoted_header.csv");
   ASSERT_TRUE(serializeCSV(table, path));
-  EXPECT_EQ(readFile(path), "time,numeric,name,string,name\n0.000000,1,value\n");
+  EXPECT_EQ(readFile(path), platformCsv("time,numeric,name,string,name\n0.000000,1,value\n"));
 }
 
 TEST(SerializeCsv, NumericFormattingIsIndependentOfProcessLocale) {
@@ -310,7 +330,7 @@ TEST(SerializeCsv, NumericFormattingIsIndependentOfProcessLocale) {
   (void)std::setlocale(LC_ALL, original_locale.c_str());
 
   ASSERT_TRUE(serialized);
-  EXPECT_EQ(contents, "time,number\n1.500000,1234.5\n");
+  EXPECT_EQ(contents, platformCsv("time,number\n1.500000,1234.5\n"));
 }
 
 TEST(Serializers, Pj3TablePreconditionsAreShared) {
