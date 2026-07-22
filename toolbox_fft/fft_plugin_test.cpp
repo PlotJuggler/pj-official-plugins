@@ -240,6 +240,28 @@ TEST(FftPluginTest, RestoresSelectionWhenConfigLoadsAfterBind) {
   EXPECT_TRUE(data.at("btn_compute").at("enabled").get<bool>());
 }
 
+TEST(FftPluginTest, KeepsSelectionPendingUntilFieldAppears) {
+  auto fixture = makeFixture();
+  fixture.bind();
+
+  ASSERT_TRUE(fixture.handle.loadConfig(R"({"selected_fields":["signal/data"]})"));
+  auto dialog = fixture.dialog();
+  auto data = widgetData(dialog);
+  EXPECT_EQ(data.at("selected_value").at("text"), "No input selected");
+  EXPECT_FALSE(data.at("btn_compute").at("enabled").get<bool>());
+
+  std::string saved_config;
+  ASSERT_TRUE(fixture.handle.saveConfig(saved_config));
+  EXPECT_EQ(nlohmann::json::parse(saved_config).at("selected_fields"), nlohmann::json::array({"signal/data"}));
+
+  fixture.addSignal(regularTimestamps(16), sinusoid(16, 125.0, 1.0));
+  fixture.handle.onDataChanged();
+  data = widgetData(dialog);
+  EXPECT_EQ(data.at("selected_value").at("text"), "signal/data");
+  EXPECT_TRUE(data.at("btn_compute").at("enabled").get<bool>());
+  EXPECT_EQ(data.at("status_label").at("text"), "Input selection restored");
+}
+
 TEST(FftPluginTest, RejectsMalformedConfig) {
   auto fixture = makeFixture();
   fixture.bind();

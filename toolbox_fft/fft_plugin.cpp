@@ -34,39 +34,39 @@ bool isNumericType(PJ::PrimitiveType type) {
          type != PJ::PrimitiveType::kUnspecified;
 }
 
-template <typename T>
-bool copyValues(const T* input, std::size_t count, std::vector<double>& output) {
-  if (input == nullptr) {
+template <typename T, typename Callback>
+bool invokeNumericCallback(const T* values, std::size_t count, Callback& callback) {
+  if (values == nullptr) {
     return false;
   }
-  output.resize(count);
-  std::transform(input, input + count, output.begin(), [](T value) { return static_cast<double>(value); });
+  callback(values, count);
   return true;
 }
 
-bool copyNumericValues(const PJ::sdk::MaterializedSeriesView& series, std::vector<double>& output) {
+template <typename Callback>
+bool visitNumericValues(const PJ::sdk::MaterializedSeriesView& series, Callback&& callback) {
   const std::size_t count = series.rowCount();
   switch (series.type()) {
     case PJ::PrimitiveType::kFloat64:
-      return copyValues(series.valuesAsFloat64(), count, output);
+      return invokeNumericCallback(series.valuesAsFloat64(), count, callback);
     case PJ::PrimitiveType::kFloat32:
-      return copyValues(series.valuesAsFloat32(), count, output);
+      return invokeNumericCallback(series.valuesAsFloat32(), count, callback);
     case PJ::PrimitiveType::kInt8:
-      return copyValues(series.valuesAsInt8(), count, output);
+      return invokeNumericCallback(series.valuesAsInt8(), count, callback);
     case PJ::PrimitiveType::kInt16:
-      return copyValues(series.valuesAsInt16(), count, output);
+      return invokeNumericCallback(series.valuesAsInt16(), count, callback);
     case PJ::PrimitiveType::kInt32:
-      return copyValues(series.valuesAsInt32(), count, output);
+      return invokeNumericCallback(series.valuesAsInt32(), count, callback);
     case PJ::PrimitiveType::kInt64:
-      return copyValues(series.valuesAsInt64(), count, output);
+      return invokeNumericCallback(series.valuesAsInt64(), count, callback);
     case PJ::PrimitiveType::kUint8:
-      return copyValues(series.valuesAsUint8(), count, output);
+      return invokeNumericCallback(series.valuesAsUint8(), count, callback);
     case PJ::PrimitiveType::kUint16:
-      return copyValues(series.valuesAsUint16(), count, output);
+      return invokeNumericCallback(series.valuesAsUint16(), count, callback);
     case PJ::PrimitiveType::kUint32:
-      return copyValues(series.valuesAsUint32(), count, output);
+      return invokeNumericCallback(series.valuesAsUint32(), count, callback);
     case PJ::PrimitiveType::kUint64:
-      return copyValues(series.valuesAsUint64(), count, output);
+      return invokeNumericCallback(series.valuesAsUint64(), count, callback);
     case PJ::PrimitiveType::kBool:
     case PJ::PrimitiveType::kString:
     case PJ::PrimitiveType::kUnspecified:
@@ -163,6 +163,7 @@ class FFTDialog : public PJ::DialogPluginTyped {
       return false;
     }
     selected_fields_ = replacement;
+    saved_selected_.clear();
     clearFftOutput();
     resetZoomRange();
     status_msg_ = items.size() > 1 ? "Selected '" + items.front() + "' (FFT accepts one input at a time)"
@@ -276,7 +277,7 @@ class FFTDialog : public PJ::DialogPluginTyped {
     j["suffix"] = suffix_;
     j["range_zoomed"] = range_zoomed_;
     j["window"] = window_ == WindowFunction::kHann ? "hann" : "rectangular";
-    j["selected_fields"] = selected_fields_;
+    j["selected_fields"] = selected_fields_.empty() ? saved_selected_ : selected_fields_;
     return j.dump();
   }
 
@@ -334,26 +335,31 @@ class FFTDialog : public PJ::DialogPluginTyped {
     const auto previous_selection = selected_fields_;
     available_fields_ = fields;
 
-    // Reconcile previously-selected fields that may have disappeared and
-    // re-attach any saved_selected_ items from config that now exist.
-    std::vector<std::string> merged = selected_fields_;
-    for (const auto& saved : saved_selected_) {
-      if (std::find(merged.begin(), merged.end(), saved) == merged.end()) {
-        merged.push_back(saved);
-      }
+    // Keep the desired field pending while a layout's data source is absent.
+    // A late catalog update can then restore it instead of silently losing the
+    // selection during the first empty/partial snapshot.
+    std::optional<std::string> desired_field;
+    if (!selected_fields_.empty()) {
+      desired_field = selected_fields_.front();
+    } else if (!saved_selected_.empty()) {
+      desired_field = saved_selected_.front();
     }
+
     selected_fields_.clear();
-    for (const auto& sel : merged) {
-      if (std::find(available_fields_.begin(), available_fields_.end(), sel) != available_fields_.end()) {
-        selected_fields_.push_back(sel);
-        break;
-      }
+    if (desired_field &&
+        std::find(available_fields_.begin(), available_fields_.end(), *desired_field) != available_fields_.end()) {
+      selected_fields_.push_back(*desired_field);
+      saved_selected_.clear();
+    } else if (desired_field) {
+      saved_selected_ = {*desired_field};
+    } else {
+      saved_selected_.clear();
     }
-    saved_selected_.clear();
-    if (selected_fields_ != previous_selection && !previous_selection.empty()) {
+
+    if (selected_fields_ != previous_selection) {
       clearFftOutput();
       resetZoomRange();
-      status_msg_ = selected_fields_.empty() ? "The selected input is no longer available" : "Input selection restored";
+      status_msg_ = selected_fields_.empty() ? "The selected input is not available yet" : "Input selection restored";
     }
   }
 
@@ -577,29 +583,27 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
       }
       auto ts_span = read->timestamps();
       const size_t row_count = read->rowCount();
-      std::vector<double> values;
-      if (row_count == 0 || ts_span.size() != row_count || !copyNumericValues(*read, values)) {
+      if (row_count == 0 || ts_span.size() != row_count) {
         continue;
       }
 
-      int64_t t_min = ts_span[0];
-      int64_t t_max = ts_span[row_count - 1];
-
       if (!t0_set) {
-        t0_common = t_min;
-        t0_common_ns_ = t_min;
+        t0_common = ts_span[0];
+        t0_common_ns_ = t0_common;
         t0_set = true;
       }
 
       std::vector<PJ::ChartPoint> pts;
       pts.reserve(row_count);
-      for (size_t i = 0; i < row_count; ++i) {
-        if (ts_span[i] < t_min || ts_span[i] > t_max) {
-          continue;
+      const bool visited = visitNumericValues(*read, [&](const auto* values, std::size_t count) {
+        for (std::size_t i = 0; i < count; ++i) {
+          const long double offset_ns = static_cast<long double>(ts_span[i]) - static_cast<long double>(t0_common);
+          const double x = static_cast<double>(offset_ns / 1.0e9L);
+          pts.push_back({x, static_cast<double>(values[i])});
         }
-        const long double offset_ns = static_cast<long double>(ts_span[i]) - static_cast<long double>(t0_common);
-        const double x = static_cast<double>(offset_ns / 1.0e9L);
-        pts.push_back({x, values[i]});
+      });
+      if (!visited) {
+        continue;
       }
       // No explicit color — chart_input uses the Qt Charts theme default.
       series.push_back({path, std::move(pts), ""});
@@ -622,8 +626,7 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
     }
     auto ts_span = read->timestamps();
     const size_t row_count = read->rowCount();
-    std::vector<double> values;
-    if (row_count == 0 || ts_span.size() != row_count || !copyNumericValues(*read, values)) {
+    if (row_count == 0 || ts_span.size() != row_count) {
       return false;
     }
 
@@ -653,14 +656,16 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
     out_vals.clear();
     out_ts.reserve(row_count);
     out_vals.reserve(row_count);
-    for (size_t i = 0; i < row_count; ++i) {
-      if (ts_span[i] < t_min || ts_span[i] > t_max) {
-        continue;
+    const bool visited = visitNumericValues(*read, [&](const auto* values, std::size_t count) {
+      for (std::size_t i = 0; i < count; ++i) {
+        if (ts_span[i] < t_min || ts_span[i] > t_max) {
+          continue;
+        }
+        out_ts.push_back(ts_span[i]);
+        out_vals.push_back(static_cast<double>(values[i]));
       }
-      out_ts.push_back(ts_span[i]);
-      out_vals.push_back(values[i]);
-    }
-    return !out_ts.empty();
+    });
+    return visited && !out_ts.empty();
   }
 
   void runComputation() {
