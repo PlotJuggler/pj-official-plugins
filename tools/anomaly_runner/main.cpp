@@ -115,6 +115,7 @@ class CaptureHost {
         .show_message_box = &CaptureHost::showMessageBox,
         .list_available_encodings = &CaptureHost::listEncodings,
         .push_message = &CaptureHost::pushMessage,
+        .notify_available_topics = &CaptureHost::notifyAvailableTopics,
     };
     return PJ_data_source_runtime_host_t{.ctx = this, .vtable = &vtable};
   }
@@ -332,6 +333,10 @@ class CaptureHost {
       void* ctx, PJ_parser_binding_handle_t binding, int64_t ts, PJ_message_data_fetcher_t fetch,
       PJ_error_t*) noexcept {
     return static_cast<CaptureHost*>(ctx)->doPushMessage(binding, ts, fetch);
+  }
+  // Advertised-topic streaming is a live-source concern; file ingest accepts and ignores it.
+  static bool notifyAvailableTopics(void*, const PJ_available_topic_t*, uint64_t, PJ_error_t*) noexcept {
+    return true;
   }
 };
 
