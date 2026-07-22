@@ -1,8 +1,8 @@
 {
   "id": "toolbox-fft",
   "name": "Fast Fourier Transform",
-  "version": "0.99.0",
-  "description": "Compute a windowed, one-sided amplitude spectrum for evenly sampled numeric time series.",
+  "version": "0.9.0",
+  "description": "Compute the frequency-domain amplitude of numeric time series using FFT.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
   "website": "https://github.com/PlotJuggler/pj-official-plugins",

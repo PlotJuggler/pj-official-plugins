@@ -165,7 +165,7 @@ class SharedUdpEndpoint : public std::enable_shared_from_this<SharedUdpEndpoint>
     socket_->async_receive_from(
         asio::buffer(recv_buffer_), sender_endpoint_, [this](asio::error_code ec, std::size_t n) {
           if (!ec && n > 0) {
-            const auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+            const auto now = std::chrono::system_clock::now().time_since_epoch();
             const int64_t ts_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
 
             std::lock_guard<std::mutex> lock(subscribers_mutex_);
@@ -292,4 +292,4 @@ class UdpSource : public PJ::StreamSourceBase {
 
 PJ_DATA_SOURCE_PLUGIN(UdpSource, kUdpManifest)
 
-PJ_DIALOG_PLUGIN(UdpDialog)
+PJ_DIALOG_PLUGIN(UdpDialog, kUdpManifest)

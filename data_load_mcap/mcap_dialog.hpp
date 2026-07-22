@@ -119,14 +119,16 @@ class McapDialog : public PJ::DialogPluginTyped {
     std::vector<std::string> headers = {"Channel name", "Schema", "Encoding", "Msg Count"};
     wd.setTableHeaders("tableWidget", headers);
 
-    std::vector<std::vector<std::string>> rows;
+    std::vector<std::vector<PJ::TableItem>> rows;
     std::vector<std::string> selected_topic_names;
     std::vector<int> disabled_row_indices;
     rows.reserve(filtered.size());
 
     for (size_t i = 0; i < filtered.size(); ++i) {
       const auto& ch = *filtered[i];
-      rows.push_back({ch.topic, ch.schema, ch.encoding, std::to_string(ch.msg_count)});
+      // Msg Count carries its native uint64 so the column sorts numerically;
+      // without it the host could only compare the rendered digits.
+      rows.push_back({ch.topic, ch.schema, ch.encoding, PJ::TableItem(ch.msg_count)});
       if (selected_topics_.count(ch.topic) > 0) {
         selected_topic_names.push_back(ch.topic);
       }
@@ -376,13 +378,20 @@ class McapDialog : public PJ::DialogPluginTyped {
       }
     }
 
-    // If no previous selection, select all channels with messages
-    if (selected_topics_.empty()) {
-      for (const auto& ch : all_channels_) {
-        if (ch.msg_count > 0) {
-          selected_topics_.insert(ch.topic);
-        }
+    // Saved selections belong to the previously opened recording. Drop names
+    // that do not exist (or have no messages) in this one; otherwise a stale,
+    // non-empty set leaves the dialog with no selected rows and OK disabled.
+    std::unordered_set<std::string> selectable_topics;
+    for (const auto& ch : all_channels_) {
+      if (ch.msg_count > 0) {
+        selectable_topics.insert(ch.topic);
       }
+    }
+    std::erase_if(selected_topics_, [&](const std::string& topic) { return !selectable_topics.contains(topic); });
+
+    // If no previous selection survives, select all channels with messages.
+    if (selected_topics_.empty()) {
+      selected_topics_ = std::move(selectable_topics);
     }
 
     reassertAlwaysIncluded();

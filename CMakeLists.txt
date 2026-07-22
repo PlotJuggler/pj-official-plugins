@@ -19,6 +19,11 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/streaming_utils)
   add_subdirectory(common/laser_scan)
   add_subdirectory(common/pointcloud_color)
+  # This block always adds every plugin (no PJ_BUILD_PLUGIN filtering), so its
+  # consumers data_load_mf4/data_load_blf are always present — add their shared
+  # can_dbc unconditionally too. (The standalone block below, which DOES honor
+  # PJ_BUILD_PLUGIN, gates it to avoid the CPM download for unrelated plugins.)
+  add_subdirectory(common/can_dbc)
 
   # Enabled entries track the v4 ABI (PJ_ABI_VERSION == 4): service-
   # registry API, Arrow C Data Interface at the write boundary, and the
@@ -30,6 +35,8 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(data_load_mcap)
   add_subdirectory(data_load_parquet)
   add_subdirectory(data_load_ulog)
+  add_subdirectory(data_load_mf4)
+  add_subdirectory(data_load_blf)
   add_subdirectory(data_load_3d)
   # data_load_lerobot and data_load_mp4 are intentionally NOT in this aggregate
   # list: they depend on FFmpeg (via common/pj_video_demux), which this build
@@ -46,6 +53,10 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(data_stream_webrtc)
   add_subdirectory(data_stream_pj_bridge)
   add_subdirectory(data_stream_dummy)
+  # data_stream_lsl is intentionally NOT in this aggregate list: liblsl requires
+  # boost>=1.85, which conflicts with the boost/1.81.0 that Arrow's Flight thrift
+  # pins here. It builds per-plugin against its own conanfile (like
+  # data_load_lerobot/data_load_mp4).
   add_subdirectory(toolbox_fft)
   add_subdirectory(toolbox_colormap)
   add_subdirectory(toolbox_quaternion)
@@ -151,6 +162,12 @@ add_subdirectory(common/array_policy)
 add_subdirectory(common/streaming_utils)
 add_subdirectory(common/laser_scan)
 add_subdirectory(common/pointcloud_color)
+# common/can_dbc has a CPM download side-effect, so configure it only for its
+# consumers (skipped when building an unrelated single plugin).
+set(PJ_CAN_DBC_CONSUMERS data_load_mf4 data_load_blf)
+if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_CAN_DBC_CONSUMERS)
+  add_subdirectory(common/can_dbc)
+endif()
 
 # ---------------------------------------------------------------------------
 # Plugins — use -DPJ_BUILD_PLUGIN=<dir> to build a single plugin (CI mode),
@@ -169,6 +186,8 @@ else()
   add_subdirectory(data_load_mcap)
   add_subdirectory(data_load_parquet)
   add_subdirectory(data_load_ulog)
+  add_subdirectory(data_load_mf4)
+  add_subdirectory(data_load_blf)
   add_subdirectory(data_load_3d)
   # data_load_lerobot and data_load_mp4 are intentionally NOT in this aggregate
   # list: they depend on FFmpeg (via common/pj_video_demux), which this build
@@ -181,6 +200,10 @@ else()
   add_subdirectory(data_stream_webrtc)
   add_subdirectory(data_stream_pj_bridge)
   add_subdirectory(data_stream_dummy)
+  # data_stream_lsl is intentionally NOT in this aggregate list: liblsl requires
+  # boost>=1.85, which conflicts with the boost/1.81.0 that Arrow's Flight thrift
+  # pins here. It builds per-plugin against its own conanfile (like
+  # data_load_lerobot/data_load_mp4).
   add_subdirectory(toolbox_fft)
   add_subdirectory(toolbox_colormap)
   add_subdirectory(toolbox_quaternion)

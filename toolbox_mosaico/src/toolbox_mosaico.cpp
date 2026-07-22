@@ -50,5 +50,10 @@ class MosaicoToolbox : public PJ::ToolboxPluginBase {
 
 }  // namespace mosaico
 
+#ifdef PJ_TOOLBOX_PLUGIN_NAMED
+PJ_TOOLBOX_PLUGIN_NAMED(mosaico::MosaicoToolbox, MosaicoToolbox, kMosaicoPanelManifest)
+PJ_DIALOG_PLUGIN_NAMED(mosaico::MosaicoDialog, MosaicoDialog, kMosaicoPanelManifest)
+#else
 PJ_TOOLBOX_PLUGIN(mosaico::MosaicoToolbox, kMosaicoPanelManifest)
-PJ_DIALOG_PLUGIN(mosaico::MosaicoDialog)
+PJ_DIALOG_PLUGIN(mosaico::MosaicoDialog, kMosaicoPanelManifest)
+#endif

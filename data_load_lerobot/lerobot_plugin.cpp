@@ -623,4 +623,4 @@ class LeRobotSource : public PJ::FileSourceBase {
 
 PJ_DATA_SOURCE_PLUGIN(LeRobotSource, kLerobotManifest)
 
-PJ_DIALOG_PLUGIN(LeRobotDialog)
+PJ_DIALOG_PLUGIN(LeRobotDialog, kLerobotManifest)

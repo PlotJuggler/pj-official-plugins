@@ -61,7 +61,7 @@ Each plugin is a shared library (`.so`) loaded at runtime:
 - **DataSource plugins** — file importers (`FileSourceBase`) or streaming sources (`StreamSourceBase`)
 - **MessageParser plugins** — decode raw bytes into named fields (`MessageParserPluginBase`)
 
-Export macros: `PJ_DATA_SOURCE_PLUGIN(Class, manifest_json)`, `PJ_MESSAGE_PARSER_PLUGIN(Class, manifest_json)`, `PJ_DIALOG_PLUGIN(DialogClass)`.
+Export macros: `PJ_DATA_SOURCE_PLUGIN(Class, manifest_json)`, `PJ_MESSAGE_PARSER_PLUGIN(Class, manifest_json)`, `PJ_DIALOG_PLUGIN(DialogClass, manifest_json)` (two-arg form requires plotjuggler_sdk >= 0.18.0 on MSVC).
 
 ### Dual-mode CMake
 
@@ -95,6 +95,34 @@ Plugins with UI subclass `PJ::DialogPluginTyped` and use real `.ui` files (Qt Cr
 | Conan (JFrog cache → ConanCenter) | nlohmann_json, mcap, arrow/parquet, paho-mqtt-cpp, cppzmq, protobuf, zstd, date, ixwebsocket, asio, kissfft, lua, sol2, libsodium, pybind11, cpython, gtest |
 | CPM | ulog_cpp, rosx_introspection, data_tamer (plugin-private deps only) |
 | Optional | Qt 6 (WebSockets, Network) — only for foxglove_bridge and pj_bridge |
+
+## Release Process
+
+Each plugin's `manifest.json` `version` field is the single source of truth for its release
+version. Releases are **not** created manually on GitHub — pushing a tag creates them automatically.
+
+- **Cut a release:** `python3 scripts/release_extension.py <source_dir|extension_id> [--bump patch|minor|major | --version X.Y.Z] [--submit-to-registry]`.
+  It reads/updates `manifest.json`, commits the bump (`chore(<dir>): bump version to X.Y.Z`),
+  creates an **annotated** tag `<source_dir>/vX.Y.Z` whose message is JSON metadata
+  (`{"extension_id", "version", "auto_submit_to_registry"}`), and pushes both the commit and the tag.
+  The manifest-bump commit and the tag push are two separate git operations — if only the tag lands
+  upstream (e.g. a rejected/reverted commit push), the in-tree manifest silently drifts behind the
+  already-released version. Always confirm the bump commit is actually on the target branch, not
+  just the tag.
+- **What pushing the tag does:** any tag matching `*/v*` triggers `.github/workflows/build-release.yml`,
+  which resolves the specific plugin from the tag name (`scripts/release_tools.py resolve-build-scope`),
+  builds+tests just that plugin across linux/macos/windows (x86_64 + arm), verifies the built
+  artifact's version against the tag (`verify-version-consistency`), packages a zip + sha256, and
+  uploads them via `softprops/action-gh-release@v2` — **this step is what creates the GitHub Release**;
+  there is no separate manual release-creation step.
+- **Registry submission:** if the tag's annotation has `"auto_submit_to_registry": true`, a follow-up
+  `submit-to-registry` job runs `scripts/submit_to_registry.py` to open a PR against the extension
+  registry with the built artifact's checksums.
+- **Version format:** must be 3-part semver (`SEMVER_REGEX` in `scripts/release_tools.py`,
+  `^\d+\.\d+\.\d+(-pre)?(+build)?$`) — a two-part string like `"1.0"` fails manifest validation and
+  `release_extension.py` will refuse to tag it.
+- **Force-recreating a tag** (`--force`) invalidates existing registry checksums and breaks
+  installations pinned to the old artifact — treat as a last resort, not a routine fix.
 
 ## Porting Rules (Summary)
 

@@ -1,0 +1,26 @@
+{
+  "id": "blf-loader",
+  "name": "BLF Loader",
+  "version": "0.1.0",
+  "description": "Data loader for Vector BLF (Binary Logging Format) CAN logs, decoded to signals via DBC.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "data_loader",
+  "tags": [
+    "blf",
+    "vector",
+    "can",
+    "automotive",
+    "file",
+    "loader"
+  ],
+  "file_extensions": [
+    ".blf",
+    ".BLF"
+  ],
+  "min_plotjuggler_version": "3.999.1"
+}

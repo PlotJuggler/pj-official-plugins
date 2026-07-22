@@ -782,4 +782,4 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
 }  // namespace
 
 PJ_TOOLBOX_PLUGIN(FFTToolbox, kFftManifest)
-PJ_DIALOG_PLUGIN(FFTDialog)
+PJ_DIALOG_PLUGIN(FFTDialog, kFftManifest)

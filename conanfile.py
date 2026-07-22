@@ -46,6 +46,10 @@ class PjOfficialPluginsConan(ConanFile):
         "ixwebsocket/11.4.6",
         "libdatachannel/0.24.0",
         "asio/1.28.2",
+        # NOTE: liblsl (data_stream_lsl) is intentionally NOT here. It requires
+        # boost/[>=1.85], which conflicts with the boost/1.81.0 that Arrow's
+        # Flight stack pins via thrift in this aggregate. data_stream_lsl builds
+        # per-plugin against its own conanfile.py (like data_load_lerobot/mp4).
         "kissfft/131.1.0",
         "lua/5.4.6",
         "sol2/3.5.0",
@@ -54,6 +58,10 @@ class PjOfficialPluginsConan(ConanFile):
         "libsodium/1.0.20",
         "pybind11/2.13.6",
         "cpython/3.12.7",
+        # data_load_mf4: mdflib (vendored via CPM) links zlib + expat, provided
+        # here from Conan. zlib/1.3.1 matches arrow/23.0.1's pin (no conflict).
+        "zlib/1.3.1",
+        "expat/2.6.4",
         f"plotjuggler_sdk/{_SDK_VERSION}",
     )
 
@@ -67,6 +75,9 @@ class PjOfficialPluginsConan(ConanFile):
         "*:shared": False,
         "arrow/*:parquet": True,
         "arrow/*:with_snappy": True,
+        # mimalloc uses initial-exec TLS, making every .so linking it require static
+        # TLS and fail to dlopen once the process's static-TLS surplus is exhausted.
+        "arrow/*:with_mimalloc": False,
         "boost/*:without_test": True,
         "boost/*:without_cobalt": True,
         "lua/*:compile_as_cpp": True,

@@ -1060,4 +1060,4 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
 
 PJ_MESSAGE_PARSER_PLUGIN(ProtobufParser, kProtobufManifest)
 
-PJ_DIALOG_PLUGIN(ProtobufParserDialog)
+PJ_DIALOG_PLUGIN(ProtobufParserDialog, kProtobufManifest)

@@ -11,3 +11,6 @@ __pycache__/
 /deactivate_conanbuild.sh
 /deactivate_conanrun.sh
 /build_*
+
+# local MF4/BLF review build trees
+build-mf4/

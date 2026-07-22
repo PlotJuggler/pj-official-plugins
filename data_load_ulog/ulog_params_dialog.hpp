@@ -1,6 +1,7 @@
 #pragma once
 
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
 #include <vector>
 
@@ -23,9 +24,9 @@ class ULogParamsDialog : public PJ::DialogPluginTyped {
   void parseFile();
 
   std::string filepath_;
-  std::vector<std::vector<std::string>> info_rows_;
-  std::vector<std::vector<std::string>> param_rows_;
-  std::vector<std::vector<std::string>> log_rows_;
+  std::vector<std::vector<PJ::TableItem>> info_rows_;
+  std::vector<std::vector<PJ::TableItem>> param_rows_;
+  std::vector<std::vector<PJ::TableItem>> log_rows_;
 };
 
 }  // namespace ulog_detail
