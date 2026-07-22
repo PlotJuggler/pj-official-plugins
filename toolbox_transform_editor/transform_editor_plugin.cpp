@@ -899,11 +899,13 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     if (name == "luaButton" && checked) {
       language_ = "luau";
       validateSyntax();
+      preview_dirty_ = true;
       return true;
     }
     if (name == "pythonButton" && checked) {
       language_ = "python";
       validateSyntax();
+      preview_dirty_ = true;
       return true;
     }
     if (name == "luaBatchButton" && checked) {
@@ -1214,6 +1216,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     function_body_ = body;
     output_name_ = names.front();  // seed with the first; the user can rename
     validateSyntax();
+    preview_dirty_ = true;
   }
 
   void setPreviewSeries(std::vector<PJ::ChartSeries> series) {
