@@ -32,6 +32,7 @@
 #include <filesystem>
 #include <mcap/message_byte_store.hpp>
 #include <mcap/parallel_reader.hpp>
+#include <mcap/unchunked_payload_store.hpp>
 #include <mcap/writer.hpp>
 #include <memory>
 #include <string>
@@ -200,6 +201,127 @@ TEST_F(MessageByteStoreTest, HotPathReturnsMessageCopy) {
   mcap::MessageByteStore store;
   auto items = collect(store, /*invoke_hot=*/true);
   ASSERT_GE(items.size(), 24u);
+}
+
+TEST(UnchunkedPayloadStoreTest, FetchesRetainedPayloadAfterReaderCloses) {
+  static std::atomic<int> counter{0};
+  const std::string path = (std::filesystem::temp_directory_path() /
+                            ("pj_unchunked_payload_" + std::to_string(counter.fetch_add(1)) + ".mcap"))
+                               .string();
+  struct Cleanup {
+    std::string path;
+    ~Cleanup() {
+      std::error_code ec;
+      std::filesystem::remove(path, ec);
+    }
+  } cleanup{path};
+
+  const std::vector<uint8_t> expected = {'i', 'n', 'd', 'e', 'x', 'l', 'e', 's', 's'};
+  mcap::ChannelId channelId = 0;
+  constexpr mcap::Timestamp kLogTime = 42'000;
+  {
+    mcap::McapWriter writer;
+    mcap::McapWriterOptions options("");
+    options.noChunking = true;
+    ASSERT_TRUE(writer.open(path, options).ok());
+    mcap::Schema schema("test/Raw", "raw", mcap::ByteArray{});
+    writer.addSchema(schema);
+    mcap::Channel channel("/topic/raw", "raw", schema.id);
+    writer.addChannel(channel);
+    channelId = channel.id;
+
+    mcap::Message message;
+    message.channelId = channel.id;
+    message.logTime = kLogTime;
+    message.publishTime = kLogTime;
+    message.dataSize = expected.size();
+    message.data = reinterpret_cast<const std::byte*>(expected.data());
+    ASSERT_TRUE(writer.write(message).ok());
+    writer.close();
+  }
+
+  uint64_t recordOffset = 0;
+  uint64_t payloadSize = 0;
+  {
+    mcap::McapReader reader;
+    ASSERT_TRUE(reader.open(path).ok());
+    ASSERT_TRUE(reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan).ok());
+    EXPECT_TRUE(reader.chunkIndexes().empty());
+
+    mcap::ReadMessageOptions options;
+    options.readOrder = mcap::ReadMessageOptions::ReadOrder::FileOrder;
+    auto onProblem = [](const mcap::Status&) {};
+    auto messages = reader.readMessages(onProblem, options);
+    auto it = messages.begin();
+    ASSERT_NE(it, messages.end());
+    ASSERT_FALSE(it->messageOffset.chunkOffset.has_value());
+    recordOffset = it->messageOffset.offset;
+    payloadSize = it->message.dataSize;
+  }
+
+  mcap::ByteView retained;
+  {
+    mcap::UnchunkedPayloadStore store(path);
+    retained = store.fetch(recordOffset, payloadSize, channelId, kLogTime);
+    ASSERT_EQ(retained.size, expected.size());
+    EXPECT_EQ(0, std::memcmp(retained.data, expected.data(), retained.size));
+
+    const auto mismatch = store.fetch(recordOffset, payloadSize, channelId, kLogTime + 1);
+    EXPECT_EQ(mismatch.size, 0u);
+  }
+
+  ASSERT_EQ(retained.size, expected.size());
+  EXPECT_EQ(0, std::memcmp(retained.data, expected.data(), retained.size))
+      << "the returned payload must own its bytes independently of the store";
+}
+
+TEST(ParallelReaderTest, ChunkedSummaryWithoutChunkIndexesExposesChunkOffsets) {
+  static std::atomic<int> counter{0};
+  const std::string path = (std::filesystem::temp_directory_path() /
+                            ("pj_chunked_without_indexes_" + std::to_string(counter.fetch_add(1)) + ".mcap"))
+                               .string();
+  struct Cleanup {
+    std::string path;
+    ~Cleanup() {
+      std::error_code ec;
+      std::filesystem::remove(path, ec);
+    }
+  } cleanup{path};
+
+  const std::vector<uint8_t> payload = {'c', 'h', 'u', 'n', 'k', 'e', 'd'};
+  {
+    mcap::McapWriter writer;
+    mcap::McapWriterOptions options("");
+    options.noChunkIndex = true;
+    options.compression = mcap::Compression::None;
+    options.chunkSize = 1;
+    ASSERT_TRUE(writer.open(path, options).ok());
+    mcap::Schema schema("test/Raw", "raw", mcap::ByteArray{});
+    writer.addSchema(schema);
+    mcap::Channel channel("/topic/raw", "raw", schema.id);
+    writer.addChannel(channel);
+
+    mcap::Message message;
+    message.channelId = channel.id;
+    message.logTime = 42'000;
+    message.publishTime = message.logTime;
+    message.dataSize = payload.size();
+    message.data = reinterpret_cast<const std::byte*>(payload.data());
+    ASSERT_TRUE(writer.write(message).ok());
+    writer.close();
+  }
+
+  mcap::ParallelReader reader;
+  ASSERT_TRUE(reader.open(path).ok());
+  ASSERT_TRUE(reader.chunkIndexes().empty()) << "a valid Statistics-only summary must not force an AllowFallbackScan";
+
+  mcap::ReadMessageOptions options;
+  options.readOrder = mcap::ReadMessageOptions::ReadOrder::FileOrder;
+  auto messages = reader.reader().readMessages([](const mcap::Status&) {}, options);
+  auto it = messages.begin();
+  ASSERT_NE(it, messages.end());
+  EXPECT_TRUE(it->messageOffset.chunkOffset.has_value())
+      << "the indexless source path must eagerly copy payloads owned by a decompressed chunk";
 }
 
 // Regression: a retained hot ByteView must NOT keep its source chunk resident.
