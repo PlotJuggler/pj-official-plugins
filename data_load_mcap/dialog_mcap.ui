@@ -302,45 +302,6 @@
     </widget>
    </item>
    <item>
-    <widget class="QGroupBox" name="parser_group">
-     <property name="title">
-      <string>Parser options</string>
-     </property>
-     <layout class="QVBoxLayout" name="parserGroupLayout">
-      <item>
-       <layout class="QHBoxLayout" name="encodingLayout">
-        <item>
-         <widget class="QLabel" name="labelEncoding">
-          <property name="text">
-           <string>Encoding:</string>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QComboBox" name="comboBoxProtocol"/>
-        </item>
-        <item>
-         <spacer name="encodingSpacer">
-          <property name="orientation">
-           <enum>Qt::Orientation::Horizontal</enum>
-          </property>
-          <property name="sizeHint" stdset="0">
-           <size>
-            <width>40</width>
-            <height>20</height>
-           </size>
-          </property>
-         </spacer>
-        </item>
-       </layout>
-      </item>
-      <item>
-       <widget class="QWidget" name="pj_parser_slot" native="true"/>
-      </item>
-     </layout>
-    </widget>
-   </item>
-   <item>
     <layout class="QHBoxLayout" name="bottomBar">
      <item>
       <widget class="QLabel" name="labelUsageHint">
