@@ -5,6 +5,7 @@
 #define MCAP_IMPLEMENTATION
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -12,6 +13,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -29,6 +31,20 @@
 #include <mcap/unchunked_payload_store.hpp>  // NOLINT(build/include_order)
 
 namespace {
+
+struct TransparentStringHash {
+  using is_transparent = void;
+
+  std::size_t operator()(std::string_view value) const noexcept {
+    return std::hash<std::string_view>{}(value);
+  }
+
+  std::size_t operator()(const std::string& value) const noexcept {
+    return (*this)(std::string_view(value));
+  }
+};
+
+using SelectedTopicSet = std::unordered_set<std::string, TransparentStringHash, std::equal_to<>>;
 
 // Hardware-derived worker count. Floor at 2 so we still get parallelism on
 // virtualized hosts that report 1 core; cap at 8 to avoid oversubscription on
@@ -290,8 +306,10 @@ class McapSource : public PJ::FileSourceBase {
     parallel_opts.lookaheadBytes = kParallelLookaheadBytes;
     parallel_opts.maxChunkUncompressedSize = kMaxChunkUncompressedBytes;
 #endif
-    parallel_opts.read.topicFilter = [selected_topics = dialog_.selectedTopics()](std::string_view topic) {
-      return selected_topics.find(std::string(topic)) != selected_topics.end();
+    const auto& dialog_selected_topics = dialog_.selectedTopics();
+    SelectedTopicSet selected_topics(dialog_selected_topics.begin(), dialog_selected_topics.end());
+    parallel_opts.read.topicFilter = [selected_topics = std::move(selected_topics)](std::string_view topic) {
+      return selected_topics.contains(topic);
     };
 
     // Track terminal failure so we can return PJ::unexpected after the message

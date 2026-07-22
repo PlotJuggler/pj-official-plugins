@@ -387,21 +387,11 @@ class McapDialog : public PJ::DialogPluginTyped {
         selectable_topics.insert(ch.topic);
       }
     }
-    for (auto it = selected_topics_.begin(); it != selected_topics_.end();) {
-      if (selectable_topics.count(*it) == 0) {
-        it = selected_topics_.erase(it);
-      } else {
-        ++it;
-      }
-    }
+    std::erase_if(selected_topics_, [&](const std::string& topic) { return !selectable_topics.contains(topic); });
 
     // If no previous selection survives, select all channels with messages.
     if (selected_topics_.empty()) {
-      for (const auto& ch : all_channels_) {
-        if (ch.msg_count > 0) {
-          selected_topics_.insert(ch.topic);
-        }
-      }
+      selected_topics_ = std::move(selectable_topics);
     }
 
     reassertAlwaysIncluded();

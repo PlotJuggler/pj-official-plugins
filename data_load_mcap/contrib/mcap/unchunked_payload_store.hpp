@@ -1,7 +1,5 @@
 #pragma once
 
-#include "types.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -11,6 +9,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "internal.hpp"
 
 namespace mcap {
 
@@ -30,27 +30,30 @@ class UnchunkedPayloadStore {
       return {};
     }
 
-    uint8_t header[kPayloadOffset];
+    std::byte header[kPayloadOffset];
     file_.clear();
     file_.seekg(static_cast<std::streamoff>(recordOffset));
     file_.read(reinterpret_cast<char*>(header), sizeof(header));
     const bool headerOk = file_.gcount() == static_cast<std::streamsize>(sizeof(header)) &&
-                          header[0] == static_cast<uint8_t>(OpCode::Message) &&
-                          readUint64Le(header + 1) == kMessagePreambleSize + payloadSize &&
-                          readUint16Le(header + 9) == channelId && readUint64Le(header + 15) == logTime;
+                          header[0] == std::byte{static_cast<uint8_t>(OpCode::Message)} &&
+                          internal::ParseUint64(header + 1) == kMessagePreambleSize + payloadSize &&
+                          internal::ParseUint16(header + 9) == channelId &&
+                          internal::ParseUint64(header + 15) == logTime;
     if (!headerOk) {
-      std::fprintf(stderr,
-                   "[data_load_mcap] lazy payload record mismatch at offset %llu "
-                   "(file truncated or replaced?)\n",
-                   static_cast<unsigned long long>(recordOffset));
+      std::fprintf(
+          stderr,
+          "[data_load_mcap] lazy payload record mismatch at offset %llu "
+          "(file truncated or replaced?)\n",
+          static_cast<unsigned long long>(recordOffset));
       return {};
     }
 
     auto payload = std::make_shared<std::vector<uint8_t>>(payloadSize);
     file_.read(reinterpret_cast<char*>(payload->data()), static_cast<std::streamsize>(payloadSize));
     if (static_cast<uint64_t>(file_.gcount()) != payloadSize) {
-      std::fprintf(stderr, "[data_load_mcap] lazy payload short read at offset %llu\n",
-                   static_cast<unsigned long long>(recordOffset));
+      std::fprintf(
+          stderr, "[data_load_mcap] lazy payload short read at offset %llu\n",
+          static_cast<unsigned long long>(recordOffset));
       return {};
     }
 
@@ -63,18 +66,6 @@ class UnchunkedPayloadStore {
   // sequence(4) + log_time(8) + publish_time(8) + payload.
   static constexpr uint64_t kMessagePreambleSize = 2 + 4 + 8 + 8;
   static constexpr std::size_t kPayloadOffset = 1 + 8 + kMessagePreambleSize;
-
-  static uint16_t readUint16Le(const uint8_t* bytes) {
-    return static_cast<uint16_t>(uint16_t(bytes[0]) | (uint16_t(bytes[1]) << 8));
-  }
-
-  static uint64_t readUint64Le(const uint8_t* bytes) {
-    uint64_t value = 0;
-    for (int index = 7; index >= 0; --index) {
-      value = (value << 8) | bytes[index];
-    }
-    return value;
-  }
 
   bool ensureOpenLocked() {
     if (openFailed_) {
