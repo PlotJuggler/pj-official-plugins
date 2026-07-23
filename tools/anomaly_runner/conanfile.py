@@ -24,7 +24,7 @@ class AnomalyRunnerConan(ConanFile):
     # gtest builds the notify unit tests.
     requires = (
         f"plotjuggler_sdk/{_SDK_VERSION}",
-        "pj_scripting_core/0.1.0",
+        "pj_scripting_core/0.2.0",
         "nlohmann_json/3.12.0",
         "libcurl/8.10.1",
         "gtest/1.17.0",
