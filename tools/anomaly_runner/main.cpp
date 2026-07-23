@@ -197,7 +197,7 @@ class CaptureHost {
 
   // Fetch the message bytes, parse them into the binding's recorder, and drain the
   // decoded numeric fields into our (topic/field) series buffers.
-  bool doPushMessage(PJ_parser_binding_handle_t binding, int64_t /*ts*/, PJ_message_data_fetcher_t fetch) {
+  bool doPushMessage(PJ_parser_binding_handle_t binding, int64_t ts, PJ_message_data_fetcher_t fetch) {
     auto it = bindings_.find(binding.id);
     if (it == bindings_.end()) {
       if (fetch.release != nullptr) {
@@ -216,7 +216,11 @@ class CaptureHost {
       return false;
     }
     b.recorder->rows().clear();
-    const auto st = b.handle->parse(PJ::Timestamp{0}, PJ::Span<const uint8_t>(payload.data, payload.size));
+    // Forward the real per-message host timestamp (MCAP log-time, etc.). Parsers
+    // with their own embedded stamp override it; stampless parsers (json/protobuf)
+    // use it verbatim, so hardcoding 0 here collapsed every headless sample to
+    // t=0 and diverged from the GUI (which forwards the same timestamp).
+    const auto st = b.handle->parse(PJ::Timestamp{ts}, PJ::Span<const uint8_t>(payload.data, payload.size));
     if (payload.anchor.release != nullptr) {
       payload.anchor.release(payload.anchor.ctx);
     }
