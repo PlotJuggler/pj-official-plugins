@@ -304,6 +304,23 @@ MosaicoDialog::MosaicoDialog() : worker_(std::make_unique<FetchWorker>()) {
   worker_->errorOccurred = [this](std::string message) {
     postEvent([this, message = std::move(message)]() mutable { notify(PJ::ToolboxMessageLevel::kError, message); });
   };
+  worker_->hostStopRequested = [this]() {
+    // Host-side Stop (title-bar strip). requestCancel() already fired inside
+    // the worker; mirror the in-panel Cancel button's UI state so the batch
+    // ends with the same "Cancelling…" presentation and cancelled topics stay
+    // out of the error tally.
+    postEvent([this]() {
+      std::lock_guard<std::mutex> lock(state_.mu);
+      state_.cancelling = true;
+      state_.fetch_status = "Cancelling…";
+      for (const std::string& tname : state_.selected_topics) {
+        auto it = state_.topic_fetch_status.find(tname);
+        if (it == state_.topic_fetch_status.end() || it->second.empty() || it->second == "downloading…") {
+          state_.topic_fetch_status[tname] = "Cancelling…";
+        }
+      }
+    });
+  };
 
   worker_thread_ = std::thread([this] { workerLoop(); });
   // Persisted-state restore + auto-connect happen in initFromSettings(), once
@@ -444,7 +461,10 @@ void MosaicoDialog::setHostProvider(std::function<PJ::sdk::ToolboxHostView()> pr
 }
 
 void MosaicoDialog::setRuntimeHostProvider(std::function<PJ::ToolboxRuntimeHostView()> provider) {
-  runtime_host_provider_ = std::move(provider);
+  runtime_host_provider_ = provider;
+  // The worker drives the host's progress/stop surface from its fetch threads;
+  // same stable-view contract as setHostProvider.
+  worker_->setRuntimeHostProvider(std::move(provider));
 }
 
 std::string MosaicoDialog::widget_data() {
@@ -1747,10 +1767,13 @@ void MosaicoDialog::onPullFinished(PullResultEvent result) {
     if (!result.warning.empty()) {
       notify(PJ::ToolboxMessageLevel::kWarning, result.warning);
     }
-  } else if (state_.cancelling) {
-    // Interrupted by the user's Cancel, not a real failure: label it
-    // "Cancelled" and keep it OUT of the error tally so a cancel doesn't
-    // raise spurious "Mosaico fetch errors" notifications.
+  } else if (state_.cancelling || (worker_ != nullptr && worker_->isCancelled())) {
+    // Interrupted by a Cancel, not a real failure: label it "Cancelled" and
+    // keep it OUT of the error tally so a cancel doesn't raise spurious
+    // "Mosaico fetch errors" notifications. The worker flag covers the
+    // HOST-initiated stop: its atomic fires immediately on the pool threads,
+    // while the queued hostStopRequested event that sets state_.cancelling may
+    // land only after this completion was already enqueued.
     state_.topic_fetch_status[topic_name] = "Cancelled";
   } else {
     ++state_.fetch_failed;
