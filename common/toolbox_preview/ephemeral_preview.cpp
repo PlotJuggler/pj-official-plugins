@@ -20,8 +20,21 @@ PreviewOverlay EphemeralPreview::refresh(
   // otherwise the host keeps the output topic fresh on every commit and we read it back below.
   bool resubmitted = false;
   if (dirty_ || code != last_code_ || source != last_source_) {
+    // A rule that just failed with this exact code at this data revision will fail
+    // identically — don't re-run the expensive whole-series submit every tick while
+    // the user reads the error. Re-surface the cached message until the code
+    // changes, new data arrives, or markDirty() forces a genuine re-run.
+    if (!dirty_ && code == last_failed_code_ && data_revision == last_failed_revision_) {
+      if (error != nullptr) {
+        *error = last_error_;
+      }
+      return {};
+    }
     PJ::Expected<std::string> topic = backend.submitPreview(code);
     if (!topic) {
+      last_failed_code_ = code;  // latch this failure so idle ticks don't re-run it
+      last_error_ = topic.error();
+      last_failed_revision_ = data_revision;
       if (error != nullptr) {
         *error = topic.error();  // compile/runtime rule error → surface it
       }
@@ -33,6 +46,7 @@ PreviewOverlay EphemeralPreview::refresh(
     topic_ = std::move(*topic);
     last_code_ = code;
     last_source_ = source;
+    last_failed_code_.clear();  // succeeded → drop the failure latch
     dirty_ = false;
     resubmitted = true;
   }

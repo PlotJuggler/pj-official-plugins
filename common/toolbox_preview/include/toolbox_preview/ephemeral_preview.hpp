@@ -82,6 +82,15 @@ class EphemeralPreview {
   std::string last_source_;
   std::uint64_t last_read_revision_ = UINT64_MAX;  ///< data revision at last read-back; sentinel forces first read
   PreviewOverlay cached_overlay_;                  ///< returned between read-backs (see CONTRACT)
+
+  // Failure latch: a rule that just failed with this exact code at this data
+  // revision fails identically every tick, so re-surface the cached error instead
+  // of re-running the expensive submit. (submitPreview takes only `code`, so the
+  // source never affects the outcome — it is not part of the latch.) Cleared on
+  // success; a new data revision retries once (a runtime error may depend on data).
+  std::string last_failed_code_;
+  std::string last_error_;
+  std::uint64_t last_failed_revision_ = UINT64_MAX;
 };
 
 }  // namespace toolbox_preview
