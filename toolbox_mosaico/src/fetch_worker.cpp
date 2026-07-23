@@ -109,6 +109,65 @@ PJ::Expected<PJ::sdk::DataSourceHandle> FetchWorker::datasetForFetch(
   return *fetch_dataset_;
 }
 
+void FetchWorker::ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, const std::string& sequence_name) {
+  std::lock_guard<std::mutex> plock(progress_mu_);
+  if (ingest_progress_attempted_) {
+    return;
+  }
+  ingest_progress_attempted_ = true;
+  if (!runtime_host_provider_) {
+    return;
+  }
+  const auto runtime = runtime_host_provider_();
+  if (!runtime.valid()) {
+    return;
+  }
+  const PJ_toolbox_runtime_host_t& raw = runtime.raw();
+  // Tail-slot gate: an older host's vtable ends before create_parser_ingest —
+  // Downloads then run exactly as before, without host progress.
+  if (!PJ_HAS_TAIL_SLOT(PJ_toolbox_runtime_host_vtable_t, raw.vtable, create_parser_ingest)) {
+    return;
+  }
+  PJ_data_source_runtime_host_t ingest_raw{};
+  PJ_error_t error{};
+  if (!raw.vtable->create_parser_ingest(raw.ctx, ds.id, &ingest_raw, &error)) {
+    return;  // e.g. parser ingest not configured on this host — degrade silently
+  }
+  // The context is LIVE on the host from this point: record the id first so
+  // finishIngestProgress releases it even when progressStart below fails
+  // (release is idempotent and needs no prior progress sequence).
+  ingest_ds_id_ = ds.id;
+  PJ::DataSourceRuntimeHostView view(ingest_raw);
+  // Always indeterminate (total=0): TopicInfo::total_size_bytes is the
+  // COMPRESSED full-topic size while progress ticks carry DECODED bytes of the
+  // requested slice — no comparable denominator exists, and a wrong one would
+  // over/undershoot the host bar wildly. `current` still carries the decoded
+  // byte count.
+  if (!view.progressStart(sequence_name, /*total_steps=*/0, /*cancellable=*/true).has_value()) {
+    return;
+  }
+  ingest_progress_ = view;
+}
+
+void FetchWorker::finishIngestProgress() {
+  std::optional<uint32_t> release_id;
+  {
+    std::lock_guard<std::mutex> plock(progress_mu_);
+    if (ingest_progress_.has_value()) {
+      ingest_progress_->progressFinish();
+      ingest_progress_.reset();
+    }
+    release_id = ingest_ds_id_;
+    ingest_ds_id_.reset();
+  }
+  if (release_id.has_value() && runtime_host_provider_) {
+    const auto runtime = runtime_host_provider_();
+    if (runtime.valid()) {
+      (void)runtime.releaseParserIngest(*release_id);
+    }
+  }
+}
+
 void FetchWorker::connectAsync(std::string uri, ServerCredentials creds) {
   // creds.allow_insecure is intentionally not consulted here: the plaintext
   // fallback is driven by the caller (onConnectFinished, Step 10.1), which
@@ -308,6 +367,15 @@ void FetchWorker::pullTopicsAsync(
     std::lock_guard<std::mutex> lock(fetch_dataset_mu_);
     fetch_dataset_ = std::nullopt;
   }
+  // Fresh host-progress bracket for this batch.
+  {
+    std::lock_guard<std::mutex> plock(progress_mu_);
+    ingest_progress_.reset();
+    ingest_progress_attempted_ = false;
+    host_stop_reported_ = false;
+    ingest_ds_id_.reset();
+    progress_bytes_by_topic_.clear();
+  }
 
   // Use the SDK's parallel pullTopics. Per-topic completion (on_done) fires on
   // SDK connection-pool worker threads; the host-write critical section there
@@ -457,6 +525,7 @@ void FetchWorker::pullTopicsAsync(
         finish(false, ds.error());
         return;
       }
+      ensureIngestProgress(*ds, sequence_name);
       const ObjectIngestContext ctx{host, *ds, topic_name, ts_field, synth_anchor_ns, synth_interval_ns};
       auto pushed = [&]() -> PJ::Expected<ObjectPushOutcome> {
         if (is_image) {
@@ -542,6 +611,7 @@ void FetchWorker::pullTopicsAsync(
       finish(false, ds.error());
       return;
     }
+    ensureIngestProgress(*ds, sequence_name);
     auto append_status = pumpStreamToHost(host, *ds, topic_name, &stream, ts_field);
     if (!append_status) {
       if (stream.release != nullptr) {
@@ -581,6 +651,37 @@ void FetchWorker::pullTopicsAsync(
         if (pullProgress) {
           pullProgress(topic_name, bytes);
         }
+        // Host progress tick. progress_mu_ serializes the fat-pointer call
+        // (single-caller surface; these events arrive on concurrent pool
+        // threads) and guards the byte ledger. The host throttles internally
+        // (~50 ms), so most ticks return immediately. A false return is the
+        // host's stop request (title-bar Stop): route it into the existing
+        // cancel machinery, once. The ledger records UNCONDITIONALLY: the
+        // ingest context is created lazily at the first topic's on_done (the
+        // dataset must exist first), so bytes streamed before that must not
+        // vanish from later sums — and a single-topic Download gets its host
+        // progress only from the started/finished bracket, never these ticks.
+        bool host_stop = false;
+        {
+          std::lock_guard<std::mutex> plock(progress_mu_);
+          progress_bytes_by_topic_[topic_name] = bytes;
+          if (ingest_progress_.has_value()) {
+            std::uint64_t fetched = 0;
+            for (const auto& [name, count] : progress_bytes_by_topic_) {
+              fetched += static_cast<std::uint64_t>(count > 0 ? count : 0);
+            }
+            if (!ingest_progress_->progressUpdate(fetched) && !host_stop_reported_) {
+              host_stop_reported_ = true;
+              host_stop = true;
+            }
+          }
+        }
+        if (host_stop) {
+          requestCancel();
+          if (hostStopRequested) {
+            hostStopRequested();
+          }
+        }
       };
 
   // Cancel is owned/reset by the dialog at fetch start (buttonFetch handler, on
@@ -603,6 +704,11 @@ void FetchWorker::pullTopicsAsync(
       pullFinished({{sequence_name, {}}, false, "pull failed: unknown error", {}});
     }
   }
+  // Bracket the host progress/stop channel on EVERY exit (success, cancel,
+  // throw) and BEFORE allFetchesComplete: the dialog's terminal
+  // notifyDataChanged is queued behind that signal, so the release must land
+  // first for the host's terminal focus/reconcile pass to see this dataset.
+  finishIngestProgress();
   if (allFetchesComplete) {
     allFetchesComplete(std::move(sequence_name));
   }
