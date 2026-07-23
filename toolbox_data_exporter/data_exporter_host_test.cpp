@@ -306,7 +306,7 @@ TEST(DataExporterHostTest, LateLoadedCurvesRefreshOnDropAndBothExportPaths) {
 
   store.addTopic("alpha").addField("alpha", "value", {5'000'000'000LL, 7'000'000'000LL}, {1.0, 2.0});
   ASSERT_TRUE(dialog.onItemsDropped("tableWidget", {"alpha/value"}));
-  EXPECT_DOUBLE_EQ(render(dialog)["endTime"]["value"].get<double>(), 2.0);
+  EXPECT_EQ(render(dialog)["rangeSlider"]["range_upper"].get<int>(), 2000);
 
   ASSERT_TRUE(dialog.onItemsDropped("tableWidget", {"beta/value"}));
   store.addTopic("beta").addField("beta", "value", {5'000'000'000LL, 7'000'000'000LL}, {3.0, 4.0});
@@ -391,7 +391,7 @@ TEST(DataExporterHostTest, EmptyMultiFileGroupIsSkippedWhilePopulatedGroupSuccee
   bindStore(toolbox, store, canonical_host, registry);
   DataExporterDialog& dialog = toolbox.dialog();
   ASSERT_TRUE(dialog.onClicked("buttonAddAllFiles"));
-  ASSERT_TRUE(dialog.onValueChanged("endTime", 1.0));
+  ASSERT_TRUE(dialog.onRangeChanged("rangeSlider", 0, 1000));
   ASSERT_TRUE(dialog.onToggled("checkBoxMultifile", true));
   EXPECT_FALSE(dialog.onTextChanged("lineEditPrefix", "range"));
 

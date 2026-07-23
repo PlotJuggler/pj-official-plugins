@@ -1,7 +1,7 @@
 {
   "id": "toolbox-data-exporter",
   "name": "CSV/Parquet Exporter",
-  "version": "0.99.0",
+  "version": "0.114.0",
   "description": "Export selected time series to CSV or Parquet files.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",

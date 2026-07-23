@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <climits>
+#include <cstdint>
 #include <filesystem>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -8,7 +9,6 @@
 #include <vector>
 
 #include "data_exporter.hpp"
-#include "exporter_icons.hpp"
 
 namespace {
 
@@ -35,7 +35,7 @@ TEST(DataExporterDialogTest, RecomputesForEmptyRemoveAndDuplicateOnlyDrop) {
   EXPECT_EQ(dialog.topics(), std::vector<std::string>({"alpha/value"}));
 }
 
-TEST(DataExporterDialogTest, ClearLastRowKeepsRangeAndDisablesTimeControls) {
+TEST(DataExporterDialogTest, ClearLastRowKeepsRangeAndDisablesExportControls) {
   DataExporterDialog dialog;
   dialog.setDataRange(std::pair{42.0, 47.0});
   dialog.setOnRecomputeRange([&dialog]() { dialog.setDataRange(std::nullopt); });
@@ -45,24 +45,48 @@ TEST(DataExporterDialogTest, ClearLastRowKeepsRangeAndDisablesTimeControls) {
   ASSERT_TRUE(dialog.onClicked("clearButton"));
   const Json after = render(dialog);
 
-  EXPECT_EQ(after["startTime"]["value"], before["startTime"]["value"]);
-  EXPECT_EQ(after["endTime"]["value"], before["endTime"]["value"]);
   EXPECT_EQ(after["rangeSlider"]["range_min"], before["rangeSlider"]["range_min"]);
   EXPECT_EQ(after["rangeSlider"]["range_max"], before["rangeSlider"]["range_max"]);
-  EXPECT_FALSE(after["startTime"]["enabled"].get<bool>());
-  EXPECT_FALSE(after["endTime"]["enabled"].get<bool>());
+  EXPECT_EQ(after["rangeSlider"]["range_time_min_ns"], before["rangeSlider"]["range_time_min_ns"]);
+  EXPECT_EQ(after["rangeSlider"]["range_time_max_ns"], before["rangeSlider"]["range_time_max_ns"]);
+  EXPECT_FALSE(after.contains("startTime"));
+  EXPECT_FALSE(after.contains("endTime"));
   EXPECT_FALSE(after["rangeSlider"]["enabled"].get<bool>());
   EXPECT_FALSE(after["saveButton"]["enabled"].get<bool>());
 }
 
-TEST(DataExporterDialogTest, UsesVerbatimPj3InlineSvgIcons) {
+TEST(DataExporterDialogTest, ExportAndClearButtonsHaveNoIcons) {
   DataExporterDialog dialog;
   const Json state = render(dialog);
 
-  EXPECT_EQ(state["clearButton"]["button_icon_svg"].get<std::string>(), kPj3ClearIconSvg);
-  EXPECT_EQ(state["saveButton"]["button_icon_svg"].get<std::string>(), kPj3SaveIconSvg);
-  EXPECT_FALSE(state["clearButton"].contains("button_icon_name"));
+  EXPECT_FALSE(state["saveButton"].contains("button_icon_svg"));
   EXPECT_FALSE(state["saveButton"].contains("button_icon_name"));
+  EXPECT_FALSE(state.contains("clearButton"));
+}
+
+TEST(DataExporterDialogTest, EmitsTablePlaceholderAndRowDeletableFlag) {
+  DataExporterDialog dialog;
+  const Json state = render(dialog);
+
+  EXPECT_EQ(state["tableWidget"]["list_placeholder"], "Drag and Drop series from the left panel");
+  EXPECT_TRUE(state["tableWidget"]["list_deletable"].get<bool>());
+}
+
+TEST(DataExporterDialogTest, RowDeleteErasesRequestedTopicClearsSelectionAndRecomputes) {
+  DataExporterDialog dialog;
+  int recompute_count = 0;
+  dialog.setOnRecomputeRange([&recompute_count]() { ++recompute_count; });
+  ASSERT_TRUE(dialog.onItemsDropped("tableWidget", {"Alpha", "Beta", "Gamma"}));
+  ASSERT_TRUE(dialog.onSelectionChanged("tableWidget", {"Beta"}));
+  ASSERT_EQ(recompute_count, 1);
+
+  ASSERT_TRUE(dialog.onItemDeleteRequested("tableWidget", 1));
+
+  EXPECT_EQ(recompute_count, 2);
+  EXPECT_EQ(dialog.topics(), std::vector<std::string>({"Alpha", "Gamma"}));
+  const Json state = render(dialog);
+  EXPECT_EQ(state["tableWidget"]["rows"], Json::array({{"Alpha"}, {"Gamma"}}));
+  EXPECT_EQ(state["tableWidget"]["selected_rows"], Json::array());
 }
 
 TEST(DataExporterDialogTest, FilterIsTrimmedCaseInsensitiveAndClearingExplicitlyUnhidesAllRows) {
@@ -174,6 +198,8 @@ TEST(DataExporterDialogTest, SliderReducesPrecisionUntilScaledSpanFitsInt) {
   EXPECT_EQ(dialog.sliderScale(), 100);
   EXPECT_EQ(state["rangeSlider"]["range_min"], 0);
   EXPECT_EQ(state["rangeSlider"]["range_max"], 300'000'000);
+  EXPECT_EQ(state["rangeSlider"]["range_time_min_ns"], "10000000000");
+  EXPECT_EQ(state["rangeSlider"]["range_time_max_ns"], "3000010000000000");
 
   ASSERT_TRUE(dialog.onRangeChanged("rangeSlider", 123, 456));
   const auto [absolute_start, absolute_end] = dialog.absoluteTimeRange();
@@ -195,14 +221,24 @@ TEST(DataExporterDialogTest, SliderHandlesNormalPrecisionZeroDurationAndEpochAbs
   EXPECT_EQ(state["rangeSlider"]["range_max"], 1000);
   EXPECT_EQ(state["rangeSlider"]["range_lower"], 0);
   EXPECT_EQ(state["rangeSlider"]["range_upper"], 0);
+  EXPECT_EQ(state["rangeSlider"]["range_time_min_ns"], "99000000000");
+  EXPECT_EQ(state["rangeSlider"]["range_time_max_ns"], "99000000000");
 
-  ASSERT_TRUE(dialog.onIndexChanged("comboTime", 1));
-  dialog.setDataRange(std::pair{1'700'000'000.125, 1'700'000'002.125});
+  ASSERT_TRUE(dialog.onToggled("radioAbsolute", true));
+  constexpr double kEpochStart = 1'700'000'000.125;
+  constexpr double kEpochEnd = 1'700'000'002.125;
+  dialog.setDataRange(std::pair{kEpochStart, kEpochEnd});
   state = render(dialog);
   EXPECT_EQ(dialog.sliderScale(), 1000);
   EXPECT_EQ(state["rangeSlider"]["range_max"], 2000);
-  EXPECT_DOUBLE_EQ(state["startTime"]["value"].get<double>(), 1'700'000'000.125);
-  EXPECT_DOUBLE_EQ(state["endTime"]["value"].get<double>(), 1'700'000'002.125);
+  EXPECT_FALSE(state["radioRelative"]["checked"].get<bool>());
+  EXPECT_TRUE(state["radioAbsolute"]["checked"].get<bool>());
+  const auto epoch_start_ns = static_cast<std::int64_t>(kEpochStart * 1'000'000'000.0);
+  const auto epoch_end_ns = static_cast<std::int64_t>(kEpochEnd * 1'000'000'000.0);
+  EXPECT_EQ(state["rangeSlider"]["range_time_min_ns"], std::to_string(epoch_start_ns));
+  EXPECT_EQ(state["rangeSlider"]["range_time_max_ns"], std::to_string(epoch_end_ns));
+  EXPECT_FALSE(state.contains("startTime"));
+  EXPECT_FALSE(state.contains("endTime"));
 }
 
 TEST(DataExporterDialogTest, SliderSaturatesAtIntMaxWhenScaleOneStillCannotRepresentSpan) {
@@ -218,36 +254,60 @@ TEST(DataExporterDialogTest, SliderSaturatesAtIntMaxWhenScaleOneStillCannotRepre
   EXPECT_EQ(state["rangeSlider"]["range_upper"], INT_MAX);
 }
 
-TEST(DataExporterDialogTest, UiSpinboxesHaveWideStaticBounds) {
+TEST(DataExporterDialogTest, UiUsesTimeRadiosRemovesSpinboxesAndLabelsClearButton) {
   DataExporterDialog dialog;
   const std::string ui = dialog.ui_content();
-  constexpr std::string_view minimum = "<double>-1000000000000000.000000000000000</double>";
-  constexpr std::string_view maximum = "<double>1000000000000000.000000000000000</double>";
 
-  const size_t first_minimum = ui.find(minimum);
-  const size_t first_maximum = ui.find(maximum);
-  ASSERT_NE(first_minimum, std::string::npos);
-  ASSERT_NE(first_maximum, std::string::npos);
-  EXPECT_NE(ui.find(minimum, first_minimum + minimum.size()), std::string::npos);
-  EXPECT_NE(ui.find(maximum, first_maximum + maximum.size()), std::string::npos);
+  EXPECT_NE(ui.find("name=\"radioRelative\""), std::string::npos);
+  EXPECT_NE(ui.find("name=\"radioAbsolute\""), std::string::npos);
+  EXPECT_EQ(ui.find("name=\"comboTime\""), std::string::npos);
+  EXPECT_EQ(ui.find("name=\"startTime\""), std::string::npos);
+  EXPECT_EQ(ui.find("name=\"endTime\""), std::string::npos);
+
+  const size_t clear_button = ui.find("name=\"clearButton\"");
+  ASSERT_NE(clear_button, std::string::npos);
+  const size_t clear_button_end = ui.find("</widget>", clear_button);
+  ASSERT_NE(clear_button_end, std::string::npos);
+  const size_t clear_text = ui.find("<string>Clear</string>", clear_button);
+  ASSERT_NE(clear_text, std::string::npos);
+  EXPECT_LT(clear_text, clear_button_end);
 }
 
-TEST(DataExporterDialogTest, SpinboxCommitsClampToDisplayRangeAndKeepEndpointsOrdered) {
+TEST(DataExporterDialogTest, TimeModeRadiosRecomputeRangeAndPreserveAbsoluteSpan) {
   DataExporterDialog dialog;
   dialog.setDataRange(std::pair{10.0, 20.0});
+  int recompute_count = 0;
+  dialog.setOnRecomputeRange([&dialog, &recompute_count]() {
+    ++recompute_count;
+    dialog.setDataRange(std::pair{10.0, 20.0});
+  });
 
-  ASSERT_TRUE(dialog.onValueChanged("startTime", 8.0));
-  ASSERT_TRUE(dialog.onValueChanged("endTime", 2.0));
   Json state = render(dialog);
-  EXPECT_DOUBLE_EQ(state["startTime"]["value"].get<double>(), 8.0);
-  EXPECT_DOUBLE_EQ(state["endTime"]["value"].get<double>(), 8.0);
+  EXPECT_TRUE(state["radioRelative"]["checked"].get<bool>());
+  EXPECT_FALSE(state["radioAbsolute"]["checked"].get<bool>());
+  EXPECT_FALSE(state.contains("comboTime"));
 
-  dialog.setDataRange(std::pair{10.0, 20.0});
-  ASSERT_TRUE(dialog.onValueChanged("startTime", -5.0));
-  ASSERT_TRUE(dialog.onValueChanged("endTime", 50.0));
+  ASSERT_TRUE(dialog.onToggled("radioRelative", false));
+  EXPECT_EQ(recompute_count, 1);
+  ASSERT_TRUE(dialog.onToggled("radioAbsolute", true));
+  EXPECT_EQ(recompute_count, 1);
   state = render(dialog);
-  EXPECT_DOUBLE_EQ(state["startTime"]["value"].get<double>(), 0.0);
-  EXPECT_DOUBLE_EQ(state["endTime"]["value"].get<double>(), 10.0);
+  EXPECT_FALSE(state["radioRelative"]["checked"].get<bool>());
+  EXPECT_TRUE(state["radioAbsolute"]["checked"].get<bool>());
+  EXPECT_EQ(state["rangeSlider"]["range_time_min_ns"], "10000000000");
+  EXPECT_EQ(state["rangeSlider"]["range_time_max_ns"], "20000000000");
+  EXPECT_EQ(dialog.absoluteTimeRange(), std::pair(10.0, 20.0));
+
+  ASSERT_TRUE(dialog.onToggled("radioAbsolute", false));
+  EXPECT_EQ(recompute_count, 2);
+  ASSERT_TRUE(dialog.onToggled("radioRelative", true));
+  EXPECT_EQ(recompute_count, 2);
+  state = render(dialog);
+  EXPECT_TRUE(state["radioRelative"]["checked"].get<bool>());
+  EXPECT_FALSE(state["radioAbsolute"]["checked"].get<bool>());
+  EXPECT_EQ(state["rangeSlider"]["range_time_min_ns"], "10000000000");
+  EXPECT_EQ(state["rangeSlider"]["range_time_max_ns"], "20000000000");
+  EXPECT_EQ(dialog.absoluteTimeRange(), std::pair(10.0, 20.0));
 }
 
 TEST(DataExporterDialogTest, ConfigContainsOnlyMultifileAndLastDirectory) {

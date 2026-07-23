@@ -24,12 +24,11 @@ class DataExporterDialog : public PJ::DialogPluginTyped {
 
   bool onItemsDropped(std::string_view widget_name, const std::vector<std::string>& items) override;
   bool onClicked(std::string_view widget_name) override;
+  bool onItemDeleteRequested(std::string_view widget_name, int index) override;
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override;
   bool onTextChanged(std::string_view widget_name, std::string_view text) override;
-  bool onIndexChanged(std::string_view widget_name, int index) override;
   bool onToggled(std::string_view widget_name, bool checked) override;
   bool onRangeChanged(std::string_view widget_name, int lower, int upper) override;
-  bool onValueChanged(std::string_view widget_name, double value) override;
   bool onFileSelected(std::string_view widget_name, std::string_view path) override;
   bool onFolderSelected(std::string_view widget_name, std::string_view path) override;
   bool onTick() override;

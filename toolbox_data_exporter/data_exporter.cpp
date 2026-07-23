@@ -15,11 +15,11 @@
 
 #include "data_exporter_manifest.hpp"
 #include "exporter_dialog_ui.hpp"
-#include "exporter_icons.hpp"
 
 namespace {
 
 constexpr int kSliderDecimals = 3;
+constexpr double kNanosecondsPerSecond = 1e9;
 
 bool isNumericType(PJ::PrimitiveType type) {
   switch (type) {
@@ -94,19 +94,25 @@ std::string DataExporterDialog::widget_data() {
     rows.push_back({topic});
   }
 
+  const double time_offset = relative_time_ ? time_offset_ : 0.0;
+  const auto display_min_ns = static_cast<std::int64_t>((display_min_s_ + time_offset) * kNanosecondsPerSecond);
+  const auto display_max_ns = static_cast<std::int64_t>((display_max_s_ + time_offset) * kNanosecondsPerSecond);
+
   PJ::WidgetData wd;
   wd.setTableHeaders("tableWidget", {"Topic"})
       .setTableRows("tableWidget", rows)
       .setSelectedRows("tableWidget", selected_rows_)
       .setVisibleRows("tableWidget", visibleRows())
       .setDropTarget("tableWidget")
+      .setListPlaceholder("tableWidget", "Drag and Drop series from the left panel")
+      .setListItemsDeletable("tableWidget", true)
       // RangeSlider bounds reset its handles in the host. Mosaico sends these
-      // in this exact bounds-then-values order (mosaico_dialog.cpp:542-543).
+      // in this exact bounds-then-values-then-time-span order.
       .setRangeSliderBounds("rangeSlider", 0, slider_max_)
       .setRangeSliderValues("rangeSlider", sliderPosition(sel_start_s_), sliderPosition(sel_end_s_))
-      .setValue("startTime", sel_start_s_)
-      .setValue("endTime", sel_end_s_)
-      .setCurrentIndex("comboTime", relative_time_ ? 0 : 1)
+      .setRangeSliderTimeSpan("rangeSlider", display_min_ns, display_max_ns)
+      .setChecked("radioRelative", relative_time_)
+      .setChecked("radioAbsolute", !relative_time_)
       .setChecked("csvButton", export_csv_)
       .setChecked("parquetButton", !export_csv_)
       .setChecked("checkBoxMultifile", multifile_)
@@ -114,14 +120,8 @@ std::string DataExporterDialog::widget_data() {
       .setVisible("lineEditPrefix", multifile_)
       .setText("lineEditPrefix", prefix_)
       // PJ3 toolbox_ui.cpp:360-367 — time and export controls are live iff the table is non-empty.
-      .setEnabled("startTime", !topics_.empty())
-      .setEnabled("endTime", !topics_.empty())
       .setEnabled("rangeSlider", !topics_.empty())
       .setEnabled("saveButton", !topics_.empty())
-      // PJ3 toolbox_ui.cpp:50-55 — clearButton/saveButton icon resources. Inline SVGs
-      // are rendered as authored by the PJ4 host, preserving the PJ3 glyphs.
-      .setButtonIcon("clearButton", kPj3ClearIconSvg)
-      .setButtonIcon("saveButton", kPj3SaveIconSvg)
       .setLabel("statusLabel", status_);
 
   if (multifile_) {
@@ -196,6 +196,20 @@ bool DataExporterDialog::onClicked(std::string_view widget_name) {
   return false;
 }
 
+bool DataExporterDialog::onItemDeleteRequested(std::string_view widget_name, int index) {
+  if (widget_name != "tableWidget") {
+    return false;
+  }
+
+  if (index >= 0 && static_cast<size_t>(index) < topics_.size()) {
+    topics_.erase(topics_.begin() + index);
+  }
+  selected_rows_.clear();
+  dirty_ = true;
+  invokeRecomputeRange();
+  return true;
+}
+
 bool DataExporterDialog::onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) {
   if (widget_name != "tableWidget") {
     return false;
@@ -231,20 +245,18 @@ bool DataExporterDialog::onTextChanged(std::string_view widget_name, std::string
   return false;
 }
 
-bool DataExporterDialog::onIndexChanged(std::string_view widget_name, int index) {
-  if (widget_name != "comboTime") {
-    return false;
-  }
-
-  // PJ3 toolbox_ui.cpp:133-134 and toolbox_ui.cpp:369-413 — switching time
-  // mode triggers the same range recomputation and resets selection when data resolves.
-  relative_time_ = (index == 0);
-  dirty_ = true;
-  invokeRecomputeRange();
-  return true;
-}
-
 bool DataExporterDialog::onToggled(std::string_view widget_name, bool checked) {
+  if (widget_name == "radioRelative" || widget_name == "radioAbsolute") {
+    // An exclusive radio switch emits one unchecked and one checked event. Derive
+    // the same target mode from either event, but recompute the range only once.
+    const bool relative_time = widget_name == "radioRelative" ? checked : !checked;
+    if (relative_time != relative_time_) {
+      relative_time_ = relative_time;
+      dirty_ = true;
+      invokeRecomputeRange();
+    }
+    return true;
+  }
   if (widget_name == "csvButton") {
     // PJ3 toolbox_ui.cpp:46-48,136-147 — the two format radios are mutually exclusive.
     export_csv_ = checked;
@@ -277,23 +289,6 @@ bool DataExporterDialog::onRangeChanged(std::string_view widget_name, int lower,
   sel_end_s_ = display_min_s_ + (static_cast<double>(upper) / static_cast<double>(slider_scale_));
   dirty_ = true;
   return true;
-}
-
-bool DataExporterDialog::onValueChanged(std::string_view widget_name, double value) {
-  if (widget_name == "startTime") {
-    // PJ3 toolbox_ui.cpp:82-87,389-411 — emulate the spinbox bounds in the
-    // protocol and additionally keep the two committed endpoints ordered.
-    sel_start_s_ = std::min(std::clamp(value, display_min_s_, display_max_s_), sel_end_s_);
-    dirty_ = true;
-    return true;
-  }
-  if (widget_name == "endTime") {
-    // PJ3 toolbox_ui.cpp:89-93,389-411 — clamp to the active display range and start.
-    sel_end_s_ = std::max(std::clamp(value, display_min_s_, display_max_s_), sel_start_s_);
-    dirty_ = true;
-    return true;
-  }
-  return false;
 }
 
 bool DataExporterDialog::onFileSelected(std::string_view widget_name, std::string_view path) {
@@ -399,7 +394,7 @@ void DataExporterDialog::setDataRange(std::optional<std::pair<double, double>> r
   data_tmax_s_ = maximum;
 
   // PJ3 toolbox_ui.cpp:369-413 — mode conversion sets the offset and resets
-  // both handles/spinboxes to the complete newly computed range.
+  // both slider handles to the complete newly computed range.
   if (relative_time_) {
     time_offset_ = data_tmin_s_;
     display_min_s_ = 0.0;
