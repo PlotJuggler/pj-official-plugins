@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -264,6 +265,15 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   void onPullProgress(std::string topic_name, std::int64_t bytes);
   void onPullFinished(PullResultEvent result);
   void onAllFetchesComplete(std::string sequence_name);
+  // Mark a mid-fetch reveal as wanted and try to fire it (see the
+  // reveal_pending_ member doc). Call with state_.mu NOT held.
+  void requestProgressiveReveal();
+  // Fire the pending reveal unless the throttle window is still open or the
+  // batch is ending (cancelling / last topic done — the terminal notify owns
+  // those). Stamps last_progressive_notify_ AFTER the synchronous host refresh
+  // returns, so the throttle measures GUI breathing room between rebuilds, not
+  // event arrival gaps. Call with state_.mu NOT held.
+  void maybeFireProgressiveReveal();
 
   void workerLoop();
   void postCommand(std::function<void()> fn);
@@ -311,6 +321,16 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   std::mutex evt_mu_;
   std::deque<std::function<void()>> evt_queue_;
   std::function<PJ::ToolboxRuntimeHostView()> runtime_host_provider_;
+  // Progressive-reveal machinery (GUI-thread only): mid-fetch, each completed
+  // topic requests a throttled notifyDataChanged() so it appears in the
+  // catalog without waiting for the batch. reveal_pending_ marks a request
+  // suppressed by the throttle; onTick retries it once the window passes, so
+  // visibility stays bounded (~kMinRevealInterval) even when the next topic
+  // completion is minutes away. onAllFetchesComplete's terminal notify is
+  // unconditional and clears the flag.
+  static constexpr std::chrono::milliseconds kMinRevealInterval{500};
+  std::chrono::steady_clock::time_point last_progressive_notify_{};
+  bool reveal_pending_ = false;
   // Host-backed QSettings-like store (pj.settings.v1). Default-constructed
   // unbound until setSettings(); an unbound view reads defaults / drops writes.
   PJ::sdk::SettingsView settings_;
