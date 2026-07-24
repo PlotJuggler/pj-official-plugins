@@ -122,6 +122,11 @@ std::string DataExporterDialog::widget_data() {
       // PJ3 toolbox_ui.cpp:360-367 — time and export controls are live iff the table is non-empty.
       .setEnabled("rangeSlider", !topics_.empty())
       .setEnabled("saveButton", !topics_.empty())
+      // Streaming-only affordance (deliberate PJ4 addition over PJ3): the refresh
+      // button pulls newly received samples into the export window, and is live
+      // only while the table holds at least one topic from a streaming source.
+      .setButtonIconNamed("refreshButton", "refresh")
+      .setEnabled("refreshButton", has_streaming_topics_)
       .setLabel("statusLabel", status_);
 
   if (multifile_) {
@@ -148,27 +153,42 @@ bool DataExporterDialog::onItemsDropped(std::string_view widget_name, const std:
     return false;
   }
 
-  // PJ3 toolbox_ui.cpp:426-463 — trim, append in input order, dedupe, and
-  // recompute even when every dropped entry was already present.
-  appendTopics(items);
-  invokeRecomputeRange();
+  // PJ3 toolbox_ui.cpp:426-463 — trim, append in input order, dedupe. Unlike
+  // PJ3, the range only recomputes when the topic set actually changed: pulling
+  // fresh samples without touching the list is the refresh button's job.
+  if (appendTopics(items)) {
+    invokeRecomputeRange();
+  }
   return true;
 }
 
 bool DataExporterDialog::onClicked(std::string_view widget_name) {
   if (widget_name == "buttonAddAllFiles") {
     // PJ3 toolbox_csv.cpp:53-74 — add numeric+string catalog entries sorted,
-    // with insertion delegated to the same deduplicating path as a drop.
-    if (on_add_all_) {
-      appendTopics(on_add_all_());
+    // with insertion delegated to the same deduplicating path as a drop. The
+    // range only recomputes when the topic set actually grew (see refresh).
+    if (on_add_all_ && appendTopics(on_add_all_())) {
+      invokeRecomputeRange();
     }
-    invokeRecomputeRange();
+    return true;
+  }
+
+  if (widget_name == "refreshButton") {
+    // Streaming-only: re-read the catalog so samples received since the last
+    // recompute enter the export window. Disabled (and a no-op) without a
+    // streaming topic in the table.
+    if (has_streaming_topics_) {
+      dirty_ = true;
+      invokeRecomputeRange();
+    }
     return true;
   }
 
   if (widget_name == "removeButton") {
     // PJ3 toolbox_ui.cpp:256-279 and toolbox_csv.cpp:39-44 — remove selected
-    // rows bottom-up and recompute even when the selection is empty.
+    // rows bottom-up. Removals never recompute: re-reading the catalog would
+    // drag fresh streaming samples in, and that is the refresh button's job.
+    // The range keeps its last span even if the widest topic just left.
     std::vector<int> rows = selected_rows_;
     std::sort(rows.begin(), rows.end(), std::greater<>());
     rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
@@ -179,17 +199,15 @@ bool DataExporterDialog::onClicked(std::string_view widget_name) {
     }
     selected_rows_.clear();
     dirty_ = true;
-    invokeRecomputeRange();
     return true;
   }
 
   if (widget_name == "clearButton") {
-    // PJ3 toolbox_csv.cpp:46-51 — clear all topics, update gating on the next
-    // render, and ask the toolbox to recompute (whose no-range path preserves the range).
+    // PJ3 toolbox_csv.cpp:46-51 — clear all topics and update gating on the
+    // next render. No recompute: like removals, clearing must not pull data.
     topics_.clear();
     selected_rows_.clear();
     dirty_ = true;
-    invokeRecomputeRange();
     return true;
   }
 
@@ -201,12 +219,12 @@ bool DataExporterDialog::onItemDeleteRequested(std::string_view widget_name, int
     return false;
   }
 
+  // Row deletion is a removal: never recompute (see removeButton).
   if (index >= 0 && static_cast<size_t>(index) < topics_.size()) {
     topics_.erase(topics_.begin() + index);
   }
   selected_rows_.clear();
   dirty_ = true;
-  invokeRecomputeRange();
   return true;
 }
 
@@ -410,6 +428,13 @@ void DataExporterDialog::setDataRange(std::optional<std::pair<double, double>> r
   dirty_ = true;
 }
 
+void DataExporterDialog::setHasStreamingTopics(bool has_streaming) {
+  if (has_streaming_topics_ != has_streaming) {
+    has_streaming_topics_ = has_streaming;
+    dirty_ = true;
+  }
+}
+
 void DataExporterDialog::setStatus(std::string status) {
   status_ = std::move(status);
   dirty_ = true;
@@ -467,7 +492,8 @@ bool DataExporterDialog::endsWithCaseInsensitive(std::string_view text, std::str
   return true;
 }
 
-void DataExporterDialog::appendTopics(const std::vector<std::string>& topics) {
+bool DataExporterDialog::appendTopics(const std::vector<std::string>& topics) {
+  bool changed = false;
   for (const auto& raw_topic : topics) {
     const std::string topic = trim(raw_topic);
     if (topic.empty() || std::find(topics_.begin(), topics_.end(), topic) != topics_.end()) {
@@ -475,7 +501,9 @@ void DataExporterDialog::appendTopics(const std::vector<std::string>& topics) {
     }
     topics_.push_back(topic);
     dirty_ = true;
+    changed = true;
   }
+  return changed;
 }
 
 void DataExporterDialog::invokeRecomputeRange() {
@@ -621,8 +649,26 @@ void DataExporterToolbox::refreshCatalog() {
   std::map<std::string, PJ::sdk::FieldHandle> new_field_index;
   std::map<std::string, std::string> new_field_topic;
   std::map<std::string, PJ::PrimitiveType> new_field_type;
+  std::set<std::string> new_streaming_topics;
   const auto topics = catalog->topics();
   const auto fields = catalog->fields();
+
+  // The catalog ABI carries no structured source-kind bit; the host marks
+  // streaming datasets by prefixing their source_name — the same convention the
+  // catalog tree renders. Collect the topics owned by such sources so the
+  // refresh button can gate on "the table holds live data".
+  constexpr std::string_view kStreamSourcePrefix = "[stream] ";
+  for (const auto& source : catalog->dataSources()) {
+    if (!PJ::sdk::toStringView(source.name).starts_with(kStreamSourcePrefix)) {
+      continue;
+    }
+    for (uint32_t topic_offset = 0; topic_offset < source.topic_count; ++topic_offset) {
+      const uint64_t topic_index = static_cast<uint64_t>(source.first_topic) + topic_offset;
+      if (topic_index < topics.size()) {
+        new_streaming_topics.emplace(PJ::sdk::toStringView(topics[static_cast<size_t>(topic_index)].name));
+      }
+    }
+  }
   for (size_t topic_index = 0; topic_index < topics.size(); ++topic_index) {
     const auto& topic = topics[topic_index];
     const std::string topic_name(PJ::sdk::toStringView(topic.name));
@@ -652,6 +698,19 @@ void DataExporterToolbox::refreshCatalog() {
   field_index_.swap(new_field_index);
   field_topic_.swap(new_field_topic);
   field_type_.swap(new_field_type);
+
+  // Re-gate the refresh button after every catalog walk — the entry points
+  // (drop/add/remove/clear/mode switch/export) are exactly the moments the
+  // table contents can change.
+  bool any_streaming = false;
+  for (const auto& path : dialog_.topics()) {
+    const auto topic = field_topic_.find(path);
+    if (topic != field_topic_.end() && new_streaming_topics.count(topic->second) > 0) {
+      any_streaming = true;
+      break;
+    }
+  }
+  dialog_.setHasStreamingTopics(any_streaming);
 }
 
 std::vector<std::string> DataExporterToolbox::allCatalogFields() {

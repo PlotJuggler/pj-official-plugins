@@ -91,7 +91,7 @@
            <number>0</number>
           </property>
           <item>
-           <layout class="QHBoxLayout" name="horizontalFrameLayout" stretch="0,1,0,0,0">
+           <layout class="QHBoxLayout" name="horizontalFrameLayout" stretch="0,1,0,0,0,0">
             <property name="spacing">
              <number>4</number>
             </property>
@@ -178,6 +178,13 @@
               </property>
               <property name="text">
                <string>Clear</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="refreshButton">
+              <property name="toolTip">
+               <string>Pull new samples from streaming topics</string>
               </property>
              </widget>
             </item>

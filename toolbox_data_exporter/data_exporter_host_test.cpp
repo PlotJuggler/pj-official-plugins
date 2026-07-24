@@ -162,6 +162,9 @@ TEST(DataExporterHostTest, AddAllExportsMergedSinglePerTopicMultiAndParquet) {
   DataExporterDialog& dialog = toolbox.dialog();
   ASSERT_TRUE(dialog.onClicked("buttonAddAllFiles"));
   EXPECT_EQ(dialog.topics(), std::vector<std::string>({"topic_a/value", "topic_b/value"}));
+  // The test store's catalog exposes no "[stream] "-prefixed data source, so
+  // the streaming refresh affordance must stay disabled through a bound host.
+  EXPECT_FALSE(nlohmann::json::parse(dialog.widget_data())["refreshButton"]["enabled"].get<bool>());
 
   TempDirectory temp_directory;
   const auto single_base = temp_directory.path() / "merged";

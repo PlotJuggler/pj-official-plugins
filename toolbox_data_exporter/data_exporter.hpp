@@ -44,6 +44,7 @@ class DataExporterDialog : public PJ::DialogPluginTyped {
   void setOnExportMulti(ExportMultiCallback callback);
 
   void setDataRange(std::optional<std::pair<double, double>> range);
+  void setHasStreamingTopics(bool has_streaming);
   void setStatus(std::string status);
   void requestAcceptAfterExport();
   void clearPendingAccept();
@@ -55,7 +56,7 @@ class DataExporterDialog : public PJ::DialogPluginTyped {
  private:
   static std::string trim(std::string_view text);
   static bool endsWithCaseInsensitive(std::string_view text, std::string_view suffix);
-  void appendTopics(const std::vector<std::string>& topics);
+  bool appendTopics(const std::vector<std::string>& topics);
   void invokeRecomputeRange();
   void updateSliderMapping();
   [[nodiscard]] int sliderPosition(double value) const;
@@ -65,6 +66,7 @@ class DataExporterDialog : public PJ::DialogPluginTyped {
   std::vector<int> selected_rows_;
   std::string filter_;
   bool relative_time_ = true;
+  bool has_streaming_topics_ = false;
   double data_tmin_s_ = 0.0;
   double data_tmax_s_ = 1.0;
   double display_min_s_ = 0.0;

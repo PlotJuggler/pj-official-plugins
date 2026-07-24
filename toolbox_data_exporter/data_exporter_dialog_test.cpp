@@ -18,21 +18,33 @@ Json render(DataExporterDialog& dialog) {
   return Json::parse(dialog.widget_data());
 }
 
-TEST(DataExporterDialogTest, RecomputesForEmptyRemoveAndDuplicateOnlyDrop) {
+TEST(DataExporterDialogTest, OnlyAddingTopicsRecomputesTheRange) {
   DataExporterDialog dialog;
   int recompute_count = 0;
   dialog.setOnRecomputeRange([&recompute_count]() { ++recompute_count; });
 
+  // Adding new topics is the only list gesture that recomputes. Removals and
+  // clears must not, so they never pull fresh streaming samples in — that is
+  // the refresh button's exclusive job.
   EXPECT_TRUE(dialog.onClicked("removeButton"));
+  EXPECT_EQ(recompute_count, 0);
+
+  EXPECT_TRUE(dialog.onItemsDropped("tableWidget", {"  alpha/value  ", "beta/value"}));
+  EXPECT_EQ(recompute_count, 1);
+  ASSERT_EQ(dialog.topics(), std::vector<std::string>({"alpha/value", "beta/value"}));
+
+  // Duplicate-only drop adds nothing → no recompute.
+  EXPECT_TRUE(dialog.onItemsDropped("tableWidget", {"alpha/value", " alpha/value "}));
   EXPECT_EQ(recompute_count, 1);
 
-  EXPECT_TRUE(dialog.onItemsDropped("tableWidget", {"  alpha/value  "}));
-  EXPECT_EQ(recompute_count, 2);
-  ASSERT_EQ(dialog.topics(), std::vector<std::string>({"alpha/value"}));
+  // Row delete and Clear remove topics without recomputing.
+  EXPECT_TRUE(dialog.onItemDeleteRequested("tableWidget", 0));
+  EXPECT_EQ(recompute_count, 1);
+  EXPECT_EQ(dialog.topics(), std::vector<std::string>({"beta/value"}));
 
-  EXPECT_TRUE(dialog.onItemsDropped("tableWidget", {"alpha/value", " alpha/value "}));
-  EXPECT_EQ(recompute_count, 3);
-  EXPECT_EQ(dialog.topics(), std::vector<std::string>({"alpha/value"}));
+  EXPECT_TRUE(dialog.onClicked("clearButton"));
+  EXPECT_EQ(recompute_count, 1);
+  EXPECT_TRUE(dialog.topics().empty());
 }
 
 TEST(DataExporterDialogTest, ClearLastRowKeepsRangeAndDisablesExportControls) {
@@ -62,6 +74,29 @@ TEST(DataExporterDialogTest, ExportAndClearButtonsHaveNoIcons) {
   EXPECT_FALSE(state["saveButton"].contains("button_icon_svg"));
   EXPECT_FALSE(state["saveButton"].contains("button_icon_name"));
   EXPECT_FALSE(state.contains("clearButton"));
+  // The refresh button is the one icon-only control: host named-icon id.
+  EXPECT_EQ(state["refreshButton"]["button_icon_name"], "refresh");
+}
+
+TEST(DataExporterDialogTest, RefreshButtonGatesOnStreamingTopicsAndRecomputes) {
+  DataExporterDialog dialog;
+  int recompute_count = 0;
+  dialog.setOnRecomputeRange([&recompute_count]() { ++recompute_count; });
+
+  // Disabled and inert without a streaming topic in the table.
+  EXPECT_FALSE(render(dialog)["refreshButton"]["enabled"].get<bool>());
+  EXPECT_TRUE(dialog.onClicked("refreshButton"));
+  EXPECT_EQ(recompute_count, 0);
+
+  dialog.setHasStreamingTopics(true);
+  EXPECT_TRUE(render(dialog)["refreshButton"]["enabled"].get<bool>());
+  EXPECT_TRUE(dialog.onClicked("refreshButton"));
+  EXPECT_EQ(recompute_count, 1);
+
+  dialog.setHasStreamingTopics(false);
+  EXPECT_FALSE(render(dialog)["refreshButton"]["enabled"].get<bool>());
+  EXPECT_TRUE(dialog.onClicked("refreshButton"));
+  EXPECT_EQ(recompute_count, 1);
 }
 
 TEST(DataExporterDialogTest, EmitsTablePlaceholderAndRowDeletableFlag) {
@@ -72,7 +107,7 @@ TEST(DataExporterDialogTest, EmitsTablePlaceholderAndRowDeletableFlag) {
   EXPECT_TRUE(state["tableWidget"]["list_deletable"].get<bool>());
 }
 
-TEST(DataExporterDialogTest, RowDeleteErasesRequestedTopicClearsSelectionAndRecomputes) {
+TEST(DataExporterDialogTest, RowDeleteErasesRequestedTopicAndClearsSelectionWithoutRecomputing) {
   DataExporterDialog dialog;
   int recompute_count = 0;
   dialog.setOnRecomputeRange([&recompute_count]() { ++recompute_count; });
@@ -82,7 +117,8 @@ TEST(DataExporterDialogTest, RowDeleteErasesRequestedTopicClearsSelectionAndReco
 
   ASSERT_TRUE(dialog.onItemDeleteRequested("tableWidget", 1));
 
-  EXPECT_EQ(recompute_count, 2);
+  // Deleting a row must not recompute — no fresh streaming data is pulled in.
+  EXPECT_EQ(recompute_count, 1);
   EXPECT_EQ(dialog.topics(), std::vector<std::string>({"Alpha", "Gamma"}));
   const Json state = render(dialog);
   EXPECT_EQ(state["tableWidget"]["rows"], Json::array({{"Alpha"}, {"Gamma"}}));
