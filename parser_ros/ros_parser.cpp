@@ -1,10 +1,10 @@
 #include <cctype>
 #include <cstdint>
-#include <cstdlib>
 #include <functional>
 #include <pj_array_policy/array_policy.hpp>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 #include "ros_parser_internal.hpp"
 
@@ -14,10 +14,11 @@ namespace {
 
 // Port of the legacy PJ::ParseDouble helper (PJ3
 // `plotjuggler-ros-plugins/src/parser_configuration.cpp:115-153`). Same
-// three-stage semantics, std::strtod in place of boost::spirit:
+// three-stage semantics, PJ::parseNumber (locale-independent, like the
+// original boost::spirit) in place of boost::spirit:
 //
-//   1. Strict full-string double parse: success only when strtod consumes
-//      every byte of `str`.
+//   1. Strict full-string double parse: success only when the entire `str`
+//      is a valid number.
 //   2. If that fails and `remove_suffix` is on, scan a numeric prefix
 //      consisting of {digit, '+', '-', '.'} characters, stop at the first
 //      character outside that set, and re-parse the prefix. PJ3 quirks are
@@ -33,10 +34,12 @@ bool parseStringAsDouble(const std::string& str, double& value, bool remove_suff
     return false;
   }
 
-  char* parse_end = nullptr;
-  double parsed = std::strtod(str.data(), &parse_end);
-  if (parse_end == str.data() + str.size()) {
-    value = parsed;
+  // PJ::parseNumber keeps the strict whole-string semantics of the previous
+  // strtod call but ignores LC_NUMERIC, so "3.14" parses under comma-decimal
+  // locales too (strtod stopped at the '.' and failed the full-consumption
+  // check there).
+  if (auto parsed = PJ::parseNumber<double>(str)) {
+    value = *parsed;
     return true;
   }
 
@@ -50,11 +53,8 @@ bool parseStringAsDouble(const std::string& str, double& value, bool remove_suff
       ++pos;
     }
     if (pos > 0 && pos < str.size()) {
-      const std::string prefix(str, 0, pos);
-      parse_end = nullptr;
-      parsed = std::strtod(prefix.data(), &parse_end);
-      if (parse_end == prefix.data() + prefix.size()) {
-        value = parsed;
+      if (auto parsed = PJ::parseNumber<double>(std::string_view(str).substr(0, pos))) {
+        value = *parsed;
         return true;
       }
     }
