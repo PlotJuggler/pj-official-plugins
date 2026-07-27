@@ -25,6 +25,20 @@ target_link_libraries(anomaly_helpers
     nlohmann_json::nlohmann_json
 )
 
+# Unit tests for the engine-free layer. Deliberately hangs off anomaly_helpers (NOT
+# anomaly_core), so it builds and runs wherever the GUI plugin does — including the
+# cross-platform plugin CI, which never sees the runner or pj_scripting_core.
+if(TARGET GTest::gtest_main)
+  add_executable(anomaly_helpers_test tests/anomaly_helpers_test.cpp)
+  target_compile_options(anomaly_helpers_test PRIVATE ${PJ_WARNING_FLAGS})
+  target_link_libraries(anomaly_helpers_test PRIVATE
+    anomaly_helpers
+    nlohmann_json::nlohmann_json
+    GTest::gtest_main
+  )
+  add_test(NAME anomaly_helpers_test COMMAND anomaly_helpers_test)
+endif()
+
 # anomaly_core (the Luau engine layer) is built ONLY for the headless anomaly_runner
 # (gated by PJ_BUILD_ANOMALY_RUNNER, which the runner's CMakeLists enables). The GUI
 # plugin links anomaly_helpers and stays Luau-free, so the default/aggregate build never
