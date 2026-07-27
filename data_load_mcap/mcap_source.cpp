@@ -5,6 +5,7 @@
 #define MCAP_IMPLEMENTATION
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -12,6 +13,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -24,18 +26,40 @@
 // #include "parallel_reader.inl" compiles the parallel-reader bodies here (the
 // same .hpp/.inl split the rest of the library uses). message_byte_store.hpp
 // adds the optional deferred-byte (hot/cold lazy) layer on top.
-#include <mcap/message_byte_store.hpp>  // NOLINT(build/include_order)
-#include <mcap/parallel_reader.hpp>     // NOLINT(build/include_order)
+#include <mcap/message_byte_store.hpp>       // NOLINT(build/include_order)
+#include <mcap/parallel_reader.hpp>          // NOLINT(build/include_order)
+#include <mcap/unchunked_payload_store.hpp>  // NOLINT(build/include_order)
 
 namespace {
+
+struct TransparentStringHash {
+  using is_transparent = void;
+
+  std::size_t operator()(std::string_view value) const noexcept {
+    return std::hash<std::string_view>{}(value);
+  }
+
+  std::size_t operator()(const std::string& value) const noexcept {
+    return (*this)(std::string_view(value));
+  }
+};
+
+using SelectedTopicSet = std::unordered_set<std::string, TransparentStringHash, std::equal_to<>>;
 
 // Hardware-derived worker count. Floor at 2 so we still get parallelism on
 // virtualized hosts that report 1 core; cap at 8 to avoid oversubscription on
 // many-core machines where the byte-budget and consumer drain rate become the
 // real limits anyway.
 inline unsigned parallelImportThreadCount() {
+#ifdef PJ_TARGET_WASM
+  // Browser pthreads are comparatively expensive and WASM memory growth
+  // expands in coarse steps. Two workers keep decompression parallel without
+  // multiplying the resident chunk frontier.
+  return 2;
+#else
   const unsigned hw = std::thread::hardware_concurrency();
   return std::min(8u, std::max(2u, hw));
+#endif
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -43,6 +67,12 @@ inline unsigned parallelImportThreadCount() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 class McapSource : public PJ::FileSourceBase {
+#ifdef PJ_TARGET_WASM
+  static constexpr size_t kChunkCacheCapacityBytes = 32ULL * 1024 * 1024;
+  static constexpr uint64_t kParallelImportBudgetBytes = 128ULL * 1024 * 1024;
+  static constexpr uint64_t kParallelLookaheadBytes = 64ULL * 1024 * 1024;
+  static constexpr uint64_t kMaxChunkUncompressedBytes = 128ULL * 1024 * 1024;
+#else
   // Cold-path chunk cache budget, handed to the MessageByteStore. 128 MiB
   // comfortably holds tens of typical 4 MiB chunks so a scrubbing consumer
   // rarely re-decompresses, while staying well below host memory pressure.
@@ -51,6 +81,7 @@ class McapSource : public PJ::FileSourceBase {
   static constexpr size_t kChunkCacheCapacityBytes = 128ULL * 1024 * 1024;
   // Parallel-import in-flight decompression budget.
   static constexpr uint64_t kParallelImportBudgetBytes = 256ULL * 1024 * 1024;
+#endif
   // Progress / log throttling.
   static constexpr uint64_t kProgressUpdateInterval = 1000;
   // Push-failure threshold + log throttling. A handful of transient push
@@ -174,6 +205,11 @@ class McapSource : public PJ::FileSourceBase {
                                           parser_encoding == "ros1msg" || schema->encoding == "ros1msg";
       channel_parser_config["serialization"] = use_ros1_serialization ? "ros1" : "cdr";
       channel_parser_config["schema_encoding"] = parser_encoding;
+      // Topic-conditional parser classifications (notably std_msgs/String on
+      // */robot_description) need the same topic identity already carried by
+      // ParserBindingRequest. Keep it in each parser instance's config too so
+      // classifySchema() and the retained object parser agree.
+      channel_parser_config["topic_name"] = channel_ptr->topic;
       const std::string parser_config_str = channel_parser_config.dump();
 
       PJ::ParserBindingRequest request{
@@ -257,11 +293,23 @@ class McapSource : public PJ::FileSourceBase {
     }
 
     mcap::ParallelReadOptions parallel_opts;
-    parallel_opts.read.readOrder = mcap::ReadMessageOptions::ReadOrder::LogTimeOrder;
+    // Indexless/unchunked recordings are discovered by AllowFallbackScan but
+    // cannot be replayed in LogTimeOrder: the MCAP reader rejects that order
+    // without message indexes and otherwise yields a misleading empty import.
+    // Their physical file order is the only available deterministic order.
+    parallel_opts.read.readOrder = parallel_reader.chunkIndexes().empty()
+                                       ? mcap::ReadMessageOptions::ReadOrder::FileOrder
+                                       : mcap::ReadMessageOptions::ReadOrder::LogTimeOrder;
     parallel_opts.maxBytesInFlight = kParallelImportBudgetBytes;
     parallel_opts.threadCount = parallelImportThreadCount();
-    parallel_opts.read.topicFilter = [selected_topics = dialog_.selectedTopics()](std::string_view topic) {
-      return selected_topics.find(std::string(topic)) != selected_topics.end();
+#ifdef PJ_TARGET_WASM
+    parallel_opts.lookaheadBytes = kParallelLookaheadBytes;
+    parallel_opts.maxChunkUncompressedSize = kMaxChunkUncompressedBytes;
+#endif
+    const auto& dialog_selected_topics = dialog_.selectedTopics();
+    SelectedTopicSet selected_topics(dialog_selected_topics.begin(), dialog_selected_topics.end());
+    parallel_opts.read.topicFilter = [selected_topics = std::move(selected_topics)](std::string_view topic) {
+      return selected_topics.contains(topic);
     };
 
     // Track terminal failure so we can return PJ::unexpected after the message
@@ -269,91 +317,110 @@ class McapSource : public PJ::FileSourceBase {
     // exception must propagate to FileLoader as a load failure, not get silently
     // downgraded to okStatus() with a warning toast.
     std::optional<std::string> import_failure;
-    {
-      auto messages = parallel_reader.readMessages(on_problem, parallel_opts);
-      try {
-        // Explicit iterator so makeFetcher() can capture the current message's
-        // pinned-buffer handle (it.currentBuffer()).
-        for (auto it = messages.begin(); it != messages.end(); ++it) {
-          const auto& mv = *it;
+    auto push_message = [&](const mcap::MessageView& mv, auto fetch_payload) {
+      if (mv.channel == nullptr || mv.message.data == nullptr) {
+        return true;
+      }
+      auto binding_it = bindings.find(mv.channel->id);
+      if (binding_it == bindings.end()) {
+        return true;
+      }
+
+      const uint64_t pub_time = mv.message.publishTime;
+      const bool header_in_window = pub_time >= log_window_min && pub_time <= log_window_max;
+      const PJ::Timestamp timestamp_ns = use_log_time
+                                             ? static_cast<PJ::Timestamp>(mv.message.logTime)
+                                             : static_cast<PJ::Timestamp>(header_in_window ? pub_time : log_window_min);
+
+      auto push_status = runtimeHost().pushMessage(binding_it->second, timestamp_ns, std::move(fetch_payload));
+      if (!push_status) {
+        ++consecutive_push_failures;
+        if (consecutive_push_failures % kPushFailureLogInterval == 1) {
+          runtimeHost().reportMessage(
+              PJ::DataSourceMessageLevel::kWarning,
+              std::string("push failed on '") + mv.channel->topic + "': " + push_status.error() +
+                  " (consecutive failures: " + std::to_string(consecutive_push_failures) + ")");
+        }
+        if (consecutive_push_failures >= kMaxConsecutivePushFailures) {
+          import_failure = "MCAP import aborted: " + std::to_string(consecutive_push_failures) +
+                           " consecutive push failures (loaded " + std::to_string(msg_count) + " messages)";
+          runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, *import_failure);
+          return false;
+        }
+      } else {
+        consecutive_push_failures = 0;
+      }
+
+      ++msg_count;
+      if (msg_count % kProgressUpdateInterval == 0 &&
+          (!runtimeHost().progressUpdate(msg_count) || runtimeHost().isStopRequested())) {
+        return false;
+      }
+      return true;
+    };
+
+    try {
+      if (parallel_reader.chunkIndexes().empty()) {
+        // Indexless serial fallback. A chunk-free recording keeps every
+        // Message record uncompressed at a stable file offset, so each fetcher
+        // retains only a small locator and re-reads its payload on demand —
+        // retention stays bounded no matter how many object-topic messages the
+        // host defers (ObjectStore keeps those fetchers for the whole
+        // session). Only a chunked recording whose summary lacks chunk indexes
+        // still pays a message-sized eager copy: its in-chunk messages have no
+        // stable file offset to re-read from.
+        auto payload_store = std::make_shared<mcap::UnchunkedPayloadStore>(dialog_.filepath());
+        auto messages = parallel_reader.reader().readMessages(on_problem, parallel_opts.read);
+        for (const auto& mv : messages) {
           if (mv.channel == nullptr || mv.message.data == nullptr) {
             continue;
           }
-          auto binding_it = bindings.find(mv.channel->id);
-          if (binding_it == bindings.end()) {
-            continue;
-          }
-
-          // Window fallback: trust the header (publishTime) only when it lands
-          // inside the recording's log-time window. A header outside it comes from
-          // a latched / long-running publisher (static TF, robot_description, a map
-          // computed hours/days earlier); pin those to the recording's first
-          // timestamp (log_window_min) so the data is valid from the very start of
-          // playback rather than at its own arrival offset. useLogTime() forces
-          // the message's own logTime unconditionally.
-          const uint64_t pub_time = mv.message.publishTime;
-          const bool header_in_window = pub_time >= log_window_min && pub_time <= log_window_max;
-          PJ::Timestamp timestamp_ns;
-          if (use_log_time) {
-            timestamp_ns = static_cast<PJ::Timestamp>(mv.message.logTime);
-          } else if (header_in_window) {
-            timestamp_ns = static_cast<PJ::Timestamp>(pub_time);
+          bool keep_going = true;
+          if (mv.messageOffset.chunkOffset.has_value()) {
+            const auto* data = reinterpret_cast<const uint8_t*>(mv.message.data);
+            auto bytes = std::make_shared<const std::vector<uint8_t>>(data, data + mv.message.dataSize);
+            keep_going = push_message(mv, [bytes]() { return PJ::sdk::PayloadView{bytes}; });
           } else {
-            timestamp_ns = static_cast<PJ::Timestamp>(log_window_min);
+            keep_going = push_message(
+                mv, [payload_store, record_offset = mv.messageOffset.offset, size = mv.message.dataSize,
+                     channel_id = mv.channel->id, log_time = mv.message.logTime]() {
+                  mcap::ByteView view = payload_store->fetch(record_offset, size, channel_id, log_time);
+                  return PJ::sdk::PayloadView{
+                      PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(view.data), view.size),
+                      view.anchor,
+                  };
+                });
           }
-
-          // The fetcher captures the hot (pinned-chunk) handle + cold locator
-          // now; the lambda just adapts the std-only ByteView to PayloadView
-          // (BufferAnchor == std::shared_ptr<const void>, so anchor passes
-          // through unchanged).
-          auto push_status = runtimeHost().pushMessage(
-              binding_it->second, timestamp_ns, [fetcher = byte_store_.makeFetcher(it, mv)]() {
+          if (!keep_going) {
+            break;
+          }
+        }
+      } else {
+        auto messages = parallel_reader.readMessages(on_problem, parallel_opts);
+        for (auto it = messages.begin(); it != messages.end(); ++it) {
+          const auto& mv = *it;
+          if (!push_message(mv, [fetcher = byte_store_.makeFetcher(it, mv)]() {
                 mcap::ByteView v = fetcher();
                 return PJ::sdk::PayloadView{
                     PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(v.data), v.size),
                     v.anchor,
                 };
-              });
-          if (!push_status) {
-            ++consecutive_push_failures;
-            if (consecutive_push_failures % kPushFailureLogInterval == 1) {
-              runtimeHost().reportMessage(
-                  PJ::DataSourceMessageLevel::kWarning,
-                  std::string("push failed on '") + mv.channel->topic + "': " + push_status.error() +
-                      " (consecutive failures: " + std::to_string(consecutive_push_failures) + ")");
-            }
-            if (consecutive_push_failures >= kMaxConsecutivePushFailures) {
-              import_failure = "MCAP import aborted: " + std::to_string(consecutive_push_failures) +
-                               " consecutive push failures (loaded " + std::to_string(msg_count) + " messages)";
-              runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, *import_failure);
-              break;
-            }
-          } else {
-            consecutive_push_failures = 0;
-          }
-
-          ++msg_count;
-          if (msg_count % kProgressUpdateInterval == 0) {
-            if (!runtimeHost().progressUpdate(msg_count)) {
-              break;
-            }
-            if (runtimeHost().isStopRequested()) {
-              break;
-            }
+              })) {
+            break;
           }
         }
-      } catch (const std::exception& e) {
-        const std::string msg =
-            std::string("MCAP import aborted: ") + e.what() + " (loaded " + std::to_string(msg_count) + " messages)";
-        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, msg);
-        import_failure = msg;
-      } catch (...) {
-        const std::string msg =
-            "MCAP import aborted on unknown error (loaded " + std::to_string(msg_count) + " messages)";
-        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, msg);
-        import_failure = msg;
       }
-    }  // ~messages runs here, before ~parallel_reader (and its owned source).
+    } catch (const std::exception& e) {
+      const std::string msg =
+          std::string("MCAP import aborted: ") + e.what() + " (loaded " + std::to_string(msg_count) + " messages)";
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, msg);
+      import_failure = msg;
+    } catch (...) {
+      const std::string msg =
+          "MCAP import aborted on unknown error (loaded " + std::to_string(msg_count) + " messages)";
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, msg);
+      import_failure = msg;
+    }
 
     if (import_failure) {
       return PJ::unexpected(*import_failure);

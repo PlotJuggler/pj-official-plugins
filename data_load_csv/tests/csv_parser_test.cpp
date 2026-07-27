@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <clocale>
+#include <cstdlib>
 #include <sstream>
 #include <string>
 
@@ -268,6 +270,110 @@ TEST(CsvTimestamp, Trim) {
   EXPECT_EQ(Trim("  hello  "), "hello");
   EXPECT_EQ(Trim("\t\n"), "");
   EXPECT_EQ(Trim("no_space"), "no_space");
+}
+
+// --- Locale independence (issue #238) ---
+//
+// The plugin runs inside a Qt host, and QCoreApplication calls
+// setlocale(LC_ALL, "") at startup. On comma-decimal systems (fr_FR, es_ES,
+// de_DE, ...) that makes std::strtod treat ',' as the decimal separator and
+// reject "1781610745.99047" — every row of a dot-decimal CSV was skipped as
+// "Invalid timestamp". Parsing must not depend on the process locale.
+
+constexpr const char* kIssue238Csv =
+    "time_epoch,data1,data2\n"
+    "1781610745.99047,5.0414,-1.0\n"
+    "1781610746.51634,5.0414,-2.0\n"
+    "1781610747.85435,5.0510,-3.0\n";
+
+void expectIssue238CsvLoads() {
+  CsvParseConfig config;
+  config.time_column_index = 0;
+  auto result = ParseCsvData(kIssue238Csv, config);
+  EXPECT_EQ(result.lines_processed, 3);
+  EXPECT_EQ(result.lines_skipped, 0);
+  EXPECT_TRUE(result.warnings.empty());
+  ASSERT_EQ(result.columns.size(), 3u);
+  ASSERT_EQ(result.columns[0].numeric_points.size(), 3u);
+  EXPECT_DOUBLE_EQ(result.columns[0].numeric_points.front().first, 1781610745.99047);
+}
+
+TEST(CsvLocale, Issue238CsvLoadsInDefaultLocale) {
+  expectIssue238CsvLoads();
+}
+
+// Finds a comma-decimal locale usable with setlocale(LC_NUMERIC, ...). On
+// POSIX, if none is installed, compiles one into a scratch directory with
+// localedef and points LOCPATH at it — CI images usually ship only C/English
+// locales, and a skipped test would leave this regression uncovered.
+std::string commaDecimalLocaleName() {
+#if defined(_WIN32)
+  const char* candidates[] = {"French_France.1252", "fr-FR", "Spanish_Spain.1252", "es-ES"};
+#else
+  const char* candidates[] = {"fr_FR.UTF-8", "es_ES.UTF-8", "de_DE.UTF-8", "fr_FR", "es_ES"};
+#endif
+  for (const char* name : candidates) {
+    if (std::setlocale(LC_NUMERIC, name) != nullptr) {
+      std::setlocale(LC_NUMERIC, "C");
+      return name;
+    }
+  }
+#if !defined(_WIN32)
+  const std::string locale_dir = ::testing::TempDir() + "csv_locale_test";
+  const std::string command = "localedef -i fr_FR -f UTF-8 '" + locale_dir + "/fr_FR.UTF-8' 2>/dev/null";
+  if (std::system(("mkdir -p '" + locale_dir + "'").c_str()) == 0 && std::system(command.c_str()) == 0 &&
+      setenv("LOCPATH", locale_dir.c_str(), 1) == 0 && std::setlocale(LC_NUMERIC, "fr_FR.UTF-8") != nullptr) {
+    std::setlocale(LC_NUMERIC, "C");
+    return "fr_FR.UTF-8";
+  }
+#endif
+  return {};
+}
+
+class CsvCommaDecimalLocale : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    const std::string name = commaDecimalLocaleName();
+    if (name.empty()) {
+      GTEST_SKIP() << "no comma-decimal locale available and localedef generation failed";
+    }
+    ASSERT_NE(std::setlocale(LC_NUMERIC, name.c_str()), nullptr);
+    // Sanity: the locale must actually flip the decimal separator, otherwise
+    // these tests silently degrade into the default-locale ones.
+    ASSERT_STREQ(std::localeconv()->decimal_point, ",");
+  }
+
+  void TearDown() override {
+    std::setlocale(LC_NUMERIC, "C");
+  }
+};
+
+TEST_F(CsvCommaDecimalLocale, ToDoubleParsesDotDecimal) {
+  auto value = toDouble("1781610745.99047");
+  ASSERT_TRUE(value.has_value());
+  EXPECT_DOUBLE_EQ(*value, 1781610745.99047);
+}
+
+TEST_F(CsvCommaDecimalLocale, ToDoubleStillNormalizesEuropeanComma) {
+  auto value = toDouble("5,0414");
+  ASSERT_TRUE(value.has_value());
+  EXPECT_DOUBLE_EQ(*value, 5.0414);
+}
+
+TEST_F(CsvCommaDecimalLocale, ToDoubleRejectsGarbage) {
+  EXPECT_FALSE(toDouble("12.34abc").has_value());
+  EXPECT_FALSE(toDouble("abc").has_value());
+  EXPECT_FALSE(toDouble("").has_value());
+}
+
+TEST_F(CsvCommaDecimalLocale, AutoParseTimestampDecimalEpoch) {
+  auto ts = AutoParseTimestamp("1781610745.99047");
+  ASSERT_TRUE(ts.has_value());
+  EXPECT_DOUBLE_EQ(*ts, 1781610745.99047);
+}
+
+TEST_F(CsvCommaDecimalLocale, Issue238CsvLoadsCompletely) {
+  expectIssue238CsvLoads();
 }
 
 }  // namespace

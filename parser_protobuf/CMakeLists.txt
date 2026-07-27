@@ -58,3 +58,21 @@ target_link_libraries(protobuf_parser_test PRIVATE
   GTest::gtest_main
 )
 add_test(NAME protobuf_parser_test COMMAND protobuf_parser_test)
+
+add_executable(protobuf_parser_dialog_test tests/protobuf_parser_dialog_test.cpp)
+target_compile_features(protobuf_parser_dialog_test PRIVATE cxx_std_20)
+target_compile_options(protobuf_parser_dialog_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(protobuf_parser_dialog_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
+target_link_libraries(protobuf_parser_dialog_test PRIVATE
+  plotjuggler_sdk::plugin_sdk
+  protobuf::libprotobuf
+  protobuf::libprotoc
+  nlohmann_json::nlohmann_json
+  pj_base64
+  pj_array_policy
+  GTest::gtest_main
+)
+add_test(NAME protobuf_parser_dialog_test COMMAND protobuf_parser_dialog_test)

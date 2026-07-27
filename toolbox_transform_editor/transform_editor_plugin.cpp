@@ -670,6 +670,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   bool onTextChanged(std::string_view name, std::string_view text) override {
     if (name == "nameLineEdit") {
       output_name_ = std::string(text);
+      preview_dirty_ = true;
       return true;
     }
     // Live search filter in the function library box.
@@ -822,12 +823,18 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
         on_save_();
       }
     }
-    // Always refresh the preview every tick so a live/streaming source keeps
-    // moving in the chart (mirrors the FFT toolbox). refreshPreview re-reads the
-    // latest samples and re-applies the Lua function each time.
-    preview_dirty_ = false;
-    if (on_refresh_preview_) {
-      on_refresh_preview_();
+    // Rebuild immediately after an editor change. Browser builds sample an
+    // otherwise-live source at 1 Hz instead of replaying the complete Luau
+    // transform on every 20 Hz panel tick; native builds retain their existing
+    // every-tick live preview. Streaming output still advances in the host on
+    // every source commit—this cadence only rebuilds the preview snapshot.
+    ++preview_refresh_ticks_;
+    if (preview_dirty_ || preview_refresh_ticks_ >= kPreviewRefreshTickInterval) {
+      preview_dirty_ = false;
+      preview_refresh_ticks_ = 0;
+      if (on_refresh_preview_) {
+        on_refresh_preview_();
+      }
     }
     // Re-validate the batch function only when its fields changed (not every tick).
     if (batch_dirty_) {
@@ -892,11 +899,13 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     if (name == "luaButton" && checked) {
       language_ = "luau";
       validateSyntax();
+      preview_dirty_ = true;
       return true;
     }
     if (name == "pythonButton" && checked) {
       language_ = "python";
       validateSyntax();
+      preview_dirty_ = true;
       return true;
     }
     if (name == "luaBatchButton" && checked) {
@@ -1207,6 +1216,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     function_body_ = body;
     output_name_ = names.front();  // seed with the first; the user can rename
     validateSyntax();
+    preview_dirty_ = true;
   }
 
   void setPreviewSeries(std::vector<PJ::ChartSeries> series) {
@@ -1419,6 +1429,12 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   bool save_requested_ = false;
   bool pending_close_ = false;
   bool preview_dirty_ = false;
+  int preview_refresh_ticks_ = 0;
+#ifdef PJ_TARGET_WASM
+  static constexpr int kPreviewRefreshTickInterval = 20;
+#else
+  static constexpr int kPreviewRefreshTickInterval = 1;
+#endif
   bool help_requested_ = false;
   std::function<void()> on_save_;
   std::function<void()> on_refresh_preview_;

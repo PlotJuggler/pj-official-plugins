@@ -2,9 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cerrno>
-#include <cstdlib>
 #include <cstring>
+#include <pj_base/number_parse.hpp>
 #include <sstream>
 
 #include "date/date.h"
@@ -35,14 +34,10 @@ std::optional<double> toDouble(const std::string& str) {
     std::replace(normalized.begin(), normalized.end(), ',', '.');
   }
 
-  const char* start = normalized.c_str();
-  char* end = nullptr;
-  errno = 0;
-  double value = std::strtod(start, &end);
-  if (errno != 0 || end == start || *end != '\0') {
-    return std::nullopt;
-  }
-  return value;
+  // PJ::parseNumber is a strict whole-string parse and, unlike std::strtod,
+  // ignores LC_NUMERIC — "1.5" parses as 1.5 even when the host application
+  // runs under a comma-decimal locale (fr_FR, es_ES, ...). See issue #238.
+  return PJ::parseNumber<double>(normalized);
 }
 
 static const char* const UNAMBIGUOUS_FORMATS[] = {
