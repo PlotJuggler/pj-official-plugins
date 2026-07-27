@@ -28,6 +28,23 @@ It links only the SDK plugin host (`plotjuggler_sdk::plugin_host`) + `anomaly_co
 — no `pj_datastore`, no Qt. Data is captured by an in-memory write-host that
 implements the DataSource write ABI directly.
 
+> **Known limitation — the runner is not yet reproducible from a clean checkout.**
+> Unlike the GUI plugin (which is Luau-free and builds from public packages alone),
+> the runner needs two Conan packages that are **not on any enabled remote** today:
+>
+> - **`luau/0.700` with an `fPIC` option.** ConanCenter publishes `luau/0.700`, but its
+>   recipe has no `fPIC` option, and the engine is linked into a shared library — so the
+>   stock recipe either rejects `luau/*:fPIC=True` or yields a non-PIC static lib that
+>   fails at link time. The recipe in use here is a locally patched export.
+> - **`pj_scripting_core/0.2.0`.** Built and exported from the PlotJuggler host repo
+>   (`PJ4/pj_scripting/`); not published to a remote.
+>
+> Until both are published (`plotjuggler-cloudsmith`), you must export them into your
+> local Conan cache yourself. This is also why the runner — and its `notify_test` — are
+> absent from CI: the plugin discovery in `.github/workflows/ci-linux.yml` only walks
+> `*/conanfile.py` entries that carry a `manifest.json`, and CI could not resolve these
+> two packages anyway. Publishing them is the prerequisite for putting the runner under CI.
+
 ## Usage
 
 ```
