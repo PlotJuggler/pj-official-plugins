@@ -1,12 +1,15 @@
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <pj_base/number_parse.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_plugins/sdk/encoding_utils.hpp>
 #include <pj_streaming/delegated_ingest.hpp>
 #include <pj_streaming/endpoint.hpp>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <zmq.hpp>
 
@@ -130,20 +133,35 @@ class ZmqSource : public PJ::StreamSourceBase {
 
       // Optional third frame: timestamp as text (seconds since epoch)
       int64_t timestamp_ns = 0;
+      bool timestamp_parsed = false;
       if (recv_msg.more()) {
         zmq::message_t ts_msg;
         result = socket_->recv(ts_msg, zmq::recv_flags::dontwait);
         if (result && ts_msg.size() > 0) {
-          std::string ts_str(static_cast<const char*>(ts_msg.data()), ts_msg.size());
-          double ts_sec = std::strtod(ts_str.c_str(), nullptr);
-          timestamp_ns = static_cast<int64_t>(ts_sec * 1e9);
+          std::string_view ts_str(static_cast<const char*>(ts_msg.data()), ts_msg.size());
+          while (!ts_str.empty() && std::isspace(static_cast<unsigned char>(ts_str.front()))) {
+            ts_str.remove_prefix(1);
+          }
+          while (!ts_str.empty() && std::isspace(static_cast<unsigned char>(ts_str.back()))) {
+            ts_str.remove_suffix(1);
+          }
+          // Strict, locale-independent parse. std::strtod respects LC_NUMERIC and
+          // under a comma-decimal locale silently truncated "1721.5" to 1721.
+          if (auto ts_sec = PJ::parseNumber<double>(ts_str)) {
+            timestamp_ns = static_cast<int64_t>(*ts_sec * 1e9);
+            timestamp_parsed = true;
+          }
         }
         // Drain remaining frames
         while (ts_msg.more()) {
           ts_msg.rebuild();
           (void)socket_->recv(ts_msg, zmq::recv_flags::dontwait);
         }
-      } else {
+      }
+      if (!timestamp_parsed) {
+        // No timestamp frame, or a frame that is not a valid number: fall back to
+        // arrival time. (An unparsable frame previously produced timestamp 0, i.e.
+        // the epoch, which mis-places the sample by decades.)
         auto now = std::chrono::system_clock::now().time_since_epoch();
         timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
       }
