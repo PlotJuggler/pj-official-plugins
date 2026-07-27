@@ -3,7 +3,12 @@
   "name": "Anomaly Detector",
   "version": "0.1.0",
   "description": "Write Lua anomaly rules over time series and emit plot markers (regions / events) when a rule fires.",
-  "author": "PlotJuggler",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
   "category": "toolbox",
   "tags": [
     "lua",
@@ -11,5 +16,5 @@
     "markers",
     "toolbox"
   ],
-  "min_plotjuggler_version": "4.0.0"
+  "min_plotjuggler_version": "3.999.1"
 }
