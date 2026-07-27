@@ -374,18 +374,17 @@ void CsvDialog::analyzeFile() {
       if (col >= row.size() || row[col].empty()) {
         continue;
       }
-      try {
-        double val = std::stod(row[col]);
-        if (val < prev_val) {
-          warning_message_ =
-              "WARNING: timestamps in the selected column are not monotonically increasing. "
-              "Data will be sorted automatically after loading.";
-          break;
-        }
-        prev_val = val;
-      } catch (...) {
+      auto val = PJ::CSV::toDouble(PJ::CSV::Trim(row[col]));
+      if (!val) {
         break;  // Non-numeric timestamps: skip check
       }
+      if (*val < prev_val) {
+        warning_message_ =
+            "WARNING: timestamps in the selected column are not monotonically increasing. "
+            "Data will be sorted automatically after loading.";
+        break;
+      }
+      prev_val = *val;
     }
   }
 
