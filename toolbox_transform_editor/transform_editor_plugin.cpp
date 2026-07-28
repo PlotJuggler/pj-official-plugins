@@ -14,13 +14,13 @@
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <optional>
-#include <regex>
 #include <pj_base/sdk/platform.hpp>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_base/sdk/service_traits.hpp>
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
