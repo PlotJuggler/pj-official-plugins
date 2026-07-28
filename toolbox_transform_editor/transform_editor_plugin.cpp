@@ -428,10 +428,18 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // setDropTarget stays unconditional even in edit mode: the panel engine reads
     // the declared targets from the FIRST snapshot only, so gating it here would
     // install no drop filter at all — onItemsDropped does the gating instead.
-    wd.setDropTarget("listBatchSources");
-    wd.setListItems("listBatchSources", batch_sources_);
-    wd.setListPlaceholder("listBatchSources", "Drag & drop timeseries here");
-    wd.setListItemsDeletable("listBatchSources", !edit_mode_);
+    wd.setDropTarget("tableBatchSources");
+    // One column, headers hidden: the header is only here to give the column a
+    // width to stretch, the same way tableSources uses its own.
+    wd.setTableHeaders("tableBatchSources", {"Input timeseries"});
+    std::vector<std::vector<std::string>> batch_rows;
+    batch_rows.reserve(batch_sources_.size());
+    for (const std::string& source : batch_sources_) {
+      batch_rows.push_back({source});
+    }
+    wd.setTableRows("tableBatchSources", batch_rows);
+    wd.setListPlaceholder("tableBatchSources", "Drag & drop timeseries here");
+    wd.setListItemsDeletable("tableBatchSources", !edit_mode_);
     const char* batch_lang = (batch_language_ == "python") ? "python" : "lua";
     wd.setCodeContent("globalVarsTextBatch", batch_global_code_).setCodeLanguage("globalVarsTextBatch", batch_lang);
     wd.setCodeContent("functionTextBatch", batch_function_body_).setCodeLanguage("functionTextBatch", batch_lang);
@@ -443,7 +451,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
     // Batch validation overlay — veil the source list with every blocking problem.
     // batch_validation_error_ is the host's real compile/run error (validateBatch).
-    // The empty-input gate is NOT a batch_term: listBatchSources renders its own
+    // The empty-input gate is NOT a batch_term: tableBatchSources renders its own
     // placeholder over the same rect. It lives on the Create setEnabled below.
     std::string batch_term;
     if (batch_function_body_.empty()) {
@@ -466,7 +474,11 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // parity). Single: the name field. Batch: the sources + prefix/suffix that form
     // the name. setEnabled(false) is cosmetic for drops — see onItemsDropped.
     wd.setEnabled("nameLineEdit", !edit_mode_);
-    wd.setEnabled("listBatchSources", !edit_mode_);
+    wd.setEnabled("tableBatchSources", !edit_mode_);
+    // Each Clear tracks its own list: nothing to clear, nothing to press. Batch
+    // also follows the edit lock, matching its per-row trash.
+    wd.setEnabled("buttonClearSources", !sources_.empty());
+    wd.setEnabled("buttonClearBatchSources", !batch_sources_.empty() && !edit_mode_);
     wd.setEnabled("suffixLineEdit", !edit_mode_);
     wd.setEnabled("radioButtonPrefix", !edit_mode_);
     wd.setEnabled("radioButtonSuffix", !edit_mode_);
@@ -531,6 +543,23 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       pending_create_ = PendingCreate::Batch;
       return true;
     }
+    // Clear affordance in each Input Timeseries band: empty that tab's input list
+    // in one go, the bulk counterpart of the per-row trash.
+    if (name == "buttonClearSources") {
+      sources_.clear();
+      primary_index_ = -1;
+      preview_dirty_ = true;
+      return true;
+    }
+    if (name == "buttonClearBatchSources") {
+      // edit_mode_ locks the input set — see onItemsDropped.
+      if (edit_mode_) {
+        return true;
+      }
+      batch_sources_.clear();
+      batch_dirty_ = true;
+      return true;
+    }
     // Function library box (PJ3's buttonLibraryBox): open the interactive sub-panel.
     if (name == "buttonLibraryBox") {
       library_open_ = true;
@@ -587,7 +616,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
 
   bool onItemDeleteRequested(std::string_view name, int index) override {
-    if (name == "listBatchSources") {
+    if (name == "tableBatchSources") {
       // edit_mode_ locks the input set (see onItemsDropped). Belt-and-braces here:
       // list_deletable already hides the trash button, so this only fires if that
       // ever stops holding.
@@ -665,7 +694,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       library_selected_ = items;
       return true;
     }
-    // No listBatchSources branch on purpose: the host clears the list before
+    // No tableBatchSources branch on purpose: the host clears the table before
     // repopulating it, and that clear arrives here as an empty selection — a branch
     // that stored `items` would wipe batch_sources_ one tick after every drop.
     return false;
@@ -738,7 +767,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       preview_dirty_ = true;
       return true;
     }
-    if (widget_name == "listBatchSources") {
+    if (widget_name == "tableBatchSources") {
       // Identity lock: in edit mode the stored source is what names the output, so a
       // second drop would modify the original AND create another series on the same
       // click. Enforced here, not by setEnabled(false): the drop filter lives on the
@@ -1202,7 +1231,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   std::string batch_suffix_;
   int current_tab_ = 0;                     // active tab (0 = Single, 1 = Batch)
   bool pending_tab_restore_ = false;        // one-shot: push the tab after loadConfig
-  std::vector<std::string> batch_sources_;  // full paths dropped into listBatchSources
+  std::vector<std::string> batch_sources_;  // full paths dropped into tableBatchSources
   bool batch_use_prefix_ = false;           // Prefix vs Suffix radio (default Suffix)
   std::vector<std::string> all_series_;     // live catalog, for outputNameExists
 

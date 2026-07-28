@@ -123,6 +123,12 @@
                   <property name="fillDockedWidgets" stdset="0">
                    <bool>true</bool>
                   </property>
+                  <property name="trailingButtonName">
+                   <string>buttonClearSources</string>
+                  </property>
+                  <property name="trailingButtonIcon">
+                   <string>:/resources/svg/clear.svg</string>
+                  </property>
                   <widget class="QPushButton" name="pushButtonHelp">
                    <property name="toolTip">
                     <string>Help</string>
@@ -585,6 +591,12 @@
              <property name="fillDockedWidgets" stdset="0">
               <bool>true</bool>
              </property>
+             <property name="trailingButtonName">
+              <string>buttonClearBatchSources</string>
+             </property>
+             <property name="trailingButtonIcon">
+              <string>:/resources/svg/clear.svg</string>
+             </property>
             </widget>
            </item>
            <item>
@@ -615,16 +627,31 @@
                <number>0</number>
               </property>
               <item>
-               <widget class="QListWidget" name="listBatchSources">
+               <widget class="QTableWidget" name="tableBatchSources">
+                <property name="flush" stdset="0">
+                 <bool>true</bool>
+                </property>
                 <property name="toolTip">
                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Drag &amp;amp; drop timeseries here. The function is applied to each one separately.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                 </property>
                 <property name="frameShape">
                  <enum>QFrame::NoFrame</enum>
                 </property>
-                <property name="selectionMode">
-                 <enum>QAbstractItemView::ExtendedSelection</enum>
+                <property name="showGrid">
+                 <bool>true</bool>
                 </property>
+                <property name="selectionBehavior">
+                 <enum>QAbstractItemView::SelectRows</enum>
+                </property>
+                <property name="editTriggers">
+                 <set>QAbstractItemView::NoEditTriggers</set>
+                </property>
+                <attribute name="horizontalHeaderVisible">
+                 <bool>false</bool>
+                </attribute>
+                <attribute name="verticalHeaderVisible">
+                 <bool>false</bool>
+                </attribute>
                </widget>
               </item>
              </layout>
