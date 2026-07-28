@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -20,7 +19,6 @@
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
-#include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -306,13 +304,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     PJ::WidgetData wd;
 
     // One-shot after loadConfig (Modify): force the editor onto the tab the series
-    // was created from, and (for batch) re-select its source. Only once, so the
-    // user can freely switch tabs / change the selection afterwards.
+    // was created from. Only once, so the user can freely switch tabs afterwards.
     if (pending_tab_restore_) {
       wd.setTabIndex("tabWidget", current_tab_);
-      if (current_tab_ == 1) {
-        wd.setSelectedItems("listBatchSources", batch_selected_);
-      }
       pending_tab_restore_ = false;
     }
 
@@ -430,8 +424,14 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     }
 
     // Batch tab content (set first so the validation overlay and Create gating
-    // below see the current state).
-    wd.setListItems("listBatchSources", batch_filtered_sources_);
+    // below see the current state). The rows ARE the input set, not a selection.
+    // setDropTarget stays unconditional even in edit mode: the panel engine reads
+    // the declared targets from the FIRST snapshot only, so gating it here would
+    // install no drop filter at all — onItemsDropped does the gating instead.
+    wd.setDropTarget("listBatchSources");
+    wd.setListItems("listBatchSources", batch_sources_);
+    wd.setListPlaceholder("listBatchSources", "Drag & drop timeseries here");
+    wd.setListItemsDeletable("listBatchSources", !edit_mode_);
     const char* batch_lang = (batch_language_ == "python") ? "python" : "lua";
     wd.setCodeContent("globalVarsTextBatch", batch_global_code_).setCodeLanguage("globalVarsTextBatch", batch_lang);
     wd.setCodeContent("functionTextBatch", batch_function_body_).setCodeLanguage("functionTextBatch", batch_lang);
@@ -443,10 +443,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
     // Batch validation overlay — veil the source list with every blocking problem.
     // batch_validation_error_ is the host's real compile/run error (validateBatch).
+    // The empty-input gate is NOT a batch_term: listBatchSources renders its own
+    // placeholder over the same rect. It lives on the Create setEnabled below.
     std::string batch_term;
-    if (batch_selected_.empty()) {
-      batch_term += "Select input series with the filter\n";
-    }
     if (batch_function_body_.empty()) {
       batch_term += "Write your function body\n";
     }
@@ -460,16 +459,14 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     const bool is_modify_single = outputNameExists(output_name_) || edit_mode_;
     wd.setEnabled("pushButtonCreate", single_term.empty());
     wd.setButtonText("pushButtonCreate", is_modify_single ? "Modify Time Series" : "Create New Time Series");
-    // Prefix/suffix is no longer surfaced in the overlay; the missing-affix gate is
-    // the Create button staying disabled until a prefix/suffix is entered.
-    wd.setEnabled("pushButtonCreateBatch", batch_term.empty() && !batch_suffix_.empty());
+    // Missing affix and empty inputs gate via the disabled button, not the overlay.
+    wd.setEnabled("pushButtonCreateBatch", batch_term.empty() && !batch_sources_.empty() && !batch_suffix_.empty());
     wd.setButtonText("pushButtonCreateBatch", edit_mode_ ? "Modify Time Series" : "Create New Time Series");
     // Lock the identity while editing so a rename can't fork a new series (PJ3
-    // parity). Single: the name field. Batch: the inputs that form the name —
-    // source selection + filter + prefix/suffix.
+    // parity). Single: the name field. Batch: the sources + prefix/suffix that form
+    // the name. setEnabled(false) is cosmetic for drops — see onItemsDropped.
     wd.setEnabled("nameLineEdit", !edit_mode_);
     wd.setEnabled("listBatchSources", !edit_mode_);
-    wd.setEnabled("lineEditTab2Filter", !edit_mode_);
     wd.setEnabled("suffixLineEdit", !edit_mode_);
     wd.setEnabled("radioButtonPrefix", !edit_mode_);
     wd.setEnabled("radioButtonSuffix", !edit_mode_);
@@ -490,11 +487,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // Name typed in the "Save current function" prompt (harvested on OK).
     if (name == "saveFunctionName") {
       pending_save_name_ = std::string(text);
-      return true;
-    }
-    if (name == "lineEditTab2Filter") {
-      batch_filter_ = std::string(text);
-      updateBatchFilter();
       return true;
     }
     if (name == "suffixLineEdit") {
@@ -595,6 +587,17 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
 
   bool onItemDeleteRequested(std::string_view name, int index) override {
+    if (name == "listBatchSources") {
+      // edit_mode_ locks the input set (see onItemsDropped). Belt-and-braces here:
+      // list_deletable already hides the trash button, so this only fires if that
+      // ever stops holding.
+      if (edit_mode_ || index < 0 || index >= static_cast<int>(batch_sources_.size())) {
+        return false;
+      }
+      batch_sources_.erase(batch_sources_.begin() + index);
+      batch_dirty_ = true;
+      return true;
+    }
     if (name != "tableSources" || index < 0 || index >= static_cast<int>(sources_.size())) {
       return false;
     }
@@ -662,10 +665,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       library_selected_ = items;
       return true;
     }
-    if (name == "listBatchSources") {
-      batch_selected_ = items;
-      return true;
-    }
+    // No listBatchSources branch on purpose: the host clears the list before
+    // repopulating it, and that clear arrives here as an empty selection — a branch
+    // that stored `items` would wipe batch_sources_ one tick after every drop.
     return false;
   }
 
@@ -710,13 +712,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       batch_dirty_ = true;
       return true;
     }
-    // Batch filter regex toggle (the band's ".*" button, mirroring Mosaico). Off =
-    // substring/`*`-wildcard on the filter text; on = full ECMAScript regex.
-    if (name == "batchRegexToggle") {
-      batch_regex_ = checked;
-      updateBatchFilter();
-      return true;
-    }
     return false;
   }
 
@@ -741,6 +736,23 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
         primary_index_ = 0;
       }
       preview_dirty_ = true;
+      return true;
+    }
+    if (widget_name == "listBatchSources") {
+      // Identity lock: in edit mode the stored source is what names the output, so a
+      // second drop would modify the original AND create another series on the same
+      // click. Enforced here, not by setEnabled(false): the drop filter lives on the
+      // panel root and QWidget::childAt does not skip disabled children, so a greyed
+      // widget still receives drops.
+      if (edit_mode_) {
+        return true;
+      }
+      for (const auto& item : items) {
+        if (std::find(batch_sources_.begin(), batch_sources_.end(), item) == batch_sources_.end()) {
+          batch_sources_.push_back(item);
+        }
+      }
+      batch_dirty_ = true;
       return true;
     }
     return false;
@@ -859,12 +871,12 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       batch_language_ = cfg.value("language", std::string{"luau"});
       batch_suffix_ = cfg.value("suffix", std::string{});
       batch_use_prefix_ = cfg.value("use_prefix", false);
-      batch_selected_.clear();
+      batch_sources_.clear();
       if (cfg.contains("sources") && cfg["sources"].is_array()) {
-        batch_selected_ = cfg["sources"].get<std::vector<std::string>>();
+        batch_sources_ = cfg["sources"].get<std::vector<std::string>>();
       }
       current_tab_ = 1;             // open on the Batch tab
-      pending_tab_restore_ = true;  // one-shot: push the tab + selection to the UI
+      pending_tab_restore_ = true;  // one-shot: push the tab to the UI
       batch_dirty_ = true;
       edit_mode_ = true;
       return true;
@@ -1048,8 +1060,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   int currentTab() const {
     return current_tab_;
   }
-  const std::vector<std::string>& batchSelected() const {
-    return batch_selected_;
+  const std::vector<std::string>& batchSources() const {
+    return batch_sources_;
   }
   const std::string& batchSuffix() const {
     return batch_suffix_;
@@ -1065,7 +1077,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
   void setAvailableSeries(std::vector<std::string> series) {
     all_series_ = std::move(series);
-    updateBatchFilter();
   }
 
   // The series that provides `value` (the radio-selected row), "" when no inputs.
@@ -1120,60 +1131,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   void validateSyntax() {
     // Lightweight check: non-empty function body = tentatively OK
     syntax_ok_ = !function_body_.empty();
-  }
-
-  // Filter the available series into batch_filtered_sources_. Case-insensitive:
-  // substring by default, glob wildcard when the text contains '*', or full
-  // ECMAScript regex when the regex toggle is on. An invalid regex matches
-  // nothing. Called every tick (via setAvailableSeries), so the matcher is
-  // compiled ONCE per call, not once per series.
-  void updateBatchFilter() {
-    batch_filtered_sources_.clear();
-    const std::string& pat = batch_filter_;
-    auto lower = [](std::string v) {
-      for (char& c : v) {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-      }
-      return v;
-    };
-    const bool use_regex = batch_regex_ && !pat.empty();
-    const bool use_glob = !batch_regex_ && pat.find('*') != std::string::npos;
-    std::optional<std::regex> re;
-    if (use_regex || use_glob) {
-      std::string src = pat;
-      if (use_glob) {  // escape regex specials, then '*' -> '.*'
-        src.clear();
-        for (const char c : pat) {
-          if (c == '*') {
-            src += ".*";
-          } else if (std::strchr(".^$+?()[]{}|\\", c) != nullptr) {
-            src += '\\';
-            src += c;
-          } else {
-            src += c;
-          }
-        }
-      }
-      try {
-        re.emplace(src, std::regex::icase | std::regex::ECMAScript);
-      } catch (const std::regex_error&) {
-        re.reset();  // invalid pattern -> nothing matches below
-      }
-    }
-    const std::string needle = (use_regex || use_glob) ? std::string{} : lower(pat);
-    for (const auto& s : all_series_) {
-      bool keep = false;
-      if (pat.empty()) {
-        keep = true;
-      } else if (use_regex || use_glob) {
-        keep = re.has_value() && std::regex_search(s, *re);
-      } else {
-        keep = lower(s).find(needle) != std::string::npos;
-      }
-      if (keep) {
-        batch_filtered_sources_.push_back(s);
-      }
-    }
   }
 
   // Clamped primary row: the checked radio, or row 0 when the stored index is
@@ -1242,15 +1199,12 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   // Batch state
   std::string batch_global_code_;
   std::string batch_function_body_ = "return value";
-  std::string batch_filter_;
-  bool batch_regex_ = false;  // batch filter regex toggle (band ".*" button)
   std::string batch_suffix_;
-  int current_tab_ = 0;                      // active tab (0 = Single, 1 = Batch)
-  bool pending_tab_restore_ = false;         // one-shot: push tab+selection after loadConfig
-  std::vector<std::string> batch_selected_;  // full paths selected in listBatchSources
-  bool batch_use_prefix_ = false;            // Prefix vs Suffix radio (default Suffix)
-  std::vector<std::string> all_series_;
-  std::vector<std::string> batch_filtered_sources_;
+  int current_tab_ = 0;                     // active tab (0 = Single, 1 = Batch)
+  bool pending_tab_restore_ = false;        // one-shot: push the tab after loadConfig
+  std::vector<std::string> batch_sources_;  // full paths dropped into listBatchSources
+  bool batch_use_prefix_ = false;           // Prefix vs Suffix radio (default Suffix)
+  std::vector<std::string> all_series_;     // live catalog, for outputNameExists
 
   // Library
   std::vector<Snippet> snippets_;
@@ -1309,18 +1263,6 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       callbacks_wired_ = true;
     }
     dialog_.setSnippets(loadSnippetsFromDisk());
-
-    // Populate available series for the batch tab
-    if (toolboxHostBound()) {
-      auto catalog = toolboxHost().catalogSnapshot();
-      if (catalog) {
-        std::vector<std::string> series;
-        for (const auto& topic : catalog->topics()) {
-          series.emplace_back(topic.name.data, topic.name.size);
-        }
-        dialog_.setAvailableSeries(std::move(series));
-      }
-    }
 
     refreshPreview();
     return PJ::borrowDialog(dialog_);
@@ -1426,7 +1368,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     dialog_.requestClose();  // PJ3 parity: creating the series closes the editor.
   }
 
-  // Batch create: apply the batch function to EVERY selected source, naming each
+  // Batch create: apply the batch function to EVERY input series, naming each
   // output with the prefix/suffix (mirrors the native panel's batch path). One
   // transform per source; each output is surfaced in Custom Series via on_data_changed.
   void onSaveBatch() {
@@ -1439,11 +1381,11 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     const std::string& global = dialog_.batchGlobalCode();
     const std::string& suffix = dialog_.batchSuffix();
     const bool use_prefix = dialog_.batchUsePrefix();
-    const auto& selected = dialog_.batchSelected();
-    if (body.empty() || selected.empty() || suffix.empty()) {
+    const auto& sources = dialog_.batchSources();
+    if (body.empty() || sources.empty() || suffix.empty()) {
       report(
           PJ::ToolboxMessageLevel::kWarning,
-          "Transform Editor: select sources, set a prefix/suffix, and write a function body.");
+          "Transform Editor: drop in some input series, set a prefix/suffix, and write a function body.");
       return;
     }
     if (!dp_view_.valid()) {
@@ -1453,7 +1395,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       return;
     }
     int created = 0;
-    for (const std::string& source_display : selected) {
+    for (const std::string& source_display : sources) {
       // Add the prefix/suffix to the FULL source name so each output stays unique.
       // Deriving the base from only the leaf ("value" from "test/sin/value")
       // collapses distinct sources that share a leaf name — e.g. every ".../x" tf
@@ -1567,10 +1509,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     return out;
   }
 
-  // Rebuild the Batch tab's available-series list from the LIVE catalog (full
-  // "topic/field" paths, skipping our own "__" ephemeral outputs). Called every
-  // tick so series from a file/stream loaded AFTER the editor opened show up; the
-  // panel engine diffs WidgetData, so an unchanged list is a no-op (selection kept).
+  // Snapshot the LIVE catalog as full "topic/field" paths, skipping our own "__"
+  // ephemeral outputs. Called every tick so series from a file/stream loaded after
+  // the editor opened are accounted for. Feeds outputNameExists, which is what
+  // decides whether the Single tab's button says Create or Modify.
   void refreshAvailableSeries() {
     auto catalog = toolboxHost().catalogSnapshot();
     if (!catalog) {
@@ -1599,7 +1541,13 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   }
 
   void refreshPreview() {
-    refreshAvailableSeries();
+    // Only the Create/Modify label consults the catalog mirror, and that lookup
+    // short-circuits on an empty name — so skip the snapshot entirely until there
+    // is a name to match. Keeps the Batch tab, which never fills that field, off a
+    // lock-held per-tick copy of every topic and field.
+    if (!dialog_.outputName().empty()) {
+      refreshAvailableSeries();
+    }
     // The live preview belongs to the Single Function tab only. On the Batch tab
     // tear it down so its ephemeral node can never coexist with / leak into a
     // batch Create (and to avoid needless per-tick churn).

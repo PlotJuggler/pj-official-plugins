@@ -585,21 +585,6 @@
              <property name="fillDockedWidgets" stdset="0">
               <bool>true</bool>
              </property>
-             <property name="filterPlaceholder">
-              <string>Filter</string>
-             </property>
-             <property name="filterFieldName">
-              <string>lineEditTab2Filter</string>
-             </property>
-             <property name="trailingToggleName">
-              <string>batchRegexToggle</string>
-             </property>
-             <property name="trailingToggleText">
-              <string>.*</string>
-             </property>
-             <property name="trailingToggleToolTip">
-              <string>Use regular expression</string>
-             </property>
             </widget>
            </item>
            <item>
@@ -631,6 +616,9 @@
               </property>
               <item>
                <widget class="QListWidget" name="listBatchSources">
+                <property name="toolTip">
+                 <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Drag &amp;amp; drop timeseries here. The function is applied to each one separately.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                </property>
                 <property name="frameShape">
                  <enum>QFrame::NoFrame</enum>
                 </property>
