@@ -5,6 +5,7 @@
 #include <arrow/util/bit_util.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -383,4 +384,59 @@ TEST(ArrowSeriesReader, ImportFailureConsumesBothExportedStructs) {
   EXPECT_FALSE(decodeNumericSeries(&schema, &array, "invalid import").has_value());
   EXPECT_EQ(schema.release, nullptr);
   EXPECT_EQ(array.release, nullptr);
+}
+
+// The host emits sealed chunks in commit order, so out-of-order streaming
+// ingest can produce a series that steps backwards at chunk boundaries.
+TEST(ArrowSeriesReader, NonMonotonicNumericTimestampsAreSortedOnDecode) {
+  const std::vector<int64_t> unsorted_ns{10, 20, 5, 20, 15};
+  const auto timestamps = makePresentArray<arrow::Int64Builder>(unsorted_ns);
+  const auto values = makePresentArray<arrow::DoubleBuilder>(std::vector<double>{1.0, 2.0, 3.0, 4.0, 5.0});
+  const auto root = makeStructArray({timestamps, values});
+  ArrowSchema schema{};
+  ArrowArray array{};
+  exportArrayAndSchema(root, &schema, &array);
+
+  auto decoded = decodeNumericSeries(&schema, &array, "unsorted");
+
+  ASSERT_TRUE(decoded.has_value());
+  const std::vector<int64_t> expected_ns{5, 10, 15, 20, 20};
+  // The duplicate ts=20 rows must keep delivery order: 2.0 before 4.0.
+  const std::vector<double> expected_v{3.0, 1.0, 5.0, 2.0, 4.0};
+  ASSERT_EQ(decoded->t.size(), expected_ns.size());
+  for (size_t index = 0; index < expected_ns.size(); ++index) {
+    EXPECT_DOUBLE_EQ(decoded->t[index], static_cast<double>(expected_ns[index]) * 1e-9);
+  }
+  EXPECT_EQ(decoded->v, expected_v);
+}
+
+TEST(ArrowSeriesReader, NonMonotonicStringTimestampsAreSortedOnDecode) {
+  const auto timestamps = makePresentArray<arrow::Int64Builder>(std::vector<int64_t>{10, 20, 5, 20, 15});
+  const auto values = makeStringArray({"a", "b", "c", "d", "e"});
+  const auto root = makeStructArray({timestamps, values});
+  ArrowSchema schema{};
+  ArrowArray array{};
+  exportArrayAndSchema(root, &schema, &array);
+
+  auto decoded = decodeStringSeries(&schema, &array, "unsorted strings");
+
+  ASSERT_TRUE(decoded.has_value());
+  const std::vector<std::string> expected_v{"c", "a", "e", "b", "d"};
+  EXPECT_EQ(decoded->v, expected_v);
+  EXPECT_TRUE(std::is_sorted(decoded->t.begin(), decoded->t.end()));
+}
+
+TEST(ArrowSeriesReader, SortedTimestampsWithDuplicatesPassThroughUnchanged) {
+  const auto timestamps = makePresentArray<arrow::Int64Builder>(std::vector<int64_t>{10, 20, 20, 30});
+  const auto values = makePresentArray<arrow::DoubleBuilder>(std::vector<double>{1.0, 2.0, 3.0, 4.0});
+  const auto root = makeStructArray({timestamps, values});
+  ArrowSchema schema{};
+  ArrowArray array{};
+  exportArrayAndSchema(root, &schema, &array);
+
+  auto decoded = decodeNumericSeries(&schema, &array, "sorted with dups");
+
+  ASSERT_TRUE(decoded.has_value());
+  const std::vector<double> expected_v{1.0, 2.0, 3.0, 4.0};
+  EXPECT_EQ(decoded->v, expected_v);
 }

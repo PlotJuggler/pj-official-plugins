@@ -3,11 +3,15 @@
 #include <arrow/api.h>
 #include <arrow/c/bridge.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -118,6 +122,32 @@ bool rowIsPresent(const SeriesColumns& columns, int64_t row) {
   return !columns.root->IsNull(row) && !columns.timestamps->IsNull(row) && !columns.values->IsNull(row);
 }
 
+// The host concatenates sealed chunks in commit order; under out-of-order
+// streaming ingest chunks may overlap in time, so the decoded series can step
+// backwards at chunk boundaries. export_core requires non-decreasing time
+// (lower_bound, front/back range pre-filter, greedy merge), so restore it here.
+// stable_sort keeps duplicate-timestamp rows in delivery order.
+template <typename SeriesData>
+void sortByTimeIfNeeded(SeriesData& series) {
+  if (std::is_sorted(series.t.begin(), series.t.end())) {
+    return;
+  }
+  std::vector<size_t> order(series.t.size());
+  std::iota(order.begin(), order.end(), size_t{0});
+  std::stable_sort(order.begin(), order.end(), [&](size_t lhs, size_t rhs) { return series.t[lhs] < series.t[rhs]; });
+
+  auto source_t = std::move(series.t);
+  auto source_v = std::move(series.v);
+  series.t.clear();
+  series.v.clear();
+  series.t.reserve(order.size());
+  series.v.reserve(order.size());
+  for (const size_t source : order) {
+    series.t.push_back(source_t[source]);
+    series.v.push_back(std::move(source_v[source]));
+  }
+}
+
 }  // namespace
 
 std::optional<NumericSeriesData> decodeNumericSeries(
@@ -147,6 +177,7 @@ std::optional<NumericSeriesData> decodeNumericSeries(
     result.t.push_back(static_cast<double>(columns->timestamps->Value(row)) * kNanosecondsToSeconds);
     result.v.push_back(*value);
   }
+  sortByTimeIfNeeded(result);
   return result;
 }
 
@@ -171,6 +202,7 @@ std::optional<StringSeriesData> decodeStringSeries(
     result.t.push_back(static_cast<double>(columns->timestamps->Value(row)) * kNanosecondsToSeconds);
     result.v.emplace_back(view.data(), view.size());
   }
+  sortByTimeIfNeeded(result);
   return result;
 }
 
