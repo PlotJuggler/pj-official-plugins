@@ -140,7 +140,9 @@ if(TARGET parquet_source_plugin)
 endif()
 add_test(NAME data_exporter_isolation_test COMMAND data_exporter_isolation_test)
 # The test GTEST_SKIP()s when the data_load_parquet DSO is absent (single-plugin
-# builds); surface that as ***Skipped in ctest instead of a false Passed.
+# builds); surface that as ***Skipped in ctest instead of a false Passed. The
+# property is binary-granular (any skipped gtest marks the whole entry Skipped) —
+# acceptable here because the DSO gate skips this binary all-or-nothing.
 set_tests_properties(data_exporter_isolation_test PROPERTIES
   SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\]"
 )

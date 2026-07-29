@@ -7,6 +7,10 @@
 #include <string_view>
 #include <vector>
 
+// Precondition shared by every export_core consumer: `t` is non-decreasing
+// (lower_bound, the front/back range pre-filter, and the greedy merge all
+// assume it). Producers must sort before handing a series over; duplicate
+// timestamps are allowed and keep producer order.
 struct NumericSeriesData {
   std::string name;
   std::vector<double> t;

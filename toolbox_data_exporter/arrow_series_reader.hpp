@@ -13,6 +13,9 @@
 // The decode functions consume both C Data Interface structs on every path.
 // Their release callbacks are transferred to Arrow C++ or invoked during a
 // failed import; callers must not release the structs afterward.
+// Guarantee: the returned series has non-decreasing `t` (the export_core
+// precondition) even when the host delivers rows out of time order;
+// duplicate-timestamp rows keep delivery order.
 std::optional<NumericSeriesData> decodeNumericSeries(
     struct ArrowSchema* schema, struct ArrowArray* array, std::string name);
 std::optional<StringSeriesData> decodeStringSeries(

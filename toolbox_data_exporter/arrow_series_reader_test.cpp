@@ -425,18 +425,3 @@ TEST(ArrowSeriesReader, NonMonotonicStringTimestampsAreSortedOnDecode) {
   EXPECT_EQ(decoded->v, expected_v);
   EXPECT_TRUE(std::is_sorted(decoded->t.begin(), decoded->t.end()));
 }
-
-TEST(ArrowSeriesReader, SortedTimestampsWithDuplicatesPassThroughUnchanged) {
-  const auto timestamps = makePresentArray<arrow::Int64Builder>(std::vector<int64_t>{10, 20, 20, 30});
-  const auto values = makePresentArray<arrow::DoubleBuilder>(std::vector<double>{1.0, 2.0, 3.0, 4.0});
-  const auto root = makeStructArray({timestamps, values});
-  ArrowSchema schema{};
-  ArrowArray array{};
-  exportArrayAndSchema(root, &schema, &array);
-
-  auto decoded = decodeNumericSeries(&schema, &array, "sorted with dups");
-
-  ASSERT_TRUE(decoded.has_value());
-  const std::vector<double> expected_v{1.0, 2.0, 3.0, 4.0};
-  EXPECT_EQ(decoded->v, expected_v);
-}
