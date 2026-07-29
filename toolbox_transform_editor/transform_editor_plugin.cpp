@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // Transform Editor toolbox plugin for PlotJuggler 4.
-// Ports the PJ3 "Custom Series" / Function Editor. Identical UI to PJ3.
+// Ports the PJ3 "Custom Series" / Function Editor to the PJ4 semantic UI.
 // Motor: pj.data_processors.v1 — onSave hands the host a self-describing Luau class
 // (N inputs -> M outputs) run live as a DerivedEngine node. Requires SDK >= 0.12.0.
 // Preview uses createEphemeralTransform (SDK 0.12+) — no local Lua runtime.
@@ -25,196 +25,17 @@
 
 #include "transform_editor_dialog_ui.hpp"
 #include "transform_editor_manifest.hpp"
+// Auxiliary dialog/panel UIs, embedded from their .ui files at build time:
+//   kHelpDialogUi       — Help (requestSubDialog), same for both tabs.
+//   kFunctionLibraryUi  — live Function Library sub-panel (requestSubPanel).
+//   kSaveNameUi         — "save current function" name prompt (requestSubDialog).
+//   kOverwriteUi        — overwrite-existing-function confirmation (requestSubDialog).
+#include "function_library_ui.hpp"
+#include "overwrite_function_ui.hpp"
+#include "save_function_name_ui.hpp"
+#include "transform_editor_help_ui.hpp"
 
 namespace {
-
-// Help dialog UI (cloned from the native TransformEditorHelp.ui). Shown via
-// WidgetData::requestSubDialog when either Help button is clicked — same content
-// for both the Single Function and Batch Functions tabs.
-constexpr const char* kHelpDialogUi = R"PJHELP(<?xml version="1.0" encoding="UTF-8"?>
-<ui version="4.0">
- <class>TransformEditorHelp</class>
- <widget class="QDialog" name="TransformEditorHelp">
-  <property name="geometry"><rect><x>0</x><y>0</y><width>800</width><height>600</height></rect></property>
-  <property name="windowTitle"><string>Help</string></property>
-  <layout class="QVBoxLayout" name="verticalLayout">
-   <item>
-    <widget class="QTextBrowser" name="textBrowser">
-     <property name="openExternalLinks"><bool>true</bool></property>
-     <property name="html">
-      <string>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Ubuntu'; font-size:11pt; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-size:14pt; font-weight:600;&quot;&gt;Transform editor Help&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px; font-size:14pt; font-weight:600;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;The transform editor uses the scripting language Lua. You may want to read &lt;a href=&quot;http://tylerneylon.com/a/learn-lua/&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#0000ff;&quot;&gt;Learn Lua in 15 minutes&lt;/span&gt;&lt;/a&gt;.&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;In practice, you don't need to know that much to use it in PlotJuggler.&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;You should implement the body of a &lt;span style=&quot; font-style:italic; color:#204a87;&quot;&gt;function(time, value),&lt;/span&gt; that is invoked for each point. The returned value is the point [time, your_value]&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-size:12pt; font-weight:600;&quot;&gt;Single input, stateless functions:&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Example:&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-style:italic; color:#204a87;&quot;&gt;   return (value *  2) + 1&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;or you can use the &lt;a href=&quot;https://www.tutorialspoint.com/lua/lua_math_library.htm&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#0000ff;&quot;&gt;math library from Lua&lt;/span&gt;&lt;/a&gt;:&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-style:italic; color:#204a87;&quot;&gt;   return math.log(value)&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;The new point will have the same time of the original point. If you want to modify the timestamp, just return two values like this:&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-style:italic; color:#204a87;&quot;&gt;   return time +1, (value *  2) &lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-size:12pt; font-weight:600;&quot;&gt;Return multiple points at once:&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Since version 3.1, you may also return multiple values at once, using a Lua table:&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-style:italic; color:#204a87;&quot;&gt;   -- Calculate t1,v1, t2, v2, etc...&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-style:italic; color:#204a87;&quot;&gt;   return { {t1, v1}, {t2, v2} }&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-size:12pt; font-weight:600;&quot;&gt;Stateful functions:&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Some transformations require some form of &amp;quot;memory&amp;quot;, i.e. they need the previous value. To do this you may use the &amp;quot;global variable&amp;quot; textbox.&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;For instance, to compute the finite difference between two consecutive value, you would add this to the &lt;span style=&quot; font-weight:600;&quot;&gt;Global Variables&lt;/span&gt; textbox:&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-style:italic; color:#204a87;&quot;&gt;   prev = nil&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;And this to the &lt;span style=&quot; font-weight:600;&quot;&gt;Function() &lt;/span&gt;textbox&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-style:italic; color:#204a87;&quot;&gt;   if ( prev == nil ) then&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-style:italic; color:#204a87;&quot;&gt;        prev = value&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-style:italic; color:#204a87;&quot;&gt;   end&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-style:italic; color:#204a87;&quot;&gt;   diff = value - prev&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-style:italic; color:#204a87;&quot;&gt;   prev = value&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-style:italic; color:#204a87;&quot;&gt;   return diff  &lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-size:12pt; font-weight:600;&quot;&gt;Multi input, single output:&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Select an additional time series and drop it in the table on the left side. Now your function definition will look like &lt;span style=&quot; font-style:italic; color:#204a87;&quot;&gt;function(time,value,v1)&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Average of two time series:&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-style:italic; color:#204a87;&quot;&gt;   return (value + v1) / 2&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
-     </property>
-    </widget>
-   </item>
-   <item>
-    <widget class="QDialogButtonBox" name="buttonBox">
-     <property name="orientation"><enum>Qt::Horizontal</enum></property>
-     <property name="standardButtons"><set>QDialogButtonBox::Close</set></property>
-    </widget>
-   </item>
-  </layout>
- </widget>
-</ui>)PJHELP";
-
-// Function Library dialog UI (cloned from PJ3's functions_library.ui / the
-// buttonLibraryBox box). Shown via WidgetData::requestSubPanel as a LIVE,
-// interactive sub-panel: the search box filters as you type, the table selection
-// drives the preview, and double-click / Use loads the function into the editor.
-constexpr const char* kFunctionLibraryUi = R"PJLIB(<?xml version="1.0" encoding="UTF-8"?>
-<ui version="4.0">
- <class>FunctionsLibrary</class>
- <widget class="QDialog" name="FunctionsLibrary">
-  <property name="geometry"><rect><x>0</x><y>0</y><width>440</width><height>470</height></rect></property>
-  <property name="minimumSize"><size><width>360</width><height>320</height></size></property>
-  <property name="windowTitle"><string>Function Library</string></property>
-  <layout class="QVBoxLayout" name="libVerticalLayout">
-   <item>
-    <widget class="QLineEdit" name="searchLineEdit">
-     <property name="placeholderText"><string>Search</string></property>
-    </widget>
-   </item>
-   <item>
-    <widget class="QLabel" name="labelPreview">
-     <property name="font"><font><weight>75</weight><bold>true</bold></font></property>
-     <property name="text"><string>Function Preview:</string></property>
-    </widget>
-   </item>
-   <item>
-    <widget class="QTableWidget" name="tableFunctions">
-     <property name="selectionBehavior"><enum>QAbstractItemView::SelectRows</enum></property>
-     <property name="selectionMode"><enum>QAbstractItemView::ExtendedSelection</enum></property>
-     <property name="editTriggers"><set>QAbstractItemView::NoEditTriggers</set></property>
-     <attribute name="horizontalHeaderVisible"><bool>false</bool></attribute>
-     <attribute name="verticalHeaderVisible"><bool>false</bool></attribute>
-    </widget>
-   </item>
-   <item>
-    <widget class="QPlainTextEdit" name="previewPlainText">
-     <property name="minimumSize"><size><width>0</width><height>100</height></size></property>
-     <property name="readOnly"><bool>true</bool></property>
-     <property name="styleSheet"><string notr="true">QPlainTextEdit { background-color: #ffffff; color: #000000; border: 1px solid #888; }</string></property>
-     <property name="font"><font><family>DejaVu Sans Mono</family><pointsize>10</pointsize></font></property>
-    </widget>
-   </item>
-   <item>
-    <layout class="QHBoxLayout" name="libButtonsRow">
-     <item>
-      <widget class="QLabel" name="labelTip">
-       <property name="font"><font><italic>true</italic></font></property>
-       <property name="text"><string>Ctrl+Click to select multiple</string></property>
-      </widget>
-     </item>
-     <item>
-      <spacer name="libSpacer">
-       <property name="orientation"><enum>Qt::Horizontal</enum></property>
-       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
-      </spacer>
-     </item>
-     <item>
-      <widget class="QPushButton" name="useButton"><property name="text"><string>Use</string></property></widget>
-     </item>
-    </layout>
-   </item>
-  </layout>
- </widget>
- <resources/>
- <connections/>
-</ui>)PJLIB";
-
-// "Save current function" name prompt (PJ3 parity: QInputDialog asking for the
-// function name, prefilled with the current name). Shown as a modal sub-dialog;
-// the host harvests `saveFunctionName` and emits subDialogAccepted on OK.
-constexpr const char* kSaveNameUi = R"PJSAVE(<?xml version="1.0" encoding="UTF-8"?>
-<ui version="4.0">
- <class>SaveFunctionName</class>
- <widget class="QDialog" name="SaveFunctionName">
-  <property name="geometry"><rect><x>0</x><y>0</y><width>360</width><height>120</height></rect></property>
-  <property name="windowTitle"><string>Name of the Function</string></property>
-  <layout class="QVBoxLayout" name="saveNameLayout">
-   <item>
-    <widget class="QLabel" name="saveNameLabel"><property name="text"><string>Name:</string></property></widget>
-   </item>
-   <item>
-    <widget class="QLineEdit" name="saveFunctionName"/>
-   </item>
-   <item>
-    <widget class="QDialogButtonBox" name="buttonBox">
-     <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
-    </widget>
-   </item>
-  </layout>
- </widget>
- <resources/>
- <connections/>
-</ui>)PJSAVE";
-
-// Overwrite confirmation (PJ3 parity: warn when a function with the same name
-// already exists). OK = overwrite, Cancel = abort.
-constexpr const char* kOverwriteUi = R"PJOVW(<?xml version="1.0" encoding="UTF-8"?>
-<ui version="4.0">
- <class>OverwriteFunction</class>
- <widget class="QDialog" name="OverwriteFunction">
-  <property name="geometry"><rect><x>0</x><y>0</y><width>400</width><height>130</height></rect></property>
-  <property name="windowTitle"><string>Warning</string></property>
-  <layout class="QVBoxLayout" name="overwriteLayout">
-   <item>
-    <widget class="QLabel" name="overwriteLabel">
-     <property name="wordWrap"><bool>true</bool></property>
-     <property name="text"><string>A function with the same name exists already in the list of saved functions.
-
-Overwrite it?</string></property>
-    </widget>
-   </item>
-   <item>
-    <widget class="QDialogButtonBox" name="buttonBox">
-     <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
-    </widget>
-   </item>
-  </layout>
- </widget>
- <resources/>
- <connections/>
-</ui>)PJOVW";
 
 // ---------------------------------------------------------------------------
 // Snippet
@@ -483,21 +304,15 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     PJ::WidgetData wd;
 
     // One-shot after loadConfig (Modify): force the editor onto the tab the series
-    // was created from, and (for batch) re-select its source. Only once, so the
-    // user can freely switch tabs / change the selection afterwards.
+    // was created from. Only once, so the user can freely switch tabs afterwards.
     if (pending_tab_restore_) {
       wd.setTabIndex("tabWidget", current_tab_);
-      if (current_tab_ == 1) {
-        wd.setSelectedItems("listBatchSources", batch_selected_);
-      }
       pending_tab_restore_ = false;
     }
 
     // Single function tab — one table of inputs (drop target). Col 0 is the radio
-    // marking which row provides `value`; col 1 is the series path the trash button
-    // acts on; col 2 is the bound variable. The host emits row selection from the
-    // first text column (col 1 here, as col 0 hosts the radio widget and carries no
-    // text). The non-primary rows are v1, v2, … in row order.
+    // marking which row provides `value`; col 1 is the series path; col 2 is the
+    // bound variable. The non-primary rows are v1, v2, ... in row order.
     wd.setDropTarget("tableSources");
     wd.setTableHeaders("tableSources", {"", "Input timeseries", "Var"});
     std::vector<std::vector<std::string>> rows;
@@ -506,11 +321,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       rows.push_back({"", sources_[static_cast<std::size_t>(i)], variableName(i)});
     }
     wd.setTableRows("tableSources", rows);
+    wd.setListPlaceholder("tableSources", "Drag & drop timeseries here");
+    wd.setListItemsDeletable("tableSources", true);
     wd.setTableRadioColumn("tableSources", 0, primaryIndex());
-    // Enabled only while a row is selected, so it can never delete the whole list
-    // on a single click when nothing is highlighted (and it disables again the
-    // moment the selection is cleared).
-    wd.setEnabled("pushButtonDeleteCurves", !selected_paths_.empty());
     wd.setText("nameLineEdit", output_name_);
 
     // Function signature reflects the inputs: `value` (the radio-selected row) plus
@@ -522,7 +335,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       signature += ", v" + std::to_string(i + 1);
     }
     signature += " )";
-    wd.setText("labelFunction", signature);
+    wd.setText("functionTitle", signature);
 
     const char* single_lang = (language_ == "python") ? "python" : "lua";
     wd.setCodeContent("globalVarsText", global_code_).setCodeLanguage("globalVarsText", single_lang);
@@ -564,7 +377,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
         lib_rows.push_back({n, lang});
       }
       wd.setTableRows("tableFunctions", lib_rows);
-      wd.setPlainText("previewPlainText", combinedSnippetText(library_selected_));
+      wd.setCodeContent("previewPlainText", combinedSnippetText(library_selected_))
+          .setCodeLanguage("previewPlainText", "lua");
     }
 
     // Import / Export library buttons: the host drives the native file choosers.
@@ -573,27 +387,26 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     wd.setFilePicker("buttonLoadFunctions", "", "Snippet library (*.json)", "Import snippet library");
     wd.setSaveFilePicker("buttonSaveFunctions", "", "Snippet library (*.json)", "Export snippet library", "json");
 
-    // Single-tab validation terminal — same as PJ3's onUpdatePreview: list every
-    // blocking problem; the terminal HIDES once the function is valid, and Create is
-    // enabled iff there are none. validation_error_ is the host's real compile/run
-    // error (refreshPreview ran the script as an ephemeral transform). PJ4 keeps its
-    // Modify-by-name behaviour, so an already-existing name is NOT an error here.
+    // Single-tab validation overlay — list every blocking problem over the chart.
+    // validation_error_ is the host's real compile/run error (refreshPreview ran
+    // the script as an ephemeral transform). PJ4 keeps its Modify-by-name
+    // behaviour, so an already-existing name is not an error here.
     std::string single_term;
     if (output_name_.empty()) {
-      single_term += "- Missing name of the new time series.\n";
+      single_term += "Create a name for the new series\n";
     } else if (std::find(sources_.begin(), sources_.end(), output_name_) != sources_.end()) {
-      single_term += "- The name of the new timeseries is the same of one of its inputs.\n";
+      single_term += "Give the new series a name that isn't one of its inputs\n";
     }
     if (sources_.empty()) {
-      single_term += "- Missing source time series.\n";
+      single_term += "Add an input time series (drag & drop)\n";
     }
     if (function_body_.empty()) {
-      single_term += "- Missing function body.\n";
+      single_term += "Write your function body\n";
     }
     if (!validation_error_.empty()) {
-      single_term += "- " + validation_error_ + "\n";
+      single_term += validation_error_ + "\n";
     }
-    // A one-shot Import/Export status line shows in the terminal for this render
+    // A one-shot Import/Export status line shows in the overlay for this render
     // (above any validation problems) and then clears on the next build.
     if (!io_status_.empty()) {
       single_term = single_term.empty() ? io_status_ : io_status_ + "\n" + single_term;
@@ -601,68 +414,74 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     }
     // Red fill on the name field when it's missing (PJ3 parity).
     wd.setFieldValid("nameLineEdit", !output_name_.empty(), output_name_.empty() ? "Name is required" : "");
-    wd.setPlainText("terminalPlainText", single_term);
-    // PJ3 parity: the chart and the terminal share the same area and are mutually
-    // exclusive — the graph only appears once the function is valid; while there are
-    // problems the terminal takes its place.
-    wd.setVisible("terminalPlainText", !single_term.empty());
-    wd.setVisible("framePlotPreview", single_term.empty());
+    if (!single_term.empty()) {
+      wd.clearChart("framePlotPreview");
+      wd.setChartPlaceholder("framePlotPreview", single_term);
+    } else {
+      wd.setChartPlaceholder("framePlotPreview", "");
+      wd.setChartSeries("framePlotPreview", preview_series_);
+      wd.setChartAutoZoom("framePlotPreview", autozoom_);
+    }
 
-    // Create button enabled
-    // Batch tab content (set first so the validation terminal + Create gating below
-    // see the current state).
-    wd.setListItems("listBatchSources", batch_filtered_sources_);
+    // Batch tab content (set first so the validation overlay and Create gating
+    // below see the current state). The rows ARE the input set, not a selection.
+    // setDropTarget stays unconditional even in edit mode: the panel engine reads
+    // the declared targets from the FIRST snapshot only, so gating it here would
+    // install no drop filter at all — onItemsDropped does the gating instead.
+    wd.setDropTarget("tableBatchSources");
+    // One column, headers hidden: the header is only here to give the column a
+    // width to stretch, the same way tableSources uses its own.
+    wd.setTableHeaders("tableBatchSources", {"Input timeseries"});
+    std::vector<std::vector<std::string>> batch_rows;
+    batch_rows.reserve(batch_sources_.size());
+    for (const std::string& source : batch_sources_) {
+      batch_rows.push_back({source});
+    }
+    wd.setTableRows("tableBatchSources", batch_rows);
+    wd.setListPlaceholder("tableBatchSources", "Drag & drop timeseries here");
+    wd.setListItemsDeletable("tableBatchSources", !edit_mode_);
     const char* batch_lang = (batch_language_ == "python") ? "python" : "lua";
     wd.setCodeContent("globalVarsTextBatch", batch_global_code_).setCodeLanguage("globalVarsTextBatch", batch_lang);
     wd.setCodeContent("functionTextBatch", batch_function_body_).setCodeLanguage("functionTextBatch", batch_lang);
     wd.setChecked("luaBatchButton", batch_language_ != "python");
     wd.setChecked("pythonBatchButton", batch_language_ == "python");
+    wd.setText("suffixLineEdit", batch_suffix_);
+    wd.setChecked("radioButtonPrefix", batch_use_prefix_);
+    wd.setChecked("radioButtonSuffix", !batch_use_prefix_);
 
-    // Batch validation terminal — same messages and behaviour as PJ3's
-    // onUpdatePreviewBatch (function_editor.cpp): list every blocking problem; the
-    // terminal HIDES entirely once the batch is valid, and Create is enabled iff
-    // there are no problems. batch_validation_error_ is the host's real compile/run
-    // error (validateBatch).
+    // Batch validation overlay — veil the source list with every blocking problem.
+    // batch_validation_error_ is the host's real compile/run error (validateBatch).
+    // The empty-input gate is NOT a batch_term: tableBatchSources renders its own
+    // placeholder over the same rect. It lives on the Create setEnabled below.
     std::string batch_term;
-    if (batch_suffix_.empty()) {
-      batch_term += "- Missing prefix/suffix.\n";
-    }
-    if (batch_selected_.empty()) {
-      batch_term += "- No input series.\n";
-    }
     if (batch_function_body_.empty()) {
-      batch_term += "- Missing function body.\n";
+      batch_term += "Write your function body\n";
     }
     if (!batch_validation_error_.empty()) {
-      batch_term += "- " + batch_validation_error_ + "\n";
+      batch_term += batch_validation_error_ + "\n";
     }
-    wd.setPlainText("terminalBatchPlainText", batch_term);
-    wd.setVisible("terminalBatchPlainText", !batch_term.empty());
+    wd.setChartPlaceholder("framePlotPreviewBatch", batch_term);
 
-    // Create-enable: Single needs source+name+body; Batch needs an empty terminal
-    // (no blocking problems) — mirrors PJ3 enabling Create only when valid, so an
-    // empty prefix/suffix now blocks creation.
-    const bool can_create = (current_tab_ == 0) ? single_term.empty() : batch_term.empty();
-    wd.setEnabled("pushButtonCreate", can_create);
-    // Create vs Modify (PJ3 parity): in explicit edit mode (single OR batch), or
-    // when the Single-tab output name already exists, the button reads "Modify".
-    const bool is_modify = edit_mode_ || (current_tab_ == 0 && outputNameExists(output_name_));
-    wd.setButtonText("pushButtonCreate", is_modify ? "Modify Time Series" : "Create New Time Series");
+    // Each tab owns its Create action and validation gate. A pre-existing Single
+    // output name and either explicit edit mode use the Modify label.
+    const bool is_modify_single = outputNameExists(output_name_) || edit_mode_;
+    wd.setEnabled("pushButtonCreate", single_term.empty());
+    wd.setButtonText("pushButtonCreate", is_modify_single ? "Modify Time Series" : "Create New Time Series");
+    // Missing affix and empty inputs gate via the disabled button, not the overlay.
+    wd.setEnabled("pushButtonCreateBatch", batch_term.empty() && !batch_sources_.empty() && !batch_suffix_.empty());
+    wd.setButtonText("pushButtonCreateBatch", edit_mode_ ? "Modify Time Series" : "Create New Time Series");
     // Lock the identity while editing so a rename can't fork a new series (PJ3
-    // parity). Single: the name field. Batch: the inputs that form the name —
-    // source selection + filter + prefix/suffix.
+    // parity). Single: the name field. Batch: the sources + prefix/suffix that form
+    // the name. setEnabled(false) is cosmetic for drops — see onItemsDropped.
     wd.setEnabled("nameLineEdit", !edit_mode_);
-    wd.setEnabled("listBatchSources", !edit_mode_);
-    wd.setEnabled("lineEditTab2Filter", !edit_mode_);
+    wd.setEnabled("tableBatchSources", !edit_mode_);
+    // Each Clear tracks its own list: nothing to clear, nothing to press. Batch
+    // also follows the edit lock, matching its per-row trash.
+    wd.setEnabled("buttonClearSources", !sources_.empty());
+    wd.setEnabled("buttonClearBatchSources", !batch_sources_.empty() && !edit_mode_);
     wd.setEnabled("suffixLineEdit", !edit_mode_);
     wd.setEnabled("radioButtonPrefix", !edit_mode_);
     wd.setEnabled("radioButtonSuffix", !edit_mode_);
-
-    // Preview chart — always set (even if empty) so ChartPreviewWidget is
-    // instantiated from the start, matching PJ3 behaviour where the empty
-    // plot area is visible as soon as the editor opens.
-    wd.setChartSeries("framePlotPreview", preview_series_);
-    wd.setChartAutoZoom("framePlotPreview", autozoom_);
 
     return wd;
   }
@@ -681,11 +500,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // Name typed in the "Save current function" prompt (harvested on OK).
     if (name == "saveFunctionName") {
       pending_save_name_ = std::string(text);
-      return true;
-    }
-    if (name == "lineEditTab2Filter") {
-      batch_filter_ = std::string(text);
-      updateBatchFilter();
       return true;
     }
     if (name == "suffixLineEdit") {
@@ -723,7 +537,28 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
   bool onClicked(std::string_view name) override {
     if (name == "pushButtonCreate") {
-      save_requested_ = true;
+      pending_create_ = PendingCreate::Single;
+      return true;
+    }
+    if (name == "pushButtonCreateBatch") {
+      pending_create_ = PendingCreate::Batch;
+      return true;
+    }
+    // Clear affordance in each Input Timeseries band: empty that tab's input list
+    // in one go, the bulk counterpart of the per-row trash.
+    if (name == "buttonClearSources") {
+      sources_.clear();
+      primary_index_ = -1;
+      preview_dirty_ = true;
+      return true;
+    }
+    if (name == "buttonClearBatchSources") {
+      // edit_mode_ locks the input set — see onItemsDropped.
+      if (edit_mode_) {
+        return true;
+      }
+      batch_sources_.clear();
+      batch_dirty_ = true;
       return true;
     }
     // Function library box (PJ3's buttonLibraryBox): open the interactive sub-panel.
@@ -774,41 +609,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       }
       return true;
     }
-    if (name == "pushButtonDeleteCurves") {
-      // Remove the selected row(s) only. The button is disabled when nothing is
-      // selected (see buildWidgetData), so an empty selection here is a no-op
-      // rather than a "clear everything" — guards against deleting the whole list
-      // on a stray click. The selection arrives as series paths (column-0 text).
-      if (selected_paths_.empty()) {
-        return true;
-      }
-      {
-        // Remember the primary's path so the radio follows the same series after
-        // the surviving rows renumber.
-        const std::string primary_path = primarySource();
-        sources_.erase(
-            std::remove_if(
-                sources_.begin(), sources_.end(),
-                [this](const std::string& s) {
-                  return std::find(selected_paths_.begin(), selected_paths_.end(), s) != selected_paths_.end();
-                }),
-            sources_.end());
-        selected_paths_.clear();
-        // Keep the primary on the same series if it survived, else fall back to row 0.
-        primary_index_ = 0;
-        for (int i = 0; i < static_cast<int>(sources_.size()); ++i) {
-          if (sources_[static_cast<std::size_t>(i)] == primary_path) {
-            primary_index_ = i;
-            break;
-          }
-        }
-      }
-      if (sources_.empty()) {
-        primary_index_ = -1;
-      }
-      preview_dirty_ = true;
-      return true;
-    }
     if (name == "pushButtonHelp") {
       help_requested_ = true;
       return true;
@@ -816,11 +616,48 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
+  bool onItemDeleteRequested(std::string_view name, int index) override {
+    if (name == "tableBatchSources") {
+      // edit_mode_ locks the input set (see onItemsDropped). Belt-and-braces here:
+      // list_deletable already hides the trash button, so this only fires if that
+      // ever stops holding.
+      if (edit_mode_ || index < 0 || index >= static_cast<int>(batch_sources_.size())) {
+        return false;
+      }
+      batch_sources_.erase(batch_sources_.begin() + index);
+      batch_dirty_ = true;
+      return true;
+    }
+    if (name != "tableSources" || index < 0 || index >= static_cast<int>(sources_.size())) {
+      return false;
+    }
+
+    const std::string primary_path = primarySource();
+    sources_.erase(sources_.begin() + index);
+    primary_index_ = 0;
+    for (int i = 0; i < static_cast<int>(sources_.size()); ++i) {
+      if (sources_[static_cast<std::size_t>(i)] == primary_path) {
+        primary_index_ = i;
+        break;
+      }
+    }
+    if (sources_.empty()) {
+      primary_index_ = -1;
+    }
+    preview_dirty_ = true;
+    return true;
+  }
+
   bool onTick() override {
-    if (save_requested_) {
-      save_requested_ = false;
+    const PendingCreate action = pending_create_;
+    pending_create_ = PendingCreate::None;
+    if (action == PendingCreate::Single) {
       if (on_save_) {
         on_save_();
+      }
+    } else if (action == PendingCreate::Batch) {
+      if (on_save_batch_) {
+        on_save_batch_();
       }
     }
     // Rebuild immediately after an editor change. Browser builds sample an
@@ -864,14 +701,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       library_selected_ = items;
       return true;
     }
-    if (name == "listBatchSources") {
-      batch_selected_ = items;
-      return true;
-    }
-    if (name == "tableSources") {
-      selected_paths_ = items;
-      return true;
-    }
+    // No tableBatchSources branch on purpose: the host clears the table before
+    // repopulating it, and that clear arrives here as an empty selection — a branch
+    // that stored `items` would wipe batch_sources_ one tick after every drop.
     return false;
   }
 
@@ -942,6 +774,23 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
         primary_index_ = 0;
       }
       preview_dirty_ = true;
+      return true;
+    }
+    if (widget_name == "tableBatchSources") {
+      // Identity lock: in edit mode the stored source is what names the output, so a
+      // second drop would modify the original AND create another series on the same
+      // click. Enforced here, not by setEnabled(false): the drop filter lives on the
+      // panel root and QWidget::childAt does not skip disabled children, so a greyed
+      // widget still receives drops.
+      if (edit_mode_) {
+        return true;
+      }
+      for (const auto& item : items) {
+        if (std::find(batch_sources_.begin(), batch_sources_.end(), item) == batch_sources_.end()) {
+          batch_sources_.push_back(item);
+        }
+      }
+      batch_dirty_ = true;
       return true;
     }
     return false;
@@ -1060,12 +909,12 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       batch_language_ = cfg.value("language", std::string{"luau"});
       batch_suffix_ = cfg.value("suffix", std::string{});
       batch_use_prefix_ = cfg.value("use_prefix", false);
-      batch_selected_.clear();
+      batch_sources_.clear();
       if (cfg.contains("sources") && cfg["sources"].is_array()) {
-        batch_selected_ = cfg["sources"].get<std::vector<std::string>>();
+        batch_sources_ = cfg["sources"].get<std::vector<std::string>>();
       }
       current_tab_ = 1;             // open on the Batch tab
-      pending_tab_restore_ = true;  // one-shot: push the tab + selection to the UI
+      pending_tab_restore_ = true;  // one-shot: push the tab to the UI
       batch_dirty_ = true;
       edit_mode_ = true;
       return true;
@@ -1103,6 +952,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
   void setOnSave(std::function<void()> cb) {
     on_save_ = std::move(cb);
+  }
+  void setOnSaveBatch(std::function<void()> cb) {
+    on_save_batch_ = std::move(cb);
   }
   void setOnRefreshPreview(std::function<void()> cb) {
     on_refresh_preview_ = std::move(cb);
@@ -1223,8 +1075,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     preview_series_ = std::move(series);
   }
   /// Set by the toolbox after each ephemeral-preview attempt: empty = script
-  /// accepted by the host (semaphore green); non-empty = the host's error
-  /// message (semaphore red + shown in the status box).
+  /// accepted by the host; non-empty = the error shown over the preview chart.
   void setValidationError(std::string error) {
     validation_error_ = std::move(error);
   }
@@ -1233,7 +1084,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   void requestClose() {
     pending_close_ = true;
   }
-  /// Batch-tab counterpart of setValidationError (drives labelSemaphoreBatch).
+  /// Batch-tab counterpart of setValidationError (shown over the source list).
   void setBatchValidationError(std::string error) {
     batch_validation_error_ = std::move(error);
   }
@@ -1244,12 +1095,12 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   const std::string& batchGlobalCode() const {
     return batch_global_code_;
   }
-  /// Batch-create inputs read by the toolbox's onSave.
+  /// Active tab, used to suspend the Single preview while Batch is visible.
   int currentTab() const {
     return current_tab_;
   }
-  const std::vector<std::string>& batchSelected() const {
-    return batch_selected_;
+  const std::vector<std::string>& batchSources() const {
+    return batch_sources_;
   }
   const std::string& batchSuffix() const {
     return batch_suffix_;
@@ -1265,7 +1116,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
   void setAvailableSeries(std::vector<std::string> series) {
     all_series_ = std::move(series);
-    updateBatchFilter();
   }
 
   // The series that provides `value` (the radio-selected row), "" when no inputs.
@@ -1322,15 +1172,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     syntax_ok_ = !function_body_.empty();
   }
 
-  void updateBatchFilter() {
-    batch_filtered_sources_.clear();
-    for (const auto& s : all_series_) {
-      if (batch_filter_.empty() || s.find(batch_filter_) != std::string::npos) {
-        batch_filtered_sources_.push_back(s);
-      }
-    }
-  }
-
   // Clamped primary row: the checked radio, or row 0 when the stored index is
   // stale (e.g. the primary row was just deleted), or -1 when there are no inputs.
   int primaryIndex() const {
@@ -1378,9 +1219,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
 
   // Single function state. All dragged inputs live in one table; the row whose
-  // radio is checked (`primary_index_`) provides `value`, the rest become v1, v2,
-  // ... in row order. `selected_paths_` are the rows the user highlighted for the
-  // trash button (the table reports its column-0 text, i.e. the series path).
+  // radio is checked (`primary_index_`) provides `value`, and the rest become
+  // v1, v2, ... in row order.
   std::string language_ = "luau";        // single-tab script language: "luau" | "python" (radios)
   std::string batch_language_ = "luau";  // batch-tab script language (radios)
   std::string output_name_;
@@ -1388,7 +1228,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   std::string function_body_ = "return value";
   std::vector<std::string> sources_;
   int primary_index_ = -1;
-  std::vector<std::string> selected_paths_;
   bool syntax_ok_ = false;
   bool autozoom_ = true;                // AutoZoom checkbox state (default on)
   bool edit_mode_ = false;              // opened to modify an existing series (locks the name, button = Modify)
@@ -1399,14 +1238,12 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   // Batch state
   std::string batch_global_code_;
   std::string batch_function_body_ = "return value";
-  std::string batch_filter_;
   std::string batch_suffix_;
-  int current_tab_ = 0;                      // active tab (0 = Single, 1 = Batch)
-  bool pending_tab_restore_ = false;         // one-shot: push tab+selection after loadConfig
-  std::vector<std::string> batch_selected_;  // full paths selected in listBatchSources
-  bool batch_use_prefix_ = false;            // Prefix vs Suffix radio (default Suffix)
-  std::vector<std::string> all_series_;
-  std::vector<std::string> batch_filtered_sources_;
+  int current_tab_ = 0;                     // active tab (0 = Single, 1 = Batch)
+  bool pending_tab_restore_ = false;        // one-shot: push the tab after loadConfig
+  std::vector<std::string> batch_sources_;  // full paths dropped into tableBatchSources
+  bool batch_use_prefix_ = false;           // Prefix vs Suffix radio (default Suffix)
+  std::vector<std::string> all_series_;     // live catalog, for outputNameExists
 
   // Library
   std::vector<Snippet> snippets_;
@@ -1426,7 +1263,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
   std::string io_status_;  // one-shot Import/Export status line; consumed by the next widget_data()
 
-  bool save_requested_ = false;
+  enum class PendingCreate { None, Single, Batch };
+  PendingCreate pending_create_ = PendingCreate::None;
   bool pending_close_ = false;
   bool preview_dirty_ = false;
   int preview_refresh_ticks_ = 0;
@@ -1437,6 +1275,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 #endif
   bool help_requested_ = false;
   std::function<void()> on_save_;
+  std::function<void()> on_save_batch_;
   std::function<void()> on_refresh_preview_;
   std::function<void()> on_validate_batch_;
   std::vector<PJ::ChartSeries> preview_series_;
@@ -1463,23 +1302,12 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   PJ_borrowed_dialog_t getDialog() override {
     if (!callbacks_wired_) {
       dialog_.setOnSave([this]() { onSave(); });
+      dialog_.setOnSaveBatch([this]() { onSaveBatch(); });
       dialog_.setOnRefreshPreview([this]() { refreshPreview(); });
       dialog_.setOnValidateBatch([this]() { validateBatch(); });
       callbacks_wired_ = true;
     }
     dialog_.setSnippets(loadSnippetsFromDisk());
-
-    // Populate available series for the batch tab
-    if (toolboxHostBound()) {
-      auto catalog = toolboxHost().catalogSnapshot();
-      if (catalog) {
-        std::vector<std::string> series;
-        for (const auto& topic : catalog->topics()) {
-          series.emplace_back(topic.name.data, topic.name.size);
-        }
-        dialog_.setAvailableSeries(std::move(series));
-      }
-    }
 
     refreshPreview();
     return PJ::borrowDialog(dialog_);
@@ -1510,10 +1338,6 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
 
  private:
   void onSave() {
-    if (dialog_.currentTab() != 0) {
-      onSaveBatch();
-      return;
-    }
     const auto& source = dialog_.sourceSeries();
     const auto& output_name = dialog_.outputName();
     const auto& global = dialog_.globalCode();
@@ -1589,7 +1413,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     dialog_.requestClose();  // PJ3 parity: creating the series closes the editor.
   }
 
-  // Batch create: apply the batch function to EVERY selected source, naming each
+  // Batch create: apply the batch function to EVERY input series, naming each
   // output with the prefix/suffix (mirrors the native panel's batch path). One
   // transform per source; each output is surfaced in Custom Series via on_data_changed.
   void onSaveBatch() {
@@ -1602,11 +1426,11 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     const std::string& global = dialog_.batchGlobalCode();
     const std::string& suffix = dialog_.batchSuffix();
     const bool use_prefix = dialog_.batchUsePrefix();
-    const auto& selected = dialog_.batchSelected();
-    if (body.empty() || selected.empty() || suffix.empty()) {
+    const auto& sources = dialog_.batchSources();
+    if (body.empty() || sources.empty() || suffix.empty()) {
       report(
           PJ::ToolboxMessageLevel::kWarning,
-          "Transform Editor: select sources, set a prefix/suffix, and write a function body.");
+          "Transform Editor: drop in some input series, set a prefix/suffix, and write a function body.");
       return;
     }
     if (!dp_view_.valid()) {
@@ -1616,10 +1440,13 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       return;
     }
     int created = 0;
-    for (const std::string& source_display : selected) {
-      const auto slash = source_display.find_last_of('/');
-      const std::string base = (slash == std::string::npos) ? source_display : source_display.substr(slash + 1);
-      const std::string name = use_prefix ? (suffix + base) : (base + suffix);
+    for (const std::string& source_display : sources) {
+      // Add the prefix/suffix to the FULL source name so each output stays unique.
+      // Deriving the base from only the leaf ("value" from "test/sin/value")
+      // collapses distinct sources that share a leaf name — e.g. every ".../x" tf
+      // field — into one output name, so all but the first createTransform fails
+      // with "structural replacement is not supported" and the editor never closes.
+      const std::string name = use_prefix ? (suffix + source_display) : (source_display + suffix);
       if (name.empty()) {
         continue;
       }
@@ -1727,10 +1554,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     return out;
   }
 
-  // Rebuild the Batch tab's available-series list from the LIVE catalog (full
-  // "topic/field" paths, skipping our own "__" ephemeral outputs). Called every
-  // tick so series from a file/stream loaded AFTER the editor opened show up; the
-  // panel engine diffs WidgetData, so an unchanged list is a no-op (selection kept).
+  // Snapshot the LIVE catalog as full "topic/field" paths, skipping our own "__"
+  // ephemeral outputs. Called every tick so series from a file/stream loaded after
+  // the editor opened are accounted for. Feeds outputNameExists, which is what
+  // decides whether the Single tab's button says Create or Modify.
   void refreshAvailableSeries() {
     auto catalog = toolboxHost().catalogSnapshot();
     if (!catalog) {
@@ -1747,14 +1574,25 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       for (uint32_t fi = t.first_field; fi < end && fi < fields.size(); ++fi) {
         const auto& f = fields[fi];
         const std::string fname(f.name.data, f.name.size);
-        series.push_back(tname.empty() ? fname : (tname + "/" + fname));
+        // A ROS leaf carries a leading '/', so join WITHOUT doubling the slash —
+        // matching the host's joinTopicField (see readManyRawSamples). A naive
+        // `tname + "/" + fname` produces "topic//field", which then fails to
+        // resolve when createTransform is handed it as the batch input path.
+        const std::string leaf = (!fname.empty() && fname.front() == '/') ? fname.substr(1) : fname;
+        series.push_back(tname.empty() ? leaf : (tname + "/" + leaf));
       }
     }
     dialog_.setAvailableSeries(std::move(series));
   }
 
   void refreshPreview() {
-    refreshAvailableSeries();
+    // Only the Create/Modify label consults the catalog mirror, and that lookup
+    // short-circuits on an empty name — so skip the snapshot entirely until there
+    // is a name to match. Keeps the Batch tab, which never fills that field, off a
+    // lock-held per-tick copy of every topic and field.
+    if (!dialog_.outputName().empty()) {
+      refreshAvailableSeries();
+    }
     // The live preview belongs to the Single Function tab only. On the Batch tab
     // tear it down so its ephemeral node can never coexist with / leak into a
     // batch Create (and to avoid needless per-tick churn).
@@ -1894,6 +1732,9 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     };
 
     std::vector<PJ::ChartSeries> series;
+    // TODO(theme): These data-series colors are the approved color-as-data
+    // exception from visual_guidelines.md 4.6.2; use renderer-selected colors
+    // when the chart protocol exposes them.
     // Ghost (original): faded blue + dashed, distinct from the solid result curves
     // — same styling as the native TransformEditorPanel. Color hex is #AARRGGBB.
     series.push_back({source, to_points(ghost_raw), "#5A4488ff", /*dashed=*/true});
@@ -1918,8 +1759,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
 
   // Validate the BATCH function via the SDK's validateScript — the host compiles
   // it and runs a synthetic test point, with NO node/topic created (unlike the old
-  // throwaway-transform approach). Drives labelSemaphoreBatch; called only when the
-  // batch fields changed (consumeBatchDirty), not every tick.
+  // throwaway-transform approach). Drives the source-list error overlay; called
+  // only when the batch fields changed (consumeBatchDirty), not every tick.
   void validateBatch() {
     if (!dp_view_.valid()) {
       return;
