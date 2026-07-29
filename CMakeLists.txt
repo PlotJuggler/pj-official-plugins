@@ -58,6 +58,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   # pins here. It builds per-plugin against its own conanfile (like
   # data_load_lerobot/data_load_mp4).
   add_subdirectory(toolbox_fft)
+  add_subdirectory(toolbox_data_exporter)
   add_subdirectory(toolbox_colormap)
   add_subdirectory(toolbox_quaternion)
   add_subdirectory(toolbox_reactive_scripts_editor)
@@ -205,6 +206,7 @@ else()
   # pins here. It builds per-plugin against its own conanfile (like
   # data_load_lerobot/data_load_mp4).
   add_subdirectory(toolbox_fft)
+  add_subdirectory(toolbox_data_exporter)
   add_subdirectory(toolbox_colormap)
   add_subdirectory(toolbox_quaternion)
   add_subdirectory(toolbox_mosaico)
