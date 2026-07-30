@@ -9,7 +9,7 @@
 
 namespace PJ::CSV {
 
-char DetectDelimiter(const std::string& first_line) {
+DelimiterDetection DetectDelimiterEx(const std::string& first_line) {
   auto countOutsideQuotes = [](const std::string& line, char delim) -> int {
     int count = 0;
     bool inside_quotes = false;
@@ -73,7 +73,16 @@ char DetectDelimiter(const std::string& first_line) {
     }
   }
 
-  return best != nullptr ? best->delim : ',';
+  // Ambiguous when >=2 hard delimiters are present. Space is deliberately
+  // excluded: it is only the delimiter when no hard delimiter appears, so a
+  // header like "time, value" (comma + trailing spaces) stays unambiguous.
+  const int hard_present = (comma_count >= 1 ? 1 : 0) + (semicolon_count >= 1 ? 1 : 0) + (tab_count >= 1 ? 1 : 0);
+  const char delim = best != nullptr ? best->delim : ',';
+  return {delim, hard_present >= 2};
+}
+
+char DetectDelimiter(const std::string& first_line) {
+  return DetectDelimiterEx(first_line).delimiter;
 }
 
 void SplitLine(const std::string& line, char separator, std::vector<std::string>& parts) {

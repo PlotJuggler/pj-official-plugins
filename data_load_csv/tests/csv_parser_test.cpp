@@ -33,6 +33,33 @@ TEST(CsvDelimiter, DefaultsToComma) {
   EXPECT_EQ(DetectDelimiter("single_field"), ',');
 }
 
+// --- DetectDelimiterEx ambiguity ---
+
+TEST(CsvDelimiterEx, SingleHardDelimiterIsUnambiguous) {
+  EXPECT_FALSE(DetectDelimiterEx("a,b,c").ambiguous);
+  EXPECT_FALSE(DetectDelimiterEx("a;b;c").ambiguous);
+  EXPECT_FALSE(DetectDelimiterEx("a\tb\tc").ambiguous);
+}
+
+TEST(CsvDelimiterEx, SpaceDoesNotCauseAmbiguity) {
+  // A comma header with spaces after the commas stays unambiguous (space is only
+  // the delimiter when no hard delimiter is present).
+  const auto det = DetectDelimiterEx("time, value, x");
+  EXPECT_FALSE(det.ambiguous);
+  EXPECT_EQ(det.delimiter, ',');
+}
+
+TEST(CsvDelimiterEx, TwoHardDelimitersAreAmbiguous) {
+  EXPECT_TRUE(DetectDelimiterEx("a,b;c").ambiguous);
+  EXPECT_TRUE(DetectDelimiterEx("a\tb,c").ambiguous);
+}
+
+TEST(CsvDelimiterEx, PureSpaceIsUnambiguous) {
+  const auto det = DetectDelimiterEx("a b c");
+  EXPECT_FALSE(det.ambiguous);
+  EXPECT_EQ(det.delimiter, ' ');
+}
+
 // --- SplitLine ---
 
 TEST(CsvSplitLine, SimpleComma) {
