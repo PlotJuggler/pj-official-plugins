@@ -22,6 +22,10 @@
 
 namespace mosaico {
 
+namespace testing {
+class FetchWorkerTestAccess;
+}
+
 /// Thin background adapter for MosaicoClient running on the dialog's worker
 /// thread. The worker itself is transport-agnostic: callers serialize commands
 /// and route callbacks to the GUI thread.
@@ -113,19 +117,20 @@ class FetchWorker {
   /// NotImplemented). Routed to the app notification bell (PJ3 parity:
   /// fetch_worker.cpp:105-117 emits errorOccurred for these statuses).
   std::function<void(std::string message)> errorOccurred;
-  /// The HOST asked this download to stop (title-bar Stop → progress_update
-  /// returning false). requestCancel() has already been called when this
-  /// fires; the dialog uses it to flip its own "Cancelling…" UI state exactly
-  /// as if the in-panel Cancel button had been pressed. Fired at most once per
-  /// Download, from an SDK pool thread.
+  /// The HOST asked this download to stop (title-bar Stop → the ingest Stop
+  /// flag, or progress_update returning false). requestCancel() has already
+  /// been called when this fires; the dialog uses it to flip its own
+  /// "Cancelling…" UI state exactly as if the in-panel Cancel button had been
+  /// pressed. Fired at most once per Download, from a background thread.
   std::function<void()> hostStopRequested;
 
  private:
+  friend class testing::FetchWorkerTestAccess;
+
   /// Return the single DataSourceHandle for the current Download, creating it
-  /// on first use. All topics of one sequence share this handle so they land
-  /// in ONE catalog group; the mutex makes the lazy-create safe under the
-  /// parallel per-topic callbacks of pullTopicsAsync. Each Download entry
-  /// point resets fetch_dataset_ to std::nullopt before its per-topic loop.
+  /// on first use. pullTopicsAsync creates it before starting the transport;
+  /// all topic-completion callbacks then share the handle so they land in ONE
+  /// catalog group. Each Download resets fetch_dataset_ first.
   [[nodiscard]] PJ::Expected<PJ::sdk::DataSourceHandle> datasetForFetch(
       const PJ::sdk::ToolboxHostView& host, const std::string& sequence_name);
 
@@ -133,13 +138,19 @@ class FetchWorker {
   /// a parser-ingest context bound to @p ds (tail-slot-gated; a host without
   /// the slots, or without parser-ingest configured, degrades to no progress).
   /// On success stores the fat-pointer view + calls progressStart
-  /// (indeterminate — see the .cpp). Runs at the FIRST topic's on_done because
-  /// the dataset must exist first (lazy datasetForFetch): a single-topic
-  /// Download therefore gets only the started/finished bracket, and host Stop
-  /// becomes available from the first completed topic — the in-panel Cancel
-  /// covers the window before that. Caller holds host_write_mu_; takes
+  /// (indeterminate — see the .cpp). Runs after the batch dataset is created
+  /// and before its transport starts. Caller holds host_write_mu_; takes
   /// progress_mu_.
   void ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, const std::string& sequence_name);
+
+  /// Sum the per-topic byte ledger. Caller holds progress_mu_.
+  [[nodiscard]] std::uint64_t accumulatedProgressBytesLocked() const;
+
+  /// Read the ingest context's thread-safe host Stop flag.
+  [[nodiscard]] bool isStopRequestedByHost();
+
+  /// Route a host Stop through cancellation and the once-only UI callback.
+  void requestCancelFromHost();
 
   /// End-of-batch bracket: progressFinish + releaseParserIngest (idempotent,
   /// [thread-safe]). Releasing BEFORE allFetchesComplete is load-bearing: the
@@ -148,6 +159,7 @@ class FetchWorker {
   void finishIngestProgress();
 
   std::unique_ptr<MosaicoClient> client_;
+  std::function<void()> pull_topics_override_;
   std::function<PJ::sdk::ToolboxHostView()> host_provider_;
   std::function<PJ::ToolboxRuntimeHostView()> runtime_host_provider_;
   std::atomic<bool> cancel_flag_{false};
@@ -155,20 +167,16 @@ class FetchWorker {
   std::optional<PJ::sdk::DataSourceHandle> fetch_dataset_;
   std::mutex fetch_dataset_mu_;
   // Host progress/stop channel state, all guarded by progress_mu_ — which also
-  // SERIALIZES every call into the ingest fat pointer (progress_update is a
-  // single-caller surface, but Mosaico progress events arrive on concurrent
-  // SDK pool threads). Leaf-ish mutex: acquired under host_write_mu_ only in
-  // ensureIngestProgress; the per-event tick takes it alone, so the only lock
-  // ever nested inside it is the host's internal engine lock (also taken under
-  // host_write_mu_ on the write path — no cycle).
+  // SERIALIZES calls into the ingest fat pointer. Leaf-ish mutex: acquired
+  // under host_write_mu_ only in ensureIngestProgress; progress and Stop polls
+  // take it alone, so the only lock ever nested inside it is the host's internal
+  // engine lock (also taken under host_write_mu_ on the write path — no cycle).
   std::mutex progress_mu_;
   std::optional<PJ::DataSourceRuntimeHostView> ingest_progress_;
   bool ingest_progress_attempted_ = false;  // one create attempt per Download
   bool host_stop_reported_ = false;         // hostStopRequested fires at most once
   std::optional<uint32_t> ingest_ds_id_;
-  // Cumulative decoded bytes per topic. Recorded on EVERY progress event, even
-  // before the ingest context exists, so a late-created context's first sum is
-  // complete.
+  // Cumulative decoded bytes per topic, published as a batch-wide sum.
   std::map<std::string, std::int64_t, std::less<>> progress_bytes_by_topic_;
   // [C1] Serializes the ENTIRE host-write critical section in pullTopicsAsync's
   // per-topic on_done callback (datasetForFetch + register/append/push), which

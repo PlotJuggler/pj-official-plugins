@@ -179,6 +179,28 @@ if(BUILD_TESTING)
   )
   add_test(NAME ToolboxMosaicoDetectTimestampTest COMMAND toolbox_mosaico_detect_timestamp_test)
 
+  add_executable(toolbox_mosaico_ingest_progress_test
+    tests/ingest_progress_test.cpp
+    src/fetch_worker.cpp
+    src/arrow_ingest.cpp
+  )
+  target_link_libraries(toolbox_mosaico_ingest_progress_test PRIVATE
+    plotjuggler_sdk::plugin_sdk
+    mosaico_sdk
+    fmt::fmt
+    ${_test_arrow_target}
+    GTest::gtest_main
+  )
+  if(MOSAICO_GRPCPP_TARGET)
+    target_link_libraries(toolbox_mosaico_ingest_progress_test PRIVATE ${MOSAICO_GRPCPP_TARGET})
+  endif()
+  target_include_directories(toolbox_mosaico_ingest_progress_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_mosaico_ingest_progress_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_mosaico_ingest_progress_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  add_test(NAME ToolboxMosaicoIngestProgressTest COMMAND toolbox_mosaico_ingest_progress_test)
+
   # Image-topic metadata builder: pure string logic, header-only, so this needs
   # nothing but GTest. Pins the cross-repo metadata_json contract.
   add_executable(toolbox_mosaico_image_metadata_test

@@ -21,9 +21,11 @@
 #include <fmt/format.h>
 
 #include <chrono>
+#include <condition_variable>
 #include <initializer_list>
 #include <memory>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -35,6 +37,8 @@
 namespace mosaico {
 
 namespace {
+
+constexpr auto kHostStopPollInterval = std::chrono::milliseconds(50);
 
 std::string stringFromArrow(const arrow::Status& status) {
   return status.ToString();
@@ -109,8 +113,40 @@ PJ::Expected<PJ::sdk::DataSourceHandle> FetchWorker::datasetForFetch(
   return *fetch_dataset_;
 }
 
-void FetchWorker::ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, const std::string& sequence_name) {
+std::uint64_t FetchWorker::accumulatedProgressBytesLocked() const {
+  std::uint64_t fetched = 0;
+  for (const auto& entry : progress_bytes_by_topic_) {
+    const std::int64_t count = entry.second;
+    fetched += static_cast<std::uint64_t>(count > 0 ? count : 0);
+  }
+  return fetched;
+}
+
+bool FetchWorker::isStopRequestedByHost() {
   std::lock_guard<std::mutex> plock(progress_mu_);
+  return ingest_progress_.has_value() && ingest_progress_->isStopRequested();
+}
+
+void FetchWorker::requestCancelFromHost() {
+  bool report_stop = false;
+  {
+    std::lock_guard<std::mutex> plock(progress_mu_);
+    if (!host_stop_reported_) {
+      host_stop_reported_ = true;
+      report_stop = true;
+    }
+  }
+  if (!report_stop) {
+    return;
+  }
+  requestCancel();
+  if (hostStopRequested) {
+    hostStopRequested();
+  }
+}
+
+void FetchWorker::ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, const std::string& sequence_name) {
+  std::unique_lock<std::mutex> plock(progress_mu_);
   if (ingest_progress_attempted_) {
     return;
   }
@@ -147,6 +183,11 @@ void FetchWorker::ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, cons
     return;
   }
   ingest_progress_ = view;
+  const bool host_stop = !ingest_progress_->progressUpdate(accumulatedProgressBytesLocked());
+  plock.unlock();
+  if (host_stop) {
+    requestCancelFromHost();
+  }
 }
 
 void FetchWorker::finishIngestProgress() {
@@ -341,7 +382,7 @@ void FetchWorker::fetchTopicMetadataAsync(TopicRef topic) {
 
 void FetchWorker::pullTopicsAsync(
     std::string sequence_name, std::vector<std::string> topic_names, std::int64_t start_ns, std::int64_t end_ns) {
-  if (!client_) {
+  if (!client_ && !pull_topics_override_) {
     for (const auto& t : topic_names) {
       if (pullFinished) {
         pullFinished({{sequence_name, t}, false, "not connected", {}});
@@ -359,10 +400,9 @@ void FetchWorker::pullTopicsAsync(
     return;
   }
   // Start of a multi-topic Download: discard any DataSourceHandle cached from a
-  // previous fetch. datasetForFetch then creates exactly one dataset for this
-  // sequence (mutex-guarded against the parallel per-topic callbacks below) and
-  // every topic attaches to it, so the catalog shows ONE group, not one per
-  // topic.
+  // previous fetch. datasetForFetch creates exactly one dataset before the
+  // transport starts, and every topic callback reuses it so the catalog shows
+  // ONE group, not one per topic.
   {
     std::lock_guard<std::mutex> lock(fetch_dataset_mu_);
     fetch_dataset_ = std::nullopt;
@@ -513,7 +553,7 @@ void FetchWorker::pullTopicsAsync(
       // [C1] Serialize the whole host-write critical section ourselves: this
       // callback runs on SDK connection-pool worker threads and the host
       // DataWriter has no internal mutex. We hold host_write_mu_ around the
-      // lazy dataset create AND every register/push, so the plugin guarantees
+      // cached dataset lookup AND every register/push, so the plugin guarantees
       // serialization regardless of whether the SDK serializes on_done.
       //
       // Lock order: host_write_mu_ is acquired ONLY here, and datasetForFetch
@@ -525,7 +565,6 @@ void FetchWorker::pullTopicsAsync(
         finish(false, ds.error());
         return;
       }
-      ensureIngestProgress(*ds, sequence_name);
       const ObjectIngestContext ctx{host, *ds, topic_name, ts_field, synth_anchor_ns, synth_interval_ns};
       auto pushed = [&]() -> PJ::Expected<ObjectPushOutcome> {
         if (is_image) {
@@ -611,7 +650,6 @@ void FetchWorker::pullTopicsAsync(
       finish(false, ds.error());
       return;
     }
-    ensureIngestProgress(*ds, sequence_name);
     auto append_status = pumpStreamToHost(host, *ds, topic_name, &stream, ts_field);
     if (!append_status) {
       if (stream.release != nullptr) {
@@ -655,32 +693,20 @@ void FetchWorker::pullTopicsAsync(
         // (single-caller surface; these events arrive on concurrent pool
         // threads) and guards the byte ledger. The host throttles internally
         // (~50 ms), so most ticks return immediately. A false return is the
-        // host's stop request (title-bar Stop): route it into the existing
-        // cancel machinery, once. The ledger records UNCONDITIONALLY: the
-        // ingest context is created lazily at the first topic's on_done (the
-        // dataset must exist first), so bytes streamed before that must not
-        // vanish from later sums — and a single-topic Download gets its host
-        // progress only from the started/finished bracket, never these ticks.
+        // host's stop request (title-bar Stop).
         bool host_stop = false;
         {
           std::lock_guard<std::mutex> plock(progress_mu_);
           progress_bytes_by_topic_[topic_name] = bytes;
           if (ingest_progress_.has_value()) {
-            std::uint64_t fetched = 0;
-            for (const auto& [name, count] : progress_bytes_by_topic_) {
-              fetched += static_cast<std::uint64_t>(count > 0 ? count : 0);
-            }
+            const std::uint64_t fetched = accumulatedProgressBytesLocked();
             if (!ingest_progress_->progressUpdate(fetched) && !host_stop_reported_) {
-              host_stop_reported_ = true;
               host_stop = true;
             }
           }
         }
         if (host_stop) {
-          requestCancel();
-          if (hostStopRequested) {
-            hostStopRequested();
-          }
+          requestCancelFromHost();
         }
       };
 
@@ -692,9 +718,50 @@ void FetchWorker::pullTopicsAsync(
   // the dialog clears fetch_active (and re-enables Close) only on that signal,
   // so a swallowed completion would strand the panel with Close disabled.
   try {
-    (void)client_->pullTopics(
-        sequence_name, topic_names_std, range, on_done, on_progress, &cancel_flag_, on_batch, on_schema,
-        /*retain_batches=*/false);
+    if (host_provider_) {
+      const auto host = host_provider_();
+      std::lock_guard<std::mutex> write_lock(host_write_mu_);
+      auto ds = datasetForFetch(host, sequence_name);
+      if (!ds) {
+        // One failure per requested topic: the dialog's ledger is keyed by topic
+        // name, so a single synthetic result would strand the tally at 1/N and
+        // show a blank-named row.
+        for (const auto& t : topic_names_std) {
+          if (pullFinished) {
+            pullFinished({{sequence_name, t}, false, fmt::format("create dataset failed: {}", ds.error()), {}});
+          }
+        }
+        finishIngestProgress();
+        if (allFetchesComplete) {
+          allFetchesComplete(std::move(sequence_name));
+        }
+        return;
+      }
+      ensureIngestProgress(*ds, sequence_name);
+    }
+
+    // A silent transport still has a live control plane: the ingest context's
+    // Stop flag is thread-safe and does not depend on progress callbacks.
+    std::mutex poll_wait_mu;
+    std::condition_variable_any poll_wait_cv;
+    std::jthread host_stop_poller([this, &poll_wait_mu, &poll_wait_cv](std::stop_token stop_token) {
+      while (!stop_token.stop_requested()) {
+        if (isStopRequestedByHost()) {
+          requestCancelFromHost();
+          return;
+        }
+        std::unique_lock<std::mutex> wait_lock(poll_wait_mu);
+        (void)poll_wait_cv.wait_for(wait_lock, stop_token, kHostStopPollInterval, [] { return false; });
+      }
+    });
+
+    if (pull_topics_override_) {
+      pull_topics_override_();
+    } else {
+      (void)client_->pullTopics(
+          sequence_name, topic_names_std, range, on_done, on_progress, &cancel_flag_, on_batch, on_schema,
+          /*retain_batches=*/false);
+    }
   } catch (const std::exception& e) {
     if (pullFinished) {
       pullFinished({{sequence_name, {}}, false, fmt::format("pull failed: {}", e.what()), {}});
