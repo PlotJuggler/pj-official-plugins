@@ -822,7 +822,11 @@ std::string MosaicoDialog::widget_data() {
   }
 
   if (state_.close_pending) {
-    wd.requestClose("user_back");
+    // Batch completion, not a user gesture: a host that has moved this panel into
+    // a background tab keeps it open on this reason (the tab is the user's
+    // surface, and it stays connected so another fetch can be queued), while a
+    // takeover panel still dismisses itself.
+    wd.requestClose("import_complete");
     state_.close_pending = false;
   }
 
