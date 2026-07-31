@@ -9,6 +9,18 @@
 
 namespace PJ::CSV {
 
+/// Best-guess delimiter plus whether the header was ambiguous. A header is
+/// ambiguous when two or more of the "hard" delimiters (comma / semicolon / tab)
+/// each appear — the choice cannot be made confidently and needs the user. Space
+/// never contributes to ambiguity (headers routinely contain spaces after
+/// commas); it is only the delimiter when no hard delimiter is present.
+struct DelimiterDetection {
+  char delimiter;  ///< detected delimiter (',' when none found)
+  bool ambiguous;  ///< true when >=2 hard delimiters are present
+};
+
+DelimiterDetection DetectDelimiterEx(const std::string& first_line);
+
 char DetectDelimiter(const std::string& first_line);
 
 void SplitLine(const std::string& line, char separator, std::vector<std::string>& parts);
