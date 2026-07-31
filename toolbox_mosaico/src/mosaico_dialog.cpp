@@ -1810,7 +1810,10 @@ void MosaicoDialog::onPullFinished(PullResultEvent result) {
 
 void MosaicoDialog::requestProgressiveReveal() {
   reveal_pending_ = true;
-  maybeFireProgressiveReveal();
+  // Deliberately defer the decision to onTick's trailing edge. More worker
+  // events may already be in the same swapped batch — notably the terminal
+  // allFetchesComplete event. Firing here would rebuild once for the topic and
+  // again for terminal completion in the same GUI tick.
 }
 
 void MosaicoDialog::maybeFireProgressiveReveal() {

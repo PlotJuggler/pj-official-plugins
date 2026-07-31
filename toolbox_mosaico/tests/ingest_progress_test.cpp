@@ -21,6 +21,10 @@ class FetchWorkerTestAccess {
   static void setPullTopicsOverride(FetchWorker& worker, std::function<void()> pull_topics) {
     worker.pull_topics_override_ = std::move(pull_topics);
   }
+
+  static void setCancelActivePullsOverride(FetchWorker& worker, std::function<void()> cancel_active_pulls) {
+    worker.cancel_active_pulls_override_ = std::move(cancel_active_pulls);
+  }
 };
 
 }  // namespace mosaico::testing
@@ -28,6 +32,15 @@ class FetchWorkerTestAccess {
 namespace {
 
 using namespace std::chrono_literals;
+
+#if defined(PJ_TOOLBOX_HAS_DISCARD_PARSER_INGEST)
+using FakeRuntimeVtable = PJ_toolbox_runtime_host_vtable_t;
+#else
+struct FakeRuntimeVtable {
+  PJ_toolbox_runtime_host_vtable_t base;
+  bool (*discard_parser_ingest)(void* ctx, std::uint32_t data_source_id, PJ_error_t* out_error) PJ_NOEXCEPT;
+};
+#endif
 
 class FakeIngestHost {
  public:
@@ -43,10 +56,12 @@ class FakeIngestHost {
     ingest_vtable_.progress_finish = &FakeIngestHost::progressFinish;
     ingest_vtable_.is_stop_requested = &FakeIngestHost::isStopRequested;
 
-    runtime_vtable_.protocol_version = PJ_TOOLBOX_PLUGIN_PROTOCOL_VERSION;
-    runtime_vtable_.struct_size = sizeof(PJ_toolbox_runtime_host_vtable_t);
-    runtime_vtable_.create_parser_ingest = &FakeIngestHost::createParserIngest;
-    runtime_vtable_.release_parser_ingest = &FakeIngestHost::releaseParserIngest;
+    auto& runtime_base = runtimeBase();
+    runtime_base.protocol_version = PJ_TOOLBOX_PLUGIN_PROTOCOL_VERSION;
+    runtime_base.struct_size = sizeof(FakeRuntimeVtable);
+    runtime_base.create_parser_ingest = &FakeIngestHost::createParserIngest;
+    runtime_base.release_parser_ingest = &FakeIngestHost::releaseParserIngest;
+    runtime_vtable_.discard_parser_ingest = &FakeIngestHost::discardParserIngest;
   }
 
   [[nodiscard]] PJ::sdk::ToolboxHostView writeView() {
@@ -54,7 +69,7 @@ class FakeIngestHost {
   }
 
   [[nodiscard]] PJ::ToolboxRuntimeHostView runtimeView() {
-    return PJ::ToolboxRuntimeHostView(PJ_toolbox_runtime_host_t{.ctx = this, .vtable = &runtime_vtable_});
+    return PJ::ToolboxRuntimeHostView(PJ_toolbox_runtime_host_t{.ctx = this, .vtable = &runtimeBase()});
   }
 
   void requestStopFromHost() {
@@ -67,6 +82,26 @@ class FakeIngestHost {
 
   [[nodiscard]] std::size_t createdDataSources() const {
     return data_sources_created_.load();
+  }
+
+  [[nodiscard]] std::size_t liveDataSources() const {
+    return live_data_sources_.load();
+  }
+
+  [[nodiscard]] std::size_t discardedParserIngests() const {
+    return discarded_.load();
+  }
+
+  void emulateRuntimeWithoutDiscard() {
+#if defined(PJ_TOOLBOX_HAS_DISCARD_PARSER_INGEST)
+    runtime_vtable_.struct_size = offsetof(PJ_toolbox_runtime_host_vtable_t, discard_parser_ingest);
+#else
+    runtimeBase().struct_size = sizeof(PJ_toolbox_runtime_host_vtable_t);
+#endif
+  }
+
+  void failParserIngestCreation() {
+    create_ingest_succeeds_.store(false);
   }
 
   [[nodiscard]] std::size_t releasedParserIngests() const {
@@ -82,9 +117,18 @@ class FakeIngestHost {
   }
 
  private:
+  PJ_toolbox_runtime_host_vtable_t& runtimeBase() {
+#if defined(PJ_TOOLBOX_HAS_DISCARD_PARSER_INGEST)
+    return runtime_vtable_;
+#else
+    return runtime_vtable_.base;
+#endif
+  }
+
   static bool createDataSource(void* ctx, PJ_string_view_t, PJ_data_source_handle_t* out, PJ_error_t*) PJ_NOEXCEPT {
     auto* self = static_cast<FakeIngestHost*>(ctx);
     ++self->data_sources_created_;
+    ++self->live_data_sources_;
     *out = PJ_data_source_handle_t{1};
     return true;
   }
@@ -111,6 +155,9 @@ class FakeIngestHost {
   static bool createParserIngest(void* ctx, std::uint32_t, PJ_data_source_runtime_host_t* out_host, PJ_error_t*)
       PJ_NOEXCEPT {
     auto* self = static_cast<FakeIngestHost*>(ctx);
+    if (!self->create_ingest_succeeds_.load()) {
+      return false;
+    }
     ++self->created_;
     self->live_.store(true);
     *out_host = PJ_data_source_runtime_host_t{.ctx = self, .vtable = &self->ingest_vtable_};
@@ -124,13 +171,24 @@ class FakeIngestHost {
     return true;
   }
 
+  static bool discardParserIngest(void* ctx, std::uint32_t data_source_id, PJ_error_t* error) PJ_NOEXCEPT {
+    auto* self = static_cast<FakeIngestHost*>(ctx);
+    (void)releaseParserIngest(ctx, data_source_id, error);
+    ++self->discarded_;
+    --self->live_data_sources_;
+    return true;
+  }
+
   PJ_toolbox_host_vtable_t write_vtable_{};
   PJ_data_source_runtime_host_vtable_t ingest_vtable_{};
-  PJ_toolbox_runtime_host_vtable_t runtime_vtable_{};
+  FakeRuntimeVtable runtime_vtable_{};
   std::atomic<std::size_t> data_sources_created_{0};
+  std::atomic<std::size_t> live_data_sources_{0};
   std::atomic<std::size_t> created_{0};
   std::atomic<std::size_t> released_{0};
+  std::atomic<std::size_t> discarded_{0};
   std::atomic<std::size_t> progress_finishes_{0};
+  std::atomic<bool> create_ingest_succeeds_{true};
   std::atomic<bool> live_{false};
   std::atomic<bool> stop_requested_{false};
 };
@@ -196,9 +254,9 @@ TEST(MosaicoIngestProgress, ContextExistsBeforeFirstTopicCompletes) {
   EXPECT_FALSE(host.hasLiveParserIngest());
 }
 
-// Stop remains responsive when transport produces neither progress nor topic
-// completion callbacks.
-TEST(MosaicoIngestProgress, StopObservedWithoutFurtherProgressEvents) {
+// Stop must actively interrupt the transport. Merely observing the atomic flag
+// cannot release a real Flight reader already blocked inside Next().
+TEST(MosaicoIngestProgress, StopInterruptsBlockedTransportRead) {
   FakeIngestHost host;
   mosaico::FetchWorker worker;
   worker.setHostProvider([&host] { return host.writeView(); });
@@ -206,20 +264,27 @@ TEST(MosaicoIngestProgress, StopObservedWithoutFurtherProgressEvents) {
 
   std::atomic<std::size_t> completed_topics{0};
   std::atomic<std::size_t> host_stop_callbacks{0};
-  std::atomic<bool> transport_observed_cancel{false};
+  std::atomic<bool> active_cancel_called{false};
   worker.pullFinished = [&completed_topics](mosaico::PullResultEvent) { ++completed_topics; };
   worker.hostStopRequested = [&host_stop_callbacks] { ++host_stop_callbacks; };
 
   std::mutex pull_mu;
   std::condition_variable pull_cv;
   bool pull_entered = false;
-  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&] {
+  bool transport_released = false;
+  mosaico::testing::FetchWorkerTestAccess::setCancelActivePullsOverride(worker, [&] {
     {
       std::lock_guard<std::mutex> lock(pull_mu);
-      pull_entered = true;
+      active_cancel_called.store(true);
+      transport_released = true;
     }
     pull_cv.notify_all();
-    transport_observed_cancel.store(waitUntil([&worker] { return worker.isCancelled(); }, 2s));
+  });
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&] {
+    std::unique_lock<std::mutex> lock(pull_mu);
+    pull_entered = true;
+    pull_cv.notify_all();
+    pull_cv.wait(lock, [&transport_released] { return transport_released; });
   });
 
   std::jthread fetch_thread([&worker] { worker.pullTopicsAsync("seq", {"/a"}, 0, 1); });
@@ -239,11 +304,59 @@ TEST(MosaicoIngestProgress, StopObservedWithoutFurtherProgressEvents) {
   EXPECT_TRUE(cancelled);
   fetch_thread.join();
 
-  EXPECT_TRUE(transport_observed_cancel.load());
+  EXPECT_TRUE(active_cancel_called.load());
   EXPECT_EQ(host_stop_callbacks.load(), 1U);
   EXPECT_EQ(host.releasedParserIngests(), 1U);
   EXPECT_EQ(host.progressFinishes(), 1U);
   EXPECT_FALSE(host.hasLiveParserIngest());
+}
+
+TEST(MosaicoIngestProgress, ZeroSuccessBatchDiscardsProvisionalDataset) {
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [] {});
+
+  worker.pullTopicsAsync("seq", {"/failed"}, 0, 1);
+
+  EXPECT_EQ(host.createdDataSources(), 1U);
+  EXPECT_EQ(host.discardedParserIngests(), 1U);
+  EXPECT_EQ(host.liveDataSources(), 0U);
+  EXPECT_FALSE(host.hasLiveParserIngest());
+}
+
+TEST(MosaicoIngestProgress, ZeroSuccessBatchDiscardsWhenProgressContextCreationFails) {
+  FakeIngestHost host;
+  host.failParserIngestCreation();
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [] {});
+
+  worker.pullTopicsAsync("seq", {"/failed"}, 0, 1);
+
+  EXPECT_EQ(host.createdDataSources(), 1U);
+  EXPECT_EQ(host.createdParserIngests(), 0U);
+  EXPECT_EQ(host.discardedParserIngests(), 1U);
+  EXPECT_EQ(host.liveDataSources(), 0U);
+}
+
+TEST(MosaicoIngestProgress, OlderRuntimeDefersDatasetUntilFirstSuccess) {
+  FakeIngestHost host;
+  host.emulateRuntimeWithoutDiscard();
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&host] {
+    EXPECT_EQ(host.createdDataSources(), 0U);
+    EXPECT_EQ(host.createdParserIngests(), 0U);
+  });
+
+  worker.pullTopicsAsync("seq", {"/failed"}, 0, 1);
+
+  EXPECT_EQ(host.createdDataSources(), 0U);
+  EXPECT_EQ(host.liveDataSources(), 0U);
 }
 
 }  // namespace

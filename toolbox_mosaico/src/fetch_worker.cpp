@@ -40,6 +40,17 @@ namespace {
 
 constexpr auto kHostStopPollInterval = std::chrono::milliseconds(50);
 
+#if !defined(PJ_TOOLBOX_HAS_DISCARD_PARSER_INGEST)
+// Compatibility layout for SDK 0.20: the paired host appends this slot after
+// release_parser_ingest. Keeping it local lets this plugin negotiate the new
+// capability while the public SDK package catches up; struct_size preserves
+// ABI safety with every older host.
+struct ToolboxRuntimeHostDiscardExtension {
+  PJ_toolbox_runtime_host_vtable_t base;
+  bool (*discard_parser_ingest)(void* ctx, std::uint32_t data_source_id, PJ_error_t* out_error) PJ_NOEXCEPT;
+};
+#endif
+
 std::string stringFromArrow(const arrow::Status& status) {
   return status.ToString();
 }
@@ -100,6 +111,19 @@ std::string stringFromArrow(const arrow::Status& status) {
 FetchWorker::FetchWorker() = default;
 FetchWorker::~FetchWorker() = default;
 
+void FetchWorker::requestCancel() {
+  cancel_flag_.store(true, std::memory_order_relaxed);
+  cancelActivePulls();
+}
+
+void FetchWorker::cancelActivePulls() {
+  if (cancel_active_pulls_override_) {
+    cancel_active_pulls_override_();
+  } else if (client_) {
+    client_->cancelActivePulls();
+  }
+}
+
 PJ::Expected<PJ::sdk::DataSourceHandle> FetchWorker::datasetForFetch(
     const PJ::sdk::ToolboxHostView& host, const std::string& sequence_name) {
   std::lock_guard<std::mutex> lock(fetch_dataset_mu_);
@@ -143,6 +167,44 @@ void FetchWorker::requestCancelFromHost() {
   if (hostStopRequested) {
     hostStopRequested();
   }
+}
+
+bool FetchWorker::supportsProvisionalIngestDiscard() const {
+  if (!runtime_host_provider_) {
+    return false;
+  }
+  const auto runtime = runtime_host_provider_();
+  if (!runtime.valid()) {
+    return false;
+  }
+  const auto& raw = runtime.raw();
+  if (!PJ_HAS_TAIL_SLOT(PJ_toolbox_runtime_host_vtable_t, raw.vtable, create_parser_ingest)) {
+    return false;
+  }
+#if defined(PJ_TOOLBOX_HAS_DISCARD_PARSER_INGEST)
+  return PJ_HAS_TAIL_SLOT(PJ_toolbox_runtime_host_vtable_t, raw.vtable, discard_parser_ingest);
+#else
+  return raw.vtable->struct_size >= sizeof(ToolboxRuntimeHostDiscardExtension) &&
+         reinterpret_cast<const ToolboxRuntimeHostDiscardExtension*>(raw.vtable)->discard_parser_ingest != nullptr;
+#endif
+}
+
+bool FetchWorker::discardProvisionalIngest(
+    const PJ::ToolboxRuntimeHostView& runtime, std::uint32_t data_source_id) const {
+#if defined(PJ_TOOLBOX_HAS_DISCARD_PARSER_INGEST)
+  return runtime.discardParserIngest(data_source_id).has_value();
+#else
+  const auto& raw = runtime.raw();
+  if (raw.vtable->struct_size < sizeof(ToolboxRuntimeHostDiscardExtension)) {
+    return false;
+  }
+  const auto* extension = reinterpret_cast<const ToolboxRuntimeHostDiscardExtension*>(raw.vtable);
+  if (extension->discard_parser_ingest == nullptr) {
+    return false;
+  }
+  PJ_error_t error{};
+  return extension->discard_parser_ingest(raw.ctx, data_source_id, &error);
+#endif
 }
 
 void FetchWorker::ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, const std::string& sequence_name) {
@@ -190,7 +252,7 @@ void FetchWorker::ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, cons
   }
 }
 
-void FetchWorker::finishIngestProgress() {
+void FetchWorker::finishIngestProgress(bool discard_provisional) {
   std::optional<uint32_t> release_id;
   {
     std::lock_guard<std::mutex> plock(progress_mu_);
@@ -201,10 +263,32 @@ void FetchWorker::finishIngestProgress() {
     release_id = ingest_ds_id_;
     ingest_ds_id_.reset();
   }
-  if (release_id.has_value() && runtime_host_provider_) {
+
+  // The provisional DataSource can exist even when create_parser_ingest failed
+  // (for example, a temporarily unavailable parser service). Rollback is keyed
+  // by the DataSource id, so it must not depend on having acquired a progress
+  // context successfully.
+  std::optional<uint32_t> discard_id;
+  if (discard_provisional) {
+    std::lock_guard<std::mutex> lock(fetch_dataset_mu_);
+    if (fetch_dataset_.has_value()) {
+      discard_id = fetch_dataset_->id;
+    }
+  }
+
+  if ((release_id.has_value() || discard_id.has_value()) && runtime_host_provider_) {
     const auto runtime = runtime_host_provider_();
     if (runtime.valid()) {
-      (void)runtime.releaseParserIngest(*release_id);
+      if (discard_id.has_value()) {
+        if (discardProvisionalIngest(runtime, *discard_id)) {
+          return;
+        }
+        // A runtime that changed underneath the capability probe still gets a
+        // normal release, keeping the progress lifecycle paired.
+      }
+      if (release_id.has_value()) {
+        (void)runtime.releaseParserIngest(*release_id);
+      }
     }
   }
 }
@@ -400,9 +484,9 @@ void FetchWorker::pullTopicsAsync(
     return;
   }
   // Start of a multi-topic Download: discard any DataSourceHandle cached from a
-  // previous fetch. datasetForFetch creates exactly one dataset before the
-  // transport starts, and every topic callback reuses it so the catalog shows
-  // ONE group, not one per topic.
+  // previous fetch. datasetForFetch creates exactly one dataset (eagerly only
+  // when rollback is available), and every topic callback reuses it so the
+  // catalog shows ONE group, not one per topic.
   {
     std::lock_guard<std::mutex> lock(fetch_dataset_mu_);
     fetch_dataset_ = std::nullopt;
@@ -434,16 +518,22 @@ void FetchWorker::pullTopicsAsync(
     std::shared_ptr<arrow::Schema> schema;
   };
   auto state = std::make_shared<std::unordered_map<std::string, PerTopic>>();
+  auto imported_any = std::make_shared<std::atomic<bool>>(false);
   for (const auto& t : topic_names_std) {
     (*state)[t] = PerTopic{};
   }
 
-  auto on_done = [this, sequence_name, state](const std::string& topic_name, arrow::Result<PullResult> result) {
+  auto on_done = [this, sequence_name, state, imported_any](
+                     const std::string& topic_name, arrow::Result<PullResult> result) {
     auto it = state->find(topic_name);
     if (it == state->end()) {
       return;
     }
-    auto finish = [this, &sequence_name, &topic_name](bool ok, std::string error, std::string warning = {}) {
+    auto finish = [this, &sequence_name, &topic_name, imported_any](
+                      bool ok, std::string error, std::string warning = {}) {
+      if (ok) {
+        imported_any->store(true, std::memory_order_relaxed);
+      }
       if (pullFinished) {
         pullFinished({{sequence_name, topic_name}, ok, std::move(error), std::move(warning)});
       }
@@ -565,6 +655,7 @@ void FetchWorker::pullTopicsAsync(
         finish(false, ds.error());
         return;
       }
+      ensureIngestProgress(*ds, sequence_name);
       const ObjectIngestContext ctx{host, *ds, topic_name, ts_field, synth_anchor_ns, synth_interval_ns};
       auto pushed = [&]() -> PJ::Expected<ObjectPushOutcome> {
         if (is_image) {
@@ -650,6 +741,7 @@ void FetchWorker::pullTopicsAsync(
       finish(false, ds.error());
       return;
     }
+    ensureIngestProgress(*ds, sequence_name);
     auto append_status = pumpStreamToHost(host, *ds, topic_name, &stream, ts_field);
     if (!append_status) {
       if (stream.release != nullptr) {
@@ -718,7 +810,12 @@ void FetchWorker::pullTopicsAsync(
   // the dialog clears fetch_active (and re-enables Close) only on that signal,
   // so a swallowed completion would strand the panel with Close disabled.
   try {
-    if (host_provider_) {
+    // A real DataSource may be created before the first byte only when the
+    // paired host can roll it back. Older hosts have no remove operation, so
+    // they retain the lazy-on-first-importable-topic path in on_done and cannot
+    // accumulate empty datasets after transport failures, no-data responses,
+    // or cancellation.
+    if (host_provider_ && supportsProvisionalIngestDiscard()) {
       const auto host = host_provider_();
       std::lock_guard<std::mutex> write_lock(host_write_mu_);
       auto ds = datasetForFetch(host, sequence_name);
@@ -731,7 +828,7 @@ void FetchWorker::pullTopicsAsync(
             pullFinished({{sequence_name, t}, false, fmt::format("create dataset failed: {}", ds.error()), {}});
           }
         }
-        finishIngestProgress();
+        finishIngestProgress(/*discard_provisional=*/false);
         if (allFetchesComplete) {
           allFetchesComplete(std::move(sequence_name));
         }
@@ -772,10 +869,10 @@ void FetchWorker::pullTopicsAsync(
     }
   }
   // Bracket the host progress/stop channel on EVERY exit (success, cancel,
-  // throw) and BEFORE allFetchesComplete: the dialog's terminal
-  // notifyDataChanged is queued behind that signal, so the release must land
-  // first for the host's terminal focus/reconcile pass to see this dataset.
-  finishIngestProgress();
+  // throw) and BEFORE allFetchesComplete: a zero-success provisional source is
+  // rolled back; otherwise release lands before the dialog's terminal
+  // notifyDataChanged so the host can focus/reconcile the finished dataset.
+  finishIngestProgress(/*discard_provisional=*/!imported_any->load(std::memory_order_relaxed));
   if (allFetchesComplete) {
     allFetchesComplete(std::move(sequence_name));
   }

@@ -50,9 +50,9 @@ class FetchWorker {
     runtime_host_provider_ = std::move(provider);
   }
 
-  void requestCancel() {
-    cancel_flag_.store(true, std::memory_order_relaxed);
-  }
+  /// Cancel the batch flag and actively interrupt any Flight readers that may
+  /// currently be blocked in GetSchema/Next.
+  void requestCancel();
   void resetCancel() {
     cancel_flag_.store(false, std::memory_order_relaxed);
   }
@@ -128,8 +128,9 @@ class FetchWorker {
   friend class testing::FetchWorkerTestAccess;
 
   /// Return the single DataSourceHandle for the current Download, creating it
-  /// on first use. pullTopicsAsync creates it before starting the transport;
-  /// all topic-completion callbacks then share the handle so they land in ONE
+  /// on first use. A rollback-capable runtime creates it before transport for
+  /// immediate host progress; older runtimes create it on the first importable
+  /// topic. All completion callbacks share the handle so they land in ONE
   /// catalog group. Each Download resets fetch_dataset_ first.
   [[nodiscard]] PJ::Expected<PJ::sdk::DataSourceHandle> datasetForFetch(
       const PJ::sdk::ToolboxHostView& host, const std::string& sequence_name);
@@ -152,14 +153,30 @@ class FetchWorker {
   /// Route a host Stop through cancellation and the once-only UI callback.
   void requestCancelFromHost();
 
-  /// End-of-batch bracket: progressFinish + releaseParserIngest (idempotent,
-  /// [thread-safe]). Releasing BEFORE allFetchesComplete is load-bearing: the
-  /// dialog's terminal notifyDataChanged is queued after it, so the host's
-  /// release-time report focuses playback on the finished dataset.
-  void finishIngestProgress();
+  /// Interrupt SDK readers (or the injected transport cancellation seam in a
+  /// focused test). Safe when no client/pull is active.
+  void cancelActivePulls();
+
+  /// True only when the runtime host can roll back an eager provisional data
+  /// source. Older hosts keep the original lazy-on-first-importable-topic
+  /// behavior.
+  [[nodiscard]] bool supportsProvisionalIngestDiscard() const;
+
+  /// Invoke the optional discard tail slot across both the released SDK view
+  /// and its ABI-compatible older headers.
+  [[nodiscard]] bool discardProvisionalIngest(
+      const PJ::ToolboxRuntimeHostView& runtime, std::uint32_t data_source_id) const;
+
+  /// End-of-batch bracket: progressFinish + releaseParserIngest, or the
+  /// provisional discard path for a zero-success batch. Finishing BEFORE
+  /// allFetchesComplete is load-bearing: the dialog's terminal
+  /// notifyDataChanged is queued after it, so the host's release-time report
+  /// focuses playback on the finished dataset.
+  void finishIngestProgress(bool discard_provisional);
 
   std::unique_ptr<MosaicoClient> client_;
   std::function<void()> pull_topics_override_;
+  std::function<void()> cancel_active_pulls_override_;
   std::function<PJ::sdk::ToolboxHostView()> host_provider_;
   std::function<PJ::ToolboxRuntimeHostView()> runtime_host_provider_;
   std::atomic<bool> cancel_flag_{false};
