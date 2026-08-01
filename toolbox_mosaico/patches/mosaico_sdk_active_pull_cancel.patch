@@ -1,0 +1,112 @@
+diff --git a/src/flight/mosaico_client.cpp b/src/flight/mosaico_client.cpp
+index 77db6d8..e3e7a23 100644
+--- a/src/flight/mosaico_client.cpp
++++ b/src/flight/mosaico_client.cpp
+@@ -47,6 +47,23 @@ inline std::string tidStr() {
+   return std::string(buf);
+ }
+
++template <typename F>
++class ScopeExit {
++ public:
++  explicit ScopeExit(F callback) : callback_(std::move(callback)) {}
++  ScopeExit(const ScopeExit&) = delete;
++  ScopeExit& operator=(const ScopeExit&) = delete;
++  ~ScopeExit() { callback_(); }
++
++ private:
++  F callback_;
++};
++
++template <typename F>
++ScopeExit<F> onScopeExit(F callback) {
++  return ScopeExit<F>(std::move(callback));
++}
++
+ int64_t decodedRecordBatchBytes(const arrow::RecordBatch& batch) {
+   auto referenced_size = arrow::util::ReferencedBufferSize(batch);
+   if (referenced_size.ok()) {
+@@ -773,6 +790,26 @@ arrow::Result<TopicInfo> MosaicoClient::getTopicMetadata(
+ // Pull
+ // ---------------------------------------------------------------------------
+
++void MosaicoClient::registerActiveReader(fl::FlightStreamReader* reader) {
++  std::lock_guard<std::mutex> lock(active_readers_mu_);
++  active_readers_.insert(reader);
++}
++
++void MosaicoClient::unregisterActiveReader(fl::FlightStreamReader* reader) {
++  std::lock_guard<std::mutex> lock(active_readers_mu_);
++  active_readers_.erase(reader);
++}
++
++void MosaicoClient::cancelActivePulls() {
++  // FlightStreamReader::Cancel delegates to gRPC ClientContext::TryCancel and
++  // is expressly intended for watchdog/background-thread cancellation. Keep
++  // the registry locked so a reader cannot be destroyed during this call.
++  std::lock_guard<std::mutex> lock(active_readers_mu_);
++  for (auto* reader : active_readers_) {
++    reader->Cancel();
++  }
++}
++
+ arrow::Result<PullResult> MosaicoClient::pullTopic(
+     const std::string& sequence_name, const std::string& topic_name, const TimeRange& range,
+     ProgressCallback progress_cb, std::atomic<bool>* interrupted, BatchCallback batch_cb, SchemaCallback schema_cb,
+@@ -838,6 +875,18 @@ arrow::Result<PullResult> MosaicoClient::pullTopic(
+   ARROW_ASSIGN_OR_RAISE(auto reader, conn->DoGet(stream_opts, ticket));
+   const auto ms_doget = sdkElapsedMs(t_doget);
+
++  // Register before GetSchema: both schema discovery and Next() can block
++  // waiting for the server. A cancellation from another thread now reaches
++  // the underlying gRPC ClientContext immediately instead of waiting for the
++  // next chunk to make the atomic flag observable.
++  registerActiveReader(reader.get());
++  auto unregister_reader =
++      onScopeExit([this, active_reader = reader.get()] { unregisterActiveReader(active_reader); });
++  if (is_cancelled()) {
++    reader->Cancel();
++    return arrow::Status::Cancelled("pull cancelled by caller");
++  }
++
+   PullResult result;
+   const auto t_schema = sdkNow();
+   ARROW_ASSIGN_OR_RAISE(result.schema, reader->GetSchema());
+diff --git a/src/flight/mosaico_client.hpp b/src/flight/mosaico_client.hpp
+index d2cc693..dc62695 100644
+--- a/src/flight/mosaico_client.hpp
++++ b/src/flight/mosaico_client.hpp
+@@ -8,7 +8,9 @@
+ #include <atomic>
+ #include <functional>
+ #include <memory>
++#include <mutex>
+ #include <string>
++#include <unordered_set>
+ #include <vector>
+
+ #include "flight/connection_pool.hpp"
+@@ -99,6 +101,11 @@ class MosaicoClient {
+       std::atomic<bool>* interrupted = nullptr, MultiTopicBatchCallback batch_cb = nullptr,
+       MultiTopicSchemaCallback schema_cb = nullptr, bool retain_batches = true);
+
++  // Interrupt every Flight reader currently owned by pullTopic/pullTopics.
++  // Thread-safe: intended for a UI or watchdog thread while a worker is
++  // blocked in FlightStreamReader::GetSchema/Next.
++  void cancelActivePulls();
++
+   // Notifications (server-side error trail).
+   arrow::Status reportSequenceNotification(
+       const std::string& sequence_name, const std::string& type, const std::string& message);
+@@ -122,6 +129,11 @@ class MosaicoClient {
+       arrow::flight::FlightClient* client, const std::string& action_type, const std::string& json_body,
+       std::string* response = nullptr);
+   arrow::flight::FlightCallOptions callOpts() const;
++  void registerActiveReader(arrow::flight::FlightStreamReader* reader);
++  void unregisterActiveReader(arrow::flight::FlightStreamReader* reader);
++
++  std::mutex active_readers_mu_;
++  std::unordered_set<arrow::flight::FlightStreamReader*> active_readers_;
+
+   ConnectionPool pool_;
+   int timeout_;

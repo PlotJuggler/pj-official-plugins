@@ -21,9 +21,11 @@
 #include <fmt/format.h>
 
 #include <chrono>
+#include <condition_variable>
 #include <initializer_list>
 #include <memory>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -35,6 +37,19 @@
 namespace mosaico {
 
 namespace {
+
+constexpr auto kHostStopPollInterval = std::chrono::milliseconds(50);
+
+#if !defined(PJ_TOOLBOX_HAS_DISCARD_PARSER_INGEST)
+// Compatibility layout for SDK 0.20: the paired host appends this slot after
+// release_parser_ingest. Keeping it local lets this plugin negotiate the new
+// capability while the public SDK package catches up; struct_size preserves
+// ABI safety with every older host.
+struct ToolboxRuntimeHostDiscardExtension {
+  PJ_toolbox_runtime_host_vtable_t base;
+  bool (*discard_parser_ingest)(void* ctx, std::uint32_t data_source_id, PJ_error_t* out_error) PJ_NOEXCEPT;
+};
+#endif
 
 std::string stringFromArrow(const arrow::Status& status) {
   return status.ToString();
@@ -96,6 +111,19 @@ std::string stringFromArrow(const arrow::Status& status) {
 FetchWorker::FetchWorker() = default;
 FetchWorker::~FetchWorker() = default;
 
+void FetchWorker::requestCancel() {
+  cancel_flag_.store(true, std::memory_order_relaxed);
+  cancelActivePulls();
+}
+
+void FetchWorker::cancelActivePulls() {
+  if (cancel_active_pulls_override_) {
+    cancel_active_pulls_override_();
+  } else if (client_) {
+    client_->cancelActivePulls();
+  }
+}
+
 PJ::Expected<PJ::sdk::DataSourceHandle> FetchWorker::datasetForFetch(
     const PJ::sdk::ToolboxHostView& host, const std::string& sequence_name) {
   std::lock_guard<std::mutex> lock(fetch_dataset_mu_);
@@ -107,6 +135,162 @@ PJ::Expected<PJ::sdk::DataSourceHandle> FetchWorker::datasetForFetch(
     fetch_dataset_ = *ds;
   }
   return *fetch_dataset_;
+}
+
+std::uint64_t FetchWorker::accumulatedProgressBytesLocked() const {
+  std::uint64_t fetched = 0;
+  for (const auto& entry : progress_bytes_by_topic_) {
+    const std::int64_t count = entry.second;
+    fetched += static_cast<std::uint64_t>(count > 0 ? count : 0);
+  }
+  return fetched;
+}
+
+bool FetchWorker::isStopRequestedByHost() {
+  std::lock_guard<std::mutex> plock(progress_mu_);
+  return ingest_progress_.has_value() && ingest_progress_->isStopRequested();
+}
+
+void FetchWorker::requestCancelFromHost() {
+  bool report_stop = false;
+  {
+    std::lock_guard<std::mutex> plock(progress_mu_);
+    if (!host_stop_reported_) {
+      host_stop_reported_ = true;
+      report_stop = true;
+    }
+  }
+  if (!report_stop) {
+    return;
+  }
+  requestCancel();
+  if (hostStopRequested) {
+    hostStopRequested();
+  }
+}
+
+bool FetchWorker::supportsProvisionalIngestDiscard() const {
+  if (!runtime_host_provider_) {
+    return false;
+  }
+  const auto runtime = runtime_host_provider_();
+  if (!runtime.valid()) {
+    return false;
+  }
+  const auto& raw = runtime.raw();
+  if (!PJ_HAS_TAIL_SLOT(PJ_toolbox_runtime_host_vtable_t, raw.vtable, create_parser_ingest)) {
+    return false;
+  }
+#if defined(PJ_TOOLBOX_HAS_DISCARD_PARSER_INGEST)
+  return PJ_HAS_TAIL_SLOT(PJ_toolbox_runtime_host_vtable_t, raw.vtable, discard_parser_ingest);
+#else
+  return raw.vtable->struct_size >= sizeof(ToolboxRuntimeHostDiscardExtension) &&
+         reinterpret_cast<const ToolboxRuntimeHostDiscardExtension*>(raw.vtable)->discard_parser_ingest != nullptr;
+#endif
+}
+
+bool FetchWorker::discardProvisionalIngest(
+    const PJ::ToolboxRuntimeHostView& runtime, std::uint32_t data_source_id) const {
+#if defined(PJ_TOOLBOX_HAS_DISCARD_PARSER_INGEST)
+  return runtime.discardParserIngest(data_source_id).has_value();
+#else
+  const auto& raw = runtime.raw();
+  if (raw.vtable->struct_size < sizeof(ToolboxRuntimeHostDiscardExtension)) {
+    return false;
+  }
+  const auto* extension = reinterpret_cast<const ToolboxRuntimeHostDiscardExtension*>(raw.vtable);
+  if (extension->discard_parser_ingest == nullptr) {
+    return false;
+  }
+  PJ_error_t error{};
+  return extension->discard_parser_ingest(raw.ctx, data_source_id, &error);
+#endif
+}
+
+void FetchWorker::ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, const std::string& sequence_name) {
+  std::unique_lock<std::mutex> plock(progress_mu_);
+  if (ingest_progress_attempted_) {
+    return;
+  }
+  ingest_progress_attempted_ = true;
+  if (!runtime_host_provider_) {
+    return;
+  }
+  const auto runtime = runtime_host_provider_();
+  if (!runtime.valid()) {
+    return;
+  }
+  const PJ_toolbox_runtime_host_t& raw = runtime.raw();
+  // Tail-slot gate: an older host's vtable ends before create_parser_ingest —
+  // Downloads then run exactly as before, without host progress.
+  if (!PJ_HAS_TAIL_SLOT(PJ_toolbox_runtime_host_vtable_t, raw.vtable, create_parser_ingest)) {
+    return;
+  }
+  PJ_data_source_runtime_host_t ingest_raw{};
+  PJ_error_t error{};
+  if (!raw.vtable->create_parser_ingest(raw.ctx, ds.id, &ingest_raw, &error)) {
+    return;  // e.g. parser ingest not configured on this host — degrade silently
+  }
+  // The context is LIVE on the host from this point: record the id first so
+  // finishIngestProgress releases it even when progressStart below fails
+  // (release is idempotent and needs no prior progress sequence).
+  ingest_ds_id_ = ds.id;
+  PJ::DataSourceRuntimeHostView view(ingest_raw);
+  // Always indeterminate (total=0): TopicInfo::total_size_bytes is the
+  // COMPRESSED full-topic size while progress ticks carry DECODED bytes of the
+  // requested slice — no comparable denominator exists, and a wrong one would
+  // over/undershoot the host bar wildly. `current` still carries the decoded
+  // byte count.
+  if (!view.progressStart(sequence_name, /*total_steps=*/0, /*cancellable=*/true).has_value()) {
+    return;
+  }
+  ingest_progress_ = view;
+  const bool host_stop = !ingest_progress_->progressUpdate(accumulatedProgressBytesLocked());
+  plock.unlock();
+  if (host_stop) {
+    requestCancelFromHost();
+  }
+}
+
+void FetchWorker::finishIngestProgress(bool discard_provisional) {
+  std::optional<uint32_t> release_id;
+  {
+    std::lock_guard<std::mutex> plock(progress_mu_);
+    if (ingest_progress_.has_value()) {
+      ingest_progress_->progressFinish();
+      ingest_progress_.reset();
+    }
+    release_id = ingest_ds_id_;
+    ingest_ds_id_.reset();
+  }
+
+  // The provisional DataSource can exist even when create_parser_ingest failed
+  // (for example, a temporarily unavailable parser service). Rollback is keyed
+  // by the DataSource id, so it must not depend on having acquired a progress
+  // context successfully.
+  std::optional<uint32_t> discard_id;
+  if (discard_provisional) {
+    std::lock_guard<std::mutex> lock(fetch_dataset_mu_);
+    if (fetch_dataset_.has_value()) {
+      discard_id = fetch_dataset_->id;
+    }
+  }
+
+  if ((release_id.has_value() || discard_id.has_value()) && runtime_host_provider_) {
+    const auto runtime = runtime_host_provider_();
+    if (runtime.valid()) {
+      if (discard_id.has_value()) {
+        if (discardProvisionalIngest(runtime, *discard_id)) {
+          return;
+        }
+        // A runtime that changed underneath the capability probe still gets a
+        // normal release, keeping the progress lifecycle paired.
+      }
+      if (release_id.has_value()) {
+        (void)runtime.releaseParserIngest(*release_id);
+      }
+    }
+  }
 }
 
 void FetchWorker::connectAsync(std::string uri, ServerCredentials creds) {
@@ -282,7 +466,7 @@ void FetchWorker::fetchTopicMetadataAsync(TopicRef topic) {
 
 void FetchWorker::pullTopicsAsync(
     std::string sequence_name, std::vector<std::string> topic_names, std::int64_t start_ns, std::int64_t end_ns) {
-  if (!client_) {
+  if (!client_ && !pull_topics_override_) {
     for (const auto& t : topic_names) {
       if (pullFinished) {
         pullFinished({{sequence_name, t}, false, "not connected", {}});
@@ -300,13 +484,21 @@ void FetchWorker::pullTopicsAsync(
     return;
   }
   // Start of a multi-topic Download: discard any DataSourceHandle cached from a
-  // previous fetch. datasetForFetch then creates exactly one dataset for this
-  // sequence (mutex-guarded against the parallel per-topic callbacks below) and
-  // every topic attaches to it, so the catalog shows ONE group, not one per
-  // topic.
+  // previous fetch. datasetForFetch creates exactly one dataset (eagerly only
+  // when rollback is available), and every topic callback reuses it so the
+  // catalog shows ONE group, not one per topic.
   {
     std::lock_guard<std::mutex> lock(fetch_dataset_mu_);
     fetch_dataset_ = std::nullopt;
+  }
+  // Fresh host-progress bracket for this batch.
+  {
+    std::lock_guard<std::mutex> plock(progress_mu_);
+    ingest_progress_.reset();
+    ingest_progress_attempted_ = false;
+    host_stop_reported_ = false;
+    ingest_ds_id_.reset();
+    progress_bytes_by_topic_.clear();
   }
 
   // Use the SDK's parallel pullTopics. Per-topic completion (on_done) fires on
@@ -326,16 +518,22 @@ void FetchWorker::pullTopicsAsync(
     std::shared_ptr<arrow::Schema> schema;
   };
   auto state = std::make_shared<std::unordered_map<std::string, PerTopic>>();
+  auto imported_any = std::make_shared<std::atomic<bool>>(false);
   for (const auto& t : topic_names_std) {
     (*state)[t] = PerTopic{};
   }
 
-  auto on_done = [this, sequence_name, state](const std::string& topic_name, arrow::Result<PullResult> result) {
+  auto on_done = [this, sequence_name, state, imported_any](
+                     const std::string& topic_name, arrow::Result<PullResult> result) {
     auto it = state->find(topic_name);
     if (it == state->end()) {
       return;
     }
-    auto finish = [this, &sequence_name, &topic_name](bool ok, std::string error, std::string warning = {}) {
+    auto finish = [this, &sequence_name, &topic_name, imported_any](
+                      bool ok, std::string error, std::string warning = {}) {
+      if (ok) {
+        imported_any->store(true, std::memory_order_relaxed);
+      }
       if (pullFinished) {
         pullFinished({{sequence_name, topic_name}, ok, std::move(error), std::move(warning)});
       }
@@ -445,7 +643,7 @@ void FetchWorker::pullTopicsAsync(
       // [C1] Serialize the whole host-write critical section ourselves: this
       // callback runs on SDK connection-pool worker threads and the host
       // DataWriter has no internal mutex. We hold host_write_mu_ around the
-      // lazy dataset create AND every register/push, so the plugin guarantees
+      // cached dataset lookup AND every register/push, so the plugin guarantees
       // serialization regardless of whether the SDK serializes on_done.
       //
       // Lock order: host_write_mu_ is acquired ONLY here, and datasetForFetch
@@ -457,6 +655,7 @@ void FetchWorker::pullTopicsAsync(
         finish(false, ds.error());
         return;
       }
+      ensureIngestProgress(*ds, sequence_name);
       const ObjectIngestContext ctx{host, *ds, topic_name, ts_field, synth_anchor_ns, synth_interval_ns};
       auto pushed = [&]() -> PJ::Expected<ObjectPushOutcome> {
         if (is_image) {
@@ -542,6 +741,7 @@ void FetchWorker::pullTopicsAsync(
       finish(false, ds.error());
       return;
     }
+    ensureIngestProgress(*ds, sequence_name);
     auto append_status = pumpStreamToHost(host, *ds, topic_name, &stream, ts_field);
     if (!append_status) {
       if (stream.release != nullptr) {
@@ -581,6 +781,25 @@ void FetchWorker::pullTopicsAsync(
         if (pullProgress) {
           pullProgress(topic_name, bytes);
         }
+        // Host progress tick. progress_mu_ serializes the fat-pointer call
+        // (single-caller surface; these events arrive on concurrent pool
+        // threads) and guards the byte ledger. The host throttles internally
+        // (~50 ms), so most ticks return immediately. A false return is the
+        // host's stop request (title-bar Stop).
+        bool host_stop = false;
+        {
+          std::lock_guard<std::mutex> plock(progress_mu_);
+          progress_bytes_by_topic_[topic_name] = bytes;
+          if (ingest_progress_.has_value()) {
+            const std::uint64_t fetched = accumulatedProgressBytesLocked();
+            if (!ingest_progress_->progressUpdate(fetched) && !host_stop_reported_) {
+              host_stop = true;
+            }
+          }
+        }
+        if (host_stop) {
+          requestCancelFromHost();
+        }
       };
 
   // Cancel is owned/reset by the dialog at fetch start (buttonFetch handler, on
@@ -591,9 +810,55 @@ void FetchWorker::pullTopicsAsync(
   // the dialog clears fetch_active (and re-enables Close) only on that signal,
   // so a swallowed completion would strand the panel with Close disabled.
   try {
-    (void)client_->pullTopics(
-        sequence_name, topic_names_std, range, on_done, on_progress, &cancel_flag_, on_batch, on_schema,
-        /*retain_batches=*/false);
+    // A real DataSource may be created before the first byte only when the
+    // paired host can roll it back. Older hosts have no remove operation, so
+    // they retain the lazy-on-first-importable-topic path in on_done and cannot
+    // accumulate empty datasets after transport failures, no-data responses,
+    // or cancellation.
+    if (host_provider_ && supportsProvisionalIngestDiscard()) {
+      const auto host = host_provider_();
+      std::lock_guard<std::mutex> write_lock(host_write_mu_);
+      auto ds = datasetForFetch(host, sequence_name);
+      if (!ds) {
+        // One failure per requested topic: the dialog's ledger is keyed by topic
+        // name, so a single synthetic result would strand the tally at 1/N and
+        // show a blank-named row.
+        for (const auto& t : topic_names_std) {
+          if (pullFinished) {
+            pullFinished({{sequence_name, t}, false, fmt::format("create dataset failed: {}", ds.error()), {}});
+          }
+        }
+        finishIngestProgress(/*discard_provisional=*/false);
+        if (allFetchesComplete) {
+          allFetchesComplete(std::move(sequence_name));
+        }
+        return;
+      }
+      ensureIngestProgress(*ds, sequence_name);
+    }
+
+    // A silent transport still has a live control plane: the ingest context's
+    // Stop flag is thread-safe and does not depend on progress callbacks.
+    std::mutex poll_wait_mu;
+    std::condition_variable_any poll_wait_cv;
+    std::jthread host_stop_poller([this, &poll_wait_mu, &poll_wait_cv](std::stop_token stop_token) {
+      while (!stop_token.stop_requested()) {
+        if (isStopRequestedByHost()) {
+          requestCancelFromHost();
+          return;
+        }
+        std::unique_lock<std::mutex> wait_lock(poll_wait_mu);
+        (void)poll_wait_cv.wait_for(wait_lock, stop_token, kHostStopPollInterval, [] { return false; });
+      }
+    });
+
+    if (pull_topics_override_) {
+      pull_topics_override_();
+    } else {
+      (void)client_->pullTopics(
+          sequence_name, topic_names_std, range, on_done, on_progress, &cancel_flag_, on_batch, on_schema,
+          /*retain_batches=*/false);
+    }
   } catch (const std::exception& e) {
     if (pullFinished) {
       pullFinished({{sequence_name, {}}, false, fmt::format("pull failed: {}", e.what()), {}});
@@ -603,6 +868,11 @@ void FetchWorker::pullTopicsAsync(
       pullFinished({{sequence_name, {}}, false, "pull failed: unknown error", {}});
     }
   }
+  // Bracket the host progress/stop channel on EVERY exit (success, cancel,
+  // throw) and BEFORE allFetchesComplete: a zero-success provisional source is
+  // rolled back; otherwise release lands before the dialog's terminal
+  // notifyDataChanged so the host can focus/reconcile the finished dataset.
+  finishIngestProgress(/*discard_provisional=*/!imported_any->load(std::memory_order_relaxed));
   if (allFetchesComplete) {
     allFetchesComplete(std::move(sequence_name));
   }
