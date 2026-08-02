@@ -33,6 +33,9 @@ class ToolboxMosaicoConan(ConanFile):
         "*:shared": False,
         "arrow/*:parquet": True,
         "arrow/*:with_snappy": True,
+        # mimalloc uses initial-exec TLS, making every .so linking it require static
+        # TLS and fail to dlopen once the process's static-TLS surplus is exhausted.
+        "arrow/*:with_mimalloc": False,
         "arrow/*:with_flight_rpc": True,  # required by Mosaico SDK (Arrow Flight client)
         "arrow/*:with_grpc": True,
         "arrow/*:with_protobuf": True,
