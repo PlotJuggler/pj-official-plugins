@@ -183,6 +183,17 @@ if(BUILD_TESTING)
   )
   add_test(NAME ToolboxMosaicoDetectTimestampTest COMMAND toolbox_mosaico_detect_timestamp_test)
 
+  # StoppableThread is pure-std with no Arrow/Flight surface, so its test links
+  # nothing but gtest.
+  add_executable(toolbox_mosaico_stoppable_thread_test tests/stoppable_thread_test.cpp)
+  target_link_libraries(toolbox_mosaico_stoppable_thread_test PRIVATE GTest::gtest_main)
+  target_include_directories(toolbox_mosaico_stoppable_thread_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_mosaico_stoppable_thread_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_mosaico_stoppable_thread_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  add_test(NAME ToolboxMosaicoStoppableThreadTest COMMAND toolbox_mosaico_stoppable_thread_test)
+
   add_executable(toolbox_mosaico_ingest_progress_test
     tests/ingest_progress_test.cpp
     src/fetch_worker.cpp

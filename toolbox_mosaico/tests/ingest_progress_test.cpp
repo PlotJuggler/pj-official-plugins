@@ -227,7 +227,7 @@ TEST(MosaicoIngestProgress, ContextExistsBeforeFirstTopicCompletes) {
     pull_cv.wait(lock, [&release_pull] { return release_pull; });
   });
 
-  std::jthread fetch_thread([&worker] { worker.pullTopicsAsync("seq", {"/a", "/b"}, 0, 1); });
+  std::thread fetch_thread([&worker] { worker.pullTopicsAsync("seq", {"/a", "/b"}, 0, 1); });
 
   bool entered = false;
   {
@@ -287,7 +287,7 @@ TEST(MosaicoIngestProgress, StopInterruptsBlockedTransportRead) {
     pull_cv.wait(lock, [&transport_released] { return transport_released; });
   });
 
-  std::jthread fetch_thread([&worker] { worker.pullTopicsAsync("seq", {"/a"}, 0, 1); });
+  std::thread fetch_thread([&worker] { worker.pullTopicsAsync("seq", {"/a"}, 0, 1); });
 
   bool entered = false;
   {

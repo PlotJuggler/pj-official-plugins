@@ -134,6 +134,13 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 
 enable_testing()
 
+# enable_testing() does NOT define BUILD_TESTING -- only include(CTest) does, and
+# this project never included it. toolbox_mosaico wraps its entire test tree in
+# `if(BUILD_TESTING)`, so all 27 of its tests silently never built and `ctest`
+# reported only the handful from common/. Declared here rather than via
+# include(CTest) to avoid pulling in CTest's dashboard machinery.
+option(BUILD_TESTING "Build the testing tree" ON)
+
 # ---------------------------------------------------------------------------
 # Internal helper libraries shared by several plugins.
 # Added before any plugin subdir so they are visible regardless of whether
