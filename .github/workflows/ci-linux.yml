@@ -18,6 +18,7 @@ jobs:
   # extern/plotjuggler_core submodule. The matrix still receives one local artifact.
   acquire-core:
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -89,6 +90,7 @@ jobs:
   # runs (GitHub cache keys are immutable, so the key encodes the exact Arrow config).
   acquire-arrow:
     runs-on: ubuntu-22.04
+    timeout-minutes: 120
     env:
       CONAN_HOME: ${{ github.workspace }}/.conan-arrow
     steps:
@@ -231,6 +233,7 @@ jobs:
   per-plugin-build:
     needs: [discover-plugins, acquire-core]
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -319,6 +322,7 @@ jobs:
   arrow-plugin-build:
     needs: [discover-plugins, acquire-core, acquire-arrow]
     runs-on: ubuntu-22.04
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
