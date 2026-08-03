@@ -137,5 +137,21 @@ if(PJ_BUILD_ROS2_DISTRO)
 endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+# The proxy also exports the documented PJ_get_proxy_last_error diagnostic
+# hook (see proxy/src/data_stream_ros2.cpp) — keep it in the allowlist and
+# enforced by the gate alongside both family getters.
 pj_harden_plugin_exports(ros2_stream_plugin
-  REQUIRED_EXPORTS PJ_get_data_source_vtable)
+  REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable PJ_get_proxy_last_error
+  EXTRA_EXPORTS PJ_get_proxy_last_error)
+
+# The inner per-distro payload is dlopen-ed by the proxy, which resolves the
+# deliberately renamed PJ_ros2_inner_* getters (renamed so the host scanner
+# never mistakes the payload for a top-level plugin). The shared allowlist
+# would localize them, so they ride in as EXTRA_EXPORTS. ROS core libraries
+# (rclcpp/rcl/rmw) are linked shared, so localizing the payload's own spill
+# does not affect RMW/typesupport symbol resolution.
+if(PJ_BUILD_ROS2_DISTRO)
+  pj_harden_plugin_exports(ros2_stream_plugin_distro
+    REQUIRED_EXPORTS PJ_ros2_inner_get_data_source_vtable PJ_ros2_inner_get_dialog_vtable
+    EXTRA_EXPORTS PJ_ros2_inner_get_data_source_vtable PJ_ros2_inner_get_dialog_vtable)
+endif()

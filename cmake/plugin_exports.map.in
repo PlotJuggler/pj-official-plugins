@@ -1,4 +1,8 @@
-/* Export allowlist shared by every plugin DSO (pj_harden_plugin_exports).
+/* Export allowlist template shared by every plugin DSO — configured per
+ * target by pj_harden_plugin_exports(), which substitutes any EXTRA_EXPORTS
+ * (e.g. the ros2 proxy's documented diagnostic hook, or the ros2 inner
+ * payload's private getters) at the placeholder below.
+ *
  * Everything not named here is localized, which keeps statically linked deps
  * (gRPC/Abseil/Arrow/protobuf/...) and libstdc++ template instantiations out
  * of .dynsym. Exported STB_GNU_UNIQUE symbols are process-global despite
@@ -22,6 +26,6 @@
     PJ_get_toolbox_vtable;
     PJ_get_dialog_vtable;
     pj_plugin_descriptor_*;
-  local:
+@PJ_EXTRA_EXPORT_LINES@  local:
     *;
 };

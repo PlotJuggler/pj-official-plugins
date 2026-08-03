@@ -10,17 +10,7 @@
   "license": "MIT",
   "icon_url": "",
   "category": "data_loader",
-  "tags": [
-    "ply",
-    "pcd",
-    "pointcloud",
-    "mesh",
-    "3d",
-    "loader"
-  ],
-  "file_extensions": [
-    ".ply",
-    ".pcd"
-  ],
+  "tags": ["ply", "pcd", "pointcloud", "mesh", "3d", "loader"],
+  "file_extensions": [".ply", ".pcd"],
   "min_plotjuggler_version": "3.999.1"
 }

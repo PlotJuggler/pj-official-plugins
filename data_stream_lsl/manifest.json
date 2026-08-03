@@ -10,13 +10,6 @@
   "license": "MIT",
   "icon_url": "",
   "category": "data_stream",
-  "tags": [
-    "lsl",
-    "lab streaming layer",
-    "stream",
-    "realtime",
-    "eeg",
-    "biosignals"
-  ],
+  "tags": ["lsl", "lab streaming layer", "stream", "realtime", "eeg", "biosignals"],
   "min_plotjuggler_version": "3.999.1"
 }

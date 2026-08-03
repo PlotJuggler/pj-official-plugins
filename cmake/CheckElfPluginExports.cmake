@@ -4,6 +4,7 @@
 #
 #   cmake -DPLUGIN_SO=<path/to/plugin.so>
 #         -DREQUIRED_EXPORTS=<sym1,sym2,...>
+#         [-DNM_TOOL=<toolchain nm>]
 #         -P CheckElfPluginExports.cmake
 #
 # Fails the build when:
@@ -20,24 +21,31 @@ if(NOT PLUGIN_SO OR NOT REQUIRED_EXPORTS)
   message(FATAL_ERROR "CheckElfPluginExports: PLUGIN_SO and REQUIRED_EXPORTS are required")
 endif()
 
+# NM_TOOL lets the caller pass the toolchain's nm (CMAKE_NM) so cross-builds
+# do not inspect target ELF files with an incompatible host nm.
+if(NOT NM_TOOL)
+  set(NM_TOOL nm)
+endif()
+
 execute_process(
-  COMMAND nm -D "${PLUGIN_SO}"
+  COMMAND "${NM_TOOL}" -D "${PLUGIN_SO}"
   OUTPUT_VARIABLE _dynsym
   ERROR_VARIABLE _nm_err
   RESULT_VARIABLE _nm_rc
 )
 if(NOT _nm_rc EQUAL 0)
-  message(FATAL_ERROR "CheckElfPluginExports: nm -D failed on ${PLUGIN_SO}: ${_nm_err}")
+  message(FATAL_ERROR
+    "CheckElfPluginExports: ${NM_TOOL} -D failed on ${PLUGIN_SO} (rc=${_nm_rc}): ${_nm_err}")
 endif()
 
-string(REGEX MATCHALL "[^\n]* u [^\n]*" _unique_syms "${_dynsym}")
+string(REGEX MATCHALL "[^\n]*[ \t]u[ \t][^\n]*" _unique_syms "${_dynsym}")
 list(LENGTH _unique_syms _unique_count)
 if(_unique_count GREATER 0)
   list(SUBLIST _unique_syms 0 5 _unique_sample)
   list(JOIN _unique_sample "\n  " _unique_sample_text)
   message(FATAL_ERROR
     "CheckElfPluginExports: ${PLUGIN_SO} exports ${_unique_count} STB_GNU_UNIQUE "
-    "symbol(s); they must all be localized (see plugin_exports.map). First few:\n"
+    "symbol(s); they must all be localized (see plugin_exports.map.in). First few:\n"
     "  ${_unique_sample_text}")
 endif()
 
