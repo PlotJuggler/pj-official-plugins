@@ -33,6 +33,7 @@
 #include "arrow_ingest.hpp"
 #include "flight/metadata.hpp"
 #include "ontology_routing.h"
+#include "stoppable_thread.hpp"
 
 namespace mosaico {
 
@@ -839,16 +840,18 @@ void FetchWorker::pullTopicsAsync(
 
     // A silent transport still has a live control plane: the ingest context's
     // Stop flag is thread-safe and does not depend on progress callbacks.
-    std::mutex poll_wait_mu;
-    std::condition_variable_any poll_wait_cv;
-    std::jthread host_stop_poller([this, &poll_wait_mu, &poll_wait_cv](std::stop_token stop_token) {
-      while (!stop_token.stop_requested()) {
+    // StoppableThread rather than std::jthread + std::stop_token: neither exists
+    // in Apple's libc++, which is why 1.1.0 shipped with no macOS artifacts. Same
+    // two properties as before -- the destructor stops and joins on every exit
+    // path, and the wait returns the moment stop is requested instead of sitting
+    // out the remaining poll interval.
+    StoppableThread host_stop_poller([this](StoppableThread& poller) {
+      while (!poller.stopRequested()) {
         if (isStopRequestedByHost()) {
           requestCancelFromHost();
           return;
         }
-        std::unique_lock<std::mutex> wait_lock(poll_wait_mu);
-        (void)poll_wait_cv.wait_for(wait_lock, stop_token, kHostStopPollInterval, [] { return false; });
+        poller.waitForStop(kHostStopPollInterval);
       }
     });
 
