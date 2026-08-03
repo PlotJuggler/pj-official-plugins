@@ -37,6 +37,9 @@ class JsonParserDialog : public PJ::DialogPluginTyped {
 
     // Embedded timestamp checkbox
     wd.setChecked("checkBoxUseEmbeddedTimestamp", use_embedded_timestamp_);
+
+    // Label-keyed arrays checkbox
+    wd.setChecked("checkBoxLabelKeyedArrays", label_keyed_arrays_);
     return wd.toJson();
   }
 
@@ -50,6 +53,10 @@ class JsonParserDialog : public PJ::DialogPluginTyped {
   bool onToggled(std::string_view widget_name, bool checked) override {
     if (widget_name == "checkBoxUseEmbeddedTimestamp") {
       use_embedded_timestamp_ = checked;
+      return false;
+    }
+    if (widget_name == "checkBoxLabelKeyedArrays") {
+      label_keyed_arrays_ = checked;
       return false;
     }
     if (checked && widget_name == "radioMaxClamp") {
@@ -67,6 +74,7 @@ class JsonParserDialog : public PJ::DialogPluginTyped {
     nlohmann::json cfg;
     cfg["use_embedded_timestamp"] = use_embedded_timestamp_;
     cfg["timestamp_field_name"] = timestamp_field_name_;
+    cfg["label_keyed_arrays"] = label_keyed_arrays_;
     pj::array_policy::arrayLimitToJson(cfg, array_limit_);
     return cfg.dump();
   }
@@ -78,6 +86,7 @@ class JsonParserDialog : public PJ::DialogPluginTyped {
     }
     use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
     timestamp_field_name_ = cfg.value("timestamp_field_name", std::string("timestamp"));
+    label_keyed_arrays_ = cfg.value("label_keyed_arrays", false);
     array_limit_ = pj::array_policy::arrayLimitFromJson(cfg);
     return true;
   }
@@ -85,6 +94,7 @@ class JsonParserDialog : public PJ::DialogPluginTyped {
  private:
   pj::array_policy::ArrayLimit array_limit_;
   bool use_embedded_timestamp_ = false;
+  bool label_keyed_arrays_ = false;
   std::string timestamp_field_name_ = "timestamp";
 };
 

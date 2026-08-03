@@ -37,6 +37,16 @@
     </widget>
    </item>
    <item>
+    <widget class="QCheckBox" name="checkBoxLabelKeyedArrays">
+     <property name="text">
+      <string>Key arrays of labeled objects by label</string>
+     </property>
+     <property name="toolTip">
+      <string>If enabled, arrays of objects carrying a string "label" (or "name") member are keyed by that label instead of the array index, and a lone "value" member collapses onto it (e.g. scalars/shoulder_pan.pos instead of scalars[0]/value).</string>
+     </property>
+    </widget>
+   </item>
+   <item>
     <layout class="QHBoxLayout" name="layoutArraySize">
      <item>
       <widget class="QLabel" name="labelArraySize">

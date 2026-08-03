@@ -11,14 +11,18 @@ server and streams real-time data via delegated ingest.
 - Per-channel parser delegation by encoding:
   - `ros2msg` / `omgidl` over CDR → `parser_ros`
   - `protobuf` (binary `FileDescriptorSet` schema, base64-encoded in the advertise) → `parser_protobuf`
+  - `json` (JSON-Schema text or schemaless) → `parser_json`, with
+    `label_keyed_arrays` enabled so `{"scalars":[{"label":"shoulder_pan.pos","value":…}]}`
+    payloads (e.g. LeRobot 0.6.0's `--display_mode=foxglove` joint/action
+    channels) plot as one series per label
 - Configurable array size limits and embedded timestamp usage
 
-> **Note:** protobuf routing is an intentional, additive enhancement beyond the
-> upstream PlotJuggler plugin, which handled only CDR/ros2msg. The Foxglove
-> WebSocket protocol is multi-encoding, so each channel is classified and routed
-> to the matching parser (`classifyChannel` in `foxglove_protocol.hpp`). Encodings
-> with no parser yet (`jsonschema`, `flatbuffer`) are reported as a visible
-> warning instead of being silently dropped.
+> **Note:** protobuf and json routing are intentional, additive enhancements
+> beyond the upstream PlotJuggler plugin, which handled only CDR/ros2msg. The
+> Foxglove WebSocket protocol is multi-encoding, so each channel is classified
+> and routed to the matching parser (`classifyChannel` in
+> `foxglove_protocol.hpp`). Encodings with no parser yet (`flatbuffer`) are
+> reported as a visible warning instead of being silently dropped.
 
 ## Configuration
 

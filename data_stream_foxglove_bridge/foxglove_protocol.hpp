@@ -76,8 +76,9 @@ inline std::string buildUnsubscribeMessage(const std::vector<uint32_t>& subscrip
 /// How a Foxglove channel routes to a message parser.
 struct ChannelRoute {
   bool supported = false;
-  std::string parser_encoding;    ///< routing key for ensureParserBinding (host picks the parser).
-  bool schema_is_base64 = false;  ///< true => the advertised schema must be base64-decoded first.
+  std::string parser_encoding;      ///< routing key for ensureParserBinding (host picks the parser).
+  bool schema_is_base64 = false;    ///< true => the advertised schema must be base64-decoded first.
+  bool label_keyed_arrays = false;  ///< parser config: key {label, value} object arrays by label.
 };
 
 /// Classify a Foxglove channel into a parser route.
@@ -87,25 +88,35 @@ struct ChannelRoute {
 ///   - CDR + ros2msg/omgidl -> parser_ros (text schema, passed verbatim)
 ///   - protobuf             -> parser_protobuf (binary FileDescriptorSet schema,
 ///                             base64-encoded in the advertise JSON)
+///   - json                 -> parser_json (JSON-Schema text or schemaless;
+///                             e.g. LeRobot 0.6.0 joint/action channels)
 ///
 /// NOTE: this intentionally extends beyond the upstream PlotJuggler plugin,
-/// which was CDR/ros2msg-only. The protobuf route is an additive enhancement
-/// (see data_stream_foxglove_bridge/README.md). Future encodings (jsonschema,
-/// flatbuffer) are a single new branch each.
+/// which was CDR/ros2msg-only. The protobuf and json routes are additive
+/// enhancements (see data_stream_foxglove_bridge/README.md). Future encodings
+/// (flatbuffer) are a single new branch each.
 inline ChannelRoute classifyChannel(const ChannelInfo& ch) {
-  if (ch.topic.empty() || ch.schema_name.empty()) {
+  if (ch.topic.empty()) {
     return {};
   }
   // Text-schema, CDR-serialized ROS 2 (the original behaviour).
   if (ch.encoding == "cdr" && (ch.schema_encoding == "ros2msg" || ch.schema_encoding == "omgidl") &&
-      !ch.schema.empty()) {
-    return {true, ch.schema_encoding, /*schema_is_base64=*/false};
+      !ch.schema_name.empty() && !ch.schema.empty()) {
+    return ChannelRoute{.supported = true, .parser_encoding = ch.schema_encoding};
   }
   // Protobuf wire messages with a base64 FileDescriptorSet schema. The schema
   // MAY be empty for the well-known foxglove.* types, which parser_protobuf
   // recognizes by name and decodes without a descriptor.
-  if (ch.encoding == "protobuf" && ch.schema_encoding == "protobuf") {
-    return {true, "protobuf", /*schema_is_base64=*/true};
+  if (ch.encoding == "protobuf" && ch.schema_encoding == "protobuf" && !ch.schema_name.empty()) {
+    return ChannelRoute{.supported = true, .parser_encoding = "protobuf", .schema_is_base64 = true};
+  }
+  // JSON payloads, self-describing. The advertised JSON-Schema (plain text,
+  // never base64) is informational only — parser_json flattens by content, so
+  // schemaless channels (no schema, no schema_name) work too. label_keyed_arrays
+  // is safe to force: json channels were never routed before, so no saved
+  // layout can depend on index-based names from this bridge.
+  if (ch.encoding == "json" && (ch.schema_encoding == "jsonschema" || ch.schema_encoding.empty())) {
+    return ChannelRoute{.supported = true, .parser_encoding = "json", .label_keyed_arrays = true};
   }
   return {};
 }
