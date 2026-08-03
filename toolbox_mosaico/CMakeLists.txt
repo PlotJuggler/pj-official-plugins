@@ -118,6 +118,28 @@ if(MOSAICO_GRPCPP_TARGET)
   target_link_libraries(toolbox_mosaico_plugin PRIVATE ${MOSAICO_GRPCPP_TARGET})
 endif()
 
+# Restrict .dynsym to the plugin ABI allowlist (see plugin_exports.map for the
+# full rationale: exported STB_GNU_UNIQUE symbols from the statically linked
+# gRPC/Abseil/Arrow make glibc pin the DSO NODELETE and cross-bind statics
+# between two loaded copies of the plugin). A version script — rather than
+# --exclude-libs,ALL — because the boot symbol pj_plugin_abi_version is a weak
+# header-emitted definition that archive members also carry: hiding the archive
+# copy would demote every copy via ELF visibility merging, while the version
+# script selects by final symbol name after resolution.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_options(toolbox_mosaico_plugin PRIVATE
+    "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/plugin_exports.map")
+  set_target_properties(toolbox_mosaico_plugin PROPERTIES
+    LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/plugin_exports.map)
+  add_custom_command(TARGET toolbox_mosaico_plugin POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+      -DPLUGIN_SO=$<TARGET_FILE:toolbox_mosaico_plugin>
+      -DREQUIRED_EXPORTS=pj_plugin_abi_version,PJ_get_toolbox_vtable,PJ_get_dialog_vtable
+      -P ${CMAKE_CURRENT_LIST_DIR}/../cmake/CheckElfPluginExports.cmake
+    COMMENT "toolbox_mosaico: verifying export allowlist (no STB_GNU_UNIQUE leaks)"
+    VERBATIM)
+endif()
+
 pj_embed_ui(toolbox_mosaico_plugin
   UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/ui/mosaico_panel.ui
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/mosaico_panel_ui.hpp

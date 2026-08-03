@@ -1,0 +1,21 @@
+/* Export allowlist for the plugin DSO. Everything not named here is localized,
+ * which keeps the statically linked deps (gRPC/Abseil/Arrow) and libstdc++
+ * template instantiations out of .dynsym. STB_GNU_UNIQUE symbols in .dynsym
+ * are process-global despite RTLD_LOCAL: glibc pins the first DSO providing
+ * such a name (dlclose stops unmapping it) and a second copy of the plugin
+ * loaded from another path binds into the first copy's statics — skipped
+ * constructors and cross-build state mixing.
+ *
+ * pj_plugin_descriptor_* is the (future) SDK descriptor-section blob whose
+ * exported symbol doubles as the section's gc-root; keep it exported when the
+ * plugin is rebuilt against an SDK that emits it.
+ */
+{
+  global:
+    pj_plugin_abi_version;
+    PJ_get_toolbox_vtable;
+    PJ_get_dialog_vtable;
+    pj_plugin_descriptor_*;
+  local:
+    *;
+};
