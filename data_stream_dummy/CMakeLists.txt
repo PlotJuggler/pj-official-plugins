@@ -16,3 +16,7 @@ pj_emit_plugin_manifest(dummy_stream_plugin
   FAMILY        data_source
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(dummy_stream_plugin
+  REQUIRED_EXPORTS PJ_get_data_source_vtable)

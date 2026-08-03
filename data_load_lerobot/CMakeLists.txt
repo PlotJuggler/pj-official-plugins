@@ -110,3 +110,7 @@ target_include_directories(lerobot_dialog_fanout_test PRIVATE
   $<TARGET_PROPERTY:lerobot_source_plugin,INCLUDE_DIRECTORIES>
 )
 add_test(NAME lerobot_dialog_fanout_test COMMAND lerobot_dialog_fanout_test)
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(lerobot_source_plugin
+  REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable)

@@ -1,7 +1,7 @@
 {
   "id": "udp-server",
   "name": "UDP Server",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Real-time data streaming via UDP. Supports unicast and multicast IPv4/IPv6.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",

@@ -135,3 +135,7 @@ if(PJ_BUILD_ROS2_DISTRO)
     MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
   )
 endif()
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(ros2_stream_plugin
+  REQUIRED_EXPORTS PJ_get_data_source_vtable)

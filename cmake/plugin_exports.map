@@ -1,0 +1,27 @@
+/* Export allowlist shared by every plugin DSO (pj_harden_plugin_exports).
+ * Everything not named here is localized, which keeps statically linked deps
+ * (gRPC/Abseil/Arrow/protobuf/...) and libstdc++ template instantiations out
+ * of .dynsym. Exported STB_GNU_UNIQUE symbols are process-global despite
+ * RTLD_LOCAL: glibc pins the first DSO providing such a name (dlclose stops
+ * unmapping it), a second copy of the plugin loaded from another path binds
+ * into the first copy's statics with init guards already set (skipped
+ * constructors, cross-build state mixing), and two DIFFERENT plugins that
+ * embed the same dependency silently share one copy's static state.
+ *
+ * The list names every family entry point; a plugin only defines the ones for
+ * the families it implements (naming an absent symbol is a no-op).
+ * pj_plugin_descriptor_* is the (future) SDK descriptor-section blob whose
+ * exported symbol doubles as the section's gc-root; keep it exported when
+ * plugins are rebuilt against an SDK that emits it.
+ */
+{
+  global:
+    pj_plugin_abi_version;
+    PJ_get_data_source_vtable;
+    PJ_get_message_parser_vtable;
+    PJ_get_toolbox_vtable;
+    PJ_get_dialog_vtable;
+    pj_plugin_descriptor_*;
+  local:
+    *;
+};

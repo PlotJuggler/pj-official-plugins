@@ -46,3 +46,7 @@ target_link_libraries(data_tamer_parser_test PRIVATE
   GTest::gtest_main
 )
 add_test(NAME data_tamer_parser_test COMMAND data_tamer_parser_test)
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(parser_data_tamer_plugin
+  REQUIRED_EXPORTS PJ_get_message_parser_vtable)

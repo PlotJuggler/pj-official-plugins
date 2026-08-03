@@ -1,7 +1,7 @@
 {
   "id": "blf-loader",
   "name": "BLF Loader",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Data loader for Vector BLF (Binary Logging Format) CAN logs, decoded to signals via DBC.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",

@@ -127,3 +127,7 @@ if(benchmark_FOUND)
   target_link_libraries(ros_parser_bench PRIVATE
     plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host rosx_introspection benchmark::benchmark)
 endif()
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(parser_ros_plugin
+  REQUIRED_EXPORTS PJ_get_message_parser_vtable PJ_get_dialog_vtable)

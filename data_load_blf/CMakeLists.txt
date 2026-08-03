@@ -165,3 +165,7 @@ target_link_libraries(blf_source_test PRIVATE
   nlohmann_json::nlohmann_json
   GTest::gtest_main)
 add_test(NAME blf_source_test COMMAND blf_source_test)
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(blf_source_plugin
+  REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable)

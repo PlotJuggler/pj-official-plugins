@@ -141,3 +141,7 @@ target_link_libraries(webrtc_recv_probe PRIVATE
   LibDataChannel::LibDataChannel
   ixwebsocket::ixwebsocket
 )
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(webrtc_source_plugin
+  REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable)

@@ -40,3 +40,7 @@ target_link_libraries(json_parser_test PRIVATE
   GTest::gtest_main
 )
 add_test(NAME json_parser_test COMMAND json_parser_test)
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(parser_json_plugin
+  REQUIRED_EXPORTS PJ_get_message_parser_vtable PJ_get_dialog_vtable)
