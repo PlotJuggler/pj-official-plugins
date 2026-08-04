@@ -19,6 +19,21 @@ REF="plotjuggler_sdk/${CORE_VERSION}"
 REMOTE="plotjuggler-conan"
 SETTINGS=(-s build_type="${BUILD_TYPE:-Release}" -s compiler.cppstd=20)
 
+# The SDK package must match the plugins' instrumentation. tools.build:* is
+# acceptable here (unlike the plugin build) because this graph is only the SDK
+# and its small closure. NOTE: these confs do NOT participate in the Conan
+# package_id, so the ASan lane MUST run with a dedicated CONAN_HOME — otherwise
+# an instrumented package silently overwrites the Release one under the same id.
+# appimage/build_in_docker.sh --asan supplies that via a separate cache volume.
+if [[ "${PJ_SANITIZE:-}" == "asan" ]]; then
+  SETTINGS+=(
+    -c "tools.build:cxxflags=['-fsanitize=address','-fno-omit-frame-pointer']"
+    -c "tools.build:cflags=['-fsanitize=address','-fno-omit-frame-pointer']"
+    -c "tools.build:sharedlinkflags=['-fsanitize=address']"
+    -c "tools.build:exelinkflags=['-fsanitize=address']"
+  )
+fi
+
 # Use `conan cache path` (errors when the recipe is truly absent) rather than
 # `conan list | grep`: conan list echoes the queried reference in its "not found"
 # output, which made the grep false-positive and skip building the real package.

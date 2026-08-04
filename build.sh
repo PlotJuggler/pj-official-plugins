@@ -24,6 +24,17 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
+# --asan (or PJ_SANITIZE=asan) instruments the plugins' OWN targets with
+# AddressSanitizer. Deliberately NOT injected through Conan's tools.build:*
+# config: that applies to the whole dependency graph, which would rebuild
+# Arrow + Flight + gRPC + protobuf under ASan with a fresh package_id — hours of
+# work for code we are not hunting in. Prebuilt Conan deps stay as-is.
+SANITIZE="${PJ_SANITIZE:-}"
+if [[ "${1:-}" == "--asan" ]]; then
+  SANITIZE=asan
+  shift
+fi
+
 if [[ "$#" -gt 1 || "${1:-}" == -* ]]; then
   usage >&2
   exit 1
@@ -52,6 +63,18 @@ fi
 
 CMAKE_BUILD_DIR="$BUILD_DIR/$BUILD_TYPE"
 CONAN_ARGS=()
+
+if [[ "$SANITIZE" == "asan" ]]; then
+  BUILD_DIR="${BUILD_DIR/\/build\//\/build-asan\/}"
+  CMAKE_BUILD_DIR="$BUILD_DIR/$BUILD_TYPE"
+  CMAKE_ARGS+=(
+    "-DCMAKE_CXX_FLAGS=-fsanitize=address -fno-omit-frame-pointer -g"
+    "-DCMAKE_C_FLAGS=-fsanitize=address -fno-omit-frame-pointer -g"
+    "-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address"
+    "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address"
+  )
+  echo "Sanitizer: AddressSanitizer (plugin targets only; Conan deps unchanged)"
+fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
   CONAN_ARGS+=("-o" "cpython/*:shared=True")
