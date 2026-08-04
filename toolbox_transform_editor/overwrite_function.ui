@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>OverwriteFunction</class>
+ <widget class="QDialog" name="OverwriteFunction">
+  <property name="geometry"><rect><x>0</x><y>0</y><width>400</width><height>130</height></rect></property>
+  <property name="windowTitle"><string>Warning</string></property>
+  <layout class="QVBoxLayout" name="overwriteLayout">
+   <item>
+    <widget class="QLabel" name="overwriteLabel">
+     <property name="wordWrap"><bool>true</bool></property>
+     <property name="text"><string>A function with the same name exists already in the list of saved functions.
+
+Overwrite it?</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

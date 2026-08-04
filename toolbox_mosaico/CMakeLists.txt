@@ -52,12 +52,16 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 # The Mosaico client SDK lives in its own repo and is fetched via CPM. Arrow
 # (+ Flight) and nlohmann_json targets must already exist (created above) — the
-# SDK does not find_package() them. CPM add_subdirectory's the fetched tree, so
-# it defines the `mosaico_sdk` target exactly as the old vendored copy did.
+# SDK does not find_package() them. Pin the source: the downstream cancellation
+# patch below is deliberately tied to this revision and must fail loudly if its
+# context stops matching, rather than silently building without active stream
+# cancellation.
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CPM.cmake)
+set(MOSAICO_SDK_REVISION 64b2872f4decb5a24e8761138a3c8d4c1d6f8396)
 CPMAddPackage(
   NAME mosaico_sdk
-  URL https://github.com/PlotJuggler/mosaico-cpp-sdk/archive/refs/heads/development.zip
+  URL https://github.com/PlotJuggler/mosaico-cpp-sdk/archive/${MOSAICO_SDK_REVISION}.zip
+  PATCHES ${CMAKE_CURRENT_LIST_DIR}/patches/mosaico_sdk_active_pull_cancel.patch
 )
 
 set(MOSAICO_SOURCES
@@ -178,6 +182,39 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
   add_test(NAME ToolboxMosaicoDetectTimestampTest COMMAND toolbox_mosaico_detect_timestamp_test)
+
+  # StoppableThread is pure-std with no Arrow/Flight surface, so its test links
+  # nothing but gtest.
+  add_executable(toolbox_mosaico_stoppable_thread_test tests/stoppable_thread_test.cpp)
+  target_link_libraries(toolbox_mosaico_stoppable_thread_test PRIVATE GTest::gtest_main)
+  target_include_directories(toolbox_mosaico_stoppable_thread_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_mosaico_stoppable_thread_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_mosaico_stoppable_thread_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  add_test(NAME ToolboxMosaicoStoppableThreadTest COMMAND toolbox_mosaico_stoppable_thread_test)
+
+  add_executable(toolbox_mosaico_ingest_progress_test
+    tests/ingest_progress_test.cpp
+    src/fetch_worker.cpp
+    src/arrow_ingest.cpp
+  )
+  target_link_libraries(toolbox_mosaico_ingest_progress_test PRIVATE
+    plotjuggler_sdk::plugin_sdk
+    mosaico_sdk
+    fmt::fmt
+    ${_test_arrow_target}
+    GTest::gtest_main
+  )
+  if(MOSAICO_GRPCPP_TARGET)
+    target_link_libraries(toolbox_mosaico_ingest_progress_test PRIVATE ${MOSAICO_GRPCPP_TARGET})
+  endif()
+  target_include_directories(toolbox_mosaico_ingest_progress_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_mosaico_ingest_progress_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_mosaico_ingest_progress_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  add_test(NAME ToolboxMosaicoIngestProgressTest COMMAND toolbox_mosaico_ingest_progress_test)
 
   # Image-topic metadata builder: pure string logic, header-only, so this needs
   # nothing but GTest. Pins the cross-repo metadata_json contract.

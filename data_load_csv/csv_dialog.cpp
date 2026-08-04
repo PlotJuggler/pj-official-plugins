@@ -27,6 +27,31 @@ int CsvDialog::combinedColumnIndex() const {
   return -1;
 }
 
+bool CsvDialog::combinableAvailable() const {
+  bool has_date = false;
+  bool has_time = false;
+  for (const auto& info : column_types_) {
+    has_date = has_date || info.type == PJ::CSV::ColumnType::DATE_ONLY;
+    has_time = has_time || info.type == PJ::CSV::ColumnType::TIME_ONLY;
+  }
+  return has_date && has_time;
+}
+
+void CsvDialog::setCombinedColumns(int date_index, int time_index) {
+  combined_pairs_.clear();
+  combined_index_ = -1;
+  const int n = static_cast<int>(column_names_.size());
+  if (date_index >= 0 && time_index >= 0 && date_index < n && time_index < n) {
+    PJ::CSV::CombinedColumnPair pair;
+    pair.date_column_index = date_index;
+    pair.time_column_index = time_index;
+    pair.virtual_name =
+        column_names_[static_cast<size_t>(date_index)] + " + " + column_names_[static_cast<size_t>(time_index)];
+    combined_pairs_.push_back(pair);
+    combined_index_ = 0;
+  }
+}
+
 void CsvDialog::setFilePath(const std::string& filepath) {
   filepath_ = filepath;
   analyzeFile();
@@ -43,55 +68,89 @@ std::string CsvDialog::ui_content() const {
 std::string CsvDialog::widget_data() {
   PJ::WidgetData wd;
 
-  // Delimiter
+  // Delimiter: the "Detect Automatically" toggle (host-adapted into an iOS
+  // switch) gates the dropdown. Auto on -> dropdown shows the detected delimiter
+  // and is disabled; auto off (incl. the forced-off ambiguous case) -> dropdown
+  // is enabled for the user to pick. An ambiguous header also disables the
+  // toggle itself, so auto cannot be re-armed until a different file is loaded.
   std::vector<std::string> delimiters = {"\",\" (comma)", "\";\" (semicolon)", "\" \" (space)", "\"\\t\" (tab)"};
   wd.setItems("comboBox", delimiters);
   wd.setCurrentIndex("comboBox", delimiterToIndex(delimiter_));
+  wd.setChecked("checkBoxAutoDelim", detect_delimiter_);
+  wd.setEnabled("checkBoxAutoDelim", !delimiter_ambiguous_);
+  wd.setEnabled("comboBox", !detect_delimiter_);
 
-  // Time axis radios
-  wd.setChecked("radioButtonIndex", time_mode_ == TimeMode::RowNumber);
-  wd.setChecked("radioButtonSelect", time_mode_ == TimeMode::Column);
-  wd.setChecked("radioButtonDateTimeColumns", time_mode_ == TimeMode::Combined);
+  // Time-axis mode dropdown (docked on the right of the "Time Axis" header).
+  // "Multiple Columns" only appears when the file has both a date-only and a
+  // time-only column, so a combined timestamp can be formed from them.
+  std::vector<std::string> mode_items = {"Number of Rows", "Selected Column"};
+  if (combinableAvailable()) {
+    mode_items.push_back("Multiple Columns");
+  }
+  wd.setItems("timeAxisModeCombo", mode_items);
+  int mode_index = 0;
+  if (time_mode_ == TimeMode::Column) {
+    mode_index = 1;
+  } else if (time_mode_ == TimeMode::Combined) {
+    mode_index = 2;
+  }
+  wd.setCurrentIndex("timeAxisModeCombo", mode_index);
 
-  // Column list
+  // Column list. "Selected Column" picks one time column (single-select).
+  // "Multiple Columns" multi-selects the date + time columns that form the
+  // combined timestamp; every non date/time column is greyed out.
+  const bool combined_mode = time_mode_ == TimeMode::Combined;
   wd.setListItems("listWidgetSeries", column_names_);
-  wd.setEnabled("listWidgetSeries", time_mode_ == TimeMode::Column);
-  if (time_mode_ == TimeMode::Column && selected_column_index_ >= 0 &&
-      selected_column_index_ < static_cast<int>(column_names_.size())) {
-    wd.setSelectedItems("listWidgetSeries", {column_names_[static_cast<size_t>(selected_column_index_)]});
+  wd.setEnabled("listWidgetSeries", time_mode_ == TimeMode::Column || combined_mode);
+  wd.setListSelectionMode("listWidgetSeries", combined_mode);
+  if (combined_mode) {
+    std::vector<std::string> disabled;
+    for (size_t i = 0; i < column_names_.size(); i++) {
+      const bool time_capable = i < column_types_.size() && (column_types_[i].type == PJ::CSV::ColumnType::DATE_ONLY ||
+                                                             column_types_[i].type == PJ::CSV::ColumnType::TIME_ONLY);
+      if (!time_capable) {
+        disabled.push_back(column_names_[i]);
+      }
+    }
+    wd.setListItemsDisabled("listWidgetSeries", disabled);
+    std::vector<std::string> selected;
+    if (!combined_pairs_.empty()) {
+      const auto& p = combined_pairs_.front();
+      selected.push_back(column_names_[static_cast<size_t>(p.date_column_index)]);
+      selected.push_back(column_names_[static_cast<size_t>(p.time_column_index)]);
+    }
+    wd.setSelectedItems("listWidgetSeries", selected);
+  } else {
+    wd.setListItemsDisabled("listWidgetSeries", {});
+    std::vector<std::string> selected;
+    if (time_mode_ == TimeMode::Column && selected_column_index_ >= 0 &&
+        selected_column_index_ < static_cast<int>(column_names_.size())) {
+      selected.push_back(column_names_[static_cast<size_t>(selected_column_index_)]);
+    }
+    wd.setSelectedItems("listWidgetSeries", selected);
   }
 
-  // Combined pairs
-  std::vector<std::string> combo_items;
-  for (const auto& p : combined_pairs_) {
-    combo_items.push_back(p.virtual_name);
-  }
-  wd.setItems("combinedCombo", combo_items);
-  if (combined_index_ >= 0) {
-    wd.setCurrentIndex("combinedCombo", combined_index_);
-  }
-  wd.setEnabled("radioButtonDateTimeColumns", !combined_pairs_.empty());
-  wd.setEnabled("combinedCombo", time_mode_ == TimeMode::Combined && !combined_pairs_.empty());
-  wd.setVisible("combinedCombo", !combined_pairs_.empty());
-
-  // Timestamp format
-  wd.setChecked("radioAutoTime", !use_custom_format_);
-  wd.setChecked("radioCustomTime", use_custom_format_);
+  // Timestamp format: the "Detect Automatically" toggle (host-adapted from the
+  // checkbox into an iOS switch) gates the custom-format row — turning it off
+  // enables the "Custom" label + format field below.
+  wd.setChecked("checkBoxAutoTime", !use_custom_format_);
+  wd.setEnabled("labelCustomFormat", use_custom_format_);
   wd.setText("lineEditDateFormat", custom_format_);
   wd.setEnabled("lineEditDateFormat", use_custom_format_);
-  wd.setEnabled("checkBoxAutoCloseHelp", use_custom_format_);
-  wd.setChecked("checkBoxAutoCloseHelp", close_after_help_);
-
-  // Format live preview
-  if (use_custom_format_ && !custom_format_.empty()) {
-    wd.setText("labelFormatPreview", "Example (2024-01-15 14:30:45): " + computeFormatPreview(custom_format_));
-  } else {
-    wd.setText("labelFormatPreview", "");
-  }
 
   // Preview table
   wd.setTableHeaders("tableView", column_names_);
   wd.setTableRows("tableView", preview_rows_);
+
+  // Raw-text preview (header + first 100 lines, verbatim)
+  wd.setPlainText("rawText", raw_preview_);
+
+  // Preview mode: the segmented Table/Raw control (host-adapted from the two
+  // grouped radios in the Preview band) drives which preview widget is shown.
+  wd.setChecked("radioPreviewTable", !preview_raw_);
+  wd.setChecked("radioPreviewRaw", preview_raw_);
+  wd.setVisible("tableView", !preview_raw_);
+  wd.setVisible("rawText", preview_raw_);
 
   // Preview warning (shared label — text set by analyzeFile)
   wd.setVisible("labelWarning", !warning_message_.empty());
@@ -102,7 +161,7 @@ std::string CsvDialog::widget_data() {
   // OK enabled?
   bool ok = (time_mode_ == TimeMode::RowNumber) || (time_mode_ == TimeMode::Column && selected_column_index_ >= 0) ||
             (time_mode_ == TimeMode::Combined && combined_index_ >= 0);
-  wd.setOkEnabled("buttonBox", ok);
+  wd.setEnabled("buttonAccept", ok);
 
   if (accept_requested_) {
     accept_requested_ = false;
@@ -111,7 +170,6 @@ std::string CsvDialog::widget_data() {
 
   if (show_help_requested_) {
     show_help_requested_ = false;
-    help_was_shown_ = true;
     wd.requestSubDialog(kDateTimeHelpUi);
   }
 
@@ -124,46 +182,70 @@ bool CsvDialog::onIndexChanged(std::string_view widget_name, int index) {
     analyzeFile();
     return true;
   }
-  if (widget_name == "combinedCombo") {
-    combined_index_ = index;
+  if (widget_name == "timeAxisModeCombo") {
+    // Item order matches widget_data: 0 = row number, 1 = single column,
+    // 2 = multiple columns (present only when a date + time column exist).
+    time_mode_ = index == 1 ? TimeMode::Column : index == 2 ? TimeMode::Combined : TimeMode::RowNumber;
+    // Re-run so the preview warning is recomputed for the new mode (the
+    // non-monotonic warning only applies in single-column mode) instead of
+    // lingering from the previous mode's selection.
+    analyzeFile();
     return true;
   }
   return false;
 }
 
 bool CsvDialog::onToggled(std::string_view widget_name, bool checked) {
+  // The auto-detect toggles act in both directions (unlike a radio), so they are
+  // handled before the checked-only radios below.
+  if (widget_name == "checkBoxAutoDelim") {
+    detect_delimiter_ = checked;
+    analyzeFile();
+    return true;
+  }
+  if (widget_name == "checkBoxAutoTime") {
+    use_custom_format_ = !checked;
+    return true;
+  }
   if (!checked) {
     return false;
   }
-  if (widget_name == "radioButtonIndex") {
-    time_mode_ = TimeMode::RowNumber;
+  if (widget_name == "radioPreviewTable") {
+    preview_raw_ = false;
     return true;
   }
-  if (widget_name == "radioButtonSelect") {
-    time_mode_ = TimeMode::Column;
-    return true;
-  }
-  if (widget_name == "radioButtonDateTimeColumns") {
-    time_mode_ = TimeMode::Combined;
-    return true;
-  }
-  if (widget_name == "radioAutoTime") {
-    use_custom_format_ = false;
-    return true;
-  }
-  if (widget_name == "radioCustomTime") {
-    use_custom_format_ = true;
-    return true;
-  }
-  if (widget_name == "checkBoxAutoCloseHelp") {
-    close_after_help_ = checked;
+  if (widget_name == "radioPreviewRaw") {
+    preview_raw_ = true;
     return true;
   }
   return false;
 }
 
 bool CsvDialog::onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) {
-  if (widget_name == "listWidgetSeries" && !selected.empty()) {
+  if (widget_name != "listWidgetSeries") {
+    return false;
+  }
+  if (time_mode_ == TimeMode::Combined) {
+    // Multiple Columns: from the multi-selection, take the first date-only and
+    // first time-only column and combine them into the timestamp.
+    int date_idx = -1;
+    int time_idx = -1;
+    for (const auto& name : selected) {
+      for (size_t i = 0; i < column_names_.size() && i < column_types_.size(); i++) {
+        if (column_names_[i] != name) {
+          continue;
+        }
+        if (date_idx < 0 && column_types_[i].type == PJ::CSV::ColumnType::DATE_ONLY) {
+          date_idx = static_cast<int>(i);
+        } else if (time_idx < 0 && column_types_[i].type == PJ::CSV::ColumnType::TIME_ONLY) {
+          time_idx = static_cast<int>(i);
+        }
+      }
+    }
+    setCombinedColumns(date_idx, time_idx);
+    return true;
+  }
+  if (!selected.empty()) {
     for (int i = 0; i < static_cast<int>(column_names_.size()); i++) {
       if (column_names_[static_cast<size_t>(i)] == selected[0]) {
         selected_column_index_ = i;
@@ -190,12 +272,7 @@ bool CsvDialog::onClicked(std::string_view widget_name) {
     show_help_requested_ = true;
     return true;
   }
-  return false;
-}
-
-bool CsvDialog::onTick() {
-  if (help_was_shown_ && close_after_help_) {
-    help_was_shown_ = false;
+  if (widget_name == "buttonAccept") {
     accept_requested_ = true;
     return true;
   }
@@ -228,10 +305,11 @@ std::string CsvDialog::saveConfig() const {
   cfg["delimiter"] = std::string(1, delimiter_);
   cfg["time_mode"] = timeModeToString(time_mode_);
   cfg["time_column_index"] = selected_column_index_;
-  cfg["combined_column_index"] = combined_index_;
+  cfg["combined_date_index"] = combined_pairs_.empty() ? -1 : combined_pairs_.front().date_column_index;
+  cfg["combined_time_index"] = combined_pairs_.empty() ? -1 : combined_pairs_.front().time_column_index;
   cfg["custom_time_format"] = custom_format_;
   cfg["use_custom_format"] = use_custom_format_;
-  cfg["close_after_help"] = close_after_help_;
+  cfg["detect_delimiter"] = detect_delimiter_;
   cfg["column_history"] = column_history_;
   return cfg.dump();
 }
@@ -246,10 +324,11 @@ bool CsvDialog::loadConfig(std::string_view config_json) {
   delimiter_ = d.empty() ? ',' : d[0];
   time_mode_ = stringToTimeMode(cfg.value("time_mode", std::string("row_number")));
   selected_column_index_ = cfg.value("time_column_index", -1);
-  combined_index_ = cfg.value("combined_column_index", -1);
+  const int restored_combined_date = cfg.value("combined_date_index", -1);
+  const int restored_combined_time = cfg.value("combined_time_index", -1);
   custom_format_ = cfg.value("custom_time_format", std::string{});
   use_custom_format_ = cfg.value("use_custom_format", false);
-  close_after_help_ = cfg.value("close_after_help", false);
+  detect_delimiter_ = cfg.value("detect_delimiter", true);
   if (cfg.contains("column_history") && cfg["column_history"].is_array()) {
     column_history_ = cfg["column_history"].get<std::vector<std::string>>();
   }
@@ -257,11 +336,15 @@ bool CsvDialog::loadConfig(std::string_view config_json) {
   if (time_mode_ == TimeMode::Column && selected_column_index_ < 0) {
     time_mode_ = TimeMode::RowNumber;
   }
-  if (time_mode_ == TimeMode::Combined && combined_index_ < 0) {
+  if (time_mode_ == TimeMode::Combined && (restored_combined_date < 0 || restored_combined_time < 0)) {
     time_mode_ = TimeMode::RowNumber;
   }
   if (!filepath_.empty()) {
     analyzeFile();
+  }
+  // Re-apply the saved combined pair after the columns/types are rebuilt.
+  if (time_mode_ == TimeMode::Combined) {
+    setCombinedColumns(restored_combined_date, restored_combined_time);
   }
   return true;
 }
@@ -278,8 +361,9 @@ void CsvDialog::analyzeFile() {
   }
 
   column_names_.clear();
-  combined_pairs_.clear();
+  column_types_.clear();
   preview_rows_.clear();
+  raw_preview_.clear();
 
   if (filepath_.empty()) {
     return;
@@ -298,8 +382,23 @@ void CsvDialog::analyzeFile() {
     header_line.pop_back();
   }
 
-  if (delimiter_ == '\0') {
-    delimiter_ = PJ::CSV::DetectDelimiter(header_line);
+  // Delimiter detection drives the "Detect Automatically" toggle. Ambiguity is a
+  // property of the header, so it is always recomputed. With auto on: a single
+  // clear delimiter is adopted; an ambiguous header drops to manual so the user
+  // disambiguates. With auto off, the user's chosen delimiter is respected.
+  const auto detected = PJ::CSV::DetectDelimiterEx(header_line);
+  delimiter_ambiguous_ = detected.ambiguous;
+  if (detect_delimiter_) {
+    if (detected.ambiguous) {
+      detect_delimiter_ = false;
+      if (delimiter_ == '\0') {
+        delimiter_ = detected.delimiter;
+      }
+    } else {
+      delimiter_ = detected.delimiter;
+    }
+  } else if (delimiter_ == '\0') {
+    delimiter_ = detected.delimiter;
   }
 
   // Check for duplicate column names before deduplication
@@ -318,6 +417,10 @@ void CsvDialog::analyzeFile() {
 
   column_names_ = PJ::CSV::ParseHeaderLine(header_line, delimiter_);
 
+  // Raw-text preview mirrors the file verbatim: the header plus the first 100
+  // data lines, exactly as read (the Raw Text tab shows this).
+  raw_preview_ = header_line;
+
   // Build preview rows: first 100 data lines (like the original)
   std::string line;
   std::vector<std::string> parts;
@@ -330,6 +433,8 @@ void CsvDialog::analyzeFile() {
     if (line.empty()) {
       continue;
     }
+    raw_preview_ += '\n';
+    raw_preview_ += line;
     PJ::CSV::SplitLine(line, delimiter_, parts);
     preview_rows_.push_back(parts);
 
@@ -341,7 +446,7 @@ void CsvDialog::analyzeFile() {
           first_row_types[i] = PJ::CSV::DetectColumnType(parts[i]);
         }
       }
-      combined_pairs_ = PJ::CSV::DetectCombinedDateTimeColumns(column_names_, first_row_types);
+      column_types_ = first_row_types;
     }
     count++;
   }
@@ -350,17 +455,13 @@ void CsvDialog::analyzeFile() {
   warning_message_.clear();
   // Check for duplicate column names in header
   if (has_duplicate_columns_) {
-    warning_message_ =
-        "WARNING: duplicate column names detected in the header. Suffixes have been added "
-        "automatically to make them unique.";
+    warning_message_ = "Duplicate column names detected. Adding suffixes";
   }
   // Check for rows with wrong column count
   if (warning_message_.empty()) {
     for (const auto& row : preview_rows_) {
       if (row.size() != column_names_.size()) {
-        warning_message_ =
-            "WARNING: some rows in the preview have a different number of columns than the "
-            "header. Those rows will be skipped during loading.";
+        warning_message_ = "Some rows have column number mismatch. Will skip those";
         break;
       }
     }
@@ -380,23 +481,28 @@ void CsvDialog::analyzeFile() {
       }
       if (*val < prev_val) {
         warning_message_ =
-            "WARNING: timestamps in the selected column are not monotonically increasing. "
-            "Data will be sorted automatically after loading.";
+            "Values in \"" + column_names_[col] + "\" are not monotonically increasing. Will sort these automatically";
         break;
       }
       prev_val = *val;
     }
   }
 
-  // If the current mode was "combined" but this file has no detectable pairs,
-  // fall back to row_number to avoid an invalid state.
-  if (time_mode_ == TimeMode::Combined && combined_pairs_.empty()) {
+  // Multiple-Columns mode needs a date column and a time column; drop to row
+  // number if this file has neither. The user's picked pair carries over across
+  // a re-analyze, but is dropped if its column indices no longer fit.
+  if (time_mode_ == TimeMode::Combined && !combinableAvailable()) {
     time_mode_ = TimeMode::RowNumber;
+    combined_pairs_.clear();
     combined_index_ = -1;
   }
-  // Auto-select the first combined pair if none is selected yet.
-  if (!combined_pairs_.empty() && combined_index_ < 0) {
-    combined_index_ = 0;
+  if (!combined_pairs_.empty()) {
+    const auto& p = combined_pairs_.front();
+    const int n = static_cast<int>(column_names_.size());
+    if (p.date_column_index >= n || p.time_column_index >= n) {
+      combined_pairs_.clear();
+      combined_index_ = -1;
+    }
   }
 
   // Re-validate the selected time column against the rebuilt columns so we never
@@ -417,128 +523,6 @@ void CsvDialog::analyzeFile() {
       selected_column_index_ = -1;
     }
   }
-}
-
-// Interprets a Qt date/time format string against the fixed example
-// 2024-01-15 14:30:45 and returns the formatted result.
-// Supports: yyyy yy MMMM MMM MM M dddd ddd dd d HH H hh h mm m ss s zzz z AP ap A a
-// and single-quoted literals.
-std::string CsvDialog::computeFormatPreview(const std::string& fmt) {
-  const int year = 2024, month = 1, day = 15, hour = 14, min = 30, sec = 45;
-  const int weekday = 0;  // Monday (2024-01-15)
-
-  static const char* month_long[] = {"January", "February", "March",     "April",   "May",      "June",
-                                     "July",    "August",   "September", "October", "November", "December"};
-  static const char* month_short[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-  static const char* wday_long[] = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"};
-  static const char* wday_short[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
-
-  auto pad2 = [](int v) -> std::string { return (v < 10 ? "0" : "") + std::to_string(v); };
-  auto match = [&](size_t pos, const char* tok) -> bool {
-    size_t n = 0;
-    while (tok[n]) {
-      ++n;
-    }
-    return fmt.size() - pos >= n && fmt.compare(pos, n, tok) == 0;
-  };
-
-  std::string out;
-  size_t i = 0;
-  while (i < fmt.size()) {
-    if (fmt[i] == '\'') {
-      ++i;
-      while (i < fmt.size() && fmt[i] != '\'') {
-        out += fmt[i++];
-      }
-      if (i < fmt.size()) {
-        ++i;
-      }
-    } else if (match(i, "yyyy")) {
-      out += std::to_string(year);
-      i += 4;
-    } else if (match(i, "yy")) {
-      out += pad2(year % 100);
-      i += 2;
-    } else if (match(i, "MMMM")) {
-      out += month_long[month - 1];
-      i += 4;
-    } else if (match(i, "MMM")) {
-      out += month_short[month - 1];
-      i += 3;
-    } else if (match(i, "MM")) {
-      out += pad2(month);
-      i += 2;
-    } else if (fmt[i] == 'M') {
-      out += std::to_string(month);
-      ++i;
-    } else if (match(i, "dddd")) {
-      out += wday_long[weekday];
-      i += 4;
-    } else if (match(i, "ddd")) {
-      out += wday_short[weekday];
-      i += 3;
-    } else if (match(i, "dd")) {
-      out += pad2(day);
-      i += 2;
-    } else if (fmt[i] == 'd') {
-      out += std::to_string(day);
-      ++i;
-    } else if (match(i, "HH")) {
-      out += pad2(hour);
-      i += 2;
-    } else if (fmt[i] == 'H') {
-      out += std::to_string(hour);
-      ++i;
-    } else if (match(i, "hh")) {
-      int h = hour % 12;
-      if (!h) {
-        h = 12;
-      }
-      out += pad2(h);
-      i += 2;
-    } else if (fmt[i] == 'h') {
-      int h = hour % 12;
-      if (!h) {
-        h = 12;
-      }
-      out += std::to_string(h);
-      ++i;
-    } else if (match(i, "mm")) {
-      out += pad2(min);
-      i += 2;
-    } else if (fmt[i] == 'm') {
-      out += std::to_string(min);
-      ++i;
-    } else if (match(i, "ss")) {
-      out += pad2(sec);
-      i += 2;
-    } else if (fmt[i] == 's') {
-      out += std::to_string(sec);
-      ++i;
-    } else if (match(i, "zzz")) {
-      out += "000";
-      i += 3;
-    } else if (fmt[i] == 'z') {
-      out += "0";
-      ++i;
-    } else if (match(i, "AP")) {
-      out += (hour < 12 ? "AM" : "PM");
-      i += 2;
-    } else if (match(i, "ap")) {
-      out += (hour < 12 ? "am" : "pm");
-      i += 2;
-    } else if (fmt[i] == 'A') {
-      out += (hour < 12 ? "AM" : "PM");
-      ++i;
-    } else if (fmt[i] == 'a') {
-      out += (hour < 12 ? "am" : "pm");
-      ++i;
-    } else {
-      out += fmt[i++];
-    }
-  }
-  return out;
 }
 
 int CsvDialog::delimiterToIndex(char d) {

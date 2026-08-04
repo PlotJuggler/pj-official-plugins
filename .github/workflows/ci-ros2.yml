@@ -38,6 +38,7 @@ jobs:
   build-distro:
     name: distro / ${{ matrix.distro }} (${{ matrix.ubuntu }})
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -123,6 +124,7 @@ jobs:
   build-proxy:
     name: proxy (no ROS)
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
 
     steps:
       - name: Install build dependencies
@@ -184,6 +186,7 @@ jobs:
     name: package marketplace zip
     needs: [build-distro, build-proxy]
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
 
     steps:
       - name: Checkout

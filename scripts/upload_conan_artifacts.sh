@@ -19,9 +19,15 @@ set -euo pipefail
 REMOTE_NAME="plotjuggler-conan"
 PATTERN="${1:-*}"
 
+# configure_jfrog_conan.sh leaves the remote unconfigured when Artifactory is
+# unreachable or credentials are absent, so "no remote" is an expected state,
+# not an error. Priming the shared cache is an optimisation for later runs --
+# never a reason to fail a build that has already compiled and tested cleanly.
 if ! conan remote list 2>/dev/null | grep -q "${REMOTE_NAME}"; then
-  echo "::error::${REMOTE_NAME} remote is not configured; run configure_jfrog_conan.sh first" >&2
-  exit 1
+  echo "::warning::${REMOTE_NAME} remote is not configured; skipping upload of '${PATTERN}'"
+  exit 0
 fi
 
-conan upload "${PATTERN}" -r "${REMOTE_NAME}" --confirm --check
+if ! conan upload "${PATTERN}" -r "${REMOTE_NAME}" --confirm --check; then
+  echo "::warning::upload of '${PATTERN}' to ${REMOTE_NAME} failed; continuing (cache priming only)"
+fi

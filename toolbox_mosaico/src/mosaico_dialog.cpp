@@ -304,6 +304,23 @@ MosaicoDialog::MosaicoDialog() : worker_(std::make_unique<FetchWorker>()) {
   worker_->errorOccurred = [this](std::string message) {
     postEvent([this, message = std::move(message)]() mutable { notify(PJ::ToolboxMessageLevel::kError, message); });
   };
+  worker_->hostStopRequested = [this]() {
+    // Host-side Stop (title-bar strip). requestCancel() already fired inside
+    // the worker; mirror the in-panel Cancel button's UI state so the batch
+    // ends with the same "Cancelling…" presentation and cancelled topics stay
+    // out of the error tally.
+    postEvent([this]() {
+      std::lock_guard<std::mutex> lock(state_.mu);
+      state_.cancelling = true;
+      state_.fetch_status = "Cancelling…";
+      for (const std::string& tname : state_.selected_topics) {
+        auto it = state_.topic_fetch_status.find(tname);
+        if (it == state_.topic_fetch_status.end() || it->second.empty() || it->second == "downloading…") {
+          state_.topic_fetch_status[tname] = "Cancelling…";
+        }
+      }
+    });
+  };
 
   worker_thread_ = std::thread([this] { workerLoop(); });
   // Persisted-state restore + auto-connect happen in initFromSettings(), once
@@ -428,6 +445,10 @@ bool MosaicoDialog::onTick() {
       // Keep one bad callback from escaping the plugin tick ABI.
     }
   }
+  // Trailing edge of the progressive reveal: a topic whose reveal was
+  // throttled in onPullFinished surfaces on the first tick past the window,
+  // instead of waiting for the next topic completion (possibly minutes away).
+  maybeFireProgressiveReveal();
   return !batch.empty();
 }
 
@@ -444,7 +465,10 @@ void MosaicoDialog::setHostProvider(std::function<PJ::sdk::ToolboxHostView()> pr
 }
 
 void MosaicoDialog::setRuntimeHostProvider(std::function<PJ::ToolboxRuntimeHostView()> provider) {
-  runtime_host_provider_ = std::move(provider);
+  runtime_host_provider_ = provider;
+  // The worker drives the host's progress/stop surface from its fetch threads;
+  // same stable-view contract as setHostProvider.
+  worker_->setRuntimeHostProvider(std::move(provider));
 }
 
 std::string MosaicoDialog::widget_data() {
@@ -798,7 +822,11 @@ std::string MosaicoDialog::widget_data() {
   }
 
   if (state_.close_pending) {
-    wd.requestClose("user_back");
+    // Batch completion, not a user gesture: a host that has moved this panel into
+    // a background tab keeps it open on this reason (the tab is the user's
+    // surface, and it stays connected so another fetch can be queued), while a
+    // takeover panel still dismisses itself.
+    wd.requestClose("import_complete");
     state_.close_pending = false;
   }
 
@@ -1731,33 +1759,91 @@ void MosaicoDialog::onPullProgress(std::string topic_name, std::int64_t bytes) {
 }
 
 void MosaicoDialog::onPullFinished(PullResultEvent result) {
-  std::lock_guard<std::mutex> lock(state_.mu);
-  const std::string& topic_name = result.topic.topic_name;
-  const bool ok = result.ok;
-  // PJ3 parity: tally per-topic results into the batch ledger. The panel does
-  // NOT close here — that happens once in onAllFetchesComplete after the whole
-  // batch lands. Closing on the first topic (the old behaviour) tore down the
-  // worker mid-stream and dropped every remaining topic.
-  ++state_.fetch_done;
-  if (ok) {
-    state_.imported_any = true;
-    state_.topic_fetch_status[topic_name] = "Done";
-    // A successful topic may still have dropped rows; surface that as a warning
-    // (notify does not take state_.mu, so calling it under the lock is safe).
-    if (!result.warning.empty()) {
-      notify(PJ::ToolboxMessageLevel::kWarning, result.warning);
+  bool reveal = false;
+  {
+    std::lock_guard<std::mutex> lock(state_.mu);
+    const std::string& topic_name = result.topic.topic_name;
+    const bool ok = result.ok;
+    // PJ3 parity: tally per-topic results into the batch ledger. The panel does
+    // NOT close here — that happens once in onAllFetchesComplete after the whole
+    // batch lands. Closing on the first topic (the old behaviour) tore down the
+    // worker mid-stream and dropped every remaining topic.
+    ++state_.fetch_done;
+    if (ok) {
+      state_.imported_any = true;
+      state_.topic_fetch_status[topic_name] = "Done";
+      // Progressive reveal: this topic's rows are already written into the
+      // shared store (the [C1] streaming-write design), so surface them now
+      // instead of at batch completion. Skipped while cancelling, and skipped
+      // for the batch's LAST topic — onAllFetchesComplete's terminal notify
+      // arrives right behind it and would refresh the host twice back-to-back.
+      // The worker flag is checked for the same reason the Cancelled branch
+      // below checks it: on a HOST-initiated stop the atomic fires immediately
+      // while the queued hostStopRequested event that sets state_.cancelling
+      // can land after this completion was enqueued.
+      reveal = !state_.cancelling && !(worker_ != nullptr && worker_->isCancelled()) &&
+               state_.fetch_done < state_.fetch_total;
+      // A successful topic may still have dropped rows; surface that as a warning
+      // (notify does not take state_.mu, so calling it under the lock is safe).
+      if (!result.warning.empty()) {
+        notify(PJ::ToolboxMessageLevel::kWarning, result.warning);
+      }
+    } else if (state_.cancelling || (worker_ != nullptr && worker_->isCancelled())) {
+      // Interrupted by a Cancel, not a real failure: label it "Cancelled" and
+      // keep it OUT of the error tally so a cancel doesn't raise spurious
+      // "Mosaico fetch errors" notifications. The worker flag covers the
+      // HOST-initiated stop: its atomic fires immediately on the pool threads,
+      // while the queued hostStopRequested event that sets state_.cancelling may
+      // land only after this completion was already enqueued.
+      state_.topic_fetch_status[topic_name] = "Cancelled";
+    } else {
+      ++state_.fetch_failed;
+      state_.topic_fetch_status[topic_name] = "Failed";
+      // Collapse identical messages so "[3x] no data" reads once, not thrice.
+      ++state_.error_counts[std::move(result.error)];
     }
-  } else if (state_.cancelling) {
-    // Interrupted by the user's Cancel, not a real failure: label it
-    // "Cancelled" and keep it OUT of the error tally so a cancel doesn't
-    // raise spurious "Mosaico fetch errors" notifications.
-    state_.topic_fetch_status[topic_name] = "Cancelled";
-  } else {
-    ++state_.fetch_failed;
-    state_.topic_fetch_status[topic_name] = "Failed";
-    // Collapse identical messages so "[3x] no data" reads once, not thrice.
-    ++state_.error_counts[std::move(result.error)];
   }
+  if (reveal) {
+    requestProgressiveReveal();
+  }
+}
+
+void MosaicoDialog::requestProgressiveReveal() {
+  reveal_pending_ = true;
+  // Deliberately defer the decision to onTick's trailing edge. More worker
+  // events may already be in the same swapped batch — notably the terminal
+  // allFetchesComplete event. Firing here would rebuild once for the topic and
+  // again for terminal completion in the same GUI tick.
+}
+
+void MosaicoDialog::maybeFireProgressiveReveal() {
+  if (!reveal_pending_ || !runtime_host_provider_) {
+    return;
+  }
+  if (std::chrono::steady_clock::now() - last_progressive_notify_ < kMinRevealInterval) {
+    return;  // still throttled; onTick retries once the window passes
+  }
+  {
+    std::lock_guard<std::mutex> lock(state_.mu);
+    if (!state_.fetch_active || state_.cancelling || state_.fetch_done >= state_.fetch_total) {
+      // Batch ending (or ended): the terminal notify owns the final reveal.
+      reveal_pending_ = false;
+      return;
+    }
+  }
+  auto runtime = runtime_host_provider_();
+  if (!runtime.valid()) {
+    return;
+  }
+  reveal_pending_ = false;
+  // Outside state_.mu: notifyDataChanged() runs the host's flush + catalog
+  // rebuild synchronously on this (GUI) thread, and a host refresh must never
+  // run under a plugin lock.
+  runtime.notifyDataChanged();
+  // Stamp AFTER the refresh returns: the throttle must measure the idle gap
+  // between rebuilds, or a slow rebuild would let an already-queued burst of
+  // completions re-qualify immediately and stack refreshes back-to-back.
+  last_progressive_notify_ = std::chrono::steady_clock::now();
 }
 
 void MosaicoDialog::onAllFetchesComplete(std::string sequence_name) {
@@ -1781,6 +1867,8 @@ void MosaicoDialog::onAllFetchesComplete(std::string sequence_name) {
       state_.close_pending = true;  // PJ3 parity: panel closes after a successful batch.
     }
   }
+  // The terminal notify below reveals everything; drop any pending mid-fetch one.
+  reveal_pending_ = false;
 
   if (!summary.error_summary.empty()) {
     notify(PJ::ToolboxMessageLevel::kError, fmt::format("Mosaico fetch errors:\n{}", summary.error_summary));

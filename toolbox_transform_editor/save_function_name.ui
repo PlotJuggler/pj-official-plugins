@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SaveFunctionName</class>
+ <widget class="QDialog" name="SaveFunctionName">
+  <property name="geometry"><rect><x>0</x><y>0</y><width>360</width><height>120</height></rect></property>
+  <property name="windowTitle"><string>Name of the Function</string></property>
+  <layout class="QVBoxLayout" name="saveNameLayout">
+   <item>
+    <widget class="QLabel" name="saveNameLabel"><property name="text"><string>Name:</string></property></widget>
+   </item>
+   <item>
+    <widget class="QLineEdit" name="saveFunctionName"/>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

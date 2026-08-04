@@ -13,7 +13,10 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-15-intel
+    # Apple silicon, matching the only macOS leg the release matrix still builds.
+    # Intel Macs are not a supported target for the time being.
+    runs-on: macos-14
+    timeout-minutes: 60
 
     steps:
       - name: Checkout

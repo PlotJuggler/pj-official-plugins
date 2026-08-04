@@ -30,6 +30,30 @@ pj_embed_ui(toolbox_transform_editor_plugin
   VAR_NAME kTransformEditorDialogUi
 )
 
+pj_embed_ui(toolbox_transform_editor_plugin
+  UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/transform_editor_help.ui
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/transform_editor_help_ui.hpp
+  VAR_NAME kHelpDialogUi
+)
+
+pj_embed_ui(toolbox_transform_editor_plugin
+  UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/function_library.ui
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/function_library_ui.hpp
+  VAR_NAME kFunctionLibraryUi
+)
+
+pj_embed_ui(toolbox_transform_editor_plugin
+  UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/save_function_name.ui
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/save_function_name_ui.hpp
+  VAR_NAME kSaveNameUi
+)
+
+pj_embed_ui(toolbox_transform_editor_plugin
+  UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/overwrite_function.ui
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/overwrite_function_ui.hpp
+  VAR_NAME kOverwriteUi
+)
+
 pj_embed_manifest(toolbox_transform_editor_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/transform_editor_manifest.hpp
   VAR_NAME kTransformEditorManifest

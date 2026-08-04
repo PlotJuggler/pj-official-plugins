@@ -67,6 +67,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   # pins here. It builds per-plugin against its own conanfile (like
   # data_load_lerobot/data_load_mp4).
   add_subdirectory(toolbox_fft)
+  add_subdirectory(toolbox_data_exporter)
   add_subdirectory(toolbox_colormap)
   add_subdirectory(toolbox_quaternion)
   add_subdirectory(toolbox_reactive_scripts_editor)
@@ -145,6 +146,13 @@ find_package(plotjuggler_sdk CONFIG REQUIRED
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 
 enable_testing()
+
+# enable_testing() does NOT define BUILD_TESTING -- only include(CTest) does, and
+# this project never included it. toolbox_mosaico wraps its entire test tree in
+# `if(BUILD_TESTING)`, so all 27 of its tests silently never built and `ctest`
+# reported only the handful from common/. Declared here rather than via
+# include(CTest) to avoid pulling in CTest's dashboard machinery.
+option(BUILD_TESTING "Build the testing tree" ON)
 
 # ---------------------------------------------------------------------------
 # Internal helper libraries shared by several plugins.
@@ -229,6 +237,7 @@ else()
   # pins here. It builds per-plugin against its own conanfile (like
   # data_load_lerobot/data_load_mp4).
   add_subdirectory(toolbox_fft)
+  add_subdirectory(toolbox_data_exporter)
   add_subdirectory(toolbox_colormap)
   add_subdirectory(toolbox_quaternion)
   add_subdirectory(toolbox_anomaly_detector)
