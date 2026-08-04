@@ -3082,12 +3082,13 @@ TEST(ProtobufParserTest, FoxgloveVoxelGridScalarRoute) {
   expectNumeric(*row, "data_size", static_cast<double>(kVoxelData.size()));
 }
 
-// foxglove.SceneUpdate is deliberately untouched: the schema has no top-level
-// timestamp or frame_id (each entity carries its own), so there is nothing to
-// promote to a header series.
-TEST(ProtobufParserTest, FoxgloveSceneUpdateScalarRouteHasNoHeaderSeries) {
+// foxglove.SceneUpdate has no TOP-LEVEL timestamp, but the first entity's stamp
+// is the one the object route files the record under — so it is the stamp for
+// the message, and the scalar route emits it like every other promoted schema.
+// There is still no top-level frame_id (each entity carries its own).
+TEST(ProtobufParserTest, FoxgloveSceneUpdateScalarRouteEmitsFirstEntityTimestamp) {
   PW entity;
-  entity.sub(1, foxgloveTimestamp(3, 0));
+  entity.sub(1, foxgloveTimestamp(3, 250));
   entity.str(2, "map");
   entity.str(3, "robot");
   PW scene;
@@ -3097,6 +3098,88 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateScalarRouteHasNoHeaderSeries) {
   f.setUp();
   const auto* row = scalarRow(f, "foxglove.SceneUpdate", scene.b);
   ASSERT_NE(row, nullptr);
+  expectNumeric(*row, "timestamp", static_cast<double>(3'000'000'250LL) * 1e-9);
   expectNumeric(*row, "num_entities", 1.0);
+  EXPECT_EQ(PJ::sdk::testing::ParserWriteRecorder::findField(*row, "frame_id"), nullptr);
+  EXPECT_EQ(row->fields.size(), 2u);
+}
+
+// An empty SceneUpdate has no stamp anywhere: omit the column rather than file a
+// fabricated 0.0 (same rule as foxglove.FrameTransform with no transforms).
+TEST(ProtobufParserTest, FoxgloveSceneUpdateScalarRouteOmitsTimestampWhenEmpty) {
+  PW scene;  // no entities at all
+
+  ProtobufParserFixture f;
+  f.setUp();
+  const auto* row = scalarRow(f, "foxglove.SceneUpdate", scene.b);
+  ASSERT_NE(row, nullptr);
+  EXPECT_EQ(PJ::sdk::testing::ParserWriteRecorder::findField(*row, "timestamp"), nullptr);
+  expectNumeric(*row, "num_entities", 0.0);
   EXPECT_EQ(row->fields.size(), 1u);
+}
+
+// With use_embedded_timestamp ON, the scalar ROW must land on the same clock the
+// object route uses. These handlers previously left record.ts unset, so scalars
+// stayed on host time while the object went to sensor time — the two views of
+// one message disagreed about when it happened.
+TEST(ProtobufParserTest, PromotedScalarRowsAdoptEmbeddedTimestamp) {
+  const std::vector<uint8_t> blob = {0xFF, 0xD8, 0xFF, 0xE0};
+  PW img;
+  img.sub(1, foxgloveTimestamp(7, 42));
+  img.bytesField(2, blob);
+  img.str(3, "jpeg");
+  img.str(4, "camera_optical");
+
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  ASSERT_TRUE(f.bindSchema("foxglove.CompressedImage", std::string{}));
+  ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(img.b.data()), img.b.size()), 555));
+
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 7'000'000'042LL) << "row must adopt the embedded stamp, not host time 555";
+}
+
+TEST(ProtobufParserTest, SceneUpdateScalarRowAdoptsEmbeddedTimestamp) {
+  PW entity;
+  entity.sub(1, foxgloveTimestamp(3, 250));
+  entity.str(2, "map");
+  PW scene;
+  scene.sub(2, entity);
+
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  ASSERT_TRUE(f.bindSchema("foxglove.SceneUpdate", std::string{}));
+  ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(scene.b.data()), scene.b.size()), 555));
+
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 3'000'000'250LL);
+}
+
+TEST(ProtobufParserTest, VoxelGridScalarRowAdoptsEmbeddedTimestamp) {
+  FoxgloveVoxelGridParams p;
+  p.ts_sec = 4;
+  p.ts_nanos = 250;
+  p.frame_id = "map";
+  p.cell_x = 0.05;
+  p.cell_y = 0.05;
+  p.cell_z = 0.05;
+  p.row_count = 2;
+  p.column_count = 2;
+  p.cell_stride = 1;
+  p.row_stride = 2;
+  p.slice_stride = 4;
+  p.fields = kVoxelFields;
+  p.data = kVoxelData;
+  const auto wire = buildFoxgloveVoxelGridWire(p);
+
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  ASSERT_TRUE(f.bindSchema("foxglove.VoxelGrid", std::string{}));
+  ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(wire.data()), wire.size()), 555));
+
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 4'000'000'250LL);
 }

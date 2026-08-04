@@ -916,6 +916,13 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         compressed_image_frame_id_ = std::move(obj->frame_id);
         compressed_image_format_ = std::move(obj->encoding);
         PJ::sdk::ScalarRecord r;
+        // Same timestamp policy as this schema's object route, so the scalar
+        // columns and the object entry land on the SAME timeline. Without it,
+        // enabling use_embedded_timestamp put the object on sensor time while
+        // its own metadata row stayed on host time.
+        if (use_embedded_timestamp_ && obj->timestamp_ns > 0) {
+          r.ts = obj->timestamp_ns;
+        }
         r.fields.push_back({.name = "timestamp", .value = PJ::sdk::ValueRef{timestampSeconds(obj->timestamp_ns)}});
         r.fields.push_back(
             {.name = "frame_id", .value = PJ::sdk::ValueRef{std::string_view(compressed_image_frame_id_)}});
@@ -946,6 +953,9 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         }
         camera_calibration_frame_id_ = std::move(obj->frame_id);  // keep alive for the string_view below.
         PJ::sdk::ScalarRecord r;
+        if (use_embedded_timestamp_ && obj->timestamp_ns > 0) {  // match the object route's timeline
+          r.ts = obj->timestamp_ns;
+        }
         r.fields.push_back({.name = "timestamp", .value = PJ::sdk::ValueRef{timestampSeconds(obj->timestamp_ns)}});
         r.fields.push_back(
             {.name = "frame_id", .value = PJ::sdk::ValueRef{std::string_view(camera_calibration_frame_id_)}});
@@ -975,6 +985,9 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
           return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
         }
         PJ::sdk::ScalarRecord r;
+        if (use_embedded_timestamp_ && obj->timestamp > 0) {  // match the object route's timeline
+          r.ts = obj->timestamp;
+        }
         // No top-level frame_id in this schema — annotations are tied to an
         // image by layer stacking, not by frame — so only the stamp is added.
         r.fields.push_back({.name = "timestamp", .value = PJ::sdk::ValueRef{timestampSeconds(obj->timestamp)}});
@@ -1008,6 +1021,9 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         }
         raw_image_frame_id_ = std::move(obj->frame_id);  // keep alive for the string_view below.
         PJ::sdk::ScalarRecord r;
+        if (use_embedded_timestamp_ && obj->timestamp_ns > 0) {  // match the object route's timeline
+          r.ts = obj->timestamp_ns;
+        }
         r.fields.push_back({.name = "timestamp", .value = PJ::sdk::ValueRef{timestampSeconds(obj->timestamp_ns)}});
         r.fields.push_back({.name = "frame_id", .value = PJ::sdk::ValueRef{std::string_view(raw_image_frame_id_)}});
         r.fields.push_back({.name = "width", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->width)}});
@@ -1038,6 +1054,9 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         }
         voxelgrid_frame_id_ = std::move(obj->frame_id);  // keep alive for the string_view below.
         PJ::sdk::ScalarRecord r;
+        if (use_embedded_timestamp_ && obj->timestamp_ns > 0) {  // match the object route's timeline
+          r.ts = obj->timestamp_ns;
+        }
         r.fields.push_back({.name = "timestamp", .value = PJ::sdk::ValueRef{timestampSeconds(obj->timestamp_ns)}});
         r.fields.push_back({.name = "frame_id", .value = PJ::sdk::ValueRef{std::string_view(voxelgrid_frame_id_)}});
         r.fields.push_back(
@@ -1068,6 +1087,17 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
           return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
         }
         PJ::sdk::ScalarRecord r;
+        if (use_embedded_timestamp_ && !obj->entities.empty() && obj->entities.front().timestamp > 0) {
+          r.ts = obj->entities.front().timestamp;  // match the object route's timeline
+        }
+        // A SceneUpdate has no top-level stamp; the first entity's is the one
+        // the object route files the record under, so it is the stamp for this
+        // message. With no entities there is none — omit the column rather than
+        // file a fabricated 0.0 (same rule as foxglove.FrameTransform).
+        if (!obj->entities.empty()) {
+          r.fields.push_back(
+              {.name = "timestamp", .value = PJ::sdk::ValueRef{timestampSeconds(obj->entities.front().timestamp)}});
+        }
         r.fields.push_back(
             {.name = "num_entities", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->entities.size())}});
         return r;

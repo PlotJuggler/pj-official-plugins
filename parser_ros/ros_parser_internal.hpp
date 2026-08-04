@@ -132,6 +132,19 @@ inline std::pair<double, bool> tryParseDouble(const std::string& s) {
   return {0.0, false};
 }
 
+/// Absolute nanoseconds -> seconds as a double, keeping the integral second exact.
+///
+/// A plain `ts_ns * 1e-9` is NOT good enough for a stamp series: an epoch-scale
+/// value (~1.8e18 ns) is far beyond 2^53, so the conversion to double quantizes
+/// the result to ~200 ns steps — visible the moment anyone zooms into the series
+/// this exists to make plottable. Splitting the quotient from the remainder
+/// first keeps the seconds exact and the fraction full-resolution. Correct for
+/// negative stamps too: integer division and modulo both truncate toward zero in
+/// C++, so the two terms carry the same sign and sum to the right value.
+inline double nanosecondsToSeconds(int64_t ts_ns) {
+  return static_cast<double>(ts_ns / 1000000000LL) + static_cast<double>(ts_ns % 1000000000LL) * 1e-9;
+}
+
 inline std::string palStatisticsKey(const std::string& topic) {
   if (topic.size() >= 6 && topic.compare(topic.size() - 6, 6, "/names") == 0) {
     return topic.substr(0, topic.size() - 6);
@@ -282,13 +295,26 @@ class RosParser : public PJ::MessageParserPluginBase {
   // Header helpers
   struct HeaderData {
     uint32_t seq = 0;
-    uint32_t sec = 0;
+    // Seconds since the epoch. Signed and 64-bit so BOTH wire encodings fit
+    // losslessly: ROS 2's builtin_interfaces/Time.sec is an int32 (pre-1970 and
+    // relative stamps are legal and do occur), while ROS 1's ros::Time.sec is a
+    // uint32 whose upper half would overflow an int32.
+    int64_t sec = 0;
     uint32_t nsec = 0;
     std::string frame_id;
   };
 
   HeaderData readHeader();
   void emitHeader(const HeaderData& h);
+
+  // Reads a BARE builtin_interfaces/Time (sec int32, nanosec uint32) at the
+  // cursor — the head of the foxglove_msgs schemas, which carry a raw Time
+  // instead of a std_msgs/Header — and returns it as absolute nanoseconds.
+  // Adopts it as current_timestamp_ under the usual use_embedded_timestamp_ &&
+  // ts_ns > 0 contract, so every bare-Time schema behaves like readHeader().
+  // `sec` is read SIGNED: builtin_interfaces/Time is a ROS 2 type and its sec
+  // field is int32 on every wire that carries it.
+  int64_t readBareTime();
 
   // Composition parse helpers (used by specialization handlers)
   void parseVector3(const std::string& prefix);

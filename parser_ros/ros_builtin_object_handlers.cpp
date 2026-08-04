@@ -325,12 +325,9 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedVideo(PJ::Timestam
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
 
     // builtin_interfaces/Time timestamp — bare, not wrapped in a Header.
-    const uint32_t sec = deserializer_->deserializeUInt32();
-    const uint32_t nsec = deserializer_->deserializeUInt32();
-    const int64_t embedded_ts_ns = static_cast<int64_t>(sec) * 1000000000LL + static_cast<int64_t>(nsec);
-    if (use_embedded_timestamp_ && embedded_ts_ns > 0) {
-      current_timestamp_ = embedded_ts_ns;
-    }
+    // readBareTime() reads `sec` SIGNED (int32) and applies the embedded-stamp
+    // adoption; reading it unsigned turned negative stamps into ~4.29e9.
+    (void)readBareTime();
 
     std::string frame_id;
     deserializer_->deserializeString(frame_id);
@@ -625,12 +622,9 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxgloveCompressedPointCloud
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
 
     // builtin_interfaces/Time timestamp — bare, not wrapped in a Header.
-    const uint32_t sec = deserializer_->deserializeUInt32();
-    const uint32_t nsec = deserializer_->deserializeUInt32();
-    const int64_t embedded_ts_ns = static_cast<int64_t>(sec) * 1000000000LL + static_cast<int64_t>(nsec);
-    if (use_embedded_timestamp_ && embedded_ts_ns > 0) {
-      current_timestamp_ = embedded_ts_ns;
-    }
+    // readBareTime() reads `sec` SIGNED (int32) and applies the embedded-stamp
+    // adoption; reading it unsigned turned negative stamps into ~4.29e9.
+    (void)readBareTime();
 
     std::string frame_id;
     deserializer_->deserializeString(frame_id);
@@ -672,16 +666,12 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseFoxgloveComp
   try {
     beginDirectScalarRead(ts, payload);
 
-    const uint32_t sec = deserializer_->deserializeUInt32();
-    const uint32_t nsec = deserializer_->deserializeUInt32();
-    const int64_t embedded_ts_ns = static_cast<int64_t>(sec) * 1000000000LL + static_cast<int64_t>(nsec);
-    // Same contract as readHeader(): the embedded stamp becomes the record time
-    // only when the user asked for it (registerBoundSchemaHandler reads
-    // current_timestamp_ back out).
-    if (use_embedded_timestamp_ && embedded_ts_ns > 0) {
-      current_timestamp_ = embedded_ts_ns;
-    }
-    addField("/timestamp", static_cast<double>(sec) + static_cast<double>(nsec) * 1e-9);
+    // readBareTime() reads `sec` SIGNED (int32) and applies the embedded-stamp
+    // adoption under the same contract as readHeader(): the stamp becomes the
+    // record time only when the user asked for it (registerBoundSchemaHandler
+    // reads current_timestamp_ back out).
+    const int64_t stamp_ns = readBareTime();
+    addField("/timestamp", nanosecondsToSeconds(stamp_ns));
 
     std::string frame_id;
     deserializer_->deserializeString(frame_id);
@@ -946,12 +936,9 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxglovePosesInFrame(
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
 
     // builtin_interfaces/Time timestamp — bare, not wrapped in a Header.
-    const uint32_t sec = deserializer_->deserializeUInt32();
-    const uint32_t nsec = deserializer_->deserializeUInt32();
-    const int64_t embedded_ts_ns = static_cast<int64_t>(sec) * 1000000000LL + static_cast<int64_t>(nsec);
-    if (use_embedded_timestamp_ && embedded_ts_ns > 0) {
-      current_timestamp_ = embedded_ts_ns;
-    }
+    // readBareTime() reads `sec` SIGNED (int32) and applies the embedded-stamp
+    // adoption; reading it unsigned turned negative stamps into ~4.29e9.
+    (void)readBareTime();
 
     std::string frame_id;
     deserializer_->deserializeString(frame_id);

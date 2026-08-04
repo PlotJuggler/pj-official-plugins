@@ -807,14 +807,28 @@ PJ::Status RosParser::emitRecord(PJ::Timestamp ts) {
 
 RosParser::HeaderData RosParser::readHeader() {
   HeaderData h;
+  // The stamp's `sec` word has a DIFFERENT SIGNEDNESS on the two wires, and the
+  // raw 4 bytes are identical either way — only the interpretation differs:
+  //   ROS 1  std_msgs/Header { uint32 seq; time stamp; ... }
+  //          ros::Time.sec is UINT32.
+  //   ROS 2  std_msgs/Header { builtin_interfaces/Time stamp; ... }  (no seq)
+  //          builtin_interfaces/Time.sec is INT32.
+  // Reading the ROS 2 word as unsigned turned any negative stamp into ~4.29e9
+  // (a 2106-ish date), which is not a rounding artifact but a wholly wrong
+  // value: negative stamps are legal and do occur (pre-epoch or relative clocks).
   if (!deserializer_->isROS2()) {
     h.seq = deserializer_->deserializeUInt32();
+    h.sec = static_cast<int64_t>(deserializer_->deserializeUInt32());
+  } else {
+    h.sec = static_cast<int64_t>(static_cast<int32_t>(deserializer_->deserializeUInt32()));
   }
-  h.sec = deserializer_->deserializeUInt32();
   h.nsec = deserializer_->deserializeUInt32();
 
   if (use_embedded_timestamp_) {
-    int64_t ts_ns = static_cast<int64_t>(h.sec) * 1000000000LL + static_cast<int64_t>(h.nsec);
+    const int64_t ts_ns = h.sec * 1000000000LL + static_cast<int64_t>(h.nsec);
+    // A non-positive stamp means "unset" (or a pre-epoch clock we cannot file
+    // rows under), so the embedded clock is not adopted — unchanged behavior,
+    // and it is what keeps a now-correctly-negative sec from being adopted.
     if (ts_ns > 0) {
       current_timestamp_ = ts_ns;
     }
@@ -822,6 +836,20 @@ RosParser::HeaderData RosParser::readHeader() {
 
   deserializer_->deserializeString(h.frame_id);
   return h;
+}
+
+int64_t RosParser::readBareTime() {
+  // builtin_interfaces/Time { int32 sec; uint32 nanosec }. Signed on every wire
+  // that carries it: this is a ROS 2 type, and the foxglove_msgs schemas that
+  // embed it bare (CompressedVideo / CompressedPointCloud / PosesInFrame) are
+  // ROS 2 only. Same signedness trap as the ROS 2 branch of readHeader().
+  const int32_t sec = static_cast<int32_t>(deserializer_->deserializeUInt32());
+  const uint32_t nsec = deserializer_->deserializeUInt32();
+  const int64_t ts_ns = static_cast<int64_t>(sec) * 1000000000LL + static_cast<int64_t>(nsec);
+  if (use_embedded_timestamp_ && ts_ns > 0) {
+    current_timestamp_ = ts_ns;
+  }
+  return ts_ns;
 }
 
 void RosParser::emitHeader(const HeaderData& h) {

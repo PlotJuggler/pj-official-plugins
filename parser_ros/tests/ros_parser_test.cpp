@@ -3580,6 +3580,40 @@ TEST(RosParserTest, PointCloud2ScalarRouteRos1EmitsHeaderSeq) {
   EXPECT_EQ(row.fields.size(), 4u);
 }
 
+// builtin_interfaces/Time.sec is INT32 on the ROS 2 wire. Reading it unsigned
+// turned any negative stamp into ~4.29e9 (a year-2106 date) — not a rounding
+// artifact but a wholly wrong value, and exactly the kind of clock problem this
+// series exists to expose.
+TEST(RosParserTest, PointCloud2ScalarRouteHandlesNegativeHeaderSeconds) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/PointCloud2", kPointCloud2Def));
+
+  // sec = -3, nsec = 250 ms  ->  -3 + 0.25 = -2.75 s
+  const auto payload = serializePointCloud2(-3, 250000000, "velodyne", 1, 3, 16, 48);
+  ASSERT_TRUE(f.parse(payload, 1000));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+
+  const auto* stamp = findField(f.recorder.rows()[0], "/header/stamp");
+  ASSERT_NE(stamp, nullptr);
+  EXPECT_DOUBLE_EQ(stamp->numeric, -2.75);
+  EXPECT_LT(stamp->numeric, 0.0) << "a negative int32 sec must stay negative, not wrap to ~4.29e9";
+}
+
+// A negative stamp must not be adopted as the row's clock either: the
+// `ts_ns > 0` guard leaves the row on the message time.
+TEST(RosParserTest, NegativeHeaderSecondsNotAdoptedAsEmbeddedTimestamp) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/PointCloud2", kPointCloud2Def));
+
+  const auto payload = serializePointCloud2(-3, 250000000, "velodyne", 1, 3, 16, 48);
+  ASSERT_TRUE(f.parse(payload, 1000));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 1000);  // message clock, not the negative stamp
+}
+
 // The compressed counterpart gets the header series and NOTHING else: its blob
 // is compressed, so len(data)/point_step counts nothing real, and the declared
 // width*height would be the producer's claim rather than a measurement.
@@ -3717,6 +3751,39 @@ TEST(RosParserTest, FoxgloveCompressedPointCloudScalarRouteEmitsTimestampAndFram
   EXPECT_EQ(row.fields.size(), 2u);
   EXPECT_EQ(findField(row, "/header/stamp"), nullptr);
   EXPECT_EQ(findField(row, "/num_points"), nullptr);
+}
+
+// Same signedness trap on the BARE builtin_interfaces/Time layout, which is
+// read by readBareTime() rather than readHeader().
+TEST(RosParserTest, FoxgloveCompressedPointCloudScalarRouteHandlesNegativeSeconds) {
+  static const char* kDef =
+      "builtin_interfaces/Time timestamp\nstring frame_id\ngeometry_msgs/Pose pose\n"
+      "uint8[] data\nstring format\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+      "================\nMSG: geometry_msgs/Pose\n"
+      "geometry_msgs/Point position\ngeometry_msgs/Quaternion orientation\n"
+      "================\nMSG: geometry_msgs/Point\nfloat64 x\nfloat64 y\nfloat64 z\n"
+      "================\nMSG: geometry_msgs/Quaternion\nfloat64 x\nfloat64 y\nfloat64 z\nfloat64 w\n";
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("foxglove_msgs/CompressedPointCloud", kDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(-3)));           // sec
+    enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(static_cast<uint32_t>(250000000)));  // nanosec
+    enc.serializeString("lidar_frame");
+    serializeVector3(enc, 0.0, 0.0, 0.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+    enc.serializeUInt32(0);  // data[]: empty
+    enc.serializeString("draco");
+  });
+
+  ASSERT_TRUE(f.parse(payload, 1000));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto* timestamp = findField(f.recorder.rows()[0], "/timestamp");
+  ASSERT_NE(timestamp, nullptr);
+  EXPECT_DOUBLE_EQ(timestamp->numeric, -2.75);
 }
 
 TEST(RosParserTest, MarkerScalarRouteEmitsHeader) {
