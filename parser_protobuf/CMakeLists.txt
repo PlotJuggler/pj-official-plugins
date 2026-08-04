@@ -76,3 +76,7 @@ target_link_libraries(protobuf_parser_dialog_test PRIVATE
   GTest::gtest_main
 )
 add_test(NAME protobuf_parser_dialog_test COMMAND protobuf_parser_dialog_test)
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(parser_protobuf_plugin
+  REQUIRED_EXPORTS PJ_get_message_parser_vtable PJ_get_dialog_vtable)

@@ -47,3 +47,7 @@ target_link_libraries(parquet_helpers_test PRIVATE
   pj_arrow_helpers
 )
 add_test(NAME parquet_helpers_test COMMAND parquet_helpers_test)
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(parquet_source_plugin
+  REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable)

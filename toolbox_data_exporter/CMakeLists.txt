@@ -146,3 +146,7 @@ add_test(NAME data_exporter_isolation_test COMMAND data_exporter_isolation_test)
 set_tests_properties(data_exporter_isolation_test PROPERTIES
   SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\]"
 )
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(toolbox_data_exporter_plugin
+  REQUIRED_EXPORTS PJ_get_toolbox_vtable PJ_get_dialog_vtable)

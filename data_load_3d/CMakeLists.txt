@@ -68,3 +68,7 @@ target_include_directories(loader_helpers_test PRIVATE ${CMAKE_CURRENT_SOURCE_DI
 target_link_libraries(loader_helpers_test PRIVATE
   plotjuggler_sdk::plugin_sdk GTest::gtest_main ${CMAKE_DL_LIBS})
 add_test(NAME loader_helpers_test COMMAND loader_helpers_test)
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(data_load_3d_plugin
+  REQUIRED_EXPORTS PJ_get_data_source_vtable)

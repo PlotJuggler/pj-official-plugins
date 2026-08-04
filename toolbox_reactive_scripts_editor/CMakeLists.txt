@@ -94,3 +94,16 @@ pj_emit_plugin_manifest(toolbox_reactive_scripts_editor_plugin
   FAMILY        toolbox
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
+
+# Python-enabled builds statically link CPython (conanfile pins
+# cpython/*:shared=False) and import native stdlib extension modules at
+# runtime; those .so modules resolve the Python C API from the process, so
+# localizing the interpreter's Py* exports would break every import. Harden
+# only the default (Lua-only) configuration.
+if(NOT PJ_REACTIVE_ENABLE_PYTHON)
+  include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+  pj_harden_plugin_exports(toolbox_reactive_scripts_editor_plugin
+    REQUIRED_EXPORTS PJ_get_toolbox_vtable PJ_get_dialog_vtable)
+else()
+  message(STATUS "[reactive_scripts_editor] PJ_REACTIVE_ENABLE_PYTHON=ON — export hardening skipped (static CPython must keep Py* exported for native module imports)")
+endif()

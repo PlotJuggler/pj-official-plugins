@@ -60,3 +60,7 @@ target_link_libraries(pj_bridge_topic_subscription_test PRIVATE
   pj_bridge_protocol_lib nlohmann_json::nlohmann_json GTest::gtest_main pj_streaming_utils
 )
 add_test(NAME pj_bridge_topic_subscription_test COMMAND pj_bridge_topic_subscription_test)
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(pj_bridge_source_plugin
+  REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable)

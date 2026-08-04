@@ -1,7 +1,7 @@
 {
   "id": "parquet-loader",
   "name": "Parquet Loader",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Data loader for Apache Parquet files. Efficient columnar storage format.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",

@@ -1,7 +1,7 @@
 {
   "id": "mf4-loader",
   "name": "MF4/MDF Loader",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Data loader for ASAM MDF / MF4 measurement files (automotive, CAN/LIN bus logging).",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
