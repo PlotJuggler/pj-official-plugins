@@ -60,8 +60,8 @@ from pathlib import Path
 # CONSTANTS
 # =============================================================================
 
-REQUIRED_MANIFEST_FIELDS = ["id", "name", "version"]
-OPTIONAL_MANIFEST_FIELDS = ["description", "author", "publisher", "license", "category"]
+REQUIRED_MANIFEST_FIELDS = ["id", "name", "version", "category"]
+OPTIONAL_MANIFEST_FIELDS = ["description", "author", "publisher", "license"]
 
 VALID_PLATFORMS = [
     "linux-x86_64",
@@ -72,7 +72,7 @@ VALID_PLATFORMS = [
     "windows-arm64",
 ]
 
-VALID_CATEGORIES = ["data_loader", "data_stream", "message_parser", "parser", "toolbox"]
+VALID_CATEGORIES = ["data_loader", "data_stream", "message_parser", "toolbox"]
 
 # Semantic versioning regex (simplified: major.minor.patch with optional pre-release)
 SEMVER_REGEX = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9.-]+))?(?:\+([a-zA-Z0-9.-]+))?$")
