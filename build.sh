@@ -71,10 +71,21 @@ echo "Build directory: $CMAKE_BUILD_DIR"
 # C++17, but a default build profile (e.g. MSVC's cppstd=14) fails its validate()
 # with "Current cppstd is lower than the required C++ standard". Host -s only
 # covers the host context, so the build context needs its own cppstd.
+#
+# liblsl/*:...ASIO_HAS_STD_INVOKE_RESULT: liblsl 1.16.2 vendors asio 1.20.0, whose
+# detail/type_traits.hpp falls back to `using std::result_of;` unless that macro is
+# defined -- and its autodetection (detail/config.hpp) only implements the MSVC
+# branch, none for clang or gcc. std::result_of was removed in C++20: MSVC takes the
+# good branch, libstdc++ still ships it (deprecated) so Linux compiles by accident,
+# and libc++ actually removed it, so macOS fails to build liblsl at all. Defining the
+# macro is exactly what asio itself does for MSVC, and keeps the whole graph on C++20
+# (dropping just liblsl to C++17 would straddle a standard boundary through Boost,
+# which liblsl links). Bumping liblsl is not an option: ConanCenter has 1.16.2 at most.
 conan install "$CONAN_RECIPE" --output-folder="$BUILD_DIR" --build=missing \
   -s build_type="$BUILD_TYPE" \
   -s compiler.cppstd=20 \
   -s:b compiler.cppstd=20 \
+  -c 'liblsl/*:tools.build:defines=["ASIO_HAS_STD_INVOKE_RESULT=1"]' \
   -c tools.cmake.cmaketoolchain:generator=Ninja \
   ${CONAN_ARGS[@]+"${CONAN_ARGS[@]}"}
 
