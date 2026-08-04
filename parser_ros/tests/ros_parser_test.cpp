@@ -1732,9 +1732,21 @@ TEST(RosParserTest, YoloDetectionArrayScalarRouteEmitsNumDetections) {
   // companion parse_scalars on this object-only schema.
   ASSERT_TRUE(f.parse(payload, 1234));
   ASSERT_EQ(f.recorder.rows().size(), 1u);
-  const auto* num = PJ::sdk::testing::ParserWriteRecorder::findField(f.recorder.rows()[0], "num_detections");
+  const auto& row = f.recorder.rows()[0];
+  const auto* num = PJ::sdk::testing::ParserWriteRecorder::findField(row, "num_detections");
   ASSERT_NE(num, nullptr);
   EXPECT_DOUBLE_EQ(num->numeric, 2.0);
+
+  // The header used to be read and thrown away here; it is emitted now.
+  const auto* stamp = findField(row, "/header/stamp");
+  ASSERT_NE(stamp, nullptr);
+  EXPECT_DOUBLE_EQ(stamp->numeric, 7.0);
+
+  const auto* frame_id = findField(row, "/header/frame_id");
+  ASSERT_NE(frame_id, nullptr);
+  EXPECT_EQ(frame_id->string_value, "camera_optical");
+
+  EXPECT_EQ(row.fields.size(), 3u);
 }
 
 // frame_id producer: parseImage must carry Header.frame_id into the canonical
@@ -3419,6 +3431,341 @@ TEST(RosParserTest, OdometryProducesSinglePosePosesInFrameObject) {
   const auto* pos_x = PJ::sdk::testing::ParserWriteRecorder::findField(row, "/pose/pose/position/x");
   ASSERT_NE(pos_x, nullptr);
   EXPECT_DOUBLE_EQ(pos_x->numeric, 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// Header series on the promoted (object-bearing) schemas.
+//
+// A message promoted to a builtin object is still worth a time base: the
+// datastore row is filed under the message/log clock, so without an explicit
+// stamp column the sensor's own time (and the frame it lives in) would be
+// unreachable from a plot. Each of these schemas therefore has a slim scalar
+// route that reads only the header (plus the one count that is genuinely a time
+// series) instead of the old full introspection flatten.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// sensor_msgs/PointCloud2. point_cloud_interfaces/CompressedPointCloud2 opens
+// identically (header, height, width) — see kCompressedPointCloud2Def below.
+static const char* kPointCloud2Def =
+    "std_msgs/Header header\nuint32 height\nuint32 width\nsensor_msgs/PointField[] fields\n"
+    "bool is_bigendian\nuint32 point_step\nuint32 row_step\nuint8[] data\nbool is_dense\n"
+    "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+    "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+    "================\nMSG: sensor_msgs/PointField\nstring name\nuint32 offset\nuint8 datatype\nuint32 count\n";
+
+// A complete, valid PointCloud2 on the ROS 2 CDR wire. `point_step` and the
+// SIZE of data[] are explicit so a test can make len(data)/point_step disagree
+// with the declared width*height.
+std::vector<uint8_t> serializePointCloud2(
+    int32_t sec, uint32_t nsec, const std::string& frame_id, uint32_t height, uint32_t width, uint32_t point_step,
+    uint32_t data_bytes) {
+  return serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, sec, nsec, frame_id);
+    enc.serializeUInt32(height);
+    enc.serializeUInt32(width);
+    enc.serializeUInt32(1);                                                              // fields[]: one PointField
+    enc.serializeString("x");                                                            // fields[0].name
+    enc.serializeUInt32(0);                                                              // fields[0].offset
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(7)));  // FLOAT32
+    enc.serializeUInt32(1);                                                              // fields[0].count
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(0)));  // is_bigendian
+    enc.serializeUInt32(point_step);
+    enc.serializeUInt32(point_step * width);  // row_step
+    enc.serializeUInt32(data_bytes);          // data[]: length prefix…
+    for (uint32_t i = 0; i < data_bytes; ++i) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(i & 0xFFu)));  // …then the bytes
+    }
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(1)));  // is_dense
+  });
+}
+
+// ROS 1 wire helpers: raw little-endian, no CDR encapsulation or alignment
+// padding, and a std_msgs/Header that leads with `seq`.
+void appendRos1U32(std::vector<uint8_t>& out, uint32_t v) {
+  for (unsigned i = 0; i < 4; ++i) {
+    out.push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xFFu));
+  }
+}
+
+void appendRos1String(std::vector<uint8_t>& out, const std::string& s) {
+  appendRos1U32(out, static_cast<uint32_t>(s.size()));
+  out.insert(out.end(), s.begin(), s.end());
+}
+
+}  // namespace
+
+TEST(RosParserTest, PointCloud2ScalarRouteEmitsHeaderAndPointCount) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/PointCloud2", kPointCloud2Def));
+
+  // Deliberately inconsistent: the producer DECLARES a 4 x 1024 grid but ships
+  // only 48 bytes at 16 bytes/point. /num_points must report the 3 points that
+  // are actually there, not the 4096 the header claims.
+  const auto payload = serializePointCloud2(12, 250000000, "velodyne", 4, 1024, 16, 48);
+  ASSERT_TRUE(f.parse(payload, 1000));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+  EXPECT_EQ(row.timestamp, 1000);  // use_embedded_timestamp off → message clock
+
+  const auto* stamp = findField(row, "/header/stamp");
+  ASSERT_NE(stamp, nullptr);
+  EXPECT_DOUBLE_EQ(stamp->numeric, 12.25);
+
+  const auto* frame_id = findField(row, "/header/frame_id");
+  ASSERT_NE(frame_id, nullptr);
+  EXPECT_EQ(frame_id->string_value, "velodyne");
+
+  const auto* num_points = findField(row, "/num_points");
+  ASSERT_NE(num_points, nullptr);
+  EXPECT_DOUBLE_EQ(num_points->numeric, 3.0) << "num_points must be len(data)/point_step, not width*height";
+
+  // Exactly those three columns: no /header/seq on ROS 2, and none of the
+  // layout metadata the previous full-flatten route used to emit.
+  EXPECT_EQ(row.fields.size(), 3u);
+  EXPECT_EQ(findField(row, "/header/seq"), nullptr);
+  EXPECT_EQ(findField(row, "/point_step"), nullptr);
+  EXPECT_EQ(findField(row, "/height"), nullptr);
+  EXPECT_EQ(findField(row, "/fields[0]/name"), nullptr);
+}
+
+TEST(RosParserTest, PointCloud2ScalarRouteRos1EmitsHeaderSeq) {
+  RosParserFixture f;
+  f.setUp();
+  // ROS 1 first: bindSchema() round-trips the config, so `serialization` sticks.
+  ASSERT_TRUE(f.handle.loadConfig(R"({"serialization":"ros1"})"));
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/PointCloud2", kPointCloud2Def));
+
+  std::vector<uint8_t> payload;
+  appendRos1U32(payload, 5);          // header.seq  (ROS 1 only)
+  appendRos1U32(payload, 12);         // header.stamp.sec
+  appendRos1U32(payload, 250000000);  // header.stamp.nsec
+  appendRos1String(payload, "velodyne");
+  appendRos1U32(payload, 1);   // height
+  appendRos1U32(payload, 10);  // width  (declared: 10 points)
+  appendRos1U32(payload, 1);   // fields[]: one PointField
+  appendRos1String(payload, "x");
+  appendRos1U32(payload, 0);    // fields[0].offset
+  payload.push_back(7);         // fields[0].datatype = FLOAT32
+  appendRos1U32(payload, 1);    // fields[0].count
+  payload.push_back(0);         // is_bigendian
+  appendRos1U32(payload, 16);   // point_step
+  appendRos1U32(payload, 160);  // row_step
+  appendRos1U32(payload, 32);   // data[]: 32 bytes = 2 points, NOT the declared 10
+  payload.insert(payload.end(), 32, uint8_t{0xAB});
+  payload.push_back(1);  // is_dense
+
+  ASSERT_TRUE(f.parse(payload, 1000));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+
+  const auto* seq = findField(row, "/header/seq");
+  ASSERT_NE(seq, nullptr) << "ROS 1 headers carry seq and it must be emitted";
+  EXPECT_DOUBLE_EQ(seq->numeric, 5.0);
+
+  const auto* stamp = findField(row, "/header/stamp");
+  ASSERT_NE(stamp, nullptr);
+  EXPECT_DOUBLE_EQ(stamp->numeric, 12.25);
+
+  const auto* frame_id = findField(row, "/header/frame_id");
+  ASSERT_NE(frame_id, nullptr);
+  EXPECT_EQ(frame_id->string_value, "velodyne");
+
+  const auto* num_points = findField(row, "/num_points");
+  ASSERT_NE(num_points, nullptr);
+  EXPECT_DOUBLE_EQ(num_points->numeric, 2.0);  // 32 bytes / 16 bytes per point
+
+  EXPECT_EQ(row.fields.size(), 4u);
+}
+
+// The compressed counterpart gets the header series and NOTHING else: its blob
+// is compressed, so len(data)/point_step counts nothing real, and the declared
+// width*height would be the producer's claim rather than a measurement.
+// point_step == 0 is malformed (no point occupies zero bytes). The route must
+// not divide by it — the column is simply omitted for that message.
+TEST(RosParserTest, PointCloud2ScalarRouteOmitsPointCountOnZeroPointStep) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/PointCloud2", kPointCloud2Def));
+
+  const auto payload = serializePointCloud2(1, 0, "velodyne", 1, 0, 0, 0);
+  ASSERT_TRUE(f.parse(payload, 1000));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+
+  EXPECT_NE(findField(row, "/header/stamp"), nullptr);  // the header still lands
+  EXPECT_EQ(findField(row, "/num_points"), nullptr);
+  EXPECT_EQ(row.fields.size(), 2u);
+}
+
+// A data[] length prefix that runs past the buffer means a truncated or corrupt
+// message: reject it rather than reporting a fabricated point count.
+TEST(RosParserTest, PointCloud2ScalarRouteRejectsOverlongDataLength) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/PointCloud2", kPointCloud2Def));
+
+  // Serialize a valid 3-point cloud, then overwrite the data[] length prefix
+  // with a value far larger than the buffer.
+  auto payload = serializePointCloud2(1, 0, "velodyne", 1, 3, 16, 48);
+  const std::vector<uint8_t> needle = {48, 0, 0, 0};  // the data[] length, little-endian
+  auto it = std::search(payload.rbegin(), payload.rend(), needle.rbegin(), needle.rend());
+  ASSERT_NE(it, payload.rend());
+  const size_t offset = payload.size() - static_cast<size_t>(std::distance(payload.rbegin(), it)) - needle.size();
+  payload[offset] = 0xFF;
+  payload[offset + 1] = 0xFF;
+  payload[offset + 2] = 0xFF;
+  payload[offset + 3] = 0x7F;
+
+  EXPECT_FALSE(f.parse(payload, 1000));
+  EXPECT_TRUE(f.recorder.rows().empty());
+}
+
+TEST(RosParserTest, CompressedPointCloud2ScalarRouteEmitsHeaderOnly) {
+  static const char* kCompressedPointCloud2Def =
+      "std_msgs/Header header\nuint32 height\nuint32 width\nsensor_msgs/PointField[] fields\n"
+      "bool is_bigendian\nuint32 point_step\nuint32 row_step\nuint8[] compressed_data\n"
+      "bool is_dense\nstring format\n"
+      "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+      "================\nMSG: sensor_msgs/PointField\nstring name\nuint32 offset\nuint8 datatype\nuint32 count\n";
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("point_cloud_interfaces/CompressedPointCloud2", kCompressedPointCloud2Def));
+
+  const std::vector<uint8_t> blob = {0xCA, 0xFE, 0xBA, 0xBE};
+  auto payload = serializeCdr([&blob](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 11, 500000000, "velodyne");
+    enc.serializeUInt32(1);                                                              // height
+    enc.serializeUInt32(2048);                                                           // width
+    enc.serializeUInt32(0);                                                              // fields[]: none
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(0)));  // is_bigendian
+    enc.serializeUInt32(16);                                                             // point_step
+    enc.serializeUInt32(32768);                                                          // row_step
+    enc.serializeUInt32(static_cast<uint32_t>(blob.size()));
+    for (uint8_t b : blob) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(1)));  // is_dense
+    enc.serializeString("cloudini");
+  });
+
+  ASSERT_TRUE(f.parse(payload, 1000));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+
+  const auto* stamp = findField(row, "/header/stamp");
+  ASSERT_NE(stamp, nullptr);
+  EXPECT_DOUBLE_EQ(stamp->numeric, 11.5);
+
+  const auto* frame_id = findField(row, "/header/frame_id");
+  ASSERT_NE(frame_id, nullptr);
+  EXPECT_EQ(frame_id->string_value, "velodyne");
+
+  EXPECT_EQ(findField(row, "/num_points"), nullptr) << "a compressed blob has no measurable point count";
+  EXPECT_EQ(row.fields.size(), 2u);
+}
+
+TEST(RosParserTest, FoxgloveCompressedPointCloudScalarRouteEmitsTimestampAndFrameId) {
+  // BARE builtin_interfaces/Time + frame_id — no std_msgs/Header — so the
+  // columns are the flat /timestamp + /frame_id pair, and readHeader() must not
+  // be used (its ROS 1 seq branch would misalign the read).
+  static const char* kDef =
+      "builtin_interfaces/Time timestamp\nstring frame_id\ngeometry_msgs/Pose pose\n"
+      "uint8[] data\nstring format\n"
+      "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+      "================\nMSG: geometry_msgs/Pose\n"
+      "geometry_msgs/Point position\ngeometry_msgs/Quaternion orientation\n"
+      "================\nMSG: geometry_msgs/Point\nfloat64 x\nfloat64 y\nfloat64 z\n"
+      "================\nMSG: geometry_msgs/Quaternion\nfloat64 x\nfloat64 y\nfloat64 z\nfloat64 w\n";
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("foxglove_msgs/CompressedPointCloud", kDef));
+
+  const std::vector<uint8_t> blob = {0x44, 0x52, 0x41, 0x43};
+  auto payload = serializeCdr([&blob](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(7)));      // timestamp.sec
+    enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(static_cast<uint32_t>(250)));  // timestamp.nanosec
+    enc.serializeString("lidar_frame");
+    serializeVector3(enc, 1.0, 2.0, 3.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+    enc.serializeUInt32(static_cast<uint32_t>(blob.size()));
+    for (uint8_t b : blob) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+    enc.serializeString("draco");
+  });
+
+  ASSERT_TRUE(f.parse(payload, 1000));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+
+  const auto* timestamp = findField(row, "/timestamp");
+  ASSERT_NE(timestamp, nullptr);
+  EXPECT_DOUBLE_EQ(timestamp->numeric, 7.0 + 250e-9);
+
+  const auto* frame_id = findField(row, "/frame_id");
+  ASSERT_NE(frame_id, nullptr);
+  EXPECT_EQ(frame_id->string_value, "lidar_frame");
+
+  // No point count exists in this wire format (the cloud is an opaque blob),
+  // and the bare Time is NOT a header, so no /header/* columns either.
+  EXPECT_EQ(row.fields.size(), 2u);
+  EXPECT_EQ(findField(row, "/header/stamp"), nullptr);
+  EXPECT_EQ(findField(row, "/num_points"), nullptr);
+}
+
+TEST(RosParserTest, MarkerScalarRouteEmitsHeader) {
+  RosParserFixture f;
+  f.setUp();
+  const std::string def = markerDef(/*humble=*/true);
+  ASSERT_TRUE(f.bindSchema("visualization_msgs/Marker", def));
+
+  MarkerWire m;
+  m.sec = 42;
+  m.nsec = 500000000;
+  m.frame_id = "map";
+  m.type = 1;  // CUBE
+  auto payload = serializeCdr([&m](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeMarker(enc, m, /*has_texture_block=*/true, /*has_mesh_file=*/true);
+  });
+
+  ASSERT_TRUE(f.parse(payload, 1000));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+
+  const auto* stamp = findField(row, "/header/stamp");
+  ASSERT_NE(stamp, nullptr);
+  EXPECT_DOUBLE_EQ(stamp->numeric, 42.5);
+
+  const auto* frame_id = findField(row, "/header/frame_id");
+  ASSERT_NE(frame_id, nullptr);
+  EXPECT_EQ(frame_id->string_value, "map");
+
+  // Header only — nothing else about a marker belongs on a time axis.
+  EXPECT_EQ(row.fields.size(), 2u);
+}
+
+// A MarkerArray has no top-level header (only its elements do), so its scalar
+// route stays the empty one: no row is written at all.
+TEST(RosParserTest, MarkerArrayScalarRouteStaysEmpty) {
+  RosParserFixture f;
+  f.setUp();
+  const std::string def = markerArrayDef(/*humble=*/true);
+  ASSERT_TRUE(f.bindSchema("visualization_msgs/MarkerArray", def));
+
+  MarkerWire m;
+  auto payload = serializeCdr([&m](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serializeUInt32(1);
+    serializeMarker(enc, m, /*has_texture_block=*/true, /*has_mesh_file=*/true);
+  });
+
+  ASSERT_TRUE(f.parse(payload, 1000));
+  EXPECT_TRUE(f.recorder.rows().empty());
 }
 
 }  // namespace

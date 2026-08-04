@@ -155,9 +155,14 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kVideoFrame,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseCompressedVideo}},
+      // A promoted cloud is consumed as a 3D object; its scalar route exists to
+      // keep the message plottable on a time axis, not to mirror the message.
+      // parseScalarsDiscardingLargeArrays would run a full introspection walk
+      // per message to yield mostly per-PointField noise, so the route is a slim
+      // hand-written read of the header + the measured point count instead.
       {"sensor_msgs/PointCloud2",
        {.object_type = ObjectType::kPointCloud,
-        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_scalars = &RosParser::parsePointCloud2Scalars,
         .parse_object = &RosParser::parsePointCloud}},
       // sensor_msgs/LaserScan — eagerly projected to a canonical PointCloud via
       // the shared pj_laser_scan projector (cos/sin LUT cached per scanner
@@ -169,17 +174,22 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
         .parse_scalars = &RosParser::parseScalarsGeneric,
         .parse_object = &RosParser::parseLaserScan}},
       // foxglove_msgs/CompressedPointCloud — opaque compressed cloud (draco/cloudini/…).
-      // The parser repackages the blob + format; it does not decode. The scalar
-      // route keeps frame_id / format plottable while discarding the data[] blob.
+      // The parser repackages the blob + format; it does not decode. Its scalar
+      // route reads the BARE builtin_interfaces/Time head (this schema has no
+      // std_msgs/Header) and emits /timestamp + /frame_id; the compressed wire
+      // format carries no point count.
       {"foxglove_msgs/CompressedPointCloud",
        {.object_type = ObjectType::kCompressedPointCloud,
-        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_scalars = &RosParser::parseFoxgloveCompressedPointCloudScalars,
         .parse_object = &RosParser::parseFoxgloveCompressedPointCloud}},
       // point_cloud_interfaces/CompressedPointCloud2 — the point_cloud_transport
-      // canonical compressed message. Same dual route as above.
+      // canonical compressed message. Header-only scalar route: the payload is a
+      // compressed blob, so no point count can be MEASURED from it (compressed
+      // size / point_step is meaningless), and the declared width * height would
+      // be a claim, not a measurement.
       {"point_cloud_interfaces/CompressedPointCloud2",
        {.object_type = ObjectType::kCompressedPointCloud,
-        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_scalars = &RosParser::parseHeaderOnlyScalars,
         .parse_object = &RosParser::parseCompressedPointCloud2}},
       // TF keeps its specialized scalar flattening (handleTFMessage) AND emits a
       // canonical FrameTransforms object for the 3D scene's TF buffer.
@@ -210,9 +220,13 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
       // parseScalarsObjectOnly returns an empty row so the SceneEntities object
       // ingests under ANY policy. One SceneEntity per Marker (ADD/MODIFY) or a
       // SceneEntityDeletion (DELETE/DELETEALL) — see MARKER_NOTES.md.
+      //
+      // A single Marker DOES lead with a std_msgs/Header, so its scalar route
+      // reads it and emits the header series (a MarkerArray has no top-level
+      // header — only its elements do — and keeps the empty route).
       {"visualization_msgs/Marker",
        {.object_type = ObjectType::kSceneEntities,
-        .parse_scalars = &RosParser::parseScalarsObjectOnly,
+        .parse_scalars = &RosParser::parseHeaderOnlyScalars,
         .parse_object = &RosParser::parseMarker}},
       {"visualization_msgs/MarkerArray",
        {.object_type = ObjectType::kSceneEntities,
@@ -638,6 +652,58 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsObjec
     PJ::Timestamp ts, PJ::Span<const uint8_t> /*payload*/) {
   current_timestamp_ = ts;
   return std::vector<PJ::sdk::NamedFieldValue>{};
+}
+
+// ---------------------------------------------------------------------------
+// Shared plumbing for the slim direct-CDR scalar routes (the hand-written
+// header/metadata walkers that back the object-bearing schemas). Same setup and
+// harvest halves as wrapVoidHandler, minus the introspection parser: these
+// routes never need a compiled schema, only the deserializer.
+// ---------------------------------------------------------------------------
+
+void RosParser::beginDirectScalarRead(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+  ensureDeserializer();
+  owned_fields_.clear();
+  string_storage_.clear();
+  named_fields_.clear();
+  current_timestamp_ = ts;
+  deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()));
+}
+
+std::vector<PJ::sdk::NamedFieldValue> RosParser::harvestOwnedFields() const {
+  std::vector<PJ::sdk::NamedFieldValue> out;
+  out.reserve(owned_fields_.size());
+  for (const auto& f : owned_fields_) {
+    out.push_back({.name = f.name, .value = f.value});
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Header-only scalar route, for object-bearing schemas whose payload has nothing
+// plottable of its own but does lead with a std_msgs/Header:
+//
+//   visualization_msgs/Marker                       — pure 3D scene content.
+//   point_cloud_interfaces/CompressedPointCloud2    — the cloud is an opaque
+//       compressed blob, so no point count can be measured from it: the
+//       compressed byte size divided by point_step is meaningless, and
+//       width * height would be the producer's claim rather than a measurement
+//       (the uncompressed PointCloud2 route emits a real count instead).
+//
+// The route also has to exist at all: an object-only entry (no parse_scalars)
+// makes the host's eager-scalar ingest abort the push on any non-kPureLazy
+// policy, and the canonical object never reaches the ObjectStore.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseHeaderOnlyScalars(
+    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+  try {
+    beginDirectScalarRead(ts, payload);
+    emitHeader(readHeader());
+    return harvestOwnedFields();
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("header scalars: CDR read error: ") + e.what());
+  }
 }
 
 // ---------------------------------------------------------------------------

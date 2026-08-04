@@ -335,6 +335,45 @@ class RosParser : public PJ::MessageParserPluginBase {
   PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseScalarsObjectOnly(
       PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
 
+  // ----- Slim direct-CDR scalar routes -----
+  //
+  // Shared prologue for every hand-written scalar route that reads the CDR wire
+  // directly (no rosx_introspection flatten): resets the field accumulators —
+  // emitHeader()/addStringField() write into owned_fields_ + string_storage_ —
+  // seeds current_timestamp_ with the host time, and points the deserializer at
+  // the payload. Mirrors the setup half of wrapVoidHandler().
+  void beginDirectScalarRead(PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+
+  // Copies owned_fields_ into the vector shape parse_scalars returns. The
+  // string_view values keep pointing into string_storage_, which stays alive
+  // until the next parse on this instance — the same lifetime contract
+  // parseScalarsGeneric and wrapVoidHandler already rely on.
+  std::vector<PJ::sdk::NamedFieldValue> harvestOwnedFields() const;
+
+  // Header-only scalar route: emits just the emitHeader() series. For
+  // object-bearing schemas that lead with a std_msgs/Header but carry nothing
+  // else worth plotting — visualization_msgs/Marker and
+  // point_cloud_interfaces/CompressedPointCloud2 (whose blob is compressed, so
+  // no point count can be measured from it).
+  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseHeaderOnlyScalars(
+      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+
+  // sensor_msgs/PointCloud2: the header series plus /num_points, measured as
+  // len(data) / point_step — the points actually present, NOT the width*height
+  // the producer declares. A full introspection flatten of a cloud is worthless
+  // as time series (the bulk data[] is dropped anyway) and costs an entire
+  // schema walk per message.
+  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parsePointCloud2Scalars(
+      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+
+  // foxglove_msgs/CompressedPointCloud: leads with a BARE
+  // builtin_interfaces/Time (NOT a std_msgs/Header — readHeader() must not be
+  // used, its ROS1 seq branch would consume the wrong word), then frame_id.
+  // Emits /timestamp + /frame_id; the wire carries no point count (the cloud is
+  // an opaque compressed blob), so there is nothing else to emit.
+  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseFoxgloveCompressedPointCloudScalars(
+      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+
   // sensor_msgs/Image
   PJ::Expected<PJ::sdk::ObjectRecord> parseImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
