@@ -1,7 +1,7 @@
 {
   "id": "ros-parser",
   "name": "ROS CDR Parser",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Message parser for ROS1 and ROS2 messages (ros1msg, ros2msg, omgidl). Promotes common sensor and visualization messages (Image, PointCloud2, OccupancyGrid, TF, Markers, and yolo_msgs/DetectionArray to ImageAnnotations) to builtin scene objects.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
