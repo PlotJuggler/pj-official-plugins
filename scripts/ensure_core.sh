@@ -18,6 +18,28 @@ REF="plotjuggler_sdk/${CORE_VERSION}"
 REMOTE="plotjuggler-conan"
 SETTINGS=(-s build_type="${BUILD_TYPE:-Release}" -s compiler.cppstd=20)
 
+# The SDK package must match the plugins' instrumentation: an uninstrumented SDK
+# linked into an instrumented plugin reports nothing for a use-after-free inside
+# it. tools.build:* is acceptable here (unlike the plugin build) because this
+# graph is only the SDK and its small closure.
+#
+# These confs do NOT participate in the Conan package_id, so the ASan lane MUST
+# run with a dedicated CONAN_HOME — otherwise an instrumented package silently
+# overwrites the Release one under the same id, and a later Release build links
+# instrumented code (or the reverse) with no error. The app repo's AppImage
+# wrapper supplies that isolation via a separate cache volume for the lane.
+#
+# Set before the local-SDK branch below, so `--sdk-local --asan` instruments the
+# local tree too rather than registering an uninstrumented build under the pin.
+if [[ "${PJ_SANITIZE:-}" == "asan" ]]; then
+  SETTINGS+=(
+    -c "tools.build:cxxflags=['-fsanitize=address','-fno-omit-frame-pointer']"
+    -c "tools.build:cflags=['-fsanitize=address','-fno-omit-frame-pointer']"
+    -c "tools.build:sharedlinkflags=['-fsanitize=address']"
+    -c "tools.build:exelinkflags=['-fsanitize=address']"
+  )
+fi
+
 # Local-SDK development mode (build.sh --sdk-local): register the given working
 # tree in the Conan cache AS the pinned version, so every downstream plugin
 # recipe resolves unchanged. Always re-created — a stale cached build of a

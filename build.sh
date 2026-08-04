@@ -27,11 +27,23 @@ EOF
 }
 
 SDK_LOCAL_DIR=""
+# --asan (or PJ_SANITIZE=asan) instruments the plugins' OWN targets with
+# AddressSanitizer. Deliberately NOT injected through Conan's tools.build:*
+# config: that applies to the whole dependency graph, which would rebuild
+# Arrow + Flight + gRPC + protobuf under ASan with a fresh package_id — hours of
+# work for code we are not hunting in. Prebuilt Conan deps stay as-is. The SDK
+# is the one exception, instrumented in scripts/ensure_core.sh, because an
+# uninstrumented SDK linked into an instrumented plugin reports nothing.
+SANITIZE="${PJ_SANITIZE:-}"
 while [[ "${1:-}" == -* ]]; do
   case "$1" in
     -h|--help)
       usage
       exit 0
+      ;;
+    --asan)
+      SANITIZE=asan
+      shift
       ;;
     --sdk-local)
       SDK_LOCAL_DIR="$HOME/ws_plotjuggler/plotjuggler_sdk"
@@ -91,6 +103,24 @@ fi
 
 CMAKE_BUILD_DIR="$BUILD_DIR/$BUILD_TYPE"
 CONAN_ARGS=()
+
+if [[ "$SANITIZE" == "asan" ]]; then
+  # Lane trees nest under build/, mirroring the app repo, so the AppImage
+  # builder's recursive chown of the build directory reaches them and the host
+  # is not left with root-owned output.
+  BUILD_DIR="${BUILD_DIR/\/build\//\/build\/asan\/}"
+  CMAKE_BUILD_DIR="$BUILD_DIR/$BUILD_TYPE"
+  # -g is explicit: an ASan report without file and line is not actionable, and
+  # this repo has no debug-info policy of its own to supply it.
+  CMAKE_ARGS+=(
+    "-DCMAKE_CXX_FLAGS=-fsanitize=address -fno-omit-frame-pointer -g"
+    "-DCMAKE_C_FLAGS=-fsanitize=address -fno-omit-frame-pointer -g"
+    "-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address"
+    "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address"
+    "-DPJ_PLUGINS_NO_WERROR=ON"
+  )
+  echo "Sanitizer: AddressSanitizer (plugin targets only; Conan deps unchanged)"
+fi
 
 IS_WINDOWS=false
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
