@@ -148,6 +148,33 @@ jobs:
 
           ctest --test-dir build/Release -V --output-on-failure
 
+      - name: Build & Test plugins outside the aggregate
+        # The aggregate root recipe above leaves out the plugins whose dependency
+        # pins clash with the Arrow/Flight stack, so this job never compiled them and
+        # a green Windows check said nothing about them. That is not hypothetical: the
+        # macOS fix for data_stream_lsl (#256) merged with all 34 checks green, then
+        # broke both Windows legs of the very next release -- because liblsl is one of
+        # those plugins and no Windows job had ever built it.
+        #
+        # Same discovery rule and rationale as the step added to ci-macos.yml in #256
+        # (own conanfile.py + manifest.json, no release.sh), and ci-linux.yml already
+        # covers this through its discover-plugins matrix. Run in this job so the legs
+        # reuse the Conan cache the aggregate just warmed.
+        shell: bash
+        env:
+          SCCACHE_GHA_ENABLED: "on"
+        run: |
+          for d in */conanfile.py; do
+            plugin=$(dirname "$d")
+            [[ -f "$plugin/release.sh" ]] && continue
+            [[ -f "$plugin/manifest.json" ]] || continue
+            grep -q "add_subdirectory($plugin)" CMakeLists.txt && continue
+            echo "::group::$plugin"
+            ./build.sh "$plugin"
+            ctest --test-dir "build/$plugin/Release" --output-on-failure -V
+            echo "::endgroup::"
+          done
+
       - name: Dump linker response files on failure
         # A LNK1181 with a truncated .obj path points at rsp corruption; the
         # log never contains the rsp content, so surface it (plus the object
