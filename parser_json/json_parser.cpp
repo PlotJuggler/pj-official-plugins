@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstddef>
 #include <deque>
 #include <nlohmann/json.hpp>
@@ -5,6 +6,7 @@
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "json_manifest.hpp"
@@ -24,30 +26,97 @@ struct FlattenSink {
   std::deque<std::string>& strings;
 };
 
+/// Flattening policy, invariant across one parse() call (mirrors FlattenSink,
+/// which carries the mutable half of the recursion state).
+struct FlattenOptions {
+  pj::array_policy::ArrayLimit limit;
+  bool label_keyed_arrays = false;
+};
+
+std::string joinPath(const std::string& prefix, const std::string& key) {
+  return prefix.empty() ? key : prefix + "/" + key;
+}
+
+/// The member ("label", falling back to "name") whose non-empty string value
+/// keys an array element; elem.end() when the element is not label-keyed.
+nlohmann::json::const_iterator labelMember(const nlohmann::json& elem) {
+  if (elem.is_object()) {
+    for (const char* key : {"label", "name"}) {
+      auto it = elem.find(key);
+      if (it != elem.end() && it->is_string() && !it->get_ref<const std::string&>().empty()) {
+        return it;
+      }
+    }
+  }
+  return elem.end();
+}
+
+void flattenJson(const std::string& prefix, const nlohmann::json& value, const FlattenOptions& opts, FlattenSink& sink);
+
+/// Flatten one labeled array element under "<prefix>/<label>", collapsing the
+/// canonical {label, value} pair to a single field. Returns false when the
+/// element carries no usable label or repeats one already used in this array,
+/// so the caller falls back to the indexed name.
+bool flattenLabeledElement(
+    const std::string& prefix, const nlohmann::json& elem, std::vector<std::string_view>& seen_labels,
+    const FlattenOptions& opts, FlattenSink& sink) {
+  const auto label_it = labelMember(elem);
+  if (label_it == elem.end()) {
+    return false;
+  }
+  const std::string& label = label_it->get_ref<const std::string&>();
+  if (std::find(seen_labels.begin(), seen_labels.end(), label) != seen_labels.end()) {
+    return false;
+  }
+  seen_labels.push_back(label);
+  const std::string elem_prefix = joinPath(prefix, label);
+  if (elem.size() == 2) {
+    if (const auto value_it = elem.find("value"); value_it != elem.end()) {
+      flattenJson(elem_prefix, *value_it, opts, sink);
+      return true;
+    }
+  }
+  for (const auto& [key, child] : elem.items()) {
+    if (key != label_it.key()) {
+      flattenJson(joinPath(elem_prefix, key), child, opts, sink);
+    }
+  }
+  return true;
+}
+
 /// Flatten a JSON value into NamedFieldValue entries using "/" as separator.
-/// Arrays use bracket notation: "arr[0]", "arr[1]", etc.
+/// Arrays use bracket notation: "arr[0]", "arr[1]", etc. — unless
+/// `opts.label_keyed_arrays` is set and an element is an object carrying a
+/// string "label" (or "name") member: see flattenLabeledElement above (the
+/// LeRobot / JointState-style name-value pair convention).
 /// String values shorter than 100 chars are preserved (the std::string is
 /// owned by sink.strings); longer strings and nulls are skipped.
 void flattenJson(
-    const std::string& prefix, const nlohmann::json& value, std::size_t max_array_size, bool clamp_arrays,
-    FlattenSink& sink) {
+    const std::string& prefix, const nlohmann::json& value, const FlattenOptions& opts, FlattenSink& sink) {
   switch (value.type()) {
     case nlohmann::detail::value_t::object:
       for (const auto& [key, child] : value.items()) {
-        flattenJson(prefix.empty() ? key : prefix + "/" + key, child, max_array_size, clamp_arrays, sink);
+        flattenJson(joinPath(prefix, key), child, opts, sink);
       }
       break;
 
     case nlohmann::detail::value_t::array: {
       auto count = value.size();
-      if (max_array_size > 0 && count > max_array_size) {
-        if (!clamp_arrays) {
+      if (opts.limit.max_size > 0 && count > opts.limit.max_size) {
+        if (!opts.limit.clamp()) {
           break;
         }
-        count = max_array_size;
+        count = opts.limit.max_size;
+      }
+      std::vector<std::string_view> seen_labels;  // views into `value`, which outlives the loop
+      if (opts.label_keyed_arrays) {
+        seen_labels.reserve(count);
       }
       for (std::size_t i = 0; i < count; ++i) {
-        flattenJson(prefix + "[" + std::to_string(i) + "]", value[i], max_array_size, clamp_arrays, sink);
+        if (opts.label_keyed_arrays && flattenLabeledElement(prefix, value[i], seen_labels, opts, sink)) {
+          continue;
+        }
+        flattenJson(prefix + "[" + std::to_string(i) + "]", value[i], opts, sink);
       }
       break;
     }
@@ -95,7 +164,8 @@ class JsonParser : public PJ::MessageParserPluginBase {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
     if (!cfg.is_discarded()) {
       encoding_hint_ = cfg.value("encoding_hint", std::string{});
-      array_limit_ = pj::array_policy::arrayLimitFromJson(cfg);
+      flatten_opts_.limit = pj::array_policy::arrayLimitFromJson(cfg);
+      flatten_opts_.label_keyed_arrays = cfg.value("label_keyed_arrays", false);
       // Embedded timestamp: when set, doParseScalars reports the field's value
       // as ScalarRecord::ts so the host keys the row by it instead of the
       // transport receive time.
@@ -143,7 +213,7 @@ class JsonParser : public PJ::MessageParserPluginBase {
     // Apply the configured embedded timestamp (nullopt -> host keeps its own).
     rec.ts = extractEmbeddedTimestamp(json);
     FlattenSink sink{rec.fields, string_storage_};
-    flattenJson("", json, array_limit_.max_size, array_limit_.clamp(), sink);
+    flattenJson("", json, flatten_opts_, sink);
     return rec;
   }
 
@@ -205,7 +275,7 @@ class JsonParser : public PJ::MessageParserPluginBase {
   }
 
   std::string encoding_hint_;
-  pj::array_policy::ArrayLimit array_limit_;
+  FlattenOptions flatten_opts_;
   bool use_embedded_timestamp_ = false;
   std::string timestamp_field_name_ = "timestamp";
   // Owns the std::string backing every string_view in the returned

@@ -255,6 +255,93 @@ TEST(JsonParserTest, EmbeddedTimestampMissingFieldFallsBackToHost) {
   EXPECT_EQ(f.recorder.rows()[0].timestamp, 9999);
 }
 
+TEST(JsonParserTest, LabelKeyedArraysDisabledByDefault) {
+  // Without config, {label, value} arrays keep index-based names — existing
+  // MQTT/ZMQ/file users' saved layouts must not change.
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.parse(R"({"scalars":[{"label":"shoulder_pan.pos","value":3.5}]})"));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 2u);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].name, "scalars[0]/label");
+  EXPECT_EQ(f.recorder.rows()[0].fields[1].name, "scalars[0]/value");
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[1].numeric, 3.5);
+}
+
+TEST(JsonParserTest, LabelKeyedArraysLerobotShape) {
+  // The LeRobot 0.6.0 /observation/state payload: labels become the series
+  // names, values collapse, and no stray label string series remain.
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"label_keyed_arrays":true})"));
+  ASSERT_TRUE(f.parse(R"({"scalars":[{"label":"shoulder_pan.pos","value":3.5},{"label":"delta_x","value":-0.1}]})"));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 2u);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].name, "scalars/shoulder_pan.pos");
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[0].numeric, 3.5);
+  EXPECT_EQ(f.recorder.rows()[0].fields[1].name, "scalars/delta_x");
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[1].numeric, -0.1);
+}
+
+TEST(JsonParserTest, LabelKeyedArraysNameKeyFallback) {
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"label_keyed_arrays":true})"));
+  ASSERT_TRUE(f.parse(R"({"joints":[{"name":"elbow","value":1.5}]})"));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].name, "joints/elbow");
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[0].numeric, 1.5);
+}
+
+TEST(JsonParserTest, LabelKeyedArraysMultiFieldElement) {
+  // More members than {label, value}: no collapse — remaining members flatten
+  // beneath the label, and the label member itself is suppressed.
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"label_keyed_arrays":true})"));
+  ASSERT_TRUE(f.parse(R"({"joints":[{"label":"j1","pos":1.0,"vel":2.0}]})"));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 2u);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].name, "joints/j1/pos");
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[0].numeric, 1.0);
+  EXPECT_EQ(f.recorder.rows()[0].fields[1].name, "joints/j1/vel");
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[1].numeric, 2.0);
+}
+
+TEST(JsonParserTest, LabelKeyedArraysMixedAndDuplicate) {
+  // Unlabeled elements and duplicate labels keep the indexed fallback so no
+  // series is silently overwritten.
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"label_keyed_arrays":true})"));
+  ASSERT_TRUE(f.parse(R"({"arr":[{"label":"a","value":1.0},{"value":2.0},{"label":"a","value":3.0}]})"));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  // The duplicate element flattens fully under its indexed name — label
+  // member included, same as with the option off.
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 4u);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].name, "arr/a");
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[0].numeric, 1.0);
+  EXPECT_EQ(f.recorder.rows()[0].fields[1].name, "arr[1]/value");
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[1].numeric, 2.0);
+  EXPECT_EQ(f.recorder.rows()[0].fields[2].name, "arr[2]/label");
+  EXPECT_EQ(f.recorder.rows()[0].fields[3].name, "arr[2]/value");
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[3].numeric, 3.0);
+}
+
+TEST(JsonParserTest, LabelKeyedArraysRespectsArrayLimit) {
+  // The clamp policy bounds the element count before labels are applied.
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"label_keyed_arrays":true,"max_array_size":2,"array_policy":"clamp"})"));
+  ASSERT_TRUE(
+      f.parse(R"({"scalars":[{"label":"a","value":1.0},{"label":"b","value":2.0},{"label":"c","value":3.0}]})"));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 2u);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].name, "scalars/a");
+  EXPECT_EQ(f.recorder.rows()[0].fields[1].name, "scalars/b");
+}
+
 TEST(JsonParserTest, EmbeddedTimestampIntegerValue) {
   JsonParserFixture f;
   f.setUp();

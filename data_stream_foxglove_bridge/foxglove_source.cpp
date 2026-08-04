@@ -306,6 +306,9 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     parser_cfg["use_timestamp"] = use_timestamp_;
     parser_cfg["use_embedded_timestamp"] = use_timestamp_;
     parser_cfg["schema_encoding"] = route.parser_encoding;
+    if (route.label_keyed_arrays) {
+      parser_cfg["label_keyed_arrays"] = true;
+    }
 
     // `decoded` must outlive the ensureParserBinding call below — the host
     // consumes the schema span synchronously, same as data_load_mcap.
