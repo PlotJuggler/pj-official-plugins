@@ -8,7 +8,7 @@
  * extension's embedded manifest, so the host's plugin scanner can discover
  * and catalog the extension on a machine with no ROS installed. The vtable's
  * function slots are trampolines — the per-distro inner binary
- * (`dist/<distro>/libros2_stream_plugin-<distro>.so` relative to this library)
+ * (`dist/<distro>/libros2_stream_plugin-<distro>.pjros2` relative to this library)
  * is dlopen-ed lazily on the first slot call (i.e. when the source is actually
  * instantiated), never at discovery time. Once loaded, the trampolines forward
  * straight to the inner's vtable.
@@ -20,13 +20,14 @@
  * clear message (see PJ_get_proxy_last_error) instead of a dynamic-linker
  * error at install/scan time.
  *
- * The inner DSO deliberately does NOT export the standard
+ * The packaged inner DSO uses the private `.pjros2` suffix and deliberately
+ * does NOT export the standard
  * `PJ_get_data_source_vtable` / `PJ_get_dialog_vtable` symbols — the
- * host's recursive plugin scanner (`scanPluginDsos`) would otherwise
- * register every per-distro inner as a top-level plugin (one per ROS
- * distro) instead of just this proxy. Inner exports are therefore named
- * `PJ_ros2_inner_get_*_vtable`, invisible to the scanner but reachable
- * from this file via dlsym.
+ * host's recursive plugin scanner (`scanPluginDsos`) would otherwise try to
+ * inspect every per-distro inner as a top-level plugin. The private suffix
+ * keeps these implementation libraries out of discovery, while the renamed
+ * `PJ_ros2_inner_get_*_vtable` exports keep them reachable only through this
+ * proxy.
  *
  * By design this translation unit has **no dependency** on rclcpp or any
  * ROS component. Only <dlfcn.h>, <filesystem> and <cstdlib>. This way
@@ -56,6 +57,7 @@ namespace {
 // highest-priority one present. LTS distros come first because they are the
 // reasonable "default" for a user who hasn't sourced anything.
 constexpr std::array<std::string_view, 4> kSupportedDistros = {"humble", "iron", "jazzy", "rolling"};
+constexpr std::string_view kInnerLibrarySuffix = ".pjros2";
 
 // Cached state — the inner library stays resident for the process lifetime.
 std::once_flag g_load_once;
@@ -128,11 +130,7 @@ std::string supportedDistrosList() {
 void loadInnerImpl() {
   auto distro = detectRosDistro();
   if (!distro.has_value()) {
-    g_last_error =
-        "ROS 2 distribution not detected. "
-        "Source /opt/ros/<distro>/setup.bash before launching PlotJuggler, "
-        "or install one of: " +
-        supportedDistrosList() + ".";
+    g_last_error = "ROS 2 not detected; source /opt/ros/<distro>/setup.bash before starting PlotJuggler.";
     return;
   }
 
@@ -142,7 +140,8 @@ void loadInnerImpl() {
     return;
   }
 
-  const auto inner_path = dir / "dist" / *distro / ("libros2_stream_plugin-" + *distro + ".so");
+  const auto inner_path =
+      dir / "dist" / *distro / ("libros2_stream_plugin-" + *distro + std::string(kInnerLibrarySuffix));
   if (!std::filesystem::exists(inner_path)) {
     g_last_error = "ROS 2 distribution '" + *distro +
                    "' is installed but no matching binary is shipped in this extension. "

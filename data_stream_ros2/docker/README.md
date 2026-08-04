@@ -69,10 +69,10 @@ After `--bundle`, under the `pj-official-plugins` root:
       libros2_stream_plugin.so                      ← entry point referenced by manifest.json
       manifest.json                                  ← copied from data_stream_ros2/
       dist/
-        humble/libros2_stream_plugin-humble.so
-        iron/libros2_stream_plugin-iron.so
-        jazzy/libros2_stream_plugin-jazzy.so
-        rolling/libros2_stream_plugin-rolling.so
+        humble/libros2_stream_plugin-humble.pjros2
+        iron/libros2_stream_plugin-iron.pjros2
+        jazzy/libros2_stream_plugin-jazzy.pjros2
+        rolling/libros2_stream_plugin-rolling.pjros2
 
     ros2-topic-subscriber-linux-x86_64.zip           ← marketplace artifact
 
@@ -119,7 +119,7 @@ script assembles a marketplace-style layout next to the plugin build:
       ros2-topic-subscriber/                                ← one extension dir
         libros2_stream_plugin.so                            ← proxy entrypoint
         manifest.json                                        ← from data_stream_ros2/
-        dist/<distro>/libros2_stream_plugin-<distro>.so     ← per-distro inner
+        dist/<distro>/libros2_stream_plugin-<distro>.pjros2 ← per-distro inner
 
 To run `pj_app` inside the same image, bind-mount the assembled
 `test_extensions/` as the container user's extensions dir and forward X11:

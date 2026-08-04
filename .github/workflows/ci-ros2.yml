@@ -33,7 +33,8 @@ concurrency:
 #    per-distro binary.
 #
 #  - `package-extension` assembles both into a single marketplace zip with
-#    the proxy at the root and one .so per distro under `dist/<distro>/`.
+#    the proxy at the root and one private .pjros2 payload per distro under
+#    `dist/<distro>/`.
 jobs:
   build-distro:
     name: distro / ${{ matrix.distro }} (${{ matrix.ubuntu }})
@@ -202,25 +203,33 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ros2-distro-humble
-          path: stage/dist/
+          path: stage/dist/humble/
 
       - name: Download distro iron
         uses: actions/download-artifact@v4
         with:
           name: ros2-distro-iron
-          path: stage/dist/
+          path: stage/dist/iron/
 
       - name: Download distro jazzy
         uses: actions/download-artifact@v4
         with:
           name: ros2-distro-jazzy
-          path: stage/dist/
+          path: stage/dist/jazzy/
 
       - name: Download distro rolling
         uses: actions/download-artifact@v4
         with:
           name: ros2-distro-rolling
-          path: stage/dist/
+          path: stage/dist/rolling/
+
+      - name: Mark distro libraries as private payloads
+        shell: bash
+        run: |
+          for distro in humble iron jazzy rolling; do
+            mv "stage/dist/${distro}/libros2_stream_plugin-${distro}.so" \
+              "stage/dist/${distro}/libros2_stream_plugin-${distro}.pjros2"
+          done
 
       - name: Copy manifest alongside proxy
         shell: bash
