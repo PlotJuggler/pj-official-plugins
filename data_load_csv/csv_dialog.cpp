@@ -161,7 +161,7 @@ std::string CsvDialog::widget_data() {
   // OK enabled?
   bool ok = (time_mode_ == TimeMode::RowNumber) || (time_mode_ == TimeMode::Column && selected_column_index_ >= 0) ||
             (time_mode_ == TimeMode::Combined && combined_index_ >= 0);
-  wd.setEnabled("buttonAccept", ok);
+  wd.setOkEnabled("buttonBox", ok);
 
   if (accept_requested_) {
     accept_requested_ = false;
@@ -270,10 +270,6 @@ bool CsvDialog::onItemDoubleClicked(std::string_view widget_name, int index) {
 bool CsvDialog::onClicked(std::string_view widget_name) {
   if (widget_name == "dateTimeHelpButton") {
     show_help_requested_ = true;
-    return true;
-  }
-  if (widget_name == "buttonAccept") {
-    accept_requested_ = true;
     return true;
   }
   return false;
