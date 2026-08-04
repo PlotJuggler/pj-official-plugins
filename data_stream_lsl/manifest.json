@@ -1,7 +1,7 @@
 {
   "id": "lsl-streaming",
   "name": "Lab Streaming Layer",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "Real-time streaming from Lab Streaming Layer (LSL) sources, including numeric and marker (string) streams.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
