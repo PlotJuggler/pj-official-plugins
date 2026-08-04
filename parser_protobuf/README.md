@@ -35,8 +35,12 @@ objects (instead of flattened scalars), so PlotJuggler can render them:
 
 These bypass the descriptor pool: their wire layout is known, so they are
 decoded directly and **zero-copy** (the packed-point / bitstream span aliases
-the payload). A slim metadata row (e.g. `frame_id`, `point_count`,
-`point_step`, `num_fields`) is still emitted as plottable scalars.
+the payload). A slim metadata row is still emitted as plottable scalars: the
+embedded `timestamp` (seconds) and `frame_id` that every promoted schema
+carries, plus a bounded count or size (e.g. `point_count`, `num_poses`,
+`data_size`). The `timestamp` series is always emitted — the row itself is
+filed under the host/log clock unless `use_embedded_timestamp` is on, so
+without it the message's own stamp would be unplottable.
 
 `foxglove.LaserScan` is the exception to zero-copy: the wire carries polar
 ranges, so the handler eagerly projects rays into cartesian x/y/z
@@ -46,7 +50,8 @@ ranges, so the handler eagerly projects rays into cartesian x/y/z
 dropped (Foxglove carries no range bounds), and the generated point buffer is
 owned via the cloud's `BufferAnchor`. The same non-identity-`pose` drop policy
 as `foxglove.PointCloud` applies. Its scalar route never projects: a header-only
-walk emits `frame_id`, `start_angle`, `end_angle` and `num_ranges`.
+walk emits `timestamp`, `frame_id`, `start_angle`, `end_angle` and
+`num_ranges`.
 
 `PJ.PosesInFrame` and `foxglove.PosesInFrame` are wire-identical (the SDK proto
 mirrors Foxglove field-for-field), so both names bind to the same SDK codec
