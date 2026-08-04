@@ -72,6 +72,11 @@ if [[ "$SANITIZE" == "asan" ]]; then
     "-DCMAKE_C_FLAGS=-fsanitize=address -fno-omit-frame-pointer -g"
     "-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address"
     "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address"
+    # ASan's instrumented codegen changes inlining and value-range propagation,
+    # which flips optimization-dependent warnings (-Wmaybe-uninitialized) to
+    # false positives on otherwise-clean vendored code. See PJ_PLUGINS_NO_WERROR
+    # in the root CMakeLists.txt.
+    "-DPJ_PLUGINS_NO_WERROR=ON"
   )
   echo "Sanitizer: AddressSanitizer (plugin targets only; Conan deps unchanged)"
 fi

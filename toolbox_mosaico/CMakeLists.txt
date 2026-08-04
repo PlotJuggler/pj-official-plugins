@@ -91,10 +91,17 @@ target_compile_features(toolbox_mosaico_plugin PRIVATE cxx_std_20)
 # own build flags for its query/ subdir. These GNU flags are not valid for cl,
 # so gate them to non-MSVC compilers.
 if(NOT MSVC)
-  target_compile_options(toolbox_mosaico_plugin PRIVATE
+  set(_mosaico_plugin_warnings
     -Wall -Wextra -Werror
     -Wno-conversion -Wno-unused-parameter -Wno-unused-function
   )
+  # See PJ_PLUGINS_NO_WERROR in the root CMakeLists.txt: ASan's instrumented
+  # codegen flips optimization-dependent warnings (-Wmaybe-uninitialized) to
+  # false positives, so the sanitizer lane demotes -Werror here too.
+  if(PJ_PLUGINS_NO_WERROR)
+    list(APPEND _mosaico_plugin_warnings -Wno-error)
+  endif()
+  target_compile_options(toolbox_mosaico_plugin PRIVATE ${_mosaico_plugin_warnings})
 endif()
 
 target_include_directories(toolbox_mosaico_plugin PRIVATE
@@ -159,6 +166,12 @@ if(BUILD_TESTING)
     set(MOSAICO_QUERY_TEST_WARNINGS
       -Wall -Wextra -Werror
       -Wno-conversion -Wno-unused-parameter -Wno-unused-function)
+    # See PJ_PLUGINS_NO_WERROR in the root CMakeLists.txt: ASan's instrumented
+    # codegen flips optimization-dependent warnings (-Wmaybe-uninitialized) to
+    # false positives, so the sanitizer lane demotes -Werror here too.
+    if(PJ_PLUGINS_NO_WERROR)
+      list(APPEND MOSAICO_QUERY_TEST_WARNINGS -Wno-error)
+    endif()
   endif()
 
   # detectTimestampColumn over canned ArrowSchema fixtures.

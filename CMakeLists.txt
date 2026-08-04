@@ -80,6 +80,16 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Compiler warnings (matches plotjuggler_sdk)
 # ---------------------------------------------------------------------------
 
+# Sanitizer instrumentation (build.sh --asan) changes inlining and value-range
+# propagation, which flips optimization-dependent warnings like
+# -Wmaybe-uninitialized to false positives on otherwise-clean code (e.g.
+# data_stream_pj_bridge's std::optional access under ASan's codegen). This
+# option demotes -Werror wholesale for that lane rather than chasing each
+# codegen-dependent warning by name; build.sh sets it via -DPJ_PLUGINS_NO_WERROR=ON
+# alongside the sanitizer flags. Real warnings from normal (non-sanitized)
+# builds are unaffected — default is OFF.
+option(PJ_PLUGINS_NO_WERROR "Demote -Werror to non-fatal warnings (sanitizer builds only)" OFF)
+
 if(MSVC)
   set(PJ_WARNING_FLAGS /W4 /WX /permissive-)
 else()
@@ -94,6 +104,9 @@ else()
   # Real overflows in first-party code still warn loudly.
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     list(APPEND PJ_WARNING_FLAGS -Wno-error=stringop-overflow -Wno-error=array-bounds)
+  endif()
+  if(PJ_PLUGINS_NO_WERROR)
+    list(APPEND PJ_WARNING_FLAGS -Wno-error)
   endif()
 endif()
 
