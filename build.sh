@@ -77,6 +77,11 @@ if [[ "$SANITIZE" == "asan" ]]; then
     # false positives on otherwise-clean vendored code. See PJ_PLUGINS_NO_WERROR
     # in the root CMakeLists.txt.
     "-DPJ_PLUGINS_NO_WERROR=ON"
+    # ASan + -g makes every object huge, and each test executable statically
+    # links the instrumented libraries: on the PJ4 side the equivalent binaries
+    # cost 62 GB of a 74 GB tree. The sanitizer lane bundles plugin .so files
+    # into an AppImage and never runs ctest, so skip them.
+    "-DBUILD_TESTING=OFF"
   )
   echo "Sanitizer: AddressSanitizer (plugin targets only; Conan deps unchanged)"
 fi
