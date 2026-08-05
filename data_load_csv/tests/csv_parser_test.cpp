@@ -78,6 +78,25 @@ TEST(CsvSplitLine, QuotedField) {
   EXPECT_EQ(parts[0], "hello, world");
 }
 
+// An RFC-4180 escaped double-quote ("") inside a quoted field must become a
+// single literal quote in the output, not truncate or empty the field.
+TEST(CsvSplitLine, EscapedQuoteInsideQuotedField) {
+  std::vector<std::string> parts;
+  SplitLine(R"(a,"he said ""hi""",b)", ',', parts);
+  ASSERT_EQ(parts.size(), 3u);
+  EXPECT_EQ(parts[0], "a");
+  EXPECT_EQ(parts[1], R"(he said "hi")");
+  EXPECT_EQ(parts[2], "b");
+}
+
+TEST(CsvSplitLine, EscapedQuoteAtFieldStart) {
+  std::vector<std::string> parts;
+  SplitLine(R"("a""b",c)", ',', parts);
+  ASSERT_EQ(parts.size(), 2u);
+  EXPECT_EQ(parts[0], R"(a"b)");
+  EXPECT_EQ(parts[1], "c");
+}
+
 TEST(CsvSplitLine, TrailingSeparator) {
   std::vector<std::string> parts;
   SplitLine("a,b,", ',', parts);

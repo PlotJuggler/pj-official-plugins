@@ -87,57 +87,32 @@ char DetectDelimiter(const std::string& first_line) {
 
 void SplitLine(const std::string& line, char separator, std::vector<std::string>& parts) {
   parts.clear();
+  // Accumulate each field character by character so a doubled quote ("") inside
+  // a quoted field collapses to a single literal quote (RFC 4180). The previous
+  // scalar quote_start/quote_end were reset on every quote toggle, so an escaped
+  // "" emitted only the last quoted segment — or an empty string for a field
+  // that ends on the escape.
+  std::string field;
   bool inside_quotes = false;
-  bool quoted_word = false;
-  size_t start_pos = 0;
-
-  size_t quote_start = 0;
-  size_t quote_end = 0;
 
   for (size_t pos = 0; pos < line.size(); pos++) {
-    if (line[pos] == '"') {
-      if (inside_quotes) {
-        quoted_word = true;
-        quote_end = pos - 1;
+    const char c = line[pos];
+    if (c == '"') {
+      if (inside_quotes && pos + 1 < line.size() && line[pos + 1] == '"') {
+        // Escaped quote: emit one literal quote and skip the second.
+        field.push_back('"');
+        pos++;
       } else {
-        quote_start = pos + 1;
+        inside_quotes = !inside_quotes;
       }
-      inside_quotes = !inside_quotes;
-    }
-
-    bool part_completed = false;
-    bool add_empty = false;
-    size_t end_pos = pos;
-
-    if (!inside_quotes && line[pos] == separator) {
-      part_completed = true;
-    }
-    if (pos + 1 == line.size()) {
-      part_completed = true;
-      end_pos = pos + 1;
-      if (line[pos] == separator) {
-        end_pos = pos;
-        add_empty = true;
-      }
-    }
-
-    if (part_completed) {
-      std::string part;
-      if (quoted_word) {
-        part = line.substr(quote_start, quote_end - quote_start + 1);
-      } else {
-        part = line.substr(start_pos, end_pos - start_pos);
-      }
-
-      parts.push_back(Trim(part));
-      start_pos = pos + 1;
-      quoted_word = false;
-      inside_quotes = false;
-    }
-    if (add_empty) {
-      parts.emplace_back();
+    } else if (c == separator && !inside_quotes) {
+      parts.push_back(Trim(field));
+      field.clear();
+    } else {
+      field.push_back(c);
     }
   }
+  parts.push_back(Trim(field));
 }
 
 std::vector<std::string> ParseHeaderLine(const std::string& header_line, char delimiter) {
