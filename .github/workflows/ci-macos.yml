@@ -16,7 +16,10 @@ jobs:
     # Apple silicon, matching the only macOS leg the release matrix still builds.
     # Intel Macs are not a supported target for the time being.
     runs-on: macos-14
-    timeout-minutes: 60
+    # 90, not the 60 this job carried before: it now also builds the plugins the
+    # aggregate leaves out (see the step below). Recent runs land at 27-45 min, so
+    # 60 left no room for the extra legs on a cold Conan cache.
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -65,6 +68,38 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
           cmake --build build/Release --config Release
           ctest --test-dir build/Release -V --output-on-failure
+
+      - name: Build & Test plugins outside the aggregate
+        # The aggregate root recipe above deliberately leaves out a few plugins whose
+        # dependency pins clash with the Arrow/Flight stack (see the notes in
+        # CMakeLists.txt and conanfile.py), so no macOS job ever compiled them.
+        # ci-linux.yml already covers them via its discover-plugins matrix; macOS had no
+        # equivalent, and that is how data_stream_lsl/v0.9.1 reached a published release
+        # with its macos-14 leg red: liblsl only fails to build under libc++, so Linux
+        # and Windows stayed green and nothing else looked at macOS until the tag.
+        #
+        # Discovered, not listed, matching ci-linux.yml's rule (own conanfile.py +
+        # manifest.json, no release.sh -- those have their own workflow), so a new
+        # out-of-aggregate plugin is covered with no workflow edit. Run inside this job
+        # rather than as a separate matrix so the legs reuse the Conan cache the
+        # aggregate build just warmed -- data_load_lerobot needs Arrow, which the
+        # aggregate already built here via data_load_parquet.
+        #
+        # build.sh (not the inline conan install above) because that is the path a
+        # release tag takes for a single plugin, and it carries the plugin-scoped Conan
+        # confs -- including the liblsl ASIO_HAS_STD_INVOKE_RESULT define.
+        shell: bash
+        run: |
+          for d in */conanfile.py; do
+            plugin=$(dirname "$d")
+            [[ -f "$plugin/release.sh" ]] && continue
+            [[ -f "$plugin/manifest.json" ]] || continue
+            grep -q "add_subdirectory($plugin)" CMakeLists.txt && continue
+            echo "::group::$plugin"
+            ./build.sh "$plugin"
+            ctest --test-dir "build/$plugin/Release" --output-on-failure -V
+            echo "::endgroup::"
+          done
 
       - name: Upload built Conan binaries to JFrog
         # Publish every dependency compiled above (macOS binaries) so the next

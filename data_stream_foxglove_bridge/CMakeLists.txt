@@ -46,3 +46,7 @@ target_compile_options(foxglove_topic_subscription_test PRIVATE ${PJ_WARNING_FLA
 target_include_directories(foxglove_topic_subscription_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(foxglove_topic_subscription_test PRIVATE GTest::gtest_main pj_streaming_utils)
 add_test(NAME foxglove_topic_subscription_test COMMAND foxglove_topic_subscription_test)
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(foxglove_source_plugin
+  REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable)

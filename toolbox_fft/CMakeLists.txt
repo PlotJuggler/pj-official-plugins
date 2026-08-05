@@ -60,3 +60,7 @@ if(TARGET GTest::gtest_main)
   )
   add_test(NAME toolbox_fft_plugin_test COMMAND toolbox_fft_plugin_test)
 endif()
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(toolbox_fft_plugin
+  REQUIRED_EXPORTS PJ_get_toolbox_vtable PJ_get_dialog_vtable)

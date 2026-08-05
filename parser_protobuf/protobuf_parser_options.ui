@@ -61,6 +61,14 @@
         </widget>
        </item>
        <item>
+        <widget class="QWidget" name="protoFileContent" native="true">
+         <layout class="QVBoxLayout" name="protoFileContentLayout">
+          <property name="spacing"><number>8</number></property>
+          <property name="leftMargin"><number>8</number></property>
+          <property name="topMargin"><number>6</number></property>
+          <property name="rightMargin"><number>8</number></property>
+          <property name="bottomMargin"><number>6</number></property>
+       <item>
         <layout class="QHBoxLayout" name="horizontalLayoutLoadProto">
          <item>
           <widget class="QLabel" name="labelProtoFile">
@@ -260,6 +268,9 @@
          </property>
         </widget>
        </item>
+         </layout>
+        </widget>
+       </item>
       </layout>
      </widget>
      <!-- RIGHT COLUMN: Include Folders (the splitter handle between the panes is the movable separator) -->
@@ -286,13 +297,24 @@
         </widget>
        </item>
        <item>
-        <widget class="QListWidget" name="listWidgetIncludeFolders">
-         <property name="minimumSize">
-          <size>
-           <width>0</width>
-           <height>100</height>
-          </size>
-         </property>
+        <widget class="QWidget" name="includeFoldersContent" native="true">
+         <layout class="QVBoxLayout" name="includeFoldersContentLayout">
+          <property name="spacing"><number>0</number></property>
+          <property name="leftMargin"><number>8</number></property>
+          <property name="topMargin"><number>6</number></property>
+          <property name="rightMargin"><number>8</number></property>
+          <property name="bottomMargin"><number>6</number></property>
+          <item>
+           <widget class="QListWidget" name="listWidgetIncludeFolders">
+            <property name="minimumSize">
+             <size>
+              <width>0</width>
+              <height>100</height>
+             </size>
+            </property>
+           </widget>
+          </item>
+         </layout>
         </widget>
        </item>
       </layout>

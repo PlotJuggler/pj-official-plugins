@@ -295,14 +295,11 @@
      </property>
      <item>
       <widget class="QDialogButtonBox" name="buttonBox">
-       <property name="pjButtonsFillWidth" stdset="0">
-        <bool>true</bool>
-       </property>
        <property name="orientation">
         <enum>Qt::Orientation::Horizontal</enum>
        </property>
        <property name="standardButtons">
-        <set>QDialogButtonBox::StandardButton::Ok</set>
+        <set>QDialogButtonBox::StandardButton::Cancel|QDialogButtonBox::StandardButton::Ok</set>
        </property>
       </widget>
      </item>
@@ -327,6 +324,12 @@
      <y>274</y>
     </hint>
    </hints>
+  </connection>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>rejected()</signal>
+   <receiver>dialog_mcap</receiver>
+   <slot>reject()</slot>
   </connection>
  </connections>
  <buttongroups>

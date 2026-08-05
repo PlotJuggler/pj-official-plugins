@@ -1,7 +1,7 @@
 {
   "id": "ulog-loader",
   "name": "ULog Loader",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Data loader for PX4 ULog files. Flight log format for PX4 autopilot.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",

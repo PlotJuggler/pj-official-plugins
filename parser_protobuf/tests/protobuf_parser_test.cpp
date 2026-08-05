@@ -726,12 +726,17 @@ TEST(ProtobufParserTest, VideoFrameScalarRouteEmitsSlimMetadata) {
   f.setUp();
   ASSERT_TRUE(f.bindSchema(std::string(PJ::kSchemaVideoFrame), std::string{}));
 
-  const auto wire = buildVideoFrameWire("h265", 0);
+  const auto wire = buildVideoFrameWire("h265", 7'000'000'042LL);
   ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(wire.data()), wire.size()), 555));
 
   ASSERT_EQ(f.recorder.rows().size(), 1u);
   const auto& row = f.recorder.rows()[0];
   EXPECT_EQ(row.timestamp, 555);  // embedded ts disabled by default → host ts
+
+  // …and the embedded stamp still reaches the datastore as its own series.
+  const auto* timestamp = PJ::sdk::testing::ParserWriteRecorder::findField(row, "timestamp");
+  ASSERT_NE(timestamp, nullptr);
+  EXPECT_DOUBLE_EQ(timestamp->numeric, static_cast<double>(7'000'000'042LL) * 1e-9);
 
   const auto* frame_id = PJ::sdk::testing::ParserWriteRecorder::findField(row, "frame_id");
   ASSERT_NE(frame_id, nullptr);
@@ -1229,12 +1234,19 @@ TEST(ProtobufParserTest, FoxglovePointCloudScalarRoute) {
   f.setUp();
   ASSERT_TRUE(f.bindSchema("foxglove.PointCloud", std::string{}));
 
-  const auto wire = buildFoxglovePointCloudWire(7, 0, "lidar_top", 16, kCloudFields, kCloudBlob, false, 0.0);
+  const auto wire = buildFoxglovePointCloudWire(7, 250, "lidar_top", 16, kCloudFields, kCloudBlob, false, 0.0);
   ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(wire.data()), wire.size()), 555));
 
   ASSERT_EQ(f.recorder.rows().size(), 1u);
   const auto& row = f.recorder.rows()[0];
   EXPECT_EQ(row.timestamp, 555);  // embedded ts disabled by default → host ts
+
+  // The embedded sensor stamp is emitted as a series regardless: the row is
+  // filed under the host clock (555), so without this column the message's own
+  // time would be unplottable.
+  const auto* timestamp = PJ::sdk::testing::ParserWriteRecorder::findField(row, "timestamp");
+  ASSERT_NE(timestamp, nullptr);
+  EXPECT_DOUBLE_EQ(timestamp->numeric, static_cast<double>(7'000'000'250LL) * 1e-9);
 
   const auto* frame_id = PJ::sdk::testing::ParserWriteRecorder::findField(row, "frame_id");
   ASSERT_NE(frame_id, nullptr);
@@ -1244,13 +1256,11 @@ TEST(ProtobufParserTest, FoxglovePointCloudScalarRoute) {
   ASSERT_NE(point_count, nullptr);
   EXPECT_DOUBLE_EQ(point_count->numeric, 2.0);
 
-  const auto* point_step = PJ::sdk::testing::ParserWriteRecorder::findField(row, "point_step");
-  ASSERT_NE(point_step, nullptr);
-  EXPECT_DOUBLE_EQ(point_step->numeric, 16.0);
-
-  const auto* num_fields = PJ::sdk::testing::ParserWriteRecorder::findField(row, "num_fields");
-  ASSERT_NE(num_fields, nullptr);
-  EXPECT_DOUBLE_EQ(num_fields->numeric, 4.0);
+  // point_step / num_fields are cloud layout constants, not time series: they
+  // describe how to read data[] and never move over a recording.
+  EXPECT_EQ(PJ::sdk::testing::ParserWriteRecorder::findField(row, "point_step"), nullptr);
+  EXPECT_EQ(PJ::sdk::testing::ParserWriteRecorder::findField(row, "num_fields"), nullptr);
+  EXPECT_EQ(row.fields.size(), 3u);
 }
 
 }  // namespace
@@ -2447,12 +2457,16 @@ TEST(ProtobufParserTest, FoxgloveLaserScanScalarRoute) {
   f.setUp();
   ASSERT_TRUE(f.bindSchema("foxglove.LaserScan", std::string{}));
 
-  const auto wire = buildFoxgloveLaserScanWire(7, 0, "lidar_2d", -0.5, 0.5, {1.0, kDNaN, 2.0}, {}, false, 0.0);
+  const auto wire = buildFoxgloveLaserScanWire(7, 250, "lidar_2d", -0.5, 0.5, {1.0, kDNaN, 2.0}, {}, false, 0.0);
   ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(wire.data()), wire.size()), 555));
 
   ASSERT_EQ(f.recorder.rows().size(), 1u);
   const auto& row = f.recorder.rows()[0];
   EXPECT_EQ(row.timestamp, 555);  // embedded ts disabled by default → host ts
+
+  const auto* timestamp = PJ::sdk::testing::ParserWriteRecorder::findField(row, "timestamp");
+  ASSERT_NE(timestamp, nullptr);
+  EXPECT_DOUBLE_EQ(timestamp->numeric, static_cast<double>(7'000'000'250LL) * 1e-9);
 
   const auto* frame_id = PJ::sdk::testing::ParserWriteRecorder::findField(row, "frame_id");
   ASSERT_NE(frame_id, nullptr);
@@ -2663,14 +2677,22 @@ TEST(ProtobufParserTest, FoxglovePosesInFrameScalarRoute) {
   const auto wire = buildPosesInFrameWire(9, 500, "map", twoSamplePoses());
   ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(wire.data()), wire.size()), 555));
 
-  // Slim metadata row: a pose array can be huge, so the scalar route emits only
-  // a bounded count (mirroring foxglove.FrameTransform's num_transforms), never
-  // per-pose columns.
+  // Slim metadata row: a pose array can be huge, so the scalar route emits the
+  // header pair plus a bounded count (mirroring foxglove.FrameTransform's
+  // num_transforms), never per-pose columns.
   ASSERT_EQ(f.recorder.rows().size(), 1u);
   const auto& row = f.recorder.rows()[0];
   const auto* num_poses = PJ::sdk::testing::ParserWriteRecorder::findField(row, "num_poses");
   ASSERT_NE(num_poses, nullptr);
   EXPECT_DOUBLE_EQ(num_poses->numeric, 2.0);
+
+  const auto* timestamp = PJ::sdk::testing::ParserWriteRecorder::findField(row, "timestamp");
+  ASSERT_NE(timestamp, nullptr);
+  EXPECT_DOUBLE_EQ(timestamp->numeric, static_cast<double>(9'000'000'500LL) * 1e-9);
+
+  const auto* frame_id = PJ::sdk::testing::ParserWriteRecorder::findField(row, "frame_id");
+  ASSERT_NE(frame_id, nullptr);
+  EXPECT_EQ(frame_id->string_value, "map");
 }
 
 // The canonical PJ.PosesInFrame schema name binds to the same SDK codec as the
@@ -2837,6 +2859,15 @@ TEST(ProtobufParserTest, FoxgloveOdometryScalarRoute) {
   const auto* qw = PJ::sdk::testing::ParserWriteRecorder::findField(row, "pose/orientation/w");
   ASSERT_NE(qw, nullptr);
   EXPECT_DOUBLE_EQ(qw->numeric, 1.0);
+
+  // …plus the header pair every promoted schema now emits.
+  const auto* timestamp = PJ::sdk::testing::ParserWriteRecorder::findField(row, "timestamp");
+  ASSERT_NE(timestamp, nullptr);
+  EXPECT_DOUBLE_EQ(timestamp->numeric, 5.0);
+
+  const auto* frame_id = PJ::sdk::testing::ParserWriteRecorder::findField(row, "frame_id");
+  ASSERT_NE(frame_id, nullptr);
+  EXPECT_EQ(frame_id->string_value, "odom");  // the reference frame, not body_frame_id
 }
 
 // foxglove.Odometry with a NON-default numbering: official is { frame_id=2,
@@ -2869,4 +2900,286 @@ TEST(ProtobufParserTest, FoxgloveOdometryHonorsVariantSchemaFieldNumbers) {
   EXPECT_DOUBLE_EQ(pf->poses[0].position.x, 4.0);
   EXPECT_DOUBLE_EQ(pf->poses[0].position.z, 6.0);
   EXPECT_DOUBLE_EQ(pf->poses[0].orientation.w, 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// Scalar routes of the promoted Foxglove scene/image schemas.
+//
+// Every object-bearing schema emits its embedded sensor stamp (and frame_id
+// where the schema has one) as scalar series, so a promoted topic still has a
+// plottable time base: the ROW is filed under the host/log clock unless
+// use_embedded_timestamp is on, which would otherwise leave the message's own
+// stamp unreachable. These drive the real parse() path (bind → parse →
+// recorder) rather than the codecs directly.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Runs one message through the scalar route and returns the recorded row.
+const PJ::sdk::testing::RecordedRow* scalarRow(
+    ProtobufParserFixture& f, std::string_view type_name, const std::vector<uint8_t>& wire) {
+  if (!f.bindSchema(type_name, std::string{})) {
+    return nullptr;
+  }
+  if (!f.parse(std::string(reinterpret_cast<const char*>(wire.data()), wire.size()), 555)) {
+    return nullptr;
+  }
+  if (f.recorder.rows().size() != 1u) {
+    return nullptr;
+  }
+  return &f.recorder.rows()[0];
+}
+
+void expectNumeric(const PJ::sdk::testing::RecordedRow& row, const std::string& name, double expected) {
+  const auto* field = PJ::sdk::testing::ParserWriteRecorder::findField(row, name);
+  ASSERT_NE(field, nullptr) << "missing scalar column: " << name;
+  EXPECT_DOUBLE_EQ(field->numeric, expected) << name;
+}
+
+void expectString(const PJ::sdk::testing::RecordedRow& row, const std::string& name, const std::string& expected) {
+  const auto* field = PJ::sdk::testing::ParserWriteRecorder::findField(row, name);
+  ASSERT_NE(field, nullptr) << "missing scalar column: " << name;
+  EXPECT_EQ(field->string_value, expected) << name;
+}
+
+}  // namespace
+
+// The FrameTransform scalar route used to decode NOTHING and hardcode
+// num_transforms=1 — an entirely synthetic row. It now reads the message (cheap:
+// no blob) and reports the real stamp and count.
+TEST(ProtobufParserTest, FoxgloveFrameTransformScalarRoute) {
+  PW vec3;
+  vec3.dbl(1, 1.0);
+  vec3.dbl(2, 2.0);
+  vec3.dbl(3, 3.0);
+  PW quat;
+  quat.dbl(4, 1.0);
+  PW tf;
+  tf.sub(1, foxgloveTimestamp(5, 250));
+  tf.str(2, "world");
+  tf.str(3, "base_link");
+  tf.sub(4, vec3);
+  tf.sub(5, quat);
+
+  ProtobufParserFixture f;
+  f.setUp();
+  const auto* row = scalarRow(f, "foxglove.FrameTransform", tf.b);
+  ASSERT_NE(row, nullptr);
+  EXPECT_EQ(row->timestamp, 555);  // embedded ts off by default → host clock
+  expectNumeric(*row, "timestamp", static_cast<double>(5'000'000'250LL) * 1e-9);
+  expectNumeric(*row, "num_transforms", 1.0);
+}
+
+TEST(ProtobufParserTest, FoxgloveCompressedImageScalarRoute) {
+  const std::vector<uint8_t> blob = {0xFF, 0xD8, 0xFF, 0xE0, 0xDE, 0xAD};
+  PW img;
+  img.sub(1, foxgloveTimestamp(7, 42));
+  img.bytesField(2, blob);
+  img.str(3, "jpeg");
+  img.str(4, "camera_optical");
+
+  ProtobufParserFixture f;
+  f.setUp();
+  const auto* row = scalarRow(f, "foxglove.CompressedImage", img.b);
+  ASSERT_NE(row, nullptr);
+  expectNumeric(*row, "timestamp", static_cast<double>(7'000'000'042LL) * 1e-9);
+  expectString(*row, "frame_id", "camera_optical");
+  expectString(*row, "format", "jpeg");
+  expectNumeric(*row, "data_size", static_cast<double>(blob.size()));
+}
+
+TEST(ProtobufParserTest, FoxgloveRawImageScalarRoute) {
+  const std::vector<uint8_t> pixels = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};  // 2x2 rgb8
+  PW img;
+  img.sub(1, foxgloveTimestamp(5, 0));
+  img.str(2, "camera_optical");
+  img.fixed32(3, 2);
+  img.fixed32(4, 2);
+  img.str(5, "rgb8");
+  img.fixed32(6, 6);
+  img.bytesField(7, pixels);
+
+  ProtobufParserFixture f;
+  f.setUp();
+  const auto* row = scalarRow(f, "foxglove.RawImage", img.b);
+  ASSERT_NE(row, nullptr);
+  expectNumeric(*row, "timestamp", 5.0);
+  expectString(*row, "frame_id", "camera_optical");
+  expectNumeric(*row, "width", 2.0);
+  expectNumeric(*row, "height", 2.0);
+  expectNumeric(*row, "data_size", static_cast<double>(pixels.size()));
+}
+
+TEST(ProtobufParserTest, FoxgloveCameraCalibrationScalarRoute) {
+  PW cc;
+  cc.sub(1, foxgloveTimestamp(3, 500));
+  cc.fixed32(2, 640);
+  cc.fixed32(3, 480);
+  cc.str(4, "plumb_bob");
+  cc.packedDoubles(5, {0.1, 0.2, 0.3, 0.4, 0.5});
+  cc.packedDoubles(6, {1, 0, 320, 0, 1, 240, 0, 0, 1});
+  cc.str(9, "camera_optical");
+
+  ProtobufParserFixture f;
+  f.setUp();
+  const auto* row = scalarRow(f, "foxglove.CameraCalibration", cc.b);
+  ASSERT_NE(row, nullptr);
+  expectNumeric(*row, "timestamp", static_cast<double>(3'000'000'500LL) * 1e-9);
+  expectString(*row, "frame_id", "camera_optical");
+  expectNumeric(*row, "width", 640.0);
+  expectNumeric(*row, "height", 480.0);
+}
+
+// ImageAnnotations has no top-level frame_id (annotations are matched to an
+// image by layer stacking); its stamp is adopted from the first annotation.
+TEST(ProtobufParserTest, FoxgloveImageAnnotationsScalarRoute) {
+  PW p0;
+  p0.dbl(1, 10.0);
+  p0.dbl(2, 20.0);
+  PW pa;
+  pa.sub(1, foxgloveTimestamp(8, 500));  // PointsAnnotation.timestamp
+  pa.varint(2, 1);                       // type = POINTS
+  pa.sub(3, p0);
+  PW ann;
+  ann.sub(2, pa);
+
+  ProtobufParserFixture f;
+  f.setUp();
+  const auto* row = scalarRow(f, "foxglove.ImageAnnotations", ann.b);
+  ASSERT_NE(row, nullptr);
+  expectNumeric(*row, "timestamp", static_cast<double>(8'000'000'500LL) * 1e-9);
+  expectNumeric(*row, "num_points", 1.0);
+  expectNumeric(*row, "num_circles", 0.0);
+  expectNumeric(*row, "num_texts", 0.0);
+  EXPECT_EQ(PJ::sdk::testing::ParserWriteRecorder::findField(*row, "frame_id"), nullptr);
+}
+
+TEST(ProtobufParserTest, FoxgloveVoxelGridScalarRoute) {
+  FoxgloveVoxelGridParams p;
+  p.ts_sec = 4;
+  p.ts_nanos = 250;
+  p.frame_id = "map";
+  p.cell_x = 0.05;
+  p.cell_y = 0.05;
+  p.cell_z = 0.05;
+  p.row_count = 2;
+  p.column_count = 2;
+  p.cell_stride = 1;
+  p.row_stride = 2;
+  p.slice_stride = 4;
+  p.fields = kVoxelFields;
+  p.data = kVoxelData;
+
+  ProtobufParserFixture f;
+  f.setUp();
+  const auto* row = scalarRow(f, "foxglove.VoxelGrid", buildFoxgloveVoxelGridWire(p));
+  ASSERT_NE(row, nullptr);
+  expectNumeric(*row, "timestamp", static_cast<double>(4'000'000'250LL) * 1e-9);
+  expectString(*row, "frame_id", "map");
+  expectNumeric(*row, "column_count", 2.0);
+  expectNumeric(*row, "row_count", 2.0);
+  expectNumeric(*row, "slice_count", 2.0);
+  expectNumeric(*row, "data_size", static_cast<double>(kVoxelData.size()));
+}
+
+// foxglove.SceneUpdate has no TOP-LEVEL timestamp, but the first entity's stamp
+// is the one the object route files the record under — so it is the stamp for
+// the message, and the scalar route emits it like every other promoted schema.
+// There is still no top-level frame_id (each entity carries its own).
+TEST(ProtobufParserTest, FoxgloveSceneUpdateScalarRouteEmitsFirstEntityTimestamp) {
+  PW entity;
+  entity.sub(1, foxgloveTimestamp(3, 250));
+  entity.str(2, "map");
+  entity.str(3, "robot");
+  PW scene;
+  scene.sub(2, entity);
+
+  ProtobufParserFixture f;
+  f.setUp();
+  const auto* row = scalarRow(f, "foxglove.SceneUpdate", scene.b);
+  ASSERT_NE(row, nullptr);
+  expectNumeric(*row, "timestamp", static_cast<double>(3'000'000'250LL) * 1e-9);
+  expectNumeric(*row, "num_entities", 1.0);
+  EXPECT_EQ(PJ::sdk::testing::ParserWriteRecorder::findField(*row, "frame_id"), nullptr);
+  EXPECT_EQ(row->fields.size(), 2u);
+}
+
+// An empty SceneUpdate has no stamp anywhere: omit the column rather than file a
+// fabricated 0.0 (same rule as foxglove.FrameTransform with no transforms).
+TEST(ProtobufParserTest, FoxgloveSceneUpdateScalarRouteOmitsTimestampWhenEmpty) {
+  PW scene;  // no entities at all
+
+  ProtobufParserFixture f;
+  f.setUp();
+  const auto* row = scalarRow(f, "foxglove.SceneUpdate", scene.b);
+  ASSERT_NE(row, nullptr);
+  EXPECT_EQ(PJ::sdk::testing::ParserWriteRecorder::findField(*row, "timestamp"), nullptr);
+  expectNumeric(*row, "num_entities", 0.0);
+  EXPECT_EQ(row->fields.size(), 1u);
+}
+
+// With use_embedded_timestamp ON, the scalar ROW must land on the same clock the
+// object route uses. These handlers previously left record.ts unset, so scalars
+// stayed on host time while the object went to sensor time — the two views of
+// one message disagreed about when it happened.
+TEST(ProtobufParserTest, PromotedScalarRowsAdoptEmbeddedTimestamp) {
+  const std::vector<uint8_t> blob = {0xFF, 0xD8, 0xFF, 0xE0};
+  PW img;
+  img.sub(1, foxgloveTimestamp(7, 42));
+  img.bytesField(2, blob);
+  img.str(3, "jpeg");
+  img.str(4, "camera_optical");
+
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  ASSERT_TRUE(f.bindSchema("foxglove.CompressedImage", std::string{}));
+  ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(img.b.data()), img.b.size()), 555));
+
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 7'000'000'042LL) << "row must adopt the embedded stamp, not host time 555";
+}
+
+TEST(ProtobufParserTest, SceneUpdateScalarRowAdoptsEmbeddedTimestamp) {
+  PW entity;
+  entity.sub(1, foxgloveTimestamp(3, 250));
+  entity.str(2, "map");
+  PW scene;
+  scene.sub(2, entity);
+
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  ASSERT_TRUE(f.bindSchema("foxglove.SceneUpdate", std::string{}));
+  ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(scene.b.data()), scene.b.size()), 555));
+
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 3'000'000'250LL);
+}
+
+TEST(ProtobufParserTest, VoxelGridScalarRowAdoptsEmbeddedTimestamp) {
+  FoxgloveVoxelGridParams p;
+  p.ts_sec = 4;
+  p.ts_nanos = 250;
+  p.frame_id = "map";
+  p.cell_x = 0.05;
+  p.cell_y = 0.05;
+  p.cell_z = 0.05;
+  p.row_count = 2;
+  p.column_count = 2;
+  p.cell_stride = 1;
+  p.row_stride = 2;
+  p.slice_stride = 4;
+  p.fields = kVoxelFields;
+  p.data = kVoxelData;
+  const auto wire = buildFoxgloveVoxelGridWire(p);
+
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  ASSERT_TRUE(f.bindSchema("foxglove.VoxelGrid", std::string{}));
+  ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(wire.data()), wire.size()), 555));
+
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 4'000'000'250LL);
 }

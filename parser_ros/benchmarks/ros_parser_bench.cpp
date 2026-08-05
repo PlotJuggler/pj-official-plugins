@@ -23,10 +23,10 @@ struct NullWriteHost {
     *out = PJ_field_handle_t{{1}, 1};
     return true;
   }
-  static bool appendRecord(void*, int64_t, const PJ_named_field_value_t*, size_t, PJ_error_t*) noexcept {
+  static bool appendRecord(void*, int64_t, const PJ_named_field_value_t*, uint64_t, PJ_error_t*) noexcept {
     return true;
   }
-  static bool appendBoundRecord(void*, int64_t, const PJ_bound_field_value_t*, size_t, PJ_error_t*) noexcept {
+  static bool appendBoundRecord(void*, int64_t, const PJ_bound_field_value_t*, uint64_t, PJ_error_t*) noexcept {
     return true;
   }
 };

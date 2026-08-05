@@ -346,44 +346,32 @@
     </widget>
    </item>
    <item>
-    <layout class="QHBoxLayout" name="acceptButtonLayout">
-     <property name="spacing"><number>0</number></property>
-     <property name="leftMargin"><number>4</number></property>
-     <property name="topMargin"><number>4</number></property>
-     <property name="rightMargin"><number>4</number></property>
-     <property name="bottomMargin"><number>4</number></property>
-     <item>
-      <widget class="QPushButton" name="buttonAccept">
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
-         <horstretch>1</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="default">
-        <bool>true</bool>
-       </property>
-       <property name="text">
-        <string>OK</string>
-       </property>
-      </widget>
-     </item>
-    </layout>
-   </item>
-   <item>
     <widget class="QDialogButtonBox" name="buttonBox">
-     <property name="visible">
-      <bool>false</bool>
+     <property name="orientation">
+      <enum>Qt::Horizontal</enum>
      </property>
      <property name="standardButtons">
-      <set>QDialogButtonBox::NoButton</set>
+      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
      </property>
     </widget>
    </item>
   </layout>
  </widget>
  <resources/>
- <connections/>
+ <connections>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>accepted()</signal>
+   <receiver>DialogCSV</receiver>
+   <slot>accept()</slot>
+  </connection>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>rejected()</signal>
+   <receiver>DialogCSV</receiver>
+   <slot>reject()</slot>
+  </connection>
+ </connections>
  <buttongroups>
   <buttongroup name="previewModeGroup"/>
  </buttongroups>

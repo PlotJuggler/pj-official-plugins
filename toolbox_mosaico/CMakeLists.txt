@@ -118,6 +118,10 @@ if(MOSAICO_GRPCPP_TARGET)
   target_link_libraries(toolbox_mosaico_plugin PRIVATE ${MOSAICO_GRPCPP_TARGET})
 endif()
 
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(toolbox_mosaico_plugin
+  REQUIRED_EXPORTS PJ_get_toolbox_vtable PJ_get_dialog_vtable)
+
 pj_embed_ui(toolbox_mosaico_plugin
   UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/ui/mosaico_panel.ui
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/mosaico_panel_ui.hpp
