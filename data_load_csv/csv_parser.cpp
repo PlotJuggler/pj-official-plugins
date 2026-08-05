@@ -399,7 +399,18 @@ CsvParseResult ParseCsvData(std::istream& input, const CsvParseConfig& config, s
       }
 
       if (col_type.type != ColumnType::STRING) {
-        if (auto val = ParseWithType(str, col_type)) {
+        // Epoch auto-detection/scaling is meaningful only for the column chosen
+        // as the time axis (parsed separately above). A DATA column of large
+        // integers that merely falls in an epoch range — a byte counter, an id,
+        // a fixed-point sensor value — must keep its raw value, not be silently
+        // divided by 1e3/1e6/1e9. So parse epoch-typed data columns as plain
+        // numbers here.
+        ColumnTypeInfo value_type = col_type;
+        if (value_type.type == ColumnType::EPOCH_SECONDS || value_type.type == ColumnType::EPOCH_MILLIS ||
+            value_type.type == ColumnType::EPOCH_MICROS || value_type.type == ColumnType::EPOCH_NANOS) {
+          value_type.type = ColumnType::NUMBER;
+        }
+        if (auto val = ParseWithType(str, value_type)) {
           result.columns[i].numeric_points.emplace_back(timestamp, *val);
         } else {
           result.columns[i].string_points.emplace_back(timestamp, str);

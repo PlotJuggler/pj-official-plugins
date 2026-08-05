@@ -213,6 +213,41 @@ TEST(CsvParse, CancellationViaProgress) {
   EXPECT_LT(result.lines_processed, 300);
 }
 
+// A DATA column of large integers that happens to fall in an epoch range must
+// keep its raw value — epoch scaling belongs to the time column only. Before the
+// fix, byte_counter (1.5e12, an epoch-millis-range integer) was silently divided
+// by 1000.
+TEST(CsvParse, LargeIntegerDataColumnIsNotEpochScaled) {
+  std::string csv = "index,byte_counter\n0,1500000000000\n1,1500000000001\n2,1500000000002\n";
+  CsvParseConfig config;
+  config.delimiter = ',';
+  config.time_column_index = 0;
+  auto result = ParseCsvData(csv, config);
+
+  ASSERT_TRUE(result.success);
+  ASSERT_EQ(result.columns[1].numeric_points.size(), 3u);
+  EXPECT_DOUBLE_EQ(result.columns[1].numeric_points[0].second, 1500000000000.0)
+      << "a data column must not be rescaled as an epoch timestamp";
+  EXPECT_DOUBLE_EQ(result.columns[1].numeric_points[1].second, 1500000000001.0);
+  EXPECT_DOUBLE_EQ(result.columns[1].numeric_points[2].second, 1500000000002.0);
+}
+
+// The time column, by contrast, IS scaled from epoch-millis to seconds (that is
+// the correct behaviour for the axis the user picked as time).
+TEST(CsvParse, TimeColumnStillScaledFromEpochMillis) {
+  std::string csv = "ts_ms,value\n1700000000000,10\n1700000001000,20\n";
+  CsvParseConfig config;
+  config.delimiter = ',';
+  config.time_column_index = 0;
+  auto result = ParseCsvData(csv, config);
+
+  ASSERT_TRUE(result.success);
+  ASSERT_EQ(result.columns[1].numeric_points.size(), 2u);
+  // 1700000000000 ms -> 1700000000 s, 1700000001000 ms -> 1700000001 s.
+  EXPECT_DOUBLE_EQ(result.columns[1].numeric_points[0].first, 1700000000.0);
+  EXPECT_DOUBLE_EQ(result.columns[1].numeric_points[1].first, 1700000001.0);
+}
+
 // --- Timestamp parsing ---
 
 TEST(CsvTimestamp, ToDouble) {
