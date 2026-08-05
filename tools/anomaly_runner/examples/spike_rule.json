@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "Spike (point)",
+  "description": "Flags a sudden jump between consecutive samples as a point event (the same built-in the GUI 'Save rule' would produce).",
+  "rule": {
+    "code": "-- A point event at a sudden jump between consecutive samples.\nlocal s = series(\"--SOURCE--\")\nlocal JUMP = 0.8\nfor i = 1, s:size() - 1 do\n  local a = s:at(i - 1)\n  local b = s:at(i)\n  if math.abs(b.v - a.v) > JUMP then\n    createPointMarker(b.t, b.v, {label=\"spike\", severity=\"error\"})\n  end\nend\n",
+    "source": "anomaly_demo/value",
+    "fail_on": "error"
+  }
+}

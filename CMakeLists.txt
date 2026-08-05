@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
 
+# The headless anomaly_runner CLI (and its Luau engine layer: anomaly_core +
+# pj_scripting_core) is OFF by default. The cross-platform plugin CI builds only the
+# host-driven, Luau-FREE GUI plugins (the GUI Anomaly Detector submits rules to the host,
+# which runs Lua), so it does NOT need the private pj_scripting_core package. Build the
+# runner with `./build.sh tools/anomaly_runner` (its recipe provides pj_scripting_core)
+# or pass -DPJ_BUILD_ANOMALY_RUNNER=ON.
+option(PJ_BUILD_ANOMALY_RUNNER "Build the headless anomaly_runner CLI (needs pj_scripting_core)" OFF)
+
 # ---------------------------------------------------------------------------
 # Dual-mode: standalone project OR subdirectory of plotjuggler_sdk.
 #
@@ -19,6 +27,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/streaming_utils)
   add_subdirectory(common/laser_scan)
   add_subdirectory(common/pointcloud_color)
+  add_subdirectory(common/toolbox_preview)
   # This block always adds every plugin (no PJ_BUILD_PLUGIN filtering), so its
   # consumers data_load_mf4/data_load_blf are always present — add their shared
   # can_dbc unconditionally too. (The standalone block below, which DOES honor
@@ -60,6 +69,10 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(toolbox_fft)
   add_subdirectory(toolbox_data_exporter)
   add_subdirectory(toolbox_quaternion)
+  add_subdirectory(toolbox_anomaly_detector)
+  if(PJ_BUILD_ANOMALY_RUNNER)
+    add_subdirectory(tools/anomaly_runner)
+  endif()
   add_subdirectory(toolbox_mosaico)
   add_subdirectory(toolbox_transform_editor)
   return()
@@ -175,6 +188,17 @@ if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_CAN_DBC_CONSUMERS)
   add_subdirectory(common/can_dbc)
 endif()
 
+# Shared toolbox-preview engine: only the generator toolboxes consume it, so in
+# single-plugin (CI) mode add it only when building one of those plugins.
+set(PJ_TOOLBOX_PREVIEW_CONSUMERS toolbox_anomaly_detector)
+if(DEFINED PJ_BUILD_PLUGIN)
+  if(PJ_BUILD_PLUGIN IN_LIST PJ_TOOLBOX_PREVIEW_CONSUMERS)
+    add_subdirectory(common/toolbox_preview)
+  endif()
+else()
+  add_subdirectory(common/toolbox_preview)
+endif()
+
 # ---------------------------------------------------------------------------
 # Plugins — use -DPJ_BUILD_PLUGIN=<dir> to build a single plugin (CI mode),
 # or omit to build all plugins (local development).
@@ -213,5 +237,9 @@ else()
   add_subdirectory(toolbox_fft)
   add_subdirectory(toolbox_data_exporter)
   add_subdirectory(toolbox_quaternion)
+  add_subdirectory(toolbox_anomaly_detector)
+  if(PJ_BUILD_ANOMALY_RUNNER)
+    add_subdirectory(tools/anomaly_runner)
+  endif()
   add_subdirectory(toolbox_mosaico)
 endif()

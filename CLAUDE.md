@@ -8,6 +8,13 @@ PlotJuggler official plugin collection — 12 plugins (CSV, Parquet, ULog, MCAP,
 
 **Before doing any work, read `porting_guide.md` in its entirety.** It defines the porting philosophy, mandatory workflow, and known pitfalls. The porting gap analysis is tracked in `PORTING_PLAN.md`.
 
+**Exception — `toolbox_anomaly_detector` + `tools/anomaly_runner` (Task F) are NEW, not ports.** They have no PJ3 equivalent, so the porting guide/plan don't apply to them. Engineers author Luau anomaly-detection rules that emit plot markers; the same rule can run two ways:
+
+- **GUI plugin** (`toolbox_anomaly_detector/`): a **host-driven, Luau-FREE** toolbox. It submits the rule to the PlotJuggler host via the unified SDK service **`pj.data_processors.v1`** (`kind="markers"`), and the HOST runs it (and re-runs it as data changes) and publishes the markers; the live preview is host-driven too (an ephemeral generator read back through the object store). So the plugin carries **no script engine** — it links only `core/anomaly_helpers` (the Luau-free builtins + JSON report/rule helpers).
+- **Headless CLI** (`tools/anomaly_runner/`): a **standalone** analyzer that runs the rule **in-process** via its own engine (`core/anomaly_core`, which adds `runAnomalyScript` on the **shared Luau engine `pj_scripting_core`** — the same engine PlotJuggler uses for filters; `bandPower` FFT via kissfft lives there). CSV/MCAP in → JSON report + exit code out, for CI.
+
+Both share the **same Lua rule syntax** and emit the **same `PlotMarkers`**, and the GUI host and the CLI run the rule through the **same `runMarkerScript`** core, so a rule authored in the GUI produces identical markers in CI ("GUI == headless") — only *who invokes the engine* differs (the host vs. the standalone runner; the GUI plugin itself runs nothing). The two-layer split (`anomaly_helpers` Luau-free + `anomaly_core` engine) is what lets the GUI plugin stay engine-free. The runner can deliver the report to webhook/email/command sinks (`--notify`, via libcurl; `tools/anomaly_runner/notify.{hpp,cpp}`), and `tools/anomaly_runner/deploy/watch.sh` screens every uploaded MCAP automatically. See `toolbox_anomaly_detector/README.md` (covers BOTH GUI and headless usage). Build: `./build.sh toolbox_anomaly_detector` and `./build.sh tools/anomaly_runner`, then copy the artifacts into `build/all/Release/bin/`.
+
 ## Build Commands
 
 ### Standalone (requires Conan 2.x)
@@ -92,7 +99,8 @@ Plugins with UI subclass `PJ::DialogPluginTyped` and use real `.ui` files (Qt Cr
 | Source | Packages |
 |--------|----------|
 | Conan (JFrog) + `extern/plotjuggler_core` submodule fallback | plotjuggler_sdk (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
-| Conan (JFrog cache → ConanCenter) | nlohmann_json, mcap, arrow/parquet, paho-mqtt-cpp, cppzmq, protobuf, zstd, date, ixwebsocket, asio, kissfft, lua, sol2, libsodium, pybind11, cpython, gtest |
+| Conan (JFrog cache → ConanCenter) | nlohmann_json, mcap, arrow/parquet, paho-mqtt-cpp, cppzmq, protobuf, zstd, date, ixwebsocket, asio, kissfft, lua, sol2, libsodium, pybind11, cpython, gtest, libcurl (`anomaly_runner` webhook/email notifications) |
+| Conan (JFrog) | pj_scripting_core (the shared Luau marker engine; carries Luau + kissfft) — linked by the Anomaly Detector toolbox + `anomaly_runner` |
 | CPM | ulog_cpp, rosx_introspection, data_tamer (plugin-private deps only) |
 | Optional | Qt 6 (WebSockets, Network) — only for foxglove_bridge and pj_bridge |
 

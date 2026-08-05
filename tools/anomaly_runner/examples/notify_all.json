@@ -1,0 +1,22 @@
+{
+  "_comment": "Showcase: all three sink types at once, and notify_on:always so it fires even on a passing run. The webhook/email need their listeners up; the command sink always works.",
+  "notify_on": "always",
+  "sinks": [
+    {
+      "type": "command",
+      "exec": ["sh", "-c", "cat > /tmp/anomaly_report.json && echo '  [command sink] report written to /tmp/anomaly_report.json'"]
+    },
+    {
+      "type": "webhook",
+      "url": "http://127.0.0.1:8731/hook",
+      "headers": { "Authorization": "Bearer ${WH_TOKEN}" }
+    },
+    {
+      "type": "email",
+      "smtp_url": "smtp://127.0.0.1:8025",
+      "from": "anomaly-bot@lab.local",
+      "to": ["oncall@lab.local"],
+      "subject": "Anomalía detectada en el log"
+    }
+  ]
+}

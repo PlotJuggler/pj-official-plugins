@@ -33,6 +33,13 @@
 | [![toolbox_quaternion](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_quaternion.json)](toolbox_quaternion/) | Toolbox | Quaternion → roll/pitch/yaw |
 | [![toolbox_mosaico](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_mosaico.json)](toolbox_mosaico/) | Toolbox | Mosaico cloud server browsing (Arrow Flight) |
 | [![toolbox_transform_editor](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_transform_editor.json)](toolbox_transform_editor/) | Toolbox | Lua-based derived/custom series editor |
+| [toolbox_anomaly_detector](toolbox_anomaly_detector/) | Toolbox | Lua anomaly detection → plot markers (shares its engine with the headless runner) |
+
+In addition to the plugins above, [`tools/anomaly_runner`](tools/anomaly_runner/) is a
+standalone **headless CLI** that runs the same anomaly-detection rules without a GUI (CSV/MCAP
+in, JSON report + exit code out) for CI and data pipelines. It can also **notify** on a bad log
+(webhook / email / command via `--notify`), and a bundled watcher screens every upload
+automatically — see its [README](tools/anomaly_runner/README.md).
 
 ## Building
 
@@ -233,6 +240,8 @@ is unavailable (`scripts/ensure_core.sh`).
 | zlib | 1.3.1 | data_load_mf4 (mdflib; matches arrow's pin) |
 | expat | 2.6.4 | data_load_mf4 (mdflib) |
 | gtest | 1.17.0 | All plugin tests |
+| libcurl | 8.10.1 | tools/anomaly_runner (webhook/email notifications) |
+| pj_scripting_core | 0.1.0 | tools/anomaly_runner — shared Luau marker engine (carries Luau + kissfft) |
 
 ### Via CPM (plugin-private deps only)
 
