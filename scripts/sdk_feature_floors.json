@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "matching_rule": "cpp_token_v1",
+  "_comment": "Identifiers are matched in comment-stripped C/C++ source with C++ identifier boundaries. A trailing '(' matches a call with optional whitespace before the parenthesis; string literals remain searchable for named services. Add new identifier/version entries to features.",
+  "features": {
+    "pj_base/sdk/version.hpp": "0.21.0",
+    "PJ_SDK_VERSION_AT_LEAST": "0.21.0",
+    "PJ::sdkVersion": "0.21.0",
+    "sdkVersion(": "0.21.0",
+    "pj_base/sdk/semver.hpp": "0.21.0",
+    "PJ::SemVer": "0.21.0",
+    "SemVer::parse": "0.21.0",
+    "pj.parser_runtime.v1": "0.21.0",
+    "ParserRuntimeHostView": "0.21.0",
+    "parserRuntimeHost(": "0.21.0",
+    "parserRuntimeHostBound(": "0.21.0",
+    "reportDiagnostic(": "0.21.0",
+    "ObjectTopicMetadataBuilder": "0.21.0",
+    "pj_base/sdk/object_topic_metadata.hpp": "0.21.0",
+    "kBuiltinObjectTypeMetadataKey": "0.21.0"
+  }
+}
