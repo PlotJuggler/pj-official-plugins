@@ -18,6 +18,8 @@ Scripts for releasing PlotJuggler extensions and submitting them to the extensio
 | `submit_to_registry.py` | Submits extensions to registry via PR |
 | `build_local_registry.py` | Builds a local `file://` registry from compiled plugins (no release) |
 | `release_tools.py` | Library + CLI for validation and packaging |
+| `check_sdk_feature_floors.py` | Validates SDK feature use against manifest floors |
+| `sdk_feature_floors.json` | Maps SDK API/service identifiers to their introduction versions |
 | `requirements.txt` | Python dependencies |
 
 ---
@@ -40,9 +42,9 @@ Scripts for releasing PlotJuggler extensions and submitting them to the extensio
 │         ▼                        ▼                       ▼                    ▼     │
 │  - Manifest validation    - Build 6 platforms     - Download artifacts  - Schema   │
 │  - Semver check           - Version consistency   - Verify checksums      validation│
-│  - Tag conflict check     - Package ZIPs          - Build registry entry- Checksum │
-│  - Push annotated tag     - Generate checksums    - Create PR             verify   │
-│                           - Generate plugin notes                                   │
+│  - SDK floor preflight    - Package ZIPs          - Build registry entry- Checksum │
+│  - Tag conflict check     - Generate checksums    - Create PR             verify   │
+│  - Push annotated tag     - Generate plugin notes                                  │
 │                           - Upload to release                                       │
 │                           - (Auto-submit if flag)                                   │
 └─────────────────────────────────────────────────────────────────────────────────────┘
@@ -162,6 +164,7 @@ Tag format: `{source_dir}/v{version}` (e.g., `data_load_csv/v1.0.6`)
 | Read manifest.json | Extracts version and extension id |
 | Validate manifest | Checks required fields: id, name, version, description, author |
 | Validate semver | Ensures version follows semantic versioning (X.Y.Z) |
+| Validate SDK floor | Checks detected/annotated SDK feature use and the pinned build SDK |
 | Check tag conflicts | Verifies tag doesn't exist locally or on remote |
 | Verify HEAD alignment | Ensures existing tags point to current HEAD |
 | Find GitHub remote | Auto-detects remote pointing to pj-official-plugins |
@@ -171,8 +174,53 @@ Tag format: `{source_dir}/v{version}` (e.g., `data_load_csv/v1.0.6`)
 **Exit conditions:**
 - Fails if manifest.json is missing or invalid
 - Fails if version is not valid semver
+- Fails if `min_sdk_required` under-declares detected SDK feature use
+- Fails if `min_sdk_required` is newer than the repository's `SDK_VERSION`
 - Fails if tag exists at different commit
 - Succeeds if tag already exists at HEAD (idempotent)
+
+---
+
+### SDK feature-floor guardrail
+
+`SDK_VERSION` is the SDK used to build this repository, not an automatic
+compatibility floor. A plugin built with a newer SDK can remain compatible with
+older hosts as long as it does not use newer APIs. The guardrail therefore
+derives a floor only from source evidence. `min_sdk_required` is also independent
+of the application-facing `min_plotjuggler_version` manifest field.
+
+- `scripts/sdk_feature_floors.json` maps distinctive SDK API, header, and named
+  service identifiers to the SDK version that introduced them. Extend the
+  `features` object whenever a new SDK surface is adopted.
+- `scripts/check_sdk_feature_floors.py` scans each plugin's production C/C++
+  sources and its transitive linked `common/` libraries. It computes the maximum
+  detected version and requires `manifest.json`'s `min_sdk_required` to be at
+  least that version.
+- `PJ_REQUIRE_SDK_VERSION(X, Y, Z)` is an explicit escape hatch for behavior the
+  token map cannot infer. It only raises the computed floor; it cannot override
+  a newer detected feature. Annotations are accepted in code or comments. The
+  SDK-side no-op macro is a follow-up, so use a comment annotation until that
+  macro is available in the pinned SDK.
+
+The CMake closure starts at every target passed to
+`pj_emit_plugin_manifest(...)`, follows literal `target_link_libraries(...)`
+edges through plugin-local and `common/` targets, and scans the reached common
+library directories. Current CMake uses literal link targets except for a helper
+whose `${TARGET}` edge is conservatively applied to the plugin's manifest
+target; this avoids needing to execute CMake while covering the repository's
+release graph. Test, benchmark, vendored `contrib/`, generated build-tree, and
+comment-only mapped-token occurrences are excluded.
+
+Run the whole-repository check, or select release directories explicitly:
+
+```bash
+python3 scripts/check_sdk_feature_floors.py
+python3 scripts/check_sdk_feature_floors.py data_load_csv parser_json
+```
+
+The PR workflow runs the whole-repository check and its pytest suite. The local
+`release_extension.py` path runs the selected plugin preflight before changing
+its manifest or creating a tag.
 
 ---
 

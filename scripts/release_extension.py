@@ -47,6 +47,7 @@ from release_tools import (
     validate_manifest_file,
     validate_semver,
 )
+from check_sdk_feature_floors import check_sdk_feature_floors
 
 GITHUB_REMOTE_PATTERN = re.compile(r"github\.com[:/].+/pj-official-plugins")
 
@@ -249,6 +250,13 @@ def main():
         for err in validation_errors:
             print(f"  - {err}", file=sys.stderr)
         sys.exit(1)
+
+    # Refuse to mutate the manifest or create a tag when the plugin uses an SDK
+    # feature above its declared floor (including use inherited from common/).
+    print("Checking SDK feature-floor declaration...")
+    repo_root = Path(repo.working_tree_dir)
+    if not check_sdk_feature_floors(repo_root, [Path(source_dir)]):
+        sys.exit("Error: SDK feature-floor preflight failed; release tag not created.")
 
     # Check for conflicting version arguments
     if args.bump and args.version:
