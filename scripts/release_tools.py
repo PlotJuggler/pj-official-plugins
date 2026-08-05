@@ -898,7 +898,7 @@ def cmd_create_distribution_package(args) -> int:
     - **Heuristic mode** (default): binaries are located by their embedded
       manifest id and copied alongside ``manifest.json``. Any sibling
       ``python3*`` directory placed next to the binary by a CMake
-      POST_BUILD step (e.g. reactive scripts toolbox) is bundled too.
+      POST_BUILD step is bundled too.
 
     Outputs the ZIP filename to stdout for CI to capture.
     """
