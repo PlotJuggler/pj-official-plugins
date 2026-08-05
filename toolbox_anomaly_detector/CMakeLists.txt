@@ -36,3 +36,7 @@ pj_emit_plugin_manifest(toolbox_anomaly_detector_plugin
   FAMILY        toolbox
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(toolbox_anomaly_detector_plugin
+  REQUIRED_EXPORTS PJ_get_toolbox_vtable PJ_get_dialog_vtable)
