@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "matching_rule": "cpp_token_v1",
-  "_comment": "Identifiers are matched in comment-stripped C/C++ source with C++ identifier boundaries. A trailing '(' matches a call with optional whitespace before the parenthesis; string literals remain searchable for named services. Add new identifier/version entries to features.",
+  "_comment": "After C/C++ phase-2 line splicing, identifiers are matched in comment-stripped source with C++ identifier boundaries. A trailing '(' matches a call with optional whitespace before the parenthesis; string literals remain searchable for named services. Add new identifier/version entries to features.",
   "features": {
     "pj_base/sdk/version.hpp": "0.21.0",
     "PJ_SDK_VERSION_AT_LEAST": "0.21.0",

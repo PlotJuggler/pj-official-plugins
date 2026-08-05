@@ -7,12 +7,13 @@ plugin-local helper targets and targets declared under ``common/``. Once a
 common target is reached, production C/C++ files in that common library's
 directory are added to the plugin's scan closure.
 
-This is deliberately a small CMake lexer rather than a CMake interpreter. It is
-sound for this repository's layout: link targets are literal tokens, apart from
-one helper function whose ``${TARGET}`` edge is conservatively attached to all
-manifest-emitting targets in that plugin. Generator-expression/variable link
-items are ignored. Tests, benchmarks, vendored ``contrib/`` code, and generated
-build trees are not shipped plugin sources and are excluded from source scans.
+This is deliberately a small CMake lexer rather than a CMake interpreter. It
+resolves literal targets, simple ``set()`` variables, and ALIAS targets. A helper
+function's ``${TARGET}`` source edge is conservatively attached to all manifest
+targets in that plugin. Any other unresolved reachable link item fails closed
+unless it is in the explicit known-external allowlist below. Tests, benchmarks,
+demos, vendored ``contrib/`` code, and generated build trees are not shipped
+plugin sources and are excluded from source scans.
 
 ``PJ_REQUIRE_SDK_VERSION(X, Y, Z)`` annotations are recognized in code or
 comments and contribute to the same transitive closure maximum. The SDK-side
@@ -59,10 +60,19 @@ EXCLUDED_SOURCE_DIRS = {
     "benchmarks",
     "build",
     "contrib",
+    "demo",
     "test",
     "test_data",
     "test_scripts",
     "tests",
+}
+# These CMake variables are platform-selected external libraries, never targets
+# implemented under common/. Keeping the exceptions explicit makes a newly
+# introduced unresolved expression fail closed instead of silently shrinking a
+# plugin's source closure.
+EXTERNAL_LINK_EXPRESSION_ALLOWLIST = {
+    "${CMAKE_DL_LIBS}": "CMake's platform dynamic-loader libraries",
+    "${MOSAICO_GRPCPP_TARGET}": "optional external gRPC target selected by toolbox_mosaico",
 }
 LINK_KEYWORDS = {
     "PRIVATE",
@@ -82,6 +92,7 @@ ANNOTATION_RE = re.compile(
 )
 COMMAND_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 LITERAL_TARGET_RE = re.compile(r"^[A-Za-z0-9_.:+-]+$")
+VARIABLE_REF_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 RAW_STRING_START_RE = re.compile(r'(?:u8|u|U|L)?R"([^ ()\\\t\r\n]{0,16})\(')
 
 
@@ -185,18 +196,29 @@ class Trigger:
     line: int
 
 
+@dataclass(frozen=True)
+class UnresolvedLink:
+    expression: str
+    cmake_path: Path
+
+
 @dataclass
 class CMakeModel:
     targets: set[str] = field(default_factory=set)
     release_targets: set[str] = field(default_factory=set)
     edges: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
+    unresolved_edges: dict[str, set[UnresolvedLink]] = field(
+        default_factory=lambda: defaultdict(set)
+    )
     dynamic_link_dependencies: set[str] = field(default_factory=set)
+    dynamic_unresolved_links: set[UnresolvedLink] = field(default_factory=set)
 
 
 @dataclass
 class CommonGraph:
     target_dirs: dict[str, Path]
     edges: dict[str, set[str]]
+    unresolved_edges: dict[str, set[UnresolvedLink]]
 
 
 def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -372,42 +394,101 @@ def _cmake_tokens(body: str, path: Path) -> list[str]:
     return [item for token in raw_tokens for item in token.split(";") if item]
 
 
-def _link_dependencies(tokens: Sequence[str]) -> set[str]:
-    dependencies = set()
-    for token in tokens:
-        if token in LINK_KEYWORDS or token.startswith("-"):
-            continue
-        if token.startswith("${") or token.startswith("$<"):
-            continue
-        if LITERAL_TARGET_RE.fullmatch(token):
-            dependencies.add(token)
-    return dependencies
+def _resolve_link_item(
+    token: str,
+    variables: dict[str, set[str]],
+    cmake_path: Path,
+    resolving: tuple[str, ...] = (),
+) -> tuple[set[str], set[UnresolvedLink]]:
+    if token in LINK_KEYWORDS or token.startswith("-"):
+        return set(), set()
+    if token in EXTERNAL_LINK_EXPRESSION_ALLOWLIST:
+        return set(), set()
+    if LITERAL_TARGET_RE.fullmatch(token):
+        return {token}, set()
+
+    variable_match = VARIABLE_REF_RE.fullmatch(token)
+    if not variable_match:
+        return set(), {UnresolvedLink(token, cmake_path)}
+
+    variable_name = variable_match.group(1)
+    if variable_name in resolving:
+        return set(), {UnresolvedLink(token, cmake_path)}
+    if variable_name not in variables:
+        return set(), {UnresolvedLink(token, cmake_path)}
+
+    dependencies: set[str] = set()
+    unresolved: set[UnresolvedLink] = set()
+    for value in variables[variable_name]:
+        value_dependencies, value_unresolved = _resolve_link_item(
+            value,
+            variables,
+            cmake_path,
+            (*resolving, variable_name),
+        )
+        dependencies.update(value_dependencies)
+        unresolved.update(value_unresolved)
+    return dependencies, unresolved
 
 
 def parse_cmake_model(path: Path) -> CMakeModel:
     model = CMakeModel()
-    for name, body in _cmake_commands(path):
-        tokens = _cmake_tokens(body, path)
+    commands = [
+        (name, _cmake_tokens(body, path))
+        for name, body in _cmake_commands(path)
+    ]
+    variables: dict[str, set[str]] = {}
+    for name, tokens in commands:
+        if name != "set" or not tokens or not COMMAND_NAME_RE.fullmatch(tokens[0]):
+            continue
+        variables.setdefault(tokens[0], set()).update(tokens[1:])
+
+    for name, tokens in commands:
         if not tokens:
             continue
         if name == "add_library" and LITERAL_TARGET_RE.fullmatch(tokens[0]):
             model.targets.add(tokens[0])
+            if len(tokens) >= 3 and tokens[1].upper() == "ALIAS":
+                alias_target = tokens[2]
+                if LITERAL_TARGET_RE.fullmatch(alias_target):
+                    model.edges[tokens[0]].add(alias_target)
+                else:
+                    model.unresolved_edges[tokens[0]].add(
+                        UnresolvedLink(alias_target, path)
+                    )
         elif name == "pj_emit_plugin_manifest" and LITERAL_TARGET_RE.fullmatch(tokens[0]):
             model.release_targets.add(tokens[0])
         elif name == "target_link_libraries" and len(tokens) > 1:
-            dependencies = _link_dependencies(tokens[1:])
+            dependencies: set[str] = set()
+            unresolved: set[UnresolvedLink] = set()
+            for token in tokens[1:]:
+                token_dependencies, token_unresolved = _resolve_link_item(
+                    token, variables, path
+                )
+                dependencies.update(token_dependencies)
+                unresolved.update(token_unresolved)
             source = tokens[0]
             if LITERAL_TARGET_RE.fullmatch(source):
                 model.edges[source].update(dependencies)
+                model.unresolved_edges[source].update(unresolved)
             else:
-                model.dynamic_link_dependencies.update(dependencies)
+                source_targets, _ = _resolve_link_item(source, variables, path)
+                if source_targets:
+                    for source_target in source_targets:
+                        model.edges[source_target].update(dependencies)
+                        model.unresolved_edges[source_target].update(unresolved)
+                else:
+                    # Function parameters such as parser_ros's ${TARGET} are
+                    # attached conservatively to every release target below.
+                    model.dynamic_link_dependencies.update(dependencies)
+                    model.dynamic_unresolved_links.update(unresolved)
     return model
 
 
 def load_common_graph(repo_root: Path) -> CommonGraph:
     common_root = repo_root / "common"
     if not common_root.is_dir():
-        return CommonGraph({}, {})
+        return CommonGraph({}, {}, {})
 
     models: list[tuple[Path, CMakeModel]] = []
     target_dirs: dict[str, Path] = {}
@@ -423,13 +504,19 @@ def load_common_graph(repo_root: Path) -> CommonGraph:
             target_dirs[target] = cmake_path.parent
 
     edges: dict[str, set[str]] = defaultdict(set)
+    unresolved_edges: dict[str, set[UnresolvedLink]] = defaultdict(set)
     for _, model in models:
         for source, dependencies in model.edges.items():
             edges[source].update(dependencies)
+        for source, unresolved in model.unresolved_edges.items():
+            unresolved_edges[source].update(unresolved)
         if model.dynamic_link_dependencies:
             for target in model.targets:
                 edges[target].update(model.dynamic_link_dependencies)
-    return CommonGraph(target_dirs, edges)
+        if model.dynamic_unresolved_links:
+            for target in model.targets:
+                unresolved_edges[target].update(model.dynamic_unresolved_links)
+    return CommonGraph(target_dirs, edges, unresolved_edges)
 
 
 def derive_common_closure(plugin_dir: Path, common_graph: CommonGraph) -> set[Path]:
@@ -443,13 +530,21 @@ def derive_common_closure(plugin_dir: Path, common_graph: CommonGraph) -> set[Pa
         )
 
     edges: dict[str, set[str]] = defaultdict(set)
+    unresolved_edges: dict[str, set[UnresolvedLink]] = defaultdict(set)
     for source, dependencies in common_graph.edges.items():
         edges[source].update(dependencies)
+    for source, unresolved in common_graph.unresolved_edges.items():
+        unresolved_edges[source].update(unresolved)
     for source, dependencies in plugin_model.edges.items():
         edges[source].update(dependencies)
+    for source, unresolved in plugin_model.unresolved_edges.items():
+        unresolved_edges[source].update(unresolved)
     if plugin_model.dynamic_link_dependencies:
         for target in plugin_model.release_targets:
             edges[target].update(plugin_model.dynamic_link_dependencies)
+    if plugin_model.dynamic_unresolved_links:
+        for target in plugin_model.release_targets:
+            unresolved_edges[target].update(plugin_model.dynamic_unresolved_links)
 
     common_dirs: set[Path] = set()
     pending = list(plugin_model.release_targets)
@@ -459,6 +554,19 @@ def derive_common_closure(plugin_dir: Path, common_graph: CommonGraph) -> set[Pa
         if target in visited:
             continue
         visited.add(target)
+        unresolved = unresolved_edges.get(target, set())
+        if unresolved:
+            details = ", ".join(
+                f"{item.expression!r} in {item.cmake_path}"
+                for item in sorted(
+                    unresolved,
+                    key=lambda item: (str(item.cmake_path), item.expression),
+                )
+            )
+            raise CheckError(
+                f"reachable CMake target {target!r} has unresolved link items: {details}; "
+                "resolve them with set(), an ALIAS target, or the explicit external allowlist"
+            )
         common_dir = common_graph.target_dirs.get(target)
         if common_dir is not None:
             common_dirs.add(common_dir)
@@ -513,6 +621,83 @@ def _strip_cpp_comments(text: str) -> str:
     return "".join(output)
 
 
+def _splice_cpp_lines(text: str) -> tuple[str, list[int]]:
+    """Apply C/C++ phase-2 backslash-newline removal and retain offset mapping."""
+    output: list[str] = []
+    original_offsets: list[int] = []
+    index = 0
+    while index < len(text):
+        if text.startswith("\\\r\n", index):
+            index += 3
+            continue
+        if text.startswith("\\\n", index):
+            index += 2
+            continue
+        output.append(text[index])
+        original_offsets.append(index)
+        index += 1
+    return "".join(output), original_offsets
+
+
+def _blank_cpp_literals(text: str) -> str:
+    """Blank string/character literals while preserving code, comments, and offsets."""
+    output: list[str] = []
+    index = 0
+    while index < len(text):
+        if text.startswith("//", index):
+            end = text.find("\n", index)
+            end = len(text) if end < 0 else end
+            output.append(text[index:end])
+            index = end
+            continue
+        if text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            end = len(text) if end < 0 else end + 2
+            output.append(text[index:end])
+            index = end
+            continue
+
+        raw_match = RAW_STRING_START_RE.match(text, index)
+        if raw_match:
+            closing = ")" + raw_match.group(1) + '"'
+            end = text.find(closing, raw_match.end())
+            end = len(text) if end < 0 else end + len(closing)
+            output.append(_blank_except_newlines(text[index:end]))
+            index = end
+            continue
+
+        char = text[index]
+        if char not in {'"', "'"}:
+            output.append(char)
+            index += 1
+            continue
+
+        quote = char
+        end = index + 1
+        escaped = False
+        while end < len(text):
+            current = text[end]
+            end += 1
+            if escaped:
+                escaped = False
+            elif current == "\\":
+                escaped = True
+            elif current == quote:
+                break
+        output.append(_blank_except_newlines(text[index:end]))
+        index = end
+    return "".join(output)
+
+
+def _original_line(text: str, original_offsets: Sequence[int], spliced_offset: int) -> int:
+    original_offset = (
+        original_offsets[spliced_offset]
+        if spliced_offset < len(original_offsets)
+        else len(text)
+    )
+    return text.count("\n", 0, original_offset) + 1
+
+
 def _source_files(directory: Path) -> Iterable[Path]:
     for path in directory.rglob("*"):
         if not path.is_file() or path.suffix.lower() not in SOURCE_SUFFIXES:
@@ -542,7 +727,8 @@ def detect_triggers(
             raw_source = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             raise CheckError(f"cannot read C/C++ source {_display_path(path, repo_root)}: {exc}") from exc
-        searchable_source = _strip_cpp_comments(raw_source)
+        spliced_source, original_offsets = _splice_cpp_lines(raw_source)
+        searchable_source = _strip_cpp_comments(spliced_source)
         for feature in feature_floors:
             for match in feature.matcher.finditer(searchable_source):
                 triggers.add(
@@ -551,15 +737,16 @@ def detect_triggers(
                         "identifier",
                         feature.identifier,
                         path,
-                        raw_source.count("\n", 0, match.start()) + 1,
+                        _original_line(raw_source, original_offsets, match.start()),
                     )
                 )
 
-        annotation_matches = list(ANNOTATION_RE.finditer(raw_source))
+        annotation_source = _blank_cpp_literals(spliced_source)
+        annotation_matches = list(ANNOTATION_RE.finditer(annotation_source))
         valid_starts = {match.start() for match in annotation_matches}
-        for token_match in ANNOTATION_TOKEN_RE.finditer(raw_source):
+        for token_match in ANNOTATION_TOKEN_RE.finditer(annotation_source):
             if token_match.start() not in valid_starts:
-                line = raw_source.count("\n", 0, token_match.start()) + 1
+                line = _original_line(raw_source, original_offsets, token_match.start())
                 raise CheckError(
                     f"malformed {ANNOTATION_NAME}(X, Y, Z) annotation in "
                     f"{_display_path(path, repo_root)}:{line}"
@@ -572,7 +759,7 @@ def detect_triggers(
                     "annotation",
                     match.group(0),
                     path,
-                    raw_source.count("\n", 0, match.start()) + 1,
+                    _original_line(raw_source, original_offsets, match.start()),
                 )
             )
 
@@ -610,6 +797,8 @@ def _read_manifest_floor(plugin_dir: Path) -> SemVer | None:
     if "min_sdk_required" not in manifest:
         return None
     value = manifest["min_sdk_required"]
+    if value == "":
+        return None
     return SemVer.parse(value, f"min_sdk_required in {path}")
 
 

@@ -176,6 +176,7 @@ Tag format: `{source_dir}/v{version}` (e.g., `data_load_csv/v1.0.6`)
 - Fails if version is not valid semver
 - Fails if `min_sdk_required` under-declares detected SDK feature use
 - Fails if `min_sdk_required` is newer than the repository's `SDK_VERSION`
+- Fails if the plugin, `common/`, `scripts/`, or `SDK_VERSION` differs from HEAD
 - Fails if tag exists at different commit
 - Succeeds if tag already exists at HEAD (idempotent)
 
@@ -195,21 +196,43 @@ of the application-facing `min_plotjuggler_version` manifest field.
 - `scripts/check_sdk_feature_floors.py` scans each plugin's production C/C++
   sources and its transitive linked `common/` libraries. It computes the maximum
   detected version and requires `manifest.json`'s `min_sdk_required` to be at
-  least that version.
+  least that version. A missing or empty-string field means no SDK floor was
+  declared; it passes only when no floor input is detected.
 - `PJ_REQUIRE_SDK_VERSION(X, Y, Z)` is an explicit escape hatch for behavior the
   token map cannot infer. It only raises the computed floor; it cannot override
   a newer detected feature. Annotations are accepted in code or comments. The
   SDK-side no-op macro is a follow-up, so use a comment annotation until that
-  macro is available in the pinned SDK.
+  macro is available in the pinned SDK. Annotation-shaped text inside string or
+  character literals is ignored.
 
 The CMake closure starts at every target passed to
 `pj_emit_plugin_manifest(...)`, follows literal `target_link_libraries(...)`
 edges through plugin-local and `common/` targets, and scans the reached common
-library directories. Current CMake uses literal link targets except for a helper
-whose `${TARGET}` edge is conservatively applied to the plugin's manifest
-target; this avoids needing to execute CMake while covering the repository's
-release graph. Test, benchmark, vendored `contrib/`, generated build-tree, and
-comment-only mapped-token occurrences are excluded.
+library directories. Simple `set(...)` variables and CMake `ALIAS` library
+targets are resolved. The parser ROS helper's `${TARGET}` source edge is
+conservatively applied to its manifest target. Any other unresolved link item
+on a reachable target is an error instead of being silently discarded.
+
+The explicit known-external expression allowlist lives in
+`EXTERNAL_LINK_EXPRESSION_ALLOWLIST` in the checker. It currently contains only:
+
+- `${CMAKE_DL_LIBS}`, CMake's platform dynamic-loader libraries.
+- `${MOSAICO_GRPCPP_TARGET}`, toolbox Mosaico's platform-selected external gRPC
+  target.
+
+Adding another exception requires documenting why it cannot name a repository
+`common/` target. This keeps the lightweight parser fail-closed without needing
+to execute platform-dependent CMake configuration.
+
+C/C++ backslash-newline splices are removed before lexical matching, as required
+by translation phase 2. Mapped feature tokens in comments are ignored, while
+string literals remain searchable for named SDK services. The checker does not
+run a preprocessor, so feature use inside `#if 0` still raises the floor; this is
+an intentional conservative rule. Directory names established as non-shipping
+are excluded wherever they occur: `tests`, `test`, `test_data`, `test_scripts`,
+`benchmarks`, `demo`, `contrib`, and generated build directories. For example,
+`data_stream_webrtc/demo/recv_probe.cpp` is explicitly not part of that plugin
+and is not scanned.
 
 Run the whole-repository check, or select release directories explicitly:
 
@@ -219,8 +242,12 @@ python3 scripts/check_sdk_feature_floors.py data_load_csv parser_json
 ```
 
 The PR workflow runs the whole-repository check and its pytest suite. The local
-`release_extension.py` path runs the selected plugin preflight before changing
-its manifest or creating a tag.
+`release_extension.py` path first requires every scanner input to match HEAD,
+then runs the selected-plugin preflight before changing its manifest or creating
+a tag. The tag-triggered `build-release.yml` workflow checks out the tagged ref,
+resolves its plugin with `release_tools.py resolve-build-scope`, and makes the
+floor check a prerequisite of every build/upload/release job. Manual tags are
+therefore subject to the same mandatory publishing guardrail.
 
 ---
 
@@ -249,6 +276,7 @@ Triggered by tags matching `*/v*` pattern.
 
 | Step | Description |
 |------|-------------|
+| SDK floor gate | Before the build matrix starts, check the tagged plugin from the exact tagged tree |
 | Checkout | Clone repository at tagged commit |
 | Install dependencies | For tags, install the tagged plugin's `conanfile.py`; for scheduled/manual full builds, install the root `conanfile.py` |
 | Restore Conan cache | Use a cache key scoped by Conan version, platform, plugin, and recipe hash |

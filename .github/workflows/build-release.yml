@@ -13,7 +13,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  sdk-feature-floor:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout the build ref
+        uses: actions/checkout@v4
+        with:
+          # On a tag event this pins the scan to the exact tree that the build
+          # and release jobs will publish, including lightweight tags.
+          ref: ${{ github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Resolve build scope
+        id: build-scope
+        shell: bash
+        run: |
+          python3 scripts/release_tools.py resolve-build-scope \
+            --tag "${GITHUB_REF_NAME:-}" \
+            --tag-type "${GITHUB_REF_TYPE:-}" \
+            --os-label linux \
+            --arch x86_64 \
+            >> "${GITHUB_OUTPUT}"
+
+      - name: Check SDK feature-floor declarations
+        shell: bash
+        run: |
+          PLUGIN="${{ steps.build-scope.outputs.plugin_name }}"
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && -z "${PLUGIN}" ]]; then
+            echo "::error::Tag build did not resolve a plugin source directory"
+            exit 1
+          fi
+          if [[ -n "${PLUGIN}" ]]; then
+            python3 scripts/check_sdk_feature_floors.py "${PLUGIN}"
+          else
+            python3 scripts/check_sdk_feature_floors.py
+          fi
+
   build:
+    needs: sdk-feature-floor
     runs-on: ${{ matrix.runner }}
     # Without an explicit bound these inherit GitHub's 360-minute default, so a
     # wedged build burns six hours per leg before anyone notices.

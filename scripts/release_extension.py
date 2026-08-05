@@ -183,6 +183,55 @@ def build_tag_message(extension_id: str, version: str, submit_to_registry: bool)
     return json.dumps(metadata, indent=2)
 
 
+def run_sdk_feature_floor_preflight(
+    repo: git.Repo,
+    source_dir: str,
+    *,
+    out=sys.stdout,
+    err=sys.stderr,
+) -> bool:
+    """Check committed release inputs, then run the SDK-floor guardrail.
+
+    Release tags point at HEAD, so scanning mutable files would allow an
+    uncommitted manifest floor to validate a different tree from the one being
+    tagged. Require every scanner input to match HEAD before checking it.
+    """
+    repo_root_text = repo.working_tree_dir
+    if repo_root_text is None:
+        print("Error: Release repository has no working tree", file=err)
+        return False
+    repo_root = Path(repo_root_text).resolve()
+    source_path = Path(source_dir)
+    if not source_path.is_absolute():
+        source_path = repo_root / source_path
+    try:
+        source_pathspec = source_path.resolve().relative_to(repo_root).as_posix()
+    except ValueError:
+        print(f"Error: Plugin directory is outside the release repository: {source_dir}", file=err)
+        return False
+
+    checked_pathspecs = [source_pathspec, "common", "scripts", "SDK_VERSION"]
+    dirty_output = repo.git.status(
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--",
+        *checked_pathspecs,
+    )
+    dirty_lines = [line for line in dirty_output.splitlines() if line]
+    if dirty_lines:
+        print(
+            "Error: SDK feature-floor preflight inputs differ from HEAD; "
+            "commit or stash them before creating a release tag:",
+            file=err,
+        )
+        for line in dirty_lines:
+            print(f"  {line}", file=err)
+        return False
+
+    print("Checking SDK feature-floor declaration...", file=out)
+    return check_sdk_feature_floors(repo_root, [Path(source_pathspec)], out=out, err=err)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Create and push a release tag for an extension.",
@@ -251,11 +300,9 @@ def main():
             print(f"  - {err}", file=sys.stderr)
         sys.exit(1)
 
-    # Refuse to mutate the manifest or create a tag when the plugin uses an SDK
-    # feature above its declared floor (including use inherited from common/).
-    print("Checking SDK feature-floor declaration...")
-    repo_root = Path(repo.working_tree_dir)
-    if not check_sdk_feature_floors(repo_root, [Path(source_dir)]):
+    # Refuse to mutate the manifest or create a tag when committed release
+    # inputs do not pass the same guardrail that runs in tag CI.
+    if not run_sdk_feature_floor_preflight(repo, source_dir):
         sys.exit("Error: SDK feature-floor preflight failed; release tag not created.")
 
     # Check for conflicting version arguments
