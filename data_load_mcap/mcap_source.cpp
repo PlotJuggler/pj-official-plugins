@@ -154,14 +154,18 @@ class McapSource : public PJ::FileSourceBase {
     // schemas, statistics and chunk indexes are all available now — no separate
     // reader or summary parse is needed for binding setup or the cold path.
 
+    // channels() returns the table BY VALUE, so take one copy up front and
+    // share it with the binding loop below rather than paying for a second.
+    const auto& selected = dialog_.selectedTopics();
+    const auto channels = parallel_reader.channels();
+
     // Progress is measured against the messages this import will actually push,
     // i.e. only the channels the user selected. The file-wide messageCount
     // would leave the bar stranded well short of its maximum whenever the
     // selection is a subset (the common case).
     uint64_t total_messages = 0;
     if (const auto stats = parallel_reader.statistics()) {
-      const auto& selected = dialog_.selectedTopics();
-      for (const auto& [channel_id, channel_ptr] : parallel_reader.channels()) {
+      for (const auto& [channel_id, channel_ptr] : channels) {
         if (selected.find(channel_ptr->topic) == selected.end()) {
           continue;
         }
@@ -188,8 +192,7 @@ class McapSource : public PJ::FileSourceBase {
     parser_config["use_embedded_timestamp"] = dialog_.useHeaderTimestamp();
 
     // --- Ensure parser bindings for selected channels ---
-    const auto& selected = dialog_.selectedTopics();
-    const auto channels = parallel_reader.channels();
+    // `selected` and `channels` were taken above, before the progress total.
     const auto schemas = parallel_reader.schemas();
     std::unordered_map<mcap::ChannelId, PJ::ParserBindingHandle> bindings;
     std::vector<std::string> binding_errors;
@@ -294,7 +297,8 @@ class McapSource : public PJ::FileSourceBase {
       runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, problem.message);
     };
 
-    uint64_t msg_count = 0;
+    uint64_t msg_count = 0;       // messages processed (drives the progress bar)
+    uint64_t accepted_count = 0;  // messages the host actually accepted
     uint64_t consecutive_push_failures = 0;
     const bool use_log_time = dialog_.useLogTime();
 
@@ -352,13 +356,16 @@ class McapSource : public PJ::FileSourceBase {
       if (view_status.ok()) {
         return;
       }
-      if (msg_count == 0) {
+      // Keyed on ACCEPTED messages: msg_count also counts pushes the host
+      // rejected, so using it here would report "partially recovered" for an
+      // import that in fact loaded nothing.
+      if (accepted_count == 0) {
         import_failure = "MCAP import failed: " + view_status.message;
         runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, *import_failure);
       } else {
         runtimeHost().reportMessage(
             PJ::DataSourceMessageLevel::kWarning, "MCAP file partially recovered: " + view_status.message +
-                                                      " (loaded " + std::to_string(msg_count) + " messages)");
+                                                      " (loaded " + std::to_string(accepted_count) + " messages)");
       }
     };
 
@@ -398,6 +405,7 @@ class McapSource : public PJ::FileSourceBase {
         }
       } else {
         consecutive_push_failures = 0;
+        ++accepted_count;
       }
 
       ++msg_count;

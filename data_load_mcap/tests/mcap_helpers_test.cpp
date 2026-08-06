@@ -76,13 +76,19 @@ class MemoryReadable : public mcap::IReadable {
   std::vector<std::byte> read_buffer_;
 };
 
-// Create a minimal valid MCAP file with schema, channel, messages and summary
-std::vector<uint8_t> createTestMcap(uint64_t message_count = 10) {
+// Create a minimal valid MCAP file with schema, channel, messages and summary.
+// The writer chunks by default; pass chunked=false for a flat recording, or
+// with_message_index=false to suppress Message Index records — a valid,
+// spec-conformant writer mode that the read-order tests below depend on.
+std::vector<uint8_t> createTestMcap(uint64_t message_count = 10, bool chunked = true, bool with_message_index = true) {
   MemoryWritable writable;
   mcap::McapWriter writer;
 
   mcap::McapWriterOptions options("test_profile");
   options.compression = mcap::Compression::None;
+  options.chunkSize = 1024;  // small, so a multi-message fixture spans many chunks
+  options.noChunking = !chunked;
+  options.noMessageIndex = !with_message_index;
   writer.open(writable, options);
 
   // Add a schema
@@ -319,48 +325,6 @@ TEST(McapHelpersTest, EmptyMcap) {
 // distinction, because getting it wrong imports zero messages.
 // ---------------------------------------------------------------------------
 
-// Chunked MCAP; message indexes are written unless suppressed. Pass
-// chunked=false for a flat recording (the writer chunks by default).
-std::vector<uint8_t> createChunkedMcap(bool with_message_index, uint64_t message_count = 400, bool chunked = true) {
-  MemoryWritable writable;
-  mcap::McapWriter writer;
-
-  mcap::McapWriterOptions options("test_profile");
-  options.compression = mcap::Compression::None;
-  options.chunkSize = 1024;  // many small chunks
-  options.noChunking = !chunked;
-  options.noMessageIndex = !with_message_index;
-  writer.open(writable, options);
-
-  mcap::Schema schema;
-  schema.name = "test_msg";
-  schema.encoding = "json";
-  schema.data.assign(reinterpret_cast<const std::byte*>("{}"), reinterpret_cast<const std::byte*>("{}") + 2);
-  writer.addSchema(schema);
-
-  mcap::Channel channel;
-  channel.topic = "/test/topic";
-  channel.schemaId = schema.id;
-  channel.messageEncoding = "json";
-  writer.addChannel(channel);
-
-  const std::string payload = R"({"value": 42, "pad": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"})";
-  mcap::Message msg;
-  msg.channelId = channel.id;
-  msg.data = reinterpret_cast<const std::byte*>(payload.data());
-  msg.dataSize = payload.size();
-
-  for (uint64_t i = 0; i < message_count; i++) {
-    msg.sequence = static_cast<uint32_t>(i);
-    msg.publishTime = 1000000000 + i * 10000000;
-    msg.logTime = msg.publishTime;
-    (void)writer.write(msg);
-  }
-
-  writer.close();
-  return writable.data();
-}
-
 // Count messages actually delivered by an iteration in the given read order.
 uint64_t countDeliveredMessages(mcap::McapReader& reader, mcap::ReadMessageOptions::ReadOrder order) {
   mcap::ReadMessageOptions opts;
@@ -374,7 +338,7 @@ uint64_t countDeliveredMessages(mcap::McapReader& reader, mcap::ReadMessageOptio
 }
 
 TEST(McapMessageIndexTest, UnchunkedRecordingLacksMessageIndexes) {
-  auto data = createChunkedMcap(/*with_message_index=*/true, /*message_count=*/10, /*chunked=*/false);
+  auto data = createTestMcap(/*message_count=*/10, /*chunked=*/false);
   MemoryReadable readable(data);
   mcap::McapReader reader;
   ASSERT_TRUE(reader.open(readable).ok());
@@ -385,7 +349,7 @@ TEST(McapMessageIndexTest, UnchunkedRecordingLacksMessageIndexes) {
 }
 
 TEST(McapMessageIndexTest, ChunkedRecordingWithIndexesHasThem) {
-  auto data = createChunkedMcap(/*with_message_index=*/true);
+  auto data = createTestMcap(/*message_count=*/400);
   MemoryReadable readable(data);
   mcap::McapReader reader;
   ASSERT_TRUE(reader.open(readable).ok());
@@ -401,7 +365,7 @@ TEST(McapMessageIndexTest, ChunkedRecordingWithIndexesHasThem) {
 // of message indexes. chunkIndexes() is non-empty, so an "is it empty?" test
 // wrongly concludes log-time replay is possible.
 TEST(McapMessageIndexTest, ValidRecordingWrittenWithoutMessageIndexes) {
-  auto data = createChunkedMcap(/*with_message_index=*/false);
+  auto data = createTestMcap(/*message_count=*/400, /*chunked=*/true, /*with_message_index=*/false);
   MemoryReadable readable(data);
   mcap::McapReader reader;
   ASSERT_TRUE(reader.open(readable).ok());
@@ -414,7 +378,7 @@ TEST(McapMessageIndexTest, ValidRecordingWrittenWithoutMessageIndexes) {
 // Damaging the trailing magic forces readSummary() down the fallback-scan
 // path, which synthesizes chunk indexes with messageIndexLength == 0.
 TEST(McapMessageIndexTest, SummaryReconstructedByFallbackScanLacksIndexes) {
-  auto data = createChunkedMcap(/*with_message_index=*/true);
+  auto data = createTestMcap(/*message_count=*/400);
   ASSERT_GT(data.size(), 8u);
   data[data.size() - 4] ^= 0xFF;  // corrupt the trailing magic
 
@@ -431,7 +395,7 @@ TEST(McapMessageIndexTest, SummaryReconstructedByFallbackScanLacksIndexes) {
 // Why the distinction matters: asking for LogTimeOrder without message indexes
 // silently yields nothing, while FileOrder recovers every message.
 TEST(McapMessageIndexTest, LogTimeOrderYieldsNothingWithoutMessageIndexes) {
-  auto data = createChunkedMcap(/*with_message_index=*/false);
+  auto data = createTestMcap(/*message_count=*/400, /*chunked=*/true, /*with_message_index=*/false);
   MemoryReadable readable(data);
   mcap::McapReader reader;
   ASSERT_TRUE(reader.open(readable).ok());
@@ -441,7 +405,7 @@ TEST(McapMessageIndexTest, LogTimeOrderYieldsNothingWithoutMessageIndexes) {
 }
 
 TEST(McapMessageIndexTest, FileOrderRecoversMessagesWithoutMessageIndexes) {
-  auto data = createChunkedMcap(/*with_message_index=*/false);
+  auto data = createTestMcap(/*message_count=*/400, /*chunked=*/true, /*with_message_index=*/false);
   MemoryReadable readable(data);
   mcap::McapReader reader;
   ASSERT_TRUE(reader.open(readable).ok());
@@ -453,7 +417,7 @@ TEST(McapMessageIndexTest, FileOrderRecoversMessagesWithoutMessageIndexes) {
 
 // The same recovery, end to end, for a footer-damaged recording.
 TEST(McapMessageIndexTest, FileOrderRecoversFooterDamagedRecording) {
-  auto data = createChunkedMcap(/*with_message_index=*/true);
+  auto data = createTestMcap(/*message_count=*/400);
   data[data.size() - 4] ^= 0xFF;
 
   MemoryReadable readable(data);

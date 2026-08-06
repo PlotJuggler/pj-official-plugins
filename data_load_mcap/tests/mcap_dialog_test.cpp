@@ -217,6 +217,24 @@ TEST(McapDialogTest, AnalyzeErrorIsSurfacedInWidgetData) {
   EXPECT_FALSE(data["labelAnalyzeError"].value("label", std::string{}).empty());
 }
 
+// A restored config carries the previous recording's topic selection. If
+// analysis fails we never reach the pruning step, so those stale names would
+// survive and leave OK enabled over an empty table — clicking it would start
+// an import that cannot bind anything.
+TEST(McapDialogTest, AnalysisFailureClearsStaleSelectionAndDisablesOk) {
+  McapDialog dialog;
+  nlohmann::json cfg;
+  cfg["filepath"] = writeUnopenableFile();
+  cfg["selected_topics"] = std::vector<std::string>{"/topic/from/previous/file"};
+  ASSERT_TRUE(dialog.loadConfig(cfg.dump()));
+
+  ASSERT_FALSE(dialog.analyzeError().empty());
+  EXPECT_TRUE(dialog.selectedTopics().empty()) << "stale selection must not survive a failed analysis";
+
+  const auto data = nlohmann::json::parse(dialog.widget_data());
+  EXPECT_FALSE(data["buttonBox"]["ok_enabled"].get<bool>());
+}
+
 TEST(McapDialogTest, AnalyzeErrorLabelStaysHiddenForAHealthyRecording) {
   McapDialog dialog;
   nlohmann::json cfg;

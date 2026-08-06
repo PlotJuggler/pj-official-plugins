@@ -300,10 +300,19 @@ class McapDialog : public PJ::DialogPluginTyped {
       return "Code: " + std::to_string(static_cast<int>(s.code)) + "\nMessage: " + s.message;
     };
 
+    // A restored config still holds the PREVIOUS recording's selection. The
+    // pruning step near the end of this function is what normally reconciles
+    // it, so any early return has to drop it here — otherwise OK stays enabled
+    // over an empty table and starts an import that can bind nothing.
+    const auto fail = [this](std::string message) {
+      analyze_error_ = std::move(message);
+      selected_topics_.clear();
+    };
+
     mcap::McapReader reader;
     auto status = reader.open(filepath_);
     if (!status.ok()) {
-      analyze_error_ = "Cannot open this MCAP file.\n" + describe(status);
+      fail("Cannot open this MCAP file.\n" + describe(status));
       return;
     }
 
@@ -312,7 +321,7 @@ class McapDialog : public PJ::DialogPluginTyped {
     // the data section itself could not be read.
     status = reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan);
     if (!status.ok()) {
-      analyze_error_ = "Cannot read the contents of this MCAP file.\n" + describe(status);
+      fail("Cannot read the contents of this MCAP file.\n" + describe(status));
       reader.close();
       return;
     }
