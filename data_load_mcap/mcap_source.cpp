@@ -154,9 +154,22 @@ class McapSource : public PJ::FileSourceBase {
     // schemas, statistics and chunk indexes are all available now — no separate
     // reader or summary parse is needed for binding setup or the cold path.
 
+    // Progress is measured against the messages this import will actually push,
+    // i.e. only the channels the user selected. The file-wide messageCount
+    // would leave the bar stranded well short of its maximum whenever the
+    // selection is a subset (the common case).
     uint64_t total_messages = 0;
-    if (parallel_reader.statistics()) {
-      total_messages = parallel_reader.statistics()->messageCount;
+    if (const auto stats = parallel_reader.statistics()) {
+      const auto& selected = dialog_.selectedTopics();
+      for (const auto& [channel_id, channel_ptr] : parallel_reader.channels()) {
+        if (selected.find(channel_ptr->topic) == selected.end()) {
+          continue;
+        }
+        if (auto count_it = stats->channelMessageCounts.find(channel_id);
+            count_it != stats->channelMessageCounts.end()) {
+          total_messages += count_it->second;
+        }
+      }
     }
     (void)runtimeHost().progressStart("Importing MCAP", total_messages, true);
 
@@ -270,7 +283,14 @@ class McapSource : public PJ::FileSourceBase {
     //     view into the still-pinned, worker-decompressed bytes (no re-decompress);
     //   * invoked lazily after import, the pinned chunk is gone, so it falls back
     //     to the byte store's bounded cold re-decompression. True lazy.
-    auto on_problem = [this](const mcap::Status& problem) {
+    // LinearMessageView (the indexless branch) exposes no status() — the
+    // problem callback is its only failure channel — so remember the first
+    // problem and let check_view_status() below decide whether it was terminal.
+    std::optional<mcap::Status> first_problem;
+    auto on_problem = [&](const mcap::Status& problem) {
+      if (!first_problem) {
+        first_problem = problem;
+      }
       runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, problem.message);
     };
 
@@ -292,14 +312,17 @@ class McapSource : public PJ::FileSourceBase {
       log_window_max = parallel_reader.statistics()->messageEndTime;
     }
 
+    // Recordings without Message Index records cannot be replayed in
+    // LogTimeOrder: the reader rejects that order and otherwise yields a
+    // misleading empty import. Their physical file order is the only available
+    // deterministic order. Note this is NOT the same as "has no chunk indexes"
+    // — see PJ::McapHelpers::lacksMessageIndexes for the two cases that carry
+    // chunk indexes with no message indexes behind them.
+    const bool lacks_message_indexes = PJ::McapHelpers::lacksMessageIndexes(parallel_reader.chunkIndexes());
+
     mcap::ParallelReadOptions parallel_opts;
-    // Indexless/unchunked recordings are discovered by AllowFallbackScan but
-    // cannot be replayed in LogTimeOrder: the MCAP reader rejects that order
-    // without message indexes and otherwise yields a misleading empty import.
-    // Their physical file order is the only available deterministic order.
-    parallel_opts.read.readOrder = parallel_reader.chunkIndexes().empty()
-                                       ? mcap::ReadMessageOptions::ReadOrder::FileOrder
-                                       : mcap::ReadMessageOptions::ReadOrder::LogTimeOrder;
+    parallel_opts.read.readOrder = lacks_message_indexes ? mcap::ReadMessageOptions::ReadOrder::FileOrder
+                                                         : mcap::ReadMessageOptions::ReadOrder::LogTimeOrder;
     parallel_opts.maxBytesInFlight = kParallelImportBudgetBytes;
     parallel_opts.threadCount = parallelImportThreadCount();
 #ifdef PJ_TARGET_WASM
@@ -317,6 +340,28 @@ class McapSource : public PJ::FileSourceBase {
     // exception must propagate to FileLoader as a load failure, not get silently
     // downgraded to okStatus() with a warning toast.
     std::optional<std::string> import_failure;
+
+    // A message view that fails to initialise reports the failure through
+    // status() and then compares begin() == end(), so the loop body never runs.
+    // Without this the import would return okStatus() after loading nothing —
+    // PlotJuggler would announce a successful load of an empty dataset. A
+    // non-ok status that still produced messages is a partial read (the scan
+    // stopped at the first unreadable record); keep that data and warn, which
+    // is what the pre-SDK plugin did.
+    auto check_view_status = [&](const mcap::Status& view_status) {
+      if (view_status.ok()) {
+        return;
+      }
+      if (msg_count == 0) {
+        import_failure = "MCAP import failed: " + view_status.message;
+        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, *import_failure);
+      } else {
+        runtimeHost().reportMessage(
+            PJ::DataSourceMessageLevel::kWarning, "MCAP file partially recovered: " + view_status.message +
+                                                      " (loaded " + std::to_string(msg_count) + " messages)");
+      }
+    };
+
     auto push_message = [&](const mcap::MessageView& mv, auto fetch_payload) {
       if (mv.channel == nullptr || mv.message.data == nullptr) {
         return true;
@@ -328,9 +373,13 @@ class McapSource : public PJ::FileSourceBase {
 
       const uint64_t pub_time = mv.message.publishTime;
       const bool header_in_window = pub_time >= log_window_min && pub_time <= log_window_max;
-      const PJ::Timestamp timestamp_ns = use_log_time
-                                             ? static_cast<PJ::Timestamp>(mv.message.logTime)
-                                             : static_cast<PJ::Timestamp>(header_in_window ? pub_time : log_window_min);
+      // Out-of-window publish stamps fall back to this message's OWN logTime —
+      // when it was actually recorded, which is inside the window by
+      // construction. Collapsing them onto log_window_min instead would stack
+      // every latched message on one instant and destroy their relative order.
+      const PJ::Timestamp timestamp_ns =
+          use_log_time ? static_cast<PJ::Timestamp>(mv.message.logTime)
+                       : static_cast<PJ::Timestamp>(header_in_window ? pub_time : mv.message.logTime);
 
       auto push_status = runtimeHost().pushMessage(binding_it->second, timestamp_ns, std::move(fetch_payload));
       if (!push_status) {
@@ -360,15 +409,15 @@ class McapSource : public PJ::FileSourceBase {
     };
 
     try {
-      if (parallel_reader.chunkIndexes().empty()) {
+      if (lacks_message_indexes) {
         // Indexless serial fallback. A chunk-free recording keeps every
         // Message record uncompressed at a stable file offset, so each fetcher
         // retains only a small locator and re-reads its payload on demand —
         // retention stays bounded no matter how many object-topic messages the
         // host defers (ObjectStore keeps those fetchers for the whole
-        // session). Only a chunked recording whose summary lacks chunk indexes
-        // still pays a message-sized eager copy: its in-chunk messages have no
-        // stable file offset to re-read from.
+        // session). Only a chunked recording whose summary lacks message
+        // indexes still pays a message-sized eager copy: its in-chunk messages
+        // have no stable file offset to re-read from.
         auto payload_store = std::make_shared<mcap::UnchunkedPayloadStore>(dialog_.filepath());
         auto messages = parallel_reader.reader().readMessages(on_problem, parallel_opts.read);
         for (const auto& mv : messages) {
@@ -395,6 +444,9 @@ class McapSource : public PJ::FileSourceBase {
             break;
           }
         }
+        if (first_problem) {
+          check_view_status(*first_problem);
+        }
       } else {
         auto messages = parallel_reader.readMessages(on_problem, parallel_opts);
         for (auto it = messages.begin(); it != messages.end(); ++it) {
@@ -409,6 +461,7 @@ class McapSource : public PJ::FileSourceBase {
             break;
           }
         }
+        check_view_status(messages.status());
       }
     } catch (const std::exception& e) {
       const std::string msg =

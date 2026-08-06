@@ -307,4 +307,163 @@ TEST(McapHelpersTest, EmptyMcap) {
   EXPECT_EQ(stats->messageCount, 0u);
 }
 
+// ---------------------------------------------------------------------------
+// Message-index detection — which read order a recording can actually replay.
+//
+// LogTimeOrder requires Message Index records. Two very different recordings
+// lack them while still reporting a non-empty chunkIndexes() list:
+//   * a valid file written with McapWriterOptions::noMessageIndex = true;
+//   * any file whose summary had to be reconstructed by a fallback scan,
+//     because synthesized chunk indexes always carry messageIndexLength == 0.
+// Asking "are there chunk indexes?" answers neither. These tests pin the
+// distinction, because getting it wrong imports zero messages.
+// ---------------------------------------------------------------------------
+
+// Chunked MCAP; message indexes are written unless suppressed. Pass
+// chunked=false for a flat recording (the writer chunks by default).
+std::vector<uint8_t> createChunkedMcap(bool with_message_index, uint64_t message_count = 400, bool chunked = true) {
+  MemoryWritable writable;
+  mcap::McapWriter writer;
+
+  mcap::McapWriterOptions options("test_profile");
+  options.compression = mcap::Compression::None;
+  options.chunkSize = 1024;  // many small chunks
+  options.noChunking = !chunked;
+  options.noMessageIndex = !with_message_index;
+  writer.open(writable, options);
+
+  mcap::Schema schema;
+  schema.name = "test_msg";
+  schema.encoding = "json";
+  schema.data.assign(reinterpret_cast<const std::byte*>("{}"), reinterpret_cast<const std::byte*>("{}") + 2);
+  writer.addSchema(schema);
+
+  mcap::Channel channel;
+  channel.topic = "/test/topic";
+  channel.schemaId = schema.id;
+  channel.messageEncoding = "json";
+  writer.addChannel(channel);
+
+  const std::string payload = R"({"value": 42, "pad": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"})";
+  mcap::Message msg;
+  msg.channelId = channel.id;
+  msg.data = reinterpret_cast<const std::byte*>(payload.data());
+  msg.dataSize = payload.size();
+
+  for (uint64_t i = 0; i < message_count; i++) {
+    msg.sequence = static_cast<uint32_t>(i);
+    msg.publishTime = 1000000000 + i * 10000000;
+    msg.logTime = msg.publishTime;
+    (void)writer.write(msg);
+  }
+
+  writer.close();
+  return writable.data();
+}
+
+// Count messages actually delivered by an iteration in the given read order.
+uint64_t countDeliveredMessages(mcap::McapReader& reader, mcap::ReadMessageOptions::ReadOrder order) {
+  mcap::ReadMessageOptions opts;
+  opts.readOrder = order;
+  uint64_t count = 0;
+  auto view = reader.readMessages([](const mcap::Status&) {}, opts);
+  for (auto it = view.begin(); it != view.end(); ++it) {
+    ++count;
+  }
+  return count;
+}
+
+TEST(McapMessageIndexTest, UnchunkedRecordingLacksMessageIndexes) {
+  auto data = createChunkedMcap(/*with_message_index=*/true, /*message_count=*/10, /*chunked=*/false);
+  MemoryReadable readable(data);
+  mcap::McapReader reader;
+  ASSERT_TRUE(reader.open(readable).ok());
+  ASSERT_TRUE(reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan).ok());
+
+  EXPECT_TRUE(reader.chunkIndexes().empty());
+  EXPECT_TRUE(lacksMessageIndexes(reader.chunkIndexes()));
+}
+
+TEST(McapMessageIndexTest, ChunkedRecordingWithIndexesHasThem) {
+  auto data = createChunkedMcap(/*with_message_index=*/true);
+  MemoryReadable readable(data);
+  mcap::McapReader reader;
+  ASSERT_TRUE(reader.open(readable).ok());
+  ASSERT_TRUE(reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan).ok());
+
+  ASSERT_FALSE(reader.chunkIndexes().empty());
+  EXPECT_FALSE(lacksMessageIndexes(reader.chunkIndexes()));
+  // The fast path stays available for healthy indexed recordings.
+  EXPECT_EQ(countDeliveredMessages(reader, mcap::ReadMessageOptions::ReadOrder::LogTimeOrder), 400u);
+}
+
+// A perfectly valid recording — no corruption at all — that simply opted out
+// of message indexes. chunkIndexes() is non-empty, so an "is it empty?" test
+// wrongly concludes log-time replay is possible.
+TEST(McapMessageIndexTest, ValidRecordingWrittenWithoutMessageIndexes) {
+  auto data = createChunkedMcap(/*with_message_index=*/false);
+  MemoryReadable readable(data);
+  mcap::McapReader reader;
+  ASSERT_TRUE(reader.open(readable).ok());
+  ASSERT_TRUE(reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan).ok());
+
+  ASSERT_FALSE(reader.chunkIndexes().empty()) << "chunk indexes exist; only message indexes are absent";
+  EXPECT_TRUE(lacksMessageIndexes(reader.chunkIndexes()));
+}
+
+// Damaging the trailing magic forces readSummary() down the fallback-scan
+// path, which synthesizes chunk indexes with messageIndexLength == 0.
+TEST(McapMessageIndexTest, SummaryReconstructedByFallbackScanLacksIndexes) {
+  auto data = createChunkedMcap(/*with_message_index=*/true);
+  ASSERT_GT(data.size(), 8u);
+  data[data.size() - 4] ^= 0xFF;  // corrupt the trailing magic
+
+  MemoryReadable readable(data);
+  mcap::McapReader reader;
+  ASSERT_TRUE(reader.open(readable).ok()) << "leading magic is intact, so open() must succeed";
+  ASSERT_TRUE(reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan).ok());
+
+  EXPECT_FALSE(reader.footer().has_value()) << "footer is unreadable, summary came from the scan";
+  ASSERT_FALSE(reader.chunkIndexes().empty()) << "the scan synthesized chunk indexes";
+  EXPECT_TRUE(lacksMessageIndexes(reader.chunkIndexes()));
+}
+
+// Why the distinction matters: asking for LogTimeOrder without message indexes
+// silently yields nothing, while FileOrder recovers every message.
+TEST(McapMessageIndexTest, LogTimeOrderYieldsNothingWithoutMessageIndexes) {
+  auto data = createChunkedMcap(/*with_message_index=*/false);
+  MemoryReadable readable(data);
+  mcap::McapReader reader;
+  ASSERT_TRUE(reader.open(readable).ok());
+  ASSERT_TRUE(reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan).ok());
+
+  EXPECT_EQ(countDeliveredMessages(reader, mcap::ReadMessageOptions::ReadOrder::LogTimeOrder), 0u);
+}
+
+TEST(McapMessageIndexTest, FileOrderRecoversMessagesWithoutMessageIndexes) {
+  auto data = createChunkedMcap(/*with_message_index=*/false);
+  MemoryReadable readable(data);
+  mcap::McapReader reader;
+  ASSERT_TRUE(reader.open(readable).ok());
+  ASSERT_TRUE(reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan).ok());
+
+  ASSERT_TRUE(lacksMessageIndexes(reader.chunkIndexes()));
+  EXPECT_EQ(countDeliveredMessages(reader, mcap::ReadMessageOptions::ReadOrder::FileOrder), 400u);
+}
+
+// The same recovery, end to end, for a footer-damaged recording.
+TEST(McapMessageIndexTest, FileOrderRecoversFooterDamagedRecording) {
+  auto data = createChunkedMcap(/*with_message_index=*/true);
+  data[data.size() - 4] ^= 0xFF;
+
+  MemoryReadable readable(data);
+  mcap::McapReader reader;
+  ASSERT_TRUE(reader.open(readable).ok());
+  ASSERT_TRUE(reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan).ok());
+
+  ASSERT_TRUE(lacksMessageIndexes(reader.chunkIndexes()));
+  EXPECT_EQ(countDeliveredMessages(reader, mcap::ReadMessageOptions::ReadOrder::LogTimeOrder), 0u);
+  EXPECT_EQ(countDeliveredMessages(reader, mcap::ReadMessageOptions::ReadOrder::FileOrder), 400u);
+}
+
 }  // namespace

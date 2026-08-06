@@ -2,13 +2,38 @@
 
 // Note: MCAP_IMPLEMENTATION must be defined in exactly one translation unit
 // before including this header.
+#include <algorithm>
 #include <cstdint>
 #include <mcap/reader.hpp>
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <vector>
 
 namespace PJ::McapHelpers {
+
+/// True when the recording cannot be replayed in log-time order.
+///
+/// LogTimeOrder needs Message Index records, which are a *separate* thing from
+/// Chunk Index records: a chunked recording can carry chunk indexes while
+/// having no message indexes at all. That happens in two unrelated situations,
+/// neither of which is detectable by asking whether chunkIndexes() is empty:
+///
+///   * the file was written with McapWriterOptions::noMessageIndex = true —
+///     valid, spec-conformant, and produced by real recorders;
+///   * the summary section was unusable (damaged footer, writer killed
+///     mid-write) so readSummary() fell back to a sequential scan, which
+///     synthesizes chunk indexes with messageIndexLength == 0 because a scan
+///     cannot recover message indexes.
+///
+/// Requesting LogTimeOrder in either case makes the reader fail with
+/// NoMessageIndexesAvailable and deliver zero messages, so callers must fall
+/// back to FileOrder. Mirrors the reader's own guard so the two cannot drift.
+inline bool lacksMessageIndexes(const std::vector<mcap::ChunkIndex>& chunk_indexes) {
+  return chunk_indexes.empty() || std::all_of(
+                                      chunk_indexes.begin(), chunk_indexes.end(),
+                                      [](const mcap::ChunkIndex& ci) { return ci.messageIndexLength == 0; });
+}
 
 /// Summary data extracted from the MCAP file footer/summary section.
 struct McapSummaryInfo {

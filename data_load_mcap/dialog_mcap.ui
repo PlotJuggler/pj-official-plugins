@@ -220,6 +220,22 @@
     </widget>
    </item>
    <item>
+    <widget class="QLabel" name="labelAnalyzeError">
+     <property name="visible">
+      <bool>false</bool>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">QLabel { padding: 8px 10px; }</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+    </widget>
+   </item>
+   <item>
     <widget class="QTableWidget" name="tableWidget">
      <property name="styleSheet">
       <string>QTableWidget { border: none; } QHeaderView::section { height: 24px; }</string>
