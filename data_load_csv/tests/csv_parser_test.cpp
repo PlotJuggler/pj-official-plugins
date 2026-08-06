@@ -78,6 +78,25 @@ TEST(CsvSplitLine, QuotedField) {
   EXPECT_EQ(parts[0], "hello, world");
 }
 
+// An RFC-4180 escaped double-quote ("") inside a quoted field must become a
+// single literal quote in the output, not truncate or empty the field.
+TEST(CsvSplitLine, EscapedQuoteInsideQuotedField) {
+  std::vector<std::string> parts;
+  SplitLine(R"(a,"he said ""hi""",b)", ',', parts);
+  ASSERT_EQ(parts.size(), 3u);
+  EXPECT_EQ(parts[0], "a");
+  EXPECT_EQ(parts[1], R"(he said "hi")");
+  EXPECT_EQ(parts[2], "b");
+}
+
+TEST(CsvSplitLine, EscapedQuoteAtFieldStart) {
+  std::vector<std::string> parts;
+  SplitLine(R"("a""b",c)", ',', parts);
+  ASSERT_EQ(parts.size(), 2u);
+  EXPECT_EQ(parts[0], R"(a"b)");
+  EXPECT_EQ(parts[1], "c");
+}
+
 TEST(CsvSplitLine, TrailingSeparator) {
   std::vector<std::string> parts;
   SplitLine("a,b,", ',', parts);
@@ -173,6 +192,33 @@ TEST(CsvParse, WindowsLineEndings) {
   EXPECT_EQ(result.lines_processed, 2);
   EXPECT_EQ(result.column_names[0], "a");
   EXPECT_EQ(result.column_names[1], "b");
+}
+
+// End-to-end mirror of test_data/test_escaped_quotes.csv. The reported symptom
+// was that a header like "temp ""degC""" ended up nameless (_Column_N) because
+// SplitLine emitted an empty string; assert the escape-collapsed header AND
+// that the numeric column downstream still lands on the right index.
+TEST(CsvParse, EscapedQuotesHeaderAndData) {
+  std::string csv =
+      "time,\"temp \"\"degC\"\"\",value\n"
+      "0,10,100\n"
+      "1,11,101\n"
+      "2,12,102\n"
+      "3,13,103\n";
+  CsvParseConfig config;
+  config.delimiter = ',';
+  config.time_column_index = 0;
+  auto result = ParseCsvData(csv, config);
+
+  ASSERT_TRUE(result.success);
+  EXPECT_EQ(result.lines_processed, 4);
+  ASSERT_EQ(result.column_names.size(), 3u);
+  EXPECT_EQ(result.column_names[0], "time");
+  EXPECT_EQ(result.column_names[1], R"(temp "degC")");
+  EXPECT_EQ(result.column_names[2], "value");
+  ASSERT_EQ(result.columns[1].numeric_points.size(), 4u);
+  EXPECT_DOUBLE_EQ(result.columns[1].numeric_points[0].second, 10.0);
+  EXPECT_DOUBLE_EQ(result.columns[1].numeric_points[3].second, 13.0);
 }
 
 TEST(CsvParse, SkipRows) {
