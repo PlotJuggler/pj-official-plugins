@@ -480,21 +480,49 @@ wasm-vs-native decode overhead on a 1MB cloud fixture. No unmeasured claims.
 | M3 | Structured protobuf: descriptor-aware wire scanner + parser_protobuf integration | pj-official-plugins | M1 (M2 formats) |
 | M4 | parser_extensions wasm loader: hardening, budgets, quarantine, wasm macro target + custom-section manifest, offset remap; E2E both formats | pj-official-plugins | M1–M2 |
 | M5 | Pin UI, template repo (one source, two build presets), authoring docs | plugins + new repo | M1–M4 |
+| M6 | Registry/marketplace distribution: `kind: "decoder"` schema + submit tooling; PJ4 marketplace decoder support incl. wasm artifacts; rescan-on-install | pj-plugin-registry + PJ4 | M4 |
 
 Host registry ownership, provider bootstrap, and classification integration are M1
 scope. `deserializeBuiltinObject` reuse removes the former object-builder milestone.
 
-## 16. Deferred / rejected
+## 16. Distribution — registry & marketplace (M6)
+
+Folder drop (`decoders/`) is the v1 mechanism and ships with M4. Registry/marketplace
+distribution follows as M6, decoupled from the critical path:
+
+- **Registry**: new entry `kind: "decoder"` alongside plugins. **Both module kinds are
+  accepted — no marketplace-level trust restriction** (maintainer decision,
+  2026-08-08); the UI surfaces trust honestly (sandboxed badge for `.wasm`,
+  trusted-native framing for `.so`) but does not gate. A wasm decoder is **one
+  universal artifact** + sha256 (no per-platform build matrix for authors); native
+  decoders ship per-platform artifacts exactly like plugins today.
+- **Entries are derived, never hand-written**: submit tooling (extending
+  `submit_to_registry.py`) extracts the embedded manifest, runs the same validation
+  parser_extensions applies at load (manifest extraction, export-signature audit,
+  size caps), computes checksums, and opens the registry PR. Claims are listed in the
+  entry, making decoders **searchable by message type name** ("what decodes
+  `my_msgs/RadarScan`?").
+- **Compatibility gating for auto-update**: the decoder ABI version + tape-version
+  window in the claims is the decoder analog of `min_sdk_required` — the marketplace
+  never installs a module the installed host cannot run.
+- **PJ4 marketplace**: decoder kind in the existing UI; install writes into
+  `decoders/`; updates ride the existing checksum watcher. `rescan-on-install` in
+  parser_extensions graduates from deferred to M6 scope (one-click install must not
+  require a restart).
+- Force-retagging a released decoder invalidates registry checksums — same rule and
+  same caution as plugin releases.
+
+## 17. Deferred / rejected
 
 **Rejected:** Lua; declarative mapping/schema hints; host-owned WASM runtime;
 silent priority override of built-ins; manifest-by-execution for wasm; bespoke nested
 output format (superseded by canonical-wire reuse).
 **Deferred:** native provider plugins as a documented extension path; supplementary
-scalars; maps/oneofs/recursion in structured mode; `.wasm` via extension registry;
-vendored single-header authoring kit (build-without-SDK); rescan without restart;
-module-supplied options UI; transactional scalar rollback.
+scalars; maps/oneofs/recursion in structured mode; vendored single-header authoring
+kit (build-without-SDK); module-supplied options UI; transactional scalar rollback.
+(Registry distribution and rescan-on-install moved to M6, §16.)
 
-## 17. Key decisions log
+## 18. Key decisions log
 
 1. **Harmonized decoder modules** — one C++ source, two build targets, one folder, one
    host plugin; format choice is the user's, never the architecture's (maintainer,
@@ -512,3 +540,6 @@ module-supplied options UI; transactional scalar rollback.
 8. **Availability limits are v1 prerequisites**, per-call and aggregate.
 9. **wasmer, prebuilt; store-per-instance; lazy instantiation with admission.**
 10. **Vertical-slice milestones** (maintainer).
+11. **Marketplace carries both module kinds, unrestricted** — trust surfaced in the
+    UI, not gated at submission; wasm supported as a first-class single-artifact
+    registry kind (maintainer, 2026-08-08).
