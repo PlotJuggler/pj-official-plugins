@@ -53,7 +53,7 @@ clouds, bit-packed payloads) where users already have C++ decode logic.
    single-artifact kind, unrestricted (trust badged, not gated).
 
 **Non-goals / rejected:** runtime structured mode (event tapes, projection, field
-masks — see §15); Lua; declarative mapping; an intermediary loader plugin
+masks — see §14); Lua; declarative mapping; an intermediary loader plugin
 (wasmer lives in the host per maintainer decision, PJ3 precedent); supplementary
 scalars smuggled through object decode (a module that wants scalars claims the
 scalar route).
@@ -74,7 +74,7 @@ Host-owned. Three sources:
    (derived at submit time — no pre-install execution).
 
 Claim key: `(encoding, normalized type name | wildcard, route flags, object_type,
-schema-digest set, provider id, bounded priority)`. Type-name normalization is
+schema-digest set, provider id, claim id, bounded priority)`. Type-name normalization is
 **per-encoding** (ROS: `pkg/msg/Type` canonical; protobuf: full name), not one
 global rule. Provenance is **never** a manifest field.
 
@@ -148,9 +148,11 @@ claimed / object claimed / both", exact-vs-wildcard, or decline-vs-failure. A ne
 `MessageParserPluginBase` implements it automatically from its registered handler
 table — official parsers get it by **recompiling only**. Legacy rule: a parser
 plugin without the extension implicitly claims wildcard scalars for its manifest
-encodings (this covers parser_protobuf's legacy generic path). Delivered through
-the existing `pluginExtension(id)` mechanism or a tail-append per the frozen-layout
-discipline — no existing member moves; sentinel tests stay green.
+encodings (this covers parser_protobuf's legacy generic path). Delivery mechanism:
+the existing `pluginExtension(id)` hook (primary — zero layout change, verified
+present since 0.21); tail-append per the frozen-layout discipline is the fallback
+only if per-instance state proves inexpressible through it. Either way, no existing
+member moves; sentinel tests stay green.
 
 ## 8. Functional parser modules
 
@@ -162,7 +164,7 @@ SOURCE … MANIFEST … TARGETS native wasm)`:
 ```cpp
 #include <pj_base/parser_module/module.hpp>   // header-only, wasi-clean
 
-class RadarDecoder : public pj::FunctionalParser {
+class RadarScanParser : public pj::FunctionalParser {
   pj::Status bind(const pj::BindingInfo& info) override {
     // §8.3: schema available here — digest check, or full inspection
     plan_ = pj::CdrFieldLocator(info.schemaText())
@@ -180,21 +182,21 @@ class RadarDecoder : public pj::FunctionalParser {
   }
   // optional: parseScalars(...) with a typed field sink — claims the scalar route
 };
-PJ_FUNCTIONAL_PARSER(RadarDecoder)
+PJ_FUNCTIONAL_PARSER(RadarScanParser)
 ```
 
 Native target: `.so` with hidden visibility, only `pj_module_*` C exports (u64
 address-token signatures identical to wasm), manifest behind C getters. Wasm
 target: wasip1 **reactor** (`_initialize` once; start sections rejected), manifest
 appended as exactly one custom section by the SDK post-link embedder. Handles are
-instance pointers as u64; results are byte-encoded descriptors; all tape/wire
-loads via explicit little-endian helpers; the pinned `static_assert` set guards
-32/64-bit drift.
+instance pointers as u64; results are byte-encoded descriptors; all wire
+loads/stores via explicit little-endian helpers; the pinned `static_assert` set
+guards 32/64-bit drift.
 
 ### 8.2 Claims manifest
 
 ```json
-{ "abi_version": 1, "name": "radar-decoders", "version": "1.0.0",
+{ "module_abi": 1, "name": "radar-scan-parsers", "version": "1.0.0",
   "claims": [{
     "claim_id": "radar-scan-v1",
     "encoding": "ros2msg", "type_name": "my_msgs/msg/RadarScan",
@@ -226,6 +228,12 @@ gets. Author's robustness ladder:
   runtime machinery. Deferred; the authoring path is reserved.
 
 ### 8.4 Module ABI
+
+**Version naming, to prevent confusion during execution:** the manifest's
+`module_abi` (=1) versions the module export surface as a whole; it *adopts* the
+sink/result semantics of `pj.parser_functional` **v2** (the plugin-side extension).
+Two different contracts, two counters — a module never declares "functional v2"
+itself.
 
 The landed `pj.parser_functional.v1` shape (#168), extended to **v2**:
 
@@ -331,7 +339,7 @@ package would have provided).
 | PR | Repo | Contents |
 |---|---|---|
 | 1 | plotjuggler_sdk | Route-aware classification ext · functional v2 + splice · module ABI header · claim catalog + route resolver (host lib; harvests the v3 M1 snapshot's copy/lease/diagnostic patterns) · native + wasm loaders in `plugin_host` (wasmer statically linked) · authoring kit + tools + wasi gate → **SDK 0.22 release** |
-| 2 | PJ4 | Composite-binding refactor (`DataSourceRuntimeHost`), config envelope, per-route pins + parser-slot UI extension, diagnostics attribution, binding generations, module folder scan + rescan-on-install, provider bootstrap |
+| 2 | PJ4 | Composite-binding refactor (`DataSourceRuntimeHost`), config envelope, per-route pins + parser-slot UI extension, diagnostics attribution, binding generations, module folder scan at startup + rescan-on-install |
 | 3 | pj-official-plugins | SDK bump: rebuild-only for all parsers (zero source changes verified) + E2E fixtures/example module + benchmarks |
 | 4 | pj-plugin-registry (+ PJ4 marketplace bits) | `kind: parser_module` schema, submit tooling, marketplace wasm artifact support |
 | 5 | new repo + docs | Template repo (one source, two build presets), authoring guide |
