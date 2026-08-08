@@ -2,10 +2,12 @@
 
 **Date:** 2026-08-08
 **Status:** v4 — supersedes the v3 architecture (registry consulted by parsers +
-structured event tapes; see git history of this file for v3). Provenance: three
-adversarial Codex reviews (27 findings on v2/v3), a module-mechanics consult, a
-host-code stress test against PJ4 (`DataSourceRuntimeHost`, `SessionManager`), and
-DSO-safety verification against plotjuggler_sdk `origin/main` through #169.
+structured event tapes; see git history of this file for v3). Provenance: four
+adversarial Codex reviews (27 findings on v2/v3 + a final specification-closure
+review whose 8 findings froze the normative ABI surfaces in §7/§8.4), a
+module-mechanics consult, a host-code stress test against PJ4
+(`DataSourceRuntimeHost`, `SessionManager`), and DSO-safety verification against
+plotjuggler_sdk `origin/main` through #169.
 **Scope:** plotjuggler_sdk, PJ4 host runtime, pj-official-plugins (rebuild only),
 pj-plugin-registry, new template repo.
 
@@ -44,8 +46,9 @@ clouds, bit-packed payloads) where users already have C++ decode logic.
 
 1. Zero source changes to existing parser plugins; one rebuild against the new SDK.
 2. Extensions are **functional parser modules**: one C++ source built as a native
-   `.so` (trusted, full speed) or a `.wasm` (one universal artifact, sandboxed);
-   both drop in one folder, both loadable by the host.
+   platform shared library (`.so`/`.dylib`/`.dll`; trusted, full speed) or a
+   `.wasm` (one universal artifact, sandboxed); both drop in one folder, both
+   loadable by the host.
 3. One uniform, host-owned selection policy; no special-cased "builtin wins" code.
 4. Schema access at bind time is the backward-compatibility mechanism (§8.3).
 5. All cross-boundary contracts are versioned POD in the SDK's existing idioms.
@@ -63,20 +66,43 @@ scalar route).
 Host-owned. Three sources:
 
 1. **Existing parser plugins** — encodings from their manifests, exactly as today
-   (= the wildcard scalar claim). No manifest changes.
-2. **Their object coverage** — discovered, not declared: the host queries the new
+   (= the universal wildcard scalar claim, §7 — held by every parser plugin
+   regardless of extension presence). No manifest changes.
+2. **Their exact-type coverage** — discovered, not declared: the host queries the
    route-aware classification extension (§7), which `MessageParserPluginBase`
    implements automatically from the handler table. The subset stays in sync with
-   the code by construction.
+   the code by construction; it adds to the wildcard, never replaces it.
 3. **Module manifests** — embedded claims (§8.2): wasm read from a passive custom
    section without executing code; folder-drop native read via C getters after
    `dlopen` (the trust act); marketplace-installed native from the registry index
    (derived at submit time — no pre-install execution).
 
 Claim key: `(encoding, normalized type name | wildcard, route flags, object_type,
-schema-digest set, provider id, claim id, bounded priority)`. Type-name normalization is
-**per-encoding** (ROS: `pkg/msg/Type` canonical; protobuf: full name), not one
-global rule. Provenance is **never** a manifest field.
+schema-digest set, provider id, claim id, bounded priority)`. Identity and
+normalization rules (normative):
+
+- **provider id** = the plugin manifest's `"id"` for parser plugins, the module
+  manifest's `"id"` for modules (§8.2) — globally stable, reverse-DNS
+  recommended; `name` is display-only everywhere. Pins, config keys, receipts,
+  ties, and upgrades all key on it.
+- **claim id** is unique within its provider; the catalog key is
+  `(provider_id, claim_id)`, and a duplicate rejects the whole module at
+  admission.
+- **priority** is int32 in `[-1000, 1000]`; out-of-range claims are rejected at
+  admission (explicit, never clamped).
+- **wildcard** is spelled `"type_name": "*"`. Modules may declare it for the
+  scalar route; a wildcard **object** claim is rejected at admission (the object
+  route requires an exact type and an `object_type`). `object_type` is required
+  iff `routes` contains `"object"`, forbidden otherwise.
+- **schema digest** = SHA-256 over the exact schema byte sequence the host
+  delivers to `bind_schema`/`bind` — no normalization; the digest set names
+  supported recorded eras of those bytes.
+- **encoding names** come from the SDK-owned registry (the same strings parser
+  manifests use: `ros2msg`, `protobuf`, …); matching is case-sensitive; a claim
+  with an unknown encoding is admitted but never matched (diagnostic).
+- Type-name normalization is **per-encoding** (ROS: `pkg/msg/Type` canonical;
+  protobuf: full name), owned by the host catalog, not by claimants.
+- Provenance is **never** a manifest field.
 
 ## 5. Per-route dispatch
 
@@ -103,7 +129,15 @@ per-route pin (fail-closed)
   with the candidate's real config, the winning probe instance is retained (never
   instantiated twice), results are cached by (provider generation, encoding,
   normalized type, schema digest, config digest), and invalidated on catalog, pin,
-  or config change. Probe work off the source poll thread where possible.
+  or config change.
+- **Probe threading (normative):** the parser ABI marks create/destroy/bind/
+  bind-schema/config as main-thread-class operations, and classification is only
+  meaningful after them — so the host marshals the whole probe sequence to one
+  designated **parser-control executor** (the thread class those slots already
+  require), never to arbitrary workers or the source poll thread:
+  `create → bind services → bind schema → load provider config → route
+  classification/probe → retain winner`. Only functional parse calls run on
+  their declared stream/worker thread class.
 - **No silent provider switching**: bindings are immutable generations (§6).
 
 ## 6. Composite binding
@@ -124,35 +158,71 @@ CompositeBinding (generation-stamped)
   artifact/version, plus the legacy single parser config for backward
   compatibility. The one-config-string flow and the parser-slot UI grow route
   identities.
-- **Timestamps**: under eager-scalar policies the scalar route's normalized
-  timestamp is binding-wide authoritative; the object route's is validated or
-  ignored. Pure-lazy uses the transport timestamp.
-- **Generations**: catalog reloads, pin edits, quarantine → new binding generation;
-  previously indexed lazy object entries keep their original provider leases and
-  decode as recorded. Object-type changes surface through host reclassification,
-  never silent metadata drift.
+- **Timestamps (one rule)**: for a given message, the binding-wide timestamp is
+  the scalar route's normalized timestamp **when a successful scalar result
+  exists for that message**; otherwise (scalar route absent, declined, or failed
+  on that message) it is the transport timestamp, with a rate-limited scalar
+  diagnostic. Object-route timestamps are never authoritative; a mismatch beyond
+  tolerance is a rate-limited diagnostic, not an error. The object route stays
+  independently eligible when the scalar route fails.
+- **Generations pin descriptors, not instances**: a generation immutably records
+  per-route `(provider id, artifact version + checksum, config digest)`.
+  Catalog reloads, pin edits, and claim changes create a **new** generation;
+  quarantine recreation (§8.5) replays create/bind for the **same** descriptor
+  and therefore stays within its generation. Previously indexed lazy object
+  entries decode as recorded via their generation's descriptor; if that
+  descriptor becomes unsatisfiable — the claim was disabled for the session, or
+  the artifact was upgraded/removed — those entries **fail closed** with a
+  diagnostic. No fallback provider is ever substituted. Object-type changes
+  surface through host reclassification, never silent metadata drift.
 - Diagnostics carry route, provider id, artifact/version, native/wasm mode, and
   quarantine state.
 
 ## 7. Route-aware classification (SDK extension)
 
 `classifySchema` today returns only `object_type` — it cannot express "scalar
-claimed / object claimed / both", exact-vs-wildcard, or decline-vs-failure. A new
-**tail/extension classification surface** returns:
+claimed / object claimed / both", exact-vs-wildcard, or decline-vs-failure.
 
-```
-{ route_flags (scalar|object), object_type, match (exact|wildcard),
-  status (claimed|declined|failed) }
+**Delivery is the existing `get_plugin_extension(id)` hook — committed, no
+fallback.** The hook already receives the instance `ctx`, so per-instance state is
+expressible; the tail-append alternative is dropped. No vtable member moves;
+sentinel tests stay green. Normative surface (frozen in PR 1a):
+
+- Extension ID: `PJ_PARSER_ROUTE_CLAIMS_EXTENSION_V1 = "pj.parser_route_claims.v1"`.
+- Table (append-only, `struct_size`-gated, every slot `PJ_NOEXCEPT`):
+
+```c
+typedef struct PJ_route_classification_v1_t {
+  uint16_t route_flags;   /* bit0 scalar, bit1 object */
+  uint16_t match;         /* 0 exact, 1 wildcard */
+  uint16_t status;        /* 0 claimed, 1 declined, 2 failed */
+  uint16_t object_type;   /* PJ_BUILTIN_OBJECT_TYPE_*; NONE unless object claimed */
+} PJ_route_classification_v1_t;
+
+typedef struct PJ_parser_route_claims_v1_t {
+  uint32_t struct_size;   /* sizeof(this table revision) */
+  /* [thread-class of classify_schema: thread-safe, pure, no host side-effects]
+   * Called after bind_schema() on the same instance. Returns false + out_error
+   * only on classification FAILURE (status is then ignored); DECLINE is a
+   * successful return with status=declined. */
+  bool (*classify_routes)(void* ctx, PJ_string_view_t type_name, PJ_bytes_view_t schema,
+                          PJ_route_classification_v1_t* out, PJ_error_t* out_error) PJ_NOEXCEPT;
+} PJ_parser_route_claims_v1_t;
 ```
 
 `MessageParserPluginBase` implements it automatically from its registered handler
-table — official parsers get it by **recompiling only**. Legacy rule: a parser
-plugin without the extension implicitly claims wildcard scalars for its manifest
-encodings (this covers parser_protobuf's legacy generic path). Delivery mechanism:
-the existing `pluginExtension(id)` hook (primary — zero layout change, verified
-present since 0.21); tail-append per the frozen-layout discipline is the fallback
-only if per-instance state proves inexpressible through it. Either way, no existing
-member moves; sentinel tests stay green.
+table — official parsers get it by **recompiling only**. A recompiled plugin
+exposes both the legacy `classify_schema` tail slot and this extension unchanged;
+hosts prefer the extension when present and fall back to `classify_schema` (object
+route only, scalar assumed wildcard) when absent or on failure.
+
+**Universal wildcard rule (resolves the legacy/protobuf contradiction):** every
+parser plugin receives the manifest-derived **wildcard scalar claim** for its
+declared encodings — with or without the extension, which only *adds* exact
+handler-table claims and never removes the wildcard. parser_protobuf's generic
+descriptor-driven flatten is exactly that wildcard claim; parser_ros's generic
+flatten likewise. A plugin that genuinely cannot scalar-flatten a schema signals
+it per-topic via DECLINE at probe time, not by claim absence.
 
 ## 8. Functional parser modules
 
@@ -185,25 +255,30 @@ class RadarScanParser : public pj::FunctionalParser {
 PJ_FUNCTIONAL_PARSER(RadarScanParser)
 ```
 
-Native target: `.so` with hidden visibility, only `pj_module_*` C exports (u64
-address-token signatures identical to wasm), manifest behind C getters. Wasm
-target: wasip1 **reactor** (`_initialize` once; start sections rejected), manifest
-appended as exactly one custom section by the SDK post-link embedder. Handles are
-instance pointers as u64; results are byte-encoded descriptors; all wire
-loads/stores via explicit little-endian helpers; the pinned `static_assert` set
-guards 32/64-bit drift.
+Native target: platform shared library with hidden visibility, only `pj_module_*`
+C exports (u64 address-token signatures identical to wasm), manifest behind C
+getters. Wasm target: wasip1 **reactor** (`_initialize` once; start sections
+rejected), manifest appended as exactly one custom section by the SDK post-link
+embedder. The complete export set, token semantics, and byte formats are the
+normative §8.4.2/§8.4.3; the pinned `static_assert` set guards 32/64-bit drift.
 
 ### 8.2 Claims manifest
 
 ```json
-{ "module_abi": 1, "name": "radar-scan-parsers", "version": "1.0.0",
+{ "module_abi": 1,
+  "id": "com.example.radar-scan-parsers",   // globally stable provider id (§4)
+  "name": "Radar Scan Parsers",             // display-only
+  "version": "1.0.0",
   "claims": [{
-    "claim_id": "radar-scan-v1",
+    "claim_id": "radar-scan-v1",            // unique within the module
     "encoding": "ros2msg", "type_name": "my_msgs/msg/RadarScan",
     "routes": ["object"], "object_type": "kPointCloud",
     "schema_digests": ["sha256:…", "sha256:…"],   // optional allow-list
     "priority": 0 }] }
 ```
+
+`id` mirrors the plugin manifest's required `"id"` key and obeys the §4 identity
+rules (pins, config, receipts, upgrades all key on it; `name` never does).
 
 One module may carry claims across encodings (e.g. `ros2msg` and `protobuf`
 variants of the same product) — the decode core is shared; only thin per-encoding
@@ -217,17 +292,22 @@ gets. Author's robustness ladder:
 - **L0** hard-coded layout — brittle; digest gating strongly recommended.
 - **L1** digest allow-list — unknown revision ⇒ DECLINE (+ diagnostic); never a
   silent misparse. Multiple digests = multiple supported eras of recorded data.
-- **L2** bind-time schema inspection — the module computes field positions from the
+- **L2** bind-time schema inspection — the module derives field access from the
   `.msg` text / descriptor set and adapts across revisions. For **CDR this is the
   only reliable evolution mechanism** (positional format); protobuf is
   evolution-tolerant by field number regardless. The authoring kit's
-  **field locator** (`CdrFieldLocator` / `ProtoFieldLocator`: schema + field paths
-  → offset/field-number plan, computed once at bind) makes L2 a few lines.
+  **field locator** (`CdrFieldLocator` / `ProtoFieldLocator`) compiles schema +
+  field paths **once at bind into a runtime traversal plan** — for CDR, any
+  variable-length field shifts everything after it, so payload-independent
+  offsets don't generally exist; the plan is a per-message walk (with position
+  caching across field reads), never a static offset table. Protobuf plans
+  resolve to field-number paths. Contract details in §9. This makes L2 a few
+  lines for the author.
 - **L3 (reserved)** build-time typed-view codegen: `.msg`/`.proto` → generated
   wasi-clean accessor structs; wire-format independence at build time with zero
   runtime machinery. Deferred; the authoring path is reserved.
 
-### 8.4 Module ABI
+### 8.4 Frozen contracts (normative — this is the PR 1a freeze set)
 
 **Version naming, to prevent confusion during execution:** the manifest's
 `module_abi` (=1) versions the module export surface as a whole; it *adopts* the
@@ -235,21 +315,131 @@ sink/result semantics of `pj.parser_functional` **v2** (the plugin-side extensio
 Two different contracts, two counters — a module never declares "functional v2"
 itself.
 
-The landed `pj.parser_functional.v1` shape (#168), extended to **v2**:
+#### 8.4.1 `pj.parser_functional.v2` (plugin extension)
 
-- scalar route: typed key/value sink (`PJ_named_field_value_t`), unchanged;
-- object route: `object_type u16 + canonical PJ.* wire bytes` (host decodes with
-  the existing `deserializeBuiltinObject`), **plus** an append-only spliced sink
-  (`accept_object_spliced`): canonical wire with the bulk field elided + one
-  `(field, offset, len)` reference into the input payload. The host validates
-  against the per-type splice-eligible table and resolves with the
-  `PayloadView.anchor` (empty anchor ⇒ materialize). Anchor ownership, expected
-  object-type validation, and wasm u64-token rules (validated offsets, never host
-  pointers) are part of the v2 contract.
-- results: `0 ACCEPT / 1 DECLINE / <0 ERROR` at create/bind; `0 / <0` per message;
-  fixed error buffer with copy-out accessor; output valid until the next call on
-  the instance; host consumes via a with-output transaction (no module pointer
-  escapes).
+ID: `PJ_PARSER_FUNCTIONAL_EXTENSION_V2 = "pj.parser_functional.v2"`. Same idioms
+as the landed v1 (#168): `struct_size`-gated append-only PODs, borrowed
+call-duration views, `PJ_NOEXCEPT` everywhere, [stream-thread] calls.
+
+- **Scalar route:** unchanged from v1 (`PJ_parser_scalar_sink_v1_t`,
+  `PJ_named_field_value_t`).
+- **Object sink v2** extends the v1 sink append-only:
+
+```c
+typedef bool (*PJ_parser_accept_object_spliced_fn_t)(
+    void* ctx, bool has_timestamp, int64_t timestamp_ns, uint16_t object_type,
+    PJ_bytes_view_t partial_wire,       /* canonical PJ.* wire, bulk field elided */
+    uint32_t splice_field_number,       /* PJ.* field number of the elided field  */
+    uint64_t input_offset, uint64_t input_length,   /* into the parse payload     */
+    PJ_error_t* out_error) PJ_NOEXCEPT;
+
+typedef struct PJ_parser_object_sink_v2_t {
+  uint32_t struct_size;
+  void* ctx;
+  PJ_parser_accept_object_fn_t accept_object;               /* v1 slot, same type */
+  PJ_parser_accept_object_spliced_fn_t accept_object_spliced;
+} PJ_parser_object_sink_v2_t;
+
+typedef struct PJ_parser_functional_v2_t {
+  uint32_t struct_size;
+  PJ_parser_parse_scalars_fn_t parse_scalars;               /* v1 type, unchanged */
+  bool (*parse_object)(void* plugin_ctx, int64_t timestamp_ns, PJ_payload_t payload,
+                       const PJ_parser_object_sink_v2_t* sink, PJ_error_t* out_error) PJ_NOEXCEPT;
+} PJ_parser_functional_v2_t;
+```
+
+- **Splice rules:** at most **one** splice reference per object (a second
+  spliced call for the same message is a contract violation).
+  `splice_field_number` must appear in the per-type splice-eligible table frozen
+  in `builtin_object_abi.h`; `input_offset/input_length` index the exact payload
+  bytes passed to `parse_object` (input-space; host bounds-validates). The host
+  resolves the reference with `PJ_payload_t.anchor` (empty anchor ⇒ the host
+  materializes a copy). Expected-object-type validation and anchor ownership are
+  exactly v1's (#168) rules.
+- **Compatibility:** a rebuilt plugin exposes **both** IDs. New host + old
+  plugin: host queries v2, falls back to v1 (no splice). Old host + new plugin:
+  host only queries v1; the base class materializes bulk fields into full
+  canonical wire. Both directions work with no negotiation beyond
+  `get_plugin_extension`.
+- **Outcome taxonomy:** `0 ACCEPT / 1 DECLINE / <0 ERROR` exists only at
+  create/bind. Per message there is no decline: `true` = success, `false` +
+  `PJ_error_t` = failure, with `extended_kind` distinguishing **parser data
+  error** (bad payload — diagnostic, no strike), **sink rejection** (host-side;
+  propagated as call failure with the sink's error), and **contract violation**
+  (double splice, ineligible field, bounds — strikes, §8.5).
+
+#### 8.4.2 Module export ABI (`module_abi = 1`)
+
+One C export set, identical for both targets. Every address-like value is a
+`uint64_t` **module-space token**: for native, a process pointer (host buffers
+may be passed directly — zero copy); for wasm, a linear-memory offset (host
+copies in via `pj_module_alloc`, re-acquires the memory base after every guest
+call, and never passes host pointers).
+
+```c
+uint32_t pj_module_abi(void);                                   /* = 1          */
+uint64_t pj_module_create(uint32_t claim_index);                /* 0 = failure  */
+void     pj_module_destroy(uint64_t inst);
+int32_t  pj_module_bind(uint64_t inst, uint64_t info_addr, uint64_t info_len);
+                                          /* 0 ACCEPT / 1 DECLINE / <0 ERROR    */
+int32_t  pj_module_parse(uint64_t inst, uint64_t in_addr, uint64_t in_len,
+                         uint64_t out_addr_ptr, uint64_t out_len_ptr);  /* 0/<0 */
+uint64_t pj_module_last_error(uint64_t inst, uint64_t buf_addr, uint64_t buf_cap);
+uint64_t pj_module_alloc(uint64_t size);                        /* 0 = failure  */
+void     pj_module_free(uint64_t addr, uint64_t size);
+```
+
+- **Lifecycle:** `create(claim_index)` → `bind` (BindingInfo bytes, §8.4.3) →
+  `parse` per message → `destroy`. `claim_index` is the claim's position in the
+  manifest's `claims` array; out-of-range → create fails.
+- **Buffers:** input buffers for wasm are guest-allocated by the host via
+  `pj_module_alloc` and freed via `pj_module_free` after the call. Output
+  descriptors are module-owned, returned through `(*out_addr, *out_len)`, and
+  valid until the next call on the same instance or `destroy` — the host
+  consumes them inside a with-output transaction; no module pointer escapes.
+- **Instance tokens** are opaque; the module validates them against its live
+  table and returns `PJ_MODULE_ERR_BAD_TOKEN` for stale/unknown values, which
+  the host treats as a contract violation (strike). Error codes: `0` OK, `1`
+  DECLINE (bind only); `<0` reserved set (`-1` generic, `-2` bad token, `-3`
+  malformed input, `-4` bad claim index, `-5` allocation failure; new codes
+  append).
+- **Errors:** on any negative return the module records a UTF-8 message in a
+  fixed 512-byte internal buffer (NUL-truncated); the host copies it out with
+  `pj_module_last_error` (returns bytes written).
+- **Manifest delivery:** native exports `const char* pj_module_manifest_json(void)`
+  + `uint64_t pj_module_manifest_len(void)` (pointer valid for module lifetime);
+  wasm carries the manifest **only** in a custom section named
+  `pj_parser_module_manifest` holding the exact UTF-8 JSON bytes — exactly one;
+  zero or duplicates reject the artifact at scan. Wasm modules are wasip1
+  **reactors**: `_initialize` required, `_start` or a start section rejected.
+
+#### 8.4.3 Byte formats (all integers little-endian)
+
+- **BindingInfo (host → module, `pj_module_bind`):** header
+  `u16 version=1 · u16 route (1 scalar / 2 object) · u32 claim_index ·
+  u16 expected_object_type · u16 reserved · u32 field_count`, then
+  `field_count` × `(u32 offset, u32 len)` into the block, fixed order:
+  encoding, type_name, schema bytes, claim_id, config JSON, schema digest
+  (`sha256:…` ASCII or empty). Readers accept and ignore extra trailing fields
+  (append-only). Config JSON here is the module's per-provider entry from the
+  host's config envelope (§6); there is no other config channel.
+- **Parse input (host → module):** `u8 flags (bit0 has_timestamp) · 7×u8 pad ·
+  i64 timestamp_ns · u64 payload_len · payload bytes`. Splice offsets in the
+  output are relative to the **payload region** (byte 0 = first payload byte);
+  the host maps them back to its original message buffer — the single
+  input-space offset rule.
+- **Output descriptor (module → host):** header `u16 version=1 · u8 route ·
+  u8 reserved`, then per route — object: `u16 object_type · u16 splice_count
+  (0|1) · u32 splice_field_number · u64 splice_offset · u64 splice_len ·
+  u64 wire_len · wire bytes` (canonical PJ.* wire; host decodes with the landed
+  `deserializeBuiltinObject`, then applies the same splice validation as
+  §8.4.1); scalar: `u8 has_timestamp · 7×u8 pad · i64 timestamp_ns ·
+  u32 field_count`, then per field `u32 name_off · u32 name_len · u8 value_kind
+  · value bytes`, with `value_kind` mirroring `PJ_named_field_value_t`
+  (0 f64, 1 i64, 2 u64, 3 bool, 4 string as u32 len + UTF-8 bytes).
+- The pinned `static_assert` set plus golden byte fixtures (§12) freeze these
+  layouts; the PR 1a static wasm conformance slice (§13) verifies them against
+  a real wasi-sdk-built reactor before 0.22 ships.
 
 ### 8.5 Loaders (in `plugin_host`, shared by PJ4 and pj_proto_app)
 
@@ -269,8 +459,10 @@ The landed `pj.parser_functional.v1` shape (#168), extended to **v2**:
 - **Quarantine separates faults from data errors**: bad payloads = per-message
   diagnostics, never strikes; traps/deadlines/contract violations strike
   `(module, claim)` — 3 strikes quarantines (destroy + recreate via full
-  create/bind replay), repeat disables for the session. Established bindings never
-  silently switch provider.
+  create/bind replay), repeat disables for the session. Same-descriptor
+  recreation stays within its binding generation; disablement makes outstanding
+  lazy entries fail closed (§6). Established bindings never silently switch
+  provider.
 
 ## 9. Authoring kit — `pj_base/parser_module/`
 
@@ -283,6 +475,25 @@ builders per object type), `PJ_FUNCTIONAL_PARSER` macro, manifest tooling
 (`pj-wasm-embed-manifest`, `pj_add_parser_module`). Enforcement: standalone wasi-sdk
 compile job in CI + pinned POD `static_assert`s (that gate is what a separate
 package would have provided).
+
+**Reader/locator contract (normative):**
+
+- **Accepted schema inputs:** ROS 2 concatenated `.msg` bundles as delivered on
+  `ros2msg` channels (MCAP/ROS 2 convention); protobuf serialized
+  `FileDescriptorSet`. Anything else → bind-time error `Status`.
+- **CDR:** XCDR1, endianness from the encapsulation header, alignment relative
+  to the encapsulation start; nested types, fixed arrays, sequences, and strings
+  traversed per the compiled plan. Every read is bounds-checked against the
+  payload; malformed or truncated input yields an error `Status`, **never** UB.
+  Sequence/string lengths are validated against remaining bytes before
+  allocation; traversal depth is capped (64). Random-access field reads reuse
+  cached traversal positions (monotone re-reads never re-walk from byte 0).
+- **Protobuf:** unknown fields skipped, packed and unpacked repeated encodings
+  both accepted, duplicate scalar occurrences last-wins, recursion depth capped
+  (64), truncated varints/groups → error `Status`.
+- **Time normalization:** `readRosTime`/`readProtoTimestamp` reject
+  out-of-range values (would overflow int64 ns) with an error `Status` rather
+  than saturating silently.
 
 ## 10. Distribution — registry & marketplace
 
@@ -298,6 +509,12 @@ package would have provided).
 - Marketplace-installed native modules: claims come from the registry index (no
   pre-install execution). Install writes into the `parser_modules/` folder; the
   host rescans on install (no restart).
+- **Install receipts (provenance anchor):** marketplace and folder-drop
+  artifacts share `parser_modules/`, so folder location cannot carry provenance.
+  On install the host writes a receipt into its own catalog state —
+  `(module id, version, sha256, provenance tier, install time, source)`. At scan,
+  an artifact whose checksum matches a receipt gets that receipt's tier;
+  anything else is folder-drop. Receipts are host state, never artifact content.
 - Force-retagging released modules invalidates checksums — same rule as plugins.
 
 ## 11. Error handling summary
@@ -319,10 +536,13 @@ package would have provided).
   per-route pins fail-closed, decline-vs-failure, probe caching/invalidation,
   generations); route-aware classification auto-implementation; functional v2 +
   splice validation; canonical-wire writer golden tests vs
-  `deserializeBuiltinObject`; authoring-kit round-trips; wasi compile gate; module
-  loader tests incl. adversarial wasm fixtures (trap, deadline loop, memory bomb,
-  start-section module, duplicate manifest sections, disallowed imports,
-  admission limits, quarantine replay); post-link ABI audit.
+  `deserializeBuiltinObject`; authoring-kit round-trips; wasi compile gate;
+  **static wasm ABI conformance (1a):** wasi-sdk reactor fixture with export/
+  signature audit, manifest-section embed/read-back, §8.4.3 golden byte
+  fixtures — no execution; module loader tests incl. adversarial wasm fixtures
+  (1b: trap, deadline loop, memory bomb, start-section module, duplicate
+  manifest sections, disallowed imports, admission limits, quarantine replay);
+  post-link ABI audit.
 - **PJ4**: composite-binding refactor tests (split providers, timestamp authority,
   generations across catalog reload/pin edits, lazy entries under old
   generations), config-envelope round-trip incl. legacy configs, UI route
@@ -338,19 +558,23 @@ package would have provided).
 
 | PR | Repo | Contents |
 |---|---|---|
-| 1a | plotjuggler_sdk | **SDK core, wasm-free**: route-aware classification ext · functional v2 + splice · **complete dual-target module ABI header (frozen here)** · claim catalog + route resolver · native module loader · authoring kit core (readers, locators, ObjectWriter, native macro target) + wasi-clean CI gate → **release 0.22** |
+| 1a | plotjuggler_sdk | **SDK core, wasmer-free**: route-aware classification ext · functional v2 + splice · **complete dual-target module ABI header (frozen here)** · claim catalog + route resolver · native module loader · authoring kit core (readers, locators, ObjectWriter, native macro target) + wasi-clean CI gate · **static wasm ABI conformance slice** (one wasi-sdk-built reactor fixture; static export/signature audit; manifest custom-section embed + read-back; §8.4.3 descriptor-byte and token-width assertions — no wasmer, no execution) → **release 0.22** |
 | 1b | plotjuggler_sdk | **SDK wasm**: wasmer loader (statically linked, pinned; hardening, budgets, quarantine) · wasm macro target + `pj-wasm-embed-manifest` · adversarial wasm fixtures → **release 0.23**. Exit criterion: wasmer-7 shared-module-obtain + store thread-affinity prototype |
 | 2 | PJ4 | Composite-binding refactor (`DataSourceRuntimeHost`), config envelope, per-route pins + parser-slot UI extension, diagnostics attribution, binding generations, module folder scan at startup + rescan-on-install, marketplace `parser_module` support (wasm artifacts activate with 0.23) |
 | 3 | pj-official-plugins | SDK bump: rebuild-only for all parsers (zero source changes verified) + native-module E2E fixtures + benchmarks + authoring guide; wasm E2E addendum after 0.23 |
-| 4 | pj-plugin-registry | `kind: parser_module` schema + submit tooling + validation |
+| 4 | pj-plugin-registry | `kind: parser_module` schema + submit tooling + validation. The schema covers both artifact kinds from day one; **wasm artifact admission stays dormant until 0.23 ships** (mirrors PR 2's marketplace gate) |
 | — | new repo | Template repo bootstrap (one source, two build presets) — repo creation, not a PR |
 
 Gates: PRs 2/3/4 need only **0.22** (the ABI is complete there); everything
-wasm-facing (1b, wasm E2E, marketplace wasm artifacts) rides **0.23** without
-touching any contract — 1b is a second loader for an already-frozen ABI, so a
-wasmer setback delays wasm, never the architecture. Rationale for the 1a/1b split:
-wasmer packaging and the shared-module prototype are the highest-risk items and
-review as runtime/security work, while 1a reviews as ABI/contract work.
+wasm-*execution*-facing (1b, wasm E2E, marketplace/registry wasm-artifact
+admission) activates with **0.23** without touching any contract — 1b is a
+second loader for an already-frozen ABI, so a wasmer setback delays wasm, never
+the architecture. The 1a conformance slice is what makes that freeze safe: the
+export surface, manifest section, and descriptor bytes are proven against a real
+wasm artifact before 0.22 ships, leaving 1b zero room to discover ABI defects.
+Rationale for the 1a/1b split: wasmer packaging and the shared-module prototype
+are the highest-risk items and review as runtime/security work, while 1a reviews
+as ABI/contract work.
 
 ## 14. Deferred / rejected
 
@@ -445,3 +669,14 @@ functional-v2 splice gap.
    enforcement (maintainer).
 10. **Immutable binding generations; scalar-route timestamp authority** (stress-test
     resolution).
+11. **Classification delivery committed to `get_plugin_extension`** (no
+    tail-append fallback) **+ universal wildcard scalar claim** for every parser
+    plugin regardless of extension presence (final-review blocker resolution).
+12. **Generations pin descriptors, not instances**: quarantine recreation stays
+    in-generation; disablement/upgrade fails outstanding lazy entries closed —
+    never a substituted provider (final-review resolution).
+13. **Stable module `id` in the manifest** (name display-only) + host install
+    receipts as the provenance anchor (final-review blocker resolution).
+14. **PR 1a carries a static wasm ABI conformance slice** (wasi-sdk fixture,
+    export/section/byte audits, no wasmer) so the 0.22 freeze is proven against
+    a real wasm artifact before 1b (final-review resolution).
