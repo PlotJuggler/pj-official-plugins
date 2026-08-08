@@ -87,7 +87,10 @@ normalization rules (normative):
   ties, and upgrades all key on it.
 - **claim id** is unique within its provider; the catalog key is
   `(provider_id, claim_id)`, and a duplicate rejects the whole module at
-  admission.
+  admission. Parser plugins declare no claim ids, so the host **synthesizes
+  deterministic ones**: `wildcard:<encoding>` for the manifest-derived wildcard
+  scalar claim, `handler:<normalized type name>` for each discovered exact
+  claim. Pins, ties, and diagnostics use these frozen forms.
 - **priority** is int32 in `[-1000, 1000]`; out-of-range claims are rejected at
   admission (explicit, never clamped).
 - **wildcard** is spelled `"type_name": "*"`. Modules may declare it for the
@@ -99,7 +102,8 @@ normalization rules (normative):
   supported recorded eras of those bytes.
 - **encoding names** come from the SDK-owned registry (the same strings parser
   manifests use: `ros2msg`, `protobuf`, …); matching is case-sensitive; a claim
-  with an unknown encoding is admitted but never matched (diagnostic).
+  with an unknown encoding is **rejected at admission** with a diagnostic (same
+  rule as unknown `object_type` — §11).
 - Type-name normalization is **per-encoding** (ROS: `pkg/msg/Type` canonical;
   protobuf: full name), owned by the host catalog, not by claimants.
 - Provenance is **never** a manifest field.
@@ -163,8 +167,9 @@ CompositeBinding (generation-stamped)
   exists for that message**; otherwise (scalar route absent, declined, or failed
   on that message) it is the transport timestamp, with a rate-limited scalar
   diagnostic. Object-route timestamps are never authoritative; a mismatch beyond
-  tolerance is a rate-limited diagnostic, not an error. The object route stays
-  independently eligible when the scalar route fails.
+  the diagnostic tolerance (1 ms — affects only diagnostics, never data) is a
+  rate-limited diagnostic, not an error. The object route stays independently
+  eligible when the scalar route fails.
 - **Generations pin descriptors, not instances**: a generation immutably records
   per-route `(provider id, artifact version + checksum, config digest)`.
   Catalog reloads, pin edits, and claim changes create a **new** generation;
@@ -195,7 +200,8 @@ sentinel tests stay green. Normative surface (frozen in PR 1a):
 typedef struct PJ_route_classification_v1_t {
   uint16_t route_flags;   /* bit0 scalar, bit1 object */
   uint16_t match;         /* 0 exact, 1 wildcard */
-  uint16_t status;        /* 0 claimed, 1 declined, 2 failed */
+  uint16_t status;        /* 0 claimed, 1 declined — failure is NOT a status:
+                             it is `return false` + out_error */
   uint16_t object_type;   /* PJ_BUILTIN_OBJECT_TYPE_*; NONE unless object claimed */
 } PJ_route_classification_v1_t;
 
@@ -212,9 +218,21 @@ typedef struct PJ_parser_route_claims_v1_t {
 
 `MessageParserPluginBase` implements it automatically from its registered handler
 table — official parsers get it by **recompiling only**. A recompiled plugin
-exposes both the legacy `classify_schema` tail slot and this extension unchanged;
-hosts prefer the extension when present and fall back to `classify_schema` (object
-route only, scalar assumed wildcard) when absent or on failure.
+exposes both the legacy `classify_schema` tail slot and this extension unchanged.
+**Failure/fallback semantics are single-valued:** the host uses the extension
+whenever it is present; if a present extension's call fails, that is a
+classification FAILURE for this candidate — diagnosed distinctly and the host
+advances to the next candidate (§5), **never** a fallback to legacy
+classification. Legacy `classify_schema` is consulted only when the extension is
+**absent** (object route only; scalar assumed wildcard).
+
+**DECLINE mapping for the wildcard claim:** extension-bearing plugins decline
+their wildcard scalar claim per topic via `classify_routes` returning
+`status=declined`. Legacy plugins have no classification DECLINE channel, so at
+probe time a legacy plugin's `bind_schema` returning false maps to **DECLINE**
+for selection purposes (its error text goes into the probe summary diagnostic);
+a legacy plugin that accepts `bind_schema` is deemed to accept its wildcard
+scalar claim.
 
 **Universal wildcard rule (resolves the legacy/protobuf contradiction):** every
 parser plugin receives the manifest-derived **wildcard scalar claim** for its
@@ -354,19 +372,27 @@ typedef struct PJ_parser_functional_v2_t {
   in `builtin_object_abi.h`; `input_offset/input_length` index the exact payload
   bytes passed to `parse_object` (input-space; host bounds-validates). The host
   resolves the reference with `PJ_payload_t.anchor` (empty anchor ⇒ the host
-  materializes a copy). Expected-object-type validation and anchor ownership are
-  exactly v1's (#168) rules.
+  materializes a copy). Anchor ownership is exactly v1's (#168) rule.
+- **Expected-object-type validation is host-side and new in v2** (landed v1
+  performs no comparison): the host compares each sink-received `object_type`
+  against the binding's expected type from classification; mismatch fails the
+  call with `pj.parser.contract_violation` (a strike for modules, §8.5) and the
+  object is dropped.
 - **Compatibility:** a rebuilt plugin exposes **both** IDs. New host + old
   plugin: host queries v2, falls back to v1 (no splice). Old host + new plugin:
   host only queries v1; the base class materializes bulk fields into full
   canonical wire. Both directions work with no negotiation beyond
   `get_plugin_extension`.
-- **Outcome taxonomy:** `0 ACCEPT / 1 DECLINE / <0 ERROR` exists only at
-  create/bind. Per message there is no decline: `true` = success, `false` +
-  `PJ_error_t` = failure, with `extended_kind` distinguishing **parser data
-  error** (bad payload — diagnostic, no strike), **sink rejection** (host-side;
-  propagated as call failure with the sink's error), and **contract violation**
-  (double splice, ineligible field, bounds — strikes, §8.5).
+- **Outcome taxonomy:** the `0 ACCEPT / 1 DECLINE / <0 ERROR` integer taxonomy
+  belongs to the **module ABI's** create/bind (§8.4.2); plugin vtable calls keep
+  their existing bool semantics, with plugin-side DECLINE expressed through
+  classification (§7). Per message — both surfaces — there is no decline:
+  `true`/`0` = success, failure carries a `PJ_error_t` whose `extended_kind` is
+  one of three frozen constants: `"pj.parser.data_error"` (bad payload —
+  diagnostic, no strike), `"pj.parser.sink_rejected"` (host-side; propagated as
+  call failure with the sink's error), `"pj.parser.contract_violation"` (double
+  splice, ineligible field, bounds, type mismatch — strikes, §8.5). `extended`
+  is NULL for all three in v2.
 
 #### 8.4.2 Module export ABI (`module_abi = 1`)
 
@@ -404,14 +430,23 @@ void     pj_module_free(uint64_t addr, uint64_t size);
   malformed input, `-4` bad claim index, `-5` allocation failure; new codes
   append).
 - **Errors:** on any negative return the module records a UTF-8 message in a
-  fixed 512-byte internal buffer (NUL-truncated); the host copies it out with
-  `pj_module_last_error` (returns bytes written).
-- **Manifest delivery:** native exports `const char* pj_module_manifest_json(void)`
-  + `uint64_t pj_module_manifest_len(void)` (pointer valid for module lifetime);
-  wasm carries the manifest **only** in a custom section named
-  `pj_parser_module_manifest` holding the exact UTF-8 JSON bytes — exactly one;
-  zero or duplicates reject the artifact at scan. Wasm modules are wasip1
-  **reactors**: `_initialize` required, `_start` or a start section rejected.
+  fixed 512-byte per-instance buffer (NUL-truncated); the host copies it out
+  with `pj_module_last_error` (returns bytes written). **Creation errors** (bad
+  claim index, allocation failure) have no instance, so `create` returning 0
+  records its message in a module-global creation-error slot read via
+  `pj_module_last_error(0, buf, cap)` — race-free because the host serializes
+  all lifecycle calls per module on the parser-control executor (§5). Token 0
+  is therefore reserved and never a valid instance.
+- **Manifest delivery:** the operational export set above is identical for both
+  targets. Native artifacts additionally export exactly two **metadata**
+  functions with the same u64 conventions — `uint64_t pj_module_manifest_addr(void)`
+  (module-space token of the UTF-8 JSON bytes, valid for module lifetime; no
+  `const char*` anywhere in the ABI) and `uint64_t pj_module_manifest_len(void)`.
+  Wasm artifacts must **not** export them: the wasm manifest lives **only** in a
+  custom section named `pj_parser_module_manifest` holding the exact UTF-8 JSON
+  bytes — exactly one; zero or duplicates reject the artifact at scan. Wasm
+  modules are wasip1 **reactors**: `_initialize` required, `_start` or a start
+  section rejected.
 
 #### 8.4.3 Byte formats (all integers little-endian)
 
@@ -449,10 +484,13 @@ void     pj_module_free(uint64_t addr, uint64_t size);
 - **Wasm (wasmer, statically linked, pinned build)**: exact import allow-list, no
   stdin/fs/net, export signature validation, reject start sections/`_start`,
   compile-once + store-per-bound-instance via shared-module obtain (*gate:
-  prototype against wasmer 7 before freezing; fallbacks enumerated*; verify store
+  prototype against wasmer 7 before freezing the wasmer loader implementation —
+  the module ABI is already frozen in 0.22; fallbacks enumerated*; verify store
   thread-affinity — route calls through per-store executors if required), memory
-  base re-acquired after every guest call, compacted-span segment table with
-  span-id-authorized splice refs, metering/epoch deadlines, memory/stack caps.
+  base re-acquired after every guest call, splice references bounds-validated
+  against the payload region per §8.4.3 (the single offset model — no other
+  splice authorization scheme exists), metering/epoch deadlines, memory/stack
+  caps.
 - **Budgets (aggregate, session)**: module count/file size (pre-compile), total
   claims, active instances, total linear memory; lazy instantiation with admission
   DECLINE. Compilation bounded and off the UI thread.
@@ -558,8 +596,8 @@ package would have provided).
 
 | PR | Repo | Contents |
 |---|---|---|
-| 1a | plotjuggler_sdk | **SDK core, wasmer-free**: route-aware classification ext · functional v2 + splice · **complete dual-target module ABI header (frozen here)** · claim catalog + route resolver · native module loader · authoring kit core (readers, locators, ObjectWriter, native macro target) + wasi-clean CI gate · **static wasm ABI conformance slice** (one wasi-sdk-built reactor fixture; static export/signature audit; manifest custom-section embed + read-back; §8.4.3 descriptor-byte and token-width assertions — no wasmer, no execution) → **release 0.22** |
-| 1b | plotjuggler_sdk | **SDK wasm**: wasmer loader (statically linked, pinned; hardening, budgets, quarantine) · wasm macro target + `pj-wasm-embed-manifest` · adversarial wasm fixtures → **release 0.23**. Exit criterion: wasmer-7 shared-module-obtain + store thread-affinity prototype |
+| 1a | plotjuggler_sdk | **SDK core, wasmer-free**: route-aware classification ext · functional v2 + splice · **complete dual-target module ABI header (frozen here)** · claim catalog + route resolver · native module loader · authoring kit core (readers, locators, ObjectWriter, native macro target) + wasi-clean CI gate · **manifest custom-section codec** (the shared embed/read library — 1b's CLI tool and macro target wrap this exact implementation) · **static wasm ABI conformance slice** (one wasi-sdk-built reactor fixture; static export/signature audit; section embed + read-back through the 1a codec; §8.4.3 descriptor-byte and token-width assertions — no wasmer, no execution) → **release 0.22** |
+| 1b | plotjuggler_sdk | **SDK wasm**: wasmer loader (statically linked, pinned; hardening, budgets, quarantine) · wasm macro target + `pj-wasm-embed-manifest` CLI (both wrapping the 1a section codec) · adversarial wasm fixtures → **release 0.23**. Exit criterion: wasmer-7 shared-module-obtain + store thread-affinity prototype |
 | 2 | PJ4 | Composite-binding refactor (`DataSourceRuntimeHost`), config envelope, per-route pins + parser-slot UI extension, diagnostics attribution, binding generations, module folder scan at startup + rescan-on-install, marketplace `parser_module` support (wasm artifacts activate with 0.23) |
 | 3 | pj-official-plugins | SDK bump: rebuild-only for all parsers (zero source changes verified) + native-module E2E fixtures + benchmarks + authoring guide; wasm E2E addendum after 0.23 |
 | 4 | pj-plugin-registry | `kind: parser_module` schema + submit tooling + validation. The schema covers both artifact kinds from day one; **wasm artifact admission stays dormant until 0.23 ships** (mirrors PR 2's marketplace gate) |
@@ -680,3 +718,10 @@ functional-v2 splice gap.
 14. **PR 1a carries a static wasm ABI conformance slice** (wasi-sdk fixture,
     export/section/byte audits, no wasmer) so the 0.22 freeze is proven against
     a real wasm artifact before 1b (final-review resolution).
+15. **Delta-verification closure round**: classification failure is
+    single-valued (present-extension failure advances candidates — no legacy
+    fallback); legacy `bind_schema` false maps to DECLINE at probe; parser
+    plugin claim ids synthesized (`wildcard:<encoding>` / `handler:<type>`);
+    unknown encodings rejected at admission; manifest metadata exports are
+    u64-only and native-only; token-0 creation-error channel; one splice offset
+    model everywhere (span tables deleted); manifest-section codec lands in 1a.
