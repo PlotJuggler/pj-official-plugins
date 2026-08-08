@@ -156,11 +156,11 @@ discipline — no existing member moves; sentinel tests stay green.
 
 ### 8.1 Authoring
 
-One C++ source + one `decoder.json`, wired by `pj_add_decoder(name SOURCE …
-MANIFEST … TARGETS native wasm)`:
+One C++ source + one `<name>.module.json`, wired by `pj_add_parser_module(name
+SOURCE … MANIFEST … TARGETS native wasm)`:
 
 ```cpp
-#include <pj_base/decoder/module.hpp>   // header-only, wasi-clean
+#include <pj_base/parser_module/module.hpp>   // header-only, wasi-clean
 
 class RadarDecoder : public pj::FunctionalParser {
   pj::Status bind(const pj::BindingInfo& info) override {
@@ -264,32 +264,32 @@ The landed `pj.parser_functional.v1` shape (#168), extended to **v2**:
   create/bind replay), repeat disables for the session. Established bindings never
   silently switch provider.
 
-## 9. Authoring kit — `pj_base/decoder/`
+## 9. Authoring kit — `pj_base/parser_module/`
 
-Header-only, wasi-clean subtree; INTERFACE target `plotjuggler_sdk::decoder`
+Header-only, wasi-clean subtree; INTERFACE target `plotjuggler_sdk::parser_module`
 (include paths, zero linkage). C++17 floor; SDK-owned `Span`/`Expected`/`Status`;
 no throwing std paths; fallible `allocate_blob`; realloc bump arenas. Contents:
 `CdrReader`, `ProtoReader`, time normalization (`readRosTime`/`readProtoTimestamp`
 → ns), `CdrFieldLocator`/`ProtoFieldLocator`, `ObjectWriter` (canonical-wire
 builders per object type), `PJ_FUNCTIONAL_PARSER` macro, manifest tooling
-(`pj-wasm-embed-manifest`, `pj_add_decoder`). Enforcement: standalone wasi-sdk
+(`pj-wasm-embed-manifest`, `pj_add_parser_module`). Enforcement: standalone wasi-sdk
 compile job in CI + pinned POD `static_assert`s (that gate is what a separate
 package would have provided).
 
 ## 10. Distribution — registry & marketplace
 
-- Registry `kind: "decoder"` (functional parser module) alongside plugins. **Both
+- Registry `kind: "parser_module"` alongside plugins. **Both
   module kinds accepted, unrestricted** — trust badged in the UI (sandboxed wasm vs
   trusted native), not gated (maintainer decision).
 - Wasm = one universal artifact + sha256; native = per-platform artifacts as
   plugins today.
 - Entries derived from the embedded manifest by submit tooling (same validation the
   host loader applies), claims listed → **searchable by message type**.
-- Compatibility gating by module ABI version (the decoder analog of
+- Compatibility gating by module ABI version (the module analog of
   `min_sdk_required`); auto-update never installs what the host can't run.
 - Marketplace-installed native modules: claims come from the registry index (no
-  pre-install execution). Install writes into the modules folder; the host rescans
-  on install (no restart).
+  pre-install execution). Install writes into the `parser_modules/` folder; the
+  host rescans on install (no restart).
 - Force-retagging released modules invalidates checksums — same rule as plugins.
 
 ## 11. Error handling summary
@@ -333,7 +333,7 @@ package would have provided).
 | 1 | plotjuggler_sdk | Route-aware classification ext · functional v2 + splice · module ABI header · claim catalog + route resolver (host lib; harvests the v3 M1 snapshot's copy/lease/diagnostic patterns) · native + wasm loaders in `plugin_host` (wasmer statically linked) · authoring kit + tools + wasi gate → **SDK 0.22 release** |
 | 2 | PJ4 | Composite-binding refactor (`DataSourceRuntimeHost`), config envelope, per-route pins + parser-slot UI extension, diagnostics attribution, binding generations, module folder scan + rescan-on-install, provider bootstrap |
 | 3 | pj-official-plugins | SDK bump: rebuild-only for all parsers (zero source changes verified) + E2E fixtures/example module + benchmarks |
-| 4 | pj-plugin-registry (+ PJ4 marketplace bits) | `kind: decoder` schema, submit tooling, marketplace wasm artifact support |
+| 4 | pj-plugin-registry (+ PJ4 marketplace bits) | `kind: parser_module` schema, submit tooling, marketplace wasm artifact support |
 | 5 | new repo + docs | Template repo (one source, two build presets), authoring guide |
 
 Gates: PR 2/3 require PR 1's release. The wasmer shared-module/thread-affinity
@@ -430,7 +430,7 @@ functional-v2 splice gap.
 7. **Output = canonical PJ.* wire + splice** via functional v2 — reuse of #166/#168.
 8. **Marketplace unrestricted, both kinds; wasm first-class universal artifact**
    (maintainer).
-9. **Authoring kit inside pj_base** (`pj_base/decoder/`), wasi CI gate as the
+9. **Authoring kit inside pj_base** (`pj_base/parser_module/`), wasi CI gate as the
    enforcement (maintainer).
 10. **Immutable binding generations; scalar-route timestamp authority** (stress-test
     resolution).
