@@ -89,8 +89,10 @@ normalization rules (normative):
   `(provider_id, claim_id)`, and a duplicate rejects the whole module at
   admission. Parser plugins declare no claim ids, so the host **synthesizes
   deterministic ones**: `wildcard:<encoding>` for the manifest-derived wildcard
-  scalar claim, `handler:<normalized type name>` for each discovered exact
-  claim. Pins, ties, and diagnostics use these frozen forms.
+  scalar claim, `handler:<encoding>:<normalized type name>` for each discovered
+  exact claim (encoding included — a multi-encoding parser supporting the same
+  type name in two encodings must not collide). Pins, ties, and diagnostics use
+  these frozen forms.
 - **priority** is int32 in `[-1000, 1000]`; out-of-range claims are rejected at
   admission (explicit, never clamped).
 - **wildcard** is spelled `"type_name": "*"`. Modules may declare it for the
@@ -208,9 +210,11 @@ typedef struct PJ_route_classification_v1_t {
 typedef struct PJ_parser_route_claims_v1_t {
   uint32_t struct_size;   /* sizeof(this table revision) */
   /* [thread-class of classify_schema: thread-safe, pure, no host side-effects]
-   * Called after bind_schema() on the same instance. Returns false + out_error
-   * only on classification FAILURE (status is then ignored); DECLINE is a
-   * successful return with status=declined. */
+   * Called after bind_schema() on the same instance. Reports EXACT
+   * handler-table claims only — never the universal wildcard scalar claim.
+   * Returns false + out_error only on classification FAILURE (status is then
+   * ignored); DECLINE ("no exact claim") is a successful return with
+   * status=declined. */
   bool (*classify_routes)(void* ctx, PJ_string_view_t type_name, PJ_bytes_view_t schema,
                           PJ_route_classification_v1_t* out, PJ_error_t* out_error) PJ_NOEXCEPT;
 } PJ_parser_route_claims_v1_t;
@@ -226,13 +230,15 @@ advances to the next candidate (§5), **never** a fallback to legacy
 classification. Legacy `classify_schema` is consulted only when the extension is
 **absent** (object route only; scalar assumed wildcard).
 
-**DECLINE mapping for the wildcard claim:** extension-bearing plugins decline
-their wildcard scalar claim per topic via `classify_routes` returning
-`status=declined`. Legacy plugins have no classification DECLINE channel, so at
-probe time a legacy plugin's `bind_schema` returning false maps to **DECLINE**
-for selection purposes (its error text goes into the probe summary diagnostic);
-a legacy plugin that accepts `bind_schema` is deemed to accept its wildcard
-scalar claim.
+**Wildcard acceptance is decoupled from classification:** `classify_routes`
+discovers and reports **exact handler-table claims only** — its `declined`
+status means "no exact claim for this type", never a verdict on the wildcard
+(the auto-implementation is handler-table-derived, so treating its DECLINE as a
+wildcard rejection would disable exactly the generic flatten the universal rule
+preserves). The universal wildcard scalar claim is probed identically for every
+plugin, extension-bearing or legacy: `bind_schema` success = ACCEPT,
+`bind_schema` false = DECLINE (its error text goes into the probe summary
+diagnostic).
 
 **Universal wildcard rule (resolves the legacy/protobuf contradiction):** every
 parser plugin receives the manifest-derived **wildcard scalar claim** for its
@@ -240,7 +246,8 @@ declared encodings — with or without the extension, which only *adds* exact
 handler-table claims and never removes the wildcard. parser_protobuf's generic
 descriptor-driven flatten is exactly that wildcard claim; parser_ros's generic
 flatten likewise. A plugin that genuinely cannot scalar-flatten a schema signals
-it per-topic via DECLINE at probe time, not by claim absence.
+it per-topic via DECLINE at probe time (= `bind_schema` rejection, above), not
+by claim absence.
 
 ## 8. Functional parser modules
 
@@ -396,7 +403,8 @@ typedef struct PJ_parser_functional_v2_t {
 
 #### 8.4.2 Module export ABI (`module_abi = 1`)
 
-One C export set, identical for both targets. Every address-like value is a
+One **operational** C export set, identical for both targets (plus two
+native-only metadata exports — see manifest delivery below). Every address-like value is a
 `uint64_t` **module-space token**: for native, a process pointer (host buffers
 may be passed directly — zero copy); for wasm, a linear-memory offset (host
 copies in via `pj_module_alloc`, re-acquires the memory base after every guest
@@ -718,10 +726,13 @@ functional-v2 splice gap.
 14. **PR 1a carries a static wasm ABI conformance slice** (wasi-sdk fixture,
     export/section/byte audits, no wasmer) so the 0.22 freeze is proven against
     a real wasm artifact before 1b (final-review resolution).
-15. **Delta-verification closure round**: classification failure is
+15. **Delta-verification closure rounds**: classification failure is
     single-valued (present-extension failure advances candidates — no legacy
-    fallback); legacy `bind_schema` false maps to DECLINE at probe; parser
-    plugin claim ids synthesized (`wildcard:<encoding>` / `handler:<type>`);
-    unknown encodings rejected at admission; manifest metadata exports are
-    u64-only and native-only; token-0 creation-error channel; one splice offset
-    model everywhere (span tables deleted); manifest-section codec lands in 1a.
+    fallback); `classify_routes` reports **exact claims only**, and the
+    universal wildcard scalar claim is accepted/declined solely by
+    `bind_schema` success/failure for all plugins (classification DECLINE never
+    touches the wildcard); parser plugin claim ids synthesized
+    (`wildcard:<encoding>` / `handler:<encoding>:<type>`); unknown encodings
+    rejected at admission; manifest metadata exports are u64-only and
+    native-only; token-0 creation-error channel; one splice offset model
+    everywhere (span tables deleted); manifest-section codec lands in 1a.
