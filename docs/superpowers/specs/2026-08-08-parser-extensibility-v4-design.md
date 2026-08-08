@@ -201,7 +201,8 @@ sentinel tests stay green. Normative surface (frozen in PR 1a):
 ```c
 typedef struct PJ_route_classification_v1_t {
   uint16_t route_flags;   /* bit0 scalar, bit1 object */
-  uint16_t match;         /* 0 exact, 1 wildcard */
+  uint16_t match;         /* must be 0 (exact) in v1; other values invalid —
+                             this extension never reports wildcard claims */
   uint16_t status;        /* 0 claimed, 1 declined — failure is NOT a status:
                              it is `return false` + out_error */
   uint16_t object_type;   /* PJ_BUILTIN_OBJECT_TYPE_*; NONE unless object claimed */
