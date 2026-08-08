@@ -1,545 +1,436 @@
-# Parser Extensibility: Decoder Modules + Object-Decoder Registry
+# Parser Extensibility v4 — Overlapping Parsers with Host-Side Per-Route Dispatch
 
 **Date:** 2026-08-08
-**Status:** Draft v3 — harmonized decoder-module architecture; aligned to plotjuggler_sdk
-`origin/main` (through #168); v2 adversarial-review findings 17–27 incorporated.
-Module-packaging mechanics resolved per the mechanics consult (Codex,
-2026-08-08): uniform u64 address-token ABI, post-link manifest embedder, reactor-model
-wasm, with-output transaction.
-**Scope:** plotjuggler_sdk (`pj_base/decoder/` subtree, registry service, provider
-family), parser_ros, parser_protobuf, new plugin `parser_extensions`
+**Status:** v4 — supersedes the v3 architecture (registry consulted by parsers +
+structured event tapes; see git history of this file for v3). Provenance: three
+adversarial Codex reviews (27 findings on v2/v3), a module-mechanics consult, a
+host-code stress test against PJ4 (`DataSourceRuntimeHost`, `SessionManager`), and
+DSO-safety verification against plotjuggler_sdk `origin/main` through #169.
+**Scope:** plotjuggler_sdk, PJ4 host runtime, pj-official-plugins (rebuild only),
+pj-plugin-registry, new template repo.
 
-## 1. Summary
+## 1. The model
 
-Users cannot today map a custom ROS2/protobuf message type onto a builtin canonical
-object (PointCloud, Image, …) without forking parser_ros/parser_protobuf. This design
-adds **decoder modules**: an author writes ONE C++ source against a header-only
-authoring API in the SDK, and builds it as either
+There are no "parsers" vs "decoders" vs "wasm extensions". There are only **parsers**,
+each a **claimant over a set of message types** within an encoding, and a **host that
+dispatches each topic's two routes — scalars and objects — independently** to the best
+claimant.
 
-- a **native module** (`.so`/`.dll`/`.dylib`) — this platform, full speed, trusted; or
-- a **WASM module** (`.wasm`, wasi-sdk) — one artifact for every platform, sandboxed;
+- parser_ros is a claimant with a large set: its builtin handler table (objects +
+  specialized scalars) plus a wildcard scalar claim (generic flatten).
+- parser_protobuf: same shape, different subset.
+- A user extension is a claimant with a set of one (or a few) types, offering one or
+  both routes.
+- Today's world is the degenerate case: exactly one claimant per encoding.
 
-both drop into one `decoders/` folder. One official plugin, **parser_extensions**,
-loads both kinds (dlopen | wasmer), normalizes them onto one internal contract, and
-registers their claims with a host-brokered **ObjectDecoder registry**. parser_ros and
-parser_protobuf consult the registry when binding a schema, before falling back to
-generic scalar flatten.
+A CDR message of a type nobody claims → wildcard scalar flatten, exactly today's
+behavior. Install a module claiming that type's object route → objects appear; the
+scalar route still runs parser_ros's flatten. Neither side knows the other exists.
 
-Decode modes per claim:
+**parser_ros and parser_protobuf change zero source lines.** All new complexity
+concentrates in the host, which already owns parser selection, dual-route
+scheduling (eager scalars / lazy objects), and a second parser instance for the
+object route.
 
-- **raw** — the module receives payload bytes (schema-less/custom envelopes, or
-  wrapping an existing whole-message decoder);
-- **structured** — the parser walks CDR/protobuf itself and hands the module a
-  tokenized **event tape** (typed fields, blobs as spans) filtered by a bind-time field
-  mask; module authors never implement wire decoding. v1 supports a declared schema
-  subset with deterministic bind DECLINE outside it (§8.4).
+## 2. Problem (unchanged)
 
-Module **output** reuses the SDK's existing canonical contract (landed in #166/#168):
-`object_type (u16) + canonical PJ.* wire bytes`, decoded host-side by
-`deserializeBuiltinObject()` — no bespoke output format — plus one splice extension for
-zero-copy bulk passthrough (§9).
+Custom ROS2/protobuf types cannot be rendered as builtin canonical objects without
+forking the official parsers. Dominant need: novel encodings (custom-compressed
+clouds, bit-packed payloads) where users already have C++ decode logic.
 
-## 2. Problem
-
-- parser_ros: static schema-name table in `ros_parser.cpp`; parser_protobuf: if-chain
-  in `bindSchema()`. Adding a type means forking a plugin.
-- Dominant need (confirmed): **novel encodings** — custom compression, bit-packed
-  payloads — real decode logic, usually already written in C++ by the user.
-- Plugins are RTLD_LOCAL and self-contained: all cross-plugin delegation must be
-  host-brokered; every boundary must follow the SDK's established DSO-safe idioms
-  (§4).
-
-## 3. Goals and non-goals
+## 3. Goals / non-goals
 
 **Goals**
 
-1. One authoring experience: the same C++ class + macro builds to `.so` or `.wasm`;
-   format choice is a build/trust/performance trade-off, never an architecture change.
-2. Structured mode: decoder authors never reimplement CDR/protobuf (within the v1
-   subset).
-3. Every cross-DSO/WASM boundary uses the SDK's existing POD idioms (`PJ_*_view_t`,
-   `PJ_error_t`, fat-pointer services, `struct_size`-gated vtables, noexcept).
-4. Untrusted WASM modules are bounded in **access and availability**, per-call and in
-   aggregate (§11.4).
-5. Delegation, conflicts, and failures surface on the parser-diagnostics channel
-   (`pj.parser_runtime.v1`).
+1. Zero source changes to existing parser plugins; one rebuild against the new SDK.
+2. Extensions are **functional parser modules**: one C++ source built as a native
+   `.so` (trusted, full speed) or a `.wasm` (one universal artifact, sandboxed);
+   both drop in one folder, both loadable by the host.
+3. One uniform, host-owned selection policy; no special-cased "builtin wins" code.
+4. Schema access at bind time is the backward-compatibility mechanism (§8.3).
+5. All cross-boundary contracts are versioned POD in the SDK's existing idioms.
+6. Marketplace distributes modules alongside plugins, wasm as a first-class
+   single-artifact kind, unrestricted (trust badged, not gated).
 
-**Non-goals (deferred/rejected, §16):** Lua; declarative mapping; host-owned WASM
-runtime; supplementary scalars from object decode; native provider plugins as a
-documented extension path (the module format is the one story; the provider family
-stays available for a future advanced path).
+**Non-goals / rejected:** runtime structured mode (event tapes, projection, field
+masks — see §15); Lua; declarative mapping; an intermediary loader plugin
+(wasmer lives in the host per maintainer decision, PJ3 precedent); supplementary
+scalars smuggled through object decode (a module that wants scalars claims the
+scalar route).
 
-## 4. DSO-safety baseline (verified against origin/main, 2026-08-08)
+## 4. The claim catalog
 
-The design conforms to, and reuses, the following landed mechanisms:
+Host-owned. Three sources:
 
-| Mechanism (main) | Used here for |
-|---|---|
-| `PJ_service_registry_t` — ABI-FROZEN fat pointer; ABI-APPENDABLE vtable with `struct_size` | Delivery of the registry + binding context to parsers via the `ServiceRegistry` already passed to `MessageParserPluginBase::bind()`; **zero base-class layout change** (sentinel test `message_parser_abi_layout_sentinels_test.cpp` stays green by construction) |
-| `service_traits.hpp` pattern (`kName`, `kMinVersion`, `View`) — as used by `pj.parser_runtime.v1`, `pj.source_promotion.v1` | `pj.object_decoder_registry.v1` and `pj.parser_binding_context.v1` are defined the same way |
-| `PJ_string_view_t`, `PJ_bytes_view_t`, `PJ_error_t`, noexcept trampolines | All new C surfaces use these types verbatim — no parallel inventions |
-| `pj.parser_functional.v1` object sink: `object_type u16 + canonical_wire PJ_bytes_view_t`, anchor-ownership rules | The module output contract (§9) mirrors this convention exactly |
-| `serializeBuiltinObject` / `deserializeBuiltinObject` (`builtin_object_codec.hpp`) | Host-side decode of module output — the former "object builders" milestone is deleted |
-| `min_sdk_required` gating (#164) | parser_extensions and new parser builds gate cleanly on old hosts |
+1. **Existing parser plugins** — encodings from their manifests, exactly as today
+   (= the wildcard scalar claim). No manifest changes.
+2. **Their object coverage** — discovered, not declared: the host queries the new
+   route-aware classification extension (§7), which `MessageParserPluginBase`
+   implements automatically from the handler table. The subset stays in sync with
+   the code by construction.
+3. **Module manifests** — embedded claims (§8.2): wasm read from a passive custom
+   section without executing code; folder-drop native read via C getters after
+   `dlopen` (the trust act); marketplace-installed native from the registry index
+   (derived at submit time — no pre-install execution).
 
-## 5. Architecture overview
+Claim key: `(encoding, normalized type name | wildcard, route flags, object_type,
+schema-digest set, provider id, bounded priority)`. Type-name normalization is
+**per-encoding** (ROS: `pkg/msg/Type` canonical; protobuf: full name), not one
+global rule. Provenance is **never** a manifest field.
 
-```
-   author writes ONE source:  class RadarDecoder : pj::ObjectDecoder + PJ_OBJECT_DECODER(...)
-        │ native toolchain                          │ wasi-sdk
-        ▼                                           ▼
-   radar_decoder.so                            radar_decoder.wasm
-        └───────────────┬───────────────────────────┘
-                 <plugins dir>/decoders/
-                        │  scan + manifest read
-        ┌───────────────▼────────────────────────────────────────┐
-        │ parser_extensions (official plugin, kObjectDecoderProvider) │
-        │   dlopen loader │ wasmer loader → one internal contract │
-        └───────────────┬────────────────────────────────────────┘
-                        │ register claims (PJ_object_decoder_registry_v1)
-        ┌───────────────▼───────────────┐      lookup at schema bind
-        │ Host: ObjectDecoderRegistry   │◀────────────────────────────┐
-        └───────────────────────────────┘                             │
-                                                    parser_ros / parser_protobuf
-  Per-schema bind: per-topic pin → built-in table → registry candidates
-                   (priority order, ACCEPT/DECLINE iteration) → generic flatten
-  Per message:     parser ──(event tape | raw payload)──▶ module
-                   parser ◀─(canonical PJ.* wire [+ splice ref])── module
-```
+## 5. Per-route dispatch
 
-## 6. Authoring SDK — `pj_base/decoder/`
-
-Header-only subtree inside pj_base, exported as INTERFACE target
-`plotjuggler_sdk::decoder` (include paths only — a module links **nothing**):
+Resolved once per topic at bind time, independently for the scalar and object route:
 
 ```
-pj_base/include/pj_base/decoder/
-  tape.hpp            token codec for binding/event tapes (shared with host side)
-  object_wire.hpp     canonical PJ.* wire writer (hand-rolled, no protobuf dep)
-  object_fields.hpp   per-type wire field tables + splice-eligible field table
-  object_decoder.hpp  pj::ObjectDecoder, pj::EventView, pj::ObjectWriter
-  module_export.hpp   PJ_OBJECT_DECODER macro — per-target export glue
+per-route pin (fail-closed)
+  → exact-type claims over wildcard
+  → provenance tier (host-derived: bundled > marketplace > folder-drop)
+  → bounded priority within tier
+  → stable (provider_id, claim_id) tie-break        [one-time ambiguity diagnostic]
 ```
 
-Constraints (structural, not conventions):
+- **Pins** are per-route and fail closed: a missing/rejected pinned provider darkens
+  only its pinned route (diagnostics; scalars unaffected by an object pin failure).
+  Fallback past a pin requires user action.
+- **Provenance tiers** come from installation source (bundled catalog state,
+  marketplace records, folder placement) — unforgeable by artifacts. An unrestricted
+  module can therefore never outrank parser_ros for `sensor_msgs/PointCloud2`
+  without a pin, yet the comparator has no parser-specific code.
+- **Candidate probing** uses ACCEPT / DECLINE / ERROR: a candidate may DECLINE at
+  bind (digest mismatch, schema inspection failed, version window); the host tries
+  the next. Classification failure is distinguishable from a decline. Probes run
+  with the candidate's real config, the winning probe instance is retained (never
+  instantiated twice), results are cached by (provider generation, encoding,
+  normalized type, schema digest, config digest), and invalidated on catalog, pin,
+  or config change. Probe work off the source poll thread where possible.
+- **No silent provider switching**: bindings are immutable generations (§6).
 
-- **wasi-clean**: compiles under wasi-sdk; no exceptions (`Status`/`Expected`), no
-  host-only includes, no pointer-width assumptions (POD layouts pinned by
-  `static_assert`s against 32/64-bit drift).
-- **CI gate**: a job compiles the subtree standalone under wasi-sdk; this replaces the
-  isolation a separate package would have provided.
-- Host-side code (tape emitters, DecoderLimits validation, splice) lives in normal
-  pj_base/pj_plugins and includes the same `tape.hpp`/`object_fields.hpp` — one source
-  of truth, adjacent to `pj_base/builtin/` where the canonical structs live.
+## 6. Composite binding
 
-Author experience (complete):
+Per topic the host builds:
+
+```
+CompositeBinding (generation-stamped)
+  ScalarRouteBinding { provider, instance, config, lease }
+  ObjectRouteBinding { provider, instance | lazy factory, object_type, config, lease }
+```
+
+- Two route instances even when one provider wins both routes (eager scalar and lazy
+  object execution overlap; share compiled wasm modules and DSO leases, never
+  mutable instances or stores without synchronization).
+- **Config envelope** (versioned, host-owned): per-route provider IDs/pins, config
+  JSON keyed by stable provider ID, policy/catalog generation, selected
+  artifact/version, plus the legacy single parser config for backward
+  compatibility. The one-config-string flow and the parser-slot UI grow route
+  identities.
+- **Timestamps**: under eager-scalar policies the scalar route's normalized
+  timestamp is binding-wide authoritative; the object route's is validated or
+  ignored. Pure-lazy uses the transport timestamp.
+- **Generations**: catalog reloads, pin edits, quarantine → new binding generation;
+  previously indexed lazy object entries keep their original provider leases and
+  decode as recorded. Object-type changes surface through host reclassification,
+  never silent metadata drift.
+- Diagnostics carry route, provider id, artifact/version, native/wasm mode, and
+  quarantine state.
+
+## 7. Route-aware classification (SDK extension)
+
+`classifySchema` today returns only `object_type` — it cannot express "scalar
+claimed / object claimed / both", exact-vs-wildcard, or decline-vs-failure. A new
+**tail/extension classification surface** returns:
+
+```
+{ route_flags (scalar|object), object_type, match (exact|wildcard),
+  status (claimed|declined|failed) }
+```
+
+`MessageParserPluginBase` implements it automatically from its registered handler
+table — official parsers get it by **recompiling only**. Legacy rule: a parser
+plugin without the extension implicitly claims wildcard scalars for its manifest
+encodings (this covers parser_protobuf's legacy generic path). Delivered through
+the existing `pluginExtension(id)` mechanism or a tail-append per the frozen-layout
+discipline — no existing member moves; sentinel tests stay green.
+
+## 8. Functional parser modules
+
+### 8.1 Authoring
+
+One C++ source + one `decoder.json`, wired by `pj_add_decoder(name SOURCE …
+MANIFEST … TARGETS native wasm)`:
 
 ```cpp
-#include <pj_base/decoder/object_decoder.hpp>
+#include <pj_base/decoder/module.hpp>   // header-only, wasi-clean
 
-class RadarDecoder : public pj::ObjectDecoder {
-public:
+class RadarDecoder : public pj::FunctionalParser {
   pj::Status bind(const pj::BindingInfo& info) override {
-    frame_ = info.fieldId("header/frame_id");
-    width_ = info.fieldId("width");
-    payload_ = info.fieldId("payload");
+    // §8.3: schema available here — digest check, or full inspection
+    plan_ = pj::CdrFieldLocator(info.schemaText())
+                .locate({"header.stamp", "header.frame_id", "width", "payload"});
+    return plan_ ? pj::Status::ok() : pj::Status::decline("unsupported schema rev");
+  }
+  pj::Status parseObject(pj::PayloadView payload, pj::ObjectWriter& out) override {
+    pj::CdrReader r(payload, plan_);
+    auto cloud = out.pointCloud();
+    cloud.setFrameId(r.string(kFrameId));
+    auto pts = radar::decompress(r.span(kPayload), r.u32(kWidth));
+    cloud.setData(pts);                    // owned → the one honest copy
+    // or cloud.setDataFromInput(r.spanRef(kPayload))  → zero-copy splice
     return pj::Status::ok();
   }
-  pj::Status decode(const pj::EventView& in, pj::ObjectWriter& out) override {
-    auto cloud = out.pointCloud();                 // typed canonical-wire builder
-    cloud.setFrameId(in.string(frame_));
-    cloud.setPointStride(16);
-    cloud.addField("x", 0, pj::Datatype::kFloat32); /* … y,z,velocity … */
-    auto pts = radar::decompress(in.span(payload_), in.u32(width_));
-    cloud.setData(pts);                            // owned bytes — serialized into wire
-    // passthrough alternative: cloud.setDataFromInput(in.spanRef(payload_));  // §9 splice
-    return pj::Status::ok();
-  }
-private:
-  pj::FieldId frame_, width_, payload_;
+  // optional: parseScalars(...) with a typed field sink — claims the scalar route
 };
-PJ_OBJECT_DECODER(RadarDecoder)
+PJ_FUNCTIONAL_PARSER(RadarDecoder)
 ```
 
-Authoring is **two files** — `radar_decoder.cpp` + `radar.decoder.json` — wired by an
-SDK CMake helper (`pj_add_decoder(radar SOURCE … MANIFEST … TARGETS native wasm)`).
-The macro emits identical `extern "C"` exports on both targets (native:
-default-visibility / `.def`-listed on MSVC; wasm: clang `export_name`, audited
-post-link); the manifest is embedded by the **build helper**, not the macro:
+Native target: `.so` with hidden visibility, only `pj_module_*` C exports (u64
+address-token signatures identical to wasm), manifest behind C getters. Wasm
+target: wasip1 **reactor** (`_initialize` once; start sections rejected), manifest
+appended as exactly one custom section by the SDK post-link embedder. Handles are
+instance pointers as u64; results are byte-encoded descriptors; all tape/wire
+loads via explicit little-endian helpers; the pinned `static_assert` set guards
+32/64-bit drift.
 
-- **wasm**: an SDK post-link tool appends exactly one validated `pj_decoder_manifest`
-  custom section after `wasm-opt`/stripping (a C++ `__attribute__((section))` data
-  definition is NOT a reliable custom-section mechanism — it can land as an active
-  data segment); the host requires exactly one such section.
-- **native**: the same JSON becomes a constexpr byte array behind two trivial C
-  getters (`pj_decoder_manifest_size_v1` / `pj_decoder_manifest_copy_v1`) read after
-  `dlopen` — trusted native discovery accepts loader initialization; no ELF/Mach-O/PE
-  parsing (three security-sensitive parsers for no security gain).
-
-SDK floor is **C++17** with SDK-owned vocabulary types (`pj::Span`, `pj::Expected`,
-`pj::Status`, tagged event — no `std::variant`/`vector`/`string` in the SDK core, no
-throwing std paths); owned-blob creation is fallible (`out.allocate_blob(size)` →
-`Expected`), backed by module-local realloc bump arenas valid until the next call on
-the instance. Tapes are **byte records with named offsets** read/written via explicit
-little-endian `memcpy` helpers — never `reinterpret_cast` of structs — with a pinned
-`static_assert` set (fixed-width types, IEC 559, wasm32 pointer width). The C++
-virtuals never cross the boundary — class + trampolines compile together into the
-artifact.
-
-## 7. Registry & host wiring
-
-### 7.1 `pj.object_decoder_registry.v1` (standard service, POD throughout)
-
-Defined exactly like existing services: C vtable (ABI-APPENDABLE, `struct_size`),
-fat-pointer service, `Traits` wrapper for C++ consumers. Registration side (used only
-by parser_extensions today):
-
-```c
-typedef struct PJ_decoder_claim_v1 {          /* POD views; host copies at registration */
-  uint32_t struct_size;
-  PJ_string_view_t parser_encoding;           /* "ros2msg" | "omgidl" | "ros1msg" | "protobuf" */
-  PJ_string_view_t wire_encoding;             /* "cdr" | "ros1" | "" = any for this parser */
-  PJ_string_view_t type_name;                 /* normalized (§7.3) */
-  PJ_string_view_t schema_digest;             /* optional hex sha256; "" = any */
-  PJ_string_view_t decoder_id;                /* unique within the module */
-  uint16_t object_type;                       /* frozen BuiltinObjectType; validated */
-  uint8_t  mode;                              /* raw | structured */
-  int32_t  priority;
-  PJ_string_view_t const* field_mask;         /* structured only */
-  uint64_t field_mask_count;
-  uint16_t min_event_tape, max_event_tape;    /* §10 version negotiation */
-} PJ_decoder_claim_v1;
-
-/* vtable slots (sketch — frozen at M1):
-   register_claim(ctx, claim*, decoder_iface*, out_handle*, out_error*) -> bool
-   unregister_claim(ctx, handle) -> void            // idempotent
-   candidates(ctx, key*, out_iter*, out_error*)     // parser side, priority-ordered   */
-```
-
-- The host copies every view at registration (nothing borrowed survives the call) and
-  returns a `u64` claim handle. parser_extensions holds its claims; the host holds a
-  DSO lease on parser_extensions until every decoder instance is destroyed; shutdown
-  order: parsers unbind → instances destroyed → claims unregistered → provider
-  destroyed.
-- `decoder_iface` is a fat pointer to the internal normalized decoder contract (§8) —
-  implemented by parser_extensions' two loaders, never by modules directly.
-
-### 7.2 Selection policy (per topic, at schema bind)
-
-1. **Per-topic pin** (`object_decoder_overrides: {"<topic>": "<module>/<decoder_id>"}`
-   in parser config, set via parser options UI) — the only override of built-ins.
-   **A failing pin fails closed**: object route omitted with diagnostics, scalar route
-   continues; falling back to the built-in requires the user removing the pin.
-2. **Built-in handler table** — exact normalized encoding + name, as today.
-3. **Registry candidates** — ordered by: exact-wire match over `wire_encoding=""`
-   wildcard, then priority desc, then `(module_id, decoder_id)` lexicographic (ties
-   emit a one-time ambiguity diagnostic). The parser iterates `create`+`bind`:
-   **ACCEPT** binds; **DECLINE** (schema digest mismatch, unsupported constructs,
-   version window miss) tries next; **ERROR** is diagnosed and tries next. One summary
-   diagnostic lists all rejections.
-4. **Generic scalar flatten** — unchanged.
-
-### 7.3 Identity & binding context
-
-- Lookup key: `(parser_encoding, wire_encoding, normalized type_name)`. ROS
-  normalization (SDK-defined): canonical `pkg/msg/Type`; `pkg/Type` and
-  `pkg::msg::Type` fold into it.
-- Parsers obtain the registry and a **binding context** (`pj.parser_binding_context.v1`
-  → `{parser_encoding, wire_encoding, topic}` for the instance) from the
-  `ServiceRegistry` received in `bind()`. Lifetime: services are host-owned and outlive
-  the plugin (existing contract); the parser copies context strings during `bind()`.
-  Classification-only instances resolve a no-op write service.
-- **Classification lifecycle** (v2 finding 19): delegate selection runs once, at the
-  first operation that needs it (classify or bind), using the same inputs
-  (context + parser config + schema + candidate iteration), and the accepted binding is
-  cached and reused — preflight and real binding cannot diverge. A later
-  `loadConfig()` that changes wire encoding or pins invalidates the cache, re-runs
-  selection, and the parser signals reclassification to the host.
-
-## 8. Decoder contract (internal normalized form + module ABI)
-
-### 8.1 Operations
-
-`create → bind → (decode_raw | decode_tape)* → destroy`, with `output` and
-`last_error` accessors. All calls on one instance are serialized by the parser;
-distinct instances may run concurrently (parser_extensions guarantees this via
-store-per-instance for wasm, §11.3).
-
-### 8.2 Result protocol (v2 finding 21)
-
-`create`/`bind` return `int32`: `0 = ACCEPT`, `1 = DECLINE`, `< 0 = ERROR` — with
-`PJ_error_t* out_error` populated on ERROR (module-scope, not handle-scope, so
-create-failure is reportable). On DECLINE/ERROR after a successful `create`, the
-caller invokes `destroy`; a module must tolerate `destroy` at any lifecycle point.
-`decode_*` return `0 = OK`, `< 0 = ERROR` (per-message; never DECLINE).
-
-### 8.3 Module export surface
-
-Native and wasm export **literally identical scalar signatures**, built on a 64-bit
-address token (`pj_addr_t = u64`: native = `uintptr_t` round-trip; wasm = zero-extended
-linear-memory offset, host-verified to fit u32) and `u32` lengths. Handles are the
-module's `Instance*` as u64 — no index table, no global lock. Results travel as
-byte-encoded records at caller-supplied addresses (fixed 40-byte output descriptor:
-`{descriptor_size, flags, tape_addr, tape_len, arena_addr, arena_len, generation}`),
-never as C structs by value. Modules export SDK wrappers `pj_decoder_alloc`/`_free`
-(libc `malloc`/`free` names are not part of the ABI). Export set:
-`pj_decoder_abi_version`, `pj_decoder_alloc`, `pj_decoder_free`,
-`pj_decoder_create(out_handle_addr)` (null handle = allocation failure; fallible init
-belongs in `bind`), `pj_decoder_bind`, `pj_decoder_decode_raw`,
-`pj_decoder_decode_tape`, `pj_decoder_output`, `pj_decoder_last_error(dst, cap)`
-(returns required length; not NUL-terminated), `pj_decoder_destroy`, the manifest
-getters (§6, native), plus wasm: `memory`, `_initialize` (wasip1 **reactor** model,
-`-mexec-model=reactor`; called exactly once — never also `__wasm_call_ctors`).
-Literal signatures freeze in one ABI header at M1; parser_extensions validates every
-export's exact signature at load and rejects modules with a wasm start section or
-`_start` (a start section executes at instantiation, outside the budgeted init path).
-
-### 8.4 Structured input: binding tape + event tape
-
-Unchanged from v2 in vocabulary (BEGIN_MSG/END_MSG, BEGIN_ARRAY/END_ARRAY, SCALAR,
-STRING, PACKED_ARRAY, BYTES_SPAN, TIMESTAMP_NS, DURATION_NS, END_TAPE) with these
-bindings tightened (v2 findings 5/6):
-
-- **Sequence elements**: `BEGIN_ARRAY(field_id, count)` then per element
-  `BEGIN_MSG(field_id)…END_MSG` (messages) or value tokens carrying the sequence's
-  `field_id` (primitives/strings). Empty messages are legal (`BEGIN_MSG`+`END_MSG`
-  adjacent); an empty projection yields an empty per-message tape.
-- **Presence**: absent optional field ⇒ no token. IDL optionals/unions, protobuf
-  maps/oneofs/groups, recursive types, wstrings, multidim arrays ⇒ bind **DECLINE**
-  when reachable through the mask; `"*"` over a message containing any of them is a
-  hard DECLINE (raw mode is the escape hatch).
-- **PACKED_ARRAY** only for a single contiguous fixed-width little-endian wire
-  segment (CDR primitive arrays in LE payloads; protobuf packed fixed32/64/float/
-  double). Multiple wire segments, varint packing, unpacked repeats, BE payloads ⇒
-  materialized `SCALAR`s inside `BEGIN_ARRAY`/`END_ARRAY`. Wire order preserved;
-  protobuf duplicate-singular = every occurrence emitted, consumer applies last-wins;
-  enums as int32.
-- **Field mask grammar** (v2 finding 27): '/'-joined names; selecting a non-leaf
-  selects its whole subtree; duplicates deduped; `"*"` = root subtree. Caps applied at
-  registration/bind before any allocation: ≤ 256 paths, ≤ 512 bytes/path, ≤ 4096
-  expanded entries (host defaults; configurable downward).
-
-### 8.5 Offset spaces (v2 finding 24 — one rule)
-
-All span offsets in tapes are **input-space**: offsets into the payload view **as
-presented to the module**. Native modules see the original payload (identity). WASM
-modules see a compacted arena containing only the projected span ranges; the host
-keeps the inverse segment table. Any input-space range a module returns (splice, §9)
-is accepted only if it maps wholly into one contiguous original-payload range —
-guaranteed for ranges within one projected segment, a validation error otherwise.
-
-## 9. Module output: canonical wire + splice
-
-Adopting the landed `pj.parser_functional.v1` convention (v2 findings 7/22 resolved by
-reuse — the nested-output-model decision is honored by protobuf wire's natural
-nesting):
-
-```
-output bundle: { object_type u16,            // must equal the claim's — validated
-                 canonical_wire view,        // stable PJ.* wire for that type
-                 splice_ref? {field u16, input_off u32, len u32} }
-```
-
-- **Owned bulk data** (decompressed): serialized inside `canonical_wire` by
-  `ObjectWriter` — the one honest copy.
-- **Passthrough bulk data**: `canonical_wire` elides the bulk field;
-  `splice_ref` names it (validated against the SDK's per-type splice-eligible table:
-  `PointCloud.data`, `Image.data`, `CompressedPointCloud.data`, `VideoFrame.data`) and
-  gives an input-space range. The host resolves it through §8.5 to the original
-  payload and attaches the existing `PayloadView.anchor` — zero-copy end to end; with
-  an empty anchor the host materializes a copy (existing parser contract).
-- Host decode: `deserializeBuiltinObject(object_type, wire)` + splice + DecoderLimits
-  semantic validation (stride/step/dimension invariants). The internal contract exposes
-  the result as a **`with_output(consumer)` transaction**, not borrowed spans: the
-  loader adapter fetches the descriptor, bounds-checks both spans (wasm: under the
-  instance lock, memory base re-acquired), and invokes the host's validator/decoder
-  synchronously inside the callback — no module pointer ever escapes the transaction.
-  Everything the host retains is copied before the callback returns.
-- Scalar output from modules: deferred (unchanged); the bundle has no scalar section.
-
-## 10. Versioning & negotiation (v2 finding 23)
-
-- Module ABI version (`pj_decoder_abi_version` = 1) covers the export surface and
-  bundle layout. Tape formats carry `tape_version`; claims declare
-  `[min_event_tape, max_event_tape]`; the parser picks the highest mutually supported
-  version at bind or DECLINEs. Canonical wire is versioned upstream by the SDK
-  (`PJ.*` contract) — modules emit the version they were built against; the codec's
-  own compatibility rules apply. Unknown tokens/fields in v1: reject, never skip.
-- One compatibility matrix (ABI 1 ⇔ event tape 1 ⇔ binding tape 1) ships in the ABI
-  header and is extended, never rewritten.
-
-## 11. parser_extensions (official plugin)
-
-### 11.1 Loading
-
-Scans `<plugin dir>/decoders/` at startup (rescan requires restart, v1). Native `.so`
-loaded with `dlopen(RTLD_LOCAL | RTLD_NOW)` (Windows: `LoadLibraryExW` with
-`LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`, absolute path)
-— loaded by default: placing the file is the trust act. Module hygiene: hidden
-visibility with only `pj_decoder_*` exported, linked with no unresolved symbols
-(`-z,defs`), symbols resolved per-handle (identical names across modules are fine
-under RTLD_LOCAL), no substantive `DllMain`/global-ctor work. **v1 never unloads a
-successfully loaded native module during the session** — eliminating shutdown-order,
-TLS-destructor, and dangling-pointer hazards outright. `.wasm` via wasmer (statically
-linked, prebuilt, pinned build — the metering C API is unstable, so the pin is
-load-bearing). Wasm manifests are read from the custom section before any module code
-runs; native manifests via the C getters after dlopen (§6).
-
-### 11.2 Manifest (JSON, size-capped)
+### 8.2 Claims manifest
 
 ```json
 { "abi_version": 1, "name": "radar-decoders", "version": "1.0.0",
-  "decoders": [{
-    "decoder_id": "radar-scan-v1",
-    "parser_encoding": "ros2msg", "wire_encoding": "cdr",
-    "type_name": "my_msgs/msg/RadarScan",
-    "object_type": "kPointCloud",              // canonical PJ::sdk::name() strings
-    "mode": "structured", "priority": 0,
-    "event_tape": [1, 1],
-    "field_mask": ["header", "width", "payload"] }] }
+  "claims": [{
+    "claim_id": "radar-scan-v1",
+    "encoding": "ros2msg", "type_name": "my_msgs/msg/RadarScan",
+    "routes": ["object"], "object_type": "kPointCloud",
+    "schema_digests": ["sha256:…", "sha256:…"],   // optional allow-list
+    "priority": 0 }] }
 ```
 
-### 11.3 WASM execution model
+One module may carry claims across encodings (e.g. `ros2msg` and `protobuf`
+variants of the same product) — the decode core is shared; only thin per-encoding
+wire shims differ (~25–50 lines each, measured against our own handlers).
 
-Compiled module cached and shared via the C API's shared-module mechanism
-(`wasm_module_share`/`obtain` per store); **one store + instance per bound decoder**
-(no cross-topic head-of-line blocking). *M4 gate: prototype share/obtain against the
-pinned wasmer 7 build before freezing; fallbacks are serialized compiled artifacts,
-per-module store + mutex, or a small instance pool.* Store **thread affinity** must be
-verified — "calls serialized" is insufficient if a store cannot migrate OS threads;
-if needed, wasm calls route through per-store executor workers. Structured mode copies
-tape + projected spans into a compact guest arena tracked by an explicit segment table
-`{guest_start, length, original_host_start, span_id}`; `EventView` blob accessors carry
-the `span_id`, and a returned splice ref is accepted only against an authorized
-segment (§8.5). Memory base re-acquired after **every** guest call — including
-`pj_decoder_alloc`/`_free` and `_initialize`, which can themselves grow memory (the
-PJ3 prototype's cached pre-decode output pointer is exactly this bug). Instantiation
-is **lazy** (first bind) with admission control against the budgets below; per-decoder
-instance cost is benchmarked at 10/100/1000 bound topics.
+### 8.3 Schema access = the backward-compatibility mechanism
 
-### 11.4 Hardening & budgets (v2 findings 8/13/25/26)
+Every claimant receives `(type_name, schema)` at bind — same inputs parser_ros
+gets. Author's robustness ladder:
 
-- Imports: exact allow-list; anything else rejects the module. No stdin; no fs/net.
-  Export signatures validated; wasm **start sections and `_start` rejected**; command
-  modules rejected (reactor only). Guests build `-fno-exceptions`; traps are the error
-  path. Module compilation itself is bounded (size/function caps checked pre-compile,
-  compiled off the UI thread) — runtime fuel does not protect compilation.
-- Per-call: wasmer metering/epoch deadline, memory-page cap, stack cap.
-- **Aggregate (session)**: max modules, max module file size (checked before
-  compilation), max total claims, max active instances, total linear-memory budget.
-  Admission failure = bind DECLINE with diagnostic.
-- **Quarantine separates faults from data errors**: ordinary `decode` errors
-  (bad payload) are per-message diagnostics only — never strikes. Runtime faults
-  (trap, deadline, memory exhaustion) and contract violations (malformed bundle,
-  invalid splice) strike the `(module, decoder_id)` key; N=3 strikes in a session
-  quarantines it: instance destroyed, recreated on next use via the full
-  `create`+`bind` replay from cached inputs; a second quarantine disables the decoder
-  for the session with a summary diagnostic.
+- **L0** hard-coded layout — brittle; digest gating strongly recommended.
+- **L1** digest allow-list — unknown revision ⇒ DECLINE (+ diagnostic); never a
+  silent misparse. Multiple digests = multiple supported eras of recorded data.
+- **L2** bind-time schema inspection — the module computes field positions from the
+  `.msg` text / descriptor set and adapts across revisions. For **CDR this is the
+  only reliable evolution mechanism** (positional format); protobuf is
+  evolution-tolerant by field number regardless. The authoring kit's
+  **field locator** (`CdrFieldLocator` / `ProtoFieldLocator`: schema + field paths
+  → offset/field-number plan, computed once at bind) makes L2 a few lines.
+- **L3 (reserved)** build-time typed-view codegen: `.msg`/`.proto` → generated
+  wasi-clean accessor structs; wire-format independence at build time with zero
+  runtime machinery. Deferred; the authoring path is reserved.
 
-## 12. Failure semantics (parsers)
+### 8.4 Module ABI
 
-Scalar and object routes stay independent (lazy object route): decode failure omits
-the object; committed scalar rows remain; no transactional rollback; diagnostics
-rate-limited per topic. No auto-demotion to generic flatten. Pin failures: §7.2,
-fail-closed.
+The landed `pj.parser_functional.v1` shape (#168), extended to **v2**:
 
-## 13. Performance obligations
+- scalar route: typed key/value sink (`PJ_named_field_value_t`), unchanged;
+- object route: `object_type u16 + canonical PJ.* wire bytes` (host decodes with
+  the existing `deserializeBuiltinObject`), **plus** an append-only spliced sink
+  (`accept_object_spliced`): canonical wire with the bulk field elided + one
+  `(field, offset, len)` reference into the input payload. The host validates
+  against the per-type splice-eligible table and resolves with the
+  `PayloadView.anchor` (empty anchor ⇒ materialize). Anchor ownership, expected
+  object-type validation, and wasm u64-token rules (validated offsets, never host
+  pointers) are part of the v2 contract.
+- results: `0 ACCEPT / 1 DECLINE / <0 ERROR` at create/bind; `0 / <0` per message;
+  fixed error buffer with copy-out accessor; output valid until the next call on
+  the instance; host consumes via a with-output transaction (no module pointer
+  escapes).
 
-Structured emitters: CDR emitter over `RosMsgParser::Deserializer` (M2); protobuf
-requires a **new descriptor-aware wire scanner** — DynamicMessage preserves no offsets
-(M3). Benchmarks are deliverables with regression budgets fixed from M1/M2
-measurements: baseline generic flatten vs structured delegation vs raw delegation;
-wasm-vs-native decode overhead on a 1MB cloud fixture. No unmeasured claims.
+### 8.5 Loaders (in `plugin_host`, shared by PJ4 and pj_proto_app)
 
-## 14. Testing strategy
+- **Native**: `dlopen(RTLD_LOCAL|RTLD_NOW)` (Windows `LoadLibraryExW` with
+  dll-load-dir search), per-handle symbol resolution, `-z,defs` modules, no
+  substantive init work; **v1 never unloads a loaded native module mid-session**.
+- **Wasm (wasmer, statically linked, pinned build)**: exact import allow-list, no
+  stdin/fs/net, export signature validation, reject start sections/`_start`,
+  compile-once + store-per-bound-instance via shared-module obtain (*gate:
+  prototype against wasmer 7 before freezing; fallbacks enumerated*; verify store
+  thread-affinity — route calls through per-store executors if required), memory
+  base re-acquired after every guest call, compacted-span segment table with
+  span-id-authorized splice refs, metering/epoch deadlines, memory/stack caps.
+- **Budgets (aggregate, session)**: module count/file size (pre-compile), total
+  claims, active instances, total linear memory; lazy instantiation with admission
+  DECLINE. Compilation bounded and off the UI thread.
+- **Quarantine separates faults from data errors**: bad payloads = per-message
+  diagnostics, never strikes; traps/deadlines/contract violations strike
+  `(module, claim)` — 3 strikes quarantines (destroy + recreate via full
+  create/bind replay), repeat disables for the session. Established bindings never
+  silently switch provider.
 
-- **SDK**: registry service tests (registration copies, handles, leases, shutdown
-  order, candidate ordering incl. wildcard specificity, ACCEPT/DECLINE/ERROR
-  iteration); tape round-trips; DecoderLimits adversarial corpus + fuzz targets (tape
-  validators, manifest parser, splice validation); canonical-wire writer golden tests
-  against `deserializeBuiltinObject`; wasi compile gate + POD layout static_asserts.
-- **Parsers**: golden event tapes from CDR/protobuf fixtures (subset DECLINEs, packed
-  vs materialized, BE payloads, empty projections, sequence-of-message delimiting);
-  selection-policy tests incl. pin fail-closed and config-change reclassification;
-  scalar-route regressions.
-- **parser_extensions**: fixture modules built from one source as both `.so` and
-  `.wasm` (source committed; prebuilt artifacts committed, wasi-sdk in CI as
-  follow-up): raw, structured, splice passthrough, trap, deadline loop, memory bomb,
-  malformed bundle, bad manifest, duplicate manifest sections, start-section module,
-  disallowed import, admission-limit hits, quarantine strike/replay. Post-link ABI
-  audit (exact export set, no extras) and manifest-embedder round-trip tests.
-- **E2E**: pj_proto_app smoke — MCAP with custom type + the example module (both
-  formats), screenshot-verified cloud.
+## 9. Authoring kit — `pj_base/decoder/`
 
-## 15. Milestones — vertical slice
+Header-only, wasi-clean subtree; INTERFACE target `plotjuggler_sdk::decoder`
+(include paths, zero linkage). C++17 floor; SDK-owned `Span`/`Expected`/`Status`;
+no throwing std paths; fallible `allocate_blob`; realloc bump arenas. Contents:
+`CdrReader`, `ProtoReader`, time normalization (`readRosTime`/`readProtoTimestamp`
+→ ns), `CdrFieldLocator`/`ProtoFieldLocator`, `ObjectWriter` (canonical-wire
+builders per object type), `PJ_FUNCTIONAL_PARSER` macro, manifest tooling
+(`pj-wasm-embed-manifest`, `pj_add_decoder`). Enforcement: standalone wasi-sdk
+compile job in CI + pinned POD `static_assert`s (that gate is what a separate
+package would have provided).
 
-| # | Deliverable | Repo | Depends |
-|---|---|---|---|
-| M1 | `pj_base/decoder/` subtree (tape codec, canonical-wire writer, ObjectDecoder/EventView/ObjectWriter, native macro target) + registry service + provider family + leases + binding-context service + DecoderLimits + wasi CI gate; parser_ros fallback (raw mode, native modules) end-to-end; benchmark baseline | plotjuggler_sdk + parser_ros | — |
-| M2 | Structured CDR: emitter, projection, subset DECLINEs; splice; classification-lifecycle wiring | SDK + parser_ros | M1 |
-| M3 | Structured protobuf: descriptor-aware wire scanner + parser_protobuf integration | pj-official-plugins | M1 (M2 formats) |
-| M4 | parser_extensions wasm loader: hardening, budgets, quarantine, wasm macro target + custom-section manifest, offset remap; E2E both formats | pj-official-plugins | M1–M2 |
-| M5 | Pin UI, template repo (one source, two build presets), authoring docs | plugins + new repo | M1–M4 |
-| M6 | Registry/marketplace distribution: `kind: "decoder"` schema + submit tooling; PJ4 marketplace decoder support incl. wasm artifacts; rescan-on-install | pj-plugin-registry + PJ4 | M4 |
+## 10. Distribution — registry & marketplace
 
-Host registry ownership, provider bootstrap, and classification integration are M1
-scope. `deserializeBuiltinObject` reuse removes the former object-builder milestone.
+- Registry `kind: "decoder"` (functional parser module) alongside plugins. **Both
+  module kinds accepted, unrestricted** — trust badged in the UI (sandboxed wasm vs
+  trusted native), not gated (maintainer decision).
+- Wasm = one universal artifact + sha256; native = per-platform artifacts as
+  plugins today.
+- Entries derived from the embedded manifest by submit tooling (same validation the
+  host loader applies), claims listed → **searchable by message type**.
+- Compatibility gating by module ABI version (the decoder analog of
+  `min_sdk_required`); auto-update never installs what the host can't run.
+- Marketplace-installed native modules: claims come from the registry index (no
+  pre-install execution). Install writes into the modules folder; the host rescans
+  on install (no restart).
+- Force-retagging released modules invalidates checksums — same rule as plugins.
 
-## 16. Distribution — registry & marketplace (M6)
+## 11. Error handling summary
 
-Folder drop (`decoders/`) is the v1 mechanism and ships with M4. Registry/marketplace
-distribution follows as M6, decoupled from the critical path:
+| Failure | Behavior |
+|---|---|
+| Claim invalid (unknown object_type/encoding) | Rejected at catalog admission, diagnostic |
+| Pinned provider missing/declines | That route fails closed; other route unaffected |
+| Probe DECLINE (digest, schema inspection, version) | Next candidate; one summary diagnostic |
+| Probe ERROR / classification failure | Diagnosed distinctly; next candidate |
+| Per-message decode error | Object omitted / scalar row skipped; rate-limited diagnostic; no strikes |
+| Trap / deadline / contract violation (wasm) | Strike → quarantine → recreate; 3× disables for session |
+| Module fails load (imports/signatures/start section/manifest) | Rejected at scan, diagnostic |
+| Old host (no v4 SDK) | Modules not loaded; parsers behave exactly as today |
 
-- **Registry**: new entry `kind: "decoder"` alongside plugins. **Both module kinds are
-  accepted — no marketplace-level trust restriction** (maintainer decision,
-  2026-08-08); the UI surfaces trust honestly (sandboxed badge for `.wasm`,
-  trusted-native framing for `.so`) but does not gate. A wasm decoder is **one
-  universal artifact** + sha256 (no per-platform build matrix for authors); native
-  decoders ship per-platform artifacts exactly like plugins today.
-- **Entries are derived, never hand-written**: submit tooling (extending
-  `submit_to_registry.py`) extracts the embedded manifest, runs the same validation
-  parser_extensions applies at load (manifest extraction, export-signature audit,
-  size caps), computes checksums, and opens the registry PR. Claims are listed in the
-  entry, making decoders **searchable by message type name** ("what decodes
-  `my_msgs/RadarScan`?").
-- **Compatibility gating for auto-update**: the decoder ABI version + tape-version
-  window in the claims is the decoder analog of `min_sdk_required` — the marketplace
-  never installs a module the installed host cannot run.
-- **PJ4 marketplace**: decoder kind in the existing UI; install writes into
-  `decoders/`; updates ride the existing checksum watcher. `rescan-on-install` in
-  parser_extensions graduates from deferred to M6 scope (one-click install must not
-  require a restart).
-- Force-retagging a released decoder invalidates registry checksums — same rule and
-  same caution as plugin releases.
+## 12. Testing strategy
 
-## 17. Deferred / rejected
+- **SDK**: claim catalog + route resolver (ordering, tiers, wildcard specificity,
+  per-route pins fail-closed, decline-vs-failure, probe caching/invalidation,
+  generations); route-aware classification auto-implementation; functional v2 +
+  splice validation; canonical-wire writer golden tests vs
+  `deserializeBuiltinObject`; authoring-kit round-trips; wasi compile gate; module
+  loader tests incl. adversarial wasm fixtures (trap, deadline loop, memory bomb,
+  start-section module, duplicate manifest sections, disallowed imports,
+  admission limits, quarantine replay); post-link ABI audit.
+- **PJ4**: composite-binding refactor tests (split providers, timestamp authority,
+  generations across catalog reload/pin edits, lazy entries under old
+  generations), config-envelope round-trip incl. legacy configs, UI route
+  identities.
+- **plugins repo**: rebuild-only verification for every parser (zero source diff,
+  sentinel tests green), E2E: MCAP with custom type + example module (both
+  targets) → screenshot-verified cloud; scalar-route regression suite proving
+  envelope series unchanged.
+- **Benchmarks**: probe cost at 10/100/1000 topics × N claimants; native vs wasm
+  decode overhead on a 1MB cloud fixture; regression budgets from baselines.
 
-**Rejected:** Lua; declarative mapping/schema hints; host-owned WASM runtime;
-silent priority override of built-ins; manifest-by-execution for wasm; bespoke nested
-output format (superseded by canonical-wire reuse).
-**Deferred:** native provider plugins as a documented extension path; supplementary
-scalars; maps/oneofs/recursion in structured mode; vendored single-header authoring
-kit (build-without-SDK); module-supplied options UI; transactional scalar rollback.
-(Registry distribution and rescan-on-install moved to M6, §16.)
+## 13. Milestones & PR map (minimized)
 
-## 18. Key decisions log
+| PR | Repo | Contents |
+|---|---|---|
+| 1 | plotjuggler_sdk | Route-aware classification ext · functional v2 + splice · module ABI header · claim catalog + route resolver (host lib; harvests the v3 M1 snapshot's copy/lease/diagnostic patterns) · native + wasm loaders in `plugin_host` (wasmer statically linked) · authoring kit + tools + wasi gate → **SDK 0.22 release** |
+| 2 | PJ4 | Composite-binding refactor (`DataSourceRuntimeHost`), config envelope, per-route pins + parser-slot UI extension, diagnostics attribution, binding generations, module folder scan + rescan-on-install, provider bootstrap |
+| 3 | pj-official-plugins | SDK bump: rebuild-only for all parsers (zero source changes verified) + E2E fixtures/example module + benchmarks |
+| 4 | pj-plugin-registry (+ PJ4 marketplace bits) | `kind: decoder` schema, submit tooling, marketplace wasm artifact support |
+| 5 | new repo + docs | Template repo (one source, two build presets), authoring guide |
 
-1. **Harmonized decoder modules** — one C++ source, two build targets, one folder, one
-   host plugin; format choice is the user's, never the architecture's (maintainer,
-   2026-08-08).
-2. **Authoring API in `pj_base/decoder/`** — no new package; INTERFACE target +
-   wasi CI gate carry the constraints (maintainer, 2026-08-08).
-3. **Output = canonical PJ.* wire + splice** — reuse of #166/#168 contracts; the
-   nested-output decision honored through protobuf wire's natural nesting.
-4. **Registry/binding delivery via existing `ServiceRegistry`** — zero parser
-   base-class change; sentinel tests stay green by construction.
-5. **Structured subset with hard DECLINE**; raw mode escape hatch (maintainer).
-6. **Per-topic pin, fail-closed** — the only built-in override.
-7. **Faults strike, data errors don't** — quarantine reserved for traps/deadlines/
-   contract violations.
-8. **Availability limits are v1 prerequisites**, per-call and aggregate.
-9. **wasmer, prebuilt; store-per-instance; lazy instantiation with admission.**
-10. **Vertical-slice milestones** (maintainer).
-11. **Marketplace carries both module kinds, unrestricted** — trust surfaced in the
-    UI, not gated at submission; wasm supported as a first-class single-artifact
-    registry kind (maintainer, 2026-08-08).
+Gates: PR 2/3 require PR 1's release. The wasmer shared-module/thread-affinity
+prototype is a PR 1 exit criterion. M1 v3-snapshot harvest list is recorded in the
+stress-test report (keep: copies/snapshots/leases/tie-diagnostics/test structure;
+prune: provider family, parser-facing service, tapes).
+
+## 14. Deferred / rejected
+
+**Rejected:** runtime structured mode (event/binding tapes, projection, field
+masks) — cross-encoding schemas are rarely field-aligned, CDR name-robustness was
+illusory, and the machinery drew the majority of adversarial findings; Lua;
+declarative mapping; loader-intermediary plugin; manifest-by-execution for wasm;
+priority as a trust mechanism.
+**Deferred:** typed-view codegen (L3, reserved authoring path); per-thread wasm
+instance pools beyond store-per-instance; module options UI; vendored
+single-header authoring kit; transactional scalar rollback.
+
+## 15. Design history — options considered and why they lost
+
+The path to v4, kept for institutional memory (each non-adopted shape in a line or
+two; full detail in this file's git history and the review transcripts).
+
+**Initial option survey.**
+- *Declarative mapping files* ("field X is the pointcloud") — solved the
+  embedded-standard-type case; the real need is novel encodings requiring code.
+- *Lua scripting* — interpreted per-point loops can't do codec work; a second,
+  permanently weaker extension ABI.
+- *Out-of-band conversion / schema hints* — documentation, not architecture.
+- *Decode-downstream* (wrap bytes, decode at render — the
+  `kCompressedPointCloud`/`kVideoFrame` pattern) — already exists; orthogonal;
+  per-encoding not per-schema.
+- *Native codec plugins + WASM modules* — survived, evolved into v4's modules.
+
+**v1–v3: ObjectDecoder registry consulted by parsers + dual-mode ABI.** Parsers
+grew a fallback rung querying a registry service; decoders got raw bytes or a
+host-emitted **structured event tape** (SAX-for-CDR/protobuf with bind-time
+projection). Three adversarial reviews (27 findings) kept finding the same class of
+problem: the tape/projection/mask machinery was the bulk of the contract surface
+and of the defects. Two external discoveries reshaped it: PJ3's working wasm-parser
+prototype (validated wasmer packaging + guest feasibility; taught ABI-drift,
+memory-reacquisition, and reactor-model lessons), and SDK #166/#168 landing a
+canonical `PJ.*` wire codec + functional parser protocol — replacing our invented
+output format with reuse.
+
+**Harmonization step.** "Decoder = one C++ source → `.so` or `.wasm`" replaced the
+two-shaped authoring story; the authoring kit moved into `pj_base/decoder/` (no new
+package; wasi CI gate carries the constraint); wasmer moved from an intermediary
+`parser_extensions` plugin into the host (PJ3 precedent), dissolving the provider
+plugin family and its lease machinery.
+
+**The collapse into v4.** Interrogating "how is a decoder technically different
+from a parser?" showed it isn't: a decoder is a parser restricted to one type and
+(optionally) one route, and the v4 parser contract already splits the routes.
+Host-side per-route dispatch made the parsers' fallback branches, the
+parser-facing registry service, and the binding-context service unnecessary —
+existing parsers now change zero source lines. A host-code stress test then
+hardened it: provenance-tier trust (priority alone was a security regression),
+composite bindings with immutable generations, timestamp authority, and the
+functional-v2 splice gap.
+
+**Durable learnings.**
+1. *Schema divergence beats wire abstraction*: even Foxglove's own dual-encoding
+   schemas aren't field-aligned — the event tape abstracted the wrong layer. The
+   true cross-encoding convergence point is the **canonical object** (output),
+   not the wire (input).
+2. *Reuse over invention*: every place we replaced an invented contract with a
+   landed one (#166/#168 wire codec, ServiceRegistry idiom, functional protocol)
+   deleted findings wholesale.
+3. *Trust must be host-derived* — never a field an artifact writes.
+4. *Schema access at bind is the evolution mechanism* (CDR is positional; digest
+   gating turns drift into DECLINE, not garbage).
+5. *Measure before architecting*: the feared per-encoding boilerplate is 25–50
+   lines with good readers — measured in our own handlers — which is what made
+   dropping the tape machinery safe.
+6. *The zero-source-change constraint produced the best architecture*: every
+   design that required parsers to participate was worse than the one that
+   didn't.
+
+## 16. Decisions log
+
+1. **Overlapping type-subset claimants; per-route host dispatch; zero parser source
+   changes** (maintainer, 2026-08-08).
+2. **Wasmer in the host** (`plugin_host`), PJ3 precedent — no intermediary plugin
+   (maintainer).
+3. **Modules = functional parsers**: one concept; "decoder" vs "wasm parser"
+   differs only in claims (maintainer).
+4. **Structured mode dropped; readers + bind-time field locators + reserved
+   codegen** replace it (analysis + stress test).
+5. **Trust is host-derived provenance, never manifest data**; uniform comparator;
+   per-route fail-closed pins (stress-test blocker resolution).
+6. **Schema access at bind = compatibility mechanism** (L0–L3 ladder; DECLINE
+   semantics) (maintainer insight).
+7. **Output = canonical PJ.* wire + splice** via functional v2 — reuse of #166/#168.
+8. **Marketplace unrestricted, both kinds; wasm first-class universal artifact**
+   (maintainer).
+9. **Authoring kit inside pj_base** (`pj_base/decoder/`), wasi CI gate as the
+   enforcement (maintainer).
+10. **Immutable binding generations; scalar-route timestamp authority** (stress-test
+    resolution).
