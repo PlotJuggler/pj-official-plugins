@@ -334,20 +334,23 @@ package would have provided).
 - **Benchmarks**: probe cost at 10/100/1000 topics × N claimants; native vs wasm
   decode overhead on a 1MB cloud fixture; regression budgets from baselines.
 
-## 13. Milestones & PR map (minimized)
+## 13. Milestones & PR map
 
 | PR | Repo | Contents |
 |---|---|---|
-| 1 | plotjuggler_sdk | Route-aware classification ext · functional v2 + splice · module ABI header · claim catalog + route resolver (host lib; harvests the v3 M1 snapshot's copy/lease/diagnostic patterns) · native + wasm loaders in `plugin_host` (wasmer statically linked) · authoring kit + tools + wasi gate → **SDK 0.22 release** |
-| 2 | PJ4 | Composite-binding refactor (`DataSourceRuntimeHost`), config envelope, per-route pins + parser-slot UI extension, diagnostics attribution, binding generations, module folder scan at startup + rescan-on-install |
-| 3 | pj-official-plugins | SDK bump: rebuild-only for all parsers (zero source changes verified) + E2E fixtures/example module + benchmarks |
-| 4 | pj-plugin-registry (+ PJ4 marketplace bits) | `kind: parser_module` schema, submit tooling, marketplace wasm artifact support |
-| 5 | new repo + docs | Template repo (one source, two build presets), authoring guide |
+| 1a | plotjuggler_sdk | **SDK core, wasm-free**: route-aware classification ext · functional v2 + splice · **complete dual-target module ABI header (frozen here)** · claim catalog + route resolver · native module loader · authoring kit core (readers, locators, ObjectWriter, native macro target) + wasi-clean CI gate → **release 0.22** |
+| 1b | plotjuggler_sdk | **SDK wasm**: wasmer loader (statically linked, pinned; hardening, budgets, quarantine) · wasm macro target + `pj-wasm-embed-manifest` · adversarial wasm fixtures → **release 0.23**. Exit criterion: wasmer-7 shared-module-obtain + store thread-affinity prototype |
+| 2 | PJ4 | Composite-binding refactor (`DataSourceRuntimeHost`), config envelope, per-route pins + parser-slot UI extension, diagnostics attribution, binding generations, module folder scan at startup + rescan-on-install, marketplace `parser_module` support (wasm artifacts activate with 0.23) |
+| 3 | pj-official-plugins | SDK bump: rebuild-only for all parsers (zero source changes verified) + native-module E2E fixtures + benchmarks + authoring guide; wasm E2E addendum after 0.23 |
+| 4 | pj-plugin-registry | `kind: parser_module` schema + submit tooling + validation |
+| — | new repo | Template repo bootstrap (one source, two build presets) — repo creation, not a PR |
 
-Gates: PR 2/3 require PR 1's release. The wasmer shared-module/thread-affinity
-prototype is a PR 1 exit criterion. M1 v3-snapshot harvest list is recorded in the
-stress-test report (keep: copies/snapshots/leases/tie-diagnostics/test structure;
-prune: provider family, parser-facing service, tapes).
+Gates: PRs 2/3/4 need only **0.22** (the ABI is complete there); everything
+wasm-facing (1b, wasm E2E, marketplace wasm artifacts) rides **0.23** without
+touching any contract — 1b is a second loader for an already-frozen ABI, so a
+wasmer setback delays wasm, never the architecture. Rationale for the 1a/1b split:
+wasmer packaging and the shared-module prototype are the highest-risk items and
+review as runtime/security work, while 1a reviews as ABI/contract work.
 
 ## 14. Deferred / rejected
 
