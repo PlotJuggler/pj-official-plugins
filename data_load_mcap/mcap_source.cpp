@@ -165,27 +165,14 @@ class McapSource : public PJ::FileSourceBase {
     // selection is a subset (the common case).
     uint64_t total_messages = 0;
     if (const auto stats = parallel_reader.statistics()) {
-      size_t selected_channels = 0;
-      size_t counted_channels = 0;
+      std::vector<mcap::ChannelId> selected_channel_ids;
+      selected_channel_ids.reserve(channels.size());
       for (const auto& [channel_id, channel_ptr] : channels) {
-        if (selected.find(channel_ptr->topic) == selected.end()) {
-          continue;
-        }
-        ++selected_channels;
-        if (auto count_it = stats->channelMessageCounts.find(channel_id);
-            count_it != stats->channelMessageCounts.end()) {
-          total_messages += count_it->second;
-          ++counted_channels;
+        if (selected.find(channel_ptr->topic) != selected.end()) {
+          selected_channel_ids.push_back(channel_id);
         }
       }
-      // channelMessageCounts is optional in a Statistics record: some writers
-      // leave it empty, and so does the fallback scan for channels it cannot
-      // attribute. Summing it then yields 0 and the bar never moves at all, so
-      // fall back to the file-wide count — too large when the selection is a
-      // subset, but monotonic and bounded, which an all-zero total is not.
-      if (counted_channels == 0 && selected_channels > 0) {
-        total_messages = stats->messageCount;
-      }
+      total_messages = PJ::McapHelpers::progressTotal(*stats, selected_channel_ids);
     }
     (void)runtimeHost().progressStart("Importing MCAP", total_messages, true);
 
@@ -221,7 +208,7 @@ class McapSource : public PJ::FileSourceBase {
       // alone. Schema ids are 1-based, so a NON-zero id that resolves to
       // nothing is a dangling reference in a damaged file and stays skipped.
       // Mirrors the channel filter in McapDialog::analyzeFile.
-      const bool schemaless = (channel_ptr->schemaId == 0);
+      const bool schemaless = PJ::McapHelpers::isSchemaless(channel_ptr->schemaId);
       auto schema_it = schemas.find(channel_ptr->schemaId);
       if (!schemaless && schema_it == schemas.end()) {
         continue;
@@ -316,22 +303,14 @@ class McapSource : public PJ::FileSourceBase {
     //     view into the still-pinned, worker-decompressed bytes (no re-decompress);
     //   * invoked lazily after import, the pinned chunk is gone, so it falls back
     //     to the byte store's bounded cold re-decompression. True lazy.
-    // LinearMessageView (the indexless branch) exposes no status() — the
-    // problem callback is its only failure channel — so remember the first
-    // problem and let check_view_status() below decide whether it was terminal.
-    // LinearMessageView exposes no status(), so this callback is the serial
-    // branch's only failure channel. Not every problem is terminal though:
-    // onMessage reports InvalidChannelId / InvalidSchemaId per message and
-    // keeps iterating, so remembering those would report "partially recovered"
-    // over an import that in fact read every selected message. Only problems
-    // that actually stop the scan belong in first_problem; the rest are still
-    // surfaced as warnings.
-    const auto problem_is_terminal = [](const mcap::Status& problem) {
-      return problem.code != mcap::StatusCode::InvalidChannelId && problem.code != mcap::StatusCode::InvalidSchemaId;
-    };
+    // LinearMessageView (the indexless branch) exposes no status(), so this
+    // callback is that branch's only failure channel. Only problems that
+    // actually end the scan belong in first_problem — see
+    // PJ::McapHelpers::problemIsTerminal — while every problem is still
+    // surfaced to the user as a warning.
     std::optional<mcap::Status> first_problem;
     auto on_problem = [&](const mcap::Status& problem) {
-      if (!first_problem && problem_is_terminal(problem)) {
+      if (!first_problem && PJ::McapHelpers::problemIsTerminal(problem.code)) {
         first_problem = problem;
       }
       runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, problem.message);
@@ -385,41 +364,12 @@ class McapSource : public PJ::FileSourceBase {
     // downgraded to okStatus() with a warning toast.
     std::optional<std::string> import_failure;
 
-    // A message view that fails to initialise reports the failure through
-    // status() and then compares begin() == end(), so the loop body never runs.
-    // Without this the import would return okStatus() after loading nothing —
-    // PlotJuggler would announce a successful load of an empty dataset. A
-    // non-ok status that still produced messages is a partial read (the scan
-    // stopped at the first unreadable record); keep that data and warn, which
-    // is what the pre-SDK plugin did.
-    auto check_view_status = [&](const mcap::Status& view_status) {
-      if (view_status.ok()) {
-        return;
-      }
-      // Keyed on ACCEPTED messages: msg_count also counts pushes the host
-      // rejected, so using it here would report "partially recovered" for an
-      // import that in fact loaded nothing.
-      if (accepted_count == 0) {
-        // A push-failure abort already recorded a more specific reason and the
-        // non-ok view status is a consequence of it, so keep the original.
-        if (!import_failure) {
-          import_failure = "MCAP import failed: " + view_status.message;
-          runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, *import_failure);
-        }
-      } else {
-        // Error level rather than warning: the dataset that just landed is
-        // INCOMPLETE and every downstream analysis silently inherits that. The
-        // load still succeeds (keeping recovered data is what the pre-SDK
-        // plugin did), so this message is the only signal the user ever gets.
-        std::string partial =
-            "MCAP file partially recovered: " + view_status.message + " (loaded " + std::to_string(accepted_count);
-        if (total_messages > 0) {
-          partial += " of " + std::to_string(total_messages);
-        }
-        partial += " messages)";
-        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, partial);
-      }
-    };
+    // Final status of whichever message view ran: the serial branch has no
+    // status() and reports through on_problem, the parallel one exposes
+    // status() directly. Classified ONCE after the read finishes rather than
+    // inline, so the "did this import actually succeed" rule lives in one
+    // testable place — PJ::McapHelpers::classifyImportOutcome.
+    mcap::Status view_status;
 
     auto push_message = [&](const mcap::MessageView& mv, auto fetch_payload) {
       if (mv.channel == nullptr || mv.message.data == nullptr) {
@@ -468,45 +418,52 @@ class McapSource : public PJ::FileSourceBase {
       return true;
     };
 
+    // Serial file-order scan. Two callers: the primary path for recordings
+    // that have no message indexes at all, and the recovery path when an
+    // indexed read fails outright (see shouldRetryInFileOrder below).
+    auto read_file_order = [&]() {
+      // Indexless serial fallback. A chunk-free recording keeps every
+      // Message record uncompressed at a stable file offset, so each fetcher
+      // retains only a small locator and re-reads its payload on demand —
+      // retention stays bounded no matter how many object-topic messages the
+      // host defers (ObjectStore keeps those fetchers for the whole
+      // session). Only a chunked recording whose summary lacks message
+      // indexes still pays a message-sized eager copy: its in-chunk messages
+      // have no stable file offset to re-read from.
+      auto payload_store = std::make_shared<mcap::UnchunkedPayloadStore>(dialog_.filepath());
+      auto messages = parallel_reader.reader().readMessages(on_problem, parallel_opts.read);
+      for (const auto& mv : messages) {
+        if (mv.channel == nullptr || mv.message.data == nullptr) {
+          continue;
+        }
+        bool keep_going = true;
+        if (mv.messageOffset.chunkOffset.has_value()) {
+          const auto* data = reinterpret_cast<const uint8_t*>(mv.message.data);
+          auto bytes = std::make_shared<const std::vector<uint8_t>>(data, data + mv.message.dataSize);
+          keep_going = push_message(mv, [bytes]() { return PJ::sdk::PayloadView{bytes}; });
+        } else {
+          keep_going = push_message(
+              mv, [payload_store, record_offset = mv.messageOffset.offset, size = mv.message.dataSize,
+                   channel_id = mv.channel->id, log_time = mv.message.logTime]() {
+                mcap::ByteView view = payload_store->fetch(record_offset, size, channel_id, log_time);
+                return PJ::sdk::PayloadView{
+                    PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(view.data), view.size),
+                    view.anchor,
+                };
+              });
+        }
+        if (!keep_going) {
+          break;
+        }
+      }
+      if (first_problem) {
+        view_status = *first_problem;
+      }
+    };
+
     try {
       if (lacks_message_indexes) {
-        // Indexless serial fallback. A chunk-free recording keeps every
-        // Message record uncompressed at a stable file offset, so each fetcher
-        // retains only a small locator and re-reads its payload on demand —
-        // retention stays bounded no matter how many object-topic messages the
-        // host defers (ObjectStore keeps those fetchers for the whole
-        // session). Only a chunked recording whose summary lacks message
-        // indexes still pays a message-sized eager copy: its in-chunk messages
-        // have no stable file offset to re-read from.
-        auto payload_store = std::make_shared<mcap::UnchunkedPayloadStore>(dialog_.filepath());
-        auto messages = parallel_reader.reader().readMessages(on_problem, parallel_opts.read);
-        for (const auto& mv : messages) {
-          if (mv.channel == nullptr || mv.message.data == nullptr) {
-            continue;
-          }
-          bool keep_going = true;
-          if (mv.messageOffset.chunkOffset.has_value()) {
-            const auto* data = reinterpret_cast<const uint8_t*>(mv.message.data);
-            auto bytes = std::make_shared<const std::vector<uint8_t>>(data, data + mv.message.dataSize);
-            keep_going = push_message(mv, [bytes]() { return PJ::sdk::PayloadView{bytes}; });
-          } else {
-            keep_going = push_message(
-                mv, [payload_store, record_offset = mv.messageOffset.offset, size = mv.message.dataSize,
-                     channel_id = mv.channel->id, log_time = mv.message.logTime]() {
-                  mcap::ByteView view = payload_store->fetch(record_offset, size, channel_id, log_time);
-                  return PJ::sdk::PayloadView{
-                      PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(view.data), view.size),
-                      view.anchor,
-                  };
-                });
-          }
-          if (!keep_going) {
-            break;
-          }
-        }
-        if (first_problem) {
-          check_view_status(*first_problem);
-        }
+        read_file_order();
       } else {
         auto messages = parallel_reader.readMessages(on_problem, parallel_opts);
         for (auto it = messages.begin(); it != messages.end(); ++it) {
@@ -521,7 +478,24 @@ class McapSource : public PJ::FileSourceBase {
             break;
           }
         }
-        check_view_status(messages.status());
+        view_status = messages.status();
+
+        // The summary advertised message indexes, so we came down the indexed
+        // path — but the index records themselves can be truncated or corrupt,
+        // and then the reader dies having produced nothing. A file-order scan
+        // never consults them, so it can still recover the whole recording.
+        // Only reachable when the first pass delivered nothing at all, so
+        // there is no risk of ingesting anything twice.
+        if (PJ::McapHelpers::shouldRetryInFileOrder(
+                view_status.ok(), msg_count, accepted_count, runtimeHost().isStopRequested())) {
+          runtimeHost().reportMessage(
+              PJ::DataSourceMessageLevel::kWarning,
+              "MCAP indexed read failed (" + view_status.message + "); retrying as a serial file-order scan");
+          parallel_opts.read.readOrder = mcap::ReadMessageOptions::ReadOrder::FileOrder;
+          first_problem.reset();
+          view_status = mcap::Status{};
+          read_file_order();
+        }
       }
     } catch (const std::exception& e) {
       const std::string msg =
@@ -535,23 +509,40 @@ class McapSource : public PJ::FileSourceBase {
       import_failure = msg;
     }
 
+    // A push-failure abort or a thrown exception already recorded a specific
+    // reason; it wins over anything the outcome rule would say, and must not
+    // be overwritten by the more generic view-status message.
     if (import_failure) {
       return PJ::unexpected(*import_failure);
     }
 
-    // A reader run that ends CLEANLY can still have loaded nothing: every push
-    // may have been rejected while staying under kMaxConsecutivePushFailures,
-    // and check_view_status never runs on an ok status. Returning okStatus()
-    // there announces a successful load of an empty dataset — the exact
-    // outcome this plugin exists to avoid. Two things are deliberately not
-    // failures: a user cancel, and a selection that genuinely had no messages
-    // to begin with (total_messages == 0, which also covers the conservative
-    // case of statistics being absent).
-    if (accepted_count == 0 && total_messages > 0 && !runtimeHost().isStopRequested()) {
-      const std::string msg = "MCAP import loaded no messages: all " + std::to_string(msg_count) +
-                              " message(s) on the selected topics were rejected by the host.";
-      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, msg);
-      return PJ::unexpected(msg);
+    switch (PJ::McapHelpers::classifyImportOutcome(
+        view_status.ok(), msg_count, accepted_count, runtimeHost().isStopRequested())) {
+      case PJ::McapHelpers::ImportOutcome::kSuccess:
+        break;
+
+      case PJ::McapHelpers::ImportOutcome::kPartial: {
+        // Error level rather than warning: the dataset that just landed is
+        // INCOMPLETE and every downstream analysis silently inherits that. The
+        // load still succeeds — keeping recovered data is what the pre-SDK
+        // plugin did — so this message is the only signal the user ever gets.
+        std::string partial =
+            "MCAP file partially recovered: " + view_status.message + " (loaded " + std::to_string(accepted_count);
+        if (total_messages > 0) {
+          partial += " of " + std::to_string(total_messages);
+        }
+        partial += " messages)";
+        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, partial);
+        break;
+      }
+
+      case PJ::McapHelpers::ImportOutcome::kFailed: {
+        const std::string msg = view_status.ok() ? ("MCAP import loaded no messages: all " + std::to_string(msg_count) +
+                                                    " message(s) on the selected topics were rejected by the host.")
+                                                 : ("MCAP import failed: " + view_status.message);
+        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, msg);
+        return PJ::unexpected(msg);
+      }
     }
     return PJ::okStatus();
   }
