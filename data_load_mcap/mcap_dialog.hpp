@@ -78,13 +78,11 @@ class McapDialog : public PJ::DialogPluginTyped {
   const std::unordered_set<std::string>& selectedTopics() const {
     return selected_topics_;
   }
+  /// Non-empty when the file could not be analyzed (unreadable, damaged
+  /// beyond the reader's fallback scan). Surfaced in the dialog so an empty
+  /// channel table is never mistaken for a recording without topics.
   const std::string& analyzeError() const {
     return analyze_error_;
-  }
-  /// Primary encoding for the comboBoxProtocol / parser dialog embedding.
-  /// Empty when no channels have been analyzed yet.
-  const std::string& primaryEncoding() const {
-    return primary_encoding_;
   }
 
   // --- Dialog protocol ---
@@ -151,13 +149,12 @@ class McapDialog : public PJ::DialogPluginTyped {
     wd.setShortcut("btnSelectAll", "Ctrl+A");
     wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
 
-    // Encoding combobox for pj_parser_slot — hide row when only one encoding
-    // (nothing to choose) but keep the widget so DialogEngine can find it.
-    wd.setItems("comboBoxProtocol", available_encodings_);
-    wd.setCurrentIndex("comboBoxProtocol", encodingIndex(primary_encoding_));
-    bool multi_encoding = available_encodings_.size() > 1;
-    wd.setVisible("comboBoxProtocol", multi_encoding);
-    wd.setVisible("labelEncoding", multi_encoding);
+    // Explain an empty table rather than leaving it looking like a recording
+    // with no topics.
+    wd.setVisible("labelAnalyzeError", !analyze_error_.empty());
+    if (!analyze_error_.empty()) {
+      wd.setLabel("labelAnalyzeError", analyze_error_);
+    }
 
     wd.setOkEnabled(!selected_topics_.empty());
 
@@ -167,16 +164,6 @@ class McapDialog : public PJ::DialogPluginTyped {
   bool onValueChanged(std::string_view widget_name, int value) override {
     if (widget_name == "spinBox") {
       max_array_size_ = static_cast<unsigned>(std::max(0, value));
-      return false;
-    }
-    return false;
-  }
-
-  bool onIndexChanged(std::string_view widget_name, int index) override {
-    if (widget_name == "comboBoxProtocol") {
-      if (index >= 0 && index < static_cast<int>(available_encodings_.size())) {
-        primary_encoding_ = available_encodings_[static_cast<size_t>(index)];
-      }
       return false;
     }
     return false;
@@ -309,22 +296,34 @@ class McapDialog : public PJ::DialogPluginTyped {
     all_channels_.clear();
     analyze_error_.clear();
 
+    auto describe = [](const mcap::Status& s) {
+      return "Code: " + std::to_string(static_cast<int>(s.code)) + "\nMessage: " + s.message;
+    };
+
+    // A restored config still holds the PREVIOUS recording's selection. The
+    // pruning step near the end of this function is what normally reconciles
+    // it, so any early return has to drop it here — otherwise OK stays enabled
+    // over an empty table and starts an import that can bind nothing.
+    const auto fail = [this](std::string message) {
+      analyze_error_ = std::move(message);
+      selected_topics_.clear();
+    };
+
     mcap::McapReader reader;
     auto status = reader.open(filepath_);
     if (!status.ok()) {
+      fail("Cannot open this MCAP file.\n" + describe(status));
       return;
     }
 
+    // AllowFallbackScan reconstructs channels, schemas and statistics by
+    // scanning when the summary section is unusable, so a failure here means
+    // the data section itself could not be read.
     status = reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan);
     if (!status.ok()) {
-      if (status.code == mcap::StatusCode::MissingStatistics) {
-        // readSummarySection_ still populated channels and schemas before returning
-        // this error — record it so McapSource can route to the error dialog.
-        analyze_error_ = "Code: " + std::to_string(static_cast<int>(status.code)) + "\nMessage: " + status.message;
-      } else {
-        reader.close();
-        return;
-      }
+      fail("Cannot read the contents of this MCAP file.\n" + describe(status));
+      reader.close();
+      return;
     }
 
     // Build message count map from statistics
@@ -334,17 +333,29 @@ class McapDialog : public PJ::DialogPluginTyped {
     }
 
     const auto& schemas = reader.schemas();
+    size_t channels_with_dangling_schema = 0;
     for (const auto& [id, channel_ptr] : reader.channels()) {
+      // schema_id 0 is the MCAP spec's "no schema" sentinel, not an error:
+      // the channel is self-describing (schemaless JSON is the common case)
+      // and binds on its message encoding alone. Schema ids are 1-based, so a
+      // NON-zero id that resolves to nothing is a dangling reference in a
+      // damaged file — no parser can ever be bound to that, and offering it in
+      // the picker would promise data that never arrives.
+      const bool schemaless = (channel_ptr->schemaId == 0);
+      auto schema_it = schemas.find(channel_ptr->schemaId);
+      if (!schemaless && schema_it == schemas.end()) {
+        ++channels_with_dangling_schema;
+        continue;
+      }
+
       ChannelInfo info;
       info.topic = channel_ptr->topic;
-
-      auto schema_it = schemas.find(channel_ptr->schemaId);
-      if (schema_it != schemas.end()) {
+      if (schemaless) {
+        info.encoding = channel_ptr->messageEncoding;
+      } else {
         info.schema = schema_it->second->name;
         info.encoding =
             channel_ptr->messageEncoding.empty() ? schema_it->second->encoding : channel_ptr->messageEncoding;
-      } else {
-        info.encoding = channel_ptr->messageEncoding;
       }
 
       auto count_it = msg_counts.find(id);
@@ -353,30 +364,19 @@ class McapDialog : public PJ::DialogPluginTyped {
       all_channels_.push_back(std::move(info));
     }
 
+    if (all_channels_.empty()) {
+      analyze_error_ = channels_with_dangling_schema > 0
+                           ? "No readable channels: all " + std::to_string(channels_with_dangling_schema) +
+                                 " channel(s) in this file reference a missing schema."
+                           : "No channels were found in this MCAP file.";
+    }
+
     // Sort by topic name
     std::sort(all_channels_.begin(), all_channels_.end(), [](const ChannelInfo& a, const ChannelInfo& b) {
       return a.topic < b.topic;
     });
 
     reader.close();
-
-    // Derive unique encodings (insertion-ordered) for comboBoxProtocol.
-    // Preserve the previously selected primary_encoding_ if it is still present.
-    {
-      std::unordered_set<std::string> seen;
-      std::vector<std::string> encodings;
-      for (const auto& ch : all_channels_) {
-        if (!ch.encoding.empty() && seen.insert(ch.encoding).second) {
-          encodings.push_back(ch.encoding);
-        }
-      }
-      available_encodings_ = std::move(encodings);
-
-      bool prev_still_valid = !primary_encoding_.empty() && seen.count(primary_encoding_) > 0;
-      if (!prev_still_valid) {
-        primary_encoding_ = available_encodings_.empty() ? std::string{} : available_encodings_.front();
-      }
-    }
 
     // Saved selections belong to the previously opened recording. Drop names
     // that do not exist (or have no messages) in this one; otherwise a stale,
@@ -459,15 +459,6 @@ class McapDialog : public PJ::DialogPluginTyped {
     return result;
   }
 
-  int encodingIndex(const std::string& enc) const {
-    for (int i = 0; i < static_cast<int>(available_encodings_.size()); ++i) {
-      if (available_encodings_[static_cast<size_t>(i)] == enc) {
-        return i;
-      }
-    }
-    return 0;
-  }
-
   // Config state
   std::string analyze_error_;
   std::string filepath_;
@@ -480,8 +471,6 @@ class McapDialog : public PJ::DialogPluginTyped {
 
   // File analysis results
   std::vector<ChannelInfo> all_channels_;
-  std::vector<std::string> available_encodings_;
-  std::string primary_encoding_;
 };
 
 }  // namespace

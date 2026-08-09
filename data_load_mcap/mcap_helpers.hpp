@@ -2,13 +2,50 @@
 
 // Note: MCAP_IMPLEMENTATION must be defined in exactly one translation unit
 // before including this header.
+#include <algorithm>
 #include <cstdint>
 #include <mcap/reader.hpp>
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <vector>
 
 namespace PJ::McapHelpers {
+
+/// True when the recording cannot be replayed in log-time order.
+///
+/// LogTimeOrder needs Message Index records, which are a *separate* thing from
+/// Chunk Index records: a chunked recording can carry chunk indexes while
+/// having no message indexes at all. That happens in two unrelated situations,
+/// neither of which is detectable by asking whether chunkIndexes() is empty:
+///
+///   * the file was written with McapWriterOptions::noMessageIndex = true —
+///     valid, spec-conformant, and produced by real recorders;
+///   * the summary section was unusable (damaged footer, writer killed
+///     mid-write) so readSummary() fell back to a sequential scan, which
+///     synthesizes chunk indexes with messageIndexLength == 0 because a scan
+///     cannot recover message indexes.
+///
+/// Requesting LogTimeOrder in either case makes the reader fail with
+/// NoMessageIndexesAvailable and deliver zero messages, so callers must fall
+/// back to FileOrder. Mirrors the reader's own guard so the two cannot drift.
+///
+/// all_of, NOT any_of — a mixed file is not a reason to give up time order.
+/// A chunk can legitimately carry messageIndexLength == 0 while its neighbours
+/// do not: McapWriter emits the Schema and Channel records for a new channel
+/// into the CURRENT chunk and only then checks for overflow, so the chunk it
+/// flushes at that point can hold nothing but those records. Such a chunk has
+/// no messages, so the parallel planner skipping it (it keys off
+/// messageIndexOffsets) loses nothing. Switching to any_of would drop those
+/// files to serial FileOrder for no benefit. The genuinely lossy shape —
+/// message-bearing chunks with no indexes alongside indexed ones — needs
+/// noMessageIndex to vary per chunk, which McapWriter cannot do: options_ is
+/// assigned once in open() and never mutated.
+inline bool lacksMessageIndexes(const std::vector<mcap::ChunkIndex>& chunk_indexes) {
+  return chunk_indexes.empty() || std::all_of(
+                                      chunk_indexes.begin(), chunk_indexes.end(),
+                                      [](const mcap::ChunkIndex& ci) { return ci.messageIndexLength == 0; });
+}
 
 /// Summary data extracted from the MCAP file footer/summary section.
 struct McapSummaryInfo {
