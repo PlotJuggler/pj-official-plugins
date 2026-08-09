@@ -333,20 +333,30 @@ class McapDialog : public PJ::DialogPluginTyped {
     }
 
     const auto& schemas = reader.schemas();
-    size_t channels_without_schema = 0;
+    size_t channels_with_dangling_schema = 0;
     for (const auto& [id, channel_ptr] : reader.channels()) {
+      // schema_id 0 is the MCAP spec's "no schema" sentinel, not an error:
+      // the channel is self-describing (schemaless JSON is the common case)
+      // and binds on its message encoding alone. Schema ids are 1-based, so a
+      // NON-zero id that resolves to nothing is a dangling reference in a
+      // damaged file — no parser can ever be bound to that, and offering it in
+      // the picker would promise data that never arrives.
+      const bool schemaless = (channel_ptr->schemaId == 0);
       auto schema_it = schemas.find(channel_ptr->schemaId);
-      if (schema_it == schemas.end()) {
-        // No schema means no parser can ever be bound, so offering the topic
-        // in the picker would promise data that never arrives.
-        ++channels_without_schema;
+      if (!schemaless && schema_it == schemas.end()) {
+        ++channels_with_dangling_schema;
         continue;
       }
 
       ChannelInfo info;
       info.topic = channel_ptr->topic;
-      info.schema = schema_it->second->name;
-      info.encoding = channel_ptr->messageEncoding.empty() ? schema_it->second->encoding : channel_ptr->messageEncoding;
+      if (schemaless) {
+        info.encoding = channel_ptr->messageEncoding;
+      } else {
+        info.schema = schema_it->second->name;
+        info.encoding =
+            channel_ptr->messageEncoding.empty() ? schema_it->second->encoding : channel_ptr->messageEncoding;
+      }
 
       auto count_it = msg_counts.find(id);
       info.msg_count = (count_it != msg_counts.end()) ? count_it->second : 0;
@@ -355,8 +365,8 @@ class McapDialog : public PJ::DialogPluginTyped {
     }
 
     if (all_channels_.empty()) {
-      analyze_error_ = channels_without_schema > 0
-                           ? "No readable channels: all " + std::to_string(channels_without_schema) +
+      analyze_error_ = channels_with_dangling_schema > 0
+                           ? "No readable channels: all " + std::to_string(channels_with_dangling_schema) +
                                  " channel(s) in this file reference a missing schema."
                            : "No channels were found in this MCAP file.";
     }

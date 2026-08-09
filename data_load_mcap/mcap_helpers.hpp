@@ -29,6 +29,18 @@ namespace PJ::McapHelpers {
 /// Requesting LogTimeOrder in either case makes the reader fail with
 /// NoMessageIndexesAvailable and deliver zero messages, so callers must fall
 /// back to FileOrder. Mirrors the reader's own guard so the two cannot drift.
+///
+/// all_of, NOT any_of — a mixed file is not a reason to give up time order.
+/// A chunk can legitimately carry messageIndexLength == 0 while its neighbours
+/// do not: McapWriter emits the Schema and Channel records for a new channel
+/// into the CURRENT chunk and only then checks for overflow, so the chunk it
+/// flushes at that point can hold nothing but those records. Such a chunk has
+/// no messages, so the parallel planner skipping it (it keys off
+/// messageIndexOffsets) loses nothing. Switching to any_of would drop those
+/// files to serial FileOrder for no benefit. The genuinely lossy shape —
+/// message-bearing chunks with no indexes alongside indexed ones — needs
+/// noMessageIndex to vary per chunk, which McapWriter cannot do: options_ is
+/// assigned once in open() and never mutated.
 inline bool lacksMessageIndexes(const std::vector<mcap::ChunkIndex>& chunk_indexes) {
   return chunk_indexes.empty() || std::all_of(
                                       chunk_indexes.begin(), chunk_indexes.end(),

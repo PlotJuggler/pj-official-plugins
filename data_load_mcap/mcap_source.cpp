@@ -165,14 +165,26 @@ class McapSource : public PJ::FileSourceBase {
     // selection is a subset (the common case).
     uint64_t total_messages = 0;
     if (const auto stats = parallel_reader.statistics()) {
+      size_t selected_channels = 0;
+      size_t counted_channels = 0;
       for (const auto& [channel_id, channel_ptr] : channels) {
         if (selected.find(channel_ptr->topic) == selected.end()) {
           continue;
         }
+        ++selected_channels;
         if (auto count_it = stats->channelMessageCounts.find(channel_id);
             count_it != stats->channelMessageCounts.end()) {
           total_messages += count_it->second;
+          ++counted_channels;
         }
+      }
+      // channelMessageCounts is optional in a Statistics record: some writers
+      // leave it empty, and so does the fallback scan for channels it cannot
+      // attribute. Summing it then yields 0 and the bar never moves at all, so
+      // fall back to the file-wide count — too large when the selection is a
+      // subset, but monotonic and bounded, which an all-zero total is not.
+      if (counted_channels == 0 && selected_channels > 0) {
+        total_messages = stats->messageCount;
       }
     }
     (void)runtimeHost().progressStart("Importing MCAP", total_messages, true);
@@ -203,22 +215,40 @@ class McapSource : public PJ::FileSourceBase {
         continue;
       }
 
+      // schema_id 0 is the MCAP spec's "no schema" sentinel, not a broken
+      // reference: the payload is self-describing (schemaless JSON is the
+      // common case) and the parser is selected from the message encoding
+      // alone. Schema ids are 1-based, so a NON-zero id that resolves to
+      // nothing is a dangling reference in a damaged file and stays skipped.
+      // Mirrors the channel filter in McapDialog::analyzeFile.
+      const bool schemaless = (channel_ptr->schemaId == 0);
       auto schema_it = schemas.find(channel_ptr->schemaId);
-      if (schema_it == schemas.end()) {
+      if (!schemaless && schema_it == schemas.end()) {
         continue;
       }
-      const auto& schema = schema_it->second;
+      const mcap::Schema* schema = schemaless ? nullptr : schema_it->second.get();
 
-      PJ::Span<const uint8_t> schema_bytes{reinterpret_cast<const uint8_t*>(schema->data.data()), schema->data.size()};
+      PJ::Span<const uint8_t> schema_bytes{};
+      if (schema != nullptr) {
+        schema_bytes =
+            PJ::Span<const uint8_t>{reinterpret_cast<const uint8_t*>(schema->data.data()), schema->data.size()};
+      }
 
       std::string parser_encoding = channel_ptr->messageEncoding;
-      if (parser_encoding.empty() || (parser_encoding == "cdr" && !schema->encoding.empty())) {
+      if (schema != nullptr && (parser_encoding.empty() || (parser_encoding == "cdr" && !schema->encoding.empty()))) {
         parser_encoding = schema->encoding;
+      }
+      if (parser_encoding.empty()) {
+        // Neither a schema nor a message encoding: nothing identifies the
+        // payload format. Report it rather than dropping the topic silently.
+        binding_errors.push_back(channel_ptr->topic + ": channel declares neither a schema nor a message encoding");
+        continue;
       }
 
       auto channel_parser_config = parser_config;
       const bool use_ros1_serialization = channel_ptr->messageEncoding == "ros1" || parser_encoding == "ros1" ||
-                                          parser_encoding == "ros1msg" || schema->encoding == "ros1msg";
+                                          parser_encoding == "ros1msg" ||
+                                          (schema != nullptr && schema->encoding == "ros1msg");
       channel_parser_config["serialization"] = use_ros1_serialization ? "ros1" : "cdr";
       channel_parser_config["schema_encoding"] = parser_encoding;
       // Topic-conditional parser classifications (notably std_msgs/String on
@@ -231,7 +261,7 @@ class McapSource : public PJ::FileSourceBase {
       PJ::ParserBindingRequest request{
           .topic_name = channel_ptr->topic,
           .parser_encoding = parser_encoding,
-          .type_name = schema->name,
+          .type_name = schema != nullptr ? schema->name : channel_ptr->topic,
           .schema = schema_bytes,
           .parser_config_json = parser_config_str,
       };
@@ -289,9 +319,19 @@ class McapSource : public PJ::FileSourceBase {
     // LinearMessageView (the indexless branch) exposes no status() — the
     // problem callback is its only failure channel — so remember the first
     // problem and let check_view_status() below decide whether it was terminal.
+    // LinearMessageView exposes no status(), so this callback is the serial
+    // branch's only failure channel. Not every problem is terminal though:
+    // onMessage reports InvalidChannelId / InvalidSchemaId per message and
+    // keeps iterating, so remembering those would report "partially recovered"
+    // over an import that in fact read every selected message. Only problems
+    // that actually stop the scan belong in first_problem; the rest are still
+    // surfaced as warnings.
+    const auto problem_is_terminal = [](const mcap::Status& problem) {
+      return problem.code != mcap::StatusCode::InvalidChannelId && problem.code != mcap::StatusCode::InvalidSchemaId;
+    };
     std::optional<mcap::Status> first_problem;
     auto on_problem = [&](const mcap::Status& problem) {
-      if (!first_problem) {
+      if (!first_problem && problem_is_terminal(problem)) {
         first_problem = problem;
       }
       runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, problem.message);
@@ -360,12 +400,24 @@ class McapSource : public PJ::FileSourceBase {
       // rejected, so using it here would report "partially recovered" for an
       // import that in fact loaded nothing.
       if (accepted_count == 0) {
-        import_failure = "MCAP import failed: " + view_status.message;
-        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, *import_failure);
+        // A push-failure abort already recorded a more specific reason and the
+        // non-ok view status is a consequence of it, so keep the original.
+        if (!import_failure) {
+          import_failure = "MCAP import failed: " + view_status.message;
+          runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, *import_failure);
+        }
       } else {
-        runtimeHost().reportMessage(
-            PJ::DataSourceMessageLevel::kWarning, "MCAP file partially recovered: " + view_status.message +
-                                                      " (loaded " + std::to_string(accepted_count) + " messages)");
+        // Error level rather than warning: the dataset that just landed is
+        // INCOMPLETE and every downstream analysis silently inherits that. The
+        // load still succeeds (keeping recovered data is what the pre-SDK
+        // plugin did), so this message is the only signal the user ever gets.
+        std::string partial =
+            "MCAP file partially recovered: " + view_status.message + " (loaded " + std::to_string(accepted_count);
+        if (total_messages > 0) {
+          partial += " of " + std::to_string(total_messages);
+        }
+        partial += " messages)";
+        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, partial);
       }
     };
 
@@ -485,6 +537,21 @@ class McapSource : public PJ::FileSourceBase {
 
     if (import_failure) {
       return PJ::unexpected(*import_failure);
+    }
+
+    // A reader run that ends CLEANLY can still have loaded nothing: every push
+    // may have been rejected while staying under kMaxConsecutivePushFailures,
+    // and check_view_status never runs on an ok status. Returning okStatus()
+    // there announces a successful load of an empty dataset — the exact
+    // outcome this plugin exists to avoid. Two things are deliberately not
+    // failures: a user cancel, and a selection that genuinely had no messages
+    // to begin with (total_messages == 0, which also covers the conservative
+    // case of statistics being absent).
+    if (accepted_count == 0 && total_messages > 0 && !runtimeHost().isStopRequested()) {
+      const std::string msg = "MCAP import loaded no messages: all " + std::to_string(msg_count) +
+                              " message(s) on the selected topics were rejected by the host.";
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, msg);
+      return PJ::unexpected(msg);
     }
     return PJ::okStatus();
   }
