@@ -12,6 +12,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "mcap_helpers.hpp"
+
 namespace {
 
 // Generated at configure time
@@ -341,7 +343,7 @@ class McapDialog : public PJ::DialogPluginTyped {
       // NON-zero id that resolves to nothing is a dangling reference in a
       // damaged file — no parser can ever be bound to that, and offering it in
       // the picker would promise data that never arrives.
-      const bool schemaless = (channel_ptr->schemaId == 0);
+      const bool schemaless = PJ::McapHelpers::isSchemaless(channel_ptr->schemaId);
       auto schema_it = schemas.find(channel_ptr->schemaId);
       if (!schemaless && schema_it == schemas.end()) {
         ++channels_with_dangling_schema;

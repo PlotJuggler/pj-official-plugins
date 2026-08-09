@@ -430,4 +430,162 @@ TEST(McapMessageIndexTest, FileOrderRecoversFooterDamagedRecording) {
   EXPECT_EQ(countDeliveredMessages(reader, mcap::ReadMessageOptions::ReadOrder::FileOrder), 400u);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Import outcome policy
+//
+// These pin the rule that decides whether an import is reported as a success,
+// a partial recovery, or a failure. The rule lives here rather than inline in
+// McapSource::importData precisely so it can be tested: importData needs a
+// live runtime host, so the branches below were previously unreachable from
+// any test.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ImportOutcome, CleanRunWithAcceptedMessagesSucceeds) {
+  EXPECT_EQ(
+      classifyImportOutcome(/*view_status_ok=*/true, /*pushed=*/10, /*accepted=*/10, /*stop_requested=*/false),
+      ImportOutcome::kSuccess);
+}
+
+// A selection whose topics genuinely hold no messages is not an error: the
+// reader offered nothing, so there is nothing to have failed at.
+TEST(ImportOutcome, CleanRunOfferingNothingSucceeds) {
+  EXPECT_EQ(classifyImportOutcome(true, /*pushed=*/0, /*accepted=*/0, false), ImportOutcome::kSuccess);
+}
+
+// The trap this rule exists for: the reader finishes cleanly, but every push
+// was rejected. Below kMaxConsecutivePushFailures nothing aborts the run, so
+// without this the load is announced as a success over an empty dataset.
+TEST(ImportOutcome, CleanRunWithEverythingRejectedFails) {
+  EXPECT_EQ(classifyImportOutcome(true, /*pushed=*/50, /*accepted=*/0, false), ImportOutcome::kFailed);
+}
+
+// Deliberately independent of Statistics: a recording may carry an absent,
+// empty or untruthful Statistics record, and one push is enough to prove the
+// reader offered data regardless of what the metadata claims.
+TEST(ImportOutcome, RejectionFailureDoesNotDependOnMessageCounts) {
+  EXPECT_EQ(classifyImportOutcome(true, /*pushed=*/1, /*accepted=*/0, false), ImportOutcome::kFailed);
+}
+
+TEST(ImportOutcome, FailedViewWithNothingAcceptedFails) {
+  EXPECT_EQ(
+      classifyImportOutcome(/*view_status_ok=*/false, /*pushed=*/0, /*accepted=*/0, false), ImportOutcome::kFailed);
+}
+
+// Data that did land is kept — matching the pre-SDK plugin — but the caller
+// must tell the user the dataset is incomplete.
+TEST(ImportOutcome, FailedViewWithSomeAcceptedIsPartial) {
+  EXPECT_EQ(classifyImportOutcome(false, /*pushed=*/10, /*accepted=*/4, false), ImportOutcome::kPartial);
+}
+
+// A cancel is never a failure and never a partial-recovery warning: the
+// truncation was requested, so whatever landed before it is legitimate.
+TEST(ImportOutcome, CancelIsNeverAFailure) {
+  EXPECT_EQ(
+      classifyImportOutcome(true, /*pushed=*/50, /*accepted=*/0, /*stop_requested=*/true), ImportOutcome::kSuccess);
+  EXPECT_EQ(
+      classifyImportOutcome(false, /*pushed=*/50, /*accepted=*/7, /*stop_requested=*/true), ImportOutcome::kSuccess);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// File-order retry after a failed indexed read
+// ─────────────────────────────────────────────────────────────────────────────
+
+// The summary advertised message indexes, so the indexed path was taken, but
+// the index records themselves were unreadable and nothing came out. A serial
+// file-order scan ignores message indexes entirely and can still recover the
+// file.
+TEST(ShouldRetryInFileOrder, FailedReadThatProducedNothingIsRetried) {
+  EXPECT_TRUE(shouldRetryInFileOrder(
+      /*view_status_ok=*/false, /*pushed=*/0, /*accepted=*/0,
+      /*stop_requested=*/false));
+}
+
+// Re-reading would push the already-accepted messages a second time.
+TEST(ShouldRetryInFileOrder, NeverRetryOnceDataHasLanded) {
+  EXPECT_FALSE(shouldRetryInFileOrder(false, /*pushed=*/5, /*accepted=*/5, false));
+}
+
+// The reader worked and the host refused the data; a different read order
+// cannot change that.
+TEST(ShouldRetryInFileOrder, NoRetryWhenPushesWereRejected) {
+  EXPECT_FALSE(shouldRetryInFileOrder(false, /*pushed=*/5, /*accepted=*/0, false));
+}
+
+TEST(ShouldRetryInFileOrder, NoRetryOnSuccessOrCancel) {
+  EXPECT_FALSE(shouldRetryInFileOrder(/*view_status_ok=*/true, 0, 0, false));
+  EXPECT_FALSE(shouldRetryInFileOrder(false, 0, 0, /*stop_requested=*/true));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Recoverable vs terminal reader problems
+// ─────────────────────────────────────────────────────────────────────────────
+
+// LinearMessageView::onMessage reports these per message and keeps iterating,
+// so one stray record must not turn a complete import into "partially
+// recovered".
+TEST(ProblemIsTerminal, PerMessageProblemsAreRecoverable) {
+  EXPECT_FALSE(problemIsTerminal(mcap::StatusCode::InvalidChannelId));
+  EXPECT_FALSE(problemIsTerminal(mcap::StatusCode::InvalidSchemaId));
+}
+
+TEST(ProblemIsTerminal, EverythingElseEndsTheScan) {
+  EXPECT_TRUE(problemIsTerminal(mcap::StatusCode::DecompressionFailed));
+  EXPECT_TRUE(problemIsTerminal(mcap::StatusCode::InvalidRecord));
+  EXPECT_TRUE(problemIsTerminal(mcap::StatusCode::ReadFailed));
+  EXPECT_TRUE(problemIsTerminal(mcap::StatusCode::NoMessageIndexesAvailable));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Progress denominator
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ProgressTotal, CountsOnlySelectedChannels) {
+  mcap::Statistics stats;
+  stats.messageCount = 300;
+  stats.channelMessageCounts = {{1, 100}, {2, 200}};
+  EXPECT_EQ(progressTotal(stats, {1}), 100u);
+  EXPECT_EQ(progressTotal(stats, {1, 2}), 300u);
+}
+
+// channelMessageCounts is optional in a Statistics record. Summing an empty
+// map yields 0, which pins the progress bar at zero for the whole import; the
+// file-wide count is too large for a subset selection but at least moves.
+TEST(ProgressTotal, FallsBackToMessageCountWhenPerChannelCountsAreMissing) {
+  mcap::Statistics stats;
+  stats.messageCount = 4200;
+  stats.channelMessageCounts.clear();
+  EXPECT_EQ(progressTotal(stats, {1, 2}), 4200u);
+}
+
+// A channel the map does know about is authoritative — no fallback, even
+// though other selected channels are unattributed.
+TEST(ProgressTotal, NoFallbackWhenAtLeastOneChannelIsAttributed) {
+  mcap::Statistics stats;
+  stats.messageCount = 4200;
+  stats.channelMessageCounts = {{1, 7}};
+  EXPECT_EQ(progressTotal(stats, {1, 2}), 7u);
+}
+
+// Nothing selected means nothing to measure; the file-wide count would give a
+// bar that can never fill.
+TEST(ProgressTotal, EmptySelectionIsZeroNotTheFileTotal) {
+  mcap::Statistics stats;
+  stats.messageCount = 4200;
+  stats.channelMessageCounts = {{1, 100}};
+  EXPECT_EQ(progressTotal(stats, {}), 0u);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Schemaless channels
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Schema ids are 1-based, so 0 is the spec's "no schema" sentinel (schemaless
+// JSON), not a dangling reference. Shared by the dialog's channel filter and
+// the source's binding loop so they cannot disagree.
+TEST(IsSchemaless, ZeroIsTheNoSchemaSentinel) {
+  EXPECT_TRUE(isSchemaless(0));
+  EXPECT_FALSE(isSchemaless(1));
+  EXPECT_FALSE(isSchemaless(42));
+}
+
 }  // namespace
