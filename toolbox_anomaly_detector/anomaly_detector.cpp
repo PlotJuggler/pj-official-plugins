@@ -17,6 +17,8 @@
 // GUI-free and lives in anomaly_core; this file is only the host + dialog wiring.
 
 #include <algorithm>
+#include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -163,7 +165,22 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
 
   std::string widget_data() override {
     PJ::WidgetData wd;
-    wd.setListItems("source_list", series_names_);
+    // Accept series dragged from the host's Datasets tree. Marked on the group box, not
+    // the list, so the whole panel section is a target. This MUST be present in the very
+    // first delivery: PanelEngine reads the drop targets once, off the initial payload —
+    // it is not a per-tick flag.
+    wd.setDropTarget("sourceGroup");
+    const std::vector<std::string>& visible = visibleNames();
+    wd.setListItems("source_list", visible);
+    // Say WHY the list is empty; "no series match" and "nothing loaded" send the user to
+    // completely different places.
+    if (series_names_.empty()) {
+      wd.setListPlaceholder("source_list", "No series loaded");
+    } else if (visible.empty()) {
+      wd.setListPlaceholder("source_list", "No series match \"" + filter_ + "\"");
+    } else {
+      wd.setListPlaceholder("source_list", "Drag & drop a series here, or pick one from the list");
+    }
 
     std::vector<std::string> function_names;
     for (const auto& f : anomaly_core::builtinFunctions()) {
@@ -183,11 +200,18 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     // by widget name. Save-as lets the user create a new file anywhere.
     wd.setSaveFilePicker("save_rule_button", "Save rule as...", "*.json", "Save detection rule", "json");
     wd.setFilePicker("load_rule_button", "Load rule...", "*.json", "Load detection rule");
-    wd.setEnabled("apply_button", !code_.empty());
+    // State the precondition in the UI rather than failing on the click: runScript needs a
+    // source unless the markers are global. Reachable by default now that nothing is
+    // auto-selected.
+    const bool resolved = sourceResolved();
+    wd.setEnabled("apply_button", !code_.empty() && (global_ || resolved));
 
     // Preview: the selected source curve, with the rule's detected markers overlaid.
     std::string status_line = status_;
-    if (!selected_source_.empty() && preview_provider_) {
+    if (!selected_source_.empty() && !resolved) {
+      status_line = "Source '" + selected_source_ + "' is not available in the loaded datasets.";
+    }
+    if (resolved && preview_provider_) {
       PJ::ChartSeries cs;
       cs.label = selected_source_;
       cs.points = preview_provider_(selected_source_);
@@ -206,6 +230,12 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
           status_line = "Rule error: " + preview_error;
         }
       }
+    } else {
+      // No usable source: clear the chart, or the previous curve stays painted under a
+      // status line that says there is no source. Now reachable on open, since nothing is
+      // auto-selected any more.
+      wd.clearChart("preview_chart");
+      wd.setChartPlaceholder("preview_chart", "Pick a source curve, or drag & drop one from the Datasets tree");
     }
     wd.setText("status_label", status_line);
     return wd.toJson();
@@ -213,13 +243,9 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
 
   bool onSelectionChanged(std::string_view name, const std::vector<std::string>& items) override {
     if (name == "source_list") {
-      selected_source_ = items.empty() ? "" : items.front();
       // Re-target the rule at the new source so the preview recomputes for it (and
       // stale markers from the previous series don't linger). Manual edits are kept.
-      if (!current_template_.empty() && !user_edited_) {
-        code_ = anomaly_core::substituteSource(current_template_, selected_source_);
-      }
-      return true;  // refresh preview + markers
+      return adoptSource(items.empty() ? std::string{} : items.front());  // refresh preview + markers
     }
     if (name == "function_list") {
       const std::string fn = items.empty() ? "" : items.front();
@@ -232,6 +258,46 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
         }
       }
       return true;  // load the template into the editor
+    }
+    return false;
+  }
+
+  // Series dragged from the host's Datasets tree onto the Source curve box.
+  //
+  // Validated against series_names_ (everything the catalog offers), NOT the filtered
+  // view: a drop has to work while a text filter is narrowing the list.
+  //
+  // A text field dropped here arrives as an unresolved catalog key rather than a series
+  // name, so it simply fails the lookup: the host's catalog_key_resolver (pj_app
+  // MainWindow, panel setup) goes through CatalogModel::curveDescriptor, which defaults to
+  // the kPlottable capability and returns nullopt for text — and DropEventFilter then
+  // passes the raw key through. A text drop and an unknown drop are therefore
+  // indistinguishable here, hence one message covering both. Telling them apart needs a
+  // host change, not a plugin one.
+  bool onItemsDropped(std::string_view name, const std::vector<std::string>& items) override {
+    if (name != "sourceGroup" || items.empty()) {
+      return false;
+    }
+    const std::string& dropped = items.front();
+    if (std::find(series_names_.begin(), series_names_.end(), dropped) == series_names_.end()) {
+      status_ =
+          "'" + dropped + "' is unavailable as a source: a detection rule needs a numeric or boolean time series.";
+      return true;  // repaint the status; leave the selection alone
+    }
+    adoptSource(dropped);
+    status_ =
+        items.size() > 1 ? "Selected '" + dropped + "' (one source curve at a time)" : "Selected '" + dropped + "'";
+    return true;
+  }
+
+  // The Search box above the source list. Purely a view filter: it must never touch the
+  // selection or the rule, so that narrowing the list cannot silently change what Apply
+  // would run.
+  bool onTextChanged(std::string_view name, std::string_view text) override {
+    if (name == "source_filter") {
+      filter_ = std::string(text);
+      list_dirty_ = true;
+      return true;
     }
     return false;
   }
@@ -301,6 +367,10 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
       }
       code_ = rule->code;
       selected_source_ = rule->source;
+      // A loaded rule counts as hand-authored: without this, the natural "load a rule,
+      // then pick a source" flow would have the source click overwrite the rule with the
+      // active builtin template. Only reachable now that nothing is auto-selected.
+      user_edited_ = true;
       status_ = "Loaded rule from " + std::string(path);
       return true;
     }
@@ -330,18 +400,18 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     return true;
   }
 
+  // The dialog deliberately does NOT auto-select a source. Picking series_names_.front()
+  // used to open the panel on whatever field happened to sort first — often an unusable
+  // one — with the template already retargeted at it and a blank preview explaining
+  // nothing. An empty selection invites a pick or a drop instead.
+  //
+  // A `selected_source_` restored from a layout is left alone here even when it is absent
+  // from `names`: the dataset may simply not have loaded yet, and clearing it would be
+  // destructive and would retarget the rule back to --SOURCE--. widget_data() reports the
+  // unresolved state instead, and it heals itself once the catalog catches up.
   void setSeriesNames(std::vector<std::string> names) {
     series_names_ = std::move(names);
-    // Auto-select the first source so the preview fills on open (like the Filter
-    // Editor, which is launched with a source curve already selected).
-    if (selected_source_.empty() && !series_names_.empty()) {
-      selected_source_ = series_names_.front();
-      // Target the pristine template at the auto-selected source so the first preview
-      // is correct (not left pointing at an empty --SOURCE-- substitution).
-      if (!current_template_.empty() && !user_edited_) {
-        code_ = anomaly_core::substituteSource(current_template_, selected_source_);
-      }
-    }
+    list_dirty_ = true;
   }
 
   using RunCallback =
@@ -375,6 +445,60 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
   }
 
  private:
+  // Is the current selection something the host can actually run a rule against? False
+  // for "nothing picked" and for a layout-restored name the catalog no longer offers.
+  [[nodiscard]] bool sourceResolved() const {
+    return !selected_source_.empty() &&
+           std::find(series_names_.begin(), series_names_.end(), selected_source_) != series_names_.end();
+  }
+
+  // Take `name` as the source, retargeting a builtin template at it. Shared by the list
+  // click and the drop so the two paths cannot drift apart.
+  bool adoptSource(std::string name) {
+    selected_source_ = std::move(name);
+    // Manual edits win: only a pristine template gets re-pointed.
+    if (!current_template_.empty() && !user_edited_) {
+      code_ = anomaly_core::substituteSource(current_template_, selected_source_);
+    }
+    return true;
+  }
+
+  static void foldAsciiInto(std::string_view text, std::string& out) {
+    out.clear();  // keeps the capacity, so a per-name fold does not allocate every time
+    for (const char c : text) {
+      out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+  }
+
+  // Case-insensitive substring match on the whitespace-trimmed query, preserving catalog
+  // order. Recomputed only when the list or the query changed — widget_data() runs at
+  // ~20 Hz and the source list can be thousands of names.
+  const std::vector<std::string>& visibleNames() {
+    if (!list_dirty_) {
+      return visible_names_;
+    }
+    list_dirty_ = false;
+    visible_names_.clear();
+
+    const std::size_t begin = filter_.find_first_not_of(" \t\n\r\f\v");
+    if (begin == std::string::npos) {
+      visible_names_ = series_names_;
+      return visible_names_;
+    }
+    const std::size_t end = filter_.find_last_not_of(" \t\n\r\f\v");
+    std::string query;
+    foldAsciiInto(std::string_view(filter_).substr(begin, end - begin + 1), query);
+
+    std::string folded;
+    for (const std::string& name : series_names_) {
+      foldAsciiInto(name, folded);
+      if (folded.find(query) != std::string::npos) {
+        visible_names_.push_back(name);
+      }
+    }
+    return visible_names_;
+  }
+
   // Write the current rule (script + source) to the chosen path as a portable JSON
   // file. The Save-as picker already let the user create/select the file; the host
   // guarantees the ".json" extension via the save-file-picker default_suffix contract
@@ -396,8 +520,13 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
 
   // "-- No function --" guidance is builtin function index 0.
   std::string code_ = anomaly_core::substituteSource(anomaly_core::builtinFunctions().front().code, "");
-  std::string status_ = "Pick a source curve and a function (or write your own), then Apply.";
+  std::string status_ = "Pick a source curve (or drag & drop one), pick a function, then Apply.";
   std::string selected_source_;
+  // Source-list view state. Transient by design: a stale filter restored with a layout
+  // would look like a broken list, so none of this is persisted.
+  std::string filter_;
+  std::vector<std::string> visible_names_;
+  bool list_dirty_ = true;
   // Raw builtin code (still containing --SOURCE--) of the active function, so a source
   // change can re-target the rule; user_edited_ guards manual edits from being clobbered.
   std::string current_template_ = anomaly_core::builtinFunctions().front().code;

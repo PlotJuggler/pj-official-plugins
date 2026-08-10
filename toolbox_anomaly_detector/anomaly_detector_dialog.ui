@@ -55,11 +55,23 @@
 
          <!-- Source curve -->
          <item>
+          <!-- The whole group box is the drop target (declared from code with
+               setDropTarget): the host's DropEventFilter walks up from the widget under
+               the cursor, so marking the container covers the list, the filter box and
+               the margins in one go. -->
           <widget class="QGroupBox" name="sourceGroup">
            <property name="title"><string>Source curve</string></property>
            <property name="minimumSize"><size><width>200</width><height>0</height></size></property>
            <property name="maximumSize"><size><width>280</width><height>16777215</height></size></property>
            <layout class="QVBoxLayout" name="sourceLayout">
+            <item>
+             <!-- The host's canonical filter input; the inner QLineEdit takes the
+                  fieldObjectName, which is what onTextChanged() reports. -->
+             <widget class="Search" name="source_search">
+              <property name="fieldObjectName"><string>source_filter</string></property>
+              <property name="placeholder"><string>Filter series...</string></property>
+             </widget>
+            </item>
             <item>
              <widget class="QListWidget" name="source_list">
               <property name="sizePolicy">
@@ -155,7 +167,7 @@
      <item>
       <widget class="QPushButton" name="apply_button">
        <property name="text"><string>Apply</string></property>
-       <property name="toolTip"><string>Run the Lua rule and apply the emitted markers to the plots</string></property>
+       <property name="toolTip"><string>Run the Lua rule and apply the emitted markers to the plots. Requires a source curve, or Global marker.</string></property>
       </widget>
      </item>
      <item>
