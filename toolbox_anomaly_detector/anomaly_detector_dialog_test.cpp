@@ -120,6 +120,65 @@ std::string statusText(const PJ::WidgetDataView& wd) {
 }
 
 // ---------------------------------------------------------------------------
+// Bring-up, one step per test.
+//
+// Split this finely on purpose: the fixture below reaches the plugin through fat
+// pointers that the SDK dereferences unconditionally, so a failure anywhere in the
+// sequence lands as one indistinguishable access violation. One assertion per step means
+// the first test that fails names the step, on platforms we cannot run locally.
+// ---------------------------------------------------------------------------
+
+TEST(AnomalyPluginBringUp, LibraryLoads) {
+  auto library = PJ::ToolboxLibrary::load(PJ_ANOMALY_PLUGIN_PATH);
+  ASSERT_TRUE(library) << "load failed: " << library.error();
+}
+
+TEST(AnomalyPluginBringUp, CreateHandleReturnsAValidInstance) {
+  auto library = PJ::ToolboxLibrary::load(PJ_ANOMALY_PLUGIN_PATH);
+  ASSERT_TRUE(library) << library.error();
+  auto handle = library->createHandle();
+  EXPECT_TRUE(handle.valid()) << "createHandle() produced a null instance or vtable";
+}
+
+TEST(AnomalyPluginBringUp, ManifestIsReadableBeforeBinding) {
+  auto library = PJ::ToolboxLibrary::load(PJ_ANOMALY_PLUGIN_PATH);
+  ASSERT_TRUE(library) << library.error();
+  auto handle = library->createHandle();
+  ASSERT_TRUE(handle.valid());
+  EXPECT_FALSE(handle.manifest().empty());
+}
+
+TEST(AnomalyPluginBringUp, BindsToATestStore) {
+  auto library = PJ::ToolboxLibrary::load(PJ_ANOMALY_PLUGIN_PATH);
+  ASSERT_TRUE(library) << library.error();
+  auto handle = library->createHandle();
+  ASSERT_TRUE(handle.valid());
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("alpha").addField("alpha", "x", timestamps(16), ramp(16));
+  PJ::ServiceRegistryBuilder registry;
+  registry.registerService<PJ::sdk::ToolboxHostService>(store.makeHost());
+  registry.registerService<PJ::sdk::ToolboxRuntimeHostService>(store.makeRuntimeHost());
+  EXPECT_TRUE(handle.bind(registry.view()));
+}
+
+TEST(AnomalyPluginBringUp, GetDialogReturnsANonNullFatPointer) {
+  auto library = PJ::ToolboxLibrary::load(PJ_ANOMALY_PLUGIN_PATH);
+  ASSERT_TRUE(library) << library.error();
+  auto handle = library->createHandle();
+  ASSERT_TRUE(handle.valid());
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("alpha").addField("alpha", "x", timestamps(16), ramp(16));
+  PJ::ServiceRegistryBuilder registry;
+  registry.registerService<PJ::sdk::ToolboxHostService>(store.makeHost());
+  registry.registerService<PJ::sdk::ToolboxRuntimeHostService>(store.makeRuntimeHost());
+  ASSERT_TRUE(handle.bind(registry.view()));
+
+  const PJ_borrowed_dialog_t borrowed = handle.getDialog();
+  EXPECT_NE(borrowed.ctx, nullptr);
+  EXPECT_NE(borrowed.vtable, nullptr);
+}
+
+// ---------------------------------------------------------------------------
 // Opening state
 // ---------------------------------------------------------------------------
 
