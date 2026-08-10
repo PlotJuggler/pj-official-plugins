@@ -10,10 +10,10 @@
 // constructed directly.
 
 #include <gtest/gtest.h>
-#include <unistd.h>
 
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <optional>
 #include <stdexcept>
@@ -314,12 +314,10 @@ TEST(AnomalyDialogSource, ALoadedRuleSurvivesALaterSourceClick) {
   fixture.bind();
   auto dialog = fixture.dialog();
 
-  // mkstemp, not tmpnam: the latter hands back a name that another process can claim
-  // before we open it, and the linker warns about exactly that.
-  std::string path = "/tmp/anomaly_rule_XXXXXX";
-  const int fd = ::mkstemp(path.data());
-  ASSERT_NE(fd, -1);
-  ::close(fd);
+  // std::filesystem rather than tmpnam (which the linker warns about) or mkstemp (POSIX
+  // only — this repo also builds on MSVC). The name is fixed because ctest runs this
+  // binary once; the file is removed at the end.
+  const std::string path = (std::filesystem::temp_directory_path() / "pj_anomaly_rule_test.json").string();
   {
     // Custom delimiter: the embedded Lua contains `)"`, which would close a plain R"( )".
     std::ofstream out(path);
