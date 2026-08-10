@@ -53,10 +53,16 @@ std::vector<double> ramp(std::size_t count) {
 }
 
 struct PluginFixture {
+  // Declaration order is load-bearing. Members are destroyed in reverse, and this
+  // plugin's destructor talks to the host services (it tears down its ephemeral preview
+  // topic), so the handle MUST die before the store and registry it points at. The plugin
+  // is entitled to that: its destructor documents that the host outlives the plugin
+  // instance during teardown. Getting this backwards leaves the destructor reading freed
+  // memory — harmless-looking on Linux, an access violation on Windows and macOS.
   PJ::ToolboxLibrary library;
-  PJ::ToolboxHandle handle;
   PJ::testing::ToolboxTestStore store;
   PJ::ServiceRegistryBuilder registry;
+  PJ::ToolboxHandle handle;
 
   PluginFixture(PJ::ToolboxLibrary&& loaded, PJ::ToolboxHandle&& created)
       : library(std::move(loaded)), handle(std::move(created)) {}
@@ -151,26 +157,27 @@ TEST(AnomalyPluginBringUp, ManifestIsReadableBeforeBinding) {
 TEST(AnomalyPluginBringUp, BindsToATestStore) {
   auto library = PJ::ToolboxLibrary::load(PJ_ANOMALY_PLUGIN_PATH);
   ASSERT_TRUE(library) << library.error();
-  auto handle = library->createHandle();
-  ASSERT_TRUE(handle.valid());
+  // Store and registry declared BEFORE the handle so they outlive it — see PluginFixture.
   PJ::testing::ToolboxTestStore store;
   store.addTopic("alpha").addField("alpha", "x", timestamps(16), ramp(16));
   PJ::ServiceRegistryBuilder registry;
   registry.registerService<PJ::sdk::ToolboxHostService>(store.makeHost());
   registry.registerService<PJ::sdk::ToolboxRuntimeHostService>(store.makeRuntimeHost());
+  auto handle = library->createHandle();
+  ASSERT_TRUE(handle.valid());
   EXPECT_TRUE(handle.bind(registry.view()));
 }
 
 TEST(AnomalyPluginBringUp, GetDialogReturnsANonNullFatPointer) {
   auto library = PJ::ToolboxLibrary::load(PJ_ANOMALY_PLUGIN_PATH);
   ASSERT_TRUE(library) << library.error();
-  auto handle = library->createHandle();
-  ASSERT_TRUE(handle.valid());
   PJ::testing::ToolboxTestStore store;
   store.addTopic("alpha").addField("alpha", "x", timestamps(16), ramp(16));
   PJ::ServiceRegistryBuilder registry;
   registry.registerService<PJ::sdk::ToolboxHostService>(store.makeHost());
   registry.registerService<PJ::sdk::ToolboxRuntimeHostService>(store.makeRuntimeHost());
+  auto handle = library->createHandle();
+  ASSERT_TRUE(handle.valid());
   ASSERT_TRUE(handle.bind(registry.view()));
 
   const PJ_borrowed_dialog_t borrowed = handle.getDialog();
