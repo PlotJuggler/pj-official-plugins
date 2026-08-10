@@ -65,14 +65,29 @@ struct PluginFixture {
     store.addTopic(topic).addField(topic, field, timestamps(16), ramp(16));
   }
 
+  // These throw rather than ASSERT because DialogHandle dereferences its vtable
+  // unconditionally (widget_data is `vt_->get_widget_data(ctx_)`), so handing it an
+  // unbound handle or an absent dialog is an access violation, not a test failure — and a
+  // crash reports nothing about which step went wrong. ASSERT_* would not help either: in
+  // a void member it only returns from the member, and the test would carry on into the
+  // same crash.
   void bind() {
+    if (!handle.valid()) {
+      throw std::runtime_error("toolbox handle is invalid — createHandle() failed");
+    }
     registry.registerService<PJ::sdk::ToolboxHostService>(store.makeHost());
     registry.registerService<PJ::sdk::ToolboxRuntimeHostService>(store.makeRuntimeHost());
-    ASSERT_TRUE(handle.bind(registry.view()));
+    if (!handle.bind(registry.view())) {
+      throw std::runtime_error("handle.bind() failed");
+    }
   }
 
   PJ::DialogHandle dialog() {
-    return PJ::DialogHandle::fromBorrowed(handle.getDialog());
+    const PJ_borrowed_dialog_t borrowed = handle.getDialog();
+    if (borrowed.vtable == nullptr || borrowed.ctx == nullptr) {
+      throw std::runtime_error("plugin returned no dialog: getDialog() gave a null fat pointer");
+    }
+    return PJ::DialogHandle::fromBorrowed(borrowed);
   }
 };
 
