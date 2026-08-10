@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>AssistantPanel</class>
+ <widget class="QWidget" name="AssistantPanel">
+  <property name="windowTitle"><string>Assistant Agent</string></property>
+  <property name="minimumWidth"><number>420</number></property>
+  <property name="minimumHeight"><number>360</number></property>
+  <layout class="QVBoxLayout" name="rootLayout">
+   <item>
+    <widget class="QFrame" name="headerBand">
+     <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+     <layout class="QHBoxLayout" name="headerLayout">
+      <item>
+       <widget class="QLabel" name="backendLabel">
+        <property name="text"><string>Backend: -</string></property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="headerSpacer">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        <property name="sizeHint" stdset="0"><size><width>40</width><height>0</height></size></property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QPushButton" name="settingsButton">
+        <property name="text"><string>Settings...</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QPlainTextEdit" name="transcriptText">
+     <property name="readOnly"><bool>true</bool></property>
+     <property name="placeholderText"><string>Ask the assistant to list your topics, describe a topic, or plot the derivative of a series...</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="statusLabel">
+     <property name="text"><string>Ready.</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="inputRow" native="true">
+     <layout class="QHBoxLayout" name="inputLayout">
+      <property name="leftMargin"><number>0</number></property>
+      <property name="rightMargin"><number>0</number></property>
+      <property name="topMargin"><number>0</number></property>
+      <property name="bottomMargin"><number>0</number></property>
+      <item>
+       <widget class="QLineEdit" name="inputEdit">
+        <property name="placeholderText"><string>Type a message and press Send...</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="sendButton">
+        <property name="text"><string>Send</string></property>
+        <property name="default"><bool>true</bool></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="cancelButton">
+        <property name="text"><string>Cancel</string></property>
+        <property name="enabled"><bool>false</bool></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>

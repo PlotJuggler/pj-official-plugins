@@ -1,0 +1,107 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MIT
+//
+// A data-processors host that records what it was asked to install instead of
+// installing it. Shared by the unit tests and the model benchmark: both need to
+// assert on the exact script and inputs a tool synthesized, which is the only
+// objective way to tell whether a model did the job.
+//
+// Note the limit this implies. It records INTENT — nothing here runs the script,
+// so a transform recorded as correct can still yield an empty curve in the real
+// application (e.g. inputs that do not share exact timestamps). Verifying the
+// drawn result requires the GUI pass.
+#pragma once
+
+#include <cstdint>
+#include <pj_base/sdk/plugin_data_api.hpp>
+#include <string>
+#include <vector>
+
+namespace assistant_agent::testing {
+
+// Records the last create/validate call so tests can assert the synthesized
+// Luau script + routed inputs/outputs. Returns success unless a fail flag is set.
+struct RecordingDpHost {
+  int create_calls = 0;
+  int validate_calls = 0;
+  bool fail_validate = false;
+  bool fail_create = false;
+  std::string last_kind;
+  std::string last_id;
+  std::string last_removed;
+  std::string last_script;
+  std::string last_validate_script;
+  std::vector<std::string> last_inputs;
+  std::vector<std::string> last_outputs;
+  std::vector<std::string> resolved;  // storage the returned borrowed views point into
+
+  static std::string toStr(PJ_string_view_t v) {
+    return std::string(v.data == nullptr ? "" : v.data, v.size);
+  }
+
+  static bool tCreate(
+      void* ctx, PJ_string_view_t id, PJ_string_view_t kind, PJ_string_view_t language, const PJ_string_view_t* inputs,
+      uint64_t input_count, const PJ_string_view_t* outputs, uint64_t output_count, PJ_string_view_t script,
+      PJ_string_view_t /*params*/, uint32_t /*flags*/, PJ_string_view_t* out_topics, uint64_t out_topics_capacity,
+      uint64_t* out_topics_count, PJ_error_t* err) noexcept {
+    auto* self = static_cast<RecordingDpHost*>(ctx);
+    (void)language;
+    ++self->create_calls;
+    self->last_id = toStr(id);
+    self->last_kind = toStr(kind);
+    self->last_script = toStr(script);
+    self->last_inputs.clear();
+    for (uint64_t i = 0; i < input_count; ++i) {
+      self->last_inputs.push_back(toStr(inputs[i]));
+    }
+    self->last_outputs.clear();
+    for (uint64_t i = 0; i < output_count; ++i) {
+      self->last_outputs.push_back(toStr(outputs[i]));
+    }
+    if (self->fail_create) {
+      PJ::sdk::fillError(err, 1, "test", "create rejected");
+      return false;
+    }
+    self->resolved = self->last_outputs.empty() ? std::vector<std::string>{"auto_topic"} : self->last_outputs;
+    if (out_topics_count != nullptr) {
+      *out_topics_count = self->resolved.size();
+    }
+    for (uint64_t i = 0; i < self->resolved.size() && i < out_topics_capacity; ++i) {
+      out_topics[i] = PJ_string_view_t{self->resolved[i].data(), self->resolved[i].size()};
+    }
+    return true;
+  }
+
+  static bool tValidate(
+      void* ctx, PJ_string_view_t /*kind*/, PJ_string_view_t /*language*/, PJ_string_view_t script,
+      PJ_string_view_t /*params*/, PJ_error_t* err) noexcept {
+    auto* self = static_cast<RecordingDpHost*>(ctx);
+    ++self->validate_calls;
+    self->last_validate_script = toStr(script);
+    if (self->fail_validate) {
+      PJ::sdk::fillError(err, 1, "test", "compile error");
+      return false;
+    }
+    return true;
+  }
+
+  static bool tRemove(void* ctx, PJ_string_view_t id, PJ_error_t* /*err*/) noexcept {
+    static_cast<RecordingDpHost*>(ctx)->last_removed = toStr(id);
+    return true;
+  }
+
+  PJ::sdk::DataProcessorsHostView view() {
+    static const PJ_data_processors_host_vtable_t vtable = {
+        .protocol_version = 1,
+        .struct_size = sizeof(PJ_data_processors_host_vtable_t),
+        .create_data_processor = &RecordingDpHost::tCreate,
+        .remove_data_processor = &RecordingDpHost::tRemove,
+        .list_data_processor_ids = nullptr,
+        .data_processor_config = nullptr,
+        .validate_data_processor_script = &RecordingDpHost::tValidate,
+    };
+    return PJ::sdk::DataProcessorsHostView(PJ_data_processors_host_t{this, &vtable});
+  }
+};
+
+}  // namespace assistant_agent::testing
