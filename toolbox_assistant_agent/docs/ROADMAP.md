@@ -10,8 +10,15 @@ anything.
 
 Two properties are non-negotiable and hold today:
 
-- **Non-destructive by construction.** The plugin ABI exposes no delete operation, so no delete
-  tool can exist. This is not a rule the model is asked to follow.
+- **Loaded data is untouchable by construction.** Every write path goes through
+  `pj.data_processors.v1`, which is addressed by node id and only ever enumerates or removes nodes
+  *this plugin* created. There is no reachable operation that edits or deletes a loaded series, so
+  no such tool can exist. This is not a rule the model is asked to follow.
+
+  Stated carefully on purpose. An earlier wording claimed the ABI "exposes no delete operation",
+  which was simply false — `remove_markers` has always called `dp.remove()`, and the assistant can
+  now withdraw its own derived series too. The guarantee is about *scope*, not about the absence of
+  deletion, and a safety claim that overstates itself is worse than none.
 - **No API key, no per-token billing.** The Claude backend drives the user's existing CLI
   subscription; the Ollama backend runs locally.
 
@@ -21,7 +28,7 @@ Two properties are non-negotiable and hold today:
 |---|---|
 | Chat panel as a floating toolbox window | Keeps the chart area usable while the assistant is open |
 | Two real backends | Claude Code (via a loopback MCP server) and Ollama, plus Echo/Fake for tests |
-| Seven tools | list / describe / read, create derived series, create + remove markers, status |
+| Nine tools | list / describe / read, create derived series + markers, remove either, list own work, status |
 | Tolerant path resolution | Abbreviated paths resolve when unambiguous; ambiguous ones return candidates |
 | Input validation before install | Stops the silent-empty-curve failure at its source |
 | Catalog handed to the model up front | 6 → 1–4 round-trips per task (`FINDINGS.md` §2) |
@@ -32,9 +39,21 @@ Two properties are non-negotiable and hold today:
 | Conversation outlives the backend | Saving a setting used to rebuild the backend and silently restart the chat |
 | Explicit "New chat" | The reset that was, until now, only available by accident |
 | Per-turn cost in the panel | The price the CLI reports was already parsed, and thrown away |
+| Creations report what they produced | Marker count and kind read back from the object store, not just "created" |
+| Refuses to build an empty curve | Inputs that share no timestamps are caught before anything is installed |
+| Datasets are visible | The listing groups by source, so several loaded runs can be told apart |
+| Several outputs from one node | roll/pitch/yaw out of one quaternion instead of three nodes |
+| Can withdraw its own work | `list_created` / `remove_derived_series`, scoped to what it made |
 | Confirmed in the application | Every drawing scenario checked on screen, not just in the harness |
 
 ## Next
+
+**Re-measure the marker guidance on the cheap tiers.** The shape guidance in `create_markers` has
+no demonstrated effect: L13 passes 4/4 both with it and with it removed, on `sonnet`. It survives in
+trimmed form because `haiku` and `fable` are unmeasured and the real-world failure was harder than
+the synthetic one — but that is a hypothesis, not a result, and it should be settled rather than
+assumed. The enumeration of shapes was cut when the schema hit its budget, for exactly this reason:
+it was the only part with no evidence behind it.
 
 **Require the model to disclose a choice when a name is under-specified.** The tool layer already
 refuses to guess between candidate series, but that guard rarely fires: handed the full catalog, a

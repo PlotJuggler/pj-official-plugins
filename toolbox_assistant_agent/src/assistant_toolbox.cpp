@@ -36,6 +36,16 @@ class AssistantToolbox : public PJ::ToolboxPluginBase {
     // clean "service unavailable" to the model instead of failing to bind.
     dp_view_ = services.get<PJ::sdk::DataProcessorsHostService>().value_or(PJ::sdk::DataProcessorsHostView{});
     dialog_.setDataProcessorsProvider([this]() { return dp_view_; });
+    // Read-back path for what we create: markers land in the ObjectStore, and
+    // this is the only way to learn how many. Without it the model is told
+    // "created" and nothing else, which is how a wall of thousands of markers
+    // gets reported as a success. Optional service — the base returns nullptr
+    // when the host omits it, and the tools then answer without a count rather
+    // than failing.
+    dialog_.setObjectReadProvider([this]() {
+      const auto* view = objectReadHost();
+      return view != nullptr ? *view : PJ::sdk::ToolboxObjectReadHostView{};
+    });
     // Optional pj.settings.v1 store (QSettings-like persistence). An unbound
     // view reads defaults / drops writes, so this is safe when the host omits it.
     dialog_.setSettings(services.get<PJ::sdk::SettingsStoreService>().value_or(PJ::sdk::SettingsView{}));

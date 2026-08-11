@@ -8,8 +8,13 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <iomanip>
+#include <iterator>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <pj_base/builtin/plot_markers.hpp>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -21,6 +26,84 @@ namespace assistant_agent {
 namespace {
 
 using nlohmann::json;
+
+const char* markerKindName(PJ::sdk::MarkerKind k) {
+  switch (k) {
+    case PJ::sdk::MarkerKind::kRegion:
+      return "regions";
+    case PJ::sdk::MarkerKind::kEvent:
+      return "events";
+    case PJ::sdk::MarkerKind::kValueBand:
+      return "value_bands";
+    case PJ::sdk::MarkerKind::kLabel:
+      return "labels";
+  }
+  return "other";
+}
+
+// What the host ACTUALLY published for a marker set, read back out of the
+// object store.
+//
+// This exists because the model cannot see the plot. Told only "created", it
+// has no way to distinguish twelve shaded regions from four thousand vertical
+// lines that merge into a wall — and it will report both as a success, because
+// from where it sits they are identical. The breakdown by kind is the part that
+// carries the meaning: "4182 events" is a wall, "12 regions" is an annotation.
+//
+// A marker topic holds ONE serialized PlotMarkers blob (MarkerService pushes the
+// whole set at Timestamp{0} and republishes it on every change), so entryCount()
+// would report 1 no matter how many markers there are — the payload has to be
+// decoded. Same read path the anomaly detector uses for its live preview.
+//
+// Returns a null json when the optional read service is absent: the answer then
+// carries no count, which is strictly better than the tool failing.
+json publishedMarkerSummary(const ToolContext& ctx, const std::vector<std::string>& object_topics) {
+  if (!ctx.objects.valid()) {
+    return nullptr;
+  }
+  std::size_t total = 0;
+  std::map<std::string, std::size_t> by_kind;
+  bool any_span = false;
+  PJ::Timestamp t_min = 0;
+  PJ::Timestamp t_max = 0;
+  for (const auto& name : object_topics) {
+    const std::optional<PJ::sdk::ObjectTopicHandle> handle = ctx.objects.lookupTopic(name);
+    if (!handle) {
+      continue;
+    }
+    const PJ::Expected<PJ::sdk::ObjectBytes> bytes = ctx.objects.readLatestAt(*handle, PJ::Timestamp{0});
+    if (!bytes || bytes->empty()) {
+      continue;
+    }
+    const PJ::Span<const uint8_t> view = bytes->view();
+    const PJ::Expected<PJ::sdk::PlotMarkers> decoded = PJ::deserializePlotMarkers(view.data(), view.size());
+    if (!decoded) {
+      continue;
+    }
+    for (const auto& m : decoded->markers) {
+      ++total;
+      ++by_kind[markerKindName(m.kind)];
+      const PJ::Timestamp lo = m.t_start;
+      const PJ::Timestamp hi = m.kind == PJ::sdk::MarkerKind::kRegion ? m.t_end : m.t_start;
+      if (!any_span) {
+        t_min = lo;
+        t_max = hi;
+        any_span = true;
+      } else {
+        t_min = std::min(t_min, lo);
+        t_max = std::max(t_max, hi);
+      }
+    }
+  }
+  json out = {{"markers_created", total}};
+  if (!by_kind.empty()) {
+    out["by_kind"] = by_kind;
+  }
+  if (any_span) {
+    out["span_s"] = static_cast<double>(t_max - t_min) * 1e-9;
+  }
+  return out;
+}
 
 // Cap on a single tool response handed back to the model, so a wide catalog or
 // a long series can't blow the context window. read_series coarsens to fit.
@@ -55,6 +138,30 @@ const char* primitiveTypeName(PJ::PrimitiveType t) {
     default:
       return "unspecified";
   }
+}
+
+// Dataset name for each topic INDEX, or empty when the host reports no data
+// sources (the SDK's test store is one such host, so every unit test exercises
+// the degraded path). Topics are laid out contiguously per source, so this is a
+// table build rather than a search.
+//
+// It matters because PJ4 can hold several datasets at once — two runs of the
+// same robot is the ordinary case — and a flat topic list makes them
+// indistinguishable. Without it the model can neither offer to compare two runs
+// nor avoid mixing them, for the same reason: it does not know there are two.
+std::map<std::uint32_t, std::string> datasetByTopicIndex(const PJ::sdk::CatalogSnapshot& catalog) {
+  std::map<std::uint32_t, std::string> out;
+  const auto sources = catalog.dataSources();
+  if (sources.size() < 2) {
+    return out;  // one source (or none) adds no information worth the tokens
+  }
+  for (const auto& src : sources) {
+    const std::string name(PJ::sdk::toStringView(src.name));
+    for (std::uint32_t i = 0; i < src.topic_count; ++i) {
+      out[src.first_topic + i] = name;
+    }
+  }
+  return out;
 }
 
 // Join a topic name and a field path into the canonical curve path. Hosts
@@ -280,18 +387,33 @@ ToolResult listTopics(const json& args, ToolContext& ctx) {
   // still tells the model how to narrow the search.
   const int limit = std::clamp(args.value("limit", 100), 1, 500);
 
+  // Scoping to one dataset is what makes this usable with several loaded: the
+  // same topic names repeat across runs, so a name filter alone returns both.
+  const std::string dataset_filter = args.value("dataset", std::string{});
+
   json topics = json::array();
   int matched = 0;
   int shown = 0;
   auto all = catalog->topics();
-  for (const auto& topic : all) {
+  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(*catalog);
+  for (std::uint32_t ti = 0; ti < all.size(); ++ti) {
+    const auto& topic = all[ti];
     const std::string name(PJ::sdk::toStringView(topic.name));
     if (!filter.empty() && name.find(filter) == std::string::npos) {
       continue;
     }
+    const auto ds = topic_dataset.find(ti);
+    const std::string dataset = ds != topic_dataset.end() ? ds->second : std::string{};
+    if (!dataset_filter.empty() && dataset.find(dataset_filter) == std::string::npos) {
+      continue;
+    }
     ++matched;
     if (shown < limit) {
-      topics.push_back({{"topic", name}, {"fields", topic.field_count}});
+      json entry = {{"topic", name}, {"fields", topic.field_count}};
+      if (!dataset.empty()) {
+        entry["dataset"] = dataset;
+      }
+      topics.push_back(entry);
       ++shown;
     }
   }
@@ -314,7 +436,9 @@ ToolResult describeTopic(const json& args, ToolContext& ctx) {
   }
   auto topics = catalog->topics();
   auto fields = catalog->fields();
-  for (const auto& topic : topics) {
+  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(*catalog);
+  for (std::uint32_t ti = 0; ti < topics.size(); ++ti) {
+    const auto& topic = topics[ti];
     if (std::string(PJ::sdk::toStringView(topic.name)) != want) {
       continue;
     }
@@ -331,7 +455,11 @@ ToolResult describeTopic(const json& args, ToolContext& ctx) {
           {"type", primitiveTypeName(PJ::sdk::fromAbiType(fields[idx].type))}};
       field_arr.push_back(entry);
     }
-    return ToolResult::success(json({{"topic", want}, {"fields", field_arr}}).dump());
+    json out = {{"topic", want}, {"fields", field_arr}};
+    if (auto it = topic_dataset.find(ti); it != topic_dataset.end()) {
+      out["dataset"] = it->second;
+    }
+    return ToolResult::success(out.dump());
   }
   return ToolResult::failure("no topic named '" + want + "' (use list_topics)");
 }
@@ -339,6 +467,65 @@ ToolResult describeTopic(const json& args, ToolContext& ctx) {
 json statsToJson(const SeriesStats& s) {
   return {{"count", s.count},           {"min", s.min},        {"max", s.max}, {"mean", s.mean}, {"stddev", s.stddev},
           {"duration_s", s.duration_s}, {"rate_hz", s.rate_hz}};
+}
+
+// How a multi-input transform would fare BEFORE anything is installed.
+//
+// PJ4 joins the inputs of a multi-input transform on EXACT timestamp equality
+// (pj_datastore run_mimo_incremental). Inputs that share no timestamps produce a
+// series with zero points — created "successfully", drawn as nothing, with no
+// error anywhere. That is not a rare corner: two recordings of the same robot
+// are exactly that, and comparing two runs is a perfectly reasonable thing to
+// ask for.
+//
+// So this measures the real intersection rather than guessing from sample rates
+// (two 100 Hz series can still share nothing if one is offset by half a sample —
+// a rate comparison would call that compatible and be wrong).
+struct JoinForecast {
+  bool checked = false;            // false when an input could not be read; draw no conclusion
+  std::size_t shared = 0;          // timestamps common to every input
+  std::size_t smallest = 0;        // rows in the shortest input, the ceiling for `shared`
+  std::vector<std::string> rates;  // "path (100.0 Hz, 200 samples)" per input, for the message
+};
+
+JoinForecast forecastJoin(
+    const ToolContext& ctx, const PJ::sdk::CatalogSnapshot& catalog, const std::vector<std::string>& inputs) {
+  JoinForecast out;
+  std::vector<std::int64_t> common;
+  for (std::size_t i = 0; i < inputs.size(); ++i) {
+    auto lookup = resolveSeriesPath(catalog, inputs[i]);
+    if (!lookup.resolved) {
+      return out;
+    }
+    auto view = ctx.host.readSeries(lookup.resolved->handle);
+    if (!view) {
+      return out;
+    }
+    std::vector<std::int64_t> ts;
+    std::vector<double> vals;
+    if (!readSeriesDoubles(*view, ts, vals)) {
+      return out;  // a non-numeric input fails later, on its own terms
+    }
+    const SeriesStats stats = computeStats(ts, vals);
+    std::ostringstream rate;
+    rate << inputs[i] << " (" << std::fixed << std::setprecision(1) << stats.rate_hz << " Hz, " << ts.size()
+         << " samples)";
+    out.rates.push_back(rate.str());
+    out.smallest = (i == 0) ? ts.size() : std::min(out.smallest, ts.size());
+
+    std::sort(ts.begin(), ts.end());
+    ts.erase(std::unique(ts.begin(), ts.end()), ts.end());
+    if (i == 0) {
+      common = std::move(ts);
+    } else {
+      std::vector<std::int64_t> next;
+      std::set_intersection(common.begin(), common.end(), ts.begin(), ts.end(), std::back_inserter(next));
+      common = std::move(next);
+    }
+  }
+  out.checked = true;
+  out.shared = common.size();
+  return out;
 }
 
 ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
@@ -415,6 +602,23 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
         "e.g. 'value * 2') OR 'body' (full Luau statements ending in return, with optional 'global' state)");
   }
   const std::string name = args["name"].get<std::string>();
+  // One node can produce SEVERAL series. The host has always accepted a span of
+  // outputs and our wrapper already forwards every value the body returns
+  // (MULTRET), so the single-output limit was ours alone — it forced three
+  // separate nodes, each recomputing the same intermediate, for something like
+  // roll/pitch/yaw out of one quaternion. Defaults to [name], so nothing that
+  // worked before changes.
+  std::vector<std::string> outputs;
+  if (args.contains("outputs") && args["outputs"].is_array()) {
+    for (const auto& o : args["outputs"]) {
+      if (o.is_string() && !o.get<std::string>().empty()) {
+        outputs.push_back(o.get<std::string>());
+      }
+    }
+  }
+  if (outputs.empty()) {
+    outputs.push_back(name);
+  }
   std::vector<std::string> inputs;
   for (const auto& in : args["inputs"]) {
     if (in.is_string()) {
@@ -429,6 +633,7 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
   // round-trip), and a path that names nothing fails loudly instead of
   // installing a transform whose input never matches — which produces an empty
   // curve and looks like it worked.
+  JoinForecast forecast;
   if (auto catalog = ctx.host.catalogSnapshot()) {
     for (auto& in : inputs) {
       auto lookup = resolveSeriesPath(*catalog, in);
@@ -436,6 +641,25 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
         return ToolResult::failure(seriesLookupError(in, lookup));
       }
       in = lookup.resolved->path;
+    }
+    // The same failure the resolution above guards against — an empty curve that
+    // looks like it worked — reached the other way: inputs that all exist but
+    // share no timestamps. Refuse to build it, and point at what does work,
+    // because wanting to relate two recordings is legitimate even when a joined
+    // series cannot express it.
+    if (inputs.size() > 1) {
+      forecast = forecastJoin(ctx, *catalog, inputs);
+      if (forecast.checked && forecast.shared == 0) {
+        std::string why = "these inputs share no timestamps, so the joined series would have 0 points: ";
+        for (std::size_t i = 0; i < forecast.rates.size(); ++i) {
+          why += (i == 0 ? "" : ", ") + forecast.rates[i];
+        }
+        why +=
+            ". Multi-input transforms join on exact timestamp equality, so they only work on series recorded on the "
+            "same clock. To relate series that are not (two runs, two devices), read_series each one and compare the "
+            "statistics, or tell the user to plot them together.";
+        return ToolResult::failure(why);
+      }
     }
   }
   const std::size_t num_extra = inputs.size() - 1;
@@ -456,7 +680,7 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
   const std::string script = buildLuauTransform(name, name, global, body, num_extra);
 
   std::vector<std::string_view> in_views(inputs.begin(), inputs.end());
-  std::array<std::string_view, 1> out_views{name};
+  std::vector<std::string_view> out_views(outputs.begin(), outputs.end());
   auto status = ctx.dp.createTransform(
       name, PJ::Span<const std::string_view>(in_views.data(), in_views.size()),
       PJ::Span<const std::string_view>(out_views.data(), out_views.size()), script, "{}");
@@ -468,7 +692,23 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
   }
   // Report the readable series path, not just the topic: the output lands as
   // "<name>/value", and models routinely read_series() what this returns.
-  return ToolResult::success(json({{"created", name}, {"series", name + "/value"}, {"inputs", inputs}}).dump());
+  json series_paths = json::array();
+  for (const auto& o : outputs) {
+    series_paths.push_back(o + "/value");
+  }
+  json result = {
+      {"created", name},
+      {"series", outputs.size() == 1 ? json(outputs.front() + "/value") : series_paths},
+      {"inputs", inputs}};
+  // A join that survives but loses most of its rows is a legitimate surprise
+  // worth naming: "of 20000 samples, 340 line up" is the difference between a
+  // usable series and a handful of stray points, and nothing else would say so.
+  if (forecast.checked && forecast.shared < forecast.smallest) {
+    result["joined_points"] = forecast.shared;
+    result["shortest_input_points"] = forecast.smallest;
+  }
+  result["verify_with"] = "read_series on " + outputs.front() + "/value";
+  return ToolResult::success(result.dump());
 }
 
 // Raw form: the model authored the whole Luau rule; declare its inputs, pass
@@ -518,7 +758,12 @@ ToolResult createMarkersFromRule(const json& args, ToolContext& ctx) {
   if (ctx.notify_data_changed) {
     ctx.notify_data_changed();
   }
-  return ToolResult::success(json({{"created_markers_on", output}, {"inputs", inputs}, {"form", "rule"}}).dump());
+  json result = {{"created_markers_on", output}, {"inputs", inputs}, {"form", "rule"}};
+  // Hand back what was actually produced, not just what was asked for.
+  if (json published = publishedMarkerSummary(ctx, *topics); !published.is_null()) {
+    result.update(published);
+  }
+  return ToolResult::success(result.dump());
 }
 
 ToolResult createMarkers(const json& args, ToolContext& ctx) {
@@ -613,7 +858,11 @@ ToolResult createMarkers(const json& args, ToolContext& ctx) {
   if (ctx.notify_data_changed) {
     ctx.notify_data_changed();
   }
-  return ToolResult::success(json({{"created_markers_on", series}, {"style", style}, {"rule", label}}).dump());
+  json result = {{"created_markers_on", series}, {"style", style}, {"rule", label}};
+  if (json published = publishedMarkerSummary(ctx, *topics); !published.is_null()) {
+    result.update(published);
+  }
+  return ToolResult::success(result.dump());
 }
 
 ToolResult removeMarkers(const json& /*args*/, ToolContext& ctx) {
@@ -630,15 +879,75 @@ ToolResult removeMarkers(const json& /*args*/, ToolContext& ctx) {
   return ToolResult::success(json({{"removed", "assistant_markers"}}).dump());
 }
 
+// What this assistant has installed in the session so far.
+//
+// dp.list() enumerates only THIS plugin's nodes, so both this and the removal
+// below are bounded by construction: neither can see or touch loaded data, or
+// anything another plugin created.
+ToolResult listCreated(const json& /*args*/, ToolContext& ctx) {
+  if (!ctx.dp.valid()) {
+    return ToolResult::failure("the host did not expose pj.data_processors.v1");
+  }
+  auto ids = ctx.dp.list();
+  if (!ids) {
+    return ToolResult::failure("list failed: " + ids.error());
+  }
+  json arr = json::array();
+  for (const auto& id : *ids) {
+    arr.push_back(id);
+  }
+  return ToolResult::success(json({{"created", arr}, {"count", arr.size()}}).dump());
+}
+
+ToolResult removeDerivedSeries(const json& args, ToolContext& ctx) {
+  if (!ctx.dp.valid()) {
+    return ToolResult::failure("the host did not expose pj.data_processors.v1");
+  }
+  if (!args.contains("name") || !args["name"].is_string() || args["name"].get<std::string>().empty()) {
+    return ToolResult::failure("remove_derived_series requires a non-empty string 'name'");
+  }
+  const std::string name = args["name"].get<std::string>();
+  // Check membership first so an unknown name gets a useful answer listing what
+  // does exist, rather than whatever the host says about a handle it never had.
+  auto ids = ctx.dp.list();
+  if (ids && std::find(ids->begin(), ids->end(), name) == ids->end()) {
+    std::string known;
+    for (const auto& id : *ids) {
+      known += (known.empty() ? "" : ", ") + id;
+    }
+    return ToolResult::failure(
+        "this assistant did not create '" + name + "'" +
+        (known.empty() ? "; it has created nothing in this session" : "; it has created: " + known) +
+        ". Only series created here can be removed — loaded data cannot be touched.");
+  }
+  auto status = ctx.dp.remove(name);
+  if (!status) {
+    return ToolResult::failure("remove_derived_series failed: " + status.error());
+  }
+  if (ctx.notify_data_changed) {
+    ctx.notify_data_changed();
+  }
+  return ToolResult::success(json({{"removed", name}}).dump());
+}
+
 ToolResult reportStatus(const json& /*args*/, ToolContext& ctx) {
   auto catalog = ctx.host.catalogSnapshot();
   if (!catalog) {
     return ToolResult::failure("catalog unavailable: " + catalog.error());
   }
+  // Name the datasets rather than only counting them: "2" cannot be acted on,
+  // and which two is exactly what decides whether series may be combined.
+  json names = json::array();
+  for (const auto& src : catalog->dataSources()) {
+    names.push_back(std::string(PJ::sdk::toStringView(src.name)));
+  }
   json out = {
       {"data_sources", catalog->dataSources().size()},
       {"topics", catalog->topics().size()},
       {"fields", catalog->fields().size()}};
+  if (!names.empty()) {
+    out["dataset_names"] = names;
+  }
   return ToolResult::success(out.dump());
 }
 
@@ -657,14 +966,30 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
     return "Loaded data: nothing is loaded yet.";
   }
 
+  // Which dataset each topic belongs to. PJ4 can hold several loaded at once —
+  // two runs of the same robot, say — and a flat topic list hides that
+  // completely: the model cannot offer to compare them because it does not know
+  // there are two, and cannot avoid mixing them for the same reason. Topics are
+  // grouped contiguously per source (first_topic/topic_count), so this is a
+  // lookup table rather than a scan. Empty when the host reports no sources, in
+  // which case the listing stays exactly as it was.
+  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(*catalog);
+
   // Pass 1: the full tree, "topic: fieldA (type), fieldB (type)". Preferred,
   // because it gives the model complete paths and types with no follow-up.
   auto build = [&](bool with_fields, std::size_t& shown) -> std::string {
     std::string body;
     shown = 0;
-    for (const auto& topic : topics) {
+    std::string current_dataset;
+    for (std::uint32_t ti = 0; ti < topics.size(); ++ti) {
+      const auto& topic = topics[ti];
+      std::string dataset_header;
+      if (auto it = topic_dataset.find(ti); it != topic_dataset.end() && it->second != current_dataset) {
+        current_dataset = it->second;
+        dataset_header = "dataset \"" + current_dataset + "\":\n";
+      }
       const auto topic_name = PJ::sdk::toStringView(topic.name);
-      std::string line = "  " + std::string(topic_name);
+      std::string line = dataset_header + "  " + std::string(topic_name);
       if (with_fields) {
         line += ": ";
         for (std::uint32_t fi = 0; fi < topic.field_count; ++fi) {
@@ -743,6 +1068,9 @@ ToolRegistry::ToolRegistry() {
        {{"type", "object"},
         {"properties",
          {{"filter", {{"type", "string"}, {"description", "case-sensitive substring to match topic names"}}},
+          {"dataset",
+           {{"type", "string"},
+            {"description", "only topics from this dataset (substring); useful when several are loaded"}}},
           {"limit", {{"type", "integer"}, {"description", "max topics to return (default 100, capped at 500)"}}}}}},
        &listTopics});
 
@@ -780,6 +1108,13 @@ ToolRegistry::ToolRegistry() {
         {"properties",
          {{"name", {{"type", "string"}, {"description", "name of the new series"}}},
           {"inputs", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "topic/field paths"}}},
+          {"outputs",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description",
+             "OPTIONAL — several series from ONE node (default: just 'name'). The body then returns one value per "
+             "output, in order: outputs ['roll','pitch','yaw'] with a body ending 'return r, p, y'. Prefer this over "
+             "three nodes recomputing the same intermediate."}}},
           {"expression", {{"type", "string"}, {"description", "stateless Luau expression over value/v1../time"}}},
           {"body",
            {{"type", "string"}, {"description", "full Luau statements ending in return (overrides expression)"}}},
@@ -793,17 +1128,11 @@ ToolRegistry::ToolRegistry() {
        "Create plot markers from a Luau rule you write (preferred), or from a simple threshold "
        "template. There is ONE assistant marker set: calling this again REPLACES it (use "
        "remove_markers to clear it).\n"
-       "CHOOSE THE SHAPE FIRST — it is not always a line:\n"
-       "- a condition true over a STRETCH of time (stationary, over limit, out of range) -> ONE "
-       "region per stretch (startMarker/closeMarker). Never one line per matching sample: zoomed "
-       "out they merge into a solid wall that hides the data underneath.\n"
-       "- a single INSTANT (an impact, a step, a dropout) -> createVerticalMarker, and only when "
-       "such instants are few and far apart.\n"
-       "- a SAMPLE worth pointing at (a peak, an outlier) -> createPointMarker(t, y).\n"
-       "- a CONSTANT to compare against (a limit, a mean) -> createHorizontalMarker(y).\n"
-       "- an acceptable CORRIDOR of values -> createBandMarker(y_low, y_high).\n"
-       "More than ~50 markers means the shape is wrong: merge contiguous hits into regions, or "
-       "raise the threshold.\n"
+       "CHOOSE THE SHAPE, it is not always a line: a condition true over a STRETCH of time wants ONE "
+       "region per stretch (startMarker/closeMarker), never one line per matching sample — zoomed out "
+       "those merge into a solid wall that hides the data underneath. This call reports how many "
+       "markers it produced and of which kind: past ~50, the shape is wrong, so merge contiguous hits "
+       "into regions or raise the threshold.\n"
        "THRESHOLDS on raw high-rate signals (IMU and the like, tens of Hz and up): 'a sample "
        "crosses X' marks vibration, not events — across thousands of samples a few sigma from the "
        "mean is a routine excursion, not an outlier. Require the condition to hold for a minimum "
@@ -853,6 +1182,22 @@ ToolRegistry::ToolRegistry() {
        "Remove the assistant-created marker set from all plots. Only affects markers this "
        "assistant created; cannot delete user data.",
        empty_obj, &removeMarkers});
+
+  add(
+      {"list_created",
+       "List the derived series and marker sets THIS assistant has created in this session. Use it "
+       "before creating something that may already exist, or to find the name to remove.",
+       empty_obj, &listCreated});
+
+  add(
+      {"remove_derived_series",
+       "Delete a derived series this assistant created, by its name. Only its own creations — loaded "
+       "data cannot be touched. Use it to withdraw a series that turned out wrong instead of leaving "
+       "it in the user's panel.",
+       {{"type", "object"},
+        {"properties", {{"name", {{"type", "string"}, {"description", "name given at creation"}}}}},
+        {"required", json::array({"name"})}},
+       &removeDerivedSeries});
 
   add(
       {"report_status",

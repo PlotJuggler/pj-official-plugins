@@ -28,8 +28,12 @@ struct ToolResult {
 // (host-callback) thread — the GuiExecutor guarantees that — so these views may
 // be used directly. Obtained fresh per turn from the dialog's providers.
 struct ToolContext {
-  PJ::sdk::ToolboxHostView host;              // catalog snapshot + readSeries
-  PJ::sdk::DataProcessorsHostView dp;         // createTransform / createMarkers / validateScript
+  PJ::sdk::ToolboxHostView host;       // catalog snapshot + readSeries
+  PJ::sdk::DataProcessorsHostView dp;  // createTransform / createMarkers / validateScript
+  // Reads back what we just created — markers are objects, and entryCount() is
+  // the only way to know how many were actually produced. Optional: an unbound
+  // view means the answer carries no count, never that the tool fails.
+  PJ::sdk::ToolboxObjectReadHostView objects;
   std::function<void()> notify_data_changed;  // runtimeHost().notifyDataChanged() after a create
   std::string language = "luau";              // transform/marker script backend
 };

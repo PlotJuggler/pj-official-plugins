@@ -41,9 +41,15 @@ must be destroyed while the settings backend it writes through is still alive.
 function-spec format *and* to MCP's `tools/list` from the same definitions, so the two backends
 and the unit tests can never drift apart.
 
-Tools receive a `ToolContext`: a catalog+read view, a data-processors view, and a
-`notify_data_changed` callback. There is deliberately **no delete/destroy op** anywhere in that
-surface — the non-destructiveness is structural.
+Tools receive a `ToolContext`: a catalog+read view, a data-processors view, an object-read view for
+verifying what was created, and a `notify_data_changed` callback.
+
+What that surface cannot do is the structural part. Every write goes through
+`pj.data_processors.v1`, addressed by node id, and `dp.list()` enumerates only nodes *this plugin*
+created — so removal is bounded to its own work by construction rather than by instruction. There is
+no reachable operation that edits or deletes a loaded series. (`remove_derived_series` checks
+membership against `dp.list()` before asking the host, so an unknown name is refused here with a
+useful message instead of being forwarded.)
 
 ### Path resolution
 
@@ -103,6 +109,49 @@ each turn and kept at index 0, so a changed catalog is reflected without discard
 Streams with `stream: true`, parsing NDJSON incrementally and emitting each text delta as it
 lands. Servers that ignore `stream: true` and answer with one whole object still work — the
 splitter is flushed and, failing that, the body is parsed directly.
+
+## Closing the loop on what it creates
+
+The model never sees the plot. Handed `{"created_markers_on": ...}` and nothing else, it cannot
+distinguish twelve shaded regions from four thousand vertical lines that merge into a wall at any
+zoom-out — and it reports both as a success, because from where it sits they are identical. That is
+not a reasoning failure; it is a missing sensor, and no amount of instruction fixes it.
+
+So the creation tools report facts rather than intentions:
+
+- `create_markers` reads the published set back out of the ObjectStore and returns the count and the
+  breakdown by kind. `{"regions": 12}` and `{"events": 4182}` are the difference between an
+  annotation and a wall. The tool description states the ~50 rule and this is what makes it
+  checkable — a rule the model has no way to evaluate is decoration.
+- `create_derived_series` names the series to verify, and reports how many points survive a join
+  that loses rows.
+
+Two things about the read-back are easy to get wrong. A marker topic holds **one** serialized
+`PlotMarkers` blob — `MarkerService` pushes the whole set at `Timestamp{0}` and republishes it on
+every change — so `entryCount()` returns 1 regardless of how many markers exist; the payload has to
+be decoded with `deserializePlotMarkers`. And the read service (`pj.toolbox_object_read.v1`) is
+optional: when the host omits it the answer simply carries no count, which is strictly better than
+the tool failing.
+
+## Refusing to build an empty curve
+
+Multi-input transforms join on **exact timestamp equality**. Inputs that share no timestamps produce
+a series with zero points, created "successfully" and drawn as nothing. That is not an exotic case:
+two recordings of the same robot are exactly that.
+
+Before installing anything, the tool measures the real intersection of the inputs' timestamps — not
+their sample rates, because two 100 Hz series offset by half a sample share nothing while looking
+perfectly compatible. An empty intersection is refused with both halves of the answer: why, and what
+does work instead (read each series and compare statistics, or plot them together). Wanting to
+relate two runs is legitimate even when a joined series cannot express it.
+
+## Several datasets at once
+
+`PJ_topic_info_t` carries the data source each topic belongs to, and the catalog lists the sources
+by name. The digest groups by dataset whenever more than one is loaded — and says nothing when there
+is only one, because naming it every turn buys nothing but tokens. `list_topics` takes a `dataset`
+filter, and `describe_topic` names the owner. Without this the model can neither offer to compare
+two runs nor avoid mixing them, for the same reason: it does not know there are two.
 
 ## Where the conversation lives
 

@@ -16,6 +16,8 @@
 #include <string>
 #include <vector>
 
+#include "support/fake_multi_dataset_host.hpp"
+#include "support/fake_object_read_host.hpp"
 #include "support/recording_dp_host.hpp"
 
 namespace {
@@ -23,6 +25,8 @@ namespace {
 using assistant_agent::catalogDigest;
 using assistant_agent::ToolContext;
 using assistant_agent::ToolRegistry;
+using assistant_agent::testing::FakeMultiDatasetHost;
+using assistant_agent::testing::FakeObjectReadHost;
 using assistant_agent::testing::RecordingDpHost;
 using nlohmann::json;
 
@@ -37,21 +41,24 @@ void populate(PJ::testing::ToolboxTestStore& store) {
   store.addField("/imu", "y", {0, kSec, 2 * kSec}, {2.0, 2.0, 2.0});
 }
 
-ToolContext makeCtx(PJ::testing::ToolboxTestStore& store, RecordingDpHost* dp) {
+ToolContext makeCtx(PJ::testing::ToolboxTestStore& store, RecordingDpHost* dp, FakeObjectReadHost* objects = nullptr) {
   ToolContext ctx;
   ctx.host = PJ::sdk::ToolboxHostView(store.makeHost());
   if (dp != nullptr) {
     ctx.dp = dp->view();
+  }
+  if (objects != nullptr) {
+    ctx.objects = PJ::sdk::ToolboxObjectReadHostView(objects->makeHost());
   }
   return ctx;
 }
 
 TEST(ToolRegistry, ListsAllToolsAndSchemas) {
   ToolRegistry reg;
-  EXPECT_EQ(reg.tools().size(), 7u);
+  EXPECT_EQ(reg.tools().size(), 9u);
   // Both serializations expose every tool by name.
-  EXPECT_EQ(reg.toOllamaTools().size(), 7u);
-  EXPECT_EQ(reg.toMcpToolsList().size(), 7u);
+  EXPECT_EQ(reg.toOllamaTools().size(), 9u);
+  EXPECT_EQ(reg.toMcpToolsList().size(), 9u);
   EXPECT_NE(reg.find("create_derived_series"), nullptr);
   // remove_markers exists but is scoped to the assistant's own marker set;
   // no tool can touch user data destructively.
@@ -425,6 +432,353 @@ TEST(ToolRegistry, ReportStatus) {
   auto j = json::parse(r.content);
   EXPECT_EQ(j["topics"], 1);
   EXPECT_EQ(j["fields"], 2);
+}
+
+// --- what the model is told about what it just made ------------------------
+
+namespace {
+// A marker set as the host would publish it: `regions` shaded spans followed by
+// `events` per-sample ticks.
+PJ::sdk::PlotMarkers makeSet(std::size_t regions, std::size_t events) {
+  PJ::sdk::PlotMarkers set;
+  for (std::size_t i = 0; i < regions; ++i) {
+    PJ::sdk::PlotMarker m;
+    m.kind = PJ::sdk::MarkerKind::kRegion;
+    m.t_start = static_cast<PJ::Timestamp>(i) * kSec;
+    m.t_end = m.t_start + kSec / 2;
+    set.markers.push_back(m);
+  }
+  for (std::size_t i = 0; i < events; ++i) {
+    PJ::sdk::PlotMarker m;
+    m.kind = PJ::sdk::MarkerKind::kEvent;
+    m.t_start = static_cast<PJ::Timestamp>(i) * (kSec / 100);
+    set.markers.push_back(m);
+  }
+  return set;
+}
+}  // namespace
+
+// The whole point of the read-back: from the model's seat, twelve tidy regions
+// and four thousand overlapping lines are the same "created" message. The
+// breakdown by kind is what separates them.
+TEST(ToolRegistry, CreateMarkersReportsWhatWasActuallyPublished) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  FakeObjectReadHost objects;
+  objects.publish("/imu/x", makeSet(/*regions=*/3, /*events=*/0));
+  ToolContext ctx = makeCtx(store, &dp, &objects);
+
+  auto r = reg.execute("create_markers", {{"series", "/imu/x"}, {"comparison", ">"}, {"threshold", 2.5}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["markers_created"], 3);
+  EXPECT_EQ(j["by_kind"]["regions"], 3);
+  EXPECT_FALSE(j["by_kind"].contains("events"));
+}
+
+TEST(ToolRegistry, CreateMarkersMakesAWallVisibleAsSuch) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  FakeObjectReadHost objects;
+  objects.publish("/imu/x", makeSet(/*regions=*/0, /*events=*/4182));
+  ToolContext ctx = makeCtx(store, &dp, &objects);
+
+  auto r = reg.execute("create_markers", {{"series", "/imu/x"}, {"comparison", ">"}, {"threshold", 2.5}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["markers_created"], 4182);
+  EXPECT_EQ(j["by_kind"]["events"], 4182);
+}
+
+// entry_count() reports 1 for any set, because MarkerService pushes the whole
+// blob as a single entry. If the production code ever regresses to trusting it,
+// this is the test that catches it: the count would read 1 instead of 3.
+TEST(ToolRegistry, MarkerCountComesFromThePayloadNotTheEntryCount) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  FakeObjectReadHost objects;
+  objects.publish("/imu/x", makeSet(/*regions=*/3, /*events=*/0));
+  ToolContext ctx = makeCtx(store, &dp, &objects);
+
+  auto r = reg.execute("create_markers", {{"series", "/imu/x"}, {"comparison", ">"}, {"threshold", 2.5}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(json::parse(r.content)["markers_created"], 3) << "1 here means entry_count() was trusted";
+}
+
+// The read service is optional. Without it the answer simply carries no count —
+// creating markers must not start failing on a host that omits it.
+TEST(ToolRegistry, CreateMarkersSucceedsWithoutTheObjectReadService) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  ToolContext ctx = makeCtx(store, &dp);  // no object host
+
+  auto r = reg.execute("create_markers", {{"series", "/imu/x"}, {"comparison", ">"}, {"threshold", 2.5}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["created_markers_on"], "/imu/x");
+  EXPECT_FALSE(j.contains("markers_created"));
+}
+
+// --- refusing to build an empty curve --------------------------------------
+
+// Two inputs that exist, are numeric, and share not one timestamp: the host
+// joins multi-input transforms on exact timestamp equality, so this would
+// install a series with zero points and report success. Reproduced from the
+// real shape of the problem — same rate, offset by half a sample — because a
+// rate comparison would call these compatible and be wrong.
+TEST(ToolRegistry, RefusesATransformWhoseInputsShareNoTimestamps) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("/a");
+  store.addField("/a", "v", {0, kSec, 2 * kSec}, {1.0, 2.0, 3.0});
+  store.addTopic("/b");
+  store.addField("/b", "v", {kSec / 2, 3 * kSec / 2, 5 * kSec / 2}, {1.0, 2.0, 3.0});
+  RecordingDpHost dp;
+  ToolContext ctx = makeCtx(store, &dp);
+
+  auto r = reg.execute(
+      "create_derived_series",
+      {{"name", "mix"}, {"inputs", json::array({"/a/v", "/b/v"})}, {"expression", "value + v1"}}, ctx);
+
+  EXPECT_FALSE(r.ok);
+  EXPECT_EQ(dp.persistent_creates, 0) << "nothing may be installed";
+  // The message has to carry both halves: why it refused, and what does work.
+  EXPECT_NE(r.content.find("share no timestamps"), std::string::npos) << r.content;
+  EXPECT_NE(r.content.find("read_series"), std::string::npos) << r.content;
+}
+
+// The other half of the contract, and the one that keeps this from becoming an
+// over-restrictive guard: inputs on a common clock must still work.
+TEST(ToolRegistry, AllowsATransformWhoseInputsShareATimeline) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("/a");
+  store.addField("/a", "v", {0, kSec, 2 * kSec}, {1.0, 2.0, 3.0});
+  store.addTopic("/b");
+  store.addField("/b", "v", {0, kSec, 2 * kSec}, {4.0, 5.0, 6.0});
+  RecordingDpHost dp;
+  ToolContext ctx = makeCtx(store, &dp);
+
+  auto r = reg.execute(
+      "create_derived_series",
+      {{"name", "mix"}, {"inputs", json::array({"/a/v", "/b/v"})}, {"expression", "value + v1"}}, ctx);
+
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.persistent_creates, 1);
+  // Fully overlapping, so no partial-join warning is emitted.
+  EXPECT_FALSE(json::parse(r.content).contains("joined_points"));
+}
+
+// A partial overlap is legal and gets built — but silently dropping most of the
+// rows is exactly the kind of surprise the model cannot see, so it is named.
+TEST(ToolRegistry, ReportsHowManyPointsSurviveAPartialJoin) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("/a");
+  store.addField("/a", "v", {0, kSec, 2 * kSec, 3 * kSec}, {1.0, 2.0, 3.0, 4.0});
+  store.addTopic("/b");
+  store.addField("/b", "v", {0, 5 * kSec, 6 * kSec, 7 * kSec}, {4.0, 5.0, 6.0, 7.0});
+  RecordingDpHost dp;
+  ToolContext ctx = makeCtx(store, &dp);
+
+  auto r = reg.execute(
+      "create_derived_series",
+      {{"name", "mix"}, {"inputs", json::array({"/a/v", "/b/v"})}, {"expression", "value + v1"}}, ctx);
+
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["joined_points"], 1) << "only t=0 is common";
+  EXPECT_EQ(j["shortest_input_points"], 4);
+}
+
+// Single-input transforms have nothing to join, so the guard must not touch
+// them — this is the overwhelmingly common case.
+TEST(ToolRegistry, SingleInputTransformIsNeverForecast) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  ToolContext ctx = makeCtx(store, &dp);
+
+  auto r = reg.execute(
+      "create_derived_series", {{"name", "doubled"}, {"inputs", json::array({"/imu/x"})}, {"expression", "value * 2"}},
+      ctx);
+
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.persistent_creates, 1);
+  EXPECT_FALSE(json::parse(r.content).contains("joined_points"));
+}
+
+// --- several datasets loaded at once ---------------------------------------
+
+// With two runs loaded, a flat topic list leaves the model unable to tell them
+// apart — so it can neither offer a comparison nor avoid mixing them.
+TEST(CatalogDigest, GroupsTopicsByDatasetWhenSeveralAreLoaded) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run_monday.mcap", {"/imu", "/speed"}).addDataset("run_friday.mcap", {"/imu", "/speed"});
+
+  const std::string digest = catalogDigest(PJ::sdk::ToolboxHostView(host.makeHost()));
+
+  EXPECT_NE(digest.find("run_monday.mcap"), std::string::npos) << digest;
+  EXPECT_NE(digest.find("run_friday.mcap"), std::string::npos) << digest;
+  // The same topic name appears under both, which is the whole point: identical
+  // names across runs are the norm, not a collision.
+  EXPECT_LT(digest.find("run_monday.mcap"), digest.find("run_friday.mcap"));
+}
+
+// One dataset is the overwhelmingly common case and naming it every time buys
+// nothing but tokens — on every API call, several times a turn.
+TEST(CatalogDigest, SaysNothingAboutDatasetsWhenThereIsOnlyOne) {
+  FakeMultiDatasetHost host;
+  host.addDataset("only.mcap", {"/imu", "/speed"});
+
+  const std::string digest = catalogDigest(PJ::sdk::ToolboxHostView(host.makeHost()));
+
+  EXPECT_EQ(digest.find("dataset"), std::string::npos) << digest;
+  EXPECT_NE(digest.find("/imu"), std::string::npos) << digest;
+}
+
+TEST(ToolRegistry, DescribeTopicNamesItsDataset) {
+  ToolRegistry reg;
+  FakeMultiDatasetHost host;
+  host.addDataset("run_monday.mcap", {"/imu"}).addDataset("run_friday.mcap", {"/speed"});
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+
+  auto r = reg.execute("describe_topic", {{"topic", "/speed"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(json::parse(r.content)["dataset"], "run_friday.mcap");
+}
+
+TEST(ToolRegistry, ReportStatusNamesTheDatasets) {
+  ToolRegistry reg;
+  FakeMultiDatasetHost host;
+  host.addDataset("run_monday.mcap", {"/imu"}).addDataset("run_friday.mcap", {"/speed"});
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+
+  auto r = reg.execute("report_status", json::object(), ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["data_sources"], 2);
+  EXPECT_EQ(j["dataset_names"][0], "run_monday.mcap");
+  EXPECT_EQ(j["dataset_names"][1], "run_friday.mcap");
+}
+
+// --- one node, several outputs ---------------------------------------------
+
+TEST(ToolRegistry, CreatesSeveralOutputsFromOneTransform) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  ToolContext ctx = makeCtx(store, &dp);
+
+  auto r = reg.execute(
+      "create_derived_series",
+      {{"name", "split"},
+       {"inputs", json::array({"/imu/x"})},
+       {"outputs", json::array({"roll", "pitch", "yaw"})},
+       {"body", "    return value, value * 2, value * 3"}},
+      ctx);
+
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.last_outputs, (std::vector<std::string>{"roll", "pitch", "yaw"}));
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["series"].size(), 3u);
+  EXPECT_EQ(j["series"][0], "roll/value");
+}
+
+// Omitting `outputs` must behave exactly as before — this is the path every
+// existing conversation takes.
+TEST(ToolRegistry, DefaultsToASingleOutputNamedAfterTheSeries) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  ToolContext ctx = makeCtx(store, &dp);
+
+  auto r = reg.execute(
+      "create_derived_series", {{"name", "doubled"}, {"inputs", json::array({"/imu/x"})}, {"expression", "value * 2"}},
+      ctx);
+
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.last_outputs, (std::vector<std::string>{"doubled"}));
+  EXPECT_EQ(json::parse(r.content)["series"], "doubled/value");
+}
+
+// --- what the tool surface costs, on every call ----------------------------
+
+// The whole schema is re-sent on every API call, and one turn with tool use is
+// several calls — so a description is not paid once per message, it is paid per
+// round-trip. This is a budget, not a style rule: when it binds, the answer is
+// to cut prose, not to drop a capability.
+//
+// Measured, not guessed: the chars/4 rule of thumb overestimated this surface by
+// about 50% when it was checked against the real token counters.
+TEST(ToolRegistry, ToolSchemaStaysWithinItsBudget) {
+  ToolRegistry reg;
+  const std::size_t chars = reg.toOllamaTools().dump().size();
+  std::cerr << "tool schema: " << chars << " chars across " << reg.tools().size() << " tools\n";
+  for (const auto& t : reg.tools()) {
+    std::cerr << "  " << t.name << ": " << t.description.size() << "\n";
+  }
+  EXPECT_LT(chars, 7500u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
+}
+
+// --- seeing and withdrawing its own work -----------------------------------
+
+TEST(ToolRegistry, ListsWhatItHasCreated) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  dp.live_ids = {"doubled", "assistant_markers"};
+  ToolContext ctx = makeCtx(store, &dp);
+
+  auto r = reg.execute("list_created", json::object(), ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 2);
+  EXPECT_EQ(j["created"][0], "doubled");
+}
+
+TEST(ToolRegistry, RemovesADerivedSeriesItCreated) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  dp.live_ids = {"doubled"};
+  ToolContext ctx = makeCtx(store, &dp);
+
+  auto r = reg.execute("remove_derived_series", {{"name", "doubled"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.last_removed, "doubled");
+}
+
+// The safety property, stated as a test rather than as a promise in a doc: a
+// name this assistant never created is refused before the host is asked, and
+// the refusal says what it DID create so the model can correct itself.
+TEST(ToolRegistry, RefusesToRemoveSomethingItDidNotCreate) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  dp.live_ids = {"doubled"};
+  ToolContext ctx = makeCtx(store, &dp);
+
+  auto r = reg.execute("remove_derived_series", {{"name", "/imu/x"}}, ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_TRUE(dp.last_removed.empty()) << "the host must not even be asked";
+  EXPECT_NE(r.content.find("doubled"), std::string::npos) << r.content;
 }
 
 }  // namespace

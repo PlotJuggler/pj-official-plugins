@@ -137,6 +137,10 @@ void AssistantDialog::setDataProcessorsProvider(std::function<PJ::sdk::DataProce
   dp_provider_ = std::move(provider);
 }
 
+void AssistantDialog::setObjectReadProvider(std::function<PJ::sdk::ToolboxObjectReadHostView()> provider) {
+  object_read_provider_ = std::move(provider);
+}
+
 void AssistantDialog::setSettings(PJ::sdk::SettingsView settings) {
   settings_ = settings;
   rebuildBackend();
@@ -149,6 +153,9 @@ ToolContext AssistantDialog::makeToolContext() {
   }
   if (dp_provider_) {
     ctx.dp = dp_provider_();
+  }
+  if (object_read_provider_) {
+    ctx.objects = object_read_provider_();
   }
   if (runtime_host_provider_) {
     const PJ::ToolboxRuntimeHostView rt = runtime_host_provider_();

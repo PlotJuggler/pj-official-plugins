@@ -182,3 +182,39 @@ ambiguity is already gone.
   the conversation. Claude does not have this problem because the CLI owns the session.
 - **Streaming would have broken the transcript.** Each assistant event created a *new* message,
   so a streamed reply would have rendered one fragment per line. Chunks now append.
+
+## 9. Guidance you cannot measure is a guess
+
+The `create_markers` description gained a block telling the model how to choose a marker shape,
+written after a real dataset produced walls of thousands of vertical lines. It reads well. It also
+has **no demonstrated effect**.
+
+An A/B against the commit before it, same scenario, same model, four repetitions each: 4/4 with the
+guidance, 4/4 without. Sonnet already chose regions.
+
+Worse, the first version of that scenario said "mark the *stretches* where…", and "stretches" is
+contiguous by definition — the prompt was handing over the answer, so the test measured the wording
+rather than the system. Rewritten to say only WHAT to mark, the result was the same.
+
+Two things this does not prove: that the guidance is useless (`haiku` and `fable` are unmeasured),
+and that the shape choice was ever the real problem. On the noisy IMU that started this, the
+condition fired on scattered single samples, so per-sample lines were not a bad choice of shape —
+they were the honest rendering of thousands of instantaneous events. **The wall came from the
+count, not the shape**, and nothing in the system could see the count.
+
+The enumeration of shape-to-primitive mappings was cut when the tool schema hit its size budget:
+faced with choosing what to spend a shrinking budget on, the part with no evidence behind it is the
+part that goes. What stayed is the sentence about stretches, the ~50 ceiling — now checkable,
+because the call reports its own count — and the threshold warning, which explains an observed
+failure rather than a hypothetical one.
+
+## 10. The harness cannot see a wall, and never will
+
+`RecordingDpHost` records intent: nothing executes the script. So a benchmark scenario can confirm
+that a marker generator was installed with a plausible rule, and can never tell how many markers it
+draws. The wall-of-lines failure is structurally invisible to the headless benchmark — that is a
+property of the design, not a gap to be filled, and it is why the GUI pass exists.
+
+What the harness *can* see is what gets installed. That is why the empty-curve scenario (L14) works
+as a measurement where the marker-shape one does not: "a transform whose inputs share no timestamps
+was installed" is a fact about intent, and it reproduced 3/3, deterministically, before the fix.
