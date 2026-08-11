@@ -183,30 +183,36 @@ ambiguity is already gone.
 - **Streaming would have broken the transcript.** Each assistant event created a *new* message,
   so a streamed reply would have rendered one fragment per line. Chunks now append.
 
-## 9. Guidance you cannot measure is a guess
+## 9. A synthetic benchmark measures the floor, not the ceiling
 
-The `create_markers` description gained a block telling the model how to choose a marker shape,
-written after a real dataset produced walls of thousands of vertical lines. It reads well. It also
-has **no demonstrated effect**.
+The `create_markers` description gained a block telling the model how to choose a marker shape and
+why a bare threshold on a high-rate signal marks vibration. An A/B against the commit before it —
+same scenario, same model, four repetitions each — showed **4/4 with the guidance and 4/4 without**.
+On that evidence the guidance had no demonstrated effect.
 
-An A/B against the commit before it, same scenario, same model, four repetitions each: 4/4 with the
-guidance, 4/4 without. Sonnet already chose regions.
+That reading was correct about the measurement and wrong about reality.
 
-Worse, the first version of that scenario said "mark the *stretches* where…", and "stretches" is
-contiguous by definition — the prompt was handing over the answer, so the test measured the wording
-rather than the system. Rewritten to say only WHAT to mark, the result was the same.
+The scenario marks a clean 1 Hz sine sampled at 100 Hz, where "above 0.5" already holds across
+contiguous stretches: regions fall out naturally and the model got there unaided. The case that
+prompted the work is a 99 Hz IMU where the condition fires on scattered single samples — a
+qualitatively harder problem the synthetic case never poses.
 
-Two things this does not prove: that the guidance is useless (`haiku` and `fable` are unmeasured),
-and that the shape choice was ever the real problem. On the noisy IMU that started this, the
-condition fired on scattered single samples, so per-sample lines were not a bad choice of shape —
-they were the honest rendering of thousands of instantaneous events. **The wall came from the
-count, not the shape**, and nothing in the system could see the count.
+Run against the real dataset, the difference is not subtle. The build carrying the guidance produced
+**9 marker regions with sustained-duration debouncing** (0.3 s for driving events, 2 s for stops) and
+explained itself: *"IMU noise routinely produces single-sample excursions several sigma from the mean
+— at 99 Hz that's normal vibration, not an event. Requiring the condition to hold for hundreds of
+milliseconds is what keeps this at 9 clean regions instead of a wall of thousands of one-sample
+lines."* The behaviour it replaced was thousands of per-sample vertical lines chosen on a 3-sigma cut.
 
-The enumeration of shape-to-primitive mappings was cut when the tool schema hit its size budget:
-faced with choosing what to spend a shrinking budget on, the part with no evidence behind it is the
-part that goes. What stayed is the sentence about stretches, the ~50 ceiling — now checkable,
-because the call reports its own count — and the threshold warning, which explains an observed
-failure rather than a hypothetical one.
+The lesson is not that the benchmark lies. It is that a synthetic scenario measures the floor: it
+shows what a model does on the easy version, and a change that only matters on the hard version is
+invisible to it. "No demonstrated effect" meant "no effect this instrument can see" — a different
+claim, and the first wording of this section did not make the distinction.
+
+What did get cut, when the tool schema hit its size budget, was the enumeration of
+shape-to-primitive mappings. That was a budget decision rather than an evidence one, and the parts
+that carry the observed behaviour — the stretch rule, the ~50 ceiling (now checkable against the
+count the call reports), and the threshold warning — all stayed.
 
 ## 10. The harness cannot see a wall, and never will
 

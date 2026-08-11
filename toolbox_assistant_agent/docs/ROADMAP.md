@@ -48,12 +48,8 @@ Two properties are non-negotiable and hold today:
 
 ## Next
 
-**Re-measure the marker guidance on the cheap tiers.** The shape guidance in `create_markers` has
-no demonstrated effect: L13 passes 4/4 both with it and with it removed, on `sonnet`. It survives in
-trimmed form because `haiku` and `fable` are unmeasured and the real-world failure was harder than
-the synthetic one — but that is a hypothesis, not a result, and it should be settled rather than
-assumed. The enumeration of shapes was cut when the schema hit its budget, for exactly this reason:
-it was the only part with no evidence behind it.
+**Measure `fable`.** The last full matrix stopped at 181 of 240 cells when the usage window ran out,
+so that tier is the only one without current numbers. Run it first next time rather than last.
 
 **Require the model to disclose a choice when a name is under-specified.** The tool layer already
 refuses to guess between candidate series, but that guard rarely fires: handed the full catalog, a
