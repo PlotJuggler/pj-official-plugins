@@ -23,16 +23,23 @@ namespace assistant_agent::testing {
 // Luau script + routed inputs/outputs. Returns success unless a fail flag is set.
 struct RecordingDpHost {
   int create_calls = 0;
+  // Creates that were NOT marked ephemeral — i.e. things the user is left with.
+  // A dry-run that measures its output and then removes it must not count here,
+  // which is what separates "installed an empty curve" from "checked and
+  // declined to install one".
+  int persistent_creates = 0;
   int validate_calls = 0;
   bool fail_validate = false;
   bool fail_create = false;
   std::string last_kind;
   std::string last_id;
   std::string last_removed;
+  std::uint32_t last_flags = 0;
   std::string last_script;
   std::string last_validate_script;
   std::vector<std::string> last_inputs;
   std::vector<std::string> last_outputs;
+  std::vector<std::string> live_ids;  // what list() reports; the views point into this
   std::vector<std::string> resolved;  // storage the returned borrowed views point into
 
   static std::string toStr(PJ_string_view_t v) {
@@ -42,11 +49,15 @@ struct RecordingDpHost {
   static bool tCreate(
       void* ctx, PJ_string_view_t id, PJ_string_view_t kind, PJ_string_view_t language, const PJ_string_view_t* inputs,
       uint64_t input_count, const PJ_string_view_t* outputs, uint64_t output_count, PJ_string_view_t script,
-      PJ_string_view_t /*params*/, uint32_t /*flags*/, PJ_string_view_t* out_topics, uint64_t out_topics_capacity,
+      PJ_string_view_t /*params*/, uint32_t flags, PJ_string_view_t* out_topics, uint64_t out_topics_capacity,
       uint64_t* out_topics_count, PJ_error_t* err) noexcept {
     auto* self = static_cast<RecordingDpHost*>(ctx);
     (void)language;
     ++self->create_calls;
+    self->last_flags = flags;
+    if ((flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL) == 0) {
+      ++self->persistent_creates;
+    }
     self->last_id = toStr(id);
     self->last_kind = toStr(kind);
     self->last_script = toStr(script);
@@ -85,6 +96,21 @@ struct RecordingDpHost {
     return true;
   }
 
+  // Ids this fake claims to have live, so the list/remove tools can be driven.
+  // Kept separate from what create() recorded: a test needs to say "the host
+  // already has these" without pretending this plugin made them here.
+  static bool tList(
+      void* ctx, PJ_string_view_t* out_buffer, uint64_t capacity, uint64_t* out_count, PJ_error_t* /*err*/) noexcept {
+    auto* self = static_cast<RecordingDpHost*>(ctx);
+    if (out_count != nullptr) {
+      *out_count = self->live_ids.size();
+    }
+    for (uint64_t i = 0; i < self->live_ids.size() && i < capacity; ++i) {
+      out_buffer[i] = PJ_string_view_t{self->live_ids[i].data(), self->live_ids[i].size()};
+    }
+    return true;
+  }
+
   static bool tRemove(void* ctx, PJ_string_view_t id, PJ_error_t* /*err*/) noexcept {
     static_cast<RecordingDpHost*>(ctx)->last_removed = toStr(id);
     return true;
@@ -96,7 +122,7 @@ struct RecordingDpHost {
         .struct_size = sizeof(PJ_data_processors_host_vtable_t),
         .create_data_processor = &RecordingDpHost::tCreate,
         .remove_data_processor = &RecordingDpHost::tRemove,
-        .list_data_processor_ids = nullptr,
+        .list_data_processor_ids = &RecordingDpHost::tList,
         .data_processor_config = nullptr,
         .validate_data_processor_script = &RecordingDpHost::tValidate,
     };

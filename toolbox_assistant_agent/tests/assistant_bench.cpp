@@ -54,6 +54,26 @@ std::string envStr(const char* name, const std::string& fallback) {
   return raw != nullptr ? std::string(raw) : fallback;
 }
 
+// Comma-separated env value -> list, skipping empty entries so "a,,b" and a
+// trailing comma are both harmless. Used for the model and scenario filters.
+std::vector<std::string> envList(const char* name, const std::string& fallback) {
+  const std::string spec = envStr(name, fallback);
+  std::vector<std::string> out;
+  std::size_t pos = 0;
+  while (pos <= spec.size()) {
+    const std::size_t comma = spec.find(',', pos);
+    std::string one = spec.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+    if (!one.empty()) {
+      out.push_back(std::move(one));
+    }
+    if (comma == std::string::npos) {
+      break;
+    }
+    pos = comma + 1;
+  }
+  return out;
+}
+
 int envInt(const char* name, int fallback) {
   const char* raw = std::getenv(name);
   if (raw == nullptr) {
@@ -184,6 +204,21 @@ void populate(PJ::testing::ToolboxTestStore& store) {
   store.addField("test/sin", "value", ts, sin_v);
   store.addTopic("test/cos");
   store.addField("test/cos", "value", ts, cos_v);
+
+  // A third series on a DELIBERATELY incompatible timeline: the same signal and
+  // the same rate, but every sample sits exactly half a period off the grid
+  // above, so not one timestamp is shared. Multi-input transforms join on exact
+  // timestamp equality, so anything combining this with test/sin yields zero
+  // points. That is the silent empty curve L14 exists to catch, and it is not a
+  // contrived case: it is what two recordings of the same robot look like.
+  std::vector<std::int64_t> offset_ts;
+  offset_ts.reserve(ts.size());
+  const std::int64_t half_sample_ns = static_cast<std::int64_t>(0.5e9 / kSampleHz);
+  for (const std::int64_t t : ts) {
+    offset_ts.push_back(t + half_sample_ns);
+  }
+  store.addTopic("test/offset");
+  store.addField("test/offset", "value", offset_ts, sin_v);
 }
 
 std::vector<Scenario> scenarios() {
@@ -193,8 +228,8 @@ std::vector<Scenario> scenarios() {
   s.push_back(
       {"L1", "catalog lookup", "How many topics are loaded? Answer with just the number.",
        [](const TurnOutcome& o) -> std::string {
-         if (!mentionsNumber(o.reply, 2, 0.01)) {
-           return "did not state that 2 topics are loaded";
+         if (!mentionsNumber(o.reply, 3, 0.01)) {
+           return "did not state that 3 topics are loaded";
          }
          return o.roundTrips() == 0 ? "" : "used a tool for something already in the catalog";
        }});
@@ -429,6 +464,54 @@ std::vector<Scenario> scenarios() {
          return mentionsNumber(o.reply, 1000, 20) ? "" : "did not state a period of ~1000 ms";
        }});
 
+  // L13 — the shape of a marker is a decision the model has to make, and this
+  // scenario exists to see whether it makes it. Over a 1 Hz sine sampled at
+  // 100 Hz, "above 0.5" holds across contiguous stretches covering roughly a
+  // third of 200 samples: regions are right, and a vertical line per matching
+  // sample is the wall-of-lines failure that started this work.
+  //
+  // The prompt deliberately does NOT say "stretches". An earlier draft did, and
+  // it passed 3/3 both with the shape guidance in the tool description and
+  // without it — the word was handing over the answer, so the scenario measured
+  // the prompt rather than the system. Say WHAT to mark, never what shape.
+  s.push_back(
+      {"L13", "marker shape", "Mark where test/sin/value is above 0.5.", [](const TurnOutcome& o) -> std::string {
+         if (o.dp->last_kind != "markers") {
+           return "no marker generator installed";
+         }
+         const std::string script = o.dp->last_script;
+         if (contains(script, "createVerticalMarker") || contains(script, "createPointMarker")) {
+           return "marked a contiguous condition with per-sample lines instead of regions";
+         }
+         if (!contains(script, "startMarker") || !contains(script, "closeMarker")) {
+           return "did not build regions with startMarker/closeMarker";
+         }
+         return "";
+       }});
+
+  // L14 — the silent empty curve. test/offset carries the same signal as
+  // test/sin on a timeline half a sample off, so the exact-timestamp join
+  // behind a multi-input transform produces zero points. Installing it is the
+  // wrong answer however confidently it is reported: the user is left with an
+  // empty series in their panel and no idea why.
+  //
+  // Comparing two runs of the same robot is a legitimate thing to want, so
+  // refusing the REQUEST is not the pass condition — refusing to leave a broken
+  // artifact behind is, and saying why.
+  s.push_back(
+      {"L14", "incompatible timelines",
+       "Create a derived series named mix equal to test/sin/value plus test/offset/value.",
+       [](const TurnOutcome& o) -> std::string {
+         if (o.dp->persistent_creates != 0) {
+           return "installed a transform whose inputs share no timestamps, so the series is empty";
+         }
+         const std::string r = lower(o.reply);
+         const bool explains = contains(r, "timestamp") || contains(r, "timeline") || contains(r, "empty") ||
+                               contains(r, "no samples") || contains(r, "do not overlap") ||
+                               contains(r, "different time");
+         return explains ? "" : "declined without telling the user what the problem was";
+       }});
+
   return s;
 }
 
@@ -546,11 +629,11 @@ TEST(AssistantBenchVerifiers, AcceptCorrectAndRejectWrongOutcomes) {
 
   // L1: the count must actually be stated, and stated without a tool call.
   reset();
-  o.reply = "There are 2 topics loaded.";
+  o.reply = "There are 3 topics loaded.";
   EXPECT_EQ(find(all, "L1").verify(o), "");
   o.reply = "There are 7 topics loaded.";
   EXPECT_NE(find(all, "L1").verify(o), "") << "a wrong count must fail";
-  o.reply = "There are 2 topics loaded.";
+  o.reply = "There are 3 topics loaded.";
   o.tools_called = {"list_topics"};
   EXPECT_NE(find(all, "L1").verify(o), "") << "re-discovering the catalog must fail";
 
@@ -700,6 +783,37 @@ TEST(AssistantBenchVerifiers, AcceptCorrectAndRejectWrongOutcomes) {
   o.reply = "That series does not exist.";
   dp.create_calls = 1;
   EXPECT_NE(find(all, "L8").verify(o), "") << "creating something must fail";
+
+  // L13: regions pass, per-sample lines fail. This is the pair that matters —
+  // both answers install a marker generator and both "work", so a verifier that
+  // only checked last_kind would score the wall of lines as a success.
+  reset();
+  dp.last_kind = "markers";
+  dp.last_script = "startMarker(t) ... closeMarker(t2, {label='high'})";
+  EXPECT_EQ(find(all, "L13").verify(o), "");
+  dp.last_script = "for i=0,s:size()-1 do createVerticalMarker(p.t, {}) end";
+  EXPECT_NE(find(all, "L13").verify(o), "") << "a line per sample must fail a stretch task";
+  dp.last_script = "createPointMarker(p.t, p.v, {})";
+  EXPECT_NE(find(all, "L13").verify(o), "") << "points must fail a stretch task too";
+  dp.last_script = "startMarker(t) ... closeMarker(t2, {})";
+  dp.last_kind = "transform";
+  EXPECT_NE(find(all, "L13").verify(o), "") << "installing a transform instead of markers must fail";
+
+  // L14: what counts is that nothing broken was left behind, and that the user
+  // was told why. An ephemeral dry-run is NOT a failure — that is the whole
+  // point of persistent_creates existing separately from create_calls.
+  reset();
+  o.reply =
+      "Those two series share no timestamps, so the joined series would be empty. Compare their statistics "
+      "instead, or plot them together.";
+  dp.create_calls = 1;        // the dry-run happened...
+  dp.persistent_creates = 0;  // ...and nothing was installed
+  EXPECT_EQ(find(all, "L14").verify(o), "");
+  dp.persistent_creates = 1;
+  EXPECT_NE(find(all, "L14").verify(o), "") << "leaving an empty series installed must fail";
+  dp.persistent_creates = 0;
+  o.reply = "Sorry, I cannot do that.";
+  EXPECT_NE(find(all, "L14").verify(o), "") << "declining without a reason must fail";
 }
 
 // --- the matrix ------------------------------------------------------------
@@ -712,24 +826,20 @@ TEST(AssistantBench, ModelMatrix) {
   const double max_usd = envDouble("ASSISTANT_BENCH_MAX_USD", 25.0);
   const std::string out_path = envStr("ASSISTANT_BENCH_OUT", "bench_results.json");
 
-  std::vector<std::string> models;
-  {
-    // Comma-separated, so a re-run can target just the tiers still missing.
-    const std::string spec = envStr("ASSISTANT_BENCH_MODELS", "haiku,sonnet,opus,fable");
-    std::size_t pos = 0;
-    while (pos <= spec.size()) {
-      const std::size_t comma = spec.find(',', pos);
-      const std::string one = spec.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
-      if (!one.empty()) {
-        models.push_back(one);
-      }
-      if (comma == std::string::npos) {
-        break;
-      }
-      pos = comma + 1;
+  // Both filters exist so a re-run can target what is actually in question:
+  // the tiers still missing after an exhausted usage window, or the single
+  // scenario a change was supposed to move. Without the scenario filter,
+  // re-measuring one case drags every other scenario's new repetitions with it.
+  const std::vector<std::string> models = envList("ASSISTANT_BENCH_MODELS", "haiku,sonnet,opus,fable");
+  const std::vector<std::string> only = envList("ASSISTANT_BENCH_SCENARIOS", "");
+
+  std::vector<Scenario> all;
+  for (auto& sc : scenarios()) {
+    if (only.empty() || std::find(only.begin(), only.end(), sc.id) != only.end()) {
+      all.push_back(std::move(sc));
     }
   }
-  const auto all = scenarios();
+  ASSERT_FALSE(all.empty()) << "ASSISTANT_BENCH_SCENARIOS matched no scenario";
 
   // Resume: anything already recorded for this (model, scenario, rep) is kept
   // and skipped. A five-hour usage window makes a full matrix likely to be
