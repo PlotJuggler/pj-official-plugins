@@ -19,8 +19,17 @@
 #include "gui_executor.hpp"
 #include "llm_backend.hpp"
 #include "tool_registry.hpp"
+#include "usage_ledger.hpp"
 
 namespace assistant_agent {
+
+// Per-conversation state the backends borrow (claude_backend.hpp /
+// ollama_backend.hpp). Forward-declared so this header does not pull the
+// backend implementations — and their JSON dependency — into everything that
+// includes it; the dialog's destructor lives in the .cpp, where both are
+// complete.
+struct ClaudeMemory;
+struct OllamaMemory;
 
 // DialogState — pure data the panel drives. Mutated on the GUI thread only
 // (widget events + worker results drained by onTick), serialized into
@@ -48,6 +57,17 @@ struct DialogState {
   bool controls_dirty = true;
   // Clear the input box exactly once, right after a Send (never mid-typing).
   bool clear_input_pending = false;
+
+  // What the last turn moved; rendered after statusText().
+  UsageLedger usage;
+
+  // A backend rebuild that arrived mid-turn and has to wait. Swapping the
+  // backend is safe (the worker holds its own reference), but the conversation
+  // memory is now SHARED between the outgoing and incoming objects, so doing it
+  // while the worker is writing a session id is a data race. Applied by onTick
+  // once the turn is over — outside the state lock, because rebuildBackend()
+  // takes it and the mutex is not recursive.
+  bool rebuild_pending = false;
 
   // Settings sub-dialog: request flag (read+cleared in widget_data) plus the
   // staged edits harvested from the modal's inputs on OK. PanelEngine fires
@@ -105,8 +125,15 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   // Build a ToolContext from the currently-bound host providers (GUI thread).
   ToolContext makeToolContext();
   // Select the backend implementation from settings + the ASSISTANT_FAKE_BACKEND
-  // env override. Rebuilt whenever the backend choice changes.
+  // env override. Rebuilt whenever the backend choice changes. Defers itself
+  // while a turn is in flight (see DialogState::rebuild_pending).
   void rebuildBackend();
+
+  // Drop the transcript, the accumulated cost and both backends' conversation
+  // memory. No backend rebuild: the memory is cleared in place and the live
+  // backend reads through the same pointer, so the next turn sends no --resume
+  // and re-sends the catalog — genuinely fresh, with the MCP server left up.
+  void startNewConversation();
 
   DialogState state_;
   ToolRegistry registry_;
@@ -115,6 +142,11 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   // for the duration of a turn, so a Settings commit that rebuilds the backend
   // mid-turn swaps this member without destroying the object under the worker.
   std::shared_ptr<LlmBackend> backend_;
+  // The conversation itself, outliving every backend built for it. Created once
+  // in the constructor and lent to each backend, so changing the model — or
+  // just saving the settings modal — no longer wipes what was said.
+  std::shared_ptr<ClaudeMemory> claude_memory_;
+  std::shared_ptr<OllamaMemory> ollama_memory_;
 
   std::thread worker_thread_;
   std::mutex cmd_mu_;

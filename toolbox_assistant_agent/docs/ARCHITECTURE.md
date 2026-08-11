@@ -96,13 +96,36 @@ complete will confidently tell the user a signal does not exist.
 
 ## The Ollama backend
 
-Owns its conversation: it builds the message list itself, so `history_` is what makes it
-remember anything between turns. The system message is rebuilt each turn and kept at index 0,
-so a changed catalog is reflected without discarding what was said.
+Owns the mechanics of its conversation: it builds the message list itself, so the borrowed
+`OllamaMemory` is what makes it remember anything between turns. The system message is rebuilt
+each turn and kept at index 0, so a changed catalog is reflected without discarding what was said.
 
 Streams with `stream: true`, parsing NDJSON incrementally and emitting each text delta as it
 lands. Servers that ignore `stream: true` and answer with one whole object still work — the
 splitter is flushed and, failing that, the body is parsed directly.
+
+## Where the conversation lives
+
+Not in the backend. A backend is a transport — a CLI path and a model name, or an endpoint URL —
+and it is rebuilt whenever any of those change, which in practice means every time the Settings
+modal is accepted. The conversation is not a property of that transport, so it is held by the
+dialog (`ClaudeMemory`, `OllamaMemory`) and lent to each backend it builds.
+
+Getting this wrong is not a crash, which is what made it worth writing down: while the state lived
+inside the backend, changing the model mid-chat rebuilt the object, dropped the Claude session id
+and the Ollama message list, and the next turn arrived with no idea what had been discussed. No
+error, no warning — just a model that had forgotten. `ollama_backend_test.cpp` pins it by running
+a turn, destroying the backend, and asserting the rebuilt one still puts the earlier turn on the
+wire.
+
+Two consequences worth knowing:
+
+- **A rebuild may not happen mid-turn.** The outgoing and incoming backends share the memory, so
+  swapping while the worker writes a session id is a data race. `rebuildBackend()` defers itself
+  and `onTick` applies it once the turn is over.
+- **Forgetting had to become deliberate.** With the accidental reset gone, "New chat" is the only
+  way to start over: it clears the transcript, the cost ledger and both memories in place — no
+  rebuild, so the MCP server stays up and the next turn simply sends no `--resume`.
 
 ## Threading of the panel
 

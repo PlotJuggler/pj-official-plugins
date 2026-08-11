@@ -67,6 +67,12 @@ class FakeOllama {
   [[nodiscard]] int chatCalls() const {
     return chat_calls_.load();
   }
+  // Body of the most recent /api/chat request — this is where the conversation
+  // the backend believes it is having becomes observable.
+  [[nodiscard]] std::string lastChatBody() const {
+    std::lock_guard<std::mutex> lk(body_mu_);
+    return last_chat_body_;
+  }
 
  private:
   ix::HttpResponsePtr json(const std::string& body) {
@@ -79,6 +85,10 @@ class FakeOllama {
       return json(R"({"models":[{"name":"test-model"}]})");
     }
     if (req->uri.find("/api/chat") != std::string::npos) {
+      {
+        std::lock_guard<std::mutex> lk(body_mu_);
+        last_chat_body_ = req->body;
+      }
       const int n = ++chat_calls_;
       if (n == 1) {
         // First round: ask the model to call list_topics.
@@ -97,6 +107,8 @@ class FakeOllama {
   bool listen_ok_ = false;
   std::string listen_err_;
   std::atomic<int> chat_calls_{0};
+  mutable std::mutex body_mu_;
+  std::string last_chat_body_;
 };
 
 // Bind the first free port in a small range, so parallel/repeat test runs don't
@@ -178,6 +190,57 @@ TEST(OllamaBackend, ToolCallRoundTrip) {
   EXPECT_TRUE(has(evs, BackendEvent::Kind::ToolActivity, "list_topics"));
   EXPECT_TRUE(has(evs, BackendEvent::Kind::AssistantText, "one topic"));
   EXPECT_TRUE(has(evs, BackendEvent::Kind::TurnComplete, ""));
+}
+
+// The conversation must survive the backend object. Saving any setting rebuilds
+// the backend, and before the memory was hoisted out of it that silently
+// restarted the conversation: the user changed a model and the assistant lost
+// everything it had been told, with nothing on screen to say so.
+TEST(OllamaBackend, ConversationSurvivesARebuild) {
+  auto server = startFakeOllama();
+  ASSERT_NE(server, nullptr) << "no free port to bind the fake Ollama server";
+
+  auto memory = std::make_shared<assistant_agent::OllamaMemory>();
+  ToolRegistry reg;
+  TurnTools tools;
+  tools.registry = &reg;
+  tools.invoke = [&](const std::string&, const nlohmann::json&) { return assistant_agent::ToolResult::success("{}"); };
+
+  {
+    OllamaBackend first(server->url(), "test-model", memory);
+    runTurn(first, "remember the number 41", tools);
+  }  // the settings modal is accepted here: `first` is destroyed
+
+  OllamaBackend second(server->url(), "test-model", memory);
+  runTurn(second, "what number did I say?", tools);
+
+  // What the rebuilt backend actually put on the wire carries the earlier turn.
+  const std::string body = server->lastChatBody();
+  EXPECT_NE(body.find("remember the number 41"), std::string::npos)
+      << "the rebuilt backend forgot the conversation; body was: " << body;
+  EXPECT_NE(body.find("what number did I say?"), std::string::npos);
+}
+
+// The other half of the contract: a backend handed no memory keeps its own, so
+// the tests above (and any future caller that wants a clean slate) are not
+// quietly sharing state.
+TEST(OllamaBackend, PrivateMemoryWhenNoneIsLent) {
+  auto server = startFakeOllama();
+  ASSERT_NE(server, nullptr) << "no free port to bind the fake Ollama server";
+
+  ToolRegistry reg;
+  TurnTools tools;
+  tools.registry = &reg;
+  tools.invoke = [&](const std::string&, const nlohmann::json&) { return assistant_agent::ToolResult::success("{}"); };
+
+  {
+    OllamaBackend first(server->url(), "test-model");
+    runTurn(first, "remember the number 41", tools);
+  }
+  OllamaBackend second(server->url(), "test-model");
+  runTurn(second, "what number did I say?", tools);
+
+  EXPECT_EQ(server->lastChatBody().find("remember the number 41"), std::string::npos);
 }
 
 }  // namespace

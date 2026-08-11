@@ -110,10 +110,13 @@ class ChatSession {
 
   // A one-line status suitable for the panel's status label, reflecting the
   // turn state (and the busy hint the user needs while a request is in flight).
+  //
+  // No full stop: the panel appends the turn's token counts after this, and
+  // "Ready. - 19.8k" reads as two fragments rather than one line.
   [[nodiscard]] std::string statusText() const {
     switch (state_) {
       case TurnState::Idle:
-        return "Ready.";
+        return "Ready";
       case TurnState::WaitingForLlm:
         return "Thinking…";
       case TurnState::ExecutingTool:

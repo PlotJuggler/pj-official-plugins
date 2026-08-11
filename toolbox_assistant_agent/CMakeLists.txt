@@ -75,6 +75,17 @@ if(BUILD_TESTING)
   target_compile_features(toolbox_assistant_agent_chat_session_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentChatSessionTest COMMAND toolbox_assistant_agent_chat_session_test)
 
+  # UsageLedger: last turn's token counts + the status-label text. Pure.
+  add_executable(toolbox_assistant_agent_usage_ledger_test
+    tests/usage_ledger_test.cpp
+  )
+  target_link_libraries(toolbox_assistant_agent_usage_ledger_test PRIVATE GTest::gtest_main)
+  target_include_directories(toolbox_assistant_agent_usage_ledger_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_assistant_agent_usage_ledger_test PRIVATE cxx_std_20)
+  add_test(NAME ToolboxAssistantAgentUsageLedgerTest COMMAND toolbox_assistant_agent_usage_ledger_test)
+
   # SettingsStore adapter over pj.settings.v1 (fake in-memory settings host).
   add_executable(toolbox_assistant_agent_settings_store_test
     tests/settings_store_test.cpp

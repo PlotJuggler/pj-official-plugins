@@ -7,6 +7,7 @@
 #include <string>
 
 #include "tool_registry.hpp"
+#include "turn_metrics.hpp"
 
 namespace assistant_agent {
 
@@ -17,10 +18,17 @@ struct BackendEvent {
     AssistantText,  // a chunk of assistant prose to append
     ToolActivity,   // a human-readable note about a tool the model invoked
     Error,          // the turn failed; `text` is the reason
+    Metrics,        // what the turn cost; `metrics` is filled, `text` unused
     TurnComplete,   // the backend is done; return the panel to Idle
   };
-  Kind kind;
+  Kind kind{};
   std::string text;
+  // Only meaningful on Metrics. Carried as numbers rather than a formatted
+  // string so the panel — not the backend — decides how to present them; a
+  // backend whose provider reports no cost simply never emits the event.
+  // Explicitly brace-initialized so the many `sink({Kind::X, "text"})` call
+  // sites stay legal under -Werror=missing-field-initializers.
+  TurnMetrics metrics{};
 };
 
 // The tool surface a backend gets for the duration of one turn: the catalog to

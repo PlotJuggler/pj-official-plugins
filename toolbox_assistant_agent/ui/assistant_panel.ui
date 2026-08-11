@@ -22,6 +22,12 @@
        </spacer>
       </item>
       <item>
+       <widget class="QPushButton" name="newChatButton">
+        <property name="text"><string>New chat</string></property>
+        <property name="toolTip"><string>Forget this conversation and start over</string></property>
+       </widget>
+      </item>
+      <item>
        <widget class="QPushButton" name="settingsButton">
         <property name="text"><string>Settings...</string></property>
        </widget>

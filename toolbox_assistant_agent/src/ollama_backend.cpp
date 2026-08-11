@@ -41,8 +41,10 @@ json normalizeArgs(const json& raw) {
 
 }  // namespace
 
-OllamaBackend::OllamaBackend(std::string base_url, std::string model)
-    : base_url_(stripTrailingSlash(std::move(base_url))), model_(std::move(model)) {}
+OllamaBackend::OllamaBackend(std::string base_url, std::string model, std::shared_ptr<OllamaMemory> memory)
+    : base_url_(stripTrailingSlash(std::move(base_url))),
+      model_(std::move(model)),
+      memory_(memory ? std::move(memory) : std::make_shared<OllamaMemory>()) {}
 
 std::string OllamaBackend::name() const {
   return "Ollama: " + (model_.empty() ? std::string("(no model set)") : model_);
@@ -98,13 +100,14 @@ void OllamaBackend::runTurn(const std::string& text, const TurnTools& tools, con
   // discarding what has already been said.
   const std::string system =
       tools.catalog.empty() ? std::string(kSystemPrompt) : std::string(kSystemPrompt) + "\n\n" + tools.catalog;
-  if (history_.empty()) {
-    history_.push_back({{"role", "system"}, {"content", system}});
+  json& history = memory_->history;
+  if (history.empty()) {
+    history.push_back({{"role", "system"}, {"content", system}});
   } else {
-    history_[0] = {{"role", "system"}, {"content", system}};
+    history[0] = {{"role", "system"}, {"content", system}};
   }
-  history_.push_back({{"role", "user"}, {"content", text}});
-  json& messages = history_;
+  history.push_back({{"role", "user"}, {"content", text}});
+  json& messages = history;
 
   const json tool_specs = (tools.registry != nullptr) ? tools.registry->toOllamaTools() : json::array();
   ix::HttpClient client(/*async=*/false);

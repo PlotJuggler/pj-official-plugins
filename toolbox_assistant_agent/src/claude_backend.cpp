@@ -40,8 +40,10 @@ std::string allowedToolsArg(const ToolRegistry& registry) {
 
 }  // namespace
 
-ClaudeBackend::ClaudeBackend(std::string cli_path, std::string model)
-    : cli_path_(cli_path.empty() ? "claude" : std::move(cli_path)), model_(std::move(model)) {}
+ClaudeBackend::ClaudeBackend(std::string cli_path, std::string model, std::shared_ptr<ClaudeMemory> memory)
+    : cli_path_(cli_path.empty() ? "claude" : std::move(cli_path)),
+      model_(std::move(model)),
+      memory_(memory ? std::move(memory) : std::make_shared<ClaudeMemory>()) {}
 
 ClaudeBackend::~ClaudeBackend() {
   if (!mcp_config_path_.empty()) {
@@ -140,11 +142,11 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
   // the same text twice. A listing that has CHANGED does get re-sent — that is
   // how the model learns the loaded data is not what it was told earlier.
   std::string payload = text;
-  if (!tools.catalog.empty() && tools.catalog != sent_catalog_) {
-    const bool first = sent_catalog_.empty();
+  if (!tools.catalog.empty() && tools.catalog != memory_->sent_catalog) {
+    const bool first = memory_->sent_catalog.empty();
     payload = tools.catalog + "\n" +
               (first ? "" : "(The loaded data changed; the listing above replaces the earlier one.)\n") + "\n" + text;
-    sent_catalog_ = tools.catalog;
+    memory_->sent_catalog = tools.catalog;
   }
 
   std::vector<std::string> argv = {
@@ -171,9 +173,9 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
     argv.push_back("--model");
     argv.push_back(model_);
   }
-  if (!session_id_.empty()) {
+  if (!memory_->session_id.empty()) {
     argv.push_back("--resume");
-    argv.push_back(session_id_);
+    argv.push_back(memory_->session_id);
   }
 
   NdjsonSplitter splitter;
@@ -185,7 +187,7 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
       switch (ev.kind) {
         case ClaudeEvent::Kind::Init:
           if (!ev.session_id.empty()) {
-            session_id_ = ev.session_id;
+            memory_->session_id = ev.session_id;
           }
           break;
         case ClaudeEvent::Kind::AssistantText:
@@ -206,7 +208,7 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
             last_metrics_ = ev.metrics;
           }
           if (!ev.session_id.empty()) {
-            session_id_ = ev.session_id;
+            memory_->session_id = ev.session_id;
           }
           if (ev.is_error) {
             sink({BackendEvent::Kind::Error, ev.text.empty() ? "Claude reported an error" : ev.text});
@@ -239,6 +241,12 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
     sink(
         {BackendEvent::Kind::Error,
          "Claude CLI exited " + std::to_string(res.exit_code) + " (check it is installed and logged in via Settings)"});
+  }
+  // Report what the turn cost before closing it out. Only when the CLI actually
+  // produced a result record: a turn that died early has no price to quote, and
+  // last_metrics_ was reset at the top so it cannot repeat the previous one's.
+  if (last_metrics_.valid) {
+    sink({BackendEvent::Kind::Metrics, {}, last_metrics_});
   }
   sink({BackendEvent::Kind::TurnComplete, {}});
 }

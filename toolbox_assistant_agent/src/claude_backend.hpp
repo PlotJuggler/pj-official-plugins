@@ -12,6 +12,22 @@
 
 namespace assistant_agent {
 
+// What has to survive this backend object for the conversation to continue.
+//
+// It is deliberately NOT owned by ClaudeBackend: the backend is a transport
+// (a CLI path and a model name) and gets rebuilt whenever either changes, while
+// the conversation belongs to the user and does not. Kept together in one
+// struct because both fields answer the same question — what this conversation
+// has already been told.
+struct ClaudeMemory {
+  std::string session_id;  // Claude session for --resume continuity
+  // The catalog listing already sent into this conversation. --resume carries
+  // the whole history forward, so re-sending an identical listing every turn
+  // would be pure waste; re-sending a CHANGED one is how the model finds out
+  // the user loaded something else.
+  std::string sent_catalog;
+};
+
 // Remote backend driving the user's Claude Code CLI subscription headlessly —
 // NO Anthropic API key, no per-token billing. Per turn it spawns
 // `claude -p --output-format stream-json ... "<message>"` and parses the
@@ -20,10 +36,14 @@ namespace assistant_agent {
 // localhost MCP server (started lazily on the first turn); Claude calls it over
 // HTTP and those calls run through the same GuiExecutor as every other backend.
 // Conversation context is preserved across turns via the CLI's --resume with the
-// session id Claude reports.
+// session id Claude reports — held in a caller-owned ClaudeMemory so that
+// rebuilding this object (a settings change) does not silently start over.
 class ClaudeBackend : public LlmBackend {
  public:
-  ClaudeBackend(std::string cli_path, std::string model);
+  // `memory` must outlive the backend; the dialog owns one per conversation and
+  // lends the same one to every backend it builds. A null pointer is treated as
+  // a fresh private memory, so tests can construct without one.
+  ClaudeBackend(std::string cli_path, std::string model, std::shared_ptr<ClaudeMemory> memory = nullptr);
   ~ClaudeBackend() override;
 
   void sendUserMessage(const std::string& text, const TurnTools& tools, const EventSink& sink) override;
@@ -50,12 +70,7 @@ class ClaudeBackend : public LlmBackend {
 
   std::string cli_path_;
   std::string model_;
-  std::string session_id_;  // Claude session for --resume continuity
-  // The catalog listing already sent into this conversation. --resume carries
-  // the whole history forward, so re-sending an identical listing every turn
-  // would be pure waste; re-sending a CHANGED one is how the model finds out
-  // the user loaded something else.
-  std::string sent_catalog_;
+  std::shared_ptr<ClaudeMemory> memory_;  // never null after construction
   TurnMetrics last_metrics_;
   bool rate_limited_ = false;
   std::unique_ptr<McpHttpServer> mcp_;

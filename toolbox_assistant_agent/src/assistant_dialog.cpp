@@ -35,7 +35,8 @@ constexpr const char* kDefaultOllamaUrl = "http://localhost:11434";
 constexpr const char* kDefaultClaudeModel = "sonnet";
 }  // namespace
 
-AssistantDialog::AssistantDialog() {
+AssistantDialog::AssistantDialog()
+    : claude_memory_(std::make_shared<ClaudeMemory>()), ollama_memory_(std::make_shared<OllamaMemory>()) {
   rebuildBackend();
   worker_thread_ = std::thread([this]() { workerLoop(); });
 }
@@ -61,6 +62,19 @@ AssistantDialog::~AssistantDialog() {
 }
 
 void AssistantDialog::rebuildBackend() {
+  // Never mid-turn: the incoming and outgoing backends share the conversation
+  // memory, and the worker may be writing a session id into it right now. The
+  // Settings button is already disabled while busy, so in practice this only
+  // catches a host-driven setSettings() landing during a turn.
+  {
+    std::lock_guard<std::mutex> lock(state_.mu);
+    if (state_.session.busy()) {
+      state_.rebuild_pending = true;
+      return;
+    }
+    state_.rebuild_pending = false;
+  }
+
   // The scripted FakeBackend is an explicit opt-in for driving the tool path
   // without an LLM (unit tests + manual E2E). Otherwise the persisted
   // 'assistant.backend' choice selects the real backend; an unset/unknown choice
@@ -73,10 +87,11 @@ void AssistantDialog::rebuildBackend() {
     const std::string choice = store.getString(kKeyBackend, "");
     if (choice == "ollama") {
       backend_ = std::make_shared<OllamaBackend>(
-          store.getString(kKeyOllamaUrl, kDefaultOllamaUrl), store.getString(kKeyOllamaModel, ""));
+          store.getString(kKeyOllamaUrl, kDefaultOllamaUrl), store.getString(kKeyOllamaModel, ""), ollama_memory_);
     } else if (choice == "claude") {
       backend_ = std::make_shared<ClaudeBackend>(
-          store.getString(kKeyClaudeCli, "claude"), store.getString(kKeyClaudeModel, kDefaultClaudeModel));
+          store.getString(kKeyClaudeCli, "claude"), store.getString(kKeyClaudeModel, kDefaultClaudeModel),
+          claude_memory_);
     } else {
       // Unset choice -> the harmless echo backend until the user picks one.
       backend_ = std::make_shared<EchoBackend>();
@@ -85,6 +100,21 @@ void AssistantDialog::rebuildBackend() {
   std::lock_guard<std::mutex> lock(state_.mu);
   state_.backend_name = backend_->name();
   state_.header_dirty = true;
+}
+
+void AssistantDialog::startNewConversation() {
+  std::lock_guard<std::mutex> lock(state_.mu);
+  if (state_.session.busy()) {
+    return;  // the button is disabled while busy; this is the belt to that brace
+  }
+  state_.session.clear();
+  state_.usage.reset();
+  // Clearing in place is what makes this work for whichever backend is live:
+  // both read their memory through the pointer the dialog still holds.
+  *claude_memory_ = ClaudeMemory{};
+  *ollama_memory_ = OllamaMemory{};
+  state_.transcript_dirty = true;
+  state_.controls_dirty = true;
 }
 
 std::string AssistantDialog::manifest() const {
@@ -150,13 +180,19 @@ std::string AssistantDialog::widget_data() {
 
   if (state_.controls_dirty) {
     const bool busy = state_.session.busy();
-    wd.setLabel("statusLabel", state_.session.statusText());
+    // The turn state, then what the last turn moved. summary() returns "" when
+    // there is nothing to report, which is the whole story for a local backend
+    // — no branch on which backend is live.
+    wd.setLabel("statusLabel", state_.session.statusText() + state_.usage.summary());
     wd.setEnabled("inputEdit", !busy);
     wd.setEnabled("sendButton", !busy);
     wd.setEnabled("cancelButton", busy);
     // A mid-turn backend rebuild would strand the in-flight turn on the old
     // backend (kept alive by the worker's reference) — just don't offer it.
     wd.setEnabled("settingsButton", !busy);
+    // Same reason, plus: wiping the conversation memory under a running turn
+    // would have the backend resume a session it just forgot.
+    wd.setEnabled("newChatButton", !busy);
     state_.controls_dirty = false;
   }
 
@@ -232,6 +268,10 @@ bool AssistantDialog::onClicked(std::string_view widget_name) {
     state_.open_settings_pending = true;
     return true;
   }
+  if (widget_name == "newChatButton") {
+    startNewConversation();
+    return true;
+  }
   if (widget_name == "subDialogAccepted") {
     commitSettings();
     return true;
@@ -262,7 +302,20 @@ bool AssistantDialog::onTick() {
   for (auto& fn : batch) {
     fn();
   }
-  return tools_ran > 0 || !batch.empty();
+
+  // A backend rebuild that had to wait for the turn to finish. The flag is read
+  // under the lock, but rebuildBackend() is called outside it: it takes the same
+  // non-recursive mutex, and it re-checks busy() and clears the flag itself.
+  bool rebuild = false;
+  {
+    std::lock_guard<std::mutex> lock(state_.mu);
+    rebuild = state_.rebuild_pending && !state_.session.busy();
+  }
+  if (rebuild) {
+    rebuildBackend();
+  }
+
+  return tools_ran > 0 || !batch.empty() || rebuild;
 }
 
 void AssistantDialog::sendCurrentInput() {
@@ -334,6 +387,11 @@ void AssistantDialog::applyBackendEvent(const BackendEvent& ev) {
     case BackendEvent::Kind::Error:
       state_.session.addSystem("Error: " + ev.text);
       state_.transcript_dirty = true;
+      break;
+    case BackendEvent::Kind::Metrics:
+      // No repaint of its own: TurnComplete follows immediately and its
+      // controls_dirty is what re-renders the status label.
+      state_.usage.record(ev.metrics);
       break;
     case BackendEvent::Kind::TurnComplete:
       state_.session.setState(TurnState::Idle);

@@ -55,7 +55,7 @@ TEST(ChatSession, BusyReflectsNonIdleStates) {
 
 TEST(ChatSession, StatusTextTracksState) {
   ChatSession s;
-  EXPECT_EQ(s.statusText(), "Ready.");
+  EXPECT_EQ(s.statusText(), "Ready");
   s.setState(TurnState::WaitingForLlm);
   EXPECT_EQ(s.statusText(), "Thinking…");
   s.setState(TurnState::ExecutingTool);
