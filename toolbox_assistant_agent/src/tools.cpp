@@ -528,48 +528,148 @@ JoinForecast forecastJoin(
   return out;
 }
 
-ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
-  if (!args.contains("series") || !args["series"].is_string()) {
-    return ToolResult::failure("read_series requires a string 'series' (a topic/field path)");
+// Cap on how many series one call may read. Stats are small and fixed-size per
+// series, so this is not about the response cap — it is about not turning a
+// single tool call into an unbounded scan of the whole dataset.
+constexpr std::size_t kMaxBatchPaths = 32;
+
+// Collect the requested paths from either a bare string or an array.
+//
+// The parameter is named `paths` rather than `series` on purpose. The object
+// store holds point clouds, images and occupancy grids behind the same read
+// view, and when this call learns to summarize those too, "series" would be the
+// wrong word for what it takes. The model learns the name from the description,
+// so renaming it later is more expensive than choosing it now. `series` still
+// works, undocumented, so a conversation already in flight does not break.
+std::vector<std::string> requestedPaths(const json& args) {
+  std::vector<std::string> out;
+  for (const char* key : {"paths", "series"}) {
+    if (!args.contains(key)) {
+      continue;
+    }
+    const json& v = args[key];
+    if (v.is_string()) {
+      out.push_back(canonicalSeriesPath(v.get<std::string>()));
+    } else if (v.is_array()) {
+      for (const auto& e : v) {
+        if (e.is_string()) {
+          out.push_back(canonicalSeriesPath(e.get<std::string>()));
+        }
+      }
+    }
+    if (!out.empty()) {
+      break;
+    }
   }
-  const std::string series = canonicalSeriesPath(args["series"].get<std::string>());
+  return out;
+}
+
+// Read one series into timestamps + doubles, or return why not. Shared by both
+// modes so a batch entry and a single read fail with the same wording.
+struct SeriesRead {
+  bool ok = false;
+  std::string error;
+  std::string path;  // the resolved path, which may differ from what was asked
+  std::vector<std::int64_t> ts;
+  std::vector<double> vals;
+};
+
+SeriesRead readOne(const PJ::sdk::CatalogSnapshot& catalog, ToolContext& ctx, const std::string& want) {
+  SeriesRead r;
+  r.path = want;
+  auto lookup = resolveSeriesPath(catalog, want);
+  if (!lookup.resolved) {
+    r.error = seriesLookupError(want, lookup);
+    return r;
+  }
+  r.path = lookup.resolved->path;
+  auto view = ctx.host.readSeries(lookup.resolved->handle);
+  if (!view) {
+    r.error = "read failed for '" + want + "': " + view.error();
+    return r;
+  }
+  if (!readSeriesDoubles(*view, r.ts, r.vals)) {
+    r.error = "series '" + want + "' is not a numeric time series";
+    return r;
+  }
+  r.ok = true;
+  return r;
+}
+
+ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
+  const std::vector<std::string> paths = requestedPaths(args);
+  if (paths.empty()) {
+    return ToolResult::failure(
+        "read_series requires 'paths': one topic/field path, or an array of them to read several in "
+        "a single call");
+  }
+  if (paths.size() > kMaxBatchPaths) {
+    return ToolResult::failure(
+        "read_series takes at most " + std::to_string(kMaxBatchPaths) + " paths per call, got " +
+        std::to_string(paths.size()));
+  }
   const std::string mode = args.value("mode", std::string("stats"));
 
   auto catalog = ctx.host.catalogSnapshot();
   if (!catalog) {
     return ToolResult::failure("catalog unavailable: " + catalog.error());
   }
-  auto lookup = resolveSeriesPath(*catalog, series);
-  if (!lookup.resolved) {
-    return ToolResult::failure(seriesLookupError(series, lookup));
-  }
-  const auto& resolved = lookup.resolved;
-  auto view = ctx.host.readSeries(resolved->handle);
-  if (!view) {
-    return ToolResult::failure("read failed for '" + series + "': " + view.error());
-  }
-  std::vector<std::int64_t> ts;
-  std::vector<double> vals;
-  if (!readSeriesDoubles(*view, ts, vals)) {
-    return ToolResult::failure("series '" + series + "' is not a numeric time series");
+
+  if (mode == "stats") {
+    // One entry per requested path, each carrying its own error. A single typo
+    // must not cost the whole round trip — which is the entire point of asking
+    // for several at once.
+    json arr = json::array();
+    std::size_t failed = 0;
+    for (const auto& want : paths) {
+      SeriesRead r = readOne(*catalog, ctx, want);
+      if (!r.ok) {
+        ++failed;
+        arr.push_back({{"series", want}, {"error", r.error}});
+        continue;
+      }
+      arr.push_back({{"series", r.path}, {"stats", statsToJson(computeStats(r.ts, r.vals))}});
+    }
+    // A lone path keeps the shape it has always had, so nothing that worked
+    // before starts reading differently.
+    if (paths.size() == 1) {
+      const json& only = arr.front();
+      return only.contains("error") ? ToolResult::failure(only["error"].get<std::string>())
+                                    : ToolResult::success(only.dump());
+    }
+    json out = {{"count", arr.size()}, {"read", arr}};
+    if (failed != 0) {
+      out["failed"] = failed;
+    }
+    return ToolResult::success(out.dump());
   }
 
-  const SeriesStats stats = computeStats(ts, vals);
-  json stats_json = statsToJson(stats);
-  if (mode == "stats") {
-    return ToolResult::success(json({{"series", series}, {"stats", stats_json}}).dump());
-  }
   if (mode == "buckets") {
+    // Deliberately single-series. Buckets are the expensive, variable payload,
+    // and fitting several into one response means coarsening each until the set
+    // fits — degrading exactly the thing buckets exist to show. Asking for them
+    // one at a time keeps each one at full usable resolution.
+    if (paths.size() != 1) {
+      return ToolResult::failure(
+          "mode 'buckets' reads one series at a time: fitting several shapes in one response would "
+          "coarsen each of them past usefulness. Batch 'stats' instead, then request buckets for the "
+          "series worth looking at.");
+    }
+    SeriesRead r = readOne(*catalog, ctx, paths.front());
+    if (!r.ok) {
+      return ToolResult::failure(r.error);
+    }
+    const json stats_json = statsToJson(computeStats(r.ts, r.vals));
     // Coarsen until the serialized payload fits the response cap so spiky data
     // stays representable without overrunning the model's context.
     std::size_t max_points = static_cast<std::size_t>(std::clamp(args.value("max_points", 200), 1, 500));
     for (;;) {
-      auto buckets = bucketize(ts, vals, max_points);
-      json arr = json::array();
+      auto buckets = bucketize(r.ts, r.vals, max_points);
+      json bucket_arr = json::array();
       for (const auto& b : buckets) {
-        arr.push_back({{"t", b.t_rel_s}, {"min", b.min}, {"max", b.max}, {"mean", b.mean}, {"n", b.count}});
+        bucket_arr.push_back({{"t", b.t_rel_s}, {"min", b.min}, {"max", b.max}, {"mean", b.mean}, {"n", b.count}});
       }
-      json out = {{"series", series}, {"stats", stats_json}, {"buckets", arr}};
+      json out = {{"series", r.path}, {"stats", stats_json}, {"buckets", bucket_arr}};
       std::string dumped = out.dump();
       if (dumped.size() <= kMaxResponseBytes || max_points <= 16) {
         if (dumped.size() > kMaxResponseBytes) {
@@ -1086,15 +1186,22 @@ ToolRegistry::ToolRegistry() {
 
   add(
       {"read_series",
-       "Read summary statistics ('stats') or a min/max-preserving downsample ('buckets') of one "
-       "series. Never returns raw samples. Use the full 'topic/field' path. Bucket times 't' are "
-       "seconds relative to the series start.",
+       "Read summary statistics ('stats') or a min/max-preserving downsample ('buckets'). Never "
+       "returns raw samples. Bucket times 't' are seconds relative to the series start.\n"
+       "'paths' is an ARRAY — ask for every series you want stats for in ONE call. Each call is a "
+       "round trip that re-sends the whole conversation, so twelve one-by-one cost twelve times "
+       "twelve together. A bad path returns as an error beside the results that worked.\n"
+       "mode='buckets' reads ONE series: several shapes in one response would be coarsened past "
+       "usefulness. Batch the stats, then ask for the shape of whichever mattered.",
        {{"type", "object"},
         {"properties",
-         {{"series", {{"type", "string"}, {"description", "topic/field path (see describe_topic)"}}},
+         {{"paths",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description", "topic/field paths; a bare string is accepted for a single series"}}},
           {"mode", {{"type", "string"}, {"enum", json::array({"stats", "buckets"})}}},
           {"max_points", {{"type", "integer"}, {"description", "bucket count for mode=buckets (<=500)"}}}}},
-        {"required", json::array({"series"})}},
+        {"required", json::array({"paths"})}},
        &readSeriesTool});
 
   add(

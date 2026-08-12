@@ -719,8 +719,18 @@ TEST(ToolRegistry, DefaultsToASingleOutputNamedAfterTheSeries) {
 
 // The whole schema is re-sent on every API call, and one turn with tool use is
 // several calls — so a description is not paid once per message, it is paid per
-// round-trip. This is a budget, not a style rule: when it binds, the answer is
-// to cut prose, not to drop a capability.
+// round trip. This is a budget, not a style rule.
+//
+// Raised from 7500 to 8000 when batched reads landed, and the number is not a
+// convenience: it was moved against a measurement. In the reference turn
+// (41 round trips, 1.67 M tokens) a round trip costs ~40 700 tokens on average,
+// and consecutive read runs account for 45% of the turn. The batch description
+// adds ~95 tokens per round trip and removes roughly twenty of them — a trade of
+// about 400 to 1.
+//
+// Move it again only with that kind of arithmetic behind it. Prose that cannot
+// point at a saving is what the ceiling exists to stop, and when it binds the
+// answer is to cut prose, not to drop a capability.
 //
 // Measured, not guessed: the chars/4 rule of thumb overestimated this surface by
 // about 50% when it was checked against the real token counters.
@@ -731,7 +741,7 @@ TEST(ToolRegistry, ToolSchemaStaysWithinItsBudget) {
   for (const auto& t : reg.tools()) {
     std::cerr << "  " << t.name << ": " << t.description.size() << "\n";
   }
-  EXPECT_LT(chars, 7500u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
+  EXPECT_LT(chars, 8000u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
 }
 
 // --- seeing and withdrawing its own work -----------------------------------
@@ -779,6 +789,97 @@ TEST(ToolRegistry, RefusesToRemoveSomethingItDidNotCreate) {
   EXPECT_FALSE(r.ok);
   EXPECT_TRUE(dp.last_removed.empty()) << "the host must not even be asked";
   EXPECT_NE(r.content.find("doubled"), std::string::npos) << r.content;
+}
+
+// --- reading several series in one call ------------------------------------
+
+// The measured problem: in a real analysis the model issued 25 read_series, in
+// runs of up to 15 back to back, and the CLI never batches two tools into one
+// response — so each read cost a full round trip that re-sent the whole
+// conversation. Those runs were 45% of the turn's tokens.
+TEST(ToolRegistry, ReadsSeveralSeriesInOneCall) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  store.addField("/imu", "z", {0, kSec, 2 * kSec}, {7.0, 8.0, 9.0});
+  ToolContext ctx = makeCtx(store, nullptr);
+
+  auto r = reg.execute("read_series", {{"paths", json::array({"/imu/x", "/imu/y", "/imu/z"})}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 3);
+  EXPECT_EQ(j["read"].size(), 3u);
+  EXPECT_EQ(j["read"][0]["series"], "/imu/x");
+  EXPECT_EQ(j["read"][2]["series"], "/imu/z");
+  // Each entry carries its own statistics, not a merged blob.
+  EXPECT_EQ(j["read"][0]["stats"]["count"], 5);
+  EXPECT_EQ(j["read"][1]["stats"]["count"], 3);
+  EXPECT_FALSE(j.contains("failed"));
+}
+
+// One typo must not cost the round trip the batch exists to save.
+TEST(ToolRegistry, ABadPathDoesNotSpoilTheBatch) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  ToolContext ctx = makeCtx(store, nullptr);
+
+  auto r = reg.execute("read_series", {{"paths", json::array({"/imu/x", "/imu/nope", "/imu/y"})}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 3);
+  EXPECT_EQ(j["failed"], 1);
+  EXPECT_TRUE(j["read"][0].contains("stats"));
+  EXPECT_TRUE(j["read"][1].contains("error")) << j["read"][1].dump();
+  EXPECT_TRUE(j["read"][2].contains("stats"));
+}
+
+// A single path keeps exactly the shape it had before batching existed, so
+// nothing that already worked starts reading differently to the model.
+TEST(ToolRegistry, SinglePathKeepsTheOldShape) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  ToolContext ctx = makeCtx(store, nullptr);
+
+  auto batch = json::parse(reg.execute("read_series", {{"paths", json::array({"/imu/x"})}}, ctx).content);
+  auto bare = json::parse(reg.execute("read_series", {{"paths", "/imu/x"}}, ctx).content);
+  auto legacy = json::parse(reg.execute("read_series", {{"series", "/imu/x"}}, ctx).content);
+
+  EXPECT_EQ(batch["series"], "/imu/x");
+  EXPECT_FALSE(batch.contains("read")) << "a lone path must not be wrapped in the batch envelope";
+  EXPECT_EQ(bare, batch);
+  EXPECT_EQ(legacy, batch) << "'series' still works so a conversation in flight does not break";
+}
+
+// Buckets stay single-series on purpose: coarsening several shapes to fit one
+// response destroys the only thing buckets are for. The refusal has to say so
+// and point at what does work, or the model just retries the same thing.
+TEST(ToolRegistry, BucketsRefuseABatchAndSayWhy) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  ToolContext ctx = makeCtx(store, nullptr);
+
+  auto r = reg.execute("read_series", {{"paths", json::array({"/imu/x", "/imu/y"})}, {"mode", "buckets"}}, ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("one series at a time"), std::string::npos) << r.content;
+  EXPECT_NE(r.content.find("stats"), std::string::npos) << r.content;
+}
+
+TEST(ToolRegistry, RejectsAnOversizedBatch) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  ToolContext ctx = makeCtx(store, nullptr);
+
+  json many = json::array();
+  for (int i = 0; i < 40; ++i) {
+    many.push_back("/imu/x");
+  }
+  auto r = reg.execute("read_series", {{"paths", many}}, ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("at most"), std::string::npos) << r.content;
 }
 
 }  // namespace
