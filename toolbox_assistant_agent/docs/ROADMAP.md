@@ -73,6 +73,77 @@ requirement has to move to the system prompt, because by the time the call arriv
 is gone (`FINDINGS.md` §7). Asking is not required — naming the assumption is, and it is the one
 behaviour the benchmark separates the tiers on.
 
+## Bigger directions, none of them decided
+
+Three ideas argued through and left open on purpose. Each records where the argument got to,
+including the parts that were wrong, so the next person can disagree with the reasoning rather
+than re-derive it.
+
+### Compare two series that do not share a clock
+
+The largest gap between what users ask for and what the plugin can do. A multi-input transform
+joins on exact timestamp equality, so relating an IMU at 99.1 Hz to a CAN signal at 30.0 Hz is
+impossible — and the tool correctly refuses rather than installing an empty curve. What it offers
+instead ("read each one and compare the statistics") is weak: it cannot produce a correlation, a
+lag, or "the acceleration peak precedes the brake by 120 ms".
+
+The constraint is PlotJuggler's, but only for *creating a series*. Nothing stops the plugin from
+resampling in-process to **answer a question**, without installing anything. That is a new tool,
+not a change to the transform path, and it closes a refusal users hit today.
+
+The open question is what it should report. Correlation and best-fit lag are the obvious pair;
+whether it should also state the resampling it did — and how loudly — is the part that decides
+whether the answer is trustworthy or just plausible.
+
+### See 2D and 3D data
+
+The plumbing is finished: 16 SDK object codecs, and `pj.toolbox_object_read.v1` is already wired
+up and in use for counting markers. What is missing is judgement about what a useful summary is.
+
+Two very different ambitions hide under "analyse images", and they should not be conflated:
+
+- **Summarise.** A tool result is text, so what the model can get is metadata and statistics:
+  dimensions, encoding, cadence, gaps, empty frames; for point clouds, count, bounding box, density
+  over time. This genuinely catches a dead sensor or a frozen camera. It is not vision.
+- **Actually look.** The CLI is launched with `--tools ""`, which disables every built-in tool and
+  is the safety spine — headless Claude can reach only this plugin's MCP tools and nothing on the
+  machine. Export a frame to PNG and allow the CLI's own `Read`, and the model sees the image.
+
+The second is the only path to real vision and is cheap to build. It is also a genuine security
+decision, not a flag: `Read` reads any file on disk, so allowing it punches a hole in the one
+guarantee that makes this plugin safe to ship. Whether it can be confined to a directory is the
+question to answer *before* writing any summariser, because the answer changes what the summariser
+is for.
+
+Start with two or three object types that exist in real logs, not all 16.
+
+### Remember things between sessions
+
+The idea is a memory of facts about a robot or a recording — "speed is in km/h here", "CAN and IMU
+never share timestamps on this vehicle" — so the model stops rediscovering them.
+
+The argument against it was that memory *adds* tokens to every turn to save calls in some, and that
+the catalog already goes up front, which is why the ambiguity guard rarely fires. That argument was
+built on a mistake: sent tokens were being counted with cached ones at full price. Priced properly,
+**a stable block at the head of the prompt is cache-read at 0.1x and is nearly free**, while one
+that changes every turn invalidates the prefix behind it and forces cache *writes* at 1.25x.
+
+So the design question is not how much to remember. It is **where it sits and how often it
+changes** — a stable header is cheap, a per-turn journal is expensive. That reframing has not been
+turned into a design yet.
+
+The risk that has not been answered: stale memory. This plugin's whole direction has been to stop
+the model asserting things it cannot see. A remembered "the IMU is at 99 Hz" applied to a log where
+it is 200 Hz reintroduces exactly that failure, with our blessing. Any memory needs to be either
+verifiable at point of use or bound to the recording that produced it.
+
+### An unknown that may sit under all three
+
+Nobody has checked whether the assistant's work survives closing PlotJuggler. If nine derived
+series and a marker set are gone when the layout reopens, then "memory" is a question about layout
+persistence and not about the model at all — and the three ideas above are being discussed at the
+wrong layer. Worth ten minutes before anyone commits to a design.
+
 **Keep the CLI process alive between turns** (`--input-format stream-json`). Saves the ~1 s
 startup and the per-turn MCP handshake. Deliberately parked: it is ~3 % of a turn and it means
 rewriting the subprocess lifecycle — who kills it, what happens when it dies, how Cancel
