@@ -595,8 +595,13 @@ TEST(ToolRegistry, ReportsHowManyPointsSurviveAPartialJoin) {
 
   ASSERT_TRUE(r.ok) << r.content;
   const json j = json::parse(r.content);
-  EXPECT_EQ(j["joined_points"], 1) << "only t=0 is common";
+  EXPECT_EQ(j["points"], 1) << "only t=0 is common";
   EXPECT_EQ(j["shortest_input_points"], 4);
+  // The result states the outcome and stops there. It used to append
+  // "verify_with: read_series on ...", and models obliged — a full round trip
+  // spent fetching a number this response already had. What to do about the
+  // result is the model's call; this tool's job is to report it.
+  EXPECT_FALSE(j.contains("verify_with")) << "a tool result must not prescribe the next call";
 }
 
 // Single-input transforms have nothing to join, so the guard must not touch
@@ -614,7 +619,13 @@ TEST(ToolRegistry, SingleInputTransformIsNeverForecast) {
 
   ASSERT_TRUE(r.ok) << r.content;
   EXPECT_EQ(dp.persistent_creates, 1);
-  EXPECT_FALSE(json::parse(r.content).contains("joined_points"));
+  const json j = json::parse(r.content);
+  EXPECT_FALSE(j.contains("shortest_input_points")) << "nothing joined, so nothing was lost to a join";
+  // Length still gets reported, because it is the fact the model would otherwise
+  // spend a round trip to fetch. With one input there is no join to shorten it,
+  // so the output is exactly as long as the input.
+  EXPECT_EQ(j["points"], 5) << "as long as its only input, which populate() gives 5 samples";
+  EXPECT_FALSE(j.contains("verify_with")) << "a tool result must not prescribe the next call";
 }
 
 // --- several datasets loaded at once ---------------------------------------

@@ -123,8 +123,37 @@ So the creation tools report facts rather than intentions:
   breakdown by kind. `{"regions": 12}` and `{"events": 4182}` are the difference between an
   annotation and a wall. The tool description states the ~50 rule and this is what makes it
   checkable — a rule the model has no way to evaluate is decoration.
-- `create_derived_series` names the series to verify, and reports how many points survive a join
-  that loses rows.
+- `create_derived_series` reports `points`: how many samples the new series has. With one input that
+  is the input's length, read from the Arrow header without decoding values; with several it is the
+  size of the timestamp intersection, which is what the join will actually produce.
+
+### Facts, never instructions
+
+A tool result states what happened. It does not say what to do next. The distinction sounds
+pedantic and is worth about a third of the round trips in a turn.
+
+`create_derived_series` used to append `verify_with: "read_series on <name>/value"`. It was added
+after watching models re-read what they had just created — the reasoning being that if they were
+going to do it anyway, we may as well name the right path. The effect was the opposite of helpful:
+the models were not going to do it anyway, they were doing it *because we suggested it*, and the
+suggestion fired on every create whether or not the result warranted a second look. Measured across
+the creation scenarios it cost 47 extra `read_series` calls and pulled the model into a
+check-and-retry loop that dragged 34 `list_created` and 25 `list_topics` calls along with it —
+each one a full round trip re-sending the whole conversation, to learn a number this response
+already had. Replacing the string with the number took total round trips from 44 to 31 (-30%) and
+tokens by 21%.
+
+The general rule, and the reason it is a rule rather than a one-off fix: **this code cannot make
+that decision well.** Whether a result deserves a closer look depends on what the user asked for,
+and the tool layer has not read the question. The model has. An `if` here is a guess competing with
+something that has the context — and it is a guess that fires unconditionally, which is worse than
+guessing occasionally.
+
+Note where the boundary falls. Explaining a *mechanism the model cannot discover* is a fact, not an
+instruction: the join-refusal message says multi-input transforms join on exact timestamp equality,
+because nothing in the catalog would ever reveal that. And a refusal is already a dead end, so
+naming what does work costs no extra call. The expensive mistake is prescribing a next step on a
+**success** path, where the model had nothing left to do until we invented an errand for it.
 
 Two things about the read-back are easy to get wrong. A marker topic holds **one** serialized
 `PlotMarkers` blob — `MarkerService` pushes the whole set at `Timestamp{0}` and republishes it on

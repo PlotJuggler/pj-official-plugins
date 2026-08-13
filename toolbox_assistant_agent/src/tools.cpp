@@ -734,6 +734,10 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
   // installing a transform whose input never matches — which produces an empty
   // curve and looks like it worked.
   JoinForecast forecast;
+  // How long the output will be when there is no join to shorten it. Taken here,
+  // where the input is already resolved, because the catalog does not outlive
+  // this block. rowCount() reads the Arrow header — it decodes no values.
+  std::optional<std::size_t> single_input_points;
   if (auto catalog = ctx.host.catalogSnapshot()) {
     for (auto& in : inputs) {
       auto lookup = resolveSeriesPath(*catalog, in);
@@ -741,6 +745,11 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
         return ToolResult::failure(seriesLookupError(in, lookup));
       }
       in = lookup.resolved->path;
+      if (inputs.size() == 1) {
+        if (auto view = ctx.host.readSeries(lookup.resolved->handle); view) {
+          single_input_points = view->rowCount();
+        }
+      }
     }
     // The same failure the resolution above guards against — an empty curve that
     // looks like it worked — reached the other way: inputs that all exist but
@@ -800,14 +809,25 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
       {"created", name},
       {"series", outputs.size() == 1 ? json(outputs.front() + "/value") : series_paths},
       {"inputs", inputs}};
-  // A join that survives but loses most of its rows is a legitimate surprise
-  // worth naming: "of 20000 samples, 340 line up" is the difference between a
-  // usable series and a handful of stray points, and nothing else would say so.
-  if (forecast.checked && forecast.shared < forecast.smallest) {
-    result["joined_points"] = forecast.shared;
-    result["shortest_input_points"] = forecast.smallest;
+  // Report what the call produced, not what to do about it. This used to carry a
+  // "verify_with: read_series on ..." string, and models took the hint: across
+  // the creation scenarios it cost 79 extra read_series calls, each one a full
+  // round trip re-sending the whole conversation, to learn a number we already
+  // had here. Deciding whether a result warrants a second look is the model's
+  // job — it knows what the user asked for and this code does not. Ours is to
+  // hand it the fact, once, at no cost.
+  if (forecast.checked) {
+    // Multi-input: the join is what determines the length, and losing most of
+    // the rows to it ("of 20000 samples, 340 line up") is the difference between
+    // a usable series and a handful of stray points.
+    result["points"] = forecast.shared;
+    if (forecast.shared < forecast.smallest) {
+      result["shortest_input_points"] = forecast.smallest;
+    }
+  } else if (single_input_points) {
+    // Single input: nothing joins, so the output is as long as the input.
+    result["points"] = *single_input_points;
   }
-  result["verify_with"] = "read_series on " + outputs.front() + "/value";
   return ToolResult::success(result.dump());
 }
 
