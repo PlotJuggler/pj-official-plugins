@@ -238,8 +238,9 @@ std::vector<Scenario> scenarios() {
   s.push_back(
       {"L2", "single-input transform", "Create a derived series named doubled equal to test/sin/value times 2.",
        [](const TurnOutcome& o) -> std::string {
-         if (o.dp->create_calls != 1) {
-           return "expected exactly 1 create, got " + std::to_string(o.dp->create_calls);
+         if (o.dp->liveCount() != 1) {
+           return "expected exactly 1 series left, got " + std::to_string(o.dp->liveCount()) + " (from " +
+                  std::to_string(o.dp->create_calls) + " create calls)";
          }
          if (o.dp->last_inputs != std::vector<std::string>{"test/sin/value"}) {
            return "wrong inputs";
@@ -255,8 +256,9 @@ std::vector<Scenario> scenarios() {
       {"L3", "two-input transform",
        "Create a derived series named sumsq equal to test/sin/value squared plus test/cos/value squared.",
        [](const TurnOutcome& o) -> std::string {
-         if (o.dp->create_calls != 1) {
-           return "expected exactly 1 create, got " + std::to_string(o.dp->create_calls);
+         if (o.dp->liveCount() != 1) {
+           return "expected exactly 1 series left, got " + std::to_string(o.dp->liveCount()) + " (from " +
+                  std::to_string(o.dp->create_calls) + " create calls)";
          }
          const auto& in = o.dp->last_inputs;
          if (in.size() != 2) {
@@ -271,8 +273,9 @@ std::vector<Scenario> scenarios() {
   s.push_back(
       {"L4", "abbreviated path", "Create a derived series named halved equal to sin divided by 2.",
        [](const TurnOutcome& o) -> std::string {
-         if (o.dp->create_calls != 1) {
-           return "expected exactly 1 create, got " + std::to_string(o.dp->create_calls);
+         if (o.dp->liveCount() != 1) {
+           return "expected exactly 1 series left, got " + std::to_string(o.dp->liveCount()) + " (from " +
+                  std::to_string(o.dp->create_calls) + " create calls)";
          }
          return o.dp->last_inputs == std::vector<std::string>{"test/sin/value"}
                     ? ""
@@ -297,8 +300,9 @@ std::vector<Scenario> scenarios() {
   s.push_back(
       {"L6", "stateful transform", "Create a derived series named slope that is the time derivative of test/sin/value.",
        [](const TurnOutcome& o) -> std::string {
-         if (o.dp->create_calls != 1) {
-           return "expected exactly 1 create, got " + std::to_string(o.dp->create_calls);
+         if (o.dp->liveCount() != 1) {
+           return "expected exactly 1 series left, got " + std::to_string(o.dp->liveCount()) + " (from " +
+                  std::to_string(o.dp->create_calls) + " create calls)";
          }
          const std::string sc = lower(o.dp->last_script);
          // A derivative needs the previous sample kept somewhere between calls.
@@ -372,8 +376,9 @@ std::vector<Scenario> scenarios() {
        "Create a derived series named rms10 that is the root mean square of test/sin/value over a sliding window "
        "of the last 10 samples.",
        [](const TurnOutcome& o) -> std::string {
-         if (o.dp->create_calls != 1) {
-           return "expected exactly 1 create, got " + std::to_string(o.dp->create_calls);
+         if (o.dp->liveCount() != 1) {
+           return "expected exactly 1 series left, got " + std::to_string(o.dp->liveCount()) + " (from " +
+                  std::to_string(o.dp->create_calls) + " create calls)";
          }
          if (o.dp->last_inputs != std::vector<std::string>{"test/sin/value"}) {
            return "wrong inputs";
@@ -397,8 +402,9 @@ std::vector<Scenario> scenarios() {
       {"L10", "conditional logic",
        "Create a derived series named clipped equal to test/sin/value clamped to the range -0.5 to 0.5.",
        [](const TurnOutcome& o) -> std::string {
-         if (o.dp->create_calls != 1) {
-           return "expected exactly 1 create, got " + std::to_string(o.dp->create_calls);
+         if (o.dp->liveCount() != 1) {
+           return "expected exactly 1 series left, got " + std::to_string(o.dp->liveCount()) + " (from " +
+                  std::to_string(o.dp->create_calls) + " create calls)";
          }
          if (o.dp->last_inputs != std::vector<std::string>{"test/sin/value"}) {
            return "wrong inputs";
@@ -502,8 +508,8 @@ std::vector<Scenario> scenarios() {
       {"L14", "incompatible timelines",
        "Create a derived series named mix equal to test/sin/value plus test/offset/value.",
        [](const TurnOutcome& o) -> std::string {
-         if (o.dp->persistent_creates != 0) {
-           return "installed a transform whose inputs share no timestamps, so the series is empty";
+         if (o.dp->liveCount() != 0) {
+           return "left behind a transform whose inputs share no timestamps, so the series is empty";
          }
          const std::string r = lower(o.reply);
          const bool explains = contains(r, "timestamp") || contains(r, "timeline") || contains(r, "empty") ||
@@ -640,6 +646,7 @@ TEST(AssistantBenchVerifiers, AcceptCorrectAndRejectWrongOutcomes) {
   // L2: right input, right arithmetic.
   reset();
   dp.create_calls = 1;
+  dp.live_ids = {"derived"};  // ...and it is still there at the end
   dp.last_inputs = {"test/sin/value"};
   dp.last_script = "return value * 2";
   EXPECT_EQ(find(all, "L2").verify(o), "");
@@ -650,11 +657,13 @@ TEST(AssistantBenchVerifiers, AcceptCorrectAndRejectWrongOutcomes) {
   EXPECT_NE(find(all, "L2").verify(o), "") << "the wrong source series must fail";
   dp.last_inputs = {"test/sin/value"};
   dp.create_calls = 0;
+  dp.live_ids.clear();
   EXPECT_NE(find(all, "L2").verify(o), "") << "creating nothing must fail";
 
   // L3: both inputs, not one.
   reset();
   dp.create_calls = 1;
+  dp.live_ids = {"derived"};  // ...and it is still there at the end
   dp.last_inputs = {"test/sin/value", "test/cos/value"};
   EXPECT_EQ(find(all, "L3").verify(o), "");
   dp.last_inputs = {"test/sin/value"};
@@ -663,6 +672,7 @@ TEST(AssistantBenchVerifiers, AcceptCorrectAndRejectWrongOutcomes) {
   // L4: the abbreviation has to end up expanded.
   reset();
   dp.create_calls = 1;
+  dp.live_ids = {"derived"};  // ...and it is still there at the end
   dp.last_inputs = {"test/sin/value"};
   EXPECT_EQ(find(all, "L4").verify(o), "");
   dp.last_inputs = {"sin"};
@@ -683,6 +693,7 @@ TEST(AssistantBenchVerifiers, AcceptCorrectAndRejectWrongOutcomes) {
   // L6: a derivative that keeps no state is not a derivative.
   reset();
   dp.create_calls = 1;
+  dp.live_ids = {"derived"};  // ...and it is still there at the end
   dp.last_script = "global prev = 0\nreturn (value - prev) / dt";
   EXPECT_EQ(find(all, "L6").verify(o), "");
   dp.last_script = "return value * 2";
@@ -710,6 +721,7 @@ TEST(AssistantBenchVerifiers, AcceptCorrectAndRejectWrongOutcomes) {
   // L9: a window needs a buffer, a length and a square root — each absence caught.
   reset();
   dp.create_calls = 1;
+  dp.live_ids = {"derived"};  // ...and it is still there at the end
   dp.last_inputs = {"test/sin/value"};
   dp.last_script =
       "global buf = {}\ntable.insert(buf, value)\nif #buf > 10 then table.remove(buf, 1) end\nreturn math.sqrt(s / "
@@ -724,6 +736,7 @@ TEST(AssistantBenchVerifiers, AcceptCorrectAndRejectWrongOutcomes) {
   // L10: clamping to one side only is the half-done answer this must reject.
   reset();
   dp.create_calls = 1;
+  dp.live_ids = {"derived"};  // ...and it is still there at the end
   dp.last_inputs = {"test/sin/value"};
   dp.last_script = "return math.max(-0.5, math.min(0.5, value))";
   EXPECT_EQ(find(all, "L10").verify(o), "");
@@ -800,20 +813,54 @@ TEST(AssistantBenchVerifiers, AcceptCorrectAndRejectWrongOutcomes) {
   EXPECT_NE(find(all, "L13").verify(o), "") << "installing a transform instead of markers must fail";
 
   // L14: what counts is that nothing broken was left behind, and that the user
-  // was told why. An ephemeral dry-run is NOT a failure — that is the whole
-  // point of persistent_creates existing separately from create_calls.
+  // was told why. A dry-run is NOT a failure, whether it was flagged ephemeral or
+  // simply removed afterwards — both leave the panel empty, which is the point.
   reset();
   o.reply =
       "Those two series share no timestamps, so the joined series would be empty. Compare their statistics "
       "instead, or plot them together.";
-  dp.create_calls = 1;        // the dry-run happened...
-  dp.persistent_creates = 0;  // ...and nothing was installed
+  dp.create_calls = 1;  // the dry-run happened, and left nothing live
   EXPECT_EQ(find(all, "L14").verify(o), "");
-  dp.persistent_creates = 1;
+  dp.live_ids = {"mix"};
   EXPECT_NE(find(all, "L14").verify(o), "") << "leaving an empty series installed must fail";
-  dp.persistent_creates = 0;
+  dp.live_ids.clear();
   o.reply = "Sorry, I cannot do that.";
   EXPECT_NE(find(all, "L14").verify(o), "") << "declining without a reason must fail";
+}
+
+// The regression that made this whole verdict wrong: a model that creates a
+// probe, measures it and removes it leaves the user with exactly what a model
+// that got it right first time leaves them with, and must score the same. The
+// old counter only ever went up, so it scored the careful model as the failure —
+// and it did so silently, in green, because no test drove a create THROUGH a
+// remove. This is that test.
+TEST(AssistantBench, CleaningUpAfterAProbeScoresTheSameAsGettingItRightFirstTime) {
+  using namespace assistant_agent::testing;
+  RecordingDpHost dp;
+  auto view = dp.view();
+
+  const auto create = [&](const char* id, std::uint32_t flags) {
+    PJ_string_view_t topics[4];
+    std::uint64_t count = 0;
+    PJ_error_t err{};
+    const PJ_string_view_t in{"test/sin/value", 14};
+    RecordingDpHost::tCreate(
+        &dp, PJ_string_view_t{id, std::strlen(id)}, PJ_string_view_t{"transform", 9}, PJ_string_view_t{"luau", 4}, &in,
+        1, nullptr, 0, PJ_string_view_t{"value", 5}, PJ_string_view_t{"", 0}, flags, topics, 4, &count, &err);
+  };
+
+  create("probe", 0);
+  create("answer", 0);
+  EXPECT_EQ(dp.liveCount(), 2) << "two persistent creates are two live series";
+
+  PJ_error_t err{};
+  RecordingDpHost::tRemove(&dp, PJ_string_view_t{"probe", 5}, &err);
+  EXPECT_EQ(dp.liveCount(), 1) << "removing the probe must leave only the answer";
+  EXPECT_EQ(dp.create_calls, 2) << "the call count still records what it cost";
+
+  // An ephemeral create is the host's own dry run: it never joins the live set.
+  create("dry", PJ_DATA_PROCESSOR_FLAG_EPHEMERAL);
+  EXPECT_EQ(dp.liveCount(), 1) << "an ephemeral create leaves nothing behind";
 }
 
 // --- the matrix ------------------------------------------------------------

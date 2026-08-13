@@ -12,6 +12,7 @@
 // drawn result requires the GUI pass.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <string>
@@ -23,10 +24,10 @@ namespace assistant_agent::testing {
 // Luau script + routed inputs/outputs. Returns success unless a fail flag is set.
 struct RecordingDpHost {
   int create_calls = 0;
-  // Creates that were NOT marked ephemeral — i.e. things the user is left with.
-  // A dry-run that measures its output and then removes it must not count here,
-  // which is what separates "installed an empty curve" from "checked and
-  // declined to install one".
+  // Persistent creates ever ATTEMPTED. Note what this is not: it never goes down,
+  // so it answers "did it call create" and not "what is the user left with". Once
+  // removal existed, those stopped being the same question — judge an outcome
+  // with liveCount() instead, and keep this for asserting a call happened at all.
   int persistent_creates = 0;
   int validate_calls = 0;
   bool fail_validate = false;
@@ -73,6 +74,12 @@ struct RecordingDpHost {
       PJ::sdk::fillError(err, 1, "test", "create rejected");
       return false;
     }
+    // The create succeeded, so from here on the host really is holding it. An
+    // ephemeral one is a dry run the host drops by itself, so it never joins the
+    // set the user is left with.
+    if ((flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL) == 0) {
+      self->live_ids.push_back(self->last_id);
+    }
     self->resolved = self->last_outputs.empty() ? std::vector<std::string>{"auto_topic"} : self->last_outputs;
     if (out_topics_count != nullptr) {
       *out_topics_count = self->resolved.size();
@@ -112,8 +119,20 @@ struct RecordingDpHost {
   }
 
   static bool tRemove(void* ctx, PJ_string_view_t id, PJ_error_t* /*err*/) noexcept {
-    static_cast<RecordingDpHost*>(ctx)->last_removed = toStr(id);
+    auto* self = static_cast<RecordingDpHost*>(ctx);
+    self->last_removed = toStr(id);
+    auto it = std::find(self->live_ids.begin(), self->live_ids.end(), self->last_removed);
+    if (it != self->live_ids.end()) {
+      self->live_ids.erase(it);
+    }
     return true;
+  }
+
+  // What the user is actually left with. This is the number a benchmark verdict
+  // wants: a model that probes, measures and cleans up leaves the panel as tidy
+  // as one that got it right first time, and should score the same.
+  int liveCount() const {
+    return static_cast<int>(live_ids.size());
   }
 
   PJ::sdk::DataProcessorsHostView view() {

@@ -224,3 +224,42 @@ property of the design, not a gap to be filled, and it is why the GUI pass exist
 What the harness *can* see is what gets installed. That is why the empty-curve scenario (L14) works
 as a measurement where the marker-shape one does not: "a transform whose inputs share no timestamps
 was installed" is a fact about intent, and it reproduced 3/3, deterministically, before the fix.
+
+## 11. A new capability can invalidate a metric that nobody touched
+
+The benchmark scored creation scenarios on `create_calls != 1`. That was a good proxy for "what is
+the user left with" for exactly as long as there was no way to undo a create. The day
+`remove_derived_series` shipped, the two stopped being the same question — and nothing went red,
+because no test drove a create *through* a remove. The assertion kept passing its own unit tests,
+kept compiling, and kept producing numbers that looked like measurements.
+
+The numbers it produced were not noise. They were **biased against the models that behaved best**:
+
+| | old metric (calls) | end-state metric |
+|---|---|---|
+| opus | 17/35 | 35/35 |
+| sonnet | 24/35 | 35/35 |
+| fable | 30/35 | 34/35 |
+| haiku | 35/35 | 35/35 |
+
+opus probes, measures, removes what it does not need, and confirms with `list_created` — it used
+`remove_derived_series` in 12 cells against haiku's 0. Every one of those probes incremented a
+counter that never came down. Read at face value, the table said "use haiku, opus sprawls", which
+is the reverse of what the runs actually did, backed by numbers.
+
+Two things follow, and the second is the one that will keep mattering:
+
+- Judge an **outcome**, not a call sequence. `RecordingDpHost` now maintains the live set — create
+  adds, remove erases, ephemeral never joins — and verdicts read `liveCount()`. The cost of getting
+  there is still reported separately (`"expected exactly 1 series left, got 2 (from 4 create
+  calls)"`), because tidiness and efficiency are different questions and one number cannot answer
+  both.
+- When adding a capability, ask what measurement elsewhere just stopped meaning what it measured.
+  A test suite cannot raise this on its own: every assertion still holds on the inputs it was
+  written for. What changed is the set of inputs the world can now produce.
+
+The same reflex applies to reading results. Three headline findings in this session dissolved on
+inspection — the over-creation that was a counter, a cross-model cost table that was comparing
+different amounts of work (4 series against 30), and a 100%->40% drop that five repetitions cannot
+distinguish from chance. A surprising result has passed through more links of the measuring chain
+than a boring one, so it is the one that has earned the least trust, not the most.
