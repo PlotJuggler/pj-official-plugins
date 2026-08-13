@@ -249,14 +249,28 @@ Three facts came out of the first turn it was pointed at, a real analysis of a v
 - **The CLI never puts two tools in one response.** Every tool call is a full round trip that
   re-sends the whole conversation. Batching is not something the model can be asked to do; the only
   lever is how much work fits in one call.
-- **Consecutive runs of one tool were 62% of the turn.** Fifteen `read_series` in a row, then four,
+- **Consecutive runs of one tool were 68% of the turn.** Fifteen `read_series` in a row, then four,
   then two, then three.
-- **Late rounds cost far more than early ones** — 21,648 tokens on average in the first half of the
-  turn against 58,816 in the second, because each carries everything said so far. A run of three
-  reads at the end cost nearly as much as a run of fifteen at the start.
+- **Almost nothing is recomputed, and that is not the same as free.** Of the reference turn's
+  1.67 M sent tokens, 82 were fresh input; the rest was 1.12 M read from cache and 548 k written to
+  it. Reads bill at 0.1x a fresh input token and writes at 1.25x, so the turn prices at 797 k
+  equivalent tokens.
 
-That last one inverts the obvious optimisation: the biggest visible run is not the most expensive
-one.
+### Price it, or the shape comes out wrong
+
+Counting cached tokens at full price does not just inflate a total, it distorts which round is
+expensive. Unweighted, the second half of the reference turn looks 2.7x costlier than the first
+(21,648 against 58,816), which argues for optimising the end of a turn over the start. Weighted,
+the halves are 18,909 and 19,931 — **flat**.
+
+The mechanism: a longer conversation does make each round carry more text, but nearly all of the
+extra arrives as cache *read*, at a tenth price. What a round adds to the bill is roughly what it
+newly *writes*, and that stays about constant. A round costs about a round, wherever it falls.
+
+The weights are checked, not assumed. Applied to this benchmark's own cells they reproduce the cost
+the CLI reports to within 5% on both models with public prices (Sonnet 0.96x, Haiku 0.95x), where
+summing unweighted lands at 5.14x and 13.65x. Opus comes out at 2.82x, so its effective price is
+not the published one — which is why everything here is stated in token equivalents, not money.
 
 ### What the two changes did
 
@@ -268,8 +282,13 @@ same four derived series and the same marker set:
 | round trips | 41 | 22 |
 | tool calls | 31 | 10 |
 | `read_series` | 25 | 5 |
-| tokens sent | 1,668,088 | 885,388 |
+| tokens sent (raw) | 1,668,088 | 885,388 |
+| tokens sent (priced) | 796,732 | 258,949 |
 | wall clock | 247 s | 191 s |
+
+Priced, the saving is larger than raw volume suggests: -67% against -47%. Cutting rounds cuts
+`cache_creation` — the expensive kind, at 1.25x — from 548 k to 148 k, because writing new prefix
+is what growing a conversation actually costs.
 
 **Removing a suggestion.** `create_derived_series` returned a `verify_with` string naming the path
 to re-read. Models took the hint on almost every create, and the re-read pulled them into a
