@@ -894,3 +894,26 @@ TEST(ToolRegistry, RejectsAnOversizedBatch) {
 }
 
 }  // namespace
+
+// A name that is already taken is not a judgement call: installing over it
+// shadows something the user already has, and "create" was not asked to replace
+// anything. The tool description used to send the model to list_created "before
+// creating something that may already exist" — an instruction it had to
+// remember, in place of a check that costs nothing.
+TEST(ToolRegistry, RefusesToCreateOverAnExistingName) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  ToolContext ctx = makeCtx(store, &dp);
+
+  const json args = {{"name", "doubled"}, {"inputs", json::array({"/imu/x"})}, {"expression", "value * 2"}};
+  ASSERT_TRUE(reg.execute("create_derived_series", args, ctx).ok);
+  ASSERT_EQ(dp.liveCount(), 1);
+
+  const auto again = reg.execute("create_derived_series", args, ctx);
+  EXPECT_FALSE(again.ok) << "creating the same name twice must not silently install a second one";
+  EXPECT_NE(again.content.find("already exists"), std::string::npos) << again.content;
+  EXPECT_EQ(dp.liveCount(), 1) << "the refused create must leave the first one untouched";
+  EXPECT_EQ(dp.create_calls, 1) << "and must not reach the host at all";
+}

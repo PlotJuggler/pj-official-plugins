@@ -263,3 +263,43 @@ inspection — the over-creation that was a counter, a cross-model cost table th
 different amounts of work (4 series against 30), and a 100%->40% drop that five repetitions cannot
 distinguish from chance. A surprising result has passed through more links of the measuring chain
 than a boring one, so it is the one that has earned the least trust, not the most.
+
+## 12. Ambiguity cannot be fixed from the tool layer
+
+The benchmark's weakest cell is Haiku on ambiguity disclosure: asked to build something from
+`value` when two topics carry a field of that name, it picks one and reports success without saying
+a choice was made. 15 of 20.
+
+The tempting reading is that the smaller model has less judgement. The better one is that a model
+which infers less is a **detector for what this plugin leaves unsaid** — the larger tiers cover for
+our ambiguity, so where Haiku falls is where the design is thin. Two attempts, both from the tool
+layer, both failed:
+
+**A guard that cannot fire.** `seriesLookupError` returns the candidate list when a path is
+ambiguous. It almost never runs. The catalog goes up with every message, so the model resolves an
+under-specified name into a fully-qualified path *before* any tool call; what arrives is
+`inputs: ["test/sin/value"]`, which is not ambiguous at all. The guard sits after the decision it
+was meant to catch.
+
+**A fact reported after the fact.** So instead of guarding, the create result named the other
+series sharing that leaf field — a fact, in the pattern that had worked twice before (marker count,
+join forecast). Measured over 400 cells across four models: Haiku 14/20 -> ... unchanged within
+noise on all three of its weak scenarios (p = 0.24, 1.00, 0.66), and nothing broke on the other
+three tiers (Fable and Sonnet 100/100, Opus 99/100). Reverted.
+
+Two things worth keeping from the failure. First, the design flaw that should have been caught
+before spending the run: leaf names repeat constantly in real logs — in the Nissan reference turn
+`z` appears in 4 series, `x`, `y`, `value` and `data` in 3 each, and that is only among the series
+the model touched. The field would have fired on nearly every create and listed half a dozen paths
+each time, paying tokens on the common path for a benefit that could not be shown.
+
+Second, the limit of the instrument. Twenty repetitions distinguish 70% from 90%; they do not
+distinguish 70% from 80%. Separating effects that size needs 60-80 per cell. That is a property of
+the experiment that has to be settled before running it, not discovered in the result — and it
+means an effect the size we are looking for here is invisible to this harness.
+
+So the conclusion is structural, not a to-do: **by the time a tool call arrives, the ambiguity is
+gone.** Anything that requires the model to notice it must live where the user's own words are
+still visible — the system prompt — or be accepted as a property of the tier and chosen around.
+The same run, incidentally, is the strongest statement available about the default: Sonnet 100/100
+across five scenarios at 20 repetitions each.

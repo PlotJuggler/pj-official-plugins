@@ -733,6 +733,25 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
   // round-trip), and a path that names nothing fails loudly instead of
   // installing a transform whose input never matches — which produces an empty
   // curve and looks like it worked.
+  // Installing over a name that is already taken is not a judgement call the
+  // model gets to make — it silently replaces or shadows something the user has,
+  // and neither outcome is what "create" was asked to do. The description used to
+  // tell the model to call list_created "before creating something that may
+  // already exist"; checking here costs nothing and does not depend on it
+  // remembering to.
+  if (auto existing = ctx.dp.list()) {
+    for (const auto& id : *existing) {
+      for (const auto& out : outputs) {
+        if (id == out) {
+          return ToolResult::failure(
+              "'" + out +
+              "' already exists — this assistant created it earlier in the session. Remove it first with "
+              "remove_derived_series, or choose another name.");
+        }
+      }
+    }
+  }
+
   JoinForecast forecast;
   // How long the output will be when there is no join to shorten it. Taken here,
   // where the input is already resolved, because the catalog does not outlive
@@ -1313,7 +1332,8 @@ ToolRegistry::ToolRegistry() {
   add(
       {"list_created",
        "List the derived series and marker sets THIS assistant has created in this session. Use it "
-       "before creating something that may already exist, or to find the name to remove.",
+       "to find the name to remove. A name that is already taken is refused by create_derived_series "
+       "itself, so there is no need to call this first.",
        empty_obj, &listCreated});
 
   add(
