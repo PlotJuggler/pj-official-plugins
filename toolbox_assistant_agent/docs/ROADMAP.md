@@ -45,11 +45,19 @@ Two properties are non-negotiable and hold today:
 | Several outputs from one node | roll/pitch/yaw out of one quaternion instead of three nodes |
 | Can withdraw its own work | `list_created` / `remove_derived_series`, scoped to what it made |
 | Confirmed in the application | Every drawing scenario checked on screen, not just in the harness |
+| Several series read per call | Collapses the runs of reads that were 62% of a real turn (`BENCHMARKS.md`) |
+| Results state facts, not next steps | A `verify_with` hint was costing ~30% of round trips (`ARCHITECTURE.md`) |
+| Benchmark scores outcomes, not calls | The old counter scored the models that clean up as the failures |
 
 ## Next
 
-**Measure `fable`.** The last full matrix stopped at 181 of 240 cells when the usage window ran out,
-so that tier is the only one without current numbers. Run it first next time rather than last.
+**Make Haiku clean up after a refusal.** It is the one model that never calls
+`remove_derived_series` — zero cells out of seventy — and the one failure left in the creation
+scenarios is it retrying a refused join three times and leaving the empty series installed. The
+same shape appeared in the application: twelve `create_markers` calls where the description states
+plainly that each call replaces the previous set. Stating the rule in the description has already
+been tried and does not hold it. What has worked twice is making the result visible, so the lead to
+follow is telling it what it just replaced or left behind.
 
 **Require the model to disclose a choice when a name is under-specified.** The tool layer already
 refuses to guess between candidate series, but that guard rarely fires: handed the full catalog, a

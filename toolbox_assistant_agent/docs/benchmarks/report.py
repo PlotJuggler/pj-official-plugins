@@ -7,6 +7,7 @@ models change.
 
     python3 docs/benchmarks/report.py docs/benchmarks/data/<run>.json
 """
+import gzip
 import json
 import statistics
 import sys
@@ -15,11 +16,21 @@ from collections import defaultdict
 # Ascending difficulty. The interesting question is where each tier stops.
 # L9+ are the hard tier, added after L1-L8 turned out to be cleared by every
 # model on every repetition — a suite nobody fails locates no ceiling.
-ORDER = ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9", "L10", "L11", "L12"]
+# L13-L14 came from real failures seen in the GUI against a vehicle log: a wall
+# of per-sample lines, and a transform silently joined into an empty curve.
+ORDER = ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9", "L10", "L11", "L12", "L13", "L14"]
 
 
 def load(path):
-    with open(path) as f:
+    """Read a run, compressed or not.
+
+    Raw runs keep every model reply verbatim — that is the evidence, and reading
+    replies is what caught three wrong conclusions in this study. A full matrix
+    of them lands around half a megabyte, so the larger ones are stored gzipped
+    rather than trimmed.
+    """
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rt") as f:
         return json.load(f)
 
 

@@ -235,6 +235,73 @@ worse curve — where both tiers succeed, the user gets the same plot.
 End-to-end times in the application, for the same prompts, were in the same range as the headless
 medians (6–25 s), so the MCP round-trip and the real datastore do not change the picture.
 
+## The cost of a turn
+
+Capability is one axis; what a turn *costs* is another, and until recently it was argued rather
+than measured. The instrument turned out to already exist. The Claude CLI writes every turn to
+`~/.claude/projects/<slug>/<id>.jsonl`, one JSON object per line, carrying `usage` and `timestamp`
+on each assistant message — round trips, per-message token counts, wall-clock gaps, the tool
+sequence and the model's own reasoning blocks. `benchmarks/session_report.py` reads it; archived
+turns live in `benchmarks/sessions/`.
+
+Three facts came out of the first turn it was pointed at, a real analysis of a vehicle log:
+
+- **The CLI never puts two tools in one response.** Every tool call is a full round trip that
+  re-sends the whole conversation. Batching is not something the model can be asked to do; the only
+  lever is how much work fits in one call.
+- **Consecutive runs of one tool were 62% of the turn.** Fifteen `read_series` in a row, then four,
+  then two, then three.
+- **Late rounds cost far more than early ones** — 21,648 tokens on average in the first half of the
+  turn against 58,816 in the second, because each carries everything said so far. A run of three
+  reads at the end cost nearly as much as a run of fifteen at the start.
+
+That last one inverts the obvious optimisation: the biggest visible run is not the most expensive
+one.
+
+### What the two changes did
+
+**Reading several series per call.** Measured on the same log with the same prompt, producing the
+same four derived series and the same marker set:
+
+| | before | after |
+|---|---|---|
+| round trips | 41 | 22 |
+| tool calls | 31 | 10 |
+| `read_series` | 25 | 5 |
+| tokens sent | 1,668,088 | 885,388 |
+| wall clock | 247 s | 191 s |
+
+**Removing a suggestion.** `create_derived_series` returned a `verify_with` string naming the path
+to re-read. Models took the hint on almost every create, and the re-read pulled them into a
+check-and-retry loop. Replacing the string with the number it was sending them to fetch, over the
+seven creation scenarios and four models:
+
+| | round trips |
+|---|---|
+| baseline, before either change | 27 |
+| with batched reads and removal available | 44 |
+| after replacing `verify_with` with `points` | 31 |
+
+Sonnet returns exactly to its baseline count. The residual is Opus, which probes and cleans up —
+and that is what buys its 35/35 and a tidy panel, so it is not worth optimising away.
+
+### Do not compare wall clock across runs
+
+Between two of these runs, seconds-per-round rose 50–68% **for all four models at once**. No change
+to this plugin can slow an individual round down uniformly across four tiers; that is server-side
+load. Round trips and token counts are invariant to it and are what the tables above report. Wall
+clock is only meaningful within a run, or when per-round latency is checked and found stable — in
+the 11→12 August pair it had *fallen* 8–22%, which is why the round-count regression measured there
+was real rather than an artefact.
+
+### And do not read a cross-model cost table as like-for-like
+
+Running the same open-ended prompt through four models produced four different amounts of work:
+Sonnet made 4 derived series, Fable 10, Haiku 13, Opus 30. Comparing their token totals answers
+"what did each choose to do", not "what does the same job cost on each". The before/after
+comparisons above are controlled — same model, same prompt, same artefacts produced — and the
+cross-model comparison is not.
+
 ## Corrections
 
 Two mistakes were found during the study and are recorded here because both changed a published
@@ -281,6 +348,35 @@ anticipate; a rule built from common words will find "successes" wherever a mode
 length. Both distortions scale with verbosity, so both punish or flatter tiers for their style
 rather than their work. The striking headline is always the result most in need of an audit —
 twice here it survived the audit only by being read reply-by-reply against the raw text.
+
+**A metric that a new feature quietly invalidated.** The creation scenarios graded on
+`create_calls != 1`. That was a fair proxy for "what is the user left with" until
+`remove_derived_series` shipped, at which point creating a probe, measuring it and removing it
+became a normal and *desirable* thing to do — and the counter only ever went up. Nothing turned
+red: the assertion still passed its own self-tests, because no test drove a create through a
+remove.
+
+The distortion was not random. It ran precisely against the models that behaved best. Opus probes,
+measures, removes what it does not need and confirms the result with `list_created`; it used
+`remove_derived_series` in 12 cells against Haiku's zero. Scored on calls it took 17/35, scored on
+the end state 35/35, while the model that never cleans up anything scored full marks either way:
+
+| | scored on calls | scored on end state |
+|---|---|---|
+| Opus | 17/35 | 35/35 |
+| Sonnet | 24/35 | 35/35 |
+| Fable | 30/35 | 34/35 |
+| Haiku | 35/35 | 35/35 |
+
+Read at face value that table said "use Haiku, Opus sprawls" — the reverse of what the runs did,
+with numbers behind it. `RecordingDpHost` now maintains the live set and the verdicts read
+`liveCount()`; the call count survives in the failure text, because tidiness and cost are different
+questions. The run under the old scoring is kept at `benchmarks/data/2026-08-12-matrix.json.gz`.
+
+This is a different failure from the three above. Those were graders that were wrong when written.
+This one was right when written and was invalidated by a feature in another file — which means a
+green test suite cannot catch it, since every assertion still holds for the inputs it was written
+for. What changed is the set of inputs the world can now produce.
 
 **A run stopped for no reason.** The first matrix run halted early reporting an exhausted usage
 window. The CLI had actually reported `allowed_warning` — a heads-up that the window is filling,
