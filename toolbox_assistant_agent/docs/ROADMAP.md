@@ -78,6 +78,15 @@ requirement has to move to the system prompt, because by the time the call arriv
 is gone (`FINDINGS.md` §7). Asking is not required — naming the assumption is, and it is the one
 behaviour the benchmark separates the tiers on.
 
+**Keep the CLI process alive between turns** (`--input-format stream-json`). Saves the ~1 s
+startup and the per-turn MCP handshake. Deliberately parked: it is ~3 % of a turn and it means
+rewriting the subprocess lifecycle — who kills it, what happens when it dies, how Cancel
+behaves, what closing the window does. Worth revisiting once the model-tier win is banked, at
+which point that second is a visible fraction.
+
+**Widen the tool surface.** Playback and viewport control (play/pause/seek/zoom) were built and
+then dropped, because the SDK services they need are not in `main`. They return if those land.
+
 ## Bigger directions, none of them decided
 
 Three ideas argued through and left open on purpose. Each records where the argument got to,
@@ -144,15 +153,6 @@ Nobody has checked whether the assistant's work survives closing PlotJuggler. If
 series and a marker set are gone when the layout reopens, then "memory" is a question about layout
 persistence and not about the model at all — and the three ideas above are being discussed at the
 wrong layer. Worth ten minutes before anyone commits to a design.
-
-**Keep the CLI process alive between turns** (`--input-format stream-json`). Saves the ~1 s
-startup and the per-turn MCP handshake. Deliberately parked: it is ~3 % of a turn and it means
-rewriting the subprocess lifecycle — who kills it, what happens when it dies, how Cancel
-behaves, what closing the window does. Worth revisiting once the model-tier win is banked, at
-which point that second is a visible fraction.
-
-**Widen the tool surface.** Playback and viewport control (play/pause/seek/zoom) were built and
-then dropped, because the SDK services they need are not in `main`. They return if those land.
 
 ## Not planned
 
