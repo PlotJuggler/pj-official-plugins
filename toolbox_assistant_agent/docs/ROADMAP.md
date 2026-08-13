@@ -51,13 +51,20 @@ Two properties are non-negotiable and hold today:
 
 ## Next
 
-**Make Haiku clean up after a refusal.** It is the one model that never calls
-`remove_derived_series` — zero cells out of seventy — and the one failure left in the creation
-scenarios is it retrying a refused join three times and leaving the empty series installed. The
-same shape appeared in the application: twelve `create_markers` calls where the description states
-plainly that each call replaces the previous set. Stating the rule in the description has already
-been tried and does not hold it. What has worked twice is making the result visible, so the lead to
-follow is telling it what it just replaced or left behind.
+**Make Haiku clean up after a refusal.** Over 20 repetitions it leaves an empty series installed
+1 time in 5 — it retries a refused join until one goes through — and it called
+`remove_derived_series` in 0 of those 20, and in 0 of the 70 matrix cells before them. It is the
+only model that never withdraws anything.
+
+The same shape appeared in the application: twelve `create_markers` calls, where the description
+states plainly that there is one marker set and each call replaces it. So stating the rule in the
+description has been tried and does not hold it. What has worked twice — the marker count, the join
+forecast — is making the result visible, which points at telling it what it just replaced or left
+behind rather than writing the rule more firmly.
+
+Ambiguity is the same story on the same model: in 20 repetitions Haiku acted without asking 11
+times and named its assumption in only 4 of them. That is a measured weakness, not a regression —
+an earlier 5/5 against this 13/20 is p≈0.28, and five repetitions cannot establish a baseline.
 
 **Require the model to disclose a choice when a name is under-specified.** The tool layer already
 refuses to guess between candidate series, but that guard rarely fires: handed the full catalog, a
