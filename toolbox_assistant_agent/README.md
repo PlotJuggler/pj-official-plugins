@@ -66,16 +66,19 @@ Since the assistant's work is mostly "read this catalog and call this tool", the
 the better trade:
 
 ```
-claude-sonnet-5      recommended — as fast as haiku, no miss in the benchmark
-claude-haiku-4-5     ~3.4x cheaper per turn, so the usage window lasts longer
-                     (blank) = CLI default, ~2.6x slower for the same result
+claude-sonnet-5      recommended — fastest tier measured, 70/70 in the benchmark
+claude-haiku-4-5     ~3.8x cheaper per turn, so the usage window lasts longer; 64/70
+claude-opus-5        thorough and self-correcting, 2.6x slower — for open-ended questions
+                     (blank) = CLI default
 ```
 
-Measured over 240 turns: `sonnet` and `haiku` have the same median turn time (10.1 s vs 10.4 s),
-so the cheapest tier is not the fastest one — it is only the cheapest. The one place they differ
-is judgement: asked to use a series name that matches more than one series, `haiku` will sometimes
-pick one and report success without mentioning that a choice was made. If you work with topics
-that share field names, prefer `sonnet` or give full paths.
+Measured over 280 turns: `sonnet` is the fastest tier (10.8 s median, against `haiku`'s 11.1 s),
+so the cheapest one is not the quickest — only the cheapest. Where they part is judgement.
+`haiku` clears every scenario that is a matter of building the right thing, and misses only where
+the right answer is uncomfortable: it will sometimes answer about a series that does not exist
+(3/5), pick between same-named series without mentioning it chose (2/5), or draw a line per sample
+where a region was wanted (4/5). If you work with topics that share field names, prefer `sonnet` or
+give full paths.
 
 See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the full study — method, per-scenario results and
 the reasoning behind this recommendation — and [docs/FINDINGS.md](docs/FINDINGS.md) for why the

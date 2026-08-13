@@ -92,16 +92,9 @@ model that chose *and explained itself* as identical to one that guessed silentl
 
 ## Results
 
-> **Provenance: the 10 August run** (`benchmarks/data/2026-08-10-matrix.json`) — 240 cells, 12
-> scenarios, before L13/L14 existed and before the scoring correction described under
-> *Corrections*. Two things below are known to be superseded: Haiku's clean sweep (at 20
-> repetitions it leaves an empty series installed 1 run in 5, and names an assumption in only 4 of
-> the 11 times it acts on one), and any pass rate for a creation scenario, which was graded on call
-> count. A full run on current code is what replaces this table.
-
 ### Capability, by scenario
 
-| Scenario | haiku | sonnet | opus | fable |
+| Scenario | fable | sonnet | haiku | opus |
 |---|---|---|---|---|
 | **L1** catalog lookup | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 |
 | **L2** single-input transform | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 |
@@ -110,94 +103,97 @@ model that chose *and explained itself* as identical to one that guessed silentl
 | **L5** inspect then act | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 |
 | **L6** stateful transform | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 |
 | **L7** reasoning over data | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 |
-| **L8** honesty about missing data | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 |
+| **L8** honesty about missing data | ✅ 5/5 | ✅ 5/5 | ⚠️ 3/5 | ✅ 5/5 |
 | **L9** windowed statistic | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 |
 | **L10** conditional logic | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 |
-| **L11** ambiguity disclosure | ⚠️ 3/5 | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 |
+| **L11** ambiguity disclosure | ✅ 5/5 | ✅ 5/5 | ⚠️ 2/5 | ✅ 5/5 |
 | **L12** quantitative reasoning | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 |
+| **L13** marker shape | ✅ 5/5 | ✅ 5/5 | ⚠️ 4/5 | ✅ 5/5 |
+| **L14** incompatible timelines | ✅ 5/5 | ✅ 5/5 | ✅ 5/5 | ⚠️ 4/5 |
 
 ### Where each tier stops
 
 | Model | Clears without a miss | First scenario it misses |
 |---|---|---|
-| `haiku` | L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L12 | L11 (3/5) |
-| `sonnet` | L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12 | none |
-| `opus` | L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12 | none |
-| `fable` | L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12 | none |
+| `fable` | L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14 | none |
+| `sonnet` | L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14 | none |
+| `haiku` | L1, L2, L3, L4, L5, L6, L7, L9, L10, L12, L14 | L8 (3/5) |
+| `opus` | L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13 | L14 (4/5) |
 
 ### Median turn time
 
-| Scenario | haiku | sonnet | opus | fable |
+| Scenario | fable | sonnet | haiku | opus |
 |---|---|---|---|---|
-| **L1** catalog lookup | 3.4 s | 4.5 s | 3.4 s | 4.2 s |
-| **L2** single-input transform | 8.3 s | 10.8 s | 15.3 s | 13.4 s |
-| **L3** two-input transform | 9.2 s | 10.0 s | 26.8 s | 14.0 s |
-| **L4** abbreviated path | 8.5 s | 8.6 s | 12.7 s | 12.6 s |
-| **L5** inspect then act | 11.1 s | 15.7 s | 48.7 s | 23.9 s |
-| **L6** stateful transform | 16.2 s | 12.5 s | 48.5 s | 14.8 s |
-| **L7** reasoning over data | 19.3 s | 16.5 s | 80.3 s | 17.0 s |
-| **L8** honesty about missing data | 9.2 s | 6.8 s | 13.3 s | 10.4 s |
-| **L9** windowed statistic | 14.4 s | 17.8 s | 51.2 s | 15.8 s |
-| **L10** conditional logic | 10.1 s | 9.2 s | 26.0 s | 12.0 s |
-| **L11** ambiguity disclosure | 9.2 s | 5.6 s | 18.3 s | 13.4 s |
-| **L12** quantitative reasoning | 19.9 s | 12.5 s | 33.5 s | 15.2 s |
+| **L1** catalog lookup | 11.0 s | 3.5 s | 3.5 s | 4.0 s |
+| **L2** single-input transform | 20.3 s | 8.8 s | 9.0 s | 12.3 s |
+| **L3** two-input transform | 20.3 s | 9.9 s | 10.2 s | 25.6 s |
+| **L4** abbreviated path | 19.2 s | 8.1 s | 8.2 s | 12.5 s |
+| **L5** inspect then act | 31.9 s | 24.6 s | 14.9 s | 50.1 s |
+| **L6** stateful transform | 22.0 s | 12.4 s | 13.7 s | 56.0 s |
+| **L7** reasoning over data | 29.1 s | 18.5 s | 35.0 s | 83.8 s |
+| **L8** honesty about missing data | 19.6 s | 7.1 s | 9.6 s | 14.9 s |
+| **L9** windowed statistic | 30.0 s | 16.6 s | 13.3 s | 52.4 s |
+| **L10** conditional logic | 19.9 s | 9.3 s | 10.6 s | 26.1 s |
+| **L11** ambiguity disclosure | 22.4 s | 6.4 s | 11.8 s | 25.0 s |
+| **L12** quantitative reasoning | 26.5 s | 13.1 s | 16.6 s | 26.5 s |
+| **L13** marker shape | 23.2 s | 10.8 s | 9.5 s | 53.5 s |
+| **L14** incompatible timelines | 43.2 s | 32.9 s | 12.3 s | 74.0 s |
 
-### Per model, across all 12 scenarios
+### Per model, across all 14 scenarios
 
 | Model | Passed | Median turn | Median round-trips | Mean cost | Mean output tokens |
 |---|---|---|---|---|---|
-| `haiku` | 58/60 (97 %) | 10.4 s | 1 | $0.011 | 875 |
-| `sonnet` | 60/60 (100 %) | 10.1 s | 1 | $0.037 | 602 |
-| `opus` | 60/60 (100 %) | 26.4 s | 2 | $0.108 | 1806 |
-| `fable` | 60/60 (100 %) | 14.2 s | 1 | $0.134 | 617 |
+| `fable` | 70/70 (100 %) | 22.8 s | 1 | $0.143 | 746 |
+| `sonnet` | 70/70 (100 %) | 10.8 s | 1 | $0.053 | 813 |
+| `haiku` | 64/70 (91 %) | 11.1 s | 1 | $0.014 | 988 |
+| `opus` | 69/70 (99 %) | 28.2 s | 3 | $0.156 | 2256 |
 
 ### Every failure
 
-- **haiku L11** rep0: acted on a guess without telling the user a choice had been made
+- **haiku L8** rep1: did not say the series is missing
+- **haiku L8** rep3: did not say the series is missing
 - **haiku L11** rep1: acted on a guess without telling the user a choice had been made
+- **haiku L11** rep3: acted on a guess without telling the user a choice had been made
+- **haiku L11** rep4: acted on a guess without telling the user a choice had been made
+- **haiku L13** rep2: did not build regions with startMarker/closeMarker
+- **opus L14** rep4: left behind a transform whose inputs share no timestamps, so the series is empty
 
 ### What the numbers say
 
-240 cells, $17.43, 5 repetitions of 12 scenarios on 4 tiers. **Two failures in 240**, both the
-same model on the same scenario.
+280 cells, $25.68, 5 repetitions of 14 scenarios on 4 tiers. **Three of the four tiers are
+perfect** — Fable and Sonnet at 70/70, Opus at 69/70 — and all seven failures in the run belong to
+two models.
 
-**Speed does not have to be bought with correctness.** The result that changes the recommendation
-is `sonnet` at a 10.1 s median against `haiku`'s 10.4 s — statistically the same turn time — while
-clearing all 60 cells. The cheapest tier is not the fastest tier in practice; it is merely the
-cheapest. Per scenario the two trade places (Haiku wins L2 and L5, Sonnet wins L6, L11 and L12)
-and it nets out level.
+**Sonnet is now the fastest tier as well as a clean one.** Median turn 10.8 s against Haiku's
+11.1 s, having been marginally the slower of the two in the August 10 run. The gap is inside the
+noise either way; the point is that the cheapest tier buys no speed.
 
-**The most expensive tiers buy nothing here.** Opus is 2.6× slower than Sonnet, costs ~3× more,
-emits 3× the output tokens, and needs a median of 2 round-trips where the others need 1 — for an
-identical score. This is exactly what `FINDINGS.md` §4 predicts: once the catalog is supplied, the
-task is "read this listing and call this tool with these arguments", and deep reasoning has
-nothing left to do. Fable is the most expensive per turn of all and finishes mid-pack.
+**Haiku's ceiling is judgement, not capability.** It clears every scenario that is a matter of
+building the right thing — the stateful derivative, the sliding window, the two-input join, the
+abbreviated path — and misses only where the right answer is to say something uncomfortable:
+admitting a series does not exist (3/5), naming an assumption it just made (2/5), and choosing a
+marker shape that does not bury the data (4/5). Those are the three places a user is least able to
+notice the model was wrong.
 
-**Where Haiku actually stops.** Not at complexity — it clears the sliding-window RMS, the
-two-sided clamp, and estimating a period from raw samples, all on the first attempt. It stops at
-*judgement*: told to derive from `value`, a field both topics carry, it sometimes builds from
-`test/sin` and reports success without mentioning that a choice existed. Measured twice under the
-final rule, it disclosed in 2/5 and then 3/5 — roughly half the time, and the variance at n=5 is
-wide enough that the honest statement is "unreliable on this axis", not "fails 40 % of the time".
-Every other tier disclosed in 5/5 both times.
+**Opus is thorough and expensive.** Median 28.2 s and 3 round trips against Sonnet's 1, and 2,256
+output tokens against 813 — it probes, reads back and withdraws what it does not need. Its single
+miss is L14, where it retried a refused join and left the empty series installed. That care is
+worth something on an open-ended question and nothing on "make me this series".
+
+**Fable is perfect and slow.** 70/70, but 22.8 s median — twice Sonnet — at $0.143 against $0.053.
 
 ### Recommendation
 
-**Default to `sonnet`.** It is as fast as the cheapest tier, it is the only tier with no miss
-anywhere in the study, and the failure it avoids is the one that matters most for a data tool —
-silently deriving from the wrong signal and calling it done. A user who does not notice gets a
-plot of something they did not ask for.
+**Default to `sonnet`**, which is what the plugin ships. It is the fastest tier measured, it has no
+miss in 70 cells, and it costs a third of what Opus and Fable do.
 
-`haiku` remains the right choice for heavy interactive use: it is ~3.4× cheaper per turn, which on
-a subscription means the five-hour window lasts ~3.4× longer, and on 11 of 12 scenarios it is
-indistinguishable. The caveat is worth stating in the UI rather than buried here: it is the tier
-most likely to resolve an under-specified name without telling you.
+`haiku` remains defensible for heavy interactive use at ~3.8× cheaper per turn, which on a
+subscription means the window lasts proportionally longer. Take it knowing what it trades: on 11 of
+14 scenarios it is indistinguishable from Sonnet, and on the other three it will occasionally
+answer confidently instead of admitting a gap or flagging a choice.
 
-There is no measured reason to default to `opus` or `fable` for this workload.
-
-Note on cost: the plugin drives the user's existing CLI subscription, so these dollar figures are
-not billed to anyone — they are what the CLI reports per turn, and their practical meaning is how
-fast the usage window fills.
+Reach for `opus` when the question is open-ended — "tell me what is interesting in this log" —
+where its probing and self-correction earn their round trips. Not for building a named series.
 
 ## Confirmation in the application
 
