@@ -3,14 +3,17 @@
 How the four Claude tiers compare on the work this plugin actually asks of them: speed, cost, and
 whether the job gets done at all.
 
-The question behind the study is practical. The `Claude model` setting ships empty, which means
-every user gets the default tier, and a derived series was taking around 30 seconds to appear.
+The question behind the study is practical. The `Claude model` setting used to ship empty, which
+meant every user got the default tier and a derived series took around 30 seconds to appear. It now
+defaults to `sonnet` **because of** this study; what follows is the evidence for that choice.
 `FINDINGS.md` establishes that the plugin's own code accounts for ~0.003 % of a turn and that the
 model tier dominates everything else. What it did not establish is whether a faster tier is still
 a *correct* tier. That is what this measures.
 
-All numbers here are generated from the raw JSON in `benchmarks/data/` by
-`benchmarks/report.py`. Nothing in this file is typed by hand.
+The per-scenario tables under **Results** are generated from the raw JSON in `benchmarks/data/` by
+`benchmarks/report.py` — none of those numbers is typed by hand. The prose sections that follow
+(turn cost, corrections) are written, and each states the run it draws on so any figure can be
+re-derived with `benchmarks/session_report.py` or the snippet beside it.
 
 ## Method
 
@@ -88,6 +91,13 @@ model that chose *and explained itself* as identical to one that guessed silentl
 *Corrections*.
 
 ## Results
+
+> **Provenance: the 10 August run** (`benchmarks/data/2026-08-10-matrix.json`) — 240 cells, 12
+> scenarios, before L13/L14 existed and before the scoring correction described under
+> *Corrections*. Two things below are known to be superseded: Haiku's clean sweep (at 20
+> repetitions it leaves an empty series installed 1 run in 5, and names an assumption in only 4 of
+> the 11 times it acts on one), and any pass rate for a creation scenario, which was graded on call
+> count. A full run on current code is what replaces this table.
 
 ### Capability, by scenario
 

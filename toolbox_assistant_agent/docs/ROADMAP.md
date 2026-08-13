@@ -34,7 +34,7 @@ Two properties are non-negotiable and hold today:
 | Catalog handed to the model up front | 6 → 1–4 round-trips per task (`FINDINGS.md` §2) |
 | Ollama streaming and conversation memory | Replies appear as generated; turns are no longer independent |
 | Per-turn telemetry | Cost, tokens and API time captured from the CLI's own report |
-| Model benchmark | Speed, cost and capability across four tiers, 12 graded scenarios (`BENCHMARKS.md`) |
+| Model benchmark | Speed, cost and capability across four tiers, 14 graded scenarios (`BENCHMARKS.md`) |
 | Default model set to `sonnet` | Same turn time as the cheapest tier, no miss in 60 cells, ~2.6× faster than the CLI default |
 | Conversation outlives the backend | Saving a setting used to rebuild the backend and silently restart the chat |
 | Explicit "New chat" | The reset that was, until now, only available by accident |
@@ -45,7 +45,7 @@ Two properties are non-negotiable and hold today:
 | Several outputs from one node | roll/pitch/yaw out of one quaternion instead of three nodes |
 | Can withdraw its own work | `list_created` / `remove_derived_series`, scoped to what it made |
 | Confirmed in the application | Every drawing scenario checked on screen, not just in the harness |
-| Several series read per call | Collapses the runs of reads that were 62% of a real turn (`BENCHMARKS.md`) |
+| Several series read per call | Collapses the runs of reads that were 68% of a real turn (`BENCHMARKS.md`) |
 | Results state facts, not next steps | A `verify_with` hint was costing ~30% of round trips (`ARCHITECTURE.md`) |
 | Benchmark scores outcomes, not calls | The old counter scored the models that clean up as the failures |
 

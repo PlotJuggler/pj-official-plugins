@@ -29,9 +29,9 @@ runs behind exposes no such operation. There is no delete tool to withhold.
 | **Echo / Fake** | No model. Used for wiring tests. | — |
 
 For the Claude backend every built-in tool is disabled (`--tools ""`), so the model reaches
-*only* the seven tools below — it cannot touch your machine outside PlotJuggler.
+*only* the nine tools below — it cannot touch your machine outside PlotJuggler.
 
-## The seven tools
+## The nine tools
 
 | Tool | Does |
 |---|---|
@@ -41,6 +41,8 @@ For the Claude backend every built-in tool is disabled (`--tools ""`), so the mo
 | `create_derived_series` | Install a live Luau transform over one or more series |
 | `create_markers` | Install a marker generator (threshold or a raw Luau rule) |
 | `remove_markers` | Remove the assistant's own marker set — and only that one |
+| `list_created` | What this assistant has installed so far |
+| `remove_derived_series` | Withdraw one of its own derived series — and only its own |
 | `report_status` | Counts of loaded sources, topics and fields |
 
 Paths may be abbreviated: a unique suffix or prefix resolves on its own, and an ambiguous one
@@ -58,9 +60,10 @@ drag one onto a plot to see it. Marker bands only paint on plots that show the g
 
 ### Choosing a model
 
-The `Claude model` field is empty by default, which means the CLI's own default — the most
-capable tier, and by far the slowest. Since the assistant's work is mostly "read this catalog
-and call this tool", a smaller model is the better trade:
+The `Claude model` field defaults to `sonnet` (`kDefaultClaudeModel`, `src/assistant_dialog.cpp`).
+Left blank it falls back to the CLI's own default — the most capable tier, and by far the slowest.
+Since the assistant's work is mostly "read this catalog and call this tool", the smaller tier is
+the better trade:
 
 ```
 claude-sonnet-5      recommended — as fast as haiku, no miss in the benchmark
@@ -78,8 +81,10 @@ See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the full study — method, per-
 the reasoning behind this recommendation — and [docs/FINDINGS.md](docs/FINDINGS.md) for why the
 model matters more than anything in this plugin's own code.
 
-> Changing any setting rebuilds the backend and starts a **new conversation** — the Claude
-> session id is not carried across. Pick your model before you start, not mid-chat.
+Changing a setting rebuilds the backend but **keeps the conversation**: the outgoing and incoming
+backends share the same memory, so the Claude session id survives and the model can still answer a
+question about what you asked it four turns ago. Switching model mid-chat is fine. Use **New chat**
+when you want a clean slate.
 
 ## Documentation
 
