@@ -28,6 +28,24 @@ struct ClaudeMemory {
   std::string sent_catalog;
 };
 
+// The command line handed to the CLI, built where a test can read it.
+//
+// This exists as a free function for one reason: the flags that keep headless
+// Claude off the user's machine are three entries in a vector, and nothing
+// stopped a well-meant change from removing them. `ClaudeBackendCommandLineIsLocked`
+// asserts them. See the "not negotiable" note in ROADMAP.md.
+//
+// `allowed_tools` is the comma-separated `mcp__pj__*` list; an empty `model` or
+// `session_id` simply omits its flag.
+[[nodiscard]] std::vector<std::string> buildClaudeArgv(
+    const std::string& cli_path, const std::string& mcp_config_path, const std::string& allowed_tools,
+    const std::string& system_prompt, const std::string& model, const std::string& session_id);
+
+// The `mcp__pj__<name>` list the CLI is allowed to call, one entry per registered
+// tool. Every entry carries that prefix by construction, which is what keeps a
+// built-in tool from being whitelisted by accident.
+[[nodiscard]] std::string allowedToolsArg(const ToolRegistry& registry);
+
 // Remote backend driving the user's Claude Code CLI subscription headlessly —
 // NO Anthropic API key, no per-token billing. Per turn it spawns
 // `claude -p --output-format stream-json ... "<message>"` and parses the

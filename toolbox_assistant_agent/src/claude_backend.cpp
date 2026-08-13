@@ -27,6 +27,8 @@ std::string prettyToolName(const std::string& name) {
 
 // Comma-separated allowlist of every tool, MCP-namespaced, so Claude may call
 // them without an interactive permission prompt (headless has no UI to grant).
+}  // namespace
+
 std::string allowedToolsArg(const ToolRegistry& registry) {
   std::string out;
   for (const auto& spec : registry.tools()) {
@@ -38,7 +40,45 @@ std::string allowedToolsArg(const ToolRegistry& registry) {
   return out;
 }
 
-}  // namespace
+std::vector<std::string> buildClaudeArgv(
+    const std::string& cli_path, const std::string& mcp_config_path, const std::string& allowed_tools,
+    const std::string& system_prompt, const std::string& model, const std::string& session_id) {
+  std::vector<std::string> argv = {
+      cli_path,
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--verbose",  // required for stream-json under --print
+      // Disable EVERY built-in tool (Bash/Read/Write/...). This is the safety
+      // spine: headless Claude gets ONLY our MCP tools, so it cannot touch the
+      // machine outside PlotJuggler's non-destructive surface. `--strict-mcp-config`
+      // alone does not do this — it only restricts which MCP servers load.
+      //
+      // Not a default to be relaxed. Granting a built-in tool — `Read` to let the
+      // model look at an exported image is the tempting one — hands it the whole
+      // filesystem, and the guarantee that this plugin cannot touch the user's
+      // machine is gone. Any such feature has to arrive through an MCP tool of
+      // ours with its own bounds, not by widening this.
+      "--tools",
+      "",
+      "--mcp-config",
+      mcp_config_path,
+      "--strict-mcp-config",
+      "--allowedTools",
+      allowed_tools,
+      "--append-system-prompt",
+      system_prompt,
+  };
+  if (!model.empty()) {
+    argv.push_back("--model");
+    argv.push_back(model);
+  }
+  if (!session_id.empty()) {
+    argv.push_back("--resume");
+    argv.push_back(session_id);
+  }
+  return argv;
+}
 
 ClaudeBackend::ClaudeBackend(std::string cli_path, std::string model, std::shared_ptr<ClaudeMemory> memory)
     : cli_path_(cli_path.empty() ? "claude" : std::move(cli_path)),
@@ -149,34 +189,8 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
     memory_->sent_catalog = tools.catalog;
   }
 
-  std::vector<std::string> argv = {
-      cli_path_,
-      "-p",
-      "--output-format",
-      "stream-json",
-      "--verbose",  // required for stream-json under --print
-      // Disable EVERY built-in tool (Bash/Read/Write/...). This is the safety
-      // spine: headless Claude gets ONLY our MCP tools, so it cannot touch the
-      // machine outside PlotJuggler's non-destructive surface. `--strict-mcp-config`
-      // alone does not do this — it only restricts which MCP servers load.
-      "--tools",
-      "",
-      "--mcp-config",
-      mcp_config_path_,
-      "--strict-mcp-config",
-      "--allowedTools",
-      allowedToolsArg(*tools.registry),
-      "--append-system-prompt",
-      kSystemPrompt,
-  };
-  if (!model_.empty()) {
-    argv.push_back("--model");
-    argv.push_back(model_);
-  }
-  if (!memory_->session_id.empty()) {
-    argv.push_back("--resume");
-    argv.push_back(memory_->session_id);
-  }
+  const std::vector<std::string> argv = buildClaudeArgv(
+      cli_path_, mcp_config_path_, allowedToolsArg(*tools.registry), kSystemPrompt, model_, memory_->session_id);
 
   NdjsonSplitter splitter;
   bool emitted_text = false;

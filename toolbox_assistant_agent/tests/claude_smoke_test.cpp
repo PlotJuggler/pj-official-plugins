@@ -7,6 +7,7 @@
 // consumes the user's subscription). Skipped otherwise, so CI stays offline.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <mutex>
@@ -75,3 +76,53 @@ TEST(ClaudeSmoke, ListTopicsThroughMcp) {
 }
 
 }  // namespace
+
+// The one thing about this backend that is not a preference.
+//
+// Headless Claude reaches the user's machine through the CLI's built-in tools —
+// Bash, Read, Write, the rest — and `--tools ""` is what withholds every one of
+// them. Take that flag away and this plugin's assistant can read any file the
+// user can. The guarantee in ROADMAP.md ("structurally incapable of destroying
+// anything") rests on three entries in a vector that nothing was watching.
+//
+// The pressure to relax it is real and will come with a good reason attached:
+// letting the model actually LOOK at an exported image needs `Read`, and that is
+// a genuinely useful feature. It still does not go here. A bounded MCP tool of
+// ours can hand over one image; `Read` hands over the filesystem.
+TEST(ClaudeBackendCommandLine, WithholdsEveryBuiltInTool) {
+  ToolRegistry registry;
+  const std::vector<std::string> argv = assistant_agent::buildClaudeArgv(
+      "/usr/bin/claude", "/tmp/mcp.json", assistant_agent::allowedToolsArg(registry), "system", "sonnet", "");
+
+  const auto at = std::find(argv.begin(), argv.end(), "--tools");
+  ASSERT_NE(at, argv.end()) << "--tools is gone: every built-in tool is now available to the model";
+  ASSERT_NE(std::next(at), argv.end()) << "--tools has no value";
+  EXPECT_EQ(*std::next(at), "") << "--tools must be empty; anything else grants a built-in tool";
+
+  EXPECT_NE(std::find(argv.begin(), argv.end(), "--strict-mcp-config"), argv.end())
+      << "without it the CLI may load MCP servers from the user's own config";
+}
+
+// Whitelisting is the other half: --tools decides what EXISTS, --allowedTools
+// what may be called. Every entry has to be one of ours, so a built-in cannot be
+// let back in through this door.
+TEST(ClaudeBackendCommandLine, AllowsOnlyThisPluginsOwnTools) {
+  ToolRegistry registry;
+  const std::string allowed = assistant_agent::allowedToolsArg(registry);
+  ASSERT_FALSE(allowed.empty()) << "the registry advertised no tools at all";
+
+  std::size_t start = 0;
+  int counted = 0;
+  while (start <= allowed.size()) {
+    const std::size_t comma = allowed.find(',', start);
+    const std::string entry = allowed.substr(start, comma - start);
+    EXPECT_EQ(entry.rfind("mcp__pj__", 0), 0u)
+        << "'" << entry << "' is not one of this plugin's MCP tools; a built-in must never be whitelisted";
+    ++counted;
+    if (comma == std::string::npos) {
+      break;
+    }
+    start = comma + 1;
+  }
+  EXPECT_EQ(counted, static_cast<int>(registry.tools().size())) << "the whitelist and the registry disagree";
+}

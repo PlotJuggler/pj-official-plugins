@@ -21,6 +21,11 @@ Two properties are non-negotiable and hold today:
   deletion, and a safety claim that overstates itself is worse than none.
 - **No API key, no per-token billing.** The Claude backend drives the user's existing CLI
   subscription; the Ollama backend runs locally.
+- **The model gets no built-in tool.** The CLI is launched with `--tools ""`, which withholds
+  Bash, Read, Write and the rest, so headless Claude can reach this plugin's MCP tools and nothing
+  else on the machine. `--strict-mcp-config` does not do this — it only limits which MCP servers
+  load. Decided and closed: a feature that needs filesystem access gets a bounded MCP tool of ours,
+  never a built-in. `ClaudeBackendCommandLine` asserts both flags, and fails if either is relaxed.
 
 ## Done
 
@@ -105,17 +110,13 @@ Two very different ambitions hide under "analyse images", and they should not be
 - **Summarise.** A tool result is text, so what the model can get is metadata and statistics:
   dimensions, encoding, cadence, gaps, empty frames; for point clouds, count, bounding box, density
   over time. This genuinely catches a dead sensor or a frozen camera. It is not vision.
-- **Actually look.** The CLI is launched with `--tools ""`, which disables every built-in tool and
-  is the safety spine — headless Claude can reach only this plugin's MCP tools and nothing on the
-  machine. Export a frame to PNG and allow the CLI's own `Read`, and the model sees the image.
+- **Actually look.** Export a frame to PNG and let the model open it. Through the CLI's own `Read`
+  this would be cheap — and it is **ruled out**: `Read` reads any file on disk, and withholding the
+  built-in tools is what makes this plugin safe to ship (see *Objective*). If real vision is wanted,
+  it arrives as an MCP tool of ours that returns one designated image and can return nothing else.
 
-The second is the only path to real vision and is cheap to build. It is also a genuine security
-decision, not a flag: `Read` reads any file on disk, so allowing it punches a hole in the one
-guarantee that makes this plugin safe to ship. Whether it can be confined to a directory is the
-question to answer *before* writing any summariser, because the answer changes what the summariser
-is for.
-
-Start with two or three object types that exist in real logs, not all 16.
+So the near-term shape is summaries, and the open question is which ones earn their place. Start
+with two or three object types that exist in real logs, not all 16.
 
 ### Remember things between sessions
 
