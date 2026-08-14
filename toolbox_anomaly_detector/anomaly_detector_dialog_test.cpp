@@ -209,7 +209,7 @@ TEST(AnomalyDialogSource, OpensWithNoSourceSelected) {
   EXPECT_FALSE(wd.chartPlaceholder("preview_chart").value_or(std::string{}).empty())
       << "an empty chart must say why it is empty";
   EXPECT_EQ(wd.enabled("apply_button"), std::optional<bool>{false})
-      << "Apply must be off until there is a source or Global marker";
+      << "Apply must be off until there is a source or a wider scope";
 }
 
 TEST(AnomalyDialogSource, DeclaresTheDropTargetInTheFirstDelivery) {
@@ -323,10 +323,10 @@ TEST(AnomalyDialogSource, NoMatchesShowsAFilterAwarePlaceholder) {
 }
 
 // ---------------------------------------------------------------------------
-// Apply gating and Global marker
+// Apply gating and scope
 // ---------------------------------------------------------------------------
 
-TEST(AnomalyDialogSource, GlobalMarkerEnablesApplyWithNoSource) {
+TEST(AnomalyDialogSource, WiderScopeEnablesApplyWithNoSource) {
   // runScript already allows an empty source when the markers are global; with nothing
   // auto-selected that path is now the normal one, so the UI has to say so up front
   // instead of failing on the click.
@@ -336,7 +336,7 @@ TEST(AnomalyDialogSource, GlobalMarkerEnablesApplyWithNoSource) {
   auto dialog = fixture.dialog();
 
   EXPECT_EQ(widgetData(dialog).enabled("apply_button"), std::optional<bool>{false});
-  ASSERT_TRUE(dialog.sendEvent("global_marker", PJ::WidgetEventBuilder::toggled(true)));
+  ASSERT_TRUE(dialog.sendEvent("scope_dataset", PJ::WidgetEventBuilder::toggled(true)));
   EXPECT_EQ(widgetData(dialog).enabled("apply_button"), std::optional<bool>{true});
 }
 

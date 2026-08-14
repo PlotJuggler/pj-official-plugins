@@ -42,11 +42,11 @@ GUI produces identical markers in CI — only *who invokes the engine* differs.
    rule in the editor. The preview overlays the rule's **detected markers live** (computed by
    the host). A rule error shows in the status line as `Rule error: …` so a blank overlay is
    never mistaken for "no anomalies".
-4. Choose where the markers land:
-   - **default (per-series):** under the selected source curve only.
-   - **Global marker:** on the dataset-global topic — drawn on *every* plot of the dataset.
-   - **Global marker + All datasets:** global on *every loaded dataset* (handy when several
-     logs are open at once).
+4. Choose the **scope** — one segmented control on the Lua rule band, widening left to right:
+   - **Timeseries:** under the selected source curve only.
+   - **Dataset:** on the dataset-global topic — drawn on *every* plot of the dataset.
+   - **Global:** dataset-global on *every loaded dataset* (handy when several logs are open
+     at once).
 5. **Apply** — submits the rule to the host as a live generator. It recomputes automatically
    when the data changes/reloads. The status shows `Done: …` or `Error: …`.
 6. **Save rule as… / Load rule…** — native file dialogs for the portable rule JSON (the same
@@ -57,7 +57,7 @@ recomputes). If you hand-edit the Lua — or load a rule from a file — your ru
 picking a source will not overwrite it; adjust the `series("…")` line yourself.
 
 **Apply** stays disabled until there is something to run against: a resolved source curve, or
-**Global marker** ticked. A source restored from a saved layout that the loaded datasets do
+a scope of **Dataset** or **Global**. A source restored from a saved layout that the loaded datasets do
 not currently offer is kept, not silently dropped — the status line says so, and it starts
 working again as soon as that dataset is loaded.
 

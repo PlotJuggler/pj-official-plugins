@@ -9,7 +9,7 @@
 // marker engine in pj_scripting_core — the SAME engine PlotJuggler uses for filters
 // and the headless anomaly_runner CLI uses — and publishes the emitted set
 // as a PlotMarkers object via the toolbox object-write surface (per-series under the
-// selected source, or dataset-global when "Global marker" is ticked). The status
+// selected source, or dataset-global at the Dataset and Global scopes). The status
 // shows "Done: N marker(s)" or "Error".
 //
 // It is a Toolbox because only that plugin family can read timeseries
@@ -165,7 +165,7 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
 
   std::string widget_data() override {
     PJ::WidgetData wd;
-    // Accept series dragged from the host's Datasets tree. Marked on the group box, not
+    // Accept series dragged from the host's Datasets tree. Marked on the section frame, not
     // the list, so the whole panel section is a target. This MUST be present in the very
     // first delivery: PanelEngine reads the drop targets once, off the initial payload —
     // it is not a per-tick flag.
@@ -192,16 +192,18 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
       wd.setSelectedItems("source_list", std::vector<std::string>{selected_source_});
     }
     wd.setCodeContent("code_editor", code_).setCodeLanguage("code_editor", "lua");
-    wd.setChecked("global_marker", global_);
-    // "All datasets" only applies to a global marker — enabled when Global is ticked.
-    wd.setChecked("all_datasets_marker", all_datasets_);
-    wd.setEnabled("all_datasets_marker", global_);
+    // Scope is one ordered axis (series, then dataset, then every dataset) still carried
+    // by the two persisted booleans; naming the segments is what makes the pair that
+    // means nothing (all_datasets without global) unreachable.
+    wd.setChecked("scope_timeseries", !global_);
+    wd.setChecked("scope_dataset", global_ && !all_datasets_);
+    wd.setChecked("scope_global", global_ && all_datasets_);
     // Save and Load are both native file pickers; onFileSelected tells them apart
     // by widget name. Save-as lets the user create a new file anywhere.
     wd.setSaveFilePicker("save_rule_button", "Save rule as...", "*.json", "Save detection rule", "json");
     wd.setFilePicker("load_rule_button", "Load rule...", "*.json", "Load detection rule");
     // State the precondition in the UI rather than failing on the click: runScript needs a
-    // source unless the markers are global. Reachable by default now that nothing is
+    // source unless the scope is Dataset or Global. Reachable by default now that nothing is
     // auto-selected.
     const bool resolved = sourceResolved();
     wd.setEnabled("apply_button", !code_.empty() && (global_ || resolved));
@@ -262,7 +264,7 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
-  // Series dragged from the host's Datasets tree onto the Source curve box.
+  // Series dragged from the host's Datasets tree onto the Source curve section.
   //
   // Validated against series_names_ (everything the catalog offers), NOT the filtered
   // view: a drop has to work while a text filter is narrowing the list.
@@ -290,7 +292,8 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     return true;
   }
 
-  // The Search box above the source list. Purely a view filter: it must never touch the
+  // The filter lives inside the Source curve section's band (sourceHeader's
+  // filterFieldName), not above the list. Purely a view filter: it must never touch the
   // selection or the rule, so that narrowing the list cannot silently change what Apply
   // would run.
   bool onTextChanged(std::string_view name, std::string_view text) override {
@@ -319,15 +322,25 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     return false;  // the panel byte-diffs widget_data(); no forced re-read needed
   }
 
+  // A radio group reports the segment that turned OFF as well as the one that turned ON;
+  // only the latter carries the new scope.
   bool onToggled(std::string_view name, bool checked) override {
-    if (name == "global_marker") {
-      global_ = checked;
-      return true;  // re-render to enable/disable the "all datasets" sub-option
+    if (!checked) {
+      return false;
     }
-    if (name == "all_datasets_marker") {
-      all_datasets_ = checked;
+    if (name == "scope_timeseries") {
+      global_ = false;
+      all_datasets_ = false;
+    } else if (name == "scope_dataset") {
+      global_ = true;
+      all_datasets_ = false;
+    } else if (name == "scope_global") {
+      global_ = true;
+      all_datasets_ = true;
+    } else {
+      return false;
     }
-    return false;
+    return true;  // Apply gating reads global_
   }
 
   bool onClicked(std::string_view name) override {
@@ -532,7 +545,7 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
   std::string current_template_ = anomaly_core::builtinFunctions().front().code;
   bool user_edited_ = false;
   bool global_ = false;
-  bool all_datasets_ = false;  // global marker spans every dataset (only meaningful with global_)
+  bool all_datasets_ = false;  // with global_: the Global scope, spanning every loaded dataset
   std::vector<std::string> series_names_;
   RunCallback run_callback_;
   PreviewProvider preview_provider_;
@@ -705,7 +718,7 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
     const PJ::sdk::DataProcessorsHostView gens = *gens_service;
 
     if (!global && source.empty()) {
-      return "Error: select a source curve, or tick Global marker";
+      return "Error: select a source curve, or set the scope to Dataset or Global";
     }
     const std::string target = global ? std::string(PJ::sdk::kGlobalMarkerTopic) : source;
 

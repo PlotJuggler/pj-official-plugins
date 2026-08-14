@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- Keep this file pure ASCII: pj_embed_ui bakes it into a constexpr char[], where any
+     byte above 127 is a narrowing error under -Werror. Nothing validates the XML either
+     (the embed is a plain file read), so a malformed edit builds green, passes the tests
+     and only fails when the dialog is opened. -->
 <ui version="4.0">
  <class>AnomalyDetectorDialog</class>
  <widget class="QWidget" name="AnomalyDetectorDialog">
@@ -43,7 +47,15 @@
       </property>
       <property name="minimumSize"><size><width>0</width><height>200</height></size></property>
      </widget>
+     <!-- Without an explicit vertical stretch this pane gets 0 against the chart's 2,
+          so the splitter hands every spare pixel to the chart and the function list
+          opens clipped mid-row. -->
      <widget class="QWidget" name="controlsPane" native="true">
+      <property name="sizePolicy">
+       <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+        <horstretch>0</horstretch><verstretch>1</verstretch>
+       </sizepolicy>
+      </property>
       <layout class="QVBoxLayout" name="controlsVLayout">
        <property name="leftMargin"><number>0</number></property>
        <property name="topMargin"><number>4</number></property>
@@ -55,21 +67,37 @@
 
          <!-- Source curve -->
          <item>
-          <!-- The whole group box is the drop target (declared from code with
+          <!-- The whole section frame is the drop target (declared from code with
                setDropTarget): the host's DropEventFilter walks up from the widget under
-               the cursor, so marking the container covers the list, the filter box and
-               the margins in one go. -->
-          <widget class="QGroupBox" name="sourceGroup">
-           <property name="title"><string>Source curve</string></property>
+               the cursor, so marking the container covers the band, its filter and the
+               list in one go. A bare NoFrame QFrame is what that filter resolves
+               cleanly, same as toolbox_fft's inputFrame. The objectName predates the
+               band migration and is kept verbatim: it is the drop contract the plugin
+               and its tests speak. -->
+          <widget class="QFrame" name="sourceGroup">
+           <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+           <property name="frameShadow"><enum>QFrame::Plain</enum></property>
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+             <horstretch>1</horstretch><verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
            <property name="minimumSize"><size><width>200</width><height>0</height></size></property>
-           <property name="maximumSize"><size><width>280</width><height>16777215</height></size></property>
            <layout class="QVBoxLayout" name="sourceLayout">
+            <property name="spacing"><number>0</number></property>
+            <property name="leftMargin"><number>0</number></property>
+            <property name="topMargin"><number>0</number></property>
+            <property name="rightMargin"><number>0</number></property>
+            <property name="bottomMargin"><number>0</number></property>
             <item>
-             <!-- The host's canonical filter input; the inner QLineEdit takes the
-                  fieldObjectName, which is what onTextChanged() reports. -->
-             <widget class="Search" name="source_search">
-              <property name="fieldObjectName"><string>source_filter</string></property>
-              <property name="placeholder"><string>Filter series...</string></property>
+             <!-- filterPlaceholder grows the host's canonical filter inside the band;
+                  filterFieldName is the objectName onTextChanged() reports, kept as
+                  source_filter so the plugin code is untouched. Class name without the
+                  PJ:: prefix: that is how PjUiLoader registers this widget. -->
+             <widget class="SectionHeaderBand" name="sourceHeader">
+              <property name="text"><string>Source curve</string></property>
+              <property name="filterPlaceholder"><string>Filter series...</string></property>
+              <property name="filterFieldName"><string>source_filter</string></property>
              </widget>
             </item>
             <item>
@@ -87,11 +115,24 @@
 
          <!-- Function -->
          <item>
-          <widget class="QGroupBox" name="functionGroup">
-           <property name="title"><string>Function</string></property>
+          <widget class="QWidget" name="functionGroup" native="true">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+             <horstretch>1</horstretch><verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
            <property name="minimumSize"><size><width>200</width><height>0</height></size></property>
-           <property name="maximumSize"><size><width>280</width><height>16777215</height></size></property>
            <layout class="QVBoxLayout" name="functionLayout">
+            <property name="spacing"><number>0</number></property>
+            <property name="leftMargin"><number>0</number></property>
+            <property name="topMargin"><number>0</number></property>
+            <property name="rightMargin"><number>0</number></property>
+            <property name="bottomMargin"><number>0</number></property>
+            <item>
+             <widget class="SectionHeaderBand" name="functionHeader">
+              <property name="text"><string>Function</string></property>
+             </widget>
+            </item>
             <item>
              <widget class="QListWidget" name="function_list">
               <property name="sizePolicy">
@@ -107,9 +148,47 @@
 
          <!-- Lua rule editor -->
          <item>
-          <widget class="QGroupBox" name="editorGroup">
-           <property name="title"><string>Lua rule</string></property>
+          <widget class="QWidget" name="editorGroup" native="true">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+             <horstretch>2</horstretch><verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
+           <property name="minimumSize"><size><width>280</width><height>0</height></size></property>
            <layout class="QVBoxLayout" name="editorLayout">
+            <property name="spacing"><number>0</number></property>
+            <property name="leftMargin"><number>0</number></property>
+            <property name="topMargin"><number>0</number></property>
+            <property name="rightMargin"><number>0</number></property>
+            <property name="bottomMargin"><number>0</number></property>
+            <item>
+             <!-- The scope selector rides this band's trailing area. Nested widgets are
+                  handed to the band's own horizontal layout, which is exactly where the
+                  host's radio adapter looks before swapping an exclusive group for a
+                  segmented DualOptionsWidget; a group that ends up outside a box or grid
+                  layout stays a row of bare radios, silently. Same shape as the Preview
+                  band of data_load_csv. -->
+             <widget class="SectionHeaderBand" name="editorHeader">
+              <property name="text"><string>Lua rule</string></property>
+              <property name="fillDockedWidgets" stdset="0"><bool>true</bool></property>
+              <widget class="QRadioButton" name="scope_timeseries">
+               <property name="text"><string>Timeseries</string></property>
+               <property name="checked"><bool>true</bool></property>
+               <property name="toolTip"><string>Markers only on the selected source curve.</string></property>
+               <attribute name="buttonGroup"><string>scopeGroup</string></attribute>
+              </widget>
+              <widget class="QRadioButton" name="scope_dataset">
+               <property name="text"><string>Dataset</string></property>
+               <property name="toolTip"><string>Markers on every plot of the active dataset, whatever series it shows.</string></property>
+               <attribute name="buttonGroup"><string>scopeGroup</string></attribute>
+              </widget>
+              <widget class="QRadioButton" name="scope_global">
+               <property name="text"><string>Global</string></property>
+               <property name="toolTip"><string>Markers on every plot of every loaded dataset.</string></property>
+               <attribute name="buttonGroup"><string>scopeGroup</string></attribute>
+              </widget>
+             </widget>
+            </item>
             <item>
              <widget class="QPlainTextEdit" name="code_editor"/>
             </item>
@@ -131,21 +210,10 @@
     </widget>
    </item>
 
-   <!-- Global toggle (left) + rule file + Apply / Close (right) -->
+   <!-- Rule file + Apply / Close (right). The scope selector is NOT here: it rides the
+        Lua rule band, next to the rule it scopes. -->
    <item>
     <layout class="QHBoxLayout" name="bottomBar">
-     <item>
-      <widget class="QCheckBox" name="global_marker">
-       <property name="text"><string>Global marker</string></property>
-       <property name="toolTip"><string>Apply the markers to every plot of the dataset. Unchecked: only the selected source curve.</string></property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QCheckBox" name="all_datasets_marker">
-       <property name="text"><string>All datasets</string></property>
-       <property name="toolTip"><string>For a global marker: publish it across every loaded dataset, not just the active one.</string></property>
-      </widget>
-     </item>
      <item>
       <spacer name="bottomSpacer">
        <property name="orientation"><enum>Qt::Horizontal</enum></property>
@@ -167,7 +235,7 @@
      <item>
       <widget class="QPushButton" name="apply_button">
        <property name="text"><string>Apply</string></property>
-       <property name="toolTip"><string>Run the Lua rule and apply the emitted markers to the plots. Requires a source curve, or Global marker.</string></property>
+       <property name="toolTip"><string>Run the Lua rule and apply the emitted markers to the plots. Requires a source curve, unless the scope is Dataset or Global.</string></property>
       </widget>
      </item>
      <item>
@@ -184,4 +252,7 @@
    </item>
   </layout>
  </widget>
+ <buttongroups>
+  <buttongroup name="scopeGroup"/>
+ </buttongroups>
 </ui>
