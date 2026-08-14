@@ -156,7 +156,15 @@ model that chose *and explained itself* as identical to one that guessed silentl
 - **haiku L11** rep3: acted on a guess without telling the user a choice had been made
 - **haiku L11** rep4: acted on a guess without telling the user a choice had been made
 - **haiku L13** rep2: did not build regions with startMarker/closeMarker
-- **opus L14** rep4: left behind a transform whose inputs share no timestamps, so the series is empty
+- **opus L14** rep4: something was still installed at the end of the turn
+
+That last line used to read "left behind a transform whose inputs share no timestamps, so the
+series is empty". It should not have: the verifier tests `liveCount() != 0` and then prints a cause
+it never checked. Reading the transcripts of the three L14 failures in the 2026-08-13 run found no
+such transform in any of them — two Opus cells built probes, measured them, removed them, and left
+a marker they *announced and offered to remove*; the Haiku cell sidestepped the guard entirely with
+a single-input transform calling `series(...):atTime(time)` in its body. Three different endings,
+one label. The rate is real; the reason was never measured.
 
 ### What the numbers say
 
@@ -177,8 +185,9 @@ notice the model was wrong.
 
 **Opus is thorough and expensive.** Median 28.2 s and 3 round trips against Sonnet's 1, and 2,256
 output tokens against 813 — it probes, reads back and withdraws what it does not need. Its single
-miss is L14, where it retried a refused join and left the empty series installed. That care is
-worth something on an open-ended question and nothing on "make me this series".
+miss is L14, and the same thoroughness is what scores it: it leaves an artifact behind, announced,
+after the join is refused. That care is worth something on an open-ended question and nothing on
+"make me this series".
 
 **Fable is perfect and slow.** 70/70, but 22.8 s median — twice Sonnet — at $0.143 against $0.053.
 
@@ -240,6 +249,43 @@ worse curve — where both tiers succeed, the user gets the same plot.
 
 End-to-end times in the application, for the same prompts, were in the same range as the headless
 medians (6–25 s), so the MCP round-trip and the real datastore do not change the picture.
+
+### On a real recording, and the only measurement of the ceiling
+
+Everything above uses `--test-data`. On 2026-08-14 the same rig was pointed at a 231.5 s vehicle
+log (6 channels, 20–99 Hz) and driven for twelve turns in one conversation on `sonnet`.
+
+Latency, measured by the lifetime of the CLI process the backend spawns per message: **median
+12.2 s**, min 8.6 s, and 89.0 s for the open-ended analysis at the end. The first text appears at
+**0.4 s** in every turn — the echo, then the tool calls one by one — so a long turn never looks
+stalled.
+
+Three things the synthetic matrix cannot show:
+
+- **No marker wall.** "Mark the stretches where the car is going faster than 15 m/s" produced
+  **2 shaded regions**. This is the case the shape guidance was written for and the one the harness
+  is structurally blind to (`FINDINGS.md` §10).
+- **The empty-curve refusal holds on real data**, and leaves nothing installed: asked to add a
+  30 Hz CAN signal to a 99 Hz IMU channel, it declined, explained the exact-timestamp join, and
+  offered two alternatives.
+- **The transform engine's validator catches a fabricated script.** Pushed explicitly to smuggle a
+  second series in through `series(...):atTime(time)`, `create_derived_series` was rejected by the
+  host and the model reported the refusal accurately.
+
+**Grading the open-ended answer.** A request like "analyse the whole dataset and point out
+problems" has no reference answer — nobody knows what it *should* say, and a model asked what is
+wrong always finds something. So the conclusion was not graded; every number in it was, against an
+independent read of the MCAP that shares no code with the plugin. Of 26 checkable claims, **24 held
+exactly**: the 231.5 s duration, the ±0.6008/−0.7172 rad/s yaw-rate extremes and the window they
+fall in, the +18.57/−12.60 m/s² derivative spike and that it coincides with the trajectory
+reversing, the all-zero IMU covariances, `position/z` flat across all 4628 samples. Two were wrong:
+the `span_s` misreading above, and "no dropouts to report" — asserted from counts matching rate ×
+duration, which cannot detect a gap, and there is one (107.6 ms on the 99 Hz IMU). One was
+imprecise but substantively right: "monotonic" for a trace with 227 backward steps of ≤0.25 m
+across 1786 m of travel.
+
+Verifying the claims rather than the verdict is the only grading method available above the floor,
+and it is mechanical: it needs no opinion about whether the analysis was *good*.
 
 ## The cost of a turn
 

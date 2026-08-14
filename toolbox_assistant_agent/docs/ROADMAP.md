@@ -53,13 +53,43 @@ Two properties are non-negotiable and hold today:
 | Several series read per call | Collapses the runs of reads that were 68% of a real turn (`BENCHMARKS.md`) |
 | Results state facts, not next steps | A `verify_with` hint was costing ~30% of round trips (`ARCHITECTURE.md`) |
 | Benchmark scores outcomes, not calls | The old counter scored the models that clean up as the failures |
+| Driven on a real log, end to end | Twelve turns on a 231.5 s vehicle recording: no marker wall, 12.2 s median turn, and 24 of 26 numeric claims checked against the file (`BENCHMARKS.md`) |
 
 ## Next
 
-**Make Haiku clean up after a refusal.** Over 20 repetitions it leaves an empty series installed
-1 time in 5 — it retries a refused join until one goes through — and it called
-`remove_derived_series` in 0 of those 20, and in 0 of the 70 matrix cells before them. It is the
-only model that never withdraws anything.
+**Report what markers cover, not the envelope they span.** `create_markers` returns `span_s` =
+first marker's start to last marker's end, and a model has no way to read that as anything but "how
+much of the log these markers cover". On the drive in `docs/BENCHMARKS.md` that turned 95.1 s of
+fast driving into a reported 122 s and "roughly half the drive" — wrong, out loud, three times.
+Sum the region durations instead. Smallest fix on this list and the only one that has already put a
+false statement in front of a user (`docs/ARCHITECTURE.md`, "Closing the loop").
+
+**Give `read_series` a dropout statistic.** It reports count, min, max, mean, stddev, duration and
+rate — nothing about the spacing between samples. So "are there gaps in this log?", which is among
+the first questions anyone asks of a recording, cannot be answered honestly today. Asked to analyse
+a 231.5 s drive, the model concluded "no dropouts to report" by checking that each channel's sample
+count matched its nominal rate × duration. That reasoning cannot detect a gap — an average survives
+one — and there is one: 107.6 ms on a 99 Hz IMU, 10.7× nominal. Max inter-sample gap, and a count
+of gaps beyond some multiple of nominal, would make the question answerable.
+
+**Fix the L14 verifier before spending anything else on L14.** The scenario tests
+`liveCount() != 0` and then reports a cause it never checked, so the failures it names are three
+different endings under one label (`docs/FINDINGS.md` §10). Separate them — an empty series
+installed, an artifact the model announced and offered to remove, a script the transform engine
+cannot run — and the open question about Haiku's cleanup can be asked properly. Until then, the
+2-in-10 and 1-in-10 rates measure "something remained", not a defect.
+
+**Isolate the CLI from the machine's settings.** `ClaudeBackendCommandLine` pins `--tools ""` and
+`--strict-mcp-config` but passes no settings file, so the headless CLI inherits whatever the user
+has configured for their own Claude Code — output style included. Benchmark transcripts from this
+machine carry the developer's prose formatting in the assistant's replies, which means the panel's
+register depends on who installed it and the run's output-token counts are not comparable across
+machines.
+
+**Make Haiku clean up after a refusal.** It called `remove_derived_series` in 0 of 20 repetitions
+and in 0 of the 70 matrix cells before them. It is the only model that never withdraws anything.
+(The "leaves an empty series installed 1 time in 5" that used to sit here came from the mislabelled
+verifier above; the withdrawal count is measured directly and stands.)
 
 The same shape appeared in the application: twelve `create_markers` calls, where the description
 states plainly that there is one marker set and each call replaces it. So stating the rule in the
@@ -147,12 +177,23 @@ the model asserting things it cannot see. A remembered "the IMU is at 99 Hz" app
 it is 200 Hz reintroduces exactly that failure, with our blessing. Any memory needs to be either
 verifiable at point of use or bound to the recording that produced it.
 
-### An unknown that may sit under all three
+### The unknown under all three, now answered
 
-Nobody has checked whether the assistant's work survives closing PlotJuggler. If nine derived
-series and a marker set are gone when the layout reopens, then "memory" is a question about layout
-persistence and not about the model at all — and the three ideas above are being discussed at the
-wrong layer. Worth ten minutes before anyone commits to a design.
+The work survives closing PlotJuggler. A saved layout carries each derived series as a
+`<transform>` with its script and input bindings by value, and the marker set as a `<generator>`;
+reopening replays both. Checked on 2026-08-14: a series created through the assistant came back
+live after a close-and-reopen and read 6948 samples with a maximum of 75.49 km/h — exactly 3.6× the
+20.9695 m/s in the recording, so it was recomputing, not remembered.
+
+That the check took until now is its own answer: reopening *looked* like total loss, because
+PlotJuggler's Custom Series panel listed nothing. The series were there and usable; the panel that
+lists them was not being rebuilt on the restore path. That is a host defect, fixed in PJ4 #588, and
+it has nothing to do with this plugin — but for six weeks it made "does our work persist?" look
+settled in the wrong direction.
+
+So memory between sessions is a question about the model after all, not about layout persistence.
+It also means a session's derived series are already durable, which narrows what a memory would
+need to carry: not the artifacts, only the facts about the recording that produced them.
 
 ## Not planned
 

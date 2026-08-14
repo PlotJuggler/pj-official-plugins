@@ -222,8 +222,22 @@ draws. The wall-of-lines failure is structurally invisible to the headless bench
 property of the design, not a gap to be filled, and it is why the GUI pass exists.
 
 What the harness *can* see is what gets installed. That is why the empty-curve scenario (L14) works
-as a measurement where the marker-shape one does not: "a transform whose inputs share no timestamps
-was installed" is a fact about intent, and it reproduced 3/3, deterministically, before the fix.
+as a measurement where the marker-shape one does not: "something is still installed at the end of
+the turn" is a fact about intent, and it reproduced 3/3, deterministically, before the fix.
+
+**Only that much, though.** The verifier tests `liveCount() != 0` and then reports a cause it never
+checked — for a long time, "a transform whose inputs share no timestamps was installed". Reading the
+transcripts of the three L14 failures in the 2026-08-13 run found that in none of them. Two Opus
+cells removed everything they built and left a marker they announced; the Haiku cell installed a
+single-input transform whose body called `series(...):atTime(time)`, which the guard never sees
+because the guard only inspects declared inputs. The count was measuring; the sentence next to it
+was guessing.
+
+The Haiku case also shows the second half of the blind spot: `RecordingDpHost` validates nothing, so
+that script installed cleanly in the harness. In the application it does not — `series()` is bound
+only in the marker engine, never in the transform engine, and the host's `validateScript` rejects
+it (checked by hand on 2026-08-14). The harness could see neither the fabrication nor the net that
+catches it.
 
 ## 11. A new capability can invalidate a metric that nobody touched
 
