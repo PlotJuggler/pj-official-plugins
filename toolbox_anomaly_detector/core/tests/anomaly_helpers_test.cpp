@@ -111,7 +111,7 @@ TEST(Severity, FromStringKnowsExactlyTheFourNames) {
 }
 
 // ---------------------------------------------------------------------------
-// "--SOURCE--" substitution — applied to every builtin when the user picks a curve
+// "--SOURCE--" substitution — applied to every builtin when the user picks a series
 // ---------------------------------------------------------------------------
 
 TEST(SubstituteSource, ReplacesEveryOccurrenceNotJustTheFirst) {
@@ -120,7 +120,7 @@ TEST(SubstituteSource, ReplacesEveryOccurrenceNotJustTheFirst) {
 }
 
 TEST(SubstituteSource, EmptySourceLeavesTheTemplateUntouched) {
-  // The editor opens with no curve selected; the placeholder must stay visible.
+  // The editor opens with no series selected; the placeholder must stay visible.
   const std::string tmpl = "series('--SOURCE--')";
   EXPECT_EQ(anomaly_core::substituteSource(tmpl, ""), tmpl);
 }

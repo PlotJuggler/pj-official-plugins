@@ -16,23 +16,6 @@
    <property name="rightMargin"><number>10</number></property>
    <property name="bottomMargin"><number>10</number></property>
 
-   <!-- Preview header -->
-   <item>
-    <layout class="QHBoxLayout" name="previewHeaderRow">
-     <item>
-      <widget class="QLabel" name="preview_title">
-       <property name="text"><string>&lt;b&gt;Preview&lt;/b&gt;</string></property>
-      </widget>
-     </item>
-     <item>
-      <spacer name="previewHeaderSpacer">
-       <property name="orientation"><enum>Qt::Horizontal</enum></property>
-       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
-      </spacer>
-     </item>
-    </layout>
-   </item>
-
    <!-- Preview chart (top) and controls (bottom) in a user-resizable vertical splitter -->
    <item>
     <widget class="QSplitter" name="previewSplitter">
@@ -65,7 +48,7 @@
         <layout class="QHBoxLayout" name="columnsLayout">
          <property name="spacing"><number>8</number></property>
 
-         <!-- Source curve -->
+         <!-- Source -->
          <item>
           <!-- The whole section frame is the drop target (declared from code with
                setDropTarget): the host's DropEventFilter walks up from the widget under
@@ -95,7 +78,7 @@
                   source_filter so the plugin code is untouched. Class name without the
                   PJ:: prefix: that is how PjUiLoader registers this widget. -->
              <widget class="SectionHeaderBand" name="sourceHeader">
-              <property name="text"><string>Source curve</string></property>
+              <property name="text"><string>Source</string></property>
               <property name="filterPlaceholder"><string>Filter series...</string></property>
               <property name="filterFieldName"><string>source_filter</string></property>
              </widget>
@@ -174,7 +157,7 @@
               <widget class="QRadioButton" name="scope_timeseries">
                <property name="text"><string>Timeseries</string></property>
                <property name="checked"><bool>true</bool></property>
-               <property name="toolTip"><string>Markers only on the selected source curve.</string></property>
+               <property name="toolTip"><string>Markers only on the selected source series.</string></property>
                <attribute name="buttonGroup"><string>scopeGroup</string></attribute>
               </widget>
               <widget class="QRadioButton" name="scope_dataset">
@@ -205,7 +188,7 @@
    <!-- Status line -->
    <item>
     <widget class="QLabel" name="status_label">
-     <property name="text"><string>Pick a source curve and a function (or write your own), then Apply.</string></property>
+     <property name="text"><string>Pick a source series and a function (or write your own), then Apply.</string></property>
      <property name="wordWrap"><bool>true</bool></property>
     </widget>
    </item>
@@ -235,7 +218,7 @@
      <item>
       <widget class="QPushButton" name="apply_button">
        <property name="text"><string>Apply</string></property>
-       <property name="toolTip"><string>Run the Lua rule and apply the emitted markers to the plots. Requires a source curve, unless the scope is Dataset or Global.</string></property>
+       <property name="toolTip"><string>Run the Lua rule and apply the emitted markers to the plots. Requires a source series, unless the scope is Dataset or Global.</string></property>
       </widget>
      </item>
      <item>

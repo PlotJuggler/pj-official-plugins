@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: Apache-2.0
 //
-// Dialog-level tests for the Source curve section: no auto-selection on open, the drop
+// Dialog-level tests for the Source section: no auto-selection on open, the drop
 // target, the text filter, Apply gating, and a layout-restored source the catalog no
 // longer offers.
 //
@@ -268,7 +268,7 @@ TEST(AnomalyDialogSource, DroppingSeveralSeriesTakesTheFirstAndSaysSo) {
 
   const auto wd = widgetData(dialog);
   EXPECT_EQ(selectedItems(wd), (std::vector<std::string>{"alpha/x"}));
-  EXPECT_NE(statusText(wd).find("one source curve at a time"), std::string::npos) << statusText(wd);
+  EXPECT_NE(statusText(wd).find("one source series at a time"), std::string::npos) << statusText(wd);
 }
 
 // ---------------------------------------------------------------------------

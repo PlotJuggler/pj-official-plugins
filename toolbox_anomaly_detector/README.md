@@ -29,7 +29,7 @@ GUI produces identical markers in CI — only *who invokes the engine* differs.
 
 1. Open **Toolbox → Anomaly Detector** (it reads the currently loaded timeseries). It opens
    with **no source selected**.
-2. Choose a **source curve**, either way round: **drag & drop** one from the Datasets tree on
+2. Choose a **source series**, either way round: **drag & drop** one from the Datasets tree on
    the left, or pick it from the source list (with the **Filter** box to narrow a long
    catalog). The preview chart fills with it.
 
@@ -38,12 +38,12 @@ GUI produces identical markers in CI — only *who invokes the engine* differs.
    non-plottable field as a rule input, so a text source could only ever fail. Markers are
    drawn on the time-series plot overlay, and text series are not shown there either (they
    render in the State Transitions strip).
-3. Pick a **builtin function** (loads its Lua, targeting the selected curve) or write your own
+3. Pick a **builtin function** (loads its Lua, targeting the selected series) or write your own
    rule in the editor. The preview overlays the rule's **detected markers live** (computed by
    the host). A rule error shows in the status line as `Rule error: …` so a blank overlay is
    never mistaken for "no anomalies".
 4. Choose the **scope** — one segmented control on the Lua rule band, widening left to right:
-   - **Timeseries:** under the selected source curve only.
+   - **Timeseries:** under the selected source series only.
    - **Dataset:** on the dataset-global topic — drawn on *every* plot of the dataset.
    - **Global:** dataset-global on *every loaded dataset* (handy when several logs are open
      at once).
@@ -52,11 +52,11 @@ GUI produces identical markers in CI — only *who invokes the engine* differs.
 6. **Save rule as… / Load rule…** — native file dialogs for the portable rule JSON (the same
    file the CLI consumes with `--rule`).
 
-Changing the source re-targets a builtin rule to the new curve automatically (the preview
+Changing the source re-targets a builtin rule to the new series automatically (the preview
 recomputes). If you hand-edit the Lua — or load a rule from a file — your rule is kept and
 picking a source will not overwrite it; adjust the `series("…")` line yourself.
 
-**Apply** stays disabled until there is something to run against: a resolved source curve, or
+**Apply** stays disabled until there is something to run against: a resolved source series, or
 a scope of **Dataset** or **Global**. A source restored from a saved layout that the loaded datasets do
 not currently offer is kept, not silently dropped — the status line says so, and it starts
 working again as soon as that dataset is loaded.

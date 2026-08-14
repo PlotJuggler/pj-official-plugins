@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Anomaly Detector toolbox (demo), styled after the host Filter Editor: a Preview
-// chart on top, then Source curve | Function | Lua editor. Picking a predefined
+// chart on top, then Source | Function | Lua editor. Picking a predefined
 // Function fills the editor with its Lua (targeting the selected source); the
 // "-- No function --" entry leaves a blank template to write your own. Apply runs
 // the script via the shared `anomaly_core` engine, which delegates to the Luau
@@ -47,7 +47,7 @@
 namespace {
 
 // --- PlotMarkers -> chart overlay (this plugin's "render the generator's output") ---
-// The generic toolbox_preview lib renders the INPUT source curve; rendering the OUTPUT is
+// The generic toolbox_preview lib renders the INPUT source series; rendering the OUTPUT is
 // the backend's job, so the markers-specific mapping lives here, not in the shared lib.
 
 // Upper bound on markers drawn in the LIVE preview. A noisy rule can emit one marker per
@@ -208,7 +208,7 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     const bool resolved = sourceResolved();
     wd.setEnabled("apply_button", !code_.empty() && (global_ || resolved));
 
-    // Preview: the selected source curve, with the rule's detected markers overlaid.
+    // Preview: the selected source series, with the rule's detected markers overlaid.
     std::string status_line = status_;
     if (!selected_source_.empty() && !resolved) {
       status_line = "Source '" + selected_source_ + "' is not available in the loaded datasets.";
@@ -237,7 +237,7 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
       // status line that says there is no source. Now reachable on open, since nothing is
       // auto-selected any more.
       wd.clearChart("preview_chart");
-      wd.setChartPlaceholder("preview_chart", "Pick a source curve, or drag & drop one from the Datasets tree");
+      wd.setChartPlaceholder("preview_chart", "Pick a source series, or drag & drop one from the Datasets tree");
     }
     wd.setText("status_label", status_line);
     return wd.toJson();
@@ -264,7 +264,7 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
-  // Series dragged from the host's Datasets tree onto the Source curve section.
+  // Series dragged from the host's Datasets tree onto the Source section.
   //
   // Validated against series_names_ (everything the catalog offers), NOT the filtered
   // view: a drop has to work while a text filter is narrowing the list.
@@ -288,11 +288,11 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     }
     adoptSource(dropped);
     status_ =
-        items.size() > 1 ? "Selected '" + dropped + "' (one source curve at a time)" : "Selected '" + dropped + "'";
+        items.size() > 1 ? "Selected '" + dropped + "' (one source series at a time)" : "Selected '" + dropped + "'";
     return true;
   }
 
-  // The filter lives inside the Source curve section's band (sourceHeader's
+  // The filter lives inside the Source section's band (sourceHeader's
   // filterFieldName), not above the list. Purely a view filter: it must never touch the
   // selection or the rule, so that narrowing the list cannot silently change what Apply
   // would run.
@@ -451,7 +451,7 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     on_tick_ = std::move(cb);
   }
 
-  // The source curve currently selected in the panel — read by the toolbox's tick
+  // The source series currently selected in the panel — read by the toolbox's tick
   // handler so it can live-refresh just that one series while streaming.
   const std::string& selectedSource() const {
     return selected_source_;
@@ -533,7 +533,7 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
 
   // "-- No function --" guidance is builtin function index 0.
   std::string code_ = anomaly_core::substituteSource(anomaly_core::builtinFunctions().front().code, "");
-  std::string status_ = "Pick a source curve (or drag & drop one), pick a function, then Apply.";
+  std::string status_ = "Pick a source series (or drag & drop one), pick a function, then Apply.";
   std::string selected_source_;
   // Source-list view state. Transient by design: a stale filter restored with a layout
   // would look like a broken list, so none of this is persisted.
@@ -718,7 +718,7 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
     const PJ::sdk::DataProcessorsHostView gens = *gens_service;
 
     if (!global && source.empty()) {
-      return "Error: select a source curve, or set the scope to Dataset or Global";
+      return "Error: select a source series, or set the scope to Dataset or Global";
     }
     const std::string target = global ? std::string(PJ::sdk::kGlobalMarkerTopic) : source;
 
