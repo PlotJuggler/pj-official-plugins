@@ -9,12 +9,15 @@
   <property name="windowTitle">
    <string>Anomaly Detector</string>
   </property>
+  <!-- Edge to edge, like toolbox_quaternion: the panel is the window, so an outer margin
+       here only draws a grey gutter around everything. Padding belongs inside the rows
+       that need it (the status line and the button bar), never out here. -->
   <layout class="QVBoxLayout" name="mainLayout">
-   <property name="spacing"><number>8</number></property>
-   <property name="leftMargin"><number>10</number></property>
-   <property name="topMargin"><number>10</number></property>
-   <property name="rightMargin"><number>10</number></property>
-   <property name="bottomMargin"><number>10</number></property>
+   <property name="spacing"><number>0</number></property>
+   <property name="leftMargin"><number>0</number></property>
+   <property name="topMargin"><number>0</number></property>
+   <property name="rightMargin"><number>0</number></property>
+   <property name="bottomMargin"><number>0</number></property>
 
    <!-- Preview chart (top) and controls (bottom) in a user-resizable vertical splitter -->
    <item>
@@ -22,7 +25,8 @@
      <property name="orientation"><enum>Qt::Vertical</enum></property>
      <property name="childrenCollapsible"><bool>false</bool></property>
      <widget class="QFrame" name="preview_chart">
-      <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+      <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+      <property name="frameShadow"><enum>QFrame::Plain</enum></property>
       <property name="sizePolicy">
        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
         <horstretch>0</horstretch><verstretch>2</verstretch>
@@ -187,16 +191,28 @@
 
    <!-- Status line -->
    <item>
-    <widget class="QLabel" name="status_label">
-     <property name="text"><string>Pick a source series and a function (or write your own), then Apply.</string></property>
-     <property name="wordWrap"><bool>true</bool></property>
-    </widget>
+    <layout class="QHBoxLayout" name="statusRow">
+     <property name="leftMargin"><number>8</number></property>
+     <property name="topMargin"><number>6</number></property>
+     <property name="rightMargin"><number>8</number></property>
+     <property name="bottomMargin"><number>0</number></property>
+     <item>
+      <widget class="QLabel" name="status_label">
+       <property name="text"><string>Pick a source series and a function (or write your own), then Apply.</string></property>
+       <property name="wordWrap"><bool>true</bool></property>
+      </widget>
+     </item>
+    </layout>
    </item>
 
    <!-- Rule file + Apply / Close (right). The scope selector is NOT here: it rides the
         Lua rule band, next to the rule it scopes. -->
    <item>
     <layout class="QHBoxLayout" name="bottomBar">
+     <property name="leftMargin"><number>8</number></property>
+     <property name="topMargin"><number>6</number></property>
+     <property name="rightMargin"><number>8</number></property>
+     <property name="bottomMargin"><number>8</number></property>
      <item>
       <spacer name="bottomSpacer">
        <property name="orientation"><enum>Qt::Horizontal</enum></property>
