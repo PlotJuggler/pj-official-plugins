@@ -132,7 +132,7 @@ TEST(CacheTeeSession, IncompleteFetchLeavesNothingBehind) {
   EXPECT_FALSE(dirHasPartial(env.path));
   bool any_artifact = false;
   for (const auto& entry : fs::directory_iterator(env.path)) {
-    if (entry.path().extension() == ".mcap") {
+    if (entry.path().extension() == ".pjmosaico") {
       any_artifact = true;
     }
   }

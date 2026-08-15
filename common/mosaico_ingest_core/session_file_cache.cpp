@@ -23,10 +23,13 @@ namespace {
 
 constexpr std::string_view kIdentityPrefix = "mosaico:v1:sha256/128:";
 constexpr std::size_t kDigestHexChars = 32;  // 128 bits, lowercase hex
-// The artifact is an MCAP container whose message payloads are Arrow-IPC
-// serialized record batches (see arrow_cache_artifact.hpp) — the .mcap
-// extension keeps standard MCAP tooling usable on cache files.
-constexpr const char* kArtifactSuffix = ".mcap";
+// The artifact is an MCAP container inside (see arrow_cache_artifact.hpp),
+// but carries the .pjmosaico extension: the host resolves even a
+// pinned-by-id loader through its declared file extensions, so the cache
+// loader's extension and the artifact's must match — and neither may be
+// ".mcap", or every ordinary MCAP drag-drop would see two candidate
+// loaders. The mcap CLI reads the file regardless of extension.
+constexpr const char* kArtifactSuffix = ".pjmosaico";
 
 // Extract the digest component from a full identity string; nullopt for
 // anything that is not EXACTLY "mosaico:v1:sha256/128:<32 lowercase hex>".

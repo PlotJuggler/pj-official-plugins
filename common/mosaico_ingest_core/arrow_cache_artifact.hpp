@@ -17,9 +17,11 @@
 // canonical object metadata, timestamp column) so replay never re-derives
 // it; two Metadata records carry the canonical source descriptor
 // (provenance, re-hashed by the validator) and the content summary (the
-// finalize completeness pin). The .mcap extension is honest — standard MCAP
-// tooling can inspect a cache artifact — but payloads are not ROS/protobuf
-// messages.
+// finalize completeness pin). Artifacts carry the .pjmosaico extension (the
+// cache loader's declared extension; it must never be ".mcap" or ordinary
+// MCAP drag-drops would see two candidate loaders), but the container IS
+// MCAP — the mcap CLI inspects it regardless of extension; payloads are not
+// ROS/protobuf messages.
 #pragma once
 #include <cstdint>
 #include <filesystem>

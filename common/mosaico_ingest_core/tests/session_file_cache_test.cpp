@@ -79,7 +79,7 @@ fs::path materialize(SessionFileCache& cache, const std::string& hex, const std:
 TEST(SessionFileCache, PathForShapeAndIdentityValidation) {
   TempRoot root("pathfor");
   SessionFileCache cache(root.path, acceptAll());
-  EXPECT_EQ(cache.pathFor(identityFor(kValidHexA)), root.path / (kValidHexA + ".mcap"));
+  EXPECT_EQ(cache.pathFor(identityFor(kValidHexA)), root.path / (kValidHexA + ".pjmosaico"));
   // Malformed identities can never name a file.
   EXPECT_TRUE(cache.pathFor("").empty());
   EXPECT_TRUE(cache.pathFor("mosaico:v1:sha256/128:short").empty());
@@ -149,7 +149,7 @@ TEST(SessionFileCache, NullValidatorFailsClosed) {
   TempRoot root("null-validator");
   SessionFileCache cache(root.path, nullptr);
   // A pre-existing file at the right path must NOT classify as a hit.
-  writeFile(root.path / (kValidHexA + ".mcap"), "foreign");
+  writeFile(root.path / (kValidHexA + ".pjmosaico"), "foreign");
   EXPECT_FALSE(cache.lookup(identityFor(kValidHexA), nullptr));
   std::string error;
   auto lock = cache.tryLockForMaterialize(identityFor(kValidHexB), &error);
@@ -162,7 +162,7 @@ TEST(SessionFileCache, NullValidatorFailsClosed) {
 TEST(SessionFileCache, LookupMissDoesNotDeleteTheFile) {
   TempRoot root("miss-keeps");
   SessionFileCache cache(root.path, rejectAll("invalid"));
-  const fs::path file = root.path / (kValidHexA + ".mcap");
+  const fs::path file = root.path / (kValidHexA + ".pjmosaico");
   writeFile(file, "not-an-artifact");
   EXPECT_FALSE(cache.lookup(identityFor(kValidHexA), nullptr));
   EXPECT_TRUE(fs::exists(file));  // deletion policy is the provider flow's
@@ -235,18 +235,18 @@ TEST(SessionFileCache, FileLockSharedExclusiveContract) {
 TEST(SessionFileCache, CleanupRemovesStaleOrphanPartialsOnly) {
   TempRoot root("orphans");
   SessionFileCache cache(root.path, acceptAll());
-  const fs::path stale = root.path / (kValidHexA + ".mcap.partial.99999");
-  const fs::path fresh = root.path / (kValidHexB + ".mcap.partial.99998");
+  const fs::path stale = root.path / (kValidHexA + ".pjmosaico.partial.99999");
+  const fs::path fresh = root.path / (kValidHexB + ".pjmosaico.partial.99998");
   writeFile(stale, "stale");
   writeFile(fresh, "fresh");
   fs::last_write_time(stale, fs::file_time_type::clock::now() - std::chrono::hours(48));
 
   // A partial whose identity lock is HELD stays even when old.
-  const fs::path held = root.path / (kValidHexC + ".mcap.partial.99997");
+  const fs::path held = root.path / (kValidHexC + ".pjmosaico.partial.99997");
   writeFile(held, "held");
   fs::last_write_time(held, fs::file_time_type::clock::now() - std::chrono::hours(48));
   std::string error;
-  auto lock = FileLock::tryExclusive(root.path / (kValidHexC + ".mcap.lock"), &error);
+  auto lock = FileLock::tryExclusive(root.path / (kValidHexC + ".pjmosaico.lock"), &error);
   ASSERT_TRUE(lock.has_value()) << error;
 
   cache.cleanup(SessionFileCache::Config{});
@@ -298,7 +298,7 @@ TEST(SessionFileCache, StandardHonoursCacheDirOverride) {
   ASSERT_EQ(::setenv("MOSAICO_CACHE_DIR", root.path.string().c_str(), 1), 0);
   std::string error;
   SessionFileCache cache = SessionFileCache::standard(acceptAll(), &error);
-  EXPECT_EQ(cache.pathFor(identityFor(kValidHexA)), root.path / (kValidHexA + ".mcap"));
+  EXPECT_EQ(cache.pathFor(identityFor(kValidHexA)), root.path / (kValidHexA + ".pjmosaico"));
   ::unsetenv("MOSAICO_CACHE_DIR");
 }
 #endif

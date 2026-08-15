@@ -20,10 +20,10 @@
 
 namespace mosaico {
 
-/// Request-addressed session cache. Files: <root>/<128-bit-hex>.mcap;
-/// partials: <name>.mcap.partial.<pid>; sidecars: <name>.mcap.lock
+/// Request-addressed session cache. Files: <root>/<128-bit-hex>.pjmosaico;
+/// partials: <name>.pjmosaico.partial.<pid>; sidecars: <name>.pjmosaico.lock
 /// (materialize/evict mutual exclusion and the read-lease point) and
-/// <name>.mcap.touch (LRU stamp — atime is unreliable under
+/// <name>.pjmosaico.touch (LRU stamp — atime is unreliable under
 /// relatime/noatime, so hits touch explicitly).
 /// Root: MOSAICO_CACHE_DIR || $XDG_CACHE_HOME/mosaico/sessions ||
 /// ~/.cache/mosaico/sessions. Directory 0700, files 0600.
@@ -56,7 +56,7 @@ class SessionFileCache {
       std::string* error)>;
 
   /// The validator is mandatory: a store cannot classify hits without one,
-  /// and defaulting to "accept" would let any foreign file at <digest>.mcap
+  /// and defaulting to "accept" would let any foreign file at <digest>.pjmosaico
   /// classify as a hit. Tests inject stubs; production injects the Arrow-IPC
   /// artifact validator.
   SessionFileCache(std::filesystem::path root, Validator validator);
