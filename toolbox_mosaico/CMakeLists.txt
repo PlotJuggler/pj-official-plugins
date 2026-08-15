@@ -3,6 +3,10 @@ find_package(Arrow CONFIG REQUIRED)
 find_package(fmt REQUIRED)
 find_package(lua REQUIRED)
 find_package(sol2 REQUIRED)
+# The cache artifact is an MCAP container (vendored header-only mcap from
+# data_load_mcap/contrib); lz4 + zstd come from conan for chunk compression.
+find_package(lz4 REQUIRED)
+find_package(zstd REQUIRED)
 
 # Probe for a real Arrow Flight target (the candidate set must match the SDK's
 # in mosaico-cpp-sdk). Crucially this does NOT fall back to plain arrow::arrow:
@@ -93,20 +97,36 @@ endforeach()
 
 # The Arrow -> datastore ingest core: column routing, canonical-object
 # serialization, and the bulk columnar write path (arrow_ingest.*, plus the
-# header-only image_metadata.hpp / object_metadata.hpp constants it registers).
+# header-only image_metadata.hpp / object_metadata.hpp constants it registers),
+# and the layout re-import foundation (source_descriptor.* + vendored sha256:
+# the canonical descriptor a layout embeds and its request identity).
 # A separate SDK-free static library so the planned cache-artifact loader
 # plugin can replay the exact same ingest without linking the Mosaico Flight
 # SDK, and so the test targets below stop re-compiling arrow_ingest.cpp each.
 add_library(mosaico_ingest_core STATIC
+  src/arrow_cache_artifact.cpp
   src/arrow_ingest.cpp
+  src/core/file_lock.cpp
+  src/core/sha256.cpp
+  src/session_file_cache.cpp
+  src/source_descriptor.cpp
 )
 set_target_properties(mosaico_ingest_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(mosaico_ingest_core PUBLIC cxx_std_20)
 target_include_directories(mosaico_ingest_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
+# Vendored header-only mcap (the repo's single copy lives with data_load_mcap;
+# arrow_cache_artifact.cpp is this library's one MCAP_IMPLEMENTATION TU — the
+# plugin's export allowlist keeps those symbols DSO-private).
+target_include_directories(mosaico_ingest_core SYSTEM PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/../data_load_mcap/contrib
+)
 target_link_libraries(mosaico_ingest_core PUBLIC
   plotjuggler_sdk::plugin_sdk
+  nlohmann_json::nlohmann_json
+  LZ4::lz4_static
+  zstd::libzstd_static
   ${MOSAICO_ARROW_TARGET}
 )
 if(NOT MSVC)
@@ -199,6 +219,58 @@ if(BUILD_TESTING)
   # The Arrow target for tests is the MOSAICO_ARROW_TARGET probed above; the
   # ingest tests link mosaico_ingest_core, which carries it transitively.
   set(_test_arrow_target ${MOSAICO_ARROW_TARGET})
+
+  # Vendored FIPS 180-4 SHA-256 — the descriptor-identity digest foundation.
+  # Pinned to the NIST vectors incl. the one-million-'a' block-boundary case.
+  add_executable(toolbox_mosaico_sha256_test
+    tests/sha256_test.cpp
+    src/core/sha256.cpp
+  )
+  target_link_libraries(toolbox_mosaico_sha256_test PRIVATE GTest::gtest_main)
+  target_include_directories(toolbox_mosaico_sha256_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  add_test(NAME ToolboxMosaicoSha256Test COMMAND toolbox_mosaico_sha256_test)
+
+  # Canonical source descriptor: parse/validate, canonical bytes + identity.
+  # The canonicalization vectors are a contract file
+  # (docs/source-descriptor-vectors.json); every consumer of the descriptor
+  # must reproduce those bytes verbatim.
+  add_executable(toolbox_mosaico_source_descriptor_test
+    tests/source_descriptor_test.cpp
+  )
+  target_link_libraries(toolbox_mosaico_source_descriptor_test PRIVATE
+    mosaico_ingest_core
+    GTest::gtest_main
+  )
+  target_compile_definitions(toolbox_mosaico_source_descriptor_test PRIVATE
+    MOSAICO_VECTORS_JSON="${CMAKE_CURRENT_SOURCE_DIR}/docs/source-descriptor-vectors.json"
+  )
+  add_test(NAME ToolboxMosaicoSourceDescriptorTest COMMAND toolbox_mosaico_source_descriptor_test)
+
+  # Cache-store mechanics (locking / partials / atomic rename / leases / LRU)
+  # against a STUB validator — format-independent by design; the Arrow-IPC
+  # artifact validator gets its own suite beside the artifact writer.
+  add_executable(toolbox_mosaico_session_file_cache_test
+    tests/session_file_cache_test.cpp
+  )
+  target_link_libraries(toolbox_mosaico_session_file_cache_test PRIVATE
+    mosaico_ingest_core
+    GTest::gtest_main
+  )
+  add_test(NAME ToolboxMosaicoSessionFileCacheTest COMMAND toolbox_mosaico_session_file_cache_test)
+
+  # The Arrow-in-MCAP artifact: write/validate/read round trip, the
+  # validator's rejection matrix (incl. the bounded-budget forgery refusals),
+  # and the artifact <-> store integration.
+  add_executable(toolbox_mosaico_arrow_cache_artifact_test
+    tests/arrow_cache_artifact_test.cpp
+  )
+  target_link_libraries(toolbox_mosaico_arrow_cache_artifact_test PRIVATE
+    mosaico_ingest_core
+    GTest::gtest_main
+  )
+  add_test(NAME ToolboxMosaicoArrowCacheArtifactTest COMMAND toolbox_mosaico_arrow_cache_artifact_test)
 
   # detectTimestampColumn over canned ArrowSchema fixtures.
   add_executable(toolbox_mosaico_detect_timestamp_test

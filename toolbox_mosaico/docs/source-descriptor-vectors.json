@@ -1,0 +1,17 @@
+{
+  "comment": "Contract vectors: canonical serialization + identity for the Mosaico source descriptor (mosaico_layout_import plan §1.2). Any consumer of the descriptor must reproduce these bytes and identities verbatim. Regenerating requires bumping the descriptor version — a changed byte stream is a different request (cache miss), and a silently regenerated vector would hide that.",
+  "cases": [
+    { "name": "whole-range-single-topic",
+      "descriptor": {"v":1,"kind":"mosaico-sequence","server_uri":"grpc+tls://demo.mosaico.dev:6726","sequence":"indoor_45_11_davis","topics":["/dvs/imu"],"start_ns":"0","end_ns":"0","display_name":"IMU only"},
+      "canonical": "{\"end_ns\":\"0\",\"kind\":\"mosaico-sequence\",\"sequence\":\"indoor_45_11_davis\",\"server_uri\":\"grpc+tls://demo.mosaico.dev:6726\",\"start_ns\":\"0\",\"topics\":[\"/dvs/imu\"],\"v\":1}",
+      "identity": "mosaico:v1:sha256/128:8311e64d0bc59a28f97bc7070d5e1b3f" },
+    { "name": "resolved-window-multi-topic",
+      "descriptor": {"v":1,"kind":"mosaico-sequence","server_uri":"grpc+tls://demo.mosaico.dev:6726","sequence":"bonirob_2016-04-20-15-42-15_7","topics":["/camera/image_raw","/gps","/imu"],"start_ns":"1461159735713519717","end_ns":"1461159795713519718","display_name":"Bonirob run 7"},
+      "canonical": "{\"end_ns\":\"1461159795713519718\",\"kind\":\"mosaico-sequence\",\"sequence\":\"bonirob_2016-04-20-15-42-15_7\",\"server_uri\":\"grpc+tls://demo.mosaico.dev:6726\",\"start_ns\":\"1461159735713519717\",\"topics\":[\"/camera/image_raw\",\"/gps\",\"/imu\"],\"v\":1}",
+      "identity": "mosaico:v1:sha256/128:1fda8e70c5503fa9d259b914268321a9" },
+    { "name": "display-name-does-not-change-identity",
+      "descriptor": {"v":1,"kind":"mosaico-sequence","server_uri":"grpc://localhost:6726","sequence":"seq","topics":["/a"],"start_ns":"5","end_ns":"9","display_name":"RENAMED"},
+      "canonical": "{\"end_ns\":\"9\",\"kind\":\"mosaico-sequence\",\"sequence\":\"seq\",\"server_uri\":\"grpc://localhost:6726\",\"start_ns\":\"5\",\"topics\":[\"/a\"],\"v\":1}",
+      "identity": "mosaico:v1:sha256/128:6bf67ce6da74addf1d300d28be18849f" }
+  ]
+}
