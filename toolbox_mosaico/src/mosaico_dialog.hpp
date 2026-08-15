@@ -88,6 +88,14 @@ struct DialogState {
   std::vector<std::string> selected_topics;
   std::string selected_sequence;
 
+  // Topic-selection mode, driven by the All|Custom radio pair in the Topics
+  // column (radioTopicsAll / radioTopicsCustom -> DualOptionsWidget). true =
+  // All: every listed topic downloads and the table rows are inert (disabled
+  // per-row; the table itself stays enabled so it remains scrollable). false =
+  // Custom: the selected rows download. `selected_topics` is preserved across
+  // mode flips, so switching to All and back keeps the custom pick.
+  bool topics_all = false;
+
   // PJ3 parity (main_window.cpp:1051-1052,1064-1065): the last sequence + topic
   // selection is persisted and re-selected on the next connect. These hold the
   // restored values until the matching sequence/topic list arrives; the

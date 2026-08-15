@@ -103,13 +103,24 @@
          </property>
         </widget>
        </item>
-       <!-- Generic date/time range picker: presets + from/to fields + calendar overlay -->
+       <!-- Generic date/time range picker: presets + from/to fields + calendar
+            overlay. Wrapped in a margined row so the preset chips don't touch
+            the panel edge (8 = the framework's space_comfortable, same as the
+            duration row at the bottom). -->
        <item>
-        <widget class="DateRangePicker" name="datePicker">
-         <property name="sizePolicy">
-          <sizepolicy hsizetype="Preferred" vsizetype="Preferred"><horstretch>0</horstretch><verstretch>0</verstretch></sizepolicy>
-         </property>
-        </widget>
+        <layout class="QHBoxLayout" name="dateRow">
+         <property name="leftMargin"><number>8</number></property>
+         <property name="topMargin"><number>0</number></property>
+         <property name="rightMargin"><number>8</number></property>
+         <property name="bottomMargin"><number>2</number></property>
+         <item>
+          <widget class="DateRangePicker" name="datePicker">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Preferred" vsizetype="Preferred"><horstretch>0</horstretch><verstretch>0</verstretch></sizepolicy>
+           </property>
+          </widget>
+         </item>
+        </layout>
        </item>
        <!-- Draggable split between sequence rows and the metadata query editor. -->
        <item>
@@ -148,9 +159,13 @@
              <property name="text"><string>Metadata Filter</string></property>
             </widget>
            </item>
-           <!-- Key/Op/Value assist dropdowns build one clause, committed by +. -->
+           <!-- Key/Op/Value assist dropdowns build one clause, committed by +.
+                Side margins keep the combos off the panel edge (the band above
+                stays full-bleed by design). -->
            <item>
             <layout class="QHBoxLayout" name="queryAssistRow">
+             <property name="leftMargin"><number>8</number></property>
+             <property name="rightMargin"><number>8</number></property>
              <item>
               <widget class="PJ::ComboBox" name="keyCombo">
                <property name="sizePolicy">
@@ -189,16 +204,23 @@
             </layout>
            </item>
            <item>
-            <widget class="QPlainTextEdit" name="lua_queryBar">
-             <property name="sizePolicy">
-              <sizepolicy hsizetype="Expanding" vsizetype="Expanding"><horstretch>0</horstretch><verstretch>1</verstretch></sizepolicy>
-             </property>
-             <property name="minimumSize"><size><width>0</width><height>72</height></size></property>
-             <!-- Background is themed from the host QSS (QPlainTextEdit#lua_queryBar):
-                  white in light, ${dark_background} in dark. An inline #ffffff here
-                  would override the QSS and render white in dark mode. -->
-             <property name="placeholderText"><string>&lt;your_filter_key&gt; &lt;operation&gt; &lt;filter_value&gt;</string></property>
-            </widget>
+            <layout class="QHBoxLayout" name="luaQueryRow">
+             <property name="leftMargin"><number>8</number></property>
+             <property name="rightMargin"><number>8</number></property>
+             <property name="bottomMargin"><number>8</number></property>
+             <item>
+              <widget class="QPlainTextEdit" name="lua_queryBar">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Expanding" vsizetype="Expanding"><horstretch>0</horstretch><verstretch>1</verstretch></sizepolicy>
+               </property>
+               <property name="minimumSize"><size><width>0</width><height>72</height></size></property>
+               <!-- Background is themed from the host QSS (QPlainTextEdit#lua_queryBar):
+                    white in light, ${dark_background} in dark. An inline #ffffff here
+                    would override the QSS and render white in dark mode. -->
+               <property name="placeholderText"><string>&lt;your_filter_key&gt; &lt;operation&gt; &lt;filter_value&gt;</string></property>
+              </widget>
+             </item>
+            </layout>
            </item>
           </layout>
          </widget>
@@ -238,6 +260,37 @@
           </stringlist>
          </property>
         </widget>
+       </item>
+       <!-- Topic-selection mode: All downloads every listed topic (rows go
+            inert but the table stays scrollable), Custom downloads the picked
+            rows. The radio pair shares topicModeGroup so the host renders it
+            as one DualOptionsWidget segment control. -->
+       <item>
+        <layout class="QHBoxLayout" name="topicModeRow">
+         <property name="leftMargin"><number>8</number></property>
+         <property name="topMargin"><number>2</number></property>
+         <property name="rightMargin"><number>8</number></property>
+         <property name="bottomMargin"><number>2</number></property>
+         <item>
+          <spacer name="topicModeSpacer">
+           <property name="orientation"><enum>Qt::Horizontal</enum></property>
+           <property name="sizeHint" stdset="0"><size><width>0</width><height>0</height></size></property>
+          </spacer>
+         </item>
+         <item>
+          <widget class="QRadioButton" name="radioTopicsAll">
+           <property name="text"><string>All</string></property>
+           <attribute name="buttonGroup"><string notr="true">topicModeGroup</string></attribute>
+          </widget>
+         </item>
+         <item>
+          <widget class="QRadioButton" name="radioTopicsCustom">
+           <property name="text"><string>Custom</string></property>
+           <property name="checked"><bool>true</bool></property>
+           <attribute name="buttonGroup"><string notr="true">topicModeGroup</string></attribute>
+          </widget>
+         </item>
+        </layout>
        </item>
        <item>
         <widget class="QTableWidget" name="topicTable">
@@ -350,4 +403,7 @@
    </item>
   </layout>
  </widget>
+ <buttongroups>
+  <buttongroup name="topicModeGroup"/>
+ </buttongroups>
 </ui>
