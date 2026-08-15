@@ -43,9 +43,11 @@ add_library(mosaico_ingest_core STATIC
   artifact_replay.cpp
   cache_tee_session.cpp
   core/file_lock.cpp
+  core/origin_match.cpp
   core/sha256.cpp
   session_file_cache.cpp
   source_descriptor.cpp
+  trusted_origins.cpp
 )
 # Static lib goes inside SHARED plugin .so files → must be position-independent.
 set_target_properties(mosaico_ingest_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -94,6 +96,8 @@ if(BUILD_TESTING AND TARGET GTest::gtest_main)
   # name = test source basename; every target links the core + gtest only.
   set(MOSAICO_INGEST_CORE_TESTS
     sha256_test
+    origin_match_test
+    trusted_origins_test
     source_descriptor_test
     session_file_cache_test
     arrow_cache_artifact_test

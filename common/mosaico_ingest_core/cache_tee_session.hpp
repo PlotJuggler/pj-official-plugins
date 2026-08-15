@@ -32,11 +32,12 @@ namespace mosaico {
 
 class CacheTeeSession {
  public:
-  /// Arms the tee for `descriptor`: standard cache root, materialize lock,
-  /// writer over the partial with the canonical descriptor embedded. On any
-  /// failure the session constructs INERT (armed() == false) with the reason
-  /// in disarmReason().
-  explicit CacheTeeSession(const SourceDescriptor& descriptor);
+  /// Arms the tee for `descriptor`: cache root (the user-configured
+  /// `cache_root_override` when non-empty, else standardCacheRoot),
+  /// materialize lock, writer over the partial with the canonical descriptor
+  /// embedded. On any failure the session constructs INERT (armed() == false)
+  /// with the reason in disarmReason().
+  explicit CacheTeeSession(const SourceDescriptor& descriptor, const std::filesystem::path& cache_root_override = {});
   ~CacheTeeSession();
   CacheTeeSession(const CacheTeeSession&) = delete;
   CacheTeeSession& operator=(const CacheTeeSession&) = delete;

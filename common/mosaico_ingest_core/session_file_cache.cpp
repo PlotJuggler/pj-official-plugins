@@ -136,20 +136,24 @@ SessionFileCache::MaterializeLock::MaterializeLock(FileLock lock, std::string he
 SessionFileCache::SessionFileCache(fs::path root, Validator validator)
     : root_(std::move(root)), validator_(std::move(validator)) {}
 
-SessionFileCache SessionFileCache::standard(Validator validator, std::string* error) {
+fs::path standardCacheRoot(std::string* error) {
   if (auto v = PJ::sdk::getEnv("MOSAICO_CACHE_DIR")) {
-    return SessionFileCache(fs::path(*v), std::move(validator));
+    return fs::path(*v);
   }
   if (auto v = PJ::sdk::getEnv("XDG_CACHE_HOME")) {
-    return SessionFileCache(fs::path(*v) / "mosaico" / "sessions", std::move(validator));
+    return fs::path(*v) / "mosaico" / "sessions";
   }
   if (auto v = PJ::sdk::getEnv("HOME")) {
-    return SessionFileCache(fs::path(*v) / ".cache" / "mosaico" / "sessions", std::move(validator));
+    return fs::path(*v) / ".cache" / "mosaico" / "sessions";
   }
   if (error) {
     *error = "cache root unresolvable (MOSAICO_CACHE_DIR, XDG_CACHE_HOME and HOME all unset)";
   }
-  return SessionFileCache(fs::path(), std::move(validator));
+  return {};
+}
+
+SessionFileCache SessionFileCache::standard(Validator validator, std::string* error) {
+  return SessionFileCache(standardCacheRoot(error), std::move(validator));
 }
 
 fs::path SessionFileCache::pathFor(std::string_view identity) const {

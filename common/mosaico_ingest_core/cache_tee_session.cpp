@@ -26,8 +26,10 @@ std::int64_t batchLogTime(const arrow::RecordBatch& batch, const std::string& ts
 
 }  // namespace
 
-CacheTeeSession::CacheTeeSession(const SourceDescriptor& descriptor)
-    : cache_(SessionFileCache::standard(validateArtifact, nullptr)) {
+CacheTeeSession::CacheTeeSession(const SourceDescriptor& descriptor, const std::filesystem::path& cache_root_override)
+    : cache_(
+          cache_root_override.empty() ? SessionFileCache::standard(validateArtifact, nullptr)
+                                      : SessionFileCache(cache_root_override, validateArtifact)) {
   // Self-check: only a descriptor that round-trips our own validation may
   // name an artifact (e.g. a scheme-less URI typed into the connect box
   // disarms the tee instead of producing an unloadable record).

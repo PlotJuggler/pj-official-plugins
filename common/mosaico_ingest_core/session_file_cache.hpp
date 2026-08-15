@@ -20,6 +20,12 @@
 
 namespace mosaico {
 
+/// The env-resolved standard cache root: MOSAICO_CACHE_DIR ||
+/// $XDG_CACHE_HOME/mosaico/sessions || ~/.cache/mosaico/sessions. Empty (with
+/// `error` set) when unresolvable. The dialog pre-fills its cache-directory
+/// field from this, so the user always sees the effective destination.
+[[nodiscard]] std::filesystem::path standardCacheRoot(std::string* error);
+
 /// Request-addressed session cache. Files: <root>/<128-bit-hex>.pjmosaico;
 /// partials: <name>.pjmosaico.partial.<pid>; sidecars: <name>.pjmosaico.lock
 /// (materialize/evict mutual exclusion and the read-lease point) and
