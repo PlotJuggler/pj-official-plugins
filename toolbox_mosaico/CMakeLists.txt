@@ -68,7 +68,6 @@ set(MOSAICO_SOURCES
   src/toolbox_mosaico.cpp
   src/mosaico_dialog.cpp
   src/fetch_worker.cpp
-  src/arrow_ingest.cpp
   src/settings_store.cpp
   src/server_history.cpp
   src/core/time_format.cpp
@@ -80,6 +79,41 @@ set(MOSAICO_SOURCES
 # so the plugin and every Arrow-linked test target below inherit it.
 if(MSVC)
   add_compile_options(/bigobj)
+endif()
+
+# Plain (Flight-free) Arrow target for the ingest core and the tests. Conan's
+# CMakeDeps creates arrow::arrow; upstream Arrow exports the Arrow:: spellings.
+set(MOSAICO_ARROW_TARGET "")
+foreach(_candidate arrow::arrow Arrow::arrow_static Arrow::arrow_shared Arrow::arrow)
+  if(TARGET ${_candidate})
+    set(MOSAICO_ARROW_TARGET ${_candidate})
+    break()
+  endif()
+endforeach()
+
+# The Arrow -> datastore ingest core: column routing, canonical-object
+# serialization, and the bulk columnar write path (arrow_ingest.*, plus the
+# header-only image_metadata.hpp / object_metadata.hpp constants it registers).
+# A separate SDK-free static library so the planned cache-artifact loader
+# plugin can replay the exact same ingest without linking the Mosaico Flight
+# SDK, and so the test targets below stop re-compiling arrow_ingest.cpp each.
+add_library(mosaico_ingest_core STATIC
+  src/arrow_ingest.cpp
+)
+set_target_properties(mosaico_ingest_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_features(mosaico_ingest_core PUBLIC cxx_std_20)
+target_include_directories(mosaico_ingest_core PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(mosaico_ingest_core PUBLIC
+  plotjuggler_sdk::plugin_sdk
+  ${MOSAICO_ARROW_TARGET}
+)
+if(NOT MSVC)
+  target_compile_options(mosaico_ingest_core PRIVATE
+    -Wall -Wextra -Werror
+    -Wno-conversion -Wno-unused-parameter -Wno-unused-function
+  )
 endif()
 
 add_library(toolbox_mosaico_plugin SHARED ${MOSAICO_SOURCES})
@@ -105,6 +139,7 @@ target_include_directories(toolbox_mosaico_plugin PRIVATE
 )
 
 target_link_libraries(toolbox_mosaico_plugin PRIVATE
+  mosaico_ingest_core
   plotjuggler_sdk::plugin_sdk
   fmt::fmt
   nlohmann_json::nlohmann_json
@@ -161,25 +196,16 @@ if(BUILD_TESTING)
       -Wno-conversion -Wno-unused-parameter -Wno-unused-function)
   endif()
 
-  # detectTimestampColumn over canned ArrowSchema fixtures.
-  # Re-resolves the Arrow target name (Conan: arrow::arrow, upstream:
-  # Arrow::arrow_static) since the cached _mosaico_arrow_target variable
-  # may not be visible across the BUILD_TESTING gate.
-  set(_test_arrow_target "")
-  foreach(_candidate arrow::arrow Arrow::arrow_static Arrow::arrow_shared Arrow::arrow)
-    if(TARGET ${_candidate})
-      set(_test_arrow_target ${_candidate})
-      break()
-    endif()
-  endforeach()
+  # The Arrow target for tests is the MOSAICO_ARROW_TARGET probed above; the
+  # ingest tests link mosaico_ingest_core, which carries it transitively.
+  set(_test_arrow_target ${MOSAICO_ARROW_TARGET})
 
+  # detectTimestampColumn over canned ArrowSchema fixtures.
   add_executable(toolbox_mosaico_detect_timestamp_test
     tests/detect_timestamp_test.cpp
-    src/arrow_ingest.cpp
   )
   target_link_libraries(toolbox_mosaico_detect_timestamp_test PRIVATE
-    plotjuggler_sdk::plugin_sdk
-    ${_test_arrow_target}
+    mosaico_ingest_core
     GTest::gtest_main
   )
   target_include_directories(toolbox_mosaico_detect_timestamp_test PRIVATE
@@ -201,13 +227,12 @@ if(BUILD_TESTING)
   add_executable(toolbox_mosaico_ingest_progress_test
     tests/ingest_progress_test.cpp
     src/fetch_worker.cpp
-    src/arrow_ingest.cpp
   )
   target_link_libraries(toolbox_mosaico_ingest_progress_test PRIVATE
+    mosaico_ingest_core
     plotjuggler_sdk::plugin_sdk
     mosaico_sdk
     fmt::fmt
-    ${_test_arrow_target}
     GTest::gtest_main
   )
   if(MOSAICO_GRPCPP_TARGET)
@@ -254,11 +279,9 @@ if(BUILD_TESTING)
   # helper against a recording fake toolbox host (no Flight/gRPC).
   add_executable(toolbox_mosaico_fetch_grouping_test
     tests/fetch_grouping_test.cpp
-    src/arrow_ingest.cpp
   )
   target_link_libraries(toolbox_mosaico_fetch_grouping_test PRIVATE
-    plotjuggler_sdk::plugin_sdk
-    ${_test_arrow_target}
+    mosaico_ingest_core
     GTest::gtest_main
   )
   target_include_directories(toolbox_mosaico_fetch_grouping_test PRIVATE
@@ -271,11 +294,9 @@ if(BUILD_TESTING)
   # with the real server's BINARY_VIEW/STRING_VIEW column types (no Flight/gRPC).
   add_executable(toolbox_mosaico_image_serialize_test
     tests/image_serialize_test.cpp
-    src/arrow_ingest.cpp
   )
   target_link_libraries(toolbox_mosaico_image_serialize_test PRIVATE
-    plotjuggler_sdk::plugin_sdk
-    ${_test_arrow_target}
+    mosaico_ingest_core
     GTest::gtest_main
   )
   target_include_directories(toolbox_mosaico_image_serialize_test PRIVATE
@@ -290,11 +311,9 @@ if(BUILD_TESTING)
   # server shapes and asserts each pushed blob round-trips.
   add_executable(toolbox_mosaico_object_serialize_test
     tests/object_serialize_test.cpp
-    src/arrow_ingest.cpp
   )
   target_link_libraries(toolbox_mosaico_object_serialize_test PRIVATE
-    plotjuggler_sdk::plugin_sdk
-    ${_test_arrow_target}
+    mosaico_ingest_core
     GTest::gtest_main
   )
   target_include_directories(toolbox_mosaico_object_serialize_test PRIVATE
@@ -308,11 +327,9 @@ if(BUILD_TESTING)
   # uncommitted) fixture is absent; regenerate it via toolbox_mosaico_live_harness.
   add_executable(toolbox_mosaico_image_real_fixture_test
     tests/image_real_fixture_test.cpp
-    src/arrow_ingest.cpp
   )
   target_link_libraries(toolbox_mosaico_image_real_fixture_test PRIVATE
-    plotjuggler_sdk::plugin_sdk
-    ${_test_arrow_target}
+    mosaico_ingest_core
     GTest::gtest_main
   )
   target_include_directories(toolbox_mosaico_image_real_fixture_test PRIVATE
