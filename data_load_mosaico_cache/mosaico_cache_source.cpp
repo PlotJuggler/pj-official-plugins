@@ -11,6 +11,7 @@
 // file drag-and-drop — its declared ".pjmosaico" extension is a marker that
 // matches no real file, so it can never shadow the general MCAP loader.
 #include <cstdint>
+#include <filesystem>
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <string>
@@ -53,8 +54,16 @@ class MosaicoCacheSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("no filepath configured"));
     }
 
-    std::vector<mosaico::ArtifactTopicData> topics;
+    // Bounded-budget preflight BEFORE the full parse: the artifact's filename
+    // stem IS its identity digest (<32hex>.pjmosaico), so validateArtifact can
+    // re-hash the embedded provenance against it — a corrupted, replaced, or
+    // renamed file fails here instead of driving the reader on foreign bytes.
+    const std::string stem = std::filesystem::path(filepath).stem().string();
     std::string error;
+    if (!mosaico::validateArtifact(filepath, stem, /*expected=*/std::nullopt, &error)) {
+      return PJ::unexpected("cache artifact failed validation: " + error);
+    }
+    std::vector<mosaico::ArtifactTopicData> topics;
     if (!mosaico::readArtifact(filepath, &topics, /*out_canonical_descriptor_json=*/nullptr, &error)) {
       return PJ::unexpected("cannot read cache artifact: " + error);
     }

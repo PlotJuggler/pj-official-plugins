@@ -135,6 +135,9 @@ struct DescriptorImportProvider::JobState {
   ServerCredentials credentials;  // resolved on the main thread
   std::string cache_root_override;
   SessionFileCache file_cache;  // same root the tee will publish under
+  // Hands the pull's promotion leases to the provider (which outlives this
+  // job); set by startImport, invoked on the job thread after the pull.
+  std::function<void(std::unordered_map<std::string, FileLock>)> adopt_leases;
   std::uint64_t max_transfer_bytes = 0;
   std::chrono::milliseconds max_transfer_duration{0};
   std::chrono::milliseconds poll{50};
@@ -357,6 +360,11 @@ PJ_descriptor_import_outcome_t DescriptorImportProvider::JobState::runToTerminal
     fetch.pullTopicsAsync(
         descriptor.sequence, descriptor.topics, descriptor.start_ns, descriptor.end_ns, descriptor,
         cache_root_override);
+  }
+  // The promoted dataset lazily re-opens the artifact long after this job
+  // dies — move the pull's read leases to the provider before the terminal.
+  if (adopt_leases) {
+    adopt_leases(fetch.takeArtifactLeases());
   }
   if (pre_terminal_hook) {
     pre_terminal_hook();
@@ -696,6 +704,12 @@ bool DescriptorImportProvider::startImport(
         std::chrono::milliseconds(envLimit("MOSAICO_IMPORT_MAX_SECONDS", kDefaultImportMaxSeconds) * 1000);
     state->poll = poll_;
     state->pre_terminal_hook = pre_terminal_hook_;
+    state->adopt_leases = [this](std::unordered_map<std::string, FileLock> leases) {
+      std::lock_guard<std::mutex> lock(job_leases_mu_);
+      for (auto& [identity, lease] : leases) {
+        job_leases_.insert_or_assign(identity, std::move(lease));
+      }
+    };
     state->on_dataset = callbacks->on_dataset;  // may be null (zero-or-one)
     state->on_terminal = callbacks->on_terminal;
     state->callback_ctx = callback_ctx;

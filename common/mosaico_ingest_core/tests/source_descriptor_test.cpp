@@ -250,3 +250,21 @@ TEST(SourceDescriptor, RejectsEmptyTopicListEmptyNamesAndDuplicates) {
     expectReject(j.dump(), "duplicate");
   }
 }
+
+TEST(SourceDescriptorFactory, StampsKindAndSortsTopics) {
+  // The identity is a property of the topic SET: the factory sorts, so two
+  // selections of the same topics in different orders share one identity.
+  std::string error;
+  const auto ab =
+      mosaico::makeSequenceDescriptor("grpc+tls://demo.mosaico.dev:6726", "seq", {"/b", "/a"}, 1, 2, "name", &error);
+  ASSERT_TRUE(ab.has_value()) << error;
+  EXPECT_EQ(ab->kind, "mosaico-sequence");
+  EXPECT_EQ(ab->topics, (std::vector<std::string>{"/a", "/b"}));
+  const auto ba =
+      mosaico::makeSequenceDescriptor("grpc+tls://demo.mosaico.dev:6726", "seq", {"/a", "/b"}, 1, 2, "name", &error);
+  ASSERT_TRUE(ba.has_value()) << error;
+  EXPECT_EQ(mosaico::descriptorIdentity(*ab), mosaico::descriptorIdentity(*ba));
+  // The same validation bar as the parser: a scheme-less URI is rejected.
+  EXPECT_FALSE(
+      mosaico::makeSequenceDescriptor("demo.mosaico.dev:6726", "seq", {"/a"}, 1, 2, "name", &error).has_value());
+}

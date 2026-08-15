@@ -283,6 +283,11 @@ std::optional<SourceDescriptor> makeSequenceDescriptor(
   d.server_uri = std::move(server_uri);
   d.sequence = std::move(sequence);
   d.topics = std::move(topics);
+  // The identity is a property of the topic SET: sort so two selections of
+  // the same topics in different orders hash to one cache entry. (A layout
+  // replays its serialized order verbatim, so existing identities keep
+  // matching their own artifacts.)
+  std::sort(d.topics.begin(), d.topics.end());
   d.start_ns = start_ns;
   d.end_ns = end_ns;
   d.display_name = std::move(display_name);

@@ -15,6 +15,11 @@
 //     estimate. NO network, NO credential resolution, NO blocking lock
 //     acquisition. Result strings are owned by this instance and stay valid
 //     until the NEXT query on it (the ABI lifetime rule).
+// Trust gating is the HOST's job by the ABI's design: queryDescriptor
+// returns the verdict and the host confirms/refuses before calling
+// startImport (its own confirmation flow may proceed past a
+// needs-confirmation verdict, so the provider must NOT hard-gate here).
+//
 //   - startImport: [main-thread] — flags fail closed FIRST; required
 //     callbacks validated; descriptor parsed; credentials resolved into an
 //     immutable snapshot ON THIS THREAD (SettingsView is main-thread-only);
@@ -127,9 +132,15 @@ class DescriptorImportProvider {
   // Materialized-hit read leases pinned by the query (a path the HOST is
   // about to load must survive another process's eviction while the loader
   // lazily re-opens it). v1 approximation: leases live as long as this
-  // provider (the toolbox instance) — same lifetime FetchWorker uses for its
-  // promotion leases. Main-thread only, like the query itself.
+  // provider (the toolbox instance). Main-thread only, like the query itself.
   std::unordered_map<std::string, FileLock> query_leases_;
+
+  // Promotion leases adopted from finished import jobs (the per-job
+  // FetchWorker dies with its JobState right after on_terminal, but the
+  // promoted dataset keeps lazily re-opening the artifact — the lease must
+  // outlive the job). Appended from job threads; guarded.
+  std::mutex job_leases_mu_;
+  std::unordered_map<std::string, FileLock> job_leases_;
 
   // query-result string storage: owned by the provider, valid until the NEXT
   // query on this instance (ABI lifetime rule). Main-thread only.

@@ -4,6 +4,8 @@
 
 #include <arrow/api.h>
 
+#include <system_error>
+
 namespace mosaico {
 
 namespace {
@@ -48,6 +50,10 @@ CacheTeeSession::CacheTeeSession(const SourceDescriptor& descriptor, const std::
   }
   if (!writer_.open(cache_.partialPathFor(*lock_), canonicalSourceDescriptorJson(descriptor), &error)) {
     disarm("artifact writer: " + error);
+    // open() may have created the file before failing; a cache partial must
+    // never outlive its session (finish() removes them on every other path).
+    std::error_code remove_error;
+    std::filesystem::remove(cache_.partialPathFor(*lock_), remove_error);
     lock_.reset();
     return;
   }

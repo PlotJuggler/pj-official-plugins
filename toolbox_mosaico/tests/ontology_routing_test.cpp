@@ -111,3 +111,19 @@ TEST(OntologyRouting, NewObjectOntologiesAreDisjoint) {
 }
 
 }  // namespace
+
+TEST(OntologyRouting, CanonicalMetadataMatchesTheRoutingPredicates) {
+  // canonicalMetadataForOntology labels the cache artifact's channel; it must
+  // agree with the constants the per-ontology push helpers register on the
+  // host, keyed by the same predicates that pick the push helper.
+  using mosaico::canonicalMetadataForOntology;
+  EXPECT_EQ(canonicalMetadataForOntology("image"), mosaico::kCanonicalImageMetadata);
+  EXPECT_EQ(canonicalMetadataForOntology("compressed_image"), mosaico::kCanonicalImageMetadata);
+  EXPECT_EQ(canonicalMetadataForOntology("pose"), mosaico::kCanonicalPosesInFrameMetadata);
+  EXPECT_EQ(canonicalMetadataForOntology("frame_transform"), mosaico::kCanonicalFrameTransformsMetadata);
+  EXPECT_EQ(canonicalMetadataForOntology("occupancy_grid"), mosaico::kCanonicalOccupancyGridMetadata);
+  EXPECT_EQ(canonicalMetadataForOntology("grid_cells"), mosaico::kCanonicalSceneEntitiesMetadata);
+  // Cloud-like tags (point cloud / laser scan / futures) share the record.
+  EXPECT_EQ(canonicalMetadataForOntology("point_cloud"), mosaico::kCanonicalPointCloudMetadata);
+  EXPECT_EQ(canonicalMetadataForOntology("laser_scan"), mosaico::kCanonicalPointCloudMetadata);
+}

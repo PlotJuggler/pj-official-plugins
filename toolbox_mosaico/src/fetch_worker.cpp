@@ -951,7 +951,7 @@ void FetchWorker::pullTopicsAsync(
           promotionSettled(false, status.error());
         }
         if (finalized->lease.has_value()) {
-          artifact_leases_.push_back(std::move(*finalized->lease));
+          artifact_leases_.insert_or_assign(tee->identity(), std::move(*finalized->lease));
         }
       } else if (promotionSettled) {
         promotionSettled(false, "no dataset to promote");
