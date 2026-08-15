@@ -207,6 +207,54 @@ if(BUILD_TESTING)
   target_compile_options(toolbox_mosaico_ingest_progress_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
   add_test(NAME ToolboxMosaicoIngestProgressTest COMMAND toolbox_mosaico_ingest_progress_test)
 
+  # Headless credential resolution incl. the MOSAICO_URL origin guard for the
+  # env key. POSIX-gated (setenv).
+  add_executable(toolbox_mosaico_credential_resolve_test
+    tests/credential_resolve_test.cpp
+    src/credential_resolve.cpp
+    src/settings_store.cpp
+    src/server_history.cpp
+  )
+  target_link_libraries(toolbox_mosaico_credential_resolve_test PRIVATE
+    mosaico_ingest_core
+    plotjuggler_sdk::plugin_sdk
+    GTest::gtest_main
+  )
+  target_include_directories(toolbox_mosaico_credential_resolve_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_mosaico_credential_resolve_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_mosaico_credential_resolve_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  add_test(NAME ToolboxMosaicoCredentialResolveTest COMMAND toolbox_mosaico_credential_resolve_test)
+
+  # pj.descriptor_import.v1 provider: query taxonomy + start_import fail-closed
+  # rejections (network-free; the live job path is the scripted E2E). Links the
+  # provider with its FetchWorker dependency (Flight), like the plugin itself.
+  add_executable(toolbox_mosaico_descriptor_import_contract_test
+    tests/descriptor_import_contract_test.cpp
+    src/descriptor_import_provider.cpp
+    src/credential_resolve.cpp
+    src/fetch_worker.cpp
+    src/settings_store.cpp
+    src/server_history.cpp
+  )
+  target_link_libraries(toolbox_mosaico_descriptor_import_contract_test PRIVATE
+    mosaico_ingest_core
+    plotjuggler_sdk::plugin_sdk
+    mosaico_sdk
+    fmt::fmt
+    GTest::gtest_main
+  )
+  if(MOSAICO_GRPCPP_TARGET)
+    target_link_libraries(toolbox_mosaico_descriptor_import_contract_test PRIVATE ${MOSAICO_GRPCPP_TARGET})
+  endif()
+  target_include_directories(toolbox_mosaico_descriptor_import_contract_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_mosaico_descriptor_import_contract_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_mosaico_descriptor_import_contract_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  add_test(NAME ToolboxMosaicoDescriptorImportContractTest COMMAND toolbox_mosaico_descriptor_import_contract_test)
+
   # Ontology routing (image vs point-cloud/scalar). Compiles only the SDK's
   # light metadata.cpp (arrow + nlohmann) — no Flight/gRPC.
   add_executable(toolbox_mosaico_ontology_routing_test
