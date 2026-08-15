@@ -32,6 +32,8 @@
 
 #include "arrow_ingest.hpp"
 #include "flight/metadata.hpp"
+#include "image_metadata.hpp"
+#include "object_metadata.hpp"
 #include "ontology_routing.h"
 #include "stoppable_thread.hpp"
 
@@ -466,7 +468,8 @@ void FetchWorker::fetchTopicMetadataAsync(TopicRef topic) {
 }
 
 void FetchWorker::pullTopicsAsync(
-    std::string sequence_name, std::vector<std::string> topic_names, std::int64_t start_ns, std::int64_t end_ns) {
+    std::string sequence_name, std::vector<std::string> topic_names, std::int64_t start_ns, std::int64_t end_ns,
+    std::optional<SourceDescriptor> descriptor) {
   if (!client_ && !pull_topics_override_) {
     for (const auto& t : topic_names) {
       if (pullFinished) {
@@ -520,20 +523,35 @@ void FetchWorker::pullTopicsAsync(
   };
   auto state = std::make_shared<std::unordered_map<std::string, PerTopic>>();
   auto imported_any = std::make_shared<std::atomic<bool>>(false);
+  auto any_failed = std::make_shared<std::atomic<bool>>(false);
   for (const auto& t : topic_names_std) {
     (*state)[t] = PerTopic{};
   }
 
-  auto on_done = [this, sequence_name, state, imported_any](
+  // Arm the cache tee when this Download carries a durable descriptor AND the
+  // host offers the promotion service. An unarmed/disarmed tee is inert —
+  // every tee call below no-ops and the fetch completes eager-only (a tee
+  // problem never fails an ingest). Tee writes happen only under
+  // host_write_mu_, which serializes them across the pool threads.
+  std::shared_ptr<CacheTeeSession> tee;
+  if (descriptor.has_value() && promotion_provider_ && promotion_provider_().valid()) {
+    tee = std::make_shared<CacheTeeSession>(*descriptor);
+  }
+
+  auto on_done = [this, sequence_name, state, imported_any, any_failed, tee](
                      const std::string& topic_name, arrow::Result<PullResult> result) {
     auto it = state->find(topic_name);
     if (it == state->end()) {
       return;
     }
-    auto finish = [this, &sequence_name, &topic_name, imported_any](
+    auto finish = [this, &sequence_name, &topic_name, imported_any, any_failed](
                       bool ok, std::string error, std::string warning = {}) {
       if (ok) {
         imported_any->store(true, std::memory_order_relaxed);
+      } else {
+        // Any per-topic failure poisons the cache artifact: it would not
+        // match the descriptor's topic list, so the batch ends eager-only.
+        any_failed->store(true, std::memory_order_relaxed);
       }
       if (pullFinished) {
         pullFinished({{sequence_name, topic_name}, ok, std::move(error), std::move(warning)});
@@ -657,7 +675,19 @@ void FetchWorker::pullTopicsAsync(
         return;
       }
       ensureIngestProgress(*ds, sequence_name);
-      const ObjectIngestContext ctx{host, *ds, topic_name, ts_field, synth_anchor_ns, synth_interval_ns};
+      ObjectIngestContext ctx{host, *ds, topic_name, ts_field, synth_anchor_ns, synth_interval_ns};
+      if (tee && tee->armed()) {
+        // The artifact channel records the same canonical metadata the push
+        // helper registers on the host, keyed by the resolved routing above.
+        const std::string_view canonical_meta = is_image            ? kCanonicalImageMetadata
+                                                : is_pose           ? kCanonicalPosesInFrameMetadata
+                                                : is_transform      ? kCanonicalFrameTransformsMetadata
+                                                : is_occupancy_grid ? kCanonicalOccupancyGridMetadata
+                                                : is_grid_cells
+                                                    ? kCanonicalSceneEntitiesMetadata
+                                                    : kCanonicalPointCloudMetadata;  // clouds incl. laser/futures
+        ctx.tee = tee->objectTee(topic_name, ontology_tag, std::string(canonical_meta));
+      }
       auto pushed = [&]() -> PJ::Expected<ObjectPushOutcome> {
         if (is_image) {
           return pushImageRowsToHost(ctx, table);
@@ -750,6 +780,18 @@ void FetchWorker::pullTopicsAsync(
       }
       finish(false, append_status.error());
       return;
+    }
+    if (tee && tee->armed()) {
+      // Record the exact normalized batches the host just ingested (the
+      // export above pulled from its own reader; `table` is untouched).
+      // Still under host_write_mu_, which serializes all tee writes.
+      std::vector<std::shared_ptr<arrow::RecordBatch>> tee_batches;
+      arrow::TableBatchReader tee_reader(*table);
+      std::shared_ptr<arrow::RecordBatch> tee_batch;
+      while (tee_reader.ReadNext(&tee_batch).ok() && tee_batch != nullptr) {
+        tee_batches.push_back(std::move(tee_batch));
+      }
+      tee->teeScalarTopic(topic_name, *table->schema(), ts_field, tee_batches);
     }
     finish(true, {});
   };
@@ -869,6 +911,50 @@ void FetchWorker::pullTopicsAsync(
   } catch (...) {
     if (pullFinished) {
       pullFinished({{sequence_name, {}}, false, "pull failed: unknown error", {}});
+    }
+  }
+  // Cache-tee terminal: promote only a COMPLETE batch — every topic ingested,
+  // nothing failed, no cancel. Anything else aborts the artifact and the
+  // Download stays eager-only (a tee/promotion problem never fails a fetch).
+  // pullTopics has returned, so every on_done (and thus every tee write) is
+  // done; this runs on the single worker thread.
+  if (tee) {
+    const bool complete =
+        imported_any->load(std::memory_order_relaxed) && !any_failed->load(std::memory_order_relaxed) && !isCancelled();
+    auto finalized = tee->finish(complete);
+    if (finalized.has_value()) {
+      std::optional<PJ::sdk::DataSourceHandle> dataset;
+      {
+        std::lock_guard<std::mutex> lock(fetch_dataset_mu_);
+        dataset = fetch_dataset_;
+      }
+      if (dataset.has_value() && promotion_provider_) {
+        PJ::SourcePromotionRequest request;
+        request.dataset = dataset->id;
+        request.source_identity = tee->identity();
+        request.local_path_utf8 = finalized->path.string();
+        request.loader_plugin_id = "mosaico-cache-loader";
+        request.loader_config_json = "{}";
+        request.descriptor_json = tee->descriptorJson();
+        // The result closure captures COPIES only: it may run re-entrantly or
+        // long after this Download, on any thread.
+        auto settled = promotionSettled;
+        const auto status = promotion_provider_().promoteToFileSource(request, [settled](bool ok, std::string message) {
+          if (settled) {
+            settled(ok, std::move(message));
+          }
+        });
+        if (!status && promotionSettled) {
+          promotionSettled(false, status.error());
+        }
+        if (finalized->lease.has_value()) {
+          artifact_leases_.push_back(std::move(*finalized->lease));
+        }
+      } else if (promotionSettled) {
+        promotionSettled(false, "no dataset to promote");
+      }
+    } else if (promotionSettled) {
+      promotionSettled(false, tee->disarmReason().empty() ? "fetch incomplete" : tee->disarmReason());
     }
   }
   // Bracket the host progress/stop channel on EVERY exit (success, cancel,

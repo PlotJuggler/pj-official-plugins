@@ -42,6 +42,7 @@
 #include "selection_merge.h"
 #include "server_history.h"
 #include "settings_store.hpp"
+#include "source_descriptor.hpp"
 #include "table_sort.h"
 #include "tls_utils.h"
 
@@ -304,6 +305,20 @@ MosaicoDialog::MosaicoDialog() : worker_(std::make_unique<FetchWorker>()) {
   worker_->errorOccurred = [this](std::string message) {
     postEvent([this, message = std::move(message)]() mutable { notify(PJ::ToolboxMessageLevel::kError, message); });
   };
+  worker_->promotionSettled = [this](bool promoted, std::string detail) {
+    // Fires from a background thread (possibly re-entrantly from the
+    // promotion call); route to the GUI thread. Promotion success is silent —
+    // the user asked for data, not plumbing — while an eager-only outcome is
+    // a gentle heads-up that a re-saved layout will not re-download this one.
+    if (promoted) {
+      return;
+    }
+    postEvent([this, detail = std::move(detail)]() mutable {
+      notify(
+          PJ::ToolboxMessageLevel::kInfo,
+          "Download not cached for layout re-import (" + detail + "); data is loaded normally");
+    });
+  };
   worker_->hostStopRequested = [this]() {
     // Host-side Stop (title-bar strip). requestCancel() already fired inside
     // the worker; mirror the in-panel Cancel button's UI state so the batch
@@ -469,6 +484,10 @@ void MosaicoDialog::setRuntimeHostProvider(std::function<PJ::ToolboxRuntimeHostV
   // The worker drives the host's progress/stop surface from its fetch threads;
   // same stable-view contract as setHostProvider.
   worker_->setRuntimeHostProvider(std::move(provider));
+}
+
+void MosaicoDialog::setPromotionProvider(std::function<PJ::SourcePromotionHostView()> provider) {
+  worker_->setPromotionProvider(std::move(provider));
 }
 
 std::string MosaicoDialog::widget_data() {
@@ -1028,6 +1047,7 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
   }
   if (widget_name == "buttonFetch") {
     std::string seq;
+    std::string server_uri;
     std::vector<std::string> topics;
     std::int64_t start = 0;
     std::int64_t end = 0;
@@ -1038,6 +1058,7 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
         return true;
       }
       seq = state_.selected_sequence;
+      server_uri = state_.uri;
       // Only fetch topics that still exist in the current listing — a selection
       // preserved across a filter or re-list may reference a topic that's gone.
       for (const std::string& tname : state_.selected_topics) {
@@ -1085,12 +1106,25 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
     }
     worker_->resetCancel();
     notify(PJ::ToolboxMessageLevel::kInfo, fmt::format("Fetching {} topic(s)…", topics.size()));
+    // The durable re-download descriptor: the EXACT resolved request —
+    // sequence, explicit topic list, absolute time window (never slider
+    // proportions). The worker arms the cache tee with it when the host
+    // offers source promotion; an uncacheable descriptor simply disarms.
+    SourceDescriptor descriptor;
+    descriptor.kind = "mosaico-sequence";
+    descriptor.server_uri = server_uri;
+    descriptor.sequence = seq;
+    descriptor.topics = topics;
+    descriptor.start_ns = start;
+    descriptor.end_ns = end;
+    descriptor.display_name = seq;
     // Multi-topic parallel pull (Step 10.2). Single topic still goes
     // via this path — the SDK handles the degenerate 1-topic case fine
     // and the per-topic completion signals are uniform.
-    postCommand([w = worker_.get(), seq, topics = std::move(topics), start, end]() mutable {
-      w->pullTopicsAsync(seq, std::move(topics), start, end);
-    });
+    postCommand(
+        [w = worker_.get(), seq, topics = std::move(topics), start, end, descriptor = std::move(descriptor)]() mutable {
+          w->pullTopicsAsync(seq, std::move(topics), start, end, std::move(descriptor));
+        });
     persistState();  // crash-resilient: remember query + range at fetch time
     return true;
   }

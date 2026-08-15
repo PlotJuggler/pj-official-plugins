@@ -961,6 +961,9 @@ PJ::Expected<ImagePushOutcome> pushImageRowsToHost(
     if (!status) {
       return PJ::unexpected(std::move(status).error());
     }
+    if (ctx.tee) {
+      ctx.tee(ts_ns, blob.data(), blob.size());
+    }
     ++outcome.pushed;
   }
   return outcome;
@@ -1041,6 +1044,9 @@ PJ::Expected<ObjectPushOutcome> pushPointCloudRowsToHost(
     if (!status) {
       return PJ::unexpected(std::move(status).error());
     }
+    if (ctx.tee) {
+      ctx.tee(ts_ns, blob.data(), blob.size());
+    }
     ++outcome.pushed;
   }
   return outcome;
@@ -1119,6 +1125,9 @@ PJ::Expected<ObjectPushOutcome> pushPoseRowsToHost(
     if (!status) {
       return PJ::unexpected(std::move(status).error());
     }
+    if (ctx.tee) {
+      ctx.tee(ts_ns, blob.data(), blob.size());
+    }
     ++outcome.pushed;
   }
   return outcome;
@@ -1171,6 +1180,9 @@ PJ::Expected<ObjectPushOutcome> pushFrameTransformsRowsToHost(
       if (!status) {
         return PJ::unexpected(std::move(status).error());
       }
+      if (ctx.tee) {
+        ctx.tee(ts_ns, blob.data(), blob.size());
+      }
       ++outcome.pushed;
     }
     return outcome;
@@ -1222,6 +1234,9 @@ PJ::Expected<ObjectPushOutcome> pushFrameTransformsRowsToHost(
     auto status = host.pushOwnedObject(*topic_handle, ts_ns, PJ::Span<const std::uint8_t>(blob.data(), blob.size()));
     if (!status) {
       return PJ::unexpected(std::move(status).error());
+    }
+    if (ctx.tee) {
+      ctx.tee(ts_ns, blob.data(), blob.size());
     }
     ++outcome.pushed;
   }
@@ -1312,6 +1327,9 @@ PJ::Expected<ObjectPushOutcome> pushOccupancyGridRowsToHost(
     auto status = host.pushOwnedObject(*topic_handle, ts_ns, PJ::Span<const std::uint8_t>(blob.data(), blob.size()));
     if (!status) {
       return PJ::unexpected(std::move(status).error());
+    }
+    if (ctx.tee) {
+      ctx.tee(ts_ns, blob.data(), blob.size());
     }
     ++outcome.pushed;
   }
@@ -1445,6 +1463,9 @@ PJ::Expected<ObjectPushOutcome> pushLaserScanRowsToHost(
     if (!status) {
       return PJ::unexpected(std::move(status).error());
     }
+    if (ctx.tee) {
+      ctx.tee(ts_ns, blob.data(), blob.size());
+    }
     ++outcome.pushed;
   }
   return outcome;
@@ -1518,6 +1539,9 @@ PJ::Expected<ObjectPushOutcome> pushGridCellsRowsToHost(
     auto status = host.pushOwnedObject(*topic_handle, ts_ns, PJ::Span<const std::uint8_t>(blob.data(), blob.size()));
     if (!status) {
       return PJ::unexpected(std::move(status).error());
+    }
+    if (ctx.tee) {
+      ctx.tee(ts_ns, blob.data(), blob.size());
     }
     ++outcome.pushed;
   }
@@ -1637,6 +1661,9 @@ PJ::Expected<ObjectPushOutcome> pushColumnarPointCloudRowsToHost(
     auto status = host.pushOwnedObject(*topic_handle, ts_ns, PJ::Span<const std::uint8_t>(blob.data(), blob.size()));
     if (!status) {
       return PJ::unexpected(std::move(status).error());
+    }
+    if (ctx.tee) {
+      ctx.tee(ts_ns, blob.data(), blob.size());
     }
     ++outcome.pushed;
   }

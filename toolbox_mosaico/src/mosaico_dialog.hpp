@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <pj_base/sdk/descriptor_import.hpp>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
@@ -241,6 +242,12 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   // flush buffered writer chunks and refresh the catalog tree. Without
   // it, ingested topics never appear in the datasets panel.
   void setRuntimeHostProvider(std::function<PJ::ToolboxRuntimeHostView()> provider);
+
+  // Wires the host's pj.source_promotion.v1 view so a completed Download can
+  // be recorded as a cache artifact and promoted to a file-backed dataset
+  // (the layout re-import path). Optional — unset, every fetch stays
+  // eager-only. Called by MosaicoToolbox during bind().
+  void setPromotionProvider(std::function<PJ::SourcePromotionHostView()> provider);
 
   // Binds the host's `pj.settings.v1` store and restores persisted UI state
   // (+ auto-connect). Called by MosaicoToolbox during bind(). An unbound view

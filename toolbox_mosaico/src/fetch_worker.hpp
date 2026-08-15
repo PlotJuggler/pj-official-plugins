@@ -10,14 +10,18 @@
 #include <mutex>
 #include <optional>
 #include <pj_base/sdk/data_source_host_views.hpp>
+#include <pj_base/sdk/descriptor_import.hpp>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "cache_tee_session.hpp"
+#include "core/file_lock.h"
 #include "flight/mosaico_client.hpp"
 #include "flight/types.hpp"
+#include "source_descriptor.hpp"
 #include "worker_types.h"
 
 namespace mosaico {
@@ -48,6 +52,14 @@ class FetchWorker {
   /// exactly as before, just without host-side progress/stop integration.
   void setRuntimeHostProvider(std::function<PJ::ToolboxRuntimeHostView()> provider) {
     runtime_host_provider_ = std::move(provider);
+  }
+
+  /// Provider for the host's pj.source_promotion.v1 service view. Same
+  /// contract as the host providers above. Optional — absent or invalid, the
+  /// cache tee never arms and every Download stays eager-only (today's
+  /// behavior).
+  void setPromotionProvider(std::function<PJ::SourcePromotionHostView()> provider) {
+    promotion_provider_ = std::move(provider);
   }
 
   /// Cancel the batch flag and actively interrupt any Flight readers that may
@@ -86,8 +98,14 @@ class FetchWorker {
   /// callback; the per-topic host-write section is serialized by host_write_mu_
   /// so the plugin's bookkeeping is safe regardless of SDK-internal locking.
   /// After all topics complete, allFetchesComplete fires once.
+  /// `descriptor`, when provided (and the promotion provider is bound),
+  /// arms the cache tee: the Download is recorded into a session cache
+  /// artifact and, on full success, promoted to a file-backed dataset via
+  /// pj.source_promotion.v1 so a saved layout can re-import it. Tee/promotion
+  /// problems NEVER fail the fetch — it completes eager-only.
   void pullTopicsAsync(
-      std::string sequence_name, std::vector<std::string> topic_names, std::int64_t start_ns, std::int64_t end_ns);
+      std::string sequence_name, std::vector<std::string> topic_names, std::int64_t start_ns, std::int64_t end_ns,
+      std::optional<SourceDescriptor> descriptor = std::nullopt);
 
   std::function<void(ConnectResult result)> connectFinished;
   /// Full SequenceInfo entries, including user_metadata (used by the Lua
@@ -123,6 +141,12 @@ class FetchWorker {
   /// "Cancelling…" UI state exactly as if the in-panel Cancel button had been
   /// pressed. Fired at most once per Download, from a background thread.
   std::function<void()> hostStopRequested;
+  /// Cache/promotion outcome of a Download whose tee was armed. `promoted`
+  /// true = the dataset is now file-backed over the cache artifact (layout
+  /// saves will carry the re-import record); false = eager-only, with the
+  /// reason in `detail`. Fired at most once per Download, possibly from a
+  /// background thread (and possibly re-entrantly from the promotion call).
+  std::function<void(bool promoted, std::string detail)> promotionSettled;
 
  private:
   friend class testing::FetchWorkerTestAccess;
@@ -179,6 +203,12 @@ class FetchWorker {
   std::function<void()> cancel_active_pulls_override_;
   std::function<PJ::sdk::ToolboxHostView()> host_provider_;
   std::function<PJ::ToolboxRuntimeHostView()> runtime_host_provider_;
+  std::function<PJ::SourcePromotionHostView()> promotion_provider_;
+  /// Dataset-lifetime read leases on promoted cache artifacts: a promoted
+  /// dataset lazily re-opens its file, so eviction must be blocked while it
+  /// lives. v1 approximation: leases live as long as this worker (the panel
+  /// instance) — released on destruction.
+  std::vector<FileLock> artifact_leases_;
   std::atomic<bool> cancel_flag_{false};
   std::unordered_map<std::string, TopicInfo> topic_info_by_name_;
   std::optional<PJ::sdk::DataSourceHandle> fetch_dataset_;

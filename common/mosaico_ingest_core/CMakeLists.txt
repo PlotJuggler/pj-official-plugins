@@ -41,6 +41,7 @@ add_library(mosaico_ingest_core STATIC
   arrow_cache_artifact.cpp
   arrow_ingest.cpp
   artifact_replay.cpp
+  cache_tee_session.cpp
   core/file_lock.cpp
   core/sha256.cpp
   session_file_cache.cpp
@@ -97,6 +98,7 @@ if(BUILD_TESTING AND TARGET GTest::gtest_main)
     session_file_cache_test
     arrow_cache_artifact_test
     artifact_replay_test
+    cache_tee_session_test
     detect_timestamp_test
     fetch_grouping_test
     image_serialize_test

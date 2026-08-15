@@ -5,6 +5,7 @@
 #include <arrow/c/abi.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <string>
@@ -85,12 +86,31 @@ using ImagePushOutcome = ObjectPushOutcome;
 /// `topic_name`/`ts_field` are owned so a context can be built from string
 /// literals (tests) or borrowed lvalues alike.
 struct ObjectIngestContext {
+  ObjectIngestContext() = default;
+  /// The original 6-tuple; `tee` stays empty and is assigned separately by
+  /// the one caller that records a cache artifact.
+  ObjectIngestContext(
+      PJ::sdk::ToolboxHostView host_in, PJ::sdk::DataSourceHandle source_in, std::string topic_name_in,
+      std::string ts_field_in, std::int64_t synth_anchor_ns_in, std::int64_t synth_interval_ns_in)
+      : host(host_in),
+        source(source_in),
+        topic_name(std::move(topic_name_in)),
+        ts_field(std::move(ts_field_in)),
+        synth_anchor_ns(synth_anchor_ns_in),
+        synth_interval_ns(synth_interval_ns_in) {}
+
   PJ::sdk::ToolboxHostView host;
   PJ::sdk::DataSourceHandle source;
   std::string topic_name;  ///< BARE topic name; the data source carries the sequence.
   std::string ts_field;    ///< timestamp column to use, or "" to synthesize timestamps.
   std::int64_t synth_anchor_ns = 0;
   std::int64_t synth_interval_ns = 0;
+  /// Optional per-blob tap, invoked after every SUCCESSFUL host push with the
+  /// exact (timestamp, blob bytes) pushed — the cache tee records them so a
+  /// replay is byte-identical. Must not throw; a tee that wants to abort
+  /// records its own failure and goes inert (a tee problem never fails the
+  /// ingest).
+  std::function<void(std::int64_t ts_ns, const std::uint8_t* data, std::size_t size)> tee;
 };
 
 /// Serialize every row of @p table as a canonical PJ.Image blob (pj_base's
