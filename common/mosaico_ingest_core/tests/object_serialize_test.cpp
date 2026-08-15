@@ -32,7 +32,7 @@
 #include <string>
 #include <vector>
 
-#include "../src/arrow_ingest.hpp"
+#include "../arrow_ingest.hpp"
 #include "pj_base/builtin/frame_transforms_codec.hpp"
 #include "pj_base/builtin/occupancy_grid_codec.hpp"
 #include "pj_base/builtin/point_cloud_codec.hpp"

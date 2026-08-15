@@ -3,10 +3,13 @@ find_package(Arrow CONFIG REQUIRED)
 find_package(fmt REQUIRED)
 find_package(lua REQUIRED)
 find_package(sol2 REQUIRED)
-# The cache artifact is an MCAP container (vendored header-only mcap from
-# data_load_mcap/contrib); lz4 + zstd come from conan for chunk compression.
-find_package(lz4 REQUIRED)
-find_package(zstd REQUIRED)
+
+# The shared Arrow ingest + layout re-import foundation lives in
+# common/mosaico_ingest_core (added by the top-level CMakeLists before this
+# directory); this plugin only links the target.
+if(NOT TARGET mosaico_ingest_core)
+  message(FATAL_ERROR "toolbox_mosaico requires the mosaico_ingest_core target (common/mosaico_ingest_core)")
+endif()
 
 # Probe for a real Arrow Flight target (the candidate set must match the SDK's
 # in mosaico-cpp-sdk). Crucially this does NOT fall back to plain arrow::arrow:
@@ -77,63 +80,12 @@ set(MOSAICO_SOURCES
   src/core/time_format.cpp
 )
 
-# Arrow/Flight + Arrow-compute translation units (arrow_ingest.cpp, and the
-# Flight/serialize tests that compile it) instantiate enough templates to exceed
-# the COFF section limit without /bigobj (C1128). Apply it directory-wide on MSVC
-# so the plugin and every Arrow-linked test target below inherit it.
+# Arrow/Flight + Arrow-compute translation units (fetch_worker.cpp and the
+# Flight tests) instantiate enough templates to exceed the COFF section limit
+# without /bigobj (C1128). Apply it directory-wide on MSVC so the plugin and
+# every Arrow-linked test target below inherit it.
 if(MSVC)
   add_compile_options(/bigobj)
-endif()
-
-# Plain (Flight-free) Arrow target for the ingest core and the tests. Conan's
-# CMakeDeps creates arrow::arrow; upstream Arrow exports the Arrow:: spellings.
-set(MOSAICO_ARROW_TARGET "")
-foreach(_candidate arrow::arrow Arrow::arrow_static Arrow::arrow_shared Arrow::arrow)
-  if(TARGET ${_candidate})
-    set(MOSAICO_ARROW_TARGET ${_candidate})
-    break()
-  endif()
-endforeach()
-
-# The Arrow -> datastore ingest core: column routing, canonical-object
-# serialization, and the bulk columnar write path (arrow_ingest.*, plus the
-# header-only image_metadata.hpp / object_metadata.hpp constants it registers),
-# and the layout re-import foundation (source_descriptor.* + vendored sha256:
-# the canonical descriptor a layout embeds and its request identity).
-# A separate SDK-free static library so the planned cache-artifact loader
-# plugin can replay the exact same ingest without linking the Mosaico Flight
-# SDK, and so the test targets below stop re-compiling arrow_ingest.cpp each.
-add_library(mosaico_ingest_core STATIC
-  src/arrow_cache_artifact.cpp
-  src/arrow_ingest.cpp
-  src/core/file_lock.cpp
-  src/core/sha256.cpp
-  src/session_file_cache.cpp
-  src/source_descriptor.cpp
-)
-set_target_properties(mosaico_ingest_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_compile_features(mosaico_ingest_core PUBLIC cxx_std_20)
-target_include_directories(mosaico_ingest_core PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
-# Vendored header-only mcap (the repo's single copy lives with data_load_mcap;
-# arrow_cache_artifact.cpp is this library's one MCAP_IMPLEMENTATION TU — the
-# plugin's export allowlist keeps those symbols DSO-private).
-target_include_directories(mosaico_ingest_core SYSTEM PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/../data_load_mcap/contrib
-)
-target_link_libraries(mosaico_ingest_core PUBLIC
-  plotjuggler_sdk::plugin_sdk
-  nlohmann_json::nlohmann_json
-  LZ4::lz4_static
-  zstd::libzstd_static
-  ${MOSAICO_ARROW_TARGET}
-)
-if(NOT MSVC)
-  target_compile_options(mosaico_ingest_core PRIVATE
-    -Wall -Wextra -Werror
-    -Wno-conversion -Wno-unused-parameter -Wno-unused-function
-  )
 endif()
 
 add_library(toolbox_mosaico_plugin SHARED ${MOSAICO_SOURCES})
@@ -216,74 +168,10 @@ if(BUILD_TESTING)
       -Wno-conversion -Wno-unused-parameter -Wno-unused-function)
   endif()
 
-  # The Arrow target for tests is the MOSAICO_ARROW_TARGET probed above; the
-  # ingest tests link mosaico_ingest_core, which carries it transitively.
-  set(_test_arrow_target ${MOSAICO_ARROW_TARGET})
-
-  # Vendored FIPS 180-4 SHA-256 — the descriptor-identity digest foundation.
-  # Pinned to the NIST vectors incl. the one-million-'a' block-boundary case.
-  add_executable(toolbox_mosaico_sha256_test
-    tests/sha256_test.cpp
-    src/core/sha256.cpp
-  )
-  target_link_libraries(toolbox_mosaico_sha256_test PRIVATE GTest::gtest_main)
-  target_include_directories(toolbox_mosaico_sha256_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoSha256Test COMMAND toolbox_mosaico_sha256_test)
-
-  # Canonical source descriptor: parse/validate, canonical bytes + identity.
-  # The canonicalization vectors are a contract file
-  # (docs/source-descriptor-vectors.json); every consumer of the descriptor
-  # must reproduce those bytes verbatim.
-  add_executable(toolbox_mosaico_source_descriptor_test
-    tests/source_descriptor_test.cpp
-  )
-  target_link_libraries(toolbox_mosaico_source_descriptor_test PRIVATE
-    mosaico_ingest_core
-    GTest::gtest_main
-  )
-  target_compile_definitions(toolbox_mosaico_source_descriptor_test PRIVATE
-    MOSAICO_VECTORS_JSON="${CMAKE_CURRENT_SOURCE_DIR}/docs/source-descriptor-vectors.json"
-  )
-  add_test(NAME ToolboxMosaicoSourceDescriptorTest COMMAND toolbox_mosaico_source_descriptor_test)
-
-  # Cache-store mechanics (locking / partials / atomic rename / leases / LRU)
-  # against a STUB validator — format-independent by design; the Arrow-IPC
-  # artifact validator gets its own suite beside the artifact writer.
-  add_executable(toolbox_mosaico_session_file_cache_test
-    tests/session_file_cache_test.cpp
-  )
-  target_link_libraries(toolbox_mosaico_session_file_cache_test PRIVATE
-    mosaico_ingest_core
-    GTest::gtest_main
-  )
-  add_test(NAME ToolboxMosaicoSessionFileCacheTest COMMAND toolbox_mosaico_session_file_cache_test)
-
-  # The Arrow-in-MCAP artifact: write/validate/read round trip, the
-  # validator's rejection matrix (incl. the bounded-budget forgery refusals),
-  # and the artifact <-> store integration.
-  add_executable(toolbox_mosaico_arrow_cache_artifact_test
-    tests/arrow_cache_artifact_test.cpp
-  )
-  target_link_libraries(toolbox_mosaico_arrow_cache_artifact_test PRIVATE
-    mosaico_ingest_core
-    GTest::gtest_main
-  )
-  add_test(NAME ToolboxMosaicoArrowCacheArtifactTest COMMAND toolbox_mosaico_arrow_cache_artifact_test)
-
-  # detectTimestampColumn over canned ArrowSchema fixtures.
-  add_executable(toolbox_mosaico_detect_timestamp_test
-    tests/detect_timestamp_test.cpp
-  )
-  target_link_libraries(toolbox_mosaico_detect_timestamp_test PRIVATE
-    mosaico_ingest_core
-    GTest::gtest_main
-  )
-  target_include_directories(toolbox_mosaico_detect_timestamp_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoDetectTimestampTest COMMAND toolbox_mosaico_detect_timestamp_test)
+  # The core-library suites (descriptor/sha256/cache/artifact + the
+  # arrow_ingest behavior tests) moved to common/mosaico_ingest_core/tests —
+  # they are Flight-free and now run on every platform. What remains here is
+  # dialog/worker/query logic tied to this plugin (or the Mosaico SDK).
 
   # StoppableThread is pure-std with no Arrow/Flight surface, so its test links
   # nothing but gtest.
@@ -317,26 +205,14 @@ if(BUILD_TESTING)
   target_compile_options(toolbox_mosaico_ingest_progress_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
   add_test(NAME ToolboxMosaicoIngestProgressTest COMMAND toolbox_mosaico_ingest_progress_test)
 
-  # Image-topic metadata builder: pure string logic, header-only, so this needs
-  # nothing but GTest. Pins the cross-repo metadata_json contract.
-  add_executable(toolbox_mosaico_image_metadata_test
-    tests/image_metadata_test.cpp
-  )
-  target_link_libraries(toolbox_mosaico_image_metadata_test PRIVATE GTest::gtest_main)
-  target_include_directories(toolbox_mosaico_image_metadata_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoImageMetadataTest COMMAND toolbox_mosaico_image_metadata_test)
-
   # Ontology routing (image vs point-cloud/scalar). Compiles only the SDK's
-  # light metadata.cpp (arrow + nlohmann) — no Flight/gRPC — like the
-  # detect-timestamp test.
+  # light metadata.cpp (arrow + nlohmann) — no Flight/gRPC.
   add_executable(toolbox_mosaico_ontology_routing_test
     tests/ontology_routing_test.cpp
     ${mosaico_sdk_SOURCE_DIR}/src/flight/metadata.cpp
   )
   target_link_libraries(toolbox_mosaico_ontology_routing_test PRIVATE
-    ${_test_arrow_target}
+    mosaico_ingest_core
     nlohmann_json::nlohmann_json
     GTest::gtest_main
   )
@@ -345,69 +221,6 @@ if(BUILD_TESTING)
     ${mosaico_sdk_SOURCE_DIR}/src
   )
   add_test(NAME ToolboxMosaicoOntologyRoutingTest COMMAND toolbox_mosaico_ontology_routing_test)
-
-  # Multi-topic grouping contract: one Download (sequence) → ONE dataset, with
-  # topics registered under their BARE names. Drives the real arrow_ingest
-  # helper against a recording fake toolbox host (no Flight/gRPC).
-  add_executable(toolbox_mosaico_fetch_grouping_test
-    tests/fetch_grouping_test.cpp
-  )
-  target_link_libraries(toolbox_mosaico_fetch_grouping_test PRIVATE
-    mosaico_ingest_core
-    GTest::gtest_main
-  )
-  target_include_directories(toolbox_mosaico_fetch_grouping_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoFetchGroupingTest COMMAND toolbox_mosaico_fetch_grouping_test)
-
-  # Per-frame image serialization: each Arrow row -> one canonical PJ.Image blob
-  # (pj_base codec), driven against a recording fake toolbox host. Builds tables
-  # with the real server's BINARY_VIEW/STRING_VIEW column types (no Flight/gRPC).
-  add_executable(toolbox_mosaico_image_serialize_test
-    tests/image_serialize_test.cpp
-  )
-  target_link_libraries(toolbox_mosaico_image_serialize_test PRIVATE
-    mosaico_ingest_core
-    GTest::gtest_main
-  )
-  target_include_directories(toolbox_mosaico_image_serialize_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoImageSerializeTest COMMAND toolbox_mosaico_image_serialize_test)
-
-  # Per-row canonicalization of the 3D-object ontologies (point_cloud / transform
-  # / pose) -> one canonical PJ.{PointCloud,FrameTransforms,PosesInFrame} blob per
-  # row (pj_base codec), driven against a recording fake toolbox host (no
-  # Flight/gRPC). Builds synthetic list<float32> / struct tables matching the
-  # server shapes and asserts each pushed blob round-trips.
-  add_executable(toolbox_mosaico_object_serialize_test
-    tests/object_serialize_test.cpp
-  )
-  target_link_libraries(toolbox_mosaico_object_serialize_test PRIVATE
-    mosaico_ingest_core
-    GTest::gtest_main
-  )
-  target_include_directories(toolbox_mosaico_object_serialize_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoObjectSerializeTest COMMAND toolbox_mosaico_object_serialize_test)
-
-  # Real-server regression: replays the captured jai/rgb Arrow batch (PNG-wrapped
-  # Bayer, BINARY_VIEW/STRING_VIEW columns) through the real producer and checks
-  # every blob round-trips to a valid per-frame PJ::Image. SKIPS if the (~31 MB,
-  # uncommitted) fixture is absent; regenerate it via toolbox_mosaico_live_harness.
-  add_executable(toolbox_mosaico_image_real_fixture_test
-    tests/image_real_fixture_test.cpp
-  )
-  target_link_libraries(toolbox_mosaico_image_real_fixture_test PRIVATE
-    mosaico_ingest_core
-    GTest::gtest_main
-  )
-  target_include_directories(toolbox_mosaico_image_real_fixture_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoImageRealFixtureTest COMMAND toolbox_mosaico_image_real_fixture_test)
 
   # Fetch-completion policy (close/import/error-dedup). Header-only, std only.
   add_executable(toolbox_mosaico_fetch_summary_test
@@ -572,6 +385,15 @@ if(BUILD_TESTING)
     plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
   )
   add_test(NAME toolbox_mosaico_settings_store_test COMMAND toolbox_mosaico_settings_store_test)
+
+  # Plain Arrow target for the SDK-linked live targets below.
+  set(_test_arrow_target "")
+  foreach(_candidate arrow::arrow Arrow::arrow_static Arrow::arrow_shared Arrow::arrow)
+    if(TARGET ${_candidate})
+      set(_test_arrow_target ${_candidate})
+      break()
+    endif()
+  endforeach()
 
   # Live-server smoke: connects to demo.mosaico.dev, looks for an
   # image-ontology topic, pulls a 1-second window. Opt-in: only runs

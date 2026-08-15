@@ -31,8 +31,8 @@
 #include <string>
 #include <vector>
 
-#include "../src/arrow_ingest.hpp"
-#include "../src/image_metadata.hpp"
+#include "../arrow_ingest.hpp"
+#include "../image_metadata.hpp"
 #include "pj_base/builtin/image_codec.hpp"
 
 namespace {

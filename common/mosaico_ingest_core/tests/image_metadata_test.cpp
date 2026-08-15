@@ -10,7 +10,7 @@
 // canonical PJ.Image blob (see image_serialize_test.cpp). The topic metadata
 // only carries the type tag + codec id.
 
-#include "../src/image_metadata.hpp"
+#include "../image_metadata.hpp"
 
 #include <gtest/gtest.h>
 

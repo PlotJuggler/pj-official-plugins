@@ -35,7 +35,7 @@
 #include <thread>
 #include <vector>
 
-#include "../src/arrow_ingest.hpp"
+#include "../arrow_ingest.hpp"
 
 namespace {
 

@@ -1,16 +1,25 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// The cache artifact format: an MCAP container whose message payloads are the
-// fetch's Arrow record batches serialized VERBATIM as encapsulated IPC
-// messages — no per-row re-encode, ever. One channel per topic; the channel
-// metadata stores the ingest ROUTING DECISION (ontology tag, canonical object
-// metadata, timestamp column) so replay never re-derives it; the schema
-// record carries the serialized Arrow schema; two Metadata records carry the
-// canonical source descriptor (provenance, re-hashed by the validator) and
-// the content summary (the finalize completeness pin). The .mcap extension is
-// honest — standard MCAP tooling can inspect a cache artifact — but payloads
-// are Arrow IPC ("arrow_ipc" message encoding), not ROS/protobuf messages.
+// The cache artifact format: an MCAP container storing EXACTLY what the fetch
+// ingested — never a re-encode that could drift. One channel per topic, two
+// channel kinds:
+//   - SCALAR topics ("arrow_ipc" encoding): the post-normalization /
+//     post-timestamp-synthesis Arrow record batches serialized VERBATIM as
+//     encapsulated IPC messages; the schema record carries the serialized
+//     Arrow schema.
+//   - OBJECT topics ("pj_canonical" encoding, no schema record): one message
+//     per row holding the CONVERTED canonical object blob exactly as it was
+//     pushed to the host's ObjectStore, with the exact ingest timestamp as
+//     logTime — replay is byte-identical by construction, and needs no
+//     ontology converter at all.
+// Channel metadata stores the ingest ROUTING DECISION (ontology tag,
+// canonical object metadata, timestamp column) so replay never re-derives
+// it; two Metadata records carry the canonical source descriptor
+// (provenance, re-hashed by the validator) and the content summary (the
+// finalize completeness pin). The .mcap extension is honest — standard MCAP
+// tooling can inspect a cache artifact — but payloads are not ROS/protobuf
+// messages.
 #pragma once
 #include <cstdint>
 #include <filesystem>
@@ -58,7 +67,7 @@ class ArtifactWriter {
   [[nodiscard]] bool open(
       const std::filesystem::path& path, const std::string& canonical_descriptor_json, std::string* error);
 
-  /// Register a topic; returns the channel id to pass to writeBatch.
+  /// Register a SCALAR topic; returns the channel id to pass to writeBatch.
   [[nodiscard]] std::optional<std::uint16_t> addTopic(
       const ArtifactTopic& topic, const arrow::Schema& schema, std::string* error);
 
@@ -66,6 +75,16 @@ class ArtifactWriter {
   /// is the batch's representative timestamp (first row's, by convention).
   [[nodiscard]] bool writeBatch(
       std::uint16_t channel_id, const arrow::RecordBatch& batch, std::int64_t log_time_ns, std::string* error);
+
+  /// Register an OBJECT topic (canonical-blob channel, no Arrow schema);
+  /// returns the channel id to pass to writeObjectSample.
+  [[nodiscard]] std::optional<std::uint16_t> addObjectTopic(const ArtifactTopic& topic, std::string* error);
+
+  /// Append one canonical object blob (one MCAP message = one row), with the
+  /// EXACT timestamp the row was pushed to the host with.
+  [[nodiscard]] bool writeObjectSample(
+      std::uint16_t channel_id, std::int64_t log_time_ns, const std::uint8_t* data, std::size_t size,
+      std::string* error);
 
   /// Embed the content summary, close the container (footer + summary
   /// section), and report the producer counts for the finalize pin.
@@ -90,12 +109,23 @@ class ArtifactWriter {
     const std::filesystem::path& file, const std::string& hex,
     const std::optional<SessionFileCache::ExpectedContent>& expected, std::string* error);
 
-/// One topic's replayable content, as read back from an artifact.
+/// One canonical object blob, with the exact timestamp it was ingested at.
+struct ArtifactObjectSample {
+  std::int64_t log_time_ns = 0;
+  std::vector<std::uint8_t> payload;
+};
+
+/// One topic's replayable content, as read back from an artifact. Exactly one
+/// of the two representations is populated, per `is_object`.
 struct ArtifactTopicData {
   ArtifactTopic info;
+  bool is_object = false;
+  // Scalar channels:
   std::shared_ptr<arrow::Schema> schema;
   std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
   std::vector<std::int64_t> batch_log_times_ns;  // parallel to `batches`
+  // Object channels:
+  std::vector<ArtifactObjectSample> object_samples;
 };
 
 /// Read a whole artifact back for replay. Returns the topics in channel-id

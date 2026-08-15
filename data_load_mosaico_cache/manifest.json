@@ -1,0 +1,22 @@
+{
+  "id": "mosaico-cache-loader",
+  "name": "Mosaico Cache Loader",
+  "version": "0.1.0",
+  "description": "Replays Mosaico layout re-import cache artifacts (Arrow-in-MCAP session files produced by the Mosaico Cloud Server toolbox). Not a general MCAP loader; reached through source promotion and layout re-import, never file drag-and-drop.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "data_loader",
+  "tags": [
+    "mosaico",
+    "cache",
+    "loader"
+  ],
+  "file_extensions": [
+    ".pjmosaico"
+  ],
+  "min_plotjuggler_version": "3.999.2"
+}

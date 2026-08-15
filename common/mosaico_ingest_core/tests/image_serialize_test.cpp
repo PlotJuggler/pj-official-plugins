@@ -36,7 +36,7 @@
 #include <string>
 #include <vector>
 
-#include "../src/arrow_ingest.hpp"
+#include "../arrow_ingest.hpp"
 #include "pj_base/builtin/image_codec.hpp"
 
 namespace {

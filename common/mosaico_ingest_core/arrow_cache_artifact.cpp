@@ -27,6 +27,9 @@ namespace {
 
 constexpr const char* kSchemaEncoding = "arrow_ipc_schema";
 constexpr const char* kMessageEncoding = "arrow_ipc";
+// Object channels: one message per row, payload = the canonical blob exactly
+// as pushed to the ObjectStore. schemaId 0 (no schema record).
+constexpr const char* kObjectMessageEncoding = "pj_canonical";
 // Channel-metadata keys for the stored routing decision.
 constexpr const char* kMetaOntologyTag = "mosaico:ontology_tag";
 constexpr const char* kMetaCanonicalMetadata = "mosaico:canonical_metadata";
@@ -239,6 +242,50 @@ std::optional<std::uint16_t> ArtifactWriter::addTopic(
   impl_->writer.addChannel(channel);
   ++impl_->topics;
   return channel.id;
+}
+
+std::optional<std::uint16_t> ArtifactWriter::addObjectTopic(const ArtifactTopic& topic, std::string* error) {
+  if (!impl_->open) {
+    if (error) {
+      *error = "artifact writer is not open";
+    }
+    return std::nullopt;
+  }
+  mcap::Channel channel(
+      topic.name, kObjectMessageEncoding, /*schemaId=*/0,
+      {{kMetaOntologyTag, topic.ontology_tag},
+       {kMetaCanonicalMetadata, topic.canonical_metadata},
+       {kMetaTimestampColumn, topic.timestamp_column}});
+  impl_->writer.addChannel(channel);
+  ++impl_->topics;
+  return channel.id;
+}
+
+bool ArtifactWriter::writeObjectSample(
+    std::uint16_t channel_id, std::int64_t log_time_ns, const std::uint8_t* data, std::size_t size,
+    std::string* error) {
+  if (!impl_->open) {
+    if (error) {
+      *error = "artifact writer is not open";
+    }
+    return false;
+  }
+  mcap::Message message;
+  message.channelId = channel_id;
+  message.sequence = 0;
+  message.logTime = static_cast<mcap::Timestamp>(log_time_ns);
+  message.publishTime = message.logTime;
+  message.dataSize = static_cast<std::uint64_t>(size);
+  message.data = reinterpret_cast<const std::byte*>(data);
+  const auto status = impl_->writer.write(message);
+  if (!status.ok()) {
+    if (error) {
+      *error = "artifact object write failed: " + status.message;
+    }
+    return false;
+  }
+  ++impl_->rows;  // one object sample = one row
+  return true;
 }
 
 bool ArtifactWriter::writeBatch(
@@ -475,6 +522,12 @@ bool readArtifact(
     state.data.info.ontology_tag = meta(kMetaOntologyTag);
     state.data.info.canonical_metadata = meta(kMetaCanonicalMetadata);
     state.data.info.timestamp_column = meta(kMetaTimestampColumn);
+    if (channel->messageEncoding == kObjectMessageEncoding) {
+      // Object channel: canonical blobs, no Arrow schema to decode.
+      state.data.is_object = true;
+      state.schema_ok = true;
+      continue;
+    }
     const auto schema_it = all_schemas.find(channel->schemaId);
     if (schema_it == all_schemas.end()) {
       reader.close();
@@ -521,6 +574,14 @@ bool readArtifact(
         *error = "message on unknown channel " + std::to_string(channel_id);
       }
       return false;
+    }
+    if (it->second.data.is_object) {
+      // Object channel: the payload IS the canonical blob; copy it verbatim.
+      const auto* bytes = reinterpret_cast<const std::uint8_t*>(view.message.data);
+      it->second.data.object_samples.push_back(
+          {static_cast<std::int64_t>(view.message.logTime),
+           std::vector<std::uint8_t>(bytes, bytes + view.message.dataSize)});
+      continue;
     }
     // Copy the payload into an OWNED, arrow-allocated (8-byte-aligned) buffer:
     // the message view's memory is transient (reused as iteration advances) and

@@ -28,6 +28,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/laser_scan)
   add_subdirectory(common/pointcloud_color)
   add_subdirectory(common/toolbox_preview)
+  add_subdirectory(common/mosaico_ingest_core)
   # This block always adds every plugin (no PJ_BUILD_PLUGIN filtering), so its
   # consumers data_load_mf4/data_load_blf are always present — add their shared
   # can_dbc unconditionally too. (The standalone block below, which DOES honor
@@ -74,6 +75,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
     add_subdirectory(tools/anomaly_runner)
   endif()
   add_subdirectory(toolbox_mosaico)
+  add_subdirectory(data_load_mosaico_cache)
   add_subdirectory(toolbox_transform_editor)
   return()
 endif()
@@ -199,6 +201,13 @@ else()
   add_subdirectory(common/toolbox_preview)
 endif()
 
+# Shared Mosaico ingest + layout re-import core: consumed by the Flight-bound
+# toolbox and the Flight-free cache loader. Skips itself when Arrow is absent.
+set(PJ_MOSAICO_INGEST_CORE_CONSUMERS toolbox_mosaico data_load_mosaico_cache)
+if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_MOSAICO_INGEST_CORE_CONSUMERS)
+  add_subdirectory(common/mosaico_ingest_core)
+endif()
+
 # ---------------------------------------------------------------------------
 # Plugins — use -DPJ_BUILD_PLUGIN=<dir> to build a single plugin (CI mode),
 # or omit to build all plugins (local development).
@@ -242,4 +251,5 @@ else()
     add_subdirectory(tools/anomaly_runner)
   endif()
   add_subdirectory(toolbox_mosaico)
+  add_subdirectory(data_load_mosaico_cache)
 endif()

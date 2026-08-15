@@ -66,18 +66,14 @@ std::shared_ptr<arrow::RecordBatch> scalarBatch(std::int64_t t0, int rows) {
   return arrow::RecordBatch::Make(schema, rows, {t_array, v_array});
 }
 
-std::shared_ptr<arrow::RecordBatch> blobBatch(int rows) {
-  arrow::BinaryBuilder blob_builder;
-  for (int i = 0; i < rows; ++i) {
-    EXPECT_TRUE(blob_builder.Append(std::string(64, static_cast<char>('a' + i))).ok());
-  }
-  std::shared_ptr<arrow::Array> blob_array;
-  EXPECT_TRUE(blob_builder.Finish(&blob_array).ok());
-  const auto schema = arrow::schema({arrow::field("payload", arrow::binary())});
-  return arrow::RecordBatch::Make(schema, rows, {blob_array});
+// A recognizable fake canonical blob (real codecs are exercised by the
+// arrow_ingest serialize suites; the artifact stores bytes verbatim).
+std::vector<std::uint8_t> blobPayload(int seed) {
+  return std::vector<std::uint8_t>(64, static_cast<std::uint8_t>('a' + seed));
 }
 
-// Write a complete two-topic artifact at `path`; returns the producer counts.
+// Write a complete artifact at `path`: one scalar topic (2 batches) and one
+// object topic (2 canonical-blob samples). Returns the producer counts.
 SessionFileCache::ExpectedContent writeArtifact(const fs::path& path, const mosaico::SourceDescriptor& d) {
   ArtifactWriter writer;
   std::string error;
@@ -86,17 +82,20 @@ SessionFileCache::ExpectedContent writeArtifact(const fs::path& path, const mosa
       ArtifactTopic{.name = "/imu", .ontology_tag = "", .canonical_metadata = "", .timestamp_column = "timestamp_ns"},
       *scalarBatch(0, 1)->schema(), &error);
   EXPECT_TRUE(imu.has_value()) << error;
-  const auto blob = writer.addTopic(
+  const auto blob = writer.addObjectTopic(
       ArtifactTopic{
           .name = "/blob",
           .ontology_tag = "image",
           .canonical_metadata = R"({"builtin_object_type":"kImage"})",
           .timestamp_column = ""},
-      *blobBatch(1)->schema(), &error);
+      &error);
   EXPECT_TRUE(blob.has_value()) << error;
   EXPECT_TRUE(writer.writeBatch(*imu, *scalarBatch(100, 3), 100, &error)) << error;
   EXPECT_TRUE(writer.writeBatch(*imu, *scalarBatch(200, 2), 200, &error)) << error;
-  EXPECT_TRUE(writer.writeBatch(*blob, *blobBatch(2), 150, &error)) << error;
+  const auto blob0 = blobPayload(0);
+  const auto blob1 = blobPayload(1);
+  EXPECT_TRUE(writer.writeObjectSample(*blob, 150, blob0.data(), blob0.size(), &error)) << error;
+  EXPECT_TRUE(writer.writeObjectSample(*blob, 250, blob1.data(), blob1.size(), &error)) << error;
   SessionFileCache::ExpectedContent expected;
   EXPECT_TRUE(writer.close(&expected, &error)) << error;
   return expected;
@@ -127,6 +126,7 @@ TEST(ArrowCacheArtifact, WriteValidateReadRoundTrip) {
   EXPECT_EQ(imu.info.name, "/imu");
   EXPECT_EQ(imu.info.timestamp_column, "timestamp_ns");
   EXPECT_TRUE(imu.info.ontology_tag.empty());
+  EXPECT_FALSE(imu.is_object);
   ASSERT_EQ(imu.batches.size(), 2u);
   EXPECT_TRUE(imu.batches[0]->Equals(*scalarBatch(100, 3)));
   EXPECT_TRUE(imu.batches[1]->Equals(*scalarBatch(200, 2)));
@@ -136,8 +136,13 @@ TEST(ArrowCacheArtifact, WriteValidateReadRoundTrip) {
   EXPECT_EQ(blob.info.name, "/blob");
   EXPECT_EQ(blob.info.ontology_tag, "image");
   EXPECT_EQ(blob.info.canonical_metadata, R"({"builtin_object_type":"kImage"})");
-  ASSERT_EQ(blob.batches.size(), 1u);
-  EXPECT_TRUE(blob.batches[0]->Equals(*blobBatch(2)));
+  EXPECT_TRUE(blob.is_object);
+  EXPECT_TRUE(blob.batches.empty());
+  ASSERT_EQ(blob.object_samples.size(), 2u);
+  EXPECT_EQ(blob.object_samples[0].log_time_ns, 150);
+  EXPECT_EQ(blob.object_samples[0].payload, blobPayload(0));
+  EXPECT_EQ(blob.object_samples[1].log_time_ns, 250);
+  EXPECT_EQ(blob.object_samples[1].payload, blobPayload(1));
 }
 
 TEST(ArrowCacheArtifact, ValidatorRejectsWrongIdentity) {
