@@ -136,6 +136,9 @@ PJ::Expected<PJ::sdk::DataSourceHandle> FetchWorker::datasetForFetch(
       return PJ::unexpected(std::move(ds).error());
     }
     fetch_dataset_ = *ds;
+    if (datasetCreated) {
+      datasetCreated(*fetch_dataset_);
+    }
   }
   return *fetch_dataset_;
 }

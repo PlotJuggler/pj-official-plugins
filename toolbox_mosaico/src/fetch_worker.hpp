@@ -149,6 +149,11 @@ class FetchWorker {
   /// reason in `detail`. Fired at most once per Download, possibly from a
   /// background thread (and possibly re-entrantly from the promotion call).
   std::function<void(bool promoted, std::string detail)> promotionSettled;
+  /// Fired once per Download when the batch dataset is created, BEFORE any
+  /// publication into it. The descriptor-import job forwards it as the ABI's
+  /// on_dataset; the dialog leaves it unset. Fires under host_write_mu_ on a
+  /// pool/worker thread.
+  std::function<void(PJ::sdk::DataSourceHandle dataset)> datasetCreated;
 
  private:
   friend class testing::FetchWorkerTestAccess;

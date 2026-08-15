@@ -32,6 +32,7 @@
 
 #include "cert_dialog_ui.hpp"
 #include "core/time_format.h"
+#include "credential_resolve.hpp"
 #include "date_filter.h"
 #include "fetch_summary.h"
 #include "fetch_worker.hpp"
@@ -51,39 +52,8 @@ namespace mosaico {
 
 namespace {
 
-std::string credentialsSettingsPrefix(const std::string& uri) {
-  return "mosaico/server_cache/" + normalizeServerKey(uri) + "/";
-}
-
-ServerCredentials loadCredentialsForUri(PJ::sdk::SettingsView view, const std::string& uri) {
-  SettingsStore settings(view);
-  const std::string prefix = credentialsSettingsPrefix(uri);
-  ServerCredentials creds;
-  creds.cert_path = settings.getString(prefix + "cert_path");
-  creds.api_key = settings.getString(prefix + "api_key");
-  creds.allow_insecure = settings.getBool(prefix + "allow_insecure", false);
-  return creds;
-}
-
-void saveCredentialsForUri(PJ::sdk::SettingsView view, const std::string& uri, const ServerCredentials& creds) {
-  SettingsStore settings(view);
-  const std::string prefix = credentialsSettingsPrefix(uri);
-  settings.setString(prefix + "cert_path", creds.cert_path);
-  settings.setString(prefix + "api_key", creds.api_key);
-  settings.setBool(prefix + "allow_insecure", creds.allow_insecure);
-}
-
-// Load per-server credentials, falling back to the MOSAICO_API_KEY environment
-// variable when no key is cached for this server (PJ3 automation parity).
-ServerCredentials resolveCredentials(PJ::sdk::SettingsView view, const std::string& uri) {
-  ServerCredentials creds = loadCredentialsForUri(view, uri);
-  if (creds.api_key.empty()) {
-    if (auto env = PJ::sdk::getEnv("MOSAICO_API_KEY")) {
-      creds.api_key = *env;
-    }
-  }
-  return creds;
-}
+// Per-server credential load/save/resolve live in credential_resolve.{hpp,cpp}
+// (shared with the descriptor-import provider).
 
 // ---------------------------------------------------------------------------
 // Info-panel / table formatting helpers (ported from PJ3 data_view_panel.cpp

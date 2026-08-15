@@ -75,6 +75,8 @@ set(MOSAICO_SOURCES
   src/toolbox_mosaico.cpp
   src/mosaico_dialog.cpp
   src/fetch_worker.cpp
+  src/credential_resolve.cpp
+  src/descriptor_import_provider.cpp
   src/settings_store.cpp
   src/server_history.cpp
   src/core/time_format.cpp
