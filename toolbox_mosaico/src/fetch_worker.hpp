@@ -103,9 +103,11 @@ class FetchWorker {
   /// artifact and, on full success, promoted to a file-backed dataset via
   /// pj.source_promotion.v1 so a saved layout can re-import it. Tee/promotion
   /// problems NEVER fail the fetch — it completes eager-only.
+  /// `cache_root_override`, when non-empty, is the user-configured cache
+  /// directory the artifact is written under (empty = standardCacheRoot).
   void pullTopicsAsync(
       std::string sequence_name, std::vector<std::string> topic_names, std::int64_t start_ns, std::int64_t end_ns,
-      std::optional<SourceDescriptor> descriptor = std::nullopt);
+      std::optional<SourceDescriptor> descriptor = std::nullopt, std::string cache_root_override = {});
 
   std::function<void(ConnectResult result)> connectFinished;
   /// Full SequenceInfo entries, including user_metadata (used by the Lua

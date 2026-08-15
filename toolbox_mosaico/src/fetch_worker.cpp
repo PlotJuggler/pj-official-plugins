@@ -469,7 +469,7 @@ void FetchWorker::fetchTopicMetadataAsync(TopicRef topic) {
 
 void FetchWorker::pullTopicsAsync(
     std::string sequence_name, std::vector<std::string> topic_names, std::int64_t start_ns, std::int64_t end_ns,
-    std::optional<SourceDescriptor> descriptor) {
+    std::optional<SourceDescriptor> descriptor, std::string cache_root_override) {
   if (!client_ && !pull_topics_override_) {
     for (const auto& t : topic_names) {
       if (pullFinished) {
@@ -535,7 +535,7 @@ void FetchWorker::pullTopicsAsync(
   // host_write_mu_, which serializes them across the pool threads.
   std::shared_ptr<CacheTeeSession> tee;
   if (descriptor.has_value() && promotion_provider_ && promotion_provider_().valid()) {
-    tee = std::make_shared<CacheTeeSession>(*descriptor);
+    tee = std::make_shared<CacheTeeSession>(*descriptor, std::filesystem::path(cache_root_override));
   }
 
   auto on_done = [this, sequence_name, state, imported_any, any_failed, tee](

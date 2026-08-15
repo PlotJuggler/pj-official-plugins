@@ -41,6 +41,7 @@
 #include "name_filter.h"
 #include "selection_merge.h"
 #include "server_history.h"
+#include "session_file_cache.hpp"
 #include "settings_store.hpp"
 #include "source_descriptor.hpp"
 #include "table_sort.h"
@@ -366,6 +367,14 @@ void MosaicoDialog::initFromSettings() {
   state_.restore_selected_sequence = settings.getString("mosaico/selected_sequence");
   state_.restore_selected_topics = settings.getStringList("mosaico/selected_topics");
   state_.topics_all = settings.getBool("mosaico/topics_all", false);
+  state_.cache_downloads = settings.getBool("mosaico/cache_enabled", true);
+  state_.cache_directory = settings.getString("mosaico/cache_directory");
+  if (state_.cache_directory.empty()) {
+    // Pre-fill with the resolved standard root (mcap_cloud parity: the field
+    // always shows the effective destination). Left empty only when even the
+    // standard root is unresolvable.
+    state_.cache_directory = standardCacheRoot(nullptr).string();
+  }
 
   if (!history.empty()) {
     const std::string uri = state_.uri;
@@ -492,6 +501,10 @@ void MosaicoDialog::setPromotionProvider(std::function<PJ::SourcePromotionHostVi
   worker_->setPromotionProvider(std::move(provider));
 }
 
+void MosaicoDialog::setConnectSuccessRecorder(std::function<bool(const std::string& uri)> recorder) {
+  trust_recorder_ = std::move(recorder);
+}
+
 std::string MosaicoDialog::widget_data() {
   std::lock_guard<std::mutex> lock(state_.mu);
   PJ::WidgetData wd;
@@ -608,6 +621,18 @@ std::string MosaicoDialog::widget_data() {
         "datePicker", formatDateOnlyIso(state_.global_min_ts_ns),
         state_.global_max_ts_ns > 0 ? formatDateOnlyIso(state_.global_max_ts_ns) : "");
   }
+
+  // Local cache controls (mcap_cloud's Export-MCAP shape): the directory
+  // field + its label + Browse follow the toggle, and everything freezes
+  // during a fetch (the running Download already latched its destination).
+  wd.setChecked("checkSaveCache", state_.cache_downloads);
+  wd.setText("cacheDirectory", state_.cache_directory);
+  const bool cache_dir_enabled = state_.cache_downloads && !state_.fetch_active;
+  wd.setEnabled("cacheDirectory", cache_dir_enabled);
+  wd.setEnabled("labelCacheDirectory", cache_dir_enabled);
+  wd.setFolderPicker("buttonBrowseCacheDir", "Browse...", "Select cache directory");
+  wd.setEnabled("buttonBrowseCacheDir", cache_dir_enabled);
+  wd.setEnabled("checkSaveCache", !state_.fetch_active);
 
   // Button enable/disable (PJ3 parity): Connect is inert while a connect or a
   // fetch is in flight; Download needs a sequence + topic(s) and an idle
@@ -891,6 +916,12 @@ bool MosaicoDialog::onTextChanged(std::string_view widget_name, std::string_view
     state_.query_text = std::string(text);
     return true;
   }
+  if (widget_name == "cacheDirectory") {
+    // Empty = fall back to the standard cache root (the clear button's path);
+    // persisted with the rest of the panel state at the usual persist points.
+    state_.cache_directory = std::string(text);
+    return true;
+  }
   // Cert sub-dialog input widgets: panel_engine fires onTextChanged for
   // each text/checkable child after the user clicks OK,
   // followed by an onClicked("subDialogAccepted") to commit. We just
@@ -1133,27 +1164,40 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
       state_.speed_samples.clear();
       state_.topic_fetch_status.clear();
     }
+    bool cache_downloads = true;
+    std::string cache_root;
+    {
+      std::lock_guard<std::mutex> lock(state_.mu);
+      cache_downloads = state_.cache_downloads;
+      cache_root = state_.cache_directory;
+    }
     worker_->resetCancel();
     notify(PJ::ToolboxMessageLevel::kInfo, fmt::format("Fetching {} topic(s)…", topics.size()));
     // The durable re-download descriptor: the EXACT resolved request —
     // sequence, explicit topic list, absolute time window (never slider
     // proportions). The worker arms the cache tee with it when the host
     // offers source promotion; an uncacheable descriptor simply disarms.
-    SourceDescriptor descriptor;
-    descriptor.kind = "mosaico-sequence";
-    descriptor.server_uri = server_uri;
-    descriptor.sequence = seq;
-    descriptor.topics = topics;
-    descriptor.start_ns = start;
-    descriptor.end_ns = end;
-    descriptor.display_name = seq;
+    // The Cache-download toggle OFF withholds the descriptor entirely, so
+    // the Download stays eager-only and no artifact is written.
+    std::optional<SourceDescriptor> descriptor;
+    if (cache_downloads) {
+      SourceDescriptor d;
+      d.kind = "mosaico-sequence";
+      d.server_uri = server_uri;
+      d.sequence = seq;
+      d.topics = topics;
+      d.start_ns = start;
+      d.end_ns = end;
+      d.display_name = seq;
+      descriptor = std::move(d);
+    }
     // Multi-topic parallel pull (Step 10.2). Single topic still goes
     // via this path — the SDK handles the degenerate 1-topic case fine
     // and the per-topic completion signals are uniform.
-    postCommand(
-        [w = worker_.get(), seq, topics = std::move(topics), start, end, descriptor = std::move(descriptor)]() mutable {
-          w->pullTopicsAsync(seq, std::move(topics), start, end, std::move(descriptor));
-        });
+    postCommand([w = worker_.get(), seq, topics = std::move(topics), start, end, descriptor = std::move(descriptor),
+                 cache_root = std::move(cache_root)]() mutable {
+      w->pullTopicsAsync(seq, std::move(topics), start, end, std::move(descriptor), std::move(cache_root));
+    });
     persistState();  // crash-resilient: remember query + range at fetch time
     return true;
   }
@@ -1199,7 +1243,30 @@ bool MosaicoDialog::onToggled(std::string_view widget_name, bool checked) {
     }
     return true;
   }
+  if (widget_name == "checkSaveCache") {
+    {
+      std::lock_guard<std::mutex> lock(state_.mu);
+      state_.cache_downloads = checked;
+    }
+    persistState();
+    return true;
+  }
   return false;
+}
+
+bool MosaicoDialog::onFolderSelected(std::string_view widget_name, std::string_view path) {
+  // The host ran the directory chooser for buttonBrowseCacheDir (declared as
+  // a folder picker in widget_data) and hands back the chosen path. An empty
+  // path means the user cancelled — leave the configured directory untouched.
+  if (widget_name != "buttonBrowseCacheDir" || path.empty()) {
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> lock(state_.mu);
+    state_.cache_directory = std::string(path);
+  }
+  persistState();
+  return true;
 }
 
 bool MosaicoDialog::onValueChanged(std::string_view /*widget_name*/, int /*value*/) {
@@ -1445,6 +1512,18 @@ void MosaicoDialog::onConnectFinished(ConnectResult result) {
     history = promoteToHead(history, uri, /*cap=*/20);
     settings.setStringList("mosaico/server_history", history);
 
+    // Layout re-import trust bootstrap: a successful interactive connect is
+    // the ONLY event that marks an origin safe to auto-import against —
+    // recorded about the server that actually answered. A failed durable
+    // ledger write means the origin is NOT trusted anywhere (no silent
+    // transient trust), so say so instead of pretending.
+    if (trust_recorder_ && !trust_recorder_(uri)) {
+      notify(
+          PJ::ToolboxMessageLevel::kWarning,
+          "Mosaico: could not persist the trusted-server list; layout re-imports from this "
+          "server will keep asking for confirmation");
+    }
+
     notify(PJ::ToolboxMessageLevel::kInfo, status);
     postCommand([w = worker_.get()] { w->listSequencesAsync(); });
     return;
@@ -1468,6 +1547,8 @@ void MosaicoDialog::persistState() {
   std::string selected_sequence;
   std::vector<std::string> selected_topics;
   bool topics_all = false;
+  bool cache_downloads = true;
+  std::string cache_directory;
   {
     std::lock_guard<std::mutex> lock(state_.mu);
     query = state_.query_text;
@@ -1479,6 +1560,8 @@ void MosaicoDialog::persistState() {
     selected_sequence = state_.selected_sequence;
     selected_topics = state_.selected_topics;
     topics_all = state_.topics_all;
+    cache_downloads = state_.cache_downloads;
+    cache_directory = state_.cache_directory;
   }
   SettingsStore settings(settings_);
   settings.setString("mosaico/metadata_query", query);
@@ -1487,6 +1570,8 @@ void MosaicoDialog::persistState() {
   settings.setString("mosaico/selected_sequence", selected_sequence);
   settings.setStringList("mosaico/selected_topics", selected_topics);
   settings.setBool("mosaico/topics_all", topics_all);
+  settings.setBool("mosaico/cache_enabled", cache_downloads);
+  settings.setString("mosaico/cache_directory", cache_directory);
 }
 
 void MosaicoDialog::notify(PJ::ToolboxMessageLevel level, const std::string& message) {

@@ -96,6 +96,14 @@ struct DialogState {
   // mode flips, so switching to All and back keeps the custom pick.
   bool topics_all = false;
 
+  // Local cache controls (saveCacheRow — mcap_cloud's Export-MCAP shape,
+  // applied to the layout re-import artifact). cache_downloads gates the
+  // tee at Download start; cache_directory is where artifacts live,
+  // pre-filled with the resolved standard root so the user always sees the
+  // effective destination (empty falls back to standardCacheRoot).
+  bool cache_downloads = true;
+  std::string cache_directory;
+
   // PJ3 parity (main_window.cpp:1051-1052,1064-1065): the last sequence + topic
   // selection is persisted and re-selected on the next connect. These hold the
   // restored values until the matching sequence/topic list arrives; the
@@ -232,6 +240,7 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   bool onTextChanged(std::string_view widget_name, std::string_view text) override;
   bool onClicked(std::string_view widget_name) override;
   bool onToggled(std::string_view widget_name, bool checked) override;
+  bool onFolderSelected(std::string_view widget_name, std::string_view path) override;
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override;
   bool onValueChanged(std::string_view widget_name, int value) override;
   bool onRangeChanged(std::string_view widget_name, int lower, int upper) override;
@@ -261,6 +270,15 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   // (+ auto-connect). Called by MosaicoToolbox during bind(). An unbound view
   // (host omits the optional service) yields defaults gracefully.
   void setSettings(PJ::sdk::SettingsView settings);
+
+  // Wires the trusted-origin recorder invoked on every successful panel
+  // connect (the layout re-import trust bootstrap: only an interactive
+  // connect marks a server safe to auto-import against). The callback
+  // returns false when the durable ledger write failed — the dialog then
+  // warns instead of holding silent transient trust. Optional; unset skips
+  // recording. Called by MosaicoToolbox during bind(); runs on the GUI
+  // thread inside onConnectFinished.
+  void setConnectSuccessRecorder(std::function<bool(const std::string& uri)> recorder);
 
  private:
   // Restore persisted query/range/server + auto-connect. Runs once when the
@@ -349,6 +367,8 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   // Host-backed QSettings-like store (pj.settings.v1). Default-constructed
   // unbound until setSettings(); an unbound view reads defaults / drops writes.
   PJ::sdk::SettingsView settings_;
+  // Trusted-origin recorder (see setConnectSuccessRecorder). GUI thread only.
+  std::function<bool(const std::string& uri)> trust_recorder_;
 };
 
 }  // namespace mosaico
