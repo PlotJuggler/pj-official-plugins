@@ -313,7 +313,8 @@ MosaicoDialog::MosaicoDialog() : worker_(std::make_unique<FetchWorker>()) {
       std::lock_guard<std::mutex> lock(state_.mu);
       state_.cancelling = true;
       state_.fetch_status = "Cancelling…";
-      for (const std::string& tname : state_.selected_topics) {
+      const std::vector<std::string>& stop_fetched = state_.topics_all ? state_.topic_names : state_.selected_topics;
+      for (const std::string& tname : stop_fetched) {
         auto it = state_.topic_fetch_status.find(tname);
         if (it == state_.topic_fetch_status.end() || it->second.empty() || it->second == "downloading…") {
           state_.topic_fetch_status[tname] = "Cancelling…";
@@ -349,6 +350,7 @@ void MosaicoDialog::initFromSettings() {
   // sequence/topic list arrives from the auto-connect below.
   state_.restore_selected_sequence = settings.getString("mosaico/selected_sequence");
   state_.restore_selected_topics = settings.getStringList("mosaico/selected_topics");
+  state_.topics_all = settings.getBool("mosaico/topics_all", false);
 
   if (!history.empty()) {
     const std::string uri = state_.uri;
@@ -593,8 +595,8 @@ std::string MosaicoDialog::widget_data() {
   // worker; Cancel is live only during a fetch.
   wd.setEnabled("buttonConnect", !state_.connecting && !state_.fetch_active);
   wd.setEnabled(
-      "buttonFetch",
-      state_.connected && !state_.selected_sequence.empty() && !state_.selected_topics.empty() && !state_.fetch_active);
+      "buttonFetch", state_.connected && !state_.selected_sequence.empty() &&
+                         (state_.topics_all || !state_.selected_topics.empty()) && !state_.fetch_active);
   // Per-column reload buttons re-list without a disconnect/reconnect (PJ3
   // main_window.cpp:933-945): live only while connected and idle. The topic
   // reload additionally needs a selected sequence (its topics are what reload).
@@ -694,6 +696,7 @@ std::string MosaicoDialog::widget_data() {
   {
     std::vector<std::vector<std::string>> rows;
     std::vector<int> visible;
+    std::vector<int> disabled;
     rows.reserve(state_.topic_names.size());
     for (size_t i = 0; i < state_.topic_names.size(); ++i) {
       const auto& name = state_.topic_names[i];
@@ -702,12 +705,24 @@ std::string MosaicoDialog::widget_data() {
         size_text = formatBytes(state_.topic_infos[i].total_size_bytes);
       }
       rows.push_back({name, size_text});
+      // All mode: every row is inert (the mode already selects everything).
+      if (state_.topics_all) {
+        disabled.push_back(static_cast<int>(i));
+      }
       if (nameMatches(name, state_.topic_filter, state_.topic_filter_regex)) {
         visible.push_back(static_cast<int>(i));
       }
     }
     wd.setTableHeaders("topicTable", {"Name", "Size"});
     wd.setTableRows("topicTable", rows);
+    wd.setChecked("radioTopicsAll", state_.topics_all);
+    wd.setChecked("radioTopicsCustom", !state_.topics_all);
+    // The table stays ENABLED in both modes — disabling the QTableWidget
+    // itself also kills its scrollbars, making a long list unbrowsable in All
+    // mode. Inertness is per-row: disabled_rows clears each item's
+    // ItemIsEnabled|ItemIsSelectable, so All mode is read-only but scrollable.
+    // Always delivered (empty in Custom mode) so flipping back re-enables.
+    wd.setDisabledRows("topicTable", disabled);
     wd.setVisibleRows("topicTable", visible);
     if (state_.topic_sort_col >= 0) {
       wd.setTableSortIndicator("topicTable", state_.topic_sort_col, state_.topic_sort_asc);
@@ -717,8 +732,14 @@ std::string MosaicoDialog::widget_data() {
     }
     if (state_.topics_loading) {
       wd.setLabel("topicHeader", "Topics — loading…");
-    } else {
+    } else if (state_.topic_names.empty()) {
       wd.setLabel("topicHeader", "Topics");
+    } else if (state_.topics_all) {
+      wd.setLabel("topicHeader", fmt::format("Topics (all {})", state_.topic_names.size()));
+    } else {
+      // Selection feedback: how many topics the Download will actually carry.
+      wd.setLabel(
+          "topicHeader", fmt::format("Topics ({}/{})", state_.selected_topics.size(), state_.topic_names.size()));
     }
   }
 
@@ -1038,11 +1059,19 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
         return true;
       }
       seq = state_.selected_sequence;
-      // Only fetch topics that still exist in the current listing — a selection
-      // preserved across a filter or re-list may reference a topic that's gone.
-      for (const std::string& tname : state_.selected_topics) {
-        if (std::find(state_.topic_names.begin(), state_.topic_names.end(), tname) != state_.topic_names.end()) {
-          topics.push_back(tname);
+      if (state_.topics_all) {
+        // All mode: request every listed topic EXPLICITLY (never an "empty =
+        // all" shorthand) so the fetch ledger, progress and any durable
+        // record of this download see the same list the user saw.
+        topics = state_.topic_names;
+      } else {
+        // Only fetch topics that still exist in the current listing — a
+        // selection preserved across a filter or re-list may reference a
+        // topic that's gone.
+        for (const std::string& tname : state_.selected_topics) {
+          if (std::find(state_.topic_names.begin(), state_.topic_names.end(), tname) != state_.topic_names.end()) {
+            topics.push_back(tname);
+          }
         }
       }
       // Step 7: convert proportional 0..100 % into absolute nanoseconds
@@ -1101,9 +1130,11 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
       state_.cancelling = true;
       // Reflect the cancel in the Info-panel progress header immediately, and
       // mark every not-yet-finished topic "Cancelling…" so the per-topic view
-      // updates without waiting for allFetchesComplete (PJ3 parity).
+      // updates without waiting for allFetchesComplete (PJ3 parity). In All
+      // mode the batch carries every listed topic, not the pick.
       state_.fetch_status = "Cancelling…";
-      for (const std::string& tname : state_.selected_topics) {
+      const std::vector<std::string>& fetched = state_.topics_all ? state_.topic_names : state_.selected_topics;
+      for (const std::string& tname : fetched) {
         auto it = state_.topic_fetch_status.find(tname);
         if (it == state_.topic_fetch_status.end() || it->second.empty() || it->second == "downloading…") {
           state_.topic_fetch_status[tname] = "Cancelling…";
@@ -1121,6 +1152,17 @@ bool MosaicoDialog::onToggled(std::string_view widget_name, bool checked) {
     std::lock_guard<std::mutex> lock(state_.mu);
     state_.pending_allow_insecure = checked;
     state_.has_pending_allow_insecure_edit = true;
+    return true;
+  }
+  if (widget_name == "radioTopicsAll" || widget_name == "radioTopicsCustom") {
+    // The All|Custom topic-selection mode (radio pair -> DualOptionsWidget).
+    // Only the newly-CHECKED radio moves the mode (the unchecked partner's
+    // `false` arrives too and is ignored); the render tick re-applies the
+    // table enablement and header count for the new mode.
+    if (checked) {
+      std::lock_guard<std::mutex> lock(state_.mu);
+      state_.topics_all = (widget_name == "radioTopicsAll");
+    }
     return true;
   }
   return false;
@@ -1298,6 +1340,12 @@ bool MosaicoDialog::onSelectionChanged(std::string_view widget_name, const std::
     std::vector<std::string> need_metadata;
     {
       std::lock_guard<std::mutex> lock(state_.mu);
+      if (state_.topics_all) {
+        // All mode: rows are inert, so any report here is programmatic noise
+        // (e.g. a re-apply after rows flip disabled). Ignoring it preserves
+        // the custom pick across All -> Custom round trips.
+        return true;
+      }
       seq = state_.selected_sequence;
       state_.selected_topics = mosaico::mergeReportedSelection(
           state_.selected_topics, selected, state_.topic_names,
@@ -1385,6 +1433,7 @@ void MosaicoDialog::persistState() {
   int upper = DialogState::kSliderSteps;
   std::string selected_sequence;
   std::vector<std::string> selected_topics;
+  bool topics_all = false;
   {
     std::lock_guard<std::mutex> lock(state_.mu);
     query = state_.query_text;
@@ -1395,6 +1444,7 @@ void MosaicoDialog::persistState() {
     // re-fetch).
     selected_sequence = state_.selected_sequence;
     selected_topics = state_.selected_topics;
+    topics_all = state_.topics_all;
   }
   SettingsStore settings(settings_);
   settings.setString("mosaico/metadata_query", query);
@@ -1402,6 +1452,7 @@ void MosaicoDialog::persistState() {
   settings.setInt("mosaico/range_upper", upper);
   settings.setString("mosaico/selected_sequence", selected_sequence);
   settings.setStringList("mosaico/selected_topics", selected_topics);
+  settings.setBool("mosaico/topics_all", topics_all);
 }
 
 void MosaicoDialog::notify(PJ::ToolboxMessageLevel level, const std::string& message) {
