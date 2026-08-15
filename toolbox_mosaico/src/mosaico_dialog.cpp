@@ -297,15 +297,7 @@ MosaicoDialog::MosaicoDialog() : worker_(std::make_unique<FetchWorker>()) {
     // out of the error tally.
     postEvent([this]() {
       std::lock_guard<std::mutex> lock(state_.mu);
-      state_.cancelling = true;
-      state_.fetch_status = "Cancelling…";
-      const std::vector<std::string>& stop_fetched = state_.topics_all ? state_.topic_names : state_.selected_topics;
-      for (const std::string& tname : stop_fetched) {
-        auto it = state_.topic_fetch_status.find(tname);
-        if (it == state_.topic_fetch_status.end() || it->second.empty() || it->second == "downloading…") {
-          state_.topic_fetch_status[tname] = "Cancelling…";
-        }
-      }
+      markFetchCancellingLocked();
     });
   };
 
@@ -339,12 +331,6 @@ void MosaicoDialog::initFromSettings() {
   state_.topics_all = settings.getBool("mosaico/topics_all", false);
   state_.cache_downloads = settings.getBool("mosaico/cache_enabled", true);
   state_.cache_directory = settings.getString("mosaico/cache_directory");
-  if (state_.cache_directory.empty()) {
-    // Pre-fill with the resolved standard root (mcap_cloud parity: the field
-    // always shows the effective destination). Left empty only when even the
-    // standard root is unresolvable.
-    state_.cache_directory = standardCacheRoot(nullptr).string();
-  }
 
   if (!history.empty()) {
     const std::string uri = state_.uri;
@@ -597,6 +583,9 @@ std::string MosaicoDialog::widget_data() {
   // during a fetch (the running Download already latched its destination).
   wd.setChecked("checkSaveCache", state_.cache_downloads);
   wd.setText("cacheDirectory", state_.cache_directory);
+  // Empty setting = the live standard resolution (MOSAICO_CACHE_DIR / XDG);
+  // surface it as a hint rather than persisting a frozen snapshot of it.
+  wd.setPlaceholder("cacheDirectory", standardCacheRoot(nullptr).string());
   const bool cache_dir_enabled = state_.cache_downloads && !state_.fetch_active;
   wd.setEnabled("cacheDirectory", cache_dir_enabled);
   wd.setEnabled("labelCacheDirectory", cache_dir_enabled);
@@ -1151,15 +1140,10 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
     // the Download stays eager-only and no artifact is written.
     std::optional<SourceDescriptor> descriptor;
     if (cache_downloads) {
-      SourceDescriptor d;
-      d.kind = "mosaico-sequence";
-      d.server_uri = server_uri;
-      d.sequence = seq;
-      d.topics = topics;
-      d.start_ns = start;
-      d.end_ns = end;
-      d.display_name = seq;
-      descriptor = std::move(d);
+      // Validated factory: an uncacheable request (e.g. a scheme-less URI
+      // typed into the connect box) yields no descriptor and the Download
+      // proceeds eager-only, exactly like the tee's own self-check.
+      descriptor = makeSequenceDescriptor(server_uri, seq, topics, start, end, /*display_name=*/seq, nullptr);
     }
     // Multi-topic parallel pull (Step 10.2). Single topic still goes
     // via this path — the SDK handles the degenerate 1-topic case fine
@@ -1175,19 +1159,7 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
     worker_->requestCancel();
     {
       std::lock_guard<std::mutex> lock(state_.mu);
-      state_.cancelling = true;
-      // Reflect the cancel in the Info-panel progress header immediately, and
-      // mark every not-yet-finished topic "Cancelling…" so the per-topic view
-      // updates without waiting for allFetchesComplete (PJ3 parity). In All
-      // mode the batch carries every listed topic, not the pick.
-      state_.fetch_status = "Cancelling…";
-      const std::vector<std::string>& fetched = state_.topics_all ? state_.topic_names : state_.selected_topics;
-      for (const std::string& tname : fetched) {
-        auto it = state_.topic_fetch_status.find(tname);
-        if (it == state_.topic_fetch_status.end() || it->second.empty() || it->second == "downloading…") {
-          state_.topic_fetch_status[tname] = "Cancelling…";
-        }
-      }
+      markFetchCancellingLocked();
     }
     notify(PJ::ToolboxMessageLevel::kInfo, "Cancelling…");
     return true;
@@ -1435,6 +1407,22 @@ bool MosaicoDialog::onSelectionChanged(std::string_view widget_name, const std::
     return true;
   }
   return false;
+}
+
+void MosaicoDialog::markFetchCancellingLocked() {
+  // Reflect the cancel in the Info-panel progress header immediately, and
+  // mark every not-yet-finished topic "Cancelling…" so the per-topic view
+  // updates without waiting for allFetchesComplete (PJ3 parity). In All
+  // mode the batch carries every listed topic, not the pick.
+  state_.cancelling = true;
+  state_.fetch_status = "Cancelling…";
+  const std::vector<std::string>& fetched = state_.topics_all ? state_.topic_names : state_.selected_topics;
+  for (const std::string& tname : fetched) {
+    auto it = state_.topic_fetch_status.find(tname);
+    if (it == state_.topic_fetch_status.end() || it->second.empty() || it->second == "downloading…") {
+      state_.topic_fetch_status[tname] = "Cancelling…";
+    }
+  }
 }
 
 void MosaicoDialog::onConnectFinished(ConnectResult result) {

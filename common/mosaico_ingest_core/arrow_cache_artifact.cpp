@@ -166,6 +166,38 @@ bool parseDecimalU64(const std::string& text, std::uint64_t* out) {
   return true;
 }
 
+// The three channel-metadata entries every artifact channel carries (the
+// ingest ROUTING DECISION, replayed verbatim) — one authority for both the
+// scalar and the object channel kind.
+mcap::KeyValueMap channelMetadataFor(const ArtifactTopic& topic) {
+  return {
+      {kMetaOntologyTag, topic.ontology_tag},
+      {kMetaCanonicalMetadata, topic.canonical_metadata},
+      {kMetaTimestampColumn, topic.timestamp_column}};
+}
+
+// One MCAP message per write, framed identically for both channel kinds
+// (sequence 0; publishTime == logTime). `what` labels the error.
+bool writeMcapMessage(
+    mcap::McapWriter& writer, std::uint16_t channel_id, std::int64_t log_time_ns, const std::byte* data,
+    std::uint64_t size, const char* what, std::string* error) {
+  mcap::Message message;
+  message.channelId = channel_id;
+  message.sequence = 0;
+  message.logTime = static_cast<mcap::Timestamp>(log_time_ns);
+  message.publishTime = message.logTime;
+  message.dataSize = size;
+  message.data = data;
+  const auto status = writer.write(message);
+  if (!status.ok()) {
+    if (error) {
+      *error = std::string(what) + " failed: " + status.message;
+    }
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -234,11 +266,7 @@ std::optional<std::uint16_t> ArtifactWriter::addTopic(
       std::string_view(
           reinterpret_cast<const char*>((*serialized)->data()), static_cast<std::size_t>((*serialized)->size())));
   impl_->writer.addSchema(mcap_schema);
-  mcap::Channel channel(
-      topic.name, kMessageEncoding, mcap_schema.id,
-      {{kMetaOntologyTag, topic.ontology_tag},
-       {kMetaCanonicalMetadata, topic.canonical_metadata},
-       {kMetaTimestampColumn, topic.timestamp_column}});
+  mcap::Channel channel(topic.name, kMessageEncoding, mcap_schema.id, channelMetadataFor(topic));
   impl_->writer.addChannel(channel);
   ++impl_->topics;
   return channel.id;
@@ -251,11 +279,7 @@ std::optional<std::uint16_t> ArtifactWriter::addObjectTopic(const ArtifactTopic&
     }
     return std::nullopt;
   }
-  mcap::Channel channel(
-      topic.name, kObjectMessageEncoding, /*schemaId=*/0,
-      {{kMetaOntologyTag, topic.ontology_tag},
-       {kMetaCanonicalMetadata, topic.canonical_metadata},
-       {kMetaTimestampColumn, topic.timestamp_column}});
+  mcap::Channel channel(topic.name, kObjectMessageEncoding, /*schemaId=*/0, channelMetadataFor(topic));
   impl_->writer.addChannel(channel);
   ++impl_->topics;
   return channel.id;
@@ -270,18 +294,9 @@ bool ArtifactWriter::writeObjectSample(
     }
     return false;
   }
-  mcap::Message message;
-  message.channelId = channel_id;
-  message.sequence = 0;
-  message.logTime = static_cast<mcap::Timestamp>(log_time_ns);
-  message.publishTime = message.logTime;
-  message.dataSize = static_cast<std::uint64_t>(size);
-  message.data = reinterpret_cast<const std::byte*>(data);
-  const auto status = impl_->writer.write(message);
-  if (!status.ok()) {
-    if (error) {
-      *error = "artifact object write failed: " + status.message;
-    }
+  if (!writeMcapMessage(
+          impl_->writer, channel_id, log_time_ns, reinterpret_cast<const std::byte*>(data),
+          static_cast<std::uint64_t>(size), "artifact object write", error)) {
     return false;
   }
   ++impl_->rows;  // one object sample = one row
@@ -303,18 +318,9 @@ bool ArtifactWriter::writeBatch(
     }
     return false;
   }
-  mcap::Message message;
-  message.channelId = channel_id;
-  message.sequence = 0;
-  message.logTime = static_cast<mcap::Timestamp>(log_time_ns);
-  message.publishTime = message.logTime;
-  message.dataSize = static_cast<std::uint64_t>((*serialized)->size());
-  message.data = reinterpret_cast<const std::byte*>((*serialized)->data());
-  const auto status = impl_->writer.write(message);
-  if (!status.ok()) {
-    if (error) {
-      *error = "artifact message write failed: " + status.message;
-    }
+  if (!writeMcapMessage(
+          impl_->writer, channel_id, log_time_ns, reinterpret_cast<const std::byte*>((*serialized)->data()),
+          static_cast<std::uint64_t>((*serialized)->size()), "artifact message write", error)) {
     return false;
   }
   impl_->rows += static_cast<std::uint64_t>(batch.num_rows());

@@ -86,19 +86,6 @@ using ImagePushOutcome = ObjectPushOutcome;
 /// `topic_name`/`ts_field` are owned so a context can be built from string
 /// literals (tests) or borrowed lvalues alike.
 struct ObjectIngestContext {
-  ObjectIngestContext() = default;
-  /// The original 6-tuple; `tee` stays empty and is assigned separately by
-  /// the one caller that records a cache artifact.
-  ObjectIngestContext(
-      PJ::sdk::ToolboxHostView host_in, PJ::sdk::DataSourceHandle source_in, std::string topic_name_in,
-      std::string ts_field_in, std::int64_t synth_anchor_ns_in, std::int64_t synth_interval_ns_in)
-      : host(host_in),
-        source(source_in),
-        topic_name(std::move(topic_name_in)),
-        ts_field(std::move(ts_field_in)),
-        synth_anchor_ns(synth_anchor_ns_in),
-        synth_interval_ns(synth_interval_ns_in) {}
-
   PJ::sdk::ToolboxHostView host;
   PJ::sdk::DataSourceHandle source;
   std::string topic_name;  ///< BARE topic name; the data source carries the sequence.
@@ -112,6 +99,15 @@ struct ObjectIngestContext {
   /// ingest).
   std::function<void(std::int64_t ts_ns, const std::uint8_t* data, std::size_t size)> tee;
 };
+
+/// The one tee call every push helper makes after a successful host push —
+/// kept as a single function so the tap contract (post-success, exact bytes)
+/// cannot drift across the per-ontology helpers.
+inline void teeIfPresent(const ObjectIngestContext& ctx, std::int64_t ts_ns, const std::vector<uint8_t>& blob) {
+  if (ctx.tee) {
+    ctx.tee(ts_ns, blob.data(), blob.size());
+  }
+}
 
 /// Serialize every row of @p table as a canonical PJ.Image blob (pj_base's
 /// PJ::serializeImage) and push it into the host's ObjectStore under

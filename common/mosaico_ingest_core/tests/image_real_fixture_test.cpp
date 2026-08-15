@@ -165,7 +165,8 @@ TEST(MosaicoImageRealFixture, RealServerBatchSerializesToValidPerFrameImages) {
   ASSERT_TRUE(ds.has_value());
 
   auto outcome = mosaico::pushImageRowsToHost(
-      {host, *ds, "/camera/jai/rgb/image", "timestamp_ns", /*synth_anchor_ns=*/0, /*synth_interval_ns=*/0}, table);
+      {host, *ds, "/camera/jai/rgb/image", "timestamp_ns", /*synth_anchor_ns=*/0, /*synth_interval_ns=*/0, /*tee=*/{}},
+      table);
   ASSERT_TRUE(outcome.has_value()) << "pushImageRowsToHost failed: " << outcome.error();
   EXPECT_EQ(outcome->skipped, 0) << "first skip reason: " << outcome->first_error;
   EXPECT_EQ(outcome->pushed, table->num_rows());

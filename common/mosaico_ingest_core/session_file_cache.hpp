@@ -22,8 +22,9 @@ namespace mosaico {
 
 /// The env-resolved standard cache root: MOSAICO_CACHE_DIR ||
 /// $XDG_CACHE_HOME/mosaico/sessions || ~/.cache/mosaico/sessions. Empty (with
-/// `error` set) when unresolvable. The dialog pre-fills its cache-directory
-/// field from this, so the user always sees the effective destination.
+/// `error` set) when unresolvable. The dialog shows this as the
+/// cache-directory placeholder hint (the stored setting stays empty unless
+/// the user picks a directory, so this resolution stays live).
 [[nodiscard]] std::filesystem::path standardCacheRoot(std::string* error);
 
 /// Request-addressed session cache. Files: <root>/<128-bit-hex>.pjmosaico;
@@ -69,6 +70,12 @@ class SessionFileCache {
   /// Env-resolved root (see class comment). On unresolvable root returns a
   /// store with an empty root — every operation then fails cleanly.
   static SessionFileCache standard(Validator validator, std::string* error);
+  /// The ONE "configured directory else standard root" rule: a non-empty
+  /// `configured_root` (the panel's cache-directory setting) wins; empty
+  /// falls back to standard(). Every cache consumer (tee, provider query,
+  /// import job) resolves through here so they can never disagree on where
+  /// an identity's artifact lives.
+  static SessionFileCache at(const std::filesystem::path& configured_root, Validator validator, std::string* error);
 
   /// Exclusive per-identity materialization guard (RAII; non-blocking).
   /// Holds the identity's sidecar .lock for its lifetime — finalize, orphan

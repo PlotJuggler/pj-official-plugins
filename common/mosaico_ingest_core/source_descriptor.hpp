@@ -41,6 +41,15 @@ inline constexpr std::size_t kMaxDescriptorBytes = 64 * 1024;
 inline constexpr std::size_t kMaxTopics = 4096;
 inline constexpr std::size_t kMaxStringBytes = 4096;
 
+/// Build a validated "mosaico-sequence" descriptor from the resolved request
+/// fields, stamping version/kind (their authority stays in this module). The
+/// SAME validation as parseSourceDescriptor applies via a round-trip, so an
+/// invalid request (scheme-less URI, empty topics, ...) yields nullopt with a
+/// human-readable reason instead of an uncacheable descriptor.
+[[nodiscard]] std::optional<SourceDescriptor> makeSequenceDescriptor(
+    std::string server_uri, std::string sequence, std::vector<std::string> topics, std::int64_t start_ns,
+    std::int64_t end_ns, std::string display_name, std::string* error);
+
 /// Parse + validate. Rejects: wrong v/kind, missing/mistyped fields, unknown
 /// fields (allowlist!), over-limit sizes, non-grpc(+tls) scheme, URI userinfo
 /// ('@' in the authority), URI query ('?') or fragment ('#'), an empty

@@ -8,6 +8,8 @@
 #include <string>
 
 #include "flight/metadata.hpp"  // mosaico::extractOntologyTag / detectOntologyTag
+#include "image_metadata.hpp"
+#include "object_metadata.hpp"
 
 namespace mosaico {
 
@@ -95,6 +97,30 @@ namespace mosaico {
 //   2) extractOntologyTag on the pulled stream's schema metadata.
 // An absent tag yields "" — the topic is then treated as plain scalar data
 // rather than guessed at.
+/// The canonical registerObjectTopic metadata for a resolved ontology tag —
+/// the SAME record the per-ontology push helpers register on the host, kept
+/// here next to the routing predicates so the cache artifact's channel
+/// metadata can never drift from the ingest routing. Cloud-like tags (point
+/// cloud / laser scan / futures cloud) share the point-cloud record.
+[[nodiscard]] inline std::string_view canonicalMetadataForOntology(const std::string& tag) {
+  if (isImageOntology(tag)) {
+    return kCanonicalImageMetadata;
+  }
+  if (isPoseOntology(tag)) {
+    return kCanonicalPosesInFrameMetadata;
+  }
+  if (isTransformOntology(tag)) {
+    return kCanonicalFrameTransformsMetadata;
+  }
+  if (isOccupancyGridOntology(tag)) {
+    return kCanonicalOccupancyGridMetadata;
+  }
+  if (isGridCellsOntology(tag)) {
+    return kCanonicalSceneEntitiesMetadata;
+  }
+  return kCanonicalPointCloudMetadata;
+}
+
 [[nodiscard]] inline std::string resolveOntologyTag(
     const std::shared_ptr<arrow::Schema>& schema, const std::string& cached_tag) {
   if (!cached_tag.empty()) {

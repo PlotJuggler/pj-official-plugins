@@ -98,9 +98,9 @@ struct DialogState {
 
   // Local cache controls (saveCacheRow — mcap_cloud's Export-MCAP shape,
   // applied to the layout re-import artifact). cache_downloads gates the
-  // tee at Download start; cache_directory is where artifacts live,
-  // pre-filled with the resolved standard root so the user always sees the
-  // effective destination (empty falls back to standardCacheRoot).
+  // tee at Download start; cache_directory is where artifacts live. Empty =
+  // the live standard resolution (SessionFileCache::at falls back to
+  // standardCacheRoot), shown to the user as the field's placeholder hint.
   bool cache_downloads = true;
   std::string cache_directory;
 
@@ -284,6 +284,11 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   // Restore persisted query/range/server + auto-connect. Runs once when the
   // settings view is bound, before the tick loop.
   void initFromSettings();
+
+  // The shared cancel presentation (in-panel Cancel button and host-side
+  // Stop): progress header + per-topic "Cancelling…" rows. Caller holds
+  // state_.mu.
+  void markFetchCancellingLocked();
 
   void onConnectFinished(ConnectResult result);
   void onSequencesReady(std::vector<SequenceInfo> sequences);

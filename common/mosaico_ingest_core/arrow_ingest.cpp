@@ -961,9 +961,7 @@ PJ::Expected<ImagePushOutcome> pushImageRowsToHost(
     if (!status) {
       return PJ::unexpected(std::move(status).error());
     }
-    if (ctx.tee) {
-      ctx.tee(ts_ns, blob.data(), blob.size());
-    }
+    teeIfPresent(ctx, ts_ns, blob);
     ++outcome.pushed;
   }
   return outcome;
@@ -1044,9 +1042,7 @@ PJ::Expected<ObjectPushOutcome> pushPointCloudRowsToHost(
     if (!status) {
       return PJ::unexpected(std::move(status).error());
     }
-    if (ctx.tee) {
-      ctx.tee(ts_ns, blob.data(), blob.size());
-    }
+    teeIfPresent(ctx, ts_ns, blob);
     ++outcome.pushed;
   }
   return outcome;
@@ -1125,9 +1121,7 @@ PJ::Expected<ObjectPushOutcome> pushPoseRowsToHost(
     if (!status) {
       return PJ::unexpected(std::move(status).error());
     }
-    if (ctx.tee) {
-      ctx.tee(ts_ns, blob.data(), blob.size());
-    }
+    teeIfPresent(ctx, ts_ns, blob);
     ++outcome.pushed;
   }
   return outcome;
@@ -1180,9 +1174,7 @@ PJ::Expected<ObjectPushOutcome> pushFrameTransformsRowsToHost(
       if (!status) {
         return PJ::unexpected(std::move(status).error());
       }
-      if (ctx.tee) {
-        ctx.tee(ts_ns, blob.data(), blob.size());
-      }
+      teeIfPresent(ctx, ts_ns, blob);
       ++outcome.pushed;
     }
     return outcome;
@@ -1235,9 +1227,7 @@ PJ::Expected<ObjectPushOutcome> pushFrameTransformsRowsToHost(
     if (!status) {
       return PJ::unexpected(std::move(status).error());
     }
-    if (ctx.tee) {
-      ctx.tee(ts_ns, blob.data(), blob.size());
-    }
+    teeIfPresent(ctx, ts_ns, blob);
     ++outcome.pushed;
   }
   return outcome;
@@ -1328,9 +1318,7 @@ PJ::Expected<ObjectPushOutcome> pushOccupancyGridRowsToHost(
     if (!status) {
       return PJ::unexpected(std::move(status).error());
     }
-    if (ctx.tee) {
-      ctx.tee(ts_ns, blob.data(), blob.size());
-    }
+    teeIfPresent(ctx, ts_ns, blob);
     ++outcome.pushed;
   }
   return outcome;
@@ -1463,9 +1451,7 @@ PJ::Expected<ObjectPushOutcome> pushLaserScanRowsToHost(
     if (!status) {
       return PJ::unexpected(std::move(status).error());
     }
-    if (ctx.tee) {
-      ctx.tee(ts_ns, blob.data(), blob.size());
-    }
+    teeIfPresent(ctx, ts_ns, blob);
     ++outcome.pushed;
   }
   return outcome;
@@ -1540,9 +1526,7 @@ PJ::Expected<ObjectPushOutcome> pushGridCellsRowsToHost(
     if (!status) {
       return PJ::unexpected(std::move(status).error());
     }
-    if (ctx.tee) {
-      ctx.tee(ts_ns, blob.data(), blob.size());
-    }
+    teeIfPresent(ctx, ts_ns, blob);
     ++outcome.pushed;
   }
   return outcome;
@@ -1662,9 +1646,7 @@ PJ::Expected<ObjectPushOutcome> pushColumnarPointCloudRowsToHost(
     if (!status) {
       return PJ::unexpected(std::move(status).error());
     }
-    if (ctx.tee) {
-      ctx.tee(ts_ns, blob.data(), blob.size());
-    }
+    teeIfPresent(ctx, ts_ns, blob);
     ++outcome.pushed;
   }
   return outcome;

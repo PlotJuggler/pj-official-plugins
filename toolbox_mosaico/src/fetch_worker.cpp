@@ -678,18 +678,11 @@ void FetchWorker::pullTopicsAsync(
         return;
       }
       ensureIngestProgress(*ds, sequence_name);
-      ObjectIngestContext ctx{host, *ds, topic_name, ts_field, synth_anchor_ns, synth_interval_ns};
+      ObjectIngestContext ctx{host, *ds, topic_name, ts_field, synth_anchor_ns, synth_interval_ns, /*tee=*/{}};
       if (tee && tee->armed()) {
         // The artifact channel records the same canonical metadata the push
-        // helper registers on the host, keyed by the resolved routing above.
-        const std::string_view canonical_meta = is_image            ? kCanonicalImageMetadata
-                                                : is_pose           ? kCanonicalPosesInFrameMetadata
-                                                : is_transform      ? kCanonicalFrameTransformsMetadata
-                                                : is_occupancy_grid ? kCanonicalOccupancyGridMetadata
-                                                : is_grid_cells
-                                                    ? kCanonicalSceneEntitiesMetadata
-                                                    : kCanonicalPointCloudMetadata;  // clouds incl. laser/futures
-        ctx.tee = tee->objectTee(topic_name, ontology_tag, std::string(canonical_meta));
+        // helper registers on the host (one authority: ontology_routing.h).
+        ctx.tee = tee->objectTee(topic_name, ontology_tag, std::string(canonicalMetadataForOntology(ontology_tag)));
       }
       auto pushed = [&]() -> PJ::Expected<ObjectPushOutcome> {
         if (is_image) {
@@ -752,9 +745,23 @@ void FetchWorker::pullTopicsAsync(
       }
       table = normalized.ValueOrDie();
     }
-    auto reader = std::make_shared<arrow::TableBatchReader>(*table);
+    // One table->batches decomposition feeds BOTH the host export and the
+    // cache tee below (the batches share the table's chunks; no data copy).
+    std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
+    {
+      arrow::TableBatchReader batch_reader(*table);
+      std::shared_ptr<arrow::RecordBatch> batch;
+      while (batch_reader.ReadNext(&batch).ok() && batch != nullptr) {
+        batches.push_back(std::move(batch));
+      }
+    }
+    auto reader = arrow::RecordBatchReader::Make(batches, table->schema());
+    if (!reader.ok()) {
+      finish(false, stringFromArrow(reader.status()));
+      return;
+    }
     ArrowArrayStream stream{};
-    auto export_status = arrow::ExportRecordBatchReader(reader, &stream);
+    auto export_status = arrow::ExportRecordBatchReader(reader.ValueOrDie(), &stream);
     if (!export_status.ok()) {
       finish(false, stringFromArrow(export_status));
       return;
@@ -785,16 +792,9 @@ void FetchWorker::pullTopicsAsync(
       return;
     }
     if (tee && tee->armed()) {
-      // Record the exact normalized batches the host just ingested (the
-      // export above pulled from its own reader; `table` is untouched).
-      // Still under host_write_mu_, which serializes all tee writes.
-      std::vector<std::shared_ptr<arrow::RecordBatch>> tee_batches;
-      arrow::TableBatchReader tee_reader(*table);
-      std::shared_ptr<arrow::RecordBatch> tee_batch;
-      while (tee_reader.ReadNext(&tee_batch).ok() && tee_batch != nullptr) {
-        tee_batches.push_back(std::move(tee_batch));
-      }
-      tee->teeScalarTopic(topic_name, *table->schema(), ts_field, tee_batches);
+      // Record the exact normalized batches the host just ingested. Still
+      // under host_write_mu_, which serializes all tee writes.
+      tee->teeScalarTopic(topic_name, *table->schema(), ts_field, batches);
     }
     finish(true, {});
   };
@@ -936,7 +936,7 @@ void FetchWorker::pullTopicsAsync(
         request.dataset = dataset->id;
         request.source_identity = tee->identity();
         request.local_path_utf8 = finalized->path.string();
-        request.loader_plugin_id = "mosaico-cache-loader";
+        request.loader_plugin_id = kMosaicoCacheLoaderPluginId;
         request.loader_config_json = "{}";
         request.descriptor_json = tee->descriptorJson();
         // The result closure captures COPIES only: it may run re-entrantly or
@@ -959,6 +959,11 @@ void FetchWorker::pullTopicsAsync(
     } else if (promotionSettled) {
       promotionSettled(false, tee->disarmReason().empty() ? "fetch incomplete" : tee->disarmReason());
     }
+  } else if (descriptor.has_value() && promotionSettled) {
+    // Contract: a Download that carried a descriptor ALWAYS settles exactly
+    // once, so waiters (the descriptor-import job) never need to know the
+    // tee's arming rule.
+    promotionSettled(false, "host offers no source-promotion service");
   }
   // Bracket the host progress/stop channel on EVERY exit (success, cancel,
   // throw) and BEFORE allFetchesComplete: a zero-success provisional source is

@@ -256,12 +256,13 @@ std::optional<SourceDescriptor> parseSourceDescriptor(std::string_view json, std
   return d;
 }
 
-std::string canonicalSourceDescriptorJson(const SourceDescriptor& d) {
-  // ordered_json populated in ALPHABETICAL key order EXPLICITLY — the insert
-  // order below IS the vectors-file contract, never an artifact of map
-  // ordering. display_name is deliberately absent (identity excludes it: a
-  // rename is not a new request).
-  nlohmann::ordered_json j;
+namespace {
+
+// The canonical fields in ALPHABETICAL insert order — the ONE field list both
+// serializations share, so a new descriptor field cannot land in only one of
+// them. The insert order IS the vectors-file contract, never an artifact of
+// map ordering.
+void appendCanonicalFields(nlohmann::ordered_json& j, const SourceDescriptor& d) {
   j["end_ns"] = std::to_string(d.end_ns);
   j["kind"] = d.kind;
   j["sequence"] = d.sequence;
@@ -269,6 +270,35 @@ std::string canonicalSourceDescriptorJson(const SourceDescriptor& d) {
   j["start_ns"] = std::to_string(d.start_ns);
   j["topics"] = d.topics;
   j["v"] = d.version;
+}
+
+}  // namespace
+
+std::optional<SourceDescriptor> makeSequenceDescriptor(
+    std::string server_uri, std::string sequence, std::vector<std::string> topics, std::int64_t start_ns,
+    std::int64_t end_ns, std::string display_name, std::string* error) {
+  SourceDescriptor d;
+  d.version = 1;
+  d.kind = kKind;
+  d.server_uri = std::move(server_uri);
+  d.sequence = std::move(sequence);
+  d.topics = std::move(topics);
+  d.start_ns = start_ns;
+  d.end_ns = end_ns;
+  d.display_name = std::move(display_name);
+  // Validate through the one parser (allowlist, limits, URI hygiene, time
+  // ordering) so every producer meets the same bar as a layout consumer.
+  if (!parseSourceDescriptor(toSourceDescriptorJson(d), error).has_value()) {
+    return std::nullopt;
+  }
+  return d;
+}
+
+std::string canonicalSourceDescriptorJson(const SourceDescriptor& d) {
+  // display_name is deliberately absent (identity excludes it: a rename is
+  // not a new request).
+  nlohmann::ordered_json j;
+  appendCanonicalFields(j, d);
   return j.dump();
 }
 
@@ -282,13 +312,7 @@ std::string toSourceDescriptorJson(const SourceDescriptor& d) {
   // ("display_name" sorts first).
   nlohmann::ordered_json j;
   j["display_name"] = d.display_name;
-  j["end_ns"] = std::to_string(d.end_ns);
-  j["kind"] = d.kind;
-  j["sequence"] = d.sequence;
-  j["server_uri"] = d.server_uri;
-  j["start_ns"] = std::to_string(d.start_ns);
-  j["topics"] = d.topics;
-  j["v"] = d.version;
+  appendCanonicalFields(j, d);
   return j.dump();
 }
 

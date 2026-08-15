@@ -308,7 +308,8 @@ TEST(ObjectSerialize, PointCloud2RoundTripsThroughCanonicalCodec) {
   auto ds = host.createDataSource("seq");
   ASSERT_TRUE(ds) << ds.error();
 
-  auto pushed = mosaico::pushPointCloudRowsToHost({host, *ds, "/velodyne/points", "timestamp_ns", 0, 0}, table);
+  auto pushed =
+      mosaico::pushPointCloudRowsToHost({host, *ds, "/velodyne/points", "timestamp_ns", 0, 0, /*tee=*/{}}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   EXPECT_EQ(pushed->skipped, 0);
@@ -360,7 +361,8 @@ TEST(ObjectSerialize, PointCloud2SkipsEmptyRow) {
   auto host = fake.view();
   auto ds = host.createDataSource("seq");
   ASSERT_TRUE(ds) << ds.error();
-  auto pushed = mosaico::pushPointCloudRowsToHost({host, *ds, "/velodyne/points", "timestamp_ns", 0, 0}, table);
+  auto pushed =
+      mosaico::pushPointCloudRowsToHost({host, *ds, "/velodyne/points", "timestamp_ns", 0, 0, /*tee=*/{}}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 0);
   EXPECT_EQ(pushed->skipped, 1);
@@ -394,7 +396,7 @@ TEST(ObjectSerialize, PoseTopLevelRoundTripsThroughCanonicalCodec) {
   auto ds = host.createDataSource("seq");
   ASSERT_TRUE(ds) << ds.error();
 
-  auto pushed = mosaico::pushPoseRowsToHost({host, *ds, "/groundtruth/pose", "timestamp_ns", 0, 0}, table);
+  auto pushed = mosaico::pushPoseRowsToHost({host, *ds, "/groundtruth/pose", "timestamp_ns", 0, 0, /*tee=*/{}}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   ASSERT_EQ(fake.object_topics.size(), 1u);
@@ -430,7 +432,7 @@ TEST(ObjectSerialize, MotionStateNestedPoseRoundTrips) {
   auto ds = host.createDataSource("seq");
   ASSERT_TRUE(ds) << ds.error();
 
-  auto pushed = mosaico::pushPoseRowsToHost({host, *ds, "/odometry/odometry", "timestamp_ns", 0, 0}, table);
+  auto pushed = mosaico::pushPoseRowsToHost({host, *ds, "/odometry/odometry", "timestamp_ns", 0, 0, /*tee=*/{}}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   ASSERT_EQ(fake.pushes.size(), 1u);
@@ -464,7 +466,7 @@ TEST(ObjectSerialize, TransformSingularRoundTrips) {
   auto host = fake.view();
   auto ds = host.createDataSource("seq");
   ASSERT_TRUE(ds) << ds.error();
-  auto pushed = mosaico::pushFrameTransformsRowsToHost({host, *ds, "/tf", "timestamp_ns", 0, 0}, table);
+  auto pushed = mosaico::pushFrameTransformsRowsToHost({host, *ds, "/tf", "timestamp_ns", 0, 0, /*tee=*/{}}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   ASSERT_EQ(fake.object_topics.size(), 1u);
@@ -506,7 +508,7 @@ TEST(ObjectSerialize, FrameTransformListRoundTrips) {
   auto host = fake.view();
   auto ds = host.createDataSource("seq");
   ASSERT_TRUE(ds) << ds.error();
-  auto pushed = mosaico::pushFrameTransformsRowsToHost({host, *ds, "/tf", "timestamp_ns", 0, 0}, table);
+  auto pushed = mosaico::pushFrameTransformsRowsToHost({host, *ds, "/tf", "timestamp_ns", 0, 0, /*tee=*/{}}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   ASSERT_EQ(fake.pushes.size(), 1u);
@@ -546,7 +548,7 @@ TEST(ObjectSerialize, OccupancyGridRoundTrips) {
   auto host = fake.view();
   auto ds = host.createDataSource("seq");
   ASSERT_TRUE(ds) << ds.error();
-  auto pushed = mosaico::pushOccupancyGridRowsToHost({host, *ds, "/map", "timestamp_ns", 0, 0}, table);
+  auto pushed = mosaico::pushOccupancyGridRowsToHost({host, *ds, "/map", "timestamp_ns", 0, 0, /*tee=*/{}}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   ASSERT_EQ(fake.object_topics.size(), 1u);
@@ -588,7 +590,7 @@ TEST(ObjectSerialize, LaserScanExpandsToPointCloud) {
   auto host = fake.view();
   auto ds = host.createDataSource("seq");
   ASSERT_TRUE(ds) << ds.error();
-  auto pushed = mosaico::pushLaserScanRowsToHost({host, *ds, "/scan", "timestamp_ns", 0, 0}, table);
+  auto pushed = mosaico::pushLaserScanRowsToHost({host, *ds, "/scan", "timestamp_ns", 0, 0, /*tee=*/{}}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   ASSERT_EQ(fake.object_topics.size(), 1u);
@@ -625,7 +627,7 @@ TEST(ObjectSerialize, GridCellsToSceneEntities) {
   auto host = fake.view();
   auto ds = host.createDataSource("seq");
   ASSERT_TRUE(ds) << ds.error();
-  auto pushed = mosaico::pushGridCellsRowsToHost({host, *ds, "/grid_cells", "timestamp_ns", 0, 0}, table);
+  auto pushed = mosaico::pushGridCellsRowsToHost({host, *ds, "/grid_cells", "timestamp_ns", 0, 0, /*tee=*/{}}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   ASSERT_EQ(fake.object_topics.size(), 1u);
@@ -663,7 +665,8 @@ TEST(ObjectSerialize, FuturesLidarColumnarPacksToPointCloud) {
   auto host = fake.view();
   auto ds = host.createDataSource("seq");
   ASSERT_TRUE(ds) << ds.error();
-  auto pushed = mosaico::pushColumnarPointCloudRowsToHost({host, *ds, "/lidar/points", "timestamp_ns", 0, 0}, table);
+  auto pushed =
+      mosaico::pushColumnarPointCloudRowsToHost({host, *ds, "/lidar/points", "timestamp_ns", 0, 0, /*tee=*/{}}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   ASSERT_EQ(fake.object_topics.size(), 1u);

@@ -43,6 +43,7 @@ add_library(mosaico_ingest_core STATIC
   artifact_replay.cpp
   cache_tee_session.cpp
   core/file_lock.cpp
+  core/fs_durability.cpp
   core/origin_match.cpp
   core/sha256.cpp
   session_file_cache.cpp

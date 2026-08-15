@@ -8,6 +8,8 @@
 #include <system_error>
 #include <vector>
 
+#include "core/fs_durability.h"
+
 #if defined(_WIN32)
 #include <windows.h>
 #else
@@ -50,20 +52,6 @@ std::optional<std::string> identityHex(std::string_view identity) {
   return std::string(hex);
 }
 
-// Apply 0600 to a file (owner read/write only). Best-effort: failures are
-// swallowed (e.g. on filesystems that don't carry POSIX bits).
-void chmod0600(const fs::path& file) {
-  std::error_code ec;
-  fs::permissions(file, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, ec);
-}
-
-// Create `dir` (and parents) and tighten it to 0700 (owner only). Best-effort.
-void ensureDir0700(const fs::path& dir) {
-  std::error_code ec;
-  fs::create_directories(dir, ec);
-  fs::permissions(dir, fs::perms::owner_all, fs::perm_options::replace, ec);
-}
-
 fs::path touchPathFor(const fs::path& file) {
   return fs::path(file.string() + ".touch");
 }
@@ -80,52 +68,6 @@ void touchStamp(const fs::path& file) {
   std::error_code ec;
   fs::last_write_time(stamp, fs::file_time_type::clock::now(), ec);
   chmod0600(stamp);
-}
-
-// fsync `path`'s contents to stable storage before the publishing rename.
-bool syncFile(const fs::path& path, std::string* error) {
-#if defined(_WIN32)
-  const HANDLE handle = ::CreateFileW(
-      path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (handle == INVALID_HANDLE_VALUE) {
-    *error = "could not reopen for flush: " + path.string();
-    return false;
-  }
-  const bool ok = ::FlushFileBuffers(handle) != 0;
-  ::CloseHandle(handle);
-  if (!ok) {
-    *error = "FlushFileBuffers failed: " + path.string();
-  }
-  return ok;
-#else
-  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-  if (fd < 0) {
-    *error = "could not reopen for fsync: " + path.string() + ": " +
-             std::error_code(errno, std::generic_category()).message();
-    return false;
-  }
-  const bool ok = ::fsync(fd) == 0;
-  const int fsync_errno = errno;
-  ::close(fd);
-  if (!ok) {
-    *error = "fsync failed: " + path.string() + ": " + std::error_code(fsync_errno, std::generic_category()).message();
-  }
-  return ok;
-#endif
-}
-
-// Make the publishing rename itself durable (POSIX: fsync the directory;
-// no-op where unsupported). Best-effort.
-void syncDir(const fs::path& dir) {
-#if !defined(_WIN32)
-  const int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  if (fd >= 0) {
-    ::fsync(fd);
-    ::close(fd);
-  }
-#else
-  (void)dir;
-#endif
 }
 
 }  // namespace
@@ -154,6 +96,13 @@ fs::path standardCacheRoot(std::string* error) {
 
 SessionFileCache SessionFileCache::standard(Validator validator, std::string* error) {
   return SessionFileCache(standardCacheRoot(error), std::move(validator));
+}
+
+SessionFileCache SessionFileCache::at(const fs::path& configured_root, Validator validator, std::string* error) {
+  if (!configured_root.empty()) {
+    return SessionFileCache(configured_root, std::move(validator));
+  }
+  return standard(std::move(validator), error);
 }
 
 fs::path SessionFileCache::pathFor(std::string_view identity) const {
@@ -287,7 +236,7 @@ bool SessionFileCache::finalize(
   if (ec) {
     return fail("atomic rename failed: " + ec.message());
   }
-  syncDir(root_);
+  (void)syncDir(root_);
   touchStamp(final_path);
   return true;
 }

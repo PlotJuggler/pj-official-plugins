@@ -7,6 +7,7 @@
 // runToTerminal().
 #include "descriptor_import_provider.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
@@ -167,7 +168,6 @@ struct DescriptorImportProvider::JobState {
 
   // ---- per-run result state ------------------------------------------------
   std::shared_ptr<PromotionLatch> promotion_latch = std::make_shared<PromotionLatch>();
-  std::atomic<bool> dataset_announced{false};
   std::atomic<bool> dataset_created{false};
   std::atomic<bool> imported_any{false};
   std::atomic<bool> any_failed{false};
@@ -176,6 +176,7 @@ struct DescriptorImportProvider::JobState {
   std::mutex results_mu;
   std::string first_error;                             // guarded by results_mu
   std::map<std::string, std::int64_t> bytes_by_topic;  // guarded by results_mu
+  std::uint64_t total_bytes = 0;                       // guarded by results_mu
 
   // At-most-once gate release (std::binary_semaphore::release on an
   // already-released semaphore is UB) — callable from startImport (the
@@ -257,8 +258,7 @@ PJ_descriptor_import_outcome_t DescriptorImportProvider::JobState::runToTerminal
   // on_dataset: zero-or-one, fired when the pull creates its batch dataset,
   // strictly before any publication into it.
   fetch.datasetCreated = [this](PJ::sdk::DataSourceHandle handle) {
-    if (!dataset_announced.exchange(true)) {
-      dataset_created.store(true, std::memory_order_relaxed);
+    if (!dataset_created.exchange(true)) {
       if (on_dataset != nullptr) {
         on_dataset(callback_ctx, PJ_data_source_handle_t{handle.id});
       }
@@ -292,11 +292,14 @@ PJ_descriptor_import_outcome_t DescriptorImportProvider::JobState::runToTerminal
     }
     std::uint64_t total = 0;
     {
+      // `bytes` is the topic's cumulative count: replace its ledger entry and
+      // nudge the running total by the delta (no per-tick rescan).
       std::lock_guard<std::mutex> lock(results_mu);
-      bytes_by_topic[topic_name] = bytes;
-      for (const auto& entry : bytes_by_topic) {
-        total += static_cast<std::uint64_t>(entry.second > 0 ? entry.second : 0);
-      }
+      std::int64_t& entry = bytes_by_topic[topic_name];
+      total_bytes += static_cast<std::uint64_t>(std::max<std::int64_t>(bytes, 0)) -
+                     static_cast<std::uint64_t>(std::max<std::int64_t>(entry, 0));
+      entry = bytes;
+      total = total_bytes;
     }
     if (total > max_transfer_bytes && !byte_ceiling_exceeded.exchange(true)) {
       fetch.requestCancel();
@@ -335,13 +338,6 @@ PJ_descriptor_import_outcome_t DescriptorImportProvider::JobState::runToTerminal
       return PJ_DESCRIPTOR_IMPORT_CANCELLED;
     }
     fetch.fetchTopicMetadataAsync({descriptor.sequence, topic});
-  }
-
-  // Pre-settle the promotion latch when the host offers no promotion
-  // service: the tee will not arm, so no promotionSettled callback can ever
-  // fire — without this the settlement wait below would spin until cancel.
-  if (!bindings.promotion_provider || !bindings.promotion_provider().valid()) {
-    promotion_latch->settle(false, "host has no source-promotion service");
   }
 
   // ---- the descriptor-armed pull (cache tee + promotion) -------------------
@@ -502,10 +498,7 @@ void DescriptorImportProvider::bind(PJ::sdk::SettingsView settings, HostBindings
 
 SessionFileCache DescriptorImportProvider::makeFileCache() {
   const std::string configured = SettingsStore(settings_).getString("mosaico/cache_directory");
-  if (!configured.empty()) {
-    return SessionFileCache(std::filesystem::path(configured), validateArtifact);
-  }
-  return SessionFileCache::standard(validateArtifact, nullptr);
+  return SessionFileCache::at(std::filesystem::path(configured), validateArtifact, nullptr);
 }
 
 void DescriptorImportProvider::ensureTrustLoaded() {

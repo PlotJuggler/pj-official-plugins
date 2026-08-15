@@ -39,6 +39,11 @@ class Schema;
 
 namespace mosaico {
 
+/// The companion loader's manifest id (data_load_mosaico_cache/manifest.json)
+/// — the producer half of the artifact contract names its consumer here, so
+/// the binding lives next to the format instead of as a stray literal.
+inline constexpr const char* kMosaicoCacheLoaderPluginId = "mosaico-cache-loader";
+
 /// Metadata record names inside an artifact.
 inline constexpr const char* kProvenanceMetadataName = "mosaico/source_descriptor";
 inline constexpr const char* kContentSummaryMetadataName = "mosaico/content_summary";

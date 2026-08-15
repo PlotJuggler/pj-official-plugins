@@ -18,6 +18,7 @@
 #include <pj_base/sdk/platform.hpp>
 
 #include "core/file_lock.h"
+#include "core/fs_durability.h"
 #include "core/origin_match.h"
 
 namespace mosaico {
@@ -54,63 +55,16 @@ nlohmann::json loadOrigins(const fs::path& file) {
   return *it;
 }
 
-// Best-effort POSIX permission tightening (no-ops on filesystems without bits).
-void chmod0600(const fs::path& file) {
-  std::error_code ec;
-  fs::permissions(file, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, ec);
-}
-
-void ensureDir0700(const fs::path& dir) {
-  std::error_code ec;
-  fs::create_directories(dir, ec);
-  fs::permissions(dir, fs::perms::owner_all, fs::perm_options::replace, ec);
-}
-
-// A trusted-origin write must be durable before the origin is treated as
-// trusted anywhere — fsync the file, then the directory entry.
-bool syncLedgerFile(const fs::path& path) {
-#if defined(_WIN32)
-  const HANDLE handle = ::CreateFileW(
-      path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (handle == INVALID_HANDLE_VALUE) {
-    return false;
-  }
-  const bool ok = ::FlushFileBuffers(handle) != 0;
-  ::CloseHandle(handle);
-  return ok;
-#else
-  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-  if (fd < 0) {
-    return false;
-  }
-  const bool ok = ::fsync(fd) == 0;
-  ::close(fd);
-  return ok;
-#endif
-}
-
 bool g_fail_dir_sync_for_test = false;
 
 // A rename whose directory entry never reached stable storage can vanish on
-// crash, so a directory-fsync failure fails the whole write. Windows has no
-// directory-fsync equivalent (metadata durability rides the NTFS journal);
-// documented no-op success there.
+// crash, so a directory-fsync failure fails the whole write (the shared
+// syncDir is a documented no-op success on Windows).
 [[nodiscard]] bool syncLedgerDir(const fs::path& dir) {
   if (g_fail_dir_sync_for_test) {
     return false;
   }
-#if !defined(_WIN32)
-  const int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  if (fd < 0) {
-    return false;
-  }
-  const bool ok = ::fsync(fd) == 0;
-  ::close(fd);
-  return ok;
-#else
-  (void)dir;
-  return true;
-#endif
+  return syncDir(dir);
 }
 
 // Durably persist the ledger: UNIQUE temp (pid-suffixed — two processes must
@@ -142,7 +96,7 @@ bool g_fail_dir_sync_for_test = false;
     }
   }
   chmod0600(tmp);
-  if (!syncLedgerFile(tmp)) {
+  if (!syncFile(tmp, nullptr)) {
     std::error_code ec;
     fs::remove(tmp, ec);
     return false;
