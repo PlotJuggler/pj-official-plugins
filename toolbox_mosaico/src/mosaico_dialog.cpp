@@ -26,9 +26,16 @@
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <pj_base/sdk/platform.hpp>
 #include <string_view>
 #include <utility>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 #include "cert_dialog_ui.hpp"
 #include "core/time_format.h"
@@ -311,6 +318,48 @@ void MosaicoDialog::setSettings(PJ::sdk::SettingsView settings) {
   initFromSettings();
 }
 
+namespace {
+
+// The transient artifact area under a cache root: one dir per live session,
+// each pinned by an exclusive .session.lock so the purge sweep can tell dead
+// sessions (lock acquirable) from live ones.
+std::filesystem::path transientAreaFor(const std::string& configured_root) {
+  const std::filesystem::path root =
+      configured_root.empty() ? standardCacheRoot(nullptr) : std::filesystem::path(configured_root);
+  if (root.empty()) {
+    return {};
+  }
+  return root / "transient";
+}
+
+constexpr const char* kTransientSessionLockName = ".session.lock";
+
+// Remove every transient session dir whose lock is acquirable (its session
+// died without cleaning up). Bounded: one directory scan + one non-blocking
+// flock attempt per entry.
+void purgeDeadTransientSessions(const std::filesystem::path& area) {
+  std::error_code ec;
+  if (area.empty() || !std::filesystem::is_directory(area, ec) || ec) {
+    return;
+  }
+  for (const auto& entry : std::filesystem::directory_iterator(area, ec)) {
+    if (ec || !entry.is_directory()) {
+      continue;
+    }
+    {
+      auto lock = FileLock::tryExclusive(entry.path() / kTransientSessionLockName, nullptr);
+      if (!lock.has_value()) {
+        continue;  // a live session owns it
+      }
+      // Lock released at scope exit so remove_all can delete it too.
+    }
+    std::error_code remove_error;
+    std::filesystem::remove_all(entry.path(), remove_error);
+  }
+}
+
+}  // namespace
+
 void MosaicoDialog::initFromSettings() {
   // Restore persisted UI state and auto-connect to the last server (PJ3
   // parity). Runs at bind time, before the tick loop or any worker result can
@@ -331,6 +380,14 @@ void MosaicoDialog::initFromSettings() {
   state_.topics_all = settings.getBool("mosaico/topics_all", false);
   state_.cache_downloads = settings.getBool("mosaico/cache_enabled", true);
   state_.cache_directory = settings.getString("mosaico/cache_directory");
+
+  // Sweep transient artifact dirs left by dead sessions (save-cache-off
+  // Downloads); ours is protected by its held .session.lock. Off the GUI
+  // thread: it is a directory scan with per-entry flock attempts.
+  {
+    const std::filesystem::path area = transientAreaFor(state_.cache_directory);
+    postCommand([area] { purgeDeadTransientSessions(area); });
+  }
 
   if (!history.empty()) {
     const std::string uri = state_.uri;
@@ -1123,27 +1180,31 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
       state_.speed_samples.clear();
       state_.topic_fetch_status.clear();
     }
-    bool cache_downloads = true;
+    bool save_cache = true;
     std::string cache_root;
     {
       std::lock_guard<std::mutex> lock(state_.mu);
-      cache_downloads = state_.cache_downloads;
+      save_cache = state_.cache_downloads;
       cache_root = state_.cache_directory;
     }
     worker_->resetCancel();
     notify(PJ::ToolboxMessageLevel::kInfo, fmt::format("Fetching {} topic(s)…", topics.size()));
     // The durable re-download descriptor: the EXACT resolved request —
     // sequence, explicit topic list, absolute time window (never slider
-    // proportions). The worker arms the cache tee with it when the host
-    // offers source promotion; an uncacheable descriptor simply disarms.
-    // The Cache-download toggle OFF withholds the descriptor entirely, so
-    // the Download stays eager-only and no artifact is written.
-    std::optional<SourceDescriptor> descriptor;
-    if (cache_downloads) {
-      // Validated factory: an uncacheable request (e.g. a scheme-less URI
-      // typed into the connect box) yields no descriptor and the Download
-      // proceeds eager-only, exactly like the tee's own self-check.
-      descriptor = makeSequenceDescriptor(server_uri, seq, topics, start, end, /*display_name=*/seq, nullptr);
+    // proportions). EVERY Download is recorded for layout re-import; the
+    // Save-cache-file toggle only picks the artifact's home: unchecked =
+    // the per-session transient folder, so the layout still carries the
+    // download instructions but a later reopen re-downloads. The validated
+    // factory yields no descriptor for an uncacheable request (e.g. a
+    // scheme-less URI typed into the connect box); the Download then
+    // proceeds eager-only, exactly like the tee's own self-check.
+    std::optional<SourceDescriptor> descriptor =
+        makeSequenceDescriptor(server_uri, seq, topics, start, end, /*display_name=*/seq, nullptr);
+    if (!save_cache && descriptor.has_value()) {
+      cache_root = transientSessionDir(cache_root);
+      if (cache_root.empty()) {
+        descriptor.reset();  // no safe transient home: honest eager-only
+      }
     }
     // Multi-topic parallel pull (Step 10.2). Single topic still goes
     // via this path — the SDK handles the degenerate 1-topic case fine
@@ -1407,6 +1468,31 @@ bool MosaicoDialog::onSelectionChanged(std::string_view widget_name, const std::
     return true;
   }
   return false;
+}
+
+std::string MosaicoDialog::transientSessionDir(const std::string& configured_root) {
+  const std::filesystem::path area = transientAreaFor(configured_root);
+  if (area.empty()) {
+    return {};
+  }
+#if defined(_WIN32)
+  const auto pid = static_cast<long long>(::GetCurrentProcessId());
+#else
+  const auto pid = static_cast<long long>(::getpid());
+#endif
+  const std::filesystem::path dir = area / std::to_string(pid);
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  if (ec) {
+    return {};
+  }
+  if (!transient_lock_.has_value()) {
+    transient_lock_ = FileLock::tryExclusive(dir / kTransientSessionLockName, nullptr);
+    if (!transient_lock_.has_value()) {
+      return {};
+    }
+  }
+  return dir.string();
 }
 
 void MosaicoDialog::markFetchCancellingLocked() {
