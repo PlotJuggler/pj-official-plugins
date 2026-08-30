@@ -24,6 +24,13 @@ class ToolboxMosaicoConan(ConanFile):
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
         "arrow/23.0.1",
+        # mosaico_ingest_core's cache artifact is an MCAP container; the vendored
+        # header-only mcap needs lz4 + zstd for chunk (de)compression. Arrow pulls
+        # both in, but Conan hides a transitive dependency's headers, so without a
+        # direct require mcap would compile against the host's /usr/include copies.
+        # Versions match arrow/23.0.1's own pins (see data_load_mosaico_cache).
+        "lz4/1.9.4",
+        "zstd/1.5.7",
         "lua/5.4.6",
         "sol2/3.5.0",
         # fmt required transitively by plotjuggler_sdk's pj_plugins
