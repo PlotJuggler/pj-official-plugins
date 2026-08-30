@@ -13,11 +13,14 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
+#include <pj_base/sdk/settings_store_host.hpp>
 #include <string>
 
 #include "cache_tee_session.hpp"
 #include "descriptor_import_provider.hpp"
 #include "source_descriptor.hpp"
+#include "source_presentation.hpp"
 
 #if !defined(_WIN32)
 
@@ -104,6 +107,23 @@ TEST(DescriptorImportQuery, MalformedDescriptorIsAContractFailure) {
   PJ_error_t error{};
   const std::string bad = "{not json";
   EXPECT_FALSE(provider.queryDescriptor(view(bad), &result, &error));
+}
+
+TEST(DescriptorImportQuery, PublishesPresentationThroughHostSettings) {
+  ProviderEnv env;
+  PJ::sdk::InMemorySettingsBackend settings_backend;
+  PJ::sdk::SettingsStoreHost settings_host(settings_backend);
+  DescriptorImportProvider provider;
+  provider.bind(PJ::sdk::SettingsView{settings_host.view()}, {});
+  const SourceDescriptor d = descriptor();
+  const std::string json = toSourceDescriptorJson(d);
+
+  auto result = freshResult();
+  ASSERT_TRUE(provider.queryDescriptor(view(json), &result, nullptr));
+
+  const std::string group = mosaico::sourcePresentationSettingsGroup(mosaico::descriptorIdentity(d));
+  EXPECT_EQ(settings_backend.getString(group + "/display_name"), std::optional<std::string>("contract-test"));
+  EXPECT_EQ(settings_backend.getString(group + "/origin"), std::optional<std::string>("demo.mosaico.dev:6726"));
 }
 
 TEST(DescriptorImportQuery, UntrustedMissThenTrustedThenMaterialized) {

@@ -78,6 +78,7 @@ set(MOSAICO_SOURCES
   src/credential_resolve.cpp
   src/descriptor_import_provider.cpp
   src/settings_store.cpp
+  src/source_presentation.cpp
   src/server_history.cpp
   src/core/time_format.cpp
 )
@@ -236,6 +237,7 @@ if(BUILD_TESTING)
     src/credential_resolve.cpp
     src/fetch_worker.cpp
     src/settings_store.cpp
+    src/source_presentation.cpp
     src/server_history.cpp
   )
   target_link_libraries(toolbox_mosaico_descriptor_import_contract_test PRIVATE
@@ -435,6 +437,19 @@ if(BUILD_TESTING)
     plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
   )
   add_test(NAME toolbox_mosaico_settings_store_test COMMAND toolbox_mosaico_settings_store_test)
+
+  add_executable(toolbox_mosaico_source_presentation_test
+    tests/source_presentation_test.cpp
+    src/settings_store.cpp
+    src/source_presentation.cpp
+  )
+  target_include_directories(toolbox_mosaico_source_presentation_test PRIVATE src)
+  target_link_libraries(toolbox_mosaico_source_presentation_test PRIVATE
+    mosaico_ingest_core plotjuggler_sdk::plugin_sdk GTest::gtest_main
+  )
+  target_compile_features(toolbox_mosaico_source_presentation_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_mosaico_source_presentation_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  add_test(NAME ToolboxMosaicoSourcePresentationTest COMMAND toolbox_mosaico_source_presentation_test)
 
   # Plain Arrow target for the SDK-linked live targets below.
   set(_test_arrow_target "")

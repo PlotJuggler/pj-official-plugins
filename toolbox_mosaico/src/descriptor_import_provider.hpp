@@ -10,11 +10,12 @@
 // Surfaces, both operating on the raw C structs so the growth contract
 // (struct_size-covered reads/writes) lives in exactly one place:
 //   - queryDescriptor: [main-thread, strictly bounded] — descriptor parse,
-//     in-memory trust lookup (preloaded once from the TrustedOrigins ledger),
-//     DISK-validated cache lookup with lease-then-validate pinning, file-size
-//     estimate. NO network, NO credential resolution, NO blocking lock
-//     acquisition. Result strings are owned by this instance and stay valid
-//     until the NEXT query on it (the ABI lifetime rule).
+//     presentation write through the host settings view, in-memory trust lookup
+//     (preloaded once from the TrustedOrigins ledger), DISK-validated cache
+//     lookup with lease-then-validate pinning, file-size estimate. NO network,
+//     NO credential resolution, NO blocking lock acquisition. Result strings
+//     are owned by this instance and stay valid until the NEXT query on it (the
+//     ABI lifetime rule).
 // Trust gating is the HOST's job by the ABI's design: queryDescriptor
 // returns the verdict and the host confirms/refuses before calling
 // startImport (its own confirmation flow may proceed past a

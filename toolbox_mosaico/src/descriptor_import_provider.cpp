@@ -26,6 +26,7 @@
 #include "fetch_worker.hpp"
 #include "settings_store.hpp"
 #include "source_descriptor.hpp"
+#include "source_presentation.hpp"
 #include "stoppable_thread.hpp"
 
 namespace mosaico {
@@ -552,6 +553,10 @@ bool DescriptorImportProvider::queryDescriptor(
     // Result strings: owned by this instance, valid until the NEXT query on
     // it (the ABI lifetime rule; main-thread only, like the query itself).
     query_identity_ = descriptorIdentity(*descriptor);
+    // The host builds the dialog rows only after this bounded query returns.
+    // Publish the descriptor's human presentation now so first loads on a new
+    // machine do not fall back to the opaque durable identity.
+    recordSourcePresentation(settings_, query_identity_, *descriptor);
     query_path_ = cache.pathFor(query_identity_).string();
     query_message_.clear();
 

@@ -52,6 +52,7 @@
 #include "session_file_cache.hpp"
 #include "settings_store.hpp"
 #include "source_descriptor.hpp"
+#include "source_presentation.hpp"
 #include "table_sort.h"
 #include "tls_utils.h"
 
@@ -1205,6 +1206,9 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
       if (cache_root.empty()) {
         descriptor.reset();  // no safe transient home: honest eager-only
       }
+    }
+    if (descriptor.has_value()) {
+      recordSourcePresentation(settings_, descriptorIdentity(*descriptor), *descriptor);
     }
     // Multi-topic parallel pull (Step 10.2). Single topic still goes
     // via this path — the SDK handles the degenerate 1-topic case fine
