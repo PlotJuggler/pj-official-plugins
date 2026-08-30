@@ -36,11 +36,12 @@ find_package(nlohmann_json REQUIRED)
 # data_load_mcap/contrib); lz4 + zstd come from conan for chunk compression.
 find_package(lz4 REQUIRED)
 find_package(zstd REQUIRED)
+find_package(OpenSSL REQUIRED)
 # Conan hides the headers of transitive dependencies: a consumer recipe that
-# reaches lz4/zstd only through arrow still gets these imported targets, but
-# with EMPTY include dirs, and the vendored mcap then silently compiles against
-# whatever /usr/include ships (lz4 < 1.9.4 has no skipChecksums). Fail here,
-# naming the fix, instead of at some distro's compiler.
+# reaches lz4/zstd/OpenSSL only through arrow still gets these imported
+# targets, but with EMPTY include dirs, and our sources then silently compile
+# against whatever /usr/include ships (lz4 < 1.9.4 has no skipChecksums).
+# Fail here, naming the fix, instead of at some distro's compiler.
 function(mosaico_ingest_require_visible_headers target)
   get_target_property(dirs ${target} INTERFACE_INCLUDE_DIRECTORIES)
   # CMakeDeps wraps each config's dirs as $<$<CONFIG:...>:dirs>; unwrap so an
@@ -50,13 +51,14 @@ function(mosaico_ingest_require_visible_headers target)
   if("${dirs}" STREQUAL "" OR "${dirs}" MATCHES "-NOTFOUND$")
     message(FATAL_ERROR
       "mosaico_ingest_core: ${target} exposes no include directories. The conan "
-      "recipe of every plugin linking mosaico_ingest_core must list lz4 and zstd "
-      "as direct requires (Conan hides transitive headers); otherwise the vendored "
-      "mcap would compile against the host's system headers.")
+      "recipe of every plugin linking mosaico_ingest_core must list lz4, zstd, "
+      "and openssl as direct requires (Conan hides transitive headers); otherwise "
+      "the sources may compile against the host's system headers.")
   endif()
 endfunction()
 mosaico_ingest_require_visible_headers(LZ4::lz4_static)
 mosaico_ingest_require_visible_headers(zstd::libzstd_static)
+mosaico_ingest_require_visible_headers(OpenSSL::Crypto)
 
 add_library(mosaico_ingest_core STATIC
   arrow_cache_artifact.cpp
@@ -89,6 +91,7 @@ target_link_libraries(mosaico_ingest_core PUBLIC
   zstd::libzstd_static
   ${MOSAICO_INGEST_ARROW_TARGET}
 )
+target_link_libraries(mosaico_ingest_core PRIVATE OpenSSL::Crypto)
 # Arrow-compute instantiations exceed the COFF section limit without /bigobj.
 if(MSVC)
   target_compile_options(mosaico_ingest_core PRIVATE /bigobj)

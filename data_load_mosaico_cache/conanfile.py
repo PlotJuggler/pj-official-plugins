@@ -30,6 +30,10 @@ class DataLoadMosaicoCacheConan(ConanFile):
         # mcap needs lz4 + zstd for chunk (de)compression.
         "lz4/1.9.4",
         "zstd/1.5.7",
+        # mosaico_ingest_core's SHA-256 wrapper includes OpenSSL EVP headers.
+        # Arrow already resolves OpenSSL, but Conan hides transitive headers;
+        # this direct require exposes them without selecting another version.
+        "openssl/3.6.4",
     )
     default_options = {
         "*:shared": False,
