@@ -26,16 +26,9 @@
 
 #include <algorithm>
 #include <chrono>
-#include <filesystem>
 #include <pj_base/sdk/platform.hpp>
 #include <string_view>
 #include <utility>
-
-#if defined(_WIN32)
-#include <windows.h>
-#else
-#include <unistd.h>
-#endif
 
 #include "cert_dialog_ui.hpp"
 #include "core/time_format.h"
@@ -319,48 +312,6 @@ void MosaicoDialog::setSettings(PJ::sdk::SettingsView settings) {
   initFromSettings();
 }
 
-namespace {
-
-// The transient artifact area under a cache root: one dir per live session,
-// each pinned by an exclusive .session.lock so the purge sweep can tell dead
-// sessions (lock acquirable) from live ones.
-std::filesystem::path transientAreaFor(const std::string& configured_root) {
-  const std::filesystem::path root =
-      configured_root.empty() ? standardCacheRoot(nullptr) : std::filesystem::path(configured_root);
-  if (root.empty()) {
-    return {};
-  }
-  return root / "transient";
-}
-
-constexpr const char* kTransientSessionLockName = ".session.lock";
-
-// Remove every transient session dir whose lock is acquirable (its session
-// died without cleaning up). Bounded: one directory scan + one non-blocking
-// flock attempt per entry.
-void purgeDeadTransientSessions(const std::filesystem::path& area) {
-  std::error_code ec;
-  if (area.empty() || !std::filesystem::is_directory(area, ec) || ec) {
-    return;
-  }
-  for (const auto& entry : std::filesystem::directory_iterator(area, ec)) {
-    if (ec || !entry.is_directory()) {
-      continue;
-    }
-    {
-      auto lock = FileLock::tryExclusive(entry.path() / kTransientSessionLockName, nullptr);
-      if (!lock.has_value()) {
-        continue;  // a live session owns it
-      }
-      // Lock released at scope exit so remove_all can delete it too.
-    }
-    std::error_code remove_error;
-    std::filesystem::remove_all(entry.path(), remove_error);
-  }
-}
-
-}  // namespace
-
 void MosaicoDialog::initFromSettings() {
   // Restore persisted UI state and auto-connect to the last server (PJ3
   // parity). Runs at bind time, before the tick loop or any worker result can
@@ -379,16 +330,7 @@ void MosaicoDialog::initFromSettings() {
   state_.restore_selected_sequence = settings.getString("mosaico/selected_sequence");
   state_.restore_selected_topics = settings.getStringList("mosaico/selected_topics");
   state_.topics_all = settings.getBool("mosaico/topics_all", false);
-  state_.cache_downloads = settings.getBool("mosaico/cache_enabled", true);
   state_.cache_directory = settings.getString("mosaico/cache_directory");
-
-  // Sweep transient artifact dirs left by dead sessions (save-cache-off
-  // Downloads); ours is protected by its held .session.lock. Off the GUI
-  // thread: it is a directory scan with per-entry flock attempts.
-  {
-    const std::filesystem::path area = transientAreaFor(state_.cache_directory);
-    postCommand([area] { purgeDeadTransientSessions(area); });
-  }
 
   if (!history.empty()) {
     const std::string uri = state_.uri;
@@ -636,20 +578,17 @@ std::string MosaicoDialog::widget_data() {
         state_.global_max_ts_ns > 0 ? formatDateOnlyIso(state_.global_max_ts_ns) : "");
   }
 
-  // Local cache controls (mcap_cloud's Export-MCAP shape): the directory
-  // field + its label + Browse follow the toggle, and everything freezes
-  // during a fetch (the running Download already latched its destination).
-  wd.setChecked("checkSaveCache", state_.cache_downloads);
+  // The cache destination freezes during a fetch because the running Download
+  // has already latched it.
   wd.setText("cacheDirectory", state_.cache_directory);
   // Empty setting = the live standard resolution (MOSAICO_CACHE_DIR / XDG);
   // surface it as a hint rather than persisting a frozen snapshot of it.
   wd.setPlaceholder("cacheDirectory", standardCacheRoot(nullptr).string());
-  const bool cache_dir_enabled = state_.cache_downloads && !state_.fetch_active;
+  const bool cache_dir_enabled = !state_.fetch_active;
   wd.setEnabled("cacheDirectory", cache_dir_enabled);
   wd.setEnabled("labelCacheDirectory", cache_dir_enabled);
   wd.setFolderPicker("buttonBrowseCacheDir", "Browse...", "Select cache directory");
   wd.setEnabled("buttonBrowseCacheDir", cache_dir_enabled);
-  wd.setEnabled("checkSaveCache", !state_.fetch_active);
 
   // Button enable/disable (PJ3 parity): Connect is inert while a connect or a
   // fetch is in flight; Download needs a sequence + topic(s) and an idle
@@ -1117,6 +1056,7 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
   if (widget_name == "buttonFetch") {
     std::string seq;
     std::string server_uri;
+    std::string cache_root;
     std::vector<std::string> topics;
     std::int64_t start = 0;
     std::int64_t end = 0;
@@ -1128,6 +1068,7 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
       }
       seq = state_.selected_sequence;
       server_uri = state_.uri;
+      cache_root = state_.cache_directory;
       if (state_.topics_all) {
         // All mode: request every listed topic EXPLICITLY (never an "empty =
         // all" shorthand) so the fetch ledger, progress and the durable
@@ -1181,32 +1122,17 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
       state_.speed_samples.clear();
       state_.topic_fetch_status.clear();
     }
-    bool save_cache = true;
-    std::string cache_root;
-    {
-      std::lock_guard<std::mutex> lock(state_.mu);
-      save_cache = state_.cache_downloads;
-      cache_root = state_.cache_directory;
-    }
     worker_->resetCancel();
     notify(PJ::ToolboxMessageLevel::kInfo, fmt::format("Fetching {} topic(s)…", topics.size()));
     // The durable re-download descriptor: the EXACT resolved request —
     // sequence, explicit topic list, absolute time window (never slider
-    // proportions). EVERY Download is recorded for layout re-import; the
-    // Save-cache-file toggle only picks the artifact's home: unchecked =
-    // the per-session transient folder, so the layout still carries the
-    // download instructions but a later reopen re-downloads. The validated
-    // factory yields no descriptor for an uncacheable request (e.g. a
-    // scheme-less URI typed into the connect box); the Download then
-    // proceeds eager-only, exactly like the tee's own self-check.
+    // proportions). Every Download with a valid descriptor is recorded in the
+    // persistent cache for layout re-import. The validated factory yields no
+    // descriptor for an uncacheable request (e.g. a scheme-less URI typed into
+    // the connect box); the Download then proceeds eager-only, exactly like the
+    // tee's own self-check.
     std::optional<SourceDescriptor> descriptor =
         makeSequenceDescriptor(server_uri, seq, topics, start, end, /*display_name=*/seq, nullptr);
-    if (!save_cache && descriptor.has_value()) {
-      cache_root = transientSessionDir(cache_root);
-      if (cache_root.empty()) {
-        descriptor.reset();  // no safe transient home: honest eager-only
-      }
-    }
     if (descriptor.has_value()) {
       recordSourcePresentation(settings_, descriptorIdentity(*descriptor), *descriptor);
     }
@@ -1248,14 +1174,6 @@ bool MosaicoDialog::onToggled(std::string_view widget_name, bool checked) {
       std::lock_guard<std::mutex> lock(state_.mu);
       state_.topics_all = (widget_name == "radioTopicsAll");
     }
-    return true;
-  }
-  if (widget_name == "checkSaveCache") {
-    {
-      std::lock_guard<std::mutex> lock(state_.mu);
-      state_.cache_downloads = checked;
-    }
-    persistState();
     return true;
   }
   return false;
@@ -1474,31 +1392,6 @@ bool MosaicoDialog::onSelectionChanged(std::string_view widget_name, const std::
   return false;
 }
 
-std::string MosaicoDialog::transientSessionDir(const std::string& configured_root) {
-  const std::filesystem::path area = transientAreaFor(configured_root);
-  if (area.empty()) {
-    return {};
-  }
-#if defined(_WIN32)
-  const auto pid = static_cast<long long>(::GetCurrentProcessId());
-#else
-  const auto pid = static_cast<long long>(::getpid());
-#endif
-  const std::filesystem::path dir = area / std::to_string(pid);
-  std::error_code ec;
-  std::filesystem::create_directories(dir, ec);
-  if (ec) {
-    return {};
-  }
-  if (!transient_lock_.has_value()) {
-    transient_lock_ = FileLock::tryExclusive(dir / kTransientSessionLockName, nullptr);
-    if (!transient_lock_.has_value()) {
-      return {};
-    }
-  }
-  return dir.string();
-}
-
 void MosaicoDialog::markFetchCancellingLocked() {
   // Reflect the cancel in the Info-panel progress header immediately, and
   // mark every not-yet-finished topic "Cancelling…" so the per-topic view
@@ -1595,7 +1488,6 @@ void MosaicoDialog::persistState() {
   std::string selected_sequence;
   std::vector<std::string> selected_topics;
   bool topics_all = false;
-  bool cache_downloads = true;
   std::string cache_directory;
   {
     std::lock_guard<std::mutex> lock(state_.mu);
@@ -1608,7 +1500,6 @@ void MosaicoDialog::persistState() {
     selected_sequence = state_.selected_sequence;
     selected_topics = state_.selected_topics;
     topics_all = state_.topics_all;
-    cache_downloads = state_.cache_downloads;
     cache_directory = state_.cache_directory;
   }
   SettingsStore settings(settings_);
@@ -1618,7 +1509,6 @@ void MosaicoDialog::persistState() {
   settings.setString("mosaico/selected_sequence", selected_sequence);
   settings.setStringList("mosaico/selected_topics", selected_topics);
   settings.setBool("mosaico/topics_all", topics_all);
-  settings.setBool("mosaico/cache_enabled", cache_downloads);
   settings.setString("mosaico/cache_directory", cache_directory);
 }
 

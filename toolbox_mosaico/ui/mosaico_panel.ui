@@ -345,23 +345,15 @@
     </widget>
    </item>
 
-   <!-- Local cache controls (mcap_cloud parity: checkSaveMcap / saveDirectory /
-        buttonBrowseSaveDir). Governs whether a Download is recorded as a local
-        cache artifact for layout re-import, and where artifacts live. -->
+   <!-- Persistent cache directory. Every Download with a valid descriptor is
+        recorded here for layout re-import. -->
    <item>
-    <layout class="QHBoxLayout" name="saveCacheRow">
+    <layout class="QHBoxLayout" name="cacheDirectoryRow">
      <property name="spacing"><number>8</number></property>
      <property name="leftMargin"><number>8</number></property>
      <property name="topMargin"><number>4</number></property>
      <property name="rightMargin"><number>8</number></property>
      <property name="bottomMargin"><number>0</number></property>
-     <item>
-      <widget class="QCheckBox" name="checkSaveCache">
-       <property name="text"><string>Save cache file</string></property>
-       <property name="toolTip"><string>Keep this Download's cache file so a saved layout reloads instantly. When unchecked, layouts still record the download instructions, but reopening them downloads from the server again</string></property>
-       <property name="checked"><bool>true</bool></property>
-      </widget>
-     </item>
      <item>
       <widget class="QLabel" name="labelCacheDirectory">
        <property name="text"><string>Directory:</string></property>

@@ -19,7 +19,6 @@
 #include <thread>
 #include <vector>
 
-#include "core/file_lock.h"
 #include "core/types.h"
 #include "flight/types.hpp"  // mosaico::SequenceInfo
 #include "worker_types.h"    // ServerCredentials, ConnectResult, TopicRef, PullResultEvent
@@ -97,14 +96,10 @@ struct DialogState {
   // mode flips, so switching to All and back keeps the custom pick.
   bool topics_all = false;
 
-  // Local cache controls (saveCacheRow). Every Download is recorded for
-  // layout re-import; cache_downloads only picks the artifact's HOME:
-  // checked = the persistent cache (instant layout reloads), unchecked = a
-  // purged-per-session transient folder, so reopening the layout later
-  // re-downloads from the server. cache_directory: empty = the live
-  // standard resolution (SessionFileCache::at falls back to
-  // standardCacheRoot), shown as the field's placeholder hint.
-  bool cache_downloads = true;
+  // Every Download is recorded in the persistent cache for layout re-import.
+  // cache_directory: empty = the live standard resolution
+  // (SessionFileCache::at falls back to standardCacheRoot), shown as the
+  // field's placeholder hint.
   std::string cache_directory;
 
   // PJ3 parity (main_window.cpp:1051-1052,1064-1065): the last sequence + topic
@@ -288,14 +283,6 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   // settings view is bound, before the tick loop.
   void initFromSettings();
 
-  // The per-session transient artifact home for save-cache-off Downloads:
-  // <resolved root>/transient/<pid>, created on first use and pinned by an
-  // exclusive .session.lock held for the dialog's lifetime (the purge
-  // sweep removes any transient dir whose lock is acquirable, i.e. whose
-  // session died). Returns an empty string when the dir or lock cannot be
-  // established; the caller then falls back to an unrecorded Download.
-  [[nodiscard]] std::string transientSessionDir(const std::string& configured_root);
-
   // The shared cancel presentation (in-panel Cancel button and host-side
   // Stop): progress header + per-topic "Cancelling…" rows. Caller holds
   // state_.mu.
@@ -385,10 +372,6 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   PJ::sdk::SettingsView settings_;
   // Trusted-origin recorder (see setConnectSuccessRecorder). GUI thread only.
   std::function<bool(const std::string& uri)> trust_recorder_;
-  // Held for the dialog lifetime once a transient Download ran (see
-  // transientSessionDir); its presence is what keeps the purge sweep of
-  // another session from deleting our live transient artifacts.
-  std::optional<FileLock> transient_lock_;
 };
 
 }  // namespace mosaico
