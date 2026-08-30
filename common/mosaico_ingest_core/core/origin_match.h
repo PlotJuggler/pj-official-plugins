@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 //
 // Strict grpc/grpc+tls origin parsing + comparison for trust and credential
-// origin binding: the trusted-origin ledger keys entries by origin, and the
-// MOSAICO_API_KEY env token may only apply to a target whose origin equals
-// MOSAICO_URL's. Deliberately NOT normalizeServerKey() — that is a storage
-// key (lossy, collision-tolerant), not an origin parser; a trust or
-// credential-release decision needs the strict fail-closed parse below.
+// origin binding: MOSAICO_TRUSTED_ORIGINS entries and the MOSAICO_API_KEY env
+// token may only apply to targets with the same origin. Deliberately NOT
+// normalizeServerKey() — that is a storage key (lossy, collision-tolerant),
+// not an origin parser; a trust or credential-release decision needs the
+// strict fail-closed parse below.
 #pragma once
 #include <cstdint>
 #include <optional>

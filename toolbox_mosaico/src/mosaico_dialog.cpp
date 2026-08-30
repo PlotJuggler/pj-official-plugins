@@ -457,10 +457,6 @@ void MosaicoDialog::setPromotionProvider(std::function<PJ::SourcePromotionHostVi
   worker_->setPromotionProvider(std::move(provider));
 }
 
-void MosaicoDialog::setConnectSuccessRecorder(std::function<bool(const std::string& uri)> recorder) {
-  trust_recorder_ = std::move(recorder);
-}
-
 std::string MosaicoDialog::widget_data() {
   std::lock_guard<std::mutex> lock(state_.mu);
   PJ::WidgetData wd;
@@ -1452,18 +1448,6 @@ void MosaicoDialog::onConnectFinished(ConnectResult result) {
     std::vector<std::string> history = settings.getStringList("mosaico/server_history");
     history = promoteToHead(history, uri, /*cap=*/20);
     settings.setStringList("mosaico/server_history", history);
-
-    // Layout re-import trust bootstrap: a successful interactive connect is
-    // the ONLY event that marks an origin safe to auto-import against —
-    // recorded about the server that actually answered. A failed durable
-    // ledger write means the origin is NOT trusted anywhere (no silent
-    // transient trust), so say so instead of pretending.
-    if (trust_recorder_ && !trust_recorder_(uri)) {
-      notify(
-          PJ::ToolboxMessageLevel::kWarning,
-          "Mosaico: could not persist the trusted-server list; layout re-imports from this "
-          "server will keep asking for confirmation");
-    }
 
     notify(PJ::ToolboxMessageLevel::kInfo, status);
     postCommand([w = worker_.get()] { w->listSequencesAsync(); });

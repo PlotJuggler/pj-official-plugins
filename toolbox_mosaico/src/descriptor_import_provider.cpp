@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <condition_variable>
 #include <cstddef>
 #include <filesystem>
@@ -22,6 +23,7 @@
 #include <vector>
 
 #include "arrow_cache_artifact.hpp"
+#include "core/origin_match.h"
 #include "credential_resolve.hpp"
 #include "fetch_worker.hpp"
 #include "settings_store.hpp"
@@ -65,6 +67,39 @@ std::uint64_t minNonzero(std::uint64_t a, std::uint64_t b) {
     return a;
   }
   return a < b ? a : b;
+}
+
+std::string_view trimAsciiWhitespace(std::string_view text) {
+  while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front())) != 0) {
+    text.remove_prefix(1);
+  }
+  while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())) != 0) {
+    text.remove_suffix(1);
+  }
+  return text;
+}
+
+bool trustedByEnvironment(std::string_view server_uri) {
+  const auto target = parseGrpcOrigin(server_uri);
+  const std::optional<std::string> allowlist = PJ::sdk::getEnv("MOSAICO_TRUSTED_ORIGINS");
+  if (!target.has_value() || !allowlist.has_value()) {
+    return false;
+  }
+
+  std::string_view remaining = *allowlist;
+  for (;;) {
+    const std::size_t comma = remaining.find(',');
+    const std::string_view entry = trimAsciiWhitespace(remaining.substr(0, comma));
+    if (const auto candidate = parseGrpcOrigin(entry); candidate.has_value() && candidate->scheme == target->scheme &&
+                                                       candidate->host == target->host &&
+                                                       candidate->port == target->port) {
+      return true;
+    }
+    if (comma == std::string_view::npos) {
+      return false;
+    }
+    remaining.remove_prefix(comma + 1);
+  }
 }
 
 // Settled-exactly-once promotion outcome, shared (shared_ptr) between the
@@ -510,29 +545,6 @@ SessionFileCache DescriptorImportProvider::makeFileCache() {
   return SessionFileCache::at(std::filesystem::path(configured), validateArtifact, nullptr);
 }
 
-void DescriptorImportProvider::ensureTrustLoaded() {
-  std::lock_guard<std::mutex> lock(trust_mu_);
-  if (trust_loaded_) {
-    return;
-  }
-  for (auto& origin : ledger_.allOrigins()) {
-    trusted_keys_.insert(std::move(origin));
-  }
-  trust_loaded_ = true;
-}
-
-bool DescriptorImportProvider::recordSuccessfulConnect(const std::string& uri) {
-  ensureTrustLoaded();
-  if (!ledger_.recordSuccessfulConnect(uri)) {
-    return false;  // nothing durable happened — never hold transient trust
-  }
-  if (auto key = trustedOriginKey(uri)) {
-    std::lock_guard<std::mutex> lock(trust_mu_);
-    trusted_keys_.insert(std::move(*key));
-  }
-  return true;
-}
-
 bool DescriptorImportProvider::queryDescriptor(
     PJ_string_view_t descriptor_json, PJ_descriptor_query_result_v1_t* out_result, PJ_error_t* out_error) {
   try {
@@ -560,17 +572,12 @@ bool DescriptorImportProvider::queryDescriptor(
     query_path_ = cache.pathFor(query_identity_).string();
     query_message_.clear();
 
-    // Trust: the in-memory set ONLY (bounded-query rule — the one ledger
-    // file read happens lazily, once). v1 emits only trusted /
-    // needs-confirmation; refused is reserved for future policy.
-    ensureTrustLoaded();
-    bool trusted = false;
-    if (const auto key = trustedOriginKey(descriptor->server_uri)) {
-      std::lock_guard<std::mutex> lock(trust_mu_);
-      trusted = trusted_keys_.contains(*key);
-    }
+    // Trust: strict origin equality against the process environment
+    // allowlist. Malformed entries are ignored; v1 emits only trusted /
+    // needs-confirmation (refused is reserved for future policy).
+    const bool trusted = trustedByEnvironment(descriptor->server_uri);
     if (!trusted) {
-      query_message_ = "server not trusted on this machine yet; connect to it once in the Mosaico panel to trust it";
+      query_message_ = "server not trusted on this machine; confirm the download or set MOSAICO_TRUSTED_ORIGINS";
     }
 
     // is_materialized: the DISK-validated cache ONLY, with lease-then-

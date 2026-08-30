@@ -4,13 +4,13 @@
 # observation channel. Three legs over ONE generated layout whose cache
 # artifact lives in a sandboxed MOSAICO_CACHE_DIR:
 #
-#   A. cold + UNTRUSTED: no ledger entry, no artifact -> the host must NOT
+#   A. cold + UNTRUSTED: no environment allowlist, no artifact -> the host must NOT
 #      auto-import (no network fetch, no artifact appears) and must surface
 #      the needs-confirmation diagnostic.
-#   B. cold + TRUSTED: seeded trusted_origins.json + the MOSAICO_URL-guarded
-#      env key -> the provider re-downloads the descriptor headlessly,
-#      materializes the artifact at the request-addressed path, and the
-#      restore commits (exit 0). This is the "layout opened on another
+#   B. cold + TRUSTED: MOSAICO_TRUSTED_ORIGINS allowlists the target server
+#      origin and the MOSAICO_URL-guarded env key lets the provider re-download
+#      the descriptor headlessly, materialize the request-addressed artifact,
+#      and commit the restore (exit 0). This is the "layout opened on another
 #      machine" scenario.
 #   C. warm + NO CREDENTIALS: the artifact from leg B present, no api key in
 #      the environment at all -> the restore commits instantly from the cache
@@ -33,6 +33,22 @@ TOPIC="${MOSAICO_E2E_TOPIC:-/odometry/odometry}"
 START_NS="${MOSAICO_E2E_START_NS:-1461159829761465942}"
 END_NS="${MOSAICO_E2E_END_NS:-1461159838697221495}"
 
+SERVER_ORIGIN="$(python3 - "${SERVER_URI}" <<'PYEOF'
+import sys
+from urllib.parse import urlsplit
+
+uri = urlsplit(sys.argv[1])
+try:
+    port = uri.port
+except ValueError:
+    raise SystemExit(1)
+if (uri.scheme.lower() not in {"grpc", "grpc+tls"} or uri.hostname is None or port is None or port == 0
+        or uri.username is not None or uri.password is not None or uri.query or uri.fragment or ":" in uri.hostname):
+    raise SystemExit(1)
+print(f"{uri.scheme.lower()}://{uri.hostname.lower()}:{port}")
+PYEOF
+)" || { echo "FATAL: invalid MOSAICO_E2E_SERVER origin" >&2; exit 64; }
+
 TOOLBOX_SO="${REPO}/build/toolbox_mosaico/Release/bin/libtoolbox_mosaico_plugin.so"
 LOADER_SO="${REPO}/build/data_load_mosaico_cache/Release/bin/libmosaico_cache_source_plugin.so"
 [[ -f "${TOOLBOX_SO}" && -f "${LOADER_SO}" ]] || {
@@ -54,10 +70,9 @@ fi
 WORK="$(mktemp -d /tmp/mosaico-e2e-XXXXXX)"
 trap 'rm -rf "${WORK}"' EXIT
 CACHE="${WORK}/cache"
-CONFIG="${WORK}/config"
 XDG="${WORK}/xdg"
 PLUGINS="${WORK}/plugins"
-mkdir -p "${CACHE}" "${CONFIG}" "${XDG}" "${PLUGINS}"
+mkdir -p "${CACHE}" "${XDG}" "${PLUGINS}"
 ln -s "${TOOLBOX_SO}" "${PLUGINS}/"
 ln -s "${LOADER_SO}" "${PLUGINS}/"
 
@@ -116,9 +131,9 @@ run_leg() {
   shift 2
   local diag="${WORK}/${name}.json"
   set +e
-  env -u MOSAICO_API_KEY -u MOSAICO_URL \
+  env -u MOSAICO_API_KEY -u MOSAICO_URL -u MOSAICO_TRUSTED_ORIGINS \
     QT_QPA_PLATFORM=offscreen XDG_CONFIG_HOME="${XDG}" \
-    MOSAICO_CACHE_DIR="${CACHE}" MOSAICO_CONFIG_DIR="${CONFIG}" "$@" \
+    MOSAICO_CACHE_DIR="${CACHE}" "$@" \
     "${PJ4_DIR}/run.sh" --plugin-dir "${PLUGINS}" --nosplash \
     --layout "${LAYOUT}" --exit-after-layout --exit-after-layout-timeout "${timeout_s}" \
     --dump-diagnostics "${diag}" > "${WORK}/${name}.log" 2>&1
@@ -137,14 +152,8 @@ grep -qi "trust" "${WORK}/A.json" || fail "leg A diagnostics carry no trust refu
 echo "== leg A OK: no artifact, trust refusal surfaced"
 
 # ---- Leg B: cold + trusted + origin-bound env key ------------------------
-python3 -c "
-import json, sys
-from urllib.parse import urlsplit
-u = urlsplit('${SERVER_URI}'.replace('grpc+tls', 'https').replace('grpc', 'http'))
-origin = '${SERVER_URI}'.split('://')[0] + '://' + u.hostname.lower() + ':' + str(u.port)
-print(json.dumps({'v': 1, 'origins': [origin]}))
-" > "${CONFIG}/trusted_origins.json"
-run_leg B 300 MOSAICO_URL="${SERVER_URI}" MOSAICO_API_KEY="${API_KEY}" \
+run_leg B 300 MOSAICO_TRUSTED_ORIGINS="${SERVER_ORIGIN}" \
+  MOSAICO_URL="${SERVER_URI}" MOSAICO_API_KEY="${API_KEY}" \
   || fail "leg B (trusted cold re-download) exited non-zero"
 [[ -f "${ARTIFACT}" ]] || fail "leg B did not materialize ${ARTIFACT}"
 echo "== leg B OK: re-downloaded + materialized $(stat -c%s "${ARTIFACT}") bytes"

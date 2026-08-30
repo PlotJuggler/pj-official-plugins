@@ -269,15 +269,6 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   // (host omits the optional service) yields defaults gracefully.
   void setSettings(PJ::sdk::SettingsView settings);
 
-  // Wires the trusted-origin recorder invoked on every successful panel
-  // connect (the layout re-import trust bootstrap: only an interactive
-  // connect marks a server safe to auto-import against). The callback
-  // returns false when the durable ledger write failed — the dialog then
-  // warns instead of holding silent transient trust. Optional; unset skips
-  // recording. Called by MosaicoToolbox during bind(); runs on the GUI
-  // thread inside onConnectFinished.
-  void setConnectSuccessRecorder(std::function<bool(const std::string& uri)> recorder);
-
  private:
   // Restore persisted query/range/server + auto-connect. Runs once when the
   // settings view is bound, before the tick loop.
@@ -370,8 +361,6 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   // Host-backed QSettings-like store (pj.settings.v1). Default-constructed
   // unbound until setSettings(); an unbound view reads defaults / drops writes.
   PJ::sdk::SettingsView settings_;
-  // Trusted-origin recorder (see setConnectSuccessRecorder). GUI thread only.
-  std::function<bool(const std::string& uri)> trust_recorder_;
 };
 
 }  // namespace mosaico

@@ -10,12 +10,11 @@
 // Surfaces, both operating on the raw C structs so the growth contract
 // (struct_size-covered reads/writes) lives in exactly one place:
 //   - queryDescriptor: [main-thread, strictly bounded] — descriptor parse,
-//     presentation write through the host settings view, in-memory trust lookup
-//     (preloaded once from the TrustedOrigins ledger), DISK-validated cache
-//     lookup with lease-then-validate pinning, file-size estimate. NO network,
-//     NO credential resolution, NO blocking lock acquisition. Result strings
-//     are owned by this instance and stay valid until the NEXT query on it (the
-//     ABI lifetime rule).
+//     presentation write through the host settings view, environment trust
+//     allowlist lookup, DISK-validated cache lookup with lease-then-validate
+//     pinning, file-size estimate. NO network, NO credential resolution, NO
+//     blocking lock acquisition. Result strings are owned by this instance and
+//     stay valid until the NEXT query on it (the ABI lifetime rule).
 // Trust gating is the HOST's job by the ABI's design: queryDescriptor
 // returns the verdict and the host confirms/refuses before calling
 // startImport (its own confirmation flow may proceed past a
@@ -49,11 +48,9 @@
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 
 #include "core/file_lock.h"
 #include "session_file_cache.hpp"
-#include "trusted_origins.hpp"
 
 namespace mosaico {
 
@@ -75,12 +72,6 @@ class DescriptorImportProvider {
 
   /// Main-thread wiring at bind() (re-bind swaps the views; no network).
   void bind(PJ::sdk::SettingsView settings, HostBindings bindings);
-
-  /// Write-through trust recording (the dialog's connect-success hook):
-  /// records into the durable TrustedOrigins ledger AND — only after that
-  /// durable write succeeded — the in-memory set the query consults. False =
-  /// nothing recorded anywhere (transient trust is never held silently).
-  [[nodiscard]] bool recordSuccessfulConnect(const std::string& uri);
 
   /// The raw extension surface (see the file header). The toolbox's
   /// PJ_descriptor_import_provider_v1_t thunks forward here.
@@ -120,15 +111,8 @@ class DescriptorImportProvider {
   /// mosaico/cache_directory when set (the panel's Directory field), else
   /// standardCacheRoot — main thread only (SettingsView).
   [[nodiscard]] SessionFileCache makeFileCache();
-  /// Preload the in-memory trust set from the ledger (once, lazily).
-  void ensureTrustLoaded();
-
   PJ::sdk::SettingsView settings_{};
   HostBindings bindings_{};
-  TrustedOrigins ledger_ = TrustedOrigins::standard();
-  std::mutex trust_mu_;
-  bool trust_loaded_ = false;
-  std::unordered_set<std::string> trusted_keys_;  // trustedOriginKey shape
 
   // Materialized-hit read leases pinned by the query (a path the HOST is
   // about to load must survive another process's eviction while the loader

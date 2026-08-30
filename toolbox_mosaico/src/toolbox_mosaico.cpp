@@ -55,12 +55,6 @@ class MosaicoToolbox : public PJ::ToolboxPluginBase {
     provider_.bind(
         settings,
         {[this]() { return toolboxHost(); }, [this]() { return runtimeHost(); }, [this]() { return promotion_host_; }});
-    // The layout re-import trust bootstrap: every successful interactive
-    // connect in the panel records its origin through the provider
-    // (write-through: durable ledger + the bounded in-memory set the
-    // provider's query consults).
-    dialog_.setConnectSuccessRecorder(
-        [this](const std::string& uri) { return provider_.recordSuccessfulConnect(uri); });
     return PJ::okStatus();
   }
 

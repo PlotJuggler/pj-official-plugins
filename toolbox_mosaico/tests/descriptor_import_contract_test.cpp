@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT
 //
 // The pj.descriptor_import.v1 provider's NETWORK-FREE surfaces: the query
-// taxonomy (malformed / untrusted-miss / trusted / materialized-with-pin) and
+// taxonomy (malformed / env-untrusted / env-allowlisted / materialized-with-pin) and
 // startImport's fail-closed rejections (flags, callbacks, descriptor,
 // unbound host). The full job path needs a live Flight server and is covered
 // by the scripted E2E (scripts/e2e-mosaico-layout-import.sh). Hermetic via
-// MOSAICO_CONFIG_DIR + MOSAICO_CACHE_DIR (POSIX-only, like the ingest-core
-// env tests).
+// MOSAICO_TRUSTED_ORIGINS + MOSAICO_CACHE_DIR (POSIX-only, like the
+// ingest-core env tests).
 #include <arrow/api.h>
 #include <gtest/gtest.h>
 
@@ -30,25 +30,25 @@ namespace fs = std::filesystem;
 using mosaico::DescriptorImportProvider;
 using mosaico::SourceDescriptor;
 
-// mkdtemp-based temp roots + the env the provider resolves at construction.
+// mkdtemp-based cache root + the environment the provider resolves.
 struct ProviderEnv {
-  fs::path config_dir;
   fs::path cache_dir;
 
   ProviderEnv() {
-    std::string config_template = (fs::temp_directory_path() / "mosaico-di-config-XXXXXX").string();
     std::string cache_template = (fs::temp_directory_path() / "mosaico-di-cache-XXXXXX").string();
-    config_dir = ::mkdtemp(config_template.data());
     cache_dir = ::mkdtemp(cache_template.data());
-    ::setenv("MOSAICO_CONFIG_DIR", config_dir.string().c_str(), 1);
+    ::unsetenv("MOSAICO_TRUSTED_ORIGINS");
     ::setenv("MOSAICO_CACHE_DIR", cache_dir.string().c_str(), 1);
   }
   ~ProviderEnv() {
-    ::unsetenv("MOSAICO_CONFIG_DIR");
+    ::unsetenv("MOSAICO_TRUSTED_ORIGINS");
     ::unsetenv("MOSAICO_CACHE_DIR");
     std::error_code ec;
-    fs::remove_all(config_dir, ec);
     fs::remove_all(cache_dir, ec);
+  }
+
+  void setTrustAllowlist(const char* origins) {
+    ::setenv("MOSAICO_TRUSTED_ORIGINS", origins, 1);
   }
 };
 
@@ -126,7 +126,7 @@ TEST(DescriptorImportQuery, PublishesPresentationThroughHostSettings) {
   EXPECT_EQ(settings_backend.getString(group + "/origin"), std::optional<std::string>("demo.mosaico.dev:6726"));
 }
 
-TEST(DescriptorImportQuery, UntrustedMissThenTrustedThenMaterialized) {
+TEST(DescriptorImportQuery, UntrustedThenEnvAllowlistedThenMaterialized) {
   ProviderEnv env;
   DescriptorImportProvider provider;
   const SourceDescriptor d = descriptor();
@@ -139,16 +139,17 @@ TEST(DescriptorImportQuery, UntrustedMissThenTrustedThenMaterialized) {
   EXPECT_EQ(result.is_materialized, 0u);
   EXPECT_EQ(str(result.source_identity), mosaico::descriptorIdentity(d));
   EXPECT_FALSE(str(result.local_path_utf8).empty());
-  EXPECT_FALSE(str(result.message).empty());
+  EXPECT_EQ(
+      str(result.message), "server not trusted on this machine; confirm the download or set MOSAICO_TRUSTED_ORIGINS");
   EXPECT_EQ(result.estimated_bytes, 0u);
 
-  // 2. A successful interactive connect flips the verdict (write-through:
-  // the durable ledger AND the in-memory set the query consults).
-  ASSERT_TRUE(provider.recordSuccessfulConnect(d.server_uri));
+  // 2. An exact strict origin in the process allowlist flips the verdict.
+  env.setTrustAllowlist("https://ignored:443, grpc+tls://other.example:6726, GRPC+TLS://DEMO.MOSAICO.DEV:6726");
   result = freshResult();
   ASSERT_TRUE(provider.queryDescriptor(view(json), &result, nullptr));
   EXPECT_EQ(result.trust, PJ_DESCRIPTOR_TRUST_TRUSTED);
   EXPECT_EQ(result.is_materialized, 0u);
+  EXPECT_TRUE(str(result.message).empty());
 
   // 3. A materialized artifact classifies as a hit with a size estimate...
   materializeArtifact(d);
@@ -169,6 +170,25 @@ TEST(DescriptorImportQuery, UntrustedMissThenTrustedThenMaterialized) {
   result = freshResult();
   ASSERT_TRUE(provider.queryDescriptor(view(json), &result, nullptr));
   EXPECT_EQ(result.is_materialized, 1u);
+}
+
+TEST(DescriptorImportQuery, TrustAllowlistFailsClosedForDifferentOrMalformedOrigins) {
+  ProviderEnv env;
+  DescriptorImportProvider provider;
+  const std::string json = toSourceDescriptorJson(descriptor());
+
+  for (const char* allowlist : {
+           "",
+           "not-an-origin,https://demo.mosaico.dev:6726",
+           "grpc://demo.mosaico.dev:6726",
+           "grpc+tls://demo.mosaico.dev:6727",
+           "grpc+tls://other.mosaico.dev:6726",
+       }) {
+    env.setTrustAllowlist(allowlist);
+    auto result = freshResult();
+    ASSERT_TRUE(provider.queryDescriptor(view(json), &result, nullptr));
+    EXPECT_EQ(result.trust, PJ_DESCRIPTOR_TRUST_NEEDS_CONFIRMATION) << allowlist;
+  }
 }
 
 TEST(DescriptorImportStart, FailClosedRejections) {
