@@ -43,7 +43,6 @@
 #include "selection_merge.h"
 #include "server_history.h"
 #include "session_file_cache.hpp"
-#include "settings_store.hpp"
 #include "source_descriptor.hpp"
 #include "source_presentation.hpp"
 #include "table_sort.h"
@@ -316,21 +315,45 @@ void MosaicoDialog::initFromSettings() {
   // Restore persisted UI state and auto-connect to the last server (PJ3
   // parity). Runs at bind time, before the tick loop or any worker result can
   // touch state_, so the unlocked access here is safe.
-  SettingsStore settings(settings_);
-  const std::vector<std::string> history = settings.getStringList("mosaico/server_history");
+  std::vector<std::string> history;
+  if (auto stored = settings_.valueStringList("mosaico/server_history")) {
+    history = std::move(*stored);
+  }
   if (!history.empty()) {
     state_.uri = history.front();
   }
-  state_.query_text = settings.getString("mosaico/metadata_query");
-  state_.range_lower = std::clamp(settings.getInt("mosaico/range_lower", 0), 0, DialogState::kSliderSteps);
-  state_.range_upper =
-      std::clamp(settings.getInt("mosaico/range_upper", DialogState::kSliderSteps), 0, DialogState::kSliderSteps);
+  state_.query_text.clear();
+  if (auto stored = settings_.value("mosaico/metadata_query")) {
+    state_.query_text = stored->toString();
+  }
+  int range_lower = 0;
+  if (auto stored = settings_.value("mosaico/range_lower")) {
+    range_lower = static_cast<int>(stored->toInt(0));
+  }
+  state_.range_lower = std::clamp(range_lower, 0, DialogState::kSliderSteps);
+  int range_upper = DialogState::kSliderSteps;
+  if (auto stored = settings_.value("mosaico/range_upper")) {
+    range_upper = static_cast<int>(stored->toInt(DialogState::kSliderSteps));
+  }
+  state_.range_upper = std::clamp(range_upper, 0, DialogState::kSliderSteps);
   // PJ3 parity: stage the last selection for re-selection once the matching
   // sequence/topic list arrives from the auto-connect below.
-  state_.restore_selected_sequence = settings.getString("mosaico/selected_sequence");
-  state_.restore_selected_topics = settings.getStringList("mosaico/selected_topics");
-  state_.topics_all = settings.getBool("mosaico/topics_all", false);
-  state_.cache_directory = settings.getString("mosaico/cache_directory");
+  state_.restore_selected_sequence.clear();
+  if (auto stored = settings_.value("mosaico/selected_sequence")) {
+    state_.restore_selected_sequence = stored->toString();
+  }
+  state_.restore_selected_topics.clear();
+  if (auto stored = settings_.valueStringList("mosaico/selected_topics")) {
+    state_.restore_selected_topics = std::move(*stored);
+  }
+  state_.topics_all = false;
+  if (auto stored = settings_.value("mosaico/topics_all")) {
+    state_.topics_all = stored->toBool(false);
+  }
+  state_.cache_directory.clear();
+  if (auto stored = settings_.value("mosaico/cache_directory")) {
+    state_.cache_directory = stored->toString();
+  }
 
   if (!history.empty()) {
     const std::string uri = state_.uri;
@@ -469,7 +492,10 @@ std::string MosaicoDialog::widget_data() {
   {
     static const std::string kDemoServer = "grpc+tls://demo.mosaico.dev:6726";
     std::vector<std::string> items;
-    const std::vector<std::string> history = SettingsStore(settings_).getStringList("mosaico/server_history");
+    std::vector<std::string> history;
+    if (auto stored = settings_.valueStringList("mosaico/server_history")) {
+      history = std::move(*stored);
+    }
     bool has_demo = false;
     for (const std::string& s : history) {
       items.push_back(s);
@@ -1444,10 +1470,12 @@ void MosaicoDialog::onConnectFinished(ConnectResult result) {
   if (ok) {
     // PJ3 parity: promote a successful URI to the head of the MRU history
     // (cap 20) and persist via the settings store ("mosaico/server_history").
-    SettingsStore settings(settings_);
-    std::vector<std::string> history = settings.getStringList("mosaico/server_history");
+    std::vector<std::string> history;
+    if (auto stored = settings_.valueStringList("mosaico/server_history")) {
+      history = std::move(*stored);
+    }
     history = promoteToHead(history, uri, /*cap=*/20);
-    settings.setStringList("mosaico/server_history", history);
+    (void)settings_.setValue("mosaico/server_history", history);
 
     notify(PJ::ToolboxMessageLevel::kInfo, status);
     postCommand([w = worker_.get()] { w->listSequencesAsync(); });
@@ -1486,14 +1514,15 @@ void MosaicoDialog::persistState() {
     topics_all = state_.topics_all;
     cache_directory = state_.cache_directory;
   }
-  SettingsStore settings(settings_);
-  settings.setString("mosaico/metadata_query", query);
-  settings.setInt("mosaico/range_lower", lower);
-  settings.setInt("mosaico/range_upper", upper);
-  settings.setString("mosaico/selected_sequence", selected_sequence);
-  settings.setStringList("mosaico/selected_topics", selected_topics);
-  settings.setBool("mosaico/topics_all", topics_all);
-  settings.setString("mosaico/cache_directory", cache_directory);
+  // UI state persistence is best-effort; the live dialog state remains the
+  // authority if the optional backend rejects any write.
+  (void)settings_.setValue("mosaico/metadata_query", query);
+  (void)settings_.setValue("mosaico/range_lower", lower);
+  (void)settings_.setValue("mosaico/range_upper", upper);
+  (void)settings_.setValue("mosaico/selected_sequence", selected_sequence);
+  (void)settings_.setValue("mosaico/selected_topics", selected_topics);
+  (void)settings_.setValue("mosaico/topics_all", topics_all);
+  (void)settings_.setValue("mosaico/cache_directory", cache_directory);
 }
 
 void MosaicoDialog::notify(PJ::ToolboxMessageLevel level, const std::string& message) {

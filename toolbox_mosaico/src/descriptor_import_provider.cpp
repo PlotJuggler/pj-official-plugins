@@ -26,7 +26,6 @@
 #include "core/origin_match.h"
 #include "credential_resolve.hpp"
 #include "fetch_worker.hpp"
-#include "settings_store.hpp"
 #include "source_descriptor.hpp"
 #include "source_presentation.hpp"
 #include "stoppable_thread.hpp"
@@ -533,7 +532,10 @@ void DescriptorImportProvider::bind(PJ::sdk::SettingsView settings, HostBindings
 }
 
 SessionFileCache DescriptorImportProvider::makeFileCache() {
-  const std::string configured = SettingsStore(settings_).getString("mosaico/cache_directory");
+  std::string configured;
+  if (auto stored = settings_.value("mosaico/cache_directory")) {
+    configured = stored->toString();
+  }
   return SessionFileCache::at(std::filesystem::path(configured), validateArtifact, nullptr);
 }
 
@@ -694,7 +696,9 @@ bool DescriptorImportProvider::startImport(
     state->descriptor = *descriptor;
     state->identity = descriptorIdentity(*descriptor);
     state->credentials = resolveHeadlessCredentials(settings_, descriptor->server_uri);
-    state->cache_root_override = SettingsStore(settings_).getString("mosaico/cache_directory");
+    if (auto stored = settings_.value("mosaico/cache_directory")) {
+      state->cache_root_override = stored->toString();
+    }
     const std::uint64_t caller_bytes =
         req_covered(
             offsetof(PJ_descriptor_import_start_request_v1_t, max_transfer_bytes), sizeof(request->max_transfer_bytes))

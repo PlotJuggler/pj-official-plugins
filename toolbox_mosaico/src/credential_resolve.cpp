@@ -6,7 +6,6 @@
 
 #include "core/origin_match.h"
 #include "server_history.h"
-#include "settings_store.hpp"
 
 namespace mosaico {
 
@@ -15,21 +14,29 @@ std::string credentialsSettingsPrefix(const std::string& uri) {
 }
 
 ServerCredentials loadCredentialsForUri(PJ::sdk::SettingsView view, const std::string& uri) {
-  SettingsStore settings(view);
   const std::string prefix = credentialsSettingsPrefix(uri);
   ServerCredentials creds;
-  creds.cert_path = settings.getString(prefix + "cert_path");
-  creds.api_key = settings.getString(prefix + "api_key");
-  creds.allow_insecure = settings.getBool(prefix + "allow_insecure", false);
+  // Missing/unbound settings and backend read failures all leave the
+  // credential defaults in place; every fallback is explicit at its read.
+  if (auto stored = view.value(prefix + "cert_path")) {
+    creds.cert_path = stored->toString();
+  }
+  if (auto stored = view.value(prefix + "api_key")) {
+    creds.api_key = stored->toString();
+  }
+  if (auto stored = view.value(prefix + "allow_insecure")) {
+    creds.allow_insecure = stored->toBool(false);
+  }
   return creds;
 }
 
 void saveCredentialsForUri(PJ::sdk::SettingsView view, const std::string& uri, const ServerCredentials& creds) {
-  SettingsStore settings(view);
   const std::string prefix = credentialsSettingsPrefix(uri);
-  settings.setString(prefix + "cert_path", creds.cert_path);
-  settings.setString(prefix + "api_key", creds.api_key);
-  settings.setBool(prefix + "allow_insecure", creds.allow_insecure);
+  // Persistence is best-effort; connection behavior uses the caller's
+  // in-memory credentials even if the optional settings backend rejects it.
+  (void)view.setValue(prefix + "cert_path", creds.cert_path);
+  (void)view.setValue(prefix + "api_key", creds.api_key);
+  (void)view.setValue(prefix + "allow_insecure", creds.allow_insecure);
 }
 
 ServerCredentials resolveCredentials(PJ::sdk::SettingsView view, const std::string& uri) {

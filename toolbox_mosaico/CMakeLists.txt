@@ -77,7 +77,6 @@ set(MOSAICO_SOURCES
   src/fetch_worker.cpp
   src/credential_resolve.cpp
   src/descriptor_import_provider.cpp
-  src/settings_store.cpp
   src/source_presentation.cpp
   src/server_history.cpp
   src/core/time_format.cpp
@@ -213,7 +212,6 @@ if(BUILD_TESTING)
   add_executable(toolbox_mosaico_credential_resolve_test
     tests/credential_resolve_test.cpp
     src/credential_resolve.cpp
-    src/settings_store.cpp
     src/server_history.cpp
   )
   target_link_libraries(toolbox_mosaico_credential_resolve_test PRIVATE
@@ -236,7 +234,6 @@ if(BUILD_TESTING)
     src/descriptor_import_provider.cpp
     src/credential_resolve.cpp
     src/fetch_worker.cpp
-    src/settings_store.cpp
     src/source_presentation.cpp
     src/server_history.cpp
   )
@@ -428,19 +425,8 @@ if(BUILD_TESTING)
   )
   add_test(NAME ToolboxMosaicoTimeFormatTest COMMAND toolbox_mosaico_time_format_test)
 
-  add_executable(toolbox_mosaico_settings_store_test
-    tests/settings_store_test.cpp
-    src/settings_store.cpp
-  )
-  target_include_directories(toolbox_mosaico_settings_store_test PRIVATE src)
-  target_link_libraries(toolbox_mosaico_settings_store_test PRIVATE
-    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
-  )
-  add_test(NAME toolbox_mosaico_settings_store_test COMMAND toolbox_mosaico_settings_store_test)
-
   add_executable(toolbox_mosaico_source_presentation_test
     tests/source_presentation_test.cpp
-    src/settings_store.cpp
     src/source_presentation.cpp
   )
   target_include_directories(toolbox_mosaico_source_presentation_test PRIVATE src)

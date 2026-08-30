@@ -8,7 +8,6 @@
 #include <string_view>
 
 #include "core/origin_match.h"
-#include "settings_store.hpp"
 
 namespace mosaico {
 
@@ -85,9 +84,12 @@ std::string capPresentation(std::string_view text) {
   return std::string(text.substr(0, bytes));
 }
 
-void setIfChanged(SettingsStore& settings, const std::string& key, const std::string& value) {
-  if (settings.getString(key) != value) {
-    settings.setString(key, value);
+void setIfChanged(PJ::sdk::SettingsView settings, const std::string& key, const std::string& value) {
+  const auto current = settings.value(key);
+  // A backend read fault cannot establish equality, so attempt the write; all
+  // presentation persistence is best-effort and never affects the Download.
+  if (!current || current->toString() != value) {
+    (void)settings.setValue(key, value);
   }
 }
 
@@ -107,12 +109,11 @@ void recordSourcePresentation(
   const std::string display_name =
       capPresentation(descriptor.display_name.empty() ? descriptor.sequence : descriptor.display_name);
 
-  SettingsStore settings(settings_view);
-  setIfChanged(settings, group + "/display_name", display_name);
+  setIfChanged(settings_view, group + "/display_name", display_name);
   if (const auto parsed_origin = parseGrpcOrigin(descriptor.server_uri)) {
     const std::string origin =
         capPresentation(parsed_origin->host + ":" + std::to_string(static_cast<unsigned int>(parsed_origin->port)));
-    setIfChanged(settings, group + "/origin", origin);
+    setIfChanged(settings_view, group + "/origin", origin);
   }
 }
 
