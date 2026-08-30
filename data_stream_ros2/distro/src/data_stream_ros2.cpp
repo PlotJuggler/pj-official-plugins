@@ -21,8 +21,7 @@
 #include <nlohmann/json.hpp>
 #include <pj_base/buffer_anchor.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
-#include <pj_streaming/delegated_ingest.hpp>
-#include <pj_streaming/drain_queue.hpp>
+#include <pj_plugins/sdk/streaming_source.hpp>
 #include <rclcpp/executors/multi_threaded_executor.hpp>
 #include <rclcpp/generic_subscription.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -84,7 +83,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
     (void)dialog_.loadConfig(config_json);
     // Extract parser config (e.g. "use_embedded_timestamp") persisted by the
     // host under "_parser_config" so it reaches ensureParserBinding.
-    parser_config_override_ = pj::streaming::parserConfigOverride(config_json);
+    parser_config_override_ = PJ::sdk::parserConfigOverride(config_json);
     return PJ::okStatus();
   }
 
@@ -594,7 +593,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
   static bool setActiveTopicsThunk(
       void* ctx, const PJ_string_view_t* names, uint64_t count, PJ_error_t* /*out_error*/) noexcept {
     auto* self = static_cast<Ros2StreamSource*>(ctx);
-    self->desired_topics_slot_.set(pj::streaming::stringSetFromViews(names, count));
+    self->desired_topics_slot_.set(PJ::sdk::stringSetFromViews(names, count));
     return true;
   }
 
@@ -614,7 +613,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
   std::atomic<bool> running_{false};
 
   std::string parser_config_override_;
-  pj::streaming::DrainQueue<PendingMessage> message_queue_;
+  PJ::sdk::DrainQueue<PendingMessage> message_queue_;
   std::unordered_map<std::string, PJ::ParserBindingHandle> binding_cache_;
   // topic -> the ROS 2 type its cached binding_cache_ entry was created for;
   // ensureBinding() invalidates the cache when the live subscription's type no

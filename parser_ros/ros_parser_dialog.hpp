@@ -1,8 +1,8 @@
 #pragma once
 
 #include <nlohmann/json.hpp>
-#include <pj_array_policy/array_policy.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
 #include <string_view>
@@ -70,7 +70,7 @@ class RosParserDialog : public PJ::DialogPluginTyped {
 
   std::string saveConfig() const override {
     nlohmann::json cfg;
-    pj::array_policy::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), !discard_large_arrays_);
+    PJ::sdk::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), !discard_large_arrays_);
     cfg["use_embedded_timestamp"] = use_embedded_timestamp_;
     cfg["boolean_strings_to_number"] = boolean_strings_to_number_;
     cfg["remove_suffix_from_strings"] = remove_suffix_from_strings_;
@@ -82,9 +82,9 @@ class RosParserDialog : public PJ::DialogPluginTyped {
     if (cfg.is_discarded()) {
       return false;
     }
-    const auto array_limit = pj::array_policy::arrayLimitFromJson(cfg);
+    const auto array_limit = PJ::sdk::arrayLimitFromJson(cfg);
     max_array_size_ = static_cast<int>(array_limit.max_size);
-    discard_large_arrays_ = (array_limit.policy == pj::array_policy::ArrayPolicy::kSkip);
+    discard_large_arrays_ = (array_limit.policy == PJ::sdk::ArrayPolicy::kSkip);
     use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
     boolean_strings_to_number_ = cfg.value("boolean_strings_to_number", false);
     remove_suffix_from_strings_ = cfg.value("remove_suffix_from_strings", false);
