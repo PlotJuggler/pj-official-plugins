@@ -7,7 +7,7 @@
 // unbound host). The full job path needs a live Flight server and is covered
 // by the scripted E2E (scripts/e2e-mosaico-layout-import.sh). Hermetic via
 // MOSAICO_TRUSTED_ORIGINS + MOSAICO_CACHE_DIR (POSIX-only, like the
-// ingest-core env tests).
+// connector env tests).
 #include <arrow/api.h>
 #include <gtest/gtest.h>
 
@@ -17,9 +17,9 @@
 #include <pj_base/sdk/settings_store_host.hpp>
 #include <string>
 
-#include "cache_tee_session.hpp"
+#include "descriptor_import/artifact_capture.hpp"
+#include "descriptor_import/source_descriptor.hpp"
 #include "descriptor_import_provider.hpp"
-#include "source_descriptor.hpp"
 #include "source_presentation.hpp"
 
 #if !defined(_WIN32)
@@ -79,12 +79,12 @@ std::string str(PJ_string_view_t sv) {
   return std::string(sv.data == nullptr ? "" : sv.data, sv.data == nullptr ? 0 : sv.size);
 }
 
-// Materialize a valid artifact for `d` through the real tee (one scalar
+// Materialize a valid artifact for `d` through the real capture (one scalar
 // batch), releasing the finalize-time lease so the query's own pin is what
 // keeps it alive.
 void materializeArtifact(const SourceDescriptor& d) {
-  mosaico::CacheTeeSession tee(d);
-  ASSERT_TRUE(tee.armed()) << tee.disarmReason();
+  mosaico::ArtifactCapture capture(d);
+  ASSERT_TRUE(capture.armed()) << capture.disarmReason();
   arrow::Int64Builder t_builder;
   arrow::DoubleBuilder v_builder;
   ASSERT_TRUE(t_builder.Append(100).ok());
@@ -95,9 +95,10 @@ void materializeArtifact(const SourceDescriptor& d) {
   ASSERT_TRUE(v_builder.Finish(&v_array).ok());
   const auto schema =
       arrow::schema({arrow::field("timestamp_ns", arrow::int64()), arrow::field("value", arrow::float64())});
-  tee.teeScalarTopic("/imu", *schema, "timestamp_ns", {arrow::RecordBatch::Make(schema, 1, {t_array, v_array})});
-  auto finalized = tee.finish(/*complete=*/true);
-  ASSERT_TRUE(finalized.has_value()) << tee.disarmReason();
+  capture.captureScalarTopic(
+      "/imu", *schema, "timestamp_ns", {arrow::RecordBatch::Make(schema, 1, {t_array, v_array})});
+  auto finalized = capture.finish(/*complete=*/true);
+  ASSERT_TRUE(finalized.has_value()) << capture.disarmReason();
 }
 
 TEST(DescriptorImportQuery, MalformedDescriptorIsAContractFailure) {
@@ -163,7 +164,7 @@ TEST(DescriptorImportQuery, UntrustedThenEnvAllowlistedThenMaterialized) {
   // ...and the query PINNED it: a re-materialization attempt of the same
   // identity must now fail to arm (the shared read lease blocks the
   // exclusive materialize lock).
-  mosaico::CacheTeeSession contender(d);
+  mosaico::ArtifactCapture contender(d);
   EXPECT_FALSE(contender.armed());
 
   // 4. Repeat queries stay stable (the pin is idempotent, not stacking).

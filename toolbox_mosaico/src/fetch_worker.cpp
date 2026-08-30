@@ -30,10 +30,10 @@
 #include <utility>
 #include <vector>
 
-#include "arrow_ingest.hpp"
 #include "flight/metadata.hpp"
-#include "image_metadata.hpp"
-#include "object_metadata.hpp"
+#include "ingest/arrow_ingest.hpp"
+#include "ingest/image_metadata.hpp"
+#include "ingest/object_metadata.hpp"
 #include "ontology_routing.h"
 #include "stoppable_thread.hpp"
 
@@ -556,13 +556,13 @@ void FetchWorker::pullTopicsAsync(
     FileLock lease;
   };
 
-  // Arm the cache tee when this Download carries a durable descriptor AND the
+  // Arm artifact capture when this Download carries a durable descriptor AND the
   // host offers the promotion service. A valid artifact for the same identity
   // is already complete: pin and revalidate it instead of trying to take its
   // exclusive materialize lock, then promote the newly downloaded eager
-  // dataset onto that path after the pull succeeds. Tee writes happen only
+  // dataset onto that path after the pull succeeds. Capture writes happen only
   // under host_write_mu_, which serializes them across the pool threads.
-  std::shared_ptr<CacheTeeSession> tee;
+  std::shared_ptr<ArtifactCapture> capture;
   std::optional<ExistingArtifact> existing_artifact;
   if (descriptor.has_value() && promotion_provider_ && promotion_provider_().valid()) {
     const std::string identity = descriptorIdentity(*descriptor);
@@ -584,11 +584,11 @@ void FetchWorker::pullTopicsAsync(
       }
     }
     if (!existing_artifact.has_value()) {
-      tee = std::make_shared<CacheTeeSession>(*descriptor, std::filesystem::path(cache_root_override));
+      capture = std::make_shared<ArtifactCapture>(*descriptor, std::filesystem::path(cache_root_override));
     }
   }
 
-  auto on_done = [this, sequence_name, state, imported_any, any_failed, tee](
+  auto on_done = [this, sequence_name, state, imported_any, any_failed, capture](
                      const std::string& topic_name, arrow::Result<PullResult> result) {
     auto it = state->find(topic_name);
     if (it == state->end()) {
@@ -724,11 +724,13 @@ void FetchWorker::pullTopicsAsync(
         return;
       }
       ensureIngestProgress(*ds, sequence_name);
-      ObjectIngestContext ctx{host, *ds, topic_name, ts_field, synth_anchor_ns, synth_interval_ns, /*tee=*/{}};
-      if (tee && tee->armed()) {
+      ObjectIngestContext ctx{
+          host, *ds, topic_name, ts_field, synth_anchor_ns, synth_interval_ns, /*on_blob_pushed=*/{}};
+      if (capture && capture->armed()) {
         // The artifact channel records the same canonical metadata the push
         // helper registers on the host (one authority: ontology_routing.h).
-        ctx.tee = tee->objectTee(topic_name, ontology_tag, std::string(canonicalMetadataForOntology(ontology_tag)));
+        ctx.on_blob_pushed = capture->objectSampleCapture(
+            topic_name, ontology_tag, std::string(canonicalMetadataForOntology(ontology_tag)));
       }
       auto pushed = [&]() -> PJ::Expected<ObjectPushOutcome> {
         if (is_image) {
@@ -792,7 +794,7 @@ void FetchWorker::pullTopicsAsync(
       table = normalized.ValueOrDie();
     }
     // One table->batches decomposition feeds BOTH the host export and the
-    // cache tee below (the batches share the table's chunks; no data copy).
+    // artifact capture below (the batches share the table's chunks; no data copy).
     std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
     {
       arrow::TableBatchReader batch_reader(*table);
@@ -837,10 +839,10 @@ void FetchWorker::pullTopicsAsync(
       finish(false, append_status.error());
       return;
     }
-    if (tee && tee->armed()) {
+    if (capture && capture->armed()) {
       // Record the exact normalized batches the host just ingested. Still
-      // under host_write_mu_, which serializes all tee writes.
-      tee->teeScalarTopic(topic_name, *table->schema(), ts_field, batches);
+      // under host_write_mu_, which serializes all capture writes.
+      capture->captureScalarTopic(topic_name, *table->schema(), ts_field, batches);
     }
     finish(true, {});
   };
@@ -967,7 +969,7 @@ void FetchWorker::pullTopicsAsync(
   // Artifact terminal: promote only a COMPLETE batch — every topic ingested,
   // nothing failed, no cancel. Anything else aborts a new artifact (or leaves
   // an existing one untouched) and the Download stays eager-only. pullTopics
-  // has returned, so every on_done and tee write is done on this worker.
+  // has returned, so every on_done and capture write is done on this worker.
   const bool complete =
       imported_any->load(std::memory_order_relaxed) && !any_failed->load(std::memory_order_relaxed) && !isCancelled();
   const auto promote_artifact = [this](
@@ -1005,12 +1007,12 @@ void FetchWorker::pullTopicsAsync(
     }
   };
 
-  if (tee) {
-    auto finalized = tee->finish(complete);
+  if (capture) {
+    auto finalized = capture->finish(complete);
     if (finalized.has_value()) {
-      promote_artifact(finalized->path, tee->identity(), tee->descriptorJson(), std::move(finalized->lease));
+      promote_artifact(finalized->path, capture->identity(), capture->descriptorJson(), std::move(finalized->lease));
     } else if (promotionSettled) {
-      promotionSettled(false, tee->disarmReason().empty() ? "fetch incomplete" : tee->disarmReason());
+      promotionSettled(false, capture->disarmReason().empty() ? "fetch incomplete" : capture->disarmReason());
     }
   } else if (existing_artifact.has_value()) {
     if (complete) {
@@ -1023,7 +1025,7 @@ void FetchWorker::pullTopicsAsync(
   } else if (descriptor.has_value() && promotionSettled) {
     // Contract: a Download that carried a descriptor ALWAYS settles exactly
     // once, so waiters (the descriptor-import job) never need to know the
-    // tee's arming rule.
+    // capture's arming rule.
     promotionSettled(false, "host offers no source-promotion service");
   }
   // Bracket the host progress/stop channel on EVERY exit (success, cancel,

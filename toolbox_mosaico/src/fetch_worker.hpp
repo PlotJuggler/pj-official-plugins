@@ -17,11 +17,11 @@
 #include <unordered_map>
 #include <vector>
 
-#include "cache_tee_session.hpp"
-#include "core/file_lock.h"
+#include "descriptor_import/artifact_capture.hpp"
+#include "descriptor_import/core/file_lock.h"
+#include "descriptor_import/source_descriptor.hpp"
 #include "flight/mosaico_client.hpp"
 #include "flight/types.hpp"
-#include "source_descriptor.hpp"
 #include "worker_types.h"
 
 namespace mosaico {
@@ -56,7 +56,7 @@ class FetchWorker {
 
   /// Provider for the host's pj.source_promotion.v1 service view. Same
   /// contract as the host providers above. Optional — absent or invalid, the
-  /// cache tee never arms and every Download stays eager-only (today's
+  /// artifact capture never arms and every Download stays eager-only (today's
   /// behavior).
   void setPromotionProvider(std::function<PJ::SourcePromotionHostView()> provider) {
     promotion_provider_ = std::move(provider);
@@ -153,7 +153,7 @@ class FetchWorker {
   /// "Cancelling…" UI state exactly as if the in-panel Cancel button had been
   /// pressed. Fired at most once per Download, from a background thread.
   std::function<void()> hostStopRequested;
-  /// Cache/promotion outcome of a Download whose tee was armed. `promoted`
+  /// Cache/promotion outcome of a Download whose capture was armed. `promoted`
   /// true = the dataset is now file-backed over the cache artifact (layout
   /// saves will carry the re-import record); false = eager-only, with the
   /// reason in `detail`. Fired at most once per Download, possibly from a

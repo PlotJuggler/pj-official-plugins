@@ -3,7 +3,7 @@
 //
 // DescriptorImportProvider — the pj.descriptor_import.v1 implementation for
 // Mosaico (the mcap_cloud provider shape, adapted to this plugin's
-// FetchWorker + CacheTeeSession stage-1 machinery). Owned by MosaicoToolbox,
+// FetchWorker + ArtifactCapture stage-1 machinery). Owned by MosaicoToolbox,
 // which exposes it through its pluginExtension() thunks (the ABI's plugin_ctx
 // is the TOOLBOX instance — never this object or the extension table).
 //
@@ -28,8 +28,8 @@
 //
 // The job (one worker thread + one private FetchWorker per job): connect ->
 // per-topic metadata (ontology routing) -> the descriptor-armed pull (cache
-// tee + promotion) -> cancel-aware promotion-settlement wait (DETACH on
-// cancel) -> the exactly-once terminal. cancel() is idempotent and
+// artifact capture + promotion) -> cancel-aware promotion-settlement wait
+// (DETACH on cancel) -> the exactly-once terminal. cancel() is idempotent and
 // non-blocking; join() returns after on_terminal returned; destroy() is
 // cancel+join+free. NEVER call join/destroy from a job callback.
 //
@@ -49,8 +49,8 @@
 #include <string>
 #include <unordered_map>
 
-#include "core/file_lock.h"
-#include "session_file_cache.hpp"
+#include "descriptor_import/core/file_lock.h"
+#include "descriptor_import/session_file_cache.hpp"
 
 namespace mosaico {
 

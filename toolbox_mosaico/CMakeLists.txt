@@ -4,11 +4,12 @@ find_package(fmt REQUIRED)
 find_package(lua REQUIRED)
 find_package(sol2 REQUIRED)
 
-# The shared Arrow ingest + layout re-import foundation lives in
-# common/mosaico_ingest_core (added by the top-level CMakeLists before this
-# directory); this plugin only links the target.
-if(NOT TARGET mosaico_ingest_core)
-  message(FATAL_ERROR "toolbox_mosaico requires the mosaico_ingest_core target (common/mosaico_ingest_core)")
+# The shared ingest and descriptor-import libraries live in
+# common/mosaico_connector (added by the top-level CMakeLists before this
+# directory); this plugin only links the targets.
+if(NOT TARGET pj_mosaico_ingest OR NOT TARGET pj_mosaico_descriptor_import)
+  message(FATAL_ERROR
+    "toolbox_mosaico requires pj_mosaico_ingest and pj_mosaico_descriptor_import (common/mosaico_connector)")
 endif()
 
 # Probe for a real Arrow Flight target (the candidate set must match the SDK's
@@ -113,7 +114,8 @@ target_include_directories(toolbox_mosaico_plugin PRIVATE
 )
 
 target_link_libraries(toolbox_mosaico_plugin PRIVATE
-  mosaico_ingest_core
+  pj_mosaico_ingest
+  pj_mosaico_descriptor_import
   plotjuggler_sdk::plugin_sdk
   fmt::fmt
   nlohmann_json::nlohmann_json
@@ -170,10 +172,9 @@ if(BUILD_TESTING)
       -Wno-conversion -Wno-unused-parameter -Wno-unused-function)
   endif()
 
-  # The core-library suites (descriptor/sha256/cache/artifact + the
-  # arrow_ingest behavior tests) moved to common/mosaico_ingest_core/tests —
-  # they are Flight-free and now run on every platform. What remains here is
-  # dialog/worker/query logic tied to this plugin (or the Mosaico SDK).
+  # The connector-library suites live under common/mosaico_connector — they
+  # are Flight-free and run on every platform. What remains here is dialog,
+  # worker, and query logic tied to this plugin (or the Mosaico SDK).
 
   # StoppableThread is pure-std with no Arrow/Flight surface, so its test links
   # nothing but gtest.
@@ -191,7 +192,8 @@ if(BUILD_TESTING)
     src/fetch_worker.cpp
   )
   target_link_libraries(toolbox_mosaico_ingest_progress_test PRIVATE
-    mosaico_ingest_core
+    pj_mosaico_ingest
+    pj_mosaico_descriptor_import
     plotjuggler_sdk::plugin_sdk
     mosaico_sdk
     fmt::fmt
@@ -215,7 +217,7 @@ if(BUILD_TESTING)
     src/server_history.cpp
   )
   target_link_libraries(toolbox_mosaico_credential_resolve_test PRIVATE
-    mosaico_ingest_core
+    pj_mosaico_descriptor_import
     plotjuggler_sdk::plugin_sdk
     GTest::gtest_main
   )
@@ -238,7 +240,8 @@ if(BUILD_TESTING)
     src/server_history.cpp
   )
   target_link_libraries(toolbox_mosaico_descriptor_import_contract_test PRIVATE
-    mosaico_ingest_core
+    pj_mosaico_ingest
+    pj_mosaico_descriptor_import
     plotjuggler_sdk::plugin_sdk
     mosaico_sdk
     fmt::fmt
@@ -261,7 +264,7 @@ if(BUILD_TESTING)
     ${mosaico_sdk_SOURCE_DIR}/src/flight/metadata.cpp
   )
   target_link_libraries(toolbox_mosaico_ontology_routing_test PRIVATE
-    mosaico_ingest_core
+    pj_mosaico_ingest
     nlohmann_json::nlohmann_json
     GTest::gtest_main
   )
@@ -431,7 +434,7 @@ if(BUILD_TESTING)
   )
   target_include_directories(toolbox_mosaico_source_presentation_test PRIVATE src)
   target_link_libraries(toolbox_mosaico_source_presentation_test PRIVATE
-    mosaico_ingest_core plotjuggler_sdk::plugin_sdk GTest::gtest_main
+    pj_mosaico_descriptor_import plotjuggler_sdk::plugin_sdk GTest::gtest_main
   )
   target_compile_features(toolbox_mosaico_source_presentation_test PRIVATE cxx_std_20)
   target_compile_options(toolbox_mosaico_source_presentation_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})

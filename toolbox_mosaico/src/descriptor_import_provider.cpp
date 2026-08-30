@@ -22,11 +22,11 @@
 #include <utility>
 #include <vector>
 
-#include "arrow_cache_artifact.hpp"
-#include "core/origin_match.h"
 #include "credential_resolve.hpp"
+#include "descriptor_import/arrow_cache_artifact.hpp"
+#include "descriptor_import/core/origin_match.h"
+#include "descriptor_import/source_descriptor.hpp"
 #include "fetch_worker.hpp"
-#include "source_descriptor.hpp"
 #include "source_presentation.hpp"
 #include "stoppable_thread.hpp"
 
@@ -169,7 +169,7 @@ struct DescriptorImportProvider::JobState {
   std::string identity;
   ServerCredentials credentials;  // resolved on the main thread
   std::string cache_root_override;
-  SessionFileCache file_cache;  // same root the tee will publish under
+  SessionFileCache file_cache;  // same root artifact capture publishes under
   // Hands the pull's promotion leases to the provider (which outlives this
   // job); set by startImport, invoked on the job thread after the pull.
   std::function<void(std::unordered_map<std::string, FileLock>)> adopt_leases;
@@ -279,7 +279,7 @@ PJ_descriptor_import_outcome_t DescriptorImportProvider::JobState::runToTerminal
   // on_dataset), so the only truthful terminal is a retry classification —
   // never promote, never report success (the mcap_cloud provider's locked v1
   // decision). Ongoing (unfinished) materializations are arbitrated later by
-  // the tee's materialize lock: the tee simply disarms and this import lands
+  // the capture's materialize lock: capture simply disarms and this import lands
   // eager-only.
   {
     std::filesystem::path disk;
@@ -370,7 +370,7 @@ PJ_descriptor_import_outcome_t DescriptorImportProvider::JobState::runToTerminal
   // and headless routing are identical by construction.
   fetch.listTopicsAsync(descriptor.sequence);
 
-  // ---- the descriptor-armed pull (cache tee + promotion) -------------------
+  // ---- the descriptor-armed pull (artifact capture + promotion) ------------
   {
     // Duration-ceiling watchdog: fires the FETCH cancel (like the byte
     // ceiling) so the terminal classifies as the ceiling. Scoped to the
@@ -423,7 +423,7 @@ PJ_descriptor_import_outcome_t DescriptorImportProvider::JobState::runToTerminal
   }
 
   // ---- promotion settlement (cancel-aware, DETACH on cancel) ---------------
-  // The FetchWorker fires promotionSettled on every armed-tee path; an
+  // The FetchWorker fires promotionSettled on every armed-capture path; an
   // ACCEPTED promotion settles whenever the host's result callback runs —
   // possibly after the pull returned. A cancel while it is outstanding
   // detaches: the shared latch outlives this job and join() stays

@@ -4,7 +4,7 @@
 
 #include <pj_base/sdk/platform.hpp>
 
-#include "core/origin_match.h"
+#include "descriptor_import/core/origin_match.h"
 #include "server_history.h"
 
 namespace mosaico {

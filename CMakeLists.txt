@@ -28,7 +28,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/laser_scan)
   add_subdirectory(common/pointcloud_color)
   add_subdirectory(common/toolbox_preview)
-  add_subdirectory(common/mosaico_ingest_core)
+  add_subdirectory(common/mosaico_connector)
   # This block always adds every plugin (no PJ_BUILD_PLUGIN filtering), so its
   # consumers data_load_mf4/data_load_blf are always present — add their shared
   # can_dbc unconditionally too. (The standalone block below, which DOES honor
@@ -201,11 +201,12 @@ else()
   add_subdirectory(common/toolbox_preview)
 endif()
 
-# Shared Mosaico ingest + layout re-import core: consumed by the Flight-bound
-# toolbox and the Flight-free cache loader. Skips itself when Arrow is absent.
-set(PJ_MOSAICO_INGEST_CORE_CONSUMERS toolbox_mosaico data_load_mosaico_cache)
-if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_MOSAICO_INGEST_CORE_CONSUMERS)
-  add_subdirectory(common/mosaico_ingest_core)
+# Shared Mosaico connector libraries: the Flight-bound toolbox consumes both
+# ingest and descriptor import, while the Flight-free cache loader consumes
+# descriptor import only. The connector skips itself when Arrow is absent.
+set(PJ_MOSAICO_CONNECTOR_CONSUMERS toolbox_mosaico data_load_mosaico_cache)
+if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_MOSAICO_CONNECTOR_CONSUMERS)
+  add_subdirectory(common/mosaico_connector)
 endif()
 
 # ---------------------------------------------------------------------------

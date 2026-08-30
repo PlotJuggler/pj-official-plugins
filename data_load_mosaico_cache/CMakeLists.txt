@@ -1,8 +1,8 @@
-find_package(nlohmann_json REQUIRED)
-# Arrow (and the vendored mcap headers + lz4/zstd) arrive transitively through
-# mosaico_ingest_core; a build without Arrow fails there, at the real consumer.
-if(NOT TARGET mosaico_ingest_core)
-  message(FATAL_ERROR "data_load_mosaico_cache requires the mosaico_ingest_core target (common/mosaico_ingest_core)")
+# Arrow and the artifact dependencies arrive through descriptor import; a
+# build without Arrow fails there, at the real consumer.
+if(NOT TARGET pj_mosaico_descriptor_import)
+  message(FATAL_ERROR
+    "data_load_mosaico_cache requires pj_mosaico_descriptor_import (common/mosaico_connector)")
 endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
@@ -10,9 +10,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 add_library(mosaico_cache_source_plugin SHARED mosaico_cache_source.cpp)
 target_compile_features(mosaico_cache_source_plugin PRIVATE cxx_std_20)
 target_compile_options(mosaico_cache_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
-target_link_libraries(mosaico_cache_source_plugin PRIVATE
-  plotjuggler_sdk::plugin_sdk mosaico_ingest_core nlohmann_json::nlohmann_json
-)
+target_link_libraries(mosaico_cache_source_plugin PRIVATE pj_mosaico_descriptor_import)
 
 pj_embed_manifest(mosaico_cache_source_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/mosaico_cache_manifest.hpp

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //
 // Replays a Mosaico layout re-import cache artifact (Arrow-in-MCAP, produced
-// by the Mosaico Cloud Server toolbox's cache tee) into the datastore:
+// by the Mosaico Cloud Server toolbox's artifact capture) into the datastore:
 // scalar topics re-append the exact stored Arrow batches, object topics
 // re-push the exact stored canonical blobs at their exact timestamps —
 // byte-identical to the original fetch by construction. Dialog-less on
@@ -17,8 +17,8 @@
 #include <string>
 #include <vector>
 
-#include "arrow_cache_artifact.hpp"
-#include "artifact_replay.hpp"
+#include "descriptor_import/arrow_cache_artifact.hpp"
+#include "descriptor_import/artifact_replay.hpp"
 #include "mosaico_cache_manifest.hpp"
 
 namespace {

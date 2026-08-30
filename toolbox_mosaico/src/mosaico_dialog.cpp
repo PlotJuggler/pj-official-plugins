@@ -34,6 +34,8 @@
 #include "core/time_format.h"
 #include "credential_resolve.hpp"
 #include "date_filter.h"
+#include "descriptor_import/session_file_cache.hpp"
+#include "descriptor_import/source_descriptor.hpp"
 #include "fetch_summary.h"
 #include "fetch_worker.hpp"
 #include "format_utils.h"
@@ -42,8 +44,6 @@
 #include "name_filter.h"
 #include "selection_merge.h"
 #include "server_history.h"
-#include "session_file_cache.hpp"
-#include "source_descriptor.hpp"
 #include "source_presentation.hpp"
 #include "table_sort.h"
 #include "tls_utils.h"
@@ -1152,7 +1152,7 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
     // persistent cache for layout re-import. The validated factory yields no
     // descriptor for an uncacheable request (e.g. a scheme-less URI typed into
     // the connect box); the Download then proceeds eager-only, exactly like the
-    // tee's own self-check.
+    // artifact capture's own self-check.
     std::optional<SourceDescriptor> descriptor =
         makeSequenceDescriptor(server_uri, seq, topics, start, end, /*display_name=*/seq, nullptr);
     if (descriptor.has_value()) {

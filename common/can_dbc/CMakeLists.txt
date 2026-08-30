@@ -2,7 +2,7 @@
 # into named DBC signals. Consumed by data_load_mf4 and data_load_blf.
 #
 # dbc_parser_cpp (+ the header-only fast_float) is vendored via CPM DOWNLOAD_ONLY
-# and built as a static `dbc` lib here; it is PRIVATE-linked and fully hidden
+# and built as a private static vendor library here; it is fully hidden
 # behind can_decoder's pImpl, so consumers never see a DBC header. Both deps are
 # pinned by commit tarball + SHA256. Handles little- and big-endian signals.
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/CPM.cmake)
@@ -34,11 +34,11 @@ file(CONFIGURE OUTPUT ${_dbc_patched_dir}/message.cpp CONTENT "${_dbc_message_cp
 list(REMOVE_ITEM _dbc_sources ${dbc_parser_cpp_SOURCE_DIR}/src/message.cpp)
 list(APPEND _dbc_sources ${_dbc_patched_dir}/message.cpp)
 
-add_library(dbc STATIC ${_dbc_sources})
-set_target_properties(dbc PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_compile_features(dbc PRIVATE cxx_std_20)
-target_include_directories(dbc SYSTEM PUBLIC ${dbc_parser_cpp_SOURCE_DIR}/include)
-target_include_directories(dbc SYSTEM PRIVATE ${fast_float_SOURCE_DIR}/include)
+add_library(pj_can_dbc_vendor STATIC ${_dbc_sources})
+set_target_properties(pj_can_dbc_vendor PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_features(pj_can_dbc_vendor PRIVATE cxx_std_20)
+target_include_directories(pj_can_dbc_vendor SYSTEM PUBLIC ${dbc_parser_cpp_SOURCE_DIR}/include)
+target_include_directories(pj_can_dbc_vendor SYSTEM PRIVATE ${fast_float_SOURCE_DIR}/include)
 
 add_library(pj_can_dbc STATIC can_decoder.cpp can_topic.cpp)
 # Static lib goes inside SHARED plugin .so files -> must be position-independent.
@@ -48,8 +48,8 @@ if(DEFINED PJ_WARNING_FLAGS)
   target_compile_options(pj_can_dbc PRIVATE ${PJ_WARNING_FLAGS})
 endif()
 target_include_directories(pj_can_dbc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-# dbc is PRIVATE: can_decoder.hpp hides it behind a pImpl (no dbc header leaks).
-target_link_libraries(pj_can_dbc PUBLIC plotjuggler_sdk::base PRIVATE dbc)
+# The vendor library is PRIVATE: can_decoder.hpp hides it behind a pImpl.
+target_link_libraries(pj_can_dbc PUBLIC plotjuggler_sdk::base PRIVATE pj_can_dbc_vendor)
 
 # GTest-guarded so this common target can be configured unconditionally.
 find_package(GTest QUIET CONFIG)

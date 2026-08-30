@@ -5,7 +5,7 @@
 // descriptor target ONLY when MOSAICO_URL is set and origin-matches it. Any
 // widening here silently hands the env bearer token to whatever server a
 // hostile layout names, so every rejected shape is pinned. Hermetic via
-// setenv (POSIX-only, like the ingest-core env tests).
+// setenv (POSIX-only, like the connector env tests).
 #include "credential_resolve.hpp"
 
 #include <gtest/gtest.h>

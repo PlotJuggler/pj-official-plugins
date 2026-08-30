@@ -6,7 +6,7 @@
 #include <string>
 #include <string_view>
 
-#include "source_descriptor.hpp"
+#include "descriptor_import/source_descriptor.hpp"
 
 namespace mosaico {
 

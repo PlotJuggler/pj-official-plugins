@@ -7,7 +7,7 @@
 #include <string>
 #include <string_view>
 
-#include "core/origin_match.h"
+#include "descriptor_import/core/origin_match.h"
 
 namespace mosaico {
 

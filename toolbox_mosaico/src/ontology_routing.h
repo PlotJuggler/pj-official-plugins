@@ -8,8 +8,8 @@
 #include <string>
 
 #include "flight/metadata.hpp"  // mosaico::extractOntologyTag / detectOntologyTag
-#include "image_metadata.hpp"
-#include "object_metadata.hpp"
+#include "ingest/image_metadata.hpp"
+#include "ingest/object_metadata.hpp"
 
 namespace mosaico {
 
