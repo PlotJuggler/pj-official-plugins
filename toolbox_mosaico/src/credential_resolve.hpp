@@ -44,7 +44,8 @@ void saveCredentialsForUri(PJ::sdk::SettingsView view, const std::string& uri, c
 [[nodiscard]] bool envKeyAllowedForTarget(const std::string& target_uri, const std::string& mosaico_url_env);
 
 /// HEADLESS resolution (the descriptor-import job): stored per-server key
-/// first, then the env key ONLY under envKeyAllowedForTarget's origin guard.
+/// first, except a grpc:// target requires that entry's allow_insecure opt-in;
+/// then the env key ONLY under envKeyAllowedForTarget's origin guard.
 [[nodiscard]] ServerCredentials resolveHeadlessCredentials(PJ::sdk::SettingsView view, const std::string& uri);
 
 }  // namespace mosaico

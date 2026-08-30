@@ -108,10 +108,11 @@ class FetchWorker {
   /// so the plugin's bookkeeping is safe regardless of SDK-internal locking.
   /// After all topics complete, allFetchesComplete fires once.
   /// `descriptor`, when provided (and the promotion provider is bound),
-  /// arms the cache tee: the Download is recorded into the persistent cache
-  /// and, on full success, promoted to a file-backed dataset via
-  /// pj.source_promotion.v1 so a saved layout can re-import it. Tee/promotion
-  /// problems NEVER fail the fetch — it completes eager-only.
+  /// records a new persistent artifact, or reuses a valid artifact already
+  /// cached for the same identity. On full success the eager dataset is
+  /// promoted to that file-backed source via pj.source_promotion.v1 so a saved
+  /// layout can re-import it. Artifact/promotion problems NEVER fail the fetch
+  /// — it completes eager-only.
   /// `cache_root_override`, when non-empty, is the persistent cache directory
   /// the artifact is written under (empty = standardCacheRoot).
   void pullTopicsAsync(

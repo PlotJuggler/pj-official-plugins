@@ -365,19 +365,11 @@ PJ_descriptor_import_outcome_t DescriptorImportProvider::JobState::runToTerminal
     return PJ_DESCRIPTOR_IMPORT_FAILED;
   }
 
-  // ---- per-topic metadata (ontology routing) -------------------------------
-  // Mirror the interactive flow: listTopics fills the size/timestamp cache,
-  // then getTopicMetadata refreshes each selected topic with its ontology
-  // tag. Failures are non-fatal — the pulled stream's own schema metadata is
-  // the routing fallback.
+  // ---- topic list metadata -------------------------------------------------
+  // Preserve size/timestamp context when the server supports listTopics.
+  // pullTopicsAsync itself fills every missing ontology tag, so interactive
+  // and headless routing are identical by construction.
   fetch.listTopicsAsync(descriptor.sequence);
-  for (const auto& topic : descriptor.topics) {
-    if (isCancelled()) {
-      *message = "import cancelled";
-      return PJ_DESCRIPTOR_IMPORT_CANCELLED;
-    }
-    fetch.fetchTopicMetadataAsync({descriptor.sequence, topic});
-  }
 
   // ---- the descriptor-armed pull (cache tee + promotion) -------------------
   {

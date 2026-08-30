@@ -464,6 +464,10 @@ void FetchWorker::fetchTopicMetadataAsync(TopicRef topic) {
     }
     // Refresh the cache so a later pull reuses the fuller record.
     it->second = info;
+  } else {
+    // All-mode pulls can request metadata before listTopics populated this
+    // cache. Preserve the result so routing below sees the authoritative tag.
+    topic_info_by_name_.emplace(topic.topic_name, info);
   }
   if (topicMetadataReady) {
     topicMetadataReady(std::move(topic), std::move(info));
@@ -489,6 +493,20 @@ void FetchWorker::pullTopicsAsync(
       allFetchesComplete(std::move(sequence_name));
     }
     return;
+  }
+
+  // Routing must not depend on how the topics were selected. In particular,
+  // All mode does not issue the Info-panel's selection-driven metadata calls,
+  // so fill every missing ontology tag here on the worker thread before any
+  // batch is classified for scalar/object ingest.
+  for (const auto& topic_name : topic_names) {
+    if (isCancelled()) {
+      break;
+    }
+    const auto it = topic_info_by_name_.find(topic_name);
+    if (it == topic_info_by_name_.end() || it->second.ontology_tag.empty()) {
+      fetchTopicMetadataAsync({sequence_name, topic_name});
+    }
   }
   // Start of a multi-topic Download: discard any DataSourceHandle cached from a
   // previous fetch. datasetForFetch creates exactly one dataset (eagerly only
@@ -531,14 +549,43 @@ void FetchWorker::pullTopicsAsync(
     (*state)[t] = PerTopic{};
   }
 
+  struct ExistingArtifact {
+    std::filesystem::path path;
+    std::string identity;
+    std::string descriptor_json;
+    FileLock lease;
+  };
+
   // Arm the cache tee when this Download carries a durable descriptor AND the
-  // host offers the promotion service. An unarmed/disarmed tee is inert —
-  // every tee call below no-ops and the fetch completes eager-only (a tee
-  // problem never fails an ingest). Tee writes happen only under
-  // host_write_mu_, which serializes them across the pool threads.
+  // host offers the promotion service. A valid artifact for the same identity
+  // is already complete: pin and revalidate it instead of trying to take its
+  // exclusive materialize lock, then promote the newly downloaded eager
+  // dataset onto that path after the pull succeeds. Tee writes happen only
+  // under host_write_mu_, which serializes them across the pool threads.
   std::shared_ptr<CacheTeeSession> tee;
+  std::optional<ExistingArtifact> existing_artifact;
   if (descriptor.has_value() && promotion_provider_ && promotion_provider_().valid()) {
-    tee = std::make_shared<CacheTeeSession>(*descriptor, std::filesystem::path(cache_root_override));
+    const std::string identity = descriptorIdentity(*descriptor);
+    SessionFileCache cache =
+        SessionFileCache::at(std::filesystem::path(cache_root_override), validateArtifact, nullptr);
+    std::filesystem::path hit_path;
+    if (cache.lookup(identity, &hit_path)) {
+      std::string lease_error;
+      auto lease = cache.acquireReadLease(identity, &lease_error);
+      std::filesystem::path revalidated_path;
+      if (lease.has_value() && cache.lookup(identity, &revalidated_path) && revalidated_path == hit_path) {
+        existing_artifact.emplace(
+            ExistingArtifact{
+                .path = std::move(revalidated_path),
+                .identity = identity,
+                .descriptor_json = toSourceDescriptorJson(*descriptor),
+                .lease = std::move(*lease),
+            });
+      }
+    }
+    if (!existing_artifact.has_value()) {
+      tee = std::make_shared<CacheTeeSession>(*descriptor, std::filesystem::path(cache_root_override));
+    }
   }
 
   auto on_done = [this, sequence_name, state, imported_any, any_failed, tee](
@@ -593,9 +640,8 @@ void FetchWorker::pullTopicsAsync(
     // Route by the authoritative ontology tag (image → ObjectStore; point
     // clouds / poses / scalars → the scalar appendArrowStream path). Also pick
     // up the cached [min,max] ts for synthetic-timestamp anchoring. The tag is
-    // cached from getTopicMetadata — which the dialog fetches on topic
-    // selection, and the worker processes that slot before this pull (serial
-    // queue), so it is populated by now.
+    // cached from getTopicMetadata. pullTopicsAsync fills missing tags before
+    // transport, so both selection-driven and All-mode downloads use it.
     std::int64_t info_min_ts_ns = 0;
     std::int64_t info_max_ts_ns = 0;
     std::string cached_tag;
@@ -908,56 +954,71 @@ void FetchWorker::pullTopicsAsync(
           /*retain_batches=*/false);
     }
   } catch (const std::exception& e) {
+    any_failed->store(true, std::memory_order_relaxed);
     if (pullFinished) {
       pullFinished({{sequence_name, {}}, false, fmt::format("pull failed: {}", e.what()), {}});
     }
   } catch (...) {
+    any_failed->store(true, std::memory_order_relaxed);
     if (pullFinished) {
       pullFinished({{sequence_name, {}}, false, "pull failed: unknown error", {}});
     }
   }
-  // Cache-tee terminal: promote only a COMPLETE batch — every topic ingested,
-  // nothing failed, no cancel. Anything else aborts the artifact and the
-  // Download stays eager-only (a tee/promotion problem never fails a fetch).
-  // pullTopics has returned, so every on_done (and thus every tee write) is
-  // done; this runs on the single worker thread.
-  if (tee) {
-    const bool complete =
-        imported_any->load(std::memory_order_relaxed) && !any_failed->load(std::memory_order_relaxed) && !isCancelled();
-    auto finalized = tee->finish(complete);
-    if (finalized.has_value()) {
-      std::optional<PJ::sdk::DataSourceHandle> dataset;
-      {
-        std::lock_guard<std::mutex> lock(fetch_dataset_mu_);
-        dataset = fetch_dataset_;
+  // Artifact terminal: promote only a COMPLETE batch — every topic ingested,
+  // nothing failed, no cancel. Anything else aborts a new artifact (or leaves
+  // an existing one untouched) and the Download stays eager-only. pullTopics
+  // has returned, so every on_done and tee write is done on this worker.
+  const bool complete =
+      imported_any->load(std::memory_order_relaxed) && !any_failed->load(std::memory_order_relaxed) && !isCancelled();
+  const auto promote_artifact = [this](
+                                    const std::filesystem::path& path, const std::string& identity,
+                                    const std::string& descriptor_json, std::optional<FileLock> lease) {
+    std::optional<PJ::sdk::DataSourceHandle> dataset;
+    {
+      std::lock_guard<std::mutex> lock(fetch_dataset_mu_);
+      dataset = fetch_dataset_;
+    }
+    if (dataset.has_value() && promotion_provider_) {
+      PJ::SourcePromotionRequest request;
+      request.dataset = dataset->id;
+      request.source_identity = identity;
+      request.local_path_utf8 = path.string();
+      request.loader_plugin_id = kMosaicoCacheLoaderPluginId;
+      request.loader_config_json = "{}";
+      request.descriptor_json = descriptor_json;
+      // The result closure captures COPIES only: it may run re-entrantly or
+      // long after this Download, on any thread.
+      auto settled = promotionSettled;
+      const auto status = promotion_provider_().promoteToFileSource(request, [settled](bool ok, std::string message) {
+        if (settled) {
+          settled(ok, std::move(message));
+        }
+      });
+      if (!status && promotionSettled) {
+        promotionSettled(false, status.error());
       }
-      if (dataset.has_value() && promotion_provider_) {
-        PJ::SourcePromotionRequest request;
-        request.dataset = dataset->id;
-        request.source_identity = tee->identity();
-        request.local_path_utf8 = finalized->path.string();
-        request.loader_plugin_id = kMosaicoCacheLoaderPluginId;
-        request.loader_config_json = "{}";
-        request.descriptor_json = tee->descriptorJson();
-        // The result closure captures COPIES only: it may run re-entrantly or
-        // long after this Download, on any thread.
-        auto settled = promotionSettled;
-        const auto status = promotion_provider_().promoteToFileSource(request, [settled](bool ok, std::string message) {
-          if (settled) {
-            settled(ok, std::move(message));
-          }
-        });
-        if (!status && promotionSettled) {
-          promotionSettled(false, status.error());
-        }
-        if (finalized->lease.has_value()) {
-          artifact_leases_.insert_or_assign(tee->identity(), std::move(*finalized->lease));
-        }
-      } else if (promotionSettled) {
-        promotionSettled(false, "no dataset to promote");
+      if (lease.has_value()) {
+        artifact_leases_.insert_or_assign(identity, std::move(*lease));
       }
     } else if (promotionSettled) {
+      promotionSettled(false, "no dataset to promote");
+    }
+  };
+
+  if (tee) {
+    auto finalized = tee->finish(complete);
+    if (finalized.has_value()) {
+      promote_artifact(finalized->path, tee->identity(), tee->descriptorJson(), std::move(finalized->lease));
+    } else if (promotionSettled) {
       promotionSettled(false, tee->disarmReason().empty() ? "fetch incomplete" : tee->disarmReason());
+    }
+  } else if (existing_artifact.has_value()) {
+    if (complete) {
+      promote_artifact(
+          existing_artifact->path, existing_artifact->identity, existing_artifact->descriptor_json,
+          std::optional<FileLock>(std::move(existing_artifact->lease)));
+    } else if (promotionSettled) {
+      promotionSettled(false, "fetch incomplete");
     }
   } else if (descriptor.has_value() && promotionSettled) {
     // Contract: a Download that carried a descriptor ALWAYS settles exactly

@@ -62,10 +62,54 @@ API_KEY="${MOSAICO_API_KEY:-}"
 if [[ -z "${API_KEY}" ]]; then
   CONF="${HOME}/.config/PlotJuggler/PlotJuggler4.conf"
   if [[ -f "${CONF}" ]]; then
-    API_KEY="$(grep -m1 'api_key=' "${CONF}" | sed 's/^[^=]*=//')"
+    API_KEY="$(python3 - "${CONF}" "${SERVER_URI}" <<'PYEOF'
+import sys
+from urllib.parse import unquote
+
+
+def normalize_server_key(uri):
+    value = uri.strip()
+    if value.startswith("grpc+tls://"):
+        value = value[len("grpc+tls://"):]
+    elif value.startswith("grpc://"):
+        value = value[len("grpc://"):]
+    if value.endswith("/"):
+        value = value[:-1]
+    if not value:
+        return ""
+    colon = value.find(":")
+    if colon < 0:
+        return value.lower()
+    return value[:colon].lower() + value[colon:]
+
+
+target = f"mosaico/server_cache/{normalize_server_key(sys.argv[2])}/api_key"
+section = ""
+with open(sys.argv[1], encoding="utf-8", errors="replace") as config:
+    for raw_line in config:
+        line = raw_line.rstrip("\r\n")
+        stripped = line.strip()
+        if not stripped or stripped[0] in ";#":
+            continue
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = unquote(stripped[1:-1]).replace("\\", "/").strip("/")
+            continue
+        if "=" not in line:
+            continue
+        raw_key, value = line.split("=", 1)
+        key = unquote(raw_key.strip()).replace("\\", "/").strip("/")
+        full_key = f"{section}/{key}" if section else key
+        if full_key == target:
+            print(value)
+            break
+PYEOF
+)"
   fi
 fi
-[[ -n "${API_KEY}" ]] || { echo "FATAL: no MOSAICO_API_KEY and no stored key found" >&2; exit 64; }
+[[ -n "${API_KEY}" ]] || {
+  echo "FATAL: no MOSAICO_API_KEY and no stored key for ${SERVER_ORIGIN}" >&2
+  exit 64
+}
 
 WORK="$(mktemp -d /tmp/mosaico-e2e-XXXXXX)"
 trap 'rm -rf "${WORK}"' EXIT

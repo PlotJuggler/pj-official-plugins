@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <pj_base/sdk/settings_store_host.hpp>
 
 #if !defined(_WIN32)
 
@@ -19,6 +20,8 @@ namespace {
 using mosaico::envKeyAllowedForTarget;
 using mosaico::resolveCredentials;
 using mosaico::resolveHeadlessCredentials;
+using mosaico::saveCredentialsForUri;
+using mosaico::ServerCredentials;
 
 constexpr const char* kTarget = "grpc+tls://demo.mosaico.dev:6726";
 
@@ -38,6 +41,15 @@ struct EnvGuard {
   ~EnvGuard() {
     ::unsetenv("MOSAICO_URL");
     ::unsetenv("MOSAICO_API_KEY");
+  }
+};
+
+struct SettingsFixture {
+  PJ::sdk::InMemorySettingsBackend backend;
+  PJ::sdk::SettingsStoreHost host{backend};
+
+  PJ::sdk::SettingsView view() {
+    return PJ::sdk::SettingsView{host.view()};
   }
 };
 
@@ -69,6 +81,38 @@ TEST(HeadlessCredentials, EnvKeyRequiresOriginBoundUrl) {
     EnvGuard env(kTarget, "msco_secret");
     EXPECT_EQ(resolveHeadlessCredentials(view, kTarget).api_key, "msco_secret");
   }
+}
+
+TEST(HeadlessCredentials, StoredTlsKeyRequiresExplicitOptInForPlaintextTarget) {
+  EnvGuard env(nullptr, nullptr);
+  SettingsFixture settings;
+  ServerCredentials stored;
+  stored.api_key = "stored_secret";
+
+  // grpc and grpc+tls intentionally share a history/settings key. Without
+  // the stored entry's explicit plaintext opt-in, that collision must not
+  // downgrade its bearer token.
+  saveCredentialsForUri(settings.view(), kTarget, stored);
+  const std::string plaintext_target = "grpc://demo.mosaico.dev:6726";
+  EXPECT_TRUE(resolveHeadlessCredentials(settings.view(), plaintext_target).api_key.empty());
+
+  stored.allow_insecure = true;
+  saveCredentialsForUri(settings.view(), kTarget, stored);
+  EXPECT_EQ(resolveHeadlessCredentials(settings.view(), plaintext_target).api_key, "stored_secret");
+
+  // Descriptor URIs may omit the port. The strict env-origin parser rejects
+  // that shape, but the stored-key downgrade guard still recognizes its
+  // exact lowercase plaintext scheme.
+  constexpr const char* kTlsNoPort = "grpc+tls://demo.mosaico.dev";
+  constexpr const char* kPlaintextNoPort = "grpc://demo.mosaico.dev";
+  stored.allow_insecure = false;
+  saveCredentialsForUri(settings.view(), kTlsNoPort, stored);
+  EXPECT_EQ(resolveHeadlessCredentials(settings.view(), kTlsNoPort).api_key, "stored_secret");
+  EXPECT_TRUE(resolveHeadlessCredentials(settings.view(), kPlaintextNoPort).api_key.empty());
+
+  stored.allow_insecure = true;
+  saveCredentialsForUri(settings.view(), kTlsNoPort, stored);
+  EXPECT_EQ(resolveHeadlessCredentials(settings.view(), kPlaintextNoPort).api_key, "stored_secret");
 }
 
 TEST(InteractiveCredentials, EnvFallbackStaysUnguarded) {

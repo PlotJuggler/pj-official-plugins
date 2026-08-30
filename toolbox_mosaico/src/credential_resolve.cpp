@@ -48,6 +48,11 @@ bool envKeyAllowedForTarget(const std::string& target_uri, const std::string& mo
 
 ServerCredentials resolveHeadlessCredentials(PJ::sdk::SettingsView view, const std::string& uri) {
   ServerCredentials creds = loadCredentialsForUri(view, uri);
+  if (!creds.api_key.empty() && uri.rfind("grpc://", 0) == 0 && !creds.allow_insecure) {
+    // normalizeServerKey deliberately aliases grpc and grpc+tls storage keys.
+    // A layout must not turn that convenience into a credential downgrade.
+    creds.api_key.clear();
+  }
   if (creds.api_key.empty()) {
     const std::string url_env = PJ::sdk::getEnv("MOSAICO_URL").value_or("");
     if (envKeyAllowedForTarget(uri, url_env)) {
