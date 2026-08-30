@@ -55,6 +55,7 @@ target_compile_options(ulog_source_test PRIVATE ${PJ_WARNING_FLAGS})
 if(MSVC)
   target_compile_options(ulog_source_test PRIVATE /wd4702)
 endif()
+target_compile_definitions(ulog_source_test PRIVATE ULOG_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data")
 target_link_libraries(ulog_source_test PRIVATE ulog_cpp::ulog_cpp GTest::gtest_main)
 add_test(NAME ulog_source_test COMMAND ulog_source_test)
 

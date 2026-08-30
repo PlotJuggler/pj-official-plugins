@@ -8,11 +8,11 @@
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
 #include <type_traits>
-#include <ulog_cpp/data_container.hpp>
 #include <ulog_cpp/reader.hpp>
 #include <variant>
 #include <vector>
 
+#include "ulog_container.hpp"
 // Generated at configure time
 #include "ulog_manifest.hpp"
 #include "ulog_params_ui.hpp"
@@ -129,7 +129,7 @@ void ULogParamsDialog::parseFile() {
     return;
   }
 
-  auto data_container = std::make_shared<ulog_cpp::DataContainer>(ulog_cpp::DataContainer::StorageConfig::FullLog);
+  auto data_container = std::make_shared<ulog_container::ULogContainer>();
   ulog_cpp::Reader reader{data_container};
 
   static constexpr size_t kChunkSize = 65536;
@@ -148,8 +148,9 @@ void ULogParamsDialog::parseFile() {
     info_rows_.push_back({key, infoValueToItem(info)});
   }
 
-  // Properties tab: initial parameters
-  for (const auto& [param_name, param] : data_container->initialParameters()) {
+  // Properties tab: the LAST value of every parameter (initial snapshot with
+  // in-flight changes applied), as the original plugin showed.
+  for (const auto& [param_name, param] : data_container->finalParameters()) {
     PJ::TableItem value_item("N/A");
     try {
       const double value = param.value().as<double>();
