@@ -14,7 +14,6 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -39,14 +38,11 @@ std::string identityFor(const std::string& hex) {
 }
 
 SessionFileCache::Validator acceptAll() {
-  return [](const fs::path&, const std::string&, const std::optional<SessionFileCache::ExpectedContent>&,
-            std::string*) { return true; };
+  return [](const fs::path&, const std::string&, std::string*) { return true; };
 }
 
 SessionFileCache::Validator rejectAll(const std::string& reason) {
-  return [reason](
-             const fs::path&, const std::string&, const std::optional<SessionFileCache::ExpectedContent>&,
-             std::string* error) {
+  return [reason](const fs::path&, const std::string&, std::string* error) {
     if (error) {
       *error = reason;
     }
@@ -69,8 +65,7 @@ fs::path materialize(SessionFileCache& cache, const std::string& hex, const std:
     return {};
   }
   writeFile(cache.partialPathFor(*lock), content);
-  EXPECT_TRUE(cache.finalize(*lock, SessionFileCache::ExpectedContent{.row_count = 1, .topic_count = 1}, &error))
-      << error;
+  EXPECT_TRUE(cache.finalize(*lock, &error)) << error;
   return cache.pathFor(identity);
 }
 
@@ -111,24 +106,19 @@ TEST(SessionFileCache, MaterializeFinalizeLookupRoundTrip) {
   EXPECT_FALSE(cache.lookup(identityFor(kValidHexB), nullptr));  // absent = miss
 }
 
-TEST(SessionFileCache, ValidatorReceivesExpectedOnFinalizeAndNulloptOnLookup) {
+TEST(SessionFileCache, ValidatorRunsForFinalizeAndLookup) {
   TempRoot root("validator-args");
-  std::vector<std::optional<SessionFileCache::ExpectedContent>> seen;
-  SessionFileCache cache(
-      root.path, [&seen](
-                     const fs::path&, const std::string& hex,
-                     const std::optional<SessionFileCache::ExpectedContent>& expected, std::string*) {
-        EXPECT_EQ(hex, kValidHexA);
-        seen.push_back(expected);
-        return true;
-      });
+  std::vector<std::string> seen;
+  SessionFileCache cache(root.path, [&seen](const fs::path&, const std::string& hex, std::string*) {
+    EXPECT_EQ(hex, kValidHexA);
+    seen.push_back(hex);
+    return true;
+  });
   (void)materialize(cache, kValidHexA, "bytes");
   EXPECT_TRUE(cache.lookup(identityFor(kValidHexA), nullptr));
   ASSERT_EQ(seen.size(), 2u);
-  ASSERT_TRUE(seen[0].has_value());  // finalize carries the producer counts
-  EXPECT_EQ(seen[0]->row_count, 1u);
-  EXPECT_EQ(seen[0]->topic_count, 1u);
-  EXPECT_FALSE(seen[1].has_value());  // lookup skips the completeness pin
+  EXPECT_EQ(seen[0], kValidHexA);
+  EXPECT_EQ(seen[1], kValidHexA);
 }
 
 TEST(SessionFileCache, FinalizeRejectionDeletesPartialAndReportsReason) {
@@ -139,7 +129,7 @@ TEST(SessionFileCache, FinalizeRejectionDeletesPartialAndReportsReason) {
   ASSERT_TRUE(lock.has_value()) << error;
   const fs::path partial = cache.partialPathFor(*lock);
   writeFile(partial, "junk");
-  EXPECT_FALSE(cache.finalize(*lock, std::nullopt, &error));
+  EXPECT_FALSE(cache.finalize(*lock, &error));
   EXPECT_NE(error.find("stub says no"), std::string::npos) << error;
   EXPECT_FALSE(fs::exists(partial));  // partials never survive
   EXPECT_FALSE(fs::exists(cache.pathFor(identityFor(kValidHexA))));
@@ -155,7 +145,7 @@ TEST(SessionFileCache, NullValidatorFailsClosed) {
   auto lock = cache.tryLockForMaterialize(identityFor(kValidHexB), &error);
   ASSERT_TRUE(lock.has_value()) << error;
   writeFile(cache.partialPathFor(*lock), "bytes");
-  EXPECT_FALSE(cache.finalize(*lock, std::nullopt, &error));
+  EXPECT_FALSE(cache.finalize(*lock, &error));
   EXPECT_NE(error.find("no artifact validator"), std::string::npos) << error;
 }
 
@@ -196,7 +186,7 @@ TEST(SessionFileCache, ToSharedLeaseBlocksMaterializeButAllowsLookup) {
   auto lock = cache.tryLockForMaterialize(identity, &error);
   ASSERT_TRUE(lock.has_value()) << error;
   writeFile(cache.partialPathFor(*lock), "bytes");
-  ASSERT_TRUE(cache.finalize(*lock, std::nullopt, &error)) << error;
+  ASSERT_TRUE(cache.finalize(*lock, &error)) << error;
   auto lease = SessionFileCache::toSharedLease(std::move(*lock), &error);
   ASSERT_TRUE(lease.has_value()) << error;
   // The lease blocks a re-materialization (contended)...

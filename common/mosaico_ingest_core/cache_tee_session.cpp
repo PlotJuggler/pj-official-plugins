@@ -162,15 +162,14 @@ std::optional<CacheTeeSession::Finalized> CacheTeeSession::finish(bool complete)
     return std::nullopt;
   }
   std::string error;
-  SessionFileCache::ExpectedContent expected;
-  if (!writer_.close(&expected, &error)) {
+  if (!writer_.close(&error)) {
     disarm("artifact close: " + error);
     std::error_code ec;
     std::filesystem::remove(cache_.partialPathFor(*lock_), ec);
     lock_.reset();
     return std::nullopt;
   }
-  if (!cache_.finalize(*lock_, expected, &error)) {
+  if (!cache_.finalize(*lock_, &error)) {
     disarm("cache finalize: " + error);  // finalize already removed the partial
     lock_.reset();
     return std::nullopt;

@@ -124,7 +124,7 @@ bool SessionFileCache::lookup(std::string_view identity, fs::path* out) {
     return false;
   }
   std::string error;
-  if (!validator_(file, *hex, /*expected=*/std::nullopt, &error)) {
+  if (!validator_(file, *hex, &error)) {
     return false;
   }
   touchStamp(file);
@@ -208,8 +208,7 @@ std::optional<FileLock> SessionFileCache::acquireReadLease(std::string_view iden
   return lease;
 }
 
-bool SessionFileCache::finalize(
-    const MaterializeLock& lock, const std::optional<ExpectedContent>& expected, std::string* error) {
+bool SessionFileCache::finalize(const MaterializeLock& lock, std::string* error) {
   const fs::path& partial = lock.partial_;
   const fs::path final_path = root_ / (lock.hex_ + kArtifactSuffix);
   const auto fail = [&](const std::string& reason) {
@@ -224,7 +223,7 @@ bool SessionFileCache::finalize(
     return fail("cache finalize rejected " + partial.filename().string() + ": no artifact validator configured");
   }
   std::string reason;
-  if (!validator_(partial, lock.hex_, expected, &reason)) {
+  if (!validator_(partial, lock.hex_, &reason)) {
     return fail("cache finalize rejected " + partial.filename().string() + ": " + reason);
   }
   chmod0600(partial);

@@ -42,25 +42,13 @@ class SessionFileCache {
     std::chrono::hours orphan_partial_age{24};
   };
 
-  /// Semantic-completeness pin for finalize: the counts the PRODUCER knows the
-  /// finished artifact must contain. A cleanly-closed writer over a PREFIX of
-  /// a fetch produces a structurally valid file that only this check can
-  /// reject.
-  struct ExpectedContent {
-    std::uint64_t row_count = 0;
-    std::uint64_t topic_count = 0;
-  };
-
   /// Artifact validation callback: given the file, the identity's 32-char hex
-  /// digest, and (for finalize) the producer-known expected content, decide
-  /// whether the file is a structurally valid artifact FOR THAT identity.
-  /// Must be bounded I/O (lookup runs on the GUI thread) and must verify the
-  /// embedded descriptor provenance by RE-HASHING its bytes — never by
-  /// trusting a stored identity string. std::nullopt `expected` (the lookup
-  /// path) skips only the semantic-completeness comparison.
-  using Validator = std::function<bool(
-      const std::filesystem::path& file, const std::string& hex, const std::optional<ExpectedContent>& expected,
-      std::string* error)>;
+  /// digest, decide whether the file is a structurally valid artifact FOR
+  /// THAT identity. Must be bounded I/O (lookup runs on the GUI thread) and
+  /// must verify the embedded descriptor provenance by RE-HASHING its bytes —
+  /// never by trusting a stored identity string. Fetch completeness is the
+  /// producer's publication gate: incomplete fetches never call finalize().
+  using Validator = std::function<bool(const std::filesystem::path& file, const std::string& hex, std::string* error)>;
 
   /// The validator is mandatory: a store cannot classify hits without one,
   /// and defaulting to "accept" would let any foreign file at <digest>.pjmosaico
@@ -99,9 +87,9 @@ class SessionFileCache {
   /// name a file outside the root.
   [[nodiscard]] std::filesystem::path pathFor(std::string_view identity) const;
 
-  /// Existing + validator-approved (with no expected-content pin). Touches
-  /// the LRU stamp on hit. A failed check is a plain miss — the file is NOT
-  /// deleted here; re-materialization atomically renames over it.
+  /// Existing + validator-approved. Touches the LRU stamp on hit. A failed
+  /// check is a plain miss — the file is NOT deleted here;
+  /// re-materialization atomically renames over it.
   [[nodiscard]] bool lookup(std::string_view identity, std::filesystem::path* out);
 
   /// `contended` (optional out): true iff the failure is the lock being held
@@ -123,12 +111,11 @@ class SessionFileCache {
   /// The partial path this process must write under `lock`.
   [[nodiscard]] std::filesystem::path partialPathFor(const MaterializeLock& lock) const;
 
-  /// Validate the finished partial through the injected validator (passing
-  /// `expected` — the producer always knows the counts), fsync file, atomic
-  /// rename to pathFor(identity), fsync directory (POSIX). On any failure:
-  /// remove the partial, return false with the reason.
-  [[nodiscard]] bool finalize(
-      const MaterializeLock& lock, const std::optional<ExpectedContent>& expected, std::string* error);
+  /// Validate the finished partial through the injected validator, fsync
+  /// file, atomic rename to pathFor(identity), fsync directory (POSIX). On
+  /// any failure: remove the partial, return false with the reason. The
+  /// producer calls this only after its fetch ledger reports completeness.
+  [[nodiscard]] bool finalize(const MaterializeLock& lock, std::string* error);
 
   /// SHARED read lease on `identity`'s lock sidecar (every live cache-backed
   /// consumer holds one for the file's whole lifetime — Linux

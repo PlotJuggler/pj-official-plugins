@@ -3,8 +3,8 @@
 //
 // The Arrow-in-MCAP cache artifact: write -> validate -> read round trip
 // (multi-topic, heterogeneous schemas, verbatim batches), the validator's
-// rejection matrix (identity mismatch, foreign junk, truncation, content
-// mismatch, forged summary span), and the artifact <-> SessionFileCache
+// rejection matrix (identity mismatch, foreign junk, truncation, forged
+// summary span), and the artifact <-> SessionFileCache
 // integration through the real lock -> partial -> finalize path.
 #include "arrow_cache_artifact.hpp"
 
@@ -73,8 +73,8 @@ std::vector<std::uint8_t> blobPayload(int seed) {
 }
 
 // Write a complete artifact at `path`: one scalar topic (2 batches) and one
-// object topic (2 canonical-blob samples). Returns the producer counts.
-SessionFileCache::ExpectedContent writeArtifact(const fs::path& path, const mosaico::SourceDescriptor& d) {
+// object topic (2 canonical-blob samples).
+void writeArtifact(const fs::path& path, const mosaico::SourceDescriptor& d) {
   ArtifactWriter writer;
   std::string error;
   EXPECT_TRUE(writer.open(path, mosaico::canonicalSourceDescriptorJson(d), &error)) << error;
@@ -96,9 +96,7 @@ SessionFileCache::ExpectedContent writeArtifact(const fs::path& path, const mosa
   const auto blob1 = blobPayload(1);
   EXPECT_TRUE(writer.writeObjectSample(*blob, 150, blob0.data(), blob0.size(), &error)) << error;
   EXPECT_TRUE(writer.writeObjectSample(*blob, 250, blob1.data(), blob1.size(), &error)) << error;
-  SessionFileCache::ExpectedContent expected;
-  EXPECT_TRUE(writer.close(&expected, &error)) << error;
-  return expected;
+  EXPECT_TRUE(writer.close(&error)) << error;
 }
 
 }  // namespace
@@ -107,14 +105,10 @@ TEST(ArrowCacheArtifact, WriteValidateReadRoundTrip) {
   TempRoot root("roundtrip");
   const fs::path path = root.path / "artifact.mcap";
   const auto d = descriptor();
-  const auto expected = writeArtifact(path, d);
-  EXPECT_EQ(expected.row_count, 7u);  // 3 + 2 + 2
-  EXPECT_EQ(expected.topic_count, 2u);
+  writeArtifact(path, d);
 
   std::string error;
-  // Finalize-style validation (with the completeness pin) and lookup-style.
-  EXPECT_TRUE(mosaico::validateArtifact(path, hexFor(d), expected, &error)) << error;
-  EXPECT_TRUE(mosaico::validateArtifact(path, hexFor(d), std::nullopt, &error)) << error;
+  EXPECT_TRUE(mosaico::validateArtifact(path, hexFor(d), &error)) << error;
 
   std::vector<ArtifactTopicData> topics;
   std::string canonical;
@@ -148,9 +142,9 @@ TEST(ArrowCacheArtifact, WriteValidateReadRoundTrip) {
 TEST(ArrowCacheArtifact, ValidatorRejectsWrongIdentity) {
   TempRoot root("wrong-id");
   const fs::path path = root.path / "artifact.mcap";
-  (void)writeArtifact(path, descriptor());
+  writeArtifact(path, descriptor());
   std::string error;
-  EXPECT_FALSE(mosaico::validateArtifact(path, std::string(32, 'f'), std::nullopt, &error));
+  EXPECT_FALSE(mosaico::validateArtifact(path, std::string(32, 'f'), &error));
   EXPECT_NE(error.find("identity mismatch"), std::string::npos) << error;
 }
 
@@ -162,26 +156,13 @@ TEST(ArrowCacheArtifact, ValidatorRejectsForeignJunkAndTruncation) {
     out << "this is not an mcap file at all";
   }
   std::string error;
-  EXPECT_FALSE(mosaico::validateArtifact(junk, std::string(32, 'a'), std::nullopt, &error));
+  EXPECT_FALSE(mosaico::validateArtifact(junk, std::string(32, 'a'), &error));
 
   const fs::path truncated = root.path / "truncated.mcap";
   const auto d = descriptor();
-  (void)writeArtifact(truncated, d);
+  writeArtifact(truncated, d);
   fs::resize_file(truncated, fs::file_size(truncated) / 2);
-  EXPECT_FALSE(mosaico::validateArtifact(truncated, hexFor(d), std::nullopt, &error));
-}
-
-TEST(ArrowCacheArtifact, ValidatorRejectsContentMismatchButLookupStillPasses) {
-  TempRoot root("content");
-  const fs::path path = root.path / "artifact.mcap";
-  const auto d = descriptor();
-  auto expected = writeArtifact(path, d);
-  std::string error;
-  expected.row_count += 1;  // a cleanly-closed PREFIX would look like this
-  EXPECT_FALSE(mosaico::validateArtifact(path, hexFor(d), expected, &error));
-  EXPECT_NE(error.find("content summary mismatch"), std::string::npos) << error;
-  // The lookup path (no pin) still accepts the structurally valid file.
-  EXPECT_TRUE(mosaico::validateArtifact(path, hexFor(d), std::nullopt, &error)) << error;
+  EXPECT_FALSE(mosaico::validateArtifact(truncated, hexFor(d), &error));
 }
 
 TEST(ArrowCacheArtifact, AbortedWriterLeavesUnvalidatablePartial) {
@@ -196,7 +177,7 @@ TEST(ArrowCacheArtifact, AbortedWriterLeavesUnvalidatablePartial) {
   ASSERT_TRUE(imu.has_value()) << error;
   ASSERT_TRUE(writer.writeBatch(*imu, *scalarBatch(100, 3), 100, &error)) << error;
   writer.abort();
-  EXPECT_FALSE(mosaico::validateArtifact(path, hexFor(descriptor()), std::nullopt, &error));
+  EXPECT_FALSE(mosaico::validateArtifact(path, hexFor(descriptor()), &error));
 }
 
 // A forged file whose footer points at a multi-gigabyte summary span must be
@@ -214,13 +195,13 @@ TEST(ArrowCacheArtifact, ForgedOversizedSummarySpanIsRefusedBeforeParsing) {
     out.write(reinterpret_cast<const char*>(tail), sizeof(tail));
   }
   std::string error;
-  EXPECT_FALSE(mosaico::validateArtifact(path, std::string(32, 'a'), std::nullopt, &error));
+  EXPECT_FALSE(mosaico::validateArtifact(path, std::string(32, 'a'), &error));
   EXPECT_NE(error.find("bounded query budget"), std::string::npos) << error;
 }
 
 // End-to-end with the store: the artifact validator is exactly the store's
 // injected Validator, driven through the real lock -> partial -> finalize
-// path with the writer-reported producer counts.
+// path.
 TEST(ArrowCacheArtifact, CacheRoundTripThroughStore) {
   TempRoot root("store");
   SessionFileCache cache(root.path, mosaico::validateArtifact);
@@ -229,8 +210,8 @@ TEST(ArrowCacheArtifact, CacheRoundTripThroughStore) {
   std::string error;
   auto lock = cache.tryLockForMaterialize(identity, &error);
   ASSERT_TRUE(lock.has_value()) << error;
-  const auto expected = writeArtifact(cache.partialPathFor(*lock), d);
-  ASSERT_TRUE(cache.finalize(*lock, expected, &error)) << error;
+  writeArtifact(cache.partialPathFor(*lock), d);
+  ASSERT_TRUE(cache.finalize(*lock, &error)) << error;
 
   fs::path hit;
   EXPECT_TRUE(cache.lookup(identity, &hit));

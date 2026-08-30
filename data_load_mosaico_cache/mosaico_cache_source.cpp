@@ -60,7 +60,7 @@ class MosaicoCacheSource : public PJ::FileSourceBase {
     // renamed file fails here instead of driving the reader on foreign bytes.
     const std::string stem = std::filesystem::path(filepath).stem().string();
     std::string error;
-    if (!mosaico::validateArtifact(filepath, stem, /*expected=*/std::nullopt, &error)) {
+    if (!mosaico::validateArtifact(filepath, stem, &error)) {
       return PJ::unexpected("cache artifact failed validation: " + error);
     }
     std::vector<mosaico::ArtifactTopicData> topics;

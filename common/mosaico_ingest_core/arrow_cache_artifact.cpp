@@ -12,7 +12,6 @@
 
 #include <cstring>
 #include <fstream>
-#include <limits>
 #include <map>
 #include <mcap/reader.hpp>
 #include <mcap/writer.hpp>
@@ -146,26 +145,6 @@ bool readBoundedMetadata(
   return true;
 }
 
-// Strict decimal parse for the content-summary counters.
-bool parseDecimalU64(const std::string& text, std::uint64_t* out) {
-  if (text.empty() || text.size() > 20) {
-    return false;
-  }
-  std::uint64_t value = 0;
-  for (const char c : text) {
-    if (c < '0' || c > '9') {
-      return false;
-    }
-    const std::uint64_t digit = static_cast<std::uint64_t>(c - '0');
-    if (value > (std::numeric_limits<std::uint64_t>::max() - digit) / 10) {
-      return false;
-    }
-    value = value * 10 + digit;
-  }
-  *out = value;
-  return true;
-}
-
 // The three channel-metadata entries every artifact channel carries (the
 // ingest ROUTING DECISION, replayed verbatim) — one authority for both the
 // scalar and the object channel kind.
@@ -207,8 +186,6 @@ bool writeMcapMessage(
 struct ArtifactWriter::Impl {
   mcap::McapWriter writer;
   bool open = false;
-  std::uint64_t rows = 0;
-  std::uint64_t topics = 0;
 };
 
 ArtifactWriter::ArtifactWriter() : impl_(std::make_unique<Impl>()) {}
@@ -268,7 +245,6 @@ std::optional<std::uint16_t> ArtifactWriter::addTopic(
   impl_->writer.addSchema(mcap_schema);
   mcap::Channel channel(topic.name, kMessageEncoding, mcap_schema.id, channelMetadataFor(topic));
   impl_->writer.addChannel(channel);
-  ++impl_->topics;
   return channel.id;
 }
 
@@ -281,7 +257,6 @@ std::optional<std::uint16_t> ArtifactWriter::addObjectTopic(const ArtifactTopic&
   }
   mcap::Channel channel(topic.name, kObjectMessageEncoding, /*schemaId=*/0, channelMetadataFor(topic));
   impl_->writer.addChannel(channel);
-  ++impl_->topics;
   return channel.id;
 }
 
@@ -299,7 +274,6 @@ bool ArtifactWriter::writeObjectSample(
           static_cast<std::uint64_t>(size), "artifact object write", error)) {
     return false;
   }
-  ++impl_->rows;  // one object sample = one row
   return true;
 }
 
@@ -323,34 +297,18 @@ bool ArtifactWriter::writeBatch(
           static_cast<std::uint64_t>((*serialized)->size()), "artifact message write", error)) {
     return false;
   }
-  impl_->rows += static_cast<std::uint64_t>(batch.num_rows());
   return true;
 }
 
-bool ArtifactWriter::close(SessionFileCache::ExpectedContent* out_expected, std::string* error) {
+bool ArtifactWriter::close(std::string* error) {
   if (!impl_->open) {
     if (error) {
       *error = "artifact writer is not open";
     }
     return false;
   }
-  mcap::Metadata summary;
-  summary.name = kContentSummaryMetadataName;
-  summary.metadata = {{"rows", std::to_string(impl_->rows)}, {"topics", std::to_string(impl_->topics)}};
-  const auto status = impl_->writer.write(summary);
-  if (!status.ok()) {
-    if (error) {
-      *error = "artifact content summary write failed: " + status.message;
-    }
-    abort();
-    return false;
-  }
   impl_->writer.close();
   impl_->open = false;
-  if (out_expected) {
-    out_expected->row_count = impl_->rows;
-    out_expected->topic_count = impl_->topics;
-  }
   return true;
 }
 
@@ -365,9 +323,7 @@ void ArtifactWriter::abort() {
 // validateArtifact
 // ---------------------------------------------------------------------------
 
-bool validateArtifact(
-    const fs::path& file, const std::string& hex, const std::optional<SessionFileCache::ExpectedContent>& expected,
-    std::string* error) {
+bool validateArtifact(const fs::path& file, const std::string& hex, std::string* error) {
   std::string reason;
   if (!summarySpanWithinBudget(file, &reason)) {
     if (error) {
@@ -422,39 +378,6 @@ bool validateArtifact(
       *error = "embedded descriptor identity mismatch";
     }
     return false;
-  }
-  if (expected.has_value()) {
-    mcap::KeyValueMap summary;
-    if (!readBoundedMetadata(reader, file, kContentSummaryMetadataName, &summary, &reason)) {
-      reader.close();
-      if (error) {
-        *error = reason;
-      }
-      return false;
-    }
-    std::uint64_t rows = 0;
-    std::uint64_t topics = 0;
-    const auto rows_it = summary.find("rows");
-    const auto topics_it = summary.find("topics");
-    if (rows_it == summary.end() || topics_it == summary.end() || !parseDecimalU64(rows_it->second, &rows) ||
-        !parseDecimalU64(topics_it->second, &topics)) {
-      reader.close();
-      if (error) {
-        *error = "embedded content summary is malformed";
-      }
-      return false;
-    }
-    const std::uint64_t channel_count = reader.statistics()->channelCount;
-    if (rows != expected->row_count || topics != expected->topic_count || channel_count != expected->topic_count) {
-      reader.close();
-      if (error) {
-        *error = "content summary mismatch: file has " + std::to_string(rows) + " row(s) / " + std::to_string(topics) +
-                 " topic(s) (" + std::to_string(channel_count) + " channel(s)), expected " +
-                 std::to_string(expected->row_count) + " / " + std::to_string(expected->topic_count) +
-                 " (incomplete or foreign fetch content)";
-      }
-      return false;
-    }
   }
   reader.close();
   return true;

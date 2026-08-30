@@ -101,7 +101,7 @@ TEST(CacheTeeSession, CompleteFetchProducesValidatedReadableArtifact) {
   // The artifact validates against the identity and reads back exactly.
   const std::string hex = mosaico::sha256HexPrefix(mosaico::canonicalSourceDescriptorJson(d), 16);
   std::string error;
-  EXPECT_TRUE(mosaico::validateArtifact(finalized->path, hex, std::nullopt, &error)) << error;
+  EXPECT_TRUE(mosaico::validateArtifact(finalized->path, hex, &error)) << error;
   std::vector<mosaico::ArtifactTopicData> topics;
   std::string canonical;
   ASSERT_TRUE(mosaico::readArtifact(finalized->path, &topics, &canonical, &error)) << error;

@@ -15,12 +15,11 @@
 //     ontology converter at all.
 // Channel metadata stores the ingest ROUTING DECISION (ontology tag,
 // canonical object metadata, timestamp column) so replay never re-derives
-// it; two Metadata records carry the canonical source descriptor
-// (provenance, re-hashed by the validator) and the content summary (the
-// finalize completeness pin). Artifacts carry the .pjmosaico extension (the
+// it; a Metadata record carries the canonical source descriptor (provenance,
+// re-hashed by the validator). Artifacts carry the .pjmosaico extension (the
 // cache loader's declared extension; it must never be ".mcap" or ordinary
-// MCAP drag-drops would see two candidate loaders), but the container IS
-// MCAP — the mcap CLI inspects it regardless of extension; payloads are not
+// MCAP drag-drops would see two candidate loaders), but the container IS MCAP
+// — the mcap CLI inspects it regardless of extension; payloads are not
 // ROS/protobuf messages.
 #pragma once
 #include <cstdint>
@@ -46,7 +45,6 @@ inline constexpr const char* kMosaicoCacheLoaderPluginId = "mosaico-cache-loader
 
 /// Metadata record names inside an artifact.
 inline constexpr const char* kProvenanceMetadataName = "mosaico/source_descriptor";
-inline constexpr const char* kContentSummaryMetadataName = "mosaico/content_summary";
 
 /// Per-topic replay information, stored in the channel metadata.
 struct ArtifactTopic {
@@ -58,9 +56,7 @@ struct ArtifactTopic {
 
 /// Streaming artifact writer. Lifecycle: open -> addTopic* -> writeBatch* ->
 /// close. Not thread-safe; one writer per partial file. The descriptor is
-/// embedded at open() (before any message, so it never splits a chunk); the
-/// content summary is embedded at close(), which also reports the counts the
-/// caller passes to SessionFileCache::finalize as ExpectedContent.
+/// embedded at open() (before any message, so it never splits a chunk).
 class ArtifactWriter {
  public:
   ArtifactWriter();
@@ -93,9 +89,8 @@ class ArtifactWriter {
       std::uint16_t channel_id, std::int64_t log_time_ns, const std::uint8_t* data, std::size_t size,
       std::string* error);
 
-  /// Embed the content summary, close the container (footer + summary
-  /// section), and report the producer counts for the finalize pin.
-  [[nodiscard]] bool close(SessionFileCache::ExpectedContent* out_expected, std::string* error);
+  /// Close the container, writing its footer and summary section.
+  [[nodiscard]] bool close(std::string* error);
 
   /// Abort: close the underlying file WITHOUT a valid footer. The caller
   /// deletes the partial (SessionFileCache::finalize would reject it anyway).
@@ -109,12 +104,10 @@ class ArtifactWriter {
 /// The SessionFileCache validator for this artifact format. Bounded I/O
 /// (raw footer preflight + summary section only — a forged file can never
 /// make the parser allocate past the fixed budgets): footer + summary
-/// readable, Statistics present, embedded provenance present with its bytes
-/// RE-HASHING to `hex`, and — when `expected` is provided (the finalize
-/// gate) — the embedded content summary matching the producer counts exactly.
-[[nodiscard]] bool validateArtifact(
-    const std::filesystem::path& file, const std::string& hex,
-    const std::optional<SessionFileCache::ExpectedContent>& expected, std::string* error);
+/// readable, Statistics present, and embedded provenance present with its
+/// bytes RE-HASHING to `hex`. Fetch-ledger completeness is enforced before
+/// this artifact is finalized and published.
+[[nodiscard]] bool validateArtifact(const std::filesystem::path& file, const std::string& hex, std::string* error);
 
 /// One canonical object blob, with the exact timestamp it was ingested at.
 struct ArtifactObjectSample {
