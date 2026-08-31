@@ -3,8 +3,9 @@
 //
 // A PlotJuggler session recording stores, per channel, the parser config the
 // live session used (`pj.parser_config` channel metadata). Replaying such a
-// file must start from that config so the parse is identical, while the
-// dialog's explicit choices and the loader's own keys still win.
+// file must parse exactly like that session, so the recorded config wins over
+// the dialog's keys — only the keys describing the channel being read now
+// (topic_name, serialization, schema_encoding) still come from the loader.
 //
 // Drives the real McapSource against a synthetic recording through a fake
 // runtime host that records every ensureParserBinding request — the host stub
@@ -234,8 +235,14 @@ class RecordedParserConfigTest : public ::testing::Test {
 // Tests
 // ---------------------------------------------------------------------------
 
-TEST_F(RecordedParserConfigTest, RecordedConfigSeedsTheBindingAndLoaderKeysStillWin) {
-  const std::string path = writeRecordingWithParserConfig(R"({"label_keyed_arrays":true})");
+TEST_F(RecordedParserConfigTest, RecordedConfigWinsOverDialogDefaultsButNotOverLoaderKeys) {
+  // use_embedded_timestamp and max_array_size are keys the dialog writes on
+  // every import from its own (here untouched, default) state: false and 500.
+  // The trailing three are deliberately stale copies of the loader-derived
+  // keys, so the assertions below cannot pass vacuously.
+  const std::string path = writeRecordingWithParserConfig(
+      R"({"label_keyed_arrays":true,"use_embedded_timestamp":true,"max_array_size":5000,)"
+      R"("topic_name":"/recorded_under_another_name","schema_encoding":"protobuf","serialization":"ros1"})");
   ASSERT_FALSE(path.empty());
 
   importFile(path);
@@ -244,12 +251,17 @@ TEST_F(RecordedParserConfigTest, RecordedConfigSeedsTheBindingAndLoaderKeysStill
 
   const auto config = nlohmann::json::parse(host_.bindings[0].parser_config_json, nullptr, false);
   ASSERT_TRUE(config.is_object()) << host_.bindings[0].parser_config_json;
+  const std::string dumped = host_.bindings[0].parser_config_json;
 
-  // The recorded config is the base...
-  EXPECT_EQ(config.value("label_keyed_arrays", false), true) << host_.bindings[0].parser_config_json;
-  // ...and the loader's own per-channel keys survive on top of it.
+  // A key only the recording carries.
+  EXPECT_EQ(config.value("label_keyed_arrays", false), true) << dumped;
+  // Keys the dialog also writes, from its defaults: the recording wins.
+  EXPECT_EQ(config.value("use_embedded_timestamp", false), true) << dumped;
+  EXPECT_EQ(config.value("max_array_size", 0), 5000) << dumped;
+  // Keys derived from the channel being read now: the loader still wins.
   EXPECT_EQ(config.value("topic_name", std::string{}), "/pt");
   EXPECT_EQ(config.value("schema_encoding", std::string{}), "json");
+  EXPECT_EQ(config.value("serialization", std::string{}), "cdr");
 
   std::filesystem::remove(path);
 }

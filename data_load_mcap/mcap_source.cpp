@@ -232,6 +232,23 @@ class McapSource : public PJ::FileSourceBase {
       }
 
       auto channel_parser_config = parser_config;
+
+      // A PlotJuggler session recording stores the live session's parser config
+      // per channel, and it wins: replay must parse exactly like the live
+      // session, whereas the dialog writes its array-limit and timestamp keys
+      // unconditionally (defaults included), so letting those through would
+      // silently change how a recording replays. Channel metadata is arbitrary
+      // user data, so a value that is not a JSON object is ignored.
+      if (const auto recorded = channel_ptr->metadata.find("pj.parser_config");
+          recorded != channel_ptr->metadata.end()) {
+        const auto recorded_config = nlohmann::json::parse(recorded->second, nullptr, /*allow_exceptions=*/false);
+        if (recorded_config.is_object()) {
+          channel_parser_config.update(recorded_config);
+        }
+      }
+
+      // Keys describing the channel being read right now, not any past session:
+      // these are applied last and override a recording's stale copies.
       const bool use_ros1_serialization = channel_ptr->messageEncoding == "ros1" || parser_encoding == "ros1" ||
                                           parser_encoding == "ros1msg" ||
                                           (schema != nullptr && schema->encoding == "ros1msg");
@@ -242,20 +259,6 @@ class McapSource : public PJ::FileSourceBase {
       // ParserBindingRequest. Keep it in each parser instance's config too so
       // classifySchema() and the retained object parser agree.
       channel_parser_config["topic_name"] = channel_ptr->topic;
-
-      // A PlotJuggler session recording stores the live session's parser config
-      // per channel; start from it so replay parses exactly like the live
-      // session, then let the dialog's explicit choices and the keys set above
-      // override. Channel metadata is arbitrary user data, so a value that is
-      // not a JSON object is ignored rather than trusted.
-      if (const auto recorded = channel_ptr->metadata.find("pj.parser_config");
-          recorded != channel_ptr->metadata.end()) {
-        auto recorded_config = nlohmann::json::parse(recorded->second, nullptr, /*allow_exceptions=*/false);
-        if (recorded_config.is_object()) {
-          recorded_config.update(channel_parser_config);
-          channel_parser_config = std::move(recorded_config);
-        }
-      }
       const std::string parser_config_str = channel_parser_config.dump();
 
       PJ::ParserBindingRequest request{

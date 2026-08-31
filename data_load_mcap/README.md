@@ -80,15 +80,22 @@ so the user can select which topics to import. Per-import options:
 PlotJuggler's session recorder writes the live session's parser config for
 each topic into the channel's MCAP `metadata` map under the key
 `pj.parser_config` (alongside `pj.type_name`, `pj.source_id` and
-`pj.source_plugin`). When that key is present, the loader seeds the channel's
-parser config from it, so replaying a recording parses exactly like the
-session that produced it.
+`pj.source_plugin`). When that key is present the loader merges it into the
+channel's parser config, **and the recorded values win** — replaying a
+recording must parse exactly like the session that produced it.
 
-It is only the *base*: the dialog's explicit choices and the loader's own
-per-channel keys (`serialization`, `schema_encoding`, `topic_name`, the array
-limits, `use_embedded_timestamp`) are merged on top and win. A value that is
-missing, unparsable, or not a JSON object is ignored — channel metadata is
-arbitrary user data, and files written by other tools are unaffected.
+The dialog does not override it. Its array-limit and `use_embedded_timestamp`
+keys are written on every import from the dialog's current state, defaults
+included, so letting them through would silently change how a recording
+replays.
+
+The exception is the three keys that describe the channel being read *now*,
+which are applied last and always win: `topic_name`, `serialization` and
+`schema_encoding`.
+
+A value that is missing, unparsable, or not a JSON object is ignored — channel
+metadata is arbitrary user data, and files written by other tools are
+unaffected.
 
 ## Always-included channels
 
