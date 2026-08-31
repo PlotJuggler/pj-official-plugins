@@ -8,9 +8,10 @@
 #include <algorithm>
 #include <cctype>
 #include <nlohmann/json.hpp>
+#include <pj_base/sdk/text_utils.hpp>
+#include <pj_plugins/sdk/endpoint.hpp>
+#include <pj_plugins/sdk/streaming_dialog.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
-#include <pj_streaming/dialog_utils.hpp>
-#include <pj_streaming/endpoint.hpp>
 #include <utility>
 
 #include "datastream_webrtc_ui.hpp"
@@ -184,7 +185,7 @@ bool WebrtcDialog::onTextChanged(std::string_view widget_name, std::string_view 
   }
   if (widget_name == "lineEditFilter") {
     filter_ = std::string(text);
-    filter_lower_ = pj::streaming::lowerAscii(filter_);
+    filter_lower_ = PJ::sdk::lowerAscii(filter_);
     return true;
   }
   return false;
@@ -202,7 +203,7 @@ bool WebrtcDialog::onSelectionChanged(std::string_view widget_name, const std::v
   // must survive. So: preserve every selected path that is not a rendered row,
   // then re-add the rendered ones the host still reports (subject to the
   // H.264/manual selectable check).
-  selected_ = pj::streaming::mergeVisibleSelection(
+  selected_ = PJ::sdk::mergeVisibleSelection(
       selected_, selected, [this](const std::string& label) { return isRenderedLocked(label); },
       [this](const std::string& label) {
         const bool manual = std::find(manual_paths_.begin(), manual_paths_.end(), label) != manual_paths_.end();
@@ -387,12 +388,11 @@ std::string WebrtcDialog::composeUrl(const UrlParts& parts) {
   if (parts.host.empty()) {
     return {};
   }
-  return pj::streaming::composeEndpoint(
-      parts.scheme.empty() ? "http" : parts.scheme, parts.host, parts.port, parts.path);
+  return PJ::sdk::composeEndpoint(parts.scheme.empty() ? "http" : parts.scheme, parts.host, parts.port, parts.path);
 }
 
 bool WebrtcDialog::isValidOptionalPort(std::string_view port) {
-  return port.empty() || pj::streaming::parsePort(port).has_value();
+  return port.empty() || PJ::sdk::parsePort(port).has_value();
 }
 
 std::string WebrtcDialog::serverUrl() const {
@@ -407,7 +407,7 @@ bool WebrtcDialog::passesFilter(const std::string& path) const {
   if (filter_lower_.empty()) {
     return true;
   }
-  return pj::streaming::lowerAscii(path).find(filter_lower_) != std::string::npos;
+  return PJ::sdk::lowerAscii(path).find(filter_lower_) != std::string::npos;
 }
 
 bool WebrtcDialog::isSelected(const std::string& path) const {

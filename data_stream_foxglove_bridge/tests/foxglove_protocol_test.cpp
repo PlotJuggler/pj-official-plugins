@@ -159,6 +159,18 @@ TEST(FoxgloveProtocolTest, ClassifyChannelProtobuf) {
   EXPECT_EQ(route.parser_encoding, "protobuf");
   // Must be flagged base64 so the source decodes it before binding.
   EXPECT_TRUE(route.schema_is_base64);
+  EXPECT_FALSE(route.label_keyed_arrays);
+}
+
+TEST(FoxgloveProtocolTest, ClassifyChannelProtobufEmptySchemaName) {
+  // protobuf needs a type name to bind (well-known types are bound by name).
+  ChannelInfo ch;
+  ch.topic = "/camera/image";
+  ch.encoding = "protobuf";
+  ch.schema_name = "";
+  ch.schema = "";
+  ch.schema_encoding = "protobuf";
+  EXPECT_FALSE(classifyChannel(ch).supported);
 }
 
 TEST(FoxgloveProtocolTest, ClassifyChannelProtobufWellKnownEmptySchema) {
@@ -177,10 +189,52 @@ TEST(FoxgloveProtocolTest, ClassifyChannelProtobufWellKnownEmptySchema) {
 TEST(FoxgloveProtocolTest, ClassifyChannelUnsupportedSchemaEncoding) {
   ChannelInfo ch;
   ch.topic = "/test/topic";
+  ch.encoding = "flatbuffer";
+  ch.schema_name = "foxglove.SceneUpdate";
+  ch.schema = "ChJzb21lLWJpbmFyeS1zY2hlbWE=";
+  ch.schema_encoding = "flatbuffer";  // intentionally unsupported
+  EXPECT_FALSE(classifyChannel(ch).supported);
+}
+
+TEST(FoxgloveProtocolTest, ClassifyChannelJson) {
+  // The LeRobot 0.6.0 shape: generic foxglove.Channel with a JSON-Schema.
+  ChannelInfo ch;
+  ch.topic = "/observation/state";
   ch.encoding = "json";
-  ch.schema_name = "std_msgs/msg/String";
-  ch.schema = "{}";
-  ch.schema_encoding = "jsonschema";  // jsonschema/flatbuffer intentionally unsupported
+  ch.schema_name = "Scalars";
+  ch.schema = R"({"type":"object","properties":{"scalars":{"type":"array"}}})";
+  ch.schema_encoding = "jsonschema";
+  auto route = classifyChannel(ch);
+  EXPECT_TRUE(route.supported);
+  EXPECT_EQ(route.parser_encoding, "json");
+  // jsonschema is plain text in the advertise JSON — must NOT be base64-decoded.
+  EXPECT_FALSE(route.schema_is_base64);
+  // The route instructs the binder to key {label, value} arrays by label.
+  EXPECT_TRUE(route.label_keyed_arrays);
+}
+
+TEST(FoxgloveProtocolTest, ClassifyChannelJsonSchemaless) {
+  // Self-describing payloads need neither schema nor schema_name.
+  ChannelInfo ch;
+  ch.topic = "/telemetry";
+  ch.encoding = "json";
+  ch.schema_name = "";
+  ch.schema = "";
+  ch.schema_encoding = "";
+  auto route = classifyChannel(ch);
+  EXPECT_TRUE(route.supported);
+  EXPECT_EQ(route.parser_encoding, "json");
+  EXPECT_FALSE(route.schema_is_base64);
+  EXPECT_TRUE(route.label_keyed_arrays);
+}
+
+TEST(FoxgloveProtocolTest, ClassifyChannelJsonWrongSchemaEncoding) {
+  ChannelInfo ch;
+  ch.topic = "/test/topic";
+  ch.encoding = "json";
+  ch.schema_name = "my.pkg.Thing";
+  ch.schema = "ChJzb21lLWZpbGUtZGVzY3JpcHRvcg==";
+  ch.schema_encoding = "protobuf";  // json payload with a non-json schema: reject
   EXPECT_FALSE(classifyChannel(ch).supported);
 }
 

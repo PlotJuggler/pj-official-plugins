@@ -325,12 +325,9 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedVideo(PJ::Timestam
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
 
     // builtin_interfaces/Time timestamp — bare, not wrapped in a Header.
-    const uint32_t sec = deserializer_->deserializeUInt32();
-    const uint32_t nsec = deserializer_->deserializeUInt32();
-    const int64_t embedded_ts_ns = static_cast<int64_t>(sec) * 1000000000LL + static_cast<int64_t>(nsec);
-    if (use_embedded_timestamp_ && embedded_ts_ns > 0) {
-      current_timestamp_ = embedded_ts_ns;
-    }
+    // readBareTime() reads `sec` SIGNED (int32) and applies the embedded-stamp
+    // adoption; reading it unsigned turned negative stamps into ~4.29e9.
+    (void)readBareTime();
 
     std::string frame_id;
     deserializer_->deserializeString(frame_id);
@@ -448,6 +445,73 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePointCloud(PJ::Timestamp ts,
 }
 
 // ---------------------------------------------------------------------------
+// Slim scalar route for sensor_msgs/PointCloud2.
+//
+// Emits the header series (/header/stamp, /header/frame_id, plus /header/seq on
+// ROS 1) and /num_points — everything else on this wire is layout detail of a
+// payload consumed as a 3D object, not as time series.
+//
+// /num_points is the number of points ACTUALLY present in the message:
+// len(data) / point_step. It is deliberately NOT width * height. Those two agree
+// only for a well-formed dense cloud; a truncated or partially-filled message
+// (and any producer that leaves width/height as the sensor's nominal grid) makes
+// width * height a claim about the cloud rather than a measurement of it — the
+// series is worth plotting precisely because it can reveal dropped points.
+// Reaching data[] means walking past fields[] to point_step, which is a handful
+// of cheap reads; the bulk bytes themselves are never touched (we read only the
+// sequence's length prefix and stop).
+//
+// This replaces the generic DISCARD_LARGE_ARRAYS flatten: that walked the whole
+// message through rosx_introspection on every frame just to yield per-PointField
+// metadata columns, and — being a flatten of the leaf fields — never produced
+// the combined /header/stamp series at all.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parsePointCloud2Scalars(
+    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+  try {
+    beginDirectScalarRead(ts, payload);
+    emitHeader(readHeader());
+
+    (void)deserializer_->deserializeUInt32();  // height
+    (void)deserializer_->deserializeUInt32();  // width
+
+    // fields[] — read and discard; we only need the cursor to land on point_step.
+    const uint32_t fields_count = deserializer_->deserializeUInt32();
+    if (fields_count > 1024) {
+      return PJ::unexpected(std::string("PointCloud2 scalars: too many fields"));
+    }
+    for (uint32_t i = 0; i < fields_count; ++i) {
+      std::string name;
+      deserializer_->deserializeString(name);
+      (void)deserializer_->deserializeUInt32();  // offset
+      (void)readU8(*deserializer_);              // datatype
+      (void)deserializer_->deserializeUInt32();  // count
+    }
+
+    (void)readU8(*deserializer_);  // is_bigendian
+    const uint32_t point_step = deserializer_->deserializeUInt32();
+    (void)deserializer_->deserializeUInt32();  // row_step
+
+    // data[] length prefix only — the points themselves are never read here.
+    const uint32_t data_size = deserializer_->deserializeUInt32();
+    if (data_size > deserializer_->bytesLeft()) {
+      // Declared length runs past the payload: truncated or corrupt. Same
+      // verdict readByteSequence() reaches on the object route.
+      return PJ::unexpected(std::string("PointCloud2 scalars: data[] length exceeds message payload"));
+    }
+    // point_step == 0 is malformed (no point has zero size). Omit the column for
+    // that message rather than dividing by zero or filing a fabricated count.
+    if (point_step > 0) {
+      addField("/num_points", PJ::sdk::ValueRef{static_cast<uint64_t>(data_size) / point_step});
+    }
+    return harvestOwnedFields();
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("PointCloud2 scalars: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
 // sensor_msgs/LaserScan
 //
 // Wire layout (ROS2 shown; ROS1 prepends a uint32 seq inside the header):
@@ -558,12 +622,9 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxgloveCompressedPointCloud
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
 
     // builtin_interfaces/Time timestamp — bare, not wrapped in a Header.
-    const uint32_t sec = deserializer_->deserializeUInt32();
-    const uint32_t nsec = deserializer_->deserializeUInt32();
-    const int64_t embedded_ts_ns = static_cast<int64_t>(sec) * 1000000000LL + static_cast<int64_t>(nsec);
-    if (use_embedded_timestamp_ && embedded_ts_ns > 0) {
-      current_timestamp_ = embedded_ts_ns;
-    }
+    // readBareTime() reads `sec` SIGNED (int32) and applies the embedded-stamp
+    // adoption; reading it unsigned turned negative stamps into ~4.29e9.
+    (void)readBareTime();
 
     std::string frame_id;
     deserializer_->deserializeString(frame_id);
@@ -590,6 +651,35 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxgloveCompressedPointCloud
         .object = PJ::sdk::BuiltinObject{std::move(cloud)}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("CompressedPointCloud: CDR read error: ") + e.what());
+  }
+}
+
+// Slim scalar companion for foxglove_msgs/CompressedPointCloud. The head of the
+// wire is a BARE builtin_interfaces/Time followed by frame_id — NOT a
+// std_msgs/Header — so readHeader() must not be used here: its ROS 1 branch
+// would consume `seq` first and shift every subsequent read. We therefore emit
+// the flat "/timestamp" + "/frame_id" pair rather than the /header/* series.
+// There is no point count anywhere in this schema (the cloud is an opaque
+// compressed blob), so nothing else is emitted.
+PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseFoxgloveCompressedPointCloudScalars(
+    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+  try {
+    beginDirectScalarRead(ts, payload);
+
+    // readBareTime() reads `sec` SIGNED (int32) and applies the embedded-stamp
+    // adoption under the same contract as readHeader(): the stamp becomes the
+    // record time only when the user asked for it (registerBoundSchemaHandler
+    // reads current_timestamp_ back out).
+    const int64_t stamp_ns = readBareTime();
+    addField("/timestamp", nanosecondsToSeconds(stamp_ns));
+
+    std::string frame_id;
+    deserializer_->deserializeString(frame_id);
+    addStringField("/frame_id", frame_id);
+
+    return harvestOwnedFields();
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("CompressedPointCloud scalars: CDR read error: ") + e.what());
   }
 }
 
@@ -846,12 +936,9 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxglovePosesInFrame(
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
 
     // builtin_interfaces/Time timestamp — bare, not wrapped in a Header.
-    const uint32_t sec = deserializer_->deserializeUInt32();
-    const uint32_t nsec = deserializer_->deserializeUInt32();
-    const int64_t embedded_ts_ns = static_cast<int64_t>(sec) * 1000000000LL + static_cast<int64_t>(nsec);
-    if (use_embedded_timestamp_ && embedded_ts_ns > 0) {
-      current_timestamp_ = embedded_ts_ns;
-    }
+    // readBareTime() reads `sec` SIGNED (int32) and applies the embedded-stamp
+    // adoption; reading it unsigned turned negative stamps into ~4.29e9.
+    (void)readBareTime();
 
     std::string frame_id;
     deserializer_->deserializeString(frame_id);

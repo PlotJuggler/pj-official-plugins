@@ -1,7 +1,7 @@
 {
   "id": "data-tamer-parser",
   "name": "DataTamer Parser",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Message parser for DataTamer encoded data. Efficient serialization for robotics.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",

@@ -6,11 +6,11 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
-#include <pj_array_policy/array_policy.hpp>
+#include <pj_base/sdk/text_utils.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/endpoint.hpp>
+#include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
-#include <pj_streaming/dialog_utils.hpp>
-#include <pj_streaming/endpoint.hpp>
 #include <string>
 #include <vector>
 
@@ -130,7 +130,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       return false;
     }
     if (widget_name == "lineEditPort") {
-      if (const auto port = pj::streaming::parsePort(text)) {
+      if (const auto port = PJ::sdk::parsePort(text)) {
         port_ = *port;
       }
       return false;
@@ -194,7 +194,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     nlohmann::json cfg;
     cfg["address"] = address_;
     cfg["port"] = port_;
-    pj::array_policy::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), clamp_large_arrays_);
+    PJ::sdk::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), clamp_large_arrays_);
     cfg["use_timestamp"] = use_timestamp_;
 
     // Use the snapshot — topics_ may already be cleared by disconnect()
@@ -220,7 +220,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     }
     address_ = cfg.value("address", std::string("127.0.0.1"));
     port_ = cfg.value("port", 9871);
-    const auto array_limit = pj::array_policy::arrayLimitFromJson(cfg);
+    const auto array_limit = PJ::sdk::arrayLimitFromJson(cfg);
     max_array_size_ = static_cast<int>(array_limit.max_size);
     clamp_large_arrays_ = array_limit.clamp();
     use_timestamp_ = cfg.value("use_timestamp", false);
@@ -248,7 +248,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
  private:
   void connectToServer() {
     socket_ = std::make_unique<ix::WebSocket>();
-    socket_->setUrl(pj::streaming::composeEndpoint("ws", address_, static_cast<uint16_t>(port_)));
+    socket_->setUrl(PJ::sdk::composeEndpoint("ws", address_, static_cast<uint16_t>(port_)));
 
     socket_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
       if (msg->type == ix::WebSocketMessageType::Open) {
@@ -374,9 +374,9 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       }
     }
     // Case-insensitive search
-    const std::string lower_filter = pj::streaming::lowerAscii(filter_);
-    const std::string lower_name = pj::streaming::lowerAscii(t.name);
-    const std::string lower_type = pj::streaming::lowerAscii(t.type);
+    const std::string lower_filter = PJ::sdk::lowerAscii(filter_);
+    const std::string lower_name = PJ::sdk::lowerAscii(t.name);
+    const std::string lower_type = PJ::sdk::lowerAscii(t.type);
     return lower_name.find(lower_filter) != std::string::npos || lower_type.find(lower_filter) != std::string::npos;
   }
 

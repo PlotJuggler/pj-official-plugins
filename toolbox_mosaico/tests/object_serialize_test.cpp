@@ -95,7 +95,7 @@ struct FakeHost {
     return true;
   }
   static bool pushOwnedObject(
-      void* ctx, PJ_object_topic_handle_t topic, int64_t ts, const uint8_t* data, size_t size,
+      void* ctx, PJ_object_topic_handle_t topic, int64_t ts, const uint8_t* data, uint64_t size,
       PJ_error_t*) PJ_NOEXCEPT {
     auto* h = self(ctx);
     std::lock_guard<std::mutex> lk(h->mu);

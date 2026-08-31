@@ -35,3 +35,7 @@ target_link_libraries(mp4_iso8601_test PRIVATE
   date::date GTest::gtest_main
 )
 add_test(NAME mp4_iso8601_test COMMAND mp4_iso8601_test)
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(mp4_source_plugin
+  REQUIRED_EXPORTS PJ_get_data_source_vtable)

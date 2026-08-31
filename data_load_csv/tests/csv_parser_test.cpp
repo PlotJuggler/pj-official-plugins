@@ -78,6 +78,25 @@ TEST(CsvSplitLine, QuotedField) {
   EXPECT_EQ(parts[0], "hello, world");
 }
 
+// An RFC-4180 escaped double-quote ("") inside a quoted field must become a
+// single literal quote in the output, not truncate or empty the field.
+TEST(CsvSplitLine, EscapedQuoteInsideQuotedField) {
+  std::vector<std::string> parts;
+  SplitLine(R"(a,"he said ""hi""",b)", ',', parts);
+  ASSERT_EQ(parts.size(), 3u);
+  EXPECT_EQ(parts[0], "a");
+  EXPECT_EQ(parts[1], R"(he said "hi")");
+  EXPECT_EQ(parts[2], "b");
+}
+
+TEST(CsvSplitLine, EscapedQuoteAtFieldStart) {
+  std::vector<std::string> parts;
+  SplitLine(R"("a""b",c)", ',', parts);
+  ASSERT_EQ(parts.size(), 2u);
+  EXPECT_EQ(parts[0], R"(a"b)");
+  EXPECT_EQ(parts[1], "c");
+}
+
 TEST(CsvSplitLine, TrailingSeparator) {
   std::vector<std::string> parts;
   SplitLine("a,b,", ',', parts);
@@ -175,6 +194,33 @@ TEST(CsvParse, WindowsLineEndings) {
   EXPECT_EQ(result.column_names[1], "b");
 }
 
+// End-to-end mirror of test_data/test_escaped_quotes.csv. The reported symptom
+// was that a header like "temp ""degC""" ended up nameless (_Column_N) because
+// SplitLine emitted an empty string; assert the escape-collapsed header AND
+// that the numeric column downstream still lands on the right index.
+TEST(CsvParse, EscapedQuotesHeaderAndData) {
+  std::string csv =
+      "time,\"temp \"\"degC\"\"\",value\n"
+      "0,10,100\n"
+      "1,11,101\n"
+      "2,12,102\n"
+      "3,13,103\n";
+  CsvParseConfig config;
+  config.delimiter = ',';
+  config.time_column_index = 0;
+  auto result = ParseCsvData(csv, config);
+
+  ASSERT_TRUE(result.success);
+  EXPECT_EQ(result.lines_processed, 4);
+  ASSERT_EQ(result.column_names.size(), 3u);
+  EXPECT_EQ(result.column_names[0], "time");
+  EXPECT_EQ(result.column_names[1], R"(temp "degC")");
+  EXPECT_EQ(result.column_names[2], "value");
+  ASSERT_EQ(result.columns[1].numeric_points.size(), 4u);
+  EXPECT_DOUBLE_EQ(result.columns[1].numeric_points[0].second, 10.0);
+  EXPECT_DOUBLE_EQ(result.columns[1].numeric_points[3].second, 13.0);
+}
+
 TEST(CsvParse, SkipRows) {
   std::string csv = "# comment\n# comment2\ntime,val\n0,1\n1,2\n";
   CsvParseConfig config;
@@ -211,6 +257,41 @@ TEST(CsvParse, CancellationViaProgress) {
 
   // Should have processed fewer than all 300 rows
   EXPECT_LT(result.lines_processed, 300);
+}
+
+// A DATA column of large integers that happens to fall in an epoch range must
+// keep its raw value — epoch scaling belongs to the time column only. Before the
+// fix, byte_counter (1.5e12, an epoch-millis-range integer) was silently divided
+// by 1000.
+TEST(CsvParse, LargeIntegerDataColumnIsNotEpochScaled) {
+  std::string csv = "index,byte_counter\n0,1500000000000\n1,1500000000001\n2,1500000000002\n";
+  CsvParseConfig config;
+  config.delimiter = ',';
+  config.time_column_index = 0;
+  auto result = ParseCsvData(csv, config);
+
+  ASSERT_TRUE(result.success);
+  ASSERT_EQ(result.columns[1].numeric_points.size(), 3u);
+  EXPECT_DOUBLE_EQ(result.columns[1].numeric_points[0].second, 1500000000000.0)
+      << "a data column must not be rescaled as an epoch timestamp";
+  EXPECT_DOUBLE_EQ(result.columns[1].numeric_points[1].second, 1500000000001.0);
+  EXPECT_DOUBLE_EQ(result.columns[1].numeric_points[2].second, 1500000000002.0);
+}
+
+// The time column, by contrast, IS scaled from epoch-millis to seconds (that is
+// the correct behaviour for the axis the user picked as time).
+TEST(CsvParse, TimeColumnStillScaledFromEpochMillis) {
+  std::string csv = "ts_ms,value\n1700000000000,10\n1700000001000,20\n";
+  CsvParseConfig config;
+  config.delimiter = ',';
+  config.time_column_index = 0;
+  auto result = ParseCsvData(csv, config);
+
+  ASSERT_TRUE(result.success);
+  ASSERT_EQ(result.columns[1].numeric_points.size(), 2u);
+  // 1700000000000 ms -> 1700000000 s, 1700000001000 ms -> 1700000001 s.
+  EXPECT_DOUBLE_EQ(result.columns[1].numeric_points[0].first, 1700000000.0);
+  EXPECT_DOUBLE_EQ(result.columns[1].numeric_points[1].first, 1700000001.0);
 }
 
 // --- Timestamp parsing ---

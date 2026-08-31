@@ -8,7 +8,7 @@ add_library(zmq_source_plugin SHARED zmq_source.cpp)
 target_compile_features(zmq_source_plugin PRIVATE cxx_std_20)
 target_compile_options(zmq_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(zmq_source_plugin PRIVATE
-  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json cppzmq pj_streaming_utils
+  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json cppzmq
 )
 
 pj_embed_ui(zmq_source_plugin
@@ -28,3 +28,7 @@ pj_emit_plugin_manifest(zmq_source_plugin
   FAMILY        data_source
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(zmq_source_plugin
+  REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable)

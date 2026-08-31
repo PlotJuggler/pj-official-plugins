@@ -161,7 +161,7 @@ std::string CsvDialog::widget_data() {
   // OK enabled?
   bool ok = (time_mode_ == TimeMode::RowNumber) || (time_mode_ == TimeMode::Column && selected_column_index_ >= 0) ||
             (time_mode_ == TimeMode::Combined && combined_index_ >= 0);
-  wd.setEnabled("buttonAccept", ok);
+  wd.setOkEnabled("buttonBox", ok);
 
   if (accept_requested_) {
     accept_requested_ = false;
@@ -270,10 +270,6 @@ bool CsvDialog::onItemDoubleClicked(std::string_view widget_name, int index) {
 bool CsvDialog::onClicked(std::string_view widget_name) {
   if (widget_name == "dateTimeHelpButton") {
     show_help_requested_ = true;
-    return true;
-  }
-  if (widget_name == "buttonAccept") {
-    accept_requested_ = true;
     return true;
   }
   return false;
@@ -430,11 +426,15 @@ void CsvDialog::analyzeFile() {
     if (!line.empty() && line.back() == '\r') {
       line.pop_back();
     }
+    // The Raw tab claims to mirror the file verbatim, so a blank line has to
+    // appear there: it is the line the parser will report as skipped, and
+    // hiding it leaves that warning untraceable in the preview. It still does
+    // not become a preview row — a blank line is not a record.
+    raw_preview_ += '\n';
+    raw_preview_ += line;
     if (line.empty()) {
       continue;
     }
-    raw_preview_ += '\n';
-    raw_preview_ += line;
     PJ::CSV::SplitLine(line, delimiter_, parts);
     preview_rows_.push_back(parts);
 

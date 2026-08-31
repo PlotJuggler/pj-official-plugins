@@ -36,32 +36,59 @@
     <widget class="QWidget" name="headerContent" native="true">
      <layout class="QVBoxLayout" name="headerContentLayout">
       <property name="spacing"><number>6</number></property>
-      <property name="leftMargin"><number>9</number></property>
+      <property name="leftMargin"><number>8</number></property>
       <property name="topMargin"><number>6</number></property>
-      <property name="rightMargin"><number>9</number></property>
+      <property name="rightMargin"><number>8</number></property>
       <property name="bottomMargin"><number>6</number></property>
    <item>
-    <widget class="QRadioButton" name="radioConnect">
-     <property name="text">
-      <string>Connect (connect to server)</string>
-     </property>
-     <property name="checked">
-      <bool>true</bool>
-     </property>
-     <attribute name="buttonGroup">
-      <string>socketModeGroup</string>
-     </attribute>
-    </widget>
-   </item>
-   <item>
-    <widget class="QRadioButton" name="radioBind">
-     <property name="text">
-      <string>Bind (accept connections)</string>
-     </property>
-     <attribute name="buttonGroup">
-      <string>socketModeGroup</string>
-     </attribute>
-    </widget>
+    <layout class="QHBoxLayout" name="socketModeRow">
+     <property name="spacing"><number>6</number></property>
+     <item>
+      <widget class="QRadioButton" name="radioConnect">
+       <property name="text">
+        <string>Connect (connect to server)</string>
+       </property>
+       <property name="checked">
+        <bool>true</bool>
+       </property>
+       <!-- Side-by-side radios so the host adapts the group into a HORIZONTAL
+            segmented control; pjInlineGroup keeps it left-aligned in this row
+            instead of being pushed to the right edge. -->
+       <property name="pjInlineGroup" stdset="0">
+        <bool>true</bool>
+       </property>
+       <attribute name="buttonGroup">
+        <string>socketModeGroup</string>
+       </attribute>
+      </widget>
+     </item>
+     <item>
+      <widget class="QRadioButton" name="radioBind">
+       <property name="text">
+        <string>Bind (accept connections)</string>
+       </property>
+       <property name="pjInlineGroup" stdset="0">
+        <bool>true</bool>
+       </property>
+       <attribute name="buttonGroup">
+        <string>socketModeGroup</string>
+       </attribute>
+      </widget>
+     </item>
+     <item>
+      <spacer name="socketModeSpacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>0</width>
+         <height>0</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+    </layout>
    </item>
    <item>
     <layout class="QGridLayout" name="gridLayout" columnstretch="0,2,1">
@@ -180,9 +207,9 @@
    <item>
     <layout class="QHBoxLayout" name="subscriptionRow">
      <property name="spacing"><number>6</number></property>
-     <property name="leftMargin"><number>9</number></property>
+     <property name="leftMargin"><number>8</number></property>
      <property name="topMargin"><number>6</number></property>
-     <property name="rightMargin"><number>9</number></property>
+     <property name="rightMargin"><number>8</number></property>
      <property name="bottomMargin"><number>6</number></property>
      <item>
       <widget class="QLabel" name="labelSubscriptionPrefixes">
@@ -215,10 +242,10 @@
     <widget class="QWidget" name="buttonBoxWrap" native="true">
      <layout class="QVBoxLayout" name="buttonBoxWrapLayout">
       <property name="spacing"><number>0</number></property>
-      <property name="leftMargin"><number>9</number></property>
+      <property name="leftMargin"><number>8</number></property>
       <property name="topMargin"><number>0</number></property>
-      <property name="rightMargin"><number>9</number></property>
-      <property name="bottomMargin"><number>9</number></property>
+      <property name="rightMargin"><number>8</number></property>
+      <property name="bottomMargin"><number>8</number></property>
    <item>
     <widget class="QDialogButtonBox" name="buttonBox">
      <property name="orientation">

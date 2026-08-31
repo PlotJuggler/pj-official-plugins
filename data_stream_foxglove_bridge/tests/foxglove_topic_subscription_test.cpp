@@ -217,10 +217,24 @@ TEST(FilteredAdvertisedTopicsTest, LiveSubscriptionToNewlyFilteredTopicIsDropped
 TEST(FilteredAdvertisedTopicsTest, UnsupportedChannelIsExcludedRegardlessOfFilter) {
   std::map<uint64_t, ChannelInfo> advertised;
   advertised[3] = supportedChannel(3, "/ok");
-  advertised[4].id = 4;  // default-constructed → empty schema_name → unsupported
+  advertised[4].id = 4;  // default-constructed → empty encoding → unsupported
   advertised[4].topic = "/unsupported";
 
   EXPECT_EQ(filteredAdvertisedTopics(advertised, {}).size(), 1U);
+}
+
+TEST(FilteredAdvertisedTopicsTest, JsonChannelIsAdvertised) {
+  // LeRobot-style schemaless-typed json channel reaches the reconcilable map.
+  std::map<uint64_t, ChannelInfo> advertised;
+  advertised[5].id = 5;
+  advertised[5].topic = "/observation/state";
+  advertised[5].encoding = "json";
+  advertised[5].schema_encoding = "jsonschema";
+  advertised[5].schema = R"({"type":"object"})";
+
+  const auto advertised_topics = filteredAdvertisedTopics(advertised, {});
+  ASSERT_EQ(advertised_topics.size(), 1U);
+  EXPECT_EQ(advertised_topics.at(5), "/observation/state");
 }
 
 }  // namespace

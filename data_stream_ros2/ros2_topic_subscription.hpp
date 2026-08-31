@@ -18,8 +18,8 @@
 
 #include <algorithm>
 #include <map>
-#include <pj_streaming/dialog_utils.hpp>
-#include <pj_streaming/latest_value_slot.hpp>
+#include <pj_plugins/sdk/streaming_dialog.hpp>
+#include <pj_plugins/sdk/streaming_source.hpp>
 #include <set>
 #include <string>
 #include <utility>
@@ -37,7 +37,7 @@ namespace ros2_streamer {
 /// only the MOST RECENT write matters. The poll thread drains it with take(),
 /// which atomically hands over whatever is pending and resets the slot to empty
 /// (nullopt), so a poll pass that finds nothing new is a cheap no-op.
-using DesiredTopicsSlot = pj::streaming::LatestValueSlot<std::set<std::string>>;
+using DesiredTopicsSlot = PJ::sdk::LatestValueSlot<std::set<std::string>>;
 
 /// Result of computeRos2SubscriptionDiff: which live subscriptions to drop and
 /// which discoverable topics to newly subscribe, to reconcile the source's
@@ -101,7 +101,7 @@ struct SubscriptionDiff {
 /// selected). Mirrors PJ::FoxgloveProtocol::passesAdvertiseFilter.
 [[nodiscard]] inline bool passesAdvertiseFilter(
     const std::string& topic, const std::vector<std::pair<std::string, std::string>>& selection) {
-  return pj::streaming::passesSelectionFilter(
+  return PJ::sdk::passesSelectionFilter(
       topic, selection, [](const auto& value) -> const std::string& { return value.first; });
 }
 

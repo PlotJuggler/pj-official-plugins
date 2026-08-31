@@ -1,7 +1,8 @@
 #include <cctype>
 #include <cstdint>
 #include <functional>
-#include <pj_array_policy/array_policy.hpp>
+#include <pj_base/sdk/text_utils.hpp>
+#include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -61,9 +62,7 @@ bool parseStringAsDouble(const std::string& str, double& value, bool remove_suff
   }
 
   if (parse_boolean && str.size() >= 4 && str.size() <= 5) {
-    std::string lower = str;
-    std::transform(
-        lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const std::string lower = PJ::sdk::lowerAscii(str);
     if (lower == "true") {
       value = 1.0;
       return true;
@@ -155,9 +154,14 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kVideoFrame,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseCompressedVideo}},
+      // A promoted cloud is consumed as a 3D object; its scalar route exists to
+      // keep the message plottable on a time axis, not to mirror the message.
+      // parseScalarsDiscardingLargeArrays would run a full introspection walk
+      // per message to yield mostly per-PointField noise, so the route is a slim
+      // hand-written read of the header + the measured point count instead.
       {"sensor_msgs/PointCloud2",
        {.object_type = ObjectType::kPointCloud,
-        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_scalars = &RosParser::parsePointCloud2Scalars,
         .parse_object = &RosParser::parsePointCloud}},
       // sensor_msgs/LaserScan — eagerly projected to a canonical PointCloud via
       // the shared pj_laser_scan projector (cos/sin LUT cached per scanner
@@ -169,17 +173,22 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
         .parse_scalars = &RosParser::parseScalarsGeneric,
         .parse_object = &RosParser::parseLaserScan}},
       // foxglove_msgs/CompressedPointCloud — opaque compressed cloud (draco/cloudini/…).
-      // The parser repackages the blob + format; it does not decode. The scalar
-      // route keeps frame_id / format plottable while discarding the data[] blob.
+      // The parser repackages the blob + format; it does not decode. Its scalar
+      // route reads the BARE builtin_interfaces/Time head (this schema has no
+      // std_msgs/Header) and emits /timestamp + /frame_id; the compressed wire
+      // format carries no point count.
       {"foxglove_msgs/CompressedPointCloud",
        {.object_type = ObjectType::kCompressedPointCloud,
-        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_scalars = &RosParser::parseFoxgloveCompressedPointCloudScalars,
         .parse_object = &RosParser::parseFoxgloveCompressedPointCloud}},
       // point_cloud_interfaces/CompressedPointCloud2 — the point_cloud_transport
-      // canonical compressed message. Same dual route as above.
+      // canonical compressed message. Header-only scalar route: the payload is a
+      // compressed blob, so no point count can be MEASURED from it (compressed
+      // size / point_step is meaningless), and the declared width * height would
+      // be a claim, not a measurement.
       {"point_cloud_interfaces/CompressedPointCloud2",
        {.object_type = ObjectType::kCompressedPointCloud,
-        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_scalars = &RosParser::parseHeaderOnlyScalars,
         .parse_object = &RosParser::parseCompressedPointCloud2}},
       // TF keeps its specialized scalar flattening (handleTFMessage) AND emits a
       // canonical FrameTransforms object for the 3D scene's TF buffer.
@@ -210,9 +219,13 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
       // parseScalarsObjectOnly returns an empty row so the SceneEntities object
       // ingests under ANY policy. One SceneEntity per Marker (ADD/MODIFY) or a
       // SceneEntityDeletion (DELETE/DELETEALL) — see MARKER_NOTES.md.
+      //
+      // A single Marker DOES lead with a std_msgs/Header, so its scalar route
+      // reads it and emits the header series (a MarkerArray has no top-level
+      // header — only its elements do — and keeps the empty route).
       {"visualization_msgs/Marker",
        {.object_type = ObjectType::kSceneEntities,
-        .parse_scalars = &RosParser::parseScalarsObjectOnly,
+        .parse_scalars = &RosParser::parseHeaderOnlyScalars,
         .parse_object = &RosParser::parseMarker}},
       {"visualization_msgs/MarkerArray",
        {.object_type = ObjectType::kSceneEntities,
@@ -488,7 +501,7 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
 
 std::string RosParser::saveConfig() const {
   nlohmann::json cfg;
-  pj::array_policy::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), !discard_large_arrays_);
+  PJ::sdk::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), !discard_large_arrays_);
   cfg["use_embedded_timestamp"] = use_embedded_timestamp_;
   cfg["boolean_strings_to_number"] = boolean_strings_to_number_;
   cfg["remove_suffix_from_strings"] = remove_suffix_from_strings_;
@@ -506,9 +519,9 @@ PJ::Status RosParser::loadConfig(std::string_view config_json) {
     return PJ::okStatus();
   }
 
-  const auto array_limit = pj::array_policy::arrayLimitFromJson(cfg);
+  const auto array_limit = PJ::sdk::arrayLimitFromJson(cfg);
   max_array_size_ = array_limit.max_size;
-  discard_large_arrays_ = (array_limit.policy == pj::array_policy::ArrayPolicy::kSkip);
+  discard_large_arrays_ = (array_limit.policy == PJ::sdk::ArrayPolicy::kSkip);
   use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
   boolean_strings_to_number_ = cfg.value("boolean_strings_to_number", false);
   remove_suffix_from_strings_ = cfg.value("remove_suffix_from_strings", false);
@@ -641,6 +654,58 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsObjec
 }
 
 // ---------------------------------------------------------------------------
+// Shared plumbing for the slim direct-CDR scalar routes (the hand-written
+// header/metadata walkers that back the object-bearing schemas). Same setup and
+// harvest halves as wrapVoidHandler, minus the introspection parser: these
+// routes never need a compiled schema, only the deserializer.
+// ---------------------------------------------------------------------------
+
+void RosParser::beginDirectScalarRead(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+  ensureDeserializer();
+  owned_fields_.clear();
+  string_storage_.clear();
+  named_fields_.clear();
+  current_timestamp_ = ts;
+  deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()));
+}
+
+std::vector<PJ::sdk::NamedFieldValue> RosParser::harvestOwnedFields() const {
+  std::vector<PJ::sdk::NamedFieldValue> out;
+  out.reserve(owned_fields_.size());
+  for (const auto& f : owned_fields_) {
+    out.push_back({.name = f.name, .value = f.value});
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Header-only scalar route, for object-bearing schemas whose payload has nothing
+// plottable of its own but does lead with a std_msgs/Header:
+//
+//   visualization_msgs/Marker                       — pure 3D scene content.
+//   point_cloud_interfaces/CompressedPointCloud2    — the cloud is an opaque
+//       compressed blob, so no point count can be measured from it: the
+//       compressed byte size divided by point_step is meaningless, and
+//       width * height would be the producer's claim rather than a measurement
+//       (the uncompressed PointCloud2 route emits a real count instead).
+//
+// The route also has to exist at all: an object-only entry (no parse_scalars)
+// makes the host's eager-scalar ingest abort the push on any non-kPureLazy
+// policy, and the canonical object never reaches the ObjectStore.
+// ---------------------------------------------------------------------------
+
+PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseHeaderOnlyScalars(
+    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+  try {
+    beginDirectScalarRead(ts, payload);
+    emitHeader(readHeader());
+    return harvestOwnedFields();
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("header scalars: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Setup helpers
 // ---------------------------------------------------------------------------
 
@@ -741,14 +806,28 @@ PJ::Status RosParser::emitRecord(PJ::Timestamp ts) {
 
 RosParser::HeaderData RosParser::readHeader() {
   HeaderData h;
+  // The stamp's `sec` word has a DIFFERENT SIGNEDNESS on the two wires, and the
+  // raw 4 bytes are identical either way — only the interpretation differs:
+  //   ROS 1  std_msgs/Header { uint32 seq; time stamp; ... }
+  //          ros::Time.sec is UINT32.
+  //   ROS 2  std_msgs/Header { builtin_interfaces/Time stamp; ... }  (no seq)
+  //          builtin_interfaces/Time.sec is INT32.
+  // Reading the ROS 2 word as unsigned turned any negative stamp into ~4.29e9
+  // (a 2106-ish date), which is not a rounding artifact but a wholly wrong
+  // value: negative stamps are legal and do occur (pre-epoch or relative clocks).
   if (!deserializer_->isROS2()) {
     h.seq = deserializer_->deserializeUInt32();
+    h.sec = static_cast<int64_t>(deserializer_->deserializeUInt32());
+  } else {
+    h.sec = static_cast<int64_t>(static_cast<int32_t>(deserializer_->deserializeUInt32()));
   }
-  h.sec = deserializer_->deserializeUInt32();
   h.nsec = deserializer_->deserializeUInt32();
 
   if (use_embedded_timestamp_) {
-    int64_t ts_ns = static_cast<int64_t>(h.sec) * 1000000000LL + static_cast<int64_t>(h.nsec);
+    const int64_t ts_ns = h.sec * 1000000000LL + static_cast<int64_t>(h.nsec);
+    // A non-positive stamp means "unset" (or a pre-epoch clock we cannot file
+    // rows under), so the embedded clock is not adopted — unchanged behavior,
+    // and it is what keeps a now-correctly-negative sec from being adopted.
     if (ts_ns > 0) {
       current_timestamp_ = ts_ns;
     }
@@ -756,6 +835,20 @@ RosParser::HeaderData RosParser::readHeader() {
 
   deserializer_->deserializeString(h.frame_id);
   return h;
+}
+
+int64_t RosParser::readBareTime() {
+  // builtin_interfaces/Time { int32 sec; uint32 nanosec }. Signed on every wire
+  // that carries it: this is a ROS 2 type, and the foxglove_msgs schemas that
+  // embed it bare (CompressedVideo / CompressedPointCloud / PosesInFrame) are
+  // ROS 2 only. Same signedness trap as the ROS 2 branch of readHeader().
+  const int32_t sec = static_cast<int32_t>(deserializer_->deserializeUInt32());
+  const uint32_t nsec = deserializer_->deserializeUInt32();
+  const int64_t ts_ns = static_cast<int64_t>(sec) * 1000000000LL + static_cast<int64_t>(nsec);
+  if (use_embedded_timestamp_ && ts_ns > 0) {
+    current_timestamp_ = ts_ns;
+  }
+  return ts_ns;
 }
 
 void RosParser::emitHeader(const HeaderData& h) {

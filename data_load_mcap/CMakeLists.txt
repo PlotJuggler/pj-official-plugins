@@ -14,7 +14,6 @@ target_compile_options(mcap_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(mcap_source_plugin SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
 target_link_libraries(mcap_source_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json LZ4::lz4_static zstd::libzstd_static
-  pj_array_policy
 )
 
 pj_embed_ui(mcap_source_plugin
@@ -72,3 +71,7 @@ target_link_libraries(message_byte_store_test PRIVATE
   LZ4::lz4_static zstd::libzstd_static GTest::gtest_main Threads::Threads
 )
 add_test(NAME message_byte_store_test COMMAND message_byte_store_test)
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(mcap_source_plugin
+  REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable)

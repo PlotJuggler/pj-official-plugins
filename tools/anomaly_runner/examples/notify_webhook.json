@@ -1,0 +1,11 @@
+{
+  "_comment": "HTTP POST the report to a URL. ${WH_TOKEN} is read from the environment (export it first), proving secrets stay out of the file. Start examples/webhook_listener.py to receive it.",
+  "notify_on": "fail",
+  "sinks": [
+    {
+      "type": "webhook",
+      "url": "http://127.0.0.1:8731/hook",
+      "headers": { "Authorization": "Bearer ${WH_TOKEN}" }
+    }
+  ]
+}

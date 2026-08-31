@@ -108,11 +108,11 @@ struct FakeHost {
       void*, PJ_topic_handle_t, PJ_string_view_t, PJ_primitive_type_t, PJ_field_handle_t*, PJ_error_t*) PJ_NOEXCEPT {
     return false;
   }
-  static bool appendRecord(void*, PJ_topic_handle_t, int64_t, const PJ_named_field_value_t*, size_t, PJ_error_t*)
+  static bool appendRecord(void*, PJ_topic_handle_t, int64_t, const PJ_named_field_value_t*, uint64_t, PJ_error_t*)
       PJ_NOEXCEPT {
     return false;
   }
-  static bool appendBoundRecord(void*, PJ_topic_handle_t, int64_t, const PJ_bound_field_value_t*, size_t, PJ_error_t*)
+  static bool appendBoundRecord(void*, PJ_topic_handle_t, int64_t, const PJ_bound_field_value_t*, uint64_t, PJ_error_t*)
       PJ_NOEXCEPT {
     return false;
   }
@@ -148,7 +148,7 @@ struct FakeHost {
     out_handle->id = id;
     return true;
   }
-  static bool pushOwnedObject(void*, PJ_object_topic_handle_t, int64_t, const uint8_t*, size_t, PJ_error_t*)
+  static bool pushOwnedObject(void*, PJ_object_topic_handle_t, int64_t, const uint8_t*, uint64_t, PJ_error_t*)
       PJ_NOEXCEPT {
     return true;
   }

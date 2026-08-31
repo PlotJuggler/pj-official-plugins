@@ -54,7 +54,7 @@ function(configure_parser_ros_target TARGET)
   target_compile_features(${TARGET} PRIVATE cxx_std_20)
   target_compile_options(${TARGET} PRIVATE ${PJ_WARNING_FLAGS})
   target_link_libraries(${TARGET} PRIVATE
-    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json rosx_introspection data_tamer_parser pj_array_policy
+    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json rosx_introspection data_tamer_parser
     pj_laser_scan pj_pointcloud_color)
 endfunction()
 
@@ -127,3 +127,7 @@ if(benchmark_FOUND)
   target_link_libraries(ros_parser_bench PRIVATE
     plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host rosx_introspection benchmark::benchmark)
 endif()
+
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
+pj_harden_plugin_exports(parser_ros_plugin
+  REQUIRED_EXPORTS PJ_get_message_parser_vtable PJ_get_dialog_vtable)
