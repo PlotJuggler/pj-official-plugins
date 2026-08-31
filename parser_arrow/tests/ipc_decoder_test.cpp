@@ -141,20 +141,45 @@ TEST(IpcDecoderTest, DecodesZstdCompressedBodies) {
   verifyFlatBatch(schema.get(), batch.get(), 0, 3);
 }
 
+/// Compression pre-scan and decoding both advance across multiple zstd batches.
+TEST(IpcDecoderTest, DecodesMultipleZstdCompressedBodies) {
+  const auto bytes = test::readFile(fixturePath("flat_two_batches_zstd.arrows"));
+  auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
+  ASSERT_TRUE(decoded) << decoded.error();
+  auto stream = std::move(*decoded);
+
+  PJ::sdk::ArrowSchemaHolder schema;
+  ASSERT_EQ(stream.get()->get_schema(stream.get(), schema.out()), NANOARROW_OK)
+      << ArrowArrayStreamGetLastError(stream.get());
+  PJ::sdk::ArrowArrayHolder batch;
+  ASSERT_EQ(stream.get()->get_next(stream.get(), batch.out()), NANOARROW_OK)
+      << ArrowArrayStreamGetLastError(stream.get());
+  ASSERT_TRUE(batch.valid());
+  verifyFlatBatch(schema.get(), batch.get(), 0, 2);
+
+  ASSERT_EQ(stream.get()->get_next(stream.get(), batch.out()), NANOARROW_OK)
+      << ArrowArrayStreamGetLastError(stream.get());
+  ASSERT_TRUE(batch.valid());
+  verifyFlatBatch(schema.get(), batch.get(), 2, 1);
+  batch.reset();
+  verifyEndOfStream(stream.get());
+}
+
 /// Lz4-compressed bodies are rejected with an actionable codec name.
 TEST(IpcDecoderTest, RejectsLz4CompressedBodiesWithClearError) {
   const auto bytes = test::readFile(fixturePath("flat_lz4.arrows"));
-  auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
-  if (!decoded) {
-    EXPECT_TRUE(containsLz4(decoded.error())) << decoded.error();
-    return;
-  }
+  const auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
+  ASSERT_FALSE(decoded);
+  EXPECT_TRUE(containsLz4(decoded.error())) << decoded.error();
+}
 
-  auto stream = std::move(*decoded);
-  PJ::sdk::ArrowArrayHolder batch;
-  const int result = stream.get()->get_next(stream.get(), batch.out());
-  ASSERT_NE(result, NANOARROW_OK) << "nanoarrow unexpectedly decoded an lz4-compressed body";
-  EXPECT_TRUE(containsLz4(ArrowArrayStreamGetLastError(stream.get()))) << ArrowArrayStreamGetLastError(stream.get());
+/// Dictionary fields are rejected during decode, before the first DictionaryBatch is pulled.
+TEST(IpcDecoderTest, RejectsDictionaryEncodedColumnsAtDecodeTime) {
+  const auto bytes = test::readFile(fixturePath("dictionary.arrows"));
+  const auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
+  ASSERT_FALSE(decoded);
+  EXPECT_NE(decoded.error().find("dictionary"), std::string::npos) << decoded.error();
+  EXPECT_NE(decoded.error().find("DictionaryBatch"), std::string::npos) << decoded.error();
 }
 
 /// Empty payloads are rejected before constructing a stream.

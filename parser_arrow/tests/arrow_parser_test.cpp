@@ -181,8 +181,8 @@ TEST(ArrowParserTest, FlattensNestedStructsForHostIngest) {
   expectOnlyArrowWrites(fixture.arrow_write_host, 1);
 }
 
-/// Configuration can preserve a top-level struct instead of flattening it.
-TEST(ArrowParserTest, PreservesNestedStructWhenFlatteningIsDisabled) {
+/// Configuration can preserve struct boundaries while removing the unsupported struct column.
+TEST(ArrowParserTest, RemovesNestedStructWhenFlatteningIsDisabled) {
   ArrowParserFixture fixture;
   fixture.setUp();
   ASSERT_TRUE(fixture.handle.loadConfig(R"({"flatten_structs":false})"));
@@ -191,8 +191,9 @@ TEST(ArrowParserTest, PreservesNestedStructWhenFlatteningIsDisabled) {
 
   ASSERT_EQ(fixture.arrow_write_host.streams().size(), 1);
   const auto& stream = fixture.arrow_write_host.streams()[0];
-  EXPECT_NE(std::find(stream.schema_names.begin(), stream.schema_names.end(), "pose"), stream.schema_names.end());
-  EXPECT_EQ(formatFor(stream, "pose"), "+s");
+  EXPECT_EQ(stream.schema_names, (std::vector<std::string>{"timestamp_ns", "speed"}));
+  EXPECT_EQ(formatFor(stream, "pose"), "");
+  EXPECT_EQ(stream.batch_row_counts, (std::vector<int64_t>{3}));
   expectOnlyArrowWrites(fixture.arrow_write_host, 1);
 }
 
@@ -292,6 +293,9 @@ TEST(ArrowParserTest, ReportsDroppedColumnsWhenSchemaSetChanges) {
 
   auto status = parseFixture(fixture, "nested_dropped_scalars.arrows");
   ASSERT_TRUE(status) << status.error();
+  ASSERT_EQ(fixture.arrow_write_host.streams().size(), 1);
+  EXPECT_EQ(fixture.arrow_write_host.streams()[0].schema_names, (std::vector<std::string>{"timestamp_ns", "value"}));
+  EXPECT_EQ(fixture.arrow_write_host.streams()[0].batch_row_counts, (std::vector<int64_t>{3}));
   ASSERT_EQ(fixture.runtime_host.diagnostics().size(), 1);
   const auto& first_diagnostic = fixture.runtime_host.diagnostics()[0];
   EXPECT_EQ(first_diagnostic.level, PJ::sdk::ParserDiagnosticLevel::Warning);
@@ -312,6 +316,28 @@ TEST(ArrowParserTest, ReportsDroppedColumnsWhenSchemaSetChanges) {
   ASSERT_TRUE(status) << status.error();
   EXPECT_EQ(fixture.runtime_host.diagnostics().size(), 2);
   expectOnlyArrowWrites(fixture.arrow_write_host, 4);
+}
+
+/// A nullable struct's unsupported list leaf is removed without blocking ingestion of its string sibling.
+TEST(ArrowParserTest, ParsesNullableStructAfterRemovingDroppedListLeaf) {
+  ArrowParserFixture fixture;
+  fixture.setUp(true, true);
+
+  const auto status = parseFixture(fixture, "nullable_struct_list.arrows");
+  ASSERT_TRUE(status) << status.error();
+  ASSERT_EQ(fixture.arrow_write_host.streams().size(), 1);
+  const auto& stream = fixture.arrow_write_host.streams()[0];
+  EXPECT_EQ(stream.schema_names, (std::vector<std::string>{"timestamp_ns", "value", "metadata/note"}));
+  EXPECT_EQ(stream.batch_row_counts, (std::vector<int64_t>{3}));
+  EXPECT_EQ(stream.timestamp_values, (std::vector<int64_t>{1000, 2000, 3000}));
+  ASSERT_EQ(fixture.runtime_host.diagnostics().size(), 1);
+  const auto& diagnostic = fixture.runtime_host.diagnostics()[0];
+  EXPECT_EQ(diagnostic.level, PJ::sdk::ParserDiagnosticLevel::Warning);
+  EXPECT_EQ(diagnostic.stable_code, "parser_arrow.dropped_columns");
+  EXPECT_EQ(diagnostic.occurrences, 1);
+  EXPECT_NE(diagnostic.message.find("removed from the Arrow stream"), std::string::npos);
+  EXPECT_NE(diagnostic.message.find("metadata/samples:+l"), std::string::npos);
+  expectOnlyArrowWrites(fixture.arrow_write_host, 1);
 }
 
 /// Dropped columns remain non-fatal when the optional runtime service is absent.

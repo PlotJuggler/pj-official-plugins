@@ -21,7 +21,7 @@ struct ShapeOptions {
   int64_t synthetic_interval_ns = 0;
 };
 
-/// One final output column whose type the current PlotJuggler host silently skips.
+/// One source column removed because its final type is not ingestible by the current PlotJuggler host.
 struct DroppedColumn {
   /// Final output name after flattening and empty-name substitution.
   std::string name;
@@ -37,11 +37,11 @@ struct ShapedStream {
   std::string timestamp_column;
   /// Whether timestamp_ns was synthesized and prepended.
   bool synthesized_timestamp = false;
-  /// Final output columns retained in the stream even though the current host skips them.
+  /// Unsupported source columns removed from the shaped stream and reported to the caller.
   std::vector<DroppedColumn> dropped_columns;
 };
 
-/// Observable summary of timestamp resolution, rewrites, and host-skipped final columns.
+/// Observable summary of timestamp resolution, rewrites, and removed unsupported columns.
 struct ShapePlan {
   /// Whether output schemas or arrays change beyond validation-only timestamp scanning.
   bool needs_rewrite = false;
@@ -49,7 +49,7 @@ struct ShapePlan {
   std::string timestamp_column;
   /// Whether the rewrite prepends a synthetic timestamp_ns column.
   bool synthesize_timestamp = false;
-  /// Final output columns retained in the stream even though the current host skips them.
+  /// Unsupported source columns that will be removed from the shaped stream.
   std::vector<DroppedColumn> dropped_columns;
 };
 
@@ -62,7 +62,8 @@ struct ShapePlan {
 /// Explicit timestamp names must exist. Resolved timestamps accept int32/int64/uint32/uint64 ticks, float/double
 /// seconds, or Arrow timestamps; shapeStream() emits each as non-null int64 nanoseconds. Every Arrow timestamp
 /// column is scaled to int64 nanoseconds. String/binary views and large string/binary are normalized to u/z.
-/// Unsupported final data columns are listed in dropped_columns, and a schema with no host-ingestible data fails.
+/// Unsupported final data columns are removed and listed in dropped_columns; a schema with no host-ingestible data
+/// fails.
 [[nodiscard]] PJ::Expected<ShapePlan> planShape(const ArrowSchema* schema, const ShapeOptions& options);
 
 /// Lazily rewrite a decoded IPC stream while moving untouched columns and copying only casts, normalizations, and

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -27,8 +28,39 @@ namespace {
   return parserError(std::error_code(result, std::generic_category()).message());
 }
 
-/// Inspect IPC message metadata without consuming record-batch bodies.
-PJ::Status rejectUnsupportedCompression(PJ::Span<const uint8_t> bytes) {
+/// Build the producer-facing rejection for a dictionary-encoded field; `name` may be empty when the IPC decoder
+/// refuses the schema before the field can be identified.
+[[nodiscard]] std::string dictionaryError(std::string_view name) {
+  const std::string subject = name.empty() ? std::string("a dictionary-encoded column")
+                                           : "dictionary-encoded column '" + std::string(name) + "'";
+  return "parser_arrow: " + subject +
+         " is not supported (nanoarrow_ipc 0.7 cannot decode DictionaryBatch messages); producers must decode "
+         "dictionaries before encoding";
+}
+
+/// Find the first dictionary-encoded field in a decoded Arrow C schema.
+[[nodiscard]] std::optional<std::string> findDictionaryColumn(
+    const ArrowSchema* schema, std::string_view parent_name = {}) {
+  if (schema == nullptr) {
+    return std::nullopt;
+  }
+  const std::string_view field_name = schema->name != nullptr ? std::string_view(schema->name) : std::string_view{};
+  const std::string full_name = parent_name.empty() || field_name.empty()
+                                    ? std::string(field_name.empty() ? parent_name : field_name)
+                                    : std::string(parent_name) + "/" + std::string(field_name);
+  if (schema->dictionary != nullptr) {
+    return full_name.empty() ? std::optional<std::string>("<unnamed>") : std::optional<std::string>(full_name);
+  }
+  for (int64_t index = 0; index < schema->n_children; ++index) {
+    if (auto dictionary = findDictionaryColumn(schema->children[index], full_name); dictionary.has_value()) {
+      return dictionary;
+    }
+  }
+  return std::nullopt;
+}
+
+/// Preflight IPC message metadata without consuming record-batch bodies.
+PJ::Status rejectUnsupportedIpcFeatures(PJ::Span<const uint8_t> bytes) {
   ArrowIpcDecoder decoder{};
   const int init_result = ArrowIpcDecoderInit(&decoder);
   if (init_result != NANOARROW_OK) {
@@ -96,7 +128,7 @@ PJ::Expected<PJ::sdk::ArrowStreamHolder> decodeIpcStream(PJ::Span<const uint8_t>
     return PJ::unexpected("parser_arrow: Arrow IPC payload is too large");
   }
 
-  if (auto status = rejectUnsupportedCompression(bytes); !status) {
+  if (auto status = rejectUnsupportedIpcFeatures(bytes); !status) {
     return PJ::unexpected(std::move(status).error());
   }
 
@@ -131,6 +163,11 @@ PJ::Expected<PJ::sdk::ArrowStreamHolder> decodeIpcStream(PJ::Span<const uint8_t>
   const int schema_result = stream.get()->get_schema(stream.get(), schema.out());
   if (schema_result != NANOARROW_OK) {
     const char* stream_error = ArrowArrayStreamGetLastError(stream.get());
+    if (stream_error != nullptr && std::string_view(stream_error).find("DictionaryEncoding") != std::string::npos) {
+      // nanoarrow rejects dictionary fields while converting the IPC schema (ipc/decoder.c: "Schema message field
+      // with DictionaryEncoding not supported"); it does not tell us which field.
+      return PJ::unexpected(dictionaryError({}));
+    }
     std::string diagnostic = nanoarrowError(schema_result, stream_error);
     if (stream_error != nullptr &&
         std::string_view(stream_error).find("Unrecognized Field type") != std::string::npos) {
@@ -139,6 +176,9 @@ PJ::Expected<PJ::sdk::ArrowStreamHolder> decodeIpcStream(PJ::Span<const uint8_t>
           "utf8/binary before encoding)";
     }
     return PJ::unexpected(std::move(diagnostic));
+  }
+  if (auto dictionary_name = findDictionaryColumn(schema.get()); dictionary_name.has_value()) {
+    return PJ::unexpected(dictionaryError(*dictionary_name));
   }
 
   return stream;

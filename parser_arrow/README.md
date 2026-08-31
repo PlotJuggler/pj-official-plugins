@@ -15,7 +15,7 @@ Configuration is a JSON object:
 | Key | Type | Default | Semantics |
 |-----|------|---------|-----------|
 | `timestamp_column` | string | `""` | Non-empty: use this exact top-level field as the time axis; an absent field is an error. Empty: auto-detect an axis, then synthesize one if none is found. |
-| `flatten_structs` | bool | `true` | Flatten nested structs depth-first to slash-separated leaf names. `false` preserves top-level struct columns, which the current host skips. |
+| `flatten_structs` | bool | `true` | Flatten nested structs depth-first to slash-separated leaf names. `false` preserves struct boundaries while unsupported top-level struct columns are removed. |
 | `synthetic_interval_ns` | int64 | `0` | When an axis is synthesized, add this many nanoseconds per row. Zero gives every row the message timestamp; negative intervals are allowed. The row index continues across record batches. |
 
 The top-level JSON value must be an object; unknown keys are ignored.
@@ -61,12 +61,17 @@ which would discard the transport message time.
   level. Duplicate output names after flattening and substitution are errors.
 
 The current PlotJuggler host ingests `int8` through `int64`, `uint8` through
-`uint64`, `float`, `double`, `bool`, and `utf8`. It therefore skips lists,
-binary, dictionary, decimal, date/time/duration, maps/unions, and unflattened
-struct columns. The parser retains those columns in the shaped stream and, when
-parser runtime diagnostics are available, reports each unchanged dropped set
-once as `parser_arrow.dropped_columns`. A schema with no host-ingestible data
-column other than its timestamp axis is rejected.
+`uint64`, `float`, `double`, `bool`, and `utf8`. Lists, binary, decimal,
+date/time/duration, maps/unions, and unflattened struct columns are removed from
+the shaped stream and reported. When parser runtime diagnostics are available,
+the parser reports each unchanged dropped set once as
+`parser_arrow.dropped_columns`. A schema with no host-ingestible data column
+other than its timestamp axis is rejected. The selected timestamp axis is never
+droppable.
+
+Dictionary-encoded fields are rejected at decode time with the field name.
+`nanoarrow_ipc` 0.7 cannot decode `DictionaryBatch` messages; producers must
+decode dictionaries before encoding the IPC stream.
 
 ## Compression
 
@@ -85,6 +90,7 @@ bound by the transport to `parser_ros`, not `parser_arrow`.
 - Encode one complete Arrow IPC stream per message, not an IPC file.
 - Prefer an explicit int64-nanosecond timestamp column and configure its name.
 - Cast view types before IPC encoding.
+- Decode dictionary-encoded columns before IPC encoding.
 - Do not use LZ4 compression.
 - Use flat columns or nested struct columns only.
 - Use one topic per parser binding.

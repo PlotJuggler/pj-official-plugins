@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -284,6 +285,36 @@ TEST(TableShaperTest, RepeatsAnchorWhenSyntheticIntervalIsZero) {
   }
 }
 
+/// Positive synthetic sequences report the exact overflowing stream row.
+TEST(TableShaperTest, ReportsPositiveSyntheticTimestampOverflow) {
+  ShapeOptions options;
+  options.message_timestamp_ns = std::numeric_limits<int64_t>::max();
+  options.synthetic_interval_ns = 1;
+  auto shaped = shapeStream(decodeFixture("no_timestamp.arrows"), options);
+  ASSERT_TRUE(shaped) << shaped.error();
+
+  PJ::sdk::ArrowArrayHolder batch;
+  EXPECT_EQ(shaped->stream.get()->get_next(shaped->stream.get(), batch.out()), ERANGE);
+  EXPECT_NE(
+      std::string(ArrowArrayStreamGetLastError(shaped->stream.get())).find("synthetic timestamp overflow at row 1"),
+      std::string::npos);
+}
+
+/// Negative synthetic sequences report underflow with the same row-specific diagnostic.
+TEST(TableShaperTest, ReportsNegativeSyntheticTimestampOverflow) {
+  ShapeOptions options;
+  options.message_timestamp_ns = std::numeric_limits<int64_t>::min();
+  options.synthetic_interval_ns = -1;
+  auto shaped = shapeStream(decodeFixture("no_timestamp.arrows"), options);
+  ASSERT_TRUE(shaped) << shaped.error();
+
+  PJ::sdk::ArrowArrayHolder batch;
+  EXPECT_EQ(shaped->stream.get()->get_next(shaped->stream.get(), batch.out()), ERANGE);
+  EXPECT_NE(
+      std::string(ArrowArrayStreamGetLastError(shaped->stream.get())).find("synthetic timestamp overflow at row 1"),
+      std::string::npos);
+}
+
 /// Typed nanosecond timestamp axes are exposed to the host as int64 nanoseconds.
 TEST(TableShaperTest, CastsTypedTimestampAxisToInt64Nanoseconds) {
   auto shaped = shapeStream(decodeFixture("timestamp_typed.arrows"), ShapeOptions{});
@@ -406,26 +437,36 @@ TEST(TableShaperTest, AppliesSlicedStructParentOffsetWhenFlattening) {
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[8], 1), 7.5);
 }
 
-/// Disabling flattening passes the struct column through unchanged.
-TEST(TableShaperTest, PreservesStructColumnWhenFlatteningDisabled) {
+/// Disabling flattening removes the unsupported struct while preserving supported siblings.
+TEST(TableShaperTest, RemovesStructColumnWhenFlatteningDisabled) {
   ShapeOptions options;
   options.flatten_structs = false;
   auto shaped = shapeStream(decodeFixture("nested.arrows"), options);
   ASSERT_TRUE(shaped) << shaped.error();
+  ASSERT_EQ(shaped->dropped_columns.size(), 1);
+  EXPECT_EQ(shaped->dropped_columns[0].name, "pose");
+  EXPECT_EQ(shaped->dropped_columns[0].format, "+s");
   auto schema = readSchema(shaped->stream);
-  ASSERT_EQ(schema.get()->n_children, 3);
-  EXPECT_STREQ(schema.get()->children[1]->name, "pose");
-  EXPECT_STREQ(schema.get()->children[1]->format, "+s");
+  ASSERT_EQ(schema.get()->n_children, 2);
+  EXPECT_STREQ(schema.get()->children[0]->name, "timestamp_ns");
+  EXPECT_STREQ(schema.get()->children[1]->name, "speed");
+  auto batch = readBatch(shaped->stream);
+  ScopedArrayView view(schema.get(), batch.get());
+  EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[1], 0), 5.5);
+  EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[1], 2), 7.5);
 }
 
-/// String and binary views normalize to canonical arrays with bytes and nulls preserved.
+/// A string view is normalized while the unsupported normalized binary view is removed.
 TEST(TableShaperTest, NormalizesStringAndBinaryViews) {
   auto shaped = shapeStream(makeViewStream(decodeFixture("views_storage.arrows")), ShapeOptions{});
   ASSERT_TRUE(shaped) << shaped.error();
+  ASSERT_EQ(shaped->dropped_columns.size(), 1);
+  EXPECT_EQ(shaped->dropped_columns[0].name, "blob");
+  EXPECT_EQ(shaped->dropped_columns[0].format, "z");
   auto schema = readSchema(shaped->stream);
-  ASSERT_EQ(schema.get()->n_children, 4);
+  ASSERT_EQ(schema.get()->n_children, 3);
   EXPECT_STREQ(schema.get()->children[1]->format, "u");
-  EXPECT_STREQ(schema.get()->children[2]->format, "z");
+  EXPECT_STREQ(schema.get()->children[2]->name, "value");
 
   auto batch = readBatch(shaped->stream);
   ScopedArrayView view(schema.get(), batch.get());
@@ -433,14 +474,11 @@ TEST(TableShaperTest, NormalizesStringAndBinaryViews) {
   EXPECT_EQ(
       std::string_view(long_label.data, static_cast<std::size_t>(long_label.size_bytes)),
       "this string is longer than twelve bytes");
-  const ArrowBufferView long_blob = ArrowArrayViewGetBytesUnsafe(view.get()->children[2], 1);
-  EXPECT_EQ(
-      std::string_view(long_blob.data.as_char, static_cast<std::size_t>(long_blob.size_bytes)), "0123456789abcdef");
   EXPECT_TRUE(ArrowArrayViewIsNull(view.get()->children[1], 2));
-  EXPECT_TRUE(ArrowArrayViewIsNull(view.get()->children[2], 2));
+  EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[2], 3), 4.25);
 }
 
-/// Canonical-width string and binary formats do not trigger normalization.
+/// Canonical string stays in place while removing canonical binary still forces a rewrite.
 TEST(TableShaperTest, LeavesCanonicalVariableWidthColumnsInPlace) {
   auto schema = makeSchema(
       {{"timestamp_ns", NANOARROW_TYPE_INT64},
@@ -449,27 +487,29 @@ TEST(TableShaperTest, LeavesCanonicalVariableWidthColumnsInPlace) {
        {"value", NANOARROW_TYPE_DOUBLE}});
   auto plan = planShape(schema.get(), ShapeOptions{});
   ASSERT_TRUE(plan) << plan.error();
-  EXPECT_FALSE(plan->needs_rewrite);
+  EXPECT_TRUE(plan->needs_rewrite);
   ASSERT_EQ(plan->dropped_columns.size(), 1);
   EXPECT_EQ(plan->dropped_columns[0].name, "binary");
   EXPECT_EQ(plan->dropped_columns[0].format, "z");
 }
 
-/// Large string/binary offsets are copied into host-compatible canonical-width arrays.
+/// Large string offsets are normalized while normalized large binary is removed.
 TEST(TableShaperTest, NormalizesLargeStringAndBinaryColumns) {
   auto shaped = shapeStream(decodeFixture("large_types.arrows"), ShapeOptions{});
   ASSERT_TRUE(shaped) << shaped.error();
+  ASSERT_EQ(shaped->dropped_columns.size(), 1);
+  EXPECT_EQ(shaped->dropped_columns[0].name, "blob");
+  EXPECT_EQ(shaped->dropped_columns[0].format, "z");
   auto schema = readSchema(shaped->stream);
+  ASSERT_EQ(schema.get()->n_children, 3);
   EXPECT_STREQ(schema.get()->children[1]->format, "u");
-  EXPECT_STREQ(schema.get()->children[2]->format, "z");
+  EXPECT_STREQ(schema.get()->children[2]->name, "value");
   auto batch = readBatch(shaped->stream);
   ScopedArrayView view(schema.get(), batch.get());
   const ArrowStringView label = ArrowArrayViewGetStringUnsafe(view.get()->children[1], 1);
   EXPECT_EQ(std::string_view(label.data, static_cast<std::size_t>(label.size_bytes)), "this is a large string value");
-  const ArrowBufferView blob = ArrowArrayViewGetBytesUnsafe(view.get()->children[2], 1);
-  EXPECT_EQ(std::string_view(blob.data.as_char, static_cast<std::size_t>(blob.size_bytes)), "large binary value");
   EXPECT_TRUE(ArrowArrayViewIsNull(view.get()->children[1], 2));
-  EXPECT_TRUE(ArrowArrayViewIsNull(view.get()->children[2], 2));
+  EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[2], 2), 3.0);
 }
 
 /// Narrow integer timestamp axes are widened to int64 without changing units.
@@ -575,20 +615,21 @@ TEST(TableShaperTest, RejectsNullTimestampCellAndPoisonsStream) {
   EXPECT_EQ(shaped->stream.get()->get_next(shaped->stream.get(), batch.out()), first_result);
 }
 
-/// Host-skipped final output columns are reported while supported data remains ingestible.
+/// Host-skipped final output columns force a rewrite and are reported for diagnostics.
 TEST(TableShaperTest, ReportsDroppedOutputColumns) {
   auto schema =
       makeSchema({{"timestamp_ns", NANOARROW_TYPE_INT64}, {"a", NANOARROW_TYPE_LIST}, {"b", NANOARROW_TYPE_DOUBLE}});
   ASSERT_EQ(ArrowSchemaSetType(schema.get()->children[1]->children[0], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
   auto plan = planShape(schema.get(), ShapeOptions{});
   ASSERT_TRUE(plan) << plan.error();
+  EXPECT_TRUE(plan->needs_rewrite);
   ASSERT_EQ(plan->dropped_columns.size(), 1);
   EXPECT_EQ(plan->dropped_columns[0].name, "a");
   EXPECT_EQ(plan->dropped_columns[0].format, "+l");
 }
 
-/// Nullable flattened date/decimal leaves preserve values and parent nulls even though the host skips them.
-TEST(TableShaperTest, CopiesDroppedScalarLeavesUnderNullableStruct) {
+/// Nullable unsupported scalar leaves are removed while supported siblings retain their values.
+TEST(TableShaperTest, RemovesDroppedScalarLeavesUnderNullableStruct) {
   auto shaped = shapeStream(decodeFixture("nested_dropped_scalars.arrows"), ShapeOptions{});
   ASSERT_TRUE(shaped) << shaped.error();
   ASSERT_EQ(shaped->dropped_columns.size(), 2);
@@ -597,21 +638,42 @@ TEST(TableShaperTest, CopiesDroppedScalarLeavesUnderNullableStruct) {
   EXPECT_EQ(shaped->dropped_columns[1].name, "metadata/amount");
   EXPECT_EQ(shaped->dropped_columns[1].format, "d:10,2");
   auto schema = readSchema(shaped->stream);
-  ASSERT_EQ(schema.get()->n_children, 4);
-  EXPECT_STREQ(schema.get()->children[1]->name, "metadata/date");
-  EXPECT_STREQ(schema.get()->children[2]->name, "metadata/amount");
+  ASSERT_EQ(schema.get()->n_children, 2);
+  EXPECT_STREQ(schema.get()->children[0]->name, "timestamp_ns");
+  EXPECT_STREQ(schema.get()->children[1]->name, "value");
   auto batch = readBatch(shaped->stream);
   ScopedArrayView view(schema.get(), batch.get());
-  EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[1], 0), 18'263);
-  EXPECT_TRUE(ArrowArrayViewIsNull(view.get()->children[1], 1));
-  EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[1], 2), 18'265);
-  ArrowDecimal amount{};
-  ArrowDecimalInit(&amount, 128, 10, 2);
-  ArrowArrayViewGetDecimalUnsafe(view.get()->children[2], 0, &amount);
-  EXPECT_EQ(ArrowDecimalGetIntUnsafe(&amount), 1234);
+  EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[1], 0), 1.0);
+  EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[1], 1), 2.0);
+  EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[1], 2), 3.0);
+}
+
+/// A dropped list under a nullable struct cannot poison copying of the retained string leaf.
+TEST(TableShaperTest, RemovesDroppedListUnderNullableStruct) {
+  auto shaped = shapeStream(decodeFixture("nullable_struct_list.arrows"), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  ASSERT_EQ(shaped->dropped_columns.size(), 1);
+  EXPECT_EQ(shaped->dropped_columns[0].name, "metadata/samples");
+  EXPECT_EQ(shaped->dropped_columns[0].format, "+l");
+
+  auto schema = readSchema(shaped->stream);
+  ASSERT_EQ(schema.get()->n_children, 3);
+  EXPECT_STREQ(schema.get()->children[0]->name, "timestamp_ns");
+  EXPECT_STREQ(schema.get()->children[1]->name, "value");
+  EXPECT_STREQ(schema.get()->children[2]->name, "metadata/note");
+
+  auto batch = readBatch(shaped->stream);
+  ScopedArrayView view(schema.get(), batch.get());
+  ASSERT_EQ(batch.get()->length, 3);
+  EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 0), 1000);
+  EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 3000);
+  EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[1], 0), 1.5);
+  EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[1], 2), 3.5);
+  const ArrowStringView first_note = ArrowArrayViewGetStringUnsafe(view.get()->children[2], 0);
+  EXPECT_EQ(std::string_view(first_note.data, static_cast<std::size_t>(first_note.size_bytes)), "first");
   EXPECT_TRUE(ArrowArrayViewIsNull(view.get()->children[2], 1));
-  ArrowArrayViewGetDecimalUnsafe(view.get()->children[2], 2, &amount);
-  EXPECT_EQ(ArrowDecimalGetIntUnsafe(&amount), -567);
+  const ArrowStringView third_note = ArrowArrayViewGetStringUnsafe(view.get()->children[2], 2);
+  EXPECT_EQ(std::string_view(third_note.data, static_cast<std::size_t>(third_note.size_bytes)), "third");
 }
 
 /// A schema with no host-ingestible data produces an actionable planning error.

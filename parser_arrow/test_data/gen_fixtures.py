@@ -218,6 +218,44 @@ def make_nested_dropped_scalars_batch() -> pa.RecordBatch:
     )
 
 
+def make_nullable_struct_list_batch() -> pa.RecordBatch:
+    """Build a nullable struct with one dropped list leaf and one retained string leaf."""
+    metadata_type = pa.struct(
+        [
+            pa.field("samples", pa.list_(pa.int32())),
+            pa.field("note", pa.string()),
+        ]
+    )
+    metadata = pa.array(
+        [
+            {"samples": [1, 2], "note": "first"},
+            None,
+            {"samples": [3, 4, 5], "note": "third"},
+        ],
+        type=metadata_type,
+    )
+    return pa.record_batch(
+        [
+            pa.array([1000, 2000, 3000], type=pa.int64()),
+            pa.array([1.5, 2.5, 3.5], type=pa.float64()),
+            metadata,
+        ],
+        names=["timestamp_ns", "value", "metadata"],
+    )
+
+
+def make_dictionary_batch() -> pa.RecordBatch:
+    """Build a dictionary-encoded string column unsupported by nanoarrow_ipc 0.7."""
+    return pa.record_batch(
+        [
+            pa.array([1000, 2000, 3000], type=pa.int64()),
+            pa.array(["alpha", "beta", "alpha"], type=pa.dictionary(pa.int8(), pa.string())),
+            pa.array([1.5, 2.5, 3.5], type=pa.float64()),
+        ],
+        names=["timestamp_ns", "label", "value"],
+    )
+
+
 def main() -> None:
     """Generate every checked-in test fixture and print its byte size."""
     flat_batch = make_flat_batch()
@@ -233,6 +271,11 @@ def main() -> None:
         write_stream(
             "flat_zstd.arrows",
             [flat_batch],
+            pa.ipc.IpcWriteOptions(compression="zstd"),
+        ),
+        write_stream(
+            "flat_two_batches_zstd.arrows",
+            [flat_batch.slice(0, 2), flat_batch.slice(2, 1)],
             pa.ipc.IpcWriteOptions(compression="zstd"),
         ),
         write_stream(
@@ -256,6 +299,8 @@ def main() -> None:
             [make_axis_batch(pa.timestamp("s"), [1, 2**63 - 1, 3])],
         ),
         write_stream("nested_dropped_scalars.arrows", [make_nested_dropped_scalars_batch()]),
+        write_stream("nullable_struct_list.arrows", [make_nullable_struct_list_batch()]),
+        write_stream("dictionary.arrows", [make_dictionary_batch()]),
         write_stream("no_timestamp.arrows", [make_no_timestamp_batch()]),
         write_stream(
             "no_timestamp_two_batches.arrows",

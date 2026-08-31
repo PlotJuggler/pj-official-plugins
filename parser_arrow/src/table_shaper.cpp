@@ -405,56 +405,42 @@ PJ::Status collectOutputColumns(
 
   RewritePlan rewrite;
   rewrite.timestamp_source_index = timestamp_source_index;
-  ArrowSchemaInit(rewrite.output_schema.out());
-  int result = ArrowSchemaSetTypeStruct(rewrite.output_schema.get(), static_cast<int64_t>(collected.size()));
-  if (result != NANOARROW_OK) {
-    return PJ::unexpected(nanoarrowError(result, nullptr));
-  }
-  result = copySchemaName(rewrite.output_schema.get(), input_schema->name);
-  if (result != NANOARROW_OK) {
-    return PJ::unexpected(nanoarrowError(result, nullptr));
-  }
-  result = copySchemaMetadata(rewrite.output_schema.get(), input_schema->metadata);
-  if (result != NANOARROW_OK) {
-    return PJ::unexpected(nanoarrowError(result, nullptr));
-  }
-  rewrite.output_schema.get()->flags = input_schema->flags;
-
   rewrite.columns.reserve(collected.size());
   bool has_host_ingestible_data = false;
-  for (std::size_t output_index = 0; output_index < collected.size(); ++output_index) {
-    auto& column = collected[output_index];
-    auto* output_child = rewrite.output_schema.get()->children[output_index];
+  for (auto& column : collected) {
+    const ArrowSchema* input_child = nullptr;
+    std::string output_format;
+    bool ingestible = false;
     if (column.cast == CastKind::kSyntheticTimestamp) {
-      result = ArrowSchemaSetType(output_child, NANOARROW_TYPE_INT64);
+      output_format = "l";
+      ingestible = true;
     } else {
-      const auto* input_child = schemaAtPath(input_schema, column.source_path);
-      output_child->release(output_child);
-      result = ArrowSchemaDeepCopy(input_child, output_child);
-      if (result == NANOARROW_OK && column.cast == CastKind::kNormalizeBytes) {
+      input_child = schemaAtPath(input_schema, column.source_path);
+      if (column.cast == CastKind::kNormalizeBytes) {
         const std::string_view input_format(input_child->format);
-        const ArrowType canonical_type =
-            input_format == "vu" || input_format == "U" ? NANOARROW_TYPE_STRING : NANOARROW_TYPE_BINARY;
-        result = ArrowSchemaSetType(output_child, canonical_type);
-      } else if (result == NANOARROW_OK && castsToInt64(column.cast)) {
-        result = ArrowSchemaSetType(output_child, NANOARROW_TYPE_INT64);
+        const bool is_string = input_format == "vu" || input_format == "U";
+        output_format = is_string ? "u" : "z";
+        ingestible = is_string;
+      } else if (castsToInt64(column.cast)) {
+        output_format = "l";
+        ingestible = true;
+      } else {
+        output_format = input_child->format;
+        auto host_ingestible = isHostIngestible(input_child);
+        if (!host_ingestible) {
+          return PJ::unexpected(std::move(host_ingestible).error());
+        }
+        ingestible = *host_ingestible;
       }
-      if (result == NANOARROW_OK && column.nullable_struct_ancestor) {
-        output_child->flags |= ARROW_FLAG_NULLABLE;
-      }
     }
-    if (result == NANOARROW_OK) {
-      result = ArrowSchemaSetName(output_child, column.name.c_str());
-    }
-    if (result != NANOARROW_OK) {
-      return PJ::unexpected(nanoarrowError(result, nullptr));
-    }
-    auto ingestible = isHostIngestible(output_child);
+
     if (!ingestible) {
-      return PJ::unexpected(std::move(ingestible).error());
-    }
-    if (!*ingestible) {
-      rewrite.dropped_columns.push_back(DroppedColumn{column.name, output_child->format});
+      if (column.name == timestamp_column) {
+        return PJ::unexpected("parser_arrow: timestamp axis cannot be dropped from the shaped Arrow stream");
+      }
+      rewrite.dropped_columns.push_back(DroppedColumn{column.name, std::move(output_format)});
+      rewrite.needs_rewrite = true;
+      continue;
     } else if (column.name != timestamp_column) {
       has_host_ingestible_data = true;
     }
@@ -483,6 +469,50 @@ PJ::Status collectOutputColumns(
     return PJ::unexpected(
         "parser_arrow: no host-ingestible columns in Arrow schema (" +
         (details.empty() ? std::string("no data columns") : details) + ")");
+  }
+
+  ArrowSchemaInit(rewrite.output_schema.out());
+  int result = ArrowSchemaSetTypeStruct(rewrite.output_schema.get(), static_cast<int64_t>(rewrite.columns.size()));
+  if (result != NANOARROW_OK) {
+    return PJ::unexpected(nanoarrowError(result, nullptr));
+  }
+  result = copySchemaName(rewrite.output_schema.get(), input_schema->name);
+  if (result != NANOARROW_OK) {
+    return PJ::unexpected(nanoarrowError(result, nullptr));
+  }
+  result = copySchemaMetadata(rewrite.output_schema.get(), input_schema->metadata);
+  if (result != NANOARROW_OK) {
+    return PJ::unexpected(nanoarrowError(result, nullptr));
+  }
+  rewrite.output_schema.get()->flags = input_schema->flags;
+
+  for (std::size_t output_index = 0; output_index < rewrite.columns.size(); ++output_index) {
+    const auto& column = rewrite.columns[output_index];
+    auto* output_child = rewrite.output_schema.get()->children[output_index];
+    if (column.cast == CastKind::kSyntheticTimestamp) {
+      result = ArrowSchemaSetType(output_child, NANOARROW_TYPE_INT64);
+    } else {
+      const auto* input_child = schemaAtPath(input_schema, column.source_path);
+      output_child->release(output_child);
+      result = ArrowSchemaDeepCopy(input_child, output_child);
+      if (result == NANOARROW_OK && column.cast == CastKind::kNormalizeBytes) {
+        const std::string_view input_format(input_child->format);
+        const ArrowType canonical_type =
+            input_format == "vu" || input_format == "U" ? NANOARROW_TYPE_STRING : NANOARROW_TYPE_BINARY;
+        result = ArrowSchemaSetType(output_child, canonical_type);
+      } else if (result == NANOARROW_OK && castsToInt64(column.cast)) {
+        result = ArrowSchemaSetType(output_child, NANOARROW_TYPE_INT64);
+      }
+      if (result == NANOARROW_OK && column.nullable_struct_ancestor) {
+        output_child->flags |= ARROW_FLAG_NULLABLE;
+      }
+    }
+    if (result == NANOARROW_OK) {
+      result = ArrowSchemaSetName(output_child, column.name.c_str());
+    }
+    if (result != NANOARROW_OK) {
+      return PJ::unexpected(nanoarrowError(result, nullptr));
+    }
   }
 
   return rewrite;
@@ -832,15 +862,16 @@ PJ::Status collectOutputColumns(
 }
 
 /// Append this batch's section of the whole-stream synthetic timestamp sequence.
-[[nodiscard]] int appendSyntheticTimestamps(ArrowArray* output, const ShapingStreamState& state, int64_t length) {
+[[nodiscard]] int appendSyntheticTimestamps(ArrowArray* output, ShapingStreamState& state, int64_t length) {
   int result = ArrowArrayStartAppending(output);
   if (result != NANOARROW_OK) {
     return result;
   }
   for (int64_t row = 0; row < length; ++row) {
     int64_t timestamp = 0;
-    if (!syntheticTimestamp(
-            state.message_timestamp_ns, state.synthetic_interval_ns, state.row_offset + row, &timestamp)) {
+    const int64_t stream_row = state.row_offset + row;
+    if (!syntheticTimestamp(state.message_timestamp_ns, state.synthetic_interval_ns, stream_row, &timestamp)) {
+      setStreamError(state, "synthetic timestamp overflow at row " + std::to_string(stream_row));
       return ERANGE;
     }
     result = ArrowArrayAppendInt(output, timestamp);

@@ -27,10 +27,10 @@ using pj::parser_arrow::DroppedColumn;
       });
 }
 
-/// Build the bounded human-readable warning for host-skipped Arrow columns.
+/// Build the bounded human-readable warning for Arrow columns removed before host ingest.
 [[nodiscard]] std::string droppedColumnsMessage(const std::vector<DroppedColumn>& columns) {
   std::string message = std::to_string(columns.size());
-  message += " column(s) skipped by the host (unsupported Arrow type): ";
+  message += " column(s) removed from the Arrow stream (unsupported host type): ";
   constexpr std::size_t kMaxListedColumns = 8;
   const std::size_t listed_columns = std::min(columns.size(), kMaxListedColumns);
   for (std::size_t index = 0; index < listed_columns; ++index) {
