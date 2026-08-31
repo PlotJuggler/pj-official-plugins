@@ -17,7 +17,10 @@
 #include <map>
 #include <mcap/reader.hpp>
 #include <mcap/writer.hpp>
+#include <nlohmann/json.hpp>
+#include <optional>
 #include <pj_base/sdk/platform.hpp>
+#include <set>
 
 #include "descriptor_import/source_descriptor.hpp"
 
@@ -185,6 +188,17 @@ fs::path standardCacheRoot(std::string* error) {
   if (auto value = PJ::sdk::getEnv("MOSAICO_CACHE_DIR")) {
     return fs::path(*value);
   }
+#if defined(_WIN32)
+  if (auto value = PJ::sdk::getEnv("LOCALAPPDATA")) {
+    return fs::path(*value) / "mosaico" / "sessions";
+  }
+  if (auto value = PJ::sdk::getEnv("USERPROFILE")) {
+    return fs::path(*value) / "AppData" / "Local" / "mosaico" / "sessions";
+  }
+  if (error != nullptr) {
+    *error = "cache root unresolvable (MOSAICO_CACHE_DIR, LOCALAPPDATA and USERPROFILE all unset)";
+  }
+#else
   if (auto value = PJ::sdk::getEnv("XDG_CACHE_HOME")) {
     return fs::path(*value) / "mosaico" / "sessions";
   }
@@ -194,12 +208,22 @@ fs::path standardCacheRoot(std::string* error) {
   if (error != nullptr) {
     *error = "cache root unresolvable (MOSAICO_CACHE_DIR, XDG_CACHE_HOME and HOME all unset)";
   }
+#endif
   return {};
 }
 
 PJ::sdk::descriptor_import::RequestArtifactCache makeArtifactCache(
     const fs::path& configured_root, std::string* error) {
-  const fs::path root = configured_root.empty() ? standardCacheRoot(error) : configured_root;
+  fs::path root = configured_root.empty() ? standardCacheRoot(error) : configured_root;
+  if (!root.empty() && root.is_relative()) {
+    // The ABI requires absolute paths, and a relative root would change
+    // meaning with the process cwd.
+    std::error_code ec;
+    const fs::path absolute = fs::absolute(root, ec);
+    if (!ec) {
+      root = absolute;
+    }
+  }
   return PJ::sdk::descriptor_import::RequestArtifactCache(
       PJ::sdk::descriptor_import::CacheSpec{root, ".pjmosaico", sourceDescriptorPolicy().identity}, validateArtifact);
 }
@@ -230,6 +254,44 @@ PJ::sdk::descriptor_import::CleanupResult maintainCache(
   }
 }
 
+std::string utf8Path(const fs::path& path) {
+  const std::u8string u8 = path.u8string();
+  return std::string(u8.begin(), u8.end());
+}
+
+bool quarantineArtifact(const fs::path& artifact, std::string* error) {
+  fs::path quarantined = artifact;
+  quarantined += ".corrupt";
+  std::error_code ec;
+  fs::remove(quarantined, ec);  // an older quarantine of the same identity
+  ec.clear();
+  fs::rename(artifact, quarantined, ec);
+  if (ec) {
+    if (error != nullptr) {
+      *error = "could not quarantine " + utf8Path(artifact) + ": " + ec.message();
+    }
+    return false;
+  }
+  return true;
+}
+
+namespace {
+
+// The vendored MCAP writer takes a narrow path; the conversion can throw on
+// Windows for a path outside the execution code page — report, never crash.
+std::optional<std::string> narrowPath(const fs::path& path, std::string* error) {
+  try {
+    return path.string();
+  } catch (const std::exception& e) {
+    if (error != nullptr) {
+      *error = "cache path is not representable in the system code page: " + std::string(e.what());
+    }
+    return std::nullopt;
+  }
+}
+
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // ArtifactWriter
 // ---------------------------------------------------------------------------
@@ -250,7 +312,11 @@ ArtifactWriter::~ArtifactWriter() {
 bool ArtifactWriter::open(const fs::path& path, const std::string& canonical_descriptor_json, std::string* error) {
   mcap::McapWriterOptions options("");  // profile: none (payloads are Arrow IPC)
   options.library = "toolbox_mosaico cache";
-  const auto status = impl_->writer.open(path.string(), options);
+  const auto narrow = narrowPath(path, error);
+  if (!narrow.has_value()) {
+    return false;
+  }
+  const auto status = impl_->writer.open(*narrow, options);
   if (!status.ok()) {
     if (error) {
       *error = "artifact open failed: " + status.message;
@@ -382,8 +448,16 @@ bool validateArtifact(const fs::path& file, const std::string& hex, std::string*
     }
     return false;
   }
+  std::ifstream input(file, std::ios::binary);  // native path: no narrowing
+  if (!input) {
+    if (error) {
+      *error = "cannot open artifact";
+    }
+    return false;
+  }
+  mcap::FileStreamReader source(input);
   mcap::McapReader reader;
-  auto status = reader.open(file.string());
+  auto status = reader.open(source);
   if (!status.ok()) {
     if (error) {
       *error = "not a readable artifact: " + status.message;
@@ -429,6 +503,40 @@ bool validateArtifact(const fs::path& file, const std::string& hex, std::string*
       *error = "embedded descriptor identity mismatch";
     }
     return false;
+  }
+  // Bounded content check from the summary: every channel must be a
+  // descriptor topic, and an artifact with messages must have channels. A
+  // corrupted or foreign body that kept a valid footer fails here instead of
+  // being a sticky hit; body corruption past this point is caught by replay,
+  // which quarantines the file.
+  {
+    std::set<std::string> topics;
+    const auto canonical = nlohmann::json::parse(json_it->second, /*cb=*/nullptr, /*allow_exceptions=*/false);
+    if (canonical.is_object() && canonical.contains("topics") && canonical["topics"].is_array()) {
+      for (const auto& topic : canonical["topics"]) {
+        if (topic.is_string()) {
+          topics.insert(topic.get<std::string>());
+        }
+      }
+    }
+    const auto channels = reader.channels();  // returned BY VALUE: snapshot once
+    for (const auto& entry : channels) {
+      const auto& channel = entry.second;
+      if (channel == nullptr || topics.count(channel->topic) == 0) {
+        reader.close();
+        if (error) {
+          *error = "artifact channel is not a descriptor topic: " + (channel ? channel->topic : std::string("<null>"));
+        }
+        return false;
+      }
+    }
+    if (channels.empty() && reader.statistics()->messageCount > 0) {
+      reader.close();
+      if (error) {
+        *error = "artifact has messages but no channels";
+      }
+      return false;
+    }
   }
   reader.close();
   return true;

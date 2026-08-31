@@ -123,9 +123,19 @@ void FetchWorker::requestCancel() {
 void FetchWorker::cancelActivePulls() {
   if (cancel_active_pulls_override_) {
     cancel_active_pulls_override_();
-  } else if (client_) {
-    client_->cancelActivePulls();
+  } else {
+    // Cancel arrives from another thread (host Stop, the job's cancel hook)
+    // while the worker may be publishing or dropping the client.
+    std::lock_guard<std::mutex> lock(client_mu_);
+    if (client_) {
+      client_->cancelActivePulls();
+    }
   }
+}
+
+void FetchWorker::dropClient() {
+  std::lock_guard<std::mutex> lock(client_mu_);
+  client_.reset();
 }
 
 PJ::Expected<PJ::sdk::DataSourceHandle> FetchWorker::datasetForFetch(
@@ -305,29 +315,33 @@ void FetchWorker::connectAsync(std::string uri, ServerCredentials creds) {
   // fallback is driven by the caller (onConnectFinished, Step 10.1), which
   // retries with a grpc:// URI. connectAsync always honors the scheme it is given.
   try {
-    client_ = std::make_unique<MosaicoClient>(
+    auto client = std::make_unique<MosaicoClient>(
         uri,
         // PJ3 parity (main_window.cpp:48): 30 s connection timeout for slow links.
         /*timeout_seconds=*/30,
         /*pool_size=*/4, creds.cert_path, creds.api_key);
+    {
+      std::lock_guard<std::mutex> lock(client_mu_);
+      client_ = std::move(client);
+    }
     auto v = client_->version();
     if (!v.ok()) {
       if (connectFinished) {
         connectFinished({false, {}, v.status().message()});
       }
-      client_.reset();
+      dropClient();
       return;
     }
     if (connectFinished) {
       connectFinished({true, fmt::format("Connected — server {}", v.ValueOrDie().version), {}});
     }
   } catch (const std::exception& e) {
-    client_.reset();
+    dropClient();
     if (connectFinished) {
       connectFinished({false, {}, e.what()});
     }
   } catch (...) {
-    client_.reset();
+    dropClient();
     if (connectFinished) {
       connectFinished({false, {}, "Unknown error"});
     }
@@ -565,24 +579,42 @@ void FetchWorker::pullTopicsAsync(
   // under host_write_mu_, which serializes them across the pool threads.
   std::shared_ptr<ArtifactCapture> capture;
   std::optional<ExistingArtifact> existing_artifact;
+  std::string eager_only_reason;
   if (descriptor.has_value() && promotion_provider_ && promotion_provider_().valid()) {
     const std::string identity = descriptorIdentity(*descriptor);
     auto cache = makeArtifactCache(std::filesystem::path(cache_root_override));
-    if (auto hit = cache.lookup(identity)) {
-      existing_artifact.emplace(
-          ExistingArtifact{
-              .path = std::move(hit->path),
-              .identity = identity,
-              .descriptor_json = toSourceDescriptorJson(*descriptor),
-              .lease = std::move(hit->lease),
-          });
+    // An explicit Download asks for FRESH data: capture first — the write
+    // slot is free whenever nothing leases the identity, and commit renames
+    // over a stale file. Only a leased slot (a promoted dataset in this
+    // process, or another instance) falls back to the existing artifact, and
+    // only for a bounded window: an open-ended request is not reproducible.
+    auto fresh = std::make_shared<ArtifactCapture>(*descriptor, std::filesystem::path(cache_root_override));
+    const bool window_bounded = !(descriptor->start_ns == 0 && descriptor->end_ns == 0);
+    std::optional<PJ::sdk::descriptor_import::RequestArtifactCache::Hit> hit;
+    if (!fresh->armed()) {
+      hit = cache.lookup(identity);
     }
-    // Budget pass AFTER the leased lookup (a hit's lease protects it) and
-    // BEFORE a new capture claims space. Best-effort: never blocks a Download.
+    switch (chooseCaptureStrategy(fresh->armed(), hit.has_value(), window_bounded)) {
+      case CaptureStrategy::kCaptureFresh:
+        capture = std::move(fresh);
+        break;
+      case CaptureStrategy::kPromoteExisting:
+        existing_artifact.emplace(
+            ExistingArtifact{
+                .path = std::move(hit->path),
+                .identity = identity,
+                .descriptor_json = toSourceDescriptorJson(*descriptor),
+                .lease = std::move(hit->lease),
+            });
+        break;
+      case CaptureStrategy::kEagerOnly:
+        eager_only_reason = hit.has_value() ? "an earlier snapshot of this open-ended request is cached and in use"
+                                            : "cache unavailable: " + fresh->disarmReason();
+        break;
+    }
+    // Budget pass once the slot decision is made: a fresh partial holds its
+    // exclusive lock and a hit holds its lease, so neither can be the victim.
     (void)maintainCache(cache, cache_policy_);
-    if (!existing_artifact.has_value()) {
-      capture = std::make_shared<ArtifactCapture>(*descriptor, std::filesystem::path(cache_root_override));
-    }
   }
 
   auto on_done = [this, sequence_name, state, imported_any, any_failed, capture](
@@ -796,8 +828,15 @@ void FetchWorker::pullTopicsAsync(
     {
       arrow::TableBatchReader batch_reader(*table);
       std::shared_ptr<arrow::RecordBatch> batch;
-      while (batch_reader.ReadNext(&batch).ok() && batch != nullptr) {
+      arrow::Status read_status;
+      while ((read_status = batch_reader.ReadNext(&batch)).ok() && batch != nullptr) {
         batches.push_back(std::move(batch));
+      }
+      if (!read_status.ok()) {
+        // A prefix of batches must never pass as a complete topic: it would
+        // be exported, captured and promoted as if whole.
+        finish(false, stringFromArrow(read_status));
+        return;
       }
     }
     auto reader = arrow::RecordBatchReader::Make(batches, table->schema());
@@ -981,7 +1020,7 @@ void FetchWorker::pullTopicsAsync(
       PJ::SourcePromotionRequest request;
       request.dataset = dataset->id;
       request.source_identity = identity;
-      request.local_path_utf8 = path.string();
+      request.local_path_utf8 = utf8Path(path);
       request.loader_plugin_id = kMosaicoCacheLoaderPluginId;
       request.loader_config_json = "{}";
       request.descriptor_json = descriptor_json;
@@ -1029,7 +1068,7 @@ void FetchWorker::pullTopicsAsync(
     // Contract: a Download that carried a descriptor ALWAYS settles exactly
     // once, so waiters (the descriptor-import job) never need to know the
     // capture's arming rule.
-    promotionSettled(false, "host offers no source-promotion service");
+    promotionSettled(false, eager_only_reason.empty() ? "host offers no source-promotion service" : eager_only_reason);
   }
   // Bracket the host progress/stop channel on EVERY exit (success, cancel,
   // throw) and BEFORE allFetchesComplete: a zero-success provisional source is

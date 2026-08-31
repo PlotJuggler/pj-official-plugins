@@ -149,9 +149,8 @@ PJ::sdk::descriptor_import::ImportOutcome DescriptorImportProvider::JobState::ru
     }
   }
 
-  // Budget pass at job start (worker thread): this import is about to add
-  // an artifact. Best-effort, and the worker's own passes get the same policy.
-  (void)maintainCache(file_cache, cache_policy);
+  // The worker's own maintenance passes (before capture, after publish)
+  // apply this job's budget.
   fetch.setCacheCleanupPolicy(cache_policy);
   fetch.setHostProvider(bindings.host_provider);
   fetch.setRuntimeHostProvider(bindings.runtime_host_provider);
@@ -340,7 +339,7 @@ bool DescriptorImportProvider::queryDescriptor(
     // Publish the descriptor's human presentation now so first loads on a new
     // machine do not fall back to the opaque durable identity.
     recordSourcePresentation(settings_, query_result_.source_identity, *descriptor);
-    query_result_.local_path_utf8 = cache.pathFor(query_result_.source_identity).string();
+    query_result_.local_path_utf8 = utf8Path(cache.pathFor(query_result_.source_identity));
 
     // Trust: strict origin equality against the process environment
     // allowlist. Malformed entries are ignored; v1 emits only trusted /
@@ -367,11 +366,8 @@ bool DescriptorImportProvider::queryDescriptor(
     std::string miss_reason;
     if (auto hit = cache.lookup(query_result_.source_identity, &miss_reason)) {
       disk = hit->path;
-      if (promotionArtifactLeaseRegistry().retain(disk, std::move(hit->lease))) {
-        query_result_.is_materialized = true;
-      } else {
-        append_message("cache artifact present but its read lease could not be retained");
-      }
+      promotionArtifactLeaseRegistry().retain(disk, std::move(hit->lease));
+      query_result_.is_materialized = true;
     } else if (miss_reason.find("retry") != std::string::npos) {
       append_message("cache artifact is temporarily locked; retry the import");
     }

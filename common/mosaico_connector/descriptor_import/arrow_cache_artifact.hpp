@@ -137,6 +137,17 @@ inline constexpr double kDefaultCacheMaxGb = 20.0;
     PJ::sdk::descriptor_import::RequestArtifactCache& cache,
     const PJ::sdk::descriptor_import::CleanupPolicy& policy) noexcept;
 
+/// A path as the ABI's UTF-8 string — never through path::string(), which
+/// narrows via the execution code page on Windows.
+[[nodiscard]] std::string utf8Path(const std::filesystem::path& path);
+
+/// Quarantine an artifact whose BODY failed replay after the bounded
+/// validation passed: rename it to "<artifact>.corrupt" (best-effort) so the
+/// next layout open classifies the identity as a miss and re-downloads
+/// instead of repeating the failure forever. False = rename failed, file
+/// left in place.
+bool quarantineArtifact(const std::filesystem::path& artifact, std::string* error);
+
 /// One canonical object blob, with the exact timestamp it was ingested at.
 struct ArtifactObjectSample {
   std::int64_t log_time_ns = 0;

@@ -28,6 +28,30 @@ class Schema;
 
 namespace mosaico {
 
+/// What an explicit Download does with its identity's cache slot.
+enum class CaptureStrategy {
+  kCaptureFresh,     ///< the slot is free: materialize THIS download (renames over a stale file)
+  kPromoteExisting,  ///< the slot is leased and the request is bounded: the existing artifact IS this data
+  kEagerOnly,        ///< the slot is leased and the request is open-ended: an older snapshot may differ
+};
+
+/// The pure decision rule (unit-tested). A fresh capture whenever the write
+/// slot is free; when it is leased — a promoted dataset in this process or
+/// another instance holds it — promote onto the existing artifact only if the
+/// window is bounded: "0"/"0" is the unbounded sentinel and an open-ended
+/// request is not reproducible, so a stale snapshot must never replace fresh
+/// data silently.
+[[nodiscard]] inline CaptureStrategy chooseCaptureStrategy(
+    bool slot_free, bool existing_artifact_valid, bool window_bounded) {
+  if (slot_free) {
+    return CaptureStrategy::kCaptureFresh;
+  }
+  if (existing_artifact_valid && window_bounded) {
+    return CaptureStrategy::kPromoteExisting;
+  }
+  return CaptureStrategy::kEagerOnly;
+}
+
 class ArtifactCapture {
  public:
   /// Arms capture for `descriptor`: cache root (the user-configured

@@ -7,6 +7,7 @@
 
 #include <pj_base/descriptor_import_protocol.h>
 
+#include <memory>
 #include <pj_base/sdk/platform.hpp>
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
@@ -28,25 +29,19 @@ class MosaicoToolbox : public PJ::ToolboxPluginBase {
     if (!status) {
       return status;
     }
-    // Once the toolbox host is bound, hand a host-view provider to the
-    // dialog so the worker can ingest Arrow data on fetch completion.
-    dialog_.setHostProvider([this]() { return toolboxHost(); });
-    // Runtime host carries notifyDataChanged — the dialog calls this after
-    // a successful import so the app flushes pending writer chunks and
-    // rebuilds the catalog tree. Without it, ingested data stays buffered
-    // in the writer and the dataset panel never sees the new topics.
-    dialog_.setRuntimeHostProvider([this]() { return runtimeHost(); });
     // Optional pj.source_promotion.v1: with it, a completed Download is
     // recorded into a session cache artifact and promoted to a file-backed
     // dataset, so a saved layout can re-import it. Absent service = every
     // fetch stays eager-only (previous behavior).
     promotion_host_ = services.get<PJ::sdk::SourcePromotionHostService>().value_or(PJ::SourcePromotionHostView{});
-    dialog_.setPromotionProvider([this]() { return promotion_host_; });
-    // Bind the optional pj.settings.v1 store (QSettings-like persistence) and
-    // restore persisted UI state + auto-connect. setSettings() also runs when
-    // the service is absent — an unbound view just reads defaults.
-    const auto settings = services.get<PJ::sdk::SettingsStoreService>().value_or(PJ::sdk::SettingsView{});
-    dialog_.setSettings(settings);
+    // The optional pj.settings.v1 store (QSettings-like persistence); an
+    // unbound view just reads defaults.
+    settings_ = services.get<PJ::sdk::SettingsStoreService>().value_or(PJ::sdk::SettingsView{});
+    const auto settings = settings_;
+    // The panel itself is created lazily by getDialog(): a headless
+    // descriptor-import session binds this toolbox for every layout query
+    // without ever opening the panel, and must not spin its worker thread,
+    // scan the cache, or auto-connect with credentials.
     // The descriptor-import provider (pj.descriptor_import.v1): same settings
     // view as the dialog (headless credential + cache-directory resolution at
     // import time, main-thread), plus the host providers its per-job pulls
@@ -66,7 +61,8 @@ class MosaicoToolbox : public PJ::ToolboxPluginBase {
   }
 
   PJ_borrowed_dialog_t getDialog() override {
-    return PJ::borrowDialog(dialog_);
+    ensureDialog();
+    return PJ::borrowDialog(*dialog_);
   }
 
  private:
@@ -96,7 +92,25 @@ class MosaicoToolbox : public PJ::ToolboxPluginBase {
         ->provider_.startImport(request, callbacks, callback_ctx, out_job, out_error);
   }
 
-  MosaicoDialog dialog_;
+  // First panel open: construct the dialog and wire the host providers and
+  // the settings view (which restores persisted state and auto-connects).
+  // Main thread, like getDialog().
+  void ensureDialog() {
+    if (dialog_) {
+      return;
+    }
+    dialog_ = std::make_unique<MosaicoDialog>();
+    // Host-view provider so the worker can ingest Arrow data on fetch
+    // completion; the runtime host carries notifyDataChanged (writer flush +
+    // catalog rebuild after an import).
+    dialog_->setHostProvider([this]() { return toolboxHost(); });
+    dialog_->setRuntimeHostProvider([this]() { return runtimeHost(); });
+    dialog_->setPromotionProvider([this]() { return promotion_host_; });
+    dialog_->setSettings(settings_);
+  }
+
+  std::unique_ptr<MosaicoDialog> dialog_;  // created by getDialog()
+  PJ::sdk::SettingsView settings_{};
   PJ::SourcePromotionHostView promotion_host_{};
   DescriptorImportProvider provider_;
   PJ_descriptor_import_provider_v1_t descriptor_import_ext_{

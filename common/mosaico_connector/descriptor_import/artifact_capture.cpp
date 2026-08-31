@@ -85,6 +85,10 @@ void ArtifactCapture::disarm(std::string reason) {
     writer_.abort();
     armed_ = false;
   }
+  // Release the identity's exclusive slot now (the partial goes with it):
+  // other instances must not see a leased MISS for a materialization that
+  // already ended.
+  transaction_.reset();
 }
 
 void ArtifactCapture::captureScalarTopic(

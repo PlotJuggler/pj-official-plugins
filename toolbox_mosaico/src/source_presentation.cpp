@@ -51,10 +51,21 @@ std::string base64UrlUnpadded(std::string_view bytes) {
   return out;
 }
 
+// A presentation code point that must never reach the UI: C0/C1 controls,
+// zero-width and bidi/format controls. The text comes from a layout file and
+// is shown beside trust decisions, so it must not be able to fake a row.
+bool isControlOrFormat(std::uint32_t cp) {
+  return cp < 0x20 || cp == 0x7f || (cp >= 0x80 && cp <= 0x9f) || (cp >= 0x200b && cp <= 0x200f) ||
+         (cp >= 0x2028 && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069) || cp == 0xfeff;
+}
+
 // QSettings stores QString values and the host applies QString::left(200).
 // Bound UTF-8 by the corresponding UTF-16 code-unit count without splitting a
-// multi-byte code point (notably, an astral code point consumes two QChars).
+// multi-byte code point (notably, an astral code point consumes two QChars),
+// dropping control/format code points on the way.
 std::string capPresentation(std::string_view text) {
+  std::string out;
+  out.reserve(text.size());
   std::size_t bytes = 0;
   std::size_t utf16_units = 0;
   while (bytes < text.size()) {
@@ -69,7 +80,6 @@ std::string capPresentation(std::string_view text) {
       width = 4;
       units = 2;
     }
-
     bool complete = bytes + width <= text.size();
     for (std::size_t offset = 1; complete && offset < width; ++offset) {
       const auto continuation = static_cast<unsigned char>(text[bytes + offset]);
@@ -79,13 +89,27 @@ std::string capPresentation(std::string_view text) {
       width = 1;
       units = 1;
     }
+    std::uint32_t cp = lead;
+    if (complete && width == 2) {
+      cp = ((lead & 0x1fu) << 6) | (static_cast<unsigned char>(text[bytes + 1]) & 0x3fu);
+    } else if (complete && width == 3) {
+      cp = ((lead & 0x0fu) << 12) | ((static_cast<unsigned char>(text[bytes + 1]) & 0x3fu) << 6) |
+           (static_cast<unsigned char>(text[bytes + 2]) & 0x3fu);
+    } else if (complete && width == 4) {
+      cp = 0x10000;  // astral plane: never a control/format code point
+    }
+    if (isControlOrFormat(cp)) {
+      bytes += width;
+      continue;
+    }
     if (utf16_units + units > kMaxPresentationChars) {
       break;
     }
+    out.append(text.substr(bytes, width));
     bytes += width;
     utf16_units += units;
   }
-  return std::string(text.substr(0, bytes));
+  return out;
 }
 
 void setIfChanged(PJ::sdk::SettingsView settings, const std::string& key, const std::string& value) {

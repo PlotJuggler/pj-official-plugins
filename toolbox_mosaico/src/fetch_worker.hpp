@@ -213,6 +213,8 @@ class FetchWorker {
   void finishIngestProgress(bool discard_provisional);
 
   std::unique_ptr<MosaicoClient> client_;
+  std::mutex client_mu_;  ///< guards client_'s lifetime against the cross-thread cancel path
+  void dropClient();
   std::function<void()> pull_topics_override_;
   std::function<void()> cancel_active_pulls_override_;
   std::function<PJ::sdk::ToolboxHostView()> host_provider_;

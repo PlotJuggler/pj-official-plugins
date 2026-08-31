@@ -66,6 +66,7 @@ if(BUILD_TESTING AND TARGET GTest::gtest_main)
     artifact_replay_test
     artifact_capture_test
     cache_maintenance_test
+    capture_strategy_test
   )
   foreach(_test ${PJ_MOSAICO_DESCRIPTOR_IMPORT_TESTS})
     add_executable(pj_mosaico_descriptor_import_${_test} tests/${_test}.cpp)

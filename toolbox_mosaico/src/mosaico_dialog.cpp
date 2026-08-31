@@ -356,18 +356,24 @@ void MosaicoDialog::initFromSettings() {
   if (auto stored = settings_.value("mosaico/cache_directory")) {
     state_.cache_directory = stored->toString();
   }
-  // Cache budget: hand the worker its policy for the per-Download passes and
-  // run one maintenance pass now (panel open), while nothing is in flight.
+  // Cache budget: the worker applies it around each Download; one
+  // maintenance pass runs now (panel open), off the GUI thread. Over-target
+  // is surfaced, not forced: artifacts leased by open datasets stay until
+  // PlotJuggler exits, so the budget is best-effort while sources live.
   {
     const auto policy = cacheCleanupPolicyFromSettings(settings_);
-    postCommand([w = worker_.get(), policy] { w->setCacheCleanupPolicy(policy); });
-    auto cache = makeArtifactCache(std::filesystem::path(state_.cache_directory));
-    const auto result = maintainCache(cache, policy);
-    if (result.had_errors) {
-      notify(
-          PJ::ToolboxMessageLevel::kWarning,
-          "Cache maintenance: " + PJ::sdk::descriptor_import::cleanupResultSummary(result));
-    }
+    postCommand([this, w = worker_.get(), policy, directory = state_.cache_directory] {
+      w->setCacheCleanupPolicy(policy);
+      auto cache = makeArtifactCache(std::filesystem::path(directory));
+      const auto result = maintainCache(cache, policy);
+      if (result.had_errors || !result.target_met) {
+        postEvent([this, result] {
+          notify(
+              result.had_errors ? PJ::ToolboxMessageLevel::kWarning : PJ::ToolboxMessageLevel::kInfo,
+              "Mosaico cache: " + PJ::sdk::descriptor_import::cleanupResultSummary(result));
+        });
+      }
+    });
   }
 
   if (!history.empty()) {

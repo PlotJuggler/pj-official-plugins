@@ -10,7 +10,8 @@ namespace mosaico {
 
 /// The cache budget from the host settings: `mosaico/cache_max_gb` (GiB;
 /// <= 0 = unlimited), defaulting to kDefaultCacheMaxGb. An advanced setting
-/// with no panel UI. Main-thread only (SettingsView).
+/// with no panel UI. Best-effort: artifacts leased by open datasets are never
+/// evicted, so the budget binds only what is evictable. Main-thread only.
 [[nodiscard]] inline PJ::sdk::descriptor_import::CleanupPolicy cacheCleanupPolicyFromSettings(
     PJ::sdk::SettingsView settings) {
   double max_gb = kDefaultCacheMaxGb;

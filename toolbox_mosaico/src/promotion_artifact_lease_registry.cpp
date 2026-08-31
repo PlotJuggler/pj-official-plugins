@@ -5,6 +5,8 @@
 #include <system_error>
 #include <utility>
 
+#include "descriptor_import/arrow_cache_artifact.hpp"
+
 namespace mosaico {
 
 std::string PromotionArtifactLeaseRegistry::stableKey(const std::filesystem::path& artifact_path) {
@@ -17,21 +19,30 @@ std::string PromotionArtifactLeaseRegistry::stableKey(const std::filesystem::pat
   if (error) {
     stable = artifact_path;
   }
-  return stable.lexically_normal().string();
+  return utf8Path(stable.lexically_normal());
 }
 
-bool PromotionArtifactLeaseRegistry::retain(
+void PromotionArtifactLeaseRegistry::retain(
     const std::filesystem::path& artifact_path, PJ::sdk::descriptor_import::ReadLease lease) noexcept {
+  std::string key;
   try {
-    const std::string key = stableKey(artifact_path);
-    if (key.empty()) {
-      return false;
-    }
-    std::lock_guard<std::mutex> lock(mu_);
-    leases_.insert_or_assign(key, std::move(lease));
-    return true;
+    key = stableKey(artifact_path);
   } catch (...) {
-    return false;
+    key.clear();
+  }
+  try {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (key.empty()) {
+      parked_.push_back(std::move(lease));
+    } else {
+      leases_.insert_or_assign(key, std::move(lease));
+    }
+  } catch (...) {
+    // Allocation failure: last resort, park the lease so it is never dropped.
+    try {
+      std::lock_guard<std::mutex> lock(mu_);
+      parked_.push_back(std::move(lease));
+    } catch (...) {}
   }
 }
 
@@ -63,28 +74,38 @@ PendingPromotionArtifactLease::PendingPromotionArtifactLease(
       lease_(std::move(lease)),
       handler_(std::move(handler)) {}
 
-void PendingPromotionArtifactLease::settle(bool ok, std::string detail) {
+void PendingPromotionArtifactLease::settle(bool ok, std::string detail) noexcept {
   std::optional<PJ::sdk::descriptor_import::ReadLease> lease;
   SettlementHandler handler;
-  {
-    std::lock_guard<std::mutex> lock(mu_);
-    if (settled_) {
-      return;
+  bool notified = false;
+  try {
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      if (settled_) {
+        return;
+      }
+      settled_ = true;
+      if (ok && lease_.has_value()) {
+        lease.emplace(std::move(*lease_));
+      }
+      lease_.reset();
+      handler = std::move(handler_);
     }
-    settled_ = true;
-    if (ok && lease_.has_value()) {
-      lease.emplace(std::move(*lease_));
+    if (ok && lease.has_value()) {
+      registry_.retain(artifact_path_, std::move(*lease));  // never re-labels the host's verdict
     }
-    lease_.reset();
-    handler = std::move(handler_);
-  }
-
-  if (ok && (!lease.has_value() || !registry_.retain(artifact_path_, std::move(*lease)))) {
-    ok = false;
-    detail = "promotion succeeded but its artifact read lease could not be retained";
-  }
-  if (handler) {
-    handler(ok, std::move(detail));
+    if (handler) {
+      notified = true;
+      handler(ok, std::move(detail));
+    }
+  } catch (...) {
+    // Nothing may escape into the host's callback; the waiter must still be
+    // released with the host's verdict.
+    if (handler && !notified) {
+      try {
+        handler(ok, "promotion settled");
+      } catch (...) {}
+    }
   }
 }
 
