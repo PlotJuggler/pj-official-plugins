@@ -18,7 +18,6 @@
 #include <vector>
 
 #include "descriptor_import/artifact_capture.hpp"
-#include "descriptor_import/core/file_lock.h"
 #include "descriptor_import/source_descriptor.hpp"
 #include "flight/mosaico_client.hpp"
 #include "flight/types.hpp"

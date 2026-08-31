@@ -7,8 +7,8 @@
 // which exposes it through its pluginExtension() thunks (the ABI's plugin_ctx
 // is the TOOLBOX instance — never this object or the extension table).
 //
-// Surfaces, both operating on the raw C structs so the growth contract
-// (struct_size-covered reads/writes) lives in exactly one place:
+// Surfaces, both operating on the raw C structs through the SDK's growth-
+// contract helpers:
 //   - queryDescriptor: [main-thread, strictly bounded] — descriptor parse,
 //     presentation write through the host settings view, environment trust
 //     allowlist lookup, DISK-validated cache lookup with lease-then-validate
@@ -23,10 +23,10 @@
 //   - startImport: [main-thread] — flags fail closed FIRST; required
 //     callbacks validated; descriptor parsed; credentials resolved into an
 //     immutable snapshot ON THIS THREAD (SettingsView is main-thread-only);
-//     out_job populated BEFORE the worker starts; an explicit post-return
-//     START GATE guarantees no callback runs before start_import returns.
+//     ProviderJob owns the worker, start gate, cancellation, watchdog,
+//     exactly-once terminal, and joinable-job vtable.
 //
-// The job (one worker thread + one private FetchWorker per job): connect ->
+// The job (one SDK-owned worker thread + one private FetchWorker per job): connect ->
 // per-topic metadata (ontology routing) -> the descriptor-armed pull (cache
 // artifact capture + promotion) -> cancel-aware promotion-settlement wait
 // (DETACH on cancel) -> the exactly-once terminal. cancel() is idempotent and
@@ -39,17 +39,21 @@
 
 #include <pj_base/descriptor_import_protocol.h>
 
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <memory>
 #include <pj_base/sdk/descriptor_import.hpp>
+#include <pj_base/sdk/descriptor_import/request_cache.hpp>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <string>
 
-#include "descriptor_import/session_file_cache.hpp"
-
 namespace mosaico {
+
+namespace testing {
+class DescriptorImportProviderTestAccess;
+}
 
 class DescriptorImportProvider {
  public:
@@ -95,27 +99,24 @@ class DescriptorImportProvider {
   }
 
  private:
+  friend class testing::DescriptorImportProviderTestAccess;
+
   struct JobState;
 
-  static void jobCancel(void* ctx) noexcept;
-  static void jobJoin(void* ctx) noexcept;
-  static void jobDestroy(void* ctx) noexcept;
-  static constexpr PJ_joinable_job_vtable_t kJobVtable{
-      sizeof(PJ_joinable_job_vtable_t), 0, &DescriptorImportProvider::jobCancel, &DescriptorImportProvider::jobJoin,
-      &DescriptorImportProvider::jobDestroy};
+  /// Claim a still-active transport deadline. A watchdog firing after the
+  /// pull's disarm observes false and must not change the job outcome.
+  [[nodiscard]] static bool claimTransferWatchdogExpiry(std::atomic<bool>& transfer_in_progress) noexcept;
 
   /// The cache the provider answers from: the user-configured
   /// mosaico/cache_directory when set (the panel's Directory field), else
   /// standardCacheRoot — main thread only (SettingsView).
-  [[nodiscard]] SessionFileCache makeFileCache();
+  [[nodiscard]] PJ::sdk::descriptor_import::RequestArtifactCache makeFileCache();
   PJ::sdk::SettingsView settings_{};
   HostBindings bindings_{};
 
   // query-result string storage: owned by the provider, valid until the NEXT
   // query on this instance (ABI lifetime rule). Main-thread only.
-  std::string query_identity_;
-  std::string query_path_;
-  std::string query_message_;
+  PJ::DescriptorQueryResult query_result_;
 
   // test seams
   std::function<void()> start_gate_probe_;

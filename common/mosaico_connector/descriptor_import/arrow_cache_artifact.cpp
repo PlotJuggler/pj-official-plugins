@@ -15,8 +15,9 @@
 #include <map>
 #include <mcap/reader.hpp>
 #include <mcap/writer.hpp>
+#include <pj_base/sdk/platform.hpp>
 
-#include "descriptor_import/core/sha256.h"
+#include "descriptor_import/source_descriptor.hpp"
 
 namespace mosaico {
 
@@ -43,7 +44,6 @@ constexpr std::uint64_t kQueryMetadataBudget = 1ull * 1024 * 1024;
 // MCAP file tail: Footer record (1-byte op 0x02 + 8-byte length + 20-byte
 // payload {summary_start, summary_offset_start, summary_crc}) + 8-byte magic.
 constexpr std::uintmax_t kMcapTailBytes = 29 + 8;
-constexpr std::size_t kDigestHexBytes = 16;  // sha256/128
 
 bool summarySpanWithinBudget(const fs::path& path, std::string* error) {
   std::error_code ec;
@@ -178,6 +178,29 @@ bool writeMcapMessage(
 }
 
 }  // namespace
+
+fs::path standardCacheRoot(std::string* error) {
+  if (auto value = PJ::sdk::getEnv("MOSAICO_CACHE_DIR")) {
+    return fs::path(*value);
+  }
+  if (auto value = PJ::sdk::getEnv("XDG_CACHE_HOME")) {
+    return fs::path(*value) / "mosaico" / "sessions";
+  }
+  if (auto value = PJ::sdk::getEnv("HOME")) {
+    return fs::path(*value) / ".cache" / "mosaico" / "sessions";
+  }
+  if (error != nullptr) {
+    *error = "cache root unresolvable (MOSAICO_CACHE_DIR, XDG_CACHE_HOME and HOME all unset)";
+  }
+  return {};
+}
+
+PJ::sdk::descriptor_import::RequestArtifactCache makeArtifactCache(
+    const fs::path& configured_root, std::string* error) {
+  const fs::path root = configured_root.empty() ? standardCacheRoot(error) : configured_root;
+  return PJ::sdk::descriptor_import::RequestArtifactCache(
+      PJ::sdk::descriptor_import::CacheSpec{root, ".pjmosaico", sourceDescriptorPolicy().identity}, validateArtifact);
+}
 
 // ---------------------------------------------------------------------------
 // ArtifactWriter
@@ -372,7 +395,7 @@ bool validateArtifact(const fs::path& file, const std::string& hex, std::string*
   }
   // The identity is DEFINED as sha256/128 over the embedded canonical bytes —
   // re-hash them; never trust a stored identity string.
-  if (sha256HexPrefix(json_it->second, kDigestHexBytes) != hex) {
+  if (PJ::sdk::descriptor_import::sha256Hex(json_it->second, 32) != hex) {
     reader.close();
     if (error) {
       *error = "embedded descriptor identity mismatch";

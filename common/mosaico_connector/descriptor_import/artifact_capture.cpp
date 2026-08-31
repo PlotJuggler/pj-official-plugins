@@ -4,8 +4,6 @@
 
 #include <arrow/api.h>
 
-#include <system_error>
-
 namespace mosaico {
 
 namespace {
@@ -29,7 +27,7 @@ std::int64_t batchLogTime(const arrow::RecordBatch& batch, const std::string& ts
 }  // namespace
 
 ArtifactCapture::ArtifactCapture(const SourceDescriptor& descriptor, const std::filesystem::path& cache_root_override)
-    : cache_(SessionFileCache::at(cache_root_override, validateArtifact, nullptr)) {
+    : cache_(makeArtifactCache(cache_root_override)) {
   // Self-check: only a descriptor that round-trips our own validation may
   // name an artifact (e.g. a scheme-less URI typed into the connect box
   // disarms capture instead of producing an unloadable record).
@@ -41,20 +39,17 @@ ArtifactCapture::ArtifactCapture(const SourceDescriptor& descriptor, const std::
   }
   identity_ = descriptorIdentity(descriptor);
   descriptor_json_ = json;
-  lock_ = cache_.tryLockForMaterialize(identity_, &error);
-  if (!lock_.has_value()) {
+  auto transaction = cache_.beginWrite(identity_);
+  if (!transaction) {
     // Contended = another materialization or a live read lease (the
     // refusal-while-referenced rule); either way: eager-only.
-    disarm("cache unavailable: " + error);
+    disarm("cache unavailable: " + transaction.error().message);
     return;
   }
-  if (!writer_.open(cache_.partialPathFor(*lock_), canonicalSourceDescriptorJson(descriptor), &error)) {
+  transaction_.emplace(std::move(*transaction));
+  if (!writer_.open(transaction_->partialPath(), canonicalSourceDescriptorJson(descriptor), &error)) {
     disarm("artifact writer: " + error);
-    // open() may have created the file before failing; a cache partial must
-    // never outlive its session (finish() removes them on every other path).
-    std::error_code remove_error;
-    std::filesystem::remove(cache_.partialPathFor(*lock_), remove_error);
-    lock_.reset();
+    transaction_.reset();
     return;
   }
   armed_ = true;
@@ -152,51 +147,42 @@ std::optional<ArtifactCapture::Finalized> ArtifactCapture::finish(bool complete)
     if (armed_) {
       disarm(complete ? "finish failed" : "fetch incomplete");
     }
-    // Delete an orphaned partial (the writer wrote no valid footer, so
-    // finalize would reject it anyway — remove it eagerly).
-    if (lock_.has_value()) {
-      std::error_code ec;
-      std::filesystem::remove(cache_.partialPathFor(*lock_), ec);
-      lock_.reset();
+    // Abort eagerly: the writer has no valid footer and commit would reject
+    // it anyway.
+    if (transaction_.has_value()) {
+      transaction_.reset();
     }
     return std::nullopt;
   }
   std::string error;
   if (!writer_.close(&error)) {
     disarm("artifact close: " + error);
-    std::error_code ec;
-    std::filesystem::remove(cache_.partialPathFor(*lock_), ec);
-    lock_.reset();
+    transaction_.reset();
     return std::nullopt;
   }
-  if (!cache_.finalize(*lock_, &error)) {
-    disarm("cache finalize: " + error);  // finalize already removed the partial
-    lock_.reset();
-    return std::nullopt;
-  }
-  Finalized finalized;
-  const std::filesystem::path expected_path = cache_.pathFor(identity_);
-  finalized.path = expected_path;
-  finalized.lease = SessionFileCache::toSharedLease(std::move(*lock_), &error);
-  lock_.reset();
-  if (!finalized.lease.has_value()) {
-    const std::string downgrade_error = std::move(error);
-    error.clear();
-    finalized.lease = cache_.acquireReadLease(identity_, &error);
-    std::filesystem::path revalidated_path;
-    if (!finalized.lease.has_value()) {
-      disarm_reason_ = "cache read lease recovery failed after downgrade (" + downgrade_error + "): " + error;
+  auto committed = transaction_->commit();
+  transaction_.reset();
+  std::optional<PJ::sdk::descriptor_import::RequestArtifactCache::Hit> hit;
+  if (committed) {
+    hit.emplace(std::move(*committed));
+  } else if (committed.error().retryable) {
+    // commit() already published the artifact but lost the lease handoff to a
+    // concurrent exclusive holder. Exactly one leased lookup is the SDK's
+    // prescribed recovery; never return a bare, unpinned path.
+    std::string miss_reason;
+    hit = cache_.lookup(identity_, &miss_reason);
+    if (!hit.has_value()) {
+      disarm_reason_ = "cache commit lease recovery failed (" + committed.error().message + "): " + miss_reason;
       armed_ = false;
       return std::nullopt;
     }
-    if (!cache_.lookup(identity_, &revalidated_path) || revalidated_path != expected_path) {
-      disarm_reason_ = "cache read lease recovery could not revalidate the finalized artifact";
-      armed_ = false;
-      return std::nullopt;
-    }
+  } else {
+    disarm_reason_ = "cache commit: " + committed.error().message;
+    armed_ = false;
+    return std::nullopt;
   }
   armed_ = false;
-  return finalized;
+  return Finalized{std::move(hit->path), std::move(hit->lease)};
 }
 
 }  // namespace mosaico

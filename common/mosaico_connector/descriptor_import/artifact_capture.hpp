@@ -19,8 +19,6 @@
 #include <vector>
 
 #include "descriptor_import/arrow_cache_artifact.hpp"
-#include "descriptor_import/core/file_lock.h"
-#include "descriptor_import/session_file_cache.hpp"
 #include "descriptor_import/source_descriptor.hpp"
 
 namespace arrow {
@@ -64,21 +62,21 @@ class ArtifactCapture {
   /// Terminal. On `complete` (every topic succeeded and the session is still
   /// armed): close the writer, finalize into the cache, and hand back the
   /// artifact path + a dataset-lifetime read lease + the descriptor json for
-  /// the promotion request. If the exclusive-to-shared lock conversion fails,
-  /// finish reacquires a shared lease and revalidates the published path; it
-  /// fails eager-only rather than returning an unpinned artifact. Anything
-  /// else aborts and deletes the partial.
+  /// the promotion request. A retryable commit handoff failure performs one
+  /// leased lookup of the published artifact; a miss fails eager-only rather
+  /// than returning an unpinned path. Anything else aborts and deletes the
+  /// partial.
   struct Finalized {
     std::filesystem::path path;
-    std::optional<FileLock> lease;  ///< always populated on a successful finish
+    PJ::sdk::descriptor_import::ReadLease lease;
   };
   [[nodiscard]] std::optional<Finalized> finish(bool complete);
 
  private:
   void disarm(std::string reason);
 
-  SessionFileCache cache_;
-  std::optional<SessionFileCache::MaterializeLock> lock_;
+  PJ::sdk::descriptor_import::RequestArtifactCache cache_;
+  std::optional<PJ::sdk::descriptor_import::RequestArtifactCache::WriteTransaction> transaction_;
   ArtifactWriter writer_;
   std::unordered_map<std::string, std::uint16_t> object_channels_;
   std::string identity_;

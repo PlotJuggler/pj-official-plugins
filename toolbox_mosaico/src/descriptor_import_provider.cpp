@@ -9,27 +9,24 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cctype>
-#include <condition_variable>
 #include <cstddef>
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <pj_base/sdk/descriptor_import/origin.hpp>
+#include <pj_base/sdk/descriptor_import/provider_job.hpp>
 #include <pj_base/sdk/platform.hpp>
-#include <semaphore>
+#include <pj_base/sdk/testing/provider_job_probe.hpp>
 #include <string_view>
-#include <thread>
 #include <utility>
 #include <vector>
 
 #include "credential_resolve.hpp"
 #include "descriptor_import/arrow_cache_artifact.hpp"
-#include "descriptor_import/core/origin_match.h"
 #include "descriptor_import/source_descriptor.hpp"
 #include "fetch_worker.hpp"
 #include "promotion_artifact_lease_registry.hpp"
 #include "source_presentation.hpp"
-#include "stoppable_thread.hpp"
 
 namespace mosaico {
 
@@ -69,100 +66,24 @@ std::uint64_t minNonzero(std::uint64_t a, std::uint64_t b) {
   return a < b ? a : b;
 }
 
-std::string_view trimAsciiWhitespace(std::string_view text) {
-  while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front())) != 0) {
-    text.remove_prefix(1);
-  }
-  while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())) != 0) {
-    text.remove_suffix(1);
-  }
-  return text;
-}
-
 bool trustedByEnvironment(std::string_view server_uri) {
-  const auto target = parseGrpcOrigin(server_uri);
   const std::optional<std::string> allowlist = PJ::sdk::getEnv("MOSAICO_TRUSTED_ORIGINS");
-  if (!target.has_value() || !allowlist.has_value()) {
+  if (!allowlist.has_value()) {
     return false;
   }
-
-  std::string_view remaining = *allowlist;
-  for (;;) {
-    const std::size_t comma = remaining.find(',');
-    const std::string_view entry = trimAsciiWhitespace(remaining.substr(0, comma));
-    if (const auto candidate = parseGrpcOrigin(entry); candidate.has_value() && candidate->scheme == target->scheme &&
-                                                       candidate->host == target->host &&
-                                                       candidate->port == target->port) {
-      return true;
-    }
-    if (comma == std::string_view::npos) {
-      return false;
-    }
-    remaining.remove_prefix(comma + 1);
-  }
+  const PJ::sdk::descriptor_import::OriginPolicy policy{{"grpc", "grpc+tls"}, {}};
+  return PJ::sdk::descriptor_import::originAllowed(
+      server_uri, PJ::sdk::descriptor_import::parseOriginList(*allowlist, policy), policy);
 }
-
-// Settled-exactly-once promotion outcome, shared (shared_ptr) between the
-// FetchWorker's promotionSettled callback — which may fire re-entrantly, on
-// any thread, or long after the pull returned — and the job's waiter. The
-// callback captures ONLY this shared state, so a late settle can never touch
-// freed memory. wait() checks `settled` BEFORE `cancelled`, so a settle that
-// raced a post-completion cancel still reports truthfully.
-struct PromotionLatch {
-  std::mutex mu;
-  std::condition_variable cv;
-  bool settled = false;
-  bool promoted = false;
-  std::string detail;
-
-  void settle(bool ok, std::string message) {
-    {
-      std::lock_guard<std::mutex> lock(mu);
-      if (settled) {
-        return;
-      }
-      settled = true;
-      promoted = ok;
-      detail = std::move(message);
-    }
-    cv.notify_all();
-  }
-
-  /// True when settled; false = `cancelled()` while still outstanding
-  /// (DETACH: this shared state outlives the caller and settles whenever the
-  /// promotion result fires).
-  [[nodiscard]] bool wait(const std::function<bool()>& cancelled, std::chrono::milliseconds poll) {
-    std::unique_lock<std::mutex> lock(mu);
-    for (;;) {
-      if (settled) {
-        return true;
-      }
-      if (cancelled()) {
-        return false;
-      }
-      cv.wait_for(lock, poll);
-    }
-  }
-
-  [[nodiscard]] bool isPromoted() {
-    std::lock_guard<std::mutex> lock(mu);
-    return promoted;
-  }
-  [[nodiscard]] std::string detailCopy() {
-    std::lock_guard<std::mutex> lock(mu);
-    return detail;
-  }
-};
 
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// JobState — one import job: worker thread + a private FetchWorker + the ABI
-// callbacks
+// JobState — Mosaico's policy/body state. ProviderJob owns the lifecycle.
 // ---------------------------------------------------------------------------
 
 struct DescriptorImportProvider::JobState {
-  explicit JobState(SessionFileCache cache) : file_cache(std::move(cache)) {}
+  explicit JobState(PJ::sdk::descriptor_import::RequestArtifactCache cache) : file_cache(std::move(cache)) {}
 
   // ---- immutable inputs (written by startImport BEFORE the worker starts) --
   HostBindings bindings;
@@ -170,105 +91,45 @@ struct DescriptorImportProvider::JobState {
   std::string identity;
   ServerCredentials credentials;  // resolved on the main thread
   std::string cache_root_override;
-  SessionFileCache file_cache;  // same root artifact capture publishes under
+  PJ::sdk::descriptor_import::RequestArtifactCache file_cache;  // same root artifact capture publishes under
   std::uint64_t max_transfer_bytes = 0;
   std::chrono::milliseconds max_transfer_duration{0};
   std::chrono::milliseconds poll{50};
   std::function<void()> pre_terminal_hook;  // test seam
 
-  // Copied ABI callback pointers (the ABI: copied before start returns).
-  void (*on_dataset)(void*, PJ_data_source_handle_t) noexcept = nullptr;
-  void (*on_terminal)(void*, PJ_descriptor_import_outcome_t, PJ_string_view_t) noexcept = nullptr;
-  void* callback_ctx = nullptr;
-
-  // ---- lifecycle -----------------------------------------------------------
   FetchWorker fetch;  // per-job: owns the client + cancel wake machinery
-  std::binary_semaphore start_gate{0};
-  std::atomic<bool> start_released{false};
-  std::atomic<bool> cancelled{false};
-  std::atomic<int> terminal_count{0};
-  std::thread worker;
-  // Immutable after startImport (set before out_job is returned): the
-  // worker's id for the self-join guard — reading worker.get_id() during a
-  // concurrent join() would race the join's modification of the thread
-  // object.
-  std::thread::id worker_id;
-  // join()-state: the ABI slot is [thread-safe]/idempotent, but
-  // std::thread::join is neither — exactly ONE caller performs the join,
-  // every other caller waits for `joined`; all errors are swallowed inside
-  // the noexcept boundary.
-  std::mutex join_mu;
-  std::condition_variable join_cv;
-  bool join_in_progress = false;
-  bool joined = false;
 
   // ---- per-run result state ------------------------------------------------
-  std::shared_ptr<PromotionLatch> promotion_latch = std::make_shared<PromotionLatch>();
+  std::shared_ptr<PJ::sdk::descriptor_import::SettlementLatch> promotion_latch =
+      std::make_shared<PJ::sdk::descriptor_import::SettlementLatch>();
   std::atomic<bool> dataset_created{false};
+  std::atomic<bool> host_stop_requested{false};
   std::atomic<bool> imported_any{false};
   std::atomic<bool> any_failed{false};
   std::atomic<bool> byte_ceiling_exceeded{false};
   std::atomic<bool> duration_ceiling_exceeded{false};
+  std::atomic<bool> transfer_in_progress{false};
   std::mutex results_mu;
   std::string first_error;                             // guarded by results_mu
   std::map<std::string, std::int64_t> bytes_by_topic;  // guarded by results_mu
   std::uint64_t total_bytes = 0;                       // guarded by results_mu
 
-  // At-most-once gate release (std::binary_semaphore::release on an
-  // already-released semaphore is UB) — callable from startImport (the
-  // normal path) and defensively from destroy.
-  void releaseStartOnce() {
-    bool expected = false;
-    if (start_released.compare_exchange_strong(expected, true)) {
-      start_gate.release();
-    }
+  [[nodiscard]] bool isCancelled(const PJ::sdk::descriptor_import::JobControl& control) const {
+    return control.isCancelled() || host_stop_requested.load(std::memory_order_relaxed);
   }
 
-  // [thread-safe] Idempotent, non-blocking: flag + the pull's cancel wake
-  // machinery (Flight reader interrupts) — the poll loops read the flag.
-  void requestCancel() {
-    cancelled.store(true, std::memory_order_relaxed);
-    fetch.requestCancel();
-  }
-
-  [[nodiscard]] bool isCancelled() const {
-    return cancelled.load(std::memory_order_relaxed);
-  }
-
-  // Exactly-once terminal (defensive counter; the run() flow fires it once).
-  void fireTerminal(PJ_descriptor_import_outcome_t outcome, const std::string& message) {
-    if (terminal_count.fetch_add(1) != 0) {
-      return;
-    }
-    if (on_terminal != nullptr) {
-      on_terminal(callback_ctx, outcome, PJ_string_view_t{message.data(), message.size()});
-    }
-  }
-
-  void run() noexcept;
-  PJ_descriptor_import_outcome_t runToTerminal(std::string* message);
+  PJ::sdk::descriptor_import::ImportOutcome runToTerminal(PJ::sdk::descriptor_import::JobControl& control);
 };
 
-void DescriptorImportProvider::JobState::run() noexcept {
-  // FIRST action: block on the start gate — the ABI forbids any job callback
-  // before start_import returns; startImport releases the gate as it is
-  // about to return, after out_job is fully populated.
-  start_gate.acquire();
-  PJ_descriptor_import_outcome_t outcome = PJ_DESCRIPTOR_IMPORT_FAILED;
-  std::string message;
-  try {
-    outcome = runToTerminal(&message);
-  } catch (...) {
-    outcome = PJ_DESCRIPTOR_IMPORT_FAILED;
-    message = "internal error while running the import";
-  }
-  fireTerminal(outcome, message);
+bool DescriptorImportProvider::claimTransferWatchdogExpiry(std::atomic<bool>& transfer_in_progress) noexcept {
+  return transfer_in_progress.exchange(false, std::memory_order_relaxed);
 }
 
-PJ_descriptor_import_outcome_t DescriptorImportProvider::JobState::runToTerminal(std::string* message) {
-  if (isCancelled()) {
-    *message = "import cancelled";
-    return PJ_DESCRIPTOR_IMPORT_CANCELLED;
+PJ::sdk::descriptor_import::ImportOutcome DescriptorImportProvider::JobState::runToTerminal(
+    PJ::sdk::descriptor_import::JobControl& control) {
+  control.onCancel([this] { fetch.requestCancel(); });
+  if (isCancelled(control)) {
+    return {PJ_DESCRIPTOR_IMPORT_CANCELLED, "import cancelled"};
   }
 
   // The host classifies hit/miss BEFORE starting a job, so a fresh VALID
@@ -280,10 +141,9 @@ PJ_descriptor_import_outcome_t DescriptorImportProvider::JobState::runToTerminal
   // the capture's materialize lock: capture simply disarms and this import lands
   // eager-only.
   {
-    std::filesystem::path disk;
-    if (file_cache.lookup(identity, &disk)) {
-      *message = "session was materialized concurrently; reload to classify it as a cache hit";
-      return PJ_DESCRIPTOR_IMPORT_FAILED;
+    if (file_cache.lookup(identity)) {
+      return {
+          PJ_DESCRIPTOR_IMPORT_FAILED, "session was materialized concurrently; reload to classify it as a cache hit"};
     }
   }
 
@@ -293,11 +153,9 @@ PJ_descriptor_import_outcome_t DescriptorImportProvider::JobState::runToTerminal
 
   // on_dataset: zero-or-one, fired when the pull creates its batch dataset,
   // strictly before any publication into it.
-  fetch.datasetCreated = [this](PJ::sdk::DataSourceHandle handle) {
+  fetch.datasetCreated = [this, &control](PJ::sdk::DataSourceHandle handle) {
     if (!dataset_created.exchange(true)) {
-      if (on_dataset != nullptr) {
-        on_dataset(callback_ctx, PJ_data_source_handle_t{handle.id});
-      }
+      control.notifyDataset(PJ_data_source_handle_t{handle.id});
     }
   };
   // Per-topic outcomes (SDK pool threads): the terminal message carries the
@@ -342,8 +200,8 @@ PJ_descriptor_import_outcome_t DescriptorImportProvider::JobState::runToTerminal
     }
   };
   // A host-side Stop (the curve-tree row's stop button) is a caller cancel.
-  fetch.hostStopRequested = [this] { cancelled.store(true, std::memory_order_relaxed); };
-  // Promotion settlement rides the shared latch (see PromotionLatch).
+  fetch.hostStopRequested = [this] { host_stop_requested.store(true, std::memory_order_relaxed); };
+  // Promotion settlement rides the SDK's shared, settle-exactly-once latch.
   {
     auto latch = promotion_latch;
     fetch.promotionSettled = [latch](bool ok, std::string detail) { latch->settle(ok, std::move(detail)); };
@@ -353,13 +211,11 @@ PJ_descriptor_import_outcome_t DescriptorImportProvider::JobState::runToTerminal
   ConnectResult connect_result;
   fetch.connectFinished = [&connect_result](ConnectResult result) { connect_result = std::move(result); };
   fetch.connectAsync(descriptor.server_uri, credentials);
-  if (isCancelled()) {
-    *message = "import cancelled";
-    return PJ_DESCRIPTOR_IMPORT_CANCELLED;
+  if (isCancelled(control)) {
+    return {PJ_DESCRIPTOR_IMPORT_CANCELLED, "import cancelled"};
   }
   if (!connect_result.ok) {
-    *message = "could not connect to " + descriptor.server_uri + ": " + connect_result.error;
-    return PJ_DESCRIPTOR_IMPORT_FAILED;
+    return {PJ_DESCRIPTOR_IMPORT_FAILED, "could not connect to " + descriptor.server_uri + ": " + connect_result.error};
   }
 
   // ---- topic list metadata -------------------------------------------------
@@ -369,23 +225,22 @@ PJ_descriptor_import_outcome_t DescriptorImportProvider::JobState::runToTerminal
   fetch.listTopicsAsync(descriptor.sequence);
 
   // ---- the descriptor-armed pull (artifact capture + promotion) ------------
-  {
-    // Duration-ceiling watchdog: fires the FETCH cancel (like the byte
-    // ceiling) so the terminal classifies as the ceiling. Scoped to the
-    // pull; the destructor stops + joins on every exit path.
-    std::optional<StoppableThread> watchdog;
-    if (max_transfer_duration.count() > 0) {
-      watchdog.emplace([this](StoppableThread& thread) {
-        if (!thread.waitForStop(max_transfer_duration)) {
-          duration_ceiling_exceeded.store(true, std::memory_order_relaxed);
-          fetch.requestCancel();
-        }
-      });
+  // Duration-ceiling watchdog: fires the FETCH cancel (like the byte
+  // ceiling) so the terminal classifies as the ceiling, not caller cancel.
+  // ProviderJob owns the watchdog through the whole body, whereas Mosaico's
+  // ceiling covers transport only. The active gate preserves that scope: a
+  // later expiry during promotion settlement is inert.
+  transfer_in_progress.store(true, std::memory_order_relaxed);
+  control.armWatchdog(max_transfer_duration, [this] {
+    if (!DescriptorImportProvider::claimTransferWatchdogExpiry(transfer_in_progress)) {
+      return;
     }
-    fetch.pullTopicsAsync(
-        descriptor.sequence, descriptor.topics, descriptor.start_ns, descriptor.end_ns, descriptor,
-        cache_root_override);
-  }
+    duration_ceiling_exceeded.store(true, std::memory_order_relaxed);
+    fetch.requestCancel();
+  });
+  fetch.pullTopicsAsync(
+      descriptor.sequence, descriptor.topics, descriptor.start_ns, descriptor.end_ns, descriptor, cache_root_override);
+  transfer_in_progress.store(false, std::memory_order_relaxed);
   if (pre_terminal_hook) {
     pre_terminal_hook();
   }
@@ -397,22 +252,18 @@ PJ_descriptor_import_outcome_t DescriptorImportProvider::JobState::runToTerminal
   // that COMPLETED before a post-completion cancel reports its truthful
   // terminal (the host's cancel rollback is ledger-based either way).
   const bool batch_complete = imported_any.load() && !any_failed.load();
-  if (isCancelled() && !batch_complete) {
-    *message = "import cancelled";
-    return PJ_DESCRIPTOR_IMPORT_CANCELLED;
+  if (isCancelled(control) && !batch_complete) {
+    return {PJ_DESCRIPTOR_IMPORT_CANCELLED, "import cancelled"};
   }
   if (byte_ceiling_exceeded.load()) {
-    *message = "import exceeded the transfer byte ceiling (MOSAICO_IMPORT_MAX_BYTES)";
-    return PJ_DESCRIPTOR_IMPORT_FAILED;
+    return {PJ_DESCRIPTOR_IMPORT_FAILED, "import exceeded the transfer byte ceiling (MOSAICO_IMPORT_MAX_BYTES)"};
   }
   if (duration_ceiling_exceeded.load()) {
-    *message = "import exceeded the transfer time ceiling (MOSAICO_IMPORT_MAX_SECONDS)";
-    return PJ_DESCRIPTOR_IMPORT_FAILED;
+    return {PJ_DESCRIPTOR_IMPORT_FAILED, "import exceeded the transfer time ceiling (MOSAICO_IMPORT_MAX_SECONDS)"};
   }
   if (!imported_any.load()) {
     std::lock_guard<std::mutex> lock(results_mu);
-    *message = first_error.empty() ? "no topic could be imported" : first_error;
-    return PJ_DESCRIPTOR_IMPORT_FAILED;
+    return {PJ_DESCRIPTOR_IMPORT_FAILED, first_error.empty() ? "no topic could be imported" : first_error};
   }
 
   // ---- promotion settlement (cancel-aware, DETACH on cancel) ---------------
@@ -421,94 +272,20 @@ PJ_descriptor_import_outcome_t DescriptorImportProvider::JobState::runToTerminal
   // possibly after the pull returned. A cancel while it is outstanding
   // detaches: the shared latch outlives this job and join() stays
   // unblockable.
-  const bool settled = promotion_latch->wait([this] { return isCancelled(); }, poll);
+  const bool settled = promotion_latch->wait([this, &control] { return isCancelled(control); }, poll);
   if (!settled) {
-    *message = "import cancelled (promotion still pending; detached)";
-    return PJ_DESCRIPTOR_IMPORT_CANCELLED;
+    return {PJ_DESCRIPTOR_IMPORT_CANCELLED, "import cancelled (promotion still pending; detached)"};
   }
   const bool eager_usable = dataset_created.load() && imported_any.load();
-  if (promotion_latch->isPromoted()) {
-    *message = "promoted to a file-backed source";
-    return PJ_DESCRIPTOR_IMPORT_SUCCEEDED_PROMOTED;
+  if (promotion_latch->ok()) {
+    return {PJ_DESCRIPTOR_IMPORT_SUCCEEDED_PROMOTED, "promoted to a file-backed source"};
   }
   if (eager_usable) {
-    *message = "import completed without promotion (" + promotion_latch->detailCopy() + ")";
-    return PJ_DESCRIPTOR_IMPORT_SUCCEEDED_EAGER_ONLY;
+    return {
+        PJ_DESCRIPTOR_IMPORT_SUCCEEDED_EAGER_ONLY,
+        "import completed without promotion (" + promotion_latch->detail() + ")"};
   }
-  *message = "import produced no usable dataset (" + promotion_latch->detailCopy() + ")";
-  return PJ_DESCRIPTOR_IMPORT_FAILED;
-}
-
-// ---------------------------------------------------------------------------
-// The job vtable trio
-// ---------------------------------------------------------------------------
-
-void DescriptorImportProvider::jobCancel(void* ctx) noexcept {
-  if (ctx != nullptr) {
-    static_cast<JobState*>(ctx)->requestCancel();
-  }
-}
-
-void DescriptorImportProvider::jobJoin(void* ctx) noexcept {
-  if (ctx == nullptr) {
-    return;
-  }
-  auto* state = static_cast<JobState*>(ctx);
-  // ABI: join/destroy must never be called from a job callback (that thread
-  // joining itself is deadlock-or-terminate). The host is trusted; this
-  // guard documents the rule and downgrades a violation to a no-op. The id
-  // read is the IMMUTABLE worker_id member — never worker.get_id(), which
-  // would race a concurrent join()'s modification of the thread object.
-  if (state->worker_id == std::this_thread::get_id()) {
-    return;
-  }
-  // Concurrent-caller safety: two allowed non-callback threads may call
-  // join() together, but std::thread::join is not thread-safe — one caller
-  // performs the join, the rest wait for `joined`, and EVERY error stays
-  // inside this noexcept boundary.
-  try {
-    std::unique_lock<std::mutex> lock(state->join_mu);
-    if (state->joined) {
-      return;
-    }
-    if (state->join_in_progress) {
-      state->join_cv.wait(lock, [state] { return state->joined; });
-      return;
-    }
-    state->join_in_progress = true;
-    lock.unlock();
-    try {
-      if (state->worker.joinable()) {
-        state->worker.join();
-      }
-    } catch (...) {
-      // Swallow: the thread either finished or the join failed; either way
-      // the terminal contract is the run() flow's, not join()'s.
-    }
-    lock.lock();
-    state->joined = true;
-    state->join_cv.notify_all();
-  } catch (...) {
-    // Lock/wait failure: nothing safe left to do inside noexcept.
-  }
-}
-
-void DescriptorImportProvider::jobDestroy(void* ctx) noexcept {
-  if (ctx == nullptr) {
-    return;
-  }
-  // NOTE: jobJoin's self-join guard does NOT make destroy-from-a-callback
-  // survivable — the guard only skips the join, and `delete state` below
-  // then destroys a still-joinable std::thread member, which is
-  // std::terminate. The ABI's "never call join/destroy from a job callback"
-  // rule is load-bearing here, not merely advisory.
-  auto* state = static_cast<JobState*>(ctx);
-  jobCancel(ctx);
-  // Defensive: startImport always releases the gate before returning, but a
-  // gate that was somehow never released must not deadlock the join below.
-  state->releaseStartOnce();
-  jobJoin(ctx);
-  delete state;
+  return {PJ_DESCRIPTOR_IMPORT_FAILED, "import produced no usable dataset (" + promotion_latch->detail() + ")"};
 }
 
 // ---------------------------------------------------------------------------
@@ -524,12 +301,12 @@ void DescriptorImportProvider::bind(PJ::sdk::SettingsView settings, HostBindings
   bindings_ = std::move(bindings);
 }
 
-SessionFileCache DescriptorImportProvider::makeFileCache() {
+PJ::sdk::descriptor_import::RequestArtifactCache DescriptorImportProvider::makeFileCache() {
   std::string configured;
   if (auto stored = settings_.value("mosaico/cache_directory")) {
     configured = stored->toString();
   }
-  return SessionFileCache::at(std::filesystem::path(configured), validateArtifact, nullptr);
+  return makeArtifactCache(std::filesystem::path(configured));
 }
 
 bool DescriptorImportProvider::queryDescriptor(
@@ -548,81 +325,59 @@ bool DescriptorImportProvider::queryDescriptor(
       return false;
     }
 
-    SessionFileCache cache = makeFileCache();
+    auto cache = makeFileCache();
     // Result strings: owned by this instance, valid until the NEXT query on
     // it (the ABI lifetime rule; main-thread only, like the query itself).
-    query_identity_ = descriptorIdentity(*descriptor);
+    query_result_ = PJ::DescriptorQueryResult{};
+    query_result_.source_identity = descriptorIdentity(*descriptor);
     // The host builds the dialog rows only after this bounded query returns.
     // Publish the descriptor's human presentation now so first loads on a new
     // machine do not fall back to the opaque durable identity.
-    recordSourcePresentation(settings_, query_identity_, *descriptor);
-    query_path_ = cache.pathFor(query_identity_).string();
-    query_message_.clear();
+    recordSourcePresentation(settings_, query_result_.source_identity, *descriptor);
+    query_result_.local_path_utf8 = cache.pathFor(query_result_.source_identity).string();
 
     // Trust: strict origin equality against the process environment
     // allowlist. Malformed entries are ignored; v1 emits only trusted /
     // needs-confirmation (refused is reserved for future policy).
     const bool trusted = trustedByEnvironment(descriptor->server_uri);
+    query_result_.trust = trusted ? PJ::DescriptorTrust::kTrusted : PJ::DescriptorTrust::kNeedsConfirmation;
     if (!trusted) {
-      query_message_ = "server not trusted on this machine; confirm the download or set MOSAICO_TRUSTED_ORIGINS";
+      query_result_.message = "server not trusted on this machine; confirm the download or set MOSAICO_TRUSTED_ORIGINS";
     }
 
     // is_materialized: the DISK-validated cache ONLY, with lease-then-
     // validate pinning — a materialized hit is a path the HOST is about to
     // load, and after a process restart no finalize-time lease exists. Retain
     // the lease in the DSO-lifetime path registry so panel/provider teardown
-    // cannot make the host's lazy re-open evictable. On lease contention
-    // (another process holds the exclusive) we still answer honestly from a
-    // plain validation, just without retention.
-    bool materialized = false;
+    // cannot make the host's lazy re-open evictable. The SDK never returns an
+    // unleased path: lock contention is a miss with a retry hint.
+    const auto append_message = [this](std::string message) {
+      if (!query_result_.message.empty()) {
+        query_result_.message += "; ";
+      }
+      query_result_.message += std::move(message);
+    };
     std::filesystem::path disk;
-    std::string lease_error;
-    if (auto lease = cache.acquireReadLease(query_identity_, &lease_error)) {
-      materialized = cache.lookup(query_identity_, &disk);
-      if (materialized && !promotionArtifactLeaseRegistry().retain(disk, std::move(*lease))) {
-        materialized = false;
-        if (query_message_.empty()) {
-          query_message_ = "cache artifact present but its read lease could not be retained";
-        }
+    std::string miss_reason;
+    if (auto hit = cache.lookup(query_result_.source_identity, &miss_reason)) {
+      disk = hit->path;
+      if (promotionArtifactLeaseRegistry().retain(disk, std::move(hit->lease))) {
+        query_result_.is_materialized = true;
+      } else {
+        append_message("cache artifact present but its read lease could not be retained");
       }
-    } else {
-      materialized = cache.lookup(query_identity_, &disk);
-      if (materialized && query_message_.empty()) {
-        query_message_ = "cache artifact present but its read lease is contended";
-      }
+    } else if (miss_reason.find("retry") != std::string::npos) {
+      append_message("cache artifact is temporarily locked; retry the import");
     }
-    std::uint64_t estimated_bytes = 0;
-    if (materialized) {
+    if (query_result_.is_materialized) {
       std::error_code ec;
       const auto size = std::filesystem::file_size(disk, ec);
       if (!ec) {
-        estimated_bytes = static_cast<std::uint64_t>(size);
+        query_result_.estimated_bytes = static_cast<std::uint64_t>(size);
       }
     }
 
-    // Growth contract: write ONLY fields wholly covered by the caller's
-    // struct_size.
-    auto covered = [out_result](std::size_t offset, std::size_t size) {
-      return out_result->struct_size >= offset + size;
-    };
-    if (covered(offsetof(PJ_descriptor_query_result_v1_t, trust), sizeof(out_result->trust))) {
-      out_result->trust = trusted ? PJ_DESCRIPTOR_TRUST_TRUSTED : PJ_DESCRIPTOR_TRUST_NEEDS_CONFIRMATION;
-    }
-    if (covered(offsetof(PJ_descriptor_query_result_v1_t, is_materialized), sizeof(out_result->is_materialized))) {
-      out_result->is_materialized = materialized ? 1 : 0;
-    }
-    if (covered(offsetof(PJ_descriptor_query_result_v1_t, source_identity), sizeof(out_result->source_identity))) {
-      out_result->source_identity = PJ_string_view_t{query_identity_.data(), query_identity_.size()};
-    }
-    if (covered(offsetof(PJ_descriptor_query_result_v1_t, local_path_utf8), sizeof(out_result->local_path_utf8))) {
-      out_result->local_path_utf8 = PJ_string_view_t{query_path_.data(), query_path_.size()};
-    }
-    if (covered(offsetof(PJ_descriptor_query_result_v1_t, message), sizeof(out_result->message))) {
-      out_result->message = PJ_string_view_t{query_message_.data(), query_message_.size()};
-    }
-    if (covered(offsetof(PJ_descriptor_query_result_v1_t, estimated_bytes), sizeof(out_result->estimated_bytes))) {
-      out_result->estimated_bytes = estimated_bytes;
-    }
+    PJ::writeDescriptorQueryResult(out_result, query_result_);
     return true;
   } catch (...) {
     PJ::sdk::fillError(out_error, 1, "mosaico", "internal error in query_descriptor");
@@ -634,41 +389,31 @@ bool DescriptorImportProvider::startImport(
     const PJ_descriptor_import_start_request_v1_t* request, const PJ_descriptor_import_callbacks_v1_t* callbacks,
     void* callback_ctx, PJ_joinable_job_t* out_job, PJ_error_t* out_error) {
   try {
+    // Preserve Mosaico's synchronous ABI-preflight precedence. ProviderJob
+    // revalidates this surface at the tail call, after Mosaico has parsed and
+    // resolved its policy, but unusable outputs/callbacks must not make that
+    // policy work observable.
     if (request == nullptr || out_job == nullptr) {
       PJ::sdk::fillError(out_error, 1, "mosaico", "null request/out_job");
       return false;
     }
-    auto req_covered = [request](std::size_t offset, std::size_t size) {
-      return request->struct_size >= offset + size;
-    };
-
-    // FLAGS FAIL CLOSED, FIRST: unknown bits reject synchronously — no
-    // callbacks, out_job untouched (the ABI's fail-closed spine).
-    const std::uint64_t flags =
-        req_covered(offsetof(PJ_descriptor_import_start_request_v1_t, flags), sizeof(request->flags))
-            ? request->flags
-            : PJ_DESCRIPTOR_IMPORT_START_FLAG_NONE;
-    if ((flags & ~PJ_DESCRIPTOR_IMPORT_START_FLAGS_V1_MASK) != 0) {
-      PJ::sdk::fillError(out_error, 1, "mosaico", "unknown start_import flag bits (fail closed)");
+    auto parsed_request = PJ::readDescriptorImportStartRequest(request);
+    if (!parsed_request) {
+      PJ::sdk::fillError(out_error, 1, "mosaico", parsed_request.error());
       return false;
     }
-
-    // Required callback surface: on_terminal is the exactly-once spine.
     const bool terminal_covered =
-        callbacks != nullptr && callbacks->struct_size >= offsetof(PJ_descriptor_import_callbacks_v1_t, on_terminal) +
-                                                              sizeof(callbacks->on_terminal);
+        callbacks != nullptr && PJ::sdk::fieldCovered(
+                                    callbacks->struct_size, offsetof(PJ_descriptor_import_callbacks_v1_t, on_terminal),
+                                    sizeof(callbacks->on_terminal));
     if (!terminal_covered || callbacks->on_terminal == nullptr) {
       PJ::sdk::fillError(out_error, 1, "mosaico", "on_terminal callback is required");
       return false;
     }
 
     std::string parse_error;
-    const std::string_view descriptor_json =
-        req_covered(
-            offsetof(PJ_descriptor_import_start_request_v1_t, descriptor_json), sizeof(request->descriptor_json))
-            ? toView(request->descriptor_json)
-            : std::string_view{};
-    const std::optional<SourceDescriptor> descriptor = parseSourceDescriptor(descriptor_json, &parse_error);
+    const std::optional<SourceDescriptor> descriptor =
+        parseSourceDescriptor(parsed_request->descriptor_json, &parse_error);
     if (!descriptor.has_value()) {
       PJ::sdk::fillError(out_error, 1, "mosaico", parse_error);
       return false;
@@ -681,7 +426,7 @@ bool DescriptorImportProvider::startImport(
     // Credentials resolved ON THIS (main) thread — SettingsView is
     // main-thread-only; the job thread never touches the view. The env-key
     // origin guard lives in resolveHeadlessCredentials.
-    auto* state = new JobState(makeFileCache());
+    auto state = std::make_shared<JobState>(makeFileCache());
     state->bindings = bindings_;
     state->descriptor = *descriptor;
     state->identity = descriptorIdentity(*descriptor);
@@ -689,51 +434,24 @@ bool DescriptorImportProvider::startImport(
     if (auto stored = settings_.value("mosaico/cache_directory")) {
       state->cache_root_override = stored->toString();
     }
-    const std::uint64_t caller_bytes =
-        req_covered(
-            offsetof(PJ_descriptor_import_start_request_v1_t, max_transfer_bytes), sizeof(request->max_transfer_bytes))
-            ? request->max_transfer_bytes
-            : 0;
     // The provider's per-machine hard limits apply even when the caller
     // imposes none — effective = min-nonzero(caller, provider). Read on the
     // main thread, like every other start-time resolution.
-    state->max_transfer_bytes = minNonzero(caller_bytes, envLimit("MOSAICO_IMPORT_MAX_BYTES", kDefaultImportMaxBytes));
+    state->max_transfer_bytes =
+        minNonzero(parsed_request->max_transfer_bytes, envLimit("MOSAICO_IMPORT_MAX_BYTES", kDefaultImportMaxBytes));
     state->max_transfer_duration =
         std::chrono::milliseconds(envLimit("MOSAICO_IMPORT_MAX_SECONDS", kDefaultImportMaxSeconds) * 1000);
     state->poll = poll_;
     state->pre_terminal_hook = pre_terminal_hook_;
-    state->on_dataset = callbacks->on_dataset;  // may be null (zero-or-one)
-    state->on_terminal = callbacks->on_terminal;
-    state->callback_ctx = callback_ctx;
+    auto body = [state](PJ::sdk::descriptor_import::JobControl& control) { return state->runToTerminal(control); };
 
-    // Spawn the GATED worker first (its first action is start_gate.acquire(),
-    // so it cannot touch anything before the release below): a thread-spawn
-    // failure must return false with out_job UNTOUCHED and no leaked state.
-    try {
-      state->worker = std::thread([state]() { state->run(); });
-    } catch (...) {
-      delete state;
-      PJ::sdk::fillError(out_error, 1, "mosaico", "could not start the import worker thread");
-      return false;
-    }
-    state->worker_id = state->worker.get_id();  // immutable from here
-
-    // Populate out_job with the worker safely gated; the caller reads it
-    // only after this returns.
-    out_job->ctx = state;
-    out_job->vtable = &kJobVtable;
-
-    // The explicit post-return START GATE: released only now — after out_job
-    // is fully populated and this thunk is about to return — so the worker's
-    // FIRST action cannot proceed earlier. (The residual caller-side window
-    // between this release and the caller resuming is the ABI's known,
-    // callee-unfixable gap; the SDK's reference provider has the identical
-    // shape.)
+    // Keep the deterministic gate probe as a test seam; production uses the
+    // ordinary SDK entry point as start_import's tail call.
     if (start_gate_probe_) {
-      start_gate_probe_();
+      return PJ::sdk::descriptor_import::testing::startWithGateProbe(
+          std::move(body), callbacks, callback_ctx, out_job, out_error, start_gate_probe_);
     }
-    state->releaseStartOnce();
-    return true;
+    return PJ::sdk::descriptor_import::ProviderJob::start(std::move(body), callbacks, callback_ctx, out_job, out_error);
   } catch (...) {
     PJ::sdk::fillError(out_error, 1, "mosaico", "internal error in start_import");
     return false;

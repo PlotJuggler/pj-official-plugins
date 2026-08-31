@@ -26,10 +26,9 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <pj_base/sdk/descriptor_import/request_cache.hpp>
 #include <string>
 #include <vector>
-
-#include "descriptor_import/session_file_cache.hpp"
 
 namespace arrow {
 class RecordBatch;
@@ -93,7 +92,7 @@ class ArtifactWriter {
   [[nodiscard]] bool close(std::string* error);
 
   /// Abort: close the underlying file WITHOUT a valid footer. The caller
-  /// deletes the partial (SessionFileCache::finalize would reject it anyway).
+  /// deletes the partial (RequestArtifactCache::commit would reject it anyway).
   void abort();
 
  private:
@@ -101,13 +100,26 @@ class ArtifactWriter {
   std::unique_ptr<Impl> impl_;
 };
 
-/// The SessionFileCache validator for this artifact format. Bounded I/O
+/// The RequestArtifactCache validator for this artifact format. Bounded I/O
 /// (raw footer preflight + summary section only — a forged file can never
 /// make the parser allocate past the fixed budgets): footer + summary
 /// readable, Statistics present, and embedded provenance present with its
 /// bytes RE-HASHING to `hex`. Fetch-ledger completeness is enforced before
 /// this artifact is finalized and published.
 [[nodiscard]] bool validateArtifact(const std::filesystem::path& file, const std::string& hex, std::string* error);
+
+/// The env-resolved standard cache root: MOSAICO_CACHE_DIR ||
+/// $XDG_CACHE_HOME/mosaico/sessions || ~/.cache/mosaico/sessions. Empty (with
+/// `error` set) when unresolvable. The dialog shows this as the cache-directory
+/// placeholder hint while an empty configured root keeps this resolution live.
+[[nodiscard]] std::filesystem::path standardCacheRoot(std::string* error);
+
+/// The one "configured directory else standard root" rule, paired with the
+/// Mosaico artifact suffix, identity scheme, and provenance-rehashing
+/// validator. Every capture/query/import consumer uses this factory so an
+/// identity always names the same validated cache entry.
+[[nodiscard]] PJ::sdk::descriptor_import::RequestArtifactCache makeArtifactCache(
+    const std::filesystem::path& configured_root = {}, std::string* error = nullptr);
 
 /// One canonical object blob, with the exact timestamp it was ingested at.
 struct ArtifactObjectSample {

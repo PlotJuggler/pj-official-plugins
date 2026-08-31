@@ -13,6 +13,17 @@
 namespace {
 
 namespace fs = std::filesystem;
+using PJ::sdk::descriptor_import::CacheSpec;
+using PJ::sdk::descriptor_import::IdentityScheme;
+using PJ::sdk::descriptor_import::RequestArtifactCache;
+
+const std::string kIdentity = "test:v1:sha256/128:" + std::string(32, 'a');
+
+RequestArtifactCache cacheFor(const fs::path& root) {
+  return RequestArtifactCache(
+      CacheSpec{root, ".pjmosaico", IdentityScheme{"test:v1:sha256/128:", 32}},
+      [](const fs::path&, const std::string&, std::string*) { return true; });
+}
 
 struct TempDir {
   TempDir() {
@@ -29,15 +40,14 @@ struct TempDir {
 
 TEST(PromotionArtifactLeaseRegistry, SuccessPinsUntilRegistryDestructionAndHandlesReentrantResult) {
   TempDir temp;
-  const fs::path artifact = temp.path / "artifact.pjmosaico";
-  const fs::path lock_path = temp.path / "artifact.pjmosaico.lock";
-  std::string error;
+  auto cache = cacheFor(temp.path);
+  const fs::path artifact = cache.pathFor(kIdentity);
   int settlements = 0;
 
   {
     mosaico::PromotionArtifactLeaseRegistry registry;
-    auto lease = mosaico::FileLock::tryShared(lock_path, &error);
-    ASSERT_TRUE(lease.has_value()) << error;
+    auto lease = cache.acquireReadLease(kIdentity);
+    ASSERT_TRUE(lease) << lease.error().message;
 
     std::weak_ptr<mosaico::PendingPromotionArtifactLease> weak_pending;
     auto pending = std::make_shared<mosaico::PendingPromotionArtifactLease>(
@@ -54,20 +64,22 @@ TEST(PromotionArtifactLeaseRegistry, SuccessPinsUntilRegistryDestructionAndHandl
     EXPECT_EQ(settlements, 1);
     EXPECT_EQ(registry.retainedCount(), 1u);
     EXPECT_TRUE(registry.retains(artifact));
-    EXPECT_FALSE(mosaico::FileLock::tryExclusive(lock_path, &error).has_value());
+    auto blocked = cache.beginWrite(kIdentity);
+    ASSERT_FALSE(blocked);
+    EXPECT_TRUE(blocked.error().retryable);
   }
 
-  EXPECT_TRUE(mosaico::FileLock::tryExclusive(lock_path, &error).has_value()) << error;
+  auto writer = cache.beginWrite(kIdentity);
+  EXPECT_TRUE(writer) << writer.error().message;
 }
 
 TEST(PromotionArtifactLeaseRegistry, FailureReleasesPendingLease) {
   TempDir temp;
-  const fs::path artifact = temp.path / "artifact.pjmosaico";
-  const fs::path lock_path = temp.path / "artifact.pjmosaico.lock";
-  std::string error;
+  auto cache = cacheFor(temp.path);
+  const fs::path artifact = cache.pathFor(kIdentity);
   mosaico::PromotionArtifactLeaseRegistry registry;
-  auto lease = mosaico::FileLock::tryShared(lock_path, &error);
-  ASSERT_TRUE(lease.has_value()) << error;
+  auto lease = cache.acquireReadLease(kIdentity);
+  ASSERT_TRUE(lease) << lease.error().message;
 
   bool settled = false;
   auto pending = std::make_shared<mosaico::PendingPromotionArtifactLease>(
@@ -79,7 +91,8 @@ TEST(PromotionArtifactLeaseRegistry, FailureReleasesPendingLease) {
 
   EXPECT_TRUE(settled);
   EXPECT_EQ(registry.retainedCount(), 0u);
-  EXPECT_TRUE(mosaico::FileLock::tryExclusive(lock_path, &error).has_value()) << error;
+  auto writer = cache.beginWrite(kIdentity);
+  EXPECT_TRUE(writer) << writer.error().message;
 }
 
 }  // namespace

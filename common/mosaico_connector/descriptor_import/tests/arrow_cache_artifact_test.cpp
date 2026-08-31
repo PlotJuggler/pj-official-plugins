@@ -4,19 +4,20 @@
 // The Arrow-in-MCAP cache artifact: write -> validate -> read round trip
 // (multi-topic, heterogeneous schemas, verbatim batches), the validator's
 // rejection matrix (identity mismatch, foreign junk, truncation, forged
-// summary span), and the artifact <-> SessionFileCache
-// integration through the real lock -> partial -> finalize path.
+// summary span), and the artifact <-> RequestArtifactCache integration
+// through the real transaction -> partial -> commit path.
 #include "descriptor_import/arrow_cache_artifact.hpp"
 
 #include <arrow/api.h>
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <pj_base/sdk/descriptor_import/source_descriptor.hpp>
 #include <string>
 
-#include "descriptor_import/core/sha256.h"
 #include "descriptor_import/source_descriptor.hpp"
 #include "descriptor_import/tests/test_support_fs.hpp"
 
@@ -26,7 +27,6 @@ namespace fs = std::filesystem;
 using mosaico::ArtifactTopic;
 using mosaico::ArtifactTopicData;
 using mosaico::ArtifactWriter;
-using mosaico::SessionFileCache;
 
 struct TempRoot : mosaico_test::ScopedTempDir {
   explicit TempRoot(const std::string& name) : ScopedTempDir("mosaico-artifact-test-" + name) {}
@@ -47,7 +47,7 @@ mosaico::SourceDescriptor descriptor() {
 
 // The identity's digest component for `d` (what the store hands validators).
 std::string hexFor(const mosaico::SourceDescriptor& d) {
-  return mosaico::sha256HexPrefix(mosaico::canonicalSourceDescriptorJson(d), 16);
+  return PJ::sdk::descriptor_import::sha256Hex(mosaico::canonicalSourceDescriptorJson(d), 32);
 }
 
 std::shared_ptr<arrow::RecordBatch> scalarBatch(std::int64_t t0, int rows) {
@@ -204,18 +204,27 @@ TEST(ArrowCacheArtifact, ForgedOversizedSummarySpanIsRefusedBeforeParsing) {
 // path.
 TEST(ArrowCacheArtifact, CacheRoundTripThroughStore) {
   TempRoot root("store");
-  SessionFileCache cache(root.path, mosaico::validateArtifact);
+  auto cache = mosaico::makeArtifactCache(root.path);
   const auto d = descriptor();
   const std::string identity = mosaico::descriptorIdentity(d);
-  std::string error;
-  auto lock = cache.tryLockForMaterialize(identity, &error);
-  ASSERT_TRUE(lock.has_value()) << error;
-  writeArtifact(cache.partialPathFor(*lock), d);
-  ASSERT_TRUE(cache.finalize(*lock, &error)) << error;
+  auto transaction = cache.beginWrite(identity);
+  ASSERT_TRUE(transaction) << transaction.error().message;
+  writeArtifact(transaction->partialPath(), d);
+  auto committed = transaction->commit();
+  ASSERT_TRUE(committed) << committed.error().message;
 
-  fs::path hit;
-  EXPECT_TRUE(cache.lookup(identity, &hit));
+  std::string error;
   std::vector<ArtifactTopicData> topics;
-  ASSERT_TRUE(mosaico::readArtifact(hit, &topics, nullptr, &error)) << error;
+  ASSERT_TRUE(mosaico::readArtifact(committed->path, &topics, nullptr, &error)) << error;
   EXPECT_EQ(topics.size(), 2u);
 }
+
+#if !defined(_WIN32)
+TEST(ArrowCacheArtifact, StandardCacheRootHonoursMosaicoCacheDirOverride) {
+  TempRoot root("standard-root");
+  ASSERT_EQ(::setenv("MOSAICO_CACHE_DIR", root.path.string().c_str(), 1), 0);
+  auto cache = mosaico::makeArtifactCache();
+  EXPECT_EQ(cache.pathFor(mosaico::descriptorIdentity(descriptor())).parent_path(), root.path);
+  ::unsetenv("MOSAICO_CACHE_DIR");
+}
+#endif

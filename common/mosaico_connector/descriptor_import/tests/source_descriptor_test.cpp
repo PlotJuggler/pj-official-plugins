@@ -18,6 +18,7 @@
 namespace {
 
 using mosaico::SourceDescriptor;
+namespace descriptor_import = PJ::sdk::descriptor_import;
 
 SourceDescriptor fullDescriptor() {
   SourceDescriptor d;
@@ -105,9 +106,21 @@ TEST(SourceDescriptor, VectorConformance) {
 
   for (const auto& c : vectors["cases"]) {
     const std::string name = c["name"].get<std::string>();
+    const std::string descriptor_json = c["descriptor"].dump();
     SCOPED_TRACE(name);
+
+    const auto sdk_descriptor =
+        descriptor_import::parseSourceDescriptor(descriptor_json, mosaico::sourceDescriptorPolicy());
+    ASSERT_TRUE(sdk_descriptor) << sdk_descriptor.error();
+    EXPECT_EQ(
+        descriptor_import::canonicalSourceDescriptorJson(*sdk_descriptor, mosaico::sourceDescriptorPolicy()),
+        c["canonical"].get<std::string>());
+    EXPECT_EQ(
+        descriptor_import::sourceDescriptorIdentity(*sdk_descriptor, mosaico::sourceDescriptorPolicy()),
+        c["identity"].get<std::string>());
+
     std::string error;
-    const auto d = mosaico::parseSourceDescriptor(c["descriptor"].dump(), &error);
+    const auto d = mosaico::parseSourceDescriptor(descriptor_json, &error);
     ASSERT_TRUE(d.has_value()) << error;
     EXPECT_EQ(mosaico::canonicalSourceDescriptorJson(*d), c["canonical"].get<std::string>());
     EXPECT_EQ(mosaico::descriptorIdentity(*d), c["identity"].get<std::string>());
@@ -205,7 +218,7 @@ TEST(SourceDescriptor, RejectionMatrix) {
       topics.push_back("/t" + std::to_string(i));
     }
     j["topics"] = topics;
-    expectReject(j.dump(), "topics");
+    expectReject(j.dump(), "entry limit");
   }
   {  // Non-numeric ns string.
     auto j = baseJson();

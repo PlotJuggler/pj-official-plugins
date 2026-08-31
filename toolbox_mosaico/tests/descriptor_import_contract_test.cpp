@@ -11,9 +11,13 @@
 #include <arrow/api.h>
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
+#include <mutex>
 #include <optional>
+#include <pj_base/sdk/descriptor_import/provider_job.hpp>
 #include <pj_base/sdk/settings_store_host.hpp>
 #include <string>
 
@@ -23,6 +27,17 @@
 #include "source_presentation.hpp"
 
 #if !defined(_WIN32)
+
+namespace mosaico::testing {
+
+class DescriptorImportProviderTestAccess {
+ public:
+  static bool claimTransferWatchdogExpiry(std::atomic<bool>& transfer_in_progress) {
+    return DescriptorImportProvider::claimTransferWatchdogExpiry(transfer_in_progress);
+  }
+};
+
+}  // namespace mosaico::testing
 
 namespace {
 
@@ -192,6 +207,28 @@ TEST(DescriptorImportQuery, TrustAllowlistFailsClosedForDifferentOrMalformedOrig
   }
 }
 
+TEST(DescriptorImportQuery, LockContentionIsAMissWithRetryHint) {
+  ProviderEnv env;
+  env.setTrustAllowlist("grpc+tls://demo.mosaico.dev:6726");
+  DescriptorImportProvider provider;
+  SourceDescriptor d = descriptor();
+  d.sequence = "contention";
+  const std::string json = toSourceDescriptorJson(d);
+  materializeArtifact(d);
+
+  auto cache = mosaico::makeArtifactCache(env.cache_dir);
+  auto writer = cache.beginWrite(mosaico::descriptorIdentity(d));
+  ASSERT_TRUE(writer) << writer.error().message;
+
+  auto result = freshResult();
+  ASSERT_TRUE(provider.queryDescriptor(view(json), &result, nullptr));
+  EXPECT_EQ(result.trust, PJ_DESCRIPTOR_TRUST_TRUSTED);
+  EXPECT_EQ(result.is_materialized, 0u);
+  EXPECT_EQ(result.estimated_bytes, 0u);
+  EXPECT_NE(str(result.message).find("retry"), std::string::npos) << str(result.message);
+  EXPECT_TRUE(fs::is_regular_file(fs::path(str(result.local_path_utf8))));
+}
+
 TEST(DescriptorImportStart, FailClosedRejections) {
   ProviderEnv env;
   DescriptorImportProvider provider;
@@ -224,6 +261,10 @@ TEST(DescriptorImportStart, FailClosedRejections) {
   EXPECT_FALSE(provider.startImport(&request, &no_terminal, nullptr, &job, nullptr));
   EXPECT_FALSE(provider.startImport(&request, nullptr, nullptr, &job, nullptr));
 
+  auto short_callbacks = callbacks;
+  short_callbacks.struct_size = offsetof(PJ_descriptor_import_callbacks_v1_t, on_terminal);
+  EXPECT_FALSE(provider.startImport(&request, &short_callbacks, nullptr, &job, nullptr));
+
   // Malformed descriptor.
   auto bad_request = request;
   const std::string bad = "{}";
@@ -235,6 +276,52 @@ TEST(DescriptorImportStart, FailClosedRejections) {
 
   // No rejection touched out_job.
   EXPECT_EQ(job.ctx, reinterpret_cast<void*>(0x1234));
+}
+
+TEST(DescriptorImportJob, WatchdogExpiryAfterTransferIsInert) {
+  std::atomic<bool> transfer_in_progress{false};
+  std::atomic<bool> expired{false};
+  std::atomic<PJ_descriptor_import_outcome_t> terminal{PJ_DESCRIPTOR_IMPORT_FAILED};
+  std::mutex callback_mu;
+  std::condition_variable callback_cv;
+  bool callback_ran = false;
+
+  PJ_descriptor_import_callbacks_v1_t callbacks{};
+  callbacks.struct_size = sizeof(callbacks);
+  callbacks.on_terminal = [](void* ctx, PJ_descriptor_import_outcome_t outcome, PJ_string_view_t) noexcept {
+    static_cast<std::atomic<PJ_descriptor_import_outcome_t>*>(ctx)->store(outcome);
+  };
+
+  PJ_joinable_job_t job{};
+  ASSERT_TRUE(
+      PJ::sdk::descriptor_import::ProviderJob::start(
+          [&](PJ::sdk::descriptor_import::JobControl& control) {
+            transfer_in_progress.store(true);
+            control.armWatchdog(std::chrono::milliseconds(5), [&] {
+              if (mosaico::testing::DescriptorImportProviderTestAccess::claimTransferWatchdogExpiry(
+                      transfer_in_progress)) {
+                expired.store(true);
+              }
+              {
+                std::lock_guard<std::mutex> lock(callback_mu);
+                callback_ran = true;
+              }
+              callback_cv.notify_one();
+            });
+            transfer_in_progress.store(false);  // pull returned
+            std::unique_lock<std::mutex> lock(callback_mu);
+            (void)callback_cv.wait_for(lock, std::chrono::seconds(1), [&] { return callback_ran; });
+            return PJ::sdk::descriptor_import::ImportOutcome{
+                PJ_DESCRIPTOR_IMPORT_SUCCEEDED_EAGER_ONLY, "transfer completed"};
+          },
+          &callbacks, &terminal, &job, nullptr));
+
+  ASSERT_NE(job.vtable, nullptr);
+  job.vtable->join(job.ctx);
+  EXPECT_TRUE(callback_ran);
+  EXPECT_FALSE(expired.load());
+  EXPECT_EQ(terminal.load(), PJ_DESCRIPTOR_IMPORT_SUCCEEDED_EAGER_ONLY);
+  job.vtable->destroy(job.ctx);
 }
 
 }  // namespace

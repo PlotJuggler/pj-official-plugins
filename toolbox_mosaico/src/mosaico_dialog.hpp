@@ -99,7 +99,7 @@ struct DialogState {
 
   // Every Download is recorded in the persistent cache for layout re-import.
   // cache_directory: empty = the live standard resolution
-  // (SessionFileCache::at falls back to standardCacheRoot), shown as the
+  // (makeArtifactCache falls back to standardCacheRoot), shown as the
   // field's placeholder hint.
   std::string cache_directory;
 

@@ -20,7 +20,8 @@ std::string PromotionArtifactLeaseRegistry::stableKey(const std::filesystem::pat
   return stable.lexically_normal().string();
 }
 
-bool PromotionArtifactLeaseRegistry::retain(const std::filesystem::path& artifact_path, FileLock lease) noexcept {
+bool PromotionArtifactLeaseRegistry::retain(
+    const std::filesystem::path& artifact_path, PJ::sdk::descriptor_import::ReadLease lease) noexcept {
   try {
     const std::string key = stableKey(artifact_path);
     if (key.empty()) {
@@ -55,15 +56,15 @@ PromotionArtifactLeaseRegistry& promotionArtifactLeaseRegistry() {
 }
 
 PendingPromotionArtifactLease::PendingPromotionArtifactLease(
-    PromotionArtifactLeaseRegistry& registry, std::filesystem::path artifact_path, FileLock lease,
-    SettlementHandler handler)
+    PromotionArtifactLeaseRegistry& registry, std::filesystem::path artifact_path,
+    PJ::sdk::descriptor_import::ReadLease lease, SettlementHandler handler)
     : registry_(registry),
       artifact_path_(std::move(artifact_path)),
       lease_(std::move(lease)),
       handler_(std::move(handler)) {}
 
 void PendingPromotionArtifactLease::settle(bool ok, std::string detail) {
-  std::optional<FileLock> lease;
+  std::optional<PJ::sdk::descriptor_import::ReadLease> lease;
   SettlementHandler handler;
   {
     std::lock_guard<std::mutex> lock(mu_);

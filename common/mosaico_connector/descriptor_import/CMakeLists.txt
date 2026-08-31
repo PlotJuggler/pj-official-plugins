@@ -1,10 +1,8 @@
 # Copyright 2026 Davide Faconti
 # SPDX-License-Identifier: MIT
 
-find_package(nlohmann_json REQUIRED)
 find_package(lz4 REQUIRED)
 find_package(zstd REQUIRED)
-find_package(OpenSSL REQUIRED)
 
 # Conan hides headers for dependencies reached only through Arrow. Imported
 # targets can therefore exist with empty include directories, silently falling
@@ -16,23 +14,17 @@ function(pj_mosaico_descriptor_import_require_visible_headers target)
   if("${dirs}" STREQUAL "" OR "${dirs}" MATCHES "-NOTFOUND$")
     message(FATAL_ERROR
       "pj_mosaico_descriptor_import: ${target} exposes no include directories. "
-      "Every consumer recipe must list lz4, zstd, and openssl as direct requires "
+      "Every consumer recipe must list lz4 and zstd as direct requires "
       "so the artifact implementation cannot compile against host headers.")
   endif()
 endfunction()
 pj_mosaico_descriptor_import_require_visible_headers(LZ4::lz4_static)
 pj_mosaico_descriptor_import_require_visible_headers(zstd::libzstd_static)
-pj_mosaico_descriptor_import_require_visible_headers(OpenSSL::Crypto)
 
 add_library(pj_mosaico_descriptor_import STATIC
   arrow_cache_artifact.cpp
   artifact_capture.cpp
   artifact_replay.cpp
-  core/file_lock.cpp
-  core/fs_durability.cpp
-  core/origin_match.cpp
-  core/sha256.cpp
-  session_file_cache.cpp
   source_descriptor.cpp
 )
 
@@ -45,13 +37,11 @@ target_include_directories(pj_mosaico_descriptor_import SYSTEM PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../data_load_mcap/contrib
 )
 target_link_libraries(pj_mosaico_descriptor_import PUBLIC
-  plotjuggler_sdk::plugin_sdk
-  nlohmann_json::nlohmann_json
+  plotjuggler_sdk::descriptor_import_support
   LZ4::lz4_static
   zstd::libzstd_static
   ${PJ_MOSAICO_CONNECTOR_ARROW_TARGET}
 )
-target_link_libraries(pj_mosaico_descriptor_import PRIVATE OpenSSL::Crypto)
 
 if(MSVC)
   target_compile_options(pj_mosaico_descriptor_import PRIVATE /bigobj)
@@ -71,10 +61,7 @@ if(BUILD_TESTING AND TARGET GTest::gtest_main)
   endif()
 
   set(PJ_MOSAICO_DESCRIPTOR_IMPORT_TESTS
-    sha256_test
-    origin_match_test
     source_descriptor_test
-    session_file_cache_test
     arrow_cache_artifact_test
     artifact_replay_test
     artifact_capture_test

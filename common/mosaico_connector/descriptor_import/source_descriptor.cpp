@@ -6,20 +6,11 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 
-#include "descriptor_import/core/sha256.h"
-
 namespace mosaico {
 
 namespace {
 
 constexpr const char* kKind = "mosaico-sequence";
-
-// The complete field allowlist — a descriptor carrying ANYTHING else (a
-// token, a cert path, an allow-insecure flag, a future field) is rejected
-// outright rather than silently ignored: unknown fields are the
-// credential-smuggling and forward-compat hazard the allowlist closes.
-constexpr const char* kAllowedFields[] = {"v",      "kind",     "server_uri", "sequence",
-                                          "topics", "start_ns", "end_ns",     "display_name"};
 
 bool fail(std::string* error, std::string message) {
   if (error != nullptr) {
@@ -140,37 +131,30 @@ bool takeNs(const nlohmann::json& obj, const char* field, std::int64_t* out, std
 
 }  // namespace
 
-std::optional<SourceDescriptor> parseSourceDescriptor(std::string_view json, std::string* error) {
-  if (json.size() > kMaxDescriptorBytes) {
-    fail(error, "descriptor exceeds the " + std::to_string(kMaxDescriptorBytes) + "-byte limit");
-    return std::nullopt;
-  }
-  const auto obj = nlohmann::json::parse(json, /*cb=*/nullptr, /*allow_exceptions=*/false);
-  if (obj.is_discarded()) {
-    fail(error, "descriptor is not valid JSON");
-    return std::nullopt;
-  }
-  if (!obj.is_object()) {
-    fail(error, "descriptor is not a JSON object");
-    return std::nullopt;
-  }
+const PJ::sdk::descriptor_import::SourceDescriptorPolicy& sourceDescriptorPolicy() {
+  using PJ::sdk::descriptor_import::IdentityScheme;
+  using PJ::sdk::descriptor_import::SourceDescriptorPolicy;
 
-  // Allowlist BEFORE field extraction: an unknown field is rejected even when
-  // everything required is present and valid.
-  for (const auto& [key, value] : obj.items()) {
-    (void)value;
-    bool allowed = false;
-    for (const char* candidate : kAllowedFields) {
-      if (key == candidate) {
-        allowed = true;
-        break;
-      }
-    }
-    if (!allowed) {
-      fail(error, "unknown field \"" + key + "\"");
-      return std::nullopt;
-    }
+  static const SourceDescriptorPolicy policy = [] {
+    SourceDescriptorPolicy value;
+    value.identity_fields = {"v", "kind", "server_uri", "sequence", "topics", "start_ns", "end_ns"};
+    value.presentation_fields = {"display_name"};
+    value.identity = IdentityScheme{"mosaico:v1:sha256/128:", 32};
+    value.max_descriptor_bytes = kMaxDescriptorBytes;
+    value.max_string_bytes = kMaxStringBytes;
+    value.max_container_entries = kMaxTopics;
+    return value;
+  }();
+  return policy;
+}
+
+std::optional<SourceDescriptor> parseSourceDescriptor(std::string_view json, std::string* error) {
+  const auto parsed = PJ::sdk::descriptor_import::parseSourceDescriptor(json, sourceDescriptorPolicy());
+  if (!parsed) {
+    fail(error, parsed.error());
+    return std::nullopt;
   }
+  const nlohmann::json& obj = *parsed;
 
   SourceDescriptor d;
 
@@ -258,11 +242,11 @@ std::optional<SourceDescriptor> parseSourceDescriptor(std::string_view json, std
 
 namespace {
 
-// The canonical fields in ALPHABETICAL insert order — the ONE field list both
-// serializations share, so a new descriptor field cannot land in only one of
-// them. The insert order IS the vectors-file contract, never an artifact of
-// map ordering.
-void appendCanonicalFields(nlohmann::ordered_json& j, const SourceDescriptor& d) {
+// The one typed-to-JSON projection used by both SDK-owned canonicalization
+// and layout embedding. nlohmann::json's object keys serialize alphabetically,
+// preserving the existing layout bytes.
+nlohmann::json descriptorJson(const SourceDescriptor& d, bool include_presentation) {
+  nlohmann::json j;
   j["end_ns"] = std::to_string(d.end_ns);
   j["kind"] = d.kind;
   j["sequence"] = d.sequence;
@@ -270,6 +254,10 @@ void appendCanonicalFields(nlohmann::ordered_json& j, const SourceDescriptor& d)
   j["start_ns"] = std::to_string(d.start_ns);
   j["topics"] = d.topics;
   j["v"] = d.version;
+  if (include_presentation) {
+    j["display_name"] = d.display_name;
+  }
+  return j;
 }
 
 }  // namespace
@@ -300,25 +288,15 @@ std::optional<SourceDescriptor> makeSequenceDescriptor(
 }
 
 std::string canonicalSourceDescriptorJson(const SourceDescriptor& d) {
-  // display_name is deliberately absent (identity excludes it: a rename is
-  // not a new request).
-  nlohmann::ordered_json j;
-  appendCanonicalFields(j, d);
-  return j.dump();
+  return PJ::sdk::descriptor_import::canonicalSourceDescriptorJson(descriptorJson(d, false), sourceDescriptorPolicy());
 }
 
 std::string descriptorIdentity(const SourceDescriptor& d) {
-  // sha256/128 = the first 128 bits (16 bytes -> 32 lowercase hex chars).
-  return "mosaico:v1:sha256/128:" + sha256HexPrefix(canonicalSourceDescriptorJson(d), 16);
+  return PJ::sdk::descriptor_import::sourceDescriptorIdentity(descriptorJson(d, false), sourceDescriptorPolicy());
 }
 
 std::string toSourceDescriptorJson(const SourceDescriptor& d) {
-  // Canonical fields + display_name, still in alphabetical insert order
-  // ("display_name" sorts first).
-  nlohmann::ordered_json j;
-  j["display_name"] = d.display_name;
-  appendCanonicalFields(j, d);
-  return j.dump();
+  return descriptorJson(d, true).dump();
 }
 
 }  // namespace mosaico

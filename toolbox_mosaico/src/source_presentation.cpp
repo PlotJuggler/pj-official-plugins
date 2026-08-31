@@ -4,10 +4,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <pj_base/sdk/descriptor_import/origin.hpp>
 #include <string>
 #include <string_view>
-
-#include "descriptor_import/core/origin_match.h"
 
 namespace mosaico {
 
@@ -16,6 +15,11 @@ namespace {
 constexpr std::size_t kMaxPresentationChars = 200;
 constexpr std::string_view kSettingsPrefix = "source_presentation/v1/";
 constexpr char kBase64UrlAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+const PJ::sdk::descriptor_import::OriginPolicy& grpcOriginPolicy() {
+  static const PJ::sdk::descriptor_import::OriginPolicy policy{{"grpc", "grpc+tls"}, {}};
+  return policy;
+}
 
 std::string base64UrlUnpadded(std::string_view bytes) {
   std::string out;
@@ -110,7 +114,7 @@ void recordSourcePresentation(
       capPresentation(descriptor.display_name.empty() ? descriptor.sequence : descriptor.display_name);
 
   setIfChanged(settings_view, group + "/display_name", display_name);
-  if (const auto parsed_origin = parseGrpcOrigin(descriptor.server_uri)) {
+  if (const auto parsed_origin = PJ::sdk::descriptor_import::parseOrigin(descriptor.server_uri, grpcOriginPolicy())) {
     const std::string origin =
         capPresentation(parsed_origin->host + ":" + std::to_string(static_cast<unsigned int>(parsed_origin->port)));
     setIfChanged(settings_view, group + "/origin", origin);

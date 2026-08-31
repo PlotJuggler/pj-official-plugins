@@ -13,11 +13,11 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <pj_base/sdk/descriptor_import/source_descriptor.hpp>
 #include <string>
 #include <vector>
 
 #include "descriptor_import/artifact_replay.hpp"
-#include "descriptor_import/core/sha256.h"
 #include "descriptor_import/tests/test_support_fs.hpp"
 
 #if !defined(_WIN32)
@@ -95,11 +95,11 @@ TEST(ArtifactCapture, CompleteFetchProducesValidatedReadableArtifact) {
   const auto finalized = capture.finish(/*complete=*/true);
   ASSERT_TRUE(finalized.has_value()) << capture.disarmReason();
   EXPECT_TRUE(fs::is_regular_file(finalized->path));
-  EXPECT_TRUE(finalized->lease.has_value());
+  EXPECT_TRUE(finalized->lease.held());
   EXPECT_FALSE(dirHasPartial(env.path));
 
   // The artifact validates against the identity and reads back exactly.
-  const std::string hex = mosaico::sha256HexPrefix(mosaico::canonicalSourceDescriptorJson(d), 16);
+  const std::string hex = PJ::sdk::descriptor_import::sha256Hex(mosaico::canonicalSourceDescriptorJson(d), 32);
   std::string error;
   EXPECT_TRUE(mosaico::validateArtifact(finalized->path, hex, &error)) << error;
   std::vector<mosaico::ArtifactTopicData> topics;

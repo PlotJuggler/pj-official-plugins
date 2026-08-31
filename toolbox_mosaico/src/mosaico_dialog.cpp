@@ -34,7 +34,7 @@
 #include "core/time_format.h"
 #include "credential_resolve.hpp"
 #include "date_filter.h"
-#include "descriptor_import/session_file_cache.hpp"
+#include "descriptor_import/arrow_cache_artifact.hpp"
 #include "descriptor_import/source_descriptor.hpp"
 #include "fetch_summary.h"
 #include "fetch_worker.hpp"

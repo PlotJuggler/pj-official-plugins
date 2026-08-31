@@ -554,7 +554,7 @@ void FetchWorker::pullTopicsAsync(
     std::filesystem::path path;
     std::string identity;
     std::string descriptor_json;
-    FileLock lease;
+    PJ::sdk::descriptor_import::ReadLease lease;
   };
 
   // Arm artifact capture when this Download carries a durable descriptor AND the
@@ -567,22 +567,15 @@ void FetchWorker::pullTopicsAsync(
   std::optional<ExistingArtifact> existing_artifact;
   if (descriptor.has_value() && promotion_provider_ && promotion_provider_().valid()) {
     const std::string identity = descriptorIdentity(*descriptor);
-    SessionFileCache cache =
-        SessionFileCache::at(std::filesystem::path(cache_root_override), validateArtifact, nullptr);
-    std::filesystem::path hit_path;
-    if (cache.lookup(identity, &hit_path)) {
-      std::string lease_error;
-      auto lease = cache.acquireReadLease(identity, &lease_error);
-      std::filesystem::path revalidated_path;
-      if (lease.has_value() && cache.lookup(identity, &revalidated_path) && revalidated_path == hit_path) {
-        existing_artifact.emplace(
-            ExistingArtifact{
-                .path = std::move(revalidated_path),
-                .identity = identity,
-                .descriptor_json = toSourceDescriptorJson(*descriptor),
-                .lease = std::move(*lease),
-            });
-      }
+    auto cache = makeArtifactCache(std::filesystem::path(cache_root_override));
+    if (auto hit = cache.lookup(identity)) {
+      existing_artifact.emplace(
+          ExistingArtifact{
+              .path = std::move(hit->path),
+              .identity = identity,
+              .descriptor_json = toSourceDescriptorJson(*descriptor),
+              .lease = std::move(hit->lease),
+          });
     }
     if (!existing_artifact.has_value()) {
       capture = std::make_shared<ArtifactCapture>(*descriptor, std::filesystem::path(cache_root_override));
@@ -975,7 +968,7 @@ void FetchWorker::pullTopicsAsync(
       imported_any->load(std::memory_order_relaxed) && !any_failed->load(std::memory_order_relaxed) && !isCancelled();
   const auto promote_artifact = [this](
                                     const std::filesystem::path& path, const std::string& identity,
-                                    const std::string& descriptor_json, FileLock lease) {
+                                    const std::string& descriptor_json, PJ::sdk::descriptor_import::ReadLease lease) {
     std::optional<PJ::sdk::DataSourceHandle> dataset;
     {
       std::lock_guard<std::mutex> lock(fetch_dataset_mu_);
@@ -1012,8 +1005,8 @@ void FetchWorker::pullTopicsAsync(
 
   if (capture) {
     auto finalized = capture->finish(complete);
-    if (finalized.has_value() && finalized->lease.has_value()) {
-      promote_artifact(finalized->path, capture->identity(), capture->descriptorJson(), std::move(*finalized->lease));
+    if (finalized.has_value()) {
+      promote_artifact(finalized->path, capture->identity(), capture->descriptorJson(), std::move(finalized->lease));
     } else if (promotionSettled) {
       promotionSettled(false, capture->disarmReason().empty() ? "fetch incomplete" : capture->disarmReason());
     }
