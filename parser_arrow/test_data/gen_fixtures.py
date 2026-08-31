@@ -10,6 +10,8 @@ Arrow IPC file format. Generated files are intentionally checked into the
 repository so normal C++ test runs do not require Python or PyArrow.
 """
 
+import datetime
+import decimal
 from pathlib import Path
 
 import pyarrow as pa
@@ -157,6 +159,65 @@ def make_timestamp_typed_batch() -> pa.RecordBatch:
     )
 
 
+def make_timestamp_casts_batch() -> pa.RecordBatch:
+    """Build millisecond axis and microsecond data timestamps for cast tests."""
+    return pa.record_batch(
+        [
+            pa.array([1, 2, 3], type=pa.timestamp("ms")),
+            pa.array([4, None, 6], type=pa.timestamp("us")),
+            pa.array([1.0, 2.0, 3.0], type=pa.float64()),
+        ],
+        names=["stamp", "recording_timestamp_ns", "value"],
+    )
+
+
+def make_large_types_batch() -> pa.RecordBatch:
+    """Build large string and binary columns for canonical-width normalization."""
+    return pa.record_batch(
+        [
+            pa.array([1000, 2000, 3000], type=pa.int64()),
+            pa.array(["short", "this is a large string value", None], type=pa.large_string()),
+            pa.array([b"a", b"large binary value", None], type=pa.large_binary()),
+            pa.array([1.0, 2.0, 3.0], type=pa.float64()),
+        ],
+        names=["timestamp_ns", "label", "blob", "value"],
+    )
+
+
+def make_axis_batch(axis_type: pa.DataType, values: list[object]) -> pa.RecordBatch:
+    """Build one named time axis and one host-ingestible data column."""
+    return pa.record_batch(
+        [pa.array(values, type=axis_type), pa.array([1.0, 2.0, 3.0], type=pa.float64())],
+        names=["time", "value"],
+    )
+
+
+def make_nested_dropped_scalars_batch() -> pa.RecordBatch:
+    """Build nullable nested date/decimal leaves that the host will skip."""
+    metadata_type = pa.struct(
+        [
+            pa.field("date", pa.date32()),
+            pa.field("amount", pa.decimal128(10, 2)),
+        ]
+    )
+    metadata = pa.array(
+        [
+            {"date": datetime.date(2020, 1, 2), "amount": decimal.Decimal("12.34")},
+            None,
+            {"date": datetime.date(2020, 1, 4), "amount": decimal.Decimal("-5.67")},
+        ],
+        type=metadata_type,
+    )
+    return pa.record_batch(
+        [
+            pa.array([1000, 2000, 3000], type=pa.int64()),
+            metadata,
+            pa.array([1.0, 2.0, 3.0], type=pa.float64()),
+        ],
+        names=["timestamp_ns", "metadata", "value"],
+    )
+
+
 def main() -> None:
     """Generate every checked-in test fixture and print its byte size."""
     flat_batch = make_flat_batch()
@@ -180,6 +241,21 @@ def main() -> None:
             pa.ipc.IpcWriteOptions(compression="lz4"),
         ),
         write_stream("timestamp_typed.arrows", [make_timestamp_typed_batch()]),
+        write_stream("timestamp_casts.arrows", [make_timestamp_casts_batch()]),
+        write_stream("large_types.arrows", [make_large_types_batch()]),
+        write_stream("axis_int32.arrows", [make_axis_batch(pa.int32(), [1, 2, 3])]),
+        write_stream("axis_uint32.arrows", [make_axis_batch(pa.uint32(), [1, 2, 3])]),
+        write_stream("axis_uint64_overflow.arrows", [make_axis_batch(pa.uint64(), [1, 2**63, 3])]),
+        write_stream("axis_float.arrows", [make_axis_batch(pa.float32(), [1.5, 2.25, -0.5])]),
+        write_stream("axis_double.arrows", [make_axis_batch(pa.float64(), [1.5, 2.25, -0.5])]),
+        write_stream("axis_fractional_ns.arrows", [make_axis_batch(pa.float64(), [1.6e-9, -1.6e-9, 2.4e-9])]),
+        write_stream("axis_double_nonfinite.arrows", [make_axis_batch(pa.float64(), [1.0, float("nan"), 3.0])]),
+        write_stream("axis_null.arrows", [make_axis_batch(pa.int64(), [1, None, 3])]),
+        write_stream(
+            "timestamp_seconds_overflow.arrows",
+            [make_axis_batch(pa.timestamp("s"), [1, 2**63 - 1, 3])],
+        ),
+        write_stream("nested_dropped_scalars.arrows", [make_nested_dropped_scalars_batch()]),
         write_stream("no_timestamp.arrows", [make_no_timestamp_batch()]),
         write_stream(
             "no_timestamp_two_batches.arrows",

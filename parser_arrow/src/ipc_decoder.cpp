@@ -130,7 +130,15 @@ PJ::Expected<PJ::sdk::ArrowStreamHolder> decodeIpcStream(PJ::Span<const uint8_t>
   PJ::sdk::ArrowSchemaHolder schema;
   const int schema_result = stream.get()->get_schema(stream.get(), schema.out());
   if (schema_result != NANOARROW_OK) {
-    return PJ::unexpected(nanoarrowError(schema_result, ArrowArrayStreamGetLastError(stream.get())));
+    const char* stream_error = ArrowArrayStreamGetLastError(stream.get());
+    std::string diagnostic = nanoarrowError(schema_result, stream_error);
+    if (stream_error != nullptr &&
+        std::string_view(stream_error).find("Unrecognized Field type") != std::string::npos) {
+      diagnostic +=
+          " (string_view/binary_view and other IPC field types unsupported by nanoarrow_ipc 0.7; cast to "
+          "utf8/binary before encoding)";
+    }
+    return PJ::unexpected(std::move(diagnostic));
   }
 
   return stream;

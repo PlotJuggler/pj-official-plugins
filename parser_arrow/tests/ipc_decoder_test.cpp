@@ -173,6 +173,15 @@ TEST(IpcDecoderTest, RejectsGarbageInput) {
   EXPECT_NE(decoded.error().find("parser_arrow:"), std::string::npos);
 }
 
+/// Unsupported IPC view field types include an actionable producer-side cast hint.
+TEST(IpcDecoderTest, HintsHowToEncodeUnsupportedViewFields) {
+  const auto bytes = test::readFile(fixturePath("views.arrows"));
+  const auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
+  ASSERT_FALSE(decoded);
+  EXPECT_NE(decoded.error().find("string_view"), std::string::npos) << decoded.error();
+  EXPECT_NE(decoded.error().find("cast to utf8/binary"), std::string::npos) << decoded.error();
+}
+
 /// The returned stream owns a payload copy independent of the caller's Span.
 TEST(IpcDecoderTest, OwnsPayloadAfterCallerStorageIsDestroyed) {
   auto decoded = [] {
