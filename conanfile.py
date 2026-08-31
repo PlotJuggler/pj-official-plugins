@@ -41,9 +41,6 @@ class PjOfficialPluginsConan(ConanFile):
         # and is unaffected. Bump only in lockstep with arrow's lz4 pin.
         "lz4/1.9.4",
         "zstd/1.5.7",
-        # The aggregate configures pj_mosaico_descriptor_import directly, and
-        # Conan hides Arrow's transitive EVP headers. Match Arrow's resolved pin.
-        "openssl/3.6.4",
         "date/3.0.4",
         "gtest/1.17.0",
         "ixwebsocket/11.4.6",

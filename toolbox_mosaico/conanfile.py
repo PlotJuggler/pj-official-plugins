@@ -31,10 +31,6 @@ class ToolboxMosaicoConan(ConanFile):
         # Versions match arrow/23.0.1's own pins (see data_load_mosaico_cache).
         "lz4/1.9.4",
         "zstd/1.5.7",
-        # Descriptor import's SHA-256 wrapper includes OpenSSL EVP headers.
-        # Arrow already resolves OpenSSL, but Conan hides transitive headers;
-        # this direct require exposes them without selecting another version.
-        "openssl/3.6.4",
         "lua/5.4.6",
         "sol2/3.5.0",
         # fmt required transitively by plotjuggler_sdk's pj_plugins
