@@ -1111,7 +1111,8 @@ PJ::Expected<ShapedStream> shapeStream(PJ::sdk::ArrowStreamHolder input, const S
     wrapper.release = &shapingRelease;
     wrapper.private_data = state.release();
     return ShapedStream{
-        PJ::sdk::ArrowStreamHolder(wrapper), complete->shape.timestamp_column, complete->shape.synthesize_timestamp};
+        PJ::sdk::ArrowStreamHolder(wrapper), complete->shape.timestamp_column, complete->shape.synthesize_timestamp,
+        std::move(complete->shape.dropped_columns)};
   } catch (const std::bad_alloc&) {
     return PJ::unexpected("parser_arrow: out of memory while planning Arrow stream rewrite");
   } catch (const std::exception& error) {

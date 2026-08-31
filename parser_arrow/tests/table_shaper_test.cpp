@@ -591,6 +591,11 @@ TEST(TableShaperTest, ReportsDroppedOutputColumns) {
 TEST(TableShaperTest, CopiesDroppedScalarLeavesUnderNullableStruct) {
   auto shaped = shapeStream(decodeFixture("nested_dropped_scalars.arrows"), ShapeOptions{});
   ASSERT_TRUE(shaped) << shaped.error();
+  ASSERT_EQ(shaped->dropped_columns.size(), 2);
+  EXPECT_EQ(shaped->dropped_columns[0].name, "metadata/date");
+  EXPECT_EQ(shaped->dropped_columns[0].format, "tdD");
+  EXPECT_EQ(shaped->dropped_columns[1].name, "metadata/amount");
+  EXPECT_EQ(shaped->dropped_columns[1].format, "d:10,2");
   auto schema = readSchema(shaped->stream);
   ASSERT_EQ(schema.get()->n_children, 4);
   EXPECT_STREQ(schema.get()->children[1]->name, "metadata/date");

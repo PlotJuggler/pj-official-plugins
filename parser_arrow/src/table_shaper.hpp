@@ -21,7 +21,15 @@ struct ShapeOptions {
   int64_t synthetic_interval_ns = 0;
 };
 
-/// Result of lazy shaping, including the int64-nanosecond timestamp column Task 4 must pass to the host.
+/// One final output column whose type the current PlotJuggler host silently skips.
+struct DroppedColumn {
+  /// Final output name after flattening and empty-name substitution.
+  std::string name;
+  /// Final Arrow C Data format after timestamp casts and variable-width normalization.
+  std::string format;
+};
+
+/// Result of lazy shaping, including the int64-nanosecond timestamp column passed to the host.
 struct ShapedStream {
   /// Lazy stream; validation-only plans move each original record-batch root through unchanged.
   PJ::sdk::ArrowStreamHolder stream;
@@ -29,14 +37,8 @@ struct ShapedStream {
   std::string timestamp_column;
   /// Whether timestamp_ns was synthesized and prepended.
   bool synthesized_timestamp = false;
-};
-
-/// One final output column whose type the current PlotJuggler host silently skips.
-struct DroppedColumn {
-  /// Final output name after flattening and empty-name substitution.
-  std::string name;
-  /// Final Arrow C Data format after timestamp casts and variable-width normalization.
-  std::string format;
+  /// Final output columns retained in the stream even though the current host skips them.
+  std::vector<DroppedColumn> dropped_columns;
 };
 
 /// Observable summary of timestamp resolution, rewrites, and host-skipped final columns.

@@ -62,10 +62,13 @@ target_compile_features(arrow_parser_test PRIVATE cxx_std_20)
 target_compile_options(arrow_parser_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(arrow_parser_test PRIVATE
   PJ_ARROW_PARSER_PLUGIN_PATH="$<TARGET_FILE:parser_arrow_plugin>"
+  PJ_ARROW_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data"
 )
+target_include_directories(arrow_parser_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 target_link_libraries(arrow_parser_test PRIVATE
   plotjuggler_sdk::plugin_sdk
   plotjuggler_sdk::plugin_host
+  nanoarrow::nanoarrow
   GTest::gtest_main
 )
 add_test(NAME arrow_parser_test COMMAND arrow_parser_test)
