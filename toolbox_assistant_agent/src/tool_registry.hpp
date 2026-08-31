@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -67,5 +68,36 @@ class ToolRegistry {
 // so explicitly — a model that believes an incomplete listing is the whole
 // truth will confidently tell the user a signal does not exist.
 [[nodiscard]] std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budget_chars = 6000);
+
+// A resolved "topic/field" curve path: the field handle plus the owning topic
+// name. `path` is the canonical form the lookup settled on — with several
+// datasets loaded it carries the "dataset:topic/field" qualifier, so whatever
+// echoes it back also discloses which dataset it came from. `host_path` is the
+// bare topic/field form: the HOST's create interface addresses inputs by name
+// and knows nothing of the qualifier, so anything handed to it goes in this
+// form (reads are unaffected — they go by handle).
+struct ResolvedSeries {
+  PJ::sdk::FieldHandle handle;
+  std::string topic;
+  std::string path;
+  std::string host_path;
+};
+
+// Outcome of a path lookup. When nothing resolves, `candidates` carries the
+// near misses so the caller can put them in the error — a model that gets told
+// what the real paths are corrects on the spot, instead of spending a whole
+// extra round-trip asking the catalog.
+struct SeriesLookup {
+  std::optional<ResolvedSeries> resolved;
+  std::vector<std::string> candidates;
+  bool ambiguous = false;  // several paths matched; refusing to guess between them
+};
+
+// Resolve one curve path against the catalog. Accepts the host's
+// "dataset:topic/field" qualifier (matched against known source names); an
+// unqualified path whose exact topic/field exists in several datasets is
+// refused as ambiguous with the qualified candidates. Exported for the unit
+// tests: resolution is where the multi-dataset rules live.
+[[nodiscard]] SeriesLookup resolveSeriesPath(const PJ::sdk::CatalogSnapshot& catalog, const std::string& series);
 
 }  // namespace assistant_agent

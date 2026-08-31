@@ -704,6 +704,132 @@ TEST(CatalogDigest, GroupsTopicsByDatasetWhenSeveralAreLoaded) {
   // The same topic name appears under both, which is the whole point: identical
   // names across runs are the norm, not a collision.
   EXPECT_LT(digest.find("run_monday.mcap"), digest.find("run_friday.mcap"));
+  // The qualifier syntax is taught HERE, by the listing, not by the tool
+  // schema: this line is paid for only in sessions that actually hold several
+  // datasets, instead of in the prefix of every session.
+  EXPECT_NE(digest.find("<dataset>:<topic>/<field>"), std::string::npos) << digest;
+}
+
+// --- addressing a series when several datasets are loaded -------------------
+
+// The host's own display convention, "dataset:topic/field", addresses one
+// run's series when both runs share every topic name.
+TEST(ResolveSeriesPath, QualifiedPathPicksItsDataset) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run_monday.mcap", {"/imu", "/speed"}).addDataset("run_friday.mcap", {"/imu", "/speed"});
+  auto view = PJ::sdk::ToolboxHostView(host.makeHost());
+  auto catalog = view.catalogSnapshot();
+  ASSERT_TRUE(catalog);
+
+  const auto monday = assistant_agent::resolveSeriesPath(*catalog, "run_monday.mcap:/speed/value");
+  const auto friday = assistant_agent::resolveSeriesPath(*catalog, "run_friday.mcap:/speed/value");
+  ASSERT_TRUE(monday.resolved.has_value());
+  ASSERT_TRUE(friday.resolved.has_value());
+  EXPECT_NE(monday.resolved->handle.topic.id, friday.resolved->handle.topic.id)
+      << "both qualifiers resolved to the same underlying series";
+  EXPECT_EQ(monday.resolved->path, "run_monday.mcap:/speed/value");
+}
+
+// The failure the correctness sweep caught on screen: the bare path used to
+// resolve silently to whichever file loaded first, for reads AND installs.
+TEST(ResolveSeriesPath, RefusesABarePathThatExistsInSeveralDatasets) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run_monday.mcap", {"/imu", "/speed"}).addDataset("run_friday.mcap", {"/imu", "/speed"});
+  auto view = PJ::sdk::ToolboxHostView(host.makeHost());
+  auto catalog = view.catalogSnapshot();
+  ASSERT_TRUE(catalog);
+
+  const auto lookup = assistant_agent::resolveSeriesPath(*catalog, "/speed/value");
+  EXPECT_FALSE(lookup.resolved.has_value()) << "resolved to '" << lookup.resolved->path << "' instead of refusing";
+  EXPECT_TRUE(lookup.ambiguous);
+  ASSERT_EQ(lookup.candidates.size(), 2u);
+  // Candidates arrive in qualified form, copy-pasteable back as-is — this is
+  // what turns the refusal into a one-round-trip correction.
+  EXPECT_EQ(lookup.candidates[0], "run_monday.mcap:/speed/value");
+  EXPECT_EQ(lookup.candidates[1], "run_friday.mcap:/speed/value");
+}
+
+// A topic that lives in only one of the datasets keeps resolving bare, and the
+// resolved path discloses which dataset it came from.
+TEST(ResolveSeriesPath, BarePathStillResolvesWhenUniqueAcrossDatasets) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run_monday.mcap", {"/imu"}).addDataset("run_friday.mcap", {"/speed"});
+  auto view = PJ::sdk::ToolboxHostView(host.makeHost());
+  auto catalog = view.catalogSnapshot();
+  ASSERT_TRUE(catalog);
+
+  const auto lookup = assistant_agent::resolveSeriesPath(*catalog, "/speed/value");
+  ASSERT_TRUE(lookup.resolved.has_value());
+  EXPECT_EQ(lookup.resolved->path, "run_friday.mcap:/speed/value");
+}
+
+// Stream datasets carry names like "[stream] UDP Server" — spaces, brackets.
+// Matching the qualifier against the known names (instead of parsing at ':')
+// is what makes those work with no escaping rules.
+TEST(ResolveSeriesPath, StreamStyleDatasetNamesNeedNoEscaping) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run_monday.mcap", {"/udp/data"}).addDataset("[stream] UDP Server", {"/udp/data"});
+  auto view = PJ::sdk::ToolboxHostView(host.makeHost());
+  auto catalog = view.catalogSnapshot();
+  ASSERT_TRUE(catalog);
+
+  const auto lookup = assistant_agent::resolveSeriesPath(*catalog, "[stream] UDP Server:/udp/data/value");
+  ASSERT_TRUE(lookup.resolved.has_value());
+  EXPECT_EQ(lookup.resolved->path, "[stream] UDP Server:/udp/data/value");
+}
+
+// The host's create interface addresses inputs by BARE name, so a qualified
+// create on a path that several datasets share cannot be delivered — the
+// honest outcome is a loud refusal here, not an artifact on whichever dataset
+// the host resolves first. (Reads are unaffected: they go by handle.)
+TEST(ToolRegistry, CreateOnADuplicatedPathIsRefusedInsteadOfMistargeted) {
+  ToolRegistry reg;
+  FakeMultiDatasetHost host;
+  host.addDataset("run_monday.mcap", {"/imu", "/speed"}).addDataset("run_friday.mcap", {"/imu", "/speed"});
+  RecordingDpHost dp;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+
+  auto r = reg.execute(
+      "create_markers", {{"series", "run_friday.mcap:/speed/value"}, {"comparison", ">"}, {"threshold", 1.0}}, ctx);
+  ASSERT_FALSE(r.ok) << r.content;
+  EXPECT_NE(r.content.find("cannot target that specific dataset"), std::string::npos) << r.content;
+  EXPECT_EQ(dp.create_calls, 0) << "nothing may reach the host after the refusal";
+}
+
+// When the bare name IS unique across datasets, a qualified create goes
+// through — and what reaches the host is the bare form it understands, while
+// the result reports the qualified form the model used.
+TEST(ToolRegistry, QualifiedCreateOnAUniqueNameHandsTheHostItsBareForm) {
+  ToolRegistry reg;
+  FakeMultiDatasetHost host;
+  host.addDataset("run_monday.mcap", {"/imu"}).addDataset("run_friday.mcap", {"/speed"});
+  RecordingDpHost dp;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+
+  auto r = reg.execute(
+      "create_markers", {{"series", "run_friday.mcap:/speed/value"}, {"comparison", ">"}, {"threshold", 1.0}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_NE(dp.last_script.find("series(\"/speed/value\")"), std::string::npos) << dp.last_script;
+  EXPECT_EQ(json::parse(r.content)["created_markers_on"], "run_friday.mcap:/speed/value");
+}
+
+// One dataset loaded: paths stay bare in both directions — no qualifier to
+// learn, no extra characters in any result. The overwhelmingly common case
+// pays nothing.
+TEST(ResolveSeriesPath, SingleDatasetKeepsBarePaths) {
+  FakeMultiDatasetHost host;
+  host.addDataset("only.mcap", {"/imu", "/speed"});
+  auto view = PJ::sdk::ToolboxHostView(host.makeHost());
+  auto catalog = view.catalogSnapshot();
+  ASSERT_TRUE(catalog);
+
+  const auto lookup = assistant_agent::resolveSeriesPath(*catalog, "/speed/value");
+  ASSERT_TRUE(lookup.resolved.has_value());
+  EXPECT_EQ(lookup.resolved->path, "/speed/value");
 }
 
 // One dataset is the overwhelmingly common case and naming it every time buys

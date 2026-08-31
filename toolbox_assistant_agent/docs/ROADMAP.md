@@ -59,6 +59,7 @@ Two properties are non-negotiable and hold today:
 | The CLI is isolated from the machine | `--restricted` (ignores user/project/local settings and the user-level CLAUDE.md; OAuth untouched — A/B-verified on CLI 2.1.251) plus a private working directory, so neither the panel's register nor its instructions depend on who installed it or where PlotJuggler was launched |
 | The L14 verdict judges disclosure, not residue | Whatever remains installed passes exactly when the reply says it is there; unmentioned residue fails as `silent-residue(<kind>)`, classified per surviving id. The harness now also refuses a transform that reads `series(...)` at runtime, exactly as the real host does — so the benchmark measures the reaction the product would produce, not an install that cannot happen |
 | The Haiku "cleanup" item closed as not-a-defect | Replicated under the honest instrument: 10/10 L14 ($0.12) — the join refusal is accepted, nothing installed, every reply explains and offers alternatives. 0 withdrawals across 90 historical cells is style, not residue: Haiku does not probe, so it has nothing to remove. The result-visibility mechanism stays parked until a real `silent-residue` verdict appears in a run or a GUI session (`FINDINGS.md` §14) |
+| Series can be addressed by dataset | The host's own `dataset:topic/field` form, taught by one catalog line that exists only when several datasets are loaded — zero schema tokens. A bare path duplicated across datasets is refused with the qualified candidates instead of silently resolving to whichever file loaded first (both failure modes were caught on screen, `FINDINGS.md` §15). "Compare the two runs" went from impossible (9 invented syntaxes, all failing) to one batched read with exact numbers |
 
 ## Next
 
@@ -83,6 +84,14 @@ which point that second is a visible fraction.
 
 **Widen the tool surface.** Playback and viewport control (play/pause/seek/zoom) were built and
 then dropped, because the SDK services they need are not in `main`. They return if those land.
+
+**Let creations target a dataset through the ABI.** Reads are dataset-aware (they go by handle),
+but the create side of `pj.data_processors.v1` addresses inputs by bare name, so a series whose
+path exists in several datasets cannot be built on — the tool refuses loudly rather than letting
+the host land it on whichever file loaded first (`FINDINGS.md` §15). The host already carries a
+qualified form internally (`TransformInputBinding` with `dataset_source`, resolved through session
+identity — `DataProcessorService::resolveInputBinding`); what is missing is a way to express it
+through the plugin ABI. Host-side work, to be proposed upstream.
 
 ## Bigger directions, none of them decided
 

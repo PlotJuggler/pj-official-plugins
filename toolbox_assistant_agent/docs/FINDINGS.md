@@ -411,3 +411,34 @@ Together with §9–§11 this closes a pattern worth naming: of the four "model 
 has chased, three were the measuring instrument and the fourth shrank to a rare behaviour already
 caught by a structural net. The models have been better than the graders more often than the
 reverse — budget the audit before the fix.
+
+## 15. Two runs of the same robot were unaddressable, and the fix cost zero schema tokens
+
+A correctness sweep of the operating envelope loaded two purpose-built MCAPs with identical topics
+and deliberately different values (temperature baselines 20 vs 60). The flagship use case —
+"compare the temperature between the two runs" — turned out to be impossible: the model invented
+nine addressing syntaxes (`run_a.mcap/...`, `run_a.mcap:/...`, `[run_a.mcap]/...`, `::` and more),
+every one answered "unknown series". Meanwhile the bare path resolved **silently to whichever file
+loaded first**, for reads and for the template marker form alike — the resolver's identity was the
+`topic/field` string, and an exact match returned the first hit before the ambiguity check could
+run. The only reason no false statement reached the user is that the model disclosed on its own,
+twice ("I can't confirm which run this actually is").
+
+The fix adopted the host's own convention, `dataset:topic/field` (`SeriesPath::display()` in PJ4),
+which was also the model's second guess. The qualifier is matched against the known source names —
+no reserved characters, so `[stream] UDP Server:/udp/data/...` needs no escaping. A bare path that
+exists in several datasets is refused with the qualified candidates; unique bare paths resolve as
+before, and single-dataset sessions are byte-identical. The syntax is taught by one catalog line
+that exists only when several datasets are loaded, plus the refusal itself: the tool schema did
+not grow by one character. Re-run on screen, the comparison went from nine failed calls to **one
+batched read with exact numbers** (means 20.198 / 60.198 against an independent decode).
+
+The sweep's second act found the boundary behind the first: reads are dataset-aware because they
+go by handle, but the **create side of `pj.data_processors.v1` addresses inputs by bare name**.
+The host itself refuses duplicated names for transforms (`resolveInputField` returns a match only
+when unique) and carries a qualified form internally (`TransformInputBinding` with
+`dataset_source`, resolved through session identity) — but nothing in the plugin ABI can express
+it. So creations on a duplicated path are refused in the tool with the reason spelled out, rather
+than letting the host land the artifact on the first-loaded file; on screen the model relayed the
+limitation accurately and proposed workable alternatives. Lifting it for real means exposing the
+qualified binding through the ABI — host-side work, recorded in the roadmap.

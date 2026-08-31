@@ -207,13 +207,8 @@ std::string canonicalSeriesPath(std::string_view s) {
   return out;
 }
 
-// A resolved "topic/field" curve path: the field handle plus the owning topic
-// name.
-struct ResolvedSeries {
-  PJ::sdk::FieldHandle handle;
-  std::string topic;
-  std::string path;  // the full canonical path, which may differ from what was asked for
-};
+// ResolvedSeries/SeriesLookup live in tool_registry.hpp: resolution is where
+// the multi-dataset rules live, and the tests drive it directly.
 
 // Split a curve path into its '/'-separated segments, ignoring empty ones so
 // leading or doubled slashes don't produce phantom segments.
@@ -258,37 +253,69 @@ bool segmentsContain(const std::vector<std::string_view>& have, const std::vecto
   return false;
 }
 
-// Outcome of a path lookup. When nothing resolves, `candidates` carries the
-// near misses so the caller can put them in the error — a model that gets told
-// what the real paths are corrects on the spot, instead of spending a whole
-// extra round-trip asking the catalog.
-struct SeriesLookup {
-  std::optional<ResolvedSeries> resolved;
-  std::vector<std::string> candidates;
-  bool ambiguous = false;  // several paths matched; refusing to guess between them
-};
-
 // Cap on how many near misses we name. The error text is fed back to the model
 // and then re-sent on every later round-trip of the turn, so an unbounded list
 // would be paid for repeatedly.
 constexpr std::size_t kMaxCandidates = 10;
 
+}  // namespace
+
 // Resolve one "topic/field" curve path (joinSeriesPath convention, the same the
 // rest of PJ4 uses) by scanning the catalog — models call read_series
 // repeatedly per turn, so avoid materializing a full path index.
 //
-// An exact match always wins. Failing that, an abbreviated path resolves only
+// An exact match wins over abbreviations. An abbreviated path resolves only
 // when exactly one series matches: with several the answer is the candidate
 // list, never a guess, because silently picking one would attach a transform to
 // the wrong signal and look like it worked.
+//
+// Datasets: the path may carry the host's qualifier convention,
+// "dataset:topic/field". The qualifier is matched against the KNOWN source
+// names (longest match wins) rather than parsed at ':', so a name like
+// "[stream] UDP Server" needs no escaping. An unqualified path whose exact
+// topic/field exists in SEVERAL datasets is refused as ambiguous — two runs of
+// the same robot share every topic name, and silently taking the first-loaded
+// one reads (or worse, installs onto) whichever file happened to load first.
+// With several sources loaded, every path this returns is in qualified form, so
+// results disclose which dataset they came from and candidates can be copied
+// back verbatim.
 SeriesLookup resolveSeriesPath(const PJ::sdk::CatalogSnapshot& catalog, const std::string& series) {
   SeriesLookup out;
-  const auto want = pathSegments(series);
   auto topics = catalog.topics();
   auto fields = catalog.fields();
+  const auto sources = catalog.dataSources();
 
+  std::string bare = series;
+  std::uint32_t topic_lo = 0;
+  auto topic_hi = static_cast<std::uint32_t>(topics.size());
+  std::size_t qualifier_len = 0;
+  for (const auto& src : sources) {
+    const std::string name(PJ::sdk::toStringView(src.name));
+    if (name.empty() || name.size() <= qualifier_len || series.size() <= name.size() || series[name.size()] != ':' ||
+        series.compare(0, name.size(), name) != 0) {
+      continue;
+    }
+    qualifier_len = name.size();
+    topic_lo = src.first_topic;
+    topic_hi = std::min(src.first_topic + src.topic_count, static_cast<std::uint32_t>(topics.size()));
+  }
+  if (qualifier_len != 0) {
+    bare = series.substr(qualifier_len + 1);
+  }
+
+  const auto want = pathSegments(bare);
+  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(catalog);
+  auto qualified = [&](std::uint32_t ti, const std::string& full) {
+    const auto it = topic_dataset.find(ti);
+    return it == topic_dataset.end() ? full : it->second + ":" + full;
+  };
+
+  std::optional<ResolvedSeries> exact;
+  bool exact_ambiguous = false;
+  std::vector<std::string> exact_candidates;
   std::optional<ResolvedSeries> fuzzy;
-  for (const auto& topic : topics) {
+  for (std::uint32_t ti = topic_lo; ti < topic_hi; ++ti) {
+    const auto& topic = topics[ti];
     const auto topic_name = PJ::sdk::toStringView(topic.name);
     for (std::uint32_t fi = 0; fi < topic.field_count; ++fi) {
       const std::size_t idx = topic.first_field + fi;
@@ -296,21 +323,39 @@ SeriesLookup resolveSeriesPath(const PJ::sdk::CatalogSnapshot& catalog, const st
         break;
       }
       const std::string full = joinSeriesPath(topic_name, PJ::sdk::toStringView(fields[idx].name));
-      if (full == series) {
-        out.resolved = ResolvedSeries{fields[idx].handle, std::string(topic_name), full};
-        return out;  // exact beats everything; stop looking
+      if (full == bare) {
+        if (!exact) {
+          exact = ResolvedSeries{fields[idx].handle, std::string(topic_name), qualified(ti, full), full};
+        } else {
+          exact_ambiguous = true;
+        }
+        if (exact_candidates.size() < kMaxCandidates) {
+          exact_candidates.push_back(qualified(ti, full));
+        }
+        continue;
       }
       if (segmentsContain(pathSegments(full), want)) {
         if (out.candidates.size() < kMaxCandidates) {
-          out.candidates.push_back(full);
+          out.candidates.push_back(qualified(ti, full));
         }
         if (!fuzzy) {
-          fuzzy = ResolvedSeries{fields[idx].handle, std::string(topic_name), full};
+          fuzzy = ResolvedSeries{fields[idx].handle, std::string(topic_name), qualified(ti, full), full};
         } else {
           out.ambiguous = true;
         }
       }
     }
+  }
+  if (exact) {
+    if (exact_ambiguous) {
+      out.ambiguous = true;
+      out.candidates = std::move(exact_candidates);
+      return out;
+    }
+    out.resolved = std::move(exact);
+    out.candidates.clear();
+    out.ambiguous = false;
+    return out;
   }
   if (!out.ambiguous && fuzzy) {
     out.resolved = std::move(fuzzy);
@@ -318,6 +363,8 @@ SeriesLookup resolveSeriesPath(const PJ::sdk::CatalogSnapshot& catalog, const st
   }
   return out;
 }
+
+namespace {
 
 // The error a failed lookup should produce: self-contained, so the model can
 // fix the path from the message alone.
@@ -334,6 +381,24 @@ std::string seriesLookupError(const std::string& series, const SeriesLookup& loo
   return "unknown series '" + series +
          "'. If you expected it to exist, call list_topics (with a filter) or describe_topic once to check before "
          "concluding it is missing.";
+}
+
+// Whether the HOST can address this series by name for a create, and the error
+// to hand back when it cannot. The create side of pj.data_processors.v1 takes
+// bare names; when the same topic/field exists in several datasets the bare
+// name no longer picks one, so handing it over would either fail or land on
+// whichever dataset the host resolves first. Reads are unaffected — they go by
+// handle — so this is a create-only limit, refused loudly here instead of
+// silently mistargeted there.
+std::optional<std::string> hostCreateBlocker(const PJ::sdk::CatalogSnapshot& catalog, const ResolvedSeries& resolved) {
+  const auto bare = resolveSeriesPath(catalog, resolved.host_path);
+  if (!bare.ambiguous) {
+    return std::nullopt;
+  }
+  return "cannot create from '" + resolved.path + "': several loaded datasets share the path '" + resolved.host_path +
+         "', and the host's create interface addresses inputs by bare name, so it cannot target that specific "
+         "dataset. Reading it works (read_series); to build on it, ask the user to keep only the relevant file "
+         "loaded.";
 }
 
 // Materialize a numeric field into parallel timestamp + double columns,
@@ -785,7 +850,10 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
       if (!lookup.resolved) {
         return ToolResult::failure(seriesLookupError(in, lookup));
       }
-      in = lookup.resolved->path;
+      if (auto blocked = hostCreateBlocker(*catalog, *lookup.resolved)) {
+        return ToolResult::failure(*blocked);
+      }
+      in = lookup.resolved->host_path;
       if (inputs.size() == 1) {
         if (auto view = ctx.host.readSeries(lookup.resolved->handle); view) {
           single_input_points = view->rowCount();
@@ -902,7 +970,10 @@ ToolResult createMarkersFromRule(const json& args, ToolContext& ctx) {
       if (!lookup.resolved) {
         return ToolResult::failure(seriesLookupError(in, lookup));
       }
-      in = lookup.resolved->path;
+      if (auto blocked = hostCreateBlocker(*catalog, *lookup.resolved)) {
+        return ToolResult::failure(*blocked);
+      }
+      in = lookup.resolved->host_path;
     }
   }
   const std::string output = args.contains("output") && args["output"].is_string()
@@ -953,7 +1024,23 @@ ToolResult createMarkers(const json& args, ToolContext& ctx) {
     return ToolResult::failure(
         "create_markers requires a string 'series' (a topic/field path), or a raw 'rule' with 'inputs'");
   }
-  const std::string series = canonicalSeriesPath(args["series"].get<std::string>());
+  std::string series = canonicalSeriesPath(args["series"].get<std::string>());
+  // The rule embeds this name and the host resolves it by itself, so it must
+  // be the resolved HOST form — the raw argument used to go straight through,
+  // which is how a bare name that exists in two datasets landed on whichever
+  // one the host tried first.
+  std::string display_series = series;
+  if (auto catalog = ctx.host.catalogSnapshot()) {
+    auto lookup = resolveSeriesPath(*catalog, series);
+    if (!lookup.resolved) {
+      return ToolResult::failure(seriesLookupError(series, lookup));
+    }
+    if (auto blocked = hostCreateBlocker(*catalog, *lookup.resolved)) {
+      return ToolResult::failure(*blocked);
+    }
+    display_series = lookup.resolved->path;
+    series = lookup.resolved->host_path;
+  }
   const std::string comparison = args.value("comparison", std::string(">"));
   if (comparison != ">" && comparison != "<" && comparison != ">=" && comparison != "<=") {
     return ToolResult::failure("'comparison' must be one of >, <, >=, <=");
@@ -1019,7 +1106,7 @@ ToolResult createMarkers(const json& args, ToolContext& ctx) {
   if (ctx.notify_data_changed) {
     ctx.notify_data_changed();
   }
-  json result = {{"created_markers_on", series}, {"style", style}, {"rule", label}};
+  json result = {{"created_markers_on", display_series}, {"style", style}, {"rule", label}};
   if (json published = publishedMarkerSummary(ctx, *topics); !published.is_null()) {
     result.update(published);
   }
@@ -1197,6 +1284,14 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
     header += ", listing the first " + std::to_string(shown);
   }
   header += "):\n";
+  // Teach the qualifier by stating it where the dataset names are, instead of
+  // spending schema tokens on it in every session: this line exists only when
+  // several datasets are actually loaded.
+  if (catalog->dataSources().size() >= 2) {
+    header +=
+        "Several datasets are loaded; when the same topic exists in more than one, address the series as "
+        "\"<dataset>:<topic>/<field>\".\n";
+  }
 
   std::string footer;
   if (!with_fields) {
