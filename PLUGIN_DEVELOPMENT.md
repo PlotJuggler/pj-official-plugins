@@ -20,7 +20,7 @@ shape for a new plugin will fight the runtime the entire way.
 |-------|--------------|---------------------|----------|
 | **Self-parsing DataSource** | Reads *and* decodes its file/stream in one plugin. Writes scalar fields straight into the host via `writeHost().appendRecord(...)`. | `kCapabilityDirectIngest` | `data_load_ulog`, `data_load_csv`, `data_load_parquet` |
 | **Delegating DataSource** | Reads the file/stream, advertises each channel's schema, and hands raw bytes off via `pushMessage`. Never inspects message content. | `kCapabilityDelegatedIngest` | `data_load_mcap`, `data_stream_zmq`, `data_stream_mqtt`, `data_stream_foxglove_bridge` |
-| **MessageParser** | Has no I/O of its own. Decodes bytes on behalf of a delegating source whenever the host calls. | Declares its `"encoding"` in the plugin manifest | `parser_protobuf`, `parser_ros`, `parser_json`, `parser_data_tamer` |
+| **MessageParser** | Has no I/O of its own. Decodes bytes on behalf of a delegating source whenever the host calls. | Declares its `"encoding"` in the plugin manifest | `parser_protobuf`, `parser_ros`, `parser_json`, `parser_data_tamer`, `parser_arrow` |
 
 You can see the flag at the top of each DataSource class:
 
@@ -134,7 +134,7 @@ it never opens a file, a socket, or a broker. The host hands it bytes
 and asks for columns; that's the whole contract.
 
 Examples: `parser_json`, `parser_protobuf`, `parser_ros`,
-`parser_data_tamer`.
+`parser_data_tamer`, `parser_arrow`.
 
 **What a MessageParser is *not*:**
 
@@ -173,7 +173,9 @@ ends up as a stream of `(timestamp, value)` samples that the plotter,
 tables, transforms, and Lua scripts can consume directly. Most parsers
 in this collection do exactly that and nothing else — `parser_json`,
 `parser_protobuf`, `parser_data_tamer`. The mental model is *"walk
-the message, name every primitive, emit one column per leaf"*.
+the message, name every primitive, emit one column per leaf"*;
+`parser_arrow` is the batch-shaped exception and hands the shaped stream to
+the host through `appendArrowStream(...)`.
 
 Some message types do not fit the scalar model: a camera frame, a
 compressed image, a point cloud. To visualize those, PJ4 adds a
