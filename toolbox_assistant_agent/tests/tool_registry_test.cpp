@@ -332,6 +332,30 @@ TEST(ToolRegistry, CreateDerivedSeriesSurfacesValidateError) {
   EXPECT_EQ(dp.create_calls, 0);  // never installed on a compile failure
 }
 
+// The runtime cross-read: a single declared input, with the OTHER series read
+// inside the body via the marker-rule vocabulary. The empty-join guard only
+// inspects declared inputs, so this sidesteps it — and the real host then
+// refuses the install, because `series(...)` does not exist in a transform's
+// environment (verified in the application, 2026-08-14). The fake host mirrors
+// that refusal; this test pins that the refusal reaches the model as a plain
+// failure, so the benchmark measures the reaction the product would produce.
+TEST(ToolRegistry, CreateDerivedSeriesRuntimeCrossReadIsRefusedLikeTheRealHost) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  auto ctx = makeCtx(store, &dp);
+  auto r = reg.execute(
+      "create_derived_series",
+      {{"name", "mix"},
+       {"inputs", json::array({"/imu/x"})},
+       {"body", "local other = series(\"/imu/y\"):atTime(time)\nreturn value + other"}},
+      ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("series"), std::string::npos) << r.content;
+  EXPECT_EQ(dp.liveCount(), 0) << "nothing may be left installed after the refusal";
+}
+
 TEST(ToolRegistry, CreateDerivedSeriesUnboundDpDegrades) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;

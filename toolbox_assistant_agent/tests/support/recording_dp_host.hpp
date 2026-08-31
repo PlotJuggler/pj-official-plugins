@@ -43,6 +43,45 @@ struct RecordingDpHost {
   std::vector<std::string> live_ids;  // what list() reports; the views point into this
   std::vector<std::string> resolved;  // storage the returned borrowed views point into
 
+  // One record per ACCEPTED persistent create, so a verdict can ask what a
+  // surviving id actually is (kind, script, declared inputs) instead of judging
+  // from last_* — which only remembers the final call and lumps three different
+  // leftovers under one shape. Removal deliberately keeps the record: history
+  // stays, and pairing `created` with `live_ids` answers "what is the user
+  // left with, and what is each thing".
+  struct CreatedNode {
+    std::string id;
+    std::string kind;
+    std::string script;
+    std::vector<std::string> inputs;
+    std::vector<std::string> outputs;
+  };
+  std::vector<CreatedNode> created;
+
+  const CreatedNode* recordFor(const std::string& id) const {
+    for (auto it = created.rbegin(); it != created.rend(); ++it) {
+      if (it->id == id) {
+        return &*it;
+      }
+    }
+    return nullptr;
+  }
+
+  // The real host compiles a transform script in an environment where the
+  // marker-rule vocabulary does not exist, so a `series(...)` reference fails to
+  // resolve and the install is refused (verified in the application,
+  // 2026-08-14). Mirror that refusal here: without it the harness records as a
+  // success a runtime cross-read the product would reject, and the benchmark
+  // measures an outcome that cannot happen.
+  static bool rejectsCrossRead(const std::string& kind, const std::string& script, PJ_error_t* err) {
+    if (kind == "transform" && script.find("series(") != std::string::npos) {
+      PJ::sdk::fillError(
+          err, 1, "test", "unknown global 'series' — the marker-rule vocabulary does not exist in a transform");
+      return true;
+    }
+    return false;
+  }
+
   static std::string toStr(PJ_string_view_t v) {
     return std::string(v.data == nullptr ? "" : v.data, v.size);
   }
@@ -74,11 +113,16 @@ struct RecordingDpHost {
       PJ::sdk::fillError(err, 1, "test", "create rejected");
       return false;
     }
+    if (rejectsCrossRead(self->last_kind, self->last_script, err)) {
+      return false;
+    }
     // The create succeeded, so from here on the host really is holding it. An
     // ephemeral one is a dry run the host drops by itself, so it never joins the
     // set the user is left with.
     if ((flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL) == 0) {
       self->live_ids.push_back(self->last_id);
+      self->created.push_back(
+          {self->last_id, self->last_kind, self->last_script, self->last_inputs, self->last_outputs});
     }
     self->resolved = self->last_outputs.empty() ? std::vector<std::string>{"auto_topic"} : self->last_outputs;
     if (out_topics_count != nullptr) {
@@ -91,13 +135,16 @@ struct RecordingDpHost {
   }
 
   static bool tValidate(
-      void* ctx, PJ_string_view_t /*kind*/, PJ_string_view_t /*language*/, PJ_string_view_t script,
+      void* ctx, PJ_string_view_t kind, PJ_string_view_t /*language*/, PJ_string_view_t script,
       PJ_string_view_t /*params*/, PJ_error_t* err) noexcept {
     auto* self = static_cast<RecordingDpHost*>(ctx);
     ++self->validate_calls;
     self->last_validate_script = toStr(script);
     if (self->fail_validate) {
       PJ::sdk::fillError(err, 1, "test", "compile error");
+      return false;
+    }
+    if (rejectsCrossRead(toStr(kind), self->last_validate_script, err)) {
       return false;
     }
     return true;

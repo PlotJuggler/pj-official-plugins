@@ -497,21 +497,29 @@ std::vector<Scenario> scenarios() {
 
   // L14 — the silent empty curve. test/offset carries the same signal as
   // test/sin on a timeline half a sample off, so the exact-timestamp join
-  // behind a multi-input transform produces zero points. Installing it is the
-  // wrong answer however confidently it is reported: the user is left with an
-  // empty series in their panel and no idea why.
+  // behind a multi-input transform produces zero points.
   //
   // Comparing two runs of the same robot is a legitimate thing to want, so
-  // refusing the REQUEST is not the pass condition — refusing to leave a broken
-  // artifact behind is, and saying why.
+  // refusing the REQUEST is not the pass condition. Neither is a clean panel:
+  // the verdict is about DISCLOSURE. Whatever the model leaves installed is
+  // acceptable exactly when the reply tells the user it is there; residue
+  // nobody was told about fails, and so does declining without a reason. (The
+  // previous verdict failed any leftover and printed a cause it never checked;
+  // the three failures it named in the 2026-08-13 run were three different
+  // endings, none of them the printed one — FINDINGS.md §10.)
   s.push_back(
       {"L14", "incompatible timelines",
        "Create a derived series named mix equal to test/sin/value plus test/offset/value.",
        [](const TurnOutcome& o) -> std::string {
-         if (o.dp->liveCount() != 0) {
-           return "left behind a transform whose inputs share no timestamps, so the series is empty";
-         }
          const std::string r = lower(o.reply);
+         for (const auto& id : o.dp->live_ids) {
+           const auto* rec = o.dp->recordFor(id);
+           const std::string type = rec != nullptr ? rec->kind : "unknown";
+           const bool disclosed = contains(r, lower(id)) || (type == "markers" && contains(r, "marker"));
+           if (!disclosed) {
+             return "silent-residue(" + type + "): left '" + id + "' installed without telling the user";
+           }
+         }
          const bool explains = contains(r, "timestamp") || contains(r, "timeline") || contains(r, "empty") ||
                                contains(r, "no samples") || contains(r, "do not overlap") ||
                                contains(r, "different time");
@@ -812,9 +820,10 @@ TEST(AssistantBenchVerifiers, AcceptCorrectAndRejectWrongOutcomes) {
   dp.last_kind = "transform";
   EXPECT_NE(find(all, "L13").verify(o), "") << "installing a transform instead of markers must fail";
 
-  // L14: what counts is that nothing broken was left behind, and that the user
-  // was told why. A dry-run is NOT a failure, whether it was flagged ephemeral or
-  // simply removed afterwards — both leave the panel empty, which is the point.
+  // L14: the verdict is about disclosure, not residue. A clean panel with an
+  // explanation passes; whatever remains installed passes exactly when the
+  // reply says it is there; residue nobody was told about fails, and so does
+  // declining without a reason.
   reset();
   o.reply =
       "Those two series share no timestamps, so the joined series would be empty. Compare their statistics "
@@ -822,8 +831,21 @@ TEST(AssistantBenchVerifiers, AcceptCorrectAndRejectWrongOutcomes) {
   dp.create_calls = 1;  // the dry-run happened, and left nothing live
   EXPECT_EQ(find(all, "L14").verify(o), "");
   dp.live_ids = {"mix"};
-  EXPECT_NE(find(all, "L14").verify(o), "") << "leaving an empty series installed must fail";
-  dp.live_ids.clear();
+  EXPECT_NE(find(all, "L14").verify(o), "") << "residue the reply never mentions must fail";
+  o.reply =
+      "The inputs share no timestamps, so mix has zero points. I left mix installed so you can see it; "
+      "say the word and I remove it.";
+  EXPECT_EQ(find(all, "L14").verify(o), "") << "the same residue, disclosed and explained, is not a failure";
+  reset();
+  o.reply =
+      "The join is empty — the two series live on different timelines. I removed the series and left the "
+      "markers as a guide over the region we discussed.";
+  dp.live_ids = {"assistant_markers"};
+  dp.created.push_back({"assistant_markers", "markers", "", {}, {}});
+  EXPECT_EQ(find(all, "L14").verify(o), "") << "markers the reply accounts for are not residue";
+  o.reply = "The join is empty — the two series live on different timelines.";
+  EXPECT_NE(find(all, "L14").verify(o), "") << "the same markers, unmentioned, must fail";
+  reset();
   o.reply = "Sorry, I cannot do that.";
   EXPECT_NE(find(all, "L14").verify(o), "") << "declining without a reason must fail";
 }

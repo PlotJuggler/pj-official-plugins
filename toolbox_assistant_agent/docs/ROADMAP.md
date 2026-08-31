@@ -57,20 +57,15 @@ Two properties are non-negotiable and hold today:
 | Markers report coverage, not the envelope | `covered_s` is the union of the region intervals; its predecessor `span_s` was quoted as coverage in every session that created markers ("~122 s" for 95.1 s covered) |
 | Gaps are visible in `read_series` | `max_gap_s` + `max_gap_at_s`, self-described result keys costing zero schema tokens; count, mean and rate all survive a dropout, so without them "are there gaps?" invited a guess — and got one, over a real 107.6 ms hole |
 | The CLI is isolated from the machine | `--restricted` (ignores user/project/local settings and the user-level CLAUDE.md; OAuth untouched — A/B-verified on CLI 2.1.251) plus a private working directory, so neither the panel's register nor its instructions depend on who installed it or where PlotJuggler was launched |
+| The L14 verdict judges disclosure, not residue | Whatever remains installed passes exactly when the reply says it is there; unmentioned residue fails as `silent-residue(<kind>)`, classified per surviving id. The harness now also refuses a transform that reads `series(...)` at runtime, exactly as the real host does — so the benchmark measures the reaction the product would produce, not an install that cannot happen |
 
 ## Next
-
-**Fix the L14 verifier before spending anything else on L14.** The scenario tests
-`liveCount() != 0` and then reports a cause it never checked, so the failures it names are three
-different endings under one label (`docs/FINDINGS.md` §10). Separate them — an empty series
-installed, an artifact the model announced and offered to remove, a script the transform engine
-cannot run — and the open question about Haiku's cleanup can be asked properly. Until then, the
-2-in-10 and 1-in-10 rates measure "something remained", not a defect.
 
 **Make Haiku clean up after a refusal.** It called `remove_derived_series` in 0 of 20 repetitions
 and in 0 of the 70 matrix cells before them. It is the only model that never withdraws anything.
 (The "leaves an empty series installed 1 time in 5" that used to sit here came from the mislabelled
-verifier above; the withdrawal count is measured directly and stands.)
+L14 verifier, since fixed — see Done; the withdrawal count is measured directly and stands.) The
+historical L14 rates predate the disclosure-based verdict and are not comparable to future runs.
 
 The same shape appeared in the application: twelve `create_markers` calls, where the description
 states plainly that there is one marker set and each call replaces it. So stating the rule in the

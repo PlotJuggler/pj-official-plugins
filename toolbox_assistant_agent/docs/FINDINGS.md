@@ -239,6 +239,18 @@ only in the marker engine, never in the transform engine, and the host's `valida
 it (checked by hand on 2026-08-14). The harness could see neither the fabrication nor the net that
 catches it.
 
+**Resolved (2026-08-31), with a rule simpler than the three labels first proposed.** The verdict
+now judges disclosure, not residue: `RecordingDpHost` keeps a record per accepted create, and the
+L14 verifier walks every surviving id — whatever remains installed passes exactly when the reply
+tells the user it is there, and unmentioned residue fails as `silent-residue(<kind>)`. An empty
+series left behind *with* the explanation ("mix has zero points — the inputs share no timestamps;
+say the word and I remove it") is a correct outcome: the user has everything needed to decide. The
+harness also now refuses a transform whose script references `series(` — the same refusal, for the
+same reason, as the host's own environment — so the cross-read fabrication dies where it would die
+in the product, and what the benchmark measures from here on is the model's reaction to that
+refusal. L14 rates recorded before this change measure "something remained" and are not comparable
+to rates recorded after it.
+
 ## 11. A new capability can invalidate a metric that nobody touched
 
 The benchmark scored creation scenarios on `create_calls != 1`. That was a good proxy for "what is
