@@ -71,6 +71,7 @@ def make_nested_batch() -> pa.RecordBatch:
 
     # Row 0: position=(1, 2, 3), orientation=(0.1, 0.2, 0.3, 0.4), speed=5.5.
     # Row 1: position=(4, 5, 6), orientation=(0.5, 0.6, 0.7, 0.8), speed=6.5.
+    # Row 2: null pose, speed=7.5. This exercises parent-null propagation.
     poses = pa.array(
         [
             {
@@ -81,14 +82,15 @@ def make_nested_batch() -> pa.RecordBatch:
                 "position": {"x": 4.0, "y": 5.0, "z": 6.0},
                 "orientation": {"x": 0.5, "y": 0.6, "z": 0.7, "w": 0.8},
             },
+            None,
         ],
         type=pose_type,
     )
     return pa.record_batch(
         [
-            pa.array([1000, 2000], type=pa.int64()),
+            pa.array([1000, 2000, 3000], type=pa.int64()),
             poses,
-            pa.array([5.5, 6.5], type=pa.float64()),
+            pa.array([5.5, 6.5, 7.5], type=pa.float64()),
         ],
         names=["timestamp_ns", "pose", "speed"],
     )
@@ -110,6 +112,36 @@ def make_views_batch() -> pa.RecordBatch:
             pa.array([1.25, 2.25, 3.25], type=pa.float64()),
         ],
         names=["timestamp_ns", "label", "blob", "value"],
+    )
+
+
+def make_views_storage_batch() -> pa.RecordBatch:
+    """Build canonical storage for the C-Data view normalization test."""
+    return pa.record_batch(
+        [
+            pa.array([1000, 2000, 3000, 4000], type=pa.int64()),
+            pa.array(
+                ["short", "this string is longer than twelve bytes", None, "end"],
+                type=pa.string(),
+            ),
+            pa.array(
+                [b"\x01\x02", b"0123456789abcdef", None, b"\xff"],
+                type=pa.binary(),
+            ),
+            pa.array([1.25, 2.25, 3.25, 4.25], type=pa.float64()),
+        ],
+        names=["timestamp_ns", "label", "blob", "value"],
+    )
+
+
+def make_no_timestamp_batch() -> pa.RecordBatch:
+    """Build a flat batch with no timestamp candidate."""
+    return pa.record_batch(
+        [
+            pa.array([1.5, 2.5, 3.5], type=pa.float64()),
+            pa.array([10, 20, 30], type=pa.int32()),
+        ],
+        names=["a", "b"],
     )
 
 
@@ -136,6 +168,7 @@ def main() -> None:
         ),
         write_stream("nested.arrows", [make_nested_batch()]),
         write_stream("views.arrows", [make_views_batch()]),
+        write_stream("views_storage.arrows", [make_views_storage_batch()]),
         write_stream(
             "flat_zstd.arrows",
             [flat_batch],
@@ -147,6 +180,11 @@ def main() -> None:
             pa.ipc.IpcWriteOptions(compression="lz4"),
         ),
         write_stream("timestamp_typed.arrows", [make_timestamp_typed_batch()]),
+        write_stream("no_timestamp.arrows", [make_no_timestamp_batch()]),
+        write_stream(
+            "no_timestamp_two_batches.arrows",
+            [make_no_timestamp_batch().slice(0, 2), make_no_timestamp_batch().slice(2, 1)],
+        ),
     ]
 
     for output_path in generated_paths:

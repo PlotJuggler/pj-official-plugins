@@ -18,8 +18,11 @@ find_library(PARSER_ARROW_FLATCCRT_LIBRARY
   REQUIRED
 )
 
-# --- Arrow IPC decoder shared by the plugin and unit tests ---
-add_library(parser_arrow_core STATIC src/ipc_decoder.cpp)
+# --- Arrow IPC decoder and table shaper shared by the plugin and unit tests ---
+add_library(parser_arrow_core STATIC
+  src/ipc_decoder.cpp
+  src/table_shaper.cpp
+)
 set_target_properties(parser_arrow_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(parser_arrow_core PUBLIC cxx_std_20)
 target_compile_options(parser_arrow_core PRIVATE ${PJ_WARNING_FLAGS})
@@ -83,6 +86,23 @@ target_link_libraries(ipc_decoder_test PRIVATE
   GTest::gtest_main
 )
 add_test(NAME ipc_decoder_test COMMAND ipc_decoder_test)
+
+# --- Unit test for decoded Arrow stream shaping ---
+add_executable(table_shaper_test tests/table_shaper_test.cpp)
+target_compile_features(table_shaper_test PRIVATE cxx_std_20)
+target_compile_options(table_shaper_test PRIVATE ${PJ_WARNING_FLAGS})
+target_compile_definitions(table_shaper_test PRIVATE
+  PJ_ARROW_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data"
+)
+target_include_directories(table_shaper_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+target_link_libraries(table_shaper_test PRIVATE
+  parser_arrow_core
+  GTest::gtest_main
+)
+add_test(NAME table_shaper_test COMMAND table_shaper_test)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(parser_arrow_plugin
