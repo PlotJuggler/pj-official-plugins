@@ -9,7 +9,6 @@
 #include <iostream>
 #include <memory>
 #include <nlohmann/json.hpp>
-#include <pj_array_policy/array_policy.hpp>
 #include <pj_base/builtin/builtin_object.hpp>
 #include <pj_base/builtin/point_cloud.hpp>
 #include <pj_base/builtin/poses_in_frame_codec.hpp>
@@ -18,6 +17,7 @@
 #include <pj_laser_scan/laser_scan_projector.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
+#include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -264,7 +264,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     // Load options
     use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
     timestamp_field_name_ = cfg.value("timestamp_field_name", std::string{});
-    array_limit_ = pj::array_policy::arrayLimitFromJson(cfg);
+    array_limit_ = PJ::sdk::arrayLimitFromJson(cfg);
 
     // If config contains a compiled schema (from dialog), bind it
     if (cfg.contains("compiled_schema_base64") && cfg["compiled_schema_base64"].is_string() &&
@@ -1113,7 +1113,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   const gp::FieldDescriptor* timestamp_field_ = nullptr;
   bool use_embedded_timestamp_ = false;
   std::string timestamp_field_name_;  // empty = fallback chain ("timestamp" → "ts")
-  pj::array_policy::ArrayLimit array_limit_;
+  PJ::sdk::ArrayLimit array_limit_;
 
   // Field numbers for the well-known Foxglove schemas, resolved from the bound
   // topic's embedded descriptor in bindSchema(). Default to each codec's historical
