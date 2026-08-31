@@ -111,8 +111,9 @@ class McapSource : public PJ::FileSourceBase {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
     if (!cfg.is_discarded()) {
       if (cfg.contains("_parser_config")) {
-        // Parser config forwarded by FileLoader from the embedded pj_parser_slot
-        // dialog — takes precedence over everything else.
+        // Parser config forwarded by FileLoader from an embedded pj_parser_slot
+        // dialog, or restored from a preset/layout. Outranks both the MCAP
+        // dialog and a recording's pj.parser_config (see importData).
         parser_config_override_ = cfg["_parser_config"].get<std::string>();
       } else {
         // Migration: old configs had use_timestamp / timestamp_field_name directly
@@ -176,18 +177,23 @@ class McapSource : public PJ::FileSourceBase {
     }
     (void)runtimeHost().progressStart("Importing MCAP", total_messages, true);
 
-    // Parser config starts with the embedded parser dialog (pj_parser_slot) when
-    // present, then MCAP-level controls apply consistently to every selected
-    // channel.
+    // Per-channel parser config is layered lowest-to-highest:
+    //   MCAP dialog controls -> recorded pj.parser_config -> explicit
+    //   "_parser_config" override -> keys derived from the channel itself.
+    // The dialog layer is shared by every selected channel; the rest is applied
+    // per channel below. The override stays a separate object rather than being
+    // folded in here, because it has to outrank the recorded config.
     nlohmann::json parser_config = nlohmann::json::object();
+    PJ::sdk::arrayLimitToJson(parser_config, static_cast<uint32_t>(dialog_.maxArraySize()), dialog_.clampLargeArrays());
+    parser_config["use_embedded_timestamp"] = dialog_.useHeaderTimestamp();
+
+    nlohmann::json explicit_parser_config = nlohmann::json::object();
     if (!parser_config_override_.empty()) {
       auto parsed_config = nlohmann::json::parse(parser_config_override_, nullptr, false);
       if (parsed_config.is_object()) {
-        parser_config = std::move(parsed_config);
+        explicit_parser_config = std::move(parsed_config);
       }
     }
-    PJ::sdk::arrayLimitToJson(parser_config, static_cast<uint32_t>(dialog_.maxArraySize()), dialog_.clampLargeArrays());
-    parser_config["use_embedded_timestamp"] = dialog_.useHeaderTimestamp();
 
     // --- Ensure parser bindings for selected channels ---
     // `selected` and `channels` were taken above, before the progress total.
@@ -234,11 +240,11 @@ class McapSource : public PJ::FileSourceBase {
       auto channel_parser_config = parser_config;
 
       // A PlotJuggler session recording stores the live session's parser config
-      // per channel, and it wins: replay must parse exactly like the live
-      // session, whereas the dialog writes its array-limit and timestamp keys
-      // unconditionally (defaults included), so letting those through would
-      // silently change how a recording replays. Channel metadata is arbitrary
-      // user data, so a value that is not a JSON object is ignored.
+      // per channel, and it outranks the dialog: replay must parse exactly like
+      // the live session, whereas the dialog writes its array-limit and
+      // timestamp keys unconditionally (defaults included), so letting those
+      // through would silently change how a recording replays. Channel metadata
+      // is arbitrary user data, so a value that is not a JSON object is ignored.
       if (const auto recorded = channel_ptr->metadata.find("pj.parser_config");
           recorded != channel_ptr->metadata.end()) {
         const auto recorded_config = nlohmann::json::parse(recorded->second, nullptr, /*allow_exceptions=*/false);
@@ -246,6 +252,11 @@ class McapSource : public PJ::FileSourceBase {
           channel_parser_config.update(recorded_config);
         }
       }
+
+      // An explicit override outranks the recording: it is a deliberate choice
+      // about this import, made after the fact. Note the host cannot yet tell a
+      // deliberate choice from an untouched default — see parser_config_override_.
+      channel_parser_config.update(explicit_parser_config);
 
       // Keys describing the channel being read right now, not any past session:
       // these are applied last and override a recording's stale copies.
@@ -565,9 +576,16 @@ class McapSource : public PJ::FileSourceBase {
 
  private:
   McapDialog dialog_;
-  // Parser config from the embedded parser dialog (pj_parser_slot). Set by
-  // loadConfig() when FileLoader embeds it under "_parser_config". When
-  // non-empty, takes precedence over per-field accessors in McapDialog.
+  // Explicit parser override, set by loadConfig() from the "_parser_config" key
+  // FileLoader embeds (a JSON object serialized as a string). Applied after a
+  // recording's pj.parser_config, so it wins.
+  //
+  // Limitation: FileLoader carries no dirty flag, so "explicit" is inferred
+  // from the key's presence. Today the MCAP dialog has no pj_parser_slot, so
+  // the key only arrives from presets and layouts — explicit by construction.
+  // Should the dialog gain a parser slot, its untouched defaults would also
+  // land here and outrank the recording; propagating an edited/dirty flag
+  // through DialogEngine and FileLoader is the PJ4-side fix.
   std::string parser_config_override_;
   // Owns the cold (post-import lazy) byte path while fetchers are created.
   // Each fetcher retains the shared cold state, so deferred ObjectStore pulls

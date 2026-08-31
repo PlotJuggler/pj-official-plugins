@@ -81,21 +81,36 @@ PlotJuggler's session recorder writes the live session's parser config for
 each topic into the channel's MCAP `metadata` map under the key
 `pj.parser_config` (alongside `pj.type_name`, `pj.source_id` and
 `pj.source_plugin`). When that key is present the loader merges it into the
-channel's parser config, **and the recorded values win** — replaying a
-recording must parse exactly like the session that produced it.
+channel's parser config, so replaying a recording parses the way the session
+that produced it did.
 
-The dialog does not override it. Its array-limit and `use_embedded_timestamp`
-keys are written on every import from the dialog's current state, defaults
-included, so letting them through would silently change how a recording
-replays.
+Each channel's config is layered lowest-to-highest:
 
-The exception is the three keys that describe the channel being read *now*,
-which are applied last and always win: `topic_name`, `serialization` and
-`schema_encoding`.
+1. **MCAP dialog controls** — the array limits and `use_embedded_timestamp`,
+   written on every import from the dialog's current state, defaults included.
+   The recording outranks them: letting an untouched default through would
+   silently change how a recording replays.
+2. **Recorded `pj.parser_config`** — the live session's config for that
+   channel.
+3. **Explicit `_parser_config` override** — the parser config FileLoader
+   embeds in the source config (from a preset, a saved layout, or an embedded
+   parser sub-dialog). A deliberate choice about *this* import, so it outranks
+   the recording.
+4. **Keys derived from the channel being read now** — `topic_name`,
+   `serialization`, `schema_encoding`. Applied last; they always win, so a
+   recording's stale copies never mislabel the channel in front of us.
 
-A value that is missing, unparsable, or not a JSON object is ignored — channel
-metadata is arbitrary user data, and files written by other tools are
+A recorded value that is missing, unparsable, or not a JSON object is ignored —
+channel metadata is arbitrary user data, and files written by other tools are
 unaffected.
+
+> **Known limitation.** "Explicit" at layer 3 is inferred from the key being
+> present, because FileLoader carries no dirty flag. Today the MCAP dialog has
+> no `pj_parser_slot`, so `_parser_config` only reaches this loader from
+> presets and layouts — explicit by construction. Were the dialog to gain a
+> parser slot, that slot's *untouched defaults* would also land at layer 3 and
+> outrank the recording; the fix is to propagate an edited/dirty flag through
+> DialogEngine and FileLoader, which is PJ4-side work.
 
 ## Always-included channels
 
