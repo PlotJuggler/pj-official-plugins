@@ -60,22 +60,31 @@ class MosaicoCacheSource : public PJ::FileSourceBase {
     // renamed file fails here instead of driving the reader on foreign bytes.
     const std::string stem = std::filesystem::path(filepath).stem().string();
     std::string error;
+    // Run the allocation-safe raw framing gate before the provenance
+    // validator enters MCAP: a forged Header or Chunk-in-summary must never
+    // reach an allocating parser in this production path.
+    if (!mosaico::preflightArtifactForReplay(filepath, &error)) {
+      return PJ::unexpected("cache artifact failed replay preflight: " + error);
+    }
     if (!mosaico::validateArtifact(filepath, stem, &error)) {
       return PJ::unexpected("cache artifact failed validation: " + error);
     }
-    std::vector<mosaico::ArtifactTopicData> topics;
-    if (!mosaico::readArtifact(filepath, &topics, /*out_canonical_descriptor_json=*/nullptr, &error)) {
-      return PJ::unexpected("cannot read cache artifact: " + error);
-    }
-
-    (void)runtimeHost().progressStart(
-        "Replaying Mosaico cache", static_cast<uint64_t>(topics.size()), /*cancellable=*/true);
-
     // Object topics keep their host handles in a registry; the replay seam
     // hands out registry indices as its opaque handles.
     std::vector<PJ::sdk::ObjectTopicHandle> object_handles;
+    std::size_t topic_count = 0;
 
     mosaico::ReplaySinks sinks;
+    sinks.start = [this, &topic_count](
+                      std::size_t topics_total, std::uint64_t messages_total, std::string* start_error) {
+      topic_count = topics_total;
+      const auto status = runtimeHost().progressStart("Replaying Mosaico cache", messages_total, /*cancellable=*/true);
+      if (!status) {
+        *start_error = status.error();
+        return false;
+      }
+      return true;
+    };
     sinks.append_scalar_stream = [this](
                                      const std::string& topic, ArrowArrayStream* stream,
                                      const std::string& timestamp_column, std::string* sink_error) {
@@ -125,25 +134,19 @@ class MosaicoCacheSource : public PJ::FileSourceBase {
       }
       return true;
     };
-    sinks.progress = [this](std::size_t done, std::size_t /*total*/) {
-      if (runtimeHost().isStopRequested()) {
-        return false;
-      }
-      return runtimeHost().progressUpdate(static_cast<uint64_t>(done));
-    };
+    sinks.is_cancelled = [this]() { return runtimeHost().isStopRequested(); };
+    sinks.progress = [this](std::uint64_t done, std::uint64_t /*total*/) { return runtimeHost().progressUpdate(done); };
 
-    if (!mosaico::replayArtifact(topics, sinks, &error)) {
-      // A user stop keeps what already replayed (the host's keep/discard
-      // choice applies); a genuine failure aborts.
-      if (runtimeHost().isStopRequested()) {
-        return PJ::okStatus();
+    if (!mosaico::replayArtifact(filepath, sinks, &error)) {
+      if (mosaico::isReplayCancellation(error, runtimeHost().isStopRequested())) {
+        return PJ::unexpected(std::string("import cancelled"));
       }
       return PJ::unexpected("cache replay failed: " + error);
     }
 
     runtimeHost().reportMessage(
         PJ::DataSourceMessageLevel::kInfo,
-        "Replayed " + std::to_string(topics.size()) + " topic(s) from the Mosaico cache");
+        "Replayed " + std::to_string(topic_count) + " topic(s) from the Mosaico cache");
     return PJ::okStatus();
   }
 

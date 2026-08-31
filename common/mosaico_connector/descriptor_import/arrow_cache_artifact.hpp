@@ -167,6 +167,54 @@ struct ArtifactTopicData {
   std::vector<ArtifactObjectSample> object_samples;
 };
 
+/// Summary-only description of one artifact channel. `message_count` comes
+/// from the MCAP Statistics record and is used to report replay progress
+/// before any message payload is read.
+struct ArtifactTopicSummary {
+  ArtifactTopic info;
+  bool is_object = false;
+  std::shared_ptr<arrow::Schema> schema;  // scalar channels only
+  std::uint64_t message_count = 0;
+};
+
+/// Allocation-safe raw framing gate for the replay reader. Call this before
+/// any other MCAP consumer in a cache-loader path: it bounds the Header and
+/// summary section and rejects Chunk records embedded in the summary.
+[[nodiscard]] bool preflightArtifactForReplay(const std::filesystem::path& file, std::string* error);
+
+/// Incremental artifact reader used by cache replay. `open()` reads only the
+/// bounded summary and channel schemas. Each `startTopic()` visits, in file
+/// order, only summary-indexed chunks containing that channel. One chunk and
+/// the current decoded batch/blob are retained at a time. A topic must be
+/// consumed synchronously before starting another one.
+class ArtifactStreamReader {
+ public:
+  ArtifactStreamReader();
+  ~ArtifactStreamReader();
+  ArtifactStreamReader(const ArtifactStreamReader&) = delete;
+  ArtifactStreamReader& operator=(const ArtifactStreamReader&) = delete;
+
+  [[nodiscard]] bool open(
+      const std::filesystem::path& file, std::string* out_canonical_descriptor_json, std::string* error);
+  void close();
+
+  [[nodiscard]] const std::vector<ArtifactTopicSummary>& topics() const;
+  [[nodiscard]] std::uint64_t messageCount() const;
+
+  [[nodiscard]] bool startTopic(std::size_t topic_index, std::string* error);
+
+  /// `out_batch == nullptr` means end of the selected scalar topic.
+  [[nodiscard]] bool readNextScalar(
+      std::shared_ptr<arrow::RecordBatch>* out_batch, std::int64_t* out_log_time_ns, std::string* error);
+
+  /// `out_has_sample == false` means end of the selected object topic.
+  [[nodiscard]] bool readNextObject(ArtifactObjectSample* out_sample, bool* out_has_sample, std::string* error);
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
 /// Read a whole artifact back for replay. Returns the topics in channel-id
 /// order and the embedded canonical descriptor JSON. Fails (never partially
 /// succeeds) on any structural problem; run validateArtifact first when the
