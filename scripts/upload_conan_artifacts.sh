@@ -28,6 +28,14 @@ if ! conan remote list 2>/dev/null | grep -q "${REMOTE_NAME}"; then
   exit 0
 fi
 
+# The remote may be configured anonymously (read-only: pull requests, failed
+# login). `conan upload` would then prompt for credentials and fail in CI, so
+# only publish when configure_jfrog_conan.sh actually logged in.
+if ! conan remote list-users 2>/dev/null | grep -A2 "^${REMOTE_NAME}:" | grep -qi "authenticated: *true"; then
+  echo "::warning::not logged in to ${REMOTE_NAME}; skipping upload of '${PATTERN}'"
+  exit 0
+fi
+
 if ! conan upload "${PATTERN}" -r "${REMOTE_NAME}" --confirm --check; then
   echo "::warning::upload of '${PATTERN}' to ${REMOTE_NAME} failed; continuing (cache priming only)"
 fi

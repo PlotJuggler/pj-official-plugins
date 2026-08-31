@@ -80,7 +80,7 @@ jobs:
           submodules: recursive
 
       - name: Configure PlotJuggler JFrog Conan remote
-        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        if: github.repository == 'PlotJuggler/pj-official-plugins'
         env:
           JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
           JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
@@ -144,7 +144,7 @@ jobs:
           submodules: recursive
 
       - name: Configure PlotJuggler JFrog Conan remote
-        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        if: github.repository == 'PlotJuggler/pj-official-plugins'
         env:
           JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
           JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
