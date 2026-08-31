@@ -121,6 +121,22 @@ class ArtifactWriter {
 [[nodiscard]] PJ::sdk::descriptor_import::RequestArtifactCache makeArtifactCache(
     const std::filesystem::path& configured_root = {}, std::string* error = nullptr);
 
+/// Cache budget when `mosaico/cache_max_gb` is unset: 20 GiB.
+inline constexpr double kDefaultCacheMaxGb = 20.0;
+
+/// The SDK cleanup policy for a `max_gb` budget: non-positive or non-finite
+/// means unlimited; otherwise max_total_bytes = max_gb GiB (saturating).
+/// Orphaned partials keep the SDK's default age.
+[[nodiscard]] PJ::sdk::descriptor_import::CleanupPolicy cacheCleanupPolicy(double max_gb);
+
+/// Best-effort maintenance at the moments the cache may have grown: the
+/// SDK's LRU cleanup under `policy`. Never throws. Leased and in-flight
+/// artifacts are never evicted (the SDK's rule), so running it while holding
+/// a just-published artifact's lease is the intended way to protect it.
+[[nodiscard]] PJ::sdk::descriptor_import::CleanupResult maintainCache(
+    PJ::sdk::descriptor_import::RequestArtifactCache& cache,
+    const PJ::sdk::descriptor_import::CleanupPolicy& policy) noexcept;
+
 /// One canonical object blob, with the exact timestamp it was ingested at.
 struct ArtifactObjectSample {
   std::int64_t log_time_ns = 0;

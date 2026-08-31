@@ -577,6 +577,9 @@ void FetchWorker::pullTopicsAsync(
               .lease = std::move(hit->lease),
           });
     }
+    // Budget pass AFTER the leased lookup (a hit's lease protects it) and
+    // BEFORE a new capture claims space. Best-effort: never blocks a Download.
+    (void)maintainCache(cache, cache_policy_);
     if (!existing_artifact.has_value()) {
       capture = std::make_shared<ArtifactCapture>(*descriptor, std::filesystem::path(cache_root_override));
     }
@@ -1006,6 +1009,10 @@ void FetchWorker::pullTopicsAsync(
   if (capture) {
     auto finalized = capture->finish(complete);
     if (finalized.has_value()) {
+      // The cache just grew: budget pass while the new artifact's lease is
+      // held, so it can never be the victim of its own publication.
+      auto cache = makeArtifactCache(std::filesystem::path(cache_root_override));
+      (void)maintainCache(cache, cache_policy_);
       promote_artifact(finalized->path, capture->identity(), capture->descriptorJson(), std::move(finalized->lease));
     } else if (promotionSettled) {
       promotionSettled(false, capture->disarmReason().empty() ? "fetch incomplete" : capture->disarmReason());

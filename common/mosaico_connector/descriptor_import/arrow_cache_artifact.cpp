@@ -10,8 +10,10 @@
 #include <arrow/io/memory.h>
 #include <arrow/ipc/api.h>
 
+#include <cmath>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <mcap/reader.hpp>
 #include <mcap/writer.hpp>
@@ -200,6 +202,32 @@ PJ::sdk::descriptor_import::RequestArtifactCache makeArtifactCache(
   const fs::path root = configured_root.empty() ? standardCacheRoot(error) : configured_root;
   return PJ::sdk::descriptor_import::RequestArtifactCache(
       PJ::sdk::descriptor_import::CacheSpec{root, ".pjmosaico", sourceDescriptorPolicy().identity}, validateArtifact);
+}
+
+PJ::sdk::descriptor_import::CleanupPolicy cacheCleanupPolicy(double max_gb) {
+  PJ::sdk::descriptor_import::CleanupPolicy policy;  // default: unlimited
+  if (!std::isfinite(max_gb) || max_gb <= 0.0) {
+    return policy;
+  }
+  constexpr double kGiB = 1024.0 * 1024.0 * 1024.0;
+  constexpr double kMaxBytes = static_cast<double>(std::numeric_limits<std::uintmax_t>::max());
+  const double bytes = max_gb * kGiB;
+  policy.max_total_bytes =
+      bytes >= kMaxBytes ? std::numeric_limits<std::uintmax_t>::max() : static_cast<std::uintmax_t>(bytes);
+  return policy;
+}
+
+PJ::sdk::descriptor_import::CleanupResult maintainCache(
+    PJ::sdk::descriptor_import::RequestArtifactCache& cache,
+    const PJ::sdk::descriptor_import::CleanupPolicy& policy) noexcept {
+  try {
+    return cache.cleanup(policy);
+  } catch (...) {
+    PJ::sdk::descriptor_import::CleanupResult failed;
+    failed.target_met = false;
+    failed.had_errors = true;
+    return failed;
+  }
 }
 
 // ---------------------------------------------------------------------------

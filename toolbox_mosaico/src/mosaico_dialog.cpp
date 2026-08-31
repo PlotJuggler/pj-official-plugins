@@ -30,6 +30,7 @@
 #include <string_view>
 #include <utility>
 
+#include "cache_policy.hpp"
 #include "cert_dialog_ui.hpp"
 #include "core/time_format.h"
 #include "credential_resolve.hpp"
@@ -354,6 +355,19 @@ void MosaicoDialog::initFromSettings() {
   state_.cache_directory.clear();
   if (auto stored = settings_.value("mosaico/cache_directory")) {
     state_.cache_directory = stored->toString();
+  }
+  // Cache budget: hand the worker its policy for the per-Download passes and
+  // run one maintenance pass now (panel open), while nothing is in flight.
+  {
+    const auto policy = cacheCleanupPolicyFromSettings(settings_);
+    postCommand([w = worker_.get(), policy] { w->setCacheCleanupPolicy(policy); });
+    auto cache = makeArtifactCache(std::filesystem::path(state_.cache_directory));
+    const auto result = maintainCache(cache, policy);
+    if (result.had_errors) {
+      notify(
+          PJ::ToolboxMessageLevel::kWarning,
+          "Cache maintenance: " + PJ::sdk::descriptor_import::cleanupResultSummary(result));
+    }
   }
 
   if (!history.empty()) {

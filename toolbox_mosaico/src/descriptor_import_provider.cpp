@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "cache_policy.hpp"
 #include "credential_resolve.hpp"
 #include "descriptor_import/arrow_cache_artifact.hpp"
 #include "descriptor_import/source_descriptor.hpp"
@@ -95,7 +96,8 @@ struct DescriptorImportProvider::JobState {
   std::uint64_t max_transfer_bytes = 0;
   std::chrono::milliseconds max_transfer_duration{0};
   std::chrono::milliseconds poll{50};
-  std::function<void()> pre_terminal_hook;  // test seam
+  std::function<void()> pre_terminal_hook;                 // test seam
+  PJ::sdk::descriptor_import::CleanupPolicy cache_policy;  // resolved on the main thread
 
   FetchWorker fetch;  // per-job: owns the client + cancel wake machinery
 
@@ -147,6 +149,10 @@ PJ::sdk::descriptor_import::ImportOutcome DescriptorImportProvider::JobState::ru
     }
   }
 
+  // Budget pass at job start (worker thread): this import is about to add
+  // an artifact. Best-effort, and the worker's own passes get the same policy.
+  (void)maintainCache(file_cache, cache_policy);
+  fetch.setCacheCleanupPolicy(cache_policy);
   fetch.setHostProvider(bindings.host_provider);
   fetch.setRuntimeHostProvider(bindings.runtime_host_provider);
   fetch.setPromotionProvider(bindings.promotion_provider);
@@ -442,6 +448,7 @@ bool DescriptorImportProvider::startImport(
     state->max_transfer_duration =
         std::chrono::milliseconds(envLimit("MOSAICO_IMPORT_MAX_SECONDS", kDefaultImportMaxSeconds) * 1000);
     state->poll = poll_;
+    state->cache_policy = cacheCleanupPolicyFromSettings(settings_);
     state->pre_terminal_hook = pre_terminal_hook_;
     auto body = [state](PJ::sdk::descriptor_import::JobControl& control) { return state->runToTerminal(control); };
 

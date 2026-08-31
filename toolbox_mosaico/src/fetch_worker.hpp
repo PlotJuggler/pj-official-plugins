@@ -61,6 +61,13 @@ class FetchWorker {
     promotion_provider_ = std::move(provider);
   }
 
+  /// The cache budget applied by the maintenance passes around a capture
+  /// (after the leased lookup, after publishing). Worker-thread only, like
+  /// the pull itself.
+  void setCacheCleanupPolicy(PJ::sdk::descriptor_import::CleanupPolicy policy) {
+    cache_policy_ = policy;
+  }
+
   /// Cancel the batch flag and actively interrupt any Flight readers that may
   /// currently be blocked in GetSchema/Next.
   void requestCancel();
@@ -211,6 +218,7 @@ class FetchWorker {
   std::function<PJ::sdk::ToolboxHostView()> host_provider_;
   std::function<PJ::ToolboxRuntimeHostView()> runtime_host_provider_;
   std::function<PJ::SourcePromotionHostView()> promotion_provider_;
+  PJ::sdk::descriptor_import::CleanupPolicy cache_policy_ = cacheCleanupPolicy(kDefaultCacheMaxGb);
   std::atomic<bool> cancel_flag_{false};
   std::unordered_map<std::string, TopicInfo> topic_info_by_name_;
   std::optional<PJ::sdk::DataSourceHandle> fetch_dataset_;
