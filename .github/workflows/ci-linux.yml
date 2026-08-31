@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   # Acquire plotjuggler_sdk ONCE per run and hand it to every build leg as a Conan
-  # cache artifact. Trusted jobs try the shared JFrog remote first; if the exact
+  # cache artifact. Every job tries the shared JFrog remote first; if the exact
   # prebuilt SDK is absent, ensure_core.sh builds it from the pinned
   # extern/plotjuggler_core submodule. The matrix still receives one local artifact.
   acquire-core:
@@ -38,7 +38,7 @@ jobs:
         run: conan profile detect --force
 
       - name: Configure PlotJuggler JFrog Conan remote
-        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        if: github.repository == 'PlotJuggler/pj-official-plugins'
         env:
           JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
           JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
@@ -119,7 +119,7 @@ jobs:
           key: conan-arrow-23.0.1-cppstd20-parquet-flight-${{ runner.os }}-v3
 
       - name: Configure PlotJuggler JFrog Conan remote
-        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        if: github.repository == 'PlotJuggler/pj-official-plugins'
         env:
           JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
           JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
@@ -228,7 +228,7 @@ jobs:
 
   # Build each plugin in isolation against its own conanfile.py, matching the
   # path the release workflow takes. Catches per-plugin recipe gaps. Each leg
-  # restores plotjuggler_sdk from the acquire-core artifact, then trusted jobs use
+  # restores plotjuggler_sdk from the acquire-core artifact, then every job uses
   # JFrog before ConanCenter for each plugin's third-party dependencies.
   per-plugin-build:
     needs: [discover-plugins, acquire-core]
@@ -258,7 +258,7 @@ jobs:
         run: conan profile detect --force
 
       - name: Configure PlotJuggler JFrog Conan remote
-        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        if: github.repository == 'PlotJuggler/pj-official-plugins'
         env:
           JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
           JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
@@ -347,7 +347,7 @@ jobs:
         run: conan profile detect --force
 
       - name: Configure PlotJuggler JFrog Conan remote
-        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        if: github.repository == 'PlotJuggler/pj-official-plugins'
         env:
           JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
           JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}

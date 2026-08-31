@@ -101,10 +101,12 @@ jobs:
         # cache miss (dependency change, SDK bump, or eviction -- this repo sits
         # at the 10 GB Actions cache limit) `conan install --build=missing` pulls
         # MSVC binaries the release workflow already published instead of
-        # recompiling Arrow/boost/gRPC. Push-only: PR runs get no secrets, and
-        # configure_jfrog_conan.sh degrades to ConanCenter when anything fails.
-        # The login token is purged again before ~/.conan2 is saved (see Trim).
-        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        # recompiling Arrow/boost/gRPC. The repository allows anonymous read, so
+        # PR runs (no secrets) use it read-only; push runs also log in so the
+        # upload step can publish. configure_jfrog_conan.sh degrades to
+        # ConanCenter when anything fails. The login token is purged again before
+        # ~/.conan2 is saved (see Trim).
+        if: github.repository == 'PlotJuggler/pj-official-plugins'
         env:
           JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
           JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
@@ -191,8 +193,9 @@ jobs:
       - name: Upload built Conan binaries to JFrog
         # Publish every dependency compiled above (Windows x64 MSVC binaries) so
         # later push runs and the windows-2022 release leg fetch them prebuilt.
-        # Same guard as the remote-config step: never on pull requests, only on
-        # this repo. No-op when the remote is not configured.
+        # Never on pull requests (no secrets there, and we never publish binaries
+        # built from unreviewed code), only on this repo. No-op when the remote is
+        # not configured or was added anonymously.
         if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
         shell: bash
         run: scripts/upload_conan_artifacts.sh
@@ -217,8 +220,8 @@ jobs:
         # persist. Also forget the JFrog remote and its login token: the whole
         # ~/.conan2 tree is what gets cached, PR runs (fork PRs included) can
         # restore caches saved by main, and a credential must never travel that
-        # way. Removing the remote (not just logging out) also keeps PR runs from
-        # querying a server they cannot authenticate against.
+        # way. The remote itself is removed too so the cached remotes.json stays
+        # neutral; every run re-adds it through configure_jfrog_conan.sh.
         if: always() && steps.conan-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
