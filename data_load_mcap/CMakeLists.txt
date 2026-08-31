@@ -72,6 +72,24 @@ target_link_libraries(message_byte_store_test PRIVATE
 )
 add_test(NAME message_byte_store_test COMMAND message_byte_store_test)
 
+# --- Loader test: pj.parser_config channel metadata from session recordings ---
+# Compiles its own copy of mcap_source.cpp (McapSource is file-local) and drives
+# it through a fake runtime host, so it needs the plugin's own include paths and
+# generated headers, plus plugin_host for the service-registry builder.
+add_executable(mcap_recorded_parser_config_test tests/recorded_parser_config_test.cpp)
+target_compile_features(mcap_recorded_parser_config_test PRIVATE cxx_std_20)
+target_compile_options(mcap_recorded_parser_config_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(mcap_recorded_parser_config_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
+target_include_directories(mcap_recorded_parser_config_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
+target_link_libraries(mcap_recorded_parser_config_test PRIVATE
+  plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json
+  LZ4::lz4_static zstd::libzstd_static GTest::gtest_main Threads::Threads
+)
+add_test(NAME mcap_recorded_parser_config_test COMMAND mcap_recorded_parser_config_test)
+
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(mcap_source_plugin
   REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable)
