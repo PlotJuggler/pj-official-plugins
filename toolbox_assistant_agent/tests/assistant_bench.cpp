@@ -603,6 +603,18 @@ json cellToJson(const std::string& model, const Scenario& sc, int rep, const Tur
       {"reply", utf8Truncate(o.reply, why.empty() ? 1200 : 20000)},
       {"script", utf8Truncate(o.dp->last_script, 600)},
       {"inputs", o.dp->last_inputs},
+      // What the user is left with, id by id — the verdict only names residue
+      // when it fails, so without this a disclosed leftover and a clean panel
+      // are indistinguishable in the record.
+      {"live",
+       [&] {
+         json arr = json::array();
+         for (const auto& id : o.dp->live_ids) {
+           const auto* rec = o.dp->recordFor(id);
+           arr.push_back({{"id", id}, {"kind", rec != nullptr ? rec->kind : "unknown"}});
+         }
+         return arr;
+       }()},
       {"wall_s", o.wall_s},
       {"api_ms", o.api_ms},
       {"round_trips", o.roundTrips()},

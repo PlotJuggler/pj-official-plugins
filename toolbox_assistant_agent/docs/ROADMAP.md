@@ -58,24 +58,15 @@ Two properties are non-negotiable and hold today:
 | Gaps are visible in `read_series` | `max_gap_s` + `max_gap_at_s`, self-described result keys costing zero schema tokens; count, mean and rate all survive a dropout, so without them "are there gaps?" invited a guess — and got one, over a real 107.6 ms hole |
 | The CLI is isolated from the machine | `--restricted` (ignores user/project/local settings and the user-level CLAUDE.md; OAuth untouched — A/B-verified on CLI 2.1.251) plus a private working directory, so neither the panel's register nor its instructions depend on who installed it or where PlotJuggler was launched |
 | The L14 verdict judges disclosure, not residue | Whatever remains installed passes exactly when the reply says it is there; unmentioned residue fails as `silent-residue(<kind>)`, classified per surviving id. The harness now also refuses a transform that reads `series(...)` at runtime, exactly as the real host does — so the benchmark measures the reaction the product would produce, not an install that cannot happen |
+| The Haiku "cleanup" item closed as not-a-defect | Replicated under the honest instrument: 10/10 L14 ($0.12) — the join refusal is accepted, nothing installed, every reply explains and offers alternatives. 0 withdrawals across 90 historical cells is style, not residue: Haiku does not probe, so it has nothing to remove. The result-visibility mechanism stays parked until a real `silent-residue` verdict appears in a run or a GUI session (`FINDINGS.md` §14) |
 
 ## Next
 
-**Make Haiku clean up after a refusal.** It called `remove_derived_series` in 0 of 20 repetitions
-and in 0 of the 70 matrix cells before them. It is the only model that never withdraws anything.
-(The "leaves an empty series installed 1 time in 5" that used to sit here came from the mislabelled
-L14 verifier, since fixed — see Done; the withdrawal count is measured directly and stands.) The
-historical L14 rates predate the disclosure-based verdict and are not comparable to future runs.
-
-The same shape appeared in the application: twelve `create_markers` calls, where the description
-states plainly that there is one marker set and each call replaces it. So stating the rule in the
-description has been tried and does not hold it. What has worked twice — the marker count, the join
-forecast — is making the result visible, which points at telling it what it just replaced or left
-behind rather than writing the rule more firmly.
-
-Ambiguity is the same story on the same model: in 20 repetitions Haiku acted without asking 11
-times and named its assumption in only 4 of them. That is a measured weakness, not a regression —
-an earlier 5/5 against this 13/20 is p≈0.28, and five repetitions cannot establish a baseline.
+On Haiku, ambiguity remains its measured weakness: in 20 repetitions it acted without asking 11
+times and named its assumption in only 4 of them. That is a weakness, not a regression — an
+earlier 5/5 against this 13/20 is p≈0.28, and five repetitions cannot establish a baseline. (The
+"make Haiku clean up" item that used to sit here closed as not-a-defect once the instrument was
+honest — see Done and `FINDINGS.md` §14.)
 
 **Require the model to disclose a choice when a name is under-specified.** The tool layer already
 refuses to guess between candidate series, but that guard rarely fires: handed the full catalog, a

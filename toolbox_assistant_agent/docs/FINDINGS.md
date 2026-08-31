@@ -373,3 +373,41 @@ The budget test's ceiling moved from 8000 back to 7500 to hold the trim. The wid
 stands regardless of the small absolute number: prose in the schema is bought per turn and should
 be paid for per turn, and the place to spend description budget is where no feedback loop can
 substitute for it.
+
+## 14. A defect that did not survive an honest instrument
+
+"Make Haiku clean up after a refusal" entered the roadmap on two signals: it never called
+`remove_derived_series` (0 across 70 matrix cells and the 20-repetition run), and it failed L14 in
+1 of 10 repetitions. Before building anything, the failure was replicated under the corrected
+verdict — 10 repetitions of L14, Haiku only, $0.12 (`data/2026-08-31-haiku-L14-disclosure-verdict.json`).
+
+It does not reproduce. 10 of 10 passed: in every cell Haiku attempted the transform, took the join
+guard's refusal at face value, installed nothing, and explained the timestamp mismatch to the user
+with alternatives — all ten replies offer interpolation, alignment or plotting side by side. Three
+cells read the series statistics before answering. No cell attempted the `series(...):atTime`
+fabrication that produced the one historical failure.
+
+Both motivating signals dissolve on inspection:
+
+- **The 1-in-10 L14 failure** was partly the mislabelled verifier (§10) and partly a fabrication
+  that the harness now refuses exactly as the real host does. Ten repetitions cannot prove the
+  fabrication attempt is gone (a 10% behaviour shows 0/10 about a third of the time), but they do
+  not need to: if it ever recurs it dies in validation, and what follows is the accepted-refusal
+  path measured here, ten times, clean.
+- **The zero withdrawals** are a style trait, not a defect. Haiku does not probe — it goes
+  straight at the task — so unlike Opus (12 withdrawals, all of its own probes) it has nothing to
+  remove. Scored on end state it was already 35/35 (§11). Not withdrawing what you never left is
+  not a failure.
+
+The mechanism the roadmap sketched for this — telling the model in tool results what it just
+replaced or left behind — is parked, not rejected: it would be a fix without a measured defect,
+and every earned token in a result should point at a failure that exists. The reopening condition
+is written down: a `silent-residue` verdict in any future run, or unannounced leftovers in a GUI
+session. The evidence that description-stated rules alone do not hold behaviour (twelve
+`create_markers` calls in one application session, with REPLACES stated plainly) still stands and
+is what makes result-visibility the right shape *if* that day comes.
+
+Together with §9–§11 this closes a pattern worth naming: of the four "model defects" this project
+has chased, three were the measuring instrument and the fourth shrank to a rare behaviour already
+caught by a structural net. The models have been better than the graders more often than the
+reverse — budget the audit before the fix.
