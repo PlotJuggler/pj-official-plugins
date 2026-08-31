@@ -24,6 +24,14 @@ struct SeriesStats {
   std::int64_t t_end_ns = 0;
   double duration_s = 0.0;
   double rate_hz = 0.0;  // (count - 1) / duration_s, 0 when undefined
+  // Largest spacing between consecutive samples, and where the gap starts (in
+  // seconds relative to the first sample, matching the buckets' time axis).
+  // Only defined with two or more samples — see has_gap. This is what makes
+  // "are there gaps in this recording?" answerable: count, mean and rate all
+  // survive a dropout untouched, so without it the question invites a guess.
+  bool has_gap = false;
+  double max_gap_s = 0.0;
+  double max_gap_at_s = 0.0;
 };
 
 // One decimated bucket: a time window collapsed to its min/max/mean. `t_rel_s`
@@ -69,6 +77,20 @@ struct SeriesBucket {
   s.duration_s = static_cast<double>(s.t_end_ns - s.t_start_ns) * 1e-9;
   if (s.duration_s > 0.0 && n > 1) {
     s.rate_hz = static_cast<double>(n - 1) / s.duration_s;
+  }
+  if (n > 1) {
+    std::int64_t max_gap_ns = 0;
+    std::int64_t gap_at_ns = timestamps[0];
+    for (std::size_t i = 1; i < n; ++i) {
+      const std::int64_t gap = timestamps[i] - timestamps[i - 1];
+      if (gap > max_gap_ns) {
+        max_gap_ns = gap;
+        gap_at_ns = timestamps[i - 1];
+      }
+    }
+    s.has_gap = true;
+    s.max_gap_s = static_cast<double>(max_gap_ns) * 1e-9;
+    s.max_gap_at_s = static_cast<double>(gap_at_ns - s.t_start_ns) * 1e-9;
   }
   return s;
 }

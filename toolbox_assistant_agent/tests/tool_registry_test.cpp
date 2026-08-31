@@ -123,6 +123,9 @@ TEST(ToolRegistry, ReadSeriesStats) {
   EXPECT_EQ(j["stats"]["count"], 5);
   EXPECT_DOUBLE_EQ(j["stats"]["min"].get<double>(), 0.0);
   EXPECT_DOUBLE_EQ(j["stats"]["max"].get<double>(), 4.0);
+  // The spacing facts ride along in the same report, self-described by key.
+  EXPECT_TRUE(j["stats"].contains("max_gap_s"));
+  EXPECT_TRUE(j["stats"].contains("max_gap_at_s"));
 }
 
 TEST(ToolRegistry, ReadSeriesBuckets) {

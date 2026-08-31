@@ -55,16 +55,9 @@ Two properties are non-negotiable and hold today:
 | Benchmark scores outcomes, not calls | The old counter scored the models that clean up as the failures |
 | Driven on a real log, end to end | Twelve turns on a 231.5 s vehicle recording: no marker wall, 12.2 s median turn, and 24 of 26 numeric claims checked against the file (`BENCHMARKS.md`) |
 | Markers report coverage, not the envelope | `covered_s` is the union of the region intervals; its predecessor `span_s` was quoted as coverage in every session that created markers ("~122 s" for 95.1 s covered) |
+| Gaps are visible in `read_series` | `max_gap_s` + `max_gap_at_s`, self-described result keys costing zero schema tokens; count, mean and rate all survive a dropout, so without them "are there gaps?" invited a guess — and got one, over a real 107.6 ms hole |
 
 ## Next
-
-**Give `read_series` a dropout statistic.** It reports count, min, max, mean, stddev, duration and
-rate — nothing about the spacing between samples. So "are there gaps in this log?", which is among
-the first questions anyone asks of a recording, cannot be answered honestly today. Asked to analyse
-a 231.5 s drive, the model concluded "no dropouts to report" by checking that each channel's sample
-count matched its nominal rate × duration. That reasoning cannot detect a gap — an average survives
-one — and there is one: 107.6 ms on a 99 Hz IMU, 10.7× nominal. Max inter-sample gap, and a count
-of gaps beyond some multiple of nominal, would make the question answerable.
 
 **Fix the L14 verifier before spending anything else on L14.** The scenario tests
 `liveCount() != 0` and then reports a cause it never checked, so the failures it names are three

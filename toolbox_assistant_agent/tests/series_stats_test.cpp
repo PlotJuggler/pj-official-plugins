@@ -42,6 +42,41 @@ TEST(SeriesStats, SingleSampleHasNoRate) {
   EXPECT_DOUBLE_EQ(s.min, 7.0);
   EXPECT_DOUBLE_EQ(s.max, 7.0);
   EXPECT_EQ(s.rate_hz, 0.0);
+  EXPECT_FALSE(s.has_gap);  // one sample has no spacing to report
+}
+
+// The property that makes the gap fields necessary: this series and a
+// perfectly regular one have the same count, mean and a near-identical rate,
+// so nothing else in the report can betray the dropout.
+TEST(SeriesStats, LargestGapAndItsPosition) {
+  // 1 Hz samples with one 3 s hole after t=2 s: 0,1,2,[hole],5,6.
+  std::vector<std::int64_t> ts = {0, kSec, 2 * kSec, 5 * kSec, 6 * kSec};
+  std::vector<double> v = {1.0, 1.0, 1.0, 1.0, 1.0};
+  auto s = computeStats(ts, v);
+  ASSERT_TRUE(s.has_gap);
+  EXPECT_DOUBLE_EQ(s.max_gap_s, 3.0);
+  EXPECT_DOUBLE_EQ(s.max_gap_at_s, 2.0);
+}
+
+TEST(SeriesStats, GapPositionIsRelativeToTheFirstSample) {
+  // Same shape, shifted to start at t=100 s: the gap after the FIRST interval,
+  // reported on the buckets' relative time axis (0 = first sample).
+  std::vector<std::int64_t> ts = {100 * kSec, 104 * kSec, 105 * kSec};
+  std::vector<double> v = {1.0, 1.0, 1.0};
+  auto s = computeStats(ts, v);
+  ASSERT_TRUE(s.has_gap);
+  EXPECT_DOUBLE_EQ(s.max_gap_s, 4.0);
+  EXPECT_DOUBLE_EQ(s.max_gap_at_s, 0.0);
+}
+
+TEST(SeriesStats, RegularSeriesReportsItsSpacingAsTheGap) {
+  // No hole: the max gap IS the nominal spacing. Reporting it anyway lets the
+  // reader see "largest gap == 1/rate" and conclude health from facts.
+  std::vector<std::int64_t> ts = {0, kSec, 2 * kSec, 3 * kSec};
+  std::vector<double> v = {0.0, 0.0, 0.0, 0.0};
+  auto s = computeStats(ts, v);
+  ASSERT_TRUE(s.has_gap);
+  EXPECT_DOUBLE_EQ(s.max_gap_s, 1.0);
 }
 
 TEST(SeriesBuckets, FewerSamplesThanBucketsOnePer) {

@@ -477,8 +477,18 @@ ToolResult describeTopic(const json& args, ToolContext& ctx) {
 }
 
 json statsToJson(const SeriesStats& s) {
-  return {{"count", s.count},           {"min", s.min},        {"max", s.max}, {"mean", s.mean}, {"stddev", s.stddev},
-          {"duration_s", s.duration_s}, {"rate_hz", s.rate_hz}};
+  json out = {{"count", s.count},    {"min", s.min},       {"max", s.max},
+              {"mean", s.mean},      {"stddev", s.stddev}, {"duration_s", s.duration_s},
+              {"rate_hz", s.rate_hz}};
+  // The spacing facts that count/mean/rate cannot carry: a dropout leaves all
+  // three untouched. The keys are self-describing on purpose — the tool's
+  // schema description says nothing about them, so they cost prefix tokens in
+  // no turn and appear exactly when a series is read.
+  if (s.has_gap) {
+    out["max_gap_s"] = s.max_gap_s;
+    out["max_gap_at_s"] = s.max_gap_at_s;
+  }
+  return out;
 }
 
 // How a multi-input transform would fare BEFORE anything is installed.
