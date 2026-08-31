@@ -2,8 +2,8 @@
 
 #include <algorithm>
 #include <map>
-#include <pj_streaming/dialog_utils.hpp>
-#include <pj_streaming/latest_value_slot.hpp>
+#include <pj_plugins/sdk/streaming_dialog.hpp>
+#include <pj_plugins/sdk/streaming_source.hpp>
 #include <set>
 #include <string>
 #include <vector>
@@ -20,7 +20,7 @@ namespace PJ::FoxgloveProtocol {
 /// only the MOST RECENT write matters. The poll thread drains it with take(),
 /// which atomically hands over whatever is pending and resets the slot to empty
 /// (nullopt), so a poll pass that finds nothing new is a cheap no-op.
-using DesiredTopicsSlot = pj::streaming::LatestValueSlot<std::set<std::string>>;
+using DesiredTopicsSlot = PJ::sdk::LatestValueSlot<std::set<std::string>>;
 
 /// Result of computeSubscriptionDiff: which live subscriptions to drop and which
 /// advertised channels to newly subscribe, to reconcile the source's current
@@ -71,7 +71,7 @@ struct SubscriptionDiff {
 /// allow-list rather than a subscribe list. An EMPTY selection means "no
 /// filter, advertise everything" (the default when nothing is selected).
 [[nodiscard]] inline bool passesAdvertiseFilter(const std::string& topic, const std::vector<ChannelInfo>& selection) {
-  return pj::streaming::passesSelectionFilter(
+  return PJ::sdk::passesSelectionFilter(
       topic, selection, [](const ChannelInfo& ch) -> const std::string& { return ch.topic; });
 }
 

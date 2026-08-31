@@ -23,7 +23,6 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/arrow_helpers)
   add_subdirectory(common/base64)
   add_subdirectory(common/pj_video_demux)
-  add_subdirectory(common/array_policy)
   add_subdirectory(common/streaming_utils)
   add_subdirectory(common/laser_scan)
   add_subdirectory(common/pointcloud_color)
@@ -165,8 +164,7 @@ option(BUILD_TESTING "Build the testing tree" ON)
 # CMAKE_PREFIX_PATH — colliding with the Conan protobuf (6.x + abseil) that a
 # non-Arrow plugin (e.g. parser_protobuf) legitimately requires. The other
 # helpers are safe to always configure (base64 header-only; pj_video_demux is
-# find_package(ffmpeg QUIET); array_policy needs nlohmann_json, which every
-# plugin already has; laser_scan is SDK-only).
+# find_package(ffmpeg QUIET); laser_scan is SDK-only).
 # ---------------------------------------------------------------------------
 
 set(PJ_ARROW_HELPER_CONSUMERS data_load_parquet data_load_lerobot)
@@ -179,7 +177,6 @@ else()
 endif()
 add_subdirectory(common/base64)
 add_subdirectory(common/pj_video_demux)
-add_subdirectory(common/array_policy)
 add_subdirectory(common/streaming_utils)
 add_subdirectory(common/laser_scan)
 add_subdirectory(common/pointcloud_color)

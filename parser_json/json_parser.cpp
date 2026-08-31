@@ -2,9 +2,9 @@
 #include <cstddef>
 #include <deque>
 #include <nlohmann/json.hpp>
-#include <pj_array_policy/array_policy.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
+#include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -29,7 +29,7 @@ struct FlattenSink {
 /// Flattening policy, invariant across one parse() call (mirrors FlattenSink,
 /// which carries the mutable half of the recursion state).
 struct FlattenOptions {
-  pj::array_policy::ArrayLimit limit;
+  PJ::sdk::ArrayLimit limit;
   bool label_keyed_arrays = false;
 };
 
@@ -164,7 +164,7 @@ class JsonParser : public PJ::MessageParserPluginBase {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
     if (!cfg.is_discarded()) {
       encoding_hint_ = cfg.value("encoding_hint", std::string{});
-      flatten_opts_.limit = pj::array_policy::arrayLimitFromJson(cfg);
+      flatten_opts_.limit = PJ::sdk::arrayLimitFromJson(cfg);
       flatten_opts_.label_keyed_arrays = cfg.value("label_keyed_arrays", false);
       // Embedded timestamp: when set, doParseScalars reports the field's value
       // as ScalarRecord::ts so the host keys the row by it instead of the
