@@ -6,27 +6,14 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
+
+#include "arrow_error.hpp"
 
 namespace pj::parser_arrow {
 namespace {
-
-/// Prefix a nanoarrow diagnostic for the parser-facing error contract.
-[[nodiscard]] std::string parserError(std::string_view message) {
-  return "parser_arrow: " + std::string(message);
-}
-
-/// Convert an errno-style nanoarrow result into a parser-facing diagnostic.
-[[nodiscard]] std::string nanoarrowError(int result, const char* message) {
-  if (message != nullptr && message[0] != '\0') {
-    return parserError(message);
-  }
-  return parserError(std::error_code(result, std::generic_category()).message());
-}
 
 /// Build the producer-facing rejection for a dictionary-encoded field; `name` may be empty when the IPC decoder
 /// refuses the schema before the field can be identified.
@@ -38,25 +25,19 @@ namespace {
          "dictionaries before encoding";
 }
 
-/// Find the first dictionary-encoded field in a decoded Arrow C schema.
-[[nodiscard]] std::optional<std::string> findDictionaryColumn(
-    const ArrowSchema* schema, std::string_view parent_name = {}) {
-  if (schema == nullptr) {
-    return std::nullopt;
+/// Convert schema-decoder limitations into the stable producer-facing diagnostics.
+[[nodiscard]] std::string classifySchemaDecodeError(int result, const char* message) {
+  const std::string_view text = message != nullptr ? std::string_view(message) : std::string_view{};
+  if (text.find("DictionaryEncoding") != std::string_view::npos) {
+    return dictionaryError({});
   }
-  const std::string_view field_name = schema->name != nullptr ? std::string_view(schema->name) : std::string_view{};
-  const std::string full_name = parent_name.empty() || field_name.empty()
-                                    ? std::string(field_name.empty() ? parent_name : field_name)
-                                    : std::string(parent_name) + "/" + std::string(field_name);
-  if (schema->dictionary != nullptr) {
-    return full_name.empty() ? std::optional<std::string>("<unnamed>") : std::optional<std::string>(full_name);
+  std::string diagnostic = nanoarrowError(result, message);
+  if (text.find("Unrecognized Field type") != std::string_view::npos) {
+    diagnostic +=
+        " (string_view/binary_view and other IPC field types unsupported by nanoarrow_ipc 0.7; cast to "
+        "utf8/binary before encoding)";
   }
-  for (int64_t index = 0; index < schema->n_children; ++index) {
-    if (auto dictionary = findDictionaryColumn(schema->children[index], full_name); dictionary.has_value()) {
-      return dictionary;
-    }
-  }
-  return std::nullopt;
+  return diagnostic;
 }
 
 /// Preflight IPC message metadata without consuming record-batch bodies.
@@ -96,14 +77,19 @@ PJ::Status rejectUnsupportedIpcFeatures(PJ::Span<const uint8_t> bytes) {
     if (decoder.message_type == NANOARROW_IPC_MESSAGE_TYPE_SCHEMA) {
       PJ::sdk::ArrowSchemaHolder schema;
       const int schema_result = ArrowIpcDecoderDecodeSchema(&decoder, schema.out(), &error);
-      if (schema_result != NANOARROW_OK || ArrowIpcDecoderSetSchema(&decoder, schema.get(), &error) != NANOARROW_OK) {
+      if (schema_result != NANOARROW_OK) {
+        return PJ::unexpected(classifySchemaDecodeError(schema_result, error.message));
+      }
+      if (ArrowIpcDecoderSetSchema(&decoder, schema.get(), &error) != NANOARROW_OK) {
         break;
       }
     }
 
-    if (decoder.message_type == NANOARROW_IPC_MESSAGE_TYPE_RECORD_BATCH &&
-        decoder.codec == NANOARROW_IPC_COMPRESSION_TYPE_LZ4_FRAME) {
-      return PJ::unexpected("parser_arrow: lz4-compressed Arrow IPC bodies are not supported");
+    if (decoder.message_type == NANOARROW_IPC_MESSAGE_TYPE_RECORD_BATCH) {
+      if (decoder.codec == NANOARROW_IPC_COMPRESSION_TYPE_LZ4_FRAME) {
+        return PJ::unexpected("parser_arrow: lz4-compressed Arrow IPC bodies are not supported");
+      }
+      break;
     }
 
     const int64_t header_size = decoder.header_size_bytes;
@@ -117,6 +103,9 @@ PJ::Status rejectUnsupportedIpcFeatures(PJ::Span<const uint8_t> bytes) {
 
   return PJ::okStatus();
 }
+
+/// Do nothing when nanoarrow releases a buffer that borrows caller-owned payload storage.
+void releaseBorrowedBuffer(ArrowBufferAllocator*, uint8_t*, int64_t) {}
 
 }  // namespace
 
@@ -132,14 +121,16 @@ PJ::Expected<PJ::sdk::ArrowStreamHolder> decodeIpcStream(PJ::Span<const uint8_t>
     return PJ::unexpected(std::move(status).error());
   }
 
-  ArrowBuffer input_buffer;
+  ArrowBuffer input_buffer{};
   ArrowBufferInit(&input_buffer);
-  const auto reset_buffer = [](ArrowBuffer* value) { ArrowBufferReset(value); };
-  const std::unique_ptr<ArrowBuffer, decltype(reset_buffer)> buffer_owner(&input_buffer, reset_buffer);
-  const int append_result = ArrowBufferAppend(&input_buffer, bytes.data(), static_cast<int64_t>(bytes.size()));
-  if (append_result != NANOARROW_OK) {
-    return PJ::unexpected(nanoarrowError(append_result, nullptr));
+  const int allocator_result =
+      ArrowBufferSetAllocator(&input_buffer, ArrowBufferDeallocator(&releaseBorrowedBuffer, nullptr));
+  if (allocator_result != NANOARROW_OK) {
+    return PJ::unexpected(nanoarrowError(allocator_result, nullptr));
   }
+  input_buffer.data = const_cast<uint8_t*>(bytes.data());
+  input_buffer.size_bytes = static_cast<int64_t>(bytes.size());
+  input_buffer.capacity_bytes = input_buffer.size_bytes;
 
   ArrowIpcInputStream input_stream{};
   const int input_result = ArrowIpcInputStreamInitBuffer(&input_stream, &input_buffer);
@@ -162,23 +153,7 @@ PJ::Expected<PJ::sdk::ArrowStreamHolder> decodeIpcStream(PJ::Span<const uint8_t>
   PJ::sdk::ArrowSchemaHolder schema;
   const int schema_result = stream.get()->get_schema(stream.get(), schema.out());
   if (schema_result != NANOARROW_OK) {
-    const char* stream_error = ArrowArrayStreamGetLastError(stream.get());
-    if (stream_error != nullptr && std::string_view(stream_error).find("DictionaryEncoding") != std::string::npos) {
-      // nanoarrow rejects dictionary fields while converting the IPC schema (ipc/decoder.c: "Schema message field
-      // with DictionaryEncoding not supported"); it does not tell us which field.
-      return PJ::unexpected(dictionaryError({}));
-    }
-    std::string diagnostic = nanoarrowError(schema_result, stream_error);
-    if (stream_error != nullptr &&
-        std::string_view(stream_error).find("Unrecognized Field type") != std::string::npos) {
-      diagnostic +=
-          " (string_view/binary_view and other IPC field types unsupported by nanoarrow_ipc 0.7; cast to "
-          "utf8/binary before encoding)";
-    }
-    return PJ::unexpected(std::move(diagnostic));
-  }
-  if (auto dictionary_name = findDictionaryColumn(schema.get()); dictionary_name.has_value()) {
-    return PJ::unexpected(dictionaryError(*dictionary_name));
+    return PJ::unexpected(nanoarrowError(schema_result, ArrowArrayStreamGetLastError(stream.get())));
   }
 
   return stream;

@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <filesystem>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -54,15 +53,10 @@ struct ArrowParserFixture {
   }
 };
 
-/// Return the absolute path of one checked-in Arrow IPC fixture.
-[[nodiscard]] std::filesystem::path fixturePath(std::string_view filename) {
-  return std::filesystem::path(PJ_ARROW_TEST_DATA_DIR) / filename;
-}
-
 /// Read and parse one checked-in Arrow IPC fixture.
 [[nodiscard]] PJ::Status parseFixture(
     ArrowParserFixture& fixture, std::string_view filename, PJ::Timestamp timestamp_ns = 0) {
-  const auto payload = pj::parser_arrow::test::readFile(fixturePath(filename));
+  const auto payload = pj::parser_arrow::test::readFile(pj::parser_arrow::test::fixturePath(filename));
   return fixture.handle.parse(timestamp_ns, PJ::Span<const uint8_t>(payload.data(), payload.size()));
 }
 

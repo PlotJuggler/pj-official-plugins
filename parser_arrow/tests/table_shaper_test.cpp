@@ -6,18 +6,14 @@
 #include <array>
 #include <cerrno>
 #include <cstdint>
-#include <filesystem>
 #include <limits>
-#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-#include "ipc_decoder.hpp"
 #include "pj_base/sdk/arrow.hpp"
-#include "pj_base/span.hpp"
 #include "test_utils.hpp"
 
 #ifndef PJ_ARROW_TEST_DATA_DIR
@@ -27,30 +23,9 @@
 namespace pj::parser_arrow {
 namespace {
 
-/// Return the absolute path of a checked-in parser_arrow fixture.
-[[nodiscard]] std::filesystem::path fixturePath(std::string_view filename) {
-  return std::filesystem::path(PJ_ARROW_TEST_DATA_DIR) / filename;
-}
-
-/// Decode one checked-in IPC fixture or throw with its parser diagnostic.
-[[nodiscard]] PJ::sdk::ArrowStreamHolder decodeFixture(std::string_view filename) {
-  const auto bytes = test::readFile(fixturePath(filename));
-  auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
-  if (!decoded) {
-    throw std::runtime_error(decoded.error());
-  }
-  return std::move(*decoded);
-}
-
-/// Read a stream schema or throw its stream diagnostic.
-[[nodiscard]] PJ::sdk::ArrowSchemaHolder readSchema(PJ::sdk::ArrowStreamHolder& stream) {
-  PJ::sdk::ArrowSchemaHolder schema;
-  const int result = stream.get()->get_schema(stream.get(), schema.out());
-  if (result != NANOARROW_OK) {
-    throw std::runtime_error(ArrowArrayStreamGetLastError(stream.get()));
-  }
-  return schema;
-}
+using test::decodeFixture;
+using test::readBatch;
+using test::readSchema;
 
 /// Construct a flat struct schema with the requested child names and types.
 [[nodiscard]] PJ::sdk::ArrowSchemaHolder makeSchema(const std::vector<std::pair<std::string, ArrowType>>& fields) {
@@ -69,51 +44,150 @@ namespace {
   return schema;
 }
 
-/// Initialize and bind an ArrowArrayView for one schema and batch.
-class ScopedArrayView {
- public:
-  /// Bind an array view or throw nanoarrow's validation diagnostic.
-  ScopedArrayView(const ArrowSchema* schema, const ArrowArray* array) {
-    ArrowError error{};
-    const int init_result = ArrowArrayViewInitFromSchema(&view_, schema, &error);
-    if (init_result != NANOARROW_OK) {
-      throw std::runtime_error(error.message);
-    }
-    const int bind_result = ArrowArrayViewSetArray(&view_, array, &error);
-    if (bind_result != NANOARROW_OK) {
-      ArrowArrayViewReset(&view_);
-      throw std::runtime_error(error.message);
-    }
+/// Wrap a schema in an empty basic stream for observable shapeStream assertions.
+[[nodiscard]] PJ::sdk::ArrowStreamHolder emptyStream(ArrowSchema* schema) {
+  ArrowArrayStream stream{};
+  if (ArrowBasicArrayStreamInit(&stream, schema, 0) != NANOARROW_OK) {
+    throw std::runtime_error("ArrowBasicArrayStreamInit failed");
+  }
+  return PJ::sdk::ArrowStreamHolder(stream);
+}
+
+/// Wrap one owned batch in a basic stream using the supplied schema.
+[[nodiscard]] PJ::sdk::ArrowStreamHolder oneBatchStream(ArrowSchema* schema, ArrowArray* batch) {
+  ArrowArrayStream stream{};
+  if (ArrowBasicArrayStreamInit(&stream, schema, 1) != NANOARROW_OK) {
+    throw std::runtime_error("ArrowBasicArrayStreamInit failed");
+  }
+  ArrowBasicArrayStreamSetArray(&stream, 0, batch);
+  return PJ::sdk::ArrowStreamHolder(stream);
+}
+
+/// Build two rows whose timestamp-list columns fail in opposite row/column order.
+[[nodiscard]] PJ::sdk::ArrowStreamHolder makeCompetingTimestampListOverflowStream() {
+  PJ::sdk::ArrowSchemaHolder schema;
+  ArrowSchemaInit(schema.out());
+  if (ArrowSchemaSetTypeStruct(schema.get(), 3) != NANOARROW_OK ||
+      ArrowSchemaSetType(schema.get()->children[0], NANOARROW_TYPE_INT64) != NANOARROW_OK ||
+      ArrowSchemaSetName(schema.get()->children[0], "timestamp_ns") != NANOARROW_OK ||
+      ArrowSchemaSetTypeFixedSize(schema.get()->children[1], NANOARROW_TYPE_FIXED_SIZE_LIST, 2) != NANOARROW_OK ||
+      ArrowSchemaSetName(schema.get()->children[1], "times") != NANOARROW_OK ||
+      ArrowSchemaSetTypeDateTime(
+          schema.get()->children[1]->children[0], NANOARROW_TYPE_TIMESTAMP, NANOARROW_TIME_UNIT_SECOND, nullptr) !=
+          NANOARROW_OK ||
+      ArrowSchemaSetType(schema.get()->children[2], NANOARROW_TYPE_DOUBLE) != NANOARROW_OK ||
+      ArrowSchemaSetName(schema.get()->children[2], "value") != NANOARROW_OK) {
+    throw std::runtime_error("timestamp-list schema initialization failed");
   }
 
-  ScopedArrayView(const ScopedArrayView&) = delete;
-  ScopedArrayView& operator=(const ScopedArrayView&) = delete;
-
-  /// Release the recursively allocated nanoarrow view.
-  ~ScopedArrayView() {
-    ArrowArrayViewReset(&view_);
-  }
-
-  /// Access the bound view.
-  [[nodiscard]] const ArrowArrayView* get() const {
-    return &view_;
-  }
-
- private:
-  ArrowArrayView view_{};
-};
-
-/// Pull the next shaped batch and require that it is not end-of-stream.
-[[nodiscard]] PJ::sdk::ArrowArrayHolder readBatch(PJ::sdk::ArrowStreamHolder& stream) {
   PJ::sdk::ArrowArrayHolder batch;
-  const int result = stream.get()->get_next(stream.get(), batch.out());
-  if (result != NANOARROW_OK) {
-    throw std::runtime_error(ArrowArrayStreamGetLastError(stream.get()));
+  ArrowError error{};
+  if (ArrowArrayInitFromSchema(batch.out(), schema.get(), &error) != NANOARROW_OK ||
+      ArrowArrayStartAppending(batch.get()->children[0]) != NANOARROW_OK ||
+      ArrowArrayStartAppending(batch.get()->children[1]) != NANOARROW_OK ||
+      ArrowArrayStartAppending(batch.get()->children[1]->children[0]) != NANOARROW_OK ||
+      ArrowArrayStartAppending(batch.get()->children[2]) != NANOARROW_OK) {
+    throw std::runtime_error("timestamp-list array initialization failed");
   }
-  if (!batch.valid()) {
-    throw std::runtime_error("unexpected end of stream");
+
+  constexpr int64_t kOverflowingSeconds = std::numeric_limits<int64_t>::max();
+  for (int64_t row = 0; row < 2; ++row) {
+    int result = ArrowArrayAppendInt(batch.get()->children[0], 1000 + row);
+    const int64_t first = row == 0 ? 1 : kOverflowingSeconds;
+    const int64_t second = row == 0 ? kOverflowingSeconds : 1;
+    if (result == NANOARROW_OK) {
+      result = ArrowArrayAppendInt(batch.get()->children[1]->children[0], first);
+    }
+    if (result == NANOARROW_OK) {
+      result = ArrowArrayAppendInt(batch.get()->children[1]->children[0], second);
+    }
+    if (result == NANOARROW_OK) {
+      result = ArrowArrayFinishElement(batch.get()->children[1]);
+    }
+    if (result == NANOARROW_OK) {
+      result = ArrowArrayAppendDouble(batch.get()->children[2], static_cast<double>(row));
+    }
+    if (result != NANOARROW_OK) {
+      throw std::runtime_error("timestamp-list row append failed");
+    }
   }
-  return batch;
+  batch.get()->length = 2;
+  batch.get()->null_count = 0;
+  if (ArrowArrayFinishBuildingDefault(batch.get(), &error) != NANOARROW_OK) {
+    throw std::runtime_error(error.message);
+  }
+  return oneBatchStream(schema.get(), batch.get());
+}
+
+/// Build a nullable axis with an earlier overflow either in the axis itself or in a preceding data timestamp.
+[[nodiscard]] PJ::sdk::ArrowStreamHolder makeAxisNullPrecedenceStream(bool earlier_non_axis_timestamp) {
+  PJ::sdk::ArrowSchemaHolder schema;
+  ArrowSchemaInit(schema.out());
+  const int64_t field_count = earlier_non_axis_timestamp ? 3 : 2;
+  if (ArrowSchemaSetTypeStruct(schema.get(), field_count) != NANOARROW_OK) {
+    throw std::runtime_error("axis-null schema initialization failed");
+  }
+  int64_t axis_index = 0;
+  if (earlier_non_axis_timestamp) {
+    if (ArrowSchemaSetTypeDateTime(
+            schema.get()->children[0], NANOARROW_TYPE_TIMESTAMP, NANOARROW_TIME_UNIT_SECOND, nullptr) != NANOARROW_OK ||
+        ArrowSchemaSetName(schema.get()->children[0], "data_time") != NANOARROW_OK) {
+      throw std::runtime_error("data timestamp schema initialization failed");
+    }
+    axis_index = 1;
+  } else if (
+      ArrowSchemaSetTypeDateTime(
+          schema.get()->children[0], NANOARROW_TYPE_TIMESTAMP, NANOARROW_TIME_UNIT_SECOND, nullptr) != NANOARROW_OK) {
+    throw std::runtime_error("timestamp axis schema initialization failed");
+  }
+  if (earlier_non_axis_timestamp) {
+    if (ArrowSchemaSetType(schema.get()->children[axis_index], NANOARROW_TYPE_INT64) != NANOARROW_OK) {
+      throw std::runtime_error("timestamp axis schema initialization failed");
+    }
+  }
+  if (ArrowSchemaSetName(schema.get()->children[axis_index], "time") != NANOARROW_OK ||
+      ArrowSchemaSetType(schema.get()->children[field_count - 1], NANOARROW_TYPE_DOUBLE) != NANOARROW_OK ||
+      ArrowSchemaSetName(schema.get()->children[field_count - 1], "value") != NANOARROW_OK) {
+    throw std::runtime_error("axis-null schema naming failed");
+  }
+  schema.get()->children[axis_index]->flags |= ARROW_FLAG_NULLABLE;
+
+  PJ::sdk::ArrowArrayHolder batch;
+  ArrowError error{};
+  if (ArrowArrayInitFromSchema(batch.out(), schema.get(), &error) != NANOARROW_OK) {
+    throw std::runtime_error(error.message);
+  }
+  for (int64_t child = 0; child < field_count; ++child) {
+    if (ArrowArrayStartAppending(batch.get()->children[child]) != NANOARROW_OK) {
+      throw std::runtime_error("axis-null array initialization failed");
+    }
+  }
+
+  constexpr int64_t kOverflowingSeconds = std::numeric_limits<int64_t>::max();
+  for (int64_t row = 0; row < 2; ++row) {
+    int result = NANOARROW_OK;
+    if (earlier_non_axis_timestamp) {
+      result = ArrowArrayAppendInt(batch.get()->children[0], row == 0 ? kOverflowingSeconds : 1);
+    }
+    if (result == NANOARROW_OK && row == 0) {
+      result =
+          ArrowArrayAppendInt(batch.get()->children[axis_index], earlier_non_axis_timestamp ? 1 : kOverflowingSeconds);
+    } else if (result == NANOARROW_OK) {
+      result = ArrowArrayAppendNull(batch.get()->children[axis_index], 1);
+    }
+    if (result == NANOARROW_OK) {
+      result = ArrowArrayAppendDouble(batch.get()->children[field_count - 1], static_cast<double>(row));
+    }
+    if (result != NANOARROW_OK) {
+      throw std::runtime_error("axis-null row append failed");
+    }
+  }
+  batch.get()->length = 2;
+  batch.get()->null_count = 0;
+  if (ArrowArrayFinishBuildingDefault(batch.get(), &error) != NANOARROW_OK) {
+    throw std::runtime_error(error.message);
+  }
+  return oneBatchStream(schema.get(), batch.get());
 }
 
 /// State for a stream whose schema succeeds and first record-batch pull fails.
@@ -168,7 +242,7 @@ void failingPeekRelease(ArrowArrayStream* stream) noexcept {
 [[nodiscard]] PJ::sdk::ArrowStreamHolder makeViewStream(PJ::sdk::ArrowStreamHolder storage_stream) {
   auto storage_schema = readSchema(storage_stream);
   auto storage_batch = readBatch(storage_stream);
-  ScopedArrayView storage_view(storage_schema.get(), storage_batch.get());
+  auto storage_view = test::bindArrayView(storage_schema.get(), storage_batch.get());
 
   auto schema = makeSchema(
       {{"timestamp_ns", NANOARROW_TYPE_INT64},
@@ -257,7 +331,9 @@ TEST(TableShaperTest, UsesExplicitTimestampColumnAsIs) {
   auto shaped = shapeStream(decodeFixture("timestamp_typed.arrows"), options);
   ASSERT_TRUE(shaped) << shaped.error();
   EXPECT_EQ(shaped->timestamp_column, "time");
-  EXPECT_FALSE(shaped->synthesized_timestamp);
+  auto schema = readSchema(shaped->stream);
+  EXPECT_STREQ(schema.get()->children[1]->name, "time");
+  EXPECT_STREQ(schema.get()->children[1]->format, "l");
 }
 
 /// A missing explicit timestamp is an error instead of an automatic fallback.
@@ -275,7 +351,9 @@ TEST(TableShaperTest, AutoDetectsTimestampColumn) {
   auto shaped = shapeStream(decodeFixture("timestamp_typed.arrows"), ShapeOptions{});
   ASSERT_TRUE(shaped) << shaped.error();
   EXPECT_EQ(shaped->timestamp_column, "stamp");
-  EXPECT_FALSE(shaped->synthesized_timestamp);
+  auto schema = readSchema(shaped->stream);
+  EXPECT_STREQ(schema.get()->children[0]->name, "stamp");
+  EXPECT_STREQ(schema.get()->children[0]->format, "l");
 }
 
 /// Missing timestamps produce a prepended int64 timestamp_ns sequence.
@@ -286,14 +364,13 @@ TEST(TableShaperTest, SynthesizesTimestampColumnForEveryRow) {
   auto shaped = shapeStream(decodeFixture("no_timestamp.arrows"), options);
   ASSERT_TRUE(shaped) << shaped.error();
   EXPECT_EQ(shaped->timestamp_column, "timestamp_ns");
-  EXPECT_TRUE(shaped->synthesized_timestamp);
 
   auto schema = readSchema(shaped->stream);
   ASSERT_EQ(schema.get()->n_children, 3);
   EXPECT_STREQ(schema.get()->children[0]->name, "timestamp_ns");
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 0), 5000);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 1), 5007);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 5014);
@@ -309,13 +386,13 @@ TEST(TableShaperTest, ContinuesSyntheticTimestampAcrossBatches) {
   auto schema = readSchema(shaped->stream);
 
   auto first_batch = readBatch(shaped->stream);
-  ScopedArrayView first_view(schema.get(), first_batch.get());
+  auto first_view = test::bindArrayView(schema.get(), first_batch.get());
   ASSERT_EQ(first_batch.get()->length, 2);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(first_view.get()->children[0], 0), 5000);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(first_view.get()->children[0], 1), 5007);
 
   auto second_batch = readBatch(shaped->stream);
-  ScopedArrayView second_view(schema.get(), second_batch.get());
+  auto second_view = test::bindArrayView(schema.get(), second_batch.get());
   ASSERT_EQ(second_batch.get()->length, 1);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(second_view.get()->children[0], 0), 5014);
 }
@@ -328,7 +405,7 @@ TEST(TableShaperTest, RepeatsAnchorWhenSyntheticIntervalIsZero) {
   ASSERT_TRUE(shaped) << shaped.error();
   auto schema = readSchema(shaped->stream);
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   for (int64_t row = 0; row < batch.get()->length; ++row) {
     EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], row), 5000);
   }
@@ -372,7 +449,7 @@ TEST(TableShaperTest, CastsTypedTimestampAxisToInt64Nanoseconds) {
   auto schema = readSchema(shaped->stream);
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 0), 1000);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 1), 2000);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 3000);
@@ -386,7 +463,7 @@ TEST(TableShaperTest, ScalesAllTypedTimestampColumnsToNanoseconds) {
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
   EXPECT_STREQ(schema.get()->children[1]->format, "l");
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 0), 1'000'000);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 3'000'000);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[1], 0), 4000);
@@ -408,7 +485,7 @@ TEST(TableShaperTest, FlattensNestedStructsDepthFirst) {
   }
 
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   constexpr std::array<std::array<double, 7>, 2> kPoseValues = {
       std::array<double, 7>{1.0, 2.0, 3.0, 0.1, 0.2, 0.3, 0.4},
       std::array<double, 7>{4.0, 5.0, 6.0, 0.5, 0.6, 0.7, 0.8}};
@@ -453,7 +530,7 @@ TEST(TableShaperTest, PropagatesNullStructParentToFlattenedLeaves) {
   ASSERT_TRUE(shaped) << shaped.error();
   auto schema = readSchema(shaped->stream);
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   for (int64_t child = 1; child <= 7; ++child) {
     EXPECT_TRUE(ArrowArrayViewIsNull(view.get()->children[child], 2));
   }
@@ -477,7 +554,7 @@ TEST(TableShaperTest, AppliesSlicedStructParentOffsetWhenFlattening) {
 
   auto schema = readSchema(shaped->stream);
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 0), 2000);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 1), 3000);
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[1], 0), 4.0);
@@ -500,7 +577,7 @@ TEST(TableShaperTest, RemovesStructColumnWhenFlatteningDisabled) {
   EXPECT_STREQ(schema.get()->children[0]->name, "timestamp_ns");
   EXPECT_STREQ(schema.get()->children[1]->name, "speed");
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[1], 0), 5.5);
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[1], 2), 7.5);
 }
@@ -518,7 +595,7 @@ TEST(TableShaperTest, NormalizesStringAndBinaryViews) {
   EXPECT_STREQ(schema.get()->children[2]->name, "value");
 
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   const ArrowStringView long_label = ArrowArrayViewGetStringUnsafe(view.get()->children[1], 1);
   EXPECT_EQ(
       std::string_view(long_label.data, static_cast<std::size_t>(long_label.size_bytes)),
@@ -527,19 +604,23 @@ TEST(TableShaperTest, NormalizesStringAndBinaryViews) {
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[2], 3), 4.25);
 }
 
-/// Canonical string stays in place while removing canonical binary still forces a rewrite.
+/// Canonical string remains observable while canonical binary is reported and absent from the shaped schema.
 TEST(TableShaperTest, LeavesCanonicalVariableWidthColumnsInPlace) {
   auto schema = makeSchema(
       {{"timestamp_ns", NANOARROW_TYPE_INT64},
        {"string", NANOARROW_TYPE_STRING},
        {"binary", NANOARROW_TYPE_BINARY},
        {"value", NANOARROW_TYPE_DOUBLE}});
-  auto plan = planShape(schema.get(), ShapeOptions{});
-  ASSERT_TRUE(plan) << plan.error();
-  EXPECT_TRUE(plan->needs_rewrite);
-  ASSERT_EQ(plan->dropped_columns.size(), 1);
-  EXPECT_EQ(plan->dropped_columns[0].name, "binary");
-  EXPECT_EQ(plan->dropped_columns[0].format, "z");
+  auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  ASSERT_EQ(shaped->dropped_columns.size(), 1);
+  EXPECT_EQ(shaped->dropped_columns[0].name, "binary");
+  EXPECT_EQ(shaped->dropped_columns[0].format, "z");
+  auto output_schema = readSchema(shaped->stream);
+  ASSERT_EQ(output_schema.get()->n_children, 3);
+  EXPECT_STREQ(output_schema.get()->children[1]->name, "string");
+  EXPECT_STREQ(output_schema.get()->children[1]->format, "u");
+  EXPECT_STREQ(output_schema.get()->children[2]->name, "value");
 }
 
 /// Large string offsets are normalized while normalized large binary is removed.
@@ -554,7 +635,7 @@ TEST(TableShaperTest, NormalizesLargeStringAndBinaryColumns) {
   EXPECT_STREQ(schema.get()->children[1]->format, "u");
   EXPECT_STREQ(schema.get()->children[2]->name, "value");
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   const ArrowStringView label = ArrowArrayViewGetStringUnsafe(view.get()->children[1], 1);
   EXPECT_EQ(std::string_view(label.data, static_cast<std::size_t>(label.size_bytes)), "this is a large string value");
   EXPECT_TRUE(ArrowArrayViewIsNull(view.get()->children[1], 2));
@@ -576,7 +657,7 @@ TEST(TableShaperTest, ExpandsPrimitiveListsWithExactValuesAndNullPadding) {
   }
 
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[childIndex(schema.get(), "ranges[0]")], 0), 1.0);
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[childIndex(schema.get(), "ranges[2]")], 0), 3.0);
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[childIndex(schema.get(), "ranges[0]")], 1), 4.0);
@@ -608,17 +689,13 @@ TEST(TableShaperTest, UsesFirstBatchWidthAndClampsLaterRows) {
   ASSERT_EQ(schema.get()->n_children, 3);
   EXPECT_STREQ(schema.get()->children[1]->name, "ranges[0]");
   EXPECT_STREQ(schema.get()->children[2]->name, "ranges[1]");
-  ASSERT_EQ(shaped->expanded_lists.size(), 1);
-  EXPECT_EQ(shaped->expanded_lists[0].name, "ranges");
-  EXPECT_EQ(shaped->expanded_lists[0].width, 2);
-  EXPECT_FALSE(shaped->expanded_lists[0].clamped);
 
   auto first_batch = readBatch(shaped->stream);
-  ScopedArrayView first_view(schema.get(), first_batch.get());
+  auto first_view = test::bindArrayView(schema.get(), first_batch.get());
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(first_view.get()->children[1], 0), 1.0);
   EXPECT_TRUE(ArrowArrayViewIsNull(first_view.get()->children[2], 1));
   auto second_batch = readBatch(shaped->stream);
-  ScopedArrayView second_view(schema.get(), second_batch.get());
+  auto second_view = test::bindArrayView(schema.get(), second_batch.get());
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(second_view.get()->children[1], 0), 4.0);
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(second_view.get()->children[2], 0), 5.0);
 }
@@ -634,7 +711,7 @@ TEST(TableShaperTest, ExpandsNestedFixedSizeListAndDropsStructList) {
   ASSERT_EQ(schema.get()->n_children, 4);
   EXPECT_STREQ(schema.get()->children[2]->name, "pose/vel[1]");
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[2], 0), 2.0);
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[2], 1), 5.0);
   EXPECT_TRUE(ArrowArrayViewIsNull(view.get()->children[2], 2));
@@ -647,14 +724,11 @@ TEST(TableShaperTest, ClampsWideListToArrayLimit) {
   auto shaped = shapeStream(decodeFixture("lists_wide.arrows"), options);
   ASSERT_TRUE(shaped) << shaped.error();
   EXPECT_TRUE(shaped->dropped_columns.empty());
-  ASSERT_EQ(shaped->expanded_lists.size(), 1);
-  EXPECT_EQ(shaped->expanded_lists[0].width, 4);
-  EXPECT_TRUE(shaped->expanded_lists[0].clamped);
   auto schema = readSchema(shaped->stream);
   ASSERT_EQ(schema.get()->n_children, 6);
   EXPECT_STREQ(schema.get()->children[4]->name, "wide[3]");
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[4], 0), 4.0);
 }
 
@@ -705,7 +779,7 @@ TEST(TableShaperTest, ExpandsLargeListsAndNormalizesElementTypes) {
   EXPECT_STREQ(schema.get()->children[5]->format, "u");
 
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[1], 0), 10);
   EXPECT_TRUE(ArrowArrayViewIsNull(view.get()->children[2], 1));
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[3], 0), 1000);
@@ -748,7 +822,7 @@ TEST(TableShaperTest, WidensInt32TimestampAxis) {
   auto schema = readSchema(shaped->stream);
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 3);
 }
 
@@ -759,7 +833,7 @@ TEST(TableShaperTest, WidensUint32TimestampAxis) {
   auto schema = readSchema(shaped->stream);
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 1), 2);
 }
 
@@ -770,7 +844,7 @@ TEST(TableShaperTest, ConvertsDoubleSecondsTimestampAxis) {
   auto schema = readSchema(shaped->stream);
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 0), 1'500'000'000);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), -500'000'000);
 }
@@ -781,7 +855,7 @@ TEST(TableShaperTest, ConvertsFloatSecondsTimestampAxis) {
   ASSERT_TRUE(shaped) << shaped.error();
   auto schema = readSchema(shaped->stream);
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 0), 1'500'000'000);
 }
 
@@ -791,7 +865,7 @@ TEST(TableShaperTest, RoundsFractionalNanosecondTimestampAxis) {
   ASSERT_TRUE(shaped) << shaped.error();
   auto schema = readSchema(shaped->stream);
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 0), 2);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 1), -2);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 2);
@@ -816,6 +890,17 @@ TEST(TableShaperTest, RejectsTypedTimestampScalingOverflow) {
   EXPECT_NE(std::string(ArrowArrayStreamGetLastError(shaped->stream.get())).find("overflows"), std::string::npos);
 }
 
+/// Expanded timestamp lists retain column-major conversion precedence while sharing cached row bounds.
+TEST(TableShaperTest, ReportsFirstExpandedColumnWhenTimestampListOverflowsCompete) {
+  auto shaped = shapeStream(makeCompetingTimestampListOverflowStream(), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  PJ::sdk::ArrowArrayHolder batch;
+  EXPECT_EQ(shaped->stream.get()->get_next(shaped->stream.get(), batch.out()), ERANGE);
+  EXPECT_STREQ(
+      ArrowArrayStreamGetLastError(shaped->stream.get()),
+      "parser_arrow: timestamp column 'times[0]' overflows int64 nanoseconds");
+}
+
 /// Unsigned 64-bit timestamp ticks outside int64 fail instead of changing sign.
 TEST(TableShaperTest, RejectsUint64TimestampAboveInt64Max) {
   auto shaped = shapeStream(decodeFixture("axis_uint64_overflow.arrows"), ShapeOptions{});
@@ -825,12 +910,12 @@ TEST(TableShaperTest, RejectsUint64TimestampAboveInt64Max) {
   EXPECT_NE(std::string(ArrowArrayStreamGetLastError(shaped->stream.get())).find("INT64_MAX"), std::string::npos);
 }
 
-/// Unsupported timestamp types are rejected while planning, before any batch is consumed.
+/// Unsupported timestamp types are rejected before a shaped schema is exposed.
 TEST(TableShaperTest, RejectsStringTimestampAxisDuringPlanning) {
   auto schema = makeSchema({{"time", NANOARROW_TYPE_STRING}, {"value", NANOARROW_TYPE_DOUBLE}});
-  auto plan = planShape(schema.get(), ShapeOptions{});
-  ASSERT_FALSE(plan);
-  EXPECT_NE(plan.error().find("timestamp column 'time' has unsupported type 'u'"), std::string::npos);
+  auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  ASSERT_FALSE(shaped);
+  EXPECT_NE(shaped.error().find("timestamp column 'time' has unsupported type 'u'"), std::string::npos);
 }
 
 /// Null timestamp cells fail get_next and poison the lazy wrapper instead of exposing garbage.
@@ -844,19 +929,45 @@ TEST(TableShaperTest, RejectsNullTimestampCellAndPoisonsStream) {
   EXPECT_EQ(shaped->stream.get()->get_next(shaped->stream.get(), batch.out()), first_result);
 }
 
-/// Host-skipped final output columns force a rewrite and are reported for diagnostics.
+/// Axis null validation wins over an earlier overflowing value in the same timestamp column.
+TEST(TableShaperTest, ReportsAxisNullBeforeEarlierAxisOverflow) {
+  auto shaped = shapeStream(makeAxisNullPrecedenceStream(false), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  PJ::sdk::ArrowArrayHolder batch;
+  EXPECT_EQ(shaped->stream.get()->get_next(shaped->stream.get(), batch.out()), EINVAL);
+  EXPECT_STREQ(
+      ArrowArrayStreamGetLastError(shaped->stream.get()),
+      "parser_arrow: timestamp column 'time' contains a null value");
+}
+
+/// Axis null validation also wins over a preceding non-axis timestamp conversion failure.
+TEST(TableShaperTest, ReportsLaterAxisNullBeforeEarlierDataTimestampOverflow) {
+  ShapeOptions options;
+  options.timestamp_column = "time";
+  auto shaped = shapeStream(makeAxisNullPrecedenceStream(true), options);
+  ASSERT_TRUE(shaped) << shaped.error();
+  PJ::sdk::ArrowArrayHolder batch;
+  EXPECT_EQ(shaped->stream.get()->get_next(shaped->stream.get(), batch.out()), EINVAL);
+  EXPECT_STREQ(
+      ArrowArrayStreamGetLastError(shaped->stream.get()),
+      "parser_arrow: timestamp column 'time' contains a null value");
+}
+
+/// Host-skipped final output columns are reported and absent from the shaped schema.
 TEST(TableShaperTest, ReportsDroppedOutputColumns) {
   auto schema =
       makeSchema({{"timestamp_ns", NANOARROW_TYPE_INT64}, {"a", NANOARROW_TYPE_LIST}, {"b", NANOARROW_TYPE_DOUBLE}});
   ASSERT_EQ(ArrowSchemaSetTypeStruct(schema.get()->children[1]->children[0], 1), NANOARROW_OK);
   ASSERT_EQ(
       ArrowSchemaSetType(schema.get()->children[1]->children[0]->children[0], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
-  auto plan = planShape(schema.get(), ShapeOptions{});
-  ASSERT_TRUE(plan) << plan.error();
-  EXPECT_TRUE(plan->needs_rewrite);
-  ASSERT_EQ(plan->dropped_columns.size(), 1);
-  EXPECT_EQ(plan->dropped_columns[0].name, "a");
-  EXPECT_EQ(plan->dropped_columns[0].format, "+l");
+  auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  ASSERT_EQ(shaped->dropped_columns.size(), 1);
+  EXPECT_EQ(shaped->dropped_columns[0].name, "a");
+  EXPECT_EQ(shaped->dropped_columns[0].format, "+l");
+  auto output_schema = readSchema(shaped->stream);
+  ASSERT_EQ(output_schema.get()->n_children, 2);
+  EXPECT_STREQ(output_schema.get()->children[1]->name, "b");
 }
 
 /// Lists with nested-list or binary elements remain on the dropped-column path.
@@ -877,15 +988,48 @@ TEST(TableShaperTest, ReportsNonIngestibleListElementTypesAsDropped) {
   ASSERT_EQ(ArrowSchemaInitFromType(dictionary_element.get()->dictionary, NANOARROW_TYPE_STRING), NANOARROW_OK);
   schema.get()->children[3]->children[0]->release(schema.get()->children[3]->children[0]);
   ArrowSchemaMove(dictionary_element.get(), schema.get()->children[3]->children[0]);
-  auto plan = planShape(schema.get(), ShapeOptions{});
-  ASSERT_TRUE(plan) << plan.error();
-  ASSERT_EQ(plan->dropped_columns.size(), 3);
-  EXPECT_EQ(plan->dropped_columns[0].name, "nested");
-  EXPECT_EQ(plan->dropped_columns[0].format, "+l");
-  EXPECT_EQ(plan->dropped_columns[1].name, "binary");
-  EXPECT_EQ(plan->dropped_columns[1].format, "+l");
-  EXPECT_EQ(plan->dropped_columns[2].name, "dictionary");
-  EXPECT_EQ(plan->dropped_columns[2].format, "+l");
+  auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  ASSERT_EQ(shaped->dropped_columns.size(), 3);
+  EXPECT_EQ(shaped->dropped_columns[0].name, "nested");
+  EXPECT_EQ(shaped->dropped_columns[0].format, "+l");
+  EXPECT_EQ(shaped->dropped_columns[1].name, "binary");
+  EXPECT_EQ(shaped->dropped_columns[1].format, "+l");
+  EXPECT_EQ(shaped->dropped_columns[2].name, "dictionary");
+  EXPECT_EQ(shaped->dropped_columns[2].format, "+l");
+  auto output_schema = readSchema(shaped->stream);
+  ASSERT_EQ(output_schema.get()->n_children, 2);
+  EXPECT_STREQ(output_schema.get()->children[1]->name, "value");
+}
+
+/// Duplicate names remain errors even when one colliding column would otherwise be dropped by host compatibility.
+TEST(TableShaperTest, RejectsDuplicateNameSharedByDroppedAndRetainedColumns) {
+  auto schema = makeSchema(
+      {{"timestamp_ns", NANOARROW_TYPE_INT64},
+       {"duplicate", NANOARROW_TYPE_BINARY},
+       {"duplicate", NANOARROW_TYPE_DOUBLE},
+       {"value", NANOARROW_TYPE_DOUBLE}});
+  auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  ASSERT_FALSE(shaped);
+  EXPECT_NE(shaped.error().find("duplicate output column name 'duplicate'"), std::string::npos);
+}
+
+/// Deferred empty-list drops retain source order relative to later immediately unsupported columns.
+TEST(TableShaperTest, PreservesSourceOrderAcrossDeferredAndImmediateDrops) {
+  auto schema = makeSchema(
+      {{"timestamp_ns", NANOARROW_TYPE_INT64},
+       {"empty", NANOARROW_TYPE_LIST},
+       {"binary", NANOARROW_TYPE_BINARY},
+       {"value", NANOARROW_TYPE_DOUBLE}});
+  ASSERT_EQ(ArrowSchemaSetType(schema.get()->children[1]->children[0], NANOARROW_TYPE_INT32), NANOARROW_OK);
+
+  auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  ASSERT_EQ(shaped->dropped_columns.size(), 2);
+  EXPECT_EQ(shaped->dropped_columns[0].name, "empty");
+  EXPECT_EQ(shaped->dropped_columns[0].format, "+l(empty)");
+  EXPECT_EQ(shaped->dropped_columns[1].name, "binary");
+  EXPECT_EQ(shaped->dropped_columns[1].format, "z");
 }
 
 /// Nullable unsupported scalar leaves are removed while supported siblings retain their values.
@@ -902,7 +1046,7 @@ TEST(TableShaperTest, RemovesDroppedScalarLeavesUnderNullableStruct) {
   EXPECT_STREQ(schema.get()->children[0]->name, "timestamp_ns");
   EXPECT_STREQ(schema.get()->children[1]->name, "value");
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[1], 0), 1.0);
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[1], 1), 2.0);
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[1], 2), 3.0);
@@ -923,7 +1067,7 @@ TEST(TableShaperTest, ExpandsListUnderNullableStructAndPropagatesParentNull) {
   EXPECT_STREQ(schema.get()->children[5]->name, "metadata/note");
 
   auto batch = readBatch(shaped->stream);
-  ScopedArrayView view(schema.get(), batch.get());
+  auto view = test::bindArrayView(schema.get(), batch.get());
   ASSERT_EQ(batch.get()->length, 3);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 0), 1000);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 3000);
@@ -948,10 +1092,10 @@ TEST(TableShaperTest, RejectsSchemaWhenAllDataColumnsWouldBeDropped) {
   ASSERT_EQ(ArrowSchemaSetTypeStruct(schema.get()->children[1]->children[0], 1), NANOARROW_OK);
   ASSERT_EQ(
       ArrowSchemaSetType(schema.get()->children[1]->children[0]->children[0], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
-  auto plan = planShape(schema.get(), ShapeOptions{});
-  ASSERT_FALSE(plan);
-  EXPECT_NE(plan.error().find("no host-ingestible columns"), std::string::npos);
-  EXPECT_NE(plan.error().find("a:+l"), std::string::npos);
+  auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  ASSERT_FALSE(shaped);
+  EXPECT_NE(shaped.error().find("no host-ingestible columns"), std::string::npos);
+  EXPECT_NE(shaped.error().find("a:+l"), std::string::npos);
 }
 
 /// Flattening rejects output names that collide with an already-flat field.
@@ -969,12 +1113,12 @@ TEST(TableShaperTest, RejectsDuplicateOutputNames) {
   ASSERT_EQ(ArrowSchemaSetName(schema.get()->children[2], "pose/x"), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaSetType(schema.get()->children[3], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaSetName(schema.get()->children[3], "value"), NANOARROW_OK);
-  auto plan = planShape(schema.get(), ShapeOptions{});
-  ASSERT_FALSE(plan);
-  EXPECT_NE(plan.error().find("duplicate output column name 'pose/x'"), std::string::npos);
+  auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  ASSERT_FALSE(shaped);
+  EXPECT_NE(shaped.error().find("duplicate output column name 'pose/x'"), std::string::npos);
 }
 
-/// Fixed-size list widths are planned from schema alone and participate in duplicate-name checks.
+/// Fixed-size list widths are exposed in the shaped schema and participate in duplicate-name checks.
 TEST(TableShaperTest, PlansFixedSizeListFromSchemaAndRejectsExpandedNameCollision) {
   PJ::sdk::ArrowSchemaHolder schema;
   ArrowSchemaInit(schema.out());
@@ -989,17 +1133,18 @@ TEST(TableShaperTest, PlansFixedSizeListFromSchemaAndRejectsExpandedNameCollisio
   ASSERT_EQ(ArrowSchemaSetType(schema.get()->children[3], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaSetName(schema.get()->children[3], "spare"), NANOARROW_OK);
 
-  auto plan = planShape(schema.get(), ShapeOptions{});
-  ASSERT_TRUE(plan) << plan.error();
-  ASSERT_EQ(plan->expanded_lists.size(), 1);
-  EXPECT_EQ(plan->expanded_lists[0].name, "a");
-  EXPECT_EQ(plan->expanded_lists[0].width, 3);
-  EXPECT_FALSE(plan->expanded_lists[0].clamped);
+  auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  auto output_schema = readSchema(shaped->stream);
+  ASSERT_EQ(output_schema.get()->n_children, 6);
+  EXPECT_STREQ(output_schema.get()->children[1]->name, "a[0]");
+  EXPECT_STREQ(output_schema.get()->children[3]->name, "a[2]");
+  EXPECT_STREQ(output_schema.get()->children[4]->name, "value");
 
   ASSERT_EQ(ArrowSchemaSetName(schema.get()->children[3], "a[0]"), NANOARROW_OK);
-  plan = planShape(schema.get(), ShapeOptions{});
-  ASSERT_FALSE(plan);
-  EXPECT_NE(plan.error().find("duplicate output column name 'a[0]'"), std::string::npos);
+  shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  ASSERT_FALSE(shaped);
+  EXPECT_NE(shaped.error().find("duplicate output column name 'a[0]'"), std::string::npos);
 }
 
 /// A variable list's peek-resolved element names use the same duplicate-name error.
@@ -1068,15 +1213,21 @@ TEST(TableShaperTest, SubstitutesNestedEmptyOutputNames) {
   EXPECT_STREQ(output_schema.get()->children[1]->name, "parent/_0");
 }
 
-/// A flat supported schema exposes an observable no-rewrite pass-through plan.
+/// A flat supported stream preserves its observable schema and values through the always-wrapped shaper.
 TEST(TableShaperTest, PlansPassThroughWhenNothingApplies) {
-  auto stream = decodeFixture("flat.arrows");
-  auto schema = readSchema(stream);
-  auto plan = planShape(schema.get(), ShapeOptions{});
-  ASSERT_TRUE(plan) << plan.error();
-  EXPECT_FALSE(plan->needs_rewrite);
-  EXPECT_EQ(plan->timestamp_column, "timestamp_ns");
-  EXPECT_FALSE(plan->synthesize_timestamp);
+  auto shaped = shapeStream(decodeFixture("flat.arrows"), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  EXPECT_EQ(shaped->timestamp_column, "timestamp_ns");
+  auto schema = readSchema(shaped->stream);
+  ASSERT_EQ(schema.get()->n_children, 4);
+  EXPECT_STREQ(schema.get()->children[0]->name, "timestamp_ns");
+  EXPECT_STREQ(schema.get()->children[1]->name, "a");
+  EXPECT_STREQ(schema.get()->children[2]->name, "b");
+  EXPECT_STREQ(schema.get()->children[3]->name, "name");
+  auto batch = readBatch(shaped->stream);
+  auto view = test::bindArrayView(schema.get(), batch.get());
+  EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 3000);
+  EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[1], 1), 2.5);
 }
 
 }  // namespace

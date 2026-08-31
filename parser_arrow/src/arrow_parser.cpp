@@ -32,17 +32,8 @@ using pj::parser_arrow::DroppedColumn;
 [[nodiscard]] std::string droppedColumnsMessage(const std::vector<DroppedColumn>& columns) {
   std::string message = std::to_string(columns.size());
   message += " column(s) removed from the Arrow stream (unsupported host type): ";
-  constexpr std::size_t kMaxListedColumns = 8;
-  const std::size_t listed_columns = std::min(columns.size(), kMaxListedColumns);
-  for (std::size_t index = 0; index < listed_columns; ++index) {
-    if (index > 0) {
-      message += ", ";
-    }
-    message += columns[index].name;
-    message += ":";
-    message += columns[index].format;
-  }
-  if (listed_columns < columns.size()) {
+  message += pj::parser_arrow::formatDroppedColumns(columns, 8);
+  if (columns.size() > 8) {
     message += ", …";
   }
   return message;

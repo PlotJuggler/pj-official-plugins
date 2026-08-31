@@ -7,8 +7,6 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
-#include <filesystem>
-#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -25,11 +23,6 @@
 namespace pj::parser_arrow {
 namespace {
 
-/// Return the absolute path of a checked-in parser_arrow fixture.
-[[nodiscard]] std::filesystem::path fixturePath(std::string_view filename) {
-  return std::filesystem::path(PJ_ARROW_TEST_DATA_DIR) / filename;
-}
-
 /// Return whether text contains "lz4" without regard to ASCII case.
 [[nodiscard]] bool containsLz4(std::string text) {
   std::transform(text.begin(), text.end(), text.begin(), [](unsigned char character) {
@@ -41,12 +34,7 @@ namespace {
 /// Verify one flat fixture batch starting at the requested source row.
 void verifyFlatBatch(
     const ArrowSchema* schema, const ArrowArray* batch, int64_t source_row_offset, int64_t expected_length) {
-  ArrowArrayView array_view{};
-  const auto reset_view = [](ArrowArrayView* view) { ArrowArrayViewReset(view); };
-  const std::unique_ptr<ArrowArrayView, decltype(reset_view)> view_owner(&array_view, reset_view);
-  ArrowError error{};
-  ASSERT_EQ(ArrowArrayViewInitFromSchema(&array_view, schema, &error), NANOARROW_OK) << error.message;
-  ASSERT_EQ(ArrowArrayViewSetArray(&array_view, batch, &error), NANOARROW_OK) << error.message;
+  auto array_view = test::bindArrayView(schema, batch);
   ASSERT_EQ(batch->length, expected_length);
 
   constexpr std::array<int64_t, 3> kTimestamps = {1000, 2000, 3000};
@@ -56,11 +44,11 @@ void verifyFlatBatch(
 
   for (int64_t batch_row = 0; batch_row < batch->length; ++batch_row) {
     const auto source_row = static_cast<std::size_t>(source_row_offset + batch_row);
-    EXPECT_EQ(ArrowArrayViewGetIntUnsafe(array_view.children[0], batch_row), kTimestamps[source_row]);
-    EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(array_view.children[1], batch_row), kAValues[source_row]);
-    EXPECT_EQ(ArrowArrayViewGetIntUnsafe(array_view.children[2], batch_row), kBValues[source_row]);
+    EXPECT_EQ(ArrowArrayViewGetIntUnsafe(array_view->children[0], batch_row), kTimestamps[source_row]);
+    EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(array_view->children[1], batch_row), kAValues[source_row]);
+    EXPECT_EQ(ArrowArrayViewGetIntUnsafe(array_view->children[2], batch_row), kBValues[source_row]);
 
-    const ArrowStringView name = ArrowArrayViewGetStringUnsafe(array_view.children[3], batch_row);
+    const ArrowStringView name = ArrowArrayViewGetStringUnsafe(array_view->children[3], batch_row);
     EXPECT_EQ(std::string_view(name.data, static_cast<std::size_t>(name.size_bytes)), kNames[source_row]);
   }
 }
@@ -74,14 +62,12 @@ void verifyEndOfStream(ArrowArrayStream* stream) {
 
 /// Flat IPC streams expose the exact schema and one batch of expected values.
 TEST(IpcDecoderTest, DecodesFlatStreamSchemaValuesAndEndOfStream) {
-  const auto bytes = test::readFile(fixturePath("flat.arrows"));
+  const auto bytes = test::readFile(test::fixturePath("flat.arrows"));
   auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
   ASSERT_TRUE(decoded) << decoded.error();
   auto stream = std::move(*decoded);
 
-  PJ::sdk::ArrowSchemaHolder schema;
-  ASSERT_EQ(stream.get()->get_schema(stream.get(), schema.out()), NANOARROW_OK)
-      << ArrowArrayStreamGetLastError(stream.get());
+  auto schema = test::readSchema(stream);
   ASSERT_EQ(schema.get()->n_children, 4);
   constexpr std::array<std::string_view, 4> kExpectedNames = {"timestamp_ns", "a", "b", "name"};
   constexpr std::array<std::string_view, 4> kExpectedFormats = {"l", "g", "i", "u"};
@@ -90,10 +76,7 @@ TEST(IpcDecoderTest, DecodesFlatStreamSchemaValuesAndEndOfStream) {
     EXPECT_EQ(schema.get()->children[child_index]->format, kExpectedFormats[child_index]);
   }
 
-  PJ::sdk::ArrowArrayHolder batch;
-  ASSERT_EQ(stream.get()->get_next(stream.get(), batch.out()), NANOARROW_OK)
-      << ArrowArrayStreamGetLastError(stream.get());
-  ASSERT_TRUE(batch.valid());
+  auto batch = test::readBatch(stream);
   verifyFlatBatch(schema.get(), batch.get(), 0, 3);
   batch.reset();
   verifyEndOfStream(stream.get());
@@ -101,24 +84,17 @@ TEST(IpcDecoderTest, DecodesFlatStreamSchemaValuesAndEndOfStream) {
 
 /// A stream with two record batches preserves batch boundaries and reaches EOS.
 TEST(IpcDecoderTest, IteratesMultipleRecordBatches) {
-  const auto bytes = test::readFile(fixturePath("flat_two_batches.arrows"));
+  const auto bytes = test::readFile(test::fixturePath("flat_two_batches.arrows"));
   auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
   ASSERT_TRUE(decoded) << decoded.error();
   auto stream = std::move(*decoded);
 
-  PJ::sdk::ArrowSchemaHolder schema;
-  ASSERT_EQ(stream.get()->get_schema(stream.get(), schema.out()), NANOARROW_OK)
-      << ArrowArrayStreamGetLastError(stream.get());
+  auto schema = test::readSchema(stream);
 
-  PJ::sdk::ArrowArrayHolder batch;
-  ASSERT_EQ(stream.get()->get_next(stream.get(), batch.out()), NANOARROW_OK)
-      << ArrowArrayStreamGetLastError(stream.get());
-  ASSERT_TRUE(batch.valid());
+  auto batch = test::readBatch(stream);
   verifyFlatBatch(schema.get(), batch.get(), 0, 2);
 
-  ASSERT_EQ(stream.get()->get_next(stream.get(), batch.out()), NANOARROW_OK)
-      << ArrowArrayStreamGetLastError(stream.get());
-  ASSERT_TRUE(batch.valid());
+  batch = test::readBatch(stream);
   verifyFlatBatch(schema.get(), batch.get(), 2, 1);
   batch.reset();
   verifyEndOfStream(stream.get());
@@ -126,40 +102,28 @@ TEST(IpcDecoderTest, IteratesMultipleRecordBatches) {
 
 /// Zstd-compressed record-batch bodies decode to the original values.
 TEST(IpcDecoderTest, DecodesZstdCompressedBodies) {
-  const auto bytes = test::readFile(fixturePath("flat_zstd.arrows"));
+  const auto bytes = test::readFile(test::fixturePath("flat_zstd.arrows"));
   auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
   ASSERT_TRUE(decoded) << decoded.error();
   auto stream = std::move(*decoded);
 
-  PJ::sdk::ArrowSchemaHolder schema;
-  ASSERT_EQ(stream.get()->get_schema(stream.get(), schema.out()), NANOARROW_OK)
-      << ArrowArrayStreamGetLastError(stream.get());
-  PJ::sdk::ArrowArrayHolder batch;
-  ASSERT_EQ(stream.get()->get_next(stream.get(), batch.out()), NANOARROW_OK)
-      << ArrowArrayStreamGetLastError(stream.get());
-  ASSERT_TRUE(batch.valid());
+  auto schema = test::readSchema(stream);
+  auto batch = test::readBatch(stream);
   verifyFlatBatch(schema.get(), batch.get(), 0, 3);
 }
 
-/// Compression pre-scan and decoding both advance across multiple zstd batches.
+/// The pre-scan stops after the first record-batch header while the decoder still consumes every zstd batch.
 TEST(IpcDecoderTest, DecodesMultipleZstdCompressedBodies) {
-  const auto bytes = test::readFile(fixturePath("flat_two_batches_zstd.arrows"));
+  const auto bytes = test::readFile(test::fixturePath("flat_two_batches_zstd.arrows"));
   auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
   ASSERT_TRUE(decoded) << decoded.error();
   auto stream = std::move(*decoded);
 
-  PJ::sdk::ArrowSchemaHolder schema;
-  ASSERT_EQ(stream.get()->get_schema(stream.get(), schema.out()), NANOARROW_OK)
-      << ArrowArrayStreamGetLastError(stream.get());
-  PJ::sdk::ArrowArrayHolder batch;
-  ASSERT_EQ(stream.get()->get_next(stream.get(), batch.out()), NANOARROW_OK)
-      << ArrowArrayStreamGetLastError(stream.get());
-  ASSERT_TRUE(batch.valid());
+  auto schema = test::readSchema(stream);
+  auto batch = test::readBatch(stream);
   verifyFlatBatch(schema.get(), batch.get(), 0, 2);
 
-  ASSERT_EQ(stream.get()->get_next(stream.get(), batch.out()), NANOARROW_OK)
-      << ArrowArrayStreamGetLastError(stream.get());
-  ASSERT_TRUE(batch.valid());
+  batch = test::readBatch(stream);
   verifyFlatBatch(schema.get(), batch.get(), 2, 1);
   batch.reset();
   verifyEndOfStream(stream.get());
@@ -167,7 +131,7 @@ TEST(IpcDecoderTest, DecodesMultipleZstdCompressedBodies) {
 
 /// Lz4-compressed bodies are rejected with an actionable codec name.
 TEST(IpcDecoderTest, RejectsLz4CompressedBodiesWithClearError) {
-  const auto bytes = test::readFile(fixturePath("flat_lz4.arrows"));
+  const auto bytes = test::readFile(test::fixturePath("flat_lz4.arrows"));
   const auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
   ASSERT_FALSE(decoded);
   EXPECT_TRUE(containsLz4(decoded.error())) << decoded.error();
@@ -175,7 +139,7 @@ TEST(IpcDecoderTest, RejectsLz4CompressedBodiesWithClearError) {
 
 /// Dictionary fields are rejected during decode, before the first DictionaryBatch is pulled.
 TEST(IpcDecoderTest, RejectsDictionaryEncodedColumnsAtDecodeTime) {
-  const auto bytes = test::readFile(fixturePath("dictionary.arrows"));
+  const auto bytes = test::readFile(test::fixturePath("dictionary.arrows"));
   const auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
   ASSERT_FALSE(decoded);
   EXPECT_NE(decoded.error().find("dictionary"), std::string::npos) << decoded.error();
@@ -200,34 +164,28 @@ TEST(IpcDecoderTest, RejectsGarbageInput) {
 
 /// Unsupported IPC view field types include an actionable producer-side cast hint.
 TEST(IpcDecoderTest, HintsHowToEncodeUnsupportedViewFields) {
-  const auto bytes = test::readFile(fixturePath("views.arrows"));
+  const auto bytes = test::readFile(test::fixturePath("views.arrows"));
   const auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
   ASSERT_FALSE(decoded);
   EXPECT_NE(decoded.error().find("string_view"), std::string::npos) << decoded.error();
   EXPECT_NE(decoded.error().find("cast to utf8/binary"), std::string::npos) << decoded.error();
 }
 
-/// The returned stream owns a payload copy independent of the caller's Span.
-TEST(IpcDecoderTest, OwnsPayloadAfterCallerStorageIsDestroyed) {
-  auto decoded = [] {
-    auto temporary_bytes = test::readFile(fixturePath("flat.arrows"));
-    auto result = decodeIpcStream(PJ::Span<const uint8_t>(temporary_bytes.data(), temporary_bytes.size()));
-    std::fill(temporary_bytes.begin(), temporary_bytes.end(), uint8_t{0xA5});
-    temporary_bytes.clear();
-    temporary_bytes.shrink_to_fit();
-    return result;
-  }();
+/// The borrowing decoder can consume the complete stream while its caller-owned payload remains alive and unchanged.
+TEST(IpcDecoderTest, BorrowsPayloadWithoutModifyingItWhileStreamIsConsumed) {
+  auto bytes = test::readFile(test::fixturePath("flat.arrows"));
+  const auto original_bytes = bytes;
+  auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
   ASSERT_TRUE(decoded) << decoded.error();
   auto stream = std::move(*decoded);
 
-  PJ::sdk::ArrowSchemaHolder schema;
-  ASSERT_EQ(stream.get()->get_schema(stream.get(), schema.out()), NANOARROW_OK)
-      << ArrowArrayStreamGetLastError(stream.get());
-  PJ::sdk::ArrowArrayHolder batch;
-  ASSERT_EQ(stream.get()->get_next(stream.get(), batch.out()), NANOARROW_OK)
-      << ArrowArrayStreamGetLastError(stream.get());
-  ASSERT_TRUE(batch.valid());
+  auto schema = test::readSchema(stream);
+  auto batch = test::readBatch(stream);
   verifyFlatBatch(schema.get(), batch.get(), 0, 3);
+  batch.reset();
+  verifyEndOfStream(stream.get());
+  stream.reset();
+  EXPECT_EQ(bytes, original_bytes);
 }
 
 }  // namespace

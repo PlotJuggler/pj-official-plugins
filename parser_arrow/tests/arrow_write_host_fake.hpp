@@ -12,6 +12,7 @@
 
 #include "pj_base/sdk/arrow.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
+#include "test_utils.hpp"
 
 namespace pj::parser_arrow::test {
 
@@ -78,29 +79,6 @@ class ArrowWriteHostFake {
   }
 
  private:
-  /// RAII owner for the recursively allocated storage of one ArrowArrayView.
-  class ScopedArrayView {
-   public:
-    /// Initialize an empty view.
-    ScopedArrayView() = default;
-
-    ScopedArrayView(const ScopedArrayView&) = delete;
-    ScopedArrayView& operator=(const ScopedArrayView&) = delete;
-
-    /// Release the recursively allocated view storage.
-    ~ScopedArrayView() {
-      ArrowArrayViewReset(&view_);
-    }
-
-    /// Return the mutable C view for nanoarrow initialization and binding.
-    [[nodiscard]] ArrowArrayView* get() noexcept {
-      return &view_;
-    }
-
-   private:
-    ArrowArrayView view_{};
-  };
-
   /// Copy a C ABI string view into owned storage.
   [[nodiscard]] static std::string copyString(PJ_string_view_t value) {
     if (value.data == nullptr) {
@@ -187,16 +165,7 @@ class ArrowWriteHostFake {
         }
 
         recorded.batch_row_counts.push_back(batch.get()->length);
-        ScopedArrayView batch_view;
-        ArrowError arrow_error{};
-        const int view_result = ArrowArrayViewInitFromSchema(batch_view.get(), schema.get(), &arrow_error);
-        if (view_result != NANOARROW_OK) {
-          return fail(error, arrowError(arrow_error, "failed to initialize Arrow batch view"));
-        }
-        const int bind_result = ArrowArrayViewSetArray(batch_view.get(), batch.get(), &arrow_error);
-        if (bind_result != NANOARROW_OK) {
-          return fail(error, arrowError(arrow_error, "failed to bind Arrow batch view"));
-        }
+        auto batch_view = bindArrayView(schema.get(), batch.get());
         for (int64_t row = 0; row < batch.get()->length; ++row) {
           recorded.timestamp_values.push_back(
               ArrowArrayViewGetIntUnsafe(batch_view.get()->children[timestamp_index], row));
@@ -217,11 +186,6 @@ class ArrowWriteHostFake {
   [[nodiscard]] static std::string_view streamError(ArrowArrayStream* stream, std::string_view fallback) noexcept {
     const char* message = ArrowArrayStreamGetLastError(stream);
     return message != nullptr && message[0] != '\0' ? std::string_view(message) : fallback;
-  }
-
-  /// Return a nanoarrow diagnostic with a deterministic fallback.
-  [[nodiscard]] static std::string_view arrowError(const ArrowError& error, std::string_view fallback) noexcept {
-    return error.message[0] != '\0' ? std::string_view(error.message) : fallback;
   }
 
   bool fail_next_ = false;

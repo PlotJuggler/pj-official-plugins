@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -32,60 +33,28 @@ struct DroppedColumn {
   std::string format;
 };
 
-/// One primitive list expanded into a fixed set of scalar output columns.
-struct ExpandedList {
-  /// Final flattened source name before the bracketed element suffix.
-  std::string name;
-  /// Output width after applying the first-batch rule and ArrayLimit.
-  int64_t width = 0;
-  /// Whether ArrayLimit truncated the observed or schema-declared width.
-  bool clamped = false;
-};
-
-/// Result of lazy shaping, including the int64-nanosecond timestamp column passed to the host.
+/// Result of lazy shaping, including the resolved int64-nanosecond timestamp column passed to the host.
 struct ShapedStream {
-  /// Lazy stream; validation-only plans move each original record-batch root through unchanged.
+  /// Lazy wrapper stream; untouched child arrays are moved without copying.
   PJ::sdk::ArrowStreamHolder stream;
   /// Resolved timestamp column name; never empty on success.
   std::string timestamp_column;
-  /// Whether timestamp_ns was synthesized and prepended.
-  bool synthesized_timestamp = false;
   /// Unsupported source columns removed from the shaped stream and reported to the caller.
   std::vector<DroppedColumn> dropped_columns;
-  /// Primitive lists expanded by the resolved stream plan.
-  std::vector<ExpandedList> expanded_lists;
-};
-
-/// Observable summary of timestamp resolution, rewrites, and removed unsupported columns.
-struct ShapePlan {
-  /// Whether output schemas or arrays change beyond validation-only timestamp scanning.
-  bool needs_rewrite = false;
-  /// Explicit, detected, or synthesized timestamp column name.
-  std::string timestamp_column;
-  /// Whether the rewrite prepends a synthetic timestamp_ns column.
-  bool synthesize_timestamp = false;
-  /// Unsupported source columns that will be removed from the shaped stream.
-  std::vector<DroppedColumn> dropped_columns;
-  /// Primitive fixed-size lists, plus unresolved variable lists with width zero in schema-only plans.
-  std::vector<ExpandedList> expanded_lists;
 };
 
 /// Detect the first child whose format starts with "ts", otherwise the first child named timestamp_ns,
 /// recording_timestamp_ns, timestamp, time, or ts in that priority order; return an empty string if none match.
 [[nodiscard]] std::string detectTimestampColumn(const ArrowSchema* schema);
 
-/// Inspect a decoded stream schema and select its timestamp and required rewrites.
-///
-/// Explicit timestamp names must exist. Resolved timestamps accept int32/int64/uint32/uint64 ticks, float/double
-/// seconds, or Arrow timestamps; shapeStream() emits each as non-null int64 nanoseconds. Every Arrow timestamp
-/// column is scaled to int64 nanoseconds. String/binary views and large string/binary are normalized to u/z.
-/// Fixed-size primitive lists expand from schema; schema-only plans record variable primitive lists with unresolved
-/// width zero, which shapeStream() replaces with the width measured from its buffered first batch. Unsupported final
-/// data columns are removed and listed in dropped_columns; a schema with no host-ingestible data fails.
-[[nodiscard]] PJ::Expected<ShapePlan> planShape(const ArrowSchema* schema, const ShapeOptions& options);
-
 /// Lazily rewrite a decoded IPC stream while moving untouched columns and copying only casts, normalizations, and
-/// flattened leaves that require ancestor validity or offset handling.
+/// flattened leaves that require ancestor validity or offset handling. Variable primitive-list widths are measured
+/// from one buffered first batch before the output schema is exposed. Unsupported columns are returned for caller
+/// diagnostics, and schemas without a host-ingestible non-axis data column are rejected.
 [[nodiscard]] PJ::Expected<ShapedStream> shapeStream(PJ::sdk::ArrowStreamHolder input, const ShapeOptions& options);
+
+/// Format at most `max_listed` dropped name/format pairs separated by comma-space. An empty input produces an empty
+/// string. Callers retain their existing policy for indicating additional omitted columns.
+[[nodiscard]] std::string formatDroppedColumns(const std::vector<DroppedColumn>& columns, std::size_t max_listed);
 
 }  // namespace pj::parser_arrow
