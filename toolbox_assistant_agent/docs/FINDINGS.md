@@ -317,3 +317,47 @@ gone.** Anything that requires the model to notice it must live where the user's
 still visible — the system prompt — or be accepted as a property of the tier and chosen around.
 The same run, incidentally, is the strongest statement available about the default: Sonnet 100/100
 across five scenarios at 20 repetitions each.
+
+## 13. The schema's fixed cost, and what trimming it is actually worth
+
+Every capability described in the tool schema is paid for in the prefix of every turn, whether or
+not the turn uses it. The two honest answers to "is the current schema worth it" pointed in
+opposite directions: against the 2026-08-10 baseline the synthetic single-series benchmark paid
++40% weighted tokens, while the open-ended analysis of the real drive log paid −67%. Short sessions
+bear the fixed cost; long ones amortize it.
+
+One tempting resolution is structurally unavailable. The CLI re-fetches `tools/list` on every turn
+(each turn is a fresh `claude -p --resume` process), so serving a per-turn schema is technically
+trivial — and economically self-defeating: the tools block precedes the conversation in the cached
+prefix, so changing it mid-session invalidates the cache from that point and rewrites the entire
+history as `cache_creation` at 1.25x. The longer the session, the more a "smart" schema costs.
+
+The resolution taken (2026-08-31) was to compress the cautionary prose in `create_markers` — the
+largest tool at 30% of the schema — while keeping every element with a job the description alone
+performs: the rule vocabulary (capability, not guidance), both calling forms, the REPLACES
+semantics, and one dense sentence each for the stretch/region rule and the high-rate-threshold
+warning. The long form of the shape lecture had already shown no measurable effect in the
+2026-08-11 A/B, and the wall failure has a separate, measured defense in the count-and-kind report
+the call returns. The threshold warning is the one piece with no corrective feedback behind it,
+which is why it was compressed rather than removed.
+
+Two measurements bound what this is worth, both smaller than the arithmetic that motivated them:
+
+- **−504 chars is −39 prefix tokens**, not the ~125 that chars-per-token rules of thumb suggested.
+  Measured in a same-day A/B: two app launches differing only in the plugin `.so`, identical
+  one-word prompt, comparing total prefix (creation + read) — 31,834 vs 31,795. Fluent English
+  prose tokenizes far denser than symbol-heavy text; the cheap-looking paragraphs were the
+  cheapest part of the schema per character. A comparison against a session recorded two weeks
+  earlier was attempted first and discarded: CLI version drift and cache temperature moved the
+  prefix by thousands of tokens, drowning a two-digit effect.
+- **The compressed sentences still carry the behaviour.** A GUI pass on the Nissan log, with the
+  giveaway word "stretches" removed from the prompt ("mark where the vehicle speed goes above
+  15 m/s"): 2 shaded regions on the first call, pixel-verified on the plot. The high-rate case
+  ("mark the moments where the IMU angular velocity z is unusually high"): the model read the
+  stats first, then wrote a rule requiring a 3-sigma excursion to persist for 0.15 s and to
+  coincide with an independent 30 Hz steering input read through `atTime()` — 7 regions, no wall.
+
+The budget test's ceiling moved from 8000 back to 7500 to hold the trim. The wider conclusion
+stands regardless of the small absolute number: prose in the schema is bought per turn and should
+be paid for per turn, and the place to spend description budget is where no feedback loop can
+substitute for it.

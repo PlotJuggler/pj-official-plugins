@@ -743,6 +743,17 @@ TEST(ToolRegistry, DefaultsToASingleOutputNamedAfterTheSeries) {
 // point at a saving is what the ceiling exists to stop, and when it binds the
 // answer is to cut prose, not to drop a capability.
 //
+// Lowered back from 8000 to 7500 when the create_markers cautionary prose was
+// compressed: -504 chars, measured as -39 prefix tokens in a same-day A/B (two
+// app launches differing only in the plugin .so, identical prompt — fluent
+// prose tokenizes far denser than chars/4 suggests). The line-wall warning kept
+// its measured defense — the result reports marker count and kind, the
+// loop-closing mechanism — and the A/B of 2026-08-11 showed the long prose
+// bought nothing measurable. The threshold caution stays as one dense sentence:
+// it is the only guidance with no corrective feedback behind it, and a GUI pass
+// on the Nissan log confirmed the sentence still induces min-duration +
+// slow-signal cross-check behavior (7 regions, no wall).
+//
 // Measured, not guessed: the chars/4 rule of thumb overestimated this surface by
 // about 50% when it was checked against the real token counters.
 TEST(ToolRegistry, ToolSchemaStaysWithinItsBudget) {
@@ -752,7 +763,7 @@ TEST(ToolRegistry, ToolSchemaStaysWithinItsBudget) {
   for (const auto& t : reg.tools()) {
     std::cerr << "  " << t.name << ": " << t.description.size() << "\n";
   }
-  EXPECT_LT(chars, 8000u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
+  EXPECT_LT(chars, 7500u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
 }
 
 // --- seeing and withdrawing its own work -----------------------------------
