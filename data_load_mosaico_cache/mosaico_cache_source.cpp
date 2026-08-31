@@ -63,11 +63,21 @@ class MosaicoCacheSource : public PJ::FileSourceBase {
     // Run the allocation-safe raw framing gate before the provenance
     // validator enters MCAP: a forged Header or Chunk-in-summary must never
     // reach an allocating parser in this production path.
+    // Any structural failure past the query's bounded validation is a body
+    // that must not stay a sticky hit: quarantine it so the next layout open
+    // classifies the identity as a miss and re-downloads.
+    const auto quarantine = [&](const std::string& what) {
+      std::string quarantine_error;
+      if (!mosaico::quarantineArtifact(filepath, &quarantine_error)) {
+        return what + " (quarantine failed: " + quarantine_error + ")";
+      }
+      return what + " (artifact quarantined; reopen the layout to re-download)";
+    };
     if (!mosaico::preflightArtifactForReplay(filepath, &error)) {
-      return PJ::unexpected("cache artifact failed replay preflight: " + error);
+      return PJ::unexpected(quarantine("cache artifact failed replay preflight: " + error));
     }
     if (!mosaico::validateArtifact(filepath, stem, &error)) {
-      return PJ::unexpected("cache artifact failed validation: " + error);
+      return PJ::unexpected(quarantine("cache artifact failed validation: " + error));
     }
     // Object topics keep their host handles in a registry; the replay seam
     // hands out registry indices as its opaque handles.
@@ -139,9 +149,13 @@ class MosaicoCacheSource : public PJ::FileSourceBase {
 
     if (!mosaico::replayArtifact(filepath, sinks, &error)) {
       if (mosaico::isReplayCancellation(error, runtimeHost().isStopRequested())) {
-        return PJ::unexpected(std::string("import cancelled"));
+        // A user Stop keeps what already replayed (the host's keep/discard
+        // choice applies), like every other file loader.
+        runtimeHost().reportMessage(
+            PJ::DataSourceMessageLevel::kInfo, "Mosaico cache replay stopped; keeping the topics already replayed");
+        return PJ::okStatus();
       }
-      return PJ::unexpected("cache replay failed: " + error);
+      return PJ::unexpected(quarantine("cache replay failed: " + error));
     }
 
     runtimeHost().reportMessage(

@@ -666,6 +666,10 @@ struct ArtifactStreamReader::Impl {
     std::unique_ptr<arrow::ipc::DictionaryMemo> memo = std::make_unique<arrow::ipc::DictionaryMemo>();
   };
 
+  // Declared before `reader`, which keeps a pointer to the source: members
+  // are destroyed in reverse order, so the reader goes first.
+  std::ifstream mcap_stream;  // native path: no narrowing through path::string()
+  std::optional<mcap::FileStreamReader> mcap_source;
   mcap::McapReader reader;
   std::uintmax_t file_size = 0;
   std::ifstream raw_file;
@@ -880,7 +884,16 @@ bool ArtifactStreamReader::open(const fs::path& file, std::string* out_canonical
     close();
     return false;
   }
-  auto status = impl_->reader.open(file.string());
+  impl_->mcap_stream.open(file, std::ios::binary);
+  if (!impl_->mcap_stream) {
+    if (error) {
+      *error = "artifact open failed";
+    }
+    close();
+    return false;
+  }
+  impl_->mcap_source.emplace(impl_->mcap_stream);
+  auto status = impl_->reader.open(*impl_->mcap_source);
   if (!status.ok()) {
     if (error) {
       *error = "artifact open failed: " + status.message;
@@ -1049,6 +1062,11 @@ void ArtifactStreamReader::close() {
   if (impl_->open) {
     impl_->reader.close();
   }
+  impl_->mcap_source.reset();
+  if (impl_->mcap_stream.is_open()) {
+    impl_->mcap_stream.close();
+  }
+  impl_->mcap_stream.clear();
   if (impl_->raw_file.is_open()) {
     impl_->raw_file.close();
   }
@@ -1223,7 +1241,9 @@ bool readArtifact(
     const fs::path& file, std::vector<ArtifactTopicData>* out_topics, std::string* out_canonical_descriptor_json,
     std::string* error) {
   mcap::McapReader reader;
-  auto status = reader.open(file.string());
+  std::ifstream input(file, std::ios::binary);  // native path: no narrowing
+  mcap::FileStreamReader source(input);
+  auto status = input ? reader.open(source) : mcap::Status(mcap::StatusCode::OpenFailed, "cannot open artifact");
   if (!status.ok()) {
     if (error) {
       *error = "artifact open failed: " + status.message;
