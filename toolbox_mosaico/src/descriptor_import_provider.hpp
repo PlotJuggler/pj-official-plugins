@@ -42,14 +42,11 @@
 #include <chrono>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <pj_base/sdk/descriptor_import.hpp>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <string>
-#include <unordered_map>
 
-#include "descriptor_import/core/file_lock.h"
 #include "descriptor_import/session_file_cache.hpp"
 
 namespace mosaico {
@@ -113,19 +110,6 @@ class DescriptorImportProvider {
   [[nodiscard]] SessionFileCache makeFileCache();
   PJ::sdk::SettingsView settings_{};
   HostBindings bindings_{};
-
-  // Materialized-hit read leases pinned by the query (a path the HOST is
-  // about to load must survive another process's eviction while the loader
-  // lazily re-opens it). v1 approximation: leases live as long as this
-  // provider (the toolbox instance). Main-thread only, like the query itself.
-  std::unordered_map<std::string, FileLock> query_leases_;
-
-  // Promotion leases adopted from finished import jobs (the per-job
-  // FetchWorker dies with its JobState right after on_terminal, but the
-  // promoted dataset keeps lazily re-opening the artifact — the lease must
-  // outlive the job). Appended from job threads; guarded.
-  std::mutex job_leases_mu_;
-  std::unordered_map<std::string, FileLock> job_leases_;
 
   // query-result string storage: owned by the provider, valid until the NEXT
   // query on this instance (ABI lifetime rule). Main-thread only.

@@ -27,6 +27,7 @@
 #include "descriptor_import/core/origin_match.h"
 #include "descriptor_import/source_descriptor.hpp"
 #include "fetch_worker.hpp"
+#include "promotion_artifact_lease_registry.hpp"
 #include "source_presentation.hpp"
 #include "stoppable_thread.hpp"
 
@@ -170,9 +171,6 @@ struct DescriptorImportProvider::JobState {
   ServerCredentials credentials;  // resolved on the main thread
   std::string cache_root_override;
   SessionFileCache file_cache;  // same root artifact capture publishes under
-  // Hands the pull's promotion leases to the provider (which outlives this
-  // job); set by startImport, invoked on the job thread after the pull.
-  std::function<void(std::unordered_map<std::string, FileLock>)> adopt_leases;
   std::uint64_t max_transfer_bytes = 0;
   std::chrono::milliseconds max_transfer_duration{0};
   std::chrono::milliseconds poll{50};
@@ -388,11 +386,6 @@ PJ_descriptor_import_outcome_t DescriptorImportProvider::JobState::runToTerminal
         descriptor.sequence, descriptor.topics, descriptor.start_ns, descriptor.end_ns, descriptor,
         cache_root_override);
   }
-  // The promoted dataset lazily re-opens the artifact long after this job
-  // dies — move the pull's read leases to the provider before the terminal.
-  if (adopt_leases) {
-    adopt_leases(fetch.takeArtifactLeases());
-  }
   if (pre_terminal_hook) {
     pre_terminal_hook();
   }
@@ -576,29 +569,26 @@ bool DescriptorImportProvider::queryDescriptor(
 
     // is_materialized: the DISK-validated cache ONLY, with lease-then-
     // validate pinning — a materialized hit is a path the HOST is about to
-    // load, and after a process restart no finalize-time lease exists, so
-    // the query itself pins it (idempotent via the lease map). On lease
-    // contention (another process holds the exclusive) we still answer
-    // honestly from a plain validation, just without retention.
+    // load, and after a process restart no finalize-time lease exists. Retain
+    // the lease in the DSO-lifetime path registry so panel/provider teardown
+    // cannot make the host's lazy re-open evictable. On lease contention
+    // (another process holds the exclusive) we still answer honestly from a
+    // plain validation, just without retention.
     bool materialized = false;
     std::filesystem::path disk;
-    if (const auto held = query_leases_.find(query_identity_); held != query_leases_.end()) {
+    std::string lease_error;
+    if (auto lease = cache.acquireReadLease(query_identity_, &lease_error)) {
       materialized = cache.lookup(query_identity_, &disk);
-      if (!materialized) {
-        query_leases_.erase(held);  // vanished/corrupt under our pin: drop it
+      if (materialized && !promotionArtifactLeaseRegistry().retain(disk, std::move(*lease))) {
+        materialized = false;
+        if (query_message_.empty()) {
+          query_message_ = "cache artifact present but its read lease could not be retained";
+        }
       }
     } else {
-      std::string lease_error;
-      if (auto lease = cache.acquireReadLease(query_identity_, &lease_error)) {
-        materialized = cache.lookup(query_identity_, &disk);
-        if (materialized) {
-          query_leases_.emplace(query_identity_, std::move(*lease));
-        }
-      } else {
-        materialized = cache.lookup(query_identity_, &disk);
-        if (materialized && query_message_.empty()) {
-          query_message_ = "cache artifact present but its read lease is contended";
-        }
+      materialized = cache.lookup(query_identity_, &disk);
+      if (materialized && query_message_.empty()) {
+        query_message_ = "cache artifact present but its read lease is contended";
       }
     }
     std::uint64_t estimated_bytes = 0;
@@ -712,12 +702,6 @@ bool DescriptorImportProvider::startImport(
         std::chrono::milliseconds(envLimit("MOSAICO_IMPORT_MAX_SECONDS", kDefaultImportMaxSeconds) * 1000);
     state->poll = poll_;
     state->pre_terminal_hook = pre_terminal_hook_;
-    state->adopt_leases = [this](std::unordered_map<std::string, FileLock> leases) {
-      std::lock_guard<std::mutex> lock(job_leases_mu_);
-      for (auto& [identity, lease] : leases) {
-        job_leases_.insert_or_assign(identity, std::move(lease));
-      }
-    };
     state->on_dataset = callbacks->on_dataset;  // may be null (zero-or-one)
     state->on_terminal = callbacks->on_terminal;
     state->callback_ctx = callback_ctx;

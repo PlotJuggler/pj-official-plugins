@@ -104,8 +104,9 @@ class SessionFileCache {
   /// just-published file that live datasets will lazily re-open. The platform
   /// conversion has a microscopic non-atomic window (see
   /// FileLock::downgradeToShared); on failure nullopt is returned with the
-  /// lock RELEASED — the caller revalidates and proceeds lease-less. Call
-  /// only AFTER finalize() succeeded.
+  /// lock RELEASED — the caller must reacquire a shared lease and revalidate
+  /// the published artifact, or fail closed. Call only AFTER finalize()
+  /// succeeded.
   [[nodiscard]] static std::optional<FileLock> toSharedLease(MaterializeLock&& lock, std::string* error);
 
   /// The partial path this process must write under `lock`.

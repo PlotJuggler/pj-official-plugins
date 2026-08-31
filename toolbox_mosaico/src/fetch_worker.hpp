@@ -62,15 +62,6 @@ class FetchWorker {
     promotion_provider_ = std::move(provider);
   }
 
-  /// Move out every promotion read lease accumulated so far (see
-  /// artifact_leases_). The descriptor-import job hands them to the provider,
-  /// which outlives the per-job worker — otherwise the lease would drop the
-  /// moment the job is destroyed, while the promoted dataset still lazily
-  /// re-opens the artifact. Same-thread with the pull; not thread-safe.
-  [[nodiscard]] std::unordered_map<std::string, FileLock> takeArtifactLeases() {
-    return std::move(artifact_leases_);
-  }
-
   /// Cancel the batch flag and actively interrupt any Flight readers that may
   /// currently be blocked in GetSchema/Next.
   void requestCancel();
@@ -221,14 +212,6 @@ class FetchWorker {
   std::function<PJ::sdk::ToolboxHostView()> host_provider_;
   std::function<PJ::ToolboxRuntimeHostView()> runtime_host_provider_;
   std::function<PJ::SourcePromotionHostView()> promotion_provider_;
-  /// Read leases on promoted cache artifacts, keyed by identity (a repeat
-  /// promotion of the same identity replaces its lease instead of stacking
-  /// fds). A promoted dataset lazily re-opens its file, so eviction must be
-  /// blocked while it lives. v1 approximation: leases live as long as this
-  /// worker unless taken (takeArtifactLeases) by a longer-lived owner;
-  /// per-dataset release needs a dataset-close callback the SDK does not
-  /// expose yet.
-  std::unordered_map<std::string, FileLock> artifact_leases_;
   std::atomic<bool> cancel_flag_{false};
   std::unordered_map<std::string, TopicInfo> topic_info_by_name_;
   std::optional<PJ::sdk::DataSourceHandle> fetch_dataset_;

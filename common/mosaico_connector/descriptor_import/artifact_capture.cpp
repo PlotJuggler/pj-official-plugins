@@ -175,9 +175,26 @@ std::optional<ArtifactCapture::Finalized> ArtifactCapture::finish(bool complete)
     return std::nullopt;
   }
   Finalized finalized;
-  finalized.path = cache_.pathFor(identity_);
+  const std::filesystem::path expected_path = cache_.pathFor(identity_);
+  finalized.path = expected_path;
   finalized.lease = SessionFileCache::toSharedLease(std::move(*lock_), &error);
   lock_.reset();
+  if (!finalized.lease.has_value()) {
+    const std::string downgrade_error = std::move(error);
+    error.clear();
+    finalized.lease = cache_.acquireReadLease(identity_, &error);
+    std::filesystem::path revalidated_path;
+    if (!finalized.lease.has_value()) {
+      disarm_reason_ = "cache read lease recovery failed after downgrade (" + downgrade_error + "): " + error;
+      armed_ = false;
+      return std::nullopt;
+    }
+    if (!cache_.lookup(identity_, &revalidated_path) || revalidated_path != expected_path) {
+      disarm_reason_ = "cache read lease recovery could not revalidate the finalized artifact";
+      armed_ = false;
+      return std::nullopt;
+    }
+  }
   armed_ = false;
   return finalized;
 }

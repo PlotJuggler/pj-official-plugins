@@ -21,7 +21,8 @@
 
 #include "core/types.h"
 #include "flight/types.hpp"  // mosaico::SequenceInfo
-#include "worker_types.h"    // ServerCredentials, ConnectResult, TopicRef, PullResultEvent
+#include "promotion_settlement_gate.hpp"
+#include "worker_types.h"  // ServerCredentials, ConnectResult, TopicRef, PullResultEvent
 
 namespace mosaico {
 
@@ -339,6 +340,9 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   void persistState();
 
   DialogState state_;
+  // The host may retain a promotion result closure beyond dialog teardown.
+  // This shared barrier is invalidated before any other destructor work.
+  std::shared_ptr<PromotionSettlementGate> promotion_settlement_gate_;
   std::thread worker_thread_;
   std::unique_ptr<FetchWorker> worker_;
   std::mutex cmd_mu_;

@@ -173,7 +173,7 @@ std::optional<SessionFileCache::MaterializeLock> SessionFileCache::tryLockForMat
 std::optional<FileLock> SessionFileCache::toSharedLease(MaterializeLock&& lock, std::string* error) {
   FileLock held = std::move(lock.lock_);
   if (!held.downgradeToShared(error)) {
-    return std::nullopt;  // released; the caller proceeds lease-less
+    return std::nullopt;  // released; the caller must reacquire + revalidate
   }
   return held;
 }

@@ -35,6 +35,7 @@
 #include "ingest/image_metadata.hpp"
 #include "ingest/object_metadata.hpp"
 #include "ontology_routing.h"
+#include "promotion_artifact_lease_registry.hpp"
 #include "stoppable_thread.hpp"
 
 namespace mosaico {
@@ -974,7 +975,7 @@ void FetchWorker::pullTopicsAsync(
       imported_any->load(std::memory_order_relaxed) && !any_failed->load(std::memory_order_relaxed) && !isCancelled();
   const auto promote_artifact = [this](
                                     const std::filesystem::path& path, const std::string& identity,
-                                    const std::string& descriptor_json, std::optional<FileLock> lease) {
+                                    const std::string& descriptor_json, FileLock lease) {
     std::optional<PJ::sdk::DataSourceHandle> dataset;
     {
       std::lock_guard<std::mutex> lock(fetch_dataset_mu_);
@@ -988,19 +989,21 @@ void FetchWorker::pullTopicsAsync(
       request.loader_plugin_id = kMosaicoCacheLoaderPluginId;
       request.loader_config_json = "{}";
       request.descriptor_json = descriptor_json;
-      // The result closure captures COPIES only: it may run re-entrantly or
-      // long after this Download, on any thread.
       auto settled = promotionSettled;
-      const auto status = promotion_provider_().promoteToFileSource(request, [settled](bool ok, std::string message) {
-        if (settled) {
-          settled(ok, std::move(message));
-        }
-      });
-      if (!status && promotionSettled) {
-        promotionSettled(false, status.error());
-      }
-      if (lease.has_value()) {
-        artifact_leases_.insert_or_assign(identity, std::move(*lease));
+      // The copyable result closure may outlive this worker and may run
+      // re-entrantly inside promoteToFileSource. Its shared pending state owns
+      // the read lease until the first result: success transfers it into the
+      // DSO-lifetime path registry before notification; failure releases it.
+      auto pending = std::make_shared<PendingPromotionArtifactLease>(
+          promotionArtifactLeaseRegistry(), path, std::move(lease), [settled](bool ok, std::string message) {
+            if (settled) {
+              settled(ok, std::move(message));
+            }
+          });
+      const auto status = promotion_provider_().promoteToFileSource(
+          request, [pending](bool ok, std::string message) { pending->settle(ok, std::move(message)); });
+      if (!status) {
+        pending->settle(/*ok=*/false, status.error());
       }
     } else if (promotionSettled) {
       promotionSettled(false, "no dataset to promote");
@@ -1009,8 +1012,8 @@ void FetchWorker::pullTopicsAsync(
 
   if (capture) {
     auto finalized = capture->finish(complete);
-    if (finalized.has_value()) {
-      promote_artifact(finalized->path, capture->identity(), capture->descriptorJson(), std::move(finalized->lease));
+    if (finalized.has_value() && finalized->lease.has_value()) {
+      promote_artifact(finalized->path, capture->identity(), capture->descriptorJson(), std::move(*finalized->lease));
     } else if (promotionSettled) {
       promotionSettled(false, capture->disarmReason().empty() ? "fetch incomplete" : capture->disarmReason());
     }
@@ -1018,7 +1021,7 @@ void FetchWorker::pullTopicsAsync(
     if (complete) {
       promote_artifact(
           existing_artifact->path, existing_artifact->identity, existing_artifact->descriptor_json,
-          std::optional<FileLock>(std::move(existing_artifact->lease)));
+          std::move(existing_artifact->lease));
     } else if (promotionSettled) {
       promotionSettled(false, "fetch incomplete");
     }

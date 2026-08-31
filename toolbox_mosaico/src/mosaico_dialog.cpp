@@ -234,7 +234,15 @@ std::string buildTopicInfoText(const TopicInfo& info) {
 
 }  // namespace
 
-MosaicoDialog::MosaicoDialog() : worker_(std::make_unique<FetchWorker>()) {
+MosaicoDialog::MosaicoDialog()
+    : promotion_settlement_gate_(std::make_shared<PromotionSettlementGate>([this](std::string detail) {
+        postEvent([this, detail = std::move(detail)]() mutable {
+          notify(
+              PJ::ToolboxMessageLevel::kInfo,
+              "Download not cached for layout re-import (" + detail + "); data is loaded normally");
+        });
+      })),
+      worker_(std::make_unique<FetchWorker>()) {
   worker_->connectFinished = [this](ConnectResult result) {
     postEvent([this, result = std::move(result)]() mutable { onConnectFinished(std::move(result)); });
   };
@@ -276,19 +284,12 @@ MosaicoDialog::MosaicoDialog() : worker_(std::make_unique<FetchWorker>()) {
   worker_->errorOccurred = [this](std::string message) {
     postEvent([this, message = std::move(message)]() mutable { notify(PJ::ToolboxMessageLevel::kError, message); });
   };
-  worker_->promotionSettled = [this](bool promoted, std::string detail) {
+  worker_->promotionSettled = [gate = promotion_settlement_gate_](bool promoted, std::string detail) {
     // Fires from a background thread (possibly re-entrantly from the
     // promotion call); route to the GUI thread. Promotion success is silent —
     // the user asked for data, not plumbing — while an eager-only outcome is
     // a gentle heads-up that a re-saved layout will not re-download this one.
-    if (promoted) {
-      return;
-    }
-    postEvent([this, detail = std::move(detail)]() mutable {
-      notify(
-          PJ::ToolboxMessageLevel::kInfo,
-          "Download not cached for layout re-import (" + detail + "); data is loaded normally");
-    });
+    gate->settle(promoted, std::move(detail));
   };
   worker_->hostStopRequested = [this]() {
     // Host-side Stop (title-bar strip). requestCancel() already fired inside
@@ -371,6 +372,9 @@ void MosaicoDialog::initFromSettings() {
 }
 
 MosaicoDialog::~MosaicoDialog() {
+  // The host may invoke a retained promotion closure on any thread. Invalidate
+  // its shared gate first; the mutex is also a barrier for an in-flight call.
+  promotion_settlement_gate_->invalidateAndWait();
   // Persist the Lua query + slider proportions for next open (PJ3 parity).
   persistState();
   // Signal the SDK's mid-stream cancel flag before joining; otherwise the

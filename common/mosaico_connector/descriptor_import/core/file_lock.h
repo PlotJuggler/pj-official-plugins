@@ -50,7 +50,7 @@ class FileLock {
   /// locks (F_OFD_SETLK), whose lock CONVERSIONS are atomic — that closes
   /// downgradeToShared()'s non-atomic window for real. It must be a
   /// whole-release migration: flock(2) and fcntl locks live in independent
-  /// namespaces, so every acquirer (cache sidecars, ledger lock) has to
+  /// namespaces, so every cache-sidecar acquirer has to
   /// switch in the same release, plus a Windows byte-range equivalent.
   ///
   /// Convert a HELD EXCLUSIVE lock to SHARED without closing the handle
@@ -59,7 +59,7 @@ class FileLock {
   /// can drop before the new one lands, so a concurrent non-blocking
   /// exclusive try may slip into that microscopic window. On conversion
   /// failure the lock is RELEASED and false is returned; the caller must
-  /// revalidate whatever the lock protected and proceed lease-less.
+  /// reacquire a shared lease, revalidate what the lock protected, or fail.
   [[nodiscard]] bool downgradeToShared(std::string* error);
 
   FileLock(FileLock&& other) noexcept;

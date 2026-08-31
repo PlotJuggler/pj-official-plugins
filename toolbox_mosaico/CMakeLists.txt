@@ -76,6 +76,7 @@ set(MOSAICO_SOURCES
   src/toolbox_mosaico.cpp
   src/mosaico_dialog.cpp
   src/fetch_worker.cpp
+  src/promotion_artifact_lease_registry.cpp
   src/credential_resolve.cpp
   src/descriptor_import_provider.cpp
   src/source_presentation.cpp
@@ -187,9 +188,41 @@ if(BUILD_TESTING)
   target_compile_options(toolbox_mosaico_stoppable_thread_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
   add_test(NAME ToolboxMosaicoStoppableThreadTest COMMAND toolbox_mosaico_stoppable_thread_test)
 
+  add_executable(toolbox_mosaico_promotion_settlement_gate_test
+    tests/promotion_settlement_gate_test.cpp
+  )
+  target_link_libraries(toolbox_mosaico_promotion_settlement_gate_test PRIVATE GTest::gtest_main)
+  target_include_directories(toolbox_mosaico_promotion_settlement_gate_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_mosaico_promotion_settlement_gate_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_mosaico_promotion_settlement_gate_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  add_test(
+    NAME ToolboxMosaicoPromotionSettlementGateTest
+    COMMAND toolbox_mosaico_promotion_settlement_gate_test)
+
+  add_executable(toolbox_mosaico_promotion_artifact_lease_registry_test
+    tests/promotion_artifact_lease_registry_test.cpp
+    src/promotion_artifact_lease_registry.cpp
+  )
+  target_link_libraries(toolbox_mosaico_promotion_artifact_lease_registry_test PRIVATE
+    pj_mosaico_descriptor_import
+    GTest::gtest_main
+  )
+  target_include_directories(toolbox_mosaico_promotion_artifact_lease_registry_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_mosaico_promotion_artifact_lease_registry_test PRIVATE cxx_std_20)
+  target_compile_options(
+    toolbox_mosaico_promotion_artifact_lease_registry_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  add_test(
+    NAME ToolboxMosaicoPromotionArtifactLeaseRegistryTest
+    COMMAND toolbox_mosaico_promotion_artifact_lease_registry_test)
+
   add_executable(toolbox_mosaico_ingest_progress_test
     tests/ingest_progress_test.cpp
     src/fetch_worker.cpp
+    src/promotion_artifact_lease_registry.cpp
   )
   target_link_libraries(toolbox_mosaico_ingest_progress_test PRIVATE
     pj_mosaico_ingest
@@ -236,6 +269,7 @@ if(BUILD_TESTING)
     src/descriptor_import_provider.cpp
     src/credential_resolve.cpp
     src/fetch_worker.cpp
+    src/promotion_artifact_lease_registry.cpp
     src/source_presentation.cpp
     src/server_history.cpp
   )

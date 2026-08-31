@@ -64,10 +64,13 @@ class ArtifactCapture {
   /// Terminal. On `complete` (every topic succeeded and the session is still
   /// armed): close the writer, finalize into the cache, and hand back the
   /// artifact path + a dataset-lifetime read lease + the descriptor json for
-  /// the promotion request. Anything else aborts and deletes the partial.
+  /// the promotion request. If the exclusive-to-shared lock conversion fails,
+  /// finish reacquires a shared lease and revalidates the published path; it
+  /// fails eager-only rather than returning an unpinned artifact. Anything
+  /// else aborts and deletes the partial.
   struct Finalized {
     std::filesystem::path path;
-    std::optional<FileLock> lease;  ///< nullopt if the shared-lease downgrade failed
+    std::optional<FileLock> lease;  ///< always populated on a successful finish
   };
   [[nodiscard]] std::optional<Finalized> finish(bool complete);
 

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //
 // The chmod/mkdir/fsync primitives shared by the durable-write paths (the
-// session cache's validated finalize and the trusted-origins ledger). The
+// session cache's validated finalize). The
 // platform fsync incantations are a classic source of subtle cross-platform
 // bugs, so they live in exactly one TU.
 #pragma once
