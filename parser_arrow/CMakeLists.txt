@@ -31,6 +31,7 @@ target_link_libraries(parser_arrow_core PUBLIC
   plotjuggler_sdk::base
   nanoarrow::nanoarrow
   nanoarrow::nanoarrow_ipc
+  nlohmann_json::nlohmann_json
   ${PARSER_ARROW_FLATCCRT_LIBRARY}
 )
 

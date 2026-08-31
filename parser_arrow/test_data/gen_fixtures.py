@@ -244,6 +244,134 @@ def make_nullable_struct_list_batch() -> pa.RecordBatch:
     )
 
 
+def make_lists_batch() -> pa.RecordBatch:
+    """Build primitive variable/fixed lists with short and null rows."""
+    return pa.record_batch(
+        [
+            pa.array([1000, 2000, 3000], type=pa.int64()),
+            pa.array([[1.0, 2.0, 3.0], [4.0, 5.0], None], type=pa.list_(pa.float32())),
+            pa.array(
+                [[0.1, 0.2, 0.3], [1.1, 1.2, 1.3], None],
+                type=pa.list_(pa.float64(), list_size=3),
+            ),
+            pa.array([[True, False], [False], None], type=pa.list_(pa.bool_())),
+            pa.array([["alice", "bob"], ["carol"], None], type=pa.list_(pa.string())),
+        ],
+        names=["timestamp_ns", "ranges", "cov", "flags", "names"],
+    )
+
+
+def make_lists_two_batches() -> list[pa.RecordBatch]:
+    """Build variable lists whose later rows are wider than the first batch."""
+    schema = pa.schema(
+        [
+            pa.field("timestamp_ns", pa.int64()),
+            pa.field("ranges", pa.list_(pa.float32())),
+        ]
+    )
+    return [
+        pa.record_batch(
+            [pa.array([1000, 2000], type=pa.int64()), pa.array([[1.0, 2.0], [3.0]], type=pa.list_(pa.float32()))],
+            schema=schema,
+        ),
+        pa.record_batch(
+            [pa.array([3000], type=pa.int64()), pa.array([[4.0, 5.0, 6.0, 7.0]], type=pa.list_(pa.float32()))],
+            schema=schema,
+        ),
+    ]
+
+
+def make_lists_nested_batch() -> pa.RecordBatch:
+    """Build a nested fixed-size primitive list and a non-ingestible struct list."""
+    velocity_type = pa.list_(pa.float64(), list_size=3)
+    pose_type = pa.struct([pa.field("vel", velocity_type)])
+    bad_type = pa.list_(pa.struct([pa.field("x", pa.float64())]))
+    return pa.record_batch(
+        [
+            pa.array([1000, 2000, 3000], type=pa.int64()),
+            pa.array(
+                [{"vel": [1.0, 2.0, 3.0]}, {"vel": [4.0, 5.0, 6.0]}, None],
+                type=pose_type,
+            ),
+            pa.array([[{"x": 7.0}], None, [{"x": 8.0}, {"x": 9.0}]], type=bad_type),
+        ],
+        names=["timestamp_ns", "pose", "bad"],
+    )
+
+
+def make_lists_wide_batch() -> pa.RecordBatch:
+    """Build one eight-element list for ArrayLimit clamp/skip tests."""
+    return pa.record_batch(
+        [
+            pa.array([1000], type=pa.int64()),
+            pa.array([[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]], type=pa.list_(pa.float64())),
+            pa.array([42.0], type=pa.float64()),
+        ],
+        names=["timestamp_ns", "wide", "value"],
+    )
+
+
+def make_lists_normalized_elements_batch() -> pa.RecordBatch:
+    """Build large-list storage plus element types normalized by the shaper."""
+    return pa.record_batch(
+        [
+            pa.array([1000, 2000, 3000], type=pa.int64()),
+            pa.array([[10, 20], [30], None], type=pa.large_list(pa.int16())),
+            pa.array(
+                [[1, 2], [3, None], None],
+                type=pa.list_(pa.timestamp("us"), list_size=2),
+            ),
+            pa.array(
+                [["alpha", "a large string value"], ["gamma", None], None],
+                type=pa.list_(pa.large_string(), list_size=2),
+            ),
+        ],
+        names=["timestamp_ns", "large_values", "typed_times", "large_names"],
+    )
+
+
+def make_lists_empty_first_batches() -> list[pa.RecordBatch]:
+    """Build an empty-width first batch followed by a non-empty list row."""
+    schema = pa.schema(
+        [
+            pa.field("timestamp_ns", pa.int64()),
+            pa.field("empty", pa.list_(pa.int32())),
+            pa.field("value", pa.float64()),
+        ]
+    )
+    return [
+        pa.record_batch(
+            [
+                pa.array([1000, 2000], type=pa.int64()),
+                pa.array([[], None], type=pa.list_(pa.int32())),
+                pa.array([1.0, 2.0], type=pa.float64()),
+            ],
+            schema=schema,
+        ),
+        pa.record_batch(
+            [
+                pa.array([3000], type=pa.int64()),
+                pa.array([[1, 2, 3]], type=pa.list_(pa.int32())),
+                pa.array([3.0], type=pa.float64()),
+            ],
+            schema=schema,
+        ),
+    ]
+
+
+def make_lists_collision_batch() -> pa.RecordBatch:
+    """Build a variable list whose first expanded name collides with a literal field."""
+    return pa.record_batch(
+        [
+            pa.array([1000], type=pa.int64()),
+            pa.array([[1.0]], type=pa.list_(pa.float64())),
+            pa.array([2.0], type=pa.float64()),
+            pa.array([3.0], type=pa.float64()),
+        ],
+        names=["timestamp_ns", "a", "a[0]", "value"],
+    )
+
+
 def make_dictionary_batch() -> pa.RecordBatch:
     """Build a dictionary-encoded string column unsupported by nanoarrow_ipc 0.7."""
     return pa.record_batch(
@@ -300,6 +428,13 @@ def main() -> None:
         ),
         write_stream("nested_dropped_scalars.arrows", [make_nested_dropped_scalars_batch()]),
         write_stream("nullable_struct_list.arrows", [make_nullable_struct_list_batch()]),
+        write_stream("lists.arrows", [make_lists_batch()]),
+        write_stream("lists_two_batches.arrows", make_lists_two_batches()),
+        write_stream("lists_nested.arrows", [make_lists_nested_batch()]),
+        write_stream("lists_wide.arrows", [make_lists_wide_batch()]),
+        write_stream("lists_normalized_elements.arrows", [make_lists_normalized_elements_batch()]),
+        write_stream("lists_empty_first_batch.arrows", make_lists_empty_first_batches()),
+        write_stream("lists_collision.arrows", [make_lists_collision_batch()]),
         write_stream("dictionary.arrows", [make_dictionary_batch()]),
         write_stream("no_timestamp.arrows", [make_no_timestamp_batch()]),
         write_stream(

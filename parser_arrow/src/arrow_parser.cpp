@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
+#include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -72,6 +73,7 @@ struct ArrowParserConfig {
   std::string timestamp_column;
   bool flatten_structs = true;
   int64_t synthetic_interval_ns = 0;
+  PJ::sdk::ArrayLimit array_limit;
 };
 
 /// Message parser scaffold for self-describing Arrow IPC streams.
@@ -103,6 +105,7 @@ class ArrowParser : public PJ::MessageParserPluginBase {
       loaded.timestamp_column = parsed.value("timestamp_column", std::string{});
       loaded.flatten_structs = parsed.value("flatten_structs", true);
       loaded.synthetic_interval_ns = parsed.value("synthetic_interval_ns", int64_t{0});
+      loaded.array_limit = PJ::sdk::arrayLimitFromJson(parsed);
       config_ = std::move(loaded);
     } catch (const nlohmann::json::exception& error) {
       return PJ::unexpected(std::string("parser_arrow: invalid configuration: ") + error.what());
@@ -112,12 +115,13 @@ class ArrowParser : public PJ::MessageParserPluginBase {
 
   /// Serialize all parser options to the JSON configuration contract.
   [[nodiscard]] std::string saveConfig() const override {
-    return nlohmann::json{
+    nlohmann::json saved{
         {"timestamp_column", config_.timestamp_column},
         {"flatten_structs", config_.flatten_structs},
         {"synthetic_interval_ns", config_.synthetic_interval_ns},
-    }
-        .dump();
+    };
+    PJ::sdk::arrayLimitToJson(saved, config_.array_limit);
+    return saved.dump();
   }
 
   /// Decode, shape, diagnose, and bulk-ingest one self-describing Arrow IPC stream.
@@ -133,6 +137,7 @@ class ArrowParser : public PJ::MessageParserPluginBase {
                                  .flatten_structs = config_.flatten_structs,
                                  .message_timestamp_ns = timestamp_ns,
                                  .synthetic_interval_ns = config_.synthetic_interval_ns,
+                                 .array_limit = config_.array_limit,
                              });
     if (!shaped) {
       return PJ::unexpected(std::move(shaped).error());

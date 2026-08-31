@@ -17,6 +17,8 @@ Configuration is a JSON object:
 | `timestamp_column` | string | `""` | Non-empty: use this exact top-level field as the time axis; an absent field is an error. Empty: auto-detect an axis, then synthesize one if none is found. |
 | `flatten_structs` | bool | `true` | Flatten nested structs depth-first to slash-separated leaf names. `false` preserves struct boundaries while unsupported top-level struct columns are removed. |
 | `synthetic_interval_ns` | int64 | `0` | When an axis is synthesized, add this many nanoseconds per row. Zero gives every row the message timestamp; negative intervals are allowed. The row index continues across record batches. |
+| `max_array_size` | uint32 | `500` | Maximum scalar columns emitted for one list. Zero means unlimited. |
+| `array_policy` | string | `"clamp"` | When a list width exceeds `max_array_size`, `"clamp"` keeps the first elements and `"skip"` drops the whole list column. |
 
 The top-level JSON value must be an object; unknown keys are ignored.
 
@@ -61,17 +63,53 @@ which would discard the transport message time.
   level. Duplicate output names after flattening and substitution are errors.
 
 The current PlotJuggler host ingests `int8` through `int64`, `uint8` through
-`uint64`, `float`, `double`, `bool`, and `utf8`. Lists, binary, decimal,
-date/time/duration, maps/unions, and unflattened struct columns are removed from
-the shaped stream and reported. When parser runtime diagnostics are available,
-the parser reports each unchanged dropped set once as
-`parser_arrow.dropped_columns`. A schema with no host-ingestible data column
+`uint64`, `float`, `double`, `bool`, and `utf8`. Binary, decimal,
+date/time/duration, maps/unions, complex lists, and unflattened struct columns
+are removed from the shaped stream and reported. When parser runtime
+diagnostics are available, the parser reports each unchanged dropped set once
+as `parser_arrow.dropped_columns`. A schema with no host-ingestible data column
 other than its timestamp axis is rejected. The selected timestamp axis is never
 droppable.
 
-Dictionary-encoded fields are rejected at decode time with the field name.
-`nanoarrow_ipc` 0.7 cannot decode `DictionaryBatch` messages; producers must
-decode dictionaries before encoding the IPC stream.
+## List expansion
+
+`list<P>`, `large_list<P>`, and `fixed_size_list<P>` columns expand into scalar
+columns named `name[0]`, `name[1]`, and so on. Expansion works at every struct
+flattening depth, for example `pose/vel[2]`. `P` may be any primitive supported
+by the host. Timestamp elements are converted to int64 nanoseconds, and
+`large_string` or `string_view` elements are normalized to `utf8` by the same
+rules as scalar columns.
+
+The output width is fixed before the shaped schema is exposed:
+
+- A `fixed_size_list<P, N>` uses its schema width `N`.
+- A variable `list` or `large_list` uses the maximum list length in the first
+  record batch of that message. The parser peeks and buffers that batch, then
+  returns it as the wrapper stream's first batch. Later wider rows are limited
+  to the already-selected width.
+- An all-null/empty first batch selects width zero. The list emits no scalar
+  columns and is reported in `dropped_columns` with an empty marker such as
+  `+l(empty)`, even if a later batch contains values.
+
+Null list rows produce nulls in every expanded column. Short rows are padded
+with nulls; extra elements are ignored. A null struct ancestor also makes every
+expanded descendant null.
+
+`max_array_size` and `array_policy` use PlotJuggler's cross-parser `ArrayLimit`
+contract. The default keeps at most the first 500 elements. `max_array_size: 0`
+is unlimited. With `"clamp"`, an oversized width is reduced to the configured
+limit; with `"skip"`, the source list is removed and reported with its original
+Arrow format.
+
+Lists of non-ingestible elements—including structs, nested lists, binary, and
+dictionary values—remain unsupported and follow the normal dropped-column
+diagnostic path at the shaping layer. Dictionary-encoded IPC fields are still
+rejected earlier by `nanoarrow_ipc` as described below.
+
+Dictionary-encoded fields are rejected at decode time: `nanoarrow_ipc` 0.7
+refuses them while converting the IPC schema (so the offending field cannot be
+named) and cannot decode `DictionaryBatch` messages. Producers must decode
+dictionaries before encoding the IPC stream.
 
 ## Compression
 
@@ -92,7 +130,8 @@ bound by the transport to `parser_ros`, not `parser_arrow`.
 - Cast view types before IPC encoding.
 - Decode dictionary-encoded columns before IPC encoding.
 - Do not use LZ4 compression.
-- Use flat columns or nested struct columns only.
+- Use flat columns, nested structs, or primitive-element lists; pre-cast
+  unsupported list elements and account for the first-batch width rule.
 - Use one topic per parser binding.
 
 ## Build and test

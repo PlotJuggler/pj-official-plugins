@@ -107,13 +107,15 @@ TEST(ArrowParserTest, ConfigRoundTrip) {
   ArrowParserFixture fixture;
   fixture.setUp();
   ASSERT_TRUE(fixture.handle.loadConfig(
-      R"({"timestamp_column":"event_time","flatten_structs":false,"synthetic_interval_ns":2500000})"));
+      R"({"timestamp_column":"event_time","flatten_structs":false,"synthetic_interval_ns":2500000,"max_array_size":4,"array_policy":"skip"})"));
 
   std::string saved_config;
   ASSERT_TRUE(fixture.handle.saveConfig(saved_config));
   EXPECT_NE(saved_config.find("\"timestamp_column\":\"event_time\""), std::string::npos);
   EXPECT_NE(saved_config.find("\"flatten_structs\":false"), std::string::npos);
   EXPECT_NE(saved_config.find("\"synthetic_interval_ns\":2500000"), std::string::npos);
+  EXPECT_NE(saved_config.find("\"max_array_size\":4"), std::string::npos);
+  EXPECT_NE(saved_config.find("\"array_policy\":\"skip\""), std::string::npos);
 }
 
 /// Verify that an untouched parser saves every documented default.
@@ -126,6 +128,8 @@ TEST(ArrowParserTest, ConfigDefaultsMatchContract) {
   EXPECT_NE(saved_config.find("\"timestamp_column\":\"\""), std::string::npos);
   EXPECT_NE(saved_config.find("\"flatten_structs\":true"), std::string::npos);
   EXPECT_NE(saved_config.find("\"synthetic_interval_ns\":0"), std::string::npos);
+  EXPECT_NE(saved_config.find("\"max_array_size\":500"), std::string::npos);
+  EXPECT_NE(saved_config.find("\"array_policy\":\"clamp\""), std::string::npos);
 }
 
 /// Verify that malformed JSON is reported through the parser Status API.
@@ -149,6 +153,48 @@ TEST(ArrowParserTest, ParsesFlatStreamThroughArrowHostPath) {
   EXPECT_EQ(stream.batch_row_counts, (std::vector<int64_t>{3}));
   EXPECT_EQ(stream.timestamp_values, (std::vector<int64_t>{1000, 2000, 3000}));
   expectOnlyArrowWrites(fixture.arrow_write_host, 1);
+}
+
+/// Primitive lists expand end-to-end through the plugin DSO and Arrow-capable fake host.
+TEST(ArrowParserTest, ExpandsListsThroughArrowHostPathWithoutDiagnostics) {
+  ArrowParserFixture fixture;
+  fixture.setUp(true, true);
+  const auto status = parseFixture(fixture, "lists.arrows");
+  ASSERT_TRUE(status) << status.error();
+
+  ASSERT_EQ(fixture.arrow_write_host.streams().size(), 1);
+  const auto& stream = fixture.arrow_write_host.streams()[0];
+  EXPECT_EQ(
+      stream.schema_names, (std::vector<std::string>{
+                               "timestamp_ns", "ranges[0]", "ranges[1]", "ranges[2]", "cov[0]", "cov[1]", "cov[2]",
+                               "flags[0]", "flags[1]", "names[0]", "names[1]"}));
+  EXPECT_EQ(stream.batch_row_counts, (std::vector<int64_t>{3}));
+  EXPECT_EQ(stream.timestamp_values, (std::vector<int64_t>{1000, 2000, 3000}));
+  EXPECT_TRUE(fixture.runtime_host.diagnostics().empty());
+  expectOnlyArrowWrites(fixture.arrow_write_host, 1);
+}
+
+/// Parser configuration applies clamp and skip ArrayLimit behavior to variable lists.
+TEST(ArrowParserTest, AppliesArrayLimitConfigToListExpansion) {
+  ArrowParserFixture fixture;
+  fixture.setUp(true, true);
+  ASSERT_TRUE(fixture.handle.loadConfig(R"({"max_array_size":4,"array_policy":"clamp"})"));
+  auto status = parseFixture(fixture, "lists_wide.arrows");
+  ASSERT_TRUE(status) << status.error();
+  ASSERT_EQ(fixture.arrow_write_host.streams().size(), 1);
+  EXPECT_EQ(
+      fixture.arrow_write_host.streams()[0].schema_names,
+      (std::vector<std::string>{"timestamp_ns", "wide[0]", "wide[1]", "wide[2]", "wide[3]", "value"}));
+  EXPECT_TRUE(fixture.runtime_host.diagnostics().empty());
+
+  ASSERT_TRUE(fixture.handle.loadConfig(R"({"max_array_size":4,"array_policy":"skip"})"));
+  status = parseFixture(fixture, "lists_wide.arrows");
+  ASSERT_TRUE(status) << status.error();
+  ASSERT_EQ(fixture.arrow_write_host.streams().size(), 2);
+  EXPECT_EQ(fixture.arrow_write_host.streams()[1].schema_names, (std::vector<std::string>{"timestamp_ns", "value"}));
+  ASSERT_EQ(fixture.runtime_host.diagnostics().size(), 1);
+  EXPECT_NE(fixture.runtime_host.diagnostics()[0].message.find("wide:+l"), std::string::npos);
+  expectOnlyArrowWrites(fixture.arrow_write_host, 2);
 }
 
 /// Record-batch boundaries survive decoding and shaping.
@@ -318,8 +364,8 @@ TEST(ArrowParserTest, ReportsDroppedColumnsWhenSchemaSetChanges) {
   expectOnlyArrowWrites(fixture.arrow_write_host, 4);
 }
 
-/// A nullable struct's unsupported list leaf is removed without blocking ingestion of its string sibling.
-TEST(ArrowParserTest, ParsesNullableStructAfterRemovingDroppedListLeaf) {
+/// A nullable struct's primitive list leaf expands without diagnostics alongside its string sibling.
+TEST(ArrowParserTest, ParsesExpandedListUnderNullableStruct) {
   ArrowParserFixture fixture;
   fixture.setUp(true, true);
 
@@ -327,16 +373,13 @@ TEST(ArrowParserTest, ParsesNullableStructAfterRemovingDroppedListLeaf) {
   ASSERT_TRUE(status) << status.error();
   ASSERT_EQ(fixture.arrow_write_host.streams().size(), 1);
   const auto& stream = fixture.arrow_write_host.streams()[0];
-  EXPECT_EQ(stream.schema_names, (std::vector<std::string>{"timestamp_ns", "value", "metadata/note"}));
+  EXPECT_EQ(
+      stream.schema_names, (std::vector<std::string>{
+                               "timestamp_ns", "value", "metadata/samples[0]", "metadata/samples[1]",
+                               "metadata/samples[2]", "metadata/note"}));
   EXPECT_EQ(stream.batch_row_counts, (std::vector<int64_t>{3}));
   EXPECT_EQ(stream.timestamp_values, (std::vector<int64_t>{1000, 2000, 3000}));
-  ASSERT_EQ(fixture.runtime_host.diagnostics().size(), 1);
-  const auto& diagnostic = fixture.runtime_host.diagnostics()[0];
-  EXPECT_EQ(diagnostic.level, PJ::sdk::ParserDiagnosticLevel::Warning);
-  EXPECT_EQ(diagnostic.stable_code, "parser_arrow.dropped_columns");
-  EXPECT_EQ(diagnostic.occurrences, 1);
-  EXPECT_NE(diagnostic.message.find("removed from the Arrow stream"), std::string::npos);
-  EXPECT_NE(diagnostic.message.find("metadata/samples:+l"), std::string::npos);
+  EXPECT_TRUE(fixture.runtime_host.diagnostics().empty());
   expectOnlyArrowWrites(fixture.arrow_write_host, 1);
 }
 
