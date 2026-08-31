@@ -101,6 +101,14 @@ TEST(ClaudeBackendCommandLine, WithholdsEveryBuiltInTool) {
 
   EXPECT_NE(std::find(argv.begin(), argv.end(), "--strict-mcp-config"), argv.end())
       << "without it the CLI may load MCP servers from the user's own config";
+
+  // The isolation half of the lock: --restricted makes the CLI ignore the
+  // machine's user/project/local settings AND the user-level CLAUDE.md, so the
+  // panel's register and instructions do not depend on who installed it or on
+  // what they configured for their own coding sessions. (The project-level side
+  // is covered by running the CLI in a private cwd, which argv cannot show.)
+  EXPECT_NE(std::find(argv.begin(), argv.end(), "--restricted"), argv.end())
+      << "without it the panel inherits the machine's settings, output style and global CLAUDE.md";
 }
 
 // Whitelisting is the other half: --tools decides what EXISTS, --allowedTools

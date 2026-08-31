@@ -61,6 +61,15 @@ std::vector<std::string> buildClaudeArgv(
       // ours with its own bounds, not by widening this.
       "--tools",
       "",
+      // Ignore the machine's user/project/local settings files (an explicit
+      // --settings would still apply; we pass none). Without this the panel
+      // inherits whatever the user configured for their own coding sessions —
+      // output style included — and, worse, the user-level CLAUDE.md loads as
+      // instructions regardless of cwd (verified 2026-08-31 on CLI 2.1.251:
+      // the same prompt answers "# Global rules" without the flag and NONE
+      // with it). Subscription OAuth is untouched. Its tool restrictions are
+      // redundant under `--tools ""` — that redundancy is fine.
+      "--restricted",
       "--mcp-config",
       mcp_config_path,
       "--strict-mcp-config",
@@ -89,6 +98,24 @@ ClaudeBackend::~ClaudeBackend() {
   if (!mcp_config_path_.empty()) {
     unlink(mcp_config_path_.c_str());
   }
+  if (!work_dir_.empty()) {
+    rmdir(work_dir_.c_str());  // ours and empty by construction; failure just leaves a /tmp dir
+  }
+}
+
+bool ClaudeBackend::ensureWorkDir(std::string& error) {
+  if (!work_dir_.empty()) {
+    return true;
+  }
+  char tmpl[] = "/tmp/pj_assistant_cwd_XXXXXX";
+  if (mkdtemp(tmpl) == nullptr) {
+    // Fail closed: running in the inherited cwd would silently hand the panel
+    // whatever project context PlotJuggler was launched from.
+    error = "could not create the assistant's working directory";
+    return false;
+  }
+  work_dir_ = tmpl;
+  return true;
 }
 
 std::string ClaudeBackend::name() const {
@@ -170,7 +197,7 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
   last_metrics_ = TurnMetrics{};  // per-turn, so a failed turn cannot report the previous one's cost
 
   std::string mcp_error;
-  if (!ensureMcpServer(tools, mcp_error)) {
+  if (!ensureMcpServer(tools, mcp_error) || !ensureWorkDir(mcp_error)) {
     sink({BackendEvent::Kind::Error, mcp_error});
     sink({BackendEvent::Kind::TurnComplete, {}});
     return;
@@ -244,7 +271,7 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
       // command line, where /proc/<pid>/cmdline exposes it to every local
       // user. stdin also keeps a message starting with '-' from being parsed
       // as a CLI flag.
-      argv, payload, [&](const std::string& chunk) { splitter.feed(chunk, on_line); }, cancel_);
+      argv, payload, [&](const std::string& chunk) { splitter.feed(chunk, on_line); }, cancel_, work_dir_);
   splitter.flush(on_line);
 
   if (!res.spawned) {

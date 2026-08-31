@@ -85,6 +85,12 @@ class ClaudeBackend : public LlmBackend {
  private:
   // Bring up the MCP server on first use, bound to this turn's tool surface.
   bool ensureMcpServer(const TurnTools& tools, std::string& error);
+  // Create (once) the private, empty directory the CLI runs in. The CLI reads
+  // its cwd's CLAUDE.md and project state as context, so inheriting the host
+  // app's cwd would inject whatever project PlotJuggler happened to be launched
+  // from into the panel's system prompt. Pairs with --restricted, which covers
+  // the user-level side (settings, global CLAUDE.md).
+  bool ensureWorkDir(std::string& error);
 
   std::string cli_path_;
   std::string model_;
@@ -95,6 +101,9 @@ class ClaudeBackend : public LlmBackend {
   // 0600 temp file holding the MCP config (bearer token inside); created with
   // the server, removed in the destructor.
   std::string mcp_config_path_;
+  // 0700 temp directory the CLI runs in (see ensureWorkDir); removed in the
+  // destructor.
+  std::string work_dir_;
   std::atomic<bool> cancel_{false};
 };
 

@@ -56,6 +56,7 @@ Two properties are non-negotiable and hold today:
 | Driven on a real log, end to end | Twelve turns on a 231.5 s vehicle recording: no marker wall, 12.2 s median turn, and 24 of 26 numeric claims checked against the file (`BENCHMARKS.md`) |
 | Markers report coverage, not the envelope | `covered_s` is the union of the region intervals; its predecessor `span_s` was quoted as coverage in every session that created markers ("~122 s" for 95.1 s covered) |
 | Gaps are visible in `read_series` | `max_gap_s` + `max_gap_at_s`, self-described result keys costing zero schema tokens; count, mean and rate all survive a dropout, so without them "are there gaps?" invited a guess — and got one, over a real 107.6 ms hole |
+| The CLI is isolated from the machine | `--restricted` (ignores user/project/local settings and the user-level CLAUDE.md; OAuth untouched — A/B-verified on CLI 2.1.251) plus a private working directory, so neither the panel's register nor its instructions depend on who installed it or where PlotJuggler was launched |
 
 ## Next
 
@@ -65,13 +66,6 @@ different endings under one label (`docs/FINDINGS.md` §10). Separate them — a
 installed, an artifact the model announced and offered to remove, a script the transform engine
 cannot run — and the open question about Haiku's cleanup can be asked properly. Until then, the
 2-in-10 and 1-in-10 rates measure "something remained", not a defect.
-
-**Isolate the CLI from the machine's settings.** `ClaudeBackendCommandLine` pins `--tools ""` and
-`--strict-mcp-config` but passes no settings file, so the headless CLI inherits whatever the user
-has configured for their own Claude Code — output style included. Benchmark transcripts from this
-machine carry the developer's prose formatting in the assistant's replies, which means the panel's
-register depends on who installed it and the run's output-token counts are not comparable across
-machines.
 
 **Make Haiku clean up after a refusal.** It called `remove_derived_series` in 0 of 20 repetitions
 and in 0 of the 70 matrix cells before them. It is the only model that never withdraws anything.

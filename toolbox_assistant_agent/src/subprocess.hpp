@@ -23,11 +23,18 @@ struct SubprocessResult {
 // the child a closed stdin. Blocks until the child exits; if `cancel` becomes
 // true the child is sent SIGTERM and reaped. stderr is discarded.
 //
+// A non-empty `working_dir` becomes the child's cwd (chdir after fork, before
+// exec); the child exits 127 if it cannot enter it. Callers that hand the child
+// to a tool which derives context from its cwd — the Claude CLI reads the
+// working directory's CLAUDE.md and project state — pass a neutral directory so
+// the child sees the caller's choice, not wherever the host app was launched.
+//
 // POSIX only. On other platforms it returns spawned=false so the caller can
 // surface a clean "not supported here" instead of failing to build.
 SubprocessResult runProcess(
     const std::vector<std::string>& argv, const std::string& stdin_data,
-    const std::function<void(const std::string&)>& on_stdout, const std::atomic<bool>& cancel);
+    const std::function<void(const std::string&)>& on_stdout, const std::atomic<bool>& cancel,
+    const std::string& working_dir = {});
 
 }  // namespace assistant_agent
 
@@ -45,7 +52,8 @@ namespace assistant_agent {
 
 inline SubprocessResult runProcess(
     const std::vector<std::string>& argv, const std::string& stdin_data,
-    const std::function<void(const std::string&)>& on_stdout, const std::atomic<bool>& cancel) {
+    const std::function<void(const std::string&)>& on_stdout, const std::atomic<bool>& cancel,
+    const std::string& working_dir) {
   if (argv.empty()) {
     return {false, -1, "empty argv"};
   }
@@ -79,6 +87,9 @@ inline SubprocessResult runProcess(
     close(in_fds[1]);
     close(fds[0]);
     close(fds[1]);
+    if (!working_dir.empty() && chdir(working_dir.c_str()) != 0) {
+      _exit(127);  // refusing to run in the wrong directory beats running there
+    }
     std::vector<char*> cargv;
     cargv.reserve(argv.size() + 1);
     for (const auto& a : argv) {
@@ -149,7 +160,7 @@ inline SubprocessResult runProcess(
 namespace assistant_agent {
 inline SubprocessResult runProcess(
     const std::vector<std::string>&, const std::string&, const std::function<void(const std::string&)>&,
-    const std::atomic<bool>&) {
+    const std::atomic<bool>&, const std::string&) {
   return {false, -1, "subprocess is only supported on POSIX platforms"};
 }
 }  // namespace assistant_agent
