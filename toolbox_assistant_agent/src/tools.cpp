@@ -63,9 +63,7 @@ json publishedMarkerSummary(const ToolContext& ctx, const std::vector<std::strin
   }
   std::size_t total = 0;
   std::map<std::string, std::size_t> by_kind;
-  bool any_span = false;
-  PJ::Timestamp t_min = 0;
-  PJ::Timestamp t_max = 0;
+  std::vector<std::pair<PJ::Timestamp, PJ::Timestamp>> regions;
   for (const auto& name : object_topics) {
     const std::optional<PJ::sdk::ObjectTopicHandle> handle = ctx.objects.lookupTopic(name);
     if (!handle) {
@@ -83,15 +81,8 @@ json publishedMarkerSummary(const ToolContext& ctx, const std::vector<std::strin
     for (const auto& m : decoded->markers) {
       ++total;
       ++by_kind[markerKindName(m.kind)];
-      const PJ::Timestamp lo = m.t_start;
-      const PJ::Timestamp hi = m.kind == PJ::sdk::MarkerKind::kRegion ? m.t_end : m.t_start;
-      if (!any_span) {
-        t_min = lo;
-        t_max = hi;
-        any_span = true;
-      } else {
-        t_min = std::min(t_min, lo);
-        t_max = std::max(t_max, hi);
+      if (m.kind == PJ::sdk::MarkerKind::kRegion && m.t_end > m.t_start) {
+        regions.emplace_back(m.t_start, m.t_end);
       }
     }
   }
@@ -99,8 +90,29 @@ json publishedMarkerSummary(const ToolContext& ctx, const std::vector<std::strin
   if (!by_kind.empty()) {
     out["by_kind"] = by_kind;
   }
-  if (any_span) {
-    out["span_s"] = static_cast<double>(t_max - t_min) * 1e-9;
+  // `covered_s` is the UNION of the region intervals — the log time the regions
+  // actually cover, which is what a model quotes back to the user. The envelope
+  // (first start to last end) used to be reported here as `span_s`, and models
+  // read it as coverage every single time: two regions covering 95.1 s were
+  // announced as "~122 s, half the drive" because the slow stretch between them
+  // sat inside the envelope. Zero-duration marker kinds contribute nothing, and
+  // a set with no regions omits the field rather than reporting a meaningless 0.
+  if (!regions.empty()) {
+    std::sort(regions.begin(), regions.end());
+    PJ::Timestamp covered_ns = 0;
+    PJ::Timestamp cur_start = regions.front().first;
+    PJ::Timestamp cur_end = regions.front().second;
+    for (std::size_t i = 1; i < regions.size(); ++i) {
+      if (regions[i].first > cur_end) {
+        covered_ns += cur_end - cur_start;
+        cur_start = regions[i].first;
+        cur_end = regions[i].second;
+      } else {
+        cur_end = std::max(cur_end, regions[i].second);
+      }
+    }
+    covered_ns += cur_end - cur_start;
+    out["covered_s"] = static_cast<double>(covered_ns) * 1e-9;
   }
   return out;
 }

@@ -124,17 +124,16 @@ So the creation tools report facts rather than intentions:
   annotation and a wall. The tool description states the ~50 rule and this is what makes it
   checkable — a rule the model has no way to evaluate is decoration.
 
-  It also returns `span_s`, and that one is a trap. It is the **envelope** — first marker's start to
-  last marker's end — not the time the markers cover. Marking speed above 15 m/s on a 231.5 s drive
-  produced two regions, `[99.3, 185.4]` and `[212.1, 221.1]`: 95.1 s covered, 41 % of the log, and
-  `span_s = 121.8` because the 26.7 s of *slow* driving between them sits inside the envelope. The
-  model read it as coverage and told the user "about 122 s, roughly half the drive" — three times,
-  in two separate sessions. Nothing about `{markers_created: 2, by_kind: {region: 2}, span_s: 121.8}`
-  says otherwise.
-
-  This is the one place where the section's own principle turns on itself: a true fact, named in a
-  way that reads as a different fact, is worse than no fact. The fix is to report the summed region
-  duration.
+  It also returns `covered_s`: the **union** of the region intervals, the log time the regions
+  actually cover, omitted when the set has no regions. Its predecessor `span_s` was a trap — the
+  envelope, first marker's start to last marker's end. Marking speed above 15 m/s on a 231.5 s
+  drive produced two regions, `[99.3, 185.4]` and `[212.1, 221.1]`: 95.1 s covered, 41 % of the
+  log, and `span_s = 121.8` because the 26.7 s of *slow* driving between them sat inside the
+  envelope. The model read it as coverage and told the user "about 122 s, roughly half the drive"
+  — three times, in two separate sessions. That was the section's own principle turning on itself:
+  a true fact, named in a way that reads as a different fact, is worse than no fact. `covered_s`
+  merges overlaps rather than summing durations for the same reason — the name promises coverage,
+  so the number has to be coverage.
 - `create_derived_series` reports `points`: how many samples the new series has. With one input that
   is the input's length, read from the Arrow header without decoding values; with several it is the
   size of the timestamp intersection, which is what the join will actually produce.

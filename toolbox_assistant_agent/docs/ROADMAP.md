@@ -54,15 +54,9 @@ Two properties are non-negotiable and hold today:
 | Results state facts, not next steps | A `verify_with` hint was costing ~30% of round trips (`ARCHITECTURE.md`) |
 | Benchmark scores outcomes, not calls | The old counter scored the models that clean up as the failures |
 | Driven on a real log, end to end | Twelve turns on a 231.5 s vehicle recording: no marker wall, 12.2 s median turn, and 24 of 26 numeric claims checked against the file (`BENCHMARKS.md`) |
+| Markers report coverage, not the envelope | `covered_s` is the union of the region intervals; its predecessor `span_s` was quoted as coverage in every session that created markers ("~122 s" for 95.1 s covered) |
 
 ## Next
-
-**Report what markers cover, not the envelope they span.** `create_markers` returns `span_s` =
-first marker's start to last marker's end, and a model has no way to read that as anything but "how
-much of the log these markers cover". On the drive in `docs/BENCHMARKS.md` that turned 95.1 s of
-fast driving into a reported 122 s and "roughly half the drive" — wrong, out loud, three times.
-Sum the region durations instead. Smallest fix on this list and the only one that has already put a
-false statement in front of a user (`docs/ARCHITECTURE.md`, "Closing the loop").
 
 **Give `read_series` a dropout statistic.** It reports count, min, max, mean, stddev, duration and
 rate — nothing about the spacing between samples. So "are there gaps in this log?", which is among

@@ -476,6 +476,38 @@ TEST(ToolRegistry, CreateMarkersReportsWhatWasActuallyPublished) {
   EXPECT_EQ(j["markers_created"], 3);
   EXPECT_EQ(j["by_kind"]["regions"], 3);
   EXPECT_FALSE(j["by_kind"].contains("events"));
+  // Three half-second regions cover 1.5 s; the envelope they sit in is 2.5 s.
+  EXPECT_DOUBLE_EQ(j["covered_s"].get<double>(), 1.5);
+  EXPECT_FALSE(j.contains("span_s"));
+}
+
+// The field is named `covered_s` and it has to earn the name: overlapping
+// regions merge instead of double-counting, and the stretch BETWEEN regions is
+// not covered. The envelope of this set is 11 s and the naive duration sum is
+// 5 s; only the union, 4 s, is what a user would call "time covered". Its
+// predecessor `span_s` reported the envelope, and models quoted it as coverage
+// in every session that created markers.
+TEST(ToolRegistry, CoveredTimeIsTheUnionOfRegionsNotTheEnvelope) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  FakeObjectReadHost objects;
+  PJ::sdk::PlotMarkers set;
+  for (const auto& [start_s, end_s] : {std::pair{0, 2}, {1, 3}, {10, 11}}) {
+    PJ::sdk::PlotMarker m;
+    m.kind = PJ::sdk::MarkerKind::kRegion;
+    m.t_start = static_cast<PJ::Timestamp>(start_s) * kSec;
+    m.t_end = static_cast<PJ::Timestamp>(end_s) * kSec;
+    set.markers.push_back(m);
+  }
+  objects.publish("/imu/x", set);
+  ToolContext ctx = makeCtx(store, &dp, &objects);
+
+  auto r = reg.execute("create_markers", {{"series", "/imu/x"}, {"comparison", ">"}, {"threshold", 2.5}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  EXPECT_DOUBLE_EQ(j["covered_s"].get<double>(), 4.0);
 }
 
 TEST(ToolRegistry, CreateMarkersMakesAWallVisibleAsSuch) {
@@ -492,6 +524,8 @@ TEST(ToolRegistry, CreateMarkersMakesAWallVisibleAsSuch) {
   const json j = json::parse(r.content);
   EXPECT_EQ(j["markers_created"], 4182);
   EXPECT_EQ(j["by_kind"]["events"], 4182);
+  // Zero-duration marks cover nothing; an absent field beats a meaningless 0.
+  EXPECT_FALSE(j.contains("covered_s"));
 }
 
 // entry_count() reports 1 for any set, because MarkerService pushes the whole
