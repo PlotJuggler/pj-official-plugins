@@ -717,10 +717,13 @@ TEST(MosaicoTransport, UndecodableColumnIsDroppedAndReportedAsAWarning) {
   auto run_ends = arrayOf<arrow::Int32Builder, std::int32_t>({1, 2, 3});
   auto ree = *arrow::RunEndEncodedArray::Make(3, run_ends, ids);
   auto stamps = arrayOf<arrow::Int64Builder, std::int64_t>({1000, 1001, 1002});
+  // The dropped column sits BEFORE the timestamp on purpose: the axis lands at
+  // index 1 raw and index 0 framed, so reading the stamp from the raw batch
+  // would yield nullopt and silently synthesize instead.
   auto schema = arrow::schema(
-      {arrow::field("timestamp_ns", arrow::int64()), arrow::field("counter", ree->type()),
+      {arrow::field("counter", ree->type()), arrow::field("timestamp_ns", arrow::int64()),
        arrow::field("value", arrow::int64())});
-  auto batch = arrow::RecordBatch::Make(schema, 3, {stamps, ree, ids});
+  auto batch = arrow::RecordBatch::Make(schema, 3, {ree, stamps, ids});
 
   FakeIngestHost host;
   mosaico::FetchWorker worker;
@@ -773,29 +776,54 @@ TEST(MosaicoTransport, TopicFailsWhenTheTimestampColumnItselfIsUndecodable) {
   EXPECT_NE(results[0].error.find("timestamp_ns"), std::string::npos) << results[0].error;
 }
 
-// A timestamp-less topic buffers its whole payload to fit the cadence. Once the
-// host has said it has no parser ingest, that buffer can never be pushed, so the
-// topic gives up on the first batch instead of holding it all to fail at the end.
-TEST(MosaicoTransport, UnstampedTopicStopsBufferingOnceIngestIsKnownUnavailable) {
+// The raw pick can be dropped while a DIFFERENT column is still a perfectly
+// good axis: `hdr/stamp` goes with the struct its REE sibling condemns, and the
+// top-level `good` takes over. Judging by "did the raw pick survive" would fail
+// this topic for nothing.
+TEST(MosaicoTransport, DroppedRawAxisIsFineWhenAnotherColumnStillProvidesOne) {
+  auto ids = arrayOf<arrow::Int64Builder, std::int64_t>({1, 2, 3});
+  auto run_ends = arrayOf<arrow::Int32Builder, std::int32_t>({1, 2, 3});
+  auto ree = *arrow::RunEndEncodedArray::Make(3, run_ends, ids);
+  arrow::TimestampBuilder stamp_builder(arrow::timestamp(arrow::TimeUnit::NANO), arrow::default_memory_pool());
+  arrow::TimestampBuilder good_builder(arrow::timestamp(arrow::TimeUnit::NANO), arrow::default_memory_pool());
+  for (int row = 0; row < 3; ++row) {
+    ASSERT_TRUE(stamp_builder.Append(10 + row).ok());
+    ASSERT_TRUE(good_builder.Append(5000 + row).ok());
+  }
+  std::shared_ptr<arrow::Array> stamps;
+  std::shared_ptr<arrow::Array> good;
+  ASSERT_TRUE(stamp_builder.Finish(&stamps).ok());
+  ASSERT_TRUE(good_builder.Finish(&good).ok());
+  // hdr is the raw schema's first TIMESTAMP leaf, but its REE sibling drops the
+  // whole struct column.
+  auto hdr = *arrow::StructArray::Make(arrow::ArrayVector{stamps, ree}, std::vector<std::string>{"stamp", "weird"});
+  auto schema = arrow::schema(
+      {arrow::field("hdr", hdr->type()), arrow::field("good", good->type()), arrow::field("x", arrow::float64())});
+  auto batch = arrow::RecordBatch::Make(
+      schema, 3,
+      {std::static_pointer_cast<arrow::Array>(hdr), good, arrayOf<arrow::DoubleBuilder, double>({0.0, 1.0, 2.0})});
+
   FakeIngestHost host;
-  host.failParserIngestCreation();
   mosaico::FetchWorker worker;
   worker.setHostProvider([&host] { return host.writeView(); });
   worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
   std::vector<mosaico::PullResultEvent> results;
   worker.pullFinished = [&results](mosaico::PullResultEvent result) { results.push_back(std::move(result)); };
-  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
-    on_batch("imu/raw", unstampedBatch());
-    on_batch("imu/raw", unstampedBatch());
-    on_done("imu/raw", mosaico::PullResult{});
-  });
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(
+      worker, [&batch](const auto& on_batch, const auto& on_done) {
+        on_batch("odom", batch);
+        on_done("odom", mosaico::PullResult{});
+      });
 
-  worker.pullTopicsAsync("seq", {"imu/raw"}, 0, 1);
+  worker.pullTopicsAsync("seq", {"odom"}, 0, 1);
 
-  EXPECT_TRUE(host.messages.empty());
   ASSERT_EQ(results.size(), 1U);
-  EXPECT_FALSE(results[0].ok);
-  EXPECT_NE(results[0].error.find("no parser installed for arrow-ipc"), std::string::npos) << results[0].error;
+  EXPECT_TRUE(results[0].ok) << results[0].error;
+  EXPECT_NE(results[0].warning.find("hdr/weird"), std::string::npos) << results[0].warning;
+  ASSERT_EQ(host.bindings.size(), 1U);
+  EXPECT_EQ(nlohmann::json::parse(host.bindings[0].config).at("timestamp_column"), "good");
+  ASSERT_EQ(host.messages.size(), 1U);
+  EXPECT_EQ(host.messages[0].host_ts_ns, 5000);
 }
 
 // A synthetic axis anchored near INT64_MAX would silently wrap into the distant

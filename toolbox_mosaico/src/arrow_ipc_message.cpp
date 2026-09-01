@@ -7,7 +7,8 @@
 #include <arrow/extension_type.h>
 #include <arrow/io/memory.h>
 #include <arrow/ipc/writer.h>
-#include <arrow/util/string.h>
+#include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include <algorithm>
 #include <array>
@@ -136,16 +137,16 @@ arrow::Result<std::shared_ptr<arrow::DataType>> ipcSafeType(
         }
       }
       return type;
-      case arrow::Type::RUN_END_ENCODED:
-        // ponytail: arrow::compute::RunEndDecode would materialize this, but the
-        // pinned Arrow is built with compute=False, so its vector kernels
-        // (run_end_decode, take) are not registered and only the cast kernels
-        // are. Dropping the column keeps the siblings; flip `arrow/*:compute` in
-        // the root conanfile and rewrite this arm if a producer ever emits one.
-        return arrow::Status::NotImplemented(
-            "field '", path, "': type ", type->ToString(),
-            " needs the run_end_decode kernel, absent from this Arrow build");
     }
+    case arrow::Type::RUN_END_ENCODED:
+      // ponytail: arrow::compute::RunEndDecode would materialize this, but the
+      // pinned Arrow is built with compute=False, so its vector kernels
+      // (run_end_decode, take) are not registered and only the cast kernels are.
+      // Dropping the column keeps the siblings; flip `arrow/*:compute` in the
+      // root conanfile and rewrite this arm if a producer ever emits one.
+      return arrow::Status::NotImplemented(
+          "field '", path, "': type ", type->ToString(),
+          " needs the run_end_decode kernel, absent from this Arrow build");
     default:
       if (isIpcDecodableLeaf(type->id())) {
         return type;
@@ -175,7 +176,7 @@ arrow::Result<IpcSafeSchema> ipcSafeSchema(const std::shared_ptr<arrow::Schema>&
   }
   if (fields.empty()) {
     return arrow::Status::Invalid(
-        "no column parser_arrow can decode: ", arrow::internal::JoinStrings(result.dropped, "; "));
+        fmt::format("no column parser_arrow can decode: {}", fmt::join(result.dropped, "; ")));
   }
   result.schema = changed ? std::make_shared<arrow::Schema>(fields, schema->metadata()) : schema;
   return result;

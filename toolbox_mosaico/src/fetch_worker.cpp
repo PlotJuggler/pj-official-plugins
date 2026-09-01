@@ -22,7 +22,6 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -130,11 +129,6 @@ std::uint64_t FetchWorker::accumulatedProgressBytesLocked() const {
 bool FetchWorker::isStopRequestedByHost() {
   std::lock_guard<std::mutex> plock(progress_mu_);
   return ingest_progress_.has_value() && ingest_progress_->isStopRequested();
-}
-
-std::string FetchWorker::knownParserIngestError() {
-  std::lock_guard<std::mutex> lock(progress_mu_);
-  return ingest_progress_.has_value() ? std::string{} : parser_ingest_error_;
 }
 
 void FetchWorker::requestCancelFromHost() {
@@ -569,10 +563,9 @@ void FetchWorker::pullTopicsAsync(
     topic.synth_anchor_ns = info_min_ts_ns != 0 ? info_min_ts_ns : nowNs();
     if (topic.object_route) {
       // Never IPC-framed: the object helpers read the Arrow table directly, so
-      // the RAW schema is the one their flattenStructColumns will name.
-      auto leaf = detectTimestampLeaf(*topic.schema);
-      topic.ts_field = std::move(leaf.path);
-      topic.ts_route = std::move(leaf.route);
+      // the RAW schema is the one their flattenStructColumns will name — and
+      // they look the column up BY NAME, so the route stays unused here.
+      topic.ts_field = detectTimestampLeaf(*topic.schema).path;
       return;
     }
     auto safe_schema = ipcSafeSchema(topic.schema);
@@ -591,14 +584,16 @@ void FetchWorker::pullTopicsAsync(
       topic.warning = fmt::format(
           "topic '{}': dropped {} column(s) parser_arrow cannot decode: {}", topic_name, topic.ipc_safe.dropped.size(),
           fmt::join(topic.ipc_safe.dropped, "; "));
-      // Losing an ordinary column costs its curves; losing the axis would put
-      // every surviving curve on a synthetic time base that silently disagrees
-      // with the rest of the sequence, so that one is fatal.
-      const auto raw_leaf = detectTimestampLeaf(*topic.schema);
-      const auto& kept = topic.ipc_safe.kept_columns;
-      if (!raw_leaf.path.empty() && std::find(kept.begin(), kept.end(), raw_leaf.route.front()) == kept.end()) {
-        topic.error = fmt::format("timestamp column '{}' is undecodable ({})", raw_leaf.path, topic.warning);
-        return;
+      // Losing an ordinary column costs its curves; being left with NO axis at
+      // all would put every surviving curve on a synthetic time base that
+      // silently disagrees with the rest of the sequence, so that one is fatal.
+      // Only a drop can cause it: the rewrite never renames, and it can only
+      // reveal more axis candidates (a dictionary-wrapped stamp), never fewer.
+      if (topic.ts_field.empty()) {
+        if (const std::string raw_axis = detectTimestampLeaf(*topic.schema).path; !raw_axis.empty()) {
+          topic.error = fmt::format("timestamp column '{}' is undecodable ({})", raw_axis, topic.warning);
+          return;
+        }
       }
     }
     auto schema_bytes = arrow::ipc::SerializeSchema(*topic.ipc_safe.schema);
@@ -882,7 +877,7 @@ void FetchWorker::pullTopicsAsync(
     finish(true, {}, std::move(warning));
   };
 
-  auto on_batch = [this, state, route, push_scalar_batch](
+  auto on_batch = [state, route, push_scalar_batch](
                       const std::string& topic_name, const std::shared_ptr<arrow::RecordBatch>& batch) {
     auto it = state->find(topic_name);
     if (it == state->end() || !batch) {
@@ -905,12 +900,6 @@ void FetchWorker::pullTopicsAsync(
     if (topic.object_route) {
       topic.batches.push_back(batch);
     } else if (topic.ts_field.empty()) {
-      // Buffering a whole topic only to fail at on_done is pure waste once the
-      // host has already told us it has no parser ingest to push into.
-      if (auto reason = knownParserIngestError(); !reason.empty()) {
-        topic.error = std::move(reason);
-        return;
-      }
       topic.batches.push_back(batch);
     } else {
       push_scalar_batch(topic, topic_name, *batch);

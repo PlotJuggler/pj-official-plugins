@@ -31,8 +31,8 @@ struct IpcSafeSchema {
   std::shared_ptr<arrow::Schema> schema;
   /// Input column index per output column — the projection castToSchema applies.
   std::vector<int> kept_columns;
-  /// One "<field path>: <reason>" per column that had to be dropped. Empty on
-  /// the common path; a topic-level warning otherwise.
+  /// One `field '<path>': type <T> <reason>` message per column that had to be
+  /// dropped. Empty on the common path; a topic-level warning otherwise.
   std::vector<std::string> dropped;
 };
 

@@ -155,11 +155,6 @@ class FetchWorker {
   /// Read the ingest context's thread-safe host Stop flag.
   [[nodiscard]] bool isStopRequestedByHost();
 
-  /// The reason the host gave for having no parser-ingest context, or empty
-  /// while one exists or none has been attempted yet. Lets a topic that would
-  /// otherwise buffer its whole payload give up as soon as the answer is known.
-  [[nodiscard]] std::string knownParserIngestError();
-
   /// Route a host Stop through cancellation and the once-only UI callback.
   void requestCancelFromHost();
 

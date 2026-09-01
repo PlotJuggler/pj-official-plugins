@@ -181,6 +181,7 @@ if(BUILD_TESTING)
   target_link_libraries(toolbox_mosaico_arrow_ipc_message_test PRIVATE
     ${_test_arrow_target}
     nlohmann_json::nlohmann_json
+    fmt::fmt
     GTest::gtest_main
   )
   target_include_directories(toolbox_mosaico_arrow_ipc_message_test PRIVATE
