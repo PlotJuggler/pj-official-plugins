@@ -18,7 +18,7 @@
 //      carries the sequence name).
 //
 // These tests exercise the lower-level contract directly (no Flight/gRPC):
-//   * pumpStreamToHost takes a DataSourceHandle and uses the BARE topic name,
+//   * object pushes take the shared DataSourceHandle and use the BARE topic name,
 //     never calling create_data_source itself.
 //   * A datasetForFetch-shaped helper creates the source exactly once even
 //     under concurrent callbacks, and both topics attach to that one source.
@@ -173,27 +173,6 @@ const PJ_toolbox_host_vtable_t FakeHost::kVtable = [] {
   return v;
 }();
 
-// Build a trivial 2-column scalar table (timestamp_ns + value) and export it
-// as an ArrowArrayStream the way the worker does before calling pumpStreamToHost.
-ArrowArrayStream makeScalarStream() {
-  arrow::Int64Builder ts_builder;
-  arrow::DoubleBuilder val_builder;
-  for (int i = 0; i < 3; ++i) {
-    EXPECT_TRUE(ts_builder.Append(1000 + i).ok());
-    EXPECT_TRUE(val_builder.Append(static_cast<double>(i)).ok());
-  }
-  std::shared_ptr<arrow::Array> ts_array;
-  std::shared_ptr<arrow::Array> val_array;
-  EXPECT_TRUE(ts_builder.Finish(&ts_array).ok());
-  EXPECT_TRUE(val_builder.Finish(&val_array).ok());
-  auto schema = arrow::schema({arrow::field("timestamp_ns", arrow::int64()), arrow::field("value", arrow::float64())});
-  auto table = arrow::Table::Make(schema, {ts_array, val_array});
-  auto reader = std::make_shared<arrow::TableBatchReader>(*table);
-  ArrowArrayStream stream{};
-  EXPECT_TRUE(arrow::ExportRecordBatchReader(reader, &stream).ok());
-  return stream;
-}
-
 // datasetForFetch-shaped helper, mirroring the worker's caching logic so the
 // call-once contract can be unit-tested without the Flight-laden FetchWorker.
 class FetchSession {
@@ -222,65 +201,6 @@ class FetchSession {
 
 }  // namespace
 
-// pumpStreamToHost must take the caller-provided DataSourceHandle, register the
-// topic under the BARE name, and never call create_data_source itself.
-TEST(FetchGrouping, PumpStreamUsesProvidedSourceAndBareTopic) {
-  FakeHost fake;
-  auto host = fake.view();
-
-  // Caller creates the single source up front (as datasetForFetch would).
-  auto ds = host.createDataSource("seq");
-  ASSERT_TRUE(ds) << ds.error();
-  ASSERT_EQ(fake.data_sources.size(), 1u);
-
-  ArrowArrayStream stream = makeScalarStream();
-  auto status = mosaico::pumpStreamToHost(host, *ds, "gps/fix", &stream, "timestamp_ns");
-  ASSERT_TRUE(status) << status.error();
-
-  // No additional data source was created inside the helper.
-  EXPECT_EQ(fake.data_sources.size(), 1u);
-  // The topic was created under the bare name on the provided source.
-  ASSERT_EQ(fake.topics.size(), 1u);
-  EXPECT_EQ(fake.topics[0].name, "gps/fix");
-  EXPECT_EQ(fake.topics[0].source_id, ds->id);
-  // And the stream was appended against that topic with the chosen ts column.
-  ASSERT_EQ(fake.appended_streams.size(), 1u);
-  EXPECT_EQ(fake.appended_streams[0].first, fake.topics[0].id);
-  EXPECT_EQ(fake.appended_streams[0].second, "timestamp_ns");
-}
-
-// The full grouping contract: two scalar topics from ONE sequence must land in
-// ONE dataset under their BARE names.
-TEST(FetchGrouping, TwoTopicsShareOneDatasetUnderBareNames) {
-  FakeHost fake;
-  auto host = fake.view();
-  FetchSession session;
-
-  const std::string sequence = "seq";
-  for (const char* topic : {"gps/fix", "odom/pose"}) {
-    auto ds = session.datasetForFetch(host, sequence);
-    ASSERT_TRUE(ds) << ds.error();
-    ArrowArrayStream stream = makeScalarStream();
-    auto status = mosaico::pumpStreamToHost(host, *ds, topic, &stream, "timestamp_ns");
-    ASSERT_TRUE(status) << status.error();
-  }
-
-  // create_data_source called EXACTLY ONCE, with the sequence name.
-  ASSERT_EQ(fake.data_sources.size(), 1u);
-  EXPECT_EQ(fake.data_sources[0].name, "seq");
-
-  // ensure_topic called twice, with the BARE topic names (not "<seq>/...").
-  ASSERT_EQ(fake.topics.size(), 2u);
-  EXPECT_EQ(fake.topics[0].name, "gps/fix");
-  EXPECT_EQ(fake.topics[1].name, "odom/pose");
-
-  // Both topics attach to the SAME data source handle.
-  const std::uint32_t source_id = fake.data_sources[0].id;
-  EXPECT_EQ(fake.topics[0].source_id, source_id);
-  EXPECT_EQ(fake.topics[1].source_id, source_id);
-}
-
-// datasetForFetch must create the source exactly once even when called
 // concurrently — the parallel pullTopics callbacks race here.
 TEST(FetchGrouping, DatasetForFetchCreatesOnceUnderConcurrency) {
   FakeHost fake;

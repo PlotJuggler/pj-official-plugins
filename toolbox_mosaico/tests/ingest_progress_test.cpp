@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT
 
+#include <arrow/api.h>
+#include <arrow/io/memory.h>
+#include <arrow/ipc/reader.h>
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -9,8 +12,11 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <nlohmann/json.hpp>
+#include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "fetch_worker.hpp"
 
@@ -24,6 +30,15 @@ class FetchWorkerTestAccess {
 
   static void setCancelActivePullsOverride(FetchWorker& worker, std::function<void()> cancel_active_pulls) {
     worker.cancel_active_pulls_override_ = std::move(cancel_active_pulls);
+  }
+
+  static void feedBatch(
+      FetchWorker& worker, const std::string& topic, const std::shared_ptr<arrow::RecordBatch>& batch) {
+    worker.on_batch_for_test_(topic, batch);
+  }
+
+  static void finishTopic(FetchWorker& worker, const std::string& topic) {
+    worker.on_done_for_test_(topic, PullResult{});
   }
 };
 
@@ -55,6 +70,8 @@ class FakeIngestHost {
     ingest_vtable_.progress_update = &FakeIngestHost::progressUpdate;
     ingest_vtable_.progress_finish = &FakeIngestHost::progressFinish;
     ingest_vtable_.is_stop_requested = &FakeIngestHost::isStopRequested;
+    ingest_vtable_.ensure_parser_binding = &FakeIngestHost::ensureParserBinding;
+    ingest_vtable_.push_message = &FakeIngestHost::pushMessage;
 
     auto& runtime_base = runtimeBase();
     runtime_base.protocol_version = PJ_TOOLBOX_PLUGIN_PROTOCOL_VERSION;
@@ -116,6 +133,22 @@ class FakeIngestHost {
     return live_.load();
   }
 
+  struct Binding {
+    std::string topic;
+    std::string encoding;
+    std::string type_name;
+    std::vector<std::uint8_t> schema;
+    std::string config;
+  };
+  struct Message {
+    std::uint32_t binding = 0;
+    std::int64_t host_ts_ns = 0;
+    std::vector<std::uint8_t> payload;
+  };
+  std::vector<Binding> bindings;  // guarded by mu
+  std::vector<Message> messages;  // guarded by mu
+  std::mutex mu;
+
  private:
   PJ_toolbox_runtime_host_vtable_t& runtimeBase() {
 #if defined(PJ_TOOLBOX_HAS_DISCARD_PARSER_INGEST)
@@ -150,6 +183,44 @@ class FakeIngestHost {
 
   static bool isStopRequested(void* ctx) PJ_NOEXCEPT {
     return static_cast<FakeIngestHost*>(ctx)->stop_requested_.load();
+  }
+
+  static std::string str(PJ_string_view_t view) {
+    return std::string(view.data, view.size);
+  }
+
+  static bool ensureParserBinding(
+      void* ctx, const PJ_parser_binding_request_t* request, PJ_parser_binding_handle_t* out_handle,
+      PJ_error_t*) PJ_NOEXCEPT {
+    auto* self = static_cast<FakeIngestHost*>(ctx);
+    std::lock_guard<std::mutex> lock(self->mu);
+    self->bindings.push_back(
+        Binding{
+            str(request->topic_name), str(request->parser_encoding), str(request->type_name),
+            std::vector<std::uint8_t>(request->schema.data, request->schema.data + request->schema.size),
+            str(request->parser_config_json)});
+    out_handle->id = static_cast<std::uint32_t>(self->bindings.size());
+    return true;
+  }
+
+  static bool pushMessage(
+      void* ctx, PJ_parser_binding_handle_t handle, std::int64_t host_timestamp_ns, PJ_message_data_fetcher_t fetch,
+      PJ_error_t* error) PJ_NOEXCEPT {
+    auto* self = static_cast<FakeIngestHost*>(ctx);
+    PJ_payload_t payload{};
+    const bool fetched = fetch.fetchMessageData(fetch.ctx, &payload, error);
+    if (fetched) {
+      std::lock_guard<std::mutex> lock(self->mu);
+      self->messages.push_back(
+          Message{handle.id, host_timestamp_ns, std::vector<std::uint8_t>(payload.data, payload.data + payload.size)});
+      if (payload.anchor.release != nullptr) {
+        payload.anchor.release(payload.anchor.ctx);
+      }
+    }
+    if (fetch.release != nullptr) {
+      fetch.release(fetch.ctx);
+    }
+    return fetched;
   }
 
   static bool createParserIngest(void* ctx, std::uint32_t, PJ_data_source_runtime_host_t* out_host, PJ_error_t*)
@@ -357,6 +428,93 @@ TEST(MosaicoIngestProgress, OlderRuntimeDefersDatasetUntilFirstSuccess) {
 
   EXPECT_EQ(host.createdDataSources(), 0U);
   EXPECT_EQ(host.liveDataSources(), 0U);
+}
+
+std::shared_ptr<arrow::RecordBatch> scalarBatch(std::int64_t first_ts) {
+  arrow::Int64Builder ts_builder;
+  arrow::DoubleBuilder value_builder;
+  for (int row = 0; row < 3; ++row) {
+    EXPECT_TRUE(ts_builder.Append(first_ts + row).ok());
+    EXPECT_TRUE(value_builder.Append(static_cast<double>(row)).ok());
+  }
+  std::shared_ptr<arrow::Array> ts_array;
+  std::shared_ptr<arrow::Array> value_array;
+  EXPECT_TRUE(ts_builder.Finish(&ts_array).ok());
+  EXPECT_TRUE(value_builder.Finish(&value_array).ok());
+  auto schema = arrow::schema({arrow::field("timestamp_ns", arrow::int64()), arrow::field("value", arrow::float64())});
+  return arrow::RecordBatch::Make(schema, 3, {ts_array, value_array});
+}
+
+// A scalar topic binds parser_arrow once and hands every Flight batch to the
+// host as one complete arrow-ipc stream, stamped with its first row's time.
+TEST(MosaicoTransport, ScalarTopicBindsOnceAndPushesOneIpcStreamPerBatch) {
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+
+  std::vector<mosaico::PullResultEvent> results;
+  worker.pullFinished = [&results](mosaico::PullResultEvent result) { results.push_back(std::move(result)); };
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&] {
+    mosaico::testing::FetchWorkerTestAccess::feedBatch(worker, "gps/fix", scalarBatch(1000));
+    mosaico::testing::FetchWorkerTestAccess::feedBatch(worker, "gps/fix", scalarBatch(2000));
+    mosaico::testing::FetchWorkerTestAccess::finishTopic(worker, "gps/fix");
+  });
+
+  worker.pullTopicsAsync("seq", {"gps/fix"}, 0, 1);
+
+  ASSERT_EQ(host.bindings.size(), 1U);
+  EXPECT_EQ(host.bindings[0].topic, "gps/fix");
+  EXPECT_EQ(host.bindings[0].encoding, "arrow-ipc");
+  EXPECT_EQ(nlohmann::json::parse(host.bindings[0].config).at("timestamp_column"), "timestamp_ns");
+  EXPECT_FALSE(host.bindings[0].schema.empty());
+
+  ASSERT_EQ(host.messages.size(), 2U);
+  EXPECT_EQ(host.messages[0].host_ts_ns, 1000);
+  EXPECT_EQ(host.messages[1].host_ts_ns, 2000);
+  for (const auto& message : host.messages) {
+    EXPECT_EQ(message.binding, 1U);
+    auto buffer =
+        std::make_shared<arrow::Buffer>(message.payload.data(), static_cast<std::int64_t>(message.payload.size()));
+    auto reader = arrow::ipc::RecordBatchStreamReader::Open(std::make_shared<arrow::io::BufferReader>(buffer));
+    ASSERT_TRUE(reader.ok()) << reader.status().ToString();
+    auto batch = (*reader)->Next();
+    ASSERT_TRUE(batch.ok());
+    ASSERT_NE(*batch, nullptr);
+    EXPECT_EQ((*batch)->num_rows(), 3);
+    EXPECT_EQ(*(*reader)->Next(), nullptr);
+  }
+
+  ASSERT_EQ(results.size(), 1U);
+  EXPECT_TRUE(results[0].ok) << results[0].error;
+  // Data reached the host: the provisional dataset is kept, not discarded.
+  EXPECT_EQ(host.discardedParserIngests(), 0U);
+  EXPECT_EQ(host.releasedParserIngests(), 1U);
+}
+
+// Without a parser-ingest context (older host / parser_arrow absent) a scalar
+// topic fails with a message instead of silently writing nothing.
+TEST(MosaicoTransport, ScalarTopicFailsWhenTheHostOffersNoParserIngest) {
+  FakeIngestHost host;
+  host.failParserIngestCreation();
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+
+  std::vector<mosaico::PullResultEvent> results;
+  worker.pullFinished = [&results](mosaico::PullResultEvent result) { results.push_back(std::move(result)); };
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&] {
+    mosaico::testing::FetchWorkerTestAccess::feedBatch(worker, "gps/fix", scalarBatch(1000));
+    mosaico::testing::FetchWorkerTestAccess::finishTopic(worker, "gps/fix");
+  });
+
+  worker.pullTopicsAsync("seq", {"gps/fix"}, 0, 1);
+
+  EXPECT_TRUE(host.messages.empty());
+  ASSERT_EQ(results.size(), 1U);
+  EXPECT_FALSE(results[0].ok);
+  EXPECT_NE(results[0].error.find("parser ingest"), std::string::npos) << results[0].error;
+  EXPECT_EQ(host.discardedParserIngests(), 1U);
 }
 
 }  // namespace

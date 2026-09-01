@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <arrow/record_batch.h>
+#include <arrow/result.h>
+
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -176,6 +179,11 @@ class FetchWorker {
 
   std::unique_ptr<MosaicoClient> client_;
   std::function<void()> pull_topics_override_;
+  // Test seam: while pull_topics_override_ runs, the pull's per-batch and
+  // per-topic-done callbacks (what the Flight client would invoke) so a test can
+  // feed record batches through the ingest path without a server.
+  std::function<void(const std::string&, const std::shared_ptr<arrow::RecordBatch>&)> on_batch_for_test_;
+  std::function<void(const std::string&, arrow::Result<PullResult>)> on_done_for_test_;
   std::function<void()> cancel_active_pulls_override_;
   std::function<PJ::sdk::ToolboxHostView()> host_provider_;
   std::function<PJ::ToolboxRuntimeHostView()> runtime_host_provider_;

@@ -304,7 +304,7 @@ namespace {
       }
       // Read each child through a type-flexible helper rather than a single
       // fixed cast: the `fields` column is a list<struct> that bypasses both
-      // flattenStructColumns and normalizeViewColumns, so the server is free to
+      // flattenStructColumns, so the server is free to
       // emit `name` as Utf8/LargeUtf8/Utf8View and offset/datatype/count at any
       // integer width. A fixed cast would null out and silently yield empty
       // names / offset 0 (every channel aliasing byte 0) — the exact view-type
@@ -705,73 +705,6 @@ struct PackAttr {
 
 }  // namespace
 
-std::string detectTimestampColumn(const ArrowSchema* schema) {
-  if (schema == nullptr || schema->children == nullptr) {
-    return {};
-  }
-  // First pass: Arrow TIMESTAMP type. The format string for timestamps
-  // starts with "ts" per Arrow C ABI spec (e.g. "tsn:UTC").
-  for (int64_t i = 0; i < schema->n_children; ++i) {
-    const auto* child = schema->children[i];
-    if (child != nullptr && child->format != nullptr) {
-      std::string_view fmt(child->format);
-      if (fmt.size() >= 2 && fmt[0] == 't' && fmt[1] == 's') {
-        return child->name != nullptr ? std::string(child->name) : std::string();
-      }
-    }
-  }
-  // Second pass: name heuristics. Order matters — most-specific first.
-  static const std::array<std::string_view, 5> kNames = {
-      "timestamp_ns", "recording_timestamp_ns", "timestamp", "time", "ts"};
-  for (std::string_view preferred : kNames) {
-    for (int64_t i = 0; i < schema->n_children; ++i) {
-      const auto* child = schema->children[i];
-      if (child != nullptr && child->name != nullptr && std::string_view(child->name) == preferred) {
-        return std::string(child->name);
-      }
-    }
-  }
-  return {};
-}
-
-arrow::Result<std::shared_ptr<arrow::Table>> normalizeViewColumns(std::shared_ptr<arrow::Table> table) {
-  if (!table) {
-    return arrow::Status::Invalid("normalizeViewColumns: null table");
-  }
-  // Cast Arrow "view" string/binary columns (Utf8View / BinaryView, which the
-  // Mosaico server / Arrow >= 15 emit for e.g. frame_id) to canonical Utf8 /
-  // Binary. pj_datastore's nanoarrow import maps only STRING / LARGE_STRING; a
-  // view-typed column anywhere in the record batch corrupts the import for the
-  // WHOLE batch, so every column (even plain doubles) lands as null. Applied to
-  // the scalar (appendArrowStream) pipeline only — the image path reads view
-  // types directly.
-  std::vector<std::shared_ptr<arrow::ChunkedArray>> cols = table->columns();
-  std::vector<std::shared_ptr<arrow::Field>> fields;
-  fields.reserve(static_cast<std::size_t>(table->num_columns()));
-  bool changed = false;
-  for (int i = 0; i < table->num_columns(); ++i) {
-    const auto& field = table->schema()->field(i);
-    std::shared_ptr<arrow::DataType> target;
-    if (field->type()->id() == arrow::Type::STRING_VIEW) {
-      target = arrow::utf8();
-    } else if (field->type()->id() == arrow::Type::BINARY_VIEW) {
-      target = arrow::binary();
-    }
-    if (target != nullptr) {
-      ARROW_ASSIGN_OR_RAISE(auto casted, arrow::compute::Cast(arrow::Datum(cols[static_cast<std::size_t>(i)]), target));
-      cols[static_cast<std::size_t>(i)] = casted.chunked_array();
-      fields.push_back(field->WithType(target));
-      changed = true;
-    } else {
-      fields.push_back(field);
-    }
-  }
-  if (!changed) {
-    return table;
-  }
-  return arrow::Table::Make(std::make_shared<arrow::Schema>(fields), cols, table->num_rows());
-}
-
 arrow::Result<std::shared_ptr<arrow::Table>> flattenStructColumns(std::shared_ptr<arrow::Table> table) {
   if (!table) {
     return arrow::Status::Invalid("flattenStructColumns: null table");
@@ -832,26 +765,6 @@ arrow::Result<std::shared_ptr<arrow::Table>> flattenStructColumns(std::shared_pt
   // CombineChunks normalizes each column into a single contiguous chunk
   // with offset = 0, which exports cleanly.
   return current->CombineChunks();
-}
-
-PJ::Status pumpStreamToHost(
-    const PJ::sdk::ToolboxHostView& host, PJ::sdk::DataSourceHandle source, std::string_view topic_name,
-    ArrowArrayStream* stream, std::string_view timestamp_col) {
-  if (!host.valid()) {
-    return PJ::unexpected("arrow_ingest: toolbox host not bound");
-  }
-  if (stream == nullptr) {
-    return PJ::unexpected("arrow_ingest: null stream");
-  }
-  // The data source already carries the sequence name (it is created once per
-  // Download in FetchWorker::datasetForFetch and shared by every topic), so the
-  // topic is registered under its BARE name. The resulting catalog tree is
-  // <sequence> ▸ <topic> ▸ fields.
-  auto topic = host.ensureTopic(source, topic_name);
-  if (!topic) {
-    return PJ::unexpected(std::move(topic).error());
-  }
-  return host.appendArrowStream(*topic, stream, timestamp_col);
 }
 
 PJ::Expected<ImagePushOutcome> pushImageRowsToHost(

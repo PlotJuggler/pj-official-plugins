@@ -69,6 +69,7 @@ set(MOSAICO_SOURCES
   src/mosaico_dialog.cpp
   src/fetch_worker.cpp
   src/arrow_ingest.cpp
+  src/arrow_ipc_message.cpp
   src/settings_store.cpp
   src/server_history.cpp
   src/core/time_format.cpp
@@ -161,7 +162,7 @@ if(BUILD_TESTING)
       -Wno-conversion -Wno-unused-parameter -Wno-unused-function)
   endif()
 
-  # detectTimestampColumn over canned ArrowSchema fixtures.
+  # arrow-ipc framing (timestamp detection, host timestamp, IPC round trip).
   # Re-resolves the Arrow target name (Conan: arrow::arrow, upstream:
   # Arrow::arrow_static) since the cached _mosaico_arrow_target variable
   # may not be visible across the BUILD_TESTING gate.
@@ -173,19 +174,19 @@ if(BUILD_TESTING)
     endif()
   endforeach()
 
-  add_executable(toolbox_mosaico_detect_timestamp_test
-    tests/detect_timestamp_test.cpp
-    src/arrow_ingest.cpp
+  add_executable(toolbox_mosaico_arrow_ipc_message_test
+    tests/arrow_ipc_message_test.cpp
+    src/arrow_ipc_message.cpp
   )
-  target_link_libraries(toolbox_mosaico_detect_timestamp_test PRIVATE
-    plotjuggler_sdk::plugin_sdk
+  target_link_libraries(toolbox_mosaico_arrow_ipc_message_test PRIVATE
     ${_test_arrow_target}
+    nlohmann_json::nlohmann_json
     GTest::gtest_main
   )
-  target_include_directories(toolbox_mosaico_detect_timestamp_test PRIVATE
+  target_include_directories(toolbox_mosaico_arrow_ipc_message_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
-  add_test(NAME ToolboxMosaicoDetectTimestampTest COMMAND toolbox_mosaico_detect_timestamp_test)
+  add_test(NAME ToolboxMosaicoArrowIpcMessageTest COMMAND toolbox_mosaico_arrow_ipc_message_test)
 
   # StoppableThread is pure-std with no Arrow/Flight surface, so its test links
   # nothing but gtest.
@@ -202,11 +203,13 @@ if(BUILD_TESTING)
     tests/ingest_progress_test.cpp
     src/fetch_worker.cpp
     src/arrow_ingest.cpp
+    src/arrow_ipc_message.cpp
   )
   target_link_libraries(toolbox_mosaico_ingest_progress_test PRIVATE
     plotjuggler_sdk::plugin_sdk
     mosaico_sdk
     fmt::fmt
+    nlohmann_json::nlohmann_json
     ${_test_arrow_target}
     GTest::gtest_main
   )

@@ -2,13 +2,10 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-#include <arrow/c/abi.h>
-
 #include <cstdint>
 #include <memory>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <string>
-#include <string_view>
 
 // Forward-declared so the header doesn't pull in <arrow/api.h>.
 namespace arrow {
@@ -18,13 +15,6 @@ class Result;
 }  // namespace arrow
 
 namespace mosaico {
-
-/// Auto-detect the timestamp column name in an Arrow Schema:
-///   1. Any field whose type is TIMESTAMP.
-///   2. Otherwise, the first name in {timestamp_ns, recording_timestamp_ns,
-///      timestamp, time, ts}.
-/// Returns the detected name or "" if none.
-[[nodiscard]] std::string detectTimestampColumn(const ArrowSchema* schema);
 
 /// Walk every column of @p table and flatten any STRUCT-typed columns into
 /// individual primitive columns named `<parent>/<child>`. Mirrors PJ3's
@@ -36,30 +26,6 @@ namespace mosaico {
 /// Non-struct columns pass through unchanged. List/map/union columns also
 /// pass through — PJ3 only handles primitive + struct; matching that.
 [[nodiscard]] arrow::Result<std::shared_ptr<arrow::Table>> flattenStructColumns(std::shared_ptr<arrow::Table> table);
-
-/// Cast Arrow "view" string/binary columns (Utf8View / BinaryView) to canonical
-/// Utf8 / Binary. pj_datastore's nanoarrow import only maps STRING / LARGE_STRING
-/// and a view-typed column corrupts the whole record-batch import (every column
-/// reads null), so the scalar appendArrowStream pipeline normalizes them first.
-/// Columns without a view type pass through unchanged.
-[[nodiscard]] arrow::Result<std::shared_ptr<arrow::Table>> normalizeViewColumns(std::shared_ptr<arrow::Table> table);
-
-/// Pump an ArrowArrayStream into the toolbox host as a single topic under a
-/// previously created data source.
-///
-/// `source` is the per-Download DataSourceHandle (one per sequence, shared by
-/// every topic — see FetchWorker::datasetForFetch). `topic_name` is the BARE
-/// topic name; it is NOT prefixed with the sequence, because the data source
-/// already carries the sequence name. `timestamp_col` is the field to use as
-/// the X axis; the caller should run detectTimestampColumn against the
-/// stream's schema first.
-///
-/// Takes ownership of `stream` on success — the host's appendArrowStream
-/// implementation calls stream->release. On failure the caller still owns
-/// the stream and must release it.
-[[nodiscard]] PJ::Status pumpStreamToHost(
-    const PJ::sdk::ToolboxHostView& host, PJ::sdk::DataSourceHandle source, std::string_view topic_name,
-    ArrowArrayStream* stream, std::string_view timestamp_col);
 
 /// Outcome of a per-row canonical-object push (image / point cloud / transform /
 /// pose). A non-fatal per-row skip (missing data, malformed geometry, …)

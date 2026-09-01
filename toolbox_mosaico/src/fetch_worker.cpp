@@ -20,6 +20,7 @@
 
 #include <fmt/format.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <initializer_list>
@@ -31,6 +32,7 @@
 #include <vector>
 
 #include "arrow_ingest.hpp"
+#include "arrow_ipc_message.hpp"
 #include "flight/metadata.hpp"
 #include "ontology_routing.h"
 #include "stoppable_thread.hpp"
@@ -56,56 +58,20 @@ std::string stringFromArrow(const arrow::Status& status) {
   return status.ToString();
 }
 
-// Detect whether `schema` already carries a usable timestamp column. Matches
-// arrow_ingest::detectTimestampColumn but operates on arrow::Schema for
-// convenience inside the worker.
-[[nodiscard]] std::string detectTsField(const std::shared_ptr<arrow::Schema>& schema) {
-  if (!schema) {
-    return {};
-  }
-  for (const auto& field : schema->fields()) {
-    if (field->type()->id() == arrow::Type::TIMESTAMP) {
-      return field->name();
-    }
-  }
-  static const std::vector<std::string> kNames = {"timestamp_ns", "recording_timestamp_ns", "timestamp", "time", "ts"};
-  for (const auto& cand : kNames) {
-    if (schema->GetFieldByName(cand)) {
-      return cand;
-    }
-  }
-  return {};
-}
+// Delegated-ingest encoding of scalar topics: one Flight batch = one complete
+// Arrow IPC stream, decoded host-side by parser_arrow.
+constexpr std::string_view kArrowIpcEncoding = "arrow-ipc";
 
-// Prepend a synthetic `timestamp_ns` int64 column to a Table for ontology
-// payloads (images, point clouds, etc.) that don't carry per-row timestamps
-// on the wire. Generates monotonically increasing ns from `start_ns` using
-// `interval_ns` between rows.
-//
-// Image topics in particular ship as one Arrow row per frame with no
-// timestamp column — the server uses the Flight ticket metadata for
-// frame ordering. We pick a stable monotonic clock anchored at the
-// sequence's min_ts_ns when available, otherwise wall-clock.
-[[nodiscard]] arrow::Result<std::shared_ptr<arrow::Table>> prependSyntheticTimestamp(
-    std::shared_ptr<arrow::Table> table, std::int64_t start_ns, std::int64_t interval_ns) {
-  const int64_t num_rows = table->num_rows();
-  arrow::Int64Builder builder;
-  ARROW_RETURN_NOT_OK(builder.Reserve(num_rows));
-  for (int64_t i = 0; i < num_rows; ++i) {
-    ARROW_RETURN_NOT_OK(builder.Append(start_ns + i * interval_ns));
-  }
-  std::shared_ptr<arrow::Array> ts_array;
-  ARROW_RETURN_NOT_OK(builder.Finish(&ts_array));
-  auto chunked = std::make_shared<arrow::ChunkedArray>(ts_array);
-  return table->AddColumn(0, arrow::field("timestamp_ns", arrow::int64()), chunked);
-}
+// Cadence of the synthetic time axis for rows without a timestamp column. The
+// parser continues it per row from each message's host timestamp; the object
+// helpers fit it to the topic's [min,max] range instead because they see the
+// whole table.
+constexpr std::int64_t kSyntheticIntervalNs = 33'333'333LL;  // ~30 fps
 
-// Ontology routing (isImageOntology / resolveOntologyTag) lives in
-// ontology_routing.h so it can be unit-tested without linking Flight/gRPC.
-//
-// Per-frame image serialization (pushImageRowsToHost) and the per-row Arrow
-// column readers (handling BINARY_VIEW / STRING_VIEW) live in arrow_ingest.cpp
-// so they can be unit-tested against synthetic *_view tables without Flight.
+std::int64_t nowNs() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
 
 }  // namespace
 
@@ -512,11 +478,24 @@ void FetchWorker::pullTopicsAsync(
   range.start_ns = start_ns;
   range.end_ns = end_ns;
 
-  // Per-topic accumulators keyed by topic name. Progress bytes no longer live
-  // here — they come from the SDK's accurate decoded-size progress_cb ([I6]).
+  // Per-topic state keyed by topic name. Fully populated before the pull starts
+  // and never rehashed, so concurrent access to DIFFERENT keys is safe; one
+  // topic's callbacks arrive in order on one pool thread.
   struct PerTopic {
-    std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
     std::shared_ptr<arrow::Schema> schema;
+    bool routed = false;        // ontology resolved on first sight of the schema
+    bool object_route = false;  // canonical object: buffered table -> object helpers
+    std::string ontology_tag;
+    std::string ts_field;
+    std::int64_t info_min_ts_ns = 0;
+    std::int64_t info_max_ts_ns = 0;
+    // Object route only.
+    std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
+    // Scalar route: one arrow-ipc message per batch through parser ingest.
+    std::optional<PJ::ParserBindingHandle> binding;
+    std::int64_t synth_anchor_ns = 0;
+    std::int64_t rows_pushed = 0;
+    std::string error;  // first bind/push failure; fails the topic at on_done
   };
   auto state = std::make_shared<std::unordered_map<std::string, PerTopic>>();
   auto imported_any = std::make_shared<std::atomic<bool>>(false);
@@ -524,12 +503,107 @@ void FetchWorker::pullTopicsAsync(
     (*state)[t] = PerTopic{};
   }
 
+  // Route by the authoritative ontology tag, once per topic, as soon as its
+  // schema is known. The tag is cached from getTopicMetadata (the dialog fetches
+  // it on topic selection, processed before this pull on the serial queue) with
+  // the stream's schema metadata as fallback.
+  auto route = [this](PerTopic& topic, const std::string& topic_name) {
+    if (topic.routed || !topic.schema) {
+      return;
+    }
+    topic.routed = true;
+    std::string cached_tag;
+    if (auto info_it = topic_info_by_name_.find(topic_name); info_it != topic_info_by_name_.end()) {
+      cached_tag = info_it->second.ontology_tag;
+      topic.info_min_ts_ns = info_it->second.min_ts_ns;
+      topic.info_max_ts_ns = info_it->second.max_ts_ns;
+    }
+    topic.ontology_tag = resolveOntologyTag(topic.schema, cached_tag);
+    topic.object_route = isCanonicalObjectOntology(topic.ontology_tag);
+    topic.ts_field = detectTimestampField(*topic.schema);
+    topic.synth_anchor_ns = topic.info_min_ts_ns != 0 ? topic.info_min_ts_ns : nowNs();
+  };
+
+  // Scalar route: hand the batch to the host as an arrow-ipc message. Runs on
+  // the pool thread that received the batch; the host-write section is
+  // serialized by host_write_mu_ ([C1]) and the ingest fat pointer by
+  // progress_mu_ (same order as ensureIngestProgress), so the context is only
+  // ever driven by one caller at a time as its contract requires.
+  auto push_scalar_batch = [this, sequence_name, imported_any](
+                               PerTopic& topic, const std::string& topic_name, const arrow::RecordBatch& batch) {
+    if (!topic.error.empty() || batch.num_rows() == 0) {
+      return;
+    }
+    auto bytes = serializeIpcStream(batch);
+    if (!bytes.ok()) {
+      topic.error = stringFromArrow(bytes.status());
+      return;
+    }
+    // Host timestamp: the row's own time; without a column, the synthetic
+    // cadence the parser continues per row (see parserConfigJson).
+    const std::int64_t host_ts_ns = firstRowTimestampNs(batch, topic.ts_field)
+                                        .value_or(topic.synth_anchor_ns + topic.rows_pushed * kSyntheticIntervalNs);
+    if (!host_provider_) {
+      topic.error = "host not bound";
+      return;
+    }
+    auto host = host_provider_();
+    std::lock_guard<std::mutex> write_lock(host_write_mu_);
+    auto ds = datasetForFetch(host, sequence_name);
+    if (!ds) {
+      topic.error = ds.error();
+      return;
+    }
+    ensureIngestProgress(*ds, sequence_name);
+    std::lock_guard<std::mutex> plock(progress_mu_);
+    if (!ingest_progress_.has_value()) {
+      topic.error = "host offers no parser ingest (arrow-ipc topics need a PlotJuggler with parser_arrow installed)";
+      return;
+    }
+    if (!topic.binding.has_value()) {
+      auto schema_bytes = serializeIpcSchema(*topic.schema);
+      if (!schema_bytes.ok()) {
+        topic.error = stringFromArrow(schema_bytes.status());
+        return;
+      }
+      const std::string config = parserConfigJson(topic.ts_field, kSyntheticIntervalNs);
+      auto binding = ingest_progress_->ensureParserBinding(
+          PJ::ParserBindingRequest{
+              .topic_name = topic_name,
+              .parser_encoding = kArrowIpcEncoding,
+              .type_name = topic.ontology_tag,
+              .schema =
+                  PJ::Span<const uint8_t>((*schema_bytes)->data(), static_cast<std::size_t>((*schema_bytes)->size())),
+              .parser_config_json = config,
+          });
+      if (!binding) {
+        topic.error = binding.error();
+        return;
+      }
+      topic.binding = *binding;
+    }
+    // Zero-copy: the IPC buffer is its own anchor, the host keeps it alive.
+    std::shared_ptr<arrow::Buffer> payload = *bytes;
+    auto pushed = ingest_progress_->pushMessage(*topic.binding, host_ts_ns, [payload]() {
+      return PJ::sdk::PayloadView(
+          PJ::Span<const uint8_t>(payload->data(), static_cast<std::size_t>(payload->size())),
+          PJ::sdk::BufferAnchor(payload));
+    });
+    if (!pushed) {
+      topic.error = pushed.error();
+      return;
+    }
+    topic.rows_pushed += batch.num_rows();
+    imported_any->store(true, std::memory_order_relaxed);
+  };
+
   auto on_done = [this, sequence_name, state, imported_any](
                      const std::string& topic_name, arrow::Result<PullResult> result) {
     auto it = state->find(topic_name);
     if (it == state->end()) {
       return;
     }
+    PerTopic& topic = it->second;
     auto finish = [this, &sequence_name, &topic_name, imported_any](
                       bool ok, std::string error, std::string warning = {}) {
       if (ok) {
@@ -544,22 +618,34 @@ void FetchWorker::pullTopicsAsync(
       finish(false, stringFromArrow(result.status()));
       return;
     }
-    if (!it->second.schema || it->second.batches.empty()) {
+    if (!topic.schema) {
       finish(false, "no data");
       return;
     }
-    auto table_result = arrow::Table::FromRecordBatches(it->second.schema, it->second.batches);
+    if (!topic.object_route) {
+      // Every batch already reached the host (or failed) in push_scalar_batch.
+      if (!topic.error.empty()) {
+        finish(false, topic.error);
+      } else if (topic.rows_pushed == 0) {
+        finish(false, "no data");
+      } else {
+        finish(true, {});
+      }
+      return;
+    }
+    if (topic.batches.empty()) {
+      finish(false, "no data");
+      return;
+    }
+    auto table_result = arrow::Table::FromRecordBatches(topic.schema, topic.batches);
     if (!table_result.ok()) {
       finish(false, stringFromArrow(table_result.status()));
       return;
     }
     std::shared_ptr<arrow::Table> table = table_result.ValueOrDie();
 
-    // PJ3-parity: explode struct columns (e.g. nav_msgs/Odometry's pose +
-    // twist) into individual primitive columns before handing the stream to
-    // the datastore — pj_datastore's arrow_import silently skips non-primitive
-    // top-level fields, so without this an Odometry topic shows up as just the
-    // timestamp column.
+    // Explode struct columns (odometry's pose + twist, …) so the object helpers
+    // read flat `pose/position/x` paths.
     {
       auto flat_result = flattenStructColumns(std::move(table));
       if (!flat_result.ok()) {
@@ -569,21 +655,7 @@ void FetchWorker::pullTopicsAsync(
       table = flat_result.ValueOrDie();
     }
 
-    // Route by the authoritative ontology tag (image → ObjectStore; point
-    // clouds / poses / scalars → the scalar appendArrowStream path). Also pick
-    // up the cached [min,max] ts for synthetic-timestamp anchoring. The tag is
-    // cached from getTopicMetadata — which the dialog fetches on topic
-    // selection, and the worker processes that slot before this pull (serial
-    // queue), so it is populated by now.
-    std::int64_t info_min_ts_ns = 0;
-    std::int64_t info_max_ts_ns = 0;
-    std::string cached_tag;
-    if (auto info_it = topic_info_by_name_.find(topic_name); info_it != topic_info_by_name_.end()) {
-      info_min_ts_ns = info_it->second.min_ts_ns;
-      info_max_ts_ns = info_it->second.max_ts_ns;
-      cached_tag = info_it->second.ontology_tag;
-    }
-    const std::string ontology_tag = resolveOntologyTag(table->schema(), cached_tag);
+    const std::string& ontology_tag = topic.ontology_tag;
     const bool is_image = isImageOntology(ontology_tag);
     const bool is_point_cloud = isPointCloudOntology(ontology_tag);
     const bool is_pose = isPoseOntology(ontology_tag);
@@ -592,182 +664,111 @@ void FetchWorker::pullTopicsAsync(
     const bool is_laser_scan = isLaserScanOntology(ontology_tag);
     const bool is_grid_cells = isGridCellsOntology(ontology_tag);
     const bool is_futures_cloud = isFuturesPointCloudOntology(ontology_tag);
-    // Canonicalized into a pj_base builtin object (ObjectStore route) instead of
-    // scalar columns. These share the single object-push critical section below.
-    const bool is_object = isCanonicalObjectOntology(ontology_tag);
 
-    // Determine the timestamp column. Image (and similar media) ontologies
-    // ship without per-row timestamps on the wire — the server uses the
-    // Flight ticket for frame ordering. If no timestamp column is present,
-    // synthesize one anchored at the sequence's min_ts_ns (from the cached
-    // TopicInfo) with a ~30 fps cadence so the data still lands in the
-    // datastore with monotonic timestamps in the sequence's nominal range.
-    std::string ts_field = detectTsField(table->schema());
-    std::int64_t synth_anchor_ns = info_min_ts_ns;
-    std::int64_t synth_interval_ns = 33'333'333LL;  // ~30 fps default
+    // Media ontologies ship without per-row timestamps (the server orders frames
+    // by Flight ticket): synthesize a monotonic axis anchored at the topic's
+    // min_ts_ns and spread over its [min,max] range.
+    const std::string& ts_field = topic.ts_field;
+    const std::int64_t synth_anchor_ns = topic.synth_anchor_ns;
+    std::int64_t synth_interval_ns = kSyntheticIntervalNs;
     if (ts_field.empty()) {
-      if (synth_anchor_ns == 0) {
-        synth_anchor_ns =
-            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
-                .count();
-      }
-      const std::int64_t span_ns = info_max_ts_ns - synth_anchor_ns;
+      const std::int64_t span_ns = topic.info_max_ts_ns - synth_anchor_ns;
       if (table->num_rows() > 1 && span_ns > 0) {
         synth_interval_ns = span_ns / (table->num_rows() - 1);
       }
-      // Only augment the table when we'll feed it to the scalar pipeline; the
-      // object-push paths (image / point cloud / transform / pose) compute
-      // timestamps inline from synth_* directly.
-      if (!is_object) {
-        auto augmented = prependSyntheticTimestamp(std::move(table), synth_anchor_ns, synth_interval_ns);
-        if (!augmented.ok()) {
-          finish(false, stringFromArrow(augmented.status()));
-          return;
-        }
-        table = augmented.ValueOrDie();
-        ts_field = "timestamp_ns";
-      }
     }
 
-    // Canonical-object ontologies route into the ObjectStore: each row becomes
-    // one serialized pj_base builtin object (Image / PointCloud / FrameTransforms
-    // / PosesInFrame) keyed by timestamp. We deliberately skip pumpStreamToHost
-    // for these so the raw payload columns don't ALSO land as opaque scalar
-    // series in the datastore. The HOST decodes each blob (the toolbox never
-    // decodes/decompresses — see the per-ontology push helpers).
-    if (is_object) {
-      if (!host_provider_) {
-        finish(false, "host not bound");
-        return;
-      }
-      auto host = host_provider_();
-      // [C1] Serialize the whole host-write critical section ourselves: this
-      // callback runs on SDK connection-pool worker threads and the host
-      // DataWriter has no internal mutex. We hold host_write_mu_ around the
-      // cached dataset lookup AND every register/push, so the plugin guarantees
-      // serialization regardless of whether the SDK serializes on_done.
-      //
-      // Lock order: host_write_mu_ is acquired ONLY here, and datasetForFetch
-      // takes the distinct fetch_dataset_mu_ nested under it (host_write_mu_ ->
-      // fetch_dataset_mu_, never the reverse) — so the nesting can't deadlock.
-      std::lock_guard<std::mutex> write_lock(host_write_mu_);
-      auto ds = datasetForFetch(host, sequence_name);
-      if (!ds) {
-        finish(false, ds.error());
-        return;
-      }
-      ensureIngestProgress(*ds, sequence_name);
-      const ObjectIngestContext ctx{host, *ds, topic_name, ts_field, synth_anchor_ns, synth_interval_ns};
-      auto pushed = [&]() -> PJ::Expected<ObjectPushOutcome> {
-        if (is_image) {
-          return pushImageRowsToHost(ctx, table);
-        }
-        if (is_point_cloud) {
-          return pushPointCloudRowsToHost(ctx, table);
-        }
-        if (is_pose) {
-          return pushPoseRowsToHost(ctx, table);
-        }
-        if (is_transform) {
-          return pushFrameTransformsRowsToHost(ctx, table);
-        }
-        if (is_occupancy_grid) {
-          return pushOccupancyGridRowsToHost(ctx, table);
-        }
-        if (is_laser_scan) {
-          return pushLaserScanRowsToHost(ctx, table);
-        }
-        if (is_grid_cells) {
-          return pushGridCellsRowsToHost(ctx, table);
-        }
-        if (is_futures_cloud) {
-          return pushColumnarPointCloudRowsToHost(ctx, table);
-        }
-        // Unreachable: is_object (isCanonicalObjectOntology) gates entry, so one
-        // branch above always matches. Defensive fallback for a canonical tag
-        // added to the routing predicates but not wired to a push helper here.
-        return PJ::unexpected(std::string("unhandled canonical ontology '") + ontology_tag + "'");
-      }();
-      if (!pushed) {
-        finish(false, pushed.error());
-        return;
-      }
-      if (pushed->pushed == 0) {
-        finish(false, pushed->first_error.empty() ? ("no " + ontology_tag + " rows") : pushed->first_error);
-        return;
-      }
-      // The topic succeeded, but per-row skips are silent in the ObjectPushOutcome
-      // — surface them as a non-fatal warning so a partial import (1 good row,
-      // N silently dropped) is visible rather than presenting as a clean success.
-      std::string warning;
-      if (pushed->skipped > 0) {
-        warning = ontology_tag + " topic '" + topic_name + "': skipped " + std::to_string(pushed->skipped) + " of " +
-                  std::to_string(pushed->pushed + pushed->skipped) + " rows" +
-                  (pushed->first_error.empty() ? "" : (" (first: " + pushed->first_error + ")"));
-      }
-      finish(true, {}, std::move(warning));
-      return;
-    }
-
-    // Cast Utf8View/BinaryView columns to canonical Utf8/Binary: pj_datastore's
-    // import can't parse Arrow view types and nulls the whole batch otherwise.
-    {
-      auto normalized = normalizeViewColumns(std::move(table));
-      if (!normalized.ok()) {
-        finish(false, stringFromArrow(normalized.status()));
-        return;
-      }
-      table = normalized.ValueOrDie();
-    }
-    auto reader = std::make_shared<arrow::TableBatchReader>(*table);
-    ArrowArrayStream stream{};
-    auto export_status = arrow::ExportRecordBatchReader(reader, &stream);
-    if (!export_status.ok()) {
-      finish(false, stringFromArrow(export_status));
-      return;
-    }
+    // Each row becomes one serialized pj_base builtin object keyed by timestamp;
+    // the HOST decodes each blob (see the per-ontology push helpers).
     if (!host_provider_) {
-      stream.release(&stream);
       finish(false, "host not bound");
       return;
     }
     auto host = host_provider_();
-    // [C1] Same self-owned serialization as the image branch: hold
-    // host_write_mu_ across datasetForFetch + pumpStreamToHost (the host
-    // ensureTopic/appendArrowStream writes). See the lock-order note above.
+    // [C1] Serialize the whole host-write critical section ourselves: this
+    // callback runs on SDK connection-pool worker threads and the host
+    // DataWriter has no internal mutex. Lock order: host_write_mu_ ->
+    // fetch_dataset_mu_ (inside datasetForFetch), never the reverse.
     std::lock_guard<std::mutex> write_lock(host_write_mu_);
     auto ds = datasetForFetch(host, sequence_name);
     if (!ds) {
-      stream.release(&stream);
       finish(false, ds.error());
       return;
     }
     ensureIngestProgress(*ds, sequence_name);
-    auto append_status = pumpStreamToHost(host, *ds, topic_name, &stream, ts_field);
-    if (!append_status) {
-      if (stream.release != nullptr) {
-        stream.release(&stream);
+    const ObjectIngestContext ctx{host, *ds, topic_name, ts_field, synth_anchor_ns, synth_interval_ns};
+    auto pushed = [&]() -> PJ::Expected<ObjectPushOutcome> {
+      if (is_image) {
+        return pushImageRowsToHost(ctx, table);
       }
-      finish(false, append_status.error());
+      if (is_point_cloud) {
+        return pushPointCloudRowsToHost(ctx, table);
+      }
+      if (is_pose) {
+        return pushPoseRowsToHost(ctx, table);
+      }
+      if (is_transform) {
+        return pushFrameTransformsRowsToHost(ctx, table);
+      }
+      if (is_occupancy_grid) {
+        return pushOccupancyGridRowsToHost(ctx, table);
+      }
+      if (is_laser_scan) {
+        return pushLaserScanRowsToHost(ctx, table);
+      }
+      if (is_grid_cells) {
+        return pushGridCellsRowsToHost(ctx, table);
+      }
+      if (is_futures_cloud) {
+        return pushColumnarPointCloudRowsToHost(ctx, table);
+      }
+      // Unreachable: object_route (isCanonicalObjectOntology) gates entry, so one
+      // branch above always matches. Defensive fallback for a canonical tag
+      // added to the routing predicates but not wired to a push helper here.
+      return PJ::unexpected(std::string("unhandled canonical ontology '") + ontology_tag + "'");
+    }();
+    if (!pushed) {
+      finish(false, pushed.error());
       return;
     }
-    finish(true, {});
+    if (pushed->pushed == 0) {
+      finish(false, pushed->first_error.empty() ? ("no " + ontology_tag + " rows") : pushed->first_error);
+      return;
+    }
+    // Per-row skips are silent in the ObjectPushOutcome — surface them as a
+    // non-fatal warning so a partial import is visible rather than presenting
+    // as a clean success.
+    std::string warning;
+    if (pushed->skipped > 0) {
+      warning = ontology_tag + " topic '" + topic_name + "': skipped " + std::to_string(pushed->skipped) + " of " +
+                std::to_string(pushed->pushed + pushed->skipped) + " rows" +
+                (pushed->first_error.empty() ? "" : (" (first: " + pushed->first_error + ")"));
+    }
+    finish(true, {}, std::move(warning));
   };
 
-  auto on_batch = [state](const std::string& topic_name, const std::shared_ptr<arrow::RecordBatch>& batch) {
+  auto on_batch = [state, route, push_scalar_batch](
+                      const std::string& topic_name, const std::shared_ptr<arrow::RecordBatch>& batch) {
     auto it = state->find(topic_name);
     if (it == state->end() || !batch) {
       return;
     }
-    if (!it->second.schema) {
-      it->second.schema = batch->schema();
+    PerTopic& topic = it->second;
+    if (!topic.schema) {
+      topic.schema = batch->schema();
     }
-    it->second.batches.push_back(batch);
+    route(topic, topic_name);
+    if (topic.object_route) {
+      topic.batches.push_back(batch);
+    } else {
+      push_scalar_batch(topic, topic_name, *batch);
+    }
   };
-  auto on_schema = [state](const std::string& topic_name, const std::shared_ptr<arrow::Schema>& schema) {
+  auto on_schema = [state, route](const std::string& topic_name, const std::shared_ptr<arrow::Schema>& schema) {
     auto it = state->find(topic_name);
     if (it != state->end() && !it->second.schema) {
       it->second.schema = schema;
+      route(it->second, topic_name);
     }
   };
   // [I6] Real progress bytes. The SDK already computes the TRUE decoded batch
@@ -856,7 +857,11 @@ void FetchWorker::pullTopicsAsync(
     });
 
     if (pull_topics_override_) {
+      on_batch_for_test_ = on_batch;
+      on_done_for_test_ = on_done;
       pull_topics_override_();
+      on_batch_for_test_ = nullptr;
+      on_done_for_test_ = nullptr;
     } else {
       (void)client_->pullTopics(
           sequence_name, topic_names_std, range, on_done, on_progress, &cancel_flag_, on_batch, on_schema,
