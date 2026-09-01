@@ -39,6 +39,10 @@ The watermark is the boundary, in both directions: the user reads it as "the
 model drives here", and the model's view control is scoped to the tabs that
 carry it. The user's own tabs stay the user's.
 
+The boundary is the VIEW, not the transport. Playback cannot be scoped: the
+application has one time cursor, shared by every plot, so moving it is not
+something a tab can contain.
+
 ## 3. Playback and viewport, back in full
 
 Everything the July build had, restored: play, pause, seek, playback rate, and
