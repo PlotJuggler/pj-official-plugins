@@ -7,10 +7,12 @@
 #include <arrow/io/memory.h>
 #include <arrow/ipc/writer.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <vector>
 
 namespace mosaico {
 
@@ -58,7 +60,6 @@ std::shared_ptr<arrow::DataType> ipcSafeType(const std::shared_ptr<arrow::DataTy
       return type;
   }
 }
-
 }  // namespace
 
 std::shared_ptr<arrow::Schema> ipcSafeSchema(const std::shared_ptr<arrow::Schema>& schema) {
@@ -86,20 +87,85 @@ arrow::Result<std::shared_ptr<arrow::RecordBatch>> castToSchema(
   return arrow::RecordBatch::Make(target, batch.num_rows(), std::move(columns));
 }
 
+namespace {
+
+/// Name list scanned after the type rule, in THIS order (a later field named
+/// `recording_timestamp_ns` beats an earlier `ts`).
+constexpr std::array<std::string_view, 5> kTimestampNames = {
+    "timestamp_ns", "recording_timestamp_ns", "timestamp", "time", "ts"};
+
+std::string normalizedComponent(const std::string& name) {
+  std::string out = name;
+  std::replace(out.begin(), out.end(), '.', '/');
+  return out;
+}
+
+// Depth-first walk of the flattened leaves: STRUCT fields expand into their
+// children, everything else is a leaf. @p visit(path, route, field) returns true
+// to stop the walk. @p route is the live child-index stack.
+template <typename Visit>
+bool walkLeaves(const arrow::FieldVector& fields, const std::string& prefix, std::vector<int>& route, Visit& visit) {
+  for (int index = 0; index < static_cast<int>(fields.size()); ++index) {
+    const auto& field = fields[static_cast<std::size_t>(index)];
+    const std::string path =
+        prefix.empty() ? normalizedComponent(field->name()) : prefix + "/" + normalizedComponent(field->name());
+    route.push_back(index);
+    const bool stop = field->type()->id() == arrow::Type::STRUCT
+                          ? walkLeaves(field->type()->fields(), path, route, visit)
+                          : visit(path, route, *field);
+    route.pop_back();
+    if (stop) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
 std::string detectTimestampField(const arrow::Schema& schema) {
-  for (const auto& field : schema.fields()) {
-    if (field->type()->id() == arrow::Type::TIMESTAMP) {
-      return field->name();
+  std::string found;
+  std::vector<int> route;
+  auto by_type = [&found](const std::string& path, const std::vector<int>&, const arrow::Field& field) {
+    if (field.type()->id() != arrow::Type::TIMESTAMP) {
+      return false;
     }
-  }
-  static constexpr std::array<std::string_view, 5> kNames = {
-      "timestamp_ns", "recording_timestamp_ns", "timestamp", "time", "ts"};
-  for (std::string_view candidate : kNames) {
-    if (schema.GetFieldByName(std::string(candidate))) {
-      return std::string(candidate);
+    found = path;
+    return true;
+  };
+  walkLeaves(schema.fields(), {}, route, by_type);
+
+  for (std::string_view candidate : kTimestampNames) {
+    if (!found.empty()) {
+      break;
     }
+    auto by_name = [&found, candidate](const std::string& path, const std::vector<int>&, const arrow::Field&) {
+      if (path != candidate) {
+        return false;
+      }
+      found = path;
+      return true;
+    };
+    walkLeaves(schema.fields(), {}, route, by_name);
   }
-  return {};
+  return found;
+}
+
+std::vector<int> timestampFieldRoute(const arrow::Schema& schema, std::string_view leaf_path) {
+  std::vector<int> found;
+  if (leaf_path.empty()) {
+    return found;
+  }
+  std::vector<int> route;
+  auto match = [&found, leaf_path](const std::string& path, const std::vector<int>& current, const arrow::Field&) {
+    if (path != leaf_path) {
+      return false;
+    }
+    found = current;
+    return true;
+  };
+  walkLeaves(schema.fields(), {}, route, match);
+  return found;
 }
 
 namespace {
@@ -118,27 +184,39 @@ std::optional<std::int64_t> secondsToNs(double seconds) {
 
 }  // namespace
 
-std::optional<std::int64_t> firstRowTimestampNs(const arrow::RecordBatch& batch, int index) {
-  if (batch.num_rows() == 0 || index < 0 || index >= batch.num_columns()) {
+std::optional<std::int64_t> firstRowTimestampNs(const arrow::RecordBatch& batch, const std::vector<int>& route) {
+  if (batch.num_rows() == 0 || route.empty() || route.front() < 0 || route.front() >= batch.num_columns()) {
     return std::nullopt;
   }
-  auto scalar = batch.column(index)->GetScalar(0);
-  if (!scalar.ok() || !(*scalar)->is_valid) {
+  auto column_scalar = batch.column(route.front())->GetScalar(0);
+  if (!column_scalar.ok()) {
     return std::nullopt;
   }
-  const arrow::Type::type type_id = (*scalar)->type->id();
+  std::shared_ptr<arrow::Scalar> scalar = *column_scalar;
+  for (std::size_t depth = 1; depth < route.size(); ++depth) {
+    auto* parent = dynamic_cast<arrow::StructScalar*>(scalar.get());
+    const auto child = static_cast<std::size_t>(route[depth]);
+    if (parent == nullptr || !parent->is_valid || child >= parent->value.size()) {
+      return std::nullopt;
+    }
+    scalar = parent->value[child];
+  }
+  if (!scalar || !scalar->is_valid) {
+    return std::nullopt;
+  }
+  const arrow::Type::type type_id = scalar->type->id();
   if (arrow::is_floating(type_id)) {
-    auto seconds = arrow::compute::Cast(arrow::Datum(*scalar), arrow::float64());
+    auto seconds = arrow::compute::Cast(arrow::Datum(scalar), arrow::float64());
     return seconds.ok() ? secondsToNs(seconds->scalar_as<arrow::DoubleScalar>().value) : std::nullopt;
   }
   if (type_id == arrow::Type::TIMESTAMP) {
-    auto nanos = arrow::compute::Cast(arrow::Datum(*scalar), arrow::timestamp(arrow::TimeUnit::NANO));
+    auto nanos = arrow::compute::Cast(arrow::Datum(scalar), arrow::timestamp(arrow::TimeUnit::NANO));
     return nanos.ok() ? std::optional(nanos->scalar_as<arrow::TimestampScalar>().value) : std::nullopt;
   }
   if (!arrow::is_integer(type_id)) {
     return std::nullopt;
   }
-  auto nanos = arrow::compute::Cast(arrow::Datum(*scalar), arrow::int64());
+  auto nanos = arrow::compute::Cast(arrow::Datum(scalar), arrow::int64());
   return nanos.ok() ? std::optional(nanos->scalar_as<arrow::Int64Scalar>().value) : std::nullopt;
 }
 

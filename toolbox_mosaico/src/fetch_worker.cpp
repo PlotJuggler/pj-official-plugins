@@ -495,8 +495,8 @@ void FetchWorker::pullTopicsAsync(
     std::shared_ptr<arrow::Schema> ipc_schema;
     bool object_route = false;  // canonical object: buffered table -> object helpers
     std::string ontology_tag;
-    std::string ts_field;
-    int ts_column_index = -1;  // ts_field's position in schema; -1 = no timestamp column
+    std::string ts_field;       // flattened leaf path; empty = no timestamp column
+    std::vector<int> ts_route;  // child-index route to that leaf
     std::int64_t info_max_ts_ns = 0;
     // Object route only.
     std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
@@ -535,8 +535,12 @@ void FetchWorker::pullTopicsAsync(
     }
     topic.ontology_tag = resolveOntologyTag(topic.schema, cached_tag);
     topic.object_route = isCanonicalObjectOntology(topic.ontology_tag);
+    // Detection runs on the RAW schema but over its flattened leaves, so a
+    // nested `header/stamp` is found here and the name it yields is already the
+    // one flattenStructColumns (object route) and parser_arrow (scalar route)
+    // will see.
     topic.ts_field = detectTimestampField(*topic.schema);
-    topic.ts_column_index = topic.ts_field.empty() ? -1 : topic.schema->GetFieldIndex(topic.ts_field);
+    topic.ts_route = timestampFieldRoute(*topic.schema, topic.ts_field);
     topic.synth_anchor_ns = info_min_ts_ns != 0 ? info_min_ts_ns : nowNs();
     topic.ipc_schema = ipcSafeSchema(topic.schema);
     if (topic.object_route) {
@@ -580,7 +584,7 @@ void FetchWorker::pullTopicsAsync(
     topic.last_ipc_bytes = (*bytes)->size();
     // Host timestamp: the row's own time; without a column, the synthetic
     // cadence the parser continues per row (see parserConfigJson).
-    const std::int64_t host_ts_ns = firstRowTimestampNs(batch, topic.ts_column_index)
+    const std::int64_t host_ts_ns = firstRowTimestampNs(batch, topic.ts_route)
                                         .value_or(topic.synth_anchor_ns + topic.rows_pushed * kSyntheticIntervalNs);
     if (!host_provider_) {
       topic.error = "host not bound";

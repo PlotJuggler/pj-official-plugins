@@ -53,12 +53,41 @@ TEST(DetectTimestampField, TypeThenNamePriorityThenEmpty) {
   EXPECT_EQ(mosaico::detectTimestampField(*arrow::schema({arrow::field("x", arrow::float64())})), "");
 }
 
-TEST(FirstRowTimestampNs, ByTypeAndInvalidIndices) {
-  EXPECT_EQ(mosaico::firstRowTimestampNs(*scalarBatch(), 0), 1000);
+// The stamp a ROS-shaped topic carries lives inside its `header` struct: the
+// scan walks flattened leaves, so it is found and named the way the flattened
+// table (and parser_arrow) will name it.
+TEST(DetectTimestampField, WalksFlattenedLeavesAndNormalizesDots) {
+  auto nested = arrow::schema(
+      {arrow::field("value", arrow::float64()),
+       arrow::field(
+           "header", arrow::struct_(
+                         {arrow::field("frame_id", arrow::utf8()),
+                          arrow::field("stamp", arrow::timestamp(arrow::TimeUnit::MICRO))}))});
+  EXPECT_EQ(mosaico::detectTimestampField(*nested), "header/stamp");
+  EXPECT_EQ(mosaico::timestampFieldRoute(*nested, "header/stamp"), (std::vector<int>{1, 1}));
+
+  // The name list matches a nested leaf by its full path, not its bare name.
+  auto nested_by_name =
+      arrow::schema({arrow::field("msg", arrow::struct_({arrow::field("timestamp_ns", arrow::int64())}))});
+  EXPECT_EQ(mosaico::detectTimestampField(*nested_by_name), "");
+
+  // A '.' inside any component becomes '/' at every depth.
+  auto dotted = arrow::schema(
+      {arrow::field("wheel.speed", arrow::float64()),
+       arrow::field("msg", arrow::struct_({arrow::field("header.stamp", arrow::timestamp(arrow::TimeUnit::NANO))}))});
+  EXPECT_EQ(mosaico::detectTimestampField(*dotted), "msg/header/stamp");
+  EXPECT_EQ(mosaico::timestampFieldRoute(*dotted, "msg/header/stamp"), (std::vector<int>{1, 0}));
+  EXPECT_TRUE(mosaico::timestampFieldRoute(*dotted, "wheel.speed").empty()) << "the raw dotted name is not the leaf";
+  EXPECT_EQ(mosaico::timestampFieldRoute(*dotted, "wheel/speed"), (std::vector<int>{0}));
+  EXPECT_TRUE(mosaico::timestampFieldRoute(*dotted, "").empty());
+}
+
+TEST(FirstRowTimestampNs, ByTypeAndInvalidRoutes) {
+  EXPECT_EQ(mosaico::firstRowTimestampNs(*scalarBatch(), {0}), 1000);
 
   auto double_schema = arrow::schema({arrow::field("t", arrow::float64())});
   auto double_batch = arrow::RecordBatch::Make(double_schema, 1, {arrayOf<arrow::DoubleBuilder, double>({1.5})});
-  EXPECT_EQ(mosaico::firstRowTimestampNs(*double_batch, 0), 1'500'000'000LL);
+  EXPECT_EQ(mosaico::firstRowTimestampNs(*double_batch, {0}), 1'500'000'000LL);
 
   auto milli_schema = arrow::schema({arrow::field("stamp", arrow::timestamp(arrow::TimeUnit::MILLI))});
   arrow::TimestampBuilder milli_builder(arrow::timestamp(arrow::TimeUnit::MILLI), arrow::default_memory_pool());
@@ -66,13 +95,32 @@ TEST(FirstRowTimestampNs, ByTypeAndInvalidIndices) {
   std::shared_ptr<arrow::Array> milli_array;
   ASSERT_TRUE(milli_builder.Finish(&milli_array).ok());
   auto milli_batch = arrow::RecordBatch::Make(milli_schema, 1, {milli_array});
-  EXPECT_EQ(mosaico::firstRowTimestampNs(*milli_batch, 0), 7'000'000LL);
+  EXPECT_EQ(mosaico::firstRowTimestampNs(*milli_batch, {0}), 7'000'000LL);
 
-  // -1 is what route() stores for a topic with no timestamp column.
+  // An empty route is what route() stores for a topic with no timestamp column.
   auto batch = scalarBatch();
-  EXPECT_FALSE(mosaico::firstRowTimestampNs(*batch, -1).has_value());
-  EXPECT_FALSE(mosaico::firstRowTimestampNs(*batch, batch->num_columns()).has_value());
-  EXPECT_FALSE(mosaico::firstRowTimestampNs(*batch->Slice(0, 0), 0).has_value());
+  EXPECT_FALSE(mosaico::firstRowTimestampNs(*batch, {}).has_value());
+  EXPECT_FALSE(mosaico::firstRowTimestampNs(*batch, {batch->num_columns()}).has_value());
+  EXPECT_FALSE(mosaico::firstRowTimestampNs(*batch->Slice(0, 0), {0}).has_value());
+}
+
+// A nested stamp is read through its child-index route, so the message host
+// timestamp is the row's real time rather than a synthetic one.
+TEST(FirstRowTimestampNs, DescendsAStructRoute) {
+  arrow::TimestampBuilder stamp_builder(arrow::timestamp(arrow::TimeUnit::MICRO), arrow::default_memory_pool());
+  ASSERT_TRUE(stamp_builder.Append(1'234).ok());
+  std::shared_ptr<arrow::Array> stamps;
+  ASSERT_TRUE(stamp_builder.Finish(&stamps).ok());
+  auto header = *arrow::StructArray::Make(
+      arrow::ArrayVector{arrayOf<arrow::StringBuilder, std::string>({"map"}), stamps},
+      std::vector<std::string>{"frame_id", "stamp"});
+  auto batch = arrow::RecordBatch::Make(
+      arrow::schema({arrow::field("header", header->type())}), 1, {std::static_pointer_cast<arrow::Array>(header)});
+
+  EXPECT_EQ(mosaico::firstRowTimestampNs(*batch, {0, 1}), 1'234'000LL);
+  EXPECT_FALSE(mosaico::firstRowTimestampNs(*batch, {0, 0}).has_value()) << "frame_id is not a timestamp";
+  EXPECT_FALSE(mosaico::firstRowTimestampNs(*batch, {0, 5}).has_value());
+  EXPECT_FALSE(mosaico::firstRowTimestampNs(*batch, {0, 1, 0}).has_value()) << "a scalar leaf has no children";
 }
 
 TEST(SerializeIpcStream, RoundTripsOneBatchAsACompleteStream) {

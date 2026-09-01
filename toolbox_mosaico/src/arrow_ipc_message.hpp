@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace mosaico {
 
@@ -34,21 +35,39 @@ inline constexpr std::int64_t kSyntheticIntervalNs = 33'333'333LL;
 [[nodiscard]] arrow::Result<std::shared_ptr<arrow::RecordBatch>> castToSchema(
     const arrow::RecordBatch& batch, const std::shared_ptr<arrow::Schema>& target);
 
-/// Timestamp field of a topic schema: the first Arrow TIMESTAMP-typed field,
-/// else the first of {timestamp_ns, recording_timestamp_ns, timestamp, time,
-/// ts}; empty when nothing matches. Same rule `parser_arrow` applies, passed
-/// explicitly at bind time so the layout records the policy (D9).
+/// Timestamp leaf of a topic schema, as the FLATTENED leaf path both sides
+/// agree on: struct children are expanded depth-first into `parent/child`, and
+/// every literal '.' inside a name component becomes '/' (`wheel.speed` ->
+/// `wheel/speed`; `header.stamp` inside struct `msg` -> `msg/header/stamp`).
+/// That is exactly what flattenStructColumns produces, so the name reaches the
+/// object helpers and parser_arrow unchanged.
+///
+/// Over those leaves, in order: the first Arrow TIMESTAMP-typed one, else the
+/// first path equal to one of {timestamp_ns, recording_timestamp_ns, timestamp,
+/// time, ts} (name-list order wins, not schema order — as it has since PJ3);
+/// empty when nothing matches. Passed explicitly at bind time so the layout
+/// records the policy (D9).
 ///
 /// Mirror of parser_arrow's detectTimestampColumn
 /// (parser_arrow/src/table_shaper.hpp) — keep the name lists in sync.
 [[nodiscard]] std::string detectTimestampField(const arrow::Schema& schema);
 
-/// Row 0 of column @p index as nanoseconds: floating values are read as
-/// seconds, TIMESTAMP is rescaled to ns, anything else is cast to int64 and
-/// taken as ns. Empty for an out-of-range index, an empty batch, a null or
-/// non-finite value, or a value that does not cast safely. Used only as the
-/// message's host timestamp — the parser reads per-row time from the column.
-[[nodiscard]] std::optional<std::int64_t> firstRowTimestampNs(const arrow::RecordBatch& batch, int index);
+/// Child-index route to the leaf whose flattened path is @p leaf_path: the
+/// top-level column index followed by one struct-child index per level. Empty
+/// when the path does not resolve (an empty @p leaf_path included), which is
+/// how a timestamp-less topic is marked. Resolving by walk rather than by
+/// splitting on '/' is load-bearing: a component may itself contain a '/' that
+/// came from a '.' in the field name.
+[[nodiscard]] std::vector<int> timestampFieldRoute(const arrow::Schema& schema, std::string_view leaf_path);
+
+/// Row 0 of the leaf reached by @p route (see timestampFieldRoute) as
+/// nanoseconds: floating values are read as seconds, TIMESTAMP is rescaled to
+/// ns, anything else is cast to int64 and taken as ns. Empty for an empty
+/// route, an empty batch, a null or non-finite value, or a value that does not
+/// cast safely. Used only as the message's host timestamp — the parser reads
+/// per-row time from the column.
+[[nodiscard]] std::optional<std::int64_t> firstRowTimestampNs(
+    const arrow::RecordBatch& batch, const std::vector<int>& route);
 
 /// One record batch as a complete IPC stream (schema message, the batch, end
 /// of stream). Uncompressed: the bytes cross a process-internal seam.
@@ -58,7 +77,7 @@ inline constexpr std::int64_t kSyntheticIntervalNs = 33'333'333LL;
     const arrow::RecordBatch& batch, std::int64_t capacity_hint = 0);
 
 /// `parser_arrow` configuration for one topic:
-/// `{"timestamp_column": <field>, "synthetic_interval_ns": kSyntheticIntervalNs}`.
+/// `{"timestamp_column": <leaf path>, "synthetic_interval_ns": kSyntheticIntervalNs}`.
 [[nodiscard]] std::string parserConfigJson(std::string_view timestamp_field);
 
 }  // namespace mosaico

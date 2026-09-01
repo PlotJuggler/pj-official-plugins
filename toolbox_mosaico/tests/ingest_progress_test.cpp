@@ -583,6 +583,48 @@ TEST(MosaicoTransport, UnstampedTopicAdvancesTheSyntheticAxisAcrossBatches) {
   EXPECT_EQ(host.messages[1].host_ts_ns, 5000 + 3 * mosaico::kSyntheticIntervalNs);
 }
 
+std::shared_ptr<arrow::RecordBatch> nestedStampBatch(std::int64_t first_stamp_us) {
+  arrow::TimestampBuilder stamp_builder(arrow::timestamp(arrow::TimeUnit::MICRO), arrow::default_memory_pool());
+  arrow::StringBuilder frame_builder;
+  arrow::DoubleBuilder value_builder;
+  for (int row = 0; row < 3; ++row) {
+    EXPECT_TRUE(stamp_builder.Append(first_stamp_us + row).ok());
+    EXPECT_TRUE(frame_builder.Append("map").ok());
+    EXPECT_TRUE(value_builder.Append(static_cast<double>(row)).ok());
+  }
+  std::shared_ptr<arrow::Array> stamps;
+  std::shared_ptr<arrow::Array> frames;
+  std::shared_ptr<arrow::Array> values;
+  EXPECT_TRUE(stamp_builder.Finish(&stamps).ok());
+  EXPECT_TRUE(frame_builder.Finish(&frames).ok());
+  EXPECT_TRUE(value_builder.Finish(&values).ok());
+  auto header =
+      *arrow::StructArray::Make(arrow::ArrayVector{frames, stamps}, std::vector<std::string>{"frame_id", "stamp"});
+  auto schema = arrow::schema({arrow::field("value", arrow::float64()), arrow::field("header", header->type())});
+  return arrow::RecordBatch::Make(schema, 3, {values, std::static_pointer_cast<arrow::Array>(header)});
+}
+
+// A ROS-shaped topic carries its stamp inside `header`, with no top-level
+// timestamp column. Detection walks the flattened leaves, so the topic stays on
+// the real time axis instead of silently falling back to a synthetic one.
+TEST(MosaicoTransport, NestedStampTopicBindsTheFlattenedLeafPath) {
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
+    on_batch("odom", nestedStampBatch(7000));
+    on_done("odom", mosaico::PullResult{});
+  });
+
+  worker.pullTopicsAsync("seq", {"odom"}, 0, 1);
+
+  ASSERT_EQ(host.bindings.size(), 1U);
+  EXPECT_EQ(nlohmann::json::parse(host.bindings[0].config).at("timestamp_column"), "header/stamp");
+  ASSERT_EQ(host.messages.size(), 1U);
+  EXPECT_EQ(host.messages[0].host_ts_ns, 7'000'000LL);
+}
+
 // Canonical-object ontologies stay on the direct-write path: no parser binding,
 // no arrow-ipc message.
 TEST(MosaicoTransport, ObjectOntologyTopicNeverTakesTheTransportPath) {
