@@ -229,9 +229,9 @@ arrow::Result<std::shared_ptr<arrow::Buffer>> serializeIpcStream(
   return sink->Finish();
 }
 
-std::string parserConfigJson(std::string_view timestamp_field) {
+std::string parserConfigJson(std::string_view timestamp_field, std::int64_t synthetic_interval_ns) {
   return nlohmann::json{
-      {"timestamp_column", std::string(timestamp_field)}, {"synthetic_interval_ns", kSyntheticIntervalNs}}
+      {"timestamp_column", std::string(timestamp_field)}, {"synthetic_interval_ns", synthetic_interval_ns}}
       .dump();
 }
 

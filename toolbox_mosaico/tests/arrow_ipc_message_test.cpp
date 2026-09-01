@@ -145,6 +145,8 @@ TEST(ParserConfigJson, CarriesBothKeys) {
   EXPECT_EQ(config.at("timestamp_column"), "timestamp_ns");
   EXPECT_EQ(config.at("synthetic_interval_ns"), mosaico::kSyntheticIntervalNs);
   EXPECT_EQ(nlohmann::json::parse(mosaico::parserConfigJson("")).at("timestamp_column"), "");
+  // The interval is per-topic: a fitted cadence must reach the parser verbatim.
+  EXPECT_EQ(nlohmann::json::parse(mosaico::parserConfigJson("", 1000)).at("synthetic_interval_ns"), 1000);
 }
 
 std::shared_ptr<arrow::Array> castArray(

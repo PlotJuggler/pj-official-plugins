@@ -77,7 +77,10 @@ inline constexpr std::int64_t kSyntheticIntervalNs = 33'333'333LL;
     const arrow::RecordBatch& batch, std::int64_t capacity_hint = 0);
 
 /// `parser_arrow` configuration for one topic:
-/// `{"timestamp_column": <leaf path>, "synthetic_interval_ns": kSyntheticIntervalNs}`.
-[[nodiscard]] std::string parserConfigJson(std::string_view timestamp_field);
+/// `{"timestamp_column": <leaf path>, "synthetic_interval_ns": <interval>}`.
+/// The interval is per-topic, not a constant: a timestamp-less topic spreads its
+/// rows over the topic's [min,max] range, so the caller passes the fitted value.
+[[nodiscard]] std::string parserConfigJson(
+    std::string_view timestamp_field, std::int64_t synthetic_interval_ns = kSyntheticIntervalNs);
 
 }  // namespace mosaico

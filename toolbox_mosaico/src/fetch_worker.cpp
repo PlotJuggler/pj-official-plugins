@@ -498,7 +498,8 @@ void FetchWorker::pullTopicsAsync(
     std::string ts_field;       // flattened leaf path; empty = no timestamp column
     std::vector<int> ts_route;  // child-index route to that leaf
     std::int64_t info_max_ts_ns = 0;
-    // Object route only.
+    // Object route, and the scalar route while it has no timestamp column (its
+    // cadence is fitted at on_done, once the total row count is known).
     std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
     // Scalar route: one arrow-ipc message per batch through parser ingest. The
     // bind inputs are built in route(), off the host-write locks.
@@ -506,6 +507,7 @@ void FetchWorker::pullTopicsAsync(
     std::string parser_config;
     std::optional<PJ::ParserBindingHandle> binding;
     std::int64_t synth_anchor_ns = 0;
+    std::int64_t synth_interval_ns = kSyntheticIntervalNs;
     std::int64_t rows_pushed = 0;
     std::int64_t last_ipc_bytes = 0;  // sizes the next batch's output buffer
     std::string error;                // first bind/push failure; fails the topic at on_done
@@ -520,7 +522,8 @@ void FetchWorker::pullTopicsAsync(
   // schema is known. The tag is cached from getTopicMetadata (the dialog fetches
   // it on topic selection, processed before this pull on the serial queue) with
   // the stream's schema metadata as fallback. Everything a scalar topic needs at
-  // bind time is computed here so the host-write locks cover only the two host
+  // bind time is computed here — bar a timestamp-less topic's fitted interval,
+  // which only on_done knows — so the host-write locks cover only the two host
   // calls (ensureParserBinding + pushMessage).
   auto route = [this](PerTopic& topic, const std::string& topic_name) {
     if (topic.ipc_schema || !topic.schema) {
@@ -552,11 +555,25 @@ void FetchWorker::pullTopicsAsync(
       return;
     }
     topic.ipc_schema_bytes = *schema_bytes;
-    topic.parser_config = parserConfigJson(topic.ts_field);
+    // A timestamp-less topic's config waits for on_done: its synthetic interval
+    // is fitted to the topic's [min,max] range and needs the total row count.
+    if (!topic.ts_field.empty()) {
+      topic.parser_config = parserConfigJson(topic.ts_field);
+    }
+  };
+
+  // Cadence for a timestamp-less topic: spread @p total_rows over the topic's
+  // [min_ts_ns, max_ts_ns] range, else keep the ~30 fps default.
+  auto fitSyntheticInterval = [](PerTopic& topic, std::int64_t total_rows) {
+    const std::int64_t span_ns = topic.info_max_ts_ns - topic.synth_anchor_ns;
+    if (topic.ts_field.empty() && total_rows > 1 && span_ns > 0) {
+      topic.synth_interval_ns = span_ns / (total_rows - 1);
+    }
   };
 
   // Scalar route: hand the batch to the host as an arrow-ipc message. Runs on
-  // the pool thread that received the batch; the host-write section is
+  // the pool thread that received the batch — or, for a timestamp-less topic,
+  // on the one that completed it; the host-write section is
   // serialized by host_write_mu_ ([C1]) and the ingest fat pointer by
   // progress_mu_ (same order as ensureIngestProgress), so the context is only
   // ever driven by one caller at a time as its contract requires.
@@ -585,7 +602,7 @@ void FetchWorker::pullTopicsAsync(
     // Host timestamp: the row's own time; without a column, the synthetic
     // cadence the parser continues per row (see parserConfigJson).
     const std::int64_t host_ts_ns = firstRowTimestampNs(batch, topic.ts_route)
-                                        .value_or(topic.synth_anchor_ns + topic.rows_pushed * kSyntheticIntervalNs);
+                                        .value_or(topic.synth_anchor_ns + topic.rows_pushed * topic.synth_interval_ns);
     if (!host_provider_) {
       topic.error = "host not bound";
       return;
@@ -637,7 +654,7 @@ void FetchWorker::pullTopicsAsync(
     imported_any->store(true, std::memory_order_relaxed);
   };
 
-  auto on_done = [this, sequence_name, state, imported_any](
+  auto on_done = [this, sequence_name, state, imported_any, push_scalar_batch, fitSyntheticInterval](
                      const std::string& topic_name, arrow::Result<PullResult> result) {
     auto it = state->find(topic_name);
     if (it == state->end()) {
@@ -663,7 +680,24 @@ void FetchWorker::pullTopicsAsync(
       return;
     }
     if (!topic.object_route) {
-      // Every batch already reached the host (or failed) in push_scalar_batch.
+      // A stamped topic streamed batch by batch through push_scalar_batch and
+      // leaves nothing buffered. A timestamp-less one waited here: its cadence
+      // is fitted to the topic's [min,max] range over the WHOLE row count, so
+      // both the parser config and every host timestamp need the total first.
+      // Batches that never reached this point (cancel, transport failure) are
+      // dropped, exactly as when the whole topic was written at on_done.
+      if (topic.error.empty() && !topic.batches.empty()) {
+        std::int64_t total_rows = 0;
+        for (const auto& buffered : topic.batches) {
+          total_rows += buffered->num_rows();
+        }
+        fitSyntheticInterval(topic, total_rows);
+        topic.parser_config = parserConfigJson(topic.ts_field, topic.synth_interval_ns);
+        for (const auto& buffered : topic.batches) {
+          push_scalar_batch(topic, topic_name, *buffered);
+        }
+      }
+      topic.batches.clear();
       if (!topic.error.empty()) {
         finish(false, topic.error);
       } else if (topic.rows_pushed == 0) {
@@ -708,15 +742,7 @@ void FetchWorker::pullTopicsAsync(
     // Media ontologies ship without per-row timestamps (the server orders frames
     // by Flight ticket): synthesize a monotonic axis anchored at the topic's
     // min_ts_ns and spread over its [min,max] range.
-    const std::string& ts_field = topic.ts_field;
-    const std::int64_t synth_anchor_ns = topic.synth_anchor_ns;
-    std::int64_t synth_interval_ns = kSyntheticIntervalNs;
-    if (ts_field.empty()) {
-      const std::int64_t span_ns = topic.info_max_ts_ns - synth_anchor_ns;
-      if (table->num_rows() > 1 && span_ns > 0) {
-        synth_interval_ns = span_ns / (table->num_rows() - 1);
-      }
-    }
+    fitSyntheticInterval(topic, table->num_rows());
 
     // Each row becomes one serialized pj_base builtin object keyed by timestamp;
     // the HOST decodes each blob (see the per-ontology push helpers).
@@ -736,7 +762,8 @@ void FetchWorker::pullTopicsAsync(
       return;
     }
     ensureIngestProgress(*ds, sequence_name);
-    const ObjectIngestContext ctx{host, *ds, topic_name, ts_field, synth_anchor_ns, synth_interval_ns};
+    const ObjectIngestContext ctx{
+        host, *ds, topic_name, topic.ts_field, topic.synth_anchor_ns, topic.synth_interval_ns};
     auto pushed = [&]() -> PJ::Expected<ObjectPushOutcome> {
       if (is_image) {
         return pushImageRowsToHost(ctx, table);
@@ -798,7 +825,10 @@ void FetchWorker::pullTopicsAsync(
       topic.schema = batch->schema();
     }
     route(topic, topic_name);
-    if (topic.object_route) {
+    // Only a stamped scalar topic can be pushed progressively: everything else
+    // needs the whole topic in hand at on_done (an object table to explode, or
+    // the row count that fits the synthetic cadence).
+    if (topic.object_route || topic.ts_field.empty()) {
       topic.batches.push_back(batch);
     } else {
       push_scalar_batch(topic, topic_name, *batch);

@@ -544,27 +544,29 @@ TEST(MosaicoTransport, FailedProgressStartStillImportsScalarTopics) {
   EXPECT_EQ(host.releasedParserIngests(), 1U);
 }
 
-std::shared_ptr<arrow::RecordBatch> unstampedBatch() {
+std::shared_ptr<arrow::RecordBatch> unstampedBatch(int rows = 3) {
   arrow::DoubleBuilder value_builder;
-  for (int row = 0; row < 3; ++row) {
+  for (int row = 0; row < rows; ++row) {
     EXPECT_TRUE(value_builder.Append(static_cast<double>(row)).ok());
   }
   std::shared_ptr<arrow::Array> value_array;
   EXPECT_TRUE(value_builder.Finish(&value_array).ok());
-  return arrow::RecordBatch::Make(arrow::schema({arrow::field("value", arrow::float64())}), 3, {value_array});
+  return arrow::RecordBatch::Make(arrow::schema({arrow::field("value", arrow::float64())}), rows, {value_array});
 }
 
-// Rows without a timestamp column get a synthetic axis: the message host
-// timestamp advances by rows_pushed * interval from the topic's min_ts_ns and
-// the parser is told the same interval so the axis continues within a batch.
-TEST(MosaicoTransport, UnstampedTopicAdvancesTheSyntheticAxisAcrossBatches) {
+// Rows without a timestamp column get a synthetic axis fitted to the topic's
+// [min,max] range — which needs the total row count, so those batches are held
+// back and pushed together once the topic completes. The parser is told the
+// same interval so the axis continues within a batch.
+TEST(MosaicoTransport, UnstampedTopicFitsItsSyntheticCadenceToTheTopicRange) {
   FakeIngestHost host;
   mosaico::FetchWorker worker;
   worker.setHostProvider([&host] { return host.writeView(); });
   worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
   mosaico::TopicInfo info;
   info.topic_name = "imu/raw";
-  info.min_ts_ns = 5000;
+  info.min_ts_ns = 1000;
+  info.max_ts_ns = 6000;
   worker.setTopicInfoCache({{"imu/raw", info}});
   mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
     on_batch("imu/raw", unstampedBatch());
@@ -577,10 +579,38 @@ TEST(MosaicoTransport, UnstampedTopicAdvancesTheSyntheticAxisAcrossBatches) {
   ASSERT_EQ(host.bindings.size(), 1U);
   const auto config = nlohmann::json::parse(host.bindings[0].config);
   EXPECT_EQ(config.at("timestamp_column"), "");
-  EXPECT_EQ(config.at("synthetic_interval_ns"), mosaico::kSyntheticIntervalNs);
+  // 6 rows over [1000, 6000] -> 5000 / 5.
+  EXPECT_EQ(config.at("synthetic_interval_ns"), 1000);
+  ASSERT_EQ(host.messages.size(), 2U);
+  EXPECT_EQ(host.messages[0].host_ts_ns, 1000);
+  EXPECT_EQ(host.messages[1].host_ts_ns, 4000);
+}
+
+// Nothing to fit (one row, or a range that does not span forward): the ~30 fps
+// default carries the axis, exactly as before the range was consulted.
+TEST(MosaicoTransport, UnstampedTopicFallsBackToTheDefaultCadence) {
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::TopicInfo info;
+  info.topic_name = "imu/raw";
+  info.min_ts_ns = 5000;
+  info.max_ts_ns = 5000;  // zero span
+  worker.setTopicInfoCache({{"imu/raw", info}});
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
+    on_batch("imu/raw", unstampedBatch(1));
+    on_batch("imu/raw", unstampedBatch(1));
+    on_done("imu/raw", mosaico::PullResult{});
+  });
+
+  worker.pullTopicsAsync("seq", {"imu/raw"}, 0, 1);
+
+  ASSERT_EQ(host.bindings.size(), 1U);
+  EXPECT_EQ(nlohmann::json::parse(host.bindings[0].config).at("synthetic_interval_ns"), mosaico::kSyntheticIntervalNs);
   ASSERT_EQ(host.messages.size(), 2U);
   EXPECT_EQ(host.messages[0].host_ts_ns, 5000);
-  EXPECT_EQ(host.messages[1].host_ts_ns, 5000 + 3 * mosaico::kSyntheticIntervalNs);
+  EXPECT_EQ(host.messages[1].host_ts_ns, 5000 + mosaico::kSyntheticIntervalNs);
 }
 
 std::shared_ptr<arrow::RecordBatch> nestedStampBatch(std::int64_t first_stamp_us) {
