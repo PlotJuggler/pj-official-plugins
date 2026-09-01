@@ -433,6 +433,26 @@ TEST(TableShaperTest, UsesConfiguredNestedTimestampLeaf) {
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
 }
 
+/// Dots inside a field name are path separators, matching PlotJuggler 3's series names.
+TEST(TableShaperTest, NormalizesDottedFieldNameToSlashes) {
+  auto schema = makeSchema({{"timestamp_ns", NANOARROW_TYPE_INT64}, {"wheel.speed", NANOARROW_TYPE_DOUBLE}});
+  auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  auto output_schema = readSchema(shaped->stream);
+  ASSERT_EQ(output_schema.get()->n_children, 2);
+  EXPECT_STREQ(output_schema.get()->children[1]->name, "wheel/speed");
+}
+
+/// Dotted components normalize at every flatten depth and stay detectable as the axis.
+TEST(TableShaperTest, NormalizesDottedFieldNameInsideStruct) {
+  auto shaped = shapeStream(makeNestedTimestampStream("msg", "header.stamp"), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  EXPECT_EQ(shaped->timestamp_column, "msg/header/stamp");
+  auto schema = readSchema(shaped->stream);
+  EXPECT_STREQ(schema.get()->children[0]->name, "msg/header/stamp");
+  EXPECT_STREQ(schema.get()->children[0]->format, "l");
+}
+
 /// Missing timestamps produce a prepended int64 timestamp_ns sequence.
 TEST(TableShaperTest, SynthesizesTimestampColumnForEveryRow) {
   ShapeOptions options;

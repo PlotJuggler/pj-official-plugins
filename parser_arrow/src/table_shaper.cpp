@@ -151,11 +151,13 @@ void setNanoarrowStreamError(ShapingStreamState& state, int result, const char* 
   return format == "vu" || format == "vz" || format == "U" || format == "Z";
 }
 
-/// Build the stable slash-separated output name for one nullable or empty child name.
+/// Build the stable slash-separated output name for one nullable or empty child name. Dots inside a field name are
+/// path separators too, so a flat `wheel.speed` and a nested `wheel: struct<speed>` produce the same series name.
 [[nodiscard]] std::string childOutputName(std::string_view parent_name, const ArrowSchema* child, int64_t child_index) {
-  const std::string component = child != nullptr && child->name != nullptr && child->name[0] != '\0'
-                                    ? std::string(child->name)
-                                    : "_" + std::to_string(child_index);
+  std::string component = child != nullptr && child->name != nullptr && child->name[0] != '\0'
+                              ? std::string(child->name)
+                              : "_" + std::to_string(child_index);
+  std::replace(component.begin(), component.end(), '.', '/');
   return parent_name.empty() ? component : std::string(parent_name) + "/" + component;
 }
 
