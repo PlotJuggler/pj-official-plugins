@@ -34,6 +34,10 @@ struct ToolContext {
   // the only way to know how many were actually produced. Optional: an unbound
   // view means the answer carries no count, never that the tool fails.
   PJ::sdk::ToolboxObjectReadHostView objects;
+  // App-control path. Optional on the same terms: an unbound view degrades to a
+  // clean "host did not expose pj.playback.v1 / pj.viewport.v1" the model reads.
+  PJ::sdk::PlaybackHostView playback;         // play/pause/seek/rate/state + ns->display-seconds
+  PJ::sdk::ViewportHostView viewport;         // zoom plots to a time range / reset to fit
   std::function<void()> notify_data_changed;  // runtimeHost().notifyDataChanged() after a create
   std::string language = "luau";              // transform/marker script backend
 };

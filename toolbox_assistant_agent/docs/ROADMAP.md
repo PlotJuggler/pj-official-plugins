@@ -35,7 +35,7 @@ Two properties are non-negotiable and hold today:
 |---|---|
 | Chat panel as a floating toolbox window | Keeps the chart area usable while the assistant is open |
 | Two real backends | Claude Code (via a loopback MCP server) and Ollama, plus Echo/Fake for tests. Ollama was later retired by the North Star (see below) |
-| Nine tools | list / describe / read, create derived series + markers, remove either, list own work, status |
+| Sixteen tools | list / describe / read, create derived series + markers, remove either, list own work, status — plus the seven transport/viewport tools (play/pause/seek/rate/state, zoom/reset), replugged when `pj.playback.v1` + `pj.viewport.v1` went upstream |
 | Tolerant path resolution | Abbreviated paths resolve when unambiguous; ambiguous ones return candidates |
 | Input validation before install | Stops the silent-empty-curve failure at its source |
 | Catalog handed to the model up front | 6 → 1–4 round-trips per task (`FINDINGS.md` §2) |

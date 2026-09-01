@@ -9,7 +9,7 @@ work by calling the same plugin SDK a human-written plugin would.
           │
           ▼
    ┌──────────────┐   tool calls    ┌──────────────────┐   SDK services   ┌────────────┐
-   │  chat panel  │ ──────────────▶ │  tool layer (9)  │ ───────────────▶ │ PlotJuggler│
+   │  chat panel  │ ──────────────▶ │ tool layer (16)  │ ───────────────▶ │ PlotJuggler│
    │  (floating)  │ ◀────────────── │   over MCP       │ ◀─────────────── │    host    │
    └──────────────┘   results       └──────────────────┘                  └────────────┘
 ```
@@ -32,9 +32,9 @@ same pattern as Claude Code. The Ollama backend that used to run a local model i
 retired with that decision.
 
 For the Claude backend every built-in tool is disabled (`--tools ""`), so the model reaches
-*only* the nine tools below — it cannot touch your machine outside PlotJuggler.
+*only* the sixteen tools below — it cannot touch your machine outside PlotJuggler.
 
-## The nine tools
+## The sixteen tools
 
 | Tool | Does |
 |---|---|
@@ -47,6 +47,16 @@ For the Claude backend every built-in tool is disabled (`--tools ""`), so the mo
 | `list_created` | What this assistant has installed so far |
 | `remove_derived_series` | Withdraw one of its own derived series — and only its own |
 | `report_status` | Counts of loaded sources, topics and fields |
+| `play` / `pause` | Start/stop the playback cursor; every call echoes the full transport state |
+| `seek` | Move the cursor (display-axis seconds); the echo shows where it actually landed |
+| `set_playback_rate` | Playback speed multiplier, clamped to [0.05, 20] |
+| `get_playback_state` | Playing flag, cursor, range and rate — all display-axis seconds |
+| `zoom_to_time_range` | Frame every time plot's X window; each plot keeps its own Y |
+| `zoom_reset` | Reset every plot to fit its data |
+
+The transport/zoom tools exist only when the host exposes `pj.playback.v1` / `pj.viewport.v1`
+(PlotJuggler with SDK >= 0.27.0); on an older host they answer with a clean "not exposed" the
+model relays instead of guessing.
 
 Paths may be abbreviated: a unique suffix or prefix resolves on its own, and an ambiguous one
 comes back with the exact candidates rather than a guess.
