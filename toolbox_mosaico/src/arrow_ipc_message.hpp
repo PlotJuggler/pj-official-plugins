@@ -24,12 +24,19 @@ namespace mosaico {
 /// seamlessly across batches.
 inline constexpr std::int64_t kSyntheticIntervalNs = 33'333'333LL;
 
-/// The schema parser_arrow can decode: string_view/binary_view become
-/// utf8/binary and dictionary-encoded fields become their value type, at any
-/// nesting depth (struct children, list values) — nanoarrow_ipc 0.7 refuses
-/// both. Returns the SAME pointer when nothing needs to change, so callers can
-/// skip the cast pass (and stay zero-copy) with a pointer compare.
-[[nodiscard]] std::shared_ptr<arrow::Schema> ipcSafeSchema(const std::shared_ptr<arrow::Schema>& schema);
+/// The schema parser_arrow can decode, as an ALLOWLIST of what nanoarrow_ipc
+/// 0.7 actually accepts. At any nesting depth (struct/list/map children):
+/// string_view -> utf8, binary_view -> binary, dictionary -> its value type,
+/// list_view -> list, large_list_view -> large_list; struct / list / large_list
+/// / fixed_size_list / map recurse into their children. Everything else is
+/// either decodable as-is or an ERROR naming the field path and type — there is
+/// no silent pass-through, because a refused type only surfaces later as an
+/// opaque decode failure host-side. Run-end-encoded and any union whose child
+/// needs rewriting are errors: Arrow 23 has no cast kernel for them.
+///
+/// Returns the SAME pointer when nothing needs to change, so callers can skip
+/// the cast pass (and stay zero-copy) with a pointer compare.
+[[nodiscard]] arrow::Result<std::shared_ptr<arrow::Schema>> ipcSafeSchema(const std::shared_ptr<arrow::Schema>& schema);
 
 /// Cast every column whose type differs from `target` (see ipcSafeSchema).
 [[nodiscard]] arrow::Result<std::shared_ptr<arrow::RecordBatch>> castToSchema(

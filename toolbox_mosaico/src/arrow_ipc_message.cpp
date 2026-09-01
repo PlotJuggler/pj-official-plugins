@@ -18,20 +18,65 @@ namespace mosaico {
 
 namespace {
 
-// Type rewrite behind ipcSafeSchema; returns the input pointer when unchanged.
-std::shared_ptr<arrow::DataType> ipcSafeType(const std::shared_ptr<arrow::DataType>& type) {
+// Leaf types nanoarrow_ipc 0.7 decodes verbatim — the accepted arms of its
+// Field type switch (ArrowIpcDecoderSetType, nanoarrow/ipc/decoder.c), minus the
+// nested ones handled in ipcSafeType. Anything absent here is a decode failure,
+// so it must be rewritten or refused before framing.
+bool isIpcDecodableLeaf(arrow::Type::type id) {
+  switch (id) {
+    case arrow::Type::NA:
+    case arrow::Type::BOOL:
+    case arrow::Type::UINT8:
+    case arrow::Type::INT8:
+    case arrow::Type::UINT16:
+    case arrow::Type::INT16:
+    case arrow::Type::UINT32:
+    case arrow::Type::INT32:
+    case arrow::Type::UINT64:
+    case arrow::Type::INT64:
+    case arrow::Type::HALF_FLOAT:
+    case arrow::Type::FLOAT:
+    case arrow::Type::DOUBLE:
+    case arrow::Type::DECIMAL32:
+    case arrow::Type::DECIMAL64:
+    case arrow::Type::DECIMAL128:
+    case arrow::Type::DECIMAL256:
+    case arrow::Type::STRING:
+    case arrow::Type::LARGE_STRING:
+    case arrow::Type::BINARY:
+    case arrow::Type::LARGE_BINARY:
+    case arrow::Type::FIXED_SIZE_BINARY:
+    case arrow::Type::DATE32:
+    case arrow::Type::DATE64:
+    case arrow::Type::TIME32:
+    case arrow::Type::TIME64:
+    case arrow::Type::TIMESTAMP:
+    case arrow::Type::DURATION:
+    case arrow::Type::INTERVAL_MONTHS:
+    case arrow::Type::INTERVAL_DAY_TIME:
+    case arrow::Type::INTERVAL_MONTH_DAY_NANO:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Type rewrite behind ipcSafeSchema; returns the input pointer when unchanged
+// and an error naming @p path when the type can neither be decoded nor cast.
+arrow::Result<std::shared_ptr<arrow::DataType>> ipcSafeType(
+    const std::shared_ptr<arrow::DataType>& type, const std::string& path) {
   switch (type->id()) {
     case arrow::Type::STRING_VIEW:
       return arrow::utf8();
     case arrow::Type::BINARY_VIEW:
       return arrow::binary();
     case arrow::Type::DICTIONARY:
-      return ipcSafeType(std::static_pointer_cast<arrow::DictionaryType>(type)->value_type());
+      return ipcSafeType(std::static_pointer_cast<arrow::DictionaryType>(type)->value_type(), path);
     case arrow::Type::STRUCT: {
-      std::vector<std::shared_ptr<arrow::Field>> fields;
+      arrow::FieldVector fields;
       bool changed = false;
       for (const auto& field : type->fields()) {
-        auto safe = ipcSafeType(field->type());
+        ARROW_ASSIGN_OR_RAISE(auto safe, ipcSafeType(field->type(), path + "/" + field->name()));
         changed |= safe != field->type();
         fields.push_back(field->WithType(safe));
       }
@@ -39,38 +84,76 @@ std::shared_ptr<arrow::DataType> ipcSafeType(const std::shared_ptr<arrow::DataTy
     }
     case arrow::Type::LIST:
     case arrow::Type::LARGE_LIST:
-    case arrow::Type::FIXED_SIZE_LIST: {
+    case arrow::Type::FIXED_SIZE_LIST:
+    case arrow::Type::LIST_VIEW:
+    case arrow::Type::LARGE_LIST_VIEW: {
       const auto& value_field = type->field(0);
-      auto safe = ipcSafeType(value_field->type());
-      if (safe == value_field->type()) {
+      ARROW_ASSIGN_OR_RAISE(auto safe, ipcSafeType(value_field->type(), path + "/" + value_field->name()));
+      const bool is_view = type->id() == arrow::Type::LIST_VIEW || type->id() == arrow::Type::LARGE_LIST_VIEW;
+      if (!is_view && safe == value_field->type()) {
         return type;
       }
-      if (type->id() == arrow::Type::LIST) {
-        return arrow::list(value_field->WithType(safe));
+      auto value = value_field->WithType(safe);
+      switch (type->id()) {
+        case arrow::Type::LIST:
+        case arrow::Type::LIST_VIEW:
+          return arrow::list(value);
+        case arrow::Type::LARGE_LIST:
+        case arrow::Type::LARGE_LIST_VIEW:
+          return arrow::large_list(value);
+        default:
+          return arrow::fixed_size_list(value, std::static_pointer_cast<arrow::FixedSizeListType>(type)->list_size());
       }
-      if (type->id() == arrow::Type::LARGE_LIST) {
-        return arrow::large_list(value_field->WithType(safe));
-      }
-      return arrow::fixed_size_list(
-          value_field->WithType(safe), std::static_pointer_cast<arrow::FixedSizeListType>(type)->list_size());
     }
-    // ponytail: map/union/run-end types are not rewritten; a view nested in one fails at decode with a named type — add
-    // a case when a producer appears.
-    default:
+    case arrow::Type::MAP: {
+      const auto map = std::static_pointer_cast<arrow::MapType>(type);
+      ARROW_ASSIGN_OR_RAISE(auto key, ipcSafeType(map->key_type(), path + "/key"));
+      ARROW_ASSIGN_OR_RAISE(auto item, ipcSafeType(map->item_type(), path + "/" + map->item_field()->name()));
+      if (key == map->key_type() && item == map->item_type()) {
+        return type;
+      }
+      return arrow::map(key, map->item_field()->WithType(item), map->keys_sorted());
+    }
+    case arrow::Type::SPARSE_UNION:
+    case arrow::Type::DENSE_UNION: {
+      // Arrow has no union-to-union cast kernel, so a union passes only when
+      // every child is already decodable; one needing a rewrite is refused
+      // rather than framed into a stream parser_arrow would reject.
+      for (const auto& field : type->fields()) {
+        ARROW_ASSIGN_OR_RAISE(auto safe, ipcSafeType(field->type(), path + "/" + field->name()));
+        if (safe != field->type()) {
+          return arrow::Status::NotImplemented(
+              "field '", path, "': ", type->ToString(),
+              " has a child parser_arrow cannot decode and Arrow cannot cast");
+        }
+      }
       return type;
+    }
+    default:
+      if (isIpcDecodableLeaf(type->id())) {
+        return type;
+      }
+      // Notably RUN_END_ENCODED: nanoarrow_ipc rejects it and Arrow 23 has no
+      // cast to its value type either.
+      return arrow::Status::NotImplemented(
+          "field '", path, "': type ", type->ToString(), " cannot be decoded by parser_arrow");
   }
 }
+
 }  // namespace
 
-std::shared_ptr<arrow::Schema> ipcSafeSchema(const std::shared_ptr<arrow::Schema>& schema) {
-  std::vector<std::shared_ptr<arrow::Field>> fields;
+arrow::Result<std::shared_ptr<arrow::Schema>> ipcSafeSchema(const std::shared_ptr<arrow::Schema>& schema) {
+  arrow::FieldVector fields;
   bool changed = false;
   for (const auto& field : schema->fields()) {
-    auto safe = ipcSafeType(field->type());
+    ARROW_ASSIGN_OR_RAISE(auto safe, ipcSafeType(field->type(), field->name()));
     changed |= safe != field->type();
     fields.push_back(field->WithType(safe));
   }
-  return changed ? std::make_shared<arrow::Schema>(fields, schema->metadata()) : schema;
+  if (!changed) {
+    return schema;
+  }
+  return std::make_shared<arrow::Schema>(fields, schema->metadata());
 }
 
 arrow::Result<std::shared_ptr<arrow::RecordBatch>> castToSchema(

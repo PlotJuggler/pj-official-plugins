@@ -490,8 +490,8 @@ void FetchWorker::pullTopicsAsync(
   // topic's callbacks arrive in order on one pool thread.
   struct PerTopic {
     std::shared_ptr<arrow::Schema> schema;
-    // ipcSafeSchema(schema); same pointer = no cast needed. Doubles as the
-    // "already routed" marker — it is set exactly when route() has run.
+    bool routed = false;  // route() has run; its results below are final
+    // ipcSafeSchema(schema); same pointer = no cast needed. Scalar route only.
     std::shared_ptr<arrow::Schema> ipc_schema;
     bool object_route = false;  // canonical object: buffered table -> object helpers
     std::string ontology_tag;
@@ -526,9 +526,10 @@ void FetchWorker::pullTopicsAsync(
   // which only on_done knows — so the host-write locks cover only the two host
   // calls (ensureParserBinding + pushMessage).
   auto route = [this](PerTopic& topic, const std::string& topic_name) {
-    if (topic.ipc_schema || !topic.schema) {
+    if (topic.routed || !topic.schema) {
       return;
     }
+    topic.routed = true;
     std::string cached_tag;
     std::int64_t info_min_ts_ns = 0;
     if (auto info_it = topic_info_by_name_.find(topic_name); info_it != topic_info_by_name_.end()) {
@@ -545,10 +546,15 @@ void FetchWorker::pullTopicsAsync(
     topic.ts_field = detectTimestampField(*topic.schema);
     topic.ts_route = timestampFieldRoute(*topic.schema, topic.ts_field);
     topic.synth_anchor_ns = info_min_ts_ns != 0 ? info_min_ts_ns : nowNs();
-    topic.ipc_schema = ipcSafeSchema(topic.schema);
     if (topic.object_route) {
+      return;  // never IPC-framed: the object helpers read the Arrow table directly
+    }
+    auto safe_schema = ipcSafeSchema(topic.schema);
+    if (!safe_schema.ok()) {
+      topic.error = stringFromArrow(safe_schema.status());
       return;
     }
+    topic.ipc_schema = *safe_schema;
     auto schema_bytes = arrow::ipc::SerializeSchema(*topic.ipc_schema);
     if (!schema_bytes.ok()) {
       topic.error = stringFromArrow(schema_bytes.status());
