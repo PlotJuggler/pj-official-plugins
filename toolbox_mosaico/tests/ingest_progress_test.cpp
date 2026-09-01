@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <arrow/api.h>
+#include <arrow/compute/api.h>
 #include <arrow/io/memory.h>
 #include <arrow/ipc/reader.h>
 #include <gtest/gtest.h>
@@ -11,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -263,6 +265,17 @@ class FakeIngestHost {
   std::atomic<bool> live_{false};
   std::atomic<bool> stop_requested_{false};
 };
+
+template <typename Builder, typename Value>
+std::shared_ptr<arrow::Array> arrayOf(const std::vector<Value>& values) {
+  Builder builder;
+  for (const auto& value : values) {
+    EXPECT_TRUE(builder.Append(value).ok());
+  }
+  std::shared_ptr<arrow::Array> array;
+  EXPECT_TRUE(builder.Finish(&array).ok());
+  return array;
+}
 
 template <typename Predicate>
 bool waitUntil(Predicate&& predicate, std::chrono::milliseconds timeout) {
@@ -656,6 +669,159 @@ TEST(MosaicoTransport, NestedStampTopicBindsTheFlattenedLeafPath) {
   EXPECT_EQ(nlohmann::json::parse(host.bindings[0].config).at("timestamp_column"), "header/stamp");
   ASSERT_EQ(host.messages.size(), 1U);
   EXPECT_EQ(host.messages[0].host_ts_ns, 7'000'000LL);
+}
+
+// The stamp only looks like a timestamp AFTER the IPC rewrite: detecting on the
+// raw schema would call this topic unstamped and invent a synthetic axis while
+// the parser happily used the real column.
+TEST(MosaicoTransport, DictionaryEncodedStampIsDetectedAfterTheRewrite) {
+  arrow::TimestampBuilder stamp_builder(arrow::timestamp(arrow::TimeUnit::MICRO), arrow::default_memory_pool());
+  arrow::DoubleBuilder value_builder;
+  for (int row = 0; row < 3; ++row) {
+    EXPECT_TRUE(stamp_builder.Append(7000 + row).ok());
+    EXPECT_TRUE(value_builder.Append(static_cast<double>(row)).ok());
+  }
+  std::shared_ptr<arrow::Array> stamps;
+  std::shared_ptr<arrow::Array> values;
+  ASSERT_TRUE(stamp_builder.Finish(&stamps).ok());
+  ASSERT_TRUE(value_builder.Finish(&values).ok());
+  auto dictionary_type = arrow::dictionary(arrow::int32(), stamps->type());
+  auto encoded = arrow::DictionaryArray::FromArrays(
+      dictionary_type, arrayOf<arrow::Int32Builder, std::int32_t>({0, 1, 2}), stamps);
+  ASSERT_TRUE(encoded.ok()) << encoded.status().ToString();
+  auto schema = arrow::schema({arrow::field("value", arrow::float64()), arrow::field("stamp", dictionary_type)});
+  auto batch = arrow::RecordBatch::Make(schema, 3, {values, *encoded});
+
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(
+      worker, [&batch](const auto& on_batch, const auto& on_done) {
+        on_batch("gps/fix", batch);
+        on_done("gps/fix", mosaico::PullResult{});
+      });
+
+  worker.pullTopicsAsync("seq", {"gps/fix"}, 0, 1);
+
+  ASSERT_EQ(host.bindings.size(), 1U);
+  EXPECT_EQ(nlohmann::json::parse(host.bindings[0].config).at("timestamp_column"), "stamp");
+  ASSERT_EQ(host.messages.size(), 1U);
+  EXPECT_EQ(host.messages[0].host_ts_ns, 7'000'000LL) << "stamped from the decoded value, not synthesized";
+}
+
+// An undecodable column costs its own curves, not the topic: the siblings still
+// import and the loss is reported as a warning on the successful result.
+TEST(MosaicoTransport, UndecodableColumnIsDroppedAndReportedAsAWarning) {
+  auto ids = arrayOf<arrow::Int64Builder, std::int64_t>({1, 2, 3});
+  auto run_ends = arrayOf<arrow::Int32Builder, std::int32_t>({1, 2, 3});
+  auto ree = *arrow::RunEndEncodedArray::Make(3, run_ends, ids);
+  auto stamps = arrayOf<arrow::Int64Builder, std::int64_t>({1000, 1001, 1002});
+  auto schema = arrow::schema(
+      {arrow::field("timestamp_ns", arrow::int64()), arrow::field("counter", ree->type()),
+       arrow::field("value", arrow::int64())});
+  auto batch = arrow::RecordBatch::Make(schema, 3, {stamps, ree, ids});
+
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  std::vector<mosaico::PullResultEvent> results;
+  worker.pullFinished = [&results](mosaico::PullResultEvent result) { results.push_back(std::move(result)); };
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(
+      worker, [&batch](const auto& on_batch, const auto& on_done) {
+        on_batch("odom", batch);
+        on_done("odom", mosaico::PullResult{});
+      });
+
+  worker.pullTopicsAsync("seq", {"odom"}, 0, 1);
+
+  ASSERT_EQ(results.size(), 1U);
+  EXPECT_TRUE(results[0].ok) << results[0].error;
+  EXPECT_NE(results[0].warning.find("counter"), std::string::npos) << results[0].warning;
+  ASSERT_EQ(host.messages.size(), 1U);
+  EXPECT_EQ(host.messages[0].host_ts_ns, 1000) << "the surviving stamp still drives the axis";
+}
+
+// Losing the axis is the one drop that is fatal: every surviving curve would
+// land on a synthetic base that disagrees with the rest of the sequence.
+TEST(MosaicoTransport, TopicFailsWhenTheTimestampColumnItselfIsUndecodable) {
+  auto ids = arrayOf<arrow::Int64Builder, std::int64_t>({1, 2, 3});
+  auto run_ends = arrayOf<arrow::Int32Builder, std::int32_t>({1, 2, 3});
+  // A run-end encoded `timestamp_ns` cannot be framed, so the axis is gone.
+  auto ree = *arrow::RunEndEncodedArray::Make(3, run_ends, ids);
+  auto schema = arrow::schema({arrow::field("timestamp_ns", ree->type()), arrow::field("value", arrow::int64())});
+  auto batch = arrow::RecordBatch::Make(schema, 3, {ree, ids});
+
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  std::vector<mosaico::PullResultEvent> results;
+  worker.pullFinished = [&results](mosaico::PullResultEvent result) { results.push_back(std::move(result)); };
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(
+      worker, [&batch](const auto& on_batch, const auto& on_done) {
+        on_batch("odom", batch);
+        on_done("odom", mosaico::PullResult{});
+      });
+
+  worker.pullTopicsAsync("seq", {"odom"}, 0, 1);
+
+  EXPECT_TRUE(host.messages.empty());
+  ASSERT_EQ(results.size(), 1U);
+  EXPECT_FALSE(results[0].ok);
+  EXPECT_NE(results[0].error.find("timestamp_ns"), std::string::npos) << results[0].error;
+}
+
+// A timestamp-less topic buffers its whole payload to fit the cadence. Once the
+// host has said it has no parser ingest, that buffer can never be pushed, so the
+// topic gives up on the first batch instead of holding it all to fail at the end.
+TEST(MosaicoTransport, UnstampedTopicStopsBufferingOnceIngestIsKnownUnavailable) {
+  FakeIngestHost host;
+  host.failParserIngestCreation();
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  std::vector<mosaico::PullResultEvent> results;
+  worker.pullFinished = [&results](mosaico::PullResultEvent result) { results.push_back(std::move(result)); };
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
+    on_batch("imu/raw", unstampedBatch());
+    on_batch("imu/raw", unstampedBatch());
+    on_done("imu/raw", mosaico::PullResult{});
+  });
+
+  worker.pullTopicsAsync("seq", {"imu/raw"}, 0, 1);
+
+  EXPECT_TRUE(host.messages.empty());
+  ASSERT_EQ(results.size(), 1U);
+  EXPECT_FALSE(results[0].ok);
+  EXPECT_NE(results[0].error.find("no parser installed for arrow-ipc"), std::string::npos) << results[0].error;
+}
+
+// A synthetic axis anchored near INT64_MAX would silently wrap into the distant
+// past; the topic fails naming the overflow instead.
+TEST(MosaicoTransport, SyntheticTimestampOverflowFailsTheTopic) {
+  FakeIngestHost host;
+  std::vector<mosaico::PullResultEvent> results;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  worker.pullFinished = [&results](mosaico::PullResultEvent result) { results.push_back(std::move(result)); };
+  mosaico::TopicInfo info;
+  info.topic_name = "imu/raw";
+  info.min_ts_ns = std::numeric_limits<std::int64_t>::max() - 10;
+  worker.setTopicInfoCache({{"imu/raw", info}});
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
+    on_batch("imu/raw", unstampedBatch(2));
+    on_batch("imu/raw", unstampedBatch(2));
+    on_done("imu/raw", mosaico::PullResult{});
+  });
+
+  worker.pullTopicsAsync("seq", {"imu/raw"}, 0, 1);
+
+  ASSERT_EQ(results.size(), 1U);
+  EXPECT_FALSE(results[0].ok);
+  EXPECT_NE(results[0].error.find("overflow"), std::string::npos) << results[0].error;
 }
 
 // Canonical-object ontologies stay on the direct-write path: no parser binding,

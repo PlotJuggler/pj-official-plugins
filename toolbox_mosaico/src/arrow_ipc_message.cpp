@@ -7,6 +7,7 @@
 #include <arrow/extension_type.h>
 #include <arrow/io/memory.h>
 #include <arrow/ipc/writer.h>
+#include <arrow/util/string.h>
 
 #include <algorithm>
 #include <array>
@@ -135,13 +136,20 @@ arrow::Result<std::shared_ptr<arrow::DataType>> ipcSafeType(
         }
       }
       return type;
+      case arrow::Type::RUN_END_ENCODED:
+        // ponytail: arrow::compute::RunEndDecode would materialize this, but the
+        // pinned Arrow is built with compute=False, so its vector kernels
+        // (run_end_decode, take) are not registered and only the cast kernels
+        // are. Dropping the column keeps the siblings; flip `arrow/*:compute` in
+        // the root conanfile and rewrite this arm if a producer ever emits one.
+        return arrow::Status::NotImplemented(
+            "field '", path, "': type ", type->ToString(),
+            " needs the run_end_decode kernel, absent from this Arrow build");
     }
     default:
       if (isIpcDecodableLeaf(type->id())) {
         return type;
       }
-      // Notably RUN_END_ENCODED: nanoarrow_ipc rejects it and Arrow 23 has no
-      // cast to its value type either.
       return arrow::Status::NotImplemented(
           "field '", path, "': type ", type->ToString(), " cannot be decoded by parser_arrow");
   }
@@ -149,32 +157,43 @@ arrow::Result<std::shared_ptr<arrow::DataType>> ipcSafeType(
 
 }  // namespace
 
-arrow::Result<std::shared_ptr<arrow::Schema>> ipcSafeSchema(const std::shared_ptr<arrow::Schema>& schema) {
+arrow::Result<IpcSafeSchema> ipcSafeSchema(const std::shared_ptr<arrow::Schema>& schema) {
+  IpcSafeSchema result;
   arrow::FieldVector fields;
   bool changed = false;
-  for (const auto& field : schema->fields()) {
-    ARROW_ASSIGN_OR_RAISE(auto safe, ipcSafeType(field->type(), field->name()));
-    changed |= safe != field->type();
-    fields.push_back(field->WithType(safe));
+  for (int index = 0; index < schema->num_fields(); ++index) {
+    const auto& field = schema->field(index);
+    auto safe = ipcSafeType(field->type(), field->name());
+    if (!safe.ok()) {
+      result.dropped.push_back(safe.status().message());
+      changed = true;
+      continue;
+    }
+    changed |= *safe != field->type();
+    result.kept_columns.push_back(index);
+    fields.push_back(field->WithType(*safe));
   }
-  if (!changed) {
-    return schema;
+  if (fields.empty()) {
+    return arrow::Status::Invalid(
+        "no column parser_arrow can decode: ", arrow::internal::JoinStrings(result.dropped, "; "));
   }
-  return std::make_shared<arrow::Schema>(fields, schema->metadata());
+  result.schema = changed ? std::make_shared<arrow::Schema>(fields, schema->metadata()) : schema;
+  return result;
 }
 
 arrow::Result<std::shared_ptr<arrow::RecordBatch>> castToSchema(
-    const arrow::RecordBatch& batch, const std::shared_ptr<arrow::Schema>& target) {
-  std::vector<std::shared_ptr<arrow::Array>> columns = batch.columns();
-  for (int index = 0; index < batch.num_columns(); ++index) {
-    const auto& want = target->field(index)->type();
-    if (columns[index]->type()->Equals(*want)) {
-      continue;
+    const arrow::RecordBatch& batch, const IpcSafeSchema& safe) {
+  arrow::ArrayVector columns;
+  columns.reserve(safe.kept_columns.size());
+  for (std::size_t index = 0; index < safe.kept_columns.size(); ++index) {
+    std::shared_ptr<arrow::Array> column = batch.column(safe.kept_columns[index]);
+    const auto& want = safe.schema->field(static_cast<int>(index))->type();
+    if (!column->type()->Equals(*want)) {
+      ARROW_ASSIGN_OR_RAISE(column, arrow::compute::Cast(*column, want));
     }
-    ARROW_ASSIGN_OR_RAISE(auto casted, arrow::compute::Cast(*columns[index], want));
-    columns[index] = std::move(casted);
+    columns.push_back(std::move(column));
   }
-  return arrow::RecordBatch::Make(target, batch.num_rows(), std::move(columns));
+  return arrow::RecordBatch::Make(safe.schema, batch.num_rows(), std::move(columns));
 }
 
 namespace {
@@ -191,7 +210,13 @@ struct Leaf {
   arrow::Type::type type_id;
 };
 
-std::string normalizedComponent(const std::string& name) {
+// parser_arrow's childOutputName: an empty name becomes `_<child index>`, and
+// dots are path separators so a flat `wheel.speed` and a nested
+// `wheel: struct<speed>` name the same series.
+std::string outputComponent(const std::string& name, int child_index) {
+  if (name.empty()) {
+    return "_" + std::to_string(child_index);
+  }
   std::string out = name;
   std::replace(out.begin(), out.end(), '.', '/');
   return out;
@@ -203,8 +228,8 @@ void appendLeaves(
     const arrow::FieldVector& fields, const std::string& prefix, std::vector<int>& route, std::vector<Leaf>& out) {
   for (int index = 0; index < static_cast<int>(fields.size()); ++index) {
     const auto& field = fields[static_cast<std::size_t>(index)];
-    std::string path =
-        prefix.empty() ? normalizedComponent(field->name()) : prefix + "/" + normalizedComponent(field->name());
+    const std::string component = outputComponent(field->name(), index);
+    std::string path = prefix.empty() ? component : prefix + "/" + component;
     route.push_back(index);
     if (field->type()->id() == arrow::Type::STRUCT) {
       appendLeaves(field->type()->fields(), path, route, out);
@@ -243,16 +268,22 @@ TimestampLeaf detectTimestampLeaf(const arrow::Schema& schema) {
 
 namespace {
 
+// Bit-for-bit parser_arrow's floatingSecondsToNanoseconds: the long double
+// promotion before the multiply is load-bearing, not defensive — in double the
+// product lands on a .5 tie often enough to round a whole nanosecond away from
+// what the parser computes for the very same column.
 std::optional<std::int64_t> secondsToNs(double seconds) {
   if (!std::isfinite(seconds)) {
     return std::nullopt;
   }
-  const double ns = std::round(seconds * 1e9);
-  if (ns < static_cast<double>(std::numeric_limits<std::int64_t>::min()) ||
-      ns >= static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
+  constexpr long double kNanosecondsPerSecond = 1'000'000'000.0L;
+  constexpr long double kInt64LowerBound = -0x1p63L;
+  constexpr long double kInt64UpperBound = 0x1p63L;
+  const long double rounded = std::round(static_cast<long double>(seconds) * kNanosecondsPerSecond);
+  if (rounded < kInt64LowerBound || rounded >= kInt64UpperBound) {
     return std::nullopt;
   }
-  return static_cast<std::int64_t>(ns);
+  return static_cast<std::int64_t>(rounded);
 }
 
 }  // namespace
@@ -275,7 +306,9 @@ std::optional<std::int64_t> firstRowTimestampNs(const arrow::RecordBatch& batch,
   }
   const std::shared_ptr<arrow::Scalar>& scalar = *leaf_scalar;
   const arrow::Type::type type_id = scalar->type->id();
-  if (arrow::is_floating(type_id)) {
+  // FLOAT/DOUBLE only: parser_arrow refuses a half-float axis, so stamping from
+  // one here would disagree with the parser about the very same column.
+  if (type_id == arrow::Type::FLOAT || type_id == arrow::Type::DOUBLE) {
     auto seconds = arrow::compute::Cast(arrow::Datum(scalar), arrow::float64());
     return seconds.ok() ? secondsToNs(seconds->scalar_as<arrow::DoubleScalar>().value) : std::nullopt;
   }

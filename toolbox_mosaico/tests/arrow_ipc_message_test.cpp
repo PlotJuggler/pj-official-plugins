@@ -88,12 +88,43 @@ TEST(DetectTimestampLeaf, WalksFlattenedLeavesAndNormalizesDots) {
   EXPECT_TRUE(mosaico::detectTimestampLeaf(*nested_by_name).route.empty());
 }
 
+// parser_arrow names an unnamed child `_<index>`. Mirroring it keeps the scalar
+// contract exact, and keeps an unnamed top-level stamp from colliding with the
+// empty string that means "this topic has no timestamp".
+TEST(DetectTimestampLeaf, EmptyNameComponentsBecomeUnderscoreIndex) {
+  auto unnamed_child = arrow::schema(
+      {arrow::field("value", arrow::float64()),
+       arrow::field("header", arrow::struct_({arrow::field("", arrow::timestamp(arrow::TimeUnit::MICRO))}))});
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*unnamed_child).path, "header/_0");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*unnamed_child).route, (std::vector<int>{1, 0}));
+
+  auto unnamed_top = arrow::schema({arrow::field("", arrow::timestamp(arrow::TimeUnit::NANO))});
+  const auto leaf = mosaico::detectTimestampLeaf(*unnamed_top);
+  EXPECT_EQ(leaf.path, "_0") << "not \"\", which route() reads as timestamp-less";
+  EXPECT_FALSE(leaf.route.empty());
+}
+
 TEST(FirstRowTimestampNs, ByTypeAndInvalidRoutes) {
   EXPECT_EQ(mosaico::firstRowTimestampNs(*scalarBatch(), {0}), 1000);
 
   auto double_schema = arrow::schema({arrow::field("t", arrow::float64())});
   auto double_batch = arrow::RecordBatch::Make(double_schema, 1, {arrayOf<arrow::DoubleBuilder, double>({1.5})});
   EXPECT_EQ(mosaico::firstRowTimestampNs(*double_batch, {0}), 1'500'000'000LL);
+
+  // Witness value: in plain double the product lands on a .5 tie and rounds a
+  // whole nanosecond past what parser_arrow computes for the same column.
+  auto witness_batch =
+      arrow::RecordBatch::Make(double_schema, 1, {arrayOf<arrow::DoubleBuilder, double>({-362.3269081675})});
+  EXPECT_EQ(mosaico::firstRowTimestampNs(*witness_batch, {0}), -362'326'908'167LL);
+
+  // Half-float is refused: parser_arrow rejects it as an axis, so stamping from
+  // it here would disagree with the parser about the very same column.
+  arrow::HalfFloatBuilder half_builder;
+  ASSERT_TRUE(half_builder.Append(static_cast<std::uint16_t>(0x3C00)).ok());  // 1.0
+  std::shared_ptr<arrow::Array> half_array;
+  ASSERT_TRUE(half_builder.Finish(&half_array).ok());
+  auto half_batch = arrow::RecordBatch::Make(arrow::schema({arrow::field("time", arrow::float16())}), 1, {half_array});
+  EXPECT_FALSE(mosaico::firstRowTimestampNs(*half_batch, {0}).has_value());
 
   auto milli_schema = arrow::schema({arrow::field("stamp", arrow::timestamp(arrow::TimeUnit::MILLI))});
   arrow::TimestampBuilder milli_builder(arrow::timestamp(arrow::TimeUnit::MILLI), arrow::default_memory_pool());
@@ -194,7 +225,9 @@ TEST(IpcSafeSchema, ViewAndDictionaryFieldsBecomePlainTypesAtEveryDepth) {
 
   auto safe_result = mosaico::ipcSafeSchema(schema);
   ASSERT_TRUE(safe_result.ok()) << safe_result.status().ToString();
-  auto safe_schema = *safe_result;
+  const mosaico::IpcSafeSchema& safe = *safe_result;
+  EXPECT_TRUE(safe.dropped.empty());
+  auto safe_schema = safe.schema;
   ASSERT_NE(safe_schema, schema);
   EXPECT_TRUE(safe_schema->field(0)->type()->Equals(arrow::utf8()));
   EXPECT_TRUE(safe_schema->field(1)->type()->Equals(arrow::binary()));
@@ -202,7 +235,7 @@ TEST(IpcSafeSchema, ViewAndDictionaryFieldsBecomePlainTypesAtEveryDepth) {
   EXPECT_TRUE(safe_schema->field(3)->type()->field(0)->type()->Equals(arrow::utf8()));
   EXPECT_TRUE(safe_schema->field(4)->type()->Equals(arrow::int64()));
 
-  auto safe_batch = mosaico::castToSchema(*batch, safe_schema);
+  auto safe_batch = mosaico::castToSchema(*batch, safe);
   ASSERT_TRUE(safe_batch.ok()) << safe_batch.status().ToString();
   auto bytes = mosaico::serializeIpcStream(**safe_batch);
   ASSERT_TRUE(bytes.ok()) << bytes.status().ToString();
@@ -220,7 +253,9 @@ TEST(IpcSafeSchema, ReturnsTheSamePointerWhenNothingNeedsCasting) {
   auto schema = scalarBatch()->schema();
   auto safe = mosaico::ipcSafeSchema(schema);
   ASSERT_TRUE(safe.ok()) << safe.status().ToString();
-  EXPECT_EQ(*safe, schema);
+  EXPECT_EQ(safe->schema, schema);
+  EXPECT_EQ(safe->kept_columns, (std::vector<int>{0, 1}));
+  EXPECT_TRUE(safe->dropped.empty());
 }
 
 // Every rewrite the allowlist promises must survive a REAL cast, not just a
@@ -259,15 +294,15 @@ TEST(IpcSafeSchema, EveryRewriteKindActuallyCasts) {
 
   auto safe_schema = mosaico::ipcSafeSchema(batch->schema());
   ASSERT_TRUE(safe_schema.ok()) << safe_schema.status().ToString();
-  EXPECT_TRUE((*safe_schema)->field(0)->type()->Equals(arrow::utf8()));
-  EXPECT_TRUE((*safe_schema)->field(1)->type()->Equals(arrow::binary()));
-  EXPECT_TRUE((*safe_schema)->field(2)->type()->Equals(arrow::utf8()));
-  EXPECT_TRUE((*safe_schema)->field(3)->type()->Equals(arrow::list(arrow::field("item", arrow::int64()))));
-  EXPECT_TRUE((*safe_schema)->field(4)->type()->Equals(arrow::large_list(arrow::field("item", arrow::int64()))));
-  EXPECT_TRUE((*safe_schema)->field(5)->type()->Equals(arrow::list(arrow::field("item", arrow::utf8()))));
-  EXPECT_TRUE((*safe_schema)->field(6)->type()->field(0)->type()->Equals(arrow::utf8()));
-  EXPECT_TRUE((*safe_schema)->field(7)->type()->Equals(arrow::map(arrow::utf8(), arrow::utf8())));
-  EXPECT_TRUE((*safe_schema)->field(8)->type()->Equals(arrow::fixed_size_list(arrow::utf8(), 1)));
+  EXPECT_TRUE((*safe_schema).schema->field(0)->type()->Equals(arrow::utf8()));
+  EXPECT_TRUE((*safe_schema).schema->field(1)->type()->Equals(arrow::binary()));
+  EXPECT_TRUE((*safe_schema).schema->field(2)->type()->Equals(arrow::utf8()));
+  EXPECT_TRUE((*safe_schema).schema->field(3)->type()->Equals(arrow::list(arrow::field("item", arrow::int64()))));
+  EXPECT_TRUE((*safe_schema).schema->field(4)->type()->Equals(arrow::large_list(arrow::field("item", arrow::int64()))));
+  EXPECT_TRUE((*safe_schema).schema->field(5)->type()->Equals(arrow::list(arrow::field("item", arrow::utf8()))));
+  EXPECT_TRUE((*safe_schema).schema->field(6)->type()->field(0)->type()->Equals(arrow::utf8()));
+  EXPECT_TRUE((*safe_schema).schema->field(7)->type()->Equals(arrow::map(arrow::utf8(), arrow::utf8())));
+  EXPECT_TRUE((*safe_schema).schema->field(8)->type()->Equals(arrow::fixed_size_list(arrow::utf8(), 1)));
 
   auto safe_batch = mosaico::castToSchema(*batch, *safe_schema);
   ASSERT_TRUE(safe_batch.ok()) << safe_batch.status().ToString();
@@ -275,7 +310,7 @@ TEST(IpcSafeSchema, EveryRewriteKindActuallyCasts) {
   ASSERT_TRUE(bytes.ok()) << bytes.status().ToString();
   auto decoded = decodeSingleBatch(*bytes);
   ASSERT_NE(decoded, nullptr);
-  EXPECT_TRUE(decoded->schema()->Equals(**safe_schema));
+  EXPECT_TRUE(decoded->schema()->Equals(*(*safe_schema).schema));
 }
 
 // Stand-in for arrow.opaque / arrow.json / uuid / geoarrow: only the storage
@@ -312,8 +347,8 @@ TEST(IpcSafeSchema, ExtensionFieldsBecomeTheirStorageType) {
   auto schema = arrow::schema({arrow::field("doc", plain), arrow::field("blob", over_view)});
   auto safe = mosaico::ipcSafeSchema(schema);
   ASSERT_TRUE(safe.ok()) << safe.status().ToString();
-  EXPECT_TRUE((*safe)->field(0)->type()->Equals(arrow::utf8()));
-  EXPECT_TRUE((*safe)->field(1)->type()->Equals(arrow::utf8())) << "a view-typed storage is still cast away";
+  EXPECT_TRUE(safe->schema->field(0)->type()->Equals(arrow::utf8()));
+  EXPECT_TRUE(safe->schema->field(1)->type()->Equals(arrow::utf8())) << "a view-typed storage is still cast away";
 
   auto batch = arrow::RecordBatch::Make(
       schema, 3,
@@ -329,37 +364,90 @@ TEST(IpcSafeSchema, ExtensionFieldsBecomeTheirStorageType) {
   EXPECT_TRUE(decoded->column(1)->Equals(*names));
 }
 
-// The allowlist fails loudly. A silent pass-through would hand parser_arrow a
-// stream it cannot decode, surfacing as an opaque host-side error instead.
-TEST(IpcSafeSchema, UndecodableTypesFailWithTheFieldPath) {
-  auto run_ends = arrayOf<arrow::Int32Builder, std::int32_t>({1, 2, 3});
+// Run-end encoding would materialize through arrow::compute::RunEndDecode, but
+// the pinned Arrow is built with compute=False so that kernel is unregistered.
+// It is therefore droppable, not fatal — and the diagnostic says why.
+TEST(IpcSafeSchema, RunEndEncodedColumnsAreDroppedWithTheReason) {
+  auto run_ends = arrayOf<arrow::Int32Builder, std::int32_t>({2, 3});
+  auto values = arrayOf<arrow::Int64Builder, std::int64_t>({7, 9});
+  auto ree = *arrow::RunEndEncodedArray::Make(3, run_ends, values);
   auto ids = arrayOf<arrow::Int64Builder, std::int64_t>({1, 2, 3});
-  auto ree = *arrow::RunEndEncodedArray::Make(3, run_ends, ids);
 
-  // Run-end encoding: nanoarrow_ipc refuses it and Arrow has no cast for it.
-  auto ree_status = mosaico::ipcSafeSchema(arrow::schema({arrow::field("counter", ree->type())})).status();
-  EXPECT_TRUE(ree_status.IsNotImplemented()) << ree_status.ToString();
-  EXPECT_NE(ree_status.message().find("'counter'"), std::string::npos) << ree_status.ToString();
+  auto schema = arrow::schema({arrow::field("counter", ree->type()), arrow::field("x", arrow::int64())});
+  auto safe = mosaico::ipcSafeSchema(schema);
+  ASSERT_TRUE(safe.ok()) << safe.status().ToString();
+  ASSERT_EQ(safe->dropped.size(), 1U);
+  EXPECT_NE(safe->dropped[0].find("'counter'"), std::string::npos) << safe->dropped[0];
+  EXPECT_NE(safe->dropped[0].find("run_end_decode"), std::string::npos) << safe->dropped[0];
+  EXPECT_EQ(safe->kept_columns, (std::vector<int>{1}));
 
-  // …and nested, the path names the leaf, not just the top-level column.
-  auto nested = arrow::schema({arrow::field("wrap", arrow::struct_({arrow::field("counter", ree->type())}))});
-  auto nested_status = mosaico::ipcSafeSchema(nested).status();
-  EXPECT_NE(nested_status.message().find("'wrap/counter'"), std::string::npos) << nested_status.ToString();
+  auto batch = arrow::RecordBatch::Make(schema, 3, {ree, ids});
+  auto safe_batch = mosaico::castToSchema(*batch, *safe);
+  ASSERT_TRUE(safe_batch.ok()) << safe_batch.status().ToString();
+  ASSERT_EQ((*safe_batch)->num_columns(), 1);
+  EXPECT_TRUE((*safe_batch)->column(0)->Equals(*ids));
+}
 
-  // A union needing a rewrite: Arrow has no union-to-union cast kernel.
-  auto union_type =
-      arrow::sparse_union({arrow::field("s", arrow::utf8_view()), arrow::field("i", arrow::int64())}, {0, 1});
-  auto union_status = mosaico::ipcSafeSchema(arrow::schema({arrow::field("choice", union_type)})).status();
-  EXPECT_TRUE(union_status.IsNotImplemented()) << union_status.ToString();
-  // The offending CHILD is named, not just the union that contains it.
-  EXPECT_NE(union_status.message().find("'choice/s'"), std::string::npos) << union_status.ToString();
+// PJ3 flattened and let the datastore skip what it could not plot. One exotic
+// column must not cost the user every sibling curve, so an irreducible column is
+// dropped with a diagnostic and the rest of the topic still imports.
+TEST(IpcSafeSchema, IrreducibleColumnsAreDroppedAndSiblingsSurvive) {
+  auto names = arrayOf<arrow::StringBuilder, std::string>({"a", "b", "c"});
+  auto ids = arrayOf<arrow::Int64Builder, std::int64_t>({1, 2, 3});
+  arrow::Int8Builder type_builder;
+  ASSERT_TRUE(type_builder.AppendValues({0, 0, 0}).ok());
+  std::shared_ptr<arrow::Array> type_ids;
+  ASSERT_TRUE(type_builder.Finish(&type_ids).ok());
+  // A union whose child needs a rewrite: Arrow has no union-to-union cast.
+  auto choice = *arrow::SparseUnionArray::Make(
+      *type_ids, arrow::ArrayVector{castArray(names, arrow::utf8_view()), ids}, std::vector<std::string>{"s", "i"});
 
-  // A union whose children are all decodable stays untouched.
+  auto schema = arrow::schema(
+      {arrow::field("x", arrow::int64()), arrow::field("choice", choice->type()),
+       arrow::field("label", arrow::utf8_view())});
+  auto batch = arrow::RecordBatch::Make(schema, 3, {ids, choice, castArray(names, arrow::utf8_view())});
+
+  auto safe = mosaico::ipcSafeSchema(schema);
+  ASSERT_TRUE(safe.ok()) << safe.status().ToString();
+  ASSERT_EQ(safe->dropped.size(), 1U);
+  // The diagnostic names the offending CHILD path, not just the union.
+  EXPECT_NE(safe->dropped[0].find("'choice/s'"), std::string::npos) << safe->dropped[0];
+  EXPECT_EQ(safe->kept_columns, (std::vector<int>{0, 2})) << "the siblings survive, renumbered";
+  ASSERT_EQ(safe->schema->num_fields(), 2);
+  EXPECT_EQ(safe->schema->field(0)->name(), "x");
+  EXPECT_EQ(safe->schema->field(1)->name(), "label");
+
+  auto safe_batch = mosaico::castToSchema(*batch, *safe);
+  ASSERT_TRUE(safe_batch.ok()) << safe_batch.status().ToString();
+  auto bytes = mosaico::serializeIpcStream(**safe_batch);
+  ASSERT_TRUE(bytes.ok()) << bytes.status().ToString();
+  auto decoded = decodeSingleBatch(*bytes);
+  ASSERT_NE(decoded, nullptr);
+  ASSERT_EQ(decoded->num_columns(), 2);
+  EXPECT_TRUE(decoded->column(0)->Equals(*ids));
+  EXPECT_TRUE(decoded->column(1)->Equals(*names));
+
+  // A union whose children are all decodable is left alone, not dropped.
   auto plain_union = arrow::sparse_union({arrow::field("s", arrow::utf8()), arrow::field("i", arrow::int64())}, {0, 1});
   auto plain_schema = arrow::schema({arrow::field("choice", plain_union)});
   auto plain = mosaico::ipcSafeSchema(plain_schema);
   ASSERT_TRUE(plain.ok()) << plain.status().ToString();
-  EXPECT_EQ(*plain, plain_schema);
+  EXPECT_EQ(plain->schema, plain_schema);
+  EXPECT_TRUE(plain->dropped.empty());
+}
+
+// Nothing plottable left is the one case that still fails the topic outright.
+TEST(IpcSafeSchema, FailsOnlyWhenNoColumnSurvives) {
+  auto run_ends = arrayOf<arrow::Int32Builder, std::int32_t>({1, 2, 3});
+  auto ids = arrayOf<arrow::Int64Builder, std::int64_t>({1, 2, 3});
+  auto ree = *arrow::RunEndEncodedArray::Make(3, run_ends, ids);
+  // The struct's only leaf is undecodable, so the whole column goes and the
+  // topic is left with nothing to plot.
+  auto nested = arrow::schema({arrow::field("wrap", arrow::struct_({arrow::field("counter", ree->type())}))});
+
+  auto status = mosaico::ipcSafeSchema(nested).status();
+  EXPECT_TRUE(status.IsInvalid()) << status.ToString();
+  EXPECT_NE(status.message().find("'wrap/counter'"), std::string::npos) << status.ToString();
 }
 
 }  // namespace

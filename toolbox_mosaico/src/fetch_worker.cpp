@@ -20,12 +20,16 @@
 // clang-format on
 
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <initializer_list>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -62,6 +66,21 @@ std::string stringFromArrow(const arrow::Status& status) {
 // Delegated-ingest encoding of scalar topics: one Flight batch = one complete
 // Arrow IPC stream, decoded host-side by parser_arrow.
 constexpr std::string_view kArrowIpcEncoding = "arrow-ipc";
+
+// anchor + rows_before * interval with no signed overflow (mirrors
+// parser_arrow's checkedMultiply); empty when the axis would wrap.
+std::optional<std::int64_t> syntheticTimestampNs(std::int64_t anchor, std::int64_t rows_before, std::int64_t interval) {
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  constexpr std::int64_t kMin = std::numeric_limits<std::int64_t>::min();
+  if (rows_before != 0 && (interval > kMax / rows_before || interval < kMin / rows_before)) {
+    return std::nullopt;
+  }
+  const std::int64_t offset = rows_before * interval;
+  if ((offset > 0 && anchor > kMax - offset) || (offset < 0 && anchor < kMin - offset)) {
+    return std::nullopt;
+  }
+  return anchor + offset;
+}
 
 std::int64_t nowNs() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
@@ -111,6 +130,11 @@ std::uint64_t FetchWorker::accumulatedProgressBytesLocked() const {
 bool FetchWorker::isStopRequestedByHost() {
   std::lock_guard<std::mutex> plock(progress_mu_);
   return ingest_progress_.has_value() && ingest_progress_->isStopRequested();
+}
+
+std::string FetchWorker::knownParserIngestError() {
+  std::lock_guard<std::mutex> lock(progress_mu_);
+  return ingest_progress_.has_value() ? std::string{} : parser_ingest_error_;
 }
 
 void FetchWorker::requestCancelFromHost() {
@@ -491,8 +515,10 @@ void FetchWorker::pullTopicsAsync(
   struct PerTopic {
     std::shared_ptr<arrow::Schema> schema;
     bool routed = false;  // route() has run; its results below are final
-    // ipcSafeSchema(schema); same pointer = no cast needed. Scalar route only.
-    std::shared_ptr<arrow::Schema> ipc_schema;
+    // ipcSafeSchema(schema): what actually goes on the wire, plus the column
+    // projection castToSchema applies. `schema` member same pointer as the raw
+    // schema = nothing to cast. Scalar route only.
+    IpcSafeSchema ipc_safe;
     bool object_route = false;  // canonical object: buffered table -> object helpers
     std::string ontology_tag;
     std::string ts_field;       // flattened leaf path; empty = no timestamp column
@@ -511,6 +537,7 @@ void FetchWorker::pullTopicsAsync(
     std::int64_t rows_pushed = 0;
     std::int64_t last_ipc_bytes = 0;  // sizes the next batch's output buffer
     std::string error;                // first bind/push failure; fails the topic at on_done
+    std::string warning;              // non-fatal note (dropped columns); rides the successful result
   };
   auto state = std::make_shared<std::unordered_map<std::string, PerTopic>>();
   auto imported_any = std::make_shared<std::atomic<bool>>(false);
@@ -539,24 +566,42 @@ void FetchWorker::pullTopicsAsync(
     }
     topic.ontology_tag = resolveOntologyTag(topic.schema, cached_tag);
     topic.object_route = isCanonicalObjectOntology(topic.ontology_tag);
-    // Detection runs on the RAW schema but over its flattened leaves, so a
-    // nested `header/stamp` is found here and the name it yields is already the
-    // one flattenStructColumns (object route) and parser_arrow (scalar route)
-    // will see.
-    auto leaf = detectTimestampLeaf(*topic.schema);
-    topic.ts_field = std::move(leaf.path);
-    topic.ts_route = std::move(leaf.route);
     topic.synth_anchor_ns = info_min_ts_ns != 0 ? info_min_ts_ns : nowNs();
     if (topic.object_route) {
-      return;  // never IPC-framed: the object helpers read the Arrow table directly
+      // Never IPC-framed: the object helpers read the Arrow table directly, so
+      // the RAW schema is the one their flattenStructColumns will name.
+      auto leaf = detectTimestampLeaf(*topic.schema);
+      topic.ts_field = std::move(leaf.path);
+      topic.ts_route = std::move(leaf.route);
+      return;
     }
     auto safe_schema = ipcSafeSchema(topic.schema);
     if (!safe_schema.ok()) {
       topic.error = stringFromArrow(safe_schema.status());
       return;
     }
-    topic.ipc_schema = *safe_schema;
-    auto schema_bytes = arrow::ipc::SerializeSchema(*topic.ipc_schema);
+    topic.ipc_safe = *std::move(safe_schema);
+    // Detect on the schema the PARSER will see, never the raw one: an
+    // extension- or dictionary-wrapped stamp is opaque before the rewrite and
+    // plainly TIMESTAMP after it, and a dropped column renumbers the route.
+    auto leaf = detectTimestampLeaf(*topic.ipc_safe.schema);
+    topic.ts_field = std::move(leaf.path);
+    topic.ts_route = std::move(leaf.route);
+    if (!topic.ipc_safe.dropped.empty()) {
+      topic.warning = fmt::format(
+          "topic '{}': dropped {} column(s) parser_arrow cannot decode: {}", topic_name, topic.ipc_safe.dropped.size(),
+          fmt::join(topic.ipc_safe.dropped, "; "));
+      // Losing an ordinary column costs its curves; losing the axis would put
+      // every surviving curve on a synthetic time base that silently disagrees
+      // with the rest of the sequence, so that one is fatal.
+      const auto raw_leaf = detectTimestampLeaf(*topic.schema);
+      const auto& kept = topic.ipc_safe.kept_columns;
+      if (!raw_leaf.path.empty() && std::find(kept.begin(), kept.end(), raw_leaf.route.front()) == kept.end()) {
+        topic.error = fmt::format("timestamp column '{}' is undecodable ({})", raw_leaf.path, topic.warning);
+        return;
+      }
+    }
+    auto schema_bytes = arrow::ipc::SerializeSchema(*topic.ipc_safe.schema);
     if (!schema_bytes.ok()) {
       topic.error = stringFromArrow(schema_bytes.status());
       return;
@@ -592,15 +637,19 @@ void FetchWorker::pullTopicsAsync(
     // parser_arrow (nanoarrow_ipc) cannot decode view or dictionary fields; the
     // server emits Utf8View for e.g. frame_id. Cast only when the schema needs it.
     std::shared_ptr<arrow::RecordBatch> safe_batch;
-    if (topic.ipc_schema != topic.schema) {
-      auto casted = castToSchema(batch, topic.ipc_schema);
+    if (topic.ipc_safe.schema != topic.schema) {
+      auto casted = castToSchema(batch, topic.ipc_safe);
       if (!casted.ok()) {
         topic.error = stringFromArrow(casted.status());
         return;
       }
       safe_batch = *casted;
     }
-    auto bytes = serializeIpcStream(safe_batch ? *safe_batch : batch, topic.last_ipc_bytes);
+    // Everything downstream reads the FRAMED batch: ts_route indexes the
+    // IPC-safe schema, whose columns the drop projection may have renumbered,
+    // and a dictionary/extension stamp only becomes readable after the cast.
+    const arrow::RecordBatch& framed = safe_batch ? *safe_batch : batch;
+    auto bytes = serializeIpcStream(framed, topic.last_ipc_bytes);
     if (!bytes.ok()) {
       topic.error = stringFromArrow(bytes.status());
       return;
@@ -608,8 +657,17 @@ void FetchWorker::pullTopicsAsync(
     topic.last_ipc_bytes = (*bytes)->size();
     // Host timestamp: the row's own time; without a column, the synthetic
     // cadence the parser continues per row (see parserConfigJson).
-    const std::int64_t host_ts_ns = firstRowTimestampNs(batch, topic.ts_route)
-                                        .value_or(topic.synth_anchor_ns + topic.rows_pushed * topic.synth_interval_ns);
+    auto host_ts = firstRowTimestampNs(framed, topic.ts_route);
+    if (!host_ts) {
+      host_ts = syntheticTimestampNs(topic.synth_anchor_ns, topic.rows_pushed, topic.synth_interval_ns);
+      if (!host_ts) {
+        topic.error = fmt::format(
+            "synthetic timestamp overflows int64 at row {} (anchor {}, interval {})", topic.rows_pushed,
+            topic.synth_anchor_ns, topic.synth_interval_ns);
+        return;
+      }
+    }
+    const std::int64_t host_ts_ns = *host_ts;
     if (!host_provider_) {
       topic.error = "host not bound";
       return;
@@ -713,7 +771,7 @@ void FetchWorker::pullTopicsAsync(
       } else if (topic.rows_pushed == 0) {
         finish(false, "no data");
       } else {
-        finish(true, {});
+        finish(true, {}, topic.warning);
       }
       return;
     }
@@ -824,7 +882,7 @@ void FetchWorker::pullTopicsAsync(
     finish(true, {}, std::move(warning));
   };
 
-  auto on_batch = [state, route, push_scalar_batch](
+  auto on_batch = [this, state, route, push_scalar_batch](
                       const std::string& topic_name, const std::shared_ptr<arrow::RecordBatch>& batch) {
     auto it = state->find(topic_name);
     if (it == state->end() || !batch) {
@@ -832,6 +890,9 @@ void FetchWorker::pullTopicsAsync(
     }
     PerTopic& topic = it->second;
     if (!topic.schema) {
+      // One schema per topic, cached from whichever of on_schema/on_batch lands
+      // first: Flight gives a stream ONE schema, so there is deliberately no
+      // evolution machinery here — every later batch is framed against this one.
       topic.schema = batch->schema();
     }
     route(topic, topic_name);
@@ -841,7 +902,15 @@ void FetchWorker::pullTopicsAsync(
     // Only a stamped scalar topic can be pushed progressively: everything else
     // needs the whole topic in hand at on_done (an object table to explode, or
     // the row count that fits the synthetic cadence).
-    if (topic.object_route || topic.ts_field.empty()) {
+    if (topic.object_route) {
+      topic.batches.push_back(batch);
+    } else if (topic.ts_field.empty()) {
+      // Buffering a whole topic only to fail at on_done is pure waste once the
+      // host has already told us it has no parser ingest to push into.
+      if (auto reason = knownParserIngestError(); !reason.empty()) {
+        topic.error = std::move(reason);
+        return;
+      }
       topic.batches.push_back(batch);
     } else {
       push_scalar_batch(topic, topic_name, *batch);
