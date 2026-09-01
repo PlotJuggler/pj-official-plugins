@@ -10,13 +10,11 @@
   "license": "MIT",
   "icon_url": "",
   "category": "toolbox",
-  "presentation": "floating",
   "tags": [
     "llm",
     "assistant",
     "agent",
     "ollama",
     "claude"
-  ],
-  "min_plotjuggler_version": "4.0.0"
+  ]
 }
