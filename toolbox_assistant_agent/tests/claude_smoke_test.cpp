@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
+#include <iterator>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
@@ -17,6 +18,7 @@
 #include <vector>
 
 #include "claude_backend.hpp"
+#include "conversation_state.hpp"  // fnv1aHex, asserted against the stored hash
 #include "tool_registry.hpp"
 
 namespace {
@@ -133,4 +135,45 @@ TEST(ClaudeBackendCommandLine, AllowsOnlyThisPluginsOwnTools) {
     start = comma + 1;
   }
   EXPECT_EQ(counted, static_cast<int>(registry.tools().size())) << "the whitelist and the registry disagree";
+}
+
+// A persisted conversation resumes on its very FIRST turn after a restart: the
+// dialog restores ClaudeMemory::session_id from the settings store, and the
+// argv builder turns any non-empty id into --resume — turn number is not part
+// of the contract.
+TEST(ClaudeBackendCommandLine, PersistedSessionIdResumesOnTheFirstTurn) {
+  ToolRegistry registry;
+  const std::vector<std::string> argv = assistant_agent::buildClaudeArgv(
+      "/usr/bin/claude", "/tmp/mcp.json", assistant_agent::allowedToolsArg(registry), "system", "sonnet",
+      "persisted-session-id");
+
+  const auto at = std::find(argv.begin(), argv.end(), "--resume");
+  ASSERT_NE(at, argv.end());
+  ASSERT_NE(std::next(at), argv.end());
+  EXPECT_EQ(*std::next(at), "persisted-session-id");
+}
+
+// The catalog-note rules, hash-based so only the hash needs persisting: first
+// send carries the listing without a note; a changed listing carries the note;
+// an unchanged one sends the bare text.
+TEST(ClaudeComposePayload, CatalogNoteRules) {
+  assistant_agent::ClaudeMemory memory;
+
+  const std::string first = assistant_agent::composePayload("hi", "CATALOG v1", memory);
+  EXPECT_EQ(first.rfind("CATALOG v1", 0), 0u);
+  EXPECT_EQ(first.find("loaded data changed"), std::string::npos);
+  EXPECT_NE(first.find("hi"), std::string::npos);
+  EXPECT_EQ(memory.sent_catalog_hash, assistant_agent::fnv1aHex("CATALOG v1"));
+
+  const std::string same = assistant_agent::composePayload("again", "CATALOG v1", memory);
+  EXPECT_EQ(same, "again") << "an unchanged listing must not be re-sent";
+
+  const std::string changed = assistant_agent::composePayload("third", "CATALOG v2", memory);
+  EXPECT_EQ(changed.rfind("CATALOG v2", 0), 0u);
+  EXPECT_NE(changed.find("(The loaded data changed; the listing above replaces the earlier one.)"), std::string::npos);
+  EXPECT_EQ(memory.sent_catalog_hash, assistant_agent::fnv1aHex("CATALOG v2"));
+
+  assistant_agent::ClaudeMemory no_catalog;
+  EXPECT_EQ(assistant_agent::composePayload("bare", "", no_catalog), "bare");
+  EXPECT_TRUE(no_catalog.sent_catalog_hash.empty());
 }

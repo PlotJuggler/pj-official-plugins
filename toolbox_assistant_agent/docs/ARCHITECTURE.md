@@ -216,6 +216,32 @@ Two consequences worth knowing:
   way to start over: it clears the transcript, the cost ledger and both memories in place — no
   rebuild, so the MCP server stays up and the next turn simply sends no `--resume`.
 
+The conversation also survives the *dialog*: closing the toolbox (or the app) destroys the
+instance and both memories, so `conversation_state.{hpp,cpp}` writes them to the per-user
+settings store (`pj.settings.v1`, `assistant.conv.*` keys) after every completed turn, and the
+next instance restores them when the settings view is first bound. What is stored is small on
+purpose: the transcript rows (so the reopened panel *shows* what the model remembers, behind a
+visible "resumed previous conversation" seam), Claude's session id and the fnv1a hash of the
+catalog it was last told (the CLI's own `--resume` carries the actual context), and Ollama's
+message list whole — the one large item, capped, because that backend owns its history. Three
+deliberate boundaries:
+
+- **Never the layout.** The toolbox's `saveConfig` stays `{}`. A conversation in the layout
+  recipe would ride inside shared `.pj4.xml` files (a privacy leak) and make a layout restore
+  resurrect or destroy chats; in the settings store it simply belongs to the user and machine.
+- **A stable CLI working directory.** The CLI indexes sessions by cwd, so `--resume` across a
+  restart only works if every instance runs in the same place: `ensureWorkDir` now resolves a
+  fixed private 0700 directory under XDG state instead of a fresh `mkdtemp`, and never removes
+  it. The isolation reasoning is unchanged (a private dir of ours + `--restricted`); what the
+  directory now holds is the CLI's own session state and nothing of the host's.
+- **"New chat" erases the persisted copy too** — the reset must free the user from the past,
+  not hide it until the next reopen.
+
+Known edges, accepted: a session the CLI has purged makes the resumed turn fail visibly (New
+chat recovers); two PlotJuggler instances share the store last-writer-wins; and the cost ledger
+does not resume — a restored conversation starts its token counter at zero, because the ledger
+answers "what did the last turns cost", not "what has this conversation ever cost".
+
 ## Threading of the panel
 
 `PanelEngine` ticks at 20 Hz. `onTick` drains the `GuiExecutor` queue and pushes any dirty

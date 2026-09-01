@@ -11,6 +11,7 @@
 
 namespace {
 
+using assistant_agent::ChatMessage;
 using assistant_agent::ChatSession;
 using assistant_agent::TurnState;
 
@@ -85,6 +86,38 @@ TEST(ChatSession, EchoTurnLifecycle) {
   EXPECT_FALSE(s.busy());
   EXPECT_EQ(s.messages().size(), 2u);
   EXPECT_NE(s.render().find("You said: ping"), std::string::npos);
+}
+
+// Restoring a persisted conversation replays messages() through the addX
+// methods (assistant_dialog's loadPersistedConversation) — the rebuilt session
+// must render byte-identically to the original, rows and speaker tags intact.
+TEST(ChatSession, ReplayingMessagesReproducesTheRender) {
+  ChatSession original;
+  original.addUser("how many topics?");
+  original.addTool("list_topics");
+  original.addAssistant("6 topics.");
+  original.addSystem("note");
+  original.addAssistant("Anything else?");  // consecutive assistant rows stay separate
+
+  ChatSession restored;
+  for (const auto& m : original.messages()) {
+    switch (m.role) {
+      case ChatMessage::Role::User:
+        restored.addUser(m.text);
+        break;
+      case ChatMessage::Role::Assistant:
+        restored.addAssistant(m.text);
+        break;
+      case ChatMessage::Role::System:
+        restored.addSystem(m.text);
+        break;
+      case ChatMessage::Role::Tool:
+        restored.addTool(m.text);
+        break;
+    }
+  }
+  EXPECT_EQ(restored.render(), original.render());
+  EXPECT_EQ(restored.messages().size(), original.messages().size());
 }
 
 }  // namespace

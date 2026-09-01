@@ -17,10 +17,13 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <pj_base/sdk/settings_store_host.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <string>
 #include <vector>
 
+#include "conversation_state.hpp"
+#include "settings_store.hpp"
 #include "tool_registry.hpp"
 
 namespace {
@@ -219,6 +222,49 @@ TEST(OllamaBackend, ConversationSurvivesARebuild) {
   EXPECT_NE(body.find("remember the number 41"), std::string::npos)
       << "the rebuilt backend forgot the conversation; body was: " << body;
   EXPECT_NE(body.find("what number did I say?"), std::string::npos);
+}
+
+// The conversation must also survive the PROCESS: the dialog saves the memory's
+// history into the settings store after every turn and restores it into a fresh
+// memory on the next launch. Driven through the real serialize/deserialize path
+// (ConversationState over an in-memory settings host), then proven on the wire.
+TEST(OllamaBackend, ConversationSurvivesAProcessRestart) {
+  auto server = startFakeOllama();
+  ASSERT_NE(server, nullptr) << "no free port to bind the fake Ollama server";
+
+  ToolRegistry reg;
+  TurnTools tools;
+  tools.registry = &reg;
+  tools.invoke = [&](const std::string&, const nlohmann::json&) { return assistant_agent::ToolResult::success("{}"); };
+
+  PJ::sdk::InMemorySettingsBackend settings_backend;
+  PJ::sdk::SettingsStoreHost settings_host{settings_backend};
+
+  {
+    // "First process": run a turn, then persist what the dialog would persist.
+    auto memory = std::make_shared<assistant_agent::OllamaMemory>();
+    OllamaBackend first(server->url(), "test-model", memory);
+    runTurn(first, "remember the number 41", tools);
+
+    assistant_agent::ConversationState conv;
+    conv.ollama_history_json = memory->history.dump();
+    assistant_agent::SettingsStore store(PJ::sdk::SettingsView{settings_host.view()});
+    assistant_agent::saveConversation(store, conv);
+  }
+
+  // "Second process": a fresh memory restored from the store, a fresh backend.
+  const assistant_agent::ConversationState back =
+      assistant_agent::loadConversation(assistant_agent::SettingsStore(PJ::sdk::SettingsView{settings_host.view()}));
+  ASSERT_FALSE(back.ollama_history_json.empty());
+  auto restored = std::make_shared<assistant_agent::OllamaMemory>();
+  restored->history = nlohmann::json::parse(back.ollama_history_json);
+
+  OllamaBackend second(server->url(), "test-model", restored);
+  runTurn(second, "what number did I say?", tools);
+
+  const std::string body = server->lastChatBody();
+  EXPECT_NE(body.find("remember the number 41"), std::string::npos)
+      << "the restored conversation is not on the wire; body was: " << body;
 }
 
 // The other half of the contract: a backend handed no memory keeps its own, so

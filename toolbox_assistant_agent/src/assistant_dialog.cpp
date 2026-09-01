@@ -9,6 +9,7 @@
 #include "assistant_panel_ui.hpp"
 #include "assistant_settings_ui.hpp"
 #include "claude_backend.hpp"
+#include "conversation_state.hpp"
 #include "fake_backend.hpp"
 #include "ollama_backend.hpp"
 #include "settings_store.hpp"
@@ -113,8 +114,66 @@ void AssistantDialog::startNewConversation() {
   // both read their memory through the pointer the dialog still holds.
   *claude_memory_ = ClaudeMemory{};
   *ollama_memory_ = OllamaMemory{};
+  // The persisted copy goes too: New chat is the one gesture that frees the
+  // user from the past, and a reopen must not resurrect it.
+  SettingsStore store(settings_);
+  eraseConversation(store);
   state_.transcript_dirty = true;
   state_.controls_dirty = true;
+}
+
+void AssistantDialog::loadPersistedConversation() {
+  SettingsStore store(settings_);
+  const ConversationState conv = loadConversation(store);
+  if (conv.empty()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(state_.mu);
+  for (const ChatMessage& m : conv.messages) {
+    switch (m.role) {
+      case ChatMessage::Role::User:
+        state_.session.addUser(m.text);
+        break;
+      case ChatMessage::Role::Assistant:
+        // addAssistant, not appendAssistant: rows were persisted as final
+        // messages and must come back as the same rows, not merged.
+        state_.session.addAssistant(m.text);
+        break;
+      case ChatMessage::Role::System:
+        state_.session.addSystem(m.text);
+        break;
+      case ChatMessage::Role::Tool:
+        state_.session.addTool(m.text);
+        break;
+    }
+  }
+  if (!conv.messages.empty()) {
+    // Visible seam between then and now — the model's memory comes back through
+    // --resume regardless; this keeps the user able to SEE that it did.
+    state_.session.addSystem("resumed previous conversation");
+  }
+  claude_memory_->session_id = conv.claude_session_id;
+  claude_memory_->sent_catalog_hash = conv.claude_catalog_hash;
+  if (!conv.ollama_history_json.empty()) {
+    nlohmann::json parsed = nlohmann::json::parse(conv.ollama_history_json, nullptr, /*allow_exceptions=*/false);
+    if (parsed.is_array()) {
+      ollama_memory_->history = std::move(parsed);
+    }
+  }
+  state_.transcript_dirty = true;
+  state_.controls_dirty = true;
+}
+
+void AssistantDialog::saveConversationLocked() {
+  ConversationState conv;
+  conv.messages = state_.session.messages();
+  conv.claude_session_id = claude_memory_->session_id;
+  conv.claude_catalog_hash = claude_memory_->sent_catalog_hash;
+  if (!ollama_memory_->history.empty()) {
+    conv.ollama_history_json = ollama_memory_->history.dump();
+  }
+  SettingsStore store(settings_);
+  saveConversation(store, conv);
 }
 
 std::string AssistantDialog::manifest() const {
@@ -143,6 +202,10 @@ void AssistantDialog::setObjectReadProvider(std::function<PJ::sdk::ToolboxObject
 
 void AssistantDialog::setSettings(PJ::sdk::SettingsView settings) {
   settings_ = settings;
+  if (!conversation_loaded_) {
+    conversation_loaded_ = true;
+    loadPersistedConversation();
+  }
   rebuildBackend();
 }
 
@@ -403,6 +466,10 @@ void AssistantDialog::applyBackendEvent(const BackendEvent& ev) {
     case BackendEvent::Kind::TurnComplete:
       state_.session.setState(TurnState::Idle);
       state_.controls_dirty = true;
+      // Persist once per completed turn — the one moment the session id (worker
+      // is done writing it) and the transcript are both final. Crash-safe by
+      // construction: whatever the store holds is a whole conversation.
+      saveConversationLocked();
       break;
   }
 }

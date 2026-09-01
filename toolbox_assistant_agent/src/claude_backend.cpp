@@ -3,7 +3,8 @@
 #include "claude_backend.hpp"
 
 #if defined(__unix__) || defined(__APPLE__)
-#include <unistd.h>  // mkstemp/write/close/unlink for the private MCP config file
+#include <sys/stat.h>  // mkdir/lstat for the stable work dir
+#include <unistd.h>    // mkstemp/write/close/unlink for the private MCP config file
 #endif
 
 #include <cstdlib>
@@ -11,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "conversation_state.hpp"  // fnv1aHex, shared with the persisted form
 #include "stream_json.hpp"
 #include "subprocess.hpp"
 #include "system_prompt.hpp"
@@ -89,6 +91,26 @@ std::vector<std::string> buildClaudeArgv(
   return argv;
 }
 
+std::string composePayload(const std::string& text, const std::string& catalog, ClaudeMemory& memory) {
+  // Prepend the catalog listing to the user's message, but only when it is new
+  // to this conversation. --resume replays the whole history, so a listing sent
+  // once stays visible on every later turn; sending it again would just pay for
+  // the same text twice. A listing that has CHANGED does get re-sent — that is
+  // how the model learns the loaded data is not what it was told earlier.
+  if (catalog.empty()) {
+    return text;
+  }
+  const std::string hash = fnv1aHex(catalog);
+  if (hash == memory.sent_catalog_hash) {
+    return text;
+  }
+  const char* const note = memory.sent_catalog_hash.empty()
+                               ? ""  // first listing of the conversation: nothing to replace
+                               : "(The loaded data changed; the listing above replaces the earlier one.)\n";
+  memory.sent_catalog_hash = hash;
+  return catalog + "\n" + note + "\n" + text;
+}
+
 ClaudeBackend::ClaudeBackend(std::string cli_path, std::string model, std::shared_ptr<ClaudeMemory> memory)
     : cli_path_(cli_path.empty() ? "claude" : std::move(cli_path)),
       model_(std::move(model)),
@@ -98,23 +120,38 @@ ClaudeBackend::~ClaudeBackend() {
   if (!mcp_config_path_.empty()) {
     unlink(mcp_config_path_.c_str());
   }
-  if (!work_dir_.empty()) {
-    rmdir(work_dir_.c_str());  // ours and empty by construction; failure just leaves a /tmp dir
-  }
+  // work_dir_ is deliberately left in place: it holds the CLI's session state,
+  // which is exactly what a persisted conversation resumes into.
 }
 
 bool ClaudeBackend::ensureWorkDir(std::string& error) {
   if (!work_dir_.empty()) {
     return true;
   }
-  char tmpl[] = "/tmp/pj_assistant_cwd_XXXXXX";
-  if (mkdtemp(tmpl) == nullptr) {
-    // Fail closed: running in the inherited cwd would silently hand the panel
-    // whatever project context PlotJuggler was launched from.
-    error = "could not create the assistant's working directory";
+  // Fail closed on every path below: running in the inherited cwd would
+  // silently hand the panel whatever project context PlotJuggler was launched
+  // from.
+  std::string base;
+  if (const char* state_home = std::getenv("XDG_STATE_HOME"); state_home != nullptr && state_home[0] != '\0') {
+    base = state_home;
+  } else if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
+    base = std::string(home) + "/.local/state";
+  } else {
+    error = "could not resolve the assistant's working directory (no XDG_STATE_HOME or HOME)";
     return false;
   }
-  work_dir_ = tmpl;
+  const std::string dir = base + "/pj-assistant-cli";
+  // Best-effort parents (XDG_STATE_HOME normally exists); the leaf must end up
+  // a real 0700 directory of ours — a symlink planted there would redirect the
+  // CLI's session state, so lstat, not stat.
+  mkdir(base.c_str(), 0700);
+  mkdir(dir.c_str(), 0700);
+  struct stat st{};
+  if (lstat(dir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != getuid()) {
+    error = "could not create the assistant's working directory (" + dir + ")";
+    return false;
+  }
+  work_dir_ = dir;
   return true;
 }
 
@@ -203,18 +240,7 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
     return;
   }
 
-  // Prepend the catalog listing to the user's message, but only when it is new
-  // to this conversation. --resume replays the whole history, so a listing sent
-  // once stays visible on every later turn; sending it again would just pay for
-  // the same text twice. A listing that has CHANGED does get re-sent — that is
-  // how the model learns the loaded data is not what it was told earlier.
-  std::string payload = text;
-  if (!tools.catalog.empty() && tools.catalog != memory_->sent_catalog) {
-    const bool first = memory_->sent_catalog.empty();
-    payload = tools.catalog + "\n" +
-              (first ? "" : "(The loaded data changed; the listing above replaces the earlier one.)\n") + "\n" + text;
-    memory_->sent_catalog = tools.catalog;
-  }
+  const std::string payload = composePayload(text, tools.catalog, *memory_);
 
   const std::vector<std::string> argv = buildClaudeArgv(
       cli_path_, mcp_config_path_, allowedToolsArg(*tools.registry), kSystemPrompt, model_, memory_->session_id);

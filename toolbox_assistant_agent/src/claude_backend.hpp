@@ -21,11 +21,13 @@ namespace assistant_agent {
 // has already been told.
 struct ClaudeMemory {
   std::string session_id;  // Claude session for --resume continuity
-  // The catalog listing already sent into this conversation. --resume carries
-  // the whole history forward, so re-sending an identical listing every turn
-  // would be pure waste; re-sending a CHANGED one is how the model finds out
-  // the user loaded something else.
-  std::string sent_catalog;
+  // fnv1aHex of the catalog listing already sent into this conversation.
+  // --resume carries the whole history forward, so re-sending an identical
+  // listing every turn would be pure waste; re-sending a CHANGED one is how
+  // the model finds out the user loaded something else. A hash rather than the
+  // ~6 KB listing itself: the code only ever compares it, and this struct is
+  // persisted verbatim across panel restarts (conversation_state.hpp).
+  std::string sent_catalog_hash;
 };
 
 // The command line handed to the CLI, built where a test can read it.
@@ -45,6 +47,13 @@ struct ClaudeMemory {
 // tool. Every entry carries that prefix by construction, which is what keeps a
 // built-in tool from being whitelisted by accident.
 [[nodiscard]] std::string allowedToolsArg(const ToolRegistry& registry);
+
+// The user text as actually sent: the catalog listing is prepended only when
+// its hash differs from what this conversation was already told (first turn,
+// or the loaded data changed — the latter carries an explicit note). Updates
+// `memory.sent_catalog_hash`. Free function so the catalog-note rules are
+// testable without spawning the CLI.
+[[nodiscard]] std::string composePayload(const std::string& text, const std::string& catalog, ClaudeMemory& memory);
 
 // Remote backend driving the user's Claude Code CLI subscription headlessly —
 // NO Anthropic API key, no per-token billing. Per turn it spawns
@@ -85,11 +94,14 @@ class ClaudeBackend : public LlmBackend {
  private:
   // Bring up the MCP server on first use, bound to this turn's tool surface.
   bool ensureMcpServer(const TurnTools& tools, std::string& error);
-  // Create (once) the private, empty directory the CLI runs in. The CLI reads
-  // its cwd's CLAUDE.md and project state as context, so inheriting the host
-  // app's cwd would inject whatever project PlotJuggler happened to be launched
-  // from into the panel's system prompt. Pairs with --restricted, which covers
-  // the user-level side (settings, global CLAUDE.md).
+  // Resolve (once) the private directory the CLI runs in. The CLI reads its
+  // cwd's CLAUDE.md and project state as context, so inheriting the host app's
+  // cwd would inject whatever project PlotJuggler happened to be launched from
+  // into the panel's system prompt. Pairs with --restricted, which covers the
+  // user-level side (settings, global CLAUDE.md). The directory is STABLE
+  // (under XDG state), not a fresh temp dir: the CLI indexes its sessions by
+  // cwd, and resuming a persisted conversation (--resume after a plugin
+  // restart) only works when every instance runs in the same place.
   bool ensureWorkDir(std::string& error);
 
   std::string cli_path_;
@@ -101,8 +113,8 @@ class ClaudeBackend : public LlmBackend {
   // 0600 temp file holding the MCP config (bearer token inside); created with
   // the server, removed in the destructor.
   std::string mcp_config_path_;
-  // 0700 temp directory the CLI runs in (see ensureWorkDir); removed in the
-  // destructor.
+  // 0700 stable directory the CLI runs in (see ensureWorkDir). Never removed:
+  // it holds the CLI's session state, which is what --resume comes back to.
   std::string work_dir_;
   std::atomic<bool> cancel_{false};
 };

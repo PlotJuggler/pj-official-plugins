@@ -14,6 +14,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 add_library(toolbox_assistant_agent_plugin SHARED
   src/assistant_toolbox.cpp
   src/assistant_dialog.cpp
+  src/conversation_state.cpp
   src/settings_store.cpp
   src/tools.cpp
   src/ollama_backend.cpp
@@ -100,6 +101,22 @@ if(BUILD_TESTING)
   target_compile_features(toolbox_assistant_agent_settings_store_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentSettingsStoreTest COMMAND toolbox_assistant_agent_settings_store_test)
 
+  # ConversationState: the persisted conversation (settings-store round-trip,
+  # caps, defensive parsing) plus the fnv1a hash it shares with ClaudeMemory.
+  add_executable(toolbox_assistant_agent_conversation_state_test
+    tests/conversation_state_test.cpp
+    src/conversation_state.cpp
+    src/settings_store.cpp
+  )
+  target_link_libraries(toolbox_assistant_agent_conversation_state_test PRIVATE
+    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
+  )
+  target_include_directories(toolbox_assistant_agent_conversation_state_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_assistant_agent_conversation_state_test PRIVATE cxx_std_20)
+  add_test(NAME ToolboxAssistantAgentConversationStateTest COMMAND toolbox_assistant_agent_conversation_state_test)
+
   # SeriesStats: stats + min/max-preserving bucket decimation. Pure, std-only.
   add_executable(toolbox_assistant_agent_series_stats_test
     tests/series_stats_test.cpp
@@ -131,6 +148,8 @@ if(BUILD_TESTING)
   add_executable(toolbox_assistant_agent_ollama_backend_test
     tests/ollama_backend_test.cpp
     src/ollama_backend.cpp
+    src/conversation_state.cpp
+    src/settings_store.cpp
     src/tools.cpp
   )
   target_link_libraries(toolbox_assistant_agent_ollama_backend_test PRIVATE

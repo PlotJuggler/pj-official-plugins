@@ -131,10 +131,20 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   void rebuildBackend();
 
   // Drop the transcript, the accumulated cost and both backends' conversation
-  // memory. No backend rebuild: the memory is cleared in place and the live
-  // backend reads through the same pointer, so the next turn sends no --resume
-  // and re-sends the catalog — genuinely fresh, with the MCP server left up.
+  // memory — AND the persisted copy in the settings store, so a later reopen
+  // does not resurrect what the user explicitly reset. No backend rebuild: the
+  // memory is cleared in place and the live backend reads through the same
+  // pointer, so the next turn sends no --resume and re-sends the catalog —
+  // genuinely fresh, with the MCP server left up.
   void startNewConversation();
+
+  // Conversation persistence (conversation_state.hpp): restore once when the
+  // settings view is first bound (the ctor runs before bind(), against an
+  // unbound view), and save after every completed turn.
+  void loadPersistedConversation();
+  // Requires state_.mu held by the caller (the TurnComplete arm); reads the
+  // session + both memories and writes the store, which takes no locks of ours.
+  void saveConversationLocked();
 
   DialogState state_;
   ToolRegistry registry_;
@@ -163,6 +173,9 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   std::function<PJ::sdk::DataProcessorsHostView()> dp_provider_;
   std::function<PJ::sdk::ToolboxObjectReadHostView()> object_read_provider_;
   PJ::sdk::SettingsView settings_;
+  // One restore per instance: setSettings can in principle be re-bound, and a
+  // second load would duplicate the transcript on top of the live one.
+  bool conversation_loaded_ = false;
 };
 
 }  // namespace assistant_agent
