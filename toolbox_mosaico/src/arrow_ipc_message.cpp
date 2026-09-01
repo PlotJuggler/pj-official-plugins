@@ -6,7 +6,6 @@
 #include <arrow/compute/api.h>
 #include <arrow/io/memory.h>
 #include <arrow/ipc/writer.h>
-#include <arrow/util/checked_cast.h>
 
 #include <array>
 #include <cmath>
@@ -35,6 +34,17 @@ std::shared_ptr<arrow::DataType> ipcSafeType(const std::shared_ptr<arrow::DataTy
         fields.push_back(field->WithType(safe));
       }
       return changed ? arrow::struct_(fields) : type;
+    }
+    case arrow::Type::MAP: {
+      // MapType derives from ListType but its single child is the entries
+      // struct — rebuild through map() so the {key, value} shape survives.
+      const auto& map_type = *std::static_pointer_cast<arrow::MapType>(type);
+      auto key = ipcSafeType(map_type.key_type());
+      auto item = ipcSafeType(map_type.item_type());
+      if (key == map_type.key_type() && item == map_type.item_type()) {
+        return type;
+      }
+      return arrow::map(key, map_type.item_field()->WithType(item), map_type.keys_sorted());
     }
     case arrow::Type::LIST:
     case arrow::Type::LARGE_LIST:
@@ -115,83 +125,41 @@ std::optional<std::int64_t> secondsToNs(double seconds) {
   return static_cast<std::int64_t>(ns);
 }
 
-std::int64_t timestampUnitToNs(arrow::TimeUnit::type unit) {
-  switch (unit) {
-    case arrow::TimeUnit::SECOND:
-      return 1'000'000'000LL;
-    case arrow::TimeUnit::MILLI:
-      return 1'000'000LL;
-    case arrow::TimeUnit::MICRO:
-      return 1'000LL;
-    case arrow::TimeUnit::NANO:
-      return 1LL;
-  }
-  return 1LL;
-}
-
 }  // namespace
 
-std::optional<std::int64_t> firstRowTimestampNs(const arrow::RecordBatch& batch, std::string_view field) {
-  if (batch.num_rows() == 0 || field.empty()) {
+std::optional<std::int64_t> firstRowTimestampNs(const arrow::RecordBatch& batch, int index) {
+  if (batch.num_rows() == 0 || index < 0 || index >= batch.num_columns()) {
     return std::nullopt;
   }
-  const auto column = batch.GetColumnByName(std::string(field));
-  if (!column || column->IsNull(0)) {
+  auto scalar = batch.column(index)->GetScalar(0);
+  if (!scalar.ok() || !(*scalar)->is_valid) {
     return std::nullopt;
   }
-  using arrow::internal::checked_cast;
-  switch (column->type_id()) {
-    case arrow::Type::INT8:
-      return checked_cast<const arrow::Int8Array&>(*column).Value(0);
-    case arrow::Type::INT16:
-      return checked_cast<const arrow::Int16Array&>(*column).Value(0);
-    case arrow::Type::INT32:
-      return checked_cast<const arrow::Int32Array&>(*column).Value(0);
-    case arrow::Type::INT64:
-      return checked_cast<const arrow::Int64Array&>(*column).Value(0);
-    case arrow::Type::UINT8:
-      return checked_cast<const arrow::UInt8Array&>(*column).Value(0);
-    case arrow::Type::UINT16:
-      return checked_cast<const arrow::UInt16Array&>(*column).Value(0);
-    case arrow::Type::UINT32:
-      return checked_cast<const arrow::UInt32Array&>(*column).Value(0);
-    case arrow::Type::UINT64: {
-      const auto value = checked_cast<const arrow::UInt64Array&>(*column).Value(0);
-      if (value > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
-        return std::nullopt;
-      }
-      return static_cast<std::int64_t>(value);
-    }
-    case arrow::Type::FLOAT:
-      return secondsToNs(checked_cast<const arrow::FloatArray&>(*column).Value(0));
-    case arrow::Type::DOUBLE:
-      return secondsToNs(checked_cast<const arrow::DoubleArray&>(*column).Value(0));
-    case arrow::Type::TIMESTAMP: {
-      const auto& array = checked_cast<const arrow::TimestampArray&>(*column);
-      const auto unit = checked_cast<const arrow::TimestampType&>(*column->type()).unit();
-      const std::int64_t factor = timestampUnitToNs(unit);
-      const std::int64_t value = array.Value(0);
-      if (value > std::numeric_limits<std::int64_t>::max() / factor ||
-          value < std::numeric_limits<std::int64_t>::min() / factor) {
-        return std::nullopt;
-      }
-      return value * factor;
-    }
-    default:
-      return std::nullopt;
+  const arrow::Type::type type_id = (*scalar)->type->id();
+  // Safe casts reject what the hand-rolled switch used to reject explicitly:
+  // uint64 above int64 max, and any TIMESTAMP unit that overflows in ns.
+  if (arrow::is_floating(type_id)) {
+    auto seconds = arrow::compute::Cast(arrow::Datum(*scalar), arrow::float64());
+    return seconds.ok() ? secondsToNs(seconds->scalar_as<arrow::DoubleScalar>().value) : std::nullopt;
   }
+  if (type_id == arrow::Type::TIMESTAMP) {
+    auto nanos = arrow::compute::Cast(arrow::Datum(*scalar), arrow::timestamp(arrow::TimeUnit::NANO));
+    return nanos.ok() ? std::optional(nanos->scalar_as<arrow::TimestampScalar>().value) : std::nullopt;
+  }
+  if (!arrow::is_integer(type_id)) {
+    return std::nullopt;
+  }
+  auto nanos = arrow::compute::Cast(arrow::Datum(*scalar), arrow::int64());
+  return nanos.ok() ? std::optional(nanos->scalar_as<arrow::Int64Scalar>().value) : std::nullopt;
 }
 
-arrow::Result<std::shared_ptr<arrow::Buffer>> serializeIpcStream(const arrow::RecordBatch& batch) {
-  ARROW_ASSIGN_OR_RAISE(auto sink, arrow::io::BufferOutputStream::Create());
+arrow::Result<std::shared_ptr<arrow::Buffer>> serializeIpcStream(
+    const arrow::RecordBatch& batch, std::int64_t capacity_hint) {
+  ARROW_ASSIGN_OR_RAISE(auto sink, arrow::io::BufferOutputStream::Create(capacity_hint > 0 ? capacity_hint : 4096));
   ARROW_ASSIGN_OR_RAISE(auto writer, arrow::ipc::MakeStreamWriter(sink, batch.schema()));
   ARROW_RETURN_NOT_OK(writer->WriteRecordBatch(batch));
   ARROW_RETURN_NOT_OK(writer->Close());
   return sink->Finish();
-}
-
-arrow::Result<std::shared_ptr<arrow::Buffer>> serializeIpcSchema(const arrow::Schema& schema) {
-  return arrow::ipc::SerializeSchema(schema);
 }
 
 std::string parserConfigJson(std::string_view timestamp_field, std::int64_t synthetic_interval_ns) {

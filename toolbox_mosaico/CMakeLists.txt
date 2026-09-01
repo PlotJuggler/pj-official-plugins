@@ -252,23 +252,6 @@ if(BUILD_TESTING)
   )
   add_test(NAME ToolboxMosaicoOntologyRoutingTest COMMAND toolbox_mosaico_ontology_routing_test)
 
-  # Multi-topic grouping contract: one Download (sequence) → ONE dataset, with
-  # topics registered under their BARE names. Drives the real arrow_ingest
-  # helper against a recording fake toolbox host (no Flight/gRPC).
-  add_executable(toolbox_mosaico_fetch_grouping_test
-    tests/fetch_grouping_test.cpp
-    src/arrow_ingest.cpp
-  )
-  target_link_libraries(toolbox_mosaico_fetch_grouping_test PRIVATE
-    plotjuggler_sdk::plugin_sdk
-    ${_test_arrow_target}
-    GTest::gtest_main
-  )
-  target_include_directories(toolbox_mosaico_fetch_grouping_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoFetchGroupingTest COMMAND toolbox_mosaico_fetch_grouping_test)
-
   # Per-frame image serialization: each Arrow row -> one canonical PJ.Image blob
   # (pj_base codec), driven against a recording fake toolbox host. Builds tables
   # with the real server's BINARY_VIEW/STRING_VIEW column types (no Flight/gRPC).

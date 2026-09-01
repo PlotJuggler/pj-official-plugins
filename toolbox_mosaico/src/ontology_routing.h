@@ -28,7 +28,8 @@ namespace mosaico {
 // (odometry) for poses. (`point_cloud` is accepted as a forward-compat alias for
 // the canonical-named ontology, though the live server uses `point_cloud2`.) The
 // server has NO transform/tf ontology, so TF is not sourced here. Anything not
-// matched (and not an image) falls through to the scalar appendArrowStream path.
+// matched (and not an image) falls through to the scalar arrow-ipc path: one
+// IPC stream per batch, decoded host-side by parser_arrow.
 [[nodiscard]] inline bool isPointCloudOntology(const std::string& tag) {
   return tag == "point_cloud2" || tag == "point_cloud";
 }

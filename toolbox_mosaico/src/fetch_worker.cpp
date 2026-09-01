@@ -14,6 +14,7 @@
 #include "fetch_worker.hpp"
 
 #include <arrow/api.h>
+#include <arrow/ipc/writer.h>
 #include <arrow/record_batch.h>
 #include <arrow/table.h>
 // clang-format on
@@ -174,6 +175,9 @@ void FetchWorker::ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, cons
     return;
   }
   ingest_progress_attempted_ = true;
+  // Every early return below means "no ingest context"; scalar topics report
+  // this reason verbatim, so it is the single writer for those paths.
+  parser_ingest_error_ = "host offers no parser ingest (arrow-ipc topics need a newer PlotJuggler)";
   if (!runtime_host_provider_) {
     return;
   }
@@ -185,7 +189,6 @@ void FetchWorker::ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, cons
   // Tail-slot gate: an older host's vtable ends before create_parser_ingest —
   // Downloads then run exactly as before, without host progress.
   if (!PJ_HAS_TAIL_SLOT(PJ_toolbox_runtime_host_vtable_t, raw.vtable, create_parser_ingest)) {
-    parser_ingest_error_ = "host offers no parser ingest (arrow-ipc topics need a newer PlotJuggler)";
     return;
   }
   PJ_data_source_runtime_host_t ingest_raw{};
@@ -196,20 +199,22 @@ void FetchWorker::ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, cons
     parser_ingest_error_ = PJ::errorToString(error);
     return;
   }
-  // The context is LIVE on the host from this point: record the id first so
-  // finishIngestProgress releases it even when progressStart below fails
-  // (release is idempotent and needs no prior progress sequence).
+  // The context is LIVE on the host from this point: publish it (scalar topics
+  // route through it) and record the id so finishIngestProgress releases it even
+  // when progressStart below fails.
+  parser_ingest_error_.clear();
   ingest_ds_id_ = ds.id;
-  PJ::DataSourceRuntimeHostView view(ingest_raw);
+  ingest_progress_ = PJ::DataSourceRuntimeHostView(ingest_raw);
   // Always indeterminate (total=0): TopicInfo::total_size_bytes is the
   // COMPRESSED full-topic size while progress ticks carry DECODED bytes of the
   // requested slice — no comparable denominator exists, and a wrong one would
   // over/undershoot the host bar wildly. `current` still carries the decoded
   // byte count.
-  if (!view.progressStart(sequence_name, /*total_steps=*/0, /*cancellable=*/true).has_value()) {
-    return;
+  progress_started_ =
+      ingest_progress_->progressStart(sequence_name, /*total_steps=*/0, /*cancellable=*/true).has_value();
+  if (!progress_started_) {
+    return;  // Only the progress bar is lost; the ingest route stays open.
   }
-  ingest_progress_ = view;
   const bool host_stop = !ingest_progress_->progressUpdate(accumulatedProgressBytesLocked());
   plock.unlock();
   if (host_stop) {
@@ -222,7 +227,9 @@ void FetchWorker::finishIngestProgress(bool discard_provisional) {
   {
     std::lock_guard<std::mutex> plock(progress_mu_);
     if (ingest_progress_.has_value()) {
-      ingest_progress_->progressFinish();
+      if (progress_started_) {
+        ingest_progress_->progressFinish();
+      }
       ingest_progress_.reset();
     }
     release_id = ingest_ds_id_;
@@ -461,6 +468,7 @@ void FetchWorker::pullTopicsAsync(
     std::lock_guard<std::mutex> plock(progress_mu_);
     ingest_progress_.reset();
     ingest_progress_attempted_ = false;
+    progress_started_ = false;
     parser_ingest_error_.clear();
     host_stop_reported_ = false;
     ingest_ds_id_.reset();
@@ -482,20 +490,25 @@ void FetchWorker::pullTopicsAsync(
   // topic's callbacks arrive in order on one pool thread.
   struct PerTopic {
     std::shared_ptr<arrow::Schema> schema;
-    std::shared_ptr<arrow::Schema> ipc_schema;  // ipcSafeSchema(schema); same pointer = no cast needed
-    bool routed = false;                        // ontology resolved on first sight of the schema
-    bool object_route = false;                  // canonical object: buffered table -> object helpers
+    // ipcSafeSchema(schema); same pointer = no cast needed. Doubles as the
+    // "already routed" marker — it is set exactly when route() has run.
+    std::shared_ptr<arrow::Schema> ipc_schema;
+    bool object_route = false;  // canonical object: buffered table -> object helpers
     std::string ontology_tag;
     std::string ts_field;
-    std::int64_t info_min_ts_ns = 0;
+    int ts_column_index = -1;  // ts_field's position in schema; -1 = no timestamp column
     std::int64_t info_max_ts_ns = 0;
     // Object route only.
     std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
-    // Scalar route: one arrow-ipc message per batch through parser ingest.
+    // Scalar route: one arrow-ipc message per batch through parser ingest. The
+    // bind inputs are built in route(), off the host-write locks.
+    std::shared_ptr<arrow::Buffer> ipc_schema_bytes;
+    std::string parser_config;
     std::optional<PJ::ParserBindingHandle> binding;
     std::int64_t synth_anchor_ns = 0;
     std::int64_t rows_pushed = 0;
-    std::string error;  // first bind/push failure; fails the topic at on_done
+    std::int64_t last_ipc_bytes = 0;  // sizes the next batch's output buffer
+    std::string error;                // first bind/push failure; fails the topic at on_done
   };
   auto state = std::make_shared<std::unordered_map<std::string, PerTopic>>();
   auto imported_any = std::make_shared<std::atomic<bool>>(false);
@@ -506,23 +519,36 @@ void FetchWorker::pullTopicsAsync(
   // Route by the authoritative ontology tag, once per topic, as soon as its
   // schema is known. The tag is cached from getTopicMetadata (the dialog fetches
   // it on topic selection, processed before this pull on the serial queue) with
-  // the stream's schema metadata as fallback.
+  // the stream's schema metadata as fallback. Everything a scalar topic needs at
+  // bind time is computed here so the host-write locks cover only the two host
+  // calls (ensureParserBinding + pushMessage).
   auto route = [this](PerTopic& topic, const std::string& topic_name) {
-    if (topic.routed || !topic.schema) {
+    if (topic.ipc_schema || !topic.schema) {
       return;
     }
-    topic.routed = true;
     std::string cached_tag;
+    std::int64_t info_min_ts_ns = 0;
     if (auto info_it = topic_info_by_name_.find(topic_name); info_it != topic_info_by_name_.end()) {
       cached_tag = info_it->second.ontology_tag;
-      topic.info_min_ts_ns = info_it->second.min_ts_ns;
+      info_min_ts_ns = info_it->second.min_ts_ns;
       topic.info_max_ts_ns = info_it->second.max_ts_ns;
     }
     topic.ontology_tag = resolveOntologyTag(topic.schema, cached_tag);
     topic.object_route = isCanonicalObjectOntology(topic.ontology_tag);
     topic.ts_field = detectTimestampField(*topic.schema);
+    topic.ts_column_index = topic.ts_field.empty() ? -1 : topic.schema->GetFieldIndex(topic.ts_field);
+    topic.synth_anchor_ns = info_min_ts_ns != 0 ? info_min_ts_ns : nowNs();
     topic.ipc_schema = ipcSafeSchema(topic.schema);
-    topic.synth_anchor_ns = topic.info_min_ts_ns != 0 ? topic.info_min_ts_ns : nowNs();
+    if (topic.object_route) {
+      return;
+    }
+    auto schema_bytes = arrow::ipc::SerializeSchema(*topic.ipc_schema);
+    if (!schema_bytes.ok()) {
+      topic.error = stringFromArrow(schema_bytes.status());
+      return;
+    }
+    topic.ipc_schema_bytes = *schema_bytes;
+    topic.parser_config = parserConfigJson(topic.ts_field, kSyntheticIntervalNs);
   };
 
   // Scalar route: hand the batch to the host as an arrow-ipc message. Runs on
@@ -546,14 +572,15 @@ void FetchWorker::pullTopicsAsync(
       }
       safe_batch = *casted;
     }
-    auto bytes = serializeIpcStream(safe_batch ? *safe_batch : batch);
+    auto bytes = serializeIpcStream(safe_batch ? *safe_batch : batch, topic.last_ipc_bytes);
     if (!bytes.ok()) {
       topic.error = stringFromArrow(bytes.status());
       return;
     }
+    topic.last_ipc_bytes = (*bytes)->size();
     // Host timestamp: the row's own time; without a column, the synthetic
     // cadence the parser continues per row (see parserConfigJson).
-    const std::int64_t host_ts_ns = firstRowTimestampNs(batch, topic.ts_field)
+    const std::int64_t host_ts_ns = firstRowTimestampNs(batch, topic.ts_column_index)
                                         .value_or(topic.synth_anchor_ns + topic.rows_pushed * kSyntheticIntervalNs);
     if (!host_provider_) {
       topic.error = "host not bound";
@@ -573,25 +600,18 @@ void FetchWorker::pullTopicsAsync(
     // profile shows it: hand batches to a per-topic queue drained by one thread.
     std::lock_guard<std::mutex> plock(progress_mu_);
     if (!ingest_progress_.has_value()) {
-      topic.error =
-          parser_ingest_error_.empty() ? "host offers no parser ingest for arrow-ipc topics" : parser_ingest_error_;
+      topic.error = parser_ingest_error_;  // ensureIngestProgress always leaves a reason
       return;
     }
     if (!topic.binding.has_value()) {
-      auto schema_bytes = serializeIpcSchema(*topic.ipc_schema);
-      if (!schema_bytes.ok()) {
-        topic.error = stringFromArrow(schema_bytes.status());
-        return;
-      }
-      const std::string config = parserConfigJson(topic.ts_field, kSyntheticIntervalNs);
       auto binding = ingest_progress_->ensureParserBinding(
           PJ::ParserBindingRequest{
               .topic_name = topic_name,
               .parser_encoding = kArrowIpcEncoding,
               .type_name = topic.ontology_tag,
-              .schema =
-                  PJ::Span<const uint8_t>((*schema_bytes)->data(), static_cast<std::size_t>((*schema_bytes)->size())),
-              .parser_config_json = config,
+              .schema = PJ::Span<const uint8_t>(
+                  topic.ipc_schema_bytes->data(), static_cast<std::size_t>(topic.ipc_schema_bytes->size())),
+              .parser_config_json = topic.parser_config,
           });
       if (!binding) {
         topic.error = binding.error();
@@ -600,8 +620,7 @@ void FetchWorker::pullTopicsAsync(
       topic.binding = *binding;
     }
     // Zero-copy: the IPC buffer is its own anchor, the host keeps it alive.
-    std::shared_ptr<arrow::Buffer> payload = *bytes;
-    auto pushed = ingest_progress_->pushMessage(*topic.binding, host_ts_ns, [payload]() {
+    auto pushed = ingest_progress_->pushMessage(*topic.binding, host_ts_ns, [payload = std::move(*bytes)]() {
       return PJ::sdk::PayloadView(
           PJ::Span<const uint8_t>(payload->data(), static_cast<std::size_t>(payload->size())),
           PJ::sdk::BufferAnchor(payload));
@@ -809,7 +828,7 @@ void FetchWorker::pullTopicsAsync(
         {
           std::lock_guard<std::mutex> plock(progress_mu_);
           progress_bytes_by_topic_[topic_name] = bytes;
-          if (ingest_progress_.has_value()) {
+          if (ingest_progress_.has_value() && progress_started_) {
             const std::uint64_t fetched = accumulatedProgressBytesLocked();
             if (!ingest_progress_->progressUpdate(fetched) && !host_stop_reported_) {
               host_stop = true;
@@ -874,11 +893,7 @@ void FetchWorker::pullTopicsAsync(
     });
 
     if (pull_topics_override_) {
-      on_batch_for_test_ = on_batch;
-      on_done_for_test_ = on_done;
-      pull_topics_override_();
-      on_batch_for_test_ = nullptr;
-      on_done_for_test_ = nullptr;
+      pull_topics_override_(on_batch, on_done);
     } else {
       (void)client_->pullTopics(
           sequence_name, topic_names_std, range, on_done, on_progress, &cancel_flag_, on_batch, on_schema,

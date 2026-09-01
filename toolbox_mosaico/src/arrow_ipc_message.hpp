@@ -38,22 +38,24 @@ inline constexpr std::int64_t kSyntheticIntervalNs = 33'333'333LL;
 /// else the first of {timestamp_ns, recording_timestamp_ns, timestamp, time,
 /// ts}; empty when nothing matches. Same rule `parser_arrow` applies, passed
 /// explicitly at bind time so the layout records the policy (D9).
+///
+/// Mirror of parser_arrow's detectTimestampColumn
+/// (parser_arrow/src/table_shaper.hpp) — keep the name lists in sync.
 [[nodiscard]] std::string detectTimestampField(const arrow::Schema& schema);
 
-/// Row 0 of `field` as nanoseconds: integers are taken as ns, floating values
-/// as seconds, TIMESTAMP scaled by its unit. Empty when the batch is empty,
-/// the field is absent, the value is null/non-finite, or the type is not a
-/// time-like scalar. Used only as the message's host timestamp — the parser
-/// reads per-row time from the column itself.
-[[nodiscard]] std::optional<std::int64_t> firstRowTimestampNs(const arrow::RecordBatch& batch, std::string_view field);
+/// Row 0 of column @p index as nanoseconds: floating values are read as
+/// seconds, TIMESTAMP is rescaled to ns, anything else is cast to int64 and
+/// taken as ns. Empty for an out-of-range index, an empty batch, a null or
+/// non-finite value, or a value that does not cast safely. Used only as the
+/// message's host timestamp — the parser reads per-row time from the column.
+[[nodiscard]] std::optional<std::int64_t> firstRowTimestampNs(const arrow::RecordBatch& batch, int index);
 
 /// One record batch as a complete IPC stream (schema message, the batch, end
 /// of stream). Uncompressed: the bytes cross a process-internal seam.
-[[nodiscard]] arrow::Result<std::shared_ptr<arrow::Buffer>> serializeIpcStream(const arrow::RecordBatch& batch);
-
-/// The schema alone as an IPC schema message — the binding's informational
-/// `schema` bytes (a recording keeps them; `parser_arrow` reads the stream).
-[[nodiscard]] arrow::Result<std::shared_ptr<arrow::Buffer>> serializeIpcSchema(const arrow::Schema& schema);
+/// @p capacity_hint sizes the output buffer up front (the previous batch's
+/// size is a good guess); 0 falls back to a small default.
+[[nodiscard]] arrow::Result<std::shared_ptr<arrow::Buffer>> serializeIpcStream(
+    const arrow::RecordBatch& batch, std::int64_t capacity_hint = 0);
 
 /// `parser_arrow` configuration for one topic:
 /// `{"timestamp_column": <field>, "synthetic_interval_ns": <interval>}`.

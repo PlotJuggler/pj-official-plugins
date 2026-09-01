@@ -141,10 +141,12 @@ class FetchWorker {
   /// Create the host progress/stop channel for this Download, once per batch:
   /// a parser-ingest context bound to @p ds (tail-slot-gated; a host without
   /// the slots, or without parser-ingest configured, degrades to no progress).
-  /// On success stores the fat-pointer view + calls progressStart
-  /// (indeterminate — see the .cpp). Runs after the batch dataset is created
-  /// and before its transport starts. Caller holds host_write_mu_; takes
-  /// progress_mu_.
+  /// On success stores the fat-pointer view (which is what scalar topics route
+  /// through) and calls progressStart (indeterminate — see the .cpp); a failed
+  /// progressStart costs only the progress bar. On failure leaves
+  /// parser_ingest_error_ holding the reason topics report. Runs after the batch
+  /// dataset is created and before its transport starts. Caller holds
+  /// host_write_mu_; takes progress_mu_.
   void ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, const std::string& sequence_name);
 
   /// Sum the per-topic byte ledger. Caller holds progress_mu_.
@@ -177,13 +179,13 @@ class FetchWorker {
   /// focuses playback on the finished dataset.
   void finishIngestProgress(bool discard_provisional);
 
+  using OnBatch = std::function<void(const std::string&, const std::shared_ptr<arrow::RecordBatch>&)>;
+  using OnDone = std::function<void(const std::string&, arrow::Result<PullResult>)>;
+
   std::unique_ptr<MosaicoClient> client_;
-  std::function<void()> pull_topics_override_;
-  // Test seam: while pull_topics_override_ runs, the pull's per-batch and
-  // per-topic-done callbacks (what the Flight client would invoke) so a test can
-  // feed record batches through the ingest path without a server.
-  std::function<void(const std::string&, const std::shared_ptr<arrow::RecordBatch>&)> on_batch_for_test_;
-  std::function<void(const std::string&, arrow::Result<PullResult>)> on_done_for_test_;
+  // Test seam replacing the Flight pull: receives the very callbacks the client
+  // would invoke, so a test can feed record batches through the ingest path.
+  std::function<void(const OnBatch&, const OnDone&)> pull_topics_override_;
   std::function<void()> cancel_active_pulls_override_;
   std::function<PJ::sdk::ToolboxHostView()> host_provider_;
   std::function<PJ::ToolboxRuntimeHostView()> runtime_host_provider_;
@@ -200,6 +202,7 @@ class FetchWorker {
   std::optional<PJ::DataSourceRuntimeHostView> ingest_progress_;
   std::string parser_ingest_error_;         // why the host gave no ingest context (guarded by progress_mu_)
   bool ingest_progress_attempted_ = false;  // one create attempt per Download
+  bool progress_started_ = false;           // progressStart succeeded: update/finish are paired with it
   bool host_stop_reported_ = false;         // hostStopRequested fires at most once
   std::optional<uint32_t> ingest_ds_id_;
   // Cumulative decoded bytes per topic, published as a batch-wide sum.

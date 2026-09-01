@@ -25,21 +25,15 @@ namespace mosaico::testing {
 
 class FetchWorkerTestAccess {
  public:
-  static void setPullTopicsOverride(FetchWorker& worker, std::function<void()> pull_topics) {
+  /// Replaces the Flight pull; @p pull_topics is handed the worker's own
+  /// per-batch and per-topic-done callbacks to drive the ingest path directly.
+  static void setPullTopicsOverride(
+      FetchWorker& worker, std::function<void(const FetchWorker::OnBatch&, const FetchWorker::OnDone&)> pull_topics) {
     worker.pull_topics_override_ = std::move(pull_topics);
   }
 
   static void setCancelActivePullsOverride(FetchWorker& worker, std::function<void()> cancel_active_pulls) {
     worker.cancel_active_pulls_override_ = std::move(cancel_active_pulls);
-  }
-
-  static void feedBatch(
-      FetchWorker& worker, const std::string& topic, const std::shared_ptr<arrow::RecordBatch>& batch) {
-    worker.on_batch_for_test_(topic, batch);
-  }
-
-  static void finishTopic(FetchWorker& worker, const std::string& topic) {
-    worker.on_done_for_test_(topic, PullResult{});
   }
 };
 
@@ -122,6 +116,10 @@ class FakeIngestHost {
     create_ingest_succeeds_.store(false);
   }
 
+  void failProgressStart() {
+    progress_start_succeeds_.store(false);
+  }
+
   [[nodiscard]] std::size_t releasedParserIngests() const {
     return released_.load();
   }
@@ -168,8 +166,7 @@ class FakeIngestHost {
   }
 
   static bool progressStart(void* ctx, PJ_string_view_t, std::uint64_t, bool, PJ_error_t*) PJ_NOEXCEPT {
-    static_cast<void>(ctx);
-    return true;
+    return static_cast<FakeIngestHost*>(ctx)->progress_start_succeeds_.load();
   }
 
   static bool progressUpdate(void* ctx, std::uint64_t) PJ_NOEXCEPT {
@@ -262,6 +259,7 @@ class FakeIngestHost {
   std::atomic<std::size_t> discarded_{0};
   std::atomic<std::size_t> progress_finishes_{0};
   std::atomic<bool> create_ingest_succeeds_{true};
+  std::atomic<bool> progress_start_succeeds_{true};
   std::atomic<bool> live_{false};
   std::atomic<bool> stop_requested_{false};
 };
@@ -293,7 +291,7 @@ TEST(MosaicoIngestProgress, ContextExistsBeforeFirstTopicCompletes) {
   std::condition_variable pull_cv;
   bool pull_entered = false;
   bool release_pull = false;
-  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&] {
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&](auto&, auto&) {
     std::unique_lock<std::mutex> lock(pull_mu);
     pull_entered = true;
     pull_cv.notify_all();
@@ -353,7 +351,7 @@ TEST(MosaicoIngestProgress, StopInterruptsBlockedTransportRead) {
     }
     pull_cv.notify_all();
   });
-  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&] {
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&](auto&, auto&) {
     std::unique_lock<std::mutex> lock(pull_mu);
     pull_entered = true;
     pull_cv.notify_all();
@@ -389,7 +387,7 @@ TEST(MosaicoIngestProgress, ZeroSuccessBatchDiscardsProvisionalDataset) {
   mosaico::FetchWorker worker;
   worker.setHostProvider([&host] { return host.writeView(); });
   worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
-  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [] {});
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](auto&, auto&) {});
 
   worker.pullTopicsAsync("seq", {"/failed"}, 0, 1);
 
@@ -405,7 +403,7 @@ TEST(MosaicoIngestProgress, ZeroSuccessBatchDiscardsWhenProgressContextCreationF
   mosaico::FetchWorker worker;
   worker.setHostProvider([&host] { return host.writeView(); });
   worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
-  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [] {});
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](auto&, auto&) {});
 
   worker.pullTopicsAsync("seq", {"/failed"}, 0, 1);
 
@@ -421,7 +419,7 @@ TEST(MosaicoIngestProgress, OlderRuntimeDefersDatasetUntilFirstSuccess) {
   mosaico::FetchWorker worker;
   worker.setHostProvider([&host] { return host.writeView(); });
   worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
-  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&host] {
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&host](auto&, auto&) {
     EXPECT_EQ(host.createdDataSources(), 0U);
     EXPECT_EQ(host.createdParserIngests(), 0U);
   });
@@ -457,10 +455,10 @@ TEST(MosaicoTransport, ScalarTopicBindsOnceAndPushesOneIpcStreamPerBatch) {
 
   std::vector<mosaico::PullResultEvent> results;
   worker.pullFinished = [&results](mosaico::PullResultEvent result) { results.push_back(std::move(result)); };
-  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&] {
-    mosaico::testing::FetchWorkerTestAccess::feedBatch(worker, "gps/fix", scalarBatch(1000));
-    mosaico::testing::FetchWorkerTestAccess::feedBatch(worker, "gps/fix", scalarBatch(2000));
-    mosaico::testing::FetchWorkerTestAccess::finishTopic(worker, "gps/fix");
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
+    on_batch("gps/fix", scalarBatch(1000));
+    on_batch("gps/fix", scalarBatch(2000));
+    on_done("gps/fix", mosaico::PullResult{});
   });
 
   worker.pullTopicsAsync("seq", {"gps/fix"}, 0, 1);
@@ -508,9 +506,9 @@ TEST(MosaicoTransport, ScalarTopicFailsWhenTheHostOffersNoParserIngest) {
 
   std::vector<mosaico::PullResultEvent> results;
   worker.pullFinished = [&results](mosaico::PullResultEvent result) { results.push_back(std::move(result)); };
-  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&] {
-    mosaico::testing::FetchWorkerTestAccess::feedBatch(worker, "gps/fix", scalarBatch(1000));
-    mosaico::testing::FetchWorkerTestAccess::finishTopic(worker, "gps/fix");
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
+    on_batch("gps/fix", scalarBatch(1000));
+    on_done("gps/fix", mosaico::PullResult{});
   });
 
   worker.pullTopicsAsync("seq", {"gps/fix"}, 0, 1);
@@ -521,6 +519,32 @@ TEST(MosaicoTransport, ScalarTopicFailsWhenTheHostOffersNoParserIngest) {
   // The host's own reason reaches the user, not a hardcoded placeholder.
   EXPECT_NE(results[0].error.find("no parser installed for arrow-ipc"), std::string::npos) << results[0].error;
   EXPECT_EQ(host.discardedParserIngests(), 1U);
+}
+
+// A refused progressStart costs the progress bar only: the ingest context is
+// live, so the topic must still import rather than fail with a blank reason.
+TEST(MosaicoTransport, FailedProgressStartStillImportsScalarTopics) {
+  FakeIngestHost host;
+  host.failProgressStart();
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+
+  std::vector<mosaico::PullResultEvent> results;
+  worker.pullFinished = [&results](mosaico::PullResultEvent result) { results.push_back(std::move(result)); };
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
+    on_batch("gps/fix", scalarBatch(1000));
+    on_done("gps/fix", mosaico::PullResult{});
+  });
+
+  worker.pullTopicsAsync("seq", {"gps/fix"}, 0, 1);
+
+  ASSERT_EQ(results.size(), 1U);
+  EXPECT_TRUE(results[0].ok) << results[0].error;
+  EXPECT_EQ(host.messages.size(), 1U);
+  // No progressStart means no progressFinish: the lifecycle stays paired.
+  EXPECT_EQ(host.progressFinishes(), 0U);
+  EXPECT_EQ(host.releasedParserIngests(), 1U);
 }
 
 std::shared_ptr<arrow::RecordBatch> unstampedBatch() {
@@ -545,10 +569,10 @@ TEST(MosaicoTransport, UnstampedTopicAdvancesTheSyntheticAxisAcrossBatches) {
   info.topic_name = "imu/raw";
   info.min_ts_ns = 5000;
   worker.setTopicInfoCache({{"imu/raw", info}});
-  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&] {
-    mosaico::testing::FetchWorkerTestAccess::feedBatch(worker, "imu/raw", unstampedBatch());
-    mosaico::testing::FetchWorkerTestAccess::feedBatch(worker, "imu/raw", unstampedBatch());
-    mosaico::testing::FetchWorkerTestAccess::finishTopic(worker, "imu/raw");
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
+    on_batch("imu/raw", unstampedBatch());
+    on_batch("imu/raw", unstampedBatch());
+    on_done("imu/raw", mosaico::PullResult{});
   });
 
   worker.pullTopicsAsync("seq", {"imu/raw"}, 0, 1);
@@ -573,9 +597,9 @@ TEST(MosaicoTransport, ObjectOntologyTopicNeverTakesTheTransportPath) {
   info.topic_name = "odom";
   info.ontology_tag = "pose";
   worker.setTopicInfoCache({{"odom", info}});
-  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&] {
-    mosaico::testing::FetchWorkerTestAccess::feedBatch(worker, "odom", scalarBatch(1000));
-    mosaico::testing::FetchWorkerTestAccess::finishTopic(worker, "odom");
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
+    on_batch("odom", scalarBatch(1000));
+    on_done("odom", mosaico::PullResult{});
   });
 
   worker.pullTopicsAsync("seq", {"odom"}, 0, 1);

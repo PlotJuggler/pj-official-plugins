@@ -42,9 +42,8 @@
 namespace {
 
 // ---------------------------------------------------------------------------
-// Recording fake host (mirrors tests/fetch_grouping_test.cpp). Captures every
-// registerObjectTopic + pushOwnedObject so the test can assert the topic
-// metadata and inspect each pushed blob.
+// Recording fake host. Captures every registerObjectTopic + pushOwnedObject so
+// the test can assert the topic metadata and inspect each pushed blob.
 // ---------------------------------------------------------------------------
 struct RecordedObjectTopic {
   std::uint32_t source_id = 0;
