@@ -17,11 +17,9 @@
 //   2. Register topics with the BARE "<topic>" name (the dataset already
 //      carries the sequence name).
 //
-// These tests exercise the lower-level contract directly (no Flight/gRPC):
-//   * object pushes take the shared DataSourceHandle and use the BARE topic name,
-//     never calling create_data_source itself.
-//   * A datasetForFetch-shaped helper creates the source exactly once even
-//     under concurrent callbacks, and both topics attach to that one source.
+// This test exercises the lower-level contract directly (no Flight/gRPC): a
+// datasetForFetch-shaped helper creates the source exactly once even under
+// concurrent callbacks, and every caller gets that one source.
 
 #include <arrow/api.h>
 #include <arrow/c/bridge.h>
@@ -66,8 +64,6 @@ struct FakeHost {
   std::vector<RecordedDataSource> data_sources;
   std::vector<RecordedTopic> topics;
   std::vector<RecordedObjectTopic> object_topics;
-  // Records every appendArrowStream so we can verify the topic + ts column.
-  std::vector<std::pair<std::uint32_t, std::string>> appended_streams;  // (topic_id, ts_col)
   std::uint32_t next_id = 1;
   std::mutex mu;
 
@@ -116,21 +112,6 @@ struct FakeHost {
       PJ_NOEXCEPT {
     return false;
   }
-  static bool appendArrowStream(
-      void* ctx, PJ_topic_handle_t topic, struct ArrowArrayStream* stream, PJ_string_view_t timestamp_column,
-      PJ_error_t*) PJ_NOEXCEPT {
-    auto* h = self(ctx);
-    {
-      std::lock_guard<std::mutex> lk(h->mu);
-      h->appended_streams.emplace_back(topic.id, toStr(timestamp_column));
-    }
-    // Honor the C ABI ownership contract: the host consumes (releases) the
-    // stream on success.
-    if (stream != nullptr && stream->release != nullptr) {
-      stream->release(stream);
-    }
-    return true;
-  }
   static bool acquireCatalogSnapshot(void*, PJ_catalog_snapshot_t*, PJ_error_t*) PJ_NOEXCEPT {
     return false;
   }
@@ -165,7 +146,6 @@ const PJ_toolbox_host_vtable_t FakeHost::kVtable = [] {
   v.ensure_field = &FakeHost::ensureField;
   v.append_record = &FakeHost::appendRecord;
   v.append_bound_record = &FakeHost::appendBoundRecord;
-  v.append_arrow_stream = &FakeHost::appendArrowStream;
   v.acquire_catalog_snapshot = &FakeHost::acquireCatalogSnapshot;
   v.read_series_arrow = &FakeHost::readSeriesArrow;
   v.register_object_topic = &FakeHost::registerObjectTopic;
@@ -201,6 +181,7 @@ class FetchSession {
 
 }  // namespace
 
+// datasetForFetch must create the source exactly once even when called
 // concurrently — the parallel pullTopics callbacks race here.
 TEST(FetchGrouping, DatasetForFetchCreatesOnceUnderConcurrency) {
   FakeHost fake;

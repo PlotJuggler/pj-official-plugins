@@ -303,12 +303,11 @@ namespace {
         return out;
       }
       // Read each child through a type-flexible helper rather than a single
-      // fixed cast: the `fields` column is a list<struct> that bypasses both
-      // flattenStructColumns, so the server is free to
-      // emit `name` as Utf8/LargeUtf8/Utf8View and offset/datatype/count at any
-      // integer width. A fixed cast would null out and silently yield empty
-      // names / offset 0 (every channel aliasing byte 0) — the exact view-type
-      // failure this plugin already guards against on the scalar columns.
+      // fixed cast: the `fields` column is a list<struct> that bypasses
+      // flattenStructColumns, so the server is free to emit `name` as
+      // Utf8/LargeUtf8/Utf8View and offset/datatype/count at any integer width.
+      // A fixed cast would null out and silently yield empty names / offset 0
+      // (every channel aliasing byte 0).
       const auto names = items->GetFieldByName("name");
       const auto offsets = items->GetFieldByName("offset");
       const auto datatypes = items->GetFieldByName("datatype");

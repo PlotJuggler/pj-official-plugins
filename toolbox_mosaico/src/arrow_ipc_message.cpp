@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 #include "arrow_ipc_message.hpp"
 
+#include <arrow/api.h>
+#include <arrow/compute/api.h>
 #include <arrow/io/memory.h>
 #include <arrow/ipc/writer.h>
 #include <arrow/util/checked_cast.h>
@@ -12,6 +14,76 @@
 #include <nlohmann/json.hpp>
 
 namespace mosaico {
+
+namespace {
+
+// Type rewrite behind ipcSafeSchema; returns the input pointer when unchanged.
+std::shared_ptr<arrow::DataType> ipcSafeType(const std::shared_ptr<arrow::DataType>& type) {
+  switch (type->id()) {
+    case arrow::Type::STRING_VIEW:
+      return arrow::utf8();
+    case arrow::Type::BINARY_VIEW:
+      return arrow::binary();
+    case arrow::Type::DICTIONARY:
+      return ipcSafeType(std::static_pointer_cast<arrow::DictionaryType>(type)->value_type());
+    case arrow::Type::STRUCT: {
+      std::vector<std::shared_ptr<arrow::Field>> fields;
+      bool changed = false;
+      for (const auto& field : type->fields()) {
+        auto safe = ipcSafeType(field->type());
+        changed |= safe != field->type();
+        fields.push_back(field->WithType(safe));
+      }
+      return changed ? arrow::struct_(fields) : type;
+    }
+    case arrow::Type::LIST:
+    case arrow::Type::LARGE_LIST:
+    case arrow::Type::FIXED_SIZE_LIST: {
+      const auto& value_field = type->field(0);
+      auto safe = ipcSafeType(value_field->type());
+      if (safe == value_field->type()) {
+        return type;
+      }
+      if (type->id() == arrow::Type::LIST) {
+        return arrow::list(value_field->WithType(safe));
+      }
+      if (type->id() == arrow::Type::LARGE_LIST) {
+        return arrow::large_list(value_field->WithType(safe));
+      }
+      return arrow::fixed_size_list(
+          value_field->WithType(safe), std::static_pointer_cast<arrow::FixedSizeListType>(type)->list_size());
+    }
+    default:
+      return type;
+  }
+}
+
+}  // namespace
+
+std::shared_ptr<arrow::Schema> ipcSafeSchema(const std::shared_ptr<arrow::Schema>& schema) {
+  std::vector<std::shared_ptr<arrow::Field>> fields;
+  bool changed = false;
+  for (const auto& field : schema->fields()) {
+    auto safe = ipcSafeType(field->type());
+    changed |= safe != field->type();
+    fields.push_back(field->WithType(safe));
+  }
+  return changed ? std::make_shared<arrow::Schema>(fields, schema->metadata()) : schema;
+}
+
+arrow::Result<std::shared_ptr<arrow::RecordBatch>> castToSchema(
+    const arrow::RecordBatch& batch, const std::shared_ptr<arrow::Schema>& target) {
+  std::vector<std::shared_ptr<arrow::Array>> columns = batch.columns();
+  for (int index = 0; index < batch.num_columns(); ++index) {
+    const auto& want = target->field(index)->type();
+    if (columns[index]->type()->Equals(*want)) {
+      continue;
+    }
+    ARROW_ASSIGN_OR_RAISE(auto casted, arrow::compute::Cast(*columns[index], want));
+    columns[index] = std::move(casted);
+  }
+  return arrow::RecordBatch::Make(target, batch.num_rows(), std::move(columns));
+}
 
 std::string detectTimestampField(const arrow::Schema& schema) {
   for (const auto& field : schema.fields()) {

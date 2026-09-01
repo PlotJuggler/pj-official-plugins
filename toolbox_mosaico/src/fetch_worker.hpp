@@ -198,6 +198,7 @@ class FetchWorker {
   // engine lock (also taken under host_write_mu_ on the write path — no cycle).
   std::mutex progress_mu_;
   std::optional<PJ::DataSourceRuntimeHostView> ingest_progress_;
+  std::string parser_ingest_error_;         // why the host gave no ingest context (guarded by progress_mu_)
   bool ingest_progress_attempted_ = false;  // one create attempt per Download
   bool host_stop_reported_ = false;         // hostStopRequested fires at most once
   std::optional<uint32_t> ingest_ds_id_;

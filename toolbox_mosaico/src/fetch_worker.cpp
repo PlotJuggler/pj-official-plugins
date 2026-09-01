@@ -62,12 +62,6 @@ std::string stringFromArrow(const arrow::Status& status) {
 // Arrow IPC stream, decoded host-side by parser_arrow.
 constexpr std::string_view kArrowIpcEncoding = "arrow-ipc";
 
-// Cadence of the synthetic time axis for rows without a timestamp column. The
-// parser continues it per row from each message's host timestamp; the object
-// helpers fit it to the topic's [min,max] range instead because they see the
-// whole table.
-constexpr std::int64_t kSyntheticIntervalNs = 33'333'333LL;  // ~30 fps
-
 std::int64_t nowNs() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
       .count();
@@ -191,12 +185,16 @@ void FetchWorker::ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, cons
   // Tail-slot gate: an older host's vtable ends before create_parser_ingest —
   // Downloads then run exactly as before, without host progress.
   if (!PJ_HAS_TAIL_SLOT(PJ_toolbox_runtime_host_vtable_t, raw.vtable, create_parser_ingest)) {
+    parser_ingest_error_ = "host offers no parser ingest (arrow-ipc topics need a newer PlotJuggler)";
     return;
   }
   PJ_data_source_runtime_host_t ingest_raw{};
   PJ_error_t error{};
   if (!raw.vtable->create_parser_ingest(raw.ctx, ds.id, &ingest_raw, &error)) {
-    return;  // e.g. parser ingest not configured on this host — degrade silently
+    // Object topics still import through direct writes; scalar topics fail with
+    // the host's reason (typically: no parser installed for arrow-ipc).
+    parser_ingest_error_ = PJ::errorToString(error);
+    return;
   }
   // The context is LIVE on the host from this point: record the id first so
   // finishIngestProgress releases it even when progressStart below fails
@@ -463,6 +461,7 @@ void FetchWorker::pullTopicsAsync(
     std::lock_guard<std::mutex> plock(progress_mu_);
     ingest_progress_.reset();
     ingest_progress_attempted_ = false;
+    parser_ingest_error_.clear();
     host_stop_reported_ = false;
     ingest_ds_id_.reset();
     progress_bytes_by_topic_.clear();
@@ -483,8 +482,9 @@ void FetchWorker::pullTopicsAsync(
   // topic's callbacks arrive in order on one pool thread.
   struct PerTopic {
     std::shared_ptr<arrow::Schema> schema;
-    bool routed = false;        // ontology resolved on first sight of the schema
-    bool object_route = false;  // canonical object: buffered table -> object helpers
+    std::shared_ptr<arrow::Schema> ipc_schema;  // ipcSafeSchema(schema); same pointer = no cast needed
+    bool routed = false;                        // ontology resolved on first sight of the schema
+    bool object_route = false;                  // canonical object: buffered table -> object helpers
     std::string ontology_tag;
     std::string ts_field;
     std::int64_t info_min_ts_ns = 0;
@@ -521,6 +521,7 @@ void FetchWorker::pullTopicsAsync(
     topic.ontology_tag = resolveOntologyTag(topic.schema, cached_tag);
     topic.object_route = isCanonicalObjectOntology(topic.ontology_tag);
     topic.ts_field = detectTimestampField(*topic.schema);
+    topic.ipc_schema = ipcSafeSchema(topic.schema);
     topic.synth_anchor_ns = topic.info_min_ts_ns != 0 ? topic.info_min_ts_ns : nowNs();
   };
 
@@ -534,7 +535,18 @@ void FetchWorker::pullTopicsAsync(
     if (!topic.error.empty() || batch.num_rows() == 0) {
       return;
     }
-    auto bytes = serializeIpcStream(batch);
+    // parser_arrow (nanoarrow_ipc) cannot decode view or dictionary fields; the
+    // server emits Utf8View for e.g. frame_id. Cast only when the schema needs it.
+    std::shared_ptr<arrow::RecordBatch> safe_batch;
+    if (topic.ipc_schema != topic.schema) {
+      auto casted = castToSchema(batch, topic.ipc_schema);
+      if (!casted.ok()) {
+        topic.error = stringFromArrow(casted.status());
+        return;
+      }
+      safe_batch = *casted;
+    }
+    auto bytes = serializeIpcStream(safe_batch ? *safe_batch : batch);
     if (!bytes.ok()) {
       topic.error = stringFromArrow(bytes.status());
       return;
@@ -555,13 +567,18 @@ void FetchWorker::pullTopicsAsync(
       return;
     }
     ensureIngestProgress(*ds, sequence_name);
+    // ponytail: progress_mu_ is held across pushMessage, so a slow host push
+    // stalls the 50 ms stop poller and the progress ticks, and host_write_mu_
+    // serializes concurrent scalar topics batch by batch. Upgrade path if a
+    // profile shows it: hand batches to a per-topic queue drained by one thread.
     std::lock_guard<std::mutex> plock(progress_mu_);
     if (!ingest_progress_.has_value()) {
-      topic.error = "host offers no parser ingest (arrow-ipc topics need a PlotJuggler with parser_arrow installed)";
+      topic.error =
+          parser_ingest_error_.empty() ? "host offers no parser ingest for arrow-ipc topics" : parser_ingest_error_;
       return;
     }
     if (!topic.binding.has_value()) {
-      auto schema_bytes = serializeIpcSchema(*topic.schema);
+      auto schema_bytes = serializeIpcSchema(*topic.ipc_schema);
       if (!schema_bytes.ok()) {
         topic.error = stringFromArrow(schema_bytes.status());
         return;

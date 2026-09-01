@@ -7,6 +7,7 @@
 #include "../src/arrow_ipc_message.hpp"
 
 #include <arrow/api.h>
+#include <arrow/compute/api.h>
 #include <arrow/io/memory.h>
 #include <arrow/ipc/dictionary.h>
 #include <arrow/ipc/reader.h>
@@ -121,6 +122,65 @@ TEST(ParserConfigJson, CarriesBothKeys) {
   EXPECT_EQ(config.at("timestamp_column"), "timestamp_ns");
   EXPECT_EQ(config.at("synthetic_interval_ns"), 33);
   EXPECT_EQ(nlohmann::json::parse(mosaico::parserConfigJson("", 0)).at("timestamp_column"), "");
+}
+
+std::shared_ptr<arrow::Array> castArray(
+    const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::DataType>& type) {
+  auto casted = arrow::compute::Cast(*array, type);
+  EXPECT_TRUE(casted.ok()) << casted.status().ToString();
+  return *casted;
+}
+
+std::shared_ptr<arrow::RecordBatch> decodeSingleBatch(const std::shared_ptr<arrow::Buffer>& bytes) {
+  auto reader = arrow::ipc::RecordBatchStreamReader::Open(std::make_shared<arrow::io::BufferReader>(bytes));
+  EXPECT_TRUE(reader.ok()) << reader.status().ToString();
+  auto batch = (*reader)->Next();
+  EXPECT_TRUE(batch.ok());
+  return *batch;
+}
+
+// nanoarrow_ipc (parser_arrow) cannot decode view types, even nested inside a
+// struct, nor dictionary batches: the cast pass must remove all of them and the
+// stream must decode to plain utf8/binary values.
+TEST(IpcSafeSchema, ViewAndDictionaryFieldsBecomePlainTypesAtEveryDepth) {
+  auto names = arrayOf<arrow::StringBuilder, std::string>({"map", "odom", "map"});
+  auto ids = arrayOf<arrow::Int64Builder, std::int64_t>({1, 2, 3});
+  auto header = *arrow::StructArray::Make(
+      {castArray(names, arrow::utf8_view()), ids}, std::vector<std::string>{"frame_id", "seq"});
+  auto schema = arrow::schema(
+      {arrow::field("frame_id", arrow::utf8_view()), arrow::field("blob", arrow::binary_view()),
+       arrow::field("label", arrow::dictionary(arrow::int32(), arrow::utf8())), arrow::field("header", header->type()),
+       arrow::field("x", arrow::int64())});
+  auto batch = arrow::RecordBatch::Make(
+      schema, 3,
+      {castArray(names, arrow::utf8_view()), castArray(names, arrow::binary_view()),
+       castArray(names, arrow::dictionary(arrow::int32(), arrow::utf8())), header, ids});
+
+  auto safe_schema = mosaico::ipcSafeSchema(schema);
+  ASSERT_NE(safe_schema, schema);
+  EXPECT_TRUE(safe_schema->field(0)->type()->Equals(arrow::utf8()));
+  EXPECT_TRUE(safe_schema->field(1)->type()->Equals(arrow::binary()));
+  EXPECT_TRUE(safe_schema->field(2)->type()->Equals(arrow::utf8()));
+  EXPECT_TRUE(safe_schema->field(3)->type()->field(0)->type()->Equals(arrow::utf8()));
+  EXPECT_TRUE(safe_schema->field(4)->type()->Equals(arrow::int64()));
+
+  auto safe_batch = mosaico::castToSchema(*batch, safe_schema);
+  ASSERT_TRUE(safe_batch.ok()) << safe_batch.status().ToString();
+  auto bytes = mosaico::serializeIpcStream(**safe_batch);
+  ASSERT_TRUE(bytes.ok()) << bytes.status().ToString();
+  auto decoded = decodeSingleBatch(*bytes);
+  ASSERT_NE(decoded, nullptr);
+  EXPECT_TRUE(decoded->schema()->Equals(*safe_schema));
+  EXPECT_EQ(decoded->column(0)->type_id(), arrow::Type::STRING);
+  EXPECT_EQ(decoded->column(2)->type_id(), arrow::Type::STRING);
+  EXPECT_TRUE(decoded->column(0)->Equals(*names));
+  EXPECT_TRUE(decoded->column(2)->Equals(*names));
+  EXPECT_TRUE(decoded->column(4)->Equals(*ids));
+}
+
+TEST(IpcSafeSchema, ReturnsTheSamePointerWhenNothingNeedsCasting) {
+  auto schema = scalarBatch()->schema();
+  EXPECT_EQ(mosaico::ipcSafeSchema(schema), schema);
 }
 
 }  // namespace

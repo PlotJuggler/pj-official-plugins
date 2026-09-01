@@ -6,7 +6,8 @@
 // record batch becomes one self-contained Arrow IPC stream (schema + batch +
 // EOS), which is exactly what `parser_arrow` decodes. Plain libarrow, no SDK.
 
-#include <arrow/api.h>
+#include <arrow/result.h>
+#include <arrow/type_fwd.h>
 
 #include <cstdint>
 #include <memory>
@@ -15,6 +16,23 @@
 #include <string_view>
 
 namespace mosaico {
+
+/// Cadence of the synthetic time axis for rows without a timestamp column
+/// (~30 fps). Passed to parser_arrow as `synthetic_interval_ns`; the message
+/// host timestamp advances by it per row so the parser continues the axis
+/// seamlessly across batches.
+inline constexpr std::int64_t kSyntheticIntervalNs = 33'333'333LL;
+
+/// The schema parser_arrow can decode: string_view/binary_view become
+/// utf8/binary and dictionary-encoded fields become their value type, at any
+/// nesting depth (struct children, list values) — nanoarrow_ipc 0.7 refuses
+/// both. Returns the SAME pointer when nothing needs to change, so callers can
+/// skip the cast pass (and stay zero-copy) with a pointer compare.
+[[nodiscard]] std::shared_ptr<arrow::Schema> ipcSafeSchema(const std::shared_ptr<arrow::Schema>& schema);
+
+/// Cast every column whose type differs from `target` (see ipcSafeSchema).
+[[nodiscard]] arrow::Result<std::shared_ptr<arrow::RecordBatch>> castToSchema(
+    const arrow::RecordBatch& batch, const std::shared_ptr<arrow::Schema>& target);
 
 /// Timestamp field of a topic schema: the first Arrow TIMESTAMP-typed field,
 /// else the first of {timestamp_ns, recording_timestamp_ns, timestamp, time,

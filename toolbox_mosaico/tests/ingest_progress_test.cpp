@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "arrow_ipc_message.hpp"
 #include "fetch_worker.hpp"
 
 namespace mosaico::testing {
@@ -223,10 +224,11 @@ class FakeIngestHost {
     return fetched;
   }
 
-  static bool createParserIngest(void* ctx, std::uint32_t, PJ_data_source_runtime_host_t* out_host, PJ_error_t*)
+  static bool createParserIngest(void* ctx, std::uint32_t, PJ_data_source_runtime_host_t* out_host, PJ_error_t* error)
       PJ_NOEXCEPT {
     auto* self = static_cast<FakeIngestHost*>(ctx);
     if (!self->create_ingest_succeeds_.load()) {
+      PJ::sdk::setErrorField(error->message, sizeof(error->message), "no parser installed for arrow-ipc");
       return false;
     }
     ++self->created_;
@@ -466,6 +468,7 @@ TEST(MosaicoTransport, ScalarTopicBindsOnceAndPushesOneIpcStreamPerBatch) {
   ASSERT_EQ(host.bindings.size(), 1U);
   EXPECT_EQ(host.bindings[0].topic, "gps/fix");
   EXPECT_EQ(host.bindings[0].encoding, "arrow-ipc");
+  EXPECT_EQ(host.bindings[0].type_name, "");  // no ontology tag cached or in the schema
   EXPECT_EQ(nlohmann::json::parse(host.bindings[0].config).at("timestamp_column"), "timestamp_ns");
   EXPECT_FALSE(host.bindings[0].schema.empty());
 
@@ -482,7 +485,9 @@ TEST(MosaicoTransport, ScalarTopicBindsOnceAndPushesOneIpcStreamPerBatch) {
     ASSERT_TRUE(batch.ok());
     ASSERT_NE(*batch, nullptr);
     EXPECT_EQ((*batch)->num_rows(), 3);
-    EXPECT_EQ(*(*reader)->Next(), nullptr);
+    auto end = (*reader)->Next();
+    ASSERT_TRUE(end.ok());
+    EXPECT_EQ(*end, nullptr);
   }
 
   ASSERT_EQ(results.size(), 1U);
@@ -513,8 +518,70 @@ TEST(MosaicoTransport, ScalarTopicFailsWhenTheHostOffersNoParserIngest) {
   EXPECT_TRUE(host.messages.empty());
   ASSERT_EQ(results.size(), 1U);
   EXPECT_FALSE(results[0].ok);
-  EXPECT_NE(results[0].error.find("parser ingest"), std::string::npos) << results[0].error;
+  // The host's own reason reaches the user, not a hardcoded placeholder.
+  EXPECT_NE(results[0].error.find("no parser installed for arrow-ipc"), std::string::npos) << results[0].error;
   EXPECT_EQ(host.discardedParserIngests(), 1U);
+}
+
+std::shared_ptr<arrow::RecordBatch> unstampedBatch() {
+  arrow::DoubleBuilder value_builder;
+  for (int row = 0; row < 3; ++row) {
+    EXPECT_TRUE(value_builder.Append(static_cast<double>(row)).ok());
+  }
+  std::shared_ptr<arrow::Array> value_array;
+  EXPECT_TRUE(value_builder.Finish(&value_array).ok());
+  return arrow::RecordBatch::Make(arrow::schema({arrow::field("value", arrow::float64())}), 3, {value_array});
+}
+
+// Rows without a timestamp column get a synthetic axis: the message host
+// timestamp advances by rows_pushed * interval from the topic's min_ts_ns and
+// the parser is told the same interval so the axis continues within a batch.
+TEST(MosaicoTransport, UnstampedTopicAdvancesTheSyntheticAxisAcrossBatches) {
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::TopicInfo info;
+  info.topic_name = "imu/raw";
+  info.min_ts_ns = 5000;
+  worker.setTopicInfoCache({{"imu/raw", info}});
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&] {
+    mosaico::testing::FetchWorkerTestAccess::feedBatch(worker, "imu/raw", unstampedBatch());
+    mosaico::testing::FetchWorkerTestAccess::feedBatch(worker, "imu/raw", unstampedBatch());
+    mosaico::testing::FetchWorkerTestAccess::finishTopic(worker, "imu/raw");
+  });
+
+  worker.pullTopicsAsync("seq", {"imu/raw"}, 0, 1);
+
+  ASSERT_EQ(host.bindings.size(), 1U);
+  const auto config = nlohmann::json::parse(host.bindings[0].config);
+  EXPECT_EQ(config.at("timestamp_column"), "");
+  EXPECT_EQ(config.at("synthetic_interval_ns"), mosaico::kSyntheticIntervalNs);
+  ASSERT_EQ(host.messages.size(), 2U);
+  EXPECT_EQ(host.messages[0].host_ts_ns, 5000);
+  EXPECT_EQ(host.messages[1].host_ts_ns, 5000 + 3 * mosaico::kSyntheticIntervalNs);
+}
+
+// Canonical-object ontologies stay on the direct-write path: no parser binding,
+// no arrow-ipc message.
+TEST(MosaicoTransport, ObjectOntologyTopicNeverTakesTheTransportPath) {
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::TopicInfo info;
+  info.topic_name = "odom";
+  info.ontology_tag = "pose";
+  worker.setTopicInfoCache({{"odom", info}});
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&] {
+    mosaico::testing::FetchWorkerTestAccess::feedBatch(worker, "odom", scalarBatch(1000));
+    mosaico::testing::FetchWorkerTestAccess::finishTopic(worker, "odom");
+  });
+
+  worker.pullTopicsAsync("seq", {"odom"}, 0, 1);
+
+  EXPECT_TRUE(host.bindings.empty());
+  EXPECT_TRUE(host.messages.empty());
 }
 
 }  // namespace
