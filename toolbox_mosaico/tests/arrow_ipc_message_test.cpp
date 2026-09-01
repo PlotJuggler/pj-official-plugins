@@ -8,6 +8,7 @@
 
 #include <arrow/api.h>
 #include <arrow/compute/api.h>
+#include <arrow/extension_type.h>
 #include <arrow/io/memory.h>
 #include <arrow/ipc/reader.h>
 #include <gtest/gtest.h>
@@ -38,48 +39,53 @@ std::shared_ptr<arrow::RecordBatch> scalarBatch() {
        arrayOf<arrow::DoubleBuilder, double>({0.0, 1.0, 2.0})});
 }
 
-TEST(DetectTimestampField, TypeThenNamePriorityThenEmpty) {
+TEST(DetectTimestampLeaf, TypeThenNamePriorityThenEmpty) {
   auto typed_schema = arrow::schema(
       {arrow::field("timestamp_ns", arrow::int64()), arrow::field("stamp", arrow::timestamp(arrow::TimeUnit::MICRO))});
-  EXPECT_EQ(mosaico::detectTimestampField(*typed_schema), "stamp");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*typed_schema).path, "stamp");
 
   auto name_schema = arrow::schema(
       {arrow::field("ts", arrow::int64()), arrow::field("time", arrow::int64()),
        arrow::field("recording_timestamp_ns", arrow::int64())});
-  EXPECT_EQ(mosaico::detectTimestampField(*name_schema), "recording_timestamp_ns");
-  EXPECT_EQ(mosaico::detectTimestampField(*arrow::schema({arrow::field("time", arrow::int64())})), "time");
-  EXPECT_EQ(mosaico::detectTimestampField(*arrow::schema({arrow::field("ts", arrow::int64())})), "ts");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*name_schema).path, "recording_timestamp_ns");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*arrow::schema({arrow::field("time", arrow::int64())})).path, "time");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*arrow::schema({arrow::field("ts", arrow::int64())})).path, "ts");
 
-  EXPECT_EQ(mosaico::detectTimestampField(*arrow::schema({arrow::field("x", arrow::float64())})), "");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*arrow::schema({arrow::field("x", arrow::float64())})).path, "");
 }
 
 // The stamp a ROS-shaped topic carries lives inside its `header` struct: the
 // scan walks flattened leaves, so it is found and named the way the flattened
 // table (and parser_arrow) will name it.
-TEST(DetectTimestampField, WalksFlattenedLeavesAndNormalizesDots) {
+TEST(DetectTimestampLeaf, WalksFlattenedLeavesAndNormalizesDots) {
   auto nested = arrow::schema(
       {arrow::field("value", arrow::float64()),
        arrow::field(
            "header", arrow::struct_(
                          {arrow::field("frame_id", arrow::utf8()),
                           arrow::field("stamp", arrow::timestamp(arrow::TimeUnit::MICRO))}))});
-  EXPECT_EQ(mosaico::detectTimestampField(*nested), "header/stamp");
-  EXPECT_EQ(mosaico::timestampFieldRoute(*nested, "header/stamp"), (std::vector<int>{1, 1}));
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*nested).path, "header/stamp");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*nested).route, (std::vector<int>{1, 1}));
 
   // The name list matches a nested leaf by its full path, not its bare name.
   auto nested_by_name =
       arrow::schema({arrow::field("msg", arrow::struct_({arrow::field("timestamp_ns", arrow::int64())}))});
-  EXPECT_EQ(mosaico::detectTimestampField(*nested_by_name), "");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*nested_by_name).path, "");
 
-  // A '.' inside any component becomes '/' at every depth.
-  auto dotted = arrow::schema(
+  // A '.' inside any component becomes '/' — at the top level…
+  auto dotted_top = arrow::schema({arrow::field("wheel.stamp", arrow::timestamp(arrow::TimeUnit::NANO))});
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*dotted_top).path, "wheel/stamp");
+
+  // …and nested, where it composes with the struct separator.
+  auto dotted_nested = arrow::schema(
       {arrow::field("wheel.speed", arrow::float64()),
        arrow::field("msg", arrow::struct_({arrow::field("header.stamp", arrow::timestamp(arrow::TimeUnit::NANO))}))});
-  EXPECT_EQ(mosaico::detectTimestampField(*dotted), "msg/header/stamp");
-  EXPECT_EQ(mosaico::timestampFieldRoute(*dotted, "msg/header/stamp"), (std::vector<int>{1, 0}));
-  EXPECT_TRUE(mosaico::timestampFieldRoute(*dotted, "wheel.speed").empty()) << "the raw dotted name is not the leaf";
-  EXPECT_EQ(mosaico::timestampFieldRoute(*dotted, "wheel/speed"), (std::vector<int>{0}));
-  EXPECT_TRUE(mosaico::timestampFieldRoute(*dotted, "").empty());
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*dotted_nested).path, "msg/header/stamp");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*dotted_nested).route, (std::vector<int>{1, 0}));
+
+  // Nothing matches -> no path AND no route, which is how route() marks a
+  // topic timestamp-less.
+  EXPECT_TRUE(mosaico::detectTimestampLeaf(*nested_by_name).route.empty());
 }
 
 TEST(FirstRowTimestampNs, ByTypeAndInvalidRoutes) {
@@ -140,13 +146,18 @@ TEST(SerializeIpcStream, RoundTripsOneBatchAsACompleteStream) {
   EXPECT_EQ(*end, nullptr) << "exactly one batch then end-of-stream";
 }
 
-TEST(ParserConfigJson, CarriesBothKeys) {
-  auto config = nlohmann::json::parse(mosaico::parserConfigJson("timestamp_ns"));
-  EXPECT_EQ(config.at("timestamp_column"), "timestamp_ns");
+TEST(ParserConfigJson, CarriesEveryKeyTheContractDependsOn) {
+  auto config = nlohmann::json::parse(mosaico::parserConfigJson("header/stamp", mosaico::kSyntheticIntervalNs));
+  EXPECT_EQ(config.at("timestamp_column"), "header/stamp");
   EXPECT_EQ(config.at("synthetic_interval_ns"), mosaico::kSyntheticIntervalNs);
-  EXPECT_EQ(nlohmann::json::parse(mosaico::parserConfigJson("")).at("timestamp_column"), "");
+  // Pinned, not left to the parser's default: a nested timestamp_column only
+  // resolves once the parser has flattened.
+  EXPECT_EQ(config.at("flatten_structs"), true);
+
   // The interval is per-topic: a fitted cadence must reach the parser verbatim.
-  EXPECT_EQ(nlohmann::json::parse(mosaico::parserConfigJson("", 1000)).at("synthetic_interval_ns"), 1000);
+  auto fitted = nlohmann::json::parse(mosaico::parserConfigJson("", 1000));
+  EXPECT_EQ(fitted.at("timestamp_column"), "");
+  EXPECT_EQ(fitted.at("synthetic_interval_ns"), 1000);
 }
 
 std::shared_ptr<arrow::Array> castArray(
@@ -213,8 +224,10 @@ TEST(IpcSafeSchema, ReturnsTheSamePointerWhenNothingNeedsCasting) {
 }
 
 // Every rewrite the allowlist promises must survive a REAL cast, not just a
-// schema edit: an untested branch would only fail once a server emitted it.
-// One column per rewrite kind, cast and round-tripped through the IPC stream.
+// schema edit: an untested branch would only fail once a server emitted it. One
+// column per rewrite kind, cast and then written and read back with LIBARROW's
+// own IPC reader — which proves the casts and that the result is valid Arrow
+// IPC, NOT that nanoarrow decodes it. That gate lives in parser_arrow's tests.
 TEST(IpcSafeSchema, EveryRewriteKindActuallyCasts) {
   auto names = arrayOf<arrow::StringBuilder, std::string>({"a", "b", "c"});
   auto ids = arrayOf<arrow::Int64Builder, std::int64_t>({1, 2, 3});
@@ -265,6 +278,57 @@ TEST(IpcSafeSchema, EveryRewriteKindActuallyCasts) {
   EXPECT_TRUE(decoded->schema()->Equals(**safe_schema));
 }
 
+// Stand-in for arrow.opaque / arrow.json / uuid / geoarrow: only the storage
+// type matters to ipcSafeSchema, and a locally defined one needs no registry.
+class TestExtensionType : public arrow::ExtensionType {
+ public:
+  explicit TestExtensionType(std::shared_ptr<arrow::DataType> storage) : arrow::ExtensionType(std::move(storage)) {}
+  std::string extension_name() const override {
+    return "mosaico.test";
+  }
+  bool ExtensionEquals(const arrow::ExtensionType& other) const override {
+    return other.extension_name() == extension_name() && other.storage_type()->Equals(*storage_type());
+  }
+  std::shared_ptr<arrow::Array> MakeArray(std::shared_ptr<arrow::ArrayData> data) const override {
+    return std::make_shared<arrow::ExtensionArray>(std::move(data));
+  }
+  arrow::Result<std::shared_ptr<arrow::DataType>> Deserialize(
+      std::shared_ptr<arrow::DataType> storage_type, const std::string&) const override {
+    return std::make_shared<TestExtensionType>(std::move(storage_type));
+  }
+  std::string Serialize() const override {
+    return {};
+  }
+};
+
+// Arrow frames an extension field as its storage type, so nanoarrow decodes it
+// and main imported arrow.opaque / arrow.json / uuid / geoarrow fine — refusing
+// them would be a regression. The storage still has to pass the allowlist.
+TEST(IpcSafeSchema, ExtensionFieldsBecomeTheirStorageType) {
+  auto names = arrayOf<arrow::StringBuilder, std::string>({"a", "b", "c"});
+  std::shared_ptr<arrow::DataType> plain = std::make_shared<TestExtensionType>(arrow::utf8());
+  std::shared_ptr<arrow::DataType> over_view = std::make_shared<TestExtensionType>(arrow::utf8_view());
+
+  auto schema = arrow::schema({arrow::field("doc", plain), arrow::field("blob", over_view)});
+  auto safe = mosaico::ipcSafeSchema(schema);
+  ASSERT_TRUE(safe.ok()) << safe.status().ToString();
+  EXPECT_TRUE((*safe)->field(0)->type()->Equals(arrow::utf8()));
+  EXPECT_TRUE((*safe)->field(1)->type()->Equals(arrow::utf8())) << "a view-typed storage is still cast away";
+
+  auto batch = arrow::RecordBatch::Make(
+      schema, 3,
+      {arrow::ExtensionType::WrapArray(plain, names),
+       arrow::ExtensionType::WrapArray(over_view, castArray(names, arrow::utf8_view()))});
+  auto safe_batch = mosaico::castToSchema(*batch, *safe);
+  ASSERT_TRUE(safe_batch.ok()) << safe_batch.status().ToString();
+  auto bytes = mosaico::serializeIpcStream(**safe_batch);
+  ASSERT_TRUE(bytes.ok()) << bytes.status().ToString();
+  auto decoded = decodeSingleBatch(*bytes);
+  ASSERT_NE(decoded, nullptr);
+  EXPECT_TRUE(decoded->column(0)->Equals(*names));
+  EXPECT_TRUE(decoded->column(1)->Equals(*names));
+}
+
 // The allowlist fails loudly. A silent pass-through would hand parser_arrow a
 // stream it cannot decode, surfacing as an opaque host-side error instead.
 TEST(IpcSafeSchema, UndecodableTypesFailWithTheFieldPath) {
@@ -287,7 +351,8 @@ TEST(IpcSafeSchema, UndecodableTypesFailWithTheFieldPath) {
       arrow::sparse_union({arrow::field("s", arrow::utf8_view()), arrow::field("i", arrow::int64())}, {0, 1});
   auto union_status = mosaico::ipcSafeSchema(arrow::schema({arrow::field("choice", union_type)})).status();
   EXPECT_TRUE(union_status.IsNotImplemented()) << union_status.ToString();
-  EXPECT_NE(union_status.message().find("'choice'"), std::string::npos) << union_status.ToString();
+  // The offending CHILD is named, not just the union that contains it.
+  EXPECT_NE(union_status.message().find("'choice/s'"), std::string::npos) << union_status.ToString();
 
   // A union whose children are all decodable stays untouched.
   auto plain_union = arrow::sparse_union({arrow::field("s", arrow::utf8()), arrow::field("i", arrow::int64())}, {0, 1});

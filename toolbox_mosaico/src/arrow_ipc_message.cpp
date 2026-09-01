@@ -4,6 +4,7 @@
 
 #include <arrow/api.h>
 #include <arrow/compute/api.h>
+#include <arrow/extension_type.h>
 #include <arrow/io/memory.h>
 #include <arrow/ipc/writer.h>
 
@@ -72,6 +73,12 @@ arrow::Result<std::shared_ptr<arrow::DataType>> ipcSafeType(
       return arrow::binary();
     case arrow::Type::DICTIONARY:
       return ipcSafeType(std::static_pointer_cast<arrow::DictionaryType>(type)->value_type(), path);
+    case arrow::Type::EXTENSION:
+      // Arrow's IPC writer already emits an extension field as its STORAGE type
+      // (plus ARROW:extension:* metadata), which nanoarrow decodes — main
+      // imported arrow.opaque / arrow.json / uuid / geoarrow that way. Framing
+      // the storage keeps that and lets a view-typed storage still be cast.
+      return ipcSafeType(std::static_pointer_cast<arrow::ExtensionType>(type)->storage_type(), path);
     case arrow::Type::STRUCT: {
       arrow::FieldVector fields;
       bool changed = false;
@@ -123,8 +130,8 @@ arrow::Result<std::shared_ptr<arrow::DataType>> ipcSafeType(
         ARROW_ASSIGN_OR_RAISE(auto safe, ipcSafeType(field->type(), path + "/" + field->name()));
         if (safe != field->type()) {
           return arrow::Status::NotImplemented(
-              "field '", path, "': ", type->ToString(),
-              " has a child parser_arrow cannot decode and Arrow cannot cast");
+              "field '", path, "/", field->name(), "': type ", field->type()->ToString(),
+              " needs a rewrite Arrow cannot apply inside the enclosing union");
         }
       }
       return type;
@@ -177,78 +184,61 @@ namespace {
 constexpr std::array<std::string_view, 5> kTimestampNames = {
     "timestamp_ns", "recording_timestamp_ns", "timestamp", "time", "ts"};
 
+/// One flattened leaf: where it lives and what it is.
+struct Leaf {
+  std::string path;
+  std::vector<int> route;
+  arrow::Type::type type_id;
+};
+
 std::string normalizedComponent(const std::string& name) {
   std::string out = name;
   std::replace(out.begin(), out.end(), '.', '/');
   return out;
 }
 
-// Depth-first walk of the flattened leaves: STRUCT fields expand into their
-// children, everything else is a leaf. @p visit(path, route, field) returns true
-// to stop the walk. @p route is the live child-index stack.
-template <typename Visit>
-bool walkLeaves(const arrow::FieldVector& fields, const std::string& prefix, std::vector<int>& route, Visit& visit) {
+// Depth-first: STRUCT fields expand into their children, everything else is a
+// leaf. @p route is the live child-index stack.
+void appendLeaves(
+    const arrow::FieldVector& fields, const std::string& prefix, std::vector<int>& route, std::vector<Leaf>& out) {
   for (int index = 0; index < static_cast<int>(fields.size()); ++index) {
     const auto& field = fields[static_cast<std::size_t>(index)];
-    const std::string path =
+    std::string path =
         prefix.empty() ? normalizedComponent(field->name()) : prefix + "/" + normalizedComponent(field->name());
     route.push_back(index);
-    const bool stop = field->type()->id() == arrow::Type::STRUCT
-                          ? walkLeaves(field->type()->fields(), path, route, visit)
-                          : visit(path, route, *field);
-    route.pop_back();
-    if (stop) {
-      return true;
+    if (field->type()->id() == arrow::Type::STRUCT) {
+      appendLeaves(field->type()->fields(), path, route, out);
+    } else {
+      out.push_back(Leaf{std::move(path), route, field->type()->id()});
     }
+    route.pop_back();
   }
-  return false;
+}
+
+std::vector<Leaf> collectLeaves(const arrow::Schema& schema) {
+  std::vector<Leaf> leaves;
+  std::vector<int> route;
+  appendLeaves(schema.fields(), {}, route, leaves);
+  return leaves;
 }
 
 }  // namespace
 
-std::string detectTimestampField(const arrow::Schema& schema) {
-  std::string found;
-  std::vector<int> route;
-  auto by_type = [&found](const std::string& path, const std::vector<int>&, const arrow::Field& field) {
-    if (field.type()->id() != arrow::Type::TIMESTAMP) {
-      return false;
+TimestampLeaf detectTimestampLeaf(const arrow::Schema& schema) {
+  const std::vector<Leaf> leaves = collectLeaves(schema);
+  for (const Leaf& leaf : leaves) {
+    if (leaf.type_id == arrow::Type::TIMESTAMP) {
+      return {leaf.path, leaf.route};
     }
-    found = path;
-    return true;
-  };
-  walkLeaves(schema.fields(), {}, route, by_type);
-
+  }
   for (std::string_view candidate : kTimestampNames) {
-    if (!found.empty()) {
-      break;
-    }
-    auto by_name = [&found, candidate](const std::string& path, const std::vector<int>&, const arrow::Field&) {
-      if (path != candidate) {
-        return false;
+    for (const Leaf& leaf : leaves) {
+      if (leaf.path == candidate) {
+        return {leaf.path, leaf.route};
       }
-      found = path;
-      return true;
-    };
-    walkLeaves(schema.fields(), {}, route, by_name);
-  }
-  return found;
-}
-
-std::vector<int> timestampFieldRoute(const arrow::Schema& schema, std::string_view leaf_path) {
-  std::vector<int> found;
-  if (leaf_path.empty()) {
-    return found;
-  }
-  std::vector<int> route;
-  auto match = [&found, leaf_path](const std::string& path, const std::vector<int>& current, const arrow::Field&) {
-    if (path != leaf_path) {
-      return false;
     }
-    found = current;
-    return true;
-  };
-  walkLeaves(schema.fields(), {}, route, match);
-  return found;
+  }
+  return {};
 }
 
 namespace {
@@ -271,22 +261,19 @@ std::optional<std::int64_t> firstRowTimestampNs(const arrow::RecordBatch& batch,
   if (batch.num_rows() == 0 || route.empty() || route.front() < 0 || route.front() >= batch.num_columns()) {
     return std::nullopt;
   }
-  auto column_scalar = batch.column(route.front())->GetScalar(0);
-  if (!column_scalar.ok()) {
-    return std::nullopt;
-  }
-  std::shared_ptr<arrow::Scalar> scalar = *column_scalar;
+  std::shared_ptr<arrow::Array> array = batch.column(route.front());
   for (std::size_t depth = 1; depth < route.size(); ++depth) {
-    auto* parent = dynamic_cast<arrow::StructScalar*>(scalar.get());
-    const auto child = static_cast<std::size_t>(route[depth]);
-    if (parent == nullptr || !parent->is_valid || child >= parent->value.size()) {
+    const auto* parent = dynamic_cast<const arrow::StructArray*>(array.get());
+    if (parent == nullptr || parent->IsNull(0) || route[depth] < 0 || route[depth] >= parent->num_fields()) {
       return std::nullopt;
     }
-    scalar = parent->value[child];
+    array = parent->field(route[depth]);
   }
-  if (!scalar || !scalar->is_valid) {
+  auto leaf_scalar = array->GetScalar(0);
+  if (!leaf_scalar.ok() || !(*leaf_scalar)->is_valid) {
     return std::nullopt;
   }
+  const std::shared_ptr<arrow::Scalar>& scalar = *leaf_scalar;
   const arrow::Type::type type_id = scalar->type->id();
   if (arrow::is_floating(type_id)) {
     auto seconds = arrow::compute::Cast(arrow::Datum(scalar), arrow::float64());
@@ -314,7 +301,9 @@ arrow::Result<std::shared_ptr<arrow::Buffer>> serializeIpcStream(
 
 std::string parserConfigJson(std::string_view timestamp_field, std::int64_t synthetic_interval_ns) {
   return nlohmann::json{
-      {"timestamp_column", std::string(timestamp_field)}, {"synthetic_interval_ns", synthetic_interval_ns}}
+      {"timestamp_column", std::string(timestamp_field)},
+      {"synthetic_interval_ns", synthetic_interval_ns},
+      {"flatten_structs", true}}
       .dump();
 }
 

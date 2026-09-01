@@ -24,55 +24,53 @@ namespace mosaico {
 /// seamlessly across batches.
 inline constexpr std::int64_t kSyntheticIntervalNs = 33'333'333LL;
 
-/// The schema parser_arrow can decode, as an ALLOWLIST of what nanoarrow_ipc
-/// 0.7 actually accepts. At any nesting depth (struct/list/map children):
-/// string_view -> utf8, binary_view -> binary, dictionary -> its value type,
-/// list_view -> list, large_list_view -> large_list; struct / list / large_list
-/// / fixed_size_list / map recurse into their children. Everything else is
-/// either decodable as-is or an ERROR naming the field path and type — there is
-/// no silent pass-through, because a refused type only surfaces later as an
-/// opaque decode failure host-side. Run-end-encoded and any union whose child
-/// needs rewriting are errors: Arrow 23 has no cast kernel for them.
+/// Rewrite @p schema into one parser_arrow can decode, or fail naming the
+/// offending field path and type. An ALLOWLIST of what nanoarrow_ipc 0.7
+/// accepts: view types collapse to their materialized form, dictionary and
+/// extension fields to the type underneath, containers recurse — and ANYTHING
+/// ELSE IS AN ERROR. The refusal is the point: a silent pass-through surfaces
+/// later as an opaque host-side decode failure with no field to chase. Run-end
+/// encoding and unions needing a rewrite are refused rather than cast, because
+/// Arrow 23 has no kernel for either.
 ///
-/// Returns the SAME pointer when nothing needs to change, so callers can skip
-/// the cast pass (and stay zero-copy) with a pointer compare.
+/// Returns the SAME pointer when nothing changes, so callers skip the cast pass
+/// (and stay zero-copy) with a pointer compare. This side only asserts the
+/// allowlist; that nanoarrow really decodes the result is parser_arrow's test
+/// suite to prove.
 [[nodiscard]] arrow::Result<std::shared_ptr<arrow::Schema>> ipcSafeSchema(const std::shared_ptr<arrow::Schema>& schema);
 
 /// Cast every column whose type differs from `target` (see ipcSafeSchema).
 [[nodiscard]] arrow::Result<std::shared_ptr<arrow::RecordBatch>> castToSchema(
     const arrow::RecordBatch& batch, const std::shared_ptr<arrow::Schema>& target);
 
-/// Timestamp leaf of a topic schema, as the FLATTENED leaf path both sides
-/// agree on: struct children are expanded depth-first into `parent/child`, and
-/// every literal '.' inside a name component becomes '/' (`wheel.speed` ->
-/// `wheel/speed`; `header.stamp` inside struct `msg` -> `msg/header/stamp`).
-/// That is exactly what flattenStructColumns produces, so the name reaches the
-/// object helpers and parser_arrow unchanged.
-///
-/// Over those leaves, in order: the first Arrow TIMESTAMP-typed one, else the
-/// first path equal to one of {timestamp_ns, recording_timestamp_ns, timestamp,
-/// time, ts} (name-list order wins, not schema order — as it has since PJ3);
-/// empty when nothing matches. Passed explicitly at bind time so the layout
-/// records the policy (D9).
+/// A topic's timestamp leaf, named the way BOTH consumers name it: struct
+/// children expand depth-first into `parent/child`, and every literal '.' in a
+/// component becomes '/' (`wheel.speed` -> `wheel/speed`; `header.stamp` inside
+/// struct `msg` -> `msg/header/stamp`). Same output as flattenStructColumns, so
+/// one name serves the object helpers and parser_arrow alike.
+struct TimestampLeaf {
+  std::string path;        ///< empty when the schema has no timestamp leaf
+  std::vector<int> route;  ///< top-level column index, then one struct-child index per level
+};
+
+/// Pick the timestamp leaf: the first Arrow TIMESTAMP-typed one in schema
+/// order, else the first whose full path equals one of {timestamp_ns,
+/// recording_timestamp_ns, timestamp, time, ts} — NAME-LIST order wins over
+/// schema order, as it has since PJ3. Passed explicitly at bind time so the
+/// layout records the policy (D9).
 ///
 /// Mirror of parser_arrow's detectTimestampColumn
-/// (parser_arrow/src/table_shaper.hpp) — keep the name lists in sync.
-[[nodiscard]] std::string detectTimestampField(const arrow::Schema& schema);
+/// (parser_arrow/src/table_shaper.hpp) — keep the name lists in sync. The two
+/// namings diverge on exactly one case, unreachable for a leaf a timestamp name
+/// could match: an EMPTY field-name component, where parser_arrow substitutes
+/// `_<index>` and Table::Flatten leaves a trailing `parent/`.
+[[nodiscard]] TimestampLeaf detectTimestampLeaf(const arrow::Schema& schema);
 
-/// Child-index route to the leaf whose flattened path is @p leaf_path: the
-/// top-level column index followed by one struct-child index per level. Empty
-/// when the path does not resolve (an empty @p leaf_path included), which is
-/// how a timestamp-less topic is marked. Resolving by walk rather than by
-/// splitting on '/' is load-bearing: a component may itself contain a '/' that
-/// came from a '.' in the field name.
-[[nodiscard]] std::vector<int> timestampFieldRoute(const arrow::Schema& schema, std::string_view leaf_path);
-
-/// Row 0 of the leaf reached by @p route (see timestampFieldRoute) as
-/// nanoseconds: floating values are read as seconds, TIMESTAMP is rescaled to
-/// ns, anything else is cast to int64 and taken as ns. Empty for an empty
-/// route, an empty batch, a null or non-finite value, or a value that does not
-/// cast safely. Used only as the message's host timestamp — the parser reads
-/// per-row time from the column.
+/// Row 0 of the leaf at @p route as nanoseconds: floats are seconds, TIMESTAMP
+/// is rescaled by its unit, integers of any width are already ns. Empty for an
+/// empty route (how a timestamp-less topic is marked), an empty batch, a null
+/// value or null ancestor, or a value that does not cast safely. Only the
+/// message's host timestamp — the parser reads per-row time from the column.
 [[nodiscard]] std::optional<std::int64_t> firstRowTimestampNs(
     const arrow::RecordBatch& batch, const std::vector<int>& route);
 
@@ -83,11 +81,13 @@ inline constexpr std::int64_t kSyntheticIntervalNs = 33'333'333LL;
 [[nodiscard]] arrow::Result<std::shared_ptr<arrow::Buffer>> serializeIpcStream(
     const arrow::RecordBatch& batch, std::int64_t capacity_hint = 0);
 
-/// `parser_arrow` configuration for one topic:
-/// `{"timestamp_column": <leaf path>, "synthetic_interval_ns": <interval>}`.
+/// `parser_arrow` configuration for one topic: `{"timestamp_column": <leaf
+/// path>, "synthetic_interval_ns": <interval>, "flatten_structs": true}`.
+///
 /// The interval is per-topic, not a constant: a timestamp-less topic spreads its
 /// rows over the topic's [min,max] range, so the caller passes the fitted value.
-[[nodiscard]] std::string parserConfigJson(
-    std::string_view timestamp_field, std::int64_t synthetic_interval_ns = kSyntheticIntervalNs);
+/// `flatten_structs` is pinned rather than left to the parser's default because
+/// a nested `timestamp_column` only resolves once the parser has flattened.
+[[nodiscard]] std::string parserConfigJson(std::string_view timestamp_field, std::int64_t synthetic_interval_ns);
 
 }  // namespace mosaico

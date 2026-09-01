@@ -543,8 +543,9 @@ void FetchWorker::pullTopicsAsync(
     // nested `header/stamp` is found here and the name it yields is already the
     // one flattenStructColumns (object route) and parser_arrow (scalar route)
     // will see.
-    topic.ts_field = detectTimestampField(*topic.schema);
-    topic.ts_route = timestampFieldRoute(*topic.schema, topic.ts_field);
+    auto leaf = detectTimestampLeaf(*topic.schema);
+    topic.ts_field = std::move(leaf.path);
+    topic.ts_route = std::move(leaf.route);
     topic.synth_anchor_ns = info_min_ts_ns != 0 ? info_min_ts_ns : nowNs();
     if (topic.object_route) {
       return;  // never IPC-framed: the object helpers read the Arrow table directly
@@ -564,7 +565,7 @@ void FetchWorker::pullTopicsAsync(
     // A timestamp-less topic's config waits for on_done: its synthetic interval
     // is fitted to the topic's [min,max] range and needs the total row count.
     if (!topic.ts_field.empty()) {
-      topic.parser_config = parserConfigJson(topic.ts_field);
+      topic.parser_config = parserConfigJson(topic.ts_field, topic.synth_interval_ns);
     }
   };
 
@@ -691,7 +692,10 @@ void FetchWorker::pullTopicsAsync(
       // is fitted to the topic's [min,max] range over the WHOLE row count, so
       // both the parser config and every host timestamp need the total first.
       // Batches that never reached this point (cancel, transport failure) are
-      // dropped, exactly as when the whole topic was written at on_done.
+      // dropped, exactly as when the whole topic was written at on_done. So a
+      // cancelled Download is asymmetric BY DESIGN: a stamped topic keeps the
+      // batches already pushed, a timestamp-less one keeps nothing, because a
+      // partial row count would fit a cadence the rest of the topic contradicts.
       if (topic.error.empty() && !topic.batches.empty()) {
         std::int64_t total_rows = 0;
         for (const auto& buffered : topic.batches) {
@@ -831,6 +835,9 @@ void FetchWorker::pullTopicsAsync(
       topic.schema = batch->schema();
     }
     route(topic, topic_name);
+    if (!topic.error.empty()) {
+      return;  // route() refused the topic; on_done reports it, buffering would only waste memory
+    }
     // Only a stamped scalar topic can be pushed progressively: everything else
     // needs the whole topic in hand at on_done (an object table to explode, or
     // the row count that fits the synthetic cadence).
