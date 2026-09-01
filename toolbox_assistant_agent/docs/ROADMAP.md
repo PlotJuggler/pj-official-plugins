@@ -1,6 +1,8 @@
 # Roadmap
 
-Where the Assistant Agent stands and what is worth doing next.
+Where the Assistant Agent stands and what is worth doing next. This file executes
+[`NORTH_STAR.md`](NORTH_STAR.md) — the owner's intent for what the assistant is meant to become.
+When the two disagree, the North Star wins.
 
 ## Objective
 
@@ -20,7 +22,8 @@ Two properties are non-negotiable and hold today:
   now withdraw its own derived series too. The guarantee is about *scope*, not about the absence of
   deletion, and a safety claim that overstates itself is worse than none.
 - **No API key, no per-token billing.** The Claude backend drives the user's existing CLI
-  subscription; the Ollama backend runs locally.
+  subscription. (The Ollama backend still runs locally today; the North Star takes it out, and
+  its removal is a scheduled task below.)
 - **The model gets no built-in tool.** The CLI is launched with `--tools ""`, which withholds
   Bash, Read, Write and the rest, so headless Claude can reach this plugin's MCP tools and nothing
   else on the machine. `--strict-mcp-config` does not do this — it only limits which MCP servers
@@ -60,38 +63,51 @@ Two properties are non-negotiable and hold today:
 | The L14 verdict judges disclosure, not residue | Whatever remains installed passes exactly when the reply says it is there; unmentioned residue fails as `silent-residue(<kind>)`, classified per surviving id. The harness now also refuses a transform that reads `series(...)` at runtime, exactly as the real host does — so the benchmark measures the reaction the product would produce, not an install that cannot happen |
 | The Haiku "cleanup" item closed as not-a-defect | Replicated under the honest instrument: 10/10 L14 ($0.12) — the join refusal is accepted, nothing installed, every reply explains and offers alternatives. 0 withdrawals across 90 historical cells is style, not residue: Haiku does not probe, so it has nothing to remove. The result-visibility mechanism stays parked until a real `silent-residue` verdict appears in a run or a GUI session (`FINDINGS.md` §14) |
 | Series can be addressed by dataset | The host's own `dataset:topic/field` form, taught by one catalog line that exists only when several datasets are loaded — zero schema tokens. A bare path duplicated across datasets is refused with the qualified candidates instead of silently resolving to whichever file loaded first (both failure modes were caught on screen, `FINDINGS.md` §15). "Compare the two runs" went from impossible (9 invented syntaxes, all failing) to one batched read with exact numbers |
+| The conversation survives the panel | Closing the toolbox (or PlotJuggler) used to be silent amnesia. Saved to the per-user settings store after every turn — never into the layout, so a shared layout file carries no conversation and reloading one neither resurrects nor destroys anything. Claude resumes via `--resume` (which required the CLI's working directory to become stable — sessions are indexed by cwd); Ollama's history is stored whole, capped. The reopened panel shows the old transcript with a "resumed" seam, and "New chat" erases the persisted copy too (`ARCHITECTURE.md` → Where the conversation lives) |
 
-## Next
+## Next — the batches that serve the North Star, in dependency order
 
-On Haiku, ambiguity remains its measured weakness: in 20 repetitions it acted without asking 11
-times and named its assumption in only 4 of them. That is a weakness, not a regression — an
-earlier 5/5 against this 13/20 is p≈0.28, and five repetitions cannot establish a baseline. (The
-"make Haiku clean up" item that used to sit here closed as not-a-defect once the instrument was
-honest — see Done and `FINDINGS.md` §14.)
+**1. Retire Ollama.** The backend, its memory, its persistence branch in
+`conversation_state`, its Settings fields and its tests all go; the plugin is Claude-only until
+the new harnesses land. Declared out in the North Star; this is the scheduled removal.
 
-**Require the model to disclose a choice when a name is under-specified.** The tool layer already
-refuses to guess between candidate series, but that guard rarely fires: handed the full catalog, a
-model resolves an ambiguous name itself and calls once with its own choice already made. The
-requirement has to move to the system prompt, because by the time the call arrives the ambiguity
-is gone (`FINDINGS.md` §7). Asking is not required — naming the assumption is, and it is the one
-behaviour the benchmark separates the tiers on.
+**2. Codex and OpenCode as backends.** The `claude -p` pattern, applied twice: spawn a headless
+turn, stream the output, persist whatever handle the harness needs to resume. DeepSeek arrives as
+a provider inside OpenCode, not as a backend of its own. Each harness ships only with the
+equivalents of the Claude safety spine: our tools only (MCP or equivalent, built-ins withheld),
+resume across turns and restarts, cost reporting where the harness exposes it.
+
+**3. Upstream `pj.playback.v1` + `pj.viewport.v1`, replug the seven tools.** Play, pause, seek,
+playback rate, zoom/framing — all built and verified in July, dropped only because the SDK
+services live in preserved branches instead of `main`. Tail-appended service additions (a MINOR,
+same pattern as the dataset-naming SDK PR), then the tools return as they were.
+
+**4. Tabs the model owns, watermarked "IA".** New host capability: the model creates tabs,
+places and removes curves in them, and drives seek/zoom/framing there; every model-created tab
+carries a permanently visible "IA" watermark in a bottom corner, and the model's view control is
+scoped to the tabs that carry it. Host + SDK work (a new service), designed after pillar 3 lands
+— an owned tab is where playback and viewport control become useful.
+
+**In flight, serving the base: creations target a dataset through the ABI.** Reads are
+dataset-aware (they go by handle); the create side of `pj.data_processors.v1` addressed inputs by
+bare name (`FINDINGS.md` §15). Both halves are now open upstream: PJ4 #619 (the host accepts
+`dataset_source:topic/field` and stops first-matching markers) and plotjuggler_sdk #183 (the
+naming contract + shared split helper). When they merge, the plugin's creates switch to sending
+the qualified form with a graceful fallback on older hosts.
+
+## Parked — real items that do not serve the North Star right now
+
+**Ambiguity disclosure in the system prompt.** On Haiku, ambiguity remains its measured weakness:
+in 20 repetitions it acted without asking 11 times and named its assumption in only 4. That is a
+weakness, not a regression — an earlier 5/5 against this 13/20 is p≈0.28. The tool layer's
+refuse-to-guess guard rarely fires because a model handed the full catalog resolves ambiguity
+before calling (`FINDINGS.md` §7); the requirement has to move to the system prompt. Naming the
+assumption is required, asking is not.
 
 **Keep the CLI process alive between turns** (`--input-format stream-json`). Saves the ~1 s
 startup and the per-turn MCP handshake. Deliberately parked: it is ~3 % of a turn and it means
 rewriting the subprocess lifecycle — who kills it, what happens when it dies, how Cancel
-behaves, what closing the window does. Worth revisiting once the model-tier win is banked, at
-which point that second is a visible fraction.
-
-**Widen the tool surface.** Playback and viewport control (play/pause/seek/zoom) were built and
-then dropped, because the SDK services they need are not in `main`. They return if those land.
-
-**Let creations target a dataset through the ABI.** Reads are dataset-aware (they go by handle),
-but the create side of `pj.data_processors.v1` addresses inputs by bare name, so a series whose
-path exists in several datasets cannot be built on — the tool refuses loudly rather than letting
-the host land it on whichever file loaded first (`FINDINGS.md` §15). The host already carries a
-qualified form internally (`TransformInputBinding` with `dataset_source`, resolved through session
-identity — `DataProcessorService::resolveInputBinding`); what is missing is a way to express it
-through the plugin ABI. Host-side work, to be proposed upstream.
+behaves, what closing the window does.
 
 ## Bigger directions, none of them decided
 

@@ -25,7 +25,7 @@ runs behind exposes no such operation. There is no delete tool to withhold.
 | Backend | What it is | Cost |
 |---|---|---|
 | **Claude Code** | Drives your existing `claude` CLI subscription headlessly. Tools are exposed over a loopback MCP server the plugin starts itself. No API key, no per-token billing. | Your subscription |
-| **Ollama** | A local model over `/api/chat`, with the agentic tool loop run in-plugin. Streams as it generates. | Free, local |
+| **Ollama** | A local model over `/api/chat`, with the agentic tool loop run in-plugin. Streams as it generates. Scheduled for removal — the direction is harness CLIs only (`docs/NORTH_STAR.md`). | Free, local |
 | **Echo / Fake** | No model. Used for wiring tests. | — |
 
 For the Claude backend every built-in tool is disabled (`--tools ""`), so the model reaches
