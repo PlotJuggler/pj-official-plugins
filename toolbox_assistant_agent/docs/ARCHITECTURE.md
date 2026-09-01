@@ -43,7 +43,14 @@ backends to come) from the same definitions, so the backends and the unit tests 
 drift apart.
 
 Tools receive a `ToolContext`: a catalog+read view, a data-processors view, an object-read view for
-verifying what was created, and a `notify_data_changed` callback.
+verifying what was created, the playback and plot-tab views that let it drive the application, and a
+`notify_data_changed` callback. Each host view is optional — an unbound one degrades to a tool that
+says which service the host did not expose, never to a tool that pretends.
+
+Related verbs share one tool with an `action` argument rather than standing alone (`playback`,
+`plot_tab`). Two reasons: the whole surface is sent ahead of every message of every conversation and
+each separate tool costs 73 characters of JSON envelope before a word of prose; and verbs that share
+a frame — "this tab is yours, the user's are not" — should state it once instead of once each.
 
 What that surface cannot do is the structural part. Every write goes through
 `pj.data_processors.v1`, addressed by node id, and `dp.list()` enumerates only nodes *this plugin*
@@ -163,6 +170,34 @@ every change — so `entryCount()` returns 1 regardless of how many markers exis
 be decoded with `deserializePlotMarkers`. And the read service (`pj.toolbox_object_read.v1`) is
 optional: when the host omits it the answer simply carries no count, which is strictly better than
 the tool failing.
+
+## Where the assistant is allowed to draw
+
+It composes plot tabs of its own, through `pj.plot_tabs.v1`, and those are the only plots it can
+touch. This is not a rule it is asked to follow. The host builds one bridge per bound plugin and
+every callback behind it captures that plugin's identity, so the identity never crosses the wire
+and cannot be named, guessed or forged; a tab the assistant did not compose is rejected exactly as
+an unknown one is. It cannot even discover that the user's tabs exist.
+
+`pj.viewport.v1` narrows to the same set, which is what removed the assistant's old reach into the
+user's plots — `zoom_to_time_range` and `zoom_reset` are gone. Asked to reframe a tab it does not
+own, it says so and offers the same view in one of its own. The boundary is the VIEW, though:
+playback stays global, because the application has one time cursor shared by every plot and no tab
+can contain it.
+
+Every model-created tab carries a permanent "IA" mark in the corner of its canvas. It is painted by
+the host, not requested by the plugin — a mark the drawer could suppress would not be worth reading.
+
+Those tabs are a live view, not saved state. The host never writes one to a layout, so reloading a
+layout or stepping through undo leaves them exactly as they are, and closing PlotJuggler ends them.
+What survives of the assistant is what the user chose (the backend, the model, whether the panel is
+a tab or a window) and the data it created — derived series and markers persist as they always did.
+Closing its tab throws away a view, never a series.
+
+Each action answers with the tab as the host holds it, and the verdict is read from those contents
+rather than from what the calls returned. The host may accept a curve and resolve it to nothing, so
+"the call succeeded" is not yet "the curve is drawn" — the same reason `create_markers` reads its
+own output back out of the store instead of reporting an intention.
 
 ## Refusing to build an empty curve
 
