@@ -16,7 +16,7 @@ Configuration is a JSON object:
 
 | Key | Type | Default | Semantics |
 |-----|------|---------|-----------|
-| `timestamp_column` | string | `""` | Non-empty: use this leaf as the time axis, named in flattened form (`header/stamp`) at any depth; a name matching no leaf is an error. Empty: auto-detect an axis, then synthesize one if none is found. |
+| `timestamp_column` | string | `""` | Non-empty: use this leaf as the time axis, named as a flattened path at any depth. Dots normalize to `/` as they do in leaf names, so `header.stamp` and `header/stamp` are the same request; a name matching no leaf is an error. Empty: auto-detect an axis, then synthesize one if none is found. |
 | `flatten_structs` | bool | `true` | Flatten nested structs depth-first to slash-separated leaf names. `false` preserves struct boundaries while unsupported top-level struct columns are removed. |
 | `synthetic_interval_ns` | int64 | `0` | When an axis is synthesized, add this many nanoseconds per row. Zero gives every row the message timestamp; negative intervals are allowed. The row index continues across record batches. |
 | `max_array_size` | uint32 | `500` | Maximum scalar columns emitted for one list. Zero means unlimited. |
@@ -32,7 +32,9 @@ struct is reachable by its normalized name (with `flatten_structs: false` there
 is no such leaf and only top-level fields remain). Selection is ordered:
 
 1. A non-empty `timestamp_column`, matched against the full flattened leaf name
-   (`header/stamp`). A name matching no leaf is an error naming the column.
+   after the same dot normalization, so a field literally named `sensor.time`
+   answers to both `sensor.time` and `sensor/time`. A name matching no leaf is
+   an error naming the column as the configuration spelled it.
 2. Automatic detection: the first Arrow `TIMESTAMP`-typed leaf in schema order,
    then the first leaf whose full flattened name matches this name priority:
    `timestamp_ns`, `recording_timestamp_ns`, `timestamp`, `time`, `ts`.
@@ -142,9 +144,9 @@ bound by the transport to `parser_ros`, not `parser_arrow`.
 ## Producer checklist
 
 - Encode one Arrow IPC stream per message, not an IPC file.
-- Prefer an explicit int64-nanosecond timestamp column and configure its name
-  in flattened form, dots included: `header.stamp` is configured as
-  `header/stamp`.
+- Prefer an explicit int64-nanosecond timestamp column and configure its name.
+  Either spelling works for a nested or dotted field: `header.stamp` and
+  `header/stamp` name the same leaf.
 - Cast view types before IPC encoding.
 - Decode dictionary-encoded columns before IPC encoding.
 - Do not use LZ4 compression.

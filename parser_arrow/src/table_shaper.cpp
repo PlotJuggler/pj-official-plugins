@@ -1223,18 +1223,6 @@ void shapingRelease(ArrowArrayStream* stream) noexcept {
 
 }  // namespace
 
-std::string detectTimestampColumn(const ArrowSchema* schema) {
-  if (schema == nullptr || schema->children == nullptr) {
-    return {};
-  }
-  std::vector<OutputColumn> leaves;
-  if (!collectLeaves(schema, true, leaves)) {
-    return {};
-  }
-  const std::size_t index = detectTimestampLeaf(leaves);
-  return index < leaves.size() ? leaves[index].name : std::string();
-}
-
 std::string formatDroppedColumns(const std::vector<DroppedColumn>& columns, std::size_t max_listed) {
   std::string details;
   const std::size_t listed = std::min(columns.size(), max_listed);
@@ -1275,7 +1263,11 @@ PJ::Expected<ShapedStream> shapeStream(PJ::sdk::ArrowStreamHolder input, const S
     if (options.timestamp_column.empty()) {
       axis = detectTimestampLeaf(collected);
     } else {
-      axis = findLeaf(collected, options.timestamp_column);
+      // The configured name goes through the same dot normalization as the leaves, so a field literally named
+      // `sensor.time` stays selectable by its own spelling as well as by `sensor/time`.
+      std::string wanted = options.timestamp_column;
+      std::replace(wanted.begin(), wanted.end(), '.', '/');
+      axis = findLeaf(collected, wanted);
       if (axis == collected.size()) {
         return PJ::unexpected(
             "parser_arrow: timestamp column '" + options.timestamp_column + "' is absent from the Arrow schema");

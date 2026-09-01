@@ -81,8 +81,10 @@ using test::readSchema;
   return schema;
 }
 
-/// Build one two-row batch of microsecond ticks for a makeNestedTimestampSchema stream.
-[[nodiscard]] PJ::sdk::ArrowStreamHolder makeNestedTimestampStream(const char* parent_name, const char* leaf_name) {
+/// Build one two-row batch of microsecond ticks for a makeNestedTimestampSchema stream, optionally followed by a
+/// third row whose whole `parent` struct is null.
+[[nodiscard]] PJ::sdk::ArrowStreamHolder makeNestedTimestampStream(
+    const char* parent_name, const char* leaf_name, bool null_parent_row = false) {
   auto schema = makeNestedTimestampSchema(parent_name, leaf_name);
   PJ::sdk::ArrowArrayHolder batch;
   ArrowError error{};
@@ -99,7 +101,11 @@ using test::readSchema;
       throw std::runtime_error("nested timestamp row append failed");
     }
   }
-  batch.get()->length = 2;
+  if (null_parent_row && (ArrowArrayAppendNull(batch.get()->children[0], 1) != NANOARROW_OK ||
+                          ArrowArrayAppendDouble(batch.get()->children[1], 2.0) != NANOARROW_OK)) {
+    throw std::runtime_error("nested timestamp null-parent row append failed");
+  }
+  batch.get()->length = null_parent_row ? 3 : 2;
   batch.get()->null_count = 0;
   if (ArrowArrayFinishBuildingDefault(batch.get(), &error) != NANOARROW_OK) {
     throw std::runtime_error(error.message);
@@ -369,27 +375,46 @@ void failingPeekRelease(ArrowArrayStream* stream) noexcept {
   return PJ::sdk::ArrowStreamHolder(raw_stream);
 }
 
-/// TIMESTAMP fields take precedence over heuristic names.
-TEST(TableShaperTest, DetectsTimestampTypeBeforeNamedDecoy) {
-  auto stream = decodeFixture("timestamp_typed.arrows");
-  auto schema = readSchema(stream);
-  EXPECT_EQ(detectTimestampColumn(schema.get()), "stamp");
-}
-
 /// Name heuristics use their specified global priority, not schema order.
 TEST(TableShaperTest, DetectsTimestampNamesInPriorityOrder) {
   auto with_timestamp =
       makeSchema({{"ts", NANOARROW_TYPE_INT64}, {"time", NANOARROW_TYPE_INT64}, {"timestamp", NANOARROW_TYPE_INT64}});
-  EXPECT_EQ(detectTimestampColumn(with_timestamp.get()), "timestamp");
+  auto shaped = shapeStream(emptyStream(with_timestamp.get()), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  EXPECT_EQ(shaped->timestamp_column, "timestamp");
 
   auto with_time = makeSchema({{"ts", NANOARROW_TYPE_INT64}, {"time", NANOARROW_TYPE_INT64}});
-  EXPECT_EQ(detectTimestampColumn(with_time.get()), "time");
+  shaped = shapeStream(emptyStream(with_time.get()), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  EXPECT_EQ(shaped->timestamp_column, "time");
 }
 
-/// Schemas without typed or named candidates have no detected timestamp.
-TEST(TableShaperTest, DetectTimestampReturnsEmptyWithoutCandidate) {
+/// Heuristic names match the whole flattened path, so a nested `timestamp_ns` loses to a top-level `ts`.
+TEST(TableShaperTest, MatchesHeuristicNamesAgainstWholeLeafPath) {
+  PJ::sdk::ArrowSchemaHolder schema;
+  ArrowSchemaInit(schema.out());
+  ASSERT_EQ(ArrowSchemaSetTypeStruct(schema.get(), 2), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetTypeStruct(schema.get()->children[0], 1), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(schema.get()->children[0], "x"), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetType(schema.get()->children[0]->children[0], NANOARROW_TYPE_INT64), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(schema.get()->children[0]->children[0], "timestamp_ns"), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetType(schema.get()->children[1], NANOARROW_TYPE_INT64), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(schema.get()->children[1], "ts"), NANOARROW_OK);
+
+  auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  EXPECT_EQ(shaped->timestamp_column, "ts");
+}
+
+/// Schemas without typed or named candidates fall through to a synthesized axis.
+TEST(TableShaperTest, SynthesizesAxisWithoutDetectionCandidate) {
   auto schema = makeSchema({{"a", NANOARROW_TYPE_DOUBLE}, {"b", NANOARROW_TYPE_INT32}});
-  EXPECT_TRUE(detectTimestampColumn(schema.get()).empty());
+  auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  EXPECT_EQ(shaped->timestamp_column, "timestamp_ns");
+  auto output_schema = readSchema(shaped->stream);
+  ASSERT_EQ(output_schema.get()->n_children, 3);
+  EXPECT_STREQ(output_schema.get()->children[0]->name, "timestamp_ns");
 }
 
 /// An explicit existing timestamp field overrides automatic type detection.
@@ -404,6 +429,18 @@ TEST(TableShaperTest, UsesExplicitTimestampColumnAsIs) {
   EXPECT_STREQ(schema.get()->children[1]->format, "l");
 }
 
+/// A dotted configured name normalizes like the leaf it targets, so the producer's own spelling still selects it.
+TEST(TableShaperTest, AcceptsDottedConfiguredTimestampColumn) {
+  ShapeOptions options;
+  options.timestamp_column = "sensor.time";
+  auto schema = makeSchema({{"sensor.time", NANOARROW_TYPE_INT64}, {"value", NANOARROW_TYPE_DOUBLE}});
+  auto shaped = shapeStream(emptyStream(schema.get()), options);
+  ASSERT_TRUE(shaped) << shaped.error();
+  EXPECT_EQ(shaped->timestamp_column, "sensor/time");
+  auto output_schema = readSchema(shaped->stream);
+  EXPECT_STREQ(output_schema.get()->children[0]->name, "sensor/time");
+}
+
 /// A missing explicit timestamp is an error instead of an automatic fallback.
 TEST(TableShaperTest, RejectsMissingExplicitTimestampColumn) {
   ShapeOptions options;
@@ -414,7 +451,7 @@ TEST(TableShaperTest, RejectsMissingExplicitTimestampColumn) {
   EXPECT_NE(shaped.error().find("does_not_exist"), std::string::npos);
 }
 
-/// An empty option selects the detector's result.
+/// An empty option auto-detects, and a TIMESTAMP-typed field outranks the fixture's `time` name decoy.
 TEST(TableShaperTest, AutoDetectsTimestampColumn) {
   auto shaped = shapeStream(decodeFixture("timestamp_typed.arrows"), ShapeOptions{});
   ASSERT_TRUE(shaped) << shaped.error();
@@ -424,13 +461,7 @@ TEST(TableShaperTest, AutoDetectsTimestampColumn) {
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
 }
 
-/// Detection walks flattened leaves, so a nested timestamp needs no top-level candidate.
-TEST(TableShaperTest, DetectsNestedTimestampLeaf) {
-  auto schema = makeNestedTimestampSchema("header", "stamp");
-  EXPECT_EQ(detectTimestampColumn(schema.get()), "header/stamp");
-}
-
-/// A detected nested timestamp leaf becomes the axis and is scaled to int64 nanoseconds.
+/// Detection walks flattened leaves, so a nested timestamp becomes the axis and is scaled to int64 nanoseconds.
 TEST(TableShaperTest, UsesNestedTimestampLeafAsAxis) {
   auto shaped = shapeStream(makeNestedTimestampStream("header", "stamp"), ShapeOptions{});
   ASSERT_TRUE(shaped) << shaped.error();
@@ -443,6 +474,17 @@ TEST(TableShaperTest, UsesNestedTimestampLeafAsAxis) {
   auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 0), 1000);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 1), 2000);
+}
+
+/// A null struct ancestor nulls the nested axis, which is rejected instead of reaching the host as a raw value.
+TEST(TableShaperTest, RejectsNestedTimestampUnderNullStructParent) {
+  auto shaped = shapeStream(makeNestedTimestampStream("header", "stamp", true), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  PJ::sdk::ArrowArrayHolder batch;
+  EXPECT_EQ(shaped->stream.get()->get_next(shaped->stream.get(), batch.out()), EINVAL);
+  EXPECT_STREQ(
+      ArrowArrayStreamGetLastError(shaped->stream.get()),
+      "parser_arrow: timestamp column 'header/stamp' contains a null value");
 }
 
 /// The configured timestamp column names a leaf by its flattened path at any depth.
@@ -465,6 +507,25 @@ TEST(TableShaperTest, NormalizesDottedFieldNameToSlashes) {
   auto output_schema = readSchema(shaped->stream);
   ASSERT_EQ(output_schema.get()->n_children, 2);
   EXPECT_STREQ(output_schema.get()->children[1]->name, "wheel/speed");
+}
+
+/// A dotted flat name colliding with the equivalent struct is rejected: the whole stream fails, it is not deduplicated.
+TEST(TableShaperTest, RejectsDottedNameCollidingWithStructLeaf) {
+  PJ::sdk::ArrowSchemaHolder schema;
+  ArrowSchemaInit(schema.out());
+  ASSERT_EQ(ArrowSchemaSetTypeStruct(schema.get(), 3), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetType(schema.get()->children[0], NANOARROW_TYPE_INT64), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(schema.get()->children[0], "timestamp_ns"), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetType(schema.get()->children[1], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(schema.get()->children[1], "a.b"), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetTypeStruct(schema.get()->children[2], 1), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(schema.get()->children[2], "a"), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetType(schema.get()->children[2]->children[0], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(schema.get()->children[2]->children[0], "b"), NANOARROW_OK);
+
+  auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  ASSERT_FALSE(shaped);
+  EXPECT_NE(shaped.error().find("duplicate output column name 'a/b'"), std::string::npos);
 }
 
 /// Dotted components normalize at every flatten depth and stay detectable as the axis.
