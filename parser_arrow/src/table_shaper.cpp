@@ -189,6 +189,12 @@ void setNanoarrowStreamError(ShapingStreamState& state, int result, const char* 
   return current;
 }
 
+/// Return whether an Arrow integer type is unsigned, so its ticks must be read through the uint64 accessor.
+[[nodiscard]] bool isUnsignedInteger(ArrowType type) {
+  return type == NANOARROW_TYPE_UINT8 || type == NANOARROW_TYPE_UINT16 || type == NANOARROW_TYPE_UINT32 ||
+         type == NANOARROW_TYPE_UINT64;
+}
+
 /// Return whether a logical type uses Arrow list offsets or a schema-declared fixed width.
 [[nodiscard]] bool isListType(ArrowType type) {
   return type == NANOARROW_TYPE_LIST || type == NANOARROW_TYPE_LARGE_LIST || type == NANOARROW_TYPE_FIXED_SIZE_LIST;
@@ -208,8 +214,12 @@ PJ::Status configureSource(const ArrowSchema* schema, bool is_timestamp_axis, Ou
       case NANOARROW_TYPE_TIMESTAMP:
         cast = CastKind::kScaleTimestampTicks;
         break;
+      case NANOARROW_TYPE_INT8:
+      case NANOARROW_TYPE_INT16:
       case NANOARROW_TYPE_INT32:
       case NANOARROW_TYPE_INT64:
+      case NANOARROW_TYPE_UINT8:
+      case NANOARROW_TYPE_UINT16:
       case NANOARROW_TYPE_UINT32:
       case NANOARROW_TYPE_UINT64:
         cast = CastKind::kWidenToInt64;
@@ -866,15 +876,14 @@ PJ::Status buildOutputSchema(
       if (!column.is_timestamp_axis) {
         return EINVAL;
       }
-      if (column.source_type == NANOARROW_TYPE_UINT64) {
+      if (isUnsignedInteger(column.source_type)) {
         const uint64_t value = ArrowArrayViewGetUIntUnsafe(input, row);
+        // Only uint64 can reach past INT64_MAX; narrower widths take the same branch for free.
         if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
           setStreamError(state, "timestamp column '" + column.name + "' exceeds INT64_MAX");
           return ERANGE;
         }
         converted = static_cast<int64_t>(value);
-      } else if (column.source_type == NANOARROW_TYPE_UINT32) {
-        converted = static_cast<int64_t>(ArrowArrayViewGetUIntUnsafe(input, row));
       } else {
         converted = ArrowArrayViewGetIntUnsafe(input, row);
       }

@@ -107,6 +107,30 @@ using test::readSchema;
   return oneBatchStream(schema.get(), batch.get());
 }
 
+/// Build a one-batch stream whose `time` axis carries the requested nanosecond ticks in `axis_type`.
+[[nodiscard]] PJ::sdk::ArrowStreamHolder makeIntegerAxisStream(ArrowType axis_type, const std::vector<int64_t>& ticks) {
+  auto schema = makeSchema({{"time", axis_type}, {"value", NANOARROW_TYPE_DOUBLE}});
+  PJ::sdk::ArrowArrayHolder batch;
+  ArrowError error{};
+  if (ArrowArrayInitFromSchema(batch.out(), schema.get(), &error) != NANOARROW_OK ||
+      ArrowArrayStartAppending(batch.get()->children[0]) != NANOARROW_OK ||
+      ArrowArrayStartAppending(batch.get()->children[1]) != NANOARROW_OK) {
+    throw std::runtime_error("integer axis array initialization failed");
+  }
+  for (const int64_t tick : ticks) {
+    if (ArrowArrayAppendInt(batch.get()->children[0], tick) != NANOARROW_OK ||
+        ArrowArrayAppendDouble(batch.get()->children[1], static_cast<double>(tick)) != NANOARROW_OK) {
+      throw std::runtime_error("integer axis row append failed");
+    }
+  }
+  batch.get()->length = static_cast<int64_t>(ticks.size());
+  batch.get()->null_count = 0;
+  if (ArrowArrayFinishBuildingDefault(batch.get(), &error) != NANOARROW_OK) {
+    throw std::runtime_error(error.message);
+  }
+  return oneBatchStream(schema.get(), batch.get());
+}
+
 /// Build two rows whose timestamp-list columns fail in opposite row/column order.
 [[nodiscard]] PJ::sdk::ArrowStreamHolder makeCompetingTimestampListOverflowStream() {
   PJ::sdk::ArrowSchemaHolder schema;
@@ -923,6 +947,30 @@ TEST(TableShaperTest, WidensInt32TimestampAxis) {
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 3);
 }
 
+/// Every signed integer width is a valid nanosecond axis, not only int32/int64.
+TEST(TableShaperTest, WidensInt16TimestampAxis) {
+  auto shaped = shapeStream(makeIntegerAxisStream(NANOARROW_TYPE_INT16, {-3, 7, 32000}), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  auto schema = readSchema(shaped->stream);
+  EXPECT_STREQ(schema.get()->children[0]->format, "l");
+  auto batch = readBatch(shaped->stream);
+  auto view = test::bindArrayView(schema.get(), batch.get());
+  EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 0), -3);
+  EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 32000);
+}
+
+/// Every unsigned integer width is a valid nanosecond axis, not only uint32/uint64.
+TEST(TableShaperTest, WidensUint8TimestampAxis) {
+  auto shaped = shapeStream(makeIntegerAxisStream(NANOARROW_TYPE_UINT8, {0, 200, 255}), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  auto schema = readSchema(shaped->stream);
+  EXPECT_STREQ(schema.get()->children[0]->format, "l");
+  auto batch = readBatch(shaped->stream);
+  auto view = test::bindArrayView(schema.get(), batch.get());
+  EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 1), 200);
+  EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 255);
+}
+
 /// Unsigned 32-bit timestamp axes are widened to int64 without changing units.
 TEST(TableShaperTest, WidensUint32TimestampAxis) {
   auto shaped = shapeStream(decodeFixture("axis_uint32.arrows"), ShapeOptions{});
@@ -1004,7 +1052,8 @@ TEST(TableShaperTest, RejectsUint64TimestampAboveInt64Max) {
   ASSERT_TRUE(shaped) << shaped.error();
   PJ::sdk::ArrowArrayHolder batch;
   EXPECT_EQ(shaped->stream.get()->get_next(shaped->stream.get(), batch.out()), ERANGE);
-  EXPECT_NE(std::string(ArrowArrayStreamGetLastError(shaped->stream.get())).find("INT64_MAX"), std::string::npos);
+  EXPECT_STREQ(
+      ArrowArrayStreamGetLastError(shaped->stream.get()), "parser_arrow: timestamp column 'time' exceeds INT64_MAX");
 }
 
 /// Unsupported timestamp types are rejected before a shaped schema is exposed.
