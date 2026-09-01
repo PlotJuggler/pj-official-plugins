@@ -11,7 +11,6 @@
 #include "claude_backend.hpp"
 #include "conversation_state.hpp"
 #include "fake_backend.hpp"
-#include "ollama_backend.hpp"
 #include "settings_store.hpp"
 
 namespace assistant_agent {
@@ -19,13 +18,9 @@ namespace assistant_agent {
 namespace {
 // Persisted settings keys (pj.settings.v1). Namespaced so they never collide
 // with another toolbox's keys in the shared store.
-constexpr const char* kKeyBackend = "assistant.backend";  // "ollama" | "claude"
-constexpr const char* kKeyOllamaUrl = "assistant.ollama.url";
-constexpr const char* kKeyOllamaModel = "assistant.ollama.model";
+constexpr const char* kKeyBackend = "assistant.backend";  // "claude" (harness backends join here)
 constexpr const char* kKeyClaudeModel = "assistant.claude.model";
 constexpr const char* kKeyClaudeCli = "assistant.claude.cli_path";
-
-constexpr const char* kDefaultOllamaUrl = "http://localhost:11434";
 
 // Leaving this blank would pass no --model and get the CLI's own default, which
 // is the slowest tier for no measurable gain: `sonnet` matches the fastest tier
@@ -36,8 +31,7 @@ constexpr const char* kDefaultOllamaUrl = "http://localhost:11434";
 constexpr const char* kDefaultClaudeModel = "sonnet";
 }  // namespace
 
-AssistantDialog::AssistantDialog()
-    : claude_memory_(std::make_shared<ClaudeMemory>()), ollama_memory_(std::make_shared<OllamaMemory>()) {
+AssistantDialog::AssistantDialog() : claude_memory_(std::make_shared<ClaudeMemory>()) {
   rebuildBackend();
   worker_thread_ = std::thread([this]() { workerLoop(); });
 }
@@ -78,23 +72,21 @@ void AssistantDialog::rebuildBackend() {
 
   // The scripted FakeBackend is an explicit opt-in for driving the tool path
   // without an LLM (unit tests + manual E2E). Otherwise the persisted
-  // 'assistant.backend' choice selects the real backend; an unset/unknown choice
-  // falls back to the harmless echo backend.
+  // 'assistant.backend' choice selects the backend. Claude is the only one
+  // until the harness backends land (docs/NORTH_STAR.md), so an absent choice
+  // gets it; a choice this build has never heard of falls back to the harmless
+  // echo backend, visibly labeled. (A store still saying "ollama" was migrated
+  // when the settings view was bound — see setSettings.)
   const char* fake = std::getenv("ASSISTANT_FAKE_BACKEND");
   if (fake != nullptr && std::string(fake) == "1") {
     backend_ = std::make_shared<FakeBackend>();
   } else {
     SettingsStore store(settings_);
-    const std::string choice = store.getString(kKeyBackend, "");
-    if (choice == "ollama") {
-      backend_ = std::make_shared<OllamaBackend>(
-          store.getString(kKeyOllamaUrl, kDefaultOllamaUrl), store.getString(kKeyOllamaModel, ""), ollama_memory_);
-    } else if (choice == "claude") {
+    if (store.getString(kKeyBackend, "claude") == "claude") {
       backend_ = std::make_shared<ClaudeBackend>(
           store.getString(kKeyClaudeCli, "claude"), store.getString(kKeyClaudeModel, kDefaultClaudeModel),
           claude_memory_);
     } else {
-      // Unset choice -> the harmless echo backend until the user picks one.
       backend_ = std::make_shared<EchoBackend>();
     }
   }
@@ -111,9 +103,8 @@ void AssistantDialog::startNewConversation() {
   state_.session.clear();
   state_.usage.reset();
   // Clearing in place is what makes this work for whichever backend is live:
-  // both read their memory through the pointer the dialog still holds.
+  // it reads its memory through the pointer the dialog still holds.
   *claude_memory_ = ClaudeMemory{};
-  *ollama_memory_ = OllamaMemory{};
   // The persisted copy goes too: New chat is the one gesture that frees the
   // user from the past, and a reopen must not resurrect it.
   SettingsStore store(settings_);
@@ -154,12 +145,6 @@ void AssistantDialog::loadPersistedConversation() {
   }
   claude_memory_->session_id = conv.claude_session_id;
   claude_memory_->sent_catalog_hash = conv.claude_catalog_hash;
-  if (!conv.ollama_history_json.empty()) {
-    nlohmann::json parsed = nlohmann::json::parse(conv.ollama_history_json, nullptr, /*allow_exceptions=*/false);
-    if (parsed.is_array()) {
-      ollama_memory_->history = std::move(parsed);
-    }
-  }
   state_.transcript_dirty = true;
   state_.controls_dirty = true;
 }
@@ -169,9 +154,6 @@ void AssistantDialog::saveConversationLocked() {
   conv.messages = state_.session.messages();
   conv.claude_session_id = claude_memory_->session_id;
   conv.claude_catalog_hash = claude_memory_->sent_catalog_hash;
-  if (!ollama_memory_->history.empty()) {
-    conv.ollama_history_json = ollama_memory_->history.dump();
-  }
   SettingsStore store(settings_);
   saveConversation(store, conv);
 }
@@ -204,6 +186,13 @@ void AssistantDialog::setSettings(PJ::sdk::SettingsView settings) {
   settings_ = settings;
   if (!conversation_loaded_) {
     conversation_loaded_ = true;
+    // First bind is the one moment the store is both readable and fresh:
+    // migrate an Ollama-era store before anything reads the backend choice.
+    SettingsStore store(settings_);
+    if (store.getString(kKeyBackend, "") == "ollama") {
+      store.setString(kKeyBackend, "claude");
+    }
+    scrubRetiredOllamaKeys(store);
     loadPersistedConversation();
   }
   rebuildBackend();
@@ -275,10 +264,7 @@ std::string AssistantDialog::widget_data() {
     state_.open_settings_pending = false;
     // Pre-fill the modal from persisted settings before showing it.
     SettingsStore store(settings_);
-    const std::string backend = store.getString(kKeyBackend, "ollama");
-    wd.setCurrentIndex("backendCombo", backend == "claude" ? 1 : 0);
-    wd.setText("ollamaUrlEdit", store.getString(kKeyOllamaUrl, kDefaultOllamaUrl));
-    wd.setText("ollamaModelEdit", store.getString(kKeyOllamaModel, ""));
+    wd.setCurrentIndex("backendCombo", 0);
     wd.setText("claudeModelEdit", store.getString(kKeyClaudeModel, kDefaultClaudeModel));
     wd.setText("claudeCliPathEdit", store.getString(kKeyClaudeCli, "claude"));
     wd.requestSubDialog(kAssistantSettingsUi);
@@ -294,14 +280,6 @@ bool AssistantDialog::onTextChanged(std::string_view widget_name, std::string_vi
     return false;  // no re-render; the widget already shows the text
   }
   // Settings sub-dialog inputs: stage the value; commit on subDialogAccepted.
-  if (widget_name == "ollamaUrlEdit") {
-    state_.pending_ollama_url = std::string(text);
-    return false;
-  }
-  if (widget_name == "ollamaModelEdit") {
-    state_.pending_ollama_model = std::string(text);
-    return false;
-  }
   if (widget_name == "claudeModelEdit") {
     state_.pending_claude_model = std::string(text);
     return false;
@@ -314,11 +292,10 @@ bool AssistantDialog::onTextChanged(std::string_view widget_name, std::string_vi
 }
 
 bool AssistantDialog::onIndexChanged(std::string_view widget_name, int index) {
-  std::lock_guard<std::mutex> lock(state_.mu);
-  if (widget_name == "backendCombo") {
-    state_.pending_backend = (index == 1) ? "claude" : "ollama";
-    return false;
-  }
+  // No combo drives state today: backendCombo has one entry until the harness
+  // backends land, and the backend key is normalized at bind time instead.
+  (void)widget_name;
+  (void)index;
   return false;
 }
 
@@ -481,8 +458,7 @@ void AssistantDialog::commitSettings() {
     std::lock_guard<std::mutex> lock(state_.mu);
     // Persist each staged edit and clear it for the next time the modal opens.
     const std::pair<const char*, std::optional<std::string>*> staged[] = {
-        {kKeyBackend, &state_.pending_backend},          {kKeyOllamaUrl, &state_.pending_ollama_url},
-        {kKeyOllamaModel, &state_.pending_ollama_model}, {kKeyClaudeModel, &state_.pending_claude_model},
+        {kKeyClaudeModel, &state_.pending_claude_model},
         {kKeyClaudeCli, &state_.pending_claude_cli},
     };
     for (const auto& [key, value] : staged) {
@@ -491,7 +467,7 @@ void AssistantDialog::commitSettings() {
         value->reset();
       }
     }
-    backend = store.getString(kKeyBackend, "ollama");
+    backend = store.getString(kKeyBackend, "claude");
 
     state_.session.addSystem("Settings saved (backend: " + backend + ").");
     state_.transcript_dirty = true;

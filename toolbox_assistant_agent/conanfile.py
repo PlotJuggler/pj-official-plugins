@@ -19,8 +19,8 @@ class ToolboxAssistantAgentConan(ConanFile):
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
         "fmt/12.1.0",
-        # ixwebsocket provides both ix::HttpClient (Ollama /api/chat) and
-        # ix::HttpServer (the localhost MCP bridge for the Claude Code backend).
+        # ixwebsocket provides ix::HttpServer (the localhost MCP bridge for the
+        # Claude Code backend) plus the ix::HttpClient the MCP tests drive it with.
         "ixwebsocket/11.4.6",
     )
     default_options = {"*:shared": False}

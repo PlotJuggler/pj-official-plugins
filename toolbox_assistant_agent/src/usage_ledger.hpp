@@ -14,9 +14,9 @@ namespace assistant_agent {
 //
 // The panel shows `ChatSession::statusText()` followed by whatever summary()
 // returns, so an empty summary leaves the status line exactly as it was. That
-// is the correct answer for a backend that reports no usage at all (Ollama runs
-// locally; Echo is not a model), which is why nothing here special-cases a
-// backend: a turn that reports nothing simply never reaches record().
+// is the correct answer for a backend that reports no usage at all (Echo is not
+// a model), which is why nothing here special-cases a backend: a turn that
+// reports nothing simply never reaches record().
 //
 // Pure and Qt-free, like ChatSession and SeriesStats — unit-tested in
 // tests/usage_ledger_test.cpp.

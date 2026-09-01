@@ -17,7 +17,6 @@ add_library(toolbox_assistant_agent_plugin SHARED
   src/conversation_state.cpp
   src/settings_store.cpp
   src/tools.cpp
-  src/ollama_backend.cpp
   src/mcp_http_server.cpp
   src/claude_backend.cpp
 )
@@ -142,24 +141,6 @@ if(BUILD_TESTING)
   )
   target_compile_features(toolbox_assistant_agent_tool_registry_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentToolRegistryTest COMMAND toolbox_assistant_agent_tool_registry_test)
-
-  # OllamaBackend against an in-test ix::HttpServer impersonating Ollama's
-  # /api/chat (incl. a tool_calls round) and /api/tags.
-  add_executable(toolbox_assistant_agent_ollama_backend_test
-    tests/ollama_backend_test.cpp
-    src/ollama_backend.cpp
-    src/conversation_state.cpp
-    src/settings_store.cpp
-    src/tools.cpp
-  )
-  target_link_libraries(toolbox_assistant_agent_ollama_backend_test PRIVATE
-    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
-  )
-  target_include_directories(toolbox_assistant_agent_ollama_backend_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  target_compile_features(toolbox_assistant_agent_ollama_backend_test PRIVATE cxx_std_20)
-  add_test(NAME ToolboxAssistantAgentOllamaBackendTest COMMAND toolbox_assistant_agent_ollama_backend_test)
 
   # Claude stream-json parser + NDJSON splitter. Pure, std + nlohmann only.
   add_executable(toolbox_assistant_agent_stream_json_test

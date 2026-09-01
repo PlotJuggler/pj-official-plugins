@@ -20,9 +20,9 @@ namespace assistant_agent {
 using ToolInvoker = std::function<ToolResult(const std::string& name, const nlohmann::json& args)>;
 
 // One tool the assistant can call. `input_schema` is a JSON Schema object (the
-// same shape Ollama and MCP both want), so a single registry drives the Ollama
-// `tools` array, the MCP `tools/list` response, AND the unit tests — no second
-// source of truth to drift.
+// shape MCP and every OpenAI-style function-spec consumer both want), so a
+// single registry drives the MCP `tools/list` response, any function-spec
+// serialization, AND the unit tests — no second source of truth to drift.
 struct ToolSpec {
   std::string name;
   std::string description;
@@ -48,8 +48,8 @@ class ToolRegistry {
   [[nodiscard]] ToolResult execute(std::string_view name, const nlohmann::json& args, ToolContext& ctx) const;
 
   // Serialize the catalog for each backend's tool-advertisement format.
-  [[nodiscard]] nlohmann::json toOllamaTools() const;   // OpenAI-style function specs
-  [[nodiscard]] nlohmann::json toMcpToolsList() const;  // MCP tools/list entries
+  [[nodiscard]] nlohmann::json toFunctionSpecs() const;  // OpenAI-style function specs
+  [[nodiscard]] nlohmann::json toMcpToolsList() const;   // MCP tools/list entries
 
  private:
   void add(ToolSpec spec);

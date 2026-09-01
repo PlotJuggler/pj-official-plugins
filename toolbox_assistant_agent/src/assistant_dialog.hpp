@@ -23,13 +23,11 @@
 
 namespace assistant_agent {
 
-// Per-conversation state the backends borrow (claude_backend.hpp /
-// ollama_backend.hpp). Forward-declared so this header does not pull the
-// backend implementations — and their JSON dependency — into everything that
-// includes it; the dialog's destructor lives in the .cpp, where both are
-// complete.
+// Per-conversation state the backend borrows (claude_backend.hpp).
+// Forward-declared so this header does not pull the backend implementation —
+// and its JSON dependency — into everything that includes it; the dialog's
+// destructor lives in the .cpp, where it is complete.
 struct ClaudeMemory;
-struct OllamaMemory;
 
 // DialogState — pure data the panel drives. Mutated on the GUI thread only
 // (widget events + worker results drained by onTick), serialized into
@@ -74,9 +72,6 @@ struct DialogState {
   // onTextChanged/onIndexChanged for each child, then onClicked("subDialogAccepted")
   // to commit — mirroring the toolbox_mosaico cert-dialog handshake.
   bool open_settings_pending = false;
-  std::optional<std::string> pending_backend;  // "ollama" | "claude"
-  std::optional<std::string> pending_ollama_url;
-  std::optional<std::string> pending_ollama_model;
   std::optional<std::string> pending_claude_model;
   std::optional<std::string> pending_claude_cli;
 };
@@ -130,7 +125,7 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   // while a turn is in flight (see DialogState::rebuild_pending).
   void rebuildBackend();
 
-  // Drop the transcript, the accumulated cost and both backends' conversation
+  // Drop the transcript, the accumulated cost and the backend's conversation
   // memory — AND the persisted copy in the settings store, so a later reopen
   // does not resurrect what the user explicitly reset. No backend rebuild: the
   // memory is cleared in place and the live backend reads through the same
@@ -143,7 +138,7 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   // unbound view), and save after every completed turn.
   void loadPersistedConversation();
   // Requires state_.mu held by the caller (the TurnComplete arm); reads the
-  // session + both memories and writes the store, which takes no locks of ours.
+  // session + the memory and writes the store, which takes no locks of ours.
   void saveConversationLocked();
 
   DialogState state_;
@@ -157,7 +152,6 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   // in the constructor and lent to each backend, so changing the model — or
   // just saving the settings modal — no longer wipes what was said.
   std::shared_ptr<ClaudeMemory> claude_memory_;
-  std::shared_ptr<OllamaMemory> ollama_memory_;
 
   std::thread worker_thread_;
   std::mutex cmd_mu_;

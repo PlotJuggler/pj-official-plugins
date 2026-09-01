@@ -57,7 +57,7 @@ TEST(ToolRegistry, ListsAllToolsAndSchemas) {
   ToolRegistry reg;
   EXPECT_EQ(reg.tools().size(), 9u);
   // Both serializations expose every tool by name.
-  EXPECT_EQ(reg.toOllamaTools().size(), 9u);
+  EXPECT_EQ(reg.toFunctionSpecs().size(), 9u);
   EXPECT_EQ(reg.toMcpToolsList().size(), 9u);
   EXPECT_NE(reg.find("create_derived_series"), nullptr);
   // remove_markers exists but is scoped to the assistant's own marker set;
@@ -945,7 +945,7 @@ TEST(ToolRegistry, DefaultsToASingleOutputNamedAfterTheSeries) {
 // about 50% when it was checked against the real token counters.
 TEST(ToolRegistry, ToolSchemaStaysWithinItsBudget) {
   ToolRegistry reg;
-  const std::size_t chars = reg.toOllamaTools().dump().size();
+  const std::size_t chars = reg.toFunctionSpecs().dump().size();
   std::cerr << "tool schema: " << chars << " chars across " << reg.tools().size() << " tools\n";
   for (const auto& t : reg.tools()) {
     std::cerr << "  " << t.name << ": " << t.description.size() << "\n";

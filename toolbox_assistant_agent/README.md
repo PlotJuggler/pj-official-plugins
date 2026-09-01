@@ -9,8 +9,8 @@ work by calling the same plugin SDK a human-written plugin would.
           │
           ▼
    ┌──────────────┐   tool calls    ┌──────────────────┐   SDK services   ┌────────────┐
-   │  chat panel  │ ──────────────▶ │  tool layer (7)  │ ───────────────▶ │ PlotJuggler│
-   │  (floating)  │ ◀────────────── │  MCP / Ollama    │ ◀─────────────── │    host    │
+   │  chat panel  │ ──────────────▶ │  tool layer (9)  │ ───────────────▶ │ PlotJuggler│
+   │  (floating)  │ ◀────────────── │   over MCP       │ ◀─────────────── │    host    │
    └──────────────┘   results       └──────────────────┘                  └────────────┘
 ```
 
@@ -25,8 +25,11 @@ runs behind exposes no such operation. There is no delete tool to withhold.
 | Backend | What it is | Cost |
 |---|---|---|
 | **Claude Code** | Drives your existing `claude` CLI subscription headlessly. Tools are exposed over a loopback MCP server the plugin starts itself. No API key, no per-token billing. | Your subscription |
-| **Ollama** | A local model over `/api/chat`, with the agentic tool loop run in-plugin. Streams as it generates. Scheduled for removal — the direction is harness CLIs only (`docs/NORTH_STAR.md`). | Free, local |
 | **Echo / Fake** | No model. Used for wiring tests. | — |
+
+The direction is harness CLIs only (`docs/NORTH_STAR.md`): Codex and OpenCode join through the
+same pattern as Claude Code. The Ollama backend that used to run a local model in-plugin was
+retired with that decision.
 
 For the Claude backend every built-in tool is disabled (`--tools ""`), so the model reaches
 *only* the nine tools below — it cannot touch your machine outside PlotJuggler.

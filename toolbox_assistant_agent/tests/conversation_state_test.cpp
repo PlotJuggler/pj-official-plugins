@@ -44,7 +44,6 @@ TEST(ConversationState, RoundTripsThroughTheStore) {
   };
   conv.claude_session_id = "sess-123";
   conv.claude_catalog_hash = fnv1aHex("catalog v1");
-  conv.ollama_history_json = R"([{"role":"system","content":"s"},{"role":"user","content":"u"}])";
 
   auto store = fx.store();
   saveConversation(store, conv);
@@ -57,7 +56,6 @@ TEST(ConversationState, RoundTripsThroughTheStore) {
   }
   EXPECT_EQ(back.claude_session_id, "sess-123");
   EXPECT_EQ(back.claude_catalog_hash, conv.claude_catalog_hash);
-  EXPECT_EQ(back.ollama_history_json, conv.ollama_history_json);
 }
 
 TEST(ConversationState, AbsentKeysLoadAsCleanEmptyState) {
@@ -70,11 +68,9 @@ TEST(ConversationState, MalformedValuesLoadAsCleanEmptyState) {
   Fixture fx;
   auto store = fx.store();
   store.setString("assistant.conv.transcript", "{not json");
-  store.setString("assistant.conv.ollama.history", "\"a string, not an array\"");
 
   const ConversationState back = loadConversation(fx.store());
   EXPECT_TRUE(back.messages.empty());
-  EXPECT_TRUE(back.ollama_history_json.empty());
 }
 
 TEST(ConversationState, UnknownRowsAreSkippedNotFatal) {
@@ -110,26 +106,23 @@ TEST(ConversationState, TranscriptCapDropsOldestWholeMessages) {
   EXPECT_EQ(back.messages[1].text.rfind("newest", 0), 0u);
 }
 
-TEST(ConversationState, OllamaHistoryCapKeepsSlotZeroAndNewestTurns) {
+TEST(ConversationState, ScrubErasesEveryRetiredOllamaKey) {
   Fixture fx;
-  ConversationState conv;
-  nlohmann::json history = nlohmann::json::array();
-  history.push_back({{"role", "system"}, {"content", "the system message"}});
-  for (int i = 0; i < 4; ++i) {
-    history.push_back({{"role", "user"}, {"content", "turn " + std::to_string(i) + " " + std::string(90 * 1024, 'y')}});
-  }
-  conv.ollama_history_json = history.dump();  // ~360 KB, over the 256 KB cap
   auto store = fx.store();
-  saveConversation(store, conv);
+  // An Ollama-era store could hold up to 256 KB of dead conversation plus the
+  // backend's settings; the one-shot scrub at bind time erases all of it.
+  store.setString("assistant.ollama.url", "http://box:11434");
+  store.setString("assistant.ollama.model", "qwen2.5");
+  store.setString("assistant.conv.ollama.history", R"([{"role":"user","content":"old"}])");
 
-  const ConversationState back = loadConversation(fx.store());
-  const nlohmann::json trimmed = nlohmann::json::parse(back.ollama_history_json);
-  ASSERT_TRUE(trimmed.is_array());
-  ASSERT_GE(trimmed.size(), 2u);
-  EXPECT_EQ(trimmed[0]["role"], "system");  // slot 0 survives
-  // The newest turn survives; the oldest were dropped.
-  EXPECT_EQ(std::string(trimmed[trimmed.size() - 1]["content"]).rfind("turn 3", 0), 0u);
-  EXPECT_LE(back.ollama_history_json.size(), assistant_agent::kMaxOllamaHistoryBytes);
+  scrubRetiredOllamaKeys(store);
+  EXPECT_EQ(store.getString("assistant.ollama.url", "unset"), "");
+  EXPECT_EQ(store.getString("assistant.ollama.model", "unset"), "");
+  EXPECT_EQ(store.getString("assistant.conv.ollama.history", "unset"), "");
+
+  // Idempotent by its gate: a second pass reads and writes nothing new.
+  scrubRetiredOllamaKeys(store);
+  EXPECT_EQ(store.getString("assistant.conv.ollama.history", "unset"), "");
 }
 
 TEST(ConversationState, EraseLeavesACleanStore) {

@@ -19,7 +19,6 @@ using nlohmann::json;
 constexpr const char* kKeyTranscript = "assistant.conv.transcript";
 constexpr const char* kKeyClaudeSessionId = "assistant.conv.claude.session_id";
 constexpr const char* kKeyClaudeCatalogHash = "assistant.conv.claude.catalog_hash";
-constexpr const char* kKeyOllamaHistory = "assistant.conv.ollama.history";
 
 // One letter per role: the persisted form should stay boring and versioned
 // rather than leak the C++ enum's numeric values into the store.
@@ -59,16 +58,6 @@ ConversationState loadConversation(const SettingsStore& store) {
   ConversationState state;
   state.claude_session_id = store.getString(kKeyClaudeSessionId, "");
   state.claude_catalog_hash = store.getString(kKeyClaudeCatalogHash, "");
-
-  // The Ollama history is stored as the backend's own JSON; validate it here so
-  // a corrupt value becomes "no history" instead of a parse error downstream.
-  const std::string history = store.getString(kKeyOllamaHistory, "");
-  if (!history.empty()) {
-    const json parsed = json::parse(history, nullptr, /*allow_exceptions=*/false);
-    if (parsed.is_array()) {
-      state.ollama_history_json = history;
-    }
-  }
 
   const std::string transcript = store.getString(kKeyTranscript, "");
   if (!transcript.empty()) {
@@ -115,22 +104,17 @@ void saveConversation(SettingsStore& store, const ConversationState& state) {
 
   store.setString(kKeyClaudeSessionId, state.claude_session_id);
   store.setString(kKeyClaudeCatalogHash, state.claude_catalog_hash);
+}
 
-  // Ollama history cap: drop the oldest turns after slot 0 (the system message,
-  // rewritten by the backend every turn anyway) until the dump fits.
-  std::string history = state.ollama_history_json;
-  if (history.size() > kMaxOllamaHistoryBytes) {
-    json parsed = json::parse(history, nullptr, /*allow_exceptions=*/false);
-    if (parsed.is_array()) {
-      while (parsed.size() > 1 && parsed.dump().size() > kMaxOllamaHistoryBytes) {
-        parsed.erase(1);
-      }
-      history = parsed.dump();
-    } else {
-      history.clear();
+void scrubRetiredOllamaKeys(SettingsStore& store) {
+  // What the retired Ollama backend left behind: its settings and up to 256 KB
+  // of dead conversation. Gated on the current values, so a scrubbed store —
+  // or one that never saw Ollama — costs three reads and writes nothing.
+  for (const char* key : {"assistant.ollama.url", "assistant.ollama.model", "assistant.conv.ollama.history"}) {
+    if (!store.getString(key, "").empty()) {
+      store.setString(key, "");
     }
   }
-  store.setString(kKeyOllamaHistory, history);
 }
 
 void eraseConversation(SettingsStore& store) {

@@ -27,8 +27,8 @@ only legal on the GUI thread. Everything a model asks for is marshalled back thr
 catalog digest is built on the GUI thread *before* the turn is handed over — the worker could
 not build it itself.
 
-**Nothing throws across a thread or the ABI.** Untrusted JSON arrives from three directions
-(the model, the MCP request body, the Ollama response) and the typed getters throw on the wrong
+**Nothing throws across a thread or the ABI.** Untrusted JSON arrives from two directions
+(the model's stream and the MCP request body) and the typed getters throw on the wrong
 shape, so each entry point has an exception barrier. An escaped exception on the worker thread
 would `std::terminate` the whole application.
 
@@ -37,9 +37,10 @@ must be destroyed while the settings backend it writes through is still alive.
 
 ## The tool layer
 
-`ToolRegistry` is the single source of truth for the tool set. It serializes to Ollama's
-function-spec format *and* to MCP's `tools/list` from the same definitions, so the two backends
-and the unit tests can never drift apart.
+`ToolRegistry` is the single source of truth for the tool set. It serializes to MCP's
+`tools/list` *and* to OpenAI-style function specs (`toFunctionSpecs`, kept for the harness
+backends to come) from the same definitions, so the backends and the unit tests can never
+drift apart.
 
 Tools receive a `ToolContext`: a catalog+read view, a data-processors view, an object-read view for
 verifying what was created, and a `notify_data_changed` callback.
@@ -99,16 +100,6 @@ that *changed* is re-sent, which is how the model learns that another file was l
 The digest degrades as data grows: full tree, then topic names only, and it says so explicitly
 when truncated. That last part matters — a model that believes an incomplete listing is
 complete will confidently tell the user a signal does not exist.
-
-## The Ollama backend
-
-Owns the mechanics of its conversation: it builds the message list itself, so the borrowed
-`OllamaMemory` is what makes it remember anything between turns. The system message is rebuilt
-each turn and kept at index 0, so a changed catalog is reflected without discarding what was said.
-
-Streams with `stream: true`, parsing NDJSON incrementally and emitting each text delta as it
-lands. Servers that ignore `stream: true` and answer with one whole object still work — the
-splitter is flushed and, failing that, the body is parsed directly.
 
 ## Closing the loop on what it creates
 
@@ -195,17 +186,17 @@ two runs nor avoid mixing them, for the same reason: it does not know there are 
 
 ## Where the conversation lives
 
-Not in the backend. A backend is a transport — a CLI path and a model name, or an endpoint URL —
-and it is rebuilt whenever any of those change, which in practice means every time the Settings
-modal is accepted. The conversation is not a property of that transport, so it is held by the
-dialog (`ClaudeMemory`, `OllamaMemory`) and lent to each backend it builds.
+Not in the backend. A backend is a transport — a CLI path and a model name — and it is rebuilt
+whenever any of those change, which in practice means every time the Settings modal is accepted.
+The conversation is not a property of that transport, so it is held by the dialog
+(`ClaudeMemory`) and lent to each backend it builds.
 
 Getting this wrong is not a crash, which is what made it worth writing down: while the state lived
-inside the backend, changing the model mid-chat rebuilt the object, dropped the Claude session id
-and the Ollama message list, and the next turn arrived with no idea what had been discussed. No
-error, no warning — just a model that had forgotten. `ollama_backend_test.cpp` pins it by running
-a turn, destroying the backend, and asserting the rebuilt one still puts the earlier turn on the
-wire.
+inside the backend, changing the model mid-chat rebuilt the object, dropped the session id, and
+the next turn arrived with no idea what had been discussed. No error, no warning — just a model
+that had forgotten. `ClaudeBackend.ConversationMemorySurvivesARebuild` pins it by loading a
+conversation into the lent memory, destroying the backend, and asserting a rebuilt one still
+composes over the same memory.
 
 Two consequences worth knowing:
 
@@ -213,17 +204,16 @@ Two consequences worth knowing:
   swapping while the worker writes a session id is a data race. `rebuildBackend()` defers itself
   and `onTick` applies it once the turn is over.
 - **Forgetting had to become deliberate.** With the accidental reset gone, "New chat" is the only
-  way to start over: it clears the transcript, the cost ledger and both memories in place — no
+  way to start over: it clears the transcript, the cost ledger and the memory in place — no
   rebuild, so the MCP server stays up and the next turn simply sends no `--resume`.
 
 The conversation also survives the *dialog*: closing the toolbox (or the app) destroys the
-instance and both memories, so `conversation_state.{hpp,cpp}` writes them to the per-user
+instance and the memory, so `conversation_state.{hpp,cpp}` writes it to the per-user
 settings store (`pj.settings.v1`, `assistant.conv.*` keys) after every completed turn, and the
-next instance restores them when the settings view is first bound. What is stored is small on
+next instance restores it when the settings view is first bound. What is stored is small on
 purpose: the transcript rows (so the reopened panel *shows* what the model remembers, behind a
 visible "resumed previous conversation" seam), Claude's session id and the fnv1a hash of the
-catalog it was last told (the CLI's own `--resume` carries the actual context), and Ollama's
-message list whole — the one large item, capped, because that backend owns its history. Three
+catalog it was last told (the CLI's own `--resume` carries the actual context). Three
 deliberate boundaries:
 
 - **Never the layout.** The toolbox's `saveConfig` stays `{}`. A conversation in the layout

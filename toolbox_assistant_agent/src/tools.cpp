@@ -1490,7 +1490,7 @@ ToolResult ToolRegistry::execute(std::string_view name, const nlohmann::json& ar
   }
 }
 
-nlohmann::json ToolRegistry::toOllamaTools() const {
+nlohmann::json ToolRegistry::toFunctionSpecs() const {
   nlohmann::json arr = nlohmann::json::array();
   for (const auto& spec : tools_) {
     arr.push_back(

@@ -177,3 +177,26 @@ TEST(ClaudeComposePayload, CatalogNoteRules) {
   EXPECT_EQ(assistant_agent::composePayload("bare", "", no_catalog), "bare");
   EXPECT_TRUE(no_catalog.sent_catalog_hash.empty());
 }
+
+// The conversation lives in the LENT memory, not in the backend object: a
+// settings change destroys and rebuilds the backend, and must not reset what
+// was said. Constructing a backend over a memory that already holds a
+// conversation is the moment a careless constructor would wipe it — this pin
+// used to live in the Ollama backend's rebuild test, the only offline coverage
+// of the invariant until that backend was retired.
+TEST(ClaudeBackend, ConversationMemorySurvivesARebuild) {
+  auto memory = std::make_shared<assistant_agent::ClaudeMemory>();
+  {
+    assistant_agent::ClaudeBackend first("claude-never-spawned", "sonnet", memory);
+    // What a completed turn leaves behind, written where the worker writes it.
+    (void)assistant_agent::composePayload("hello", "CATALOG v1", *memory);
+    memory->session_id = "sess-42";
+  }  // the backend dies here; the conversation must not
+
+  assistant_agent::ClaudeBackend second("claude-never-spawned", "sonnet", memory);
+  EXPECT_EQ(memory->session_id, "sess-42");
+  EXPECT_EQ(memory->sent_catalog_hash, assistant_agent::fnv1aHex("CATALOG v1"));
+  // The rebuilt backend composes over the same memory: an unchanged listing is
+  // not re-sent, exactly as if the first backend were still alive.
+  EXPECT_EQ(assistant_agent::composePayload("again", "CATALOG v1", *memory), "again");
+}

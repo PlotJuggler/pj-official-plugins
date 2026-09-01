@@ -29,8 +29,8 @@ struct Fixture {
 TEST(AssistantSettingsStore, StringRoundTrip) {
   Fixture fx;
   auto store = fx.store();
-  store.setString("assistant.ollama.url", "http://localhost:11434");
-  EXPECT_EQ(store.getString("assistant.ollama.url"), "http://localhost:11434");
+  store.setString("assistant.claude.cli_path", "/opt/claude/bin/claude");
+  EXPECT_EQ(store.getString("assistant.claude.cli_path"), "/opt/claude/bin/claude");
 }
 
 TEST(AssistantSettingsStore, BackendChoiceRoundTrip) {
@@ -42,8 +42,8 @@ TEST(AssistantSettingsStore, BackendChoiceRoundTrip) {
 }
 
 TEST(AssistantSettingsStore, MissingBackendDefaultsEmpty) {
-  // First-ever launch: no backend chosen yet -> empty, which the dialog treats
-  // as "surface the echo stub / prompt for settings".
+  // First-ever launch: the key is absent, so the caller's default comes back
+  // verbatim (the dialog passes "claude" and gets the only backend there is).
   Fixture fx;
   EXPECT_EQ(fx.store().getString("assistant.backend", ""), "");
 }
@@ -52,17 +52,13 @@ TEST(AssistantSettingsStore, AllKeysPersistAcrossFreshStore) {
   Fixture fx;
   {
     auto store = fx.store();
-    store.setString("assistant.backend", "ollama");
-    store.setString("assistant.ollama.url", "http://box:11434");
-    store.setString("assistant.ollama.model", "qwen2.5");
+    store.setString("assistant.backend", "claude");
     store.setString("assistant.claude.model", "claude-opus-4-8");
     store.setString("assistant.claude.cli_path", "/usr/local/bin/claude");
   }
   // A fresh adapter over the same backend mirrors a later session reading back.
   auto store = fx.store();
-  EXPECT_EQ(store.getString("assistant.backend"), "ollama");
-  EXPECT_EQ(store.getString("assistant.ollama.url"), "http://box:11434");
-  EXPECT_EQ(store.getString("assistant.ollama.model"), "qwen2.5");
+  EXPECT_EQ(store.getString("assistant.backend"), "claude");
   EXPECT_EQ(store.getString("assistant.claude.model"), "claude-opus-4-8");
   EXPECT_EQ(store.getString("assistant.claude.cli_path"), "/usr/local/bin/claude");
 }
@@ -72,5 +68,5 @@ TEST(AssistantSettingsStore, UnboundViewReturnsDefaults) {
   // defaults and silently drops writes.
   assistant_agent::SettingsStore store(PJ::sdk::SettingsView{});
   store.setString("assistant.backend", "ignored");
-  EXPECT_EQ(store.getString("assistant.backend", "ollama"), "ollama");
+  EXPECT_EQ(store.getString("assistant.backend", "claude"), "claude");
 }

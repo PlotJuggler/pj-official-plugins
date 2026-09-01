@@ -22,8 +22,7 @@ Two properties are non-negotiable and hold today:
   now withdraw its own derived series too. The guarantee is about *scope*, not about the absence of
   deletion, and a safety claim that overstates itself is worse than none.
 - **No API key, no per-token billing.** The Claude backend drives the user's existing CLI
-  subscription. (The Ollama backend still runs locally today; the North Star takes it out, and
-  its removal is a scheduled task below.)
+  subscription.
 - **The model gets no built-in tool.** The CLI is launched with `--tools ""`, which withholds
   Bash, Read, Write and the rest, so headless Claude can reach this plugin's MCP tools and nothing
   else on the machine. `--strict-mcp-config` does not do this — it only limits which MCP servers
@@ -35,7 +34,7 @@ Two properties are non-negotiable and hold today:
 | | |
 |---|---|
 | Chat panel as a floating toolbox window | Keeps the chart area usable while the assistant is open |
-| Two real backends | Claude Code (via a loopback MCP server) and Ollama, plus Echo/Fake for tests |
+| Two real backends | Claude Code (via a loopback MCP server) and Ollama, plus Echo/Fake for tests. Ollama was later retired by the North Star (see below) |
 | Nine tools | list / describe / read, create derived series + markers, remove either, list own work, status |
 | Tolerant path resolution | Abbreviated paths resolve when unambiguous; ambiguous ones return candidates |
 | Input validation before install | Stops the silent-empty-curve failure at its source |
@@ -63,26 +62,23 @@ Two properties are non-negotiable and hold today:
 | The L14 verdict judges disclosure, not residue | Whatever remains installed passes exactly when the reply says it is there; unmentioned residue fails as `silent-residue(<kind>)`, classified per surviving id. The harness now also refuses a transform that reads `series(...)` at runtime, exactly as the real host does — so the benchmark measures the reaction the product would produce, not an install that cannot happen |
 | The Haiku "cleanup" item closed as not-a-defect | Replicated under the honest instrument: 10/10 L14 ($0.12) — the join refusal is accepted, nothing installed, every reply explains and offers alternatives. 0 withdrawals across 90 historical cells is style, not residue: Haiku does not probe, so it has nothing to remove. The result-visibility mechanism stays parked until a real `silent-residue` verdict appears in a run or a GUI session (`FINDINGS.md` §14) |
 | Series can be addressed by dataset | The host's own `dataset:topic/field` form, taught by one catalog line that exists only when several datasets are loaded — zero schema tokens. A bare path duplicated across datasets is refused with the qualified candidates instead of silently resolving to whichever file loaded first (both failure modes were caught on screen, `FINDINGS.md` §15). "Compare the two runs" went from impossible (9 invented syntaxes, all failing) to one batched read with exact numbers |
-| The conversation survives the panel | Closing the toolbox (or PlotJuggler) used to be silent amnesia. Saved to the per-user settings store after every turn — never into the layout, so a shared layout file carries no conversation and reloading one neither resurrects nor destroys anything. Claude resumes via `--resume` (which required the CLI's working directory to become stable — sessions are indexed by cwd); Ollama's history is stored whole, capped. The reopened panel shows the old transcript with a "resumed" seam, and "New chat" erases the persisted copy too (`ARCHITECTURE.md` → Where the conversation lives) |
+| The conversation survives the panel | Closing the toolbox (or PlotJuggler) used to be silent amnesia. Saved to the per-user settings store after every turn — never into the layout, so a shared layout file carries no conversation and reloading one neither resurrects nor destroys anything. Claude resumes via `--resume` (which required the CLI's working directory to become stable — sessions are indexed by cwd). The reopened panel shows the old transcript with a "resumed" seam, and "New chat" erases the persisted copy too (`ARCHITECTURE.md` → Where the conversation lives) |
+| Ollama retired | The North Star's scheduled removal, done: the backend, its memory, its persistence branch, its Settings fields and its tests. The plugin is Claude-only until the harness backends land; `LlmBackend`, Echo/Fake and the function-spec serialization stay for them. An Ollama-era store is migrated once (backend key set to `claude`, retired keys scrubbed — including up to 256 KB of dead history) |
 
 ## Next — the batches that serve the North Star, in dependency order
 
-**1. Retire Ollama.** The backend, its memory, its persistence branch in
-`conversation_state`, its Settings fields and its tests all go; the plugin is Claude-only until
-the new harnesses land. Declared out in the North Star; this is the scheduled removal.
-
-**2. Codex and OpenCode as backends.** The `claude -p` pattern, applied twice: spawn a headless
+**1. Codex and OpenCode as backends.** The `claude -p` pattern, applied twice: spawn a headless
 turn, stream the output, persist whatever handle the harness needs to resume. DeepSeek arrives as
 a provider inside OpenCode, not as a backend of its own. Each harness ships only with the
 equivalents of the Claude safety spine: our tools only (MCP or equivalent, built-ins withheld),
 resume across turns and restarts, cost reporting where the harness exposes it.
 
-**3. Upstream `pj.playback.v1` + `pj.viewport.v1`, replug the seven tools.** Play, pause, seek,
+**2. Upstream `pj.playback.v1` + `pj.viewport.v1`, replug the seven tools.** Play, pause, seek,
 playback rate, zoom/framing — all built and verified in July, dropped only because the SDK
 services live in preserved branches instead of `main`. Tail-appended service additions (a MINOR,
 same pattern as the dataset-naming SDK PR), then the tools return as they were.
 
-**4. Tabs the model owns, watermarked "IA".** New host capability: the model creates tabs,
+**3. Tabs the model owns, watermarked "IA".** New host capability: the model creates tabs,
 places and removes curves in them, and drives seek/zoom/framing there; every model-created tab
 carries a permanently visible "IA" watermark in a bottom corner, and the model's view control is
 scoped to the tabs that carry it. Host + SDK work (a new service), designed after pillar 3 lands

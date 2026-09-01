@@ -31,9 +31,8 @@ struct ConversationState {
   std::vector<ChatMessage> messages;
   std::string claude_session_id;    // resumes the CLI session (--resume)
   std::string claude_catalog_hash;  // ClaudeMemory::sent_catalog_hash, verbatim
-  std::string ollama_history_json;  // OllamaMemory::history, dump()ed
   [[nodiscard]] bool empty() const {
-    return messages.empty() && claude_session_id.empty() && claude_catalog_hash.empty() && ollama_history_json.empty();
+    return messages.empty() && claude_session_id.empty() && claude_catalog_hash.empty();
   }
 };
 
@@ -56,14 +55,12 @@ struct ConversationState {
   return out;
 }
 
-// Caps applied at save time so the shared QSettings file cannot grow without
-// bound under a long conversation. Oldest entries are dropped WHOLE (never
-// truncated mid-message): the transcript keeps its newest rows, and the Ollama
-// history keeps slot 0 (the system message, rewritten every turn anyway) plus
-// its newest turns. The transcript cap budgets the message TEXT; the stored
-// JSON adds its per-row envelope on top, so it is a bound, not an exact size.
+// Cap applied at save time so the shared QSettings file cannot grow without
+// bound under a long conversation. Oldest rows are dropped WHOLE (never
+// truncated mid-message): the transcript keeps its newest rows. The cap budgets
+// the message TEXT; the stored JSON adds its per-row envelope on top, so it is
+// a bound, not an exact size.
 inline constexpr std::size_t kMaxTranscriptBytes = 128 * 1024;
-inline constexpr std::size_t kMaxOllamaHistoryBytes = 256 * 1024;
 
 // Absent keys, empty values, or malformed JSON all load as a clean empty
 // state — a corrupt store must never take the panel down with it.
@@ -71,5 +68,9 @@ inline constexpr std::size_t kMaxOllamaHistoryBytes = 256 * 1024;
 void saveConversation(SettingsStore& store, const ConversationState& state);
 // Equivalent to saving an empty state: every key is overwritten with "".
 void eraseConversation(SettingsStore& store);
+// One-shot cleanup of what the retired Ollama backend left in the store — its
+// settings keys and its persisted history. Self-terminating: gated on the
+// keys' current values. Run once when the settings view is first bound.
+void scrubRetiredOllamaKeys(SettingsStore& store);
 
 }  // namespace assistant_agent

@@ -50,8 +50,8 @@ seeking, zooming and framing land.
 
 ## Out, by decision
 
-- Ollama and local models (the backend, its memory, its settings — removal is a
-  scheduled task, tracked in ROADMAP.md).
+- Ollama and local models (the backend, its memory, its settings — removed;
+  ROADMAP.md records it as done).
 - Direct-API backends of any kind.
 - Relaxing the safety spine to get any of the above: withheld built-in tools,
   MCP-only tool surface, isolated working state remain non-negotiable per

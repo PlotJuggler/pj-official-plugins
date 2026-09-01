@@ -47,8 +47,8 @@ struct TurnTools {
   std::string catalog;
 };
 
-// Result of a backend connectivity probe (Ollama endpoint reachable, claude CLI
-// present, …). `ok` false carries a human-readable reason for the transcript.
+// Result of a backend connectivity probe (claude CLI present, a harness
+// reachable, …). `ok` false carries a human-readable reason for the transcript.
 struct BackendTestResult {
   bool ok = false;
   std::string message;
