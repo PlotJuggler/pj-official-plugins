@@ -1,10 +1,12 @@
 # Arrow IPC Message Parser
 
 `parser_arrow` is a PlotJuggler `MessageParser` for the `"arrow-ipc"`
-encoding. Each message payload must be one complete Arrow IPC **stream**: a
-schema message, its record batches, and the end-of-stream marker. Arrow IPC
-**file** format payloads are not accepted. The payload is self-describing, so
-the binding's `schema` bytes are informational and ignored.
+encoding. Each message payload must be one Arrow IPC **stream**: a schema
+message followed by its record batches. The stream is read to its end-of-stream
+marker or to the end of the payload, whichever comes first; data after the
+end-of-stream marker is ignored. Arrow IPC **file** format payloads are not
+accepted. The payload is self-describing, so the binding's `schema` bytes are
+informational and ignored.
 
 The parser uses `nanoarrow` and `nanoarrow_ipc`, not `libarrow`.
 
@@ -14,7 +16,7 @@ Configuration is a JSON object:
 
 | Key | Type | Default | Semantics |
 |-----|------|---------|-----------|
-| `timestamp_column` | string | `""` | Non-empty: use this exact top-level field as the time axis; an absent field is an error. Empty: auto-detect an axis, then synthesize one if none is found. |
+| `timestamp_column` | string | `""` | Non-empty: use this leaf as the time axis, named in flattened form (`header/stamp`) at any depth; a name matching no leaf is an error. Empty: auto-detect an axis, then synthesize one if none is found. |
 | `flatten_structs` | bool | `true` | Flatten nested structs depth-first to slash-separated leaf names. `false` preserves struct boundaries while unsupported top-level struct columns are removed. |
 | `synthetic_interval_ns` | int64 | `0` | When an axis is synthesized, add this many nanoseconds per row. Zero gives every row the message timestamp; negative intervals are allowed. The row index continues across record batches. |
 | `max_array_size` | uint32 | `500` | Maximum scalar columns emitted for one list. Zero means unlimited. |
@@ -24,20 +26,29 @@ The top-level JSON value must be an object; unknown keys are ignored.
 
 ## Timestamp axis
 
-Axis selection is ordered:
+Configuration and detection both walk the leaves described in
+[Column shaping](#column-shaping-and-host-support), so an axis nested inside a
+struct is reachable by its normalized name (with `flatten_structs: false` there
+is no such leaf and only top-level fields remain). Selection is ordered:
 
-1. A non-empty `timestamp_column`. The named top-level field must exist.
-2. Automatic detection: the first top-level Arrow `TIMESTAMP` field in schema
-   order, then the first field matching this name priority:
+1. A non-empty `timestamp_column`, matched against the full flattened leaf name
+   (`header/stamp`). A name matching no leaf is an error naming the column.
+2. Automatic detection: the first Arrow `TIMESTAMP`-typed leaf in schema order,
+   then the first leaf whose full flattened name matches this name priority:
    `timestamp_ns`, `recording_timestamp_ns`, `timestamp`, `time`, `ts`.
 3. Synthesis of an int64 `timestamp_ns` field as
    `message_timestamp_ns + row_index * synthetic_interval_ns`. The row index
    is stream-wide, not batch-local.
 
+An expanded list is never detected by type, because a `list<timestamp>` is not
+itself a timestamp; a list named like an axis is still selected and then
+rejected for its unsupported type.
+
 The selected axis is emitted as int64 nanoseconds. Accepted source types are:
 
-- `int32`, `int64`, `uint32`, and `uint64`: treated as nanoseconds, widened to
-  int64 without scaling.
+- every integer width, `int8` through `int64` and `uint8` through `uint64`:
+  treated as nanoseconds, widened to int64 without scaling. A `uint64` tick
+  above `INT64_MAX` is an error naming the column.
 - `float` and `double`: treated as seconds, multiplied by 1e9, and rounded to
   the nearest nanosecond (halfway values away from zero).
 - Arrow `TIMESTAMP`: scaled from its second, millisecond, microsecond, or
@@ -51,8 +62,12 @@ which would discard the transport message time.
 ## Column shaping and host support
 
 - With `flatten_structs: true`, struct leaves use PlotJuggler 3's
-  `parent/child` naming convention. Nullable and sliced struct parents are
-  applied to every flattened leaf.
+  `parent/child` naming convention, flattened depth-first. Nullable and sliced
+  struct parents are applied to every flattened leaf.
+- A literal `.` inside any field-name component is a path separator too and is
+  replaced by `/`. So `wheel.speed` becomes `wheel/speed`, and a field
+  `header.stamp` inside a struct `msg` becomes `msg/header/stamp`. A flat dotted
+  name and the equivalent nested struct therefore produce the same series name.
 - Every Arrow `TIMESTAMP` column, not only the selected axis, is cast to int64
   nanoseconds.
 - `large_string`, `large_binary`, `string_view`, and `binary_view` are
@@ -60,7 +75,8 @@ which would discard the transport message time.
   IPC fields of type `string_view` or `binary_view` at all; producers must cast
   them to `utf8` or `binary` before encoding the stream.
 - Empty field names become `_<i>`, where `i` is the field's child index at that
-  level. Duplicate output names after flattening and substitution are errors.
+  level. Duplicate output names after flattening, dot replacement, and empty-name
+  substitution are errors.
 
 The current PlotJuggler host ingests `int8` through `int64`, `uint8` through
 `uint64`, `float`, `double`, `bool`, and `utf8`. Binary, decimal,
@@ -125,8 +141,10 @@ bound by the transport to `parser_ros`, not `parser_arrow`.
 
 ## Producer checklist
 
-- Encode one complete Arrow IPC stream per message, not an IPC file.
-- Prefer an explicit int64-nanosecond timestamp column and configure its name.
+- Encode one Arrow IPC stream per message, not an IPC file.
+- Prefer an explicit int64-nanosecond timestamp column and configure its name
+  in flattened form, dots included: `header.stamp` is configured as
+  `header/stamp`.
 - Cast view types before IPC encoding.
 - Decode dictionary-encoded columns before IPC encoding.
 - Do not use LZ4 compression.
