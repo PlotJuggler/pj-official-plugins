@@ -1233,41 +1233,44 @@ ToolResult runPlaybackOp(ToolContext& ctx, const char* verb, Op&& op) {
   return ToolResult::success(playbackStateJson(ctx).dump());
 }
 
-ToolResult playbackPlay(const json& /*args*/, ToolContext& ctx) {
-  return runPlaybackOp(ctx, "play", [&] { return ctx.playback.play(); });
-}
-
-ToolResult playbackPause(const json& /*args*/, ToolContext& ctx) {
-  return runPlaybackOp(ctx, "pause", [&] { return ctx.playback.pause(); });
-}
-
-ToolResult playbackSeek(const json& args, ToolContext& ctx) {
-  if (!args.contains("time_s") || !args["time_s"].is_number()) {
-    return ToolResult::failure("seek requires a numeric 'time_s' (display-axis seconds)");
+ToolResult playbackTool(const json& args, ToolContext& ctx) {
+  const std::string action = args.value("action", std::string());
+  if (action.empty()) {
+    return ToolResult::failure("playback requires 'action': one of 'state', 'play', 'pause', 'seek', 'rate'");
   }
-  // The echoed current_time_s shows the host's clamp into the playback range.
-  return runPlaybackOp(ctx, "seek", [&] { return ctx.playback.seek(args["time_s"].get<double>()); });
-}
-
-ToolResult playbackSetRate(const json& args, ToolContext& ctx) {
-  if (!args.contains("rate") || !args["rate"].is_number()) {
-    return ToolResult::failure("set_playback_rate requires a numeric 'rate' (> 0; 1.0 = real time)");
-  }
-  // Bound the blast radius before the host sees it: a model asking for 0 or
-  // 10000x gets the nearest sane speed instead of an error loop.
-  const double rate = std::clamp(args["rate"].get<double>(), 0.05, 20.0);
-  return runPlaybackOp(ctx, "set_playback_rate", [&] { return ctx.playback.setPlaybackRate(rate); });
-}
-
-ToolResult playbackGetState(const json& /*args*/, ToolContext& ctx) {
   if (!ctx.playback.valid()) {
     return ToolResult::failure(kNoPlayback);
   }
-  auto state = ctx.playback.state();
-  if (!state) {
-    return ToolResult::failure(state.error());
+  if (action == "state") {
+    auto state = ctx.playback.state();
+    if (!state) {
+      return ToolResult::failure(state.error());
+    }
+    return ToolResult::success(stateToJson(*state).dump());
   }
-  return ToolResult::success(stateToJson(*state).dump());
+  if (action == "play") {
+    return runPlaybackOp(ctx, "play", [&] { return ctx.playback.play(); });
+  }
+  if (action == "pause") {
+    return runPlaybackOp(ctx, "pause", [&] { return ctx.playback.pause(); });
+  }
+  if (action == "seek") {
+    if (!args.contains("time_s") || !args["time_s"].is_number()) {
+      return ToolResult::failure("seek requires a numeric 'time_s' (display-axis seconds)");
+    }
+    // The echoed current_time_s shows the host's clamp into the playback range.
+    return runPlaybackOp(ctx, "seek", [&] { return ctx.playback.seek(args["time_s"].get<double>()); });
+  }
+  if (action == "rate") {
+    if (!args.contains("rate") || !args["rate"].is_number()) {
+      return ToolResult::failure("rate requires a numeric 'rate' (> 0; 1.0 = real time)");
+    }
+    // Bound the blast radius before the host sees it: a model asking for 0 or
+    // 10000x gets the nearest sane speed instead of an error loop.
+    const double rate = std::clamp(args["rate"].get<double>(), 0.05, 20.0);
+    return runPlaybackOp(ctx, "rate", [&] { return ctx.playback.setPlaybackRate(rate); });
+  }
+  return ToolResult::failure("unknown playback action '" + action + "'; use state/play/pause/seek/rate");
 }
 
 ToolResult zoomToTimeRange(const json& args, ToolContext& ctx) {
@@ -1590,42 +1593,20 @@ ToolRegistry::ToolRegistry() {
        &removeDerivedSeries});
 
   add(
-      {"play",
-       "Start playback (the time cursor advances across all plots). Idempotent. Returns the full "
-       "playback state; all times are display-axis seconds — the numbers on the plot X axes.",
-       empty_obj, &playbackPlay});
-
-  add(
-      {"pause",
-       "Pause playback (the time cursor stops where it is). Idempotent. Returns the full playback "
-       "state.",
-       empty_obj, &playbackPause});
-
-  add(
-      {"seek",
-       "Move the playback cursor to a time, in display-axis seconds (the numbers on the plot X "
-       "axes and in the playback state's 'range'). The host clamps into the range — the returned "
-       "'current_time_s' is where the cursor actually landed. To seek to a feature found via "
-       "read_series buckets: time = stats.t_start_display_s + bucket.t.",
+      {"playback",
+       "Drive the transport: the time cursor, shared by every plot. action: 'state' (read it), "
+       "'play', 'pause', 'seek' (to 'time_s'), 'rate' (to 'rate'; 1.0 = real time, clamped to "
+       "[0.05, 20]). Every call returns the whole state - playing, current_time_s, range "
+       "{min_s, max_s}, rate - so a clamped seek shows where the cursor actually landed. Times are "
+       "DISPLAY-AXIS SECONDS, the numbers on the plot X axes: a feature found in read_series "
+       "buckets sits at stats.t_start_display_s + bucket.t.",
        {{"type", "object"},
-        {"properties", {{"time_s", {{"type", "number"}, {"description", "target time in display-axis seconds"}}}}},
-        {"required", json::array({"time_s"})}},
-       &playbackSeek});
-
-  add(
-      {"set_playback_rate",
-       "Set the playback speed multiplier (1.0 = real time, 0.25 = quarter, 2.0 = double). Clamped "
-       "to [0.05, 20]. Returns the full playback state.",
-       {{"type", "object"},
-        {"properties", {{"rate", {{"type", "number"}, {"description", "speed multiplier, > 0"}}}}},
-        {"required", json::array({"rate"})}},
-       &playbackSetRate});
-
-  add(
-      {"get_playback_state",
-       "Read the playback state: playing, current_time_s, range {min_s, max_s}, rate. All times "
-       "are display-axis seconds. During live streaming the range grows on every ingest tick.",
-       empty_obj, &playbackGetState});
+        {"properties",
+         {{"action", {{"type", "string"}, {"enum", json::array({"state", "play", "pause", "seek", "rate"})}}},
+          {"time_s", {{"type", "number"}, {"description", "target time, display-axis seconds (seek)"}}},
+          {"rate", {{"type", "number"}, {"description", "speed multiplier, > 0 (rate)"}}}}},
+        {"required", json::array({"action"})}},
+       &playbackTool});
 
   add(
       {"zoom_to_time_range",

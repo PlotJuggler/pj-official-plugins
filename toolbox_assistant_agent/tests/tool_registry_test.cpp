@@ -58,12 +58,13 @@ ToolContext makeCtx(PJ::testing::ToolboxTestStore& store, RecordingDpHost* dp, F
 
 TEST(ToolRegistry, ListsAllToolsAndSchemas) {
   ToolRegistry reg;
-  EXPECT_EQ(reg.tools().size(), 16u);
+  EXPECT_EQ(reg.tools().size(), 12u);
   // Both serializations expose every tool by name.
-  EXPECT_EQ(reg.toFunctionSpecs().size(), 16u);
-  EXPECT_EQ(reg.toMcpToolsList().size(), 16u);
+  EXPECT_EQ(reg.toFunctionSpecs().size(), 12u);
+  EXPECT_EQ(reg.toMcpToolsList().size(), 12u);
   EXPECT_NE(reg.find("create_derived_series"), nullptr);
-  EXPECT_NE(reg.find("seek"), nullptr);
+  EXPECT_NE(reg.find("playback"), nullptr);
+  EXPECT_EQ(reg.find("play"), nullptr);
   EXPECT_NE(reg.find("zoom_to_time_range"), nullptr);
   // remove_markers exists but is scoped to the assistant's own marker set;
   // no tool can touch user data destructively.
@@ -952,10 +953,13 @@ TEST(ToolRegistry, ToolSchemaStaysWithinItsBudget) {
   for (const auto& t : reg.tools()) {
     std::cerr << "  " << t.name << ": " << t.description.size() << "\n";
   }
-  // Raised from 7500 when the seven playback/viewport tools returned (measured
-  // 9930 chars at that point): the transport vocabulary is what they cost.
-  // Still a hard gate — a growing schema is paid as cached prefix on every
-  // conversation, so trim before adding capability.
+  // The whole tool surface is a fixed cost: it is sent ahead of every message
+  // of every conversation, so a tool earns its characters or it does not
+  // belong. That is what this ceiling is for — not a limit any model imposes,
+  // but the one place where adding capability has to be a decision. Note the
+  // fixed 73 chars of JSON envelope each tool costs before a word of prose,
+  // which is why related verbs share one tool with an `action` argument
+  // instead of standing alone.
   EXPECT_LT(chars, 10500u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
 }
 
@@ -969,15 +973,15 @@ TEST(ToolRegistry, PlaybackToolsEchoFullState) {
   auto ctx = makeCtx(store, nullptr);
   ctx.playback = pb.view();
 
-  for (const char* tool : {"play", "pause", "get_playback_state"}) {
-    auto r = reg.execute(tool, json::object(), ctx);
-    ASSERT_TRUE(r.ok) << tool << ": " << r.content;
+  for (const char* action : {"play", "pause", "state"}) {
+    auto r = reg.execute("playback", {{"action", action}}, ctx);
+    ASSERT_TRUE(r.ok) << action << ": " << r.content;
     auto j = json::parse(r.content);
-    EXPECT_EQ(j["playing"], false) << tool;
-    EXPECT_DOUBLE_EQ(j["current_time_s"].get<double>(), 3.0) << tool;
-    EXPECT_DOUBLE_EQ(j["range"]["min_s"].get<double>(), 0.0) << tool;
-    EXPECT_DOUBLE_EQ(j["range"]["max_s"].get<double>(), 10.0) << tool;
-    EXPECT_DOUBLE_EQ(j["rate"].get<double>(), 1.0) << tool;
+    EXPECT_EQ(j["playing"], false) << action;
+    EXPECT_DOUBLE_EQ(j["current_time_s"].get<double>(), 3.0) << action;
+    EXPECT_DOUBLE_EQ(j["range"]["min_s"].get<double>(), 0.0) << action;
+    EXPECT_DOUBLE_EQ(j["range"]["max_s"].get<double>(), 10.0) << action;
+    EXPECT_DOUBLE_EQ(j["rate"].get<double>(), 1.0) << action;
   }
   EXPECT_TRUE(pb.play_called);
   EXPECT_TRUE(pb.pause_called);
@@ -991,19 +995,19 @@ TEST(ToolRegistry, SeekForwardsTimeAndValidatesArgs) {
   auto ctx = makeCtx(store, nullptr);
   ctx.playback = pb.view();
 
-  auto r = reg.execute("seek", {{"time_s", 7.25}}, ctx);
+  auto r = reg.execute("playback", {{"action", "seek"}, {"time_s", 7.25}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
   EXPECT_DOUBLE_EQ(pb.last_seek_s, 7.25);
 
   // Missing / wrong-typed time_s -> clean failure, host untouched.
   pb.last_seek_s = -1.0;
-  EXPECT_FALSE(reg.execute("seek", json::object(), ctx).ok);
-  EXPECT_FALSE(reg.execute("seek", {{"time_s", "later"}}, ctx).ok);
+  EXPECT_FALSE(reg.execute("playback", {{"action", "seek"}}, ctx).ok);
+  EXPECT_FALSE(reg.execute("playback", {{"action", "seek"}, {"time_s", "later"}}, ctx).ok);
   EXPECT_DOUBLE_EQ(pb.last_seek_s, -1.0);
 
   // Out-of-range seek: the echoed current_time_s is where the cursor LANDED
   // (the host clamps) — the contract the tool description promises.
-  r = reg.execute("seek", {{"time_s", 999.0}}, ctx);
+  r = reg.execute("playback", {{"action", "seek"}, {"time_s", 999.0}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
   EXPECT_DOUBLE_EQ(json::parse(r.content)["current_time_s"].get<double>(), 10.0);
 }
@@ -1016,8 +1020,8 @@ TEST(ToolRegistry, SetPlaybackRateValidatesArgs) {
   auto ctx = makeCtx(store, nullptr);
   ctx.playback = pb.view();
 
-  EXPECT_FALSE(reg.execute("set_playback_rate", json::object(), ctx).ok);
-  EXPECT_FALSE(reg.execute("set_playback_rate", {{"rate", "fast"}}, ctx).ok);
+  EXPECT_FALSE(reg.execute("playback", {{"action", "rate"}}, ctx).ok);
+  EXPECT_FALSE(reg.execute("playback", {{"action", "rate"}, {"rate", "fast"}}, ctx).ok);
   EXPECT_DOUBLE_EQ(pb.last_rate, -1.0);  // host untouched
 }
 
@@ -1030,13 +1034,13 @@ TEST(ToolRegistry, StateReadFailureDegradesCleanly) {
   auto ctx = makeCtx(store, nullptr);
   ctx.playback = pb.view();
 
-  // get_playback_state converts the failed read into a tool failure.
-  auto r = reg.execute("get_playback_state", json::object(), ctx);
+  // action "state" converts the failed read into a tool failure.
+  auto r = reg.execute("playback", {{"action", "state"}}, ctx);
   EXPECT_FALSE(r.ok);
   EXPECT_NE(r.content.find("state boom"), std::string::npos);
 
   // A mutation still succeeds; the echo self-describes the missing state.
-  r = reg.execute("play", json::object(), ctx);
+  r = reg.execute("playback", {{"action", "play"}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
   EXPECT_TRUE(pb.play_called);
   EXPECT_NE(r.content.find("state_unavailable"), std::string::npos);
@@ -1050,11 +1054,11 @@ TEST(ToolRegistry, SetPlaybackRateClampsPluginSide) {
   auto ctx = makeCtx(store, nullptr);
   ctx.playback = pb.view();
 
-  ASSERT_TRUE(reg.execute("set_playback_rate", {{"rate", 0.25}}, ctx).ok);
+  ASSERT_TRUE(reg.execute("playback", {{"action", "rate"}, {"rate", 0.25}}, ctx).ok);
   EXPECT_DOUBLE_EQ(pb.last_rate, 0.25);
-  ASSERT_TRUE(reg.execute("set_playback_rate", {{"rate", 10000.0}}, ctx).ok);
+  ASSERT_TRUE(reg.execute("playback", {{"action", "rate"}, {"rate", 10000.0}}, ctx).ok);
   EXPECT_DOUBLE_EQ(pb.last_rate, 20.0);  // clamped high
-  ASSERT_TRUE(reg.execute("set_playback_rate", {{"rate", 0.0}}, ctx).ok);
+  ASSERT_TRUE(reg.execute("playback", {{"action", "rate"}, {"rate", 0.0}}, ctx).ok);
   EXPECT_DOUBLE_EQ(pb.last_rate, 0.05);  // clamped low (never 0 -> host reject loop)
 }
 
@@ -1064,12 +1068,37 @@ TEST(ToolRegistry, PlaybackToolsDegradeWithoutHost) {
   populate(store);
   auto ctx = makeCtx(store, nullptr);  // no playback host bound
 
-  for (const char* tool : {"play", "pause", "get_playback_state"}) {
-    auto r = reg.execute(tool, json::object(), ctx);
-    EXPECT_FALSE(r.ok) << tool;
-    EXPECT_NE(r.content.find("pj.playback.v1"), std::string::npos) << tool;
+  for (const char* action : {"play", "pause", "state"}) {
+    auto r = reg.execute("playback", {{"action", action}}, ctx);
+    EXPECT_FALSE(r.ok) << action;
+    EXPECT_NE(r.content.find("pj.playback.v1"), std::string::npos) << action;
   }
-  EXPECT_FALSE(reg.execute("seek", {{"time_s", 1.0}}, ctx).ok);
+  EXPECT_FALSE(reg.execute("playback", {{"action", "seek"}, {"time_s", 1.0}}, ctx).ok);
+}
+
+TEST(ToolRegistry, PlaybackRejectsAnUnknownAction) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlaybackHost pb;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  auto r = reg.execute("playback", {{"action", "fly"}}, ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_FALSE(pb.play_called);
+  EXPECT_FALSE(pb.pause_called);
+}
+
+TEST(ToolRegistry, PlaybackRequiresAnAction) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlaybackHost pb;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  EXPECT_FALSE(reg.execute("playback", json::object(), ctx).ok);
 }
 
 TEST(ToolRegistry, ZoomForwardsRangeAndValidates) {
