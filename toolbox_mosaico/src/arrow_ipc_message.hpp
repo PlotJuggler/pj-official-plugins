@@ -58,7 +58,7 @@ inline constexpr std::int64_t kSyntheticIntervalNs = 33'333'333LL;
     const arrow::RecordBatch& batch, std::int64_t capacity_hint = 0);
 
 /// `parser_arrow` configuration for one topic:
-/// `{"timestamp_column": <field>, "synthetic_interval_ns": <interval>}`.
-[[nodiscard]] std::string parserConfigJson(std::string_view timestamp_field, std::int64_t synthetic_interval_ns);
+/// `{"timestamp_column": <field>, "synthetic_interval_ns": kSyntheticIntervalNs}`.
+[[nodiscard]] std::string parserConfigJson(std::string_view timestamp_field);
 
 }  // namespace mosaico

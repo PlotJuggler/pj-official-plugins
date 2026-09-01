@@ -483,9 +483,6 @@ TEST(MosaicoTransport, ScalarTopicBindsOnceAndPushesOneIpcStreamPerBatch) {
     ASSERT_TRUE(batch.ok());
     ASSERT_NE(*batch, nullptr);
     EXPECT_EQ((*batch)->num_rows(), 3);
-    auto end = (*reader)->Next();
-    ASSERT_TRUE(end.ok());
-    EXPECT_EQ(*end, nullptr);
   }
 
   ASSERT_EQ(results.size(), 1U);

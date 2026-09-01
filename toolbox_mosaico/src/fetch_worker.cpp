@@ -548,7 +548,7 @@ void FetchWorker::pullTopicsAsync(
       return;
     }
     topic.ipc_schema_bytes = *schema_bytes;
-    topic.parser_config = parserConfigJson(topic.ts_field, kSyntheticIntervalNs);
+    topic.parser_config = parserConfigJson(topic.ts_field);
   };
 
   // Scalar route: hand the batch to the host as an arrow-ipc message. Runs on

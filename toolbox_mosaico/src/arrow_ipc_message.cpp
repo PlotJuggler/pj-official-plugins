@@ -35,17 +35,6 @@ std::shared_ptr<arrow::DataType> ipcSafeType(const std::shared_ptr<arrow::DataTy
       }
       return changed ? arrow::struct_(fields) : type;
     }
-    case arrow::Type::MAP: {
-      // MapType derives from ListType but its single child is the entries
-      // struct — rebuild through map() so the {key, value} shape survives.
-      const auto& map_type = *std::static_pointer_cast<arrow::MapType>(type);
-      auto key = ipcSafeType(map_type.key_type());
-      auto item = ipcSafeType(map_type.item_type());
-      if (key == map_type.key_type() && item == map_type.item_type()) {
-        return type;
-      }
-      return arrow::map(key, map_type.item_field()->WithType(item), map_type.keys_sorted());
-    }
     case arrow::Type::LIST:
     case arrow::Type::LARGE_LIST:
     case arrow::Type::FIXED_SIZE_LIST: {
@@ -63,6 +52,8 @@ std::shared_ptr<arrow::DataType> ipcSafeType(const std::shared_ptr<arrow::DataTy
       return arrow::fixed_size_list(
           value_field->WithType(safe), std::static_pointer_cast<arrow::FixedSizeListType>(type)->list_size());
     }
+    // ponytail: map/union/run-end types are not rewritten; a view nested in one fails at decode with a named type — add
+    // a case when a producer appears.
     default:
       return type;
   }
@@ -136,8 +127,6 @@ std::optional<std::int64_t> firstRowTimestampNs(const arrow::RecordBatch& batch,
     return std::nullopt;
   }
   const arrow::Type::type type_id = (*scalar)->type->id();
-  // Safe casts reject what the hand-rolled switch used to reject explicitly:
-  // uint64 above int64 max, and any TIMESTAMP unit that overflows in ns.
   if (arrow::is_floating(type_id)) {
     auto seconds = arrow::compute::Cast(arrow::Datum(*scalar), arrow::float64());
     return seconds.ok() ? secondsToNs(seconds->scalar_as<arrow::DoubleScalar>().value) : std::nullopt;
@@ -162,9 +151,9 @@ arrow::Result<std::shared_ptr<arrow::Buffer>> serializeIpcStream(
   return sink->Finish();
 }
 
-std::string parserConfigJson(std::string_view timestamp_field, std::int64_t synthetic_interval_ns) {
+std::string parserConfigJson(std::string_view timestamp_field) {
   return nlohmann::json{
-      {"timestamp_column", std::string(timestamp_field)}, {"synthetic_interval_ns", synthetic_interval_ns}}
+      {"timestamp_column", std::string(timestamp_field)}, {"synthetic_interval_ns", kSyntheticIntervalNs}}
       .dump();
 }
 

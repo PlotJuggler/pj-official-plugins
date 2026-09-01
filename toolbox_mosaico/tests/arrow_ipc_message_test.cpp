@@ -38,47 +38,37 @@ std::shared_ptr<arrow::RecordBatch> scalarBatch() {
        arrayOf<arrow::DoubleBuilder, double>({0.0, 1.0, 2.0})});
 }
 
-TEST(DetectTimestampField, ArrowTimestampTypeWins) {
-  auto schema = arrow::schema(
+TEST(DetectTimestampField, TypeThenNamePriorityThenEmpty) {
+  auto typed_schema = arrow::schema(
       {arrow::field("timestamp_ns", arrow::int64()), arrow::field("stamp", arrow::timestamp(arrow::TimeUnit::MICRO))});
-  EXPECT_EQ(mosaico::detectTimestampField(*schema), "stamp");
-}
+  EXPECT_EQ(mosaico::detectTimestampField(*typed_schema), "stamp");
 
-TEST(DetectTimestampField, NamePriorityMostSpecificFirst) {
-  auto schema = arrow::schema(
+  auto name_schema = arrow::schema(
       {arrow::field("ts", arrow::int64()), arrow::field("time", arrow::int64()),
        arrow::field("recording_timestamp_ns", arrow::int64())});
-  EXPECT_EQ(mosaico::detectTimestampField(*schema), "recording_timestamp_ns");
+  EXPECT_EQ(mosaico::detectTimestampField(*name_schema), "recording_timestamp_ns");
   EXPECT_EQ(mosaico::detectTimestampField(*arrow::schema({arrow::field("time", arrow::int64())})), "time");
   EXPECT_EQ(mosaico::detectTimestampField(*arrow::schema({arrow::field("ts", arrow::int64())})), "ts");
-}
 
-TEST(DetectTimestampField, EmptyWhenNothingMatches) {
   EXPECT_EQ(mosaico::detectTimestampField(*arrow::schema({arrow::field("x", arrow::float64())})), "");
 }
 
-TEST(FirstRowTimestampNs, IntegerIsNanoseconds) {
+TEST(FirstRowTimestampNs, ByTypeAndInvalidIndices) {
   EXPECT_EQ(mosaico::firstRowTimestampNs(*scalarBatch(), 0), 1000);
-}
 
-TEST(FirstRowTimestampNs, DoubleIsSeconds) {
-  auto schema = arrow::schema({arrow::field("t", arrow::float64())});
-  auto batch = arrow::RecordBatch::Make(schema, 1, {arrayOf<arrow::DoubleBuilder, double>({1.5})});
-  EXPECT_EQ(mosaico::firstRowTimestampNs(*batch, 0), 1'500'000'000LL);
-}
+  auto double_schema = arrow::schema({arrow::field("t", arrow::float64())});
+  auto double_batch = arrow::RecordBatch::Make(double_schema, 1, {arrayOf<arrow::DoubleBuilder, double>({1.5})});
+  EXPECT_EQ(mosaico::firstRowTimestampNs(*double_batch, 0), 1'500'000'000LL);
 
-TEST(FirstRowTimestampNs, TimestampScaledByUnit) {
-  auto schema = arrow::schema({arrow::field("stamp", arrow::timestamp(arrow::TimeUnit::MILLI))});
-  arrow::TimestampBuilder builder(arrow::timestamp(arrow::TimeUnit::MILLI), arrow::default_memory_pool());
-  ASSERT_TRUE(builder.Append(7).ok());
-  std::shared_ptr<arrow::Array> array;
-  ASSERT_TRUE(builder.Finish(&array).ok());
-  auto batch = arrow::RecordBatch::Make(schema, 1, {array});
-  EXPECT_EQ(mosaico::firstRowTimestampNs(*batch, 0), 7'000'000LL);
-}
+  auto milli_schema = arrow::schema({arrow::field("stamp", arrow::timestamp(arrow::TimeUnit::MILLI))});
+  arrow::TimestampBuilder milli_builder(arrow::timestamp(arrow::TimeUnit::MILLI), arrow::default_memory_pool());
+  ASSERT_TRUE(milli_builder.Append(7).ok());
+  std::shared_ptr<arrow::Array> milli_array;
+  ASSERT_TRUE(milli_builder.Finish(&milli_array).ok());
+  auto milli_batch = arrow::RecordBatch::Make(milli_schema, 1, {milli_array});
+  EXPECT_EQ(mosaico::firstRowTimestampNs(*milli_batch, 0), 7'000'000LL);
 
-// -1 is what route() stores for a topic with no timestamp column.
-TEST(FirstRowTimestampNs, EmptyOnOutOfRangeIndexOrEmptyBatch) {
+  // -1 is what route() stores for a topic with no timestamp column.
   auto batch = scalarBatch();
   EXPECT_FALSE(mosaico::firstRowTimestampNs(*batch, -1).has_value());
   EXPECT_FALSE(mosaico::firstRowTimestampNs(*batch, batch->num_columns()).has_value());
@@ -103,10 +93,10 @@ TEST(SerializeIpcStream, RoundTripsOneBatchAsACompleteStream) {
 }
 
 TEST(ParserConfigJson, CarriesBothKeys) {
-  auto config = nlohmann::json::parse(mosaico::parserConfigJson("timestamp_ns", 33));
+  auto config = nlohmann::json::parse(mosaico::parserConfigJson("timestamp_ns"));
   EXPECT_EQ(config.at("timestamp_column"), "timestamp_ns");
-  EXPECT_EQ(config.at("synthetic_interval_ns"), 33);
-  EXPECT_EQ(nlohmann::json::parse(mosaico::parserConfigJson("", 0)).at("timestamp_column"), "");
+  EXPECT_EQ(config.at("synthetic_interval_ns"), mosaico::kSyntheticIntervalNs);
+  EXPECT_EQ(nlohmann::json::parse(mosaico::parserConfigJson("")).at("timestamp_column"), "");
 }
 
 std::shared_ptr<arrow::Array> castArray(
@@ -166,19 +156,6 @@ TEST(IpcSafeSchema, ViewAndDictionaryFieldsBecomePlainTypesAtEveryDepth) {
 TEST(IpcSafeSchema, ReturnsTheSamePointerWhenNothingNeedsCasting) {
   auto schema = scalarBatch()->schema();
   EXPECT_EQ(mosaico::ipcSafeSchema(schema), schema);
-}
-
-// MapType derives from ListType but its single child is the {key, value}
-// entries struct, so the list recursion would rebuild it into the wrong shape.
-// A view nested in a map still has to go: it would fail the whole message.
-TEST(IpcSafeSchema, MapValuesAreRewrittenWithoutLosingTheMapShape) {
-  auto schema = arrow::schema({arrow::field("labels", arrow::map(arrow::utf8(), arrow::utf8_view()))});
-  auto safe = mosaico::ipcSafeSchema(schema);
-  ASSERT_NE(safe, schema);
-  EXPECT_TRUE(safe->field(0)->type()->Equals(*arrow::map(arrow::utf8(), arrow::utf8())));
-
-  auto plain = arrow::schema({arrow::field("labels", arrow::map(arrow::utf8(), arrow::utf8()))});
-  EXPECT_EQ(mosaico::ipcSafeSchema(plain), plain);
 }
 
 }  // namespace
