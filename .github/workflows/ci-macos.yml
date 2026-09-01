@@ -36,7 +36,7 @@ jobs:
         run: pip install cmake ninja
 
       - name: Configure PlotJuggler JFrog Conan remote
-        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        if: github.repository == 'PlotJuggler/pj-official-plugins'
         env:
           JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
           JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
@@ -104,7 +104,8 @@ jobs:
       - name: Upload built Conan binaries to JFrog
         # Publish every dependency compiled above (macOS binaries) so the next
         # push/release run pulls them prebuilt instead of recompiling. Same guard
-        # as the remote-config step: never on pull requests, only on this repo.
+        # as the other upload steps: never on pull requests (no secrets there, and
+        # we never publish binaries built from unreviewed code), only on this repo.
         if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
         shell: bash
         run: scripts/upload_conan_artifacts.sh

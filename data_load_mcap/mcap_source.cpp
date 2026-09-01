@@ -1,6 +1,6 @@
-#include <pj_array_policy/array_policy.hpp>
 #include <pj_base/builtin/builtin_object.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
+#include <pj_plugins/sdk/parser_array_policy.hpp>
 
 #define MCAP_IMPLEMENTATION
 #include <algorithm>
@@ -186,8 +186,7 @@ class McapSource : public PJ::FileSourceBase {
         parser_config = std::move(parsed_config);
       }
     }
-    pj::array_policy::arrayLimitToJson(
-        parser_config, static_cast<uint32_t>(dialog_.maxArraySize()), dialog_.clampLargeArrays());
+    PJ::sdk::arrayLimitToJson(parser_config, static_cast<uint32_t>(dialog_.maxArraySize()), dialog_.clampLargeArrays());
     parser_config["use_embedded_timestamp"] = dialog_.useHeaderTimestamp();
 
     // --- Ensure parser bindings for selected channels ---

@@ -21,7 +21,7 @@ if(_ulog_includes)
 endif()
 
 # --- Plugin shared library ---
-add_library(ulog_source_plugin SHARED ulog_source.cpp ulog_params_dialog.cpp)
+add_library(ulog_source_plugin SHARED ulog_source.cpp ulog_params_dialog.cpp ulog_container.cpp)
 target_compile_features(ulog_source_plugin PRIVATE cxx_std_20)
 target_compile_options(ulog_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 if(MSVC)
@@ -49,12 +49,13 @@ pj_embed_ui(ulog_source_plugin
 )
 
 # --- Integration test ---
-add_executable(ulog_source_test tests/ulog_source_test.cpp)
+add_executable(ulog_source_test tests/ulog_source_test.cpp ulog_container.cpp)
 target_compile_features(ulog_source_test PRIVATE cxx_std_20)
 target_compile_options(ulog_source_test PRIVATE ${PJ_WARNING_FLAGS})
 if(MSVC)
   target_compile_options(ulog_source_test PRIVATE /wd4702)
 endif()
+target_compile_definitions(ulog_source_test PRIVATE ULOG_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data")
 target_link_libraries(ulog_source_test PRIVATE ulog_cpp::ulog_cpp GTest::gtest_main)
 add_test(NAME ulog_source_test COMMAND ulog_source_test)
 

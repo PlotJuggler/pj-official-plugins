@@ -16,10 +16,10 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
-#include <pj_array_policy/array_policy.hpp>
+#include <pj_base/sdk/text_utils.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
-#include <pj_streaming/dialog_utils.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
 #include <string_view>
@@ -246,7 +246,7 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
         {"boolean_strings_to_number", boolean_strings_to_number_},
         {"remove_suffix_from_strings", remove_suffix_from_strings_},
     };
-    pj::array_policy::arrayLimitToJson(parser_config, static_cast<uint32_t>(max_array_size_), !discard_large_arrays_);
+    PJ::sdk::arrayLimitToJson(parser_config, static_cast<uint32_t>(max_array_size_), !discard_large_arrays_);
     cfg["parser_config"] = parser_config;
     return cfg.dump();
   }
@@ -265,9 +265,9 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
       if (cfg.contains("parser_config") && cfg["parser_config"].is_object()) {
         const auto& pc = cfg["parser_config"];
         use_embedded_timestamp_ = pc.value("use_embedded_timestamp", use_embedded_timestamp_);
-        const auto array_limit = pj::array_policy::arrayLimitFromJson(pc);
+        const auto array_limit = PJ::sdk::arrayLimitFromJson(pc);
         max_array_size_ = static_cast<int>(array_limit.max_size);
-        discard_large_arrays_ = (array_limit.policy == pj::array_policy::ArrayPolicy::kSkip);
+        discard_large_arrays_ = (array_limit.policy == PJ::sdk::ArrayPolicy::kSkip);
         boolean_strings_to_number_ = pc.value("boolean_strings_to_number", boolean_strings_to_number_);
         remove_suffix_from_strings_ = pc.value("remove_suffix_from_strings", remove_suffix_from_strings_);
       }
@@ -285,14 +285,14 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   // displays them. Locks the topics mutex briefly; callers must not already
   // hold it.
   std::vector<std::pair<std::string, std::string>> visibleTopics() {
-    const std::string needle = pj::streaming::lowerAscii(filter_);
+    const std::string needle = PJ::sdk::lowerAscii(filter_);
 
     std::vector<std::pair<std::string, std::string>> out;
     std::lock_guard<std::mutex> lock(topics_mutex_);
     out.reserve(discovered_topics_.size());
     for (const auto& [name, type] : discovered_topics_) {
       if (!needle.empty()) {
-        const std::string haystack = pj::streaming::lowerAscii(name);
+        const std::string haystack = PJ::sdk::lowerAscii(name);
         if (haystack.find(needle) == std::string::npos) {
           continue;
         }

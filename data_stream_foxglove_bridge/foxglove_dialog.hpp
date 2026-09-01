@@ -7,11 +7,12 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
-#include <pj_array_policy/array_policy.hpp>
+#include <pj_base/sdk/text_utils.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/endpoint.hpp>
+#include <pj_plugins/sdk/parser_array_policy.hpp>
+#include <pj_plugins/sdk/streaming_dialog.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
-#include <pj_streaming/dialog_utils.hpp>
-#include <pj_streaming/endpoint.hpp>
 #include <string>
 #include <vector>
 
@@ -126,7 +127,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
       return false;
     }
     if (widget_name == "lineEditPort") {
-      if (const auto port = pj::streaming::parsePort(text)) {
+      if (const auto port = PJ::sdk::parsePort(text)) {
         port_ = *port;
       }
       return false;
@@ -183,7 +184,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
       // previously selected topic would silently drop it.
       {
         std::lock_guard<std::mutex> lock(channels_mutex_);
-        selected_topic_names_ = pj::streaming::mergeVisibleSelection(
+        selected_topic_names_ = PJ::sdk::mergeVisibleSelection(
             selected_topic_names_, selected,
             [this](const std::string& name) {
               return std::any_of(channels_.begin(), channels_.end(), [&](const auto& channel) {
@@ -218,7 +219,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     nlohmann::json cfg;
     cfg["address"] = address_;
     cfg["port"] = port_;
-    pj::array_policy::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), clamp_large_arrays_);
+    PJ::sdk::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), clamp_large_arrays_);
     cfg["use_timestamp"] = use_timestamp_;
 
     // Use the snapshot — channels_ may be cleared by disconnect()
@@ -245,7 +246,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     }
     address_ = cfg.value("address", std::string("localhost"));
     port_ = cfg.value("port", 8765);
-    const auto array_limit = pj::array_policy::arrayLimitFromJson(cfg);
+    const auto array_limit = PJ::sdk::arrayLimitFromJson(cfg);
     max_array_size_ = static_cast<int>(array_limit.max_size);
     clamp_large_arrays_ = array_limit.clamp();
     use_timestamp_ = cfg.value("use_timestamp", false);
@@ -278,14 +279,14 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     if (filter_.empty()) {
       return true;
     }
-    const std::string lowered_filter = pj::streaming::lowerAscii(filter_);
-    return pj::streaming::lowerAscii(ch.topic).find(lowered_filter) != std::string::npos ||
-           pj::streaming::lowerAscii(ch.schema_name).find(lowered_filter) != std::string::npos;
+    const std::string lowered_filter = PJ::sdk::lowerAscii(filter_);
+    return PJ::sdk::lowerAscii(ch.topic).find(lowered_filter) != std::string::npos ||
+           PJ::sdk::lowerAscii(ch.schema_name).find(lowered_filter) != std::string::npos;
   }
 
   void connectToServer() {
     socket_ = std::make_unique<ix::WebSocket>();
-    socket_->setUrl(pj::streaming::composeEndpoint("ws", address_, static_cast<uint16_t>(port_)));
+    socket_->setUrl(PJ::sdk::composeEndpoint("ws", address_, static_cast<uint16_t>(port_)));
     socket_->addSubProtocol("foxglove.sdk.v1");
 
     socket_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {

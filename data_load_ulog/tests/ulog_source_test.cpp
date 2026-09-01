@@ -4,12 +4,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <ulog_cpp/data_container.hpp>
 #include <ulog_cpp/reader.hpp>
 #include <vector>
 
+#include "../ulog_container.hpp"
 #include "../ulog_flatten.hpp"
 
 namespace {
@@ -465,12 +467,12 @@ TEST(ULogFlattenTest, NamesAndOffsetsMatchKnownRecord) {
   const auto& raw = sub->rawSamples()[0].data();
   std::vector<double> values;
   size_t max_end = 0;
-  ulog_flatten::forEachFlatLeaf(
-      *sub->format(), 0, [&](size_t offset, ulog_cpp::Field::BasicType type, size_t elem_size) {
-        ASSERT_LE(offset + elem_size, raw.size());  // offsets stay inside the record
-        max_end = std::max(max_end, offset + elem_size);
-        values.push_back(decodeLeaf(raw, offset, type));
-      });
+  ulog_flatten::forEachFlatLeaf(*sub->format(), 0, [&](const ulog_flatten::FlatLeaf& leaf) {
+    ASSERT_LE(leaf.offset + leaf.size, raw.size());  // offsets stay inside the record
+    EXPECT_FALSE(leaf.is_string);
+    max_end = std::max(max_end, leaf.offset + leaf.size);
+    values.push_back(decodeLeaf(raw, leaf.offset, leaf.type));
+  });
 
   const std::vector<double> expected_values = {1.0, 2.0, 3.0, 42.0, 4.0, 5.0, -77.0};
   ASSERT_EQ(values.size(), expected_values.size());
@@ -502,9 +504,431 @@ TEST(ULogFlattenTest, NameAndLeafCountsAgree) {
   ulog_flatten::collectFlatFieldNames(*sub->format(), {}, names);
 
   size_t leaf_count = 0;
-  ulog_flatten::forEachFlatLeaf(*sub->format(), 0, [&](size_t, ulog_cpp::Field::BasicType, size_t) { ++leaf_count; });
+  ulog_flatten::forEachFlatLeaf(*sub->format(), 0, [&](const ulog_flatten::FlatLeaf&) { ++leaf_count; });
 
   EXPECT_EQ(names.size(), leaf_count);
+}
+
+// --- Timestamp field lookup ---
+//
+// The ULog spec requires every subscribed format to carry a `uint64_t timestamp`
+// field but does NOT require it to be the first field. The importer must locate
+// it by name rather than assume byte offset 0.
+
+TEST(ULogFlattenTest, TimestampOffsetIsFoundByNameNotPosition) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("odd:uint8_t mode;uint64_t timestamp;float x");
+  builder.writeSubscription(1, 0, "odd");
+
+  auto container = parseBuilder(builder);
+  ASSERT_FALSE(container->hadFatalError());
+  auto sub = container->subscription("odd");
+
+  auto offset = ulog_flatten::findTimestampOffset(*sub->format());
+  ASSERT_TRUE(offset.has_value());
+  EXPECT_EQ(*offset, 1u);
+
+  // The timestamp is still excluded from the flattened series.
+  std::vector<std::string> names;
+  ulog_flatten::collectFlatFieldNames(*sub->format(), {}, names);
+  EXPECT_EQ(names, (std::vector<std::string>{"mode", "x"}));
+}
+
+TEST(ULogFlattenTest, MissingTimestampFieldReportsNullopt) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("no_ts:uint32_t counter;float x");
+  builder.writeSubscription(1, 0, "no_ts");
+
+  auto container = parseBuilder(builder);
+  ASSERT_FALSE(container->hadFatalError());
+  auto sub = container->subscription("no_ts");
+
+  EXPECT_FALSE(ulog_flatten::findTimestampOffset(*sub->format()).has_value());
+}
+
+TEST(ULogFlattenTest, TimestampFieldOfWrongTypeIsIgnored) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("bad_ts:uint32_t timestamp;float x");
+  builder.writeSubscription(1, 0, "bad_ts");
+
+  auto container = parseBuilder(builder);
+  ASSERT_FALSE(container->hadFatalError());
+  auto sub = container->subscription("bad_ts");
+
+  EXPECT_FALSE(ulog_flatten::findTimestampOffset(*sub->format()).has_value());
+}
+
+// --- char[N] as strings (PlotJuggler#1387) ---
+//
+// A `char[N]` field is a fixed-width string per the ULog spec, not N numeric
+// samples. It flattens to ONE leaf whose size spans the whole array.
+
+TEST(ULogFlattenTest, CharArrayFlattensToSingleStringLeaf) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("named:uint64_t timestamp;char[8] name;float v");
+  builder.writeSubscription(1, 0, "named");
+
+  auto container = parseBuilder(builder);
+  ASSERT_FALSE(container->hadFatalError());
+  auto sub = container->subscription("named");
+
+  std::vector<std::string> names;
+  ulog_flatten::collectFlatFieldNames(*sub->format(), {}, names);
+  EXPECT_EQ(names, (std::vector<std::string>{"name", "v"}));
+
+  std::vector<ulog_flatten::FlatLeaf> leaves;
+  ulog_flatten::forEachFlatLeaf(*sub->format(), 0, [&](const ulog_flatten::FlatLeaf& leaf) { leaves.push_back(leaf); });
+  ASSERT_EQ(leaves.size(), 2u);
+
+  EXPECT_EQ(leaves[0].offset, 8u);
+  EXPECT_EQ(leaves[0].type, ulog_cpp::Field::BasicType::CHAR);
+  EXPECT_EQ(leaves[0].size, 8u);
+  EXPECT_TRUE(leaves[0].is_string);
+
+  EXPECT_EQ(leaves[1].offset, 16u);
+  EXPECT_EQ(leaves[1].type, ulog_cpp::Field::BasicType::FLOAT);
+  EXPECT_EQ(leaves[1].size, 4u);
+  EXPECT_FALSE(leaves[1].is_string);
+}
+
+TEST(ULogFlattenTest, ScalarCharStaysNumericLeaf) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("one_char:uint64_t timestamp;char c");
+  builder.writeSubscription(1, 0, "one_char");
+
+  auto container = parseBuilder(builder);
+  ASSERT_FALSE(container->hadFatalError());
+  auto sub = container->subscription("one_char");
+
+  std::vector<ulog_flatten::FlatLeaf> leaves;
+  ulog_flatten::forEachFlatLeaf(*sub->format(), 0, [&](const ulog_flatten::FlatLeaf& leaf) { leaves.push_back(leaf); });
+  ASSERT_EQ(leaves.size(), 1u);
+  EXPECT_EQ(leaves[0].size, 1u);
+  EXPECT_FALSE(leaves[0].is_string);
+}
+
+TEST(ULogFlattenTest, StringLeafViewStopsAtFirstNul) {
+  // PX4 zero-pads short strings; the spec says no terminator is REQUIRED, so a
+  // full-width string has none. Both must decode correctly.
+  const std::vector<uint8_t> raw = {0, 0, 'a', 'b', 'c', 0, 0, 0, 0, 0, 'f', 'u', 'l', 'l'};
+  EXPECT_EQ(ulog_flatten::stringLeafView(raw.data(), 2, 8), "abc");
+  EXPECT_EQ(ulog_flatten::stringLeafView(raw.data(), 10, 4), "full");
+  EXPECT_EQ(ulog_flatten::stringLeafView(raw.data(), 5, 3), "");
+}
+
+// --- Parameter changes over time (PlotJuggler#1245) ---
+//
+// PARAMETER messages in the data section carry no timestamp of their own. The
+// container stamps each one with the timestamp of the most recent data message,
+// which is the best approximation the file format allows.
+
+TEST(ULogContainerTest, ChangedParameterIsStampedWithLastDataTimestamp) {
+  ULogBuilder builder;
+  builder.writeHeader(500000);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeParameterInt("SYS_AUTOSTART", 4001);
+  builder.writeSubscription(1, 0, "dummy");
+
+  {
+    FieldDataBuilder fields;
+    fields.append<uint64_t>(2000000);
+    fields.append<float>(1.0f);
+    builder.writeData(1, fields.build());
+  }
+  builder.writeParameterInt("SYS_AUTOSTART", 4002);
+  {
+    FieldDataBuilder fields;
+    fields.append<uint64_t>(3000000);
+    fields.append<float>(2.0f);
+    builder.writeData(1, fields.build());
+  }
+  builder.writeParameterFloat("MC_ROLLRATE_P", 0.25f);
+
+  auto container = std::make_shared<ulog_container::ULogContainer>();
+  ulog_cpp::Reader reader{container};
+  const auto& buf = builder.data();
+  reader.readChunk(buf.data(), static_cast<int>(buf.size()));
+  ASSERT_FALSE(container->hadFatalError());
+
+  // Initial snapshot is untouched.
+  ASSERT_EQ(container->initialParameters().count("SYS_AUTOSTART"), 1u);
+  EXPECT_EQ(container->initialParameters().at("SYS_AUTOSTART").value().as<int32_t>(), 4001);
+
+  const auto& changes = container->timedChangedParameters();
+  ASSERT_EQ(changes.size(), 2u);
+  EXPECT_EQ(changes[0].parameter.field().name(), "SYS_AUTOSTART");
+  EXPECT_EQ(changes[0].parameter.value().as<int32_t>(), 4002);
+  EXPECT_EQ(changes[0].timestamp_us, 2000000u);
+  EXPECT_EQ(changes[1].parameter.field().name(), "MC_ROLLRATE_P");
+  EXPECT_FLOAT_EQ(changes[1].parameter.value().as<float>(), 0.25f);
+  EXPECT_EQ(changes[1].timestamp_us, 3000000u);
+}
+
+TEST(ULogContainerTest, ChangeBeforeAnyDataFallsBackToFileStartTimestamp) {
+  ULogBuilder builder;
+  builder.writeHeader(500000);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeParameterInt("EARLY", 1);
+
+  auto container = std::make_shared<ulog_container::ULogContainer>();
+  ulog_cpp::Reader reader{container};
+  const auto& buf = builder.data();
+  reader.readChunk(buf.data(), static_cast<int>(buf.size()));
+  ASSERT_FALSE(container->hadFatalError());
+
+  const auto& changes = container->timedChangedParameters();
+  ASSERT_EQ(changes.size(), 1u);
+  EXPECT_EQ(changes[0].timestamp_us, 500000u);
+}
+
+TEST(ULogContainerTest, ClockTracksTimestampFieldWhereverItSits) {
+  // Timestamp is NOT the first field here; the clock must still follow it.
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("odd:uint8_t mode;uint64_t timestamp");
+  builder.writeSubscription(1, 0, "odd");
+  {
+    FieldDataBuilder fields;
+    fields.append<uint8_t>(7);
+    fields.append<uint64_t>(4000000);
+    builder.writeData(1, fields.build());
+  }
+  builder.writeParameterInt("LATE", 1);
+
+  auto container = std::make_shared<ulog_container::ULogContainer>();
+  ulog_cpp::Reader reader{container};
+  const auto& buf = builder.data();
+  reader.readChunk(buf.data(), static_cast<int>(buf.size()));
+  ASSERT_FALSE(container->hadFatalError());
+
+  const auto& changes = container->timedChangedParameters();
+  ASSERT_EQ(changes.size(), 1u);
+  EXPECT_EQ(changes[0].timestamp_us, 4000000u);
+}
+
+TEST(ULogContainerTest, ClockNeverRunsBackwardsAcrossSubscriptions) {
+  // Data messages are in LOG order, but timestamps are only monotonic per
+  // subscription: a low-rate topic can be flushed after a high-rate one with an
+  // OLDER timestamp. Parameter stamps must still never go backwards, or the
+  // change history on `_parameters/<name>` is inverted.
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("fast:uint64_t timestamp;float a");
+  builder.writeFormat("slow:uint64_t timestamp;float b");
+  builder.writeSubscription(1, 0, "fast");
+  builder.writeSubscription(2, 0, "slow");
+  {
+    FieldDataBuilder fields;
+    fields.append<uint64_t>(5000000);
+    fields.append<float>(1.0f);
+    builder.writeData(1, fields.build());
+  }
+  builder.writeParameterInt("P", 1);
+  {
+    FieldDataBuilder fields;
+    fields.append<uint64_t>(3000000);  // lagging topic, older timestamp
+    fields.append<float>(2.0f);
+    builder.writeData(2, fields.build());
+  }
+  builder.writeParameterInt("P", 2);
+
+  auto container = std::make_shared<ulog_container::ULogContainer>();
+  ulog_cpp::Reader reader{container};
+  const auto& buf = builder.data();
+  reader.readChunk(buf.data(), static_cast<int>(buf.size()));
+  ASSERT_FALSE(container->hadFatalError());
+
+  const auto& changes = container->timedChangedParameters();
+  ASSERT_EQ(changes.size(), 2u);
+  EXPECT_EQ(changes[0].timestamp_us, 5000000u);
+  // Same parameter: clamped to its own previous stamp, never earlier.
+  EXPECT_EQ(changes[1].timestamp_us, 5000000u);
+}
+
+TEST(ULogContainerTest, ClockIgnoresTimestampsBelowFileStart) {
+  // Real logs contain zero / pre-boot timestamps (the committed fixture has a
+  // zero one). Those must not drag a parameter change before the file start,
+  // where the initial snapshot lives.
+  ULogBuilder builder;
+  builder.writeHeader(500000);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeSubscription(1, 0, "dummy");
+  {
+    FieldDataBuilder fields;
+    fields.append<uint64_t>(0);
+    fields.append<float>(1.0f);
+    builder.writeData(1, fields.build());
+  }
+  builder.writeParameterInt("P", 1);
+
+  auto container = std::make_shared<ulog_container::ULogContainer>();
+  ulog_cpp::Reader reader{container};
+  const auto& buf = builder.data();
+  reader.readChunk(buf.data(), static_cast<int>(buf.size()));
+  ASSERT_FALSE(container->hadFatalError());
+
+  const auto& changes = container->timedChangedParameters();
+  ASSERT_EQ(changes.size(), 1u);
+  EXPECT_EQ(changes[0].timestamp_us, 500000u);
+}
+
+TEST(ULogContainerTest, FutureOutlierDoesNotPoisonLaterChanges) {
+  // A single absurd timestamp must not pin every later parameter change to it
+  // (which a global running maximum would do).
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeSubscription(1, 0, "dummy");
+  {
+    FieldDataBuilder fields;
+    fields.append<uint64_t>(1000000000000ULL);  // ~11 days: outlier
+    fields.append<float>(1.0f);
+    builder.writeData(1, fields.build());
+  }
+  builder.writeParameterInt("Q", 1);
+  {
+    FieldDataBuilder fields;
+    fields.append<uint64_t>(6000000);
+    fields.append<float>(2.0f);
+    builder.writeData(1, fields.build());
+  }
+  builder.writeParameterInt("P", 1);
+
+  auto container = std::make_shared<ulog_container::ULogContainer>();
+  ulog_cpp::Reader reader{container};
+  const auto& buf = builder.data();
+  reader.readChunk(buf.data(), static_cast<int>(buf.size()));
+  ASSERT_FALSE(container->hadFatalError());
+
+  const auto& changes = container->timedChangedParameters();
+  ASSERT_EQ(changes.size(), 2u);
+  EXPECT_EQ(changes[0].parameter.field().name(), "Q");
+  EXPECT_EQ(changes[1].parameter.field().name(), "P");
+  EXPECT_EQ(changes[1].timestamp_us, 6000000u);
+}
+
+TEST(ULogContainerTest, FinalParametersOverlayChangesInFileOrder) {
+  // The Properties dialog must show the LAST value of each parameter, as the
+  // original plugin did (it overwrote on every data-section PARAMETER).
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeParameterInt("A", 1);
+  builder.writeParameterInt("B", 2);
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeParameterInt("A", 5);
+  builder.writeParameterInt("A", 7);
+
+  auto container = std::make_shared<ulog_container::ULogContainer>();
+  ulog_cpp::Reader reader{container};
+  const auto& buf = builder.data();
+  reader.readChunk(buf.data(), static_cast<int>(buf.size()));
+  ASSERT_FALSE(container->hadFatalError());
+
+  EXPECT_EQ(container->initialParameters().at("A").value().as<int32_t>(), 1);
+
+  const auto final_params = container->finalParameters();
+  ASSERT_EQ(final_params.size(), 2u);
+  EXPECT_EQ(final_params.at("A").value().as<int32_t>(), 7);
+  EXPECT_EQ(final_params.at("B").value().as<int32_t>(), 2);
+}
+
+// --- Truncated files (PlotJuggler#1370 / #1419) ---
+//
+// A file cut mid-message must neither crash nor be reported as fatal: every
+// message decoded before the cut is kept, and the reader flags nothing at all
+// for a clean tail cut (it simply waits for more bytes that never come).
+
+TEST(ULogContainerTest, TruncatedTailKeepsEverythingBeforeTheCut) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeSubscription(1, 0, "dummy");
+  for (uint64_t i = 1; i <= 3; ++i) {
+    FieldDataBuilder fields;
+    fields.append<uint64_t>(i * 1000000);
+    fields.append<float>(static_cast<float>(i));
+    builder.writeData(1, fields.build());
+  }
+
+  // Cut the last data message in half (header + 2 + 8 + 4 = 17 bytes per message).
+  std::vector<uint8_t> cut(builder.data().begin(), builder.data().end() - 6);
+
+  auto container = std::make_shared<ulog_container::ULogContainer>();
+  ulog_cpp::Reader reader{container};
+  reader.readChunk(cut.data(), static_cast<int>(cut.size()));
+
+  EXPECT_FALSE(container->hadFatalError());
+  auto sub = container->subscription("dummy");
+  EXPECT_EQ(sub->size(), 2u);
+}
+
+// --- Real PX4 log (committed fixture) ---
+//
+// Drives the new code paths over a genuine flight log, fed in 64 KiB chunks
+// exactly as the importer does, so chunk-boundary handling is covered too.
+
+TEST(ULogContainerTest, SampleLogExercisesAllNewPaths) {
+  std::ifstream file(ULOG_TEST_DATA_DIR "/sample_log_small.ulg", std::ios::binary);
+  ASSERT_TRUE(file.is_open());
+
+  auto container = std::make_shared<ulog_container::ULogContainer>();
+  ulog_cpp::Reader reader{container};
+  std::vector<uint8_t> buffer(65536);
+  while (file) {
+    file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(buffer.size()));
+    auto count = static_cast<size_t>(file.gcount());
+    if (count == 0) {
+      break;
+    }
+    reader.readChunk(buffer.data(), static_cast<int>(count));
+  }
+  ASSERT_FALSE(container->hadFatalError());
+  EXPECT_TRUE(container->parsingErrors().empty());
+
+  // Every subscribed format carries a locatable timestamp, and PX4 puts it
+  // first — the by-name lookup must agree with the old fixed-offset read here.
+  size_t sub_count = 0;
+  for (const auto& [key, sub] : container->subscriptionsByNameAndMultiId()) {
+    ++sub_count;
+    auto offset = ulog_flatten::findTimestampOffset(*sub->format());
+    ASSERT_TRUE(offset.has_value()) << key.name;
+    EXPECT_EQ(*offset, 0u) << key.name;
+  }
+  EXPECT_EQ(sub_count, 72u);
+
+  // Names and leaves stay zipped for every format, strings included.
+  for (const auto& [name, fmt] : container->messageFormats()) {
+    std::vector<std::string> names;
+    ulog_flatten::collectFlatFieldNames(*fmt, {}, names);
+    size_t leaf_count = 0;
+    ulog_flatten::forEachFlatLeaf(*fmt, 0, [&](const ulog_flatten::FlatLeaf&) { ++leaf_count; });
+    EXPECT_EQ(names.size(), leaf_count) << name;
+  }
+
+  // This particular log never changes a parameter in flight: the snapshot is
+  // large and the change list is empty (the synthetic tests cover changes).
+  EXPECT_EQ(container->initialParameters().size(), 980u);
+  EXPECT_TRUE(container->timedChangedParameters().empty());
 }
 
 }  // namespace

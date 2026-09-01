@@ -1,10 +1,10 @@
 #pragma once
 
 #include <nlohmann/json.hpp>
+#include <pj_base/sdk/text_utils.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/streaming_dialog.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
-#include <pj_streaming/dialog_utils.hpp>
-#include <pj_streaming/endpoint.hpp>
 #include <string>
 #include <vector>
 
@@ -54,8 +54,7 @@ class ZmqDialog : public PJ::DialogPluginTyped {
     wd.setEnabled("lineEditPort", !is_ipc);
 
     // Protocol combo — dynamically populated from available parsers
-    const bool has_encodings =
-        pj::streaming::writeEncodingSelector(wd, "comboBoxProtocol", available_encodings_, encoding_);
+    const bool has_encodings = PJ::sdk::writeEncodingSelector(wd, "comboBoxProtocol", available_encodings_, encoding_);
 
     // Topic filter
     wd.setText("lineEditTopics", topic_filter_);
@@ -84,7 +83,7 @@ class ZmqDialog : public PJ::DialogPluginTyped {
       return true;  // refresh UI so port field enable/disable updates immediately
     }
     if (widget_name == "comboBoxProtocol") {
-      encoding_ = pj::streaming::encodingAt(index, available_encodings_);
+      encoding_ = PJ::sdk::encodingAt(index, available_encodings_);
       return false;
     }
     return false;
@@ -96,7 +95,7 @@ class ZmqDialog : public PJ::DialogPluginTyped {
       return false;
     }
     if (widget_name == "lineEditPort") {
-      if (const auto port = pj::streaming::parsePort(text)) {
+      if (const auto port = PJ::sdk::parsePort(text)) {
         port_ = *port;
       }
       return false;

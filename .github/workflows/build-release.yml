@@ -19,9 +19,9 @@ jobs:
     # wedged build burns six hours per leg before anyone notices.
     #
     # 120 rather than 60: with a warm cache a leg takes 1-16 minutes, but a cold
-    # cache with no Conan remote to fall back on means compiling the whole
-    # closure. toolbox_mosaico 1.1.0 built Arrow+Flight from source in 65m21s on
-    # windows-2022 and SUCCEEDED -- a 60-minute cap would have killed it.
+    # cache whose binaries are also missing from the JFrog remote means compiling
+    # the whole closure. toolbox_mosaico 1.1.0 built Arrow+Flight from source in
+    # 65m21s on windows-2022 and SUCCEEDED -- a 60-minute cap would have killed it.
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -123,6 +123,20 @@ jobs:
             ./build.sh ${{ steps.build-scope.outputs.build_script_args }}
             ctest --test-dir "${{ steps.build-scope.outputs.build_dir }}" -V --output-on-failure
           fi
+
+      - name: Upload built Conan binaries to JFrog
+        # Publish every dependency compiled above (and the SDK if ensure_core.sh
+        # built it from the submodule) so the next tag / weekly run on this
+        # platform fetches them prebuilt. This matrix is the ONLY producer of
+        # linux-aarch64, windows-x64/arm64 and macos-arm64 release binaries: the
+        # CI workflows prime JFrog for linux-x86_64 and macos only, so without
+        # this step every cold release leg recompiled Arrow/gRPC/cpython from
+        # source (40 min on ubuntu-22.04-arm, 77 min on windows-2022). Idempotent:
+        # Conan skips revisions already on the remote, and the script is a no-op
+        # when the remote was not configured (fork, missing secrets, outage).
+        if: steps.build-scope.outputs.skip != 'true' && github.repository == 'PlotJuggler/pj-official-plugins'
+        shell: bash
+        run: scripts/upload_conan_artifacts.sh
 
       - name: Verify plugin version
         if: startsWith(github.ref, 'refs/tags/') && steps.build-scope.outputs.skip != 'true'

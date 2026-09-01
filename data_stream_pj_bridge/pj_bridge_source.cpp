@@ -6,10 +6,10 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
-#include <pj_array_policy/array_policy.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
-#include <pj_streaming/drain_queue.hpp>
-#include <pj_streaming/endpoint.hpp>
+#include <pj_plugins/sdk/endpoint.hpp>
+#include <pj_plugins/sdk/parser_array_policy.hpp>
+#include <pj_plugins/sdk/streaming_source.hpp>
 #include <pj_streaming/websocket_utils.hpp>
 #include <set>
 #include <string>
@@ -91,7 +91,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
 
     address_ = cfg.value("address", std::string("127.0.0.1"));
     port_ = cfg.value("port", 9871);
-    array_limit_ = pj::array_policy::arrayLimitFromJson(cfg);
+    array_limit_ = PJ::sdk::arrayLimitFromJson(cfg);
     use_timestamp_ = cfg.value("use_timestamp", false);
 
     // Read the saved topic selection. On a legacy host this is the subscribe
@@ -118,13 +118,12 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     if (!socket_ || socket_->getReadyState() != ix::ReadyState::Open) {
       // Fallback: connect fresh (e.g. when started without dialog via saved config)
       socket_ = std::make_unique<ix::WebSocket>();
-      socket_->setUrl(pj::streaming::composeEndpoint("ws", address_, static_cast<uint16_t>(port_)));
+      socket_->setUrl(PJ::sdk::composeEndpoint("ws", address_, static_cast<uint16_t>(port_)));
       socket_->disableAutomaticReconnection();
       if (!pj::streaming::startAndWaitForOpen(*socket_, std::chrono::seconds(5))) {
         socket_->stop();
         return PJ::unexpected(
-            "failed to connect to PJ bridge at " +
-            pj::streaming::composeHostPort(address_, static_cast<uint16_t>(port_)));
+            "failed to connect to PJ bridge at " + PJ::sdk::composeHostPort(address_, static_cast<uint16_t>(port_)));
       }
     } else {
       // Stolen socket: seed the advertise catalog from the topics the dialog
@@ -554,7 +553,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
         // omgidl schemas. use_embedded_timestamp is the key parser_ros reads
         // (use_timestamp kept for parsers using the older name).
         nlohmann::json parser_cfg;
-        pj::array_policy::arrayLimitToJson(parser_cfg, array_limit_);
+        PJ::sdk::arrayLimitToJson(parser_cfg, array_limit_);
         parser_cfg["use_timestamp"] = use_timestamp_;
         parser_cfg["use_embedded_timestamp"] = use_timestamp_;
         parser_cfg["schema_encoding"] = encoding;
@@ -693,7 +692,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   static bool setActiveTopicsThunk(
       void* ctx, const PJ_string_view_t* names, uint64_t count, PJ_error_t* /*out_error*/) noexcept {
     auto* self = static_cast<PjBridgeSource*>(ctx);
-    self->desired_topics_slot_.set(pj::streaming::stringSetFromViews(names, count));
+    self->desired_topics_slot_.set(PJ::sdk::stringSetFromViews(names, count));
     return true;
   }
 
@@ -701,7 +700,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
 
   std::string address_ = "127.0.0.1";
   int port_ = 9871;
-  pj::array_policy::ArrayLimit array_limit_;
+  PJ::sdk::ArrayLimit array_limit_;
   bool use_timestamp_ = false;
 
   // Saved topic selection: the legacy subscribe list AND the demand-mode advertise
@@ -712,7 +711,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   std::unique_ptr<ix::WebSocket> socket_;
   std::map<std::string, PJ::ParserBindingHandle> bindings_;  // poll-thread-only
 
-  pj::streaming::DrainQueue<QueuedFrame> frame_queue_;
+  PJ::sdk::DrainQueue<QueuedFrame> frame_queue_;
   std::vector<uint8_t> decompress_buffer_;
   int heartbeat_tick_ = 0;
   bool paused_ = false;

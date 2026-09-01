@@ -1,7 +1,8 @@
 #include <cctype>
 #include <cstdint>
 #include <functional>
-#include <pj_array_policy/array_policy.hpp>
+#include <pj_base/sdk/text_utils.hpp>
+#include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -61,9 +62,7 @@ bool parseStringAsDouble(const std::string& str, double& value, bool remove_suff
   }
 
   if (parse_boolean && str.size() >= 4 && str.size() <= 5) {
-    std::string lower = str;
-    std::transform(
-        lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const std::string lower = PJ::sdk::lowerAscii(str);
     if (lower == "true") {
       value = 1.0;
       return true;
@@ -502,7 +501,7 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
 
 std::string RosParser::saveConfig() const {
   nlohmann::json cfg;
-  pj::array_policy::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), !discard_large_arrays_);
+  PJ::sdk::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), !discard_large_arrays_);
   cfg["use_embedded_timestamp"] = use_embedded_timestamp_;
   cfg["boolean_strings_to_number"] = boolean_strings_to_number_;
   cfg["remove_suffix_from_strings"] = remove_suffix_from_strings_;
@@ -520,9 +519,9 @@ PJ::Status RosParser::loadConfig(std::string_view config_json) {
     return PJ::okStatus();
   }
 
-  const auto array_limit = pj::array_policy::arrayLimitFromJson(cfg);
+  const auto array_limit = PJ::sdk::arrayLimitFromJson(cfg);
   max_array_size_ = array_limit.max_size;
-  discard_large_arrays_ = (array_limit.policy == pj::array_policy::ArrayPolicy::kSkip);
+  discard_large_arrays_ = (array_limit.policy == PJ::sdk::ArrayPolicy::kSkip);
   use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
   boolean_strings_to_number_ = cfg.value("boolean_strings_to_number", false);
   remove_suffix_from_strings_ = cfg.value("remove_suffix_from_strings", false);
