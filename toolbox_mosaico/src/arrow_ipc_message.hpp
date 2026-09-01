@@ -24,14 +24,26 @@ namespace mosaico {
 /// seamlessly across batches.
 inline constexpr std::int64_t kSyntheticIntervalNs = 33'333'333LL;
 
+/// Where one framed field comes from and how to build it.
+struct FieldProjection {
+  /// Index of the source field in its parent (a batch column, or a struct child).
+  int source_index = 0;
+  /// The framed type.
+  std::shared_ptr<arrow::DataType> type;
+  /// Populated ONLY for a struct that lost children: the survivors, in output
+  /// order. Empty means "take the source as-is and cast it" — the common path,
+  /// and what keeps an untouched column zero-copy.
+  std::vector<FieldProjection> children;
+};
+
 /// What a topic's schema becomes on the wire, plus what it cost to get there.
 struct IpcSafeSchema {
   /// The schema to frame. The SAME pointer as the input when nothing changed,
   /// so callers skip the cast pass (and stay zero-copy) with a pointer compare.
   std::shared_ptr<arrow::Schema> schema;
-  /// Input column index per output column — the projection castToSchema applies.
-  std::vector<int> kept_columns;
-  /// One `field '<path>': type <T> <reason>` message per column that had to be
+  /// One entry per framed column, in output order.
+  std::vector<FieldProjection> columns;
+  /// One `field '<path>': type <T> <reason>` message per field that had to be
   /// dropped. Empty on the common path; a topic-level warning otherwise.
   std::vector<std::string> dropped;
 };
@@ -41,33 +53,38 @@ struct IpcSafeSchema {
 /// dictionary and extension fields to the type underneath, and containers
 /// recurse.
 ///
-/// A column that cannot be reduced — a union whose child needs a rewrite, a
-/// run-end encoding, any type outside the allowlist — is DROPPED and
-/// named in `dropped` rather than failing the topic: PJ3 flattened and let the
-/// datastore skip what it could not plot, and one exotic column should not cost
-/// the user every sibling. Fails only when no column survives.
+/// A field that cannot be reduced — a union whose child needs a rewrite, a
+/// run-end encoding, any type outside the allowlist — is DROPPED and named in
+/// `dropped` rather than failing the topic: PJ3 flattened and let the datastore
+/// skip what it could not plot, and one exotic field should not cost the user
+/// every sibling. The drop reaches INSIDE structs — a struct keeps the children
+/// that frame and loses only those that do not, going entirely when none
+/// survive — which is why the projection is a tree, not a column list. A struct
+/// below a list/map/union stays all-or-nothing: no kernel rebuilds those parents
+/// around a projected child. Fails only when no top-level column survives.
 ///
 /// This side only asserts the allowlist; that nanoarrow really decodes the
 /// result is parser_arrow's test suite to prove.
 [[nodiscard]] arrow::Result<IpcSafeSchema> ipcSafeSchema(const std::shared_ptr<arrow::Schema>& schema);
 
-/// Project @p batch onto `safe.kept_columns` and cast every column whose type
-/// differs from the target.
+/// Rebuild @p batch through `safe.columns`: keep, cast, or — for a struct that
+/// lost children — reassemble around the survivors, recursively.
 [[nodiscard]] arrow::Result<std::shared_ptr<arrow::RecordBatch>> castToSchema(
     const arrow::RecordBatch& batch, const IpcSafeSchema& safe);
 
-/// A topic's timestamp leaf, named the way parser_arrow names it: struct
-/// children expand depth-first into `parent/child`, every literal '.' in a
-/// component becomes '/' (`wheel.speed` -> `wheel/speed`; `header.stamp` inside
-/// struct `msg` -> `msg/header/stamp`), and an EMPTY component becomes
-/// `_<child index>` — which is also what keeps an unnamed top-level timestamp
-/// (`_0`) distinct from the empty "no timestamp" answer.
-///
-/// That is parser_arrow's childOutputName verbatim, which is the contract the
-/// SCALAR route ships. The object route has a different consumer — its own
-/// flattenStructColumns, i.e. Arrow's Table::Flatten, which writes a trailing
-/// `parent/` for an empty name — so the two agree everywhere except an unnamed
-/// field, where the object route simply finds no such column and synthesizes.
+/// How to name a field whose name is empty — the ONE point where this
+/// detector's two consumers disagree, so the caller states which it is.
+enum class EmptyNameRule {
+  kIndex,    ///< `_<child index>`: parser_arrow's childOutputName (scalar route)
+  kFlatten,  ///< nothing, leaving a trailing `parent/`: Arrow's Table::Flatten (object route)
+};
+
+/// A topic's timestamp leaf: struct children expand depth-first into
+/// `parent/child` and every literal '.' in a component becomes '/'
+/// (`wheel.speed` -> `wheel/speed`; `header.stamp` inside struct `msg` ->
+/// `msg/header/stamp`). An empty component follows @p empty_name_rule; under
+/// kIndex that also keeps an unnamed top-level timestamp (`_0`) distinct from
+/// the empty string that means "this topic has no timestamp".
 struct TimestampLeaf {
   std::string path;        ///< empty when the schema has no timestamp leaf
   std::vector<int> route;  ///< top-level column index, then one struct-child index per level
@@ -81,10 +98,11 @@ struct TimestampLeaf {
 ///
 /// Mirror of parser_arrow's detectTimestampColumn
 /// (parser_arrow/src/table_shaper.cpp) — keep the name lists in sync. Run it on
-/// the schema the CONSUMER will see: for a scalar topic that is the IPC-safe
-/// schema, not the raw one, or a `dictionary<timestamp>` stamp is invisible here
-/// and obvious to the parser.
-[[nodiscard]] TimestampLeaf detectTimestampLeaf(const arrow::Schema& schema);
+/// the schema the CONSUMER will see, under the naming rule that consumer uses:
+/// the scalar route passes its IPC-safe schema with kIndex (the raw schema would
+/// hide a `dictionary<timestamp>` stamp the parser finds), the object route
+/// passes the raw schema with kFlatten (its flattenStructColumns IS Table::Flatten).
+[[nodiscard]] TimestampLeaf detectTimestampLeaf(const arrow::Schema& schema, EmptyNameRule empty_name_rule);
 
 /// Row 0 of the leaf at @p route as nanoseconds: FLOAT/DOUBLE are seconds,
 /// TIMESTAMP is rescaled by its unit, integers of any width are already ns.

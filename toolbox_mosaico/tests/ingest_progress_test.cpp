@@ -2,6 +2,7 @@
 
 #include <arrow/api.h>
 #include <arrow/compute/api.h>
+#include <arrow/extension_type.h>
 #include <arrow/io/memory.h>
 #include <arrow/ipc/reader.h>
 #include <gtest/gtest.h>
@@ -276,6 +277,28 @@ std::shared_ptr<arrow::Array> arrayOf(const std::vector<Value>& values) {
   EXPECT_TRUE(builder.Finish(&array).ok());
   return array;
 }
+
+// Minimal extension type: only its storage matters to the rewrite.
+class StructExtensionType : public arrow::ExtensionType {
+ public:
+  explicit StructExtensionType(std::shared_ptr<arrow::DataType> storage) : arrow::ExtensionType(std::move(storage)) {}
+  std::string extension_name() const override {
+    return "mosaico.test.stamp";
+  }
+  bool ExtensionEquals(const arrow::ExtensionType& other) const override {
+    return other.extension_name() == extension_name() && other.storage_type()->Equals(*storage_type());
+  }
+  std::shared_ptr<arrow::Array> MakeArray(std::shared_ptr<arrow::ArrayData> data) const override {
+    return std::make_shared<arrow::ExtensionArray>(std::move(data));
+  }
+  arrow::Result<std::shared_ptr<arrow::DataType>> Deserialize(
+      std::shared_ptr<arrow::DataType> storage_type, const std::string&) const override {
+    return std::make_shared<StructExtensionType>(std::move(storage_type));
+  }
+  std::string Serialize() const override {
+    return {};
+  }
+};
 
 template <typename Predicate>
 bool waitUntil(Predicate&& predicate, std::chrono::milliseconds timeout) {
@@ -776,32 +799,25 @@ TEST(MosaicoTransport, TopicFailsWhenTheTimestampColumnItselfIsUndecodable) {
   EXPECT_NE(results[0].error.find("timestamp_ns"), std::string::npos) << results[0].error;
 }
 
-// The raw pick can be dropped while a DIFFERENT column is still a perfectly
-// good axis: `hdr/stamp` goes with the struct its REE sibling condemns, and the
-// top-level `good` takes over. Judging by "did the raw pick survive" would fail
-// this topic for nothing.
-TEST(MosaicoTransport, DroppedRawAxisIsFineWhenAnotherColumnStillProvidesOne) {
+// A struct must keep the children that CAN be framed — including the axis. The
+// unframeable sibling costs only itself, so the topic still rides `hdr/stamp`
+// rather than falling back to a synthetic base or dying outright.
+TEST(MosaicoTransport, NestedProjectionKeepsStructSiblingsAndTheirAxis) {
   auto ids = arrayOf<arrow::Int64Builder, std::int64_t>({1, 2, 3});
   auto run_ends = arrayOf<arrow::Int32Builder, std::int32_t>({1, 2, 3});
   auto ree = *arrow::RunEndEncodedArray::Make(3, run_ends, ids);
   arrow::TimestampBuilder stamp_builder(arrow::timestamp(arrow::TimeUnit::NANO), arrow::default_memory_pool());
-  arrow::TimestampBuilder good_builder(arrow::timestamp(arrow::TimeUnit::NANO), arrow::default_memory_pool());
   for (int row = 0; row < 3; ++row) {
     ASSERT_TRUE(stamp_builder.Append(10 + row).ok());
-    ASSERT_TRUE(good_builder.Append(5000 + row).ok());
   }
   std::shared_ptr<arrow::Array> stamps;
-  std::shared_ptr<arrow::Array> good;
   ASSERT_TRUE(stamp_builder.Finish(&stamps).ok());
-  ASSERT_TRUE(good_builder.Finish(&good).ok());
-  // hdr is the raw schema's first TIMESTAMP leaf, but its REE sibling drops the
-  // whole struct column.
-  auto hdr = *arrow::StructArray::Make(arrow::ArrayVector{stamps, ree}, std::vector<std::string>{"stamp", "weird"});
-  auto schema = arrow::schema(
-      {arrow::field("hdr", hdr->type()), arrow::field("good", good->type()), arrow::field("x", arrow::float64())});
+  auto values = arrayOf<arrow::DoubleBuilder, double>({0.5, 1.5, 2.5});
+  auto hdr = *arrow::StructArray::Make(
+      arrow::ArrayVector{stamps, values, ree}, std::vector<std::string>{"stamp", "value", "weird"});
+  auto schema = arrow::schema({arrow::field("hdr", hdr->type()), arrow::field("x", arrow::float64())});
   auto batch = arrow::RecordBatch::Make(
-      schema, 3,
-      {std::static_pointer_cast<arrow::Array>(hdr), good, arrayOf<arrow::DoubleBuilder, double>({0.0, 1.0, 2.0})});
+      schema, 3, {std::static_pointer_cast<arrow::Array>(hdr), arrayOf<arrow::DoubleBuilder, double>({0, 1, 2})});
 
   FakeIngestHost host;
   mosaico::FetchWorker worker;
@@ -821,9 +837,54 @@ TEST(MosaicoTransport, DroppedRawAxisIsFineWhenAnotherColumnStillProvidesOne) {
   EXPECT_TRUE(results[0].ok) << results[0].error;
   EXPECT_NE(results[0].warning.find("hdr/weird"), std::string::npos) << results[0].warning;
   ASSERT_EQ(host.bindings.size(), 1U);
-  EXPECT_EQ(nlohmann::json::parse(host.bindings[0].config).at("timestamp_column"), "good");
+  EXPECT_EQ(nlohmann::json::parse(host.bindings[0].config).at("timestamp_column"), "hdr/stamp");
   ASSERT_EQ(host.messages.size(), 1U);
-  EXPECT_EQ(host.messages[0].host_ts_ns, 5000);
+  EXPECT_EQ(host.messages[0].host_ts_ns, 10) << "read through the PROJECTED struct, not the raw one";
+
+  // The siblings really are on the wire, under the projected shape.
+  auto buffer = std::make_shared<arrow::Buffer>(
+      host.messages[0].payload.data(), static_cast<std::int64_t>(host.messages[0].payload.size()));
+  auto reader = arrow::ipc::RecordBatchStreamReader::Open(std::make_shared<arrow::io::BufferReader>(buffer));
+  ASSERT_TRUE(reader.ok()) << reader.status().ToString();
+  const auto& framed = *(*reader)->schema();
+  ASSERT_EQ(framed.num_fields(), 2);
+  ASSERT_EQ(framed.field(0)->type()->num_fields(), 2);
+  EXPECT_EQ(framed.field(0)->type()->field(0)->name(), "stamp");
+  EXPECT_EQ(framed.field(0)->type()->field(1)->name(), "value");
+  EXPECT_EQ(framed.field(1)->name(), "x");
+}
+
+// The raw schema had one leaf named `time`; the rewrite turned it into `time/sec`
+// and `time/nsec`, so the axis is gone without a single column being dropped.
+// Judging that only when something was dropped would miss it.
+TEST(MosaicoTransport, TopicFailsWhenTheRewriteDissolvesTheAxis) {
+  auto secs = arrayOf<arrow::Int64Builder, std::int64_t>({1, 2, 3});
+  auto nsecs = arrayOf<arrow::Int64Builder, std::int64_t>({4, 5, 6});
+  auto storage = *arrow::StructArray::Make(arrow::ArrayVector{secs, nsecs}, std::vector<std::string>{"sec", "nsec"});
+  std::shared_ptr<arrow::DataType> stamp_type = std::make_shared<StructExtensionType>(storage->type());
+  auto schema = arrow::schema({arrow::field("time", stamp_type), arrow::field("value", arrow::float64())});
+  auto batch = arrow::RecordBatch::Make(
+      schema, 3,
+      {arrow::ExtensionType::WrapArray(stamp_type, storage), arrayOf<arrow::DoubleBuilder, double>({0, 1, 2})});
+
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  std::vector<mosaico::PullResultEvent> results;
+  worker.pullFinished = [&results](mosaico::PullResultEvent result) { results.push_back(std::move(result)); };
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(
+      worker, [&batch](const auto& on_batch, const auto& on_done) {
+        on_batch("odom", batch);
+        on_done("odom", mosaico::PullResult{});
+      });
+
+  worker.pullTopicsAsync("seq", {"odom"}, 0, 1);
+
+  EXPECT_TRUE(host.messages.empty());
+  ASSERT_EQ(results.size(), 1U);
+  EXPECT_FALSE(results[0].ok);
+  EXPECT_NE(results[0].error.find("'time'"), std::string::npos) << results[0].error;
 }
 
 // A synthetic axis anchored near INT64_MAX would silently wrap into the distant

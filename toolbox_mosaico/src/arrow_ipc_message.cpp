@@ -64,6 +64,18 @@ bool isIpcDecodableLeaf(arrow::Type::type id) {
   }
 }
 
+// One path component: dots are separators too, so a flat `wheel.speed` and a
+// nested `wheel: struct<speed>` name the same series. An empty name follows the
+// consumer's rule (see EmptyNameRule).
+std::string outputComponent(const std::string& name, int child_index, EmptyNameRule empty_name_rule) {
+  if (name.empty()) {
+    return empty_name_rule == EmptyNameRule::kIndex ? "_" + std::to_string(child_index) : std::string{};
+  }
+  std::string out = name;
+  std::replace(out.begin(), out.end(), '.', '/');
+  return out;
+}
+
 // Type rewrite behind ipcSafeSchema; returns the input pointer when unchanged
 // and an error naming @p path when the type can neither be decoded nor cast.
 arrow::Result<std::shared_ptr<arrow::DataType>> ipcSafeType(
@@ -156,6 +168,67 @@ arrow::Result<std::shared_ptr<arrow::DataType>> ipcSafeType(
   }
 }
 
+// Frame one field, salvaging what can be salvaged. The whole field first: if it
+// rewrites cleanly there is nothing to project and a plain cast will do. Only a
+// STRUCT gets a second chance, per child — every other container would need a
+// kernel that rebuilds it around a projected child, and none exists. @p dropped
+// collects the reason for each child lost this way.
+arrow::Result<FieldProjection> projectField(
+    const std::shared_ptr<arrow::Field>& field, int index, const std::string& path, std::vector<std::string>& dropped) {
+  auto whole = ipcSafeType(field->type(), path);
+  if (whole.ok()) {
+    return FieldProjection{index, *whole, {}};
+  }
+  if (field->type()->id() != arrow::Type::STRUCT) {
+    return whole.status();
+  }
+
+  FieldProjection projection{index, nullptr, {}};
+  arrow::FieldVector kept;
+  for (int child = 0; child < field->type()->num_fields(); ++child) {
+    const auto& child_field = field->type()->field(child);
+    const std::string child_path = path + "/" + outputComponent(child_field->name(), child, EmptyNameRule::kIndex);
+    auto child_projection = projectField(child_field, child, child_path, dropped);
+    if (!child_projection.ok()) {
+      dropped.push_back(child_projection.status().message());
+      continue;
+    }
+    kept.push_back(child_field->WithType(child_projection->type));
+    projection.children.push_back(*std::move(child_projection));
+  }
+  if (kept.empty()) {
+    return arrow::Status::NotImplemented("field '", path, "': no child can be framed");
+  }
+  projection.type = arrow::struct_(kept);
+  return projection;
+}
+
+// Apply one projection to the ArrayData behind a source field. Working on
+// ArrayData rather than Array is what makes the struct case cheap AND correct:
+// a struct's children live unsliced with the parent's offset/validity applied on
+// top, so swapping `type` and `child_data` on a shallow copy reassembles the
+// survivors without touching a buffer or realigning a bitmap.
+arrow::Result<std::shared_ptr<arrow::ArrayData>> projectData(
+    const std::shared_ptr<arrow::ArrayData>& source, const FieldProjection& projection) {
+  if (projection.children.empty()) {
+    if (source->type->Equals(*projection.type)) {
+      return source;
+    }
+    ARROW_ASSIGN_OR_RAISE(auto casted, arrow::compute::Cast(*arrow::MakeArray(source), projection.type));
+    return casted->data();
+  }
+  auto data = source->Copy();
+  data->type = projection.type;
+  data->child_data.clear();
+  data->child_data.reserve(projection.children.size());
+  for (const auto& child : projection.children) {
+    ARROW_ASSIGN_OR_RAISE(
+        auto projected, projectData(source->child_data[static_cast<std::size_t>(child.source_index)], child));
+    data->child_data.push_back(std::move(projected));
+  }
+  return data;
+}
+
 }  // namespace
 
 arrow::Result<IpcSafeSchema> ipcSafeSchema(const std::shared_ptr<arrow::Schema>& schema) {
@@ -164,15 +237,16 @@ arrow::Result<IpcSafeSchema> ipcSafeSchema(const std::shared_ptr<arrow::Schema>&
   bool changed = false;
   for (int index = 0; index < schema->num_fields(); ++index) {
     const auto& field = schema->field(index);
-    auto safe = ipcSafeType(field->type(), field->name());
-    if (!safe.ok()) {
-      result.dropped.push_back(safe.status().message());
+    auto projection =
+        projectField(field, index, outputComponent(field->name(), index, EmptyNameRule::kIndex), result.dropped);
+    if (!projection.ok()) {
+      result.dropped.push_back(projection.status().message());
       changed = true;
       continue;
     }
-    changed |= *safe != field->type();
-    result.kept_columns.push_back(index);
-    fields.push_back(field->WithType(*safe));
+    changed |= projection->type != field->type();
+    fields.push_back(field->WithType(projection->type));
+    result.columns.push_back(*std::move(projection));
   }
   if (fields.empty()) {
     return arrow::Status::Invalid(
@@ -185,14 +259,10 @@ arrow::Result<IpcSafeSchema> ipcSafeSchema(const std::shared_ptr<arrow::Schema>&
 arrow::Result<std::shared_ptr<arrow::RecordBatch>> castToSchema(
     const arrow::RecordBatch& batch, const IpcSafeSchema& safe) {
   arrow::ArrayVector columns;
-  columns.reserve(safe.kept_columns.size());
-  for (std::size_t index = 0; index < safe.kept_columns.size(); ++index) {
-    std::shared_ptr<arrow::Array> column = batch.column(safe.kept_columns[index]);
-    const auto& want = safe.schema->field(static_cast<int>(index))->type();
-    if (!column->type()->Equals(*want)) {
-      ARROW_ASSIGN_OR_RAISE(column, arrow::compute::Cast(*column, want));
-    }
-    columns.push_back(std::move(column));
+  columns.reserve(safe.columns.size());
+  for (const auto& projection : safe.columns) {
+    ARROW_ASSIGN_OR_RAISE(auto data, projectData(batch.column(projection.source_index)->data(), projection));
+    columns.push_back(arrow::MakeArray(data));
   }
   return arrow::RecordBatch::Make(safe.schema, batch.num_rows(), std::move(columns));
 }
@@ -211,29 +281,18 @@ struct Leaf {
   arrow::Type::type type_id;
 };
 
-// parser_arrow's childOutputName: an empty name becomes `_<child index>`, and
-// dots are path separators so a flat `wheel.speed` and a nested
-// `wheel: struct<speed>` name the same series.
-std::string outputComponent(const std::string& name, int child_index) {
-  if (name.empty()) {
-    return "_" + std::to_string(child_index);
-  }
-  std::string out = name;
-  std::replace(out.begin(), out.end(), '.', '/');
-  return out;
-}
-
 // Depth-first: STRUCT fields expand into their children, everything else is a
 // leaf. @p route is the live child-index stack.
 void appendLeaves(
-    const arrow::FieldVector& fields, const std::string& prefix, std::vector<int>& route, std::vector<Leaf>& out) {
+    const arrow::FieldVector& fields, const std::string& prefix, EmptyNameRule empty_name_rule, std::vector<int>& route,
+    std::vector<Leaf>& out) {
   for (int index = 0; index < static_cast<int>(fields.size()); ++index) {
     const auto& field = fields[static_cast<std::size_t>(index)];
-    const std::string component = outputComponent(field->name(), index);
+    const std::string component = outputComponent(field->name(), index, empty_name_rule);
     std::string path = prefix.empty() ? component : prefix + "/" + component;
     route.push_back(index);
     if (field->type()->id() == arrow::Type::STRUCT) {
-      appendLeaves(field->type()->fields(), path, route, out);
+      appendLeaves(field->type()->fields(), path, empty_name_rule, route, out);
     } else {
       out.push_back(Leaf{std::move(path), route, field->type()->id()});
     }
@@ -241,17 +300,17 @@ void appendLeaves(
   }
 }
 
-std::vector<Leaf> collectLeaves(const arrow::Schema& schema) {
+std::vector<Leaf> collectLeaves(const arrow::Schema& schema, EmptyNameRule empty_name_rule) {
   std::vector<Leaf> leaves;
   std::vector<int> route;
-  appendLeaves(schema.fields(), {}, route, leaves);
+  appendLeaves(schema.fields(), {}, empty_name_rule, route, leaves);
   return leaves;
 }
 
 }  // namespace
 
-TimestampLeaf detectTimestampLeaf(const arrow::Schema& schema) {
-  const std::vector<Leaf> leaves = collectLeaves(schema);
+TimestampLeaf detectTimestampLeaf(const arrow::Schema& schema, EmptyNameRule empty_name_rule) {
+  const std::vector<Leaf> leaves = collectLeaves(schema, empty_name_rule);
   for (const Leaf& leaf : leaves) {
     if (leaf.type_id == arrow::Type::TIMESTAMP) {
       return {leaf.path, leaf.route};

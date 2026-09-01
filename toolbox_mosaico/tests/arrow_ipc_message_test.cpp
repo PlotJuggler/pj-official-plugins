@@ -20,6 +20,10 @@
 
 namespace {
 
+using mosaico::EmptyNameRule;
+constexpr EmptyNameRule kIndex = EmptyNameRule::kIndex;
+constexpr EmptyNameRule kFlatten = EmptyNameRule::kFlatten;
+
 template <typename Builder, typename Value>
 std::shared_ptr<arrow::Array> arrayOf(const std::vector<Value>& values) {
   Builder builder;
@@ -42,16 +46,16 @@ std::shared_ptr<arrow::RecordBatch> scalarBatch() {
 TEST(DetectTimestampLeaf, TypeThenNamePriorityThenEmpty) {
   auto typed_schema = arrow::schema(
       {arrow::field("timestamp_ns", arrow::int64()), arrow::field("stamp", arrow::timestamp(arrow::TimeUnit::MICRO))});
-  EXPECT_EQ(mosaico::detectTimestampLeaf(*typed_schema).path, "stamp");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*typed_schema, kIndex).path, "stamp");
 
   auto name_schema = arrow::schema(
       {arrow::field("ts", arrow::int64()), arrow::field("time", arrow::int64()),
        arrow::field("recording_timestamp_ns", arrow::int64())});
-  EXPECT_EQ(mosaico::detectTimestampLeaf(*name_schema).path, "recording_timestamp_ns");
-  EXPECT_EQ(mosaico::detectTimestampLeaf(*arrow::schema({arrow::field("time", arrow::int64())})).path, "time");
-  EXPECT_EQ(mosaico::detectTimestampLeaf(*arrow::schema({arrow::field("ts", arrow::int64())})).path, "ts");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*name_schema, kIndex).path, "recording_timestamp_ns");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*arrow::schema({arrow::field("time", arrow::int64())}), kIndex).path, "time");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*arrow::schema({arrow::field("ts", arrow::int64())}), kIndex).path, "ts");
 
-  EXPECT_EQ(mosaico::detectTimestampLeaf(*arrow::schema({arrow::field("x", arrow::float64())})).path, "");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*arrow::schema({arrow::field("x", arrow::float64())}), kIndex).path, "");
 }
 
 // The stamp a ROS-shaped topic carries lives inside its `header` struct: the
@@ -64,28 +68,28 @@ TEST(DetectTimestampLeaf, WalksFlattenedLeavesAndNormalizesDots) {
            "header", arrow::struct_(
                          {arrow::field("frame_id", arrow::utf8()),
                           arrow::field("stamp", arrow::timestamp(arrow::TimeUnit::MICRO))}))});
-  EXPECT_EQ(mosaico::detectTimestampLeaf(*nested).path, "header/stamp");
-  EXPECT_EQ(mosaico::detectTimestampLeaf(*nested).route, (std::vector<int>{1, 1}));
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*nested, kIndex).path, "header/stamp");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*nested, kIndex).route, (std::vector<int>{1, 1}));
 
   // The name list matches a nested leaf by its full path, not its bare name.
   auto nested_by_name =
       arrow::schema({arrow::field("msg", arrow::struct_({arrow::field("timestamp_ns", arrow::int64())}))});
-  EXPECT_EQ(mosaico::detectTimestampLeaf(*nested_by_name).path, "");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*nested_by_name, kIndex).path, "");
 
   // A '.' inside any component becomes '/' — at the top level…
   auto dotted_top = arrow::schema({arrow::field("wheel.stamp", arrow::timestamp(arrow::TimeUnit::NANO))});
-  EXPECT_EQ(mosaico::detectTimestampLeaf(*dotted_top).path, "wheel/stamp");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*dotted_top, kIndex).path, "wheel/stamp");
 
   // …and nested, where it composes with the struct separator.
   auto dotted_nested = arrow::schema(
       {arrow::field("wheel.speed", arrow::float64()),
        arrow::field("msg", arrow::struct_({arrow::field("header.stamp", arrow::timestamp(arrow::TimeUnit::NANO))}))});
-  EXPECT_EQ(mosaico::detectTimestampLeaf(*dotted_nested).path, "msg/header/stamp");
-  EXPECT_EQ(mosaico::detectTimestampLeaf(*dotted_nested).route, (std::vector<int>{1, 0}));
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*dotted_nested, kIndex).path, "msg/header/stamp");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*dotted_nested, kIndex).route, (std::vector<int>{1, 0}));
 
   // Nothing matches -> no path AND no route, which is how route() marks a
   // topic timestamp-less.
-  EXPECT_TRUE(mosaico::detectTimestampLeaf(*nested_by_name).route.empty());
+  EXPECT_TRUE(mosaico::detectTimestampLeaf(*nested_by_name, kIndex).route.empty());
 }
 
 // parser_arrow names an unnamed child `_<index>`. Mirroring it keeps the scalar
@@ -95,13 +99,19 @@ TEST(DetectTimestampLeaf, EmptyNameComponentsBecomeUnderscoreIndex) {
   auto unnamed_child = arrow::schema(
       {arrow::field("value", arrow::float64()),
        arrow::field("header", arrow::struct_({arrow::field("", arrow::timestamp(arrow::TimeUnit::MICRO))}))});
-  EXPECT_EQ(mosaico::detectTimestampLeaf(*unnamed_child).path, "header/_0");
-  EXPECT_EQ(mosaico::detectTimestampLeaf(*unnamed_child).route, (std::vector<int>{1, 0}));
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*unnamed_child, kIndex).path, "header/_0");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*unnamed_child, kIndex).route, (std::vector<int>{1, 0}));
 
   auto unnamed_top = arrow::schema({arrow::field("", arrow::timestamp(arrow::TimeUnit::NANO))});
-  const auto leaf = mosaico::detectTimestampLeaf(*unnamed_top);
+  const auto leaf = mosaico::detectTimestampLeaf(*unnamed_top, kIndex);
   EXPECT_EQ(leaf.path, "_0") << "not \"\", which route() reads as timestamp-less";
   EXPECT_FALSE(leaf.route.empty());
+
+  // The object route's consumer is Table::Flatten, which writes a trailing
+  // separator for an unnamed child instead. Same walk, stated rule.
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*unnamed_child, kFlatten).path, "header/");
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*unnamed_child, kFlatten).route, (std::vector<int>{1, 0}));
+  EXPECT_EQ(mosaico::detectTimestampLeaf(*unnamed_top, kFlatten).path, "");
 }
 
 TEST(FirstRowTimestampNs, ByTypeAndInvalidRoutes) {
@@ -254,7 +264,9 @@ TEST(IpcSafeSchema, ReturnsTheSamePointerWhenNothingNeedsCasting) {
   auto safe = mosaico::ipcSafeSchema(schema);
   ASSERT_TRUE(safe.ok()) << safe.status().ToString();
   EXPECT_EQ(safe->schema, schema);
-  EXPECT_EQ(safe->kept_columns, (std::vector<int>{0, 1}));
+  ASSERT_EQ(safe->columns.size(), 2U);
+  EXPECT_EQ(safe->columns[0].source_index, 0);
+  EXPECT_EQ(safe->columns[1].source_index, 1);
   EXPECT_TRUE(safe->dropped.empty());
 }
 
@@ -379,7 +391,8 @@ TEST(IpcSafeSchema, RunEndEncodedColumnsAreDroppedWithTheReason) {
   ASSERT_EQ(safe->dropped.size(), 1U);
   EXPECT_NE(safe->dropped[0].find("'counter'"), std::string::npos) << safe->dropped[0];
   EXPECT_NE(safe->dropped[0].find("run_end_decode"), std::string::npos) << safe->dropped[0];
-  EXPECT_EQ(safe->kept_columns, (std::vector<int>{1}));
+  ASSERT_EQ(safe->columns.size(), 1U);
+  EXPECT_EQ(safe->columns[0].source_index, 1);
 
   auto batch = arrow::RecordBatch::Make(schema, 3, {ree, ids});
   auto safe_batch = mosaico::castToSchema(*batch, *safe);
@@ -412,7 +425,9 @@ TEST(IpcSafeSchema, IrreducibleColumnsAreDroppedAndSiblingsSurvive) {
   ASSERT_EQ(safe->dropped.size(), 1U);
   // The diagnostic names the offending CHILD path, not just the union.
   EXPECT_NE(safe->dropped[0].find("'choice/s'"), std::string::npos) << safe->dropped[0];
-  EXPECT_EQ(safe->kept_columns, (std::vector<int>{0, 2})) << "the siblings survive, renumbered";
+  ASSERT_EQ(safe->columns.size(), 2U);
+  EXPECT_EQ(safe->columns[0].source_index, 0) << "the siblings survive, renumbered";
+  EXPECT_EQ(safe->columns[1].source_index, 2);
   ASSERT_EQ(safe->schema->num_fields(), 2);
   EXPECT_EQ(safe->schema->field(0)->name(), "x");
   EXPECT_EQ(safe->schema->field(1)->name(), "label");
@@ -434,6 +449,64 @@ TEST(IpcSafeSchema, IrreducibleColumnsAreDroppedAndSiblingsSurvive) {
   ASSERT_TRUE(plain.ok()) << plain.status().ToString();
   EXPECT_EQ(plain->schema, plain_schema);
   EXPECT_TRUE(plain->dropped.empty());
+}
+
+// A struct must not take its siblings down with it: PJ3 flattened first and lost
+// only the leaf it could not plot, so the drop reaches INSIDE the struct and the
+// array is reassembled around the survivors.
+TEST(IpcSafeSchema, StructsLoseOnlyTheChildrenThatCannotBeFramed) {
+  auto ids = arrayOf<arrow::Int64Builder, std::int64_t>({1, 2, 3});
+  auto run_ends = arrayOf<arrow::Int32Builder, std::int32_t>({1, 2, 3});
+  auto ree = *arrow::RunEndEncodedArray::Make(3, run_ends, ids);
+  auto names = arrayOf<arrow::StringBuilder, std::string>({"a", "b", "c"});
+  auto hdr = *arrow::StructArray::Make(
+      arrow::ArrayVector{castArray(names, arrow::utf8_view()), ree, ids},
+      std::vector<std::string>{"frame_id", "weird", "seq"});
+  auto schema = arrow::schema({arrow::field("hdr", hdr->type()), arrow::field("x", arrow::int64())});
+  auto batch = arrow::RecordBatch::Make(schema, 3, {std::static_pointer_cast<arrow::Array>(hdr), ids});
+
+  auto safe = mosaico::ipcSafeSchema(schema);
+  ASSERT_TRUE(safe.ok()) << safe.status().ToString();
+  ASSERT_EQ(safe->dropped.size(), 1U);
+  EXPECT_NE(safe->dropped[0].find("'hdr/weird'"), std::string::npos) << safe->dropped[0];
+
+  // hdr survives with two of three children, and the surviving view child is
+  // still cast on the way out.
+  ASSERT_EQ(safe->schema->num_fields(), 2);
+  const auto& framed_hdr = safe->schema->field(0)->type();
+  ASSERT_EQ(framed_hdr->num_fields(), 2);
+  EXPECT_EQ(framed_hdr->field(0)->name(), "frame_id");
+  EXPECT_TRUE(framed_hdr->field(0)->type()->Equals(arrow::utf8()));
+  EXPECT_EQ(framed_hdr->field(1)->name(), "seq");
+  ASSERT_EQ(safe->columns.size(), 2U);
+  ASSERT_EQ(safe->columns[0].children.size(), 2U);
+  EXPECT_EQ(safe->columns[0].children[0].source_index, 0);
+  EXPECT_EQ(safe->columns[0].children[1].source_index, 2) << "the REE child at index 1 is skipped";
+
+  auto safe_batch = mosaico::castToSchema(*batch, *safe);
+  ASSERT_TRUE(safe_batch.ok()) << safe_batch.status().ToString();
+  auto bytes = mosaico::serializeIpcStream(**safe_batch);
+  ASSERT_TRUE(bytes.ok()) << bytes.status().ToString();
+  auto decoded = decodeSingleBatch(*bytes);
+  ASSERT_NE(decoded, nullptr);
+  auto decoded_hdr = std::static_pointer_cast<arrow::StructArray>(decoded->column(0));
+  ASSERT_EQ(decoded_hdr->num_fields(), 2);
+  EXPECT_TRUE(decoded_hdr->field(0)->Equals(*names)) << "values survive the reassembly";
+  EXPECT_TRUE(decoded_hdr->field(1)->Equals(*ids));
+  EXPECT_TRUE(decoded->column(1)->Equals(*ids));
+
+  // A sliced batch is where a reassembly that mishandled offsets would show up:
+  // the struct keeps the parent's offset while its children stay unsliced.
+  auto sliced = mosaico::castToSchema(*batch->Slice(1, 2), *safe);
+  ASSERT_TRUE(sliced.ok()) << sliced.status().ToString();
+  auto sliced_bytes = mosaico::serializeIpcStream(**sliced);
+  ASSERT_TRUE(sliced_bytes.ok()) << sliced_bytes.status().ToString();
+  auto sliced_decoded = decodeSingleBatch(*sliced_bytes);
+  ASSERT_NE(sliced_decoded, nullptr);
+  ASSERT_EQ(sliced_decoded->num_rows(), 2);
+  auto sliced_hdr = std::static_pointer_cast<arrow::StructArray>(sliced_decoded->column(0));
+  EXPECT_TRUE(sliced_hdr->field(0)->Equals(*names->Slice(1, 2)));
+  EXPECT_TRUE(sliced_hdr->field(1)->Equals(*ids->Slice(1, 2)));
 }
 
 // Nothing plottable left is the one case that still fails the topic outright.

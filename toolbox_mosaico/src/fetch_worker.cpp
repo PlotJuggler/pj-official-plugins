@@ -565,7 +565,7 @@ void FetchWorker::pullTopicsAsync(
       // Never IPC-framed: the object helpers read the Arrow table directly, so
       // the RAW schema is the one their flattenStructColumns will name — and
       // they look the column up BY NAME, so the route stays unused here.
-      topic.ts_field = detectTimestampLeaf(*topic.schema).path;
+      topic.ts_field = detectTimestampLeaf(*topic.schema, EmptyNameRule::kFlatten).path;
       return;
     }
     auto safe_schema = ipcSafeSchema(topic.schema);
@@ -577,23 +577,28 @@ void FetchWorker::pullTopicsAsync(
     // Detect on the schema the PARSER will see, never the raw one: an
     // extension- or dictionary-wrapped stamp is opaque before the rewrite and
     // plainly TIMESTAMP after it, and a dropped column renumbers the route.
-    auto leaf = detectTimestampLeaf(*topic.ipc_safe.schema);
+    auto leaf = detectTimestampLeaf(*topic.ipc_safe.schema, EmptyNameRule::kIndex);
     topic.ts_field = std::move(leaf.path);
     topic.ts_route = std::move(leaf.route);
     if (!topic.ipc_safe.dropped.empty()) {
       topic.warning = fmt::format(
-          "topic '{}': dropped {} column(s) parser_arrow cannot decode: {}", topic_name, topic.ipc_safe.dropped.size(),
+          "topic '{}': dropped {} field(s) parser_arrow cannot decode: {}", topic_name, topic.ipc_safe.dropped.size(),
           fmt::join(topic.ipc_safe.dropped, "; "));
-      // Losing an ordinary column costs its curves; being left with NO axis at
-      // all would put every surviving curve on a synthetic time base that
-      // silently disagrees with the rest of the sequence, so that one is fatal.
-      // Only a drop can cause it: the rewrite never renames, and it can only
-      // reveal more axis candidates (a dictionary-wrapped stamp), never fewer.
-      if (topic.ts_field.empty()) {
-        if (const std::string raw_axis = detectTimestampLeaf(*topic.schema).path; !raw_axis.empty()) {
-          topic.error = fmt::format("timestamp column '{}' is undecodable ({})", raw_axis, topic.warning);
-          return;
+    }
+    // Losing an ordinary field costs its curves; being left with NO axis at all
+    // would put every surviving curve on a synthetic time base that silently
+    // disagrees with the rest of the sequence, so that one is fatal. A drop is
+    // not the only way to get here: an extension named `time` whose storage is a
+    // struct is one raw leaf and several framed ones, dropping nothing. Cold
+    // path — it only runs for a topic already headed for a synthetic axis.
+    if (topic.ts_field.empty()) {
+      if (const std::string raw_axis = detectTimestampLeaf(*topic.schema, EmptyNameRule::kIndex).path;
+          !raw_axis.empty()) {
+        topic.error = fmt::format("timestamp column '{}' cannot be framed", raw_axis);
+        if (!topic.warning.empty()) {
+          topic.error += " (" + topic.warning + ")";
         }
+        return;
       }
     }
     auto schema_bytes = arrow::ipc::SerializeSchema(*topic.ipc_safe.schema);
