@@ -305,9 +305,13 @@ SeriesLookup resolveSeriesPath(const PJ::sdk::CatalogSnapshot& catalog, const st
 
   const auto want = pathSegments(bare);
   const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(catalog);
-  auto qualified = [&](std::uint32_t ti, const std::string& full) {
+  auto dataset_of = [&](std::uint32_t ti) {
     const auto it = topic_dataset.find(ti);
-    return it == topic_dataset.end() ? full : it->second + ":" + full;
+    return it == topic_dataset.end() ? std::string() : it->second;
+  };
+  auto qualified = [&](std::uint32_t ti, const std::string& full) {
+    const std::string dataset = dataset_of(ti);
+    return dataset.empty() ? full : dataset + ":" + full;
   };
 
   std::optional<ResolvedSeries> exact;
@@ -325,7 +329,8 @@ SeriesLookup resolveSeriesPath(const PJ::sdk::CatalogSnapshot& catalog, const st
       const std::string full = joinSeriesPath(topic_name, PJ::sdk::toStringView(fields[idx].name));
       if (full == bare) {
         if (!exact) {
-          exact = ResolvedSeries{fields[idx].handle, std::string(topic_name), qualified(ti, full), full};
+          exact =
+              ResolvedSeries{fields[idx].handle, std::string(topic_name), qualified(ti, full), full, dataset_of(ti)};
         } else {
           exact_ambiguous = true;
         }
@@ -339,7 +344,8 @@ SeriesLookup resolveSeriesPath(const PJ::sdk::CatalogSnapshot& catalog, const st
           out.candidates.push_back(qualified(ti, full));
         }
         if (!fuzzy) {
-          fuzzy = ResolvedSeries{fields[idx].handle, std::string(topic_name), qualified(ti, full), full};
+          fuzzy =
+              ResolvedSeries{fields[idx].handle, std::string(topic_name), qualified(ti, full), full, dataset_of(ti)};
         } else {
           out.ambiguous = true;
         }
@@ -628,9 +634,10 @@ constexpr std::size_t kMaxBatchPaths = 32;
 // wrong word for what it takes. The model learns the name from the description,
 // so renaming it later is more expensive than choosing it now. `series` still
 // works, undocumented, so a conversation already in flight does not break.
-std::vector<std::string> requestedPaths(const json& args) {
+std::vector<std::string> requestedPaths(
+    const json& args, std::initializer_list<const char*> keys = {"paths", "series"}) {
   std::vector<std::string> out;
-  for (const char* key : {"paths", "series"}) {
+  for (const char* key : keys) {
     if (!args.contains(key)) {
       continue;
     }
@@ -1273,41 +1280,170 @@ ToolResult playbackTool(const json& args, ToolContext& ctx) {
   return ToolResult::failure("unknown playback action '" + action + "'; use state/play/pause/seek/rate");
 }
 
-ToolResult zoomToTimeRange(const json& args, ToolContext& ctx) {
-  if (!ctx.viewport.valid()) {
-    return ToolResult::failure(kNoViewport);
+// --- the assistant's own plot tabs -------------------------------------------
+
+constexpr const char* kNoPlotTabs = "the host did not expose pj.plot_tabs.v1 (cannot compose plot tabs)";
+
+// Names of the tabs this assistant currently owns, for the "which are mine?"
+// half of an error. An unreadable list degrades to no names rather than
+// replacing the real failure with a secondary one.
+std::string ownedTabList(ToolContext& ctx) {
+  auto ids = ctx.plot_tabs.list();
+  if (!ids || ids->empty()) {
+    return "none yet";
   }
-  if (!args.contains("start_s") || !args["start_s"].is_number() || !args.contains("end_s") ||
-      !args["end_s"].is_number()) {
-    return ToolResult::failure("zoom_to_time_range requires numeric 'start_s' and 'end_s' (display-axis seconds)");
+  std::string out;
+  for (const std::string& id : *ids) {
+    out += (out.empty() ? "" : ", ") + id;
   }
-  const double start_s = args["start_s"].get<double>();
-  const double end_s = args["end_s"].get<double>();
-  if (start_s >= end_s) {
-    return ToolResult::failure("'start_s' must be less than 'end_s'");
-  }
-  if (auto status = ctx.viewport.zoomToTimeRange(start_s, end_s); !status) {
-    return ToolResult::failure("zoom failed: " + status.error());
-  }
-  json out = {{"zoomed", {{"start_s", start_s}, {"end_s", end_s}}}};
-  if (ctx.playback.valid()) {
-    out["playback"] = playbackStateJson(ctx);
-  }
-  return ToolResult::success(out.dump());
+  return out;
 }
 
-ToolResult zoomReset(const json& /*args*/, ToolContext& ctx) {
-  if (!ctx.viewport.valid()) {
-    return ToolResult::failure(kNoViewport);
+// The tab as the HOST holds it, parsed back from tab_config. Every action
+// answers with this rather than an echo of the request, so a curve that did not
+// land shows as absent instead of being reported as drawn.
+json tabReadBack(ToolContext& ctx, const std::string& tab) {
+  auto config = ctx.plot_tabs.configOf(tab);
+  if (!config) {
+    return {{"tab", tab}, {"contents_unavailable", config.error()}};
   }
-  if (auto status = ctx.viewport.zoomReset(); !status) {
-    return ToolResult::failure("zoom_reset failed: " + status.error());
+  json parsed = json::parse(*config, nullptr, /*allow_exceptions=*/false);
+  if (!parsed.is_object()) {
+    return {{"tab", tab}, {"contents_unavailable", "the host returned no readable tab contents"}};
   }
-  json out = {{"zoom", "reset"}};
-  if (ctx.playback.valid()) {
-    out["playback"] = playbackStateJson(ctx);
+  parsed["tab"] = tab;
+  return parsed;
+}
+
+ToolResult plotTabTool(const json& args, ToolContext& ctx) {
+  const std::string action = args.value("action", std::string());
+  if (action.empty()) {
+    return ToolResult::failure("plot_tab requires 'action': one of 'create', 'add', 'remove', 'zoom', 'close', 'list'");
   }
-  return ToolResult::success(out.dump());
+  if (!ctx.plot_tabs.valid()) {
+    return ToolResult::failure(kNoPlotTabs);
+  }
+  if (action == "list") {
+    auto ids = ctx.plot_tabs.list();
+    if (!ids) {
+      return ToolResult::failure(ids.error());
+    }
+    json arr = json::array();
+    for (const std::string& id : *ids) {
+      arr.push_back(tabReadBack(ctx, id));
+    }
+    // Owning nothing is an answer, not a failure.
+    return ToolResult::success(json({{"count", arr.size()}, {"tabs", arr}}).dump());
+  }
+
+  const std::string tab = args.value("tab", std::string());
+  if (action == "create") {
+    // A name of its own, so the model can address the tab again next turn
+    // without having to remember a host-chosen handle.
+    const std::string id = tab.empty() ? "view" : tab;
+    if (auto status = ctx.plot_tabs.create(id, args.value("title", std::string())); !status) {
+      return ToolResult::failure("could not create the tab: " + status.error());
+    }
+    return ToolResult::success(tabReadBack(ctx, id).dump());
+  }
+  if (tab.empty()) {
+    return ToolResult::failure(
+        "'" + action + "' needs 'tab', the name of one of your own tabs (you have: " + ownedTabList(ctx) +
+        "). Only tabs you created can be changed; the user's tabs are not yours to touch.");
+  }
+
+  if (action == "close") {
+    if (auto status = ctx.plot_tabs.close(tab); !status) {
+      return ToolResult::failure(status.error() + " (yours: " + ownedTabList(ctx) + ")");
+    }
+    return ToolResult::success(json({{"closed", tab}}).dump());
+  }
+  if (action == "zoom") {
+    // The two services are meant to be registered together, so this only fires
+    // on a host that half-adopted them — worth saying plainly rather than
+    // failing as if the tab were at fault.
+    if (!ctx.viewport.valid()) {
+      return ToolResult::failure(kNoViewport);
+    }
+    const bool has_start = args.contains("start_s") && args["start_s"].is_number();
+    const bool has_end = args.contains("end_s") && args["end_s"].is_number();
+    if (!has_start && !has_end) {
+      if (auto status = ctx.viewport.zoomReset(); !status) {
+        return ToolResult::failure("could not fit the view: " + status.error());
+      }
+      return ToolResult::success(json({{"tab", tab}, {"x_range", "fit"}}).dump());
+    }
+    if (!has_start || !has_end) {
+      return ToolResult::failure("zoom needs both 'start_s' and 'end_s' (display-axis seconds), or neither to fit");
+    }
+    const double start_s = args["start_s"].get<double>();
+    const double end_s = args["end_s"].get<double>();
+    if (start_s >= end_s) {
+      return ToolResult::failure("'start_s' must be less than 'end_s'");
+    }
+    if (auto status = ctx.viewport.zoomToTimeRange(start_s, end_s); !status) {
+      return ToolResult::failure("could not zoom: " + status.error());
+    }
+    return ToolResult::success(json({{"tab", tab}, {"x_range", {{"start_s", start_s}, {"end_s", end_s}}}}).dump());
+  }
+
+  if (action != "add" && action != "remove") {
+    return ToolResult::failure("unknown plot_tab action '" + action + "'; use create/add/remove/zoom/close/list");
+  }
+  const std::vector<std::string> paths = requestedPaths(args, {"curves"});
+  if (paths.empty()) {
+    return ToolResult::failure("'" + action + "' needs 'curves': one topic/field path, or an array of them");
+  }
+  auto catalog = ctx.host.catalogSnapshot();
+  if (!catalog) {
+    return ToolResult::failure("catalog unavailable: " + catalog.error());
+  }
+  const bool adding = action == "add";
+  std::vector<std::string> refused;
+  std::vector<std::pair<std::string, std::string>> accepted;  // (topic, field) the host took without complaint
+  for (const std::string& want : paths) {
+    SeriesLookup lookup = resolveSeriesPath(*catalog, want);
+    if (!lookup.resolved) {
+      refused.push_back(seriesLookupError(want, lookup));
+      continue;
+    }
+    // The host addresses a series by its parts and resolves the dataset itself,
+    // so hand it the pieces rather than a joined path it would have to split.
+    const std::string topic = lookup.resolved->topic;
+    const std::string field = lookup.resolved->host_path.substr(topic.size() + 1);
+    auto status = adding ? ctx.plot_tabs.addCurve(tab, topic, field, lookup.resolved->dataset)
+                         : ctx.plot_tabs.removeCurve(tab, topic, field, lookup.resolved->dataset);
+    if (status) {
+      accepted.emplace_back(topic, field);
+    } else {
+      refused.push_back(status.error());
+    }
+  }
+
+  json out = tabReadBack(ctx, tab);
+  // A call the host accepted is not yet a curve on screen: it may resolve to
+  // nothing and simply leave the tab as it was. So the verdict comes from what
+  // the tab HOLDS, not from what the calls returned — otherwise this reports a
+  // drawing that never happened, which is the one thing the read-back exists to
+  // prevent.
+  const json& held = out.contains("curves") ? out["curves"] : json::array();
+  for (const auto& [topic, field] : accepted) {
+    const bool present = std::any_of(held.begin(), held.end(), [&](const json& curve) {
+      return curve.value("topic", std::string()) == topic && curve.value("field", std::string()) == field;
+    });
+    if (present == adding) {
+      continue;  // added and there, or removed and gone: what was asked for
+    }
+    refused.push_back(
+        adding ? "'" + topic + "/" + field + "' did not land in the tab"
+               : "'" + topic + "/" + field + "' is still drawn");
+  }
+  if (!refused.empty()) {
+    out["refused"] = refused;
+  }
+  // Nothing landed at all is a failure; a partial landing is a success whose
+  // truth the model still has to see.
+  return refused.size() == paths.size() ? ToolResult::failure(out.dump()) : ToolResult::success(out.dump());
 }
 
 ToolResult reportStatus(const json& /*args*/, ToolContext& ctx) {
@@ -1609,19 +1745,26 @@ ToolRegistry::ToolRegistry() {
        &playbackTool});
 
   add(
-      {"zoom_to_time_range",
-       "Zoom every open time-series plot to the X window [start_s, end_s], in display-axis seconds "
-       "(each plot keeps its own Y range). To frame a feature found via read_series buckets: "
-       "start/end = stats.t_start_display_s + bucket.t of the buckets around it. zoom_reset undoes "
-       "it.",
+      {"plot_tab",
+       "Compose plot tabs of your own. A tab you create is watermarked \"IA\" and is the only place "
+       "you may draw: the user's tabs are not yours to fill, zoom or close, and they do not go away "
+       "when you close yours. Your tabs are not saved with the workspace - they last for this "
+       "session, so say so rather than promising the user they will find them later.\n"
+       "action: 'create' (optional 'tab' name and 'title') | 'add'/'remove' ('curves', topic/field "
+       "paths) | 'zoom' ('start_s'..'end_s' display-axis seconds; omit both to fit) | 'close' | "
+       "'list'. Every action answers with the tab as the host holds it, so a curve that did not "
+       "land shows as missing instead of being reported as drawn. A series you made with "
+       "create_derived_series is addressable here as 'name/value'.",
        {{"type", "object"},
         {"properties",
-         {{"start_s", {{"type", "number"}, {"description", "left edge, display-axis seconds"}}},
-          {"end_s", {{"type", "number"}, {"description", "right edge, display-axis seconds"}}}}},
-        {"required", json::array({"start_s", "end_s"})}},
-       &zoomToTimeRange});
-
-  add({"zoom_reset", "Reset every open plot to fit its data (undo any zoom_to_time_range).", empty_obj, &zoomReset});
+         {{"action", {{"type", "string"}, {"enum", json::array({"create", "add", "remove", "zoom", "close", "list"})}}},
+          {"tab", {{"type", "string"}, {"description", "your name for the tab"}}},
+          {"title", {{"type", "string"}, {"description", "tab title shown to the user (create)"}}},
+          {"curves", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "topic/field paths"}}},
+          {"start_s", {{"type", "number"}}},
+          {"end_s", {{"type", "number"}}}}},
+        {"required", json::array({"action"})}},
+       &plotTabTool});
 
   add(
       {"report_status",

@@ -101,6 +101,7 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   void setObjectReadProvider(std::function<PJ::sdk::ToolboxObjectReadHostView()> provider);
   void setPlaybackProvider(std::function<PJ::sdk::PlaybackHostView()> provider);
   void setViewportProvider(std::function<PJ::sdk::ViewportHostView()> provider);
+  void setPlotTabsProvider(std::function<PJ::sdk::PlotTabHostView()> provider);
   void setSettings(PJ::sdk::SettingsView settings);
 
  private:
@@ -170,6 +171,7 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   std::function<PJ::sdk::ToolboxObjectReadHostView()> object_read_provider_;
   std::function<PJ::sdk::PlaybackHostView()> playback_provider_;
   std::function<PJ::sdk::ViewportHostView()> viewport_provider_;
+  std::function<PJ::sdk::PlotTabHostView()> plot_tabs_provider_;
   PJ::sdk::SettingsView settings_;
   // One restore per instance: setSettings can in principle be re-bound, and a
   // second load would duplicate the transcript on top of the live one.

@@ -190,6 +190,10 @@ void AssistantDialog::setViewportProvider(std::function<PJ::sdk::ViewportHostVie
   viewport_provider_ = std::move(provider);
 }
 
+void AssistantDialog::setPlotTabsProvider(std::function<PJ::sdk::PlotTabHostView()> provider) {
+  plot_tabs_provider_ = std::move(provider);
+}
+
 void AssistantDialog::setSettings(PJ::sdk::SettingsView settings) {
   settings_ = settings;
   if (!conversation_loaded_) {
@@ -222,6 +226,9 @@ ToolContext AssistantDialog::makeToolContext() {
   }
   if (viewport_provider_) {
     ctx.viewport = viewport_provider_();
+  }
+  if (plot_tabs_provider_) {
+    ctx.plot_tabs = plot_tabs_provider_();
   }
   if (runtime_host_provider_) {
     const PJ::ToolboxRuntimeHostView rt = runtime_host_provider_();

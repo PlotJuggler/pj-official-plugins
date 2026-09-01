@@ -81,6 +81,11 @@ struct ResolvedSeries {
   std::string topic;
   std::string path;
   std::string host_path;
+  // Source name of the dataset this resolved to, empty when only one dataset is
+  // loaded (and so the bare path is already unambiguous). Carried because a
+  // host that addresses a series by its parts should not have to re-split the
+  // qualified path to recover it.
+  std::string dataset;
 };
 
 // Outcome of a path lookup. When nothing resolves, `candidates` carries the

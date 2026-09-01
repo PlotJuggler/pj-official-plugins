@@ -14,11 +14,13 @@
 #include <nlohmann/json.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "support/fake_multi_dataset_host.hpp"
 #include "support/fake_object_read_host.hpp"
 #include "support/fake_playback_viewport_hosts.hpp"
+#include "support/fake_plot_tabs_host.hpp"
 #include "support/recording_dp_host.hpp"
 
 namespace {
@@ -29,6 +31,7 @@ using assistant_agent::ToolRegistry;
 using assistant_agent::testing::FakeMultiDatasetHost;
 using assistant_agent::testing::FakeObjectReadHost;
 using assistant_agent::testing::FakePlaybackHost;
+using assistant_agent::testing::FakePlotTabsHost;
 using assistant_agent::testing::FakeViewportHost;
 using assistant_agent::testing::RecordingDpHost;
 using nlohmann::json;
@@ -58,14 +61,19 @@ ToolContext makeCtx(PJ::testing::ToolboxTestStore& store, RecordingDpHost* dp, F
 
 TEST(ToolRegistry, ListsAllToolsAndSchemas) {
   ToolRegistry reg;
-  EXPECT_EQ(reg.tools().size(), 12u);
+  EXPECT_EQ(reg.tools().size(), 11u);
   // Both serializations expose every tool by name.
-  EXPECT_EQ(reg.toFunctionSpecs().size(), 12u);
-  EXPECT_EQ(reg.toMcpToolsList().size(), 12u);
+  EXPECT_EQ(reg.toFunctionSpecs().size(), 11u);
+  EXPECT_EQ(reg.toMcpToolsList().size(), 11u);
   EXPECT_NE(reg.find("create_derived_series"), nullptr);
   EXPECT_NE(reg.find("playback"), nullptr);
   EXPECT_EQ(reg.find("play"), nullptr);
-  EXPECT_NE(reg.find("zoom_to_time_range"), nullptr);
+  EXPECT_NE(reg.find("plot_tab"), nullptr);
+  // zoom_to_time_range/zoom_reset were folded into plot_tab's 'zoom' action:
+  // the user's plots are no longer reachable from any tool, only the tabs
+  // this assistant composed itself.
+  EXPECT_EQ(reg.find("zoom_to_time_range"), nullptr);
+  EXPECT_EQ(reg.find("zoom_reset"), nullptr);
   // remove_markers exists but is scoped to the assistant's own marker set;
   // no tool can touch user data destructively.
   EXPECT_NE(reg.find("remove_markers"), nullptr);
@@ -946,6 +954,12 @@ TEST(ToolRegistry, DefaultsToASingleOutputNamedAfterTheSeries) {
 //
 // Measured, not guessed: the chars/4 rule of thumb overestimated this surface by
 // about 50% when it was checked against the real token counters.
+//
+// Lowered from 10500 to 9900 when zoom_to_time_range/zoom_reset were folded
+// into plot_tab's 'zoom' action: two standalone tools (each paying the fixed
+// JSON envelope below) collapsed into one action of an existing tool. Measured
+// 9593 chars across 11 tools after the merge — down from two more tools' worth
+// of envelope despite plot_tab's description covering six actions.
 TEST(ToolRegistry, ToolSchemaStaysWithinItsBudget) {
   ToolRegistry reg;
   const std::size_t chars = reg.toFunctionSpecs().dump().size();
@@ -960,7 +974,7 @@ TEST(ToolRegistry, ToolSchemaStaysWithinItsBudget) {
   // fixed 73 chars of JSON envelope each tool costs before a word of prose,
   // which is why related verbs share one tool with an `action` argument
   // instead of standing alone.
-  EXPECT_LT(chars, 10500u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
+  EXPECT_LT(chars, 9900u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
 }
 
 // --- playback / viewport tools ----------------------------------------------
@@ -1101,61 +1115,246 @@ TEST(ToolRegistry, PlaybackRequiresAnAction) {
   EXPECT_FALSE(reg.execute("playback", json::object(), ctx).ok);
 }
 
-TEST(ToolRegistry, ZoomForwardsRangeAndValidates) {
+// --- the assistant's own plot tabs ------------------------------------------
+//
+// plot_tab replaced zoom_to_time_range/zoom_reset as one tool with an 'action'
+// argument. The product rule it exists to enforce: the model composes only in
+// tabs it created, and the user's tabs are unreachable — a rule the HOST
+// enforces (FakePlotTabsHost models that), not the plugin, so every test here
+// drives the real ownership check rather than trusting the plugin's own
+// bookkeeping.
+
+TEST(ToolRegistry, PlotTabCreateReportsTheTabTheHostHolds) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;
   populate(store);
-  FakeViewportHost vp;
+  FakePlotTabsHost tabs;
   auto ctx = makeCtx(store, nullptr);
-  ctx.viewport = vp.view();
+  ctx.plot_tabs = tabs.view();
 
-  auto r = reg.execute("zoom_to_time_range", {{"start_s", 2.0}, {"end_s", 8.5}}, ctx);
+  auto r = reg.execute("plot_tab", {{"action", "create"}, {"tab", "analysis"}, {"title", "Analysis"}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
-  EXPECT_EQ(vp.zoom_calls, 1);
-  EXPECT_DOUBLE_EQ(vp.last_t0_s, 2.0);
-  EXPECT_DOUBLE_EQ(vp.last_t1_s, 8.5);
-  auto j = json::parse(r.content);
-  EXPECT_DOUBLE_EQ(j["zoomed"]["start_s"].get<double>(), 2.0);
-
-  // start >= end is rejected BEFORE the host sees it.
-  EXPECT_FALSE(reg.execute("zoom_to_time_range", {{"start_s", 9.0}, {"end_s", 1.0}}, ctx).ok);
-  EXPECT_FALSE(reg.execute("zoom_to_time_range", {{"start_s", 5.0}, {"end_s", 5.0}}, ctx).ok);
-  EXPECT_FALSE(reg.execute("zoom_to_time_range", {{"start_s", 1.0}}, ctx).ok);  // missing end_s
-  EXPECT_EQ(vp.zoom_calls, 1);
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["tab"], "analysis");
+  EXPECT_EQ(j["title"], "Analysis");
+  EXPECT_TRUE(j["curves"].empty());
 }
 
-TEST(ToolRegistry, ZoomResetForwardsAndDegrades) {
+TEST(ToolRegistry, PlotTabAddReportsWhatActuallyLanded) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;
   populate(store);
-  FakeViewportHost vp;
+  store.addTopic("/left");
+  store.addField("/left", "speed", {0, kSec}, {1.0, 2.0});
+  FakePlotTabsHost tabs;
+  tabs.unresolvable.insert("/left");  // the host cannot place this one
   auto ctx = makeCtx(store, nullptr);
-  ctx.viewport = vp.view();
+  ctx.plot_tabs = tabs.view();
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "create"}, {"tab", "view"}}, ctx).ok);
 
-  ASSERT_TRUE(reg.execute("zoom_reset", json::object(), ctx).ok);
-  EXPECT_TRUE(vp.reset_called);
+  auto r = reg.execute(
+      "plot_tab", {{"action", "add"}, {"tab", "view"}, {"curves", json::array({"/imu/x", "/left/speed"})}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  // The host silently dropped /left/speed: the read-back shows only what
+  // actually landed, so the dropped curve is absent, not silently claimed.
+  ASSERT_EQ(j["curves"].size(), 1u);
+  EXPECT_EQ(j["curves"][0]["topic"], "/imu");
+  EXPECT_EQ(j["curves"][0]["field"], "x");
 
-  auto unbound = makeCtx(store, nullptr);
-  auto r = reg.execute("zoom_reset", json::object(), unbound);
-  EXPECT_FALSE(r.ok);
-  EXPECT_NE(r.content.find("pj.viewport.v1"), std::string::npos);
+  // A path the catalog cannot resolve at all is a request error; when every
+  // requested curve is like that, the call fails outright.
+  auto none = reg.execute("plot_tab", {{"action", "add"}, {"tab", "view"}, {"curves", "/does/not/exist"}}, ctx);
+  EXPECT_FALSE(none.ok) << none.content;
+
+  // The harder failure, and the one the read-back exists for: a path the
+  // CATALOG resolves, which the host then accepts and silently places nowhere.
+  // Every call returned success, so only the tab's own contents can tell the
+  // truth — reporting this as a drawing would be the lie.
+  auto dropped = reg.execute("plot_tab", {{"action", "add"}, {"tab", "view"}, {"curves", "/left/speed"}}, ctx);
+  EXPECT_FALSE(dropped.ok) << dropped.content;
+  EXPECT_NE(dropped.content.find("did not land"), std::string::npos) << dropped.content;
 }
 
-TEST(ToolRegistry, ZoomEchoesPlaybackStateWhenBound) {
+// The product rule stated as a test: the host, not the plugin, is what keeps
+// this assistant out of the user's own tabs.
+TEST(ToolRegistry, PlotTabRefusesATabItDoesNotOwn) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;
   populate(store);
+  FakePlotTabsHost tabs;
+  tabs.addForeignTab("user-1");
+  auto ctx = makeCtx(store, nullptr);
+  ctx.plot_tabs = tabs.view();
+
+  EXPECT_FALSE(
+      reg.execute("plot_tab", {{"action", "add"}, {"tab", "user-1"}, {"curves", json::array({"/imu/x"})}}, ctx).ok);
+  EXPECT_FALSE(
+      reg.execute("plot_tab", {{"action", "remove"}, {"tab", "user-1"}, {"curves", json::array({"/imu/x"})}}, ctx).ok);
+  // zoom never touches pj.plot_tabs.v1 at all (it goes through ctx.viewport,
+  // left unbound here), so it fails on the missing service rather than ever
+  // reaching the fake -- still "every one fails" as required.
+  EXPECT_FALSE(reg.execute("plot_tab", {{"action", "zoom"}, {"tab", "user-1"}}, ctx).ok);
+  EXPECT_FALSE(reg.execute("plot_tab", {{"action", "close"}, {"tab", "user-1"}}, ctx).ok);
+
+  EXPECT_EQ(tabs.foreign_mutations, 0);
+}
+
+// The structural version of the property above: loop over every registered
+// tool (not just plot_tab) with a foreign tab named in its args, so this
+// keeps holding automatically as tools are added later.
+TEST(ToolRegistry, NoToolReachesAForeignTab) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlotTabsHost tabs;
+  tabs.addForeignTab("user-1");
+  RecordingDpHost dp;
   FakePlaybackHost pb;
   FakeViewportHost vp;
-  auto ctx = makeCtx(store, nullptr);
+  auto ctx = makeCtx(store, &dp);
+  ctx.plot_tabs = tabs.view();
   ctx.playback = pb.view();
   ctx.viewport = vp.view();
 
-  auto r = reg.execute("zoom_to_time_range", {{"start_s", 0.0}, {"end_s", 1.0}}, ctx);
+  const json plot_tab_args = {{"action", "add"}, {"tab", "user-1"}, {"curves", json::array({"/imu/x"})}};
+  const json generic_args = {{"tab", "user-1"}};
+  for (const auto& tool : reg.tools()) {
+    std::ignore = reg.execute(tool.name, plot_tab_args, ctx);
+    std::ignore = reg.execute(tool.name, generic_args, ctx);
+  }
+
+  EXPECT_EQ(tabs.foreign_mutations, 0) << "some tool call reached a tab this plugin does not own";
+}
+
+TEST(ToolRegistry, PlotTabListShowsOnlyItsOwn) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlotTabsHost tabs;
+  tabs.addForeignTab("user-1");
+  auto ctx = makeCtx(store, nullptr);
+  ctx.plot_tabs = tabs.view();
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "create"}, {"tab", "a"}}, ctx).ok);
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "create"}, {"tab", "b"}}, ctx).ok);
+
+  auto r = reg.execute("plot_tab", {{"action", "list"}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
-  auto j = json::parse(r.content);
-  ASSERT_TRUE(j.contains("playback"));
-  EXPECT_DOUBLE_EQ(j["playback"]["current_time_s"].get<double>(), 3.0);
+  EXPECT_EQ(json::parse(r.content)["count"], 2);
+  EXPECT_EQ(r.content.find("user-1"), std::string::npos) << r.content;
+}
+
+// Owning nothing is an answer, not an error.
+TEST(ToolRegistry, PlotTabListWithNoTabsSucceeds) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlotTabsHost tabs;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.plot_tabs = tabs.view();
+
+  auto r = reg.execute("plot_tab", {{"action", "list"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(json::parse(r.content)["count"], 0);
+}
+
+TEST(ToolRegistry, PlotTabResolvesAbbreviatedCurves) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);  // /imu with fields x and y -- "x" alone is unambiguous
+  FakePlotTabsHost tabs;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.plot_tabs = tabs.view();
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "create"}, {"tab", "view"}}, ctx).ok);
+
+  auto r = reg.execute("plot_tab", {{"action", "add"}, {"tab", "view"}, {"curves", "x"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  ASSERT_EQ(tabs.find("view")->curves.size(), 1u);
+  EXPECT_EQ(tabs.find("view")->curves[0].topic, "/imu");
+  EXPECT_EQ(tabs.find("view")->curves[0].field, "x");
+}
+
+TEST(ToolRegistry, PlotTabRefusesAnAmbiguousCurve) {
+  ToolRegistry reg;
+  FakeMultiDatasetHost host;
+  host.addDataset("run_monday.mcap", {"/imu", "/speed"}).addDataset("run_friday.mcap", {"/imu", "/speed"});
+  FakePlotTabsHost tabs;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.plot_tabs = tabs.view();
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "create"}, {"tab", "view"}}, ctx).ok);
+
+  auto r = reg.execute("plot_tab", {{"action", "add"}, {"tab", "view"}, {"curves", "/speed/value"}}, ctx);
+  EXPECT_FALSE(r.ok) << r.content;
+  EXPECT_NE(r.content.find("run_monday.mcap:/speed/value"), std::string::npos) << r.content;
+  EXPECT_NE(r.content.find("run_friday.mcap:/speed/value"), std::string::npos) << r.content;
+  EXPECT_TRUE(tabs.find("view")->curves.empty());
+}
+
+TEST(ToolRegistry, PlotTabQualifiedCurveCarriesItsDataset) {
+  ToolRegistry reg;
+  FakeMultiDatasetHost host;
+  host.addDataset("run_monday.mcap", {"/imu", "/speed"}).addDataset("run_friday.mcap", {"/imu", "/speed"});
+  FakePlotTabsHost tabs;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.plot_tabs = tabs.view();
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "create"}, {"tab", "view"}}, ctx).ok);
+
+  auto r =
+      reg.execute("plot_tab", {{"action", "add"}, {"tab", "view"}, {"curves", "run_friday.mcap:/speed/value"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  ASSERT_EQ(tabs.find("view")->curves.size(), 1u);
+  EXPECT_EQ(tabs.find("view")->curves[0].dataset, "run_friday.mcap");
+}
+
+TEST(ToolRegistry, PlotTabZoomValidatesItsRange) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlotTabsHost tabs;
+  FakeViewportHost vp;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.plot_tabs = tabs.view();
+  ctx.viewport = vp.view();
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "create"}, {"tab", "view"}}, ctx).ok);
+
+  // start >= end is rejected BEFORE the host sees it.
+  EXPECT_FALSE(
+      reg.execute("plot_tab", {{"action", "zoom"}, {"tab", "view"}, {"start_s", 9.0}, {"end_s", 1.0}}, ctx).ok);
+  EXPECT_FALSE(
+      reg.execute("plot_tab", {{"action", "zoom"}, {"tab", "view"}, {"start_s", 5.0}, {"end_s", 5.0}}, ctx).ok);
+  // Only one of start_s/end_s given is refused too.
+  EXPECT_FALSE(reg.execute("plot_tab", {{"action", "zoom"}, {"tab", "view"}, {"start_s", 1.0}}, ctx).ok);
+  EXPECT_EQ(vp.zoom_calls, 0);
+
+  // Neither given -> fit the view.
+  auto r = reg.execute("plot_tab", {{"action", "zoom"}, {"tab", "view"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_TRUE(vp.reset_called);
+}
+
+TEST(ToolRegistry, PlotTabDegradesWithoutTheService) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);  // ctx.plot_tabs left unbound
+
+  auto r = reg.execute("plot_tab", {{"action", "list"}}, ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("pj.plot_tabs.v1"), std::string::npos) << r.content;
+}
+
+TEST(ToolRegistry, PlotTabUnknownActionIsACleanFailure) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlotTabsHost tabs;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.plot_tabs = tabs.view();
+
+  EXPECT_FALSE(reg.execute("plot_tab", {{"action", "levitate"}}, ctx).ok);
+  EXPECT_FALSE(reg.execute("plot_tab", json::object(), ctx).ok);
 }
 
 TEST(ToolRegistry, ReadSeriesStatsGainDisplayStartWhenPlaybackBound) {

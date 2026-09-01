@@ -9,7 +9,7 @@ work by calling the same plugin SDK a human-written plugin would.
           │
           ▼
    ┌──────────────┐   tool calls    ┌──────────────────┐   SDK services   ┌────────────┐
-   │  chat panel  │ ──────────────▶ │ tool layer (16)  │ ───────────────▶ │ PlotJuggler│
+   │  chat panel  │ ──────────────▶ │ tool layer (11)  │ ───────────────▶ │ PlotJuggler│
    │  (floating)  │ ◀────────────── │   over MCP       │ ◀─────────────── │    host    │
    └──────────────┘   results       └──────────────────┘                  └────────────┘
 ```
@@ -32,9 +32,9 @@ same pattern as Claude Code. The Ollama backend that used to run a local model i
 retired with that decision.
 
 For the Claude backend every built-in tool is disabled (`--tools ""`), so the model reaches
-*only* the sixteen tools below — it cannot touch your machine outside PlotJuggler.
+*only* the eleven tools below — it cannot touch your machine outside PlotJuggler.
 
-## The sixteen tools
+## The eleven tools
 
 | Tool | Does |
 |---|---|
@@ -47,14 +47,16 @@ For the Claude backend every built-in tool is disabled (`--tools ""`), so the mo
 | `list_created` | What this assistant has installed so far |
 | `remove_derived_series` | Withdraw one of its own derived series — and only its own |
 | `report_status` | Counts of loaded sources, topics and fields |
-| `play` / `pause` | Start/stop the playback cursor; every call echoes the full transport state |
-| `seek` | Move the cursor (display-axis seconds); the echo shows where it actually landed |
-| `set_playback_rate` | Playback speed multiplier, clamped to [0.05, 20] |
-| `get_playback_state` | Playing flag, cursor, range and rate — all display-axis seconds |
-| `zoom_to_time_range` | Frame every time plot's X window; each plot keeps its own Y |
-| `zoom_reset` | Reset every plot to fit its data |
+| `playback` | The transport, by `action`: state / play / pause / seek / rate. One time cursor is shared by every plot, so this is the one control that is not scoped |
+| `plot_tab` | Tabs of the assistant's OWN, by `action`: create / add / remove / zoom / close / list |
 
-The transport/zoom tools exist only when the host exposes `pj.playback.v1` / `pj.viewport.v1`
+`plot_tab` is where the boundary lives. A tab the assistant creates is watermarked "IA" and is the
+only place it may draw, zoom or close; your tabs are unreachable from every tool it has, and asking
+it to change one gets an explanation and an offer to show the same thing in its own. Those tabs are
+a live view, not saved state: they are never written to a layout, so a reload or an undo leaves
+them alone and closing PlotJuggler ends them.
+
+Both tools need a host exposing `pj.playback.v1`, `pj.plot_tabs.v1` and `pj.viewport.v1`
 (PlotJuggler with SDK >= 0.27.0); on an older host they answer with a clean "not exposed" the
 model relays instead of guessing.
 
@@ -67,9 +69,9 @@ comes back with the exact candidates rather than a guess.
 2. **Settings…** — pick a backend. For Claude, `claude` must be installed and logged in.
 3. Type and press Enter.
 
-Derived series appear in the **Custom Series** panel (bottom-left), not in the Datasets tree —
-drag one onto a plot to see it. Marker bands only paint on plots that show the generator's
-**input** series.
+Derived series appear in the **Custom Series** panel (bottom-left), not in the Datasets tree; the
+assistant will normally plot one for you in a tab of its own rather than leave you to drag it.
+Marker bands only paint on plots that show the generator's **input** series.
 
 ### Choosing a model
 
