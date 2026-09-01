@@ -63,6 +63,50 @@ using test::readSchema;
   return PJ::sdk::ArrowStreamHolder(stream);
 }
 
+/// Build `<parent>: struct<<leaf>: timestamp[us]>` beside a double column.
+[[nodiscard]] PJ::sdk::ArrowSchemaHolder makeNestedTimestampSchema(const char* parent_name, const char* leaf_name) {
+  PJ::sdk::ArrowSchemaHolder schema;
+  ArrowSchemaInit(schema.out());
+  if (ArrowSchemaSetTypeStruct(schema.get(), 2) != NANOARROW_OK ||
+      ArrowSchemaSetTypeStruct(schema.get()->children[0], 1) != NANOARROW_OK ||
+      ArrowSchemaSetName(schema.get()->children[0], parent_name) != NANOARROW_OK ||
+      ArrowSchemaSetTypeDateTime(
+          schema.get()->children[0]->children[0], NANOARROW_TYPE_TIMESTAMP, NANOARROW_TIME_UNIT_MICRO, nullptr) !=
+          NANOARROW_OK ||
+      ArrowSchemaSetName(schema.get()->children[0]->children[0], leaf_name) != NANOARROW_OK ||
+      ArrowSchemaSetType(schema.get()->children[1], NANOARROW_TYPE_DOUBLE) != NANOARROW_OK ||
+      ArrowSchemaSetName(schema.get()->children[1], "value") != NANOARROW_OK) {
+    throw std::runtime_error("nested timestamp schema initialization failed");
+  }
+  return schema;
+}
+
+/// Build one two-row batch of microsecond ticks for a makeNestedTimestampSchema stream.
+[[nodiscard]] PJ::sdk::ArrowStreamHolder makeNestedTimestampStream(const char* parent_name, const char* leaf_name) {
+  auto schema = makeNestedTimestampSchema(parent_name, leaf_name);
+  PJ::sdk::ArrowArrayHolder batch;
+  ArrowError error{};
+  if (ArrowArrayInitFromSchema(batch.out(), schema.get(), &error) != NANOARROW_OK ||
+      ArrowArrayStartAppending(batch.get()->children[0]) != NANOARROW_OK ||
+      ArrowArrayStartAppending(batch.get()->children[0]->children[0]) != NANOARROW_OK ||
+      ArrowArrayStartAppending(batch.get()->children[1]) != NANOARROW_OK) {
+    throw std::runtime_error("nested timestamp array initialization failed");
+  }
+  for (int64_t row = 0; row < 2; ++row) {
+    if (ArrowArrayAppendInt(batch.get()->children[0]->children[0], row + 1) != NANOARROW_OK ||
+        ArrowArrayFinishElement(batch.get()->children[0]) != NANOARROW_OK ||
+        ArrowArrayAppendDouble(batch.get()->children[1], static_cast<double>(row)) != NANOARROW_OK) {
+      throw std::runtime_error("nested timestamp row append failed");
+    }
+  }
+  batch.get()->length = 2;
+  batch.get()->null_count = 0;
+  if (ArrowArrayFinishBuildingDefault(batch.get(), &error) != NANOARROW_OK) {
+    throw std::runtime_error(error.message);
+  }
+  return oneBatchStream(schema.get(), batch.get());
+}
+
 /// Build two rows whose timestamp-list columns fail in opposite row/column order.
 [[nodiscard]] PJ::sdk::ArrowStreamHolder makeCompetingTimestampListOverflowStream() {
   PJ::sdk::ArrowSchemaHolder schema;
@@ -353,6 +397,39 @@ TEST(TableShaperTest, AutoDetectsTimestampColumn) {
   EXPECT_EQ(shaped->timestamp_column, "stamp");
   auto schema = readSchema(shaped->stream);
   EXPECT_STREQ(schema.get()->children[0]->name, "stamp");
+  EXPECT_STREQ(schema.get()->children[0]->format, "l");
+}
+
+/// Detection walks flattened leaves, so a nested timestamp needs no top-level candidate.
+TEST(TableShaperTest, DetectsNestedTimestampLeaf) {
+  auto schema = makeNestedTimestampSchema("header", "stamp");
+  EXPECT_EQ(detectTimestampColumn(schema.get()), "header/stamp");
+}
+
+/// A detected nested timestamp leaf becomes the axis and is scaled to int64 nanoseconds.
+TEST(TableShaperTest, UsesNestedTimestampLeafAsAxis) {
+  auto shaped = shapeStream(makeNestedTimestampStream("header", "stamp"), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  EXPECT_EQ(shaped->timestamp_column, "header/stamp");
+  auto schema = readSchema(shaped->stream);
+  ASSERT_EQ(schema.get()->n_children, 2);
+  EXPECT_STREQ(schema.get()->children[0]->name, "header/stamp");
+  EXPECT_STREQ(schema.get()->children[0]->format, "l");
+  auto batch = readBatch(shaped->stream);
+  auto view = test::bindArrayView(schema.get(), batch.get());
+  EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 0), 1000);
+  EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 1), 2000);
+}
+
+/// The configured timestamp column names a leaf by its flattened path at any depth.
+TEST(TableShaperTest, UsesConfiguredNestedTimestampLeaf) {
+  ShapeOptions options;
+  options.timestamp_column = "header/stamp";
+  auto shaped = shapeStream(makeNestedTimestampStream("header", "stamp"), options);
+  ASSERT_TRUE(shaped) << shaped.error();
+  EXPECT_EQ(shaped->timestamp_column, "header/stamp");
+  auto schema = readSchema(shaped->stream);
+  EXPECT_STREQ(schema.get()->children[0]->name, "header/stamp");
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
 }
 

@@ -63,15 +63,6 @@ struct OrderedDroppedColumn {
   DroppedColumn column;
 };
 
-/// Timestamp resolved once before output collection.
-struct ResolvedTimestamp {
-  const ArrowSchema* schema = nullptr;
-  int64_t source_index = -1;
-  std::string name;
-  bool synthesize = false;
-  OutputColumn source;
-};
-
 /// Final host-compatible columns, schema, diagnostics, and optional first-batch peek.
 struct CompatibilityResult {
   PJ::sdk::ArrowSchemaHolder output_schema;
@@ -160,21 +151,6 @@ void setNanoarrowStreamError(ShapingStreamState& state, int result, const char* 
   return format == "vu" || format == "vz" || format == "U" || format == "Z";
 }
 
-/// Find a top-level child with the exact requested name.
-[[nodiscard]] const ArrowSchema* findColumn(const ArrowSchema* schema, std::string_view name, int64_t* index_out) {
-  if (schema == nullptr || schema->children == nullptr) {
-    return nullptr;
-  }
-  for (int64_t index = 0; index < schema->n_children; ++index) {
-    const auto* child = schema->children[index];
-    if (child != nullptr && child->name != nullptr && std::string_view(child->name) == name) {
-      *index_out = index;
-      return child;
-    }
-  }
-  return nullptr;
-}
-
 /// Build the stable slash-separated output name for one nullable or empty child name.
 [[nodiscard]] std::string childOutputName(std::string_view parent_name, const ArrowSchema* child, int64_t child_index) {
   const std::string component = child != nullptr && child->name != nullptr && child->name[0] != '\0'
@@ -216,7 +192,8 @@ void setNanoarrowStreamError(ShapingStreamState& state, int result, const char* 
   return type == NANOARROW_TYPE_LIST || type == NANOARROW_TYPE_LARGE_LIST || type == NANOARROW_TYPE_FIXED_SIZE_LIST;
 }
 
-/// Parse a source exactly once and populate its scalar reconstruction and intrinsic axis cast.
+/// Parse a source exactly once and populate its scalar reconstruction and intrinsic axis cast. `column.name` must
+/// already hold the flattened output name: axis rejections quote it.
 PJ::Status configureSource(const ArrowSchema* schema, bool is_timestamp_axis, OutputColumn& column, bool element) {
   auto view = schemaView(schema);
   if (!view) {
@@ -241,8 +218,7 @@ PJ::Status configureSource(const ArrowSchema* schema, bool is_timestamp_axis, Ou
         break;
       default:
         return PJ::unexpected(
-            "parser_arrow: timestamp column '" + std::string(schema->name != nullptr ? schema->name : "") +
-            "' has unsupported type '" + schema->format + "'");
+            "parser_arrow: timestamp column '" + column.name + "' has unsupported type '" + schema->format + "'");
     }
   }
 
@@ -260,43 +236,12 @@ PJ::Status configureSource(const ArrowSchema* schema, bool is_timestamp_axis, Ou
   return PJ::okStatus();
 }
 
-/// Resolve and validate the explicit, detected, or synthesized timestamp axis once.
-[[nodiscard]] PJ::Expected<ResolvedTimestamp> resolveTimestamp(const ArrowSchema* schema, const ShapeOptions& options) {
-  ResolvedTimestamp timestamp;
-  timestamp.name = options.timestamp_column.empty() ? detectTimestampColumn(schema) : options.timestamp_column;
-  if (timestamp.name.empty()) {
-    timestamp.name = "timestamp_ns";
-    timestamp.synthesize = true;
-    return timestamp;
-  }
-
-  timestamp.schema = findColumn(schema, timestamp.name, &timestamp.source_index);
-  if (timestamp.schema == nullptr) {
-    return PJ::unexpected("parser_arrow: timestamp column '" + timestamp.name + "' is absent from the Arrow schema");
-  }
-  timestamp.source.is_timestamp_axis = true;
-  auto status = configureSource(timestamp.schema, true, timestamp.source, false);
-  if (!status) {
-    return PJ::unexpected(std::move(status).error());
-  }
-  return timestamp;
-}
-
-/// Collect depth-first leaves with only intrinsic axis and list casts.
+/// Collect depth-first leaves with only intrinsic list casts; the timestamp axis is tagged afterwards.
 PJ::Status collectOutputColumns(
     const ArrowSchema* schema, const std::vector<int64_t>& path, std::string name, bool flatten_structs,
-    bool nullable_struct_ancestor, const ResolvedTimestamp& timestamp, std::vector<OutputColumn>& output) {
+    bool nullable_struct_ancestor, std::vector<OutputColumn>& output) {
   if (schema == nullptr) {
     return PJ::unexpected("parser_arrow: malformed null Arrow child schema");
-  }
-
-  if (path.size() == 1 && path[0] == timestamp.source_index) {
-    OutputColumn column = timestamp.source;
-    column.source_path = path;
-    column.name = std::move(name);
-    column.source_order = output.size();
-    output.push_back(std::move(column));
-    return PJ::okStatus();
   }
 
   if (flatten_structs && isStruct(schema)) {
@@ -306,8 +251,7 @@ PJ::Status collectOutputColumns(
       auto child_path = path;
       child_path.push_back(child_index);
       auto status = collectOutputColumns(
-          child, child_path, childOutputName(name, child, child_index), flatten_structs, descendants_nullable,
-          timestamp, output);
+          child, child_path, childOutputName(name, child, child_index), flatten_structs, descendants_nullable, output);
       if (!status) {
         return status;
       }
@@ -350,6 +294,50 @@ PJ::Status collectOutputColumns(
   }
   output.push_back(std::move(column));
   return PJ::okStatus();
+}
+
+/// Collect every flattened leaf of a stream schema in depth-first order.
+PJ::Status collectLeaves(const ArrowSchema* schema, bool flatten_structs, std::vector<OutputColumn>& output) {
+  for (int64_t child_index = 0; child_index < schema->n_children; ++child_index) {
+    const auto* child = schema->children[child_index];
+    auto status = collectOutputColumns(
+        child, std::vector<int64_t>{child_index}, childOutputName({}, child, child_index), flatten_structs, false,
+        output);
+    if (!status) {
+      return status;
+    }
+  }
+  return PJ::okStatus();
+}
+
+/// Return the index of the leaf named `name`, or `leaves.size()` when no leaf matches.
+[[nodiscard]] std::size_t findLeaf(const std::vector<OutputColumn>& leaves, std::string_view name) {
+  std::size_t index = 0;
+  while (index < leaves.size() && leaves[index].name != name) {
+    ++index;
+  }
+  return index;
+}
+
+/// Detect the axis among flattened leaves: the first leaf that is itself Arrow TIMESTAMP-typed in schema order,
+/// otherwise the first leaf whose flattened name matches the heuristic list in its own priority order. An expanded
+/// list never qualifies by type because its `source_type` describes its elements, but a list named like an axis
+/// still does, so its unsupported type is reported instead of silently ignored.
+[[nodiscard]] std::size_t detectTimestampLeaf(const std::vector<OutputColumn>& leaves) {
+  for (std::size_t index = 0; index < leaves.size(); ++index) {
+    if (leaves[index].source_type == NANOARROW_TYPE_TIMESTAMP && leaves[index].cast != CastKind::kListElement) {
+      return index;
+    }
+  }
+  static constexpr std::array<std::string_view, 5> kNames = {
+      "timestamp_ns", "recording_timestamp_ns", "timestamp", "time", "ts"};
+  for (const std::string_view preferred : kNames) {
+    const std::size_t index = findLeaf(leaves, preferred);
+    if (index < leaves.size()) {
+      return index;
+    }
+  }
+  return leaves.size();
 }
 
 /// Return whether the current PlotJuggler host imports a final output schema.
@@ -535,7 +523,7 @@ PJ::Status buildOutputSchema(
 /// the host is fixed.
 [[nodiscard]] PJ::Expected<CompatibilityResult> applyHostCompatibility(
     std::vector<OutputColumn> collected, const ArrowSchema* input_schema, PJ::sdk::ArrowStreamHolder& input,
-    const ResolvedTimestamp& timestamp, const ShapeOptions& options) {
+    bool synthesize_timestamp, const ShapeOptions& options) {
   CompatibilityResult result;
   std::vector<OutputColumn> compatible;
   std::vector<OrderedDroppedColumn> dropped;
@@ -605,8 +593,8 @@ PJ::Status buildOutputSchema(
     }
   }
 
-  result.columns.reserve(compatible.size() + (timestamp.synthesize ? 1U : 0U));
-  if (timestamp.synthesize) {
+  result.columns.reserve(compatible.size() + (synthesize_timestamp ? 1U : 0U));
+  if (synthesize_timestamp) {
     OutputColumn synthetic;
     synthetic.cast = CastKind::kSyntheticTimestamp;
     synthetic.is_timestamp_axis = true;
@@ -1228,25 +1216,12 @@ std::string detectTimestampColumn(const ArrowSchema* schema) {
   if (schema == nullptr || schema->children == nullptr) {
     return {};
   }
-  for (int64_t index = 0; index < schema->n_children; ++index) {
-    const auto* child = schema->children[index];
-    if (child == nullptr || child->format == nullptr) {
-      continue;
-    }
-    if (std::string_view(child->format).starts_with("ts")) {
-      return child->name != nullptr ? std::string(child->name) : std::string();
-    }
+  std::vector<OutputColumn> leaves;
+  if (!collectLeaves(schema, true, leaves)) {
+    return {};
   }
-
-  static constexpr std::array<std::string_view, 5> kNames = {
-      "timestamp_ns", "recording_timestamp_ns", "timestamp", "time", "ts"};
-  for (const std::string_view preferred : kNames) {
-    int64_t unused_index = -1;
-    if (findColumn(schema, preferred, &unused_index) != nullptr) {
-      return std::string(preferred);
-    }
-  }
-  return {};
+  const std::size_t index = detectTimestampLeaf(leaves);
+  return index < leaves.size() ? leaves[index].name : std::string();
 }
 
 std::string formatDroppedColumns(const std::vector<DroppedColumn>& columns, std::size_t max_listed) {
@@ -1280,23 +1255,34 @@ PJ::Expected<ShapedStream> shapeStream(PJ::sdk::ArrowStreamHolder input, const S
       return PJ::unexpected("parser_arrow: malformed Arrow stream schema children");
     }
 
-    auto timestamp = resolveTimestamp(schema, options);
-    if (!timestamp) {
-      return PJ::unexpected(std::move(timestamp).error());
+    std::vector<OutputColumn> collected;
+    if (auto status = collectLeaves(schema, options.flatten_structs, collected); !status) {
+      return PJ::unexpected(std::move(status).error());
     }
 
-    std::vector<OutputColumn> collected;
-    for (int64_t child_index = 0; child_index < schema->n_children; ++child_index) {
-      const auto* child = schema->children[child_index];
-      auto status = collectOutputColumns(
-          child, std::vector<int64_t>{child_index}, childOutputName({}, child, child_index), options.flatten_structs,
-          false, *timestamp, collected);
-      if (!status) {
-        return PJ::unexpected(std::move(status).error());
+    std::size_t axis = collected.size();
+    if (options.timestamp_column.empty()) {
+      axis = detectTimestampLeaf(collected);
+    } else {
+      axis = findLeaf(collected, options.timestamp_column);
+      if (axis == collected.size()) {
+        return PJ::unexpected(
+            "parser_arrow: timestamp column '" + options.timestamp_column + "' is absent from the Arrow schema");
       }
     }
 
-    auto compatible = applyHostCompatibility(std::move(collected), schema, input, *timestamp, options);
+    const bool synthesize = axis == collected.size();
+    std::string timestamp_name = "timestamp_ns";
+    if (!synthesize) {
+      collected[axis].is_timestamp_axis = true;
+      auto status = configureSource(schemaAtPath(schema, collected[axis].source_path), true, collected[axis], false);
+      if (!status) {
+        return PJ::unexpected(std::move(status).error());
+      }
+      timestamp_name = collected[axis].name;
+    }
+
+    auto compatible = applyHostCompatibility(std::move(collected), schema, input, synthesize, options);
     if (!compatible) {
       return PJ::unexpected(std::move(compatible).error());
     }
@@ -1317,7 +1303,8 @@ PJ::Expected<ShapedStream> shapeStream(PJ::sdk::ArrowStreamHolder input, const S
     wrapper.get_last_error = &shapingGetLastError;
     wrapper.release = &shapingRelease;
     wrapper.private_data = state.release();
-    return ShapedStream{PJ::sdk::ArrowStreamHolder(wrapper), timestamp->name, std::move(compatible->dropped_columns)};
+    return ShapedStream{
+        PJ::sdk::ArrowStreamHolder(wrapper), std::move(timestamp_name), std::move(compatible->dropped_columns)};
   } catch (const std::bad_alloc&) {
     return PJ::unexpected("parser_arrow: out of memory while planning Arrow stream rewrite");
   } catch (const std::exception& error) {

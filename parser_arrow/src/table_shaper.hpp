@@ -13,7 +13,7 @@ namespace pj::parser_arrow {
 
 /// Options controlling how a decoded IPC stream is rewritten before host ingest.
 struct ShapeOptions {
-  /// Explicit timestamp column name; an empty value enables automatic detection.
+  /// Explicit timestamp column, named as a flattened leaf (`header/stamp`) at any depth; empty enables detection.
   std::string timestamp_column;
   /// Flatten nested struct columns to slash-separated leaves; unflattened structs are reported as dropped.
   bool flatten_structs = true;
@@ -43,8 +43,9 @@ struct ShapedStream {
   std::vector<DroppedColumn> dropped_columns;
 };
 
-/// Detect the first child whose format starts with "ts", otherwise the first child named timestamp_ns,
-/// recording_timestamp_ns, timestamp, time, or ts in that priority order; return an empty string if none match.
+/// Detect a timestamp axis among the flattened leaf names of `schema` (structs flattened, dots normalized to '/'):
+/// the first Arrow TIMESTAMP-typed leaf in schema order, otherwise the first leaf named timestamp_ns,
+/// recording_timestamp_ns, timestamp, time, or ts in that priority order; empty when nothing matches.
 [[nodiscard]] std::string detectTimestampColumn(const ArrowSchema* schema);
 
 /// Lazily rewrite a decoded IPC stream while moving untouched columns and copying only casts, normalizations, and
