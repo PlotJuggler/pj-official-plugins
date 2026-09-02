@@ -50,7 +50,7 @@ For the Claude backend every built-in tool is disabled (`--tools ""`), so the mo
 | `playback` | The transport, by `action`: state / play / pause / seek / rate. One time cursor is shared by every plot, so this is the one control that is not scoped |
 | `plot_tab` | Tabs of the assistant's OWN, by `action`: create / add / remove / zoom / close / list |
 
-`plot_tab` is where the boundary lives. A tab the assistant creates is watermarked "IA" and is the
+`plot_tab` is where the boundary lives. A tab the assistant creates is watermarked "AI" and is the
 only place it may draw, zoom or close; your tabs are unreachable from every tool it has, and asking
 it to change one gets an explanation and an offer to show the same thing in its own. Those tabs are
 a live view, not saved state: they are never written to a layout, so a reload or an undo leaves

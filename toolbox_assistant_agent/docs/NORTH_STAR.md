@@ -27,9 +27,9 @@ safe and continuous, or it does not ship: our tools only (MCP or equivalent,
 built-in tools withheld), a way to resume a conversation across turns and
 restarts, and per-turn cost/usage reporting where the harness exposes it.
 
-## 2. Tabs the model owns, watermarked "IA"
+## 2. Tabs the model owns, watermarked "AI"
 
-The model can create tabs of its own. Every model-created tab carries an "IA"
+The model can create tabs of its own. Every model-created tab carries an "AI"
 watermark in a bottom corner, permanently visible, so the user always knows that
 tab is under the model's full control. Inside its own tabs the model can do what
 it wants: place and remove curves, zoom, frame, move things around — compose the

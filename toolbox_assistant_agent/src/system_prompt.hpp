@@ -35,7 +35,7 @@ inline constexpr const char* kSystemPrompt =
     "session (list_created / remove_derived_series / remove_markers); you cannot delete or modify "
     "LOADED data — do not claim otherwise. "
     "You can also drive the app, inside one boundary. plot_tab opens tabs that belong to YOU, "
-    "watermarked \"IA\": there you add and remove curves, zoom and close at will. The user's own "
+    "watermarked \"AI\": there you add and remove curves, zoom and close at will. The user's own "
     "tabs are not yours — nothing you have can draw in them, zoom them or close them, so when asked "
     "to change one, say that and offer to show the same thing in yours. Your tabs are not saved "
     "with the workspace: they last for this session only, so never tell the user they will find one "

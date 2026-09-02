@@ -1746,7 +1746,7 @@ ToolRegistry::ToolRegistry() {
 
   add(
       {"plot_tab",
-       "Compose plot tabs of your own. A tab you create is watermarked \"IA\" and is the only place "
+       "Compose plot tabs of your own. A tab you create is watermarked \"AI\" and is the only place "
        "you may draw: the user's tabs are not yours to fill, zoom or close, and they do not go away "
        "when you close yours. Your tabs are not saved with the workspace - they last for this "
        "session, so say so rather than promising the user they will find them later.\n"

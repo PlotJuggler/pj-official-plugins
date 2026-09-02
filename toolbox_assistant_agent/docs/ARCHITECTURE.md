@@ -185,7 +185,7 @@ own, it says so and offers the same view in one of its own. The boundary is the 
 playback stays global, because the application has one time cursor shared by every plot and no tab
 can contain it.
 
-Every model-created tab carries a permanent "IA" mark in the corner of its canvas. It is painted by
+Every model-created tab carries a permanent "AI" mark in the corner of its canvas. It is painted by
 the host, not requested by the plugin — a mark the drawer could suppress would not be worth reading.
 
 Those tabs are a live view, not saved state. The host never writes one to a layout, so reloading a
