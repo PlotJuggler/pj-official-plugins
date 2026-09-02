@@ -230,6 +230,51 @@ TEST(GridMapTranscoderTest, LayersWithDifferentLayoutsRejected) {
   EXPECT_FALSE(transcodeGridMap(golden.msg).has_value());
 }
 
+TEST(GridMapTranscoderTest, FirstLayerStridesCheckedAgainstLayout) {
+  auto with_strides = [](uint32_t column_stride, uint32_t row_stride) {
+    Golden g;
+    g.msg.data[0].dims = {{"column_index", 2, column_stride}, {"row_index", 3, row_stride}};
+    return transcodeGridMap(g.msg).has_value();
+  };
+  EXPECT_FALSE(with_strides(1, 1)) << "strides contradict the column-major layout";
+  EXPECT_FALSE(with_strides(6, 0)) << "only one stride unspecified";
+  EXPECT_TRUE(with_strides(0, 0)) << "both strides unspecified";
+  EXPECT_TRUE(with_strides(6, 3)) << "grid_map's own strides";
+}
+
+TEST(GridMapTranscoderTest, StrideOverflowRejectedBeforeAllocation) {
+  // 2^24 x 1 cells (at the cap) x 64 float32 layers: row_stride would be 2^32,
+  // not representable in the SDK's uint32 strides. The arrays are empty so a
+  // pass would fail later on length; the stride check must fire first (and
+  // never allocate the 4 GiB output, so this test stays instant).
+  Golden g;
+  const uint32_t size_x = 1u << 24;
+  g.msg.resolution = 1.0;
+  g.msg.length_x = static_cast<double>(size_x);
+  g.msg.length_y = 1.0;
+  g.msg.layers.clear();
+  g.msg.data.clear();
+  for (size_t i = 0; i < 64; ++i) {
+    g.msg.layers.push_back("l" + std::to_string(i));
+    g.msg.data.push_back(layer({}, size_x, 1));
+  }
+  auto res = transcodeGridMap(g.msg);
+  ASSERT_FALSE(res.has_value());
+  EXPECT_NE(res.error().find("stride"), std::string::npos) << res.error();
+}
+
+TEST(GridMapTranscoderTest, NonFiniteLengthQuotientRejected) {
+  Golden g;
+  g.msg.resolution = 1e-300;
+  g.msg.length_x = 1e300;  // quotient overflows to inf: no llround on it
+  EXPECT_FALSE(transcodeGridMap(g.msg).has_value());
+  Golden h;
+  h.msg.resolution = 1e-300;
+  h.msg.length_x = 3e-300;
+  h.msg.length_y = 1e300;
+  EXPECT_FALSE(transcodeGridMap(h.msg).has_value());
+}
+
 TEST(GridMapTranscoderTest, NonIntegralLengthRejected) {
   Golden golden;
   golden.msg.length_x = 1.6;  // 1.6 / 0.5 = 3.2 -> rounds to 3 == size_x, tolerated

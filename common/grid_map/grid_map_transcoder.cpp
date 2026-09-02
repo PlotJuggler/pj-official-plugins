@@ -26,7 +26,12 @@ bool positiveFinite(double v) {
 /// grid_map_core quantizes lengths to `size * resolution`; a length that
 /// rounds to a different cell count contradicts the arrays.
 bool lengthMatchesSize(double length, double resolution, uint32_t size) {
-  return std::llround(length / resolution) == static_cast<long long>(size);
+  const double cells = length / resolution;
+  // llround on inf/NaN or a value past the integer range is undefined.
+  if (!std::isfinite(cells) || cells > 2.0 * static_cast<double>(std::numeric_limits<uint32_t>::max())) {
+    return false;
+  }
+  return std::llround(cells) == static_cast<long long>(size);
 }
 
 bool sameLayout(const MultiArrayDimension& a, const MultiArrayDimension& b) {
@@ -80,6 +85,21 @@ Expected<sdk::GridMap> transcodeGridMap(const GridMapMessage& msg) {
   if (cells > kMaxCells) {
     return unexpected(std::string("GridMap: too many cells (") + std::to_string(cells) + ")");
   }
+  // grid_map_ros writes stride = elements spanned by that dim (cells, size_x);
+  // std_msgs allows leaving both unspecified (0). Anything else contradicts the
+  // column-major layout the transcoder assumes.
+  const bool strides_unspecified = dims[0].stride == 0 && dims[1].stride == 0;
+  if (!strides_unspecified && (dims[0].stride != cells || dims[1].stride != size_x)) {
+    return unexpected(std::string("GridMap: layer strides do not match the column-major layout"));
+  }
+  const size_t layer_count = msg.layers.size();
+  const uint64_t float_size = sdk::bytesPerElement(Datatype::kFloat32);
+  const uint64_t cell_stride = float_size * layer_count;
+  const uint64_t row_stride = cell_stride * size_x;
+  const uint64_t total_bytes = cells * cell_stride;
+  if (row_stride > std::numeric_limits<uint32_t>::max() || total_bytes > std::numeric_limits<size_t>::max()) {
+    return unexpected(std::string("GridMap: row stride not representable"));
+  }
   if (!lengthMatchesSize(msg.length_x, msg.resolution, size_x) ||
       !lengthMatchesSize(msg.length_y, msg.resolution, size_y)) {
     return unexpected(std::string("GridMap: length_x/length_y do not match the array sizes at this resolution"));
@@ -98,12 +118,8 @@ Expected<sdk::GridMap> transcodeGridMap(const GridMapMessage& msg) {
   }
 
   // ---- Transcode: column-major ring buffer -> row-major interleaved records ----
-  const size_t layer_count = msg.layers.size();
-  const uint32_t float_size = sdk::bytesPerElement(Datatype::kFloat32);
-  const uint32_t cell_stride = float_size * static_cast<uint32_t>(layer_count);
-  const uint32_t row_stride = cell_stride * size_x;
-  auto owned = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(cells) * cell_stride);
-  auto* out = reinterpret_cast<float*>(owned->data());
+  auto owned = std::make_shared<std::vector<float>>(static_cast<size_t>(cells) * layer_count);
+  float* out = owned->data();
 
   std::vector<const float*> bases(layer_count);
   for (size_t k = 0; k < layer_count; ++k) {
@@ -147,17 +163,17 @@ Expected<sdk::GridMap> transcodeGridMap(const GridMapMessage& msg) {
   grid.cell_size = {.x = msg.resolution, .y = msg.resolution};
   grid.column_count = size_x;
   grid.row_count = size_y;
-  grid.cell_stride = cell_stride;
-  grid.row_stride = row_stride;
+  grid.cell_stride = static_cast<uint32_t>(cell_stride);
+  grid.row_stride = static_cast<uint32_t>(row_stride);
   grid.fields.reserve(layer_count);
   for (size_t k = 0; k < layer_count; ++k) {
     grid.fields.push_back(
         {.name = msg.layers[k],
-         .offset = float_size * static_cast<uint32_t>(k),
+         .offset = static_cast<uint32_t>(float_size * k),
          .datatype = Datatype::kFloat32,
          .count = 1});
   }
-  grid.data = Span<const uint8_t>(owned->data(), owned->size());
+  grid.data = Span<const uint8_t>(reinterpret_cast<const uint8_t*>(owned->data()), static_cast<size_t>(total_bytes));
   grid.anchor = std::move(owned);
 
   if (auto valid = validateGridMap(grid); !valid) {
