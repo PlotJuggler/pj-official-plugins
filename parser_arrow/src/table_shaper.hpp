@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -26,16 +27,33 @@ struct ShapeOptions {
   PJ::sdk::ArrayLimit array_limit;
 };
 
-/// One source column removed because its final type is not ingestible by the current PlotJuggler host.
+/// One source column omitted while planning a host-compatible output schema.
 struct DroppedColumn {
   /// Final output name after flattening and empty-name substitution.
   std::string name;
-  /// Final Arrow C Data format after timestamp casts and variable-width normalization.
+  /// Final Arrow C Data format; a zero-width first-batch list carries an `(empty)` diagnostic marker.
   std::string format;
 };
 
 /// Keep fatal planning errors and runtime dropped-column diagnostics equally bounded.
 inline constexpr std::size_t kMaxDroppedColumnsListed = 8;
+
+/// One non-fatal condition fixed while planning the shaped stream.
+struct ShapeWarning {
+  std::string code;
+  std::string message;
+};
+
+/// Facts discovered only while the host synchronously drains the shaped stream.
+///
+/// Plain members are safe because appendArrowStream drains on its calling thread; the shared ownership exists only
+/// so these facts survive the stream release callback and can be inspected after that call returns.
+struct RuntimeStats {
+  int64_t rows_truncated = 0;
+  std::string first_truncated_column;
+  bool float_axis_magnitude_exceeded = false;
+  std::string float_axis_column;
+};
 
 /// Result of lazy shaping, including the resolved int64-nanosecond timestamp column passed to the host.
 struct ShapedStream {
@@ -43,8 +61,14 @@ struct ShapedStream {
   PJ::sdk::ArrowStreamHolder stream;
   /// Resolved timestamp column name; never empty on success.
   std::string timestamp_column;
-  /// Unsupported source columns removed from the shaped stream and reported to the caller.
+  /// Source columns omitted from the shaped stream and reported to the caller.
   std::vector<DroppedColumn> dropped_columns;
+  /// Non-fatal diagnostics determined before the output schema is exposed.
+  std::vector<ShapeWarning> warnings;
+  /// True when the timestamp column is generated rather than read from the input.
+  bool synthetic_axis = false;
+  /// Drain-time facts shared with the lazy stream state.
+  std::shared_ptr<RuntimeStats> runtime;
 };
 
 /// Lazily rewrite a decoded IPC stream while moving untouched columns and copying only casts, normalizations, and

@@ -29,6 +29,9 @@ namespace pj::parser_arrow::test {
 /// Return whether production shaping permits reconstruction of this logical scalar type.
 [[nodiscard]] bool supportsScalarCopyForTesting(ArrowType type) noexcept;
 
+/// Exercise the production seconds-to-nanoseconds conversion without depending on an Arrow storage type's precision.
+[[nodiscard]] bool floatingSecondsToNanosecondsForTesting(double seconds, int64_t* output) noexcept;
+
 }  // namespace pj::parser_arrow::test
 
 namespace pj::parser_arrow {
@@ -274,6 +277,31 @@ using test::readSchema;
   return oneBatchStream(schema.get(), batch.get());
 }
 
+/// Build a one-batch stream whose explicit `time` axis stores floating-point seconds.
+[[nodiscard]] PJ::sdk::ArrowStreamHolder makeFloatingAxisStream(
+    ArrowType axis_type, const std::vector<double>& seconds) {
+  auto schema = makeSchema({{"time", axis_type}, {"value", NANOARROW_TYPE_DOUBLE}});
+  PJ::sdk::ArrowArrayHolder batch;
+  ArrowError error{};
+  if (ArrowArrayInitFromSchema(batch.out(), schema.get(), &error) != NANOARROW_OK ||
+      ArrowArrayStartAppending(batch.get()->children[0]) != NANOARROW_OK ||
+      ArrowArrayStartAppending(batch.get()->children[1]) != NANOARROW_OK) {
+    throw std::runtime_error("floating axis array initialization failed");
+  }
+  for (const double value : seconds) {
+    if (ArrowArrayAppendDouble(batch.get()->children[0], value) != NANOARROW_OK ||
+        ArrowArrayAppendDouble(batch.get()->children[1], value) != NANOARROW_OK) {
+      throw std::runtime_error("floating axis row append failed");
+    }
+  }
+  batch.get()->length = static_cast<int64_t>(seconds.size());
+  batch.get()->null_count = 0;
+  if (ArrowArrayFinishBuildingDefault(batch.get(), &error) != NANOARROW_OK) {
+    throw std::runtime_error(error.message);
+  }
+  return oneBatchStream(schema.get(), batch.get());
+}
+
 /// Build one row for the two-batch stream whose delayed timestamp conversion eventually fails.
 [[nodiscard]] PJ::sdk::ArrowArrayHolder makeDelayedTimestampBatch(
     const ArrowSchema* schema, int64_t timestamp_ns, int64_t delayed_time) {
@@ -497,6 +525,16 @@ void failingPeekRelease(ArrowArrayStream* stream) noexcept {
   return 0;
 }
 
+/// Return one plan-time warning by stable code so tests remain insensitive to unrelated warning order.
+[[nodiscard]] const ShapeWarning* warningWithCode(const ShapedStream& shaped, std::string_view code) noexcept {
+  for (const auto& warning : shaped.warnings) {
+    if (warning.code == code) {
+      return &warning;
+    }
+  }
+  return nullptr;
+}
+
 /// Re-encode decoded canonical storage as C-Data views because nanoarrow 0.7 cannot decode view IPC batches.
 [[nodiscard]] PJ::sdk::ArrowStreamHolder makeViewStream(PJ::sdk::ArrowStreamHolder storage_stream) {
   auto storage_schema = readSchema(storage_stream);
@@ -600,6 +638,75 @@ TEST(TableShaperTest, DetectsTimestampNamesInPriorityOrder) {
   EXPECT_EQ(shaped->timestamp_column, "time");
 }
 
+/// Name priority applies only after implausibly narrow candidates have been discarded.
+TEST(TableShaperTest, PrefersPlausibleAxisOverHigherPriorityNarrowName) {
+  auto schema = makeSchema({{"timestamp_ns", NANOARROW_TYPE_INT8}, {"time", NANOARROW_TYPE_INT64}});
+  auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  EXPECT_EQ(shaped->timestamp_column, "time");
+  EXPECT_TRUE(shaped->warnings.empty());
+}
+
+/// The named pass accepts exactly the scalar types whose epoch range and precision are plausible.
+TEST(TableShaperTest, AutoDetectsOnlyPlausibleNamedScalarTypes) {
+  struct AxisCase {
+    ArrowType type;
+    bool plausible;
+  };
+  constexpr std::array<AxisCase, 10> kCases = {{
+      {NANOARROW_TYPE_INT8, false},
+      {NANOARROW_TYPE_INT16, false},
+      {NANOARROW_TYPE_INT32, false},
+      {NANOARROW_TYPE_INT64, true},
+      {NANOARROW_TYPE_UINT8, false},
+      {NANOARROW_TYPE_UINT16, false},
+      {NANOARROW_TYPE_UINT32, false},
+      {NANOARROW_TYPE_UINT64, true},
+      {NANOARROW_TYPE_FLOAT, false},
+      {NANOARROW_TYPE_DOUBLE, true},
+  }};
+  for (const auto& axis_case : kCases) {
+    SCOPED_TRACE(ArrowTypeString(axis_case.type));
+    auto schema = makeSchema({{"timestamp_ns", axis_case.type}, {"time", NANOARROW_TYPE_INT64}});
+    auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+    ASSERT_TRUE(shaped) << shaped.error();
+    EXPECT_EQ(shaped->timestamp_column, axis_case.plausible ? "timestamp_ns" : "time");
+    EXPECT_TRUE(shaped->warnings.empty());
+  }
+}
+
+/// A list's element type cannot make the list itself a plausible named axis.
+TEST(TableShaperTest, NeverSelectsNamedListElementAsTimestampAxis) {
+  auto schema = makeSchema(
+      {{"timestamp", NANOARROW_TYPE_LIST}, {"time", NANOARROW_TYPE_INT64}, {"value", NANOARROW_TYPE_DOUBLE}});
+  ASSERT_EQ(ArrowSchemaSetType(schema.get()->children[0]->children[0], NANOARROW_TYPE_INT64), NANOARROW_OK);
+
+  auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  EXPECT_EQ(shaped->timestamp_column, "time");
+}
+
+/// An implausible same-name list cannot mask a later plausible scalar because filtering is candidate-based.
+TEST(TableShaperTest, FindsPlausibleScalarAfterSameNameList) {
+  PJ::sdk::ArrowSchemaHolder schema;
+  ArrowSchemaInit(schema.out());
+  ASSERT_EQ(ArrowSchemaSetTypeStruct(schema.get(), 3), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetTypeFixedSize(schema.get()->children[0], NANOARROW_TYPE_FIXED_SIZE_LIST, 1), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(schema.get()->children[0], "time"), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetType(schema.get()->children[0]->children[0], NANOARROW_TYPE_INT64), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetType(schema.get()->children[1], NANOARROW_TYPE_INT64), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(schema.get()->children[1], "time"), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetType(schema.get()->children[2], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(schema.get()->children[2], "value"), NANOARROW_OK);
+
+  auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  EXPECT_EQ(shaped->timestamp_column, "time");
+  auto output_schema = readSchema(shaped->stream);
+  EXPECT_STREQ(output_schema.get()->children[0]->name, "time[0]");
+  EXPECT_STREQ(output_schema.get()->children[1]->name, "time");
+}
+
 /// Heuristic names match the whole flattened path, so a nested `timestamp_ns` loses to a top-level `ts`.
 TEST(TableShaperTest, MatchesHeuristicNamesAgainstWholeLeafPath) {
   PJ::sdk::ArrowSchemaHolder schema;
@@ -623,6 +730,11 @@ TEST(TableShaperTest, SynthesizesAxisWithoutDetectionCandidate) {
   auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
   ASSERT_TRUE(shaped) << shaped.error();
   EXPECT_EQ(shaped->timestamp_column, "timestamp_ns");
+  EXPECT_TRUE(shaped->synthetic_axis);
+  const auto* warning = warningWithCode(*shaped, "parser_arrow.synthetic_timestamp");
+  ASSERT_NE(warning, nullptr);
+  EXPECT_EQ(
+      warning->message, "no plausible timestamp axis found; using synthetic timestamp_ns with synthetic_interval_ns=0");
   auto output_schema = readSchema(shaped->stream);
   ASSERT_EQ(output_schema.get()->n_children, 3);
   EXPECT_STREQ(output_schema.get()->children[0]->name, "timestamp_ns");
@@ -757,6 +869,10 @@ TEST(TableShaperTest, SynthesizesTimestampColumnForEveryRow) {
   auto shaped = shapeStream(decodeFixture("no_timestamp.arrows"), options);
   ASSERT_TRUE(shaped) << shaped.error();
   EXPECT_EQ(shaped->timestamp_column, "timestamp_ns");
+  EXPECT_TRUE(shaped->synthetic_axis);
+  const auto* warning = warningWithCode(*shaped, "parser_arrow.synthetic_timestamp");
+  ASSERT_NE(warning, nullptr);
+  EXPECT_NE(warning->message.find("synthetic_interval_ns=7"), std::string::npos);
 
   auto schema = readSchema(shaped->stream);
   ASSERT_EQ(schema.get()->n_children, 3);
@@ -1074,10 +1190,12 @@ TEST(TableShaperTest, ExpandsPrimitiveListsWithExactValuesAndNullPadding) {
   EXPECT_TRUE(ArrowArrayViewIsNull(view.get()->children[childIndex(schema.get(), "names[0]")], 2));
 }
 
-/// Variable-list width is fixed from the first batch and later extra elements are ignored.
+/// Variable-list width is fixed from the first batch and later extra elements are truncated and counted.
 TEST(TableShaperTest, UsesFirstBatchWidthAndClampsLaterRows) {
   auto shaped = shapeStream(decodeFixture("lists_two_batches.arrows"), ShapeOptions{});
   ASSERT_TRUE(shaped) << shaped.error();
+  ASSERT_NE(shaped->runtime, nullptr);
+  EXPECT_EQ(shaped->runtime->rows_truncated, 0);
   auto schema = readSchema(shaped->stream);
   ASSERT_EQ(schema.get()->n_children, 3);
   EXPECT_STREQ(schema.get()->children[1]->name, "ranges[0]");
@@ -1087,10 +1205,13 @@ TEST(TableShaperTest, UsesFirstBatchWidthAndClampsLaterRows) {
   auto first_view = test::bindArrayView(schema.get(), first_batch.get());
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(first_view.get()->children[1], 0), 1.0);
   EXPECT_TRUE(ArrowArrayViewIsNull(first_view.get()->children[2], 1));
+  EXPECT_EQ(shaped->runtime->rows_truncated, 0);
   auto second_batch = readBatch(shaped->stream);
   auto second_view = test::bindArrayView(schema.get(), second_batch.get());
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(second_view.get()->children[1], 0), 4.0);
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(second_view.get()->children[2], 0), 5.0);
+  EXPECT_EQ(shaped->runtime->rows_truncated, 1);
+  EXPECT_EQ(shaped->runtime->first_truncated_column, "ranges");
 }
 
 /// Fixed-size lists expand at nested flatten depth while complex-element lists remain dropped.
@@ -1123,6 +1244,9 @@ TEST(TableShaperTest, ClampsWideListToArrayLimit) {
   auto batch = readBatch(shaped->stream);
   auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[4], 0), 4.0);
+  ASSERT_NE(shaped->runtime, nullptr);
+  EXPECT_EQ(shaped->runtime->rows_truncated, 1);
+  EXPECT_EQ(shaped->runtime->first_truncated_column, "wide");
 }
 
 /// Skip policy removes an oversized list as one dropped source column.
@@ -1144,6 +1268,7 @@ TEST(TableShaperTest, SkipsWideListAtArrayLimit) {
 TEST(TableShaperTest, DropsVariableListWhenFirstBatchWidthIsZero) {
   auto shaped = shapeStream(decodeFixture("lists_empty_first_batch.arrows"), ShapeOptions{});
   ASSERT_TRUE(shaped) << shaped.error();
+  ASSERT_NE(shaped->runtime, nullptr);
   ASSERT_EQ(shaped->dropped_columns.size(), 1);
   EXPECT_EQ(shaped->dropped_columns[0].name, "empty");
   EXPECT_EQ(shaped->dropped_columns[0].format, "+l(empty)");
@@ -1152,6 +1277,8 @@ TEST(TableShaperTest, DropsVariableListWhenFirstBatchWidthIsZero) {
   EXPECT_STREQ(schema.get()->children[1]->name, "value");
   EXPECT_EQ(readBatch(shaped->stream).get()->length, 2);
   EXPECT_EQ(readBatch(shaped->stream).get()->length, 1);
+  EXPECT_EQ(shaped->runtime->rows_truncated, 0);
+  EXPECT_TRUE(shaped->runtime->first_truncated_column.empty());
 }
 
 /// Large lists use 64-bit offsets and timestamp/large-string elements reuse scalar normalization.
@@ -1208,10 +1335,15 @@ TEST(TableShaperTest, NormalizesStringViewListElementSchema) {
   EXPECT_STREQ(output_schema.get()->children[1]->format, "u");
 }
 
-/// Narrow integer timestamp axes are widened to int64 without changing units.
+/// An explicitly selected narrow integer axis remains usable and announces its limited range.
 TEST(TableShaperTest, WidensInt32TimestampAxis) {
-  auto shaped = shapeStream(decodeFixture("axis_int32.arrows"), ShapeOptions{});
+  ShapeOptions options;
+  options.timestamp_column = "time";
+  auto shaped = shapeStream(decodeFixture("axis_int32.arrows"), options);
   ASSERT_TRUE(shaped) << shaped.error();
+  const auto* warning = warningWithCode(*shaped, "parser_arrow.narrow_timestamp_axis");
+  ASSERT_NE(warning, nullptr);
+  EXPECT_EQ(warning->message, "explicit timestamp column 'time': int32 can express at most 2147483647 ns since epoch");
   auto schema = readSchema(shaped->stream);
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
   auto batch = readBatch(shaped->stream);
@@ -1219,10 +1351,15 @@ TEST(TableShaperTest, WidensInt32TimestampAxis) {
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 3);
 }
 
-/// Every signed integer width is a valid nanosecond axis, not only int32/int64.
+/// Explicit int16 axes still shape even though automatic detection considers them implausibly narrow.
 TEST(TableShaperTest, WidensInt16TimestampAxis) {
-  auto shaped = shapeStream(makeIntegerAxisStream(NANOARROW_TYPE_INT16, {-3, 7, 32000}), ShapeOptions{});
+  ShapeOptions options;
+  options.timestamp_column = "time";
+  auto shaped = shapeStream(makeIntegerAxisStream(NANOARROW_TYPE_INT16, {-3, 7, 32000}), options);
   ASSERT_TRUE(shaped) << shaped.error();
+  const auto* warning = warningWithCode(*shaped, "parser_arrow.narrow_timestamp_axis");
+  ASSERT_NE(warning, nullptr);
+  EXPECT_EQ(warning->message, "explicit timestamp column 'time': int16 can express at most 32767 ns since epoch");
   auto schema = readSchema(shaped->stream);
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
   auto batch = readBatch(shaped->stream);
@@ -1231,10 +1368,15 @@ TEST(TableShaperTest, WidensInt16TimestampAxis) {
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 32000);
 }
 
-/// Every unsigned integer width is a valid nanosecond axis, not only uint32/uint64.
+/// Explicit uint8 axes still shape and surface their maximum expressible instant.
 TEST(TableShaperTest, WidensUint8TimestampAxis) {
-  auto shaped = shapeStream(makeIntegerAxisStream(NANOARROW_TYPE_UINT8, {0, 200, 255}), ShapeOptions{});
+  ShapeOptions options;
+  options.timestamp_column = "time";
+  auto shaped = shapeStream(makeIntegerAxisStream(NANOARROW_TYPE_UINT8, {0, 200, 255}), options);
   ASSERT_TRUE(shaped) << shaped.error();
+  const auto* warning = warningWithCode(*shaped, "parser_arrow.narrow_timestamp_axis");
+  ASSERT_NE(warning, nullptr);
+  EXPECT_EQ(warning->message, "explicit timestamp column 'time': uint8 can express at most 255 ns since epoch");
   auto schema = readSchema(shaped->stream);
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
   auto batch = readBatch(shaped->stream);
@@ -1243,15 +1385,80 @@ TEST(TableShaperTest, WidensUint8TimestampAxis) {
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 255);
 }
 
-/// Unsigned 32-bit timestamp axes are widened to int64 without changing units.
+/// Explicit uint32 timestamp axes are widened while retaining their range warning.
 TEST(TableShaperTest, WidensUint32TimestampAxis) {
-  auto shaped = shapeStream(decodeFixture("axis_uint32.arrows"), ShapeOptions{});
+  ShapeOptions options;
+  options.timestamp_column = "time";
+  auto shaped = shapeStream(decodeFixture("axis_uint32.arrows"), options);
   ASSERT_TRUE(shaped) << shaped.error();
+  const auto* warning = warningWithCode(*shaped, "parser_arrow.narrow_timestamp_axis");
+  ASSERT_NE(warning, nullptr);
+  EXPECT_EQ(warning->message, "explicit timestamp column 'time': uint32 can express at most 4294967295 ns since epoch");
   auto schema = readSchema(shaped->stream);
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
   auto batch = readBatch(shaped->stream);
   auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 1), 2);
+}
+
+/// Only explicitly selected types outside the plausible set produce a narrow-axis warning.
+TEST(TableShaperTest, WarnsForExactlyTheExplicitNarrowAxisTypes) {
+  struct AxisCase {
+    ArrowType type;
+    bool warns;
+    std::string_view limitation;
+  };
+  constexpr std::array<AxisCase, 10> kCases = {{
+      {NANOARROW_TYPE_INT8, true, "int8 can express at most 127 ns since epoch"},
+      {NANOARROW_TYPE_INT16, true, "int16 can express at most 32767 ns since epoch"},
+      {NANOARROW_TYPE_INT32, true, "int32 can express at most 2147483647 ns since epoch"},
+      {NANOARROW_TYPE_INT64, false, {}},
+      {NANOARROW_TYPE_UINT8, true, "uint8 can express at most 255 ns since epoch"},
+      {NANOARROW_TYPE_UINT16, true, "uint16 can express at most 65535 ns since epoch"},
+      {NANOARROW_TYPE_UINT32, true, "uint32 can express at most 4294967295 ns since epoch"},
+      {NANOARROW_TYPE_UINT64, false, {}},
+      {NANOARROW_TYPE_FLOAT, true,
+       "float has sub-second resolution only for magnitudes below 8388608 seconds since epoch"},
+      {NANOARROW_TYPE_DOUBLE, false, {}},
+  }};
+  ShapeOptions options;
+  options.timestamp_column = "time";
+  for (const auto& axis_case : kCases) {
+    SCOPED_TRACE(ArrowTypeString(axis_case.type));
+    auto schema = makeSchema({{"time", axis_case.type}, {"value", NANOARROW_TYPE_DOUBLE}});
+    auto shaped = shapeStream(emptyStream(schema.get()), options);
+    ASSERT_TRUE(shaped) << shaped.error();
+    const auto* warning = warningWithCode(*shaped, "parser_arrow.narrow_timestamp_axis");
+    EXPECT_EQ(warning != nullptr, axis_case.warns);
+    if (warning != nullptr) {
+      EXPECT_EQ(warning->message, "explicit timestamp column 'time': " + std::string(axis_case.limitation));
+    }
+    EXPECT_EQ(shaped->warnings.size(), axis_case.warns ? 1U : 0U);
+  }
+
+  PJ::sdk::ArrowSchemaHolder timestamp_schema;
+  ArrowSchemaInit(timestamp_schema.out());
+  ASSERT_EQ(ArrowSchemaSetTypeStruct(timestamp_schema.get(), 2), NANOARROW_OK);
+  ASSERT_EQ(
+      ArrowSchemaSetTypeDateTime(
+          timestamp_schema.get()->children[0], NANOARROW_TYPE_TIMESTAMP, NANOARROW_TIME_UNIT_NANO, nullptr),
+      NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(timestamp_schema.get()->children[0], "time"), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetType(timestamp_schema.get()->children[1], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(timestamp_schema.get()->children[1], "value"), NANOARROW_OK);
+  auto shaped = shapeStream(emptyStream(timestamp_schema.get()), options);
+  ASSERT_TRUE(shaped) << shaped.error();
+  EXPECT_TRUE(shaped->warnings.empty());
+}
+
+/// Half-float remains unsupported even when the column is selected explicitly.
+TEST(TableShaperTest, RejectsExplicitHalfFloatTimestampAxis) {
+  ShapeOptions options;
+  options.timestamp_column = "time";
+  auto schema = makeSchema({{"time", NANOARROW_TYPE_HALF_FLOAT}, {"value", NANOARROW_TYPE_DOUBLE}});
+  auto shaped = shapeStream(emptyStream(schema.get()), options);
+  ASSERT_FALSE(shaped);
+  EXPECT_NE(shaped.error().find("unsupported type"), std::string::npos);
 }
 
 /// Floating timestamp axes represent seconds and are rounded after conversion to nanoseconds.
@@ -1268,12 +1475,67 @@ TEST(TableShaperTest, ConvertsDoubleSecondsTimestampAxis) {
 
 /// Float timestamp axes use the same seconds-to-rounded-nanoseconds contract.
 TEST(TableShaperTest, ConvertsFloatSecondsTimestampAxis) {
-  auto shaped = shapeStream(decodeFixture("axis_float.arrows"), ShapeOptions{});
+  ShapeOptions options;
+  options.timestamp_column = "time";
+  auto shaped = shapeStream(decodeFixture("axis_float.arrows"), options);
   ASSERT_TRUE(shaped) << shaped.error();
+  const auto* warning = warningWithCode(*shaped, "parser_arrow.narrow_timestamp_axis");
+  ASSERT_NE(warning, nullptr);
+  EXPECT_EQ(
+      warning->message,
+      "explicit timestamp column 'time': float has sub-second resolution only for magnitudes below 8388608 seconds "
+      "since epoch");
   auto schema = readSchema(shaped->stream);
   auto batch = readBatch(shaped->stream);
   auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 0), 1'500'000'000);
+}
+
+/// Float32 epoch-scale inputs collapse before conversion and record the precision-risk column during the drain.
+TEST(TableShaperTest, RecordsFloat32AxisMagnitudeAndCollapsedTimestamps) {
+  ShapeOptions options;
+  options.timestamp_column = "time";
+  auto shaped = shapeStream(makeFloatingAxisStream(NANOARROW_TYPE_FLOAT, {1.7e9, 1.7e9 + 0.5, 1.7e9 + 1.0}), options);
+  ASSERT_TRUE(shaped) << shaped.error();
+  ASSERT_NE(shaped->runtime, nullptr);
+  EXPECT_FALSE(shaped->runtime->float_axis_magnitude_exceeded);
+
+  auto schema = readSchema(shaped->stream);
+  auto batch = readBatch(shaped->stream);
+  auto view = test::bindArrayView(schema.get(), batch.get());
+  const int64_t collapsed = ArrowArrayViewGetIntUnsafe(view.get()->children[0], 0);
+  EXPECT_EQ(collapsed, 1'700'000'000'000'000'000);
+  EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 1), collapsed);
+  EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), collapsed);
+  EXPECT_TRUE(shaped->runtime->float_axis_magnitude_exceeded);
+  EXPECT_EQ(shaped->runtime->float_axis_column, "time");
+}
+
+/// The float32 precision diagnostic begins at exactly 2^23 seconds, where spacing reaches one second.
+TEST(TableShaperTest, DetectsFloat32AxisMagnitudeAtExactBoundary) {
+  ShapeOptions options;
+  options.timestamp_column = "time";
+
+  auto below = shapeStream(makeFloatingAxisStream(NANOARROW_TYPE_FLOAT, {8'388'607.0}), options);
+  ASSERT_TRUE(below) << below.error();
+  ASSERT_NE(below->runtime, nullptr);
+  EXPECT_EQ(readBatch(below->stream).get()->length, 1);
+  EXPECT_FALSE(below->runtime->float_axis_magnitude_exceeded);
+  EXPECT_TRUE(below->runtime->float_axis_column.empty());
+
+  auto boundary = shapeStream(makeFloatingAxisStream(NANOARROW_TYPE_FLOAT, {8'388'608.0}), options);
+  ASSERT_TRUE(boundary) << boundary.error();
+  ASSERT_NE(boundary->runtime, nullptr);
+  EXPECT_EQ(readBatch(boundary->stream).get()->length, 1);
+  EXPECT_TRUE(boundary->runtime->float_axis_magnitude_exceeded);
+  EXPECT_EQ(boundary->runtime->float_axis_column, "time");
+
+  auto negative_boundary = shapeStream(makeFloatingAxisStream(NANOARROW_TYPE_FLOAT, {-8'388'608.0}), options);
+  ASSERT_TRUE(negative_boundary) << negative_boundary.error();
+  ASSERT_NE(negative_boundary->runtime, nullptr);
+  EXPECT_EQ(readBatch(negative_boundary->stream).get()->length, 1);
+  EXPECT_TRUE(negative_boundary->runtime->float_axis_magnitude_exceeded);
+  EXPECT_EQ(negative_boundary->runtime->float_axis_column, "time");
 }
 
 /// Fractional nanoseconds are rounded symmetrically instead of truncated.
@@ -1286,6 +1548,15 @@ TEST(TableShaperTest, RoundsFractionalNanosecondTimestampAxis) {
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 0), 2);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 1), -2);
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 2);
+}
+
+/// Splitting integral and fractional seconds preserves an exactly representable fraction at epoch scale.
+TEST(TableShaperTest, ConvertsFloatingSecondsWithPortableIntegerArithmetic) {
+  int64_t converted = 0;
+  ASSERT_TRUE(test::floatingSecondsToNanosecondsForTesting(1'700'000'000.125, &converted));
+  EXPECT_EQ(converted, 1'700'000'000'125'000'000);
+  ASSERT_TRUE(test::floatingSecondsToNanosecondsForTesting(-1.6e-9, &converted));
+  EXPECT_EQ(converted, -2);
 }
 
 /// Non-finite floating timestamp seconds fail instead of invoking an invalid integer conversion.
@@ -1346,10 +1617,12 @@ TEST(TableShaperTest, RejectsUint64TimestampAboveInt64Max) {
       ArrowArrayStreamGetLastError(shaped->stream.get()), "parser_arrow: timestamp column 'time' exceeds INT64_MAX");
 }
 
-/// Unsupported timestamp types are rejected before a shaped schema is exposed.
+/// Unsupported explicitly selected timestamp types are rejected before a shaped schema is exposed.
 TEST(TableShaperTest, RejectsStringTimestampAxisDuringPlanning) {
+  ShapeOptions options;
+  options.timestamp_column = "time";
   auto schema = makeSchema({{"time", NANOARROW_TYPE_STRING}, {"value", NANOARROW_TYPE_DOUBLE}});
-  auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+  auto shaped = shapeStream(emptyStream(schema.get()), options);
   ASSERT_FALSE(shaped);
   EXPECT_NE(shaped.error().find("timestamp column 'time' has unsupported type 'u'"), std::string::npos);
 }

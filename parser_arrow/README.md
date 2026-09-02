@@ -36,15 +36,19 @@ is no such leaf and only top-level fields remain). Selection is ordered:
    answers to both `sensor.time` and `sensor/time`. A name matching no leaf is
    an error naming the column as the configuration spelled it.
 2. Automatic detection: the first Arrow `TIMESTAMP`-typed leaf in schema order,
-   then the first leaf whose full flattened name matches this name priority:
-   `timestamp_ns`, `recording_timestamp_ns`, `timestamp`, `time`, `ts`.
+   then the first scalar leaf whose full flattened name matches this name
+   priority: `timestamp_ns`, `recording_timestamp_ns`, `timestamp`, `time`,
+   `ts`. A name match is plausible only when its source type is `TIMESTAMP`,
+   `int64`, `uint64`, or `double`; narrower integers, `uint32`, and `float` are
+   not selected automatically.
 3. Synthesis of an int64 `timestamp_ns` field as
    `message_timestamp_ns + row_index * synthetic_interval_ns`. The row index
-   is stream-wide, not batch-local.
+   is stream-wide, not batch-local. Runtime diagnostics announce the synthetic
+   axis as `parser_arrow.synthetic_timestamp` and name the configured interval.
 
-An expanded list is never detected by type, because a `list<timestamp>` is not
-itself a timestamp; a list named like an axis is still selected and then
-rejected for its unsupported type.
+Automatic candidates are scalar leaves only. An expanded list is never selected
+by its element type or by its source list name, so `list<int64>` named
+`timestamp` cannot displace a scalar `time` axis.
 
 The selected axis is emitted as int64 nanoseconds. Accepted source types are:
 
@@ -60,6 +64,21 @@ A null axis value, a non-finite floating value, or any conversion or synthesis
 overflow is an error; values are never wrapped. Synthesis exists because the
 host interprets an empty timestamp-column name as a request to use row indices,
 which would discard the transport message time.
+
+Explicit configuration deliberately remains more permissive than automatic
+detection. Selecting `int8`, `int16`, `int32`, `uint8`, `uint16`, `uint32`, or
+`float` emits `parser_arrow.narrow_timestamp_axis`; integer messages state the
+maximum representable nanosecond instant, while the float message states that
+sub-second resolution is limited to magnitudes below 2^23 seconds. If an
+explicit float32 axis reaches `|seconds| >= 2^23` while the stream is drained,
+the parser also reports `parser_arrow.float_axis_precision`. A `double` remains
+plausible, but its spacing at the present epoch is about 238 ns, so it cannot
+represent every individual nanosecond there. `HALF_FLOAT` is not an accepted
+axis type, even explicitly.
+
+Plan-time and drain-time warnings use change-based deduplication: the same
+ordered set of diagnostic codes and messages is emitted once until that set
+changes.
 
 ## Column shaping and host support
 
@@ -104,14 +123,18 @@ The output width is fixed before the shaped schema is exposed:
 - A variable `list` or `large_list` uses the maximum list length in the first
   record batch of that message. The parser peeks and buffers that batch, then
   returns it as the wrapper stream's first batch. Later wider rows are limited
-  to the already-selected width.
+  to the already-selected width. After draining, the parser reports their count
+  and the first affected column as `parser_arrow.truncated_lists`.
 - An all-null/empty first batch selects width zero. The list emits no scalar
-  columns and is reported in `dropped_columns` with an empty marker such as
-  `+l(empty)`, even if a later batch contains values.
+  columns and is reported once at plan time with the explicit reason `empty in
+  first batch`, even if a later batch contains values. Because the source list
+  is absent from the output plan, later batches are not monitored for
+  truncation. This is a known limitation. Its reason is kept separate from the
+  `unsupported host type` wording used for genuinely unsupported columns.
 
 Null list rows produce nulls in every expanded column. Short rows are padded
-with nulls; extra elements are ignored. A null struct ancestor also makes every
-expanded descendant null.
+with nulls; extra elements are truncated and counted. A null struct ancestor
+also makes every expanded descendant null.
 
 `max_array_size` and `array_policy` use PlotJuggler's cross-parser `ArrayLimit`
 contract. The default keeps at most the first 500 elements. `max_array_size: 0`

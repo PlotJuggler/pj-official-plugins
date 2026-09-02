@@ -179,16 +179,100 @@ TEST(ArrowParserTest, AppliesArrayLimitConfigToListExpansion) {
   EXPECT_EQ(
       fixture.arrow_write_host.streams()[0].schema_names,
       (std::vector<std::string>{"timestamp_ns", "wide[0]", "wide[1]", "wide[2]", "wide[3]", "value"}));
-  EXPECT_TRUE(fixture.runtime_host.diagnostics().empty());
+  ASSERT_EQ(fixture.runtime_host.diagnostics().size(), 1);
+  EXPECT_EQ(fixture.runtime_host.diagnostics()[0].stable_code, "parser_arrow.truncated_lists");
+  EXPECT_EQ(fixture.runtime_host.diagnostics()[0].occurrences, 1);
+  EXPECT_NE(fixture.runtime_host.diagnostics()[0].message.find("affected column 'wide'"), std::string::npos);
 
   ASSERT_TRUE(fixture.handle.loadConfig(R"({"max_array_size":4,"array_policy":"skip"})"));
   status = parseFixture(fixture, "lists_wide.arrows");
   ASSERT_TRUE(status) << status.error();
   ASSERT_EQ(fixture.arrow_write_host.streams().size(), 2);
   EXPECT_EQ(fixture.arrow_write_host.streams()[1].schema_names, (std::vector<std::string>{"timestamp_ns", "value"}));
-  ASSERT_EQ(fixture.runtime_host.diagnostics().size(), 1);
-  EXPECT_NE(fixture.runtime_host.diagnostics()[0].message.find("wide:+l"), std::string::npos);
+  ASSERT_EQ(fixture.runtime_host.diagnostics().size(), 2);
+  EXPECT_EQ(fixture.runtime_host.diagnostics()[1].stable_code, "parser_arrow.dropped_columns");
+  EXPECT_NE(fixture.runtime_host.diagnostics()[1].message.find("wide:+l"), std::string::npos);
   expectOnlyArrowWrites(fixture.arrow_write_host, 2);
+}
+
+/// Drain-time list statistics survive stream release and identify the first column with a wider later batch.
+TEST(ArrowParserTest, ReportsRowsTruncatedInLaterListBatch) {
+  ArrowParserFixture fixture;
+  fixture.setUp(true, true);
+  auto status = parseFixture(fixture, "lists_two_batches.arrows");
+  ASSERT_TRUE(status) << status.error();
+
+  ASSERT_EQ(fixture.arrow_write_host.streams().size(), 1);
+  EXPECT_EQ(fixture.arrow_write_host.streams()[0].batch_row_counts, (std::vector<int64_t>{2, 1}));
+  ASSERT_EQ(fixture.runtime_host.diagnostics().size(), 1);
+  const auto& diagnostic = fixture.runtime_host.diagnostics()[0];
+  EXPECT_EQ(diagnostic.level, PJ::sdk::ParserDiagnosticLevel::Warning);
+  EXPECT_EQ(diagnostic.stable_code, "parser_arrow.truncated_lists");
+  EXPECT_EQ(diagnostic.occurrences, 1);
+  EXPECT_EQ(diagnostic.message, "Arrow list rows were truncated to the planned width; first affected column 'ranges'");
+  const std::string expected_message = diagnostic.message;
+
+  status = parseFixture(fixture, "lists_two_batches.arrows");
+  ASSERT_TRUE(status) << status.error();
+  EXPECT_EQ(fixture.runtime_host.diagnostics().size(), 1);
+
+  status = parseFixture(fixture, "flat.arrows");
+  ASSERT_TRUE(status) << status.error();
+  EXPECT_EQ(fixture.runtime_host.diagnostics().size(), 1);
+
+  status = parseFixture(fixture, "lists_two_batches.arrows");
+  ASSERT_TRUE(status) << status.error();
+  ASSERT_EQ(fixture.runtime_host.diagnostics().size(), 2);
+  EXPECT_EQ(fixture.runtime_host.diagnostics()[1].stable_code, "parser_arrow.truncated_lists");
+  EXPECT_EQ(fixture.runtime_host.diagnostics()[1].message, expected_message);
+  expectOnlyArrowWrites(fixture.arrow_write_host, 4);
+}
+
+/// Occurrence counts are reported but excluded from the required `(code, message)` change-dedup key.
+TEST(ArrowParserTest, DeduplicatesTruncationWhenOnlyCountChanges) {
+  ArrowParserFixture fixture;
+  fixture.setUp(true, true);
+  ASSERT_TRUE(fixture.handle.loadConfig(R"({"max_array_size":2,"array_policy":"clamp"})"));
+
+  auto status = parseFixture(fixture, "lists.arrows");
+  ASSERT_TRUE(status) << status.error();
+  ASSERT_EQ(fixture.runtime_host.diagnostics().size(), 1);
+  EXPECT_EQ(fixture.runtime_host.diagnostics()[0].stable_code, "parser_arrow.truncated_lists");
+  EXPECT_EQ(fixture.runtime_host.diagnostics()[0].occurrences, 3);
+
+  ASSERT_TRUE(fixture.handle.loadConfig(R"({"max_array_size":1,"array_policy":"clamp"})"));
+  status = parseFixture(fixture, "lists.arrows");
+  ASSERT_TRUE(status) << status.error();
+  EXPECT_EQ(fixture.runtime_host.diagnostics().size(), 1);
+
+  status = parseFixture(fixture, "flat.arrows");
+  ASSERT_TRUE(status) << status.error();
+  EXPECT_EQ(fixture.runtime_host.diagnostics().size(), 1);
+
+  status = parseFixture(fixture, "lists.arrows");
+  ASSERT_TRUE(status) << status.error();
+  ASSERT_EQ(fixture.runtime_host.diagnostics().size(), 2);
+  EXPECT_EQ(fixture.runtime_host.diagnostics()[1].stable_code, "parser_arrow.truncated_lists");
+  EXPECT_EQ(fixture.runtime_host.diagnostics()[1].occurrences, 6);
+  expectOnlyArrowWrites(fixture.arrow_write_host, 4);
+}
+
+/// A width-zero list has a distinct plan-time reason and is not mistaken for an observed later-row truncation.
+TEST(ArrowParserTest, ReportsEmptyFirstBatchListReasonWithoutTruncation) {
+  ArrowParserFixture fixture;
+  fixture.setUp(true, true);
+  const auto status = parseFixture(fixture, "lists_empty_first_batch.arrows");
+  ASSERT_TRUE(status) << status.error();
+
+  ASSERT_EQ(fixture.arrow_write_host.streams().size(), 1);
+  EXPECT_EQ(fixture.arrow_write_host.streams()[0].batch_row_counts, (std::vector<int64_t>{2, 1}));
+  ASSERT_EQ(fixture.runtime_host.diagnostics().size(), 1);
+  const auto& diagnostic = fixture.runtime_host.diagnostics()[0];
+  EXPECT_EQ(diagnostic.stable_code, "parser_arrow.dropped_columns");
+  EXPECT_NE(diagnostic.message.find("empty in first batch"), std::string::npos);
+  EXPECT_NE(diagnostic.message.find("empty:+l(empty)"), std::string::npos);
+  EXPECT_EQ(diagnostic.message.find("unsupported host type"), std::string::npos);
+  expectOnlyArrowWrites(fixture.arrow_write_host, 1);
 }
 
 /// Record-batch boundaries survive decoding and shaping.
@@ -240,19 +324,31 @@ TEST(ArrowParserTest, RemovesNestedStructWhenFlatteningIsDisabled) {
 /// Missing time axes are synthesized from the message timestamp and configured interval.
 TEST(ArrowParserTest, SynthesizesTimestampValuesUsingConfiguredInterval) {
   ArrowParserFixture fixture;
-  fixture.setUp();
+  fixture.setUp(true, true);
   ASSERT_TRUE(fixture.handle.loadConfig(R"({"synthetic_interval_ns":7})"));
   auto status = parseFixture(fixture, "no_timestamp.arrows", 5000);
   ASSERT_TRUE(status) << status.error();
+  ASSERT_EQ(fixture.runtime_host.diagnostics().size(), 1);
+  EXPECT_EQ(fixture.runtime_host.diagnostics()[0].stable_code, "parser_arrow.synthetic_timestamp");
+  EXPECT_NE(fixture.runtime_host.diagnostics()[0].message.find("synthetic_interval_ns=7"), std::string::npos);
+
+  status = parseFixture(fixture, "no_timestamp.arrows", 5000);
+  ASSERT_TRUE(status) << status.error();
+  EXPECT_EQ(fixture.runtime_host.diagnostics().size(), 1);
+
   ASSERT_TRUE(fixture.handle.loadConfig("{}"));
   status = parseFixture(fixture, "no_timestamp.arrows", 5000);
   ASSERT_TRUE(status) << status.error();
 
-  ASSERT_EQ(fixture.arrow_write_host.streams().size(), 2);
+  ASSERT_EQ(fixture.arrow_write_host.streams().size(), 3);
   EXPECT_EQ(fixture.arrow_write_host.streams()[0].timestamp_column, "timestamp_ns");
   EXPECT_EQ(fixture.arrow_write_host.streams()[0].timestamp_values, (std::vector<int64_t>{5000, 5007, 5014}));
-  EXPECT_EQ(fixture.arrow_write_host.streams()[1].timestamp_values, (std::vector<int64_t>{5000, 5000, 5000}));
-  expectOnlyArrowWrites(fixture.arrow_write_host, 2);
+  EXPECT_EQ(fixture.arrow_write_host.streams()[1].timestamp_values, (std::vector<int64_t>{5000, 5007, 5014}));
+  EXPECT_EQ(fixture.arrow_write_host.streams()[2].timestamp_values, (std::vector<int64_t>{5000, 5000, 5000}));
+  ASSERT_EQ(fixture.runtime_host.diagnostics().size(), 2);
+  EXPECT_EQ(fixture.runtime_host.diagnostics()[1].stable_code, "parser_arrow.synthetic_timestamp");
+  EXPECT_NE(fixture.runtime_host.diagnostics()[1].message.find("synthetic_interval_ns=0"), std::string::npos);
+  expectOnlyArrowWrites(fixture.arrow_write_host, 3);
 }
 
 /// Typed Arrow timestamps are normalized to int64 nanoseconds before ingest.
@@ -268,6 +364,29 @@ TEST(ArrowParserTest, NormalizesTypedTimestampColumnToInt64) {
   EXPECT_EQ(formatFor(stream, "stamp"), "l");
   EXPECT_EQ(stream.timestamp_values, (std::vector<int64_t>{1000, 2000, 3000}));
   expectOnlyArrowWrites(fixture.arrow_write_host, 1);
+}
+
+/// An explicit narrow axis remains ingestible and its plan warning is deduplicated while unchanged.
+TEST(ArrowParserTest, ReportsExplicitNarrowTimestampAxisOnce) {
+  ArrowParserFixture fixture;
+  fixture.setUp(true, true);
+  ASSERT_TRUE(fixture.handle.loadConfig(R"({"timestamp_column":"time"})"));
+
+  auto status = parseFixture(fixture, "axis_uint32.arrows");
+  ASSERT_TRUE(status) << status.error();
+  ASSERT_EQ(fixture.arrow_write_host.streams().size(), 1);
+  EXPECT_EQ(fixture.arrow_write_host.streams()[0].timestamp_values, (std::vector<int64_t>{1, 2, 3}));
+  ASSERT_EQ(fixture.runtime_host.diagnostics().size(), 1);
+  const auto& diagnostic = fixture.runtime_host.diagnostics()[0];
+  EXPECT_EQ(diagnostic.level, PJ::sdk::ParserDiagnosticLevel::Warning);
+  EXPECT_EQ(diagnostic.stable_code, "parser_arrow.narrow_timestamp_axis");
+  EXPECT_EQ(
+      diagnostic.message, "explicit timestamp column 'time': uint32 can express at most 4294967295 ns since epoch");
+
+  status = parseFixture(fixture, "axis_uint32.arrows");
+  ASSERT_TRUE(status) << status.error();
+  EXPECT_EQ(fixture.runtime_host.diagnostics().size(), 1);
+  expectOnlyArrowWrites(fixture.arrow_write_host, 2);
 }
 
 /// A configured timestamp column must exist before a stream reaches the host.

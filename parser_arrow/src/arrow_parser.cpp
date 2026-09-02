@@ -16,42 +16,121 @@
 namespace {
 
 using pj::parser_arrow::DroppedColumn;
+using pj::parser_arrow::ShapeWarning;
 
-/// Return whether two dropped-column lists contain identical name/format pairs in the same order.
-[[nodiscard]] bool sameDroppedColumns(
-    const std::vector<DroppedColumn>& left, const std::vector<DroppedColumn>& right) noexcept {
-  if (left.size() != right.size()) {
+/// One diagnostic plus its aggregated occurrence count, which is intentionally excluded from the dedup key.
+struct PendingDiagnostic {
+  ShapeWarning warning;
+  uint64_t occurrences = 1;
+};
+
+/// Return whether two diagnostic lists contain identical code/message pairs in the same order.
+[[nodiscard]] bool sameDiagnostics(
+    const std::vector<PendingDiagnostic>& current, const std::vector<ShapeWarning>& previous) noexcept {
+  if (current.size() != previous.size()) {
     return false;
   }
   return std::equal(
-      left.begin(), left.end(), right.begin(), [](const DroppedColumn& left_column, const DroppedColumn& right_column) {
-        return left_column.name == right_column.name && left_column.format == right_column.format;
+      current.begin(), current.end(), previous.begin(),
+      [](const PendingDiagnostic& current_diagnostic, const ShapeWarning& previous_warning) {
+        return current_diagnostic.warning.code == previous_warning.code &&
+               current_diagnostic.warning.message == previous_warning.message;
       });
+}
+
+/// Empty-width variable lists carry a format sentinel so their planning reason stays distinct from host rejection.
+[[nodiscard]] bool wasEmptyInFirstBatch(const DroppedColumn& column) noexcept {
+  constexpr std::string_view marker = "(empty)";
+  return column.format.size() >= marker.size() && column.format.ends_with(marker);
 }
 
 /// Build the bounded human-readable warning for Arrow columns removed before host ingest.
 [[nodiscard]] std::string droppedColumnsMessage(const std::vector<DroppedColumn>& columns) {
+  bool has_unsupported = false;
+  bool has_empty_first_batch = false;
+  for (const auto& column : columns) {
+    if (wasEmptyInFirstBatch(column)) {
+      has_empty_first_batch = true;
+    } else {
+      has_unsupported = true;
+    }
+  }
+
   std::string message = std::to_string(columns.size());
-  message += " column(s) removed from the Arrow stream (unsupported host type): ";
-  message += pj::parser_arrow::formatDroppedColumns(columns, pj::parser_arrow::kMaxDroppedColumnsListed);
+  if (!has_empty_first_batch) {
+    message += " column(s) removed from the Arrow stream (unsupported host type): ";
+    message += pj::parser_arrow::formatDroppedColumns(columns, pj::parser_arrow::kMaxDroppedColumnsListed);
+    return message;
+  }
+  if (!has_unsupported) {
+    message += " column(s) removed from the Arrow stream (empty in first batch): ";
+    message += pj::parser_arrow::formatDroppedColumns(columns, pj::parser_arrow::kMaxDroppedColumnsListed);
+    return message;
+  }
+
+  message += " column(s) removed from the Arrow stream: ";
+  const std::size_t listed = std::min(columns.size(), pj::parser_arrow::kMaxDroppedColumnsListed);
+  for (std::size_t index = 0; index < listed; ++index) {
+    if (index != 0) {
+      message += ", ";
+    }
+    const auto& column = columns[index];
+    message += column.name + ":" + column.format;
+    message += wasEmptyInFirstBatch(column) ? " (empty in first batch)" : " (unsupported host type)";
+  }
+  if (listed < columns.size()) {
+    message += ", …";
+  }
   return message;
 }
 
-/// Report a changed non-empty dropped-column set without making diagnostic failures fatal to parsing.
-void reportDroppedColumnsIfChanged(
-    const PJ::sdk::ParserRuntimeHostView& runtime_host, const std::vector<DroppedColumn>& columns,
-    std::vector<DroppedColumn>& last_columns) noexcept {
+/// Report a changed ordered diagnostic set without making allocation or host-reporting failures fatal to parsing.
+void reportDiagnosticsIfChanged(
+    const PJ::sdk::ParserRuntimeHostView& runtime_host, const pj::parser_arrow::ShapedStream& shaped,
+    std::vector<ShapeWarning>& last_diagnostics) noexcept {
   try {
-    if (sameDroppedColumns(columns, last_columns)) {
+    std::vector<PendingDiagnostic> diagnostics;
+    diagnostics.reserve(shaped.warnings.size() + 3);
+    for (const auto& warning : shaped.warnings) {
+      diagnostics.push_back(PendingDiagnostic{warning});
+    }
+    if (!shaped.dropped_columns.empty()) {
+      diagnostics.push_back(
+          PendingDiagnostic{ShapeWarning{
+              .code = "parser_arrow.dropped_columns", .message = droppedColumnsMessage(shaped.dropped_columns)}});
+    }
+    if (shaped.runtime->rows_truncated > 0) {
+      diagnostics.push_back(
+          PendingDiagnostic{
+              ShapeWarning{
+                  .code = "parser_arrow.truncated_lists",
+                  .message = "Arrow list rows were truncated to the planned width; first affected column '" +
+                             shaped.runtime->first_truncated_column + "'"},
+              static_cast<uint64_t>(shaped.runtime->rows_truncated)});
+    }
+    if (shaped.runtime->float_axis_magnitude_exceeded) {
+      diagnostics.push_back(
+          PendingDiagnostic{ShapeWarning{
+              .code = "parser_arrow.float_axis_precision",
+              .message = "float32 timestamp axis '" + shaped.runtime->float_axis_column +
+                         "' reached |seconds| >= 2^23; float32 spacing is at least one second at this magnitude"}});
+    }
+
+    if (sameDiagnostics(diagnostics, last_diagnostics)) {
       return;
     }
-    auto next_columns = columns;
-    if (!next_columns.empty()) {
-      const std::string message = droppedColumnsMessage(next_columns);
-      runtime_host.reportDiagnostic(
-          PJ::sdk::ParserDiagnosticLevel::Warning, "parser_arrow.dropped_columns", message, 1);
+
+    std::vector<ShapeWarning> next_diagnostics;
+    next_diagnostics.reserve(diagnostics.size());
+    for (const auto& diagnostic : diagnostics) {
+      next_diagnostics.push_back(diagnostic.warning);
     }
-    last_columns.swap(next_columns);
+    for (const auto& diagnostic : diagnostics) {
+      runtime_host.reportDiagnostic(
+          PJ::sdk::ParserDiagnosticLevel::Warning, diagnostic.warning.code, diagnostic.warning.message,
+          diagnostic.occurrences);
+    }
+    last_diagnostics.swap(next_diagnostics);
   } catch (...) {
     // Diagnostics are non-fatal: allocation failure must not reject an otherwise ingestible message.
   }
@@ -132,13 +211,14 @@ class ArrowParser : public PJ::MessageParserPluginBase {
       return PJ::unexpected(std::move(shaped).error());
     }
 
-    reportDroppedColumnsIfChanged(parserRuntimeHost(), shaped->dropped_columns, last_dropped_columns_);
-    return writeHost().appendArrowStream(std::move(shaped->stream), shaped->timestamp_column);
+    auto status = writeHost().appendArrowStream(std::move(shaped->stream), shaped->timestamp_column);
+    reportDiagnosticsIfChanged(parserRuntimeHost(), *shaped, last_diagnostics_);
+    return status;
   }
 
  private:
   ArrowParserConfig config_;
-  std::vector<DroppedColumn> last_dropped_columns_;
+  std::vector<ShapeWarning> last_diagnostics_;
 };
 
 }  // namespace
