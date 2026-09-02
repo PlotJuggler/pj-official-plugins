@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <any>
 #include <array>
 #include <cmath>
@@ -3035,6 +3036,53 @@ TEST(RosParserTest, GenericHeaderedMessageEmitsCombinedHeaderStamp) {
   const auto* nsec = findField(row, "/header/stamp/nanosec");
   ASSERT_NE(nsec, nullptr);
   EXPECT_DOUBLE_EQ(nsec->numeric, 500000000.0);
+  const auto* frame = findField(row, "/header/frame_id");
+  ASSERT_NE(frame, nullptr);
+  EXPECT_EQ(frame->string_value, "odom");
+}
+
+// ROS 1 has no split sec/nanosec leaves: its `time` builtin already flattens to a
+// single /header/stamp (seconds), so the combined series must not be added on top.
+// The datastore rejects a record carrying one field name twice, which silently
+// dropped EVERY headered ROS 1 message.
+TEST(RosParserTest, Ros1HeaderedMessageEmitsHeaderStampOnce) {
+  static const char* kRos1HeaderedDef =
+      "Header header\nfloat64 value\n"
+      "================\nMSG: std_msgs/Header\nuint32 seq\ntime stamp\nstring frame_id\n";
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"serialization":"ros1"})"));
+  ASSERT_TRUE(f.bindSchema("diag_msgs/Headered", kRos1HeaderedDef, "ros1msg"));
+
+  // ROS 1 wire format: raw little-endian, no CDR encapsulation header.
+  std::vector<uint8_t> payload;
+  auto put = [&payload](const auto& value) {
+    const auto* bytes = reinterpret_cast<const uint8_t*>(&value);
+    payload.insert(payload.end(), bytes, bytes + sizeof(value));
+  };
+  put(uint32_t{7});          // header.seq
+  put(uint32_t{2});          // header.stamp.sec
+  put(uint32_t{500000000});  // header.stamp.nsec  -> 2.5 s
+  const std::string frame_id = "odom";
+  put(static_cast<uint32_t>(frame_id.size()));
+  payload.insert(payload.end(), frame_id.begin(), frame_id.end());
+  put(double{1.0});  // value
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+
+  const auto stamp_columns = std::count_if(
+      row.fields.begin(), row.fields.end(), [](const auto& field) { return field.name == "/header/stamp"; });
+  EXPECT_EQ(stamp_columns, 1);
+
+  const auto* stamp = findField(row, "/header/stamp");
+  ASSERT_NE(stamp, nullptr);
+  EXPECT_DOUBLE_EQ(stamp->numeric, 2.5);
+  const auto* seq = findField(row, "/header/seq");
+  ASSERT_NE(seq, nullptr);
+  EXPECT_DOUBLE_EQ(seq->numeric, 7.0);
   const auto* frame = findField(row, "/header/frame_id");
   ASSERT_NE(frame, nullptr);
   EXPECT_EQ(frame->string_value, "odom");
