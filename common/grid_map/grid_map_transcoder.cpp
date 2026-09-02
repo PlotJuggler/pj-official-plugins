@@ -166,7 +166,7 @@ Expected<sdk::GridMap> transcodeGridMap(const GridMapMessage& msg) {
   return grid;
 }
 
-sdk::PointField::Datatype mapFoxglovePackedElementType(uint64_t type) {
+sdk::PointField::Datatype foxgloveNumericTypeToPointField(uint64_t type) {
   switch (type) {
     case 1:
       return Datatype::kUint8;
@@ -194,17 +194,14 @@ Expected<void> finalizeFoxgloveGrid(sdk::GridMap& grid) {
     grid.row_count = 0;
   } else {
     if (grid.row_stride == 0) {
-      return unexpected(std::string("Grid: row_stride is 0 but data is not empty"));
+      return unexpected(std::string("row_stride is 0 but data is not empty"));
     }
     if (grid.data.size() % grid.row_stride != 0) {
-      return unexpected(std::string("Grid: data length is not a whole number of rows"));
+      return unexpected(std::string("data length is not a whole number of rows"));
     }
     grid.row_count = static_cast<uint32_t>(grid.data.size() / grid.row_stride);
   }
-  if (auto valid = validateGridMap(grid); !valid) {
-    return unexpected(std::string("Grid: ") + std::move(valid).error());
-  }
-  return okStatus();
+  return validateGridMap(grid);
 }
 
 }  // namespace grid_map

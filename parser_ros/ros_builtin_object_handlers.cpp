@@ -1384,14 +1384,14 @@ PJ::Expected<PJ::sdk::GridMap> RosParser::readFoxgloveGrid(PJ::sdk::BufferAnchor
   for (auto& field : grid.fields) {
     deserializer_->deserializeString(field.name);
     field.offset = deserializer_->deserializeUInt32();
-    field.datatype = PJ::grid_map::mapFoxglovePackedElementType(readU8(*deserializer_));
+    field.datatype = PJ::grid_map::foxgloveNumericTypeToPointField(readU8(*deserializer_));
     field.count = 1;
   }
   const auto data_span = readByteSequence();
   grid.data = PJ::Span<const uint8_t>(data_span.data(), data_span.size());
   grid.anchor = std::move(anchor);
   if (auto ok = PJ::grid_map::finalizeFoxgloveGrid(grid); !ok) {
-    return PJ::unexpected(std::move(ok).error());
+    return PJ::unexpected(std::string("Grid: ") + std::move(ok).error());
   }
   return grid;
 }

@@ -13,73 +13,9 @@
 #include "foxglove_wire_util.hpp"
 
 namespace pj_protobuf {
-namespace {
 
 namespace gpio = google::protobuf::io;
 using namespace pj_protobuf::wire;
-
-using Datatype = PJ::sdk::PointField::Datatype;
-
-/// Foxglove NumericType -> canonical PJ datatype. Swaps signed/unsigned relative
-/// to ROS/SDK (UINT8=1 here vs INT8=1 there), identical to the PointCloud codec.
-[[nodiscard]] Datatype mapFoxgloveNumericType(uint64_t t) {
-  switch (t) {
-    case 1:
-      return Datatype::kUint8;
-    case 2:
-      return Datatype::kInt8;
-    case 3:
-      return Datatype::kUint16;
-    case 4:
-      return Datatype::kInt16;
-    case 5:
-      return Datatype::kUint32;
-    case 6:
-      return Datatype::kInt32;
-    case 7:
-      return Datatype::kFloat32;
-    case 8:
-      return Datatype::kFloat64;
-    default:
-      return Datatype::kUnknown;
-  }
-}
-
-/// Parse one PackedElementField submessage of `len` bytes.
-[[nodiscard]] bool readPackedElementField(
-    gpio::CodedInputStream& in, uint32_t len, PJ::sdk::PointField& out, const VoxelGridFieldNumbers& fields) {
-  const auto limit = in.PushLimit(static_cast<int>(len));
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int field = static_cast<int>(tag >> 3);
-    const uint32_t wt = tag & 0x7u;
-    if (field == fields.pef_name && wt == kWireLen) {
-      uint32_t s = 0;
-      if (!in.ReadVarint32(&s) || !in.ReadString(&out.name, static_cast<int>(s))) {
-        return false;
-      }
-    } else if (field == fields.pef_offset && wt == kWireI32) {
-      uint32_t off = 0;
-      if (!in.ReadLittleEndian32(&off)) {
-        return false;
-      }
-      out.offset = off;
-    } else if (field == fields.pef_type && wt == kWireVarint) {
-      uint64_t t = 0;
-      if (!in.ReadVarint64(&t)) {
-        return false;
-      }
-      out.datatype = mapFoxgloveNumericType(t);
-    } else if (!skipField(in, wt)) {
-      return false;
-    }
-  }
-  in.PopLimit(limit);
-  out.count = 1;  // Foxglove PackedElementField has no `count`; one element per field.
-  return true;
-}
-
-}  // namespace
 
 VoxelGridFieldNumbers resolveVoxelGridFieldNumbers(const google::protobuf::Descriptor* descriptor) {
   VoxelGridFieldNumbers n;  // official defaults
@@ -184,7 +120,7 @@ PJ::Expected<PJ::sdk::VoxelGrid> deserializeFoxgloveVoxelGridView(
         return PJ::unexpected(std::string("foxglove.VoxelGrid: failed to read field length"));
       }
       PJ::sdk::PointField pf;
-      if (!readPackedElementField(in, len, pf, fields)) {
+      if (!readPackedElementField(in, len, pf, fields.pef_name, fields.pef_offset, fields.pef_type)) {
         return PJ::unexpected(std::string("foxglove.VoxelGrid: failed to read PackedElementField"));
       }
       grid.fields.push_back(std::move(pf));

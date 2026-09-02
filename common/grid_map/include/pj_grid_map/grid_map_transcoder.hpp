@@ -75,17 +75,19 @@ struct GridMapMessage {
 /// result is passed through validateGridMap() before it is returned.
 [[nodiscard]] Expected<sdk::GridMap> transcodeGridMap(const GridMapMessage& msg);
 
-/// Foxglove PackedElementField numeric type -> canonical PointField datatype.
-/// Foxglove numbers UINT8=1, INT8=2, UINT16=3, INT16=4, UINT32=5, INT32=6,
-/// FLOAT32=7, FLOAT64=8 — signed/unsigned swapped relative to ROS/SDK. Anything
-/// else (including UNKNOWN=0) maps to kUnknown, which finalizeFoxgloveGrid rejects.
-[[nodiscard]] sdk::PointField::Datatype mapFoxglovePackedElementType(uint64_t type);
+/// Foxglove NumericType (PackedElementField.type) -> canonical PointField
+/// datatype, shared by every Foxglove packed-field codec (Grid, VoxelGrid,
+/// PointCloud). Foxglove numbers UINT8=1, INT8=2, UINT16=3, INT16=4, UINT32=5,
+/// INT32=6, FLOAT32=7, FLOAT64=8 — signed/unsigned swapped relative to ROS/SDK.
+/// Anything else (including UNKNOWN=0) maps to kUnknown, which validateGridMap
+/// rejects.
+[[nodiscard]] sdk::PointField::Datatype foxgloveNumericTypeToPointField(uint64_t type);
 
 /// Completes a GridMap built from a foxglove Grid (ROS or protobuf), whose wire
 /// carries no row count: derives `row_count = data.size() / row_stride`,
 /// rejecting a non-empty `data` with `row_stride == 0` or a length that is not
 /// a whole number of rows, then runs validateGridMap(). An empty `data` yields
-/// `row_count = 0`.
+/// `row_count = 0`. Error text carries no schema prefix; the caller adds its own.
 [[nodiscard]] Expected<void> finalizeFoxgloveGrid(sdk::GridMap& grid);
 
 }  // namespace grid_map

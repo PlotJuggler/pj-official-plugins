@@ -3211,39 +3211,26 @@ struct FoxgloveGridWire {
   pj_protobuf::GridFieldNumbers num;
 };
 
-PW foxgloveGridPose(const FoxgloveGridWire& w) {
-  PW pos;
-  pos.dbl(1, w.origin_x);
-  pos.dbl(2, w.origin_y);
-  pos.dbl(3, w.origin_z);
-  PW quat;
-  quat.dbl(4, 1.0);
-  PW pose;
-  pose.sub(1, pos);
-  pose.sub(2, quat);
-  return pose;
-}
-
-std::vector<uint8_t> buildFoxgloveGridWire(const FoxgloveGridWire& w, bool data_first = false) {
+/// The header half of a foxglove.Grid: timestamp, frame_id, pose, column_count, cell_size.
+void appendGridHeader(PW& g, const FoxgloveGridWire& w) {
   const auto& n = w.num;
-  PW g;
-  if (data_first) {  // arbitrary field order: bulk data and strides before the header
-    g.bytesField(n.data, w.data);
-    g.fixed32(n.cell_stride, w.cell_stride);
-    g.fixed32(n.row_stride, w.row_stride);
-  }
   g.sub(n.timestamp, foxgloveTimestamp(w.ts_sec, w.ts_nanos));
   g.str(n.frame_id, w.frame_id);
-  g.sub(n.pose, foxgloveGridPose(w));
+  g.sub(
+      n.pose,
+      buildPoseSubmessage(
+          PoseValues{
+              .px = w.origin_x, .py = w.origin_y, .pz = w.origin_z, .qx = 0.0, .qy = 0.0, .qz = 0.0, .qw = 1.0}));
   g.fixed32(n.column_count, w.column_count);
   PW cell;
   cell.dbl(1, w.cell_x);
   cell.dbl(2, w.cell_y);
   g.sub(n.cell_size, cell);
-  if (!data_first) {
-    g.fixed32(n.row_stride, w.row_stride);
-    g.fixed32(n.cell_stride, w.cell_stride);
-  }
+}
+
+/// One PackedElementField submessage per entry of `w.fields`.
+void appendGridFields(PW& g, const FoxgloveGridWire& w) {
+  const auto& n = w.num;
   for (const auto& f : w.fields) {
     PW pef;
     pef.str(n.pef_name, f.name);
@@ -3251,9 +3238,17 @@ std::vector<uint8_t> buildFoxgloveGridWire(const FoxgloveGridWire& w, bool data_
     pef.varint(n.pef_type, static_cast<uint64_t>(f.numeric_type));
     g.sub(n.fields, pef);
   }
-  if (!data_first) {
-    g.bytesField(n.data, w.data);
-  }
+}
+
+/// The official field order: header, strides, fields, data.
+std::vector<uint8_t> buildFoxgloveGridWire(const FoxgloveGridWire& w) {
+  const auto& n = w.num;
+  PW g;
+  appendGridHeader(g, w);
+  g.fixed32(n.row_stride, w.row_stride);
+  g.fixed32(n.cell_stride, w.cell_stride);
+  appendGridFields(g, w);
+  g.bytesField(n.data, w.data);
   return g.b;
 }
 
@@ -3342,7 +3337,15 @@ TEST(ProtobufParserTest, FoxgloveGridCodecDecodesZeroCopy) {
 }
 
 TEST(ProtobufParserTest, FoxgloveGridCodecAcceptsArbitraryFieldOrder) {
-  const auto wire = buildFoxgloveGridWire(FoxgloveGridWire{}, /*data_first=*/true);
+  // Arbitrary field order: bulk data and strides before the header and fields.
+  const FoxgloveGridWire w;
+  PW g;
+  g.bytesField(w.num.data, w.data);
+  g.fixed32(w.num.cell_stride, w.cell_stride);
+  g.fixed32(w.num.row_stride, w.row_stride);
+  appendGridHeader(g, w);
+  appendGridFields(g, w);
+  const auto& wire = g.b;
   const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
   auto decoded = pj_protobuf::deserializeFoxgloveGridView(wire.data(), wire.size(), anchor);
   ASSERT_TRUE(decoded.has_value()) << decoded.error();

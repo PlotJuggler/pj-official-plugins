@@ -9,51 +9,15 @@
 #include <limits>
 #include <pj_grid_map/grid_map_transcoder.hpp>
 #include <string>
+#include <utility>
 
 #include "foxglove_descriptor_util.hpp"
 #include "foxglove_wire_util.hpp"
 
 namespace pj_protobuf {
-namespace {
 
 namespace gpio = google::protobuf::io;
 using namespace pj_protobuf::wire;
-
-/// Parse one PackedElementField submessage of `len` bytes.
-[[nodiscard]] bool readPackedElementField(
-    gpio::CodedInputStream& in, uint32_t len, PJ::sdk::PointField& out, const GridFieldNumbers& fields) {
-  const auto limit = in.PushLimit(static_cast<int>(len));
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int field = static_cast<int>(tag >> 3);
-    const uint32_t wt = tag & 0x7u;
-    if (field == fields.pef_name && wt == kWireLen) {
-      uint32_t s = 0;
-      if (!in.ReadVarint32(&s) || !in.ReadString(&out.name, static_cast<int>(s))) {
-        return false;
-      }
-    } else if (field == fields.pef_offset && wt == kWireI32) {
-      uint32_t off = 0;
-      if (!in.ReadLittleEndian32(&off)) {
-        return false;
-      }
-      out.offset = off;
-    } else if (field == fields.pef_type && wt == kWireVarint) {
-      uint64_t t = 0;
-      if (!in.ReadVarint64(&t)) {
-        return false;
-      }
-      out.datatype = PJ::grid_map::mapFoxglovePackedElementType(t);
-    } else if (!skipField(in, wt)) {
-      return false;
-    }
-  }
-  in.PopLimit(limit);
-  out.count = 1;  // Foxglove PackedElementField has no `count`; one element per field.
-  return true;
-}
-
-}  // namespace
 
 GridFieldNumbers resolveGridFieldNumbers(const google::protobuf::Descriptor* descriptor) {
   GridFieldNumbers n;  // official defaults
@@ -84,7 +48,7 @@ PJ::Expected<PJ::sdk::GridMap> deserializeFoxgloveGridView(
   gpio::CodedInputStream in(data, static_cast<int>(size));
   in.SetTotalBytesLimit(std::numeric_limits<int>::max());
 
-  const auto fail = [](const char* what) { return PJ::unexpected(std::string("foxglove.Grid: ") + what); };
+  const auto fail = [](std::string what) { return PJ::unexpected("foxglove.Grid: " + std::move(what)); };
   uint32_t tag = 0;
   while ((tag = in.ReadTag()) != 0) {
     const int field = static_cast<int>(tag >> 3);
@@ -120,7 +84,8 @@ PJ::Expected<PJ::sdk::GridMap> deserializeFoxgloveGridView(
       }
     } else if (field == fields.fields) {
       PJ::sdk::PointField pf;
-      if (wt != kWireLen || !in.ReadVarint32(&len) || !readPackedElementField(in, len, pf, fields)) {
+      if (wt != kWireLen || !in.ReadVarint32(&len) ||
+          !readPackedElementField(in, len, pf, fields.pef_name, fields.pef_offset, fields.pef_type)) {
         return fail("failed to read PackedElementField");
       }
       grid.fields.push_back(std::move(pf));
@@ -148,7 +113,7 @@ PJ::Expected<PJ::sdk::GridMap> deserializeFoxgloveGridView(
 
   grid.anchor = std::move(anchor);
   if (auto ok = PJ::grid_map::finalizeFoxgloveGrid(grid); !ok) {
-    return PJ::unexpected(std::string("foxglove.") + std::move(ok).error());
+    return fail(std::move(ok).error());
   }
   return grid;
 }

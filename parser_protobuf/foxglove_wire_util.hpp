@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 //
 // Protobuf wire-level helpers shared by the hand-rolled foxglove codecs that
-// scan a known layout with CodedInputStream (VoxelGrid, Grid). The nested
+// scan a known layout with CodedInputStream (PointCloud, VoxelGrid, Grid). The nested
 // geometry messages (Timestamp, Vector2/3, Quaternion, Pose) carry no frame_id
 // and are never renumbered by the variant schemas PR #153 handles, so their
 // field numbers stay hardcoded here.
@@ -12,7 +12,10 @@
 
 #include <bit>
 #include <cstdint>
+#include <initializer_list>
 #include <pj_base/builtin/frame_transforms.hpp>
+#include <pj_base/builtin/point_cloud.hpp>
+#include <pj_grid_map/grid_map_transcoder.hpp>
 
 namespace pj_protobuf::wire {
 
@@ -93,51 +96,41 @@ constexpr uint32_t kWireI32 = 5;
   return true;
 }
 
-/// Parse a foxglove.Vector2 submessage (x=1, y=2 as double) of `len` bytes.
-[[nodiscard]] inline bool readVector2(gpio::CodedInputStream& in, uint32_t len, PJ::sdk::Vector2& out) {
+/// Parse a submessage of `len` bytes whose fields 1..N are doubles, storing
+/// field i into `slots[i-1]` (Vector2/3, Quaternion). Omitted fields keep their
+/// current value; anything else is skipped.
+[[nodiscard]] inline bool readDoubleFields(
+    gpio::CodedInputStream& in, uint32_t len, std::initializer_list<double*> slots) {
   const auto limit = in.PushLimit(static_cast<int>(len));
   uint32_t tag = 0;
   while ((tag = in.ReadTag()) != 0) {
     const int field = static_cast<int>(tag >> 3);
     const uint32_t wt = tag & 0x7u;
-    if (wt == kWireI64 && (field == 1 || field == 2)) {
-      double d = 0;
-      if (!readDouble(in, d)) {
+    if (wt == kWireI64 && field >= 1 && field <= static_cast<int>(slots.size())) {
+      if (!readDouble(in, *slots.begin()[field - 1])) {
         return false;
       }
-      (field == 1 ? out.x : out.y) = d;
     } else if (!skipField(in, wt)) {
       return false;
     }
   }
   in.PopLimit(limit);
   return true;
+}
+
+/// Parse a foxglove.Vector2 submessage (x=1, y=2 as double) of `len` bytes.
+[[nodiscard]] inline bool readVector2(gpio::CodedInputStream& in, uint32_t len, PJ::sdk::Vector2& out) {
+  return readDoubleFields(in, len, {&out.x, &out.y});
 }
 
 /// Parse a foxglove.Vector3 submessage (x=1, y=2, z=3 as double) of `len` bytes.
 [[nodiscard]] inline bool readVector3(gpio::CodedInputStream& in, uint32_t len, PJ::sdk::Vector3& out) {
-  const auto limit = in.PushLimit(static_cast<int>(len));
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int field = static_cast<int>(tag >> 3);
-    const uint32_t wt = tag & 0x7u;
-    if (wt == kWireI64 && field >= 1 && field <= 3) {
-      double d = 0;
-      if (!readDouble(in, d)) {
-        return false;
-      }
-      (field == 1 ? out.x : field == 2 ? out.y : out.z) = d;
-    } else if (!skipField(in, wt)) {
-      return false;
-    }
-  }
-  in.PopLimit(limit);
-  return true;
+  return readDoubleFields(in, len, {&out.x, &out.y, &out.z});
 }
 
 /// Parse a foxglove.Pose submessage (position Vector3 = 1, orientation
-/// Quaternion = 2) of `len` bytes into `out`. `out` is pre-seeded to identity so
-/// an omitted position/orientation reads as identity.
+/// Quaternion{x=1,y=2,z=3,w=4} = 2) of `len` bytes into `out`. `out` is
+/// pre-seeded to identity so an omitted position/orientation reads as identity.
 [[nodiscard]] inline bool readPose(gpio::CodedInputStream& in, uint32_t len, PJ::sdk::Pose& out) {
   out.position = {.x = 0.0, .y = 0.0, .z = 0.0};
   out.orientation = {.x = 0.0, .y = 0.0, .z = 0.0, .w = 1.0};
@@ -146,40 +139,56 @@ constexpr uint32_t kWireI32 = 5;
   while ((tag = in.ReadTag()) != 0) {
     const int field = static_cast<int>(tag >> 3);
     const uint32_t wt = tag & 0x7u;
-    if (field == 1 && wt == kWireLen) {  // position (Vector3)
-      uint32_t sub_len = 0;
+    uint32_t sub_len = 0;
+    if (field == 1 && wt == kWireLen) {
       if (!in.ReadVarint32(&sub_len) || !readVector3(in, sub_len, out.position)) {
         return false;
       }
-    } else if (field == 2 && wt == kWireLen) {  // orientation (Quaternion{x=1,y=2,z=3,w=4})
-      uint32_t sub_len = 0;
-      if (!in.ReadVarint32(&sub_len)) {
+    } else if (field == 2 && wt == kWireLen) {
+      auto& q = out.orientation;
+      if (!in.ReadVarint32(&sub_len) || !readDoubleFields(in, sub_len, {&q.x, &q.y, &q.z, &q.w})) {
         return false;
       }
-      const auto sub = in.PushLimit(static_cast<int>(sub_len));
-      uint32_t t = 0;
-      while ((t = in.ReadTag()) != 0) {
-        const int sf = static_cast<int>(t >> 3);
-        const uint32_t swt = t & 0x7u;
-        if (swt == kWireI64 && sf >= 1 && sf <= 4) {
-          double d = 0;
-          if (!readDouble(in, d)) {
-            return false;
-          }
-          (sf == 1   ? out.orientation.x
-           : sf == 2 ? out.orientation.y
-           : sf == 3 ? out.orientation.z
-                     : out.orientation.w) = d;
-        } else if (!skipField(in, swt)) {
-          return false;
-        }
-      }
-      in.PopLimit(sub);
     } else if (!skipField(in, wt)) {
       return false;
     }
   }
   in.PopLimit(limit);
+  return true;
+}
+
+/// Parse one foxglove.PackedElementField submessage of `len` bytes. The field
+/// numbers come from the owning codec's descriptor-resolved struct (name /
+/// offset / type). Foxglove carries no `count`: one element per field.
+[[nodiscard]] inline bool readPackedElementField(
+    gpio::CodedInputStream& in, uint32_t len, PJ::sdk::PointField& out, int name_field, int offset_field,
+    int type_field) {
+  const auto limit = in.PushLimit(static_cast<int>(len));
+  uint32_t tag = 0;
+  while ((tag = in.ReadTag()) != 0) {
+    const int field = static_cast<int>(tag >> 3);
+    const uint32_t wt = tag & 0x7u;
+    if (field == name_field && wt == kWireLen) {
+      uint32_t s = 0;
+      if (!in.ReadVarint32(&s) || !in.ReadString(&out.name, static_cast<int>(s))) {
+        return false;
+      }
+    } else if (field == offset_field && wt == kWireI32) {
+      if (!in.ReadLittleEndian32(&out.offset)) {
+        return false;
+      }
+    } else if (field == type_field && wt == kWireVarint) {
+      uint64_t t = 0;
+      if (!in.ReadVarint64(&t)) {
+        return false;
+      }
+      out.datatype = PJ::grid_map::foxgloveNumericTypeToPointField(t);
+    } else if (!skipField(in, wt)) {
+      return false;
+    }
+  }
+  in.PopLimit(limit);
+  out.count = 1;
   return true;
 }
 

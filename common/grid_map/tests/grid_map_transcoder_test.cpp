@@ -317,17 +317,17 @@ TEST(GridMapTranscoderTest, CapsRejectedBeforeAllocation) {
 
 TEST(FoxgloveGridTest, PackedElementTypeMapping) {
   using D = PJ::sdk::PointField::Datatype;
-  using PJ::grid_map::mapFoxglovePackedElementType;
-  EXPECT_EQ(mapFoxglovePackedElementType(0), D::kUnknown);
-  EXPECT_EQ(mapFoxglovePackedElementType(1), D::kUint8);
-  EXPECT_EQ(mapFoxglovePackedElementType(2), D::kInt8);
-  EXPECT_EQ(mapFoxglovePackedElementType(3), D::kUint16);
-  EXPECT_EQ(mapFoxglovePackedElementType(4), D::kInt16);
-  EXPECT_EQ(mapFoxglovePackedElementType(5), D::kUint32);
-  EXPECT_EQ(mapFoxglovePackedElementType(6), D::kInt32);
-  EXPECT_EQ(mapFoxglovePackedElementType(7), D::kFloat32);
-  EXPECT_EQ(mapFoxglovePackedElementType(8), D::kFloat64);
-  EXPECT_EQ(mapFoxglovePackedElementType(9), D::kUnknown);
+  using PJ::grid_map::foxgloveNumericTypeToPointField;
+  EXPECT_EQ(foxgloveNumericTypeToPointField(0), D::kUnknown);
+  EXPECT_EQ(foxgloveNumericTypeToPointField(1), D::kUint8);
+  EXPECT_EQ(foxgloveNumericTypeToPointField(2), D::kInt8);
+  EXPECT_EQ(foxgloveNumericTypeToPointField(3), D::kUint16);
+  EXPECT_EQ(foxgloveNumericTypeToPointField(4), D::kInt16);
+  EXPECT_EQ(foxgloveNumericTypeToPointField(5), D::kUint32);
+  EXPECT_EQ(foxgloveNumericTypeToPointField(6), D::kInt32);
+  EXPECT_EQ(foxgloveNumericTypeToPointField(7), D::kFloat32);
+  EXPECT_EQ(foxgloveNumericTypeToPointField(8), D::kFloat64);
+  EXPECT_EQ(foxgloveNumericTypeToPointField(9), D::kUnknown);
 }
 
 PJ::sdk::GridMap foxgloveGrid(uint32_t columns, uint32_t cell_stride, uint32_t row_stride, size_t data_size) {
