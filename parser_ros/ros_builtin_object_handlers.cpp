@@ -1405,6 +1405,10 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxgloveGrid(PJ::Timestamp t
     if (!grid) {
       return PJ::unexpected(std::move(grid).error());
     }
+    // The object carries the envelope stamp like every other handler; the
+    // embedded one only reaches current_timestamp_ through readBareTime()'s
+    // adoption (and the scalar route's /timestamp column).
+    grid->timestamp_ns = current_timestamp_;
     return PJ::sdk::ObjectRecord{
         .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
         .object = PJ::sdk::BuiltinObject{std::move(*grid)}};

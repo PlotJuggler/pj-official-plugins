@@ -4257,7 +4257,7 @@ TEST(RosParserTest, FoxgloveGridRos2ProducesZeroCopyObject) {
 
   const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
   ASSERT_NE(g, nullptr);
-  EXPECT_EQ(g->timestamp_ns, -3'000'000'000LL + 500'000'000LL);
+  EXPECT_EQ(g->timestamp_ns, 1234) << "the object carries the envelope stamp, like every other handler";
   EXPECT_EQ(g->frame_id, "map");
   EXPECT_DOUBLE_EQ(g->origin.position.x, 1.0);
   EXPECT_DOUBLE_EQ(g->origin.position.y, 2.0);
