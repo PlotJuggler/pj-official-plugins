@@ -3418,6 +3418,63 @@ TEST(ProtobufParserTest, FoxgloveGridCodecRejectsTruncatedMessages) {
   }
 }
 
+TEST(ProtobufParserTest, FoxgloveGridCodecRejectsNestedLengthPastTheEnd) {
+  auto decode = [](const std::vector<uint8_t>& wire) {
+    return pj_protobuf::deserializeFoxgloveGridView(wire.data(), wire.size(), nullptr);
+  };
+  const FoxgloveGridWire w;
+
+  // A valid Grid followed by a Timestamp whose declared length exceeds the
+  // remaining bytes: the nested limit must not be pushed past the buffer.
+  auto overlong = buildFoxgloveGridWire(w);
+  {
+    PW g;
+    g.tag(w.num.timestamp, 2);
+    g.rawVarint(100);
+    const PW ts = foxgloveTimestamp(7, 250);
+    g.b.insert(g.b.end(), ts.b.begin(), ts.b.end());
+    overlong.insert(overlong.end(), g.b.begin(), g.b.end());
+  }
+  EXPECT_FALSE(decode(overlong).has_value()) << "trailing Timestamp declares more bytes than remain";
+
+  // A PackedElementField cut short: its declared length runs past the end.
+  {
+    PW g;
+    appendGridHeader(g, w);
+    g.fixed32(w.num.row_stride, w.row_stride);
+    g.fixed32(w.num.cell_stride, w.cell_stride);
+    g.bytesField(w.num.data, w.data);
+    PW pef;
+    pef.str(w.num.pef_name, "elevation");
+    pef.fixed32(w.num.pef_offset, 0);
+    pef.varint(w.num.pef_type, 7);
+    g.tag(w.num.fields, 2);
+    g.rawVarint(pef.b.size() + 8);
+    g.b.insert(g.b.end(), pef.b.begin(), pef.b.end());
+    EXPECT_FALSE(decode(g.b).has_value()) << "truncated PackedElementField";
+  }
+
+  // A nested message that ends early on a zero tag leaves bytes unconsumed.
+  {
+    PW g;
+    PW ts;
+    ts.b.push_back(0x00);
+    g.sub(w.num.timestamp, ts);
+    g.str(w.num.frame_id, w.frame_id);
+    g.fixed32(w.num.column_count, w.column_count);
+    g.fixed32(w.num.row_stride, w.row_stride);
+    g.fixed32(w.num.cell_stride, w.cell_stride);
+    appendGridFields(g, w);
+    g.bytesField(w.num.data, w.data);
+    EXPECT_FALSE(decode(g.b).has_value()) << "Timestamp not fully consumed";
+  }
+
+  // Trailing garbage after the last field is not a legitimate message end.
+  auto trailing = buildFoxgloveGridWire(w);
+  trailing.push_back(0x00);
+  EXPECT_FALSE(decode(trailing).has_value()) << "top-level zero tag";
+}
+
 TEST(ProtobufParserTest, FoxgloveGridObjectRouteClassifiesAndForwardsAnchor) {
   ProtobufParserFixture f;
   f.setUp();

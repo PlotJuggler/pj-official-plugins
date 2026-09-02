@@ -110,6 +110,10 @@ PJ::Expected<PJ::sdk::GridMap> deserializeFoxgloveGridView(
       return fail("malformed message");
     }
   }
+  // ReadTag() also returns 0 on a zero tag or a malformed varint mid-buffer.
+  if (!in.ConsumedEntireMessage()) {
+    return fail("malformed message");
+  }
 
   grid.anchor = std::move(anchor);
   if (auto ok = PJ::grid_map::finalizeFoxgloveGrid(grid); !ok) {

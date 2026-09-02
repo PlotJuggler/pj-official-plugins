@@ -13,6 +13,7 @@
 #include <bit>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <pj_base/builtin/frame_transforms.hpp>
 #include <pj_base/builtin/point_cloud.hpp>
 #include <pj_grid_map/grid_map_transcoder.hpp>
@@ -40,7 +41,8 @@ constexpr uint32_t kWireI32 = 5;
     }
     case kWireLen: {
       uint32_t len = 0;
-      return in.ReadVarint32(&len) && in.Skip(static_cast<int>(len));
+      return in.ReadVarint32(&len) && len <= static_cast<uint32_t>(std::numeric_limits<int>::max()) &&
+             in.Skip(static_cast<int>(len));
     }
     case kWireI32: {
       uint32_t v = 0;
@@ -66,9 +68,35 @@ constexpr uint32_t kWireI32 = 5;
   return wire_type == kWireI32 && in.ReadLittleEndian32(&out);
 }
 
+/// Enter a nested message of `len` bytes. The length must fit the bytes left
+/// in the enclosing scope: PushLimit itself accepts any value, and a limit
+/// past the buffer turns a truncated submessage into a "legitimate" end.
+[[nodiscard]] inline bool pushNested(gpio::CodedInputStream& in, uint32_t len, gpio::CodedInputStream::Limit& limit) {
+  if (len > static_cast<uint32_t>(std::numeric_limits<int>::max()) || static_cast<int>(len) > in.BytesUntilLimit()) {
+    return false;
+  }
+  limit = in.PushLimit(static_cast<int>(len));
+  return true;
+}
+
+/// Leave a nested message: the tag loop must have ended by reaching the
+/// declared length, not on a zero tag or a malformed varint (ReadTag() also
+/// returns 0 for those, which ConsumedEntireMessage() tells apart; PopLimit
+/// clears that flag, so it is read first).
+[[nodiscard]] inline bool popNested(gpio::CodedInputStream& in, gpio::CodedInputStream::Limit limit) {
+  if (!in.ConsumedEntireMessage()) {
+    return false;
+  }
+  in.PopLimit(limit);
+  return true;
+}
+
 /// Parse a google.protobuf.Timestamp submessage of `len` bytes into nanoseconds.
 [[nodiscard]] inline bool readTimestampNs(gpio::CodedInputStream& in, uint32_t len, int64_t& ts_ns) {
-  const auto limit = in.PushLimit(static_cast<int>(len));
+  gpio::CodedInputStream::Limit limit = 0;
+  if (!pushNested(in, len, limit)) {
+    return false;
+  }
   int64_t seconds = 0;
   int64_t nanos = 0;
   uint32_t tag = 0;
@@ -91,7 +119,9 @@ constexpr uint32_t kWireI32 = 5;
       return false;
     }
   }
-  in.PopLimit(limit);
+  if (!popNested(in, limit)) {
+    return false;
+  }
   ts_ns = seconds * 1'000'000'000LL + nanos;
   return true;
 }
@@ -101,7 +131,10 @@ constexpr uint32_t kWireI32 = 5;
 /// current value; anything else is skipped.
 [[nodiscard]] inline bool readDoubleFields(
     gpio::CodedInputStream& in, uint32_t len, std::initializer_list<double*> slots) {
-  const auto limit = in.PushLimit(static_cast<int>(len));
+  gpio::CodedInputStream::Limit limit = 0;
+  if (!pushNested(in, len, limit)) {
+    return false;
+  }
   uint32_t tag = 0;
   while ((tag = in.ReadTag()) != 0) {
     const int field = static_cast<int>(tag >> 3);
@@ -114,8 +147,7 @@ constexpr uint32_t kWireI32 = 5;
       return false;
     }
   }
-  in.PopLimit(limit);
-  return true;
+  return popNested(in, limit);
 }
 
 /// Parse a foxglove.Vector2 submessage (x=1, y=2 as double) of `len` bytes.
@@ -134,7 +166,10 @@ constexpr uint32_t kWireI32 = 5;
 [[nodiscard]] inline bool readPose(gpio::CodedInputStream& in, uint32_t len, PJ::sdk::Pose& out) {
   out.position = {.x = 0.0, .y = 0.0, .z = 0.0};
   out.orientation = {.x = 0.0, .y = 0.0, .z = 0.0, .w = 1.0};
-  const auto limit = in.PushLimit(static_cast<int>(len));
+  gpio::CodedInputStream::Limit limit = 0;
+  if (!pushNested(in, len, limit)) {
+    return false;
+  }
   uint32_t tag = 0;
   while ((tag = in.ReadTag()) != 0) {
     const int field = static_cast<int>(tag >> 3);
@@ -153,8 +188,7 @@ constexpr uint32_t kWireI32 = 5;
       return false;
     }
   }
-  in.PopLimit(limit);
-  return true;
+  return popNested(in, limit);
 }
 
 /// Parse one foxglove.PackedElementField submessage of `len` bytes. The field
@@ -163,7 +197,10 @@ constexpr uint32_t kWireI32 = 5;
 [[nodiscard]] inline bool readPackedElementField(
     gpio::CodedInputStream& in, uint32_t len, PJ::sdk::PointField& out, int name_field, int offset_field,
     int type_field) {
-  const auto limit = in.PushLimit(static_cast<int>(len));
+  gpio::CodedInputStream::Limit limit = 0;
+  if (!pushNested(in, len, limit)) {
+    return false;
+  }
   uint32_t tag = 0;
   while ((tag = in.ReadTag()) != 0) {
     const int field = static_cast<int>(tag >> 3);
@@ -187,7 +224,9 @@ constexpr uint32_t kWireI32 = 5;
       return false;
     }
   }
-  in.PopLimit(limit);
+  if (!popNested(in, limit)) {
+    return false;
+  }
   out.count = 1;
   return true;
 }
