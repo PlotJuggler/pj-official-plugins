@@ -15,6 +15,7 @@ add_library(toolbox_assistant_agent_plugin SHARED
   src/assistant_toolbox.cpp
   src/assistant_dialog.cpp
   src/conversation_state.cpp
+  src/claude_sessions.cpp
   src/settings_store.cpp
   src/tools.cpp
   src/mcp_http_server.cpp
@@ -116,6 +117,28 @@ if(BUILD_TESTING)
   target_compile_features(toolbox_assistant_agent_conversation_state_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentConversationStateTest COMMAND toolbox_assistant_agent_conversation_state_test)
 
+  # ClaudeSessions: the harness's own ~/.claude/projects/<slug>/*.jsonl store —
+  # listing/ordering/titles, transcript replay, the catalog-prefix strip, and
+  # tolerance of corrupt lines / unknown record types. Pure, std + nlohmann
+  # only. Fixtures under tests/fixtures/sessions/ are copied to a temp dir per
+  # test (see ClaudeSessionsTest in the test file); nothing here reads or
+  # writes the real ~/.claude store.
+  add_executable(toolbox_assistant_agent_claude_sessions_test
+    tests/claude_sessions_test.cpp
+    src/claude_sessions.cpp
+  )
+  target_link_libraries(toolbox_assistant_agent_claude_sessions_test PRIVATE
+    nlohmann_json::nlohmann_json GTest::gtest_main
+  )
+  target_include_directories(toolbox_assistant_agent_claude_sessions_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(toolbox_assistant_agent_claude_sessions_test PRIVATE
+    ASSISTANT_SESSIONS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/sessions"
+  )
+  target_compile_features(toolbox_assistant_agent_claude_sessions_test PRIVATE cxx_std_20)
+  add_test(NAME ToolboxAssistantAgentClaudeSessionsTest COMMAND toolbox_assistant_agent_claude_sessions_test)
+
   # SeriesStats: stats + min/max-preserving bucket decimation. Pure, std-only.
   add_executable(toolbox_assistant_agent_series_stats_test
     tests/series_stats_test.cpp
@@ -171,11 +194,40 @@ if(BUILD_TESTING)
   target_compile_features(toolbox_assistant_agent_mcp_server_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentMcpServerTest COMMAND toolbox_assistant_agent_mcp_server_test)
 
+  # AssistantDialog end-to-end: the conversations drawer against a REAL
+  # ClaudeBackend pointed at a throwaway HOME (fixtures copied into its
+  # ~/.claude/projects/<slug>/ store) — opening the drawer, switching to a
+  # resumed conversation, and deleting the active one. No `claude` CLI is
+  # spawned: none of these paths call sendUserMessage/testConnection.
+  add_executable(toolbox_assistant_agent_assistant_dialog_test
+    tests/assistant_dialog_test.cpp
+    src/assistant_dialog.cpp
+    src/claude_backend.cpp
+    src/claude_sessions.cpp
+    src/conversation_state.cpp
+    src/settings_store.cpp
+    src/mcp_http_server.cpp
+    src/tools.cpp
+  )
+  target_link_libraries(toolbox_assistant_agent_assistant_dialog_test PRIVATE
+    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
+  )
+  target_include_directories(toolbox_assistant_agent_assistant_dialog_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
+  )
+  target_compile_definitions(toolbox_assistant_agent_assistant_dialog_test PRIVATE
+    ASSISTANT_SESSIONS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/sessions"
+  )
+  target_compile_features(toolbox_assistant_agent_assistant_dialog_test PRIVATE cxx_std_20)
+  add_test(NAME ToolboxAssistantAgentAssistantDialogTest COMMAND toolbox_assistant_agent_assistant_dialog_test)
+
   # Live Claude Code smoke — spawns the real `claude` CLI + MCP server. Opt-in
   # (ASSISTANT_CLAUDE_SMOKE=1); skips otherwise so CI stays offline.
   add_executable(toolbox_assistant_agent_claude_smoke_test
     tests/claude_smoke_test.cpp
     src/claude_backend.cpp
+    src/claude_sessions.cpp
     src/mcp_http_server.cpp
     src/tools.cpp
   )
@@ -194,6 +246,7 @@ if(BUILD_TESTING)
   add_executable(toolbox_assistant_agent_bench
     tests/assistant_bench.cpp
     src/claude_backend.cpp
+    src/claude_sessions.cpp
     src/mcp_http_server.cpp
     src/tools.cpp
   )

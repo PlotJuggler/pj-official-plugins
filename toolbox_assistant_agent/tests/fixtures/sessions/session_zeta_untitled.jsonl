@@ -1,0 +1,3 @@
+{"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-08-30T09:00:00.000Z", "sessionId": "zeta-session-0001"}
+{"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "toolu_zeta01", "type": "tool_result", "content": [{"type": "text", "text": "{\"ok\":true}"}]}]}, "timestamp": "2026-08-30T09:00:00.050Z", "sessionId": "zeta-session-0001"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Done."}]}, "timestamp": "2026-08-30T09:00:01.000Z", "sessionId": "zeta-session-0001"}

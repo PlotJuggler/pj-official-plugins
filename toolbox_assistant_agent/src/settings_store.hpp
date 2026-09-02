@@ -20,6 +20,15 @@ class SettingsStore {
   std::string getString(const std::string& key, const std::string& def = "") const;
   void setString(const std::string& key, const std::string& value);
 
+  // False for an absent key, an unbound store, or a host backend fault — the
+  // three cases the service cannot tell apart from the caller's side, and
+  // none of which should look like "yes, it's there" (used to gate a one-shot
+  // migration's remove(), see scrubLegacyConversationKeys).
+  bool contains(const std::string& key) const;
+  // No-op on an unbound store or a host backend fault, like every other
+  // writer here.
+  void remove(const std::string& key);
+
   std::vector<std::string> getStringList(const std::string& key) const;
   void setStringList(const std::string& key, const std::vector<std::string>& values);
 

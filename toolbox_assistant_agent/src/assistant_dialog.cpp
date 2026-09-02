@@ -29,6 +29,13 @@ constexpr const char* kKeyClaudeCli = "assistant.claude.cli_path";
 // field still gets the CLI default, because an empty stored value is returned
 // as-is rather than falling back to this.
 constexpr const char* kDefaultClaudeModel = "sonnet";
+
+// A drawer row's text. The date suffix is what keeps two same-titled
+// conversations apart under the host's text-keyed list protocol
+// (setSelectedItems / onSelectionChanged match by TEXT, not by row or id).
+std::string listText(const ConversationSummary& c) {
+  return c.title + " · " + formatShortDate(c.last_ts);
+}
 }  // namespace
 
 AssistantDialog::AssistantDialog() : claude_memory_(std::make_shared<ClaudeMemory>()) {
@@ -92,7 +99,7 @@ void AssistantDialog::rebuildBackend() {
   }
   std::lock_guard<std::mutex> lock(state_.mu);
   state_.backend_name = backend_->name();
-  state_.header_dirty = true;
+  state_.controls_dirty = true;  // the status line names the backend
 }
 
 void AssistantDialog::startNewConversation() {
@@ -105,57 +112,102 @@ void AssistantDialog::startNewConversation() {
   // Clearing in place is what makes this work for whichever backend is live:
   // it reads its memory through the pointer the dialog still holds.
   *claude_memory_ = ClaudeMemory{};
-  // The persisted copy goes too: New chat is the one gesture that frees the
-  // user from the past, and a reopen must not resurrect it.
+  state_.active_conversation_id.clear();
+  // The persisted pointer goes too: New chat is the one gesture that frees
+  // the user from the past, and a reopen must not resume it. Nothing is
+  // deleted on disk — the old conversation stays in the harness's store and
+  // the drawer, just no longer active.
   SettingsStore store(settings_);
-  eraseConversation(store);
+  clearActiveSessionId(store);
   state_.transcript_dirty = true;
   state_.controls_dirty = true;
+  state_.drawer_dirty = true;  // the active row changes; the drawer itself stays as it is
 }
 
-void AssistantDialog::loadPersistedConversation() {
-  SettingsStore store(settings_);
-  const ConversationState conv = loadConversation(store);
-  if (conv.empty()) {
-    return;
+bool AssistantDialog::switchToConversation(const std::string& id) {
+  const std::vector<ChatMessage> transcript = backend_ ? backend_->loadTranscript(id) : std::vector<ChatMessage>{};
+  if (transcript.empty()) {
+    return false;  // nothing under this id -- purged, or a stale drawer row
   }
+
   std::lock_guard<std::mutex> lock(state_.mu);
-  for (const ChatMessage& m : conv.messages) {
+  state_.session.clear();
+  state_.usage.reset();
+  for (const ChatMessage& m : transcript) {
     switch (m.role) {
       case ChatMessage::Role::User:
         state_.session.addUser(m.text);
         break;
       case ChatMessage::Role::Assistant:
-        // addAssistant, not appendAssistant: rows were persisted as final
-        // messages and must come back as the same rows, not merged.
-        state_.session.addAssistant(m.text);
-        break;
-      case ChatMessage::Role::System:
-        state_.session.addSystem(m.text);
+        // appendAssistant, not addAssistant: merges consecutive blocks into
+        // one row exactly like a live streamed reply does, so this renders
+        // identically to how the turn looked when it happened.
+        state_.session.appendAssistant(m.text);
         break;
       case ChatMessage::Role::Tool:
         state_.session.addTool(m.text);
         break;
+      case ChatMessage::Role::System:
+        state_.session.addSystem(m.text);
+        break;
     }
   }
-  if (!conv.messages.empty()) {
-    // Visible seam between then and now — the model's memory comes back through
-    // --resume regardless; this keeps the user able to SEE that it did.
-    state_.session.addSystem("resumed previous conversation");
-  }
-  claude_memory_->session_id = conv.claude_session_id;
-  claude_memory_->sent_catalog_hash = conv.claude_catalog_hash;
+  // Visible seam between then and now — the model's memory comes back through
+  // --resume regardless; this keeps the user able to SEE that it did.
+  state_.session.addSystem("resumed previous conversation");
+
+  *claude_memory_ = ClaudeMemory{};
+  claude_memory_->session_id = id;
+  // Forces composePayload to re-send the catalog with the resume note on the
+  // next turn: this process's ephemeral state (tabs the model composed, etc.)
+  // died with whatever process wrote this transcript, and --resume would
+  // otherwise replay history as if it hadn't.
+  claude_memory_->resumed_pending = true;
+
+  state_.active_conversation_id = id;
+  SettingsStore store(settings_);
+  saveActiveSessionId(store, id);
+
+  // The drawer stays open: it is a sidebar the user browses, not a menu that
+  // dismisses itself once picked from.
+  state_.drawer_dirty = true;
   state_.transcript_dirty = true;
   state_.controls_dirty = true;
+  return true;
 }
 
-void AssistantDialog::saveConversationLocked() {
-  ConversationState conv;
-  conv.messages = state_.session.messages();
-  conv.claude_session_id = claude_memory_->session_id;
-  conv.claude_catalog_hash = claude_memory_->sent_catalog_hash;
+void AssistantDialog::loadPersistedConversation() {
   SettingsStore store(settings_);
-  saveConversation(store, conv);
+  const std::string id = loadActiveSessionId(store);
+  if (id.empty()) {
+    return;
+  }
+  if (!switchToConversation(id)) {
+    // Purged between the last close and this reopen: nothing to resume into.
+    clearActiveSessionId(store);
+  }
+}
+
+void AssistantDialog::refreshConversationsLocked() {
+  state_.conversations = backend_ ? backend_->listConversations() : std::vector<ConversationSummary>{};
+}
+
+std::string AssistantDialog::idForListTextLocked(const std::string& text) const {
+  for (const ConversationSummary& c : state_.conversations) {
+    if (listText(c) == text) {
+      return c.id;
+    }
+  }
+  return {};
+}
+
+std::string AssistantDialog::listTextForIdLocked(const std::string& id) const {
+  for (const ConversationSummary& c : state_.conversations) {
+    if (c.id == id) {
+      return listText(c);
+    }
+  }
+  return {};
 }
 
 std::string AssistantDialog::manifest() const {
@@ -205,6 +257,7 @@ void AssistantDialog::setSettings(PJ::sdk::SettingsView settings) {
       store.setString(kKeyBackend, "claude");
     }
     scrubRetiredOllamaKeys(store);
+    scrubLegacyConversationKeys(store);
     loadPersistedConversation();
   }
   rebuildBackend();
@@ -242,16 +295,11 @@ std::string AssistantDialog::widget_data() {
   // Steady state of an open panel: nothing changed, so skip building +
   // serializing a WidgetData 20x/sec — the host treats an empty return as
   // "no update".
-  if (!state_.header_dirty && !state_.transcript_dirty && !state_.controls_dirty && !state_.clear_input_pending &&
-      !state_.open_settings_pending) {
+  if (!state_.transcript_dirty && !state_.controls_dirty && !state_.clear_input_pending &&
+      !state_.open_settings_pending && !state_.drawer_dirty && !state_.header_icons_pending) {
     return {};
   }
   PJ::WidgetData wd;
-
-  if (state_.header_dirty) {
-    wd.setLabel("backendLabel", "Backend: " + state_.backend_name);
-    state_.header_dirty = false;
-  }
 
   if (state_.transcript_dirty) {
     wd.setPlainText("transcriptText", state_.session.render());
@@ -260,10 +308,11 @@ std::string AssistantDialog::widget_data() {
 
   if (state_.controls_dirty) {
     const bool busy = state_.session.busy();
-    // The turn state, then what the last turn moved. summary() returns "" when
-    // there is nothing to report, which is the whole story for a local backend
-    // — no branch on which backend is live.
-    wd.setLabel("statusLabel", state_.session.statusText() + state_.usage.summary());
+    // The turn state, which backend answers, then what the last turn moved
+    // (summary() is "" when there is nothing to report): one line of status,
+    // since the header row above it is host chrome now.
+    wd.setLabel(
+        "statusLabel", state_.session.statusText() + "  \xc2\xb7  " + state_.backend_name + state_.usage.summary());
     wd.setEnabled("inputEdit", !busy);
     wd.setEnabled("sendButton", !busy);
     wd.setEnabled("cancelButton", busy);
@@ -273,7 +322,35 @@ std::string AssistantDialog::widget_data() {
     // Same reason, plus: wiping the conversation memory under a running turn
     // would have the backend resume a session it just forgot.
     wd.setEnabled("newChatButton", !busy);
+    // The drawer reads/mutates the same conversation memory a running turn is
+    // writing into — same reason, same guard.
+    wd.setEnabled("menuButton", !busy);
+    wd.setEnabled("conversationList", !busy);
     state_.controls_dirty = false;
+  }
+
+  if (state_.header_icons_pending) {
+    // Static per-panel glyphs; no reason to resend on every build like the
+    // per-turn state above.
+    wd.setButtonIconNamed("menuButton", "menu");
+    wd.setButtonIconNamed("newChatButton", "add");
+    state_.header_icons_pending = false;
+  }
+
+  if (state_.drawer_dirty) {
+    wd.setVisible("conversationsDrawer", state_.drawer_open);
+    std::vector<std::string> rows;
+    rows.reserve(state_.conversations.size());
+    for (const ConversationSummary& c : state_.conversations) {
+      rows.push_back(listText(c));
+    }
+    wd.setListItems("conversationList", rows);
+    wd.setListItemsDeletable("conversationList", true);
+    wd.setListPlaceholder("conversationList", "No conversations yet");
+    const std::string active_text = listTextForIdLocked(state_.active_conversation_id);
+    wd.setSelectedItems(
+        "conversationList", active_text.empty() ? std::vector<std::string>{} : std::vector<std::string>{active_text});
+    state_.drawer_dirty = false;
   }
 
   if (state_.clear_input_pending) {
@@ -340,11 +417,73 @@ bool AssistantDialog::onClicked(std::string_view widget_name) {
     startNewConversation();
     return true;
   }
+  if (widget_name == "menuButton") {
+    std::lock_guard<std::mutex> lock(state_.mu);
+    state_.drawer_open = !state_.drawer_open;
+    if (state_.drawer_open) {
+      refreshConversationsLocked();
+    }
+    state_.drawer_dirty = true;
+    return true;
+  }
   if (widget_name == "subDialogAccepted") {
     commitSettings();
     return true;
   }
   return false;
+}
+
+bool AssistantDialog::onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) {
+  if (widget_name != "conversationList") {
+    return false;
+  }
+  std::string id;
+  {
+    std::lock_guard<std::mutex> lock(state_.mu);
+    if (selected.empty() || state_.session.busy()) {
+      return false;
+    }
+    id = idForListTextLocked(selected.front());
+    if (id.empty() || id == state_.active_conversation_id) {
+      return false;  // re-selecting the active row, or a row that raced with a delete
+    }
+  }
+  // Unlocked: switchToConversation takes state_.mu itself (non-recursive).
+  switchToConversation(id);
+  return true;
+}
+
+bool AssistantDialog::onItemDeleteRequested(std::string_view widget_name, int index) {
+  if (widget_name != "conversationList") {
+    return false;
+  }
+  std::string id;
+  bool was_active = false;
+  {
+    std::lock_guard<std::mutex> lock(state_.mu);
+    if (state_.session.busy()) {
+      return false;  // the list is disabled while busy; this is the belt to that brace
+    }
+    if (index < 0 || static_cast<std::size_t>(index) >= state_.conversations.size()) {
+      return false;
+    }
+    id = state_.conversations[static_cast<std::size_t>(index)].id;
+    was_active = (id == state_.active_conversation_id);
+  }
+  if (backend_) {
+    backend_->deleteConversation(id);
+  }
+  {
+    std::lock_guard<std::mutex> lock(state_.mu);
+    refreshConversationsLocked();
+    state_.drawer_dirty = true;
+  }
+  if (was_active) {
+    // New chat, not a blank dead-end: startNewConversation also clears the
+    // active id and the in-memory session/memory.
+    startNewConversation();
+  }
+  return true;
 }
 
 bool AssistantDialog::onTick() {
@@ -454,6 +593,13 @@ void AssistantDialog::applyBackendEvent(const BackendEvent& ev) {
       break;
     case BackendEvent::Kind::Error:
       state_.session.addSystem("Error: " + ev.text);
+      if (ev.resume_failed) {
+        // The backend established that --resume itself failed (the session
+        // was purged between listing it and this turn): say the one thing the
+        // error text does not — retrying will not help. The transcript stays
+        // readable; New chat is the way forward.
+        state_.session.addSystem("This conversation can no longer be continued; start a new one.");
+      }
       state_.transcript_dirty = true;
       break;
     case BackendEvent::Kind::Metrics:
@@ -464,10 +610,14 @@ void AssistantDialog::applyBackendEvent(const BackendEvent& ev) {
     case BackendEvent::Kind::TurnComplete:
       state_.session.setState(TurnState::Idle);
       state_.controls_dirty = true;
-      // Persist once per completed turn — the one moment the session id (worker
-      // is done writing it) and the transcript are both final. Crash-safe by
-      // construction: whatever the store holds is a whole conversation.
-      saveConversationLocked();
+      // Persist the active session id once it actually changes — a brand-new
+      // conversation gets its id here for the first time; a resumed one
+      // already has it saved, so this is then a no-op read.
+      if (!claude_memory_->session_id.empty() && claude_memory_->session_id != state_.active_conversation_id) {
+        state_.active_conversation_id = claude_memory_->session_id;
+        SettingsStore store(settings_);
+        saveActiveSessionId(store, state_.active_conversation_id);
+      }
       break;
   }
 }

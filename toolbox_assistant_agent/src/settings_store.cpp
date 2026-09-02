@@ -18,6 +18,17 @@ void SettingsStore::setString(const std::string& key, const std::string& value) 
   (void)view_.setValue(key, value);
 }
 
+bool SettingsStore::contains(const std::string& key) const {
+  if (auto v = view_.contains(key)) {
+    return *v;
+  }
+  return false;
+}
+
+void SettingsStore::remove(const std::string& key) {
+  (void)view_.remove(key);
+}
+
 std::vector<std::string> SettingsStore::getStringList(const std::string& key) const {
   if (auto v = view_.valueStringList(key)) {
     return *v;

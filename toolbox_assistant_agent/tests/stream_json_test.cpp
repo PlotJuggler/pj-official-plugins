@@ -93,6 +93,25 @@ TEST(ParseClaudeLine, RateLimitRejectedIsAnError) {
   EXPECT_EQ(evs[0].text, "rejected");
 }
 
+TEST(ParseClaudeLine, ResultCarriesTheTurnCountAndToleratesANullResult) {
+  // Verbatim shape of what the CLI emits for `--resume <unknown id>`: an
+  // error, zero turns, and `"result": null` rather than a string.
+  auto evs = parseClaudeLine(
+      R"({"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"result":null,"session_id":"gone"})");
+  ASSERT_EQ(evs.size(), 1u);
+  EXPECT_TRUE(evs[0].is_error);
+  EXPECT_EQ(evs[0].num_turns, 0);
+  EXPECT_EQ(evs[0].text, "");
+
+  auto ok = parseClaudeLine(R"({"type":"result","subtype":"success","result":"Done.","num_turns":3})");
+  ASSERT_EQ(ok.size(), 1u);
+  EXPECT_EQ(ok[0].num_turns, 3);
+
+  auto silent = parseClaudeLine(R"({"type":"result","subtype":"success","result":"Done."})");
+  ASSERT_EQ(silent.size(), 1u);
+  EXPECT_EQ(silent[0].num_turns, -1) << "absent means unknown, not zero";
+}
+
 TEST(ParseClaudeLine, MalformedIsIgnoredNotThrown) {
   EXPECT_TRUE(parseClaudeLine("not json").empty());
   EXPECT_TRUE(parseClaudeLine("").empty());

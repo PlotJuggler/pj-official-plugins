@@ -5,7 +5,10 @@
 #include <atomic>
 #include <functional>
 #include <string>
+#include <vector>
 
+#include "chat_session.hpp"     // ChatMessage
+#include "claude_sessions.hpp"  // ConversationSummary
 #include "tool_registry.hpp"
 #include "turn_metrics.hpp"
 
@@ -29,6 +32,11 @@ struct BackendEvent {
   // Explicitly brace-initialized so the many `sink({Kind::X, "text"})` call
   // sites stay legal under -Werror=missing-field-initializers.
   TurnMetrics metrics{};
+  // Error only: the turn failed because the conversation it tried to resume
+  // no longer exists in the harness (purged, or deleted underneath us). The
+  // panel tells the user retrying is pointless; every other error stays
+  // exactly what it says.
+  bool resume_failed = false;
 };
 
 // The tool surface a backend gets for the duration of one turn: the catalog to
@@ -82,6 +90,22 @@ class LlmBackend {
   // change. Backends with no meaningful check keep the default.
   [[nodiscard]] virtual BackendTestResult testConnection() const {
     return {true, "no connectivity test for this backend"};
+  }
+
+  // Conversations this backend can list/resume/discard, newest first. A
+  // conversation belongs to the backend that owns its store (ClaudeBackend
+  // reads the Claude Code harness's own session files — claude_sessions.hpp);
+  // a backend with no such store (Echo, Fake) simply has none, which is what
+  // the empty defaults below say. Called on the GUI thread (opening the
+  // conversations drawer, or resuming one), never mid-turn.
+  [[nodiscard]] virtual std::vector<ConversationSummary> listConversations() {
+    return {};
+  }
+  [[nodiscard]] virtual std::vector<ChatMessage> loadTranscript(const std::string& /*id*/) {
+    return {};
+  }
+  virtual bool deleteConversation(const std::string& /*id*/) {
+    return false;
   }
 };
 

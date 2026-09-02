@@ -221,51 +221,114 @@ two runs nor avoid mixing them, for the same reason: it does not know there are 
 
 ## Where the conversation lives
 
-Not in the backend. A backend is a transport — a CLI path and a model name — and it is rebuilt
-whenever any of those change, which in practice means every time the Settings modal is accepted.
-The conversation is not a property of that transport, so it is held by the dialog
-(`ClaudeMemory`) and lent to each backend it builds.
+Not in the plugin. The harness — Claude Code's own CLI — already keeps one `.jsonl` per
+conversation under `~/.claude/projects/<slug of the cwd>/`, and `ensureWorkDir` pins that cwd to a
+fixed, private directory (see below), so the plugin's own store and the CLI's are the same
+directory by construction. Copying the transcript into `pj.settings.v1` on top of that, as an
+earlier build did, was a second, easily-stale copy of data the harness already owned. It is gone:
+`claude_sessions.{hpp,cpp}` reads the harness's files directly — to list conversations, to load one
+back into the transcript, to delete one — and the settings store keeps exactly one thing:
+`assistant.conv.claude.session_id`, the conversation currently active in this panel.
 
-Getting this wrong is not a crash, which is what made it worth writing down: while the state lived
-inside the backend, changing the model mid-chat rebuilt the object, dropped the session id, and
-the next turn arrived with no idea what had been discussed. No error, no warning — just a model
-that had forgotten. `ClaudeBackend.ConversationMemorySurvivesARebuild` pins it by loading a
-conversation into the lent memory, destroying the backend, and asserting a rebuilt one still
-composes over the same memory.
+`claude_sessions.hpp`'s functions are Qt-free and tolerant by construction, because they parse a
+file this plugin does not own and whose format carries no contract:
 
-Two consequences worth knowing:
+- `listConversations(dir)` reads every `*.jsonl`, keeping only the fields the drawer needs
+  (`id`, `title`, `first_ts`/`last_ts`, `assistant_messages`), newest `last_ts` first. A session
+  with zero `assistant` records — a cancelled turn, a smoke-test run against this cwd — is
+  filtered out: it was never a conversation the user had a reply from.
+- **Title resolution**, in order: the harness's own `ai-title` record; failing that, the first
+  `user` message with the catalog prefix stripped, cut to 48 characters; failing that,
+  `"Untitled"`. The drawer's list text appends a short date behind it
+  (`"Title · 2 Sep 09:15"`) because the host's `QListWidget` protocol selects rows by *text*, and
+  two conversations can otherwise share a title.
+- `loadTranscript(dir, id)` replays `user`/`assistant` records into `ChatMessage` rows: a `user`
+  message becomes a User row (catalog stripped); an assistant `text` block becomes an Assistant
+  row; an assistant `tool_use` block becomes a Tool row formatted exactly like the live path's
+  `BackendEvent::ToolActivity` (the tool name, `mcp__pj__` prefix stripped — no arguments, because
+  that is what a live turn shows too). `tool_result` blocks are ignored: their content already
+  surfaces as the model's next reply. `assistant_dialog.cpp` replays these rows through the SAME
+  `ChatSession::addUser`/`appendAssistant`/`addTool` calls a live turn uses, so a resumed
+  transcript renders identically to one built turn-by-turn.
+- A line that is not valid JSON, or a record whose `type` this build has never heard of, is
+  skipped, not fatal — the rest of the file still loads. This is the same exception-barrier
+  discipline the CLI subprocess boundary already follows, applied to a file instead of a process.
+- `deleteConversation(dir, id)` unlinks the `.jsonl`. Deleting an already-gone file is success, not
+  an error the caller has to special-case.
+
+**The conversation belongs to its backend.** `LlmBackend` exposes
+`listConversations()`/`loadTranscript()`/`deleteConversation()` with empty defaults, so `Echo` and
+`Fake` simply have none; `ClaudeBackend` is the only implementation today, resolving its own
+`work_dir_` the same way `sendUserMessage` does. The seam is written for Codex/OpenCode before they
+exist: switching backends in Settings while a conversation from a different harness is active
+starts a new conversation rather than trying to resume across harnesses — there is nothing in
+common to resume.
+
+**Reopening the panel resumes the last active conversation**, as before: the id survives the
+*dialog* instance (closing the toolbox or the app destroys `ClaudeMemory` with it), so
+`conversation_state.{hpp,cpp}` writes `assistant.conv.claude.session_id` after a turn establishes
+or changes it, and the next instance replays that conversation's transcript when the settings view
+is first bound. If the harness has since purged that id (its own retention, not ours), the replay
+comes back empty and the panel starts blank instead of dangling a `--resume` target that no longer
+resolves.
+
+**A resumed conversation tells the model what it lost.** The panel's own ephemeral state — tabs
+composed via `plot_tab`, say — dies with the process; `--resume` replays the model's history as if
+it hadn't. So `switchToConversation` sets `ClaudeMemory::resumed_pending`, which forces
+`composePayload` to re-send the catalog on the very next turn with a note instead of silence:
+*"Resumed conversation. The tabs you composed earlier may no longer exist; plot_tab with action list reports the ones that do. The listing above is the
+data loaded now."* Consumed once, the same way the ordinary "the loaded data changed" note is.
+
+Three boundaries carried over unchanged from the old design:
+
+- **Never the layout.** The toolbox's `saveConfig` stays `{}` — the active-conversation pointer is
+  per-user and per-machine, not something a shared `.pj4.xml` should carry or a layout restore
+  should resurrect or destroy.
+- **A stable CLI working directory**, still. `ensureWorkDir` resolves a fixed private 0700
+  directory under XDG state and never removes it — the CLI indexes sessions by cwd, so `--resume`
+  across a restart (and, now, the drawer listing anything at all) depends on every instance running
+  in the same place.
+- **"New chat" clears the pointer, not the harness's file.** It clears the transcript, the cost
+  ledger and `ClaudeMemory` in place (no backend rebuild, so the MCP server stays up and the next
+  turn sends no `--resume`), and clears `assistant.conv.claude.session_id` — but it does not delete
+  anything on disk. The old conversation stays in the harness's store and in the drawer; the
+  trash-can icon on a drawer row is the only gesture that deletes.
+
+Two consequences carried over from the "conversation lives in `ClaudeMemory`, not the backend"
+design (`ClaudeBackend.ConversationMemorySurvivesARebuild` pins the second one):
 
 - **A rebuild may not happen mid-turn.** The outgoing and incoming backends share the memory, so
   swapping while the worker writes a session id is a data race. `rebuildBackend()` defers itself
   and `onTick` applies it once the turn is over.
-- **Forgetting had to become deliberate.** With the accidental reset gone, "New chat" is the only
-  way to start over: it clears the transcript, the cost ledger and the memory in place — no
-  rebuild, so the MCP server stays up and the next turn simply sends no `--resume`.
+- Rebuilding a backend over a memory that already holds a conversation must not wipe it — a
+  Settings change (a different model, say) is not "New chat".
 
-The conversation also survives the *dialog*: closing the toolbox (or the app) destroys the
-instance and the memory, so `conversation_state.{hpp,cpp}` writes it to the per-user
-settings store (`pj.settings.v1`, `assistant.conv.*` keys) after every completed turn, and the
-next instance restores it when the settings view is first bound. What is stored is small on
-purpose: the transcript rows (so the reopened panel *shows* what the model remembers, behind a
-visible "resumed previous conversation" seam), Claude's session id and the fnv1a hash of the
-catalog it was last told (the CLI's own `--resume` carries the actual context). Three
-deliberate boundaries:
+Known edges, accepted: a failed `--resume` is inferred from the CLI's result record (an error with
+zero turns while resuming — its stderr, which names the missing session, is not read), so a
+zero-turn failure of another kind on a resumed conversation (an auth or network failure before the
+first model call) is reported with the same "can no longer be continued" row. The `.jsonl` format is the harness's own and carries no contract — if it
+changes shape, the drawer's *listing* degrades (a title falls back, or a session goes unlisted),
+not the conversations themselves, since the CLI is still the one reading them for `--resume`.
+Retention is Claude's default (`--settings` is deliberately never passed); what Claude purges
+disappears from the drawer on its own, with no warning. Two PlotJuggler instances share the active
+pointer last-writer-wins, as before. And the cost ledger still does not resume — a restored
+conversation starts its token counter at zero, because the ledger answers "what did the last turns
+cost", not "what has this conversation ever cost" (the first turn after a resume *does* carry the
+re-sent catalog's cost, and shows up in the ledger like any other turn).
 
-- **Never the layout.** The toolbox's `saveConfig` stays `{}`. A conversation in the layout
-  recipe would ride inside shared `.pj4.xml` files (a privacy leak) and make a layout restore
-  resurrect or destroy chats; in the settings store it simply belongs to the user and machine.
-- **A stable CLI working directory.** The CLI indexes sessions by cwd, so `--resume` across a
-  restart only works if every instance runs in the same place: `ensureWorkDir` now resolves a
-  fixed private 0700 directory under XDG state instead of a fresh `mkdtemp`, and never removes
-  it. The isolation reasoning is unchanged (a private dir of ours + `--restricted`); what the
-  directory now holds is the CLI's own session state and nothing of the host's.
-- **"New chat" erases the persisted copy too** — the reset must free the user from the past,
-  not hide it until the next reopen.
+## The drawer and the buttons live in the host's chrome
 
-Known edges, accepted: a session the CLI has purged makes the resumed turn fail visibly (New
-chat recovers); two PlotJuggler instances share the store last-writer-wins; and the cost ledger
-does not resume — a restored conversation starts its token counter at zero, because the ledger
-answers "what did the last turns cost", not "what has this conversation ever cost".
+The panel's `.ui` owns only the content area; the title bar (tab banner or floating window) is
+PlotJuggler's. Three `.ui` dynamic properties (documented in PJ4's `pj_dialog_host/CLAUDE.md`)
+let the panel reach it without any code of its own: `menuButton` and `settingsButton` carry
+`pjToolboxChromeAction` + `chromeActionSlot=leading`, so the host hides them and stands icon
+proxies in for them before the title (clicks are forwarded, so `onClicked` sees the same names);
+`conversationsDrawer` carries `pjToolboxSideDrawer`, so the host hoists it into a full-height
+column beside the title bar, in every presentation, with the separator drawn by the host. The
+plugin keeps driving the drawer by name (`setVisible`, `setListItems`) exactly as before — the
+host records hoisted widgets on the panel root so its lookups still reach them. On a host without
+that support the same `.ui` degrades to what it literally says: a header row with the two buttons
+and the drawer beside the transcript.
 
 ## Threading of the panel
 

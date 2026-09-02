@@ -5,7 +5,10 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <vector>
 
+#include "claude_sessions.hpp"  // ConversationSummary, for listConversations()
 #include "llm_backend.hpp"
 #include "mcp_http_server.hpp"
 #include "stream_json.hpp"  // TurnMetrics, reported by the CLI in its result record
@@ -24,10 +27,19 @@ struct ClaudeMemory {
   // fnv1aHex of the catalog listing already sent into this conversation.
   // --resume carries the whole history forward, so re-sending an identical
   // listing every turn would be pure waste; re-sending a CHANGED one is how
-  // the model finds out the user loaded something else. A hash rather than the
-  // ~6 KB listing itself: the code only ever compares it, and this struct is
-  // persisted verbatim across panel restarts (conversation_state.hpp).
+  // the model finds out the user loaded something else. Purely an in-process
+  // dedup key now — the conversation itself lives in the harness's own store
+  // (claude_sessions.hpp), so this struct is no longer persisted across panel
+  // restarts.
   std::string sent_catalog_hash;
+  // Set when this memory was just populated from a conversation resumed off
+  // disk (switchToConversation in assistant_dialog.cpp). The panel's own
+  // ephemeral state (tabs it composed, etc.) died with the earlier process,
+  // but --resume replays the model's history as if it hadn't — so the next
+  // turn forces a fresh catalog + a note telling the model what changed.
+  // Consumed (cleared) by composePayload the first time it actually sends
+  // that catalog.
+  bool resumed_pending = false;
 };
 
 // The command line handed to the CLI, built where a test can read it.
@@ -50,9 +62,11 @@ struct ClaudeMemory {
 
 // The user text as actually sent: the catalog listing is prepended only when
 // its hash differs from what this conversation was already told (first turn,
-// or the loaded data changed — the latter carries an explicit note). Updates
-// `memory.sent_catalog_hash`. Free function so the catalog-note rules are
-// testable without spawning the CLI.
+// or the loaded data changed — the latter carries an explicit note), OR when
+// `memory.resumed_pending` forces a resend regardless of the hash (a
+// conversation just resumed off disk, whose note says so instead). Updates
+// `memory.sent_catalog_hash` and clears `resumed_pending`. Free function so
+// the catalog-note rules are testable without spawning the CLI.
 [[nodiscard]] std::string composePayload(const std::string& text, const std::string& catalog, ClaudeMemory& memory);
 
 // Remote backend driving the user's Claude Code CLI subscription headlessly —
@@ -79,6 +93,14 @@ class ClaudeBackend : public LlmBackend {
 
   // Probe: `<cli> --version` exits 0.
   [[nodiscard]] BackendTestResult testConnection() const override;
+
+  // The harness's own session store for this CLI's cwd (claude_sessions.hpp).
+  // Resolves the work dir on first use exactly like sendUserMessage does; an
+  // empty list/transcript/false is the honest answer when that fails (no
+  // XDG_STATE_HOME/HOME), not an error the caller has to handle separately.
+  [[nodiscard]] std::vector<ConversationSummary> listConversations() override;
+  [[nodiscard]] std::vector<ChatMessage> loadTranscript(const std::string& id) override;
+  bool deleteConversation(const std::string& id) override;
 
   // Cost and token split of the turn that just finished, as the CLI reported
   // it. `valid` is false if the turn never produced a result record.

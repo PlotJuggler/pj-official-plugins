@@ -444,3 +444,28 @@ it. So creations on a duplicated path are refused in the tool with the reason sp
 than letting the host land the artifact on the first-loaded file; on screen the model relayed the
 limitation accurately and proposed workable alternatives. Lifting it for real means exposing the
 qualified binding through the ABI — host-side work, recorded in the roadmap.
+
+## 16. Why the conversations drawer has no index of its own
+
+The obvious way to build "list past conversations" is a small index the plugin owns — an id, a
+title, a timestamp, appended to on every turn and read back to populate the drawer. It was not
+built that way, on purpose.
+
+Claude Code's CLI already keeps exactly that index: one `.jsonl` per conversation under
+`~/.claude/projects/<slug of the cwd>/`, and `--resume` already reads it. A second, plugin-owned
+index would either duplicate that data (two things to keep in sync, one of which can go stale — the
+exact failure the earlier "copy the transcript into settings" design had, see `ARCHITECTURE.md`)
+or would have to be rebuilt from the same files anyway to stay honest, at which point it is not
+saving a read, only adding a write. And a plugin-owned index cannot see what the CLI purges on its
+own retention schedule — it would need its own purge logic to avoid listing conversations that
+`--resume` can no longer reach, reimplementing a policy this plugin does not want to own.
+
+So `claude_sessions.hpp` reads the harness's files directly, on demand, and keeps nothing of its
+own beyond the one id currently active (`conversation_state.hpp`). The cost is real and accepted: a
+directory scan plus a parse of every `.jsonl` each time the drawer opens, instead of an O(1) index
+read. Measured against the fixtures this parser ships with (a few KB each, the shape of a normal
+conversation), this is not the kind of cost that shows up in a benchmark — and the number of
+conversations for one cwd is bounded by how long a user keeps using this one plugin instance, not
+by anything this plugin does. If that ever stops being true — thousands of sessions in one
+project's store — the fix is a cache keyed by each file's mtime, not a parallel index that can
+disagree with the CLI about what `--resume` will actually find.

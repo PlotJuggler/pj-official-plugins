@@ -67,6 +67,7 @@ Two properties are non-negotiable and hold today:
 | Tabs the model owns | It composes tabs of its own through `pj.plot_tabs.v1` — create, place and remove curves, zoom, close — each watermarked "AI", and that is the ONLY place it may draw. Its reach into the user's plots is gone, not restrained: a tab it did not compose is indistinguishable from one that does not exist, because ownership comes from the per-binding identity and never crosses the wire. Confirmed on screen: asked to zoom the user's tab it explains why it cannot and offers its own, and that tab stays pixel-identical |
 | A model tab is a view, not saved state | Never written to a layout, so a reload or an undo step leaves it exactly as it is and closing PlotJuggler ends it. It follows the treatment pinned toolbox tabs already had; what persists of the assistant is what the user chose — the backend, the model, whether the panel is a tab or a window |
 | Ollama retired | The North Star's scheduled removal, done: the backend, its memory, its persistence branch, its Settings fields and its tests. The plugin is Claude-only until the harness backends land; `LlmBackend`, Echo/Fake and the function-spec serialization stay for them. An Ollama-era store is migrated once (backend key set to `claude`, retired keys scrubbed — including up to 256 KB of dead history) |
+| Past conversations, listed and resumable | The `☰` drawer reads straight from the Claude Code harness's own `~/.claude/projects/…` store (`claude_sessions.{hpp,cpp}`) — no second copy to go stale. Pick one to resume it, delete one for good with the trash icon; the plugin now persists only the active conversation's id, not a copy of the transcript (`ARCHITECTURE.md` → Where the conversation lives) |
 
 ## Next — what still serves the North Star
 
@@ -74,7 +75,12 @@ Two properties are non-negotiable and hold today:
 turn, stream the output, persist whatever handle the harness needs to resume. DeepSeek arrives as
 a provider inside OpenCode, not as a backend of its own. Each harness ships only with the
 equivalents of the Claude safety spine: our tools only (MCP or equivalent, built-ins withheld),
-resume across turns and restarts, cost reporting where the harness exposes it.
+resume across turns and restarts, cost reporting where the harness exposes it — **and its own
+`listConversations()`/`loadTranscript()`/`deleteConversation()`**, over whatever store that harness
+keeps (Codex and OpenCode do not necessarily lay out a `.jsonl`-per-conversation directory the way
+Claude Code does). The drawer and `LlmBackend`'s seam are already written for this; only Claude has
+an implementation today, and `ConversationSummary`'s five fields (`id`, `title`, `first_ts`,
+`last_ts`, `assistant_messages`) are deliberately store-agnostic, not `.jsonl`-shaped.
 
 **In flight, serving the base: creations target a dataset through the ABI.** Reads are
 dataset-aware (they go by handle); the create side of `pj.data_processors.v1` addressed inputs by

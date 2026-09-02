@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "claude_sessions.hpp"     // listConversations/loadTranscript/deleteConversation
 #include "conversation_state.hpp"  // fnv1aHex, shared with the persisted form
 #include "stream_json.hpp"
 #include "subprocess.hpp"
@@ -19,13 +20,6 @@
 
 namespace assistant_agent {
 namespace {
-
-// Strip the "mcp__pj__" prefix Claude prepends to MCP tool names, for a cleaner
-// transcript line ("mcp__pj__list_topics" -> "list_topics").
-std::string prettyToolName(const std::string& name) {
-  const std::string prefix = "mcp__pj__";
-  return name.rfind(prefix, 0) == 0 ? name.substr(prefix.size()) : name;
-}
 
 // Comma-separated allowlist of every tool, MCP-namespaced, so Claude may call
 // them without an interactive permission prompt (headless has no UI to grant).
@@ -96,18 +90,27 @@ std::string composePayload(const std::string& text, const std::string& catalog, 
   // to this conversation. --resume replays the whole history, so a listing sent
   // once stays visible on every later turn; sending it again would just pay for
   // the same text twice. A listing that has CHANGED does get re-sent — that is
-  // how the model learns the loaded data is not what it was told earlier.
+  // how the model learns the loaded data is not what it was told earlier. A
+  // conversation just resumed off disk (resumed_pending) forces a resend too,
+  // even if the hash happens to match: the model's ephemeral state (composed
+  // tabs, etc.) died with the earlier process, and it needs telling.
   if (catalog.empty()) {
-    return text;
+    return text;  // nothing to send even when resuming; resumed_pending stays
+                  // set for the next turn that actually has a catalog
   }
   const std::string hash = fnv1aHex(catalog);
-  if (hash == memory.sent_catalog_hash) {
+  const bool resuming = memory.resumed_pending;
+  if (hash == memory.sent_catalog_hash && !resuming) {
     return text;
   }
-  const char* const note = memory.sent_catalog_hash.empty()
-                               ? ""  // first listing of the conversation: nothing to replace
-                               : "(The loaded data changed; the listing above replaces the earlier one.)\n";
+  std::string note;
+  if (resuming) {
+    note = std::string(kResumedConversationNote) + "\n";
+  } else if (!memory.sent_catalog_hash.empty()) {
+    note = std::string(kCatalogChangedNote) + "\n";
+  }
   memory.sent_catalog_hash = hash;
+  memory.resumed_pending = false;
   return catalog + "\n" + note + "\n" + text;
 }
 
@@ -183,6 +186,30 @@ BackendTestResult ClaudeBackend::testConnection() const {
   return {true, "found " + version};
 }
 
+std::vector<ConversationSummary> ClaudeBackend::listConversations() {
+  std::string error;
+  if (!ensureWorkDir(error)) {
+    return {};
+  }
+  return assistant_agent::listConversations(claudeSessionsDir(work_dir_));
+}
+
+std::vector<ChatMessage> ClaudeBackend::loadTranscript(const std::string& id) {
+  std::string error;
+  if (!ensureWorkDir(error)) {
+    return {};
+  }
+  return assistant_agent::loadTranscript(claudeSessionsDir(work_dir_), id);
+}
+
+bool ClaudeBackend::deleteConversation(const std::string& id) {
+  std::string error;
+  if (!ensureWorkDir(error)) {
+    return false;
+  }
+  return assistant_agent::deleteConversation(claudeSessionsDir(work_dir_), id);
+}
+
 bool ClaudeBackend::ensureMcpServer(const TurnTools& tools, std::string& error) {
   if (mcp_) {
     return true;
@@ -240,6 +267,10 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
     return;
   }
 
+  // Whether this turn carries --resume, captured before the stream's init
+  // record overwrites the memory's id: it is what turns a 0-turn error into
+  // "that session is gone" instead of a generic failure.
+  const std::string resume_id = memory_->session_id;
   const std::string payload = composePayload(text, tools.catalog, *memory_);
 
   const std::vector<std::string> argv = buildClaudeArgv(
@@ -278,7 +309,16 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
             memory_->session_id = ev.session_id;
           }
           if (ev.is_error) {
-            sink({BackendEvent::Kind::Error, ev.text.empty() ? "Claude reported an error" : ev.text});
+            // A resumed turn that ran zero model turns never got past
+            // --resume: the CLI has no such session any more (its stderr says
+            // "No conversation found with session ID", but stderr is not ours
+            // to read). Every other error keeps the CLI's own wording.
+            BackendEvent err{BackendEvent::Kind::Error, ev.text.empty() ? "Claude reported an error" : ev.text};
+            if (!resume_id.empty() && ev.num_turns == 0) {
+              err.text = "this conversation can no longer be resumed: Claude Code has no session " + resume_id;
+              err.resume_failed = true;
+            }
+            sink(err);
             errored = true;
           } else if (!emitted_text && !ev.text.empty()) {
             // Tool-only turns carry their summary only in the result record.

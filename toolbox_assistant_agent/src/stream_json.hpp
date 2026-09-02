@@ -60,6 +60,10 @@ struct ClaudeEvent {
   std::string tool_name;
   std::string session_id;
   bool is_error = false;
+  // Result only: how many model turns ran. 0 on an error means the CLI never
+  // reached the model — with --resume, that the session it was asked to
+  // continue does not exist. -1 when the record does not say.
+  int num_turns = -1;
   TurnMetrics metrics;
 };
 
@@ -140,9 +144,15 @@ struct ClaudeEvent {
     e.session_id = session_id;
     const std::string subtype = j.value("subtype", std::string{});
     e.is_error = j.value("is_error", false) || (!subtype.empty() && subtype != "success");
+    if (const auto& turns = j.value("num_turns", nlohmann::json{}); turns.is_number_integer()) {
+      e.num_turns = turns.get<int>();
+    }
     // "result" carries the final assistant text on success; on error it may
-    // carry an error string under the same key.
-    e.text = j.value("result", std::string{});
+    // carry an error string under the same key (or nothing at all: a missing
+    // --resume session yields `"result": null`).
+    if (const auto& result = j.value("result", nlohmann::json{}); result.is_string()) {
+      e.text = result.get<std::string>();
+    }
 
     TurnMetrics m;
     m.cost_usd = j.value("total_cost_usd", 0.0);

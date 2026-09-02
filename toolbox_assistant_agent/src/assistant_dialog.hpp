@@ -14,8 +14,10 @@
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "chat_session.hpp"
+#include "claude_sessions.hpp"  // ConversationSummary
 #include "gui_executor.hpp"
 #include "llm_backend.hpp"
 #include "tool_registry.hpp"
@@ -44,20 +46,29 @@ struct DialogState {
   // Transcript + turn-state machine (see chat_session.hpp).
   ChatSession session;
 
-  // Human-readable active-backend name, shown in the header band.
+  // Human-readable active-backend name, shown on the status line.
   std::string backend_name = "Echo (no LLM)";
 
   // Dirty flags so widget_data() re-pushes only what changed. The transcript
   // re-push (setPlainText on a growing QPlainTextEdit) is the expensive one, so
   // it is gated behind an explicit change signal (risk R5).
   bool transcript_dirty = true;
-  bool header_dirty = true;
   bool controls_dirty = true;
   // Clear the input box exactly once, right after a Send (never mid-typing).
   bool clear_input_pending = false;
 
   // What the last turn moved; rendered after statusText().
   UsageLedger usage;
+
+  // The ☰ conversations drawer (left of the transcript). Populated from
+  // backend_->listConversations() when opened — not kept live, so a
+  // conversation started in another PlotJuggler instance only appears the
+  // next time this one's drawer opens.
+  bool drawer_open = false;
+  bool drawer_dirty = true;          // forces the first widget_data() to push visibility + list + placeholder
+  bool header_icons_pending = true;  // one-shot setButtonIconNamed for menuButton/newChatButton
+  std::vector<ConversationSummary> conversations;
+  std::string active_conversation_id;
 
   // A backend rebuild that arrived mid-turn and has to wait. Swapping the
   // backend is safe (the worker holds its own reference), but the conversation
@@ -91,6 +102,8 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   bool onTextChanged(std::string_view widget_name, std::string_view text) override;
   bool onIndexChanged(std::string_view widget_name, int index) override;
   bool onClicked(std::string_view widget_name) override;
+  bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override;
+  bool onItemDeleteRequested(std::string_view widget_name, int index) override;
   bool onTick() override;
 
   // Host wiring, mirroring toolbox_mosaico. Providers are captured lazily so the
@@ -129,20 +142,46 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   void rebuildBackend();
 
   // Drop the transcript, the accumulated cost and the backend's conversation
-  // memory — AND the persisted copy in the settings store, so a later reopen
-  // does not resurrect what the user explicitly reset. No backend rebuild: the
-  // memory is cleared in place and the live backend reads through the same
-  // pointer, so the next turn sends no --resume and re-sends the catalog —
-  // genuinely fresh, with the MCP server left up.
+  // memory — AND the active-session id in the settings store, so a later
+  // reopen does not resume what the user explicitly walked away from. No
+  // backend rebuild: the memory is cleared in place and the live backend
+  // reads through the same pointer, so the next turn sends no --resume and
+  // re-sends the catalog — genuinely fresh, with the MCP server left up. This
+  // does NOT delete anything on disk: the old conversation stays in the
+  // harness's store and in the drawer, just no longer active (New chat is not
+  // the trash can — see onItemDeleteRequested for that).
   void startNewConversation();
 
-  // Conversation persistence (conversation_state.hpp): restore once when the
-  // settings view is first bound (the ctor runs before bind(), against an
-  // unbound view), and save after every completed turn.
+  // Load the transcript for `id` from the backend's own store and replay it
+  // into a cleared ChatSession via the SAME calls the live path uses
+  // (addUser/appendAssistant/addTool), so a resumed transcript renders
+  // identically to one built turn-by-turn — appendAssistant is what merges
+  // consecutive assistant text blocks into one row. Points claude_memory_ at
+  // `id` with resumed_pending set (composePayload then re-sends the catalog
+  // with the resume note on the next turn) and persists the new active id. The
+  // drawer stays as it was — a sidebar, not a menu. Returns false without
+  // changing anything if the backend has nothing under `id` (purged between
+  // listing and picking it).
+  bool switchToConversation(const std::string& id);
+
+  // Restore the active conversation once when the settings view is first
+  // bound (the ctor runs before bind(), against an unbound view, so this
+  // cannot run there). If the persisted id no longer resolves to anything
+  // (purged since the last close), clears it instead of leaving a dangling
+  // --resume target.
   void loadPersistedConversation();
-  // Requires state_.mu held by the caller (the TurnComplete arm); reads the
-  // session + the memory and writes the store, which takes no locks of ours.
-  void saveConversationLocked();
+
+  // Requires state_.mu held by the caller. Rebuilds `conversations` from
+  // backend_->listConversations() — local disk I/O under the harness's
+  // project dir, cheap enough to run inline on the GUI thread when the drawer
+  // opens (there is no async path for it, unlike a turn).
+  void refreshConversationsLocked();
+  // Requires state_.mu held by the caller. The host's QListWidget protocol
+  // selects and reports rows by TEXT (setSelectedItems / onSelectionChanged),
+  // so these map a row's text back to its conversation id and forward; O(n)
+  // over a human-sized list, not worth a map.
+  [[nodiscard]] std::string idForListTextLocked(const std::string& text) const;
+  [[nodiscard]] std::string listTextForIdLocked(const std::string& id) const;
 
   DialogState state_;
   ToolRegistry registry_;

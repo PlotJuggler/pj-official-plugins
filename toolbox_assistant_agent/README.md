@@ -65,9 +65,24 @@ comes back with the exact candidates rather than a guess.
 
 ## Using it
 
-1. **Toolbox → Assistant Agent.** It opens as a floating window, so the chart area stays yours.
+1. **Toolbox → Assistant Agent.** It opens as a tab (the banner's button moves it to a floating
+   window and back) and resumes whichever conversation was active when you last closed it.
 2. **Settings…** — pick a backend. For Claude, `claude` must be installed and logged in.
 3. Type and press Enter.
+
+### Past conversations
+
+The **☰** button at the left of the panel's title bar (next to the settings gear) opens a
+full-height column of past conversations for this backend — titled by Claude's own summary where
+it has one, otherwise by the first thing you asked, newest first. Picking one replays its
+transcript and resumes it (`--resume`); the **+** on the column's header starts a fresh one
+without touching what came before. The trash icon on a row deletes that
+conversation for good — it is the only thing in this panel that deletes anything. There is no
+separate index to fall out of sync: the drawer reads straight from the same store Claude Code's CLI
+already keeps per project (`~/.claude/projects/…`), so a conversation is exactly what `--resume`
+would resume, no more and no less. It keeps to Claude's own default retention (about 30 days) —
+this plugin never changes that — so an old conversation can simply age out of the drawer on its
+own with no warning.
 
 Derived series appear in the **Custom Series** panel (bottom-left), not in the Datasets tree; the
 assistant will normally plot one for you in a tab of its own rather than leave you to drag it.

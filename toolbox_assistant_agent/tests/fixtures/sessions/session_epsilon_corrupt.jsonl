@@ -1,0 +1,6 @@
+{"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-09-01T18:00:00.000Z", "sessionId": "epsilon-session-0001"}
+{this is not valid json at all,,,
+{"type": "ai-title", "aiTitle": "Resumed tabs question", "sessionId": "epsilon-session-0001"}
+{"type": "user", "message": {"role": "user", "content": "Loaded data: nothing is loaded yet.\n(Resumed conversation. The tabs you composed earlier may no longer exist; plot_tab with action list reports the ones that do. The listing above is the data loaded now.)\n\nWhat tabs did you create earlier?"}, "timestamp": "2026-09-01T18:00:00.100Z", "cwd": "/home/user/.local/state/pj-assistant-cli", "sessionId": "epsilon-session-0001"}
+{"type": "future-record-kind", "someNewField": {"nested": true}, "timestamp": "2026-09-01T18:00:00.150Z", "sessionId": "epsilon-session-0001"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I don't have a record of tabs from before this resume."}]}, "timestamp": "2026-09-01T18:00:03.000Z", "sessionId": "epsilon-session-0001"}
