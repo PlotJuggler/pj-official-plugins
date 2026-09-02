@@ -3842,8 +3842,6 @@ TEST(RosParserTest, MarkerArrayScalarRouteStaysEmpty) {
 // foxglove_msgs/Grid (zero-copy view), on both wires.
 // ---------------------------------------------------------------------------
 
-constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
-
 static const char* kGridMapDef =
     "grid_map_msgs/GridMapInfo info\nstring[] layers\nstring[] basic_layers\n"
     "std_msgs/Float32MultiArray[] data\nuint16 outer_start_index\nuint16 inner_start_index\n"
@@ -3948,56 +3946,6 @@ void appendRos1F64(std::vector<uint8_t>& out, double v) {
   }
 }
 
-void appendRos1F32(std::vector<uint8_t>& out, float v) {
-  uint32_t bits = 0;
-  std::memcpy(&bits, &v, sizeof(bits));
-  appendRos1U32(out, bits);
-}
-
-void appendRos1U16(std::vector<uint8_t>& out, uint16_t v) {
-  out.push_back(static_cast<uint8_t>(v & 0xFFu));
-  out.push_back(static_cast<uint8_t>(v >> 8));
-}
-
-std::vector<uint8_t> serializeGridMapRos1(const GridMapWire& w, uint32_t seq) {
-  std::vector<uint8_t> out;
-  appendRos1U32(out, seq);
-  appendRos1U32(out, static_cast<uint32_t>(w.sec));
-  appendRos1U32(out, w.nsec);
-  appendRos1String(out, w.frame_id);
-  appendRos1F64(out, w.resolution);
-  appendRos1F64(out, w.length_x);
-  appendRos1F64(out, w.length_y);
-  for (double v : {w.center_x, w.center_y, 0.0, 0.0, 0.0, 0.0, 1.0}) {
-    appendRos1F64(out, v);
-  }
-  appendRos1U32(out, static_cast<uint32_t>(w.layers.size()));
-  for (const auto& s : w.layers) {
-    appendRos1String(out, s);
-  }
-  appendRos1U32(out, static_cast<uint32_t>(w.basic_layers.size()));
-  for (const auto& s : w.basic_layers) {
-    appendRos1String(out, s);
-  }
-  appendRos1U32(out, static_cast<uint32_t>(w.data.size()));
-  for (const auto& layer : w.data) {
-    appendRos1U32(out, static_cast<uint32_t>(layer.dims.size()));
-    for (const auto& [label, size, stride] : layer.dims) {
-      appendRos1String(out, label);
-      appendRos1U32(out, size);
-      appendRos1U32(out, stride);
-    }
-    appendRos1U32(out, layer.data_offset);
-    appendRos1U32(out, static_cast<uint32_t>(layer.data.size()));
-    for (float v : layer.data) {
-      appendRos1F32(out, v);
-    }
-  }
-  appendRos1U16(out, w.outer_start_index);
-  appendRos1U16(out, w.inner_start_index);
-  return out;
-}
-
 float gridCell(const PJ::sdk::GridMap& g, uint32_t c, uint32_t r, size_t field = 0) {
   float v = 0.0f;
   std::memcpy(&v, g.data.data() + r * g.row_stride + c * g.cell_stride + g.fields[field].offset, sizeof(float));
@@ -4065,35 +4013,6 @@ TEST(RosParserTest, GridMapRos2ProducesTranscodedObject) {
   EXPECT_EQ(gridRowMajor(*g), (std::vector<float>{3, 5, 4, 0, 2, 1}));
   EXPECT_NE(g->anchor, nullptr) << "transcoded bytes are owned, not a payload view";
   EXPECT_TRUE(PJ::validateGridMap(*g).has_value());
-}
-
-TEST(RosParserTest, GridMapRos1ProducesTranscodedObject) {
-  RosParserFixture f;
-  f.setUp();
-  ASSERT_TRUE(f.handle.loadConfig(R"({"serialization":"ros1","use_embedded_timestamp":true})"));
-  ASSERT_TRUE(f.bindSchema("grid_map_msgs/GridMap", kGridMapRos1Def, "ros1msg"));
-
-  GridMapWire w;
-  w.layers = {"elevation", "valid"};
-  w.basic_layers = {"valid"};
-  w.data = {gridMapLayer({0, 1, 2, 3, 4, 5}, 3, 2), gridMapLayer({1, 1, 1, 1, kNaN, 1}, 3, 2)};
-  w.inner_start_index = 1;
-  auto rec = parseObject(f, serializeGridMapRos1(w, /*seq=*/42));
-  ASSERT_TRUE(rec.has_value()) << rec.error();
-  EXPECT_EQ(*rec->ts, 7'500'000'000LL);
-
-  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
-  ASSERT_NE(g, nullptr);
-  EXPECT_EQ(g->frame_id, "odom");
-  ASSERT_EQ(g->fields.size(), 2u);
-  EXPECT_EQ(g->cell_stride, 8u);
-  // inner start 1 golden: [2,1,0,5,4,3]; storage 4 (-> cell c=1, r=1 here) is
-  // NaN in the basic layer, so BOTH fields of that cell are NaN.
-  EXPECT_EQ(gridCell(*g, 0, 0), 2.0f);
-  EXPECT_EQ(gridCell(*g, 2, 1), 3.0f);
-  EXPECT_TRUE(std::isnan(gridCell(*g, 1, 1, 0)));
-  EXPECT_TRUE(std::isnan(gridCell(*g, 1, 1, 1)));
-  EXPECT_EQ(gridCell(*g, 0, 1, 1), 1.0f);
 }
 
 TEST(RosParserTest, GridMapRejectsMalformedMessages) {

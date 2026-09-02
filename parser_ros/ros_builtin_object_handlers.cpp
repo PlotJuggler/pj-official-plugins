@@ -88,6 +88,14 @@ inline uint8_t readU8(RosMsgParser::Deserializer& d) {
   return d.deserialize(RosMsgParser::UINT8).extract<uint8_t>();
 }
 
+/// Bounds a wire-declared element count by the bytes left at the cursor, so a
+/// corrupt length prefix cannot request a huge allocation before the read fails.
+void requireAvailable(const RosMsgParser::Deserializer& d, uint64_t count, size_t min_bytes_each, const char* what) {
+  if (count * min_bytes_each > d.bytesLeft()) {
+    throw std::runtime_error(std::string(what) + " count exceeds message payload (truncated or corrupt message)");
+  }
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -1225,35 +1233,22 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOccupancyGridUpdate(
 // becomes an Expected error.
 // ---------------------------------------------------------------------------
 
-namespace {
-
-/// Bounds a wire-declared element count by the bytes left at the cursor.
-void requireAvailable(const RosMsgParser::Deserializer& d, uint64_t count, size_t min_bytes_each, const char* what) {
-  if (count * min_bytes_each > d.bytesLeft()) {
-    throw std::runtime_error(std::string(what) + " count exceeds message payload (truncated or corrupt message)");
-  }
-}
-
-}  // namespace
-
-RosParser::HeaderData RosParser::readGridMapMessage(PJ::grid_map::GridMapMessage& out) {
+RosParser::HeaderData RosParser::readGridMapMessage(
+    PJ::grid_map::GridMapMessage& out, PJ::sdk::Pose& center, bool skip_layer_data) {
   using PJ::grid_map::kMaxLayers;
   HeaderData header = readHeader();
   out.resolution = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   out.length_x = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   out.length_y = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
-  out.center_x = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
-  out.center_y = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
-  for (int i = 0; i < 5; ++i) {  // position.z + orientation xyzw: read to advance, dropped
-    (void)deserializer_->deserialize(RosMsgParser::FLOAT64);
-  }
+  center = readPose();
+  out.center_x = center.position.x;  // z + orientation: grid_map_ros ignores them
+  out.center_y = center.position.y;
 
   const auto read_strings = [this](std::vector<std::string>& names, const char* what) {
     const uint32_t count = deserializer_->deserializeUInt32();
     if (count > kMaxLayers) {
       throw std::runtime_error(std::string("GridMap: too many ") + what);
     }
-    requireAvailable(*deserializer_, count, sizeof(uint32_t), what);
     names.resize(count);
     for (auto& name : names) {
       deserializer_->deserializeString(name);
@@ -1266,8 +1261,9 @@ RosParser::HeaderData RosParser::readGridMapMessage(PJ::grid_map::GridMapMessage
   if (array_count > kMaxLayers) {
     throw std::runtime_error("GridMap: too many data arrays");
   }
-  requireAvailable(*deserializer_, array_count, 2 * sizeof(uint32_t), "data");
-  gridmap_layer_scratch_.resize(array_count);
+  if (!skip_layer_data) {
+    gridmap_layer_scratch_.resize(array_count);
+  }
   out.data.resize(array_count);
   for (uint32_t k = 0; k < array_count; ++k) {
     auto& layer = out.data[k];
@@ -1281,13 +1277,20 @@ RosParser::HeaderData RosParser::readGridMapMessage(PJ::grid_map::GridMapMessage
     }
     layer.data_offset = deserializer_->deserializeUInt32();
 
+    // The float array is contiguous little-endian right after its count on
+    // both wires (the count leaves the CDR cursor 4-aligned), so it is one
+    // bulk copy; the scratch keeps the message borrowable after the payload.
     const uint32_t float_count = deserializer_->deserializeUInt32();
     requireAvailable(*deserializer_, float_count, sizeof(float), "layer data");
+    const size_t byte_count = static_cast<size_t>(float_count) * sizeof(float);
+    if (skip_layer_data) {
+      deserializer_->jump(byte_count);
+      continue;
+    }
     auto& floats = gridmap_layer_scratch_[k];
     floats.resize(float_count);
-    for (auto& v : floats) {
-      v = deserializer_->deserialize(RosMsgParser::FLOAT32).convert<float>();
-    }
+    std::memcpy(floats.data(), deserializer_->getCurrentPtr(), byte_count);
+    deserializer_->jump(byte_count);
     layer.data = PJ::Span<const float>(floats.data(), floats.size());
   }
   out.outer_start_index = deserializer_->deserialize(RosMsgParser::UINT16).extract<uint16_t>();
@@ -1302,7 +1305,8 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseGridMap(PJ::Timestamp ts, PJ
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
 
     PJ::grid_map::GridMapMessage msg;
-    HeaderData header = readGridMapMessage(msg);
+    PJ::sdk::Pose center;
+    HeaderData header = readGridMapMessage(msg, center, /*skip_layer_data=*/false);
     auto grid = PJ::grid_map::transcodeGridMap(msg);
     if (!grid) {
       return PJ::unexpected(std::move(grid).error());
@@ -1321,47 +1325,19 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseGridMapScala
     PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   try {
     beginDirectScalarRead(ts, payload);
-    emitHeader(readHeader());
-    addField("/info/resolution", deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>());
-    addField("/info/length_x", deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>());
-    addField("/info/length_y", deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>());
-    parsePose("/info/pose");
-
-    // layers[] + basic_layers[]: only the count is plottable; the names are
-    // skipped (still read, to keep the cursor aligned).
-    const auto skip_strings = [this](const char* what) {
-      const uint32_t count = deserializer_->deserializeUInt32();
-      requireAvailable(*deserializer_, count, sizeof(uint32_t), what);
-      std::string scratch;
-      for (uint32_t i = 0; i < count; ++i) {
-        deserializer_->deserializeString(scratch);
-      }
-      return count;
-    };
-    const uint32_t layer_count = skip_strings("layers");
-    (void)skip_strings("basic_layers");
-    addField("/num_layers", static_cast<double>(layer_count));
-
-    // size_x / size_y live in the first layer's layout (dim[1] / dim[0]); the
-    // float arrays are never read.
-    const uint32_t array_count = deserializer_->deserializeUInt32();
-    if (array_count > 0) {
-      const uint32_t dim_count = deserializer_->deserializeUInt32();
-      requireAvailable(*deserializer_, dim_count, 3 * sizeof(uint32_t), "layout.dim");
-      std::string label;
-      uint32_t sizes[2] = {0, 0};
-      for (uint32_t i = 0; i < dim_count; ++i) {
-        deserializer_->deserializeString(label);
-        const uint32_t size = deserializer_->deserializeUInt32();
-        (void)deserializer_->deserializeUInt32();  // stride
-        if (i < 2) {
-          sizes[i] = size;
-        }
-      }
-      if (dim_count == 2) {
-        addField("/size_x", static_cast<double>(sizes[1]));
-        addField("/size_y", static_cast<double>(sizes[0]));
-      }
+    PJ::grid_map::GridMapMessage msg;
+    PJ::sdk::Pose center;
+    emitHeader(readGridMapMessage(msg, center, /*skip_layer_data=*/true));
+    addField("/info/resolution", msg.resolution);
+    addField("/info/length_x", msg.length_x);
+    addField("/info/length_y", msg.length_y);
+    emitPose("/info/pose", center);
+    // Only the layer count is plottable, not the names; size_x / size_y live in
+    // the first layer's layout (dim[1] / dim[0]).
+    addField("/num_layers", static_cast<double>(msg.layers.size()));
+    if (!msg.data.empty() && msg.data.front().dims.size() == 2) {
+      addField("/size_x", static_cast<double>(msg.data.front().dims[1].size));
+      addField("/size_y", static_cast<double>(msg.data.front().dims[0].size));
     }
     return harvestOwnedFields();
   } catch (const std::exception& e) {

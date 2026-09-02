@@ -328,6 +328,9 @@ class RosParser : public PJ::MessageParserPluginBase {
   void parseCovariance(const std::string& prefix);
   void parseTwist(const std::string& prefix);
   void parsePose(const std::string& prefix);
+  // Emits an already-read Pose under `prefix` exactly as parsePose does
+  // (position x/y/z, orientation x/y/z/w + roll/pitch/yaw).
+  void emitPose(const std::string& prefix, const PJ::sdk::Pose& pose);
   void parseTransform(const std::string& prefix);
   void parsePoseWithCovariance(const std::string& prefix);
   void parseTwistWithCovariance(const std::string& prefix);
@@ -487,9 +490,12 @@ class RosParser : public PJ::MessageParserPluginBase {
       PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
 
   // Reads the whole grid_map_msgs/GridMap body after the deserializer has
-  // been positioned at the start of the message. Layer floats land in
-  // gridmap_layer_scratch_, which `out` borrows. Throws on a truncated wire.
-  HeaderData readGridMapMessage(PJ::grid_map::GridMapMessage& out);
+  // been positioned at the start of the message. `center` receives the full
+  // info.pose (only its x/y reach `out`). Layer floats land in
+  // gridmap_layer_scratch_, which `out` borrows, unless `skip_layer_data` is
+  // set (the scalar route: the cursor jumps past them and `out.data[k].data`
+  // stays empty). Throws on a truncated wire.
+  HeaderData readGridMapMessage(PJ::grid_map::GridMapMessage& out, PJ::sdk::Pose& center, bool skip_layer_data);
 
   // Reads a foxglove_msgs/Grid body (bare time, frame_id, pose, layout,
   // fields[], data[]) into a GridMap view over `anchor`'s buffer and
