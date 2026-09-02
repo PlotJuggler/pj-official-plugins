@@ -19,20 +19,10 @@
 #include <vector>
 
 #include "arrow_error.hpp"
+#include "type_table.hpp"
 
 namespace pj::parser_arrow {
 namespace {
-
-/// Copy, cast, validation, or generation applied to one output column.
-enum class CastKind {
-  kNone,
-  kSyntheticTimestamp,
-  kNormalizeBytes,
-  kScaleTimestampTicks,
-  kWidenToInt64,
-  kFloatSecondsToNanoseconds,
-  kListElement,
-};
 
 /// Planning state for a scalar output or an ingestible variable list awaiting its first-batch width.
 enum class ColumnStatus { kReady, kVariableList };
@@ -40,10 +30,10 @@ enum class ColumnStatus { kReady, kVariableList };
 /// One output column and the source path or cast used to populate it.
 struct OutputColumn {
   std::vector<int64_t> source_path;
-  CastKind cast = CastKind::kNone;
-  CastKind element_cast = CastKind::kNone;
+  ColumnSource source = ColumnSource::kLeaf;
+  ValueCast cast = ValueCast::kNone;
   ArrowTimeUnit unit = NANOARROW_TIME_UNIT_NANO;
-  ArrowTimeUnit element_unit = NANOARROW_TIME_UNIT_NANO;
+  CopyKind copy = CopyKind::kUnsupported;
   bool is_timestamp_axis = false;
   int64_t element_index = -1;
   int32_t fixed_list_size = 0;
@@ -197,57 +187,38 @@ void setNanoarrowStreamError(ShapingStreamState& state, int result, const char* 
 
 /// Return whether an Arrow integer type is unsigned, so its ticks must be read through the uint64 accessor.
 [[nodiscard]] bool isUnsignedInteger(ArrowType type) {
-  return type == NANOARROW_TYPE_UINT8 || type == NANOARROW_TYPE_UINT16 || type == NANOARROW_TYPE_UINT32 ||
-         type == NANOARROW_TYPE_UINT64;
+  return typeRow(type).is_unsigned_integer;
 }
 
 /// Return whether a logical type uses Arrow list offsets or a schema-declared fixed width.
 [[nodiscard]] bool isListType(ArrowType type) {
-  return type == NANOARROW_TYPE_LIST || type == NANOARROW_TYPE_LARGE_LIST || type == NANOARROW_TYPE_FIXED_SIZE_LIST;
+  return typeRow(type).is_list_type;
 }
 
 /// Parse a source exactly once and populate its scalar reconstruction and intrinsic axis cast. `column.name` must
 /// already hold the flattened output name: axis rejections quote it.
-PJ::Status configureSource(const ArrowSchema* schema, bool is_timestamp_axis, OutputColumn& column, bool element) {
+PJ::Status configureSource(const ArrowSchema* schema, bool is_timestamp_axis, OutputColumn& column) {
   auto view = schemaView(schema);
   if (!view) {
     return PJ::unexpected(std::move(view).error());
   }
 
-  CastKind cast = CastKind::kNone;
+  const TypeRow row = typeRow(view->type);
   if (is_timestamp_axis) {
-    switch (view->type) {
-      case NANOARROW_TYPE_TIMESTAMP:
-        cast = CastKind::kScaleTimestampTicks;
-        break;
-      case NANOARROW_TYPE_INT8:
-      case NANOARROW_TYPE_INT16:
-      case NANOARROW_TYPE_INT32:
-      case NANOARROW_TYPE_INT64:
-      case NANOARROW_TYPE_UINT8:
-      case NANOARROW_TYPE_UINT16:
-      case NANOARROW_TYPE_UINT32:
-      case NANOARROW_TYPE_UINT64:
-        cast = CastKind::kWidenToInt64;
-        break;
-      case NANOARROW_TYPE_FLOAT:
-      case NANOARROW_TYPE_DOUBLE:
-        cast = CastKind::kFloatSecondsToNanoseconds;
-        break;
-      default:
-        return PJ::unexpected(
-            parserError("timestamp column '" + column.name + "' has unsupported type '" + schema->format + "'"));
+    if (!row.axis_cast.has_value()) {
+      return PJ::unexpected(
+          parserError("timestamp column '" + column.name + "' has unsupported type '" + schema->format + "'"));
     }
+    column.cast = *row.axis_cast;
+  } else {
+    column.cast = ValueCast::kNone;
   }
 
-  if (element) {
-    column.element_cast = cast;
-    column.element_unit = view->type == NANOARROW_TYPE_TIMESTAMP ? view->time_unit : NANOARROW_TIME_UNIT_NANO;
-  } else {
-    column.cast = cast;
-    column.unit = view->type == NANOARROW_TYPE_TIMESTAMP ? view->time_unit : NANOARROW_TIME_UNIT_NANO;
+  if (view->type == NANOARROW_TYPE_TIMESTAMP) {
+    column.unit = view->time_unit;
   }
   column.source_type = view->type;
+  column.copy = row.copy;
   column.decimal_bitwidth = view->decimal_bitwidth;
   column.decimal_precision = view->decimal_precision;
   column.decimal_scale = view->decimal_scale;
@@ -287,13 +258,13 @@ PJ::Status collectOutputColumns(
     }
     OutputColumn column;
     column.source_path = path;
-    column.cast = CastKind::kListElement;
+    column.source = ColumnSource::kListElement;
     column.fixed_list_size = view->type == NANOARROW_TYPE_FIXED_SIZE_LIST ? view->fixed_size : int32_t{0};
     column.status = view->type == NANOARROW_TYPE_FIXED_SIZE_LIST ? ColumnStatus::kReady : ColumnStatus::kVariableList;
     column.nullable_struct_ancestor = nullable_struct_ancestor;
     column.name = std::move(name);
     column.source_order = output.size();
-    auto status = configureSource(schema->children[0], false, column, true);
+    auto status = configureSource(schema->children[0], false, column);
     if (!status) {
       return status;
     }
@@ -306,7 +277,7 @@ PJ::Status collectOutputColumns(
   column.nullable_struct_ancestor = nullable_struct_ancestor;
   column.name = std::move(name);
   column.source_order = output.size();
-  auto status = configureSource(schema, false, column, false);
+  auto status = configureSource(schema, false, column);
   if (!status) {
     return status;
   }
@@ -339,18 +310,7 @@ PJ::Status collectLeaves(const ArrowSchema* schema, bool flatten_structs, std::v
 
 /// Named detection accepts only scalar types with a useful epoch range and precision.
 [[nodiscard]] bool isPlausibleNamedAxis(const OutputColumn& column) {
-  if (column.cast == CastKind::kListElement) {
-    return false;
-  }
-  switch (column.source_type) {
-    case NANOARROW_TYPE_TIMESTAMP:
-    case NANOARROW_TYPE_INT64:
-    case NANOARROW_TYPE_UINT64:
-    case NANOARROW_TYPE_DOUBLE:
-      return true;
-    default:
-      return false;
-  }
+  return column.source == ColumnSource::kLeaf && typeRow(column.source_type).auto_axis_plausible;
 }
 
 /// Preserve explicit narrow-axis support while making its limited epoch range visible to callers.
@@ -390,7 +350,7 @@ void appendExplicitAxisWarning(const OutputColumn& column, std::vector<ShapeWarn
 /// otherwise the first plausibly typed scalar leaf whose flattened name matches the heuristic priority list.
 [[nodiscard]] std::size_t detectTimestampLeaf(const std::vector<OutputColumn>& leaves) {
   for (std::size_t index = 0; index < leaves.size(); ++index) {
-    if (leaves[index].source_type == NANOARROW_TYPE_TIMESTAMP && leaves[index].cast != CastKind::kListElement) {
+    if (leaves[index].source_type == NANOARROW_TYPE_TIMESTAMP && leaves[index].source == ColumnSource::kLeaf) {
       return index;
     }
   }
@@ -412,23 +372,7 @@ void appendExplicitAxisWarning(const OutputColumn& column, std::vector<ShapeWarn
   if (!view) {
     return PJ::unexpected(std::move(view).error());
   }
-  switch (view->type) {
-    case NANOARROW_TYPE_INT8:
-    case NANOARROW_TYPE_INT16:
-    case NANOARROW_TYPE_INT32:
-    case NANOARROW_TYPE_INT64:
-    case NANOARROW_TYPE_UINT8:
-    case NANOARROW_TYPE_UINT16:
-    case NANOARROW_TYPE_UINT32:
-    case NANOARROW_TYPE_UINT64:
-    case NANOARROW_TYPE_FLOAT:
-    case NANOARROW_TYPE_DOUBLE:
-    case NANOARROW_TYPE_BOOL:
-    case NANOARROW_TYPE_STRING:
-      return true;
-    default:
-      return false;
-  }
+  return typeRow(view->type).host_ingestible;
 }
 
 /// Resolve a view and logical index while respecting offsets on every parent struct.
@@ -476,22 +420,16 @@ void appendExplicitAxisWarning(const OutputColumn& column, std::vector<ShapeWarn
   return *begin >= 0 && *end >= *begin;
 }
 
-/// Return the final scalar cast of an ordinary or expanded-list output.
-[[nodiscard]] CastKind scalarCast(const OutputColumn& column) {
-  return column.cast == CastKind::kListElement ? column.element_cast : column.cast;
-}
-
 /// Return the final schema format and whether the host accepts it.
 [[nodiscard]] PJ::Expected<std::pair<std::string, bool>> hostFormat(
     const ArrowSchema* scalar_schema, const OutputColumn& column) {
-  const CastKind cast = scalarCast(column);
-  if (cast == CastKind::kNormalizeBytes) {
+  if (column.cast == ValueCast::kNormalizeBytes) {
     const std::string_view input_format(scalar_schema->format);
     const bool is_string = input_format == "vu" || input_format == "U";
     return std::pair<std::string, bool>{is_string ? "u" : "z", is_string};
   }
-  if (cast == CastKind::kScaleTimestampTicks || cast == CastKind::kWidenToInt64 ||
-      cast == CastKind::kFloatSecondsToNanoseconds) {
+  if (column.cast == ValueCast::kScaleTimestampTicks || column.cast == ValueCast::kWidenToInt64 ||
+      column.cast == ValueCast::kFloatSecondsToNanoseconds) {
     return std::pair<std::string, bool>{"l", true};
   }
   auto ingestible = isHostIngestible(scalar_schema);
@@ -550,26 +488,26 @@ PJ::Status buildOutputSchema(
   for (std::size_t output_index = 0; output_index < columns.size(); ++output_index) {
     const auto& column = columns[output_index];
     auto* output_child = output_schema->children[output_index];
-    if (column.cast == CastKind::kSyntheticTimestamp) {
+    if (column.source == ColumnSource::kSynthesizedTimestamp) {
       result = ArrowSchemaSetType(output_child, NANOARROW_TYPE_INT64);
     } else {
       const auto* source = schemaAtPath(input_schema, column.source_path);
-      if (column.cast == CastKind::kListElement) {
+      if (column.source == ColumnSource::kListElement) {
         source = source->children[0];
       }
       output_child->release(output_child);
       result = ArrowSchemaDeepCopy(source, output_child);
-      const CastKind cast = scalarCast(column);
-      if (result == NANOARROW_OK && cast == CastKind::kNormalizeBytes) {
+      if (result == NANOARROW_OK && column.cast == ValueCast::kNormalizeBytes) {
         const std::string_view input_format(source->format);
         result = ArrowSchemaSetType(
             output_child, input_format == "vu" || input_format == "U" ? NANOARROW_TYPE_STRING : NANOARROW_TYPE_BINARY);
       } else if (
-          result == NANOARROW_OK && (cast == CastKind::kScaleTimestampTicks || cast == CastKind::kWidenToInt64 ||
-                                     cast == CastKind::kFloatSecondsToNanoseconds)) {
+          result == NANOARROW_OK &&
+          (column.cast == ValueCast::kScaleTimestampTicks || column.cast == ValueCast::kWidenToInt64 ||
+           column.cast == ValueCast::kFloatSecondsToNanoseconds)) {
         result = ArrowSchemaSetType(output_child, NANOARROW_TYPE_INT64);
       }
-      if (result == NANOARROW_OK && (column.nullable_struct_ancestor || column.cast == CastKind::kListElement)) {
+      if (result == NANOARROW_OK && (column.nullable_struct_ancestor || column.source == ColumnSource::kListElement)) {
         output_child->flags |= ARROW_FLAG_NULLABLE;
       }
     }
@@ -599,12 +537,12 @@ PJ::Status buildOutputSchema(
 
   for (auto& column : collected) {
     const auto* source_schema = schemaAtPath(input_schema, column.source_path);
-    if (column.cast == CastKind::kListElement) {
+    if (column.source == ColumnSource::kListElement) {
       const auto* element_schema = source_schema->children[0];
       if (column.source_type == NANOARROW_TYPE_TIMESTAMP) {
-        column.element_cast = CastKind::kScaleTimestampTicks;
+        column.cast = ValueCast::kScaleTimestampTicks;
       } else if (needsByteNormalization(element_schema)) {
-        column.element_cast = CastKind::kNormalizeBytes;
+        column.cast = ValueCast::kNormalizeBytes;
       }
       auto format = hostFormat(element_schema, column);
       if (!format) {
@@ -624,9 +562,9 @@ PJ::Status buildOutputSchema(
     }
 
     if (!column.is_timestamp_axis && column.source_type == NANOARROW_TYPE_TIMESTAMP) {
-      column.cast = CastKind::kScaleTimestampTicks;
+      column.cast = ValueCast::kScaleTimestampTicks;
     } else if (needsByteNormalization(source_schema)) {
-      column.cast = CastKind::kNormalizeBytes;
+      column.cast = ValueCast::kNormalizeBytes;
     }
     auto format = hostFormat(source_schema, column);
     if (!format) {
@@ -663,7 +601,7 @@ PJ::Status buildOutputSchema(
   result.columns.reserve(compatible.size() + (synthesize_timestamp ? 1U : 0U));
   if (synthesize_timestamp) {
     OutputColumn synthetic;
-    synthetic.cast = CastKind::kSyntheticTimestamp;
+    synthetic.source = ColumnSource::kSynthesizedTimestamp;
     synthetic.is_timestamp_axis = true;
     synthetic.name = "timestamp_ns";
     result.columns.push_back(std::move(synthetic));
@@ -764,12 +702,11 @@ PJ::Status buildOutputSchema(
 
 /// Return whether one source-backed output column needs an input view for copying.
 [[nodiscard]] bool needsCopy(const ArrowArray* input, const OutputColumn& column) {
-  if (column.cast == CastKind::kSyntheticTimestamp) {
+  if (column.source == ColumnSource::kSynthesizedTimestamp) {
     return false;
   }
-  const CastKind cast = scalarCast(column);
-  const bool cast_requires_copy =
-      cast != CastKind::kNone && !(cast == CastKind::kWidenToInt64 && column.source_type == NANOARROW_TYPE_INT64);
+  const bool cast_requires_copy = column.cast != ValueCast::kNone && !(column.cast == ValueCast::kWidenToInt64 &&
+                                                                       column.source_type == NANOARROW_TYPE_INT64);
   return cast_requires_copy || !canMoveFlattenedLeaf(input, column.source_path);
 }
 
@@ -777,76 +714,38 @@ PJ::Status buildOutputSchema(
 [[nodiscard]] int appendValue(
     ArrowArray* output, const ArrowArrayView* input, int64_t row, const OutputColumn& column,
     ShapingStreamState& state) {
-  switch (input->storage_type) {
-    case NANOARROW_TYPE_NA:
-      return ArrowArrayAppendNull(output, 1);
-    case NANOARROW_TYPE_BOOL:
-    case NANOARROW_TYPE_INT8:
-    case NANOARROW_TYPE_INT16:
-    case NANOARROW_TYPE_INT32:
-    case NANOARROW_TYPE_INT64:
-      return ArrowArrayAppendInt(output, ArrowArrayViewGetIntUnsafe(input, row));
-    case NANOARROW_TYPE_UINT8:
-    case NANOARROW_TYPE_UINT16:
-    case NANOARROW_TYPE_UINT32:
-    case NANOARROW_TYPE_UINT64:
-      return ArrowArrayAppendUInt(output, ArrowArrayViewGetUIntUnsafe(input, row));
-    case NANOARROW_TYPE_HALF_FLOAT:
-    case NANOARROW_TYPE_FLOAT:
-    case NANOARROW_TYPE_DOUBLE:
-      return ArrowArrayAppendDouble(output, ArrowArrayViewGetDoubleUnsafe(input, row));
-    case NANOARROW_TYPE_STRING:
-    case NANOARROW_TYPE_BINARY:
-    case NANOARROW_TYPE_LARGE_STRING:
-    case NANOARROW_TYPE_LARGE_BINARY:
-    case NANOARROW_TYPE_FIXED_SIZE_BINARY:
-    case NANOARROW_TYPE_STRING_VIEW:
-    case NANOARROW_TYPE_BINARY_VIEW:
-      return ArrowArrayAppendBytes(output, ArrowArrayViewGetBytesUnsafe(input, row));
-    default:
+  switch (column.copy) {
+    case CopyKind::kUnsupported:
       return fail(state, EINVAL, "Arrow column '" + column.name + "' has no scalar append path");
+    case CopyKind::kNull:
+      return ArrowArrayAppendNull(output, 1);
+    case CopyKind::kInt:
+      return ArrowArrayAppendInt(output, ArrowArrayViewGetIntUnsafe(input, row));
+    case CopyKind::kUInt:
+      return ArrowArrayAppendUInt(output, ArrowArrayViewGetUIntUnsafe(input, row));
+    case CopyKind::kDouble:
+      return ArrowArrayAppendDouble(output, ArrowArrayViewGetDoubleUnsafe(input, row));
+    case CopyKind::kBytes:
+      return ArrowArrayAppendBytes(output, ArrowArrayViewGetBytesUnsafe(input, row));
+    case CopyKind::kInterval: {
+      ArrowInterval interval{};
+      ArrowIntervalInit(&interval, column.source_type);
+      ArrowArrayViewGetIntervalUnsafe(input, row, &interval);
+      return ArrowArrayAppendInterval(output, &interval);
+    }
+    case CopyKind::kDecimal: {
+      ArrowDecimal decimal{};
+      ArrowDecimalInit(&decimal, column.decimal_bitwidth, column.decimal_precision, column.decimal_scale);
+      ArrowArrayViewGetDecimalUnsafe(input, row, &decimal);
+      return ArrowArrayAppendDecimal(output, &decimal);
+    }
   }
+  return fail(state, EINVAL, "Arrow column '" + column.name + "' has invalid scalar copy metadata");
 }
 
 /// Return whether appendValue can reconstruct one logical source value.
 [[nodiscard]] bool supportsScalarCopy(ArrowType type) {
-  switch (type) {
-    case NANOARROW_TYPE_NA:
-    case NANOARROW_TYPE_BOOL:
-    case NANOARROW_TYPE_INT8:
-    case NANOARROW_TYPE_INT16:
-    case NANOARROW_TYPE_INT32:
-    case NANOARROW_TYPE_INT64:
-    case NANOARROW_TYPE_UINT8:
-    case NANOARROW_TYPE_UINT16:
-    case NANOARROW_TYPE_UINT32:
-    case NANOARROW_TYPE_UINT64:
-    case NANOARROW_TYPE_HALF_FLOAT:
-    case NANOARROW_TYPE_FLOAT:
-    case NANOARROW_TYPE_DOUBLE:
-    case NANOARROW_TYPE_STRING:
-    case NANOARROW_TYPE_BINARY:
-    case NANOARROW_TYPE_LARGE_STRING:
-    case NANOARROW_TYPE_LARGE_BINARY:
-    case NANOARROW_TYPE_FIXED_SIZE_BINARY:
-    case NANOARROW_TYPE_DATE32:
-    case NANOARROW_TYPE_DATE64:
-    case NANOARROW_TYPE_TIME32:
-    case NANOARROW_TYPE_TIME64:
-    case NANOARROW_TYPE_DURATION:
-    case NANOARROW_TYPE_INTERVAL_MONTHS:
-    case NANOARROW_TYPE_INTERVAL_DAY_TIME:
-    case NANOARROW_TYPE_INTERVAL_MONTH_DAY_NANO:
-    case NANOARROW_TYPE_STRING_VIEW:
-    case NANOARROW_TYPE_BINARY_VIEW:
-    case NANOARROW_TYPE_DECIMAL32:
-    case NANOARROW_TYPE_DECIMAL64:
-    case NANOARROW_TYPE_DECIMAL128:
-    case NANOARROW_TYPE_DECIMAL256:
-      return true;
-    default:
-      return false;
-  }
+  return typeRow(type).copy != CopyKind::kUnsupported;
 }
 
 /// Return the integer nanoseconds-per-tick multiplier for an Arrow timestamp unit.
@@ -910,39 +809,19 @@ PJ::Status buildOutputSchema(
 [[nodiscard]] int appendCastedValue(
     ArrowArray* output, const ArrowArrayView* input, int64_t row, const OutputColumn& column,
     ShapingStreamState& state) {
-  const CastKind cast = scalarCast(column);
-  if (cast == CastKind::kNone) {
-    if (column.source_type == NANOARROW_TYPE_INTERVAL_MONTHS ||
-        column.source_type == NANOARROW_TYPE_INTERVAL_DAY_TIME ||
-        column.source_type == NANOARROW_TYPE_INTERVAL_MONTH_DAY_NANO) {
-      ArrowInterval interval{};
-      ArrowIntervalInit(&interval, column.source_type);
-      ArrowArrayViewGetIntervalUnsafe(input, row, &interval);
-      return ArrowArrayAppendInterval(output, &interval);
-    }
-    if (column.source_type == NANOARROW_TYPE_DECIMAL32 || column.source_type == NANOARROW_TYPE_DECIMAL64 ||
-        column.source_type == NANOARROW_TYPE_DECIMAL128 || column.source_type == NANOARROW_TYPE_DECIMAL256) {
-      ArrowDecimal decimal{};
-      ArrowDecimalInit(&decimal, column.decimal_bitwidth, column.decimal_precision, column.decimal_scale);
-      ArrowArrayViewGetDecimalUnsafe(input, row, &decimal);
-      return ArrowArrayAppendDecimal(output, &decimal);
-    }
-    return appendValue(output, input, row, column, state);
-  }
-  if (cast == CastKind::kNormalizeBytes) {
-    return ArrowArrayAppendBytes(output, ArrowArrayViewGetBytesUnsafe(input, row));
-  }
-
   int64_t converted = 0;
-  switch (cast) {
-    case CastKind::kScaleTimestampTicks: {
-      const ArrowTimeUnit unit = column.cast == CastKind::kListElement ? column.element_unit : column.unit;
-      if (!checkedMultiply(ArrowArrayViewGetIntUnsafe(input, row), timestampMultiplier(unit), &converted)) {
+  switch (column.cast) {
+    case ValueCast::kNone:
+      return appendValue(output, input, row, column, state);
+    case ValueCast::kNormalizeBytes:
+      return ArrowArrayAppendBytes(output, ArrowArrayViewGetBytesUnsafe(input, row));
+    case ValueCast::kScaleTimestampTicks: {
+      if (!checkedMultiply(ArrowArrayViewGetIntUnsafe(input, row), timestampMultiplier(column.unit), &converted)) {
         return fail(state, ERANGE, "timestamp column '" + column.name + "' overflows int64 nanoseconds");
       }
       break;
     }
-    case CastKind::kWidenToInt64:
+    case ValueCast::kWidenToInt64:
       if (!column.is_timestamp_axis) {
         return fail(state, EINVAL, "non-axis column '" + column.name + "' requested timestamp integer widening");
       }
@@ -957,7 +836,7 @@ PJ::Status buildOutputSchema(
         converted = ArrowArrayViewGetIntUnsafe(input, row);
       }
       break;
-    case CastKind::kFloatSecondsToNanoseconds: {
+    case ValueCast::kFloatSecondsToNanoseconds: {
       if (!column.is_timestamp_axis) {
         return fail(state, EINVAL, "non-axis column '" + column.name + "' requested timestamp float conversion");
       }
@@ -972,11 +851,6 @@ PJ::Status buildOutputSchema(
       }
       break;
     }
-    case CastKind::kNone:
-    case CastKind::kSyntheticTimestamp:
-    case CastKind::kNormalizeBytes:
-    case CastKind::kListElement:
-      return fail(state, EINVAL, "Arrow column '" + column.name + "' reached an invalid scalar cast path");
   }
   return ArrowArrayAppendInt(output, converted);
 }
@@ -985,7 +859,7 @@ PJ::Status buildOutputSchema(
 [[nodiscard]] int copyColumn(
     ArrowArray* output, const ArrowArrayView* input_root, const OutputColumn& column, int64_t length,
     ShapingStreamState& state) {
-  if (column.cast == CastKind::kNone && !supportsScalarCopy(column.source_type)) {
+  if (column.cast == ValueCast::kNone && !supportsScalarCopy(column.source_type)) {
     return fail(
         state, ENOTSUP, "cannot copy complex Arrow column '" + column.name + "' while applying parent validity");
   }
@@ -1126,7 +1000,7 @@ PJ::Status buildOutputSchema(
 [[nodiscard]] int rewriteBatch(
     ShapingStreamState& state, ArrowArray* input, const ArrowArrayView* input_view, ArrowArray* output) {
   for (const auto& column : state.columns) {
-    if (!column.is_timestamp_axis || column.cast == CastKind::kSyntheticTimestamp) {
+    if (!column.is_timestamp_axis || column.source == ColumnSource::kSynthesizedTimestamp) {
       continue;
     }
     const ArrowArray* source = arrayAtPath(input, column.source_path);
@@ -1154,15 +1028,15 @@ PJ::Status buildOutputSchema(
   std::size_t output_index = 0;
   while (output_index < state.columns.size()) {
     const auto& column = state.columns[output_index];
-    if (column.cast == CastKind::kListElement) {
+    if (column.source == ColumnSource::kListElement) {
       std::size_t group_end = output_index + 1;
-      while (group_end < state.columns.size() && state.columns[group_end].cast == CastKind::kListElement &&
+      while (group_end < state.columns.size() && state.columns[group_end].source == ColumnSource::kListElement &&
              state.columns[group_end].source_path == column.source_path) {
         ++group_end;
       }
       result = copyListColumns(output, output_index, group_end, input_view, state.columns, input->length, state);
       output_index = group_end;
-    } else if (column.cast == CastKind::kSyntheticTimestamp) {
+    } else if (column.source == ColumnSource::kSynthesizedTimestamp) {
       result = appendSyntheticTimestamps(output->children[output_index], state, input->length);
       ++output_index;
     } else {
@@ -1310,18 +1184,13 @@ namespace test {
   return floatingSecondsToNanoseconds(seconds, output);
 }
 
-/// Let the contract test follow the production predicate instead of duplicating it.
-[[nodiscard]] bool supportsScalarCopyForTesting(ArrowType type) noexcept {
-  return supportsScalarCopy(type);
-}
-
 /// Exercise production scalar-copy dispatch without exposing its shaping state to tests.
 [[nodiscard]] int appendCastedValueForTesting(
     ArrowArray* output, const ArrowArrayView* input, int64_t row, const ArrowSchema* logical_schema) {
   ShapingStreamState state;
   OutputColumn column;
   column.name = "copy_contract";
-  auto status = configureSource(logical_schema, false, column, false);
+  auto status = configureSource(logical_schema, false, column);
   if (!status) {
     return fail(state, EINVAL, status.error());
   }
@@ -1395,7 +1264,7 @@ PJ::Expected<ShapedStream> shapeStream(PJ::sdk::ArrowStreamHolder input, const S
     std::string timestamp_name = "timestamp_ns";
     if (!synthesize) {
       collected[axis].is_timestamp_axis = true;
-      auto status = configureSource(schemaAtPath(schema, collected[axis].source_path), true, collected[axis], false);
+      auto status = configureSource(schemaAtPath(schema, collected[axis].source_path), true, collected[axis]);
       if (!status) {
         return PJ::unexpected(std::move(status).error());
       }

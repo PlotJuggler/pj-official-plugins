@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 #include <nanoarrow/nanoarrow.h>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstdint>
@@ -15,6 +16,7 @@
 
 #include "pj_base/sdk/arrow.hpp"
 #include "test_utils.hpp"
+#include "type_table.hpp"
 
 #ifndef PJ_ARROW_TEST_DATA_DIR
 #error "PJ_ARROW_TEST_DATA_DIR must be defined"
@@ -25,9 +27,6 @@ namespace pj::parser_arrow::test {
 /// Invoke the production scalar-copy dispatch while keeping its shaping state private to table_shaper.cpp.
 [[nodiscard]] int appendCastedValueForTesting(
     ArrowArray* output, const ArrowArrayView* input, int64_t row, const ArrowSchema* logical_schema);
-
-/// Return whether production shaping permits reconstruction of this logical scalar type.
-[[nodiscard]] bool supportsScalarCopyForTesting(ArrowType type) noexcept;
 
 /// Exercise the production seconds-to-nanoseconds conversion without depending on an Arrow storage type's precision.
 [[nodiscard]] bool floatingSecondsToNanosecondsForTesting(double seconds, int64_t* output) noexcept;
@@ -92,6 +91,7 @@ using test::readSchema;
       break;
     case NANOARROW_TYPE_TIME64:
     case NANOARROW_TYPE_DURATION:
+    case NANOARROW_TYPE_TIMESTAMP:
       ArrowSchemaInit(schema.out());
       result = ArrowSchemaSetTypeDateTime(schema.get(), type, NANOARROW_TIME_UNIT_NANO, nullptr);
       break;
@@ -127,6 +127,7 @@ using test::readSchema;
     case NANOARROW_TYPE_TIME32:
     case NANOARROW_TYPE_TIME64:
     case NANOARROW_TYPE_DURATION:
+    case NANOARROW_TYPE_TIMESTAMP:
       return ArrowArrayAppendInt(array, 1);
     case NANOARROW_TYPE_UINT8:
     case NANOARROW_TYPE_UINT16:
@@ -201,6 +202,28 @@ using test::readSchema;
         std::string("scalar array initialization failed for ") + ArrowTypeString(type) + ": " + error.message);
   }
   return array;
+}
+
+/// Mirror the host's schema mapping independently so the compatibility table cannot validate itself.
+[[nodiscard]] constexpr bool hostRecognizes(ArrowType type) noexcept {
+  switch (type) {
+    case NANOARROW_TYPE_INT8:
+    case NANOARROW_TYPE_INT16:
+    case NANOARROW_TYPE_INT32:
+    case NANOARROW_TYPE_INT64:
+    case NANOARROW_TYPE_UINT8:
+    case NANOARROW_TYPE_UINT16:
+    case NANOARROW_TYPE_UINT32:
+    case NANOARROW_TYPE_UINT64:
+    case NANOARROW_TYPE_FLOAT:
+    case NANOARROW_TYPE_DOUBLE:
+    case NANOARROW_TYPE_BOOL:
+    case NANOARROW_TYPE_STRING:
+    case NANOARROW_TYPE_LARGE_STRING:
+      return true;
+    default:
+      return false;
+  }
 }
 
 /// Build `<parent>: struct<<leaf>: timestamp[us]>` beside a double column.
@@ -600,17 +623,14 @@ void failingPeekRelease(ArrowArrayStream* stream) noexcept {
 
 /// Every accepted logical type must resolve to storage handled by the production scalar append dispatch.
 TEST(TableShaperTest, EveryCopyableTypeHasAnAppendPath) {
-  EXPECT_TRUE(test::supportsScalarCopyForTesting(NANOARROW_TYPE_HALF_FLOAT));
   std::size_t exercised = 0;
-  for (int type_value = static_cast<int>(NANOARROW_TYPE_NA);
-       type_value <= static_cast<int>(NANOARROW_TYPE_LARGE_LIST_VIEW); ++type_value) {
-    const auto type = static_cast<ArrowType>(type_value);
-    if (!test::supportsScalarCopyForTesting(type)) {
+  for (const TypeRow& row : kTypeTable) {
+    if (row.copy == CopyKind::kUnsupported) {
       continue;
     }
-    SCOPED_TRACE(ArrowTypeString(type));
-    auto schema = makeCopyableScalarSchema(type);
-    auto input = makeCopyableScalarArray(schema.get(), type);
+    SCOPED_TRACE(ArrowTypeString(row.type));
+    auto schema = makeCopyableScalarSchema(row.type);
+    auto input = makeCopyableScalarArray(schema.get(), row.type);
     auto input_view = test::bindArrayView(schema.get(), input.get());
 
     PJ::sdk::ArrowArrayHolder output;
@@ -621,7 +641,46 @@ TEST(TableShaperTest, EveryCopyableTypeHasAnAppendPath) {
     EXPECT_EQ(ArrowArrayFinishBuildingDefault(output.get(), &error), NANOARROW_OK) << error.message;
     ++exercised;
   }
-  EXPECT_EQ(exercised, 32U);
+  EXPECT_EQ(exercised, 33U);
+}
+
+/// Keep the compatibility table synchronized with the current host mapping and its one unsafe exception.
+TEST(TableShaperTest, HostIngestibleMatchesHostMapping) {
+  constexpr std::array kExceptions = {NANOARROW_TYPE_LARGE_STRING};
+  std::size_t exceptions_seen = 0;
+  for (const TypeRow& row : kTypeTable) {
+    SCOPED_TRACE(ArrowTypeString(row.type));
+    const bool is_exception = std::find(kExceptions.begin(), kExceptions.end(), row.type) != kExceptions.end();
+    if (is_exception) {
+      ++exceptions_seen;
+      EXPECT_TRUE(hostRecognizes(row.type));
+      // PJ4/pj_datastore/src/arrow_import.cpp:210-214 reads int32 offsets after recognizing LARGE_STRING.
+      EXPECT_FALSE(row.host_ingestible);
+    } else {
+      EXPECT_EQ(row.host_ingestible, hostRecognizes(row.type));
+    }
+  }
+  EXPECT_EQ(exceptions_seen, kExceptions.size());
+}
+
+/// Automatic selection must never admit a type that explicit axis configuration cannot convert.
+TEST(TableShaperTest, AutoAxisPlausibleIsSubsetOfAxisCast) {
+  for (const TypeRow& row : kTypeTable) {
+    SCOPED_TRACE(ArrowTypeString(row.type));
+    if (row.auto_axis_plausible) {
+      EXPECT_TRUE(row.axis_cast.has_value());
+    }
+  }
+}
+
+/// A duplicate row would make typeRow's first-match behavior silently order-dependent.
+TEST(TableShaperTest, RowsAreUnique) {
+  for (std::size_t left = 0; left < kTypeTable.size(); ++left) {
+    for (std::size_t right = left + 1; right < kTypeTable.size(); ++right) {
+      SCOPED_TRACE(ArrowTypeString(kTypeTable[left].type));
+      EXPECT_NE(kTypeTable[left].type, kTypeTable[right].type);
+    }
+  }
 }
 
 /// Name heuristics use their specified global priority, not schema order.
