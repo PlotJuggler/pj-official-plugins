@@ -494,8 +494,13 @@ class RosParser : public PJ::MessageParserPluginBase {
   // info.pose (only its x/y reach `out`). Layer floats land in
   // gridmap_layer_scratch_, which `out` borrows, unless `skip_layer_data` is
   // set (the scalar route: the cursor jumps past them and `out.data[k].data`
-  // stays empty). Throws on a truncated wire.
-  HeaderData readGridMapMessage(PJ::grid_map::GridMapMessage& out, PJ::sdk::Pose& center, bool skip_layer_data);
+  // stays empty). Only each layer's `[data_offset, data_offset + cells)`
+  // window is copied, so `out.data[k].data_offset` is always 0.
+  // `little_endian_wire` (ROS 1, or a little-endian CDR encapsulation) enables
+  // the bulk copy; a big-endian CDR wire goes through the byte-swapping
+  // per-element read. Throws on a truncated or over-sized wire.
+  HeaderData readGridMapMessage(
+      PJ::grid_map::GridMapMessage& out, PJ::sdk::Pose& center, bool skip_layer_data, bool little_endian_wire);
 
   // Reads a foxglove_msgs/Grid body (bare time, frame_id, pose, layout,
   // fields[], data[]) into a GridMap view over `anchor`'s buffer and

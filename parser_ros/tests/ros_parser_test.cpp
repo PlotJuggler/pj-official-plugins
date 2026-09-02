@@ -10,6 +10,7 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <numbers>
+#include <rosx_introspection/contrib/nanocdr.hpp>
 #include <rosx_introspection/ros_parser.hpp>
 #include <rosx_introspection/serializer.hpp>
 #include <string>
@@ -3902,40 +3903,45 @@ struct GridMapWire {
   uint16_t inner_start_index = 0;
 };
 
-void serializeStringArray(RosMsgParser::NanoCDR_Serializer& enc, const std::vector<std::string>& v) {
-  enc.serializeUInt32(static_cast<uint32_t>(v.size()));
-  for (const auto& s : v) {
-    enc.serializeString(s);
-  }
-}
-
-std::vector<uint8_t> serializeGridMap(const GridMapWire& w) {
-  return serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
-    serializeHeader(enc, w.sec, w.nsec, w.frame_id);
-    serializeF64(enc, w.resolution);
-    serializeF64(enc, w.length_x);
-    serializeF64(enc, w.length_y);
-    serializeVector3(enc, w.center_x, w.center_y, 0.0);
-    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
-    serializeStringArray(enc, w.layers);
-    serializeStringArray(enc, w.basic_layers);
-    enc.serializeUInt32(static_cast<uint32_t>(w.data.size()));
-    for (const auto& layer : w.data) {
-      enc.serializeUInt32(static_cast<uint32_t>(layer.dims.size()));
-      for (const auto& [label, size, stride] : layer.dims) {
-        enc.serializeString(label);
-        enc.serializeUInt32(size);
-        enc.serializeUInt32(stride);
-      }
-      enc.serializeUInt32(layer.data_offset);
-      enc.serializeUInt32(static_cast<uint32_t>(layer.data.size()));
-      for (float v : layer.data) {
-        enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(v));
-      }
+/// The raw CDR encoder (what NanoCDR_Serializer wraps) so the same body can be
+/// emitted with either encapsulation endianness.
+std::vector<uint8_t> serializeGridMap(
+    const GridMapWire& w, nanocdr::Endianness endianness = nanocdr::Endianness::CDR_LITTLE_ENDIAN) {
+  nanocdr::CdrHeader header;
+  header.endianness = endianness;
+  std::vector<uint8_t> storage;
+  nanocdr::Encoder enc(header, storage);
+  const auto strings = [&](const std::vector<std::string>& v) {
+    enc.encode(static_cast<uint32_t>(v.size()));
+    for (const auto& str : v) {
+      enc.encode(str);
     }
-    enc.serialize(RosMsgParser::UINT16, RosMsgParser::Variant(w.outer_start_index));
-    enc.serialize(RosMsgParser::UINT16, RosMsgParser::Variant(w.inner_start_index));
-  });
+  };
+  enc.encode(w.sec);
+  enc.encode(w.nsec);
+  enc.encode(w.frame_id);
+  for (double v : {w.resolution, w.length_x, w.length_y, w.center_x, w.center_y, 0.0, 0.0, 0.0, 0.0, 1.0}) {
+    enc.encode(v);
+  }
+  strings(w.layers);
+  strings(w.basic_layers);
+  enc.encode(static_cast<uint32_t>(w.data.size()));
+  for (const auto& layer : w.data) {
+    enc.encode(static_cast<uint32_t>(layer.dims.size()));
+    for (const auto& [label, size, stride] : layer.dims) {
+      enc.encode(label);
+      enc.encode(size);
+      enc.encode(stride);
+    }
+    enc.encode(layer.data_offset);
+    enc.encode(static_cast<uint32_t>(layer.data.size()));
+    for (float v : layer.data) {
+      enc.encode(v);
+    }
+  }
+  enc.encode(w.outer_start_index);
+  enc.encode(w.inner_start_index);
+  return storage;
 }
 
 void appendRos1F64(std::vector<uint8_t>& out, double v) {
@@ -4013,6 +4019,70 @@ TEST(RosParserTest, GridMapRos2ProducesTranscodedObject) {
   EXPECT_EQ(gridRowMajor(*g), (std::vector<float>{3, 5, 4, 0, 2, 1}));
   EXPECT_NE(g->anchor, nullptr) << "transcoded bytes are owned, not a payload view";
   EXPECT_TRUE(PJ::validateGridMap(*g).has_value());
+}
+
+TEST(RosParserTest, GridMapBigEndianCdrDecodesLikeLittleEndian) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("grid_map_msgs/msg/GridMap", kGridMapDef));
+
+  GridMapWire w;
+  w.outer_start_index = 1;
+  const auto little = serializeGridMap(w);
+  const auto big = serializeGridMap(w, nanocdr::Endianness::CDR_BIG_ENDIAN);
+  ASSERT_EQ(big[1] & 1u, 0u) << "encapsulation header must say big-endian";
+  ASSERT_NE(big, little);
+
+  auto rec = parseObject(f, big);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  ASSERT_NE(g, nullptr);
+  EXPECT_EQ(g->frame_id, "odom");
+  EXPECT_DOUBLE_EQ(g->cell_size.x, 0.5);
+  EXPECT_EQ(gridRowMajor(*g), (std::vector<float>{3, 5, 4, 0, 2, 1}));
+}
+
+TEST(RosParserTest, GridMapDataOffsetAndTrailingElementsSkipped) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("grid_map_msgs/msg/GridMap", kGridMapDef));
+
+  GridMapWire w;
+  w.data[0].data_offset = 2;
+  w.data[0].data = {-1, -1, 0, 1, 2, 3, 4, 5, 99, 99};  // 2 leading + 2 trailing
+  auto rec = parseObject(f, serializeGridMap(w));
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  ASSERT_NE(g, nullptr);
+  EXPECT_EQ(gridRowMajor(*g), (std::vector<float>{5, 4, 3, 2, 1, 0}));
+  EXPECT_EQ(g->data.size(), 24u) << "only the 6-cell window is transcoded";
+
+  // The window must lie inside the declared array even when the array is
+  // long enough in total.
+  w.data[0].data_offset = 5;
+  EXPECT_FALSE(parseObject(f, serializeGridMap(w)).has_value());
+}
+
+TEST(RosParserTest, GridMapOversizedDeclaredFloatCountRejected) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("grid_map_msgs/msg/GridMap", kGridMapDef));
+
+  // The float count is the last uint32 before the 6 floats and the two uint16
+  // start indices; patch it to 100 million trailing elements.
+  auto payload = serializeGridMap(GridMapWire{});
+  const size_t count_offset = payload.size() - 2 * sizeof(uint16_t) - 6 * sizeof(float) - sizeof(uint32_t);
+  ASSERT_EQ(payload[count_offset], 6u) << "fixture layout drifted";
+  const uint32_t huge = 100'000'000u;
+  std::memcpy(payload.data() + count_offset, &huge, sizeof(huge));
+  auto rec = parseObject(f, payload);
+  ASSERT_FALSE(rec.has_value());
+  EXPECT_NE(rec.error().find("layer data"), std::string::npos) << rec.error();
+
+  // A layout with the wrong dim count is refused before any layer is copied.
+  GridMapWire dims;
+  dims.data[0].dims = {{"column_index", 2, 6}, {"row_index", 3, 3}, {"channel", 1, 1}};
+  EXPECT_FALSE(parseObject(f, serializeGridMap(dims)).has_value());
 }
 
 TEST(RosParserTest, GridMapRejectsMalformedMessages) {
