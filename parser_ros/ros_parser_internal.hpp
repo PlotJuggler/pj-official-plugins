@@ -10,6 +10,7 @@
 #include <numbers>
 #include <pj_base/builtin/builtin_object.hpp>
 #include <pj_base/number_parse.hpp>
+#include <pj_grid_map/grid_map_transcoder.hpp>
 #include <pj_laser_scan/laser_scan_projector.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <rosx_introspection/ros_parser.hpp>
@@ -254,6 +255,9 @@ class RosParser : public PJ::MessageParserPluginBase {
   // heap allocations on the hot path, same pattern as owned_fields_ below.
   std::vector<float> laserscan_ranges_scratch_;
   std::vector<float> laserscan_intensities_scratch_;
+  // grid_map_msgs/GridMap scratch: one float vector per layer, reused across
+  // messages so a 200x200x9 map does not reallocate nine arrays per frame.
+  std::vector<std::vector<float>> gridmap_layer_scratch_;
 
   // Output accumulation
   std::vector<FlattenedField> owned_fields_;
@@ -307,13 +311,13 @@ class RosParser : public PJ::MessageParserPluginBase {
   HeaderData readHeader();
   void emitHeader(const HeaderData& h);
 
-  // Reads a BARE builtin_interfaces/Time (sec int32, nanosec uint32) at the
-  // cursor — the head of the foxglove_msgs schemas, which carry a raw Time
-  // instead of a std_msgs/Header — and returns it as absolute nanoseconds.
-  // Adopts it as current_timestamp_ under the usual use_embedded_timestamp_ &&
-  // ts_ns > 0 contract, so every bare-Time schema behaves like readHeader().
-  // `sec` is read SIGNED: builtin_interfaces/Time is a ROS 2 type and its sec
-  // field is int32 on every wire that carries it.
+  // Reads a BARE stamp (sec, nsec) at the cursor — the head of the
+  // foxglove_msgs schemas, which carry a raw time instead of a std_msgs/Header
+  // — and returns it as absolute nanoseconds. Adopts it as current_timestamp_
+  // under the usual use_embedded_timestamp_ && ts_ns > 0 contract, so every
+  // bare-time schema behaves like readHeader(). Same signedness split as the
+  // header stamp: ROS 2 builtin_interfaces/Time.sec is int32, ROS 1 ros::Time
+  // (`time` in the .msg) is uint32.
   int64_t readBareTime();
 
   // Composition parse helpers (used by specialization handlers)
@@ -460,6 +464,37 @@ class RosParser : public PJ::MessageParserPluginBase {
 
   // map_msgs/OccupancyGridUpdate -> sdk::OccupancyGridUpdate (byte-backed, zero-copy cells)
   PJ::Expected<PJ::sdk::ObjectRecord> parseOccupancyGridUpdate(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // grid_map_msgs/GridMap -> sdk::GridMap, transcoded through pj_grid_map (the
+  // wire is a column-major ring buffer per layer; the canonical grid is
+  // row-major interleaved records, so the bytes are newly generated and owned).
+  PJ::Expected<PJ::sdk::ObjectRecord> parseGridMap(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // Slim scalar companion for grid_map_msgs/GridMap: header series, the
+  // GridMapInfo scalars (resolution, lengths, pose), /num_layers and the
+  // /size_x, /size_y read from the first layer's layout. The float arrays are
+  // never walked.
+  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseGridMapScalars(
+      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+
+  // foxglove_msgs/Grid -> sdk::GridMap (zero-copy view of data[], anchored to
+  // the payload). Leads with a BARE time (readBareTime), not a Header.
+  PJ::Expected<PJ::sdk::ObjectRecord> parseFoxgloveGrid(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // Slim scalar companion for foxglove_msgs/Grid: /timestamp, /frame_id,
+  // /column_count, /row_count (derived), strides and /data_size.
+  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseFoxgloveGridScalars(
+      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+
+  // Reads the whole grid_map_msgs/GridMap body after the deserializer has
+  // been positioned at the start of the message. Layer floats land in
+  // gridmap_layer_scratch_, which `out` borrows. Throws on a truncated wire.
+  HeaderData readGridMapMessage(PJ::grid_map::GridMapMessage& out);
+
+  // Reads a foxglove_msgs/Grid body (bare time, frame_id, pose, layout,
+  // fields[], data[]) into a GridMap view over `anchor`'s buffer and
+  // finalizes it (row_count derivation + validation).
+  PJ::Expected<PJ::sdk::GridMap> readFoxgloveGrid(PJ::sdk::BufferAnchor anchor);
 
   // std_msgs/String on a robot_description topic -> sdk::RobotDescription
   PJ::Expected<PJ::sdk::ObjectRecord> parseRobotDescription(PJ::Timestamp ts, PJ::sdk::PayloadView payload);

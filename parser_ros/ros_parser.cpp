@@ -212,6 +212,20 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kOccupancyGridUpdate,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseOccupancyGridUpdate}},
+      // grid_map_msgs/GridMap (elevation maps, layered costmaps) becomes a
+      // canonical GridMap through the pj_grid_map transcoder. The slim scalar
+      // route keeps the header + GridMapInfo + layer/size counts plottable
+      // without walking the per-layer float arrays.
+      {"grid_map_msgs/GridMap",
+       {.object_type = ObjectType::kGridMap,
+        .parse_scalars = &RosParser::parseGridMapScalars,
+        .parse_object = &RosParser::parseGridMap}},
+      // Foxglove's own grid message shares the canonical packed cell layout, so
+      // data[] is a zero-copy view. Bare-time head (no std_msgs/Header).
+      {"foxglove_msgs/Grid",
+       {.object_type = ObjectType::kGridMap,
+        .parse_scalars = &RosParser::parseFoxgloveGridScalars,
+        .parse_object = &RosParser::parseFoxgloveGrid}},
       // Markers are 3D scene content with no meaningful scalar columns, but they
       // still need a slim parse_scalars: an object-only entry makes the host's
       // eager-scalar ingest abort the push on any non-kPureLazy policy (e.g. live
@@ -838,13 +852,15 @@ RosParser::HeaderData RosParser::readHeader() {
 }
 
 int64_t RosParser::readBareTime() {
-  // builtin_interfaces/Time { int32 sec; uint32 nanosec }. Signed on every wire
-  // that carries it: this is a ROS 2 type, and the foxglove_msgs schemas that
-  // embed it bare (CompressedVideo / CompressedPointCloud / PosesInFrame) are
-  // ROS 2 only. Same signedness trap as the ROS 2 branch of readHeader().
-  const int32_t sec = static_cast<int32_t>(deserializer_->deserializeUInt32());
+  // The foxglove_msgs schemas lead with a bare stamp whose `sec` word has the
+  // same wire-dependent signedness as the Header stamp: ROS 2
+  // builtin_interfaces/Time.sec is int32 (negative stamps are legal), ROS 1
+  // `time`.sec is uint32 (its upper half would go negative if read signed).
+  const uint32_t raw_sec = deserializer_->deserializeUInt32();
+  const int64_t sec =
+      deserializer_->isROS2() ? static_cast<int64_t>(static_cast<int32_t>(raw_sec)) : static_cast<int64_t>(raw_sec);
   const uint32_t nsec = deserializer_->deserializeUInt32();
-  const int64_t ts_ns = static_cast<int64_t>(sec) * 1000000000LL + static_cast<int64_t>(nsec);
+  const int64_t ts_ns = sec * 1000000000LL + static_cast<int64_t>(nsec);
   if (use_embedded_timestamp_ && ts_ns > 0) {
     current_timestamp_ = ts_ns;
   }
