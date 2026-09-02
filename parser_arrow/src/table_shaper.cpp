@@ -93,7 +93,7 @@ constexpr char kCallbackErrorFallback[] = "parser_arrow: unable to store Arrow s
 /// Parse one schema node into a validated view.
 [[nodiscard]] PJ::Expected<ArrowSchemaView> schemaView(const ArrowSchema* schema) {
   if (schema == nullptr || schema->format == nullptr) {
-    return PJ::unexpected("parser_arrow: malformed Arrow child schema");
+    return PJ::unexpected(parserError("malformed Arrow child schema"));
   }
   ArrowSchemaView view{};
   ArrowError error{};
@@ -117,13 +117,17 @@ constexpr char kCallbackErrorFallback[] = "parser_arrow: unable to store Arrow s
 /// Store a callback diagnostic without allowing allocation failure to cross the C ABI.
 void setStreamError(ShapingStreamState& state, std::string_view message) noexcept {
   try {
-    std::string detailed = "parser_arrow: ";
-    detailed.append(message);
-    state.last_error = std::move(detailed);
+    state.last_error = parserError(message);
     state.fixed_error = nullptr;
   } catch (...) {
     state.fixed_error = kCallbackErrorFallback;
   }
+}
+
+/// Couple every errno-style return with the callback diagnostic required to interpret it.
+[[nodiscard]] int fail(ShapingStreamState& state, int code, std::string_view message) noexcept {
+  setStreamError(state, message);
+  return code;
 }
 
 /// Store a nanoarrow callback diagnostic with an errno fallback and no exception escape.
@@ -230,7 +234,7 @@ PJ::Status configureSource(const ArrowSchema* schema, bool is_timestamp_axis, Ou
         break;
       default:
         return PJ::unexpected(
-            "parser_arrow: timestamp column '" + column.name + "' has unsupported type '" + schema->format + "'");
+            parserError("timestamp column '" + column.name + "' has unsupported type '" + schema->format + "'"));
     }
   }
 
@@ -253,7 +257,7 @@ PJ::Status collectOutputColumns(
     const ArrowSchema* schema, const std::vector<int64_t>& path, std::string name, bool flatten_structs,
     bool nullable_struct_ancestor, std::vector<OutputColumn>& output) {
   if (schema == nullptr) {
-    return PJ::unexpected("parser_arrow: malformed null Arrow child schema");
+    return PJ::unexpected(parserError("malformed null Arrow child schema"));
   }
 
   if (flatten_structs && isStruct(schema)) {
@@ -277,7 +281,7 @@ PJ::Status collectOutputColumns(
   }
   if (isListType(view->type)) {
     if (schema->n_children != 1 || schema->children == nullptr || schema->children[0] == nullptr) {
-      return PJ::unexpected("parser_arrow: malformed Arrow list schema");
+      return PJ::unexpected(parserError("malformed Arrow list schema"));
     }
     OutputColumn column;
     column.source_path = path;
@@ -579,7 +583,7 @@ PJ::Status buildOutputSchema(
     }
     if (!format->second) {
       if (column.is_timestamp_axis) {
-        return PJ::unexpected("parser_arrow: timestamp axis cannot be dropped from the shaped Arrow stream");
+        return PJ::unexpected(parserError("timestamp axis cannot be dropped from the shaped Arrow stream"));
       }
       dropped.push_back(
           OrderedDroppedColumn{column.source_order, DroppedColumn{column.name, std::move(format->first)}});
@@ -630,7 +634,7 @@ PJ::Status buildOutputSchema(
         int64_t begin = 0;
         int64_t end = 0;
         if (!listChildBounds(list, list_row, 0, &begin, &end)) {
-          return PJ::unexpected("parser_arrow: invalid offsets in list column '" + column.name + "'");
+          return PJ::unexpected(parserError("invalid offsets in list column '" + column.name + "'"));
         }
         width = std::max(width, end - begin);
       }
@@ -657,7 +661,7 @@ PJ::Status buildOutputSchema(
   std::unordered_set<std::string_view> output_names;
   for (const auto& entry : names) {
     if (!output_names.insert(entry.name).second) {
-      return PJ::unexpected("parser_arrow: duplicate output column name '" + std::string(entry.name) + "'");
+      return PJ::unexpected(parserError("duplicate output column name '" + std::string(entry.name) + "'"));
     }
   }
 
@@ -676,10 +680,10 @@ PJ::Status buildOutputSchema(
     result.dropped_columns.push_back(std::move(entry.column));
   }
   if (!has_host_ingestible_data) {
-    const std::string details = formatDroppedColumns(result.dropped_columns, 4);
-    return PJ::unexpected(
-        "parser_arrow: no host-ingestible columns in Arrow schema (" +
-        (details.empty() ? std::string("no data columns") : details) + ")");
+    const std::string details = formatDroppedColumns(result.dropped_columns, kMaxDroppedColumnsListed);
+    return PJ::unexpected(parserError(
+        "no host-ingestible columns in Arrow schema (" + (details.empty() ? std::string("no data columns") : details) +
+        ")"));
   }
 
   auto schema_status = buildOutputSchema(input_schema, result.columns, result.output_schema.out());
@@ -719,7 +723,9 @@ PJ::Status buildOutputSchema(
 }
 
 /// Append one supported scalar or byte value from an ArrowArrayView.
-[[nodiscard]] int appendValue(ArrowArray* output, const ArrowArrayView* input, int64_t row) {
+[[nodiscard]] int appendValue(
+    ArrowArray* output, const ArrowArrayView* input, int64_t row, const OutputColumn& column,
+    ShapingStreamState& state) {
   switch (input->storage_type) {
     case NANOARROW_TYPE_NA:
       return ArrowArrayAppendNull(output, 1);
@@ -747,7 +753,7 @@ PJ::Status buildOutputSchema(
     case NANOARROW_TYPE_BINARY_VIEW:
       return ArrowArrayAppendBytes(output, ArrowArrayViewGetBytesUnsafe(input, row));
     default:
-      return EINVAL;
+      return fail(state, EINVAL, "Arrow column '" + column.name + "' has no scalar append path");
   }
 }
 
@@ -856,7 +862,7 @@ PJ::Status buildOutputSchema(
       ArrowArrayViewGetDecimalUnsafe(input, row, &decimal);
       return ArrowArrayAppendDecimal(output, &decimal);
     }
-    return appendValue(output, input, row);
+    return appendValue(output, input, row, column, state);
   }
   if (cast == CastKind::kNormalizeBytes) {
     return ArrowArrayAppendBytes(output, ArrowArrayViewGetBytesUnsafe(input, row));
@@ -867,21 +873,19 @@ PJ::Status buildOutputSchema(
     case CastKind::kScaleTimestampTicks: {
       const ArrowTimeUnit unit = column.cast == CastKind::kListElement ? column.element_unit : column.unit;
       if (!checkedMultiply(ArrowArrayViewGetIntUnsafe(input, row), timestampMultiplier(unit), &converted)) {
-        setStreamError(state, "timestamp column '" + column.name + "' overflows int64 nanoseconds");
-        return ERANGE;
+        return fail(state, ERANGE, "timestamp column '" + column.name + "' overflows int64 nanoseconds");
       }
       break;
     }
     case CastKind::kWidenToInt64:
       if (!column.is_timestamp_axis) {
-        return EINVAL;
+        return fail(state, EINVAL, "non-axis column '" + column.name + "' requested timestamp integer widening");
       }
       if (isUnsignedInteger(column.source_type)) {
         const uint64_t value = ArrowArrayViewGetUIntUnsafe(input, row);
         // Only uint64 can reach past INT64_MAX; narrower widths take the same branch for free.
         if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
-          setStreamError(state, "timestamp column '" + column.name + "' exceeds INT64_MAX");
-          return ERANGE;
+          return fail(state, ERANGE, "timestamp column '" + column.name + "' exceeds INT64_MAX");
         }
         converted = static_cast<int64_t>(value);
       } else {
@@ -890,18 +894,17 @@ PJ::Status buildOutputSchema(
       break;
     case CastKind::kFloatSecondsToNanoseconds:
       if (!column.is_timestamp_axis) {
-        return EINVAL;
+        return fail(state, EINVAL, "non-axis column '" + column.name + "' requested timestamp float conversion");
       }
       if (!floatingSecondsToNanoseconds(ArrowArrayViewGetDoubleUnsafe(input, row), &converted)) {
-        setStreamError(state, "timestamp column '" + column.name + "' cannot be represented as int64 nanoseconds");
-        return ERANGE;
+        return fail(state, ERANGE, "timestamp column '" + column.name + "' cannot be represented as int64 nanoseconds");
       }
       break;
     case CastKind::kNone:
     case CastKind::kSyntheticTimestamp:
     case CastKind::kNormalizeBytes:
     case CastKind::kListElement:
-      return EINVAL;
+      return fail(state, EINVAL, "Arrow column '" + column.name + "' reached an invalid scalar cast path");
   }
   return ArrowArrayAppendInt(output, converted);
 }
@@ -911,8 +914,8 @@ PJ::Status buildOutputSchema(
     ArrowArray* output, const ArrowArrayView* input_root, const OutputColumn& column, int64_t length,
     ShapingStreamState& state) {
   if (column.cast == CastKind::kNone && !supportsScalarCopy(column.source_type)) {
-    setStreamError(state, "cannot copy complex Arrow column '" + column.name + "' while applying parent validity");
-    return ENOTSUP;
+    return fail(
+        state, ENOTSUP, "cannot copy complex Arrow column '" + column.name + "' while applying parent validity");
   }
   int result = ArrowArrayStartAppending(output);
   if (result != NANOARROW_OK) {
@@ -924,8 +927,7 @@ PJ::Status buildOutputSchema(
     const auto* leaf = viewAtPath(input_root, column.source_path, row, &leaf_row, &parent_is_null);
     if (parent_is_null || ArrowArrayViewIsNull(leaf, leaf_row) != 0) {
       if (column.is_timestamp_axis) {
-        setStreamError(state, "timestamp column '" + column.name + "' contains a null value");
-        return EINVAL;
+        return fail(state, EINVAL, "timestamp column '" + column.name + "' contains a null value");
       }
       result = ArrowArrayAppendNull(output, 1);
     } else {
@@ -969,16 +971,14 @@ PJ::Status buildOutputSchema(
         if (!list_row_state.is_null &&
             !listChildBounds(
                 list, list_row, first_column.fixed_list_size, &list_row_state.begin, &list_row_state.end)) {
-          setStreamError(state, "invalid offsets in list column '" + first_column.name + "'");
-          return EINVAL;
+          return fail(state, EINVAL, "invalid offsets in list column '" + first_column.name + "'");
         }
       }
 
       if (list_row_state.is_null || column.element_index >= list_row_state.end - list_row_state.begin) {
         result = ArrowArrayAppendNull(output_child, 1);
       } else if (list_row_state.begin > std::numeric_limits<int64_t>::max() - column.element_index) {
-        setStreamError(state, "list child offset overflows in column '" + column.name + "'");
-        return ERANGE;
+        return fail(state, ERANGE, "list child offset overflows in column '" + column.name + "'");
       } else {
         const int64_t child_row = list_row_state.begin + column.element_index;
         result = ArrowArrayViewIsNull(list_row_state.child, child_row) != 0
@@ -1030,8 +1030,7 @@ PJ::Status buildOutputSchema(
     int64_t timestamp = 0;
     const int64_t stream_row = state.row_offset + row;
     if (!syntheticTimestamp(state.message_timestamp_ns, state.synthetic_interval_ns, stream_row, &timestamp)) {
-      setStreamError(state, "synthetic timestamp overflow at row " + std::to_string(stream_row));
-      return ERANGE;
+      return fail(state, ERANGE, "synthetic timestamp overflow at row " + std::to_string(stream_row));
     }
     result = ArrowArrayAppendInt(output, timestamp);
     if (result != NANOARROW_OK) {
@@ -1057,8 +1056,7 @@ PJ::Status buildOutputSchema(
       bool parent_is_null = false;
       const auto* leaf = viewAtPath(input_view, column.source_path, row, &leaf_row, &parent_is_null);
       if (parent_is_null || ArrowArrayViewIsNull(leaf, leaf_row) != 0) {
-        setStreamError(state, "timestamp column '" + column.name + "' contains a null value");
-        return EINVAL;
+        return fail(state, EINVAL, "timestamp column '" + column.name + "' contains a null value");
       }
     }
     break;
@@ -1099,7 +1097,7 @@ PJ::Status buildOutputSchema(
     }
     if (result != NANOARROW_OK) {
       if (state.last_error.empty() && state.fixed_error == nullptr) {
-        setNanoarrowStreamError(state, result, "failed to rewrite Arrow column");
+        setNanoarrowStreamError(state, result, ("failed to rewrite Arrow column '" + column.name + "'").c_str());
       }
       return result;
     }
@@ -1123,17 +1121,19 @@ PJ::Status buildOutputSchema(
 int shapingGetSchema(ArrowArrayStream* stream, ArrowSchema* output) noexcept {
   try {
     auto* state = streamState(stream);
+    if (state->poisoned_error_code == NANOARROW_OK) {
+      state->last_error.clear();
+      state->fixed_error = nullptr;
+    }
     const int result = ArrowSchemaDeepCopy(state->output_schema.get(), output);
     if (result != NANOARROW_OK) {
       setNanoarrowStreamError(*state, result, nullptr);
     }
     return result;
   } catch (const std::exception& error) {
-    setStreamError(*streamState(stream), error.what());
-    return EIO;
+    return fail(*streamState(stream), EIO, error.what());
   } catch (...) {
-    setStreamError(*streamState(stream), "unknown schema rewrite error");
-    return EIO;
+    return fail(*streamState(stream), EIO, "unknown schema rewrite error");
   }
 }
 
@@ -1145,6 +1145,8 @@ int shapingGetNext(ArrowArrayStream* stream, ArrowArray* output) noexcept {
     if (state->poisoned_error_code != NANOARROW_OK) {
       return state->poisoned_error_code;
     }
+    state->last_error.clear();
+    state->fixed_error = nullptr;
     PJ::sdk::ArrowArrayHolder input_batch;
     if (state->pending_first_batch.valid()) {
       input_batch = std::move(state->pending_first_batch);
@@ -1165,9 +1167,8 @@ int shapingGetNext(ArrowArrayStream* stream, ArrowArray* output) noexcept {
     }
     if (input_batch.get()->length < 0 ||
         input_batch.get()->length > std::numeric_limits<int64_t>::max() - state->row_offset) {
-      setStreamError(*state, "record batch row count overflows the stream row index");
-      state->poisoned_error_code = ERANGE;
-      return ERANGE;
+      state->poisoned_error_code = fail(*state, ERANGE, "record batch row count overflows the stream row index");
+      return state->poisoned_error_code;
     }
 
     nanoarrow::UniqueArrayView input_view;
@@ -1190,19 +1191,16 @@ int shapingGetNext(ArrowArrayStream* stream, ArrowArray* output) noexcept {
     return NANOARROW_OK;
   } catch (const std::bad_alloc&) {
     auto* state = streamState(stream);
-    setStreamError(*state, "out of memory while rewriting Arrow record batch");
-    state->poisoned_error_code = ENOMEM;
-    return ENOMEM;
+    state->poisoned_error_code = fail(*state, ENOMEM, "out of memory while rewriting Arrow record batch");
+    return state->poisoned_error_code;
   } catch (const std::exception& error) {
     auto* state = streamState(stream);
-    setStreamError(*state, error.what());
-    state->poisoned_error_code = EIO;
-    return EIO;
+    state->poisoned_error_code = fail(*state, EIO, error.what());
+    return state->poisoned_error_code;
   } catch (...) {
     auto* state = streamState(stream);
-    setStreamError(*state, "unknown record-batch rewrite error");
-    state->poisoned_error_code = EIO;
-    return EIO;
+    state->poisoned_error_code = fail(*state, EIO, "unknown record-batch rewrite error");
+    return state->poisoned_error_code;
   }
 }
 
@@ -1223,6 +1221,31 @@ void shapingRelease(ArrowArrayStream* stream) noexcept {
 
 }  // namespace
 
+namespace test {
+
+/// Let the contract test follow the production predicate instead of duplicating it.
+[[nodiscard]] bool supportsScalarCopyForTesting(ArrowType type) noexcept {
+  return supportsScalarCopy(type);
+}
+
+/// Exercise production scalar-copy dispatch without exposing its shaping state to tests.
+[[nodiscard]] int appendCastedValueForTesting(
+    ArrowArray* output, const ArrowArrayView* input, int64_t row, const ArrowSchema* logical_schema) {
+  ShapingStreamState state;
+  OutputColumn column;
+  column.name = "copy_contract";
+  auto status = configureSource(logical_schema, false, column, false);
+  if (!status) {
+    return fail(state, EINVAL, status.error());
+  }
+  if (!supportsScalarCopy(column.source_type)) {
+    return fail(state, ENOTSUP, "logical Arrow type is not copyable");
+  }
+  return appendCastedValue(output, input, row, column, state);
+}
+
+}  // namespace test
+
 std::string formatDroppedColumns(const std::vector<DroppedColumn>& columns, std::size_t max_listed) {
   std::string details;
   const std::size_t listed = std::min(columns.size(), max_listed);
@@ -1232,12 +1255,18 @@ std::string formatDroppedColumns(const std::vector<DroppedColumn>& columns, std:
     }
     details += columns[index].name + ":" + columns[index].format;
   }
+  if (listed < columns.size()) {
+    if (!details.empty()) {
+      details += ", ";
+    }
+    details += "…";
+  }
   return details;
 }
 
 PJ::Expected<ShapedStream> shapeStream(PJ::sdk::ArrowStreamHolder input, const ShapeOptions& options) {
   if (!input.valid()) {
-    return PJ::unexpected("parser_arrow: invalid Arrow input stream");
+    return PJ::unexpected(parserError("invalid Arrow input stream"));
   }
 
   PJ::sdk::ArrowSchemaHolder input_schema;
@@ -1248,10 +1277,10 @@ PJ::Expected<ShapedStream> shapeStream(PJ::sdk::ArrowStreamHolder input, const S
   try {
     const ArrowSchema* schema = input_schema.get();
     if (schema == nullptr || schema->release == nullptr) {
-      return PJ::unexpected("parser_arrow: invalid Arrow stream schema");
+      return PJ::unexpected(parserError("invalid Arrow stream schema"));
     }
     if (schema->n_children < 0 || (schema->n_children > 0 && schema->children == nullptr)) {
-      return PJ::unexpected("parser_arrow: malformed Arrow stream schema children");
+      return PJ::unexpected(parserError("malformed Arrow stream schema children"));
     }
 
     std::vector<OutputColumn> collected;
@@ -1270,7 +1299,7 @@ PJ::Expected<ShapedStream> shapeStream(PJ::sdk::ArrowStreamHolder input, const S
       axis = findLeaf(collected, wanted);
       if (axis == collected.size()) {
         return PJ::unexpected(
-            "parser_arrow: timestamp column '" + options.timestamp_column + "' is absent from the Arrow schema");
+            parserError("timestamp column '" + options.timestamp_column + "' is absent from the Arrow schema"));
       }
     }
 
@@ -1309,11 +1338,11 @@ PJ::Expected<ShapedStream> shapeStream(PJ::sdk::ArrowStreamHolder input, const S
     return ShapedStream{
         PJ::sdk::ArrowStreamHolder(wrapper), std::move(timestamp_name), std::move(compatible->dropped_columns)};
   } catch (const std::bad_alloc&) {
-    return PJ::unexpected("parser_arrow: out of memory while planning Arrow stream rewrite");
+    return PJ::unexpected(parserError("out of memory while planning Arrow stream rewrite"));
   } catch (const std::exception& error) {
     return PJ::unexpected(parserError(error.what()));
   } catch (...) {
-    return PJ::unexpected("parser_arrow: unknown Arrow stream planning error");
+    return PJ::unexpected(parserError("unknown Arrow stream planning error"));
   }
 }
 

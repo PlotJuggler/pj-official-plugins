@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "arrow_error.hpp"
 #include "arrow_manifest.hpp"
 #include "ipc_decoder.hpp"
 #include "table_shaper.hpp"
@@ -32,10 +33,7 @@ using pj::parser_arrow::DroppedColumn;
 [[nodiscard]] std::string droppedColumnsMessage(const std::vector<DroppedColumn>& columns) {
   std::string message = std::to_string(columns.size());
   message += " column(s) removed from the Arrow stream (unsupported host type): ";
-  message += pj::parser_arrow::formatDroppedColumns(columns, 8);
-  if (columns.size() > 8) {
-    message += ", …";
-  }
+  message += pj::parser_arrow::formatDroppedColumns(columns, pj::parser_arrow::kMaxDroppedColumnsListed);
   return message;
 }
 
@@ -88,7 +86,7 @@ class ArrowParser : public PJ::MessageParserPluginBase {
   PJ::Status loadConfig(std::string_view config_json) override {
     const auto parsed = nlohmann::json::parse(config_json, nullptr, false);
     if (parsed.is_discarded() || !parsed.is_object()) {
-      return PJ::unexpected("parser_arrow: malformed configuration JSON");
+      return PJ::unexpected(pj::parser_arrow::parserError("malformed configuration JSON"));
     }
 
     try {
@@ -99,7 +97,7 @@ class ArrowParser : public PJ::MessageParserPluginBase {
       loaded.array_limit = PJ::sdk::arrayLimitFromJson(parsed);
       config_ = std::move(loaded);
     } catch (const nlohmann::json::exception& error) {
-      return PJ::unexpected(std::string("parser_arrow: invalid configuration: ") + error.what());
+      return PJ::unexpected(pj::parser_arrow::parserError(std::string("invalid configuration: ") + error.what()));
     }
     return PJ::okStatus();
   }

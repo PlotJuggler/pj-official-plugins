@@ -20,6 +20,17 @@
 #error "PJ_ARROW_TEST_DATA_DIR must be defined"
 #endif
 
+namespace pj::parser_arrow::test {
+
+/// Invoke the production scalar-copy dispatch while keeping its shaping state private to table_shaper.cpp.
+[[nodiscard]] int appendCastedValueForTesting(
+    ArrowArray* output, const ArrowArrayView* input, int64_t row, const ArrowSchema* logical_schema);
+
+/// Return whether production shaping permits reconstruction of this logical scalar type.
+[[nodiscard]] bool supportsScalarCopyForTesting(ArrowType type) noexcept;
+
+}  // namespace pj::parser_arrow::test
+
 namespace pj::parser_arrow {
 namespace {
 
@@ -61,6 +72,132 @@ using test::readSchema;
   }
   ArrowBasicArrayStreamSetArray(&stream, 0, batch);
   return PJ::sdk::ArrowStreamHolder(stream);
+}
+
+/// Initialize one of the logical scalar schemas accepted by supportsScalarCopy, including parameterized types.
+[[nodiscard]] PJ::sdk::ArrowSchemaHolder makeCopyableScalarSchema(ArrowType type) {
+  PJ::sdk::ArrowSchemaHolder schema;
+  int result = NANOARROW_OK;
+  switch (type) {
+    case NANOARROW_TYPE_FIXED_SIZE_BINARY:
+      ArrowSchemaInit(schema.out());
+      result = ArrowSchemaSetTypeFixedSize(schema.get(), type, 1);
+      break;
+    case NANOARROW_TYPE_TIME32:
+      ArrowSchemaInit(schema.out());
+      result = ArrowSchemaSetTypeDateTime(schema.get(), type, NANOARROW_TIME_UNIT_SECOND, nullptr);
+      break;
+    case NANOARROW_TYPE_TIME64:
+    case NANOARROW_TYPE_DURATION:
+      ArrowSchemaInit(schema.out());
+      result = ArrowSchemaSetTypeDateTime(schema.get(), type, NANOARROW_TIME_UNIT_NANO, nullptr);
+      break;
+    case NANOARROW_TYPE_DECIMAL32:
+    case NANOARROW_TYPE_DECIMAL64:
+    case NANOARROW_TYPE_DECIMAL128:
+    case NANOARROW_TYPE_DECIMAL256:
+      ArrowSchemaInit(schema.out());
+      result = ArrowSchemaSetTypeDecimal(schema.get(), type, 8, 3);
+      break;
+    default:
+      result = ArrowSchemaInitFromType(schema.out(), type);
+      break;
+  }
+  if (result != NANOARROW_OK) {
+    throw std::runtime_error(std::string("scalar schema initialization failed for ") + ArrowTypeString(type));
+  }
+  return schema;
+}
+
+/// Append a representative value using the logical type's nanoarrow storage representation.
+[[nodiscard]] int appendCopyableScalar(ArrowArray* array, ArrowType type) {
+  switch (type) {
+    case NANOARROW_TYPE_NA:
+      return ArrowArrayAppendNull(array, 1);
+    case NANOARROW_TYPE_BOOL:
+    case NANOARROW_TYPE_INT8:
+    case NANOARROW_TYPE_INT16:
+    case NANOARROW_TYPE_INT32:
+    case NANOARROW_TYPE_INT64:
+    case NANOARROW_TYPE_DATE32:
+    case NANOARROW_TYPE_DATE64:
+    case NANOARROW_TYPE_TIME32:
+    case NANOARROW_TYPE_TIME64:
+    case NANOARROW_TYPE_DURATION:
+      return ArrowArrayAppendInt(array, 1);
+    case NANOARROW_TYPE_UINT8:
+    case NANOARROW_TYPE_UINT16:
+    case NANOARROW_TYPE_UINT32:
+    case NANOARROW_TYPE_UINT64:
+      return ArrowArrayAppendUInt(array, 1);
+    case NANOARROW_TYPE_HALF_FLOAT:
+    case NANOARROW_TYPE_FLOAT:
+    case NANOARROW_TYPE_DOUBLE:
+      return ArrowArrayAppendDouble(array, 1.0);
+    case NANOARROW_TYPE_STRING:
+    case NANOARROW_TYPE_BINARY:
+    case NANOARROW_TYPE_LARGE_STRING:
+    case NANOARROW_TYPE_LARGE_BINARY:
+    case NANOARROW_TYPE_FIXED_SIZE_BINARY:
+    case NANOARROW_TYPE_STRING_VIEW:
+    case NANOARROW_TYPE_BINARY_VIEW: {
+      ArrowBufferView bytes{};
+      bytes.data.as_char = "x";
+      bytes.size_bytes = 1;
+      return ArrowArrayAppendBytes(array, bytes);
+    }
+    case NANOARROW_TYPE_INTERVAL_MONTHS:
+    case NANOARROW_TYPE_INTERVAL_DAY_TIME:
+    case NANOARROW_TYPE_INTERVAL_MONTH_DAY_NANO: {
+      ArrowInterval interval{};
+      ArrowIntervalInit(&interval, type);
+      interval.months = 1;
+      interval.days = 2;
+      interval.ms = 3;
+      interval.ns = 4;
+      return ArrowArrayAppendInterval(array, &interval);
+    }
+    case NANOARROW_TYPE_DECIMAL32:
+    case NANOARROW_TYPE_DECIMAL64:
+    case NANOARROW_TYPE_DECIMAL128:
+    case NANOARROW_TYPE_DECIMAL256: {
+      int32_t bitwidth = 256;
+      if (type == NANOARROW_TYPE_DECIMAL32) {
+        bitwidth = 32;
+      } else if (type == NANOARROW_TYPE_DECIMAL64) {
+        bitwidth = 64;
+      } else if (type == NANOARROW_TYPE_DECIMAL128) {
+        bitwidth = 128;
+      }
+      ArrowDecimal decimal{};
+      ArrowDecimalInit(&decimal, bitwidth, 8, 3);
+      ArrowDecimalSetInt(&decimal, 1);
+      return ArrowArrayAppendDecimal(array, &decimal);
+    }
+    default:
+      return EINVAL;
+  }
+}
+
+/// Build and finish a one-row array whose schema retains the requested logical type.
+[[nodiscard]] PJ::sdk::ArrowArrayHolder makeCopyableScalarArray(const ArrowSchema* schema, ArrowType type) {
+  PJ::sdk::ArrowArrayHolder array;
+  ArrowError error{};
+  int result = ArrowArrayInitFromSchema(array.out(), schema, &error);
+  if (result == NANOARROW_OK) {
+    result = ArrowArrayStartAppending(array.get());
+  }
+  if (result == NANOARROW_OK) {
+    result = appendCopyableScalar(array.get(), type);
+  }
+  if (result == NANOARROW_OK) {
+    result = ArrowArrayFinishBuildingDefault(array.get(), &error);
+  }
+  if (result != NANOARROW_OK) {
+    throw std::runtime_error(
+        std::string("scalar array initialization failed for ") + ArrowTypeString(type) + ": " + error.message);
+  }
+  return array;
 }
 
 /// Build `<parent>: struct<<leaf>: timestamp[us]>` beside a double column.
@@ -135,6 +272,54 @@ using test::readSchema;
     throw std::runtime_error(error.message);
   }
   return oneBatchStream(schema.get(), batch.get());
+}
+
+/// Build one row for the two-batch stream whose delayed timestamp conversion eventually fails.
+[[nodiscard]] PJ::sdk::ArrowArrayHolder makeDelayedTimestampBatch(
+    const ArrowSchema* schema, int64_t timestamp_ns, int64_t delayed_time) {
+  PJ::sdk::ArrowArrayHolder batch;
+  ArrowError error{};
+  if (ArrowArrayInitFromSchema(batch.out(), schema, &error) != NANOARROW_OK ||
+      ArrowArrayStartAppending(batch.get()->children[0]) != NANOARROW_OK ||
+      ArrowArrayStartAppending(batch.get()->children[1]) != NANOARROW_OK ||
+      ArrowArrayStartAppending(batch.get()->children[2]) != NANOARROW_OK ||
+      ArrowArrayAppendInt(batch.get()->children[0], timestamp_ns) != NANOARROW_OK ||
+      ArrowArrayAppendInt(batch.get()->children[1], delayed_time) != NANOARROW_OK ||
+      ArrowArrayAppendDouble(batch.get()->children[2], 1.0) != NANOARROW_OK) {
+    throw std::runtime_error("delayed timestamp batch initialization failed");
+  }
+  batch.get()->length = 1;
+  batch.get()->null_count = 0;
+  if (ArrowArrayFinishBuildingDefault(batch.get(), &error) != NANOARROW_OK) {
+    throw std::runtime_error(error.message);
+  }
+  return batch;
+}
+
+/// Build two batches where only the second overflows while converting a named data timestamp to nanoseconds.
+[[nodiscard]] PJ::sdk::ArrowStreamHolder makeSecondBatchTimestampOverflowStream() {
+  PJ::sdk::ArrowSchemaHolder schema;
+  ArrowSchemaInit(schema.out());
+  if (ArrowSchemaSetTypeStruct(schema.get(), 3) != NANOARROW_OK ||
+      ArrowSchemaSetType(schema.get()->children[0], NANOARROW_TYPE_INT64) != NANOARROW_OK ||
+      ArrowSchemaSetName(schema.get()->children[0], "timestamp_ns") != NANOARROW_OK ||
+      ArrowSchemaSetTypeDateTime(
+          schema.get()->children[1], NANOARROW_TYPE_TIMESTAMP, NANOARROW_TIME_UNIT_SECOND, nullptr) != NANOARROW_OK ||
+      ArrowSchemaSetName(schema.get()->children[1], "delayed_time") != NANOARROW_OK ||
+      ArrowSchemaSetType(schema.get()->children[2], NANOARROW_TYPE_DOUBLE) != NANOARROW_OK ||
+      ArrowSchemaSetName(schema.get()->children[2], "value") != NANOARROW_OK) {
+    throw std::runtime_error("delayed timestamp schema initialization failed");
+  }
+
+  auto first_batch = makeDelayedTimestampBatch(schema.get(), 1, 1);
+  auto second_batch = makeDelayedTimestampBatch(schema.get(), 2, std::numeric_limits<int64_t>::max());
+  ArrowArrayStream stream{};
+  if (ArrowBasicArrayStreamInit(&stream, schema.get(), 2) != NANOARROW_OK) {
+    throw std::runtime_error("ArrowBasicArrayStreamInit failed");
+  }
+  ArrowBasicArrayStreamSetArray(&stream, 0, first_batch.get());
+  ArrowBasicArrayStreamSetArray(&stream, 1, second_batch.get());
+  return PJ::sdk::ArrowStreamHolder(stream);
 }
 
 /// Build two rows whose timestamp-list columns fail in opposite row/column order.
@@ -373,6 +558,32 @@ void failingPeekRelease(ArrowArrayStream* stream) noexcept {
   }
   ArrowBasicArrayStreamSetArray(&raw_stream, 0, batch.get());
   return PJ::sdk::ArrowStreamHolder(raw_stream);
+}
+
+/// Every accepted logical type must resolve to storage handled by the production scalar append dispatch.
+TEST(TableShaperTest, EveryCopyableTypeHasAnAppendPath) {
+  EXPECT_TRUE(test::supportsScalarCopyForTesting(NANOARROW_TYPE_HALF_FLOAT));
+  std::size_t exercised = 0;
+  for (int type_value = static_cast<int>(NANOARROW_TYPE_NA);
+       type_value <= static_cast<int>(NANOARROW_TYPE_LARGE_LIST_VIEW); ++type_value) {
+    const auto type = static_cast<ArrowType>(type_value);
+    if (!test::supportsScalarCopyForTesting(type)) {
+      continue;
+    }
+    SCOPED_TRACE(ArrowTypeString(type));
+    auto schema = makeCopyableScalarSchema(type);
+    auto input = makeCopyableScalarArray(schema.get(), type);
+    auto input_view = test::bindArrayView(schema.get(), input.get());
+
+    PJ::sdk::ArrowArrayHolder output;
+    ArrowError error{};
+    ASSERT_EQ(ArrowArrayInitFromSchema(output.out(), schema.get(), &error), NANOARROW_OK) << error.message;
+    ASSERT_EQ(ArrowArrayStartAppending(output.get()), NANOARROW_OK);
+    ASSERT_EQ(test::appendCastedValueForTesting(output.get(), input_view.get(), 0, schema.get()), NANOARROW_OK);
+    EXPECT_EQ(ArrowArrayFinishBuildingDefault(output.get(), &error), NANOARROW_OK) << error.message;
+    ++exercised;
+  }
+  EXPECT_EQ(exercised, 32U);
 }
 
 /// Name heuristics use their specified global priority, not schema order.
@@ -1096,6 +1307,24 @@ TEST(TableShaperTest, RejectsTypedTimestampScalingOverflow) {
   EXPECT_NE(std::string(ArrowArrayStreamGetLastError(shaped->stream.get())).find("overflows"), std::string::npos);
 }
 
+/// A later batch failure replaces successful-callback state with a fresh diagnostic naming the failing column.
+TEST(TableShaperTest, ReportsFreshColumnErrorWhenSecondBatchFails) {
+  ShapeOptions options;
+  options.timestamp_column = "timestamp_ns";
+  auto shaped = shapeStream(makeSecondBatchTimestampOverflowStream(), options);
+  ASSERT_TRUE(shaped) << shaped.error();
+  auto first_batch = readBatch(shaped->stream);
+  ASSERT_EQ(first_batch.get()->length, 1);
+  EXPECT_STREQ(ArrowArrayStreamGetLastError(shaped->stream.get()), "");
+
+  PJ::sdk::ArrowArrayHolder second_batch;
+  EXPECT_EQ(shaped->stream.get()->get_next(shaped->stream.get(), second_batch.out()), ERANGE);
+  const char* diagnostic = ArrowArrayStreamGetLastError(shaped->stream.get());
+  ASSERT_NE(diagnostic, nullptr);
+  EXPECT_FALSE(std::string_view(diagnostic).empty());
+  EXPECT_NE(std::string_view(diagnostic).find("delayed_time"), std::string_view::npos);
+}
+
 /// Expanded timestamp lists retain column-major conversion precedence while sharing cached row bounds.
 TEST(TableShaperTest, ReportsFirstExpandedColumnWhenTimestampListOverflowsCompete) {
   auto shaped = shapeStream(makeCompetingTimestampListOverflowStream(), ShapeOptions{});
@@ -1134,6 +1363,28 @@ TEST(TableShaperTest, RejectsNullTimestampCellAndPoisonsStream) {
   ASSERT_NE(first_result, NANOARROW_OK);
   EXPECT_NE(std::string(ArrowArrayStreamGetLastError(shaped->stream.get())).find("null"), std::string::npos);
   EXPECT_EQ(shaped->stream.get()->get_next(shaped->stream.get(), batch.out()), first_result);
+}
+
+/// Schema reads cannot erase the code or diagnostic retained by a poisoned get_next callback.
+TEST(TableShaperTest, PreservesPoisonedErrorAcrossSchemaRead) {
+  auto shaped = shapeStream(decodeFixture("axis_null.arrows"), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+
+  PJ::sdk::ArrowArrayHolder first_batch;
+  const int first_result = shaped->stream.get()->get_next(shaped->stream.get(), first_batch.out());
+  ASSERT_NE(first_result, NANOARROW_OK);
+  const char* first_diagnostic = ArrowArrayStreamGetLastError(shaped->stream.get());
+  ASSERT_NE(first_diagnostic, nullptr);
+  const std::string expected_diagnostic(first_diagnostic);
+  ASSERT_FALSE(expected_diagnostic.empty());
+
+  PJ::sdk::ArrowSchemaHolder schema;
+  EXPECT_EQ(shaped->stream.get()->get_schema(shaped->stream.get(), schema.out()), NANOARROW_OK);
+  EXPECT_EQ(ArrowArrayStreamGetLastError(shaped->stream.get()), expected_diagnostic);
+
+  PJ::sdk::ArrowArrayHolder repeated_batch;
+  EXPECT_EQ(shaped->stream.get()->get_next(shaped->stream.get(), repeated_batch.out()), first_result);
+  EXPECT_EQ(ArrowArrayStreamGetLastError(shaped->stream.get()), expected_diagnostic);
 }
 
 /// Axis null validation wins over an earlier overflowing value in the same timestamp column.
@@ -1175,6 +1426,19 @@ TEST(TableShaperTest, ReportsDroppedOutputColumns) {
   auto output_schema = readSchema(shaped->stream);
   ASSERT_EQ(output_schema.get()->n_children, 2);
   EXPECT_STREQ(output_schema.get()->children[1]->name, "b");
+}
+
+/// Truncated dropped-column details carry their own ellipsis so every caller applies identical punctuation.
+TEST(TableShaperTest, FormatsDroppedColumnsWithEllipsisWhenTruncated) {
+  std::vector<DroppedColumn> columns;
+  columns.reserve(kMaxDroppedColumnsListed + 1);
+  for (std::size_t index = 0; index <= kMaxDroppedColumnsListed; ++index) {
+    columns.push_back(DroppedColumn{"column_" + std::to_string(index), "i"});
+  }
+
+  const std::string formatted = formatDroppedColumns(columns, kMaxDroppedColumnsListed);
+  EXPECT_TRUE(formatted.ends_with(", …"));
+  EXPECT_EQ(formatted.find("column_" + std::to_string(kMaxDroppedColumnsListed)), std::string::npos);
 }
 
 /// Lists with nested-list or binary elements remain on the dropped-column path.

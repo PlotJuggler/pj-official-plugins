@@ -34,6 +34,9 @@ struct DroppedColumn {
   std::string format;
 };
 
+/// Keep fatal planning errors and runtime dropped-column diagnostics equally bounded.
+inline constexpr std::size_t kMaxDroppedColumnsListed = 8;
+
 /// Result of lazy shaping, including the resolved int64-nanosecond timestamp column passed to the host.
 struct ShapedStream {
   /// Lazy wrapper stream; untouched child arrays are moved without copying.
@@ -50,8 +53,8 @@ struct ShapedStream {
 /// diagnostics, and schemas without a host-ingestible non-axis data column are rejected.
 [[nodiscard]] PJ::Expected<ShapedStream> shapeStream(PJ::sdk::ArrowStreamHolder input, const ShapeOptions& options);
 
-/// Format at most `max_listed` dropped name/format pairs separated by comma-space. An empty input produces an empty
-/// string. Callers retain their existing policy for indicating additional omitted columns.
+/// Format at most `max_listed` dropped name/format pairs separated by comma-space, appending an ellipsis when more
+/// columns were omitted. An empty input produces an empty string.
 [[nodiscard]] std::string formatDroppedColumns(const std::vector<DroppedColumn>& columns, std::size_t max_listed);
 
 }  // namespace pj::parser_arrow
