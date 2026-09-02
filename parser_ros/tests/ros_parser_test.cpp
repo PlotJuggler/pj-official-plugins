@@ -4334,6 +4334,23 @@ TEST(RosParserTest, FoxgloveGridRejectsBadLayouts) {
   EXPECT_FALSE(parseObject(f, truncated).has_value());
 }
 
+TEST(RosParserTest, FoxgloveGridTruncatedByAFewBytesRejected) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("foxglove_msgs/Grid", kFoxgloveGridDef));
+
+  // With one field the cursor sits 1 byte past a 4-byte boundary after the
+  // uint8 `type`, so 3 padding bytes precede data[]'s length word; a bound
+  // taken before that padding is consumed tolerates up to 3 missing bytes.
+  const auto payload = serializeFoxgloveGrid(FoxgloveGridWire{});
+  ASSERT_EQ(payload.size(), 188u) << "fixture layout drifted";
+  for (size_t cut : {size_t{1}, size_t{2}, size_t{3}}) {
+    auto truncated = payload;
+    truncated.resize(truncated.size() - cut);
+    EXPECT_FALSE(parseObject(f, truncated).has_value()) << "truncated by " << cut;
+  }
+}
+
 TEST(RosParserTest, FoxgloveGridScalarRoute) {
   RosParserFixture f;
   f.setUp();
