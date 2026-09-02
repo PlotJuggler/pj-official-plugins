@@ -70,14 +70,9 @@ struct GridMapMessage {
 /// otherwise NaN is written into ALL of that cell's fields (grid_map semantics,
 /// no extra validity mask needed).
 ///
-/// Rejects (Expected error) anything grid_map_core would not have produced:
-/// dims other than {column_index, row_index}, layers with differing layouts,
-/// a layer count that differs from the data count, an array shorter than
-/// `data_offset + size_x*size_y` (longer is tolerated), zero sizes, non-finite
-/// or non-positive resolution/lengths, lengths that are not `size * resolution`,
-/// a start index >= its size, duplicate layer names, a basic layer missing
-/// from `layers`, an empty layer list, and the kMaxCells / kMaxLayers caps.
-/// The result is passed through validateGridMap() before it is returned.
+/// Rejects (Expected error) any layout grid_map_core would not have produced
+/// (see the checks in transcodeGridMap), capped at kMaxCells / kMaxLayers; the
+/// result is passed through validateGridMap() before it is returned.
 [[nodiscard]] Expected<sdk::GridMap> transcodeGridMap(const GridMapMessage& msg);
 
 /// Foxglove PackedElementField numeric type -> canonical PointField datatype.
@@ -87,10 +82,9 @@ struct GridMapMessage {
 [[nodiscard]] sdk::PointField::Datatype mapFoxglovePackedElementType(uint64_t type);
 
 /// Completes a GridMap built from a foxglove Grid (ROS or protobuf), whose wire
-/// carries no row count: derives `row_count = data.size() / row_stride` and
-/// rejects a non-empty `data` with `row_stride == 0`, a data length that is not
-/// a whole number of rows, `column_count * cell_stride > row_stride`, a field
-/// with an unknown datatype, then runs validateGridMap(). An empty `data` yields
+/// carries no row count: derives `row_count = data.size() / row_stride`,
+/// rejecting a non-empty `data` with `row_stride == 0` or a length that is not
+/// a whole number of rows, then runs validateGridMap(). An empty `data` yields
 /// `row_count = 0`.
 [[nodiscard]] Expected<void> finalizeFoxgloveGrid(sdk::GridMap& grid);
 

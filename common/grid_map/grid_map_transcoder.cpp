@@ -99,29 +99,44 @@ Expected<sdk::GridMap> transcodeGridMap(const GridMapMessage& msg) {
 
   // ---- Transcode: column-major ring buffer -> row-major interleaved records ----
   const size_t layer_count = msg.layers.size();
-  const uint32_t cell_stride = static_cast<uint32_t>(4 * layer_count);
+  const uint32_t float_size = sdk::bytesPerElement(Datatype::kFloat32);
+  const uint32_t cell_stride = float_size * static_cast<uint32_t>(layer_count);
   const uint32_t row_stride = cell_stride * size_x;
   auto owned = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(cells) * cell_stride);
   auto* out = reinterpret_cast<float*>(owned->data());
 
+  std::vector<const float*> bases(layer_count);
+  for (size_t k = 0; k < layer_count; ++k) {
+    bases[k] = msg.data[k].data.data() + msg.data[k].data_offset;
+  }
+  std::vector<const float*> basic_bases;
+  basic_bases.reserve(basic_indices.size());
+  for (const size_t b : basic_indices) {
+    basic_bases.push_back(bases[b]);
+  }
+
+  float* record = out;
   for (uint32_t r = 0; r < size_y; ++r) {
-    const uint32_t bj = (size_y - 1 - r + msg.inner_start_index) % size_y;
-    for (uint32_t c = 0; c < size_x; ++c) {
-      const uint32_t bi = (size_x - 1 - c + msg.outer_start_index) % size_x;
-      const size_t src = static_cast<size_t>(bj) * size_x + bi;
-      float* record = out + (static_cast<size_t>(r) * size_x + c) * layer_count;
+    const size_t row_base = static_cast<size_t>((size_y - 1 - r + msg.inner_start_index) % size_y) * size_x;
+    // Storage column for canonical c = 0, then one step down per column, wrapping at 0.
+    uint32_t bi = (size_x - 1 + msg.outer_start_index) % size_x;
+    for (uint32_t c = 0; c < size_x; ++c, record += layer_count) {
+      const size_t src = row_base + bi;
+      bi = bi == 0 ? size_x - 1 : bi - 1;
 
       bool valid = true;
-      for (const size_t b : basic_indices) {
-        const auto& layer = msg.data[b];
-        if (!std::isfinite(layer.data[layer.data_offset + src])) {
+      for (const float* base : basic_bases) {
+        if (!std::isfinite(base[src])) {
           valid = false;
           break;
         }
       }
+      if (!valid) {
+        std::fill_n(record, layer_count, kNaN);
+        continue;
+      }
       for (size_t k = 0; k < layer_count; ++k) {
-        const auto& layer = msg.data[k];
-        record[k] = valid ? layer.data[layer.data_offset + src] : kNaN;
+        record[k] = bases[k][src];
       }
     }
   }
@@ -137,7 +152,10 @@ Expected<sdk::GridMap> transcodeGridMap(const GridMapMessage& msg) {
   grid.fields.reserve(layer_count);
   for (size_t k = 0; k < layer_count; ++k) {
     grid.fields.push_back(
-        {.name = msg.layers[k], .offset = static_cast<uint32_t>(4 * k), .datatype = Datatype::kFloat32, .count = 1});
+        {.name = msg.layers[k],
+         .offset = float_size * static_cast<uint32_t>(k),
+         .datatype = Datatype::kFloat32,
+         .count = 1});
   }
   grid.data = Span<const uint8_t>(owned->data(), owned->size());
   grid.anchor = std::move(owned);
@@ -172,11 +190,6 @@ sdk::PointField::Datatype mapFoxglovePackedElementType(uint64_t type) {
 }
 
 Expected<void> finalizeFoxgloveGrid(sdk::GridMap& grid) {
-  for (const auto& field : grid.fields) {
-    if (field.datatype == Datatype::kUnknown) {
-      return unexpected(std::string("Grid: field '") + field.name + "' has an unknown datatype");
-    }
-  }
   if (grid.data.empty()) {
     grid.row_count = 0;
   } else {
@@ -185,9 +198,6 @@ Expected<void> finalizeFoxgloveGrid(sdk::GridMap& grid) {
     }
     if (grid.data.size() % grid.row_stride != 0) {
       return unexpected(std::string("Grid: data length is not a whole number of rows"));
-    }
-    if (static_cast<uint64_t>(grid.column_count) * grid.cell_stride > grid.row_stride) {
-      return unexpected(std::string("Grid: column_count * cell_stride exceeds row_stride"));
     }
     grid.row_count = static_cast<uint32_t>(grid.data.size() / grid.row_stride);
   }
