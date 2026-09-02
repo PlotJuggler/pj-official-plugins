@@ -8,10 +8,17 @@
 
 namespace pj::parser_arrow {
 
+/// Test-only tag that bypasses IPC metadata preflight.
+enum class IpcPreflight { kSkip };
+
 /// Decode one Arrow IPC stream into a lazily consumed Arrow C Data Interface stream.
 ///
 /// The returned stream borrows `bytes`. Callers must fully drain and release the stream before the payload storage
 /// dies. The parser host contract satisfies this by consuming appendArrowStream() synchronously inside parse().
 [[nodiscard]] PJ::Expected<PJ::sdk::ArrowStreamHolder> decodeIpcStream(PJ::Span<const uint8_t> bytes);
+
+/// Bypass preflight so tests can exercise the nanoarrow reader's schema diagnostics directly.
+[[nodiscard]] PJ::Expected<PJ::sdk::ArrowStreamHolder> decodeIpcStream(
+    PJ::Span<const uint8_t> bytes, IpcPreflight preflight);
 
 }  // namespace pj::parser_arrow

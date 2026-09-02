@@ -34,6 +34,62 @@ def write_stream(
     return output_path
 
 
+def encode_stream(
+    batches: list[pa.RecordBatch],
+    options: pa.ipc.IpcWriteOptions | None = None,
+) -> bytes:
+    """Encode record batches in memory for message-level fixture assembly."""
+    output = pa.BufferOutputStream()
+    with pa.ipc.new_stream(output, batches[0].schema, options=options) as writer:
+        for batch in batches:
+            writer.write_batch(batch)
+    return output.getvalue().to_pybytes()
+
+
+def split_stream_messages(payload: bytes) -> tuple[list[tuple[str, bytes]], bytes]:
+    """Split an IPC stream into complete framed messages and its EOS marker."""
+    source = pa.BufferReader(payload)
+    messages = []
+    offset = 0
+    while True:
+        try:
+            message = pa.ipc.read_message(source)
+        except EOFError:
+            break
+
+        next_offset = source.tell()
+        messages.append((message.type, payload[offset:next_offset]))
+        offset = next_offset
+
+    eos = payload[offset:]
+    assert source.tell() == len(payload)
+    assert eos == b"\xff\xff\xff\xff\x00\x00\x00\x00"
+    return messages, eos
+
+
+def write_lz4_second_batch_stream(filename: str, batches: list[pa.RecordBatch]) -> Path:
+    """Splice an LZ4 second batch behind an uncompressed first batch."""
+    uncompressed = encode_stream(batches)
+    lz4 = encode_stream(batches, pa.ipc.IpcWriteOptions(compression="lz4"))
+    uncompressed_messages, uncompressed_eos = split_stream_messages(uncompressed)
+    lz4_messages, lz4_eos = split_stream_messages(lz4)
+
+    expected_types = ["schema", "record batch", "record batch"]
+    assert [message_type for message_type, _ in uncompressed_messages] == expected_types
+    assert [message_type for message_type, _ in lz4_messages] == expected_types
+    assert uncompressed_messages[0][1] == lz4_messages[0][1]
+    assert uncompressed_eos == lz4_eos
+
+    output_path = OUTPUT_DIR / filename
+    output_path.write_bytes(
+        uncompressed_messages[0][1]
+        + uncompressed_messages[1][1]
+        + lz4_messages[2][1]
+        + lz4_eos
+    )
+    return output_path
+
+
 def make_flat_batch() -> pa.RecordBatch:
     """Build the shared four-column flat fixture batch."""
     return pa.record_batch(
@@ -387,12 +443,10 @@ def make_dictionary_batch() -> pa.RecordBatch:
 def main() -> None:
     """Generate every checked-in test fixture and print its byte size."""
     flat_batch = make_flat_batch()
+    flat_two_batches = [flat_batch.slice(0, 2), flat_batch.slice(2, 1)]
     generated_paths = [
         write_stream("flat.arrows", [flat_batch]),
-        write_stream(
-            "flat_two_batches.arrows",
-            [flat_batch.slice(0, 2), flat_batch.slice(2, 1)],
-        ),
+        write_stream("flat_two_batches.arrows", flat_two_batches),
         write_stream("nested.arrows", [make_nested_batch()]),
         write_stream("views.arrows", [make_views_batch()]),
         write_stream("views_storage.arrows", [make_views_storage_batch()]),
@@ -403,7 +457,7 @@ def main() -> None:
         ),
         write_stream(
             "flat_two_batches_zstd.arrows",
-            [flat_batch.slice(0, 2), flat_batch.slice(2, 1)],
+            flat_two_batches,
             pa.ipc.IpcWriteOptions(compression="zstd"),
         ),
         write_stream(
@@ -411,6 +465,7 @@ def main() -> None:
             [flat_batch],
             pa.ipc.IpcWriteOptions(compression="lz4"),
         ),
+        write_lz4_second_batch_stream("flat_lz4_second_batch.arrows", flat_two_batches),
         write_stream("timestamp_typed.arrows", [make_timestamp_typed_batch()]),
         write_stream("timestamp_casts.arrows", [make_timestamp_casts_batch()]),
         write_stream("large_types.arrows", [make_large_types_batch()]),

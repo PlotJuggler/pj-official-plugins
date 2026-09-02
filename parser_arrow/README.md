@@ -131,9 +131,9 @@ dictionaries before encoding the IPC stream.
 
 ## Compression
 
-Zstandard-compressed IPC record-batch bodies are supported. LZ4-compressed
-bodies are rejected with an error naming `lz4`; `nanoarrow_ipc` 0.7 has no LZ4
-backend.
+Zstandard-compressed IPC record-batch bodies are supported. If any record-batch
+header selects LZ4, the stream is rejected before ingest with an error naming
+`lz4`; `nanoarrow_ipc` 0.7 has no LZ4 backend.
 
 ## Out of scope for v1
 

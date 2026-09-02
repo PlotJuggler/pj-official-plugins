@@ -112,7 +112,7 @@ TEST(IpcDecoderTest, DecodesZstdCompressedBodies) {
   verifyFlatBatch(schema.get(), batch.get(), 0, 3);
 }
 
-/// The pre-scan stops after the first record-batch header while the decoder still consumes every zstd batch.
+/// Header preflight skips compressed bodies while the reader still consumes every zstd batch.
 TEST(IpcDecoderTest, DecodesMultipleZstdCompressedBodies) {
   const auto bytes = test::readFile(test::fixturePath("flat_two_batches_zstd.arrows"));
   auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
@@ -137,13 +137,32 @@ TEST(IpcDecoderTest, RejectsLz4CompressedBodiesWithClearError) {
   EXPECT_TRUE(containsLz4(decoded.error())) << decoded.error();
 }
 
-/// Dictionary fields are rejected during decode, before the first DictionaryBatch is pulled.
+/// A later LZ4 batch is rejected during preflight without decoding either body.
+TEST(IpcDecoderTest, RejectsLz4InLaterRecordBatchBeforeDecode) {
+  const auto bytes = test::readFile(test::fixturePath("flat_lz4_second_batch.arrows"));
+  const auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
+  ASSERT_FALSE(decoded);
+  EXPECT_TRUE(containsLz4(decoded.error())) << decoded.error();
+}
+
+/// Dictionary fields are rejected during preflight, before the first DictionaryBatch is pulled.
 TEST(IpcDecoderTest, RejectsDictionaryEncodedColumnsAtDecodeTime) {
   const auto bytes = test::readFile(test::fixturePath("dictionary.arrows"));
   const auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
   ASSERT_FALSE(decoded);
   EXPECT_NE(decoded.error().find("dictionary"), std::string::npos) << decoded.error();
   EXPECT_NE(decoded.error().find("DictionaryBatch"), std::string::npos) << decoded.error();
+  EXPECT_NE(decoded.error().find("producers must decode dictionaries before encoding"), std::string::npos)
+      << decoded.error();
+}
+
+/// Skipping preflight exposes the same dictionary-schema guidance from the lazy reader.
+TEST(IpcDecoderTest, ClassifiesDictionarySchemaFailureFromReader) {
+  const auto bytes = test::readFile(test::fixturePath("dictionary.arrows"));
+  const auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()), IpcPreflight::kSkip);
+  ASSERT_FALSE(decoded);
+  EXPECT_NE(decoded.error().find("producers must decode dictionaries before encoding"), std::string::npos)
+      << decoded.error();
 }
 
 /// Empty payloads are rejected before constructing a stream.

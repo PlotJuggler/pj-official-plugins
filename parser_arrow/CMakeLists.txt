@@ -6,6 +6,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 # nanoarrow/0.7.0's Conan component omits its bundled FlatCC runtime from
 # nanoarrow::nanoarrow_ipc. Resolve that archive from the same package so IPC
 # decoder symbols link on every consumer of parser_arrow_core.
+# Tracked by CCI PR #30883.
 set(_nanoarrow_library_dirs
   ${nanoarrow_LIB_DIRS_DEBUG}
   ${nanoarrow_LIB_DIRS_RELEASE}
