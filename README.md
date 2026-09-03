@@ -11,6 +11,7 @@
 | [![parser_protobuf](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_protobuf.json)](parser_protobuf/) | MessageParser | Protobuf message parsing |
 | [![parser_ros](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_ros.json)](parser_ros/) | MessageParser | ROS 1/2 message parsing |
 | [![parser_data_tamer](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_data_tamer.json)](parser_data_tamer/) | MessageParser | DataTamer schema/snapshot parsing |
+| [![parser_arrow](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_arrow.json)](parser_arrow/) | MessageParser | Arrow IPC stream parsing |
 | [![data_load_csv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_csv.json)](data_load_csv/) | DataSource | CSV file loading |
 | [![data_load_mcap](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mcap.json)](data_load_mcap/) | DataSource | MCAP file loading |
 | [![data_load_parquet](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_parquet.json)](data_load_parquet/) | DataSource | Parquet file loading |
@@ -221,6 +222,7 @@ is available (`scripts/ensure_core.sh`).
 | **plotjuggler_sdk** (cloudsmith) | pinned via `SDK_VERSION` (exact) | **SDK + host loaders** (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
 | nlohmann_json | 3.12.0 | Most plugins |
 | arrow + parquet | 23.0.1 | data_load_parquet, data_load_rerun, toolbox_mosaico |
+| nanoarrow | 0.7.0 | parser_arrow (with_ipc + with_zstd) |
 | paho-mqtt-cpp | 1.5.3 | data_stream_mqtt |
 | cppzmq | 4.11.0 | data_stream_zmq |
 | protobuf | 6.33.5 | parser_protobuf |
