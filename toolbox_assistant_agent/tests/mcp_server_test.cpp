@@ -51,6 +51,37 @@ struct Fixture {
   }
 };
 
+// POST a JSON-RPC body; returns (statusCode, raw body) for the cases where the
+// exact bytes matter, not their JSON reading.
+std::pair<int, std::string> rpcRaw(const std::string& url, const std::string& token, const json& body) {
+  ix::initNetSystem();
+  ix::HttpClient client(false);
+  auto args = client.createRequest();
+  args->extraHeaders["Content-Type"] = "application/json";
+  args->extraHeaders["Authorization"] = "Bearer " + token;
+  args->connectTimeout = 5;
+  args->transferTimeout = 10;
+  auto resp = client.post(url, body.dump(), args);
+  if (resp == nullptr) {
+    return {-1, {}};
+  }
+  return {resp->statusCode, resp->body};
+}
+
+// The MCP streamable-HTTP transport: a notification is answered "202 Accepted"
+// with no body. Codex's rmcp client reads a 200 with an empty body as a
+// malformed JSON-RPC message and, with the server marked required, gives up
+// on the session before the first turn — so this is the difference between
+// Codex working and Codex exiting 1 in silence.
+TEST(McpServer, NotificationIsAcceptedWithoutABody) {
+  Fixture fx;
+  ASSERT_TRUE(fx.server.start());
+  auto [status, raw] =
+      rpcRaw(fx.server.url(), fx.server.token(), {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}});
+  EXPECT_EQ(status, 202);
+  EXPECT_TRUE(raw.empty()) << "got a body: " << raw;
+}
+
 TEST(McpServer, RejectsMissingToken) {
   Fixture fx;
   ASSERT_TRUE(fx.server.start());

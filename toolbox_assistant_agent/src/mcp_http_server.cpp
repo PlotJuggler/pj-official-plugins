@@ -48,6 +48,16 @@ ix::HttpResponsePtr jsonResponse(int status, const std::string& body) {
       ix::WebSocketHttpHeaders{{"Content-Type", "application/json"}}, body);
 }
 
+// A notification (a request without an id) gets "202 Accepted" and NO body,
+// as the MCP streamable-HTTP transport specifies. Not "200 with an empty
+// JSON body": Codex's rmcp client parses whatever comes back with a JSON
+// content type as a JSON-RPC message, an empty one fails that parse, and with
+// the server marked `required` the whole session dies before the first turn
+// (measured on Codex CLI 0.153.0). Claude Code happened to tolerate the 200.
+ix::HttpResponsePtr acceptedResponse() {
+  return std::make_shared<ix::HttpResponse>(202, "Accepted", ix::HttpErrorCode::Ok, ix::WebSocketHttpHeaders{}, "");
+}
+
 }  // namespace
 
 McpHttpServer::McpHttpServer(const ToolRegistry& registry, ToolInvoker invoker)
@@ -94,10 +104,10 @@ bool McpHttpServer::start() {
                 out.push_back(std::move(resp));
               }
             }
-            return jsonResponse(200, out.empty() ? std::string("") : out.dump());
+            return out.empty() ? acceptedResponse() : jsonResponse(200, out.dump());
           }
           json resp = handleRpc(body);
-          return jsonResponse(200, resp.is_null() ? std::string("") : resp.dump());
+          return resp.is_null() ? acceptedResponse() : jsonResponse(200, resp.dump());
         });
     auto [ok, err] = server->listen();
     if (!ok) {
