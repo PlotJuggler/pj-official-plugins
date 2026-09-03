@@ -17,15 +17,6 @@ namespace {
 
 using nlohmann::json;
 
-// The opening words stripCatalogPrefix matches — pinned against the full
-// notes so a rewording that touches the opening fails to compile instead of
-// silently orphaning every note already written into a session file.
-constexpr std::string_view kCatalogChangedNoteOpening = "(The loaded data changed";
-constexpr std::string_view kResumedConversationNoteOpening = "(Resumed conversation";
-static_assert(kCatalogChangedNote.substr(0, kCatalogChangedNoteOpening.size()) == kCatalogChangedNoteOpening);
-static_assert(
-    kResumedConversationNote.substr(0, kResumedConversationNoteOpening.size()) == kResumedConversationNoteOpening);
-
 // The first "text" block in a `user`/`assistant` message's `content`, which is
 // either a plain string (typical for a real user prompt) or an array of typed
 // blocks (a tool_result-bearing user message, or any assistant message).
@@ -46,54 +37,7 @@ std::optional<std::string> firstTextBlock(const json& content) {
   return std::nullopt;
 }
 
-// Skip past a block that ends with a blank line (a run of consecutive '\n'),
-// landing on the first character of whatever follows `from`. `std::npos` when
-// no blank line exists past `from`. See stripCatalogPrefix: composePayload
-// (claude_backend.cpp) always shapes its output as `catalog\n\n[note\n\n]text`,
-// so this is the one primitive both strips need.
-std::size_t skipPastBlankLine(const std::string& s, std::size_t from) {
-  const std::size_t nl = s.find("\n\n", from);
-  if (nl == std::string::npos) {
-    return std::string::npos;
-  }
-  std::size_t pos = nl + 1;
-  while (pos < s.size() && s[pos] == '\n') {
-    ++pos;
-  }
-  return pos;
-}
-
-// Title fallback: the first prompt, catalog stripped, collapsed to one line
-// and capped so a drawer row never wraps. No ellipsis — this is a list label,
-// not a place to signal truncation.
-std::string truncateTitle(std::string text) {
-  for (char& c : text) {
-    if (c == '\n' || c == '\r' || c == '\t') {
-      c = ' ';
-    }
-  }
-  std::size_t begin = text.find_first_not_of(' ');
-  std::size_t end = text.find_last_not_of(' ');
-  text = begin == std::string::npos ? std::string{} : text.substr(begin, end - begin + 1);
-  constexpr std::size_t kMaxTitleBytes = 48;
-  if (text.size() > kMaxTitleBytes) {
-    // Back off to a code-point boundary: a cut through a multi-byte UTF-8
-    // sequence ("Identificación…") would hand the list an invalid string.
-    std::size_t cut = kMaxTitleBytes;
-    while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xC0) == 0x80) {
-      --cut;
-    }
-    text.resize(cut);
-  }
-  return text;
-}
-
 }  // namespace
-
-std::string prettyToolName(const std::string& name) {
-  const std::string prefix = "mcp__pj__";
-  return name.rfind(prefix, 0) == 0 ? name.substr(prefix.size()) : name;
-}
 
 std::string claudeCwdSlug(const std::string& cwd) {
   std::string slug = cwd;
@@ -115,22 +59,6 @@ std::filesystem::path claudeSessionsDir(const std::string& work_dir) {
     return {};
   }
   return std::filesystem::path(base) / "projects" / claudeCwdSlug(work_dir);
-}
-
-std::string stripCatalogPrefix(const std::string& text) {
-  if (text.rfind("Loaded data", 0) != 0) {
-    return text;
-  }
-  const std::size_t after_catalog = skipPastBlankLine(text, 0);
-  if (after_catalog == std::string::npos) {
-    return text;  // truncated/malformed catalog block -- leave it, don't guess
-  }
-  std::string rest = text.substr(after_catalog);
-  if (rest.rfind(kCatalogChangedNoteOpening, 0) == 0 || rest.rfind(kResumedConversationNoteOpening, 0) == 0) {
-    const std::size_t after_note = skipPastBlankLine(rest, 0);
-    rest = after_note == std::string::npos ? std::string{} : rest.substr(after_note);
-  }
-  return rest;
 }
 
 std::optional<std::time_t> parseIso8601Utc(const std::string& iso8601) {

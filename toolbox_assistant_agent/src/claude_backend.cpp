@@ -2,28 +2,18 @@
 // SPDX-License-Identifier: MIT
 #include "claude_backend.hpp"
 
-#if defined(__unix__) || defined(__APPLE__)
-#include <sys/stat.h>  // mkdir/lstat for the stable work dir
-#include <unistd.h>    // mkstemp/write/close/unlink for the private MCP config file
-#endif
-
-#include <cstdlib>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "claude_sessions.hpp"     // listConversations/loadTranscript/deleteConversation
-#include "conversation_state.hpp"  // fnv1aHex, shared with the persisted form
+#include "claude_sessions.hpp"  // listConversations/loadTranscript/deleteConversation
+#include "cli_probe.hpp"        // probeCliVersion
+#include "harness_workdir.hpp"  // ensureWorkDir
 #include "stream_json.hpp"
 #include "subprocess.hpp"
 #include "system_prompt.hpp"
 
 namespace assistant_agent {
-namespace {
-
-// Comma-separated allowlist of every tool, MCP-namespaced, so Claude may call
-// them without an interactive permission prompt (headless has no UI to grant).
-}  // namespace
 
 std::string allowedToolsArg(const ToolRegistry& registry) {
   std::string out;
@@ -85,77 +75,18 @@ std::vector<std::string> buildClaudeArgv(
   return argv;
 }
 
-std::string composePayload(const std::string& text, const std::string& catalog, ClaudeMemory& memory) {
-  // Prepend the catalog listing to the user's message, but only when it is new
-  // to this conversation. --resume replays the whole history, so a listing sent
-  // once stays visible on every later turn; sending it again would just pay for
-  // the same text twice. A listing that has CHANGED does get re-sent — that is
-  // how the model learns the loaded data is not what it was told earlier. A
-  // conversation just resumed off disk (resumed_pending) forces a resend too,
-  // even if the hash happens to match: the model's ephemeral state (composed
-  // tabs, etc.) died with the earlier process, and it needs telling.
-  if (catalog.empty()) {
-    return text;  // nothing to send even when resuming; resumed_pending stays
-                  // set for the next turn that actually has a catalog
-  }
-  const std::string hash = fnv1aHex(catalog);
-  const bool resuming = memory.resumed_pending;
-  if (hash == memory.sent_catalog_hash && !resuming) {
-    return text;
-  }
-  std::string note;
-  if (resuming) {
-    note = std::string(kResumedConversationNote) + "\n";
-  } else if (!memory.sent_catalog_hash.empty()) {
-    note = std::string(kCatalogChangedNote) + "\n";
-  }
-  memory.sent_catalog_hash = hash;
-  memory.resumed_pending = false;
-  return catalog + "\n" + note + "\n" + text;
-}
-
-ClaudeBackend::ClaudeBackend(std::string cli_path, std::string model, std::shared_ptr<ClaudeMemory> memory)
+ClaudeBackend::ClaudeBackend(std::string cli_path, std::string model, std::shared_ptr<HarnessMemory> memory)
     : cli_path_(cli_path.empty() ? "claude" : std::move(cli_path)),
       model_(std::move(model)),
-      memory_(memory ? std::move(memory) : std::make_shared<ClaudeMemory>()) {}
+      memory_(memory ? std::move(memory) : std::make_shared<HarnessMemory>()) {}
 
-ClaudeBackend::~ClaudeBackend() {
-  if (!mcp_config_path_.empty()) {
-    unlink(mcp_config_path_.c_str());
-  }
-  // work_dir_ is deliberately left in place: it holds the CLI's session state,
-  // which is exactly what a persisted conversation resumes into.
-}
+ClaudeBackend::~ClaudeBackend() = default;
+// mcp_'s destructor (McpLoopback) unlinks the --mcp-config temp file. work_dir_
+// is deliberately left in place: it holds the CLI's session state, which is
+// exactly what a persisted conversation resumes into.
 
 bool ClaudeBackend::ensureWorkDir(std::string& error) {
-  if (!work_dir_.empty()) {
-    return true;
-  }
-  // Fail closed on every path below: running in the inherited cwd would
-  // silently hand the panel whatever project context PlotJuggler was launched
-  // from.
-  std::string base;
-  if (const char* state_home = std::getenv("XDG_STATE_HOME"); state_home != nullptr && state_home[0] != '\0') {
-    base = state_home;
-  } else if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
-    base = std::string(home) + "/.local/state";
-  } else {
-    error = "could not resolve the assistant's working directory (no XDG_STATE_HOME or HOME)";
-    return false;
-  }
-  const std::string dir = base + "/pj-assistant-cli";
-  // Best-effort parents (XDG_STATE_HOME normally exists); the leaf must end up
-  // a real 0700 directory of ours — a symlink planted there would redirect the
-  // CLI's session state, so lstat, not stat.
-  mkdir(base.c_str(), 0700);
-  mkdir(dir.c_str(), 0700);
-  struct stat st{};
-  if (lstat(dir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != getuid()) {
-    error = "could not create the assistant's working directory (" + dir + ")";
-    return false;
-  }
-  work_dir_ = dir;
-  return true;
+  return assistant_agent::ensureWorkDir(work_dir_, error);
 }
 
 std::string ClaudeBackend::name() const {
@@ -167,23 +98,7 @@ void ClaudeBackend::cancel() {
 }
 
 BackendTestResult ClaudeBackend::testConnection() const {
-  std::atomic<bool> no_cancel{false};
-  std::string version;
-  auto res = runProcess(
-      {cli_path_, "--version"}, /*stdin_data=*/{}, [&](const std::string& chunk) { version += chunk; }, no_cancel);
-  if (!res.spawned) {
-    return {false, "cannot run '" + cli_path_ + "': " + res.error};
-  }
-  if (res.exit_code != 0) {
-    return {
-        false, "'" + cli_path_ + " --version' exited " + std::to_string(res.exit_code) +
-                   " (is the Claude CLI installed and logged in?)"};
-  }
-  // Trim trailing newline for a tidy transcript line.
-  while (!version.empty() && (version.back() == '\n' || version.back() == '\r')) {
-    version.pop_back();
-  }
-  return {true, "found " + version};
+  return probeCliVersion(cli_path_, "Claude");
 }
 
 std::vector<ConversationSummary> ClaudeBackend::listConversations() {
@@ -210,59 +125,19 @@ bool ClaudeBackend::deleteConversation(const std::string& id) {
   return assistant_agent::deleteConversation(claudeSessionsDir(work_dir_), id);
 }
 
-bool ClaudeBackend::ensureMcpServer(const TurnTools& tools, std::string& error) {
-  if (mcp_) {
-    return true;
-  }
-  if (tools.registry == nullptr || !tools.invoke) {
-    error = "no tool registry/invoker for this turn";
-    return false;
-  }
-  mcp_ = std::make_unique<McpHttpServer>(*tools.registry, tools.invoke);
-  if (!mcp_->start()) {
-    mcp_.reset();
-    error = "could not bind a local MCP port";
-    return false;
-  }
-  // The config carries the per-session bearer token; hand it to the CLI as a
-  // private file rather than a command-line argument (argv is world-readable
-  // via /proc/<pid>/cmdline). mkstemp creates it 0600.
-  char tmpl[] = "/tmp/pj_assistant_mcp_XXXXXX";
-  const int fd = mkstemp(tmpl);
-  if (fd < 0) {
-    mcp_->stop();
-    mcp_.reset();
-    error = "could not create the MCP config file";
-    return false;
-  }
-  const std::string cfg = mcp_->mcpConfigJson();
-  ssize_t off = 0;
-  while (off < static_cast<ssize_t>(cfg.size())) {
-    const ssize_t w = write(fd, cfg.data() + off, cfg.size() - static_cast<std::size_t>(off));
-    if (w <= 0) {
-      break;
-    }
-    off += w;
-  }
-  close(fd);
-  if (off != static_cast<ssize_t>(cfg.size())) {
-    unlink(tmpl);
-    mcp_->stop();
-    mcp_.reset();
-    error = "could not write the MCP config file";
-    return false;
-  }
-  mcp_config_path_ = tmpl;
-  return true;
-}
-
 void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& tools, const EventSink& sink) {
   cancel_.store(false);
   last_metrics_ = TurnMetrics{};  // per-turn, so a failed turn cannot report the previous one's cost
 
   std::string mcp_error;
-  if (!ensureMcpServer(tools, mcp_error) || !ensureWorkDir(mcp_error)) {
+  if (!mcp_.ensure(tools, mcp_error) || !ensureWorkDir(mcp_error)) {
     sink({BackendEvent::Kind::Error, mcp_error});
+    sink({BackendEvent::Kind::TurnComplete, {}});
+    return;
+  }
+  const std::string mcp_config_path = mcp_.configFilePath();
+  if (mcp_config_path.empty()) {
+    sink({BackendEvent::Kind::Error, "could not write the MCP config file"});
     sink({BackendEvent::Kind::TurnComplete, {}});
     return;
   }
@@ -274,7 +149,7 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
   const std::string payload = composePayload(text, tools.catalog, *memory_);
 
   const std::vector<std::string> argv = buildClaudeArgv(
-      cli_path_, mcp_config_path_, allowedToolsArg(*tools.registry), kSystemPrompt, model_, memory_->session_id);
+      cli_path_, mcp_config_path, allowedToolsArg(*tools.registry), kSystemPrompt, model_, memory_->session_id);
 
   NdjsonSplitter splitter;
   bool emitted_text = false;

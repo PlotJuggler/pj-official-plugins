@@ -1,0 +1,4 @@
+{"timestamp": "2026-09-03T08:46:00.000Z", "ordinal": 0, "type": "session_meta", "payload": {"session_id": "codex-wrongcwd-01", "id": "codex-wrongcwd-01", "timestamp": "2026-09-03T08:46:00.000Z", "cwd": "/home/alvvm/.local/state/pj-assistant-spike", "originator": "codex_exec", "cli_version": "0.153.0", "source": "exec", "base_instructions": {"text": "You are the PlotJuggler assistant probe. Answer in one short line."}}}
+{"timestamp": "2026-09-03T08:46:00.500Z", "ordinal": 1, "type": "response_item", "payload": {"type": "message", "id": "msg-user-1", "role": "user", "content": [{"type": "input_text", "text": "Reply only: ok"}]}}
+{"timestamp": "2026-09-03T08:46:01.000Z", "ordinal": 2, "type": "response_item", "payload": {"type": "message", "id": "msg-asst-1", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}}
+{"timestamp": "2026-09-03T08:46:01.200Z", "type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "ok"}}

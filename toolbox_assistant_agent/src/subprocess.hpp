@@ -5,6 +5,7 @@
 #include <atomic>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace assistant_agent {
@@ -29,12 +30,19 @@ struct SubprocessResult {
 // working directory's CLAUDE.md and project state — pass a neutral directory so
 // the child sees the caller's choice, not wherever the host app was launched.
 //
+// `extra_env` is applied with setenv() in the child, after fork and chdir but
+// before exec — on top of the inherited environment, never replacing it. This
+// is how CodexBackend hands the MCP bearer token to the CLI without it landing
+// on the command line (argv is world-readable via /proc/<pid>/cmdline, exactly
+// the reason ClaudeBackend already keeps its own token out of argv via a
+// private --mcp-config file instead).
+//
 // POSIX only. On other platforms it returns spawned=false so the caller can
 // surface a clean "not supported here" instead of failing to build.
 SubprocessResult runProcess(
     const std::vector<std::string>& argv, const std::string& stdin_data,
     const std::function<void(const std::string&)>& on_stdout, const std::atomic<bool>& cancel,
-    const std::string& working_dir = {});
+    const std::string& working_dir = {}, const std::vector<std::pair<std::string, std::string>>& extra_env = {});
 
 }  // namespace assistant_agent
 
@@ -47,13 +55,14 @@ SubprocessResult runProcess(
 #include <unistd.h>
 
 #include <cerrno>
+#include <cstdlib>
 
 namespace assistant_agent {
 
 inline SubprocessResult runProcess(
     const std::vector<std::string>& argv, const std::string& stdin_data,
     const std::function<void(const std::string&)>& on_stdout, const std::atomic<bool>& cancel,
-    const std::string& working_dir) {
+    const std::string& working_dir, const std::vector<std::pair<std::string, std::string>>& extra_env) {
   if (argv.empty()) {
     return {false, -1, "empty argv"};
   }
@@ -89,6 +98,9 @@ inline SubprocessResult runProcess(
     close(fds[1]);
     if (!working_dir.empty() && chdir(working_dir.c_str()) != 0) {
       _exit(127);  // refusing to run in the wrong directory beats running there
+    }
+    for (const auto& [name, value] : extra_env) {
+      setenv(name.c_str(), value.c_str(), 1);
     }
     std::vector<char*> cargv;
     cargv.reserve(argv.size() + 1);
@@ -160,7 +172,7 @@ inline SubprocessResult runProcess(
 namespace assistant_agent {
 inline SubprocessResult runProcess(
     const std::vector<std::string>&, const std::string&, const std::function<void(const std::string&)>&,
-    const std::atomic<bool>&, const std::string&) {
+    const std::atomic<bool>&, const std::string&, const std::vector<std::pair<std::string, std::string>>&) {
   return {false, -1, "subprocess is only supported on POSIX platforms"};
 }
 }  // namespace assistant_agent

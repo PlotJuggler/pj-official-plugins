@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "chat_session.hpp"
+#include "session_text.hpp"  // prettyToolName, stripCatalogPrefix, truncateTitle, the two notes
 
 namespace assistant_agent {
 
@@ -75,28 +76,10 @@ struct ConversationSummary {
 // no-op success, not a failure the caller has to special-case.
 [[nodiscard]] bool deleteConversation(const std::filesystem::path& dir, const std::string& id);
 
-// "mcp__pj__read_series" -> "read_series": the MCP namespace this plugin
-// chose for its tools (claude_backend.cpp's allowedToolsArg), stripped for a
-// transcript line — the live ToolActivity row and a replayed one go through
-// this one function.
-[[nodiscard]] std::string prettyToolName(const std::string& name);
-
-// The two notes composePayload (claude_backend.cpp) can prepend alongside a
-// (re-)sent catalog listing. stripCatalogPrefix recognizes them by their
-// OPENING words only, so the rest of each sentence may be reworded without
-// orphaning the notes already written into session files; the static_asserts
-// in claude_sessions.cpp pin those openings.
-inline constexpr std::string_view kCatalogChangedNote =
-    "(The loaded data changed; the listing above replaces the earlier one.)";
-inline constexpr std::string_view kResumedConversationNote =
-    "(Resumed conversation. The tabs you composed earlier may no longer exist; plot_tab with action list reports the "
-    "ones that do. The listing above is the data loaded now.)";
-
-// Undo composePayload's catalog prepend (claude_backend.cpp) on a user
-// message loaded back from disk: `catalog + "\n" + [note] + "\n" + text`. Text
-// not starting with "Loaded data" (every turn after the first one that saw a
-// given catalog) is returned unchanged.
-[[nodiscard]] std::string stripCatalogPrefix(const std::string& text);
+// prettyToolName, stripCatalogPrefix, truncateTitle and the two catalog notes
+// now live in session_text.hpp (shared with codex_sessions.hpp) and are
+// pulled in transitively via the #include above, so every existing caller of
+// this header keeps compiling unchanged.
 
 // "2026-09-01T15:17:30.326Z" (UTC, as the harness writes it) -> seconds since
 // the Unix epoch. nullopt on anything it cannot parse. Pure, so the drawer's

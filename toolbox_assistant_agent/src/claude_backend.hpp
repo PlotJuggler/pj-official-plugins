@@ -9,38 +9,12 @@
 #include <vector>
 
 #include "claude_sessions.hpp"  // ConversationSummary, for listConversations()
+#include "harness_memory.hpp"   // HarnessMemory + composePayload
 #include "llm_backend.hpp"
-#include "mcp_http_server.hpp"
+#include "mcp_loopback.hpp"
 #include "stream_json.hpp"  // TurnMetrics, reported by the CLI in its result record
 
 namespace assistant_agent {
-
-// What has to survive this backend object for the conversation to continue.
-//
-// It is deliberately NOT owned by ClaudeBackend: the backend is a transport
-// (a CLI path and a model name) and gets rebuilt whenever either changes, while
-// the conversation belongs to the user and does not. Kept together in one
-// struct because both fields answer the same question — what this conversation
-// has already been told.
-struct ClaudeMemory {
-  std::string session_id;  // Claude session for --resume continuity
-  // fnv1aHex of the catalog listing already sent into this conversation.
-  // --resume carries the whole history forward, so re-sending an identical
-  // listing every turn would be pure waste; re-sending a CHANGED one is how
-  // the model finds out the user loaded something else. Purely an in-process
-  // dedup key now — the conversation itself lives in the harness's own store
-  // (claude_sessions.hpp), so this struct is no longer persisted across panel
-  // restarts.
-  std::string sent_catalog_hash;
-  // Set when this memory was just populated from a conversation resumed off
-  // disk (switchToConversation in assistant_dialog.cpp). The panel's own
-  // ephemeral state (tabs it composed, etc.) died with the earlier process,
-  // but --resume replays the model's history as if it hadn't — so the next
-  // turn forces a fresh catalog + a note telling the model what changed.
-  // Consumed (cleared) by composePayload the first time it actually sends
-  // that catalog.
-  bool resumed_pending = false;
-};
 
 // The command line handed to the CLI, built where a test can read it.
 //
@@ -60,14 +34,8 @@ struct ClaudeMemory {
 // built-in tool from being whitelisted by accident.
 [[nodiscard]] std::string allowedToolsArg(const ToolRegistry& registry);
 
-// The user text as actually sent: the catalog listing is prepended only when
-// its hash differs from what this conversation was already told (first turn,
-// or the loaded data changed — the latter carries an explicit note), OR when
-// `memory.resumed_pending` forces a resend regardless of the hash (a
-// conversation just resumed off disk, whose note says so instead). Updates
-// `memory.sent_catalog_hash` and clears `resumed_pending`. Free function so
-// the catalog-note rules are testable without spawning the CLI.
-[[nodiscard]] std::string composePayload(const std::string& text, const std::string& catalog, ClaudeMemory& memory);
+// composePayload now lives in harness_memory.hpp (backend-agnostic, shared
+// with CodexBackend) and is pulled in transitively via the #include above.
 
 // Remote backend driving the user's Claude Code CLI subscription headlessly —
 // NO Anthropic API key, no per-token billing. Per turn it spawns
@@ -77,14 +45,14 @@ struct ClaudeMemory {
 // localhost MCP server (started lazily on the first turn); Claude calls it over
 // HTTP and those calls run through the same GuiExecutor as every other backend.
 // Conversation context is preserved across turns via the CLI's --resume with the
-// session id Claude reports — held in a caller-owned ClaudeMemory so that
+// session id Claude reports — held in a caller-owned HarnessMemory so that
 // rebuilding this object (a settings change) does not silently start over.
 class ClaudeBackend : public LlmBackend {
  public:
   // `memory` must outlive the backend; the dialog owns one per conversation and
   // lends the same one to every backend it builds. A null pointer is treated as
   // a fresh private memory, so tests can construct without one.
-  ClaudeBackend(std::string cli_path, std::string model, std::shared_ptr<ClaudeMemory> memory = nullptr);
+  ClaudeBackend(std::string cli_path, std::string model, std::shared_ptr<HarnessMemory> memory = nullptr);
   ~ClaudeBackend() override;
 
   void sendUserMessage(const std::string& text, const TurnTools& tools, const EventSink& sink) override;
@@ -114,27 +82,25 @@ class ClaudeBackend : public LlmBackend {
   }
 
  private:
-  // Bring up the MCP server on first use, bound to this turn's tool surface.
-  bool ensureMcpServer(const TurnTools& tools, std::string& error);
-  // Resolve (once) the private directory the CLI runs in. The CLI reads its
-  // cwd's CLAUDE.md and project state as context, so inheriting the host app's
-  // cwd would inject whatever project PlotJuggler happened to be launched from
-  // into the panel's system prompt. Pairs with --restricted, which covers the
-  // user-level side (settings, global CLAUDE.md). The directory is STABLE
-  // (under XDG state), not a fresh temp dir: the CLI indexes its sessions by
-  // cwd, and resuming a persisted conversation (--resume after a plugin
-  // restart) only works when every instance runs in the same place.
+  // Resolve (once) the private directory the CLI runs in (harness_workdir.hpp).
+  // The CLI reads its cwd's CLAUDE.md and project state as context, so
+  // inheriting the host app's cwd would inject whatever project PlotJuggler
+  // happened to be launched from into the panel's system prompt. Pairs with
+  // --restricted, which covers the user-level side (settings, global
+  // CLAUDE.md). The directory is STABLE (under XDG state), not a fresh temp
+  // dir: the CLI indexes its sessions by cwd, and resuming a persisted
+  // conversation (--resume after a plugin restart) only works when every
+  // instance runs in the same place.
   bool ensureWorkDir(std::string& error);
 
   std::string cli_path_;
   std::string model_;
-  std::shared_ptr<ClaudeMemory> memory_;  // never null after construction
+  std::shared_ptr<HarnessMemory> memory_;  // never null after construction
   TurnMetrics last_metrics_;
   bool rate_limited_ = false;
-  std::unique_ptr<McpHttpServer> mcp_;
-  // 0600 temp file holding the MCP config (bearer token inside); created with
-  // the server, removed in the destructor.
-  std::string mcp_config_path_;
+  // The loopback MCP server plus (Claude-only) the --mcp-config file wrapping
+  // its token (mcp_loopback.hpp).
+  McpLoopback mcp_;
   // 0700 stable directory the CLI runs in (see ensureWorkDir). Never removed:
   // it holds the CLI's session state, which is what --resume comes back to.
   std::string work_dir_;

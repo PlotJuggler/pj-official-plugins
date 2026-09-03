@@ -9,10 +9,13 @@ namespace assistant_agent {
 namespace {
 
 // Persisted key, next to the assistant.* settings keys (assistant_dialog.cpp)
-// in the same shared store. Unchanged name from the pre-harness-store design:
-// it already meant "the session to resume", just alongside two keys this
-// build no longer writes (see scrubLegacyConversationKeys).
-constexpr const char* kKeyClaudeSessionId = "assistant.conv.claude.session_id";
+// in the same shared store. `key` is the backend ("claude"/"codex"); the
+// "claude" form is unchanged from the pre-Codex, pre-harness-store design: it
+// already meant "the session to resume", just alongside two keys this build
+// no longer writes (see scrubLegacyConversationKeys).
+std::string activeSessionIdKey(const std::string& key) {
+  return "assistant.conv." + key + ".session_id";
+}
 
 // What an older build of this plugin persisted and this one does not: the
 // full transcript, copied into settings on every completed turn, and the
@@ -23,16 +26,16 @@ constexpr const char* kKeyLegacyCatalogHash = "assistant.conv.claude.catalog_has
 
 }  // namespace
 
-std::string loadActiveSessionId(const SettingsStore& store) {
-  return store.getString(kKeyClaudeSessionId, "");
+std::string loadActiveSessionId(const SettingsStore& store, const std::string& key) {
+  return store.getString(activeSessionIdKey(key), "");
 }
 
-void saveActiveSessionId(SettingsStore& store, const std::string& session_id) {
-  store.setString(kKeyClaudeSessionId, session_id);
+void saveActiveSessionId(SettingsStore& store, const std::string& session_id, const std::string& key) {
+  store.setString(activeSessionIdKey(key), session_id);
 }
 
-void clearActiveSessionId(SettingsStore& store) {
-  store.setString(kKeyClaudeSessionId, "");
+void clearActiveSessionId(SettingsStore& store, const std::string& key) {
+  store.setString(activeSessionIdKey(key), "");
 }
 
 void scrubLegacyConversationKeys(SettingsStore& store) {

@@ -11,13 +11,21 @@ namespace assistant_agent {
 
 class SettingsStore;
 
-// What survives closing the toolbox or the app is now just ONE id, written to
-// the host's pj.settings.v1 store after a turn establishes or changes it: the
-// Claude session to resume on the next open. The conversation itself — the
-// transcript, its title, the ability to list or delete it — is no longer
-// copied into settings; it is read straight from the harness's own store
-// (claude_sessions.hpp) on demand. See docs/ARCHITECTURE.md, "Where the
-// conversation lives".
+// What survives closing the toolbox or the app is now just ONE id per backend,
+// written to the host's pj.settings.v1 store after a turn establishes or
+// changes it: the harness session to resume on the next open. The
+// conversation itself — the transcript, its title, the ability to list or
+// delete it — is no longer copied into settings; it is read straight from the
+// harness's own store (claude_sessions.hpp / codex_sessions.hpp) on demand.
+// See docs/ARCHITECTURE.md, "Where the conversation lives".
+//
+// `key` (default "claude", the only backend that existed before Codex landed)
+// selects which backend's id this reads/writes: the persisted key is
+// `assistant.conv.<key>.session_id`, so `loadActiveSessionId(store, "claude")`
+// reads the exact same string a pre-Codex build wrote — no migration needed.
+// AssistantDialog holds one HarnessMemory per key (`memories_`) and calls
+// these with the key of whichever backend is currently active, so switching
+// backends never silently discards the OTHER one's resume point.
 //
 // Deliberately NOT part of the toolbox's layout recipe (saveConfig): the
 // settings store is per-user and per-machine, so a shared layout file never
@@ -27,12 +35,12 @@ class SettingsStore;
 //
 // Absent key, unbound store, or a host backend fault all load as "" — a panel
 // with nothing to resume, not an error.
-[[nodiscard]] std::string loadActiveSessionId(const SettingsStore& store);
-void saveActiveSessionId(SettingsStore& store, const std::string& session_id);
-void clearActiveSessionId(SettingsStore& store);
+[[nodiscard]] std::string loadActiveSessionId(const SettingsStore& store, const std::string& key);
+void saveActiveSessionId(SettingsStore& store, const std::string& session_id, const std::string& key);
+void clearActiveSessionId(SettingsStore& store, const std::string& key);
 
 // FNV-1a (64-bit), hex-encoded. Used by claude_backend.cpp to dedupe the
-// catalog listing sent into a live conversation (ClaudeMemory::sent_catalog_hash)
+// catalog listing sent into a live conversation (HarnessMemory::sent_catalog_hash)
 // — an in-process comparison only now, but kept here (rather than moved into
 // claude_backend.hpp) as the one small, generically useful pure hash both a
 // backend and a future one could share. Not std::hash: that is unspecified

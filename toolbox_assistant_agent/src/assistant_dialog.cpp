@@ -9,6 +9,7 @@
 #include "assistant_panel_ui.hpp"
 #include "assistant_settings_ui.hpp"
 #include "claude_backend.hpp"
+#include "codex_backend.hpp"
 #include "conversation_state.hpp"
 #include "fake_backend.hpp"
 #include "settings_store.hpp"
@@ -18,17 +19,53 @@ namespace assistant_agent {
 namespace {
 // Persisted settings keys (pj.settings.v1). Namespaced so they never collide
 // with another toolbox's keys in the shared store.
-constexpr const char* kKeyBackend = "assistant.backend";  // "claude" (harness backends join here)
-constexpr const char* kKeyClaudeModel = "assistant.claude.model";
-constexpr const char* kKeyClaudeCli = "assistant.claude.cli_path";
+constexpr const char* kKeyBackend = "assistant.backend";  // "claude" or "codex"
 
-// Leaving this blank would pass no --model and get the CLI's own default, which
-// is the slowest tier for no measurable gain: `sonnet` matches the fastest tier
-// on turn time (10.1 s vs 10.4 s median) and was the only tier with no miss in
-// the 240-cell study (docs/BENCHMARKS.md). A user who deliberately clears the
-// field still gets the CLI default, because an empty stored value is returned
-// as-is rather than falling back to this.
-constexpr const char* kDefaultClaudeModel = "sonnet";
+// One row per backend this build knows about: its settings key, the
+// backendCombo index it fills, and the settings keys/defaults for its
+// model/cli-path fields. Replaces the scattered kKeyClaudeModel/kKeyClaudeCli/
+// kKeyCodexModel/kKeyCodexCli/kDefaultCodexModel constants and the
+// branch-per-field logic that used to read them.
+struct BackendSpec {
+  const char* key;
+  int combo_index;
+  const char* model_key;
+  const char* cli_key;
+  const char* default_model;
+  const char* default_cli;
+};
+constexpr BackendSpec kBackends[] = {
+    // Leaving this blank would pass no --model and get the CLI's own default,
+    // which is the slowest tier for no measurable gain: `sonnet` matches the
+    // fastest tier on turn time (10.1 s vs 10.4 s median) and was the only
+    // tier with no miss in the 240-cell study (docs/BENCHMARKS.md). A user who
+    // deliberately clears the field still gets the CLI default, because an
+    // empty stored value is returned as-is rather than falling back to this.
+    {"claude", 0, "assistant.claude.model", "assistant.claude.cli_path", "sonnet", "claude"},
+    // Codex has had no equivalent benchmark run yet, so an empty default just
+    // means "whatever `codex exec` picks on its own" rather than a measured pick.
+    {"codex", 1, "assistant.codex.model", "assistant.codex.cli_path", "", "codex"},
+};
+
+// The spec whose key/combo_index matches, or nullptr for a choice this build
+// has never heard of.
+const BackendSpec* backendByKey(std::string_view key) {
+  for (const BackendSpec& spec : kBackends) {
+    if (key == spec.key) {
+      return &spec;
+    }
+  }
+  return nullptr;
+}
+
+const BackendSpec* backendByIndex(int index) {
+  for (const BackendSpec& spec : kBackends) {
+    if (spec.combo_index == index) {
+      return &spec;
+    }
+  }
+  return nullptr;
+}
 
 // A drawer row's text. The date suffix is what keeps two same-titled
 // conversations apart under the host's text-keyed list protocol
@@ -36,9 +73,20 @@ constexpr const char* kDefaultClaudeModel = "sonnet";
 std::string listText(const ConversationSummary& c) {
   return c.title + " · " + formatShortDate(c.last_ts);
 }
+
+// Which backend key a persisted `assistant.backend` value resolves to —
+// shared by rebuildBackend() (which needs it to build the right object) and
+// loadPersistedConversation() (which needs it BEFORE a backend exists, to
+// know which `assistant.conv.<key>.session_id` to read). "echo" for a choice
+// this build has never heard of: the harmless fallback backend has no store
+// of its own, so its "memory" is simply never resumed into.
+std::string resolveBackendKey(const SettingsStore& store) {
+  const std::string choice = store.getString(kKeyBackend, "claude");
+  return backendByKey(choice) ? choice : "echo";
+}
 }  // namespace
 
-AssistantDialog::AssistantDialog() : claude_memory_(std::make_shared<ClaudeMemory>()) {
+AssistantDialog::AssistantDialog() {
   rebuildBackend();
   worker_thread_ = std::thread([this]() { workerLoop(); });
 }
@@ -63,6 +111,16 @@ AssistantDialog::~AssistantDialog() {
   }
 }
 
+std::shared_ptr<HarnessMemory> AssistantDialog::memoryFor(const std::string& key) {
+  auto it = memories_.find(key);
+  if (it != memories_.end()) {
+    return it->second;
+  }
+  auto memory = std::make_shared<HarnessMemory>();
+  memories_.emplace(key, memory);
+  return memory;
+}
+
 void AssistantDialog::rebuildBackend() {
   // Never mid-turn: the incoming and outgoing backends share the conversation
   // memory, and the worker may be writing a session id into it right now. The
@@ -79,20 +137,28 @@ void AssistantDialog::rebuildBackend() {
 
   // The scripted FakeBackend is an explicit opt-in for driving the tool path
   // without an LLM (unit tests + manual E2E). Otherwise the persisted
-  // 'assistant.backend' choice selects the backend. Claude is the only one
-  // until the harness backends land (docs/NORTH_STAR.md), so an absent choice
-  // gets it; a choice this build has never heard of falls back to the harmless
-  // echo backend, visibly labeled. (A store still saying "ollama" was migrated
-  // when the settings view was bound — see setSettings.)
+  // 'assistant.backend' choice selects the backend: "claude" or "codex" each
+  // get their own conversation memory (memoryFor), so switching between them
+  // never touches the other's; a choice this build has never heard of falls
+  // back to the harmless echo backend, visibly labeled. (A store still saying
+  // "ollama" was migrated when the settings view was bound — see setSettings.)
   const char* fake = std::getenv("ASSISTANT_FAKE_BACKEND");
   if (fake != nullptr && std::string(fake) == "1") {
     backend_ = std::make_shared<FakeBackend>();
+    active_backend_key_ = "echo";  // FakeBackend keeps no memory of its own
   } else {
     SettingsStore store(settings_);
-    if (store.getString(kKeyBackend, "claude") == "claude") {
+    active_backend_key_ = resolveBackendKey(store);
+    if (active_backend_key_ == "codex") {
+      const BackendSpec& spec = *backendByKey("codex");
+      backend_ = std::make_shared<CodexBackend>(
+          store.getString(spec.cli_key, spec.default_cli), store.getString(spec.model_key, spec.default_model),
+          memoryFor("codex"));
+    } else if (active_backend_key_ == "claude") {
+      const BackendSpec& spec = *backendByKey("claude");
       backend_ = std::make_shared<ClaudeBackend>(
-          store.getString(kKeyClaudeCli, "claude"), store.getString(kKeyClaudeModel, kDefaultClaudeModel),
-          claude_memory_);
+          store.getString(spec.cli_key, spec.default_cli), store.getString(spec.model_key, spec.default_model),
+          memoryFor("claude"));
     } else {
       backend_ = std::make_shared<EchoBackend>();
     }
@@ -110,15 +176,17 @@ void AssistantDialog::startNewConversation() {
   state_.session.clear();
   state_.usage.reset();
   // Clearing in place is what makes this work for whichever backend is live:
-  // it reads its memory through the pointer the dialog still holds.
-  *claude_memory_ = ClaudeMemory{};
+  // it reads its memory through the pointer the dialog still holds. Only the
+  // ACTIVE key's memory is touched — the other backend's last conversation is
+  // none of "New chat"'s business.
+  *memoryFor(active_backend_key_) = HarnessMemory{};
   state_.active_conversation_id.clear();
   // The persisted pointer goes too: New chat is the one gesture that frees
   // the user from the past, and a reopen must not resume it. Nothing is
   // deleted on disk — the old conversation stays in the harness's store and
   // the drawer, just no longer active.
   SettingsStore store(settings_);
-  clearActiveSessionId(store);
+  clearActiveSessionId(store, active_backend_key_);
   state_.transcript_dirty = true;
   state_.controls_dirty = true;
   state_.drawer_dirty = true;  // the active row changes; the drawer itself stays as it is
@@ -156,17 +224,18 @@ bool AssistantDialog::switchToConversation(const std::string& id) {
   // --resume regardless; this keeps the user able to SEE that it did.
   state_.session.addSystem("resumed previous conversation");
 
-  *claude_memory_ = ClaudeMemory{};
-  claude_memory_->session_id = id;
+  const std::shared_ptr<HarnessMemory> memory = memoryFor(active_backend_key_);
+  *memory = HarnessMemory{};
+  memory->session_id = id;
   // Forces composePayload to re-send the catalog with the resume note on the
   // next turn: this process's ephemeral state (tabs the model composed, etc.)
   // died with whatever process wrote this transcript, and --resume would
   // otherwise replay history as if it hadn't.
-  claude_memory_->resumed_pending = true;
+  memory->resumed_pending = true;
 
   state_.active_conversation_id = id;
   SettingsStore store(settings_);
-  saveActiveSessionId(store, id);
+  saveActiveSessionId(store, id, active_backend_key_);
 
   // The drawer stays open: it is a sidebar the user browses, not a menu that
   // dismisses itself once picked from.
@@ -178,13 +247,16 @@ bool AssistantDialog::switchToConversation(const std::string& id) {
 
 void AssistantDialog::loadPersistedConversation() {
   SettingsStore store(settings_);
-  const std::string id = loadActiveSessionId(store);
+  // rebuildBackend() must already have run against these same settings — a
+  // persisted Codex id needs to be loaded THROUGH a CodexBackend, not the
+  // ctor's default ClaudeBackend (backend_ built against an unbound store).
+  const std::string id = loadActiveSessionId(store, active_backend_key_);
   if (id.empty()) {
     return;
   }
   if (!switchToConversation(id)) {
     // Purged between the last close and this reopen: nothing to resume into.
-    clearActiveSessionId(store);
+    clearActiveSessionId(store, active_backend_key_);
   }
 }
 
@@ -258,7 +330,14 @@ void AssistantDialog::setSettings(PJ::sdk::SettingsView settings) {
     }
     scrubRetiredOllamaKeys(store);
     scrubLegacyConversationKeys(store);
+    // rebuildBackend() FIRST: the ctor already built a default ClaudeBackend
+    // against an unbound settings view, but a persisted choice of "codex"
+    // needs its conversation loaded THROUGH a CodexBackend (loadTranscript
+    // reads a different store) — loadPersistedConversation() below relies on
+    // active_backend_key_ already reflecting the real, bound settings.
+    rebuildBackend();
     loadPersistedConversation();
+    return;
   }
   rebuildBackend();
 }
@@ -362,9 +441,12 @@ std::string AssistantDialog::widget_data() {
     state_.open_settings_pending = false;
     // Pre-fill the modal from persisted settings before showing it.
     SettingsStore store(settings_);
-    wd.setCurrentIndex("backendCombo", 0);
-    wd.setText("claudeModelEdit", store.getString(kKeyClaudeModel, kDefaultClaudeModel));
-    wd.setText("claudeCliPathEdit", store.getString(kKeyClaudeCli, "claude"));
+    const BackendSpec* stored_spec = backendByKey(store.getString(kKeyBackend, "claude"));
+    wd.setCurrentIndex("backendCombo", stored_spec ? stored_spec->combo_index : 0);
+    wd.setText("claudeModelEdit", store.getString(kBackends[0].model_key, kBackends[0].default_model));
+    wd.setText("claudeCliPathEdit", store.getString(kBackends[0].cli_key, kBackends[0].default_cli));
+    wd.setText("codexModelEdit", store.getString(kBackends[1].model_key, kBackends[1].default_model));
+    wd.setText("codexCliPathEdit", store.getString(kBackends[1].cli_key, kBackends[1].default_cli));
     wd.requestSubDialog(kAssistantSettingsUi);
   }
 
@@ -377,23 +459,35 @@ bool AssistantDialog::onTextChanged(std::string_view widget_name, std::string_vi
     state_.input_text = std::string(text);
     return false;  // no re-render; the widget already shows the text
   }
-  // Settings sub-dialog inputs: stage the value; commit on subDialogAccepted.
-  if (widget_name == "claudeModelEdit") {
-    state_.pending_claude_model = std::string(text);
-    return false;
-  }
-  if (widget_name == "claudeCliPathEdit") {
-    state_.pending_claude_cli = std::string(text);
-    return false;
+  // Settings sub-dialog inputs: stage the value under its settings key; commit
+  // on subDialogAccepted. One table entry per BackendSpec field instead of a
+  // hand-written branch per widget.
+  static constexpr std::pair<const char*, const char*> kTextWidgetToKey[] = {
+      {"claudeModelEdit", kBackends[0].model_key},
+      {"claudeCliPathEdit", kBackends[0].cli_key},
+      {"codexModelEdit", kBackends[1].model_key},
+      {"codexCliPathEdit", kBackends[1].cli_key},
+  };
+  for (const auto& [widget, key] : kTextWidgetToKey) {
+    if (widget_name == widget) {
+      state_.pending_text[key] = std::string(text);
+      break;
+    }
   }
   return false;
 }
 
 bool AssistantDialog::onIndexChanged(std::string_view widget_name, int index) {
-  // No combo drives state today: backendCombo has one entry until the harness
-  // backends land, and the backend key is normalized at bind time instead.
-  (void)widget_name;
-  (void)index;
+  std::lock_guard<std::mutex> lock(state_.mu);
+  if (widget_name == "backendCombo") {
+    // Stage only; commitSettings() persists it under kKeyBackend. "Claude Code
+    // (subscription)" is combo index 0, "Codex (ChatGPT subscription)" is 1
+    // (ui/assistant_settings.ui) — an index this build has never heard of
+    // falls back to "claude" rather than staging a value nothing downstream
+    // understands.
+    const BackendSpec* spec = backendByIndex(index);
+    state_.pending_backend = spec ? spec->key : "claude";
+  }
   return false;
 }
 
@@ -607,18 +701,22 @@ void AssistantDialog::applyBackendEvent(const BackendEvent& ev) {
       // controls_dirty is what re-renders the status label.
       state_.usage.record(ev.metrics);
       break;
-    case BackendEvent::Kind::TurnComplete:
+    case BackendEvent::Kind::TurnComplete: {
       state_.session.setState(TurnState::Idle);
       state_.controls_dirty = true;
       // Persist the active session id once it actually changes — a brand-new
       // conversation gets its id here for the first time; a resumed one
-      // already has it saved, so this is then a no-op read.
-      if (!claude_memory_->session_id.empty() && claude_memory_->session_id != state_.active_conversation_id) {
-        state_.active_conversation_id = claude_memory_->session_id;
+      // already has it saved, so this is then a no-op read. Always the
+      // memory for the backend that actually ran this turn (active_backend_key_
+      // cannot have changed mid-turn: rebuildBackend() defers itself while busy).
+      const std::shared_ptr<HarnessMemory> memory = memoryFor(active_backend_key_);
+      if (!memory->session_id.empty() && memory->session_id != state_.active_conversation_id) {
+        state_.active_conversation_id = memory->session_id;
         SettingsStore store(settings_);
-        saveActiveSessionId(store, state_.active_conversation_id);
+        saveActiveSessionId(store, state_.active_conversation_id, active_backend_key_);
       }
       break;
+    }
   }
 }
 
@@ -627,16 +725,15 @@ void AssistantDialog::commitSettings() {
   std::string backend;
   {
     std::lock_guard<std::mutex> lock(state_.mu);
-    // Persist each staged edit and clear it for the next time the modal opens.
-    const std::pair<const char*, std::optional<std::string>*> staged[] = {
-        {kKeyClaudeModel, &state_.pending_claude_model},
-        {kKeyClaudeCli, &state_.pending_claude_cli},
-    };
-    for (const auto& [key, value] : staged) {
-      if (value->has_value()) {
-        store.setString(key, **value);
-        value->reset();
-      }
+    // Persist each staged text edit and clear the map for the next time the
+    // modal opens.
+    for (const auto& [key, value] : state_.pending_text) {
+      store.setString(key, value);
+    }
+    state_.pending_text.clear();
+    if (state_.pending_backend.has_value()) {
+      store.setString(kKeyBackend, *state_.pending_backend);
+      state_.pending_backend.reset();
     }
     backend = store.getString(kKeyBackend, "claude");
 

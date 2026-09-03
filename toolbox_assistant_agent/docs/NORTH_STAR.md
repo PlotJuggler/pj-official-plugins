@@ -61,7 +61,7 @@ seeking, zooming and framing land.
 ## 4. One line, one gate
 
 The assistant is developed and verified on the integration line: every open draft that
-serves it — today PJ4 #573 and #619, plotjuggler_sdk #183 and #184, and the plugin branch —
+serves it — today PJ4 #573 and #619, plotjuggler_sdk #184, and the plugin branch —
 built together, deployed together, driven together on screen. A build that leaves one of
 them out proves nothing about the set.
 

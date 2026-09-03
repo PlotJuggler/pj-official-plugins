@@ -18,6 +18,7 @@
 #include <cstring>
 #include <ctime>  // tzset
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/settings_store_host.hpp>
@@ -25,6 +26,7 @@
 #include <vector>
 
 #include "claude_sessions.hpp"
+#include "codex_sessions.hpp"
 #include "conversation_state.hpp"
 #include "settings_store.hpp"
 #include "support/scoped_env.hpp"
@@ -160,7 +162,7 @@ TEST_F(AssistantDialogDrawerTest, SelectingAConversationReplaysItsTranscriptAndP
   EXPECT_EQ(entryIn(snap, "conversationsDrawer").value("visible", false), true)
       << "picking a conversation leaves the drawer open, like a sidebar";
 
-  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_)), "session_gamma");
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "session_gamma");
 }
 
 TEST_F(AssistantDialogDrawerTest, DeletingTheActiveConversationStartsANewOneAndRemovesTheFile) {
@@ -192,7 +194,7 @@ TEST_F(AssistantDialogDrawerTest, DeletingTheActiveConversationStartsANewOneAndR
   EXPECT_EQ(entryIn(snap, "transcriptText").value("plain_text", std::string("not-empty")), "")
       << "deleting the active conversation starts a blank new one";
 
-  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_)), "");
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "");
 
   const std::filesystem::path gamma_file = claudeSessionsDir(expectedWorkDir(home_).string()) / "session_gamma.jsonl";
   EXPECT_FALSE(std::filesystem::exists(gamma_file)) << "the file itself must be gone, not just delisted";
@@ -203,7 +205,7 @@ TEST_F(AssistantDialogDrawerTest, ReopeningThePanelResumesThePersistedConversati
   // itself has to come back from the harness's store on the first bind.
   {
     SettingsStore store(settings_view_);
-    saveActiveSessionId(store, "session_alpha");
+    saveActiveSessionId(store, "session_alpha", "claude");
   }
   AssistantDialog dialog;
   dialog.setSettings(settings_view_);
@@ -216,13 +218,13 @@ TEST_F(AssistantDialogDrawerTest, ReopeningThePanelResumesThePersistedConversati
   EXPECT_EQ(text.find("Loaded data"), std::string::npos) << "the injected catalog is not a transcript row";
   EXPECT_NE(text.find("resumed previous conversation"), std::string::npos);
   EXPECT_EQ(entryIn(snap, "conversationsDrawer").value("visible", true), false) << "reopening keeps the drawer shut";
-  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_)), "session_alpha");
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "session_alpha");
 }
 
 TEST_F(AssistantDialogDrawerTest, APurgedActiveConversationIsForgottenOnReopen) {
   {
     SettingsStore store(settings_view_);
-    saveActiveSessionId(store, "session_vanished");  // Claude's retention took the file
+    saveActiveSessionId(store, "session_vanished", "claude");  // Claude's retention took the file
   }
   AssistantDialog dialog;
   dialog.setSettings(settings_view_);
@@ -230,8 +232,308 @@ TEST_F(AssistantDialogDrawerTest, APurgedActiveConversationIsForgottenOnReopen) 
 
   EXPECT_EQ(entryIn(snap, "transcriptText").value("plain_text", std::string("not-empty")), "")
       << "nothing to replay, so the panel opens blank rather than half-resumed";
-  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_)), "")
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "")
       << "a dangling --resume target must not survive to the next turn";
+}
+
+// --- Codex drawer cases: same behavior, different harness store -----------
+//
+// codex_sessions.hpp filters by the `payload.cwd` FIELD inside each rollout
+// file, not by which directory it lives in (unlike Claude's per-cwd project
+// directories) — so, unlike the Claude fixtures above (copied verbatim), the
+// fixtures here are written by this test with `cwd` set to whatever this
+// test's throwaway $HOME actually resolves CodexBackend's work dir to.
+
+// Writes a minimal, valid `codex exec` rollout file: one session_meta record
+// plus one user/assistant response_item pair — everything listCodexConversations
+// / loadCodexTranscript (codex_sessions.cpp) look at.
+void writeCodexFixture(
+    const std::filesystem::path& path, const std::string& id, const std::string& cwd, const std::string& first_ts,
+    const std::string& user_text, const std::string& assistant_text, const std::string& last_ts) {
+  std::ofstream file(path);
+  file << json{
+              {"timestamp", first_ts},
+              {"ordinal", 0},
+              {"type", "session_meta"},
+              {"payload",
+               {{"session_id", id},
+                {"id", id},
+                {"timestamp", first_ts},
+                {"cwd", cwd},
+                {"originator", "codex_exec"},
+                {"cli_version", "0.153.0"},
+                {"source", "exec"}}},
+          }
+                .dump()
+       << "\n";
+  file << json{
+              {"timestamp", first_ts},
+              {"ordinal", 1},
+              {"type", "response_item"},
+              {"payload",
+               {{"type", "message"},
+                {"role", "user"},
+                {"content", json::array({{{"type", "input_text"}, {"text", user_text}}})}}},
+          }
+                .dump()
+       << "\n";
+  file << json{
+              {"timestamp", last_ts},
+              {"ordinal", 2},
+              {"type", "response_item"},
+              {"payload",
+               {{"type", "message"},
+                {"role", "assistant"},
+                {"content", json::array({{{"type", "output_text"}, {"text", assistant_text}}})}}},
+          }
+                .dump()
+       << "\n";
+}
+
+class AssistantDialogCodexDrawerTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    home_ = makeTempDir("assistant_dialog_codex_test_");
+    ASSERT_FALSE(home_.empty());
+    home_env_ = std::make_unique<ScopedEnv>("HOME", home_.c_str());
+    xdg_env_ = std::make_unique<ScopedEnv>("XDG_STATE_HOME", nullptr);
+    cfg_env_ = std::make_unique<ScopedEnv>("CLAUDE_CONFIG_DIR", nullptr);
+    codex_home_ = makeTempDir("assistant_dialog_codex_home_");
+    ASSERT_FALSE(codex_home_.empty());
+    codex_home_env_ = std::make_unique<ScopedEnv>("CODEX_HOME", codex_home_.c_str());
+    tz_env_ = std::make_unique<ScopedEnv>("TZ", "UTC");
+    tzset();
+
+    std::error_code ec;
+    std::filesystem::create_directories(home_ / ".local/state", ec);
+    ASSERT_FALSE(ec) << (home_ / ".local/state") << ": " << ec.message();
+
+    // CodexBackend's work dir resolves through the SAME harness_workdir.hpp
+    // rules as Claude's (see expectedWorkDir above).
+    const std::string work_dir = expectedWorkDir(home_).string();
+    const std::filesystem::path sessions_dir = codex_home_ / "sessions" / "2026" / "09" / "03";
+    std::filesystem::create_directories(sessions_dir, ec);
+    ASSERT_FALSE(ec) << sessions_dir << ": " << ec.message();
+
+    writeCodexFixture(
+        sessions_dir / "rollout-2026-09-01T15-17-30-codex_alpha.jsonl", "codex_alpha", work_dir,
+        "2026-09-01T15:17:30.000Z", "Give me a demo showing me everything you're capable of doing inside PlotJuggler.",
+        "I'd love to give you a demo of what I can do.", "2026-09-01T15:17:35.000Z");
+    writeCodexFixture(
+        sessions_dir / "rollout-2026-09-02T09-00-00-codex_gamma.jsonl", "codex_gamma", work_dir,
+        "2026-09-02T09:00:00.000Z", "Can you plot the vehicle speed against the steering angle?",
+        "I opened a new tab plotting vehicle_speed against vehicle_steering.", "2026-09-02T09:00:05.000Z");
+
+    settings_view_ = PJ::sdk::SettingsView{host_.view()};
+    // Codex active from the very first bind, so rebuildBackend() builds a
+    // CodexBackend (not the ctor's default ClaudeBackend) before anything
+    // tries to resume a conversation through it.
+    SettingsStore(settings_view_).setString("assistant.backend", "codex");
+  }
+
+  void TearDown() override {
+    std::error_code ec;
+    std::filesystem::remove_all(home_, ec);
+    std::filesystem::remove_all(codex_home_, ec);
+  }
+
+  json snapshot(AssistantDialog& dialog) {
+    const std::string raw = dialog.widget_data();
+    if (raw.empty()) {
+      return json::object();
+    }
+    const json doc = json::parse(raw, nullptr, /*allow_exceptions=*/false);
+    return doc.is_object() ? doc : json::object();
+  }
+  static json entryIn(const json& snapshot, const std::string& widget) {
+    return snapshot.value(widget, json::object());
+  }
+
+  std::filesystem::path home_;
+  std::filesystem::path codex_home_;
+  std::unique_ptr<ScopedEnv> home_env_;
+  std::unique_ptr<ScopedEnv> xdg_env_;
+  std::unique_ptr<ScopedEnv> cfg_env_;
+  std::unique_ptr<ScopedEnv> codex_home_env_;
+  std::unique_ptr<ScopedEnv> tz_env_;
+  PJ::sdk::InMemorySettingsBackend backend_;
+  PJ::sdk::SettingsStoreHost host_{backend_};
+  PJ::sdk::SettingsView settings_view_;
+};
+
+TEST_F(AssistantDialogCodexDrawerTest, OpeningTheDrawerListsCodexConversationsNewestFirst) {
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+
+  ASSERT_TRUE(dialog.onClicked("menuButton"));
+  const json snap = snapshot(dialog);
+  const json list = entryIn(snap, "conversationList");
+  ASSERT_TRUE(list.contains("list_items"));
+  const std::vector<std::string> items = list.at("list_items").get<std::vector<std::string>>();
+  ASSERT_EQ(items.size(), 2u);
+  EXPECT_EQ(items[0], "Can you plot the vehicle speed against the steer · 2 Sep 09:00");
+  EXPECT_EQ(items[1], "Give me a demo showing me everything you're capa · 1 Sep 15:17");
+}
+
+TEST_F(AssistantDialogCodexDrawerTest, SelectingAConversationReplaysItAndPersistsUnderTheCodexKey) {
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  ASSERT_TRUE(dialog.onClicked("menuButton"));
+  (void)dialog.widget_data();
+
+  ASSERT_TRUE(dialog.onSelectionChanged(
+      "conversationList", {"Can you plot the vehicle speed against the steer · 2 Sep 09:00"}));
+  const json snap = snapshot(dialog);
+
+  const std::string text = entryIn(snap, "transcriptText").at("plain_text").get<std::string>();
+  EXPECT_NE(text.find("You: Can you plot the vehicle speed against the steering angle?"), std::string::npos);
+  EXPECT_NE(
+      text.find("Assistant: I opened a new tab plotting vehicle_speed against vehicle_steering."), std::string::npos);
+  EXPECT_NE(text.find("resumed previous conversation"), std::string::npos);
+
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "codex"), "codex_gamma");
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "")
+      << "switching a conversation on codex must not touch claude's persisted id";
+}
+
+TEST_F(AssistantDialogCodexDrawerTest, DeletingTheActiveConversationStartsANewOneAndRemovesTheFile) {
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  ASSERT_TRUE(dialog.onClicked("menuButton"));
+  ASSERT_TRUE(dialog.onSelectionChanged(
+      "conversationList", {"Can you plot the vehicle speed against the steer · 2 Sep 09:00"}));
+  (void)dialog.widget_data();
+
+  ASSERT_TRUE(dialog.onClicked("menuButton"));
+  ASSERT_TRUE(dialog.onItemDeleteRequested("conversationList", 0));
+  const json snap = snapshot(dialog);
+
+  const std::vector<std::string> items_after =
+      entryIn(snap, "conversationList").at("list_items").get<std::vector<std::string>>();
+  ASSERT_EQ(items_after.size(), 1u);
+  EXPECT_EQ(items_after[0], "Give me a demo showing me everything you're capa · 1 Sep 15:17");
+
+  EXPECT_EQ(entryIn(snap, "transcriptText").value("plain_text", std::string("not-empty")), "");
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "codex"), "");
+
+  const std::filesystem::path gamma_file =
+      codex_home_ / "sessions" / "2026" / "09" / "03" / "rollout-2026-09-02T09-00-00-codex_gamma.jsonl";
+  EXPECT_FALSE(std::filesystem::exists(gamma_file)) << "the file itself must be gone, not just delisted";
+}
+
+TEST_F(AssistantDialogCodexDrawerTest, ReopeningThePanelResumesThePersistedConversation) {
+  {
+    SettingsStore store(settings_view_);
+    saveActiveSessionId(store, "codex_alpha", "codex");
+  }
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  const json snap = snapshot(dialog);
+
+  const std::string text = entryIn(snap, "transcriptText").at("plain_text").get<std::string>();
+  EXPECT_NE(text.find("Give me a demo"), std::string::npos);
+  EXPECT_NE(text.find("resumed previous conversation"), std::string::npos);
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "codex"), "codex_alpha");
+}
+
+TEST_F(AssistantDialogCodexDrawerTest, APurgedActiveConversationIsForgottenOnReopen) {
+  {
+    SettingsStore store(settings_view_);
+    saveActiveSessionId(store, "codex_vanished", "codex");
+  }
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  const json snap = snapshot(dialog);
+
+  EXPECT_EQ(entryIn(snap, "transcriptText").value("plain_text", std::string("not-empty")), "");
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "codex"), "");
+}
+
+// --- Switching backends must not discard either one's resume point --------
+
+TEST(AssistantDialogBackendSwitch, ClaudeCodexClaudeKeepsBothSessionIds) {
+  const std::filesystem::path home = makeTempDir("assistant_dialog_switch_test_");
+  ASSERT_FALSE(home.empty());
+  ScopedEnv home_env("HOME", home.c_str());
+  ScopedEnv xdg_env("XDG_STATE_HOME", nullptr);
+  ScopedEnv cfg_env("CLAUDE_CONFIG_DIR", nullptr);
+  const std::filesystem::path codex_home = makeTempDir("assistant_dialog_switch_codex_home_");
+  ASSERT_FALSE(codex_home.empty());
+  ScopedEnv codex_home_env("CODEX_HOME", codex_home.c_str());
+  ScopedEnv tz_env("TZ", "UTC");
+  tzset();
+
+  std::error_code ec;
+  std::filesystem::create_directories(home / ".local/state", ec);
+  ASSERT_FALSE(ec);
+  const std::string work_dir = expectedWorkDir(home).string();
+
+  const std::filesystem::path claude_sessions_dir = claudeSessionsDir(work_dir);
+  std::filesystem::create_directories(claude_sessions_dir, ec);
+  ASSERT_FALSE(ec);
+  std::filesystem::copy_file(
+      std::filesystem::path(ASSISTANT_SESSIONS_FIXTURES_DIR) / "session_alpha.jsonl",
+      claude_sessions_dir / "session_alpha.jsonl", ec);
+  ASSERT_FALSE(ec);
+
+  const std::filesystem::path codex_sessions_dir = codex_home / "sessions" / "2026" / "09" / "03";
+  std::filesystem::create_directories(codex_sessions_dir, ec);
+  ASSERT_FALSE(ec);
+  writeCodexFixture(
+      codex_sessions_dir / "rollout-2026-09-02T09-00-00-codex_gamma.jsonl", "codex_gamma", work_dir,
+      "2026-09-02T09:00:00.000Z", "Can you plot the vehicle speed against the steering angle?",
+      "I opened a new tab plotting vehicle_speed against vehicle_steering.", "2026-09-02T09:00:05.000Z");
+
+  PJ::sdk::InMemorySettingsBackend backend;
+  PJ::sdk::SettingsStoreHost host{backend};
+  PJ::sdk::SettingsView settings_view{host.view()};
+  {
+    // commitSettings() probes the newly-selected backend with testConnection()
+    // (a real `<cli> --version` subprocess) as its very last step. Point both
+    // CLI paths at names that cannot resolve on PATH, so this test — which is
+    // about session-id bookkeeping, not connectivity — never spawns the real
+    // `claude` or `codex` binary this dev machine happens to have installed.
+    SettingsStore store(settings_view);
+    store.setString("assistant.claude.cli_path", "assistant-agent-test-missing-claude-cli");
+    store.setString("assistant.codex.cli_path", "assistant-agent-test-missing-codex-cli");
+  }
+
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view);  // starts on "claude" (the default)
+
+  ASSERT_TRUE(dialog.onClicked("menuButton"));
+  (void)dialog.widget_data();
+  ASSERT_TRUE(dialog.onSelectionChanged("conversationList", {"PlotJuggler demo · 1 Sep 15:17"}));
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view), "claude"), "session_alpha");
+  ASSERT_TRUE(dialog.onClicked("menuButton"));  // close: the drawer stays open across a selection
+
+  // Switch to Codex through the real settings flow (settingsButton ->
+  // backendCombo -> subDialogAccepted), the same path the UI drives.
+  ASSERT_TRUE(dialog.onClicked("settingsButton"));
+  EXPECT_FALSE(dialog.onIndexChanged("backendCombo", 1));
+  EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
+
+  // Reopen: menuButton only refreshes conversations on the transition into
+  // "open", so the drawer has to be closed (above) before it is reopened here
+  // for the list to reflect the now-active Codex backend.
+  ASSERT_TRUE(dialog.onClicked("menuButton"));
+  (void)dialog.widget_data();
+  ASSERT_TRUE(dialog.onSelectionChanged(
+      "conversationList", {"Can you plot the vehicle speed against the steer · 2 Sep 09:00"}));
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view), "codex"), "codex_gamma");
+  // Claude's id must have survived the switch untouched.
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view), "claude"), "session_alpha");
+
+  // Switch back to Claude: both ids must still be exactly what they were.
+  ASSERT_TRUE(dialog.onClicked("settingsButton"));
+  EXPECT_FALSE(dialog.onIndexChanged("backendCombo", 0));
+  EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
+
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view), "claude"), "session_alpha");
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view), "codex"), "codex_gamma");
+
+  std::filesystem::remove_all(home, ec);
+  std::filesystem::remove_all(codex_home, ec);
 }
 
 }  // namespace

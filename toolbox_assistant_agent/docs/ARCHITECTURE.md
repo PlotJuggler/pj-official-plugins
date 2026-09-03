@@ -108,6 +108,29 @@ The digest degrades as data grows: full tree, then topic names only, and it says
 when truncated. That last part matters — a model that believes an incomplete listing is
 complete will confidently tell the user a signal does not exist.
 
+## The Codex backend
+
+Per turn it spawns `codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules
+-c features.shell_tool=false -c features.unified_exec=false -c web_search="disabled" -c
+tools.view_image=false -c sandbox_mode="read-only" -c approval_policy="never" --disable
+view_image --disable memories --disable shell_snapshot --disable multi_agent --disable plugins
+--disable apps --disable skill_search -c model_instructions_file="<file>" -c
+mcp_servers.pj.url="<url>" -c mcp_servers.pj.bearer_token_env_var="PJ_ASSISTANT_MCP_TOKEN" -c
+mcp_servers.pj.required=true -c mcp_servers.pj.default_tools_approval_mode="approve" -` (`-C
+<workdir>` inserted right after `--ignore-rules` on a fresh conversation, `-m <model>` before the
+trailing `-` when a model is configured), with the prompt on stdin and the bearer token only in
+the child's environment — never argv, the same reason Claude's own token lives in a private
+`--mcp-config` file rather than a flag. Three deliberate deviations from Claude, all measured on
+CLI 0.153.0: **Code Mode**, the JavaScript host every tool call (ours included) runs inside,
+cannot be disabled without disabling our own MCP tools, so it stays on — the startup notice item
+this produces arrives before `turn.started` and is not treated as an error; **approval**, where
+`approval_policy="never"` alone still fails every MCP call with "requires approval, but approval
+policy is never" unless `mcp_servers.pj.default_tools_approval_mode="approve"` is set alongside
+it; and **resume**, `codex exec resume <thread_id>`, which takes no `-C` at all — the process cwd
+is irrelevant to a resumed thread, unlike Claude's `--resume` which still runs inside the
+private cwd. A failed resume is silent on stdout: exit 1 with nothing printed, the reason on
+stderr only (which this plugin discards, like every other backend's stderr).
+
 ## Harness backends
 
 Three harnesses, one pattern: the plugin spawns a headless turn, streams the harness's events into
@@ -137,11 +160,11 @@ instructions forbid it anyway.
 
 ### The integration line
 
-The four drafts that serve the assistant (PJ4 #573 and #619, plotjuggler_sdk #183 and #184) are
+The three drafts that serve the assistant (PJ4 #573 and #619, plotjuggler_sdk #184) are
 built and driven together, never one at a time (`NORTH_STAR.md` §4). `tools/integration.sh`
 (`ROADMAP.md` → Next, item 3) makes that mechanical: it refreshes a local, never-pushed `integration/assistant` worktree of PJ4
 (`alvvm/assistant-host-ux` with `fix/dataset-qualified-inputs` merged in, host-ux winning on the
-Conan pin), points it at the SDK worktree that carries #184 stacked on #183, builds, runs the
+Conan pin), points it at the SDK worktree of #184, builds, runs the
 tests, and copies the host and the plugin into a deploy directory — a copy, because overwriting a
 shared object the running application has mapped crashes it at exit. Any commit on any of the
 drafts means running it again before anything is judged on screen.
@@ -296,24 +319,31 @@ file this plugin does not own and whose format carries no contract:
 
 **The conversation belongs to its backend.** `LlmBackend` exposes
 `listConversations()`/`loadTranscript()`/`deleteConversation()` with empty defaults, so `Echo` and
-`Fake` simply have none; `ClaudeBackend` is the only implementation today, resolving its own
-`work_dir_` the same way `sendUserMessage` does. The seam is written for Codex/OpenCode before they
-exist: switching backends in Settings while a conversation from a different harness is active
-starts a new conversation rather than trying to resume across harnesses — there is nothing in
-common to resume.
+`Fake` simply have none; `ClaudeBackend` and `CodexBackend` each resolve their own `work_dir_` the
+same way `sendUserMessage` does (through the same `ensureWorkDir`, `harness_workdir.hpp`) and read
+their own harness's store (`claude_sessions.hpp` / `codex_sessions.hpp`). Now that a second harness
+actually exists: `AssistantDialog` holds one `HarnessMemory` per backend key
+(`memories_`, `memoryFor()`), so switching backends in Settings never discards the other one's
+conversation — each backend resumes its OWN last conversation the next time it becomes active.
+There is still nothing in common to resume ACROSS harnesses (a Claude session id means nothing to
+Codex), which is why the memories are keyed and separate rather than shared.
 
-**Reopening the panel resumes the last active conversation**, as before: the id survives the
-*dialog* instance (closing the toolbox or the app destroys `ClaudeMemory` with it), so
-`conversation_state.{hpp,cpp}` writes `assistant.conv.claude.session_id` after a turn establishes
-or changes it, and the next instance replays that conversation's transcript when the settings view
-is first bound. If the harness has since purged that id (its own retention, not ours), the replay
-comes back empty and the panel starts blank instead of dangling a `--resume` target that no longer
-resolves.
+**Reopening the panel resumes the last active conversation per backend**, as before: the id
+survives the *dialog* instance (closing the toolbox or the app destroys every `HarnessMemory` with
+it), so `conversation_state.{hpp,cpp}` writes `assistant.conv.<key>.session_id` (`key` is
+`"claude"` or `"codex"`) after a turn establishes or changes it, and the next instance replays the
+ACTIVE backend's conversation when the settings view is first bound — `rebuildBackend()` has to run
+first, so a persisted Codex id is loaded through a `CodexBackend`, not the constructor's default
+`ClaudeBackend`. `loadActiveSessionId(store, "claude")` reads the exact string a pre-Codex build
+wrote, so no migration was needed for existing installs. If the harness has since purged that id
+(its own retention, not ours), the replay comes back empty and the panel starts blank instead of
+dangling a `--resume` target that no longer resolves.
 
 **A resumed conversation tells the model what it lost.** The panel's own ephemeral state — tabs
 composed via `plot_tab`, say — dies with the process; `--resume` replays the model's history as if
-it hadn't. So `switchToConversation` sets `ClaudeMemory::resumed_pending`, which forces
-`composePayload` to re-send the catalog on the very next turn with a note instead of silence:
+it hadn't. So `switchToConversation` sets `HarnessMemory::resumed_pending`, which forces
+`composePayload` (`harness_memory.hpp`, shared by every backend) to re-send the catalog on the very
+next turn with a note instead of silence:
 *"Resumed conversation. The tabs you composed earlier may no longer exist; plot_tab with action list reports the ones that do. The listing above is the
 data loaded now."* Consumed once, the same way the ordinary "the loaded data changed" note is.
 
@@ -322,24 +352,27 @@ Three boundaries carried over unchanged from the old design:
 - **Never the layout.** The toolbox's `saveConfig` stays `{}` — the active-conversation pointer is
   per-user and per-machine, not something a shared `.pj4.xml` should carry or a layout restore
   should resurrect or destroy.
-- **A stable CLI working directory**, still. `ensureWorkDir` resolves a fixed private 0700
-  directory under XDG state and never removes it — the CLI indexes sessions by cwd, so `--resume`
-  across a restart (and, now, the drawer listing anything at all) depends on every instance running
-  in the same place.
+- **A stable CLI working directory**, still, and now shared by every harness. `ensureWorkDir`
+  (`harness_workdir.hpp`) resolves a fixed private 0700 directory under XDG state and never removes
+  it — each harness indexes sessions by cwd (Codex by a `cwd` field, Claude by the directory
+  itself), so `--resume`/`resume` across a restart (and the drawer listing anything at all) depends
+  on every instance running in the same place.
 - **"New chat" clears the pointer, not the harness's file.** It clears the transcript, the cost
-  ledger and `ClaudeMemory` in place (no backend rebuild, so the MCP server stays up and the next
-  turn sends no `--resume`), and clears `assistant.conv.claude.session_id` — but it does not delete
-  anything on disk. The old conversation stays in the harness's store and in the drawer; the
-  trash-can icon on a drawer row is the only gesture that deletes.
+  ledger and the ACTIVE backend's `HarnessMemory` in place (no backend rebuild, so the MCP server
+  stays up and the next turn sends no `--resume`), and clears that backend's
+  `assistant.conv.<key>.session_id` — but it does not delete anything on disk, and it does not
+  touch the OTHER backend's memory or pointer. The old conversation stays in the harness's store
+  and in the drawer; the trash-can icon on a drawer row is the only gesture that deletes.
 
-Two consequences carried over from the "conversation lives in `ClaudeMemory`, not the backend"
-design (`ClaudeBackend.ConversationMemorySurvivesARebuild` pins the second one):
+Two consequences carried over from the "conversation lives in the memory, not the backend"
+design (`ClaudeBackend.ConversationMemorySurvivesARebuild` and `CodexBackend`'s own copy of the
+same pin cover it):
 
 - **A rebuild may not happen mid-turn.** The outgoing and incoming backends share the memory, so
   swapping while the worker writes a session id is a data race. `rebuildBackend()` defers itself
   and `onTick` applies it once the turn is over.
 - Rebuilding a backend over a memory that already holds a conversation must not wipe it — a
-  Settings change (a different model, say) is not "New chat".
+  Settings change (a different model, or switching to the OTHER backend) is not "New chat".
 
 Known edges, accepted: a failed `--resume` is inferred from the CLI's result record (an error with
 zero turns while resuming — its stderr, which names the missing session, is not read), so a

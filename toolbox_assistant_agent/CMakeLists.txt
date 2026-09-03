@@ -11,15 +11,28 @@ endif()
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
+# Shared across the plugin target and every test/bench executable that links a
+# real backend (assistant_dialog_test, claude_smoke_test, codex_backend_test,
+# the bench) — NOT an OBJECT library: the plugin target compiles with
+# ${PJ_WARNING_FLAGS} and the tests do not, so each target must still compile
+# its own copies of these translation units under its own flags.
+set(ASSISTANT_AGENT_COMMON_SOURCES
+  src/mcp_http_server.cpp
+  src/mcp_loopback.cpp
+  src/harness_workdir.cpp
+  src/tools.cpp
+  src/claude_sessions.cpp
+  src/codex_sessions.cpp
+)
+
 add_library(toolbox_assistant_agent_plugin SHARED
   src/assistant_toolbox.cpp
   src/assistant_dialog.cpp
   src/conversation_state.cpp
-  src/claude_sessions.cpp
   src/settings_store.cpp
-  src/tools.cpp
-  src/mcp_http_server.cpp
   src/claude_backend.cpp
+  src/codex_backend.cpp
+  ${ASSISTANT_AGENT_COMMON_SOURCES}
 )
 
 target_compile_features(toolbox_assistant_agent_plugin PRIVATE cxx_std_20)
@@ -119,10 +132,10 @@ if(BUILD_TESTING)
 
   # ClaudeSessions: the harness's own ~/.claude/projects/<slug>/*.jsonl store —
   # listing/ordering/titles, transcript replay, the catalog-prefix strip, and
-  # tolerance of corrupt lines / unknown record types. Pure, std + nlohmann
-  # only. Fixtures under tests/fixtures/sessions/ are copied to a temp dir per
-  # test (see ClaudeSessionsTest in the test file); nothing here reads or
-  # writes the real ~/.claude store.
+  # tolerance of corrupt lines / unknown record types. Fixtures under
+  # tests/fixtures/sessions/ are copied to a temp dir per test (see
+  # ClaudeSessionsTest in the test file); nothing here reads or writes the real
+  # ~/.claude store. std + nlohmann only.
   add_executable(toolbox_assistant_agent_claude_sessions_test
     tests/claude_sessions_test.cpp
     src/claude_sessions.cpp
@@ -203,11 +216,10 @@ if(BUILD_TESTING)
     tests/assistant_dialog_test.cpp
     src/assistant_dialog.cpp
     src/claude_backend.cpp
-    src/claude_sessions.cpp
+    src/codex_backend.cpp
     src/conversation_state.cpp
     src/settings_store.cpp
-    src/mcp_http_server.cpp
-    src/tools.cpp
+    ${ASSISTANT_AGENT_COMMON_SOURCES}
   )
   target_link_libraries(toolbox_assistant_agent_assistant_dialog_test PRIVATE
     plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
@@ -218,6 +230,7 @@ if(BUILD_TESTING)
   )
   target_compile_definitions(toolbox_assistant_agent_assistant_dialog_test PRIVATE
     ASSISTANT_SESSIONS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/sessions"
+    ASSISTANT_CODEX_SESSIONS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/codex_sessions"
   )
   target_compile_features(toolbox_assistant_agent_assistant_dialog_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentAssistantDialogTest COMMAND toolbox_assistant_agent_assistant_dialog_test)
@@ -227,9 +240,7 @@ if(BUILD_TESTING)
   add_executable(toolbox_assistant_agent_claude_smoke_test
     tests/claude_smoke_test.cpp
     src/claude_backend.cpp
-    src/claude_sessions.cpp
-    src/mcp_http_server.cpp
-    src/tools.cpp
+    ${ASSISTANT_AGENT_COMMON_SOURCES}
   )
   target_link_libraries(toolbox_assistant_agent_claude_smoke_test PRIVATE
     plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
@@ -240,15 +251,54 @@ if(BUILD_TESTING)
   target_compile_features(toolbox_assistant_agent_claude_smoke_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentClaudeSmokeTest COMMAND toolbox_assistant_agent_claude_smoke_test)
 
+  # Codex backend: command-line lock (the "no --tools """ spine), the fake-CLI
+  # resume/translation tests, and the parser (codex_stream.hpp) — mirrors
+  # claude_smoke_test.cpp's offline half plus stream_json_test.cpp, folded into
+  # one target per the brief. The live opt-in half (ASSISTANT_CODEX_SMOKE=1)
+  # lives in the same file, guarded the same way ClaudeSmoke.* is.
+  add_executable(toolbox_assistant_agent_codex_backend_test
+    tests/codex_backend_test.cpp
+    src/codex_backend.cpp
+    ${ASSISTANT_AGENT_COMMON_SOURCES}
+  )
+  target_link_libraries(toolbox_assistant_agent_codex_backend_test PRIVATE
+    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
+  )
+  target_include_directories(toolbox_assistant_agent_codex_backend_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_assistant_agent_codex_backend_test PRIVATE cxx_std_20)
+  add_test(NAME ToolboxAssistantAgentCodexBackendTest COMMAND toolbox_assistant_agent_codex_backend_test)
+
+  # CodexSessions: the CLI's own ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+  # store — listing/ordering/titles, transcript replay, the cwd filter, and
+  # tolerance of corrupt lines, exactly like claude_sessions_test.cpp. Fixtures under
+  # tests/fixtures/codex_sessions/ are copied to a temp dir per test; nothing
+  # here reads or writes the real ~/.codex store.
+  add_executable(toolbox_assistant_agent_codex_sessions_test
+    tests/codex_sessions_test.cpp
+    src/codex_sessions.cpp
+    src/claude_sessions.cpp
+  )
+  target_link_libraries(toolbox_assistant_agent_codex_sessions_test PRIVATE
+    nlohmann_json::nlohmann_json GTest::gtest_main
+  )
+  target_include_directories(toolbox_assistant_agent_codex_sessions_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(toolbox_assistant_agent_codex_sessions_test PRIVATE
+    ASSISTANT_CODEX_SESSIONS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/codex_sessions"
+  )
+  target_compile_features(toolbox_assistant_agent_codex_sessions_test PRIVATE cxx_std_20)
+  add_test(NAME ToolboxAssistantAgentCodexSessionsTest COMMAND toolbox_assistant_agent_codex_sessions_test)
+
   # Latency bench — times real turns to count round-trips and separate model time
   # from our own tool time. Opt-in (ASSISTANT_BENCH=1) for the same reason as the
   # smoke above: it spawns the real CLI.
   add_executable(toolbox_assistant_agent_bench
     tests/assistant_bench.cpp
     src/claude_backend.cpp
-    src/claude_sessions.cpp
-    src/mcp_http_server.cpp
-    src/tools.cpp
+    ${ASSISTANT_AGENT_COMMON_SOURCES}
   )
   target_link_libraries(toolbox_assistant_agent_bench PRIVATE
     plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main

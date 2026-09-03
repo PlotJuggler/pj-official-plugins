@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -25,11 +26,11 @@
 
 namespace assistant_agent {
 
-// Per-conversation state the backend borrows (claude_backend.hpp).
-// Forward-declared so this header does not pull the backend implementation —
-// and its JSON dependency — into everything that includes it; the dialog's
+// Per-conversation state a backend borrows (harness_memory.hpp).
+// Forward-declared so this header does not pull the backend implementations —
+// and their JSON dependency — into everything that includes it; the dialog's
 // destructor lives in the .cpp, where it is complete.
-struct ClaudeMemory;
+struct HarnessMemory;
 
 // DialogState — pure data the panel drives. Mutated on the GUI thread only
 // (widget events + worker results drained by onTick), serialized into
@@ -83,8 +84,14 @@ struct DialogState {
   // onTextChanged/onIndexChanged for each child, then onClicked("subDialogAccepted")
   // to commit — mirroring the toolbox_mosaico cert-dialog handshake.
   bool open_settings_pending = false;
-  std::optional<std::string> pending_claude_model;
-  std::optional<std::string> pending_claude_cli;
+  // Staged text edits, keyed by SETTINGS key (not widget name) — onTextChanged
+  // resolves the widget name to a settings key via kTextWidgetToKey, so this
+  // holds e.g. "assistant.claude.model" -> the typed value. commitSettings
+  // persists every entry and clears the map back to empty.
+  std::map<std::string, std::string> pending_text;
+  // Staged backendCombo choice ("claude"/"codex"); onIndexChanged sets it,
+  // commitSettings persists it and clears it back to nullopt.
+  std::optional<std::string> pending_backend;
 };
 
 // The chat panel. A non-modal DialogPluginTyped whose input drives a worker
@@ -141,28 +148,39 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   // while a turn is in flight (see DialogState::rebuild_pending).
   void rebuildBackend();
 
-  // Drop the transcript, the accumulated cost and the backend's conversation
-  // memory — AND the active-session id in the settings store, so a later
-  // reopen does not resume what the user explicitly walked away from. No
-  // backend rebuild: the memory is cleared in place and the live backend
-  // reads through the same pointer, so the next turn sends no --resume and
-  // re-sends the catalog — genuinely fresh, with the MCP server left up. This
-  // does NOT delete anything on disk: the old conversation stays in the
-  // harness's store and in the drawer, just no longer active (New chat is not
-  // the trash can — see onItemDeleteRequested for that).
+  // Drop the transcript, the accumulated cost and the ACTIVE backend's
+  // conversation memory (memoryFor(active_backend_key_)) — AND that backend's
+  // active-session id in the settings store, so a later reopen does not
+  // resume what the user explicitly walked away from. No backend rebuild: the
+  // memory is cleared in place and the live backend reads through the same
+  // pointer, so the next turn sends no --resume and re-sends the catalog —
+  // genuinely fresh, with the MCP server left up. This does NOT delete
+  // anything on disk: the old conversation stays in the harness's store and
+  // in the drawer, just no longer active (New chat is not the trash can —
+  // see onItemDeleteRequested for that). The OTHER backend's memory (and
+  // persisted id) is untouched — switching backends must never look like
+  // "New chat" to the one not currently active.
   void startNewConversation();
 
-  // Load the transcript for `id` from the backend's own store and replay it
-  // into a cleared ChatSession via the SAME calls the live path uses
-  // (addUser/appendAssistant/addTool), so a resumed transcript renders
+  // Load the transcript for `id` from the ACTIVE backend's own store and
+  // replay it into a cleared ChatSession via the SAME calls the live path
+  // uses (addUser/appendAssistant/addTool), so a resumed transcript renders
   // identically to one built turn-by-turn — appendAssistant is what merges
-  // consecutive assistant text blocks into one row. Points claude_memory_ at
-  // `id` with resumed_pending set (composePayload then re-sends the catalog
-  // with the resume note on the next turn) and persists the new active id. The
+  // consecutive assistant text blocks into one row. Points
+  // memoryFor(active_backend_key_) at `id` with resumed_pending set
+  // (composePayload then re-sends the catalog with the resume note on the
+  // next turn) and persists the new active id under that backend's key. The
   // drawer stays as it was — a sidebar, not a menu. Returns false without
   // changing anything if the backend has nothing under `id` (purged between
   // listing and picking it).
   bool switchToConversation(const std::string& id);
+
+  // The shared conversation memory for one backend key ("claude"/"codex"/
+  // "echo"), created on first request and reused for the life of the dialog —
+  // this is what makes switching backends never silently restart a chat: each
+  // key's HarnessMemory just sits there, untouched, while another key's
+  // backend is the one live. GUI-thread only, like backend_ itself.
+  std::shared_ptr<HarnessMemory> memoryFor(const std::string& key);
 
   // Restore the active conversation once when the settings view is first
   // bound (the ctor runs before bind(), against an unbound view, so this
@@ -190,10 +208,16 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   // for the duration of a turn, so a Settings commit that rebuilds the backend
   // mid-turn swaps this member without destroying the object under the worker.
   std::shared_ptr<LlmBackend> backend_;
-  // The conversation itself, outliving every backend built for it. Created once
-  // in the constructor and lent to each backend, so changing the model — or
-  // just saving the settings modal — no longer wipes what was said.
-  std::shared_ptr<ClaudeMemory> claude_memory_;
+  // Which key backend_ currently is ("claude"/"codex"/"echo" for an unknown
+  // persisted choice) — set by rebuildBackend(), read by startNewConversation/
+  // switchToConversation/the TurnComplete handler to know which memories_
+  // entry and which `assistant.conv.<key>.session_id` to touch.
+  std::string active_backend_key_ = "claude";
+  // One conversation memory PER backend key, each outliving every backend
+  // object built for that key. Populated lazily by memoryFor(); switching
+  // backends (a settings change) never touches an entry it isn't currently
+  // using, which is what lets each backend resume its own last conversation.
+  std::map<std::string, std::shared_ptr<HarnessMemory>> memories_;
 
   std::thread worker_thread_;
   std::mutex cmd_mu_;

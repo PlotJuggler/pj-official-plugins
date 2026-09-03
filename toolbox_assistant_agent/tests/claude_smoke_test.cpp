@@ -9,72 +9,29 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <iostream>
 #include <iterator>
-#include <mutex>
-#include <nlohmann/json.hpp>
-#include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <string>
 #include <vector>
 
 #include "claude_backend.hpp"
 #include "conversation_state.hpp"  // fnv1aHex, asserted against the stored hash
+#include "support/backend_test_helpers.hpp"
 #include "tool_registry.hpp"
 
 namespace {
 
 using assistant_agent::BackendEvent;
 using assistant_agent::ClaudeBackend;
-using assistant_agent::ToolContext;
 using assistant_agent::ToolRegistry;
-using assistant_agent::TurnTools;
+using assistant_agent::testing::runListTopicsSmoke;
 
 TEST(ClaudeSmoke, ListTopicsThroughMcp) {
   if (std::getenv("ASSISTANT_CLAUDE_SMOKE") == nullptr) {
     GTEST_SKIP() << "set ASSISTANT_CLAUDE_SMOKE=1 (needs a logged-in `claude` CLI) to run";
   }
-
-  ToolRegistry reg;
-  PJ::testing::ToolboxTestStore store;
-  store.addTopic("/imu/accel");
-  store.addField("/imu/accel", "x", {0}, {1.0});
-  ToolContext ctx;
-  ctx.host = PJ::sdk::ToolboxHostView(store.makeHost());
-
-  TurnTools tools;
-  tools.registry = &reg;
-  // Direct execution (no GuiExecutor): the MCP server thread runs the tool.
-  tools.invoke = [&](const std::string& n, const nlohmann::json& a) { return reg.execute(n, a, ctx); };
-
   const char* cli = std::getenv("ASSISTANT_CLAUDE_CLI");
   ClaudeBackend backend(cli != nullptr ? cli : "claude", "");
-
-  std::vector<BackendEvent> events;
-  std::mutex mu;
-  backend.sendUserMessage(
-      "Call the list_topics tool and tell me the exact topic name it returns.", tools, [&](BackendEvent e) {
-        std::lock_guard<std::mutex> lk(mu);
-        std::cerr << "[event " << static_cast<int>(e.kind) << "] " << e.text << "\n";
-        events.push_back(std::move(e));
-      });
-
-  bool complete = false;
-  bool mentioned_topic = false;
-  bool called_tool = false;
-  for (const auto& e : events) {
-    if (e.kind == BackendEvent::Kind::TurnComplete) {
-      complete = true;
-    }
-    if (e.kind == BackendEvent::Kind::ToolActivity && e.text.find("list_topics") != std::string::npos) {
-      called_tool = true;
-    }
-    if (e.text.find("/imu/accel") != std::string::npos) {
-      mentioned_topic = true;
-    }
-  }
-  EXPECT_TRUE(complete) << "backend never signalled TurnComplete";
-  EXPECT_TRUE(called_tool) << "Claude did not call list_topics via MCP";
-  EXPECT_TRUE(mentioned_topic) << "answer did not mention the topic the tool returned";
+  runListTopicsSmoke(backend, "Claude");
 }
 
 }  // namespace
@@ -138,7 +95,7 @@ TEST(ClaudeBackendCommandLine, AllowsOnlyThisPluginsOwnTools) {
 }
 
 // A persisted conversation resumes on its very FIRST turn after a restart: the
-// dialog restores ClaudeMemory::session_id from the settings store, and the
+// dialog restores HarnessMemory::session_id from the settings store, and the
 // argv builder turns any non-empty id into --resume — turn number is not part
 // of the contract.
 TEST(ClaudeBackendCommandLine, PersistedSessionIdResumesOnTheFirstTurn) {
@@ -157,7 +114,7 @@ TEST(ClaudeBackendCommandLine, PersistedSessionIdResumesOnTheFirstTurn) {
 // send carries the listing without a note; a changed listing carries the note;
 // an unchanged one sends the bare text.
 TEST(ClaudeComposePayload, CatalogNoteRules) {
-  assistant_agent::ClaudeMemory memory;
+  assistant_agent::HarnessMemory memory;
 
   const std::string first = assistant_agent::composePayload("hi", "CATALOG v1", memory);
   EXPECT_EQ(first.rfind("CATALOG v1", 0), 0u);
@@ -173,19 +130,19 @@ TEST(ClaudeComposePayload, CatalogNoteRules) {
   EXPECT_NE(changed.find("(The loaded data changed; the listing above replaces the earlier one.)"), std::string::npos);
   EXPECT_EQ(memory.sent_catalog_hash, assistant_agent::fnv1aHex("CATALOG v2"));
 
-  assistant_agent::ClaudeMemory no_catalog;
+  assistant_agent::HarnessMemory no_catalog;
   EXPECT_EQ(assistant_agent::composePayload("bare", "", no_catalog), "bare");
   EXPECT_TRUE(no_catalog.sent_catalog_hash.empty());
 }
 
 // switchToConversation (assistant_dialog.cpp) sets resumed_pending after
-// pointing a fresh ClaudeMemory at a conversation resumed off disk. The next
+// pointing a fresh HarnessMemory at a conversation resumed off disk. The next
 // turn must re-send the catalog with the RESUME note, even in the (unlikely
 // but possible, e.g. a hash collision or a memory the caller pre-seeded)
 // case where sent_catalog_hash already equals this catalog's hash -- and
 // must do so exactly once, not on every later turn.
 TEST(ClaudeComposePayload, ResumedPendingForcesTheResumeNoteOnceEvenIfTheHashAlreadyMatches) {
-  assistant_agent::ClaudeMemory memory;
+  assistant_agent::HarnessMemory memory;
   memory.sent_catalog_hash = assistant_agent::fnv1aHex("CATALOG v1");  // as if already sent
   memory.resumed_pending = true;
 
@@ -214,7 +171,7 @@ TEST(ClaudeComposePayload, ResumedPendingForcesTheResumeNoteOnceEvenIfTheHashAlr
 // used to live in the Ollama backend's rebuild test, the only offline coverage
 // of the invariant until that backend was retired.
 TEST(ClaudeBackend, ConversationMemorySurvivesARebuild) {
-  auto memory = std::make_shared<assistant_agent::ClaudeMemory>();
+  auto memory = std::make_shared<assistant_agent::HarnessMemory>();
   {
     assistant_agent::ClaudeBackend first("claude-never-spawned", "sonnet", memory);
     // What a completed turn leaves behind, written where the worker writes it.
@@ -231,37 +188,23 @@ TEST(ClaudeBackend, ConversationMemorySurvivesARebuild) {
 }
 
 #if defined(__unix__) || defined(__APPLE__)
-#include <sys/stat.h>
 #include <unistd.h>
 
-#include <fstream>
 #include <memory>
 
 namespace {
 
+using assistant_agent::testing::firstError;
+using assistant_agent::testing::writeFakeCliScript;
+
 // A stand-in for the CLI that drains its stdin and prints a canned
 // stream-json exchange. Offline: no model, no subscription — this pins how the
-// backend TRANSLATES what the CLI reports, not what the CLI does.
+// backend TRANSLATES what the CLI reports, not what the CLI does. A thin
+// wrapper over the shared writeFakeCliScript: Claude's fake CLI always emits
+// the init record first, then exits 1.
 std::string writeFakeCli(const std::string& result_line) {
-  char tmpl[] = "/tmp/pj_assistant_fake_cli_XXXXXX";
-  const int fd = mkstemp(tmpl);
-  if (fd < 0) {
-    return {};
-  }
-  close(fd);
-  {
-    std::ofstream script(tmpl);
-    script
-        << "#!/bin/sh\n"
-        << "cat >/dev/null\n"  // the payload arrives on stdin; a reader that never drains it would SIGPIPE the writer
-        << "cat <<'EOF'\n"
-        << R"({"type":"system","subtype":"init","session_id":"sess-gone"})" << "\n"
-        << result_line << "\n"
-        << "EOF\n"
-        << "exit 1\n";
-  }
-  chmod(tmpl, 0700);
-  return tmpl;
+  return writeFakeCliScript(
+      {R"({"type":"system","subtype":"init","session_id":"sess-gone"})", result_line}, /*exit_code=*/1);
 }
 
 std::vector<assistant_agent::BackendEvent> runOneTurnAgainst(const std::string& result_line, bool resuming) {
@@ -273,7 +216,7 @@ std::vector<assistant_agent::BackendEvent> runOneTurnAgainst(const std::string& 
   tools.invoke = [](const std::string&, const nlohmann::json&) {
     return assistant_agent::ToolResult::failure("no tool runs in this test");
   };
-  auto memory = std::make_shared<assistant_agent::ClaudeMemory>();
+  auto memory = std::make_shared<assistant_agent::HarnessMemory>();
   if (resuming) {
     memory->session_id = "sess-gone";
   }
@@ -282,15 +225,6 @@ std::vector<assistant_agent::BackendEvent> runOneTurnAgainst(const std::string& 
   backend.sendUserMessage("hi", tools, [&](assistant_agent::BackendEvent e) { events.push_back(std::move(e)); });
   unlink(cli.c_str());
   return events;
-}
-
-const assistant_agent::BackendEvent* firstError(const std::vector<assistant_agent::BackendEvent>& events) {
-  for (const auto& e : events) {
-    if (e.kind == assistant_agent::BackendEvent::Kind::Error) {
-      return &e;
-    }
-  }
-  return nullptr;
 }
 
 constexpr const char* kZeroTurnError =

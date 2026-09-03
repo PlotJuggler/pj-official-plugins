@@ -38,21 +38,21 @@ struct Fixture {
 TEST(ActiveSessionId, RoundTripsThroughTheStore) {
   Fixture fx;
   auto store = fx.store();
-  saveActiveSessionId(store, "sess-123");
-  EXPECT_EQ(loadActiveSessionId(fx.store()), "sess-123");
+  saveActiveSessionId(store, "sess-123", "claude");
+  EXPECT_EQ(loadActiveSessionId(fx.store(), "claude"), "sess-123");
 }
 
 TEST(ActiveSessionId, AbsentKeyLoadsAsEmptyString) {
   Fixture fx;
-  EXPECT_EQ(loadActiveSessionId(fx.store()), "");
+  EXPECT_EQ(loadActiveSessionId(fx.store(), "claude"), "");
 }
 
 TEST(ActiveSessionId, ClearLeavesAnEmptyStore) {
   Fixture fx;
   auto store = fx.store();
-  saveActiveSessionId(store, "sess-1");
-  clearActiveSessionId(store);
-  EXPECT_EQ(loadActiveSessionId(fx.store()), "");
+  saveActiveSessionId(store, "sess-1", "claude");
+  clearActiveSessionId(store, "claude");
+  EXPECT_EQ(loadActiveSessionId(fx.store(), "claude"), "");
 }
 
 TEST(ScrubLegacyConversationKeys, RemovesTheCopiedTranscriptAndCatalogHash) {
@@ -76,11 +76,11 @@ TEST(ScrubLegacyConversationKeys, LeavesTheActiveSessionIdKeyAlone) {
   // retired catalog-hash key -- the scrub must remove only the latter.
   Fixture fx;
   auto store = fx.store();
-  saveActiveSessionId(store, "sess-keep-me");
+  saveActiveSessionId(store, "sess-keep-me", "claude");
   store.setString("assistant.conv.claude.catalog_hash", "stale");
 
   scrubLegacyConversationKeys(store);
-  EXPECT_EQ(loadActiveSessionId(fx.store()), "sess-keep-me");
+  EXPECT_EQ(loadActiveSessionId(fx.store(), "claude"), "sess-keep-me");
   EXPECT_FALSE(store.contains("assistant.conv.claude.catalog_hash"));
 }
 
@@ -104,7 +104,7 @@ TEST(ScrubRetiredOllamaKeys, ErasesEveryRetiredOllamaKey) {
 }
 
 TEST(Fnv1aHex, StableAndDistinct) {
-  // Compared across turns within a live process (ClaudeMemory::sent_catalog_hash
+  // Compared across turns within a live process (HarnessMemory::sent_catalog_hash
   // dedup) -- the value must be a fixed function of the input, not of the run.
   EXPECT_EQ(fnv1aHex("catalog"), fnv1aHex("catalog"));
   EXPECT_NE(fnv1aHex("catalog"), fnv1aHex("catalog2"));

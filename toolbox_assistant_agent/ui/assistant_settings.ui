@@ -20,26 +20,55 @@
      <item row="0" column="1">
       <widget class="QComboBox" name="backendCombo">
        <item><property name="text"><string>Claude Code (subscription)</string></property></item>
+       <item><property name="text"><string>Codex (ChatGPT subscription)</string></property></item>
       </widget>
      </item>
      <item row="1" column="0">
       <widget class="QLabel" name="claudeModelLabel">
        <property name="text"><string>Claude model</string></property>
+       <property name="pj_enable_when" stdset="0"><string>backendCombo:0</string></property>
       </widget>
      </item>
      <item row="1" column="1">
       <widget class="QLineEdit" name="claudeModelEdit">
        <property name="placeholderText"><string>blank = CLI default (slowest)</string></property>
+       <property name="pj_enable_when" stdset="0"><string>backendCombo:0</string></property>
       </widget>
      </item>
      <item row="2" column="0">
       <widget class="QLabel" name="claudeCliPathLabel">
        <property name="text"><string>claude CLI path</string></property>
+       <property name="pj_enable_when" stdset="0"><string>backendCombo:0</string></property>
       </widget>
      </item>
      <item row="2" column="1">
       <widget class="QLineEdit" name="claudeCliPathEdit">
        <property name="placeholderText"><string>claude (on PATH) or /full/path/to/claude</string></property>
+       <property name="pj_enable_when" stdset="0"><string>backendCombo:0</string></property>
+      </widget>
+     </item>
+     <item row="3" column="0">
+      <widget class="QLabel" name="codexModelLabel">
+       <property name="text"><string>Codex model</string></property>
+       <property name="pj_enable_when" stdset="0"><string>backendCombo:1</string></property>
+      </widget>
+     </item>
+     <item row="3" column="1">
+      <widget class="QLineEdit" name="codexModelEdit">
+       <property name="placeholderText"><string>blank = CLI default</string></property>
+       <property name="pj_enable_when" stdset="0"><string>backendCombo:1</string></property>
+      </widget>
+     </item>
+     <item row="4" column="0">
+      <widget class="QLabel" name="codexCliPathLabel">
+       <property name="text"><string>codex CLI path</string></property>
+       <property name="pj_enable_when" stdset="0"><string>backendCombo:1</string></property>
+      </widget>
+     </item>
+     <item row="4" column="1">
+      <widget class="QLineEdit" name="codexCliPathEdit">
+       <property name="placeholderText"><string>codex (on PATH) or /full/path/to/codex</string></property>
+       <property name="pj_enable_when" stdset="0"><string>backendCombo:1</string></property>
       </widget>
      </item>
     </layout>

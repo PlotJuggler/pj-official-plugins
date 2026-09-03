@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "support/conversation_helpers.hpp"  // findById
 #include "support/scoped_env.hpp"
 
 #ifndef ASSISTANT_SESSIONS_FIXTURES_DIR
@@ -40,17 +41,9 @@ using assistant_agent::loadTranscript;
 using assistant_agent::parseIso8601Utc;
 using assistant_agent::stripCatalogPrefix;
 
+using assistant_agent::testing::findById;
 using assistant_agent::testing::makeTempDir;
 using assistant_agent::testing::ScopedEnv;
-
-const ConversationSummary* findById(const std::vector<ConversationSummary>& convs, const std::string& id) {
-  for (const auto& c : convs) {
-    if (c.id == id) {
-      return &c;
-    }
-  }
-  return nullptr;
-}
 
 // Copies every fixture into a fresh temp directory per test, so
 // listConversations/loadTranscript/deleteConversation run against a
