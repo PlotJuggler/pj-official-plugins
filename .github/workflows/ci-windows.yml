@@ -29,8 +29,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install Conan
         uses: conan-io/setup-conan@v1.3.0
@@ -116,7 +114,7 @@ jobs:
       - name: Acquire plotjuggler_sdk
         # Warm run: the SDK is in the restored cache and ensure_core.sh exits
         # immediately. Cache miss: prefer a prebuilt binary from JFrog (push
-        # runs), otherwise build the pinned submodule from source into ~/.conan2.
+        # runs), otherwise build the pinned SDK tag from source into ~/.conan2.
         shell: bash
         run: |
           conan profile detect --force

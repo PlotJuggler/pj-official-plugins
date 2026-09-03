@@ -208,15 +208,14 @@ cloudsmith remote — no CPM source clone, no SSH deploy key, no
 subdirectory-mode fallback for standalone builds. Every per-plugin
 `conanfile.py` also lists it so single-plugin builds resolve it the same way.
 The version is pinned in one place — the top-level `SDK_VERSION` file — and CI
-builds core from the pinned `extern/plotjuggler_core` submodule when cloudsmith
-is unavailable (`scripts/ensure_core.sh`).
+clones and builds the matching `v<SDK_VERSION>` tag when no prebuilt package
+is available (`scripts/ensure_core.sh`).
 
 > **Repository & package rename:** the SDK source now lives in the
 > [**plotjuggler_sdk**](https://github.com/PlotJuggler/plotjuggler_sdk)
 > repository (formerly `plotjuggler_core`), and the Conan package and CMake
 > targets are renamed to match — recipes require `plotjuggler_sdk/<version>` and
-> link `plotjuggler_sdk::plugin_sdk` / `::plugin_host`. The only thing that keeps
-> the old name is the submodule mount point, `extern/plotjuggler_core`.
+> link `plotjuggler_sdk::plugin_sdk` / `::plugin_host`.
 
 | Package | Version | Used by |
 |---------|---------|---------|
