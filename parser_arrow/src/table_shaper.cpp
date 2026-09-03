@@ -1184,6 +1184,11 @@ namespace test {
   return floatingSecondsToNanoseconds(seconds, output);
 }
 
+/// Let the contract test follow the production predicate instead of re-reading the table it is validating.
+[[nodiscard]] bool supportsScalarCopyForTesting(ArrowType type) noexcept {
+  return supportsScalarCopy(type);
+}
+
 /// Exercise production scalar-copy dispatch without exposing its shaping state to tests.
 [[nodiscard]] int appendCastedValueForTesting(
     ArrowArray* output, const ArrowArrayView* input, int64_t row, const ArrowSchema* logical_schema) {

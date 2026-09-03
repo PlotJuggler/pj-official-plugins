@@ -57,7 +57,9 @@ inline constexpr std::array kTypeTable = std::to_array<TypeRow>({
     {NANOARROW_TYPE_DOUBLE                 , CopyKind::kDouble     , true           , ValueCast::kFloatSecondsToNanoseconds, true               , false              , false},
     // --- strings and binary (large/view variants are normalized to utf8/binary before the host sees them) ---
     {NANOARROW_TYPE_STRING                 , CopyKind::kBytes      , true           , std::nullopt                         , false              , false              , false},
-    // The host recognizes LARGE_STRING but PJ4/pj_datastore/src/arrow_import.cpp:210-214 reads int32 offsets.
+    // host_ingestible is advisory on this row and the view/large rows below it: hostFormat normalizes them to "u"/"z"
+    // and answers from the normalized format, never reading the flag. False records why the un-normalized form would
+    // be unsafe — PJ4/pj_datastore/src/arrow_import.cpp:210-214 reads int32 offsets after recognizing LARGE_STRING.
     {NANOARROW_TYPE_LARGE_STRING           , CopyKind::kBytes      , false          , std::nullopt                         , false              , false              , false},
     {NANOARROW_TYPE_STRING_VIEW            , CopyKind::kBytes      , false          , std::nullopt                         , false              , false              , false},
     {NANOARROW_TYPE_BINARY                 , CopyKind::kBytes      , false          , std::nullopt                         , false              , false              , false},
@@ -69,6 +71,8 @@ inline constexpr std::array kTypeTable = std::to_array<TypeRow>({
     {NANOARROW_TYPE_DATE64                 , CopyKind::kInt        , false          , std::nullopt                         , false              , false              , false},
     {NANOARROW_TYPE_TIME32                 , CopyKind::kInt        , false          , std::nullopt                         , false              , false              , false},
     {NANOARROW_TYPE_TIME64                 , CopyKind::kInt        , false          , std::nullopt                         , false              , false              , false},
+    // kInt is unreachable in production: planning assigns kScaleTimestampTicks to every TIMESTAMP column, so the
+    // `cast == kNone` scalar-copy path never sees one. It is declared so supportsScalarCopy() stays honest per type.
     {NANOARROW_TYPE_TIMESTAMP              , CopyKind::kInt        , false          , ValueCast::kScaleTimestampTicks      , true               , false              , false},
     {NANOARROW_TYPE_DURATION               , CopyKind::kInt        , false          , std::nullopt                         , false              , false              , false},
     // --- intervals and decimals (copied through their dedicated append paths) ---

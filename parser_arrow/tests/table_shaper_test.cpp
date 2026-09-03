@@ -3,7 +3,6 @@
 #include <gtest/gtest.h>
 #include <nanoarrow/nanoarrow.h>
 
-#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstdint>
@@ -30,6 +29,9 @@ namespace pj::parser_arrow::test {
 
 /// Exercise the production seconds-to-nanoseconds conversion without depending on an Arrow storage type's precision.
 [[nodiscard]] bool floatingSecondsToNanosecondsForTesting(double seconds, int64_t* output) noexcept;
+
+/// Query the production scalar-copy predicate so the contract test cannot validate the type table against itself.
+[[nodiscard]] bool supportsScalarCopyForTesting(ArrowType type) noexcept;
 
 }  // namespace pj::parser_arrow::test
 
@@ -204,7 +206,9 @@ using test::readSchema;
   return array;
 }
 
-/// Mirror the host's schema mapping independently so the compatibility table cannot validate itself.
+/// Mirror the host's schema mapping independently so the compatibility table cannot validate itself. Keyed on the
+/// source type but answering for the format the host receives: large and view strings are normalized to utf8 by
+/// hostFormat before their row is reached, so they answer false here exactly as STRING_VIEW does.
 [[nodiscard]] constexpr bool hostRecognizes(ArrowType type) noexcept {
   switch (type) {
     case NANOARROW_TYPE_INT8:
@@ -219,7 +223,6 @@ using test::readSchema;
     case NANOARROW_TYPE_DOUBLE:
     case NANOARROW_TYPE_BOOL:
     case NANOARROW_TYPE_STRING:
-    case NANOARROW_TYPE_LARGE_STRING:
       return true;
     default:
       return false;
@@ -625,10 +628,11 @@ void failingPeekRelease(ArrowArrayStream* stream) noexcept {
 TEST(TableShaperTest, EveryCopyableTypeHasAnAppendPath) {
   std::size_t exercised = 0;
   for (const TypeRow& row : kTypeTable) {
+    SCOPED_TRACE(ArrowTypeString(row.type));
+    EXPECT_EQ(test::supportsScalarCopyForTesting(row.type), row.copy != CopyKind::kUnsupported);
     if (row.copy == CopyKind::kUnsupported) {
       continue;
     }
-    SCOPED_TRACE(ArrowTypeString(row.type));
     auto schema = makeCopyableScalarSchema(row.type);
     auto input = makeCopyableScalarArray(schema.get(), row.type);
     auto input_view = test::bindArrayView(schema.get(), input.get());
@@ -644,23 +648,21 @@ TEST(TableShaperTest, EveryCopyableTypeHasAnAppendPath) {
   EXPECT_EQ(exercised, 33U);
 }
 
-/// Keep the compatibility table synchronized with the current host mapping and its one unsafe exception.
+/// Keep the compatibility table synchronized with the format the host actually receives.
 TEST(TableShaperTest, HostIngestibleMatchesHostMapping) {
-  constexpr std::array kExceptions = {NANOARROW_TYPE_LARGE_STRING};
-  std::size_t exceptions_seen = 0;
   for (const TypeRow& row : kTypeTable) {
     SCOPED_TRACE(ArrowTypeString(row.type));
-    const bool is_exception = std::find(kExceptions.begin(), kExceptions.end(), row.type) != kExceptions.end();
-    if (is_exception) {
-      ++exceptions_seen;
-      EXPECT_TRUE(hostRecognizes(row.type));
-      // PJ4/pj_datastore/src/arrow_import.cpp:210-214 reads int32 offsets after recognizing LARGE_STRING.
-      EXPECT_FALSE(row.host_ingestible);
-    } else {
-      EXPECT_EQ(row.host_ingestible, hostRecognizes(row.type));
-    }
+    EXPECT_EQ(row.host_ingestible, hostRecognizes(row.type));
   }
-  EXPECT_EQ(exceptions_seen, kExceptions.size());
+
+  // LARGE_STRING's host_ingestible is never consulted, so pin the live path instead: it is normalized to utf8 and
+  // reaches the host, which the flag alone would deny.
+  auto shaped = shapeStream(decodeFixture("large_types.arrows"), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  auto schema = readSchema(shaped->stream);
+  ASSERT_EQ(schema.get()->n_children, 3);
+  EXPECT_STREQ(schema.get()->children[1]->name, "label");
+  EXPECT_STREQ(schema.get()->children[1]->format, "u");
 }
 
 /// Automatic selection must never admit a type that explicit axis configuration cannot convert.
