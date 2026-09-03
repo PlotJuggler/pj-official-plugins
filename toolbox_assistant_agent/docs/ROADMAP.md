@@ -21,8 +21,10 @@ Two properties are non-negotiable and hold today:
   which was simply false — `remove_markers` has always called `dp.remove()`, and the assistant can
   now withdraw its own derived series too. The guarantee is about *scope*, not about the absence of
   deletion, and a safety claim that overstates itself is worse than none.
-- **No API key, no per-token billing.** The Claude backend drives the user's existing CLI
-  subscription.
+- **The plugin never holds a credential.** Each harness owns its own sign-in — a subscription
+  for Claude Code and Codex, whatever the provider offers for OpenCode (an API key for
+  DeepSeek) — and the plugin drives the CLI the user already logged into. Nothing here reads,
+  stores or forwards a key.
 - **The model gets no built-in tool.** The CLI is launched with `--tools ""`, which withholds
   Bash, Read, Write and the rest, so headless Claude can reach this plugin's MCP tools and nothing
   else on the machine. `--strict-mcp-config` does not do this — it only limits which MCP servers
@@ -71,23 +73,41 @@ Two properties are non-negotiable and hold today:
 
 ## Next — what still serves the North Star
 
-**Next: Codex and OpenCode as backends.** The `claude -p` pattern, applied twice: spawn a headless
-turn, stream the output, persist whatever handle the harness needs to resume. DeepSeek arrives as
-a provider inside OpenCode, not as a backend of its own. Each harness ships only with the
-equivalents of the Claude safety spine: our tools only (MCP or equivalent, built-ins withheld),
-resume across turns and restarts, cost reporting where the harness exposes it — **and its own
-`listConversations()`/`loadTranscript()`/`deleteConversation()`**, over whatever store that harness
-keeps (Codex and OpenCode do not necessarily lay out a `.jsonl`-per-conversation directory the way
-Claude Code does). The drawer and `LlmBackend`'s seam are already written for this; only Claude has
-an implementation today, and `ConversationSummary`'s five fields (`id`, `title`, `first_ts`,
-`last_ts`, `assistant_messages`) are deliberately store-agnostic, not `.jsonl`-shaped.
+In order. Each item is verified on the integration line (`NORTH_STAR.md` §4; the mechanics are in
+`ARCHITECTURE.md` → The integration line) before the next one starts.
 
-**In flight, serving the base: creations target a dataset through the ABI.** Reads are
-dataset-aware (they go by handle); the create side of `pj.data_processors.v1` addressed inputs by
-bare name (`FINDINGS.md` §15). Both halves are now open upstream: PJ4 #619 (the host accepts
-`dataset_source:topic/field` and stops first-matching markers) and plotjuggler_sdk #183 (the
-naming contract + shared split helper). When they merge, the plugin's creates switch to sending
-the qualified form with a graceful fallback on older hosts.
+1. **Codex as a backend.** Measured on Codex CLI 0.153 (2026-09-03): the `claude -p` pattern holds,
+   with two differences worth knowing before reading the code. Every tool call, ours included, goes
+   through Codex's Code Mode — a JavaScript host with no `require`, `process` or `fetch` — so
+   withholding the built-ins is a set of feature flags plus a read-only sandbox rather than one
+   `--tools ""`; and MCP calls are refused under `approval_policy = "never"` unless the server is
+   marked `default_tools_approval_mode = "approve"`. Usage arrives as tokens only, no price.
+   Sessions are one `.jsonl` per thread under `~/.codex/sessions/`, resumable by id from any
+   directory.
+2. **OpenCode as a backend, DeepSeek as its first provider.** Same pattern. The spike comes first
+   because two things are undocumented: whether a config file of ours (`OPENCODE_CONFIG`, every
+   built-in tool off) wins over the user's global file when the two are merged, and where the
+   installed version keeps its sessions — JSON files or SQLite — which decides whether the drawer
+   reads files or calls `opencode session list` and `opencode export`.
+3. **Creations target a dataset through the ABI.** Reads are dataset-aware (they go by handle); the
+   create side of `pj.data_processors.v1` addressed inputs by bare name (`FINDINGS.md` §15). Both
+   halves are open upstream — PJ4 #619 (the host accepts `dataset_source:topic/field` and stops
+   first-matching markers) and plotjuggler_sdk #183 (the naming contract + shared split helper) —
+   and the plugin's creates switch to the qualified form with a fallback on older hosts. Built and
+   driven on the integration line, not on a guess about when they merge.
+4. **The gate.** The table below, every cell checked on the integration deploy, with Claude Code,
+   then Codex, then OpenCode. Only then do the drafts open, and merge in this order: SDK #183 →
+   #184 → publish 0.28.0 → PJ4 #619 → #573 → the plugin.
+
+### Gate to Open
+
+| PR | What must be seen working |
+|---|---|
+| PJ4 #573 (host UX) | floating by gesture and back to a tab; banner hidden while floating; Enter triggers the default button while floating (real keyboard — `xdotool` cannot measure this); logs stay put; Settings → Cancel → Settings reopens; the ☰ drawer as a side column in central, pinned and floating; the "AI" watermark inside every canvas of a model tab; playback and viewport hosts; declarative `pj_enable_when` in the settings dialog |
+| PJ4 #619 (qualified inputs) | a transform and a marker set created on `run_b` while `run_a` has the same topics; a bare duplicate refused with the qualified candidates; mixed datasets refused; the `:` hint on an unknown name |
+| SDK #183 (naming contract) | SDK suite green; the plugin's own copy of the split helper deleted in favour of `pj_base/sdk/dataset_qualified_name.hpp`; a stream dataset name with a colon (`[stream] UDP Server:`) still parses |
+| SDK #184 (services) | play / pause / seek / rate / state exact against the transport; zoom and reset pixel-exact; `plot_tab` create / place / zoom / close; the codec tombstone fix |
+| plugin | the eleven tools on the Nissan log; the drawer lists, resumes and deletes in all three harnesses; a conversation resumes after restarting PlotJuggler; per-turn cost (or tokens, where the harness has no price) on the status line; the withheld-tools test per harness green |
 
 ## Parked — real items that do not serve the North Star right now
 
@@ -97,6 +117,11 @@ weakness, not a regression — an earlier 5/5 against this 13/20 is p≈0.28. Th
 refuse-to-guess guard rarely fires because a model handed the full catalog resolves ambiguity
 before calling (`FINDINGS.md` §7); the requirement has to move to the system prompt. Naming the
 assumption is required, asking is not.
+
+**Claude Code pointed at DeepSeek.** DeepSeek serves an Anthropic-compatible endpoint and documents
+running Claude Code against it through environment variables, which would make `ClaudeBackend`
+serve DeepSeek almost for free. Not a substitute for OpenCode, which is a pillar of its own; kept
+as the fallback if OpenCode's config merging turns out not to be controllable.
 
 **Keep the CLI process alive between turns** (`--input-format stream-json`). Saves the ~1 s
 startup and the per-turn MCP handshake. Deliberately parked: it is ~3 % of a turn and it means

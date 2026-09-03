@@ -108,6 +108,44 @@ The digest degrades as data grows: full tree, then topic names only, and it says
 when truncated. That last part matters — a model that believes an incomplete listing is
 complete will confidently tell the user a signal does not exist.
 
+## Harness backends
+
+Three harnesses, one pattern: the plugin spawns a headless turn, streams the harness's events into
+`BackendEvent`s, and persists nothing but the id the harness needs to resume. Each row below is
+what a harness must provide for the safety spine to hold; a harness that cannot fill a row does not
+ship.
+
+| | Claude Code | Codex (measured on 0.153) | OpenCode (from its docs; spike pending) |
+|---|---|---|---|
+| Built-in tools withheld | `--tools ""` | `features.shell_tool=false`, `features.unified_exec=false`, `web_search="disabled"`, `tools.view_image=false` + `--disable view_image`, `sandbox_mode="read-only"`, `approval_policy="never"`. Every call, ours included, runs inside Code Mode, a JavaScript host with no `require`, `process` or `fetch`; disabling that host would also disable our tools, so it stays on | `tools: { bash, read, write, edit, glob, grep, list, patch, webfetch, todowrite, todoread, task: false }` in a config file of ours |
+| Our tools reach the model | `--mcp-config <0600 file>` + `--strict-mcp-config` + `--allowedTools mcp__pj__*` | `-c mcp_servers.pj.url=…`, the bearer token through `bearer_token_env_var` (never on the command line), `required=true`, and `default_tools_approval_mode="approve"` — without it every call fails with "requires approval, but approval policy is never" | `mcp.pj = { type: "remote", url, headers }` |
+| Isolated from the machine | `--restricted` + the private cwd | `--ignore-user-config` (sign-in kept), `--ignore-rules`, `-C <workdir>`, `--disable memories shell_snapshot multi_agent plugins apps skill_search`; `model_instructions_file` replaces the "You are Codex" persona with ours | `OPENCODE_CONFIG` pointing at our file — the open question is whether it wins over the user's global file, which OpenCode merges rather than replaces |
+| Resume | `--resume <id>`; the cwd must match | `codex exec resume <uuid>` — no `-C` on `resume`, the process cwd is the workdir; any cwd works | `--session <id>` |
+| Cost | `total_cost_usd` + tokens in `result` | tokens only, in `turn.completed.usage` | `step_finish.cost` (USD) + tokens |
+| Conversation store | `~/.claude/projects/<cwd slug>/*.jsonl`, `ai-title` records | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; line 1 is `session_meta` with `id` and `cwd`; no title | `~/.local/share/opencode/` (layout version-dependent), or `opencode session list` / `export` / `session delete` |
+| Failed resume | `result` with `is_error` and `num_turns == 0` | exit 1 with no `thread.started` event; the reason is on stderr only | to measure |
+
+With the Codex backend, what the three share moves into three small files: `harness_workdir` (the fixed private cwd every
+harness is pinned to), `mcp_loopback` (the HTTP server plus its token, handed to each harness in
+the form that harness takes) and `harness_memory` (session id, the hash of the catalog already
+sent, the resumed-conversation flag) — one instance per backend, held by the panel, so switching
+backends never silently restarts a chat.
+
+One residue on Codex, accepted: `collaboration.spawn_agent` still works with `multi_agent`
+disabled. A sub-agent is the same process with the same configuration, so the spine holds; the
+instructions forbid it anyway.
+
+### The integration line
+
+The four drafts that serve the assistant (PJ4 #573 and #619, plotjuggler_sdk #183 and #184) are
+built and driven together, never one at a time (`NORTH_STAR.md` §4). `tools/integration.sh`
+(`ROADMAP.md` → Next, item 3) makes that mechanical: it refreshes a local, never-pushed `integration/assistant` worktree of PJ4
+(`alvvm/assistant-host-ux` with `fix/dataset-qualified-inputs` merged in, host-ux winning on the
+Conan pin), points it at the SDK worktree that carries #184 stacked on #183, builds, runs the
+tests, and copies the host and the plugin into a deploy directory — a copy, because overwriting a
+shared object the running application has mapped crashes it at exit. Any commit on any of the
+drafts means running it again before anything is judged on screen.
+
 ## Closing the loop on what it creates
 
 The model never sees the plot. Handed `{"created_markers_on": ...}` and nothing else, it cannot

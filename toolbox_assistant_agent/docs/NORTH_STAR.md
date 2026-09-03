@@ -21,6 +21,12 @@ harness removes.
 - Claude Code stays as it is.
 - Codex (OpenAI's CLI) and OpenCode join through the same pattern.
 - DeepSeek arrives as a provider inside OpenCode, not as a backend of its own.
+- Credentials belong to the harness. Claude Code and Codex sign in with a subscription;
+  OpenCode signs in with whatever the provider offers (for DeepSeek, an API key billed per
+  token). The plugin never holds, reads or forwards any of them.
+- DeepSeek has no agent harness of its own — the API is what it sells, and its own
+  documentation routes it through Claude Code, Copilot and OpenCode. That is why it arrives
+  inside OpenCode and not beside it.
 
 Each harness must offer the equivalents of what makes the Claude integration
 safe and continuous, or it does not ship: our tools only (MCP or equivalent,
@@ -51,6 +57,18 @@ zooming/framing. The tools and both SDK services (`pj.playback.v1`,
 upstreaming the two services into the official SDK and plugging the seven tools
 back in. This is what makes pillar 2 useful — a tab the model owns is where
 seeking, zooming and framing land.
+
+## 4. One line, one gate
+
+The assistant is developed and verified on the integration line: every open draft that
+serves it — today PJ4 #573 and #619, plotjuggler_sdk #183 and #184, and the plugin branch —
+built together, deployed together, driven together on screen. A build that leaves one of
+them out proves nothing about the set.
+
+No PR leaves draft until the full end-to-end pass is green on that line: every case each PR
+claims to fix, checked with each harness. Then they open together and merge in dependency
+order — SDK first, the host second, the plugin last. Merging is the last step, never a
+milestone on the way.
 
 ## Out, by decision
 
