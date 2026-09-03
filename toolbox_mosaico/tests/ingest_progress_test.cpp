@@ -652,6 +652,44 @@ TEST(MosaicoTransport, UnstampedTopicFallsBackToTheDefaultCadence) {
   EXPECT_EQ(one_row.messages[0].host_ts_ns, 1000);
 }
 
+// A column named `time` whose type parser_arrow will not accept as an axis
+// (utf8 here) is not this topic's timestamp. Naming it in the config makes the
+// parser refuse the topic outright; left undetected, the topic imports on the
+// fitted synthetic cadence and keeps the column as an ordinary curve.
+TEST(MosaicoTransport, ImplausiblyTypedTimeColumnFallsBackToTheSyntheticAxis) {
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::TopicInfo info;
+  info.topic_name = "log";
+  info.min_ts_ns = 1000;
+  info.max_ts_ns = 3000;
+  worker.setTopicInfoCache({{"log", info}});
+
+  std::vector<mosaico::PullResultEvent> results;
+  worker.pullFinished = [&results](mosaico::PullResultEvent result) { results.push_back(std::move(result)); };
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
+    auto schema = arrow::schema({arrow::field("time", arrow::utf8()), arrow::field("value", arrow::float64())});
+    on_batch(
+        "log", arrow::RecordBatch::Make(
+                   schema, 3,
+                   {arrayOf<arrow::StringBuilder, std::string>({"a", "b", "c"}),
+                    arrayOf<arrow::DoubleBuilder, double>({0.0, 1.0, 2.0})}));
+    on_done("log", mosaico::PullResult{});
+  });
+
+  worker.pullTopicsAsync("seq", {"log"}, 0, 1);
+
+  ASSERT_EQ(results.size(), 1U);
+  EXPECT_TRUE(results[0].ok) << results[0].error;
+  ASSERT_EQ(host.bindings.size(), 1U);
+  EXPECT_EQ(nlohmann::json::parse(host.bindings[0].config).at("timestamp_column"), "");
+  EXPECT_EQ(boundInterval(host), 1000) << "3 rows over [1000, 3000]";
+  ASSERT_EQ(host.messages.size(), 1U);
+  EXPECT_EQ(host.messages[0].host_ts_ns, 1000);
+}
+
 std::shared_ptr<arrow::RecordBatch> nestedStampBatch(std::int64_t first_stamp_us) {
   arrow::TimestampBuilder stamp_builder(arrow::timestamp(arrow::TimeUnit::MICRO), arrow::default_memory_pool());
   arrow::StringBuilder frame_builder;

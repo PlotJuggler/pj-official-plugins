@@ -58,6 +58,28 @@ TEST(DetectTimestampLeaf, TypeThenNamePriorityThenEmpty) {
   EXPECT_EQ(mosaico::detectTimestampLeaf(*arrow::schema({arrow::field("x", arrow::float64())}), kIndex).path, "");
 }
 
+// A name match must also be a type parser_arrow would accept as an axis. Naming
+// a utf8 `time` column instead makes the parser refuse the topic outright; left
+// undetected it imports on the fitted synthetic cadence.
+TEST(DetectTimestampLeaf, NameMatchNeedsAPlausibleAxisType) {
+  auto named = [](const std::shared_ptr<arrow::DataType>& type, const char* name = "time") {
+    return mosaico::detectTimestampLeaf(*arrow::schema({arrow::field(name, type)}), kIndex).path;
+  };
+  EXPECT_EQ(named(arrow::utf8()), "");
+  EXPECT_EQ(named(arrow::int8(), "ts"), "");
+  EXPECT_EQ(named(arrow::float32()), "") << "parser_arrow marks only float64 plausible";
+  EXPECT_EQ(named(arrow::boolean()), "");
+
+  // The four plausible types (parser_arrow kTypeTable auto_axis_plausible).
+  EXPECT_EQ(named(arrow::int64()), "time");
+  EXPECT_EQ(named(arrow::uint64(), "ts"), "ts");
+  EXPECT_EQ(named(arrow::float64(), "timestamp"), "timestamp");
+  EXPECT_EQ(named(arrow::timestamp(arrow::TimeUnit::NANO)), "time");
+
+  // Detection BY TYPE is ungated by the name list and unchanged by all this.
+  EXPECT_EQ(named(arrow::timestamp(arrow::TimeUnit::MICRO), "whenever"), "whenever");
+}
+
 // The stamp a ROS-shaped topic carries lives inside its `header` struct: the
 // scan walks flattened leaves, so it is found and named the way the flattened
 // table (and parser_arrow) will name it.
@@ -121,11 +143,22 @@ TEST(FirstRowTimestampNs, ByTypeAndInvalidRoutes) {
   auto double_batch = arrow::RecordBatch::Make(double_schema, 1, {arrayOf<arrow::DoubleBuilder, double>({1.5})});
   EXPECT_EQ(mosaico::firstRowTimestampNs(*double_batch, {0}), 1'500'000'000LL);
 
-  // Witness value: in plain double the product lands on a .5 tie and rounds a
-  // whole nanosecond past what parser_arrow computes for the same column.
-  auto witness_batch =
-      arrow::RecordBatch::Make(double_schema, 1, {arrayOf<arrow::DoubleBuilder, double>({-362.3269081675})});
-  EXPECT_EQ(mosaico::firstRowTimestampNs(*witness_batch, {0}), -362'326'908'167LL);
+  // Epoch-scale witnesses: a `long double` product at 1e18 carries a 0.125 ns
+  // ulp, so ~6% of real timestamps round a whole nanosecond away from the split
+  // conversion parser_arrow does. Each expectation below is the SPLIT result;
+  // the old long-double form returns one nanosecond further from zero.
+  auto stamped = [&](double seconds) {
+    return mosaico::firstRowTimestampNs(
+        *arrow::RecordBatch::Make(double_schema, 1, {arrayOf<arrow::DoubleBuilder, double>({seconds})}), {0});
+  };
+  EXPECT_EQ(stamped(1620132785.1132183), 1'620'132'785'113'218'307LL);
+  EXPECT_EQ(stamped(1702807114.4990616), 1'702'807'114'499'061'584LL);
+  EXPECT_EQ(stamped(-1529583318.5568106), -1'529'583'318'556'810'617LL);
+
+  // Shared with parser_arrow's ConvertsFloatingSecondsWithPortableIntegerArithmetic:
+  // both suites pin the same two values, so the twin cannot drift silently.
+  EXPECT_EQ(stamped(1'700'000'000.125), 1'700'000'000'125'000'000LL);
+  EXPECT_EQ(stamped(-1.6e-9), -2LL);
 
   // Half-float is refused: parser_arrow rejects it as an axis, so stamping from
   // it here would disagree with the parser about the very same column.

@@ -274,6 +274,15 @@ namespace {
 constexpr std::array<std::string_view, 5> kTimestampNames = {
     "timestamp_ns", "recording_timestamp_ns", "timestamp", "time", "ts"};
 
+/// The `auto_axis_plausible` column of parser_arrow's kTypeTable
+/// (parser_arrow/src/type_table.hpp) — the only leaf types it accepts as an axis
+/// nothing named explicitly. Matching a name outside this set would hand the
+/// parser a timestamp_column it refuses, taking the whole topic down with it.
+bool isAutoAxisPlausible(arrow::Type::type id) {
+  return id == arrow::Type::TIMESTAMP || id == arrow::Type::INT64 || id == arrow::Type::UINT64 ||
+         id == arrow::Type::DOUBLE;
+}
+
 /// One flattened leaf: where it lives and what it is.
 struct Leaf {
   std::string path;
@@ -318,8 +327,32 @@ TimestampLeaf detectTimestampLeaf(const arrow::Schema& schema, EmptyNameRule emp
   }
   for (std::string_view candidate : kTimestampNames) {
     for (const Leaf& leaf : leaves) {
-      if (leaf.path == candidate) {
+      if (leaf.path == candidate && isAutoAxisPlausible(leaf.type_id)) {
         return {leaf.path, leaf.route};
+      }
+    }
+  }
+  return {};
+}
+
+std::string axisLostToFraming(const arrow::Schema& raw, const arrow::Schema& framed, EmptyNameRule empty_name_rule) {
+  const std::vector<Leaf> raw_leaves = collectLeaves(raw, empty_name_rule);
+  const std::vector<Leaf> framed_leaves = collectLeaves(framed, empty_name_rule);
+  auto lost = [&framed_leaves](const std::string& path) {
+    return std::none_of(
+        framed_leaves.begin(), framed_leaves.end(), [&path](const Leaf& leaf) { return leaf.path == path; });
+  };
+  // The same two rules as detectTimestampLeaf, minus the plausibility gate: an
+  // encoding the parser cannot decode is exactly how a real stamp gets lost.
+  for (const Leaf& leaf : raw_leaves) {
+    if (leaf.type_id == arrow::Type::TIMESTAMP && lost(leaf.path)) {
+      return leaf.path;
+    }
+  }
+  for (std::string_view candidate : kTimestampNames) {
+    for (const Leaf& leaf : raw_leaves) {
+      if (leaf.path == candidate && lost(leaf.path)) {
+        return leaf.path;
       }
     }
   }
@@ -328,22 +361,35 @@ TimestampLeaf detectTimestampLeaf(const arrow::Schema& schema, EmptyNameRule emp
 
 namespace {
 
-// Bit-for-bit parser_arrow's floatingSecondsToNanoseconds: the long double
-// promotion before the multiply is load-bearing, not defensive — in double the
-// product lands on a .5 tie often enough to round a whole nanosecond away from
-// what the parser computes for the very same column.
+// Split at the whole-second boundary so the result is independent of `long
+// double` width — keep bit-for-bit with parser_arrow's
+// floatingSecondsToNanoseconds (parser_arrow/src/table_shaper.cpp), the
+// canonical twin: a one-nanosecond disagreement puts the host timestamp off the
+// row time the parser computes for the very same column.
 std::optional<std::int64_t> secondsToNs(double seconds) {
   if (!std::isfinite(seconds)) {
     return std::nullopt;
   }
-  constexpr long double kNanosecondsPerSecond = 1'000'000'000.0L;
-  constexpr long double kInt64LowerBound = -0x1p63L;
-  constexpr long double kInt64UpperBound = 0x1p63L;
-  const long double rounded = std::round(static_cast<long double>(seconds) * kNanosecondsPerSecond);
-  if (rounded < kInt64LowerBound || rounded >= kInt64UpperBound) {
+  constexpr std::int64_t kNanosecondsPerSecond = 1'000'000'000;
+  constexpr std::int64_t kLargestWholeSeconds = std::numeric_limits<std::int64_t>::max() / kNanosecondsPerSecond;
+  constexpr std::int64_t kSmallestWholeSeconds = std::numeric_limits<std::int64_t>::min() / kNanosecondsPerSecond;
+  const double whole_seconds = std::trunc(seconds);
+  if (whole_seconds > static_cast<double>(kLargestWholeSeconds) ||
+      whole_seconds < static_cast<double>(kSmallestWholeSeconds)) {
     return std::nullopt;
   }
-  return static_cast<std::int64_t>(rounded);
+  // The range check above already bounds this product; only adding the fraction
+  // can still cross int64.
+  const std::int64_t whole_nanoseconds = static_cast<std::int64_t>(whole_seconds) * kNanosecondsPerSecond;
+  const std::int64_t fractional_nanoseconds =
+      std::llround((seconds - whole_seconds) * static_cast<double>(kNanosecondsPerSecond));
+  if ((fractional_nanoseconds > 0 &&
+       whole_nanoseconds > std::numeric_limits<std::int64_t>::max() - fractional_nanoseconds) ||
+      (fractional_nanoseconds < 0 &&
+       whole_nanoseconds < std::numeric_limits<std::int64_t>::min() - fractional_nanoseconds)) {
+    return std::nullopt;
+  }
+  return whole_nanoseconds + fractional_nanoseconds;
 }
 
 }  // namespace

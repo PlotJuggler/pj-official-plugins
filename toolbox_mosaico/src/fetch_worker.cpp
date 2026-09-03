@@ -590,9 +590,11 @@ void FetchWorker::pullTopicsAsync(
     // disagrees with the rest of the sequence, so that one is fatal. A drop is
     // not the only way to get here: an extension named `time` whose storage is a
     // struct is one raw leaf and several framed ones, dropping nothing. Cold
-    // path — it only runs for a topic already headed for a synthetic axis.
+    // path — it only runs for a topic already headed for a synthetic axis. An
+    // axis-named leaf that SURVIVED framing was never lost — it is a type the
+    // parser refuses as an axis, and the synthetic cadence is the right answer.
     if (topic.ts_field.empty()) {
-      if (const std::string raw_axis = detectTimestampLeaf(*topic.schema, EmptyNameRule::kIndex).path;
+      if (const std::string raw_axis = axisLostToFraming(*topic.schema, *topic.ipc_safe.schema, EmptyNameRule::kIndex);
           !raw_axis.empty()) {
         topic.error = fmt::format("timestamp column '{}' cannot be framed", raw_axis);
         if (!topic.warning.empty()) {

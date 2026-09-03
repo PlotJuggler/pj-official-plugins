@@ -92,17 +92,33 @@ struct TimestampLeaf {
 
 /// Pick the timestamp leaf: the first Arrow TIMESTAMP-typed one in schema
 /// order, else the first whose full path equals one of {timestamp_ns,
-/// recording_timestamp_ns, timestamp, time, ts} — NAME-LIST order wins over
-/// schema order, as it has since PJ3. Passed explicitly at bind time so the
-/// layout records the policy (D9).
+/// recording_timestamp_ns, timestamp, time, ts} AND whose type parser_arrow
+/// finds plausible for an axis — its kTypeTable `auto_axis_plausible` column
+/// (parser_arrow/src/type_table.hpp): TIMESTAMP, INT64, UINT64, DOUBLE. A `time`
+/// column of any other type is left undetected on purpose; naming it as the axis
+/// would make the parser refuse the whole topic, while an unstamped topic still
+/// imports on a fitted synthetic cadence. NAME-LIST order wins over schema
+/// order, as it has since PJ3. Passed explicitly at bind time so the layout
+/// records the policy (D9).
 ///
 /// Mirror of parser_arrow's detectTimestampColumn
-/// (parser_arrow/src/table_shaper.cpp) — keep the name lists in sync. Run it on
+/// (parser_arrow/src/table_shaper.cpp) — keep the name list and the type gate in
+/// sync with parser_arrow's tables. Run it on
 /// the schema the CONSUMER will see, under the naming rule that consumer uses:
 /// the scalar route passes its IPC-safe schema with kIndex (the raw schema would
 /// hide a `dictionary<timestamp>` stamp the parser finds), the object route
 /// passes the raw schema with kFlatten (its flattenStructColumns IS Table::Flatten).
 [[nodiscard]] TimestampLeaf detectTimestampLeaf(const arrow::Schema& schema, EmptyNameRule empty_name_rule);
+
+/// Name the axis @p raw carried that framing then LOST — the same two rules as
+/// detectTimestampLeaf minus the type gate, restricted to leaves that are no
+/// longer leaves of @p framed. Empty when the producer sent no axis-shaped leaf,
+/// or when the leaf is still there: a `time` column of a type parser_arrow will
+/// not accept as an axis was never lost, just unused, and its topic imports on
+/// the synthetic cadence. Only the fatal "cannot be framed" check wants this;
+/// everything else asks detectTimestampLeaf what the parser WILL use.
+[[nodiscard]] std::string axisLostToFraming(
+    const arrow::Schema& raw, const arrow::Schema& framed, EmptyNameRule empty_name_rule);
 
 /// Row 0 of the leaf at @p route as nanoseconds: FLOAT/DOUBLE are seconds,
 /// TIMESTAMP is rescaled by its unit, integers of any width are already ns.
