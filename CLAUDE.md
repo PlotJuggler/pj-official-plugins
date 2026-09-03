@@ -78,9 +78,9 @@ The top-level CMakeLists.txt supports two modes:
 
 Plugin CMakeLists.txt files link `plotjuggler_sdk::plugin_sdk` (plugin .so) and `plotjuggler_sdk::plugin_host` (test executables) — same target names work in both modes.
 
-The core version is **not** pinned in CMake — `find_package` resolves whatever Conan installed. The requirement is pinned in **one** place: the top-level `SDK_VERSION` file (an exact version, e.g. `0.6.0`), which the root `conanfile.py` and every plugin's `conanfile.py` read live, and to which the `extern/plotjuggler_core` git submodule is pinned (`v<version>`). Retarget in one step: `python3 scripts/bump_core_version.py 0.6.1` (writes `SDK_VERSION` and moves the submodule); `python3 scripts/bump_core_version.py --check` guards that they agree in CI.
+The core version is **not** pinned in CMake — `find_package` resolves whatever Conan installed. The requirement is pinned in **one** place: the top-level `SDK_VERSION` file (an exact version, e.g. `0.6.0`), which the root `conanfile.py` and every plugin's `conanfile.py` read live. When no prebuilt Conan package is available, `scripts/ensure_core.sh` clones the matching `v<version>` tag and builds it with `conan create`. Retarget with `python3 scripts/bump_core_version.py 0.6.1`; `python3 scripts/bump_core_version.py --check` guards against stray literal pins in recipes.
 
-**Repository & package rename (core `v0.6.0`):** the SDK was renamed `plotjuggler_core` → [`plotjuggler_sdk`](https://github.com/PlotJuggler/plotjuggler_sdk) — GitHub repo, Conan package, and CMake identity all move together. Recipes require `plotjuggler_sdk/<version>`; CMake uses `find_package(plotjuggler_sdk)` and links `plotjuggler_sdk::base|plugin_sdk|plugin_host`. The single thing that keeps the old name is the submodule mount point, `extern/plotjuggler_core` (a local directory, not the package). The upstream SDK recipe (`name`, `cmake_file_name`, `cmake_target_name`) and the JFrog package are renamed on the SDK side; this repo only consumes the new name.
+**Repository & package rename (core `v0.6.0`):** the SDK was renamed `plotjuggler_core` → [`plotjuggler_sdk`](https://github.com/PlotJuggler/plotjuggler_sdk) — GitHub repo, Conan package, and CMake identity all move together. Recipes require `plotjuggler_sdk/<version>`; CMake uses `find_package(plotjuggler_sdk)` and links `plotjuggler_sdk::base|plugin_sdk|plugin_host`. The upstream SDK recipe (`name`, `cmake_file_name`, `cmake_target_name`) and the JFrog package are renamed on the SDK side; this repo only consumes the new name.
 
 ### Dialog System
 
@@ -98,7 +98,7 @@ Plugins with UI subclass `PJ::DialogPluginTyped` and use real `.ui` files (Qt Cr
 
 | Source | Packages |
 |--------|----------|
-| Conan (JFrog) + `extern/plotjuggler_core` submodule fallback | plotjuggler_sdk (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
+| Conan (JFrog), source fallback via `scripts/ensure_core.sh` | plotjuggler_sdk (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
 | Conan (JFrog cache → ConanCenter) | nlohmann_json, mcap, arrow/parquet, paho-mqtt-cpp, cppzmq, protobuf, zstd, date, ixwebsocket, asio, kissfft, lua, sol2, libsodium, pybind11, cpython, gtest, libcurl (`anomaly_runner` webhook/email notifications) |
 | Conan (JFrog) | pj_scripting_core (the shared Luau marker engine; carries Luau + kissfft) — linked by the Anomaly Detector toolbox + `anomaly_runner` |
 | CPM | ulog_cpp, rosx_introspection, data_tamer (plugin-private deps only) |
