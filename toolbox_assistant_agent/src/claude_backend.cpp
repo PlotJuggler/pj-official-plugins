@@ -101,6 +101,21 @@ BackendTestResult ClaudeBackend::testConnection() const {
   return probeCliVersion(cli_path_, "Claude");
 }
 
+std::vector<ModelChoice> ClaudeBackend::listModels() {
+  // Curated, not read off disk: `claude --help` names these four aliases and
+  // nothing more, and there is no on-disk catalog the way Codex maintains
+  // one (codex_models.hpp). `sonnet` leads because it is the measured
+  // default (docs/BENCHMARKS.md: matches the fastest tier on turn time with
+  // zero misses in the 240-cell study) -- the same reasoning kBackends[0]'s
+  // default_model comment gives, said here for the picker instead.
+  return {
+      {"sonnet", "sonnet — fast; the measured default"},
+      {"opus", "opus"},
+      {"fable", "fable"},
+      {"haiku", "haiku"},
+  };
+}
+
 std::vector<ConversationSummary> ClaudeBackend::listConversations() {
   std::string error;
   if (!ensureWorkDir(error)) {
@@ -183,7 +198,16 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
           if (!ev.session_id.empty()) {
             memory_->session_id = ev.session_id;
           }
-          if (ev.is_error) {
+          if (ev.is_error && ev.terminal_reason == "api_error") {
+            // parseClaudeLine folds "the CLI never reached the API at all"
+            // (an all-zero usage block under this terminal_reason) into
+            // is_error itself -- this only has to supply the wording.
+            sink(
+                {BackendEvent::Kind::Error, "the Claude CLI could not reach the API with model '" +
+                                                (model_.empty() ? std::string("CLI default") : model_) +
+                                                "' (unrecognized model, or the API is down)"});
+            errored = true;
+          } else if (ev.is_error) {
             // A resumed turn that ran zero model turns never got past
             // --resume: the CLI has no such session any more (its stderr says
             // "No conversation found with session ID", but stderr is not ours

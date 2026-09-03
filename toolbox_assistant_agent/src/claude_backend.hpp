@@ -62,6 +62,16 @@ class ClaudeBackend : public LlmBackend {
   // Probe: `<cli> --version` exits 0.
   [[nodiscard]] BackendTestResult testConnection() const override;
 
+  // A curated list, not a catalog: headless Claude Code writes no model list
+  // to disk and has no "list models" command (`claude --help` names only the
+  // aliases). See claude_backend.cpp for the ordering rationale.
+  [[nodiscard]] std::vector<ModelChoice> availableModels() const override {
+    return listModels();
+  }
+  // Static twin of availableModels(), so the settings code (assistant_dialog.cpp's
+  // BackendSpec::models) can list this backend's models without constructing one.
+  [[nodiscard]] static std::vector<ModelChoice> listModels();
+
   // The harness's own session store for this CLI's cwd (claude_sessions.hpp).
   // Resolves the work dir on first use exactly like sendUserMessage does; an
   // empty list/transcript/false is the honest answer when that fails (no

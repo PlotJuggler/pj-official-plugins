@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "cli_probe.hpp"  // probeCliVersion
+#include "codex_models.hpp"
 #include "codex_sessions.hpp"
 #include "codex_stream.hpp"
 #include "harness_workdir.hpp"
@@ -139,6 +140,10 @@ BackendTestResult CodexBackend::testConnection() const {
     version.pop_back();
   }
   return {true, "found " + version};
+}
+
+std::vector<ModelChoice> CodexBackend::listModels() {
+  return listCodexModels(codexModelsCacheFile());
 }
 
 std::vector<ConversationSummary> CodexBackend::listConversations() {

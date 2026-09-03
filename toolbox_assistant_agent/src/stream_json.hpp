@@ -65,6 +65,12 @@ struct ClaudeEvent {
   // continue does not exist. -1 when the record does not say.
   int num_turns = -1;
   TurnMetrics metrics;
+  // Result only: the CLI's own "why did this turn end" tag, e.g. "api_error"
+  // when it could not reach the API at all (verified: paired with an
+  // all-zero usage block, with neither is_error nor subtype set on the real
+  // line -- is_error above is derived from this pairing, see parseClaudeLine).
+  // Empty when the record carries none.
+  std::string terminal_reason;
 };
 
 // Parse one stream-json line into zero or more events. One assistant record can
@@ -142,8 +148,8 @@ struct ClaudeEvent {
     ClaudeEvent e;
     e.kind = ClaudeEvent::Kind::Result;
     e.session_id = session_id;
+    e.terminal_reason = j.value("terminal_reason", std::string{});
     const std::string subtype = j.value("subtype", std::string{});
-    e.is_error = j.value("is_error", false) || (!subtype.empty() && subtype != "success");
     if (const auto& turns = j.value("num_turns", nlohmann::json{}); turns.is_number_integer()) {
       e.num_turns = turns.get<int>();
     }
@@ -165,6 +171,15 @@ struct ClaudeEvent {
     }
     m.valid = m.cost_usd > 0.0 || m.api_ms > 0 || m.output_tokens > 0;
     e.metrics = m;
+    // terminal_reason=="api_error" paired with an all-zero (invalid) usage
+    // block means the CLI never reached the API at all -- verified live: an
+    // unrecognized --model value produces exactly this shape, and neither
+    // is_error nor subtype says so on that real line. Folded into is_error
+    // here, same precedent as the rate-limit event's status family above, so
+    // callers (ClaudeBackend) only have to react to is_error + terminal_reason,
+    // not re-derive the "did we even reach the API" condition themselves.
+    e.is_error = j.value("is_error", false) || (!subtype.empty() && subtype != "success") ||
+                 (e.terminal_reason == "api_error" && !m.valid);
     out.push_back(std::move(e));
     return out;
   }

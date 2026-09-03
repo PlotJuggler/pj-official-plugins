@@ -207,7 +207,8 @@ std::string writeFakeCli(const std::string& result_line) {
       {R"({"type":"system","subtype":"init","session_id":"sess-gone"})", result_line}, /*exit_code=*/1);
 }
 
-std::vector<assistant_agent::BackendEvent> runOneTurnAgainst(const std::string& result_line, bool resuming) {
+std::vector<assistant_agent::BackendEvent> runOneTurnAgainst(
+    const std::string& result_line, bool resuming, const std::string& model = "") {
   const std::string cli = writeFakeCli(result_line);
   EXPECT_FALSE(cli.empty()) << "could not create the fake CLI script";
   assistant_agent::ToolRegistry reg;
@@ -220,7 +221,7 @@ std::vector<assistant_agent::BackendEvent> runOneTurnAgainst(const std::string& 
   if (resuming) {
     memory->session_id = "sess-gone";
   }
-  assistant_agent::ClaudeBackend backend(cli, "", memory);
+  assistant_agent::ClaudeBackend backend(cli, model, memory);
   std::vector<assistant_agent::BackendEvent> events;
   backend.sendUserMessage("hi", tools, [&](assistant_agent::BackendEvent e) { events.push_back(std::move(e)); });
   unlink(cli.c_str());
@@ -231,6 +232,15 @@ constexpr const char* kZeroTurnError =
     R"({"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"result":null,"session_id":"sess-gone"})";
 constexpr const char* kLaterError =
     R"({"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":2,"result":"boom","session_id":"sess-gone"})";
+
+// Verbatim (trimmed) shape of the real line this build was verified against:
+// an unrecognized --model value, with the CLI exiting nonzero on top (the fake
+// script always does — see writeFakeCli) to prove the generic "exited N"
+// fallback stays suppressed.
+constexpr const char* kApiErrorZeroTokens =
+    R"({"duration_api_ms":0,"stop_reason":"stop_sequence","session_id":"59c13c03-bd19-4994-a4d0-ca9016a2d7ae",)"
+    R"("total_cost_usd":0,"usage":{"input_tokens":0,"cache_creation_input_tokens":0,)"
+    R"("cache_read_input_tokens":0,"output_tokens":0},"terminal_reason":"api_error"})";
 
 }  // namespace
 
@@ -259,5 +269,34 @@ TEST(ClaudeBackendResume, AnErrorAfterTurnsRanIsNotAResumeFailure) {
   ASSERT_NE(err, nullptr);
   EXPECT_FALSE(err->resume_failed) << "the session resumed fine; the model failed later";
   EXPECT_EQ(err->text, "boom") << "the CLI's own wording is kept";
+}
+
+// terminal_reason=="api_error" paired with an all-zero usage block means the
+// CLI never reached the API at all -- neither is_error nor subtype says so on
+// this real line, so this is the one case that is not detected through the
+// ordinary `ev.is_error` branch.
+TEST(ClaudeBackendApiError, NamesCliDefaultWhenNoModelIsConfiguredAndSuppressesTheExitLine) {
+  const auto events = runOneTurnAgainst(kApiErrorZeroTokens, /*resuming=*/false, /*model=*/"");
+  const assistant_agent::BackendEvent* err = firstError(events);
+  ASSERT_NE(err, nullptr);
+  EXPECT_EQ(
+      err->text,
+      "the Claude CLI could not reach the API with model 'CLI default' (unrecognized model, or the API is down)");
+
+  int error_count = 0;
+  for (const auto& e : events) {
+    if (e.kind == assistant_agent::BackendEvent::Kind::Error) {
+      ++error_count;
+    }
+  }
+  EXPECT_EQ(error_count, 1) << "the generic 'exited N' fallback must not ALSO fire (fake CLI exits 1)";
+}
+
+TEST(ClaudeBackendApiError, NamesTheConfiguredModel) {
+  const auto events = runOneTurnAgainst(kApiErrorZeroTokens, /*resuming=*/false, /*model=*/"opus");
+  const assistant_agent::BackendEvent* err = firstError(events);
+  ASSERT_NE(err, nullptr);
+  EXPECT_EQ(
+      err->text, "the Claude CLI could not reach the API with model 'opus' (unrecognized model, or the API is down)");
 }
 #endif

@@ -85,9 +85,10 @@ struct DialogState {
   // to commit — mirroring the toolbox_mosaico cert-dialog handshake.
   bool open_settings_pending = false;
   // Staged text edits, keyed by SETTINGS key (not widget name) — onTextChanged
-  // resolves the widget name to a settings key via kTextWidgetToKey, so this
-  // holds e.g. "assistant.claude.model" -> the typed value. commitSettings
-  // persists every entry and clears the map back to empty.
+  // resolves the widget name to a settings key via each BackendSpec's key
+  // (widgetName(), assistant_dialog.cpp), so this holds e.g.
+  // "assistant.claude.model" -> the typed value. commitSettings persists
+  // every entry and clears the map back to empty.
   std::map<std::string, std::string> pending_text;
   // Staged backendCombo choice ("claude"/"codex"); onIndexChanged sets it,
   // commitSettings persists it and clears it back to nullopt.
@@ -144,9 +145,18 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   // Build a ToolContext from the currently-bound host providers (GUI thread).
   ToolContext makeToolContext();
   // Select the backend implementation from settings + the ASSISTANT_FAKE_BACKEND
-  // env override. Rebuilt whenever the backend choice changes. Defers itself
-  // while a turn is in flight (see DialogState::rebuild_pending).
-  void rebuildBackend();
+  // env override. Rebuilt whenever the backend choice changes. Returns whether
+  // active_backend_key_ actually changed as a result of this call -- the
+  // signal both call sites (commitSettings(), onTick's deferred branch) use to
+  // decide whether to also call activateBackendConversation(), since a
+  // backend switch is a conversation switch. Also false, without touching
+  // anything, when the rebuild has to DEFER itself because a turn is in
+  // flight (DialogState::rebuild_pending; the incoming and outgoing backends
+  // share the conversation memory, and the worker may be writing a session id
+  // into it right now) -- onTick re-invokes this once the turn ends and reads
+  // ITS return value then, which is what makes "if (rebuildBackend())
+  // activateBackendConversation();" the whole story at both call sites.
+  bool rebuildBackend();
 
   // Drop the transcript, the accumulated cost and the ACTIVE backend's
   // conversation memory (memoryFor(active_backend_key_)) — AND that backend's
@@ -186,8 +196,26 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   // bound (the ctor runs before bind(), against an unbound view, so this
   // cannot run there). If the persisted id no longer resolves to anything
   // (purged since the last close), clears it instead of leaving a dangling
-  // --resume target.
+  // --resume target. A thin wrapper over activateBackendConversation() now
+  // that a settings-driven backend switch needs the exact same logic.
   void loadPersistedConversation();
+
+  // Loads whatever the NOW-active backend (active_backend_key_, already set
+  // by the rebuildBackend() call the caller just made) has persisted as its
+  // active conversation -- or, if nothing is persisted (or it was purged),
+  // resets to a blank one. Used on the very first bind (via
+  // loadPersistedConversation) AND every time Settings actually swaps the
+  // backend key (commitSettings, and onTick's deferred-rebuild path): a
+  // backend switch is a conversation switch, because each backend key keeps
+  // its OWN resume point (memoryFor). Refreshes the drawer's listing (and
+  // marks it dirty) only when the drawer is actually OPEN -- when closed, the
+  // menuButton handler already refreshes lazily on the next open, so doing it
+  // here too would just be discarded work. transcript_dirty/controls_dirty
+  // are marked unconditionally: the panel a settings commit leaves behind
+  // must always match what is now active, whichever branch ran. GUI-thread
+  // only; takes state_.mu itself (like switchToConversation), so must not be
+  // called with it already held.
+  void activateBackendConversation();
 
   // Requires state_.mu held by the caller. Rebuilds `conversations` from
   // backend_->listConversations() — local disk I/O under the harness's

@@ -104,16 +104,19 @@ std::filesystem::path findRolloutFileById(const std::filesystem::path& sessions_
 
 }  // namespace
 
-std::filesystem::path codexSessionsDir() {
-  std::string base;
+std::filesystem::path codexHomeDir() {
   if (const char* codex_home = std::getenv("CODEX_HOME"); codex_home != nullptr && codex_home[0] != '\0') {
-    base = codex_home;
-  } else if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
-    base = std::string(home) + "/.codex";
-  } else {
-    return {};
+    return codex_home;
   }
-  return std::filesystem::path(base) / "sessions";
+  if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
+    return std::filesystem::path(home) / ".codex";
+  }
+  return {};
+}
+
+std::filesystem::path codexSessionsDir() {
+  const std::filesystem::path base = codexHomeDir();
+  return base.empty() ? std::filesystem::path{} : base / "sessions";
 }
 
 std::vector<ConversationSummary> listCodexConversations(

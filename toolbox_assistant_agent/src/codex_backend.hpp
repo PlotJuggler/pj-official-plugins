@@ -71,6 +71,15 @@ class CodexBackend : public LlmBackend {
   // Probe: `<cli> --version` exits 0.
   [[nodiscard]] BackendTestResult testConnection() const override;
 
+  // Reads the CLI's own models_cache.json (codex_models.hpp) -- unlike
+  // Claude, Codex maintains an actual on-disk catalog.
+  [[nodiscard]] std::vector<ModelChoice> availableModels() const override {
+    return listModels();
+  }
+  // Static twin of availableModels(), so the settings code (assistant_dialog.cpp's
+  // BackendSpec::models) can list this backend's models without constructing one.
+  [[nodiscard]] static std::vector<ModelChoice> listModels();
+
   // The harness's own session store for this CLI's cwd (codex_sessions.hpp).
   [[nodiscard]] std::vector<ConversationSummary> listConversations() override;
   [[nodiscard]] std::vector<ChatMessage> loadTranscript(const std::string& id) override;

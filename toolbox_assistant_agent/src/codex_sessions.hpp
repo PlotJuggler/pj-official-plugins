@@ -31,6 +31,12 @@ namespace assistant_agent {
 // like a Claude `developer` record: skipped for both the title and the
 // transcript.
 
+// `${CODEX_HOME:-$HOME/.codex}` -- the one place this resolution lives.
+// codexSessionsDir() below appends "sessions"; codex_models.cpp's
+// codexModelsCacheFile() appends "models_cache.json" onto the same base.
+// Empty when neither variable resolves a base directory.
+[[nodiscard]] std::filesystem::path codexHomeDir();
+
 // `${CODEX_HOME:-~/.codex}/sessions`. Empty when neither variable resolves a
 // base directory; callers treat that as "list nothing".
 [[nodiscard]] std::filesystem::path codexSessionsDir();

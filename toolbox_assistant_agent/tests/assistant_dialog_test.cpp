@@ -13,6 +13,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -534,6 +535,310 @@ TEST(AssistantDialogBackendSwitch, ClaudeCodexClaudeKeepsBothSessionIds) {
 
   std::filesystem::remove_all(home, ec);
   std::filesystem::remove_all(codex_home, ec);
+}
+
+// --- Settings commit switches the conversation, and the model selector -----
+//
+// Both fixtures below are prepared in SetUp() (a Claude session under the fake
+// CLAUDE_CONFIG_DIR, a Codex rollout under the fake CODEX_HOME), but neither
+// backend's ACTIVE id is persisted there — each test persists exactly the ids
+// it needs, since which one is "already active" differs per test.
+
+class AssistantDialogSettingsSwitchTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    home_ = makeTempDir("assistant_settings_switch_test_");
+    ASSERT_FALSE(home_.empty());
+    home_env_ = std::make_unique<ScopedEnv>("HOME", home_.c_str());
+    xdg_env_ = std::make_unique<ScopedEnv>("XDG_STATE_HOME", nullptr);
+    cfg_env_ = std::make_unique<ScopedEnv>("CLAUDE_CONFIG_DIR", nullptr);
+    codex_home_ = makeTempDir("assistant_settings_switch_codex_home_");
+    ASSERT_FALSE(codex_home_.empty());
+    codex_home_env_ = std::make_unique<ScopedEnv>("CODEX_HOME", codex_home_.c_str());
+    tz_env_ = std::make_unique<ScopedEnv>("TZ", "UTC");
+    tzset();
+
+    std::error_code ec;
+    std::filesystem::create_directories(home_ / ".local/state", ec);
+    ASSERT_FALSE(ec) << (home_ / ".local/state") << ": " << ec.message();
+    const std::string work_dir = expectedWorkDir(home_).string();
+
+    const std::filesystem::path claude_sessions_dir = claudeSessionsDir(work_dir);
+    std::filesystem::create_directories(claude_sessions_dir, ec);
+    ASSERT_FALSE(ec) << claude_sessions_dir << ": " << ec.message();
+    std::filesystem::copy_file(
+        std::filesystem::path(ASSISTANT_SESSIONS_FIXTURES_DIR) / "session_alpha.jsonl",
+        claude_sessions_dir / "session_alpha.jsonl", ec);
+    ASSERT_FALSE(ec) << ec.message();
+
+    const std::filesystem::path codex_sessions_dir = codex_home_ / "sessions" / "2026" / "09" / "03";
+    std::filesystem::create_directories(codex_sessions_dir, ec);
+    ASSERT_FALSE(ec) << codex_sessions_dir << ": " << ec.message();
+    writeCodexFixture(
+        codex_sessions_dir / "rollout-2026-09-02T09-00-00-codex_gamma.jsonl", "codex_gamma", work_dir,
+        "2026-09-02T09:00:00.000Z", "Can you plot the vehicle speed against the steering angle?",
+        "I opened a new tab plotting vehicle_speed against vehicle_steering.", "2026-09-02T09:00:05.000Z");
+
+    settings_view_ = PJ::sdk::SettingsView{host_.view()};
+    // commitSettings() probes the newly-selected backend with testConnection()
+    // as its last step (a real `<cli> --version` subprocess) -- point both CLI
+    // paths at names that cannot resolve on PATH, so these tests, which are
+    // about conversation/model bookkeeping, never spawn a real CLI.
+    SettingsStore store(settings_view_);
+    store.setString("assistant.claude.cli_path", "assistant-agent-test-missing-claude-cli");
+    store.setString("assistant.codex.cli_path", "assistant-agent-test-missing-codex-cli");
+  }
+
+  void TearDown() override {
+    std::error_code ec;
+    std::filesystem::remove_all(home_, ec);
+    std::filesystem::remove_all(codex_home_, ec);
+  }
+
+  json snapshot(AssistantDialog& dialog) {
+    const std::string raw = dialog.widget_data();
+    if (raw.empty()) {
+      return json::object();
+    }
+    const json doc = json::parse(raw, nullptr, /*allow_exceptions=*/false);
+    return doc.is_object() ? doc : json::object();
+  }
+  static json entryIn(const json& snapshot, const std::string& widget) {
+    return snapshot.value(widget, json::object());
+  }
+
+  std::filesystem::path home_;
+  std::filesystem::path codex_home_;
+  std::unique_ptr<ScopedEnv> home_env_;
+  std::unique_ptr<ScopedEnv> xdg_env_;
+  std::unique_ptr<ScopedEnv> cfg_env_;
+  std::unique_ptr<ScopedEnv> codex_home_env_;
+  std::unique_ptr<ScopedEnv> tz_env_;
+  PJ::sdk::InMemorySettingsBackend backend_;
+  PJ::sdk::SettingsStoreHost host_{backend_};
+  PJ::sdk::SettingsView settings_view_;
+};
+
+TEST_F(AssistantDialogSettingsSwitchTest, EveryPayloadNamingTheConversationListCarriesTheDeletableFlag) {
+  auto checkPayload = [](const std::string& raw) {
+    if (raw.empty()) {
+      return;  // "no update" -- steady state, nothing to check
+    }
+    const json doc = json::parse(raw, nullptr, /*allow_exceptions=*/false);
+    ASSERT_TRUE(doc.is_object());
+    if (doc.contains("conversationList")) {
+      EXPECT_EQ(doc.at("conversationList").value("list_deletable", false), true)
+          << "a widget-data object naming conversationList without this flag turns the trash/elision delegate "
+             "off -- payload: "
+          << doc.dump();
+    }
+  };
+
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  checkPayload(dialog.widget_data());  // initial render
+
+  ASSERT_TRUE(dialog.onClicked("menuButton"));  // drawer open
+  checkPayload(dialog.widget_data());
+
+  // A settings commit that does NOT switch backends: rebuildBackend() still
+  // sets controls_dirty (the status line names the backend), but nothing
+  // calls activateBackendConversation(), so drawer_dirty stays false -- this
+  // is exactly the payload shape (conversationList named via setEnabled
+  // alone) that used to drop the flag.
+  ASSERT_TRUE(dialog.onClicked("settingsButton"));
+  EXPECT_FALSE(dialog.onIndexChanged("backendCombo", 0));  // stays on claude
+  ASSERT_TRUE(dialog.onClicked("subDialogAccepted"));
+  checkPayload(dialog.widget_data());
+
+  // A controls-only refresh with no settings and no drawer touch at all:
+  // sendCurrentInput() sets transcript_dirty + controls_dirty synchronously,
+  // before anything reaches the (nonexistent) CLI.
+  EXPECT_FALSE(dialog.onTextChanged("inputEdit", "hello"));
+  ASSERT_TRUE(dialog.onClicked("sendButton"));
+  checkPayload(dialog.widget_data());
+}
+
+TEST_F(AssistantDialogSettingsSwitchTest, SwitchingBackendLoadsThatBackendsPersistedConversation) {
+  {
+    SettingsStore store(settings_view_);
+    saveActiveSessionId(store, "session_alpha", "claude");
+    saveActiveSessionId(store, "codex_gamma", "codex");
+  }
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);  // starts on claude, resumes session_alpha
+  const std::string initial_text = entryIn(snapshot(dialog), "transcriptText").at("plain_text").get<std::string>();
+  ASSERT_NE(initial_text.find("Give me a demo"), std::string::npos) << "must start on Claude's persisted conversation";
+
+  ASSERT_TRUE(dialog.onClicked("settingsButton"));
+  EXPECT_FALSE(dialog.onIndexChanged("backendCombo", 1));
+  EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
+
+  const json snap = snapshot(dialog);
+  const std::string text = entryIn(snap, "transcriptText").at("plain_text").get<std::string>();
+  EXPECT_NE(text.find("Can you plot the vehicle speed against the steering angle?"), std::string::npos)
+      << "must have switched to codex's persisted conversation";
+  EXPECT_NE(text.find("I opened a new tab plotting vehicle_speed against vehicle_steering."), std::string::npos);
+  const std::size_t resumed_at = text.find("resumed previous conversation");
+  const std::size_t saved_at = text.find("Settings saved (backend: codex)");
+  ASSERT_NE(resumed_at, std::string::npos);
+  ASSERT_NE(saved_at, std::string::npos);
+  EXPECT_LT(resumed_at, saved_at) << "the note must land in the transcript it switched TO, not the one just left";
+
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "codex"), "codex_gamma");
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "session_alpha")
+      << "switching must not touch claude's persisted id";
+
+  ASSERT_TRUE(dialog.onClicked("menuButton"));
+  const std::vector<std::string> items =
+      entryIn(snapshot(dialog), "conversationList").at("list_items").get<std::vector<std::string>>();
+  ASSERT_EQ(items.size(), 1u) << "the drawer listing must be codex's now, not claude's";
+  EXPECT_EQ(items[0], "Can you plot the vehicle speed against the steer · 2 Sep 09:00");
+  ASSERT_TRUE(dialog.onClicked("menuButton"));  // close, so the next reopen refreshes again
+
+  // Switch back to Claude: nothing lost.
+  ASSERT_TRUE(dialog.onClicked("settingsButton"));
+  EXPECT_FALSE(dialog.onIndexChanged("backendCombo", 0));
+  EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
+
+  const std::string back_text = entryIn(snapshot(dialog), "transcriptText").at("plain_text").get<std::string>();
+  EXPECT_NE(back_text.find("Give me a demo"), std::string::npos);
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "session_alpha");
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "codex"), "codex_gamma") << "nothing lost";
+}
+
+TEST_F(AssistantDialogSettingsSwitchTest, SwitchingToABackendWithNothingPersistedStartsBlank) {
+  {
+    SettingsStore store(settings_view_);
+    saveActiveSessionId(store, "session_alpha", "claude");
+    // Deliberately nothing persisted for codex.
+  }
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  ASSERT_NE(
+      entryIn(snapshot(dialog), "transcriptText").at("plain_text").get<std::string>().find("Give me a demo"),
+      std::string::npos);
+
+  ASSERT_TRUE(dialog.onClicked("settingsButton"));
+  EXPECT_FALSE(dialog.onIndexChanged("backendCombo", 1));
+  EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
+
+  const json snap = snapshot(dialog);
+  const std::string text = entryIn(snap, "transcriptText").at("plain_text").get<std::string>();
+  EXPECT_EQ(text.find("Give me a demo"), std::string::npos) << "must not still be showing claude's conversation";
+  EXPECT_EQ(text.find("resumed previous conversation"), std::string::npos)
+      << "nothing was resumed -- there is nothing persisted for codex";
+  EXPECT_NE(text.find("Settings saved (backend: codex)"), std::string::npos);
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "codex"), "");
+
+  ASSERT_TRUE(dialog.onClicked("menuButton"));
+  const std::vector<std::string> items =
+      entryIn(snapshot(dialog), "conversationList").at("list_items").get<std::vector<std::string>>();
+  ASSERT_EQ(items.size(), 1u) << "codex's own listing (the fixture exists, just was never made ACTIVE)";
+  EXPECT_EQ(items[0], "Can you plot the vehicle speed against the steer · 2 Sep 09:00");
+}
+
+TEST_F(AssistantDialogSettingsSwitchTest, ChangingOnlyTheModelKeepsTheConversation) {
+  {
+    SettingsStore store(settings_view_);
+    saveActiveSessionId(store, "session_alpha", "claude");
+  }
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  const std::string initial_text = entryIn(snapshot(dialog), "transcriptText").at("plain_text").get<std::string>();
+  ASSERT_NE(initial_text.find("Give me a demo"), std::string::npos);
+
+  ASSERT_TRUE(dialog.onClicked("settingsButton"));
+  (void)dialog.widget_data();                                  // populate claudeModelCombo, like a real Settings open
+  EXPECT_FALSE(dialog.onIndexChanged("claudeModelCombo", 2));  // "sonnet", the first listed model -- backend unchanged
+  EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
+
+  const std::string text = entryIn(snapshot(dialog), "transcriptText").at("plain_text").get<std::string>();
+  EXPECT_NE(text.find("Give me a demo"), std::string::npos) << "the earlier conversation must still be there";
+  std::size_t resumed_count = 0;
+  for (std::size_t pos = text.find("resumed previous conversation"); pos != std::string::npos;
+       pos = text.find("resumed previous conversation", pos + 1)) {
+    ++resumed_count;
+  }
+  EXPECT_EQ(resumed_count, 1u) << "the conversation must not have been reloaded a second time";
+  EXPECT_NE(text.find("Settings saved (backend: claude)"), std::string::npos);
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "session_alpha");
+  EXPECT_EQ(SettingsStore(settings_view_).getString("assistant.claude.model", "unset"), "sonnet")
+      << "the model change itself must still have been persisted";
+}
+
+TEST_F(AssistantDialogSettingsSwitchTest, SettingsPrefillMapsThePersistedModelOntoTheCombo) {
+  {
+    SettingsStore store(settings_view_);
+    store.setString("assistant.claude.model", "");              // -> CLI default
+    store.setString("assistant.codex.model", "made-up-model");  // -> not in this build's catalog -> Custom
+  }
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  ASSERT_TRUE(dialog.onClicked("settingsButton"));
+  const json snap = snapshot(dialog);
+
+  const json claude_combo = entryIn(snap, "claudeModelCombo");
+  ASSERT_TRUE(claude_combo.contains("items"));
+  const std::vector<std::string> claude_items = claude_combo.at("items").get<std::vector<std::string>>();
+  ASSERT_GE(claude_items.size(), 3u) << "CLI default, Custom..., plus at least one of Claude's curated models";
+  EXPECT_EQ(claude_items[0], "CLI default");
+  EXPECT_EQ(claude_items[1], "Custom...");
+  EXPECT_EQ(claude_combo.value("current_index", -1), 0) << "an explicitly empty stored value maps to CLI default";
+  EXPECT_EQ(entryIn(snap, "claudeModelEdit").value("text", std::string("not-empty")), "");
+
+  const json codex_combo = entryIn(snap, "codexModelCombo");
+  EXPECT_EQ(codex_combo.value("current_index", -1), 1)
+      << "a stored id this build's catalog does not list must fall back to Custom";
+  EXPECT_EQ(entryIn(snap, "codexModelEdit").value("text", std::string("")), "made-up-model");
+
+  // A listed id maps onto its own row, in the order ClaudeBackend::availableModels() returns them.
+  {
+    SettingsStore store(settings_view_);
+    store.setString("assistant.claude.model", "opus");
+  }
+  ASSERT_TRUE(dialog.onClicked("settingsButton"));
+  const json snap2 = snapshot(dialog);
+  const std::vector<std::string> ids_in_order = {"sonnet", "opus", "fable", "haiku"};
+  const auto it = std::find(ids_in_order.begin(), ids_in_order.end(), "opus");
+  ASSERT_NE(it, ids_in_order.end());
+  const int expected_index = 2 + static_cast<int>(it - ids_in_order.begin());
+  EXPECT_EQ(entryIn(snap2, "claudeModelCombo").value("current_index", -1), expected_index);
+  EXPECT_EQ(entryIn(snap2, "claudeModelEdit").value("text", std::string("not-empty")), "");
+}
+
+TEST_F(AssistantDialogSettingsSwitchTest, AcceptingACustomModelPersistsTheTypedText) {
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  ASSERT_TRUE(dialog.onClicked("settingsButton"));
+  (void)dialog.widget_data();  // populate the combo before picking a row
+
+  // Mirrors the host's harvest order (every QLineEdit's current text, THEN
+  // every QComboBox's index -- see the "Host facts" note in the brief).
+  EXPECT_FALSE(dialog.onTextChanged("claudeModelEdit", "claude-3-7-unreleased"));
+  EXPECT_FALSE(dialog.onIndexChanged("claudeModelCombo", 1));  // Custom...
+  EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
+
+  EXPECT_EQ(SettingsStore(settings_view_).getString("assistant.claude.model", "unset"), "claude-3-7-unreleased");
+}
+
+TEST_F(AssistantDialogSettingsSwitchTest, PickingCustomWithAnUntouchedTextBoxPersistsEmpty) {
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  {
+    SettingsStore store(settings_view_);
+    store.setString("assistant.claude.model", "opus");  // something non-empty already persisted
+  }
+  ASSERT_TRUE(dialog.onClicked("settingsButton"));
+  (void)dialog.widget_data();
+  // The host still harvests the (hidden, never edited) text box; its shown
+  // value is empty (opus is a listed model, so the prefill put it on the
+  // combo row, not the text box) -- picking Custom without typing anything
+  // must persist that empty string, not silently keep "opus".
+  EXPECT_FALSE(dialog.onTextChanged("claudeModelEdit", ""));
+  EXPECT_FALSE(dialog.onIndexChanged("claudeModelCombo", 1));
+  EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
+  EXPECT_EQ(SettingsStore(settings_view_).getString("assistant.claude.model", "unset"), "");
 }
 
 }  // namespace

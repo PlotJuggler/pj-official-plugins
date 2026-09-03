@@ -12,6 +12,7 @@
 #include "codex_backend.hpp"
 #include "conversation_state.hpp"
 #include "fake_backend.hpp"
+#include "model_picker.hpp"
 #include "settings_store.hpp"
 
 namespace assistant_agent {
@@ -22,10 +23,12 @@ namespace {
 constexpr const char* kKeyBackend = "assistant.backend";  // "claude" or "codex"
 
 // One row per backend this build knows about: its settings key, the
-// backendCombo index it fills, and the settings keys/defaults for its
-// model/cli-path fields. Replaces the scattered kKeyClaudeModel/kKeyClaudeCli/
-// kKeyCodexModel/kKeyCodexCli/kDefaultCodexModel constants and the
-// branch-per-field logic that used to read them.
+// backendCombo index it fills, the settings keys/defaults for its
+// model/cli-path fields, and two function pointers -- `make` builds the
+// backend object (rebuildBackend()'s job) and `models` lists what it offers
+// in the settings combo (the Settings code's job) -- so neither has to switch
+// on `key` or spin up a throwaway instance to reach a virtual. Widget names
+// are not stored here; see widgetName() below.
 struct BackendSpec {
   const char* key;
   int combo_index;
@@ -33,7 +36,19 @@ struct BackendSpec {
   const char* cli_key;
   const char* default_model;
   const char* default_cli;
+  std::shared_ptr<LlmBackend> (*make)(std::string cli, std::string model, std::shared_ptr<HarnessMemory> memory);
+  std::vector<ModelChoice> (*models)();
 };
+
+std::shared_ptr<LlmBackend> makeClaudeBackend(
+    std::string cli, std::string model, std::shared_ptr<HarnessMemory> memory) {
+  return std::make_shared<ClaudeBackend>(std::move(cli), std::move(model), std::move(memory));
+}
+std::shared_ptr<LlmBackend> makeCodexBackend(
+    std::string cli, std::string model, std::shared_ptr<HarnessMemory> memory) {
+  return std::make_shared<CodexBackend>(std::move(cli), std::move(model), std::move(memory));
+}
+
 constexpr BackendSpec kBackends[] = {
     // Leaving this blank would pass no --model and get the CLI's own default,
     // which is the slowest tier for no measurable gain: `sonnet` matches the
@@ -41,11 +56,21 @@ constexpr BackendSpec kBackends[] = {
     // tier with no miss in the 240-cell study (docs/BENCHMARKS.md). A user who
     // deliberately clears the field still gets the CLI default, because an
     // empty stored value is returned as-is rather than falling back to this.
-    {"claude", 0, "assistant.claude.model", "assistant.claude.cli_path", "sonnet", "claude"},
+    {"claude", 0, "assistant.claude.model", "assistant.claude.cli_path", "sonnet", "claude", &makeClaudeBackend,
+     &ClaudeBackend::listModels},
     // Codex has had no equivalent benchmark run yet, so an empty default just
     // means "whatever `codex exec` picks on its own" rather than a measured pick.
-    {"codex", 1, "assistant.codex.model", "assistant.codex.cli_path", "", "codex"},
+    {"codex", 1, "assistant.codex.model", "assistant.codex.cli_path", "", "codex", &makeCodexBackend,
+     &CodexBackend::listModels},
 };
+
+// A BackendSpec field's widget name, e.g. widgetName(kBackends[0], "ModelCombo")
+// == "claudeModelCombo" (ui/assistant_settings.ui). Derived from `key` instead
+// of stored per-field: the field never has to be told twice which backend it
+// belongs to.
+std::string widgetName(const BackendSpec& spec, const char* suffix) {
+  return std::string(spec.key) + suffix;
+}
 
 // The spec whose key/combo_index matches, or nullptr for a choice this build
 // has never heard of.
@@ -121,19 +146,23 @@ std::shared_ptr<HarnessMemory> AssistantDialog::memoryFor(const std::string& key
   return memory;
 }
 
-void AssistantDialog::rebuildBackend() {
+bool AssistantDialog::rebuildBackend() {
   // Never mid-turn: the incoming and outgoing backends share the conversation
   // memory, and the worker may be writing a session id into it right now. The
   // Settings button is already disabled while busy, so in practice this only
-  // catches a host-driven setSettings() landing during a turn.
+  // catches a host-driven setSettings() landing during a turn. Deferred here,
+  // this reports no change (false); onTick applies the real rebuild once the
+  // turn ends and acts on THAT call's return value instead.
   {
     std::lock_guard<std::mutex> lock(state_.mu);
     if (state_.session.busy()) {
       state_.rebuild_pending = true;
-      return;
+      return false;
     }
     state_.rebuild_pending = false;
   }
+
+  const std::string previous_key = active_backend_key_;
 
   // The scripted FakeBackend is an explicit opt-in for driving the tool path
   // without an LLM (unit tests + manual E2E). Otherwise the persisted
@@ -149,16 +178,10 @@ void AssistantDialog::rebuildBackend() {
   } else {
     SettingsStore store(settings_);
     active_backend_key_ = resolveBackendKey(store);
-    if (active_backend_key_ == "codex") {
-      const BackendSpec& spec = *backendByKey("codex");
-      backend_ = std::make_shared<CodexBackend>(
-          store.getString(spec.cli_key, spec.default_cli), store.getString(spec.model_key, spec.default_model),
-          memoryFor("codex"));
-    } else if (active_backend_key_ == "claude") {
-      const BackendSpec& spec = *backendByKey("claude");
-      backend_ = std::make_shared<ClaudeBackend>(
-          store.getString(spec.cli_key, spec.default_cli), store.getString(spec.model_key, spec.default_model),
-          memoryFor("claude"));
+    if (const BackendSpec* spec = backendByKey(active_backend_key_)) {
+      backend_ = spec->make(
+          store.getString(spec->cli_key, spec->default_cli), store.getString(spec->model_key, spec->default_model),
+          memoryFor(spec->key));
     } else {
       backend_ = std::make_shared<EchoBackend>();
     }
@@ -166,6 +189,7 @@ void AssistantDialog::rebuildBackend() {
   std::lock_guard<std::mutex> lock(state_.mu);
   state_.backend_name = backend_->name();
   state_.controls_dirty = true;  // the status line names the backend
+  return active_backend_key_ != previous_key;
 }
 
 void AssistantDialog::startNewConversation() {
@@ -246,18 +270,38 @@ bool AssistantDialog::switchToConversation(const std::string& id) {
 }
 
 void AssistantDialog::loadPersistedConversation() {
-  SettingsStore store(settings_);
   // rebuildBackend() must already have run against these same settings — a
   // persisted Codex id needs to be loaded THROUGH a CodexBackend, not the
   // ctor's default ClaudeBackend (backend_ built against an unbound store).
+  activateBackendConversation();
+}
+
+void AssistantDialog::activateBackendConversation() {
+  SettingsStore store(settings_);
   const std::string id = loadActiveSessionId(store, active_backend_key_);
-  if (id.empty()) {
-    return;
-  }
-  if (!switchToConversation(id)) {
-    // Purged between the last close and this reopen: nothing to resume into.
+  if (id.empty() || !switchToConversation(id)) {
+    // Nothing was persisted for this backend, or it was purged since the last
+    // time it was active either way, there is no --resume target to dangle.
     clearActiveSessionId(store, active_backend_key_);
+    std::lock_guard<std::mutex> lock(state_.mu);
+    state_.session.clear();
+    state_.usage.reset();
+    state_.active_conversation_id.clear();
   }
+  // switchToConversation() on success already sets transcript/controls dirty,
+  // but setting them again here is free, and it is what covers the
+  // blank-reset branch above too -- every path through this function leaves
+  // the panel showing exactly what is now active. The drawer's listing is
+  // only refreshed here when it is actually OPEN: when closed, the
+  // menuButton handler already refreshes lazily on the next open, so doing it
+  // here too would just be discarded work.
+  std::lock_guard<std::mutex> lock(state_.mu);
+  if (state_.drawer_open) {
+    refreshConversationsLocked();
+    state_.drawer_dirty = true;
+  }
+  state_.transcript_dirty = true;
+  state_.controls_dirty = true;
 }
 
 void AssistantDialog::refreshConversationsLocked() {
@@ -380,6 +424,15 @@ std::string AssistantDialog::widget_data() {
   }
   PJ::WidgetData wd;
 
+  // Every widget-data object that names "conversationList" must also carry
+  // list_deletable, or the host turns the trash/elision delegate off for that
+  // payload (widget_data.hpp: "re-send on every build") -- both blocks below
+  // that touch this widget route through here instead of repeating the flag.
+  const auto nameConversationList = [&wd](bool busy) {
+    wd.setEnabled("conversationList", !busy);
+    wd.setListItemsDeletable("conversationList", true);
+  };
+
   if (state_.transcript_dirty) {
     wd.setPlainText("transcriptText", state_.session.render());
     state_.transcript_dirty = false;
@@ -404,7 +457,7 @@ std::string AssistantDialog::widget_data() {
     // The drawer reads/mutates the same conversation memory a running turn is
     // writing into — same reason, same guard.
     wd.setEnabled("menuButton", !busy);
-    wd.setEnabled("conversationList", !busy);
+    nameConversationList(busy);
     state_.controls_dirty = false;
   }
 
@@ -418,13 +471,13 @@ std::string AssistantDialog::widget_data() {
 
   if (state_.drawer_dirty) {
     wd.setVisible("conversationsDrawer", state_.drawer_open);
+    nameConversationList(state_.session.busy());
     std::vector<std::string> rows;
     rows.reserve(state_.conversations.size());
     for (const ConversationSummary& c : state_.conversations) {
       rows.push_back(listText(c));
     }
     wd.setListItems("conversationList", rows);
-    wd.setListItemsDeletable("conversationList", true);
     wd.setListPlaceholder("conversationList", "No conversations yet");
     const std::string active_text = listTextForIdLocked(state_.active_conversation_id);
     wd.setSelectedItems(
@@ -443,10 +496,20 @@ std::string AssistantDialog::widget_data() {
     SettingsStore store(settings_);
     const BackendSpec* stored_spec = backendByKey(store.getString(kKeyBackend, "claude"));
     wd.setCurrentIndex("backendCombo", stored_spec ? stored_spec->combo_index : 0);
-    wd.setText("claudeModelEdit", store.getString(kBackends[0].model_key, kBackends[0].default_model));
-    wd.setText("claudeCliPathEdit", store.getString(kBackends[0].cli_key, kBackends[0].default_cli));
-    wd.setText("codexModelEdit", store.getString(kBackends[1].model_key, kBackends[1].default_model));
-    wd.setText("codexCliPathEdit", store.getString(kBackends[1].cli_key, kBackends[1].default_cli));
+    for (const BackendSpec& spec : kBackends) {
+      wd.setText(widgetName(spec, "CliPathEdit"), store.getString(spec.cli_key, spec.default_cli));
+
+      // Model combo: "CLI default", "Custom...", then this backend's own
+      // models() -- ModelPicker owns the index<->value mapping both ways.
+      const ModelPicker picker(spec.models());
+      const std::string model_combo = widgetName(spec, "ModelCombo");
+      wd.setItems(model_combo, picker.items());
+
+      const std::string value = store.getString(spec.model_key, spec.default_model);
+      const int index = picker.indexForValue(value);
+      wd.setCurrentIndex(model_combo, index);
+      wd.setText(widgetName(spec, "ModelEdit"), index == ModelPicker::kIndexCustom ? value : "");
+    }
     wd.requestSubDialog(kAssistantSettingsUi);
   }
 
@@ -460,17 +523,15 @@ bool AssistantDialog::onTextChanged(std::string_view widget_name, std::string_vi
     return false;  // no re-render; the widget already shows the text
   }
   // Settings sub-dialog inputs: stage the value under its settings key; commit
-  // on subDialogAccepted. One table entry per BackendSpec field instead of a
-  // hand-written branch per widget.
-  static constexpr std::pair<const char*, const char*> kTextWidgetToKey[] = {
-      {"claudeModelEdit", kBackends[0].model_key},
-      {"claudeCliPathEdit", kBackends[0].cli_key},
-      {"codexModelEdit", kBackends[1].model_key},
-      {"codexCliPathEdit", kBackends[1].cli_key},
-  };
-  for (const auto& [widget, key] : kTextWidgetToKey) {
-    if (widget_name == widget) {
-      state_.pending_text[key] = std::string(text);
+  // on subDialogAccepted. Widget names derived from each BackendSpec's key
+  // (widgetName()) instead of a hand-written table.
+  for (const BackendSpec& spec : kBackends) {
+    if (widget_name == widgetName(spec, "ModelEdit")) {
+      state_.pending_text[spec.model_key] = std::string(text);
+      break;
+    }
+    if (widget_name == widgetName(spec, "CliPathEdit")) {
+      state_.pending_text[spec.cli_key] = std::string(text);
       break;
     }
   }
@@ -487,6 +548,22 @@ bool AssistantDialog::onIndexChanged(std::string_view widget_name, int index) {
     // understands.
     const BackendSpec* spec = backendByIndex(index);
     state_.pending_backend = spec ? spec->key : "claude";
+    return false;
+  }
+  // A model combo. The host harvests every QLineEdit before any QComboBox on
+  // accept, so onTextChanged(model_edit, ...) has already staged whatever
+  // that box currently shows into pending_text[model_key] by the time this
+  // runs — which is exactly what "Custom..." (ModelPicker::valueForIndex
+  // returning nullopt) wants persisted, so that case below leaves it alone.
+  for (const BackendSpec& spec : kBackends) {
+    if (widget_name != widgetName(spec, "ModelCombo")) {
+      continue;
+    }
+    const ModelPicker picker(spec.models());
+    if (const std::optional<std::string> value = picker.valueForIndex(index); value.has_value()) {
+      state_.pending_text[spec.model_key] = *value;
+    }
+    break;
   }
   return false;
 }
@@ -613,7 +690,13 @@ bool AssistantDialog::onTick() {
     rebuild = state_.rebuild_pending && !state_.session.busy();
   }
   if (rebuild) {
-    rebuildBackend();
+    // This is the other half of commitSettings()'s own call: a Settings
+    // commit that landed mid-turn defers rebuildBackend() (see its doc
+    // comment), so the backend switch — and the conversation switch that
+    // goes with it — only actually happens here, once the turn is over.
+    if (rebuildBackend()) {
+      activateBackendConversation();
+    }
   }
 
   return tools_ran > 0 || !batch.empty() || rebuild;
@@ -736,12 +819,23 @@ void AssistantDialog::commitSettings() {
       state_.pending_backend.reset();
     }
     backend = store.getString(kKeyBackend, "claude");
+  }
 
+  // Re-derive the header label + active backend from the freshly persisted
+  // choice. If a turn is in flight, rebuildBackend() defers itself and
+  // returns false (see its doc comment) — onTick applies the deferred
+  // rebuild and this same activation once the turn is over. Before the
+  // "Settings saved" note, so that note lands in the transcript it is about
+  // (the backend just switched TO), not the one just left.
+  if (rebuildBackend()) {
+    activateBackendConversation();
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(state_.mu);
     state_.session.addSystem("Settings saved (backend: " + backend + ").");
     state_.transcript_dirty = true;
   }
-  // Re-derive the header label + active backend from the freshly persisted choice.
-  rebuildBackend();
 
   // Probe the new backend off the GUI thread and report the result. Capture a
   // reference (still on the GUI thread here) so a subsequent rebuild can't

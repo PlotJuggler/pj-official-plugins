@@ -339,6 +339,28 @@ wrote, so no migration was needed for existing installs. If the harness has sinc
 (its own retention, not ours), the replay comes back empty and the panel starts blank instead of
 dangling a `--resume` target that no longer resolves.
 
+**Switching backends switches conversations.** Settings' backend combo is not just "which CLI
+handles the next turn" — `commitSettings()` remembers `active_backend_key_` before calling
+`rebuildBackend()`, and if the key actually changed (not deferred — see below), it calls the same
+`activateBackendConversation()` that the first bind uses: load whatever is persisted under the NEW
+key's `assistant.conv.<key>.session_id`, or start blank if nothing is (or it was purged). This runs
+BEFORE the "Settings saved (backend: …)." system row is appended, so that note lands in the
+transcript it is actually about — the one just switched TO — rather than trailing behind on the one
+just left. Picking a different MODEL for the same backend does not go through any of this: the key
+comparison is false, so the conversation is untouched. When Settings commits mid-turn,
+`rebuildBackend()` defers itself (`state_.rebuild_pending`) and the key has not changed yet at that
+point; `onTick()` keeps its own before/after snapshot of `active_backend_key_` around the deferred
+`rebuildBackend()` call and runs the same activation there, once the turn is over and the swap
+actually happens.
+
+One invariant this depends on: every `widget_data()` block that names `"conversationList"` — not
+just the drawer's own — must also call `wd.setListItemsDeletable("conversationList", true)`, because
+the host treats that flag as PER-PAYLOAD, not sticky (see `widget_data.hpp`): a widget-data object
+naming the list without it turns the trash/elision delegate off. The `controls_dirty` block names
+the list too (`setEnabled`), so it re-asserts the flag alongside — otherwise a controls-only refresh
+that lands without the drawer block in the same payload (right after a Settings commit, or right
+after a turn completes) would silently drop every row's trash can.
+
 **A resumed conversation tells the model what it lost.** The panel's own ephemeral state — tabs
 composed via `plot_tab`, say — dies with the process; `--resume` replays the model's history as if
 it hadn't. So `switchToConversation` sets `HarnessMemory::resumed_pending`, which forces

@@ -9,6 +9,7 @@
 
 #include "chat_session.hpp"     // ChatMessage
 #include "claude_sessions.hpp"  // ConversationSummary
+#include "model_choice.hpp"     // ModelChoice
 #include "tool_registry.hpp"
 #include "turn_metrics.hpp"
 
@@ -90,6 +91,14 @@ class LlmBackend {
   // change. Backends with no meaningful check keep the default.
   [[nodiscard]] virtual BackendTestResult testConnection() const {
     return {true, "no connectivity test for this backend"};
+  }
+
+  // The models worth offering in the settings combo, beyond "CLI default" and
+  // "Custom...", which every backend gets for free (assistant_dialog.cpp adds
+  // them). Empty by default: a backend with nothing better to say (Echo,
+  // Fake) just offers those two.
+  [[nodiscard]] virtual std::vector<ModelChoice> availableModels() const {
+    return {};
   }
 
   // Conversations this backend can list/resume/discard, newest first. A

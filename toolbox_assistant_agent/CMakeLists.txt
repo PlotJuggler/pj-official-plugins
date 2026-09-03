@@ -23,6 +23,7 @@ set(ASSISTANT_AGENT_COMMON_SOURCES
   src/tools.cpp
   src/claude_sessions.cpp
   src/codex_sessions.cpp
+  src/codex_models.cpp
 )
 
 add_library(toolbox_assistant_agent_plugin SHARED
@@ -151,6 +152,18 @@ if(BUILD_TESTING)
   )
   target_compile_features(toolbox_assistant_agent_claude_sessions_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentClaudeSessionsTest COMMAND toolbox_assistant_agent_claude_sessions_test)
+
+  # ModelPicker: the settings combo's index<->value mapping (CLI default /
+  # Custom.../listed choices), both directions. Pure, std-only.
+  add_executable(toolbox_assistant_agent_model_picker_test
+    tests/model_picker_test.cpp
+  )
+  target_link_libraries(toolbox_assistant_agent_model_picker_test PRIVATE GTest::gtest_main)
+  target_include_directories(toolbox_assistant_agent_model_picker_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_assistant_agent_model_picker_test PRIVATE cxx_std_20)
+  add_test(NAME ToolboxAssistantAgentModelPickerTest COMMAND toolbox_assistant_agent_model_picker_test)
 
   # SeriesStats: stats + min/max-preserving bucket decimation. Pure, std-only.
   add_executable(toolbox_assistant_agent_series_stats_test
@@ -291,6 +304,27 @@ if(BUILD_TESTING)
   )
   target_compile_features(toolbox_assistant_agent_codex_sessions_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentCodexSessionsTest COMMAND toolbox_assistant_agent_codex_sessions_test)
+
+  # CodexModels: the settings-combo catalog read from the CLI's own
+  # models_cache.json -- visibility filtering, priority ordering, label
+  # composition, and tolerance of a missing/corrupt file. Fixture is a
+  # verbatim copy of a real cache (tests/fixtures/codex_models_cache.json).
+  add_executable(toolbox_assistant_agent_codex_models_test
+    tests/codex_models_test.cpp
+    src/codex_models.cpp
+    src/codex_sessions.cpp
+  )
+  target_link_libraries(toolbox_assistant_agent_codex_models_test PRIVATE
+    nlohmann_json::nlohmann_json GTest::gtest_main
+  )
+  target_include_directories(toolbox_assistant_agent_codex_models_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(toolbox_assistant_agent_codex_models_test PRIVATE
+    ASSISTANT_CODEX_MODELS_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/codex_models_cache.json"
+  )
+  target_compile_features(toolbox_assistant_agent_codex_models_test PRIVATE cxx_std_20)
+  add_test(NAME ToolboxAssistantAgentCodexModelsTest COMMAND toolbox_assistant_agent_codex_models_test)
 
   # Latency bench — times real turns to count round-trips and separate model time
   # from our own tool time. Opt-in (ASSISTANT_BENCH=1) for the same reason as the
