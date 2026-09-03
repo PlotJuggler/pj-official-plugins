@@ -9,7 +9,7 @@
 #
 # The remote is a build ACCELERATOR, not a correctness requirement: everything
 # it serves is also resolvable from ConanCenter, and ensure_core.sh falls back
-# to building the SDK from the extern/plotjuggler_core submodule. So an
+# to building the SDK from its pinned git tag. So an
 # unreachable Artifactory degrades to slower builds instead of failing the job
 # -- a third-party outage must not be able to take down every CI leg and every
 # release at once. Problems are reported as ::warning:: so they stay visible in

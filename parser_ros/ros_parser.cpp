@@ -908,16 +908,17 @@ void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
     }
   }
 
-  // Combined /header/stamp (seconds): every std_msgs/Header topic gets the single
-  // plottable stamp series the specialized handlers emit via emitHeader(), on top
-  // of the split sec/nanosec leaves added below. A diagnostic aid for clock
+  // Combined /header/stamp (seconds) for ROS 2, whose std_msgs/Header flattens
+  // to split sec/nanosec leaves: the single plottable stamp series the
+  // specialized handlers emit via emitHeader(), a diagnostic aid for clock
   // offset/skew against the message (log/publish) time. Independent of the
-  // use_embedded_timestamp toggle. value[0]/value[1] are the header stamp leaves
-  // (ROS2: sec, nanosec; ROS1: seq, stamp) — same assumption as the block above.
-  if (has_header_ && flat_msg_.value.size() >= 2) {
-    const double stamp_sec = deserializer_->isROS2() ? flat_msg_.value[0].second.convert<double>() +
-                                                           1e-9 * flat_msg_.value[1].second.convert<double>()
-                                                     : flat_msg_.value[1].second.convert<double>();
+  // use_embedded_timestamp toggle. ROS 1 must NOT get it: its `time` builtin
+  // already flattens to one /header/stamp leaf in seconds, and a second column
+  // of the same name makes the datastore reject the whole record.
+  // value[0]/value[1] are the sec/nanosec leaves — same assumption as above.
+  if (has_header_ && deserializer_->isROS2() && flat_msg_.value.size() >= 2) {
+    const double stamp_sec =
+        flat_msg_.value[0].second.convert<double>() + 1e-9 * flat_msg_.value[1].second.convert<double>();
     addField("/header/stamp", stamp_sec);
   }
 
