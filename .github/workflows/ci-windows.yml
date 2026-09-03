@@ -24,7 +24,7 @@ jobs:
     # GitHub's 6-hour default). A cold run still rebuilds the whole Conan
     # closure from source before the cache save persists it; keep margin for
     # that bootstrap case.
-    timeout-minutes: 150
+    timeout-minutes: 240
 
     steps:
       - name: Checkout
