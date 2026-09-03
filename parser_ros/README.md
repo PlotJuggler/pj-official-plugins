@@ -119,6 +119,16 @@ particle cloud), so the scalar route uses the large-array discard policy; only
 | `geometry_msgs/msg/PoseStamped` | `kPosesInFrame` | `parsePoseStampedObject` — single pose; keeps `handlePoseStamped` scalars |
 | `nav_msgs/msg/Path` | `kPosesInFrame` | `parsePath` — path-frame poses; per-pose stamps dropped (one frame at one instant) |
 
+Two grid schemas are promoted to the canonical `kGridMap` object (a 2D grid of
+per-cell channels — elevation maps, layered costmaps). Both carry a slim
+hand-written scalar route so the object ingests under any policy without
+walking the cell data:
+
+| Schema | `BuiltinObjectType` | Handler |
+|--------|-----------------------|---------|
+| `grid_map_msgs/msg/GridMap` | `kGridMap` | `parseGridMap` — **transcoded** (owned buffer) through the shared `pj_grid_map` library (`common/grid_map`): grid_map stores each layer as a column-major Eigen matrix behind a ring buffer with index (0,0) at the +x/+y corner; the canonical grid is row-major with cell (0,0) at the -x/-y corner, so cell `(c, r)` reads storage `((size_y-1-r+inner_start) % size_y) * size_x + (size_x-1-c+outer_start) % size_x`. One `FLOAT32` field per layer in message order; a cell where any `basic_layers` entry is non-finite is NaN in every field. The origin is the map's -x/-y corner with identity orientation and `z = 0` (grid_map_ros ignores the pose's z/orientation; elevations are absolute heights in `frame_id`). Rejects any layout grid_map_core would not have produced (see `transcodeGridMap` in `common/grid_map`), capped at 16M cells / 64 layers. Scalars: `/header/*`, `/info/resolution`, `/info/length_x|y`, `/info/pose/*`, `/num_layers`, `/size_x`, `/size_y`. |
+| `foxglove_msgs/msg/Grid` | `kGridMap` | `parseFoxgloveGrid` — **zero-copy** view of `data[]` (the packed row-major layout is the canonical one). Bare time head (`int32 sec` on ROS 2, `uint32` on ROS 1), pose kept as the origin, `PackedElementField` types mapped explicitly (Foxglove numbers UINT8=1/INT8=2, swapped relative to ROS), `row_count = data.size() / row_stride` (a remainder is rejected). Scalars: `/timestamp`, `/frame_id`, `/column_count`, `/row_count`, `/row_stride`, `/cell_stride`, `/data_size`. |
+
 ## Scalar handlers
 
 Specialized handlers (registered through `wrapVoidHandler<>`) extract

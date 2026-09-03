@@ -70,8 +70,22 @@ void RosParser::parseTwist(const std::string& prefix) {
 }
 
 void RosParser::parsePose(const std::string& prefix) {
-  parseVector3(prefix + "/position");
-  parseQuaternion(prefix + "/orientation");
+  emitPose(prefix, readPose());
+}
+
+void RosParser::emitPose(const std::string& prefix, const PJ::sdk::Pose& pose) {
+  addField(prefix + "/position/x", pose.position.x);
+  addField(prefix + "/position/y", pose.position.y);
+  addField(prefix + "/position/z", pose.position.z);
+  const auto& q = pose.orientation;
+  addField(prefix + "/orientation/x", q.x);
+  addField(prefix + "/orientation/y", q.y);
+  addField(prefix + "/orientation/z", q.z);
+  addField(prefix + "/orientation/w", q.w);
+  const auto rpy = quaternionToRPY(q.x, q.y, q.z, q.w);
+  addField(prefix + "/orientation/roll", rpy.roll);
+  addField(prefix + "/orientation/pitch", rpy.pitch);
+  addField(prefix + "/orientation/yaw", rpy.yaw);
 }
 
 void RosParser::parseTransform(const std::string& prefix) {
