@@ -57,7 +57,7 @@ a live view, not saved state: they are never written to a layout, so a reload or
 them alone and closing PlotJuggler ends them.
 
 Both tools need a host exposing `pj.playback.v1`, `pj.plot_tabs.v1` and `pj.viewport.v1`
-(PlotJuggler with SDK >= 0.28.0); on an older host they answer with a clean "not exposed" the
+(PlotJuggler with SDK >= 0.27.0); on an older host they answer with a clean "not exposed" the
 model relays instead of guessing.
 
 Paths may be abbreviated: a unique suffix or prefix resolves on its own, and an ambiguous one
