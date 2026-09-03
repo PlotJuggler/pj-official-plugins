@@ -76,7 +76,6 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
-        with:
 
       - name: Configure PlotJuggler JFrog Conan remote
         if: github.repository == 'PlotJuggler/pj-official-plugins'
@@ -139,7 +138,6 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
-        with:
 
       - name: Configure PlotJuggler JFrog Conan remote
         if: github.repository == 'PlotJuggler/pj-official-plugins'
