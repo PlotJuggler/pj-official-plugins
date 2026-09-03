@@ -14,8 +14,8 @@ concurrency:
 jobs:
   # Acquire plotjuggler_sdk ONCE per run and hand it to every build leg as a Conan
   # cache artifact. Every job tries the shared JFrog remote first; if the exact
-  # prebuilt SDK is absent, ensure_core.sh builds it from the pinned
-  # extern/plotjuggler_core submodule. The matrix still receives one local artifact.
+  # prebuilt SDK is absent, ensure_core.sh builds it from the pinned git tag
+  # (v<SDK_VERSION>). The matrix still receives one local artifact.
   acquire-core:
     runs-on: ubuntu-22.04
     timeout-minutes: 60
@@ -23,7 +23,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
 
       - name: Install Conan
         uses: conan-io/setup-conan@v1.3.0
@@ -45,12 +44,12 @@ jobs:
         shell: bash
         run: scripts/configure_jfrog_conan.sh
 
-      - name: Acquire plotjuggler_sdk (JFrog → submodule fallback)
+      - name: Acquire plotjuggler_sdk (JFrog → source fallback)
         shell: bash
         run: scripts/ensure_core.sh
 
       - name: Upload plotjuggler_sdk to JFrog
-        # When ensure_core.sh built the SDK from the submodule (JFrog had no
+        # When ensure_core.sh built the SDK from source (JFrog had no
         # matching binary), publish it so the next run fetches it prebuilt. Scoped
         # to the pinned ref, mirroring the Save step. No-op if it came from JFrog.
         if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
@@ -243,7 +242,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
 
       - name: Install Conan
         uses: conan-io/setup-conan@v1.3.0
@@ -272,7 +270,7 @@ jobs:
 
       - name: Restore plotjuggler_sdk into the Conan cache
         # Core normally comes from the artifact primed by acquire-core. If the
-        # restore somehow misses, ensure_core.sh retries JFrog before the submodule.
+        # restore somehow misses, ensure_core.sh retries JFrog before building from source.
         shell: bash
         run: conan cache restore core-cache.tgz || scripts/ensure_core.sh
 
@@ -332,7 +330,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
 
       - name: Install Conan
         uses: conan-io/setup-conan@v1.3.0

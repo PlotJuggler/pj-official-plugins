@@ -23,7 +23,7 @@ concurrency:
 #
 #  - `build-distro` runs a matrix across every supported ROS 2 distribution
 #    inside the corresponding osrf/ros Docker image. Each job builds
-#    plotjuggler_sdk from the pinned extern/plotjuggler_core submodule and links
+#    plotjuggler_sdk from the pinned git tag (v<SDK_VERSION>) and links
 #    the resulting distro-specific shared library against that distro's
 #    rclcpp.
 #
@@ -77,7 +77,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
 
       - name: Configure PlotJuggler JFrog Conan remote
         if: github.repository == 'PlotJuggler/pj-official-plugins'
@@ -87,7 +86,7 @@ jobs:
         shell: bash
         run: scripts/configure_jfrog_conan.sh
 
-      - name: Acquire plotjuggler_sdk (JFrog → submodule fallback)
+      - name: Acquire plotjuggler_sdk (JFrog → source fallback)
         shell: bash
         run: |
           conan profile detect --force
@@ -141,7 +140,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
 
       - name: Configure PlotJuggler JFrog Conan remote
         if: github.repository == 'PlotJuggler/pj-official-plugins'
@@ -151,7 +149,7 @@ jobs:
         shell: bash
         run: scripts/configure_jfrog_conan.sh
 
-      - name: Acquire plotjuggler_sdk (JFrog → submodule fallback)
+      - name: Acquire plotjuggler_sdk (JFrog → source fallback)
         shell: bash
         run: |
           conan profile detect --force
