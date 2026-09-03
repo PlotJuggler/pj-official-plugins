@@ -9,7 +9,10 @@ on:
 
 concurrency:
   group: ci-windows-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs, but QUEUE main runs: a cold main run takes hours
+  # and its trailing JFrog upload + cache save are what keep every other run
+  # warm — a merge-triggered cancellation loses both, repeatedly on busy days.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   build:
@@ -119,6 +122,21 @@ jobs:
         run: |
           conan profile detect --force
           scripts/ensure_core.sh
+
+      - name: Start periodic Conan upload
+        # Push runs only: publish finished packages to JFrog every 10 minutes
+        # while the build runs, so a cancellation or timeout mid-build loses at
+        # most the package in flight instead of hours of compilation. The
+        # script is idempotent (skips revisions already on the remote) and
+        # no-ops when the remote is absent. The loop dies with the job.
+        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        shell: bash
+        run: |
+          # Detach fully and redirect: a background process holding the step's
+          # stdout would keep this step (and the job) waiting on it.
+          nohup bash -c 'while true; do sleep 600; scripts/upload_conan_artifacts.sh || true; done' \
+            > periodic_upload.log 2>&1 < /dev/null &
+          echo "uploader started (pid $!)"
 
       - name: Build & Test
         shell: bash
