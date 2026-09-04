@@ -384,9 +384,10 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     // Setup protobuf compiler
     gp::compiler::DiskSourceTree source_tree;
 
-    // Map paths for imports
+    // Import roots are the selected proto's own directory plus any include
+    // folders the user configured. Deliberately NOT the filesystem root: mapping
+    // "/" resolves imports against arbitrary host contents outside those roots.
     source_tree.MapPath("", "");
-    source_tree.MapPath("/", "/");
 
     // Add the directory containing the proto file
     std::string proto_dir = directoryFromPath(proto_file_path_);

@@ -526,7 +526,7 @@ std::string MosaicoDialog::widget_data() {
     }
 
     // Key/Op/Value assist dropdowns + PLUS, driven entirely by the pure
-    // computeAssist() model (query/assist.h) against the lua.txt contract:
+    // computeAssist() model (query/assist.h) against the query-assist contract:
     //   REPLACE — caret ON a token: that ONE dropdown is active and edits the
     //     token in place, live, no PLUS; its title syncs to the token.
     //   ADD — caret off a token: the dropdowns STAGE a clause (staged_*); the
@@ -554,7 +554,7 @@ std::string MosaicoDialog::widget_data() {
     wd.setEnabled("valCombo", assist.value.enabled);
     wd.setCurrentIndex("valCombo", indexOf(val_items, assist.value.title));
 
-    // PLUS is the sole entry point that inserts a NEW clause (lua.txt 9): live
+    // PLUS is the sole entry point that inserts a NEW clause (contract clauses 9): live
     // only when a Key + Value are staged (Op defaults to "==").
     wd.setButtonIconNamed("buttonAddClause", "add");
     wd.setEnabled("buttonAddClause", assist.plus_enabled);
@@ -963,7 +963,7 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
     return true;
   }
   if (widget_name == "buttonAddClause") {
-    // PLUS is the SOLE entry that inserts a NEW clause (lua.txt 3,9). It commits
+    // PLUS is the SOLE entry that inserts a NEW clause (contract clauses 3,9). It commits
     // the staged Key/Op/Value triple: build `key op "value"` and append it to the
     // current query, joined with " and " when a filter is already present. Op
     // defaults to "==" when the user never overrode it. After committing, the
@@ -1239,7 +1239,7 @@ bool MosaicoDialog::onIndexChanged(std::string_view widget_name, int index) {
   }
 
   if (slot->replaces) {
-    // REPLACE mode (lua.txt 4-7): edit the token under the caret in place, live,
+    // REPLACE mode (contract clauses 4-7): edit the token under the caret in place, live,
     // with NO PLUS. Values are quoted as Lua literals; keys/ops go in verbatim.
     const CursorContext ctx = analyze(state_.query_text, cursor, state_.query_schema);
     const Action action =
@@ -1255,7 +1255,7 @@ bool MosaicoDialog::onIndexChanged(std::string_view widget_name, int index) {
     return true;
   }
 
-  // ADD mode (lua.txt 1-3,9): STAGE the pick. The clause reaches the editor only
+  // ADD mode (contract clauses 1-3,9): STAGE the pick. The clause reaches the editor only
   // when PLUS commits it (onClicked "buttonAddClause"); nothing is written here.
   if (which == Which::kKey) {
     state_.staged_key = item;

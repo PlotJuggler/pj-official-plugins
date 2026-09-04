@@ -28,7 +28,7 @@ cmake --build build
 ### As subdirectory of plotjuggler_sdk
 
 ```bash
-cd ~/ws_plotjuggler/plotjuggler_sdk
+cd "${PLOTJUGGLER_SDK_DIR:?set it to your plotjuggler_sdk checkout}"
 ./build.sh          # RelWithDebInfo
 ./build.sh --debug  # Debug + ASAN
 ```

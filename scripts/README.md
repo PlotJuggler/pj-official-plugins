@@ -456,7 +456,7 @@ By default only the host platform is packaged (`--host-platform`, default `linux
 the repeatable `--platform NAME=BUILDDIR` flag:
 
 ```bash
-python3 scripts/build_local_registry.py --platform windows-x86_64=/mnt/win-build
+python3 scripts/build_local_registry.py --platform windows-x86_64="$WINDOWS_BUILD_DIR"
 ```
 
 A platform whose build directory is missing, or that has no matching binary, is skipped with a
