@@ -18,7 +18,8 @@
 #include <vector>
 
 #include "chat_session.hpp"
-#include "claude_sessions.hpp"  // ConversationSummary
+#include "claude_sessions.hpp"     // ConversationSummary
+#include "conversation_state.hpp"  // ConversationTitles
 #include "gui_executor.hpp"
 #include "llm_backend.hpp"
 #include "tool_registry.hpp"
@@ -31,6 +32,15 @@ namespace assistant_agent {
 // and their JSON dependency — into everything that includes it; the dialog's
 // destructor lives in the .cpp, where it is complete.
 struct HarnessMemory;
+
+// Which sub-dialog PanelEngine's single synthetic "subDialogAccepted" click
+// (fired for ANY accepted sub-dialog, host side: panel_engine.cpp) refers to.
+// Set when a sub-dialog is requested (widget_data()'s two *_pending blocks),
+// routed and cleared at accept (onClicked), and also cleared the next time
+// widget_data() runs with nothing newly pending -- the backstop for a Cancel,
+// which never fires subDialogAccepted and would otherwise leave this pointing
+// at a dialog that is no longer on screen.
+enum class SubDialogKind { None, Settings, Rename };
 
 // DialogState — pure data the panel drives. Mutated on the GUI thread only
 // (widget events + worker results drained by onTick), serialized into
@@ -61,15 +71,20 @@ struct DialogState {
   // What the last turn moved; rendered after statusText().
   UsageLedger usage;
 
-  // The ☰ conversations drawer (left of the transcript). Populated from
-  // backend_->listConversations() when opened — not kept live, so a
-  // conversation started in another PlotJuggler instance only appears the
-  // next time this one's drawer opens.
-  bool drawer_open = false;
-  bool drawer_dirty = true;          // forces the first widget_data() to push visibility + list + placeholder
-  bool header_icons_pending = true;  // one-shot setButtonIconNamed for menuButton/newChatButton
+  // The conversations drawer, always visible (left of the transcript).
+  // Populated from backend_->listConversations() on bind, on a backend
+  // switch, and after a delete -- not kept live otherwise, so a conversation
+  // started in another PlotJuggler instance only appears the next time one of
+  // those runs the refresh.
+  bool drawer_dirty = true;          // forces the first widget_data() to push the list + placeholder
+  bool header_icons_pending = true;  // one-shot setButtonIconNamed for newChatButton
   std::vector<ConversationSummary> conversations;
   std::string active_conversation_id;
+  // Custom display names for `conversations`, keyed by conversation id --
+  // refreshed alongside `conversations` itself (refreshConversationsLocked),
+  // after the harness's own titles have already been pruned of anything that
+  // fell out of that same listing. See conversation_state.hpp.
+  ConversationTitles conversation_titles;
 
   // A backend rebuild that arrived mid-turn and has to wait. Swapping the
   // backend is safe (the worker holds its own reference), but the conversation
@@ -78,6 +93,11 @@ struct DialogState {
   // once the turn is over — outside the state lock, because rebuildBackend()
   // takes it and the mutex is not recursive.
   bool rebuild_pending = false;
+
+  // Which sub-dialog widget_data() last requested — see SubDialogKind's own
+  // comment for why this has to exist at all (one synthetic accept click,
+  // two possible dialogs).
+  SubDialogKind open_sub_dialog = SubDialogKind::None;
 
   // Settings sub-dialog: request flag (read+cleared in widget_data) plus the
   // staged edits harvested from the modal's inputs on OK. PanelEngine fires
@@ -93,6 +113,21 @@ struct DialogState {
   // Staged backendCombo choice ("claude"/"codex"); onIndexChanged sets it,
   // commitSettings persists it and clears it back to nullopt.
   std::optional<std::string> pending_backend;
+
+  // Rename sub-dialog: same request/stage/commit shape as Settings above, one
+  // field each because there is exactly one input (ui/rename_conversation.ui).
+  bool open_rename_pending = false;
+  // The conversation the context-menu action was fired on (resolved from the
+  // row index through `conversations` at request time, onItemContextAction) —
+  // NOT necessarily active_conversation_id; renaming never changes which
+  // conversation is open.
+  std::string rename_conversation_id;
+  // renameEdit's prefill (the row's current display name), sent once when the
+  // sub-dialog is requested.
+  std::string rename_prefill;
+  // renameEdit's live text, staged by onTextChanged exactly like a settings
+  // field and committed on accept.
+  std::optional<std::string> pending_rename_text;
 };
 
 // The chat panel. A non-modal DialogPluginTyped whose input drives a worker
@@ -112,6 +147,7 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   bool onClicked(std::string_view widget_name) override;
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override;
   bool onItemDeleteRequested(std::string_view widget_name, int index) override;
+  bool onItemContextAction(std::string_view widget_name, int index, std::string_view action_id) override;
   bool onTick() override;
 
   // Host wiring, mirroring toolbox_mosaico. Providers are captured lazily so the
@@ -142,6 +178,11 @@ class AssistantDialog : public PJ::DialogPluginTyped {
 
   // Persist staged settings edits committed by the settings sub-dialog.
   void commitSettings();
+  // Persist (or clear) the staged rename committed by the rename sub-dialog.
+  // Blank/whitespace-only text removes the custom name instead of storing it
+  // — the row falls back to the harness's own title, the house behavior for
+  // renames elsewhere in PlotJuggler.
+  void commitRename();
   // Build a ToolContext from the currently-bound host providers (GUI thread).
   ToolContext makeToolContext();
   // Select the backend implementation from settings + the ASSISTANT_FAKE_BACKEND
@@ -207,20 +248,22 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   // loadPersistedConversation) AND every time Settings actually swaps the
   // backend key (commitSettings, and onTick's deferred-rebuild path): a
   // backend switch is a conversation switch, because each backend key keeps
-  // its OWN resume point (memoryFor). Refreshes the drawer's listing (and
-  // marks it dirty) only when the drawer is actually OPEN -- when closed, the
-  // menuButton handler already refreshes lazily on the next open, so doing it
-  // here too would just be discarded work. transcript_dirty/controls_dirty
-  // are marked unconditionally: the panel a settings commit leaves behind
-  // must always match what is now active, whichever branch ran. GUI-thread
+  // its OWN resume point (memoryFor). Always refreshes the drawer's listing
+  // (and marks it dirty): the drawer has no closed state to defer the work to
+  // anymore, and the panel a settings commit leaves behind must always match
+  // what is now active. transcript_dirty/controls_dirty are marked
+  // unconditionally for the same reason, whichever branch ran. GUI-thread
   // only; takes state_.mu itself (like switchToConversation), so must not be
   // called with it already held.
   void activateBackendConversation();
 
   // Requires state_.mu held by the caller. Rebuilds `conversations` from
   // backend_->listConversations() — local disk I/O under the harness's
-  // project dir, cheap enough to run inline on the GUI thread when the drawer
-  // opens (there is no async path for it, unlike a turn).
+  // project dir, cheap enough to run inline on the GUI thread on every call
+  // site (bind, a backend switch, a delete; there is no async path for it,
+  // unlike a turn). Also prunes conversation_titles down to the ids this
+  // listing still has (conversation_state.hpp) and reloads it, so the drawer
+  // never shows a name for a conversation the harness has since purged.
   void refreshConversationsLocked();
   // Requires state_.mu held by the caller. The host's QListWidget protocol
   // selects and reports rows by TEXT (setSelectedItems / onSelectionChanged),

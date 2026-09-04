@@ -8,21 +8,12 @@
        the floating window, which then squeezes the chat instead of widening. -->
   <layout class="QVBoxLayout" name="rootLayout">
    <item>
-    <!-- Both buttons are tagged for the host's chrome: PlotJuggler hides them here
-         and stands proxies in for them at the left of the panel's title bar (drawer
-         toggle, then settings). A host without that support shows this row as is. -->
+    <!-- Tagged for the host's chrome: PlotJuggler hides it here and stands a proxy
+         in for it at the left of the panel's title bar. A host without that support
+         shows this row as is. The drawer itself has no toggle; it is always there. -->
     <widget class="QFrame" name="headerBand">
      <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
      <layout class="QHBoxLayout" name="headerLayout">
-      <item>
-       <widget class="QPushButton" name="menuButton">
-        <property name="text"><string/></property>
-        <property name="toolTip"><string>Conversations</string></property>
-        <property name="pjToolboxChromeAction" stdset="0"><bool>true</bool></property>
-        <property name="chromeActionIcon" stdset="0"><string>:/resources/svg/menu.svg</string></property>
-        <property name="chromeActionSlot" stdset="0"><string>leading</string></property>
-       </widget>
-      </item>
       <item>
        <spacer name="headerSpacer">
         <property name="orientation"><enum>Qt::Horizontal</enum></property>
@@ -51,12 +42,15 @@
       <item>
        <!-- Tagged as the panel's side drawer: PlotJuggler hoists it into a full-height
             column beside its own title bar (tab and floating window alike) and draws
-            the separator. A host without that support keeps it here, beside the chat. -->
+            the separator. A host without that support keeps it here, beside the chat.
+            Always visible; no toggle. 160 is the splitter minimum, not the opening
+            width: the transcript next to it declares minimumWidth 380, and 240 (the
+            old fixed width) plus that plus margins pushed the panel's own minimum past
+            630px, squeezing the floating window. No maximumWidth, so the splitter is
+            free to open at this frame's natural (layout-computed) size instead. -->
        <widget class="QFrame" name="conversationsDrawer">
         <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
-        <property name="visible"><bool>false</bool></property>
-        <property name="minimumWidth"><number>240</number></property>
-        <property name="maximumWidth"><number>240</number></property>
+        <property name="minimumWidth"><number>160</number></property>
         <property name="pjToolboxSideDrawer" stdset="0"><bool>true</bool></property>
         <layout class="QVBoxLayout" name="drawerLayout">
          <property name="leftMargin"><number>0</number></property>
@@ -80,7 +74,9 @@
           </widget>
          </item>
          <item>
-          <widget class="QListWidget" name="conversationList"/>
+          <widget class="QListWidget" name="conversationList">
+           <property name="pj_context_actions" stdset="0"><string>rename=Rename</string></property>
+          </widget>
          </item>
         </layout>
        </widget>

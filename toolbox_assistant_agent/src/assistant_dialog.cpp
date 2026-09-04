@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 #include "assistant_dialog.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <utility>
 
@@ -13,6 +15,7 @@
 #include "conversation_state.hpp"
 #include "fake_backend.hpp"
 #include "model_picker.hpp"
+#include "rename_conversation_ui.hpp"
 #include "settings_store.hpp"
 
 namespace assistant_agent {
@@ -92,11 +95,24 @@ const BackendSpec* backendByIndex(int index) {
   return nullptr;
 }
 
+// The name a row shows: the user's custom name (assistant.conv.<key>.titles,
+// conversation_state.hpp) if one is set, else the harness's own title.
+std::string displayTitle(const ConversationSummary& c, const ConversationTitles& titles) {
+  const auto it = titles.find(c.id);
+  return it != titles.end() ? it->second : c.title;
+}
+
 // A drawer row's text. The date suffix is what keeps two same-titled
 // conversations apart under the host's text-keyed list protocol
 // (setSelectedItems / onSelectionChanged match by TEXT, not by row or id).
-std::string listText(const ConversationSummary& c) {
-  return c.title + " · " + formatShortDate(c.last_ts);
+std::string listText(const ConversationSummary& c, const ConversationTitles& titles) {
+  return displayTitle(c, titles) + " · " + formatShortDate(c.last_ts);
+}
+
+// True for an empty or whitespace-only rename: the house behavior elsewhere
+// in PlotJuggler is that clearing a name resets it, not that it stores "".
+bool isBlank(const std::string& s) {
+  return std::all_of(s.begin(), s.end(), [](unsigned char ch) { return std::isspace(ch) != 0; });
 }
 
 // Which backend key a persisted `assistant.backend` value resolves to —
@@ -292,25 +308,31 @@ void AssistantDialog::activateBackendConversation() {
   // but setting them again here is free, and it is what covers the
   // blank-reset branch above too -- every path through this function leaves
   // the panel showing exactly what is now active. The drawer's listing is
-  // only refreshed here when it is actually OPEN: when closed, the
-  // menuButton handler already refreshes lazily on the next open, so doing it
-  // here too would just be discarded work.
+  // always visible now, so it is always refreshed here too.
   std::lock_guard<std::mutex> lock(state_.mu);
-  if (state_.drawer_open) {
-    refreshConversationsLocked();
-    state_.drawer_dirty = true;
-  }
+  refreshConversationsLocked();
+  state_.drawer_dirty = true;
   state_.transcript_dirty = true;
   state_.controls_dirty = true;
 }
 
 void AssistantDialog::refreshConversationsLocked() {
   state_.conversations = backend_ ? backend_->listConversations() : std::vector<ConversationSummary>{};
+  std::vector<std::string> ids;
+  ids.reserve(state_.conversations.size());
+  for (const ConversationSummary& c : state_.conversations) {
+    ids.push_back(c.id);
+  }
+  // Prune first, then reload: a rename whose conversation just fell out of
+  // this same listing must not still show up in conversation_titles below.
+  SettingsStore store(settings_);
+  pruneConversationTitles(store, active_backend_key_, ids);
+  state_.conversation_titles = loadConversationTitles(store, active_backend_key_);
 }
 
 std::string AssistantDialog::idForListTextLocked(const std::string& text) const {
   for (const ConversationSummary& c : state_.conversations) {
-    if (listText(c) == text) {
+    if (listText(c, state_.conversation_titles) == text) {
       return c.id;
     }
   }
@@ -320,7 +342,7 @@ std::string AssistantDialog::idForListTextLocked(const std::string& text) const 
 std::string AssistantDialog::listTextForIdLocked(const std::string& id) const {
   for (const ConversationSummary& c : state_.conversations) {
     if (c.id == id) {
-      return listText(c);
+      return listText(c, state_.conversation_titles);
     }
   }
   return {};
@@ -419,8 +441,16 @@ std::string AssistantDialog::widget_data() {
   // serializing a WidgetData 20x/sec — the host treats an empty return as
   // "no update".
   if (!state_.transcript_dirty && !state_.controls_dirty && !state_.clear_input_pending &&
-      !state_.open_settings_pending && !state_.drawer_dirty && !state_.header_icons_pending) {
+      !state_.open_settings_pending && !state_.open_rename_pending && !state_.drawer_dirty &&
+      !state_.header_icons_pending) {
     return {};
+  }
+  // SubDialogKind's backstop: a Cancel on either sub-dialog never fires
+  // subDialogAccepted, so nothing else clears open_sub_dialog. The moment
+  // THIS render has no fresh request of its own, whatever it was pointing at
+  // is stale.
+  if (!state_.open_settings_pending && !state_.open_rename_pending) {
+    state_.open_sub_dialog = SubDialogKind::None;
   }
   PJ::WidgetData wd;
 
@@ -454,28 +484,23 @@ std::string AssistantDialog::widget_data() {
     // Same reason, plus: wiping the conversation memory under a running turn
     // would have the backend resume a session it just forgot.
     wd.setEnabled("newChatButton", !busy);
-    // The drawer reads/mutates the same conversation memory a running turn is
-    // writing into — same reason, same guard.
-    wd.setEnabled("menuButton", !busy);
     nameConversationList(busy);
     state_.controls_dirty = false;
   }
 
   if (state_.header_icons_pending) {
-    // Static per-panel glyphs; no reason to resend on every build like the
+    // A static per-panel glyph; no reason to resend on every build like the
     // per-turn state above.
-    wd.setButtonIconNamed("menuButton", "menu");
     wd.setButtonIconNamed("newChatButton", "add");
     state_.header_icons_pending = false;
   }
 
   if (state_.drawer_dirty) {
-    wd.setVisible("conversationsDrawer", state_.drawer_open);
     nameConversationList(state_.session.busy());
     std::vector<std::string> rows;
     rows.reserve(state_.conversations.size());
     for (const ConversationSummary& c : state_.conversations) {
-      rows.push_back(listText(c));
+      rows.push_back(listText(c, state_.conversation_titles));
     }
     wd.setListItems("conversationList", rows);
     wd.setListPlaceholder("conversationList", "No conversations yet");
@@ -492,6 +517,7 @@ std::string AssistantDialog::widget_data() {
 
   if (state_.open_settings_pending) {
     state_.open_settings_pending = false;
+    state_.open_sub_dialog = SubDialogKind::Settings;
     // Pre-fill the modal from persisted settings before showing it.
     SettingsStore store(settings_);
     const BackendSpec* stored_spec = backendByKey(store.getString(kKeyBackend, "claude"));
@@ -513,6 +539,13 @@ std::string AssistantDialog::widget_data() {
     wd.requestSubDialog(kAssistantSettingsUi);
   }
 
+  if (state_.open_rename_pending) {
+    state_.open_rename_pending = false;
+    state_.open_sub_dialog = SubDialogKind::Rename;
+    wd.setText("renameEdit", state_.rename_prefill);
+    wd.requestSubDialog(kRenameConversationUi);
+  }
+
   return wd.toJson();
 }
 
@@ -521,6 +554,13 @@ bool AssistantDialog::onTextChanged(std::string_view widget_name, std::string_vi
   if (widget_name == "inputEdit") {
     state_.input_text = std::string(text);
     return false;  // no re-render; the widget already shows the text
+  }
+  if (widget_name == "renameEdit") {
+    // Staged exactly like a settings field: the host harvests this box's
+    // current text on accept regardless of whether the user typed anything,
+    // so this always lands before subDialogAccepted fires.
+    state_.pending_rename_text = std::string(text);
+    return false;
   }
   // Settings sub-dialog inputs: stage the value under its settings key; commit
   // on subDialogAccepted. Widget names derived from each BackendSpec's key
@@ -588,17 +628,24 @@ bool AssistantDialog::onClicked(std::string_view widget_name) {
     startNewConversation();
     return true;
   }
-  if (widget_name == "menuButton") {
-    std::lock_guard<std::mutex> lock(state_.mu);
-    state_.drawer_open = !state_.drawer_open;
-    if (state_.drawer_open) {
-      refreshConversationsLocked();
-    }
-    state_.drawer_dirty = true;
-    return true;
-  }
   if (widget_name == "subDialogAccepted") {
-    commitSettings();
+    // Exactly one sub-dialog can be open at a time, and PanelEngine fires this
+    // same synthetic click for whichever one the user just accepted (host
+    // side: panel_engine.cpp) -- route by what widget_data() last requested,
+    // not by guessing from which fields happen to be staged.
+    SubDialogKind kind;
+    {
+      std::lock_guard<std::mutex> lock(state_.mu);
+      kind = state_.open_sub_dialog;
+      state_.open_sub_dialog = SubDialogKind::None;
+    }
+    if (kind == SubDialogKind::Rename) {
+      commitRename();
+    } else {
+      // Settings, or (should never happen) None -- the safe default is the
+      // one every build before this one always did.
+      commitSettings();
+    }
     return true;
   }
   return false;
@@ -654,6 +701,25 @@ bool AssistantDialog::onItemDeleteRequested(std::string_view widget_name, int in
     // active id and the in-memory session/memory.
     startNewConversation();
   }
+  return true;
+}
+
+bool AssistantDialog::onItemContextAction(std::string_view widget_name, int index, std::string_view action_id) {
+  if (widget_name != "conversationList" || action_id != "rename") {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(state_.mu);
+  if (state_.session.busy()) {
+    return false;  // the list is disabled while busy; this is the belt to that brace
+  }
+  if (index < 0 || static_cast<std::size_t>(index) >= state_.conversations.size()) {
+    return false;  // a stale row index racing a delete
+  }
+  const ConversationSummary& c = state_.conversations[static_cast<std::size_t>(index)];
+  state_.rename_conversation_id = c.id;
+  state_.rename_prefill = displayTitle(c, state_.conversation_titles);
+  state_.pending_rename_text.reset();
+  state_.open_rename_pending = true;
   return true;
 }
 
@@ -848,6 +914,34 @@ void AssistantDialog::commitSettings() {
       state_.transcript_dirty = true;
     });
   });
+}
+
+void AssistantDialog::commitRename() {
+  std::string id;
+  std::string text;
+  {
+    std::lock_guard<std::mutex> lock(state_.mu);
+    id = state_.rename_conversation_id;
+    text = state_.pending_rename_text.value_or(std::string());
+    state_.rename_conversation_id.clear();
+    state_.rename_prefill.clear();
+    state_.pending_rename_text.reset();
+  }
+  if (id.empty()) {
+    return;  // defensive: nothing staged to commit (should not happen, see onItemContextAction)
+  }
+  SettingsStore store(settings_);
+  if (isBlank(text)) {
+    removeConversationTitle(store, active_backend_key_, id);
+  } else {
+    setConversationTitle(store, active_backend_key_, id, text);
+  }
+  std::lock_guard<std::mutex> lock(state_.mu);
+  // Only the affected id needs updating, but reloading the whole map is one
+  // read and keeps this in lockstep with refreshConversationsLocked() instead
+  // of hand-duplicating its logic here.
+  state_.conversation_titles = loadConversationTitles(store, active_backend_key_);
+  state_.drawer_dirty = true;  // the renamed row's text just changed
 }
 
 void AssistantDialog::workerLoop() {

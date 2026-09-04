@@ -4,8 +4,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace assistant_agent {
 
@@ -60,6 +62,32 @@ void clearActiveSessionId(SettingsStore& store, const std::string& key);
   }
   return out;
 }
+
+// The one thing the drawer copies into settings on purpose: a per-conversation
+// display name the user picked from the rename context-menu action, keyed by
+// conversation id. One JSON object per backend (`assistant.conv.<key>.titles`
+// = {"<id>": "<name>", ...}) rather than a key per conversation: pj.settings.v1
+// has get/set/contains/remove but no way to ENUMERATE keys, so a key-per-id
+// scheme could never find (and prune) the names of conversations the harness
+// has since purged on its own retention -- see pruneConversationTitles.
+using ConversationTitles = std::map<std::string, std::string>;
+
+// Malformed JSON (a hand-edited store, or a value this build doesn't
+// recognize) degrades to "no custom names" rather than throwing -- a title is
+// cosmetic, never worth taking the panel down over.
+[[nodiscard]] ConversationTitles loadConversationTitles(const SettingsStore& store, const std::string& key);
+void saveConversationTitles(SettingsStore& store, const std::string& key, const ConversationTitles& titles);
+
+// load + mutate + save round trips, for the two call sites that touch exactly
+// one entry (the rename commit) instead of the whole map.
+void setConversationTitle(
+    SettingsStore& store, const std::string& key, const std::string& conversation_id, const std::string& name);
+void removeConversationTitle(SettingsStore& store, const std::string& key, const std::string& conversation_id);
+
+// Drops every entry whose id is not in `live_ids`, saving only if something
+// actually changed. Called right after the drawer's listing is refreshed, so a
+// rename never outlives the conversation it named.
+void pruneConversationTitles(SettingsStore& store, const std::string& key, const std::vector<std::string>& live_ids);
 
 // One-shot migration off the pre-harness-store design: erases what an older
 // build of this plugin left behind — the copied transcript and the persisted

@@ -19,11 +19,16 @@
 namespace {
 
 using assistant_agent::clearActiveSessionId;
+using assistant_agent::ConversationTitles;
 using assistant_agent::fnv1aHex;
 using assistant_agent::loadActiveSessionId;
+using assistant_agent::loadConversationTitles;
+using assistant_agent::pruneConversationTitles;
+using assistant_agent::removeConversationTitle;
 using assistant_agent::saveActiveSessionId;
 using assistant_agent::scrubLegacyConversationKeys;
 using assistant_agent::scrubRetiredOllamaKeys;
+using assistant_agent::setConversationTitle;
 using assistant_agent::SettingsStore;
 
 struct Fixture {
@@ -101,6 +106,105 @@ TEST(ScrubRetiredOllamaKeys, ErasesEveryRetiredOllamaKey) {
   // Idempotent by its gate: a second pass reads and writes nothing new.
   scrubRetiredOllamaKeys(store);
   EXPECT_EQ(store.getString("assistant.conv.ollama.history", "unset"), "");
+}
+
+TEST(ConversationTitlesTest, RoundTripsThroughTheStore) {
+  Fixture fx;
+  auto store = fx.store();
+  setConversationTitle(store, "claude", "sess-1", "My demo");
+  setConversationTitle(store, "claude", "sess-2", "Another one");
+
+  const ConversationTitles titles = loadConversationTitles(fx.store(), "claude");
+  ASSERT_EQ(titles.size(), 2u);
+  EXPECT_EQ(titles.at("sess-1"), "My demo");
+  EXPECT_EQ(titles.at("sess-2"), "Another one");
+}
+
+TEST(ConversationTitlesTest, AbsentKeyLoadsAsAnEmptyMap) {
+  Fixture fx;
+  EXPECT_TRUE(loadConversationTitles(fx.store(), "claude").empty());
+}
+
+TEST(ConversationTitlesTest, RemoveDropsOnlyThatEntry) {
+  Fixture fx;
+  auto store = fx.store();
+  setConversationTitle(store, "claude", "sess-1", "A");
+  setConversationTitle(store, "claude", "sess-2", "B");
+
+  removeConversationTitle(store, "claude", "sess-1");
+
+  const ConversationTitles titles = loadConversationTitles(fx.store(), "claude");
+  ASSERT_EQ(titles.size(), 1u);
+  EXPECT_EQ(titles.at("sess-2"), "B");
+}
+
+TEST(ConversationTitlesTest, RemovingAnIdNotInTheMapIsANoOpWrite) {
+  Fixture fx;
+  auto store = fx.store();
+  setConversationTitle(store, "claude", "sess-1", "A");
+  removeConversationTitle(store, "claude", "sess-does-not-exist");
+  EXPECT_EQ(loadConversationTitles(fx.store(), "claude").at("sess-1"), "A");
+}
+
+TEST(ConversationTitlesTest, DifferentBackendKeysDoNotShareNames) {
+  Fixture fx;
+  auto store = fx.store();
+  setConversationTitle(store, "claude", "sess-1", "Claude name");
+  setConversationTitle(store, "codex", "sess-1", "Codex name");
+
+  EXPECT_EQ(loadConversationTitles(fx.store(), "claude").at("sess-1"), "Claude name");
+  EXPECT_EQ(loadConversationTitles(fx.store(), "codex").at("sess-1"), "Codex name");
+}
+
+TEST(ConversationTitlesTest, PruneDropsEntriesNotInTheLiveList) {
+  Fixture fx;
+  auto store = fx.store();
+  setConversationTitle(store, "claude", "sess-1", "Keep me");
+  setConversationTitle(store, "claude", "sess-2", "Purge me");
+
+  pruneConversationTitles(store, "claude", {"sess-1"});
+
+  const ConversationTitles titles = loadConversationTitles(fx.store(), "claude");
+  ASSERT_EQ(titles.size(), 1u);
+  EXPECT_EQ(titles.at("sess-1"), "Keep me");
+}
+
+TEST(ConversationTitlesTest, PruneWritesNothingWhenNothingChanged) {
+  Fixture fx;
+  auto store = fx.store();
+  setConversationTitle(store, "claude", "sess-1", "Keep me");
+
+  // sess-2 isn't in the map to begin with; nothing here should be dropped.
+  pruneConversationTitles(store, "claude", {"sess-1", "sess-2"});
+
+  EXPECT_EQ(loadConversationTitles(fx.store(), "claude").at("sess-1"), "Keep me");
+}
+
+TEST(ConversationTitlesTest, PruningEverythingAwayLeavesTheStoreReadingAsEmpty) {
+  Fixture fx;
+  auto store = fx.store();
+  setConversationTitle(store, "claude", "sess-1", "Gone soon");
+
+  pruneConversationTitles(store, "claude", {});  // nothing is live anymore
+
+  EXPECT_TRUE(loadConversationTitles(fx.store(), "claude").empty());
+}
+
+TEST(ConversationTitlesTest, MalformedJsonDegradesToNoCustomNamesRatherThanThrowing) {
+  Fixture fx;
+  auto store = fx.store();
+  store.setString("assistant.conv.claude.titles", "{not valid json");
+
+  ConversationTitles titles;
+  EXPECT_NO_THROW(titles = loadConversationTitles(fx.store(), "claude"));
+  EXPECT_TRUE(titles.empty());
+}
+
+TEST(ConversationTitlesTest, ANonObjectJsonValueDegradesToNoCustomNames) {
+  Fixture fx;
+  auto store = fx.store();
+  store.setString("assistant.conv.claude.titles", "[1,2,3]");  // valid JSON, wrong shape
+  EXPECT_TRUE(loadConversationTitles(fx.store(), "claude").empty());
 }
 
 TEST(Fnv1aHex, StableAndDistinct) {

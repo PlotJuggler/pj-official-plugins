@@ -63,6 +63,12 @@ pj_embed_ui(toolbox_assistant_agent_plugin
   VAR_NAME kAssistantSettingsUi
 )
 
+pj_embed_ui(toolbox_assistant_agent_plugin
+  UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/ui/rename_conversation.ui
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/rename_conversation_ui.hpp
+  VAR_NAME kRenameConversationUi
+)
+
 pj_embed_manifest(toolbox_assistant_agent_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/assistant_panel_manifest.hpp
   VAR_NAME kAssistantPanelManifest

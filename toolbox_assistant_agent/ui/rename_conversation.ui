@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>RenameConversation</class>
+ <widget class="QDialog" name="RenameConversation">
+  <property name="windowTitle"><string>Rename conversation</string></property>
+  <property name="minimumWidth"><number>360</number></property>
+  <layout class="QVBoxLayout" name="renameLayout">
+   <item>
+    <widget class="QLabel" name="renameCaption">
+     <property name="text"><string>Name (leave blank to use the default title)</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLineEdit" name="renameEdit"/>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>

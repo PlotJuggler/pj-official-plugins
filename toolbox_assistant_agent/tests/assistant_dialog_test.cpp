@@ -6,9 +6,11 @@
 // into the harness store that ClaudeBackend would read from
 // (~/.claude/projects/<slug>/), so listConversations/loadTranscript/
 // deleteConversation exercise the real claude_sessions.hpp parser, not a
-// mock. None of the paths this file drives (menuButton, conversationList's
-// selection/delete) ever call sendUserMessage or testConnection, so no
-// `claude` CLI is spawned — this stays fully offline.
+// mock. None of the paths this file drives (conversationList's selection,
+// delete, rename) ever call sendUserMessage or testConnection, so no `claude`
+// CLI is spawned — this stays fully offline. The conversations drawer is
+// always visible now (no menuButton toggle), so a refresh happens on bind,
+// on a backend switch, and after a delete -- never behind an "open" click.
 #include "assistant_dialog.hpp"
 
 #include <gtest/gtest.h>
@@ -41,6 +43,7 @@ namespace {
 using assistant_agent::AssistantDialog;
 using assistant_agent::claudeSessionsDir;
 using assistant_agent::loadActiveSessionId;
+using assistant_agent::loadConversationTitles;
 using assistant_agent::SettingsStore;
 using nlohmann::json;
 
@@ -122,11 +125,10 @@ class AssistantDialogDrawerTest : public ::testing::Test {
   PJ::sdk::SettingsView settings_view_;
 };
 
-TEST_F(AssistantDialogDrawerTest, OpeningTheDrawerListsRealHarnessConversationsNewestFirst) {
+TEST_F(AssistantDialogDrawerTest, ThePanelListsRealHarnessConversationsFromTheFirstFrame) {
   AssistantDialog dialog;
-  dialog.setSettings(settings_view_);
+  dialog.setSettings(settings_view_);  // the drawer is always visible now -- no open click needed
 
-  ASSERT_TRUE(dialog.onClicked("menuButton"));
   const json snap = snapshot(dialog);
   const json list = entryIn(snap, "conversationList");
 
@@ -137,15 +139,12 @@ TEST_F(AssistantDialogDrawerTest, OpeningTheDrawerListsRealHarnessConversationsN
   // is newer than session_alpha (ai-title "PlotJuggler demo") -- newest first.
   EXPECT_EQ(items[0], "Can you plot the vehicle speed against the steer · 2 Sep 09:00");
   EXPECT_EQ(items[1], "PlotJuggler demo · 1 Sep 15:17");
-
-  EXPECT_EQ(entryIn(snap, "conversationsDrawer").value("visible", false), true);
 }
 
 TEST_F(AssistantDialogDrawerTest, SelectingAConversationReplaysItsTranscriptAndPersistsTheActiveId) {
   AssistantDialog dialog;
   dialog.setSettings(settings_view_);
-  ASSERT_TRUE(dialog.onClicked("menuButton"));
-  (void)dialog.widget_data();  // flush the list-open render before selecting
+  (void)dialog.widget_data();  // flush the initial render before selecting
 
   ASSERT_TRUE(dialog.onSelectionChanged(
       "conversationList", {"Can you plot the vehicle speed against the steer · 2 Sep 09:00"}));
@@ -160,21 +159,15 @@ TEST_F(AssistantDialogDrawerTest, SelectingAConversationReplaysItsTranscriptAndP
       text.find("Assistant: I opened a new tab plotting vehicle_speed against vehicle_steering."), std::string::npos);
   EXPECT_NE(text.find("resumed previous conversation"), std::string::npos);
 
-  EXPECT_EQ(entryIn(snap, "conversationsDrawer").value("visible", false), true)
-      << "picking a conversation leaves the drawer open, like a sidebar";
-
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "session_gamma");
 }
 
 TEST_F(AssistantDialogDrawerTest, DeletingTheActiveConversationStartsANewOneAndRemovesTheFile) {
   AssistantDialog dialog;
   dialog.setSettings(settings_view_);
-  ASSERT_TRUE(dialog.onClicked("menuButton"));
   ASSERT_TRUE(dialog.onSelectionChanged(
       "conversationList", {"Can you plot the vehicle speed against the steer · 2 Sep 09:00"}));
-  (void)dialog.widget_data();
 
-  ASSERT_TRUE(dialog.onClicked("menuButton"));  // reopen: refreshes the list again
   const json before = entryIn(snapshot(dialog), "conversationList");
   const std::vector<std::string> items_before = before.at("list_items").get<std::vector<std::string>>();
   ASSERT_EQ(items_before.size(), 2u);
@@ -218,7 +211,6 @@ TEST_F(AssistantDialogDrawerTest, ReopeningThePanelResumesThePersistedConversati
   EXPECT_NE(text.find("Give me a demo"), std::string::npos) << "alpha's first prompt, catalog stripped";
   EXPECT_EQ(text.find("Loaded data"), std::string::npos) << "the injected catalog is not a transcript row";
   EXPECT_NE(text.find("resumed previous conversation"), std::string::npos);
-  EXPECT_EQ(entryIn(snap, "conversationsDrawer").value("visible", true), false) << "reopening keeps the drawer shut";
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "session_alpha");
 }
 
@@ -235,6 +227,121 @@ TEST_F(AssistantDialogDrawerTest, APurgedActiveConversationIsForgottenOnReopen) 
       << "nothing to replay, so the panel opens blank rather than half-resumed";
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "")
       << "a dangling --resume target must not survive to the next turn";
+}
+
+// --- Rename, via the context-menu action ("conversationList", "rename") ---
+
+TEST_F(AssistantDialogDrawerTest, RenamingTheActiveRowKeepsItActiveAndLeavesTheTranscriptAlone) {
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  ASSERT_TRUE(dialog.onSelectionChanged(
+      "conversationList", {"Can you plot the vehicle speed against the steer · 2 Sep 09:00"}));
+  (void)dialog.widget_data();  // flush the selection's render before renaming
+
+  // Row 0 is still session_gamma: selecting it doesn't reorder the list.
+  ASSERT_TRUE(dialog.onItemContextAction("conversationList", 0, "rename"));
+  (void)dialog.widget_data();  // let the render request the sub-dialog (sets open_sub_dialog)
+  EXPECT_FALSE(dialog.onTextChanged("renameEdit", "Steering demo"));
+  EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
+
+  const json snap = snapshot(dialog);
+  EXPECT_FALSE(snap.contains("transcriptText")) << "a rename must not re-render the transcript";
+  const std::vector<std::string> items =
+      entryIn(snap, "conversationList").at("list_items").get<std::vector<std::string>>();
+  ASSERT_EQ(items.size(), 2u);
+  EXPECT_EQ(items[0], "Steering demo · 2 Sep 09:00")
+      << "the custom name replaces the harness title; the date suffix stays";
+  EXPECT_EQ(items[1], "PlotJuggler demo · 1 Sep 15:17");
+
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "session_gamma")
+      << "renaming must not change which conversation is active";
+}
+
+TEST_F(AssistantDialogDrawerTest, CustomNameSurvivesReopeningThePanelAndWinsOverTheHarnessTitle) {
+  {
+    AssistantDialog dialog;
+    dialog.setSettings(settings_view_);
+    ASSERT_TRUE(dialog.onItemContextAction("conversationList", 0, "rename"));  // row 0: session_gamma
+    (void)dialog.widget_data();  // let the render request the sub-dialog (sets open_sub_dialog)
+    EXPECT_FALSE(dialog.onTextChanged("renameEdit", "Steering demo"));
+    EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
+  }  // dialog destroyed here, like closing and reopening the panel
+
+  AssistantDialog dialog2;
+  dialog2.setSettings(settings_view_);
+  const std::vector<std::string> items =
+      entryIn(snapshot(dialog2), "conversationList").at("list_items").get<std::vector<std::string>>();
+  ASSERT_EQ(items.size(), 2u);
+  EXPECT_EQ(items[0], "Steering demo · 2 Sep 09:00");
+}
+
+TEST_F(AssistantDialogDrawerTest, AcceptingAnEmptyRenameRemovesTheCustomNameAndTheHarnessTitleReturns) {
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  ASSERT_TRUE(dialog.onItemContextAction("conversationList", 0, "rename"));
+  (void)dialog.widget_data();  // let the render request the sub-dialog (sets open_sub_dialog)
+  EXPECT_FALSE(dialog.onTextChanged("renameEdit", "Steering demo"));
+  EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
+  ASSERT_EQ(
+      entryIn(snapshot(dialog), "conversationList").at("list_items").get<std::vector<std::string>>()[0],
+      "Steering demo · 2 Sep 09:00");
+
+  ASSERT_TRUE(dialog.onItemContextAction("conversationList", 0, "rename"));
+  (void)dialog.widget_data();  // let the render request the sub-dialog (sets open_sub_dialog)
+  EXPECT_FALSE(dialog.onTextChanged("renameEdit", "   "));  // whitespace-only
+  EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
+
+  const std::vector<std::string> items =
+      entryIn(snapshot(dialog), "conversationList").at("list_items").get<std::vector<std::string>>();
+  EXPECT_EQ(items[0], "Can you plot the vehicle speed against the steer · 2 Sep 09:00")
+      << "an empty (or whitespace-only) name removes the custom title; the harness title comes back";
+}
+
+TEST_F(AssistantDialogDrawerTest, PruningDropsACustomNameWhoseConversationIsGoneFromTheListing) {
+  {
+    AssistantDialog dialog;
+    dialog.setSettings(settings_view_);
+    ASSERT_TRUE(dialog.onItemContextAction("conversationList", 0, "rename"));  // row 0: session_gamma
+    (void)dialog.widget_data();  // let the render request the sub-dialog (sets open_sub_dialog)
+    EXPECT_FALSE(dialog.onTextChanged("renameEdit", "Steering demo"));
+    EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
+  }
+
+  // Simulate the harness's own retention purging the file -- not our delete
+  // path, so this proves the prune is driven by the LISTING, not by onItemDeleteRequested.
+  std::error_code ec;
+  std::filesystem::remove(claudeSessionsDir(expectedWorkDir(home_).string()) / "session_gamma.jsonl", ec);
+  ASSERT_FALSE(ec);
+
+  AssistantDialog dialog2;
+  dialog2.setSettings(settings_view_);  // the bind's refresh prunes the now-dangling title
+  const std::vector<std::string> items =
+      entryIn(snapshot(dialog2), "conversationList").at("list_items").get<std::vector<std::string>>();
+  ASSERT_EQ(items.size(), 1u);
+  EXPECT_EQ(items[0], "PlotJuggler demo · 1 Sep 15:17");
+
+  // Gone from the store too, not merely unused -- otherwise a later
+  // conversation reusing the same id would inherit the pruned name.
+  EXPECT_TRUE(loadConversationTitles(SettingsStore(settings_view_), "claude").empty());
+}
+
+TEST_F(AssistantDialogDrawerTest, RenameAndSettingsSubDialogsRouteIndependently) {
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+
+  // Opening the rename dialog and accepting it must not write any settings key.
+  ASSERT_TRUE(dialog.onItemContextAction("conversationList", 0, "rename"));
+  (void)dialog.widget_data();  // let the render request the sub-dialog (sets open_sub_dialog)
+  EXPECT_FALSE(dialog.onTextChanged("renameEdit", "Steering demo"));
+  EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
+  EXPECT_FALSE(SettingsStore(settings_view_).contains("assistant.backend"))
+      << "renaming must never touch a settings key";
+
+  // Opening settings and accepting it still commits it, exactly as before.
+  ASSERT_TRUE(dialog.onClicked("settingsButton"));
+  EXPECT_FALSE(dialog.onIndexChanged("backendCombo", 0));  // stays on claude
+  EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
+  EXPECT_EQ(SettingsStore(settings_view_).getString("assistant.backend", "unset"), "claude");
 }
 
 // --- Codex drawer cases: same behavior, different harness store -----------
@@ -366,7 +473,6 @@ TEST_F(AssistantDialogCodexDrawerTest, OpeningTheDrawerListsCodexConversationsNe
   AssistantDialog dialog;
   dialog.setSettings(settings_view_);
 
-  ASSERT_TRUE(dialog.onClicked("menuButton"));
   const json snap = snapshot(dialog);
   const json list = entryIn(snap, "conversationList");
   ASSERT_TRUE(list.contains("list_items"));
@@ -379,8 +485,6 @@ TEST_F(AssistantDialogCodexDrawerTest, OpeningTheDrawerListsCodexConversationsNe
 TEST_F(AssistantDialogCodexDrawerTest, SelectingAConversationReplaysItAndPersistsUnderTheCodexKey) {
   AssistantDialog dialog;
   dialog.setSettings(settings_view_);
-  ASSERT_TRUE(dialog.onClicked("menuButton"));
-  (void)dialog.widget_data();
 
   ASSERT_TRUE(dialog.onSelectionChanged(
       "conversationList", {"Can you plot the vehicle speed against the steer · 2 Sep 09:00"}));
@@ -400,12 +504,9 @@ TEST_F(AssistantDialogCodexDrawerTest, SelectingAConversationReplaysItAndPersist
 TEST_F(AssistantDialogCodexDrawerTest, DeletingTheActiveConversationStartsANewOneAndRemovesTheFile) {
   AssistantDialog dialog;
   dialog.setSettings(settings_view_);
-  ASSERT_TRUE(dialog.onClicked("menuButton"));
   ASSERT_TRUE(dialog.onSelectionChanged(
       "conversationList", {"Can you plot the vehicle speed against the steer · 2 Sep 09:00"}));
-  (void)dialog.widget_data();
 
-  ASSERT_TRUE(dialog.onClicked("menuButton"));
   ASSERT_TRUE(dialog.onItemDeleteRequested("conversationList", 0));
   const json snap = snapshot(dialog);
 
@@ -502,23 +603,18 @@ TEST(AssistantDialogBackendSwitch, ClaudeCodexClaudeKeepsBothSessionIds) {
   AssistantDialog dialog;
   dialog.setSettings(settings_view);  // starts on "claude" (the default)
 
-  ASSERT_TRUE(dialog.onClicked("menuButton"));
-  (void)dialog.widget_data();
   ASSERT_TRUE(dialog.onSelectionChanged("conversationList", {"PlotJuggler demo · 1 Sep 15:17"}));
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view), "claude"), "session_alpha");
-  ASSERT_TRUE(dialog.onClicked("menuButton"));  // close: the drawer stays open across a selection
 
   // Switch to Codex through the real settings flow (settingsButton ->
   // backendCombo -> subDialogAccepted), the same path the UI drives.
+  // activateBackendConversation() refreshes the drawer's listing
+  // unconditionally, so it is already codex's own by the time of the
+  // selection below.
   ASSERT_TRUE(dialog.onClicked("settingsButton"));
   EXPECT_FALSE(dialog.onIndexChanged("backendCombo", 1));
   EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
 
-  // Reopen: menuButton only refreshes conversations on the transition into
-  // "open", so the drawer has to be closed (above) before it is reopened here
-  // for the list to reflect the now-active Codex backend.
-  ASSERT_TRUE(dialog.onClicked("menuButton"));
-  (void)dialog.widget_data();
   ASSERT_TRUE(dialog.onSelectionChanged(
       "conversationList", {"Can you plot the vehicle speed against the steer · 2 Sep 09:00"}));
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view), "codex"), "codex_gamma");
@@ -636,10 +732,7 @@ TEST_F(AssistantDialogSettingsSwitchTest, EveryPayloadNamingTheConversationListC
 
   AssistantDialog dialog;
   dialog.setSettings(settings_view_);
-  checkPayload(dialog.widget_data());  // initial render
-
-  ASSERT_TRUE(dialog.onClicked("menuButton"));  // drawer open
-  checkPayload(dialog.widget_data());
+  checkPayload(dialog.widget_data());  // initial render -- the drawer is always visible, so this already names it
 
   // A settings commit that does NOT switch backends: rebuildBackend() still
   // sets controls_dirty (the status line names the backend), but nothing
@@ -689,12 +782,13 @@ TEST_F(AssistantDialogSettingsSwitchTest, SwitchingBackendLoadsThatBackendsPersi
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "session_alpha")
       << "switching must not touch claude's persisted id";
 
-  ASSERT_TRUE(dialog.onClicked("menuButton"));
+  // activateBackendConversation() refreshed the drawer unconditionally, so
+  // `snap` (above, already consumed by the transcript checks) carried codex's
+  // own listing too -- no extra open/close dance needed to see it.
   const std::vector<std::string> items =
-      entryIn(snapshot(dialog), "conversationList").at("list_items").get<std::vector<std::string>>();
+      entryIn(snap, "conversationList").at("list_items").get<std::vector<std::string>>();
   ASSERT_EQ(items.size(), 1u) << "the drawer listing must be codex's now, not claude's";
   EXPECT_EQ(items[0], "Can you plot the vehicle speed against the steer · 2 Sep 09:00");
-  ASSERT_TRUE(dialog.onClicked("menuButton"));  // close, so the next reopen refreshes again
 
   // Switch back to Claude: nothing lost.
   ASSERT_TRUE(dialog.onClicked("settingsButton"));
@@ -731,9 +825,10 @@ TEST_F(AssistantDialogSettingsSwitchTest, SwitchingToABackendWithNothingPersiste
   EXPECT_NE(text.find("Settings saved (backend: codex)"), std::string::npos);
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "codex"), "");
 
-  ASSERT_TRUE(dialog.onClicked("menuButton"));
+  // The same `snap` already carries codex's own listing -- the drawer refresh
+  // on a backend switch is unconditional now.
   const std::vector<std::string> items =
-      entryIn(snapshot(dialog), "conversationList").at("list_items").get<std::vector<std::string>>();
+      entryIn(snap, "conversationList").at("list_items").get<std::vector<std::string>>();
   ASSERT_EQ(items.size(), 1u) << "codex's own listing (the fixture exists, just was never made ACTIVE)";
   EXPECT_EQ(items[0], "Can you plot the vehicle speed against the steer · 2 Sep 09:00");
 }

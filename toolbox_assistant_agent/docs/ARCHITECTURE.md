@@ -412,16 +412,17 @@ re-sent catalog's cost, and shows up in the ledger like any other turn).
 ## The drawer and the buttons live in the host's chrome
 
 The panel's `.ui` owns only the content area; the title bar (tab banner or floating window) is
-PlotJuggler's. Three `.ui` dynamic properties (documented in PJ4's `pj_dialog_host/CLAUDE.md`)
-let the panel reach it without any code of its own: `menuButton` and `settingsButton` carry
-`pjToolboxChromeAction` + `chromeActionSlot=leading`, so the host hides them and stands icon
-proxies in for them before the title (clicks are forwarded, so `onClicked` sees the same names);
-`conversationsDrawer` carries `pjToolboxSideDrawer`, so the host hoists it into a full-height
-column beside the title bar, in every presentation, with the separator drawn by the host. The
-plugin keeps driving the drawer by name (`setVisible`, `setListItems`) exactly as before — the
-host records hoisted widgets on the panel root so its lookups still reach them. On a host without
-that support the same `.ui` degrades to what it literally says: a header row with the two buttons
-and the drawer beside the transcript.
+PlotJuggler's. Two `.ui` dynamic properties (documented in PJ4's `pj_dialog_host/CLAUDE.md`)
+let the panel reach it without any code of its own: `settingsButton` carries
+`pjToolboxChromeAction` + `chromeActionSlot=leading`, so the host hides it and stands an icon
+proxy in for it before the title (clicks are forwarded, so `onClicked` sees the same name);
+`conversationsDrawer` carries `pjToolboxSideDrawer`, so the host hoists it into a full-height,
+user-resizable column beside the title bar (a `QSplitter`, not a fixed width), in every
+presentation, with the handle drawn by the host. The drawer has no toggle and no closed state —
+it is always there, so the plugin only ever drives its *contents* by name (`setListItems`,
+`setSelectedItems`), never its visibility — the host records hoisted widgets on the panel root so
+those lookups still reach them. On a host without that support the same `.ui` degrades to what it
+literally says: a header row with the Settings button and the drawer beside the transcript.
 
 ## Threading of the panel
 
