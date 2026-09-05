@@ -179,6 +179,7 @@ if(BUILD_TESTING)
     src/arrow_ipc_message.cpp
   )
   target_link_libraries(toolbox_mosaico_arrow_ipc_message_test PRIVATE
+    plotjuggler_sdk::plugin_sdk
     ${_test_arrow_target}
     nlohmann_json::nlohmann_json
     fmt::fmt

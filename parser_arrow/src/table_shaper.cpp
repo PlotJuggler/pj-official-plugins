@@ -3,7 +3,6 @@
 #include <nanoarrow/nanoarrow.h>
 
 #include <algorithm>
-#include <array>
 #include <cerrno>
 #include <cmath>
 #include <cstdint>
@@ -32,7 +31,7 @@ struct OutputColumn {
   std::vector<int64_t> source_path;
   ColumnSource source = ColumnSource::kLeaf;
   ValueCast cast = ValueCast::kNone;
-  ArrowTimeUnit unit = NANOARROW_TIME_UNIT_NANO;
+  PJ::TimeUnit unit = PJ::TimeUnit::kNanoseconds;
   CopyKind copy = CopyKind::kUnsupported;
   bool is_timestamp_axis = false;
   int64_t element_index = -1;
@@ -195,6 +194,21 @@ void setNanoarrowStreamError(ShapingStreamState& state, int result, const char* 
   return typeRow(type).is_list_type;
 }
 
+/// Translate Arrow's native unit without changing the timestamp's interpretation.
+[[nodiscard]] PJ::TimeUnit timestampUnit(ArrowTimeUnit unit) {
+  switch (unit) {
+    case NANOARROW_TIME_UNIT_SECOND:
+      return PJ::TimeUnit::kSeconds;
+    case NANOARROW_TIME_UNIT_MILLI:
+      return PJ::TimeUnit::kMilliseconds;
+    case NANOARROW_TIME_UNIT_MICRO:
+      return PJ::TimeUnit::kMicroseconds;
+    case NANOARROW_TIME_UNIT_NANO:
+      return PJ::TimeUnit::kNanoseconds;
+  }
+  return PJ::TimeUnit::kNanoseconds;
+}
+
 /// Parse a source exactly once and populate its scalar reconstruction and intrinsic axis cast. `column.name` must
 /// already hold the flattened output name: axis rejections quote it.
 PJ::Status configureSource(const ArrowSchema* schema, bool is_timestamp_axis, OutputColumn& column) {
@@ -215,7 +229,7 @@ PJ::Status configureSource(const ArrowSchema* schema, bool is_timestamp_axis, Ou
   }
 
   if (view->type == NANOARROW_TYPE_TIMESTAMP) {
-    column.unit = view->time_unit;
+    column.unit = timestampUnit(view->time_unit);
   }
   column.source_type = view->type;
   column.copy = row.copy;
@@ -308,62 +322,27 @@ PJ::Status collectLeaves(const ArrowSchema* schema, bool flatten_structs, std::v
   return index;
 }
 
-/// Named detection accepts only scalar types with a useful epoch range and precision.
-[[nodiscard]] bool isPlausibleNamedAxis(const OutputColumn& column) {
-  return column.source == ColumnSource::kLeaf && typeRow(column.source_type).auto_axis_plausible;
-}
-
-/// Preserve explicit narrow-axis support while making its limited epoch range visible to callers.
+/// Surface the SDK's warning when an explicitly selected axis has limited range or precision.
 void appendExplicitAxisWarning(const OutputColumn& column, std::vector<ShapeWarning>& warnings) {
-  std::string limitation;
-  switch (column.source_type) {
-    case NANOARROW_TYPE_INT8:
-      limitation = "int8 can express at most 127 ns since epoch";
-      break;
-    case NANOARROW_TYPE_INT16:
-      limitation = "int16 can express at most 32767 ns since epoch";
-      break;
-    case NANOARROW_TYPE_INT32:
-      limitation = "int32 can express at most 2147483647 ns since epoch";
-      break;
-    case NANOARROW_TYPE_UINT8:
-      limitation = "uint8 can express at most 255 ns since epoch";
-      break;
-    case NANOARROW_TYPE_UINT16:
-      limitation = "uint16 can express at most 65535 ns since epoch";
-      break;
-    case NANOARROW_TYPE_UINT32:
-      limitation = "uint32 can express at most 4294967295 ns since epoch";
-      break;
-    case NANOARROW_TYPE_FLOAT:
-      limitation = "float has sub-second resolution only for magnitudes below 8388608 seconds since epoch";
-      break;
-    default:
-      return;
+  const auto limitation = PJ::sdk::explicitOnlyWarning(typeRow(column.source_type).timestamp_storage, column.unit);
+  if (!limitation.empty()) {
+    warnings.push_back(
+        ShapeWarning{
+            "parser_arrow.narrow_timestamp_axis",
+            "explicit timestamp column '" + column.name + "': " + std::string(limitation)});
   }
-  warnings.push_back(
-      ShapeWarning{
-          "parser_arrow.narrow_timestamp_axis", "explicit timestamp column '" + column.name + "': " + limitation});
 }
 
-/// Detect the axis among flattened leaves: the first leaf that is itself Arrow TIMESTAMP-typed in schema order,
-/// otherwise the first plausibly typed scalar leaf whose flattened name matches the heuristic priority list.
-[[nodiscard]] std::size_t detectTimestampLeaf(const std::vector<OutputColumn>& leaves) {
-  for (std::size_t index = 0; index < leaves.size(); ++index) {
-    if (leaves[index].source_type == NANOARROW_TYPE_TIMESTAMP && leaves[index].source == ColumnSource::kLeaf) {
-      return index;
-    }
+/// Both the producer and parser use the SDK's native-type and canonical-name policy.
+[[nodiscard]] std::size_t detectTimestampLeaf(const std::vector<OutputColumn>& leaves, PJ::TimeUnit unit) {
+  std::vector<PJ::sdk::TimestampCandidate> candidates;
+  candidates.reserve(leaves.size());
+  for (const auto& leaf : leaves) {
+    candidates.push_back({leaf.name, typeRow(leaf.source_type).timestamp_storage, leaf.source != ColumnSource::kLeaf});
   }
-  static constexpr std::array<std::string_view, 5> kNames = {
-      "timestamp_ns", "recording_timestamp_ns", "timestamp", "time", "ts"};
-  for (const std::string_view preferred : kNames) {
-    for (std::size_t index = 0; index < leaves.size(); ++index) {
-      if (leaves[index].name == preferred && isPlausibleNamedAxis(leaves[index])) {
-        return index;
-      }
-    }
-  }
-  return leaves.size();
+  auto policy = PJ::sdk::kCanonicalPolicy;
+  policy.unit = unit;
+  return PJ::sdk::detectTimestampColumn(candidates, policy).value_or(leaves.size());
 }
 
 /// Return whether the current PlotJuggler host imports a final output schema.
@@ -706,7 +685,8 @@ PJ::Status buildOutputSchema(
     return false;
   }
   const bool cast_requires_copy = column.cast != ValueCast::kNone && !(column.cast == ValueCast::kWidenToInt64 &&
-                                                                       column.source_type == NANOARROW_TYPE_INT64);
+                                                                       column.source_type == NANOARROW_TYPE_INT64 &&
+                                                                       column.unit == PJ::TimeUnit::kNanoseconds);
   return cast_requires_copy || !canMoveFlattenedLeaf(input, column.source_path);
 }
 
@@ -748,75 +728,19 @@ PJ::Status buildOutputSchema(
   return typeRow(type).copy != CopyKind::kUnsupported;
 }
 
-/// Return the integer nanoseconds-per-tick multiplier for an Arrow timestamp unit.
-[[nodiscard]] int64_t timestampMultiplier(ArrowTimeUnit unit) {
-  switch (unit) {
-    case NANOARROW_TIME_UNIT_SECOND:
-      return 1'000'000'000;
-    case NANOARROW_TIME_UNIT_MILLI:
-      return 1'000'000;
-    case NANOARROW_TIME_UNIT_MICRO:
-      return 1000;
-    case NANOARROW_TIME_UNIT_NANO:
-      return 1;
-  }
-  return 1;
-}
-
-/// Multiply a signed tick count by a positive unit scale without overflow.
-[[nodiscard]] bool checkedMultiply(int64_t value, int64_t multiplier, int64_t* output) {
-  if (value > 0 && value > std::numeric_limits<int64_t>::max() / multiplier) {
-    return false;
-  }
-  if (value < 0 && value < std::numeric_limits<int64_t>::min() / multiplier) {
-    return false;
-  }
-  *output = value * multiplier;
-  return true;
-}
-
-/// Split at the whole-second boundary so conversion is independent of `long double` width.
-[[nodiscard]] bool floatingSecondsToNanoseconds(double seconds, int64_t* output) noexcept {
-  if (!std::isfinite(seconds)) {
-    return false;
-  }
-  constexpr int64_t kNanosecondsPerSecond = 1'000'000'000;
-  constexpr int64_t kLargestWholeSeconds = std::numeric_limits<int64_t>::max() / kNanosecondsPerSecond;
-  constexpr int64_t kSmallestWholeSeconds = std::numeric_limits<int64_t>::min() / kNanosecondsPerSecond;
-  const double whole_seconds = std::trunc(seconds);
-  if (whole_seconds > static_cast<double>(kLargestWholeSeconds) ||
-      whole_seconds < static_cast<double>(kSmallestWholeSeconds)) {
-    return false;
-  }
-
-  int64_t whole_nanoseconds = 0;
-  if (!checkedMultiply(static_cast<int64_t>(whole_seconds), kNanosecondsPerSecond, &whole_nanoseconds)) {
-    return false;
-  }
-  const int64_t fractional_nanoseconds =
-      std::llround((seconds - whole_seconds) * static_cast<double>(kNanosecondsPerSecond));
-  if ((fractional_nanoseconds > 0 &&
-       whole_nanoseconds > std::numeric_limits<int64_t>::max() - fractional_nanoseconds) ||
-      (fractional_nanoseconds < 0 &&
-       whole_nanoseconds < std::numeric_limits<int64_t>::min() - fractional_nanoseconds)) {
-    return false;
-  }
-  *output = whole_nanoseconds + fractional_nanoseconds;
-  return true;
-}
-
 /// Append one copied/cast source value and preserve ordinary-column nulls.
 [[nodiscard]] int appendCastedValue(
     ArrowArray* output, const ArrowArrayView* input, int64_t row, const OutputColumn& column,
     ShapingStreamState& state) {
-  int64_t converted = 0;
+  std::optional<int64_t> converted;
   switch (column.cast) {
     case ValueCast::kNone:
       return appendValue(output, input, row, column, state);
     case ValueCast::kNormalizeBytes:
       return ArrowArrayAppendBytes(output, ArrowArrayViewGetBytesUnsafe(input, row));
     case ValueCast::kScaleTimestampTicks: {
-      if (!checkedMultiply(ArrowArrayViewGetIntUnsafe(input, row), timestampMultiplier(column.unit), &converted)) {
+      converted = PJ::scaleToNanoseconds(ArrowArrayViewGetIntUnsafe(input, row), column.unit);
+      if (!converted) {
         return fail(state, ERANGE, "timestamp column '" + column.name + "' overflows int64 nanoseconds");
       }
       break;
@@ -826,14 +750,16 @@ PJ::Status buildOutputSchema(
         return fail(state, EINVAL, "non-axis column '" + column.name + "' requested timestamp integer widening");
       }
       if (isUnsignedInteger(column.source_type)) {
-        const uint64_t value = ArrowArrayViewGetUIntUnsafe(input, row);
-        // Only uint64 can reach past INT64_MAX; narrower widths take the same branch for free.
-        if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+        converted = PJ::toSignedTicks(ArrowArrayViewGetUIntUnsafe(input, row));
+        if (!converted) {
           return fail(state, ERANGE, "timestamp column '" + column.name + "' exceeds INT64_MAX");
         }
-        converted = static_cast<int64_t>(value);
       } else {
         converted = ArrowArrayViewGetIntUnsafe(input, row);
+      }
+      converted = PJ::scaleToNanoseconds(*converted, column.unit);
+      if (!converted) {
+        return fail(state, ERANGE, "timestamp column '" + column.name + "' overflows int64 nanoseconds");
       }
       break;
     case ValueCast::kFloatSecondsToNanoseconds: {
@@ -846,13 +772,14 @@ PJ::Status buildOutputSchema(
         state.runtime->float_axis_column = column.name;
         state.runtime->float_axis_magnitude_exceeded = true;
       }
-      if (!floatingSecondsToNanoseconds(seconds, &converted)) {
+      converted = PJ::secondsToNanoseconds(seconds);
+      if (!converted) {
         return fail(state, ERANGE, "timestamp column '" + column.name + "' cannot be represented as int64 nanoseconds");
       }
       break;
     }
   }
-  return ArrowArrayAppendInt(output, converted);
+  return ArrowArrayAppendInt(output, *converted);
 }
 
 /// Copy one source leaf while applying all ancestor and leaf validity.
@@ -949,33 +876,6 @@ PJ::Status buildOutputSchema(
   return NANOARROW_OK;
 }
 
-/// Safely evaluate anchor + row * interval for a non-negative row index.
-[[nodiscard]] bool syntheticTimestamp(int64_t anchor, int64_t interval, int64_t row, int64_t* timestamp) {
-  if (row < 0) {
-    return false;
-  }
-  int64_t product = 0;
-  if (interval > 0) {
-    if (row != 0 && interval > std::numeric_limits<int64_t>::max() / row) {
-      return false;
-    }
-    product = interval * row;
-    if (anchor > std::numeric_limits<int64_t>::max() - product) {
-      return false;
-    }
-  } else if (interval < 0) {
-    if (row != 0 && interval < std::numeric_limits<int64_t>::min() / row) {
-      return false;
-    }
-    product = interval * row;
-    if (anchor < std::numeric_limits<int64_t>::min() - product) {
-      return false;
-    }
-  }
-  *timestamp = anchor + product;
-  return true;
-}
-
 /// Append this batch's section of the whole-stream synthetic timestamp sequence.
 [[nodiscard]] int appendSyntheticTimestamps(ArrowArray* output, ShapingStreamState& state, int64_t length) {
   int result = ArrowArrayStartAppending(output);
@@ -983,12 +883,12 @@ PJ::Status buildOutputSchema(
     return result;
   }
   for (int64_t row = 0; row < length; ++row) {
-    int64_t timestamp = 0;
     const int64_t stream_row = state.row_offset + row;
-    if (!syntheticTimestamp(state.message_timestamp_ns, state.synthetic_interval_ns, stream_row, &timestamp)) {
+    const auto timestamp = PJ::syntheticInstant(state.message_timestamp_ns, state.synthetic_interval_ns, stream_row);
+    if (!timestamp) {
       return fail(state, ERANGE, "synthetic timestamp overflow at row " + std::to_string(stream_row));
     }
-    result = ArrowArrayAppendInt(output, timestamp);
+    result = ArrowArrayAppendInt(output, *timestamp);
     if (result != NANOARROW_OK) {
       return result;
     }
@@ -1179,11 +1079,6 @@ void shapingRelease(ArrowArrayStream* stream) noexcept {
 
 namespace test {
 
-/// Exercise the platform-independent timestamp conversion at exact representable inputs.
-[[nodiscard]] bool floatingSecondsToNanosecondsForTesting(double seconds, int64_t* output) noexcept {
-  return floatingSecondsToNanoseconds(seconds, output);
-}
-
 /// Let the contract test follow the production predicate instead of re-reading the table it is validating.
 [[nodiscard]] bool supportsScalarCopyForTesting(ArrowType type) noexcept {
   return supportsScalarCopy(type);
@@ -1252,7 +1147,7 @@ PJ::Expected<ShapedStream> shapeStream(PJ::sdk::ArrowStreamHolder input, const S
     std::vector<ShapeWarning> warnings;
     std::size_t axis = collected.size();
     if (options.timestamp_column.empty()) {
-      axis = detectTimestampLeaf(collected);
+      axis = detectTimestampLeaf(collected, options.timestamp_unit);
     } else {
       // The configured name goes through the same dot normalization as the leaves, so a field literally named
       // `sensor.time` stays selectable by its own spelling as well as by `sensor/time`.
@@ -1272,6 +1167,9 @@ PJ::Expected<ShapedStream> shapeStream(PJ::sdk::ArrowStreamHolder input, const S
       auto status = configureSource(schemaAtPath(schema, collected[axis].source_path), true, collected[axis]);
       if (!status) {
         return PJ::unexpected(std::move(status).error());
+      }
+      if (collected[axis].source_type != NANOARROW_TYPE_TIMESTAMP) {
+        collected[axis].unit = options.timestamp_unit;
       }
       if (!options.timestamp_column.empty()) {
         appendExplicitAxisWarning(collected[axis], warnings);

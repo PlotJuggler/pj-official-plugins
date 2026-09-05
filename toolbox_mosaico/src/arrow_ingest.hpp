@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <pj_base/sdk/plugin_data_api.hpp>
+#include <pj_base/time_math.hpp>
 #include <string>
 
 // Forward-declared so the header doesn't pull in <arrow/api.h>.
@@ -49,7 +50,8 @@ using ImagePushOutcome = ObjectPushOutcome;
 ///
 /// `host` is a trivially-copyable view (two ABI pointers) held by value;
 /// `topic_name`/`ts_field` are owned so a context can be built from string
-/// literals (tests) or borrowed lvalues alike.
+/// literals (tests) or borrowed lvalues alike. Missing/null timestamps use the
+/// synthetic axis; unrepresentable timestamps or synthetic overflow return an error.
 struct ObjectIngestContext {
   PJ::sdk::ToolboxHostView host;
   PJ::sdk::DataSourceHandle source;
@@ -57,6 +59,7 @@ struct ObjectIngestContext {
   std::string ts_field;    ///< timestamp column to use, or "" to synthesize timestamps.
   std::int64_t synth_anchor_ns = 0;
   std::int64_t synth_interval_ns = 0;
+  PJ::TimeUnit timestamp_unit = PJ::TimeUnit::kNanoseconds;  ///< Integer axes; native/floating units are intrinsic.
 };
 
 /// Serialize every row of @p table as a canonical PJ.Image blob (pj_base's

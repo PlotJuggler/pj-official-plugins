@@ -17,6 +17,7 @@ Configuration is a JSON object:
 | Key | Type | Default | Semantics |
 |-----|------|---------|-----------|
 | `timestamp_column` | string | `""` | Non-empty: use this leaf as the time axis, named as a flattened path at any depth. Dots normalize to `/` as they do in leaf names, so `header.stamp` and `header/stamp` are the same request; a name matching no leaf is an error. Empty: auto-detect an axis, then synthesize one if none is found. |
+| `timestamp_unit` | string | `"ns"` | Integer-axis unit: `"ns"`, `"us"`, `"ms"`, or `"s"`. Native Arrow timestamps retain their own unit; floating axes always carry seconds. Invalid units are rejected. |
 | `flatten_structs` | bool | `true` | Flatten nested structs depth-first to slash-separated leaf names. `false` preserves struct boundaries while unsupported top-level struct columns are removed. |
 | `synthetic_interval_ns` | int64 | `0` | When an axis is synthesized, add this many nanoseconds per row. Zero gives every row the message timestamp; negative intervals are allowed. The row index continues across record batches. |
 | `max_array_size` | uint32 | `500` | Maximum scalar columns emitted for one list. Zero means unlimited. |
@@ -38,9 +39,11 @@ is no such leaf and only top-level fields remain). Selection is ordered:
 2. Automatic detection: the first Arrow `TIMESTAMP`-typed leaf in schema order,
    then the first scalar leaf whose full flattened name matches this name
    priority: `timestamp_ns`, `recording_timestamp_ns`, `timestamp`, `time`,
-   `ts`. A name match is plausible only when its source type is `TIMESTAMP`,
-   `int64`, `uint64`, or `double`; narrower integers, `uint32`, and `float` are
-   not selected automatically.
+   `ts`, `t`, `time_stamp`, `datetime`, `date_time`, `_timestamp`, `_time`.
+   The SDK policy checks exact spelling before ASCII case-insensitive matches
+   at each priority. At the default nanosecond unit, eligible storage is
+   `TIMESTAMP`, `int64`, `uint64`, or `double`. At seconds, `int32` and `uint32`
+   also qualify. Narrower integers and `float` require explicit selection.
 3. Synthesis of an int64 `timestamp_ns` field as
    `message_timestamp_ns + row_index * synthetic_interval_ns`. The row index
    is stream-wide, not batch-local. Runtime diagnostics announce the synthetic
@@ -53,8 +56,8 @@ by its element type or by its source list name, so `list<int64>` named
 The selected axis is emitted as int64 nanoseconds. Accepted source types are:
 
 - every integer width, `int8` through `int64` and `uint8` through `uint64`:
-  treated as nanoseconds, widened to int64 without scaling. A `uint64` tick
-  above `INT64_MAX` is an error naming the column.
+  scaled from `timestamp_unit` to int64 nanoseconds (default `ns`). A `uint64`
+  tick above `INT64_MAX`, or overflow during scaling, is an error naming the column.
 - `float` and `double`: treated as seconds, multiplied by 1e9, and rounded to
   the nearest nanosecond (halfway values away from zero).
 - Arrow `TIMESTAMP`: scaled from its second, millisecond, microsecond, or
@@ -66,10 +69,9 @@ host interprets an empty timestamp-column name as a request to use row indices,
 which would discard the transport message time.
 
 Explicit configuration deliberately remains more permissive than automatic
-detection. Selecting `int8`, `int16`, `int32`, `uint8`, `uint16`, `uint32`, or
-`float` emits `parser_arrow.narrow_timestamp_axis`; integer messages state the
-maximum representable nanosecond instant, while the float message states that
-sub-second resolution is limited to magnitudes below 2^23 seconds. If an
+detection. Selecting integer storage too narrow for the configured unit, or
+`float`, emits the SDK's range/precision warning as
+`parser_arrow.narrow_timestamp_axis`. Int32/uint32 seconds do not need that warning. If an
 explicit float32 axis reaches `|seconds| >= 2^23` while the stream is drained,
 the parser also reports `parser_arrow.float_axis_precision`. A `double` remains
 plausible, but its spacing at the present epoch is about 238 ns, so it cannot

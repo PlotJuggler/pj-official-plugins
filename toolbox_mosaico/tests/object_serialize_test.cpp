@@ -411,6 +411,80 @@ TEST(ObjectSerialize, PoseTopLevelRoundTripsThroughCanonicalCodec) {
   EXPECT_DOUBLE_EQ(pf->poses[0].orientation.w, 1.0);
 }
 
+std::shared_ptr<arrow::Table> poseTableWithAxis(const std::shared_ptr<arrow::Array>& axis) {
+  arrow::FieldVector fields{arrow::field("time", axis->type())};
+  arrow::ArrayVector columns{axis};
+  for (const char* name :
+       {"position/x", "position/y", "position/z", "orientation/x", "orientation/y", "orientation/z", "orientation/w"}) {
+    fields.push_back(arrow::field(name, arrow::float64()));
+    columns.push_back(f64Col(std::vector<double>(static_cast<std::size_t>(axis->length()), 1.0)));
+  }
+  return arrow::Table::Make(arrow::schema(fields), columns);
+}
+
+TEST(ObjectSerialize, TimestampUnitsMatchTheScalarRoute) {
+  arrow::TimestampBuilder builder(arrow::timestamp(arrow::TimeUnit::MICRO), arrow::default_memory_pool());
+  ASSERT_TRUE(builder.Append(1'500'000).ok());
+  std::shared_ptr<arrow::Array> native_timestamp;
+  ASSERT_TRUE(builder.Finish(&native_timestamp).ok());
+
+  for (const auto& axis : arrow::ArrayVector{native_timestamp, f64Col({1.5})}) {
+    SCOPED_TRACE(axis->type()->ToString());
+    auto table = poseTableWithAxis(axis);
+    FakeHost fake;
+    auto host = fake.view();
+    auto source = host.createDataSource("sequence");
+    ASSERT_TRUE(source);
+    auto pushed = mosaico::pushPoseRowsToHost({host, *source, "/pose", "time", 77, 1}, table);
+    ASSERT_TRUE(pushed) << pushed.error();
+    ASSERT_EQ(fake.pushes.size(), 1u);
+    EXPECT_EQ(fake.pushes.front().ts_ns, 1'500'000'000);
+  }
+}
+
+TEST(ObjectSerialize, ChecksTimestampUnitsAndSynthesizesOnlyMissingValues) {
+  FakeHost fake;
+  auto host = fake.view();
+  auto source = host.createDataSource("sequence");
+  ASSERT_TRUE(source);
+  mosaico::ObjectIngestContext ctx{host, *source, "/pose", "time", std::numeric_limits<std::int64_t>::max(), 1};
+  ctx.timestamp_unit = PJ::TimeUnit::kMicroseconds;
+  auto pushed = mosaico::pushPoseRowsToHost(ctx, poseTableWithAxis(i64Col({1'500'000, 2'500'000})));
+  ASSERT_TRUE(pushed) << pushed.error();
+  ASSERT_EQ(fake.pushes.size(), 2U);
+  EXPECT_EQ(fake.pushes[0].ts_ns, 1'500'000'000);
+  EXPECT_EQ(fake.pushes[1].ts_ns, 2'500'000'000);  // The unused synthetic fallback would overflow here.
+
+  arrow::Int64Builder missing;
+  ASSERT_TRUE(missing.AppendNulls(2).ok());
+  std::shared_ptr<arrow::Array> nulls;
+  ASSERT_TRUE(missing.Finish(&nulls).ok());
+  pushed = mosaico::pushPoseRowsToHost(ctx, poseTableWithAxis(nulls));
+  ASSERT_FALSE(pushed);
+  EXPECT_NE(pushed.error().find("synthetic timestamp overflow at row 1"), std::string::npos);
+}
+
+TEST(ObjectSerialize, RejectsUnrepresentableTimestampsInsteadOfSubstitutingSyntheticTime) {
+  arrow::UInt64Builder builder;
+  ASSERT_TRUE(builder.Append(std::numeric_limits<std::uint64_t>::max()).ok());
+  std::shared_ptr<arrow::Array> large_unsigned;
+  ASSERT_TRUE(builder.Finish(&large_unsigned).ok());
+  for (const auto& axis : arrow::ArrayVector{
+           large_unsigned, i64Col({std::numeric_limits<std::int64_t>::max()}),
+           f64Col({std::numeric_limits<double>::infinity()})}) {
+    FakeHost fake;
+    auto host = fake.view();
+    auto source = host.createDataSource("sequence");
+    ASSERT_TRUE(source);
+    mosaico::ObjectIngestContext ctx{host, *source, "/pose", "time", 77, 1};
+    ctx.timestamp_unit = PJ::TimeUnit::kSeconds;
+    const auto pushed = mosaico::pushPoseRowsToHost(ctx, poseTableWithAxis(axis));
+    ASSERT_FALSE(pushed);
+    EXPECT_NE(pushed.error().find("timestamp column 'time'"), std::string::npos);
+    EXPECT_TRUE(fake.pushes.empty());
+  }
+}
+
 // motion_state (odometry): position/orientation nested under a `pose` struct.
 TEST(ObjectSerialize, MotionStateNestedPoseRoundTrips) {
   auto position = structCol({"x", "y", "z"}, {f64Col({1.0}), f64Col({2.0}), f64Col({3.0})});

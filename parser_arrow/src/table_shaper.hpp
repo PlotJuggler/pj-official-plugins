@@ -9,6 +9,7 @@
 #include "pj_base/expected.hpp"
 #include "pj_base/sdk/arrow.hpp"
 #include "pj_plugins/sdk/parser_array_policy.hpp"
+#include "pj_plugins/sdk/timestamp_policy.hpp"
 
 namespace pj::parser_arrow {
 
@@ -19,6 +20,8 @@ struct ShapeOptions {
   std::string timestamp_column;
   /// Flatten nested struct columns to slash-separated leaves; unflattened structs are reported as dropped.
   bool flatten_structs = true;
+  /// Unit for integer axes; native timestamps retain their Arrow unit and floats carry seconds.
+  PJ::TimeUnit timestamp_unit = PJ::TimeUnit::kNanoseconds;
   /// Anchor in nanoseconds for a synthesized timestamp column.
   int64_t message_timestamp_ns = 0;
   /// Nanoseconds added for each row in a synthesized timestamp column.

@@ -11,11 +11,10 @@
 #include <fmt/ranges.h>
 
 #include <algorithm>
-#include <array>
-#include <cmath>
-#include <limits>
 #include <nlohmann/json.hpp>
 #include <vector>
+
+#include "arrow_timestamp.hpp"
 
 namespace mosaico {
 
@@ -269,20 +268,6 @@ arrow::Result<std::shared_ptr<arrow::RecordBatch>> castToSchema(
 
 namespace {
 
-/// Name list scanned after the type rule, in THIS order (a later field named
-/// `recording_timestamp_ns` beats an earlier `ts`).
-constexpr std::array<std::string_view, 5> kTimestampNames = {
-    "timestamp_ns", "recording_timestamp_ns", "timestamp", "time", "ts"};
-
-/// The `auto_axis_plausible` column of parser_arrow's kTypeTable
-/// (parser_arrow/src/type_table.hpp) — the only leaf types it accepts as an axis
-/// nothing named explicitly. Matching a name outside this set would hand the
-/// parser a timestamp_column it refuses, taking the whole topic down with it.
-bool isAutoAxisPlausible(arrow::Type::type id) {
-  return id == arrow::Type::TIMESTAMP || id == arrow::Type::INT64 || id == arrow::Type::UINT64 ||
-         id == arrow::Type::DOUBLE;
-}
-
 /// One flattened leaf: where it lives and what it is.
 struct Leaf {
   std::string path;
@@ -318,19 +303,18 @@ std::vector<Leaf> collectLeaves(const arrow::Schema& schema, EmptyNameRule empty
 
 }  // namespace
 
-TimestampLeaf detectTimestampLeaf(const arrow::Schema& schema, EmptyNameRule empty_name_rule) {
-  const std::vector<Leaf> leaves = collectLeaves(schema, empty_name_rule);
-  for (const Leaf& leaf : leaves) {
-    if (leaf.type_id == arrow::Type::TIMESTAMP) {
-      return {leaf.path, leaf.route};
-    }
+TimestampLeaf detectTimestampLeaf(const arrow::Schema& schema, EmptyNameRule empty_name_rule, PJ::TimeUnit unit) {
+  const auto leaves = collectLeaves(schema, empty_name_rule);
+  std::vector<PJ::sdk::TimestampCandidate> candidates;
+  candidates.reserve(leaves.size());
+  for (const auto& leaf : leaves) {
+    candidates.push_back({leaf.path, timestampStorage(leaf.type_id)});
   }
-  for (std::string_view candidate : kTimestampNames) {
-    for (const Leaf& leaf : leaves) {
-      if (leaf.path == candidate && isAutoAxisPlausible(leaf.type_id)) {
-        return {leaf.path, leaf.route};
-      }
-    }
+  auto policy = PJ::sdk::kCanonicalPolicy;
+  policy.unit = unit;
+  if (const auto selected = PJ::sdk::detectTimestampColumn(candidates, policy)) {
+    const auto& leaf = leaves[*selected];
+    return {leaf.path, leaf.route};
   }
   return {};
 }
@@ -349,52 +333,23 @@ std::string axisLostToFraming(const arrow::Schema& raw, const arrow::Schema& fra
       return leaf.path;
     }
   }
-  for (std::string_view candidate : kTimestampNames) {
-    for (const Leaf& leaf : raw_leaves) {
-      if (leaf.path == candidate && lost(leaf.path)) {
-        return leaf.path;
-      }
+  const Leaf* named = nullptr;
+  auto priority = PJ::sdk::kCanonicalTimestampNames.size();
+  for (const auto& leaf : raw_leaves) {
+    const auto rank = PJ::sdk::timestampNamePriority(leaf.path);
+    if (rank && *rank < priority && lost(leaf.path)) {
+      named = &leaf;
+      priority = *rank;
     }
+  }
+  if (named) {
+    return named->path;
   }
   return {};
 }
 
-namespace {
-
-// Split at the whole-second boundary so the result is independent of `long
-// double` width — keep bit-for-bit with parser_arrow's
-// floatingSecondsToNanoseconds (parser_arrow/src/table_shaper.cpp), the
-// canonical twin: a one-nanosecond disagreement puts the host timestamp off the
-// row time the parser computes for the very same column.
-std::optional<std::int64_t> secondsToNs(double seconds) {
-  if (!std::isfinite(seconds)) {
-    return std::nullopt;
-  }
-  constexpr std::int64_t kNanosecondsPerSecond = 1'000'000'000;
-  constexpr std::int64_t kLargestWholeSeconds = std::numeric_limits<std::int64_t>::max() / kNanosecondsPerSecond;
-  constexpr std::int64_t kSmallestWholeSeconds = std::numeric_limits<std::int64_t>::min() / kNanosecondsPerSecond;
-  const double whole_seconds = std::trunc(seconds);
-  if (whole_seconds > static_cast<double>(kLargestWholeSeconds) ||
-      whole_seconds < static_cast<double>(kSmallestWholeSeconds)) {
-    return std::nullopt;
-  }
-  // The range check above already bounds this product; only adding the fraction
-  // can still cross int64.
-  const std::int64_t whole_nanoseconds = static_cast<std::int64_t>(whole_seconds) * kNanosecondsPerSecond;
-  const std::int64_t fractional_nanoseconds =
-      std::llround((seconds - whole_seconds) * static_cast<double>(kNanosecondsPerSecond));
-  if ((fractional_nanoseconds > 0 &&
-       whole_nanoseconds > std::numeric_limits<std::int64_t>::max() - fractional_nanoseconds) ||
-      (fractional_nanoseconds < 0 &&
-       whole_nanoseconds < std::numeric_limits<std::int64_t>::min() - fractional_nanoseconds)) {
-    return std::nullopt;
-  }
-  return whole_nanoseconds + fractional_nanoseconds;
-}
-
-}  // namespace
-
-std::optional<std::int64_t> firstRowTimestampNs(const arrow::RecordBatch& batch, const std::vector<int>& route) {
+std::optional<std::int64_t> firstRowTimestampNs(
+    const arrow::RecordBatch& batch, const std::vector<int>& route, PJ::TimeUnit unit) {
   if (batch.num_rows() == 0 || route.empty() || route.front() < 0 || route.front() >= batch.num_columns()) {
     return std::nullopt;
   }
@@ -406,27 +361,7 @@ std::optional<std::int64_t> firstRowTimestampNs(const arrow::RecordBatch& batch,
     }
     array = parent->field(route[depth]);
   }
-  auto leaf_scalar = array->GetScalar(0);
-  if (!leaf_scalar.ok() || !(*leaf_scalar)->is_valid) {
-    return std::nullopt;
-  }
-  const std::shared_ptr<arrow::Scalar>& scalar = *leaf_scalar;
-  const arrow::Type::type type_id = scalar->type->id();
-  // FLOAT/DOUBLE only: parser_arrow refuses a half-float axis, so stamping from
-  // one here would disagree with the parser about the very same column.
-  if (type_id == arrow::Type::FLOAT || type_id == arrow::Type::DOUBLE) {
-    auto seconds = arrow::compute::Cast(arrow::Datum(scalar), arrow::float64());
-    return seconds.ok() ? secondsToNs(seconds->scalar_as<arrow::DoubleScalar>().value) : std::nullopt;
-  }
-  if (type_id == arrow::Type::TIMESTAMP) {
-    auto nanos = arrow::compute::Cast(arrow::Datum(scalar), arrow::timestamp(arrow::TimeUnit::NANO));
-    return nanos.ok() ? std::optional(nanos->scalar_as<arrow::TimestampScalar>().value) : std::nullopt;
-  }
-  if (!arrow::is_integer(type_id)) {
-    return std::nullopt;
-  }
-  auto nanos = arrow::compute::Cast(arrow::Datum(scalar), arrow::int64());
-  return nanos.ok() ? std::optional(nanos->scalar_as<arrow::Int64Scalar>().value) : std::nullopt;
+  return timestampNanoseconds(*array, 0, unit);
 }
 
 arrow::Result<std::shared_ptr<arrow::Buffer>> serializeIpcStream(
@@ -438,12 +373,13 @@ arrow::Result<std::shared_ptr<arrow::Buffer>> serializeIpcStream(
   return sink->Finish();
 }
 
-std::string parserConfigJson(std::string_view timestamp_field, std::int64_t synthetic_interval_ns) {
-  return nlohmann::json{
+std::string parserConfigJson(std::string_view timestamp_field, std::int64_t synthetic_interval_ns, PJ::TimeUnit unit) {
+  nlohmann::json config{
       {"timestamp_column", std::string(timestamp_field)},
       {"synthetic_interval_ns", synthetic_interval_ns},
-      {"flatten_structs", true}}
-      .dump();
+      {"flatten_structs", true}};
+  PJ::sdk::timestampUnitToJson(config, unit);
+  return config.dump();
 }
 
 }  // namespace mosaico

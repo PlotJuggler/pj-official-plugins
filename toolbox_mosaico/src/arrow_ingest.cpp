@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "arrow_timestamp.hpp"
 #include "image_metadata.hpp"
 #include "object_metadata.hpp"
 #include "pj_base/builtin/frame_transforms.hpp"  // Vector3 / Quaternion / Pose
@@ -83,46 +84,31 @@ namespace {
   return 0;
 }
 
-// Read an int64-compatible scalar, returning std::nullopt on
-// null/missing/out-of-range/unexpected-type so a caller can distinguish a real
-// 0 from "no value" (e.g. a present-but-null timestamp cell, which must fall
-// back to the synthetic timestamp rather than land the sample at epoch 0).
-[[nodiscard]] std::optional<std::int64_t> arrowI64Opt(
-    const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row) {
-  if (!col || row < 0 || row >= col->length()) {
-    return std::nullopt;
-  }
-  std::int64_t chunk_row = row;
-  for (int i = 0; i < col->num_chunks(); ++i) {
-    const auto& chunk = col->chunk(i);
-    if (chunk_row < chunk->length()) {
-      if (chunk->IsNull(chunk_row)) {
-        return std::nullopt;
+// Preserve the existing null/missing-cell fallback, but reject present values
+// that cannot convert. Synthetic arithmetic is evaluated only when needed.
+[[nodiscard]] PJ::Expected<std::int64_t> objectTimestampNs(
+    const ObjectIngestContext& ctx, const std::shared_ptr<arrow::ChunkedArray>& column, std::int64_t row) {
+  if (column) {
+    auto chunk_row = row;
+    for (const auto& chunk : column->chunks()) {
+      if (chunk_row < chunk->length()) {
+        if (chunk->IsNull(chunk_row)) {
+          break;
+        }
+        if (const auto ns = timestampNanoseconds(*chunk, chunk_row, ctx.timestamp_unit)) {
+          return *ns;
+        }
+        return PJ::unexpected(
+            "timestamp column '" + ctx.ts_field + "' cannot represent row " + std::to_string(row) +
+            " as int64 nanoseconds");
       }
-      switch (chunk->type_id()) {
-        case arrow::Type::INT64:
-          return std::static_pointer_cast<arrow::Int64Array>(chunk)->Value(chunk_row);
-        case arrow::Type::UINT64:
-          return static_cast<std::int64_t>(std::static_pointer_cast<arrow::UInt64Array>(chunk)->Value(chunk_row));
-        case arrow::Type::INT32:
-          return std::static_pointer_cast<arrow::Int32Array>(chunk)->Value(chunk_row);
-        case arrow::Type::UINT32:
-          return static_cast<std::int64_t>(std::static_pointer_cast<arrow::UInt32Array>(chunk)->Value(chunk_row));
-        case arrow::Type::TIMESTAMP:
-          return std::static_pointer_cast<arrow::TimestampArray>(chunk)->Value(chunk_row);
-        default:
-          return std::nullopt;
-      }
+      chunk_row -= chunk->length();
     }
-    chunk_row -= chunk->length();
   }
-  return std::nullopt;
-}
-
-// Convenience wrapper: 0 on null/missing/unexpected-type. Use only where 0 is a
-// safe default (geometry); for timestamps prefer arrowI64Opt + a synth fallback.
-[[nodiscard]] std::int64_t arrowI64At(const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row) {
-  return arrowI64Opt(col, row).value_or(0);
+  if (const auto ns = PJ::syntheticInstant(ctx.synth_anchor_ns, ctx.synth_interval_ns, row)) {
+    return *ns;
+  }
+  return PJ::unexpected("synthetic timestamp overflow at row " + std::to_string(row));
 }
 
 // Read a UTF-8 string handling STRING / LARGE_STRING / STRING_VIEW.
@@ -771,8 +757,6 @@ PJ::Expected<ImagePushOutcome> pushImageRowsToHost(
   const PJ::sdk::DataSourceHandle source = ctx.source;
   const std::string& topic_name = ctx.topic_name;
   const std::string& ts_field = ctx.ts_field;
-  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
-  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
   if (!host.valid()) {
     return PJ::unexpected(std::string("toolbox host not bound"));
   }
@@ -850,8 +834,11 @@ PJ::Expected<ImagePushOutcome> pushImageRowsToHost(
       continue;
     }
 
-    std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                : (synth_anchor_ns + row * synth_interval_ns);
+    const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+    if (!timestamp) {
+      return PJ::unexpected(timestamp.error());
+    }
+    const std::int64_t ts_ns = *timestamp;
 
     PJ::sdk::Image img;
     img.width = width > 0 ? static_cast<std::uint32_t>(width) : 0U;
@@ -883,8 +870,6 @@ PJ::Expected<ObjectPushOutcome> pushPointCloudRowsToHost(
   const PJ::sdk::DataSourceHandle source = ctx.source;
   const std::string& topic_name = ctx.topic_name;
   const std::string& ts_field = ctx.ts_field;
-  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
-  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
   if (!host.valid()) {
     return PJ::unexpected(std::string("toolbox host not bound"));
   }
@@ -929,8 +914,11 @@ PJ::Expected<ObjectPushOutcome> pushPointCloudRowsToHost(
       }
       continue;
     }
-    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                      : (synth_anchor_ns + row * synth_interval_ns);
+    const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+    if (!timestamp) {
+      return PJ::unexpected(timestamp.error());
+    }
+    const std::int64_t ts_ns = *timestamp;
     const std::int32_t width = arrowI32At(width_col, row);
     const std::int32_t point_step = arrowI32At(point_step_col, row);
     const std::int32_t row_step = arrowI32At(row_step_col, row);
@@ -963,8 +951,6 @@ PJ::Expected<ObjectPushOutcome> pushPoseRowsToHost(
   const PJ::sdk::DataSourceHandle source = ctx.source;
   const std::string& topic_name = ctx.topic_name;
   const std::string& ts_field = ctx.ts_field;
-  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
-  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
   if (!host.valid()) {
     return PJ::unexpected(std::string("toolbox host not bound"));
   }
@@ -1009,8 +995,11 @@ PJ::Expected<ObjectPushOutcome> pushPoseRowsToHost(
   ObjectPushOutcome outcome;
   const std::int64_t num_rows = flat->num_rows();
   for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                      : (synth_anchor_ns + row * synth_interval_ns);
+    const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+    if (!timestamp) {
+      return PJ::unexpected(timestamp.error());
+    }
+    const std::int64_t ts_ns = *timestamp;
     PJ::sdk::Pose pose;
     pose.position =
         PJ::sdk::Vector3{.x = arrowDoubleAt(px, row), .y = arrowDoubleAt(py, row), .z = arrowDoubleAt(pz, row)};
@@ -1041,8 +1030,6 @@ PJ::Expected<ObjectPushOutcome> pushFrameTransformsRowsToHost(
   const PJ::sdk::DataSourceHandle source = ctx.source;
   const std::string& topic_name = ctx.topic_name;
   const std::string& ts_field = ctx.ts_field;
-  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
-  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
   if (!host.valid()) {
     return PJ::unexpected(std::string("toolbox host not bound"));
   }
@@ -1061,8 +1048,11 @@ PJ::Expected<ObjectPushOutcome> pushFrameTransformsRowsToHost(
     const auto ts_col = ts_field.empty() ? nullptr : table->GetColumnByName(ts_field);
     const std::int64_t num_rows = table->num_rows();
     for (std::int64_t row = 0; row < num_rows; ++row) {
-      const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                        : (synth_anchor_ns + row * synth_interval_ns);
+      const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+      if (!timestamp) {
+        return PJ::unexpected(timestamp.error());
+      }
+      const std::int64_t ts_ns = *timestamp;
       std::vector<PJ::sdk::FrameTransform> transforms = readTransformList(transforms_col, row);
       if (transforms.empty()) {
         ++outcome.skipped;
@@ -1113,8 +1103,11 @@ PJ::Expected<ObjectPushOutcome> pushFrameTransformsRowsToHost(
 
   const std::int64_t num_rows = flat->num_rows();
   for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                      : (synth_anchor_ns + row * synth_interval_ns);
+    const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+    if (!timestamp) {
+      return PJ::unexpected(timestamp.error());
+    }
+    const std::int64_t ts_ns = *timestamp;
     PJ::sdk::FrameTransform ft;
     ft.timestamp = ts_ns;
     ft.parent_frame_id = parent_col ? arrowStringAt(parent_col, row) : std::string{};
@@ -1145,8 +1138,6 @@ PJ::Expected<ObjectPushOutcome> pushOccupancyGridRowsToHost(
   const PJ::sdk::DataSourceHandle source = ctx.source;
   const std::string& topic_name = ctx.topic_name;
   const std::string& ts_field = ctx.ts_field;
-  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
-  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
   if (!host.valid()) {
     return PJ::unexpected(std::string("toolbox host not bound"));
   }
@@ -1186,8 +1177,11 @@ PJ::Expected<ObjectPushOutcome> pushOccupancyGridRowsToHost(
   ObjectPushOutcome outcome;
   const std::int64_t num_rows = flat->num_rows();
   for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                      : (synth_anchor_ns + row * synth_interval_ns);
+    const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+    if (!timestamp) {
+      return PJ::unexpected(timestamp.error());
+    }
+    const std::int64_t ts_ns = *timestamp;
     const std::int32_t w = arrowI32At(width_col, row);
     const std::int32_t h = arrowI32At(height_col, row);
     const double resolution = arrowDoubleAt(resolution_col, row);
@@ -1235,8 +1229,6 @@ PJ::Expected<ObjectPushOutcome> pushLaserScanRowsToHost(
   const PJ::sdk::DataSourceHandle source = ctx.source;
   const std::string& topic_name = ctx.topic_name;
   const std::string& ts_field = ctx.ts_field;
-  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
-  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
   if (!host.valid()) {
     return PJ::unexpected(std::string("toolbox host not bound"));
   }
@@ -1270,8 +1262,11 @@ PJ::Expected<ObjectPushOutcome> pushLaserScanRowsToHost(
   ObjectPushOutcome outcome;
   const std::int64_t num_rows = flat->num_rows();
   for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                      : (synth_anchor_ns + row * synth_interval_ns);
+    const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+    if (!timestamp) {
+      return PJ::unexpected(timestamp.error());
+    }
+    const std::int64_t ts_ns = *timestamp;
     const double angle_min = arrowDoubleAt(angle_min_col, row);
     const double angle_inc = arrowDoubleAt(angle_inc_col, row);
     const double range_min = range_min_col ? arrowDoubleAt(range_min_col, row) : 0.0;
@@ -1367,8 +1362,6 @@ PJ::Expected<ObjectPushOutcome> pushGridCellsRowsToHost(
   const PJ::sdk::DataSourceHandle source = ctx.source;
   const std::string& topic_name = ctx.topic_name;
   const std::string& ts_field = ctx.ts_field;
-  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
-  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
   if (!host.valid()) {
     return PJ::unexpected(std::string("toolbox host not bound"));
   }
@@ -1398,8 +1391,11 @@ PJ::Expected<ObjectPushOutcome> pushGridCellsRowsToHost(
   ObjectPushOutcome outcome;
   const std::int64_t num_rows = flat->num_rows();
   for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                      : (synth_anchor_ns + row * synth_interval_ns);
+    const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+    if (!timestamp) {
+      return PJ::unexpected(timestamp.error());
+    }
+    const std::int64_t ts_ns = *timestamp;
     const double cw = cw_col ? arrowDoubleAt(cw_col, row) : 0.0;
     const double ch = ch_col ? arrowDoubleAt(ch_col, row) : 0.0;
     const std::vector<std::array<double, 3>> cells = readXyzStructList(cells_col, row);
@@ -1441,8 +1437,6 @@ PJ::Expected<ObjectPushOutcome> pushColumnarPointCloudRowsToHost(
   const PJ::sdk::DataSourceHandle source = ctx.source;
   const std::string& topic_name = ctx.topic_name;
   const std::string& ts_field = ctx.ts_field;
-  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
-  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
   if (!host.valid()) {
     return PJ::unexpected(std::string("toolbox host not bound"));
   }
@@ -1501,8 +1495,11 @@ PJ::Expected<ObjectPushOutcome> pushColumnarPointCloudRowsToHost(
   ObjectPushOutcome outcome;
   const std::int64_t num_rows = flat->num_rows();
   for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                      : (synth_anchor_ns + row * synth_interval_ns);
+    const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+    if (!timestamp) {
+      return PJ::unexpected(timestamp.error());
+    }
+    const std::int64_t ts_ns = *timestamp;
     // Reserve so the NumericList storage never reallocates — PackAttr holds
     // pointers into it.
     std::vector<NumericList> lists;

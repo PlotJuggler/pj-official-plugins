@@ -13,6 +13,7 @@
 #include <arrow/ipc/reader.h>
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -70,7 +71,7 @@ TEST(DetectTimestampLeaf, NameMatchNeedsAPlausibleAxisType) {
   EXPECT_EQ(named(arrow::float32()), "") << "parser_arrow marks only float64 plausible";
   EXPECT_EQ(named(arrow::boolean()), "");
 
-  // The four plausible types (parser_arrow kTypeTable auto_axis_plausible).
+  // The four plausible types (SDK timestamp eligibility at nanosecond units).
   EXPECT_EQ(named(arrow::int64()), "time");
   EXPECT_EQ(named(arrow::uint64(), "ts"), "ts");
   EXPECT_EQ(named(arrow::float64(), "timestamp"), "timestamp");
@@ -557,3 +558,26 @@ TEST(IpcSafeSchema, FailsOnlyWhenNoColumnSurvives) {
 }
 
 }  // namespace
+
+TEST(DetectTimestampLeaf, UsesCanonicalNamesAndUnitDependentEligibility) {
+  for (const auto rule : {kIndex, kFlatten}) {
+    for (const auto name : {"TIME", "t", "time_stamp", "datetime", "date_time", "_timestamp", "_time"}) {
+      const auto schema = arrow::schema({arrow::field(name, arrow::int64())});
+      EXPECT_EQ(mosaico::detectTimestampLeaf(*schema, rule).path, name);
+    }
+    const auto schema = arrow::schema({arrow::field("time", arrow::int32())});
+    EXPECT_TRUE(mosaico::detectTimestampLeaf(*schema, rule).path.empty());
+    EXPECT_EQ(mosaico::detectTimestampLeaf(*schema, rule, PJ::TimeUnit::kSeconds).path, "time");
+  }
+}
+
+TEST(FirstRowTimestampNs, ConfiguredIntegerUnitsAndOverflow) {
+  const auto batch = scalarBatch();
+  EXPECT_EQ(mosaico::firstRowTimestampNs(*batch, {0}, PJ::TimeUnit::kMicroseconds), 1'000'000);
+  auto large = arrow::RecordBatch::Make(
+      arrow::schema({arrow::field("time", arrow::uint64())}), 1,
+      {arrayOf<arrow::UInt64Builder, std::uint64_t>({std::numeric_limits<std::uint64_t>::max()})});
+  EXPECT_FALSE(mosaico::firstRowTimestampNs(*large, {0}));
+  const auto config = nlohmann::json::parse(mosaico::parserConfigJson("time", 0, PJ::TimeUnit::kMicroseconds));
+  EXPECT_EQ(config.at("timestamp_unit"), "us");
+}

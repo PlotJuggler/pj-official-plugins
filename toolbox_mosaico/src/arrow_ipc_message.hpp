@@ -4,7 +4,7 @@
 
 // Framing helpers for the `arrow-ipc` delegated-ingest encoding: one Flight
 // record batch becomes one self-contained Arrow IPC stream (schema + batch +
-// EOS), which is exactly what `parser_arrow` decodes. Plain libarrow, no SDK.
+// EOS), which is exactly what `parser_arrow` decodes. Uses the SDK timestamp policy.
 
 #include <arrow/result.h>
 #include <arrow/type_fwd.h>
@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <pj_base/time_math.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -22,7 +23,7 @@ namespace mosaico {
 /// (~30 fps). Passed to parser_arrow as `synthetic_interval_ns`; the message
 /// host timestamp advances by it per row so the parser continues the axis
 /// seamlessly across batches.
-inline constexpr std::int64_t kSyntheticIntervalNs = 33'333'333LL;
+inline constexpr std::int64_t kSyntheticIntervalNs = PJ::kDefaultSyntheticIntervalNs;
 
 /// Where one framed field comes from and how to build it.
 struct FieldProjection {
@@ -90,25 +91,11 @@ struct TimestampLeaf {
   std::vector<int> route;  ///< top-level column index, then one struct-child index per level
 };
 
-/// Pick the timestamp leaf: the first Arrow TIMESTAMP-typed one in schema
-/// order, else the first whose full path equals one of {timestamp_ns,
-/// recording_timestamp_ns, timestamp, time, ts} AND whose type parser_arrow
-/// finds plausible for an axis — its kTypeTable `auto_axis_plausible` column
-/// (parser_arrow/src/type_table.hpp): TIMESTAMP, INT64, UINT64, DOUBLE. A `time`
-/// column of any other type is left undetected on purpose; naming it as the axis
-/// would make the parser refuse the whole topic, while an unstamped topic still
-/// imports on a fitted synthetic cadence. NAME-LIST order wins over schema
-/// order, as it has since PJ3. Passed explicitly at bind time so the layout
-/// records the policy (D9).
-///
-/// Mirror of parser_arrow's detectTimestampColumn
-/// (parser_arrow/src/table_shaper.cpp) — keep the name list and the type gate in
-/// sync with parser_arrow's tables. Run it on
-/// the schema the CONSUMER will see, under the naming rule that consumer uses:
-/// the scalar route passes its IPC-safe schema with kIndex (the raw schema would
-/// hide a `dictionary<timestamp>` stamp the parser finds), the object route
-/// passes the raw schema with kFlatten (its flattenStructColumns IS Table::Flatten).
-[[nodiscard]] TimestampLeaf detectTimestampLeaf(const arrow::Schema& schema, EmptyNameRule empty_name_rule);
+/// Pick the timestamp leaf using the SDK's canonical names and storage eligibility.
+/// Use the schema and empty-name convention the consumer will see: IPC-safe with
+/// kIndex for scalars, raw with kFlatten for the object route's Table::Flatten.
+[[nodiscard]] TimestampLeaf detectTimestampLeaf(
+    const arrow::Schema& schema, EmptyNameRule empty_name_rule, PJ::TimeUnit unit = PJ::TimeUnit::kNanoseconds);
 
 /// Name the axis @p raw carried that framing then LOST — the same two rules as
 /// detectTimestampLeaf minus the type gate, restricted to leaves that are no
@@ -121,7 +108,7 @@ struct TimestampLeaf {
     const arrow::Schema& raw, const arrow::Schema& framed, EmptyNameRule empty_name_rule);
 
 /// Row 0 of the leaf at @p route as nanoseconds: FLOAT/DOUBLE are seconds,
-/// TIMESTAMP is rescaled by its unit, integers of any width are already ns.
+/// TIMESTAMP is rescaled by its native unit, integers use @p unit (default ns).
 /// Empty for an empty route (how a timestamp-less topic is marked), an empty
 /// batch, a null value or null ancestor, or a value that does not convert
 /// safely. Half-float is deliberately NOT accepted — parser_arrow refuses it as
@@ -131,7 +118,7 @@ struct TimestampLeaf {
 /// column. Pass the batch the route was computed against: for a scalar topic
 /// that is the CAST batch, whose columns the drop projection may have renumbered.
 [[nodiscard]] std::optional<std::int64_t> firstRowTimestampNs(
-    const arrow::RecordBatch& batch, const std::vector<int>& route);
+    const arrow::RecordBatch& batch, const std::vector<int>& route, PJ::TimeUnit unit = PJ::TimeUnit::kNanoseconds);
 
 /// One record batch as a complete IPC stream (schema message, the batch, end
 /// of stream). Uncompressed: the bytes cross a process-internal seam.
@@ -141,12 +128,14 @@ struct TimestampLeaf {
     const arrow::RecordBatch& batch, std::int64_t capacity_hint = 0);
 
 /// `parser_arrow` configuration for one topic: `{"timestamp_column": <leaf
-/// path>, "synthetic_interval_ns": <interval>, "flatten_structs": true}`.
+/// path>, "timestamp_unit": <unit>, "synthetic_interval_ns": <interval>, "flatten_structs": true}`.
 ///
 /// The interval is per-topic, not a constant: a timestamp-less topic spreads its
 /// rows over the topic's [min,max] range, so the caller passes the fitted value.
 /// `flatten_structs` is pinned rather than left to the parser's default because
 /// a nested `timestamp_column` only resolves once the parser has flattened.
-[[nodiscard]] std::string parserConfigJson(std::string_view timestamp_field, std::int64_t synthetic_interval_ns);
+[[nodiscard]] std::string parserConfigJson(
+    std::string_view timestamp_field, std::int64_t synthetic_interval_ns,
+    PJ::TimeUnit unit = PJ::TimeUnit::kNanoseconds);
 
 }  // namespace mosaico

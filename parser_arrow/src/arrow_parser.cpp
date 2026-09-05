@@ -140,6 +140,7 @@ void reportDiagnosticsIfChanged(
 struct ArrowParserConfig {
   std::string timestamp_column;
   bool flatten_structs = true;
+  PJ::TimeUnit timestamp_unit = PJ::TimeUnit::kNanoseconds;
   int64_t synthetic_interval_ns = 0;
   PJ::sdk::ArrayLimit array_limit;
 };
@@ -170,6 +171,11 @@ class ArrowParser : public PJ::MessageParserPluginBase {
 
     try {
       ArrowParserConfig loaded;
+      const auto unit = PJ::sdk::timestampUnitFromJson(parsed);
+      if (!unit) {
+        return PJ::unexpected(pj::parser_arrow::parserError("invalid timestamp_unit: expected ns, us, ms, or s"));
+      }
+      loaded.timestamp_unit = *unit;
       loaded.timestamp_column = parsed.value("timestamp_column", std::string{});
       loaded.flatten_structs = parsed.value("flatten_structs", true);
       loaded.synthetic_interval_ns = parsed.value("synthetic_interval_ns", int64_t{0});
@@ -188,6 +194,7 @@ class ArrowParser : public PJ::MessageParserPluginBase {
         {"flatten_structs", config_.flatten_structs},
         {"synthetic_interval_ns", config_.synthetic_interval_ns},
     };
+    PJ::sdk::timestampUnitToJson(saved, config_.timestamp_unit);
     PJ::sdk::arrayLimitToJson(saved, config_.array_limit);
     return saved.dump();
   }
@@ -203,6 +210,7 @@ class ArrowParser : public PJ::MessageParserPluginBase {
         std::move(*decoded), pj::parser_arrow::ShapeOptions{
                                  .timestamp_column = config_.timestamp_column,
                                  .flatten_structs = config_.flatten_structs,
+                                 .timestamp_unit = config_.timestamp_unit,
                                  .message_timestamp_ns = timestamp_ns,
                                  .synthetic_interval_ns = config_.synthetic_interval_ns,
                                  .array_limit = config_.array_limit,

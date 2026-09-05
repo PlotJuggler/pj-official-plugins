@@ -101,12 +101,13 @@ TEST(ArrowParserTest, ConfigRoundTrip) {
   ArrowParserFixture fixture;
   fixture.setUp();
   ASSERT_TRUE(fixture.handle.loadConfig(
-      R"({"timestamp_column":"event_time","flatten_structs":false,"synthetic_interval_ns":2500000,"max_array_size":4,"array_policy":"skip"})"));
+      R"({"timestamp_column":"event_time","timestamp_unit":"us","flatten_structs":false,"synthetic_interval_ns":2500000,"max_array_size":4,"array_policy":"skip"})"));
 
   std::string saved_config;
   ASSERT_TRUE(fixture.handle.saveConfig(saved_config));
   EXPECT_NE(saved_config.find("\"timestamp_column\":\"event_time\""), std::string::npos);
   EXPECT_NE(saved_config.find("\"flatten_structs\":false"), std::string::npos);
+  EXPECT_NE(saved_config.find("\"timestamp_unit\":\"us\""), std::string::npos);
   EXPECT_NE(saved_config.find("\"synthetic_interval_ns\":2500000"), std::string::npos);
   EXPECT_NE(saved_config.find("\"max_array_size\":4"), std::string::npos);
   EXPECT_NE(saved_config.find("\"array_policy\":\"skip\""), std::string::npos);
@@ -121,6 +122,7 @@ TEST(ArrowParserTest, ConfigDefaultsMatchContract) {
   ASSERT_TRUE(fixture.handle.saveConfig(saved_config));
   EXPECT_NE(saved_config.find("\"timestamp_column\":\"\""), std::string::npos);
   EXPECT_NE(saved_config.find("\"flatten_structs\":true"), std::string::npos);
+  EXPECT_NE(saved_config.find("\"timestamp_unit\":\"ns\""), std::string::npos);
   EXPECT_NE(saved_config.find("\"synthetic_interval_ns\":0"), std::string::npos);
   EXPECT_NE(saved_config.find("\"max_array_size\":500"), std::string::npos);
   EXPECT_NE(saved_config.find("\"array_policy\":\"clamp\""), std::string::npos);
@@ -381,7 +383,9 @@ TEST(ArrowParserTest, ReportsExplicitNarrowTimestampAxisOnce) {
   EXPECT_EQ(diagnostic.level, PJ::sdk::ParserDiagnosticLevel::Warning);
   EXPECT_EQ(diagnostic.stable_code, "parser_arrow.narrow_timestamp_axis");
   EXPECT_EQ(
-      diagnostic.message, "explicit timestamp column 'time': uint32 can express at most 4294967295 ns since epoch");
+      diagnostic.message,
+      "explicit timestamp column 'time': Integer storage too narrow to reach present-day instants at the configured "
+      "timestamp unit.");
 
   status = parseFixture(fixture, "axis_uint32.arrows");
   ASSERT_TRUE(status) << status.error();
@@ -507,3 +511,21 @@ TEST(ArrowParserTest, ParsesDroppedColumnsWithoutRuntimeService) {
 }
 
 }  // namespace
+
+TEST(ArrowParserTest, TimestampUnitReachesTheShaperAndRejectsInvalidConfig) {
+  ArrowParserFixture fixture;
+  fixture.setUp();
+  ASSERT_TRUE(fixture.handle.loadConfig(R"({"timestamp_unit":"s"})"));
+  for (const auto config :
+       {R"({"timestamp_unit":"minutes"})", R"({"timestamp_unit":42})", R"({"timestamp_unit":null})"}) {
+    const auto status = fixture.handle.loadConfig(config);
+    ASSERT_FALSE(status);
+    EXPECT_NE(status.error().find("timestamp_unit"), std::string::npos);
+  }
+  const auto status = parseFixture(fixture, "axis_int32.arrows");
+  ASSERT_TRUE(status) << status.error();
+  ASSERT_EQ(fixture.arrow_write_host.streams().size(), 1U);
+  EXPECT_EQ(
+      fixture.arrow_write_host.streams()[0].timestamp_values,
+      (std::vector<int64_t>{1'000'000'000, 2'000'000'000, 3'000'000'000}));
+}

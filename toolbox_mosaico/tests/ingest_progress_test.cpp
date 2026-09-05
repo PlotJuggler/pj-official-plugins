@@ -974,3 +974,14 @@ TEST(MosaicoTransport, ObjectOntologyTopicNeverTakesTheTransportPath) {
 }
 
 }  // namespace
+
+TEST(MosaicoTransport, FitsSyntheticCadenceAcrossASpanLargerThanInt64) {
+  FakeIngestHost host;
+  const auto first = std::numeric_limits<std::int64_t>::min();
+  pullUnstamped(host, first, 0, {1, 1, 1, 1});
+  ASSERT_EQ(host.bindings.size(), 1U);
+  EXPECT_EQ(boundInterval(host), 3'074'457'345'618'258'602LL);
+  ASSERT_EQ(host.messages.size(), 4U);
+  EXPECT_EQ(host.messages.front().host_ts_ns, first);
+  EXPECT_EQ(host.messages.back().host_ts_ns, -2);  // Integral cadence rounds down.
+}

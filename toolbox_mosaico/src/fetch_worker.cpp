@@ -66,21 +66,6 @@ std::string stringFromArrow(const arrow::Status& status) {
 // Arrow IPC stream, decoded host-side by parser_arrow.
 constexpr std::string_view kArrowIpcEncoding = "arrow-ipc";
 
-// anchor + rows_before * interval with no signed overflow (mirrors
-// parser_arrow's checkedMultiply); empty when the axis would wrap.
-std::optional<std::int64_t> syntheticTimestampNs(std::int64_t anchor, std::int64_t rows_before, std::int64_t interval) {
-  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
-  constexpr std::int64_t kMin = std::numeric_limits<std::int64_t>::min();
-  if (rows_before != 0 && (interval > kMax / rows_before || interval < kMin / rows_before)) {
-    return std::nullopt;
-  }
-  const std::int64_t offset = rows_before * interval;
-  if ((offset > 0 && anchor > kMax - offset) || (offset < 0 && anchor < kMin - offset)) {
-    return std::nullopt;
-  }
-  return anchor + offset;
-}
-
 std::int64_t nowNs() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
       .count();
@@ -619,9 +604,9 @@ void FetchWorker::pullTopicsAsync(
   // Cadence for a timestamp-less topic: spread @p total_rows over the topic's
   // [min_ts_ns, max_ts_ns] range, else keep the ~30 fps default.
   auto fitSyntheticInterval = [](PerTopic& topic, std::int64_t total_rows) {
-    const std::int64_t span_ns = topic.info_max_ts_ns - topic.synth_anchor_ns;
-    if (topic.ts_field.empty() && total_rows > 1 && span_ns > 0) {
-      topic.synth_interval_ns = span_ns / (total_rows - 1);
+    if (topic.ts_field.empty()) {
+      topic.synth_interval_ns =
+          PJ::fitSyntheticInterval(topic.synth_anchor_ns, topic.info_max_ts_ns, total_rows, kSyntheticIntervalNs);
     }
   };
 
@@ -661,7 +646,7 @@ void FetchWorker::pullTopicsAsync(
     // cadence the parser continues per row (see parserConfigJson).
     auto host_ts = firstRowTimestampNs(framed, topic.ts_route);
     if (!host_ts) {
-      host_ts = syntheticTimestampNs(topic.synth_anchor_ns, topic.rows_pushed, topic.synth_interval_ns);
+      host_ts = PJ::syntheticInstant(topic.synth_anchor_ns, topic.synth_interval_ns, topic.rows_pushed);
       if (!host_ts) {
         topic.error = fmt::format(
             "synthetic timestamp overflows int64 at row {} (anchor {}, interval {})", topic.rows_pushed,
