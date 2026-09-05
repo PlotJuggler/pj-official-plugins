@@ -13,6 +13,8 @@
 
 #include "fetch_worker.hpp"
 
+#include "source_descriptor.hpp"
+
 #include <arrow/api.h>
 #include <arrow/ipc/writer.h>
 #include <arrow/record_batch.h>
@@ -130,6 +132,11 @@ PJ::Expected<PJ::sdk::DataSourceHandle> FetchWorker::datasetForFetch(
       return PJ::unexpected(std::move(ds).error());
     }
     fetch_dataset_ = *ds;
+    // At most once per Download (fetch_dataset_ is reset per batch), before
+    // any publication into the dataset — the ABI order on_dataset requires.
+    if (datasetCreated) {
+      datasetCreated(*ds);
+    }
   }
   return *fetch_dataset_;
 }
@@ -298,6 +305,9 @@ void FetchWorker::finishIngestProgress(bool discard_provisional) {
     if (runtime.valid()) {
       if (discard_id.has_value()) {
         if (discardProvisionalIngest(runtime, *discard_id)) {
+          if (datasetDiscarded) {
+            datasetDiscarded();
+          }
           return;
         }
         // A runtime that changed underneath the capability probe still gets a
@@ -502,7 +512,14 @@ void FetchWorker::fetchTopicMetadataAsync(TopicRef topic) {
   // Merge the size/created/locked fields cached from listTopics — getTopicMetadata
   // only fills schema/ontology/user_metadata/timestamps, not total_size_bytes
   // or chunks_number.
-  if (auto it = topic_info_by_name_.find(topic.topic_name); it != topic_info_by_name_.end()) {
+  auto cache_it = topic_info_by_name_.find(topic.topic_name);
+  if (cache_it == topic_info_by_name_.end()) {
+    // A topic absent from the last listing (or fetched before any listing)
+    // still gets its metadata cached, so the ontology backfill in
+    // pullTopicsAsync can route it instead of dropping the tag on the floor.
+    topic_info_by_name_.emplace(topic.topic_name, info);
+  } else {
+    auto& it = cache_it;
     if (info.total_size_bytes == 0) {
       info.total_size_bytes = it->second.total_size_bytes;
     }
@@ -548,6 +565,20 @@ void FetchWorker::pullTopicsAsync(
     }
     return;
   }
+  // Routing must not depend on how the topics were selected: a fetch that
+  // never visited the Info panel (select-all, or a headless descriptor
+  // import) has issued no selection-driven metadata calls, so fill every
+  // missing ontology tag here on the worker thread before any batch is
+  // classified for scalar/object ingest.
+  for (const auto& topic_name : topic_names) {
+    if (isCancelled()) {
+      break;
+    }
+    const auto info_it = topic_info_by_name_.find(topic_name);
+    if (info_it == topic_info_by_name_.end() || info_it->second.ontology_tag.empty()) {
+      fetchTopicMetadataAsync({sequence_name, topic_name});
+    }
+  }
   // Start of a multi-topic Download: discard any DataSourceHandle cached from a
   // previous fetch. datasetForFetch creates exactly one dataset (eagerly only
   // when rollback is available), and every topic callback reuses it so the
@@ -579,22 +610,20 @@ void FetchWorker::pullTopicsAsync(
     for (const auto& topic : requested_topics_snapshot_) {
       topic_outcomes_[topic] = TopicOutcome::kPending;
     }
-    const nlohmann::json descriptor{
-        {"kind", "mosaico.pull"},
-        {"v", 1},
-        {"request",
-         nlohmann::json{
-             {"origin", server_origin_},
-             {"sequence", sequence_name},
-             {"topics", requested_topics_snapshot_},
-             {"start_ns", start_ns},
-             {"end_ns", end_ns}}},
-    };
-    // error_handler_t::replace: sequence/topic names are server-supplied bytes,
-    // and strict dump() throws on invalid UTF-8 — but this runs OUTSIDE the
-    // try/completion bracket below, so the descriptor build must never throw.
-    // Deterministic U+FFFD replacement keeps the canonical-bytes property.
-    pending_source_record_ = descriptor.dump(-1, ' ', /*ensure_ascii=*/false, nlohmann::json::error_handler_t::replace);
+    // The canonical request descriptor rides through the ONE typed parser
+    // (makePullDescriptor round-trips it), so the producer meets the same
+    // allowlist/limits/origin-hygiene bar as a layout consumer and the
+    // recorded bytes are exactly what parseSourceDescriptor re-accepts. A
+    // request the parser rejects (port-less origin, over-limit names, …)
+    // yields no source record — including a server-supplied name that is not
+    // valid UTF-8 (a substituted descriptor would name a different request).
+    // The Download still imports eagerly, it is just not re-importable.
+    pending_source_record_.clear();
+    std::string descriptor_error;
+    if (const auto descriptor = makePullDescriptor(
+            server_origin_, sequence_name, requested_topics_snapshot_, start_ns, end_ns, &descriptor_error)) {
+      pending_source_record_ = toSourceDescriptorJson(*descriptor);
+    }
   }
 
   // Use the SDK's parallel pullTopics. Per-topic completion (on_done) fires on

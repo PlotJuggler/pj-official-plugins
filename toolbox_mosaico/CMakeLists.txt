@@ -71,6 +71,10 @@ set(MOSAICO_SOURCES
   src/arrow_ipc_message.cpp
   src/settings_store.cpp
   src/server_history.cpp
+  src/source_descriptor.cpp
+  src/source_presentation.cpp
+  src/credential_resolve.cpp
+  src/descriptor_import_provider.cpp
   src/core/time_format.cpp
 )
 
@@ -105,6 +109,7 @@ target_include_directories(toolbox_mosaico_plugin PRIVATE
 
 target_link_libraries(toolbox_mosaico_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk
+  plotjuggler_sdk::descriptor_import_support
   fmt::fmt
   nlohmann_json::nlohmann_json
   mosaico_sdk
@@ -202,10 +207,12 @@ if(BUILD_TESTING)
   add_executable(toolbox_mosaico_ingest_progress_test
     tests/ingest_progress_test.cpp
     src/fetch_worker.cpp
-      src/arrow_ipc_message.cpp
+    src/arrow_ipc_message.cpp
+    src/source_descriptor.cpp
   )
   target_link_libraries(toolbox_mosaico_ingest_progress_test PRIVATE
     plotjuggler_sdk::plugin_sdk
+    plotjuggler_sdk::descriptor_import_support
     mosaico_sdk
     fmt::fmt
     nlohmann_json::nlohmann_json
@@ -404,6 +411,97 @@ if(BUILD_TESTING)
     plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
   )
   add_test(NAME toolbox_mosaico_settings_store_test COMMAND toolbox_mosaico_settings_store_test)
+
+  # Source descriptor: typed parse/validate, canonical bytes + identity
+  # conformance against docs/source-descriptor-vectors.json, rejection
+  # matrix. nlohmann + the SDK descriptor_import helpers only.
+  add_executable(toolbox_mosaico_source_descriptor_test
+    tests/source_descriptor_test.cpp
+    src/source_descriptor.cpp
+  )
+  target_compile_definitions(toolbox_mosaico_source_descriptor_test PRIVATE
+    MOSAICO_VECTORS_JSON="${CMAKE_CURRENT_SOURCE_DIR}/docs/source-descriptor-vectors.json"
+  )
+  target_link_libraries(toolbox_mosaico_source_descriptor_test PRIVATE
+    plotjuggler_sdk::plugin_sdk
+    plotjuggler_sdk::descriptor_import_support nlohmann_json::nlohmann_json GTest::gtest_main
+  )
+  target_include_directories(toolbox_mosaico_source_descriptor_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_mosaico_source_descriptor_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_mosaico_source_descriptor_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  add_test(NAME ToolboxMosaicoSourceDescriptorTest COMMAND toolbox_mosaico_source_descriptor_test)
+
+  # Headless credential origin guard + interactive resolution.
+  add_executable(toolbox_mosaico_credential_resolve_test
+    tests/credential_resolve_test.cpp
+    src/credential_resolve.cpp
+    src/settings_store.cpp
+    src/server_history.cpp
+  )
+  target_link_libraries(toolbox_mosaico_credential_resolve_test PRIVATE
+    plotjuggler_sdk::plugin_sdk
+    plotjuggler_sdk::descriptor_import_support nlohmann_json::nlohmann_json GTest::gtest_main
+  )
+  target_include_directories(toolbox_mosaico_credential_resolve_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_mosaico_credential_resolve_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_mosaico_credential_resolve_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  add_test(NAME ToolboxMosaicoCredentialResolveTest COMMAND toolbox_mosaico_credential_resolve_test)
+
+  # Presentation persistence: base64url settings group, control stripping,
+  # UTF-16-unit capping.
+  add_executable(toolbox_mosaico_source_presentation_test
+    tests/source_presentation_test.cpp
+    src/source_presentation.cpp
+    src/source_descriptor.cpp
+    src/settings_store.cpp
+  )
+  target_link_libraries(toolbox_mosaico_source_presentation_test PRIVATE
+    plotjuggler_sdk::plugin_sdk
+    plotjuggler_sdk::descriptor_import_support nlohmann_json::nlohmann_json GTest::gtest_main
+  )
+  target_include_directories(toolbox_mosaico_source_presentation_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_mosaico_source_presentation_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_mosaico_source_presentation_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  add_test(NAME ToolboxMosaicoSourcePresentationTest COMMAND toolbox_mosaico_source_presentation_test)
+
+  # pj.descriptor_import.v1 provider: query taxonomy + startImport
+  # fail-closed rejections + watchdog inertness. Pulls in the fetch worker,
+  # so it links the Mosaico SDK / Arrow / gRPC like the ingest-progress test.
+  add_executable(toolbox_mosaico_descriptor_import_contract_test
+    tests/descriptor_import_contract_test.cpp
+    src/descriptor_import_provider.cpp
+    src/fetch_worker.cpp
+    src/arrow_ipc_message.cpp
+    src/credential_resolve.cpp
+    src/source_descriptor.cpp
+    src/source_presentation.cpp
+    src/settings_store.cpp
+    src/server_history.cpp
+  )
+  target_link_libraries(toolbox_mosaico_descriptor_import_contract_test PRIVATE
+    plotjuggler_sdk::plugin_sdk
+    plotjuggler_sdk::descriptor_import_support
+    mosaico_sdk
+    fmt::fmt
+    nlohmann_json::nlohmann_json
+    ${_test_arrow_target}
+    GTest::gtest_main
+  )
+  if(MOSAICO_GRPCPP_TARGET)
+    target_link_libraries(toolbox_mosaico_descriptor_import_contract_test PRIVATE ${MOSAICO_GRPCPP_TARGET})
+  endif()
+  target_include_directories(toolbox_mosaico_descriptor_import_contract_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_mosaico_descriptor_import_contract_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_mosaico_descriptor_import_contract_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  add_test(NAME ToolboxMosaicoDescriptorImportContractTest COMMAND toolbox_mosaico_descriptor_import_contract_test)
 
   # Live-server smoke: connects to demo.mosaico.dev, looks for an
   # image-ontology topic, pulls a 1-second window. Opt-in: only runs
