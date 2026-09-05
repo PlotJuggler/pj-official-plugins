@@ -1,12 +1,16 @@
 #include <nanoarrow/nanoarrow.h>
 
 #include <algorithm>
+#include <any>
 #include <cstdint>
+#include <cstdio>
 #include <nlohmann/json.hpp>
+#include <pj_base/builtin/builtin_object_codec.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <string>
 #include <string_view>
+#include <typeinfo>
 #include <utility>
 #include <vector>
 
@@ -281,7 +285,27 @@ class ArrowParser : public PJ::MessageParserPluginBase {
     if (!table) {
       return PJ::unexpected(table.error());
     }
-    return convertMosaicoObject(*table, timestamp, payload.anchor);
+    auto record = convertMosaicoObject(*table, timestamp, payload.anchor);
+#ifdef __APPLE__
+    // TEMPORARY macOS RTTI diagnostic — always fail with the identity facts.
+    if (record) {
+      const std::any& any_obj = record->object;
+      const std::type_info& dynamic_type = any_obj.type();
+      const std::type_info& static_type = typeid(PJ::sdk::Image);
+      auto wire = PJ::serializeBuiltinObject(any_obj);
+      auto hex_ptr = [](const void* pointer) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%p", pointer);
+        return std::string(buf);
+      };
+      return PJ::unexpected(
+          std::string("RTTI-DIAG has_value=") + (any_obj.has_value() ? "1" : "0") + " any_type=" + dynamic_type.name() +
+          "@" + hex_ptr(&dynamic_type) + " local_image=" + static_type.name() + "@" + hex_ptr(&static_type) +
+          " eq_local=" + (dynamic_type == static_type ? "1" : "0") + " typeOf=" +
+          std::string(PJ::sdk::name(PJ::sdk::typeOf(any_obj))) + " serialize=" + (wire ? "ok" : wire.error()));
+    }
+#endif
+    return record;
   }
 
   PJ::Expected<PJ::sdk::ObjectRecord> convertMosaicoObject(
