@@ -1,0 +1,10 @@
+{
+  "_comment": "Simplest sink, no network. The report JSON arrives on the command's stdin.",
+  "notify_on": "fail",
+  "sinks": [
+    {
+      "type": "command",
+      "exec": ["sh", "-c", "cat > /tmp/anomaly_report.json && echo '  [command sink] report written to /tmp/anomaly_report.json'"]
+    }
+  ]
+}

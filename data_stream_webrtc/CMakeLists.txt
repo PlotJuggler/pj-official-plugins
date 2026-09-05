@@ -29,7 +29,6 @@ target_link_libraries(webrtc_source_plugin PRIVATE
   nlohmann_json::nlohmann_json
   LibDataChannel::LibDataChannel
   ixwebsocket::ixwebsocket
-  pj_streaming_utils
 )
 
 pj_embed_ui(webrtc_source_plugin
@@ -116,7 +115,6 @@ target_link_libraries(webrtc_dialog_test PRIVATE
   plotjuggler_sdk::plugin_sdk
   nlohmann_json::nlohmann_json
   ixwebsocket::ixwebsocket
-  pj_streaming_utils
   GTest::gtest_main
 )
 add_test(NAME webrtc_dialog_test COMMAND webrtc_dialog_test)

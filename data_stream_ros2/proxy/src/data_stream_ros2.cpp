@@ -83,8 +83,7 @@ bool condaDistroDirectoryExists(const std::filesystem::path& conda_prefix, std::
 }
 
 // Detect the ROS distribution to dispatch to. Chain of methods, highest
-// reliability first. See 2026.04.23-ros2-proxy-dispatch-study.md for the
-// rationale behind each.
+// reliability first; each step below states why it ranks where it does.
 std::optional<std::string> detectRosDistro() {
   // 1. Explicit env var — set by setup.bash. Gold standard.
   if (auto env = PJ::sdk::getEnv("ROS_DISTRO")) {

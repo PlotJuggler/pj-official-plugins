@@ -10,16 +10,27 @@
 
 #include <string>
 
+namespace {
+
+// Assembled from repeated characters so no key-shaped literal is ever committed:
+// the body is 32 'a's and the fingerprint 8 '0's, matching the grammar
+// (msco_ + 32 chars + _ + 8 hex) without resembling an issued key.
+const std::string kBody(32, 'a');
+const std::string kFingerprint(8, '0');
+const std::string kValidKey = "msco_" + kBody + "_" + kFingerprint;
+
+}  // namespace
+
 TEST(TlsUtils, ValidApiKey) {
-  EXPECT_TRUE(isValidApiKey("msco_s3l8gcdwuadege3pkhou0k0n2t5omfij_f9010b9e"));
+  EXPECT_TRUE(isValidApiKey(kValidKey));
 }
 
 TEST(TlsUtils, ApiKeyWrongPrefix) {
-  EXPECT_FALSE(isValidApiKey("xxxx_s3l8gcdwuadege3pkhou0k0n2t5omfij_f9010b9e"));
+  EXPECT_FALSE(isValidApiKey("xxxx_" + kBody + "_" + kFingerprint));
 }
 
 TEST(TlsUtils, ApiKeyTooShort) {
-  EXPECT_FALSE(isValidApiKey("msco_abc_12345678"));
+  EXPECT_FALSE(isValidApiKey("msco_abc_" + kFingerprint));
 }
 
 TEST(TlsUtils, ApiKeyEmpty) {
@@ -27,14 +38,14 @@ TEST(TlsUtils, ApiKeyEmpty) {
 }
 
 TEST(TlsUtils, ApiKeyBadFingerprint) {
-  EXPECT_FALSE(isValidApiKey("msco_s3l8gcdwuadege3pkhou0k0n2t5omfij_zzzzzzzz"));
+  EXPECT_FALSE(isValidApiKey("msco_" + kBody + "_" + std::string(8, 'z')));
 }
 
 // --- isPrintableAscii (connect-path control-byte gate, gap #1) ---
 
 TEST(TlsUtils, PrintableAsciiAcceptsTypicalUri) {
   EXPECT_TRUE(isPrintableAscii("grpc+tls://demo.mosaico.dev:6726"));
-  EXPECT_TRUE(isPrintableAscii("msco_s3l8gcdwuadege3pkhou0k0n2t5omfij_f9010b9e"));
+  EXPECT_TRUE(isPrintableAscii(kValidKey));
   EXPECT_TRUE(isPrintableAscii("/home/user/cert.pem"));
 }
 

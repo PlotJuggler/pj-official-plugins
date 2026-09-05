@@ -1,0 +1,13 @@
+{
+  "_comment": "Send the report by SMTP. Point smtp_url at a local catcher for testing (python3 -m aiosmtpd -n -l 127.0.0.1:8025). For a real server use smtp://host:587 or smtps://host:465 plus username/password (use ${ENV} for the password).",
+  "notify_on": "fail",
+  "sinks": [
+    {
+      "type": "email",
+      "smtp_url": "smtp://127.0.0.1:8025",
+      "from": "anomaly-bot@lab.local",
+      "to": ["oncall@lab.local"],
+      "subject": "Anomalía detectada en el log"
+    }
+  ]
+}

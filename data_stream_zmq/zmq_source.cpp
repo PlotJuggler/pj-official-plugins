@@ -6,8 +6,8 @@
 #include <pj_base/number_parse.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_plugins/sdk/encoding_utils.hpp>
-#include <pj_streaming/delegated_ingest.hpp>
-#include <pj_streaming/endpoint.hpp>
+#include <pj_plugins/sdk/endpoint.hpp>
+#include <pj_plugins/sdk/streaming_source.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -45,7 +45,7 @@ class ZmqSource : public PJ::StreamSourceBase {
     // (e.g. the protobuf descriptor + message type). Streaming sources must
     // forward it to ensureParserBinding, otherwise schema-based parsers bind
     // with no schema and drop every message.
-    parser_config_override_ = pj::streaming::parserConfigOverride(config_json);
+    parser_config_override_ = PJ::sdk::parserConfigOverride(config_json);
 
     return PJ::okStatus();
   }
@@ -66,9 +66,8 @@ class ZmqSource : public PJ::StreamSourceBase {
     context_ = std::make_unique<zmq::context_t>();
     socket_ = std::make_unique<zmq::socket_t>(*context_, zmq::socket_type::sub);
 
-    endpoint_ = transport_ == "ipc://"
-                    ? transport_ + address_
-                    : pj::streaming::composeEndpoint(transport_, address_, static_cast<uint16_t>(port_));
+    endpoint_ = transport_ == "ipc://" ? transport_ + address_
+                                       : PJ::sdk::composeEndpoint(transport_, address_, static_cast<uint16_t>(port_));
 
     try {
       if (connect_mode_) {
@@ -216,7 +215,7 @@ class ZmqSource : public PJ::StreamSourceBase {
 
   std::unique_ptr<zmq::context_t> context_;
   std::unique_ptr<zmq::socket_t> socket_;
-  pj::streaming::DelegatedIngestCache ingest_;
+  PJ::sdk::DelegatedIngestCache ingest_;
 };
 
 }  // namespace

@@ -9,7 +9,6 @@
 #include <iostream>
 #include <memory>
 #include <nlohmann/json.hpp>
-#include <pj_array_policy/array_policy.hpp>
 #include <pj_base/builtin/builtin_object.hpp>
 #include <pj_base/builtin/point_cloud.hpp>
 #include <pj_base/builtin/poses_in_frame_codec.hpp>
@@ -18,10 +17,12 @@
 #include <pj_laser_scan/laser_scan_projector.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
+#include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "foxglove_grid_codec.hpp"
 #include "foxglove_object_codecs.hpp"
 #include "foxglove_pointcloud_codec.hpp"
 #include "foxglove_voxelgrid_codec.hpp"
@@ -264,7 +265,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     // Load options
     use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
     timestamp_field_name_ = cfg.value("timestamp_field_name", std::string{});
-    array_limit_ = pj::array_policy::arrayLimitFromJson(cfg);
+    array_limit_ = PJ::sdk::arrayLimitFromJson(cfg);
 
     // If config contains a compiled schema (from dialog), bind it
     if (cfg.contains("compiled_schema_base64") && cfg["compiled_schema_base64"].is_string() &&
@@ -370,7 +371,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     if (type_name == "foxglove.FrameTransform" || type_name == "foxglove.CompressedImage" ||
         type_name == "foxglove.RawImage" || type_name == "foxglove.CameraCalibration" ||
         type_name == "foxglove.ImageAnnotations" || type_name == "foxglove.SceneUpdate" ||
-        type_name == "foxglove.VoxelGrid") {
+        type_name == "foxglove.VoxelGrid" || type_name == "foxglove.Grid") {
       if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
         return status;
       }
@@ -835,6 +836,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       laserscan_fields_ = pj_protobuf::resolveLaserScanFieldNumbers(descriptor);
     } else if (type_name == "foxglove.VoxelGrid") {
       voxelgrid_fields_ = pj_protobuf::resolveVoxelGridFieldNumbers(descriptor);
+    } else if (type_name == "foxglove.Grid") {
+      grid_fields_ = pj_protobuf::resolveGridFieldNumbers(descriptor);
     }
   }
 
@@ -1067,6 +1070,41 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         r.fields.push_back({.name = "data_size", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->data.size())}});
         return r;
       };
+    } else if (name == "foxglove.Grid") {
+      handler.object_type = PJ::sdk::BuiltinObjectType::kGridMap;
+      handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+        auto obj = pj_protobuf::deserializeFoxgloveGridView(p.bytes.data(), p.bytes.size(), p.anchor, grid_fields_);
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());
+        }
+        std::optional<PJ::Timestamp> ts;
+        if (use_embedded_timestamp_ && obj->timestamp_ns > 0) {
+          ts = obj->timestamp_ns;
+        }
+        return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
+      };
+      handler.parse_scalars =
+          [this](PJ::Timestamp, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+        auto obj = pj_protobuf::deserializeFoxgloveGridView(payload.data(), payload.size(), nullptr, grid_fields_);
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
+        }
+        grid_frame_id_ = std::move(obj->frame_id);  // keep alive for the string_view below.
+        PJ::sdk::ScalarRecord r;
+        if (use_embedded_timestamp_ && obj->timestamp_ns > 0) {  // match the object route's timeline
+          r.ts = obj->timestamp_ns;
+        }
+        r.fields.push_back({.name = "timestamp", .value = PJ::sdk::ValueRef{timestampSeconds(obj->timestamp_ns)}});
+        r.fields.push_back({.name = "frame_id", .value = PJ::sdk::ValueRef{std::string_view(grid_frame_id_)}});
+        r.fields.push_back(
+            {.name = "column_count", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->column_count)}});
+        r.fields.push_back({.name = "row_count", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->row_count)}});
+        r.fields.push_back({.name = "row_stride", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->row_stride)}});
+        r.fields.push_back(
+            {.name = "cell_stride", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->cell_stride)}});
+        r.fields.push_back({.name = "data_size", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->data.size())}});
+        return r;
+      };
     } else {  // foxglove.SceneUpdate
       handler.object_type = PJ::sdk::BuiltinObjectType::kSceneEntities;
       handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
@@ -1113,7 +1151,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   const gp::FieldDescriptor* timestamp_field_ = nullptr;
   bool use_embedded_timestamp_ = false;
   std::string timestamp_field_name_;  // empty = fallback chain ("timestamp" → "ts")
-  pj::array_policy::ArrayLimit array_limit_;
+  PJ::sdk::ArrayLimit array_limit_;
 
   // Field numbers for the well-known Foxglove schemas, resolved from the bound
   // topic's embedded descriptor in bindSchema(). Default to each codec's historical
@@ -1129,6 +1167,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   pj_protobuf::PointCloudFieldNumbers pointcloud_fields_;
   pj_protobuf::LaserScanFieldNumbers laserscan_fields_;
   pj_protobuf::VoxelGridFieldNumbers voxelgrid_fields_;
+  pj_protobuf::GridFieldNumbers grid_fields_;
 
   std::unordered_map<std::string, PJ::sdk::FieldHandle> field_cache_;
   std::vector<FlattenedField> owned_fields_;
@@ -1163,6 +1202,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   std::string raw_image_frame_id_;
   std::string camera_calibration_frame_id_;
   std::string voxelgrid_frame_id_;
+  std::string grid_frame_id_;
 };
 
 }  // namespace

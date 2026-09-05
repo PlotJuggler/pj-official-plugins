@@ -10,9 +10,8 @@
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_plugins/sdk/encoding_utils.hpp>
-#include <pj_streaming/delegated_ingest.hpp>
-#include <pj_streaming/drain_queue.hpp>
-#include <pj_streaming/endpoint.hpp>
+#include <pj_plugins/sdk/endpoint.hpp>
+#include <pj_plugins/sdk/streaming_source.hpp>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -34,7 +33,7 @@ struct PendingDatagram {
 // Per-stream inbox. Each UdpSource owns one; the shared endpoint copies every
 // received datagram into every inbox so concurrent streams all see all data.
 struct UdpSubscriber {
-  pj::streaming::DrainQueue<PendingDatagram> queue;
+  PJ::sdk::DrainQueue<PendingDatagram> queue;
 };
 
 // One real UDP socket per "address:port", shared by every UdpSource bound to
@@ -70,7 +69,7 @@ class SharedUdpEndpoint : public std::enable_shared_from_this<SharedUdpEndpoint>
   // and binds the socket and starts the background io thread; later callers for
   // the same endpoint reuse it.
   static PJ::Expected<std::shared_ptr<SharedUdpEndpoint>> acquire(const std::string& address, uint16_t port) {
-    const std::string key = pj::streaming::composeHostPort(address, port);
+    const std::string key = PJ::sdk::composeHostPort(address, port);
     std::lock_guard<std::mutex> lock(registryMutex());
     auto& reg = registry();
     if (auto it = reg.find(key); it != reg.end()) {
@@ -211,7 +210,7 @@ class UdpSource : public PJ::StreamSourceBase {
       (void)dialog_.loadConfig(config_json);
     }
 
-    parser_config_override_ = pj::streaming::parserConfigOverride(config_json);
+    parser_config_override_ = PJ::sdk::parserConfigOverride(config_json);
 
     return PJ::okStatus();
   }
@@ -285,7 +284,7 @@ class UdpSource : public PJ::StreamSourceBase {
 
   std::shared_ptr<SharedUdpEndpoint> endpoint_;
   std::shared_ptr<UdpSubscriber> subscriber_;
-  pj::streaming::DelegatedIngestCache ingest_;
+  PJ::sdk::DelegatedIngestCache ingest_;
 };
 
 }  // namespace

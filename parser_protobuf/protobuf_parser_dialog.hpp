@@ -7,9 +7,9 @@
 #include <fstream>
 #include <memory>
 #include <nlohmann/json.hpp>
-#include <pj_array_policy/array_policy.hpp>
 #include <pj_base64/base64.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <sstream>
 #include <string>
@@ -183,11 +183,11 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
       return true;  // refresh to enable/disable lineEditTimestampField
     }
     if (checked && widget_name == "radioMaxClamp") {
-      array_limit_.policy = pj::array_policy::ArrayPolicy::kClamp;
+      array_limit_.policy = PJ::sdk::ArrayPolicy::kClamp;
       return false;
     }
     if (checked && widget_name == "radioMaxDiscard") {
-      array_limit_.policy = pj::array_policy::ArrayPolicy::kSkip;
+      array_limit_.policy = PJ::sdk::ArrayPolicy::kSkip;
       return false;
     }
     return false;
@@ -240,7 +240,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     cfg["use_embedded_timestamp"] = use_embedded_timestamp_;
     cfg["timestamp_field_name"] = timestamp_field_name_;
     cfg["include_folders"] = include_folders_;
-    pj::array_policy::arrayLimitToJson(cfg, array_limit_);
+    PJ::sdk::arrayLimitToJson(cfg, array_limit_);
 
     // Include the compiled schema as base64-encoded bytes
     if (!compiled_schema_.empty()) {
@@ -265,7 +265,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     selected_message_type_ = cfg.value("message_type", std::string{});
     use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
     timestamp_field_name_ = cfg.value("timestamp_field_name", std::string{});
-    array_limit_ = pj::array_policy::arrayLimitFromJson(cfg);
+    array_limit_ = PJ::sdk::arrayLimitFromJson(cfg);
 
     include_folders_.clear();
     if (cfg.contains("include_folders") && cfg["include_folders"].is_array()) {
@@ -384,9 +384,10 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     // Setup protobuf compiler
     gp::compiler::DiskSourceTree source_tree;
 
-    // Map paths for imports
+    // Import roots are the selected proto's own directory plus any include
+    // folders the user configured. Deliberately NOT the filesystem root: mapping
+    // "/" resolves imports against arbitrary host contents outside those roots.
     source_tree.MapPath("", "");
-    source_tree.MapPath("/", "/");
 
     // Add the directory containing the proto file
     std::string proto_dir = directoryFromPath(proto_file_path_);
@@ -493,7 +494,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
   std::string selected_message_type_;
   bool use_embedded_timestamp_ = false;
   std::string timestamp_field_name_;  // empty = fallback chain ("timestamp" → "ts")
-  pj::array_policy::ArrayLimit array_limit_;
+  PJ::sdk::ArrayLimit array_limit_;
   std::vector<std::string> include_folders_;
   std::string compiled_schema_;  // Serialized FileDescriptorSet
 

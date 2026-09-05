@@ -4,7 +4,7 @@
 
 #include <chrono>
 #include <nlohmann/json.hpp>
-#include <pj_streaming/endpoint.hpp>
+#include <pj_plugins/sdk/endpoint.hpp>
 #include <string>
 
 namespace pj::mqtt_support {
@@ -40,8 +40,7 @@ struct ConnectionSettings {
 }
 
 [[nodiscard]] inline std::string brokerUri(const ConnectionSettings& settings) {
-  return pj::streaming::composeEndpoint(
-      settings.use_ssl ? "ssl" : "tcp", settings.address, std::to_string(settings.port));
+  return PJ::sdk::composeEndpoint(settings.use_ssl ? "ssl" : "tcp", settings.address, std::to_string(settings.port));
 }
 
 [[nodiscard]] inline mqtt::connect_options makeConnectOptions(const ConnectionSettings& settings) {

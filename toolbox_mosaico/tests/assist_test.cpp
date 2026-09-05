@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 //
 // Tests for the metadata-filter assist model (query/assist.h), encoding the
-// lua.txt contract point-by-point. Pure logic — no Qt, no Lua engine.
+// query-assist contract point-by-point (docs/query-assist-contract.md).
+// Pure logic — no Qt, no Lua engine.
 //
 // Caret offsets reference the sample clause:
 //   robot == "bonirob"
@@ -25,7 +26,7 @@ Schema schema() {
 constexpr const char* kClause = "robot == \"bonirob\"";
 
 // ---------------------------------------------------------------------------
-// lua.txt 1 — on key select, the Key dropdown shows that key as its title and
+// Contract clause 1 — on key select, the Key dropdown shows that key as its title and
 // becomes disabled as focus moves on to the Op dropdown.
 // ---------------------------------------------------------------------------
 TEST(LuaAssist, P1_KeyStaged_TitleSet_KeyDisabled_OpActivates) {
@@ -37,7 +38,7 @@ TEST(LuaAssist, P1_KeyStaged_TitleSet_KeyDisabled_OpActivates) {
 }
 
 // ---------------------------------------------------------------------------
-// lua.txt 2 — when building at the end, the Op auto-selects "==", and stays
+// Contract clause 2 — when building at the end, the Op auto-selects "==", and stays
 // enabled so the user can override it.
 // ---------------------------------------------------------------------------
 TEST(LuaAssist, P2_AtEnd_OpAutoEquals_AndOverridable) {
@@ -52,7 +53,7 @@ TEST(LuaAssist, P2_OpOverrideKept) {
 }
 
 // ---------------------------------------------------------------------------
-// lua.txt 3 — a selected value only enters the editor on PLUS; PLUS joins with
+// Contract clause 3 — a selected value only enters the editor on PLUS; PLUS joins with
 // the default ADD operator " and " when a filter is already present.
 // ---------------------------------------------------------------------------
 TEST(LuaAssist, P3_ValueStaged_EnablesPlus) {
@@ -75,20 +76,20 @@ TEST(LuaAssist, P3_Commit_WhitespaceExisting_TreatedAsEmpty) {
 }
 
 // ---------------------------------------------------------------------------
-// lua.txt 4 — caret ON a key activates the Key dropdown for replacement; the
+// Contract clause 4 — caret ON a key activates the Key dropdown for replacement; the
 // other two are inert.
 // ---------------------------------------------------------------------------
 TEST(LuaAssist, P4_CaretOnKey_KeyReplaces) {
   const AssistView v = computeAssist(kClause, /*caret=*/2, schema(), "", "", "");  // inside "robot"
   EXPECT_TRUE(v.key.enabled);
   EXPECT_TRUE(v.key.replaces);
-  EXPECT_EQ(v.key.title, "robot");  // synced to the token (lua.txt 8)
+  EXPECT_EQ(v.key.title, "robot");  // synced to the token (contract clauses 8)
   EXPECT_FALSE(v.op.enabled);
   EXPECT_FALSE(v.value.enabled);
 }
 
 // ---------------------------------------------------------------------------
-// lua.txt 5 — caret ON an operator activates the Op dropdown for replacement.
+// Contract clause 5 — caret ON an operator activates the Op dropdown for replacement.
 // ---------------------------------------------------------------------------
 TEST(LuaAssist, P5_CaretOnOp_OpReplaces) {
   const AssistView v = computeAssist(kClause, /*caret=*/7, schema(), "", "", "");  // inside "=="
@@ -100,7 +101,7 @@ TEST(LuaAssist, P5_CaretOnOp_OpReplaces) {
 }
 
 // ---------------------------------------------------------------------------
-// lua.txt 6 — caret ON a value activates the Value dropdown for replacement.
+// Contract clause 6 — caret ON a value activates the Value dropdown for replacement.
 // ---------------------------------------------------------------------------
 TEST(LuaAssist, P6_CaretOnValue_ValueReplaces) {
   const AssistView v = computeAssist(kClause, /*caret=*/12, schema(), "", "", "");  // inside "bonirob"
@@ -111,7 +112,7 @@ TEST(LuaAssist, P6_CaretOnValue_ValueReplaces) {
 }
 
 // ---------------------------------------------------------------------------
-// lua.txt 7 — replacements happen without PLUS (PLUS stays disabled in REPLACE
+// Contract clause 7 — replacements happen without PLUS (PLUS stays disabled in REPLACE
 // mode), and the edit is in-place (applyCompletion Replace).
 // ---------------------------------------------------------------------------
 TEST(LuaAssist, P7_ReplaceNeedsNoPlus_AndEditsInPlace) {
@@ -125,7 +126,7 @@ TEST(LuaAssist, P7_ReplaceNeedsNoPlus_AndEditsInPlace) {
 }
 
 // ---------------------------------------------------------------------------
-// lua.txt 8 — the user may type the next token; the dropdowns synchronise to
+// Contract clause 8 — the user may type the next token; the dropdowns synchronise to
 // the token under the caret (a freely typed key reflects in the Key dropdown).
 // ---------------------------------------------------------------------------
 TEST(LuaAssist, P8_TypedKey_SyncsToKeyDropdown) {
@@ -135,7 +136,7 @@ TEST(LuaAssist, P8_TypedKey_SyncsToKeyDropdown) {
 }
 
 // ---------------------------------------------------------------------------
-// lua.txt 9 — PLUS is the only entry that inserts a NEW clause: in ADD mode the
+// Contract clause 9 — PLUS is the only entry that inserts a NEW clause: in ADD mode the
 // dropdowns STAGE (never replace/edit the text); only commitClause writes.
 // ---------------------------------------------------------------------------
 TEST(LuaAssist, P9_AddModeStages_PlusIsOnlyInsert) {

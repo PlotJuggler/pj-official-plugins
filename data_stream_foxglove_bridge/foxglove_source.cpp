@@ -7,11 +7,11 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
-#include <pj_array_policy/array_policy.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_base64/base64.hpp>
-#include <pj_streaming/drain_queue.hpp>
-#include <pj_streaming/endpoint.hpp>
+#include <pj_plugins/sdk/endpoint.hpp>
+#include <pj_plugins/sdk/parser_array_policy.hpp>
+#include <pj_plugins/sdk/streaming_source.hpp>
 #include <pj_streaming/websocket_utils.hpp>
 #include <set>
 #include <string>
@@ -78,7 +78,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
     address_ = cfg.value("address", std::string("localhost"));
     port_ = cfg.value("port", 8765);
-    array_limit_ = pj::array_policy::arrayLimitFromJson(cfg);
+    array_limit_ = PJ::sdk::arrayLimitFromJson(cfg);
     use_timestamp_ = cfg.value("use_timestamp", false);
 
     // Read selected channels with schema info from dialog config
@@ -121,7 +121,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     if (!socket_ || socket_->getReadyState() != ix::ReadyState::Open) {
       // Fallback: connect fresh (e.g. when started without dialog via saved config)
       socket_ = std::make_unique<ix::WebSocket>();
-      socket_->setUrl(pj::streaming::composeEndpoint("ws", address_, static_cast<uint16_t>(port_)));
+      socket_->setUrl(PJ::sdk::composeEndpoint("ws", address_, static_cast<uint16_t>(port_)));
       socket_->addSubProtocol("foxglove.sdk.v1");
       socket_->disableAutomaticReconnection();
       // Install BEFORE start(): the server sends its one-shot serverInfo +
@@ -134,7 +134,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
         socket_->stop();
         return PJ::unexpected(
             "failed to connect to Foxglove bridge at " +
-            pj::streaming::composeHostPort(address_, static_cast<uint16_t>(port_)));
+            PJ::sdk::composeHostPort(address_, static_cast<uint16_t>(port_)));
       }
     } else {
       // Stolen socket: re-register for the streaming source (the dialog's
@@ -302,7 +302,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     const ChannelRoute route = classifyChannel(ch);
 
     nlohmann::json parser_cfg;
-    pj::array_policy::arrayLimitToJson(parser_cfg, array_limit_);
+    PJ::sdk::arrayLimitToJson(parser_cfg, array_limit_);
     parser_cfg["use_timestamp"] = use_timestamp_;
     parser_cfg["use_embedded_timestamp"] = use_timestamp_;
     parser_cfg["schema_encoding"] = route.parser_encoding;
@@ -612,7 +612,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
   std::string address_ = "localhost";
   int port_ = 8765;
-  pj::array_policy::ArrayLimit array_limit_;
+  PJ::sdk::ArrayLimit array_limit_;
   bool use_timestamp_ = false;
 
   std::vector<ChannelInfo> selected_channels_;
@@ -624,8 +624,8 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   std::map<uint64_t, ChannelInfo> advertised_channels_;  // channel_id -> full channel info (schema included)
   uint32_t next_subscription_id_ = 1;
 
-  pj::streaming::DrainQueue<QueuedBinaryMessage> message_queue_;
-  pj::streaming::DrainQueue<QueuedTextMessage> text_queue_;
+  PJ::sdk::DrainQueue<QueuedBinaryMessage> message_queue_;
+  PJ::sdk::DrainQueue<QueuedTextMessage> text_queue_;
   int reconnect_tick_ = 0;
   std::atomic<bool> reconnect_pending_ = false;
 
@@ -654,7 +654,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   static bool setActiveTopicsThunk(
       void* ctx, const PJ_string_view_t* names, uint64_t count, PJ_error_t* /*out_error*/) noexcept {
     auto* self = static_cast<FoxgloveSource*>(ctx);
-    self->desired_topics_slot_.set(pj::streaming::stringSetFromViews(names, count));
+    self->desired_topics_slot_.set(PJ::sdk::stringSetFromViews(names, count));
     return true;
   }
 };

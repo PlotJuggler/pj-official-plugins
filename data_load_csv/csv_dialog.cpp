@@ -426,11 +426,15 @@ void CsvDialog::analyzeFile() {
     if (!line.empty() && line.back() == '\r') {
       line.pop_back();
     }
+    // The Raw tab claims to mirror the file verbatim, so a blank line has to
+    // appear there: it is the line the parser will report as skipped, and
+    // hiding it leaves that warning untraceable in the preview. It still does
+    // not become a preview row — a blank line is not a record.
+    raw_preview_ += '\n';
+    raw_preview_ += line;
     if (line.empty()) {
       continue;
     }
-    raw_preview_ += '\n';
-    raw_preview_ += line;
     PJ::CSV::SplitLine(line, delimiter_, parts);
     preview_rows_.push_back(parts);
 
