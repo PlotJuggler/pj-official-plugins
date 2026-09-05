@@ -1,11 +1,9 @@
 name: CI Windows
 
+# TEMPORARY: pull_request/push triggers disabled while iterating on the
+# macOS-only failure on feat/mosaico-transport-split. Revert before merge.
 on:
   workflow_dispatch:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
 
 concurrency:
   group: ci-windows-${{ github.ref }}
