@@ -7,7 +7,6 @@
 #include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <string>
 #include <string_view>
-#include <typeinfo>
 #include <utility>
 #include <vector>
 
