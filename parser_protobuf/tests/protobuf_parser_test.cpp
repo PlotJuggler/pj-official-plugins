@@ -16,10 +16,12 @@
 #include <unordered_map>
 #include <vector>
 
+#include "../foxglove_grid_codec.hpp"
 #include "../foxglove_object_codecs.hpp"
 #include "../foxglove_pointcloud_codec.hpp"
 #include "../foxglove_voxelgrid_codec.hpp"
 #include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/builtin/grid_map_codec.hpp"
 #include "pj_base/builtin/video_frame_codec.hpp"
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/testing/parser_write_recorder.hpp"
@@ -3182,4 +3184,356 @@ TEST(ProtobufParserTest, VoxelGridScalarRowAdoptsEmbeddedTimestamp) {
 
   ASSERT_EQ(f.recorder.rows().size(), 1u);
   EXPECT_EQ(f.recorder.rows()[0].timestamp, 4'000'000'250LL);
+}
+
+// ---------------------------------------------------------------------------
+// foxglove.Grid -> sdk::GridMap (zero-copy view)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// One foxglove.Grid message built by hand so tests can renumber every field
+/// (parent and nested) and emit fields in any order.
+struct FoxgloveGridWire {
+  int64_t ts_sec = 7;
+  int32_t ts_nanos = 250;
+  std::string frame_id = "map";
+  double origin_x = 1.0;
+  double origin_y = 2.0;
+  double origin_z = 0.5;
+  uint32_t column_count = 3;
+  double cell_x = 0.1;
+  double cell_y = 0.2;
+  uint32_t row_stride = 16;  // 3 x 4 bytes, padded
+  uint32_t cell_stride = 4;
+  std::vector<FoxgloveField> fields = {{"elevation", 0, 7}};
+  std::vector<uint8_t> data = std::vector<uint8_t>(48, 0xAB);  // 3 rows
+  pj_protobuf::GridFieldNumbers num;
+};
+
+/// The header half of a foxglove.Grid: timestamp, frame_id, pose, column_count, cell_size.
+void appendGridHeader(PW& g, const FoxgloveGridWire& w) {
+  const auto& n = w.num;
+  g.sub(n.timestamp, foxgloveTimestamp(w.ts_sec, w.ts_nanos));
+  g.str(n.frame_id, w.frame_id);
+  g.sub(
+      n.pose,
+      buildPoseSubmessage(
+          PoseValues{
+              .px = w.origin_x, .py = w.origin_y, .pz = w.origin_z, .qx = 0.0, .qy = 0.0, .qz = 0.0, .qw = 1.0}));
+  g.fixed32(n.column_count, w.column_count);
+  PW cell;
+  cell.dbl(1, w.cell_x);
+  cell.dbl(2, w.cell_y);
+  g.sub(n.cell_size, cell);
+}
+
+/// One PackedElementField submessage per entry of `w.fields`.
+void appendGridFields(PW& g, const FoxgloveGridWire& w) {
+  const auto& n = w.num;
+  for (const auto& f : w.fields) {
+    PW pef;
+    pef.str(n.pef_name, f.name);
+    pef.fixed32(n.pef_offset, f.offset);
+    pef.varint(n.pef_type, static_cast<uint64_t>(f.numeric_type));
+    g.sub(n.fields, pef);
+  }
+}
+
+/// The official field order: header, strides, fields, data.
+std::vector<uint8_t> buildFoxgloveGridWire(const FoxgloveGridWire& w) {
+  const auto& n = w.num;
+  PW g;
+  appendGridHeader(g, w);
+  g.fixed32(n.row_stride, w.row_stride);
+  g.fixed32(n.cell_stride, w.cell_stride);
+  appendGridFields(g, w);
+  g.bytesField(n.data, w.data);
+  return g.b;
+}
+
+/// Every field renumbered, parent and nested, in a self-describing schema.
+pj_protobuf::GridFieldNumbers renumberedGridNumbers() {
+  pj_protobuf::GridFieldNumbers n;
+  n.timestamp = 9;
+  n.frame_id = 8;
+  n.pose = 7;
+  n.column_count = 6;
+  n.cell_size = 5;
+  n.row_stride = 4;
+  n.cell_stride = 3;
+  n.fields = 2;
+  n.data = 1;
+  n.pef_name = 3;
+  n.pef_offset = 1;
+  n.pef_type = 2;
+  return n;
+}
+
+std::string buildGridVariantSchema() {
+  const auto n = renumberedGridNumbers();
+  gp::FileDescriptorProto file;
+  file.set_name("foxglove/Grid.proto");
+  file.set_package("foxglove");
+  file.set_syntax("proto3");
+  auto* pef = file.add_message_type();
+  pef->set_name("PackedElementField");
+  addProtoField(pef, "name", n.pef_name, gp::FieldDescriptorProto::TYPE_STRING);
+  addProtoField(pef, "offset", n.pef_offset, gp::FieldDescriptorProto::TYPE_FIXED32);
+  addProtoField(pef, "type", n.pef_type, gp::FieldDescriptorProto::TYPE_INT32);
+  auto* grid = file.add_message_type();
+  grid->set_name("Grid");
+  addProtoField(grid, "timestamp", n.timestamp, gp::FieldDescriptorProto::TYPE_BYTES);
+  addProtoField(grid, "frame_id", n.frame_id, gp::FieldDescriptorProto::TYPE_STRING);
+  addProtoField(grid, "pose", n.pose, gp::FieldDescriptorProto::TYPE_BYTES);
+  addProtoField(grid, "column_count", n.column_count, gp::FieldDescriptorProto::TYPE_FIXED32);
+  addProtoField(grid, "cell_size", n.cell_size, gp::FieldDescriptorProto::TYPE_BYTES);
+  addProtoField(grid, "row_stride", n.row_stride, gp::FieldDescriptorProto::TYPE_FIXED32);
+  addProtoField(grid, "cell_stride", n.cell_stride, gp::FieldDescriptorProto::TYPE_FIXED32);
+  addProtoField(grid, "fields", n.fields, gp::FieldDescriptorProto::TYPE_MESSAGE, ".foxglove.PackedElementField", true);
+  addProtoField(grid, "data", n.data, gp::FieldDescriptorProto::TYPE_BYTES);
+  gp::FileDescriptorSet fds;
+  *fds.add_file() = file;
+  std::string out;
+  fds.SerializeToString(&out);
+  return out;
+}
+
+void expectGoldenGrid(
+    const PJ::sdk::GridMap& g, const std::vector<uint8_t>& wire, const PJ::sdk::BufferAnchor& anchor) {
+  EXPECT_EQ(g.timestamp_ns, 7'000'000'250LL);
+  EXPECT_EQ(g.frame_id, "map");
+  EXPECT_DOUBLE_EQ(g.origin.position.x, 1.0);
+  EXPECT_DOUBLE_EQ(g.origin.position.y, 2.0);
+  EXPECT_DOUBLE_EQ(g.origin.position.z, 0.5);
+  EXPECT_DOUBLE_EQ(g.origin.orientation.w, 1.0);
+  EXPECT_EQ(g.column_count, 3u);
+  EXPECT_EQ(g.row_count, 3u);  // derived: 48 / 16
+  EXPECT_DOUBLE_EQ(g.cell_size.x, 0.1);
+  EXPECT_DOUBLE_EQ(g.cell_size.y, 0.2);
+  EXPECT_EQ(g.row_stride, 16u);
+  EXPECT_EQ(g.cell_stride, 4u);
+  ASSERT_EQ(g.fields.size(), 1u);
+  EXPECT_EQ(g.fields[0].name, "elevation");
+  EXPECT_EQ(g.fields[0].offset, 0u);
+  EXPECT_EQ(g.fields[0].datatype, PJ::sdk::PointField::Datatype::kFloat32);
+  EXPECT_EQ(g.fields[0].count, 1u);
+  // Zero-copy: the cell span aliases the wire buffer, and the anchor is forwarded.
+  ASSERT_EQ(g.data.size(), 48u);
+  EXPECT_GE(g.data.data(), wire.data());
+  EXPECT_LE(g.data.data() + g.data.size(), wire.data() + wire.size());
+  EXPECT_EQ(g.anchor, anchor);
+  EXPECT_TRUE(PJ::validateGridMap(g).has_value());
+}
+
+}  // namespace
+
+TEST(ProtobufParserTest, FoxgloveGridCodecDecodesZeroCopy) {
+  const auto wire = buildFoxgloveGridWire(FoxgloveGridWire{});
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  auto decoded = pj_protobuf::deserializeFoxgloveGridView(wire.data(), wire.size(), anchor);
+  ASSERT_TRUE(decoded.has_value()) << decoded.error();
+  expectGoldenGrid(*decoded, wire, anchor);
+}
+
+TEST(ProtobufParserTest, FoxgloveGridCodecAcceptsArbitraryFieldOrder) {
+  // Arbitrary field order: bulk data and strides before the header and fields.
+  const FoxgloveGridWire w;
+  PW g;
+  g.bytesField(w.num.data, w.data);
+  g.fixed32(w.num.cell_stride, w.cell_stride);
+  g.fixed32(w.num.row_stride, w.row_stride);
+  appendGridHeader(g, w);
+  appendGridFields(g, w);
+  const auto& wire = g.b;
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  auto decoded = pj_protobuf::deserializeFoxgloveGridView(wire.data(), wire.size(), anchor);
+  ASSERT_TRUE(decoded.has_value()) << decoded.error();
+  expectGoldenGrid(*decoded, wire, anchor);
+}
+
+TEST(ProtobufParserTest, FoxgloveGridCodecMapsAllEightDatatypes) {
+  using D = PJ::sdk::PointField::Datatype;
+  FoxgloveGridWire w;
+  w.fields = {{"u8", 0, 1},  {"i8", 1, 2},   {"u16", 2, 3},  {"i16", 4, 4},
+              {"u32", 6, 5}, {"i32", 10, 6}, {"f32", 14, 7}, {"f64", 18, 8}};
+  w.cell_stride = 26;
+  w.column_count = 2;
+  w.row_stride = 52;
+  w.data.assign(104, 0);
+  const auto wire = buildFoxgloveGridWire(w);
+  auto decoded = pj_protobuf::deserializeFoxgloveGridView(wire.data(), wire.size(), nullptr);
+  ASSERT_TRUE(decoded.has_value()) << decoded.error();
+  ASSERT_EQ(decoded->fields.size(), 8u);
+  const D expected[] = {D::kUint8, D::kInt8, D::kUint16, D::kInt16, D::kUint32, D::kInt32, D::kFloat32, D::kFloat64};
+  for (size_t i = 0; i < 8; ++i) {
+    EXPECT_EQ(decoded->fields[i].datatype, expected[i]) << w.fields[i].name;
+    EXPECT_EQ(decoded->fields[i].offset, w.fields[i].offset);
+    EXPECT_EQ(decoded->fields[i].count, 1u);
+  }
+  EXPECT_EQ(decoded->row_count, 2u);
+}
+
+TEST(ProtobufParserTest, FoxgloveGridCodecRejectsBadLayouts) {
+  auto decode = [](const FoxgloveGridWire& w) {
+    const auto wire = buildFoxgloveGridWire(w);
+    return pj_protobuf::deserializeFoxgloveGridView(wire.data(), wire.size(), nullptr);
+  };
+  FoxgloveGridWire unknown;
+  unknown.fields = {{"elevation", 0, 0}};  // UNKNOWN
+  EXPECT_FALSE(decode(unknown).has_value());
+  unknown.fields = {{"elevation", 0, 9}};  // past the enum
+  EXPECT_FALSE(decode(unknown).has_value());
+
+  FoxgloveGridWire remainder;
+  remainder.data.assign(50, 0);  // not a whole number of 16-byte rows
+  EXPECT_FALSE(decode(remainder).has_value());
+
+  FoxgloveGridWire zero_stride;
+  zero_stride.row_stride = 0;
+  EXPECT_FALSE(decode(zero_stride).has_value());
+
+  FoxgloveGridWire overflow;
+  overflow.column_count = 5;  // 5 x 4 > 16
+  EXPECT_FALSE(decode(overflow).has_value());
+
+  FoxgloveGridWire past_cell;
+  past_cell.fields = {{"elevation", 2, 7}};  // f32 at offset 2 ends past cell_stride 4
+  EXPECT_FALSE(decode(past_cell).has_value());
+
+  // Empty data is a legal, zero-row grid.
+  FoxgloveGridWire empty;
+  empty.data.clear();
+  auto ok = decode(empty);
+  ASSERT_TRUE(ok.has_value()) << ok.error();
+  EXPECT_EQ(ok->row_count, 0u);
+}
+
+TEST(ProtobufParserTest, FoxgloveGridCodecRejectsTruncatedMessages) {
+  const auto wire = buildFoxgloveGridWire(FoxgloveGridWire{});
+  // Cut inside the data bytes (the tail of the message) and inside the header.
+  for (size_t cut : {wire.size() - 5, wire.size() - 47, size_t{20}}) {
+    auto decoded = pj_protobuf::deserializeFoxgloveGridView(wire.data(), cut, nullptr);
+    EXPECT_FALSE(decoded.has_value()) << "cut at " << cut;
+  }
+}
+
+TEST(ProtobufParserTest, FoxgloveGridCodecRejectsNestedLengthPastTheEnd) {
+  auto decode = [](const std::vector<uint8_t>& wire) {
+    return pj_protobuf::deserializeFoxgloveGridView(wire.data(), wire.size(), nullptr);
+  };
+  const FoxgloveGridWire w;
+
+  // A valid Grid followed by a Timestamp whose declared length exceeds the
+  // remaining bytes: the nested limit must not be pushed past the buffer.
+  auto overlong = buildFoxgloveGridWire(w);
+  {
+    PW g;
+    g.tag(w.num.timestamp, 2);
+    g.rawVarint(100);
+    const PW ts = foxgloveTimestamp(7, 250);
+    g.b.insert(g.b.end(), ts.b.begin(), ts.b.end());
+    overlong.insert(overlong.end(), g.b.begin(), g.b.end());
+  }
+  EXPECT_FALSE(decode(overlong).has_value()) << "trailing Timestamp declares more bytes than remain";
+
+  // A PackedElementField cut short: its declared length runs past the end.
+  {
+    PW g;
+    appendGridHeader(g, w);
+    g.fixed32(w.num.row_stride, w.row_stride);
+    g.fixed32(w.num.cell_stride, w.cell_stride);
+    g.bytesField(w.num.data, w.data);
+    PW pef;
+    pef.str(w.num.pef_name, "elevation");
+    pef.fixed32(w.num.pef_offset, 0);
+    pef.varint(w.num.pef_type, 7);
+    g.tag(w.num.fields, 2);
+    g.rawVarint(pef.b.size() + 8);
+    g.b.insert(g.b.end(), pef.b.begin(), pef.b.end());
+    EXPECT_FALSE(decode(g.b).has_value()) << "truncated PackedElementField";
+  }
+
+  // A nested message that ends early on a zero tag leaves bytes unconsumed.
+  {
+    PW g;
+    PW ts;
+    ts.b.push_back(0x00);
+    g.sub(w.num.timestamp, ts);
+    g.str(w.num.frame_id, w.frame_id);
+    g.fixed32(w.num.column_count, w.column_count);
+    g.fixed32(w.num.row_stride, w.row_stride);
+    g.fixed32(w.num.cell_stride, w.cell_stride);
+    appendGridFields(g, w);
+    g.bytesField(w.num.data, w.data);
+    EXPECT_FALSE(decode(g.b).has_value()) << "Timestamp not fully consumed";
+  }
+
+  // Trailing garbage after the last field is not a legitimate message end.
+  auto trailing = buildFoxgloveGridWire(w);
+  trailing.push_back(0x00);
+  EXPECT_FALSE(decode(trailing).has_value()) << "top-level zero tag";
+}
+
+TEST(ProtobufParserTest, FoxgloveGridObjectRouteClassifiesAndForwardsAnchor) {
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("foxglove.Grid", std::string{}));
+  const PJ::Span<const uint8_t> empty_schema{};
+  EXPECT_EQ(f.handle.classifySchema("foxglove.Grid", empty_schema), PJ::sdk::BuiltinObjectType::kGridMap);
+
+  const auto wire = buildFoxgloveGridWire(FoxgloveGridWire{});
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(wire.data(), wire.size()), anchor};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  EXPECT_FALSE(rec->ts.has_value());  // use_embedded_timestamp off
+
+  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  ASSERT_NE(g, nullptr);
+  expectGoldenGrid(*g, wire, anchor);
+}
+
+TEST(ProtobufParserTest, FoxgloveGridRenumberedSchemaResolvesParentAndNested) {
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("foxglove.Grid", buildGridVariantSchema()));
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+
+  FoxgloveGridWire w;
+  w.num = renumberedGridNumbers();
+  const auto wire = buildFoxgloveGridWire(w);
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(wire.data(), wire.size()), anchor};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  ASSERT_TRUE(rec->ts.has_value());
+  EXPECT_EQ(*rec->ts, 7'000'000'250LL);
+  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  ASSERT_NE(g, nullptr);
+  expectGoldenGrid(*g, wire, anchor);
+
+  // The official numbering must NOT decode against the renumbered binding.
+  const auto official = buildFoxgloveGridWire(FoxgloveGridWire{});
+  const PJ::sdk::PayloadView official_view{PJ::Span<const uint8_t>(official.data(), official.size()), anchor};
+  auto wrong = base->parseObject(1234, official_view);
+  EXPECT_TRUE(!wrong.has_value() || std::any_cast<PJ::sdk::GridMap>(&wrong->object)->frame_id != "map");
+}
+
+TEST(ProtobufParserTest, FoxgloveGridScalarRoute) {
+  ProtobufParserFixture f;
+  f.setUp();
+  const auto* row = scalarRow(f, "foxglove.Grid", buildFoxgloveGridWire(FoxgloveGridWire{}));
+  ASSERT_NE(row, nullptr);
+  expectNumeric(*row, "timestamp", static_cast<double>(7'000'000'250LL) * 1e-9);
+  expectString(*row, "frame_id", "map");
+  expectNumeric(*row, "column_count", 3.0);
+  expectNumeric(*row, "row_count", 3.0);
+  expectNumeric(*row, "row_stride", 16.0);
+  expectNumeric(*row, "cell_stride", 4.0);
+  expectNumeric(*row, "data_size", 48.0);
+  EXPECT_EQ(row->fields.size(), 7u);
 }

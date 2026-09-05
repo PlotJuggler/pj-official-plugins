@@ -7,119 +7,23 @@
 #include <google/protobuf/io/coded_stream.h>
 
 #include <algorithm>
-#include <bit>
 #include <limits>
 #include <pj_pointcloud_color/pointcloud_color.hpp>
 #include <string>
 #include <vector>
 
 #include "foxglove_descriptor_util.hpp"
+#include "foxglove_wire_util.hpp"
 
 namespace pj_protobuf {
 namespace {
 
 namespace gpio = google::protobuf::io;
-
-using Datatype = PJ::sdk::PointField::Datatype;
+using namespace pj_protobuf::wire;
 
 // foxglove.PointCloud / PackedElementField / LaserScan field numbers now come
 // from the descriptor-driven PointCloudFieldNumbers / LaserScanFieldNumbers
 // structs (defaults = official numbering), so the hardcoded constants are gone.
-
-// Protobuf wire types.
-constexpr uint32_t kWireVarint = 0;
-constexpr uint32_t kWireI64 = 1;
-constexpr uint32_t kWireLen = 2;
-constexpr uint32_t kWireI32 = 5;
-
-/// Foxglove NumericType -> canonical PJ datatype. The enum swaps signed and
-/// unsigned variants relative to ROS/SDK (UINT8=1 here vs INT8=1 there), so the
-/// ROS mapper cannot be reused.
-[[nodiscard]] Datatype mapFoxgloveNumericType(uint64_t t) {
-  switch (t) {
-    case 1:
-      return Datatype::kUint8;
-    case 2:
-      return Datatype::kInt8;
-    case 3:
-      return Datatype::kUint16;
-    case 4:
-      return Datatype::kInt16;
-    case 5:
-      return Datatype::kUint32;
-    case 6:
-      return Datatype::kInt32;
-    case 7:
-      return Datatype::kFloat32;
-    case 8:
-      return Datatype::kFloat64;
-    default:
-      return Datatype::kUnknown;
-  }
-}
-
-/// Skip a field whose value we do not consume, given its wire type.
-[[nodiscard]] bool skipField(gpio::CodedInputStream& in, uint32_t wire_type) {
-  switch (wire_type) {
-    case kWireVarint: {
-      uint64_t v = 0;
-      return in.ReadVarint64(&v);
-    }
-    case kWireI64: {
-      uint64_t v = 0;
-      return in.ReadLittleEndian64(&v);
-    }
-    case kWireLen: {
-      uint32_t len = 0;
-      return in.ReadVarint32(&len) && in.Skip(static_cast<int>(len));
-    }
-    case kWireI32: {
-      uint32_t v = 0;
-      return in.ReadLittleEndian32(&v);
-    }
-    default:
-      return false;  // groups (3/4) are not used by foxglove schemas.
-  }
-}
-
-[[nodiscard]] bool readDouble(gpio::CodedInputStream& in, double& out) {
-  uint64_t bits = 0;
-  if (!in.ReadLittleEndian64(&bits)) {
-    return false;
-  }
-  out = std::bit_cast<double>(bits);
-  return true;
-}
-
-/// Parse a google.protobuf.Timestamp submessage of `len` bytes into nanoseconds.
-[[nodiscard]] bool readTimestampNs(gpio::CodedInputStream& in, uint32_t len, int64_t& ts_ns) {
-  const auto limit = in.PushLimit(static_cast<int>(len));
-  int64_t seconds = 0;
-  int64_t nanos = 0;
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int field = static_cast<int>(tag >> 3);
-    const uint32_t wt = tag & 0x7u;
-    if (field == 1 && wt == kWireVarint) {
-      uint64_t v = 0;
-      if (!in.ReadVarint64(&v)) {
-        return false;
-      }
-      seconds = static_cast<int64_t>(v);
-    } else if (field == 2 && wt == kWireVarint) {
-      uint64_t v = 0;
-      if (!in.ReadVarint64(&v)) {
-        return false;
-      }
-      nanos = static_cast<int64_t>(static_cast<int32_t>(v));
-    } else if (!skipField(in, wt)) {
-      return false;
-    }
-  }
-  in.PopLimit(limit);
-  ts_ns = seconds * 1'000'000'000LL + nanos;
-  return true;
-}
 
 /// Parse a foxglove.Pose submessage to decide whether it deviates from
 /// identity. Defaults are identity (zero translation, unit quaternion), so an
@@ -219,40 +123,6 @@ constexpr uint32_t kWireI32 = 5;
   return true;
 }
 
-/// Parse one PackedElementField submessage of `len` bytes.
-[[nodiscard]] bool readPackedElementField(
-    gpio::CodedInputStream& in, uint32_t len, PJ::sdk::PointField& out, const PointCloudFieldNumbers& fields) {
-  const auto limit = in.PushLimit(static_cast<int>(len));
-  uint32_t tag = 0;
-  while ((tag = in.ReadTag()) != 0) {
-    const int field = static_cast<int>(tag >> 3);
-    const uint32_t wt = tag & 0x7u;
-    if (field == fields.pef_name && wt == kWireLen) {
-      uint32_t s = 0;
-      if (!in.ReadVarint32(&s) || !in.ReadString(&out.name, static_cast<int>(s))) {
-        return false;
-      }
-    } else if (field == fields.pef_offset && wt == kWireI32) {
-      uint32_t off = 0;
-      if (!in.ReadLittleEndian32(&off)) {
-        return false;
-      }
-      out.offset = off;
-    } else if (field == fields.pef_type && wt == kWireVarint) {
-      uint64_t t = 0;
-      if (!in.ReadVarint64(&t)) {
-        return false;
-      }
-      out.datatype = mapFoxgloveNumericType(t);
-    } else if (!skipField(in, wt)) {
-      return false;
-    }
-  }
-  in.PopLimit(limit);
-  out.count = 1;  // Foxglove PackedElementField has no `count`; one element per field.
-  return true;
-}
-
 }  // namespace
 
 PointCloudFieldNumbers resolvePointCloudFieldNumbers(const google::protobuf::Descriptor* descriptor) {
@@ -347,7 +217,7 @@ PJ::Expected<FoxglovePointCloudDecode> deserializeFoxglovePointCloudView(
         return PJ::unexpected(std::string("foxglove.PointCloud: failed to read field length"));
       }
       PJ::sdk::PointField pf;
-      if (!readPackedElementField(in, len, pf, fields)) {
+      if (!readPackedElementField(in, len, pf, fields.pef_name, fields.pef_offset, fields.pef_type)) {
         return PJ::unexpected(std::string("foxglove.PointCloud: failed to read PackedElementField"));
       }
       cloud.fields.push_back(std::move(pf));
