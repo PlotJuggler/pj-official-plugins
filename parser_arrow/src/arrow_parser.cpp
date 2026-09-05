@@ -287,22 +287,26 @@ class ArrowParser : public PJ::MessageParserPluginBase {
     }
     auto record = convertMosaicoObject(*table, timestamp, payload.anchor);
 #ifdef __APPLE__
-    // TEMPORARY macOS RTTI diagnostic — always fail with the identity facts.
+    // TEMPORARY macOS RTTI diagnostic — report the identity facts when the
+    // SDK codec cannot round-trip the record; a healthy build passes through.
     if (record) {
       const std::any& any_obj = record->object;
       const std::type_info& dynamic_type = any_obj.type();
       const std::type_info& static_type = typeid(PJ::sdk::Image);
       auto wire = PJ::serializeBuiltinObject(any_obj);
-      auto hex_ptr = [](const void* pointer) {
-        char buf[32];
-        std::snprintf(buf, sizeof(buf), "%p", pointer);
-        return std::string(buf);
-      };
-      return PJ::unexpected(
-          std::string("RTTI-DIAG has_value=") + (any_obj.has_value() ? "1" : "0") + " any_type=" + dynamic_type.name() +
-          "@" + hex_ptr(&dynamic_type) + " local_image=" + static_type.name() + "@" + hex_ptr(&static_type) +
-          " eq_local=" + (dynamic_type == static_type ? "1" : "0") + " typeOf=" +
-          std::string(PJ::sdk::name(PJ::sdk::typeOf(any_obj))) + " serialize=" + (wire ? "ok" : wire.error()));
+      if (!wire) {
+        auto hex_ptr = [](const void* pointer) {
+          char buf[32];
+          std::snprintf(buf, sizeof(buf), "%p", pointer);
+          return std::string(buf);
+        };
+        return PJ::unexpected(
+            std::string("RTTI-DIAG has_value=") + (any_obj.has_value() ? "1" : "0") +
+            " any_type=" + dynamic_type.name() + "@" + hex_ptr(&dynamic_type) + " local_image=" + static_type.name() +
+            "@" + hex_ptr(&static_type) + " eq_local=" + (dynamic_type == static_type ? "1" : "0") +
+            " cast_local=" + (std::any_cast<PJ::sdk::Image>(&any_obj) != nullptr ? "1" : "0") +
+            " typeOf=" + std::string(PJ::sdk::name(PJ::sdk::typeOf(any_obj))) + " serialize=" + wire.error());
+      }
     }
 #endif
     return record;
