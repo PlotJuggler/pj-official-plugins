@@ -25,5 +25,6 @@
     ".mdf",
     ".dat"
   ],
+  "min_sdk_required": "0.28.0",
   "min_plotjuggler_version": "3.999.1"
 }

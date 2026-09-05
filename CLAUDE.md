@@ -82,6 +82,35 @@ The core version is **not** pinned in CMake — `find_package` resolves whatever
 
 **Repository & package rename (core `v0.6.0`):** the SDK was renamed `plotjuggler_core` → [`plotjuggler_sdk`](https://github.com/PlotJuggler/plotjuggler_sdk) — GitHub repo, Conan package, and CMake identity all move together. Recipes require `plotjuggler_sdk/<version>`; CMake uses `find_package(plotjuggler_sdk)` and links `plotjuggler_sdk::base|plugin_sdk|plugin_host`. The upstream SDK recipe (`name`, `cmake_file_name`, `cmake_target_name`) and the JFrog package are renamed on the SDK side; this repo only consumes the new name.
 
+### Plugin SDK Compatibility — Required PR Review
+
+`SDK_VERSION` selects the SDK used to **build** every plugin. Each plugin's
+`manifest.json` must separately declare `min_sdk_required`: the oldest **host SDK
+contract** that the plugin requires. These values are independent. Official SDK
+pins and minimums name stable releases (`X.Y.Z`). `min_plotjuggler_version` is a
+separate application-version requirement.
+
+**Before opening or updating a PR:**
+
+- Preserve each existing `min_sdk_required` unless the change introduces a real
+  requirement for newer host functionality. A global SDK bump, rebuild, refactor,
+  or newer SDK helper that adds no host requirement does **not** justify raising
+  it. Optional services with a working fallback do not raise it either.
+- If newer host functionality becomes mandatory, raise only the affected plugins'
+  minimums to the version that introduced that requirement. Check consumers when
+  changing shared `common/` code. In the PR description, identify the requirement,
+  affected plugins, and old/new minimums; otherwise state that minimums are unchanged.
+- New plugins must declare an explicit minimum based on the host functionality
+  they require. Do not automatically copy the current build SDK version.
+- Run `python3 scripts/bump_core_version.py --check` and
+  `python3 -m unittest discover -s scripts/tests`. These validate declarations;
+  they do not infer feature use or prove compatibility with older hosts.
+
+**One-time baseline:** all plugins existing at this policy's introduction were
+assigned `min_sdk_required: "0.28.0"`, with build SDK `0.28.0`, by explicit user
+decision. This is a conservative support baseline, not a claim that every plugin
+uses 0.28 features. Do not repeat this blanket increase on future SDK bumps.
+
 ### Dialog System
 
 Plugins with UI subclass `PJ::DialogPluginTyped` and use real `.ui` files (Qt Creator-editable). CMake's `pj_embed_ui()` compiles `.ui` XML into a `constexpr char[]` header — **no Qt dependency at build time**. The `QDialogButtonBox` must be named `"buttonBox"` for the DialogEngine to wire accept/reject signals.
