@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "../../common/builtin_object_compat.hpp"
 #include "arrow_write_host_fake.hpp"
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/testing/parser_runtime_recorder.hpp"
@@ -579,7 +580,7 @@ TEST(ArrowParserTest, ClassifiesCanonicalOntologiesAndDecodesObjectsWithoutScala
   ASSERT_TRUE(object) << object.error();
   bytes.clear();
   EXPECT_EQ(object->ts, 123000);
-  const auto* image = std::any_cast<PJ::sdk::Image>(&object->object);
+  const auto* image = pj_compat::getBuiltinObject<PJ::sdk::Image>(object->object);
   ASSERT_NE(image, nullptr);
   EXPECT_EQ(image->width, 2);
   EXPECT_EQ(image->encoding, "mono8");

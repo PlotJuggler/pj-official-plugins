@@ -101,12 +101,13 @@ pj_harden_plugin_exports(parser_arrow_plugin
 
 # This plugin splits its TUs across two targets: pj_emit_plugin_manifest sets
 # hidden visibility on parser_arrow_plugin (arrow_parser.cpp + SDK trampolines)
-# while parser_arrow_core and the SDK archive compile with default visibility.
-# On Apple arm64 that mix gives the same builtin type unique RTTI in one TU and
-# non-unique RTTI in another; the pair compares UNEQUAL, so std::any identity
-# breaks inside the dylib (typeOf/any_cast in the SDK codec fail). Align the
-# whole plugin on default type visibility; exports stay restricted by the
-# pj_harden_plugin_exports allowlist above.
+# while parser_arrow_core and the prebuilt SDK archive compile with default
+# visibility. On Apple arm64 that mix gives the same type unique RTTI in one TU
+# and non-unique RTTI in another, and such a pair compares UNEQUAL — any
+# typeid-based identity spanning the seam (std::any, any_cast, dynamic_cast,
+# catch-by-type) silently fails inside the dylib. Keep the whole plugin in ONE
+# RTTI universe by aligning on default type visibility; cross-plugin isolation
+# is preserved because exports stay restricted to the C-ABI allowlist above.
 if(APPLE)
   set_target_properties(parser_arrow_plugin PROPERTIES
     CXX_VISIBILITY_PRESET     default
