@@ -88,8 +88,9 @@ class StorageReader : public arrow::RecordBatchReader {
     ARROW_RETURN_NOT_OK((*out)->ValidateFull());
     auto columns = (*out)->columns();
     for (int i = 0; i < (*out)->num_columns(); ++i) {
-      if (!columns[i]->type()->Equals(schema_->field(i)->type())) {
-        ARROW_ASSIGN_OR_RAISE(columns[i], arrow::compute::Cast(*columns[i], schema_->field(i)->type()));
+      auto& column = columns[static_cast<std::size_t>(i)];
+      if (!column->type()->Equals(schema_->field(i)->type())) {
+        ARROW_ASSIGN_OR_RAISE(column, arrow::compute::Cast(*column, schema_->field(i)->type()));
       }
     }
     *out = arrow::RecordBatch::Make(schema_, (*out)->num_rows(), std::move(columns));
