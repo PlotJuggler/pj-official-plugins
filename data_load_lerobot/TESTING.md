@@ -1,13 +1,19 @@
 # Manual testing guide for the LeRobot Loader plugin
 
-Step-by-step procedure to validate the plugin from scratch. Assumes:
+Step-by-step procedure to validate the plugin from scratch.
 
-- Plugin repo at `~/Work/pj-official-plugins` (branch `feature/data_load_lerobot`).
-- Local `plotjuggler_core` at `~/Work/PJ4/plotjuggler_core`.
-- PlotJuggler 4 built under `~/Work/PJ4` from the `feature/file-backed-video-lerobot`
-  branch (this is the branch that wires `FileVideoSource` into
-  `Media2DDockWidget` and enables libdav1d in the host's FFmpeg — without it,
-  camera topics will not render).
+Run every command from the **root of this repository**. Two locations outside it
+are needed; set them first, to wherever your checkouts actually live:
+
+```bash
+export PLOTJUGGLER_CORE_SOURCE=/path/to/plotjuggler_core   # local core checkout
+export PJ4_BUILD_DIR=/path/to/PJ4                          # a built PlotJuggler 4
+```
+
+Also assumes:
+
+- The PJ4 build wires `FileVideoSource` into `Media2DDockWidget` and enables
+  libdav1d in the host's FFmpeg — without that, camera topics will not render.
 - Extensions folder at `~/.local/share/PlotJuggler/PlotJuggler4/extensions/`.
 - `conan` 2.x, `cmake`, `ninja` and `huggingface_hub` (Python) available.
 
@@ -22,7 +28,6 @@ forward extra arguments; we invoke cmake by hand, pointing CPM at the
 **local** `plotjuggler_core`.
 
 ```bash
-cd ~/Work/pj-official-plugins
 BUILD=build/data_load_lerobot/Release
 
 conan install data_load_lerobot --output-folder="build/data_load_lerobot" \
@@ -34,7 +39,7 @@ cmake -S . -B "$BUILD" -G Ninja \
   -DCMAKE_PREFIX_PATH="$PWD/build/data_load_lerobot" \
   -DCMAKE_BUILD_TYPE=Release \
   -DPJ_BUILD_PLUGIN=data_load_lerobot \
-  -DCPM_plotjuggler_core_SOURCE=$HOME/Work/PJ4/plotjuggler_core
+  -DCPM_plotjuggler_core_SOURCE="$PLOTJUGGLER_CORE_SOURCE"
 
 cmake --build "$BUILD" --parallel
 ```
@@ -76,7 +81,7 @@ installed.
 ```bash
 DST=~/.local/share/PlotJuggler/PlotJuggler4/extensions/lerobot-loader
 mkdir -p "$DST"
-SRC=~/Work/pj-official-plugins/build/data_load_lerobot/Release/bin
+SRC="$PWD/build/data_load_lerobot/Release/bin"
 cp "$SRC/liblerobot_source_plugin.so" "$DST/"
 cp "$SRC/lerobot_source_plugin.pjmanifest.json" "$DST/"
 ls "$DST"
@@ -95,31 +100,32 @@ from Python:
 
 ```bash
 python3 -c "
+import os
 from huggingface_hub import snapshot_download
 snapshot_download('lerobot/pusht', repo_type='dataset', revision='v2.1',
-  local_dir='$HOME/datasets/pusht_v21',
+  local_dir=os.environ['LEROBOT_DATASET_DIR'] + '/pusht_v21',
   allow_patterns=['meta/*','data/chunk-000/episode_000000.parquet',
                   'videos/chunk-000/*/episode_000000.mp4'])
 "
-grep -o '\"codebase_version\"[^,]*' ~/datasets/pusht_v21/meta/info.json  # → "v2.1"
-ls ~/datasets/pusht_v21/data/chunk-000
-find ~/datasets/pusht_v21/videos -name '*.mp4'
+grep -o '\"codebase_version\"[^,]*' "$LEROBOT_DATASET_DIR/pusht_v21/meta/info.json"  # → "v2.1"
+ls "$LEROBOT_DATASET_DIR/pusht_v21/data/chunk-000"
+find "$LEROBOT_DATASET_DIR/pusht_v21/videos" -name '*.mp4'
 ```
 
 (Drop `allow_patterns` to fetch the full dataset — it's still small. If you
 want more episodes, add their `episode_0000NN.parquet` / `.mp4` files.)
 
 > The pusht v2.1 video stream is **AV1**. PJ4 decodes it with its own
-> FFmpeg (libdav1d, enabled on `feature/file-backed-video-lerobot` by commit
-> `45bb5c4`). The plugin decodes nothing — it only registers the path.
+> FFmpeg, which must be built with libdav1d. The plugin decodes nothing — it
+> only registers the path.
 
 ---
 
 ## 5. Try it in the app (numeric + video)
 
-1. Launch PlotJuggler 4: `~/Work/PJ4/run.sh`.
+1. Launch PlotJuggler 4: `"$PJ4_BUILD_DIR/run.sh"`.
 2. **File → Open** → filter `*.json`.
-3. Navigate to `~/datasets/pusht_v21/meta/` and pick `info.json`. (The plugin
+3. Navigate to your downloaded dataset's `meta/` directory and pick `info.json`. (The plugin
    only claims `.json` so it doesn't overlap with `data_load_parquet` on
    loose parquet files — the dataset is identified by `meta/info.json`, not
    by one of its parquets.)
@@ -160,8 +166,7 @@ want more episodes, add their `episode_0000NN.parquet` / `.mp4` files.)
 
 To re-test from scratch: delete
 `~/.local/share/PlotJuggler/PlotJuggler4/extensions/lerobot-loader/` and
-`~/Work/pj-official-plugins/build/data_load_lerobot/`, then repeat from
-step 1.
+`build/data_load_lerobot/` in this repository, then repeat from step 1.
 
 ---
 
@@ -170,11 +175,10 @@ step 1.
 - **CPM clones over SSH** if you don't pass `-DCPM_plotjuggler_core_SOURCE=`
   → use the local-path variant (step 1).
 - **Video codec (AV1/H.264/HEVC/…)**: decoded by the **host's** FFmpeg (PJ4),
-  not by the plugin. AV1 requires the PJ4 build to include libdav1d (the
-  `feature/file-backed-video-lerobot` branch carries it). If the camera
-  shows up in the tree but nothing renders when you drag it onto the 2D
-  view, check that the PJ4 you're running is from that branch and rebuild
-  after `conan install` to re-pick libdav1d.
+  not by the plugin. AV1 requires the PJ4 build to include libdav1d. If the
+  camera shows up in the tree but nothing renders when you drag it onto the 2D
+  view, check that your PJ4 build has libdav1d and rebuild after
+  `conan install` to re-pick it.
 - **Dialog doesn't appear when loading `info.json`**: the `*.json` filter
   and the dialog hook in via the file extension registered in the plugin
   manifest. Check that `~/.local/.../extensions/lerobot-loader/` contains

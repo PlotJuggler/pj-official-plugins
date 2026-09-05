@@ -1,7 +1,8 @@
 # Porting Gap Analysis
 
 Systematic comparison of all 12 ported plugins against their original reference
-implementations in `~/ws_plotjuggler/src/PlotJuggler/plotjuggler_plugins/`.
+implementations in `${PJ3_SOURCE_DIR}/plotjuggler_plugins/`, where `PJ3_SOURCE_DIR`
+is a checkout of [PlotJuggler 3](https://github.com/facontidavide/PlotJuggler).
 
 > **New plugins (not ports, so out of scope for this gap analysis):**
 > `data_load_3d` — static PLY/PCD 3D loader. `.pcd` and vertex-only `.ply` load as

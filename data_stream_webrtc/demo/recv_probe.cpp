@@ -8,12 +8,14 @@
 // live frame/keyframe/byte counts.
 //
 //   ./webrtc_recv_probe http://127.0.0.1:8889/cam0/whep [--token T] [--out F]
-//   verify: ffplay /tmp/webrtc_recv.h264
+//   the default --out is webrtc_recv.h264 in the platform temp dir; the probe
+//   prints the path it wrote, then: ffplay <that path>
 #include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <pj_base/sdk/platform.hpp>
 #include <rtc/rtc.hpp>
@@ -36,7 +38,7 @@ int main(int argc, char** argv) {
   }
   const std::string whep_url = argv[1];
   std::string token;
-  std::string out_path = "/tmp/webrtc_recv.h264";
+  std::string out_path = (std::filesystem::temp_directory_path() / "webrtc_recv.h264").string();
   for (int i = 2; i + 1 < argc; i += 2) {
     const std::string key = argv[i];
     const std::string val = argv[i + 1];

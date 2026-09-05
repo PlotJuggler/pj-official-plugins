@@ -381,7 +381,7 @@ if(BUILD_TESTING)
   add_test(NAME ToolboxMosaicoQueryFilterTest COMMAND toolbox_mosaico_query_filter_test)
 
   # Assist model: the Key/Op/Value dropdown + PLUS state machine for the metadata
-  # filter, encoding the lua.txt contract (replace-at-caret vs stage-then-PLUS).
+  # filter, encoding the query-assist contract (replace-at-caret vs stage-then-PLUS).
   # Pure header logic (query/assist.h) — no Lua, no Arrow/Flight.
   add_executable(toolbox_mosaico_assist_test
     tests/assist_test.cpp

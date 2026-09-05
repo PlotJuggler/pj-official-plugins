@@ -133,7 +133,7 @@ struct DialogState {
   // User keystrokes do NOT set this, so the editor keeps owning its own text.
   bool query_push_pending = false;
 
-  // Staged clause being assembled in ADD mode (lua.txt 1-3,9): the dropdown
+  // Staged clause being assembled in ADD mode (contract clauses 1-3,9): the dropdown
   // picks accumulate here and reach the editor ONLY when PLUS commits them
   // (commitClause). Empty == that slot not yet picked. Cleared after a commit,
   // and ignored while the caret is ON a token (REPLACE mode edits in place).
