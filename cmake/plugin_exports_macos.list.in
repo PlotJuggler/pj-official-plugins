@@ -11,10 +11,11 @@
 # breaks RTTI identity inside the plugin (std::any resolving to "unknown type",
 # any_cast failing). Keeping every non-ABI symbol local makes the plugin's
 # statically linked C++ self-consistent, exactly like a plain executable.
+# The family getters are one glob: unlike an ELF version script, ld64 treats a
+# literal entry as a REQUIRED symbol (undefined-symbol link error when absent),
+# while an unmatched glob is silently ignored — and each plugin defines only
+# the getters for the families it implements.
 _pj_plugin_abi_version
-_PJ_get_data_source_vtable
-_PJ_get_message_parser_vtable
-_PJ_get_toolbox_vtable
-_PJ_get_dialog_vtable
+_PJ_get_*_vtable
 _pj_plugin_descriptor_*
 @PJ_EXTRA_EXPORT_LINES@
