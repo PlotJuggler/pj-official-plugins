@@ -24,5 +24,11 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Validate SDK pins and plugin minimums
+        run: python scripts/bump_core_version.py --check
+
+      - name: Test SDK minimum policy
+        run: python -m unittest discover -s scripts/tests
+
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1

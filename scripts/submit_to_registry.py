@@ -54,6 +54,7 @@ MANIFEST_FIELDS = [
     "category",
     "tags",
     "min_plotjuggler_version",
+    "min_sdk_required",
 ]
 
 

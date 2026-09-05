@@ -238,18 +238,18 @@ jobs:
         # restore caches saved by main, and a credential must never travel that
         # way. The remote itself is removed too so the cached remotes.json stays
         # neutral; every run re-adds it through configure_jfrog_conan.sh.
-        if: always() && steps.conan-cache.outputs.cache-hit != 'true'
+        if: success() && steps.conan-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           conan remote logout plotjuggler-conan 2>/dev/null || true
           conan remote remove plotjuggler-conan 2>/dev/null || true
-          conan cache clean "*" --build --source --temp || true
+          conan cache clean "*" --build --source --temp
 
       - name: Save Conan cache
-        # always(): a failed plugin compile must still persist the expensive
-        # third-party closure. Immutable keys make a re-save a no-op, so skip
-        # only on an exact-key hit.
-        if: always() && steps.conan-cache.outputs.cache-hit != 'true'
+        # Save only after a successful build and cleanup. A cancelled restore
+        # can leave a partially extracted cache that would poison the new key.
+        # Immutable keys make a re-save a no-op, so skip exact-key hits.
+        if: success() && steps.conan-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ~/.conan2
