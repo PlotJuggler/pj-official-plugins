@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <any>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -2533,7 +2532,7 @@ void serializeMarker(
 }
 
 const PJ::sdk::SceneEntities* parseSceneEntities(
-    RosParserFixture& f, const std::vector<uint8_t>& payload, std::any& hold) {
+    RosParserFixture& f, const std::vector<uint8_t>& payload, PJ::sdk::BuiltinObject& hold) {
   auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
   if (base == nullptr) {
     return nullptr;
@@ -2585,7 +2584,7 @@ TEST(RosParserTest, MarkerArrayProducesSceneEntities) {
     serializeMarker(enc, line, true, true);
   });
 
-  std::any hold;
+  PJ::sdk::BuiltinObject hold;
   const auto* se = parseSceneEntities(f, payload, hold);
   ASSERT_NE(se, nullptr);
   ASSERT_EQ(se->entities.size(), 3u);
@@ -2626,7 +2625,7 @@ TEST(RosParserTest, TextMarkerHumbleAndFoxyLayouts) {
       serializeMarker(enc, text, /*has_texture_block=*/humble, /*has_mesh_file=*/humble);
     });
 
-    std::any hold;
+    PJ::sdk::BuiltinObject hold;
     const auto* se = parseSceneEntities(f, payload, hold);
     ASSERT_NE(se, nullptr) << (humble ? "humble" : "foxy");
     ASSERT_EQ(se->entities.size(), 1u);
@@ -2651,7 +2650,7 @@ TEST(RosParserTest, MeshResourceMarkerProducesModel) {
 
   auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) { serializeMarker(enc, mesh, true, true); });
 
-  std::any hold;
+  PJ::sdk::BuiltinObject hold;
   const auto* se = parseSceneEntities(f, payload, hold);
   ASSERT_NE(se, nullptr);
   ASSERT_EQ(se->entities.size(), 1u);
@@ -2680,7 +2679,7 @@ TEST(RosParserTest, MeshFileMarkerProducesEmbeddedModel) {
 
   auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) { serializeMarker(enc, mesh, true, true); });
 
-  std::any hold;
+  PJ::sdk::BuiltinObject hold;
   const auto* se = parseSceneEntities(f, payload, hold);
   ASSERT_NE(se, nullptr);
   ASSERT_EQ(se->entities.size(), 1u);
@@ -2710,7 +2709,7 @@ TEST(RosParserTest, MeshFileAndUrlMarkerKeepsBoth) {
 
   auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) { serializeMarker(enc, mesh, true, true); });
 
-  std::any hold;
+  PJ::sdk::BuiltinObject hold;
   const auto* se = parseSceneEntities(f, payload, hold);
   ASSERT_NE(se, nullptr);
   ASSERT_EQ(se->entities.size(), 1u);
@@ -2751,7 +2750,7 @@ TEST(RosParserTest, NonMeshMarkerWithMeshFileBytesStaysAligned) {
     serializeMarker(enc, sphere, true, true);
   });
 
-  std::any hold;
+  PJ::sdk::BuiltinObject hold;
   const auto* se = parseSceneEntities(f, payload, hold);
   ASSERT_NE(se, nullptr);
   ASSERT_EQ(se->entities.size(), 2u);
@@ -2782,7 +2781,7 @@ TEST(RosParserTest, MarkerDeleteAndDeleteAll) {
     serializeMarker(enc, del_all, true, true);
   });
 
-  std::any hold;
+  PJ::sdk::BuiltinObject hold;
   const auto* se = parseSceneEntities(f, payload, hold);
   ASSERT_NE(se, nullptr);
   EXPECT_TRUE(se->entities.empty());
@@ -2807,7 +2806,7 @@ TEST(RosParserTest, CubeListPerPointColors) {
 
   auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) { serializeMarker(enc, list, true, true); });
 
-  std::any hold;
+  PJ::sdk::BuiltinObject hold;
   const auto* se = parseSceneEntities(f, payload, hold);
   ASSERT_NE(se, nullptr);
   ASSERT_EQ(se->entities.size(), 1u);
@@ -2829,7 +2828,7 @@ TEST(RosParserTest, PointsMarkerSkipped) {
 
   auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) { serializeMarker(enc, pts, true, true); });
 
-  std::any hold;
+  PJ::sdk::BuiltinObject hold;
   const auto* se = parseSceneEntities(f, payload, hold);
   ASSERT_NE(se, nullptr);
   EXPECT_TRUE(se->entities.empty());

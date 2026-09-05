@@ -16,6 +16,7 @@
 #include <limits>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <pj_base/sdk/ingest_completion.hpp>
 #include <string>
 #include <thread>
 #include <utility>
@@ -37,6 +38,12 @@ class FetchWorkerTestAccess {
 
   static void setCancelActivePullsOverride(FetchWorker& worker, std::function<void()> cancel_active_pulls) {
     worker.cancel_active_pulls_override_ = std::move(cancel_active_pulls);
+  }
+
+  /// Seed the origin normally extracted by connectAsync, which unit tests
+  /// cannot call without a live Flight endpoint.
+  static void setServerOrigin(FetchWorker& worker, std::string origin) {
+    worker.server_origin_ = std::move(origin);
   }
 };
 
@@ -70,6 +77,9 @@ class FakeIngestHost {
     ingest_vtable_.is_stop_requested = &FakeIngestHost::isStopRequested;
     ingest_vtable_.ensure_parser_binding = &FakeIngestHost::ensureParserBinding;
     ingest_vtable_.push_message = &FakeIngestHost::pushMessage;
+    ingest_vtable_.request_stop = &FakeIngestHost::requestStop;
+    ingest_vtable_.attach_source_record = &FakeIngestHost::attachSourceRecord;
+    ingest_vtable_.complete_ingest = &FakeIngestHost::completeIngest;
 
     auto& runtime_base = runtimeBase();
     runtime_base.protocol_version = PJ_TOOLBOX_PLUGIN_PROTOCOL_VERSION;
@@ -115,6 +125,12 @@ class FakeIngestHost {
 #endif
   }
 
+  /// Shrink the ingest vtable to the pre-0.30 layout: attach_source_record is
+  /// still visible but complete_ingest falls past struct_size.
+  void emulateHostWithoutCompleteIngest() {
+    ingest_vtable_.struct_size = offsetof(PJ_data_source_runtime_host_vtable_t, complete_ingest);
+  }
+
   void failParserIngestCreation() {
     create_ingest_succeeds_.store(false);
   }
@@ -147,8 +163,11 @@ class FakeIngestHost {
     std::int64_t host_ts_ns = 0;
     std::vector<std::uint8_t> payload;
   };
-  std::vector<Binding> bindings;  // guarded by mu
-  std::vector<Message> messages;  // guarded by mu
+  std::vector<Binding> bindings;                                              // guarded by mu
+  std::vector<Message> messages;                                              // guarded by mu
+  std::vector<std::string> attached_records;                                  // guarded by mu
+  std::vector<std::pair<PJ_data_source_state_t, std::string>> stop_requests;  // guarded by mu
+  std::vector<PJ::sdk::IngestCompletionRecord> completions;                   // guarded by mu (validated copies)
   std::mutex mu;
 
  private:
@@ -222,6 +241,35 @@ class FakeIngestHost {
       fetch.release(fetch.ctx);
     }
     return fetched;
+  }
+
+  static void requestStop(void* ctx, PJ_data_source_state_t terminal_state, PJ_string_view_t reason) PJ_NOEXCEPT {
+    auto* self = static_cast<FakeIngestHost*>(ctx);
+    std::lock_guard<std::mutex> lock(self->mu);
+    self->stop_requests.emplace_back(terminal_state, str(reason));
+  }
+
+  static bool attachSourceRecord(void* ctx, PJ_string_view_t descriptor_json, PJ_error_t*) PJ_NOEXCEPT {
+    auto* self = static_cast<FakeIngestHost*>(ctx);
+    std::lock_guard<std::mutex> lock(self->mu);
+    self->attached_records.push_back(str(descriptor_json));
+    return true;
+  }
+
+  // Runs the SDK's own fail-closed validator, so a malformed completion fails
+  // the test instead of being silently recorded.
+  static bool completeIngest(void* ctx, const PJ_ingest_completion_t* completion, PJ_error_t* error) PJ_NOEXCEPT {
+    auto* self = static_cast<FakeIngestHost*>(ctx);
+    auto record = PJ::sdk::copyIngestCompletion(completion);
+    if (!record) {
+      if (error != nullptr) {
+        PJ::sdk::setErrorField(error->message, sizeof(error->message), record.error().c_str());
+      }
+      return false;
+    }
+    std::lock_guard<std::mutex> lock(self->mu);
+    self->completions.push_back(std::move(*record));
+    return true;
   }
 
   static bool createParserIngest(void* ctx, std::uint32_t, PJ_data_source_runtime_host_t* out_host, PJ_error_t* error)
@@ -981,6 +1029,215 @@ TEST(MosaicoTransport, ObjectOntologyUsesOneRawMessagePerRow) {
     ASSERT_EQ((*batch)->num_rows(), 1);
     EXPECT_EQ((*batch)->num_columns(), 2);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Source capture (SDK 0.30): the request descriptor + the completion terminal.
+// ---------------------------------------------------------------------------
+
+// The descriptor is the byte-exact identity a re-download must reproduce:
+// alphabetical keys (nlohmann's ordering), topics sorted and deduped, and an
+// origin carrying host:port only — never a scheme, credentials, or path.
+TEST(MosaicoSourceCapture, DescriptorIsAttachedOnceAndCanonical) {
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setServerOrigin(worker, "mosaico.example.com:32010");
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
+    on_batch("b/two", scalarBatch(1000));
+    on_done("b/two", mosaico::PullResult{});
+    on_batch("a/one", scalarBatch(2000));
+    on_done("a/one", mosaico::PullResult{});
+  });
+
+  worker.pullTopicsAsync("seq", {"b/two", "a/one", "b/two"}, 100, 200);
+
+  ASSERT_EQ(host.attached_records.size(), 1U);
+  EXPECT_EQ(
+      host.attached_records[0],
+      R"({"kind":"mosaico.pull","request":{"end_ns":200,"origin":"mosaico.example.com:32010",)"
+      R"("sequence":"seq","start_ns":100,"topics":["a/one","b/two"]},"v":1})");
+}
+
+TEST(MosaicoSourceCapture, AllTopicsSucceedingReportsCompleted) {
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
+    on_batch("gps/fix", scalarBatch(1000));
+    on_done("gps/fix", mosaico::PullResult{});
+  });
+
+  worker.pullTopicsAsync("seq", {"gps/fix"}, 0, 1);
+
+  ASSERT_EQ(host.completions.size(), 1U);
+  EXPECT_EQ(host.completions[0].outcome, PJ::sdk::IngestOutcome::kCompleted);
+  EXPECT_FALSE(host.completions[0].attestsEmptyTopics());
+  EXPECT_EQ(host.completions[0].requested_topics, std::vector<std::string>{"gps/fix"});
+}
+
+TEST(MosaicoSourceCapture, CancelledDownloadReportsCancelled) {
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setCancelActivePullsOverride(worker, [] {});
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&worker](const auto&, const auto&) {
+    worker.requestCancel();  // Cancel arrives mid-transport; no topic completes.
+  });
+
+  worker.pullTopicsAsync("seq", {"gps/fix"}, 0, 1);
+
+  ASSERT_EQ(host.completions.size(), 1U);
+  EXPECT_EQ(host.completions[0].outcome, PJ::sdk::IngestOutcome::kCancelled);
+  EXPECT_FALSE(host.completions[0].attestsEmptyTopics());
+  // The stop reached the host, with the TERMINAL state (kStopped, not
+  // kStopping): the cancelled verdict travels via the completion, not the state.
+  ASSERT_EQ(host.stop_requests.size(), 1U);
+  EXPECT_EQ(host.stop_requests[0].first, PJ_DATA_SOURCE_STATE_STOPPED);
+  EXPECT_EQ(host.stop_requests[0].second, "download cancelled");
+}
+
+// Every non-authority URI component is credential-bearing or identity-noise;
+// only a lowercased host:port may reach the descriptor.
+TEST(MosaicoSourceCapture, OriginFromUriKeepsOnlyLowercasedHostPort) {
+  EXPECT_EQ(mosaico::originFromUri("grpc+tls://example.com:6726?api_key=secret"), "example.com:6726");
+  EXPECT_EQ(mosaico::originFromUri("grpc://user:p@ss@EXAMPLE.com:6726/path?k=v#frag"), "example.com:6726");
+  EXPECT_EQ(mosaico::originFromUri("grpc+tls://Example.com:6726#fragment"), "example.com:6726");
+  EXPECT_EQ(mosaico::originFromUri("example.com:6726"), "example.com:6726");
+}
+
+// Sequence and topic names are server-supplied bytes; an invalid UTF-8 byte
+// must yield a descriptor with deterministic U+FFFD replacements, never a
+// throw (the descriptor is built outside any try/catch bracket).
+TEST(MosaicoSourceCapture, InvalidUtf8NamesStillProduceADescriptor) {
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto&, const auto&) {});
+
+  worker.pullTopicsAsync("seq\xFFname", {"bad\xFFtopic"}, 0, 1);
+
+  ASSERT_EQ(host.attached_records.size(), 1U);
+  const std::string replacement = "\xEF\xBF\xBD";  // U+FFFD
+  EXPECT_NE(host.attached_records[0].find("seq" + replacement + "name"), std::string::npos) << host.attached_records[0];
+  EXPECT_NE(host.attached_records[0].find("bad" + replacement + "topic"), std::string::npos)
+      << host.attached_records[0];
+}
+
+// One failed topic poisons the whole-request attestation, even though the
+// sibling imported fine.
+TEST(MosaicoSourceCapture, FailedTopicReportsFailedForTheWholeRequest) {
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
+    on_batch("gps/fix", scalarBatch(1000));
+    on_done("gps/fix", mosaico::PullResult{});
+    on_done("imu/raw", arrow::Status::IOError("stream reset"));
+  });
+
+  worker.pullTopicsAsync("seq", {"gps/fix", "imu/raw"}, 0, 1);
+
+  ASSERT_EQ(host.completions.size(), 1U);
+  EXPECT_EQ(host.completions[0].outcome, PJ::sdk::IngestOutcome::kFailed);
+  const std::vector<std::string> expected{"gps/fix", "imu/raw"};
+  EXPECT_EQ(host.completions[0].requested_topics, expected) << "always the FULL requested set";
+}
+
+// A transport-successful fetch of an empty window is a success with a warning,
+// and the completion attests the emptiness so the request stays cacheable.
+TEST(MosaicoSourceCapture, EmptyTopicReportsCompletedWithEmptyAttestation) {
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  std::vector<mosaico::PullResultEvent> results;
+  worker.pullFinished = [&results](mosaico::PullResultEvent result) { results.push_back(std::move(result)); };
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto&, const auto& on_done) {
+    on_done("gps/fix", mosaico::PullResult{});  // no batches: the window was empty
+  });
+
+  worker.pullTopicsAsync("seq", {"gps/fix"}, 0, 1);
+
+  ASSERT_EQ(results.size(), 1U);
+  EXPECT_TRUE(results[0].ok) << results[0].error;
+  EXPECT_NE(results[0].warning.find("no data"), std::string::npos) << results[0].warning;
+  ASSERT_EQ(host.completions.size(), 1U);
+  EXPECT_EQ(host.completions[0].outcome, PJ::sdk::IngestOutcome::kCompleted);
+  EXPECT_TRUE(host.completions[0].attestsEmptyTopics());
+  // Nothing was imported, so the provisional dataset rolls back: the user gets
+  // no stray empty dataset even though the attestation stays cacheable.
+  EXPECT_EQ(host.discardedParserIngests(), 1U);
+}
+
+// One topic with rows, one genuinely empty: the dataset is kept (real data
+// landed) and the completion still attests the empty sibling.
+TEST(MosaicoSourceCapture, MixedEmptyAndDataTopicsKeepDatasetAndAttest) {
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
+    on_batch("gps/fix", scalarBatch(1000));
+    on_done("gps/fix", mosaico::PullResult{});
+    on_done("imu/raw", mosaico::PullResult{});  // empty window
+  });
+
+  worker.pullTopicsAsync("seq", {"gps/fix", "imu/raw"}, 0, 1);
+
+  ASSERT_EQ(host.completions.size(), 1U);
+  EXPECT_EQ(host.completions[0].outcome, PJ::sdk::IngestOutcome::kCompleted);
+  EXPECT_TRUE(host.completions[0].attestsEmptyTopics());
+  EXPECT_EQ(host.discardedParserIngests(), 0U);
+}
+
+// A host stop that lands after the poller's last check must still veto the
+// COMPLETED attestation: the terminal reads the LIVE host stop flag.
+TEST(MosaicoSourceCapture, HostStopAfterLastPollReportsCancelled) {
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setCancelActivePullsOverride(worker, [] {});
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(
+      worker, [&host](const auto& on_batch, const auto& on_done) {
+        on_batch("gps/fix", scalarBatch(1000));
+        on_done("gps/fix", mosaico::PullResult{});
+        host.requestStopFromHost();  // too late for the 50 ms poller
+      });
+
+  worker.pullTopicsAsync("seq", {"gps/fix"}, 0, 1);
+
+  ASSERT_EQ(host.completions.size(), 1U);
+  EXPECT_EQ(host.completions[0].outcome, PJ::sdk::IngestOutcome::kCancelled);
+}
+
+// A pre-0.30 host still receives the descriptor but has no complete_ingest
+// slot: the download must succeed exactly as before, just uncached.
+TEST(MosaicoSourceCapture, HostWithoutCompleteIngestIsTolerated) {
+  FakeIngestHost host;
+  host.emulateHostWithoutCompleteIngest();
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  std::vector<mosaico::PullResultEvent> results;
+  worker.pullFinished = [&results](mosaico::PullResultEvent result) { results.push_back(std::move(result)); };
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
+    on_batch("gps/fix", scalarBatch(1000));
+    on_done("gps/fix", mosaico::PullResult{});
+  });
+
+  worker.pullTopicsAsync("seq", {"gps/fix"}, 0, 1);
+
+  ASSERT_EQ(results.size(), 1U);
+  EXPECT_TRUE(results[0].ok) << results[0].error;
+  EXPECT_EQ(host.attached_records.size(), 1U);
+  EXPECT_TRUE(host.completions.empty());
 }
 
 }  // namespace
