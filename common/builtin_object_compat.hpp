@@ -13,13 +13,21 @@ namespace pj_compat {
 /// member at compile time lets the SDK bump land without touching call
 /// sites; delete this shim and call get<T>() directly once the repo floor
 /// is >= 0.29.
-template <typename T>
-[[nodiscard]] const T* getBuiltinObject(const PJ::sdk::BuiltinObject& object) {
+// The holder type is a deduced template parameter so the requires-expression
+// stays dependent: probing a member on the concrete std::any of SDK <= 0.28
+// would otherwise be a hard error rather than a false requirement.
+template <typename T, typename Object>
+[[nodiscard]] const T* getBuiltinObjectFrom(const Object& object) {
   if constexpr (requires { object.template get<T>(); }) {
     return object.template get<T>();
   } else {
     return std::any_cast<T>(&object);
   }
+}
+
+template <typename T>
+[[nodiscard]] const T* getBuiltinObject(const PJ::sdk::BuiltinObject& object) {
+  return getBuiltinObjectFrom<T>(object);
 }
 
 }  // namespace pj_compat
