@@ -76,6 +76,7 @@ VALID_CATEGORIES = ["data_loader", "data_stream", "message_parser", "toolbox"]
 
 # Semantic versioning regex (simplified: major.minor.patch with optional pre-release)
 SEMVER_REGEX = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9.-]+))?(?:\+([a-zA-Z0-9.-]+))?$")
+SDK_VERSION_REGEX = re.compile(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}")
 
 
 # =============================================================================
@@ -213,6 +214,9 @@ def validate_manifest(manifest: dict) -> list[str]:
     Returns:
         List of error messages (empty if valid)
     """
+    if not isinstance(manifest, dict):
+        return ["Manifest must be a JSON object"]
+
     errors = []
 
     for field in REQUIRED_MANIFEST_FIELDS:
@@ -230,6 +234,20 @@ def validate_manifest(manifest: dict) -> list[str]:
             errors.append(f"Invalid category: {manifest['category']} (valid: {VALID_CATEGORIES})")
 
     return errors
+
+
+def validate_sdk_minimum(manifest: dict, sdk_version: str) -> list[str]:
+    """Validate explicit official-plugin minimums, not inferred feature usage.
+
+    Official SDK pins and minimums name stable releases (X.Y.Z).
+    """
+    minimum = manifest.get("min_sdk_required")
+    for label, version in (("min_sdk_required", minimum), ("SDK_VERSION", sdk_version)):
+        if not isinstance(version, str) or not SDK_VERSION_REGEX.fullmatch(version):
+            return [f"{label} must name a stable SDK release (X.Y.Z), got {version!r}"]
+    if tuple(map(int, minimum.split("."))) > tuple(map(int, sdk_version.split("."))):
+        return [f"min_sdk_required {minimum} exceeds build SDK_VERSION {sdk_version}"]
+    return []
 
 
 def validate_manifest_file(manifest_path: Path) -> tuple[dict | None, list[str]]:
@@ -252,6 +270,9 @@ def validate_manifest_file(manifest_path: Path) -> tuple[dict | None, list[str]]
         return None, [f"Invalid JSON: {e}"]
 
     errors = validate_manifest(manifest)
+    if not errors:
+        sdk_version = (Path(__file__).resolve().parent.parent / "SDK_VERSION").read_text().strip()
+        errors.extend(validate_sdk_minimum(manifest, sdk_version))
     return manifest, errors
 
 
