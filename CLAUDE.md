@@ -110,6 +110,9 @@ separate application-version requirement.
 assigned `min_sdk_required: "0.28.0"`, with build SDK `0.28.0`, by explicit user
 decision. This is a conservative support baseline, not a claim that every plugin
 uses 0.28 features. Do not repeat this blanket increase on future SDK bumps.
+The same initialization sets `min_plotjuggler_version: "4.0.0"` for these plugins
+in preparation for PlotJuggler 4; this application baseline remains independent
+of SDK version changes.
 
 ### Dialog System
 

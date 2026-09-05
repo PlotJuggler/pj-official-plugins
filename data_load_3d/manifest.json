@@ -13,5 +13,5 @@
   "tags": ["ply", "pcd", "pointcloud", "mesh", "3d", "loader"],
   "file_extensions": [".ply", ".pcd"],
   "min_sdk_required": "0.28.0",
-  "min_plotjuggler_version": "3.999.1"
+  "min_plotjuggler_version": "4.0.0"
 }
