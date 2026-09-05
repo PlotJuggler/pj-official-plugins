@@ -485,7 +485,7 @@ When no time column selected (row number mode):
 ./build.sh --debug   # builds with ASAN in build/debug_asan/
 ./build/debug_asan/pj_proto_app/pj_proto_app \
   --plugin-dir ./build/debug_asan/pj_ported_plugins/bin/ \
-  --load turtle.csv --plot 3 --screenshot /tmp/test.png
+  --load data_load_csv/test_data/turtle.csv --plot 3 --screenshot "$(mktemp -d)/test.png"
 # Check stderr for ASAN errors
 ```
 
@@ -503,27 +503,28 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 
 ### Reference Test Files
 
-- `~/ws_plotjuggler/src/PlotJuggler/datasamples/turtle.csv` — sparse CSV with epoch timestamps, 563 rows, 13 columns. Time range ~20.6 seconds. Good test for sparse data handling.
-- `/tmp/test_simple.csv` — create with: `echo -e "time,x,y\n0,1.0,2.0\n1,3.0,4.0\n2,5.0,6.0"` for quick smoke tests
+- `data_load_csv/test_data/turtle.csv` (tracked in this repository) — sparse CSV with epoch timestamps, 563 rows, 13 columns. Time range ~20.6 seconds. Good test for sparse data handling.
+- a throwaway CSV in `$(mktemp -d)` — create with: `echo -e "time,x,y\n0,1.0,2.0\n1,3.0,4.0\n2,5.0,6.0"` for quick smoke tests
 
 ### Full Validation Workflow
 
 ```bash
 ./build.sh                    # RelWithDebInfo
 ./build.sh --debug            # Debug + ASAN
-./test.sh                     # all unit tests (both build dirs)
+ctest --test-dir build --output-on-failure              # unit tests
+ctest --test-dir build/debug_asan --output-on-failure   # same, under ASAN
 
 # Smoke test: load CSV, auto-plot, screenshot
 ./build/pj_proto_app/pj_proto_app \
   --plugin-dir ./build/pj_ported_plugins/bin/ \
-  --load ~/ws_plotjuggler/src/PlotJuggler/datasamples/turtle.csv \
-  --plot 3 --screenshot /tmp/test.png
+  --load data_load_csv/test_data/turtle.csv \
+  --plot 3 --screenshot "$(mktemp -d)/test.png"
 
 # ASAN smoke test (catches heap overflows, use-after-free)
 ./build/debug_asan/pj_proto_app/pj_proto_app \
   --plugin-dir ./build/debug_asan/pj_ported_plugins/bin/ \
-  --load ~/ws_plotjuggler/src/PlotJuggler/datasamples/turtle.csv \
-  --plot 3 --screenshot /tmp/test_asan.png
+  --load data_load_csv/test_data/turtle.csv \
+  --plot 3 --screenshot "$(mktemp -d)/test_asan.png"
 # If ASAN reports errors, check stderr
 ```
 

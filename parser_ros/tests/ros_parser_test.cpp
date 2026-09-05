@@ -4202,9 +4202,9 @@ TEST(RosParserTest, GridMapScalarRouteIsSlim) {
   EXPECT_EQ(findField(row, "/layers[0]"), nullptr);
 }
 
-// The mandatory real-data check: the first /near_field_mapping/elevation_map_throttle
-// message of XD009.mcap (ROS 1, 200x200 cells at 0.02 m, layers elevation +
-// dynamic_time, basic layer elevation, ~4% NaN).
+// The mandatory real-data check, against the checked-in payload extracted from a
+// real recording: an elevation-map message (ROS 1, 200x200 cells at 0.02 m,
+// layers elevation + dynamic_time, basic layer elevation, ~4% NaN).
 TEST(RosParserTest, GridMapRealRos1MessageFromBag) {
   std::ifstream in(std::string(PJ_ROS_PARSER_TEST_DATA_DIR) + "/gridmap_elevation_ros1.bin", std::ios::binary);
   ASSERT_TRUE(in.is_open());
