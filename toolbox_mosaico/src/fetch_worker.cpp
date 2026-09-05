@@ -22,12 +22,15 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <initializer_list>
 #include <limits>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <thread>
@@ -75,8 +78,38 @@ std::int64_t nowNs() {
 FetchWorker::FetchWorker() = default;
 FetchWorker::~FetchWorker() = default;
 
+std::string originFromUri(const std::string& uri) {
+  std::string origin = uri;
+  if (const auto scheme = origin.find("://"); scheme != std::string::npos) {
+    origin.erase(0, scheme + 3);
+  }
+  // Path, query and fragment all terminate the authority component.
+  if (const auto authority_end = origin.find_first_of("/?#"); authority_end != std::string::npos) {
+    origin.erase(authority_end);
+  }
+  // rfind: a raw password may itself contain '@'; the last one ends userinfo.
+  if (const auto at_sign = origin.rfind('@'); at_sign != std::string::npos) {
+    origin.erase(0, at_sign + 1);
+  }
+  std::transform(origin.begin(), origin.end(), origin.begin(), [](unsigned char character) {
+    return static_cast<char>(std::tolower(character));
+  });
+  return origin;
+}
+
 void FetchWorker::requestCancel() {
   cancel_flag_.store(true, std::memory_order_relaxed);
+  {
+    // Tell the host FIRST: its stop path wakes producers blocked on a lossless
+    // capture queue, which must happen before anything joins them. Via the
+    // stop surface, never progress_mu_ — the parked producer holds that.
+    // kStopped, not kStopping: requestStop wants a terminal state, and the
+    // CANCELLED verdict travels via completeIngest, not the state.
+    std::lock_guard<std::mutex> slock(stop_mu_);
+    if (stop_view_.has_value()) {
+      stop_view_->requestStop(PJ::DataSourceState::kStopped, "download cancelled");
+    }
+  }
   cancelActivePulls();
 }
 
@@ -111,20 +144,14 @@ std::uint64_t FetchWorker::accumulatedProgressBytesLocked() const {
 }
 
 bool FetchWorker::isStopRequestedByHost() {
-  std::lock_guard<std::mutex> plock(progress_mu_);
-  return ingest_progress_.has_value() && ingest_progress_->isStopRequested();
+  // Stop surface, not progress_mu_: the poller must observe a host stop even
+  // while a push has progress_mu_ parked.
+  std::lock_guard<std::mutex> slock(stop_mu_);
+  return stop_view_.has_value() && stop_view_->isStopRequested();
 }
 
 void FetchWorker::requestCancelFromHost() {
-  bool report_stop = false;
-  {
-    std::lock_guard<std::mutex> plock(progress_mu_);
-    if (!host_stop_reported_) {
-      host_stop_reported_ = true;
-      report_stop = true;
-    }
-  }
-  if (!report_stop) {
+  if (host_stop_reported_.exchange(true, std::memory_order_relaxed)) {
     return;
   }
   requestCancel();
@@ -204,6 +231,19 @@ void FetchWorker::ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, cons
   parser_ingest_error_.clear();
   ingest_ds_id_ = ds.id;
   ingest_progress_ = PJ::DataSourceRuntimeHostView(ingest_raw);
+  {
+    // Publish the progress_mu_-free stop surface (lock order: progress_mu_ -> stop_mu_).
+    std::lock_guard<std::mutex> slock(stop_mu_);
+    stop_view_ = ingest_progress_;
+  }
+  // Declare the reproducible request this download answers, once per context
+  // and BEFORE any push (ensureIngestProgress always precedes the first
+  // pushMessage). An older host without the slot refuses — the download is
+  // simply not cacheable, never an error.
+  if (!pending_source_record_.empty()) {
+    source_record_attached_ = true;
+    (void)ingest_progress_->attachSourceRecord(pending_source_record_);
+  }
   // Always indeterminate (total=0): TopicInfo::total_size_bytes is the
   // COMPRESSED full-topic size while progress ticks carry DECODED bytes of the
   // requested slice — no comparable denominator exists, and a wrong one would
@@ -222,6 +262,12 @@ void FetchWorker::ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, cons
 }
 
 void FetchWorker::finishIngestProgress(bool discard_provisional) {
+  {
+    // Retire the stop surface BEFORE the context is finished/released below,
+    // so a late cancel cannot call into a dead context.
+    std::lock_guard<std::mutex> slock(stop_mu_);
+    stop_view_.reset();
+  }
   std::optional<uint32_t> release_id;
   {
     std::lock_guard<std::mutex> plock(progress_mu_);
@@ -264,11 +310,59 @@ void FetchWorker::finishIngestProgress(bool discard_provisional) {
   }
 }
 
+void FetchWorker::reportIngestCompletion() {
+  std::lock_guard<std::mutex> plock(progress_mu_);
+  if (!ingest_progress_.has_value() || !source_record_attached_) {
+    return;  // no context or no declared request: nothing to attest
+  }
+  bool any_failed = false;
+  bool any_pending = false;
+  bool any_empty = false;
+  for (const auto& topic : requested_topics_snapshot_) {
+    // find(): pure read — every snapshot topic was seeded kPending at batch
+    // start, and a missing entry must count as pending, not be inserted.
+    const auto outcome_it = topic_outcomes_.find(topic);
+    switch (outcome_it != topic_outcomes_.end() ? outcome_it->second : TopicOutcome::kPending) {
+      case TopicOutcome::kOk:
+        break;
+      case TopicOutcome::kEmptyOk:
+        any_empty = true;
+        break;
+      case TopicOutcome::kFailed:
+        any_failed = true;
+        break;
+      case TopicOutcome::kPending:
+        any_pending = true;
+        break;
+    }
+  }
+  // Also read the host's LIVE stop flag: a title-bar Stop landing after the
+  // poller's last check must not be attested as COMPLETED. (host_stop_reported_
+  // is implied — its only setter also raises cancel_flag_.)
+  const bool cancelled = cancel_flag_.load(std::memory_order_relaxed) || ingest_progress_->isStopRequested();
+  PJ::sdk::IngestOutcome outcome = PJ::sdk::IngestOutcome::kCompleted;
+  if (cancelled) {
+    outcome = PJ::sdk::IngestOutcome::kCancelled;
+  } else if (any_failed || any_pending) {
+    outcome = PJ::sdk::IngestOutcome::kFailed;
+  }
+  PJ_ingest_completion_flags_t flags = PJ_INGEST_COMPLETION_FLAG_NONE;
+  if (outcome == PJ::sdk::IngestOutcome::kCompleted && any_empty) {
+    flags = PJ_INGEST_COMPLETION_FLAG_ATTESTS_EMPTY_TOPICS;
+  }
+  std::vector<std::string_view> topics(requested_topics_snapshot_.begin(), requested_topics_snapshot_.end());
+  // COMPLETED attests the ENTIRE declared request; FAILED/CANCELLED are
+  // truthful terminals that keep the ingest usable while forbidding caching.
+  // An older host without the slot refuses — ignored, simply not cacheable.
+  (void)ingest_progress_->completeIngest(outcome, {topics.data(), topics.size()}, flags);
+}
+
 void FetchWorker::connectAsync(std::string uri, ServerCredentials creds) {
   // creds.allow_insecure is intentionally not consulted here: the plaintext
   // fallback is driven by the caller (onConnectFinished, Step 10.1), which
   // retries with a grpc:// URI. connectAsync always honors the scheme it is given.
   try {
+    server_origin_ = originFromUri(uri);
     client_ = std::make_unique<MosaicoClient>(
         uri,
         // PJ3 parity (main_window.cpp:48): 30 s connection timeout for slow links.
@@ -462,7 +556,10 @@ void FetchWorker::pullTopicsAsync(
     std::lock_guard<std::mutex> lock(fetch_dataset_mu_);
     fetch_dataset_ = std::nullopt;
   }
-  // Fresh host-progress bracket for this batch.
+  // Fresh host-progress bracket for this batch, plus the capture state: the
+  // canonical request descriptor (sorted, deduped, host:port origin only —
+  // the byte-exact identity a re-download must reproduce) and the
+  // requested-topic snapshot the completion report attests over.
   {
     std::lock_guard<std::mutex> plock(progress_mu_);
     ingest_progress_.reset();
@@ -472,6 +569,32 @@ void FetchWorker::pullTopicsAsync(
     host_stop_reported_ = false;
     ingest_ds_id_.reset();
     progress_bytes_by_topic_.clear();
+    source_record_attached_ = false;
+    topic_outcomes_.clear();
+    requested_topics_snapshot_ = topic_names;
+    std::sort(requested_topics_snapshot_.begin(), requested_topics_snapshot_.end());
+    requested_topics_snapshot_.erase(
+        std::unique(requested_topics_snapshot_.begin(), requested_topics_snapshot_.end()),
+        requested_topics_snapshot_.end());
+    for (const auto& topic : requested_topics_snapshot_) {
+      topic_outcomes_[topic] = TopicOutcome::kPending;
+    }
+    const nlohmann::json descriptor{
+        {"kind", "mosaico.pull"},
+        {"v", 1},
+        {"request",
+         nlohmann::json{
+             {"origin", server_origin_},
+             {"sequence", sequence_name},
+             {"topics", requested_topics_snapshot_},
+             {"start_ns", start_ns},
+             {"end_ns", end_ns}}},
+    };
+    // error_handler_t::replace: sequence/topic names are server-supplied bytes,
+    // and strict dump() throws on invalid UTF-8 — but this runs OUTSIDE the
+    // try/completion bracket below, so the descriptor build must never throw.
+    // Deterministic U+FFFD replacement keeps the canonical-bytes property.
+    pending_source_record_ = descriptor.dump(-1, ' ', /*ensure_ascii=*/false, nlohmann::json::error_handler_t::replace);
   }
 
   // Use the SDK's parallel pullTopics. Per-topic completion (on_done) fires on
@@ -609,9 +732,10 @@ void FetchWorker::pullTopicsAsync(
     }
     ensureIngestProgress(*ds, sequence_name);
     // ponytail: progress_mu_ is held across pushMessage, so a slow host push
-    // stalls the 50 ms stop poller and the progress ticks, and host_write_mu_
-    // serializes concurrent scalar topics batch by batch. Upgrade path if a
-    // profile shows it: hand batches to a per-topic queue drained by one thread.
+    // stalls the progress ticks (cancel and the stop poller stay live via the
+    // stop surface), and host_write_mu_ serializes concurrent scalar topics
+    // batch by batch. Upgrade path if a profile shows it: hand batches to a
+    // per-topic queue drained by one thread.
     std::lock_guard<std::mutex> plock(progress_mu_);
     if (!ingest_progress_.has_value()) {
       topic.error = parser_ingest_error_;  // ensureIngestProgress always leaves a reason
@@ -658,29 +782,39 @@ void FetchWorker::pullTopicsAsync(
     }
   };
 
-  auto on_done = [this, sequence_name, state, imported_any, push_batch, fitSyntheticInterval](
+  auto on_done = [this, sequence_name, state, push_batch, fitSyntheticInterval](
                      const std::string& topic_name, arrow::Result<PullResult> result) {
     auto it = state->find(topic_name);
     if (it == state->end()) {
       return;
     }
     PerTopic& topic = it->second;
-    auto finish = [this, &sequence_name, &topic_name, imported_any](
-                      bool ok, std::string error, std::string warning = {}) {
-      if (ok) {
-        imported_any->store(true, std::memory_order_relaxed);
-      }
+    // Deliberately does NOT touch imported_any: only real pushes (push_message)
+    // count toward keeping the provisional dataset, so an all-empty batch still
+    // rolls back while its topics finish ok with a warning.
+    auto finish = [this, &sequence_name, &topic_name](bool ok, std::string error, std::string warning = {}) {
       if (pullFinished) {
         pullFinished({{sequence_name, topic_name}, ok, std::move(error), std::move(warning)});
       }
     };
+    auto record_outcome = [this, &topic_name](TopicOutcome outcome) {
+      std::lock_guard<std::mutex> plock(progress_mu_);
+      topic_outcomes_[topic_name] = outcome;
+    };
     if (!result.ok()) {
-      (void)client_->reportTopicNotification(sequence_name, topic_name, "fetch_error", result.status().message());
+      if (client_) {  // absent under the transport test seam
+        (void)client_->reportTopicNotification(sequence_name, topic_name, "fetch_error", result.status().message());
+      }
+      record_outcome(TopicOutcome::kFailed);
       finish(false, stringFromArrow(result.status()));
       return;
     }
     if (!topic.schema) {
-      finish(false, "no data");
+      // Transport succeeded and the window was genuinely empty: a successful
+      // fetch of nothing, distinct from a failure — the completion report
+      // attests it so the request stays cacheable.
+      record_outcome(TopicOutcome::kEmptyOk);
+      finish(true, {}, "no data in the requested range");
       return;
     }
     // A stamped topic streamed batch by batch through push_batch and
@@ -708,10 +842,13 @@ void FetchWorker::pullTopicsAsync(
     }
     topic.batches.clear();
     if (!topic.error.empty()) {
+      record_outcome(TopicOutcome::kFailed);
       finish(false, topic.error);
     } else if (topic.rows_pushed == 0) {
-      finish(false, "no data");
+      record_outcome(TopicOutcome::kEmptyOk);
+      finish(true, {}, "no data in the requested range");
     } else {
+      record_outcome(TopicOutcome::kOk);
       finish(true, {});
     }
   };
@@ -848,6 +985,7 @@ void FetchWorker::pullTopicsAsync(
       pullFinished({{sequence_name, {}}, false, "pull failed: unknown error", {}});
     }
   }
+  reportIngestCompletion();
   // Bracket the host progress/stop channel on EVERY exit (success, cancel,
   // throw) and BEFORE allFetchesComplete: a zero-success provisional source is
   // rolled back; otherwise release lands before the dialog's terminal

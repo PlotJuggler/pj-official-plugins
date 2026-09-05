@@ -29,6 +29,13 @@ namespace testing {
 class FetchWorkerTestAccess;
 }
 
+/// Canonical `host:port` request-descriptor origin for a server URI: scheme,
+/// userinfo, path, query and fragment are all stripped (credential material —
+/// an api_key query parameter, a password in userinfo — must never reach the
+/// descriptor), and the result is lowercased so case-variant spellings of one
+/// endpoint yield one cache key.
+[[nodiscard]] std::string originFromUri(const std::string& uri);
+
 /// Thin background adapter for MosaicoClient running on the dialog's worker
 /// thread. The worker itself is transport-agnostic: callers serialize commands
 /// and route callbacks to the GUI thread.
@@ -149,6 +156,14 @@ class FetchWorker {
   /// host_write_mu_; takes progress_mu_.
   void ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, const std::string& sequence_name);
 
+  /// Report the whole-request terminal for this Download batch through
+  /// complete_ingest, after every topic's on_done has landed and before the
+  /// ingest bracket closes: COMPLETED only when every requested topic
+  /// finished (empty windows attested via the empty-topic flag), CANCELLED
+  /// on any cancel path, FAILED otherwise. No-op without a context or a
+  /// declared request; an old host's refusal is ignored (not cacheable).
+  void reportIngestCompletion();
+
   /// Sum the per-topic byte ledger. Caller holds progress_mu_.
   [[nodiscard]] std::uint64_t accumulatedProgressBytesLocked() const;
 
@@ -190,6 +205,10 @@ class FetchWorker {
   std::function<PJ::sdk::ToolboxHostView()> host_provider_;
   std::function<PJ::ToolboxRuntimeHostView()> runtime_host_provider_;
   std::atomic<bool> cancel_flag_{false};
+  // Presentation-hygiene origin of the connected server (host:port only —
+  // never scheme, credentials or key material): the request identity's
+  // server component and the only server string the descriptor may carry.
+  std::string server_origin_;
   std::unordered_map<std::string, TopicInfo> topic_info_by_name_;
   std::optional<PJ::sdk::DataSourceHandle> fetch_dataset_;
   std::mutex fetch_dataset_mu_;
@@ -203,8 +222,28 @@ class FetchWorker {
   std::string parser_ingest_error_;         // why the host gave no ingest context (guarded by progress_mu_)
   bool ingest_progress_attempted_ = false;  // one create attempt per Download
   bool progress_started_ = false;           // progressStart succeeded: update/finish are paired with it
-  bool host_stop_reported_ = false;         // hostStopRequested fires at most once
+  // hostStopRequested fires at most once. Atomic, NOT progress_mu_-guarded: the
+  // host-stop poller must be able to cancel while a push parks progress_mu_.
+  std::atomic<bool> host_stop_reported_{false};
   std::optional<uint32_t> ingest_ds_id_;
+  // Stop surface: a copy of the ingest fat pointer reachable WITHOUT
+  // progress_mu_, because a host push parked inside pushMessage holds
+  // progress_mu_ until a stop wakes it — cancel and the stop poller would
+  // otherwise deadlock behind it. stop_mu_ guards only this copy and is held
+  // across the (prompt, thread-safe) requestStop/isStopRequested host calls;
+  // finishIngestProgress clears the copy before releasing the context. Lock
+  // order: progress_mu_ -> stop_mu_ (ensureIngestProgress), never the reverse.
+  std::mutex stop_mu_;
+  std::optional<PJ::DataSourceRuntimeHostView> stop_view_;
+  // Source-capture state for the current Download batch (guarded by
+  // progress_mu_ like the fat pointer they ride on): the canonical request
+  // descriptor attached once per ingest context, and the requested-topic
+  // snapshot + per-topic outcomes the completion report is built from.
+  std::string pending_source_record_;
+  bool source_record_attached_ = false;
+  std::vector<std::string> requested_topics_snapshot_;
+  enum class TopicOutcome { kPending, kOk, kEmptyOk, kFailed };
+  std::map<std::string, TopicOutcome, std::less<>> topic_outcomes_;
   // Cumulative decoded bytes per topic, published as a batch-wide sum.
   std::map<std::string, std::int64_t, std::less<>> progress_bytes_by_topic_;
   // [C1] Serializes the ENTIRE host-write critical section in pullTopicsAsync's
