@@ -31,87 +31,13 @@
 #include <string>
 #include <vector>
 
-#include "../src/arrow_ingest.hpp"
-#include "../src/image_metadata.hpp"
+#include "mosaico_object_capture.hpp"
 #include "pj_base/builtin/image_codec.hpp"
 
 namespace {
 
 // Recording fake toolbox host: captures registerObjectTopic + pushOwnedObject
 // so the test can inspect the topic metadata and every serialized blob.
-struct RecordedObjectTopic {
-  std::string name;
-  std::string metadata_json;
-};
-struct RecordedPush {
-  std::int64_t ts_ns = 0;
-  std::vector<std::uint8_t> payload;
-};
-
-struct FakeHost {
-  std::vector<std::string> data_sources;
-  std::vector<RecordedObjectTopic> object_topics;
-  std::vector<RecordedPush> pushes;
-  std::uint32_t next_id = 1;
-  std::mutex mu;
-
-  PJ::sdk::ToolboxHostView view() {
-    PJ_toolbox_host_t host{};
-    host.ctx = this;
-    host.vtable = &kVtable;
-    return PJ::sdk::ToolboxHostView(host);
-  }
-
-  static FakeHost* self(void* ctx) {
-    return static_cast<FakeHost*>(ctx);
-  }
-  static std::string toStr(PJ_string_view_t s) {
-    return (s.data != nullptr && s.size > 0) ? std::string(s.data, s.size) : std::string();
-  }
-  static bool createDataSource(void* ctx, PJ_string_view_t name, PJ_data_source_handle_t* out, PJ_error_t*)
-      PJ_NOEXCEPT {
-    auto* h = self(ctx);
-    std::lock_guard<std::mutex> lk(h->mu);
-    h->data_sources.push_back(toStr(name));
-    out->id = h->next_id++;
-    return true;
-  }
-  static bool registerObjectTopic(
-      void* ctx, PJ_data_source_handle_t, PJ_string_view_t topic_name, PJ_string_view_t metadata_json,
-      PJ_object_topic_handle_t* out, PJ_error_t*) PJ_NOEXCEPT {
-    auto* h = self(ctx);
-    std::lock_guard<std::mutex> lk(h->mu);
-    h->object_topics.push_back({toStr(topic_name), toStr(metadata_json)});
-    out->id = h->next_id++;
-    return true;
-  }
-  static bool pushOwnedObject(
-      void* ctx, PJ_object_topic_handle_t, int64_t ts, const uint8_t* data, uint64_t size, PJ_error_t*) PJ_NOEXCEPT {
-    auto* h = self(ctx);
-    std::lock_guard<std::mutex> lk(h->mu);
-    RecordedPush rec;
-    rec.ts_ns = ts;
-    if (data != nullptr && size > 0) {
-      rec.payload.assign(data, data + size);
-    }
-    h->pushes.push_back(std::move(rec));
-    return true;
-  }
-
-  static const PJ_toolbox_host_vtable_t kVtable;
-};
-
-const PJ_toolbox_host_vtable_t FakeHost::kVtable = [] {
-  PJ_toolbox_host_vtable_t v{};
-  // struct_size MUST be set: ToolboxHostView::hasTailSlot gates object-topic
-  // support on `struct_size >= offsetof(slot) + sizeof(fn)`.
-  v.abi_version = 0;
-  v.struct_size = sizeof(PJ_toolbox_host_vtable_t);
-  v.create_data_source = &FakeHost::createDataSource;
-  v.register_object_topic = &FakeHost::registerObjectTopic;
-  v.push_owned_object = &FakeHost::pushOwnedObject;
-  return v;
-}();
 
 // Locate the captured fixture relative to this source file's tests/ dir.
 std::string fixturePath() {
@@ -159,21 +85,12 @@ TEST(MosaicoImageRealFixture, RealServerBatchSerializesToValidPerFrameImages) {
   ASSERT_NE(table, nullptr) << "failed to load Arrow IPC fixture: " << path;
   ASSERT_GT(table->num_rows(), 0);
 
-  FakeHost fake;
-  auto host = fake.view();
-  auto ds = host.createDataSource("bonirob_2016-04-20-16-31-15_21");
-  ASSERT_TRUE(ds.has_value());
+  ObjectCapture fake;
 
-  auto outcome = mosaico::pushImageRowsToHost(
-      {host, *ds, "/camera/jai/rgb/image", "timestamp_ns", /*synth_anchor_ns=*/0, /*synth_interval_ns=*/0}, table);
+  auto outcome = fake.parse("image", {"timestamp_ns", /*synth_anchor_ns=*/0, /*synth_interval_ns=*/0}, table);
   ASSERT_TRUE(outcome.has_value()) << "pushImageRowsToHost failed: " << outcome.error();
   EXPECT_EQ(outcome->skipped, 0) << "first skip reason: " << outcome->first_error;
   EXPECT_EQ(outcome->pushed, table->num_rows());
-
-  // Topic registered exactly once with the canonical metadata.
-  ASSERT_EQ(fake.object_topics.size(), 1u);
-  EXPECT_EQ(fake.object_topics[0].name, "/camera/jai/rgb/image");
-  EXPECT_EQ(fake.object_topics[0].metadata_json, std::string(mosaico::kCanonicalImageMetadata));
 
   // One blob per row, and each blob round-trips to a valid PNG-wrapped Bayer frame.
   ASSERT_EQ(fake.pushes.size(), static_cast<std::size_t>(table->num_rows()));

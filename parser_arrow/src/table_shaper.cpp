@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <limits>
 #include <memory>
@@ -56,10 +57,11 @@ struct OrderedDroppedColumn {
 /// Final host-compatible columns, schema, diagnostics, and optional first-batch peek.
 struct CompatibilityResult {
   PJ::sdk::ArrowSchemaHolder output_schema;
-  PJ::sdk::ArrowArrayHolder pending_first_batch;
+  std::deque<PJ::sdk::ArrowArrayHolder> pending_batches;
   std::vector<OutputColumn> columns;
   std::vector<DroppedColumn> dropped_columns;
   bool input_at_eos = false;
+  bool has_data = true;
 };
 
 /// State owned by one lazy shaping ArrowArrayStream.
@@ -67,7 +69,7 @@ struct ShapingStreamState {
   PJ::sdk::ArrowStreamHolder input;
   PJ::sdk::ArrowSchemaHolder input_schema;
   PJ::sdk::ArrowSchemaHolder output_schema;
-  PJ::sdk::ArrowArrayHolder pending_first_batch;
+  std::deque<PJ::sdk::ArrowArrayHolder> pending_batches;
   std::vector<OutputColumn> columns;
   std::shared_ptr<RuntimeStats> runtime;
   int64_t message_timestamp_ns = 0;
@@ -513,6 +515,7 @@ PJ::Status buildOutputSchema(
   std::vector<OrderedDroppedColumn> dropped;
   compatible.reserve(collected.size());
   bool has_variable_list = false;
+  bool has_plottable_list = false;
 
   for (auto& column : collected) {
     const auto* source_schema = schemaAtPath(input_schema, column.source_path);
@@ -531,6 +534,7 @@ PJ::Status buildOutputSchema(
         dropped.push_back(OrderedDroppedColumn{column.source_order, DroppedColumn{column.name, source_schema->format}});
         continue;
       }
+      has_plottable_list = true;
       if (column.status == ColumnStatus::kVariableList) {
         has_variable_list = true;
         compatible.push_back(std::move(column));
@@ -560,19 +564,55 @@ PJ::Status buildOutputSchema(
     compatible.push_back(std::move(column));
   }
 
-  nanoarrow::UniqueArrayView first_batch_view;
+  std::vector<int64_t> widths(compatible.size(), 0);
+  const bool has_scalar_data = std::any_of(compatible.begin(), compatible.end(), [](const OutputColumn& column) {
+    return !column.is_timestamp_axis && column.status != ColumnStatus::kVariableList;
+  });
   if (has_variable_list) {
-    const int first_batch_result = input.get()->get_next(input.get(), result.pending_first_batch.out());
-    if (first_batch_result != NANOARROW_OK) {
-      return PJ::unexpected(nanoarrowError(first_batch_result, ArrowArrayStreamGetLastError(input.get())));
-    }
-    result.input_at_eos = !result.pending_first_batch.valid();
-    if (result.pending_first_batch.valid()) {
+    // If lists are the only data and initially empty, find the first usable
+    // batch before publishing the fixed schema. Keep preceding rows for null
+    // padding and timestamp validation. Independent messages plan afresh.
+    while (true) {
+      PJ::sdk::ArrowArrayHolder batch;
+      const int next = input.get()->get_next(input.get(), batch.out());
+      if (next != NANOARROW_OK) {
+        return PJ::unexpected(nanoarrowError(next, ArrowArrayStreamGetLastError(input.get())));
+      }
+      if (!batch.valid()) {
+        result.input_at_eos = true;
+        break;
+      }
+      nanoarrow::UniqueArrayView view;
       ArrowError error{};
-      const int view_result =
-          bindArrayView(first_batch_view.get(), input_schema, result.pending_first_batch.get(), &error);
-      if (view_result != NANOARROW_OK) {
-        return PJ::unexpected(nanoarrowError(view_result, error.message));
+      const int bound = bindArrayView(view.get(), input_schema, batch.get(), &error);
+      if (bound != NANOARROW_OK) {
+        return PJ::unexpected(nanoarrowError(bound, error.message));
+      }
+      bool has_list_data = false;
+      for (std::size_t index = 0; index < compatible.size(); ++index) {
+        const auto& column = compatible[index];
+        if (column.status != ColumnStatus::kVariableList) {
+          continue;
+        }
+        for (int64_t row = 0; row < batch.get()->length; ++row) {
+          int64_t list_row = row;
+          bool parent_is_null = false;
+          const auto* list = viewAtPath(view.get(), column.source_path, row, &list_row, &parent_is_null);
+          if (parent_is_null || ArrowArrayViewIsNull(list, list_row) != 0) {
+            continue;
+          }
+          int64_t begin = 0;
+          int64_t end = 0;
+          if (!listChildBounds(list, list_row, 0, &begin, &end)) {
+            return PJ::unexpected(parserError("invalid offsets in list column '" + column.name + "'"));
+          }
+          widths[index] = std::max(widths[index], end - begin);
+        }
+        has_list_data |= widths[index] != 0;
+      }
+      result.pending_batches.push_back(std::move(batch));
+      if (has_scalar_data || has_list_data) {
+        break;
       }
     }
   }
@@ -585,30 +625,15 @@ PJ::Status buildOutputSchema(
     synthetic.name = "timestamp_ns";
     result.columns.push_back(std::move(synthetic));
   }
-  for (const auto& column : compatible) {
+  for (std::size_t index = 0; index < compatible.size(); ++index) {
+    const auto& column = compatible[index];
     if (column.status != ColumnStatus::kVariableList) {
       result.columns.push_back(column);
-      continue;
+    } else {
+      finalizeList(
+          column, widths[index], schemaAtPath(input_schema, column.source_path), options.array_limit, result.columns,
+          dropped);
     }
-    int64_t width = 0;
-    if (result.pending_first_batch.valid()) {
-      for (int64_t row = 0; row < result.pending_first_batch.get()->length; ++row) {
-        int64_t list_row = row;
-        bool parent_is_null = false;
-        const auto* list = viewAtPath(first_batch_view.get(), column.source_path, row, &list_row, &parent_is_null);
-        if (parent_is_null || ArrowArrayViewIsNull(list, list_row) != 0) {
-          continue;
-        }
-        int64_t begin = 0;
-        int64_t end = 0;
-        if (!listChildBounds(list, list_row, 0, &begin, &end)) {
-          return PJ::unexpected(parserError("invalid offsets in list column '" + column.name + "'"));
-        }
-        width = std::max(width, end - begin);
-      }
-    }
-    finalizeList(
-        column, width, schemaAtPath(input_schema, column.source_path), options.array_limit, result.columns, dropped);
   }
 
   struct OrderedName {
@@ -647,7 +672,8 @@ PJ::Status buildOutputSchema(
   for (auto& entry : dropped) {
     result.dropped_columns.push_back(std::move(entry.column));
   }
-  if (!has_host_ingestible_data) {
+  result.has_data = has_host_ingestible_data;
+  if (!has_host_ingestible_data && !has_plottable_list) {
     const std::string details = formatDroppedColumns(result.dropped_columns, kMaxDroppedColumnsListed);
     return PJ::unexpected(parserError(
         "no host-ingestible columns in Arrow schema (" + (details.empty() ? std::string("no data columns") : details) +
@@ -925,6 +951,7 @@ PJ::Status buildOutputSchema(
     return result;
   }
 
+  std::vector<std::size_t> moved_columns;
   std::size_t output_index = 0;
   while (output_index < state.columns.size()) {
     const auto& column = state.columns[output_index];
@@ -945,8 +972,7 @@ PJ::Status buildOutputSchema(
       if (copy) {
         result = copyColumn(output->children[output_index], input_view, column, input->length, state);
       } else {
-        output->children[output_index]->release(output->children[output_index]);
-        ArrowArrayMove(source, output->children[output_index]);
+        moved_columns.push_back(output_index);
         result = NANOARROW_OK;
       }
       ++output_index;
@@ -961,11 +987,18 @@ PJ::Status buildOutputSchema(
 
   output->length = input->length;
   output->null_count = 0;
-  result = ArrowArrayFinishBuildingDefault(output, &error);
+  // Finalize only nanoarrow-owned arrays. Its builder must never inspect the
+  // private_data of children exported by another Arrow implementation.
+  result = ArrowArrayFinishBuilding(output, NANOARROW_VALIDATION_LEVEL_NONE, &error);
   if (result != NANOARROW_OK) {
     setNanoarrowStreamError(state, result, error.message);
+    return result;
   }
-  return result;
+  for (const auto index : moved_columns) {
+    output->children[index]->release(output->children[index]);
+    ArrowArrayMove(arrayAtPath(input, state.columns[index].source_path), output->children[index]);
+  }
+  return NANOARROW_OK;
 }
 
 /// Recover the private wrapper state from an ArrowArrayStream callback.
@@ -1004,8 +1037,9 @@ int shapingGetNext(ArrowArrayStream* stream, ArrowArray* output) noexcept {
     state->last_error.clear();
     state->fixed_error = nullptr;
     PJ::sdk::ArrowArrayHolder input_batch;
-    if (state->pending_first_batch.valid()) {
-      input_batch = std::move(state->pending_first_batch);
+    if (!state->pending_batches.empty()) {
+      input_batch = std::move(state->pending_batches.front());
+      state->pending_batches.pop_front();
     } else {
       if (state->input_at_eos) {
         return NANOARROW_OK;
@@ -1193,7 +1227,7 @@ PJ::Expected<ShapedStream> shapeStream(PJ::sdk::ArrowStreamHolder input, const S
     state->input = std::move(input);
     state->input_schema = std::move(input_schema);
     state->output_schema = std::move(compatible->output_schema);
-    state->pending_first_batch = std::move(compatible->pending_first_batch);
+    state->pending_batches = std::move(compatible->pending_batches);
     state->columns = std::move(compatible->columns);
     state->runtime = runtime;
     state->message_timestamp_ns = options.message_timestamp_ns;
@@ -1212,6 +1246,7 @@ PJ::Expected<ShapedStream> shapeStream(PJ::sdk::ArrowStreamHolder input, const S
         .dropped_columns = std::move(compatible->dropped_columns),
         .warnings = std::move(warnings),
         .synthetic_axis = synthesize,
+        .has_data = compatible->has_data,
         .runtime = std::move(runtime),
     };
   } catch (const std::bad_alloc&) {

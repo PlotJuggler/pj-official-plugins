@@ -1,26 +1,12 @@
 find_package(nanoarrow REQUIRED)
+find_package(Arrow CONFIG REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
-# nanoarrow/0.7.0's Conan component omits its bundled FlatCC runtime from
-# nanoarrow::nanoarrow_ipc. Resolve that archive from the same package so IPC
-# decoder symbols link on every consumer of parser_arrow_core.
-# Tracked by CCI PR #30883.
-set(_nanoarrow_library_dirs
-  ${nanoarrow_LIB_DIRS_DEBUG}
-  ${nanoarrow_LIB_DIRS_RELEASE}
-  ${nanoarrow_LIB_DIRS_RELWITHDEBINFO}
-  ${nanoarrow_LIB_DIRS_MINSIZEREL}
-)
-find_library(PARSER_ARROW_FLATCCRT_LIBRARY
-  NAMES flatccrt
-  HINTS ${_nanoarrow_library_dirs}
-  REQUIRED
-)
-
 # --- Arrow IPC decoder and table shaper shared by the plugin and unit tests ---
 add_library(parser_arrow_core STATIC
+  src/mosaico_objects.cpp
   src/ipc_decoder.cpp
   src/table_shaper.cpp
 )
@@ -29,11 +15,10 @@ target_compile_features(parser_arrow_core PUBLIC cxx_std_20)
 target_compile_options(parser_arrow_core PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(parser_arrow_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(parser_arrow_core PUBLIC
-  plotjuggler_sdk::base
+  plotjuggler_sdk::plugin_sdk
   nanoarrow::nanoarrow
-  nanoarrow::nanoarrow_ipc
+  arrow::arrow
   nlohmann_json::nlohmann_json
-  ${PARSER_ARROW_FLATCCRT_LIBRARY}
 )
 
 # --- Plugin shared library ---
@@ -73,6 +58,7 @@ target_link_libraries(arrow_parser_test PRIVATE
   nanoarrow::nanoarrow
   GTest::gtest_main
 )
+add_dependencies(arrow_parser_test parser_arrow_plugin)
 add_test(NAME arrow_parser_test COMMAND arrow_parser_test)
 
 # --- Unit test for the Arrow IPC decoder ---
@@ -112,3 +98,13 @@ add_test(NAME table_shaper_test COMMAND table_shaper_test)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(parser_arrow_plugin
   REQUIRED_EXPORTS PJ_get_message_parser_vtable)
+
+# Canonical Mosaico object conversion belongs to the parser, independent of Flight.
+foreach(_name image_serialize object_serialize image_real_fixture)
+  add_executable(mosaico_${_name}_test tests/mosaico_${_name}_test.cpp)
+  target_link_libraries(mosaico_${_name}_test PRIVATE parser_arrow_core GTest::gtest_main)
+  add_test(NAME mosaico_${_name}_test COMMAND mosaico_${_name}_test)
+endforeach()
+if(MSVC)
+  target_compile_options(parser_arrow_core PRIVATE /bigobj)
+endif()

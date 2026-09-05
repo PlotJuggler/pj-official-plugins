@@ -221,8 +221,8 @@ is available (`scripts/ensure_core.sh`).
 |---------|---------|---------|
 | **plotjuggler_sdk** (cloudsmith) | pinned via `SDK_VERSION` (exact) | **SDK + host loaders** (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
 | nlohmann_json | 3.12.0 | Most plugins |
-| arrow + parquet | 23.0.1 | data_load_parquet, data_load_rerun, toolbox_mosaico |
-| nanoarrow | 0.7.0 | parser_arrow (with_ipc + with_zstd) |
+| arrow + parquet | 23.0.1 | data_load_parquet, data_load_rerun, parser_arrow, toolbox_mosaico |
+| nanoarrow | 0.7.0 | parser_arrow (C Data column shaping) |
 | paho-mqtt-cpp | 1.5.3 | data_stream_mqtt |
 | cppzmq | 4.11.0 | data_stream_zmq |
 | protobuf | 6.33.5 | parser_protobuf |

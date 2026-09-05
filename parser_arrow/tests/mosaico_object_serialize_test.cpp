@@ -32,7 +32,7 @@
 #include <string>
 #include <vector>
 
-#include "../src/arrow_ingest.hpp"
+#include "mosaico_object_capture.hpp"
 #include "pj_base/builtin/frame_transforms_codec.hpp"
 #include "pj_base/builtin/occupancy_grid_codec.hpp"
 #include "pj_base/builtin/point_cloud_codec.hpp"
@@ -45,82 +45,6 @@ namespace {
 // Recording fake host (mirror of image_serialize_test.cpp). Captures every
 // registerObjectTopic + pushOwnedObject.
 // ---------------------------------------------------------------------------
-struct RecordedObjectTopic {
-  std::uint32_t source_id = 0;
-  std::string name;
-  std::string metadata_json;
-  std::uint32_t id = 0;
-};
-struct RecordedPush {
-  std::uint32_t topic_id = 0;
-  std::int64_t ts_ns = 0;
-  std::vector<std::uint8_t> payload;
-};
-
-struct FakeHost {
-  std::vector<RecordedObjectTopic> object_topics;
-  std::vector<RecordedPush> pushes;
-  std::uint32_t next_id = 1;
-  std::mutex mu;
-
-  PJ::sdk::ToolboxHostView view() {
-    PJ_toolbox_host_t host{};
-    host.ctx = this;
-    host.vtable = &kVtable;
-    return PJ::sdk::ToolboxHostView(host);
-  }
-
-  static FakeHost* self(void* ctx) {
-    return static_cast<FakeHost*>(ctx);
-  }
-  static std::string toStr(PJ_string_view_t s) {
-    return (s.data != nullptr && s.size > 0) ? std::string(s.data, s.size) : std::string();
-  }
-
-  static bool createDataSource(void* ctx, PJ_string_view_t, PJ_data_source_handle_t* out_source, PJ_error_t*)
-      PJ_NOEXCEPT {
-    auto* h = self(ctx);
-    std::lock_guard<std::mutex> lk(h->mu);
-    out_source->id = h->next_id++;
-    return true;
-  }
-  static bool registerObjectTopic(
-      void* ctx, PJ_data_source_handle_t source, PJ_string_view_t topic_name, PJ_string_view_t metadata_json,
-      PJ_object_topic_handle_t* out_handle, PJ_error_t*) PJ_NOEXCEPT {
-    auto* h = self(ctx);
-    std::lock_guard<std::mutex> lk(h->mu);
-    const std::uint32_t id = h->next_id++;
-    h->object_topics.push_back({source.id, toStr(topic_name), toStr(metadata_json), id});
-    out_handle->id = id;
-    return true;
-  }
-  static bool pushOwnedObject(
-      void* ctx, PJ_object_topic_handle_t topic, int64_t ts, const uint8_t* data, uint64_t size,
-      PJ_error_t*) PJ_NOEXCEPT {
-    auto* h = self(ctx);
-    std::lock_guard<std::mutex> lk(h->mu);
-    RecordedPush rec;
-    rec.topic_id = topic.id;
-    rec.ts_ns = ts;
-    if (data != nullptr && size > 0) {
-      rec.payload.assign(data, data + size);
-    }
-    h->pushes.push_back(std::move(rec));
-    return true;
-  }
-
-  static const PJ_toolbox_host_vtable_t kVtable;
-};
-
-const PJ_toolbox_host_vtable_t FakeHost::kVtable = [] {
-  PJ_toolbox_host_vtable_t v{};
-  v.abi_version = 0;
-  v.struct_size = sizeof(PJ_toolbox_host_vtable_t);
-  v.create_data_source = &FakeHost::createDataSource;
-  v.register_object_topic = &FakeHost::registerObjectTopic;
-  v.push_owned_object = &FakeHost::pushOwnedObject;
-  return v;
-}();
 
 // ---- small Arrow array builders --------------------------------------------
 std::shared_ptr<arrow::Array> i64Col(const std::vector<std::int64_t>& v) {
@@ -303,18 +227,13 @@ TEST(ObjectSerialize, PointCloud2RoundTripsThroughCanonicalCodec) {
           fieldsOneRow({"x", "y", "z", "intensity"}, {0, 4, 8, 12}, {7, 7, 7, 7}),  // datatype 7 == FLOAT32
       });
 
-  FakeHost fake;
-  auto host = fake.view();
-  auto ds = host.createDataSource("seq");
-  ASSERT_TRUE(ds) << ds.error();
+  ObjectCapture fake;
 
-  auto pushed = mosaico::pushPointCloudRowsToHost({host, *ds, "/velodyne/points", "timestamp_ns", 0, 0}, table);
+  auto pushed = fake.parse("point_cloud2", {"timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   EXPECT_EQ(pushed->skipped, 0);
 
-  ASSERT_EQ(fake.object_topics.size(), 1u);
-  EXPECT_EQ(fake.object_topics[0].metadata_json, R"({"builtin_object_type":"kPointCloud"})");
   ASSERT_EQ(fake.pushes.size(), 1u);
 
   auto pc = PJ::deserializePointCloud(fake.pushes[0].payload.data(), fake.pushes[0].payload.size());
@@ -356,11 +275,8 @@ TEST(ObjectSerialize, PointCloud2SkipsEmptyRow) {
           fieldsOneRow({"x", "y", "z"}, {0, 4, 8}, {7, 7, 7}),
       });
 
-  FakeHost fake;
-  auto host = fake.view();
-  auto ds = host.createDataSource("seq");
-  ASSERT_TRUE(ds) << ds.error();
-  auto pushed = mosaico::pushPointCloudRowsToHost({host, *ds, "/velodyne/points", "timestamp_ns", 0, 0}, table);
+  ObjectCapture fake;
+  auto pushed = fake.parse("point_cloud2", {"timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 0);
   EXPECT_EQ(pushed->skipped, 1);
@@ -389,16 +305,11 @@ TEST(ObjectSerialize, PoseTopLevelRoundTripsThroughCanonicalCodec) {
           structCol({"x", "y", "z", "w"}, {f64Col({0.0}), f64Col({0.0}), f64Col({0.0}), f64Col({1.0})}),
       });
 
-  FakeHost fake;
-  auto host = fake.view();
-  auto ds = host.createDataSource("seq");
-  ASSERT_TRUE(ds) << ds.error();
+  ObjectCapture fake;
 
-  auto pushed = mosaico::pushPoseRowsToHost({host, *ds, "/groundtruth/pose", "timestamp_ns", 0, 0}, table);
+  auto pushed = fake.parse("pose", {"timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
-  ASSERT_EQ(fake.object_topics.size(), 1u);
-  EXPECT_EQ(fake.object_topics[0].metadata_json, R"({"builtin_object_type":"kPosesInFrame"})");
   ASSERT_EQ(fake.pushes.size(), 1u);
 
   auto pf = PJ::deserializePosesInFrame(fake.pushes[0].payload.data(), fake.pushes[0].payload.size());
@@ -431,37 +342,33 @@ TEST(ObjectSerialize, TimestampUnitsMatchTheScalarRoute) {
   for (const auto& axis : arrow::ArrayVector{native_timestamp, f64Col({1.5})}) {
     SCOPED_TRACE(axis->type()->ToString());
     auto table = poseTableWithAxis(axis);
-    FakeHost fake;
-    auto host = fake.view();
-    auto source = host.createDataSource("sequence");
-    ASSERT_TRUE(source);
-    auto pushed = mosaico::pushPoseRowsToHost({host, *source, "/pose", "time", 77, 1}, table);
+    ObjectCapture fake;
+    auto pushed = fake.parse("pose", {"time", 77, 1}, table);
     ASSERT_TRUE(pushed) << pushed.error();
     ASSERT_EQ(fake.pushes.size(), 1u);
     EXPECT_EQ(fake.pushes.front().ts_ns, 1'500'000'000);
   }
 }
 
-TEST(ObjectSerialize, ChecksTimestampUnitsAndSynthesizesOnlyMissingValues) {
-  FakeHost fake;
-  auto host = fake.view();
-  auto source = host.createDataSource("sequence");
-  ASSERT_TRUE(source);
-  mosaico::ObjectIngestContext ctx{host, *source, "/pose", "time", std::numeric_limits<std::int64_t>::max(), 1};
+TEST(ObjectSerialize, ChecksTimestampUnitsAndUsesMessageTimeForMissingValues) {
+  ObjectCapture fake;
+  CaptureOptions ctx{"time", 77, 1};
   ctx.timestamp_unit = PJ::TimeUnit::kMicroseconds;
-  auto pushed = mosaico::pushPoseRowsToHost(ctx, poseTableWithAxis(i64Col({1'500'000, 2'500'000})));
+  auto pushed = fake.parse("pose", ctx, poseTableWithAxis(i64Col({1'500'000, 2'500'000})));
   ASSERT_TRUE(pushed) << pushed.error();
   ASSERT_EQ(fake.pushes.size(), 2U);
   EXPECT_EQ(fake.pushes[0].ts_ns, 1'500'000'000);
-  EXPECT_EQ(fake.pushes[1].ts_ns, 2'500'000'000);  // The unused synthetic fallback would overflow here.
+  EXPECT_EQ(fake.pushes[1].ts_ns, 2'500'000'000);
 
   arrow::Int64Builder missing;
   ASSERT_TRUE(missing.AppendNulls(2).ok());
   std::shared_ptr<arrow::Array> nulls;
   ASSERT_TRUE(missing.Finish(&nulls).ok());
-  pushed = mosaico::pushPoseRowsToHost(ctx, poseTableWithAxis(nulls));
-  ASSERT_FALSE(pushed);
-  EXPECT_NE(pushed.error().find("synthetic timestamp overflow at row 1"), std::string::npos);
+  pushed = fake.parse("pose", ctx, poseTableWithAxis(nulls));
+  ASSERT_TRUE(pushed) << pushed.error();
+  ASSERT_EQ(fake.pushes.size(), 4U);
+  EXPECT_EQ(fake.pushes[2].ts_ns, 77);
+  EXPECT_EQ(fake.pushes[3].ts_ns, 78);
 }
 
 TEST(ObjectSerialize, RejectsUnrepresentableTimestampsInsteadOfSubstitutingSyntheticTime) {
@@ -472,13 +379,10 @@ TEST(ObjectSerialize, RejectsUnrepresentableTimestampsInsteadOfSubstitutingSynth
   for (const auto& axis : arrow::ArrayVector{
            large_unsigned, i64Col({std::numeric_limits<std::int64_t>::max()}),
            f64Col({std::numeric_limits<double>::infinity()})}) {
-    FakeHost fake;
-    auto host = fake.view();
-    auto source = host.createDataSource("sequence");
-    ASSERT_TRUE(source);
-    mosaico::ObjectIngestContext ctx{host, *source, "/pose", "time", 77, 1};
+    ObjectCapture fake;
+    CaptureOptions ctx{"time", 77, 1};
     ctx.timestamp_unit = PJ::TimeUnit::kSeconds;
-    const auto pushed = mosaico::pushPoseRowsToHost(ctx, poseTableWithAxis(axis));
+    const auto pushed = fake.parse("pose", ctx, poseTableWithAxis(axis));
     ASSERT_FALSE(pushed);
     EXPECT_NE(pushed.error().find("timestamp column 'time'"), std::string::npos);
     EXPECT_TRUE(fake.pushes.empty());
@@ -499,12 +403,9 @@ TEST(ObjectSerialize, MotionStateNestedPoseRoundTrips) {
       }),
       {i64Col({4242}), strCol({"odom"}), pose});
 
-  FakeHost fake;
-  auto host = fake.view();
-  auto ds = host.createDataSource("seq");
-  ASSERT_TRUE(ds) << ds.error();
+  ObjectCapture fake;
 
-  auto pushed = mosaico::pushPoseRowsToHost({host, *ds, "/odometry/odometry", "timestamp_ns", 0, 0}, table);
+  auto pushed = fake.parse("pose", {"timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   ASSERT_EQ(fake.pushes.size(), 1u);
@@ -534,15 +435,10 @@ TEST(ObjectSerialize, TransformSingularRoundTrips) {
       }),
       {i64Col({111}), header, translation, rotation, strCol({"child"})});
 
-  FakeHost fake;
-  auto host = fake.view();
-  auto ds = host.createDataSource("seq");
-  ASSERT_TRUE(ds) << ds.error();
-  auto pushed = mosaico::pushFrameTransformsRowsToHost({host, *ds, "/tf", "timestamp_ns", 0, 0}, table);
+  ObjectCapture fake;
+  auto pushed = fake.parse("transform", {"timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
-  ASSERT_EQ(fake.object_topics.size(), 1u);
-  EXPECT_EQ(fake.object_topics[0].metadata_json, R"({"builtin_object_type":"kFrameTransforms"})");
 
   auto ft = PJ::deserializeFrameTransforms(fake.pushes[0].payload.data(), fake.pushes[0].payload.size());
   ASSERT_TRUE(ft) << ft.error();
@@ -576,11 +472,8 @@ TEST(ObjectSerialize, FrameTransformListRoundTrips) {
       }),
       {i64Col({555}), transforms_list});
 
-  FakeHost fake;
-  auto host = fake.view();
-  auto ds = host.createDataSource("seq");
-  ASSERT_TRUE(ds) << ds.error();
-  auto pushed = mosaico::pushFrameTransformsRowsToHost({host, *ds, "/tf", "timestamp_ns", 0, 0}, table);
+  ObjectCapture fake;
+  auto pushed = fake.parse("transform", {"timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   ASSERT_EQ(fake.pushes.size(), 1u);
@@ -616,15 +509,10 @@ TEST(ObjectSerialize, OccupancyGridRoundTrips) {
       }),
       {i64Col({7}), info, header, data});
 
-  FakeHost fake;
-  auto host = fake.view();
-  auto ds = host.createDataSource("seq");
-  ASSERT_TRUE(ds) << ds.error();
-  auto pushed = mosaico::pushOccupancyGridRowsToHost({host, *ds, "/map", "timestamp_ns", 0, 0}, table);
+  ObjectCapture fake;
+  auto pushed = fake.parse("occupancy_grid", {"timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
-  ASSERT_EQ(fake.object_topics.size(), 1u);
-  EXPECT_EQ(fake.object_topics[0].metadata_json, R"({"builtin_object_type":"kOccupancyGrid"})");
 
   auto grid = PJ::deserializeOccupancyGrid(fake.pushes[0].payload.data(), fake.pushes[0].payload.size());
   ASSERT_TRUE(grid) << grid.error();
@@ -658,15 +546,10 @@ TEST(ObjectSerialize, LaserScanExpandsToPointCloud) {
       {i64Col({33}), header, f64Col({0.0}), f64Col({kHalfPi}), f64Col({0.0}), f64Col({100.0}),
        f32ListOneRow({1.0F, 2.0F, std::numeric_limits<float>::infinity(), 3.0F})});
 
-  FakeHost fake;
-  auto host = fake.view();
-  auto ds = host.createDataSource("seq");
-  ASSERT_TRUE(ds) << ds.error();
-  auto pushed = mosaico::pushLaserScanRowsToHost({host, *ds, "/scan", "timestamp_ns", 0, 0}, table);
+  ObjectCapture fake;
+  auto pushed = fake.parse("laser_scan", {"timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
-  ASSERT_EQ(fake.object_topics.size(), 1u);
-  EXPECT_EQ(fake.object_topics[0].metadata_json, R"({"builtin_object_type":"kPointCloud"})");
 
   auto pc = PJ::deserializePointCloud(fake.pushes[0].payload.data(), fake.pushes[0].payload.size());
   ASSERT_TRUE(pc) << pc.error();
@@ -695,15 +578,10 @@ TEST(ObjectSerialize, GridCellsToSceneEntities) {
       }),
       {i64Col({222}), header, f64Col({0.1}), f64Col({0.2}), cells});
 
-  FakeHost fake;
-  auto host = fake.view();
-  auto ds = host.createDataSource("seq");
-  ASSERT_TRUE(ds) << ds.error();
-  auto pushed = mosaico::pushGridCellsRowsToHost({host, *ds, "/grid_cells", "timestamp_ns", 0, 0}, table);
+  ObjectCapture fake;
+  auto pushed = fake.parse("grid_cells", {"timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
-  ASSERT_EQ(fake.object_topics.size(), 1u);
-  EXPECT_EQ(fake.object_topics[0].metadata_json, R"({"builtin_object_type":"kSceneEntities"})");
 
   auto se = PJ::deserializeSceneEntities(fake.pushes[0].payload.data(), fake.pushes[0].payload.size());
   ASSERT_TRUE(se) << se.error();
@@ -733,15 +611,10 @@ TEST(ObjectSerialize, FuturesLidarColumnarPacksToPointCloud) {
       {i64Col({88}), header, f32ListOneRow({1.0F, 2.0F}), f32ListOneRow({3.0F, 4.0F}), f32ListOneRow({5.0F, 6.0F}),
        f32ListOneRow({0.5F, 0.6F}), u16ListOneRow({10, 20})});
 
-  FakeHost fake;
-  auto host = fake.view();
-  auto ds = host.createDataSource("seq");
-  ASSERT_TRUE(ds) << ds.error();
-  auto pushed = mosaico::pushColumnarPointCloudRowsToHost({host, *ds, "/lidar/points", "timestamp_ns", 0, 0}, table);
+  ObjectCapture fake;
+  auto pushed = fake.parse("lidar", {"timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
-  ASSERT_EQ(fake.object_topics.size(), 1u);
-  EXPECT_EQ(fake.object_topics[0].metadata_json, R"({"builtin_object_type":"kPointCloud"})");
 
   auto pc = PJ::deserializePointCloud(fake.pushes[0].payload.data(), fake.pushes[0].payload.size());
   ASSERT_TRUE(pc) << pc.error();

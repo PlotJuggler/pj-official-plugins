@@ -68,15 +68,13 @@ set(MOSAICO_SOURCES
   src/toolbox_mosaico.cpp
   src/mosaico_dialog.cpp
   src/fetch_worker.cpp
-  src/arrow_ingest.cpp
   src/arrow_ipc_message.cpp
   src/settings_store.cpp
   src/server_history.cpp
   src/core/time_format.cpp
 )
 
-# Arrow/Flight + Arrow-compute translation units (arrow_ingest.cpp, and the
-# Flight/serialize tests that compile it) instantiate enough templates to exceed
+# Arrow/Flight translation units instantiate enough templates to exceed
 # the COFF section limit without /bigobj (C1128). Apply it directory-wide on MSVC
 # so the plugin and every Arrow-linked test target below inherit it.
 if(MSVC)
@@ -204,8 +202,7 @@ if(BUILD_TESTING)
   add_executable(toolbox_mosaico_ingest_progress_test
     tests/ingest_progress_test.cpp
     src/fetch_worker.cpp
-    src/arrow_ingest.cpp
-    src/arrow_ipc_message.cpp
+      src/arrow_ipc_message.cpp
   )
   target_link_libraries(toolbox_mosaico_ingest_progress_test PRIVATE
     plotjuggler_sdk::plugin_sdk
@@ -225,17 +222,6 @@ if(BUILD_TESTING)
   target_compile_options(toolbox_mosaico_ingest_progress_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
   add_test(NAME ToolboxMosaicoIngestProgressTest COMMAND toolbox_mosaico_ingest_progress_test)
 
-  # Image-topic metadata builder: pure string logic, header-only, so this needs
-  # nothing but GTest. Pins the cross-repo metadata_json contract.
-  add_executable(toolbox_mosaico_image_metadata_test
-    tests/image_metadata_test.cpp
-  )
-  target_link_libraries(toolbox_mosaico_image_metadata_test PRIVATE GTest::gtest_main)
-  target_include_directories(toolbox_mosaico_image_metadata_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoImageMetadataTest COMMAND toolbox_mosaico_image_metadata_test)
-
   # Ontology routing (image vs point-cloud/scalar). Compiles only the SDK's
   # light metadata.cpp (arrow + nlohmann) — no Flight/gRPC — like the
   # detect-timestamp test.
@@ -244,6 +230,7 @@ if(BUILD_TESTING)
     ${mosaico_sdk_SOURCE_DIR}/src/flight/metadata.cpp
   )
   target_link_libraries(toolbox_mosaico_ontology_routing_test PRIVATE
+    plotjuggler_sdk::base
     ${_test_arrow_target}
     nlohmann_json::nlohmann_json
     GTest::gtest_main
@@ -253,60 +240,6 @@ if(BUILD_TESTING)
     ${mosaico_sdk_SOURCE_DIR}/src
   )
   add_test(NAME ToolboxMosaicoOntologyRoutingTest COMMAND toolbox_mosaico_ontology_routing_test)
-
-  # Per-frame image serialization: each Arrow row -> one canonical PJ.Image blob
-  # (pj_base codec), driven against a recording fake toolbox host. Builds tables
-  # with the real server's BINARY_VIEW/STRING_VIEW column types (no Flight/gRPC).
-  add_executable(toolbox_mosaico_image_serialize_test
-    tests/image_serialize_test.cpp
-    src/arrow_ingest.cpp
-  )
-  target_link_libraries(toolbox_mosaico_image_serialize_test PRIVATE
-    plotjuggler_sdk::plugin_sdk
-    ${_test_arrow_target}
-    GTest::gtest_main
-  )
-  target_include_directories(toolbox_mosaico_image_serialize_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoImageSerializeTest COMMAND toolbox_mosaico_image_serialize_test)
-
-  # Per-row canonicalization of the 3D-object ontologies (point_cloud / transform
-  # / pose) -> one canonical PJ.{PointCloud,FrameTransforms,PosesInFrame} blob per
-  # row (pj_base codec), driven against a recording fake toolbox host (no
-  # Flight/gRPC). Builds synthetic list<float32> / struct tables matching the
-  # server shapes and asserts each pushed blob round-trips.
-  add_executable(toolbox_mosaico_object_serialize_test
-    tests/object_serialize_test.cpp
-    src/arrow_ingest.cpp
-  )
-  target_link_libraries(toolbox_mosaico_object_serialize_test PRIVATE
-    plotjuggler_sdk::plugin_sdk
-    ${_test_arrow_target}
-    GTest::gtest_main
-  )
-  target_include_directories(toolbox_mosaico_object_serialize_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoObjectSerializeTest COMMAND toolbox_mosaico_object_serialize_test)
-
-  # Real-server regression: replays the captured jai/rgb Arrow batch (PNG-wrapped
-  # Bayer, BINARY_VIEW/STRING_VIEW columns) through the real producer and checks
-  # every blob round-trips to a valid per-frame PJ::Image. SKIPS if the (~31 MB,
-  # uncommitted) fixture is absent; regenerate it via toolbox_mosaico_live_harness.
-  add_executable(toolbox_mosaico_image_real_fixture_test
-    tests/image_real_fixture_test.cpp
-    src/arrow_ingest.cpp
-  )
-  target_link_libraries(toolbox_mosaico_image_real_fixture_test PRIVATE
-    plotjuggler_sdk::plugin_sdk
-    ${_test_arrow_target}
-    GTest::gtest_main
-  )
-  target_include_directories(toolbox_mosaico_image_real_fixture_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoImageRealFixtureTest COMMAND toolbox_mosaico_image_real_fixture_test)
 
   # Fetch-completion policy (close/import/error-dedup). Header-only, std only.
   add_executable(toolbox_mosaico_fetch_summary_test

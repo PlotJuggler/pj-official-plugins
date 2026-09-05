@@ -624,8 +624,8 @@ TEST(MosaicoTransport, UnstampedTopicFitsItsSyntheticCadenceToTheTopicRange) {
   pullUnstamped(host, 1000, 6000, {3, 3});
 
   ASSERT_EQ(host.bindings.size(), 1U);
-  EXPECT_EQ(nlohmann::json::parse(host.bindings[0].config).at("timestamp_column"), "");
-  EXPECT_EQ(boundInterval(host), 1000) << "6 rows over [1000, 6000]";
+  EXPECT_EQ(nlohmann::json::parse(host.bindings[0].config).at("timestamp_column"), "__mosaico_timestamp");
+  EXPECT_EQ(boundInterval(host), 0) << "6 rows over [1000, 6000]";
   ASSERT_EQ(host.messages.size(), 2U);
   EXPECT_EQ(host.messages[0].host_ts_ns, 1000);
   EXPECT_EQ(host.messages[1].host_ts_ns, 4000);
@@ -637,7 +637,7 @@ TEST(MosaicoTransport, UnstampedTopicFallsBackToTheDefaultCadence) {
   FakeIngestHost zero_span;
   pullUnstamped(zero_span, 5000, 5000, {1, 1});
   ASSERT_EQ(zero_span.bindings.size(), 1U);
-  EXPECT_EQ(boundInterval(zero_span), mosaico::kSyntheticIntervalNs);
+  EXPECT_EQ(boundInterval(zero_span), 0);
   ASSERT_EQ(zero_span.messages.size(), 2U);
   EXPECT_EQ(zero_span.messages[0].host_ts_ns, 5000);
   EXPECT_EQ(zero_span.messages[1].host_ts_ns, 5000 + mosaico::kSyntheticIntervalNs);
@@ -647,7 +647,7 @@ TEST(MosaicoTransport, UnstampedTopicFallsBackToTheDefaultCadence) {
   FakeIngestHost one_row;
   pullUnstamped(one_row, 1000, 6000, {1});
   ASSERT_EQ(one_row.bindings.size(), 1U);
-  EXPECT_EQ(boundInterval(one_row), mosaico::kSyntheticIntervalNs);
+  EXPECT_EQ(boundInterval(one_row), 0);
   ASSERT_EQ(one_row.messages.size(), 1U);
   EXPECT_EQ(one_row.messages[0].host_ts_ns, 1000);
 }
@@ -684,8 +684,8 @@ TEST(MosaicoTransport, ImplausiblyTypedTimeColumnFallsBackToTheSyntheticAxis) {
   ASSERT_EQ(results.size(), 1U);
   EXPECT_TRUE(results[0].ok) << results[0].error;
   ASSERT_EQ(host.bindings.size(), 1U);
-  EXPECT_EQ(nlohmann::json::parse(host.bindings[0].config).at("timestamp_column"), "");
-  EXPECT_EQ(boundInterval(host), 1000) << "3 rows over [1000, 3000]";
+  EXPECT_EQ(nlohmann::json::parse(host.bindings[0].config).at("timestamp_column"), "__mosaico_timestamp");
+  EXPECT_EQ(boundInterval(host), 0) << "3 rows over [1000, 3000]";
   ASSERT_EQ(host.messages.size(), 1U);
   EXPECT_EQ(host.messages[0].host_ts_ns, 1000);
 }
@@ -773,7 +773,7 @@ TEST(MosaicoTransport, DictionaryEncodedStampIsDetectedAfterTheRewrite) {
 
 // An undecodable column costs its own curves, not the topic: the siblings still
 // import and the loss is reported as a warning on the successful result.
-TEST(MosaicoTransport, UndecodableColumnIsDroppedAndReportedAsAWarning) {
+TEST(MosaicoTransport, UnsupportedPlotColumnIsPreservedOnTheWire) {
   auto ids = arrayOf<arrow::Int64Builder, std::int64_t>({1, 2, 3});
   auto run_ends = arrayOf<arrow::Int32Builder, std::int32_t>({1, 2, 3});
   auto ree = *arrow::RunEndEncodedArray::Make(3, run_ends, ids);
@@ -802,14 +802,14 @@ TEST(MosaicoTransport, UndecodableColumnIsDroppedAndReportedAsAWarning) {
 
   ASSERT_EQ(results.size(), 1U);
   EXPECT_TRUE(results[0].ok) << results[0].error;
-  EXPECT_NE(results[0].warning.find("counter"), std::string::npos) << results[0].warning;
+  EXPECT_TRUE(results[0].warning.empty());
   ASSERT_EQ(host.messages.size(), 1U);
   EXPECT_EQ(host.messages[0].host_ts_ns, 1000) << "the surviving stamp still drives the axis";
 }
 
 // Losing the axis is the one drop that is fatal: every surviving curve would
 // land on a synthetic base that disagrees with the rest of the sequence.
-TEST(MosaicoTransport, TopicFailsWhenTheTimestampColumnItselfIsUndecodable) {
+TEST(MosaicoTransport, UnplottableAxisRemainsInTheRecordedMessage) {
   auto ids = arrayOf<arrow::Int64Builder, std::int64_t>({1, 2, 3});
   auto run_ends = arrayOf<arrow::Int32Builder, std::int32_t>({1, 2, 3});
   // A run-end encoded `timestamp_ns` cannot be framed, so the axis is gone.
@@ -831,16 +831,15 @@ TEST(MosaicoTransport, TopicFailsWhenTheTimestampColumnItselfIsUndecodable) {
 
   worker.pullTopicsAsync("seq", {"odom"}, 0, 1);
 
-  EXPECT_TRUE(host.messages.empty());
+  EXPECT_EQ(host.messages.size(), 1U);
   ASSERT_EQ(results.size(), 1U);
-  EXPECT_FALSE(results[0].ok);
-  EXPECT_NE(results[0].error.find("timestamp_ns"), std::string::npos) << results[0].error;
+  EXPECT_TRUE(results[0].ok) << results[0].error;
 }
 
 // A struct must keep the children that CAN be framed — including the axis. The
 // unframeable sibling costs only itself, so the topic still rides `hdr/stamp`
 // rather than falling back to a synthetic base or dying outright.
-TEST(MosaicoTransport, NestedProjectionKeepsStructSiblingsAndTheirAxis) {
+TEST(MosaicoTransport, KeepsAllStructChildrenAndTheirAxis) {
   auto ids = arrayOf<arrow::Int64Builder, std::int64_t>({1, 2, 3});
   auto run_ends = arrayOf<arrow::Int32Builder, std::int32_t>({1, 2, 3});
   auto ree = *arrow::RunEndEncodedArray::Make(3, run_ends, ids);
@@ -873,7 +872,7 @@ TEST(MosaicoTransport, NestedProjectionKeepsStructSiblingsAndTheirAxis) {
 
   ASSERT_EQ(results.size(), 1U);
   EXPECT_TRUE(results[0].ok) << results[0].error;
-  EXPECT_NE(results[0].warning.find("hdr/weird"), std::string::npos) << results[0].warning;
+  EXPECT_TRUE(results[0].warning.empty());
   ASSERT_EQ(host.bindings.size(), 1U);
   EXPECT_EQ(nlohmann::json::parse(host.bindings[0].config).at("timestamp_column"), "hdr/stamp");
   ASSERT_EQ(host.messages.size(), 1U);
@@ -886,7 +885,7 @@ TEST(MosaicoTransport, NestedProjectionKeepsStructSiblingsAndTheirAxis) {
   ASSERT_TRUE(reader.ok()) << reader.status().ToString();
   const auto& framed = *(*reader)->schema();
   ASSERT_EQ(framed.num_fields(), 2);
-  ASSERT_EQ(framed.field(0)->type()->num_fields(), 2);
+  ASSERT_EQ(framed.field(0)->type()->num_fields(), 3);
   EXPECT_EQ(framed.field(0)->type()->field(0)->name(), "stamp");
   EXPECT_EQ(framed.field(0)->type()->field(1)->name(), "value");
   EXPECT_EQ(framed.field(1)->name(), "x");
@@ -895,7 +894,7 @@ TEST(MosaicoTransport, NestedProjectionKeepsStructSiblingsAndTheirAxis) {
 // The raw schema had one leaf named `time`; the rewrite turned it into `time/sec`
 // and `time/nsec`, so the axis is gone without a single column being dropped.
 // Judging that only when something was dropped would miss it.
-TEST(MosaicoTransport, TopicFailsWhenTheRewriteDissolvesTheAxis) {
+TEST(MosaicoTransport, ExtensionFieldsRemainInTheRecordedMessage) {
   auto secs = arrayOf<arrow::Int64Builder, std::int64_t>({1, 2, 3});
   auto nsecs = arrayOf<arrow::Int64Builder, std::int64_t>({4, 5, 6});
   auto storage = *arrow::StructArray::Make(arrow::ArrayVector{secs, nsecs}, std::vector<std::string>{"sec", "nsec"});
@@ -919,10 +918,9 @@ TEST(MosaicoTransport, TopicFailsWhenTheRewriteDissolvesTheAxis) {
 
   worker.pullTopicsAsync("seq", {"odom"}, 0, 1);
 
-  EXPECT_TRUE(host.messages.empty());
+  EXPECT_EQ(host.messages.size(), 1U);
   ASSERT_EQ(results.size(), 1U);
-  EXPECT_FALSE(results[0].ok);
-  EXPECT_NE(results[0].error.find("'time'"), std::string::npos) << results[0].error;
+  EXPECT_TRUE(results[0].ok) << results[0].error;
 }
 
 // A synthetic axis anchored near INT64_MAX would silently wrap into the distant
@@ -953,7 +951,7 @@ TEST(MosaicoTransport, SyntheticTimestampOverflowFailsTheTopic) {
 
 // Canonical-object ontologies stay on the direct-write path: no parser binding,
 // no arrow-ipc message.
-TEST(MosaicoTransport, ObjectOntologyTopicNeverTakesTheTransportPath) {
+TEST(MosaicoTransport, ObjectOntologyUsesOneRawMessagePerRow) {
   FakeIngestHost host;
   mosaico::FetchWorker worker;
   worker.setHostProvider([&host] { return host.writeView(); });
@@ -969,8 +967,20 @@ TEST(MosaicoTransport, ObjectOntologyTopicNeverTakesTheTransportPath) {
 
   worker.pullTopicsAsync("seq", {"odom"}, 0, 1);
 
-  EXPECT_TRUE(host.bindings.empty());
-  EXPECT_TRUE(host.messages.empty());
+  ASSERT_EQ(host.bindings.size(), 1U);
+  EXPECT_EQ(host.bindings[0].type_name, "pose");
+  EXPECT_EQ(host.bindings[0].encoding, "arrow-ipc");
+  ASSERT_EQ(host.messages.size(), 3U);
+  for (std::size_t row = 0; row < host.messages.size(); ++row) {
+    EXPECT_EQ(host.messages[row].host_ts_ns, 1000 + row);
+    auto buffer = std::make_shared<arrow::Buffer>(host.messages[row].payload.data(), host.messages[row].payload.size());
+    auto reader = arrow::ipc::RecordBatchStreamReader::Open(std::make_shared<arrow::io::BufferReader>(buffer));
+    ASSERT_TRUE(reader.ok());
+    auto batch = (*reader)->Next();
+    ASSERT_TRUE(batch.ok());
+    ASSERT_EQ((*batch)->num_rows(), 1);
+    EXPECT_EQ((*batch)->num_columns(), 2);
+  }
 }
 
 }  // namespace
@@ -980,7 +990,7 @@ TEST(MosaicoTransport, FitsSyntheticCadenceAcrossASpanLargerThanInt64) {
   const auto first = std::numeric_limits<std::int64_t>::min();
   pullUnstamped(host, first, 0, {1, 1, 1, 1});
   ASSERT_EQ(host.bindings.size(), 1U);
-  EXPECT_EQ(boundInterval(host), 3'074'457'345'618'258'602LL);
+  EXPECT_EQ(boundInterval(host), 0);
   ASSERT_EQ(host.messages.size(), 4U);
   EXPECT_EQ(host.messages.front().host_ts_ns, first);
   EXPECT_EQ(host.messages.back().host_ts_ns, -2);  // Integral cadence rounds down.

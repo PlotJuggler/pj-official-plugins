@@ -406,23 +406,21 @@ TEST(ArrowParserTest, RejectsMissingConfiguredTimestampColumn) {
   expectOnlyArrowWrites(fixture.arrow_write_host, 0);
 }
 
-/// Unsupported compression, unsupported IPC view types, and empty input fail during decode.
-TEST(ArrowParserTest, RejectsUnsupportedAndEmptyIpcPayloads) {
+/// The native decoder accepts compression and view fields; malformed input still fails.
+TEST(ArrowParserTest, DecodesLz4AndViewsButRejectsEmptyPayloads) {
   ArrowParserFixture fixture;
   fixture.setUp();
 
   const auto lz4_status = parseFixture(fixture, "flat_lz4.arrows");
-  ASSERT_FALSE(lz4_status);
-  EXPECT_NE(lz4_status.error().find("lz4"), std::string::npos);
+  ASSERT_TRUE(lz4_status) << lz4_status.error();
 
   const auto view_status = parseFixture(fixture, "views.arrows");
-  ASSERT_FALSE(view_status);
-  EXPECT_NE(view_status.error().find("string_view"), std::string::npos);
+  ASSERT_TRUE(view_status) << view_status.error();
 
   const auto empty_status = fixture.handle.parse(0, PJ::Span<const uint8_t>{});
   ASSERT_FALSE(empty_status);
   EXPECT_NE(empty_status.error().find("empty"), std::string::npos);
-  expectOnlyArrowWrites(fixture.arrow_write_host, 0);
+  expectOnlyArrowWrites(fixture.arrow_write_host, 2);
 }
 
 /// A legacy parser write host reports that the Arrow tail slot is unavailable.
@@ -508,6 +506,94 @@ TEST(ArrowParserTest, ParsesDroppedColumnsWithoutRuntimeService) {
   ASSERT_TRUE(status) << status.error();
   ASSERT_EQ(fixture.arrow_write_host.streams().size(), 1);
   expectOnlyArrowWrites(fixture.arrow_write_host, 1);
+}
+
+TEST(ArrowParserTest, EmptyListsDoNotPreventLaterMessagesFromBeingIngested) {
+  ArrowParserFixture fixture;
+  fixture.setUp(true, true);
+  auto status = parseFixture(fixture, "lists_empty_message.arrows");
+  ASSERT_TRUE(status) << status.error();
+  expectOnlyArrowWrites(fixture.arrow_write_host, 0);
+  ASSERT_FALSE(fixture.runtime_host.diagnostics().empty());
+  status = parseFixture(fixture, "lists_populated_message.arrows");
+  ASSERT_TRUE(status) << status.error();
+  ASSERT_EQ(fixture.arrow_write_host.streams().size(), 1);
+  EXPECT_EQ(fixture.arrow_write_host.streams()[0].timestamp_values, (std::vector<int64_t>{3000}));
+  EXPECT_EQ(
+      fixture.arrow_write_host.streams()[0].schema_names,
+      (std::vector<std::string>{"timestamp_ns", "empty[0]", "empty[1]", "empty[2]"}));
+  EXPECT_FALSE(parseFixture(fixture, "lists_null_time_message.arrows"));
+  auto truncated = pj::parser_arrow::test::readFile(pj::parser_arrow::test::fixturePath("lists_empty_message.arrows"));
+  truncated.resize(truncated.size() - 16);
+  EXPECT_FALSE(fixture.handle.parse(0, {truncated.data(), truncated.size()}));
+}
+
+TEST(ArrowParserTest, EmptyLeadingBatchesDoNotHideLaterListValues) {
+  ArrowParserFixture fixture;
+  fixture.setUp();
+  auto status = parseFixture(fixture, "lists_empty_then_populated.arrows");
+  ASSERT_TRUE(status) << status.error();
+  const auto& stream = fixture.arrow_write_host.streams().at(0);
+  EXPECT_EQ(stream.timestamp_values, (std::vector<int64_t>{1000, 2000, 3000}));
+  EXPECT_EQ(stream.schema_names.size(), 4);
+}
+
+TEST(ArrowParserTest, RecordedSyntheticTimingDoesNotNeedProducerConfig) {
+  ArrowParserFixture fixture;
+  fixture.setUp();
+  auto status = parseFixture(fixture, "recorded_mosaico.arrows", 999);
+  ASSERT_TRUE(status) << status.error();
+  const auto& stream = fixture.arrow_write_host.streams().at(0);
+  EXPECT_EQ(stream.timestamp_values, (std::vector<int64_t>{100, 500, 900}));
+  EXPECT_EQ(formatFor(stream, "timestamp_ns"), "u");
+}
+
+TEST(ArrowParserTest, ClassifiesCanonicalOntologiesAndDecodesObjectsWithoutScalarWrites) {
+  ArrowParserFixture fixture;
+  fixture.setUp(true, true);
+  using Type = PJ::sdk::BuiltinObjectType;
+  for (const auto& [name, kind] : std::vector<std::pair<std::string, Type>>{
+           {"image", Type::kImage},
+           {"compressed_image", Type::kImage},
+           {"point_cloud2", Type::kPointCloud},
+           {"laser_scan", Type::kPointCloud},
+           {"lidar", Type::kPointCloud},
+           {"pose", Type::kPosesInFrame},
+           {"motion_state", Type::kPosesInFrame},
+           {"transform", Type::kFrameTransforms},
+           {"frame_transform", Type::kFrameTransforms},
+           {"occupancy_grid", Type::kOccupancyGrid},
+           {"grid_cells", Type::kSceneEntities},
+           {"unknown", Type::kNone}}) {
+    ASSERT_TRUE(fixture.handle.bindSchema(name, {}));
+    EXPECT_EQ(fixture.handle.classifySchema(name, {}), kind) << name;
+  }
+  ASSERT_TRUE(fixture.handle.bindSchema("image", {}));
+  EXPECT_EQ(fixture.handle.classifySchema("image", {}), Type::kImage);
+  EXPECT_TRUE(parseFixture(fixture, "lists_populated_message.arrows"));
+  ASSERT_FALSE(fixture.runtime_host.diagnostics().empty());
+  EXPECT_EQ(fixture.runtime_host.diagnostics().back().stable_code, "parser_arrow.invalid_object");
+  auto bytes = pj::parser_arrow::test::readFile(pj::parser_arrow::test::fixturePath("mosaico_image.arrows"));
+  ASSERT_TRUE(fixture.handle.parse(777, {bytes.data(), bytes.size()}));
+  auto object = fixture.handle.parseObjectFunctional(777, PJ::sdk::makePayloadView(bytes));
+  ASSERT_TRUE(object) << object.error();
+  bytes.clear();
+  EXPECT_EQ(object->ts, 123000);
+  const auto* image = std::any_cast<PJ::sdk::Image>(&object->object);
+  ASSERT_NE(image, nullptr);
+  EXPECT_EQ(image->width, 2);
+  EXPECT_EQ(image->encoding, "mono8");
+  ASSERT_EQ(image->data.size(), 2);
+  EXPECT_EQ(image->data[0], 'A');
+  EXPECT_EQ(image->data[1], 'B');
+  expectOnlyArrowWrites(fixture.arrow_write_host, 0);
+  auto unnamed =
+      pj::parser_arrow::test::readFile(pj::parser_arrow::test::fixturePath("mosaico_image_unnamed_stamp.arrows"));
+  auto unnamed_object = fixture.handle.parseObjectFunctional(999, PJ::sdk::makePayloadView(unnamed));
+  ASSERT_TRUE(unnamed_object) << unnamed_object.error();
+  EXPECT_EQ(unnamed_object->ts, 123000);
+  // A batched object payload cannot be represented by the host's one-object API.
+  EXPECT_FALSE(parseFixture(fixture, "flat.arrows"));
 }
 
 }  // namespace

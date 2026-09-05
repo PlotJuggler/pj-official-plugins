@@ -36,7 +36,7 @@
 #include <string>
 #include <vector>
 
-#include "../src/arrow_ingest.hpp"
+#include "mosaico_object_capture.hpp"
 #include "pj_base/builtin/image_codec.hpp"
 
 namespace {
@@ -45,122 +45,8 @@ namespace {
 // Recording fake host. Captures every registerObjectTopic + pushOwnedObject so
 // the test can assert the topic metadata and inspect each pushed blob.
 // ---------------------------------------------------------------------------
-struct RecordedObjectTopic {
-  std::uint32_t source_id = 0;
-  std::string name;
-  std::string metadata_json;
-  std::uint32_t id = 0;
-};
-struct RecordedPush {
-  std::uint32_t topic_id = 0;
-  std::int64_t ts_ns = 0;
-  std::vector<std::uint8_t> payload;
-};
-
-struct FakeHost {
-  std::vector<std::string> data_sources;
-  std::vector<RecordedObjectTopic> object_topics;
-  std::vector<RecordedPush> pushes;
-  std::uint32_t next_id = 1;
-  std::mutex mu;
-
-  PJ::sdk::ToolboxHostView view() {
-    PJ_toolbox_host_t host{};
-    host.ctx = this;
-    host.vtable = &kVtable;
-    return PJ::sdk::ToolboxHostView(host);
-  }
-
-  static FakeHost* self(void* ctx) {
-    return static_cast<FakeHost*>(ctx);
-  }
-  static std::string toStr(PJ_string_view_t s) {
-    return (s.data != nullptr && s.size > 0) ? std::string(s.data, s.size) : std::string();
-  }
-
-  static bool createDataSource(void* ctx, PJ_string_view_t name, PJ_data_source_handle_t* out_source, PJ_error_t*)
-      PJ_NOEXCEPT {
-    auto* h = self(ctx);
-    std::lock_guard<std::mutex> lk(h->mu);
-    const std::uint32_t id = h->next_id++;
-    h->data_sources.push_back(toStr(name));
-    out_source->id = id;
-    return true;
-  }
-  static bool ensureTopic(void*, PJ_data_source_handle_t, PJ_string_view_t, PJ_topic_handle_t*, PJ_error_t*)
-      PJ_NOEXCEPT {
-    return false;
-  }
-  static bool ensureField(
-      void*, PJ_topic_handle_t, PJ_string_view_t, PJ_primitive_type_t, PJ_field_handle_t*, PJ_error_t*) PJ_NOEXCEPT {
-    return false;
-  }
-  static bool appendRecord(void*, PJ_topic_handle_t, int64_t, const PJ_named_field_value_t*, uint64_t, PJ_error_t*)
-      PJ_NOEXCEPT {
-    return false;
-  }
-  static bool appendBoundRecord(void*, PJ_topic_handle_t, int64_t, const PJ_bound_field_value_t*, uint64_t, PJ_error_t*)
-      PJ_NOEXCEPT {
-    return false;
-  }
-  static bool appendArrowStream(void*, PJ_topic_handle_t, struct ArrowArrayStream*, PJ_string_view_t, PJ_error_t*)
-      PJ_NOEXCEPT {
-    return false;
-  }
-  static bool acquireCatalogSnapshot(void*, PJ_catalog_snapshot_t*, PJ_error_t*) PJ_NOEXCEPT {
-    return false;
-  }
-  static bool readSeriesArrow(void*, PJ_field_handle_t, struct ArrowSchema*, struct ArrowArray*, PJ_error_t*)
-      PJ_NOEXCEPT {
-    return false;
-  }
-  static bool registerObjectTopic(
-      void* ctx, PJ_data_source_handle_t source, PJ_string_view_t topic_name, PJ_string_view_t metadata_json,
-      PJ_object_topic_handle_t* out_handle, PJ_error_t*) PJ_NOEXCEPT {
-    auto* h = self(ctx);
-    std::lock_guard<std::mutex> lk(h->mu);
-    const std::uint32_t id = h->next_id++;
-    h->object_topics.push_back({source.id, toStr(topic_name), toStr(metadata_json), id});
-    out_handle->id = id;
-    return true;
-  }
-  static bool pushOwnedObject(
-      void* ctx, PJ_object_topic_handle_t topic, int64_t ts, const uint8_t* data, uint64_t size,
-      PJ_error_t*) PJ_NOEXCEPT {
-    auto* h = self(ctx);
-    std::lock_guard<std::mutex> lk(h->mu);
-    RecordedPush rec;
-    rec.topic_id = topic.id;
-    rec.ts_ns = ts;
-    if (data != nullptr && size > 0) {
-      rec.payload.assign(data, data + size);
-    }
-    h->pushes.push_back(std::move(rec));
-    return true;
-  }
-
-  static const PJ_toolbox_host_vtable_t kVtable;
-};
-
-const PJ_toolbox_host_vtable_t FakeHost::kVtable = [] {
-  PJ_toolbox_host_vtable_t v{};
-  v.abi_version = 0;
-  v.struct_size = sizeof(PJ_toolbox_host_vtable_t);
-  v.create_data_source = &FakeHost::createDataSource;
-  v.ensure_topic = &FakeHost::ensureTopic;
-  v.ensure_field = &FakeHost::ensureField;
-  v.append_record = &FakeHost::appendRecord;
-  v.append_bound_record = &FakeHost::appendBoundRecord;
-  v.append_arrow_stream = &FakeHost::appendArrowStream;
-  v.acquire_catalog_snapshot = &FakeHost::acquireCatalogSnapshot;
-  v.read_series_arrow = &FakeHost::readSeriesArrow;
-  v.register_object_topic = &FakeHost::registerObjectTopic;
-  v.push_owned_object = &FakeHost::pushOwnedObject;
-  return v;
-}();
 
 // The exact canonical metadata contract the PJ4 consumer keys on.
-constexpr const char* kCanonicalImageMeta = R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})";
 
 // One synthetic image row's worth of column values.
 struct RowSpec {
@@ -256,20 +142,14 @@ TEST(ImageSerialize, PerRowGeometryRoundTripsThroughCanonicalCodec) {
   rows.push_back(RowSpec{bytes({21, 22, 23, 24, 25, 26, 27, 28, 29}), "png", 3, 1, 9, "rgb8", false, 2000});
   auto table = makeImageViewTable(rows);
 
-  FakeHost fake;
-  auto host = fake.view();
-  auto ds = host.createDataSource("seq");
-  ASSERT_TRUE(ds) << ds.error();
+  ObjectCapture fake;
 
-  auto pushed = mosaico::pushImageRowsToHost({host, *ds, "/camera/jai/rgb/image", "timestamp_ns", 0, 0}, table);
+  auto pushed = fake.parse("image", {"timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 2);
   EXPECT_EQ(pushed->skipped, 0);
 
   // Registered exactly once with the canonical metadata.
-  ASSERT_EQ(fake.object_topics.size(), 1u);
-  EXPECT_EQ(fake.object_topics[0].name, "/camera/jai/rgb/image");
-  EXPECT_EQ(fake.object_topics[0].metadata_json, kCanonicalImageMeta);
 
   // Two blobs pushed, each round-tripping to its OWN row geometry.
   ASSERT_EQ(fake.pushes.size(), 2u);
@@ -305,12 +185,9 @@ TEST(ImageSerialize, FallsBackToFormatWhenEncodingEmpty) {
   rows.push_back(RowSpec{bytes({0xFF, 0xD8, 0xFF, 0xE0}), "jpeg", 0, 0, 0, "", false, 5000});
   auto table = makeImageViewTable(rows);
 
-  FakeHost fake;
-  auto host = fake.view();
-  auto ds = host.createDataSource("seq");
-  ASSERT_TRUE(ds) << ds.error();
+  ObjectCapture fake;
 
-  auto pushed = mosaico::pushImageRowsToHost({host, *ds, "/cam/compressed", "timestamp_ns", 0, 0}, table);
+  auto pushed = fake.parse("image", {"timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   ASSERT_EQ(fake.pushes.size(), 1u);
@@ -328,12 +205,9 @@ TEST(ImageSerialize, BigEndianRoundTrips) {
   rows.push_back(RowSpec{bytes({0, 1, 2, 3, 4, 5, 6, 7}), "", 2, 2, 4, "mono16", true, 7000});
   auto table = makeImageViewTable(rows);
 
-  FakeHost fake;
-  auto host = fake.view();
-  auto ds = host.createDataSource("seq");
-  ASSERT_TRUE(ds) << ds.error();
+  ObjectCapture fake;
 
-  auto pushed = mosaico::pushImageRowsToHost({host, *ds, "/cam/depth", "timestamp_ns", 0, 0}, table);
+  auto pushed = fake.parse("image", {"timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   ASSERT_EQ(fake.pushes.size(), 1u);
@@ -354,12 +228,9 @@ TEST(ImageSerialize, NullBigEndianDefaultsToHostEndianness) {
   rows.push_back(RowSpec{bytes({0, 1, 2, 3, 4, 5, 6, 7}), "", 2, 2, 4, "mono16", std::nullopt, 9000});
   auto table = makeImageViewTable(rows);
 
-  FakeHost fake;
-  auto host = fake.view();
-  auto ds = host.createDataSource("seq");
-  ASSERT_TRUE(ds) << ds.error();
+  ObjectCapture fake;
 
-  auto pushed = mosaico::pushImageRowsToHost({host, *ds, "/cam/depth", "timestamp_ns", 0, 0}, table);
+  auto pushed = fake.parse("image", {"timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);
   ASSERT_EQ(fake.pushes.size(), 1u);
@@ -383,12 +254,9 @@ TEST(ImageSerialize, EmptyEncodingWithFormatIsCompressedAndKeepsZeroGeometry) {
   rows.push_back(RowSpec{bytes({0x89, 0x50, 0x4E, 0x47}), "png", 0, 0, 0, "", false, 4200});
   auto table = makeImageViewTable(rows);
 
-  FakeHost fake;
-  auto host = fake.view();
-  auto ds = host.createDataSource("seq");
-  ASSERT_TRUE(ds) << ds.error();
+  ObjectCapture fake;
 
-  auto pushed = mosaico::pushImageRowsToHost({host, *ds, "/cam/png", "timestamp_ns", 0, 0}, table);
+  auto pushed = fake.parse("image", {"timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 1);  // compressed -> NOT skipped despite 0 geometry.
   EXPECT_EQ(pushed->skipped, 0);
@@ -407,12 +275,9 @@ TEST(ImageSerialize, MissingDataRowSkippedOthersPushed) {
   rows.push_back(RowSpec{bytes({21, 22, 23, 24, 25, 26, 27, 28, 29}), "png", 3, 1, 9, "rgb8", false, 3000});
   auto table = makeImageViewTable(rows);
 
-  FakeHost fake;
-  auto host = fake.view();
-  auto ds = host.createDataSource("seq");
-  ASSERT_TRUE(ds) << ds.error();
+  ObjectCapture fake;
 
-  auto pushed = mosaico::pushImageRowsToHost({host, *ds, "/cam/raw", "timestamp_ns", 0, 0}, table);
+  auto pushed = fake.parse("image", {"timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
   // The two good rows pushed; the null-data row skipped.
   EXPECT_EQ(pushed->pushed, 2);

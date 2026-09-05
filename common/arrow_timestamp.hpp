@@ -3,11 +3,26 @@
 #pragma once
 
 #include <arrow/array.h>
+#include <arrow/array/array_dict.h>
 #include <arrow/array/array_primitive.h>
+#include <arrow/extension_type.h>
 
 #include <pj_plugins/sdk/timestamp_policy.hpp>
 
 namespace mosaico {
+
+/// Dictionary and extension wrappers do not change timestamp semantics.
+[[nodiscard]] inline std::shared_ptr<arrow::DataType> timestampStorageType(std::shared_ptr<arrow::DataType> type) {
+  while (true) {
+    if (type->id() == arrow::Type::DICTIONARY) {
+      type = std::static_pointer_cast<arrow::DictionaryType>(type)->value_type();
+    } else if (type->id() == arrow::Type::EXTENSION) {
+      type = std::static_pointer_cast<arrow::ExtensionType>(type)->storage_type();
+    } else {
+      return type;
+    }
+  }
+}
 
 /// Map Arrow storage to the shared axis-selection policy.
 [[nodiscard]] inline PJ::sdk::TimestampStorage timestampStorage(arrow::Type::type type) {
@@ -60,6 +75,12 @@ namespace mosaico {
   }
   std::optional<std::int64_t> ticks;
   switch (array.type_id()) {
+    case arrow::Type::DICTIONARY: {
+      const auto& dictionary = static_cast<const arrow::DictionaryArray&>(array);
+      return timestampNanoseconds(*dictionary.dictionary(), dictionary.GetValueIndex(row), unit);
+    }
+    case arrow::Type::EXTENSION:
+      return timestampNanoseconds(*static_cast<const arrow::ExtensionArray&>(array).storage(), row, unit);
     case arrow::Type::FLOAT:
       return PJ::secondsToNanoseconds(static_cast<const arrow::FloatArray&>(array).Value(row));
     case arrow::Type::DOUBLE:

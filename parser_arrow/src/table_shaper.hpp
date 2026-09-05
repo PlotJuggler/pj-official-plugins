@@ -70,14 +70,16 @@ struct ShapedStream {
   std::vector<ShapeWarning> warnings;
   /// True when the timestamp column is generated rather than read from the input.
   bool synthetic_axis = false;
+  /// False when data lists are empty or excluded by array policy; drain without host writes.
+  bool has_data = true;
   /// Drain-time facts shared with the lazy stream state.
   std::shared_ptr<RuntimeStats> runtime;
 };
 
 /// Lazily rewrite a decoded IPC stream while moving untouched columns and copying only casts, normalizations, and
 /// flattened leaves that require ancestor validity or offset handling. Variable primitive-list widths are measured
-/// from one buffered first batch before the output schema is exposed. Unsupported columns are returned for caller
-/// diagnostics, and schemas without a host-ingestible non-axis data column are rejected.
+/// before the output schema is exposed, buffering leading empty batches when lists are the only data. Unsupported
+/// columns are returned for caller diagnostics. No-data schemas are rejected except for empty or excluded lists.
 [[nodiscard]] PJ::Expected<ShapedStream> shapeStream(PJ::sdk::ArrowStreamHolder input, const ShapeOptions& options);
 
 /// Format at most `max_listed` dropped name/format pairs separated by comma-space, appending an ellipsis when more
