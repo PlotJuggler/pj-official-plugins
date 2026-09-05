@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <any>
 #include <array>
 #include <cmath>
@@ -10,12 +11,15 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <numbers>
+#include <rosx_introspection/contrib/nanocdr.hpp>
 #include <rosx_introspection/ros_parser.hpp>
 #include <rosx_introspection/serializer.hpp>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/builtin/grid_map_codec.hpp"
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/testing/parser_write_recorder.hpp"
 #include "pj_plugins/host/dialog_handle.hpp"
@@ -3040,6 +3044,53 @@ TEST(RosParserTest, GenericHeaderedMessageEmitsCombinedHeaderStamp) {
   EXPECT_EQ(frame->string_value, "odom");
 }
 
+// ROS 1 has no split sec/nanosec leaves: its `time` builtin already flattens to a
+// single /header/stamp (seconds), so the combined series must not be added on top.
+// The datastore rejects a record carrying one field name twice, which silently
+// dropped EVERY headered ROS 1 message.
+TEST(RosParserTest, Ros1HeaderedMessageEmitsHeaderStampOnce) {
+  static const char* kRos1HeaderedDef =
+      "Header header\nfloat64 value\n"
+      "================\nMSG: std_msgs/Header\nuint32 seq\ntime stamp\nstring frame_id\n";
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"serialization":"ros1"})"));
+  ASSERT_TRUE(f.bindSchema("diag_msgs/Headered", kRos1HeaderedDef, "ros1msg"));
+
+  // ROS 1 wire format: raw little-endian, no CDR encapsulation header.
+  std::vector<uint8_t> payload;
+  auto put = [&payload](const auto& value) {
+    const auto* bytes = reinterpret_cast<const uint8_t*>(&value);
+    payload.insert(payload.end(), bytes, bytes + sizeof(value));
+  };
+  put(uint32_t{7});          // header.seq
+  put(uint32_t{2});          // header.stamp.sec
+  put(uint32_t{500000000});  // header.stamp.nsec  -> 2.5 s
+  const std::string frame_id = "odom";
+  put(static_cast<uint32_t>(frame_id.size()));
+  payload.insert(payload.end(), frame_id.begin(), frame_id.end());
+  put(double{1.0});  // value
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+
+  const auto stamp_columns = std::count_if(
+      row.fields.begin(), row.fields.end(), [](const auto& field) { return field.name == "/header/stamp"; });
+  EXPECT_EQ(stamp_columns, 1);
+
+  const auto* stamp = findField(row, "/header/stamp");
+  ASSERT_NE(stamp, nullptr);
+  EXPECT_DOUBLE_EQ(stamp->numeric, 2.5);
+  const auto* seq = findField(row, "/header/seq");
+  ASSERT_NE(seq, nullptr);
+  EXPECT_DOUBLE_EQ(seq->numeric, 7.0);
+  const auto* frame = findField(row, "/header/frame_id");
+  ASSERT_NE(frame, nullptr);
+  EXPECT_EQ(frame->string_value, "odom");
+}
+
 // LaserScan flows through parseScalarsGeneric, so it gets the combined stamp too
 // — the specific gap that motivated this: /scan/header/stamp as a timeseries.
 TEST(RosParserTest, LaserScanScalarRouteEmitsCombinedHeaderStamp) {
@@ -3833,6 +3884,613 @@ TEST(RosParserTest, MarkerArrayScalarRouteStaysEmpty) {
 
   ASSERT_TRUE(f.parse(payload, 1000));
   EXPECT_TRUE(f.recorder.rows().empty());
+}
+
+// ---------------------------------------------------------------------------
+// GridMap object route — grid_map_msgs/GridMap (transcoded) and
+// foxglove_msgs/Grid (zero-copy view), on both wires.
+// ---------------------------------------------------------------------------
+
+static const char* kGridMapDef =
+    "grid_map_msgs/GridMapInfo info\nstring[] layers\nstring[] basic_layers\n"
+    "std_msgs/Float32MultiArray[] data\nuint16 outer_start_index\nuint16 inner_start_index\n"
+    "================\nMSG: grid_map_msgs/GridMapInfo\n"
+    "std_msgs/Header header\nfloat64 resolution\nfloat64 length_x\nfloat64 length_y\ngeometry_msgs/Pose pose\n"
+    "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+    "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+    "================\nMSG: geometry_msgs/Pose\n"
+    "geometry_msgs/Point position\ngeometry_msgs/Quaternion orientation\n"
+    "================\nMSG: geometry_msgs/Point\nfloat64 x\nfloat64 y\nfloat64 z\n"
+    "================\nMSG: geometry_msgs/Quaternion\nfloat64 x\nfloat64 y\nfloat64 z\nfloat64 w\n"
+    "================\nMSG: std_msgs/Float32MultiArray\nstd_msgs/MultiArrayLayout layout\nfloat32[] data\n"
+    "================\nMSG: std_msgs/MultiArrayLayout\nstd_msgs/MultiArrayDimension[] dim\nuint32 data_offset\n"
+    "================\nMSG: std_msgs/MultiArrayDimension\nstring label\nuint32 size\nuint32 stride\n";
+
+// The ROS 1 definition as recorded by rosbag (uint32 seq + `time stamp` header).
+static const char* kGridMapRos1Def =
+    "grid_map_msgs/GridMapInfo info\nstring[] layers\nstring[] basic_layers\n"
+    "std_msgs/Float32MultiArray[] data\nuint16 outer_start_index\nuint16 inner_start_index\n"
+    "================\nMSG: grid_map_msgs/GridMapInfo\n"
+    "std_msgs/Header header\nfloat64 resolution\nfloat64 length_x\nfloat64 length_y\ngeometry_msgs/Pose pose\n"
+    "================\nMSG: std_msgs/Header\nuint32 seq\ntime stamp\nstring frame_id\n"
+    "================\nMSG: geometry_msgs/Pose\nPoint position\nQuaternion orientation\n"
+    "================\nMSG: geometry_msgs/Point\nfloat64 x\nfloat64 y\nfloat64 z\n"
+    "================\nMSG: geometry_msgs/Quaternion\nfloat64 x\nfloat64 y\nfloat64 z\nfloat64 w\n"
+    "================\nMSG: std_msgs/Float32MultiArray\nMultiArrayLayout layout\nfloat32[] data\n"
+    "================\nMSG: std_msgs/MultiArrayLayout\nMultiArrayDimension[] dim\nuint32 data_offset\n"
+    "================\nMSG: std_msgs/MultiArrayDimension\nstring label\nuint32 size\nuint32 stride\n";
+
+/// A grid_map layer: {label, size, stride} dims, data_offset and the floats.
+struct GridMapLayerWire {
+  std::vector<std::tuple<std::string, uint32_t, uint32_t>> dims;
+  uint32_t data_offset = 0;
+  std::vector<float> data;
+};
+
+/// grid_map's own layout for a size_x x size_y matrix (column-major Eigen).
+GridMapLayerWire gridMapLayer(std::vector<float> data, uint32_t size_x, uint32_t size_y) {
+  return {
+      .dims = {{"column_index", size_y, size_x * size_y}, {"row_index", size_x, size_x}},
+      .data_offset = 0,
+      .data = std::move(data)};
+}
+
+struct GridMapWire {
+  int32_t sec = 7;
+  uint32_t nsec = 500000000;
+  std::string frame_id = "odom";
+  double resolution = 0.5;
+  double length_x = 1.5;
+  double length_y = 1.0;
+  double center_x = 10.0;
+  double center_y = 20.0;
+  std::vector<std::string> layers = {"elevation"};
+  std::vector<std::string> basic_layers;
+  std::vector<GridMapLayerWire> data = {gridMapLayer({0, 1, 2, 3, 4, 5}, 3, 2)};
+  uint16_t outer_start_index = 0;
+  uint16_t inner_start_index = 0;
+};
+
+/// The raw CDR encoder (what NanoCDR_Serializer wraps) so the same body can be
+/// emitted with either encapsulation endianness.
+std::vector<uint8_t> serializeGridMap(
+    const GridMapWire& w, nanocdr::Endianness endianness = nanocdr::Endianness::CDR_LITTLE_ENDIAN) {
+  nanocdr::CdrHeader header;
+  header.endianness = endianness;
+  std::vector<uint8_t> storage;
+  nanocdr::Encoder enc(header, storage);
+  const auto strings = [&](const std::vector<std::string>& v) {
+    enc.encode(static_cast<uint32_t>(v.size()));
+    for (const auto& str : v) {
+      enc.encode(str);
+    }
+  };
+  enc.encode(w.sec);
+  enc.encode(w.nsec);
+  enc.encode(w.frame_id);
+  for (double v : {w.resolution, w.length_x, w.length_y, w.center_x, w.center_y, 0.0, 0.0, 0.0, 0.0, 1.0}) {
+    enc.encode(v);
+  }
+  strings(w.layers);
+  strings(w.basic_layers);
+  enc.encode(static_cast<uint32_t>(w.data.size()));
+  for (const auto& layer : w.data) {
+    enc.encode(static_cast<uint32_t>(layer.dims.size()));
+    for (const auto& [label, size, stride] : layer.dims) {
+      enc.encode(label);
+      enc.encode(size);
+      enc.encode(stride);
+    }
+    enc.encode(layer.data_offset);
+    enc.encode(static_cast<uint32_t>(layer.data.size()));
+    for (float v : layer.data) {
+      enc.encode(v);
+    }
+  }
+  enc.encode(w.outer_start_index);
+  enc.encode(w.inner_start_index);
+  return storage;
+}
+
+void appendRos1F64(std::vector<uint8_t>& out, double v) {
+  uint64_t bits = 0;
+  std::memcpy(&bits, &v, sizeof(bits));
+  for (unsigned i = 0; i < 8; ++i) {
+    out.push_back(static_cast<uint8_t>((bits >> (8 * i)) & 0xFFu));
+  }
+}
+
+float gridCell(const PJ::sdk::GridMap& g, uint32_t c, uint32_t r, size_t field = 0) {
+  float v = 0.0f;
+  std::memcpy(&v, g.data.data() + r * g.row_stride + c * g.cell_stride + g.fields[field].offset, sizeof(float));
+  return v;
+}
+
+std::vector<float> gridRowMajor(const PJ::sdk::GridMap& g, size_t field = 0) {
+  std::vector<float> out;
+  for (uint32_t r = 0; r < g.row_count; ++r) {
+    for (uint32_t c = 0; c < g.column_count; ++c) {
+      out.push_back(gridCell(g, c, r, field));
+    }
+  }
+  return out;
+}
+
+PJ::Expected<PJ::sdk::ObjectRecord> parseObject(RosParserFixture& f, const std::vector<uint8_t>& payload) {
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  EXPECT_NE(base, nullptr);
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  return base->parseObject(1234, view);
+}
+
+TEST(RosParserTest, GridMapClassifiedWithoutLoadConfig) {
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kGridMapDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchemaRaw("grid_map_msgs/msg/GridMap", def));
+  EXPECT_EQ(f.handle.classifySchema("grid_map_msgs/msg/GridMap", def_span), PJ::sdk::BuiltinObjectType::kGridMap);
+
+  RosParserFixture g;
+  g.setUp();
+  ASSERT_TRUE(g.bindSchemaRaw("grid_map_msgs/GridMap", def));
+  EXPECT_EQ(g.handle.classifySchema("grid_map_msgs/GridMap", def_span), PJ::sdk::BuiltinObjectType::kGridMap);
+}
+
+TEST(RosParserTest, GridMapRos2ProducesTranscodedObject) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("grid_map_msgs/msg/GridMap", kGridMapDef));
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+
+  GridMapWire w;
+  w.outer_start_index = 1;  // ring buffer rotated along x
+  auto rec = parseObject(f, serializeGridMap(w));
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  ASSERT_TRUE(rec->ts.has_value());
+  EXPECT_EQ(*rec->ts, 7'500'000'000LL);
+
+  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  ASSERT_NE(g, nullptr);
+  EXPECT_EQ(g->frame_id, "odom");
+  EXPECT_EQ(g->timestamp_ns, 7'500'000'000LL);
+  EXPECT_EQ(g->column_count, 3u);
+  EXPECT_EQ(g->row_count, 2u);
+  EXPECT_DOUBLE_EQ(g->cell_size.x, 0.5);
+  EXPECT_DOUBLE_EQ(g->cell_size.y, 0.5);
+  EXPECT_DOUBLE_EQ(g->origin.position.x, 10.0 - 0.75);
+  EXPECT_DOUBLE_EQ(g->origin.position.y, 20.0 - 0.5);
+  EXPECT_DOUBLE_EQ(g->origin.position.z, 0.0);
+  ASSERT_EQ(g->fields.size(), 1u);
+  EXPECT_EQ(g->fields[0].name, "elevation");
+  // Same golden as the transcoder unit test: axis flip + outer ring start of 1.
+  EXPECT_EQ(gridRowMajor(*g), (std::vector<float>{3, 5, 4, 0, 2, 1}));
+  EXPECT_NE(g->anchor, nullptr) << "transcoded bytes are owned, not a payload view";
+  EXPECT_TRUE(PJ::validateGridMap(*g).has_value());
+}
+
+TEST(RosParserTest, GridMapBigEndianCdrDecodesLikeLittleEndian) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("grid_map_msgs/msg/GridMap", kGridMapDef));
+
+  GridMapWire w;
+  w.outer_start_index = 1;
+  const auto little = serializeGridMap(w);
+  const auto big = serializeGridMap(w, nanocdr::Endianness::CDR_BIG_ENDIAN);
+  ASSERT_EQ(big[1] & 1u, 0u) << "encapsulation header must say big-endian";
+  ASSERT_NE(big, little);
+
+  auto rec = parseObject(f, big);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  ASSERT_NE(g, nullptr);
+  EXPECT_EQ(g->frame_id, "odom");
+  EXPECT_DOUBLE_EQ(g->cell_size.x, 0.5);
+  EXPECT_EQ(gridRowMajor(*g), (std::vector<float>{3, 5, 4, 0, 2, 1}));
+}
+
+TEST(RosParserTest, GridMapDataOffsetAndTrailingElementsSkipped) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("grid_map_msgs/msg/GridMap", kGridMapDef));
+
+  GridMapWire w;
+  w.data[0].data_offset = 2;
+  w.data[0].data = {-1, -1, 0, 1, 2, 3, 4, 5, 99, 99};  // 2 leading + 2 trailing
+  auto rec = parseObject(f, serializeGridMap(w));
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  ASSERT_NE(g, nullptr);
+  EXPECT_EQ(gridRowMajor(*g), (std::vector<float>{5, 4, 3, 2, 1, 0}));
+  EXPECT_EQ(g->data.size(), 24u) << "only the 6-cell window is transcoded";
+
+  // The window must lie inside the declared array even when the array is
+  // long enough in total.
+  w.data[0].data_offset = 5;
+  EXPECT_FALSE(parseObject(f, serializeGridMap(w)).has_value());
+}
+
+TEST(RosParserTest, GridMapOversizedDeclaredFloatCountRejected) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("grid_map_msgs/msg/GridMap", kGridMapDef));
+
+  // The float count is the last uint32 before the 6 floats and the two uint16
+  // start indices; patch it to 100 million trailing elements.
+  auto payload = serializeGridMap(GridMapWire{});
+  const size_t count_offset = payload.size() - 2 * sizeof(uint16_t) - 6 * sizeof(float) - sizeof(uint32_t);
+  ASSERT_EQ(payload[count_offset], 6u) << "fixture layout drifted";
+  const uint32_t huge = 100'000'000u;
+  std::memcpy(payload.data() + count_offset, &huge, sizeof(huge));
+  auto rec = parseObject(f, payload);
+  ASSERT_FALSE(rec.has_value());
+  EXPECT_NE(rec.error().find("layer data"), std::string::npos) << rec.error();
+
+  // A layout with the wrong dim count is refused before any layer is copied.
+  GridMapWire dims;
+  dims.data[0].dims = {{"column_index", 2, 6}, {"row_index", 3, 3}, {"channel", 1, 1}};
+  EXPECT_FALSE(parseObject(f, serializeGridMap(dims)).has_value());
+}
+
+TEST(RosParserTest, GridMapRejectsMalformedMessages) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("grid_map_msgs/GridMap", kGridMapDef));
+
+  GridMapWire count;
+  count.layers = {"a", "b"};  // two names, one array
+  EXPECT_FALSE(parseObject(f, serializeGridMap(count)).has_value());
+
+  GridMapWire labels;
+  labels.data[0].dims = {{"height", 2, 6}, {"width", 3, 3}};
+  EXPECT_FALSE(parseObject(f, serializeGridMap(labels)).has_value());
+
+  GridMapWire start;
+  start.outer_start_index = 3;
+  EXPECT_FALSE(parseObject(f, serializeGridMap(start)).has_value());
+
+  // Truncated wire: the float array's declared length runs past the payload.
+  auto truncated = serializeGridMap(GridMapWire{});
+  truncated.resize(truncated.size() - 12);
+  EXPECT_FALSE(parseObject(f, truncated).has_value());
+
+  // A corrupt layer count must not trigger a huge allocation.
+  GridMapWire ok;
+  auto huge = serializeGridMap(ok);
+  // layers[] count sits right after the pose: patch it to 0xFFFFFFFF.
+  const size_t layers_count_offset = 4 /*encapsulation*/ + 4 + 4 + 8 /*"odom"+len+pad*/ + 3 * 8 + 7 * 8;
+  ASSERT_EQ(huge[layers_count_offset], 1u) << "fixture layout drifted";
+  for (size_t i = 0; i < 4; ++i) {
+    huge[layers_count_offset + i] = 0xFF;
+  }
+  EXPECT_FALSE(parseObject(f, huge).has_value());
+}
+
+TEST(RosParserTest, GridMapScalarRouteIsSlim) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("grid_map_msgs/GridMap", kGridMapDef));
+
+  GridMapWire w;
+  w.layers = {"elevation", "variance"};
+  w.data = {gridMapLayer({0, 1, 2, 3, 4, 5}, 3, 2), gridMapLayer({0, 1, 2, 3, 4, 5}, 3, 2)};
+  ASSERT_TRUE(f.parse(serializeGridMap(w), 1000));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+  EXPECT_EQ(row.timestamp, 1000);
+
+  auto numeric = [&](const char* name) {
+    const auto* field = findField(row, name);
+    EXPECT_NE(field, nullptr) << name;
+    return field ? field->numeric : std::numeric_limits<double>::quiet_NaN();
+  };
+  EXPECT_DOUBLE_EQ(numeric("/header/stamp"), 7.5);
+  ASSERT_NE(findField(row, "/header/frame_id"), nullptr);
+  EXPECT_EQ(findField(row, "/header/frame_id")->string_value, "odom");
+  EXPECT_DOUBLE_EQ(numeric("/info/resolution"), 0.5);
+  EXPECT_DOUBLE_EQ(numeric("/info/length_x"), 1.5);
+  EXPECT_DOUBLE_EQ(numeric("/info/length_y"), 1.0);
+  EXPECT_DOUBLE_EQ(numeric("/info/pose/position/x"), 10.0);
+  EXPECT_DOUBLE_EQ(numeric("/info/pose/position/y"), 20.0);
+  EXPECT_DOUBLE_EQ(numeric("/info/pose/orientation/w"), 1.0);
+  EXPECT_DOUBLE_EQ(numeric("/num_layers"), 2.0);
+  EXPECT_DOUBLE_EQ(numeric("/size_x"), 3.0);
+  EXPECT_DOUBLE_EQ(numeric("/size_y"), 2.0);
+  // No per-cell columns leaked through.
+  EXPECT_EQ(findField(row, "/data[0]/data[0]"), nullptr);
+  EXPECT_EQ(findField(row, "/layers[0]"), nullptr);
+}
+
+// The mandatory real-data check, against the checked-in payload extracted from a
+// real recording: an elevation-map message (ROS 1, 200x200 cells at 0.02 m,
+// layers elevation + dynamic_time, basic layer elevation, ~4% NaN).
+TEST(RosParserTest, GridMapRealRos1MessageFromBag) {
+  std::ifstream in(std::string(PJ_ROS_PARSER_TEST_DATA_DIR) + "/gridmap_elevation_ros1.bin", std::ios::binary);
+  ASSERT_TRUE(in.is_open());
+  const std::vector<uint8_t> payload((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  ASSERT_EQ(payload.size(), 320284u);
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"serialization":"ros1","use_embedded_timestamp":true})"));
+  const std::string def(kGridMapRos1Def);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("grid_map_msgs/GridMap", kGridMapRos1Def, "ros1msg"));
+  EXPECT_EQ(f.handle.classifySchema("grid_map_msgs/GridMap", def_span), PJ::sdk::BuiltinObjectType::kGridMap);
+
+  auto rec = parseObject(f, payload);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  ASSERT_TRUE(rec->ts.has_value());
+  EXPECT_EQ(*rec->ts, 1'785'513'660'299'573'183LL);
+
+  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  ASSERT_NE(g, nullptr);
+  EXPECT_EQ(g->frame_id, "point_cloud_odom");
+  EXPECT_EQ(g->column_count, 200u);
+  EXPECT_EQ(g->row_count, 200u);
+  EXPECT_DOUBLE_EQ(g->cell_size.x, 0.02);
+  EXPECT_DOUBLE_EQ(g->cell_size.y, 0.02);
+  EXPECT_EQ(g->cell_stride, 8u);
+  EXPECT_EQ(g->row_stride, 1600u);
+  ASSERT_EQ(g->fields.size(), 2u);
+  EXPECT_EQ(g->fields[0].name, "elevation");
+  EXPECT_EQ(g->fields[1].name, "dynamic_time");
+  EXPECT_TRUE(PJ::validateGridMap(*g).has_value());
+  // Center (4.0939, -8.0380), 4 m square -> corner 2 m towards -x/-y.
+  EXPECT_NEAR(g->origin.position.x, 4.093914656842626 - 2.0, 1e-9);
+  EXPECT_NEAR(g->origin.position.y, -8.037972498161322 - 2.0, 1e-9);
+  EXPECT_DOUBLE_EQ(g->origin.position.z, 0.0);
+
+  // Axis flip pinned against the raw array: storage[0] is grid_map index
+  // (0,0), the +x/+y corner, i.e. canonical cell (199, 199); storage[39999]
+  // is canonical (0, 0).
+  EXPECT_FLOAT_EQ(gridCell(*g, 199, 199), -0.1466568112373352f);
+  EXPECT_FLOAT_EQ(gridCell(*g, 0, 0), 0.119657963514328f);
+
+  size_t nan_cells = 0;
+  size_t nan_dynamic = 0;
+  for (uint32_t r = 0; r < g->row_count; ++r) {
+    for (uint32_t c = 0; c < g->column_count; ++c) {
+      nan_cells += std::isnan(gridCell(*g, c, r, 0)) ? 1 : 0;
+      nan_dynamic += std::isnan(gridCell(*g, c, r, 1)) ? 1 : 0;
+    }
+  }
+  EXPECT_EQ(nan_cells, 1567u);  // 3.9 % of 40000
+  // elevation is the basic layer, so every NaN elevation blanks dynamic_time too.
+  EXPECT_GE(nan_dynamic, nan_cells);
+}
+
+// ---------------------------------------------------------------------------
+// foxglove_msgs/Grid — a bare Time head (uint32 sec on ROS 1, int32 on ROS 2),
+// then frame_id, pose, column_count, Vector2 cell_size, strides, fields[] and
+// the zero-copied data[].
+// ---------------------------------------------------------------------------
+
+static const char* kFoxgloveGridDef =
+    "builtin_interfaces/Time timestamp\nstring frame_id\ngeometry_msgs/Pose pose\nuint32 column_count\n"
+    "foxglove_msgs/Vector2 cell_size\nuint32 row_stride\nuint32 cell_stride\n"
+    "foxglove_msgs/PackedElementField[] fields\nuint8[] data\n"
+    "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+    "================\nMSG: geometry_msgs/Pose\n"
+    "geometry_msgs/Point position\ngeometry_msgs/Quaternion orientation\n"
+    "================\nMSG: geometry_msgs/Point\nfloat64 x\nfloat64 y\nfloat64 z\n"
+    "================\nMSG: geometry_msgs/Quaternion\nfloat64 x\nfloat64 y\nfloat64 z\nfloat64 w\n"
+    "================\nMSG: foxglove_msgs/Vector2\nfloat64 x\nfloat64 y\n"
+    "================\nMSG: foxglove_msgs/PackedElementField\nstring name\nuint32 offset\nuint8 type\n";
+
+static const char* kFoxgloveGridRos1Def =
+    "time timestamp\nstring frame_id\ngeometry_msgs/Pose pose\nuint32 column_count\n"
+    "foxglove_msgs/Vector2 cell_size\nuint32 row_stride\nuint32 cell_stride\n"
+    "foxglove_msgs/PackedElementField[] fields\nuint8[] data\n"
+    "================\nMSG: geometry_msgs/Pose\nPoint position\nQuaternion orientation\n"
+    "================\nMSG: geometry_msgs/Point\nfloat64 x\nfloat64 y\nfloat64 z\n"
+    "================\nMSG: geometry_msgs/Quaternion\nfloat64 x\nfloat64 y\nfloat64 z\nfloat64 w\n"
+    "================\nMSG: foxglove_msgs/Vector2\nfloat64 x\nfloat64 y\n"
+    "================\nMSG: foxglove_msgs/PackedElementField\nstring name\nuint32 offset\nuint8 type\n";
+
+struct FoxgloveGridWire {
+  int32_t sec = 7;
+  uint32_t nsec = 500000000;
+  std::string frame_id = "map";
+  double origin_x = 1.0;
+  double origin_y = 2.0;
+  uint32_t column_count = 3;
+  double cell_x = 0.1;
+  double cell_y = 0.2;
+  uint32_t row_stride = 16;  // 3 cells x 4 bytes, padded
+  uint32_t cell_stride = 4;
+  std::vector<std::tuple<std::string, uint32_t, uint8_t>> fields = {{"elevation", 0, 7}};
+  std::vector<uint8_t> data = std::vector<uint8_t>(48, 0xAB);  // 3 rows
+};
+
+std::vector<uint8_t> serializeFoxgloveGrid(const FoxgloveGridWire& w) {
+  return serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeI32(enc, w.sec);
+    enc.serializeUInt32(w.nsec);
+    enc.serializeString(w.frame_id);
+    serializeVector3(enc, w.origin_x, w.origin_y, 0.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+    enc.serializeUInt32(w.column_count);
+    serializeF64(enc, w.cell_x);
+    serializeF64(enc, w.cell_y);
+    enc.serializeUInt32(w.row_stride);
+    enc.serializeUInt32(w.cell_stride);
+    enc.serializeUInt32(static_cast<uint32_t>(w.fields.size()));
+    for (const auto& [name, offset, type] : w.fields) {
+      enc.serializeString(name);
+      enc.serializeUInt32(offset);
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(type));
+    }
+    enc.serializeUInt32(static_cast<uint32_t>(w.data.size()));
+    for (uint8_t b : w.data) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+  });
+}
+
+std::vector<uint8_t> serializeFoxgloveGridRos1(const FoxgloveGridWire& w, uint32_t sec) {
+  std::vector<uint8_t> out;
+  appendRos1U32(out, sec);
+  appendRos1U32(out, w.nsec);
+  appendRos1String(out, w.frame_id);
+  for (double v : {w.origin_x, w.origin_y, 0.0, 0.0, 0.0, 0.0, 1.0}) {
+    appendRos1F64(out, v);
+  }
+  appendRos1U32(out, w.column_count);
+  appendRos1F64(out, w.cell_x);
+  appendRos1F64(out, w.cell_y);
+  appendRos1U32(out, w.row_stride);
+  appendRos1U32(out, w.cell_stride);
+  appendRos1U32(out, static_cast<uint32_t>(w.fields.size()));
+  for (const auto& [name, offset, type] : w.fields) {
+    appendRos1String(out, name);
+    appendRos1U32(out, offset);
+    out.push_back(type);
+  }
+  appendRos1U32(out, static_cast<uint32_t>(w.data.size()));
+  out.insert(out.end(), w.data.begin(), w.data.end());
+  return out;
+}
+
+TEST(RosParserTest, FoxgloveGridRos2ProducesZeroCopyObject) {
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kFoxgloveGridDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchemaRaw("foxglove_msgs/msg/Grid", def));
+  EXPECT_EQ(f.handle.classifySchema("foxglove_msgs/msg/Grid", def_span), PJ::sdk::BuiltinObjectType::kGridMap);
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+
+  FoxgloveGridWire w;
+  w.sec = -3;  // int32 on the ROS 2 wire: must stay negative
+  const auto payload = serializeFoxgloveGrid(w);
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), anchor};
+  auto rec = base->parseObject(1234, view);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  ASSERT_TRUE(rec->ts.has_value());
+  EXPECT_EQ(*rec->ts, 1234) << "a negative stamp is never adopted; the host clock stays";
+
+  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  ASSERT_NE(g, nullptr);
+  EXPECT_EQ(g->timestamp_ns, 1234) << "the object carries the envelope stamp, like every other handler";
+  EXPECT_EQ(g->frame_id, "map");
+  EXPECT_DOUBLE_EQ(g->origin.position.x, 1.0);
+  EXPECT_DOUBLE_EQ(g->origin.position.y, 2.0);
+  EXPECT_EQ(g->column_count, 3u);
+  EXPECT_EQ(g->row_count, 3u);  // derived: 48 / 16
+  EXPECT_DOUBLE_EQ(g->cell_size.x, 0.1);
+  EXPECT_DOUBLE_EQ(g->cell_size.y, 0.2);
+  EXPECT_EQ(g->row_stride, 16u);
+  EXPECT_EQ(g->cell_stride, 4u);
+  ASSERT_EQ(g->fields.size(), 1u);
+  EXPECT_EQ(g->fields[0].name, "elevation");
+  EXPECT_EQ(g->fields[0].datatype, PJ::sdk::PointField::Datatype::kFloat32);
+  EXPECT_EQ(g->fields[0].count, 1u);
+  // Zero-copy: the span aliases the payload and the anchor is forwarded.
+  ASSERT_EQ(g->data.size(), 48u);
+  EXPECT_GE(g->data.data(), payload.data());
+  EXPECT_LE(g->data.data() + g->data.size(), payload.data() + payload.size());
+  EXPECT_EQ(g->anchor, anchor);
+  EXPECT_TRUE(PJ::validateGridMap(*g).has_value());
+}
+
+TEST(RosParserTest, FoxgloveGridRos1BareTimeIsUnsigned) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"serialization":"ros1","use_embedded_timestamp":true})"));
+  ASSERT_TRUE(f.bindSchema("foxglove_msgs/Grid", kFoxgloveGridRos1Def, "ros1msg"));
+
+  FoxgloveGridWire w;
+  w.fields = {{"elevation", 0, 7}, {"red", 4, 1}, {"count", 5, 6}};  // FLOAT32, UINT8, INT32
+  w.cell_stride = 9;
+  w.row_stride = 27;
+  w.data.assign(54, 0x01);
+  // ros::Time.sec is uint32: a value past INT32_MAX must not go negative.
+  const uint32_t sec = 3'000'000'000u;
+  auto rec = parseObject(f, serializeFoxgloveGridRos1(w, sec));
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  const int64_t expected_ns = static_cast<int64_t>(sec) * 1'000'000'000LL + 500'000'000LL;
+  ASSERT_TRUE(rec->ts.has_value());
+  EXPECT_EQ(*rec->ts, expected_ns);
+
+  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  ASSERT_NE(g, nullptr);
+  EXPECT_EQ(g->timestamp_ns, expected_ns);
+  EXPECT_EQ(g->row_count, 2u);
+  ASSERT_EQ(g->fields.size(), 3u);
+  EXPECT_EQ(g->fields[1].datatype, PJ::sdk::PointField::Datatype::kUint8);
+  EXPECT_EQ(g->fields[2].datatype, PJ::sdk::PointField::Datatype::kInt32);
+  EXPECT_EQ(g->fields[2].offset, 5u);
+}
+
+TEST(RosParserTest, FoxgloveGridRejectsBadLayouts) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("foxglove_msgs/Grid", kFoxgloveGridDef));
+
+  FoxgloveGridWire remainder;
+  remainder.data.assign(50, 0);  // not a whole number of 16-byte rows
+  EXPECT_FALSE(parseObject(f, serializeFoxgloveGrid(remainder)).has_value());
+
+  FoxgloveGridWire zero_stride;
+  zero_stride.row_stride = 0;
+  EXPECT_FALSE(parseObject(f, serializeFoxgloveGrid(zero_stride)).has_value());
+
+  FoxgloveGridWire unknown;
+  unknown.fields = {{"elevation", 0, 9}};
+  EXPECT_FALSE(parseObject(f, serializeFoxgloveGrid(unknown)).has_value());
+
+  FoxgloveGridWire overflow;
+  overflow.column_count = 5;  // 5 * 4 > row_stride 16
+  EXPECT_FALSE(parseObject(f, serializeFoxgloveGrid(overflow)).has_value());
+
+  auto truncated = serializeFoxgloveGrid(FoxgloveGridWire{});
+  truncated.resize(truncated.size() - 10);
+  EXPECT_FALSE(parseObject(f, truncated).has_value());
+}
+
+TEST(RosParserTest, FoxgloveGridTruncatedByAFewBytesRejected) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("foxglove_msgs/Grid", kFoxgloveGridDef));
+
+  // With one field the cursor sits 1 byte past a 4-byte boundary after the
+  // uint8 `type`, so 3 padding bytes precede data[]'s length word; a bound
+  // taken before that padding is consumed tolerates up to 3 missing bytes.
+  const auto payload = serializeFoxgloveGrid(FoxgloveGridWire{});
+  ASSERT_EQ(payload.size(), 188u) << "fixture layout drifted";
+  for (size_t cut : {size_t{1}, size_t{2}, size_t{3}}) {
+    auto truncated = payload;
+    truncated.resize(truncated.size() - cut);
+    EXPECT_FALSE(parseObject(f, truncated).has_value()) << "truncated by " << cut;
+  }
+}
+
+TEST(RosParserTest, FoxgloveGridScalarRoute) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("foxglove_msgs/Grid", kFoxgloveGridDef));
+  ASSERT_TRUE(f.parse(serializeFoxgloveGrid(FoxgloveGridWire{}), 1000));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+
+  auto numeric = [&](const char* name) {
+    const auto* field = findField(row, name);
+    EXPECT_NE(field, nullptr) << name;
+    return field ? field->numeric : std::numeric_limits<double>::quiet_NaN();
+  };
+  EXPECT_DOUBLE_EQ(numeric("/timestamp"), 7.5);
+  ASSERT_NE(findField(row, "/frame_id"), nullptr);
+  EXPECT_EQ(findField(row, "/frame_id")->string_value, "map");
+  EXPECT_DOUBLE_EQ(numeric("/column_count"), 3.0);
+  EXPECT_DOUBLE_EQ(numeric("/row_count"), 3.0);
+  EXPECT_DOUBLE_EQ(numeric("/row_stride"), 16.0);
+  EXPECT_DOUBLE_EQ(numeric("/cell_stride"), 4.0);
+  EXPECT_DOUBLE_EQ(numeric("/data_size"), 48.0);
+  EXPECT_EQ(row.fields.size(), 7u);
 }
 
 }  // namespace

@@ -9,7 +9,10 @@ on:
 
 concurrency:
   group: ci-windows-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs, but QUEUE main runs: a cold main run takes hours
+  # and its trailing JFrog upload + cache save are what keep every other run
+  # warm — a merge-triggered cancellation loses both, repeatedly on busy days.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   build:
@@ -24,13 +27,11 @@ jobs:
     # GitHub's 6-hour default). A cold run still rebuilds the whole Conan
     # closure from source before the cache save persists it; keep margin for
     # that bootstrap case.
-    timeout-minutes: 150
+    timeout-minutes: 240
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install Conan
         uses: conan-io/setup-conan@v1.3.0
@@ -64,7 +65,7 @@ jobs:
           # conanfile.py (the whole third-party closure) and SDK_VERSION (the
           # plotjuggler_sdk package ensure_core.sh builds into the same cache).
           # Bump $cacheVersion to force a cold rebuild.
-          $cacheVersion = "v1"
+          $cacheVersion = "v2"
           $combined = (Get-FileHash conanfile.py -Algorithm SHA256).Hash + (Get-FileHash SDK_VERSION -Algorithm SHA256).Hash
           $stream = [System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes($combined))
           $fileHash = (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
@@ -96,16 +97,46 @@ jobs:
         with:
           version: "v0.16.0"
 
+      - name: Configure PlotJuggler JFrog Conan remote
+        # Second-tier binary source behind the keyed Actions cache above: on a
+        # cache miss (dependency change, SDK bump, or eviction -- this repo sits
+        # at the 10 GB Actions cache limit) `conan install --build=missing` pulls
+        # MSVC binaries the release workflow already published instead of
+        # recompiling Arrow/boost/gRPC. The repository allows anonymous read, so
+        # PR runs (no secrets) use it read-only; push runs also log in so the
+        # upload step can publish. configure_jfrog_conan.sh degrades to
+        # ConanCenter when anything fails. The login token is purged again before
+        # ~/.conan2 is saved (see Trim).
+        if: github.repository == 'PlotJuggler/pj-official-plugins'
+        env:
+          JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
+          JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
+        shell: bash
+        run: scripts/configure_jfrog_conan.sh
+
       - name: Acquire plotjuggler_sdk
-        # First run after an SDK bump builds the pinned submodule from source
-        # into ~/.conan2; every later run finds it in the restored cache and
-        # exits immediately. No JFrog remote anymore: ensure_core.sh skips the
-        # remote lookup when the remote is not configured and goes straight to
-        # the cache-or-submodule path.
+        # Warm run: the SDK is in the restored cache and ensure_core.sh exits
+        # immediately. Cache miss: prefer a prebuilt binary from JFrog (push
+        # runs), otherwise build the pinned SDK tag from source into ~/.conan2.
         shell: bash
         run: |
           conan profile detect --force
           scripts/ensure_core.sh
+
+      - name: Start periodic Conan upload
+        # Push runs only: publish finished packages to JFrog every 10 minutes
+        # while the build runs, so a cancellation or timeout mid-build loses at
+        # most the package in flight instead of hours of compilation. The
+        # script is idempotent (skips revisions already on the remote) and
+        # no-ops when the remote is absent. The loop dies with the job.
+        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        shell: bash
+        run: |
+          # Detach fully and redirect: a background process holding the step's
+          # stdout would keep this step (and the job) waiting on it.
+          nohup bash -c 'while true; do sleep 600; scripts/upload_conan_artifacts.sh || true; done' \
+            > periodic_upload.log 2>&1 < /dev/null &
+          echo "uploader started (pid $!)"
 
       - name: Build & Test
         shell: bash
@@ -175,6 +206,16 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Upload built Conan binaries to JFrog
+        # Publish every dependency compiled above (Windows x64 MSVC binaries) so
+        # later push runs and the windows-2022 release leg fetch them prebuilt.
+        # Never on pull requests (no secrets there, and we never publish binaries
+        # built from unreviewed code), only on this repo. No-op when the remote is
+        # not configured or was added anonymously.
+        if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
+        shell: bash
+        run: scripts/upload_conan_artifacts.sh
+
       - name: Dump linker response files on failure
         # A LNK1181 with a truncated .obj path points at rsp corruption; the
         # log never contains the rsp content, so surface it (plus the object
@@ -192,10 +233,17 @@ jobs:
 
       - name: Trim Conan cache before saving
         # Drop build/source/temp trees so only recipes and package binaries
-        # persist.
+        # persist. Also forget the JFrog remote and its login token: the whole
+        # ~/.conan2 tree is what gets cached, PR runs (fork PRs included) can
+        # restore caches saved by main, and a credential must never travel that
+        # way. The remote itself is removed too so the cached remotes.json stays
+        # neutral; every run re-adds it through configure_jfrog_conan.sh.
         if: always() && steps.conan-cache.outputs.cache-hit != 'true'
         shell: bash
-        run: conan cache clean "*" --build --source --temp || true
+        run: |
+          conan remote logout plotjuggler-conan 2>/dev/null || true
+          conan remote remove plotjuggler-conan 2>/dev/null || true
+          conan cache clean "*" --build --source --temp || true
 
       - name: Save Conan cache
         # always(): a failed plugin compile must still persist the expensive

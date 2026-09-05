@@ -32,6 +32,7 @@ objects (instead of flattened scalars), so PlotJuggler can render them:
 | `PJ.PosesInFrame` / `foxglove.PosesInFrame` | `kPosesInFrame` (3D poses) |
 | `foxglove.PointCloud` | `kPointCloud` (3D point cloud) |
 | `foxglove.LaserScan` | `kPointCloud` (3D point cloud, eagerly projected) |
+| `foxglove.Grid` | `kGridMap` (2D grid of per-cell channels: elevation maps, layered costmaps) |
 
 These bypass the descriptor pool: their wire layout is known, so they are
 decoded directly and **zero-copy** (the packed-point / bitstream span aliases
@@ -52,6 +53,16 @@ owned via the cloud's `BufferAnchor`. The same non-identity-`pose` drop policy
 as `foxglove.PointCloud` applies. Its scalar route never projects: a header-only
 walk emits `timestamp`, `frame_id`, `start_angle`, `end_angle` and
 `num_ranges`.
+
+`foxglove.Grid` shares the canonical packed cell layout (row-major records,
+x fastest), so `data` is a zero-copy view; the wire's `PackedElementField`
+types are mapped explicitly (Foxglove numbers UINT8=1/INT8=2, swapped relative
+to ROS/SDK) and the row count, which Foxglove omits, is derived as
+`data.size() / row_stride` — a remainder, a zero `row_stride` with data, or
+`column_count * cell_stride > row_stride` rejects the message. Field numbers
+for both `Grid` and the nested `PackedElementField` are resolved by name from
+the embedded descriptor. The scalar route emits `timestamp`, `frame_id`,
+`column_count`, `row_count`, `row_stride`, `cell_stride` and `data_size`.
 
 `PJ.PosesInFrame` and `foxglove.PosesInFrame` are wire-identical (the SDK proto
 mirrors Foxglove field-for-field), so both names bind to the same SDK codec

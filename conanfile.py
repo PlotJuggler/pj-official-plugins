@@ -4,7 +4,7 @@ from conan import ConanFile
 
 # Single source of truth for the plotjuggler_sdk version: the SDK_VERSION file at the
 # repo root, read live so the pin lives in exactly one place. Edit it with
-# scripts/bump_core_version.py (which also moves the extern/plotjuggler_core submodule).
+# scripts/bump_core_version.py.
 _SDK_VERSION = (
     open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "SDK_VERSION"))
     .read()
@@ -26,6 +26,7 @@ class PjOfficialPluginsConan(ConanFile):
 
     requires = (
         "nlohmann_json/3.12.0",
+        "nanoarrow/0.7.0",
         "arrow/23.0.1",
         "fmt/12.1.0",
         "paho-mqtt-cpp/1.5.3",
@@ -78,6 +79,8 @@ class PjOfficialPluginsConan(ConanFile):
 
     default_options = {
         "*:shared": False,
+        "nanoarrow/*:with_ipc": True,
+        "nanoarrow/*:with_zstd": True,
         "arrow/*:parquet": True,
         "arrow/*:with_snappy": True,
         # mimalloc uses initial-exec TLS, making every .so linking it require static

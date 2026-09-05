@@ -11,6 +11,7 @@
 | [![parser_protobuf](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_protobuf.json)](parser_protobuf/) | MessageParser | Protobuf message parsing |
 | [![parser_ros](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_ros.json)](parser_ros/) | MessageParser | ROS 1/2 message parsing |
 | [![parser_data_tamer](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_data_tamer.json)](parser_data_tamer/) | MessageParser | DataTamer schema/snapshot parsing |
+| [![parser_arrow](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_arrow.json)](parser_arrow/) | MessageParser | Arrow IPC stream parsing |
 | [![data_load_csv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_csv.json)](data_load_csv/) | DataSource | CSV file loading |
 | [![data_load_mcap](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mcap.json)](data_load_mcap/) | DataSource | MCAP file loading |
 | [![data_load_parquet](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_parquet.json)](data_load_parquet/) | DataSource | Parquet file loading |
@@ -207,21 +208,21 @@ cloudsmith remote — no CPM source clone, no SSH deploy key, no
 subdirectory-mode fallback for standalone builds. Every per-plugin
 `conanfile.py` also lists it so single-plugin builds resolve it the same way.
 The version is pinned in one place — the top-level `SDK_VERSION` file — and CI
-builds core from the pinned `extern/plotjuggler_core` submodule when cloudsmith
-is unavailable (`scripts/ensure_core.sh`).
+clones and builds the matching `v<SDK_VERSION>` tag when no prebuilt package
+is available (`scripts/ensure_core.sh`).
 
 > **Repository & package rename:** the SDK source now lives in the
 > [**plotjuggler_sdk**](https://github.com/PlotJuggler/plotjuggler_sdk)
 > repository (formerly `plotjuggler_core`), and the Conan package and CMake
 > targets are renamed to match — recipes require `plotjuggler_sdk/<version>` and
-> link `plotjuggler_sdk::plugin_sdk` / `::plugin_host`. The only thing that keeps
-> the old name is the submodule mount point, `extern/plotjuggler_core`.
+> link `plotjuggler_sdk::plugin_sdk` / `::plugin_host`.
 
 | Package | Version | Used by |
 |---------|---------|---------|
 | **plotjuggler_sdk** (cloudsmith) | pinned via `SDK_VERSION` (exact) | **SDK + host loaders** (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
 | nlohmann_json | 3.12.0 | Most plugins |
 | arrow + parquet | 23.0.1 | data_load_parquet, data_load_rerun, toolbox_mosaico |
+| nanoarrow | 0.7.0 | parser_arrow (with_ipc + with_zstd) |
 | paho-mqtt-cpp | 1.5.3 | data_stream_mqtt |
 | cppzmq | 4.11.0 | data_stream_zmq |
 | protobuf | 6.33.5 | parser_protobuf |

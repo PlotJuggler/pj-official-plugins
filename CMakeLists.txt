@@ -25,6 +25,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/pj_video_demux)
   add_subdirectory(common/streaming_utils)
   add_subdirectory(common/laser_scan)
+  add_subdirectory(common/grid_map)
   add_subdirectory(common/pointcloud_color)
   add_subdirectory(common/toolbox_preview)
   # This block always adds every plugin (no PJ_BUILD_PLUGIN filtering), so its
@@ -54,6 +55,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(parser_protobuf)
   add_subdirectory(parser_ros)
   add_subdirectory(parser_data_tamer)
+  add_subdirectory(parser_arrow)
   add_subdirectory(data_stream_zmq)
   add_subdirectory(data_stream_mqtt)
   add_subdirectory(data_stream_udp)
@@ -162,7 +164,7 @@ option(BUILD_TESTING "Build the testing tree" ON)
 # CMAKE_PREFIX_PATH — colliding with the Conan protobuf (6.x + abseil) that a
 # non-Arrow plugin (e.g. parser_protobuf) legitimately requires. The other
 # helpers are safe to always configure (base64 header-only; pj_video_demux is
-# find_package(ffmpeg QUIET); laser_scan is SDK-only).
+# find_package(ffmpeg QUIET); laser_scan and grid_map are SDK-only).
 # ---------------------------------------------------------------------------
 
 set(PJ_ARROW_HELPER_CONSUMERS data_load_parquet data_load_lerobot)
@@ -177,6 +179,7 @@ add_subdirectory(common/base64)
 add_subdirectory(common/pj_video_demux)
 add_subdirectory(common/streaming_utils)
 add_subdirectory(common/laser_scan)
+add_subdirectory(common/grid_map)
 add_subdirectory(common/pointcloud_color)
 # common/can_dbc has a CPM download side-effect, so configure it only for its
 # consumers (skipped when building an unrelated single plugin).
@@ -209,6 +212,7 @@ else()
   add_subdirectory(parser_protobuf)
   add_subdirectory(parser_ros)
   add_subdirectory(parser_data_tamer)
+  add_subdirectory(parser_arrow)
   add_subdirectory(data_load_csv)
   add_subdirectory(data_load_mcap)
   add_subdirectory(data_load_parquet)

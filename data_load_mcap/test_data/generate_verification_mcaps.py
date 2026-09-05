@@ -2,7 +2,8 @@
 """
 Generate MCAP test files for the data_load_mcap verification plan.
 
-See: docs/claude_reports/plugins_analysis/data_load_mcap_verification.md
+Each generated file targets one verification case; the case each exercises is
+described inline with its generator function below.
 
 Files generated:
   test_publish_vs_log_time.mcap  -- Test 1: publish_time != log_time (offset 500ms)
@@ -457,4 +458,4 @@ if __name__ == "__main__":
     gen_bad_schema()
     gen_large_file()
 
-    print("\nDone. See data_load_mcap_verification.md for test procedures.")
+    print("\nDone. Each file's generator docstring above describes what it verifies.")

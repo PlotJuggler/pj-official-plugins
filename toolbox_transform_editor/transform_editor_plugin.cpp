@@ -1732,9 +1732,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     };
 
     std::vector<PJ::ChartSeries> series;
-    // TODO(theme): These data-series colors are the approved color-as-data
-    // exception from visual_guidelines.md 4.6.2; use renderer-selected colors
-    // when the chart protocol exposes them.
+    // TODO(theme): These data-series colors are a deliberate color-as-data
+    // exception to the theme palette — a curve's identity is carried by its
+    // color here. Use renderer-selected colors once the chart protocol exposes
+    // them.
     // Ghost (original): faded blue + dashed, distinct from the solid result curves
     // — same styling as the native TransformEditorPanel. Color hex is #AARRGGBB.
     series.push_back({source, to_points(ghost_raw), "#5A4488ff", /*dashed=*/true});

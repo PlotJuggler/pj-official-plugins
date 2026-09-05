@@ -16,18 +16,18 @@
 // PLUS button. Pure / Qt-free so it is unit-testable; the plugin
 // (mosaico_dialog.cpp) drives the real combos + Lua editor from it.
 //
-// Contract (lua.txt):
+// Contract (docs/query-assist-contract.md):
 //   REPLACE — when the caret is ON a key/op/value token, that ONE dropdown is
 //     active and a pick REPLACES the token in place, live, with NO PLUS. Its
-//     title syncs to the token under the caret.                 (lua.txt 4,5,6,7,8)
+//     title syncs to the token under the caret.                 (contract clauses 4,5,6,7,8)
 //   ADD — when the caret is NOT on a token (end / new clause), the dropdowns STAGE
 //     a clause: pick a Key (the Key dropdown then shows it and disables, focus
 //     moves to Op), Op auto-shows "==" (overridable), pick a Value; the clause is
 //     inserted into the editor ONLY when PLUS is pressed, joined with " and " if
 //     the editor already holds a filter. PLUS is the ONLY way a NEW clause enters
-//     the text.                                                 (lua.txt 1,2,3,9)
+//     the text.                                                 (contract clauses 1,2,3,9)
 
-// The operator auto-selected while staging a new clause (lua.txt 2).
+// The operator auto-selected while staging a new clause (contract clauses 2).
 inline constexpr const char* kDefaultOp = "==";
 
 // State of one assist dropdown.
@@ -62,7 +62,7 @@ struct AssistView {
   AssistView v;
 
   // REPLACE mode: the caret sits on a token, so its dropdown edits it in place and
-  // syncs its title to the token text (lua.txt 4-8). The other two stay inert; no PLUS.
+  // syncs its title to the token text (contract clauses 4-8). The other two stay inert; no PLUS.
   // A Value is replaceable only STRICTLY inside it: the caret at a value's trailing
   // edge ends the clause, which is a chain (ADD) position, not a value edit — this is
   // exactly the spot the caret lands on after PLUS.
@@ -80,10 +80,10 @@ struct AssistView {
     return v;
   }
 
-  // ADD mode: stage a new clause (lua.txt 1-3). Key is active until one is picked,
+  // ADD mode: stage a new clause (contract clauses 1-3). Key is active until one is picked,
   // then it shows the key and disables while focus moves to Op; Op + Value activate
-  // once a Key is staged, with Op pre-showing "==" (overridable, lua.txt 2). PLUS
-  // lights up once a Value is staged (lua.txt 3).
+  // once a Key is staged, with Op pre-showing "==" (overridable, contract clauses 2). PLUS
+  // lights up once a Value is staged (contract clauses 3).
   const bool have_key = !staged_key.empty();
   const bool have_value = !staged_value.empty();
   const std::string op_title = staged_op.empty() ? std::string(kDefaultOp) : std::string(staged_op);
@@ -96,7 +96,7 @@ struct AssistView {
   return v;
 }
 
-// PLUS commit (lua.txt 3, 9): build `key op "value"` (value quoted as a Lua literal)
+// PLUS commit (contract clauses 3, 9): build `key op "value"` (value quoted as a Lua literal)
 // and append it to `existing`. If `existing` holds any non-whitespace content, join
 // with the default ADD operator " and "; otherwise the clause stands alone.
 [[nodiscard]] inline std::string commitClause(
