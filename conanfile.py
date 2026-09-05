@@ -79,10 +79,10 @@ class PjOfficialPluginsConan(ConanFile):
 
     default_options = {
         "*:shared": False,
-        "nanoarrow/*:with_ipc": True,
-        "nanoarrow/*:with_zstd": True,
         "arrow/*:parquet": True,
         "arrow/*:with_snappy": True,
+        "arrow/*:with_lz4": True,
+        "arrow/*:with_zstd": True,
         # mimalloc uses initial-exec TLS, making every .so linking it require static
         # TLS and fail to dlopen once the process's static-TLS surplus is exhausted.
         "arrow/*:with_mimalloc": False,
@@ -123,6 +123,3 @@ class PjOfficialPluginsConan(ConanFile):
             self.options["arrow"].with_protobuf = True
             self.options["arrow"].with_re2 = True
             self.options["arrow"].with_thrift = True
-            # The Mosaico server streams RecordBatches compressed with LZ4/ZSTD.
-            self.options["arrow"].with_lz4 = True
-            self.options["arrow"].with_zstd = True

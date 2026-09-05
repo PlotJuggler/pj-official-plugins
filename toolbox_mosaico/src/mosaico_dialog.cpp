@@ -1875,9 +1875,9 @@ void MosaicoDialog::onAllFetchesComplete(std::string sequence_name) {
   }
 
   // Flush buffered writer chunks into the engine and rebuild the catalog once
-  // for the whole batch. appendArrowStream/pushOwnedObject only buffer data into
-  // the shared DataWriter/ObjectStore — without notifyDataChanged the imported
-  // topics never appear in the dataset tree.
+  // for the whole batch. The scalar arrow-ipc pushes and pushOwnedObject only
+  // buffer data into the shared DataWriter/ObjectStore — without
+  // notifyDataChanged the imported topics never appear in the dataset tree.
   //
   // CANCEL SEMANTICS — DELIBERATE DIVERGENCE FROM PJ3 (gap #10):
   // PJ3 DISCARDS all partial data on cancel (toolbox_mosaico.cpp:227-230): it

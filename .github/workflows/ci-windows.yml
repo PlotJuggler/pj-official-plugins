@@ -65,7 +65,9 @@ jobs:
           # conanfile.py (the whole third-party closure) and SDK_VERSION (the
           # plotjuggler_sdk package ensure_core.sh builds into the same cache).
           # Bump $cacheVersion to force a cold rebuild.
-          $cacheVersion = "v2"
+          # v2 includes partial downloads saved by failed builds. Keep those
+          # archives out of both exact-key and prefix restores.
+          $cacheVersion = "v3"
           $combined = (Get-FileHash conanfile.py -Algorithm SHA256).Hash + (Get-FileHash SDK_VERSION -Algorithm SHA256).Hash
           $stream = [System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes($combined))
           $fileHash = (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash.Substring(0, 16).ToLower()

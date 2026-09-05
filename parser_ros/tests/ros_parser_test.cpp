@@ -18,6 +18,7 @@
 #include <tuple>
 #include <vector>
 
+#include "../../common/builtin_object_compat.hpp"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/grid_map_codec.hpp"
 #include "pj_base/sdk/service_traits.hpp"
@@ -1245,7 +1246,7 @@ TEST(RosParserTest, TFMessageProducesFrameTransformsObject) {
   auto rec = base->parseObject(1000, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* ft = std::any_cast<PJ::sdk::FrameTransforms>(&rec->object);
+  const auto* ft = pj_compat::getBuiltinObject<PJ::sdk::FrameTransforms>(rec->object);
   ASSERT_NE(ft, nullptr);
   ASSERT_EQ(ft->transforms.size(), 2u);
 
@@ -1296,7 +1297,7 @@ TEST(RosParserTest, TFMessageZeroStampStaysStaticNonZeroOverridden) {
   auto rec = base->parseObject(7777, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* ft = std::any_cast<PJ::sdk::FrameTransforms>(&rec->object);
+  const auto* ft = pj_compat::getBuiltinObject<PJ::sdk::FrameTransforms>(rec->object);
   ASSERT_NE(ft, nullptr);
   ASSERT_EQ(ft->transforms.size(), 2u);
   EXPECT_EQ(ft->transforms[0].timestamp, 0);     // static: zero stamp preserved
@@ -1332,7 +1333,7 @@ TEST(RosParserTest, TFMessageEmbeddedTimestampKeepsHeaderStamp) {
   auto rec = base->parseObject(1000, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* ft = std::any_cast<PJ::sdk::FrameTransforms>(&rec->object);
+  const auto* ft = pj_compat::getBuiltinObject<PJ::sdk::FrameTransforms>(rec->object);
   ASSERT_NE(ft, nullptr);
   ASSERT_EQ(ft->transforms.size(), 2u);
   EXPECT_EQ(ft->transforms[0].timestamp, 1'000'000'500);  // header stamp preserved
@@ -1383,7 +1384,7 @@ TEST(RosParserTest, TransformStampedProducesFrameTransformsObject) {
   auto rec = base->parseObject(999, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* ft = std::any_cast<PJ::sdk::FrameTransforms>(&rec->object);
+  const auto* ft = pj_compat::getBuiltinObject<PJ::sdk::FrameTransforms>(rec->object);
   ASSERT_NE(ft, nullptr);
   ASSERT_EQ(ft->transforms.size(), 1u);
   EXPECT_EQ(ft->transforms[0].parent_frame_id, "odom");
@@ -1437,7 +1438,7 @@ TEST(RosParserTest, OccupancyGridProducesObject) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* grid = std::any_cast<PJ::sdk::OccupancyGrid>(&rec->object);
+  const auto* grid = pj_compat::getBuiltinObject<PJ::sdk::OccupancyGrid>(rec->object);
   ASSERT_NE(grid, nullptr);
   EXPECT_EQ(grid->frame_id, "map");
   EXPECT_EQ(grid->width, 3u);
@@ -1502,7 +1503,7 @@ TEST(RosParserTest, CameraInfoProducesObject) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* ci = std::any_cast<PJ::sdk::CameraInfo>(&rec->object);
+  const auto* ci = pj_compat::getBuiltinObject<PJ::sdk::CameraInfo>(rec->object);
   ASSERT_NE(ci, nullptr);
   EXPECT_EQ(ci->frame_id, "camera_optical");
   EXPECT_EQ(ci->width, 640u);
@@ -1636,7 +1637,7 @@ TEST(RosParserTest, YoloDetectionArrayProducesImageAnnotations) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* ann = std::any_cast<PJ::sdk::ImageAnnotations>(&rec->object);
+  const auto* ann = pj_compat::getBuiltinObject<PJ::sdk::ImageAnnotations>(rec->object);
   ASSERT_NE(ann, nullptr);
 
   // The handler uses the Header.frame_id as the best-available image-topic hint.
@@ -1698,7 +1699,7 @@ TEST(RosParserTest, YoloDetectionArrayBoxOnlyNoMaskNoKeypoints) {
   auto rec = base->parseObject(99, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* ann = std::any_cast<PJ::sdk::ImageAnnotations>(&rec->object);
+  const auto* ann = pj_compat::getBuiltinObject<PJ::sdk::ImageAnnotations>(rec->object);
   ASSERT_NE(ann, nullptr);
   // Two detections, box only (no mask, no keypoints).
   EXPECT_EQ(ann->points.size(), 2u);
@@ -1786,7 +1787,7 @@ TEST(RosParserTest, ImageObjectCarriesFrameId) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value()) << rec.error();
 
-  const auto* img = std::any_cast<PJ::sdk::Image>(&rec->object);
+  const auto* img = pj_compat::getBuiltinObject<PJ::sdk::Image>(rec->object);
   ASSERT_NE(img, nullptr);
   EXPECT_EQ(img->frame_id, "camera_link");
   EXPECT_EQ(img->width, 2u);
@@ -1870,7 +1871,7 @@ TEST(RosParserTest, ImageBayerRggb8IsAccepted) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value()) << rec.error();
 
-  const auto* img = std::any_cast<PJ::sdk::Image>(&rec->object);
+  const auto* img = pj_compat::getBuiltinObject<PJ::sdk::Image>(rec->object);
   ASSERT_NE(img, nullptr);
   EXPECT_EQ(img->encoding, "bayer_rggb8");  // emitted verbatim for the viewer to demosaic
   EXPECT_EQ(img->width, 2u);
@@ -1916,7 +1917,7 @@ TEST(RosParserTest, CompressedDepthBarePngHasNoConfigHeader) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value()) << rec.error();
 
-  const auto* img = std::any_cast<PJ::sdk::Image>(&rec->object);
+  const auto* img = pj_compat::getBuiltinObject<PJ::sdk::Image>(rec->object);
   ASSERT_NE(img, nullptr);
   EXPECT_EQ(img->encoding, "compressedDepth");
   EXPECT_EQ(img->frame_id, "depth_optical");
@@ -1962,7 +1963,7 @@ TEST(RosParserTest, CompressedDepthWithConfigHeaderIsStripped) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value()) << rec.error();
 
-  const auto* img = std::any_cast<PJ::sdk::Image>(&rec->object);
+  const auto* img = pj_compat::getBuiltinObject<PJ::sdk::Image>(rec->object);
   ASSERT_NE(img, nullptr);
   EXPECT_EQ(img->encoding, "compressedDepth");
   // The 12-byte header was stripped: the blob now starts at the PNG signature.
@@ -2012,7 +2013,7 @@ TEST(RosParserTest, CompressedVideoProducesObject) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* vf = std::any_cast<PJ::sdk::VideoFrame>(&rec->object);
+  const auto* vf = pj_compat::getBuiltinObject<PJ::sdk::VideoFrame>(rec->object);
   ASSERT_NE(vf, nullptr);
   EXPECT_EQ(vf->frame_id, "camera_optical");
   EXPECT_EQ(vf->format, "h264");
@@ -2057,7 +2058,7 @@ TEST(RosParserTest, CompressedVideoEmbeddedTimestamp) {
   ASSERT_TRUE(rec->ts.has_value());
   EXPECT_EQ(*rec->ts, 5'250'000'000LL);
 
-  const auto* vf = std::any_cast<PJ::sdk::VideoFrame>(&rec->object);
+  const auto* vf = pj_compat::getBuiltinObject<PJ::sdk::VideoFrame>(rec->object);
   ASSERT_NE(vf, nullptr);
   EXPECT_EQ(vf->format, "av1");
   EXPECT_EQ(vf->timestamp_ns, 5'250'000'000LL);
@@ -2105,7 +2106,7 @@ TEST(RosParserTest, FoxgloveCompressedPointCloudProducesObject) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* cloud = std::any_cast<PJ::sdk::CompressedPointCloud>(&rec->object);
+  const auto* cloud = pj_compat::getBuiltinObject<PJ::sdk::CompressedPointCloud>(rec->object);
   ASSERT_NE(cloud, nullptr);
   EXPECT_EQ(cloud->frame_id, "lidar_frame");
   EXPECT_EQ(cloud->format, "draco");
@@ -2169,7 +2170,7 @@ TEST(RosParserTest, CompressedPointCloud2ProducesObject) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* cloud = std::any_cast<PJ::sdk::CompressedPointCloud>(&rec->object);
+  const auto* cloud = pj_compat::getBuiltinObject<PJ::sdk::CompressedPointCloud>(rec->object);
   ASSERT_NE(cloud, nullptr);
   EXPECT_EQ(cloud->frame_id, "velodyne");
   EXPECT_EQ(cloud->format, "cloudini");
@@ -2202,7 +2203,7 @@ TEST(RosParserTest, RobotDescriptionTopicProducesObject) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* rd = std::any_cast<PJ::sdk::RobotDescription>(&rec->object);
+  const auto* rd = pj_compat::getBuiltinObject<PJ::sdk::RobotDescription>(rec->object);
   ASSERT_NE(rd, nullptr);
   EXPECT_EQ(rd->topic, "/robot_description");
   EXPECT_EQ(rd->format, "urdf");
@@ -2229,7 +2230,7 @@ TEST(RosParserTest, RobotDescriptionNamespacedTopicProducesObject) {
   auto rec = base->parseObject(1, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* rd = std::any_cast<PJ::sdk::RobotDescription>(&rec->object);
+  const auto* rd = pj_compat::getBuiltinObject<PJ::sdk::RobotDescription>(rec->object);
   ASSERT_NE(rd, nullptr);
   EXPECT_EQ(rd->topic, "/my_robot/robot_description");
   EXPECT_EQ(rd->format, "sdf");  // also exercises the SDF format sniff
@@ -2543,7 +2544,7 @@ const PJ::sdk::SceneEntities* parseSceneEntities(
     return nullptr;
   }
   hold = std::move(rec->object);
-  return std::any_cast<PJ::sdk::SceneEntities>(&hold);
+  return pj_compat::getBuiltinObject<PJ::sdk::SceneEntities>(hold);
 }
 
 TEST(RosParserTest, MarkerArrayProducesSceneEntities) {
@@ -2898,7 +2899,7 @@ TEST(RosParserTest, LaserScanProducesPointCloudObject) {
   ASSERT_TRUE(rec.has_value()) << rec.error();
   EXPECT_FALSE(rec->ts.has_value());  // embedded ts disabled by default
 
-  const auto* pc = std::any_cast<PJ::sdk::PointCloud>(&rec->object);
+  const auto* pc = pj_compat::getBuiltinObject<PJ::sdk::PointCloud>(rec->object);
   ASSERT_NE(pc, nullptr);
   EXPECT_EQ(pc->frame_id, "laser");
   EXPECT_EQ(pc->timestamp_ns, 1234);
@@ -2938,7 +2939,7 @@ TEST(RosParserTest, LaserScanIntensitiesPassThrough) {
   auto rec = base->parseObject(1, view);
   ASSERT_TRUE(rec.has_value()) << rec.error();
 
-  const auto* pc = std::any_cast<PJ::sdk::PointCloud>(&rec->object);
+  const auto* pc = pj_compat::getBuiltinObject<PJ::sdk::PointCloud>(rec->object);
   ASSERT_NE(pc, nullptr);
   EXPECT_EQ(pc->width, 2u);  // Inf ray dropped
   EXPECT_EQ(pc->point_step, 16u);
@@ -2966,7 +2967,7 @@ TEST(RosParserTest, LaserScanEmptyScanProducesEmptyCloud) {
   auto rec = base->parseObject(1, view);
   ASSERT_TRUE(rec.has_value()) << rec.error();
 
-  const auto* pc = std::any_cast<PJ::sdk::PointCloud>(&rec->object);
+  const auto* pc = pj_compat::getBuiltinObject<PJ::sdk::PointCloud>(rec->object);
   ASSERT_NE(pc, nullptr);
   EXPECT_EQ(pc->width, 0u);
   EXPECT_EQ(pc->data.size(), 0u);
@@ -3176,7 +3177,7 @@ TEST(RosParserTest, LaserScanRealCdrMessageFromBag) {
   ASSERT_TRUE(rec->ts.has_value());
   EXPECT_EQ(*rec->ts, 1'779'975'681'103'199'244LL);
 
-  const auto* pc = std::any_cast<PJ::sdk::PointCloud>(&rec->object);
+  const auto* pc = pj_compat::getBuiltinObject<PJ::sdk::PointCloud>(rec->object);
   ASSERT_NE(pc, nullptr);
   EXPECT_EQ(pc->frame_id, "base_link");
   EXPECT_EQ(pc->timestamp_ns, 1'779'975'681'103'199'244LL);
@@ -3249,7 +3250,7 @@ TEST(RosParserTest, PoseArrayProducesPosesInFrameObject) {
   auto rec = base->parseObject(1000, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  const auto* pf = pj_compat::getBuiltinObject<PJ::sdk::PosesInFrame>(rec->object);
   ASSERT_NE(pf, nullptr);
   EXPECT_EQ(pf->frame_id, "map");
   // use_embedded_timestamp_ is off by default: the object keeps the message
@@ -3305,7 +3306,7 @@ TEST(RosParserTest, FoxglovePosesInFrameProducesPosesInFrameObject) {
   auto rec = base->parseObject(1000, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  const auto* pf = pj_compat::getBuiltinObject<PJ::sdk::PosesInFrame>(rec->object);
   ASSERT_NE(pf, nullptr);
   EXPECT_EQ(pf->frame_id, "odom");
   EXPECT_EQ(pf->timestamp_ns, 7'000'000'042LL);  // bare Time decoded, embedded ts on
@@ -3342,7 +3343,7 @@ TEST(RosParserTest, PoseStampedProducesSinglePosePosesInFrameObject) {
   auto rec = base->parseObject(1000, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  const auto* pf = pj_compat::getBuiltinObject<PJ::sdk::PosesInFrame>(rec->object);
   ASSERT_NE(pf, nullptr);
   EXPECT_EQ(pf->frame_id, "base_link");
   ASSERT_EQ(pf->poses.size(), 1u);
@@ -3399,7 +3400,7 @@ TEST(RosParserTest, PathProducesPosesInFrameObject) {
   auto rec = base->parseObject(1000, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  const auto* pf = pj_compat::getBuiltinObject<PJ::sdk::PosesInFrame>(rec->object);
   ASSERT_NE(pf, nullptr);
   EXPECT_EQ(pf->frame_id, "map");                 // PATH frame, not an inner one
   EXPECT_EQ(pf->timestamp_ns, 20'000'000'000LL);  // PATH stamp, not 21/22 s
@@ -3463,7 +3464,7 @@ TEST(RosParserTest, OdometryProducesSinglePosePosesInFrameObject) {
   auto rec = base->parseObject(1000, view);
   ASSERT_TRUE(rec.has_value());
 
-  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  const auto* pf = pj_compat::getBuiltinObject<PJ::sdk::PosesInFrame>(rec->object);
   ASSERT_NE(pf, nullptr);
   EXPECT_EQ(pf->frame_id, "odom");  // header frame, NOT child_frame_id
   EXPECT_EQ(pf->timestamp_ns, 1000);
@@ -4050,7 +4051,7 @@ TEST(RosParserTest, GridMapRos2ProducesTranscodedObject) {
   ASSERT_TRUE(rec->ts.has_value());
   EXPECT_EQ(*rec->ts, 7'500'000'000LL);
 
-  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  const auto* g = pj_compat::getBuiltinObject<PJ::sdk::GridMap>(rec->object);
   ASSERT_NE(g, nullptr);
   EXPECT_EQ(g->frame_id, "odom");
   EXPECT_EQ(g->timestamp_ns, 7'500'000'000LL);
@@ -4083,7 +4084,7 @@ TEST(RosParserTest, GridMapBigEndianCdrDecodesLikeLittleEndian) {
 
   auto rec = parseObject(f, big);
   ASSERT_TRUE(rec.has_value()) << rec.error();
-  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  const auto* g = pj_compat::getBuiltinObject<PJ::sdk::GridMap>(rec->object);
   ASSERT_NE(g, nullptr);
   EXPECT_EQ(g->frame_id, "odom");
   EXPECT_DOUBLE_EQ(g->cell_size.x, 0.5);
@@ -4100,7 +4101,7 @@ TEST(RosParserTest, GridMapDataOffsetAndTrailingElementsSkipped) {
   w.data[0].data = {-1, -1, 0, 1, 2, 3, 4, 5, 99, 99};  // 2 leading + 2 trailing
   auto rec = parseObject(f, serializeGridMap(w));
   ASSERT_TRUE(rec.has_value()) << rec.error();
-  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  const auto* g = pj_compat::getBuiltinObject<PJ::sdk::GridMap>(rec->object);
   ASSERT_NE(g, nullptr);
   EXPECT_EQ(gridRowMajor(*g), (std::vector<float>{5, 4, 3, 2, 1, 0}));
   EXPECT_EQ(g->data.size(), 24u) << "only the 6-cell window is transcoded";
@@ -4224,7 +4225,7 @@ TEST(RosParserTest, GridMapRealRos1MessageFromBag) {
   ASSERT_TRUE(rec->ts.has_value());
   EXPECT_EQ(*rec->ts, 1'785'513'660'299'573'183LL);
 
-  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  const auto* g = pj_compat::getBuiltinObject<PJ::sdk::GridMap>(rec->object);
   ASSERT_NE(g, nullptr);
   EXPECT_EQ(g->frame_id, "point_cloud_odom");
   EXPECT_EQ(g->column_count, 200u);
@@ -4373,7 +4374,7 @@ TEST(RosParserTest, FoxgloveGridRos2ProducesZeroCopyObject) {
   ASSERT_TRUE(rec->ts.has_value());
   EXPECT_EQ(*rec->ts, 1234) << "a negative stamp is never adopted; the host clock stays";
 
-  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  const auto* g = pj_compat::getBuiltinObject<PJ::sdk::GridMap>(rec->object);
   ASSERT_NE(g, nullptr);
   EXPECT_EQ(g->timestamp_ns, 1234) << "the object carries the envelope stamp, like every other handler";
   EXPECT_EQ(g->frame_id, "map");
@@ -4416,7 +4417,7 @@ TEST(RosParserTest, FoxgloveGridRos1BareTimeIsUnsigned) {
   ASSERT_TRUE(rec->ts.has_value());
   EXPECT_EQ(*rec->ts, expected_ns);
 
-  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  const auto* g = pj_compat::getBuiltinObject<PJ::sdk::GridMap>(rec->object);
   ASSERT_NE(g, nullptr);
   EXPECT_EQ(g->timestamp_ns, expected_ns);
   EXPECT_EQ(g->row_count, 2u);

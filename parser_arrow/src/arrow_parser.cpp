@@ -1,3 +1,5 @@
+#include <nanoarrow/nanoarrow.h>
+
 #include <algorithm>
 #include <cstdint>
 #include <nlohmann/json.hpp>
@@ -8,9 +10,12 @@
 #include <utility>
 #include <vector>
 
+#include "../../common/arrow_timestamp.hpp"
+#include "../../common/mosaico_ontology.hpp"
 #include "arrow_error.hpp"
 #include "arrow_manifest.hpp"
 #include "ipc_decoder.hpp"
+#include "mosaico_objects.hpp"
 #include "table_shaper.hpp"
 
 namespace {
@@ -140,6 +145,7 @@ void reportDiagnosticsIfChanged(
 struct ArrowParserConfig {
   std::string timestamp_column;
   bool flatten_structs = true;
+  PJ::TimeUnit timestamp_unit = PJ::TimeUnit::kNanoseconds;
   int64_t synthetic_interval_ns = 0;
   PJ::sdk::ArrayLimit array_limit;
 };
@@ -147,17 +153,20 @@ struct ArrowParserConfig {
 /// Message parser scaffold for self-describing Arrow IPC streams.
 class ArrowParser : public PJ::MessageParserPluginBase {
  public:
-  /// Bind a self-describing IPC stream type and register its non-canonical schema classification.
+  /// Bind a self-describing IPC stream type and register its scalar or canonical object classification.
   PJ::Status bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema_bytes) override {
     if (auto status = MessageParserPluginBase::bindSchema(type_name, schema_bytes); !status) {
       return status;
     }
-    registerSchemaHandler(
-        type_name, PJ::sdk::SchemaHandler{
-                       .object_type = PJ::sdk::BuiltinObjectType::kNone,
-                       .parse_scalars = nullptr,
-                       .parse_object = nullptr,
-                   });
+    ontology_tag_ = std::string(type_name);
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = mosaico::objectType(ontology_tag_);
+    if (handler.object_type != PJ::sdk::BuiltinObjectType::kNone) {
+      handler.parse_object = [this](PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+        return parseMosaicoObject(ts, std::move(payload));
+      };
+    }
+    registerSchemaHandler(type_name, std::move(handler));
     return PJ::okStatus();
   }
 
@@ -170,6 +179,11 @@ class ArrowParser : public PJ::MessageParserPluginBase {
 
     try {
       ArrowParserConfig loaded;
+      const auto unit = PJ::sdk::timestampUnitFromJson(parsed);
+      if (!unit) {
+        return PJ::unexpected(pj::parser_arrow::parserError("invalid timestamp_unit: expected ns, us, ms, or s"));
+      }
+      loaded.timestamp_unit = *unit;
       loaded.timestamp_column = parsed.value("timestamp_column", std::string{});
       loaded.flatten_structs = parsed.value("flatten_structs", true);
       loaded.synthetic_interval_ns = parsed.value("synthetic_interval_ns", int64_t{0});
@@ -188,12 +202,35 @@ class ArrowParser : public PJ::MessageParserPluginBase {
         {"flatten_structs", config_.flatten_structs},
         {"synthetic_interval_ns", config_.synthetic_interval_ns},
     };
+    PJ::sdk::timestampUnitToJson(saved, config_.timestamp_unit);
     PJ::sdk::arrayLimitToJson(saved, config_.array_limit);
     return saved.dump();
   }
 
   /// Decode, shape, diagnose, and bulk-ingest one self-describing Arrow IPC stream.
   PJ::Status parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> payload) override {
+    if (mosaico::isCanonicalObjectOntology(ontology_tag_)) {
+      // Object materialization is functional and driven by the host. Do not
+      // push another object here: the host stores this raw message itself.
+      auto table = pj::parser_arrow::decodeIpcTable(payload);
+      if (!table) {
+        return PJ::unexpected(table.error());
+      }
+      if ((*table)->num_rows() != 1) {
+        return PJ::unexpected(pj::parser_arrow::parserError("canonical objects require one row per IPC message"));
+      }
+      auto object = convertMosaicoObject(*table, timestamp_ns, {});
+      if (!object) {
+        if (last_object_error_ != object.error()) {
+          parserRuntimeHost().reportDiagnostic(
+              PJ::sdk::ParserDiagnosticLevel::Warning, "parser_arrow.invalid_object", object.error());
+          last_object_error_ = object.error();
+        }
+      } else {
+        last_object_error_.clear();
+      }
+      return PJ::okStatus();
+    }
     auto decoded = pj::parser_arrow::decodeIpcStream(payload);
     if (!decoded) {
       return PJ::unexpected(std::move(decoded).error());
@@ -203,6 +240,7 @@ class ArrowParser : public PJ::MessageParserPluginBase {
         std::move(*decoded), pj::parser_arrow::ShapeOptions{
                                  .timestamp_column = config_.timestamp_column,
                                  .flatten_structs = config_.flatten_structs,
+                                 .timestamp_unit = config_.timestamp_unit,
                                  .message_timestamp_ns = timestamp_ns,
                                  .synthetic_interval_ns = config_.synthetic_interval_ns,
                                  .array_limit = config_.array_limit,
@@ -211,12 +249,72 @@ class ArrowParser : public PJ::MessageParserPluginBase {
       return PJ::unexpected(std::move(shaped).error());
     }
 
-    auto status = writeHost().appendArrowStream(std::move(shaped->stream), shaped->timestamp_column);
+    PJ::Status status = PJ::okStatus();
+    if (shaped->has_data) {
+      status = writeHost().appendArrowStream(std::move(shaped->stream), shaped->timestamp_column);
+    } else {
+      // An empty list message is recoverable. Still drain it: later IPC batch
+      // corruption and invalid timestamps must not turn into a successful import.
+      while (true) {
+        PJ::sdk::ArrowArrayHolder batch;
+        const int result = shaped->stream.get()->get_next(shaped->stream.get(), batch.out());
+        if (result != NANOARROW_OK) {
+          status = PJ::unexpected(
+              pj::parser_arrow::nanoarrowError(result, ArrowArrayStreamGetLastError(shaped->stream.get())));
+          break;
+        }
+        if (!batch.valid()) {
+          break;
+        }
+      }
+    }
     reportDiagnosticsIfChanged(parserRuntimeHost(), *shaped, last_diagnostics_);
     return status;
   }
 
  private:
+  PJ::Expected<PJ::sdk::ObjectRecord> parseMosaicoObject(PJ::Timestamp timestamp, PJ::sdk::PayloadView payload) {
+    if (!payload.anchor) {
+      payload = PJ::sdk::makePayloadView(std::vector<uint8_t>(payload.bytes.begin(), payload.bytes.end()));
+    }
+    auto table = pj::parser_arrow::decodeIpcTable(payload.bytes);
+    if (!table) {
+      return PJ::unexpected(table.error());
+    }
+    return convertMosaicoObject(*table, timestamp, payload.anchor);
+  }
+
+  PJ::Expected<PJ::sdk::ObjectRecord> convertMosaicoObject(
+      const std::shared_ptr<arrow::Table>& table, PJ::Timestamp timestamp, PJ::sdk::BufferAnchor anchor) {
+    auto flat = mosaico::flattenStructColumns(table);
+    if (!flat.ok()) {
+      return PJ::unexpected(flat.status().ToString());
+    }
+    std::optional<std::string> axis;
+    if (!config_.timestamp_column.empty()) {
+      axis = config_.timestamp_column;
+      std::replace(axis->begin(), axis->end(), '.', '/');
+      if (!(*flat)->GetColumnByName(*axis)) {
+        return PJ::unexpected(pj::parser_arrow::parserError("timestamp column '" + *axis + "' is absent"));
+      }
+    }
+    if (!axis) {
+      std::vector<PJ::sdk::TimestampCandidate> candidates;
+      for (const auto& field : (*flat)->schema()->fields()) {
+        candidates.push_back({field->name(), mosaico::timestampStorage(field->type()->id())});
+      }
+      auto policy = PJ::sdk::kCanonicalPolicy;
+      policy.unit = config_.timestamp_unit;
+      if (const auto selected = PJ::sdk::detectTimestampColumn(candidates, policy)) {
+        axis = candidates[*selected].name;
+      }
+    }
+    return mosaico::decodeMosaicoObject(
+        {ontology_tag_, axis, timestamp, config_.timestamp_unit, std::move(anchor)}, *flat);
+  }
+
+  std::string ontology_tag_;
+  std::string last_object_error_;
   ArrowParserConfig config_;
   std::vector<ShapeWarning> last_diagnostics_;
 };

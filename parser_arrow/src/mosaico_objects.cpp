@@ -1,13 +1,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
-#include "arrow_ingest.hpp"
+#include "mosaico_objects.hpp"
 
 #include <arrow/api.h>
 #include <arrow/array.h>
 #include <arrow/array/array_binary.h>
 #include <arrow/array/array_nested.h>
 #include <arrow/array/array_primitive.h>
-#include <arrow/compute/api.h>
 #include <arrow/table.h>
 
 #include <algorithm>
@@ -23,20 +22,14 @@
 #include <utility>
 #include <vector>
 
-#include "image_metadata.hpp"
-#include "object_metadata.hpp"
+#include "../../common/arrow_timestamp.hpp"
+#include "../../common/mosaico_ontology.hpp"
 #include "pj_base/builtin/frame_transforms.hpp"  // Vector3 / Quaternion / Pose
-#include "pj_base/builtin/frame_transforms_codec.hpp"
 #include "pj_base/builtin/image.hpp"
-#include "pj_base/builtin/image_codec.hpp"
 #include "pj_base/builtin/occupancy_grid.hpp"
-#include "pj_base/builtin/occupancy_grid_codec.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
-#include "pj_base/builtin/point_cloud_codec.hpp"
 #include "pj_base/builtin/poses_in_frame.hpp"
-#include "pj_base/builtin/poses_in_frame_codec.hpp"
 #include "pj_base/builtin/scene_entities.hpp"
-#include "pj_base/builtin/scene_entities_codec.hpp"
 
 namespace mosaico {
 
@@ -84,46 +77,27 @@ namespace {
   return 0;
 }
 
-// Read an int64-compatible scalar, returning std::nullopt on
-// null/missing/out-of-range/unexpected-type so a caller can distinguish a real
-// 0 from "no value" (e.g. a present-but-null timestamp cell, which must fall
-// back to the synthetic timestamp rather than land the sample at epoch 0).
-[[nodiscard]] std::optional<std::int64_t> arrowI64Opt(
-    const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row) {
-  if (!col || row < 0 || row >= col->length()) {
-    return std::nullopt;
-  }
-  std::int64_t chunk_row = row;
-  for (int i = 0; i < col->num_chunks(); ++i) {
-    const auto& chunk = col->chunk(i);
-    if (chunk_row < chunk->length()) {
-      if (chunk->IsNull(chunk_row)) {
-        return std::nullopt;
+// Missing/null cells use the message timestamp; present values must convert safely.
+[[nodiscard]] PJ::Expected<std::int64_t> objectTimestampNs(
+    const MosaicoObjectOptions& ctx, const std::shared_ptr<arrow::ChunkedArray>& column, std::int64_t row) {
+  if (column) {
+    auto chunk_row = row;
+    for (const auto& chunk : column->chunks()) {
+      if (chunk_row < chunk->length()) {
+        if (chunk->IsNull(chunk_row)) {
+          break;
+        }
+        if (const auto ns = timestampNanoseconds(*chunk, chunk_row, ctx.timestamp_unit)) {
+          return *ns;
+        }
+        return PJ::unexpected(
+            "timestamp column '" + ctx.ts_field.value_or("") + "' cannot represent row " + std::to_string(row) +
+            " as int64 nanoseconds");
       }
-      switch (chunk->type_id()) {
-        case arrow::Type::INT64:
-          return std::static_pointer_cast<arrow::Int64Array>(chunk)->Value(chunk_row);
-        case arrow::Type::UINT64:
-          return static_cast<std::int64_t>(std::static_pointer_cast<arrow::UInt64Array>(chunk)->Value(chunk_row));
-        case arrow::Type::INT32:
-          return std::static_pointer_cast<arrow::Int32Array>(chunk)->Value(chunk_row);
-        case arrow::Type::UINT32:
-          return static_cast<std::int64_t>(std::static_pointer_cast<arrow::UInt32Array>(chunk)->Value(chunk_row));
-        case arrow::Type::TIMESTAMP:
-          return std::static_pointer_cast<arrow::TimestampArray>(chunk)->Value(chunk_row);
-        default:
-          return std::nullopt;
-      }
+      chunk_row -= chunk->length();
     }
-    chunk_row -= chunk->length();
   }
-  return std::nullopt;
-}
-
-// Convenience wrapper: 0 on null/missing/unexpected-type. Use only where 0 is a
-// safe default (geometry); for timestamps prefer arrowI64Opt + a synth fallback.
-[[nodiscard]] std::int64_t arrowI64At(const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row) {
-  return arrowI64Opt(col, row).value_or(0);
+  return ctx.fallback_timestamp;
 }
 
 // Read a UTF-8 string handling STRING / LARGE_STRING / STRING_VIEW.
@@ -303,12 +277,11 @@ namespace {
         return out;
       }
       // Read each child through a type-flexible helper rather than a single
-      // fixed cast: the `fields` column is a list<struct> that bypasses both
-      // flattenStructColumns and normalizeViewColumns, so the server is free to
-      // emit `name` as Utf8/LargeUtf8/Utf8View and offset/datatype/count at any
-      // integer width. A fixed cast would null out and silently yield empty
-      // names / offset 0 (every channel aliasing byte 0) — the exact view-type
-      // failure this plugin already guards against on the scalar columns.
+      // fixed cast: the `fields` column is a list<struct> that bypasses
+      // flattenStructColumns, so the server is free to emit `name` as
+      // Utf8/LargeUtf8/Utf8View and offset/datatype/count at any integer width.
+      // A fixed cast would null out and silently yield empty names / offset 0
+      // (every channel aliasing byte 0).
       const auto names = items->GetFieldByName("name");
       const auto offsets = items->GetFieldByName("offset");
       const auto datatypes = items->GetFieldByName("datatype");
@@ -666,8 +639,7 @@ struct PackAttr {
 
 // Pack parallel per-point attributes into a canonical PointCloud `data` buffer.
 // Fills @p cloud.fields/width/height/point_step/row_step and returns the packed
-// bytes (the caller points cloud.data at them and keeps them alive until
-// serialize copies them). Each attribute contributes one PointField of its
+// bytes (the caller anchors the buffer in the returned cloud). Each attribute contributes one PointField of its
 // native datatype; tail elements beyond an attribute's count are left zero.
 [[nodiscard]] std::vector<std::uint8_t> packPointCloud(
     PJ::sdk::PointCloud& cloud, const std::vector<PackAttr>& attrs, std::int64_t npoints) {
@@ -704,73 +676,6 @@ struct PackAttr {
 }
 
 }  // namespace
-
-std::string detectTimestampColumn(const ArrowSchema* schema) {
-  if (schema == nullptr || schema->children == nullptr) {
-    return {};
-  }
-  // First pass: Arrow TIMESTAMP type. The format string for timestamps
-  // starts with "ts" per Arrow C ABI spec (e.g. "tsn:UTC").
-  for (int64_t i = 0; i < schema->n_children; ++i) {
-    const auto* child = schema->children[i];
-    if (child != nullptr && child->format != nullptr) {
-      std::string_view fmt(child->format);
-      if (fmt.size() >= 2 && fmt[0] == 't' && fmt[1] == 's') {
-        return child->name != nullptr ? std::string(child->name) : std::string();
-      }
-    }
-  }
-  // Second pass: name heuristics. Order matters — most-specific first.
-  static const std::array<std::string_view, 5> kNames = {
-      "timestamp_ns", "recording_timestamp_ns", "timestamp", "time", "ts"};
-  for (std::string_view preferred : kNames) {
-    for (int64_t i = 0; i < schema->n_children; ++i) {
-      const auto* child = schema->children[i];
-      if (child != nullptr && child->name != nullptr && std::string_view(child->name) == preferred) {
-        return std::string(child->name);
-      }
-    }
-  }
-  return {};
-}
-
-arrow::Result<std::shared_ptr<arrow::Table>> normalizeViewColumns(std::shared_ptr<arrow::Table> table) {
-  if (!table) {
-    return arrow::Status::Invalid("normalizeViewColumns: null table");
-  }
-  // Cast Arrow "view" string/binary columns (Utf8View / BinaryView, which the
-  // Mosaico server / Arrow >= 15 emit for e.g. frame_id) to canonical Utf8 /
-  // Binary. pj_datastore's nanoarrow import maps only STRING / LARGE_STRING; a
-  // view-typed column anywhere in the record batch corrupts the import for the
-  // WHOLE batch, so every column (even plain doubles) lands as null. Applied to
-  // the scalar (appendArrowStream) pipeline only — the image path reads view
-  // types directly.
-  std::vector<std::shared_ptr<arrow::ChunkedArray>> cols = table->columns();
-  std::vector<std::shared_ptr<arrow::Field>> fields;
-  fields.reserve(static_cast<std::size_t>(table->num_columns()));
-  bool changed = false;
-  for (int i = 0; i < table->num_columns(); ++i) {
-    const auto& field = table->schema()->field(i);
-    std::shared_ptr<arrow::DataType> target;
-    if (field->type()->id() == arrow::Type::STRING_VIEW) {
-      target = arrow::utf8();
-    } else if (field->type()->id() == arrow::Type::BINARY_VIEW) {
-      target = arrow::binary();
-    }
-    if (target != nullptr) {
-      ARROW_ASSIGN_OR_RAISE(auto casted, arrow::compute::Cast(arrow::Datum(cols[static_cast<std::size_t>(i)]), target));
-      cols[static_cast<std::size_t>(i)] = casted.chunked_array();
-      fields.push_back(field->WithType(target));
-      changed = true;
-    } else {
-      fields.push_back(field);
-    }
-  }
-  if (!changed) {
-    return table;
-  }
-  return arrow::Table::Make(std::make_shared<arrow::Schema>(fields), cols, table->num_rows());
-}
 
 arrow::Result<std::shared_ptr<arrow::Table>> flattenStructColumns(std::shared_ptr<arrow::Table> table) {
   if (!table) {
@@ -823,48 +728,13 @@ arrow::Result<std::shared_ptr<arrow::Table>> flattenStructColumns(std::shared_pt
     current = arrow::Table::Make(renamed_schema, current->columns(), current->num_rows());
   }
 
-  // Coalesce per-column chunks into one. Table::Flatten extracts struct
-  // children as Arrays that reference the parent struct's buffers — when
-  // those reach ExportRecordBatchReader, the C ABI batch carries the data
-  // pointer at offset 0 but the conceptual data lives at the parent's
-  // slice offset. The result downstream: pj_datastore's importArrowStream
-  // reads from the wrong slot and every numeric column lands as zeros.
-  // CombineChunks normalizes each column into a single contiguous chunk
-  // with offset = 0, which exports cleanly.
-  return current->CombineChunks();
+  return current;
 }
 
-PJ::Status pumpStreamToHost(
-    const PJ::sdk::ToolboxHostView& host, PJ::sdk::DataSourceHandle source, std::string_view topic_name,
-    ArrowArrayStream* stream, std::string_view timestamp_col) {
-  if (!host.valid()) {
-    return PJ::unexpected("arrow_ingest: toolbox host not bound");
-  }
-  if (stream == nullptr) {
-    return PJ::unexpected("arrow_ingest: null stream");
-  }
-  // The data source already carries the sequence name (it is created once per
-  // Download in FetchWorker::datasetForFetch and shared by every topic), so the
-  // topic is registered under its BARE name. The resulting catalog tree is
-  // <sequence> ▸ <topic> ▸ fields.
-  auto topic = host.ensureTopic(source, topic_name);
-  if (!topic) {
-    return PJ::unexpected(std::move(topic).error());
-  }
-  return host.appendArrowStream(*topic, stream, timestamp_col);
-}
-
-PJ::Expected<ImagePushOutcome> pushImageRowsToHost(
-    const ObjectIngestContext& ctx, const std::shared_ptr<arrow::Table>& table) {
-  const PJ::sdk::ToolboxHostView& host = ctx.host;
-  const PJ::sdk::DataSourceHandle source = ctx.source;
-  const std::string& topic_name = ctx.topic_name;
-  const std::string& ts_field = ctx.ts_field;
-  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
-  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
-  if (!host.valid()) {
-    return PJ::unexpected(std::string("toolbox host not bound"));
-  }
+PJ::Expected<PJ::sdk::ObjectRecord> decodeImage(
+    const MosaicoObjectOptions& ctx, const std::shared_ptr<arrow::Table>& table) {
+  const std::string& topic_name = ctx.ontology_tag;
+  const auto& ts_field = ctx.ts_field;
   if (!table) {
     return PJ::unexpected(std::string("image topic '") + topic_name + "': null table");
   }
@@ -879,104 +749,74 @@ PJ::Expected<ImagePushOutcome> pushImageRowsToHost(
   const auto encoding_col = table->GetColumnByName("encoding");
   const auto format_col = table->GetColumnByName("format");
   const auto bigendian_col = table->GetColumnByName("is_bigendian");
-  const auto ts_col = ts_field.empty() ? nullptr : table->GetColumnByName(ts_field);
+  const auto ts_col = !ts_field ? nullptr : table->GetColumnByName(*ts_field);
 
-  // Register the object topic ONCE under its BARE name on the shared data
-  // source. The catalog tree is <sequence> ▸ <topic> ▸ image, grouped with the
-  // scalar siblings.
-  auto topic_handle = host.registerObjectTopic(source, topic_name, kCanonicalImageMetadata);
-  if (!topic_handle) {
-    return PJ::unexpected(std::move(topic_handle).error());
+  constexpr std::int64_t row = 0;
+  const auto bytes_span = arrowBinaryAt(data_col, row);
+  if (bytes_span.empty()) {
+    return PJ::unexpected(
+        std::string("image topic '") + topic_name + "' row " + std::to_string(row) + ": missing/empty 'data'");
   }
 
-  ImagePushOutcome outcome;
-  const std::int64_t num_rows = table->num_rows();
-  for (std::int64_t row = 0; row < num_rows; ++row) {
-    const auto bytes_span = arrowBinaryAt(data_col, row);
-    if (bytes_span.empty()) {
-      ++outcome.skipped;
-      if (outcome.first_error.empty()) {
-        outcome.first_error =
-            std::string("image topic '") + topic_name + "' row " + std::to_string(row) + ": missing/empty 'data'";
-      }
-      continue;
-    }
-
-    const std::int32_t width = arrowI32At(width_col, row);
-    const std::int32_t height = arrowI32At(height_col, row);
-    const std::int32_t stride = arrowI32At(stride_col, row);
-    std::string encoding = arrowStringAt(encoding_col, row);
-    // Capture emptiness of the per-row `encoding` BEFORE the `format` fallback
-    // overwrites it — a row that arrived with no pixel `encoding` is a
-    // pure-compressed frame (geometry lives inside the blob). Reused below for
-    // the is_compressed test so we don't re-materialize the string column.
-    const bool encoding_was_empty = encoding.empty();
-    const std::string format = arrowStringAt(format_col, row);
-    // Pure-compressed topics ship only `format` (jpeg/png) with no pixel
-    // `encoding`; fall back so the blob still carries a usable encoding.
-    if (encoding.empty()) {
-      encoding = format;
-    }
-    if (encoding.empty()) {
-      ++outcome.skipped;
-      if (outcome.first_error.empty()) {
-        outcome.first_error = std::string("image topic '") + topic_name + "' row " + std::to_string(row) +
-                              ": missing both 'encoding' and 'format'";
-      }
-      continue;
-    }
-    // A raw (non-compressed) frame needs positive geometry. A compressed frame
-    // (encoding came from `format`, geometry lives inside the blob) is allowed
-    // to have width/height == 0.
-    const bool is_compressed = encoding_col == nullptr || encoding_was_empty;
-    if (!is_compressed && (width <= 0 || height <= 0)) {
-      ++outcome.skipped;
-      if (outcome.first_error.empty()) {
-        outcome.first_error = std::string("image topic '") + topic_name + "' row " + std::to_string(row) +
-                              ": non-positive geometry (width=" + std::to_string(width) +
-                              " height=" + std::to_string(height) + ")";
-      }
-      continue;
-    }
-
-    std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                : (synth_anchor_ns + row * synth_interval_ns);
-
-    PJ::sdk::Image img;
-    img.width = width > 0 ? static_cast<std::uint32_t>(width) : 0U;
-    img.height = height > 0 ? static_cast<std::uint32_t>(height) : 0U;
-    img.row_step = stride > 0 ? static_cast<std::uint32_t>(stride) : 0U;
-    img.encoding = std::move(encoding);
-    // is_bigendian describes the PRODUCER's byte order and matters only for
-    // multi-byte raw encodings (mono16). When the column is null/absent we
-    // default to false (little-endian), matching the canonical sdk::Image
-    // struct default (Image.hpp) and the ROS convention. An explicit column
-    // value is always honored.
-    img.is_bigendian = arrowBoolAt(bigendian_col, row, /*fallback=*/false);
-    img.timestamp_ns = ts_ns;
-    img.data = bytes_span;  // borrowed; serializeImage copies the bytes.
-
-    const std::vector<std::uint8_t> blob = PJ::serializeImage(img);
-    auto status = host.pushOwnedObject(*topic_handle, ts_ns, PJ::Span<const std::uint8_t>(blob.data(), blob.size()));
-    if (!status) {
-      return PJ::unexpected(std::move(status).error());
-    }
-    ++outcome.pushed;
+  const std::int32_t width = arrowI32At(width_col, row);
+  const std::int32_t height = arrowI32At(height_col, row);
+  const std::int32_t stride = arrowI32At(stride_col, row);
+  std::string encoding = arrowStringAt(encoding_col, row);
+  // Capture emptiness of the per-row `encoding` BEFORE the `format` fallback
+  // overwrites it — a row that arrived with no pixel `encoding` is a
+  // pure-compressed frame (geometry lives inside the blob). Reused below for
+  // the is_compressed test so we don't re-materialize the string column.
+  const bool encoding_was_empty = encoding.empty();
+  const std::string format = arrowStringAt(format_col, row);
+  // Pure-compressed topics ship only `format` (jpeg/png) with no pixel
+  // `encoding`; fall back so the blob still carries a usable encoding.
+  if (encoding.empty()) {
+    encoding = format;
   }
-  return outcome;
+  if (encoding.empty()) {
+    return PJ::unexpected(
+        std::string("image topic '") + topic_name + "' row " + std::to_string(row) +
+        ": missing both 'encoding' and 'format'");
+  }
+  // A raw (non-compressed) frame needs positive geometry. A compressed frame
+  // (encoding came from `format`, geometry lives inside the blob) is allowed
+  // to have width/height == 0.
+  const bool is_compressed = encoding_col == nullptr || encoding_was_empty;
+  if (!is_compressed && (width <= 0 || height <= 0)) {
+    return PJ::unexpected(
+        std::string("image topic '") + topic_name + "' row " + std::to_string(row) +
+        ": non-positive geometry (width=" + std::to_string(width) + " height=" + std::to_string(height) + ")");
+  }
+
+  const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+  if (!timestamp) {
+    return PJ::unexpected(timestamp.error());
+  }
+  const std::int64_t ts_ns = *timestamp;
+
+  PJ::sdk::Image img;
+  img.width = width > 0 ? static_cast<std::uint32_t>(width) : 0U;
+  img.height = height > 0 ? static_cast<std::uint32_t>(height) : 0U;
+  img.row_step = stride > 0 ? static_cast<std::uint32_t>(stride) : 0U;
+  img.encoding = std::move(encoding);
+  // is_bigendian describes the PRODUCER's byte order and matters only for
+  // multi-byte raw encodings (mono16). When the column is null/absent we
+  // default to false (little-endian), matching the canonical sdk::Image
+  // struct default (Image.hpp) and the ROS convention. An explicit column
+  // value is always honored.
+  img.is_bigendian = arrowBoolAt(bigendian_col, row, /*fallback=*/false);
+  img.timestamp_ns = ts_ns;
+  img.data = bytes_span;
+  img.anchor =
+      std::make_shared<std::pair<std::shared_ptr<arrow::Table>, PJ::sdk::BufferAnchor>>(table, ctx.payload_anchor);
+
+  return PJ::sdk::ObjectRecord{ts_ns, std::move(img)};
 }
 
-PJ::Expected<ObjectPushOutcome> pushPointCloudRowsToHost(
-    const ObjectIngestContext& ctx, const std::shared_ptr<arrow::Table>& table) {
-  const PJ::sdk::ToolboxHostView& host = ctx.host;
-  const PJ::sdk::DataSourceHandle source = ctx.source;
-  const std::string& topic_name = ctx.topic_name;
-  const std::string& ts_field = ctx.ts_field;
-  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
-  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
-  if (!host.valid()) {
-    return PJ::unexpected(std::string("toolbox host not bound"));
-  }
+PJ::Expected<PJ::sdk::ObjectRecord> decodePointCloud(
+    const MosaicoObjectOptions& ctx, const std::shared_ptr<arrow::Table>& table) {
+  const std::string& topic_name = ctx.ontology_tag;
+  const auto& ts_field = ctx.ts_field;
   if (!table) {
     return PJ::unexpected(std::string("point_cloud topic '") + topic_name + "': null table");
   }
@@ -998,77 +838,53 @@ PJ::Expected<ObjectPushOutcome> pushPointCloudRowsToHost(
   const auto bigendian_col = table->GetColumnByName("is_bigendian");
   const auto dense_col = table->GetColumnByName("is_dense");
   const auto frame_col = table->GetColumnByName("frame_id");
-  const auto ts_col = ts_field.empty() ? nullptr : table->GetColumnByName(ts_field);
+  const auto ts_col = !ts_field ? nullptr : table->GetColumnByName(*ts_field);
 
-  auto topic_handle = host.registerObjectTopic(source, topic_name, kCanonicalPointCloudMetadata);
-  if (!topic_handle) {
-    return PJ::unexpected(std::move(topic_handle).error());
+  constexpr std::int64_t row = 0;
+  const auto bytes_span = arrowBinaryAt(data_col, row);
+  std::vector<PJ::sdk::PointField> fields = readPointFields(fields_col, row);
+  if (bytes_span.empty() || fields.empty()) {
+    return PJ::unexpected(
+        std::string("point_cloud topic '") + topic_name + "' row " + std::to_string(row) +
+        ": empty 'data' or 'fields'");
   }
-
-  ObjectPushOutcome outcome;
-  const std::int64_t num_rows = table->num_rows();
-  for (std::int64_t row = 0; row < num_rows; ++row) {
-    const auto bytes_span = arrowBinaryAt(data_col, row);
-    std::vector<PJ::sdk::PointField> fields = readPointFields(fields_col, row);
-    if (bytes_span.empty() || fields.empty()) {
-      ++outcome.skipped;
-      if (outcome.first_error.empty()) {
-        outcome.first_error = std::string("point_cloud topic '") + topic_name + "' row " + std::to_string(row) +
-                              ": empty 'data' or 'fields'";
-      }
-      continue;
-    }
-    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                      : (synth_anchor_ns + row * synth_interval_ns);
-    const std::int32_t width = arrowI32At(width_col, row);
-    const std::int32_t point_step = arrowI32At(point_step_col, row);
-    const std::int32_t row_step = arrowI32At(row_step_col, row);
-
-    PJ::sdk::PointCloud cloud;
-    cloud.width = width > 0 ? static_cast<std::uint32_t>(width) : 0U;
-    cloud.height = static_cast<std::uint32_t>(std::max<std::int32_t>(arrowI32At(height_col, row), 1));
-    cloud.point_step = point_step > 0 ? static_cast<std::uint32_t>(point_step) : 0U;
-    cloud.row_step = row_step > 0 ? static_cast<std::uint32_t>(row_step) : cloud.point_step * cloud.width;
-    cloud.is_bigendian = arrowBoolAt(bigendian_col, row, /*fallback=*/false);
-    cloud.is_dense = arrowBoolAt(dense_col, row, /*fallback=*/true);
-    cloud.frame_id = frame_col ? arrowStringAt(frame_col, row) : std::string{};
-    cloud.fields = std::move(fields);
-    cloud.data = bytes_span;  // borrowed; serializePointCloud copies the bytes.
-    cloud.timestamp_ns = ts_ns;
-
-    const std::vector<std::uint8_t> blob = PJ::serializePointCloud(cloud);
-    auto status = host.pushOwnedObject(*topic_handle, ts_ns, PJ::Span<const std::uint8_t>(blob.data(), blob.size()));
-    if (!status) {
-      return PJ::unexpected(std::move(status).error());
-    }
-    ++outcome.pushed;
+  const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+  if (!timestamp) {
+    return PJ::unexpected(timestamp.error());
   }
-  return outcome;
+  const std::int64_t ts_ns = *timestamp;
+  const std::int32_t width = arrowI32At(width_col, row);
+  const std::int32_t point_step = arrowI32At(point_step_col, row);
+  const std::int32_t row_step = arrowI32At(row_step_col, row);
+
+  PJ::sdk::PointCloud cloud;
+  cloud.width = width > 0 ? static_cast<std::uint32_t>(width) : 0U;
+  cloud.height = static_cast<std::uint32_t>(std::max<std::int32_t>(arrowI32At(height_col, row), 1));
+  cloud.point_step = point_step > 0 ? static_cast<std::uint32_t>(point_step) : 0U;
+  cloud.row_step = row_step > 0 ? static_cast<std::uint32_t>(row_step) : cloud.point_step * cloud.width;
+  cloud.is_bigendian = arrowBoolAt(bigendian_col, row, /*fallback=*/false);
+  cloud.is_dense = arrowBoolAt(dense_col, row, /*fallback=*/true);
+  cloud.frame_id = frame_col ? arrowStringAt(frame_col, row) : std::string{};
+  cloud.fields = std::move(fields);
+  cloud.data = bytes_span;
+  cloud.anchor =
+      std::make_shared<std::pair<std::shared_ptr<arrow::Table>, PJ::sdk::BufferAnchor>>(table, ctx.payload_anchor);
+  cloud.timestamp_ns = ts_ns;
+
+  return PJ::sdk::ObjectRecord{ts_ns, std::move(cloud)};
 }
 
-PJ::Expected<ObjectPushOutcome> pushPoseRowsToHost(
-    const ObjectIngestContext& ctx, const std::shared_ptr<arrow::Table>& table) {
-  const PJ::sdk::ToolboxHostView& host = ctx.host;
-  const PJ::sdk::DataSourceHandle source = ctx.source;
-  const std::string& topic_name = ctx.topic_name;
-  const std::string& ts_field = ctx.ts_field;
-  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
-  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
-  if (!host.valid()) {
-    return PJ::unexpected(std::string("toolbox host not bound"));
-  }
+PJ::Expected<PJ::sdk::ObjectRecord> decodePose(
+    const MosaicoObjectOptions& ctx, const std::shared_ptr<arrow::Table>& table) {
+  const std::string& topic_name = ctx.ontology_tag;
+  const auto& ts_field = ctx.ts_field;
   if (!table) {
     return PJ::unexpected(std::string("pose topic '") + topic_name + "': null table");
   }
   // position/orientation arrive as struct columns; flatten to position/x …. The
   // `pose` ontology nests them at the top level (position/*); `motion_state`
   // (odometry) nests them under pose/* (pose/position/*) — accept either prefix.
-  auto flat_res = flattenStructColumns(table);
-  if (!flat_res.ok()) {
-    return PJ::unexpected(
-        std::string("pose topic '") + topic_name + "': flatten failed: " + flat_res.status().ToString());
-  }
-  const std::shared_ptr<arrow::Table> flat = *flat_res;
+  const auto& flat = table;
   std::string prefix;
   if (flat->GetColumnByName("position/x")) {
     prefix = "";
@@ -1088,103 +904,65 @@ PJ::Expected<ObjectPushOutcome> pushPoseRowsToHost(
     return PJ::unexpected(std::string("pose topic '") + topic_name + "' missing position/* or orientation/* columns");
   }
   const auto frame_col = flat->GetColumnByName("frame_id");
-  const auto ts_col = ts_field.empty() ? nullptr : flat->GetColumnByName(ts_field);
+  const auto ts_col = !ts_field ? nullptr : flat->GetColumnByName(*ts_field);
 
-  auto topic_handle = host.registerObjectTopic(source, topic_name, kCanonicalPosesInFrameMetadata);
-  if (!topic_handle) {
-    return PJ::unexpected(std::move(topic_handle).error());
+  constexpr std::int64_t row = 0;
+  const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+  if (!timestamp) {
+    return PJ::unexpected(timestamp.error());
   }
+  const std::int64_t ts_ns = *timestamp;
+  PJ::sdk::Pose pose;
+  pose.position =
+      PJ::sdk::Vector3{.x = arrowDoubleAt(px, row), .y = arrowDoubleAt(py, row), .z = arrowDoubleAt(pz, row)};
+  pose.orientation = sanitizeQuaternion(
+      PJ::sdk::Quaternion{
+          .x = arrowDoubleAt(ox, row),
+          .y = arrowDoubleAt(oy, row),
+          .z = arrowDoubleAt(oz, row),
+          .w = arrowDoubleAt(ow, row)});
 
-  ObjectPushOutcome outcome;
-  const std::int64_t num_rows = flat->num_rows();
-  for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                      : (synth_anchor_ns + row * synth_interval_ns);
-    PJ::sdk::Pose pose;
-    pose.position =
-        PJ::sdk::Vector3{.x = arrowDoubleAt(px, row), .y = arrowDoubleAt(py, row), .z = arrowDoubleAt(pz, row)};
-    pose.orientation = sanitizeQuaternion(
-        PJ::sdk::Quaternion{
-            .x = arrowDoubleAt(ox, row),
-            .y = arrowDoubleAt(oy, row),
-            .z = arrowDoubleAt(oz, row),
-            .w = arrowDoubleAt(ow, row)});
-
-    PJ::sdk::PosesInFrame poses;
-    poses.timestamp_ns = ts_ns;
-    poses.frame_id = frame_col ? arrowStringAt(frame_col, row) : std::string{};
-    poses.poses.push_back(pose);
-    const std::vector<std::uint8_t> blob = PJ::serializePosesInFrame(poses);
-    auto status = host.pushOwnedObject(*topic_handle, ts_ns, PJ::Span<const std::uint8_t>(blob.data(), blob.size()));
-    if (!status) {
-      return PJ::unexpected(std::move(status).error());
-    }
-    ++outcome.pushed;
-  }
-  return outcome;
+  PJ::sdk::PosesInFrame poses;
+  poses.timestamp_ns = ts_ns;
+  poses.frame_id = frame_col ? arrowStringAt(frame_col, row) : std::string{};
+  poses.poses.push_back(pose);
+  return PJ::sdk::ObjectRecord{ts_ns, std::move(poses)};
 }
 
-PJ::Expected<ObjectPushOutcome> pushFrameTransformsRowsToHost(
-    const ObjectIngestContext& ctx, const std::shared_ptr<arrow::Table>& table) {
-  const PJ::sdk::ToolboxHostView& host = ctx.host;
-  const PJ::sdk::DataSourceHandle source = ctx.source;
-  const std::string& topic_name = ctx.topic_name;
-  const std::string& ts_field = ctx.ts_field;
-  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
-  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
-  if (!host.valid()) {
-    return PJ::unexpected(std::string("toolbox host not bound"));
-  }
+PJ::Expected<PJ::sdk::ObjectRecord> decodeTransforms(
+    const MosaicoObjectOptions& ctx, const std::shared_ptr<arrow::Table>& table) {
+  const std::string& topic_name = ctx.ontology_tag;
+  const auto& ts_field = ctx.ts_field;
   if (!table) {
     return PJ::unexpected(std::string("transform topic '") + topic_name + "': null table");
   }
 
-  auto topic_handle = host.registerObjectTopic(source, topic_name, kCanonicalFrameTransformsMetadata);
-  if (!topic_handle) {
-    return PJ::unexpected(std::move(topic_handle).error());
-  }
-  ObjectPushOutcome outcome;
-
   // `frame_transform`: a `transforms` list<struct> per row → one batch each.
   if (const auto transforms_col = table->GetColumnByName("transforms")) {
-    const auto ts_col = ts_field.empty() ? nullptr : table->GetColumnByName(ts_field);
-    const std::int64_t num_rows = table->num_rows();
-    for (std::int64_t row = 0; row < num_rows; ++row) {
-      const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                        : (synth_anchor_ns + row * synth_interval_ns);
-      std::vector<PJ::sdk::FrameTransform> transforms = readTransformList(transforms_col, row);
-      if (transforms.empty()) {
-        ++outcome.skipped;
-        if (outcome.first_error.empty()) {
-          outcome.first_error =
-              std::string("transform topic '") + topic_name + "' row " + std::to_string(row) + ": empty 'transforms'";
-        }
-        continue;
-      }
-      for (auto& ft : transforms) {
-        ft.timestamp = ts_ns;
-      }
-      PJ::sdk::FrameTransforms batch;
-      batch.transforms = std::move(transforms);
-      const std::vector<std::uint8_t> blob = PJ::serializeFrameTransforms(batch);
-      auto status = host.pushOwnedObject(*topic_handle, ts_ns, PJ::Span<const std::uint8_t>(blob.data(), blob.size()));
-      if (!status) {
-        return PJ::unexpected(std::move(status).error());
-      }
-      ++outcome.pushed;
+    const auto ts_col = !ts_field ? nullptr : table->GetColumnByName(*ts_field);
+    constexpr std::int64_t row = 0;
+    const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+    if (!timestamp) {
+      return PJ::unexpected(timestamp.error());
     }
-    return outcome;
+    const std::int64_t ts_ns = *timestamp;
+    std::vector<PJ::sdk::FrameTransform> transforms = readTransformList(transforms_col, row);
+    if (transforms.empty()) {
+      return PJ::unexpected(
+          std::string("transform topic '") + topic_name + "' row " + std::to_string(row) + ": empty 'transforms'");
+    }
+    for (auto& ft : transforms) {
+      ft.timestamp = ts_ns;
+    }
+    PJ::sdk::FrameTransforms batch;
+    batch.transforms = std::move(transforms);
+    return PJ::sdk::ObjectRecord{ts_ns, std::move(batch)};
   }
 
   // `transform`: one transform per row. Flatten the struct columns and read the
   // translation/rotation children, parent (header/frame_id) + child
   // (target_frame_id) frame ids.
-  auto flat_res = flattenStructColumns(table);
-  if (!flat_res.ok()) {
-    return PJ::unexpected(
-        std::string("transform topic '") + topic_name + "': flatten failed: " + flat_res.status().ToString());
-  }
-  const std::shared_ptr<arrow::Table> flat = *flat_res;
+  const auto& flat = table;
   const auto tx = flat->GetColumnByName("translation/x");
   const auto ty = flat->GetColumnByName("translation/y");
   const auto tz = flat->GetColumnByName("translation/z");
@@ -1198,58 +976,41 @@ PJ::Expected<ObjectPushOutcome> pushFrameTransformsRowsToHost(
   }
   const auto child_col = flat->GetColumnByName("target_frame_id");
   const auto parent_col = firstPresentColumn(flat, {"header/frame_id", "frame_id"});
-  const auto ts_col = ts_field.empty() ? nullptr : flat->GetColumnByName(ts_field);
+  const auto ts_col = !ts_field ? nullptr : flat->GetColumnByName(*ts_field);
 
-  const std::int64_t num_rows = flat->num_rows();
-  for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                      : (synth_anchor_ns + row * synth_interval_ns);
-    PJ::sdk::FrameTransform ft;
-    ft.timestamp = ts_ns;
-    ft.parent_frame_id = parent_col ? arrowStringAt(parent_col, row) : std::string{};
-    ft.child_frame_id = child_col ? arrowStringAt(child_col, row) : std::string{};
-    ft.translation =
-        PJ::sdk::Vector3{.x = arrowDoubleAt(tx, row), .y = arrowDoubleAt(ty, row), .z = arrowDoubleAt(tz, row)};
-    ft.rotation = sanitizeQuaternion(
-        PJ::sdk::Quaternion{
-            .x = arrowDoubleAt(rx, row),
-            .y = arrowDoubleAt(ry, row),
-            .z = arrowDoubleAt(rz, row),
-            .w = arrowDoubleAt(rw, row)});
-    PJ::sdk::FrameTransforms batch;
-    batch.transforms.push_back(std::move(ft));
-    const std::vector<std::uint8_t> blob = PJ::serializeFrameTransforms(batch);
-    auto status = host.pushOwnedObject(*topic_handle, ts_ns, PJ::Span<const std::uint8_t>(blob.data(), blob.size()));
-    if (!status) {
-      return PJ::unexpected(std::move(status).error());
-    }
-    ++outcome.pushed;
+  constexpr std::int64_t row = 0;
+  const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+  if (!timestamp) {
+    return PJ::unexpected(timestamp.error());
   }
-  return outcome;
+  const std::int64_t ts_ns = *timestamp;
+  PJ::sdk::FrameTransform ft;
+  ft.timestamp = ts_ns;
+  ft.parent_frame_id = parent_col ? arrowStringAt(parent_col, row) : std::string{};
+  ft.child_frame_id = child_col ? arrowStringAt(child_col, row) : std::string{};
+  ft.translation =
+      PJ::sdk::Vector3{.x = arrowDoubleAt(tx, row), .y = arrowDoubleAt(ty, row), .z = arrowDoubleAt(tz, row)};
+  ft.rotation = sanitizeQuaternion(
+      PJ::sdk::Quaternion{
+          .x = arrowDoubleAt(rx, row),
+          .y = arrowDoubleAt(ry, row),
+          .z = arrowDoubleAt(rz, row),
+          .w = arrowDoubleAt(rw, row)});
+  PJ::sdk::FrameTransforms batch;
+  batch.transforms.push_back(std::move(ft));
+  return PJ::sdk::ObjectRecord{ts_ns, std::move(batch)};
 }
 
-PJ::Expected<ObjectPushOutcome> pushOccupancyGridRowsToHost(
-    const ObjectIngestContext& ctx, const std::shared_ptr<arrow::Table>& table) {
-  const PJ::sdk::ToolboxHostView& host = ctx.host;
-  const PJ::sdk::DataSourceHandle source = ctx.source;
-  const std::string& topic_name = ctx.topic_name;
-  const std::string& ts_field = ctx.ts_field;
-  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
-  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
-  if (!host.valid()) {
-    return PJ::unexpected(std::string("toolbox host not bound"));
-  }
+PJ::Expected<PJ::sdk::ObjectRecord> decodeGrid(
+    const MosaicoObjectOptions& ctx, const std::shared_ptr<arrow::Table>& table) {
+  const std::string& topic_name = ctx.ontology_tag;
+  const auto& ts_field = ctx.ts_field;
   if (!table) {
     return PJ::unexpected(std::string("occupancy_grid topic '") + topic_name + "': null table");
   }
   // info/origin/map_load_time are struct columns; flatten to read the scalar
   // metadata + origin pose. The dense `data` list<int8> passes through flatten.
-  auto flat_res = flattenStructColumns(table);
-  if (!flat_res.ok()) {
-    return PJ::unexpected(
-        std::string("occupancy_grid topic '") + topic_name + "': flatten failed: " + flat_res.status().ToString());
-  }
-  const std::shared_ptr<arrow::Table> flat = *flat_res;
+  const auto& flat = table;
   const auto data_col = flat->GetColumnByName("data");
   if (!data_col) {
     return PJ::unexpected(std::string("occupancy_grid topic '") + topic_name + "' missing 'data' column");
@@ -1265,80 +1026,56 @@ PJ::Expected<ObjectPushOutcome> pushOccupancyGridRowsToHost(
   const auto qz = firstPresentColumn(flat, {"info/origin/orientation/z", "origin/orientation/z"});
   const auto qw = firstPresentColumn(flat, {"info/origin/orientation/w", "origin/orientation/w"});
   const auto frame_col = firstPresentColumn(flat, {"header/frame_id", "frame_id"});
-  const auto ts_col = ts_field.empty() ? nullptr : flat->GetColumnByName(ts_field);
+  const auto ts_col = !ts_field ? nullptr : flat->GetColumnByName(*ts_field);
 
-  auto topic_handle = host.registerObjectTopic(source, topic_name, kCanonicalOccupancyGridMetadata);
-  if (!topic_handle) {
-    return PJ::unexpected(std::move(topic_handle).error());
+  constexpr std::int64_t row = 0;
+  const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+  if (!timestamp) {
+    return PJ::unexpected(timestamp.error());
   }
-
-  ObjectPushOutcome outcome;
-  const std::int64_t num_rows = flat->num_rows();
-  for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                      : (synth_anchor_ns + row * synth_interval_ns);
-    const std::int32_t w = arrowI32At(width_col, row);
-    const std::int32_t h = arrowI32At(height_col, row);
-    const double resolution = arrowDoubleAt(resolution_col, row);
-    const NumericList data = readNumericList(data_col, row);
-    const std::int64_t cells = static_cast<std::int64_t>(w) * static_cast<std::int64_t>(h);
-    // A zero/negative/non-finite resolution is geometrically meaningless (cells
-    // collapse to a point); reject it alongside bad geometry rather than push a
-    // degenerate map that masks a server schema mismatch.
-    if (w <= 0 || h <= 0 || !std::isfinite(resolution) || resolution <= 0.0 || !data.valid() || data.count < cells) {
-      ++outcome.skipped;
-      if (outcome.first_error.empty()) {
-        outcome.first_error = std::string("occupancy_grid topic '") + topic_name + "' row " + std::to_string(row) +
-                              ": bad geometry/resolution or short 'data'";
-      }
-      continue;
-    }
-    PJ::sdk::OccupancyGrid grid;
-    grid.timestamp_ns = ts_ns;
-    grid.frame_id = frame_col ? arrowStringAt(frame_col, row) : std::string{};
-    grid.resolution = resolution;
-    grid.width = static_cast<std::uint32_t>(w);
-    grid.height = static_cast<std::uint32_t>(h);
-    grid.origin.position =
-        PJ::sdk::Vector3{.x = arrowDoubleAt(ox, row), .y = arrowDoubleAt(oy, row), .z = arrowDoubleAt(oz, row)};
-    grid.origin.orientation = PJ::sdk::Quaternion{
-        .x = arrowDoubleAt(qx, row),
-        .y = arrowDoubleAt(qy, row),
-        .z = arrowDoubleAt(qz, row),
-        .w = qw ? arrowDoubleAt(qw, row) : 1.0};
-    // `data` is int8 (−1/0..100); store the raw bytes (codec copies them).
-    grid.data = PJ::Span<const std::uint8_t>(data.bytes.data(), static_cast<std::size_t>(cells));
-    const std::vector<std::uint8_t> blob = PJ::serializeOccupancyGrid(grid);
-    auto status = host.pushOwnedObject(*topic_handle, ts_ns, PJ::Span<const std::uint8_t>(blob.data(), blob.size()));
-    if (!status) {
-      return PJ::unexpected(std::move(status).error());
-    }
-    ++outcome.pushed;
+  const std::int64_t ts_ns = *timestamp;
+  const std::int32_t w = arrowI32At(width_col, row);
+  const std::int32_t h = arrowI32At(height_col, row);
+  const double resolution = arrowDoubleAt(resolution_col, row);
+  NumericList data = readNumericList(data_col, row);
+  const std::int64_t cells = static_cast<std::int64_t>(w) * static_cast<std::int64_t>(h);
+  // A zero/negative/non-finite resolution is geometrically meaningless (cells
+  // collapse to a point); reject it alongside bad geometry rather than push a
+  // degenerate map that masks a server schema mismatch.
+  if (w <= 0 || h <= 0 || !std::isfinite(resolution) || resolution <= 0.0 || !data.valid() || data.count < cells) {
+    return PJ::unexpected(
+        std::string("occupancy_grid topic '") + topic_name + "' row " + std::to_string(row) +
+        ": bad geometry/resolution or short 'data'");
   }
-  return outcome;
+  PJ::sdk::OccupancyGrid grid;
+  grid.timestamp_ns = ts_ns;
+  grid.frame_id = frame_col ? arrowStringAt(frame_col, row) : std::string{};
+  grid.resolution = resolution;
+  grid.width = static_cast<std::uint32_t>(w);
+  grid.height = static_cast<std::uint32_t>(h);
+  grid.origin.position =
+      PJ::sdk::Vector3{.x = arrowDoubleAt(ox, row), .y = arrowDoubleAt(oy, row), .z = arrowDoubleAt(oz, row)};
+  grid.origin.orientation = PJ::sdk::Quaternion{
+      .x = arrowDoubleAt(qx, row),
+      .y = arrowDoubleAt(qy, row),
+      .z = arrowDoubleAt(qz, row),
+      .w = qw ? arrowDoubleAt(qw, row) : 1.0};
+  // `data` is int8 (−1/0..100); store the raw bytes (codec copies them).
+  auto owned = std::make_shared<std::vector<std::uint8_t>>(std::move(data.bytes));
+  grid.data = PJ::Span<const std::uint8_t>(owned->data(), static_cast<std::size_t>(cells));
+  grid.anchor = owned;
+  return PJ::sdk::ObjectRecord{ts_ns, std::move(grid)};
 }
 
-PJ::Expected<ObjectPushOutcome> pushLaserScanRowsToHost(
-    const ObjectIngestContext& ctx, const std::shared_ptr<arrow::Table>& table) {
-  const PJ::sdk::ToolboxHostView& host = ctx.host;
-  const PJ::sdk::DataSourceHandle source = ctx.source;
-  const std::string& topic_name = ctx.topic_name;
-  const std::string& ts_field = ctx.ts_field;
-  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
-  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
-  if (!host.valid()) {
-    return PJ::unexpected(std::string("toolbox host not bound"));
-  }
+PJ::Expected<PJ::sdk::ObjectRecord> decodeLaserScan(
+    const MosaicoObjectOptions& ctx, const std::shared_ptr<arrow::Table>& table) {
+  const std::string& topic_name = ctx.ontology_tag;
+  const auto& ts_field = ctx.ts_field;
   if (!table) {
     return PJ::unexpected(std::string("laser_scan topic '") + topic_name + "': null table");
   }
   // Flatten to surface header/frame_id; the `ranges`/`intensities` lists pass through.
-  auto flat_res = flattenStructColumns(table);
-  if (!flat_res.ok()) {
-    return PJ::unexpected(
-        std::string("laser_scan topic '") + topic_name + "': flatten failed: " + flat_res.status().ToString());
-  }
-  const std::shared_ptr<arrow::Table> flat = *flat_res;
+  const auto& flat = table;
   const auto ranges_col = flat->GetColumnByName("ranges");
   if (!ranges_col) {
     return PJ::unexpected(std::string("laser_scan topic '") + topic_name + "' missing 'ranges' column");
@@ -1349,127 +1086,97 @@ PJ::Expected<ObjectPushOutcome> pushLaserScanRowsToHost(
   const auto range_min_col = flat->GetColumnByName("range_min");
   const auto range_max_col = flat->GetColumnByName("range_max");
   const auto frame_col = firstPresentColumn(flat, {"header/frame_id", "frame_id"});
-  const auto ts_col = ts_field.empty() ? nullptr : flat->GetColumnByName(ts_field);
+  const auto ts_col = !ts_field ? nullptr : flat->GetColumnByName(*ts_field);
 
-  auto topic_handle = host.registerObjectTopic(source, topic_name, kCanonicalPointCloudMetadata);
-  if (!topic_handle) {
-    return PJ::unexpected(std::move(topic_handle).error());
+  constexpr std::int64_t row = 0;
+  const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+  if (!timestamp) {
+    return PJ::unexpected(timestamp.error());
   }
+  const std::int64_t ts_ns = *timestamp;
+  const double angle_min = arrowDoubleAt(angle_min_col, row);
+  const double angle_inc = arrowDoubleAt(angle_inc_col, row);
+  const double range_min = range_min_col ? arrowDoubleAt(range_min_col, row) : 0.0;
+  const double range_max = range_max_col ? arrowDoubleAt(range_max_col, row) : std::numeric_limits<double>::infinity();
+  const NumericList ranges = readNumericList(ranges_col, row);
+  if (!ranges.valid()) {
+    return PJ::unexpected(
+        std::string("laser_scan topic '") + topic_name + "' row " + std::to_string(row) + ": empty 'ranges'");
+  }
+  const NumericList intensities = intensities_col ? readNumericList(intensities_col, row) : NumericList{};
+  const bool have_intensity = intensities.valid() && intensities.count == ranges.count;
 
-  ObjectPushOutcome outcome;
-  const std::int64_t num_rows = flat->num_rows();
-  for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                      : (synth_anchor_ns + row * synth_interval_ns);
-    const double angle_min = arrowDoubleAt(angle_min_col, row);
-    const double angle_inc = arrowDoubleAt(angle_inc_col, row);
-    const double range_min = range_min_col ? arrowDoubleAt(range_min_col, row) : 0.0;
-    const double range_max =
-        range_max_col ? arrowDoubleAt(range_max_col, row) : std::numeric_limits<double>::infinity();
-    const NumericList ranges = readNumericList(ranges_col, row);
-    if (!ranges.valid()) {
-      ++outcome.skipped;
-      if (outcome.first_error.empty()) {
-        outcome.first_error =
-            std::string("laser_scan topic '") + topic_name + "' row " + std::to_string(row) + ": empty 'ranges'";
-      }
+  // Expand the polar scan to packed XYZ (+intensity) points, dropping returns
+  // that are non-finite or outside [range_min, range_max].
+  std::vector<float> xs;
+  std::vector<float> ys;
+  std::vector<float> zs;
+  std::vector<float> intensity_vals;
+  xs.reserve(static_cast<std::size_t>(ranges.count));
+  ys.reserve(static_cast<std::size_t>(ranges.count));
+  zs.reserve(static_cast<std::size_t>(ranges.count));
+  for (std::int64_t i = 0; i < ranges.count; ++i) {
+    const double r = numericElemAsDouble(ranges, i);
+    if (!std::isfinite(r) || r < range_min || r > range_max) {
       continue;
     }
-    const NumericList intensities = intensities_col ? readNumericList(intensities_col, row) : NumericList{};
-    const bool have_intensity = intensities.valid() && intensities.count == ranges.count;
-
-    // Expand the polar scan to packed XYZ (+intensity) points, dropping returns
-    // that are non-finite or outside [range_min, range_max].
-    std::vector<float> xs;
-    std::vector<float> ys;
-    std::vector<float> zs;
-    std::vector<float> intensity_vals;
-    xs.reserve(static_cast<std::size_t>(ranges.count));
-    ys.reserve(static_cast<std::size_t>(ranges.count));
-    zs.reserve(static_cast<std::size_t>(ranges.count));
-    for (std::int64_t i = 0; i < ranges.count; ++i) {
-      const double r = numericElemAsDouble(ranges, i);
-      if (!std::isfinite(r) || r < range_min || r > range_max) {
-        continue;
-      }
-      const double angle = angle_min + (static_cast<double>(i) * angle_inc);
-      xs.push_back(static_cast<float>(r * std::cos(angle)));
-      ys.push_back(static_cast<float>(r * std::sin(angle)));
-      zs.push_back(0.0F);
-      if (have_intensity) {
-        intensity_vals.push_back(static_cast<float>(numericElemAsDouble(intensities, i)));
-      }
-    }
-    const std::size_t npoints = xs.size();
-    if (npoints == 0) {
-      ++outcome.skipped;
-      if (outcome.first_error.empty()) {
-        outcome.first_error =
-            std::string("laser_scan topic '") + topic_name + "' row " + std::to_string(row) + ": no valid returns";
-      }
-      continue;
-    }
-    const std::uint32_t point_step = have_intensity ? 16U : 12U;
-    std::vector<std::uint8_t> buf(npoints * point_step);
-    for (std::size_t i = 0; i < npoints; ++i) {
-      const std::size_t base = i * point_step;
-      std::memcpy(buf.data() + base + 0, &xs[i], sizeof(float));
-      std::memcpy(buf.data() + base + 4, &ys[i], sizeof(float));
-      std::memcpy(buf.data() + base + 8, &zs[i], sizeof(float));
-      if (have_intensity) {
-        std::memcpy(buf.data() + base + 12, &intensity_vals[i], sizeof(float));
-      }
-    }
-    PJ::sdk::PointCloud cloud;
-    cloud.width = static_cast<std::uint32_t>(npoints);
-    cloud.height = 1;
-    cloud.point_step = point_step;
-    cloud.row_step = point_step * cloud.width;
-    cloud.is_dense = true;
-    cloud.frame_id = frame_col ? arrowStringAt(frame_col, row) : std::string{};
-    cloud.timestamp_ns = ts_ns;
-    cloud.fields.push_back(
-        PJ::sdk::PointField{.name = "x", .offset = 0, .datatype = PJ::sdk::PointField::Datatype::kFloat32, .count = 1});
-    cloud.fields.push_back(
-        PJ::sdk::PointField{.name = "y", .offset = 4, .datatype = PJ::sdk::PointField::Datatype::kFloat32, .count = 1});
-    cloud.fields.push_back(
-        PJ::sdk::PointField{.name = "z", .offset = 8, .datatype = PJ::sdk::PointField::Datatype::kFloat32, .count = 1});
+    const double angle = angle_min + (static_cast<double>(i) * angle_inc);
+    xs.push_back(static_cast<float>(r * std::cos(angle)));
+    ys.push_back(static_cast<float>(r * std::sin(angle)));
+    zs.push_back(0.0F);
     if (have_intensity) {
-      cloud.fields.push_back(
-          PJ::sdk::PointField{
-              .name = "intensity", .offset = 12, .datatype = PJ::sdk::PointField::Datatype::kFloat32, .count = 1});
+      intensity_vals.push_back(static_cast<float>(numericElemAsDouble(intensities, i)));
     }
-    cloud.data = PJ::Span<const std::uint8_t>(buf.data(), buf.size());
-    const std::vector<std::uint8_t> blob = PJ::serializePointCloud(cloud);
-    auto status = host.pushOwnedObject(*topic_handle, ts_ns, PJ::Span<const std::uint8_t>(blob.data(), blob.size()));
-    if (!status) {
-      return PJ::unexpected(std::move(status).error());
-    }
-    ++outcome.pushed;
   }
-  return outcome;
+  const std::size_t npoints = xs.size();
+  if (npoints == 0) {
+    return PJ::unexpected(
+        std::string("laser_scan topic '") + topic_name + "' row " + std::to_string(row) + ": no valid returns");
+  }
+  const std::uint32_t point_step = have_intensity ? 16U : 12U;
+  std::vector<std::uint8_t> buf(npoints * point_step);
+  for (std::size_t i = 0; i < npoints; ++i) {
+    const std::size_t base = i * point_step;
+    std::memcpy(buf.data() + base + 0, &xs[i], sizeof(float));
+    std::memcpy(buf.data() + base + 4, &ys[i], sizeof(float));
+    std::memcpy(buf.data() + base + 8, &zs[i], sizeof(float));
+    if (have_intensity) {
+      std::memcpy(buf.data() + base + 12, &intensity_vals[i], sizeof(float));
+    }
+  }
+  PJ::sdk::PointCloud cloud;
+  cloud.width = static_cast<std::uint32_t>(npoints);
+  cloud.height = 1;
+  cloud.point_step = point_step;
+  cloud.row_step = point_step * cloud.width;
+  cloud.is_dense = true;
+  cloud.frame_id = frame_col ? arrowStringAt(frame_col, row) : std::string{};
+  cloud.timestamp_ns = ts_ns;
+  cloud.fields.push_back(
+      PJ::sdk::PointField{.name = "x", .offset = 0, .datatype = PJ::sdk::PointField::Datatype::kFloat32, .count = 1});
+  cloud.fields.push_back(
+      PJ::sdk::PointField{.name = "y", .offset = 4, .datatype = PJ::sdk::PointField::Datatype::kFloat32, .count = 1});
+  cloud.fields.push_back(
+      PJ::sdk::PointField{.name = "z", .offset = 8, .datatype = PJ::sdk::PointField::Datatype::kFloat32, .count = 1});
+  if (have_intensity) {
+    cloud.fields.push_back(
+        PJ::sdk::PointField{
+            .name = "intensity", .offset = 12, .datatype = PJ::sdk::PointField::Datatype::kFloat32, .count = 1});
+  }
+  auto owned = std::make_shared<std::vector<std::uint8_t>>(std::move(buf));
+  cloud.data = PJ::Span<const std::uint8_t>(owned->data(), owned->size());
+  cloud.anchor = owned;
+  return PJ::sdk::ObjectRecord{ts_ns, std::move(cloud)};
 }
 
-PJ::Expected<ObjectPushOutcome> pushGridCellsRowsToHost(
-    const ObjectIngestContext& ctx, const std::shared_ptr<arrow::Table>& table) {
-  const PJ::sdk::ToolboxHostView& host = ctx.host;
-  const PJ::sdk::DataSourceHandle source = ctx.source;
-  const std::string& topic_name = ctx.topic_name;
-  const std::string& ts_field = ctx.ts_field;
-  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
-  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
-  if (!host.valid()) {
-    return PJ::unexpected(std::string("toolbox host not bound"));
-  }
+PJ::Expected<PJ::sdk::ObjectRecord> decodeGridCells(
+    const MosaicoObjectOptions& ctx, const std::shared_ptr<arrow::Table>& table) {
+  const std::string& topic_name = ctx.ontology_tag;
+  const auto& ts_field = ctx.ts_field;
   if (!table) {
     return PJ::unexpected(std::string("grid_cells topic '") + topic_name + "': null table");
   }
-  auto flat_res = flattenStructColumns(table);
-  if (!flat_res.ok()) {
-    return PJ::unexpected(
-        std::string("grid_cells topic '") + topic_name + "': flatten failed: " + flat_res.status().ToString());
-  }
-  const std::shared_ptr<arrow::Table> flat = *flat_res;
+  const auto& flat = table;
   const auto cells_col = flat->GetColumnByName("cells");
   if (!cells_col) {
     return PJ::unexpected(std::string("grid_cells topic '") + topic_name + "' missing 'cells' column");
@@ -1477,74 +1184,47 @@ PJ::Expected<ObjectPushOutcome> pushGridCellsRowsToHost(
   const auto cw_col = flat->GetColumnByName("cell_width");
   const auto ch_col = flat->GetColumnByName("cell_height");
   const auto frame_col = firstPresentColumn(flat, {"header/frame_id", "frame_id"});
-  const auto ts_col = ts_field.empty() ? nullptr : flat->GetColumnByName(ts_field);
+  const auto ts_col = !ts_field ? nullptr : flat->GetColumnByName(*ts_field);
 
-  auto topic_handle = host.registerObjectTopic(source, topic_name, kCanonicalSceneEntitiesMetadata);
-  if (!topic_handle) {
-    return PJ::unexpected(std::move(topic_handle).error());
+  constexpr std::int64_t row = 0;
+  const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+  if (!timestamp) {
+    return PJ::unexpected(timestamp.error());
   }
-
-  ObjectPushOutcome outcome;
-  const std::int64_t num_rows = flat->num_rows();
-  for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                      : (synth_anchor_ns + row * synth_interval_ns);
-    const double cw = cw_col ? arrowDoubleAt(cw_col, row) : 0.0;
-    const double ch = ch_col ? arrowDoubleAt(ch_col, row) : 0.0;
-    const std::vector<std::array<double, 3>> cells = readXyzStructList(cells_col, row);
-    if (cells.empty()) {
-      ++outcome.skipped;
-      if (outcome.first_error.empty()) {
-        outcome.first_error =
-            std::string("grid_cells topic '") + topic_name + "' row " + std::to_string(row) + ": empty 'cells'";
-      }
-      continue;
-    }
-    PJ::sdk::SceneEntities scene;
-    PJ::sdk::SceneEntity entity;
-    entity.timestamp = ts_ns;
-    entity.frame_id = frame_col ? arrowStringAt(frame_col, row) : std::string{};
-    entity.cubes.reserve(cells.size());
-    constexpr double kThickness = 0.01;  // sparse cells render as thin flat boxes
-    for (const auto& c : cells) {
-      PJ::sdk::CubePrimitive cube;
-      cube.pose.position = PJ::sdk::Vector3{.x = c[0], .y = c[1], .z = c[2]};
-      cube.size = PJ::sdk::Vector3{.x = cw > 0.0 ? cw : 0.0, .y = ch > 0.0 ? ch : 0.0, .z = kThickness};
-      cube.color = PJ::sdk::ColorRGBA{.r = 100, .g = 149, .b = 237, .a = 200};  // cornflower, semi-opaque
-      entity.cubes.push_back(cube);
-    }
-    scene.entities.push_back(std::move(entity));
-    const std::vector<std::uint8_t> blob = PJ::serializeSceneEntities(scene);
-    auto status = host.pushOwnedObject(*topic_handle, ts_ns, PJ::Span<const std::uint8_t>(blob.data(), blob.size()));
-    if (!status) {
-      return PJ::unexpected(std::move(status).error());
-    }
-    ++outcome.pushed;
+  const std::int64_t ts_ns = *timestamp;
+  const double cw = cw_col ? arrowDoubleAt(cw_col, row) : 0.0;
+  const double ch = ch_col ? arrowDoubleAt(ch_col, row) : 0.0;
+  const std::vector<std::array<double, 3>> cells = readXyzStructList(cells_col, row);
+  if (cells.empty()) {
+    return PJ::unexpected(
+        std::string("grid_cells topic '") + topic_name + "' row " + std::to_string(row) + ": empty 'cells'");
   }
-  return outcome;
+  PJ::sdk::SceneEntities scene;
+  PJ::sdk::SceneEntity entity;
+  entity.timestamp = ts_ns;
+  entity.frame_id = frame_col ? arrowStringAt(frame_col, row) : std::string{};
+  entity.cubes.reserve(cells.size());
+  constexpr double kThickness = 0.01;  // sparse cells render as thin flat boxes
+  for (const auto& c : cells) {
+    PJ::sdk::CubePrimitive cube;
+    cube.pose.position = PJ::sdk::Vector3{.x = c[0], .y = c[1], .z = c[2]};
+    cube.size = PJ::sdk::Vector3{.x = cw > 0.0 ? cw : 0.0, .y = ch > 0.0 ? ch : 0.0, .z = kThickness};
+    cube.color = PJ::sdk::ColorRGBA{.r = 100, .g = 149, .b = 237, .a = 200};  // cornflower, semi-opaque
+    entity.cubes.push_back(cube);
+  }
+  scene.entities.push_back(std::move(entity));
+  return PJ::sdk::ObjectRecord{ts_ns, std::move(scene)};
 }
 
-PJ::Expected<ObjectPushOutcome> pushColumnarPointCloudRowsToHost(
-    const ObjectIngestContext& ctx, const std::shared_ptr<arrow::Table>& table) {
-  const PJ::sdk::ToolboxHostView& host = ctx.host;
-  const PJ::sdk::DataSourceHandle source = ctx.source;
-  const std::string& topic_name = ctx.topic_name;
-  const std::string& ts_field = ctx.ts_field;
-  const std::int64_t synth_anchor_ns = ctx.synth_anchor_ns;
-  const std::int64_t synth_interval_ns = ctx.synth_interval_ns;
-  if (!host.valid()) {
-    return PJ::unexpected(std::string("toolbox host not bound"));
-  }
+PJ::Expected<PJ::sdk::ObjectRecord> decodeColumnarCloud(
+    const MosaicoObjectOptions& ctx, const std::shared_ptr<arrow::Table>& table) {
+  const std::string& topic_name = ctx.ontology_tag;
+  const auto& ts_field = ctx.ts_field;
   if (!table) {
     return PJ::unexpected(std::string("futures point cloud topic '") + topic_name + "': null table");
   }
   // Flatten to surface header/frame_id; the per-point list columns pass through.
-  auto flat_res = flattenStructColumns(table);
-  if (!flat_res.ok()) {
-    return PJ::unexpected(
-        std::string("futures point cloud topic '") + topic_name + "': flatten failed: " + flat_res.status().ToString());
-  }
-  const std::shared_ptr<arrow::Table> flat = *flat_res;
+  const auto& flat = table;
   const auto x_col = flat->GetColumnByName("x");
   const auto y_col = flat->GetColumnByName("y");
   const auto z_col = flat->GetColumnByName("z");
@@ -1552,7 +1232,7 @@ PJ::Expected<ObjectPushOutcome> pushColumnarPointCloudRowsToHost(
     return PJ::unexpected(std::string("futures point cloud topic '") + topic_name + "' missing x/y/z columns");
   }
   const auto frame_col = firstPresentColumn(flat, {"header/frame_id", "frame_id"});
-  const auto ts_col = ts_field.empty() ? nullptr : flat->GetColumnByName(ts_field);
+  const auto ts_col = !ts_field ? nullptr : flat->GetColumnByName(*ts_field);
 
   // Recognized optional per-point attributes across lidar/radar/rgbd/tof/stereo.
   static constexpr std::array<std::string_view, 25> kOptionalAttrs = {
@@ -1582,65 +1262,89 @@ PJ::Expected<ObjectPushOutcome> pushColumnarPointCloudRowsToHost(
       "luma",
       "cost"};
 
-  auto topic_handle = host.registerObjectTopic(source, topic_name, kCanonicalPointCloudMetadata);
-  if (!topic_handle) {
-    return PJ::unexpected(std::move(topic_handle).error());
+  constexpr std::int64_t row = 0;
+  const auto timestamp = objectTimestampNs(ctx, ts_col, row);
+  if (!timestamp) {
+    return PJ::unexpected(timestamp.error());
   }
+  const std::int64_t ts_ns = *timestamp;
+  // Reserve so the NumericList storage never reallocates — PackAttr holds
+  // pointers into it.
+  std::vector<NumericList> lists;
+  lists.reserve(3 + kOptionalAttrs.size());
+  std::vector<PackAttr> attrs;
+  lists.push_back(readNumericList(x_col, row));
+  lists.push_back(readNumericList(y_col, row));
+  lists.push_back(readNumericList(z_col, row));
+  if (!lists[0].valid() || !lists[1].valid() || !lists[2].valid()) {
+    return PJ::unexpected(
+        std::string("futures point cloud topic '") + topic_name + "' row " + std::to_string(row) +
+        ": missing/empty x/y/z");
+  }
+  const std::int64_t npoints = std::min({lists[0].count, lists[1].count, lists[2].count});
+  if (npoints <= 0) {
+    return PJ::unexpected(std::string("empty point cloud"));
+  }
+  attrs.push_back(PackAttr{.name = "x", .src = &lists[0]});
+  attrs.push_back(PackAttr{.name = "y", .src = &lists[1]});
+  attrs.push_back(PackAttr{.name = "z", .src = &lists[2]});
+  for (const std::string_view nm : kOptionalAttrs) {
+    const auto col = flat->GetColumnByName(std::string(nm));
+    if (!col) {
+      continue;
+    }
+    NumericList nl = readNumericList(col, row);
+    if (nl.valid() && nl.count >= npoints) {
+      lists.push_back(std::move(nl));
+      attrs.push_back(PackAttr{.name = std::string(nm), .src = &lists.back()});
+    }
+  }
+  PJ::sdk::PointCloud cloud;
+  const std::vector<std::uint8_t> buf = packPointCloud(cloud, attrs, npoints);
+  cloud.is_dense = true;
+  cloud.frame_id = frame_col ? arrowStringAt(frame_col, row) : std::string{};
+  cloud.timestamp_ns = ts_ns;
+  auto owned = std::make_shared<std::vector<std::uint8_t>>(std::move(buf));
+  cloud.data = PJ::Span<const std::uint8_t>(owned->data(), owned->size());
+  cloud.anchor = owned;
+  return PJ::sdk::ObjectRecord{ts_ns, std::move(cloud)};
+}
 
-  ObjectPushOutcome outcome;
-  const std::int64_t num_rows = flat->num_rows();
-  for (std::int64_t row = 0; row < num_rows; ++row) {
-    const std::int64_t ts_ns = ts_col ? arrowI64Opt(ts_col, row).value_or(synth_anchor_ns + row * synth_interval_ns)
-                                      : (synth_anchor_ns + row * synth_interval_ns);
-    // Reserve so the NumericList storage never reallocates — PackAttr holds
-    // pointers into it.
-    std::vector<NumericList> lists;
-    lists.reserve(3 + kOptionalAttrs.size());
-    std::vector<PackAttr> attrs;
-    lists.push_back(readNumericList(x_col, row));
-    lists.push_back(readNumericList(y_col, row));
-    lists.push_back(readNumericList(z_col, row));
-    if (!lists[0].valid() || !lists[1].valid() || !lists[2].valid()) {
-      ++outcome.skipped;
-      if (outcome.first_error.empty()) {
-        outcome.first_error = std::string("futures point cloud topic '") + topic_name + "' row " + std::to_string(row) +
-                              ": missing/empty x/y/z";
-      }
-      continue;
-    }
-    const std::int64_t npoints = std::min({lists[0].count, lists[1].count, lists[2].count});
-    if (npoints <= 0) {
-      ++outcome.skipped;
-      continue;
-    }
-    attrs.push_back(PackAttr{.name = "x", .src = &lists[0]});
-    attrs.push_back(PackAttr{.name = "y", .src = &lists[1]});
-    attrs.push_back(PackAttr{.name = "z", .src = &lists[2]});
-    for (const std::string_view nm : kOptionalAttrs) {
-      const auto col = flat->GetColumnByName(std::string(nm));
-      if (!col) {
-        continue;
-      }
-      NumericList nl = readNumericList(col, row);
-      if (nl.valid() && nl.count >= npoints) {
-        lists.push_back(std::move(nl));
-        attrs.push_back(PackAttr{.name = std::string(nm), .src = &lists.back()});
-      }
-    }
-    PJ::sdk::PointCloud cloud;
-    const std::vector<std::uint8_t> buf = packPointCloud(cloud, attrs, npoints);
-    cloud.is_dense = true;
-    cloud.frame_id = frame_col ? arrowStringAt(frame_col, row) : std::string{};
-    cloud.timestamp_ns = ts_ns;
-    cloud.data = PJ::Span<const std::uint8_t>(buf.data(), buf.size());
-    const std::vector<std::uint8_t> blob = PJ::serializePointCloud(cloud);
-    auto status = host.pushOwnedObject(*topic_handle, ts_ns, PJ::Span<const std::uint8_t>(blob.data(), blob.size()));
-    if (!status) {
-      return PJ::unexpected(std::move(status).error());
-    }
-    ++outcome.pushed;
+PJ::Expected<PJ::sdk::ObjectRecord> decodeMosaicoObject(
+    const MosaicoObjectOptions& options, const std::shared_ptr<arrow::Table>& table) {
+  if (!table || table->num_rows() != 1) {
+    return PJ::unexpected(std::string("canonical Arrow objects require exactly one row per IPC message"));
   }
-  return outcome;
+  auto flat = flattenStructColumns(table);
+  if (!flat.ok()) {
+    return PJ::unexpected(flat.status().ToString());
+  }
+  const auto& tag = options.ontology_tag;
+  if (isImageOntology(tag)) {
+    return decodeImage(options, *flat);
+  }
+  if (isPointCloudOntology(tag)) {
+    return decodePointCloud(options, *flat);
+  }
+  if (isPoseOntology(tag)) {
+    return decodePose(options, *flat);
+  }
+  if (isTransformOntology(tag)) {
+    return decodeTransforms(options, *flat);
+  }
+  if (isOccupancyGridOntology(tag)) {
+    return decodeGrid(options, *flat);
+  }
+  if (isLaserScanOntology(tag)) {
+    return decodeLaserScan(options, *flat);
+  }
+  if (isGridCellsOntology(tag)) {
+    return decodeGridCells(options, *flat);
+  }
+  if (isFuturesPointCloudOntology(tag)) {
+    return decodeColumnarCloud(options, *flat);
+  }
+  return PJ::unexpected("unknown Mosaico ontology '" + tag + "'");
 }
 
 }  // namespace mosaico

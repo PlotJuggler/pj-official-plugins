@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "../../common/builtin_object_compat.hpp"
 #include "../foxglove_grid_codec.hpp"
 #include "../foxglove_object_codecs.hpp"
 #include "../foxglove_pointcloud_codec.hpp"
@@ -695,7 +696,7 @@ void checkVideoFrameObjectRoute(std::string_view registered_name) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value()) << rec.error();
 
-  const auto* vf = std::any_cast<PJ::sdk::VideoFrame>(&rec->object);
+  const auto* vf = pj_compat::getBuiltinObject<PJ::sdk::VideoFrame>(rec->object);
   ASSERT_NE(vf, nullptr);
   EXPECT_EQ(vf->frame_id, "camera_optical");
   EXPECT_EQ(vf->format, "h264");
@@ -1109,7 +1110,7 @@ TEST(ProtobufParserTest, FoxgloveVoxelGridObjectRoute) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value()) << rec.error();
 
-  const auto* vg = std::any_cast<PJ::sdk::VoxelGrid>(&rec->object);
+  const auto* vg = pj_compat::getBuiltinObject<PJ::sdk::VoxelGrid>(rec->object);
   ASSERT_NE(vg, nullptr);
   EXPECT_EQ(vg->frame_id, "map");
   EXPECT_EQ(vg->column_count, 2u);
@@ -1218,7 +1219,7 @@ TEST(ProtobufParserTest, FoxglovePointCloudObjectRoute) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value()) << rec.error();
 
-  const auto* pc = std::any_cast<PJ::sdk::PointCloud>(&rec->object);
+  const auto* pc = pj_compat::getBuiltinObject<PJ::sdk::PointCloud>(rec->object);
   ASSERT_NE(pc, nullptr);
   EXPECT_EQ(pc->frame_id, "lidar_top");
   EXPECT_EQ(pc->point_step, 16u);
@@ -1472,7 +1473,7 @@ TEST(ProtobufParserTest, FoxgloveRawImageHonorsVariantSchemaFieldNumbers) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value()) << rec.error();
 
-  const auto* im = std::any_cast<PJ::sdk::Image>(&rec->object);
+  const auto* im = pj_compat::getBuiltinObject<PJ::sdk::Image>(rec->object);
   ASSERT_NE(im, nullptr);
   EXPECT_EQ(im->width, 2u);
   EXPECT_EQ(im->height, 2u);
@@ -1539,7 +1540,7 @@ TEST(ProtobufParserTest, FoxgloveCompressedImageHonorsVariantSchemaFieldNumbers)
   const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
   auto rec = base->parseObject(1234, {PJ::Span<const uint8_t>(wire.data(), wire.size()), anchor});
   ASSERT_TRUE(rec.has_value()) << rec.error();
-  const auto* im = std::any_cast<PJ::sdk::Image>(&rec->object);
+  const auto* im = pj_compat::getBuiltinObject<PJ::sdk::Image>(rec->object);
   ASSERT_NE(im, nullptr);
   EXPECT_EQ(im->encoding, "jpeg");
   EXPECT_EQ(im->frame_id, "cam");
@@ -1582,7 +1583,7 @@ TEST(ProtobufParserTest, FoxgloveCameraCalibrationHonorsOfficialSchemaFieldNumbe
   const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
   auto rec = base->parseObject(1234, {PJ::Span<const uint8_t>(wire.data(), wire.size()), anchor});
   ASSERT_TRUE(rec.has_value()) << rec.error();
-  const auto* ci = std::any_cast<PJ::sdk::CameraInfo>(&rec->object);
+  const auto* ci = pj_compat::getBuiltinObject<PJ::sdk::CameraInfo>(rec->object);
   ASSERT_NE(ci, nullptr);
   EXPECT_EQ(ci->width, 640u);
   EXPECT_EQ(ci->height, 480u);
@@ -1626,7 +1627,7 @@ TEST(ProtobufParserTest, FoxgloveFrameTransformHonorsVariantSchemaFieldNumbers) 
   const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
   auto rec = base->parseObject(1234, {PJ::Span<const uint8_t>(wire.data(), wire.size()), anchor});
   ASSERT_TRUE(rec.has_value()) << rec.error();
-  const auto* tfs = std::any_cast<PJ::sdk::FrameTransforms>(&rec->object);
+  const auto* tfs = pj_compat::getBuiltinObject<PJ::sdk::FrameTransforms>(rec->object);
   ASSERT_NE(tfs, nullptr);
   ASSERT_EQ(tfs->transforms.size(), 1u);
   EXPECT_EQ(tfs->transforms[0].parent_frame_id, "world");
@@ -1663,7 +1664,7 @@ TEST(ProtobufParserTest, FoxgloveLaserScanHonorsVariantSchemaFieldNumbers) {
   const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
   auto rec = base->parseObject(1234, {PJ::Span<const uint8_t>(wire.data(), wire.size()), anchor});
   ASSERT_TRUE(rec.has_value()) << rec.error();
-  const auto* pc = std::any_cast<PJ::sdk::PointCloud>(&rec->object);
+  const auto* pc = pj_compat::getBuiltinObject<PJ::sdk::PointCloud>(rec->object);
   ASSERT_NE(pc, nullptr);
   EXPECT_EQ(pc->frame_id, "laser");
   EXPECT_GT(pc->width, 0u);  // rays projected to points
@@ -1691,7 +1692,7 @@ TEST(ProtobufParserTest, FoxgloveImageAnnotationsHonorsVariantSchemaFieldNumbers
   const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
   auto rec = base->parseObject(1234, {PJ::Span<const uint8_t>(wire.data(), wire.size()), anchor});
   ASSERT_TRUE(rec.has_value()) << rec.error();
-  const auto* a = std::any_cast<PJ::sdk::ImageAnnotations>(&rec->object);
+  const auto* a = pj_compat::getBuiltinObject<PJ::sdk::ImageAnnotations>(rec->object);
   ASSERT_NE(a, nullptr);
   EXPECT_EQ(a->circles.size(), 1u);
   EXPECT_EQ(a->points.size(), 1u);
@@ -1787,7 +1788,7 @@ TEST(ProtobufParserTest, FoxglovePointCloudHonorsVariantSchemaFieldNumbers) {
   const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
   auto rec = base->parseObject(1234, {PJ::Span<const uint8_t>(wire.data(), wire.size()), anchor});
   ASSERT_TRUE(rec.has_value()) << rec.error();
-  const auto* cloud = std::any_cast<PJ::sdk::PointCloud>(&rec->object);
+  const auto* cloud = pj_compat::getBuiltinObject<PJ::sdk::PointCloud>(rec->object);
   ASSERT_NE(cloud, nullptr);
   EXPECT_EQ(cloud->frame_id, "lidar");
   EXPECT_EQ(cloud->point_step, 4u);
@@ -1815,7 +1816,7 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateHonorsVariantNestedEntityFieldNumber
   const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
   auto rec = base->parseObject(1234, {PJ::Span<const uint8_t>(wire.data(), wire.size()), anchor});
   ASSERT_TRUE(rec.has_value()) << rec.error();
-  const auto* scene = std::any_cast<PJ::sdk::SceneEntities>(&rec->object);
+  const auto* scene = pj_compat::getBuiltinObject<PJ::sdk::SceneEntities>(rec->object);
   ASSERT_NE(scene, nullptr);
   ASSERT_EQ(scene->entities.size(), 1u);
   EXPECT_EQ(scene->entities[0].id, "robot");
@@ -2445,7 +2446,7 @@ TEST(ProtobufParserTest, FoxgloveLaserScanObjectRoute) {
   ASSERT_TRUE(rec.has_value()) << rec.error();
   EXPECT_FALSE(rec->ts.has_value());  // embedded ts disabled by default
 
-  const auto* pc = std::any_cast<PJ::sdk::PointCloud>(&rec->object);
+  const auto* pc = pj_compat::getBuiltinObject<PJ::sdk::PointCloud>(rec->object);
   ASSERT_NE(pc, nullptr);
   EXPECT_EQ(pc->frame_id, "lidar_2d");
   EXPECT_EQ(pc->width, 2u);
@@ -2663,7 +2664,7 @@ TEST(ProtobufParserTest, FoxglovePosesInFrameObjectRoute) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value()) << rec.error();
 
-  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  const auto* pf = pj_compat::getBuiltinObject<PJ::sdk::PosesInFrame>(rec->object);
   ASSERT_NE(pf, nullptr);
   EXPECT_EQ(pf->frame_id, "map");
   EXPECT_EQ(pf->timestamp_ns, 9'000'000'500LL);  // decoded from the wire timestamp
@@ -2716,7 +2717,7 @@ TEST(ProtobufParserTest, PjPosesInFrameObjectRoute) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value()) << rec.error();
 
-  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  const auto* pf = pj_compat::getBuiltinObject<PJ::sdk::PosesInFrame>(rec->object);
   ASSERT_NE(pf, nullptr);
   EXPECT_EQ(pf->frame_id, "map");
   EXPECT_EQ(pf->timestamp_ns, 9'000'000'500LL);
@@ -2749,7 +2750,7 @@ TEST(ProtobufParserTest, FoxglovePoseInFrameObjectRoute) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value()) << rec.error();
 
-  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  const auto* pf = pj_compat::getBuiltinObject<PJ::sdk::PosesInFrame>(rec->object);
   ASSERT_NE(pf, nullptr);
   EXPECT_EQ(pf->frame_id, "base_link");
   EXPECT_EQ(pf->timestamp_ns, 3'000'000'000LL);
@@ -2829,7 +2830,7 @@ TEST(ProtobufParserTest, FoxgloveOdometryObjectRoute) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value()) << rec.error();
 
-  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  const auto* pf = pj_compat::getBuiltinObject<PJ::sdk::PosesInFrame>(rec->object);
   ASSERT_NE(pf, nullptr);
   EXPECT_EQ(pf->frame_id, "odom");  // reference frame (field 2), NOT body_frame_id
   EXPECT_EQ(pf->timestamp_ns, 5'000'000'000LL);
@@ -2895,7 +2896,7 @@ TEST(ProtobufParserTest, FoxgloveOdometryHonorsVariantSchemaFieldNumbers) {
   auto rec = base->parseObject(1234, view);
   ASSERT_TRUE(rec.has_value()) << rec.error();
 
-  const auto* pf = std::any_cast<PJ::sdk::PosesInFrame>(&rec->object);
+  const auto* pf = pj_compat::getBuiltinObject<PJ::sdk::PosesInFrame>(rec->object);
   ASSERT_NE(pf, nullptr);
   EXPECT_EQ(pf->frame_id, "world");  // resolved from descriptor (field 9), not the default field 2
   ASSERT_EQ(pf->poses.size(), 1u);
@@ -3491,7 +3492,7 @@ TEST(ProtobufParserTest, FoxgloveGridObjectRouteClassifiesAndForwardsAnchor) {
   ASSERT_TRUE(rec.has_value()) << rec.error();
   EXPECT_FALSE(rec->ts.has_value());  // use_embedded_timestamp off
 
-  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  const auto* g = pj_compat::getBuiltinObject<PJ::sdk::GridMap>(rec->object);
   ASSERT_NE(g, nullptr);
   expectGoldenGrid(*g, wire, anchor);
 }
@@ -3512,7 +3513,7 @@ TEST(ProtobufParserTest, FoxgloveGridRenumberedSchemaResolvesParentAndNested) {
   ASSERT_TRUE(rec.has_value()) << rec.error();
   ASSERT_TRUE(rec->ts.has_value());
   EXPECT_EQ(*rec->ts, 7'000'000'250LL);
-  const auto* g = std::any_cast<PJ::sdk::GridMap>(&rec->object);
+  const auto* g = pj_compat::getBuiltinObject<PJ::sdk::GridMap>(rec->object);
   ASSERT_NE(g, nullptr);
   expectGoldenGrid(*g, wire, anchor);
 
@@ -3520,7 +3521,7 @@ TEST(ProtobufParserTest, FoxgloveGridRenumberedSchemaResolvesParentAndNested) {
   const auto official = buildFoxgloveGridWire(FoxgloveGridWire{});
   const PJ::sdk::PayloadView official_view{PJ::Span<const uint8_t>(official.data(), official.size()), anchor};
   auto wrong = base->parseObject(1234, official_view);
-  EXPECT_TRUE(!wrong.has_value() || std::any_cast<PJ::sdk::GridMap>(&wrong->object)->frame_id != "map");
+  EXPECT_TRUE(!wrong.has_value() || pj_compat::getBuiltinObject<PJ::sdk::GridMap>(wrong->object)->frame_id != "map");
 }
 
 TEST(ProtobufParserTest, FoxgloveGridScalarRoute) {

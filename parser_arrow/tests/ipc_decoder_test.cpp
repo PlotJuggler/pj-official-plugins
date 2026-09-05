@@ -23,14 +23,6 @@
 namespace pj::parser_arrow {
 namespace {
 
-/// Return whether text contains "lz4" without regard to ASCII case.
-[[nodiscard]] bool containsLz4(std::string text) {
-  std::transform(text.begin(), text.end(), text.begin(), [](unsigned char character) {
-    return static_cast<char>(std::tolower(character));
-  });
-  return text.find("lz4") != std::string::npos;
-}
-
 /// Verify one flat fixture batch starting at the requested source row.
 void verifyFlatBatch(
     const ArrowSchema* schema, const ArrowArray* batch, int64_t source_row_offset, int64_t expected_length) {
@@ -129,40 +121,39 @@ TEST(IpcDecoderTest, DecodesMultipleZstdCompressedBodies) {
   verifyEndOfStream(stream.get());
 }
 
-/// Lz4-compressed bodies are rejected with an actionable codec name.
-TEST(IpcDecoderTest, RejectsLz4CompressedBodiesWithClearError) {
-  const auto bytes = test::readFile(test::fixturePath("flat_lz4.arrows"));
-  const auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
-  ASSERT_FALSE(decoded);
-  EXPECT_TRUE(containsLz4(decoded.error())) << decoded.error();
+TEST(IpcDecoderTest, DecodesLz4IncludingLaterCompressedBatches) {
+  for (const char* name : {"flat_lz4.arrows", "flat_lz4_second_batch.arrows"}) {
+    const auto bytes = test::readFile(test::fixturePath(name));
+    auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
+    ASSERT_TRUE(decoded) << decoded.error();
+    auto schema = test::readSchema(*decoded);
+    int64_t row = 0;
+    while (true) {
+      PJ::sdk::ArrowArrayHolder batch;
+      ASSERT_EQ(decoded->get()->get_next(decoded->get(), batch.out()), 0);
+      if (!batch.valid()) {
+        break;
+      }
+      verifyFlatBatch(schema.get(), batch.get(), row, batch.get()->length);
+      row += batch.get()->length;
+    }
+    EXPECT_EQ(row, 3);
+  }
 }
 
-/// A later LZ4 batch is rejected during preflight without decoding either body.
-TEST(IpcDecoderTest, RejectsLz4InLaterRecordBatchBeforeDecode) {
-  const auto bytes = test::readFile(test::fixturePath("flat_lz4_second_batch.arrows"));
-  const auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
-  ASSERT_FALSE(decoded);
-  EXPECT_TRUE(containsLz4(decoded.error())) << decoded.error();
-}
-
-/// Dictionary fields are rejected during preflight, before the first DictionaryBatch is pulled.
-TEST(IpcDecoderTest, RejectsDictionaryEncodedColumnsAtDecodeTime) {
+TEST(IpcDecoderTest, DecodesDictionaryValuesAfterTheRecordBoundary) {
   const auto bytes = test::readFile(test::fixturePath("dictionary.arrows"));
-  const auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
-  ASSERT_FALSE(decoded);
-  EXPECT_NE(decoded.error().find("dictionary"), std::string::npos) << decoded.error();
-  EXPECT_NE(decoded.error().find("DictionaryBatch"), std::string::npos) << decoded.error();
-  EXPECT_NE(decoded.error().find("producers must decode dictionaries before encoding"), std::string::npos)
-      << decoded.error();
-}
-
-/// Skipping preflight exposes the same dictionary-schema guidance from the lazy reader.
-TEST(IpcDecoderTest, ClassifiesDictionarySchemaFailureFromReader) {
-  const auto bytes = test::readFile(test::fixturePath("dictionary.arrows"));
-  const auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()), IpcPreflight::kSkip);
-  ASSERT_FALSE(decoded);
-  EXPECT_NE(decoded.error().find("producers must decode dictionaries before encoding"), std::string::npos)
-      << decoded.error();
+  auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
+  ASSERT_TRUE(decoded) << decoded.error();
+  auto schema = test::readSchema(*decoded);
+  auto batch = test::readBatch(*decoded);
+  ASSERT_TRUE(batch.valid());
+  EXPECT_EQ(schema.get()->children[1]->dictionary, nullptr);
+  EXPECT_STREQ(schema.get()->children[1]->format, "u");
+  auto view = test::bindArrayView(schema.get(), batch.get());
+  const auto label = ArrowArrayViewGetStringUnsafe(view->children[1], 0);
+  EXPECT_GT(label.size_bytes, 0);
+  verifyEndOfStream(decoded->get());
 }
 
 /// Empty payloads are rejected before constructing a stream.
@@ -181,13 +172,16 @@ TEST(IpcDecoderTest, RejectsGarbageInput) {
   EXPECT_NE(decoded.error().find("parser_arrow:"), std::string::npos);
 }
 
-/// Unsupported IPC view field types include an actionable producer-side cast hint.
-TEST(IpcDecoderTest, HintsHowToEncodeUnsupportedViewFields) {
+TEST(IpcDecoderTest, DecodesViewFields) {
   const auto bytes = test::readFile(test::fixturePath("views.arrows"));
-  const auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
-  ASSERT_FALSE(decoded);
-  EXPECT_NE(decoded.error().find("string_view"), std::string::npos) << decoded.error();
-  EXPECT_NE(decoded.error().find("cast to utf8/binary"), std::string::npos) << decoded.error();
+  auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
+  ASSERT_TRUE(decoded) << decoded.error();
+  auto schema = test::readSchema(*decoded);
+  auto batch = test::readBatch(*decoded);
+  ASSERT_TRUE(batch.valid());
+  auto view = test::bindArrayView(schema.get(), batch.get());
+  EXPECT_GT(batch.get()->length, 0);
+  verifyEndOfStream(decoded->get());
 }
 
 /// The borrowing decoder can consume the complete stream while its caller-owned payload remains alive and unchanged.
