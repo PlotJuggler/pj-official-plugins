@@ -170,10 +170,9 @@ TEST(DescriptorImportQuery, TrustAllowlistFailsClosedForDifferentOrMalformedOrig
   }
 }
 
-TEST(DescriptorImportQuery, StoredPlaintextOptInMovesTheTrustTarget) {
-  // A per-machine allow_insecure opt-in makes the headless target grpc://,
-  // so the trust check follows: the grpc+tls entry no longer matches and
-  // the grpc entry does.
+TEST(DescriptorImportQuery, StoredPlaintextOptInKeepsTheTlsTrustTarget) {
+  // A per-machine allow_insecure opt-in only permits the plaintext RETRY;
+  // the headless target (and so the trust check) stays grpc+tls://.
   TrustEnvGuard env;
   PJ::sdk::InMemorySettingsBackend settings_backend;
   PJ::sdk::SettingsStoreHost settings_host(settings_backend);
@@ -188,12 +187,12 @@ TEST(DescriptorImportQuery, StoredPlaintextOptInMovesTheTrustTarget) {
   env.setTrustAllowlist("grpc+tls://demo.mosaico.dev:6726");
   auto result = freshResult();
   ASSERT_TRUE(provider.queryDescriptor(view(json), &result, nullptr));
-  EXPECT_EQ(result.trust, PJ_DESCRIPTOR_TRUST_NEEDS_CONFIRMATION);
+  EXPECT_EQ(result.trust, PJ_DESCRIPTOR_TRUST_TRUSTED);
 
   env.setTrustAllowlist("grpc://demo.mosaico.dev:6726");
   result = freshResult();
   ASSERT_TRUE(provider.queryDescriptor(view(json), &result, nullptr));
-  EXPECT_EQ(result.trust, PJ_DESCRIPTOR_TRUST_TRUSTED);
+  EXPECT_EQ(result.trust, PJ_DESCRIPTOR_TRUST_NEEDS_CONFIRMATION);
 }
 
 // A no-op but VALID host binding: preflight rejections must fire before any

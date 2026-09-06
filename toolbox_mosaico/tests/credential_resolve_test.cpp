@@ -18,6 +18,7 @@
 namespace {
 
 using mosaico::envKeyAllowedForTarget;
+using mosaico::headlessPlaintextRetryUri;
 using mosaico::headlessTargetUri;
 using mosaico::resolveCredentials;
 using mosaico::resolveHeadlessCredentials;
@@ -102,20 +103,26 @@ TEST(HeadlessCredentials, StoredTlsKeyRequiresExplicitOptInForPlaintextTarget) {
   EXPECT_EQ(resolveHeadlessCredentials(settings.view(), plaintext_target).api_key, "stored_secret");
 }
 
-TEST(HeadlessTargetUri, PlaintextOnlyByStoredOptIn) {
+TEST(HeadlessTargetUri, TlsFirstAndPlaintextRetryOnlyByStoredOptIn) {
   EnvGuard env(nullptr, nullptr);
   const std::string origin = "demo.mosaico.dev:6726";
+  EXPECT_EQ(headlessTargetUri(origin), "grpc+tls://demo.mosaico.dev:6726");
   {
-    // No stored entry (and even an unbound view): TLS by default.
+    // No stored entry (and even an unbound view): no plaintext retry.
     PJ::sdk::SettingsView unbound{};
-    EXPECT_EQ(headlessTargetUri(unbound, origin), "grpc+tls://demo.mosaico.dev:6726");
+    EXPECT_FALSE(headlessPlaintextRetryUri(unbound, origin).has_value());
   }
   SettingsFixture settings;
-  EXPECT_EQ(headlessTargetUri(settings.view(), origin), "grpc+tls://demo.mosaico.dev:6726");
+  EXPECT_FALSE(headlessPlaintextRetryUri(settings.view(), origin).has_value());
   ServerCredentials stored;
   stored.allow_insecure = true;
   saveCredentialsForUri(settings.view(), origin, stored);
-  EXPECT_EQ(headlessTargetUri(settings.view(), origin), "grpc://demo.mosaico.dev:6726");
+  // The dialog's rule: opt-in AND no custom cert.
+  EXPECT_EQ(
+      headlessPlaintextRetryUri(settings.view(), origin), std::optional<std::string>("grpc://demo.mosaico.dev:6726"));
+  stored.cert_path = "/etc/ssl/custom.pem";
+  saveCredentialsForUri(settings.view(), origin, stored);
+  EXPECT_FALSE(headlessPlaintextRetryUri(settings.view(), origin).has_value());
 }
 
 TEST(InteractiveCredentials, EnvFallbackStaysUnguarded) {
