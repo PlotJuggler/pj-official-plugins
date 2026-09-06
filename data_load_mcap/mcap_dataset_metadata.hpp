@@ -254,14 +254,12 @@ inline nlohmann::json extractDatasetMetadata(mcap::McapReader& reader, std::vect
   return buildDocument(gatherFileFacts(reader), collectMetadataRecords(reader, diagnostics), diagnostics);
 }
 
-/// Delivery seam to the host. The set_dataset_metadata runtime-host slot is
-/// not in the pinned SDK yet, so the document stops here for now.
+/// Delivery seam to the host (set_dataset_metadata, SDK 0.32). A host without
+/// the slot returns an error, which is deliberately ignored: the load is
+/// unaffected and that host simply shows no metadata.
 template <typename RuntimeHostView>
 inline void publishDatasetMetadata(const RuntimeHostView& host, const nlohmann::json& document) {
-  // TODO(sdk-0.32): call host.setDatasetMetadata(document.dump()) once the
-  // slot ships; a host without the slot simply shows no metadata.
-  (void)host;
-  (void)document;
+  (void)host.setDatasetMetadata(document.dump());
 }
 
 }  // namespace PJ::McapMetadata
