@@ -47,10 +47,9 @@ class PjOfficialPluginsConan(ConanFile):
         "ixwebsocket/11.4.6",
         "libdatachannel/0.24.0",
         "asio/1.28.2",
-        # NOTE: liblsl (data_stream_lsl) is intentionally NOT here. It requires
-        # boost/[>=1.85], which conflicts with the boost/1.81.0 that Arrow's
-        # Flight stack pins via thrift in this aggregate. data_stream_lsl builds
-        # per-plugin against its own conanfile.py (like data_load_lerobot/mp4).
+        "liblsl/1.16.2",
+        # data_load_mp4 / data_load_lerobot (via common/pj_video_demux).
+        "ffmpeg/8.1",
         "kissfft/131.1.0",
         "lua/5.4.6",
         "sol2/3.5.0",
@@ -102,7 +101,80 @@ class PjOfficialPluginsConan(ConanFile):
         "libdatachannel/*:with_websocket": True,
         "libdatachannel/*:with_nice": False,
         "libdatachannel/*:with_ssl": "openssl",
+        # FFmpeg (data_load_mp4 / data_load_lerobot): those plugins only OPEN the container to read metadata
+        # (creation_time, duration, codec name). It does not decode any frame
+        # — decoding happens later in the host via FileVideoSource. Keep the
+        # build lean and LGPL-clean: no encoders/muxers/devices/audio/codecs,
+        # only the mov demuxer + file protocol + codec-id-to-name table.
+        "ffmpeg/*:avcodec": True,
+        "ffmpeg/*:avformat": True,
+        "ffmpeg/*:swscale": False,
+        "ffmpeg/*:swresample": False,
+        "ffmpeg/*:avfilter": False,
+        "ffmpeg/*:avdevice": False,
+        "ffmpeg/*:postproc": False,
+        "ffmpeg/*:with_programs": False,
+        "ffmpeg/*:with_zlib": True,
+        "ffmpeg/*:with_bzip2": False,
+        "ffmpeg/*:with_lzma": False,
+        "ffmpeg/*:with_libiconv": False,
+        "ffmpeg/*:with_freetype": False,
+        "ffmpeg/*:with_openjpeg": False,
+        "ffmpeg/*:with_openh264": False,
+        "ffmpeg/*:with_opus": False,
+        "ffmpeg/*:with_vorbis": False,
+        "ffmpeg/*:with_libx264": False,
+        "ffmpeg/*:with_libx265": False,
+        "ffmpeg/*:with_libvpx": False,
+        "ffmpeg/*:with_libmp3lame": False,
+        "ffmpeg/*:with_libfdk_aac": False,
+        "ffmpeg/*:with_libwebp": False,
+        "ffmpeg/*:with_ssl": False,
+        "ffmpeg/*:with_libalsa": False,
+        "ffmpeg/*:with_pulse": False,
+        "ffmpeg/*:with_vaapi": False,
+        "ffmpeg/*:with_vdpau": False,
+        "ffmpeg/*:with_xcb": False,
+        # The conan recipe rejects display/extra deps unless avdevice is on
+        # (e.g. with_xlib requires avdevice). We have avdevice=False, so all
+        # of these must be explicitly disabled.
+        "ffmpeg/*:with_xlib": False,
+        "ffmpeg/*:with_libdrm": False,
+        "ffmpeg/*:with_libxml2": False,
+        "ffmpeg/*:with_fontconfig": False,
+        "ffmpeg/*:with_fribidi": False,
+        "ffmpeg/*:with_harfbuzz": False,
+        "ffmpeg/*:with_libjxl": False,
+        "ffmpeg/*:with_openapv": False,
+        "ffmpeg/*:with_zeromq": False,
+        "ffmpeg/*:with_sdl": False,
+        "ffmpeg/*:with_appkit": False,
+        "ffmpeg/*:with_audiotoolbox": False,
+        "ffmpeg/*:with_avfoundation": False,
+        "ffmpeg/*:with_coreimage": False,
+        "ffmpeg/*:with_videotoolbox": False,
+        "ffmpeg/*:with_libsvtav1": False,
+        "ffmpeg/*:with_libaom": False,
+        "ffmpeg/*:with_libdav1d": False,
+        "ffmpeg/*:disable_all_encoders": True,
+        "ffmpeg/*:disable_all_muxers": True,
+        "ffmpeg/*:disable_all_decoders": True,
+        "ffmpeg/*:disable_all_demuxers": True,
+        "ffmpeg/*:enable_demuxers": "mov",
+        "ffmpeg/*:disable_all_parsers": True,
+        "ffmpeg/*:disable_all_bitstream_filters": True,
+        "ffmpeg/*:disable_all_protocols": True,
+        "ffmpeg/*:enable_protocols": "file",
     }
+
+    def requirements(self):
+        # liblsl depends on pugixml/1.13, whose CMakeLists declares a pre-3.5
+        # cmake_minimum_required that CMake 4.x refuses; 1.15 is API-compatible.
+        self.requires("pugixml/1.15", override=True)
+        # liblsl pins boost/1.81.0 exactly while Arrow's thrift wants [>=1.85 <=1.90].
+        # Settle on thrift's choice (the Flight stack is the expensive one); liblsl
+        # only needs Boost headers and builds fine against 1.90.
+        self.requires("boost/1.90.0", override=True)
 
     def configure(self):
         # Enable Arrow's Flight stack on Linux AND Windows. toolbox_mosaico's Arrow
