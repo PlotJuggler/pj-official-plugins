@@ -92,6 +92,10 @@ separate application-version requirement.
 
 **Before opening or updating a PR:**
 
+- Every plugin carries a `CHANGELOG.md`. Any bump of a plugin's `version` in
+  `manifest.json` must add a matching entry there (`## [X.Y.Z] - YYYY-MM-DD`
+  plus Added/Changed/Fixed bullets) in the same PR. Entries describe user-visible
+  behavior, not refactors.
 - Preserve each existing `min_sdk_required` unless the change introduces a real
   requirement for newer host functionality. A global SDK bump, rebuild, refactor,
   or newer SDK helper that adds no host requirement does **not** justify raising

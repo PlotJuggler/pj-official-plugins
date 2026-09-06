@@ -1,7 +1,7 @@
 {
   "id": "protobuf-parser",
   "name": "Protobuf Parser",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Message parser for Protocol Buffers encoded data. Promotes the well-known Foxglove schemas (PointCloud, CompressedVideo, CompressedImage, RawImage, ImageAnnotations, SceneUpdate, FrameTransform, PosesInFrame, CameraCalibration, VoxelGrid, Grid) to builtin scene objects.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
