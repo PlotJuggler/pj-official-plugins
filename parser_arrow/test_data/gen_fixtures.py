@@ -440,6 +440,33 @@ def make_dictionary_batch() -> pa.RecordBatch:
     )
 
 
+def recording_fixtures() -> list[Path]:
+    """Messages exercise replay without the original producer's parser config."""
+    empty, populated = [batch.select([0, 1]) for batch in make_lists_empty_first_batches()]
+    null_time = pa.record_batch(
+        [pa.array([None, None], type=pa.int64()), empty.column(1)], schema=empty.schema
+    )
+    replay = pa.record_batch(
+        [pa.array([100, 500, 900], type=pa.timestamp("ns")),
+         pa.array(["original", "source", "values"]),
+         pa.array([1.5, 2.5, 3.5])],
+        names=["__mosaico_timestamp", "timestamp_ns", "value"],
+    )
+    image = pa.record_batch(
+        [pa.array([123], type=pa.timestamp("us")), pa.array([2], type=pa.int32()),
+         pa.array([1], type=pa.int32()), pa.array(["mono8"], type=pa.string_view()),
+         pa.array([b"AB"], type=pa.binary_view())],
+        names=["stamp", "width", "height", "encoding", "data"],
+    )
+    return [write_stream("lists_empty_then_populated.arrows", [empty, populated]),
+            write_stream("lists_empty_message.arrows", [empty]),
+            write_stream("lists_populated_message.arrows", [populated]),
+            write_stream("lists_null_time_message.arrows", [null_time]),
+            write_stream("recorded_mosaico.arrows", [replay]),
+            write_stream("mosaico_image.arrows", [image]),
+            write_stream("mosaico_image_unnamed_stamp.arrows", [image.rename_columns(["", "width", "height", "encoding", "data"])])]
+
+
 def main() -> None:
     """Generate every checked-in test fixture and print its byte size."""
     flat_batch = make_flat_batch()
@@ -498,6 +525,7 @@ def main() -> None:
         ),
     ]
 
+    generated_paths.extend(recording_fixtures())
     for output_path in generated_paths:
         print(f"{output_path.name}: {output_path.stat().st_size} bytes")
 

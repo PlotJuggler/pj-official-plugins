@@ -27,9 +27,6 @@ namespace pj::parser_arrow::test {
 [[nodiscard]] int appendCastedValueForTesting(
     ArrowArray* output, const ArrowArrayView* input, int64_t row, const ArrowSchema* logical_schema);
 
-/// Exercise the production seconds-to-nanoseconds conversion without depending on an Arrow storage type's precision.
-[[nodiscard]] bool floatingSecondsToNanosecondsForTesting(double seconds, int64_t* output) noexcept;
-
 /// Query the production scalar-copy predicate so the contract test cannot validate the type table against itself.
 [[nodiscard]] bool supportsScalarCopyForTesting(ArrowType type) noexcept;
 
@@ -669,7 +666,8 @@ TEST(TableShaperTest, HostIngestibleMatchesHostMapping) {
 TEST(TableShaperTest, AutoAxisPlausibleIsSubsetOfAxisCast) {
   for (const TypeRow& row : kTypeTable) {
     SCOPED_TRACE(ArrowTypeString(row.type));
-    if (row.auto_axis_plausible) {
+    if (PJ::sdk::timestampEligibility(row.timestamp_storage, PJ::TimeUnit::kNanoseconds) ==
+        PJ::sdk::TimestampEligibility::kEligible) {
       EXPECT_TRUE(row.axis_cast.has_value());
     }
   }
@@ -847,7 +845,9 @@ TEST(TableShaperTest, AutoDetectsTimestampColumn) {
 
 /// Detection walks flattened leaves, so a nested timestamp becomes the axis and is scaled to int64 nanoseconds.
 TEST(TableShaperTest, UsesNestedTimestampLeafAsAxis) {
-  auto shaped = shapeStream(makeNestedTimestampStream("header", "stamp"), ShapeOptions{});
+  ShapeOptions options;
+  options.timestamp_unit = PJ::TimeUnit::kSeconds;  // Native microseconds take precedence.
+  auto shaped = shapeStream(makeNestedTimestampStream("header", "stamp"), options);
   ASSERT_TRUE(shaped) << shaped.error();
   EXPECT_EQ(shaped->timestamp_column, "header/stamp");
   auto schema = readSchema(shaped->stream);
@@ -1404,7 +1404,10 @@ TEST(TableShaperTest, WidensInt32TimestampAxis) {
   ASSERT_TRUE(shaped) << shaped.error();
   const auto* warning = warningWithCode(*shaped, "parser_arrow.narrow_timestamp_axis");
   ASSERT_NE(warning, nullptr);
-  EXPECT_EQ(warning->message, "explicit timestamp column 'time': int32 can express at most 2147483647 ns since epoch");
+  EXPECT_EQ(
+      warning->message,
+      "explicit timestamp column 'time': Integer storage too narrow to reach present-day instants at the configured "
+      "timestamp unit.");
   auto schema = readSchema(shaped->stream);
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
   auto batch = readBatch(shaped->stream);
@@ -1420,7 +1423,10 @@ TEST(TableShaperTest, WidensInt16TimestampAxis) {
   ASSERT_TRUE(shaped) << shaped.error();
   const auto* warning = warningWithCode(*shaped, "parser_arrow.narrow_timestamp_axis");
   ASSERT_NE(warning, nullptr);
-  EXPECT_EQ(warning->message, "explicit timestamp column 'time': int16 can express at most 32767 ns since epoch");
+  EXPECT_EQ(
+      warning->message,
+      "explicit timestamp column 'time': Integer storage too narrow to reach present-day instants at the configured "
+      "timestamp unit.");
   auto schema = readSchema(shaped->stream);
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
   auto batch = readBatch(shaped->stream);
@@ -1437,7 +1443,10 @@ TEST(TableShaperTest, WidensUint8TimestampAxis) {
   ASSERT_TRUE(shaped) << shaped.error();
   const auto* warning = warningWithCode(*shaped, "parser_arrow.narrow_timestamp_axis");
   ASSERT_NE(warning, nullptr);
-  EXPECT_EQ(warning->message, "explicit timestamp column 'time': uint8 can express at most 255 ns since epoch");
+  EXPECT_EQ(
+      warning->message,
+      "explicit timestamp column 'time': Integer storage too narrow to reach present-day instants at the configured "
+      "timestamp unit.");
   auto schema = readSchema(shaped->stream);
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
   auto batch = readBatch(shaped->stream);
@@ -1454,7 +1463,10 @@ TEST(TableShaperTest, WidensUint32TimestampAxis) {
   ASSERT_TRUE(shaped) << shaped.error();
   const auto* warning = warningWithCode(*shaped, "parser_arrow.narrow_timestamp_axis");
   ASSERT_NE(warning, nullptr);
-  EXPECT_EQ(warning->message, "explicit timestamp column 'time': uint32 can express at most 4294967295 ns since epoch");
+  EXPECT_EQ(
+      warning->message,
+      "explicit timestamp column 'time': Integer storage too narrow to reach present-day instants at the configured "
+      "timestamp unit.");
   auto schema = readSchema(shaped->stream);
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
   auto batch = readBatch(shaped->stream);
@@ -1470,16 +1482,22 @@ TEST(TableShaperTest, WarnsForExactlyTheExplicitNarrowAxisTypes) {
     std::string_view limitation;
   };
   constexpr std::array<AxisCase, 10> kCases = {{
-      {NANOARROW_TYPE_INT8, true, "int8 can express at most 127 ns since epoch"},
-      {NANOARROW_TYPE_INT16, true, "int16 can express at most 32767 ns since epoch"},
-      {NANOARROW_TYPE_INT32, true, "int32 can express at most 2147483647 ns since epoch"},
+      {NANOARROW_TYPE_INT8, true,
+       "Integer storage too narrow to reach present-day instants at the configured timestamp unit."},
+      {NANOARROW_TYPE_INT16, true,
+       "Integer storage too narrow to reach present-day instants at the configured timestamp unit."},
+      {NANOARROW_TYPE_INT32, true,
+       "Integer storage too narrow to reach present-day instants at the configured timestamp unit."},
       {NANOARROW_TYPE_INT64, false, {}},
-      {NANOARROW_TYPE_UINT8, true, "uint8 can express at most 255 ns since epoch"},
-      {NANOARROW_TYPE_UINT16, true, "uint16 can express at most 65535 ns since epoch"},
-      {NANOARROW_TYPE_UINT32, true, "uint32 can express at most 4294967295 ns since epoch"},
+      {NANOARROW_TYPE_UINT8, true,
+       "Integer storage too narrow to reach present-day instants at the configured timestamp unit."},
+      {NANOARROW_TYPE_UINT16, true,
+       "Integer storage too narrow to reach present-day instants at the configured timestamp unit."},
+      {NANOARROW_TYPE_UINT32, true,
+       "Integer storage too narrow to reach present-day instants at the configured timestamp unit."},
       {NANOARROW_TYPE_UINT64, false, {}},
       {NANOARROW_TYPE_FLOAT, true,
-       "float has sub-second resolution only for magnitudes below 8388608 seconds since epoch"},
+       "float32 keeps 24 significant bits, so instants near the present epoch are spaced over 100 s apart."},
       {NANOARROW_TYPE_DOUBLE, false, {}},
   }};
   ShapeOptions options;
@@ -1524,7 +1542,9 @@ TEST(TableShaperTest, RejectsExplicitHalfFloatTimestampAxis) {
 
 /// Floating timestamp axes represent seconds and are rounded after conversion to nanoseconds.
 TEST(TableShaperTest, ConvertsDoubleSecondsTimestampAxis) {
-  auto shaped = shapeStream(decodeFixture("axis_double.arrows"), ShapeOptions{});
+  ShapeOptions options;
+  options.timestamp_unit = PJ::TimeUnit::kMicroseconds;  // Floating axes still carry seconds.
+  auto shaped = shapeStream(decodeFixture("axis_double.arrows"), options);
   ASSERT_TRUE(shaped) << shaped.error();
   auto schema = readSchema(shaped->stream);
   EXPECT_STREQ(schema.get()->children[0]->format, "l");
@@ -1544,8 +1564,8 @@ TEST(TableShaperTest, ConvertsFloatSecondsTimestampAxis) {
   ASSERT_NE(warning, nullptr);
   EXPECT_EQ(
       warning->message,
-      "explicit timestamp column 'time': float has sub-second resolution only for magnitudes below 8388608 seconds "
-      "since epoch");
+      "explicit timestamp column 'time': float32 keeps 24 significant bits, so instants near the present epoch are "
+      "spaced over 100 s apart.");
   auto schema = readSchema(shaped->stream);
   auto batch = readBatch(shaped->stream);
   auto view = test::bindArrayView(schema.get(), batch.get());
@@ -1613,11 +1633,14 @@ TEST(TableShaperTest, RoundsFractionalNanosecondTimestampAxis) {
 
 /// Splitting integral and fractional seconds preserves an exactly representable fraction at epoch scale.
 TEST(TableShaperTest, ConvertsFloatingSecondsWithPortableIntegerArithmetic) {
-  int64_t converted = 0;
-  ASSERT_TRUE(test::floatingSecondsToNanosecondsForTesting(1'700'000'000.125, &converted));
-  EXPECT_EQ(converted, 1'700'000'000'125'000'000);
-  ASSERT_TRUE(test::floatingSecondsToNanosecondsForTesting(-1.6e-9, &converted));
-  EXPECT_EQ(converted, -2);
+  auto shaped =
+      shapeStream(makeFloatingAxisStream(NANOARROW_TYPE_DOUBLE, {1'700'000'000.125, -1.6e-9}), ShapeOptions{});
+  ASSERT_TRUE(shaped) << shaped.error();
+  auto schema = readSchema(shaped->stream);
+  auto batch = readBatch(shaped->stream);
+  auto view = test::bindArrayView(schema.get(), batch.get());
+  EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 0), 1'700'000'000'125'000'000);
+  EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 1), -2);
 }
 
 /// Non-finite floating timestamp seconds fail instead of invoking an invalid integer conversion.
@@ -2033,6 +2056,53 @@ TEST(TableShaperTest, PlansPassThroughWhenNothingApplies) {
   auto view = test::bindArrayView(schema.get(), batch.get());
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 3000);
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[1], 1), 2.5);
+}
+
+TEST(TableShaperTest, ScalesConfiguredIntegerUnitsAndDetectsInt32Seconds) {
+  for (const auto type : {NANOARROW_TYPE_INT32, NANOARROW_TYPE_INT64, NANOARROW_TYPE_UINT32, NANOARROW_TYPE_UINT64}) {
+    for (const auto unit :
+         {PJ::TimeUnit::kSeconds, PJ::TimeUnit::kMilliseconds, PJ::TimeUnit::kMicroseconds,
+          PJ::TimeUnit::kNanoseconds}) {
+      SCOPED_TRACE(ArrowTypeString(type));
+      SCOPED_TRACE(static_cast<int>(unit));
+      ShapeOptions options;
+      options.timestamp_unit = unit;
+      if (unit != PJ::TimeUnit::kSeconds) {
+        options.timestamp_column = "time";
+      }
+      auto shaped = shapeStream(makeIntegerAxisStream(type, {1, 2, 3}), options);
+      ASSERT_TRUE(shaped) << shaped.error();
+      EXPECT_FALSE(shaped->synthetic_axis);
+      if (unit == PJ::TimeUnit::kSeconds) {
+        EXPECT_TRUE(shaped->warnings.empty());
+      }
+      auto schema = readSchema(shaped->stream);
+      auto batch = readBatch(shaped->stream);
+      auto view = test::bindArrayView(schema.get(), batch.get());
+      EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 3 * PJ::nanosecondsPer(unit));
+    }
+  }
+}
+
+TEST(TableShaperTest, ConfiguredUnitsRejectIntegerScalingOverflow) {
+  ShapeOptions options;
+  options.timestamp_unit = PJ::TimeUnit::kSeconds;
+  for (const auto ticks : {std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::max()}) {
+    auto shaped = shapeStream(makeIntegerAxisStream(NANOARROW_TYPE_INT64, {ticks}), options);
+    ASSERT_TRUE(shaped) << shaped.error();
+    PJ::sdk::ArrowArrayHolder batch;
+    EXPECT_EQ(shaped->stream.get()->get_next(shaped->stream.get(), batch.out()), ERANGE);
+  }
+}
+
+TEST(TableShaperTest, CanonicalNamesUseCaseInsensitivePriority) {
+  for (const auto name : {"TIME", "t", "time_stamp", "datetime", "date_time", "_timestamp", "_time"}) {
+    auto schema = makeSchema({{name, NANOARROW_TYPE_INT64}, {"value", NANOARROW_TYPE_DOUBLE}});
+    auto shaped = shapeStream(emptyStream(schema.get()), ShapeOptions{});
+    ASSERT_TRUE(shaped) << shaped.error();
+    EXPECT_EQ(shaped->timestamp_column, name);
+    EXPECT_FALSE(shaped->synthetic_axis);
+  }
 }
 
 }  // namespace

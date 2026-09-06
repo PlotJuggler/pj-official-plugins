@@ -2,19 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 // clang-format off
-// The query-engine headers declare a global `enum class TokenType`. On Windows
-// they MUST be included before anything that pulls in <windows.h> (Arrow's
-// windows_compatibility shim, the SDK's platform.hpp, ...): <winnt.h> defines an
-// unscoped enumerator `TokenType` (in TOKEN_INFORMATION_CLASS) that would
-// otherwise hide our scoped enum at global scope and make MSVC reject the query
-// headers ("'TokenType' is not a type"). Kept in clang-format off so include
-// sorting cannot reorder them after the Windows-pulling headers.
-#include "query/assist.h"
-#include "query/edit.h"
-#include "query/engine.h"
-#include "query/query.h"
-#include "query_filter.h"
-
 // Arrow headers must stay before the dialog header because the plugin data API
 // and Arrow C-data declarations have load-bearing include order.
 #include <arrow/api.h>
@@ -27,18 +14,22 @@
 #include <algorithm>
 #include <chrono>
 #include <pj_base/sdk/platform.hpp>
+#include <pj_base/slider_window.hpp>
+#include <pj_base/time_format.hpp>
+#include <pj_query/filter.hpp>
 #include <string_view>
 #include <utility>
 
 #include "cert_dialog_ui.hpp"
-#include "core/time_format.h"
-#include "date_filter.h"
+#include "credential_resolve.hpp"
 #include "fetch_summary.h"
 #include "fetch_worker.hpp"
 #include "format_utils.h"
 #include "mosaico_panel_manifest.hpp"
 #include "mosaico_panel_ui.hpp"
 #include "name_filter.h"
+#include "query_assist.h"
+#include "query_engine.h"
 #include "selection_merge.h"
 #include "server_history.h"
 #include "settings_store.hpp"
@@ -48,40 +39,6 @@
 namespace mosaico {
 
 namespace {
-
-std::string credentialsSettingsPrefix(const std::string& uri) {
-  return "mosaico/server_cache/" + normalizeServerKey(uri) + "/";
-}
-
-ServerCredentials loadCredentialsForUri(PJ::sdk::SettingsView view, const std::string& uri) {
-  SettingsStore settings(view);
-  const std::string prefix = credentialsSettingsPrefix(uri);
-  ServerCredentials creds;
-  creds.cert_path = settings.getString(prefix + "cert_path");
-  creds.api_key = settings.getString(prefix + "api_key");
-  creds.allow_insecure = settings.getBool(prefix + "allow_insecure", false);
-  return creds;
-}
-
-void saveCredentialsForUri(PJ::sdk::SettingsView view, const std::string& uri, const ServerCredentials& creds) {
-  SettingsStore settings(view);
-  const std::string prefix = credentialsSettingsPrefix(uri);
-  settings.setString(prefix + "cert_path", creds.cert_path);
-  settings.setString(prefix + "api_key", creds.api_key);
-  settings.setBool(prefix + "allow_insecure", creds.allow_insecure);
-}
-
-// Load per-server credentials, falling back to the MOSAICO_API_KEY environment
-// variable when no key is cached for this server (PJ3 automation parity).
-ServerCredentials resolveCredentials(PJ::sdk::SettingsView view, const std::string& uri) {
-  ServerCredentials creds = loadCredentialsForUri(view, uri);
-  if (creds.api_key.empty()) {
-    if (auto env = PJ::sdk::getEnv("MOSAICO_API_KEY")) {
-      creds.api_key = *env;
-    }
-  }
-  return creds;
-}
 
 // ---------------------------------------------------------------------------
 // Info-panel / table formatting helpers (ported from PJ3 data_view_panel.cpp
@@ -95,18 +52,18 @@ std::string isoFromNs(std::int64_t ts_ns) {
   if (ts_ns <= 0) {
     return {};
   }
-  return formatIso8601Utc(ts_ns);
+  return PJ::formatIso8601Utc(ts_ns);
 }
 
 std::string dateOnly(std::int64_t ts_ns) {
   if (ts_ns <= 0) {
     return "--/--/----";
   }
-  return formatDateDDMMYYYY(ts_ns);
+  return PJ::formatDateDDMMYYYY(ts_ns);
 }
 
 std::string dateTimeUtc(std::int64_t ts_ns) {
-  return formatDateTimeUtc(ts_ns);
+  return PJ::formatDateTimeUtc(ts_ns);
 }
 
 // --- Query-assist helpers (Key/Op/Value dropdowns) ---
@@ -521,12 +478,12 @@ std::string MosaicoDialog::widget_data() {
     if (state_.query_text.empty()) {
       wd.setFieldValid("lua_queryBar", true, "");
     } else {
-      const bool valid = Engine::validate(state_.query_text).valid;
+      const bool valid = Engine::validateText(state_.query_text).valid;
       wd.setFieldValid("lua_queryBar", valid, valid ? "" : "invalid syntax");
     }
 
     // Key/Op/Value assist dropdowns + PLUS, driven entirely by the pure
-    // computeAssist() model (query/assist.h) against the query-assist contract:
+    // computeAssist() model (query_assist.h) against the query-assist contract:
     //   REPLACE — caret ON a token: that ONE dropdown is active and edits the
     //     token in place, live, no PLUS; its title syncs to the token.
     //   ADD — caret off a token: the dropdowns STAGE a clause (staged_*); the
@@ -584,8 +541,8 @@ std::string MosaicoDialog::widget_data() {
   // DateRangePicker: hint the dataset's available span as the from/to placeholders.
   if (state_.global_min_ts_ns > 0) {
     wd.setDateRangePlaceholder(
-        "datePicker", formatDateOnlyIso(state_.global_min_ts_ns),
-        state_.global_max_ts_ns > 0 ? formatDateOnlyIso(state_.global_max_ts_ns) : "");
+        "datePicker", PJ::formatDateOnlyIso(state_.global_min_ts_ns),
+        state_.global_max_ts_ns > 0 ? PJ::formatDateOnlyIso(state_.global_max_ts_ns) : "");
   }
 
   // Button enable/disable (PJ3 parity): Connect is inert while a connect or a
@@ -650,20 +607,24 @@ std::string MosaicoDialog::widget_data() {
       // metadata query never hides rows (toolbox_mosaico.cpp `if (!valid)
       // return;`); only valid, non-empty queries are evaluated per sequence.
       // Name and date filters always apply regardless of query validity.
-      std::vector<FilterSequence> filter_seqs;
+      // pj_query's filter takes nullopt for "unknown/unbounded"; Mosaico's
+      // sequence records and date pickers use 0 as that sentinel — translate.
+      const auto ns_or_unset = [](std::int64_t ns) { return ns == 0 ? std::nullopt : std::optional<std::int64_t>(ns); };
+      std::vector<PJ::query::FilterSequence> filter_seqs;
       filter_seqs.reserve(state_.sequences.size());
       for (const auto& rec : state_.sequences) {
-        filter_seqs.push_back({rec.name, rec.min_ts_ns, rec.max_ts_ns, rec.metadata});
+        filter_seqs.push_back({rec.name, ns_or_unset(rec.min_ts_ns), ns_or_unset(rec.max_ts_ns), rec.metadata});
       }
-      FilterParams params;
+      PJ::query::FilterParams params;
       params.name_filter = state_.seq_filter;
       params.name_regex = state_.seq_filter_regex;
       params.query_text = state_.query_text;
-      params.date_from_ns = state_.date_from_ns;
-      params.date_to_ns = state_.date_to_ns;
+      params.date_from_ns = ns_or_unset(state_.date_from_ns);
+      params.date_to_ns = ns_or_unset(state_.date_to_ns);
 
+      Engine query_engine;
       cache.rows = std::move(rows);
-      cache.visible = computeVisibleSequences(filter_seqs, params, schema);
+      cache.visible = PJ::query::computeVisibleSequences(filter_seqs, params, schema, query_engine);
       cache.valid = true;
       cache.seq_epoch = state_.seq_epoch;
       cache.seq_filter = state_.seq_filter;
@@ -748,12 +709,8 @@ std::string MosaicoDialog::widget_data() {
         // surfacing PJ3 DownloadStatsDialog's per-topic Speed column. Only shown
         // while the topic is still transferring (Done/Failed/Cancelled are static).
         double topic_bps = 0.0;
-        if (auto sit = state_.speed_samples.find(tname); sit != state_.speed_samples.end() && sit->second.size() >= 2) {
-          const auto& s = sit->second;
-          const std::int64_t dt_ms = s.back().ms - s.front().ms;
-          if (dt_ms > 0) {
-            topic_bps = static_cast<double>(s.back().bytes - s.front().bytes) * 1000.0 / static_cast<double>(dt_ms);
-          }
+        if (auto sit = state_.speed_samples.find(tname); sit != state_.speed_samples.end()) {
+          topic_bps = sit->second.bytesPerSecond();
         }
         const double mib = static_cast<double>(bytes) / (1024.0 * 1024.0);
         const bool transferring = (status == "downloading…" || status == "Cancelling…");
@@ -1055,16 +1012,15 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
           break;
         }
       }
-      if (rec != nullptr && rec->max_ts_ns > rec->min_ts_ns) {
-        const std::int64_t span = rec->max_ts_ns - rec->min_ts_ns;
-        start = rec->min_ts_ns + (span * state_.range_lower) / DialogState::kSliderSteps;
-        // The server retrieval window is [start, end) — the upper bound is
-        // EXCLUSIVE. At a full-range selection the proportional end lands
-        // exactly on max_ts_ns, which would silently drop the final frame, so
-        // extend one tick past it when the slider is pinned to 100%.
-        end = (state_.range_upper >= DialogState::kSliderSteps)
-                  ? rec->max_ts_ns + 1
-                  : rec->min_ts_ns + (span * state_.range_upper) / DialogState::kSliderSteps;
+      // The server retrieval window is [start, end): sliderToWindow computes it
+      // overflow-safely and extends one tick past max_ts when pinned to 100%
+      // so the final frame is not silently dropped.
+      if (rec != nullptr) {
+        if (const auto window = PJ::sliderToWindow(
+                rec->min_ts_ns, rec->max_ts_ns, state_.range_lower, state_.range_upper, DialogState::kSliderSteps)) {
+          start = window->start_ns;
+          end = window->end_ns;
+        }
       }
       if (topics.empty()) {
         notify(PJ::ToolboxMessageLevel::kWarning, "Select a sequence + topic(s) first");
@@ -1154,8 +1110,8 @@ bool MosaicoDialog::onDateRangeChanged(
     return remainder < 0 ? quotient - 1 : quotient;
   };
   auto toEpochNsAtMsPrecision = [&](std::int64_t ns) { return floorDiv(ns, kNsPerMs) * kNsPerMs; };
-  const auto from_ns = parseIso8601Utc(from_iso);
-  const auto to_ns = parseIso8601Utc(to_iso);
+  const auto from_ns = PJ::parseIso8601Utc(from_iso);
+  const auto to_ns = PJ::parseIso8601Utc(to_iso);
   std::lock_guard<std::mutex> lock(state_.mu);
   state_.date_from_ns = from_ns.has_value() ? toEpochNsAtMsPrecision(*from_ns) : 0;
   state_.date_to_ns = to_ns.has_value() ? toEpochNsAtMsPrecision(*to_ns) : 0;
@@ -1244,7 +1200,7 @@ bool MosaicoDialog::onIndexChanged(std::string_view widget_name, int index) {
     const CursorContext ctx = analyze(state_.query_text, cursor, state_.query_schema);
     const Action action =
         (which == Which::kKey) ? ctx.key_action : (which == Which::kOp ? ctx.op_action : ctx.val_action);
-    if (action != Action::Replace) {
+    if (action != Action::kReplace) {
       return true;  // defensive: assist said replace but analyze disagrees
     }
     const std::string insert_text = (which == Which::kVal) ? quoteValueForQuery(item) : item;
@@ -1718,16 +1674,8 @@ void MosaicoDialog::onPullProgress(std::string topic_name, std::int64_t bytes) {
   // parity). "done" is the count of topics that have fully completed
   // (pullFinished), not those merely streaming.
   state_.bytes_by_topic[topic_name] = bytes;
-  const std::int64_t now_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
-          .count();
-  auto& samples = state_.speed_samples[topic_name];
-  samples.push_back({now_ms, bytes});
-  // Trim to the trailing 5 s window.
-  const std::int64_t window_start = now_ms - 5000;
-  while (samples.size() > 2 && samples.front().ms < window_start) {
-    samples.erase(samples.begin());
-  }
+  state_.speed_samples[topic_name].add(static_cast<std::uint64_t>(bytes));
+
   std::int64_t total_bytes = 0;
   for (const auto& kv : state_.bytes_by_topic) {
     total_bytes += kv.second;
@@ -1736,14 +1684,8 @@ void MosaicoDialog::onPullProgress(std::string topic_name, std::int64_t bytes) {
   // rates) — PJ3 DownloadStatsDialog surfaced this; here it rides the status
   // line since the panel has no separate progress window.
   double bytes_per_sec = 0.0;
-  for (const auto& [topic, samples] : state_.speed_samples) {
-    if (samples.size() >= 2) {
-      const std::int64_t dt_ms = samples.back().ms - samples.front().ms;
-      if (dt_ms > 0) {
-        bytes_per_sec +=
-            static_cast<double>(samples.back().bytes - samples.front().bytes) * 1000.0 / static_cast<double>(dt_ms);
-      }
-    }
+  for (const auto& [topic, rate] : state_.speed_samples) {
+    bytes_per_sec += rate.bytesPerSecond();
   }
   const double mib = static_cast<double>(total_bytes) / (1024.0 * 1024.0);
   const double mibps = bytes_per_sec / (1024.0 * 1024.0);
@@ -1875,9 +1817,9 @@ void MosaicoDialog::onAllFetchesComplete(std::string sequence_name) {
   }
 
   // Flush buffered writer chunks into the engine and rebuild the catalog once
-  // for the whole batch. appendArrowStream/pushOwnedObject only buffer data into
-  // the shared DataWriter/ObjectStore — without notifyDataChanged the imported
-  // topics never appear in the dataset tree.
+  // for the whole batch. The scalar arrow-ipc pushes and pushOwnedObject only
+  // buffer data into the shared DataWriter/ObjectStore — without
+  // notifyDataChanged the imported topics never appear in the dataset tree.
   //
   // CANCEL SEMANTICS — DELIBERATE DIVERGENCE FROM PJ3 (gap #10):
   // PJ3 DISCARDS all partial data on cancel (toolbox_mosaico.cpp:227-230): it

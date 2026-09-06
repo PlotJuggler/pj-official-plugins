@@ -68,14 +68,15 @@ set(MOSAICO_SOURCES
   src/toolbox_mosaico.cpp
   src/mosaico_dialog.cpp
   src/fetch_worker.cpp
-  src/arrow_ingest.cpp
+  src/arrow_ipc_message.cpp
   src/settings_store.cpp
   src/server_history.cpp
-  src/core/time_format.cpp
+  src/source_descriptor.cpp
+  src/credential_resolve.cpp
+  src/descriptor_import_provider.cpp
 )
 
-# Arrow/Flight + Arrow-compute translation units (arrow_ingest.cpp, and the
-# Flight/serialize tests that compile it) instantiate enough templates to exceed
+# Arrow/Flight translation units instantiate enough templates to exceed
 # the COFF section limit without /bigobj (C1128). Apply it directory-wide on MSVC
 # so the plugin and every Arrow-linked test target below inherit it.
 if(MSVC)
@@ -85,11 +86,10 @@ endif()
 add_library(toolbox_mosaico_plugin SHARED ${MOSAICO_SOURCES})
 
 target_compile_features(toolbox_mosaico_plugin PRIVATE cxx_std_20)
-# Don't apply ${PJ_WARNING_FLAGS} here — the vendored PJ3 query/* headers
-# and sol2 trigger -Wconversion and -Wunused-parameter under -Werror. The
-# core dialog/state-machine code is reviewed manually; this matches PJ3's
-# own build flags for its query/ subdir. These GNU flags are not valid for cl,
-# so gate them to non-MSVC compilers.
+# Don't apply ${PJ_WARNING_FLAGS} here — sol2 triggers -Wconversion and
+# -Wunused-parameter under -Werror. The core dialog/state-machine code is
+# reviewed manually. These GNU flags are not valid for cl, so gate them to
+# non-MSVC compilers.
 if(NOT MSVC)
   target_compile_options(toolbox_mosaico_plugin PRIVATE
     -Wall -Wextra -Werror
@@ -100,15 +100,17 @@ endif()
 target_include_directories(toolbox_mosaico_plugin PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}/src/core
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/query
   ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 
 target_link_libraries(toolbox_mosaico_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk
+  plotjuggler_sdk::source
   fmt::fmt
   nlohmann_json::nlohmann_json
   mosaico_sdk
+  pj_common_query
+  pj_transfer_rate
   lua::lua
   sol2::sol2
 )
@@ -150,9 +152,10 @@ pj_emit_plugin_manifest(toolbox_mosaico_plugin
 if(BUILD_TESTING)
   find_package(GTest REQUIRED)
 
-  # The vendored PJ3 query/* tests below relax warnings with GNU flags. MSVC
-  # rejects those (e.g. /Wextra is a fatal command-line error D8021), so map the
-  # set to nothing on MSVC and to the GNU flags elsewhere.
+  # The query tests below relax warnings with GNU flags (sol2 trips
+  # -Wconversion / -Wunused-parameter under -Werror). MSVC rejects those
+  # (e.g. /Wextra is a fatal command-line error D8021), so map the set to
+  # nothing on MSVC and to the GNU flags elsewhere.
   if(MSVC)
     set(MOSAICO_QUERY_TEST_WARNINGS "")
   else()
@@ -161,7 +164,7 @@ if(BUILD_TESTING)
       -Wno-conversion -Wno-unused-parameter -Wno-unused-function)
   endif()
 
-  # detectTimestampColumn over canned ArrowSchema fixtures.
+  # arrow-ipc framing (timestamp detection, host timestamp, IPC round trip).
   # Re-resolves the Arrow target name (Conan: arrow::arrow, upstream:
   # Arrow::arrow_static) since the cached _mosaico_arrow_target variable
   # may not be visible across the BUILD_TESTING gate.
@@ -173,19 +176,21 @@ if(BUILD_TESTING)
     endif()
   endforeach()
 
-  add_executable(toolbox_mosaico_detect_timestamp_test
-    tests/detect_timestamp_test.cpp
-    src/arrow_ingest.cpp
+  add_executable(toolbox_mosaico_arrow_ipc_message_test
+    tests/arrow_ipc_message_test.cpp
+    src/arrow_ipc_message.cpp
   )
-  target_link_libraries(toolbox_mosaico_detect_timestamp_test PRIVATE
+  target_link_libraries(toolbox_mosaico_arrow_ipc_message_test PRIVATE
     plotjuggler_sdk::plugin_sdk
     ${_test_arrow_target}
+    nlohmann_json::nlohmann_json
+    fmt::fmt
     GTest::gtest_main
   )
-  target_include_directories(toolbox_mosaico_detect_timestamp_test PRIVATE
+  target_include_directories(toolbox_mosaico_arrow_ipc_message_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
-  add_test(NAME ToolboxMosaicoDetectTimestampTest COMMAND toolbox_mosaico_detect_timestamp_test)
+  add_test(NAME ToolboxMosaicoArrowIpcMessageTest COMMAND toolbox_mosaico_arrow_ipc_message_test)
 
   # StoppableThread is pure-std with no Arrow/Flight surface, so its test links
   # nothing but gtest.
@@ -201,12 +206,15 @@ if(BUILD_TESTING)
   add_executable(toolbox_mosaico_ingest_progress_test
     tests/ingest_progress_test.cpp
     src/fetch_worker.cpp
-    src/arrow_ingest.cpp
+    src/arrow_ipc_message.cpp
+    src/source_descriptor.cpp
   )
   target_link_libraries(toolbox_mosaico_ingest_progress_test PRIVATE
     plotjuggler_sdk::plugin_sdk
+    plotjuggler_sdk::source
     mosaico_sdk
     fmt::fmt
+    nlohmann_json::nlohmann_json
     ${_test_arrow_target}
     GTest::gtest_main
   )
@@ -220,17 +228,6 @@ if(BUILD_TESTING)
   target_compile_options(toolbox_mosaico_ingest_progress_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
   add_test(NAME ToolboxMosaicoIngestProgressTest COMMAND toolbox_mosaico_ingest_progress_test)
 
-  # Image-topic metadata builder: pure string logic, header-only, so this needs
-  # nothing but GTest. Pins the cross-repo metadata_json contract.
-  add_executable(toolbox_mosaico_image_metadata_test
-    tests/image_metadata_test.cpp
-  )
-  target_link_libraries(toolbox_mosaico_image_metadata_test PRIVATE GTest::gtest_main)
-  target_include_directories(toolbox_mosaico_image_metadata_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoImageMetadataTest COMMAND toolbox_mosaico_image_metadata_test)
-
   # Ontology routing (image vs point-cloud/scalar). Compiles only the SDK's
   # light metadata.cpp (arrow + nlohmann) — no Flight/gRPC — like the
   # detect-timestamp test.
@@ -239,6 +236,7 @@ if(BUILD_TESTING)
     ${mosaico_sdk_SOURCE_DIR}/src/flight/metadata.cpp
   )
   target_link_libraries(toolbox_mosaico_ontology_routing_test PRIVATE
+    plotjuggler_sdk::base
     ${_test_arrow_target}
     nlohmann_json::nlohmann_json
     GTest::gtest_main
@@ -248,77 +246,6 @@ if(BUILD_TESTING)
     ${mosaico_sdk_SOURCE_DIR}/src
   )
   add_test(NAME ToolboxMosaicoOntologyRoutingTest COMMAND toolbox_mosaico_ontology_routing_test)
-
-  # Multi-topic grouping contract: one Download (sequence) → ONE dataset, with
-  # topics registered under their BARE names. Drives the real arrow_ingest
-  # helper against a recording fake toolbox host (no Flight/gRPC).
-  add_executable(toolbox_mosaico_fetch_grouping_test
-    tests/fetch_grouping_test.cpp
-    src/arrow_ingest.cpp
-  )
-  target_link_libraries(toolbox_mosaico_fetch_grouping_test PRIVATE
-    plotjuggler_sdk::plugin_sdk
-    ${_test_arrow_target}
-    GTest::gtest_main
-  )
-  target_include_directories(toolbox_mosaico_fetch_grouping_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoFetchGroupingTest COMMAND toolbox_mosaico_fetch_grouping_test)
-
-  # Per-frame image serialization: each Arrow row -> one canonical PJ.Image blob
-  # (pj_base codec), driven against a recording fake toolbox host. Builds tables
-  # with the real server's BINARY_VIEW/STRING_VIEW column types (no Flight/gRPC).
-  add_executable(toolbox_mosaico_image_serialize_test
-    tests/image_serialize_test.cpp
-    src/arrow_ingest.cpp
-  )
-  target_link_libraries(toolbox_mosaico_image_serialize_test PRIVATE
-    plotjuggler_sdk::plugin_sdk
-    ${_test_arrow_target}
-    GTest::gtest_main
-  )
-  target_include_directories(toolbox_mosaico_image_serialize_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoImageSerializeTest COMMAND toolbox_mosaico_image_serialize_test)
-
-  # Per-row canonicalization of the 3D-object ontologies (point_cloud / transform
-  # / pose) -> one canonical PJ.{PointCloud,FrameTransforms,PosesInFrame} blob per
-  # row (pj_base codec), driven against a recording fake toolbox host (no
-  # Flight/gRPC). Builds synthetic list<float32> / struct tables matching the
-  # server shapes and asserts each pushed blob round-trips.
-  add_executable(toolbox_mosaico_object_serialize_test
-    tests/object_serialize_test.cpp
-    src/arrow_ingest.cpp
-  )
-  target_link_libraries(toolbox_mosaico_object_serialize_test PRIVATE
-    plotjuggler_sdk::plugin_sdk
-    ${_test_arrow_target}
-    GTest::gtest_main
-  )
-  target_include_directories(toolbox_mosaico_object_serialize_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoObjectSerializeTest COMMAND toolbox_mosaico_object_serialize_test)
-
-  # Real-server regression: replays the captured jai/rgb Arrow batch (PNG-wrapped
-  # Bayer, BINARY_VIEW/STRING_VIEW columns) through the real producer and checks
-  # every blob round-trips to a valid per-frame PJ::Image. SKIPS if the (~31 MB,
-  # uncommitted) fixture is absent; regenerate it via toolbox_mosaico_live_harness.
-  add_executable(toolbox_mosaico_image_real_fixture_test
-    tests/image_real_fixture_test.cpp
-    src/arrow_ingest.cpp
-  )
-  target_link_libraries(toolbox_mosaico_image_real_fixture_test PRIVATE
-    plotjuggler_sdk::plugin_sdk
-    ${_test_arrow_target}
-    GTest::gtest_main
-  )
-  target_include_directories(toolbox_mosaico_image_real_fixture_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoImageRealFixtureTest COMMAND toolbox_mosaico_image_real_fixture_test)
 
   # Fetch-completion policy (close/import/error-dedup). Header-only, std only.
   add_executable(toolbox_mosaico_fetch_summary_test
@@ -350,18 +277,17 @@ if(BUILD_TESTING)
   )
   add_test(NAME ToolboxMosaicoNameFilterTest COMMAND toolbox_mosaico_name_filter_test)
 
-  # Query engine (Lexer/Parser/serialize/Query/complete/analyze/Engine). The
-  # query/* headers are byte-for-byte the PJ3 engine; these tests pin their
-  # behavior. Lua-backed eval/validate needs lua + sol2 only.
+  # Lua-backed query Engine (eval/validate/metadata globals). The query
+  # LANGUAGE tests live with common/query. Needs lua + sol2 only.
   add_executable(toolbox_mosaico_query_engine_test
     tests/query_engine_test.cpp
   )
   target_link_libraries(toolbox_mosaico_query_engine_test PRIVATE
-    lua::lua sol2::sol2 GTest::gtest_main
+    pj_common_query lua::lua sol2::sol2 GTest::gtest_main
   )
   target_compile_features(toolbox_mosaico_query_engine_test PRIVATE cxx_std_20)
-  # Match the plugin's relaxed flags: the vendored PJ3 query/* headers and sol2
-  # trip -Wconversion / -Wunused-parameter under -Werror.
+  # Match the plugin's relaxed flags: sol2 trips -Wconversion /
+  # -Wunused-parameter under -Werror.
   target_compile_options(toolbox_mosaico_query_engine_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
   if(MSVC)
     # This test embeds raw string literals inside gtest EXPECT_EQ() macros. MSVC's
@@ -382,7 +308,7 @@ if(BUILD_TESTING)
     tests/query_filter_test.cpp
   )
   target_link_libraries(toolbox_mosaico_query_filter_test PRIVATE
-    lua::lua sol2::sol2 GTest::gtest_main
+    pj_common_query lua::lua sol2::sol2 GTest::gtest_main
   )
   target_compile_features(toolbox_mosaico_query_filter_test PRIVATE cxx_std_20)
   target_compile_options(toolbox_mosaico_query_filter_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
@@ -394,11 +320,11 @@ if(BUILD_TESTING)
 
   # Assist model: the Key/Op/Value dropdown + PLUS state machine for the metadata
   # filter, encoding the query-assist contract (replace-at-caret vs stage-then-PLUS).
-  # Pure header logic (query/assist.h) — no Lua, no Arrow/Flight.
+  # Pure header logic (query_assist.h over pj_common_query) — no Lua, no Arrow/Flight.
   add_executable(toolbox_mosaico_assist_test
     tests/assist_test.cpp
   )
-  target_link_libraries(toolbox_mosaico_assist_test PRIVATE GTest::gtest_main)
+  target_link_libraries(toolbox_mosaico_assist_test PRIVATE pj_common_query GTest::gtest_main)
   target_compile_features(toolbox_mosaico_assist_test PRIVATE cxx_std_20)
   target_compile_options(toolbox_mosaico_assist_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
   target_include_directories(toolbox_mosaico_assist_test PRIVATE
@@ -462,18 +388,6 @@ if(BUILD_TESTING)
   )
   add_test(NAME ToolboxMosaicoTlsUtilsTest COMMAND toolbox_mosaico_tls_utils_test)
 
-  add_executable(toolbox_mosaico_time_format_test
-    tests/time_format_test.cpp
-    src/core/time_format.cpp
-  )
-  target_link_libraries(toolbox_mosaico_time_format_test PRIVATE
-    GTest::gtest_main
-  )
-  target_include_directories(toolbox_mosaico_time_format_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoTimeFormatTest COMMAND toolbox_mosaico_time_format_test)
-
   add_executable(toolbox_mosaico_settings_store_test
     tests/settings_store_test.cpp
     src/settings_store.cpp
@@ -483,6 +397,77 @@ if(BUILD_TESTING)
     plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
   )
   add_test(NAME toolbox_mosaico_settings_store_test COMMAND toolbox_mosaico_settings_store_test)
+
+  # Source descriptor: typed parse/validate, canonical bytes + identity
+  # conformance against docs/source-descriptor-vectors.json, rejection
+  # matrix. nlohmann + the SDK descriptor_import helpers only.
+  add_executable(toolbox_mosaico_source_descriptor_test
+    tests/source_descriptor_test.cpp
+    src/source_descriptor.cpp
+  )
+  target_compile_definitions(toolbox_mosaico_source_descriptor_test PRIVATE
+    MOSAICO_VECTORS_JSON="${CMAKE_CURRENT_SOURCE_DIR}/docs/source-descriptor-vectors.json"
+  )
+  target_link_libraries(toolbox_mosaico_source_descriptor_test PRIVATE
+    plotjuggler_sdk::plugin_sdk
+    plotjuggler_sdk::source nlohmann_json::nlohmann_json GTest::gtest_main
+  )
+  target_include_directories(toolbox_mosaico_source_descriptor_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_mosaico_source_descriptor_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_mosaico_source_descriptor_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  add_test(NAME ToolboxMosaicoSourceDescriptorTest COMMAND toolbox_mosaico_source_descriptor_test)
+
+  # Headless credential origin guard + interactive resolution.
+  add_executable(toolbox_mosaico_credential_resolve_test
+    tests/credential_resolve_test.cpp
+    src/credential_resolve.cpp
+    src/settings_store.cpp
+    src/server_history.cpp
+  )
+  target_link_libraries(toolbox_mosaico_credential_resolve_test PRIVATE
+    plotjuggler_sdk::plugin_sdk
+    plotjuggler_sdk::source nlohmann_json::nlohmann_json GTest::gtest_main
+  )
+  target_include_directories(toolbox_mosaico_credential_resolve_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_mosaico_credential_resolve_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_mosaico_credential_resolve_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  add_test(NAME ToolboxMosaicoCredentialResolveTest COMMAND toolbox_mosaico_credential_resolve_test)
+
+  # pj.descriptor_import.v1 provider: query taxonomy + startImport
+  # fail-closed rejections + watchdog inertness. Pulls in the fetch worker,
+  # so it links the Mosaico SDK / Arrow / gRPC like the ingest-progress test.
+  add_executable(toolbox_mosaico_descriptor_import_contract_test
+    tests/descriptor_import_contract_test.cpp
+    src/descriptor_import_provider.cpp
+    src/fetch_worker.cpp
+    src/arrow_ipc_message.cpp
+    src/credential_resolve.cpp
+    src/source_descriptor.cpp
+    src/settings_store.cpp
+    src/server_history.cpp
+  )
+  target_link_libraries(toolbox_mosaico_descriptor_import_contract_test PRIVATE
+    plotjuggler_sdk::plugin_sdk
+    plotjuggler_sdk::source
+    mosaico_sdk
+    fmt::fmt
+    nlohmann_json::nlohmann_json
+    ${_test_arrow_target}
+    GTest::gtest_main
+  )
+  if(MOSAICO_GRPCPP_TARGET)
+    target_link_libraries(toolbox_mosaico_descriptor_import_contract_test PRIVATE ${MOSAICO_GRPCPP_TARGET})
+  endif()
+  target_include_directories(toolbox_mosaico_descriptor_import_contract_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_features(toolbox_mosaico_descriptor_import_contract_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_mosaico_descriptor_import_contract_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
+  add_test(NAME ToolboxMosaicoDescriptorImportContractTest COMMAND toolbox_mosaico_descriptor_import_contract_test)
 
   # Live-server smoke: connects to demo.mosaico.dev, looks for an
   # image-ontology topic, pulls a 1-second window. Opt-in: only runs

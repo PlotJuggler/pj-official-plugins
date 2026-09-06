@@ -74,10 +74,11 @@ jobs:
   # (and its heavy boost / grpc / protobuf deps) independently in each plugin leg.
   # JFrog is the preferred binary source; missing exact package IDs are built once.
   #
-  # Two variants are primed, because Arrow's package_id depends on its options:
+  # Three variants are primed, because Arrow's package_id depends on its options:
   #   * parquet/snappy  — shared by data_load_parquet + data_load_lerobot (~14 min)
+  #   * +lz4/zstd — used by parser_arrow for compressed IPC
   #   * +Flight/grpc/protobuf — used by toolbox_mosaico's Arrow Flight client (~50 min)
-  # Both land in the one "*:*" artifact below; each build leg restores it and Conan picks
+  # All land in the one "*:*" artifact below; each build leg restores it and Conan picks
   # the matching package_id. Adding the Flight variant here (vs letting mosaico rebuild
   # it every run) costs nothing on warm runs and no extra wall-clock on cold runs —
   # mosaico already had to wait for this job, then built Flight in-leg anyway.
@@ -112,7 +113,7 @@ jobs:
           # Cache packages only. Conan stores remote credentials elsewhere in
           # CONAN_HOME, so no JFrog token is persisted in an Actions cache.
           path: ${{ github.workspace }}/.conan-arrow/p
-          # Bump the trailing -vN whenever either Arrow option set below changes, so a
+          # Bump the trailing -vN whenever an Arrow option set below changes, so a
           # stale immutable entry can't pin an old binary.
           key: conan-arrow-23.0.1-cppstd20-parquet-flight-${{ runner.os }}-v3
 
@@ -134,16 +135,25 @@ jobs:
           conan profile detect --force
           # Variant 1 — parquet/snappy (data_load_parquet, data_load_lerobot).
           conan install --requires=arrow/23.0.1 \
-            -o "arrow/*:parquet=True" -o "arrow/*:with_snappy=True" \
+            -o "arrow/*:parquet=True" -o "arrow/*:with_snappy=True" -o "arrow/*:with_mimalloc=False" \
             -o "*:shared=False" \
             -o "boost/*:without_test=True" -o "boost/*:without_cobalt=True" \
             -s build_type=Release -s compiler.cppstd=20 \
             -c tools.cmake.cmaketoolchain:generator=Ninja \
             --build=missing -of "$(mktemp -d)"
-          # Variant 2 — Arrow Flight (toolbox_mosaico). Pulls grpc + protobuf + re2 +
+          # Variant 2 — IPC decoding (parser_arrow): parquet with LZ4/ZSTD.
+          conan install --requires=arrow/23.0.1 \
+            -o "arrow/*:parquet=True" -o "arrow/*:with_snappy=True" -o "arrow/*:with_mimalloc=False" \
+            -o "arrow/*:with_lz4=True" -o "arrow/*:with_zstd=True" \
+            -o "*:shared=False" \
+            -o "boost/*:without_test=True" -o "boost/*:without_cobalt=True" \
+            -s build_type=Release -s compiler.cppstd=20 \
+            -c tools.cmake.cmaketoolchain:generator=Ninja \
+            --build=missing -of "$(mktemp -d)"
+          # Variant 3 — Arrow Flight (toolbox_mosaico). Pulls grpc + protobuf + re2 +
           # thrift; lz4/zstd are needed because the Mosaico server sends LZ4/ZSTD batches.
           conan install --requires=arrow/23.0.1 \
-            -o "arrow/*:parquet=True" -o "arrow/*:with_snappy=True" \
+            -o "arrow/*:parquet=True" -o "arrow/*:with_snappy=True" -o "arrow/*:with_mimalloc=False" \
             -o "arrow/*:with_flight_rpc=True" -o "arrow/*:with_grpc=True" \
             -o "arrow/*:with_protobuf=True" -o "arrow/*:with_re2=True" \
             -o "arrow/*:with_thrift=True" \

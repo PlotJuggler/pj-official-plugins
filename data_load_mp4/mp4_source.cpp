@@ -1,8 +1,8 @@
 #include <pj_base/builtin/video_frame_codec.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
+#include <pj_base/time_format.hpp>
 #include <pj_video_demux/video_demux.hpp>
 
-#include "mp4_iso8601.hpp"
 #include "mp4_manifest.hpp"
 
 extern "C" {
@@ -38,7 +38,7 @@ struct Mp4Metadata {
 
   AVDictionaryEntry* tag = av_dict_get(ctx->metadata, "creation_time", nullptr, 0);
   if (tag != nullptr && tag->value != nullptr) {
-    meta.creation_time_ns = pj_mp4::parseIso8601ToEpochNs(tag->value);
+    meta.creation_time_ns = PJ::parseIso8601Utc(tag->value);
   }
 
   avformat_close_input(&ctx);

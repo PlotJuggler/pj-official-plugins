@@ -19,9 +19,15 @@ class ParserArrowConan(ConanFile):
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
         "nanoarrow/0.7.0",
+        "arrow/23.0.1",
     )
     default_options = {
         "*:shared": False,
-        "nanoarrow/*:with_ipc": True,
-        "nanoarrow/*:with_zstd": True,
+        "arrow/*:parquet": True,
+        "arrow/*:with_snappy": True,
+        "arrow/*:with_mimalloc": False,
+        "arrow/*:with_lz4": True,
+        "arrow/*:with_zstd": True,
+        "boost/*:without_test": True,
+        "boost/*:without_cobalt": True,
     }

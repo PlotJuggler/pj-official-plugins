@@ -24,8 +24,13 @@
 # every copy via ELF visibility merging, while the version script selects by
 # final symbol name after resolution.
 #
-# Linux-only by design: PE and Mach-O have no STB_GNU_UNIQUE, and MSVC exports
-# nothing without dllexport.
+# Linux uses a version script (STB_GNU_UNIQUE gate + allowlist). macOS uses
+# -exported_symbols_list (plugin_exports_macos.list.in): Mach-O has no
+# STB_GNU_UNIQUE, but exported weak C++ symbols join dyld's process-wide weak
+# coalescing on dlopen, which can rebind part of a plugin's typeinfo references
+# to the host's copy and break libc++'s pointer-based typeid identity (std::any
+# in the plugin resolving to "unknown type"). Windows needs nothing: MSVC
+# exports nothing without dllexport.
 
 function(pj_harden_plugin_exports TARGET)
   set(_options)
@@ -35,6 +40,17 @@ function(pj_harden_plugin_exports TARGET)
 
   if(NOT ARG_REQUIRED_EXPORTS)
     message(FATAL_ERROR "pj_harden_plugin_exports(${TARGET}): REQUIRED_EXPORTS is required")
+  endif()
+  if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    set(PJ_EXTRA_EXPORT_LINES "")
+    foreach(_symbol IN LISTS ARG_EXTRA_EXPORTS)
+      string(APPEND PJ_EXTRA_EXPORT_LINES "_${_symbol}\n")
+    endforeach()
+    set(_list "${CMAKE_CURRENT_BINARY_DIR}/${TARGET}_exports.exp")
+    configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/plugin_exports_macos.list.in" "${_list}" @ONLY)
+    target_link_options(${TARGET} PRIVATE "LINKER:-exported_symbols_list,${_list}")
+    set_property(TARGET ${TARGET} APPEND PROPERTY LINK_DEPENDS "${_list}")
+    return()
   endif()
   if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     return()

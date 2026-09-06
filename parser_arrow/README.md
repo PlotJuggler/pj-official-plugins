@@ -8,7 +8,9 @@ end-of-stream marker is ignored. Arrow IPC **file** format payloads are not
 accepted. The payload is self-describing, so the binding's `schema` bytes are
 informational and ignored.
 
-The parser uses `nanoarrow` and `nanoarrow_ipc`, not `libarrow`.
+The parser uses Arrow C++ for IPC decoding and nanoarrow for scalar column shaping.
+LZ4, Zstandard, dictionaries, and view types are decoded after the host recording tap.
+Producers preserve the source schema and values; host plotting limits are applied here.
 
 ## Configuration
 
@@ -17,6 +19,7 @@ Configuration is a JSON object:
 | Key | Type | Default | Semantics |
 |-----|------|---------|-----------|
 | `timestamp_column` | string | `""` | Non-empty: use this leaf as the time axis, named as a flattened path at any depth. Dots normalize to `/` as they do in leaf names, so `header.stamp` and `header/stamp` are the same request; a name matching no leaf is an error. Empty: auto-detect an axis, then synthesize one if none is found. |
+| `timestamp_unit` | string | `"ns"` | Integer-axis unit: `"ns"`, `"us"`, `"ms"`, or `"s"`. Native Arrow timestamps retain their own unit; floating axes always carry seconds. Invalid units are rejected. |
 | `flatten_structs` | bool | `true` | Flatten nested structs depth-first to slash-separated leaf names. `false` preserves struct boundaries while unsupported top-level struct columns are removed. |
 | `synthetic_interval_ns` | int64 | `0` | When an axis is synthesized, add this many nanoseconds per row. Zero gives every row the message timestamp; negative intervals are allowed. The row index continues across record batches. |
 | `max_array_size` | uint32 | `500` | Maximum scalar columns emitted for one list. Zero means unlimited. |
@@ -38,9 +41,11 @@ is no such leaf and only top-level fields remain). Selection is ordered:
 2. Automatic detection: the first Arrow `TIMESTAMP`-typed leaf in schema order,
    then the first scalar leaf whose full flattened name matches this name
    priority: `timestamp_ns`, `recording_timestamp_ns`, `timestamp`, `time`,
-   `ts`. A name match is plausible only when its source type is `TIMESTAMP`,
-   `int64`, `uint64`, or `double`; narrower integers, `uint32`, and `float` are
-   not selected automatically.
+   `ts`, `t`, `time_stamp`, `datetime`, `date_time`, `_timestamp`, `_time`.
+   The SDK policy checks exact spelling before ASCII case-insensitive matches
+   at each priority. At the default nanosecond unit, eligible storage is
+   `TIMESTAMP`, `int64`, `uint64`, or `double`. At seconds, `int32` and `uint32`
+   also qualify. Narrower integers and `float` require explicit selection.
 3. Synthesis of an int64 `timestamp_ns` field as
    `message_timestamp_ns + row_index * synthetic_interval_ns`. The row index
    is stream-wide, not batch-local. Runtime diagnostics announce the synthetic
@@ -53,8 +58,8 @@ by its element type or by its source list name, so `list<int64>` named
 The selected axis is emitted as int64 nanoseconds. Accepted source types are:
 
 - every integer width, `int8` through `int64` and `uint8` through `uint64`:
-  treated as nanoseconds, widened to int64 without scaling. A `uint64` tick
-  above `INT64_MAX` is an error naming the column.
+  scaled from `timestamp_unit` to int64 nanoseconds (default `ns`). A `uint64`
+  tick above `INT64_MAX`, or overflow during scaling, is an error naming the column.
 - `float` and `double`: treated as seconds, multiplied by 1e9, and rounded to
   the nearest nanosecond (halfway values away from zero).
 - Arrow `TIMESTAMP`: scaled from its second, millisecond, microsecond, or
@@ -66,10 +71,9 @@ host interprets an empty timestamp-column name as a request to use row indices,
 which would discard the transport message time.
 
 Explicit configuration deliberately remains more permissive than automatic
-detection. Selecting `int8`, `int16`, `int32`, `uint8`, `uint16`, `uint32`, or
-`float` emits `parser_arrow.narrow_timestamp_axis`; integer messages state the
-maximum representable nanosecond instant, while the float message states that
-sub-second resolution is limited to magnitudes below 2^23 seconds. If an
+detection. Selecting integer storage too narrow for the configured unit, or
+`float`, emits the SDK's range/precision warning as
+`parser_arrow.narrow_timestamp_axis`. Int32/uint32 seconds do not need that warning. If an
 explicit float32 axis reaches `|seconds| >= 2^23` while the stream is drained,
 the parser also reports `parser_arrow.float_axis_precision`. A `double` remains
 plausible, but its spacing at the present epoch is about 238 ns, so it cannot
@@ -92,9 +96,9 @@ changes.
 - Every Arrow `TIMESTAMP` column, not only the selected axis, is cast to int64
   nanoseconds.
 - `large_string`, `large_binary`, `string_view`, and `binary_view` are
-  normalized to `utf8` or `binary`. However, `nanoarrow_ipc` 0.7 cannot decode
-  IPC fields of type `string_view` or `binary_view` at all; producers must cast
-  them to `utf8` or `binary` before encoding the stream.
+  normalized to `utf8` or `binary` after decoding. Dictionaries are unpacked,
+  extension types use their storage, and list views become ordinary lists.
+  These conversions also apply inside structs and supported lists.
 - Empty field names become `_<i>`, where `i` is the field's child index at that
   level. Duplicate output names after flattening, dot replacement, and empty-name
   substitution are errors.
@@ -105,8 +109,9 @@ date/time/duration, maps/unions, complex lists, and unflattened struct columns
 are removed from the shaped stream and reported. When parser runtime
 diagnostics are available, the parser reports each unchanged dropped set once
 as `parser_arrow.dropped_columns`. A schema with no host-ingestible data column
-other than its timestamp axis is rejected. The selected timestamp axis is never
-droppable.
+other than its timestamp axis is rejected, except for empty lists or lists excluded
+by the array policy. Such messages are drained and validated without host writes; later messages
+are parsed normally. The selected timestamp axis is never droppable.
 
 ## List expansion
 
@@ -125,7 +130,11 @@ The output width is fixed before the shaped schema is exposed:
   returns it as the wrapper stream's first batch. Later wider rows are limited
   to the already-selected width. After draining, the parser reports their count
   and the first affected column as `parser_arrow.truncated_lists`.
-- An all-null/empty first batch selects width zero. The list emits no scalar
+- When lists are the only data and initial batches are all empty, the parser
+  buffers those batches until it finds list values or reaches EOS. Earlier rows
+  become null-padded rows if a later batch supplies the width. Entirely empty
+  messages are successful no-ops.
+- When scalar data is present, an all-null/empty first batch selects width zero. The list emits no scalar
   columns and is reported once at plan time with the explicit reason `empty in
   first batch`, even if a later batch contains values. Because the source list
   is absent from the output plan, later batches are not monitored for
@@ -142,40 +151,51 @@ is unlimited. With `"clamp"`, an oversized width is reduced to the configured
 limit; with `"skip"`, the source list is removed and reported with its original
 Arrow format.
 
-Lists of non-ingestible elements—including structs, nested lists, binary, and
-dictionary values—remain unsupported and follow the normal dropped-column
-diagnostic path at the shaping layer. Dictionary-encoded IPC fields are still
-rejected earlier by `nanoarrow_ipc` as described below.
+Lists of non-ingestible elements—including structs, nested lists, and binary—
+remain unsupported and follow the normal dropped-column diagnostic path.
 
-Dictionary-encoded fields are rejected at decode time: `nanoarrow_ipc` 0.7
-refuses them while converting the IPC schema (so the offending field cannot be
-named) and cannot decode `DictionaryBatch` messages. Producers must decode
-dictionaries before encoding the IPC stream.
+## Canonical objects and recording
 
-## Compression
+A binding's `type_name` selects the Mosaico ontology. Recognized tags produce
+canonical objects through the SDK's functional object parser:
 
-Zstandard-compressed IPC record-batch bodies are supported. If any record-batch
-header selects LZ4, the stream is rejected before ingest with an error naming
-`lz4`; `nanoarrow_ipc` 0.7 has no LZ4 backend.
+| Ontology | Builtin object |
+|----------|----------------|
+| `image`, `compressed_image` | Image |
+| `point_cloud2`, `point_cloud`, `laser_scan`, `lidar`, `radar`, `rgbd_camera`, `tof_camera`, `stereo_camera` | PointCloud |
+| `pose`, `motion_state` | PosesInFrame |
+| `transform`, `frame_transform` | FrameTransforms |
+| `occupancy_grid` | OccupancyGrid |
+| `grid_cells` | SceneEntities |
 
-## Out of scope for v1
+Each canonical-object message must contain **exactly one row**. Mosaico slices
+object batches into one-row IPC streams; scalar topics keep whole batches.
+The host records and stores the raw message, and requests canonical decoding
+from the parser. The legacy `parse()` call validates object content and reports
+invalid rows without aborting later messages; it does not write a second object
+or expand media buffers into scalar columns. Functional decoding returns an error
+for an invalid object. Unknown ontology tags follow the scalar path.
 
-Canonical objects such as images, point clouds, poses, and frame transforms are
-not produced: `classifySchema` returns `kNone`. ROS/CDR-native payloads should be
-bound by the transport to `parser_ros`, not `parser_arrow`.
+Object timestamp selection uses the same SDK policy and checked conversions as
+scalars. Objects with missing/null timestamps use the message timestamp; present
+values that cannot represent int64 nanoseconds are rejected. Object schemas are
+flattened for field lookup regardless of the scalar `flatten_structs` setting.
 
-## Producer checklist
+Mosaico preserves every source field, including types that cannot currently be
+plotted. When a topic has no timestamp axis, it fits the cadence to the source
+range and prepends a collision-free native `timestamp[ns]` column. This timing is
+part of the recorded payload, so replay does not require the original parser
+configuration. Native timestamp columns also retain their units on replay.
 
-- Encode one Arrow IPC stream per message, not an IPC file.
-- Prefer an explicit int64-nanosecond timestamp column and configure its name.
-  Either spelling works for a nested or dotted field: `header.stamp` and
-  `header/stamp` name the same leaf.
-- Cast view types before IPC encoding.
-- Decode dictionary-encoded columns before IPC encoding.
-- Do not use LZ4 compression.
-- Use flat columns, nested structs, or primitive-element lists; pre-cast
-  unsupported list elements and account for the first-batch width rule.
-- Use one topic per parser binding.
+## Producer contract
+
+- Encode one complete Arrow IPC **stream** per message, with one topic per binding.
+- Preserve source fields and metadata. LZ4 and Zstandard compression are supported.
+- Prefer native Arrow timestamps so units travel with the data. Source-derived
+  synthetic timing must be in the payload if default replay needs to reproduce it.
+- For canonical Mosaico objects, supply the ontology as `type_name` and one row
+  per message. ROS/CDR-native payloads still belong to `parser_ros`.
+- Primitive lists follow the width and array-limit rules above.
 
 ## Build and test
 
@@ -185,14 +205,8 @@ ctest --test-dir build/parser_arrow/Release
 ```
 
 Regenerate the checked-in fixtures with any Python environment containing
-PyArrow 15 or newer:
+PyArrow 24:
 
 ```bash
 python3 parser_arrow/test_data/gen_fixtures.py
 ```
-
-## Known dependency quirk
-
-The ConanCenter `nanoarrow/0.7.0` recipe ships `libflatccrt.a` but omits it
-from the `nanoarrow_ipc` component. `parser_arrow/CMakeLists.txt` resolves the
-archive with `find_library`.

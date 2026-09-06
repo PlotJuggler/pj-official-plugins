@@ -14,6 +14,7 @@
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <pj_transfer_rate/transfer_rate.hpp>
 #include <string>
 #include <thread>
 #include <vector>
@@ -183,13 +184,9 @@ struct DialogState {
   // Per-message error tally so identical failures collapse into "[Nx] msg"
   // (PJ3 showCopyableWarning dedup).
   std::map<std::string, int, std::less<>> error_counts;
-  // Per-topic rolling speed samples: (epoch_ms, cumulative_bytes), trimmed to
-  // a 5 s window — mirrors PJ3 DownloadStatsDialog speed calc.
-  struct SpeedSample {
-    std::int64_t ms;
-    std::int64_t bytes;
-  };
-  std::map<std::string, std::vector<SpeedSample>, std::less<>> speed_samples;
+  // Per-topic rolling 5 s transfer rate — mirrors PJ3 DownloadStatsDialog
+  // speed calc via the shared PJ::common::RollingTransferRate.
+  std::map<std::string, PJ::common::RollingTransferRate, std::less<>> speed_samples;
   std::map<std::string, std::string, std::less<>> topic_fetch_status;  // name → "" / "Done" / "Failed"
 
   // Sub-dialog request flags (read+cleared in getWidgetData).
