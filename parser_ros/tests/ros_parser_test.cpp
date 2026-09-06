@@ -796,9 +796,9 @@ static const char* kDiagnosticArrayDef =
     "================\n"
     "MSG: diagnostic_msgs/DiagnosticStatus\n"
     // Canonical field order (matches diagnostic_msgs/msg/DiagnosticStatus): the
-    // byte constants are NOT serialized, then `name` precedes `level` on the wire.
+    // byte constants are NOT serialized, then `level` precedes `name` on the wire.
     "byte OK=0\nbyte WARN=1\nbyte ERROR=2\nbyte STALE=3\n"
-    "string name\nbyte level\nstring message\nstring hardware_id\n"
+    "byte level\nstring name\nstring message\nstring hardware_id\n"
     "diagnostic_msgs/KeyValue[] values\n"
     "================\n"
     "MSG: diagnostic_msgs/KeyValue\n"
@@ -1133,9 +1133,9 @@ TEST(RosParserTest, DiagnosticArray) {
     // 2 statuses
     enc.serializeUInt32(2);
 
-    // Status 1: with hardware_id. Wire order is name, level, message, hardware_id.
-    enc.serializeString("CPU Temperature");                                             // name
+    // Status 1: with hardware_id. Wire order is level, name, message, hardware_id.
     enc.serialize(RosMsgParser::BYTE, RosMsgParser::Variant(static_cast<uint8_t>(0)));  // level OK
+    enc.serializeString("CPU Temperature");                                             // name
     enc.serializeString("OK");                                                          // message
     enc.serializeString("cpu0");                                                        // hardware_id
     // 1 key-value pair
@@ -1144,8 +1144,8 @@ TEST(RosParserTest, DiagnosticArray) {
     enc.serializeString("65.5");
 
     // Status 2: no hardware_id
-    enc.serializeString("Battery");                                                     // name
     enc.serialize(RosMsgParser::BYTE, RosMsgParser::Variant(static_cast<uint8_t>(1)));  // level WARN
+    enc.serializeString("Battery");                                                     // name
     enc.serializeString("Low");                                                         // message
     enc.serializeString("");                                                            // hardware_id
     enc.serializeUInt32(1);
@@ -1169,6 +1169,40 @@ TEST(RosParserTest, DiagnosticArray) {
   auto* voltage = findField(f.recorder.rows()[0], "/Battery/voltage");
   ASSERT_NE(voltage, nullptr);
   EXPECT_DOUBLE_EQ(voltage->numeric, 11.2);
+}
+
+TEST(RosParserTest, DiagnosticArrayRepeatedAndEmptyKeys) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("diagnostic_msgs/DiagnosticArray", kDiagnosticArrayDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 1, 0, "");
+    enc.serializeUInt32(1);
+    enc.serialize(RosMsgParser::BYTE, RosMsgParser::Variant(static_cast<uint8_t>(0)));
+    enc.serializeString("Network Status");
+    enc.serializeString("OK");
+    enc.serializeString("");
+    enc.serializeUInt32(4);
+    enc.serializeString("Interface Name");
+    enc.serializeString("eth0");
+    enc.serializeString("");  // padding entry
+    enc.serializeString("");
+    enc.serializeString("Interface Name");
+    enc.serializeString("wlan0");
+    enc.serializeString("MTU");
+    enc.serializeString("1500");
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+  EXPECT_NE(findField(row, "/Network Status/Interface Name"), nullptr);
+  EXPECT_NE(findField(row, "/Network Status/Interface Name[1]"), nullptr);
+  EXPECT_EQ(findField(row, "/Network Status/"), nullptr);
+  auto* mtu = findField(row, "/Network Status/MTU");
+  ASSERT_NE(mtu, nullptr);
+  EXPECT_DOUBLE_EQ(mtu->numeric, 1500.0);
 }
 
 TEST(RosParserTest, TFMessage) {
