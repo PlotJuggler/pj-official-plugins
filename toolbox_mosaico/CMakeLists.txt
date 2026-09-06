@@ -52,15 +52,15 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 # The Mosaico client SDK lives in its own repo and is fetched via CPM. Arrow
 # (+ Flight) and nlohmann_json targets must already exist (created above) — the
-# SDK does not find_package() them. Pin the source: the downstream cancellation
-# patch below is deliberately tied to this revision and must fail loudly if its
-# context stops matching, rather than silently building without active stream
-# cancellation.
+# SDK does not find_package() them. Pin the source to a release tag: the
+# downstream cancellation patch below is deliberately tied to that snapshot and
+# must fail loudly if its context stops matching, rather than silently building
+# without active stream cancellation.
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CPM.cmake)
-set(MOSAICO_SDK_REVISION fcbaa3a937e527ab250b66f811bbc7a4a03e2e41)
+set(MOSAICO_SDK_VERSION v0.1.0)
 CPMAddPackage(
   NAME mosaico_sdk
-  URL https://github.com/PlotJuggler/mosaico-cpp-sdk/archive/${MOSAICO_SDK_REVISION}.zip
+  URL https://github.com/PlotJuggler/mosaico-cpp-sdk/archive/refs/tags/${MOSAICO_SDK_VERSION}.zip
   PATCHES ${CMAKE_CURRENT_LIST_DIR}/patches/mosaico_sdk_active_pull_cancel.patch
 )
 
