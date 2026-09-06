@@ -29,7 +29,6 @@ pj_emit_plugin_manifest(mp4_source_plugin
 add_executable(mp4_iso8601_test tests/mp4_iso8601_test.cpp)
 target_compile_features(mp4_iso8601_test PRIVATE cxx_std_20)
 target_compile_options(mp4_iso8601_test PRIVATE ${PJ_WARNING_FLAGS})
-target_include_directories(mp4_iso8601_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mp4_iso8601_test PRIVATE
   plotjuggler_sdk::base GTest::gtest_main
 )

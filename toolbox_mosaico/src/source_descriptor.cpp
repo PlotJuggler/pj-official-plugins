@@ -3,7 +3,6 @@
 #include "source_descriptor.hpp"
 
 #include <algorithm>
-#include <limits>
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/source/origin.hpp>
 

@@ -59,40 +59,40 @@ class Lexer {
 
       // Two-char operators.
       if (index + 1 < len) {
-        auto two = src_.substr(static_cast<std::size_t>(index), 2);
+        auto two = slice(index, index + 2);
         if (two == "==" || two == "~=" || two == "<=" || two == ">=") {
-          tokens.push_back({TokenType::kOperator, std::string(two), index, index + 2});
+          tokens.push_back({TokenType::kOperator, std::move(two), index, index + 2});
           index += 2;
           continue;
         }
       }
 
       // Single-char operators.
-      if (src_[index] == '<' || src_[index] == '>') {
-        tokens.push_back({TokenType::kOperator, std::string(1, src_[index]), index, index + 1});
+      if (at(index) == '<' || at(index) == '>') {
+        tokens.push_back({TokenType::kOperator, std::string(1, at(index)), index, index + 1});
         ++index;
         continue;
       }
 
       // Parens.
-      if (src_[index] == '(') {
+      if (at(index) == '(') {
         tokens.push_back({TokenType::kOpenParen, "(", index, index + 1});
         ++index;
         continue;
       }
-      if (src_[index] == ')') {
+      if (at(index) == ')') {
         tokens.push_back({TokenType::kCloseParen, ")", index, index + 1});
         ++index;
         continue;
       }
 
       // Quoted string.
-      if (src_[index] == '"' || src_[index] == '\'') {
+      if (at(index) == '"' || at(index) == '\'') {
         int start = index;
-        char quote = src_[index];
+        char quote = at(index);
         ++index;
-        while (index < len && src_[index] != quote) {
-          if (src_[index] == '\\' && index + 1 < len) {
+        while (index < len && at(index) != quote) {
+          if (at(index) == '\\' && index + 1 < len) {
             ++index;  // skip escaped
           }
           ++index;
@@ -100,13 +100,13 @@ class Lexer {
         if (index < len) {
           ++index;  // consume closing quote
         }
-        tokens.push_back({TokenType::kValue, std::string(src_.substr(start, index - start)), start, index});
+        tokens.push_back({TokenType::kValue, slice(start, index), start, index});
         continue;
       }
 
       // Lone = or ~ (not part of a two-char op).
-      if (src_[index] == '=' || src_[index] == '~') {
-        tokens.push_back({TokenType::kOperator, std::string(1, src_[index]), index, index + 1});
+      if (at(index) == '=' || at(index) == '~') {
+        tokens.push_back({TokenType::kOperator, std::string(1, at(index)), index, index + 1});
         ++index;
         continue;
       }
@@ -118,7 +118,7 @@ class Lexer {
       }
 
       if (index > start) {
-        auto word = std::string(src_.substr(start, index - start));
+        auto word = slice(start, index);
         tokens.push_back({classifyWord(word), std::move(word), start, index});
         continue;
       }
@@ -131,12 +131,22 @@ class Lexer {
   }
 
  private:
+  // Bounds are managed by the callers; these only centralize the int → size_type
+  // casts so -Wconversion stays clean.
+  [[nodiscard]] char at(int index) const {
+    return src_[static_cast<std::size_t>(index)];
+  }
+
+  [[nodiscard]] std::string slice(int from, int to) const {
+    return std::string(src_.substr(static_cast<std::size_t>(from), static_cast<std::size_t>(to - from)));
+  }
+
   [[nodiscard]] bool isSpace(int index) const {
-    return std::isspace(static_cast<unsigned char>(src_[index]));
+    return std::isspace(static_cast<unsigned char>(at(index)));
   }
 
   [[nodiscard]] bool isPunct(int index) const {
-    char character = src_[index];
+    char character = at(index);
     return character == '(' || character == ')' || character == '=' || character == '~' || character == '<' ||
            character == '>' || character == '"' || character == '\'';
   }

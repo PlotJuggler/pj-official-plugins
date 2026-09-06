@@ -60,10 +60,10 @@ TEST(Lexer, LoneEqualsAndTildeAreOperators) {
 
 TEST(Lexer, QuotedStringsWithEscapes) {
   // Double and single quotes are Values; escaped quote does not terminate.
-  auto toks = Lexer(R"(robot == "boni\"rob")").tokenize();
+  auto toks = Lexer("robot == \"boni\\\"rob\"").tokenize();
   ASSERT_EQ(toks.size(), 3u);
   EXPECT_EQ(toks[2].type, TokenType::kValue);
-  EXPECT_EQ(toks[2].text, R"("boni\"rob")");
+  EXPECT_EQ(toks[2].text, "\"boni\\\"rob\"");
 
   auto toks2 = Lexer("k == 'val'").tokenize();
   ASSERT_EQ(toks2.size(), 3u);

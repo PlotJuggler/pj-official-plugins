@@ -60,7 +60,8 @@ struct CursorContext {
 // Returns token index, or -1 if cursor is in whitespace.
 [[nodiscard]] inline int findActiveToken(const std::vector<Token>& tokens, int cursor) {
   for (int index = 0; index < static_cast<int>(tokens.size()); ++index) {
-    if (cursor >= tokens[index].start && cursor <= tokens[index].end) {
+    if (cursor >= tokens[static_cast<std::size_t>(index)].start &&
+        cursor <= tokens[static_cast<std::size_t>(index)].end) {
       return index;
     }
   }
@@ -79,7 +80,7 @@ struct CursorContext {
 
   ctx.token_index = findActiveToken(tokens, cursor);
   if (ctx.token_index >= 0) {
-    ctx.active_token = tokens[ctx.token_index];
+    ctx.active_token = tokens[static_cast<std::size_t>(ctx.token_index)];
   }
 
   // Slice the stream at the cursor: everything up to and including the active
