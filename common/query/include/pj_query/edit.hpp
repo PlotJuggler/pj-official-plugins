@@ -1,25 +1,24 @@
-/*
- * This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at https://mozilla.org/MPL/2.0/.
- */
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MIT
 
 #pragma once
 
-#include <cstdlib>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include "complete.h"
-#include "token.h"
-#include "types.h"
+#include "pj_base/number_parse.hpp"
+#include "pj_query/complete.hpp"
+#include "pj_query/token.hpp"
+#include "pj_query/types.hpp"
+
+namespace PJ::query {
 
 // What a dropdown action would do at this cursor position.
 enum class Action {
-  Disabled,  // dropdown should be greyed out
-  Insert,    // append new text at cursor (no existing token to replace)
-  Replace,   // overwrite the token the cursor is on
+  kDisabled,  // dropdown should be greyed out
+  kInsert,    // append new text at cursor (no existing token to replace)
+  kReplace,   // overwrite the token the cursor is on
 };
 
 // Full analysis of what the cursor position means for the UI.
@@ -33,24 +32,24 @@ struct CursorContext {
   Token active_token;  // valid only when token_index >= 0
 
   // From complete() on the prefix up to cursor.
-  Expect expect = Expect::Any;
+  Expect expect = Expect::kAny;
   std::string context_key;
   int suggestion_count = 0;
 
   // What each dropdown would do.
-  Action key_action = Action::Disabled;
-  Action op_action = Action::Disabled;
-  Action val_action = Action::Disabled;
+  Action key_action = Action::kDisabled;
+  Action op_action = Action::kDisabled;
+  Action val_action = Action::kDisabled;
 
   // Convenience: is the dropdown usable at all?
-  [[nodiscard]] bool can_pick_key() const {
-    return key_action != Action::Disabled;
+  [[nodiscard]] bool canPickKey() const {
+    return key_action != Action::kDisabled;
   }
-  [[nodiscard]] bool can_pick_op() const {
-    return op_action != Action::Disabled;
+  [[nodiscard]] bool canPickOp() const {
+    return op_action != Action::kDisabled;
   }
-  [[nodiscard]] bool can_pick_value() const {
-    return val_action != Action::Disabled;
+  [[nodiscard]] bool canPickValue() const {
+    return val_action != Action::kDisabled;
   }
 };
 
@@ -59,10 +58,10 @@ struct CursorContext {
 // This means the cursor right after a token (P == end) is still on it —
 // the common case when the user just finished typing a word.
 // Returns token index, or -1 if cursor is in whitespace.
-[[nodiscard]] inline int find_active_token(const std::vector<Token>& tokens, int cursor) {
-  for (int i = 0; i < static_cast<int>(tokens.size()); ++i) {
-    if (cursor >= tokens[i].start && cursor <= tokens[i].end) {
-      return i;
+[[nodiscard]] inline int findActiveToken(const std::vector<Token>& tokens, int cursor) {
+  for (int index = 0; index < static_cast<int>(tokens.size()); ++index) {
+    if (cursor >= tokens[index].start && cursor <= tokens[index].end) {
+      return index;
     }
   }
   return -1;
@@ -73,89 +72,68 @@ struct CursorContext {
   CursorContext ctx;
   ctx.cursor = cursor;
 
-  // Tokenize the FULL text to find what token the cursor is on.
+  // Tokenize the FULL text once; both the active-token lookup and complete()
+  // consume slices of this stream.
   Lexer lex(text);
   auto tokens = lex.tokenize();
 
-  ctx.token_index = find_active_token(tokens, cursor);
+  ctx.token_index = findActiveToken(tokens, cursor);
   if (ctx.token_index >= 0) {
     ctx.active_token = tokens[ctx.token_index];
   }
 
-  // Run complete() on the prefix for baseline analysis.
-  auto comp = complete(text, static_cast<std::size_t>(cursor), schema);
+  // Slice the stream at the cursor: everything up to and including the active
+  // token (which the Lexer saw in full — "rob|ot" analyzes as "robot"), or
+  // just the tokens fully before a cursor sitting in whitespace.
+  std::vector<Token> before_cursor;
+  if (ctx.token_index >= 0) {
+    before_cursor.assign(tokens.begin(), tokens.begin() + ctx.token_index + 1);
+  } else {
+    for (const auto& token : tokens) {
+      if (token.end < cursor) {
+        before_cursor.push_back(token);
+      }
+    }
+  }
+  auto comp = complete(before_cursor, schema, /*last_token_complete=*/ctx.token_index >= 0);
   ctx.expect = comp.expect;
   ctx.context_key = comp.current_key;
   ctx.suggestion_count = static_cast<int>(comp.suggestions.size());
-
-  // Override expect when cursor is on a known token.
-  // complete() only sees the prefix ("rob" → partial key → Expect::Key),
-  // but the Lexer sees the full token ("robot"). When the cursor is on a
-  // token, expect should reflect what comes AFTER that token type.
-  if (ctx.token_index >= 0) {
-    switch (ctx.active_token.type) {
-      case TokenType::Key:
-        ctx.expect = Expect::Operator;
-        ctx.context_key = ctx.active_token.text;
-        break;
-      case TokenType::Operator:
-        ctx.expect = Expect::Value;
-        if (ctx.token_index > 0 && tokens[ctx.token_index - 1].type == TokenType::Key) {
-          ctx.context_key = tokens[ctx.token_index - 1].text;
-        }
-        break;
-      case TokenType::Value:
-      case TokenType::CloseParen:
-        ctx.expect = Expect::Connective;
-        if (ctx.token_index >= 2 && tokens[ctx.token_index - 1].type == TokenType::Operator &&
-            tokens[ctx.token_index - 2].type == TokenType::Key) {
-          ctx.context_key = tokens[ctx.token_index - 2].text;
-        }
-        break;
-      case TokenType::And:
-      case TokenType::Or:
-      case TokenType::Not:
-      case TokenType::OpenParen:
-        ctx.expect = Expect::Key;
-        ctx.context_key.clear();
-        break;
-    }
-  }
 
   // --- Derive actions ---
   // Replace: cursor is on an existing token of the matching type.
   // Insert:  expect says this token type goes next.
   // Both can be true (cursor on key → key=Replace AND op=Insert).
 
-  bool on_key = ctx.token_index >= 0 && ctx.active_token.type == TokenType::Key;
-  bool on_op = ctx.token_index >= 0 && ctx.active_token.type == TokenType::Operator;
-  bool on_value = ctx.token_index >= 0 && ctx.active_token.type == TokenType::Value;
+  bool on_key = ctx.token_index >= 0 && ctx.active_token.type == TokenType::kKey;
+  bool on_op = ctx.token_index >= 0 && ctx.active_token.type == TokenType::kOperator;
+  bool on_value = ctx.token_index >= 0 && ctx.active_token.type == TokenType::kValue;
 
   // Key dropdown:
   //   Replace: cursor is on a Key token
   //   Insert:  expect is Key, Any, or Connective (auto-chain)
   if (on_key) {
-    ctx.key_action = Action::Replace;
-  } else if (ctx.expect == Expect::Key || ctx.expect == Expect::Any || ctx.expect == Expect::Connective) {
-    ctx.key_action = Action::Insert;
+    ctx.key_action = Action::kReplace;
+  } else if (ctx.expect == Expect::kKey || ctx.expect == Expect::kAny || ctx.expect == Expect::kConnective) {
+    ctx.key_action = Action::kInsert;
   }
 
   // Op dropdown:
   //   Replace: cursor is on an Operator token
   //   Insert:  expect is Operator (i.e., cursor on a key → op next)
   if (on_op) {
-    ctx.op_action = Action::Replace;
-  } else if (ctx.expect == Expect::Operator) {
-    ctx.op_action = Action::Insert;
+    ctx.op_action = Action::kReplace;
+  } else if (ctx.expect == Expect::kOperator) {
+    ctx.op_action = Action::kInsert;
   }
 
   // Value dropdown:
   //   Replace: cursor is on a Value token
   //   Insert:  expect is Value (i.e., cursor on an operator → value next)
   if (on_value) {
-    ctx.val_action = Action::Replace;
-  } else if (ctx.expect == Expect::Value) {
-    ctx.val_action = Action::Insert;
+    ctx.val_action = Action::kReplace;
+  } else if (ctx.expect == Expect::kValue) {
+    ctx.val_action = Action::kInsert;
   }
 
   return ctx;
@@ -163,68 +141,68 @@ struct CursorContext {
 
 // --- String formatting for debug display ---
 
-[[nodiscard]] inline const char* action_str(Action a) {
-  switch (a) {
-    case Action::Disabled:
+[[nodiscard]] inline const char* actionStr(Action first) {
+  switch (first) {
+    case Action::kDisabled:
       return "\xe2\x80\x94";  // em-dash
-    case Action::Insert:
+    case Action::kInsert:
       return "INSERT";
-    case Action::Replace:
+    case Action::kReplace:
       return "REPLACE";
   }
   return "?";
 }
 
-[[nodiscard]] inline const char* expect_str(Expect e) {
-  switch (e) {
-    case Expect::Key:
+[[nodiscard]] inline const char* expectStr(Expect entry) {
+  switch (entry) {
+    case Expect::kKey:
       return "Key";
-    case Expect::Operator:
+    case Expect::kOperator:
       return "Operator";
-    case Expect::Value:
+    case Expect::kValue:
       return "Value";
-    case Expect::Connective:
+    case Expect::kConnective:
       return "Connective";
-    case Expect::Any:
+    case Expect::kAny:
       return "Any";
   }
   return "?";
 }
 
-[[nodiscard]] inline const char* token_type_str(TokenType t) {
-  switch (t) {
-    case TokenType::Key:
+[[nodiscard]] inline const char* tokenTypeStr(TokenType token) {
+  switch (token) {
+    case TokenType::kKey:
       return "Key";
-    case TokenType::Operator:
+    case TokenType::kOperator:
       return "Op";
-    case TokenType::Value:
+    case TokenType::kValue:
       return "Val";
-    case TokenType::And:
+    case TokenType::kAnd:
       return "And";
-    case TokenType::Or:
+    case TokenType::kOr:
       return "Or";
-    case TokenType::Not:
+    case TokenType::kNot:
       return "Not";
-    case TokenType::OpenParen:
+    case TokenType::kOpenParen:
       return "(";
-    case TokenType::CloseParen:
+    case TokenType::kCloseParen:
       return ")";
   }
   return "?";
 }
 
 // Format the cursor context as a two-line debug string.
-[[nodiscard]] inline std::string format_debug(const CursorContext& ctx) {
+[[nodiscard]] inline std::string formatDebug(const CursorContext& ctx) {
   std::string line1 = "pos:" + std::to_string(ctx.cursor);
 
   if (ctx.token_index >= 0) {
-    line1 += "  active:\"" + ctx.active_token.text + "\" " + token_type_str(ctx.active_token.type) + "[" +
+    line1 += "  active:\"" + ctx.active_token.text + "\" " + tokenTypeStr(ctx.active_token.type) + "[" +
              std::to_string(ctx.active_token.start) + "," + std::to_string(ctx.active_token.end) + ")";
   } else {
     line1 += "  active:(none)";
   }
 
-  line1 += "  expect:" + std::string(expect_str(ctx.expect));
+  line1 += "  expect:" + std::string(expectStr(ctx.expect));
 
   if (!ctx.context_key.empty()) {
     line1 += "  ctx_key:" + ctx.context_key;
@@ -232,18 +210,18 @@ struct CursorContext {
 
   line1 += "  sugg:" + std::to_string(ctx.suggestion_count);
 
-  std::string line2 = "key:" + std::string(action_str(ctx.key_action));
-  if (ctx.key_action == Action::Replace) {
+  std::string line2 = "key:" + std::string(actionStr(ctx.key_action));
+  if (ctx.key_action == Action::kReplace) {
     line2 += "[" + std::to_string(ctx.active_token.start) + "," + std::to_string(ctx.active_token.end) + ")";
   }
 
-  line2 += "  op:" + std::string(action_str(ctx.op_action));
-  if (ctx.op_action == Action::Replace) {
+  line2 += "  op:" + std::string(actionStr(ctx.op_action));
+  if (ctx.op_action == Action::kReplace) {
     line2 += "[" + std::to_string(ctx.active_token.start) + "," + std::to_string(ctx.active_token.end) + ")";
   }
 
-  line2 += "  val:" + std::string(action_str(ctx.val_action));
-  if (ctx.val_action == Action::Replace) {
+  line2 += "  val:" + std::string(actionStr(ctx.val_action));
+  if (ctx.val_action == Action::kReplace) {
     line2 += "[" + std::to_string(ctx.active_token.start) + "," + std::to_string(ctx.active_token.end) + ")";
   }
 
@@ -259,32 +237,27 @@ struct EditResult {
   int cursor = 0;
 };
 
-[[nodiscard]] inline bool is_query_whitespace(char c) {
-  return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+[[nodiscard]] inline bool isQueryWhitespace(char character) {
+  return character == ' ' || character == '\t' || character == '\n' || character == '\r';
 }
 
 // Format a schema value for insertion into the query. The Lexer classifies a
-// bare word as a Key and a quoted word as a Value (token.h), so a string value
+// bare word as a Key and a quoted word as a Value (token.hpp), so a string value
 // like `cloudy` MUST be quoted to land as `weather == "cloudy"` — otherwise it
 // lexes as a second key and the whole clause falls apart. Numeric values lex as
 // Value bare, so they're left unquoted; embedded quotes/backslashes are escaped.
 [[nodiscard]] inline std::string quoteValueForQuery(std::string_view value) {
-  if (!value.empty()) {
-    const std::string tmp(value);
-    char* end = nullptr;
-    std::strtod(tmp.c_str(), &end);
-    if (end == tmp.c_str() + tmp.size()) {
-      return tmp;  // parses fully as a number → insert bare
-    }
+  if (PJ::parseNumber<double>(value)) {
+    return std::string(value);  // parses fully as a number → insert bare
   }
   std::string out;
   out.reserve(value.size() + 2);
   out += '"';
-  for (char c : value) {
-    if (c == '"' || c == '\\') {
+  for (char character : value) {
+    if (character == '"' || character == '\\') {
       out += '\\';
     }
-    out += c;
+    out += character;
   }
   out += '"';
   return out;
@@ -302,9 +275,9 @@ struct EditResult {
 [[nodiscard]] inline EditResult applyCompletion(
     std::string_view text, const CursorContext& ctx, Action action, std::string_view item) {
   std::string out(text);
-  const int n = static_cast<int>(out.size());
+  const int length = static_cast<int>(out.size());
 
-  const bool replace = (action == Action::Replace && ctx.token_index >= 0);
+  const bool replace = (action == Action::kReplace && ctx.token_index >= 0);
   // Insert: when the caret sits on a token, splice in *after* that token rather
   // than at the raw caret — a mid-token caret would otherwise cut the word in
   // half (e.g. picking "==" at "wea|ther" → "wea == ther"). In whitespace
@@ -320,19 +293,21 @@ struct EditResult {
     from = to = ctx.cursor;
   }
   // Clamp defensively against a stale cursor / token span.
-  from = from < 0 ? 0 : (from > n ? n : from);
-  to = to < from ? from : (to > n ? n : to);
+  from = from < 0 ? 0 : (from > length ? length : from);
+  to = to < from ? from : (to > length ? length : to);
 
   std::string piece;
-  if (from > 0 && !is_query_whitespace(out[static_cast<std::size_t>(from) - 1])) {
+  if (from > 0 && !isQueryWhitespace(out[static_cast<std::size_t>(from) - 1])) {
     piece += ' ';
   }
   piece += std::string(item);
-  const bool at_end = to >= n;
-  if (!replace || at_end || !is_query_whitespace(out[static_cast<std::size_t>(to)])) {
+  const bool at_end = to >= length;
+  if (!replace || at_end || !isQueryWhitespace(out[static_cast<std::size_t>(to)])) {
     piece += ' ';
   }
 
   out.replace(static_cast<std::size_t>(from), static_cast<std::size_t>(to - from), piece);
   return EditResult{std::move(out), from + static_cast<int>(piece.size())};
 }
+
+}  // namespace PJ::query

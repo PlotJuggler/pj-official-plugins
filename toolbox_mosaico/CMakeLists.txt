@@ -88,11 +88,10 @@ endif()
 add_library(toolbox_mosaico_plugin SHARED ${MOSAICO_SOURCES})
 
 target_compile_features(toolbox_mosaico_plugin PRIVATE cxx_std_20)
-# Don't apply ${PJ_WARNING_FLAGS} here — the vendored PJ3 query/* headers
-# and sol2 trigger -Wconversion and -Wunused-parameter under -Werror. The
-# core dialog/state-machine code is reviewed manually; this matches PJ3's
-# own build flags for its query/ subdir. These GNU flags are not valid for cl,
-# so gate them to non-MSVC compilers.
+# Don't apply ${PJ_WARNING_FLAGS} here — sol2 triggers -Wconversion and
+# -Wunused-parameter under -Werror. The core dialog/state-machine code is
+# reviewed manually. These GNU flags are not valid for cl, so gate them to
+# non-MSVC compilers.
 if(NOT MSVC)
   target_compile_options(toolbox_mosaico_plugin PRIVATE
     -Wall -Wextra -Werror
@@ -103,7 +102,6 @@ endif()
 target_include_directories(toolbox_mosaico_plugin PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}/src/core
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/query
   ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 
@@ -113,6 +111,7 @@ target_link_libraries(toolbox_mosaico_plugin PRIVATE
   fmt::fmt
   nlohmann_json::nlohmann_json
   mosaico_sdk
+  pj_common_query
   lua::lua
   sol2::sol2
 )
@@ -154,9 +153,10 @@ pj_emit_plugin_manifest(toolbox_mosaico_plugin
 if(BUILD_TESTING)
   find_package(GTest REQUIRED)
 
-  # The vendored PJ3 query/* tests below relax warnings with GNU flags. MSVC
-  # rejects those (e.g. /Wextra is a fatal command-line error D8021), so map the
-  # set to nothing on MSVC and to the GNU flags elsewhere.
+  # The query tests below relax warnings with GNU flags (sol2 trips
+  # -Wconversion / -Wunused-parameter under -Werror). MSVC rejects those
+  # (e.g. /Wextra is a fatal command-line error D8021), so map the set to
+  # nothing on MSVC and to the GNU flags elsewhere.
   if(MSVC)
     set(MOSAICO_QUERY_TEST_WARNINGS "")
   else()
@@ -278,18 +278,17 @@ if(BUILD_TESTING)
   )
   add_test(NAME ToolboxMosaicoNameFilterTest COMMAND toolbox_mosaico_name_filter_test)
 
-  # Query engine (Lexer/Parser/serialize/Query/complete/analyze/Engine). The
-  # query/* headers are byte-for-byte the PJ3 engine; these tests pin their
-  # behavior. Lua-backed eval/validate needs lua + sol2 only.
+  # Lua-backed query Engine (eval/validate/metadata globals). The query
+  # LANGUAGE tests live with common/query. Needs lua + sol2 only.
   add_executable(toolbox_mosaico_query_engine_test
     tests/query_engine_test.cpp
   )
   target_link_libraries(toolbox_mosaico_query_engine_test PRIVATE
-    lua::lua sol2::sol2 GTest::gtest_main
+    pj_common_query lua::lua sol2::sol2 GTest::gtest_main
   )
   target_compile_features(toolbox_mosaico_query_engine_test PRIVATE cxx_std_20)
-  # Match the plugin's relaxed flags: the vendored PJ3 query/* headers and sol2
-  # trip -Wconversion / -Wunused-parameter under -Werror.
+  # Match the plugin's relaxed flags: sol2 trips -Wconversion /
+  # -Wunused-parameter under -Werror.
   target_compile_options(toolbox_mosaico_query_engine_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
   if(MSVC)
     # This test embeds raw string literals inside gtest EXPECT_EQ() macros. MSVC's
@@ -310,7 +309,7 @@ if(BUILD_TESTING)
     tests/query_filter_test.cpp
   )
   target_link_libraries(toolbox_mosaico_query_filter_test PRIVATE
-    lua::lua sol2::sol2 GTest::gtest_main
+    pj_common_query lua::lua sol2::sol2 GTest::gtest_main
   )
   target_compile_features(toolbox_mosaico_query_filter_test PRIVATE cxx_std_20)
   target_compile_options(toolbox_mosaico_query_filter_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
@@ -322,11 +321,11 @@ if(BUILD_TESTING)
 
   # Assist model: the Key/Op/Value dropdown + PLUS state machine for the metadata
   # filter, encoding the query-assist contract (replace-at-caret vs stage-then-PLUS).
-  # Pure header logic (query/assist.h) — no Lua, no Arrow/Flight.
+  # Pure header logic (query_assist.h over pj_common_query) — no Lua, no Arrow/Flight.
   add_executable(toolbox_mosaico_assist_test
     tests/assist_test.cpp
   )
-  target_link_libraries(toolbox_mosaico_assist_test PRIVATE GTest::gtest_main)
+  target_link_libraries(toolbox_mosaico_assist_test PRIVATE pj_common_query GTest::gtest_main)
   target_compile_features(toolbox_mosaico_assist_test PRIVATE cxx_std_20)
   target_compile_options(toolbox_mosaico_assist_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
   target_include_directories(toolbox_mosaico_assist_test PRIVATE

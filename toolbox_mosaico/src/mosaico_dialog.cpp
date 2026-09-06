@@ -2,19 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 // clang-format off
-// The query-engine headers declare a global `enum class TokenType`. On Windows
-// they MUST be included before anything that pulls in <windows.h> (Arrow's
-// windows_compatibility shim, the SDK's platform.hpp, ...): <winnt.h> defines an
-// unscoped enumerator `TokenType` (in TOKEN_INFORMATION_CLASS) that would
-// otherwise hide our scoped enum at global scope and make MSVC reject the query
-// headers ("'TokenType' is not a type"). Kept in clang-format off so include
-// sorting cannot reorder them after the Windows-pulling headers.
-#include "query/assist.h"
-#include "query/edit.h"
-#include "query/engine.h"
-#include "query/query.h"
-#include "query_filter.h"
-
 // Arrow headers must stay before the dialog header because the plugin data API
 // and Arrow C-data declarations have load-bearing include order.
 #include <arrow/api.h>
@@ -27,19 +14,21 @@
 #include <algorithm>
 #include <chrono>
 #include <pj_base/sdk/platform.hpp>
+#include <pj_query/filter.hpp>
 #include <string_view>
 #include <utility>
 
 #include "cert_dialog_ui.hpp"
 #include "core/time_format.h"
 #include "credential_resolve.hpp"
-#include "date_filter.h"
 #include "fetch_summary.h"
 #include "fetch_worker.hpp"
 #include "format_utils.h"
 #include "mosaico_panel_manifest.hpp"
 #include "mosaico_panel_ui.hpp"
 #include "name_filter.h"
+#include "query_assist.h"
+#include "query_engine.h"
 #include "selection_merge.h"
 #include "server_history.h"
 #include "settings_store.hpp"
@@ -488,12 +477,12 @@ std::string MosaicoDialog::widget_data() {
     if (state_.query_text.empty()) {
       wd.setFieldValid("lua_queryBar", true, "");
     } else {
-      const bool valid = Engine::validate(state_.query_text).valid;
+      const bool valid = Engine::validateText(state_.query_text).valid;
       wd.setFieldValid("lua_queryBar", valid, valid ? "" : "invalid syntax");
     }
 
     // Key/Op/Value assist dropdowns + PLUS, driven entirely by the pure
-    // computeAssist() model (query/assist.h) against the query-assist contract:
+    // computeAssist() model (query_assist.h) against the query-assist contract:
     //   REPLACE — caret ON a token: that ONE dropdown is active and edits the
     //     token in place, live, no PLUS; its title syncs to the token.
     //   ADD — caret off a token: the dropdowns STAGE a clause (staged_*); the
@@ -617,20 +606,24 @@ std::string MosaicoDialog::widget_data() {
       // metadata query never hides rows (toolbox_mosaico.cpp `if (!valid)
       // return;`); only valid, non-empty queries are evaluated per sequence.
       // Name and date filters always apply regardless of query validity.
-      std::vector<FilterSequence> filter_seqs;
+      // pj_query's filter takes nullopt for "unknown/unbounded"; Mosaico's
+      // sequence records and date pickers use 0 as that sentinel — translate.
+      const auto ns_or_unset = [](std::int64_t ns) { return ns == 0 ? std::nullopt : std::optional<std::int64_t>(ns); };
+      std::vector<PJ::query::FilterSequence> filter_seqs;
       filter_seqs.reserve(state_.sequences.size());
       for (const auto& rec : state_.sequences) {
-        filter_seqs.push_back({rec.name, rec.min_ts_ns, rec.max_ts_ns, rec.metadata});
+        filter_seqs.push_back({rec.name, ns_or_unset(rec.min_ts_ns), ns_or_unset(rec.max_ts_ns), rec.metadata});
       }
-      FilterParams params;
+      PJ::query::FilterParams params;
       params.name_filter = state_.seq_filter;
       params.name_regex = state_.seq_filter_regex;
       params.query_text = state_.query_text;
-      params.date_from_ns = state_.date_from_ns;
-      params.date_to_ns = state_.date_to_ns;
+      params.date_from_ns = ns_or_unset(state_.date_from_ns);
+      params.date_to_ns = ns_or_unset(state_.date_to_ns);
 
+      Engine query_engine;
       cache.rows = std::move(rows);
-      cache.visible = computeVisibleSequences(filter_seqs, params, schema);
+      cache.visible = PJ::query::computeVisibleSequences(filter_seqs, params, schema, query_engine);
       cache.valid = true;
       cache.seq_epoch = state_.seq_epoch;
       cache.seq_filter = state_.seq_filter;
@@ -1211,7 +1204,7 @@ bool MosaicoDialog::onIndexChanged(std::string_view widget_name, int index) {
     const CursorContext ctx = analyze(state_.query_text, cursor, state_.query_schema);
     const Action action =
         (which == Which::kKey) ? ctx.key_action : (which == Which::kOp ? ctx.op_action : ctx.val_action);
-    if (action != Action::Replace) {
+    if (action != Action::kReplace) {
       return true;  // defensive: assist said replace but analyze disagrees
     }
     const std::string insert_text = (which == Which::kVal) ? quoteValueForQuery(item) : item;
