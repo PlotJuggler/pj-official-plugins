@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <mcap/writer.hpp>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -32,11 +33,17 @@ struct TempMcap {
 
   TempMcap() {
     path = (std::filesystem::temp_directory_path() /
-            ("pj_dataset_metadata_test_" + std::to_string(::getpid()) + "_" + std::to_string(counter_++) + ".mcap"))
+            ("pj_dataset_metadata_test_" + std::to_string(run_token()) + "_" + std::to_string(counter_++) + ".mcap"))
                .string();
   }
   ~TempMcap() {
     std::remove(path.c_str());
+  }
+
+  // Per-process uniqueness without ::getpid (POSIX-only spelling breaks MSVC).
+  static unsigned run_token() {
+    static const unsigned token = std::random_device{}();
+    return token;
   }
 
   static inline int counter_ = 0;
