@@ -1,7 +1,7 @@
 {
   "id": "ros2-topic-subscriber",
   "name": "ROS 2 Topic Subscriber",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Subscribe to ROS 2 topics in real time and stream the decoded fields into PlotJuggler.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
