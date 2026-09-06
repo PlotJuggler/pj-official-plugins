@@ -1,8 +1,5 @@
-/*
- * This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at https://mozilla.org/MPL/2.0/.
- */
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MIT
 
 #pragma once
 
@@ -10,26 +7,19 @@
 #include <string_view>
 #include <vector>
 
-#include "ast.h"
-#include "token.h"
-#include "types.h"
+#include "pj_query/ast.hpp"
+#include "pj_query/token.hpp"
 
-// Query: the single entry point for parsing and analyzing a query string.
-//
-// Usage:
-//   Query q("robot == \"humanoid\" or \"drone\"", schema);
-//   q.valid();           // true — all leaves are complete CompareExprs
-//   q.lua();             // "robot == \"humanoid\" or robot == \"drone\"" (expanded)
-//   q.tokens();          // vector of positioned tokens
-//   q.ast();             // root of the expression tree
-//   q.token_at(14);      // token at character offset 14
-//
-// The Query is immutable after construction. To analyze a new string, create a new Query.
+namespace PJ::query {
+
+/// Immutable language/editing analysis. complete() describes full comparisons
+/// in the editing grammar; use the plugin Evaluator for definitive validation.
+/// expanded() serializes shorthand or preserves raw incomplete input.
 class Query {
  public:
   Query() = default;
 
-  Query(std::string_view source, const Schema& schema) : source_(source) {
+  explicit Query(std::string_view source) : source_(source) {
     Lexer lexer(source);
     tokens_ = lexer.tokenize();
 
@@ -44,9 +34,9 @@ class Query {
     // query may be valid Lua that our subset parser doesn't understand
     // (e.g., string.find(), nil comparisons, function calls).
     if (complete_) {
-      lua_str_ = serialize(ast_.get());
+      expanded_ = serialize(ast_.get());
     } else {
-      lua_str_ = source_;
+      expanded_ = source_;
     }
   }
 
@@ -80,14 +70,14 @@ class Query {
     return tokens_.empty();
   }
 
-  // The Lua-ready expanded string (shorthand expanded, suitable for eval).
-  [[nodiscard]] const std::string& lua() const {
-    return lua_str_;
+  // Expanded expression text; incomplete input is preserved for the local evaluator.
+  [[nodiscard]] const std::string& expanded() const {
+    return expanded_;
   }
 
   // Find the token at a given character offset in the source.
   // Returns nullptr if no token covers that position.
-  [[nodiscard]] const Token* token_at(int pos) const {
+  [[nodiscard]] const Token* tokenAt(int pos) const {
     for (const auto& tok : tokens_) {
       if (pos >= tok.start && pos < tok.end) {
         return &tok;
@@ -98,10 +88,10 @@ class Query {
 
   // Find the token index at a given character offset.
   // Returns -1 if no token covers that position.
-  [[nodiscard]] int token_index_at(int pos) const {
-    for (int i = 0; i < static_cast<int>(tokens_.size()); ++i) {
-      if (pos >= tokens_[i].start && pos < tokens_[i].end) {
-        return i;
+  [[nodiscard]] int tokenIndexAt(int pos) const {
+    for (int index = 0; index < static_cast<int>(tokens_.size()); ++index) {
+      if (pos >= tokens_[index].start && pos < tokens_[index].end) {
+        return index;
       }
     }
     return -1;
@@ -109,29 +99,29 @@ class Query {
 
   // Get the most recent key in context before a given token index.
   // Walks backward through tokens to find the nearest Key token.
-  [[nodiscard]] std::string key_before(int token_index) const {
-    for (int i = token_index - 1; i >= 0; --i) {
-      if (tokens_[i].type == TokenType::Key) {
-        return tokens_[i].text;
+  [[nodiscard]] std::string keyBefore(int token_index) const {
+    for (int index = token_index - 1; index >= 0; --index) {
+      if (tokens_[index].type == TokenType::kKey) {
+        return tokens_[index].text;
       }
     }
     return {};
   }
 
   // Determine what token type is expected at the given character offset.
-  [[nodiscard]] TokenType expected_at(int pos) const {
+  [[nodiscard]] TokenType expectedAt(int pos) const {
     // Find which token we're at or after.
     int idx = -1;
-    for (int i = 0; i < static_cast<int>(tokens_.size()); ++i) {
-      if (tokens_[i].start <= pos) {
-        idx = i;
+    for (int index = 0; index < static_cast<int>(tokens_.size()); ++index) {
+      if (tokens_[index].start <= pos) {
+        idx = index;
       } else {
         break;
       }
     }
 
     if (idx < 0) {
-      return TokenType::Key;  // empty or before first token
+      return TokenType::kKey;  // empty or before first token
     }
 
     auto last_type = tokens_[idx].type;
@@ -143,22 +133,22 @@ class Query {
 
     // Cursor is after the token — what comes next?
     switch (last_type) {
-      case TokenType::Key:
-        return TokenType::Operator;
-      case TokenType::Operator:
-        return TokenType::Value;
-      case TokenType::Value:
-        return TokenType::And;  // connective
-      case TokenType::And:
-      case TokenType::Or:
-      case TokenType::Not:
-      case TokenType::OpenParen:
-        return TokenType::Key;
-      case TokenType::CloseParen:
-        return TokenType::And;  // connective
+      case TokenType::kKey:
+        return TokenType::kOperator;
+      case TokenType::kOperator:
+        return TokenType::kValue;
+      case TokenType::kValue:
+        return TokenType::kAnd;  // connective
+      case TokenType::kAnd:
+      case TokenType::kOr:
+      case TokenType::kNot:
+      case TokenType::kOpenParen:
+        return TokenType::kKey;
+      case TokenType::kCloseParen:
+        return TokenType::kAnd;  // connective
     }
 
-    return TokenType::Key;
+    return TokenType::kKey;
   }
 
  private:
@@ -167,5 +157,7 @@ class Query {
   ExprPtr ast_;
   bool complete_ = false;
   std::string parse_error_;
-  std::string lua_str_;
+  std::string expanded_;
 };
+
+}  // namespace PJ::query
