@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <pj_base/sdk/source/origin.hpp>
 
 namespace mosaico {
 
@@ -19,53 +20,12 @@ bool fail(std::string* error, std::string message) {
   return false;
 }
 
-// Strict decimal-digit parse of an epoch-nanosecond string ("0" = unset).
-// No sign, no whitespace, no exponent — the wire format is decimal strings
-// precisely so 64-bit values survive JSON without double rounding.
-bool parseDecimalNs(const std::string& text, std::int64_t* out) {
-  if (text.empty() || text.size() > 20) {
-    return false;
-  }
-  std::int64_t value = 0;
-  for (const char character : text) {
-    if (character < '0' || character > '9') {
-      return false;
-    }
-    const int digit = character - '0';
-    if (value > (std::numeric_limits<std::int64_t>::max() - digit) / 10) {
-      return false;  // would overflow int64
-    }
-    value = value * 10 + digit;
-  }
-  *out = value;
-  return true;
-}
-
-// Strict host:port origin: lowercase host bytes in [a-z0-9._-], exactly one
-// ':' followed by a 1..65535 port with no leading zero. Rejects schemes,
-// userinfo, paths, query/fragment and IPv6 literals purely by charset —
-// nothing is normalized, so a descriptor byte can never alias another origin.
+// Origin validation is the SDK's strict schemeless host:port rule; adapt its
+// Expected<void> to this parser's (bool, *error) convention.
 bool validateOrigin(const std::string& origin, std::string* error) {
-  const std::size_t colon = origin.find(':');
-  if (colon == std::string::npos || colon == 0) {
-    return fail(error, "origin must be host:port");
-  }
-  for (std::size_t i = 0; i < colon; ++i) {
-    const char character = origin[i];
-    const bool ok = (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') ||
-                    character == '.' || character == '_' || character == '-';
-    if (!ok) {
-      return fail(error, "origin host must be lowercase [a-z0-9._-]");
-    }
-  }
-  const std::string port_text = origin.substr(colon + 1);
-  if (port_text.empty() || port_text.size() > 5 || port_text[0] == '0' ||
-      port_text.find_first_not_of("0123456789") != std::string::npos) {
-    return fail(error, "origin port must be a 1..65535 decimal with no leading zero");
-  }
-  const long port = std::stol(port_text);
-  if (port < 1 || port > 65535) {
-    return fail(error, "origin port must be a 1..65535 decimal with no leading zero");
+  const auto valid = PJ::sdk::source::validateSchemelessOrigin(origin);
+  if (!valid) {
+    return fail(error, valid.error());
   }
   return true;
 }
@@ -93,9 +53,11 @@ bool takeNs(const nlohmann::json& obj, const char* field, std::int64_t* out, std
   if (!takeString(obj, field, &text, error)) {
     return false;
   }
-  if (!parseDecimalNs(text, out)) {
+  const auto parsed = PJ::sdk::source::parseDecimalNs(text);
+  if (!parsed.has_value()) {
     return fail(error, std::string(field) + " is not a decimal nanosecond string");
   }
+  *out = *parsed;
   return true;
 }
 
@@ -121,9 +83,9 @@ nlohmann::json descriptorJson(const SourceDescriptor& descriptor, bool include_p
 
 }  // namespace
 
-const PJ::sdk::descriptor_import::SourceDescriptorPolicy& sourceDescriptorPolicy() {
-  using PJ::sdk::descriptor_import::IdentityScheme;
-  using PJ::sdk::descriptor_import::SourceDescriptorPolicy;
+const PJ::sdk::source::SourceDescriptorPolicy& sourceDescriptorPolicy() {
+  using PJ::sdk::source::IdentityScheme;
+  using PJ::sdk::source::SourceDescriptorPolicy;
 
   static const SourceDescriptorPolicy policy = [] {
     SourceDescriptorPolicy value;
@@ -139,7 +101,7 @@ const PJ::sdk::descriptor_import::SourceDescriptorPolicy& sourceDescriptorPolicy
 }
 
 std::optional<SourceDescriptor> parseSourceDescriptor(std::string_view json, std::string* error) {
-  const auto parsed = PJ::sdk::descriptor_import::parseSourceDescriptor(json, sourceDescriptorPolicy());
+  const auto parsed = PJ::sdk::source::parseSourceDescriptor(json, sourceDescriptorPolicy());
   if (!parsed) {
     fail(error, parsed.error());
     return std::nullopt;
@@ -302,13 +264,11 @@ std::optional<SourceDescriptor> makePullDescriptor(
 }
 
 std::string canonicalSourceDescriptorJson(const SourceDescriptor& descriptor) {
-  return PJ::sdk::descriptor_import::canonicalSourceDescriptorJson(
-      descriptorJson(descriptor, false), sourceDescriptorPolicy());
+  return PJ::sdk::source::canonicalSourceDescriptorJson(descriptorJson(descriptor, false), sourceDescriptorPolicy());
 }
 
 std::string descriptorIdentity(const SourceDescriptor& descriptor) {
-  return PJ::sdk::descriptor_import::sourceDescriptorIdentity(
-      descriptorJson(descriptor, false), sourceDescriptorPolicy());
+  return PJ::sdk::source::sourceDescriptorIdentity(descriptorJson(descriptor, false), sourceDescriptorPolicy());
 }
 
 std::string toSourceDescriptorJson(const SourceDescriptor& descriptor) {

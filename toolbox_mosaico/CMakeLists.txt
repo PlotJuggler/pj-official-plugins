@@ -72,10 +72,8 @@ set(MOSAICO_SOURCES
   src/settings_store.cpp
   src/server_history.cpp
   src/source_descriptor.cpp
-  src/source_presentation.cpp
   src/credential_resolve.cpp
   src/descriptor_import_provider.cpp
-  src/core/time_format.cpp
 )
 
 # Arrow/Flight translation units instantiate enough templates to exceed
@@ -107,11 +105,12 @@ target_include_directories(toolbox_mosaico_plugin PRIVATE
 
 target_link_libraries(toolbox_mosaico_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk
-  plotjuggler_sdk::descriptor_import_support
+  plotjuggler_sdk::source
   fmt::fmt
   nlohmann_json::nlohmann_json
   mosaico_sdk
   pj_common_query
+  pj_transfer_rate
   lua::lua
   sol2::sol2
 )
@@ -212,7 +211,7 @@ if(BUILD_TESTING)
   )
   target_link_libraries(toolbox_mosaico_ingest_progress_test PRIVATE
     plotjuggler_sdk::plugin_sdk
-    plotjuggler_sdk::descriptor_import_support
+    plotjuggler_sdk::source
     mosaico_sdk
     fmt::fmt
     nlohmann_json::nlohmann_json
@@ -389,18 +388,6 @@ if(BUILD_TESTING)
   )
   add_test(NAME ToolboxMosaicoTlsUtilsTest COMMAND toolbox_mosaico_tls_utils_test)
 
-  add_executable(toolbox_mosaico_time_format_test
-    tests/time_format_test.cpp
-    src/core/time_format.cpp
-  )
-  target_link_libraries(toolbox_mosaico_time_format_test PRIVATE
-    GTest::gtest_main
-  )
-  target_include_directories(toolbox_mosaico_time_format_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  add_test(NAME ToolboxMosaicoTimeFormatTest COMMAND toolbox_mosaico_time_format_test)
-
   add_executable(toolbox_mosaico_settings_store_test
     tests/settings_store_test.cpp
     src/settings_store.cpp
@@ -423,7 +410,7 @@ if(BUILD_TESTING)
   )
   target_link_libraries(toolbox_mosaico_source_descriptor_test PRIVATE
     plotjuggler_sdk::plugin_sdk
-    plotjuggler_sdk::descriptor_import_support nlohmann_json::nlohmann_json GTest::gtest_main
+    plotjuggler_sdk::source nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_mosaico_source_descriptor_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -441,7 +428,7 @@ if(BUILD_TESTING)
   )
   target_link_libraries(toolbox_mosaico_credential_resolve_test PRIVATE
     plotjuggler_sdk::plugin_sdk
-    plotjuggler_sdk::descriptor_import_support nlohmann_json::nlohmann_json GTest::gtest_main
+    plotjuggler_sdk::source nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_mosaico_credential_resolve_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -449,25 +436,6 @@ if(BUILD_TESTING)
   target_compile_features(toolbox_mosaico_credential_resolve_test PRIVATE cxx_std_20)
   target_compile_options(toolbox_mosaico_credential_resolve_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
   add_test(NAME ToolboxMosaicoCredentialResolveTest COMMAND toolbox_mosaico_credential_resolve_test)
-
-  # Presentation persistence: base64url settings group, control stripping,
-  # UTF-16-unit capping.
-  add_executable(toolbox_mosaico_source_presentation_test
-    tests/source_presentation_test.cpp
-    src/source_presentation.cpp
-    src/source_descriptor.cpp
-    src/settings_store.cpp
-  )
-  target_link_libraries(toolbox_mosaico_source_presentation_test PRIVATE
-    plotjuggler_sdk::plugin_sdk
-    plotjuggler_sdk::descriptor_import_support nlohmann_json::nlohmann_json GTest::gtest_main
-  )
-  target_include_directories(toolbox_mosaico_source_presentation_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  target_compile_features(toolbox_mosaico_source_presentation_test PRIVATE cxx_std_20)
-  target_compile_options(toolbox_mosaico_source_presentation_test PRIVATE ${MOSAICO_QUERY_TEST_WARNINGS})
-  add_test(NAME ToolboxMosaicoSourcePresentationTest COMMAND toolbox_mosaico_source_presentation_test)
 
   # pj.descriptor_import.v1 provider: query taxonomy + startImport
   # fail-closed rejections + watchdog inertness. Pulls in the fetch worker,
@@ -479,13 +447,12 @@ if(BUILD_TESTING)
     src/arrow_ipc_message.cpp
     src/credential_resolve.cpp
     src/source_descriptor.cpp
-    src/source_presentation.cpp
     src/settings_store.cpp
     src/server_history.cpp
   )
   target_link_libraries(toolbox_mosaico_descriptor_import_contract_test PRIVATE
     plotjuggler_sdk::plugin_sdk
-    plotjuggler_sdk::descriptor_import_support
+    plotjuggler_sdk::source
     mosaico_sdk
     fmt::fmt
     nlohmann_json::nlohmann_json

@@ -18,7 +18,7 @@
 namespace {
 
 using mosaico::SourceDescriptor;
-namespace descriptor_import = PJ::sdk::descriptor_import;
+namespace sdk_source = PJ::sdk::source;
 
 SourceDescriptor fullDescriptor() {
   SourceDescriptor d;
@@ -112,14 +112,13 @@ TEST(SourceDescriptor, VectorConformance) {
     const std::string descriptor_json = c["descriptor"].dump();
     SCOPED_TRACE(name);
 
-    const auto sdk_descriptor =
-        descriptor_import::parseSourceDescriptor(descriptor_json, mosaico::sourceDescriptorPolicy());
+    const auto sdk_descriptor = sdk_source::parseSourceDescriptor(descriptor_json, mosaico::sourceDescriptorPolicy());
     ASSERT_TRUE(sdk_descriptor) << sdk_descriptor.error();
     EXPECT_EQ(
-        descriptor_import::canonicalSourceDescriptorJson(*sdk_descriptor, mosaico::sourceDescriptorPolicy()),
+        sdk_source::canonicalSourceDescriptorJson(*sdk_descriptor, mosaico::sourceDescriptorPolicy()),
         c["canonical"].get<std::string>());
     EXPECT_EQ(
-        descriptor_import::sourceDescriptorIdentity(*sdk_descriptor, mosaico::sourceDescriptorPolicy()),
+        sdk_source::sourceDescriptorIdentity(*sdk_descriptor, mosaico::sourceDescriptorPolicy()),
         c["identity"].get<std::string>());
 
     std::string error;

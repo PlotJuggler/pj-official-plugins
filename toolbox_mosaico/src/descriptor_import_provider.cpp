@@ -13,9 +13,11 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <pj_base/sdk/descriptor_import/origin.hpp>
-#include <pj_base/sdk/descriptor_import/provider_job.hpp>
 #include <pj_base/sdk/platform.hpp>
+#include <pj_base/sdk/source/limits.hpp>
+#include <pj_base/sdk/source/origin.hpp>
+#include <pj_base/sdk/source/presentation.hpp>
+#include <pj_base/sdk/source/provider_job.hpp>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -23,7 +25,6 @@
 #include "credential_resolve.hpp"
 #include "fetch_worker.hpp"
 #include "source_descriptor.hpp"
-#include "source_presentation.hpp"
 
 namespace mosaico {
 
@@ -39,40 +40,6 @@ std::string_view toView(PJ_string_view_t sv) {
 constexpr std::uint64_t kDefaultImportMaxBytes = 32ull * 1024 * 1024 * 1024;  // 32 GiB
 constexpr std::uint64_t kDefaultImportMaxSeconds = 3600;                      // 1 h
 
-// Strict full-string unsigned decimal parse: a sign, whitespace, trailing
-// junk, or overflow makes the value unparsable and falls back to the SAFE
-// DEFAULT (never off) — "0junk" must not disable a ceiling.
-std::uint64_t envLimit(const char* name, std::uint64_t fallback) {
-  const std::optional<std::string> raw = PJ::sdk::getEnv(name);
-  if (!raw.has_value() || raw->empty() || raw->size() > 20) {
-    return fallback;
-  }
-  std::uint64_t value = 0;
-  for (const char character : *raw) {
-    if (character < '0' || character > '9') {
-      return fallback;
-    }
-    const std::uint64_t digit = static_cast<std::uint64_t>(character - '0');
-    if (value > (std::numeric_limits<std::uint64_t>::max() - digit) / 10) {
-      return fallback;
-    }
-    value = value * 10 + digit;
-  }
-  return value;
-}
-
-// min-nonzero merge: the effective ceiling is the tighter of the caller's and
-// the provider's; 0 on either side means "that side imposes none".
-std::uint64_t minNonzero(std::uint64_t a, std::uint64_t b) {
-  if (a == 0) {
-    return b;
-  }
-  if (b == 0) {
-    return a;
-  }
-  return a < b ? a : b;
-}
-
 // Strict origin equality against the process environment allowlist.
 // Malformed entries are ignored (an allowlist only ever widens by being
 // correct); no entry, or no variable, means NOT trusted.
@@ -81,9 +48,8 @@ bool trustedByEnvironment(std::string_view server_uri) {
   if (!allowlist.has_value()) {
     return false;
   }
-  const PJ::sdk::descriptor_import::OriginPolicy policy{{"grpc", "grpc+tls"}, {}};
-  return PJ::sdk::descriptor_import::originAllowed(
-      server_uri, PJ::sdk::descriptor_import::parseOriginList(*allowlist, policy), policy);
+  const PJ::sdk::source::OriginPolicy policy{{"grpc", "grpc+tls"}, {}};
+  return PJ::sdk::source::originAllowed(server_uri, PJ::sdk::source::parseOriginList(*allowlist, policy), policy);
 }
 
 }  // namespace
@@ -118,19 +84,18 @@ struct DescriptorImportProvider::JobState {
   std::map<std::string, std::int64_t> bytes_by_topic;  // guarded by results_mu
   std::uint64_t total_bytes = 0;                       // guarded by results_mu
 
-  [[nodiscard]] bool isCancelled(const PJ::sdk::descriptor_import::JobControl& control) const {
+  [[nodiscard]] bool isCancelled(const PJ::sdk::source::JobControl& control) const {
     return control.isCancelled() || host_stop_requested.load(std::memory_order_relaxed);
   }
 
-  PJ::sdk::descriptor_import::ImportOutcome runToTerminal(PJ::sdk::descriptor_import::JobControl& control);
+  PJ::sdk::source::ImportOutcome runToTerminal(PJ::sdk::source::JobControl& control);
 };
 
 bool DescriptorImportProvider::claimTransferWatchdogExpiry(std::atomic<bool>& transfer_in_progress) noexcept {
   return transfer_in_progress.exchange(false, std::memory_order_relaxed);
 }
 
-PJ::sdk::descriptor_import::ImportOutcome DescriptorImportProvider::JobState::runToTerminal(
-    PJ::sdk::descriptor_import::JobControl& control) {
+PJ::sdk::source::ImportOutcome DescriptorImportProvider::JobState::runToTerminal(PJ::sdk::source::JobControl& control) {
   control.onCancel([this] { fetch.requestCancel(); });
   if (isCancelled(control)) {
     return {PJ_DESCRIPTOR_IMPORT_CANCELLED, "import cancelled"};
@@ -303,7 +268,8 @@ bool DescriptorImportProvider::queryDescriptor(
     // The host builds its dialog rows only after this bounded query returns.
     // Publish the descriptor's human presentation now so first loads on a new
     // machine do not fall back to the opaque durable identity.
-    recordSourcePresentation(settings_, query_result_.source_identity, *descriptor);
+    PJ::sdk::source::recordSourcePresentation(
+        settings_, query_result_.source_identity, {descriptor->display_name, descriptor->sequence, descriptor->origin});
 
     // Trust: strict origin equality against the process environment
     // allowlist, checked against the URI the headless import would actually
@@ -379,17 +345,18 @@ bool DescriptorImportProvider::startImport(
     // The provider's per-machine hard limits apply even when the caller
     // imposes none — effective = min-nonzero(caller, provider). Read on the
     // main thread, like every other start-time resolution.
-    state->max_transfer_bytes =
-        minNonzero(parsed_request->max_transfer_bytes, envLimit("MOSAICO_IMPORT_MAX_BYTES", kDefaultImportMaxBytes));
+    state->max_transfer_bytes = PJ::sdk::source::minNonzero(
+        parsed_request->max_transfer_bytes,
+        PJ::sdk::source::envLimit("MOSAICO_IMPORT_MAX_BYTES", kDefaultImportMaxBytes));
     // Cap before the seconds->ms conversion so a huge value saturates instead
     // of overflowing the int64 millisecond count.
     const std::uint64_t max_seconds = std::min<std::uint64_t>(
-        envLimit("MOSAICO_IMPORT_MAX_SECONDS", kDefaultImportMaxSeconds),
+        PJ::sdk::source::envLimit("MOSAICO_IMPORT_MAX_SECONDS", kDefaultImportMaxSeconds),
         static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max() / 1000));
     state->max_transfer_duration = std::chrono::milliseconds(static_cast<std::int64_t>(max_seconds) * 1000);
     state->transport_stub = transport_stub_for_test_;
-    auto body = [state](PJ::sdk::descriptor_import::JobControl& control) { return state->runToTerminal(control); };
-    return PJ::sdk::descriptor_import::ProviderJob::start(std::move(body), callbacks, callback_ctx, out_job, out_error);
+    auto body = [state](PJ::sdk::source::JobControl& control) { return state->runToTerminal(control); };
+    return PJ::sdk::source::ProviderJob::start(std::move(body), callbacks, callback_ctx, out_job, out_error);
   } catch (...) {
     PJ::sdk::fillError(out_error, 1, "mosaico", "internal error in start_import");
     return false;

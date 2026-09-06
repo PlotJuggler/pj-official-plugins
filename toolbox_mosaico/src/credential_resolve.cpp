@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 #include "credential_resolve.hpp"
 
-#include <pj_base/sdk/descriptor_import/origin.hpp>
 #include <pj_base/sdk/platform.hpp>
+#include <pj_base/sdk/source/origin.hpp>
 
 #include "server_history.h"
 #include "settings_store.hpp"
@@ -12,8 +12,8 @@ namespace mosaico {
 
 namespace {
 
-const PJ::sdk::descriptor_import::OriginPolicy& grpcOriginPolicy() {
-  static const PJ::sdk::descriptor_import::OriginPolicy policy{{"grpc", "grpc+tls"}, {}};
+const PJ::sdk::source::OriginPolicy& grpcOriginPolicy() {
+  static const PJ::sdk::source::OriginPolicy policy{{"grpc", "grpc+tls"}, {}};
   return policy;
 }
 
@@ -52,8 +52,7 @@ ServerCredentials resolveCredentials(PJ::sdk::SettingsView view, const std::stri
 }
 
 bool envKeyAllowedForTarget(const std::string& target_uri, const std::string& mosaico_url_env) {
-  return !mosaico_url_env.empty() &&
-         PJ::sdk::descriptor_import::sameOrigin(target_uri, mosaico_url_env, grpcOriginPolicy());
+  return !mosaico_url_env.empty() && PJ::sdk::source::sameOrigin(target_uri, mosaico_url_env, grpcOriginPolicy());
 }
 
 ServerCredentials resolveHeadlessCredentials(PJ::sdk::SettingsView view, const std::string& uri) {
