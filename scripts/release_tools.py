@@ -75,6 +75,11 @@ VALID_PLATFORMS = [
 VALID_CATEGORIES = ["data_loader", "data_stream", "message_parser", "toolbox"]
 
 # Semantic versioning regex (simplified: major.minor.patch with optional pre-release)
+import sys as _sys
+
+_sys.path.insert(0, str(Path(__file__).resolve().parent / "vendor"))
+import feature_floor_check as floor_core  # noqa: E402
+
 SEMVER_REGEX = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9.-]+))?(?:\+([a-zA-Z0-9.-]+))?$")
 SDK_VERSION_REGEX = re.compile(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}")
 
@@ -270,6 +275,7 @@ def validate_manifest_file(manifest_path: Path) -> tuple[dict | None, list[str]]
         return None, [f"Invalid JSON: {e}"]
 
     errors = validate_manifest(manifest)
+    errors.extend(floor_core.validate_manifest_shape(manifest))
     if not errors:
         sdk_version = (Path(__file__).resolve().parent.parent / "SDK_VERSION").read_text().strip()
         errors.extend(validate_sdk_minimum(manifest, sdk_version))

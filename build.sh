@@ -6,7 +6,7 @@ BUILD_TYPE="${BUILD_TYPE:-Release}"
 
 usage() {
   cat <<EOF
-Usage: ./build.sh [--help] [plugin_dir]
+Usage: ./build.sh [--help] [--sdk-local[=path]] [plugin_dir]
 
 Build all plugins:
   ./build.sh
@@ -14,19 +14,58 @@ Build all plugins:
 Build one plugin:
   ./build.sh data_load_csv
 
+Develop against an UNRELEASED SDK (no Conan release needed):
+  ./build.sh --sdk-local data_load_mcap
+      Registers the local SDK working tree (default:
+      ~/ws_plotjuggler/plotjuggler_sdk, override with --sdk-local=/path) in
+      the Conan cache AS the pinned SDK_VERSION, rebuilding it every run.
+      NOT reproducible — never use for release artifacts; refused in CI.
+
 Environment:
   BUILD_TYPE=${BUILD_TYPE}  CMake/Conan build type
 EOF
 }
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  usage
-  exit 0
-fi
+SDK_LOCAL_DIR=""
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --sdk-local)
+      SDK_LOCAL_DIR="$HOME/ws_plotjuggler/plotjuggler_sdk"
+      shift
+      ;;
+    --sdk-local=*)
+      SDK_LOCAL_DIR="${1#--sdk-local=}"
+      shift
+      ;;
+    *)
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
 
-if [[ "$#" -gt 1 || "${1:-}" == -* ]]; then
+if [[ "$#" -gt 1 ]]; then
   usage >&2
   exit 1
+fi
+
+if [[ -n "$SDK_LOCAL_DIR" ]]; then
+  if [[ ! -d "$SDK_LOCAL_DIR" ]]; then
+    echo "Error: --sdk-local directory not found: $SDK_LOCAL_DIR" >&2
+    exit 1
+  fi
+  SDK_LOCAL_DIR="$(cd "$SDK_LOCAL_DIR" && pwd)"
+  export SDK_LOCAL_DIR
+  echo "=============================================================================="
+  echo " SDK from local tree $SDK_LOCAL_DIR"
+  echo " registered as plotjuggler_sdk/$(cat "$SCRIPT_DIR/SDK_VERSION") — NOT reproducible;"
+  echo " do not use for release artifacts."
+  echo "=============================================================================="
+  "$SCRIPT_DIR/scripts/ensure_core.sh"
 fi
 
 PLUGIN="${1:-}"

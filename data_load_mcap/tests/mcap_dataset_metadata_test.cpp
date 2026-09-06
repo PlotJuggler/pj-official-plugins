@@ -22,6 +22,8 @@
 #include <string>
 #include <vector>
 
+#include "pj_base/sdk/data_source_host_views.hpp"
+
 namespace {
 
 using PJ::McapMetadata::parseIdentityFraming;
@@ -200,6 +202,49 @@ TEST(McapDatasetMetadata, OversizedRecordIsElided) {
   EXPECT_FALSE(document["mcap_metadata"][0].contains("entries"));
   EXPECT_TRUE(document["mcap_metadata"][0].contains("skipped"));
   EXPECT_FALSE(diagnostics.empty());
+}
+
+namespace {
+// Poison thunks for slots a floor-level host does not have: a correct wrapper
+// gates on struct_size and never reaches them; an implementation checking only
+// pointer nullness would call straight into these and fail the test.
+bool poison_invoked = false;
+bool poisonCompleteIngest(void*, const PJ_ingest_completion_t*, PJ_error_t*) noexcept {
+  poison_invoked = true;
+  return false;
+}
+bool poisonSetDatasetMetadata(void*, PJ_string_view_t, PJ_error_t*) noexcept {
+  poison_invoked = true;
+  return false;
+}
+}  // namespace
+
+// The manifest's floor_test: the plugin's DEGRADED PATH against a true
+// 0.28-level host — struct_size ends exactly at complete_ingest, so
+// attach_source_record is the last slot the host advertises and both
+// complete_ingest and set_dataset_metadata lie beyond it. Publishing the
+// extracted document must be a clean no-op that never calls past the
+// truncation. Helper-level on purpose (importData() needs a live host to
+// unit-test); mcap_source.cpp's importData() routes its metadata delivery
+// through this exact helper.
+TEST(McapDatasetMetadata, MetadataPublishDegradesCleanlyOnFloorLevelHost) {
+  PJ_data_source_runtime_host_vtable_t vtable{};
+  vtable.protocol_version = 1;
+  vtable.struct_size = offsetof(PJ_data_source_runtime_host_vtable_t, complete_ingest);
+  // Poison everything past the truncation: reachable only through a missing
+  // struct_size guard.
+  vtable.complete_ingest = &poisonCompleteIngest;
+  vtable.set_dataset_metadata = &poisonSetDatasetMetadata;
+  PJ_data_source_runtime_host_t host{};
+  int host_context = 0;
+  host.ctx = &host_context;
+  host.vtable = &vtable;
+  const PJ::DataSourceRuntimeHostView view(host);
+
+  poison_invoked = false;
+  const nlohmann::json document = {{"file", {{"message_count", 1}}}};
+  PJ::McapMetadata::publishDatasetMetadata(view, document);  // must not throw
+  EXPECT_FALSE(poison_invoked) << "a slot past the floor-level struct_size was invoked";
 }
 
 }  // namespace
