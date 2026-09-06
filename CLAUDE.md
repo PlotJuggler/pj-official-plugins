@@ -78,7 +78,7 @@ The top-level CMakeLists.txt supports two modes:
 
 Plugin CMakeLists.txt files link `plotjuggler_sdk::plugin_sdk` (plugin .so) and `plotjuggler_sdk::plugin_host` (test executables) — same target names work in both modes.
 
-The core version is **not** pinned in CMake — `find_package` resolves whatever Conan installed. The requirement is pinned in **one** place: the top-level `SDK_VERSION` file (an exact version, e.g. `0.6.0`), which the root `conanfile.py` and every plugin's `conanfile.py` read live. When no prebuilt Conan package is available, `scripts/ensure_core.sh` clones the matching `v<version>` tag and builds it with `conan create`. Retarget with `python3 scripts/bump_core_version.py 0.6.1`; `python3 scripts/bump_core_version.py --check` guards against stray literal pins in recipes.
+The core version is **not** pinned in CMake — `find_package` resolves whatever Conan installed. The requirement is pinned in **one** place: the top-level `SDK_VERSION` file (an exact version, e.g. `0.6.0`), which the root `conanfile.py` and every plugin's `conanfile.py` read live. When no prebuilt Conan package is available, `scripts/ensure_core.sh` clones the matching `v<version>` tag and builds it with `conan create`. Retarget with `python3 scripts/bump_core_version.py 0.6.1`; `python3 scripts/bump_core_version.py --check` guards against stray literal pins in recipes. To develop against an UNRELEASED SDK, `./build.sh --sdk-local[=path]` (default path: the sibling `~/ws_plotjuggler/plotjuggler_sdk` checkout) registers the local working tree in the Conan cache AS the pinned `SDK_VERSION`, rebuilding it on every run so a changed tree is never stale — every plugin recipe resolves unchanged. Loud banner, not reproducible, refused in CI; never use it for release artifacts.
 
 **Repository & package rename (core `v0.6.0`):** the SDK was renamed `plotjuggler_core` → [`plotjuggler_sdk`](https://github.com/PlotJuggler/plotjuggler_sdk) — GitHub repo, Conan package, and CMake identity all move together. Recipes require `plotjuggler_sdk/<version>`; CMake uses `find_package(plotjuggler_sdk)` and links `plotjuggler_sdk::base|plugin_sdk|plugin_host`. The upstream SDK recipe (`name`, `cmake_file_name`, `cmake_target_name`) and the JFrog package are renamed on the SDK side; this repo only consumes the new name.
 
@@ -114,20 +114,27 @@ separate application-version requirement.
   plugin's source closure (plugin dir + reachable `common/` libraries) for
   host-contract surfaces (tail slots, services — static-library SDK helpers
   never constrain a floor) against the SDK's surface table and fails when a
-  matched surface is newer than `min_sdk_required`. To keep a lower floor for a
-  runtime-negotiated surface that degrades gracefully, declare it in the
-  manifest:
+  matched surface is newer than `min_sdk_required`. The contract:
 
-  ```json
-  "sdk_floor_exceptions": {
-    "setDatasetMetadata": { "reason": "optional: …", "test": "Suite.Name" }
-  }
-  ```
+  - The floor must cover every matched NON-negotiated surface — a hard
+    protocol surface above the floor always fails; raise the floor.
+  - When any matched (necessarily negotiated) surface exceeds the floor, the
+    manifest must declare the degraded range:
 
-  Each entry must name a table surface that is negotiated, still matched in the
-  plugin's code (stale claims fail), and covered by the named gtest proving the
-  behavior with the capability absent. When a surface becomes essential, delete
-  the exception and raise the floor in the same change. The table ships with
+    ```json
+    "suggested_sdk_version": "0.32.0",
+    "floor_test": "McapDatasetMetadata.ImportSucceedsAgainstFloorLevelHost"
+    ```
+
+    `suggested_sdk_version` is the full-feature floor — validated to be
+    EXACTLY the max introducing release over every matched surface — so hosts
+    can point users at the release where the whole feature set is live.
+    `floor_test` names the ONE gtest (existing in the plugin's `tests/`,
+    comment-stripped search) proving the plugin functions against a
+    floor-level host with its degradations active. Both fields are forbidden
+    when nothing exceeds the floor (they would repeat `min_sdk_required`).
+    When a degraded surface becomes essential, raise the floor and drop the
+    fields in the same change. The table ships with
   the SDK (`pj_base/feature_floors.json`, >= 0.33.0);
   `scripts/sdk_feature_floors_interim.json` is the stand-in until then and must
   be deleted once the SDK copy is in the pinned build.

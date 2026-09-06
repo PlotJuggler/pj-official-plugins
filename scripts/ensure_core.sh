@@ -18,6 +18,26 @@ REF="plotjuggler_sdk/${CORE_VERSION}"
 REMOTE="plotjuggler-conan"
 SETTINGS=(-s build_type="${BUILD_TYPE:-Release}" -s compiler.cppstd=20)
 
+# Local-SDK development mode (build.sh --sdk-local): register the given working
+# tree in the Conan cache AS the pinned version, so every downstream plugin
+# recipe resolves unchanged. Always re-created — a stale cached build of a
+# changed local tree must never be silently reused. Refused in CI: the result
+# is whatever the tree holds, not a reproducible release.
+if [[ -n "${SDK_LOCAL_DIR:-}" ]]; then
+  if [[ -n "${CI:-}" ]]; then
+    echo "ensure_core: SDK_LOCAL_DIR is forbidden in CI (not reproducible)" >&2
+    exit 1
+  fi
+  if [[ ! -f "${SDK_LOCAL_DIR}/conanfile.py" ]]; then
+    echo "ensure_core: ${SDK_LOCAL_DIR} has no conanfile.py — not an SDK checkout" >&2
+    exit 1
+  fi
+  echo "ensure_core: registering LOCAL tree ${SDK_LOCAL_DIR} as ${REF} (rebuilt every run)"
+  conan create "${SDK_LOCAL_DIR}" --version "${CORE_VERSION}" "${SETTINGS[@]}" \
+    --build="plotjuggler_sdk/*" --build=missing
+  exit 0
+fi
+
 # Use `conan cache path` (errors when the recipe is truly absent) rather than
 # `conan list | grep`: conan list echoes the queried reference in its "not found"
 # output, which made the grep false-positive and skip building the real package.

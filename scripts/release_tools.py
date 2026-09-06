@@ -75,6 +75,11 @@ VALID_PLATFORMS = [
 VALID_CATEGORIES = ["data_loader", "data_stream", "message_parser", "toolbox"]
 
 # Semantic versioning regex (simplified: major.minor.patch with optional pre-release)
+import sys as _sys
+
+_sys.path.insert(0, str(Path(__file__).resolve().parent / "vendor"))
+import feature_floor_check as floor_core  # noqa: E402
+
 SEMVER_REGEX = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9.-]+))?(?:\+([a-zA-Z0-9.-]+))?$")
 SDK_VERSION_REGEX = re.compile(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}")
 
@@ -250,34 +255,6 @@ def validate_sdk_minimum(manifest: dict, sdk_version: str) -> list[str]:
     return []
 
 
-def validate_floor_exceptions_shape(manifest: dict) -> list[str]:
-    """Shape-check the optional sdk_floor_exceptions block (table-free).
-
-    Whether each key names a real, negotiated, actually-used surface with an
-    existing fallback test is check_sdk_feature_floors.py's job; this keeps
-    manifest validation self-contained for tools that have no SDK table.
-    """
-    exceptions = manifest.get("sdk_floor_exceptions")
-    if exceptions is None:
-        return []
-    if not isinstance(exceptions, dict):
-        return ["sdk_floor_exceptions must be a JSON object"]
-    errors = []
-    for identifier, entry in exceptions.items():
-        prefix = f"sdk_floor_exceptions.{identifier}"
-        if not isinstance(identifier, str) or not identifier.strip():
-            errors.append("sdk_floor_exceptions keys must be non-empty surface identifiers")
-            continue
-        if not isinstance(entry, dict) or set(entry) != {"reason", "test"}:
-            errors.append(f"{prefix} must be an object with exactly 'reason' and 'test'")
-            continue
-        if not isinstance(entry["reason"], str) or not entry["reason"].strip():
-            errors.append(f"{prefix}.reason must be a non-empty string")
-        if not isinstance(entry["test"], str) or "." not in entry["test"]:
-            errors.append(f"{prefix}.test must name a gtest as 'Suite.Name'")
-    return errors
-
-
 def validate_manifest_file(manifest_path: Path) -> tuple[dict | None, list[str]]:
     """
     Read and validate a manifest.json file.
@@ -298,7 +275,7 @@ def validate_manifest_file(manifest_path: Path) -> tuple[dict | None, list[str]]
         return None, [f"Invalid JSON: {e}"]
 
     errors = validate_manifest(manifest)
-    errors.extend(validate_floor_exceptions_shape(manifest))
+    errors.extend(floor_core.validate_manifest_shape(manifest))
     if not errors:
         sdk_version = (Path(__file__).resolve().parent.parent / "SDK_VERSION").read_text().strip()
         errors.extend(validate_sdk_minimum(manifest, sdk_version))

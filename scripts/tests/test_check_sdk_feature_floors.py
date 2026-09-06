@@ -9,7 +9,7 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
 import check_sdk_feature_floors as checker
-from release_tools import validate_floor_exceptions_shape
+from feature_floor_check import validate_manifest_shape
 
 REPO_ROOT = SCRIPTS.parent
 
@@ -44,15 +44,18 @@ class FixtureRepo:
         name: str = "example_plugin",
         source: str = "int plugin_entry() { return 0; }\n",
         min_sdk_required: str = "0.28.0",
-        exceptions: dict | None = None,
+        suggested: str | None = None,
+        floor_test: str | None = None,
         links: tuple[str, ...] = (),
         test_source: str | None = None,
     ) -> Path:
         plugin_dir = self.root / name
         plugin_dir.mkdir()
         manifest: dict = {"id": name, "min_sdk_required": min_sdk_required}
-        if exceptions is not None:
-            manifest["sdk_floor_exceptions"] = exceptions
+        if suggested is not None:
+            manifest["suggested_sdk_version"] = suggested
+        if floor_test is not None:
+            manifest["floor_test"] = floor_test
         (plugin_dir / "manifest.json").write_text(json.dumps(manifest))
         (plugin_dir / "plugin.cpp").write_text(source)
         link_line = ""
@@ -93,11 +96,12 @@ class VerdictTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("PASS example_plugin", out)
 
-    def test_newer_surface_without_exception_fails(self):
+    def test_newer_surface_without_declared_degradation_fails(self):
         self.repo.write_plugin(source="void f() { newCall(); }\n")
         ok, _, err = self.repo.run()
         self.assertFalse(ok)
-        self.assertIn("newCall (since 0.32.0) exceeds floor 0.28.0", err)
+        self.assertIn("newCall (since 0.32.0, at example_plugin/plugin.cpp:1) exceeds floor 0.28.0", err)
+        self.assertIn("suggested_sdk_version is missing", err)
 
     def test_raised_floor_covers_newer_surface(self):
         self.repo.write_plugin(source="void f() { newCall(); }\n", min_sdk_required="0.32.0")
@@ -127,88 +131,153 @@ class VerdictTests(unittest.TestCase):
         self.assertIn("WARN example_plugin", err)
 
 
-class ExceptionValidationTests(unittest.TestCase):
-    GOOD_TEST = "TEST(Suite, DegradesGracefully) { }\n"
+class FloorContractTests(unittest.TestCase):
+    GOOD_TEST = "TEST(Suite, WorksAtFloor) { }\n"
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.repo = FixtureRepo(Path(self._tmp.name))
         self.addCleanup(self._tmp.cleanup)
 
-    def _exceptions(self, identifier="newCall", test="Suite.DegradesGracefully"):
-        return {identifier: {"reason": "optional feature", "test": test}}
-
-    def test_valid_exception_passes(self):
+    def test_declared_degradation_passes(self):
         self.repo.write_plugin(
             source="void f() { newCall(); }\n",
-            exceptions=self._exceptions(),
+            suggested="0.32.0",
+            floor_test="Suite.WorksAtFloor",
             test_source=self.GOOD_TEST,
         )
         ok, out, _ = self.repo.run()
         self.assertTrue(ok)
-        self.assertIn("excepted: newCall", out)
+        self.assertIn("full features at 0.32.0", out)
 
-    def test_unknown_identifier_fails(self):
+    def test_surface_above_floor_requires_suggested(self):
+        self.repo.write_plugin(source="void f() { newCall(); }\n")
+        ok, _, err = self.repo.run()
+        self.assertFalse(ok)
+        self.assertIn("suggested_sdk_version is missing", err)
+        self.assertIn("declare suggested_sdk_version 0.32.0", err)
+
+    def test_wrong_suggested_value_fails(self):
         self.repo.write_plugin(
             source="void f() { newCall(); }\n",
-            exceptions=self._exceptions(identifier="madeUpCall"),
+            suggested="0.30.0",
+            floor_test="Suite.WorksAtFloor",
             test_source=self.GOOD_TEST,
         )
         ok, _, err = self.repo.run()
         self.assertFalse(ok)
-        self.assertIn("unknown surface identifier", err)
+        self.assertIn("full-feature floor over the matched surfaces is 0.32.0", err)
 
-    def test_non_negotiated_surface_cannot_be_waived(self):
+    def test_suggested_without_gap_is_forbidden(self):
         self.repo.write_plugin(
-            source="void f() { hardContract(); }\n",
-            exceptions=self._exceptions(identifier="hardContract"),
+            source="void f() { oldCall(); }\n",
+            suggested="0.32.0",
+            floor_test="Suite.WorksAtFloor",
             test_source=self.GOOD_TEST,
         )
         ok, _, err = self.repo.run()
         self.assertFalse(ok)
-        self.assertIn("not runtime-negotiated", err)
+        self.assertIn("remove it", err)
 
-    def test_stale_exception_fails(self):
-        self.repo.write_plugin(
-            source="int x;  // no calls\n",
-            exceptions=self._exceptions(),
-            test_source=self.GOOD_TEST,
-        )
+    def test_suggested_without_floor_test_fails_shape(self):
+        self.repo.write_plugin(source="void f() { newCall(); }\n", suggested="0.32.0")
         ok, _, err = self.repo.run()
         self.assertFalse(ok)
-        self.assertIn("STALE", err)
+        self.assertIn("floor_test is required alongside suggested_sdk_version", err)
 
-    def test_missing_fallback_test_fails(self):
+    def test_floor_test_without_suggested_fails_shape(self):
+        self.repo.write_plugin(floor_test="Suite.WorksAtFloor", test_source=self.GOOD_TEST)
+        ok, _, err = self.repo.run()
+        self.assertFalse(ok)
+        self.assertIn("only meaningful alongside suggested_sdk_version", err)
+
+    def test_missing_floor_test_gtest_fails(self):
         self.repo.write_plugin(
             source="void f() { newCall(); }\n",
-            exceptions=self._exceptions(test="Suite.DoesNotExist"),
+            suggested="0.32.0",
+            floor_test="Suite.DoesNotExist",
             test_source=self.GOOD_TEST,
         )
         ok, _, err = self.repo.run()
         self.assertFalse(ok)
         self.assertIn("not found in the plugin's tests", err)
 
-    def test_shape_validator_rejects_malformed_entries(self):
-        self.assertTrue(validate_floor_exceptions_shape({"sdk_floor_exceptions": []}))
-        self.assertTrue(
-            validate_floor_exceptions_shape({"sdk_floor_exceptions": {"x": {"reason": "r"}}})
+    def test_commented_out_floor_test_fails(self):
+        self.repo.write_plugin(
+            source="void f() { newCall(); }\n",
+            suggested="0.32.0",
+            floor_test="Suite.WorksAtFloor",
+            test_source="// TEST(Suite, WorksAtFloor) { }\n",
         )
+        ok, _, err = self.repo.run()
+        self.assertFalse(ok)
+        self.assertIn("not found in the plugin's tests", err)
+
+    def test_non_negotiated_surface_above_floor_always_fails(self):
+        # Declaring the degraded range cannot waive a hard protocol surface.
+        self.repo.write_plugin(
+            source="void f() { hardContract(); newCall(); }\n",
+            suggested="0.32.0",
+            floor_test="Suite.WorksAtFloor",
+            test_source=self.GOOD_TEST,
+        )
+        ok, _, err = self.repo.run()
+        self.assertFalse(ok)
+        self.assertIn("is not\nruntime-negotiated — raise min_sdk_required".replace("\n", " "), err)
+
+    def test_legacy_exceptions_block_is_rejected(self):
+        self.repo.write_plugin(
+            source="void f() { oldCall(); }\n",
+        )
+        manifest_path = self.repo.root / "example_plugin" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["sdk_floor_exceptions"] = {"x": {"reason": "r", "test": "S.N"}}
+        manifest_path.write_text(json.dumps(manifest))
+        ok, _, err = self.repo.run()
+        self.assertFalse(ok)
+        self.assertIn("no longer supported", err)
+
+    def test_shape_validator_branches(self):
+        self.assertEqual(validate_manifest_shape({}), [])
+        self.assertTrue(validate_manifest_shape({"sdk_floor_exceptions": {}}))  # any presence rejected
+        self.assertTrue(validate_manifest_shape({"suggested_sdk_version": "nope"}))
         self.assertTrue(
-            validate_floor_exceptions_shape(
-                {"sdk_floor_exceptions": {"x": {"reason": "", "test": "S.N"}}}
+            validate_manifest_shape(
+                {"min_sdk_required": "0.30.0", "suggested_sdk_version": "0.29.0", "floor_test": "S.N"}
             )
         )
+        self.assertTrue(validate_manifest_shape({"suggested_sdk_version": "0.32.0"}))
+        self.assertTrue(validate_manifest_shape({"floor_test": "S.N"}))
         self.assertTrue(
-            validate_floor_exceptions_shape(
-                {"sdk_floor_exceptions": {"x": {"reason": "r", "test": "no-dot"}}}
-            )
+            validate_manifest_shape({"suggested_sdk_version": "0.32.0", "floor_test": "nodot"})
         )
         self.assertEqual(
-            validate_floor_exceptions_shape(
-                {"sdk_floor_exceptions": {"x": {"reason": "r", "test": "S.N"}}}
+            validate_manifest_shape(
+                {"min_sdk_required": "0.28.0", "suggested_sdk_version": "0.32.0", "floor_test": "S.N"}
             ),
             [],
         )
+
+
+class CutoverTests(unittest.TestCase):
+    """SDK_VERSION >= 0.33.0 with interim artifacts left = hard failure."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = FixtureRepo(Path(self._tmp.name))
+        self.addCleanup(self._tmp.cleanup)
+        self.repo.write_plugin()
+
+    def test_interim_table_after_cutover_fails(self):
+        (self.repo.root / "SDK_VERSION").write_text("0.33.0\n")
+        ok, _, err = self.repo.run()
+        self.assertFalse(ok)
+        self.assertIn("delete the interim artifacts", err)
+
+    def test_interim_table_before_cutover_still_works(self):
+        (self.repo.root / "SDK_VERSION").write_text("0.32.0\n")
+        ok, _, _ = self.repo.run()
+        self.assertTrue(ok)
 
 
 class TablePrecedenceTests(unittest.TestCase):
@@ -297,7 +366,11 @@ class RealRepoAcceptanceTests(unittest.TestCase):
 
             ok = checker.check_sdk_feature_floors(root, out=out, err=err)
         self.assertFalse(ok)
-        self.assertIn("completeIngest (since 0.30.0) exceeds floor 0.28.0", err.getvalue())
+        # Without a declared degraded range the lowered floor must fail: a
+        # 0.30 surface is matched, and no suggested_sdk_version covers it.
+        self.assertIn("exceeds floor 0.28.0", err.getvalue())
+        self.assertIn("suggested_sdk_version is missing", err.getvalue())
+        self.assertIn("since 0.30.0", err.getvalue())
 
 
 if __name__ == "__main__":

@@ -208,7 +208,7 @@ TEST(McapDatasetMetadata, OversizedRecordIsElided) {
 // test: on a host that predates the slot (short struct_size), publishing the
 // extracted document must be a clean no-op — the import path is unaffected and
 // only the metadata display is missing.
-TEST(McapDatasetMetadata, PublishDegradesGracefullyWithoutHostSlot) {
+TEST(McapDatasetMetadata, ImportSucceedsAgainstFloorLevelHost) {
   PJ_data_source_runtime_host_vtable_t vtable{};
   vtable.protocol_version = 1;
   vtable.struct_size = offsetof(PJ_data_source_runtime_host_vtable_t, set_dataset_metadata);

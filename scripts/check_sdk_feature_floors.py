@@ -1,42 +1,30 @@
 #!/usr/bin/env python3
 """Enforce each plugin's ``min_sdk_required`` against the host surfaces it uses.
 
-The floor a plugin declares is a HOST-CONTRACT claim: only surfaces the host
-provides at runtime (vtable tail slots, named services, wire contracts) can
-constrain it. Static-library SDK helpers compile into the plugin and never do.
-The authoritative surface -> introducing-version table therefore lives in the
-SDK (``pj_base/feature_floors.json``, shipped with the package from 0.33.0);
-until the pinned ``SDK_VERSION`` carries it, a bundled interim copy stands in
-(``scripts/sdk_feature_floors_interim.json``) and the check FAILS if both
-exist and differ.
+Repo driver over the SDK's reusable floor-checker core
+(``scripts/vendor/feature_floor_check.py``, a temporary byte-copy of the module
+the SDK ships next to ``feature_floors.json`` from 0.33.0 — see
+``scripts/vendor/README.md``). The core owns the table schema, source
+scanning, exception validation, and the floor rule; this driver owns what is
+specific to this monorepo:
 
-Per plugin, over its source closure (the plugin directory plus every
-``common/`` library reachable from its ``pj_emit_plugin_manifest`` targets
-through ``target_link_libraries`` — unresolved link expressions fail closed):
+  - the CMake link closure: each plugin's scan set is its directory plus every
+    ``common/`` library reachable from its ``pj_emit_plugin_manifest`` targets
+    through ``target_link_libraries`` (unresolved link expressions fail closed);
+  - iteration over every top-level ``manifest.json`` plugin with aggregated
+    PASS/WARN/FAIL reporting;
+  - table resolution: an explicit ``--sdk-floors`` path wins (and must match
+    the interim copies byte-for-payload); otherwise the bundled interim table
+    stands in until the pinned ``SDK_VERSION`` ships it. Once ``SDK_VERSION``
+    reaches 0.33.0 the check HARD-FAILS while interim artifacts still exist,
+    forcing the cutover instead of trusting a doc comment.
 
-    declared min_sdk_required >= max(since) of every matched surface
-
-unless the manifest carries a validated ``sdk_floor_exceptions`` entry for
-that surface:
-
-    "sdk_floor_exceptions": {
-      "setDatasetMetadata": {
-        "reason": "optional: metadata display absent on hosts older than 0.32",
-        "test": "SuiteName.TestName"
-      }
-    }
-
-An exception is valid only when the identifier is in the table, the surface is
-runtime-negotiated (a hard protocol surface can never be waived), the
-identifier actually matches in this plugin's closure (a stale claim fails),
-and the named gtest exists in the plugin's sources. Floors below the table's
-``minimum_supported_floor`` fail; a floor higher than anything matched only
-warns (the maintainer may know a runtime reason the scan cannot see).
-
-The scan is comment-stripped token matching with identifier boundaries — the
-whole surface universe is a few dozen identifiers, so token precision is
-sufficient; a Clang-based extractor is the documented upgrade path if a real
-ambiguity ever appears.
+Per plugin, the lean floor contract (see the core module): the floor must
+cover every matched non-negotiated surface; a matched surface above the floor
+requires ``suggested_sdk_version`` (== max since over all matched surfaces)
+plus an existing ``floor_test`` gtest, both forbidden otherwise. Floors below
+the table's ``minimum_supported_floor`` fail; over-declared floors only warn
+(the maintainer may know a runtime reason the scan cannot see).
 """
 
 from __future__ import annotations
@@ -48,50 +36,42 @@ import shlex
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
-from functools import total_ordering
 from pathlib import Path
-from typing import Iterable, Sequence, TextIO
-
-from release_tools import SEMVER_REGEX
+from typing import Sequence, TextIO
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR / "vendor"))
+import feature_floor_check as core  # noqa: E402
+from feature_floor_check import CheckError  # noqa: E402
+
 DEFAULT_REPO_ROOT = SCRIPT_DIR.parent
 INTERIM_TABLE_NAME = "sdk_feature_floors_interim.json"
+VENDORED_CORE_NAME = "feature_floor_check.py"
 SDK_TABLE_RELATIVE = Path("pj_base") / "feature_floors.json"
+# The release whose SDK package ships table + checker; the interim copies must
+# be deleted (and CI rewired to the SDK's own files) when SDK_VERSION reaches it.
+SDK_SHIPS_TABLE_FROM = (0, 33, 0)
 
-SOURCE_SUFFIXES = {
-    ".c",
-    ".cc",
-    ".cpp",
-    ".cxx",
-    ".h",
-    ".hh",
-    ".hpp",
-    ".hxx",
-    ".inl",
-    ".ipp",
-    ".tpp",
-}
-EXCLUDED_SOURCE_DIRS = {
-    ".git",
-    ".pytest_cache",
-    "benchmarks",
-    "build",
-    "contrib",
-    "demo",
-    "test",
-    "test_data",
-    "test_scripts",
-    "tests",
-}
-TEST_SOURCE_DIRS = {"test", "tests"}
-# These CMake variables are platform-selected external libraries, never targets
-# implemented under common/. Keeping the exceptions explicit makes a newly
-# introduced unresolved expression fail closed instead of silently shrinking a
-# plugin's source closure.
+EXCLUDED_SOURCE_DIRS = frozenset(
+    {
+        ".git",
+        ".pytest_cache",
+        "benchmarks",
+        "build",
+        "contrib",
+        "demo",
+        "test",
+        "test_data",
+        "test_scripts",
+        "tests",
+    }
+)
+TEST_SOURCE_DIRS = ("tests", "test")
+# CMake variables that are genuinely external (never targets under common/).
+# Kept explicit so a newly introduced unresolved expression fails closed
+# instead of silently shrinking a plugin's source closure.
 EXTERNAL_LINK_EXPRESSION_ALLOWLIST = {
     "${CMAKE_DL_LIBS}": "CMake's platform dynamic-loader libraries",
-    "${MOSAICO_GRPCPP_TARGET}": "optional external gRPC target selected by toolbox_mosaico",
 }
 LINK_KEYWORDS = {
     "PRIVATE",
@@ -105,108 +85,11 @@ LINK_KEYWORDS = {
 }
 COMMAND_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 LITERAL_TARGET_RE = re.compile(r"^[A-Za-z0-9_.:+-]+$")
-VARIABLE_REF_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
-RAW_STRING_START_RE = re.compile(r'(?:u8|u|U|L)?R"([^ ()\\\t\r\n]{0,16})\(')
-
-
-class CheckError(Exception):
-    """A configuration or repository shape error that must fail the check."""
-
-
-@total_ordering
-@dataclass(frozen=True)
-class SemVer:
-    """Comparable subset of SemVer accepted by release_tools.SEMVER_REGEX."""
-
-    major: int
-    minor: int
-    patch: int
-    prerelease: tuple[str, ...] = ()
-    build: str | None = field(default=None, compare=False)
-    original: str = field(default="", compare=False)
-
-    @classmethod
-    def parse(cls, value: str, context: str) -> "SemVer":
-        if not isinstance(value, str):
-            raise CheckError(f"{context} must be a semantic-version string")
-        match = SEMVER_REGEX.fullmatch(value)
-        if not match:
-            raise CheckError(
-                f"{context} has invalid version {value!r}; expected X.Y.Z with optional pre-release"
-            )
-        prerelease = tuple(match.group(4).split(".")) if match.group(4) else ()
-        return cls(
-            int(match.group(1)),
-            int(match.group(2)),
-            int(match.group(3)),
-            prerelease,
-            match.group(5),
-            value,
-        )
-
-    def __str__(self) -> str:
-        if self.original:
-            return self.original
-        result = f"{self.major}.{self.minor}.{self.patch}"
-        if self.prerelease:
-            result += "-" + ".".join(self.prerelease)
-        if self.build:
-            result += "+" + self.build
-        return result
-
-    def __lt__(self, other: object) -> bool:
-        if not isinstance(other, SemVer):
-            return NotImplemented
-        core_self = (self.major, self.minor, self.patch)
-        core_other = (other.major, other.minor, other.patch)
-        if core_self != core_other:
-            return core_self < core_other
-        return _compare_prerelease(self.prerelease, other.prerelease) < 0
-
-
-def _compare_prerelease(left: tuple[str, ...], right: tuple[str, ...]) -> int:
-    if not left and not right:
-        return 0
-    if not left:
-        return 1
-    if not right:
-        return -1
-
-    for left_part, right_part in zip(left, right):
-        if left_part == right_part:
-            continue
-        left_numeric = left_part.isdigit()
-        right_numeric = right_part.isdigit()
-        if left_numeric and right_numeric:
-            return -1 if int(left_part) < int(right_part) else 1
-        if left_numeric != right_numeric:
-            return -1 if left_numeric else 1
-        return -1 if left_part < right_part else 1
-
-    if len(left) == len(right):
-        return 0
-    return -1 if len(left) < len(right) else 1
-
-
-@dataclass(frozen=True)
-class Surface:
-    identifier: str
-    since: SemVer
-    negotiated: bool
-    declaration: str
-    matcher: re.Pattern[str]
-
-
-@dataclass(frozen=True)
-class SurfaceTable:
-    surfaces: dict[str, Surface]
-    minimum_supported_floor: SemVer
-    path: Path
 
 
 @dataclass(frozen=True)
 class Trigger:
-    surface: Surface
+    identifier: str
     path: Path
     line: int
 
@@ -236,115 +119,7 @@ class CommonGraph:
     unresolved_edges: dict[str, set[UnresolvedLink]]
 
 
-def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise CheckError(f"duplicate JSON key {key!r}")
-        result[key] = value
-    return result
-
-
-def _surface_matcher(identifier: str) -> re.Pattern[str]:
-    if not identifier:
-        raise CheckError("surface identifiers must not be empty")
-    pattern = re.escape(identifier)
-    if identifier[0].isalnum() or identifier[0] == "_":
-        pattern = r"(?<![A-Za-z0-9_])" + pattern
-    if identifier[-1].isalnum() or identifier[-1] == "_":
-        pattern += r"(?![A-Za-z0-9_])"
-    return re.compile(pattern)
-
-
-def load_surface_table(path: Path) -> SurfaceTable:
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise CheckError(f"cannot read surface table {path}: {exc}") from exc
-
-    try:
-        document = json.loads(raw, object_pairs_hook=_reject_duplicate_json_keys)
-    except json.JSONDecodeError as exc:
-        raise CheckError(f"invalid JSON in surface table {path}: {exc}") from exc
-
-    if not isinstance(document, dict):
-        raise CheckError(f"surface table {path} must contain a JSON object")
-    expected_keys = {"schema_version", "minimum_supported_floor", "_comment", "since", "baseline"}
-    unknown_keys = set(document) - expected_keys
-    if unknown_keys:
-        raise CheckError(
-            f"surface table {path} has unknown top-level keys: {', '.join(sorted(unknown_keys))}"
-        )
-    if document.get("schema_version") != 1:
-        raise CheckError(f"surface table {path} must use schema_version 1")
-
-    minimum_supported_floor = SemVer.parse(
-        document.get("minimum_supported_floor"),
-        f"minimum_supported_floor in {path}",
-    )
-
-    since_raw = document.get("since")
-    if not isinstance(since_raw, dict) or not since_raw:
-        raise CheckError(f"surface table {path} 'since' must be a non-empty object of version groups")
-
-    surfaces: dict[str, Surface] = {}
-    for since_text, group in since_raw.items():
-        since = SemVer.parse(since_text, f"since group in {path}")
-        if since <= minimum_supported_floor:
-            raise CheckError(
-                f"since group {since_text} in {path} is at or below minimum_supported_floor — "
-                "those surfaces belong in 'baseline'"
-            )
-        if not isinstance(group, dict) or not group:
-            raise CheckError(f"since group {since_text} in {path} must be a non-empty object")
-        for identifier, value in group.items():
-            if not isinstance(identifier, str) or identifier != identifier.strip() or not identifier:
-                raise CheckError(f"surface identifier {identifier!r} must be a single trimmed token")
-            if identifier in surfaces:
-                raise CheckError(f"surface {identifier!r} appears in more than one since group in {path}")
-            # Compact entry forms: "<declaration>" (negotiated), "" (the
-            # declaration IS the identifier, as with flag macros), or
-            # {"declaration": ..., "negotiated": false} for a hard surface.
-            negotiated = True
-            if isinstance(value, str):
-                declaration = value or identifier
-            elif isinstance(value, dict):
-                unknown = set(value) - {"declaration", "negotiated"}
-                if unknown:
-                    raise CheckError(
-                        f"surface {identifier!r} in {path} has unknown keys: {', '.join(sorted(unknown))}"
-                    )
-                declaration = value.get("declaration") or identifier
-                negotiated = value.get("negotiated", True)
-                if not isinstance(negotiated, bool):
-                    raise CheckError(f"surface {identifier!r} in {path} needs a boolean 'negotiated'")
-                if not isinstance(declaration, str):
-                    raise CheckError(f"surface {identifier!r} in {path} needs a string 'declaration'")
-            else:
-                raise CheckError(
-                    f"surface {identifier!r} in {path} must map to a declaration string or an object"
-                )
-            surfaces[identifier] = Surface(
-                identifier, since, negotiated, declaration, _surface_matcher(identifier)
-            )
-
-    # Baseline surfaces: present at or before minimum_supported_floor, so they
-    # can never raise a floor at or above it — listed so verdicts can name them
-    # and so an exception naming one is "known" (and flagged as unnecessary).
-    baseline_raw = document.get("baseline", [])
-    if not isinstance(baseline_raw, list):
-        raise CheckError(f"surface table {path} baseline must be an array of identifiers")
-    for identifier in baseline_raw:
-        if not isinstance(identifier, str) or identifier != identifier.strip() or not identifier:
-            raise CheckError(f"baseline identifier {identifier!r} must be a single trimmed token")
-        if identifier in surfaces:
-            raise CheckError(
-                f"surface {identifier!r} in {path} is listed in both surfaces and baseline"
-            )
-        surfaces[identifier] = Surface(
-            identifier, minimum_supported_floor, True, identifier, _surface_matcher(identifier)
-        )
-    return SurfaceTable(surfaces, minimum_supported_floor, path)
+# --- Table resolution --------------------------------------------------------
 
 
 def _surfaces_payload(path: Path) -> object:
@@ -356,37 +131,55 @@ def _surfaces_payload(path: Path) -> object:
     }
 
 
+def _repo_sdk_version(repo_root: Path) -> tuple[int, int, int] | None:
+    version_file = repo_root / "SDK_VERSION"
+    if not version_file.is_file():
+        return None
+    return core.parse_version(version_file.read_text().strip(), "SDK_VERSION file")
+
+
 def resolve_surface_table(
     repo_root: Path,
     sdk_floors_path: Path | None,
     *,
     err: TextIO,
-) -> SurfaceTable:
-    """Prefer the SDK's own table; fall back to the bundled interim copy.
-
-    When both exist they must agree byte-for-payload — a diverging interim
-    copy is a rot hazard and fails the check outright (sync or delete it).
-    """
-    interim_path = SCRIPT_DIR / INTERIM_TABLE_NAME
-    if not repo_root.samefile(DEFAULT_REPO_ROOT):
-        candidate = repo_root / "scripts" / INTERIM_TABLE_NAME
-        interim_path = candidate if candidate.is_file() else interim_path
+) -> core.SurfaceTable:
+    """Prefer the SDK's own table; fall back to the bundled interim copy."""
+    interim_path = repo_root / "scripts" / INTERIM_TABLE_NAME
+    vendored_core_path = repo_root / "scripts" / "vendor" / VENDORED_CORE_NAME
 
     if sdk_floors_path is not None:
         if not sdk_floors_path.is_file():
             raise CheckError(f"--sdk-floors table not found: {sdk_floors_path}")
-        table = load_surface_table(sdk_floors_path)
+        table = core.load_surface_table(sdk_floors_path)
+        # A diverging interim artifact is a rot hazard: the SDK copy wins, and
+        # the stale duplicate fails the check outright (sync or delete it).
         if interim_path.is_file():
             if _surfaces_payload(sdk_floors_path) != _surfaces_payload(interim_path):
                 raise CheckError(
                     f"interim table {interim_path} differs from the SDK table "
                     f"{sdk_floors_path}; sync it or delete it (the SDK copy wins)"
                 )
-            print(
-                f"NOTE: SDK surface table in use; delete the interim copy {interim_path}",
-                file=err,
-            )
+            print(f"NOTE: SDK surface table in use; delete the interim copy {interim_path}", file=err)
+        sdk_core_path = sdk_floors_path.parent / VENDORED_CORE_NAME
+        if sdk_core_path.is_file() and vendored_core_path.is_file():
+            if sdk_core_path.read_bytes() != vendored_core_path.read_bytes():
+                raise CheckError(
+                    f"vendored checker core {vendored_core_path} differs from the SDK's "
+                    f"{sdk_core_path}; sync it or delete scripts/vendor/ (the SDK copy wins)"
+                )
         return table
+
+    sdk_version = _repo_sdk_version(repo_root)
+    if sdk_version is not None and sdk_version >= SDK_SHIPS_TABLE_FROM:
+        leftovers = [path for path in (interim_path, vendored_core_path) if path.is_file()]
+        if leftovers:
+            listed = ", ".join(str(path) for path in leftovers)
+            raise CheckError(
+                f"SDK_VERSION {core.format_version(sdk_version)} ships the floor table and "
+                f"checker in the package — delete the interim artifacts ({listed}) and point "
+                "the check at the SDK's share/plotjuggler_sdk/ copies via --sdk-floors"
+            )
 
     if not interim_path.is_file():
         raise CheckError(
@@ -398,7 +191,10 @@ def resolve_surface_table(
         f"(authoritative copy ships with plotjuggler_sdk >= 0.33.0)",
         file=err,
     )
-    return load_surface_table(interim_path)
+    return core.load_surface_table(interim_path)
+
+
+# --- CMake link-closure resolution -------------------------------------------
 
 
 def _blank_except_newlines(text: str) -> str:
@@ -516,7 +312,7 @@ def _resolve_link_item(
     if LITERAL_TARGET_RE.fullmatch(token):
         return {token}, set()
 
-    variable_match = VARIABLE_REF_RE.fullmatch(token)
+    variable_match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", token)
     if not variable_match:
         return set(), {UnresolvedLink(token, cmake_path)}
 
@@ -547,7 +343,10 @@ def parse_cmake_model(path: Path) -> CMakeModel:
     for name, tokens in commands:
         if name != "set" or not tokens or not COMMAND_NAME_RE.fullmatch(tokens[0]):
             continue
-        variables.setdefault(tokens[0], set()).update(tokens[1:])
+        # An empty CMake value (`set(X "")`) means "no dependency", not an
+        # unresolvable expression — filtering it lets ordinary optional-dep
+        # variables resolve through the machinery instead of the allowlist.
+        variables.setdefault(tokens[0], set()).update(token for token in tokens[1:] if token)
 
     for name, tokens in commands:
         if not tokens:
@@ -674,86 +473,7 @@ def derive_common_closure(plugin_dir: Path, common_graph: CommonGraph) -> set[Pa
     return common_dirs
 
 
-def _strip_cpp_comments(text: str) -> str:
-    """Remove C/C++ comments while preserving source offsets and string literals."""
-    output: list[str] = []
-    index = 0
-    quote: str | None = None
-    escaped = False
-    while index < len(text):
-        if quote is not None:
-            char = text[index]
-            output.append(char)
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == quote:
-                quote = None
-            index += 1
-            continue
-
-        raw_match = RAW_STRING_START_RE.match(text, index)
-        if raw_match:
-            closing = ")" + raw_match.group(1) + '"'
-            end = text.find(closing, raw_match.end())
-            end = len(text) if end < 0 else end + len(closing)
-            output.append(text[index:end])
-            index = end
-            continue
-        if text.startswith("//", index):
-            end = text.find("\n", index)
-            end = len(text) if end < 0 else end
-            output.append(_blank_except_newlines(text[index:end]))
-            index = end
-            continue
-        if text.startswith("/*", index):
-            end = text.find("*/", index + 2)
-            end = len(text) if end < 0 else end + 2
-            output.append(_blank_except_newlines(text[index:end]))
-            index = end
-            continue
-        char = text[index]
-        if char in {'"', "'"}:
-            quote = char
-        output.append(char)
-        index += 1
-    return "".join(output)
-
-
-def _splice_cpp_lines(text: str) -> tuple[str, list[int]]:
-    """Apply C/C++ phase-2 backslash-newline removal and retain offset mapping."""
-    output: list[str] = []
-    original_offsets: list[int] = []
-    index = 0
-    while index < len(text):
-        if text.startswith("\\\r\n", index):
-            index += 3
-            continue
-        if text.startswith("\\\n", index):
-            index += 2
-            continue
-        output.append(text[index])
-        original_offsets.append(index)
-        index += 1
-    return "".join(output), original_offsets
-
-
-def _original_line(text: str, original_offsets: Sequence[int], spliced_offset: int) -> int:
-    original_offset = (
-        original_offsets[spliced_offset] if spliced_offset < len(original_offsets) else len(text)
-    )
-    return text.count("\n", 0, original_offset) + 1
-
-
-def _source_files(directory: Path) -> Iterable[Path]:
-    for path in directory.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in SOURCE_SUFFIXES:
-            continue
-        relative_parts = path.relative_to(directory).parts[:-1]
-        if any(part in EXCLUDED_SOURCE_DIRS or part.startswith("build-") for part in relative_parts):
-            continue
-        yield path
+# --- Per-plugin scan and verdict ---------------------------------------------
 
 
 def _display_path(path: Path, repo_root: Path) -> str:
@@ -764,61 +484,26 @@ def _display_path(path: Path, repo_root: Path) -> str:
 
 
 def detect_triggers(
-    repo_root: Path,
-    scan_dirs: Iterable[Path],
-    table: SurfaceTable,
+    scan_dirs: Sequence[Path],
+    table: core.SurfaceTable,
+    file_cache: dict[Path, list[tuple[str, int]]],
 ) -> list[Trigger]:
-    triggers: set[Trigger] = set()
-    source_files = sorted({path for directory in scan_dirs for path in _source_files(directory)})
+    """Matches across the scan set; per-file results are memoized for the run
+    so a common/ library shared by many plugins is scanned once, not per
+    consumer."""
+    triggers: list[Trigger] = []
+    source_files = sorted(
+        {
+            path
+            for directory in scan_dirs
+            for path in core.iter_source_files(directory, EXCLUDED_SOURCE_DIRS)
+        }
+    )
     for path in source_files:
-        try:
-            raw_source = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            raise CheckError(
-                f"cannot read C/C++ source {_display_path(path, repo_root)}: {exc}"
-            ) from exc
-        spliced_source, original_offsets = _splice_cpp_lines(raw_source)
-        searchable_source = _strip_cpp_comments(spliced_source)
-        for surface in table.surfaces.values():
-            for match in surface.matcher.finditer(searchable_source):
-                triggers.add(
-                    Trigger(
-                        surface,
-                        path,
-                        _original_line(raw_source, original_offsets, match.start()),
-                    )
-                )
-    return sorted(
-        triggers,
-        key=lambda item: (
-            item.surface.since,
-            item.surface.identifier,
-            _display_path(item.path, repo_root),
-            item.line,
-        ),
-    )
-
-
-def _test_exists(plugin_dir: Path, test_name: str) -> bool:
-    """True when `Suite.Name` resolves to a gtest TEST/TEST_F/TEST_P in the plugin."""
-    if "." not in test_name:
-        return False
-    suite, _, name = test_name.partition(".")
-    pattern = re.compile(
-        r"TEST(?:_F|_P)?\s*\(\s*" + re.escape(suite) + r"\s*,\s*" + re.escape(name) + r"\s*[,)]"
-    )
-    for directory in sorted(plugin_dir.iterdir()):
-        if not directory.is_dir() or directory.name not in TEST_SOURCE_DIRS:
-            continue
-        for path in directory.rglob("*"):
-            if not path.is_file() or path.suffix.lower() not in SOURCE_SUFFIXES:
-                continue
-            try:
-                if pattern.search(path.read_text(encoding="utf-8")):
-                    return True
-            except (OSError, UnicodeDecodeError):
-                continue
-    return False
+        if path not in file_cache:
+            file_cache[path] = core.scan_source_file(path, table)
+        triggers.extend(Trigger(identifier, path, line) for identifier, line in file_cache[path])
+    return triggers
 
 
 def _read_manifest(plugin_dir: Path) -> dict:
@@ -857,58 +542,6 @@ def _resolve_plugin_dirs(repo_root: Path, plugins: Sequence[Path] | None) -> lis
     return unique
 
 
-def _validate_exceptions(
-    exceptions: object,
-    table: SurfaceTable,
-    matched: dict[str, Trigger],
-    plugin_dir: Path,
-) -> tuple[set[str], list[str]]:
-    """Returns (excepted surface identifiers, problems)."""
-    if exceptions is None:
-        return set(), []
-    if not isinstance(exceptions, dict):
-        return set(), ["sdk_floor_exceptions must be a JSON object"]
-
-    excepted: set[str] = set()
-    problems: list[str] = []
-    for identifier, entry in exceptions.items():
-        prefix = f"sdk_floor_exceptions.{identifier}"
-        surface = table.surfaces.get(identifier)
-        if surface is None:
-            problems.append(f"{prefix}: unknown surface identifier (not in the SDK table)")
-            continue
-        if not isinstance(entry, dict) or set(entry) != {"reason", "test"}:
-            problems.append(f"{prefix}: entry must be an object with exactly 'reason' and 'test'")
-            continue
-        reason = entry["reason"]
-        test_name = entry["test"]
-        if not isinstance(reason, str) or not reason.strip():
-            problems.append(f"{prefix}: 'reason' must be a non-empty string")
-            continue
-        if not isinstance(test_name, str) or "." not in test_name:
-            problems.append(f"{prefix}: 'test' must name a gtest as 'Suite.Name'")
-            continue
-        if not surface.negotiated:
-            problems.append(
-                f"{prefix}: surface is not runtime-negotiated — a hard protocol "
-                "requirement cannot be waived; raise min_sdk_required instead"
-            )
-            continue
-        if identifier not in matched:
-            problems.append(
-                f"{prefix}: STALE — no match for this identifier in the plugin's "
-                "scan closure; remove the exception"
-            )
-            continue
-        if not _test_exists(plugin_dir, test_name):
-            problems.append(
-                f"{prefix}: named fallback test {test_name!r} not found in the plugin's tests"
-            )
-            continue
-        excepted.add(identifier)
-    return excepted, problems
-
-
 def check_sdk_feature_floors(
     repo_root: Path = DEFAULT_REPO_ROOT,
     plugins: Sequence[Path] | None = None,
@@ -930,72 +563,57 @@ def check_sdk_feature_floors(
         print(f"ERROR: {exc}", file=err)
         return False
 
+    file_cache: dict[Path, list[tuple[str, int]]] = {}
     failed = 0
     for plugin_dir in plugin_dirs:
         plugin_name = _display_path(plugin_dir, repo_root)
         try:
             manifest = _read_manifest(plugin_dir)
-            declared = SemVer.parse(
+            declared = core.parse_version(
                 manifest.get("min_sdk_required"),
                 f"min_sdk_required in {plugin_name}/manifest.json",
             )
             common_dirs = derive_common_closure(plugin_dir, common_graph)
-            triggers = detect_triggers(repo_root, [plugin_dir, *sorted(common_dirs)], table)
+            triggers = detect_triggers([plugin_dir, *sorted(common_dirs)], table, file_cache)
         except CheckError as exc:
             failed += 1
             print(f"FAIL {plugin_name}: {exc}", file=err)
             continue
 
-        # First trigger per surface is enough for reporting; the set is what
-        # exceptions and the floor rule are validated against.
-        matched: dict[str, Trigger] = {}
-        for trigger in triggers:
-            matched.setdefault(trigger.surface.identifier, trigger)
-
-        excepted, problems = _validate_exceptions(
-            manifest.get("sdk_floor_exceptions"), table, matched, plugin_dir
-        )
-
-        if declared < table.minimum_supported_floor:
-            problems.append(
-                f"min_sdk_required {declared} is below the supported floor "
-                f"{table.minimum_supported_floor} (older history is not classified)"
+        # First trigger per surface is enough for reporting; the mapping is
+        # what exceptions and the floor rule are validated against.
+        matched: dict[str, str] = {}
+        for trigger in sorted(
+            triggers, key=lambda item: (_display_path(item.path, repo_root), item.line)
+        ):
+            matched.setdefault(
+                trigger.identifier, f"{_display_path(trigger.path, repo_root)}:{trigger.line}"
             )
 
-        binding = [
-            trigger
-            for trigger in matched.values()
-            if trigger.surface.identifier not in excepted and trigger.surface.since > declared
-        ]
-        for trigger in sorted(binding, key=lambda item: (item.surface.since, item.surface.identifier)):
-            location = f"{_display_path(trigger.path, repo_root)}:{trigger.line}"
-            hint = (
-                "add a validated sdk_floor_exceptions entry"
-                if trigger.surface.negotiated
-                else "this surface is not negotiated — the floor must rise"
-            )
-            problems.append(
-                f"{trigger.surface.identifier} (since {trigger.surface.since}) exceeds "
-                f"floor {declared} at {location}; raise min_sdk_required or {hint}"
-            )
+        test_dirs = [plugin_dir / name for name in TEST_SOURCE_DIRS]
+        problems = core.floor_problems(manifest, declared, table, matched, test_dirs)
 
         if problems:
             failed += 1
-            print(f"FAIL {plugin_name} (floor {declared}):", file=err)
+            print(f"FAIL {plugin_name} (floor {core.format_version(declared)}):", file=err)
             for problem in problems:
                 print(f"  - {problem}", file=err)
             continue
 
-        effective = max((t.surface.since for t in matched.values()), default=None)
-        if effective is not None and declared > effective and not excepted:
+        effective = core.effective_maximum(table, matched)
+        if effective is not None and declared > effective:
             print(
-                f"WARN {plugin_name}: floor {declared} is higher than any matched "
-                f"surface (max {effective}) — fine if intentional",
+                f"WARN {plugin_name}: floor {core.format_version(declared)} is higher than any "
+                f"matched surface (max {core.format_version(effective)}) — fine if intentional",
                 file=err,
             )
         summary = ", ".join(sorted(matched)) if matched else "no host surfaces matched"
-        excepted_note = f"; excepted: {', '.join(sorted(excepted))}" if excepted else ""
-        print(f"PASS {plugin_name} (floor {declared}): {summary}{excepted_note}", file=out)
+        suggested = manifest.get("suggested_sdk_version")
+        degraded_note = f", full features at {suggested}" if suggested else ""
+        print(
+            f"PASS {plugin_name} (floor {core.format_version(declared)}{degraded_note}): {summary}",
+            file=out,
+        )
 
     if failed:
         print(

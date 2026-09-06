@@ -37,6 +37,13 @@ class SdkMinimumTests(unittest.TestCase):
             scripts.mkdir()
             for name in ("release_tools.py", "bump_core_version.py"):
                 shutil.copy(SCRIPTS / name, scripts / name)
+            # release_tools delegates exception-shape validation to the
+            # vendored checker core, so the fixture repo needs it too.
+            (scripts / "vendor").mkdir()
+            shutil.copy(
+                SCRIPTS / "vendor" / "feature_floor_check.py",
+                scripts / "vendor" / "feature_floor_check.py",
+            )
             (root / "SDK_VERSION").write_text("0.28.0\n")
             manifest_path = root / "example" / "manifest.json"
             manifest_path.parent.mkdir()
