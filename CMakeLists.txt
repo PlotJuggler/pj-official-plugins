@@ -28,6 +28,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/grid_map)
   add_subdirectory(common/pointcloud_color)
   add_subdirectory(common/query)
+  add_subdirectory(common/transfer_rate)
   add_subdirectory(common/toolbox_preview)
   # This block always adds every plugin (no PJ_BUILD_PLUGIN filtering), so its
   # consumers data_load_mf4/data_load_blf are always present — add their shared
@@ -183,6 +184,7 @@ add_subdirectory(common/laser_scan)
 add_subdirectory(common/grid_map)
 add_subdirectory(common/pointcloud_color)
 add_subdirectory(common/query)
+add_subdirectory(common/transfer_rate)
 # common/can_dbc has a CPM download side-effect, so configure it only for its
 # consumers (skipped when building an unrelated single plugin).
 set(PJ_CAN_DBC_CONSUMERS data_load_mf4 data_load_blf)
