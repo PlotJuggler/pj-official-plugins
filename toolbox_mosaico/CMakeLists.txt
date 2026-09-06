@@ -57,7 +57,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 # context stops matching, rather than silently building without active stream
 # cancellation.
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CPM.cmake)
-set(MOSAICO_SDK_REVISION 64b2872f4decb5a24e8761138a3c8d4c1d6f8396)
+set(MOSAICO_SDK_REVISION fcbaa3a937e527ab250b66f811bbc7a4a03e2e41)
 CPMAddPackage(
   NAME mosaico_sdk
   URL https://github.com/PlotJuggler/mosaico-cpp-sdk/archive/${MOSAICO_SDK_REVISION}.zip
