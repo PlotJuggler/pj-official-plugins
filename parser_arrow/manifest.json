@@ -1,7 +1,7 @@
 {
   "id": "arrow-parser",
   "name": "Arrow IPC Parser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Message parser for self-describing Arrow IPC streams.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
