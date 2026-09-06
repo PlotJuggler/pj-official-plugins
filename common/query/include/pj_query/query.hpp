@@ -90,7 +90,7 @@ class Query {
   // Returns -1 if no token covers that position.
   [[nodiscard]] int tokenIndexAt(int pos) const {
     for (int index = 0; index < static_cast<int>(tokens_.size()); ++index) {
-      if (pos >= tokens_[index].start && pos < tokens_[index].end) {
+      if (pos >= tok(index).start && pos < tok(index).end) {
         return index;
       }
     }
@@ -101,8 +101,8 @@ class Query {
   // Walks backward through tokens to find the nearest Key token.
   [[nodiscard]] std::string keyBefore(int token_index) const {
     for (int index = token_index - 1; index >= 0; --index) {
-      if (tokens_[index].type == TokenType::kKey) {
-        return tokens_[index].text;
+      if (tok(index).type == TokenType::kKey) {
+        return tok(index).text;
       }
     }
     return {};
@@ -113,7 +113,7 @@ class Query {
     // Find which token we're at or after.
     int idx = -1;
     for (int index = 0; index < static_cast<int>(tokens_.size()); ++index) {
-      if (tokens_[index].start <= pos) {
+      if (tok(index).start <= pos) {
         idx = index;
       } else {
         break;
@@ -124,10 +124,10 @@ class Query {
       return TokenType::kKey;  // empty or before first token
     }
 
-    auto last_type = tokens_[idx].type;
+    auto last_type = tok(idx).type;
 
     // If cursor is inside a token, we're editing that token type.
-    if (pos < tokens_[idx].end) {
+    if (pos < tok(idx).end) {
       return last_type;
     }
 
@@ -153,6 +153,11 @@ class Query {
 
  private:
   std::string source_;
+  // Centralizes the int → size_type cast so -Wsign-conversion stays clean.
+  [[nodiscard]] const Token& tok(int index) const {
+    return tokens_[static_cast<std::size_t>(index)];
+  }
+
   std::vector<Token> tokens_;
   ExprPtr ast_;
   bool complete_ = false;

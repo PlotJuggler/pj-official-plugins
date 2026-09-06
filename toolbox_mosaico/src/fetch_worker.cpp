@@ -325,46 +325,16 @@ void FetchWorker::reportIngestCompletion() {
   if (!ingest_progress_.has_value() || !source_record_attached_) {
     return;  // no context or no declared request: nothing to attest
   }
-  bool any_failed = false;
-  bool any_pending = false;
-  bool any_empty = false;
-  for (const auto& topic : requested_topics_snapshot_) {
-    // find(): pure read — every snapshot topic was seeded kPending at batch
-    // start, and a missing entry must count as pending, not be inserted.
-    const auto outcome_it = topic_outcomes_.find(topic);
-    switch (outcome_it != topic_outcomes_.end() ? outcome_it->second : TopicOutcome::kPending) {
-      case TopicOutcome::kOk:
-        break;
-      case TopicOutcome::kEmptyOk:
-        any_empty = true;
-        break;
-      case TopicOutcome::kFailed:
-        any_failed = true;
-        break;
-      case TopicOutcome::kPending:
-        any_pending = true;
-        break;
-    }
-  }
   // Also read the host's LIVE stop flag: a title-bar Stop landing after the
   // poller's last check must not be attested as COMPLETED. (host_stop_reported_
   // is implied — its only setter also raises cancel_flag_.)
   const bool cancelled = cancel_flag_.load(std::memory_order_relaxed) || ingest_progress_->isStopRequested();
-  PJ::sdk::IngestOutcome outcome = PJ::sdk::IngestOutcome::kCompleted;
-  if (cancelled) {
-    outcome = PJ::sdk::IngestOutcome::kCancelled;
-  } else if (any_failed || any_pending) {
-    outcome = PJ::sdk::IngestOutcome::kFailed;
-  }
-  PJ_ingest_completion_flags_t flags = PJ_INGEST_COMPLETION_FLAG_NONE;
-  if (outcome == PJ::sdk::IngestOutcome::kCompleted && any_empty) {
-    flags = PJ_INGEST_COMPLETION_FLAG_ATTESTS_EMPTY_TOPICS;
-  }
+  const auto completion = outcome_ledger_.computeCompletion(cancelled);
   std::vector<std::string_view> topics(requested_topics_snapshot_.begin(), requested_topics_snapshot_.end());
   // COMPLETED attests the ENTIRE declared request; FAILED/CANCELLED are
   // truthful terminals that keep the ingest usable while forbidding caching.
   // An older host without the slot refuses — ignored, simply not cacheable.
-  (void)ingest_progress_->completeIngest(outcome, {topics.data(), topics.size()}, flags);
+  (void)ingest_progress_->completeIngest(completion.outcome, {topics.data(), topics.size()}, completion.flags);
 }
 
 void FetchWorker::connectAsync(std::string uri, ServerCredentials creds) {
@@ -601,15 +571,12 @@ void FetchWorker::pullTopicsAsync(
     ingest_ds_id_.reset();
     progress_bytes_by_topic_.clear();
     source_record_attached_ = false;
-    topic_outcomes_.clear();
     requested_topics_snapshot_ = topic_names;
     std::sort(requested_topics_snapshot_.begin(), requested_topics_snapshot_.end());
     requested_topics_snapshot_.erase(
         std::unique(requested_topics_snapshot_.begin(), requested_topics_snapshot_.end()),
         requested_topics_snapshot_.end());
-    for (const auto& topic : requested_topics_snapshot_) {
-      topic_outcomes_[topic] = TopicOutcome::kPending;
-    }
+    outcome_ledger_ = PJ::sdk::source::IngestOutcomeLedger(requested_topics_snapshot_);
     // The canonical request descriptor rides through the ONE typed parser
     // (makePullDescriptor round-trips it), so the producer meets the same
     // allowlist/limits/origin-hygiene bar as a layout consumer and the
@@ -826,15 +793,16 @@ void FetchWorker::pullTopicsAsync(
         pullFinished({{sequence_name, topic_name}, ok, std::move(error), std::move(warning)});
       }
     };
-    auto record_outcome = [this, &topic_name](TopicOutcome outcome) {
+    auto record_outcome = [this, &topic_name](PJ::sdk::source::TopicOutcome outcome) {
       std::lock_guard<std::mutex> plock(progress_mu_);
-      topic_outcomes_[topic_name] = outcome;
+      // Every pulled topic is in the requested snapshot, so record() cannot miss.
+      (void)outcome_ledger_.record(topic_name, outcome);
     };
     if (!result.ok()) {
       if (client_) {  // absent under the transport test seam
         (void)client_->reportTopicNotification(sequence_name, topic_name, "fetch_error", result.status().message());
       }
-      record_outcome(TopicOutcome::kFailed);
+      record_outcome(PJ::sdk::source::TopicOutcome::kFailed);
       finish(false, stringFromArrow(result.status()));
       return;
     }
@@ -842,7 +810,7 @@ void FetchWorker::pullTopicsAsync(
       // Transport succeeded and the window was genuinely empty: a successful
       // fetch of nothing, distinct from a failure — the completion report
       // attests it so the request stays cacheable.
-      record_outcome(TopicOutcome::kEmptyOk);
+      record_outcome(PJ::sdk::source::TopicOutcome::kEmptyOk);
       finish(true, {}, "no data in the requested range");
       return;
     }
@@ -871,13 +839,13 @@ void FetchWorker::pullTopicsAsync(
     }
     topic.batches.clear();
     if (!topic.error.empty()) {
-      record_outcome(TopicOutcome::kFailed);
+      record_outcome(PJ::sdk::source::TopicOutcome::kFailed);
       finish(false, topic.error);
     } else if (topic.rows_pushed == 0) {
-      record_outcome(TopicOutcome::kEmptyOk);
+      record_outcome(PJ::sdk::source::TopicOutcome::kEmptyOk);
       finish(true, {}, "no data in the requested range");
     } else {
-      record_outcome(TopicOutcome::kOk);
+      record_outcome(PJ::sdk::source::TopicOutcome::kOk);
       finish(true, {});
     }
   };

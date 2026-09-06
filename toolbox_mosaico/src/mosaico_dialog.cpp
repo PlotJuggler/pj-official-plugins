@@ -14,12 +14,13 @@
 #include <algorithm>
 #include <chrono>
 #include <pj_base/sdk/platform.hpp>
+#include <pj_base/slider_window.hpp>
+#include <pj_base/time_format.hpp>
 #include <pj_query/filter.hpp>
 #include <string_view>
 #include <utility>
 
 #include "cert_dialog_ui.hpp"
-#include "core/time_format.h"
 #include "credential_resolve.hpp"
 #include "fetch_summary.h"
 #include "fetch_worker.hpp"
@@ -51,18 +52,18 @@ std::string isoFromNs(std::int64_t ts_ns) {
   if (ts_ns <= 0) {
     return {};
   }
-  return formatIso8601Utc(ts_ns);
+  return PJ::formatIso8601Utc(ts_ns);
 }
 
 std::string dateOnly(std::int64_t ts_ns) {
   if (ts_ns <= 0) {
     return "--/--/----";
   }
-  return formatDateDDMMYYYY(ts_ns);
+  return PJ::formatDateDDMMYYYY(ts_ns);
 }
 
 std::string dateTimeUtc(std::int64_t ts_ns) {
-  return formatDateTimeUtc(ts_ns);
+  return PJ::formatDateTimeUtc(ts_ns);
 }
 
 // --- Query-assist helpers (Key/Op/Value dropdowns) ---
@@ -540,8 +541,8 @@ std::string MosaicoDialog::widget_data() {
   // DateRangePicker: hint the dataset's available span as the from/to placeholders.
   if (state_.global_min_ts_ns > 0) {
     wd.setDateRangePlaceholder(
-        "datePicker", formatDateOnlyIso(state_.global_min_ts_ns),
-        state_.global_max_ts_ns > 0 ? formatDateOnlyIso(state_.global_max_ts_ns) : "");
+        "datePicker", PJ::formatDateOnlyIso(state_.global_min_ts_ns),
+        state_.global_max_ts_ns > 0 ? PJ::formatDateOnlyIso(state_.global_max_ts_ns) : "");
   }
 
   // Button enable/disable (PJ3 parity): Connect is inert while a connect or a
@@ -708,12 +709,8 @@ std::string MosaicoDialog::widget_data() {
         // surfacing PJ3 DownloadStatsDialog's per-topic Speed column. Only shown
         // while the topic is still transferring (Done/Failed/Cancelled are static).
         double topic_bps = 0.0;
-        if (auto sit = state_.speed_samples.find(tname); sit != state_.speed_samples.end() && sit->second.size() >= 2) {
-          const auto& s = sit->second;
-          const std::int64_t dt_ms = s.back().ms - s.front().ms;
-          if (dt_ms > 0) {
-            topic_bps = static_cast<double>(s.back().bytes - s.front().bytes) * 1000.0 / static_cast<double>(dt_ms);
-          }
+        if (auto sit = state_.speed_samples.find(tname); sit != state_.speed_samples.end()) {
+          topic_bps = sit->second.bytesPerSecond();
         }
         const double mib = static_cast<double>(bytes) / (1024.0 * 1024.0);
         const bool transferring = (status == "downloading…" || status == "Cancelling…");
@@ -1015,16 +1012,15 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
           break;
         }
       }
-      if (rec != nullptr && rec->max_ts_ns > rec->min_ts_ns) {
-        const std::int64_t span = rec->max_ts_ns - rec->min_ts_ns;
-        start = rec->min_ts_ns + (span * state_.range_lower) / DialogState::kSliderSteps;
-        // The server retrieval window is [start, end) — the upper bound is
-        // EXCLUSIVE. At a full-range selection the proportional end lands
-        // exactly on max_ts_ns, which would silently drop the final frame, so
-        // extend one tick past it when the slider is pinned to 100%.
-        end = (state_.range_upper >= DialogState::kSliderSteps)
-                  ? rec->max_ts_ns + 1
-                  : rec->min_ts_ns + (span * state_.range_upper) / DialogState::kSliderSteps;
+      // The server retrieval window is [start, end): sliderToWindow computes it
+      // overflow-safely and extends one tick past max_ts when pinned to 100%
+      // so the final frame is not silently dropped.
+      if (rec != nullptr) {
+        if (const auto window = PJ::sliderToWindow(
+                rec->min_ts_ns, rec->max_ts_ns, state_.range_lower, state_.range_upper, DialogState::kSliderSteps)) {
+          start = window->start_ns;
+          end = window->end_ns;
+        }
       }
       if (topics.empty()) {
         notify(PJ::ToolboxMessageLevel::kWarning, "Select a sequence + topic(s) first");
@@ -1114,8 +1110,8 @@ bool MosaicoDialog::onDateRangeChanged(
     return remainder < 0 ? quotient - 1 : quotient;
   };
   auto toEpochNsAtMsPrecision = [&](std::int64_t ns) { return floorDiv(ns, kNsPerMs) * kNsPerMs; };
-  const auto from_ns = parseIso8601Utc(from_iso);
-  const auto to_ns = parseIso8601Utc(to_iso);
+  const auto from_ns = PJ::parseIso8601Utc(from_iso);
+  const auto to_ns = PJ::parseIso8601Utc(to_iso);
   std::lock_guard<std::mutex> lock(state_.mu);
   state_.date_from_ns = from_ns.has_value() ? toEpochNsAtMsPrecision(*from_ns) : 0;
   state_.date_to_ns = to_ns.has_value() ? toEpochNsAtMsPrecision(*to_ns) : 0;
@@ -1678,16 +1674,8 @@ void MosaicoDialog::onPullProgress(std::string topic_name, std::int64_t bytes) {
   // parity). "done" is the count of topics that have fully completed
   // (pullFinished), not those merely streaming.
   state_.bytes_by_topic[topic_name] = bytes;
-  const std::int64_t now_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
-          .count();
-  auto& samples = state_.speed_samples[topic_name];
-  samples.push_back({now_ms, bytes});
-  // Trim to the trailing 5 s window.
-  const std::int64_t window_start = now_ms - 5000;
-  while (samples.size() > 2 && samples.front().ms < window_start) {
-    samples.erase(samples.begin());
-  }
+  state_.speed_samples[topic_name].add(static_cast<std::uint64_t>(bytes));
+
   std::int64_t total_bytes = 0;
   for (const auto& kv : state_.bytes_by_topic) {
     total_bytes += kv.second;
@@ -1696,14 +1684,8 @@ void MosaicoDialog::onPullProgress(std::string topic_name, std::int64_t bytes) {
   // rates) — PJ3 DownloadStatsDialog surfaced this; here it rides the status
   // line since the panel has no separate progress window.
   double bytes_per_sec = 0.0;
-  for (const auto& [topic, samples] : state_.speed_samples) {
-    if (samples.size() >= 2) {
-      const std::int64_t dt_ms = samples.back().ms - samples.front().ms;
-      if (dt_ms > 0) {
-        bytes_per_sec +=
-            static_cast<double>(samples.back().bytes - samples.front().bytes) * 1000.0 / static_cast<double>(dt_ms);
-      }
-    }
+  for (const auto& [topic, rate] : state_.speed_samples) {
+    bytes_per_sec += rate.bytesPerSecond();
   }
   const double mib = static_cast<double>(total_bytes) / (1024.0 * 1024.0);
   const double mibps = bytes_per_sec / (1024.0 * 1024.0);

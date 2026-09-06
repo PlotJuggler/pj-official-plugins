@@ -14,6 +14,7 @@
 #include <optional>
 #include <pj_base/sdk/data_source_host_views.hpp>
 #include <pj_base/sdk/plugin_data_api.hpp>
+#include <pj_base/sdk/source/outcome_ledger.hpp>
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <string>
 #include <unordered_map>
@@ -255,8 +256,7 @@ class FetchWorker {
   std::string pending_source_record_;
   bool source_record_attached_ = false;
   std::vector<std::string> requested_topics_snapshot_;
-  enum class TopicOutcome { kPending, kOk, kEmptyOk, kFailed };
-  std::map<std::string, TopicOutcome, std::less<>> topic_outcomes_;
+  PJ::sdk::source::IngestOutcomeLedger outcome_ledger_{{}};
   // Cumulative decoded bytes per topic, published as a batch-wide sum.
   std::map<std::string, std::int64_t, std::less<>> progress_bytes_by_topic_;
   // [C1] Serializes the ENTIRE host-write critical section in pullTopicsAsync's

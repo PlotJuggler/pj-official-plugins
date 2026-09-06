@@ -16,15 +16,15 @@
 #include <cstring>
 #include <mutex>
 #include <optional>
-#include <pj_base/sdk/descriptor_import/provider_job.hpp>
 #include <pj_base/sdk/settings_store_host.hpp>
+#include <pj_base/sdk/source/presentation.hpp>
+#include <pj_base/sdk/source/provider_job.hpp>
 #include <string>
 
 #include "credential_resolve.hpp"
 #include "descriptor_import_provider.hpp"
 #include "fetch_worker.hpp"
 #include "source_descriptor.hpp"
-#include "source_presentation.hpp"
 #include "worker_types.h"
 
 #if !defined(_WIN32)
@@ -118,7 +118,7 @@ TEST(DescriptorImportQuery, PublishesPresentationThroughHostSettings) {
   auto result = freshResult();
   ASSERT_TRUE(provider.queryDescriptor(view(json), &result, nullptr));
 
-  const std::string group = mosaico::sourcePresentationSettingsGroup(mosaico::descriptorIdentity(d));
+  const std::string group = PJ::sdk::source::sourcePresentationSettingsGroup(mosaico::descriptorIdentity(d));
   EXPECT_EQ(settings_backend.getString(group + "/display_name"), std::optional<std::string>("contract-test"));
   EXPECT_EQ(settings_backend.getString(group + "/origin"), std::optional<std::string>("demo.mosaico.dev:6726"));
 }
@@ -343,8 +343,8 @@ TEST(DescriptorImportJob, WatchdogExpiryAfterTransferIsInert) {
 
   PJ_joinable_job_t job{};
   ASSERT_TRUE(
-      PJ::sdk::descriptor_import::ProviderJob::start(
-          [&](PJ::sdk::descriptor_import::JobControl& control) {
+      PJ::sdk::source::ProviderJob::start(
+          [&](PJ::sdk::source::JobControl& control) {
             transfer_in_progress.store(true);
             control.armWatchdog(std::chrono::milliseconds(5), [&] {
               if (mosaico::testing::DescriptorImportProviderTestAccess::claimTransferWatchdogExpiry(
@@ -360,8 +360,7 @@ TEST(DescriptorImportJob, WatchdogExpiryAfterTransferIsInert) {
             transfer_in_progress.store(false);  // pull returned
             std::unique_lock<std::mutex> lock(callback_mu);
             (void)callback_cv.wait_for(lock, std::chrono::seconds(1), [&] { return callback_ran; });
-            return PJ::sdk::descriptor_import::ImportOutcome{
-                PJ_DESCRIPTOR_IMPORT_SUCCEEDED_EAGER_ONLY, "transfer completed"};
+            return PJ::sdk::source::ImportOutcome{PJ_DESCRIPTOR_IMPORT_SUCCEEDED_EAGER_ONLY, "transfer completed"};
           },
           &callbacks, &terminal, &job, nullptr));
 

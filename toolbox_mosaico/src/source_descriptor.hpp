@@ -16,7 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <pj_base/sdk/descriptor_import/source_descriptor.hpp>
+#include <pj_base/sdk/source/source_descriptor.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -49,7 +49,7 @@ inline constexpr std::size_t kMaxStringBytes = 4096;
 
 /// The SDK policy that owns Mosaico's descriptor field allowlist,
 /// canonicalization, identity scheme and generic resource bounds.
-[[nodiscard]] const PJ::sdk::descriptor_import::SourceDescriptorPolicy& sourceDescriptorPolicy();
+[[nodiscard]] const PJ::sdk::source::SourceDescriptorPolicy& sourceDescriptorPolicy();
 
 /// Build a validated "mosaico.pull" descriptor from the resolved request
 /// fields, stamping version/kind (their authority stays in this module).

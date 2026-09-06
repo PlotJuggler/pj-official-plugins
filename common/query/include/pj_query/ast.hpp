@@ -166,8 +166,8 @@ class Parser {
       return nullptr;
     }
 
-    while (pos_ < size() && tokens_[pos_].type == TokenType::kOr) {
-      auto conn = tokens_[pos_++];
+    while (pos_ < size() && tok(pos_).type == TokenType::kOr) {
+      auto conn = tok(pos_++);
       auto right = parseAnd();
       if (!right) {
         // "A or" with nothing after — still return what we have.
@@ -186,8 +186,8 @@ class Parser {
       return nullptr;
     }
 
-    while (pos_ < size() && tokens_[pos_].type == TokenType::kAnd) {
-      auto conn = tokens_[pos_++];
+    while (pos_ < size() && tok(pos_).type == TokenType::kAnd) {
+      auto conn = tok(pos_++);
       auto right = parseUnary();
       if (!right) {
         break;
@@ -200,8 +200,8 @@ class Parser {
 
   // not-level
   ExprPtr parseUnary() {
-    if (pos_ < size() && tokens_[pos_].type == TokenType::kNot) {
-      auto not_tok = tokens_[pos_++];
+    if (pos_ < size() && tok(pos_).type == TokenType::kNot) {
+      auto not_tok = tok(pos_++);
       auto operand = parseUnary();
       if (!operand) {
         return nullptr;
@@ -219,11 +219,11 @@ class Parser {
     }
 
     // Grouped expression: ( expr )
-    if (tokens_[pos_].type == TokenType::kOpenParen) {
-      auto open = tokens_[pos_++];
+    if (tok(pos_).type == TokenType::kOpenParen) {
+      auto open = tok(pos_++);
       auto inner = parseOr();
-      if (pos_ < size() && tokens_[pos_].type == TokenType::kCloseParen) {
-        auto close = tokens_[pos_++];
+      if (pos_ < size() && tok(pos_).type == TokenType::kCloseParen) {
+        auto close = tok(pos_++);
         if (!inner) {
           // Empty parens — create a group with no inner.
           return std::make_unique<GroupExpr>(std::move(open), nullptr, std::move(close));
@@ -236,22 +236,22 @@ class Parser {
 
     // Shorthand value: a bare value after connective inherits last_key + last_op.
     // e.g., robot == "a" or "b" → the "b" is parsed here as a shorthand compare.
-    if (tokens_[pos_].type == TokenType::kValue && !last_key_.text.empty()) {
-      auto val = tokens_[pos_++];
+    if (tok(pos_).type == TokenType::kValue && !last_key_.text.empty()) {
+      auto val = tok(pos_++);
       return std::make_unique<CompareExpr>(last_key_, last_op_, std::move(val));
     }
 
     // Key — start of a comparison or bare key.
-    if (tokens_[pos_].type == TokenType::kKey) {
-      auto key = tokens_[pos_++];
+    if (tok(pos_).type == TokenType::kKey) {
+      auto key = tok(pos_++);
 
       // Key + operator?
-      if (pos_ < size() && tokens_[pos_].type == TokenType::kOperator) {
-        auto op = tokens_[pos_++];
+      if (pos_ < size() && tok(pos_).type == TokenType::kOperator) {
+        auto op = tok(pos_++);
 
         // Key + operator + value?
-        if (pos_ < size() && tokens_[pos_].type == TokenType::kValue) {
-          auto val = tokens_[pos_++];
+        if (pos_ < size() && tok(pos_).type == TokenType::kValue) {
+          auto val = tok(pos_++);
 
           // Remember for shorthand expansion.
           last_key_ = key;
@@ -295,6 +295,12 @@ class Parser {
         return false;
     }
     return false;
+  }
+
+  // Centralizes the int → size_type cast so -Wsign-conversion stays clean
+  // (positions are int end-to-end: they mirror Qt cursor offsets).
+  [[nodiscard]] const Token& tok(int index) const {
+    return tokens_[static_cast<std::size_t>(index)];
   }
 
   [[nodiscard]] int size() const {
