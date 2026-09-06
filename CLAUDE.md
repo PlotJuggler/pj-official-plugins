@@ -109,6 +109,28 @@ separate application-version requirement.
 - Run `python3 scripts/bump_core_version.py --check` and
   `python3 -m unittest discover -s scripts/tests`. These validate declarations;
   they do not infer feature use or prove compatibility with older hosts.
+- `python3 scripts/check_sdk_feature_floors.py` ENFORCES the floors (CI runs it
+  per PR; `release_extension.py` refuses to tag on failure): it scans each
+  plugin's source closure (plugin dir + reachable `common/` libraries) for
+  host-contract surfaces (tail slots, services — static-library SDK helpers
+  never constrain a floor) against the SDK's surface table and fails when a
+  matched surface is newer than `min_sdk_required`. To keep a lower floor for a
+  runtime-negotiated surface that degrades gracefully, declare it in the
+  manifest:
+
+  ```json
+  "sdk_floor_exceptions": {
+    "setDatasetMetadata": { "reason": "optional: …", "test": "Suite.Name" }
+  }
+  ```
+
+  Each entry must name a table surface that is negotiated, still matched in the
+  plugin's code (stale claims fail), and covered by the named gtest proving the
+  behavior with the capability absent. When a surface becomes essential, delete
+  the exception and raise the floor in the same change. The table ships with
+  the SDK (`pj_base/feature_floors.json`, >= 0.33.0);
+  `scripts/sdk_feature_floors_interim.json` is the stand-in until then and must
+  be deleted once the SDK copy is in the pinned build.
 
 **One-time baseline:** all plugins existing at this policy's introduction were
 assigned `min_sdk_required: "0.28.0"`, with build SDK `0.28.0`, by explicit user

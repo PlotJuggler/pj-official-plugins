@@ -22,5 +22,11 @@
     ".mcap"
   ],
   "min_sdk_required": "0.28.0",
+  "sdk_floor_exceptions": {
+    "setDatasetMetadata": {
+      "reason": "optional: metadata display absent on hosts older than 0.32; load unaffected",
+      "test": "McapDatasetMetadata.PublishDegradesGracefullyWithoutHostSlot"
+    }
+  },
   "min_plotjuggler_version": "4.0.0"
 }

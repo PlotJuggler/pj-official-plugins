@@ -22,6 +22,8 @@
 #include <string>
 #include <vector>
 
+#include "pj_base/sdk/data_source_host_views.hpp"
+
 namespace {
 
 using PJ::McapMetadata::parseIdentityFraming;
@@ -200,6 +202,25 @@ TEST(McapDatasetMetadata, OversizedRecordIsElided) {
   EXPECT_FALSE(document["mcap_metadata"][0].contains("entries"));
   EXPECT_TRUE(document["mcap_metadata"][0].contains("skipped"));
   EXPECT_FALSE(diagnostics.empty());
+}
+
+// The manifest's sdk_floor_exceptions entry for setDatasetMetadata names this
+// test: on a host that predates the slot (short struct_size), publishing the
+// extracted document must be a clean no-op — the import path is unaffected and
+// only the metadata display is missing.
+TEST(McapDatasetMetadata, PublishDegradesGracefullyWithoutHostSlot) {
+  PJ_data_source_runtime_host_vtable_t vtable{};
+  vtable.protocol_version = 1;
+  vtable.struct_size = offsetof(PJ_data_source_runtime_host_vtable_t, set_dataset_metadata);
+  PJ_data_source_runtime_host_t host{};
+  int host_context = 0;
+  host.ctx = &host_context;
+  host.vtable = &vtable;
+  const PJ::DataSourceRuntimeHostView view(host);
+
+  const nlohmann::json document = {{"file", {{"message_count", 1}}}};
+  PJ::McapMetadata::publishDatasetMetadata(view, document);  // must not throw or call anything
+  SUCCEED();
 }
 
 }  // namespace

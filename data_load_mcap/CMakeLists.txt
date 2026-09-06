@@ -67,7 +67,7 @@ target_compile_options(mcap_dataset_metadata_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(mcap_dataset_metadata_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(mcap_dataset_metadata_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
 target_link_libraries(mcap_dataset_metadata_test PRIVATE
-  nlohmann_json::nlohmann_json LZ4::lz4_static zstd::libzstd_static GTest::gtest_main
+  plotjuggler_sdk::base nlohmann_json::nlohmann_json LZ4::lz4_static zstd::libzstd_static GTest::gtest_main
 )
 add_test(NAME mcap_dataset_metadata_test COMMAND mcap_dataset_metadata_test)
 
