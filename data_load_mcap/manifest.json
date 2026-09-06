@@ -23,6 +23,6 @@
   ],
   "min_sdk_required": "0.28.0",
   "suggested_sdk_version": "0.32.0",
-  "floor_test": "McapDatasetMetadata.ImportSucceedsAgainstFloorLevelHost",
+  "floor_test": "McapDatasetMetadata.MetadataPublishDegradesCleanlyOnFloorLevelHost",
   "min_plotjuggler_version": "4.0.0"
 }

@@ -78,7 +78,7 @@ The top-level CMakeLists.txt supports two modes:
 
 Plugin CMakeLists.txt files link `plotjuggler_sdk::plugin_sdk` (plugin .so) and `plotjuggler_sdk::plugin_host` (test executables) — same target names work in both modes.
 
-The core version is **not** pinned in CMake — `find_package` resolves whatever Conan installed. The requirement is pinned in **one** place: the top-level `SDK_VERSION` file (an exact version, e.g. `0.6.0`), which the root `conanfile.py` and every plugin's `conanfile.py` read live. When no prebuilt Conan package is available, `scripts/ensure_core.sh` clones the matching `v<version>` tag and builds it with `conan create`. Retarget with `python3 scripts/bump_core_version.py 0.6.1`; `python3 scripts/bump_core_version.py --check` guards against stray literal pins in recipes. To develop against an UNRELEASED SDK, `./build.sh --sdk-local[=path]` (default path: the sibling `~/ws_plotjuggler/plotjuggler_sdk` checkout) registers the local working tree in the Conan cache AS the pinned `SDK_VERSION`, rebuilding it on every run so a changed tree is never stale — every plugin recipe resolves unchanged. Loud banner, not reproducible, refused in CI; never use it for release artifacts.
+The core version is **not** pinned in CMake — `find_package` resolves whatever Conan installed. The requirement is pinned in **one** place: the top-level `SDK_VERSION` file (an exact version, e.g. `0.6.0`), which the root `conanfile.py` and every plugin's `conanfile.py` read live. When no prebuilt Conan package is available, `scripts/ensure_core.sh` clones the matching `v<version>` tag and builds it with `conan create`. Retarget with `python3 scripts/bump_core_version.py 0.6.1`; `python3 scripts/bump_core_version.py --check` guards against stray literal pins in recipes. To develop against an UNRELEASED SDK, `./build.sh --sdk-local[=path]` (default path: the sibling `~/ws_plotjuggler/plotjuggler_sdk` checkout) registers the local working tree in the Conan cache, rebuilding it on every run so a changed tree is never stale — every plugin recipe resolves unchanged. The tree's own `VERSION` must equal the pinned `SDK_VERSION` (the SDK recipe versions itself from its VERSION file); a mismatch is refused rather than silently building a package the pin would not resolve. Loud banner, not reproducible, refused in CI; never use it for release artifacts.
 
 **Repository & package rename (core `v0.6.0`):** the SDK was renamed `plotjuggler_core` → [`plotjuggler_sdk`](https://github.com/PlotJuggler/plotjuggler_sdk) — GitHub repo, Conan package, and CMake identity all move together. Recipes require `plotjuggler_sdk/<version>`; CMake uses `find_package(plotjuggler_sdk)` and links `plotjuggler_sdk::base|plugin_sdk|plugin_host`. The upstream SDK recipe (`name`, `cmake_file_name`, `cmake_target_name`) and the JFrog package are renamed on the SDK side; this repo only consumes the new name.
 
@@ -134,7 +134,17 @@ separate application-version requirement.
     floor-level host with its degradations active. Both fields are forbidden
     when nothing exceeds the floor (they would repeat `min_sdk_required`).
     When a degraded surface becomes essential, raise the floor and drop the
-    fields in the same change. The table ships with
+    fields in the same change. A `floor_test` proves the DEGRADED PATH at the
+    finest testable granularity — helper-level is acceptable when the full
+    entry point needs a live host, with a test comment stating the routing
+    fact.
+
+  Scope boundary: the checker sees only runtime host-contract surfaces.
+  Compile-time SDK library APIs (`parseIso8601Utc`, `sliderToWindow`, ...) are
+  invisible to it, so "no surfaces matched" or an over-declared-floor WARNING
+  is never sufficient justification to lower `min_sdk_required` —
+  toolbox_mosaico and data_load_mp4 (both 0.31.0 for compile-time reasons) are
+  the canonical examples, correct as declared. The table ships with
   the SDK (`pj_base/feature_floors.json`, >= 0.33.0);
   `scripts/sdk_feature_floors_interim.json` is the stand-in until then and must
   be deleted once the SDK copy is in the pinned build.

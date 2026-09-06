@@ -19,6 +19,20 @@ specific to this monorepo:
     reaches 0.33.0 the check HARD-FAILS while interim artifacts still exist,
     forcing the cutover instead of trusting a doc comment.
 
+Known, deliberate boundaries: the scan set is the LINK closure's directories —
+include-only dependencies, sources added via ``target_sources()`` from outside
+those directories, and generated code are not covered (linking is the repo's
+dependency contract; a Clang compile-command-based extractor is the upgrade
+path). And only RUNTIME host-contract surfaces are visible: compile-time SDK
+library APIs (``parseIso8601Utc``, ``sliderToWindow``, ...) never appear here,
+so "no host surfaces matched" or an over-declared-floor WARNING is NEVER by
+itself justification to lower ``min_sdk_required`` — toolbox_mosaico and
+data_load_mp4 (both 0.31.0 for compile-time reasons) are the canonical
+examples, correct as declared. A ``floor_test`` proves the DEGRADED PATH at
+the finest testable granularity: helper-level is acceptable when the full
+entry point needs a live host, and the test comment must then state the
+routing fact.
+
 Per plugin, the lean floor contract (see the core module): the floor must
 cover every matched non-negotiated surface; a matched surface above the floor
 requires ``suggested_sdk_version`` (== max since over all matched surfaces)
@@ -148,6 +162,17 @@ def resolve_surface_table(
     interim_path = repo_root / "scripts" / INTERIM_TABLE_NAME
     vendored_core_path = repo_root / "scripts" / "vendor" / VENDORED_CORE_NAME
 
+    sdk_version = _repo_sdk_version(repo_root)
+    if sdk_version is not None and sdk_version >= SDK_SHIPS_TABLE_FROM:
+        leftovers = [path for path in (interim_path, vendored_core_path) if path.is_file()]
+        if leftovers:
+            listed = ", ".join(str(path) for path in leftovers)
+            raise CheckError(
+                f"SDK_VERSION {core.format_version(sdk_version)} ships the floor table and "
+                f"checker in the package — delete the interim artifacts ({listed}) and point "
+                "the check at the SDK's share/plotjuggler_sdk/ copies via --sdk-floors"
+            )
+
     if sdk_floors_path is not None:
         if not sdk_floors_path.is_file():
             raise CheckError(f"--sdk-floors table not found: {sdk_floors_path}")
@@ -161,25 +186,25 @@ def resolve_surface_table(
                     f"{sdk_floors_path}; sync it or delete it (the SDK copy wins)"
                 )
             print(f"NOTE: SDK surface table in use; delete the interim copy {interim_path}", file=err)
-        sdk_core_path = sdk_floors_path.parent / VENDORED_CORE_NAME
-        if sdk_core_path.is_file() and vendored_core_path.is_file():
+        if vendored_core_path.is_file():
+            # Installed layout: core beside the table. SDK checkout layout:
+            # table under pj_base/, core under tools/feature_floors/.
+            candidates = [
+                sdk_floors_path.parent / VENDORED_CORE_NAME,
+                sdk_floors_path.parent.parent / "tools" / "feature_floors" / VENDORED_CORE_NAME,
+            ]
+            sdk_core_path = next((path for path in candidates if path.is_file()), None)
+            if sdk_core_path is None:
+                raise CheckError(
+                    f"cannot verify the vendored checker core: no {VENDORED_CORE_NAME} found "
+                    f"beside {sdk_floors_path} or in its tools/feature_floors/ layout"
+                )
             if sdk_core_path.read_bytes() != vendored_core_path.read_bytes():
                 raise CheckError(
                     f"vendored checker core {vendored_core_path} differs from the SDK's "
                     f"{sdk_core_path}; sync it or delete scripts/vendor/ (the SDK copy wins)"
                 )
         return table
-
-    sdk_version = _repo_sdk_version(repo_root)
-    if sdk_version is not None and sdk_version >= SDK_SHIPS_TABLE_FROM:
-        leftovers = [path for path in (interim_path, vendored_core_path) if path.is_file()]
-        if leftovers:
-            listed = ", ".join(str(path) for path in leftovers)
-            raise CheckError(
-                f"SDK_VERSION {core.format_version(sdk_version)} ships the floor table and "
-                f"checker in the package — delete the interim artifacts ({listed}) and point "
-                "the check at the SDK's share/plotjuggler_sdk/ copies via --sdk-floors"
-            )
 
     if not interim_path.is_file():
         raise CheckError(
@@ -341,17 +366,34 @@ def parse_cmake_model(path: Path) -> CMakeModel:
     commands = [(name, _cmake_tokens(body, path)) for name, body in _cmake_commands(path)]
     variables: dict[str, set[str]] = {}
     for name, tokens in commands:
-        if name != "set" or not tokens or not COMMAND_NAME_RE.fullmatch(tokens[0]):
-            continue
         # An empty CMake value (`set(X "")`) means "no dependency", not an
         # unresolvable expression — filtering it lets ordinary optional-dep
         # variables resolve through the machinery instead of the allowlist.
-        variables.setdefault(tokens[0], set()).update(token for token in tokens[1:] if token)
+        if name == "set" and tokens and COMMAND_NAME_RE.fullmatch(tokens[0]):
+            variables.setdefault(tokens[0], set()).update(token for token in tokens[1:] if token)
+        elif (
+            name == "list"
+            and len(tokens) >= 2
+            and tokens[0].upper() in {"APPEND", "PREPEND"}
+            and COMMAND_NAME_RE.fullmatch(tokens[1])
+        ):
+            variables.setdefault(tokens[1], set()).update(token for token in tokens[2:] if token)
 
     for name, tokens in commands:
         if not tokens:
             continue
-        if name == "add_library" and LITERAL_TARGET_RE.fullmatch(tokens[0]):
+        if name == "add_library":
+            if not LITERAL_TARGET_RE.fullmatch(tokens[0]):
+                # A variable-named library target must resolve, or the file's
+                # closure would silently lose it — fail closed instead.
+                resolved_names, name_unresolved = _resolve_link_item(tokens[0], variables, path)
+                if name_unresolved or not resolved_names:
+                    raise CheckError(
+                        f"add_library target {tokens[0]!r} in {path} cannot be resolved; "
+                        "declare it via set() or use a literal name"
+                    )
+                model.targets.update(resolved_names)
+                continue
             model.targets.add(tokens[0])
             if len(tokens) >= 3 and tokens[1].upper() == "ALIAS":
                 alias_target = tokens[2]
@@ -604,7 +646,8 @@ def check_sdk_feature_floors(
         if effective is not None and declared > effective:
             print(
                 f"WARN {plugin_name}: floor {core.format_version(declared)} is higher than any "
-                f"matched surface (max {core.format_version(effective)}) — fine if intentional",
+                f"matched surface (max {core.format_version(effective)}) — may be intentional "
+                "(compile-time SDK APIs are outside this check)",
                 file=err,
             )
         summary = ", ".join(sorted(matched)) if matched else "no host surfaces matched"

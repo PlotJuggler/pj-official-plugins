@@ -32,8 +32,17 @@ if [[ -n "${SDK_LOCAL_DIR:-}" ]]; then
     echo "ensure_core: ${SDK_LOCAL_DIR} has no conanfile.py — not an SDK checkout" >&2
     exit 1
   fi
+  # The SDK recipe's set_version() reads its own VERSION file and would
+  # override any --version we pass — so require the tree to BE the pinned
+  # version instead of pretending to relabel it.
+  LOCAL_VERSION="$(tr -d '[:space:]' < "${SDK_LOCAL_DIR}/VERSION")"
+  if [[ "${LOCAL_VERSION}" != "${CORE_VERSION}" ]]; then
+    echo "ensure_core: local SDK VERSION ${LOCAL_VERSION} != pinned SDK_VERSION ${CORE_VERSION}" >&2
+    echo "ensure_core: align them (or update the pin) before using --sdk-local" >&2
+    exit 1
+  fi
   echo "ensure_core: registering LOCAL tree ${SDK_LOCAL_DIR} as ${REF} (rebuilt every run)"
-  conan create "${SDK_LOCAL_DIR}" --version "${CORE_VERSION}" "${SETTINGS[@]}" \
+  conan create "${SDK_LOCAL_DIR}" "${SETTINGS[@]}" \
     --build="plotjuggler_sdk/*" --build=missing
   exit 0
 fi

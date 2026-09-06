@@ -259,6 +259,135 @@ class FloorContractTests(unittest.TestCase):
         )
 
 
+class ReviewRegressionTests(unittest.TestCase):
+    """Regressions for the Codex #296 correctness round."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = FixtureRepo(Path(self._tmp.name))
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_abi_member_spelling_counts_as_usage(self):
+        # 2: host.vtable->new_call is a supported call spelling of newCall.
+        self.repo.write_plugin(source="void f(H* h) { h->vtable->new_call(h->ctx); }\n")
+        ok, _, err = self.repo.run()
+        self.assertFalse(ok)
+        self.assertIn("suggested_sdk_version is missing", err)
+        self.assertIn("newCall", err)
+
+    def test_string_literal_mention_is_not_usage(self):
+        # 5: a help string naming an identifier is not a call.
+        self.repo.write_plugin(
+            source='const char* help = "newCall is optional";\nauto raw = R"(newCall)";\n'
+        )
+        ok, _, _ = self.repo.run()
+        self.assertTrue(ok)
+
+    def test_list_append_feeds_the_closure(self):
+        # 3a: set(LIBS "") + list(APPEND LIBS helper) must reach the helper.
+        self.repo.write_common("shared_helper", "void helper() { newCall(); }\n")
+        plugin_dir = self.repo.write_plugin()
+        (plugin_dir / "CMakeLists.txt").write_text(
+            "add_library(example_plugin SHARED plugin.cpp)\n"
+            'set(LIBS "")\n'
+            "list(APPEND LIBS shared_helper)\n"
+            "target_link_libraries(example_plugin PRIVATE ${LIBS})\n"
+            "pj_emit_plugin_manifest(example_plugin MANIFEST_FILE manifest.json)\n"
+        )
+        ok, _, err = self.repo.run()
+        self.assertFalse(ok)
+        self.assertIn("newCall", err)
+
+    def test_unresolvable_variable_add_library_fails_closed(self):
+        # 3b: a variable-named library target the model cannot resolve fails.
+        common_dir = self.repo.root / "common" / "mystery"
+        common_dir.mkdir(parents=True)
+        (common_dir / "mystery.cpp").write_text("void helper() { newCall(); }\n")
+        (common_dir / "CMakeLists.txt").write_text(
+            "add_library(${MYSTERY_TARGET} STATIC mystery.cpp)\n"
+        )
+        self.repo.write_plugin()
+        ok, _, err = self.repo.run()
+        self.assertFalse(ok)
+        self.assertIn("cannot be resolved", err)
+
+    def test_spliced_comment_test_does_not_satisfy_floor_test(self):
+        # 6: a backslash-continued comment hides the TEST from the compiler.
+        self.repo.write_plugin(
+            source="void f() { newCall(); }\n",
+            suggested="0.32.0",
+            floor_test="Suite.WorksAtFloor",
+            test_source="// hidden \\\nTEST(Suite, WorksAtFloor) { }\n",
+        )
+        ok, _, err = self.repo.run()
+        self.assertFalse(ok)
+        self.assertIn("not found in the plugin's tests", err)
+
+    def test_raw_string_test_does_not_satisfy_floor_test(self):
+        self.repo.write_plugin(
+            source="void f() { newCall(); }\n",
+            suggested="0.32.0",
+            floor_test="Suite.WorksAtFloor",
+            test_source='auto fake = R"(TEST(Suite, WorksAtFloor))";\n',
+        )
+        ok, _, err = self.repo.run()
+        self.assertFalse(ok)
+        self.assertIn("not found in the plugin's tests", err)
+
+    def test_cutover_fires_even_with_explicit_table(self):
+        # 8: --sdk-floors must not bypass the post-0.33 interim hard failure.
+        (self.repo.root / "SDK_VERSION").write_text("0.33.0\n")
+        self.repo.write_plugin()
+        sdk_table = self.repo.write_table(TABLE, name="feature_floors.json")
+        err = io.StringIO()
+        ok = checker.check_sdk_feature_floors(
+            self.repo.root, sdk_floors_path=sdk_table, out=io.StringIO(), err=err
+        )
+        self.assertFalse(ok)
+        self.assertIn("delete the interim artifacts", err.getvalue())
+
+    def test_malformed_sdk_version_rejected(self):
+        (self.repo.root / "SDK_VERSION").write_text("garbage\n")
+        self.repo.write_plugin()
+        ok, _, err = self.repo.run()
+        self.assertFalse(ok)
+        self.assertIn("SDK_VERSION file", err)
+
+    def test_sdk_tree_layout_core_is_byte_compared(self):
+        # 9: table at pj_base/, core at tools/feature_floors/ — found and diffed.
+        self.repo.write_plugin(source="void f() { oldCall(); }\n")
+        vendor_dir = self.repo.root / "scripts" / "vendor"
+        vendor_dir.mkdir(parents=True)
+        (vendor_dir / "feature_floor_check.py").write_bytes(b"# vendored\n")
+        sdk_root = self.repo.root / "sdk"
+        (sdk_root / "pj_base").mkdir(parents=True)
+        table_path = self.repo.write_table(TABLE, name="sdk/pj_base/feature_floors.json")
+        core_dir = sdk_root / "tools" / "feature_floors"
+        core_dir.mkdir(parents=True)
+        (core_dir / "feature_floor_check.py").write_bytes(b"# different\n")
+        err = io.StringIO()
+        ok = checker.check_sdk_feature_floors(
+            self.repo.root, sdk_floors_path=table_path, out=io.StringIO(), err=err
+        )
+        self.assertFalse(ok)
+        self.assertIn("differs from the SDK's", err.getvalue())
+
+    def test_missing_sdk_core_fails_rather_than_skipping(self):
+        self.repo.write_plugin(source="void f() { oldCall(); }\n")
+        vendor_dir = self.repo.root / "scripts" / "vendor"
+        vendor_dir.mkdir(parents=True)
+        (vendor_dir / "feature_floor_check.py").write_bytes(b"# vendored\n")
+        sdk_root = self.repo.root / "sdk" / "pj_base"
+        sdk_root.mkdir(parents=True)
+        table_path = self.repo.write_table(TABLE, name="sdk/pj_base/feature_floors.json")
+        err = io.StringIO()
+        ok = checker.check_sdk_feature_floors(
+            self.repo.root, sdk_floors_path=table_path, out=io.StringIO(), err=err
+        )
+        self.assertFalse(ok)
+        self.assertIn("cannot verify the vendored checker core", err.getvalue())
+
+
 class CutoverTests(unittest.TestCase):
     """SDK_VERSION >= 0.33.0 with interim artifacts left = hard failure."""
 
