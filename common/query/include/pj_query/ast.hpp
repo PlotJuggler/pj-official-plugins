@@ -1,26 +1,26 @@
-/*
- * This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at https://mozilla.org/MPL/2.0/.
- */
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MIT
 
 #pragma once
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
-#include "token.h"
+#include "pj_query/token.hpp"
+
+namespace PJ::query {
 
 // --- AST node types ---
 
 enum class NodeType {
-  Compare,  // key op value       (e.g., robot == "humanoid")
-  Binary,   // left and/or right  (e.g., A and B)
-  Not,      // not expr           (e.g., not (X))
-  Group,    // ( expr )
-  Key,      // bare key, incomplete clause (e.g., robot)
-  Partial,  // key op, missing value (e.g., robot ==)
+  kCompare,  // key op value       (e.g., robot == "humanoid")
+  kBinary,   // left and/or right  (e.g., A and B)
+  kNot,      // not expr           (e.g., not (X))
+  kGroup,    // ( expr )
+  kKey,      // bare key, incomplete clause (e.g., robot)
+  kPartial,  // key op, missing value (e.g., robot ==)
 };
 
 struct Expr;
@@ -32,7 +32,7 @@ struct Expr {
   int start = 0;  // source offset of first token
   int end = 0;    // source offset past last token
 
-  explicit Expr(NodeType t) : type(t) {}
+  explicit Expr(NodeType token) : type(token) {}
   virtual ~Expr() = default;
 
   Expr(const Expr&) = delete;
@@ -47,8 +47,11 @@ struct CompareExpr : Expr {
   Token op;
   Token value;
 
-  CompareExpr(Token k, Token o, Token v)
-      : Expr(NodeType::Compare), key(std::move(k)), op(std::move(o)), value(std::move(v)) {
+  CompareExpr(Token key_token, Token operator_token, Token value_token)
+      : Expr(NodeType::kCompare),
+        key(std::move(key_token)),
+        op(std::move(operator_token)),
+        value(std::move(value_token)) {
     start = key.start;
     end = value.end;
   }
@@ -60,8 +63,8 @@ struct BinaryExpr : Expr {
   Token connective;  // the "and" / "or" token
   ExprPtr right;
 
-  BinaryExpr(ExprPtr l, Token conn, ExprPtr r)
-      : Expr(NodeType::Binary), left(std::move(l)), connective(std::move(conn)), right(std::move(r)) {
+  BinaryExpr(ExprPtr left_expr, Token conn, ExprPtr right_expr)
+      : Expr(NodeType::kBinary), left(std::move(left_expr)), connective(std::move(conn)), right(std::move(right_expr)) {
     start = left->start;
     end = right->end;
   }
@@ -72,7 +75,7 @@ struct NotExpr : Expr {
   Token not_token;
   ExprPtr operand;
 
-  NotExpr(Token nt, ExprPtr op) : Expr(NodeType::Not), not_token(std::move(nt)), operand(std::move(op)) {
+  NotExpr(Token nt, ExprPtr op) : Expr(NodeType::kNot), not_token(std::move(nt)), operand(std::move(op)) {
     start = not_token.start;
     end = operand->end;
   }
@@ -84,8 +87,11 @@ struct GroupExpr : Expr {
   ExprPtr inner;
   Token close;
 
-  GroupExpr(Token o, ExprPtr inner_expr, Token c)
-      : Expr(NodeType::Group), open(std::move(o)), inner(std::move(inner_expr)), close(std::move(c)) {
+  GroupExpr(Token open_token, ExprPtr inner_expr, Token close_token)
+      : Expr(NodeType::kGroup),
+        open(std::move(open_token)),
+        inner(std::move(inner_expr)),
+        close(std::move(close_token)) {
     start = open.start;
     end = close.end;
   }
@@ -95,7 +101,7 @@ struct GroupExpr : Expr {
 struct KeyExpr : Expr {
   Token key;
 
-  explicit KeyExpr(Token k) : Expr(NodeType::Key), key(std::move(k)) {
+  explicit KeyExpr(Token key_token) : Expr(NodeType::kKey), key(std::move(key_token)) {
     start = key.start;
     end = key.end;
   }
@@ -106,7 +112,8 @@ struct PartialExpr : Expr {
   Token key;
   Token op;
 
-  PartialExpr(Token k, Token o) : Expr(NodeType::Partial), key(std::move(k)), op(std::move(o)) {
+  PartialExpr(Token key_token, Token operator_token)
+      : Expr(NodeType::kPartial), key(std::move(key_token)), op(std::move(operator_token)) {
     start = key.start;
     end = op.end;
   }
@@ -141,27 +148,27 @@ class Parser {
     }
 
     pos_ = 0;
-    auto expr = parse_or();
+    auto expr = parseOr();
 
     // If there are leftover tokens, the parse is incomplete.
     bool leftover = pos_ < static_cast<int>(tokens_.size());
 
-    bool all_complete = expr && check_complete(expr.get());
+    bool all_complete = expr && checkComplete(expr.get());
 
     return {std::move(expr), all_complete && !leftover, leftover ? "unexpected tokens" : ""};
   }
 
  private:
   // or-level: lowest precedence
-  ExprPtr parse_or() {
-    auto left = parse_and();
+  ExprPtr parseOr() {
+    auto left = parseAnd();
     if (!left) {
       return nullptr;
     }
 
-    while (pos_ < size() && tokens_[pos_].type == TokenType::Or) {
+    while (pos_ < size() && tokens_[pos_].type == TokenType::kOr) {
       auto conn = tokens_[pos_++];
-      auto right = parse_and();
+      auto right = parseAnd();
       if (!right) {
         // "A or" with nothing after — still return what we have.
         break;
@@ -173,15 +180,15 @@ class Parser {
   }
 
   // and-level: higher precedence than or
-  ExprPtr parse_and() {
-    auto left = parse_unary();
+  ExprPtr parseAnd() {
+    auto left = parseUnary();
     if (!left) {
       return nullptr;
     }
 
-    while (pos_ < size() && tokens_[pos_].type == TokenType::And) {
+    while (pos_ < size() && tokens_[pos_].type == TokenType::kAnd) {
       auto conn = tokens_[pos_++];
-      auto right = parse_unary();
+      auto right = parseUnary();
       if (!right) {
         break;
       }
@@ -192,30 +199,30 @@ class Parser {
   }
 
   // not-level
-  ExprPtr parse_unary() {
-    if (pos_ < size() && tokens_[pos_].type == TokenType::Not) {
+  ExprPtr parseUnary() {
+    if (pos_ < size() && tokens_[pos_].type == TokenType::kNot) {
       auto not_tok = tokens_[pos_++];
-      auto operand = parse_unary();
+      auto operand = parseUnary();
       if (!operand) {
         return nullptr;
       }
       return std::make_unique<NotExpr>(std::move(not_tok), std::move(operand));
     }
 
-    return parse_primary();
+    return parsePrimary();
   }
 
   // Primary: group, comparison, shorthand value, or bare key
-  ExprPtr parse_primary() {
+  ExprPtr parsePrimary() {
     if (pos_ >= size()) {
       return nullptr;
     }
 
     // Grouped expression: ( expr )
-    if (tokens_[pos_].type == TokenType::OpenParen) {
+    if (tokens_[pos_].type == TokenType::kOpenParen) {
       auto open = tokens_[pos_++];
-      auto inner = parse_or();
-      if (pos_ < size() && tokens_[pos_].type == TokenType::CloseParen) {
+      auto inner = parseOr();
+      if (pos_ < size() && tokens_[pos_].type == TokenType::kCloseParen) {
         auto close = tokens_[pos_++];
         if (!inner) {
           // Empty parens — create a group with no inner.
@@ -229,21 +236,21 @@ class Parser {
 
     // Shorthand value: a bare value after connective inherits last_key + last_op.
     // e.g., robot == "a" or "b" → the "b" is parsed here as a shorthand compare.
-    if (tokens_[pos_].type == TokenType::Value && !last_key_.text.empty()) {
+    if (tokens_[pos_].type == TokenType::kValue && !last_key_.text.empty()) {
       auto val = tokens_[pos_++];
       return std::make_unique<CompareExpr>(last_key_, last_op_, std::move(val));
     }
 
     // Key — start of a comparison or bare key.
-    if (tokens_[pos_].type == TokenType::Key) {
+    if (tokens_[pos_].type == TokenType::kKey) {
       auto key = tokens_[pos_++];
 
       // Key + operator?
-      if (pos_ < size() && tokens_[pos_].type == TokenType::Operator) {
+      if (pos_ < size() && tokens_[pos_].type == TokenType::kOperator) {
         auto op = tokens_[pos_++];
 
         // Key + operator + value?
-        if (pos_ < size() && tokens_[pos_].type == TokenType::Value) {
+        if (pos_ < size() && tokens_[pos_].type == TokenType::kValue) {
           auto val = tokens_[pos_++];
 
           // Remember for shorthand expansion.
@@ -268,23 +275,23 @@ class Parser {
     return nullptr;
   }
 
-  [[nodiscard]] static bool check_complete(const Expr* expr) {
+  [[nodiscard]] static bool checkComplete(const Expr* expr) {
     if (!expr) {
       return false;
     }
     switch (expr->type) {
-      case NodeType::Compare:
+      case NodeType::kCompare:
         return true;
-      case NodeType::Binary: {
-        auto* b = static_cast<const BinaryExpr*>(expr);
-        return check_complete(b->left.get()) && check_complete(b->right.get());
+      case NodeType::kBinary: {
+        auto* binary = static_cast<const BinaryExpr*>(expr);
+        return checkComplete(binary->left.get()) && checkComplete(binary->right.get());
       }
-      case NodeType::Not:
-        return check_complete(static_cast<const NotExpr*>(expr)->operand.get());
-      case NodeType::Group:
-        return check_complete(static_cast<const GroupExpr*>(expr)->inner.get());
-      case NodeType::Key:
-      case NodeType::Partial:
+      case NodeType::kNot:
+        return checkComplete(static_cast<const NotExpr*>(expr)->operand.get());
+      case NodeType::kGroup:
+        return checkComplete(static_cast<const GroupExpr*>(expr)->inner.get());
+      case NodeType::kKey:
+      case NodeType::kPartial:
         return false;
     }
     return false;
@@ -311,28 +318,30 @@ inline std::string serialize(const Expr* expr) {
   }
 
   switch (expr->type) {
-    case NodeType::Compare: {
-      auto* c = static_cast<const CompareExpr*>(expr);
-      return c->key.text + " " + c->op.text + " " + c->value.text;
+    case NodeType::kCompare: {
+      auto* compare = static_cast<const CompareExpr*>(expr);
+      return compare->key.text + " " + compare->op.text + " " + compare->value.text;
     }
-    case NodeType::Binary: {
-      auto* b = static_cast<const BinaryExpr*>(expr);
-      return serialize(b->left.get()) + " " + b->connective.text + " " + serialize(b->right.get());
+    case NodeType::kBinary: {
+      auto* binary = static_cast<const BinaryExpr*>(expr);
+      return serialize(binary->left.get()) + " " + binary->connective.text + " " + serialize(binary->right.get());
     }
-    case NodeType::Not: {
-      auto* n = static_cast<const NotExpr*>(expr);
-      return "not " + serialize(n->operand.get());
+    case NodeType::kNot: {
+      auto* negation = static_cast<const NotExpr*>(expr);
+      return "not " + serialize(negation->operand.get());
     }
-    case NodeType::Group: {
-      auto* g = static_cast<const GroupExpr*>(expr);
-      return "(" + serialize(g->inner.get()) + ")";
+    case NodeType::kGroup: {
+      auto* group_expr = static_cast<const GroupExpr*>(expr);
+      return "(" + serialize(group_expr->inner.get()) + ")";
     }
-    case NodeType::Key:
+    case NodeType::kKey:
       return static_cast<const KeyExpr*>(expr)->key.text;
-    case NodeType::Partial: {
-      auto* p = static_cast<const PartialExpr*>(expr);
-      return p->key.text + " " + p->op.text;
+    case NodeType::kPartial: {
+      auto* partial_expr = static_cast<const PartialExpr*>(expr);
+      return partial_expr->key.text + " " + partial_expr->op.text;
     }
   }
   return {};
 }
+
+}  // namespace PJ::query

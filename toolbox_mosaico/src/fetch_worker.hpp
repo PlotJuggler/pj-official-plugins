@@ -120,6 +120,19 @@ class FetchWorker {
   /// Full per-topic metadata (incl. Arrow schema) for the Info panel.
   std::function<void(TopicRef topic, TopicInfo info)> topicMetadataReady;
   std::function<void(std::string topic_name, std::int64_t bytes)> pullProgress;
+  /// Zero-or-one per Download: the batch dataset was created, strictly before
+  /// any publication into it. Fires on whichever thread first needed the
+  /// dataset (the pull setup thread or an SDK pool thread). Used by the
+  /// descriptor-import provider's on_dataset ABI callback; the dialog leaves
+  /// it unset.
+  std::function<void(PJ::sdk::DataSourceHandle handle)> datasetCreated;
+  /// The provisional batch dataset was ROLLED BACK (zero-success or all-empty
+  /// batch on a rollback-capable host): any handle announced via
+  /// datasetCreated is dead. Fired at most once per Download, from
+  /// finishIngestProgress, before allFetchesComplete. Used by the
+  /// descriptor-import provider's terminal mapping; the dialog leaves it
+  /// unset.
+  std::function<void()> datasetDiscarded;
   std::function<void(PullResultEvent result)> pullFinished;
   std::function<void(std::string sequence_name)> allFetchesComplete;
   /// Surfaced for non-fatal RPC failures that don't map to a topic/pull

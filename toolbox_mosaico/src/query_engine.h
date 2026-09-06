@@ -1,29 +1,23 @@
-/*
- * This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at https://mozilla.org/MPL/2.0/.
- */
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MIT
 
 #pragma once
 
-#include <optional>
+#include <cstdlib>
+#include <pj_base/number_parse.hpp>
+#include <pj_query/evaluator.hpp>
 #include <string>
 #include <string_view>
-
-#include "query.h"
-#include "types.h"
 
 #define SOL_ALL_SAFETIES_ON 1
 #include <sol/sol.hpp>
 
-struct ValidationResult {
-  bool valid = false;
-  std::string error;
-  int line = 0;
-  int column = 0;
-};
+namespace mosaico {
 
-// Lua-based metadata query engine.
+using PJ::query::Query;
+using PJ::query::ValidationResult;
+
+// Lua-based metadata query engine; the plugin-side PJ::query::Evaluator.
 //
 // Usage:
 //   Engine engine;
@@ -32,15 +26,15 @@ struct ValidationResult {
 //
 // Metadata keys are injected as Lua globals. The query is expanded
 // (shorthand resolved) by the Query class before Lua sees it.
-class Engine {
+class Engine : public PJ::query::Evaluator {
  public:
   Engine() {
     lua_.open_libraries(sol::lib::base, sol::lib::string, sol::lib::math, sol::lib::table);
   }
 
-  void set(const Metadata& metadata) {
+  void set(const PJ::query::Metadata& metadata) {
     for (const auto& [key, value] : metadata) {
-      if (auto num = try_number(value)) {
+      if (auto num = PJ::parseNumber<double>(value)) {
         lua_[key] = *num;
       } else {
         lua_[key] = value;
@@ -48,7 +42,7 @@ class Engine {
     }
   }
 
-  void clear(const Metadata& metadata) {
+  void clear(const PJ::query::Metadata& metadata) {
     for (const auto& [key, value] : metadata) {
       lua_[key] = sol::lua_nil;
     }
@@ -57,7 +51,7 @@ class Engine {
   // Evaluate a pre-parsed Query. Uses the expanded Lua string.
   [[nodiscard]] bool eval(const Query& query) const noexcept {
     try {
-      const auto& lua_str = query.lua();
+      const auto& lua_str = query.expanded();
       if (lua_str.empty()) {
         return false;
       }
@@ -75,40 +69,32 @@ class Engine {
     }
   }
 
-  // Convenience: evaluate a raw string.
-  // Tries parsing via Query for shorthand expansion. If the parser can't
-  // fully handle it (raw Lua, function calls, nil comparisons), falls back
-  // to passing the original string directly to Lua.
+  // Convenience: evaluate a raw string. Query::expanded() resolves shorthand
+  // and preserves raw input (function calls, nil comparisons) verbatim.
   [[nodiscard]] bool eval(std::string_view query_str) const noexcept {
     try {
       if (query_str.empty()) {
         return false;
       }
-
-      Query q(query_str, {});
-      auto lua_str = q.lua();
-
-      // If the parser produced a usable expansion, use it.
-      // Otherwise fall back to the raw input for complex Lua expressions.
-      if (lua_str.empty()) {
-        lua_str = std::string(query_str);
-      }
-
-      auto wrapped = std::string("return (") + lua_str + ")";
-      auto result = lua_.safe_script(wrapped, sol::script_pass_on_error);
-      if (!result.valid()) {
-        return false;
-      }
-
-      sol::object val = result;
-      return truthy(val);
+      return eval(Query(query_str));
     } catch (...) {
       return false;
     }
   }
 
+  // PJ::query::Evaluator seam for the shared visible-row filter.
+  [[nodiscard]] ValidationResult validate(std::string_view text) override {
+    return validateText(text);
+  }
+  [[nodiscard]] bool evaluate(const Query& query, const PJ::query::Metadata& metadata) override {
+    set(metadata);
+    const bool match = eval(query);
+    clear(metadata);
+    return match;
+  }
+
   // Validate using Lua's parser (definitive syntax check).
-  [[nodiscard]] static ValidationResult validate(std::string_view query_str) noexcept {
+  [[nodiscard]] static ValidationResult validateText(std::string_view query_str) noexcept {
     try {
       if (query_str.empty()) {
         ValidationResult r;
@@ -117,9 +103,7 @@ class Engine {
       }
 
       // Expand shorthand via Query, then check with Lua.
-      // Fall back to raw input if parser can't handle it.
-      Query q(query_str, {});
-      auto lua_str = q.lua();
+      auto lua_str = Query(query_str).expanded();
       if (lua_str.empty()) {
         lua_str = std::string(query_str);
       }
@@ -149,25 +133,6 @@ class Engine {
   }
 
  private:
-  [[nodiscard]] static std::optional<double> try_number(std::string_view s) {
-    if (s.empty()) {
-      return std::nullopt;
-    }
-    // strtod requires a null-terminated input. std::string_view doesn't
-    // guarantee that — calling strtod directly on s.data() would read past
-    // s.size() into neighboring memory, and the end-pointer check would
-    // inconsistently reject legitimate numbers. Copy into a string so the
-    // parse is bounded.
-    const std::string str(s);
-    char* end = nullptr;
-    const char* begin = str.c_str();
-    const double val = std::strtod(begin, &end);
-    if (end == begin + str.size()) {
-      return val;
-    }
-    return std::nullopt;
-  }
-
   [[nodiscard]] static bool truthy(const sol::object& obj) {
     auto t = obj.get_type();
     if (t == sol::type::boolean) {
@@ -201,3 +166,5 @@ class Engine {
 
   mutable sol::state lua_;
 };
+
+}  // namespace mosaico

@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Tests for the metadata-filter assist model (query/assist.h), encoding the
+// Tests for the metadata-filter assist model (query_assist.h), encoding the
 // query-assist contract point-by-point (docs/query-assist-contract.md).
 // Pure logic — no Qt, no Lua engine.
 //
@@ -10,11 +10,20 @@
 //   0     6  9
 //   [robot]=[0,5)  [==]=[6,8)  ["bonirob"]=[9,18)
 
-#include "query/assist.h"
-
 #include "gtest/gtest.h"
+#include "query_assist.h"
 
 namespace {
+
+using mosaico::AssistView;
+using mosaico::commitClause;
+using mosaico::computeAssist;
+using PJ::query::Action;
+using PJ::query::analyze;
+using PJ::query::applyCompletion;
+using PJ::query::CursorContext;
+using PJ::query::EditResult;
+using PJ::query::Schema;
 
 Schema schema() {
   return Schema{
@@ -120,7 +129,7 @@ TEST(LuaAssist, P7_ReplaceNeedsNoPlus_AndEditsInPlace) {
   EXPECT_FALSE(v.plus_enabled);
 
   const CursorContext ctx = analyze(kClause, 2, schema());
-  ASSERT_EQ(ctx.key_action, Action::Replace);
+  ASSERT_EQ(ctx.key_action, Action::kReplace);
   const EditResult r = applyCompletion(kClause, ctx, ctx.key_action, "sensor");
   EXPECT_EQ(r.text, "sensor == \"bonirob\"");  // "robot" replaced in place, no new clause
 }

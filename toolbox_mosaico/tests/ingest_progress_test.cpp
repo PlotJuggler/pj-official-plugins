@@ -1056,8 +1056,8 @@ TEST(MosaicoSourceCapture, DescriptorIsAttachedOnceAndCanonical) {
   ASSERT_EQ(host.attached_records.size(), 1U);
   EXPECT_EQ(
       host.attached_records[0],
-      R"({"kind":"mosaico.pull","request":{"end_ns":200,"origin":"mosaico.example.com:32010",)"
-      R"("sequence":"seq","start_ns":100,"topics":["a/one","b/two"]},"v":1})");
+      R"({"kind":"mosaico.pull","request":{"end_ns":"200","origin":"mosaico.example.com:32010",)"
+      R"("sequence":"seq","start_ns":"100","topics":["a/one","b/two"]},"v":1})");
 }
 
 TEST(MosaicoSourceCapture, AllTopicsSucceedingReportsCompleted) {
@@ -1065,6 +1065,7 @@ TEST(MosaicoSourceCapture, AllTopicsSucceedingReportsCompleted) {
   mosaico::FetchWorker worker;
   worker.setHostProvider([&host] { return host.writeView(); });
   worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setServerOrigin(worker, "mosaico.example.com:32010");
   mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
     on_batch("gps/fix", scalarBatch(1000));
     on_done("gps/fix", mosaico::PullResult{});
@@ -1083,6 +1084,7 @@ TEST(MosaicoSourceCapture, CancelledDownloadReportsCancelled) {
   mosaico::FetchWorker worker;
   worker.setHostProvider([&host] { return host.writeView(); });
   worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setServerOrigin(worker, "mosaico.example.com:32010");
   mosaico::testing::FetchWorkerTestAccess::setCancelActivePullsOverride(worker, [] {});
   mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [&worker](const auto&, const auto&) {
     worker.requestCancel();  // Cancel arrives mid-transport; no topic completes.
@@ -1109,23 +1111,23 @@ TEST(MosaicoSourceCapture, OriginFromUriKeepsOnlyLowercasedHostPort) {
   EXPECT_EQ(mosaico::originFromUri("example.com:6726"), "example.com:6726");
 }
 
-// Sequence and topic names are server-supplied bytes; an invalid UTF-8 byte
-// must yield a descriptor with deterministic U+FFFD replacements, never a
-// throw (the descriptor is built outside any try/catch bracket).
-TEST(MosaicoSourceCapture, InvalidUtf8NamesStillProduceADescriptor) {
+// Sequence and topic names are server-supplied bytes; a name that is not
+// valid UTF-8 cannot be represented without renaming the request (a U+FFFD
+// substitution would alias a different, legitimately-named request), so the
+// batch gets NO source record and NO completion — imported eagerly, never
+// cacheable. Must not throw either way.
+TEST(MosaicoSourceCapture, InvalidUtf8NamesProduceNoRecordAndNoCompletion) {
   FakeIngestHost host;
   mosaico::FetchWorker worker;
   worker.setHostProvider([&host] { return host.writeView(); });
   worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setServerOrigin(worker, "mosaico.example.com:32010");
   mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto&, const auto&) {});
 
   worker.pullTopicsAsync("seq\xFFname", {"bad\xFFtopic"}, 0, 1);
 
-  ASSERT_EQ(host.attached_records.size(), 1U);
-  const std::string replacement = "\xEF\xBF\xBD";  // U+FFFD
-  EXPECT_NE(host.attached_records[0].find("seq" + replacement + "name"), std::string::npos) << host.attached_records[0];
-  EXPECT_NE(host.attached_records[0].find("bad" + replacement + "topic"), std::string::npos)
-      << host.attached_records[0];
+  EXPECT_TRUE(host.attached_records.empty());
+  EXPECT_TRUE(host.completions.empty());
 }
 
 // One failed topic poisons the whole-request attestation, even though the
@@ -1135,6 +1137,7 @@ TEST(MosaicoSourceCapture, FailedTopicReportsFailedForTheWholeRequest) {
   mosaico::FetchWorker worker;
   worker.setHostProvider([&host] { return host.writeView(); });
   worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setServerOrigin(worker, "mosaico.example.com:32010");
   mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
     on_batch("gps/fix", scalarBatch(1000));
     on_done("gps/fix", mosaico::PullResult{});
@@ -1156,11 +1159,15 @@ TEST(MosaicoSourceCapture, EmptyTopicReportsCompletedWithEmptyAttestation) {
   mosaico::FetchWorker worker;
   worker.setHostProvider([&host] { return host.writeView(); });
   worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setServerOrigin(worker, "mosaico.example.com:32010");
   std::vector<mosaico::PullResultEvent> results;
   worker.pullFinished = [&results](mosaico::PullResultEvent result) { results.push_back(std::move(result)); };
   mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto&, const auto& on_done) {
     on_done("gps/fix", mosaico::PullResult{});  // no batches: the window was empty
   });
+
+  bool discard_signalled = false;
+  worker.datasetDiscarded = [&discard_signalled] { discard_signalled = true; };
 
   worker.pullTopicsAsync("seq", {"gps/fix"}, 0, 1);
 
@@ -1171,8 +1178,10 @@ TEST(MosaicoSourceCapture, EmptyTopicReportsCompletedWithEmptyAttestation) {
   EXPECT_EQ(host.completions[0].outcome, PJ::sdk::IngestOutcome::kCompleted);
   EXPECT_TRUE(host.completions[0].attestsEmptyTopics());
   // Nothing was imported, so the provisional dataset rolls back: the user gets
-  // no stray empty dataset even though the attestation stays cacheable.
+  // no stray empty dataset even though the attestation stays cacheable — and
+  // the rollback is SIGNALLED so a provider terminal never claims the handle.
   EXPECT_EQ(host.discardedParserIngests(), 1U);
+  EXPECT_TRUE(discard_signalled);
 }
 
 // One topic with rows, one genuinely empty: the dataset is kept (real data
@@ -1182,6 +1191,7 @@ TEST(MosaicoSourceCapture, MixedEmptyAndDataTopicsKeepDatasetAndAttest) {
   mosaico::FetchWorker worker;
   worker.setHostProvider([&host] { return host.writeView(); });
   worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setServerOrigin(worker, "mosaico.example.com:32010");
   mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
     on_batch("gps/fix", scalarBatch(1000));
     on_done("gps/fix", mosaico::PullResult{});
@@ -1203,6 +1213,7 @@ TEST(MosaicoSourceCapture, HostStopAfterLastPollReportsCancelled) {
   mosaico::FetchWorker worker;
   worker.setHostProvider([&host] { return host.writeView(); });
   worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setServerOrigin(worker, "mosaico.example.com:32010");
   mosaico::testing::FetchWorkerTestAccess::setCancelActivePullsOverride(worker, [] {});
   mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(
       worker, [&host](const auto& on_batch, const auto& on_done) {
@@ -1225,6 +1236,7 @@ TEST(MosaicoSourceCapture, HostWithoutCompleteIngestIsTolerated) {
   mosaico::FetchWorker worker;
   worker.setHostProvider([&host] { return host.writeView(); });
   worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setServerOrigin(worker, "mosaico.example.com:32010");
   std::vector<mosaico::PullResultEvent> results;
   worker.pullFinished = [&results](mosaico::PullResultEvent result) { results.push_back(std::move(result)); };
   mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {

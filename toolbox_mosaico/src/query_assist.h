@@ -1,16 +1,25 @@
-/*
- * This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at https://mozilla.org/MPL/2.0/.
- */
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MIT
 
 #pragma once
 
+#include <pj_query/edit.hpp>  // analyze, applyCompletion, quoteValueForQuery, Action, CursorContext
 #include <string>
 #include <string_view>
 
-#include "edit.h"   // analyze, applyCompletion, quoteValueForQuery, Action, CursorContext, is_query_whitespace
-#include "types.h"  // Schema
+namespace mosaico {
+
+// The pj_query vocabulary this plugin's dialog and tests use unqualified.
+using PJ::query::Action;
+using PJ::query::analyze;
+using PJ::query::applyCompletion;
+using PJ::query::complete;
+using PJ::query::CursorContext;
+using PJ::query::EditResult;
+using PJ::query::Metadata;
+using PJ::query::operators;
+using PJ::query::quoteValueForQuery;
+using PJ::query::Schema;
 
 // Assist-UI model for the Mosaico metadata-filter Key/Op/Value dropdowns + the
 // PLUS button. Pure / Qt-free so it is unit-testable; the plugin
@@ -66,15 +75,15 @@ struct AssistView {
   // A Value is replaceable only STRICTLY inside it: the caret at a value's trailing
   // edge ends the clause, which is a chain (ADD) position, not a value edit — this is
   // exactly the spot the caret lands on after PLUS.
-  if (ctx.key_action == Action::Replace) {
+  if (ctx.key_action == Action::kReplace) {
     v.key = {true, true, ctx.active_token.text};
     return v;
   }
-  if (ctx.op_action == Action::Replace) {
+  if (ctx.op_action == Action::kReplace) {
     v.op = {true, true, ctx.active_token.text};
     return v;
   }
-  if (ctx.val_action == Action::Replace && caret < ctx.active_token.end) {
+  if (ctx.val_action == Action::kReplace && caret < ctx.active_token.end) {
     v.value = {true, true, ctx.active_token.text};
     v.value_key = ctx.context_key;
     return v;
@@ -111,7 +120,7 @@ struct AssistView {
 
   bool has_existing = false;
   for (const char c : existing) {
-    if (!is_query_whitespace(c)) {
+    if (!PJ::query::isQueryWhitespace(c)) {
       has_existing = true;
       break;
     }
@@ -120,10 +129,12 @@ struct AssistView {
     return clause;
   }
   std::string out(existing);
-  while (!out.empty() && is_query_whitespace(out.back())) {
+  while (!out.empty() && PJ::query::isQueryWhitespace(out.back())) {
     out.pop_back();
   }
   out.append(" and ");
   out.append(clause);
   return out;
 }
+
+}  // namespace mosaico
