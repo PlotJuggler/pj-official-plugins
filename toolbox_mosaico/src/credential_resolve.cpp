@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #include "credential_resolve.hpp"
 
+#include <optional>
 #include <pj_base/sdk/platform.hpp>
 #include <pj_base/sdk/source/origin.hpp>
 
@@ -73,8 +74,16 @@ ServerCredentials resolveHeadlessCredentials(PJ::sdk::SettingsView view, const s
   return creds;
 }
 
-std::string headlessTargetUri(PJ::sdk::SettingsView view, const std::string& origin) {
-  return (loadCredentialsForUri(view, origin).allow_insecure ? "grpc://" : "grpc+tls://") + origin;
+std::string headlessTargetUri(const std::string& origin) {
+  return "grpc+tls://" + origin;
+}
+
+std::optional<std::string> headlessPlaintextRetryUri(PJ::sdk::SettingsView view, const std::string& origin) {
+  const ServerCredentials creds = loadCredentialsForUri(view, origin);
+  if (!creds.allow_insecure || !creds.cert_path.empty()) {
+    return std::nullopt;
+  }
+  return "grpc://" + origin;
 }
 
 }  // namespace mosaico

@@ -64,6 +64,9 @@ struct DescriptorImportProvider::JobState {
   SourceDescriptor descriptor;
   std::string target_uri;         // scheme resolved on the main thread
   ServerCredentials credentials;  // resolved on the main thread
+  // The one plaintext retry after a failed TLS connect; empty = not allowed.
+  std::string plaintext_retry_uri;
+  ServerCredentials plaintext_credentials;
   std::uint64_t max_transfer_bytes = 0;
   std::chrono::milliseconds max_transfer_duration{0};
   std::function<void(FetchWorker&)> transport_stub;  // test seam: replaces connect + listTopics
@@ -170,7 +173,20 @@ PJ::sdk::source::ImportOutcome DescriptorImportProvider::JobState::runToTerminal
     if (isCancelled(control)) {
       return {PJ_DESCRIPTOR_IMPORT_CANCELLED, "import cancelled"};
     }
-    if (!connect_result.ok) {
+    if (!connect_result.ok && !plaintext_retry_uri.empty()) {
+      // The dialog's plaintext fallback (onConnectFinished): TLS failed and
+      // this machine opted into insecure transport for the server.
+      const std::string tls_error = connect_result.error;
+      fetch.connectAsync(plaintext_retry_uri, plaintext_credentials);
+      if (isCancelled(control)) {
+        return {PJ_DESCRIPTOR_IMPORT_CANCELLED, "import cancelled"};
+      }
+      if (!connect_result.ok) {
+        return {
+            PJ_DESCRIPTOR_IMPORT_FAILED, "could not connect to " + target_uri + ": " + tls_error + "; nor to " +
+                                             plaintext_retry_uri + ": " + connect_result.error};
+      }
+    } else if (!connect_result.ok) {
       return {PJ_DESCRIPTOR_IMPORT_FAILED, "could not connect to " + target_uri + ": " + connect_result.error};
     }
 
@@ -276,7 +292,7 @@ bool DescriptorImportProvider::queryDescriptor(
     // connect to (grpc+tls:// unless the per-machine settings opted this
     // origin into plaintext). v1 emits only trusted / needs-confirmation
     // (refused is reserved for future policy).
-    const bool trusted = trustedByEnvironment(headlessTargetUri(settings_, descriptor->origin));
+    const bool trusted = trustedByEnvironment(headlessTargetUri(descriptor->origin));
     query_result_.trust = trusted ? PJ::DescriptorTrust::kTrusted : PJ::DescriptorTrust::kNeedsConfirmation;
     if (!trusted) {
       query_result_.message = "server not trusted on this machine; confirm the download or set MOSAICO_TRUSTED_ORIGINS";
@@ -340,8 +356,12 @@ bool DescriptorImportProvider::startImport(
     auto state = std::make_shared<JobState>();
     state->bindings = bindings_;
     state->descriptor = *descriptor;
-    state->target_uri = headlessTargetUri(settings_, descriptor->origin);
+    state->target_uri = headlessTargetUri(descriptor->origin);
     state->credentials = resolveHeadlessCredentials(settings_, state->target_uri);
+    if (const auto retry = headlessPlaintextRetryUri(settings_, descriptor->origin)) {
+      state->plaintext_retry_uri = *retry;
+      state->plaintext_credentials = resolveHeadlessCredentials(settings_, *retry);
+    }
     // The provider's per-machine hard limits apply even when the caller
     // imposes none — effective = min-nonzero(caller, provider). Read on the
     // main thread, like every other start-time resolution.

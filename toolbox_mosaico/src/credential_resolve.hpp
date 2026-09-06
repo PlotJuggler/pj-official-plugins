@@ -13,6 +13,7 @@
 // (main-thread) start call — the job thread never touches the view.
 #pragma once
 
+#include <optional>
 #include <pj_base/sdk/plugin_data_api.hpp>  // PJ::sdk::SettingsView
 #include <string>
 
@@ -50,11 +51,15 @@ void saveCredentialsForUri(PJ::sdk::SettingsView view, const std::string& uri, c
 /// under envKeyAllowedForTarget's origin guard.
 [[nodiscard]] ServerCredentials resolveHeadlessCredentials(PJ::sdk::SettingsView view, const std::string& uri);
 
-/// The URI a headless import connects to for a descriptor `origin`
-/// (host:port): grpc+tls:// by default, grpc:// ONLY when the stored
-/// per-server entry explicitly opted into plaintext (allow_insecure). The
-/// descriptor deliberately carries no scheme, so the transport-security
-/// choice stays a per-machine decision a layout cannot influence.
-[[nodiscard]] std::string headlessTargetUri(PJ::sdk::SettingsView view, const std::string& origin);
+/// The URI a headless import connects to FIRST for a descriptor `origin`
+/// (host:port): always grpc+tls://. The descriptor deliberately carries no
+/// scheme, so transport security is never a layout's decision.
+[[nodiscard]] std::string headlessTargetUri(const std::string& origin);
+
+/// The grpc:// URI to retry with once the TLS connect failed — the same
+/// per-machine plaintext fallback the dialog applies (stored allow_insecure
+/// opt-in and no custom cert); nullopt when the fallback is not allowed.
+[[nodiscard]] std::optional<std::string> headlessPlaintextRetryUri(
+    PJ::sdk::SettingsView view, const std::string& origin);
 
 }  // namespace mosaico
