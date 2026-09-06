@@ -269,7 +269,7 @@ def load_surface_table(path: Path) -> SurfaceTable:
 
     if not isinstance(document, dict):
         raise CheckError(f"surface table {path} must contain a JSON object")
-    expected_keys = {"schema_version", "minimum_supported_floor", "_comment", "doc", "surfaces", "baseline"}
+    expected_keys = {"schema_version", "minimum_supported_floor", "_comment", "since", "baseline"}
     unknown_keys = set(document) - expected_keys
     if unknown_keys:
         raise CheckError(
@@ -283,31 +283,50 @@ def load_surface_table(path: Path) -> SurfaceTable:
         f"minimum_supported_floor in {path}",
     )
 
-    surfaces_raw = document.get("surfaces")
-    if not isinstance(surfaces_raw, dict) or not surfaces_raw:
-        raise CheckError(f"surface table {path} surfaces must be a non-empty object")
+    since_raw = document.get("since")
+    if not isinstance(since_raw, dict) or not since_raw:
+        raise CheckError(f"surface table {path} 'since' must be a non-empty object of version groups")
 
     surfaces: dict[str, Surface] = {}
-    for identifier, entry in surfaces_raw.items():
-        if not isinstance(identifier, str) or identifier != identifier.strip() or not identifier:
-            raise CheckError(f"surface identifier {identifier!r} must be a single trimmed token")
-        if not isinstance(entry, dict):
-            raise CheckError(f"surface {identifier!r} in {path} must be an object")
-        unknown = set(entry) - {"since", "negotiated", "declaration"}
-        if unknown:
+    for since_text, group in since_raw.items():
+        since = SemVer.parse(since_text, f"since group in {path}")
+        if since <= minimum_supported_floor:
             raise CheckError(
-                f"surface {identifier!r} in {path} has unknown keys: {', '.join(sorted(unknown))}"
+                f"since group {since_text} in {path} is at or below minimum_supported_floor — "
+                "those surfaces belong in 'baseline'"
             )
-        since = SemVer.parse(entry.get("since"), f"since for surface {identifier!r} in {path}")
-        negotiated = entry.get("negotiated")
-        if not isinstance(negotiated, bool):
-            raise CheckError(f"surface {identifier!r} in {path} needs a boolean 'negotiated'")
-        declaration = entry.get("declaration")
-        if not isinstance(declaration, str) or not declaration:
-            raise CheckError(f"surface {identifier!r} in {path} needs a non-empty 'declaration'")
-        surfaces[identifier] = Surface(
-            identifier, since, negotiated, declaration, _surface_matcher(identifier)
-        )
+        if not isinstance(group, dict) or not group:
+            raise CheckError(f"since group {since_text} in {path} must be a non-empty object")
+        for identifier, value in group.items():
+            if not isinstance(identifier, str) or identifier != identifier.strip() or not identifier:
+                raise CheckError(f"surface identifier {identifier!r} must be a single trimmed token")
+            if identifier in surfaces:
+                raise CheckError(f"surface {identifier!r} appears in more than one since group in {path}")
+            # Compact entry forms: "<declaration>" (negotiated), "" (the
+            # declaration IS the identifier, as with flag macros), or
+            # {"declaration": ..., "negotiated": false} for a hard surface.
+            negotiated = True
+            if isinstance(value, str):
+                declaration = value or identifier
+            elif isinstance(value, dict):
+                unknown = set(value) - {"declaration", "negotiated"}
+                if unknown:
+                    raise CheckError(
+                        f"surface {identifier!r} in {path} has unknown keys: {', '.join(sorted(unknown))}"
+                    )
+                declaration = value.get("declaration") or identifier
+                negotiated = value.get("negotiated", True)
+                if not isinstance(negotiated, bool):
+                    raise CheckError(f"surface {identifier!r} in {path} needs a boolean 'negotiated'")
+                if not isinstance(declaration, str):
+                    raise CheckError(f"surface {identifier!r} in {path} needs a string 'declaration'")
+            else:
+                raise CheckError(
+                    f"surface {identifier!r} in {path} must map to a declaration string or an object"
+                )
+            surfaces[identifier] = Surface(
+                identifier, since, negotiated, declaration, _surface_matcher(identifier)
+            )
 
     # Baseline surfaces: present at or before minimum_supported_floor, so they
     # can never raise a floor at or above it — listed so verdicts can name them
@@ -332,7 +351,7 @@ def _surfaces_payload(path: Path) -> object:
     document = json.loads(path.read_text(encoding="utf-8"))
     return {
         "minimum_supported_floor": document.get("minimum_supported_floor"),
-        "surfaces": document.get("surfaces"),
+        "since": document.get("since"),
         "baseline": document.get("baseline", []),
     }
 

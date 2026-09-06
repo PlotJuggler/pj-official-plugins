@@ -16,11 +16,11 @@ REPO_ROOT = SCRIPTS.parent
 TABLE = {
     "schema_version": 1,
     "minimum_supported_floor": "0.28.0",
-    "surfaces": {
-        "oldCall": {"since": "0.28.0", "negotiated": True, "declaration": "vtable::old_call"},
-        "newCall": {"since": "0.32.0", "negotiated": True, "declaration": "vtable::new_call"},
-        "hardContract": {"since": "0.30.0", "negotiated": False, "declaration": "wire contract"},
+    "since": {
+        "0.32.0": {"newCall": "vtable::new_call"},
+        "0.30.0": {"hardContract": {"declaration": "wire contract", "negotiated": False}},
     },
+    "baseline": ["oldCall"],
 }
 
 
