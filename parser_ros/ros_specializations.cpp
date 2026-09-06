@@ -1,6 +1,7 @@
 #include <data_tamer_parser/data_tamer_parser.hpp>
 #include <queue>
 #include <tuple>
+#include <unordered_map>
 
 #include "ros_parser_internal.hpp"
 
@@ -198,14 +199,25 @@ void RosParser::handleDiagnosticArray() {
   auto h = readHeader();
   emitHeader(h);
 
+  // Field names must be unique within one message, but real diagnostics repeat
+  // keys (e.g. one "Interface Name" per network interface) and repeat status
+  // names. Suffix repeats as name[1], name[2], ... so nothing is dropped.
+  std::unordered_map<std::string, int> seen;
+  const auto unique = [&seen](const std::string& name) {
+    int& count = seen[name];
+    const std::string out = count == 0 ? name : name + "[" + std::to_string(count) + "]";
+    ++count;
+    return out;
+  };
+
   size_t status_count = deserializer_->deserializeUInt32();
   for (size_t st = 0; st < status_count; st++) {
-    // diagnostic_msgs/DiagnosticStatus wire order: name, level, message,
-    // hardware_id, values[] (the OK/WARN/ERROR/STALE byte constants are not
-    // serialized). Read in exactly this order or the CDR cursor desyncs.
+    // diagnostic_msgs/DiagnosticStatus wire order (ROS1 and ROS2): level, name,
+    // message, hardware_id, values[] (the OK/WARN/ERROR/STALE byte constants are
+    // not serialized). Read in exactly this order or the cursor desyncs.
+    uint8_t level = deserializer_->deserialize(RosMsgParser::BYTE).convert<uint8_t>();
     std::string name;
     deserializer_->deserializeString(name);
-    uint8_t level = deserializer_->deserialize(RosMsgParser::BYTE).convert<uint8_t>();
     std::string message;
     deserializer_->deserializeString(message);
     std::string hardware_id;
@@ -219,8 +231,8 @@ void RosParser::handleDiagnosticArray() {
       status_prefix = "/" + hardware_id + "/" + name;
     }
 
-    addField(status_prefix + "/level", static_cast<double>(level));
-    addStringField(status_prefix + "/message", message);
+    addField(unique(status_prefix + "/level"), static_cast<double>(level));
+    addStringField(unique(status_prefix + "/message"), message);
 
     size_t kv_count = deserializer_->deserializeUInt32();
     for (size_t kv = 0; kv < kv_count; kv++) {
@@ -229,11 +241,15 @@ void RosParser::handleDiagnosticArray() {
       std::string value_str;
       deserializer_->deserializeString(value_str);
 
+      if (key.empty()) {
+        continue;  // Padding entries some publishers emit; they carry nothing.
+      }
+      const std::string field = unique(status_prefix + "/" + key);
       auto [dval, ok] = tryParseDouble(value_str);
       if (ok) {
-        addField(status_prefix + "/" + key, dval);
+        addField(field, dval);
       } else {
-        addStringField(status_prefix + "/" + key, value_str);
+        addStringField(field, value_str);
       }
     }
   }
