@@ -25,7 +25,10 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/pj_video_demux)
   add_subdirectory(common/streaming_utils)
   add_subdirectory(common/laser_scan)
+  add_subdirectory(common/grid_map)
   add_subdirectory(common/pointcloud_color)
+  add_subdirectory(common/query)
+  add_subdirectory(common/transfer_rate)
   add_subdirectory(common/toolbox_preview)
   # This block always adds every plugin (no PJ_BUILD_PLUGIN filtering), so its
   # consumers data_load_mf4/data_load_blf are always present — add their shared
@@ -46,14 +49,13 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(data_load_mf4)
   add_subdirectory(data_load_blf)
   add_subdirectory(data_load_3d)
-  # data_load_lerobot and data_load_mp4 are intentionally NOT in this aggregate
-  # list: they depend on FFmpeg (via common/pj_video_demux), which this build
-  # does not provide. Both build per-plugin against their own conanfile (CI's
-  # arrow-plugin-build / per-plugin-build and the release path).
+  add_subdirectory(data_load_lerobot)
+  add_subdirectory(data_load_mp4)
   add_subdirectory(parser_json)
   add_subdirectory(parser_protobuf)
   add_subdirectory(parser_ros)
   add_subdirectory(parser_data_tamer)
+  add_subdirectory(parser_arrow)
   add_subdirectory(data_stream_zmq)
   add_subdirectory(data_stream_mqtt)
   add_subdirectory(data_stream_udp)
@@ -61,10 +63,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(data_stream_webrtc)
   add_subdirectory(data_stream_pj_bridge)
   add_subdirectory(data_stream_dummy)
-  # data_stream_lsl is intentionally NOT in this aggregate list: liblsl requires
-  # boost>=1.85, which conflicts with the boost/1.81.0 that Arrow's Flight thrift
-  # pins here. It builds per-plugin against its own conanfile (like
-  # data_load_lerobot/data_load_mp4).
+  add_subdirectory(data_stream_lsl)
   add_subdirectory(toolbox_fft)
   add_subdirectory(toolbox_data_exporter)
   add_subdirectory(toolbox_quaternion)
@@ -163,7 +162,7 @@ option(BUILD_TESTING "Build the testing tree" ON)
 # CMAKE_PREFIX_PATH — colliding with the Conan protobuf (6.x + abseil) that a
 # non-Arrow plugin (e.g. parser_protobuf) legitimately requires. The other
 # helpers are safe to always configure (base64 header-only; pj_video_demux is
-# find_package(ffmpeg QUIET); laser_scan is SDK-only).
+# find_package(ffmpeg QUIET); laser_scan and grid_map are SDK-only).
 # ---------------------------------------------------------------------------
 
 set(PJ_ARROW_HELPER_CONSUMERS data_load_parquet data_load_lerobot)
@@ -178,7 +177,10 @@ add_subdirectory(common/base64)
 add_subdirectory(common/pj_video_demux)
 add_subdirectory(common/streaming_utils)
 add_subdirectory(common/laser_scan)
+add_subdirectory(common/grid_map)
 add_subdirectory(common/pointcloud_color)
+add_subdirectory(common/query)
+add_subdirectory(common/transfer_rate)
 # common/can_dbc has a CPM download side-effect, so configure it only for its
 # consumers (skipped when building an unrelated single plugin).
 set(PJ_CAN_DBC_CONSUMERS data_load_mf4 data_load_blf)
@@ -210,6 +212,7 @@ else()
   add_subdirectory(parser_protobuf)
   add_subdirectory(parser_ros)
   add_subdirectory(parser_data_tamer)
+  add_subdirectory(parser_arrow)
   add_subdirectory(data_load_csv)
   add_subdirectory(data_load_mcap)
   add_subdirectory(data_load_parquet)
@@ -217,10 +220,8 @@ else()
   add_subdirectory(data_load_mf4)
   add_subdirectory(data_load_blf)
   add_subdirectory(data_load_3d)
-  # data_load_lerobot and data_load_mp4 are intentionally NOT in this aggregate
-  # list: they depend on FFmpeg (via common/pj_video_demux), which this build
-  # does not provide. Both build per-plugin against their own conanfile (CI's
-  # arrow-plugin-build / per-plugin-build and the release path).
+  add_subdirectory(data_load_lerobot)
+  add_subdirectory(data_load_mp4)
   add_subdirectory(data_stream_zmq)
   add_subdirectory(data_stream_mqtt)
   add_subdirectory(data_stream_udp)
@@ -228,10 +229,7 @@ else()
   add_subdirectory(data_stream_webrtc)
   add_subdirectory(data_stream_pj_bridge)
   add_subdirectory(data_stream_dummy)
-  # data_stream_lsl is intentionally NOT in this aggregate list: liblsl requires
-  # boost>=1.85, which conflicts with the boost/1.81.0 that Arrow's Flight thrift
-  # pins here. It builds per-plugin against its own conanfile (like
-  # data_load_lerobot/data_load_mp4).
+  add_subdirectory(data_stream_lsl)
   add_subdirectory(toolbox_fft)
   add_subdirectory(toolbox_data_exporter)
   add_subdirectory(toolbox_quaternion)
@@ -240,5 +238,6 @@ else()
     add_subdirectory(tools/anomaly_runner)
   endif()
   add_subdirectory(toolbox_mosaico)
+  add_subdirectory(toolbox_transform_editor)
   add_subdirectory(toolbox_assistant_agent)
 endif()

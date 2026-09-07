@@ -2,7 +2,7 @@
 
 These rules govern all plugin porting work. For SDK reference material,
 datastore details, widget tables, and per-plugin specifics, read
-`pj_ported_plugins/porting_guide.md` in its entirety before starting.
+`porting_guide.md` (repository root) in its entirety before starting.
 
 ---
 
@@ -18,7 +18,7 @@ way, using the new SDK as the target language.
    skim. Open every function, every signal/slot connection, every conditional
    branch. You cannot translate what you have not read.
 
-2. **Read `pj_ported_plugins/porting_guide.md`** for SDK patterns, datastore
+2. **Read `porting_guide.md`** for SDK patterns, datastore
    pitfalls, dialog SDK details, and known issues. Do not start coding until
    you have read both the original plugin and this reference.
 

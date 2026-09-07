@@ -1,0 +1,23 @@
+{
+  "id": "arrow-parser",
+  "name": "Arrow IPC Parser",
+  "version": "1.0.0",
+  "description": "Message parser for self-describing Arrow IPC streams.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "message_parser",
+  "tags": [
+    "arrow",
+    "ipc",
+    "parser"
+  ],
+  "encoding": [
+    "arrow-ipc"
+  ],
+  "min_sdk_required": "0.28.0",
+  "min_plotjuggler_version": "4.0.0"
+}

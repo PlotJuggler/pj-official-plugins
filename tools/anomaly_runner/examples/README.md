@@ -38,7 +38,7 @@ cat /tmp/anomaly_report.json
 python3 $EX/webhook_listener.py
 
 # terminal 2 — run; ${WH_TOKEN} proves the secret comes from the env, not the file
-export WH_TOKEN="mi-token-secreto"
+read -rsp "Webhook token: " WH_TOKEN && export WH_TOKEN && echo
 $R --data $DATA --rule $EX/spike_rule.json --notify $EX/notify_webhook.json
 ```
 

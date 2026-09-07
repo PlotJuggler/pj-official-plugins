@@ -13,7 +13,7 @@ Usage:
   python mqtt_publisher.py --mode json_ts
   python mqtt_publisher.py --mode protobuf
   python mqtt_publisher.py --mode protobuf_ts
-  python mqtt_publisher.py --mode protobuf --host 192.168.1.100 --port 1883
+  python mqtt_publisher.py --mode protobuf --host 127.0.0.1 --port 1883
 
 Requirements:
   pip install paho-mqtt protobuf

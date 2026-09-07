@@ -35,7 +35,7 @@ cd test_scripts/
 ./mqtt_publisher.py --mode protobuf_ts
 
 # Custom broker/topic/rate
-./mqtt_publisher.py --mode json_ts --host 192.168.1.100 --topic sensors --rate 20
+./mqtt_publisher.py --mode json_ts --host <broker-host> --topic sensors --rate 20
 ```
 
 Options: `--host`, `--port`, `--topic`, `--rate`, `--qos`.

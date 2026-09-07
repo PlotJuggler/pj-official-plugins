@@ -13,24 +13,34 @@
 
 #include "fetch_worker.hpp"
 
+#include "source_descriptor.hpp"
+
 #include <arrow/api.h>
+#include <arrow/ipc/writer.h>
 #include <arrow/record_batch.h>
 #include <arrow/table.h>
 // clang-format on
 
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 
+#include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <initializer_list>
+#include <limits>
 #include <memory>
+#include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "arrow_ingest.hpp"
+#include "arrow_ipc_message.hpp"
 #include "flight/metadata.hpp"
 #include "ontology_routing.h"
 #include "stoppable_thread.hpp"
@@ -56,64 +66,52 @@ std::string stringFromArrow(const arrow::Status& status) {
   return status.ToString();
 }
 
-// Detect whether `schema` already carries a usable timestamp column. Matches
-// arrow_ingest::detectTimestampColumn but operates on arrow::Schema for
-// convenience inside the worker.
-[[nodiscard]] std::string detectTsField(const std::shared_ptr<arrow::Schema>& schema) {
-  if (!schema) {
-    return {};
-  }
-  for (const auto& field : schema->fields()) {
-    if (field->type()->id() == arrow::Type::TIMESTAMP) {
-      return field->name();
-    }
-  }
-  static const std::vector<std::string> kNames = {"timestamp_ns", "recording_timestamp_ns", "timestamp", "time", "ts"};
-  for (const auto& cand : kNames) {
-    if (schema->GetFieldByName(cand)) {
-      return cand;
-    }
-  }
-  return {};
-}
+// Delegated-ingest encoding of scalar topics: one Flight batch = one complete
+// Arrow IPC stream, decoded host-side by parser_arrow.
+constexpr std::string_view kArrowIpcEncoding = "arrow-ipc";
 
-// Prepend a synthetic `timestamp_ns` int64 column to a Table for ontology
-// payloads (images, point clouds, etc.) that don't carry per-row timestamps
-// on the wire. Generates monotonically increasing ns from `start_ns` using
-// `interval_ns` between rows.
-//
-// Image topics in particular ship as one Arrow row per frame with no
-// timestamp column — the server uses the Flight ticket metadata for
-// frame ordering. We pick a stable monotonic clock anchored at the
-// sequence's min_ts_ns when available, otherwise wall-clock.
-[[nodiscard]] arrow::Result<std::shared_ptr<arrow::Table>> prependSyntheticTimestamp(
-    std::shared_ptr<arrow::Table> table, std::int64_t start_ns, std::int64_t interval_ns) {
-  const int64_t num_rows = table->num_rows();
-  arrow::Int64Builder builder;
-  ARROW_RETURN_NOT_OK(builder.Reserve(num_rows));
-  for (int64_t i = 0; i < num_rows; ++i) {
-    ARROW_RETURN_NOT_OK(builder.Append(start_ns + i * interval_ns));
-  }
-  std::shared_ptr<arrow::Array> ts_array;
-  ARROW_RETURN_NOT_OK(builder.Finish(&ts_array));
-  auto chunked = std::make_shared<arrow::ChunkedArray>(ts_array);
-  return table->AddColumn(0, arrow::field("timestamp_ns", arrow::int64()), chunked);
+std::int64_t nowNs() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+      .count();
 }
-
-// Ontology routing (isImageOntology / resolveOntologyTag) lives in
-// ontology_routing.h so it can be unit-tested without linking Flight/gRPC.
-//
-// Per-frame image serialization (pushImageRowsToHost) and the per-row Arrow
-// column readers (handling BINARY_VIEW / STRING_VIEW) live in arrow_ingest.cpp
-// so they can be unit-tested against synthetic *_view tables without Flight.
 
 }  // namespace
 
 FetchWorker::FetchWorker() = default;
 FetchWorker::~FetchWorker() = default;
 
+std::string originFromUri(const std::string& uri) {
+  std::string origin = uri;
+  if (const auto scheme = origin.find("://"); scheme != std::string::npos) {
+    origin.erase(0, scheme + 3);
+  }
+  // Path, query and fragment all terminate the authority component.
+  if (const auto authority_end = origin.find_first_of("/?#"); authority_end != std::string::npos) {
+    origin.erase(authority_end);
+  }
+  // rfind: a raw password may itself contain '@'; the last one ends userinfo.
+  if (const auto at_sign = origin.rfind('@'); at_sign != std::string::npos) {
+    origin.erase(0, at_sign + 1);
+  }
+  std::transform(origin.begin(), origin.end(), origin.begin(), [](unsigned char character) {
+    return static_cast<char>(std::tolower(character));
+  });
+  return origin;
+}
+
 void FetchWorker::requestCancel() {
   cancel_flag_.store(true, std::memory_order_relaxed);
+  {
+    // Tell the host FIRST: its stop path wakes producers blocked on a lossless
+    // capture queue, which must happen before anything joins them. Via the
+    // stop surface, never progress_mu_ — the parked producer holds that.
+    // kStopped, not kStopping: requestStop wants a terminal state, and the
+    // CANCELLED verdict travels via completeIngest, not the state.
+    std::lock_guard<std::mutex> slock(stop_mu_);
+    if (stop_view_.has_value()) {
+      stop_view_->requestStop(PJ::DataSourceState::kStopped, "download cancelled");
+    }
+  }
   cancelActivePulls();
 }
 
@@ -134,6 +132,11 @@ PJ::Expected<PJ::sdk::DataSourceHandle> FetchWorker::datasetForFetch(
       return PJ::unexpected(std::move(ds).error());
     }
     fetch_dataset_ = *ds;
+    // At most once per Download (fetch_dataset_ is reset per batch), before
+    // any publication into the dataset — the ABI order on_dataset requires.
+    if (datasetCreated) {
+      datasetCreated(*ds);
+    }
   }
   return *fetch_dataset_;
 }
@@ -148,20 +151,14 @@ std::uint64_t FetchWorker::accumulatedProgressBytesLocked() const {
 }
 
 bool FetchWorker::isStopRequestedByHost() {
-  std::lock_guard<std::mutex> plock(progress_mu_);
-  return ingest_progress_.has_value() && ingest_progress_->isStopRequested();
+  // Stop surface, not progress_mu_: the poller must observe a host stop even
+  // while a push has progress_mu_ parked.
+  std::lock_guard<std::mutex> slock(stop_mu_);
+  return stop_view_.has_value() && stop_view_->isStopRequested();
 }
 
 void FetchWorker::requestCancelFromHost() {
-  bool report_stop = false;
-  {
-    std::lock_guard<std::mutex> plock(progress_mu_);
-    if (!host_stop_reported_) {
-      host_stop_reported_ = true;
-      report_stop = true;
-    }
-  }
-  if (!report_stop) {
+  if (host_stop_reported_.exchange(true, std::memory_order_relaxed)) {
     return;
   }
   requestCancel();
@@ -214,6 +211,9 @@ void FetchWorker::ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, cons
     return;
   }
   ingest_progress_attempted_ = true;
+  // Every early return below means "no ingest context"; topics report
+  // this reason verbatim, so it is the single writer for those paths.
+  parser_ingest_error_ = "host offers no parser ingest (arrow-ipc topics need a newer PlotJuggler)";
   if (!runtime_host_provider_) {
     return;
   }
@@ -222,30 +222,45 @@ void FetchWorker::ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, cons
     return;
   }
   const PJ_toolbox_runtime_host_t& raw = runtime.raw();
-  // Tail-slot gate: an older host's vtable ends before create_parser_ingest —
-  // Downloads then run exactly as before, without host progress.
+  // Downloads require the delegated-ingest slot on the host.
   if (!PJ_HAS_TAIL_SLOT(PJ_toolbox_runtime_host_vtable_t, raw.vtable, create_parser_ingest)) {
     return;
   }
   PJ_data_source_runtime_host_t ingest_raw{};
   PJ_error_t error{};
   if (!raw.vtable->create_parser_ingest(raw.ctx, ds.id, &ingest_raw, &error)) {
-    return;  // e.g. parser ingest not configured on this host — degrade silently
+    // Surface the host's binding failure to the importing topic.
+    parser_ingest_error_ = PJ::errorToString(error);
+    return;
   }
-  // The context is LIVE on the host from this point: record the id first so
-  // finishIngestProgress releases it even when progressStart below fails
-  // (release is idempotent and needs no prior progress sequence).
+  // Publish the context used by every topic and record its id for release, even
+  // when progressStart below fails.
+  parser_ingest_error_.clear();
   ingest_ds_id_ = ds.id;
-  PJ::DataSourceRuntimeHostView view(ingest_raw);
+  ingest_progress_ = PJ::DataSourceRuntimeHostView(ingest_raw);
+  {
+    // Publish the progress_mu_-free stop surface (lock order: progress_mu_ -> stop_mu_).
+    std::lock_guard<std::mutex> slock(stop_mu_);
+    stop_view_ = ingest_progress_;
+  }
+  // Declare the reproducible request this download answers, once per context
+  // and BEFORE any push (ensureIngestProgress always precedes the first
+  // pushMessage). An older host without the slot refuses — the download is
+  // simply not cacheable, never an error.
+  if (!pending_source_record_.empty()) {
+    source_record_attached_ = true;
+    (void)ingest_progress_->attachSourceRecord(pending_source_record_);
+  }
   // Always indeterminate (total=0): TopicInfo::total_size_bytes is the
   // COMPRESSED full-topic size while progress ticks carry DECODED bytes of the
   // requested slice — no comparable denominator exists, and a wrong one would
   // over/undershoot the host bar wildly. `current` still carries the decoded
   // byte count.
-  if (!view.progressStart(sequence_name, /*total_steps=*/0, /*cancellable=*/true).has_value()) {
-    return;
+  progress_started_ =
+      ingest_progress_->progressStart(sequence_name, /*total_steps=*/0, /*cancellable=*/true).has_value();
+  if (!progress_started_) {
+    return;  // Only the progress bar is lost; the ingest route stays open.
   }
-  ingest_progress_ = view;
   const bool host_stop = !ingest_progress_->progressUpdate(accumulatedProgressBytesLocked());
   plock.unlock();
   if (host_stop) {
@@ -254,11 +269,19 @@ void FetchWorker::ensureIngestProgress(const PJ::sdk::DataSourceHandle& ds, cons
 }
 
 void FetchWorker::finishIngestProgress(bool discard_provisional) {
+  {
+    // Retire the stop surface BEFORE the context is finished/released below,
+    // so a late cancel cannot call into a dead context.
+    std::lock_guard<std::mutex> slock(stop_mu_);
+    stop_view_.reset();
+  }
   std::optional<uint32_t> release_id;
   {
     std::lock_guard<std::mutex> plock(progress_mu_);
     if (ingest_progress_.has_value()) {
-      ingest_progress_->progressFinish();
+      if (progress_started_) {
+        ingest_progress_->progressFinish();
+      }
       ingest_progress_.reset();
     }
     release_id = ingest_ds_id_;
@@ -282,6 +305,9 @@ void FetchWorker::finishIngestProgress(bool discard_provisional) {
     if (runtime.valid()) {
       if (discard_id.has_value()) {
         if (discardProvisionalIngest(runtime, *discard_id)) {
+          if (datasetDiscarded) {
+            datasetDiscarded();
+          }
           return;
         }
         // A runtime that changed underneath the capability probe still gets a
@@ -294,11 +320,29 @@ void FetchWorker::finishIngestProgress(bool discard_provisional) {
   }
 }
 
+void FetchWorker::reportIngestCompletion() {
+  std::lock_guard<std::mutex> plock(progress_mu_);
+  if (!ingest_progress_.has_value() || !source_record_attached_) {
+    return;  // no context or no declared request: nothing to attest
+  }
+  // Also read the host's LIVE stop flag: a title-bar Stop landing after the
+  // poller's last check must not be attested as COMPLETED. (host_stop_reported_
+  // is implied — its only setter also raises cancel_flag_.)
+  const bool cancelled = cancel_flag_.load(std::memory_order_relaxed) || ingest_progress_->isStopRequested();
+  const auto completion = outcome_ledger_.computeCompletion(cancelled);
+  std::vector<std::string_view> topics(requested_topics_snapshot_.begin(), requested_topics_snapshot_.end());
+  // COMPLETED attests the ENTIRE declared request; FAILED/CANCELLED are
+  // truthful terminals that keep the ingest usable while forbidding caching.
+  // An older host without the slot refuses — ignored, simply not cacheable.
+  (void)ingest_progress_->completeIngest(completion.outcome, {topics.data(), topics.size()}, completion.flags);
+}
+
 void FetchWorker::connectAsync(std::string uri, ServerCredentials creds) {
   // creds.allow_insecure is intentionally not consulted here: the plaintext
   // fallback is driven by the caller (onConnectFinished, Step 10.1), which
   // retries with a grpc:// URI. connectAsync always honors the scheme it is given.
   try {
+    server_origin_ = originFromUri(uri);
     client_ = std::make_unique<MosaicoClient>(
         uri,
         // PJ3 parity (main_window.cpp:48): 30 s connection timeout for slow links.
@@ -438,7 +482,14 @@ void FetchWorker::fetchTopicMetadataAsync(TopicRef topic) {
   // Merge the size/created/locked fields cached from listTopics — getTopicMetadata
   // only fills schema/ontology/user_metadata/timestamps, not total_size_bytes
   // or chunks_number.
-  if (auto it = topic_info_by_name_.find(topic.topic_name); it != topic_info_by_name_.end()) {
+  auto cache_it = topic_info_by_name_.find(topic.topic_name);
+  if (cache_it == topic_info_by_name_.end()) {
+    // A topic absent from the last listing (or fetched before any listing)
+    // still gets its metadata cached, so the ontology backfill in
+    // pullTopicsAsync can route it instead of dropping the tag on the floor.
+    topic_info_by_name_.emplace(topic.topic_name, info);
+  } else {
+    auto& it = cache_it;
     if (info.total_size_bytes == 0) {
       info.total_size_bytes = it->second.total_size_bytes;
     }
@@ -484,6 +535,20 @@ void FetchWorker::pullTopicsAsync(
     }
     return;
   }
+  // Routing must not depend on how the topics were selected: a fetch that
+  // never visited the Info panel (select-all, or a headless descriptor
+  // import) has issued no selection-driven metadata calls, so fill every
+  // missing ontology tag here on the worker thread before any batch is
+  // classified for scalar/object ingest.
+  for (const auto& topic_name : topic_names) {
+    if (isCancelled()) {
+      break;
+    }
+    const auto info_it = topic_info_by_name_.find(topic_name);
+    if (info_it == topic_info_by_name_.end() || info_it->second.ontology_tag.empty()) {
+      fetchTopicMetadataAsync({sequence_name, topic_name});
+    }
+  }
   // Start of a multi-topic Download: discard any DataSourceHandle cached from a
   // previous fetch. datasetForFetch creates exactly one dataset (eagerly only
   // when rollback is available), and every topic callback reuses it so the
@@ -492,14 +557,40 @@ void FetchWorker::pullTopicsAsync(
     std::lock_guard<std::mutex> lock(fetch_dataset_mu_);
     fetch_dataset_ = std::nullopt;
   }
-  // Fresh host-progress bracket for this batch.
+  // Fresh host-progress bracket for this batch, plus the capture state: the
+  // canonical request descriptor (sorted, deduped, host:port origin only —
+  // the byte-exact identity a re-download must reproduce) and the
+  // requested-topic snapshot the completion report attests over.
   {
     std::lock_guard<std::mutex> plock(progress_mu_);
     ingest_progress_.reset();
     ingest_progress_attempted_ = false;
+    progress_started_ = false;
+    parser_ingest_error_.clear();
     host_stop_reported_ = false;
     ingest_ds_id_.reset();
     progress_bytes_by_topic_.clear();
+    source_record_attached_ = false;
+    requested_topics_snapshot_ = topic_names;
+    std::sort(requested_topics_snapshot_.begin(), requested_topics_snapshot_.end());
+    requested_topics_snapshot_.erase(
+        std::unique(requested_topics_snapshot_.begin(), requested_topics_snapshot_.end()),
+        requested_topics_snapshot_.end());
+    outcome_ledger_ = PJ::sdk::source::IngestOutcomeLedger(requested_topics_snapshot_);
+    // The canonical request descriptor rides through the ONE typed parser
+    // (makePullDescriptor round-trips it), so the producer meets the same
+    // allowlist/limits/origin-hygiene bar as a layout consumer and the
+    // recorded bytes are exactly what parseSourceDescriptor re-accepts. A
+    // request the parser rejects (port-less origin, over-limit names, …)
+    // yields no source record — including a server-supplied name that is not
+    // valid UTF-8 (a substituted descriptor would name a different request).
+    // The Download still imports eagerly, it is just not re-importable.
+    pending_source_record_.clear();
+    std::string descriptor_error;
+    if (const auto descriptor = makePullDescriptor(
+            server_origin_, sequence_name, requested_topics_snapshot_, start_ns, end_ns, &descriptor_error)) {
+      pending_source_record_ = toSourceDescriptorJson(*descriptor);
+    }
   }
 
   // Use the SDK's parallel pullTopics. Per-topic completion (on_done) fires on
@@ -512,11 +603,28 @@ void FetchWorker::pullTopicsAsync(
   range.start_ns = start_ns;
   range.end_ns = end_ns;
 
-  // Per-topic accumulators keyed by topic name. Progress bytes no longer live
-  // here — they come from the SDK's accurate decoded-size progress_cb ([I6]).
+  // Per-topic state keyed by topic name. Fully populated before the pull starts
+  // and never rehashed, so concurrent access to DIFFERENT keys is safe; one
+  // topic's callbacks arrive in order on one pool thread.
   struct PerTopic {
-    std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
     std::shared_ptr<arrow::Schema> schema;
+    bool routed = false;        // route() has run; its results below are final
+    bool object_route = false;  // canonical objects use one message per row
+    std::string ontology_tag;
+    std::string ts_field;       // flattened leaf path; may be unnamed
+    std::vector<int> ts_route;  // child-index route; empty = no timestamp column
+    std::int64_t info_max_ts_ns = 0;
+    // Unstamped topics wait for the total row count before fitting cadence.
+    std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
+    // Binding inputs are framed before taking the host-write locks.
+    std::shared_ptr<arrow::Buffer> ipc_schema_bytes;
+    std::string parser_config;
+    std::optional<PJ::ParserBindingHandle> binding;
+    std::int64_t synth_anchor_ns = 0;
+    std::int64_t synth_interval_ns = kSyntheticIntervalNs;
+    std::int64_t rows_pushed = 0;
+    std::int64_t last_ipc_bytes = 0;  // sizes the next batch's output buffer
+    std::string error;                // first bind/push failure; fails the topic at on_done
   };
   auto state = std::make_shared<std::unordered_map<std::string, PerTopic>>();
   auto imported_any = std::make_shared<std::atomic<bool>>(false);
@@ -524,250 +632,253 @@ void FetchWorker::pullTopicsAsync(
     (*state)[t] = PerTopic{};
   }
 
-  auto on_done = [this, sequence_name, state, imported_any](
+  // Resolve ontology and timestamp route once from the source metadata/schema.
+  auto route = [this](PerTopic& topic, const std::string& topic_name) {
+    if (topic.routed || !topic.schema) {
+      return;
+    }
+    topic.routed = true;
+    std::string cached_tag;
+    std::int64_t info_min_ts_ns = 0;
+    if (auto info_it = topic_info_by_name_.find(topic_name); info_it != topic_info_by_name_.end()) {
+      cached_tag = info_it->second.ontology_tag;
+      info_min_ts_ns = info_it->second.min_ts_ns;
+      topic.info_max_ts_ns = info_it->second.max_ts_ns;
+    }
+    topic.ontology_tag = resolveOntologyTag(topic.schema, cached_tag);
+    topic.object_route = isCanonicalObjectOntology(topic.ontology_tag);
+    topic.synth_anchor_ns = info_min_ts_ns != 0 ? info_min_ts_ns : nowNs();
+    auto leaf =
+        detectTimestampLeaf(*topic.schema, topic.object_route ? EmptyNameRule::kFlatten : EmptyNameRule::kIndex);
+    topic.ts_field = std::move(leaf.path);
+    topic.ts_route = std::move(leaf.route);
+  };
+
+  // Cadence for a timestamp-less topic: spread @p total_rows over the topic's
+  // [min_ts_ns, max_ts_ns] range, else keep the ~30 fps default.
+  auto fitSyntheticInterval = [](PerTopic& topic, std::int64_t total_rows) {
+    if (topic.ts_route.empty()) {
+      topic.synth_interval_ns =
+          PJ::fitSyntheticInterval(topic.synth_anchor_ns, topic.info_max_ts_ns, total_rows, kSyntheticIntervalNs);
+    }
+  };
+
+  // Hand the batch to the host as an arrow-ipc message. Runs on
+  // the pool thread that received the batch — or, for a timestamp-less topic,
+  // on the one that completed it; the host-write section is
+  // serialized by host_write_mu_ ([C1]) and the ingest fat pointer by
+  // progress_mu_ (same order as ensureIngestProgress), so the context is only
+  // ever driven by one caller at a time as its contract requires.
+  auto push_message = [this, sequence_name, imported_any](
+                          PerTopic& topic, const std::string& topic_name, const arrow::RecordBatch& batch) {
+    if (!topic.error.empty() || batch.num_rows() == 0) {
+      return;
+    }
+    if (batch.num_rows() > std::numeric_limits<std::int64_t>::max() - topic.rows_pushed) {
+      topic.error = "topic row count overflow";
+      return;
+    }
+    std::shared_ptr<arrow::RecordBatch> timed_batch;
+    if (topic.ts_route.empty()) {
+      auto timed = addSyntheticTimestamps(batch, topic.synth_anchor_ns, topic.synth_interval_ns, topic.rows_pushed);
+      if (!timed.ok()) {
+        topic.error = stringFromArrow(timed.status());
+        return;
+      }
+      timed_batch = *timed;
+    }
+    const arrow::RecordBatch& framed = timed_batch ? *timed_batch : batch;
+    if (!topic.ipc_schema_bytes) {
+      auto schema_bytes = arrow::ipc::SerializeSchema(*framed.schema());
+      if (!schema_bytes.ok()) {
+        topic.error = stringFromArrow(schema_bytes.status());
+        return;
+      }
+      topic.ipc_schema_bytes = *schema_bytes;
+      topic.parser_config = parserConfigJson(timed_batch ? framed.column_name(0) : topic.ts_field, 0);
+    }
+    auto bytes = serializeIpcStream(framed, topic.last_ipc_bytes);
+    if (!bytes.ok()) {
+      topic.error = stringFromArrow(bytes.status());
+      return;
+    }
+    topic.last_ipc_bytes = (*bytes)->size();
+    // The envelope uses the first row's timestamp, including a synthesized axis.
+    auto host_ts = firstRowTimestampNs(framed, timed_batch ? std::vector<int>{0} : topic.ts_route);
+    if (!host_ts) {
+      host_ts = PJ::syntheticInstant(topic.synth_anchor_ns, topic.synth_interval_ns, topic.rows_pushed);
+      if (!host_ts) {
+        topic.error = fmt::format(
+            "synthetic timestamp overflows int64 at row {} (anchor {}, interval {})", topic.rows_pushed,
+            topic.synth_anchor_ns, topic.synth_interval_ns);
+        return;
+      }
+    }
+    const std::int64_t host_ts_ns = *host_ts;
+    if (!host_provider_) {
+      topic.error = "host not bound";
+      return;
+    }
+    auto host = host_provider_();
+    std::lock_guard<std::mutex> write_lock(host_write_mu_);
+    auto ds = datasetForFetch(host, sequence_name);
+    if (!ds) {
+      topic.error = ds.error();
+      return;
+    }
+    ensureIngestProgress(*ds, sequence_name);
+    // ponytail: progress_mu_ is held across pushMessage, so a slow host push
+    // stalls the progress ticks (cancel and the stop poller stay live via the
+    // stop surface), and host_write_mu_ serializes concurrent scalar topics
+    // batch by batch. Upgrade path if a profile shows it: hand batches to a
+    // per-topic queue drained by one thread.
+    std::lock_guard<std::mutex> plock(progress_mu_);
+    if (!ingest_progress_.has_value()) {
+      topic.error = parser_ingest_error_;  // ensureIngestProgress always leaves a reason
+      return;
+    }
+    if (!topic.binding.has_value()) {
+      auto binding = ingest_progress_->ensureParserBinding(
+          PJ::ParserBindingRequest{
+              .topic_name = topic_name,
+              .parser_encoding = kArrowIpcEncoding,
+              .type_name = topic.ontology_tag,
+              .schema = PJ::Span<const uint8_t>(
+                  topic.ipc_schema_bytes->data(), static_cast<std::size_t>(topic.ipc_schema_bytes->size())),
+              .parser_config_json = topic.parser_config,
+          });
+      if (!binding) {
+        topic.error = binding.error();
+        return;
+      }
+      topic.binding = *binding;
+    }
+    // Zero-copy: the IPC buffer is its own anchor, the host keeps it alive.
+    auto pushed = ingest_progress_->pushMessage(*topic.binding, host_ts_ns, [payload = std::move(*bytes)]() {
+      return PJ::sdk::PayloadView(
+          PJ::Span<const uint8_t>(payload->data(), static_cast<std::size_t>(payload->size())),
+          PJ::sdk::BufferAnchor(payload));
+    });
+    if (!pushed) {
+      topic.error = pushed.error();
+      return;
+    }
+    topic.rows_pushed += batch.num_rows();
+    imported_any->store(true, std::memory_order_relaxed);
+  };
+
+  auto push_batch = [push_message](PerTopic& topic, const std::string& name, const arrow::RecordBatch& batch) {
+    if (topic.object_route) {
+      // The host's functional object contract is one object per raw message.
+      for (std::int64_t row = 0; row < batch.num_rows() && topic.error.empty(); ++row) {
+        push_message(topic, name, *batch.Slice(row, 1));
+      }
+    } else {
+      push_message(topic, name, batch);
+    }
+  };
+
+  auto on_done = [this, sequence_name, state, push_batch, fitSyntheticInterval](
                      const std::string& topic_name, arrow::Result<PullResult> result) {
     auto it = state->find(topic_name);
     if (it == state->end()) {
       return;
     }
-    auto finish = [this, &sequence_name, &topic_name, imported_any](
-                      bool ok, std::string error, std::string warning = {}) {
-      if (ok) {
-        imported_any->store(true, std::memory_order_relaxed);
-      }
+    PerTopic& topic = it->second;
+    // Deliberately does NOT touch imported_any: only real pushes (push_message)
+    // count toward keeping the provisional dataset, so an all-empty batch still
+    // rolls back while its topics finish ok with a warning.
+    auto finish = [this, &sequence_name, &topic_name](bool ok, std::string error, std::string warning = {}) {
       if (pullFinished) {
         pullFinished({{sequence_name, topic_name}, ok, std::move(error), std::move(warning)});
       }
     };
+    auto record_outcome = [this, &topic_name](PJ::sdk::source::TopicOutcome outcome) {
+      std::lock_guard<std::mutex> plock(progress_mu_);
+      // Every pulled topic is in the requested snapshot, so record() cannot miss.
+      (void)outcome_ledger_.record(topic_name, outcome);
+    };
     if (!result.ok()) {
-      (void)client_->reportTopicNotification(sequence_name, topic_name, "fetch_error", result.status().message());
+      if (client_) {  // absent under the transport test seam
+        (void)client_->reportTopicNotification(sequence_name, topic_name, "fetch_error", result.status().message());
+      }
+      record_outcome(PJ::sdk::source::TopicOutcome::kFailed);
       finish(false, stringFromArrow(result.status()));
       return;
     }
-    if (!it->second.schema || it->second.batches.empty()) {
-      finish(false, "no data");
+    if (!topic.schema) {
+      // Transport succeeded and the window was genuinely empty: a successful
+      // fetch of nothing, distinct from a failure — the completion report
+      // attests it so the request stays cacheable.
+      record_outcome(PJ::sdk::source::TopicOutcome::kEmptyOk);
+      finish(true, {}, "no data in the requested range");
       return;
     }
-    auto table_result = arrow::Table::FromRecordBatches(it->second.schema, it->second.batches);
-    if (!table_result.ok()) {
-      finish(false, stringFromArrow(table_result.status()));
-      return;
-    }
-    std::shared_ptr<arrow::Table> table = table_result.ValueOrDie();
-
-    // PJ3-parity: explode struct columns (e.g. nav_msgs/Odometry's pose +
-    // twist) into individual primitive columns before handing the stream to
-    // the datastore — pj_datastore's arrow_import silently skips non-primitive
-    // top-level fields, so without this an Odometry topic shows up as just the
-    // timestamp column.
-    {
-      auto flat_result = flattenStructColumns(std::move(table));
-      if (!flat_result.ok()) {
-        finish(false, stringFromArrow(flat_result.status()));
-        return;
-      }
-      table = flat_result.ValueOrDie();
-    }
-
-    // Route by the authoritative ontology tag (image → ObjectStore; point
-    // clouds / poses / scalars → the scalar appendArrowStream path). Also pick
-    // up the cached [min,max] ts for synthetic-timestamp anchoring. The tag is
-    // cached from getTopicMetadata — which the dialog fetches on topic
-    // selection, and the worker processes that slot before this pull (serial
-    // queue), so it is populated by now.
-    std::int64_t info_min_ts_ns = 0;
-    std::int64_t info_max_ts_ns = 0;
-    std::string cached_tag;
-    if (auto info_it = topic_info_by_name_.find(topic_name); info_it != topic_info_by_name_.end()) {
-      info_min_ts_ns = info_it->second.min_ts_ns;
-      info_max_ts_ns = info_it->second.max_ts_ns;
-      cached_tag = info_it->second.ontology_tag;
-    }
-    const std::string ontology_tag = resolveOntologyTag(table->schema(), cached_tag);
-    const bool is_image = isImageOntology(ontology_tag);
-    const bool is_point_cloud = isPointCloudOntology(ontology_tag);
-    const bool is_pose = isPoseOntology(ontology_tag);
-    const bool is_transform = isTransformOntology(ontology_tag);
-    const bool is_occupancy_grid = isOccupancyGridOntology(ontology_tag);
-    const bool is_laser_scan = isLaserScanOntology(ontology_tag);
-    const bool is_grid_cells = isGridCellsOntology(ontology_tag);
-    const bool is_futures_cloud = isFuturesPointCloudOntology(ontology_tag);
-    // Canonicalized into a pj_base builtin object (ObjectStore route) instead of
-    // scalar columns. These share the single object-push critical section below.
-    const bool is_object = isCanonicalObjectOntology(ontology_tag);
-
-    // Determine the timestamp column. Image (and similar media) ontologies
-    // ship without per-row timestamps on the wire — the server uses the
-    // Flight ticket for frame ordering. If no timestamp column is present,
-    // synthesize one anchored at the sequence's min_ts_ns (from the cached
-    // TopicInfo) with a ~30 fps cadence so the data still lands in the
-    // datastore with monotonic timestamps in the sequence's nominal range.
-    std::string ts_field = detectTsField(table->schema());
-    std::int64_t synth_anchor_ns = info_min_ts_ns;
-    std::int64_t synth_interval_ns = 33'333'333LL;  // ~30 fps default
-    if (ts_field.empty()) {
-      if (synth_anchor_ns == 0) {
-        synth_anchor_ns =
-            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
-                .count();
-      }
-      const std::int64_t span_ns = info_max_ts_ns - synth_anchor_ns;
-      if (table->num_rows() > 1 && span_ns > 0) {
-        synth_interval_ns = span_ns / (table->num_rows() - 1);
-      }
-      // Only augment the table when we'll feed it to the scalar pipeline; the
-      // object-push paths (image / point cloud / transform / pose) compute
-      // timestamps inline from synth_* directly.
-      if (!is_object) {
-        auto augmented = prependSyntheticTimestamp(std::move(table), synth_anchor_ns, synth_interval_ns);
-        if (!augmented.ok()) {
-          finish(false, stringFromArrow(augmented.status()));
+    // A stamped topic streamed batch by batch through push_batch and
+    // leaves nothing buffered. A timestamp-less one waited here: its cadence
+    // is fitted to the topic's [min,max] range over the WHOLE row count, so
+    // the timestamp column and every host timestamp need the total first.
+    // Batches that never reached this point (cancel, transport failure) are
+    // dropped, exactly as when the whole topic was written at on_done. So a
+    // cancelled Download is asymmetric BY DESIGN: a stamped topic keeps the
+    // batches already pushed, a timestamp-less one keeps nothing, because a
+    // partial row count would fit a cadence the rest of the topic contradicts.
+    if (topic.error.empty() && !topic.batches.empty()) {
+      std::int64_t total_rows = 0;
+      for (const auto& buffered : topic.batches) {
+        if (buffered->num_rows() > std::numeric_limits<std::int64_t>::max() - total_rows) {
+          finish(false, "topic row count overflow");
           return;
         }
-        table = augmented.ValueOrDie();
-        ts_field = "timestamp_ns";
+        total_rows += buffered->num_rows();
+      }
+      fitSyntheticInterval(topic, total_rows);
+      for (const auto& buffered : topic.batches) {
+        push_batch(topic, topic_name, *buffered);
       }
     }
-
-    // Canonical-object ontologies route into the ObjectStore: each row becomes
-    // one serialized pj_base builtin object (Image / PointCloud / FrameTransforms
-    // / PosesInFrame) keyed by timestamp. We deliberately skip pumpStreamToHost
-    // for these so the raw payload columns don't ALSO land as opaque scalar
-    // series in the datastore. The HOST decodes each blob (the toolbox never
-    // decodes/decompresses — see the per-ontology push helpers).
-    if (is_object) {
-      if (!host_provider_) {
-        finish(false, "host not bound");
-        return;
-      }
-      auto host = host_provider_();
-      // [C1] Serialize the whole host-write critical section ourselves: this
-      // callback runs on SDK connection-pool worker threads and the host
-      // DataWriter has no internal mutex. We hold host_write_mu_ around the
-      // cached dataset lookup AND every register/push, so the plugin guarantees
-      // serialization regardless of whether the SDK serializes on_done.
-      //
-      // Lock order: host_write_mu_ is acquired ONLY here, and datasetForFetch
-      // takes the distinct fetch_dataset_mu_ nested under it (host_write_mu_ ->
-      // fetch_dataset_mu_, never the reverse) — so the nesting can't deadlock.
-      std::lock_guard<std::mutex> write_lock(host_write_mu_);
-      auto ds = datasetForFetch(host, sequence_name);
-      if (!ds) {
-        finish(false, ds.error());
-        return;
-      }
-      ensureIngestProgress(*ds, sequence_name);
-      const ObjectIngestContext ctx{host, *ds, topic_name, ts_field, synth_anchor_ns, synth_interval_ns};
-      auto pushed = [&]() -> PJ::Expected<ObjectPushOutcome> {
-        if (is_image) {
-          return pushImageRowsToHost(ctx, table);
-        }
-        if (is_point_cloud) {
-          return pushPointCloudRowsToHost(ctx, table);
-        }
-        if (is_pose) {
-          return pushPoseRowsToHost(ctx, table);
-        }
-        if (is_transform) {
-          return pushFrameTransformsRowsToHost(ctx, table);
-        }
-        if (is_occupancy_grid) {
-          return pushOccupancyGridRowsToHost(ctx, table);
-        }
-        if (is_laser_scan) {
-          return pushLaserScanRowsToHost(ctx, table);
-        }
-        if (is_grid_cells) {
-          return pushGridCellsRowsToHost(ctx, table);
-        }
-        if (is_futures_cloud) {
-          return pushColumnarPointCloudRowsToHost(ctx, table);
-        }
-        // Unreachable: is_object (isCanonicalObjectOntology) gates entry, so one
-        // branch above always matches. Defensive fallback for a canonical tag
-        // added to the routing predicates but not wired to a push helper here.
-        return PJ::unexpected(std::string("unhandled canonical ontology '") + ontology_tag + "'");
-      }();
-      if (!pushed) {
-        finish(false, pushed.error());
-        return;
-      }
-      if (pushed->pushed == 0) {
-        finish(false, pushed->first_error.empty() ? ("no " + ontology_tag + " rows") : pushed->first_error);
-        return;
-      }
-      // The topic succeeded, but per-row skips are silent in the ObjectPushOutcome
-      // — surface them as a non-fatal warning so a partial import (1 good row,
-      // N silently dropped) is visible rather than presenting as a clean success.
-      std::string warning;
-      if (pushed->skipped > 0) {
-        warning = ontology_tag + " topic '" + topic_name + "': skipped " + std::to_string(pushed->skipped) + " of " +
-                  std::to_string(pushed->pushed + pushed->skipped) + " rows" +
-                  (pushed->first_error.empty() ? "" : (" (first: " + pushed->first_error + ")"));
-      }
-      finish(true, {}, std::move(warning));
-      return;
+    topic.batches.clear();
+    if (!topic.error.empty()) {
+      record_outcome(PJ::sdk::source::TopicOutcome::kFailed);
+      finish(false, topic.error);
+    } else if (topic.rows_pushed == 0) {
+      record_outcome(PJ::sdk::source::TopicOutcome::kEmptyOk);
+      finish(true, {}, "no data in the requested range");
+    } else {
+      record_outcome(PJ::sdk::source::TopicOutcome::kOk);
+      finish(true, {});
     }
-
-    // Cast Utf8View/BinaryView columns to canonical Utf8/Binary: pj_datastore's
-    // import can't parse Arrow view types and nulls the whole batch otherwise.
-    {
-      auto normalized = normalizeViewColumns(std::move(table));
-      if (!normalized.ok()) {
-        finish(false, stringFromArrow(normalized.status()));
-        return;
-      }
-      table = normalized.ValueOrDie();
-    }
-    auto reader = std::make_shared<arrow::TableBatchReader>(*table);
-    ArrowArrayStream stream{};
-    auto export_status = arrow::ExportRecordBatchReader(reader, &stream);
-    if (!export_status.ok()) {
-      finish(false, stringFromArrow(export_status));
-      return;
-    }
-    if (!host_provider_) {
-      stream.release(&stream);
-      finish(false, "host not bound");
-      return;
-    }
-    auto host = host_provider_();
-    // [C1] Same self-owned serialization as the image branch: hold
-    // host_write_mu_ across datasetForFetch + pumpStreamToHost (the host
-    // ensureTopic/appendArrowStream writes). See the lock-order note above.
-    std::lock_guard<std::mutex> write_lock(host_write_mu_);
-    auto ds = datasetForFetch(host, sequence_name);
-    if (!ds) {
-      stream.release(&stream);
-      finish(false, ds.error());
-      return;
-    }
-    ensureIngestProgress(*ds, sequence_name);
-    auto append_status = pumpStreamToHost(host, *ds, topic_name, &stream, ts_field);
-    if (!append_status) {
-      if (stream.release != nullptr) {
-        stream.release(&stream);
-      }
-      finish(false, append_status.error());
-      return;
-    }
-    finish(true, {});
   };
 
-  auto on_batch = [state](const std::string& topic_name, const std::shared_ptr<arrow::RecordBatch>& batch) {
+  auto on_batch = [state, route, push_batch](
+                      const std::string& topic_name, const std::shared_ptr<arrow::RecordBatch>& batch) {
     auto it = state->find(topic_name);
     if (it == state->end() || !batch) {
       return;
     }
-    if (!it->second.schema) {
-      it->second.schema = batch->schema();
+    PerTopic& topic = it->second;
+    if (!topic.schema) {
+      // One schema per topic, cached from whichever of on_schema/on_batch lands
+      // first: Flight gives a stream ONE schema, so there is deliberately no
+      // evolution machinery here — every later batch is framed against this one.
+      topic.schema = batch->schema();
     }
-    it->second.batches.push_back(batch);
+    route(topic, topic_name);
+    if (!topic.error.empty()) {
+      return;  // route() refused the topic; on_done reports it, buffering would only waste memory
+    }
+    // Stamped topics stream immediately; unstamped topics need the total row count.
+    if (topic.ts_route.empty()) {
+      topic.batches.push_back(batch);
+    } else {
+      push_batch(topic, topic_name, *batch);
+    }
   };
-  auto on_schema = [state](const std::string& topic_name, const std::shared_ptr<arrow::Schema>& schema) {
+  auto on_schema = [state, route](const std::string& topic_name, const std::shared_ptr<arrow::Schema>& schema) {
     auto it = state->find(topic_name);
     if (it != state->end() && !it->second.schema) {
       it->second.schema = schema;
+      route(it->second, topic_name);
     }
   };
   // [I6] Real progress bytes. The SDK already computes the TRUE decoded batch
@@ -791,7 +902,7 @@ void FetchWorker::pullTopicsAsync(
         {
           std::lock_guard<std::mutex> plock(progress_mu_);
           progress_bytes_by_topic_[topic_name] = bytes;
-          if (ingest_progress_.has_value()) {
+          if (ingest_progress_.has_value() && progress_started_) {
             const std::uint64_t fetched = accumulatedProgressBytesLocked();
             if (!ingest_progress_->progressUpdate(fetched) && !host_stop_reported_) {
               host_stop = true;
@@ -856,7 +967,7 @@ void FetchWorker::pullTopicsAsync(
     });
 
     if (pull_topics_override_) {
-      pull_topics_override_();
+      pull_topics_override_(on_batch, on_done);
     } else {
       (void)client_->pullTopics(
           sequence_name, topic_names_std, range, on_done, on_progress, &cancel_flag_, on_batch, on_schema,
@@ -871,6 +982,7 @@ void FetchWorker::pullTopicsAsync(
       pullFinished({{sequence_name, {}}, false, "pull failed: unknown error", {}});
     }
   }
+  reportIngestCompletion();
   // Bracket the host progress/stop channel on EVERY exit (success, cancel,
   // throw) and BEFORE allFetchesComplete: a zero-success provisional source is
   // rolled back; otherwise release lands before the dialog's terminal

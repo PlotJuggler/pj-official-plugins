@@ -15,7 +15,7 @@
 #   /workspace/build_ros2_${ROS_DISTRO}/Release/bin/libros2_stream_plugin-${ROS_DISTRO}.so
 #   /pj4/build/Release/pj_app/pj_app                                              (WITH_PJ_APP=1)
 #   /workspace/build_ros2_${ROS_DISTRO}/Release/test_extensions/ros2-topic-subscriber/   (WITH_PJ_APP=1)
-#       └ proxy + manifest + dist/${ROS_DISTRO}/inner.so — feed the parent
+#       └ proxy + manifest + dist/${ROS_DISTRO}/inner.pjros2 — feed the parent
 #         test_extensions/ dir to pj_app's extensions directory (default
 #         ~/.local/share/PlotJuggler4/extensions) via a bind-mount.
 
@@ -170,7 +170,7 @@ if [[ "${WITH_PJ_APP:-0}" == "1" ]]; then
   mkdir -p "${EXT_DIR}/dist/${ROS_DISTRO}"
   cp "${PROXY_SO}"     "${EXT_DIR}/"
   cp "${EXT_MANIFEST}" "${EXT_DIR}/"
-  cp "${INNER_SO}"     "${EXT_DIR}/dist/${ROS_DISTRO}/"
+  cp "${INNER_SO}"     "${EXT_DIR}/dist/${ROS_DISTRO}/libros2_stream_plugin-${ROS_DISTRO}.pjros2"
 
   echo "=== Test extension assembled: ${EXT_DIR} ==="
   echo "    Bind-mount ${TEST_EXT_ROOT} as the container's extensions dir"

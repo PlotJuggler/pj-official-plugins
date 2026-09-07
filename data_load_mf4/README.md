@@ -55,11 +55,11 @@ them from their upstream homes:
 | `canedge_00000001.MF4` (unfinalized CANedge raw-CAN log, J1939) | 3.0 MB | `https://raw.githubusercontent.com/CSS-Electronics/api-examples/master/examples/other/asammdf-basics/input/00000001.MF4` |
 
 ```bash
-mkdir -p /tmp/mf4_samples && cd /tmp/mf4_samples
+MF4_SAMPLES="$(mktemp -d)" && cd "$MF4_SAMPLES"
 curl -sL -O https://raw.githubusercontent.com/danielhrisca/asammdf/master/test/asammdf/gui/resources/ASAP2_Demo_V171.mf4
 curl -sL -o canedge_00000001.MF4 https://raw.githubusercontent.com/CSS-Electronics/api-examples/master/examples/other/asammdf-basics/input/00000001.MF4
 
-MF4_TEST_DATA_DIR=/tmp/mf4_samples ctest --test-dir <build> -R mf4 --output-on-failure
+MF4_TEST_DATA_DIR="$MF4_SAMPLES" ctest --test-dir <build> -R mf4 --output-on-failure
 ```
 
 ## Known Limitations

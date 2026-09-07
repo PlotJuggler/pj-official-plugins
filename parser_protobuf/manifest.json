@@ -1,8 +1,8 @@
 {
   "id": "protobuf-parser",
   "name": "Protobuf Parser",
-  "version": "1.1.0",
-  "description": "Message parser for Protocol Buffers encoded data. Promotes the well-known Foxglove schemas (PointCloud, CompressedVideo, CompressedImage, RawImage, ImageAnnotations, SceneUpdate, FrameTransform, PosesInFrame, CameraCalibration) to builtin scene objects.",
+  "version": "1.2.0",
+  "description": "Message parser for Protocol Buffers encoded data. Promotes the well-known Foxglove schemas (PointCloud, CompressedVideo, CompressedImage, RawImage, ImageAnnotations, SceneUpdate, FrameTransform, PosesInFrame, CameraCalibration, VoxelGrid, Grid) to builtin scene objects.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
   "website": "https://github.com/PlotJuggler/pj-official-plugins",
@@ -25,5 +25,6 @@
   "encoding": [
     "protobuf"
   ],
-  "min_plotjuggler_version": "3.999.1"
+  "min_sdk_required": "0.28.0",
+  "min_plotjuggler_version": "4.0.0"
 }

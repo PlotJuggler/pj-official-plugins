@@ -212,6 +212,20 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kOccupancyGridUpdate,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseOccupancyGridUpdate}},
+      // grid_map_msgs/GridMap (elevation maps, layered costmaps) becomes a
+      // canonical GridMap through the pj_grid_map transcoder. The slim scalar
+      // route keeps the header + GridMapInfo + layer/size counts plottable
+      // without walking the per-layer float arrays.
+      {"grid_map_msgs/GridMap",
+       {.object_type = ObjectType::kGridMap,
+        .parse_scalars = &RosParser::parseGridMapScalars,
+        .parse_object = &RosParser::parseGridMap}},
+      // Foxglove's own grid message shares the canonical packed cell layout, so
+      // data[] is a zero-copy view. Bare-time head (no std_msgs/Header).
+      {"foxglove_msgs/Grid",
+       {.object_type = ObjectType::kGridMap,
+        .parse_scalars = &RosParser::parseFoxgloveGridScalars,
+        .parse_object = &RosParser::parseFoxgloveGrid}},
       // Markers are 3D scene content with no meaningful scalar columns, but they
       // still need a slim parse_scalars: an object-only entry makes the host's
       // eager-scalar ingest abort the push on any non-kPureLazy policy (e.g. live
@@ -721,12 +735,12 @@ void RosParser::ensureDeserializer() {
 }
 
 RosMsgParser::Span<const uint8_t> RosParser::readByteSequence() {
-  // Bytes available at the cursor, captured before the read (the 4-byte length
-  // prefix and any trailing fields are included, so the bound is conservative:
-  // it can only over-accept by that slack, never falsely reject a full message).
-  const size_t available = deserializer_->bytesLeft();
+  // End of the payload, captured before the read: the check is on the span's
+  // end pointer, so the CDR alignment padding consumed before the length word
+  // cannot give the declared length any slack.
+  const uint8_t* end = deserializer_->getCurrentPtr() + deserializer_->bytesLeft();
   const auto span = deserializer_->deserializeByteSequence();
-  if (available < sizeof(uint32_t) || span.size() > available - sizeof(uint32_t)) {
+  if (!span.empty() && span.data() + span.size() > end) {
     // The declared length ran past the payload. deserializeByteSequence has already
     // advanced the cursor past the end, so both this span AND any field the handler
     // reads next would be out of bounds; abort now (caught upstream -> Expected error).
@@ -838,13 +852,15 @@ RosParser::HeaderData RosParser::readHeader() {
 }
 
 int64_t RosParser::readBareTime() {
-  // builtin_interfaces/Time { int32 sec; uint32 nanosec }. Signed on every wire
-  // that carries it: this is a ROS 2 type, and the foxglove_msgs schemas that
-  // embed it bare (CompressedVideo / CompressedPointCloud / PosesInFrame) are
-  // ROS 2 only. Same signedness trap as the ROS 2 branch of readHeader().
-  const int32_t sec = static_cast<int32_t>(deserializer_->deserializeUInt32());
+  // The foxglove_msgs schemas lead with a bare stamp whose `sec` word has the
+  // same wire-dependent signedness as the Header stamp: ROS 2
+  // builtin_interfaces/Time.sec is int32 (negative stamps are legal), ROS 1
+  // `time`.sec is uint32 (its upper half would go negative if read signed).
+  const uint32_t raw_sec = deserializer_->deserializeUInt32();
+  const int64_t sec =
+      deserializer_->isROS2() ? static_cast<int64_t>(static_cast<int32_t>(raw_sec)) : static_cast<int64_t>(raw_sec);
   const uint32_t nsec = deserializer_->deserializeUInt32();
-  const int64_t ts_ns = static_cast<int64_t>(sec) * 1000000000LL + static_cast<int64_t>(nsec);
+  const int64_t ts_ns = sec * 1000000000LL + static_cast<int64_t>(nsec);
   if (use_embedded_timestamp_ && ts_ns > 0) {
     current_timestamp_ = ts_ns;
   }
@@ -892,16 +908,17 @@ void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
     }
   }
 
-  // Combined /header/stamp (seconds): every std_msgs/Header topic gets the single
-  // plottable stamp series the specialized handlers emit via emitHeader(), on top
-  // of the split sec/nanosec leaves added below. A diagnostic aid for clock
+  // Combined /header/stamp (seconds) for ROS 2, whose std_msgs/Header flattens
+  // to split sec/nanosec leaves: the single plottable stamp series the
+  // specialized handlers emit via emitHeader(), a diagnostic aid for clock
   // offset/skew against the message (log/publish) time. Independent of the
-  // use_embedded_timestamp toggle. value[0]/value[1] are the header stamp leaves
-  // (ROS2: sec, nanosec; ROS1: seq, stamp) — same assumption as the block above.
-  if (has_header_ && flat_msg_.value.size() >= 2) {
-    const double stamp_sec = deserializer_->isROS2() ? flat_msg_.value[0].second.convert<double>() +
-                                                           1e-9 * flat_msg_.value[1].second.convert<double>()
-                                                     : flat_msg_.value[1].second.convert<double>();
+  // use_embedded_timestamp toggle. ROS 1 must NOT get it: its `time` builtin
+  // already flattens to one /header/stamp leaf in seconds, and a second column
+  // of the same name makes the datastore reject the whole record.
+  // value[0]/value[1] are the sec/nanosec leaves — same assumption as above.
+  if (has_header_ && deserializer_->isROS2() && flat_msg_.value.size() >= 2) {
+    const double stamp_sec =
+        flat_msg_.value[0].second.convert<double>() + 1e-9 * flat_msg_.value[1].second.convert<double>();
     addField("/header/stamp", stamp_sec);
   }
 

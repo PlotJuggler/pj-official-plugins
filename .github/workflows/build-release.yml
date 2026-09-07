@@ -57,8 +57,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Resolve build scope
         id: build-scope
@@ -108,7 +106,7 @@ jobs:
         shell: bash
         run: scripts/configure_jfrog_conan.sh
 
-      - name: Acquire plotjuggler_sdk (JFrog → submodule fallback)
+      - name: Acquire plotjuggler_sdk (JFrog → source fallback)
         if: steps.build-scope.outputs.skip != 'true'
         shell: bash
         run: scripts/ensure_core.sh
@@ -126,7 +124,7 @@ jobs:
 
       - name: Upload built Conan binaries to JFrog
         # Publish every dependency compiled above (and the SDK if ensure_core.sh
-        # built it from the submodule) so the next tag / weekly run on this
+        # built it from source) so the next tag / weekly run on this
         # platform fetches them prebuilt. This matrix is the ONLY producer of
         # linux-aarch64, windows-x64/arm64 and macos-arm64 release binaries: the
         # CI workflows prime JFrog for linux-x86_64 and macos only, so without

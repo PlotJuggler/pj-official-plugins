@@ -20,7 +20,7 @@ By default only the host platform is packaged (``--host-platform``, default
 cross-mounted from another machine — are added with repeatable ``--platform``
 flags:
 
-    --platform windows-x86_64=/mnt/win-build
+    --platform windows-x86_64="$WINDOWS_BUILD_DIR"
 
 A platform whose build directory is absent, or that has no matching binary, is
 skipped with a warning rather than failing the whole run; the registry entry then
@@ -34,11 +34,11 @@ Usage
 
     # Specific plugins (source dir or extension id), custom output
     python3 scripts/build_local_registry.py csv-loader data_load_parquet \
-        --output /tmp/registry.json
+        --output build/registry.json
 
     # Add a Windows x86_64 build from a cross-mounted directory
     python3 scripts/build_local_registry.py \
-        --platform windows-x86_64=/mnt/win-build
+        --platform windows-x86_64="$WINDOWS_BUILD_DIR"
 """
 
 import argparse
@@ -175,7 +175,7 @@ def main() -> int:
         default=[],
         type=parse_platform_flag,
         metavar="NAME=BUILDDIR",
-        help="Additional platform to package from another build dir, e.g. windows-x86_64=/mnt/win-build (repeatable)",
+        help="Additional platform to package from another build dir, as NAME=BUILDDIR (repeatable)",
     )
     parser.add_argument(
         "--output",

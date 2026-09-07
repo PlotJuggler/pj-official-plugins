@@ -157,7 +157,7 @@ any other config.
 ## Build
 
 ```bash
-cd ~/Work/pj-official-plugins
+# from the repository root
 ./build.sh toolbox_anomaly_detector   # the GUI plugin (Luau-free; host-driven)
 ./build.sh tools/anomaly_runner       # the headless CLI (standalone engine)
 ```
