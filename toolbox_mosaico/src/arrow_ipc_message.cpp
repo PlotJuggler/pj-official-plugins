@@ -3,6 +3,7 @@
 #include "arrow_ipc_message.hpp"
 
 #include <arrow/api.h>
+#include <arrow/compute/api.h>
 #include <arrow/extension_type.h>
 #include <arrow/io/memory.h>
 #include <arrow/ipc/writer.h>
@@ -142,6 +143,104 @@ arrow::Result<std::shared_ptr<arrow::Buffer>> serializeIpcStream(
   ARROW_RETURN_NOT_OK(writer->WriteRecordBatch(batch));
   ARROW_RETURN_NOT_OK(writer->Close());
   return sink->Finish();
+}
+
+namespace {
+
+// Total bytes held in the variadic (out-of-line) data buffers of every view
+// array under `data`. This is what a per-row IPC slice would drag along in full
+// (arrow/ipc/writer.cc); it also decides whether the de-viewed offsets fit in
+// int32 (`binary`/`utf8`) or need int64 (`large_binary`/`large_utf8`).
+std::int64_t viewDataBytes(const arrow::ArrayData& data) {
+  std::int64_t total = 0;
+  if (data.type != nullptr &&
+      (data.type->id() == arrow::Type::STRING_VIEW || data.type->id() == arrow::Type::BINARY_VIEW)) {
+    // buffers[0]=validity, buffers[1]=views; buffers[2..]=out-of-line data.
+    for (std::size_t i = 2; i < data.buffers.size(); ++i) {
+      if (data.buffers[i] != nullptr) {
+        total += data.buffers[i]->size();
+      }
+    }
+  }
+  for (const auto& child : data.child_data) {
+    if (child != nullptr) {
+      total += viewDataBytes(*child);
+    }
+  }
+  if (data.dictionary != nullptr) {
+    total += viewDataBytes(*data.dictionary);
+  }
+  return total;
+}
+
+// A copy of `type` with every view type replaced, recursing through the nested
+// types Mosaico object schemas actually use. @p use_large selects int64-offset
+// targets. Returns a type Equals-equal to the input when it holds no views.
+std::shared_ptr<arrow::DataType> deViewType(const std::shared_ptr<arrow::DataType>& type, bool use_large) {
+  switch (type->id()) {
+    case arrow::Type::STRING_VIEW:
+      return use_large ? arrow::large_utf8() : arrow::utf8();
+    case arrow::Type::BINARY_VIEW:
+      return use_large ? arrow::large_binary() : arrow::binary();
+    case arrow::Type::STRUCT: {
+      std::vector<std::shared_ptr<arrow::Field>> fields;
+      fields.reserve(static_cast<std::size_t>(type->num_fields()));
+      for (const auto& field : type->fields()) {
+        fields.push_back(field->WithType(deViewType(field->type(), use_large)));
+      }
+      return arrow::struct_(fields);
+    }
+    case arrow::Type::LIST:
+      return arrow::list(type->field(0)->WithType(deViewType(type->field(0)->type(), use_large)));
+    case arrow::Type::LARGE_LIST:
+      return arrow::large_list(type->field(0)->WithType(deViewType(type->field(0)->type(), use_large)));
+    case arrow::Type::FIXED_SIZE_LIST: {
+      const auto& fsl = static_cast<const arrow::FixedSizeListType&>(*type);
+      return arrow::fixed_size_list(
+          type->field(0)->WithType(deViewType(type->field(0)->type(), use_large)), fsl.list_size());
+    }
+    case arrow::Type::MAP: {
+      const auto& map = static_cast<const arrow::MapType&>(*type);
+      return arrow::map(
+          deViewType(map.key_type(), use_large), deViewType(map.item_type(), use_large), map.keys_sorted());
+    }
+    default:
+      return type;
+  }
+}
+
+}  // namespace
+
+arrow::Result<std::shared_ptr<arrow::RecordBatch>> normalizeViewColumns(const arrow::RecordBatch& batch) {
+  const auto& schema = *batch.schema();
+  std::vector<std::shared_ptr<arrow::Field>> fields;
+  std::vector<std::shared_ptr<arrow::Array>> columns;
+  fields.reserve(static_cast<std::size_t>(schema.num_fields()));
+  columns.reserve(static_cast<std::size_t>(schema.num_fields()));
+  bool changed = false;
+  for (int i = 0; i < schema.num_fields(); ++i) {
+    const auto& field = schema.field(i);
+    std::shared_ptr<arrow::Array> col = batch.column(i);
+    // int32-offset targets unless this column's out-of-line view bytes exceed
+    // what an int32 offset can address, in which case use the int64-offset
+    // (`large_*`) forms — both are decoded by parser_arrow.
+    const bool use_large = viewDataBytes(*col->data()) > std::numeric_limits<std::int32_t>::max();
+    auto target = deViewType(field->type(), use_large);
+    if (target->Equals(*field->type())) {
+      columns.push_back(std::move(col));
+      fields.push_back(field);
+      continue;
+    }
+    ARROW_ASSIGN_OR_RAISE(auto casted, arrow::compute::Cast(arrow::Datum(std::move(col)), target));
+    columns.push_back(casted.make_array());
+    fields.push_back(field->WithType(target));
+    changed = true;
+  }
+  // Nothing to do: return the batch unchanged (Slice(0) is a cheap shared copy).
+  if (!changed) {
+    return batch.Slice(0);
+  }
+  return arrow::RecordBatch::Make(arrow::schema(fields, schema.metadata()), batch.num_rows(), std::move(columns));
 }
 
 std::string parserConfigJson(std::string_view timestamp_field, std::int64_t synthetic_interval_ns, PJ::TimeUnit unit) {

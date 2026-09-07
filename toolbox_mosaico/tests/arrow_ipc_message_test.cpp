@@ -310,4 +310,62 @@ TEST(FirstRowTimestampNs, ConfiguredIntegerUnitsAndOverflow) {
   EXPECT_EQ(config.at("timestamp_unit"), "us");
 }
 
+TEST(NormalizeViewColumns, CollapsesPerRowSliceAndRoundTrips) {
+  // Three ~1 MB values force out-of-line variadic buffers in the view array.
+  const std::string big(1u << 20, 'x');
+  arrow::BinaryViewBuilder builder;
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_TRUE(builder.Append(big).ok());
+  }
+  std::shared_ptr<arrow::Array> views;
+  ASSERT_TRUE(builder.Finish(&views).ok());
+  auto batch = arrow::RecordBatch::Make(arrow::schema({arrow::field("data", arrow::binary_view())}), 3, {views});
+
+  // Arrow's IPC writer emits a view array's whole variadic buffers for a 1-row
+  // slice, so one row carries the batch's ~3 MB.
+  auto raw = mosaico::serializeIpcStream(*batch->Slice(1, 1));
+  ASSERT_TRUE(raw.ok());
+  EXPECT_GT((*raw)->size(), static_cast<std::int64_t>(2) << 20);
+
+  // De-viewed, a 1-row slice carries only its own ~1 MB, and decodes to binary.
+  auto normalized = mosaico::normalizeViewColumns(*batch);
+  ASSERT_TRUE(normalized.ok());
+  EXPECT_EQ((*normalized)->schema()->field(0)->type()->id(), arrow::Type::BINARY);
+  auto slim = mosaico::serializeIpcStream(*(*normalized)->Slice(1, 1));
+  ASSERT_TRUE(slim.ok());
+  EXPECT_LT((*slim)->size(), (static_cast<std::int64_t>(1) << 20) + (8 << 10));
+
+  auto reader = arrow::ipc::RecordBatchStreamReader::Open(std::make_shared<arrow::io::BufferReader>(*slim));
+  ASSERT_TRUE(reader.ok());
+  std::shared_ptr<arrow::RecordBatch> decoded;
+  ASSERT_TRUE((*reader)->ReadNext(&decoded).ok());
+  ASSERT_NE(decoded, nullptr);
+  EXPECT_EQ(std::static_pointer_cast<arrow::BinaryArray>(decoded->column(0))->GetString(0), big);
+}
+
+TEST(NormalizeViewColumns, NoViewColumnsReturnsUnchanged) {
+  const auto batch = scalarBatch();
+  auto normalized = mosaico::normalizeViewColumns(*batch);
+  ASSERT_TRUE(normalized.ok());
+  EXPECT_TRUE((*normalized)->schema()->Equals(*batch->schema()));
+  EXPECT_TRUE((*normalized)->Equals(*batch));
+}
+
+TEST(NormalizeViewColumns, RewritesViewNestedInStruct) {
+  arrow::StringViewBuilder inner_builder;
+  ASSERT_TRUE(inner_builder.Append(std::string(4096, 'a')).ok());
+  std::shared_ptr<arrow::Array> inner;
+  ASSERT_TRUE(inner_builder.Finish(&inner).ok());
+  auto struct_result = arrow::StructArray::Make({inner}, std::vector<std::string>{"frame_id"});
+  ASSERT_TRUE(struct_result.ok());
+  auto batch =
+      arrow::RecordBatch::Make(arrow::schema({arrow::field("header", (*struct_result)->type())}), 1, {*struct_result});
+
+  auto normalized = mosaico::normalizeViewColumns(*batch);
+  ASSERT_TRUE(normalized.ok());
+  const auto out_struct = (*normalized)->schema()->field(0)->type();
+  ASSERT_EQ(out_struct->id(), arrow::Type::STRUCT);
+  EXPECT_EQ(out_struct->field(0)->type()->id(), arrow::Type::STRING);
+}
+
 }  // namespace
