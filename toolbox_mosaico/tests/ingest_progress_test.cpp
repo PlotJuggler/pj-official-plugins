@@ -17,6 +17,7 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/ingest_completion.hpp>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -169,6 +170,11 @@ class FakeIngestHost {
   std::vector<std::pair<PJ_data_source_state_t, std::string>> stop_requests;  // guarded by mu
   std::vector<PJ::sdk::IngestCompletionRecord> completions;                   // guarded by mu (validated copies)
   std::mutex mu;
+  // Faults/hooks are configured before the fetch thread starts.
+  bool reject_binding = false;
+  bool reject_push = false;
+  std::function<void()> before_push;
+  std::function<void()> on_stop;
 
  private:
   PJ_toolbox_runtime_host_vtable_t& runtimeBase() {
@@ -211,8 +217,12 @@ class FakeIngestHost {
 
   static bool ensureParserBinding(
       void* ctx, const PJ_parser_binding_request_t* request, PJ_parser_binding_handle_t* out_handle,
-      PJ_error_t*) PJ_NOEXCEPT {
+      PJ_error_t* error) PJ_NOEXCEPT {
     auto* self = static_cast<FakeIngestHost*>(ctx);
+    if (self->reject_binding) {
+      PJ::sdk::setErrorField(error->message, sizeof(error->message), "binding rejected");
+      return false;
+    }
     std::lock_guard<std::mutex> lock(self->mu);
     self->bindings.push_back(
         Binding{
@@ -227,6 +237,16 @@ class FakeIngestHost {
       void* ctx, PJ_parser_binding_handle_t handle, std::int64_t host_timestamp_ns, PJ_message_data_fetcher_t fetch,
       PJ_error_t* error) PJ_NOEXCEPT {
     auto* self = static_cast<FakeIngestHost*>(ctx);
+    if (self->before_push) {
+      self->before_push();
+    }
+    if (self->reject_push) {
+      PJ::sdk::setErrorField(error->message, sizeof(error->message), "message rejected");
+      if (fetch.release != nullptr) {
+        fetch.release(fetch.ctx);
+      }
+      return false;
+    }
     PJ_payload_t payload{};
     const bool fetched = fetch.fetchMessageData(fetch.ctx, &payload, error);
     if (fetched) {
@@ -247,6 +267,9 @@ class FakeIngestHost {
     auto* self = static_cast<FakeIngestHost*>(ctx);
     std::lock_guard<std::mutex> lock(self->mu);
     self->stop_requests.emplace_back(terminal_state, str(reason));
+    if (self->on_stop) {
+      self->on_stop();
+    }
   }
 
   static bool attachSourceRecord(void* ctx, PJ_string_view_t descriptor_json, PJ_error_t*) PJ_NOEXCEPT {
@@ -600,6 +623,133 @@ TEST(MosaicoTransport, ScalarTopicFailsWhenTheHostOffersNoParserIngest) {
   // The host's own reason reaches the user, not a hardcoded placeholder.
   EXPECT_NE(results[0].error.find("no parser installed for arrow-ipc"), std::string::npos) << results[0].error;
   EXPECT_EQ(host.discardedParserIngests(), 1U);
+}
+
+TEST(MosaicoTransport, HostRejectionFailsTheTopicAndDiscardsItsEmptyDataset) {
+  for (bool reject_binding : {false, true}) {
+    SCOPED_TRACE(reject_binding);
+    FakeIngestHost host;
+    host.reject_binding = reject_binding;
+    host.reject_push = !reject_binding;
+    mosaico::FetchWorker worker;
+    worker.setHostProvider([&host] { return host.writeView(); });
+    worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+    mosaico::testing::FetchWorkerTestAccess::setServerOrigin(worker, "mosaico.example.com:32010");
+    std::vector<mosaico::PullResultEvent> results;
+    worker.pullFinished = [&results](auto result) { results.push_back(std::move(result)); };
+    mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(
+        worker, [](const auto& on_batch, const auto& on_done) {
+          on_batch("imu", scalarBatch(1000));
+          on_batch("imu", scalarBatch(2000));
+          on_done("imu", mosaico::PullResult{});
+        });
+
+    worker.pullTopicsAsync("seq", {"imu"}, 0, 1);
+
+    ASSERT_EQ(results.size(), 1U);
+    EXPECT_FALSE(results[0].ok);
+    EXPECT_NE(results[0].error.find(reject_binding ? "binding rejected" : "message rejected"), std::string::npos);
+    EXPECT_TRUE(host.messages.empty());
+    EXPECT_EQ(host.discardedParserIngests(), 1U);
+    EXPECT_EQ(host.releasedParserIngests(), 1U);
+    EXPECT_EQ(host.progressFinishes(), 1U);
+    EXPECT_EQ(host.liveDataSources(), 0U);
+    ASSERT_EQ(host.completions.size(), 1U);
+    EXPECT_EQ(host.completions[0].outcome, PJ::sdk::IngestOutcome::kFailed);
+  }
+}
+
+TEST(MosaicoTransport, ExceptionFinishesProgressAndTheSameWorkerCanRetry) {
+  for (bool standard_exception : {false, true}) {
+    SCOPED_TRACE(standard_exception);
+    FakeIngestHost host;
+    mosaico::FetchWorker worker;
+    worker.setHostProvider([&host] { return host.writeView(); });
+    worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+    mosaico::testing::FetchWorkerTestAccess::setServerOrigin(worker, "mosaico.example.com:32010");
+    std::vector<mosaico::PullResultEvent> results;
+    worker.pullFinished = [&results](auto result) { results.push_back(std::move(result)); };
+    int completed_fetches = 0;
+    worker.allFetchesComplete = [&](std::string) {
+      ++completed_fetches;
+      EXPECT_FALSE(host.hasLiveParserIngest());
+    };
+    mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(
+        worker, [standard_exception](const auto&, const auto&) {
+          if (standard_exception) {
+            throw std::runtime_error("broken transport");
+          }
+          throw 42;
+        });
+    worker.pullTopicsAsync("first", {"failed"}, 0, 1);
+    ASSERT_EQ(results.size(), 1U);
+    EXPECT_FALSE(results[0].ok);
+    EXPECT_NE(results[0].error.find(standard_exception ? "broken transport" : "unknown error"), std::string::npos);
+    EXPECT_EQ(completed_fetches, 1);
+    EXPECT_EQ(host.discardedParserIngests(), 1U);
+
+    mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(
+        worker, [](const auto& on_batch, const auto& on_done) {
+          on_batch("retried", scalarBatch(1000));
+          on_done("retried", mosaico::PullResult{});
+        });
+    worker.pullTopicsAsync("second", {"retried"}, 0, 1);
+    ASSERT_EQ(results.size(), 2U);
+    EXPECT_TRUE(results[1].ok) << results[1].error;
+    EXPECT_EQ(completed_fetches, 2);
+    EXPECT_EQ(host.createdDataSources(), 2U);
+    EXPECT_EQ(host.liveDataSources(), 1U);
+    EXPECT_EQ(host.releasedParserIngests(), 2U);
+    EXPECT_EQ(host.progressFinishes(), 2U);
+    ASSERT_EQ(host.completions.size(), 2U);
+    EXPECT_EQ(host.completions[0].outcome, PJ::sdk::IngestOutcome::kFailed);
+    EXPECT_EQ(host.completions[1].outcome, PJ::sdk::IngestOutcome::kCompleted);
+    EXPECT_EQ(host.completions[1].requested_topics, std::vector<std::string>{"retried"});
+    worker.requestCancel();
+    EXPECT_TRUE(host.stop_requests.empty()) << "late cancellation must not use a released host context";
+  }
+}
+
+TEST(MosaicoIngestProgress, CancelWakesAHostPushHoldingTheProgressLock) {
+  FakeIngestHost host;
+  mosaico::FetchWorker worker;
+  worker.setHostProvider([&host] { return host.writeView(); });
+  worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+  mosaico::testing::FetchWorkerTestAccess::setServerOrigin(worker, "mosaico.example.com:32010");
+  std::mutex queue_mu;
+  std::condition_variable queue_cv;
+  bool push_entered = false;
+  bool stopped = false;
+  host.before_push = [&] {
+    std::unique_lock<std::mutex> lock(queue_mu);
+    push_entered = true;
+    queue_cv.notify_all();
+    // A timeout releases the producer even if cancellation regresses to a deadlock.
+    EXPECT_TRUE(queue_cv.wait_for(lock, 2s, [&] { return stopped; }));
+  };
+  host.on_stop = [&] {
+    std::lock_guard<std::mutex> lock(queue_mu);
+    stopped = true;
+    queue_cv.notify_all();
+  };
+  mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(worker, [](const auto& on_batch, const auto& on_done) {
+    on_batch("imu", scalarBatch(1000));
+    on_done("imu", mosaico::PullResult{});
+  });
+  std::thread fetch_thread([&] { worker.pullTopicsAsync("seq", {"imu"}, 0, 1); });
+  {
+    std::unique_lock<std::mutex> lock(queue_mu);
+    EXPECT_TRUE(queue_cv.wait_for(lock, 2s, [&] { return push_entered; }));
+  }
+  worker.requestCancel();
+  fetch_thread.join();
+  EXPECT_TRUE(stopped);
+  EXPECT_EQ(host.stop_requests.size(), 1U);
+  EXPECT_EQ(host.releasedParserIngests(), 1U);
+  EXPECT_EQ(host.progressFinishes(), 1U);
+  EXPECT_FALSE(host.hasLiveParserIngest());
+  ASSERT_EQ(host.completions.size(), 1U);
+  EXPECT_EQ(host.completions[0].outcome, PJ::sdk::IngestOutcome::kCancelled);
 }
 
 // A refused progressStart costs the progress bar only: the ingest context is
