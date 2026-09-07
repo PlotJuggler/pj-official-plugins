@@ -71,16 +71,12 @@ struct TimestampLeaf {
 [[nodiscard]] arrow::Result<std::shared_ptr<arrow::Buffer>> serializeIpcStream(
     const arrow::RecordBatch& batch, std::int64_t capacity_hint = 0);
 
-/// Cast every `string_view`/`binary_view` column to `utf8`/`binary`.
-/// Arrow's IPC writer emits a view array's variadic data buffers UNSLICED
-/// (arrow/ipc/writer.cc, `Visit(const BinaryViewArray&)`), so serializing a
-/// one-row `Slice` of a view column carries the WHOLE batch's payload. On the
-/// object route — where each row becomes its own message — that inflates every
-/// message ~rows-per-batch fold. De-viewing first makes a one-row slice carry
-/// only its own bytes. Returns the input unchanged (shared) when no view column
-/// is present. Recurses through struct/list/large_list/fixed_size_list/map so a
-/// nested view is de-viewed too, and uses the int64-offset `large_*` forms for
-/// any column whose out-of-line view bytes exceed an int32 offset's reach.
+/// Validate and materialize string/binary views before per-row IPC slicing,
+/// which otherwise serializes every shared backing buffer for each row.
+/// Uses large_utf8/large_binary to avoid offset overflow when views share bytes.
+/// Recurses through structs, lists and maps; decodes dictionaries and list views
+/// containing string/binary views. Shares unchanged columns and preserves field
+/// metadata. Returns an error for malformed input before casting it.
 [[nodiscard]] arrow::Result<std::shared_ptr<arrow::RecordBatch>> normalizeViewColumns(const arrow::RecordBatch& batch);
 
 /// `parser_arrow` configuration for one topic: `{"timestamp_column": <leaf

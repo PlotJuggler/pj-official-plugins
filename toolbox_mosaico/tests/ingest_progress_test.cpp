@@ -997,8 +997,7 @@ TEST(MosaicoTransport, SyntheticTimestampOverflowFailsTheTopic) {
   EXPECT_NE(results[0].error.find("overflow"), std::string::npos) << results[0].error;
 }
 
-// Canonical-object ontologies stay on the direct-write path: no parser binding,
-// no arrow-ipc message.
+// Canonical objects use one complete arrow-ipc message per row.
 TEST(MosaicoTransport, ObjectOntologyUsesOneRawMessagePerRow) {
   FakeIngestHost host;
   mosaico::FetchWorker worker;
@@ -1028,6 +1027,64 @@ TEST(MosaicoTransport, ObjectOntologyUsesOneRawMessagePerRow) {
     ASSERT_TRUE(batch.ok());
     ASSERT_EQ((*batch)->num_rows(), 1);
     EXPECT_EQ((*batch)->num_columns(), 2);
+  }
+}
+
+TEST(MosaicoTransport, ObjectViewsStayCompactAcrossStampedAndUnstampedBatches) {
+  for (bool stamped : {false, true}) {
+    SCOPED_TRACE(stamped);
+    FakeIngestHost host;
+    mosaico::FetchWorker worker;
+    worker.setHostProvider([&host] { return host.writeView(); });
+    worker.setRuntimeHostProvider([&host] { return host.runtimeView(); });
+    mosaico::TopicInfo info;
+    info.topic_name = "image";
+    info.ontology_tag = "image";
+    info.min_ts_ns = 1000;
+    info.max_ts_ns = 6000;
+    worker.setTopicInfoCache({{"image", info}});
+    std::vector<mosaico::PullResultEvent> results;
+    worker.pullFinished = [&results](auto result) { results.push_back(std::move(result)); };
+    mosaico::testing::FetchWorkerTestAccess::setPullTopicsOverride(
+        worker, [stamped](const auto& on_batch, const auto& on_done) {
+          for (int batch_index = 0; batch_index < 2; ++batch_index) {
+            arrow::BinaryViewBuilder data;
+            arrow::Int64Builder time;
+            for (int row = 0; row < 3; ++row) {
+              ASSERT_TRUE(data.Append(std::string(64 << 10, static_cast<char>('a' + batch_index * 3 + row))).ok());
+              ASSERT_TRUE(time.Append(1000 * (1 + batch_index * 3 + row)).ok());
+            }
+            arrow::ArrayVector columns{data.Finish().ValueOrDie()};
+            arrow::FieldVector fields{arrow::field("data", arrow::binary_view())};
+            if (stamped) {
+              columns.push_back(time.Finish().ValueOrDie());
+              fields.push_back(arrow::field("timestamp_ns", arrow::int64()));
+            }
+            on_batch("image", arrow::RecordBatch::Make(arrow::schema(fields), 3, columns));
+          }
+          on_done("image", mosaico::PullResult{});
+        });
+    worker.pullTopicsAsync("seq", {"image"}, 0, 1);
+    ASSERT_EQ(results.size(), 1U);
+    ASSERT_TRUE(results[0].ok) << results[0].error;
+    ASSERT_EQ(host.bindings.size(), 1U);
+    ASSERT_EQ(host.messages.size(), 6U);
+    for (std::size_t row = 0; row < host.messages.size(); ++row) {
+      const auto& message = host.messages[row];
+      EXPECT_EQ(message.host_ts_ns, 1000 * (row + 1));
+      EXPECT_LT(message.payload.size(), (64U << 10) + 8192);
+      auto buffer = std::make_shared<arrow::Buffer>(message.payload.data(), message.payload.size());
+      auto reader = arrow::ipc::RecordBatchStreamReader::Open(std::make_shared<arrow::io::BufferReader>(buffer));
+      ASSERT_TRUE(reader.ok()) << reader.status();
+      auto decoded = (*reader)->Next();
+      ASSERT_TRUE(decoded.ok()) << decoded.status();
+      ASSERT_EQ((*decoded)->num_rows(), 1);
+      auto data = arrow::compute::Cast(*(*decoded)->GetColumnByName("data"), arrow::binary());
+      ASSERT_TRUE(data.ok()) << data.status();
+      EXPECT_EQ(
+          std::static_pointer_cast<arrow::BinaryArray>(*data)->GetString(0),
+          std::string(64 << 10, static_cast<char>('a' + row)));
+    }
   }
 }
 

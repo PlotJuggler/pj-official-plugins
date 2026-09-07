@@ -147,62 +147,53 @@ arrow::Result<std::shared_ptr<arrow::Buffer>> serializeIpcStream(
 
 namespace {
 
-// Total bytes held in the variadic (out-of-line) data buffers of every view
-// array under `data`. This is what a per-row IPC slice would drag along in full
-// (arrow/ipc/writer.cc); it also decides whether the de-viewed offsets fit in
-// int32 (`binary`/`utf8`) or need int64 (`large_binary`/`large_utf8`).
-std::int64_t viewDataBytes(const arrow::ArrayData& data) {
-  std::int64_t total = 0;
-  if (data.type != nullptr &&
-      (data.type->id() == arrow::Type::STRING_VIEW || data.type->id() == arrow::Type::BINARY_VIEW)) {
-    // buffers[0]=validity, buffers[1]=views; buffers[2..]=out-of-line data.
-    for (std::size_t i = 2; i < data.buffers.size(); ++i) {
-      if (data.buffers[i] != nullptr) {
-        total += data.buffers[i]->size();
-      }
-    }
-  }
-  for (const auto& child : data.child_data) {
-    if (child != nullptr) {
-      total += viewDataBytes(*child);
-    }
-  }
-  if (data.dictionary != nullptr) {
-    total += viewDataBytes(*data.dictionary);
-  }
-  return total;
-}
-
-// A copy of `type` with every view type replaced, recursing through the nested
-// types Mosaico object schemas actually use. @p use_large selects int64-offset
-// targets. Returns a type Equals-equal to the input when it holds no views.
-std::shared_ptr<arrow::DataType> deViewType(const std::shared_ptr<arrow::DataType>& type, bool use_large) {
+// Use 64-bit offsets: repeated views can materialize more bytes than their
+// shared backing buffers contain. Both large types are supported by parser_arrow.
+std::shared_ptr<arrow::DataType> deViewType(
+    const std::shared_ptr<arrow::DataType>& type, bool decode_dictionaries = true) {
   switch (type->id()) {
     case arrow::Type::STRING_VIEW:
-      return use_large ? arrow::large_utf8() : arrow::utf8();
+      return arrow::large_utf8();
     case arrow::Type::BINARY_VIEW:
-      return use_large ? arrow::large_binary() : arrow::binary();
+      return arrow::large_binary();
+    case arrow::Type::DICTIONARY: {
+      const auto& dictionary = static_cast<const arrow::DictionaryType&>(*type);
+      auto values = deViewType(dictionary.value_type(), decode_dictionaries);
+      // Keeping a dictionary would still serialize all its values for every row.
+      if (values->Equals(dictionary.value_type())) {
+        return type;
+      }
+      return decode_dictionaries ? values : arrow::dictionary(dictionary.index_type(), values, dictionary.ordered());
+    }
     case arrow::Type::STRUCT: {
       std::vector<std::shared_ptr<arrow::Field>> fields;
       fields.reserve(static_cast<std::size_t>(type->num_fields()));
       for (const auto& field : type->fields()) {
-        fields.push_back(field->WithType(deViewType(field->type(), use_large)));
+        fields.push_back(field->WithType(deViewType(field->type(), decode_dictionaries)));
       }
       return arrow::struct_(fields);
     }
     case arrow::Type::LIST:
-      return arrow::list(type->field(0)->WithType(deViewType(type->field(0)->type(), use_large)));
+      return arrow::list(type->field(0)->WithType(deViewType(type->field(0)->type(), decode_dictionaries)));
     case arrow::Type::LARGE_LIST:
-      return arrow::large_list(type->field(0)->WithType(deViewType(type->field(0)->type(), use_large)));
+      return arrow::large_list(type->field(0)->WithType(deViewType(type->field(0)->type(), decode_dictionaries)));
+    case arrow::Type::LIST_VIEW:
+    case arrow::Type::LARGE_LIST_VIEW: {
+      auto child = type->field(0)->WithType(deViewType(type->field(0)->type(), decode_dictionaries));
+      if (child->type()->Equals(type->field(0)->type())) {
+        return type;
+      }
+      return type->id() == arrow::Type::LIST_VIEW ? arrow::list(child) : arrow::large_list(child);
+    }
     case arrow::Type::FIXED_SIZE_LIST: {
       const auto& fsl = static_cast<const arrow::FixedSizeListType&>(*type);
       return arrow::fixed_size_list(
-          type->field(0)->WithType(deViewType(type->field(0)->type(), use_large)), fsl.list_size());
+          type->field(0)->WithType(deViewType(type->field(0)->type(), decode_dictionaries)), fsl.list_size());
     }
     case arrow::Type::MAP: {
       const auto& map = static_cast<const arrow::MapType&>(*type);
-      return arrow::map(
-          deViewType(map.key_type(), use_large), deViewType(map.item_type(), use_large), map.keys_sorted());
+      return std::make_shared<arrow::MapType>(
+          map.value_field()->WithType(deViewType(map.value_type(), decode_dictionaries)), map.keys_sorted());
     }
     default:
       return type;
@@ -212,6 +203,8 @@ std::shared_ptr<arrow::DataType> deViewType(const std::shared_ptr<arrow::DataTyp
 }  // namespace
 
 arrow::Result<std::shared_ptr<arrow::RecordBatch>> normalizeViewColumns(const arrow::RecordBatch& batch) {
+  // IPC readers do not fully validate descriptors; Cast dereferences them.
+  ARROW_RETURN_NOT_OK(batch.ValidateFull());
   const auto& schema = *batch.schema();
   std::vector<std::shared_ptr<arrow::Field>> fields;
   std::vector<std::shared_ptr<arrow::Array>> columns;
@@ -221,18 +214,20 @@ arrow::Result<std::shared_ptr<arrow::RecordBatch>> normalizeViewColumns(const ar
   for (int i = 0; i < schema.num_fields(); ++i) {
     const auto& field = schema.field(i);
     std::shared_ptr<arrow::Array> col = batch.column(i);
-    // int32-offset targets unless this column's out-of-line view bytes exceed
-    // what an int32 offset can address, in which case use the int64-offset
-    // (`large_*`) forms — both are decoded by parser_arrow.
-    const bool use_large = viewDataBytes(*col->data()) > std::numeric_limits<std::int32_t>::max();
-    auto target = deViewType(field->type(), use_large);
+    auto target = deViewType(field->type());
     if (target->Equals(*field->type())) {
       columns.push_back(std::move(col));
       fields.push_back(field);
       continue;
     }
-    ARROW_ASSIGN_OR_RAISE(auto casted, arrow::compute::Cast(arrow::Datum(std::move(col)), target));
-    columns.push_back(casted.make_array());
+    // Arrow 23 cannot Take view values when decoding a dictionary. Materialize
+    // those values first, including dictionaries nested inside other columns.
+    auto encoded_target = deViewType(field->type(), /*decode_dictionaries=*/false);
+    if (!encoded_target->Equals(target)) {
+      ARROW_ASSIGN_OR_RAISE(col, arrow::compute::Cast(*col, encoded_target));
+    }
+    ARROW_ASSIGN_OR_RAISE(col, arrow::compute::Cast(*col, target));
+    columns.push_back(std::move(col));
     fields.push_back(field->WithType(target));
     changed = true;
   }
