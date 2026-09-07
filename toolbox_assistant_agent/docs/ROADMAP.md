@@ -96,8 +96,9 @@ In order. Each item is verified on the integration line (`NORTH_STAR.md` §4; th
    and the plugin's creates switch to the qualified form with a fallback on older hosts. Built and
    driven on the integration line, not on a guess about when they merge.
 4. **The gate.** The table below, every cell checked on the integration deploy, with Claude Code,
-   then Codex, then OpenCode. Only then do the drafts open, and merge in this order: SDK #184 →
-   publish 0.27.0 → PJ4 #619 → #573 → the plugin.
+   then Codex, then OpenCode. Only then do the drafts open. SDK #184 is merged and published as
+   0.28.0 (renumbered on merge — 0.26.0 went to the GridMap builtin, 0.27.0 to the shared
+   timestamp arithmetic); what is left to merge, in order: PJ4 #619 → #573 → the plugin.
 
 ### Gate to Open
 
@@ -105,7 +106,7 @@ In order. Each item is verified on the integration line (`NORTH_STAR.md` §4; th
 |---|---|
 | PJ4 #573 (host UX) | floating by gesture and back to a tab; banner hidden while floating; Enter triggers the default button while floating (real keyboard — `xdotool` cannot measure this); logs stay put; Settings → Cancel → Settings reopens; the ☰ drawer as a side column in central, pinned and floating; the "AI" watermark inside every canvas of a model tab; playback and viewport hosts; declarative `pj_enable_when` in the settings dialog |
 | PJ4 #619 (qualified inputs) | a transform and a marker set created on `run_b` while `run_a` has the same topics; a bare duplicate refused with the qualified candidates; mixed datasets refused; the `:` hint on an unknown name |
-| SDK #184 (0.27.0: naming contract + services) | SDK suite green; the plugin's own copy of the split helper deleted in favour of `pj_base/sdk/dataset_qualified_name.hpp`; a stream dataset name with a colon (`[stream] UDP Server:`) still parses; play / pause / seek / rate / state exact against the transport; zoom and reset pixel-exact; `plot_tab` create / place / zoom / close; the codec tombstone fix |
+| SDK #184 (0.28.0: naming contract + services) — MERGED | SDK suite green; the plugin's own copy of the split helper deleted in favour of `pj_base/sdk/dataset_qualified_name.hpp`; a stream dataset name with a colon (`[stream] UDP Server:`) still parses; play / pause / seek / rate / state exact against the transport; zoom and reset pixel-exact; `plot_tab` create / place / zoom / close; the codec tombstone fix |
 | plugin | the eleven tools on the Nissan log; the drawer lists, resumes and deletes in all three harnesses; a conversation resumes after restarting PlotJuggler; per-turn cost (or tokens, where the harness has no price) on the status line; the withheld-tools test per harness green |
 
 ## Parked — real items that do not serve the North Star right now

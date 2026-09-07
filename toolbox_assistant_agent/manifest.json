@@ -15,5 +15,6 @@
     "assistant",
     "agent",
     "claude"
-  ]
+  ],
+  "min_sdk_required": "0.28.0"
 }
