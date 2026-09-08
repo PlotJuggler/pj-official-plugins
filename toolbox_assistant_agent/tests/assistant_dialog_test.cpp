@@ -25,6 +25,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/settings_store_host.hpp>
+#include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <string>
 #include <vector>
 
@@ -60,9 +61,11 @@ namespace {
 
 using assistant_agent::AssistantDialog;
 using assistant_agent::AssistantDialogTestPeer;
+using assistant_agent::catalogDigest;
 using assistant_agent::claudeSessionsDir;
 using assistant_agent::loadActiveSessionId;
 using assistant_agent::loadConversationTitles;
+using assistant_agent::resolveCatalogBudgetChars;
 using assistant_agent::SettingsStore;
 using nlohmann::json;
 
@@ -1050,6 +1053,96 @@ TEST_F(AssistantDialogSettingsSwitchTest, PickingCustomWithAnUntouchedTextBoxPer
   EXPECT_FALSE(dialog.onIndexChanged("claudeModelCombo", 1));
   EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
   EXPECT_EQ(SettingsStore(settings_view_).getString("assistant.claude.model", "unset"), "");
+}
+
+// resolveCatalogBudgetChars (assistant_dialog.hpp): the settings-reading helper
+// sendCurrentInput() calls fresh every turn to size the catalog digest. Driven
+// directly against a SettingsStore rather than through a full AssistantDialog
+// turn, per the same reasoning AssistantSettingsStore tests use (settings_store_test.cpp)
+// -- the dialog only ever forwards this value straight into catalogDigest, so
+// there is nothing a live turn would exercise that the helper itself does not.
+TEST(AssistantDialogCatalogBudget, DefaultsToSixThousandWhenKeyIsAbsent) {
+  PJ::sdk::InMemorySettingsBackend backend;
+  PJ::sdk::SettingsStoreHost host{backend};
+  SettingsStore store{PJ::sdk::SettingsView{host.view()}};
+  EXPECT_EQ(resolveCatalogBudgetChars(store), 6000);
+}
+
+TEST(AssistantDialogCatalogBudget, UsesTheStoredValueWithinRange) {
+  PJ::sdk::InMemorySettingsBackend backend;
+  PJ::sdk::SettingsStoreHost host{backend};
+  SettingsStore store{PJ::sdk::SettingsView{host.view()}};
+  store.setString("assistant.catalog_budget_chars", "1000");
+  EXPECT_EQ(resolveCatalogBudgetChars(store), 1000);
+}
+
+TEST(AssistantDialogCatalogBudget, ClampsBelowTheFloor) {
+  PJ::sdk::InMemorySettingsBackend backend;
+  PJ::sdk::SettingsStoreHost host{backend};
+  SettingsStore store{PJ::sdk::SettingsView{host.view()}};
+  store.setString("assistant.catalog_budget_chars", "1");
+  EXPECT_EQ(resolveCatalogBudgetChars(store), 1000);
+}
+
+TEST(AssistantDialogCatalogBudget, ClampsAboveTheCeiling) {
+  PJ::sdk::InMemorySettingsBackend backend;
+  PJ::sdk::SettingsStoreHost host{backend};
+  SettingsStore store{PJ::sdk::SettingsView{host.view()}};
+  store.setString("assistant.catalog_budget_chars", "999999999");
+  EXPECT_EQ(resolveCatalogBudgetChars(store), 200000);
+}
+
+TEST(AssistantDialogCatalogBudget, AnUnparsableValueFallsBackToTheDefault) {
+  PJ::sdk::InMemorySettingsBackend backend;
+  PJ::sdk::SettingsStoreHost host{backend};
+  SettingsStore store{PJ::sdk::SettingsView{host.view()}};
+  store.setString("assistant.catalog_budget_chars", "not-a-number");
+  EXPECT_EQ(resolveCatalogBudgetChars(store), 6000);
+}
+
+// The two behaviours sendCurrentInput() actually relies on: a configured
+// budget visibly shrinks+truncates the digest, and leaving the key untouched
+// reproduces catalogDigest's own default byte-for-byte -- an install that
+// never heard of this key must see no change at all.
+TEST(AssistantDialogCatalogBudget, FeedsCatalogDigestWithATighterBudget) {
+  PJ::testing::ToolboxTestStore data_store;
+  for (int i = 0; i < 400; ++i) {
+    const std::string name = "/topic_with_a_fairly_long_name_" + std::to_string(i);
+    data_store.addTopic(name);
+    data_store.addField(name, "value", {0}, {1.0});
+  }
+
+  PJ::sdk::InMemorySettingsBackend backend;
+  PJ::sdk::SettingsStoreHost host{backend};
+  SettingsStore settings{PJ::sdk::SettingsView{host.view()}};
+  settings.setString("assistant.catalog_budget_chars", "1000");
+
+  // Mirrors CatalogDigest.SaysSoWhenTruncated (tool_registry_test.cpp): the
+  // body is kept within budget_chars, but the header/footer sentences that
+  // explain the truncation are added on top of it, so the total stays well
+  // under a small multiple of the budget rather than under the budget itself.
+  const std::string digest =
+      catalogDigest(PJ::sdk::ToolboxHostView(data_store.makeHost()), resolveCatalogBudgetChars(settings));
+  EXPECT_LT(digest.size(), 2000u) << "the digest must respect its (settings-derived) budget: " << digest;
+  EXPECT_NE(digest.find("TRUNCATED"), std::string::npos) << digest;
+}
+
+TEST(AssistantDialogCatalogBudget, AbsentKeyReproducesTheDefaultBudgetDigestByteForByte) {
+  PJ::testing::ToolboxTestStore data_store;
+  for (int i = 0; i < 400; ++i) {
+    const std::string name = "/topic_with_a_fairly_long_name_" + std::to_string(i);
+    data_store.addTopic(name);
+    data_store.addField(name, "value", {0}, {1.0});
+  }
+
+  PJ::sdk::InMemorySettingsBackend backend;
+  PJ::sdk::SettingsStoreHost host{backend};
+  SettingsStore settings{PJ::sdk::SettingsView{host.view()}};  // key never set
+
+  const std::string digest_via_settings =
+      catalogDigest(PJ::sdk::ToolboxHostView(data_store.makeHost()), resolveCatalogBudgetChars(settings));
+  const std::string digest_default_arg = catalogDigest(PJ::sdk::ToolboxHostView(data_store.makeHost()));
+  EXPECT_EQ(digest_via_settings, digest_default_arg);
 }
 
 }  // namespace

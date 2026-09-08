@@ -75,6 +75,10 @@ comes back with the exact candidates rather than a guess.
 2. **Settings…** — pick a backend. For Claude, `claude` must be installed and logged in.
 3. Type and press Enter.
 
+The catalog digest handed to the model at the top of every turn is sized by the settings key
+`assistant.catalog_budget_chars` (characters, default 6000, clamped to 1000–200000) — not exposed
+in the Settings dialog; set it in the settings store before launching PlotJuggler.
+
 ### Past conversations
 
 The **☰** button at the left of the panel's title bar (next to the settings gear) opens a

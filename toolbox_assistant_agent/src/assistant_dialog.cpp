@@ -24,6 +24,16 @@ namespace {
 // Persisted settings keys (pj.settings.v1). Namespaced so they never collide
 // with another toolbox's keys in the shared store.
 constexpr const char* kKeyBackend = "assistant.backend";  // "claude" or "codex"
+// Character budget for the catalog digest handed to the model at the top of
+// every turn (catalogDigest, tool_registry.hpp). Same default as
+// catalogDigest's own parameter default, so an absent key is byte-identical
+// to the pre-existing behaviour; clamped in resolveCatalogBudgetChars so a
+// stray value in the settings store cannot blow the digest up unbounded or
+// shrink it to nothing.
+constexpr const char* kKeyCatalogBudgetChars = "assistant.catalog_budget_chars";
+constexpr int kDefaultCatalogBudgetChars = 6000;
+constexpr int kMinCatalogBudgetChars = 1000;
+constexpr int kMaxCatalogBudgetChars = 200000;
 
 // One row per backend this build knows about: its settings key, the
 // backendCombo index it fills, the settings keys/defaults for its
@@ -126,6 +136,11 @@ std::string resolveBackendKey(const SettingsStore& store) {
   return backendByKey(choice) ? choice : "echo";
 }
 }  // namespace
+
+int resolveCatalogBudgetChars(const SettingsStore& store) {
+  return std::clamp(
+      store.getInt(kKeyCatalogBudgetChars, kDefaultCatalogBudgetChars), kMinCatalogBudgetChars, kMaxCatalogBudgetChars);
+}
 
 AssistantDialog::AssistantDialog() {
   rebuildBackend();
@@ -796,10 +811,13 @@ void AssistantDialog::sendCurrentInput() {
   // legal to touch — the worker cannot call host services itself. Rebuilt every
   // turn rather than cached, so that loading another file or starting a stream
   // is reflected; it is host metadata, so the scan is cheap. The backend
-  // decides whether this turn actually needs to carry it.
+  // decides whether this turn actually needs to carry it. The budget is read
+  // from settings fresh every turn too (not cached), so a value written to the
+  // conf before the app starts takes effect without a rebuild.
   std::string catalog;
   if (host_provider_) {
-    catalog = catalogDigest(host_provider_());
+    const SettingsStore store(settings_);
+    catalog = catalogDigest(host_provider_(), resolveCatalogBudgetChars(store));
   }
 
   postCommand([this, text, catalog, backend = backend_]() {
