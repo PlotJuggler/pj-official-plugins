@@ -232,6 +232,15 @@ be decoded with `deserializePlotMarkers`. And the read service (`pj.toolbox_obje
 optional: when the host omits it the answer simply carries no count, which is strictly better than
 the tool failing.
 
+## Evaluating without creating
+
+`evaluate` uses the same Luau transform contract and input resolution as `create_derived_series`,
+but installs a uniquely named `EPHEMERAL` transform, reads its numeric output once, and removes it
+on every return path with an RAII guard. It never calls `notify_data_changed`. The output is absent
+from the GUI catalog and layout, while the plugin-facing catalog ABI still enumerates it; that
+separation is what lets `readOne` return statistics and optional buckets without exposing a Custom
+Series row or triggering a catalog rebuild.
+
 ## Where the assistant is allowed to draw
 
 It composes plot tabs of its own, through `pj.plot_tabs.v1`, and those are the only plots it can
@@ -249,11 +258,20 @@ can contain it.
 Every model-created tab carries a permanent "AI" mark in the corner of its canvas. It is painted by
 the host, not requested by the plugin — a mark the drawer could suppress would not be worth reading.
 
-Those tabs are a live view, not saved state. The host never writes one to a layout, so reloading a
-layout or stepping through undo leaves them exactly as they are, and closing PlotJuggler ends them.
-What survives of the assistant is what the user chose (the backend, the model, whether the panel is
-a tab or a window) and the data it created — derived series and markers persist as they always did.
-Closing its tab throws away a view, never a series.
+On supporting hosts, owned tabs are persistent but outside history authority. A full layout capture
+writes their `owner_plugin` and `tab_id`; a layout restore replaces the workspace and reconstructs
+them, including the ownership map and watermark. A history capture omits them, so undo/redo neither
+removes nor recreates one. If the owning plugin is absent while loading a layout, the host keeps the
+tab and its metadata and marks the plugin unavailable instead of discarding the view. Closing an
+owned tab still closes the view, never a series. Older hosts may keep owned tabs only for the
+session, which is why `plot_tab list` remains the authority after resuming.
+
+Persistent transforms and marker generators follow the same split between a full layout restore
+and history restore. When compiled with `PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT`, creation requests
+that scope and reads the stored recipe back; an absent or false `history_exempt`, a read failure, or
+a reserved-bit fallback is disclosed as unavailable undo protection. The repository remains pinned
+to SDK 0.32.0 until the SDK release carrying that flag is published, so builds at the current pin
+still create and persist processors but cannot promise history exemption.
 
 Each action answers with the tab as the host holds it, and the verdict is read from those contents
 rather than from what the calls returned. The host may accept a curve and resolve it to nothing, so
@@ -361,9 +379,9 @@ the list too (`setEnabled`), so it re-asserts the flag alongside — otherwise a
 that lands without the drawer block in the same payload (right after a Settings commit, or right
 after a turn completes) would silently drop every row's trash can.
 
-**A resumed conversation tells the model what it lost.** The panel's own ephemeral state — tabs
-composed via `plot_tab`, say — dies with the process; `--resume` replays the model's history as if
-it hadn't. So `switchToConversation` sets `HarnessMemory::resumed_pending`, which forces
+**A resumed conversation refreshes current state.** The loaded layout and the set of tabs owned by
+this plugin may differ from what the transcript describes; `--resume` still replays that earlier
+history. So `switchToConversation` sets `HarnessMemory::resumed_pending`, which forces
 `composePayload` (`harness_memory.hpp`, shared by every backend) to re-send the catalog on the very
 next turn with a note instead of silence:
 *"Resumed conversation. The tabs you composed earlier may no longer exist; plot_tab with action list reports the ones that do. The listing above is the

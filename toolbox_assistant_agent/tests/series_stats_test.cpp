@@ -38,6 +38,18 @@ TEST(SeriesStats, BasicStats) {
   EXPECT_NEAR(s.stddev, 1.4142135623730951, 1e-9);
 }
 
+// max_at_s/min_at_s must report the FIRST occurrence: the max repeats at
+// t=3s but has to stay pinned at t=1s.
+TEST(SeriesStats, MinMaxAtSReportFirstOccurrence) {
+  std::vector<std::int64_t> ts = {0, kSec, 2 * kSec, 3 * kSec, 4 * kSec};
+  std::vector<double> v = {2.0, 5.0, 1.0, 5.0, 3.0};
+  auto s = computeStats(ts, v);
+  EXPECT_DOUBLE_EQ(s.max, 5.0);
+  EXPECT_DOUBLE_EQ(s.max_at_s, 1.0);
+  EXPECT_DOUBLE_EQ(s.min, 1.0);
+  EXPECT_DOUBLE_EQ(s.min_at_s, 2.0);
+}
+
 TEST(SeriesStats, SingleSampleHasNoRate) {
   std::vector<std::int64_t> ts = {42};
   std::vector<double> v = {7.0};

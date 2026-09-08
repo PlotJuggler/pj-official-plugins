@@ -30,10 +30,10 @@ struct HarnessMemory {
   // persisted across panel restarts.
   std::string sent_catalog_hash;
   // Set when this memory was just populated from a conversation resumed off
-  // disk (switchToConversation in assistant_dialog.cpp). The panel's own
-  // ephemeral state (tabs it composed, etc.) died with the earlier process,
-  // but --resume replays the model's history as if it hadn't — so the next
-  // turn forces a fresh catalog + a note telling the model what changed.
+  // disk (switchToConversation in assistant_dialog.cpp). The loaded layout
+  // and current owned-tab set may differ from the state in that transcript,
+  // so the next turn forces a fresh catalog + a note telling the model to
+  // inspect what exists now.
   // Consumed (cleared) by composePayload the first time it actually sends
   // that catalog.
   bool resumed_pending = false;
@@ -55,8 +55,8 @@ struct HarnessMemory {
   // the same text twice. A listing that has CHANGED does get re-sent — that is
   // how the model learns the loaded data is not what it was told earlier. A
   // conversation just resumed off disk (resumed_pending) forces a resend too,
-  // even if the hash happens to match: the model's ephemeral state (composed
-  // tabs, etc.) died with the earlier process, and it needs telling.
+  // even if the hash happens to match: the loaded layout and owned tabs may
+  // differ from the state described earlier, and the model needs telling.
   if (catalog.empty()) {
     return text;  // nothing to send even when resuming; resumed_pending stays
                   // set for the next turn that actually has a catalog

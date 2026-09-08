@@ -62,10 +62,11 @@ ToolContext makeCtx(PJ::testing::ToolboxTestStore& store, RecordingDpHost* dp, F
 
 TEST(ToolRegistry, ListsAllToolsAndSchemas) {
   ToolRegistry reg;
-  EXPECT_EQ(reg.tools().size(), 11u);
+  EXPECT_EQ(reg.tools().size(), 12u);
   // Both serializations expose every tool by name.
-  EXPECT_EQ(reg.toFunctionSpecs().size(), 11u);
-  EXPECT_EQ(reg.toMcpToolsList().size(), 11u);
+  EXPECT_EQ(reg.toFunctionSpecs().size(), 12u);
+  EXPECT_EQ(reg.toMcpToolsList().size(), 12u);
+  EXPECT_NE(reg.find("evaluate"), nullptr);
   EXPECT_NE(reg.find("create_derived_series"), nullptr);
   EXPECT_NE(reg.find("playback"), nullptr);
   EXPECT_EQ(reg.find("play"), nullptr);
@@ -725,6 +726,233 @@ TEST(ToolRegistry, SingleInputTransformIsNeverForecast) {
   EXPECT_FALSE(j.contains("verify_with")) << "a tool result must not prescribe the next call";
 }
 
+// --- evaluate(): run Luau, get numbers back, leave nothing behind ----------
+
+TEST(ToolRegistry, EvaluateHappyPathCreatesReadsAndRemoves) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  // Bridges the ephemeral create's resolved output back into `store`, so the
+  // read_series-shaped read that follows create() has something to read.
+  dp.ephemeral_series_store = &store;
+  dp.ephemeral_series_ts = {0, kSec, 2 * kSec, 3 * kSec, 4 * kSec};
+  dp.ephemeral_series_vals = {0.0, 2.0, 4.0, 6.0, 8.0};
+  ToolContext ctx = makeCtx(store, &dp);
+  int notify_calls = 0;
+  ctx.notify_data_changed = [&]() { ++notify_calls; };
+
+  auto r =
+      reg.execute("evaluate", {{"inputs", json::array({"/imu/x"})}, {"expression", "value * 2"}, {"buckets", 3}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.create_calls, 1);
+  EXPECT_NE(dp.last_flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL, 0u);
+  EXPECT_EQ(dp.persistent_creates, 0) << "an ephemeral node never joins the live set";
+  EXPECT_EQ(dp.last_removed, dp.last_id) << "removed by the same id it was created under";
+  EXPECT_EQ(notify_calls, 0) << "evaluate must never notify_data_changed -- nothing changed that the user can see";
+  const json j = json::parse(r.content);
+  EXPECT_TRUE(j.contains("stats"));
+  EXPECT_TRUE(j.contains("buckets"));
+}
+
+TEST(ToolRegistry, EvaluateSurfacesValidateErrorWithoutCreating) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  dp.fail_validate = true;
+  ToolContext ctx = makeCtx(store, &dp);
+  auto r = reg.execute("evaluate", {{"inputs", json::array({"/imu/x"})}, {"expression", "value +"}}, ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_EQ(dp.create_calls, 0);
+}
+
+// No bridge to a series for the resolved output: create succeeds, the read
+// that follows it does not. The ephemeral node must still come out.
+TEST(ToolRegistry, EvaluateRemovesTheEphemeralNodeEvenWhenTheReadFails) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  ToolContext ctx = makeCtx(store, &dp);
+  auto r = reg.execute("evaluate", {{"inputs", json::array({"/imu/x"})}, {"expression", "value * 2"}}, ctx);
+  EXPECT_FALSE(r.ok) << r.content;
+  EXPECT_EQ(dp.create_calls, 1);
+  EXPECT_EQ(dp.last_removed, dp.last_id) << "the node must be removed even when the read after it fails";
+}
+
+TEST(ToolRegistry, EvaluateCallsUseDistinctIds) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  ToolContext ctx = makeCtx(store, &dp);
+  auto first = reg.execute("evaluate", {{"inputs", json::array({"/imu/x"})}, {"expression", "value * 2"}}, ctx);
+  const std::string first_id = dp.last_id;
+  auto second = reg.execute("evaluate", {{"inputs", json::array({"/imu/x"})}, {"expression", "value * 3"}}, ctx);
+  const std::string second_id = dp.last_id;
+  (void)first;
+  (void)second;
+  EXPECT_FALSE(first_id.empty());
+  EXPECT_NE(first_id, second_id);
+}
+
+// --- PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT: set when the SDK has it, with a
+// fallback for a host that rejects the unknown bit -----------------------
+
+#ifdef PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT
+
+TEST(ToolRegistry, CreatesCarryTheHistoryExemptFlagWhenTheSdkExposesIt) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  {
+    RecordingDpHost dp;
+    dp.config_history_exempt = true;
+    ToolContext ctx = makeCtx(store, &dp);
+    auto r = reg.execute(
+        "create_derived_series", {{"name", "x2"}, {"inputs", json::array({"/imu/x"})}, {"expression", "value*2"}}, ctx);
+    ASSERT_TRUE(r.ok) << r.content;
+    EXPECT_NE(dp.last_flags & PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT, 0u);
+    EXPECT_EQ(dp.config_calls, 1);
+    EXPECT_EQ(dp.last_config_id, "x2");
+    EXPECT_FALSE(json::parse(r.content).contains("undo_protection"));
+  }
+  {
+    RecordingDpHost dp;
+    dp.config_history_exempt = true;
+    ToolContext ctx = makeCtx(store, &dp);
+    auto r = reg.execute("create_markers", {{"series", "/imu/x"}, {"comparison", ">"}, {"threshold", 1.0}}, ctx);
+    ASSERT_TRUE(r.ok) << r.content;
+    EXPECT_NE(dp.last_flags & PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT, 0u);
+    EXPECT_EQ(dp.config_calls, 1);
+    EXPECT_EQ(dp.last_config_id, "assistant_markers");
+    EXPECT_FALSE(json::parse(r.content).contains("undo_protection"));
+  }
+  {
+    RecordingDpHost dp;
+    dp.config_history_exempt = true;
+    ToolContext ctx = makeCtx(store, &dp);
+    const std::string rule = "local s = series(\"/imu/x\")\nstartMarker(0)\ncloseMarker(100)\n";
+    auto r = reg.execute("create_markers", {{"inputs", json::array({"/imu/x"})}, {"rule", rule}}, ctx);
+    ASSERT_TRUE(r.ok) << r.content;
+    EXPECT_NE(dp.last_flags & PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT, 0u);
+    EXPECT_EQ(dp.config_calls, 1);
+    EXPECT_EQ(dp.last_config_id, "assistant_markers");
+    EXPECT_FALSE(json::parse(r.content).contains("undo_protection"));
+  }
+}
+
+TEST(ToolRegistry, DisclosesWhenHistoryExemptIsFalseInTheCreatedRecipe) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  dp.config_history_exempt = false;
+  ToolContext ctx = makeCtx(store, &dp);
+  auto r = reg.execute(
+      "create_derived_series", {{"name", "x2"}, {"inputs", json::array({"/imu/x"})}, {"expression", "value*2"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable on this host");
+
+  r = reg.execute("create_markers", {{"series", "/imu/x"}, {"comparison", ">"}, {"threshold", 1.0}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable on this host");
+
+  const std::string rule = "local s = series(\"/imu/x\")\nstartMarker(0)\ncloseMarker(100)\n";
+  r = reg.execute("create_markers", {{"inputs", json::array({"/imu/x"})}, {"rule", rule}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable on this host");
+  EXPECT_EQ(dp.config_calls, 3) << "each persistent create site must verify the stored flag";
+}
+
+TEST(ToolRegistry, DisclosesWhenHistoryExemptIsMissingFromTheCreatedRecipe) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  ToolContext ctx = makeCtx(store, &dp);
+  auto r = reg.execute(
+      "create_derived_series", {{"name", "x2"}, {"inputs", json::array({"/imu/x"})}, {"expression", "value*2"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.config_calls, 1);
+  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable on this host");
+}
+
+TEST(ToolRegistry, DisclosesWhenTheCreatedRecipeCannotBeRead) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  dp.fail_config = true;
+  ToolContext ctx = makeCtx(store, &dp);
+  auto r = reg.execute(
+      "create_derived_series", {{"name", "x2"}, {"inputs", json::array({"/imu/x"})}, {"expression", "value*2"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.config_calls, 1);
+  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable on this host");
+}
+
+TEST(ToolRegistry, DegradesOnceWhenAnOlderHostRejectsTheReservedBit) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  dp.reject_unknown_flags = true;  // simulates a host that only knows EPHEMERAL
+  ToolContext ctx = makeCtx(store, &dp);
+  auto r = reg.execute(
+      "create_derived_series", {{"name", "x2"}, {"inputs", json::array({"/imu/x"})}, {"expression", "value*2"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.create_calls, 2) << "first call refused, retried once with flags cleared";
+  EXPECT_EQ(dp.last_flags, 0u) << "the call that finally succeeded carried no flags";
+  EXPECT_EQ(dp.config_calls, 0) << "the reserved-bit retry already established that protection is unavailable";
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["undo_protection"], "unavailable on this host");
+}
+
+#else
+
+TEST(ToolRegistry, CreatesCarryNoHistoryExemptFlagWithoutSdkSupport) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  ToolContext ctx = makeCtx(store, &dp);
+  auto r = reg.execute(
+      "create_derived_series", {{"name", "x2"}, {"inputs", json::array({"/imu/x"})}, {"expression", "value*2"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.last_flags, 0u) << "no HISTORY_EXEMPT bit exists in this SDK build to set";
+  EXPECT_EQ(dp.config_calls, 0) << "an SDK without the flag must not probe the recipe";
+
+  r = reg.execute("create_markers", {{"series", "/imu/x"}, {"comparison", ">"}, {"threshold", 1.0}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.last_flags, 0u);
+  EXPECT_EQ(dp.config_calls, 0);
+
+  const std::string rule = "local s = series(\"/imu/x\")\nstartMarker(0)\ncloseMarker(100)\n";
+  r = reg.execute("create_markers", {{"inputs", json::array({"/imu/x"})}, {"rule", rule}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.last_flags, 0u);
+  EXPECT_EQ(dp.config_calls, 0);
+}
+
+#endif
+
+// A rejection that is not the reserved-bit wording must not be retried --
+// only a specific, matched refusal is worth a second attempt.
+TEST(ToolRegistry, ANonReservedBitFailureIsNotRetried) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  dp.fail_create = true;
+  ToolContext ctx = makeCtx(store, &dp);
+  auto r = reg.execute(
+      "create_derived_series", {{"name", "x2"}, {"inputs", json::array({"/imu/x"})}, {"expression", "value*2"}}, ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_EQ(dp.create_calls, 1) << "a generic rejection must not trigger the flags=0 retry";
+}
+
 // --- several datasets loaded at once ---------------------------------------
 
 // With two runs loaded, a flat topic list leaves the model unable to tell them
@@ -998,8 +1226,10 @@ TEST(ToolRegistry, ToolSchemaStaysWithinItsBudget) {
   // but the one place where adding capability has to be a decision. Note the
   // fixed 73 chars of JSON envelope each tool costs before a word of prose,
   // which is why related verbs share one tool with an `action` argument
-  // instead of standing alone.
-  EXPECT_LT(chars, 9900u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
+  // instead of standing alone. Raised for `evaluate` (run a Luau computation
+  // without creating anything) — a new verb, not a variant of an existing
+  // one, so it could not be folded into another tool's `action`.
+  EXPECT_LT(chars, 10500u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
 }
 
 // --- playback / viewport tools ----------------------------------------------

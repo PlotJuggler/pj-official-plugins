@@ -14,7 +14,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <pj_base/sdk/plugin_data_api.hpp>
+#include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <string>
 #include <vector>
 
@@ -32,6 +34,32 @@ struct RecordingDpHost {
   int validate_calls = 0;
   bool fail_validate = false;
   bool fail_create = false;
+  // Simulate a host that has not heard of any create_data_processor flag bit
+  // besides EPHEMERAL (i.e. an older host, pre-HISTORY_EXEMPT): any other bit
+  // is refused with an error message containing "reserved" -- the substring
+  // tools.cpp's createWithFlagFallback matches to retry once with flags=0.
+  bool reject_unknown_flags = false;
+  // Test-only bridge to a ToolboxTestStore: when set, an EPHEMERAL create
+  // registers the resolved output's exact topic/field (split on the last
+  // '/', matching joinSeriesPath's convention) into this store, holding
+  // `ephemeral_series_ts`/`ephemeral_series_vals`. This is what lets a test
+  // assert on the read that follows create() without predicting the
+  // counter-generated ephemeral id (see evaluateSeries in tools.cpp).
+  PJ::testing::ToolboxTestStore* ephemeral_series_store = nullptr;
+  std::vector<std::int64_t> ephemeral_series_ts;
+  std::vector<double> ephemeral_series_vals;
+  // Config echo for data_processor_config(id) (PJ::sdk::DataProcessorsHostView
+  // ::recipeOf), what noteUndoProtection (tools.cpp) reads back to confirm
+  // HISTORY_EXEMPT actually took. std::nullopt -> the returned recipe JSON
+  // omits "history_exempt" entirely, mirroring a host that does not know the
+  // property yet even if it tolerated the flag bit; a value -> the recipe
+  // carries "history_exempt": true|false; fail_config -> the read itself
+  // fails.
+  std::optional<bool> config_history_exempt;
+  bool fail_config = false;
+  int config_calls = 0;
+  std::string last_config_id;
+  std::string last_config_json;  // owned storage for the borrowed out_recipe_json view
   std::string last_kind;
   std::string last_id;
   std::string last_removed;
@@ -113,6 +141,10 @@ struct RecordingDpHost {
       PJ::sdk::fillError(err, 1, "test", "create rejected");
       return false;
     }
+    if (self->reject_unknown_flags && (flags & ~static_cast<uint32_t>(PJ_DATA_PROCESSOR_FLAG_EPHEMERAL)) != 0) {
+      PJ::sdk::fillError(err, 1, "test", "flags: unknown reserved bit set");
+      return false;
+    }
     if (rejectsCrossRead(self->last_kind, self->last_script, err)) {
       return false;
     }
@@ -125,6 +157,19 @@ struct RecordingDpHost {
           {self->last_id, self->last_kind, self->last_script, self->last_inputs, self->last_outputs});
     }
     self->resolved = self->last_outputs.empty() ? std::vector<std::string>{"auto_topic"} : self->last_outputs;
+    // Test-only: serve the ephemeral node's resolved output as a real series,
+    // so a test can drive evaluate() end to end without knowing the
+    // counter-generated id ahead of time.
+    if ((flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL) != 0 && self->ephemeral_series_store != nullptr &&
+        !self->resolved.empty()) {
+      const std::string& path = self->resolved.front();
+      const auto slash = path.rfind('/');
+      if (slash != std::string::npos) {
+        self->ephemeral_series_store->addTopic(path.substr(0, slash))
+            .addField(
+                path.substr(0, slash), path.substr(slash + 1), self->ephemeral_series_ts, self->ephemeral_series_vals);
+      }
+    }
     if (out_topics_count != nullptr) {
       *out_topics_count = self->resolved.size();
     }
@@ -175,6 +220,25 @@ struct RecordingDpHost {
     return true;
   }
 
+  static bool tConfig(void* ctx, PJ_string_view_t id, PJ_string_view_t* out_recipe_json, PJ_error_t* err) noexcept {
+    auto* self = static_cast<RecordingDpHost*>(ctx);
+    ++self->config_calls;
+    self->last_config_id = toStr(id);
+    if (self->fail_config) {
+      PJ::sdk::fillError(err, 1, "test", "config unavailable");
+      return false;
+    }
+    self->last_config_json = "{\"kind\":\"" + self->last_kind + "\"";
+    if (self->config_history_exempt.has_value()) {
+      self->last_config_json += std::string(",\"history_exempt\":") + (*self->config_history_exempt ? "true" : "false");
+    }
+    self->last_config_json += "}";
+    if (out_recipe_json != nullptr) {
+      *out_recipe_json = PJ::sdk::toAbiString(self->last_config_json);
+    }
+    return true;
+  }
+
   // What the user is actually left with. This is the number a benchmark verdict
   // wants: a model that probes, measures and cleans up leaves the panel as tidy
   // as one that got it right first time, and should score the same.
@@ -189,7 +253,7 @@ struct RecordingDpHost {
         .create_data_processor = &RecordingDpHost::tCreate,
         .remove_data_processor = &RecordingDpHost::tRemove,
         .list_data_processor_ids = &RecordingDpHost::tList,
-        .data_processor_config = nullptr,
+        .data_processor_config = &RecordingDpHost::tConfig,
         .validate_data_processor_script = &RecordingDpHost::tValidate,
     };
     return PJ::sdk::DataProcessorsHostView(PJ_data_processors_host_t{this, &vtable});

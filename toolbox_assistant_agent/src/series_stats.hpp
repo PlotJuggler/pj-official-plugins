@@ -23,6 +23,12 @@ struct SeriesStats {
   bool has_values = false;
   double min = 0.0;
   double max = 0.0;
+  // Where the finite min/max first occur, in seconds relative to the first
+  // sample (same axis as max_gap_at_s and bucket `t`). First occurrence: a
+  // later sample tying the extreme does not move it. Only meaningful when
+  // has_values.
+  double min_at_s = 0.0;
+  double max_at_s = 0.0;
   double mean = 0.0;
   double stddev = 0.0;
   std::int64_t t_start_ns = 0;
@@ -70,13 +76,22 @@ struct SeriesBucket {
       ++s.invalid;
       continue;
     }
+    const double t_rel_s = static_cast<double>(timestamps[i] - timestamps[0]) * 1e-9;
     if (!s.has_values) {
       s.min = v;
       s.max = v;
+      s.min_at_s = t_rel_s;
+      s.max_at_s = t_rel_s;
       s.has_values = true;
     } else {
-      s.min = std::min(s.min, v);
-      s.max = std::max(s.max, v);
+      if (v < s.min) {
+        s.min = v;
+        s.min_at_s = t_rel_s;
+      }
+      if (v > s.max) {
+        s.max = v;
+        s.max_at_s = t_rel_s;
+      }
     }
     sum += v;
     ++finite_count;

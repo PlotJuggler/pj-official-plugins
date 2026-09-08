@@ -9,7 +9,7 @@ work by calling the same plugin SDK a human-written plugin would.
           │
           ▼
    ┌──────────────┐   tool calls    ┌──────────────────┐   SDK services   ┌────────────┐
-   │  chat panel  │ ──────────────▶ │ tool layer (11)  │ ───────────────▶ │ PlotJuggler│
+   │  chat panel  │ ──────────────▶ │ tool layer (12)  │ ───────────────▶ │ PlotJuggler│
    │  (floating)  │ ◀────────────── │   over MCP       │ ◀─────────────── │    host    │
    └──────────────┘   results       └──────────────────┘                  └────────────┘
 ```
@@ -32,15 +32,16 @@ same pattern as Claude Code. The Ollama backend that used to run a local model i
 retired with that decision.
 
 For the Claude backend every built-in tool is disabled (`--tools ""`), so the model reaches
-*only* the eleven tools below — it cannot touch your machine outside PlotJuggler.
+*only* the twelve tools below — it cannot touch your machine outside PlotJuggler.
 
-## The eleven tools
+## The twelve tools
 
 | Tool | Does |
 |---|---|
 | `list_topics` | Search loaded topics by substring |
 | `describe_topic` | Fields of one topic, with types and full paths |
 | `read_series` | Statistics or a min/max-preserving downsample. Never returns raw samples |
+| `evaluate` | Run a bounded Luau computation and return statistics without leaving a series behind |
 | `create_derived_series` | Install a live Luau transform over one or more series |
 | `create_markers` | Install a marker generator (threshold or a raw Luau rule) |
 | `remove_markers` | Remove the assistant's own marker set — and only that one |
@@ -51,12 +52,16 @@ For the Claude backend every built-in tool is disabled (`--tools ""`), so the mo
 | `plot_tab` | Tabs of the assistant's OWN, by `action`: create / add / remove / zoom / close / list |
 
 `plot_tab` is where the boundary lives. A tab the assistant creates is watermarked "AI" and is the
-only place it may draw, zoom or close; your tabs are unreachable from every tool it has, and asking
-it to change one gets an explanation and an offer to show the same thing in its own. Those tabs are
-a live view, not saved state: they are never written to a layout, so a reload or an undo leaves
-them alone and closing PlotJuggler ends them.
+only place it may draw, zoom or close; your tabs are unreachable from every tool it has. Supporting
+hosts save those owned tabs in the layout while excluding them from undo/redo. Older hosts may keep
+them only for the session, so `plot_tab` with `action: "list"` is the authority after a reload.
 
-Both tools need a host exposing `pj.playback.v1`, `pj.plot_tabs.v1` and `pj.viewport.v1`
+Derived series and markers are saved with the layout too. Builds with the history-exempt SDK flag
+ask the host to keep them outside undo/redo, then read the stored recipe back. If the host rejects
+the flag or does not confirm it, the creation result sets `undo_protection` to `"unavailable on
+this host"`. Builds using an older SDK still create the node but cannot promise that exemption.
+
+`playback` and `plot_tab` need a host exposing `pj.playback.v1`, `pj.plot_tabs.v1` and `pj.viewport.v1`
 (PlotJuggler with SDK >= 0.28.0); on an older host they answer with a clean "not exposed" the
 model relays instead of guessing.
 

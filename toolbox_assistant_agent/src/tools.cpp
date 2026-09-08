@@ -7,6 +7,7 @@
 // nothing here throws out.
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <iomanip>
 #include <iterator>
@@ -14,6 +15,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_base/builtin/plot_markers.hpp>
+#include <span>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -556,6 +558,8 @@ json statsToJson(const SeriesStats& s) {
   if (s.has_values) {
     out["min"] = s.min;
     out["max"] = s.max;
+    out["min_at_s"] = s.min_at_s;
+    out["max_at_s"] = s.max_at_s;
     out["mean"] = s.mean;
     out["stddev"] = s.stddev;
   } else {
@@ -720,6 +724,40 @@ SeriesRead readOne(const PJ::sdk::CatalogSnapshot& catalog, ToolContext& ctx, co
   return r;
 }
 
+// Coarsen until the serialized payload fits the response cap so spiky data
+// stays representable without overrunning the model's context. Returns
+// `base` with a "buckets" array attached (and a "note" when it still does not
+// fit at the smallest allowed resolution). Shared by read_series's 'buckets'
+// mode and evaluate's optional bucket summary.
+json withCoarsenedBuckets(
+    json base, std::span<const std::int64_t> ts, std::span<const double> vals, std::size_t max_points) {
+  for (;;) {
+    auto buckets = bucketize(ts, vals, max_points);
+    json bucket_arr = json::array();
+    for (const auto& b : buckets) {
+      json entry = {{"t", b.t_rel_s}, {"n", b.count}};
+      if (b.count > 0) {
+        entry["min"] = b.min;
+        entry["max"] = b.max;
+        entry["mean"] = b.mean;
+      }
+      if (b.invalid > 0) {
+        entry["invalid"] = b.invalid;
+      }
+      bucket_arr.push_back(entry);
+    }
+    base["buckets"] = bucket_arr;
+    std::string dumped = base.dump();
+    if (dumped.size() <= kMaxResponseBytes || max_points <= 16) {
+      if (dumped.size() > kMaxResponseBytes) {
+        base["note"] = "coarsened to fit the response cap";
+      }
+      return base;
+    }
+    max_points /= 2;
+  }
+}
+
 ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
   const std::vector<std::string> paths = requestedPaths(args);
   if (paths.empty()) {
@@ -784,37 +822,73 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
       return ToolResult::failure(r.error);
     }
     const json stats_json = statsWithDisplayStart(computeStats(r.ts, r.vals), ctx, r.topic);
-    // Coarsen until the serialized payload fits the response cap so spiky data
-    // stays representable without overrunning the model's context.
-    std::size_t max_points = static_cast<std::size_t>(std::clamp(args.value("max_points", 200), 1, 500));
-    for (;;) {
-      auto buckets = bucketize(r.ts, r.vals, max_points);
-      json bucket_arr = json::array();
-      for (const auto& b : buckets) {
-        json entry = {{"t", b.t_rel_s}, {"n", b.count}};
-        if (b.count > 0) {
-          entry["min"] = b.min;
-          entry["max"] = b.max;
-          entry["mean"] = b.mean;
-        }
-        if (b.invalid > 0) {
-          entry["invalid"] = b.invalid;
-        }
-        bucket_arr.push_back(entry);
-      }
-      json out = {{"series", r.path}, {"stats", stats_json}, {"buckets", bucket_arr}};
-      std::string dumped = out.dump();
-      if (dumped.size() <= kMaxResponseBytes || max_points <= 16) {
-        if (dumped.size() > kMaxResponseBytes) {
-          out["note"] = "coarsened to fit the response cap";
-          dumped = out.dump();
-        }
-        return ToolResult::success(dumped);
-      }
-      max_points /= 2;
-    }
+    const std::size_t max_points = static_cast<std::size_t>(std::clamp(args.value("max_points", 200), 1, 500));
+    const json out = withCoarsenedBuckets({{"series", r.path}, {"stats", stats_json}}, r.ts, r.vals, max_points);
+    return ToolResult::success(out.dump());
   }
   return ToolResult::failure("unknown mode '" + mode + "' (use 'stats' or 'buckets')");
+}
+
+// Persistent nodes request exclusion from undo/redo, but only when the SDK
+// exposes the bit. A "reserved" substring in the error identifies a host that
+// rejects the unknown bit and needs one flags-free retry.
+template <typename Fn>
+auto createWithFlagFallback(Fn&& fn, bool& degraded) {
+  uint32_t flags = 0;
+#ifdef PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT
+  flags |= PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT;
+#endif
+  auto result = fn(flags);
+  if (!result && flags != 0 && result.error().find("reserved") != std::string::npos) {
+    flags = 0;
+    result = fn(flags);
+    degraded = static_cast<bool>(result);
+  }
+  return result;
+}
+
+#ifdef PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT
+// Confirm that the host persisted the requested property in the node recipe.
+bool historyExemptConfirmed(ToolContext& ctx, const std::string& id) {
+  auto recipe = ctx.dp.recipeOf(id);
+  if (!recipe) {
+    return false;
+  }
+  try {
+    return json::parse(*recipe).value("history_exempt", false);
+  } catch (const json::exception&) {
+    return false;
+  }
+}
+#endif
+
+// createWithFlagFallback, followed by the confirmation probe: a successful
+// flagged create is protected only when its recipe confirms it, so
+// `undo_protection_unavailable` is set unless that check passes. Skipped when
+// the fallback already degraded (that retry already established the answer)
+// or when the create itself failed (nothing was persisted to confirm).
+template <typename Fn>
+auto createHistoryExempt(ToolContext& ctx, const std::string& id, Fn&& fn, bool& undo_protection_unavailable) {
+  auto result = createWithFlagFallback(std::forward<Fn>(fn), undo_protection_unavailable);
+  if (result && !undo_protection_unavailable) {
+#ifdef PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT
+    if (!historyExemptConfirmed(ctx, id)) {
+      undo_protection_unavailable = true;
+    }
+#else
+    (void)ctx;
+    (void)id;
+#endif
+  }
+  return result;
+}
+
+// Adds the disclosure key when the host could not confirm undo/redo
+// protection for the node just created.
+void annotateUndoProtection(json& result, bool unavailable) {
+  if (unavailable) {
+    result["undo_protection"] = "unavailable on this host";
+  }
 }
 
 ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
@@ -945,9 +1019,15 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
 
   std::vector<std::string_view> in_views(inputs.begin(), inputs.end());
   std::vector<std::string_view> out_views(outputs.begin(), outputs.end());
-  auto status = ctx.dp.createTransform(
-      name, PJ::Span<const std::string_view>(in_views.data(), in_views.size()),
-      PJ::Span<const std::string_view>(out_views.data(), out_views.size()), script, "{}");
+  bool undo_protection_unavailable = false;
+  auto status = createHistoryExempt(
+      ctx, name,
+      [&](uint32_t flags) {
+        return ctx.dp.createTransform(
+            name, PJ::Span<const std::string_view>(in_views.data(), in_views.size()),
+            PJ::Span<const std::string_view>(out_views.data(), out_views.size()), script, "{}", flags);
+      },
+      undo_protection_unavailable);
   if (!status) {
     return ToolResult::failure("create failed: " + status.error());
   }
@@ -964,6 +1044,7 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
       {"created", name},
       {"series", outputs.size() == 1 ? json(outputs.front() + "/value") : series_paths},
       {"inputs", inputs}};
+  annotateUndoProtection(result, undo_protection_unavailable);
   // Report what the call produced, not what to do about it. This used to carry a
   // "verify_with: read_series on ..." string, and models took the hint: across
   // the creation scenarios it cost 79 extra read_series calls, each one a full
@@ -982,6 +1063,139 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
   } else if (single_input_points) {
     // Single input: nothing joins, so the output is as long as the input.
     result["points"] = *single_input_points;
+  }
+  return ToolResult::success(result.dump());
+}
+
+// Unique per-call id for evaluate()'s ephemeral node, scoped to this
+// plugin's own id namespace on the host (so two plugin instances, or two
+// calls in flight, never collide). Never reused — a leftover from a failed
+// remove is easy to spot rather than silently shadowed by the next call.
+std::atomic<unsigned> g_evaluate_counter{0};
+
+// Run a Luau computation over series and hand back numbers, without leaving
+// anything for the user to see: an EPHEMERAL transform is created, read once,
+// and removed before returning — the host hides ephemeral outputs from its
+// own catalog, but the plugin-facing ABI catalog snapshot still enumerates
+// them, which is what makes the read-back possible at all.
+ToolResult evaluateSeries(const json& args, ToolContext& ctx) {
+  if (!ctx.dp.valid()) {
+    return ToolResult::failure("the host did not expose pj.data_processors.v1 (cannot evaluate)");
+  }
+  if (!args.contains("inputs") || !args["inputs"].is_array() || args["inputs"].empty()) {
+    return ToolResult::failure("evaluate requires a non-empty 'inputs' array of topic/field paths");
+  }
+  const bool has_expr = args.contains("expression") && args["expression"].is_string();
+  const bool has_body = args.contains("body") && args["body"].is_string();
+  if (!has_expr && !has_body) {
+    return ToolResult::failure(
+        "evaluate requires 'expression' (a stateless Luau expression over value/v1../time, e.g. "
+        "'value - v1') OR 'body' (full Luau statements ending in return, with optional 'global' state)");
+  }
+  std::vector<std::string> inputs;
+  for (const auto& in : args["inputs"]) {
+    if (in.is_string()) {
+      inputs.push_back(canonicalSeriesPath(in.get<std::string>()));
+    }
+  }
+  if (inputs.empty()) {
+    return ToolResult::failure("'inputs' contained no string paths");
+  }
+
+  // Same resolution, host-create-blocker and join-forecast rules as
+  // create_derived_series, and for the same reasons: an unresolved or
+  // ambiguous input would install (briefly) a transform that computes
+  // nothing meaningful, and inputs that share no timestamps join to zero
+  // points either way.
+  JoinForecast forecast;
+  auto catalog = ctx.host.catalogSnapshot();
+  if (!catalog) {
+    return ToolResult::failure("catalog unavailable: " + catalog.error());
+  }
+  for (auto& in : inputs) {
+    auto lookup = resolveSeriesPath(*catalog, in);
+    if (!lookup.resolved) {
+      return ToolResult::failure(seriesLookupError(in, lookup));
+    }
+    if (auto blocked = hostCreateBlocker(*catalog, *lookup.resolved)) {
+      return ToolResult::failure(*blocked);
+    }
+    in = lookup.resolved->host_path;
+  }
+  if (inputs.size() > 1) {
+    forecast = forecastJoin(ctx, *catalog, inputs);
+    if (forecast.checked && forecast.shared == 0) {
+      std::string why = "these inputs share no timestamps, so the computed series would have 0 points: ";
+      for (std::size_t i = 0; i < forecast.rates.size(); ++i) {
+        why += (i == 0 ? "" : ", ") + forecast.rates[i];
+      }
+      why +=
+          ". evaluate joins multiple inputs on exact timestamp equality, so it only works on series recorded on "
+          "the same clock. To relate series that are not (two runs, two devices), read_series each one and "
+          "compare the statistics.";
+      return ToolResult::failure(why);
+    }
+  }
+
+  const std::size_t num_extra = inputs.size() - 1;
+  const std::string global = args.value("global", std::string{});
+  const std::string body =
+      has_body ? args["body"].get<std::string>() : "    return (" + args["expression"].get<std::string>() + ")";
+
+  const unsigned call_id = ++g_evaluate_counter;
+  const std::string id = "__evaluate_" + std::to_string(call_id);
+  // Same "__validate__" id trick create_derived_series uses: the host's
+  // validator instantiates the class under that fixed name.
+  const std::string validate_script = buildLuauTransform("__validate__", "__validate__", global, body, num_extra);
+  if (auto v = ctx.dp.validateScript("transform", ctx.language, validate_script); !v) {
+    return ToolResult::failure("invalid expression: " + v.error());
+  }
+  const std::string script = buildLuauTransform(id, id, global, body, num_extra);
+
+  const std::string output_name = id + "/value";
+  std::vector<std::string_view> in_views(inputs.begin(), inputs.end());
+  std::array<std::string_view, 1> out_views{output_name};
+  auto created = ctx.dp.create(
+      id, "transform", ctx.language, PJ::Span<const std::string_view>(in_views.data(), in_views.size()),
+      PJ::Span<const std::string_view>(out_views.data(), out_views.size()), script, "{}",
+      PJ_DATA_PROCESSOR_FLAG_EPHEMERAL);
+  if (!created) {
+    return ToolResult::failure("evaluate failed: " + created.error());
+  }
+  // The node is never shown to the user and must not outlive this call on any
+  // path — a successful read, a failed one, or an exception unwinding out of
+  // this function. No ctx.notify_data_changed() anywhere here either: nothing
+  // changed that the host's GUI should redraw for.
+  struct RemoveGuard {
+    ToolContext& ctx;
+    std::string id;
+    ~RemoveGuard() {
+      auto status = ctx.dp.remove(id);
+      (void)status;  // best-effort teardown of a node the user never saw; nothing to react to here
+    }
+  } remove_guard{ctx, id};
+
+  const std::string resolved_output = created->empty() ? output_name : created->front();
+
+  // The catalog snapshot taken before create() does not contain the new
+  // sink; a fresh one is required to resolve and read it back.
+  auto fresh_catalog = ctx.host.catalogSnapshot();
+  if (!fresh_catalog) {
+    return ToolResult::failure("catalog unavailable after create: " + fresh_catalog.error());
+  }
+  SeriesRead r = readOne(*fresh_catalog, ctx, resolved_output);
+  if (!r.ok) {
+    return ToolResult::failure(r.error);
+  }
+  const SeriesStats stats = computeStats(r.ts, r.vals);
+  json result = {{"evaluated", r.path}, {"stats", statsWithDisplayStart(stats, ctx, r.topic)}};
+
+  if (args.contains("buckets")) {
+    if (!args["buckets"].is_number_integer()) {
+      return ToolResult::failure("'buckets' must be an integer between 1 and 500");
+    }
+    const std::size_t max_points = static_cast<std::size_t>(std::clamp(args["buckets"].get<int>(), 1, 500));
+    result = withCoarsenedBuckets(std::move(result), r.ts, r.vals, max_points);
   }
   return ToolResult::success(result.dump());
 }
@@ -1027,9 +1241,15 @@ ToolResult createMarkersFromRule(const json& args, ToolContext& ctx) {
                                  : inputs.front();
 
   std::vector<std::string_view> input_views(inputs.begin(), inputs.end());
-  auto topics = ctx.dp.createMarkers(
-      "assistant_markers", PJ::Span<const std::string_view>(input_views.data(), input_views.size()), output, rule,
-      "{}");
+  bool undo_protection_unavailable = false;
+  auto topics = createHistoryExempt(
+      ctx, "assistant_markers",
+      [&](uint32_t flags) {
+        return ctx.dp.createMarkers(
+            "assistant_markers", PJ::Span<const std::string_view>(input_views.data(), input_views.size()), output, rule,
+            "{}", flags);
+      },
+      undo_protection_unavailable);
   if (!topics) {
     return ToolResult::failure("create_markers failed: " + topics.error());
   }
@@ -1037,6 +1257,7 @@ ToolResult createMarkersFromRule(const json& args, ToolContext& ctx) {
     ctx.notify_data_changed();
   }
   json result = {{"created_markers_on", output}, {"inputs", inputs}, {"form", "rule"}};
+  annotateUndoProtection(result, undo_protection_unavailable);
   // Hand back what was actually produced, not just what was asked for.
   if (json published = publishedMarkerSummary(ctx, *topics); !published.is_null()) {
     result.update(published);
@@ -1143,9 +1364,15 @@ ToolResult createMarkers(const json& args, ToolContext& ctx) {
   // series' own field path (markerSeriesKey semantics) so the markers appear
   // on every plot showing that series.
   std::array<std::string_view, 1> inputs{series};
-  auto topics = ctx.dp.createMarkers(
-      "assistant_markers", PJ::Span<const std::string_view>(inputs.data(), inputs.size()),
-      /*output_marker_topic=*/series, rule, "{}");
+  bool undo_protection_unavailable = false;
+  auto topics = createHistoryExempt(
+      ctx, "assistant_markers",
+      [&](uint32_t flags) {
+        return ctx.dp.createMarkers(
+            "assistant_markers", PJ::Span<const std::string_view>(inputs.data(), inputs.size()),
+            /*output_marker_topic=*/series, rule, "{}", flags);
+      },
+      undo_protection_unavailable);
   if (!topics) {
     return ToolResult::failure("create_markers failed: " + topics.error());
   }
@@ -1153,6 +1380,7 @@ ToolResult createMarkers(const json& args, ToolContext& ctx) {
     ctx.notify_data_changed();
   }
   json result = {{"created_markers_on", display_series}, {"style", style}, {"rule", label}};
+  annotateUndoProtection(result, undo_protection_unavailable);
   if (json published = publishedMarkerSummary(ctx, *topics); !published.is_null()) {
     result.update(published);
   }
@@ -1655,12 +1883,29 @@ ToolRegistry::ToolRegistry() {
        &readSeriesTool});
 
   add(
+      {"evaluate",
+       "Run a Luau computation over series and get numbers back — nothing is created or shown. Same "
+       "inputs/expression/body/global as create_derived_series. Returns stats (min/max with their "
+       "times, invalid count); add 'buckets' for the shape too. Use to answer how much/when/whether "
+       "before deciding if anything is worth creating.",
+       {{"type", "object"},
+        {"properties",
+         {{"inputs", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"expression", {{"type", "string"}}},
+          {"body", {{"type", "string"}}},
+          {"global", {{"type", "string"}}},
+          {"buckets", {{"type", "integer"}, {"description", "1-500"}}}}},
+        {"required", json::array({"inputs"})}},
+       &evaluateSeries});
+
+  add(
       {"create_derived_series",
        "Create a new derived timeseries computed live from one or more inputs. Each sample sees "
        "'value' (first input), 'v1'..'vN' (further inputs, in order), and 'time' (seconds). Use "
        "'expression' for a stateless formula (e.g. 'value * 2'); for stateful transforms like a "
        "derivative, use 'global' (runs once, persistent locals) + 'body' (statements ending in "
-       "return; return nothing to suppress a sample).",
+       "return; return nothing to suppress a sample). Saved in layouts. Undo protection is "
+       "verified when supported; failure is reported.",
        {{"type", "object"},
         {"properties",
          {{"name", {{"type", "string"}, {"description", "name of the new series"}}},
@@ -1684,7 +1929,8 @@ ToolRegistry::ToolRegistry() {
       {"create_markers",
        "Create plot markers from a Luau rule you write (preferred), or from a simple threshold "
        "template. There is ONE assistant marker set: calling this again REPLACES it (use "
-       "remove_markers to clear it).\n"
+       "remove_markers to clear it). Saved in layouts. Undo protection is verified when supported; "
+       "failure is reported.\n"
        "A condition true over a STRETCH of time wants ONE region per stretch "
        "(startMarker/closeMarker), never one line per matching sample. The call reports how many "
        "markers it produced and of which kind: past ~50, the shape is wrong — merge contiguous "
@@ -1772,8 +2018,8 @@ ToolRegistry::ToolRegistry() {
       {"plot_tab",
        "Compose plot tabs of your own. A tab you create is watermarked \"AI\" and is the only place "
        "you may draw: the user's tabs are not yours to fill, zoom or close, and they do not go away "
-       "when you close yours. Your tabs are not saved with the workspace - they last for this "
-       "session, so say so rather than promising the user they will find them later.\n"
+       "when you close yours. Supporting hosts save your tabs with the layout and exclude them from "
+       "undo/redo; older hosts may keep them only for the session.\n"
        "action: 'create' (optional 'tab' name and 'title') | 'add'/'remove' ('curves', topic/field "
        "paths) | 'zoom' ('start_s'..'end_s' display-axis seconds; omit both to fit) | 'close' | "
        "'list'. Every action answers with the tab as the host holds it, so a curve that did not "
