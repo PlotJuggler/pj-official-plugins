@@ -11,7 +11,14 @@ flight log files.
 - `char[N]` fields imported as **string** series (one series per field, not
   N numeric series); the value stops at the first NUL or spans the whole
   array when there is none
-- Padding field skipping (`_padding*` fields ignored)
+- Padding field skipping (`_padding*` fields ignored). A record is only
+  rejected as corrupt when it is shorter than the format's *logged* size,
+  which excludes a trailing `_padding*` field: per the ULog spec, "if the
+  padding field is the last field, then this field may not be logged, to
+  avoid writing unnecessary data" — so a record with no bytes for that
+  trailing padding is normal, not truncated. Padding anywhere else in the
+  format (including one nested inside another message, where it is needed to
+  keep sibling field offsets correct) still counts toward the required size.
 - Parameters written as `_parameters/<name>` series: the initial snapshot at
   file start, plus every **in-flight parameter change** as a further point
 - File info (`_info/`) and embedded log messages (`_log`) written as topics

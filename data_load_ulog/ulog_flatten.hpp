@@ -121,6 +121,40 @@ void forEachFlatLeaf(const ulog_cpp::MessageFormat& format, size_t base_offset, 
   }
 }
 
+/// Minimum raw payload size ULog actually logs for a *top-level* subscribed
+/// `format`. Per the spec ("Padding" section of the ULog file format): "If
+/// the padding field is the last field, then this field may not be logged,
+/// to avoid writing unnecessary data. This means the message_data_s.data
+/// will be shorter by the size of the padding. However the padding is still
+/// needed when the message is used in a nested definition." So only a
+/// padding field that is genuinely LAST in the format is optional in the
+/// data; padding anywhere else (including a trailing padding field of a
+/// format that is itself nested inside another one, where the padding is
+/// required to keep sibling field offsets correct) still counts toward the
+/// minimum size. `format.fields()` is in declaration order, matching
+/// on-disk/offset order (MessageFormat::resolveDefinition assigns offsets by
+/// walking fields in that same order), so the last entry is the true trailing
+/// field.
+inline size_t loggedSizeBytes(const ulog_cpp::MessageFormat& format) {
+  size_t size = static_cast<size_t>(format.sizeBytes());
+  const auto& fields = format.fields();
+  if (!fields.empty()) {
+    const auto& last = *fields.back();
+    if (last.name().starts_with("_padding")) {
+      // Field::sizeBytes() would do the same (type().size * array length),
+      // but is computed by hand here: it is an `inline` member defined only
+      // out-of-line in ulog_cpp's own messages.cpp, and the compiler elides
+      // its out-of-line body there since every call within that TU is fully
+      // inlined — so no definition ships in libulog_cpp.a, and a call from
+      // this header (a different TU) links as an unresolved dynamic symbol.
+      int arr_len = last.arrayLength();
+      size_t count = (arr_len < 0) ? 1 : static_cast<size_t>(arr_len);
+      size -= static_cast<size_t>(last.type().size) * count;
+    }
+  }
+  return size;
+}
+
 /// Byte offset of the record's `uint64_t timestamp` field, located by NAME.
 /// The ULog spec requires every subscribed format to carry it but does not
 /// require it to be the first field, so a fixed offset-0 read is wrong in

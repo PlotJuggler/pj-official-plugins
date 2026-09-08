@@ -626,6 +626,88 @@ TEST(ULogFlattenTest, StringLeafViewStopsAtFirstNul) {
   EXPECT_EQ(ulog_flatten::stringLeafView(raw.data(), 5, 3), "");
 }
 
+// --- Padding (ULog spec, "Padding"): "If the padding field is the last
+// field, then this field may not be logged, to avoid writing unnecessary
+// data. This means the message_data_s.data will be shorter by the size of
+// the padding. However the padding is still needed when the message is used
+// in a nested definition." ---
+
+TEST(ULogFlattenTest, TrailingPaddingIsNotRequiredInLoggedData) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  // uint64 timestamp(8) + float value(4) + uint8[4] _padding0(4) = 16 bytes on
+  // the wire, but the trailing padding is optional in the data.
+  builder.writeFormat("padded:uint64_t timestamp;float value;uint8_t[4] _padding0");
+  builder.writeSubscription(1, 0, "padded");
+
+  {
+    // Record omits the 4 trailing padding bytes entirely, exactly as a real
+    // ULog writer does.
+    FieldDataBuilder fields;
+    fields.append<uint64_t>(1000000);
+    fields.append<float>(3.5f);
+    builder.writeData(1, fields.build());
+  }
+
+  auto container = parseBuilder(builder);
+  ASSERT_FALSE(container->hadFatalError());
+  auto sub = container->subscription("padded");
+  ASSERT_NE(sub, nullptr);
+  ASSERT_EQ(sub->size(), 1u);
+
+  EXPECT_EQ(sub->format()->sizeBytes(), 16);
+  EXPECT_EQ(ulog_flatten::loggedSizeBytes(*sub->format()), 12u);
+
+  const auto& raw = sub->rawSamples()[0].data();
+  ASSERT_EQ(raw.size(), 12u);  // shorter than sizeBytes(), by design
+  // A caller gating on the corrected minimum must accept this record.
+  EXPECT_GE(raw.size(), ulog_flatten::loggedSizeBytes(*sub->format()));
+
+  // The padding field never becomes a leaf, so nothing reads past `raw`.
+  std::vector<ulog_flatten::FlatLeaf> leaves;
+  ulog_flatten::forEachFlatLeaf(*sub->format(), 0, [&](const ulog_flatten::FlatLeaf& leaf) { leaves.push_back(leaf); });
+  ASSERT_EQ(leaves.size(), 1u);
+  EXPECT_EQ(leaves[0].offset, 8u);
+  EXPECT_EQ(leaves[0].size, 4u);
+  ASSERT_LE(leaves[0].offset + leaves[0].size, raw.size());
+  EXPECT_DOUBLE_EQ(decodeLeaf(raw, leaves[0].offset, leaves[0].type), 3.5);
+}
+
+TEST(ULogFlattenTest, PaddingNotLastFieldStillCountsTowardLoggedSize) {
+  // "_padding0" here is followed by a real field, so it is NOT the trailing
+  // field and the spec's exemption does not apply: the full size is required.
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("mid_pad:uint64_t timestamp;uint8_t[4] _padding0;float value");
+  builder.writeSubscription(1, 0, "mid_pad");
+
+  auto container = parseBuilder(builder);
+  ASSERT_FALSE(container->hadFatalError());
+  auto sub = container->subscription("mid_pad");
+  ASSERT_NE(sub, nullptr);
+
+  EXPECT_EQ(sub->format()->sizeBytes(), 16);
+  // No reduction: the last field ("value") is not padding.
+  EXPECT_EQ(ulog_flatten::loggedSizeBytes(*sub->format()), 16u);
+}
+
+TEST(ULogFlattenTest, FormatWithoutTrailingPaddingIsUnaffected) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("no_pad:uint64_t timestamp;float x;float y");
+  builder.writeSubscription(1, 0, "no_pad");
+
+  auto container = parseBuilder(builder);
+  ASSERT_FALSE(container->hadFatalError());
+  auto sub = container->subscription("no_pad");
+  ASSERT_NE(sub, nullptr);
+
+  EXPECT_EQ(ulog_flatten::loggedSizeBytes(*sub->format()), static_cast<size_t>(sub->format()->sizeBytes()));
+}
+
 // --- Parameter changes over time (PlotJuggler#1245) ---
 //
 // PARAMETER messages in the data section carry no timestamp of their own. The
@@ -929,6 +1011,23 @@ TEST(ULogContainerTest, SampleLogExercisesAllNewPaths) {
   // large and the change list is empty (the synthetic tests cover changes).
   EXPECT_EQ(container->initialParameters().size(), 980u);
   EXPECT_TRUE(container->timedChangedParameters().empty());
+
+  // `vehicle_local_position`'s format ends in a trailing `uint8_t[4]
+  // _padding0`: every one of its 636 real PX4 records is logged 4 bytes
+  // shorter than sizeBytes() (156 vs. 160). Before the padding fix, the
+  // importer's `raw.size() < format_size` gate rejected all of them, so the
+  // topic came out completely empty; loggedSizeBytes() must recognize every
+  // record as valid.
+  auto local_pos = container->subscription("vehicle_local_position");
+  ASSERT_NE(local_pos, nullptr);
+  EXPECT_EQ(local_pos->format()->sizeBytes(), 160);
+  const auto logged_size = ulog_flatten::loggedSizeBytes(*local_pos->format());
+  EXPECT_EQ(logged_size, 156u);
+  ASSERT_EQ(local_pos->rawSamples().size(), 636u);
+  for (const auto& sample : local_pos->rawSamples()) {
+    EXPECT_EQ(sample.data().size(), logged_size);
+    EXPECT_GE(sample.data().size(), logged_size);
+  }
 }
 
 }  // namespace
