@@ -20,27 +20,80 @@ TEST(ChatSession, StartsIdleAndEmpty) {
   EXPECT_EQ(s.state(), TurnState::Idle);
   EXPECT_FALSE(s.busy());
   EXPECT_TRUE(s.messages().empty());
-  EXPECT_EQ(s.render(), "");
+  EXPECT_EQ(s.renderMarkdown(), "");
 }
 
 TEST(ChatSession, RendersSpeakerTags) {
   ChatSession s;
   s.addUser("hello");
   s.addAssistant("hi there");
-  const std::string out = s.render();
-  EXPECT_NE(out.find("You: hello"), std::string::npos);
-  EXPECT_NE(out.find("Assistant: hi there"), std::string::npos);
+  const std::string out = s.renderMarkdown();
+  EXPECT_NE(out.find("**You:**\n\nhello"), std::string::npos);
+  EXPECT_NE(out.find("**Assistant:**\n\nhi there"), std::string::npos);
   // The user line comes before the assistant line.
-  EXPECT_LT(out.find("You: hello"), out.find("Assistant: hi there"));
+  EXPECT_LT(out.find("**You:**"), out.find("**Assistant:**"));
 }
 
 TEST(ChatSession, ToolAndSystemRowsRenderDistinctly) {
   ChatSession s;
   s.addTool("list_topics -> 12 topics");
   s.addSystem("Settings saved.");
-  const std::string out = s.render();
-  EXPECT_NE(out.find("list_topics"), std::string::npos);
-  EXPECT_NE(out.find("Settings saved."), std::string::npos);
+  const std::string out = s.renderMarkdown();
+  // Tool/system bodies are Markdown-escaped: '_', '-', '>' and '.' are punctuation.
+  EXPECT_NE(out.find("**Tool:**\n\nlist\\_topics \\-\\> 12 topics"), std::string::npos);
+  EXPECT_NE(out.find("**System:**\n\nSettings saved\\."), std::string::npos);
+}
+
+TEST(ChatSession, MarkdownKeepsRoleLabelsSeparateFromAuthoredBlocks) {
+  ChatSession s;
+  s.addUser("# Inspect\n\n- speed\n- steering");
+  s.addAssistant("1. First\n2. Second");
+
+  EXPECT_EQ(
+      s.renderMarkdown(), "**You:**\n\n# Inspect\n\n- speed\n- steering\n\n**Assistant:**\n\n1. First\n2. Second\n\n");
+  EXPECT_EQ(s.messages()[0].text, "# Inspect\n\n- speed\n- steering") << "rendering must not rewrite stored messages";
+}
+
+TEST(ChatSession, MarkdownEscapesToolAndSystemText) {
+  ChatSession s;
+  s.addTool("read_series `speed` -> [1, 2]");
+  s.addSystem("Error: <untrusted> **literal**");
+
+  const std::string out = s.renderMarkdown();
+  EXPECT_NE(out.find(R"(read\_series \`speed\` \-\> \[1\, 2\])"), std::string::npos);
+  EXPECT_NE(out.find(R"(Error\: \<untrusted\> \*\*literal\*\*)"), std::string::npos);
+}
+
+TEST(ChatSession, MarkdownIsolatesClosedAndUnclosedFencesAcrossMessages) {
+  ChatSession s;
+  s.addAssistant("```cpp\nint complete;\n```");
+  s.addUser("after closed fence");
+  s.addAssistant("~~~~ lua\nreturn 1");
+  s.addUser("after unfinished fence");
+
+  const std::string out = s.renderMarkdown();
+  EXPECT_NE(out.find("```cpp\nint complete;\n```\n\n**You:**"), std::string::npos);
+  EXPECT_NE(out.find("~~~~ lua\nreturn 1\n~~~~\n\n**You:**"), std::string::npos);
+}
+
+TEST(ChatSession, MarkdownRecognizesCrLfFenceClosures) {
+  ChatSession s;
+  s.addAssistant("```text\r\ncomplete\r\n```\r\n");
+  s.addSystem("- literal item\n1. literal number");
+
+  const std::string out = s.renderMarkdown();
+  EXPECT_EQ(out.find("```\n\n**System:**"), std::string::npos) << "a closed CRLF fence must not gain another close";
+  EXPECT_NE(out.find("\\- literal item\n1\\. literal number"), std::string::npos);
+}
+
+TEST(ChatSession, MarkdownClosesOnlyTheCurrentStreamingSnapshot) {
+  ChatSession s;
+  s.appendAssistant("```json\n{");
+  EXPECT_EQ(s.renderMarkdown(), "**Assistant:**\n\n```json\n{\n```\n\n");
+
+  s.appendAssistant("}\n```");
+  EXPECT_EQ(s.messages().front().text, "```json\n{}\n```") << "the temporary closure must not enter stored text";
+  EXPECT_EQ(s.renderMarkdown(), "**Assistant:**\n\n```json\n{}\n```\n\n");
 }
 
 TEST(ChatSession, BusyReflectsNonIdleStates) {
@@ -85,7 +138,7 @@ TEST(ChatSession, EchoTurnLifecycle) {
   s.setState(TurnState::Idle);
   EXPECT_FALSE(s.busy());
   EXPECT_EQ(s.messages().size(), 2u);
-  EXPECT_NE(s.render().find("You said: ping"), std::string::npos);
+  EXPECT_NE(s.renderMarkdown().find("You said: ping"), std::string::npos);
 }
 
 // Restoring a persisted conversation replays messages() through the addX
@@ -116,7 +169,7 @@ TEST(ChatSession, ReplayingMessagesReproducesTheRender) {
         break;
     }
   }
-  EXPECT_EQ(restored.render(), original.render());
+  EXPECT_EQ(restored.renderMarkdown(), original.renderMarkdown());
   EXPECT_EQ(restored.messages().size(), original.messages().size());
 }
 

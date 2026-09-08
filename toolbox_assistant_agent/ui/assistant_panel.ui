@@ -88,6 +88,7 @@
         <property name="minimumHeight"><number>240</number></property>
         <!-- A transcript, not a document: opens on the newest lines, follows them while
              the reader is at the end, and shows a jump-to-latest button while not. -->
+        <property name="pjMarkdown" stdset="0"><bool>true</bool></property>
         <property name="pjFollowTail" stdset="0"><bool>true</bool></property>
         <property name="placeholderText"><string>Ask the assistant to list your topics, describe a topic, or plot the derivative of a series...</string></property>
        </widget>

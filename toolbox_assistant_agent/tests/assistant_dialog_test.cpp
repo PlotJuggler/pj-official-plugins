@@ -10,7 +10,7 @@
 // delete, rename) ever call sendUserMessage or testConnection, so no `claude`
 // CLI is spawned — this stays fully offline. The conversations drawer is
 // always visible now (no menuButton toggle), so a refresh happens on bind,
-// on a backend switch, and after a delete -- never behind an "open" click.
+// on a backend switch, after a delete, and after every completed turn.
 #include "assistant_dialog.hpp"
 
 #include <gtest/gtest.h>
@@ -31,6 +31,7 @@
 #include "claude_sessions.hpp"
 #include "codex_sessions.hpp"
 #include "conversation_state.hpp"
+#include "harness_memory.hpp"
 #include "settings_store.hpp"
 #include "support/scoped_env.hpp"
 
@@ -38,9 +39,27 @@
 #error "ASSISTANT_SESSIONS_FIXTURES_DIR must be defined by CMake"
 #endif
 
+namespace assistant_agent {
+
+class AssistantDialogTestPeer {
+ public:
+  static void setCompletedSession(AssistantDialog& dialog, const std::string& id) {
+    dialog.memoryFor(dialog.active_backend_key_)->session_id = id;
+    dialog.applyBackendEvent({BackendEvent::Kind::TurnComplete, {}});
+  }
+
+  static void finishWithError(AssistantDialog& dialog, const std::string& error) {
+    dialog.applyBackendEvent({BackendEvent::Kind::Error, error});
+    dialog.applyBackendEvent({BackendEvent::Kind::TurnComplete, {}});
+  }
+};
+
+}  // namespace assistant_agent
+
 namespace {
 
 using assistant_agent::AssistantDialog;
+using assistant_agent::AssistantDialogTestPeer;
 using assistant_agent::claudeSessionsDir;
 using assistant_agent::loadActiveSessionId;
 using assistant_agent::loadConversationTitles;
@@ -49,6 +68,14 @@ using nlohmann::json;
 
 using assistant_agent::testing::makeTempDir;
 using assistant_agent::testing::ScopedEnv;
+
+TEST(AssistantDialogUi, TranscriptOptsIntoMarkdownWithoutRequiringANewWidgetClass) {
+  AssistantDialog dialog;
+  const std::string ui = dialog.ui_content();
+  EXPECT_NE(ui.find(R"(<widget class="QPlainTextEdit" name="transcriptText">)"), std::string::npos);
+  EXPECT_NE(ui.find(R"(<property name="pjMarkdown" stdset="0"><bool>true</bool></property>)"), std::string::npos);
+  EXPECT_NE(ui.find(R"(<property name="pjFollowTail" stdset="0"><bool>true</bool></property>)"), std::string::npos);
+}
 
 // Mirrors ClaudeBackend::ensureWorkDir's own resolution (claude_backend.cpp):
 // $XDG_STATE_HOME (unset here) else $HOME/.local/state, then the fixed
@@ -153,10 +180,12 @@ TEST_F(AssistantDialogDrawerTest, SelectingAConversationReplaysItsTranscriptAndP
   const json transcript = entryIn(snap, "transcriptText");
   ASSERT_TRUE(transcript.contains("plain_text"));
   const std::string text = transcript.at("plain_text").get<std::string>();
-  EXPECT_NE(text.find("You: Can you plot the vehicle speed against the steering angle?"), std::string::npos);
-  EXPECT_NE(text.find("list_topics"), std::string::npos) << "the tool_use row, name only, like the live path";
+  EXPECT_NE(text.find("**You:**\n\nCan you plot the vehicle speed against the steering angle?"), std::string::npos);
+  EXPECT_NE(text.find(R"(list\_topics)"), std::string::npos)
+      << "the escaped tool_use row, name only, like the live path";
   EXPECT_NE(
-      text.find("Assistant: I opened a new tab plotting vehicle_speed against vehicle_steering."), std::string::npos);
+      text.find("**Assistant:**\n\nI opened a new tab plotting vehicle_speed against vehicle_steering."),
+      std::string::npos);
   EXPECT_NE(text.find("resumed previous conversation"), std::string::npos);
 
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "session_gamma");
@@ -227,6 +256,62 @@ TEST_F(AssistantDialogDrawerTest, APurgedActiveConversationIsForgottenOnReopen) 
       << "nothing to replay, so the panel opens blank rather than half-resumed";
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "")
       << "a dangling --resume target must not survive to the next turn";
+}
+
+TEST_F(AssistantDialogDrawerTest, EveryCompletionRefreshesAndSelectsTheNewConversationWithoutLosingNames) {
+  SettingsStore store(settings_view_);
+  assistant_agent::setConversationTitle(store, "claude", "session_gamma", "Steering demo");
+
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  (void)snapshot(dialog);
+  ASSERT_TRUE(dialog.onClicked("newChatButton"));
+  (void)snapshot(dialog);
+
+  const std::filesystem::path sessions_dir = claudeSessionsDir(expectedWorkDir(home_).string());
+  std::ifstream source(sessions_dir / "session_alpha.jsonl");
+  ASSERT_TRUE(source.is_open());
+  std::string contents((std::istreambuf_iterator<char>(source)), std::istreambuf_iterator<char>());
+  const auto replaceAll = [&contents](const std::string& from, const std::string& to) {
+    for (std::size_t at = contents.find(from); at != std::string::npos; at = contents.find(from, at + to.size())) {
+      contents.replace(at, from.size(), to);
+    }
+  };
+  replaceAll("PlotJuggler demo", "Fresh conversation");
+  replaceAll("2026-09-01", "2026-09-03");
+  std::ofstream fresh(sessions_dir / "session_new.jsonl");
+  ASSERT_TRUE(fresh.is_open());
+  fresh << contents;
+  fresh.close();
+
+  AssistantDialogTestPeer::setCompletedSession(dialog, "session_new");
+  const json completed = snapshot(dialog);
+  const json completed_list = entryIn(completed, "conversationList");
+  const std::vector<std::string> completed_items = completed_list.at("list_items").get<std::vector<std::string>>();
+  ASSERT_EQ(completed_items.size(), 3u);
+  EXPECT_EQ(std::count(completed_items.begin(), completed_items.end(), "Fresh conversation · 3 Sep 15:17"), 1);
+  EXPECT_NE(
+      std::find(completed_items.begin(), completed_items.end(), "Steering demo · 2 Sep 09:00"), completed_items.end());
+  EXPECT_EQ(
+      completed_list.at("selected_items").get<std::vector<std::string>>(),
+      std::vector<std::string>({"Fresh conversation · 3 Sep 15:17"}));
+  EXPECT_EQ(loadActiveSessionId(store, "claude"), "session_new");
+
+  AssistantDialogTestPeer::setCompletedSession(dialog, "session_new");
+  const std::vector<std::string> repeated =
+      entryIn(snapshot(dialog), "conversationList").at("list_items").get<std::vector<std::string>>();
+  EXPECT_EQ(repeated.size(), 3u);
+  EXPECT_EQ(std::count(repeated.begin(), repeated.end(), "Fresh conversation · 3 Sep 15:17"), 1);
+
+  for (const char* error : {"backend failed", "cancelled"}) {
+    AssistantDialogTestPeer::finishWithError(dialog, error);
+    const json after_error = entryIn(snapshot(dialog), "conversationList");
+    EXPECT_EQ(after_error.at("list_items").get<std::vector<std::string>>().size(), 3u);
+    EXPECT_EQ(
+        after_error.at("selected_items").get<std::vector<std::string>>(),
+        std::vector<std::string>({"Fresh conversation · 3 Sep 15:17"}));
+    EXPECT_EQ(loadConversationTitles(store, "claude").at("session_gamma"), "Steering demo");
+  }
 }
 
 // --- Rename, via the context-menu action ("conversationList", "rename") ---
@@ -491,9 +576,10 @@ TEST_F(AssistantDialogCodexDrawerTest, SelectingAConversationReplaysItAndPersist
   const json snap = snapshot(dialog);
 
   const std::string text = entryIn(snap, "transcriptText").at("plain_text").get<std::string>();
-  EXPECT_NE(text.find("You: Can you plot the vehicle speed against the steering angle?"), std::string::npos);
+  EXPECT_NE(text.find("**You:**\n\nCan you plot the vehicle speed against the steering angle?"), std::string::npos);
   EXPECT_NE(
-      text.find("Assistant: I opened a new tab plotting vehicle_speed against vehicle_steering."), std::string::npos);
+      text.find("**Assistant:**\n\nI opened a new tab plotting vehicle_speed against vehicle_steering."),
+      std::string::npos);
   EXPECT_NE(text.find("resumed previous conversation"), std::string::npos);
 
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "codex"), "codex_gamma");
@@ -549,6 +635,36 @@ TEST_F(AssistantDialogCodexDrawerTest, APurgedActiveConversationIsForgottenOnReo
 
   EXPECT_EQ(entryIn(snap, "transcriptText").value("plain_text", std::string("not-empty")), "");
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "codex"), "");
+}
+
+TEST_F(AssistantDialogCodexDrawerTest, FirstCompletionRefreshesAndSelectsTheNewRolloutOnce) {
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  (void)snapshot(dialog);
+  ASSERT_TRUE(dialog.onClicked("newChatButton"));
+  (void)snapshot(dialog);
+
+  const std::filesystem::path rollout =
+      codex_home_ / "sessions" / "2026" / "09" / "03" / "rollout-2026-09-03T10-00-00-codex_new.jsonl";
+  writeCodexFixture(
+      rollout, "codex_new", expectedWorkDir(home_).string(), "2026-09-03T10:00:00.000Z", "Inspect fresh data",
+      "The fresh data is ready.", "2026-09-03T10:00:05.000Z");
+
+  AssistantDialogTestPeer::setCompletedSession(dialog, "codex_new");
+  const json first = entryIn(snapshot(dialog), "conversationList");
+  const std::vector<std::string> items = first.at("list_items").get<std::vector<std::string>>();
+  ASSERT_EQ(items.size(), 3u);
+  EXPECT_EQ(std::count(items.begin(), items.end(), "Inspect fresh data · 3 Sep 10:00"), 1);
+  EXPECT_EQ(
+      first.at("selected_items").get<std::vector<std::string>>(),
+      std::vector<std::string>({"Inspect fresh data · 3 Sep 10:00"}));
+  EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "codex"), "codex_new");
+
+  AssistantDialogTestPeer::setCompletedSession(dialog, "codex_new");
+  const std::vector<std::string> repeated =
+      entryIn(snapshot(dialog), "conversationList").at("list_items").get<std::vector<std::string>>();
+  EXPECT_EQ(repeated.size(), 3u);
+  EXPECT_EQ(std::count(repeated.begin(), repeated.end(), "Inspect fresh data · 3 Sep 10:00"), 1);
 }
 
 // --- Switching backends must not discard either one's resume point --------
@@ -773,7 +889,7 @@ TEST_F(AssistantDialogSettingsSwitchTest, SwitchingBackendLoadsThatBackendsPersi
       << "must have switched to codex's persisted conversation";
   EXPECT_NE(text.find("I opened a new tab plotting vehicle_speed against vehicle_steering."), std::string::npos);
   const std::size_t resumed_at = text.find("resumed previous conversation");
-  const std::size_t saved_at = text.find("Settings saved (backend: codex)");
+  const std::size_t saved_at = text.find(R"(Settings saved \(backend\: codex\))");
   ASSERT_NE(resumed_at, std::string::npos);
   ASSERT_NE(saved_at, std::string::npos);
   EXPECT_LT(resumed_at, saved_at) << "the note must land in the transcript it switched TO, not the one just left";
@@ -822,7 +938,7 @@ TEST_F(AssistantDialogSettingsSwitchTest, SwitchingToABackendWithNothingPersiste
   EXPECT_EQ(text.find("Give me a demo"), std::string::npos) << "must not still be showing claude's conversation";
   EXPECT_EQ(text.find("resumed previous conversation"), std::string::npos)
       << "nothing was resumed -- there is nothing persisted for codex";
-  EXPECT_NE(text.find("Settings saved (backend: codex)"), std::string::npos);
+  EXPECT_NE(text.find(R"(Settings saved \(backend\: codex\))"), std::string::npos);
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "codex"), "");
 
   // The same `snap` already carries codex's own listing -- the drawer refresh
@@ -856,7 +972,7 @@ TEST_F(AssistantDialogSettingsSwitchTest, ChangingOnlyTheModelKeepsTheConversati
     ++resumed_count;
   }
   EXPECT_EQ(resumed_count, 1u) << "the conversation must not have been reloaded a second time";
-  EXPECT_NE(text.find("Settings saved (backend: claude)"), std::string::npos);
+  EXPECT_NE(text.find(R"(Settings saved \(backend\: claude\))"), std::string::npos);
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "session_alpha");
   EXPECT_EQ(SettingsStore(settings_view_).getString("assistant.claude.model", "unset"), "sonnet")
       << "the model change itself must still have been persisted";

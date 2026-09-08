@@ -268,9 +268,8 @@ bool AssistantDialog::switchToConversation(const std::string& id) {
   *memory = HarnessMemory{};
   memory->session_id = id;
   // Forces composePayload to re-send the catalog with the resume note on the
-  // next turn: this process's ephemeral state (tabs the model composed, etc.)
-  // died with whatever process wrote this transcript, and --resume would
-  // otherwise replay history as if it hadn't.
+  // next turn: the loaded layout and current owned-tab set may differ from the
+  // state in this transcript, while --resume still replays that earlier state.
   memory->resumed_pending = true;
 
   state_.active_conversation_id = id;
@@ -464,7 +463,7 @@ std::string AssistantDialog::widget_data() {
   };
 
   if (state_.transcript_dirty) {
-    wd.setPlainText("transcriptText", state_.session.render());
+    wd.setPlainText("transcriptText", state_.session.renderMarkdown());
     state_.transcript_dirty = false;
   }
 
@@ -864,6 +863,8 @@ void AssistantDialog::applyBackendEvent(const BackendEvent& ev) {
         SettingsStore store(settings_);
         saveActiveSessionId(store, state_.active_conversation_id, active_backend_key_);
       }
+      refreshConversationsLocked();
+      state_.drawer_dirty = true;
       break;
     }
   }

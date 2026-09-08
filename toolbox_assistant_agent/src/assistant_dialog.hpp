@@ -27,6 +27,8 @@
 
 namespace assistant_agent {
 
+class AssistantDialogTestPeer;
+
 // Per-conversation state a backend borrows (harness_memory.hpp).
 // Forward-declared so this header does not pull the backend implementations —
 // and their JSON dependency — into everything that includes it; the dialog's
@@ -61,7 +63,7 @@ struct DialogState {
   std::string backend_name = "Echo (no LLM)";
 
   // Dirty flags so widget_data() re-pushes only what changed. The transcript
-  // re-push (setPlainText on a growing QPlainTextEdit) is the expensive one, so
+  // re-push (setPlainText on a growing transcript) is the expensive one, so
   // it is gated behind an explicit change signal (risk R5).
   bool transcript_dirty = true;
   bool controls_dirty = true;
@@ -72,10 +74,8 @@ struct DialogState {
   UsageLedger usage;
 
   // The conversations drawer, always visible (left of the transcript).
-  // Populated from backend_->listConversations() on bind, on a backend
-  // switch, and after a delete -- not kept live otherwise, so a conversation
-  // started in another PlotJuggler instance only appears the next time one of
-  // those runs the refresh.
+  // Populated from backend_->listConversations() on bind, on a backend switch,
+  // after a delete, and after every completed turn.
   bool drawer_dirty = true;          // forces the first widget_data() to push the list + placeholder
   bool header_icons_pending = true;  // one-shot setButtonIconNamed for newChatButton
   std::vector<ConversationSummary> conversations;
@@ -162,6 +162,8 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   void setSettings(PJ::sdk::SettingsView settings);
 
  private:
+  friend class AssistantDialogTestPeer;
+
   void workerLoop();
   void postCommand(std::function<void()> fn);
   void postEvent(std::function<void()> fn);
@@ -260,8 +262,7 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   // Requires state_.mu held by the caller. Rebuilds `conversations` from
   // backend_->listConversations() — local disk I/O under the harness's
   // project dir, cheap enough to run inline on the GUI thread on every call
-  // site (bind, a backend switch, a delete; there is no async path for it,
-  // unlike a turn). Also prunes conversation_titles down to the ids this
+  // site. Also prunes conversation_titles down to the ids this
   // listing still has (conversation_state.hpp) and reloads it, so the drawer
   // never shows a name for a conversation the harness has since purged.
   void refreshConversationsLocked();
