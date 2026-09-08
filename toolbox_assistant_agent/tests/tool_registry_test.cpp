@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
@@ -137,6 +138,30 @@ TEST(ToolRegistry, ReadSeriesStats) {
   // The spacing facts ride along in the same report, self-described by key.
   EXPECT_TRUE(j["stats"].contains("max_gap_s"));
   EXPECT_TRUE(j["stats"].contains("max_gap_at_s"));
+}
+
+// A NaN sample must not silently poison min/max/mean/stddev: the tool reports
+// it as 'invalid'/'invalid_fraction' instead, and only when it is present.
+TEST(ToolRegistry, ReadSeriesStatsFlagsNonFiniteValues) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  store.addField("/imu", "nan_x", {0, kSec, 2 * kSec, 3 * kSec}, {1.0, std::nan(""), 3.0, 4.0});
+  auto ctx = makeCtx(store, nullptr);
+
+  auto dirty = reg.execute("read_series", {{"series", "/imu/nan_x"}, {"mode", "stats"}}, ctx);
+  ASSERT_TRUE(dirty.ok) << dirty.content;
+  auto dj = json::parse(dirty.content);
+  EXPECT_EQ(dj["stats"]["invalid"], 1);
+  EXPECT_DOUBLE_EQ(dj["stats"]["invalid_fraction"].get<double>(), 0.25);
+  EXPECT_DOUBLE_EQ(dj["stats"]["min"].get<double>(), 1.0);
+  EXPECT_DOUBLE_EQ(dj["stats"]["max"].get<double>(), 4.0);
+
+  auto clean = reg.execute("read_series", {{"series", "/imu/x"}, {"mode", "stats"}}, ctx);
+  ASSERT_TRUE(clean.ok) << clean.content;
+  auto cj = json::parse(clean.content);
+  EXPECT_FALSE(cj["stats"].contains("invalid"));
+  EXPECT_FALSE(cj["stats"].contains("invalid_fraction"));
 }
 
 TEST(ToolRegistry, ReadSeriesBuckets) {

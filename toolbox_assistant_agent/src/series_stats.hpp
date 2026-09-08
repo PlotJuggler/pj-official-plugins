@@ -16,6 +16,11 @@ namespace assistant_agent {
 // seconds for a model-friendly report.
 struct SeriesStats {
   std::size_t count = 0;
+  std::size_t invalid = 0;  // samples whose value is not finite (NaN, ±inf)
+  // True once at least one finite value was seen. min/max/mean/stddev are
+  // computed over finite samples only and stay at their defaults (never NaN)
+  // when this is false.
+  bool has_values = false;
   double min = 0.0;
   double max = 0.0;
   double mean = 0.0;
@@ -42,7 +47,8 @@ struct SeriesBucket {
   double min = 0.0;
   double max = 0.0;
   double mean = 0.0;
-  std::size_t count = 0;
+  std::size_t count = 0;    // finite samples in this bucket
+  std::size_t invalid = 0;  // samples whose value is not finite (NaN, ±inf)
 };
 
 // Compute summary stats. `timestamps` and `values` must be equal length and
@@ -56,22 +62,38 @@ struct SeriesBucket {
     return s;
   }
   s.count = n;
-  s.min = values[0];
-  s.max = values[0];
   double sum = 0.0;
+  std::size_t finite_count = 0;
   for (std::size_t i = 0; i < n; ++i) {
     const double v = values[i];
-    s.min = std::min(s.min, v);
-    s.max = std::max(s.max, v);
+    if (!std::isfinite(v)) {
+      ++s.invalid;
+      continue;
+    }
+    if (!s.has_values) {
+      s.min = v;
+      s.max = v;
+      s.has_values = true;
+    } else {
+      s.min = std::min(s.min, v);
+      s.max = std::max(s.max, v);
+    }
     sum += v;
+    ++finite_count;
   }
-  s.mean = sum / static_cast<double>(n);
-  double sq = 0.0;
-  for (std::size_t i = 0; i < n; ++i) {
-    const double d = values[i] - s.mean;
-    sq += d * d;
+  if (s.has_values) {
+    s.mean = sum / static_cast<double>(finite_count);
+    double sq = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+      const double v = values[i];
+      if (!std::isfinite(v)) {
+        continue;
+      }
+      const double d = v - s.mean;
+      sq += d * d;
+    }
+    s.stddev = std::sqrt(sq / static_cast<double>(finite_count));
   }
-  s.stddev = std::sqrt(sq / static_cast<double>(n));
   s.t_start_ns = timestamps[0];
   s.t_end_ns = timestamps[n - 1];
   s.duration_s = static_cast<double>(s.t_end_ns - s.t_start_ns) * 1e-9;
@@ -97,8 +119,11 @@ struct SeriesBucket {
 
 // Decimate into at most `max_points` equal-width time buckets, preserving the
 // per-bucket min and max so spikes survive the downsample (a plain stride would
-// alias them away). Buckets with no samples are omitted. When the series
-// already has <= max_points samples, each sample becomes its own bucket.
+// alias them away). Buckets with no samples at all are omitted; a bucket whose
+// samples are all non-finite (NaN/inf) is kept with count == 0 and its invalid
+// count set, so a window of bad data is reported rather than silently dropped.
+// When the series already has <= max_points samples, each sample becomes its
+// own bucket.
 [[nodiscard]] inline std::vector<SeriesBucket> bucketize(
     std::span<const std::int64_t> timestamps, std::span<const double> values, std::size_t max_points) {
   std::vector<SeriesBucket> out;
@@ -117,7 +142,12 @@ struct SeriesBucket {
     out.reserve(limit);
     for (std::size_t i = 0; i < limit; ++i) {
       const double v = values[i];
-      out.push_back({static_cast<double>(timestamps[i] - t0) * 1e-9, v, v, v, 1});
+      const double t_rel_s = static_cast<double>(timestamps[i] - t0) * 1e-9;
+      if (std::isfinite(v)) {
+        out.push_back({t_rel_s, v, v, v, 1, 0});
+      } else {
+        out.push_back({t_rel_s, 0.0, 0.0, 0.0, 0, 1});
+      }
     }
     return out;
   }
@@ -136,6 +166,11 @@ struct SeriesBucket {
     bool first = true;
     while (idx < n && (timestamps[idx] <= edge || b + 1 == max_points)) {
       const double v = values[idx];
+      if (!std::isfinite(v)) {
+        ++bucket.invalid;
+        ++idx;
+        continue;
+      }
       if (first) {
         bucket.min = v;
         bucket.max = v;
@@ -150,6 +185,11 @@ struct SeriesBucket {
     }
     if (bucket.count > 0) {
       bucket.mean = sum / static_cast<double>(bucket.count);
+      out.push_back(bucket);
+    } else if (bucket.invalid > 0) {
+      // All samples in this window were non-finite: keep the bucket (with its
+      // invalid count) instead of silently dropping the window, but leave
+      // min/max/mean at their defaults rather than emitting NaN.
       out.push_back(bucket);
     }
   }

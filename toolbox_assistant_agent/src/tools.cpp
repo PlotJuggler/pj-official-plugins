@@ -548,9 +548,19 @@ ToolResult describeTopic(const json& args, ToolContext& ctx) {
 }
 
 json statsToJson(const SeriesStats& s) {
-  json out = {{"count", s.count},    {"min", s.min},       {"max", s.max},
-              {"mean", s.mean},      {"stddev", s.stddev}, {"duration_s", s.duration_s},
-              {"rate_hz", s.rate_hz}};
+  json out = {{"count", s.count}, {"duration_s", s.duration_s}, {"rate_hz", s.rate_hz}};
+  // NaN/inf poison a straight sum, so min/max/mean/stddev are computed over
+  // finite values only; when none exist there is nothing honest to report, so
+  // they are omitted rather than serialized as NaN (which nlohmann turns into
+  // `null` — indistinguishable from a field that was never populated).
+  if (s.has_values) {
+    out["min"] = s.min;
+    out["max"] = s.max;
+    out["mean"] = s.mean;
+    out["stddev"] = s.stddev;
+  } else {
+    out["note"] = "no finite values";
+  }
   // The spacing facts that count/mean/rate cannot carry: a dropout leaves all
   // three untouched. The keys are self-describing on purpose — the tool's
   // schema description says nothing about them, so they cost prefix tokens in
@@ -558,6 +568,10 @@ json statsToJson(const SeriesStats& s) {
   if (s.has_gap) {
     out["max_gap_s"] = s.max_gap_s;
     out["max_gap_at_s"] = s.max_gap_at_s;
+  }
+  if (s.invalid > 0) {
+    out["invalid"] = s.invalid;
+    out["invalid_fraction"] = static_cast<double>(s.invalid) / static_cast<double>(s.count);
   }
   return out;
 }
@@ -777,7 +791,16 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
       auto buckets = bucketize(r.ts, r.vals, max_points);
       json bucket_arr = json::array();
       for (const auto& b : buckets) {
-        bucket_arr.push_back({{"t", b.t_rel_s}, {"min", b.min}, {"max", b.max}, {"mean", b.mean}, {"n", b.count}});
+        json entry = {{"t", b.t_rel_s}, {"n", b.count}};
+        if (b.count > 0) {
+          entry["min"] = b.min;
+          entry["max"] = b.max;
+          entry["mean"] = b.mean;
+        }
+        if (b.invalid > 0) {
+          entry["invalid"] = b.invalid;
+        }
+        bucket_arr.push_back(entry);
       }
       json out = {{"series", r.path}, {"stats", stats_json}, {"buckets", bucket_arr}};
       std::string dumped = out.dump();
@@ -1611,7 +1634,8 @@ ToolRegistry::ToolRegistry() {
   add(
       {"read_series",
        "Read summary statistics ('stats') or a min/max-preserving downsample ('buckets'). Never "
-       "returns raw samples. Bucket times 't' are seconds relative to the series start; when the "
+       "returns raw samples. Non-finite values (NaN/inf) are counted separately as 'invalid' and "
+       "excluded from min/max/mean/stddev. Bucket times 't' are seconds relative to the series start; when the "
        "host supports playback control, stats also carry 't_start_display_s' (where the series "
        "starts on the plot axis), so a bucket's display/seek time = t_start_display_s + t.\n"
        "'paths' is an ARRAY — ask for every series you want stats for in ONE call. Each call is a "

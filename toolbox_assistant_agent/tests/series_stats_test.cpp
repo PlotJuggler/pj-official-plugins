@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -13,6 +14,9 @@ using assistant_agent::bucketize;
 using assistant_agent::computeStats;
 
 constexpr std::int64_t kSec = 1'000'000'000;  // ns per second
+constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+constexpr double kPosInf = std::numeric_limits<double>::infinity();
+constexpr double kNegInf = -std::numeric_limits<double>::infinity();
 
 TEST(SeriesStats, EmptyIsZeroed) {
   auto s = computeStats({}, {});
@@ -79,6 +83,48 @@ TEST(SeriesStats, RegularSeriesReportsItsSpacingAsTheGap) {
   EXPECT_DOUBLE_EQ(s.max_gap_s, 1.0);
 }
 
+TEST(SeriesStats, OneNaNIsExcludedFromMinMaxMeanStddev) {
+  std::vector<std::int64_t> ts = {0, kSec, 2 * kSec, 3 * kSec, 4 * kSec};
+  std::vector<double> v = {1.0, 2.0, kNaN, 4.0, 5.0};
+  auto s = computeStats(ts, v);
+  EXPECT_EQ(s.count, 5u);  // total samples, NaN included
+  EXPECT_EQ(s.invalid, 1u);
+  ASSERT_TRUE(s.has_values);
+  // Same min/max/mean/stddev as the four finite values {1,2,4,5}.
+  EXPECT_DOUBLE_EQ(s.min, 1.0);
+  EXPECT_DOUBLE_EQ(s.max, 5.0);
+  EXPECT_DOUBLE_EQ(s.mean, 3.0);
+  EXPECT_NEAR(s.stddev, 1.5811388300841898, 1e-9);
+}
+
+TEST(SeriesStats, AllNaNHasNoValues) {
+  std::vector<std::int64_t> ts = {0, kSec, 2 * kSec};
+  std::vector<double> v = {kNaN, kNaN, kNaN};
+  auto s = computeStats(ts, v);
+  EXPECT_EQ(s.count, 3u);
+  EXPECT_EQ(s.invalid, 3u);
+  EXPECT_FALSE(s.has_values);
+  // min/max/mean/stddev stay at their defaults rather than becoming NaN.
+  EXPECT_DOUBLE_EQ(s.min, 0.0);
+  EXPECT_DOUBLE_EQ(s.max, 0.0);
+  EXPECT_DOUBLE_EQ(s.mean, 0.0);
+  EXPECT_DOUBLE_EQ(s.stddev, 0.0);
+  // Duration/rate describe spacing, not values, so they are unaffected.
+  EXPECT_DOUBLE_EQ(s.duration_s, 2.0);
+  EXPECT_DOUBLE_EQ(s.rate_hz, 1.0);
+}
+
+TEST(SeriesStats, InfinitiesAreInvalidToo) {
+  std::vector<std::int64_t> ts = {0, kSec, 2 * kSec};
+  std::vector<double> v = {kPosInf, 1.0, kNegInf};
+  auto s = computeStats(ts, v);
+  EXPECT_EQ(s.invalid, 2u);
+  ASSERT_TRUE(s.has_values);
+  EXPECT_DOUBLE_EQ(s.min, 1.0);
+  EXPECT_DOUBLE_EQ(s.max, 1.0);
+  EXPECT_DOUBLE_EQ(s.mean, 1.0);
+}
+
 TEST(SeriesBuckets, FewerSamplesThanBucketsOnePer) {
   std::vector<std::int64_t> ts = {0, kSec, 2 * kSec};
   std::vector<double> v = {1.0, 2.0, 3.0};
@@ -117,6 +163,35 @@ TEST(SeriesBuckets, DegenerateTimeSpan) {
   std::vector<double> v = {1.0, 2.0, 3.0, 4.0};
   auto b = bucketize(ts, v, 2);
   EXPECT_EQ(b.size(), 2u);
+}
+
+TEST(SeriesBuckets, NaNInABucketIsExcludedFromMinMaxMean) {
+  // 100 samples over one bucket window (max_points = 1), one of them NaN.
+  std::vector<std::int64_t> ts;
+  std::vector<double> v;
+  for (int i = 0; i < 100; ++i) {
+    ts.push_back(static_cast<std::int64_t>(i) * kSec / 10);
+    v.push_back(i == 50 ? kNaN : 1.0);
+  }
+  auto b = bucketize(ts, v, 1);
+  ASSERT_EQ(b.size(), 1u);
+  EXPECT_EQ(b[0].count, 99u);
+  EXPECT_EQ(b[0].invalid, 1u);
+  EXPECT_DOUBLE_EQ(b[0].min, 1.0);
+  EXPECT_DOUBLE_EQ(b[0].max, 1.0);
+  EXPECT_DOUBLE_EQ(b[0].mean, 1.0);
+}
+
+TEST(SeriesBuckets, BucketOfOnlyNaNHasZeroCount) {
+  std::vector<std::int64_t> ts = {0, kSec, 2 * kSec};
+  std::vector<double> v = {kNaN, kNaN, kNaN};
+  auto b = bucketize(ts, v, 1);
+  ASSERT_EQ(b.size(), 1u);
+  EXPECT_EQ(b[0].count, 0u);
+  EXPECT_EQ(b[0].invalid, 3u);
+  EXPECT_DOUBLE_EQ(b[0].min, 0.0);
+  EXPECT_DOUBLE_EQ(b[0].max, 0.0);
+  EXPECT_DOUBLE_EQ(b[0].mean, 0.0);
 }
 
 }  // namespace
