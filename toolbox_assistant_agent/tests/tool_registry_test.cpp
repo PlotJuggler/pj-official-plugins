@@ -179,6 +179,52 @@ TEST(ToolRegistry, ReadSeriesBuckets) {
   EXPECT_LE(j["buckets"].size(), 5u);
 }
 
+// /imu/y (populate()) never changes: {2.0, 2.0, 2.0}.
+TEST(ToolRegistry, ReadSeriesStatsFlagsConstantSeries) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);
+  auto r = reg.execute("read_series", {{"series", "/imu/y"}, {"mode", "stats"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_TRUE(j["stats"]["constant"].get<bool>());
+  EXPECT_FALSE(j["stats"].contains("flat_span_s"));
+  EXPECT_FALSE(j["stats"].contains("flat_span_at_s"));
+
+  // /imu/x varies throughout -> neither key at all.
+  auto varying = reg.execute("read_series", {{"series", "/imu/x"}, {"mode", "stats"}}, ctx);
+  ASSERT_TRUE(varying.ok) << varying.content;
+  auto vj = json::parse(varying.content);
+  EXPECT_FALSE(vj["stats"].contains("constant"));
+  EXPECT_FALSE(vj["stats"].contains("flat_span_s"));
+}
+
+// A servo-like channel: varies for most of the recording, then freezes for
+// the tail — the real aileron-jam shape this feature exists to surface.
+TEST(ToolRegistry, ReadSeriesStatsFlagsLongFlatSpan) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  // 20 samples, 1 Hz: index 0..14 vary, 15..19 freeze at the same value —
+  // 4 s of freeze out of a 19 s span (~21%), starting at t=15 s.
+  std::vector<std::int64_t> ts;
+  std::vector<double> v;
+  for (int i = 0; i < 20; ++i) {
+    ts.push_back(static_cast<std::int64_t>(i) * kSec);
+    v.push_back(i < 15 ? static_cast<double>(i % 5) : 42.0);
+  }
+  store.addField("/imu", "servo", ts, v);
+  auto ctx = makeCtx(store, nullptr);
+  auto r = reg.execute("read_series", {{"series", "/imu/servo"}, {"mode", "stats"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_FALSE(j["stats"].contains("constant"));
+  ASSERT_TRUE(j["stats"].contains("flat_span_s")) << r.content;
+  EXPECT_NEAR(j["stats"]["flat_span_s"].get<double>(), 4.0, 1e-9);
+  EXPECT_NEAR(j["stats"]["flat_span_at_s"].get<double>(), 15.0, 1e-9);
+}
+
 TEST(ToolRegistry, ReadUnknownSeriesFails) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;
@@ -874,6 +920,25 @@ TEST(ToolRegistry, EvaluateHappyPathCreatesReadsAndRemoves) {
   const json j = json::parse(r.content);
   EXPECT_TRUE(j.contains("stats"));
   EXPECT_TRUE(j.contains("buckets"));
+}
+
+// evaluate's stats go through the same statsWithDisplayStart path as
+// read_series, so the whole-series flat-run facts must ride along there too.
+TEST(ToolRegistry, EvaluateStatsCarryFlatSpanFacts) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  dp.ephemeral_series_store = &store;
+  dp.ephemeral_series_ts = {0, kSec, 2 * kSec, 3 * kSec, 4 * kSec};
+  dp.ephemeral_series_vals = {9.0, 9.0, 9.0, 9.0, 9.0};  // never changes
+  ToolContext ctx = makeCtx(store, &dp);
+
+  auto r = reg.execute("evaluate", {{"inputs", json::array({"/imu/x"})}, {"expression", "value * 0 + 9"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  ASSERT_TRUE(j.contains("stats"));
+  EXPECT_TRUE(j["stats"]["constant"].get<bool>());
 }
 
 TEST(ToolRegistry, EvaluateSurfacesValidateErrorWithoutCreating) {
@@ -1806,6 +1871,39 @@ TEST(ToolRegistry, WindowAppliesToStatsToo) {
   EXPECT_DOUBLE_EQ(j["stats"]["max"].get<double>(), 3.0);
   ASSERT_TRUE(j.contains("window")) << r.content;
   EXPECT_EQ(j["window"]["axis"], "display");
+}
+
+// flat_span_s/flat_span_at_s describe the WHOLE series, even when the read is
+// windowed to a slice that does not contain the freeze: "this channel froze
+// for 21 s" must survive asking about a different 5 s of the same flight.
+TEST(ToolRegistry, FlatSpanSurvivesAWindowOverAMovingPart) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  // 20 samples, 1 Hz: index 0..14 vary, 15..19 freeze at the same value —
+  // 4 s of freeze out of a 19 s span, starting at t=15 s.
+  std::vector<std::int64_t> ts;
+  std::vector<double> v;
+  for (int i = 0; i < 20; ++i) {
+    ts.push_back(static_cast<std::int64_t>(i) * kSec);
+    v.push_back(i < 15 ? static_cast<double>(i % 5) : 42.0);
+  }
+  store.addField("/imu", "servo", ts, v);
+  FakePlaybackHost pb;  // default offset 0: display seconds == absolute seconds
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  // Window over [0, 5] s — entirely inside the varying part; the freeze at
+  // [15, 19] s is outside the window.
+  auto r = reg.execute("read_series", {{"series", "/imu/servo"}, {"t_start_s", 0.0}, {"t_end_s", 5.0}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  ASSERT_TRUE(j.contains("window")) << r.content;
+  EXPECT_LT(j["stats"]["count"].get<int>(), 20) << "the window must have narrowed the read";
+  EXPECT_FALSE(j["stats"].contains("constant"));
+  ASSERT_TRUE(j["stats"].contains("flat_span_s")) << r.content;
+  EXPECT_NEAR(j["stats"]["flat_span_s"].get<double>(), 4.0, 1e-9);
+  EXPECT_NEAR(j["stats"]["flat_span_at_s"].get<double>(), 15.0, 1e-9);
 }
 
 TEST(ToolRegistry, WindowWithOneBoundOnly) {

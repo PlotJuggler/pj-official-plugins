@@ -696,18 +696,31 @@ struct SeriesRead {
   // echoed back on the entry so a later turn knows count/rate_hz/duration_s
   // and the bucket time axis are the WINDOW's, not the whole series'.
   json window;
+  // Computed by readOne on the full, unwindowed ts/vals — see
+  // FlatRunSummary's comment for why this must stay whole-series even when
+  // a window narrows everything else in this struct.
+  FlatRunSummary flat;
 };
 
 // With a playback host bound, report where this series STARTS on the plot
 // axis, so the model can turn bucket-relative times into seek/zoom targets:
 // display time of a bucket = t_start_display_s + bucket.t. Best-effort — the
 // conversion is frame-dependent (user-editable offsets), never an error here.
-json statsWithDisplayStart(const SeriesStats& stats, ToolContext& ctx, const std::string& topic) {
+json statsWithDisplayStart(
+    const SeriesStats& stats, ToolContext& ctx, const std::string& topic, const FlatRunSummary& flat) {
   json stats_json = statsToJson(stats);
   if (ctx.playback.valid() && stats.count > 0) {
     if (auto display_s = ctx.playback.toDisplayTime(topic, stats.t_start_ns)) {
       stats_json["t_start_display_s"] = *display_s;
     }
+  }
+  // Whole-series facts (see FlatRunSummary): a constant channel says so
+  // instead of the flat span, which would just restate "the whole thing".
+  if (flat.constant) {
+    stats_json["constant"] = true;
+  } else if (flat.has_flat_span) {
+    stats_json["flat_span_s"] = flat.flat_span_s;
+    stats_json["flat_span_at_s"] = flat.flat_span_at_s;
   }
   return stats_json;
 }
@@ -732,6 +745,10 @@ SeriesRead readOne(const PJ::sdk::CatalogSnapshot& catalog, ToolContext& ctx, co
     r.error = "series '" + want + "' is not a numeric time series";
     return r;
   }
+  // Whole-series facts, computed here — before any t_start_s/t_end_s window
+  // narrows r.ts/r.vals below — so "never changes" / "freezes for N s" stay
+  // claims about the entire recording even under a windowed read.
+  r.flat = flatRunSummary(r.ts, r.vals);
   r.ok = true;
   return r;
 }
@@ -912,7 +929,7 @@ json batchBuckets(ToolContext& ctx, const std::vector<SeriesRead>& reads, std::s
   std::size_t failed = 0;
   for (std::size_t i = 0; i < n; ++i) {
     if (reads[i].ok) {
-      stats[i] = statsWithDisplayStart(computeStats(reads[i].ts, reads[i].vals), ctx, reads[i].topic);
+      stats[i] = statsWithDisplayStart(computeStats(reads[i].ts, reads[i].vals), ctx, reads[i].topic, reads[i].flat);
     } else {
       ++failed;
     }
@@ -1006,7 +1023,8 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
         arr.push_back({{"series", r.path}, {"error", r.error}});
         continue;
       }
-      json entry = {{"series", r.path}, {"stats", statsWithDisplayStart(computeStats(r.ts, r.vals), ctx, r.topic)}};
+      json entry = {
+          {"series", r.path}, {"stats", statsWithDisplayStart(computeStats(r.ts, r.vals), ctx, r.topic, r.flat)}};
       if (!r.window.is_null()) {
         entry["window"] = r.window;
       }
@@ -1045,7 +1063,7 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
       if (!r.ok) {
         return ToolResult::failure(r.error);
       }
-      const json stats_json = statsWithDisplayStart(computeStats(r.ts, r.vals), ctx, r.topic);
+      const json stats_json = statsWithDisplayStart(computeStats(r.ts, r.vals), ctx, r.topic, r.flat);
       json base = {{"series", r.path}, {"stats", stats_json}};
       if (!r.window.is_null()) {
         base["window"] = r.window;
@@ -1423,7 +1441,7 @@ ToolResult evaluateSeries(const json& args, ToolContext& ctx) {
     return ToolResult::failure(r.error);
   }
   const SeriesStats stats = computeStats(r.ts, r.vals);
-  json result = {{"evaluated", r.path}, {"stats", statsWithDisplayStart(stats, ctx, r.topic)}};
+  json result = {{"evaluated", r.path}, {"stats", statsWithDisplayStart(stats, ctx, r.topic, r.flat)}};
 
   if (args.contains("buckets")) {
     if (!args["buckets"].is_number_integer()) {

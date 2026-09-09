@@ -132,6 +132,86 @@ struct SeriesBucket {
   return s;
 }
 
+// Longest run of consecutive samples holding exactly the same value, plus
+// whether the series never changes at all. Computed on the WHOLE series the
+// caller passes in — the executor must call this on the unsliced ts/vals
+// from readOne, BEFORE any t_start_s/t_end_s window is applied, because
+// "this channel never changes" and "this channel froze for 21s" are claims
+// about the entire recording, not about whatever slice a later window keeps.
+struct FlatRunSummary {
+  // True only when every sample equals the first. Exact `==`, so a series
+  // containing any non-finite sample can't be constant unless it has just
+  // one sample (nothing to compare it against).
+  bool constant = false;
+  // True when the longest flat run covers at least 5% of the series
+  // duration and the series is not `constant` (a constant series already
+  // says everything a flat span would add). Left false — with the span
+  // fields at 0 — for a noisy series, a single-sample series, or one where
+  // every sample shares the same timestamp (zero duration).
+  bool has_flat_span = false;
+  double flat_span_s = 0.0;
+  // Where the longest run starts, in seconds relative to the first sample —
+  // same axis as min_at_s/max_at_s/max_gap_at_s.
+  double flat_span_at_s = 0.0;
+};
+
+[[nodiscard]] inline FlatRunSummary flatRunSummary(
+    std::span<const std::int64_t> timestamps, std::span<const double> values) {
+  FlatRunSummary out;
+  const std::size_t n = std::min(timestamps.size(), values.size());
+  if (n == 0) {
+    return out;
+  }
+  if (n == 1) {
+    out.constant = true;
+    return out;
+  }
+
+  bool constant = true;
+  std::size_t run_start = 0;
+  bool run_open = false;
+  double best_len_s = 0.0;
+  double best_start_s = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const double v = values[i];
+    if (!std::isfinite(v)) {
+      // A non-finite sample can't equal anything (NaN) and can't be trusted
+      // as a repeated constant (inf) either: it breaks any run in progress
+      // and rules out the whole series being constant.
+      run_open = false;
+      constant = false;
+      continue;
+    }
+    if (i > 0 && !(v == values[i - 1])) {
+      constant = false;
+    }
+    if (run_open && v == values[run_start]) {
+      // extends the open run
+    } else {
+      run_start = i;
+      run_open = true;
+    }
+    const double len_s = static_cast<double>(timestamps[i] - timestamps[run_start]) * 1e-9;
+    if (len_s > best_len_s) {
+      best_len_s = len_s;
+      best_start_s = static_cast<double>(timestamps[run_start] - timestamps[0]) * 1e-9;
+    }
+  }
+
+  if (constant) {
+    out.constant = true;
+    return out;
+  }
+
+  const double duration_s = static_cast<double>(timestamps[n - 1] - timestamps[0]) * 1e-9;
+  if (duration_s > 0.0 && best_len_s >= 0.05 * duration_s) {
+    out.has_flat_span = true;
+    out.flat_span_s = best_len_s;
+    out.flat_span_at_s = best_start_s;
+  }
+  return out;
+}
+
 // Decimate into at most `max_points` equal-width time buckets, preserving the
 // per-bucket min and max so spikes survive the downsample (a plain stride would
 // alias them away). Buckets with no samples at all are omitted; a bucket whose

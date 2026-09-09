@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <vector>
@@ -12,6 +13,7 @@ namespace {
 
 using assistant_agent::bucketize;
 using assistant_agent::computeStats;
+using assistant_agent::flatRunSummary;
 
 constexpr std::int64_t kSec = 1'000'000'000;  // ns per second
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
@@ -204,6 +206,77 @@ TEST(SeriesBuckets, BucketOfOnlyNaNHasZeroCount) {
   EXPECT_DOUBLE_EQ(b[0].min, 0.0);
   EXPECT_DOUBLE_EQ(b[0].max, 0.0);
   EXPECT_DOUBLE_EQ(b[0].mean, 0.0);
+}
+
+TEST(FlatRunSummary, ConstantSeriesReportsConstantNoSpan) {
+  std::vector<std::int64_t> ts = {0, kSec, 2 * kSec, 3 * kSec, 4 * kSec};
+  std::vector<double> v = {7.0, 7.0, 7.0, 7.0, 7.0};
+  auto f = flatRunSummary(ts, v);
+  EXPECT_TRUE(f.constant);
+  EXPECT_FALSE(f.has_flat_span);
+  EXPECT_DOUBLE_EQ(f.flat_span_s, 0.0);
+  EXPECT_DOUBLE_EQ(f.flat_span_at_s, 0.0);
+}
+
+// A servo channel shape: ~3 Hz, varying for most of the flight, then it
+// freezes for the last ~64 of 400 samples (~21 s of a ~133 s span, ~16%) —
+// the real aileron-jam case this feature exists for.
+TEST(FlatRunSummary, LongFreezeIsReportedWithItsStart) {
+  constexpr int kN = 400;
+  constexpr int kFreezeStart = 336;  // 64 identical samples at the tail
+  const std::int64_t dt_ns = kSec / 3;
+  std::vector<std::int64_t> ts;
+  std::vector<double> v;
+  ts.reserve(kN);
+  v.reserve(kN);
+  for (int i = 0; i < kN; ++i) {
+    ts.push_back(static_cast<std::int64_t>(i) * dt_ns);
+    if (i < kFreezeStart) {
+      v.push_back(std::sin(static_cast<double>(i) * 0.3) * 10.0);
+    } else {
+      v.push_back(5.0);
+    }
+  }
+  auto f = flatRunSummary(ts, v);
+  EXPECT_FALSE(f.constant);
+  ASSERT_TRUE(f.has_flat_span);
+  const double expected_span_s = static_cast<double>(ts.back() - ts[kFreezeStart]) * 1e-9;
+  const double expected_at_s = static_cast<double>(ts[kFreezeStart] - ts.front()) * 1e-9;
+  EXPECT_NEAR(f.flat_span_s, expected_span_s, 1e-9);
+  EXPECT_NEAR(f.flat_span_at_s, expected_at_s, 1e-9);
+  EXPECT_GT(f.flat_span_s / (static_cast<double>(ts.back() - ts.front()) * 1e-9), 0.15);
+}
+
+// A noisy series whose longest accidental repeat is one or two samples must
+// not trip the 5%-of-duration threshold.
+TEST(FlatRunSummary, ShortAccidentalRepeatIsNotReported) {
+  constexpr int kN = 400;
+  const std::int64_t dt_ns = kSec / 3;
+  std::vector<std::int64_t> ts;
+  std::vector<double> v;
+  ts.reserve(kN);
+  v.reserve(kN);
+  for (int i = 0; i < kN; ++i) {
+    ts.push_back(static_cast<std::int64_t>(i) * dt_ns);
+    v.push_back(std::sin(static_cast<double>(i) * 0.7) * 10.0);
+  }
+  // Force one accidental 2-sample repeat, far too short to matter against a
+  // ~133 s span (5% would be ~6.65 s).
+  v[200] = 3.0;
+  v[201] = 3.0;
+  auto f = flatRunSummary(ts, v);
+  EXPECT_FALSE(f.constant);
+  EXPECT_FALSE(f.has_flat_span);
+}
+
+// A run of NaNs never counts as flat: exact equality never holds for NaN,
+// and a non-finite sample breaks any run it appears in.
+TEST(FlatRunSummary, RunOfNaNsIsNotAFlatRun) {
+  std::vector<std::int64_t> ts = {0, kSec, 2 * kSec, 3 * kSec, 4 * kSec, 5 * kSec};
+  std::vector<double> v = {1.0, kNaN, kNaN, kNaN, kNaN, 2.0};
+  auto f = flatRunSummary(ts, v);
+  EXPECT_FALSE(f.constant);
+  EXPECT_FALSE(f.has_flat_span);
 }
 
 }  // namespace
