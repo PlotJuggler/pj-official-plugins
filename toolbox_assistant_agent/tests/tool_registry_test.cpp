@@ -1865,19 +1865,103 @@ TEST(ToolRegistry, SinglePathKeepsTheOldShape) {
   EXPECT_EQ(legacy, batch) << "'series' still works so a conversation in flight does not break";
 }
 
-// Buckets stay single-series on purpose: coarsening several shapes to fit one
-// response destroys the only thing buckets are for. The refusal has to say so
-// and point at what does work, or the model just retries the same thing.
-TEST(ToolRegistry, BucketsRefuseABatchAndSayWhy) {
+// The measured problem: the model reads 6-7 sibling channels one buckets call
+// at a time over the same stretch, and each was a full round trip. Several
+// paths now come back as a 'stats'-shaped envelope, each entry carrying its
+// own buckets.
+TEST(ToolRegistry, BucketsAcceptABatch) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;
   populate(store);
   ToolContext ctx = makeCtx(store, nullptr);
 
   auto r = reg.execute("read_series", {{"paths", json::array({"/imu/x", "/imu/y"})}, {"mode", "buckets"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 2);
+  ASSERT_EQ(j["read"].size(), 2u);
+  EXPECT_EQ(j["read"][0]["series"], "/imu/x");
+  EXPECT_TRUE(j["read"][0].contains("stats"));
+  EXPECT_TRUE(j["read"][0].contains("buckets"));
+  EXPECT_EQ(j["read"][1]["series"], "/imu/y");
+  EXPECT_FALSE(j.contains("failed"));
+}
+
+// One typo must not cost the round trip the batch exists to save, same as
+// 'stats'.
+TEST(ToolRegistry, ABadPathDoesNotSpoilTheBucketsBatch) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  ToolContext ctx = makeCtx(store, nullptr);
+
+  auto r =
+      reg.execute("read_series", {{"paths", json::array({"/imu/x", "/imu/nope", "/imu/y"})}, {"mode", "buckets"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 3);
+  EXPECT_EQ(j["failed"], 1);
+  EXPECT_TRUE(j["read"][0].contains("buckets")) << j["read"][0].dump();
+  EXPECT_TRUE(j["read"][1].contains("error")) << j["read"][1].dump();
+  EXPECT_TRUE(j["read"][2].contains("buckets")) << j["read"][2].dump();
+}
+
+// Buckets share ONE response cap across the batch (batchBuckets), so the
+// batch itself is capped tighter than the flat 32-path limit -- past this
+// many series sharing one cap, every one of them gets coarsened past
+// usefulness.
+TEST(ToolRegistry, BucketsBatchIsCappedAtEight) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  ToolContext ctx = makeCtx(store, nullptr);
+
+  json many = json::array();
+  for (int i = 0; i < 9; ++i) {
+    many.push_back("/imu/x");
+  }
+  auto r = reg.execute("read_series", {{"paths", many}, {"mode", "buckets"}}, ctx);
   EXPECT_FALSE(r.ok);
-  EXPECT_NE(r.content.find("one series at a time"), std::string::npos) << r.content;
-  EXPECT_NE(r.content.find("stats"), std::string::npos) << r.content;
+  EXPECT_NE(r.content.find("at most 8"), std::string::npos) << r.content;
+}
+
+// Six long, busy channels over the same stretch: seven single-series buckets
+// calls at ~11 KB each (the real ALFA measurement) were 77 KB of context, and
+// six independent single-series caps would allow up to 6 x 16 KiB = 96 KiB.
+// The shared cap for 6 series is min(6,4) x 16 KiB = 64 KiB, well under
+// either, and every series still keeps a usable number of buckets.
+TEST(ToolRegistry, BatchBucketsShareTheCap) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("/rc");
+  constexpr int kSamples = 5000;
+  for (int ch = 0; ch < 6; ++ch) {
+    std::vector<std::int64_t> ts;
+    std::vector<double> vals;
+    ts.reserve(kSamples);
+    vals.reserve(kSamples);
+    for (int i = 0; i < kSamples; ++i) {
+      ts.push_back(static_cast<std::int64_t>(i) * (kSec / 100));  // 100 Hz
+      vals.push_back(std::sin(static_cast<double>(i) * 0.01) + static_cast<double>(ch));
+    }
+    store.addField("/rc", "ch" + std::to_string(ch), std::move(ts), std::move(vals));
+  }
+  ToolContext ctx = makeCtx(store, nullptr);
+
+  json paths = json::array();
+  for (int ch = 0; ch < 6; ++ch) {
+    paths.push_back("/rc/ch" + std::to_string(ch));
+  }
+  auto r = reg.execute("read_series", {{"paths", paths}, {"mode", "buckets"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_LE(r.content.size(), 64u * 1024u) << "batch size: " << r.content.size();
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 6);
+  ASSERT_EQ(j["read"].size(), 6u);
+  for (const auto& entry : j["read"]) {
+    ASSERT_TRUE(entry.contains("buckets")) << entry.dump();
+    EXPECT_GE(entry["buckets"].size(), 16u) << entry.dump();
+  }
 }
 
 TEST(ToolRegistry, RejectsAnOversizedBatch) {

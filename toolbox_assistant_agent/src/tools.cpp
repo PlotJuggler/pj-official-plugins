@@ -644,6 +644,12 @@ JoinForecast forecastJoin(
 // single tool call into an unbounded scan of the whole dataset.
 constexpr std::size_t kMaxBatchPaths = 32;
 
+// Buckets are the expensive, variable payload — several of them share ONE
+// response cap (see batchBuckets), so the batch stays smaller than the flat
+// per-path cap above: past this many series sharing the cap coarsens every
+// one of them past usefulness rather than saving a round trip.
+constexpr std::size_t kMaxBucketsBatchPaths = 8;
+
 // Collect the requested paths from either a bare string or an array.
 //
 // The parameter is named `paths` rather than `series` on purpose. The object
@@ -724,35 +730,90 @@ SeriesRead readOne(const PJ::sdk::CatalogSnapshot& catalog, ToolContext& ctx, co
   return r;
 }
 
+// Bucketize and render as the JSON array both readSeriesTool's 'buckets' mode
+// (single-series and batched) and evaluate's optional bucket summary send
+// back: one object per bucket, min/max/mean only when it holds a finite
+// sample, an 'invalid' count only when it holds a non-finite one.
+json renderBucketArray(std::span<const std::int64_t> ts, std::span<const double> vals, std::size_t max_points) {
+  auto buckets = bucketize(ts, vals, max_points);
+  json bucket_arr = json::array();
+  for (const auto& b : buckets) {
+    json entry = {{"t", b.t_rel_s}, {"n", b.count}};
+    if (b.count > 0) {
+      entry["min"] = b.min;
+      entry["max"] = b.max;
+      entry["mean"] = b.mean;
+    }
+    if (b.invalid > 0) {
+      entry["invalid"] = b.invalid;
+    }
+    bucket_arr.push_back(entry);
+  }
+  return bucket_arr;
+}
+
 // Coarsen until the serialized payload fits the response cap so spiky data
 // stays representable without overrunning the model's context. Returns
 // `base` with a "buckets" array attached (and a "note" when it still does not
-// fit at the smallest allowed resolution). Shared by read_series's 'buckets'
-// mode and evaluate's optional bucket summary.
+// fit at the smallest allowed resolution). Shared by read_series's single-path
+// 'buckets' mode and evaluate's optional bucket summary.
 json withCoarsenedBuckets(
     json base, std::span<const std::int64_t> ts, std::span<const double> vals, std::size_t max_points) {
   for (;;) {
-    auto buckets = bucketize(ts, vals, max_points);
-    json bucket_arr = json::array();
-    for (const auto& b : buckets) {
-      json entry = {{"t", b.t_rel_s}, {"n", b.count}};
-      if (b.count > 0) {
-        entry["min"] = b.min;
-        entry["max"] = b.max;
-        entry["mean"] = b.mean;
-      }
-      if (b.invalid > 0) {
-        entry["invalid"] = b.invalid;
-      }
-      bucket_arr.push_back(entry);
-    }
-    base["buckets"] = bucket_arr;
+    base["buckets"] = renderBucketArray(ts, vals, max_points);
     std::string dumped = base.dump();
     if (dumped.size() <= kMaxResponseBytes || max_points <= 16) {
       if (dumped.size() > kMaxResponseBytes) {
         base["note"] = "coarsened to fit the response cap";
       }
       return base;
+    }
+    max_points /= 2;
+  }
+}
+
+// Several series' buckets, sharing ONE response cap instead of each getting
+// the single-series kMaxResponseBytes on its own: min(N, 4) times that cap,
+// halved in lockstep across every series until the whole envelope fits (or
+// each is down to 16 buckets — the same floor withCoarsenedBuckets uses). A
+// bad path becomes an {"error"} entry beside the ones that worked, same as
+// 'stats'. Stats do not depend on max_points, so they are computed once,
+// outside the halving loop that only re-renders the bucket arrays.
+json batchBuckets(ToolContext& ctx, const std::vector<SeriesRead>& reads, std::size_t max_points) {
+  const std::size_t n = reads.size();
+  const std::size_t cap = std::min(n, std::size_t{4}) * kMaxResponseBytes;
+
+  std::vector<json> stats(n);
+  std::size_t failed = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (reads[i].ok) {
+      stats[i] = statsWithDisplayStart(computeStats(reads[i].ts, reads[i].vals), ctx, reads[i].topic);
+    } else {
+      ++failed;
+    }
+  }
+
+  for (;;) {
+    json read_arr = json::array();
+    for (std::size_t i = 0; i < n; ++i) {
+      const SeriesRead& r = reads[i];
+      if (!r.ok) {
+        read_arr.push_back({{"series", r.path}, {"error", r.error}});
+        continue;
+      }
+      read_arr.push_back(
+          {{"series", r.path}, {"stats", stats[i]}, {"buckets", renderBucketArray(r.ts, r.vals, max_points)}});
+    }
+    json out = {{"count", n}, {"read", read_arr}};
+    if (failed != 0) {
+      out["failed"] = failed;
+    }
+    std::string dumped = out.dump();
+    if (dumped.size() <= cap || max_points <= 16) {
+      if (dumped.size() > cap) {
+        out["note"] = "coarsened to fit the response cap";
+      }
+      return out;
     }
     max_points /= 2;
   }
@@ -807,23 +868,34 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
   }
 
   if (mode == "buckets") {
-    // Deliberately single-series. Buckets are the expensive, variable payload,
-    // and fitting several into one response means coarsening each until the set
-    // fits — degrading exactly the thing buckets exist to show. Asking for them
-    // one at a time keeps each one at full usable resolution.
-    if (paths.size() != 1) {
+    // Several series' buckets share ONE response cap (batchBuckets), so the
+    // batch is capped tighter than the flat kMaxBatchPaths above: past this
+    // many, sharing the cap would coarsen every one of them past usefulness.
+    if (paths.size() > kMaxBucketsBatchPaths) {
       return ToolResult::failure(
-          "mode 'buckets' reads one series at a time: fitting several shapes in one response would "
-          "coarsen each of them past usefulness. Batch 'stats' instead, then request buckets for the "
-          "series worth looking at.");
+          "mode 'buckets' takes at most " + std::to_string(kMaxBucketsBatchPaths) +
+          " paths per call — they share one response cap. Batch 'stats' first, then ask for buckets on "
+          "the series worth the shape.");
     }
-    SeriesRead r = readOne(*catalog, ctx, paths.front());
-    if (!r.ok) {
-      return ToolResult::failure(r.error);
-    }
-    const json stats_json = statsWithDisplayStart(computeStats(r.ts, r.vals), ctx, r.topic);
     const std::size_t max_points = static_cast<std::size_t>(std::clamp(args.value("max_points", 200), 1, 500));
-    const json out = withCoarsenedBuckets({{"series", r.path}, {"stats", stats_json}}, r.ts, r.vals, max_points);
+    // A lone path keeps the shape it has always had, at full single-series
+    // resolution — the batch envelope (and its shared, smaller cap) only
+    // kicks in once there is more than one series to fit together.
+    if (paths.size() == 1) {
+      SeriesRead r = readOne(*catalog, ctx, paths.front());
+      if (!r.ok) {
+        return ToolResult::failure(r.error);
+      }
+      const json stats_json = statsWithDisplayStart(computeStats(r.ts, r.vals), ctx, r.topic);
+      const json out = withCoarsenedBuckets({{"series", r.path}, {"stats", stats_json}}, r.ts, r.vals, max_points);
+      return ToolResult::success(out.dump());
+    }
+    std::vector<SeriesRead> reads;
+    reads.reserve(paths.size());
+    for (const auto& want : paths) {
+      reads.push_back(readOne(*catalog, ctx, want));
+    }
+    const json out = batchBuckets(ctx, reads, max_points);
     return ToolResult::success(out.dump());
   }
   return ToolResult::failure("unknown mode '" + mode + "' (use 'stats' or 'buckets')");
