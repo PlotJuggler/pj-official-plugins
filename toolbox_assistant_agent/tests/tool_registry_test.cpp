@@ -685,6 +685,28 @@ TEST(ToolRegistry, HeaderFieldsDoNotCount) {
   EXPECT_FALSE(j.contains("unread")) << j.dump();
 }
 
+// The bare-topic expansion excludes header/*-style fields the same way the
+// unread disclosure does (HeaderFieldsDoNotCount above): a topic with a ROS
+// header plus real data fields expands to just the data fields, so a
+// buckets/raw batch cap is never spent on header/stamp/* or header/seq.
+TEST(ToolRegistry, BareTopicExpansionExcludesHeaderFields) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("/hdr");
+  store.addField("/hdr", "header/stamp/sec", {0}, {0.0});
+  store.addField("/hdr", "header/seq", {0}, {1.0});
+  store.addField("/hdr", "a", {0, kSec}, {1.0, 2.0});
+  store.addField("/hdr", "b", {0, kSec}, {3.0, 4.0});
+  auto ctx = makeCtx(store, nullptr);
+  auto r = reg.execute("read_series", {{"paths", json::array({"/hdr"})}, {"mode", "buckets"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 2) << j.dump();
+  ASSERT_EQ(j["read"].size(), 2u) << j.dump();
+  EXPECT_EQ(j["read"][0]["series"], "/hdr/a") << j.dump();
+  EXPECT_EQ(j["read"][1]["series"], "/hdr/b") << j.dump();
+}
+
 // Every read_series shape attaches the same disclosure: the batch envelope
 // (mode 'stats' over several paths) gets it once at the top level, with
 // exactly one entry for the topic that was actually partial; 'buckets' on a
@@ -2411,6 +2433,57 @@ TEST(ToolRegistry, RawBatchCappedAtFour) {
   auto r = reg.execute("read_series", {{"paths", many}, {"mode", "raw"}, {"t_start_s", 0.0}, {"t_end_s", 4.0}}, ctx);
   EXPECT_FALSE(r.ok);
   EXPECT_NE(r.content.find("at most 4"), std::string::npos) << r.content;
+}
+
+// The 4-paths/200-samples raw caps are a guess, not a measurement: a
+// realistic batch of long (dataset-qualified-looking) paths at 200 samples
+// each can still overrun kMaxResponseBytes. The raw envelope now measures
+// its own dump and shrinks the per-series sample count in lockstep, the same
+// way buckets' batch envelope already does, until it fits.
+TEST(ToolRegistry, RawBatchMeasuresAndShrinksToFitTheResponseCap) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  constexpr int kSamples = 200;
+  json paths = json::array();
+  // A long, dataset-qualified-looking name per series -- realistic (a
+  // "[stream] some very descriptive source name":/topic/field qualifier adds
+  // up) -- pushes the total over the cap on top of what 200 samples' worth
+  // of "t"/"v" arrays alone already costs, which by itself comes in just
+  // under it.
+  const std::string long_prefix(400, 'x');
+  for (int s = 0; s < 4; ++s) {
+    const std::string topic = "/" + long_prefix + "_topic_name_for_series_number_" + std::to_string(s);
+    store.addTopic(topic);
+    std::vector<std::int64_t> ts;
+    std::vector<double> vals;
+    ts.reserve(kSamples);
+    vals.reserve(kSamples);
+    for (int i = 0; i < kSamples; ++i) {
+      ts.push_back(static_cast<std::int64_t>(i) * (kSec / 100));  // 100 Hz, spans ~2 s
+      vals.push_back(static_cast<double>(i) + 0.123456789);
+    }
+    store.addField(topic, "value", ts, vals);
+    paths.push_back(topic + "/value");
+  }
+  FakePlaybackHost pb;  // offset 0: display == absolute
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  auto r = reg.execute("read_series", {{"paths", paths}, {"mode", "raw"}, {"t_start_s", 0.0}, {"t_end_s", 100.0}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_LE(r.content.size(), 16u * 1024u) << r.content;
+  const json j = json::parse(r.content);
+  ASSERT_EQ(j["count"], 4);
+  bool any_truncated = false;
+  for (const auto& entry : j["read"]) {
+    if (entry.value("truncated", false)) {
+      any_truncated = true;
+      EXPECT_EQ(entry["window_samples"], kSamples) << entry.dump();
+      EXPECT_LT(entry["count"].get<int>(), kSamples) << entry.dump();
+    }
+  }
+  EXPECT_TRUE(any_truncated) << "the batch must have needed shrinking below the request's own 200-sample cap: "
+                             << j.dump();
 }
 
 TEST(ToolRegistry, RawNullsNonFinite) {

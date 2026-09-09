@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <iomanip>
 #include <iterator>
 #include <map>
@@ -179,6 +180,54 @@ std::map<std::uint32_t, std::string> datasetByTopicIndex(const PJ::sdk::CatalogS
   return out;
 }
 
+// Result of datasetByTopicIndex, threaded through the lookup helpers below so
+// a single read_series (or evaluate) call builds it once instead of once per
+// lookup — see the overloads of resolveSeriesPath/resolveTopicPath/
+// topicNumericFieldPaths/unreadDisclosure that take one.
+using TopicDatasetMap = std::map<std::uint32_t, std::string>;
+
+// "dataset:name" when `dataset` is non-empty, else `name` unchanged — the
+// host's qualifier convention, applied everywhere a catalog-derived name is
+// handed back to the model.
+std::string qualifyWithDataset(const std::string& dataset, const std::string& name) {
+  return dataset.empty() ? name : dataset + ":" + name;
+}
+
+// A curve or topic path's dataset-qualifier prefix and the topic index range
+// it narrows the search to. Shared by resolveSeriesPath and resolveTopicPath,
+// which differ only in what they do with `bare` afterward (a series path has
+// fields to search; a topic path additionally strips a leading '/').
+//
+// The qualifier ("dataset:" ahead of the path) is matched against the KNOWN
+// source names — longest match wins — rather than parsed at ':', so a name
+// like "[stream] UDP Server" needs no escaping.
+struct QualifierMatch {
+  std::string bare;
+  std::uint32_t topic_lo = 0;
+  std::uint32_t topic_hi = 0;
+};
+
+QualifierMatch matchDatasetQualifier(const PJ::sdk::CatalogSnapshot& catalog, std::string_view series) {
+  const auto topics = catalog.topics();
+  const auto sources = catalog.dataSources();
+  QualifierMatch out{std::string(series), 0, static_cast<std::uint32_t>(topics.size())};
+  std::size_t qualifier_len = 0;
+  for (const auto& src : sources) {
+    const std::string name(PJ::sdk::toStringView(src.name));
+    if (name.empty() || name.size() <= qualifier_len || series.size() <= name.size() || series[name.size()] != ':' ||
+        series.compare(0, name.size(), name) != 0) {
+      continue;
+    }
+    qualifier_len = name.size();
+    out.topic_lo = src.first_topic;
+    out.topic_hi = std::min(src.first_topic + src.topic_count, static_cast<std::uint32_t>(topics.size()));
+  }
+  if (qualifier_len != 0) {
+    out.bare = std::string(series.substr(qualifier_len + 1));
+  }
+  return out;
+}
+
 // Join a topic name and a field path into the canonical curve path. Hosts
 // differ on whether leaf field names carry a leading '/' (the plot-markers
 // host does, main does not), so tolerate both — a naive '+ "/" +' join emits
@@ -282,46 +331,27 @@ constexpr std::size_t kMaxCandidates = 10;
 // With several sources loaded, every path this returns is in qualified form, so
 // results disclose which dataset they came from and candidates can be copied
 // back verbatim.
-SeriesLookup resolveSeriesPath(const PJ::sdk::CatalogSnapshot& catalog, const std::string& series) {
+SeriesLookup resolveSeriesPath(
+    const PJ::sdk::CatalogSnapshot& catalog, const std::string& series, const TopicDatasetMap& topic_dataset) {
   SeriesLookup out;
   auto topics = catalog.topics();
   auto fields = catalog.fields();
-  const auto sources = catalog.dataSources();
 
-  std::string bare = series;
-  std::uint32_t topic_lo = 0;
-  auto topic_hi = static_cast<std::uint32_t>(topics.size());
-  std::size_t qualifier_len = 0;
-  for (const auto& src : sources) {
-    const std::string name(PJ::sdk::toStringView(src.name));
-    if (name.empty() || name.size() <= qualifier_len || series.size() <= name.size() || series[name.size()] != ':' ||
-        series.compare(0, name.size(), name) != 0) {
-      continue;
-    }
-    qualifier_len = name.size();
-    topic_lo = src.first_topic;
-    topic_hi = std::min(src.first_topic + src.topic_count, static_cast<std::uint32_t>(topics.size()));
-  }
-  if (qualifier_len != 0) {
-    bare = series.substr(qualifier_len + 1);
-  }
+  const QualifierMatch qm = matchDatasetQualifier(catalog, series);
+  const std::string& bare = qm.bare;
 
   const auto want = pathSegments(bare);
-  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(catalog);
   auto dataset_of = [&](std::uint32_t ti) {
     const auto it = topic_dataset.find(ti);
     return it == topic_dataset.end() ? std::string() : it->second;
   };
-  auto qualified = [&](std::uint32_t ti, const std::string& full) {
-    const std::string dataset = dataset_of(ti);
-    return dataset.empty() ? full : dataset + ":" + full;
-  };
+  auto qualified = [&](std::uint32_t ti, const std::string& full) { return qualifyWithDataset(dataset_of(ti), full); };
 
   std::optional<ResolvedSeries> exact;
   bool exact_ambiguous = false;
   std::vector<std::string> exact_candidates;
   std::optional<ResolvedSeries> fuzzy;
-  for (std::uint32_t ti = topic_lo; ti < topic_hi; ++ti) {
+  for (std::uint32_t ti = qm.topic_lo; ti < qm.topic_hi; ++ti) {
     const auto& topic = topics[ti];
     const auto topic_name = PJ::sdk::toStringView(topic.name);
     for (std::uint32_t fi = 0; fi < topic.field_count; ++fi) {
@@ -371,6 +401,10 @@ SeriesLookup resolveSeriesPath(const PJ::sdk::CatalogSnapshot& catalog, const st
     out.candidates.clear();
   }
   return out;
+}
+
+SeriesLookup resolveSeriesPath(const PJ::sdk::CatalogSnapshot& catalog, const std::string& series) {
+  return resolveSeriesPath(catalog, series, datasetByTopicIndex(catalog));
 }
 
 namespace {
@@ -713,6 +747,12 @@ struct SeriesRead {
   // FlatRunSummary's comment for why this must stay whole-series even when
   // a window narrows everything else in this struct.
   FlatRunSummary flat;
+  // display(ts) = ts*1e-9 + *display_offset_s -- set by applyDisplayWindow
+  // when a window was applied (its anchor sample's own ns->display
+  // conversion), so renderRawSamples can derive t0_display_s from it
+  // directly instead of re-running the ns->display conversion for the first
+  // sample. Absent when no window was requested.
+  std::optional<double> display_offset_s;
 };
 
 // With a playback host bound, report where this series STARTS on the plot
@@ -756,10 +796,12 @@ json statsWithDisplayStart(
   return stats_json;
 }
 
-SeriesRead readOne(const PJ::sdk::CatalogSnapshot& catalog, ToolContext& ctx, const std::string& want) {
+SeriesRead readOne(
+    const PJ::sdk::CatalogSnapshot& catalog, ToolContext& ctx, const std::string& want,
+    const TopicDatasetMap& topic_dataset) {
   SeriesRead r;
   r.path = want;
-  auto lookup = resolveSeriesPath(catalog, want);
+  auto lookup = resolveSeriesPath(catalog, want, topic_dataset);
   if (!lookup.resolved) {
     r.error = seriesLookupError(want, lookup);
     return r;
@@ -893,6 +935,7 @@ void applyDisplayWindow(
       r.vals.begin() + static_cast<std::ptrdiff_t>(lo), r.vals.begin() + static_cast<std::ptrdiff_t>(hi));
   r.ts = std::move(windowed_ts);
   r.vals = std::move(windowed_vals);
+  r.display_offset_s = offset;
 
   r.window = {{"axis", "display"}};
   if (t_start_s) {
@@ -990,21 +1033,29 @@ json renderBucketArray(std::span<const std::int64_t> ts, std::span<const double>
 // Render a windowed, successfully-read series as mode 'raw' samples: once the
 // model has narrowed to a handful of points, buckets can no longer show it
 // the actual values, so this closes that last step -- but only inside a
-// window the caller set, and only up to kMaxRawSamples of them, so a raw
-// call cannot become an unbounded dump of a whole recording. Times are
-// seconds relative to the first RETURNED sample's OWN display time
+// window the caller set, and only up to `sample_cap` of them (kMaxRawSamples,
+// halved by the raw envelope's own shrink-to-fit when the batch is too big),
+// so a raw call cannot become an unbounded dump of a whole recording. Times
+// are seconds relative to the first RETURNED sample's OWN display time
 // ("t0_display_s"), not to the window's t_start_s, mirroring how bucket "t0"
 // is relative to the first bucket rather than to the window bound. Values
 // are rounded the same way bucket min/max/mean are; a non-finite value comes
 // back as JSON null rather than poisoning the array. A window holding more
-// than the cap is truncated to its first kMaxRawSamples samples and flagged
-// "truncated", with "window_samples" carrying the true count, so the model
-// knows to narrow further rather than assume it saw everything.
-json renderRawSamples(ToolContext& ctx, const PJ::sdk::CatalogSnapshot& catalog, const SeriesRead& r) {
+// than `sample_cap` is truncated to its first `sample_cap` samples and
+// flagged "truncated", with "window_samples" carrying the true count, so the
+// model knows to narrow further rather than assume it saw everything.
+json renderRawSamples(
+    ToolContext& ctx, const PJ::sdk::CatalogSnapshot& catalog, const SeriesRead& r, std::size_t sample_cap) {
   const std::size_t window_samples = r.ts.size();
-  const std::size_t count = std::min(window_samples, kMaxRawSamples);
+  const std::size_t count = std::min(window_samples, sample_cap);
   const std::int64_t t0_ns = r.ts.front();
-  const std::optional<double> t0_display = toDisplaySeconds(ctx, catalog, r, t0_ns);
+  // The window's already-computed offset (display(ts) = ts*1e-9 + offset)
+  // applies to any ns in this series, so reuse it instead of re-running the
+  // ns->display conversion for this first sample; absent a window, fall back
+  // to the call this always used to make.
+  const std::optional<double> t0_display =
+      r.display_offset_s ? std::optional<double>(static_cast<double>(t0_ns) * 1e-9 + *r.display_offset_s)
+                         : toDisplaySeconds(ctx, catalog, r, t0_ns);
   if (!t0_display) {
     return {{"series", r.path}, {"error", "cannot map the display time of the first sample for this series"}};
   }
@@ -1028,6 +1079,25 @@ json renderRawSamples(ToolContext& ctx, const PJ::sdk::CatalogSnapshot& catalog,
   return out;
 }
 
+// Shrink `max_points` by half, re-rendering via `build`, until the serialized
+// payload fits `cap` or `max_points` bottoms out at 16 -- the halving loop
+// withCoarsenedBuckets and batchBuckets both ran themselves, over a
+// single-series render and a whole batch envelope respectively. Adds a
+// "note" to the last rendering when it still does not fit at the floor.
+json shrinkToFit(const std::function<json(std::size_t)>& build, std::size_t cap, std::size_t max_points) {
+  for (;;) {
+    json out = build(max_points);
+    const std::string dumped = out.dump();
+    if (dumped.size() <= cap || max_points <= 16) {
+      if (dumped.size() > cap) {
+        out["note"] = "coarsened to fit the response cap";
+      }
+      return out;
+    }
+    max_points /= 2;
+  }
+}
+
 // Coarsen until the serialized payload fits the response cap so spiky data
 // stays representable without overrunning the model's context. Returns
 // `base` with a "buckets" array attached (and a "note" when it still does not
@@ -1035,17 +1105,12 @@ json renderRawSamples(ToolContext& ctx, const PJ::sdk::CatalogSnapshot& catalog,
 // 'buckets' mode and evaluate's optional bucket summary.
 json withCoarsenedBuckets(
     json base, std::span<const std::int64_t> ts, std::span<const double> vals, std::size_t max_points) {
-  for (;;) {
-    base["buckets"] = renderBucketArray(ts, vals, max_points);
-    std::string dumped = base.dump();
-    if (dumped.size() <= kMaxResponseBytes || max_points <= 16) {
-      if (dumped.size() > kMaxResponseBytes) {
-        base["note"] = "coarsened to fit the response cap";
-      }
-      return base;
-    }
-    max_points /= 2;
-  }
+  return shrinkToFit(
+      [&](std::size_t points) {
+        base["buckets"] = renderBucketArray(ts, vals, points);
+        return base;
+      },
+      kMaxResponseBytes, max_points);
 }
 
 // Several series' buckets, sharing ONE response cap instead of each getting
@@ -1069,33 +1134,28 @@ json batchBuckets(ToolContext& ctx, const std::vector<SeriesRead>& reads, std::s
     }
   }
 
-  for (;;) {
-    json read_arr = json::array();
-    for (std::size_t i = 0; i < n; ++i) {
-      const SeriesRead& r = reads[i];
-      if (!r.ok) {
-        read_arr.push_back({{"series", r.path}, {"error", r.error}});
-        continue;
-      }
-      json entry = {{"series", r.path}, {"stats", stats[i]}, {"buckets", renderBucketArray(r.ts, r.vals, max_points)}};
-      if (!r.window.is_null()) {
-        entry["window"] = r.window;
-      }
-      read_arr.push_back(std::move(entry));
-    }
-    json out = {{"count", n}, {"read", read_arr}};
-    if (failed != 0) {
-      out["failed"] = failed;
-    }
-    std::string dumped = out.dump();
-    if (dumped.size() <= cap || max_points <= 16) {
-      if (dumped.size() > cap) {
-        out["note"] = "coarsened to fit the response cap";
-      }
-      return out;
-    }
-    max_points /= 2;
-  }
+  return shrinkToFit(
+      [&](std::size_t points) {
+        json read_arr = json::array();
+        for (std::size_t i = 0; i < n; ++i) {
+          const SeriesRead& r = reads[i];
+          if (!r.ok) {
+            read_arr.push_back({{"series", r.path}, {"error", r.error}});
+            continue;
+          }
+          json entry = {{"series", r.path}, {"stats", stats[i]}, {"buckets", renderBucketArray(r.ts, r.vals, points)}};
+          if (!r.window.is_null()) {
+            entry["window"] = r.window;
+          }
+          read_arr.push_back(std::move(entry));
+        }
+        json out = {{"count", n}, {"read", read_arr}};
+        if (failed != 0) {
+          out["failed"] = failed;
+        }
+        return out;
+      },
+      cap, max_points);
 }
 
 // True for every primitive type read_series can plot as a numeric time
@@ -1104,6 +1164,23 @@ json batchBuckets(ToolContext& ctx, const std::vector<SeriesRead>& reads, std::s
 // means the same thing in both places.
 bool isNumericFieldType(PJ::PrimitiveType t) {
   return t != PJ::PrimitiveType::kString && t != PJ::PrimitiveType::kBool;
+}
+
+// True for a field that counts as one of a topic's "real" signals: numeric,
+// and NOT header/*-style (a ROS header's stamp/seq are metadata, not
+// something to plot). One predicate for every place that enumerates a
+// topic's fields for read_series -- the bare-topic expansion
+// (topicNumericFieldPaths) and the unread-fields count
+// (topicNumericFieldNames) -- so a topic with a header spends its
+// buckets/raw batch cap on its actual channels, not on header/stamp/*.
+bool isSignalField(PJ::PrimitiveType type, std::string_view field_name) {
+  if (!isNumericFieldType(type)) {
+    return false;
+  }
+  while (!field_name.empty() && field_name.front() == '/') {
+    field_name.remove_prefix(1);
+  }
+  return field_name.rfind("header/", 0) != 0;
 }
 
 // Outcome of trying to resolve a read_series path as a bare TOPIC (no
@@ -1122,30 +1199,16 @@ struct TopicLookup {
 // longest match wins, rather than parsed at ':'). Tolerates a leading '/'
 // on either side, since topic names carry one by host convention but a
 // model may or may not echo it back. An unqualified name that exists in
-// several datasets is ambiguous, exactly like a series would be.
-TopicLookup resolveTopicPath(const PJ::sdk::CatalogSnapshot& catalog, const std::string& series) {
+// several datasets is ambiguous, exactly like a series would be. Takes the
+// caller's own datasetByTopicIndex result so a call site working through
+// several topics builds it once rather than once per topic.
+TopicLookup resolveTopicPath(
+    const PJ::sdk::CatalogSnapshot& catalog, const std::string& series, const TopicDatasetMap& topic_dataset) {
   TopicLookup out;
   auto topics = catalog.topics();
-  const auto sources = catalog.dataSources();
 
-  std::string bare = series;
-  std::uint32_t topic_lo = 0;
-  auto topic_hi = static_cast<std::uint32_t>(topics.size());
-  std::size_t qualifier_len = 0;
-  for (const auto& src : sources) {
-    const std::string name(PJ::sdk::toStringView(src.name));
-    if (name.empty() || name.size() <= qualifier_len || series.size() <= name.size() || series[name.size()] != ':' ||
-        series.compare(0, name.size(), name) != 0) {
-      continue;
-    }
-    qualifier_len = name.size();
-    topic_lo = src.first_topic;
-    topic_hi = std::min(src.first_topic + src.topic_count, static_cast<std::uint32_t>(topics.size()));
-  }
-  if (qualifier_len != 0) {
-    bare = series.substr(qualifier_len + 1);
-  }
-  std::string_view want = bare;
+  const QualifierMatch qm = matchDatasetQualifier(catalog, series);
+  std::string_view want = qm.bare;
   while (!want.empty() && want.front() == '/') {
     want.remove_prefix(1);
   }
@@ -1153,13 +1216,12 @@ TopicLookup resolveTopicPath(const PJ::sdk::CatalogSnapshot& catalog, const std:
     return out;
   }
 
-  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(catalog);
   auto qualifiedName = [&](std::uint32_t ti, std::string_view name) {
     const auto it = topic_dataset.find(ti);
-    return it == topic_dataset.end() ? std::string(name) : it->second + ":" + std::string(name);
+    return qualifyWithDataset(it == topic_dataset.end() ? std::string() : it->second, std::string(name));
   };
 
-  for (std::uint32_t ti = topic_lo; ti < topic_hi; ++ti) {
+  for (std::uint32_t ti = qm.topic_lo; ti < qm.topic_hi; ++ti) {
     std::string_view name = PJ::sdk::toStringView(topics[ti].name);
     std::string_view bare_name = name;
     while (!bare_name.empty() && bare_name.front() == '/') {
@@ -1189,25 +1251,26 @@ TopicLookup resolveTopicPath(const PJ::sdk::CatalogSnapshot& catalog, const std:
 // in catalog order -- what a topic-only path expands to. Qualified with
 // "dataset:" using the same rule resolveSeriesPath's own qualifying does, so
 // an expanded path is never ambiguous even when several loaded datasets
-// share this topic name.
-std::vector<std::string> topicNumericFieldPaths(const PJ::sdk::CatalogSnapshot& catalog, std::uint32_t topic_index) {
+// share this topic name. Takes the caller's own datasetByTopicIndex result,
+// same reasoning as resolveTopicPath.
+std::vector<std::string> topicNumericFieldPaths(
+    const PJ::sdk::CatalogSnapshot& catalog, std::uint32_t topic_index, const TopicDatasetMap& topic_dataset) {
   std::vector<std::string> out;
   auto topics = catalog.topics();
   auto fields = catalog.fields();
   const auto& topic = topics[topic_index];
   const std::string topic_name(PJ::sdk::toStringView(topic.name));
-  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(catalog);
   const auto dataset_it = topic_dataset.find(topic_index);
-  const std::string prefix = dataset_it == topic_dataset.end() ? std::string{} : dataset_it->second + ":";
+  const std::string dataset = dataset_it == topic_dataset.end() ? std::string() : dataset_it->second;
   for (std::uint32_t fi = 0; fi < topic.field_count; ++fi) {
     const std::size_t idx = topic.first_field + fi;
     if (idx >= fields.size()) {
       break;
     }
-    if (!isNumericFieldType(PJ::sdk::fromAbiType(fields[idx].type))) {
+    if (!isSignalField(PJ::sdk::fromAbiType(fields[idx].type), PJ::sdk::toStringView(fields[idx].name))) {
       continue;
     }
-    out.push_back(prefix + joinSeriesPath(topic_name, PJ::sdk::toStringView(fields[idx].name)));
+    out.push_back(qualifyWithDataset(dataset, joinSeriesPath(topic_name, PJ::sdk::toStringView(fields[idx].name))));
   }
   return out;
 }
@@ -1227,15 +1290,12 @@ std::vector<std::string> topicNumericFieldNames(const PJ::sdk::CatalogSnapshot& 
     if (idx >= fields.size()) {
       break;
     }
-    if (!isNumericFieldType(PJ::sdk::fromAbiType(fields[idx].type))) {
+    std::string_view name = PJ::sdk::toStringView(fields[idx].name);
+    if (!isSignalField(PJ::sdk::fromAbiType(fields[idx].type), name)) {
       continue;
     }
-    std::string_view name = PJ::sdk::toStringView(fields[idx].name);
     while (!name.empty() && name.front() == '/') {
       name.remove_prefix(1);
-    }
-    if (name.rfind("header/", 0) == 0) {
-      continue;
     }
     out.push_back(std::string(name));
   }
@@ -1280,7 +1340,9 @@ constexpr std::size_t kMaxUnreadFields = 12;
 // the raw reads so every read_series mode attaches it the same way. Empty
 // (no "unread" key at the call site) when every topic touched by this call
 // was read whole.
-json unreadDisclosure(const PJ::sdk::CatalogSnapshot& catalog, const std::vector<SeriesRead>& reads) {
+json unreadDisclosure(
+    const PJ::sdk::CatalogSnapshot& catalog, const std::vector<SeriesRead>& reads,
+    const TopicDatasetMap& topic_dataset) {
   struct Tally {
     std::uint32_t topic_index = 0;
     std::vector<std::string> read_fields;
@@ -1293,8 +1355,8 @@ json unreadDisclosure(const PJ::sdk::CatalogSnapshot& catalog, const std::vector
     }
     auto it = by_topic.find(r.topic);
     if (it == by_topic.end()) {
-      const std::string lookup_name = r.dataset.empty() ? r.topic : r.dataset + ":" + r.topic;
-      const TopicLookup topic = resolveTopicPath(catalog, lookup_name);
+      const std::string lookup_name = qualifyWithDataset(r.dataset, r.topic);
+      const TopicLookup topic = resolveTopicPath(catalog, lookup_name, topic_dataset);
       if (!topic.topic_index) {
         continue;  // a series we just read always has an owning topic; defensive only
       }
@@ -1392,19 +1454,28 @@ SeriesRead forcedFailure(const PathTask& task) {
 // that one task instead (see topicExpansionCap).
 std::vector<PathTask> expandRequestedPaths(
     const PJ::sdk::CatalogSnapshot& catalog, const std::vector<std::string>& paths, const std::string& mode,
-    std::vector<std::string>& notes_out) {
+    std::vector<std::string>& notes_out, const TopicDatasetMap& topic_dataset) {
   std::vector<PathTask> out;
   out.reserve(paths.size());
   const std::size_t cap = topicExpansionCap(mode);
+
+  // Resolve every requested path as a series exactly once -- reused below
+  // both to seed explicit_canonical and, in the main loop, as `direct` --
+  // rather than resolving each one twice (a pre-pass, then the loop).
+  std::vector<SeriesLookup> direct_lookups;
+  direct_lookups.reserve(paths.size());
+  for (const auto& want : paths) {
+    direct_lookups.push_back(resolveSeriesPath(catalog, want, topic_dataset));
+  }
 
   // Canonical form of every path in THIS call that resolves directly as a
   // series, computed once up front (order-independent) so a topic expansion
   // can skip a field the caller also named explicitly, regardless of
   // whether that explicit path appears before or after the topic path.
   std::vector<std::string> explicit_canonical;
-  for (const auto& want : paths) {
-    if (const SeriesLookup direct = resolveSeriesPath(catalog, want); direct.resolved) {
-      explicit_canonical.push_back(direct.resolved->path);
+  for (const auto& lookup : direct_lookups) {
+    if (lookup.resolved) {
+      explicit_canonical.push_back(lookup.resolved->path);
     }
   }
   auto namedExplicitly = [&](const std::string& canon) {
@@ -1412,8 +1483,9 @@ std::vector<PathTask> expandRequestedPaths(
   };
   std::vector<std::string> topic_expanded_seen;  // fields already produced by an earlier topic expansion this call
 
-  for (const auto& want : paths) {
-    const SeriesLookup direct = resolveSeriesPath(catalog, want);
+  for (std::size_t i = 0; i < paths.size(); ++i) {
+    const std::string& want = paths[i];
+    const SeriesLookup& direct = direct_lookups[i];
     if (direct.resolved) {
       PathTask task;
       task.path = want;
@@ -1421,7 +1493,7 @@ std::vector<PathTask> expandRequestedPaths(
       continue;
     }
 
-    const TopicLookup topic = resolveTopicPath(catalog, want);
+    const TopicLookup topic = resolveTopicPath(catalog, want, topic_dataset);
     if (topic.ambiguous) {
       SeriesLookup shim;
       shim.ambiguous = true;
@@ -1442,7 +1514,7 @@ std::vector<PathTask> expandRequestedPaths(
       continue;
     }
 
-    std::vector<std::string> fields = topicNumericFieldPaths(catalog, *topic.topic_index);
+    std::vector<std::string> fields = topicNumericFieldPaths(catalog, *topic.topic_index, topic_dataset);
     const std::string topic_name(PJ::sdk::toStringView(catalog.topics()[*topic.topic_index].name));
     if (fields.empty()) {
       PathTask task;
@@ -1486,6 +1558,64 @@ std::vector<PathTask> expandRequestedPaths(
   return out;
 }
 
+// The batch-shaped {count, read, failed?, unread?, note?} envelope built
+// from already-read series, regardless of how many there are -- render each
+// into its entry JSON (a failed read becomes {"series", "error"};
+// `render_entry` renders a successful one, and may itself add an "error" --
+// raw's renderRawSamples does, when the display time cannot be mapped), and
+// count the failures. `extra_note`, when non-empty, is stats' own extra: the
+// topic-expansion-cap note. Split out from finishReadEnvelope below so raw's
+// shrink-to-fit loop (which needs a plain json to measure) can call it
+// directly, without going through the single-task unwrapping.
+json buildReadEnvelope(
+    const PJ::sdk::CatalogSnapshot& catalog, const std::vector<SeriesRead>& reads, const TopicDatasetMap& topic_dataset,
+    const std::function<json(const SeriesRead&)>& render_entry, const std::string& extra_note = {}) {
+  json arr = json::array();
+  std::size_t failed = 0;
+  for (const auto& r : reads) {
+    json entry = r.ok ? render_entry(r) : json{{"series", r.path}, {"error", r.error}};
+    if (entry.contains("error")) {
+      ++failed;
+    }
+    arr.push_back(std::move(entry));
+  }
+  json out = {{"count", arr.size()}, {"read", arr}};
+  if (failed != 0) {
+    out["failed"] = failed;
+  }
+  const json unread = unreadDisclosure(catalog, reads, topic_dataset);
+  if (!unread.empty()) {
+    out["unread"] = unread;
+  }
+  if (!extra_note.empty()) {
+    out["note"] = extra_note;
+  }
+  return out;
+}
+
+// Shared tail of read_series's per-task modes (stats, buckets' single-path,
+// raw): buildReadEnvelope, then finish either as the one task's own JSON (an
+// "error" there becomes a ToolResult::failure) or the batch envelope as-is.
+ToolResult finishReadEnvelope(
+    const PJ::sdk::CatalogSnapshot& catalog, const std::vector<SeriesRead>& reads, const TopicDatasetMap& topic_dataset,
+    const std::function<json(const SeriesRead&)>& render_entry, const std::string& extra_note = {}) {
+  const json out = buildReadEnvelope(catalog, reads, topic_dataset, render_entry, extra_note);
+  // A lone path keeps the shape it has always had, so nothing that worked
+  // before starts reading differently. A whole-topic path that expanded to
+  // several series never takes this branch (reads.size() > 1 then).
+  if (reads.size() == 1) {
+    json only = out["read"].front();
+    if (only.contains("error")) {
+      return ToolResult::failure(only["error"].get<std::string>());
+    }
+    if (out.contains("unread")) {
+      only["unread"] = out["unread"];
+    }
+    return ToolResult::success(only.dump());
+  }
+  return ToolResult::success(out.dump());
+}
+
 ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
   const std::vector<std::string> paths = requestedPaths(args);
   if (paths.empty()) {
@@ -1515,13 +1645,16 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
   if (!catalog) {
     return ToolResult::failure("catalog unavailable: " + catalog.error());
   }
+  // Built once and threaded through every lookup this call makes (expansion,
+  // resolution, the unread disclosure) instead of each one rebuilding it.
+  const TopicDatasetMap topic_dataset = datasetByTopicIndex(*catalog);
 
   // A path naming a bare topic (no field) expands to every numeric field of
   // that topic here -- see expandRequestedPaths. This is where the caps
   // below start counting: a topic that names twelve fields costs twelve,
   // exactly as if the model had named them one by one.
   std::vector<std::string> topic_notes;
-  const std::vector<PathTask> tasks = expandRequestedPaths(*catalog, paths, mode, topic_notes);
+  const std::vector<PathTask> tasks = expandRequestedPaths(*catalog, paths, mode, topic_notes, topic_dataset);
   if (tasks.size() > kMaxBatchPaths) {
     return ToolResult::failure(
         "read_series takes at most " + std::to_string(kMaxBatchPaths) + " series per call, got " +
@@ -1532,7 +1665,7 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
   // every mode below so 'stats' and 'buckets', single-path and batched, all
   // apply the same window the same way.
   auto readWindowed = [&](const std::string& want) {
-    SeriesRead r = readOne(*catalog, ctx, want);
+    SeriesRead r = readOne(*catalog, ctx, want, topic_dataset);
     if (r.ok) {
       applyDisplayWindow(r, ctx, *catalog, t_start_s, t_end_s);
     }
@@ -1544,55 +1677,29 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     // One entry per requested path, each carrying its own error. A single typo
     // must not cost the whole round trip — which is the entire point of asking
     // for several at once.
-    json arr = json::array();
     std::vector<SeriesRead> reads;
     reads.reserve(tasks.size());
-    std::size_t failed = 0;
     for (const auto& task : tasks) {
-      SeriesRead r = readTask(task);
-      if (!r.ok) {
-        ++failed;
-        arr.push_back({{"series", r.path}, {"error", r.error}});
-        reads.push_back(std::move(r));
-        continue;
-      }
-      json entry = {
-          {"series", r.path}, {"stats", statsWithDisplayStart(computeStats(r.ts, r.vals), ctx, r.topic, r.flat)}};
-      if (!r.window.is_null()) {
-        entry["window"] = r.window;
-      }
-      arr.push_back(std::move(entry));
-      reads.push_back(std::move(r));
+      reads.push_back(readTask(task));
     }
-    const json unread = unreadDisclosure(*catalog, reads);
-    // A lone path keeps the shape it has always had, so nothing that worked
-    // before starts reading differently. A whole-topic path that expanded to
-    // several series never takes this branch (tasks.size() > 1 then).
-    if (tasks.size() == 1) {
-      json& only = arr.front();
-      if (only.contains("error")) {
-        return ToolResult::failure(only["error"].get<std::string>());
-      }
-      if (!unread.empty()) {
-        only["unread"] = unread;
-      }
-      return ToolResult::success(only.dump());
-    }
-    json out = {{"count", arr.size()}, {"read", arr}};
-    if (failed != 0) {
-      out["failed"] = failed;
-    }
-    if (!unread.empty()) {
-      out["unread"] = unread;
-    }
+    std::string note;
     if (!topic_notes.empty()) {
-      std::string note = topic_notes.front();
+      note = topic_notes.front();
       for (std::size_t i = 1; i < topic_notes.size(); ++i) {
         note += "; " + topic_notes[i];
       }
-      out["note"] = std::move(note);
     }
-    return ToolResult::success(out.dump());
+    return finishReadEnvelope(
+        *catalog, reads, topic_dataset,
+        [&](const SeriesRead& r) {
+          json entry = {
+              {"series", r.path}, {"stats", statsWithDisplayStart(computeStats(r.ts, r.vals), ctx, r.topic, r.flat)}};
+          if (!r.window.is_null()) {
+            entry["window"] = r.window;
+          }
+          return entry;
+        },
+        note);
   }
 
   if (mode == "buckets") {
@@ -1611,20 +1718,14 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     // kicks in once there is more than one series to fit together.
     if (tasks.size() == 1) {
       SeriesRead r = readTask(tasks.front());
-      if (!r.ok) {
-        return ToolResult::failure(r.error);
-      }
-      const json stats_json = statsWithDisplayStart(computeStats(r.ts, r.vals), ctx, r.topic, r.flat);
-      json base = {{"series", r.path}, {"stats", stats_json}};
-      if (!r.window.is_null()) {
-        base["window"] = r.window;
-      }
-      const json unread = unreadDisclosure(*catalog, {r});
-      json out = withCoarsenedBuckets(std::move(base), r.ts, r.vals, max_points);
-      if (!unread.empty()) {
-        out["unread"] = unread;
-      }
-      return ToolResult::success(out.dump());
+      return finishReadEnvelope(*catalog, {r}, topic_dataset, [&](const SeriesRead& rr) {
+        const json stats_json = statsWithDisplayStart(computeStats(rr.ts, rr.vals), ctx, rr.topic, rr.flat);
+        json base = {{"series", rr.path}, {"stats", stats_json}};
+        if (!rr.window.is_null()) {
+          base["window"] = rr.window;
+        }
+        return withCoarsenedBuckets(std::move(base), rr.ts, rr.vals, max_points);
+      });
     }
     std::vector<SeriesRead> reads;
     reads.reserve(tasks.size());
@@ -1632,7 +1733,7 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
       reads.push_back(readTask(task));
     }
     json out = batchBuckets(ctx, reads, max_points);
-    const json unread = unreadDisclosure(*catalog, reads);
+    const json unread = unreadDisclosure(*catalog, reads, topic_dataset);
     if (!unread.empty()) {
       out["unread"] = unread;
     }
@@ -1660,39 +1761,38 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
           " samples, so more would blow the response cap. Narrow with 'buckets' "
           "or 'stats' first.");
     }
-    json arr = json::array();
     std::vector<SeriesRead> reads;
     reads.reserve(tasks.size());
-    std::size_t failed = 0;
     for (const auto& task : tasks) {
-      SeriesRead r = readTask(task);
-      json entry = r.ok ? renderRawSamples(ctx, *catalog, r) : json{{"series", r.path}, {"error", r.error}};
-      if (entry.contains("error")) {
-        ++failed;
-      }
-      arr.push_back(std::move(entry));
-      reads.push_back(std::move(r));
+      reads.push_back(readTask(task));
     }
-    const json unread = unreadDisclosure(*catalog, reads);
+    // The 4-paths/200-samples caps above are a guess, not a measurement: a
+    // realistic batch of dataset-qualified paths at 200 samples each can
+    // still overrun kMaxResponseBytes. Shrink the per-series sample count in
+    // lockstep, same as buckets' batch envelope, until the whole response
+    // fits (or every series is down to 16 samples).
+    const json out = shrinkToFit(
+        [&](std::size_t sample_cap) {
+          return buildReadEnvelope(*catalog, reads, topic_dataset, [&](const SeriesRead& r) {
+            return renderRawSamples(ctx, *catalog, r, sample_cap);
+          });
+        },
+        kMaxResponseBytes, kMaxRawSamples);
     // A lone path keeps the shape it has always had, same as 'stats' and
     // single-path 'buckets': the batch envelope only kicks in once there is
     // more than one series to fit together.
-    if (tasks.size() == 1) {
-      json& only = arr.front();
+    if (reads.size() == 1) {
+      json only = out["read"].front();
       if (only.contains("error")) {
         return ToolResult::failure(only["error"].get<std::string>());
       }
-      if (!unread.empty()) {
-        only["unread"] = unread;
+      if (out.contains("unread")) {
+        only["unread"] = out["unread"];
+      }
+      if (out.contains("note")) {
+        only["note"] = out["note"];
       }
       return ToolResult::success(only.dump());
-    }
-    json out = {{"count", arr.size()}, {"read", arr}};
-    if (failed != 0) {
-      out["failed"] = failed;
-    }
-    if (!unread.empty()) {
-      out["unread"] = unread;
     }
     return ToolResult::success(out.dump());
   }
@@ -1982,8 +2082,9 @@ ToolResult evaluateSeries(const json& args, ToolContext& ctx) {
   if (!catalog) {
     return ToolResult::failure("catalog unavailable: " + catalog.error());
   }
+  const TopicDatasetMap topic_dataset = datasetByTopicIndex(*catalog);
   for (auto& in : inputs) {
-    auto lookup = resolveSeriesPath(*catalog, in);
+    auto lookup = resolveSeriesPath(*catalog, in, topic_dataset);
     if (!lookup.resolved) {
       return ToolResult::failure(seriesLookupError(in, lookup));
     }
@@ -2053,7 +2154,7 @@ ToolResult evaluateSeries(const json& args, ToolContext& ctx) {
   if (!fresh_catalog) {
     return ToolResult::failure("catalog unavailable after create: " + fresh_catalog.error());
   }
-  SeriesRead r = readOne(*fresh_catalog, ctx, resolved_output);
+  SeriesRead r = readOne(*fresh_catalog, ctx, resolved_output, datasetByTopicIndex(*fresh_catalog));
   if (!r.ok) {
     return ToolResult::failure(r.error);
   }
@@ -2594,6 +2695,10 @@ ToolResult reportStatus(const json& /*args*/, ToolContext& ctx) {
 
 namespace {
 
+// How much of a topic's field list catalogDigest rendered, cheapest to
+// costliest.
+enum class Tier { kCount, kPartial, kFull };
+
 // Plain truncation: the full tree, then (if that still does not fit) topic
 // names only, with a footer naming the gap. This is the ENTIRE pre-mixed-tier
 // catalogDigest, kept verbatim as the fallback for the rare budget so tight
@@ -2749,21 +2854,18 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
     return out;
   };
 
+  auto topicPrefix = [&](std::uint32_t ti) {
+    return "  " + std::string(PJ::sdk::toStringView(topics[ti].name)) + ": ";
+  };
+
   // Sub-budget for a partial line's field list (before the "  <topic>: "
   // prefix and the trailing "… +N more") — enough for a handful of short
   // field names at far less than a full line's cost.
   constexpr std::size_t kPartialFieldBudget = 120;
 
-  // Three renderings per topic, cheapest to costliest: count (just how many
-  // fields), partial (as many as fit the sub-budget, plus how many more),
-  // full (every field). Built once so the assignment pass below only compares
-  // sizes, never re-renders.
-  std::vector<std::string> full_body(n), partial_body(n), count_body(n);
-  for (std::uint32_t ti = 0; ti < n; ++ti) {
+  auto buildFullBody = [&](std::uint32_t ti) {
     const auto& topic = topics[ti];
-    const std::string prefix = "  " + std::string(PJ::sdk::toStringView(topic.name)) + ": ";
-
-    std::string full = prefix;
+    std::string full = topicPrefix(ti);
     for (std::uint32_t fi = 0; fi < topic.field_count; ++fi) {
       const std::size_t idx = topic.first_field + fi;
       if (idx >= fields.size()) {
@@ -2774,8 +2876,14 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
       }
       full += renderField(idx);
     }
-    full_body[ti] = full + "\n";
-
+    return full + "\n";
+  };
+  auto buildCountBody = [&](std::uint32_t ti) {
+    return topicPrefix(ti) + std::to_string(topics[ti].field_count) + " fields\n";
+  };
+  auto buildPartialBody = [&](std::uint32_t ti) {
+    const auto& topic = topics[ti];
+    const std::string prefix = topicPrefix(ti);
     std::string partial_fields;
     std::uint32_t partial_shown = 0;
     for (std::uint32_t fi = 0; fi < topic.field_count; ++fi) {
@@ -2793,16 +2901,58 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
       ++partial_shown;
     }
     const std::uint32_t remaining = topic.field_count - partial_shown;
-    partial_body[ti] = remaining == 0 ? (prefix + partial_fields + "\n")
-                                      : (prefix + partial_fields + ", … +" + std::to_string(remaining) + " more\n");
+    return remaining == 0 ? (prefix + partial_fields + "\n")
+                          : (prefix + partial_fields + ", … +" + std::to_string(remaining) + " more\n");
+  };
 
-    count_body[ti] = prefix + std::to_string(topic.field_count) + " fields\n";
+  auto renderHeader = [&] {
+    std::string header = "Loaded data (" + std::to_string(n) + " topic(s)):\n";
+    // Teach the qualifier by stating it where the dataset names are, instead
+    // of spending schema tokens on it in every session: this line exists
+    // only when several datasets are actually loaded.
+    if (catalog->dataSources().size() >= 2) {
+      header +=
+          "Several datasets are loaded; when the same topic exists in more than one, address the series as "
+          "\"<dataset>:<topic>/<field>\".\n";
+    }
+    if (dominant_type) {
+      header += "fields are " + *dominant_type + " unless marked\n";
+    }
+    return header;
+  };
+
+  // Every topic's full rendering, built up front — the common case (the
+  // whole catalog fits with every field spelled out) needs nothing else, so
+  // the count and partial tiers below are built lazily, only once that fast
+  // path has been ruled out.
+  std::vector<std::string> full_body(n);
+  for (std::uint32_t ti = 0; ti < n; ++ti) {
+    full_body[ti] = buildFullBody(ti);
   }
 
-  // Feasibility floor: if even the cheapest possible listing — every topic
-  // reduced to a bare count — does not fit, there is nothing left to trim
-  // except fields entirely, which is exactly what the pre-existing
-  // full-tree/names-only truncation already does.
+  {
+    std::size_t full_total = 0;
+    for (std::uint32_t ti = 0; ti < n; ++ti) {
+      full_total += dataset_prefix[ti].size() + full_body[ti].size();
+    }
+    if (full_total <= budget_chars) {
+      std::string body;
+      for (std::uint32_t ti = 0; ti < n; ++ti) {
+        body += dataset_prefix[ti];
+        body += full_body[ti];
+      }
+      return renderHeader() + body;
+    }
+  }
+
+  // The full tree doesn't fit whole: every topic's cheapest rendering (a
+  // bare field count) is the feasibility floor -- if even THAT doesn't fit,
+  // there is nothing left to trim except fields entirely, which is exactly
+  // what the pre-existing full-tree/names-only truncation already does.
+  std::vector<std::string> count_body(n);
+  for (std::uint32_t ti = 0; ti < n; ++ti) {
+    count_body[ti] = buildCountBody(ti);
+  }
   std::size_t count_total = 0;
   for (std::uint32_t ti = 0; ti < n; ++ti) {
     count_total += dataset_prefix[ti].size() + count_body[ti].size();
@@ -2816,8 +2966,11 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
   // resolves in catalog order — trying full, then partial, stopping the first
   // time an upgrade would blow the budget. Signed deltas: a topic with no
   // fields renders SHORTER as "full" than as "count", and that must read as
-  // an improvement, not wrap around as an unsigned underflow.
-  std::vector<int> tier(n, 0);  // 0 = count, 1 = partial, 2 = full
+  // an improvement, not wrap around as an unsigned underflow. partial_body is
+  // filled in lazily, only for the topics this loop actually considers one
+  // for (a topic whose full upgrade already fit never needs it).
+  std::vector<std::string> partial_body(n);
+  std::vector<Tier> tier(n, Tier::kCount);
   {
     std::vector<std::uint32_t> order(n);
     for (std::uint32_t ti = 0; ti < n; ++ti) {
@@ -2835,13 +2988,14 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
       const long long full_delta = delta(full_body[ti], count_body[ti]);
       if (total + full_delta <= budget) {
         total += full_delta;
-        tier[ti] = 2;
+        tier[ti] = Tier::kFull;
         continue;
       }
+      partial_body[ti] = buildPartialBody(ti);
       const long long partial_delta = delta(partial_body[ti], count_body[ti]);
       if (total + partial_delta <= budget) {
         total += partial_delta;
-        tier[ti] = 1;
+        tier[ti] = Tier::kPartial;
       }
     }
   }
@@ -2850,28 +3004,19 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
   bool any_reduced = false;
   for (std::uint32_t ti = 0; ti < n; ++ti) {
     body += dataset_prefix[ti];
-    if (tier[ti] == 2) {
-      body += full_body[ti];
-    } else if (tier[ti] == 1) {
-      body += partial_body[ti];
-      any_reduced = true;
-    } else {
-      body += count_body[ti];
-      any_reduced = true;
+    switch (tier[ti]) {
+      case Tier::kFull:
+        body += full_body[ti];
+        break;
+      case Tier::kPartial:
+        body += partial_body[ti];
+        any_reduced = true;
+        break;
+      case Tier::kCount:
+        body += count_body[ti];
+        any_reduced = true;
+        break;
     }
-  }
-
-  std::string header = "Loaded data (" + std::to_string(n) + " topic(s)):\n";
-  // Teach the qualifier by stating it where the dataset names are, instead of
-  // spending schema tokens on it in every session: this line exists only when
-  // several datasets are actually loaded.
-  if (catalog->dataSources().size() >= 2) {
-    header +=
-        "Several datasets are loaded; when the same topic exists in more than one, address the series as "
-        "\"<dataset>:<topic>/<field>\".\n";
-  }
-  if (dominant_type) {
-    header += "fields are " + *dominant_type + " unless marked\n";
   }
 
   std::string footer;
@@ -2880,7 +3025,7 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
         "Some topics list only part of their fields (… +N more) or a field count: describe_topic gives the "
         "rest.\n";
   }
-  return header + body + footer;
+  return renderHeader() + body + footer;
 }
 
 // --- registry --------------------------------------------------------------
