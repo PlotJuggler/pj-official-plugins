@@ -1757,6 +1757,122 @@ TEST(ToolRegistry, ReadSeriesStatsGainDisplayStartWhenPlaybackBound) {
   EXPECT_FALSE(json::parse(r.content)["stats"].contains("t_start_display_s"));
 }
 
+// --- t_start_s/t_end_s: narrowing a read to a display-axis window ----------
+//
+// /imu/x (populate()) has samples at absolute 0..4 s; with the FakePlaybackHost
+// offset of -2 s (display = absolute + 2 s), that is display [2, 6].
+
+TEST(ToolRegistry, WindowSelectsSamplesOnDisplayAxis) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlaybackHost pb;
+  pb.display_offset_ns = -2'000'000'000;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  auto r = reg.execute(
+      "read_series",
+      {{"series", "/imu/x"}, {"mode", "buckets"}, {"max_points", 10}, {"t_start_s", 3.0}, {"t_end_s", 5.0}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  ASSERT_TRUE(j.contains("window")) << r.content;
+  EXPECT_EQ(j["window"]["axis"], "display");
+  EXPECT_DOUBLE_EQ(j["window"]["t_start_s"].get<double>(), 3.0);
+  EXPECT_DOUBLE_EQ(j["window"]["t_end_s"].get<double>(), 5.0);
+  // display [3, 5] selects the absolute samples at 1, 2, 3 s (display 3, 4, 5).
+  EXPECT_EQ(j["stats"]["count"], 3);
+  EXPECT_DOUBLE_EQ(j["stats"]["t_start_display_s"].get<double>(), 3.0);
+  // Bucket 't' is relative to the first sample INSIDE the window, so the first
+  // bucket starts at 0, not at whatever t_start_s was.
+  ASSERT_FALSE(j["buckets"].empty());
+  EXPECT_DOUBLE_EQ(j["buckets"][0]["t"].get<double>(), 0.0);
+}
+
+TEST(ToolRegistry, WindowAppliesToStatsToo) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlaybackHost pb;
+  pb.display_offset_ns = -2'000'000'000;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  auto r = reg.execute("read_series", {{"series", "/imu/x"}, {"t_start_s", 3.0}, {"t_end_s", 5.0}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["stats"]["count"], 3);
+  EXPECT_DOUBLE_EQ(j["stats"]["min"].get<double>(), 1.0);
+  EXPECT_DOUBLE_EQ(j["stats"]["max"].get<double>(), 3.0);
+  ASSERT_TRUE(j.contains("window")) << r.content;
+  EXPECT_EQ(j["window"]["axis"], "display");
+}
+
+TEST(ToolRegistry, WindowWithOneBoundOnly) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlaybackHost pb;
+  pb.display_offset_ns = -2'000'000'000;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  // t_start_s only: display >= 3 selects absolute 1, 2, 3, 4 s.
+  auto start_only = reg.execute("read_series", {{"series", "/imu/x"}, {"t_start_s", 3.0}}, ctx);
+  ASSERT_TRUE(start_only.ok) << start_only.content;
+  json js = json::parse(start_only.content);
+  EXPECT_EQ(js["stats"]["count"], 4);
+  EXPECT_TRUE(js["window"].contains("t_start_s"));
+  EXPECT_FALSE(js["window"].contains("t_end_s"));
+
+  // t_end_s only: display <= 4 selects absolute 0, 1, 2 s.
+  auto end_only = reg.execute("read_series", {{"series", "/imu/x"}, {"t_end_s", 4.0}}, ctx);
+  ASSERT_TRUE(end_only.ok) << end_only.content;
+  json je = json::parse(end_only.content);
+  EXPECT_EQ(je["stats"]["count"], 3);
+  EXPECT_TRUE(je["window"].contains("t_end_s"));
+  EXPECT_FALSE(je["window"].contains("t_start_s"));
+}
+
+TEST(ToolRegistry, WindowWithoutConversionFailsThatEntry) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);  // no playback host bound
+
+  auto r = reg.execute("read_series", {{"series", "/imu/x"}, {"t_start_s", 3.0}}, ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("cannot map the display window"), std::string::npos) << r.content;
+}
+
+TEST(ToolRegistry, EmptyWindowIsAnErrorEntry) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlaybackHost pb;
+  pb.display_offset_ns = -2'000'000'000;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  // /imu/x spans display [2, 6]; [10, 11] has no overlap.
+  auto r = reg.execute("read_series", {{"series", "/imu/x"}, {"t_start_s", 10.0}, {"t_end_s", 11.0}}, ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("no samples in window"), std::string::npos) << r.content;
+  EXPECT_NE(r.content.find("spans display"), std::string::npos) << r.content;
+}
+
+TEST(ToolRegistry, InvertedWindowFails) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);
+
+  auto r = reg.execute("read_series", {{"series", "/imu/x"}, {"t_start_s", 5.0}, {"t_end_s", 3.0}}, ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("t_end_s"), std::string::npos) << r.content;
+  EXPECT_NE(r.content.find("t_start_s"), std::string::npos) << r.content;
+}
+
 // --- seeing and withdrawing its own work -----------------------------------
 
 TEST(ToolRegistry, ListsWhatItHasCreated) {

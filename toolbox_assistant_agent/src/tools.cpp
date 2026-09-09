@@ -687,10 +687,15 @@ std::vector<std::string> requestedPaths(
 struct SeriesRead {
   bool ok = false;
   std::string error;
-  std::string path;   // the resolved path, which may differ from what was asked
-  std::string topic;  // the owning topic — the key display-time conversion wants
+  std::string path;     // the resolved path, which may differ from what was asked
+  std::string topic;    // the owning topic — the key display-time conversion wants
+  std::string dataset;  // source name; empty when at most one dataset is loaded
   std::vector<std::int64_t> ts;
   std::vector<double> vals;
+  // Present only when a t_start_s/t_end_s window was requested and applied —
+  // echoed back on the entry so a later turn knows count/rate_hz/duration_s
+  // and the bucket time axis are the WINDOW's, not the whole series'.
+  json window;
 };
 
 // With a playback host bound, report where this series STARTS on the plot
@@ -717,6 +722,7 @@ SeriesRead readOne(const PJ::sdk::CatalogSnapshot& catalog, ToolContext& ctx, co
   }
   r.path = lookup.resolved->path;
   r.topic = lookup.resolved->topic;
+  r.dataset = lookup.resolved->dataset;
   auto view = ctx.host.readSeries(lookup.resolved->handle);
   if (!view) {
     r.error = "read failed for '" + want + "': " + view.error();
@@ -728,6 +734,125 @@ SeriesRead readOne(const PJ::sdk::CatalogSnapshot& catalog, ToolContext& ctx, co
   }
   r.ok = true;
   return r;
+}
+
+// The DataSourceHandle a resolved series' dataset qualifies to, for
+// toDisplayTimeForSource — which needs a handle, while ResolvedSeries only
+// carries the dataset's NAME (empty when at most one dataset is loaded, see
+// tool_registry.hpp). Matches the name against the catalog's data sources; an
+// empty name with exactly one loaded source is that source, unambiguously.
+std::optional<PJ::sdk::DataSourceHandle> dataSourceHandleFor(
+    const PJ::sdk::CatalogSnapshot& catalog, const std::string& dataset_name) {
+  const auto sources = catalog.dataSources();
+  if (!dataset_name.empty()) {
+    for (const auto& src : sources) {
+      if (PJ::sdk::toStringView(src.name) == dataset_name) {
+        return src.handle;
+      }
+    }
+    return std::nullopt;
+  }
+  if (sources.size() == 1) {
+    return sources.front().handle;
+  }
+  return std::nullopt;
+}
+
+// Best-effort absolute-ns -> display-seconds conversion for one series,
+// preferring the dataset-scoped host call (immune to the "ambiguous topic
+// between datasets" failure mode the plain topic-scoped one has) and falling
+// back to the topic-scoped one when the host does not offer the former.
+// Empty when neither is bound or neither succeeds — never guessed.
+std::optional<double> toDisplaySeconds(
+    ToolContext& ctx, const PJ::sdk::CatalogSnapshot& catalog, const SeriesRead& r, std::int64_t absolute_ns) {
+  if (auto handle = dataSourceHandleFor(catalog, r.dataset)) {
+    if (auto display_s = ctx.playback.toDisplayTimeForSource(*handle, absolute_ns)) {
+      return *display_s;
+    }
+  }
+  if (auto display_s = ctx.playback.toDisplayTime(r.topic, absolute_ns)) {
+    return *display_s;
+  }
+  return std::nullopt;
+}
+
+// Narrows a successfully-read series to [t_start_s, t_end_s] on the DISPLAY
+// axis (playback's, plot_tab zoom's, stats' own t_start_display_s) when
+// either bound was requested; a no-op otherwise. The series' own first
+// sample is the only anchor available for the ns<->display conversion (see
+// toDisplaySeconds): the affine offset it yields — display(ts.front()) minus
+// ts.front() in seconds — is applied to translate the window's bounds into
+// absolute ns (floor at the start, ceil at the end), and the series is
+// trimmed to that ns range via lower_bound/upper_bound before stats or
+// buckets ever see it. So a windowed read's t_start_display_s and bucket 't'
+// come out relative to the first sample INSIDE the window, never to
+// t_start_s itself.
+//
+// Failure — no anchor sample, no conversion available, or an empty result —
+// turns the entry into an error (r.ok becomes false) rather than silently
+// reinterpreting the window as relative ns, which would quietly answer a
+// different question than the one asked.
+void applyDisplayWindow(
+    SeriesRead& r, ToolContext& ctx, const PJ::sdk::CatalogSnapshot& catalog, const std::optional<double>& t_start_s,
+    const std::optional<double>& t_end_s) {
+  if (!t_start_s && !t_end_s) {
+    return;
+  }
+  if (r.ts.empty()) {
+    r.ok = false;
+    r.error = "cannot map the display window for this series";
+    return;
+  }
+  const std::int64_t anchor_ns = r.ts.front();
+  const std::optional<double> anchor_display = toDisplaySeconds(ctx, catalog, r, anchor_ns);
+  if (!anchor_display) {
+    r.ok = false;
+    r.error = "cannot map the display window for this series";
+    return;
+  }
+  const double offset = *anchor_display - static_cast<double>(anchor_ns) * 1e-9;
+  auto toAbsNs = [&](double display_s, bool round_up) {
+    const double ns = (display_s - offset) * 1e9;
+    return static_cast<std::int64_t>(round_up ? std::ceil(ns) : std::floor(ns));
+  };
+
+  auto lo_it = r.ts.begin();
+  auto hi_it = r.ts.end();
+  if (t_start_s) {
+    lo_it = std::lower_bound(r.ts.begin(), r.ts.end(), toAbsNs(*t_start_s, /*round_up=*/false));
+  }
+  if (t_end_s) {
+    hi_it = std::upper_bound(r.ts.begin(), r.ts.end(), toAbsNs(*t_end_s, /*round_up=*/true));
+  }
+  if (lo_it >= hi_it) {
+    const double series_start_display = *anchor_display;
+    const double series_end_display = static_cast<double>(r.ts.back()) * 1e-9 + offset;
+    std::ostringstream msg;
+    msg << "no samples in window; series spans display [" << series_start_display << ", " << series_end_display << "]";
+    r.ok = false;
+    r.error = msg.str();
+    return;
+  }
+
+  // Trim by INDEX, not by copying through the iterators above: ts and vals
+  // are reassigned in place below, and an iterator pair that aliases the
+  // vector being assigned is not safe to feed straight to vector::assign.
+  const auto lo = static_cast<std::size_t>(lo_it - r.ts.begin());
+  const auto hi = static_cast<std::size_t>(hi_it - r.ts.begin());
+  std::vector<std::int64_t> windowed_ts(
+      r.ts.begin() + static_cast<std::ptrdiff_t>(lo), r.ts.begin() + static_cast<std::ptrdiff_t>(hi));
+  std::vector<double> windowed_vals(
+      r.vals.begin() + static_cast<std::ptrdiff_t>(lo), r.vals.begin() + static_cast<std::ptrdiff_t>(hi));
+  r.ts = std::move(windowed_ts);
+  r.vals = std::move(windowed_vals);
+
+  r.window = {{"axis", "display"}};
+  if (t_start_s) {
+    r.window["t_start_s"] = *t_start_s;
+  }
+  if (t_end_s) {
+    r.window["t_end_s"] = *t_end_s;
+  }
 }
 
 // Bucketize and render as the JSON array both readSeriesTool's 'buckets' mode
@@ -801,8 +926,11 @@ json batchBuckets(ToolContext& ctx, const std::vector<SeriesRead>& reads, std::s
         read_arr.push_back({{"series", r.path}, {"error", r.error}});
         continue;
       }
-      read_arr.push_back(
-          {{"series", r.path}, {"stats", stats[i]}, {"buckets", renderBucketArray(r.ts, r.vals, max_points)}});
+      json entry = {{"series", r.path}, {"stats", stats[i]}, {"buckets", renderBucketArray(r.ts, r.vals, max_points)}};
+      if (!r.window.is_null()) {
+        entry["window"] = r.window;
+      }
+      read_arr.push_back(std::move(entry));
     }
     json out = {{"count", n}, {"read", read_arr}};
     if (failed != 0) {
@@ -833,10 +961,37 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
   }
   const std::string mode = args.value("mode", std::string("stats"));
 
+  // Optional display-axis window, shared by every path in this call (not
+  // per-path — one read_series call reads one moment in time). Validated
+  // once here so a backwards range fails the whole call instead of quietly
+  // producing an empty-window error on every entry.
+  std::optional<double> t_start_s;
+  std::optional<double> t_end_s;
+  if (args.contains("t_start_s") && !args["t_start_s"].is_null()) {
+    t_start_s = args["t_start_s"].get<double>();
+  }
+  if (args.contains("t_end_s") && !args["t_end_s"].is_null()) {
+    t_end_s = args["t_end_s"].get<double>();
+  }
+  if (t_start_s && t_end_s && *t_end_s <= *t_start_s) {
+    return ToolResult::failure("t_end_s must be greater than t_start_s");
+  }
+
   auto catalog = ctx.host.catalogSnapshot();
   if (!catalog) {
     return ToolResult::failure("catalog unavailable: " + catalog.error());
   }
+
+  // readOne, then narrow to the window when one was requested — shared by
+  // every mode below so 'stats' and 'buckets', single-path and batched, all
+  // apply the same window the same way.
+  auto readWindowed = [&](const std::string& want) {
+    SeriesRead r = readOne(*catalog, ctx, want);
+    if (r.ok) {
+      applyDisplayWindow(r, ctx, *catalog, t_start_s, t_end_s);
+    }
+    return r;
+  };
 
   if (mode == "stats") {
     // One entry per requested path, each carrying its own error. A single typo
@@ -845,13 +1000,17 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     json arr = json::array();
     std::size_t failed = 0;
     for (const auto& want : paths) {
-      SeriesRead r = readOne(*catalog, ctx, want);
+      SeriesRead r = readWindowed(want);
       if (!r.ok) {
         ++failed;
-        arr.push_back({{"series", want}, {"error", r.error}});
+        arr.push_back({{"series", r.path}, {"error", r.error}});
         continue;
       }
-      arr.push_back({{"series", r.path}, {"stats", statsWithDisplayStart(computeStats(r.ts, r.vals), ctx, r.topic)}});
+      json entry = {{"series", r.path}, {"stats", statsWithDisplayStart(computeStats(r.ts, r.vals), ctx, r.topic)}};
+      if (!r.window.is_null()) {
+        entry["window"] = r.window;
+      }
+      arr.push_back(std::move(entry));
     }
     // A lone path keeps the shape it has always had, so nothing that worked
     // before starts reading differently.
@@ -882,18 +1041,22 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     // resolution — the batch envelope (and its shared, smaller cap) only
     // kicks in once there is more than one series to fit together.
     if (paths.size() == 1) {
-      SeriesRead r = readOne(*catalog, ctx, paths.front());
+      SeriesRead r = readWindowed(paths.front());
       if (!r.ok) {
         return ToolResult::failure(r.error);
       }
       const json stats_json = statsWithDisplayStart(computeStats(r.ts, r.vals), ctx, r.topic);
-      const json out = withCoarsenedBuckets({{"series", r.path}, {"stats", stats_json}}, r.ts, r.vals, max_points);
+      json base = {{"series", r.path}, {"stats", stats_json}};
+      if (!r.window.is_null()) {
+        base["window"] = r.window;
+      }
+      const json out = withCoarsenedBuckets(std::move(base), r.ts, r.vals, max_points);
       return ToolResult::success(out.dump());
     }
     std::vector<SeriesRead> reads;
     reads.reserve(paths.size());
     for (const auto& want : paths) {
-      reads.push_back(readOne(*catalog, ctx, want));
+      reads.push_back(readWindowed(want));
     }
     const json out = batchBuckets(ctx, reads, max_points);
     return ToolResult::success(out.dump());
@@ -2122,16 +2285,14 @@ ToolRegistry::ToolRegistry() {
 
   add(
       {"read_series",
-       "Read summary statistics ('stats') or a min/max-preserving downsample ('buckets'). Never "
-       "returns raw samples. Non-finite values (NaN/inf) are counted separately as 'invalid' and "
-       "excluded from min/max/mean/stddev. Bucket times 't' are seconds relative to the series start; when the "
-       "host supports playback control, stats also carry 't_start_display_s' (where the series "
-       "starts on the plot axis), so a bucket's display/seek time = t_start_display_s + t.\n"
-       "'paths' is an ARRAY — ask for every series you want stats for in ONE call. Each call is a "
-       "round trip that re-sends the whole conversation, so twelve one-by-one cost twelve times "
-       "twelve together. A bad path returns as an error beside the results that worked.\n"
-       "mode='buckets' reads ONE series: several shapes in one response would be coarsened past "
-       "usefulness. Batch the stats, then ask for the shape of whichever mattered.",
+       "Read summary statistics ('stats') or a min/max-preserving downsample ('buckets'). Non-finite "
+       "values are counted as 'invalid', excluded from min/max/mean/stddev. Bucket times 't' are "
+       "seconds relative to the series (or window) start; when the host supports playback control, "
+       "stats also carry 't_start_display_s' (where the series starts on the plot axis), so a "
+       "bucket's display/seek time = t_start_display_s + t.\n"
+       "'paths' is an ARRAY — ask for every series you want stats for in ONE call. A bad path returns "
+       "as an error beside the results that worked. buckets takes up to 8 paths (shared cap, ~100 "
+       "buckets each for 4-6 series); t_start_s/t_end_s (display axis) narrow the read and re-base t.",
        {{"type", "object"},
         {"properties",
          {{"paths",
@@ -2139,7 +2300,9 @@ ToolRegistry::ToolRegistry() {
             {"items", {{"type", "string"}}},
             {"description", "topic/field paths; a bare string is accepted for a single series"}}},
           {"mode", {{"type", "string"}, {"enum", json::array({"stats", "buckets"})}}},
-          {"max_points", {{"type", "integer"}, {"description", "bucket count for mode=buckets (<=500)"}}}}},
+          {"max_points", {{"type", "integer"}, {"description", "bucket count for mode=buckets (<=500)"}}},
+          {"t_start_s", {{"type", "number"}, {"description", "display-axis window start (optional)"}}},
+          {"t_end_s", {{"type", "number"}, {"description", "display-axis window end (optional)"}}}}},
         {"required", json::array({"paths"})}},
        &readSeriesTool});
 
