@@ -71,6 +71,14 @@ struct TimestampLeaf {
 [[nodiscard]] arrow::Result<std::shared_ptr<arrow::Buffer>> serializeIpcStream(
     const arrow::RecordBatch& batch, std::int64_t capacity_hint = 0);
 
+/// Validate and materialize string/binary views before per-row IPC slicing,
+/// which otherwise serializes every shared backing buffer for each row.
+/// Uses large_utf8/large_binary to avoid offset overflow when views share bytes.
+/// Recurses through structs, lists and maps; decodes dictionaries and list views
+/// containing string/binary views. Shares unchanged columns and preserves field
+/// metadata. Returns an error for malformed input before casting it.
+[[nodiscard]] arrow::Result<std::shared_ptr<arrow::RecordBatch>> normalizeViewColumns(const arrow::RecordBatch& batch);
+
 /// `parser_arrow` configuration for one topic: `{"timestamp_column": <leaf
 /// path>, "timestamp_unit": <unit>, "synthetic_interval_ns": <interval>, "flatten_structs": true}`.
 ///

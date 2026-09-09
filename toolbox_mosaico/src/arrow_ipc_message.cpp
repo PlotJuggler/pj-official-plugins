@@ -3,6 +3,7 @@
 #include "arrow_ipc_message.hpp"
 
 #include <arrow/api.h>
+#include <arrow/compute/api.h>
 #include <arrow/extension_type.h>
 #include <arrow/io/memory.h>
 #include <arrow/ipc/writer.h>
@@ -142,6 +143,99 @@ arrow::Result<std::shared_ptr<arrow::Buffer>> serializeIpcStream(
   ARROW_RETURN_NOT_OK(writer->WriteRecordBatch(batch));
   ARROW_RETURN_NOT_OK(writer->Close());
   return sink->Finish();
+}
+
+namespace {
+
+// Use 64-bit offsets: repeated views can materialize more bytes than their
+// shared backing buffers contain. Both large types are supported by parser_arrow.
+std::shared_ptr<arrow::DataType> deViewType(
+    const std::shared_ptr<arrow::DataType>& type, bool decode_dictionaries = true) {
+  switch (type->id()) {
+    case arrow::Type::STRING_VIEW:
+      return arrow::large_utf8();
+    case arrow::Type::BINARY_VIEW:
+      return arrow::large_binary();
+    case arrow::Type::DICTIONARY: {
+      const auto& dictionary = static_cast<const arrow::DictionaryType&>(*type);
+      auto values = deViewType(dictionary.value_type(), decode_dictionaries);
+      // Keeping a dictionary would still serialize all its values for every row.
+      if (values->Equals(dictionary.value_type())) {
+        return type;
+      }
+      return decode_dictionaries ? values : arrow::dictionary(dictionary.index_type(), values, dictionary.ordered());
+    }
+    case arrow::Type::STRUCT: {
+      std::vector<std::shared_ptr<arrow::Field>> fields;
+      fields.reserve(static_cast<std::size_t>(type->num_fields()));
+      for (const auto& field : type->fields()) {
+        fields.push_back(field->WithType(deViewType(field->type(), decode_dictionaries)));
+      }
+      return arrow::struct_(fields);
+    }
+    case arrow::Type::LIST:
+      return arrow::list(type->field(0)->WithType(deViewType(type->field(0)->type(), decode_dictionaries)));
+    case arrow::Type::LARGE_LIST:
+      return arrow::large_list(type->field(0)->WithType(deViewType(type->field(0)->type(), decode_dictionaries)));
+    case arrow::Type::LIST_VIEW:
+    case arrow::Type::LARGE_LIST_VIEW: {
+      auto child = type->field(0)->WithType(deViewType(type->field(0)->type(), decode_dictionaries));
+      if (child->type()->Equals(type->field(0)->type())) {
+        return type;
+      }
+      return type->id() == arrow::Type::LIST_VIEW ? arrow::list(child) : arrow::large_list(child);
+    }
+    case arrow::Type::FIXED_SIZE_LIST: {
+      const auto& fsl = static_cast<const arrow::FixedSizeListType&>(*type);
+      return arrow::fixed_size_list(
+          type->field(0)->WithType(deViewType(type->field(0)->type(), decode_dictionaries)), fsl.list_size());
+    }
+    case arrow::Type::MAP: {
+      const auto& map = static_cast<const arrow::MapType&>(*type);
+      return std::make_shared<arrow::MapType>(
+          map.value_field()->WithType(deViewType(map.value_type(), decode_dictionaries)), map.keys_sorted());
+    }
+    default:
+      return type;
+  }
+}
+
+}  // namespace
+
+arrow::Result<std::shared_ptr<arrow::RecordBatch>> normalizeViewColumns(const arrow::RecordBatch& batch) {
+  // IPC readers do not fully validate descriptors; Cast dereferences them.
+  ARROW_RETURN_NOT_OK(batch.ValidateFull());
+  const auto& schema = *batch.schema();
+  std::vector<std::shared_ptr<arrow::Field>> fields;
+  std::vector<std::shared_ptr<arrow::Array>> columns;
+  fields.reserve(static_cast<std::size_t>(schema.num_fields()));
+  columns.reserve(static_cast<std::size_t>(schema.num_fields()));
+  bool changed = false;
+  for (int i = 0; i < schema.num_fields(); ++i) {
+    const auto& field = schema.field(i);
+    std::shared_ptr<arrow::Array> col = batch.column(i);
+    auto target = deViewType(field->type());
+    if (target->Equals(*field->type())) {
+      columns.push_back(std::move(col));
+      fields.push_back(field);
+      continue;
+    }
+    // Arrow 23 cannot Take view values when decoding a dictionary. Materialize
+    // those values first, including dictionaries nested inside other columns.
+    auto encoded_target = deViewType(field->type(), /*decode_dictionaries=*/false);
+    if (!encoded_target->Equals(target)) {
+      ARROW_ASSIGN_OR_RAISE(col, arrow::compute::Cast(*col, encoded_target));
+    }
+    ARROW_ASSIGN_OR_RAISE(col, arrow::compute::Cast(*col, target));
+    columns.push_back(std::move(col));
+    fields.push_back(field->WithType(target));
+    changed = true;
+  }
+  // Nothing to do: return the batch unchanged (Slice(0) is a cheap shared copy).
+  if (!changed) {
+    return batch.Slice(0);
+  }
+  return arrow::RecordBatch::Make(arrow::schema(fields, schema.metadata()), batch.num_rows(), std::move(columns));
 }
 
 std::string parserConfigJson(std::string_view timestamp_field, std::int64_t synthetic_interval_ns, PJ::TimeUnit unit) {

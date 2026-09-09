@@ -770,8 +770,19 @@ void FetchWorker::pullTopicsAsync(
   auto push_batch = [push_message](PerTopic& topic, const std::string& name, const arrow::RecordBatch& batch) {
     if (topic.object_route) {
       // The host's functional object contract is one object per raw message.
-      for (std::int64_t row = 0; row < batch.num_rows() && topic.error.empty(); ++row) {
-        push_message(topic, name, *batch.Slice(row, 1));
+      // De-view BEFORE slicing: Arrow's IPC writer emits a view column's
+      // variadic data buffers unsliced, so a one-row slice of a view column
+      // would carry the whole batch's payload — inflating every object message
+      // ~rows-per-batch fold. normalizeViewColumns casts view->non-view once per
+      // batch so each one-row slice carries only its own bytes.
+      auto normalized = normalizeViewColumns(batch);
+      if (!normalized.ok()) {
+        topic.error = stringFromArrow(normalized.status());
+        return;
+      }
+      const arrow::RecordBatch& src = **normalized;
+      for (std::int64_t row = 0; row < src.num_rows() && topic.error.empty(); ++row) {
+        push_message(topic, name, *src.Slice(row, 1));
       }
     } else {
       push_message(topic, name, batch);

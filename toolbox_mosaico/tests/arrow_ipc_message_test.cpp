@@ -11,8 +11,10 @@
 #include <arrow/extension_type.h>
 #include <arrow/io/memory.h>
 #include <arrow/ipc/reader.h>
+#include <arrow/ipc/writer.h>
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -308,6 +310,189 @@ TEST(FirstRowTimestampNs, ConfiguredIntegerUnitsAndOverflow) {
   EXPECT_FALSE(mosaico::firstRowTimestampNs(*large, {0}));
   const auto config = nlohmann::json::parse(mosaico::parserConfigJson("time", 0, PJ::TimeUnit::kMicroseconds));
   EXPECT_EQ(config.at("timestamp_unit"), "us");
+}
+
+TEST(NormalizeViewColumns, CollapsesPerRowSliceAndRoundTrips) {
+  // Three ~1 MB values force out-of-line variadic buffers in the view array.
+  const std::string big(1u << 20, 'x');
+  arrow::BinaryViewBuilder builder;
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_TRUE(builder.Append(big).ok());
+  }
+  std::shared_ptr<arrow::Array> views;
+  ASSERT_TRUE(builder.Finish(&views).ok());
+  auto batch = arrow::RecordBatch::Make(arrow::schema({arrow::field("data", arrow::binary_view())}), 3, {views});
+
+  // Arrow's IPC writer emits a view array's whole variadic buffers for a 1-row
+  // slice, so one row carries the batch's ~3 MB.
+  auto raw = mosaico::serializeIpcStream(*batch->Slice(1, 1));
+  ASSERT_TRUE(raw.ok());
+  EXPECT_GT((*raw)->size(), static_cast<std::int64_t>(2) << 20);
+
+  // De-viewed, a 1-row slice carries only its own ~1 MB, and decodes to binary.
+  auto normalized = mosaico::normalizeViewColumns(*batch);
+  ASSERT_TRUE(normalized.ok());
+  ASSERT_EQ((*normalized)->schema()->field(0)->type()->id(), arrow::Type::LARGE_BINARY);
+  auto slim = mosaico::serializeIpcStream(*(*normalized)->Slice(1, 1));
+  ASSERT_TRUE(slim.ok());
+  EXPECT_LT((*slim)->size(), (static_cast<std::int64_t>(1) << 20) + (8 << 10));
+
+  auto reader = arrow::ipc::RecordBatchStreamReader::Open(std::make_shared<arrow::io::BufferReader>(*slim));
+  ASSERT_TRUE(reader.ok());
+  std::shared_ptr<arrow::RecordBatch> decoded;
+  ASSERT_TRUE((*reader)->ReadNext(&decoded).ok());
+  ASSERT_NE(decoded, nullptr);
+  EXPECT_EQ(std::static_pointer_cast<arrow::LargeBinaryArray>(decoded->column(0))->GetString(0), big);
+}
+
+TEST(NormalizeViewColumns, NoViewColumnsReturnsUnchanged) {
+  const auto batch = scalarBatch();
+  auto normalized = mosaico::normalizeViewColumns(*batch);
+  ASSERT_TRUE(normalized.ok());
+  EXPECT_TRUE((*normalized)->schema()->Equals(*batch->schema()));
+  EXPECT_TRUE((*normalized)->Equals(*batch));
+}
+
+TEST(NormalizeViewColumns, RewritesViewNestedInStruct) {
+  arrow::StringViewBuilder inner_builder;
+  ASSERT_TRUE(inner_builder.Append(std::string(4096, 'a')).ok());
+  std::shared_ptr<arrow::Array> inner;
+  ASSERT_TRUE(inner_builder.Finish(&inner).ok());
+  auto encoded = arrow::DictionaryArray::FromArrays(arrayOf<arrow::Int8Builder, std::int8_t>({0}), inner);
+  ASSERT_TRUE(encoded.ok());
+  for (const auto& child : arrow::ArrayVector{inner, *encoded}) {
+    auto struct_result = arrow::StructArray::Make({child}, std::vector<std::string>{"frame_id"});
+    ASSERT_TRUE(struct_result.ok());
+    auto batch = arrow::RecordBatch::Make(
+        arrow::schema({arrow::field("header", (*struct_result)->type())}), 1, {*struct_result});
+    auto normalized = mosaico::normalizeViewColumns(*batch);
+    ASSERT_TRUE(normalized.ok()) << normalized.status();
+    const auto output = std::static_pointer_cast<arrow::StructArray>((*normalized)->column(0));
+    ASSERT_EQ(output->field(0)->type_id(), arrow::Type::LARGE_STRING);
+    EXPECT_EQ(
+        std::static_pointer_cast<arrow::LargeStringArray>(output->field(0))->GetString(0), std::string(4096, 'a'));
+  }
+}
+
+TEST(NormalizeViewColumns, RejectsMalformedViewsBeforeCasting) {
+  auto views = arrayOf<arrow::BinaryViewBuilder, std::string>({std::string(4096, 'x')});
+  auto* descriptor = reinterpret_cast<arrow::BinaryViewType::c_type*>(views->data()->buffers[1]->mutable_data());
+  descriptor->ref.buffer_index = 1'000'000;
+  auto batch = arrow::RecordBatch::Make(arrow::schema({arrow::field("data", views->type())}), 1, {views});
+  ASSERT_FALSE(batch->ValidateFull().ok());
+  ASSERT_FALSE(mosaico::serializeIpcStream(*batch).ok());
+
+  // IPC decoding alone does not validate a descriptor's buffer reference.
+  auto sink = arrow::io::BufferOutputStream::Create().ValueOrDie();
+  auto writer = arrow::ipc::MakeStreamWriter(sink, batch->schema()).ValueOrDie();
+  ASSERT_TRUE(writer->WriteRecordBatch(*batch).ok());
+  ASSERT_TRUE(writer->Close().ok());
+  auto incoming = decodeSingleBatch(sink->Finish().ValueOrDie());
+  ASSERT_FALSE(incoming->ValidateFull().ok());
+  // Isolate an unchecked cast's SIGSEGV so the remaining regressions still run.
+  EXPECT_EXIT(
+      {
+        auto result = mosaico::normalizeViewColumns(*incoming);
+        std::_Exit(result.status().IsInvalid() ? 0 : 1);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+
+TEST(NormalizeViewColumns, SharedViewBufferCanMaterializeBeyondInt32Offsets) {
+  const std::string value(1u << 20, 'x');
+  auto one = arrayOf<arrow::BinaryViewBuilder, std::string>({value});
+  auto data = one->data()->Copy();
+  constexpr std::int64_t kRows = 2048;
+  // Only 1 MiB of backing storage, but 2 GiB of materialized values.
+  data->buffers[1] = arrow::Buffer::FromVector(
+      std::vector<arrow::BinaryViewType::c_type>(kRows, data->GetValues<arrow::BinaryViewType::c_type>(1)[0]));
+  data->length = kRows;
+  auto batch =
+      arrow::RecordBatch::Make(arrow::schema({arrow::field("data", data->type)}), kRows, {arrow::MakeArray(data)});
+  ASSERT_TRUE(batch->ValidateFull().ok());
+  auto normalized = mosaico::normalizeViewColumns(*batch);
+  ASSERT_TRUE(normalized.ok()) << normalized.status();
+  ASSERT_TRUE((*normalized)->ValidateFull().ok()) << (*normalized)->ValidateFull();
+  auto bytes = mosaico::serializeIpcStream(*(*normalized)->Slice(kRows - 1, 1));
+  ASSERT_TRUE(bytes.ok()) << bytes.status();
+  auto decoded = decodeSingleBatch(*bytes);
+  ASSERT_EQ(decoded->column(0)->type_id(), arrow::Type::LARGE_BINARY);
+  EXPECT_EQ(std::static_pointer_cast<arrow::LargeBinaryArray>(decoded->column(0))->GetString(0), value);
+}
+
+TEST(NormalizeViewColumns, NestedAndEncodedViewsProduceCompactRowMessages) {
+  constexpr std::int64_t kValueBytes = 64 << 10;
+  auto values = arrayOf<arrow::BinaryViewBuilder, std::string>(
+      {std::string(kValueBytes, 'a'), std::string(kValueBytes, 'b'), std::string(kValueBytes, 'c')});
+  auto offsets = arrayOf<arrow::Int32Builder, std::int32_t>({0, 1, 2, 3});
+  auto large_offsets = arrayOf<arrow::Int64Builder, std::int64_t>({0, 1, 2, 3});
+  const arrow::ArrayVector cases{
+      arrow::StructArray::Make({values}, std::vector<std::string>{"payload"}).ValueOrDie(),
+      arrow::ListArray::FromArrays(*offsets, *values).ValueOrDie(),
+      arrow::LargeListArray::FromArrays(*large_offsets, *values).ValueOrDie(),
+      arrow::FixedSizeListArray::FromArrays(values, 1).ValueOrDie(),
+      arrow::MapArray::FromArrays(offsets, offsets->Slice(0, 3), values).ValueOrDie(),
+      arrow::DictionaryArray::FromArrays(offsets->Slice(0, 3), values).ValueOrDie(),
+      arrow::ListViewArray::FromArrays(
+          *offsets->Slice(0, 3), *arrayOf<arrow::Int32Builder, std::int32_t>({1, 1, 1}), *values)
+          .ValueOrDie(),
+      arrow::LargeListViewArray::FromArrays(
+          *large_offsets->Slice(0, 3), *arrayOf<arrow::Int64Builder, std::int64_t>({1, 1, 1}), *values)
+          .ValueOrDie()};
+  for (const auto& column : cases) {
+    SCOPED_TRACE(column->type()->ToString());
+    auto batch = arrow::RecordBatch::Make(arrow::schema({arrow::field("data", column->type())}), 3, {column});
+    // Include a nonzero parent offset in the input to normalization.
+    for (const auto& input : {batch, batch->Slice(1, 2)}) {
+      auto normalized = mosaico::normalizeViewColumns(*input);
+      ASSERT_TRUE(normalized.ok()) << normalized.status();
+      ASSERT_TRUE((*normalized)->ValidateFull().ok()) << (*normalized)->ValidateFull();
+      auto row = (*normalized)->Slice(1, 1);
+      auto bytes = mosaico::serializeIpcStream(*row);
+      ASSERT_TRUE(bytes.ok()) << bytes.status();
+      EXPECT_LT((*bytes)->size(), kValueBytes + 8192);
+      auto decoded = decodeSingleBatch(*bytes);
+      EXPECT_TRUE(decoded->Equals(*row, true));
+      auto source = input->column(0)->Slice(1, 1);
+      if (column->type_id() == arrow::Type::DICTIONARY) {
+        source = values->Slice(input == batch ? 1 : 2, 1);
+      }
+      auto expected = arrow::compute::Cast(*source, decoded->column(0)->type());
+      ASSERT_TRUE(expected.ok()) << expected.status();
+      EXPECT_TRUE(decoded->column(0)->Equals(*expected));
+    }
+  }
+}
+
+TEST(NormalizeViewColumns, PreservesMapFieldsIncludingWhenNoViewsExist) {
+  auto metadata = arrow::key_value_metadata({"source"}, {"preserved"});
+  auto keys = arrayOf<arrow::Int32Builder, std::int32_t>({0, 1, 2});
+  auto offsets = arrayOf<arrow::Int32Builder, std::int32_t>({0, 1, 2, 3});
+  for (const auto& values : {keys, arrayOf<arrow::StringViewBuilder, std::string>({"a", "b", "c"})}) {
+    auto entries = arrow::field(
+        "pairs",
+        arrow::struct_(
+            {arrow::field("key", keys->type(), false, metadata),
+             arrow::field("value", values->type(), false, metadata)}),
+        false, metadata);
+    auto type = std::make_shared<arrow::MapType>(entries, true);
+    auto column = arrow::MapArray::FromArrays(type, offsets, keys, values).ValueOrDie();
+    auto batch =
+        arrow::RecordBatch::Make(arrow::schema({arrow::field("data", type, false, metadata)}, metadata), 3, {column});
+    auto normalized = mosaico::normalizeViewColumns(*batch);
+    ASSERT_TRUE(normalized.ok()) << normalized.status();
+    const auto& output = static_cast<const arrow::MapType&>(*(*normalized)->column(0)->type());
+    EXPECT_TRUE(output.key_field()->Equals(type->key_field(), true));
+    EXPECT_TRUE(output.item_field()->WithType(values->type())->Equals(type->item_field(), true));
+    EXPECT_TRUE(output.value_field()->WithType(type->value_type())->Equals(entries, true));
+    EXPECT_TRUE(output.keys_sorted());
+    EXPECT_TRUE((*normalized)->schema()->metadata()->Equals(*metadata));
+    EXPECT_TRUE((*normalized)->schema()->field(0)->WithType(type)->Equals(batch->schema()->field(0), true));
+    if (values == keys) {
+      EXPECT_TRUE((*normalized)->Equals(*batch, true));
+      EXPECT_EQ((*normalized)->column(0)->data()->buffers, column->data()->buffers);
+    }
+  }
 }
 
 }  // namespace
