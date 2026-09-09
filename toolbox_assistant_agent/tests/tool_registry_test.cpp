@@ -469,6 +469,157 @@ TEST(ToolRegistry, PartialSegmentDoesNotResolve) {
   EXPECT_NE(r.content.find("unknown series"), std::string::npos) << r.content;
 }
 
+// A topic with `count` numeric fields w0..w(count-1), each a single dummy
+// sample — only the FIELD COUNT matters for the over-cap tests below, not
+// the data shape. ToolboxTestStore hardcodes every catalog field to
+// float64 (see acquireCatalogSnapshot in toolbox_test_store.hpp), so every
+// field this populates is numeric; there is no way to add a string/bool
+// field through this fixture to exercise the "excluded from expansion" half
+// of "numeric = every type except string and bool".
+void populateWideTopic(PJ::testing::ToolboxTestStore& store, const std::string& topic, int count) {
+  store.addTopic(topic);
+  for (int i = 0; i < count; ++i) {
+    store.addField(topic, "w" + std::to_string(i), {0}, {static_cast<double>(i)});
+  }
+}
+
+// A servo topic with a dozen array fields, read one path at a time, is the
+// real-data pattern that motivated this: models asked for channel 0-4 and
+// never noticed the jammed surface sat on channel 5. A bare topic path now
+// reads every numeric field at once.
+TEST(ToolRegistry, WholeTopicExpandsToItsNumericFields) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);  // /imu with fields x and y, both numeric
+  auto ctx = makeCtx(store, nullptr);
+  auto r = reg.execute("read_series", {{"paths", json::array({"/imu"})}, {"mode", "stats"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 2);
+  ASSERT_EQ(j["read"].size(), 2u);
+  EXPECT_EQ(j["read"][0]["series"], "/imu/x");
+  EXPECT_EQ(j["read"][1]["series"], "/imu/y");
+  EXPECT_FALSE(j["read"][0].contains("error")) << j.dump();
+  EXPECT_FALSE(j["read"][1].contains("error")) << j.dump();
+}
+
+// Hosts differ on whether a topic name carries its leading '/'; the model
+// may or may not echo it back either way.
+TEST(ToolRegistry, WholeTopicWithLeadingSlashOrWithout) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);
+  auto with_slash = reg.execute("read_series", {{"paths", json::array({"/imu"})}, {"mode", "stats"}}, ctx);
+  auto without_slash = reg.execute("read_series", {{"paths", json::array({"imu"})}, {"mode", "stats"}}, ctx);
+  ASSERT_TRUE(with_slash.ok) << with_slash.content;
+  ASSERT_TRUE(without_slash.ok) << without_slash.content;
+  EXPECT_EQ(json::parse(with_slash.content), json::parse(without_slash.content));
+}
+
+// A field of the topic named explicitly, alongside the topic itself, must
+// not be read twice.
+TEST(ToolRegistry, WholeTopicMixesWithFieldPaths) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);
+  auto r = reg.execute("read_series", {{"paths", json::array({"/imu/x", "/imu"})}, {"mode", "stats"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 2) << "the topic's own x must not duplicate the explicitly named /imu/x: " << j.dump();
+  std::vector<std::string> names;
+  for (const auto& entry : j["read"]) {
+    names.push_back(entry["series"].get<std::string>());
+  }
+  EXPECT_NE(std::find(names.begin(), names.end(), "/imu/x"), names.end()) << j.dump();
+  EXPECT_NE(std::find(names.begin(), names.end(), "/imu/y"), names.end()) << j.dump();
+}
+
+// Buckets share one response cap across the batch (kMaxBucketsBatchPaths ==
+// 8), so a topic alone naming more numeric fields than that cannot be
+// expanded silently — it fails as its own entry, naming the way out
+// ('stats' first), while any other requested path in the same call still
+// succeeds.
+TEST(ToolRegistry, WholeTopicBucketsOverCapFailsThatEntry) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  populateWideTopic(store, "/wide", 9);
+  auto ctx = makeCtx(store, nullptr);
+  auto r = reg.execute("read_series", {{"paths", json::array({"/wide", "/imu/x"})}, {"mode", "buckets"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 2);
+  const json* wide_entry = nullptr;
+  const json* imu_entry = nullptr;
+  for (const auto& entry : j["read"]) {
+    if (entry["series"] == "/wide") {
+      wide_entry = &entry;
+    } else if (entry["series"] == "/imu/x") {
+      imu_entry = &entry;
+    }
+  }
+  ASSERT_NE(wide_entry, nullptr) << j.dump();
+  ASSERT_NE(imu_entry, nullptr) << j.dump();
+  ASSERT_TRUE(wide_entry->contains("error")) << j.dump();
+  EXPECT_NE((*wide_entry)["error"].get<std::string>().find("stats first"), std::string::npos) << j.dump();
+  EXPECT_FALSE(imu_entry->contains("error")) << "the other requested path must still succeed: " << j.dump();
+}
+
+// Stats' own cap (kMaxBatchPaths == 32) is loose enough that a big topic is
+// worth reading partially rather than refusing outright: the first 32
+// numeric fields come back, with a note explaining the truncation instead
+// of silently dropping the rest.
+TEST(ToolRegistry, WholeTopicStatsOverCapReadsFirstAndSaysSo) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populateWideTopic(store, "/wide", 40);
+  auto ctx = makeCtx(store, nullptr);
+  auto r = reg.execute("read_series", {{"paths", json::array({"/wide"})}, {"mode", "stats"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 32);
+  ASSERT_EQ(j["read"].size(), 32u);
+  ASSERT_TRUE(j.contains("note")) << j.dump();
+  const std::string note = j["note"].get<std::string>();
+  EXPECT_NE(note.find("40"), std::string::npos) << note;
+  EXPECT_NE(note.find("32"), std::string::npos) << note;
+}
+
+// The expansion path must carry the same whole-series facts a directly
+// named read gets — /imu/y (populate()) never changes.
+TEST(ToolRegistry, WholeTopicCarriesTheWholeSeriesFacts) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);
+  auto r = reg.execute("read_series", {{"paths", json::array({"/imu"})}, {"mode", "stats"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  const json* y_entry = nullptr;
+  for (const auto& entry : j["read"]) {
+    if (entry["series"] == "/imu/y") {
+      y_entry = &entry;
+    }
+  }
+  ASSERT_NE(y_entry, nullptr) << j.dump();
+  EXPECT_EQ((*y_entry)["stats"]["constant"], true) << j.dump();
+  EXPECT_TRUE((*y_entry)["stats"].contains("constant_note")) << j.dump();
+}
+
+// A path that names neither a series nor a topic is unaffected by this
+// feature: the existing unknown-series error still fires.
+TEST(ToolRegistry, UnknownTopicStillErrors) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);
+  auto r = reg.execute("read_series", {{"paths", json::array({"/nope"})}, {"mode", "stats"}}, ctx);
+  EXPECT_FALSE(r.ok) << r.content;
+  EXPECT_NE(r.content.find("unknown series"), std::string::npos) << r.content;
+}
+
 // Inputs are resolved before the transform is installed. Without this a
 // mistyped input installs happily and yields an empty curve — a failure that
 // looks like success, which is the worst outcome available here.

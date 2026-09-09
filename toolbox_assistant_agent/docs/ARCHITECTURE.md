@@ -68,6 +68,9 @@ Models produce paths that are close but not exact. `resolveSeriesPath` therefore
    resolve to `test/sin/value`, while `test/si` resolves to nothing;
 3. refuses to guess when several series match, returning the candidates instead.
 
+`read_series` additionally accepts a bare topic (no field): a path that fails step 1 but names a
+whole topic expands to every numeric field of that topic, in catalog order.
+
 `create_derived_series` and `create_markers` resolve their inputs *before* installing anything.
 This is not politeness: a transform whose input does not exist installs happily and produces an
 empty curve with no error at all, which looks like success to everyone involved.

@@ -1098,17 +1098,273 @@ json batchBuckets(ToolContext& ctx, const std::vector<SeriesRead>& reads, std::s
   }
 }
 
+// True for every primitive type read_series can plot as a numeric time
+// series -- everything except the two kinds readSeriesDoubles already
+// refuses (string, bool). Shared with the topic expansion below so "numeric"
+// means the same thing in both places.
+bool isNumericFieldType(PJ::PrimitiveType t) {
+  return t != PJ::PrimitiveType::kString && t != PJ::PrimitiveType::kBool;
+}
+
+// Outcome of trying to resolve a read_series path as a bare TOPIC (no
+// field) -- used by expandRequestedPaths when a path fails to resolve as a
+// series. Exact match only: unlike a series path there is no abbreviated
+// form to fall back on, a topic is either named or it is not.
+struct TopicLookup {
+  std::optional<std::uint32_t> topic_index;  // into catalog.topics()
+  std::vector<std::string> candidates;       // qualified names, set only when ambiguous
+  bool ambiguous = false;
+};
+
+// Resolve one "topic" or "dataset:topic" path against the catalog: the
+// topic-only analogue of resolveSeriesPath's qualifier handling, with the
+// same dataset-qualifier rule (matched against the KNOWN source names,
+// longest match wins, rather than parsed at ':'). Tolerates a leading '/'
+// on either side, since topic names carry one by host convention but a
+// model may or may not echo it back. An unqualified name that exists in
+// several datasets is ambiguous, exactly like a series would be.
+TopicLookup resolveTopicPath(const PJ::sdk::CatalogSnapshot& catalog, const std::string& series) {
+  TopicLookup out;
+  auto topics = catalog.topics();
+  const auto sources = catalog.dataSources();
+
+  std::string bare = series;
+  std::uint32_t topic_lo = 0;
+  auto topic_hi = static_cast<std::uint32_t>(topics.size());
+  std::size_t qualifier_len = 0;
+  for (const auto& src : sources) {
+    const std::string name(PJ::sdk::toStringView(src.name));
+    if (name.empty() || name.size() <= qualifier_len || series.size() <= name.size() || series[name.size()] != ':' ||
+        series.compare(0, name.size(), name) != 0) {
+      continue;
+    }
+    qualifier_len = name.size();
+    topic_lo = src.first_topic;
+    topic_hi = std::min(src.first_topic + src.topic_count, static_cast<std::uint32_t>(topics.size()));
+  }
+  if (qualifier_len != 0) {
+    bare = series.substr(qualifier_len + 1);
+  }
+  std::string_view want = bare;
+  while (!want.empty() && want.front() == '/') {
+    want.remove_prefix(1);
+  }
+  if (want.empty()) {
+    return out;
+  }
+
+  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(catalog);
+  auto qualifiedName = [&](std::uint32_t ti, std::string_view name) {
+    const auto it = topic_dataset.find(ti);
+    return it == topic_dataset.end() ? std::string(name) : it->second + ":" + std::string(name);
+  };
+
+  for (std::uint32_t ti = topic_lo; ti < topic_hi; ++ti) {
+    std::string_view name = PJ::sdk::toStringView(topics[ti].name);
+    std::string_view bare_name = name;
+    while (!bare_name.empty() && bare_name.front() == '/') {
+      bare_name.remove_prefix(1);
+    }
+    if (bare_name != want) {
+      continue;
+    }
+    if (out.candidates.size() < kMaxCandidates) {
+      out.candidates.push_back(qualifiedName(ti, name));
+    }
+    if (!out.topic_index) {
+      out.topic_index = ti;
+    } else {
+      out.ambiguous = true;
+    }
+  }
+  if (out.ambiguous) {
+    out.topic_index.reset();
+  } else {
+    out.candidates.clear();
+  }
+  return out;
+}
+
+// Every numeric field of one already-resolved topic, as read_series paths
+// in catalog order -- what a topic-only path expands to. Qualified with
+// "dataset:" using the same rule resolveSeriesPath's own qualifying does, so
+// an expanded path is never ambiguous even when several loaded datasets
+// share this topic name.
+std::vector<std::string> topicNumericFieldPaths(const PJ::sdk::CatalogSnapshot& catalog, std::uint32_t topic_index) {
+  std::vector<std::string> out;
+  auto topics = catalog.topics();
+  auto fields = catalog.fields();
+  const auto& topic = topics[topic_index];
+  const std::string topic_name(PJ::sdk::toStringView(topic.name));
+  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(catalog);
+  const auto dataset_it = topic_dataset.find(topic_index);
+  const std::string prefix = dataset_it == topic_dataset.end() ? std::string{} : dataset_it->second + ":";
+  for (std::uint32_t fi = 0; fi < topic.field_count; ++fi) {
+    const std::size_t idx = topic.first_field + fi;
+    if (idx >= fields.size()) {
+      break;
+    }
+    if (!isNumericFieldType(PJ::sdk::fromAbiType(fields[idx].type))) {
+      continue;
+    }
+    out.push_back(prefix + joinSeriesPath(topic_name, PJ::sdk::toStringView(fields[idx].name)));
+  }
+  return out;
+}
+
+// How many of a topic's OWN numeric fields one read_series call may expand
+// into before the mode's degradation kicks in (see expandRequestedPaths) --
+// the same limit the mode already enforces on the whole call, so a topic
+// that fits comfortably never trips a second, tighter limit later.
+std::size_t topicExpansionCap(const std::string& mode) {
+  if (mode == "buckets") {
+    return kMaxBucketsBatchPaths;
+  }
+  if (mode == "raw") {
+    return kMaxRawBatchPaths;
+  }
+  return kMaxBatchPaths;
+}
+
+// One item read_series works on after path expansion. `forced` bypasses the
+// normal lookup+read entirely: it is set for an ambiguous topic, a topic
+// with no numeric fields, or (mode buckets/raw) a topic too big for this
+// call's cap -- cases expandRequestedPaths has already turned into a final
+// answer, rendered by forcedFailure exactly like any other per-path error.
+struct PathTask {
+  std::string path;
+  bool forced = false;
+  std::string forced_error;
+};
+
+// A forced PathTask rendered as a SeriesRead failure, so every read_series
+// mode's existing per-entry error rendering (built for a normal failed
+// lookup) handles a topic-expansion error the same way, with no
+// special-casing needed in the mode branches below.
+SeriesRead forcedFailure(const PathTask& task) {
+  SeriesRead r;
+  r.path = task.path;
+  r.error = task.forced_error;
+  return r;
+}
+
+// Expand each requested path: unchanged when it already names a series (a
+// field path always wins over a topic-only reading of the same string),
+// and also unchanged when it names neither a series nor a topic -- the
+// existing "unknown series" error fires later exactly as it did before this
+// feature. Only a path that fails as a series AND succeeds as a bare topic
+// expands, into every numeric field of that topic, in catalog order. A
+// field a topic expands to is dropped when the caller also named it
+// explicitly elsewhere in the same call, so the two never duplicate each
+// other -- but two explicit requests for the same series are NOT
+// deduplicated against each other, unchanged from before this feature
+// (RawBatchCappedAtFour and friends rely on a repeated path still costing a
+// slot against the batch cap). `notes_out` collects the "read the first N,
+// cap" note mode 'stats' surfaces when a topic alone has more numeric
+// fields than the cap; 'buckets' and 'raw' never populate it -- they fail
+// that one task instead (see topicExpansionCap).
+std::vector<PathTask> expandRequestedPaths(
+    const PJ::sdk::CatalogSnapshot& catalog, const std::vector<std::string>& paths, const std::string& mode,
+    std::vector<std::string>& notes_out) {
+  std::vector<PathTask> out;
+  out.reserve(paths.size());
+  const std::size_t cap = topicExpansionCap(mode);
+
+  // Canonical form of every path in THIS call that resolves directly as a
+  // series, computed once up front (order-independent) so a topic expansion
+  // can skip a field the caller also named explicitly, regardless of
+  // whether that explicit path appears before or after the topic path.
+  std::vector<std::string> explicit_canonical;
+  for (const auto& want : paths) {
+    if (const SeriesLookup direct = resolveSeriesPath(catalog, want); direct.resolved) {
+      explicit_canonical.push_back(direct.resolved->path);
+    }
+  }
+  auto namedExplicitly = [&](const std::string& canon) {
+    return std::find(explicit_canonical.begin(), explicit_canonical.end(), canon) != explicit_canonical.end();
+  };
+  std::vector<std::string> topic_expanded_seen;  // fields already produced by an earlier topic expansion this call
+
+  for (const auto& want : paths) {
+    const SeriesLookup direct = resolveSeriesPath(catalog, want);
+    if (direct.resolved) {
+      PathTask task;
+      task.path = want;
+      out.push_back(std::move(task));
+      continue;
+    }
+
+    const TopicLookup topic = resolveTopicPath(catalog, want);
+    if (topic.ambiguous) {
+      SeriesLookup shim;
+      shim.ambiguous = true;
+      shim.candidates = topic.candidates;
+      PathTask task;
+      task.path = want;
+      task.forced = true;
+      task.forced_error = seriesLookupError(want, shim);
+      out.push_back(std::move(task));
+      continue;
+    }
+    if (!topic.topic_index) {
+      // Not a topic either: pass through unchanged, same as before this
+      // feature -- readOne will fail it with the usual "unknown series".
+      PathTask task;
+      task.path = want;
+      out.push_back(std::move(task));
+      continue;
+    }
+
+    std::vector<std::string> fields = topicNumericFieldPaths(catalog, *topic.topic_index);
+    const std::string topic_name(PJ::sdk::toStringView(catalog.topics()[*topic.topic_index].name));
+    if (fields.empty()) {
+      PathTask task;
+      task.path = want;
+      task.forced = true;
+      task.forced_error = "topic has no numeric fields";
+      out.push_back(std::move(task));
+      continue;
+    }
+    if (fields.size() > cap) {
+      if (mode == "stats") {
+        notes_out.push_back(
+            "topic " + topic_name + " has " + std::to_string(fields.size()) + " numeric fields; the first " +
+            std::to_string(cap) + " were read (cap); name the fields to read the rest");
+        fields.resize(cap);
+      } else {
+        PathTask task;
+        task.path = want;
+        task.forced = true;
+        task.forced_error = "topic " + topic_name + " has " + std::to_string(fields.size()) +
+                            " numeric fields, more than mode '" + mode + "' allows in one call (" +
+                            std::to_string(cap) +
+                            "); read it in stats first, then name the fields whose shape you want";
+        out.push_back(std::move(task));
+        continue;
+      }
+    }
+    for (auto& f : fields) {
+      if (namedExplicitly(f)) {
+        continue;
+      }
+      if (std::find(topic_expanded_seen.begin(), topic_expanded_seen.end(), f) != topic_expanded_seen.end()) {
+        continue;
+      }
+      topic_expanded_seen.push_back(f);
+      PathTask task;
+      task.path = std::move(f);
+      out.push_back(std::move(task));
+    }
+  }
+  return out;
+}
+
 ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
   const std::vector<std::string> paths = requestedPaths(args);
   if (paths.empty()) {
     return ToolResult::failure(
         "read_series requires 'paths': one topic/field path, or an array of them to read several in "
         "a single call");
-  }
-  if (paths.size() > kMaxBatchPaths) {
-    return ToolResult::failure(
-        "read_series takes at most " + std::to_string(kMaxBatchPaths) + " paths per call, got " +
-        std::to_string(paths.size()));
   }
   const std::string mode = args.value("mode", std::string("stats"));
 
@@ -1133,6 +1389,18 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     return ToolResult::failure("catalog unavailable: " + catalog.error());
   }
 
+  // A path naming a bare topic (no field) expands to every numeric field of
+  // that topic here -- see expandRequestedPaths. This is where the caps
+  // below start counting: a topic that names twelve fields costs twelve,
+  // exactly as if the model had named them one by one.
+  std::vector<std::string> topic_notes;
+  const std::vector<PathTask> tasks = expandRequestedPaths(*catalog, paths, mode, topic_notes);
+  if (tasks.size() > kMaxBatchPaths) {
+    return ToolResult::failure(
+        "read_series takes at most " + std::to_string(kMaxBatchPaths) + " series per call, got " +
+        std::to_string(tasks.size()) + " after expanding any whole-topic paths to their fields");
+  }
+
   // readOne, then narrow to the window when one was requested — shared by
   // every mode below so 'stats' and 'buckets', single-path and batched, all
   // apply the same window the same way.
@@ -1143,6 +1411,7 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     }
     return r;
   };
+  auto readTask = [&](const PathTask& task) { return task.forced ? forcedFailure(task) : readWindowed(task.path); };
 
   if (mode == "stats") {
     // One entry per requested path, each carrying its own error. A single typo
@@ -1150,8 +1419,8 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     // for several at once.
     json arr = json::array();
     std::size_t failed = 0;
-    for (const auto& want : paths) {
-      SeriesRead r = readWindowed(want);
+    for (const auto& task : tasks) {
+      SeriesRead r = readTask(task);
       if (!r.ok) {
         ++failed;
         arr.push_back({{"series", r.path}, {"error", r.error}});
@@ -1165,8 +1434,9 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
       arr.push_back(std::move(entry));
     }
     // A lone path keeps the shape it has always had, so nothing that worked
-    // before starts reading differently.
-    if (paths.size() == 1) {
+    // before starts reading differently. A whole-topic path that expanded to
+    // several series never takes this branch (tasks.size() > 1 then).
+    if (tasks.size() == 1) {
       const json& only = arr.front();
       return only.contains("error") ? ToolResult::failure(only["error"].get<std::string>())
                                     : ToolResult::success(only.dump());
@@ -1175,6 +1445,13 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     if (failed != 0) {
       out["failed"] = failed;
     }
+    if (!topic_notes.empty()) {
+      std::string note = topic_notes.front();
+      for (std::size_t i = 1; i < topic_notes.size(); ++i) {
+        note += "; " + topic_notes[i];
+      }
+      out["note"] = std::move(note);
+    }
     return ToolResult::success(out.dump());
   }
 
@@ -1182,7 +1459,7 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     // Several series' buckets share ONE response cap (batchBuckets), so the
     // batch is capped tighter than the flat kMaxBatchPaths above: past this
     // many, sharing the cap would coarsen every one of them past usefulness.
-    if (paths.size() > kMaxBucketsBatchPaths) {
+    if (tasks.size() > kMaxBucketsBatchPaths) {
       return ToolResult::failure(
           "mode 'buckets' takes at most " + std::to_string(kMaxBucketsBatchPaths) +
           " paths per call — they share one response cap. Batch 'stats' first, then ask for buckets on "
@@ -1192,8 +1469,8 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     // A lone path keeps the shape it has always had, at full single-series
     // resolution — the batch envelope (and its shared, smaller cap) only
     // kicks in once there is more than one series to fit together.
-    if (paths.size() == 1) {
-      SeriesRead r = readWindowed(paths.front());
+    if (tasks.size() == 1) {
+      SeriesRead r = readTask(tasks.front());
       if (!r.ok) {
         return ToolResult::failure(r.error);
       }
@@ -1206,9 +1483,9 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
       return ToolResult::success(out.dump());
     }
     std::vector<SeriesRead> reads;
-    reads.reserve(paths.size());
-    for (const auto& want : paths) {
-      reads.push_back(readWindowed(want));
+    reads.reserve(tasks.size());
+    for (const auto& task : tasks) {
+      reads.push_back(readTask(task));
     }
     const json out = batchBuckets(ctx, reads, max_points);
     return ToolResult::success(out.dump());
@@ -1226,7 +1503,7 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     }
     // Each series can carry up to kMaxRawSamples individual numbers here,
     // not a bounded bucket count, so the batch cap is tighter than buckets'.
-    if (paths.size() > kMaxRawBatchPaths) {
+    if (tasks.size() > kMaxRawBatchPaths) {
       return ToolResult::failure(
           "mode 'raw' takes at most " + std::to_string(kMaxRawBatchPaths) +
           " paths per call — each can return up "
@@ -1237,8 +1514,8 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     }
     json arr = json::array();
     std::size_t failed = 0;
-    for (const auto& want : paths) {
-      SeriesRead r = readWindowed(want);
+    for (const auto& task : tasks) {
+      SeriesRead r = readTask(task);
       json entry = r.ok ? renderRawSamples(ctx, *catalog, r) : json{{"series", r.path}, {"error", r.error}};
       if (entry.contains("error")) {
         ++failed;
@@ -1248,7 +1525,7 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     // A lone path keeps the shape it has always had, same as 'stats' and
     // single-path 'buckets': the batch envelope only kicks in once there is
     // more than one series to fit together.
-    if (paths.size() == 1) {
+    if (tasks.size() == 1) {
       const json& only = arr.front();
       return only.contains("error") ? ToolResult::failure(only["error"].get<std::string>())
                                     : ToolResult::success(only.dump());
@@ -2484,13 +2761,14 @@ ToolRegistry::ToolRegistry() {
   add(
       {"read_series",
        "Read summary statistics ('stats'), a min/max-preserving downsample ('buckets'), or up to 200 "
-       "raw samples inside a mandatory window ('raw'). Non-finite values count as 'invalid', excluded "
+       "raw samples inside a mandatory window ('raw'). Non-finite values are 'invalid', excluded "
        "from min/max/mean/stddev. buckets are columnar (t0, dt, n, min, max, mean; t_i = t0 + i*dt, "
-       "or 't' when irregular). Stats carry 't_start_display_s' when the host supports playback, so "
+       "or 't' when irregular). Stats carry 't_start_display_s' when playback is bound, so "
        "bucket i's display time = t_start_display_s + t0 + i*dt.\n"
-       "'paths' is an ARRAY — ask for every series in ONE call. A bad path returns as an error beside "
-       "the ones that worked. buckets take up to 8 paths (shared cap); raw takes 4. t_start_s/t_end_s "
-       "(display axis) narrow the read and re-base t; raw REQUIRES both.",
+       "'paths' is an ARRAY: ask several at once. A bad path returns as an error beside "
+       "the ones that worked. A topic path (no field) reads all its numeric fields. buckets take "
+       "up to 8 paths; raw takes 4. t_start_s/t_end_s (display axis) narrow the read and "
+       "re-base t; raw REQUIRES both.",
        {{"type", "object"},
         {"properties",
          {{"paths",
