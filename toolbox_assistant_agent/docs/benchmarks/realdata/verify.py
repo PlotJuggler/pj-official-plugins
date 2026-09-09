@@ -386,6 +386,8 @@ def _cites_created(src, created_names):
     s = str(src).strip()
     if s.lower().startswith("derived") or " - " in s or " + " in s or " vs " in s or " minus " in s:
         return True  # an expression, not a topic claim
+    if any(w in s.lower() for w in ("playback", "report_status", "evaluate")):
+        return True  # a tool's own output (e.g. the playback range), not a topic claim
     head = s.lstrip("/").split("/")[0]
     return s in created_names or head in created_names or any(s.startswith(n) for n in created_names)
 

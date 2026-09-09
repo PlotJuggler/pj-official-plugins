@@ -679,3 +679,65 @@ one avoided round trip saves about 18 000. The 10 500 ceiling dates from one-rou
 turns and is not the binding constraint on real analysis. And a first tally of this run
 compared flights without filtering by model, so opus passes from the first run counted against
 sonnet; the numbers above come from `compare.py`, which pairs by (file, task, model).
+
+### Runs 3-7: putting the facts in the response (2026-09-09)
+
+Same 17 ALFA flights, same prompts, `sonnet`, one pass per run. Each run adds one change on top
+of the previous plugin; two runs were stopped early once their first cells had answered the
+question they were run for.
+
+| run | change | T07 sonnet | not visible at a glance (7) | false positives (2 controls) | calls/turn |
+|---|---|---|---|---|---|
+| 1 | baseline | 10/17 | 2 | 2 | 28 |
+| 2 | mixed catalog, batched reads, window | 12/17 | 3 | 1 | 16 |
+| 3 | `constant`, `flat_span_s` in stats (bare) | stopped at 5: 1/5 | | | |
+| 4 | + `constant_note`, `flat_span_note` | 14/17 | 5 | 0 | 21 |
+| 5 | + bare topic path reads every field | 14/17 | 5 | 0 | 17 |
+| 6 | + two prompt sentences (read whole; constant = unused) | stopped at 3: 1/3 | | | |
+| 7 | + `unread` object on partial topic reads | 14/17 | 5 | 1 | 16 |
+
+Every obvious fault is found from run 2 on. The gain from 10 to 14 comes from the flights whose
+fault does not show in the raw plot, and from the controls. Time per turn stayed within 180-192 s
+throughout: fewer round trips, each carrying more.
+
+What each run showed, read off the streams rather than the totals:
+
+- **Run 3.** A bare `constant: true` next to a channel that sits at 1500 µs all flight was read as
+  "stuck": on the fault-free control the model reported an aileron jammed "since the first
+  sample", and a flight that run 2 had called fault-free became a false positive. The fact
+  arrived; its meaning did not. Stopped after five cells.
+- **Run 4.** The same facts with their reading attached in the response (`held one value for the
+  entire recording — an unused or unmapped output, not something that changed during it`; `held
+  one value for 21.2 s starting at 111.7 s — a change within the recording`). False positives went
+  to zero and two invisible faults were found from the `flat_span` note. The three misses left were
+  one mechanism: the model reads `channels[0..3]` of a 12-channel topic and stops; the jammed
+  surface is on channel 5, never read. In four runs no model ever asked for a topic as a whole,
+  because `read_series` only resolved `topic/field` paths.
+- **Run 5.** A bare topic path now expands to every numeric field of the topic (verified live: one
+  call on `/mavros/rc/out` returns 11 series with the jammed channel's note). Uses in 17 flights:
+  zero. Same 14/17; one flight gained by a second read the model made on its own, one lost.
+- **Run 6.** Two sentences added to the system prompt ("before judging a topic, read it whole";
+  "a series marked constant is an unused output, not a fault"). Present in the CLI's argv on every
+  cell; the model still read `channels[0..3]` in 3 of 3. Stopped.
+- **Run 7.** When a call reads only some of a topic's numeric fields, the response says so:
+  `"unread": {"/mavros/rc/out": {"read": 4, "numeric_fields": 8, "fields": ["channels[4]", …],
+  "hint": "a bare topic path reads every field of the topic in one call"}}`. In 10 of 17 flights
+  the model went on to read the missing channels after seeing it, and `alfa_03` (jam on channel 5,
+  missed in every earlier run) was found. The two remaining coverage misses did not widen the
+  read despite four notices; and one control regressed to the constant-channel false positive
+  with both the note and the prompt sentence in front of it.
+
+Three things this ladder measured that are worth keeping:
+
+1. A capability the model is not in the habit of using does not get used (run 5), and a sentence
+   in the system prompt does not create the habit either (run 6). What moved behaviour every
+   time was a fact placed in the tool response at the moment of the decision (runs 4 and 7).
+2. A fact without its reading can be worse than no fact (run 3): the name `constant` was read as
+   "stuck". Ship the interpretation with the number when the name admits the opposite reading.
+3. The floor is now 14/17 across three runs with different flights flipping; the flips are the
+   model's own variance on the same input, not the tools. Above that floor the lever is the model:
+   opus found 8 of 8 on the first run with the run-1 tools.
+
+Cost of the whole ladder to the tool surface: the schema went from 10 473 to 10 482 characters
+(one clause for the bare-topic path, one for the window, one for raw); everything else lives in
+the responses.

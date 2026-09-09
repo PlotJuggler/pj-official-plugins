@@ -11,6 +11,7 @@ one comes from).
 - `drive.py <matrix.json>` — walks the cells: restart per layout/arm, wait for the loader's
   "import complete", New chat, type the task id, wait for `done`, screenshot. Resume-safe.
 - `score_all.sh [run_dir]` — `verify.py` on every finished cell (`flight` maps to truth id `px4`).
+- `notes_audit.py` — per flight: which channels were read, whether the faulty one's note reached the model, verdict.
 - `summarize.py` — final tables (pass rates, per-turn cost, blind rubric, at-a-glance split).
 - `blind.py` — shuffled grading packet with the model hidden (`BLIND_TASKS`, `BLIND_OUT`,
   `BLIND_PREFIX`).
