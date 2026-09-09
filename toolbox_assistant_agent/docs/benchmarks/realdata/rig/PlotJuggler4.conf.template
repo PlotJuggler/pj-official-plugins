@@ -1,0 +1,6 @@
+[General]
+assistant.backend=claude
+assistant.claude.cli_path=/home/alvvm/Work/pj-official-plugins/.worktrees/assistant/toolbox_assistant_agent/docs/benchmarks/realdata/bench_cli.py
+assistant.claude.model=
+assistant.catalog_budget_chars=6000
+MainWindow.lastLayoutDirectory=/home/alvvm/Work/assistant-realdata-bench/layouts

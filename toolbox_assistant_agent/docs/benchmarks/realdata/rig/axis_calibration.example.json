@@ -1,0 +1,127 @@
+{
+ "flight": {
+  "offset_s": 185.961326,
+  "kind": "ulog_us_since_boot",
+  "hypothesis": "truth stores SECONDS since boot (unit 's'); display axis = seconds since boot; verify on T01"
+ },
+ "alfa_01": {
+  "offset_s": 1536693691.4195974,
+  "kind": "ros_epoch",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "alfa_02": {
+  "offset_s": 1538768398.784192,
+  "kind": "ros_epoch",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "alfa_03": {
+  "offset_s": 1536703357.9565325,
+  "kind": "ros_epoch",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "alfa_04": {
+  "offset_s": 1531946412.6023195,
+  "kind": "ros_epoch",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "alfa_05": {
+  "offset_s": 1536701837.9324908,
+  "kind": "ros_epoch",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "alfa_06": {
+  "offset_s": 1536692144.7336245,
+  "kind": "ros_epoch",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "alfa_07": {
+  "offset_s": 1531945830.2450597,
+  "kind": "ros_epoch",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "alfa_08": {
+  "offset_s": 1531943810.820851,
+  "kind": "ros_epoch",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "alfa_09": {
+  "offset_s": 1539875267.1732082,
+  "kind": "ros_epoch",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "alfa_10": {
+  "offset_s": 1536701658.9300902,
+  "kind": "ros_epoch",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "alfa_11": {
+  "offset_s": 1538765324.9897063,
+  "kind": "ros_epoch",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "alfa_12": {
+  "offset_s": 1536703528.9170089,
+  "kind": "ros_epoch",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "alfa_13": {
+  "offset_s": 1536681798.8456435,
+  "kind": "ros_epoch",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "alfa_14": {
+  "offset_s": 1532133199.015983,
+  "kind": "ros_epoch",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "alfa_15": {
+  "offset_s": 1536691595.3056366,
+  "kind": "ros_epoch",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "alfa_16": {
+  "offset_s": 1536693065.1775117,
+  "kind": "ros_epoch",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "alfa_17": {
+  "offset_s": 1536693419.504351,
+  "kind": "ros_epoch",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "skab_01": {
+  "offset_s": 1583752474.0,
+  "kind": "csv_datetime_utc",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "skab_02": {
+  "offset_s": 1583770590.0,
+  "kind": "csv_datetime_utc",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "skab_03": {
+  "offset_s": 1581179229.0,
+  "kind": "csv_datetime_utc",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "skab_04": {
+  "offset_s": 1583763280.0,
+  "kind": "csv_datetime_utc",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "skab_05": {
+  "offset_s": 1583772991.0,
+  "kind": "csv_datetime_utc",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "skab_06": {
+  "offset_s": 1581184064.0,
+  "kind": "csv_datetime_utc",
+  "hypothesis": "display axis = absolute seconds; verify on first real cell"
+ },
+ "px4": {
+  "offset_s": 185.961326,
+  "kind": "ulog_us_since_boot",
+  "hypothesis": "truth stores SECONDS since boot (unit 's'); display axis = seconds since boot; verify on T01"
+ }
+}

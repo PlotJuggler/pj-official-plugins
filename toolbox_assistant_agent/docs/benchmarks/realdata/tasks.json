@@ -1,0 +1,97 @@
+{
+ "block_spec": "Termina tu respuesta con un bloque ```json con EXACTAMENTE este formato (sin comentarios):\n{\"events\":[{\"t_s\":<segundos en el eje de tiempo de PlotJuggler>,\"kind\":\"<etiqueta corta en inglés>\",\"detail\":\"<texto breve>\",\"source\":\"<topic/campo>\"}],\"values\":{\"<nombre>\":{\"value\":<número>,\"unit\":\"<unidad>\",\"source\":\"<topic/campo>\"}},\"assumptions\":[\"<cada suposición o elección que hayas hecho, o lo que no pudiste determinar>\"]}\nSi una lista queda vacía, escríbela vacía. No inventes valores: solo lo que hayas leído de los datos.",
+ "kinds": {
+  "T02": [
+   "mode_change"
+  ],
+  "T03": [
+   "actuator_saturation",
+   "none"
+  ],
+  "T07": [
+   "engine_failure",
+   "control_surface_fault",
+   "no_fault"
+  ],
+  "T09": [
+   "anomaly"
+  ],
+  "T10": [
+   "first_deviation"
+  ]
+ },
+ "tasks": [
+  {
+   "id": "T01",
+   "dataset": "px4",
+   "open": false,
+   "arms": [
+    "catalog6000",
+    "catalogfull"
+   ],
+   "prompt": "Este es el log de un vuelo de dron. Dime a qué segundo despegó y a qué segundo aterrizó, la altura máxima que alcanzó y la velocidad máxima sobre el suelo. Indica de qué topic sacaste cada dato. En \"values\" usa exactamente estos nombres: \"takeoff_s\", \"landing_s\", \"max_altitude_m\", \"max_ground_speed_mps\".",
+   "values": [
+    "takeoff_s",
+    "landing_s",
+    "max_altitude_m",
+    "max_ground_speed_mps"
+   ],
+   "prompt_full": "Este es el log de un vuelo de dron. Dime a qué segundo despegó y a qué segundo aterrizó, la altura máxima que alcanzó y la velocidad máxima sobre el suelo. Indica de qué topic sacaste cada dato. En \"values\" usa exactamente estos nombres: \"takeoff_s\", \"landing_s\", \"max_altitude_m\", \"max_ground_speed_mps\".\n\nTermina tu respuesta con un bloque ```json con EXACTAMENTE este formato (sin comentarios):\n{\"events\":[{\"t_s\":<segundos en el eje de tiempo de PlotJuggler>,\"kind\":\"<etiqueta corta en inglés>\",\"detail\":\"<texto breve>\",\"source\":\"<topic/campo>\"}],\"values\":{\"<nombre>\":{\"value\":<número>,\"unit\":\"<unidad>\",\"source\":\"<topic/campo>\"}},\"assumptions\":[\"<cada suposición o elección que hayas hecho, o lo que no pudiste determinar>\"]}\nSi una lista queda vacía, escríbela vacía. No inventes valores: solo lo que hayas leído de los datos."
+  },
+  {
+   "id": "T02",
+   "dataset": "px4",
+   "open": false,
+   "arms": [
+    "catalog6000",
+    "catalogfull"
+   ],
+   "prompt": "¿Cambió el modo de vuelo (nav_state) durante este vuelo? Lista cada cambio con el segundo en que ocurrió y a qué modo pasó. El campo \"kind\" de cada evento debe ser exactamente \"mode_change\" y \"detail\" el nombre del modo nuevo.",
+   "prompt_full": "¿Cambió el modo de vuelo (nav_state) durante este vuelo? Lista cada cambio con el segundo en que ocurrió y a qué modo pasó. El campo \"kind\" de cada evento debe ser exactamente \"mode_change\" y \"detail\" el nombre del modo nuevo.\n\nTermina tu respuesta con un bloque ```json con EXACTAMENTE este formato (sin comentarios):\n{\"events\":[{\"t_s\":<segundos en el eje de tiempo de PlotJuggler>,\"kind\":\"<etiqueta corta en inglés>\",\"detail\":\"<texto breve>\",\"source\":\"<topic/campo>\"}],\"values\":{\"<nombre>\":{\"value\":<número>,\"unit\":\"<unidad>\",\"source\":\"<topic/campo>\"}},\"assumptions\":[\"<cada suposición o elección que hayas hecho, o lo que no pudiste determinar>\"]}\nSi una lista queda vacía, escríbela vacía. No inventes valores: solo lo que hayas leído de los datos."
+  },
+  {
+   "id": "T03",
+   "dataset": "px4",
+   "open": true,
+   "arms": [
+    "catalog6000",
+    "catalogfull"
+   ],
+   "prompt": "Revisa los actuadores de este vuelo: ¿alguno llegó a saturar (se quedó en su límite) en algún momento? Si es así, dime cuál, cuándo y durante cuánto tiempo. Si crees que merece la pena, crea una serie o marcadores que lo evidencien. El campo \"kind\" de cada evento debe ser exactamente \"actuator_saturation\"; si no encuentras ninguno, pon un único evento con \"kind\":\"none\".",
+   "prompt_full": "Revisa los actuadores de este vuelo: ¿alguno llegó a saturar (se quedó en su límite) en algún momento? Si es así, dime cuál, cuándo y durante cuánto tiempo. Si crees que merece la pena, crea una serie o marcadores que lo evidencien. El campo \"kind\" de cada evento debe ser exactamente \"actuator_saturation\"; si no encuentras ninguno, pon un único evento con \"kind\":\"none\".\n\nTermina tu respuesta con un bloque ```json con EXACTAMENTE este formato (sin comentarios):\n{\"events\":[{\"t_s\":<segundos en el eje de tiempo de PlotJuggler>,\"kind\":\"<etiqueta corta en inglés>\",\"detail\":\"<texto breve>\",\"source\":\"<topic/campo>\"}],\"values\":{\"<nombre>\":{\"value\":<número>,\"unit\":\"<unidad>\",\"source\":\"<topic/campo>\"}},\"assumptions\":[\"<cada suposición o elección que hayas hecho, o lo que no pudiste determinar>\"]}\nSi una lista queda vacía, escríbela vacía. No inventes valores: solo lo que hayas leído de los datos."
+  },
+  {
+   "id": "T07",
+   "dataset": "alfa",
+   "open": true,
+   "per_file": true,
+   "prompt": "Este es el registro de un vuelo autónomo de un avión no tripulado de ala fija. Sospechamos que algo fue mal durante el vuelo. Analiza los datos y dime si hubo un fallo, en qué segundo empezó y de qué tipo (motor, o una superficie de control bloqueada: alerón, timón o elevador). Si no encuentras ningún fallo, dilo. El campo \"kind\" del evento debe ser exactamente uno de: \"engine_failure\", \"control_surface_fault\" o \"no_fault\"; en \"detail\" indica la superficie (aileron, rudder, elevator) si aplica.",
+   "prompt_full": "Este es el registro de un vuelo autónomo de un avión no tripulado de ala fija. Sospechamos que algo fue mal durante el vuelo. Analiza los datos y dime si hubo un fallo, en qué segundo empezó y de qué tipo (motor, o una superficie de control bloqueada: alerón, timón o elevador). Si no encuentras ningún fallo, dilo. El campo \"kind\" del evento debe ser exactamente uno de: \"engine_failure\", \"control_surface_fault\" o \"no_fault\"; en \"detail\" indica la superficie (aileron, rudder, elevator) si aplica.\n\nTermina tu respuesta con un bloque ```json con EXACTAMENTE este formato (sin comentarios):\n{\"events\":[{\"t_s\":<segundos en el eje de tiempo de PlotJuggler>,\"kind\":\"<etiqueta corta en inglés>\",\"detail\":\"<texto breve>\",\"source\":\"<topic/campo>\"}],\"values\":{\"<nombre>\":{\"value\":<número>,\"unit\":\"<unidad>\",\"source\":\"<topic/campo>\"}},\"assumptions\":[\"<cada suposición o elección que hayas hecho, o lo que no pudiste determinar>\"]}\nSi una lista queda vacía, escríbela vacía. No inventes valores: solo lo que hayas leído de los datos."
+  },
+  {
+   "id": "T08",
+   "dataset": "alfa",
+   "open": true,
+   "per_file": true,
+   "follows": "T07",
+   "prompt": "Márcalo en la gráfica: crea marcadores sobre el tramo del fallo y una serie derivada que haga evidente el fallo, y ponlos en una pestaña.",
+   "prompt_full": "Márcalo en la gráfica: crea marcadores sobre el tramo del fallo y una serie derivada que haga evidente el fallo, y ponlos en una pestaña.\n\nTermina tu respuesta con un bloque ```json con EXACTAMENTE este formato (sin comentarios):\n{\"events\":[{\"t_s\":<segundos en el eje de tiempo de PlotJuggler>,\"kind\":\"<etiqueta corta en inglés>\",\"detail\":\"<texto breve>\",\"source\":\"<topic/campo>\"}],\"values\":{\"<nombre>\":{\"value\":<número>,\"unit\":\"<unidad>\",\"source\":\"<topic/campo>\"}},\"assumptions\":[\"<cada suposición o elección que hayas hecho, o lo que no pudiste determinar>\"]}\nSi una lista queda vacía, escríbela vacía. No inventes valores: solo lo que hayas leído de los datos."
+  },
+  {
+   "id": "T09",
+   "dataset": "skab",
+   "open": false,
+   "per_file": true,
+   "prompt": "Estos son los sensores de una bomba de agua en un banco de pruebas. En algún momento de la grabación se provocó una anomalía. Encuentra en qué intervalo de tiempo (segundo de inicio y de fin) está la anomalía y qué sensores la muestran. Da dos eventos: uno con \"kind\":\"anomaly\" en el segundo de inicio y otro con \"kind\":\"anomaly_end\" en el de fin; en \"source\" el sensor que mejor la muestra.",
+   "prompt_full": "Estos son los sensores de una bomba de agua en un banco de pruebas. En algún momento de la grabación se provocó una anomalía. Encuentra en qué intervalo de tiempo (segundo de inicio y de fin) está la anomalía y qué sensores la muestran. Da dos eventos: uno con \"kind\":\"anomaly\" en el segundo de inicio y otro con \"kind\":\"anomaly_end\" en el de fin; en \"source\" el sensor que mejor la muestra.\n\nTermina tu respuesta con un bloque ```json con EXACTAMENTE este formato (sin comentarios):\n{\"events\":[{\"t_s\":<segundos en el eje de tiempo de PlotJuggler>,\"kind\":\"<etiqueta corta en inglés>\",\"detail\":\"<texto breve>\",\"source\":\"<topic/campo>\"}],\"values\":{\"<nombre>\":{\"value\":<número>,\"unit\":\"<unidad>\",\"source\":\"<topic/campo>\"}},\"assumptions\":[\"<cada suposición o elección que hayas hecho, o lo que no pudiste determinar>\"]}\nSi una lista queda vacía, escríbela vacía. No inventes valores: solo lo que hayas leído de los datos."
+  },
+  {
+   "id": "T10",
+   "dataset": "skab",
+   "open": true,
+   "per_file": true,
+   "prompt": "En esta grabación de una bomba hay una anomalía provocada. ¿Qué sensor la delata primero y con cuánta antelación respecto a los demás? Justifícalo con datos. El campo \"kind\" de cada evento debe ser exactamente \"first_deviation\" y \"source\" el sensor; el primer evento es el sensor que se desvía antes.",
+   "prompt_full": "En esta grabación de una bomba hay una anomalía provocada. ¿Qué sensor la delata primero y con cuánta antelación respecto a los demás? Justifícalo con datos. El campo \"kind\" de cada evento debe ser exactamente \"first_deviation\" y \"source\" el sensor; el primer evento es el sensor que se desvía antes.\n\nTermina tu respuesta con un bloque ```json con EXACTAMENTE este formato (sin comentarios):\n{\"events\":[{\"t_s\":<segundos en el eje de tiempo de PlotJuggler>,\"kind\":\"<etiqueta corta en inglés>\",\"detail\":\"<texto breve>\",\"source\":\"<topic/campo>\"}],\"values\":{\"<nombre>\":{\"value\":<número>,\"unit\":\"<unidad>\",\"source\":\"<topic/campo>\"}},\"assumptions\":[\"<cada suposición o elección que hayas hecho, o lo que no pudiste determinar>\"]}\nSi una lista queda vacía, escríbela vacía. No inventes valores: solo lo que hayas leído de los datos."
+  }
+ ]
+}
