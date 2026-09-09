@@ -52,7 +52,7 @@ APP_START_SETTLE_S = 3
 NEW_CHAT_SETTLE_S = 0.5
 
 # assistant.catalog_budget_chars per arm name (matrix.json's "arm" field).
-ARM_BUDGETS = {"catalog6000": 6000, "catalogfull": 60000}
+ARM_BUDGETS = {"catalog6000": 6000, "catalogfull": 60000, "catalog10000": 10000}
 
 
 # --------------------------------------------------------------------------

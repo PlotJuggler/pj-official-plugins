@@ -630,3 +630,52 @@ Two product changes follow directly from the failure modes, independent of the m
 prompt should say that an output constant for the entire recording is an unused channel, not a
 fault, and that a change it observes must not be explained away without a check; and the
 `read_series` error should distinguish an empty series from a non-numeric one.
+
+### Second run: mixed catalog and batched, windowed reads (2026-09-09)
+
+Same 17 ALFA flights, same prompts byte for byte, `sonnet`, one pass each, plugin at `e76501ba`
+(catalog digest with fields for the topics that fit and a count for the rest, default budget
+10 000; `read_series` buckets accept up to 8 paths under a shared cap; optional display-axis
+window). Three flights were also rerun the same day with the previous plugin as a drift control.
+
+| median per turn | first run | second run | control (old plugin, same day, 3 flights) |
+|---|---|---|---|
+| tool calls | 28 | 16 | 35 |
+| `describe_topic` | 10 | 0 | 12 |
+| single-series `buckets` reads | 9 | 0 | 5 |
+| batched reads | 0 | 6 | 0 |
+| seconds | 182 | 192 | 171 |
+| output tokens | 16 370 | 15 987 | 16 809 |
+| cache-read tokens | 584 839 | 647 506 | 535 064 |
+| T07 pass | 10/17 | 12/17 | 2/3 |
+
+Paired by flight, calls fell in 15 of 17 (median −11); seconds did not (median +19 s, faster in
+6 of 17). The rule written before the run held: `describe_topic` ≤ 3, single-series reads ≤ 3,
+total ≤ 18, no obvious hit lost. The catalog now reaches the model with fields for 29 of 30
+topics on an ALFA file (10 107 characters; `/diagnostics` alone is listed as "61 fields"), which
+is where every `describe_topic` went.
+
+By visibility of the fault in the raw plot: obvious 6/7 → 7/7 (`alfa_14` recovered: the throttle
+drop to idle is no longer read as a planned landing), partial 2/3 → 2/3, not visible 2/7 → 3/7
+with five flights changing side (`alfa_06`, `alfa_11`, `alfa_12` gained; `alfa_03`, `alfa_10`
+lost). The two losses share one mechanism, read off the streams: with the full catalog the model
+asks for all eight servo channels in one `stats` call and stops there, whereas in the first run
+it read their shape one by one. On `alfa_03` the two ailerons summarise to mean 1496.3 / sd 33.1
+and mean 1497.0 / sd 27.8; the jammed one froze for 21 s of a 133 s flight, which the whole-series
+mean cannot show. The batch made the cheap path cheaper, and the cheap path hides short faults.
+
+Of the five remaining misses, none is a matter of seconds: one fault dated at the start of the
+flight instead of 73 s in, one missed entirely, one invented on a fault-free control, two dated
+9-10 s off and attributed to one surface where two froze. All five follow from the same two
+facts the summary does not carry: a channel that is constant for the entire recording (an unused
+output, not a stuck surface) and the longest run of identical samples with its start. Computed
+independently on the files, that run lands on the labelled fault time within 0.3 s on every
+faulty flight and is absent on both controls. The next run adds both to `stats`
+(`constant`, `flat_span_s`, `flat_span_at_s`; commit `7d3b4cae`, no schema change).
+
+Two measurement notes. The cost of the tool schema was reassessed against a real turn: 10 473
+characters are about 2 600 tokens, re-read every round, 14 % of a 32-round turn's cache reads;
+one avoided round trip saves about 18 000. The 10 500 ceiling dates from one-round synthetic
+turns and is not the binding constraint on real analysis. And a first tally of this run
+compared flights without filtering by model, so opus passes from the first run counted against
+sonnet; the numbers above come from `compare.py`, which pairs by (file, task, model).
