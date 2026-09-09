@@ -476,3 +476,157 @@ unaffected. `ASSISTANT_BENCH_MAX_USD` is a hard ceiling: the run stops when the 
 `total_cost_usd` reaches it.
 
 To re-run a single cell, delete it from the JSON and re-run — resume fills the hole.
+
+## Real data, with the app in the loop (2026-09-08/09)
+
+Everything above measures the floor: synthetic sine waves and a recording host that never runs a
+script. This run puts the real application in the loop and asks questions with a known answer on
+three public datasets. Tooling and scoring live in `docs/benchmarks/realdata/` (see its README);
+the rig scripts that drive the GUI are in `docs/benchmarks/realdata/rig/`.
+
+### Setup
+
+- Host PlotJuggler 4 at `15bdf81e` (history-exempt branch merged with main), plugin at `8468a592`
+  built against SDK 0.34.0 from source, ULog loader with the trailing-padding fix (below).
+- The panel's `assistant.claude.cli_path` points at `bench_cli.py`, which launches the real
+  `claude` CLI as a child, records the stream and the CLI's own `result` usage, audits what the
+  turn left in the app through the MCP server, and cleans up. One conversation per cell (New
+  chat between cells, verified by the absence of `--resume` on turn 1).
+- Datasets, with ground truth computed by code that shares nothing with the plugin:
+  - **ALFA** (CMU AirLab): 17 fixed-wing UAV flights converted bag→MCAP under opaque names
+    (`alfa_NN`), fault-status topics removed. 5 engine failures, 10 control-surface faults
+    (aileron, rudder, elevator, combinations), 2 fault-free controls. Truth: the dataset's fault
+    time and type.
+  - **SKAB** (Skoltech): 6 water-pump recordings, 8 sensors, label columns stripped. Truth: the
+    labelled anomaly interval; for T10 a 3σ-baseline reference order of first deviation.
+  - **PX4**: one public 300 s multicopter mission log (POSCTL → MISSION → RTL, 2184 series).
+    Truth via pyulog: take-off/landing, altitude and speed maxima with three legitimate sources
+    each, nav_state changes, PWM saturation intervals.
+- Tasks: T01 numbers of the flight, T02 mode changes, T03 actuator saturation (open), T07 "what
+  failed and when" on every ALFA flight, T08 second turn "mark it and make it evident" on 4
+  flights, T09 find the SKAB anomaly interval, T10 which sensor shows it first (open). Every
+  prompt ends by asking for a fixed JSON block (events with `t_s` on PlotJuggler's display axis,
+  values with unit and source, assumptions); scoring reads only that block and the audit.
+- Models: `sonnet` on everything (32 turns), `opus` on 8 ALFA flights, T08 on one of them, both
+  T10 files and T03 (12 turns), interleaved in the same run. One pass per cell. PX4 also ran under
+  two catalog budgets (6 000 and 60 000 characters, `assistant.catalog_budget_chars`).
+- Before running, each open task was annotated blind on raw offline plots as *obvious*,
+  *partial* or *none* (visible at a glance or not), so a hit on something invisible counts for
+  more than a hit on the obvious.
+
+### Results
+
+Pass = every required check of `verify.py` (fault within ±2 s and right kind for T07; IoU ≥ 0.3 or
+start within tolerance for T09; marker coverage, created series and tab for T08; values within
+tolerance and a named source for T01; ≥ 80 % of mode changes for T02).
+
+| task | sonnet | opus |
+|---|---|---|
+| T01 flight numbers (2 catalog budgets) | 1/2 | — |
+| T02 mode changes | 2/2 | — |
+| T03 actuator saturation | 2/2 | 1/1 |
+| T07 ALFA fault, 17 flights | 10/17 | 8/8 |
+| T08 mark the fault | 3/3 | 1/1 |
+| T09 SKAB interval | 4/4 | — |
+| T10 first sensor | 2/2 | 2/2 |
+
+T07 split by whether the fault is visible at a glance in the raw plots:
+
+| at a glance | flights | sonnet | opus |
+|---|---|---|---|
+| obvious (engine cut, servo pinned) | 7 | 6/7 | 2/2 |
+| partial (something odd near the end) | 3 | 2/3 | 1/1 |
+| none | 7 | 2/7 | 5/5 |
+
+All seven sonnet failures are T07. Two are false positives on the fault-free controls
+(`alfa_04`, `alfa_11`); the other five are faults not found or dated late. Opus found every
+fault it was given, including all five that are not visible in the raw plots, with a median
+time error of 0.05 s.
+
+Blind rubric (model hidden while grading; *artefact* 0-2 only when the turn created something:
+does it show what the raw plot does not; *honesty* 0-2: does it state what it assumed and what
+it could not do):
+
+| model | task | items | artefact (n) | honesty |
+|---|---|---|---|---|
+| sonnet | T07 | 17 | 1.21 (14) | 1.82 |
+| opus | T07 | 8 | 1.88 (8) | 2.00 |
+| sonnet | T08 | 3 | 1.67 (3) | 1.67 |
+| opus | T08 | 1 | 2.00 (1) | 2.00 |
+| sonnet | T10 | 2 | 1.50 (2) | 2.00 |
+| opus | T10 | 2 | 2.00 (2) | 2.00 |
+| sonnet | T03 | 1 | 2.00 (1) | 2.00 |
+
+Cost per turn, medians, tokens exactly as the CLI reports them:
+
+| model | dataset | turns | s/turn | messages | tool calls | output tokens | cache read | cache write |
+|---|---|---|---|---|---|---|---|---|
+| sonnet | all | 32 | 170 | 36 | 22 | 14 570 | 502 543 | 76 742 |
+| sonnet | alfa | 20 | 179 | 40 | 28 | 15 568 | 576 493 | 81 520 |
+| sonnet | px4 | 6 | 137 | 26 | 15 | 11 567 | 417 460 | 45 768 |
+| sonnet | skab | 6 | 133 | 34 | 20 | 11 112 | 464 912 | 65 893 |
+| opus | all | 12 | 266 | 51 | 34 | 19 490 | 674 538 | 57 536 |
+| opus | alfa | 9 | 247 | 47 | 30 | 17 572 | 620 151 | 56 172 |
+| opus | skab | 2 | 387 | 76 | 51 | 34 218 | 943 187 | 75 562 |
+| opus | px4 | 1 | 683 | 65 | 37 | 22 087 | 1 471 813 | 69 712 |
+
+Host latency, measured without a model (PROBE mode) on the longest series of each dataset
+(14 009, 60 044 and 1 148 samples): every tool answers in 50-150 ms. The 60 s per-call ceiling is
+not a factor.
+
+### What the failures look like
+
+- **A flat channel is not a stuck surface.** On every ALFA airframe `/mavros/rc/out/channels[0]`
+  sits at 1500 µs for the whole flight (unused output). Sonnet called it "aileron stuck since the
+  start of the recording" on three flights (`alfa_02`, `alfa_11`, `alfa_14`), each time with the
+  caveat that it could not date it; on `alfa_14` it saw the throttle
+  drop to idle at 122.9 s and the descent to 3.6 m and called that a planned landing. Opus and
+  the successful sonnet turns identify the aileron pair as `channels[4]`/`[5]` from their
+  identical traces and their phase against roll, and find the fault as one twin freezing while
+  the other keeps moving.
+- **Evidence seen and dismissed.** On `alfa_06` sonnet reported that `channels[4]` and `[5]`
+  froze at 104.8 s and 174.6 s and concluded "auxiliary outputs, not a fault" because attitude
+  tracking did not degrade. Opus, same file, found the two freezes 0.02 s from the truth.
+- **False positives on clean flights.** On the 30 s control `alfa_04` one sonnet turn declared an
+  aileron fault at 3.3 s from a roll-error jump; the other explained the same jump by the 1 s
+  control lag and a poorly damped phugoid and said no fault, flagging the short window.
+- **What the artefacts add.** The best turns (both models) leave a derived series that makes the
+  fault a step (twin-servo difference, saturation flag, per-sensor z-score), one region marker
+  over the faulty span (T08 coverage within 1 % of the post-fault window on `alfa_01/02/09`), and
+  a tab with the three or four curves that prove it. That is the difference between "an
+  answer" and something the user keeps.
+
+### What the instrument found
+
+- **ULog loader bug.** PX4 logs from recent firmware omit a message's trailing `_padding` field;
+  the loader compared each record with the full format size and discarded 463 848 records of the
+  300 s log, leaving `vehicle_local_position`, `vehicle_attitude`, `vehicle_status`,
+  `battery_status`, `actuator_outputs` and `vehicle_land_detected` empty. The assistant saw
+  `not a numeric time series` on every state topic and spent 322 s deriving altitude from
+  barometric pressure. Fixed in `data_load_ulog` (branch `fix/ulog-trailing-padding`); PX4 cells
+  were rerun with the fix. The plugin's error text conflates "empty" with "non-numeric".
+- **Catalog budget.** At 6 000 characters a ULog catalog is names-only and truncated (233 of
+  1 261 topics). At 60 000 it lists all names, still without fields (34 665 characters), and every
+  turn pays the larger prefix: T01 164 s vs 109 s, T03 354 s vs 197 s, no fewer `describe_topic`
+  calls, one worse answer. More names do not help; fields for the topics that matter would.
+- **Display axis.** PlotJuggler shows absolute seconds (ROS epoch for MCAP, epoch for the CSV
+  datetime column, seconds since boot for ULog). Some turns answered in seconds since the start of
+  the file; the scorer accepts a value that fits inside the file's duration as relative and records
+  it (`relative_time_assumed`).
+- **Rig artefacts** worth knowing before reading a cell: the wrapper cleans up after every turn,
+  so T08 (second turn) always found the tab and markers of turn 1 gone and recreated them; a
+  keystroke sent while a large MCAP is still importing is lost; a turn dir left without `done` by
+  an interrupted run must be parked before the retry.
+
+### What it decides
+
+The rule written before the run was: default stays `sonnet` if it localises ≥ 80 % of ALFA faults
+within ±2 s and names the kind in ≥ 70 %. It localised 59 %; on the faults a person would not see
+in the raw plot, 29 %. Opus did 100 % at 1.5× the time and 1.3× the tokens per turn. Whether the
+default moves is a product decision; the measurement says the two models are not interchangeable
+on open analysis, and are on the closed tasks (T02, T09, T10).
+
+Two product changes follow directly from the failure modes, independent of the model: the
+prompt should say that an output constant for the entire recording is an unused channel, not a
+fault, and that a change it observes must not be explained away without a check; and the
+`read_series` error should distinguish an empty series from a non-numeric one.

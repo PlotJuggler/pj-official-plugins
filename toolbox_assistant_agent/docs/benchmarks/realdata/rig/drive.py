@@ -473,6 +473,13 @@ def process_matrix(matrix_path, actions, coords):
                 write_active_cell_file(active_cell_file, cell_run_dir, task_id, cell, turn=i)
 
             turn_dir = cell_run_dir / f"turn{i}"
+            # A partial turn dir from an interrupted run (no `done`) would make
+            # wait_for_turn_started see a stale stdin_received.txt and then wait
+            # the full timeout for a `done` that never comes. Park it aside.
+            if turn_dir.is_dir() and not (turn_dir / "done").exists():
+                stale = cell_run_dir / f"turn{i}.stale-{int(time.time())}"
+                turn_dir.rename(stale)
+                print(f"  {cid} turn {i}: parked stale partial dir as {stale.name}")
             actions.type_task_id(task_id, coords)
             if not actions.wait_for_turn_started(turn_dir):
                 # One retry: reopen the panel (idempotent) and type again.
