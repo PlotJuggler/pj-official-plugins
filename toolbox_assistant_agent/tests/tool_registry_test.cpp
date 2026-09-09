@@ -175,8 +175,169 @@ TEST(ToolRegistry, ReadSeriesBuckets) {
   auto r = reg.execute("read_series", {{"series", "/imu/x"}, {"mode", "buckets"}, {"max_points", 3}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
   auto j = json::parse(r.content);
-  EXPECT_TRUE(j.contains("buckets"));
-  EXPECT_LE(j["buckets"].size(), 5u);
+  ASSERT_TRUE(j.contains("buckets"));
+  EXPECT_TRUE(j["buckets"].contains("t0"));
+  EXPECT_TRUE(j["buckets"].contains("dt"));
+  EXPECT_LE(j["buckets"]["n"].size(), 5u);
+  EXPECT_EQ(j["buckets"]["min"].size(), j["buckets"]["n"].size());
+  EXPECT_EQ(j["buckets"]["max"].size(), j["buckets"]["n"].size());
+  EXPECT_EQ(j["buckets"]["mean"].size(), j["buckets"]["n"].size());
+}
+
+// Regular buckets (an even time grid, none dropped) reconstruct from t0/dt
+// alone -- no explicit "t" array, and t0/dt exactly reproduce what the old
+// per-bucket "t" values were.
+TEST(ToolRegistry, BucketsAreColumnar) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("/rc");
+  constexpr int kSamples = 500;
+  std::vector<std::int64_t> ts;
+  std::vector<double> vals;
+  ts.reserve(kSamples);
+  vals.reserve(kSamples);
+  for (int i = 0; i < kSamples; ++i) {
+    ts.push_back(static_cast<std::int64_t>(i) * (kSec / 100));  // 100 Hz, perfectly regular
+    vals.push_back(std::sin(static_cast<double>(i) * 0.01));
+  }
+  store.addField("/rc", "ch", ts, vals);
+  auto ctx = makeCtx(store, nullptr);
+
+  auto r = reg.execute("read_series", {{"series", "/rc/ch"}, {"mode", "buckets"}, {"max_points", 10}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  ASSERT_TRUE(j.contains("buckets")) << r.content;
+  const json& b = j["buckets"];
+  EXPECT_FALSE(b.contains("t")) << "a regular grid must not pay for an explicit 't' array: " << b.dump();
+  ASSERT_GE(b["n"].size(), 2u);
+  const double t0 = b["t0"].get<double>();
+  const double dt = b["dt"].get<double>();
+  EXPECT_NEAR(t0, 0.0, 1e-9) << "first bucket starts at the series' own first sample";
+  EXPECT_GT(dt, 0.0);
+  // 500 samples at 100 Hz span just under 5 s; 10 buckets over that span put
+  // dt somewhere around 0.5 s -- loosely, to avoid pinning bucketize's exact
+  // edge-rounding here.
+  EXPECT_NEAR(dt, 0.499, 0.05);
+}
+
+// bucketize's degenerate "one bucket per sample" path (fewer samples than
+// max_points) over UNEVEN timestamps cannot be reconstructed from t0/dt, so
+// the explicit "t" array must carry the true per-sample times -- same values
+// the old per-bucket "t" field held.
+TEST(ToolRegistry, IrregularBucketsCarryExplicitTimes) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("/uneven");
+  // 4 samples, irregular spacing: 0, 1, 3, 4 s -- fewer than max_points(10),
+  // so bucketize emits one bucket per sample verbatim.
+  store.addField("/uneven", "x", {0, kSec, 3 * kSec, 4 * kSec}, {10.0, 11.0, 12.0, 13.0});
+  auto ctx = makeCtx(store, nullptr);
+
+  auto r = reg.execute("read_series", {{"series", "/uneven/x"}, {"mode", "buckets"}, {"max_points", 10}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  const json& b = j["buckets"];
+  ASSERT_TRUE(b.contains("t")) << "uneven spacing must carry explicit times: " << b.dump();
+  const std::vector<double> expected_t = {0.0, 1.0, 3.0, 4.0};
+  ASSERT_EQ(b["t"].size(), expected_t.size());
+  for (std::size_t i = 0; i < expected_t.size(); ++i) {
+    EXPECT_DOUBLE_EQ(b["t"][i].get<double>(), expected_t[i]);
+  }
+}
+
+// A bucket with count == 0 (all its samples non-finite) reports null
+// min/max/mean but keeps a real 0 in "n" -- the data is missing, not silently
+// dropped from the arrays.
+TEST(ToolRegistry, EmptyBucketIsNull) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("/bad");
+  // 3 buckets worth of evenly spaced samples; the middle third is all NaN so
+  // its bucket has count == 0 but invalid > 0.
+  std::vector<std::int64_t> ts;
+  std::vector<double> vals;
+  for (int i = 0; i < 30; ++i) {
+    ts.push_back(static_cast<std::int64_t>(i) * (kSec / 10));
+    vals.push_back(i >= 10 && i < 20 ? std::nan("") : static_cast<double>(i));
+  }
+  store.addField("/bad", "x", ts, vals);
+  auto ctx = makeCtx(store, nullptr);
+
+  auto r = reg.execute("read_series", {{"series", "/bad/x"}, {"mode", "buckets"}, {"max_points", 3}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  const json& b = j["buckets"];
+  ASSERT_TRUE(b.contains("invalid")) << b.dump();
+  bool found_null_bucket = false;
+  for (std::size_t i = 0; i < b["n"].size(); ++i) {
+    if (b["n"][i].get<int>() == 0) {
+      found_null_bucket = true;
+      EXPECT_TRUE(b["min"][i].is_null());
+      EXPECT_TRUE(b["max"][i].is_null());
+      EXPECT_TRUE(b["mean"][i].is_null());
+      EXPECT_GT(b["invalid"][i].get<int>(), 0);
+    }
+  }
+  EXPECT_TRUE(found_null_bucket) << b.dump();
+}
+
+// The whole point of going columnar: under the same 16 KiB response cap, many
+// more buckets fit than the old one-object-per-bucket shape allowed (~240 for
+// a spiky series measured on real data). A 5000-sample series should now keep
+// several hundred buckets instead of coarsening down toward the 16-bucket
+// floor.
+TEST(ToolRegistry, ColumnarFitsMoreBucketsUnderTheCap) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("/spiky");
+  constexpr int kSamples = 5000;
+  std::vector<std::int64_t> ts;
+  std::vector<double> vals;
+  ts.reserve(kSamples);
+  vals.reserve(kSamples);
+  for (int i = 0; i < kSamples; ++i) {
+    ts.push_back(static_cast<std::int64_t>(i) * (kSec / 100));
+    // Spiky, high-entropy values so min/max/mean rarely repeat and rounding
+    // to 6 significant digits does not accidentally shrink the payload.
+    vals.push_back(std::sin(static_cast<double>(i) * 0.137) * 1000.0 + static_cast<double>(i % 7) * 0.0001234567);
+  }
+  store.addField("/spiky", "x", std::move(ts), std::move(vals));
+  auto ctx = makeCtx(store, nullptr);
+
+  auto r = reg.execute("read_series", {{"series", "/spiky/x"}, {"mode", "buckets"}, {"max_points", 500}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_LE(r.content.size(), 16u * 1024u) << "response cap: " << r.content.size();
+  const json j = json::parse(r.content);
+  const json& b = j["buckets"];
+  const std::size_t bucket_count = b["n"].size();
+  EXPECT_GE(bucket_count, 400u) << "columnar buckets should fit far more than the old shape did: " << bucket_count;
+
+  // Reconstruct the equivalent old one-object-per-bucket array from this
+  // response's own arrays (same bucket count, same values) and dump it, so
+  // the before/after byte-per-bucket comparison below is measured on the
+  // exact same data rather than a hand-picked example.
+  json old_shape = json::array();
+  for (std::size_t i = 0; i < bucket_count; ++i) {
+    const double t = b.contains("t") ? b["t"][i].get<double>()
+                                     : b["t0"].get<double>() + static_cast<double>(i) * b["dt"].get<double>();
+    json entry = {{"t", t}, {"n", b["n"][i]}};
+    if (!b["min"][i].is_null()) {
+      entry["min"] = b["min"][i];
+      entry["max"] = b["max"][i];
+      entry["mean"] = b["mean"][i];
+    }
+    if (b.contains("invalid") && b["invalid"][i].get<int>() > 0) {
+      entry["invalid"] = b["invalid"][i];
+    }
+    old_shape.push_back(std::move(entry));
+  }
+  const std::size_t old_bytes = old_shape.dump().size();
+  const std::size_t new_bytes = b.dump().size();
+  std::cerr << "bucket encoding on " << bucket_count << " buckets: old shape " << old_bytes << " bytes ("
+            << (static_cast<double>(old_bytes) / static_cast<double>(bucket_count)) << " bytes/bucket), columnar "
+            << new_bytes << " bytes (" << (static_cast<double>(new_bytes) / static_cast<double>(bucket_count))
+            << " bytes/bucket)\n";
+  EXPECT_LT(new_bytes, old_bytes) << "columnar must be smaller than the old per-bucket-object shape on the same data";
 }
 
 // /imu/y (populate()) never changes: {2.0, 2.0, 2.0}.
@@ -1848,10 +2009,10 @@ TEST(ToolRegistry, WindowSelectsSamplesOnDisplayAxis) {
   // display [3, 5] selects the absolute samples at 1, 2, 3 s (display 3, 4, 5).
   EXPECT_EQ(j["stats"]["count"], 3);
   EXPECT_DOUBLE_EQ(j["stats"]["t_start_display_s"].get<double>(), 3.0);
-  // Bucket 't' is relative to the first sample INSIDE the window, so the first
-  // bucket starts at 0, not at whatever t_start_s was.
-  ASSERT_FALSE(j["buckets"].empty());
-  EXPECT_DOUBLE_EQ(j["buckets"][0]["t"].get<double>(), 0.0);
+  // Bucket 't0' is relative to the first sample INSIDE the window, so the
+  // first bucket starts at 0, not at whatever t_start_s was.
+  ASSERT_FALSE(j["buckets"]["n"].empty());
+  EXPECT_DOUBLE_EQ(j["buckets"]["t0"].get<double>(), 0.0);
 }
 
 TEST(ToolRegistry, WindowAppliesToStatsToo) {
@@ -2174,7 +2335,7 @@ TEST(ToolRegistry, BatchBucketsShareTheCap) {
   ASSERT_EQ(j["read"].size(), 6u);
   for (const auto& entry : j["read"]) {
     ASSERT_TRUE(entry.contains("buckets")) << entry.dump();
-    EXPECT_GE(entry["buckets"].size(), 16u) << entry.dump();
+    EXPECT_GE(entry["buckets"]["n"].size(), 16u) << entry.dump();
   }
 }
 

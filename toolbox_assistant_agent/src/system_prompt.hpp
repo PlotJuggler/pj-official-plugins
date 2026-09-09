@@ -47,8 +47,8 @@ inline constexpr const char* kSystemPrompt =
     "is the exception to the boundary — one time cursor is shared by "
     "every plot, so move it only when it helps. Both speak DISPLAY-AXIS SECONDS, the numbers on the "
     "plot X axes and in playback's range: a feature found with read_series buckets sits at "
-    "stats.t_start_display_s + bucket.t. Those shift if the user edits source time offsets, so "
-    "re-read the state rather than reusing old numbers. "
+    "stats.t_start_display_s + buckets.t0 + i*buckets.dt. Those shift if the user edits source time "
+    "offsets, so re-read the state rather than reusing old numbers. "
     "Never invent VALUES — read_series is the only way to know what a signal actually does. Paths "
     "are different: those you already have, so do not spend a tool call confirming them. Give the "
     "user a short, plain summary of what you did.";

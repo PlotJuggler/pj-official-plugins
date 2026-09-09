@@ -40,7 +40,7 @@ For the Claude backend every built-in tool is disabled (`--tools ""`), so the mo
 |---|---|
 | `list_topics` | Search loaded topics by substring |
 | `describe_topic` | Fields of one topic, with types and full paths |
-| `read_series` | Statistics or a min/max-preserving downsample. Never returns raw samples |
+| `read_series` | Statistics or a min/max-preserving downsample, returned as columns (t0/dt/n/min/max/mean). Never returns raw samples |
 | `evaluate` | Run a bounded Luau computation and return statistics without leaving a series behind |
 | `create_derived_series` | Install a live Luau transform over one or more series |
 | `create_markers` | Install a marker generator (threshold or a raw Luau rule) |

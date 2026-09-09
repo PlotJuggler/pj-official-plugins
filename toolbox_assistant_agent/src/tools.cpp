@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <iomanip>
 #include <iterator>
@@ -872,26 +873,88 @@ void applyDisplayWindow(
   }
 }
 
-// Bucketize and render as the JSON array both readSeriesTool's 'buckets' mode
-// (single-series and batched) and evaluate's optional bucket summary send
-// back: one object per bucket, min/max/mean only when it holds a finite
-// sample, an 'invalid' count only when it holds a non-finite one.
+// Round to `sig_figs` significant decimal digits before serializing: the raw
+// float32 sources rarely carry more precision than that, and a double's full
+// ~17-digit decimal expansion is roughly twice the bytes for no information
+// the model can use. Leaves 0 and non-finite values untouched (a NaN/inf
+// still round-trips through nlohmann as JSON null via renderBucketArray's own
+// isfinite guard, not through this helper).
+double roundSignificant(double v, int sig_figs = 6) {
+  if (!std::isfinite(v) || v == 0.0) {
+    return v;
+  }
+  const double magnitude = std::pow(10.0, sig_figs - 1 - static_cast<int>(std::floor(std::log10(std::fabs(v)))));
+  return std::round(v * magnitude) / magnitude;
+}
+
+// Bucketize and render as the columnar JSON object both readSeriesTool's
+// 'buckets' mode (single-series and batched) and evaluate's optional bucket
+// summary send back: parallel arrays ("n"/"min"/"max"/"mean") instead of one
+// object per bucket, since every bucket used to repeat the same handful of
+// keys — measured 69 bytes/bucket as objects vs. 16 as columns on a real
+// response, which is the difference between ~240 and ~1000 buckets under the
+// 16 KiB cap. "t0"/"dt" let the model reconstruct t_i = t0 + i*dt; an
+// explicit "t" array is emitted only when some bucket's actual t_rel_s
+// deviates from that reconstruction by more than a tiny tolerance — either
+// bucketize's "one bucket per sample" path over uneven timestamps, or a
+// bucket dropped entirely because its window held no samples at all (both
+// break the even grid the t0/dt formula assumes). A bucket with no finite
+// samples reports null min/max/mean but keeps its 0 in "n", so a window of
+// missing data is visible rather than silently absent from the arrays.
 json renderBucketArray(std::span<const std::int64_t> ts, std::span<const double> vals, std::size_t max_points) {
   auto buckets = bucketize(ts, vals, max_points);
-  json bucket_arr = json::array();
-  for (const auto& b : buckets) {
-    json entry = {{"t", b.t_rel_s}, {"n", b.count}};
-    if (b.count > 0) {
-      entry["min"] = b.min;
-      entry["max"] = b.max;
-      entry["mean"] = b.mean;
+  json out = json::object();
+  const std::size_t n = buckets.size();
+  const double t0 = n > 0 ? buckets.front().t_rel_s : 0.0;
+  const double dt = n >= 2 ? (buckets.back().t_rel_s - t0) / static_cast<double>(n - 1) : 0.0;
+  const double tol = 1e-6 * std::max(1.0, std::fabs(dt));
+
+  bool irregular = false;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (std::fabs(buckets[i].t_rel_s - (t0 + static_cast<double>(i) * dt)) > tol) {
+      irregular = true;
+      break;
     }
-    if (b.invalid > 0) {
-      entry["invalid"] = b.invalid;
-    }
-    bucket_arr.push_back(entry);
   }
-  return bucket_arr;
+
+  json n_arr = json::array();
+  json min_arr = json::array();
+  json max_arr = json::array();
+  json mean_arr = json::array();
+  json invalid_arr = json::array();
+  json t_arr = json::array();
+  bool any_invalid = false;
+  for (const auto& b : buckets) {
+    n_arr.push_back(b.count);
+    if (b.count > 0) {
+      min_arr.push_back(roundSignificant(b.min));
+      max_arr.push_back(roundSignificant(b.max));
+      mean_arr.push_back(roundSignificant(b.mean));
+    } else {
+      min_arr.push_back(nullptr);
+      max_arr.push_back(nullptr);
+      mean_arr.push_back(nullptr);
+    }
+    invalid_arr.push_back(b.invalid);
+    any_invalid = any_invalid || b.invalid > 0;
+    if (irregular) {
+      t_arr.push_back(b.t_rel_s);
+    }
+  }
+
+  out["t0"] = t0;
+  out["dt"] = dt;
+  out["n"] = std::move(n_arr);
+  out["min"] = std::move(min_arr);
+  out["max"] = std::move(max_arr);
+  out["mean"] = std::move(mean_arr);
+  if (irregular) {
+    out["t"] = std::move(t_arr);
+  }
+  if (any_invalid) {
+    out["invalid"] = std::move(invalid_arr);
+  }
+  return out;
 }
 
 // Coarsen until the serialized payload fits the response cap so spiky data
@@ -2304,13 +2367,13 @@ ToolRegistry::ToolRegistry() {
   add(
       {"read_series",
        "Read summary statistics ('stats') or a min/max-preserving downsample ('buckets'). Non-finite "
-       "values are counted as 'invalid', excluded from min/max/mean/stddev. Bucket times 't' are "
-       "seconds relative to the series (or window) start; when the host supports playback control, "
-       "stats also carry 't_start_display_s' (where the series starts on the plot axis), so a "
-       "bucket's display/seek time = t_start_display_s + t.\n"
-       "'paths' is an ARRAY — ask for every series you want stats for in ONE call. A bad path returns "
-       "as an error beside the results that worked. buckets takes up to 8 paths (shared cap, ~100 "
-       "buckets each for 4-6 series); t_start_s/t_end_s (display axis) narrow the read and re-base t.",
+       "values count as 'invalid', excluded from min/max/mean/stddev. buckets are columnar (t0, dt, n, "
+       "min, max, mean; t_i = t0 + i*dt, or an explicit 't' array when spacing is irregular). When the "
+       "host supports playback control, stats carry 't_start_display_s', so bucket i's display time = "
+       "t_start_display_s + t0 + i*dt.\n"
+       "'paths' is an ARRAY — ask for every series you want stats for in ONE call. A bad path returns as "
+       "an error beside the results that worked. buckets takes up to 8 paths (shared cap, ~100 buckets "
+       "each for 4-6 series); t_start_s/t_end_s (display axis) narrow the read and re-base t.",
        {{"type", "object"},
         {"properties",
          {{"paths",
