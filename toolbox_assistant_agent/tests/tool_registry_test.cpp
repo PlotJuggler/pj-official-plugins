@@ -18,6 +18,7 @@
 #include <tuple>
 #include <vector>
 
+#include "support/fake_catalog_host.hpp"
 #include "support/fake_multi_dataset_host.hpp"
 #include "support/fake_object_read_host.hpp"
 #include "support/fake_playback_viewport_hosts.hpp"
@@ -29,6 +30,7 @@ namespace {
 using assistant_agent::catalogDigest;
 using assistant_agent::ToolContext;
 using assistant_agent::ToolRegistry;
+using assistant_agent::testing::FakeCatalogHost;
 using assistant_agent::testing::FakeMultiDatasetHost;
 using assistant_agent::testing::FakeObjectReadHost;
 using assistant_agent::testing::FakePlaybackHost;
@@ -313,6 +315,125 @@ TEST(CatalogDigest, SaysSoWhenTruncated) {
   EXPECT_LT(digest.size(), 2000u) << "the digest must respect its budget";
   EXPECT_NE(digest.find("TRUNCATED"), std::string::npos) << digest;
   EXPECT_NE(digest.find("list_topics"), std::string::npos) << digest;
+}
+
+// The measured problem this tiering exists for: a catalog where a handful of
+// topics are so field-heavy that giving every topic its full field list blows
+// the budget for ALL of them — the old algorithm's only move — even though
+// most topics are small enough to afford it easily. The mixed digest keeps
+// every topic's full fields when cheap and only trims the expensive ones.
+TEST(CatalogDigest, MixesFullPartialAndCounts) {
+  FakeCatalogHost host;
+  for (int i = 0; i < 30; ++i) {
+    const std::string topic = "/small_" + (i < 10 ? std::string("0") : std::string()) + std::to_string(i);
+    host.addTopic(topic);
+    host.addField(topic, "s" + std::to_string(i) + "_alpha");
+    host.addField(topic, "s" + std::to_string(i) + "_beta");
+    host.addField(topic, "s" + std::to_string(i) + "_gamma");
+  }
+  for (int t = 0; t < 2; ++t) {
+    const std::string topic = "/fat_" + std::to_string(t);
+    host.addTopic(topic);
+    for (int f = 0; f < 60; ++f) {
+      std::string name = "channel_" + std::to_string(t) + "_";
+      if (f < 10) {
+        name += "0";
+      }
+      name += std::to_string(f);
+      host.addField(topic, name);
+    }
+  }
+
+  // Tight enough that the two 60-field topics cannot both afford a full
+  // listing (each would cost ~800+ characters) while the 30 three-field
+  // topics can (each costs only ~20) -- the budget the real ALFA catalog
+  // exercises this same way, just smaller.
+  const std::string digest = catalogDigest(PJ::sdk::ToolboxHostView(host.makeHost()), /*budget_chars=*/1800);
+
+  EXPECT_EQ(digest.find("TRUNCATED"), std::string::npos) << "the mixed tiering must never need to drop a topic "
+                                                            "entirely -- every topic gets at least a count: "
+                                                         << digest;
+  // Every small topic keeps its full field list.
+  for (int i = 0; i < 30; ++i) {
+    const std::string field = "s" + std::to_string(i) + "_gamma";
+    EXPECT_NE(digest.find(field), std::string::npos) << "small topic " << i << " lost its fields: " << digest;
+  }
+  // Neither fat topic's full field list survives -- its last field is never
+  // reached by a count or a 120-char partial list.
+  EXPECT_EQ(digest.find("channel_0_59"), std::string::npos) << digest;
+  EXPECT_EQ(digest.find("channel_1_59"), std::string::npos) << digest;
+  EXPECT_NE(digest.find("describe_topic gives the rest"), std::string::npos) << digest;
+}
+
+// A field type shared by 80%+ of the catalog is stated once and left off
+// every field that has it; a minority type still gets its own annotation, so
+// the reader can tell the exception from the rule.
+TEST(CatalogDigest, OmitsTheDominantType) {
+  FakeCatalogHost host;
+  host.addTopic("/mostly_int");
+  for (int i = 0; i < 9; ++i) {
+    host.addField("/mostly_int", "n" + std::to_string(i), PJ_PRIMITIVE_TYPE_INT32);
+  }
+  host.addField("/mostly_int", "odd_one_out", PJ_PRIMITIVE_TYPE_FLOAT64);
+
+  const std::string digest = catalogDigest(PJ::sdk::ToolboxHostView(host.makeHost()));
+
+  EXPECT_NE(digest.find("fields are int32 unless marked"), std::string::npos) << digest;
+  EXPECT_EQ(digest.find("n0 (int32)"), std::string::npos) << "the dominant type must be left off: " << digest;
+  EXPECT_NE(digest.find("n0"), std::string::npos) << digest;
+  EXPECT_NE(digest.find("odd_one_out (float64)"), std::string::npos)
+      << "the minority type must still be stated: " << digest;
+}
+
+// When the budget cannot afford full field lists for every topic that would
+// like one, the cheapest upgrades go first -- and among ties, catalog order
+// decides, not map/hash order, so a re-run never reshuffles who won.
+TEST(CatalogDigest, PromotesCheapestFirstDeterministically) {
+  FakeCatalogHost host;
+  host.addTopic("/imu");
+  host.addField("/imu", "roll");
+  host.addField("/imu", "pitch");
+  host.addField("/imu", "yaw");
+  // A much larger topic so the budget is tight enough that not everything
+  // upgrades to full, without being so tight that /imu itself is squeezed.
+  host.addTopic("/big");
+  for (int f = 0; f < 40; ++f) {
+    std::string name = "reading_";
+    if (f < 10) {
+      name += "0";
+    }
+    name += std::to_string(f);
+    host.addField("/big", name);
+  }
+
+  const std::string digest = catalogDigest(PJ::sdk::ToolboxHostView(host.makeHost()), /*budget_chars=*/400);
+
+  // /imu is small and comes first in the catalog: its full, tied-cost fields
+  // win the budget deterministically over /big's.
+  EXPECT_NE(digest.find("roll"), std::string::npos) << digest;
+  EXPECT_NE(digest.find("pitch"), std::string::npos) << digest;
+  EXPECT_NE(digest.find("yaw"), std::string::npos) << digest;
+  EXPECT_EQ(digest.find("reading_039"), std::string::npos) << "/big must not have won a full listing: " << digest;
+}
+
+// The floor beneath the mixed tiering: a budget so tight that not even a bare
+// field COUNT fits for every topic falls back to the pre-existing plain
+// truncation (full tree, then names only), unchanged.
+TEST(CatalogDigest, FallsBackToPlainTruncationWhenNotEvenCountsFit) {
+  FakeCatalogHost host;
+  for (int i = 0; i < 400; ++i) {
+    const std::string name = "/topic_with_a_fairly_long_name_" + std::to_string(i);
+    host.addTopic(name);
+    host.addField(name, "value");
+  }
+
+  const std::string digest = catalogDigest(PJ::sdk::ToolboxHostView(host.makeHost()), /*budget_chars=*/1000);
+
+  EXPECT_LT(digest.size(), 2000u) << "the digest must respect its budget";
+  EXPECT_NE(digest.find("TRUNCATED"), std::string::npos) << digest;
+  EXPECT_NE(digest.find("list_topics"), std::string::npos) << digest;
+  EXPECT_EQ(digest.find("describe_topic gives the rest"), std::string::npos)
+      << "this is the legacy truncation footer, not the mixed-tier one: " << digest;
 }
 
 TEST(CatalogDigest, SaysWhenNothingIsLoaded) {

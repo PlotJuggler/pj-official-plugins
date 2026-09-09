@@ -104,9 +104,14 @@ from what this conversation has already been told**. `--resume` replays the hist
 listing sent once stays visible; re-sending an identical one would be paid for twice. A listing
 that *changed* is re-sent, which is how the model learns that another file was loaded.
 
-The digest degrades as data grows: full tree, then topic names only, and it says so explicitly
-when truncated. That last part matters — a model that believes an incomplete listing is
-complete will confidently tell the user a signal does not exist.
+The digest is mixed, not all-or-nothing: each topic gets the cheapest rendering that still fits
+its share of the budget — every field with its type, a partial field list ("… +N more"), or just a
+field count — so a wide catalog keeps every topic's name and most of their fields instead of
+losing types across the board the moment one topic is expensive. A field type shared by 80% or
+more of the catalog is stated once in the header and left off individual fields. Only a budget too
+tight even for bare counts falls back to the older two-step degradation (full tree, then topic
+names only), and it says so explicitly when truncated. That last part matters — a model that
+believes an incomplete listing is complete will confidently tell the user a signal does not exist.
 
 ## The Codex backend
 

@@ -1061,11 +1061,11 @@ TEST_F(AssistantDialogSettingsSwitchTest, PickingCustomWithAnUntouchedTextBoxPer
 // turn, per the same reasoning AssistantSettingsStore tests use (settings_store_test.cpp)
 // -- the dialog only ever forwards this value straight into catalogDigest, so
 // there is nothing a live turn would exercise that the helper itself does not.
-TEST(AssistantDialogCatalogBudget, DefaultsToSixThousandWhenKeyIsAbsent) {
+TEST(AssistantDialogCatalogBudget, DefaultsToTenThousandWhenKeyIsAbsent) {
   PJ::sdk::InMemorySettingsBackend backend;
   PJ::sdk::SettingsStoreHost host{backend};
   SettingsStore store{PJ::sdk::SettingsView{host.view()}};
-  EXPECT_EQ(resolveCatalogBudgetChars(store), 6000);
+  EXPECT_EQ(resolveCatalogBudgetChars(store), 10000);
 }
 
 TEST(AssistantDialogCatalogBudget, UsesTheStoredValueWithinRange) {
@@ -1097,7 +1097,7 @@ TEST(AssistantDialogCatalogBudget, AnUnparsableValueFallsBackToTheDefault) {
   PJ::sdk::SettingsStoreHost host{backend};
   SettingsStore store{PJ::sdk::SettingsView{host.view()}};
   store.setString("assistant.catalog_budget_chars", "not-a-number");
-  EXPECT_EQ(resolveCatalogBudgetChars(store), 6000);
+  EXPECT_EQ(resolveCatalogBudgetChars(store), 10000);
 }
 
 // The two behaviours sendCurrentInput() actually relies on: a configured

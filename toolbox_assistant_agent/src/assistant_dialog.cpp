@@ -31,7 +31,7 @@ constexpr const char* kKeyBackend = "assistant.backend";  // "claude" or "codex"
 // stray value in the settings store cannot blow the digest up unbounded or
 // shrink it to nothing.
 constexpr const char* kKeyCatalogBudgetChars = "assistant.catalog_budget_chars";
-constexpr int kDefaultCatalogBudgetChars = 6000;
+constexpr int kDefaultCatalogBudgetChars = 10000;
 constexpr int kMinCatalogBudgetChars = 1000;
 constexpr int kMaxCatalogBudgetChars = 200000;
 

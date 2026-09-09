@@ -76,7 +76,7 @@ comes back with the exact candidates rather than a guess.
 3. Type and press Enter.
 
 The catalog digest handed to the model at the top of every turn is sized by the settings key
-`assistant.catalog_budget_chars` (characters, default 6000, clamped to 1000–200000) — not exposed
+`assistant.catalog_budget_chars` (characters, default 10000, clamped to 1000–200000) — not exposed
 in the Settings dialog; set it in the settings store before launching PlotJuggler.
 
 ### Past conversations

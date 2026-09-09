@@ -63,11 +63,14 @@ class ToolRegistry {
 // deliberately carries no statistics (min/max would mean scanning every series,
 // which just moves the cost rather than removing it).
 //
-// Bounded by `budget_chars`, degrading in two steps as the dataset grows: the
-// full tree, then topic names only. Whenever anything is left out the text says
-// so explicitly — a model that believes an incomplete listing is the whole
-// truth will confidently tell the user a signal does not exist.
-[[nodiscard]] std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budget_chars = 6000);
+// Bounded by `budget_chars`. Per topic this picks the cheapest rendering that
+// still fits — every field with its type, a partial field list, or just a
+// field count — before falling back to the old two-step degradation (full
+// tree, then topic names only) for a budget too tight even for bare counts.
+// Whenever anything is left out the text says so explicitly — a model that
+// believes an incomplete listing is the whole truth will confidently tell the
+// user a signal does not exist.
+[[nodiscard]] std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budget_chars = 10000);
 
 // A resolved "topic/field" curve path: the field handle plus the owning topic
 // name. `path` is the canonical form the lookup settled on — with several

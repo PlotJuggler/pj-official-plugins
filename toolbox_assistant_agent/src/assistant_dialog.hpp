@@ -33,7 +33,7 @@ class SettingsStore;
 // Character budget for the catalog digest handed to the model at the top of
 // every turn (catalogDigest, tool_registry.hpp), read from the settings key
 // "assistant.catalog_budget_chars" and clamped to [1000, 200000]. An absent
-// or unparsable value falls back to catalogDigest's own default (6000) via
+// or unparsable value falls back to catalogDigest's own default (10000) via
 // SettingsStore::getInt, so an install that never touched the key sees
 // byte-identical output. Declared here (rather than kept anonymous in the
 // .cpp, like resolveBackendKey) so tests can drive it without wiring a full

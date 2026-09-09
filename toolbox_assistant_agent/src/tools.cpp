@@ -1722,28 +1722,18 @@ ToolResult reportStatus(const json& /*args*/, ToolContext& ctx) {
 
 // --- catalog digest --------------------------------------------------------
 
-std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budget_chars) {
-  auto catalog = host.catalogSnapshot();
-  if (!catalog) {
-    return "Loaded data: unavailable (" + catalog.error() + "). Use list_topics to look it up.";
-  }
-  auto topics = catalog->topics();
-  auto fields = catalog->fields();
-  if (topics.empty()) {
-    return "Loaded data: nothing is loaded yet.";
-  }
+namespace {
 
-  // Which dataset each topic belongs to. PJ4 can hold several loaded at once —
-  // two runs of the same robot, say — and a flat topic list hides that
-  // completely: the model cannot offer to compare them because it does not know
-  // there are two, and cannot avoid mixing them for the same reason. Topics are
-  // grouped contiguously per source (first_topic/topic_count), so this is a
-  // lookup table rather than a scan. Empty when the host reports no sources, in
-  // which case the listing stays exactly as it was.
-  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(*catalog);
+// Plain truncation: the full tree, then (if that still does not fit) topic
+// names only, with a footer naming the gap. This is the ENTIRE pre-mixed-tier
+// catalogDigest, kept verbatim as the fallback for the rare budget so tight
+// that not even a bare field COUNT fits for every topic — see catalogDigest's
+// count-only feasibility check below, the only caller.
+std::string legacyCatalogDigest(const PJ::sdk::CatalogSnapshot& catalog, std::size_t budget_chars) {
+  auto topics = catalog.topics();
+  auto fields = catalog.fields();
+  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(catalog);
 
-  // Pass 1: the full tree, "topic: fieldA (type), fieldB (type)". Preferred,
-  // because it gives the model complete paths and types with no follow-up.
   auto build = [&](bool with_fields, std::size_t& shown) -> std::string {
     std::string body;
     shown = 0;
@@ -1803,10 +1793,7 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
     header += ", listing the first " + std::to_string(shown);
   }
   header += "):\n";
-  // Teach the qualifier by stating it where the dataset names are, instead of
-  // spending schema tokens on it in every session: this line exists only when
-  // several datasets are actually loaded.
-  if (catalog->dataSources().size() >= 2) {
+  if (catalog.dataSources().size() >= 2) {
     header +=
         "Several datasets are loaded; when the same topic exists in more than one, address the series as "
         "\"<dataset>:<topic>/<field>\".\n";
@@ -1820,6 +1807,208 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
     footer +=
         "This listing is TRUNCATED; topics not shown above still exist. Use list_topics with a filter to find "
         "them.\n";
+  }
+  return header + body + footer;
+}
+
+}  // namespace
+
+std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budget_chars) {
+  auto catalog = host.catalogSnapshot();
+  if (!catalog) {
+    return "Loaded data: unavailable (" + catalog.error() + "). Use list_topics to look it up.";
+  }
+  auto topics = catalog->topics();
+  auto fields = catalog->fields();
+  if (topics.empty()) {
+    return "Loaded data: nothing is loaded yet.";
+  }
+  const std::uint32_t n = static_cast<std::uint32_t>(topics.size());
+
+  // Which dataset each topic belongs to. PJ4 can hold several loaded at once —
+  // two runs of the same robot, say — and a flat topic list hides that
+  // completely: the model cannot offer to compare them because it does not know
+  // there are two, and cannot avoid mixing them for the same reason. Topics are
+  // grouped contiguously per source (first_topic/topic_count), so this is a
+  // lookup table rather than a scan. Empty when the host reports no sources, in
+  // which case the listing stays exactly as it was.
+  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(*catalog);
+
+  // Dataset-header prefix per topic index — empty except where a new dataset
+  // starts. Precomputed once so every tier below (full/partial/count) shares
+  // it without re-deriving dataset transitions per topic.
+  std::vector<std::string> dataset_prefix(n);
+  {
+    std::string current_dataset;
+    for (std::uint32_t ti = 0; ti < n; ++ti) {
+      if (auto it = topic_dataset.find(ti); it != topic_dataset.end() && it->second != current_dataset) {
+        current_dataset = it->second;
+        dataset_prefix[ti] = "dataset \"" + current_dataset + "\":\n";
+      }
+    }
+  }
+
+  // The dominant field type, when at least 80% of every field in the catalog
+  // shares one: that type is then left off every "name (type)" rendering, and
+  // only the minority still carries one — the header states the rule once
+  // instead of repeating "(float64)" on thirty topics that are all float64.
+  std::optional<std::string> dominant_type;
+  {
+    std::map<std::string, std::size_t> type_counts;
+    std::size_t total_fields = 0;
+    for (const auto& f : fields) {
+      ++type_counts[primitiveTypeName(PJ::sdk::fromAbiType(f.type))];
+      ++total_fields;
+    }
+    if (total_fields > 0) {
+      const auto best = std::max_element(
+          type_counts.begin(), type_counts.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+      if (static_cast<double>(best->second) >= 0.8 * static_cast<double>(total_fields)) {
+        dominant_type = best->first;
+      }
+    }
+  }
+  auto renderField = [&](std::size_t idx) {
+    std::string out(PJ::sdk::toStringView(fields[idx].name));
+    const char* type_name = primitiveTypeName(PJ::sdk::fromAbiType(fields[idx].type));
+    if (!dominant_type || *dominant_type != type_name) {
+      out += " (";
+      out += type_name;
+      out += ")";
+    }
+    return out;
+  };
+
+  // Sub-budget for a partial line's field list (before the "  <topic>: "
+  // prefix and the trailing "… +N more") — enough for a handful of short
+  // field names at far less than a full line's cost.
+  constexpr std::size_t kPartialFieldBudget = 120;
+
+  // Three renderings per topic, cheapest to costliest: count (just how many
+  // fields), partial (as many as fit the sub-budget, plus how many more),
+  // full (every field). Built once so the assignment pass below only compares
+  // sizes, never re-renders.
+  std::vector<std::string> full_body(n), partial_body(n), count_body(n);
+  for (std::uint32_t ti = 0; ti < n; ++ti) {
+    const auto& topic = topics[ti];
+    const std::string prefix = "  " + std::string(PJ::sdk::toStringView(topic.name)) + ": ";
+
+    std::string full = prefix;
+    for (std::uint32_t fi = 0; fi < topic.field_count; ++fi) {
+      const std::size_t idx = topic.first_field + fi;
+      if (idx >= fields.size()) {
+        break;
+      }
+      if (fi != 0) {
+        full += ", ";
+      }
+      full += renderField(idx);
+    }
+    full_body[ti] = full + "\n";
+
+    std::string partial_fields;
+    std::uint32_t partial_shown = 0;
+    for (std::uint32_t fi = 0; fi < topic.field_count; ++fi) {
+      const std::size_t idx = topic.first_field + fi;
+      if (idx >= fields.size()) {
+        break;
+      }
+      const std::string candidate = (fi != 0 ? ", " : "") + renderField(idx);
+      // Always take at least one field, even an oversized one, so a partial
+      // line is never emptier than the count line it is meant to beat.
+      if (partial_shown > 0 && partial_fields.size() + candidate.size() > kPartialFieldBudget) {
+        break;
+      }
+      partial_fields += candidate;
+      ++partial_shown;
+    }
+    const std::uint32_t remaining = topic.field_count - partial_shown;
+    partial_body[ti] = remaining == 0 ? (prefix + partial_fields + "\n")
+                                      : (prefix + partial_fields + ", … +" + std::to_string(remaining) + " more\n");
+
+    count_body[ti] = prefix + std::to_string(topic.field_count) + " fields\n";
+  }
+
+  // Feasibility floor: if even the cheapest possible listing — every topic
+  // reduced to a bare count — does not fit, there is nothing left to trim
+  // except fields entirely, which is exactly what the pre-existing
+  // full-tree/names-only truncation already does.
+  std::size_t count_total = 0;
+  for (std::uint32_t ti = 0; ti < n; ++ti) {
+    count_total += dataset_prefix[ti].size() + count_body[ti].size();
+  }
+  if (count_total > budget_chars) {
+    return legacyCatalogDigest(*catalog, budget_chars);
+  }
+
+  // Every topic starts at "count" (already paid for above) and ascends
+  // cheapest-upgrade-first — (full size - count size), stable-sorted so a tie
+  // resolves in catalog order — trying full, then partial, stopping the first
+  // time an upgrade would blow the budget. Signed deltas: a topic with no
+  // fields renders SHORTER as "full" than as "count", and that must read as
+  // an improvement, not wrap around as an unsigned underflow.
+  std::vector<int> tier(n, 0);  // 0 = count, 1 = partial, 2 = full
+  {
+    std::vector<std::uint32_t> order(n);
+    for (std::uint32_t ti = 0; ti < n; ++ti) {
+      order[ti] = ti;
+    }
+    auto delta = [](const std::string& upgraded, const std::string& base) {
+      return static_cast<long long>(upgraded.size()) - static_cast<long long>(base.size());
+    };
+    std::stable_sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
+      return delta(full_body[a], count_body[a]) < delta(full_body[b], count_body[b]);
+    });
+    long long total = static_cast<long long>(count_total);
+    const long long budget = static_cast<long long>(budget_chars);
+    for (std::uint32_t ti : order) {
+      const long long full_delta = delta(full_body[ti], count_body[ti]);
+      if (total + full_delta <= budget) {
+        total += full_delta;
+        tier[ti] = 2;
+        continue;
+      }
+      const long long partial_delta = delta(partial_body[ti], count_body[ti]);
+      if (total + partial_delta <= budget) {
+        total += partial_delta;
+        tier[ti] = 1;
+      }
+    }
+  }
+
+  std::string body;
+  bool any_reduced = false;
+  for (std::uint32_t ti = 0; ti < n; ++ti) {
+    body += dataset_prefix[ti];
+    if (tier[ti] == 2) {
+      body += full_body[ti];
+    } else if (tier[ti] == 1) {
+      body += partial_body[ti];
+      any_reduced = true;
+    } else {
+      body += count_body[ti];
+      any_reduced = true;
+    }
+  }
+
+  std::string header = "Loaded data (" + std::to_string(n) + " topic(s)):\n";
+  // Teach the qualifier by stating it where the dataset names are, instead of
+  // spending schema tokens on it in every session: this line exists only when
+  // several datasets are actually loaded.
+  if (catalog->dataSources().size() >= 2) {
+    header +=
+        "Several datasets are loaded; when the same topic exists in more than one, address the series as "
+        "\"<dataset>:<topic>/<field>\".\n";
+  }
+  if (dominant_type) {
+    header += "fields are " + *dominant_type + " unless marked\n";
+  }
+
+  std::string footer;
+  if (any_reduced) {
+    footer +=
+        "Some topics list only part of their fields (… +N more) or a field count: describe_topic gives the "
+        "rest.\n";
   }
   return header + body + footer;
 }
