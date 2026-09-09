@@ -608,6 +608,109 @@ TEST(ToolRegistry, WholeTopicCarriesTheWholeSeriesFacts) {
   EXPECT_TRUE((*y_entry)["stats"].contains("constant_note")) << j.dump();
 }
 
+// Reading only some of a topic's numeric fields must say so, in the same
+// response, at the moment of the decision -- putting the fact where the
+// model already is beat putting it in the system prompt (measured: zero use
+// of the bare-topic form across 20 real cells even after the prompt said
+// so). /imu (populate()) only has x and y; a third field is added locally so
+// this test can exercise a genuinely partial read without disturbing every
+// other test's assumption that /imu has exactly two fields.
+TEST(ToolRegistry, PartialTopicReadListsTheUnreadFields) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);  // /imu: x, y
+  store.addField("/imu", "z", {0, kSec, 2 * kSec}, {5.0, 5.0, 5.0});
+  auto ctx = makeCtx(store, nullptr);
+  auto r = reg.execute("read_series", {{"series", "/imu/x"}, {"mode", "stats"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  ASSERT_TRUE(j.contains("unread")) << j.dump();
+  ASSERT_TRUE(j["unread"].contains("/imu")) << j.dump();
+  const json& unread = j["unread"]["/imu"];
+  EXPECT_EQ(unread["read"], 1);
+  EXPECT_EQ(unread["numeric_fields"], 3);
+  EXPECT_EQ(unread["fields"], json::array({"y", "z"})) << unread.dump();
+  EXPECT_EQ(unread["hint"], "a bare topic path reads every field of the topic in one call");
+}
+
+// The bare-topic form itself reads every numeric field, so it never triggers
+// its own disclosure.
+TEST(ToolRegistry, WholeTopicReadHasNoUnread) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);
+  auto r = reg.execute("read_series", {{"paths", json::array({"/imu"})}, {"mode", "stats"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_FALSE(j.contains("unread")) << j.dump();
+}
+
+// The unread field list is capped so a very wide topic does not blow up the
+// response the disclosure is meant to keep small; a truncated list ends in a
+// literal ellipsis entry rather than silently dropping the rest.
+TEST(ToolRegistry, UnreadIsCappedAtTwelve) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populateWideTopic(store, "/wide", 20);
+  auto ctx = makeCtx(store, nullptr);
+  auto r = reg.execute("read_series", {{"series", "/wide/w0"}, {"mode", "stats"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  ASSERT_TRUE(j.contains("unread")) << j.dump();
+  const json& unread = j["unread"]["/wide"];
+  EXPECT_EQ(unread["read"], 1);
+  EXPECT_EQ(unread["numeric_fields"], 20);
+  ASSERT_EQ(unread["fields"].size(), 13u) << unread.dump();
+  EXPECT_EQ(unread["fields"].back(), "…") << unread.dump();
+  for (std::size_t i = 0; i < 12; ++i) {
+    EXPECT_EQ(unread["fields"][i], "w" + std::to_string(i + 1)) << unread.dump();
+  }
+}
+
+// header/*-style fields are timestamps and sequence numbers, not signals:
+// they must not count toward "numeric_fields" nor show up as "unread" once
+// every OTHER numeric field of the topic has been read.
+TEST(ToolRegistry, HeaderFieldsDoNotCount) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("/hdr");
+  store.addField("/hdr", "header/stamp", {0}, {0.0});
+  store.addField("/hdr", "header/seq", {0}, {1.0});
+  store.addField("/hdr", "value", {0, kSec}, {1.0, 2.0});
+  auto ctx = makeCtx(store, nullptr);
+  auto r = reg.execute("read_series", {{"series", "/hdr/value"}, {"mode", "stats"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_FALSE(j.contains("unread")) << j.dump();
+}
+
+// Every read_series shape attaches the same disclosure: the batch envelope
+// (mode 'stats' over several paths) gets it once at the top level, with
+// exactly one entry for the topic that was actually partial; 'buckets' on a
+// single partial field gets it too.
+TEST(ToolRegistry, UnreadAppearsInBatchAndBucketsModes) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);  // /imu: x, y
+  store.addField("/imu", "z", {0, kSec, 2 * kSec}, {5.0, 5.0, 5.0});
+  store.addTopic("/single");
+  store.addField("/single", "v", {0, kSec}, {1.0, 2.0});
+  auto ctx = makeCtx(store, nullptr);
+
+  auto stats = reg.execute("read_series", {{"paths", json::array({"/single/v", "/imu/x"})}, {"mode", "stats"}}, ctx);
+  ASSERT_TRUE(stats.ok) << stats.content;
+  auto sj = json::parse(stats.content);
+  ASSERT_TRUE(sj.contains("unread")) << sj.dump();
+  EXPECT_EQ(sj["unread"].size(), 1u) << sj.dump();
+  EXPECT_TRUE(sj["unread"].contains("/imu")) << sj.dump();
+
+  auto buckets = reg.execute("read_series", {{"series", "/imu/x"}, {"mode", "buckets"}}, ctx);
+  ASSERT_TRUE(buckets.ok) << buckets.content;
+  auto bj = json::parse(buckets.content);
+  EXPECT_TRUE(bj.contains("unread")) << bj.dump();
+}
+
 // A path that names neither a series nor a topic is unaffected by this
 // feature: the existing unknown-series error still fires.
 TEST(ToolRegistry, UnknownTopicStillErrors) {

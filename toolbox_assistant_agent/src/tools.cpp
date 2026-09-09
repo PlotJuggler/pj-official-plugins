@@ -1212,6 +1212,133 @@ std::vector<std::string> topicNumericFieldPaths(const PJ::sdk::CatalogSnapshot& 
   return out;
 }
 
+// Numeric field NAMES of one topic (relative to the topic, not full paths),
+// excluding header/*-style fields -- timestamps and sequence numbers are not
+// signals, so they count toward neither "numeric_fields" nor "fields" in the
+// "unread" disclosure below. Field-name analogue of topicNumericFieldPaths,
+// in the same catalog order.
+std::vector<std::string> topicNumericFieldNames(const PJ::sdk::CatalogSnapshot& catalog, std::uint32_t topic_index) {
+  std::vector<std::string> out;
+  auto topics = catalog.topics();
+  auto fields = catalog.fields();
+  const auto& topic = topics[topic_index];
+  for (std::uint32_t fi = 0; fi < topic.field_count; ++fi) {
+    const std::size_t idx = topic.first_field + fi;
+    if (idx >= fields.size()) {
+      break;
+    }
+    if (!isNumericFieldType(PJ::sdk::fromAbiType(fields[idx].type))) {
+      continue;
+    }
+    std::string_view name = PJ::sdk::toStringView(fields[idx].name);
+    while (!name.empty() && name.front() == '/') {
+      name.remove_prefix(1);
+    }
+    if (name.rfind("header/", 0) == 0) {
+      continue;
+    }
+    out.push_back(std::string(name));
+  }
+  return out;
+}
+
+// The field name a successful read actually covered, relative to its owning
+// topic -- e.g. "channels[4]" out of a resolved path
+// "/mavros/rc/out/channels[4]" -- recovered by stripping the same
+// dataset-qualifier and topic prefix joinSeriesPath added, so it lines up
+// with topicNumericFieldNames's entries below.
+std::string fieldNameFromResolvedPath(const SeriesRead& r) {
+  std::string path = r.path;
+  if (!r.dataset.empty()) {
+    const std::string prefix = r.dataset + ":";
+    if (path.compare(0, prefix.size(), prefix) == 0) {
+      path = path.substr(prefix.size());
+    }
+  }
+  if (path.size() > r.topic.size() && path.compare(0, r.topic.size(), r.topic) == 0) {
+    path = path.substr(r.topic.size());
+  }
+  while (!path.empty() && path.front() == '/') {
+    path.erase(path.begin());
+  }
+  return path;
+}
+
+// Cap on how many unread field names the "unread" disclosure below names per
+// topic -- fed back to the model and re-sent on every later round-trip of the
+// turn, so an unbounded list would be paid for repeatedly. Same reasoning as
+// kMaxCandidates.
+constexpr std::size_t kMaxUnreadFields = 12;
+
+// read_series discloses, per response, which topic(s) it read only PART of:
+// grouped by owning topic, a topic where THIS call read fewer distinct
+// numeric fields (excluding header/*) than it has gets a "read"/
+// "numeric_fields" count and the unread field names, pointing at the
+// bare-topic form that would have read all of them in one call (see the
+// commit this shipped with: faults on unread fields went unnoticed because
+// the model asked for only the first few of a wide array). Built once from
+// the raw reads so every read_series mode attaches it the same way. Empty
+// (no "unread" key at the call site) when every topic touched by this call
+// was read whole.
+json unreadDisclosure(const PJ::sdk::CatalogSnapshot& catalog, const std::vector<SeriesRead>& reads) {
+  struct Tally {
+    std::uint32_t topic_index = 0;
+    std::vector<std::string> read_fields;
+  };
+  std::map<std::string, Tally> by_topic;  // keyed by the bare topic name read_series echoes as "topic"
+
+  for (const auto& r : reads) {
+    if (!r.ok) {
+      continue;
+    }
+    auto it = by_topic.find(r.topic);
+    if (it == by_topic.end()) {
+      const std::string lookup_name = r.dataset.empty() ? r.topic : r.dataset + ":" + r.topic;
+      const TopicLookup topic = resolveTopicPath(catalog, lookup_name);
+      if (!topic.topic_index) {
+        continue;  // a series we just read always has an owning topic; defensive only
+      }
+      it = by_topic.emplace(r.topic, Tally{*topic.topic_index, {}}).first;
+    }
+    const std::string field = fieldNameFromResolvedPath(r);
+    if (std::find(it->second.read_fields.begin(), it->second.read_fields.end(), field) ==
+        it->second.read_fields.end()) {
+      it->second.read_fields.push_back(field);
+    }
+  }
+
+  json out = json::object();
+  for (const auto& [topic_key, tally] : by_topic) {
+    const std::vector<std::string> counted = topicNumericFieldNames(catalog, tally.topic_index);
+    std::vector<std::string> unread_names;
+    std::size_t read_count = 0;
+    for (const auto& f : counted) {
+      if (std::find(tally.read_fields.begin(), tally.read_fields.end(), f) != tally.read_fields.end()) {
+        ++read_count;
+      } else {
+        unread_names.push_back(f);
+      }
+    }
+    if (unread_names.empty()) {
+      continue;
+    }
+    json fields_json = json::array();
+    for (std::size_t i = 0; i < unread_names.size() && i < kMaxUnreadFields; ++i) {
+      fields_json.push_back(unread_names[i]);
+    }
+    if (unread_names.size() > kMaxUnreadFields) {
+      fields_json.push_back("…");
+    }
+    out[topic_key] = {
+        {"read", read_count},
+        {"numeric_fields", counted.size()},
+        {"fields", std::move(fields_json)},
+        {"hint", "a bare topic path reads every field of the topic in one call"},
+    };
+  }
+  return out;
+}
+
 // How many of a topic's OWN numeric fields one read_series call may expand
 // into before the mode's degradation kicks in (see expandRequestedPaths) --
 // the same limit the mode already enforces on the whole call, so a topic
@@ -1418,12 +1545,15 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     // must not cost the whole round trip — which is the entire point of asking
     // for several at once.
     json arr = json::array();
+    std::vector<SeriesRead> reads;
+    reads.reserve(tasks.size());
     std::size_t failed = 0;
     for (const auto& task : tasks) {
       SeriesRead r = readTask(task);
       if (!r.ok) {
         ++failed;
         arr.push_back({{"series", r.path}, {"error", r.error}});
+        reads.push_back(std::move(r));
         continue;
       }
       json entry = {
@@ -1432,18 +1562,28 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
         entry["window"] = r.window;
       }
       arr.push_back(std::move(entry));
+      reads.push_back(std::move(r));
     }
+    const json unread = unreadDisclosure(*catalog, reads);
     // A lone path keeps the shape it has always had, so nothing that worked
     // before starts reading differently. A whole-topic path that expanded to
     // several series never takes this branch (tasks.size() > 1 then).
     if (tasks.size() == 1) {
-      const json& only = arr.front();
-      return only.contains("error") ? ToolResult::failure(only["error"].get<std::string>())
-                                    : ToolResult::success(only.dump());
+      json& only = arr.front();
+      if (only.contains("error")) {
+        return ToolResult::failure(only["error"].get<std::string>());
+      }
+      if (!unread.empty()) {
+        only["unread"] = unread;
+      }
+      return ToolResult::success(only.dump());
     }
     json out = {{"count", arr.size()}, {"read", arr}};
     if (failed != 0) {
       out["failed"] = failed;
+    }
+    if (!unread.empty()) {
+      out["unread"] = unread;
     }
     if (!topic_notes.empty()) {
       std::string note = topic_notes.front();
@@ -1479,7 +1619,11 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
       if (!r.window.is_null()) {
         base["window"] = r.window;
       }
-      const json out = withCoarsenedBuckets(std::move(base), r.ts, r.vals, max_points);
+      const json unread = unreadDisclosure(*catalog, {r});
+      json out = withCoarsenedBuckets(std::move(base), r.ts, r.vals, max_points);
+      if (!unread.empty()) {
+        out["unread"] = unread;
+      }
       return ToolResult::success(out.dump());
     }
     std::vector<SeriesRead> reads;
@@ -1487,7 +1631,11 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     for (const auto& task : tasks) {
       reads.push_back(readTask(task));
     }
-    const json out = batchBuckets(ctx, reads, max_points);
+    json out = batchBuckets(ctx, reads, max_points);
+    const json unread = unreadDisclosure(*catalog, reads);
+    if (!unread.empty()) {
+      out["unread"] = unread;
+    }
     return ToolResult::success(out.dump());
   }
 
@@ -1513,6 +1661,8 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
           "or 'stats' first.");
     }
     json arr = json::array();
+    std::vector<SeriesRead> reads;
+    reads.reserve(tasks.size());
     std::size_t failed = 0;
     for (const auto& task : tasks) {
       SeriesRead r = readTask(task);
@@ -1521,18 +1671,28 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
         ++failed;
       }
       arr.push_back(std::move(entry));
+      reads.push_back(std::move(r));
     }
+    const json unread = unreadDisclosure(*catalog, reads);
     // A lone path keeps the shape it has always had, same as 'stats' and
     // single-path 'buckets': the batch envelope only kicks in once there is
     // more than one series to fit together.
     if (tasks.size() == 1) {
-      const json& only = arr.front();
-      return only.contains("error") ? ToolResult::failure(only["error"].get<std::string>())
-                                    : ToolResult::success(only.dump());
+      json& only = arr.front();
+      if (only.contains("error")) {
+        return ToolResult::failure(only["error"].get<std::string>());
+      }
+      if (!unread.empty()) {
+        only["unread"] = unread;
+      }
+      return ToolResult::success(only.dump());
     }
     json out = {{"count", arr.size()}, {"read", arr}};
     if (failed != 0) {
       out["failed"] = failed;
+    }
+    if (!unread.empty()) {
+      out["unread"] = unread;
     }
     return ToolResult::success(out.dump());
   }
