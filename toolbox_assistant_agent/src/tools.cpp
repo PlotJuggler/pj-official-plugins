@@ -722,18 +722,36 @@ struct SeriesRead {
 json statsWithDisplayStart(
     const SeriesStats& stats, ToolContext& ctx, const std::string& topic, const FlatRunSummary& flat) {
   json stats_json = statsToJson(stats);
+  bool has_display_start = false;
   if (ctx.playback.valid() && stats.count > 0) {
     if (auto display_s = ctx.playback.toDisplayTime(topic, stats.t_start_ns)) {
       stats_json["t_start_display_s"] = *display_s;
+      has_display_start = true;
     }
   }
   // Whole-series facts (see FlatRunSummary): a constant channel says so
   // instead of the flat span, which would just restate "the whole thing".
+  // Each fact carries a fixed-text interpretation alongside it -- "constant"
+  // reads as "stuck" to a model unless told it just means "never sampled
+  // differently", and a bare flat span invites the same misreading in the
+  // other direction (a change WITHIN the recording, not since the start).
   if (flat.constant) {
     stats_json["constant"] = true;
+    stats_json["constant_note"] =
+        "held one value for the entire recording — an unused or unmapped output, not something that changed "
+        "during it";
   } else if (flat.has_flat_span) {
     stats_json["flat_span_s"] = flat.flat_span_s;
     stats_json["flat_span_at_s"] = flat.flat_span_at_s;
+    std::ostringstream note;
+    note << std::fixed << std::setprecision(1);
+    note << "held one value for " << flat.flat_span_s << " s starting at " << flat.flat_span_at_s
+         << " s into the series";
+    if (has_display_start) {
+      note << " (display: t_start_display_s + " << flat.flat_span_at_s << ")";
+    }
+    note << " — a change within the recording";
+    stats_json["flat_span_note"] = note.str();
   }
   return stats_json;
 }

@@ -12,8 +12,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
+#include <sstream>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -352,13 +354,19 @@ TEST(ToolRegistry, ReadSeriesStatsFlagsConstantSeries) {
   EXPECT_TRUE(j["stats"]["constant"].get<bool>());
   EXPECT_FALSE(j["stats"].contains("flat_span_s"));
   EXPECT_FALSE(j["stats"].contains("flat_span_at_s"));
+  ASSERT_TRUE(j["stats"].contains("constant_note")) << r.content;
+  const std::string note = j["stats"]["constant_note"].get<std::string>();
+  EXPECT_NE(note.find("entire recording"), std::string::npos) << note;
+  EXPECT_NE(note.find("not something that changed"), std::string::npos) << note;
 
-  // /imu/x varies throughout -> neither key at all.
+  // /imu/x varies throughout -> neither key at all, and no note either.
   auto varying = reg.execute("read_series", {{"series", "/imu/x"}, {"mode", "stats"}}, ctx);
   ASSERT_TRUE(varying.ok) << varying.content;
   auto vj = json::parse(varying.content);
   EXPECT_FALSE(vj["stats"].contains("constant"));
   EXPECT_FALSE(vj["stats"].contains("flat_span_s"));
+  EXPECT_FALSE(vj["stats"].contains("constant_note"));
+  EXPECT_FALSE(vj["stats"].contains("flat_span_note"));
 }
 
 // A servo-like channel: varies for most of the recording, then freezes for
@@ -381,9 +389,21 @@ TEST(ToolRegistry, ReadSeriesStatsFlagsLongFlatSpan) {
   ASSERT_TRUE(r.ok) << r.content;
   auto j = json::parse(r.content);
   EXPECT_FALSE(j["stats"].contains("constant"));
+  EXPECT_FALSE(j["stats"].contains("constant_note"));
   ASSERT_TRUE(j["stats"].contains("flat_span_s")) << r.content;
   EXPECT_NEAR(j["stats"]["flat_span_s"].get<double>(), 4.0, 1e-9);
   EXPECT_NEAR(j["stats"]["flat_span_at_s"].get<double>(), 15.0, 1e-9);
+  ASSERT_TRUE(j["stats"].contains("flat_span_note")) << r.content;
+  const std::string note = j["stats"]["flat_span_note"].get<std::string>();
+  // Render the expected numbers from the fixture's own values (flat_span_s,
+  // flat_span_at_s) rather than hard-coding a guess at the format.
+  std::ostringstream expected_span;
+  expected_span << std::fixed << std::setprecision(1) << j["stats"]["flat_span_s"].get<double>() << " s";
+  std::ostringstream expected_at;
+  expected_at << std::fixed << std::setprecision(1) << j["stats"]["flat_span_at_s"].get<double>() << " s";
+  EXPECT_NE(note.find(expected_span.str()), std::string::npos) << note;
+  EXPECT_NE(note.find(expected_at.str()), std::string::npos) << note;
+  EXPECT_NE(note.find("within the recording"), std::string::npos) << note;
 }
 
 TEST(ToolRegistry, ReadUnknownSeriesFails) {
@@ -1100,6 +1120,10 @@ TEST(ToolRegistry, EvaluateStatsCarryFlatSpanFacts) {
   const json j = json::parse(r.content);
   ASSERT_TRUE(j.contains("stats"));
   EXPECT_TRUE(j["stats"]["constant"].get<bool>());
+  ASSERT_TRUE(j["stats"].contains("constant_note")) << r.content;
+  const std::string note = j["stats"]["constant_note"].get<std::string>();
+  EXPECT_NE(note.find("entire recording"), std::string::npos) << note;
+  EXPECT_NE(note.find("not something that changed"), std::string::npos) << note;
 }
 
 TEST(ToolRegistry, EvaluateSurfacesValidateErrorWithoutCreating) {
