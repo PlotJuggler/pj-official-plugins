@@ -2034,6 +2034,127 @@ TEST(ToolRegistry, WindowAppliesToStatsToo) {
   EXPECT_EQ(j["window"]["axis"], "display");
 }
 
+// --- mode: "raw" -------------------------------------------------------
+//
+// raw returns actual sample values instead of a summary, so unlike stats and
+// buckets it REQUIRES a t_start_s/t_end_s window -- there is no sane default
+// short of the whole recording.
+
+TEST(ToolRegistry, RawNeedsAWindow) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);
+
+  auto neither = reg.execute("read_series", {{"series", "/imu/x"}, {"mode", "raw"}}, ctx);
+  EXPECT_FALSE(neither.ok);
+  EXPECT_NE(neither.content.find("t_start_s"), std::string::npos) << neither.content;
+  EXPECT_NE(neither.content.find("t_end_s"), std::string::npos) << neither.content;
+
+  // Half a window is not enough either.
+  auto only_start = reg.execute("read_series", {{"series", "/imu/x"}, {"mode", "raw"}, {"t_start_s", 1.0}}, ctx);
+  EXPECT_FALSE(only_start.ok);
+  auto only_end = reg.execute("read_series", {{"series", "/imu/x"}, {"mode", "raw"}, {"t_end_s", 3.0}}, ctx);
+  EXPECT_FALSE(only_end.ok);
+}
+
+// /imu/x (populate()) has samples at absolute 0..4 s; with the FakePlaybackHost
+// offset of -2 s (display = absolute + 2 s), display window [3, 5] selects the
+// absolute samples at 1, 2, 3 s -- same window WindowSelectsSamplesOnDisplayAxis
+// uses for buckets.
+TEST(ToolRegistry, RawReturnsSamplesInsideTheWindow) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlaybackHost pb;
+  pb.display_offset_ns = -2'000'000'000;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  auto r =
+      reg.execute("read_series", {{"series", "/imu/x"}, {"mode", "raw"}, {"t_start_s", 3.0}, {"t_end_s", 5.0}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["series"], "/imu/x");
+  EXPECT_DOUBLE_EQ(j["t0_display_s"].get<double>(), 3.0);
+  EXPECT_EQ(j["count"], 3);
+  EXPECT_FALSE(j.contains("truncated"));
+  ASSERT_EQ(j["t"].size(), 3u);
+  ASSERT_EQ(j["v"].size(), 3u);
+  EXPECT_DOUBLE_EQ(j["t"][0].get<double>(), 0.0);
+  EXPECT_DOUBLE_EQ(j["t"][1].get<double>(), 1.0);
+  EXPECT_DOUBLE_EQ(j["t"][2].get<double>(), 2.0);
+  EXPECT_DOUBLE_EQ(j["v"][0].get<double>(), 1.0);
+  EXPECT_DOUBLE_EQ(j["v"][1].get<double>(), 2.0);
+  EXPECT_DOUBLE_EQ(j["v"][2].get<double>(), 3.0);
+}
+
+TEST(ToolRegistry, RawTruncatesAt200) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("/rc");
+  constexpr int kSamples = 1000;
+  std::vector<std::int64_t> ts;
+  std::vector<double> vals;
+  ts.reserve(kSamples);
+  vals.reserve(kSamples);
+  for (int i = 0; i < kSamples; ++i) {
+    ts.push_back(static_cast<std::int64_t>(i) * (kSec / 100));  // 100 Hz, spans ~10 s
+    vals.push_back(static_cast<double>(i));
+  }
+  store.addField("/rc", "x", std::move(ts), std::move(vals));
+  FakePlaybackHost pb;  // offset 0: display == absolute
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  auto r =
+      reg.execute("read_series", {{"series", "/rc/x"}, {"mode", "raw"}, {"t_start_s", 0.0}, {"t_end_s", 100.0}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 200);
+  EXPECT_TRUE(j["truncated"].get<bool>());
+  EXPECT_EQ(j["window_samples"], 1000);
+  EXPECT_EQ(j["t"].size(), 200u);
+  EXPECT_EQ(j["v"].size(), 200u);
+}
+
+// The batch cap check happens before any series is even read, so it fires
+// regardless of whether the paths resolve.
+TEST(ToolRegistry, RawBatchCappedAtFour) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);
+
+  json many = json::array();
+  for (int i = 0; i < 5; ++i) {
+    many.push_back("/imu/x");
+  }
+  auto r = reg.execute("read_series", {{"paths", many}, {"mode", "raw"}, {"t_start_s", 0.0}, {"t_end_s", 4.0}}, ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("at most 4"), std::string::npos) << r.content;
+}
+
+TEST(ToolRegistry, RawNullsNonFinite) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("/imu");
+  store.addField("/imu", "raw_nan", {0, kSec, 2 * kSec, 3 * kSec}, {1.0, std::nan(""), 3.0, std::nan("")});
+  FakePlaybackHost pb;  // offset 0: display == absolute
+  auto ctx = makeCtx(store, nullptr);
+  ctx.playback = pb.view();
+
+  auto r = reg.execute(
+      "read_series", {{"series", "/imu/raw_nan"}, {"mode", "raw"}, {"t_start_s", 0.0}, {"t_end_s", 3.0}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  ASSERT_EQ(j["v"].size(), 4u);
+  EXPECT_DOUBLE_EQ(j["v"][0].get<double>(), 1.0);
+  EXPECT_TRUE(j["v"][1].is_null());
+  EXPECT_DOUBLE_EQ(j["v"][2].get<double>(), 3.0);
+  EXPECT_TRUE(j["v"][3].is_null());
+}
+
 // flat_span_s/flat_span_at_s describe the WHOLE series, even when the read is
 // windowed to a slice that does not contain the freeze: "this channel froze
 // for 21 s" must survive asking about a different 5 s of the same flight.

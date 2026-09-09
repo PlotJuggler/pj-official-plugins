@@ -651,6 +651,18 @@ constexpr std::size_t kMaxBatchPaths = 32;
 // one of them past usefulness rather than saving a round trip.
 constexpr std::size_t kMaxBucketsBatchPaths = 8;
 
+// Hard cap on samples mode 'raw' returns per series: raw exists so the model
+// can see actual values once it has narrowed to a handful of interesting
+// ones, not to ship a whole recording through the tool loop one call at a
+// time.
+constexpr std::size_t kMaxRawSamples = 200;
+
+// Batch cap for mode 'raw' — tighter than buckets' own, since each series
+// here can carry up to kMaxRawSamples individual numbers rather than a
+// bounded bucket count, so a handful of series already approaches the
+// response cap.
+constexpr std::size_t kMaxRawBatchPaths = 4;
+
 // Collect the requested paths from either a bare string or an array.
 //
 // The parameter is named `paths` rather than `series` on purpose. The object
@@ -957,6 +969,47 @@ json renderBucketArray(std::span<const std::int64_t> ts, std::span<const double>
   return out;
 }
 
+// Render a windowed, successfully-read series as mode 'raw' samples: once the
+// model has narrowed to a handful of points, buckets can no longer show it
+// the actual values, so this closes that last step -- but only inside a
+// window the caller set, and only up to kMaxRawSamples of them, so a raw
+// call cannot become an unbounded dump of a whole recording. Times are
+// seconds relative to the first RETURNED sample's OWN display time
+// ("t0_display_s"), not to the window's t_start_s, mirroring how bucket "t0"
+// is relative to the first bucket rather than to the window bound. Values
+// are rounded the same way bucket min/max/mean are; a non-finite value comes
+// back as JSON null rather than poisoning the array. A window holding more
+// than the cap is truncated to its first kMaxRawSamples samples and flagged
+// "truncated", with "window_samples" carrying the true count, so the model
+// knows to narrow further rather than assume it saw everything.
+json renderRawSamples(ToolContext& ctx, const PJ::sdk::CatalogSnapshot& catalog, const SeriesRead& r) {
+  const std::size_t window_samples = r.ts.size();
+  const std::size_t count = std::min(window_samples, kMaxRawSamples);
+  const std::int64_t t0_ns = r.ts.front();
+  const std::optional<double> t0_display = toDisplaySeconds(ctx, catalog, r, t0_ns);
+  if (!t0_display) {
+    return {{"series", r.path}, {"error", "cannot map the display time of the first sample for this series"}};
+  }
+
+  json t_arr = json::array();
+  json v_arr = json::array();
+  for (std::size_t i = 0; i < count; ++i) {
+    t_arr.push_back(static_cast<double>(r.ts[i] - t0_ns) * 1e-9);
+    const double v = r.vals[i];
+    v_arr.push_back(std::isfinite(v) ? json(roundSignificant(v)) : json(nullptr));
+  }
+
+  json out = {
+      {"series", r.path}, {"t0_display_s", *t0_display}, {"t", std::move(t_arr)}, {"v", std::move(v_arr)},
+      {"count", count},
+  };
+  if (count < window_samples) {
+    out["truncated"] = true;
+    out["window_samples"] = window_samples;
+  }
+  return out;
+}
+
 // Coarsen until the serialized payload fits the response cap so spiky data
 // stays representable without overrunning the model's context. Returns
 // `base` with a "buckets" array attached (and a "note" when it still does not
@@ -1142,7 +1195,53 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     const json out = batchBuckets(ctx, reads, max_points);
     return ToolResult::success(out.dump());
   }
-  return ToolResult::failure("unknown mode '" + mode + "' (use 'stats' or 'buckets')");
+
+  if (mode == "raw") {
+    // Raw returns actual values, not a summary, so an unbounded window would
+    // let one call dump an entire recording — the window is mandatory rather
+    // than optional-and-defaulting-to-everything the way it is for stats and
+    // buckets.
+    if (!t_start_s || !t_end_s) {
+      return ToolResult::failure(
+          "mode 'raw' needs t_start_s and t_end_s: it returns samples, so the window is not "
+          "optional");
+    }
+    // Each series can carry up to kMaxRawSamples individual numbers here,
+    // not a bounded bucket count, so the batch cap is tighter than buckets'.
+    if (paths.size() > kMaxRawBatchPaths) {
+      return ToolResult::failure(
+          "mode 'raw' takes at most " + std::to_string(kMaxRawBatchPaths) +
+          " paths per call — each can return up "
+          "to " +
+          std::to_string(kMaxRawSamples) +
+          " samples, so more would blow the response cap. Narrow with 'buckets' "
+          "or 'stats' first.");
+    }
+    json arr = json::array();
+    std::size_t failed = 0;
+    for (const auto& want : paths) {
+      SeriesRead r = readWindowed(want);
+      json entry = r.ok ? renderRawSamples(ctx, *catalog, r) : json{{"series", r.path}, {"error", r.error}};
+      if (entry.contains("error")) {
+        ++failed;
+      }
+      arr.push_back(std::move(entry));
+    }
+    // A lone path keeps the shape it has always had, same as 'stats' and
+    // single-path 'buckets': the batch envelope only kicks in once there is
+    // more than one series to fit together.
+    if (paths.size() == 1) {
+      const json& only = arr.front();
+      return only.contains("error") ? ToolResult::failure(only["error"].get<std::string>())
+                                    : ToolResult::success(only.dump());
+    }
+    json out = {{"count", arr.size()}, {"read", arr}};
+    if (failed != 0) {
+      out["failed"] = failed;
+    }
+    return ToolResult::success(out.dump());
+  }
+  return ToolResult::failure("unknown mode '" + mode + "' (use 'stats', 'buckets' or 'raw')");
 }
 
 // Persistent nodes request exclusion from undo/redo, but only when the SDK
@@ -2366,21 +2465,21 @@ ToolRegistry::ToolRegistry() {
 
   add(
       {"read_series",
-       "Read summary statistics ('stats') or a min/max-preserving downsample ('buckets'). Non-finite "
-       "values count as 'invalid', excluded from min/max/mean/stddev. buckets are columnar (t0, dt, n, "
-       "min, max, mean; t_i = t0 + i*dt, or an explicit 't' array when spacing is irregular). When the "
-       "host supports playback control, stats carry 't_start_display_s', so bucket i's display time = "
-       "t_start_display_s + t0 + i*dt.\n"
-       "'paths' is an ARRAY — ask for every series you want stats for in ONE call. A bad path returns as "
-       "an error beside the results that worked. buckets takes up to 8 paths (shared cap, ~100 buckets "
-       "each for 4-6 series); t_start_s/t_end_s (display axis) narrow the read and re-base t.",
+       "Read summary statistics ('stats'), a min/max-preserving downsample ('buckets'), or up to 200 "
+       "raw samples inside a mandatory window ('raw'). Non-finite values count as 'invalid', excluded "
+       "from min/max/mean/stddev. buckets are columnar (t0, dt, n, min, max, mean; t_i = t0 + i*dt, "
+       "or 't' when irregular). Stats carry 't_start_display_s' when the host supports playback, so "
+       "bucket i's display time = t_start_display_s + t0 + i*dt.\n"
+       "'paths' is an ARRAY — ask for every series in ONE call. A bad path returns as an error beside "
+       "the ones that worked. buckets take up to 8 paths (shared cap); raw takes 4. t_start_s/t_end_s "
+       "(display axis) narrow the read and re-base t; raw REQUIRES both.",
        {{"type", "object"},
         {"properties",
          {{"paths",
            {{"type", "array"},
             {"items", {{"type", "string"}}},
             {"description", "topic/field paths; a bare string is accepted for a single series"}}},
-          {"mode", {{"type", "string"}, {"enum", json::array({"stats", "buckets"})}}},
+          {"mode", {{"type", "string"}, {"enum", json::array({"stats", "buckets", "raw"})}}},
           {"max_points", {{"type", "integer"}, {"description", "bucket count for mode=buckets (<=500)"}}},
           {"t_start_s", {{"type", "number"}, {"description", "display-axis window start (optional)"}}},
           {"t_end_s", {{"type", "number"}, {"description", "display-axis window end (optional)"}}}}},
