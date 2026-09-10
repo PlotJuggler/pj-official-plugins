@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <pj_base/sdk/platform.hpp>
 #include <random>
@@ -26,6 +27,12 @@ class ScopedEnv {
     }
     setEnv(name_, value);
   }
+
+  // std::filesystem::path::c_str() is const wchar_t* on Windows, so a path
+  // cannot reach the const char* constructor there. Take the path itself and
+  // narrow it here, once.
+  ScopedEnv(const char* name, const std::filesystem::path& value) : ScopedEnv(name, value.string().c_str()) {}
+
   ~ScopedEnv() {
     setEnv(name_, had_old_ ? old_.c_str() : nullptr);
   }
@@ -53,6 +60,16 @@ class ScopedEnv {
   bool had_old_ = false;
   std::string old_;
 };
+
+// Makes the CRT re-read TZ after a ScopedEnv changed it. MSVC spells tzset()
+// with a leading underscore.
+inline void refreshTimezone() {
+#if defined(_WIN32)
+  _tzset();
+#else
+  tzset();
+#endif
+}
 
 // A fresh throwaway directory under the system temp dir; empty (with a test
 // failure recorded) when it cannot be created. The caller removes it.

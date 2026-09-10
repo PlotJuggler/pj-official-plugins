@@ -19,7 +19,6 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
-#include <ctime>  // tzset
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -70,6 +69,7 @@ using assistant_agent::SettingsStore;
 using nlohmann::json;
 
 using assistant_agent::testing::makeTempDir;
+using assistant_agent::testing::refreshTimezone;
 using assistant_agent::testing::ScopedEnv;
 
 TEST(AssistantDialogUi, TranscriptOptsIntoMarkdownWithoutRequiringANewWidgetClass) {
@@ -95,13 +95,13 @@ class AssistantDialogDrawerTest : public ::testing::Test {
   void SetUp() override {
     home_ = makeTempDir("assistant_dialog_test_");
     ASSERT_FALSE(home_.empty());
-    home_env_ = std::make_unique<ScopedEnv>("HOME", home_.c_str());
+    home_env_ = std::make_unique<ScopedEnv>("HOME", home_);
     xdg_env_ = std::make_unique<ScopedEnv>("XDG_STATE_HOME", nullptr);
     cfg_env_ = std::make_unique<ScopedEnv>("CLAUDE_CONFIG_DIR", nullptr);
     // The drawer stamps each row with the conversation's LOCAL time; pin the
     // zone so the row texts asserted below do not move with the machine.
     tz_env_ = std::make_unique<ScopedEnv>("TZ", "UTC");
-    tzset();
+    refreshTimezone();
 
     // ClaudeBackend::ensureWorkDir mkdir()s only the LAST path component,
     // trusting "$HOME/.local/state" to already exist (true on any real
@@ -491,14 +491,14 @@ class AssistantDialogCodexDrawerTest : public ::testing::Test {
   void SetUp() override {
     home_ = makeTempDir("assistant_dialog_codex_test_");
     ASSERT_FALSE(home_.empty());
-    home_env_ = std::make_unique<ScopedEnv>("HOME", home_.c_str());
+    home_env_ = std::make_unique<ScopedEnv>("HOME", home_);
     xdg_env_ = std::make_unique<ScopedEnv>("XDG_STATE_HOME", nullptr);
     cfg_env_ = std::make_unique<ScopedEnv>("CLAUDE_CONFIG_DIR", nullptr);
     codex_home_ = makeTempDir("assistant_dialog_codex_home_");
     ASSERT_FALSE(codex_home_.empty());
-    codex_home_env_ = std::make_unique<ScopedEnv>("CODEX_HOME", codex_home_.c_str());
+    codex_home_env_ = std::make_unique<ScopedEnv>("CODEX_HOME", codex_home_);
     tz_env_ = std::make_unique<ScopedEnv>("TZ", "UTC");
-    tzset();
+    refreshTimezone();
 
     std::error_code ec;
     std::filesystem::create_directories(home_ / ".local/state", ec);
@@ -675,14 +675,14 @@ TEST_F(AssistantDialogCodexDrawerTest, FirstCompletionRefreshesAndSelectsTheNewR
 TEST(AssistantDialogBackendSwitch, ClaudeCodexClaudeKeepsBothSessionIds) {
   const std::filesystem::path home = makeTempDir("assistant_dialog_switch_test_");
   ASSERT_FALSE(home.empty());
-  ScopedEnv home_env("HOME", home.c_str());
+  ScopedEnv home_env("HOME", home);
   ScopedEnv xdg_env("XDG_STATE_HOME", nullptr);
   ScopedEnv cfg_env("CLAUDE_CONFIG_DIR", nullptr);
   const std::filesystem::path codex_home = makeTempDir("assistant_dialog_switch_codex_home_");
   ASSERT_FALSE(codex_home.empty());
-  ScopedEnv codex_home_env("CODEX_HOME", codex_home.c_str());
+  ScopedEnv codex_home_env("CODEX_HOME", codex_home);
   ScopedEnv tz_env("TZ", "UTC");
-  tzset();
+  refreshTimezone();
 
   std::error_code ec;
   std::filesystem::create_directories(home / ".local/state", ec);
@@ -764,14 +764,14 @@ class AssistantDialogSettingsSwitchTest : public ::testing::Test {
   void SetUp() override {
     home_ = makeTempDir("assistant_settings_switch_test_");
     ASSERT_FALSE(home_.empty());
-    home_env_ = std::make_unique<ScopedEnv>("HOME", home_.c_str());
+    home_env_ = std::make_unique<ScopedEnv>("HOME", home_);
     xdg_env_ = std::make_unique<ScopedEnv>("XDG_STATE_HOME", nullptr);
     cfg_env_ = std::make_unique<ScopedEnv>("CLAUDE_CONFIG_DIR", nullptr);
     codex_home_ = makeTempDir("assistant_settings_switch_codex_home_");
     ASSERT_FALSE(codex_home_.empty());
-    codex_home_env_ = std::make_unique<ScopedEnv>("CODEX_HOME", codex_home_.c_str());
+    codex_home_env_ = std::make_unique<ScopedEnv>("CODEX_HOME", codex_home_);
     tz_env_ = std::make_unique<ScopedEnv>("TZ", "UTC");
-    tzset();
+    refreshTimezone();
 
     std::error_code ec;
     std::filesystem::create_directories(home_ / ".local/state", ec);
