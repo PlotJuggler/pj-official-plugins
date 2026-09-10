@@ -4,6 +4,15 @@
 // Drives McpHttpServer over loopback with an ix::HttpClient posing as the Claude
 // MCP client: bearer auth, initialize, tools/list, and a tools/call that runs a
 // real tool against a ToolboxTestStore.
+
+// Must precede any include that can pull in <windows.h> (ixwebsocket does on
+// MSVC): otherwise windows.h defines min/max macros, and pj_base/types.hpp's
+// std::numeric_limits<T>::max() stops parsing. Same guard as
+// data_stream_webrtc/whep_client.cpp.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include <gtest/gtest.h>
 #include <ixwebsocket/IXHttpClient.h>
 #include <ixwebsocket/IXNetSystem.h>
