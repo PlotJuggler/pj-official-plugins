@@ -142,13 +142,14 @@ if(BUILD_TESTING)
   # tolerance of corrupt lines / unknown record types. Fixtures under
   # tests/fixtures/sessions/ are copied to a temp dir per test (see
   # ClaudeSessionsTest in the test file); nothing here reads or writes the real
-  # ~/.claude store. std + nlohmann only.
+  # ~/.claude store. std + nlohmann, plus plotjuggler_sdk::base for
+  # PJ::sdk::getEnv (pj_base/sdk/platform.hpp) -- portable env-var reads.
   add_executable(toolbox_assistant_agent_claude_sessions_test
     tests/claude_sessions_test.cpp
     src/claude_sessions.cpp
   )
   target_link_libraries(toolbox_assistant_agent_claude_sessions_test PRIVATE
-    nlohmann_json::nlohmann_json GTest::gtest_main
+    plotjuggler_sdk::base nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_claude_sessions_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -293,14 +294,15 @@ if(BUILD_TESTING)
   # store — listing/ordering/titles, transcript replay, the cwd filter, and
   # tolerance of corrupt lines, exactly like claude_sessions_test.cpp. Fixtures under
   # tests/fixtures/codex_sessions/ are copied to a temp dir per test; nothing
-  # here reads or writes the real ~/.codex store.
+  # here reads or writes the real ~/.codex store. plotjuggler_sdk::base is for
+  # PJ::sdk::getEnv (pj_base/sdk/platform.hpp), used by both sources here.
   add_executable(toolbox_assistant_agent_codex_sessions_test
     tests/codex_sessions_test.cpp
     src/codex_sessions.cpp
     src/claude_sessions.cpp
   )
   target_link_libraries(toolbox_assistant_agent_codex_sessions_test PRIVATE
-    nlohmann_json::nlohmann_json GTest::gtest_main
+    plotjuggler_sdk::base nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_codex_sessions_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -315,13 +317,15 @@ if(BUILD_TESTING)
   # models_cache.json -- visibility filtering, priority ordering, label
   # composition, and tolerance of a missing/corrupt file. Fixture is a
   # verbatim copy of a real cache (tests/fixtures/codex_models_cache.json).
+  # plotjuggler_sdk::base is for PJ::sdk::getEnv, pulled in transitively via
+  # codex_sessions.cpp.
   add_executable(toolbox_assistant_agent_codex_models_test
     tests/codex_models_test.cpp
     src/codex_models.cpp
     src/codex_sessions.cpp
   )
   target_link_libraries(toolbox_assistant_agent_codex_models_test PRIVATE
-    nlohmann_json::nlohmann_json GTest::gtest_main
+    plotjuggler_sdk::base nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_codex_models_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src

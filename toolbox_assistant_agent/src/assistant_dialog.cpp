@@ -4,7 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstdlib>
+#include <pj_base/sdk/platform.hpp>
 #include <utility>
 
 #include "assistant_panel_manifest.hpp"
@@ -202,8 +202,7 @@ bool AssistantDialog::rebuildBackend() {
   // never touches the other's; a choice this build has never heard of falls
   // back to the harmless echo backend, visibly labeled. (A store still saying
   // "ollama" was migrated when the settings view was bound — see setSettings.)
-  const char* fake = std::getenv("ASSISTANT_FAKE_BACKEND");
-  if (fake != nullptr && std::string(fake) == "1") {
+  if (PJ::sdk::getEnv("ASSISTANT_FAKE_BACKEND") == "1") {
     backend_ = std::make_shared<FakeBackend>();
     active_backend_key_ = "echo";  // FakeBackend keeps no memory of its own
   } else {
@@ -817,7 +816,7 @@ void AssistantDialog::sendCurrentInput() {
   std::string catalog;
   if (host_provider_) {
     const SettingsStore store(settings_);
-    catalog = catalogDigest(host_provider_(), resolveCatalogBudgetChars(store));
+    catalog = catalogDigest(host_provider_(), static_cast<std::size_t>(resolveCatalogBudgetChars(store)));
   }
 
   postCommand([this, text, catalog, backend = backend_]() {

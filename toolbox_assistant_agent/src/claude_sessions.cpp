@@ -4,11 +4,11 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <cstdlib>
 #include <ctime>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <pj_base/sdk/platform.hpp>
 #include <string_view>
 
 namespace assistant_agent {
@@ -51,10 +51,10 @@ std::string claudeCwdSlug(const std::string& cwd) {
 
 std::filesystem::path claudeSessionsDir(const std::string& work_dir) {
   std::string base;
-  if (const char* cfg = std::getenv("CLAUDE_CONFIG_DIR"); cfg != nullptr && cfg[0] != '\0') {
-    base = cfg;
-  } else if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
-    base = std::string(home) + "/.claude";
+  if (const std::optional<std::string> cfg = PJ::sdk::getEnv("CLAUDE_CONFIG_DIR")) {
+    base = *cfg;
+  } else if (const std::optional<std::string> home = PJ::sdk::getEnv("HOME")) {
+    base = *home + "/.claude";
   } else {
     return {};
   }

@@ -7,7 +7,7 @@
 #include <unistd.h>    // getuid
 #endif
 
-#include <cstdlib>
+#include <pj_base/sdk/platform.hpp>
 
 namespace assistant_agent {
 
@@ -19,10 +19,10 @@ bool ensureWorkDir(std::string& work_dir, std::string& err) {
   // silently hand the panel whatever project context PlotJuggler was launched
   // from.
   std::string base;
-  if (const char* state_home = std::getenv("XDG_STATE_HOME"); state_home != nullptr && state_home[0] != '\0') {
-    base = state_home;
-  } else if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
-    base = std::string(home) + "/.local/state";
+  if (const std::optional<std::string> state_home = PJ::sdk::getEnv("XDG_STATE_HOME")) {
+    base = *state_home;
+  } else if (const std::optional<std::string> home = PJ::sdk::getEnv("HOME")) {
+    base = *home + "/.local/state";
   } else {
     err = "could not resolve the assistant's working directory (no XDG_STATE_HOME or HOME)";
     return false;

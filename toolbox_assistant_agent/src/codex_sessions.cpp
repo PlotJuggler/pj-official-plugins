@@ -3,10 +3,10 @@
 #include "codex_sessions.hpp"
 
 #include <algorithm>
-#include <cstdlib>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <pj_base/sdk/platform.hpp>
 
 namespace assistant_agent {
 
@@ -105,11 +105,11 @@ std::filesystem::path findRolloutFileById(const std::filesystem::path& sessions_
 }  // namespace
 
 std::filesystem::path codexHomeDir() {
-  if (const char* codex_home = std::getenv("CODEX_HOME"); codex_home != nullptr && codex_home[0] != '\0') {
-    return codex_home;
+  if (const std::optional<std::string> codex_home = PJ::sdk::getEnv("CODEX_HOME")) {
+    return *codex_home;
   }
-  if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
-    return std::filesystem::path(home) / ".codex";
+  if (const std::optional<std::string> home = PJ::sdk::getEnv("HOME")) {
+    return std::filesystem::path(*home) / ".codex";
   }
   return {};
 }
