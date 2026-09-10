@@ -49,11 +49,18 @@
        <property name="rightMargin"><number>0</number></property>
        <property name="bottomMargin"><number>0</number></property>
        <item>
-        <layout class="QHBoxLayout" name="columnsLayout">
-         <property name="spacing"><number>8</number></property>
+        <widget class="QSplitter" name="columnsSplitter">
+         <!-- The three columns are split, not spaced: the host draws a
+              QSplitter handle as the canonical 1 px separator (with hover and
+              pressed highlight), which is what every other pane boundary in the
+              app uses, including previewSplitter above. Resizable as a
+              consequence, which the Source column needs: its topic paths are
+              long enough to truncate at the default width. Not collapsible, so
+              no column can be dragged out of existence. -->
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+         <property name="childrenCollapsible"><bool>false</bool></property>
 
          <!-- Source -->
-         <item>
           <!-- The whole section frame is the drop target (declared from code with
                setDropTarget): the host's DropEventFilter walks up from the widget under
                the cursor, so marking the container covers the band, its filter and the
@@ -98,10 +105,8 @@
             </item>
            </layout>
           </widget>
-         </item>
 
          <!-- Function -->
-         <item>
           <widget class="QWidget" name="functionGroup" native="true">
            <property name="sizePolicy">
             <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
@@ -131,10 +136,8 @@
             </item>
            </layout>
           </widget>
-         </item>
 
          <!-- Lua rule editor -->
-         <item>
           <widget class="QWidget" name="editorGroup" native="true">
            <property name="sizePolicy">
             <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
@@ -181,8 +184,7 @@
             </item>
            </layout>
           </widget>
-         </item>
-        </layout>
+        </widget>
        </item>
       </layout>
      </widget>
