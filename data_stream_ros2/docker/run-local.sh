@@ -2,7 +2,7 @@
 # Local Docker-based build for the data_stream_ros2 marketplace extension.
 #
 # The extension has a proxy + distro split: a distro-agnostic proxy .so plus
-# one .so per supported ROS 2 distro, packaged into a single
+# one private .pjros2 payload per supported ROS 2 distro, packaged into a single
 # marketplace zip.
 #
 # Usage:
@@ -228,7 +228,10 @@ assemble_bundle() {
     local distro_so="${PLUGINS_DIR}/build_ros2_${distro}/Release/bin/libros2_stream_plugin-${distro}.so"
     [[ -f "${distro_so}" ]] || { echo "distro .so not found for ${distro}: ${distro_so}" >&2; exit 3; }
     mkdir -p "${stage}/dist/${distro}"
-    cp "${distro_so}" "${stage}/dist/${distro}/libros2_stream_plugin-${distro}.so"
+    # dlopen does not require a .so suffix. The private suffix prevents the
+    # host's recursive discovery scan from treating this implementation
+    # library as another top-level plugin.
+    cp "${distro_so}" "${stage}/dist/${distro}/libros2_stream_plugin-${distro}.pjros2"
   done < "${DISTROS_FILE}"
 
   echo "[run-local] tree:"

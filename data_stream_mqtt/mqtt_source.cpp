@@ -6,8 +6,7 @@
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_plugins/sdk/encoding_utils.hpp>
-#include <pj_streaming/delegated_ingest.hpp>
-#include <pj_streaming/drain_queue.hpp>
+#include <pj_plugins/sdk/streaming_source.hpp>
 #include <string>
 #include <vector>
 
@@ -50,7 +49,7 @@ class MqttSource : public PJ::StreamSourceBase {
     // (e.g. the protobuf descriptor + message type). Streaming sources must
     // forward it to ensureParserBinding, otherwise schema-based parsers bind
     // with no schema and drop every message.
-    parser_config_override_ = pj::streaming::parserConfigOverride(config_json);
+    parser_config_override_ = PJ::sdk::parserConfigOverride(config_json);
 
     return PJ::okStatus();
   }
@@ -174,8 +173,8 @@ class MqttSource : public PJ::StreamSourceBase {
   std::string parser_config_override_;
 
   std::unique_ptr<mqtt::async_client> client_;
-  pj::streaming::DrainQueue<MqttMessage> message_queue_;
-  pj::streaming::DelegatedIngestCache ingest_;
+  PJ::sdk::DrainQueue<MqttMessage> message_queue_;
+  PJ::sdk::DelegatedIngestCache ingest_;
 };
 
 }  // namespace

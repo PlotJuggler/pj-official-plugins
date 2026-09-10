@@ -163,9 +163,8 @@ fixture). To validate the full UI pipeline visually, launch `pj_app` with
 this plugin and load a Hub dataset:
 
 ```bash
-# 1) Build the plugin (Conan + CMake; assumes the local plotjuggler_core build
-#    is already published into the Conan cache as plotjuggler_core/0.4.1-clipwindow
-#    until the upstream patch release ships).
+# 1) Build the plugin (Conan + CMake). Uses the plotjuggler_core version pinned
+#    by this repository's Conan configuration; no locally exported build required.
 conan install . --output-folder=build_integrated --build=missing \
     -s compiler.cppstd=20 -s build_type=Release
 cmake --preset=conan-release
@@ -194,7 +193,7 @@ Download example (only the smallest pieces of a dataset):
 
 ```bash
 hf download lerobot/example_hil_serl_dataset --repo-type=dataset \
-    --local-dir ~/bags/datasets/lerobot_example_hil_serl_dataset
+    --local-dir "${LEROBOT_DATASET_DIR:?set it to a directory for downloaded datasets}/example_hil_serl_dataset"
 ```
 
 What to check in the UI:

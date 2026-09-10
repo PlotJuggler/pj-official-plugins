@@ -20,23 +20,23 @@ This extension is therefore split into two artifacts:
   installed on the user's machine (via `ROS_DISTRO`, `/opt/ros/*`, or an
   override env var) and `dlopen`s the matching per-distro binary.
 
-- **Per-distro inner** (`libros2_stream_plugin-<distro>.so`) — the actual
+- **Per-distro inner** (`libros2_stream_plugin-<distro>.pjros2`) — the actual
   subscriber, compiled against one specific distro's `rclcpp`. One inner
   per supported distro (see [`docker/distros.env`](docker/distros.env)).
-  Inner libraries deliberately rename their vtable getters
-  (`PJ_ros2_inner_get_*`) so PlotJuggler's recursive plugin scanner does
-  not register every distro as a top-level plugin — only the proxy is
-  visible to the scanner.
+  These are ELF shared libraries with a private suffix, so PlotJuggler's
+  recursive plugin scanner ignores them; `dlopen` does not require `.so`.
+  Their vtable getters are also private (`PJ_ros2_inner_get_*`), leaving only
+  the proxy visible to discovery.
 
 ```
 ~/.local/share/PlotJuggler4/extensions/ros2-topic-subscriber/
   manifest.json
   libros2_stream_plugin.so                ← proxy (entry point)
   dist/
-    humble/libros2_stream_plugin-humble.so
-    iron/libros2_stream_plugin-iron.so
-    jazzy/libros2_stream_plugin-jazzy.so
-    rolling/libros2_stream_plugin-rolling.so
+    humble/libros2_stream_plugin-humble.pjros2
+    iron/libros2_stream_plugin-iron.pjros2
+    jazzy/libros2_stream_plugin-jazzy.pjros2
+    rolling/libros2_stream_plugin-rolling.pjros2
 ```
 
 Source layout in this repository:
@@ -170,8 +170,8 @@ The build produces three artifacts under `build_ros2/bin/`:
 
 ### Drop the artifacts where the proto-app's plugin loader expects them
 
-The proxy resolves the inner at runtime as
-`dist/<distro>/libros2_stream_plugin-<distro>.so` **relative to the proxy's
+The proxy resolves the packaged inner at runtime as
+`dist/<distro>/libros2_stream_plugin-<distro>.pjros2` **relative to the proxy's
 own location**. So next to whichever `bin/` you use as `--plugin-dir`:
 
 ```bash
@@ -179,7 +179,8 @@ PJBIN=/path/to/your/plugin-dir       # the directory passed as --plugin-dir to t
 mkdir -p "$PJBIN/dist/<distro>"
 cp build_ros2/bin/libros2_stream_plugin.so          "$PJBIN/"
 cp build_ros2/bin/ros2_stream_plugin.pjmanifest.json "$PJBIN/"
-cp build_ros2/bin/libros2_stream_plugin-<distro>.so "$PJBIN/dist/<distro>/"
+cp build_ros2/bin/libros2_stream_plugin-<distro>.so \
+  "$PJBIN/dist/<distro>/libros2_stream_plugin-<distro>.pjros2"
 ```
 
 Final layout under `$PJBIN/`:
@@ -188,7 +189,7 @@ Final layout under `$PJBIN/`:
     ros2_stream_plugin.pjmanifest.json
     dist/
       <distro>/
-        libros2_stream_plugin-<distro>.so
+        libros2_stream_plugin-<distro>.pjros2
 
 When the proto-app loads, the proxy detects `ROS_DISTRO` (or scans
 `/opt/ros/*`) and `dlopen`s the matching inner from `dist/<distro>/`.

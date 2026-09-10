@@ -20,7 +20,6 @@ class DataLoadMp4Conan(ConanFile):
         "nlohmann_json/3.12.0",
         "fmt/12.1.0",
         "ffmpeg/8.1",
-        "date/3.0.4",
     )
     default_options = {
         "*:shared": False,

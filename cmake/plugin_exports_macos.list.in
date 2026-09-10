@@ -1,0 +1,21 @@
+# Export allowlist template for macOS plugin dylibs — the Mach-O counterpart
+# of plugin_exports.map.in, configured per target by pj_harden_plugin_exports().
+# Entries are ld64 -exported_symbols_list patterns (leading underscore, '*'
+# wildcards allowed); patterns that match nothing are ignored.
+#
+# Restricting exports is not just hygiene here: an exported weak C++ symbol
+# (typeinfo, inline/template instantiation) participates in dyld's process-wide
+# weak coalescing when the plugin is dlopen'd, so SOME of the plugin's
+# references get rebound to the host executable's copy while archive-internal
+# references keep their own. libc++ compares typeid by POINTER, so that split
+# breaks RTTI identity inside the plugin (std::any resolving to "unknown type",
+# any_cast failing). Keeping every non-ABI symbol local makes the plugin's
+# statically linked C++ self-consistent, exactly like a plain executable.
+# The family getters are one glob: unlike an ELF version script, ld64 treats a
+# literal entry as a REQUIRED symbol (undefined-symbol link error when absent),
+# while an unmatched glob is silently ignored — and each plugin defines only
+# the getters for the families it implements.
+_pj_plugin_abi_version
+_PJ_get_*_vtable
+_pj_plugin_descriptor_*
+@PJ_EXTRA_EXPORT_LINES@

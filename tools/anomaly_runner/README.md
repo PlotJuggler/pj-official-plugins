@@ -257,7 +257,7 @@ rule stays portable/shareable and the webhook token / SMTP password live only on
 
     // 3) command — exec a program with the report JSON on stdin (integrate with any
     //    existing alerting infra: Slack CLI, msmtp, a custom script, …)
-    { "type": "command", "exec": ["/usr/local/bin/alert-to-slack"] }
+    { "type": "command", "exec": ["alert-to-slack"] }  // resolved from PATH
   ]
 }
 ```
@@ -283,10 +283,18 @@ To screen **every uploaded MCAP automatically**, point the bundled watcher at th
 directory. It runs the runner once per new file (atomic, de-duped) and lets the runner
 dispatch notifications — no daemon to maintain.
 
+Set these to your own layout first; every example below uses them:
+
+```bash
+export WATCH_DIR=/path/to/uploads          # where new MCAPs land
+export ANOMALY_PREFIX=/path/to/anomaly     # where this tool is installed
+export RUNNER="$ANOMALY_PREFIX/bin/anomaly_runner"
+export LOG_FILE=/path/to/anomaly-watch.log
+```
+
 ```bash
 # tools/anomaly_runner/deploy/watch.sh <watch_dir> <rule.json> <notify.json> [source] [runner_path]
-deploy/watch.sh /srv/uploads spike.json notify.json /sensor/value/data \
-                /opt/anomaly/bin/anomaly_runner
+deploy/watch.sh "$WATCH_DIR" spike.json notify.json /sensor/value/data "$RUNNER"
 ```
 
 It records processed files under `<watch_dir>/.anomaly_done/` and per-file reports under
@@ -295,19 +303,19 @@ fire on each upload with whichever scheduler you run:
 
 ```cron
 # cron — scan once a minute
-* * * * * /opt/anomaly/deploy/watch.sh /srv/uploads /opt/anomaly/spike.json /opt/anomaly/notify.json /sensor/value/data /opt/anomaly/bin/anomaly_runner >> /var/log/anomaly-watch.log 2>&1
+* * * * * $ANOMALY_PREFIX/deploy/watch.sh $WATCH_DIR $ANOMALY_PREFIX/spike.json $ANOMALY_PREFIX/notify.json /sensor/value/data $RUNNER >> $LOG_FILE 2>&1
 ```
 
 ```ini
 # systemd .path — trigger the moment a file lands (anomaly-watch.path + anomaly-watch.service)
 [Path]
-PathModified=/srv/uploads
+PathModified=<your watch dir>   # the WATCH_DIR value above
 ```
 
 ```bash
 # inotify one-liner — event-driven, no polling
-inotifywait -m -e close_write --format '%f' /srv/uploads | while read _; do \
-  deploy/watch.sh /srv/uploads spike.json notify.json /sensor/value/data; done
+inotifywait -m -e close_write --format '%f' "$WATCH_DIR" | while read _; do \
+  deploy/watch.sh "$WATCH_DIR" spike.json notify.json /sensor/value/data; done
 ```
 
 > Secrets (`${ALERT_TOKEN}`, `${SMTP_PASSWORD}`) come from the watcher's environment — set

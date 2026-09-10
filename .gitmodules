@@ -1,3 +1,0 @@
-[submodule "extern/plotjuggler_core"]
-	path = extern/plotjuggler_core
-	url = https://github.com/PlotJuggler/plotjuggler_sdk.git

@@ -24,6 +24,19 @@ Scripts for releasing PlotJuggler extensions and submitting them to the extensio
 
 ## Release Pipeline Overview
 
+Each official plugin must declare `min_sdk_required` in its manifest, independently
+of the repository's build pin in `SDK_VERSION`. Both name stable SDK releases
+(`X.Y.Z`); the minimum must not exceed the build pin. A build SDK upgrade alone
+must not change plugin minimums. Raise only the minimums of plugins that acquire a
+new mandatory host requirement, including through shared code; see the required
+PR review policy in [`CLAUDE.md`](../CLAUDE.md#plugin-sdk-compatibility--required-pr-review).
+
+`python3 scripts/bump_core_version.py --check` validates all plugin declarations in
+PR CI. The existing manifest validator also checks minimums before local releases,
+release packaging, and registry submission. Both published and local registry
+entries preserve `min_sdk_required`. This checks declared metadata only; it does
+not scan source code or prove runtime compatibility.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
 │                              RELEASE PIPELINE                                        │
@@ -456,7 +469,7 @@ By default only the host platform is packaged (`--host-platform`, default `linux
 the repeatable `--platform NAME=BUILDDIR` flag:
 
 ```bash
-python3 scripts/build_local_registry.py --platform windows-x86_64=/mnt/win-build
+python3 scripts/build_local_registry.py --platform windows-x86_64="$WINDOWS_BUILD_DIR"
 ```
 
 A platform whose build directory is missing, or that has no matching binary, is skipped with a

@@ -4,10 +4,10 @@
 
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <pj_base/sdk/text_utils.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/streaming_dialog.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
-#include <pj_streaming/dialog_utils.hpp>
-#include <pj_streaming/endpoint.hpp>
 #include <set>
 #include <string>
 #include <string_view>
@@ -92,8 +92,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
     }
 
     // Protocol combo — dynamically populated from available parsers
-    const bool has_encodings =
-        pj::streaming::writeEncodingSelector(wd, "comboBoxProtocol", available_encodings_, encoding_);
+    const bool has_encodings = PJ::sdk::writeEncodingSelector(wd, "comboBoxProtocol", available_encodings_, encoding_);
 
     // TLS certificate file pickers. Icon-only browse buttons (empty label, the
     // shared "contract" certificate glyph); the editable path fields double as
@@ -135,7 +134,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
       return false;
     }
     if (widget_name == "lineEditPort") {
-      if (const auto port = pj::streaming::parsePort(text)) {
+      if (const auto port = PJ::sdk::parsePort(text)) {
         port_ = *port;
       }
       return false;
@@ -153,7 +152,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
       return false;
     }
     if (widget_name == "lineEditFilter") {
-      view_filter_lower_ = pj::streaming::lowerAscii(std::string(text));
+      view_filter_lower_ = PJ::sdk::lowerAscii(std::string(text));
       return true;  // re-render: the topic list narrows/expands live
     }
     // Certificate paths are editable: typing a path is equivalent to picking one.
@@ -198,7 +197,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
       return false;
     }
     if (widget_name == "comboBoxProtocol") {
-      encoding_ = pj::streaming::encodingAt(index, available_encodings_);
+      encoding_ = PJ::sdk::encodingAt(index, available_encodings_);
       return false;
     }
     return false;
@@ -220,7 +219,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
       // silently drop the hidden one (same contract as the foxglove picker).
       {
         std::lock_guard<std::mutex> lock(topics_mutex_);
-        selected_topics_ = pj::streaming::mergeVisibleSelection(
+        selected_topics_ = PJ::sdk::mergeVisibleSelection(
             selected_topics_, selected,
             [this](const std::string& name) {
               // Not visible = filtered out OR not (yet) discovered — e.g. a
@@ -306,7 +305,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
   /// MQTT subscription pattern. The filter is stored pre-lowercased, so only
   /// the topic pays a lowercase pass here.
   bool matchesViewFilter(const std::string& topic) const {
-    return view_filter_lower_.empty() || pj::streaming::lowerAscii(topic).find(view_filter_lower_) != std::string::npos;
+    return view_filter_lower_.empty() || PJ::sdk::lowerAscii(topic).find(view_filter_lower_) != std::string::npos;
   }
 
   void connectBroker() {

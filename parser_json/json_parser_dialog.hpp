@@ -1,8 +1,8 @@
 #pragma once
 
 #include <nlohmann/json.hpp>
-#include <pj_array_policy/array_policy.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
+#include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
 
@@ -60,11 +60,11 @@ class JsonParserDialog : public PJ::DialogPluginTyped {
       return false;
     }
     if (checked && widget_name == "radioMaxClamp") {
-      array_limit_.policy = pj::array_policy::ArrayPolicy::kClamp;
+      array_limit_.policy = PJ::sdk::ArrayPolicy::kClamp;
       return false;
     }
     if (checked && widget_name == "radioMaxDiscard") {
-      array_limit_.policy = pj::array_policy::ArrayPolicy::kSkip;
+      array_limit_.policy = PJ::sdk::ArrayPolicy::kSkip;
       return false;
     }
     return false;
@@ -75,7 +75,7 @@ class JsonParserDialog : public PJ::DialogPluginTyped {
     cfg["use_embedded_timestamp"] = use_embedded_timestamp_;
     cfg["timestamp_field_name"] = timestamp_field_name_;
     cfg["label_keyed_arrays"] = label_keyed_arrays_;
-    pj::array_policy::arrayLimitToJson(cfg, array_limit_);
+    PJ::sdk::arrayLimitToJson(cfg, array_limit_);
     return cfg.dump();
   }
 
@@ -87,12 +87,12 @@ class JsonParserDialog : public PJ::DialogPluginTyped {
     use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
     timestamp_field_name_ = cfg.value("timestamp_field_name", std::string("timestamp"));
     label_keyed_arrays_ = cfg.value("label_keyed_arrays", false);
-    array_limit_ = pj::array_policy::arrayLimitFromJson(cfg);
+    array_limit_ = PJ::sdk::arrayLimitFromJson(cfg);
     return true;
   }
 
  private:
-  pj::array_policy::ArrayLimit array_limit_;
+  PJ::sdk::ArrayLimit array_limit_;
   bool use_embedded_timestamp_ = false;
   bool label_keyed_arrays_ = false;
   std::string timestamp_field_name_ = "timestamp";

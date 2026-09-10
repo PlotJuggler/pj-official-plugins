@@ -1,7 +1,8 @@
 # Porting Gap Analysis
 
 Systematic comparison of all 12 ported plugins against their original reference
-implementations in `~/ws_plotjuggler/src/PlotJuggler/plotjuggler_plugins/`.
+implementations in `${PJ3_SOURCE_DIR}/plotjuggler_plugins/`, where `PJ3_SOURCE_DIR`
+is a checkout of [PlotJuggler 3](https://github.com/facontidavide/PlotJuggler).
 
 > **New plugins (not ports, so out of scope for this gap analysis):**
 > `data_load_3d` — static PLY/PCD 3D loader. `.pcd` and vertex-only `.ply` load as
@@ -54,10 +55,10 @@ Severity levels:
 
 | # | Gap | Severity | Original Location | Notes |
 |---|-----|----------|-------------------|-------|
-| 1 | Parameters dialog UI missing | HIGH | `ulog_parameters_dialog.h/cpp/ui` (entire file set) | Original shows an interactive 3-tab dialog (Info, Properties, Message Logs) after loading. Ported silently ingests parameters as `_parameters/` topic — no display. **BLOCKED: requires SDK "plugin status panel" design (see cross-cutting #7).** |
-| 2 | Info metadata fields not displayed | HIGH | `ulog_parser.cpp:670-760`, `ulog_parameters_dialog.cpp:16-23` | Original parses and displays file info fields (hardware, software version, etc.) in a table. Ported does not extract these. **BLOCKED: same as #1.** |
-| 3 | Embedded log messages not extracted | HIGH | `ulog_parser.cpp:84-93`, `ulog_parameters_dialog.cpp:39-77` | Original extracts LOGGING messages with level translation (EMERGENCY→DEBUG) and displays them. Ported ignores these. **BLOCKED: same as #1.** |
-| 4 | Timestamp field handling changed | MEDIUM | `ulog_parser.cpp:165-171, 645-648` | Original detects timestamp field from format definition. Ported assumes timestamp at fixed message offset (first 8 bytes). Works for standard messages but fragile. |
+| 1 | Parameters dialog UI missing | HIGH | `ulog_parameters_dialog.h/cpp/ui` (entire file set) | Original shows an interactive 3-tab dialog (Info, Properties, Message Logs) after loading. **RESOLVED:** `ulog_params_dialog.{hpp,cpp}` + `ulog_params.ui` implement the same three tabs as a `DialogPluginTyped` (exported via `PJ_DIALOG_PLUGIN`). |
+| 2 | Info metadata fields not displayed | HIGH | `ulog_parser.cpp:670-760`, `ulog_parameters_dialog.cpp:16-23` | Original parses and displays file info fields (hardware, software version, etc.) in a table. **RESOLVED:** Info tab lists `messageInfo()`; numeric info values are also written as `_info/<key>` topics (non-numeric ones are reported as info messages). |
+| 3 | Embedded log messages not extracted | HIGH | `ulog_parser.cpp:84-93`, `ulog_parameters_dialog.cpp:39-77` | Original extracts LOGGING messages with level translation (EMERGENCY→DEBUG) and displays them. **RESOLVED:** Message Logs tab shows them (relative time, level, text) and they are written to the `_log` topic (`level`, `message` string fields). |
+| 4 | Timestamp field handling changed | MEDIUM | `ulog_parser.cpp:165-171, 645-648` | Original detects timestamp field from format definition. Ported assumed timestamp at fixed message offset (first 8 bytes). **FIXED:** `ulog_flatten::findTimestampOffset` locates the `uint64_t timestamp` field by name (spec requires the field, not its position); formats without one fall back to the sample index like the original. |
 
 ---
 
@@ -229,7 +230,7 @@ CDR/ros2msg-only. This is a deliberate extension of scope, documented in the plu
 
 ### Gaps resolved by design (no fix needed):
 - ROS #1: Truncation check — native int64/uint64 types preserved, no double conversion
-- ULog #4: Timestamp field — first 8 bytes is correct per ULog spec
+- ~~ULog #4: Timestamp field — first 8 bytes is correct per ULog spec~~ (wrong: the spec mandates the field, not its position — fixed by name lookup, see §4 #4)
 - ZMQ #2: Timestamp precision — nanoseconds is correct for new SDK
 
 ### Final round fixes:

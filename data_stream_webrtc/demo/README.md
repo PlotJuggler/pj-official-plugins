@@ -25,7 +25,7 @@ receives that camera's H.264 RTP on its own `PeerConnection` — one
    ```bash
    ./demo/publish_cameras.sh
    # or, to make cam0 a real webcam:
-   ./demo/publish_cameras.sh /dev/video0
+   ./demo/publish_cameras.sh <v4l2-device>   # e.g. the node from: v4l2-ctl --list-devices
    ```
 
 3. **In PlotJuggler 4**: Streaming -> "WebRTC Video Client" -> Server URL

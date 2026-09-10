@@ -6,12 +6,14 @@
 #include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <string>
-#include <ulog_cpp/data_container.hpp>
+#include <string_view>
 #include <ulog_cpp/reader.hpp>
 #include <vector>
 
+#include "ulog_container.hpp"
 #include "ulog_flatten.hpp"
 #include "ulog_manifest.hpp"
 #include "ulog_params_dialog.hpp"
@@ -107,18 +109,22 @@ PJ::sdk::ValueRef readPrimitiveValue(const uint8_t* data, size_t offset, ulog_cp
   }
 }
 
-/// Extract numeric values from a raw ULog record into `values`, in the same order
-/// as collectFlatFieldNames. Reads that would fall outside `raw_size` (a truncated
-/// or corrupt record) push a NullValue instead, preserving alignment with the
-/// field-name list rather than reading out of bounds.
+/// Extract leaf values from a raw ULog record into `values`, in the same order
+/// as collectFlatFieldNames. `char[N]` leaves become string_views into the
+/// record (the record outlives the appendRecord call that consumes them).
+/// Reads that would fall outside `raw_size` (a truncated or corrupt record)
+/// push a NullValue instead, preserving alignment with the field-name list
+/// rather than reading out of bounds.
 void extractFlatValues(
     const uint8_t* raw_data, size_t raw_size, const ulog_cpp::MessageFormat& format,
     std::vector<PJ::sdk::ValueRef>& values) {
-  ulog_flatten::forEachFlatLeaf(format, 0, [&](size_t offset, ulog_cpp::Field::BasicType type, size_t elem_size) {
-    if (offset + elem_size <= raw_size) {
-      values.push_back(readPrimitiveValue(raw_data, offset, type));
-    } else {
+  ulog_flatten::forEachFlatLeaf(format, 0, [&](const ulog_flatten::FlatLeaf& leaf) {
+    if (leaf.offset + leaf.size > raw_size) {
       values.push_back(PJ::NullValue{});
+    } else if (leaf.is_string) {
+      values.push_back(ulog_flatten::stringLeafView(raw_data, leaf.offset, leaf.size));
+    } else {
+      values.push_back(readPrimitiveValue(raw_data, leaf.offset, leaf.type));
     }
   });
 }
@@ -166,8 +172,8 @@ class ULogSource : public PJ::FileSourceBase {
 
     (void)runtimeHost().progressStart("Importing ULog", file_size, true);
 
-    // Parse via ulog_cpp.
-    auto data_container = std::make_shared<ulog_cpp::DataContainer>(ulog_cpp::DataContainer::StorageConfig::FullLog);
+    // Parse via ulog_cpp (ULogContainer adds the data-message clock for parameter changes).
+    auto data_container = std::make_shared<ulog_container::ULogContainer>();
     ulog_cpp::Reader reader{data_container};
 
     static constexpr size_t kChunkSize = 65536;
@@ -203,6 +209,17 @@ class ULogSource : public PJ::FileSourceBase {
       return PJ::unexpected(err_msg);
     }
 
+    // Recoverable problems (mid-file corruption, unsupported appended-data
+    // offsets, ...) don't abort the import: ulog_cpp resynchronises and keeps
+    // going. Surface them so a partial result is never mistaken for a complete one.
+    if (!data_container->parsingErrors().empty()) {
+      const auto& errors = data_container->parsingErrors();
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kWarning,
+          "ULog: " + std::to_string(errors.size()) +
+              " parsing problem(s), data may be incomplete. First: " + errors.front());
+    }
+
     // Get file start timestamp (microseconds).
     uint64_t file_start_time_us = data_container->fileHeader().header().timestamp;
 
@@ -221,6 +238,13 @@ class ULogSource : public PJ::FileSourceBase {
     }
 
     size_t total_series_count = 0;
+
+    // Diagnostics are aggregated and reported once: a malformed log can define
+    // thousands of subscriptions, and one message per problem would flood the
+    // host (whose dedup is by exact text).
+    std::vector<std::string> topics_without_timestamp;
+    size_t short_records = 0;
+    std::string first_short_record_topic;
 
     for (const auto& [key, sub] : subs_map) {
       if (!sub || sub->size() == 0) {
@@ -250,8 +274,8 @@ class ULogSource : public PJ::FileSourceBase {
       }
 
       std::vector<PJ::PrimitiveType> field_types;
-      ulog_flatten::forEachFlatLeaf(*sub->format(), 0, [&](size_t, ulog_cpp::Field::BasicType type, size_t) {
-        field_types.push_back(ulogTypeToPrimitive(type));
+      ulog_flatten::forEachFlatLeaf(*sub->format(), 0, [&](const ulog_flatten::FlatLeaf& leaf) {
+        field_types.push_back(leaf.is_string ? PJ::PrimitiveType::kString : ulogTypeToPrimitive(leaf.type));
       });
 
       for (size_t fi = 0; fi < field_names.size() && fi < field_types.size(); ++fi) {
@@ -260,6 +284,16 @@ class ULogSource : public PJ::FileSourceBase {
           return PJ::unexpected(field.error());
         }
       }
+
+      // The spec mandates a `uint64_t timestamp` field but not its position, so
+      // locate it by name. A format without one (seen in the wild — original
+      // plugin issue #1154) falls back to the sample index, exactly as the
+      // original DataLoadULog did (`timestamps[i].value_or(i)` microseconds).
+      const auto ts_offset = ulog_flatten::findTimestampOffset(*sub->format());
+      if (!ts_offset) {
+        topics_without_timestamp.push_back(topic_name);
+      }
+      const auto format_size = static_cast<size_t>(sub->format()->sizeBytes());
 
       // Write data records.
       std::vector<PJ::sdk::NamedFieldValue> row_fields;
@@ -271,10 +305,20 @@ class ULogSource : public PJ::FileSourceBase {
       for (size_t i = 0; i < raw_samples.size(); ++i) {
         const auto& raw = raw_samples[i].data();
 
-        // Extract timestamp (first 8 bytes, uint64_t microseconds) and convert to nanoseconds.
-        uint64_t timestamp_us = 0;
-        if (raw.size() >= 8) {
-          std::memcpy(&timestamp_us, raw.data(), sizeof(timestamp_us));
+        // ulog_cpp validates the message FRAME, not the payload against the
+        // format. A record shorter than its format is corrupt: skip it rather
+        // than fabricate a timestamp and null fields for it.
+        if (raw.size() < format_size) {
+          if (short_records++ == 0) {
+            first_short_record_topic = topic_name;
+          }
+          continue;
+        }
+
+        // Extract the timestamp (uint64_t microseconds) and convert to nanoseconds.
+        uint64_t timestamp_us = static_cast<uint64_t>(i);
+        if (ts_offset) {
+          std::memcpy(&timestamp_us, raw.data() + *ts_offset, sizeof(timestamp_us));
         }
         auto ts_ns = static_cast<int64_t>(timestamp_us) * 1000;
 
@@ -300,57 +344,110 @@ class ULogSource : public PJ::FileSourceBase {
       total_series_count += field_names.size();
     }
 
-    // Write parameters as single-point timeseries.
-    for (const auto& [param_name, param] : data_container->initialParameters()) {
-      std::string ptopic_name = "_parameters/" + param_name;
-      auto topic = writeHost().ensureTopic(ptopic_name);
-      if (!topic) {
-        return PJ::unexpected(topic.error());
+    // Joins up to `max_shown` names, then "... (+N more)".
+    auto sample_list = [](const std::vector<std::string>& names, size_t max_shown) {
+      std::string out;
+      for (size_t i = 0; i < names.size() && i < max_shown; ++i) {
+        out += (i ? ", " : "") + names[i];
       }
+      if (names.size() > max_shown) {
+        out += ", ... (+" + std::to_string(names.size() - max_shown) + " more)";
+      }
+      return out;
+    };
 
+    if (!topics_without_timestamp.empty()) {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kWarning,
+          "ULog: " + std::to_string(topics_without_timestamp.size()) +
+              " message format(s) have no timestamp field; the sample index is used as time: " +
+              sample_list(topics_without_timestamp, 5));
+    }
+    if (short_records > 0) {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kWarning, "ULog: skipped " + std::to_string(short_records) +
+                                                    " data record(s) shorter than their message format (first in '" +
+                                                    first_short_record_topic + "')");
+    }
+
+    // Write parameters as `_parameters/<name>` timeseries: the initial snapshot
+    // at file start, then every in-flight change at the data-message clock it
+    // appeared under (PlotJuggler#1245). PX4 parameters are int32/float only;
+    // anything else is collected and reported once instead of silently skipped.
+    std::vector<std::string> non_numeric_params;
+    auto write_parameter = [&](const std::string& param_name, const ulog_cpp::Parameter& param,
+                               uint64_t ts_us) -> PJ::Status {
       double param_value = 0.0;
       try {
         param_value = param.value().as<double>();
       } catch (const std::exception&) {
-        // Non-numeric parameter: report as info message instead of silently skipping
+        std::string str_val;
         try {
-          std::string str_val = param.value().as<std::string>();
-          runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, param_name + ": " + str_val);
+          str_val = param.value().as<std::string>();
         } catch (...) {}
-        continue;
+        non_numeric_params.push_back(param_name + "=" + str_val);
+        return PJ::okStatus();  // convert BEFORE ensureTopic: no empty topics
       }
 
-      auto ts_ns = static_cast<int64_t>(file_start_time_us) * 1000;
-      auto status = writeHost().appendRecord(*topic, PJ::Timestamp{ts_ns}, {{.name = "value", .value = param_value}});
+      auto topic = writeHost().ensureTopic("_parameters/" + param_name);
+      if (!topic) {
+        return PJ::unexpected(topic.error());
+      }
+      auto ts_ns = static_cast<int64_t>(ts_us) * 1000;
+      return writeHost().appendRecord(*topic, PJ::Timestamp{ts_ns}, {{.name = "value", .value = param_value}});
+    };
+
+    for (const auto& [param_name, param] : data_container->initialParameters()) {
+      auto status = write_parameter(param_name, param, file_start_time_us);
       if (!status) {
         return status;
       }
     }
+    for (const auto& change : data_container->timedChangedParameters()) {
+      auto status = write_parameter(change.parameter.field().name(), change.parameter, change.timestamp_us);
+      if (!status) {
+        return status;
+      }
+    }
+    if (!non_numeric_params.empty()) {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kInfo,
+          "ULog: " + std::to_string(non_numeric_params.size()) +
+              " non-numeric parameter message(s) not plotted: " + sample_list(non_numeric_params, 5));
+    }
 
-    // Write file info metadata as _info/ topic.
+    // Write file info metadata as `_info/<key>` topics (numeric values) and
+    // report string values as info messages. Both ordinary INFO entries
+    // (sys_name, ver_hw, ...) and the first instance of each INFO_MULTIPLE key.
     {
-      auto& info_multi = data_container->messageInfoMulti();
-      for (const auto& [key, values_vec] : info_multi) {
-        if (values_vec.empty() || values_vec[0].empty()) {
-          continue;
-        }
-        const auto& info = values_vec[0][0];  // first instance
-        std::string info_topic = "_info/" + key;
-        auto topic = writeHost().ensureTopic(info_topic);
-        if (!topic) {
-          continue;
-        }
+      auto write_info = [&](const std::string& key, const ulog_cpp::MessageInfo& info) {
+        double val = 0.0;
         try {
-          double val = info.value().as<double>();
-          auto ts_ns = static_cast<int64_t>(file_start_time_us) * 1000;
-          (void)writeHost().appendRecord(*topic, PJ::Timestamp{ts_ns}, {{.name = "value", .value = val}});
+          val = info.value().as<double>();
         } catch (...) {
           // Non-numeric info: try as string via reportMessage
           try {
             std::string str_val = info.value().as<std::string>();
             runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, key + ": " + str_val);
           } catch (...) {}
+          return;
         }
+        auto topic = writeHost().ensureTopic("_info/" + key);
+        if (!topic) {
+          return;
+        }
+        auto ts_ns = static_cast<int64_t>(file_start_time_us) * 1000;
+        (void)writeHost().appendRecord(*topic, PJ::Timestamp{ts_ns}, {{.name = "value", .value = val}});
+      };
+
+      for (const auto& [key, info] : data_container->messageInfo()) {
+        write_info(key, info);
+      }
+      for (const auto& [key, values_vec] : data_container->messageInfoMulti()) {
+        if (values_vec.empty() || values_vec[0].empty()) {
+          continue;
+        }
+        write_info(key, values_vec[0][0]);  // first instance
       }
     }
 

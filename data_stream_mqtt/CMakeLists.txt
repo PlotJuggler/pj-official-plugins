@@ -8,7 +8,7 @@ add_library(mqtt_source_plugin SHARED mqtt_source.cpp)
 target_compile_features(mqtt_source_plugin PRIVATE cxx_std_20)
 target_compile_options(mqtt_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(mqtt_source_plugin PRIVATE
-  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json PahoMqttCpp::paho-mqttpp3-static pj_streaming_utils
+  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json PahoMqttCpp::paho-mqttpp3-static
 )
 
 pj_embed_ui(mqtt_source_plugin

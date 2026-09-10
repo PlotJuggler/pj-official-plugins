@@ -1,6 +1,6 @@
-#include <pj_array_policy/array_policy.hpp>
 #include <pj_base/builtin/builtin_object.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
+#include <pj_plugins/sdk/parser_array_policy.hpp>
 
 #define MCAP_IMPLEMENTATION
 #include <algorithm>
@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "mcap_dataset_metadata.hpp"
 #include "mcap_dialog.hpp"
 #include "mcap_helpers.hpp"
 #include "mcap_manifest.hpp"
@@ -154,6 +155,20 @@ class McapSource : public PJ::FileSourceBase {
     // schemas, statistics and chunk indexes are all available now — no separate
     // reader or summary parse is needed for binding setup or the cold path.
 
+    // Dataset-metadata document: file facts + every file-level Metadata record
+    // (PJ's pj.capture / pj.recording parsed in). Extracted up front from the
+    // summary the open already paid for — never lazily. Extraction problems
+    // are warnings; they must not affect the import.
+    {
+      std::vector<std::string> metadata_diagnostics;
+      const nlohmann::json metadata_document =
+          PJ::McapMetadata::extractDatasetMetadata(parallel_reader.reader(), &metadata_diagnostics);
+      for (const std::string& diagnostic : metadata_diagnostics) {
+        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, diagnostic);
+      }
+      PJ::McapMetadata::publishDatasetMetadata(runtimeHost(), metadata_document);
+    }
+
     // channels() returns the table BY VALUE, so take one copy up front and
     // share it with the binding loop below rather than paying for a second.
     const auto& selected = dialog_.selectedTopics();
@@ -186,8 +201,7 @@ class McapSource : public PJ::FileSourceBase {
         parser_config = std::move(parsed_config);
       }
     }
-    pj::array_policy::arrayLimitToJson(
-        parser_config, static_cast<uint32_t>(dialog_.maxArraySize()), dialog_.clampLargeArrays());
+    PJ::sdk::arrayLimitToJson(parser_config, static_cast<uint32_t>(dialog_.maxArraySize()), dialog_.clampLargeArrays());
     parser_config["use_embedded_timestamp"] = dialog_.useHeaderTimestamp();
 
     // --- Ensure parser bindings for selected channels ---
