@@ -27,6 +27,8 @@
 #include <iostream>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <optional>
+#include <pj_base/sdk/platform.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <string>
 #include <vector>
@@ -50,8 +52,7 @@ using nlohmann::json;
 // --- helpers ---------------------------------------------------------------
 
 std::string envStr(const char* name, const std::string& fallback) {
-  const char* raw = std::getenv(name);
-  return raw != nullptr ? std::string(raw) : fallback;
+  return PJ::sdk::getEnv(name).value_or(fallback);
 }
 
 // Comma-separated env value -> list, skipping empty entries so "a,,b" and a
@@ -75,20 +76,20 @@ std::vector<std::string> envList(const char* name, const std::string& fallback) 
 }
 
 int envInt(const char* name, int fallback) {
-  const char* raw = std::getenv(name);
-  if (raw == nullptr) {
+  const std::optional<std::string> raw = PJ::sdk::getEnv(name);
+  if (!raw) {
     return fallback;
   }
-  const int parsed = std::atoi(raw);
+  const int parsed = std::atoi(raw->c_str());
   return parsed > 0 ? parsed : fallback;
 }
 
 double envDouble(const char* name, double fallback) {
-  const char* raw = std::getenv(name);
-  if (raw == nullptr) {
+  const std::optional<std::string> raw = PJ::sdk::getEnv(name);
+  if (!raw) {
     return fallback;
   }
-  const double parsed = std::atof(raw);
+  const double parsed = std::atof(raw->c_str());
   return parsed > 0.0 ? parsed : fallback;
 }
 
@@ -900,7 +901,7 @@ TEST(AssistantBench, CleaningUpAfterAProbeScoresTheSameAsGettingItRightFirstTime
 // --- the matrix ------------------------------------------------------------
 
 TEST(AssistantBench, ModelMatrix) {
-  if (std::getenv("ASSISTANT_BENCH") == nullptr) {
+  if (!PJ::sdk::getEnv("ASSISTANT_BENCH")) {
     GTEST_SKIP() << "set ASSISTANT_BENCH=1 (needs a logged-in `claude` CLI) to run";
   }
   const int repeats = envInt("ASSISTANT_BENCH_REPEATS", 3);

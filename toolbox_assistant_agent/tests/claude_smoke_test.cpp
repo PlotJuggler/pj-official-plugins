@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <cstdlib>
 #include <iterator>
+#include <optional>
+#include <pj_base/sdk/platform.hpp>
 #include <string>
 #include <vector>
 
@@ -25,14 +27,19 @@ using assistant_agent::ClaudeBackend;
 using assistant_agent::ToolRegistry;
 using assistant_agent::testing::runListTopicsSmoke;
 
+// POSIX-guarded like the fake-CLI cases further down: it spawns the real
+// `claude`, and runProcess() refuses to spawn anything off POSIX.
+#if defined(__unix__) || defined(__APPLE__)
 TEST(ClaudeSmoke, ListTopicsThroughMcp) {
-  if (std::getenv("ASSISTANT_CLAUDE_SMOKE") == nullptr) {
+  const std::optional<std::string> enabled = PJ::sdk::getEnv("ASSISTANT_CLAUDE_SMOKE");
+  if (!enabled) {
     GTEST_SKIP() << "set ASSISTANT_CLAUDE_SMOKE=1 (needs a logged-in `claude` CLI) to run";
   }
-  const char* cli = std::getenv("ASSISTANT_CLAUDE_CLI");
-  ClaudeBackend backend(cli != nullptr ? cli : "claude", "");
+  const std::optional<std::string> cli = PJ::sdk::getEnv("ASSISTANT_CLAUDE_CLI");
+  ClaudeBackend backend(cli.value_or("claude"), "");
   runListTopicsSmoke(backend, "Claude");
 }
+#endif
 
 }  // namespace
 

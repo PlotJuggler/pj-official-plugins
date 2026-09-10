@@ -17,6 +17,9 @@
 #include <unistd.h>
 #endif
 
+#include <optional>
+#include <pj_base/sdk/platform.hpp>
+
 #include "codex_backend.hpp"
 #include "codex_stream.hpp"
 #include "support/backend_test_helpers.hpp"
@@ -345,13 +348,18 @@ TEST(CodexBackend, ConversationMemorySurvivesARebuild) {
 
 // --- Live opt-in smoke ------------------------------------------------------
 
+// POSIX-guarded like the fake-CLI cases above: it spawns the real `codex`, and
+// runProcess() refuses to spawn anything off POSIX.
+#if defined(__unix__) || defined(__APPLE__)
 TEST(CodexSmoke, ListTopicsThroughMcp) {
-  if (std::getenv("ASSISTANT_CODEX_SMOKE") == nullptr) {
+  const std::optional<std::string> enabled = PJ::sdk::getEnv("ASSISTANT_CODEX_SMOKE");
+  if (!enabled) {
     GTEST_SKIP() << "set ASSISTANT_CODEX_SMOKE=1 (needs a logged-in `codex` CLI) to run";
   }
-  const char* cli = std::getenv("ASSISTANT_CODEX_CLI");
-  CodexBackend backend(cli != nullptr ? cli : "codex", "");
+  const std::optional<std::string> cli = PJ::sdk::getEnv("ASSISTANT_CODEX_CLI");
+  CodexBackend backend(cli.value_or("codex"), "");
   runListTopicsSmoke(backend, "Codex");
 }
+#endif
 
 }  // namespace

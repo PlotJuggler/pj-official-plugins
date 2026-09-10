@@ -61,19 +61,48 @@ std::filesystem::path claudeSessionsDir(const std::string& work_dir) {
   return std::filesystem::path(base) / "projects" / claudeCwdSlug(work_dir);
 }
 
-std::optional<std::time_t> parseIso8601Utc(const std::string& iso8601) {
-  int year = 0;
-  int month = 0;
-  int day = 0;
-  int hour = 0;
-  int minute = 0;
-  int second = 0;
-  // sscanf rather than strptime: the latter does not exist on MSVC, and this
-  // plugin is built for Windows too. The fractional seconds and the 'Z' that
-  // follow are irrelevant to a minute-resolution label.
-  if (std::sscanf(iso8601.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d", &year, &month, &day, &hour, &minute, &second) != 6) {
+// Reads exactly `count` decimal digits at `at`, or nothing. No sign, no
+// whitespace, no short field: every producer of these timestamps writes
+// Date.toISOString(), which is fixed width.
+std::optional<int> readFixedDigits(std::string_view text, std::size_t at, std::size_t count) {
+  if (at + count > text.size()) {
     return std::nullopt;
   }
+  int value = 0;
+  for (std::size_t i = at; i < at + count; ++i) {
+    const char digit = text[i];
+    if (digit < '0' || digit > '9') {
+      return std::nullopt;
+    }
+    value = value * 10 + (digit - '0');
+  }
+  return value;
+}
+
+std::optional<std::time_t> parseIso8601Utc(const std::string& iso8601) {
+  // Parsed by hand, not with strptime (absent on MSVC) nor sscanf (deprecated
+  // there, and this repo builds warnings as errors) -- this plugin is built for
+  // Windows too. Only "YYYY-MM-DDTHH:MM:SS" is read; the fractional seconds and
+  // the 'Z' that follow are irrelevant to a minute-resolution label.
+  const std::string_view text(iso8601);
+  if (text.size() < 19 || text[4] != '-' || text[7] != '-' || text[10] != 'T' || text[13] != ':' || text[16] != ':') {
+    return std::nullopt;
+  }
+  const std::optional<int> year_read = readFixedDigits(text, 0, 4);
+  const std::optional<int> month_read = readFixedDigits(text, 5, 2);
+  const std::optional<int> day_read = readFixedDigits(text, 8, 2);
+  const std::optional<int> hour_read = readFixedDigits(text, 11, 2);
+  const std::optional<int> minute_read = readFixedDigits(text, 14, 2);
+  const std::optional<int> second_read = readFixedDigits(text, 17, 2);
+  if (!year_read || !month_read || !day_read || !hour_read || !minute_read || !second_read) {
+    return std::nullopt;
+  }
+  const int year = *year_read;
+  const int month = *month_read;
+  const int day = *day_read;
+  const int hour = *hour_read;
+  const int minute = *minute_read;
+  const int second = *second_read;
   if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 60) {
     return std::nullopt;
   }

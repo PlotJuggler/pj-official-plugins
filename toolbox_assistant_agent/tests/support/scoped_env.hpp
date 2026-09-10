@@ -4,12 +4,12 @@
 
 #include <gtest/gtest.h>
 
-#include <cerrno>
+#include <chrono>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
+#include <pj_base/sdk/platform.hpp>
+#include <random>
 #include <string>
-#include <vector>
 
 namespace assistant_agent::testing {
 
@@ -20,27 +20,35 @@ namespace assistant_agent::testing {
 class ScopedEnv {
  public:
   ScopedEnv(const char* name, const char* value) : name_(name) {
-    if (const char* old = std::getenv(name); old != nullptr) {
+    if (const std::optional<std::string> old = PJ::sdk::getEnv(name)) {
       had_old_ = true;
-      old_ = old;
+      old_ = *old;
     }
-    if (value != nullptr) {
-      setenv(name, value, 1);
-    } else {
-      unsetenv(name);
-    }
+    setEnv(name_, value);
   }
   ~ScopedEnv() {
-    if (had_old_) {
-      setenv(name_.c_str(), old_.c_str(), 1);
-    } else {
-      unsetenv(name_.c_str());
-    }
+    setEnv(name_, had_old_ ? old_.c_str() : nullptr);
   }
   ScopedEnv(const ScopedEnv&) = delete;
   ScopedEnv& operator=(const ScopedEnv&) = delete;
 
  private:
+  // setenv/unsetenv do not exist on MSVC; _putenv_s with an empty value is how
+  // it removes a variable, which is also why an empty value cannot be
+  // distinguished from an unset one there -- the same collapse PJ::sdk::getEnv
+  // already makes on every platform.
+  static void setEnv(const std::string& name, const char* value) {
+#if defined(_WIN32)
+    _putenv_s(name.c_str(), value != nullptr ? value : "");
+#else
+    if (value != nullptr) {
+      setenv(name.c_str(), value, 1);
+    } else {
+      unsetenv(name.c_str());
+    }
+#endif
+  }
+
   std::string name_;
   bool had_old_ = false;
   std::string old_;
@@ -49,15 +57,24 @@ class ScopedEnv {
 // A fresh throwaway directory under the system temp dir; empty (with a test
 // failure recorded) when it cannot be created. The caller removes it.
 inline std::filesystem::path makeTempDir(const char* prefix) {
-  std::string tmpl = (std::filesystem::temp_directory_path() / (std::string(prefix) + "XXXXXX")).string();
-  std::vector<char> buf(tmpl.begin(), tmpl.end());
-  buf.push_back('\0');
-  const char* made = mkdtemp(buf.data());
-  if (made == nullptr) {
-    ADD_FAILURE() << "mkdtemp failed: " << std::strerror(errno);
-    return {};
+  // create_directory() reports whether THIS call created the directory, so the
+  // retry loop is a race-free stand-in for mkdtemp(), which MSVC lacks.
+  std::mt19937_64 rng(static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+  for (int attempt = 0; attempt < 64; ++attempt) {
+    const std::filesystem::path candidate =
+        std::filesystem::temp_directory_path() / (std::string(prefix) + std::to_string(rng()));
+    std::error_code ec;
+    if (std::filesystem::create_directory(candidate, ec)) {
+      return candidate;
+    }
+    if (ec) {
+      ADD_FAILURE() << "could not create a temp dir under " << std::filesystem::temp_directory_path() << ": "
+                    << ec.message();
+      return {};
+    }
   }
-  return std::filesystem::path(made);
+  ADD_FAILURE() << "could not find a free temp dir name for prefix " << prefix;
+  return {};
 }
 
 }  // namespace assistant_agent::testing
