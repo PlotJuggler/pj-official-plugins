@@ -27,6 +27,7 @@
 #include <iostream>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <numbers>
 #include <optional>
 #include <pj_base/sdk/platform.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
@@ -198,8 +199,8 @@ void populate(PJ::testing::ToolboxTestStore& store) {
   for (int i = 0; i < kSamples; ++i) {
     const double t = static_cast<double>(i) / kSampleHz;
     ts.push_back(static_cast<std::int64_t>(t * 1e9));
-    sin_v.push_back(std::sin(2.0 * M_PI * 1.0 * t));  // 1 Hz
-    cos_v.push_back(std::cos(2.0 * M_PI * 1.0 * t));
+    sin_v.push_back(std::sin(2.0 * std::numbers::pi_v<double> * 1.0 * t));  // 1 Hz
+    cos_v.push_back(std::cos(2.0 * std::numbers::pi_v<double> * 1.0 * t));
   }
   store.addTopic("test/sin");
   store.addField("test/sin", "value", ts, sin_v);
