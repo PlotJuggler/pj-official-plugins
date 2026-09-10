@@ -45,6 +45,10 @@ while [[ "${1:-}" == -* ]]; do
       SANITIZE=asan
       shift
       ;;
+    --tsan)
+      SANITIZE=tsan
+      shift
+      ;;
     --sdk-local)
       SDK_LOCAL_DIR="$HOME/ws_plotjuggler/plotjuggler_sdk"
       shift
@@ -131,6 +135,23 @@ if [[ "$SANITIZE" == "asan" ]]; then
   echo "Sanitizer: AddressSanitizer (plugin targets only; Conan deps unchanged)"
 fi
 
+if [[ "$SANITIZE" == "tsan" ]]; then
+  BUILD_DIR="${BUILD_DIR/\/build\//\/build\/tsan\/}"
+  CMAKE_BUILD_DIR="$BUILD_DIR/$BUILD_TYPE"
+  CMAKE_ARGS+=(
+    "-DCMAKE_CXX_FLAGS=-fsanitize=thread -fno-omit-frame-pointer -g"
+    "-DCMAKE_C_FLAGS=-fsanitize=thread -fno-omit-frame-pointer -g"
+    "-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=thread"
+    "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread"
+    "-DPJ_PLUGINS_NO_WERROR=ON"
+    # Unlike the ASan lane, tests are the POINT here. TSan reports races only in
+    # code that actually runs, so a lane that builds plugin .so files without
+    # executing anything would report nothing no matter how racy the plugins are.
+    "-DBUILD_TESTING=ON"
+  )
+  echo "Sanitizer: ThreadSanitizer (plugin targets only; Conan deps unchanged)"
+fi
+
 IS_WINDOWS=false
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
   IS_WINDOWS=true
@@ -191,3 +212,24 @@ cmake -S "$SCRIPT_DIR" -B "$CMAKE_BUILD_DIR" -G Ninja \
   ${CMAKE_ARGS[@]+"${CMAKE_ARGS[@]}"}
 
 cmake --build "$CMAKE_BUILD_DIR" --config "$BUILD_TYPE" --parallel
+
+if [[ "$SANITIZE" == "tsan" ]]; then
+  # GCC's ThreadSanitizer aborts with "unexpected memory mapping" before running
+  # any test when the kernel randomises mmap more widely than its fixed shadow
+  # ranges (vm.mmap_rnd_bits=32 on current kernels). Disabling randomisation for
+  # the test process avoids a host sysctl change; the personality syscall it needs
+  # is denied by Docker's default seccomp profile, so the app repo's container
+  # wrapper relaxes seccomp for this lane. If the call is still refused, run
+  # unwrapped and let the runtime report rather than reporting a lane that passed
+  # without executing anything.
+  tsan_launch=()
+  if setarch -R true >/dev/null 2>&1; then
+    tsan_launch=(setarch -R)
+  else
+    echo "warning: 'setarch -R' unavailable; ThreadSanitizer may abort before running tests." >&2
+  fi
+  QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}" \
+  TSAN_OPTIONS="halt_on_error=1 history_size=4 ${TSAN_OPTIONS:-}" \
+    ${tsan_launch[@]+"${tsan_launch[@]}"} \
+    ctest --test-dir "$CMAKE_BUILD_DIR" --output-on-failure --timeout 120
+fi
