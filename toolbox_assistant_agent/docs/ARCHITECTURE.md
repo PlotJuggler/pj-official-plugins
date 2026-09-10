@@ -168,9 +168,9 @@ instructions forbid it anyway.
 
 ### The integration line
 
-The three drafts that serve the assistant (PJ4 #573 and #619, plotjuggler_sdk #184) are
-built and driven together, never one at a time (`NORTH_STAR.md` §4). `tools/integration.sh`
-(`ROADMAP.md` → Next, item 3) makes that mechanical: it refreshes a local, never-pushed `integration/assistant` worktree of PJ4
+Every open change that serves the assistant (PJ4 #573 and #619, plotjuggler_sdk #198) is
+built and driven together, never one at a time (`ROADMAP.md` → How this is verified).
+`tools/integration.sh` makes that mechanical: it refreshes a local, never-pushed `integration/assistant` worktree of PJ4
 (`alvvm/assistant-host-ux` with `fix/dataset-qualified-inputs` merged in, host-ux winning on the
 Conan pin), points it at the SDK worktree of #184, builds, runs the
 tests, and copies the host and the plugin into a deploy directory — a copy, because overwriting a

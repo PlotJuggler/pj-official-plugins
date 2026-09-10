@@ -25,14 +25,17 @@ runs behind exposes no such operation. There is no delete tool to withhold.
 | Backend | What it is | Cost |
 |---|---|---|
 | **Claude Code** | Drives your existing `claude` CLI subscription headlessly. Tools are exposed over a loopback MCP server the plugin starts itself. No API key, no per-token billing. | Your subscription |
+| **Codex** | Drives your existing `codex` CLI subscription headlessly, over the same loopback MCP server. Usage is reported in tokens; Codex does not report a price. | Your subscription |
 | **Echo / Fake** | No model. Used for wiring tests. | — |
 
-The direction is harness CLIs only (`docs/NORTH_STAR.md`): Codex and OpenCode join through the
-same pattern as Claude Code. The Ollama backend that used to run a local model in-plugin was
-retired with that decision.
+The direction is harness CLIs only (`docs/ROADMAP.md`): a backend is a headless agent CLI that
+owns its own memory, auth and agentic loop. The Ollama backend that used to run a local model
+in-plugin was retired with that decision.
 
-For the Claude backend every built-in tool is disabled (`--tools ""`), so the model reaches
-*only* the twelve tools below — it cannot touch your machine outside PlotJuggler.
+Either way the model reaches *only* the twelve tools below — it cannot touch your machine
+outside PlotJuggler. On Claude Code every built-in tool is disabled with `--tools ""`; on Codex
+the same property comes from Code Mode's sealed JavaScript sandbox, which has no `require`,
+`process` or `fetch`.
 
 ## The twelve tools
 
@@ -129,6 +132,16 @@ Changing a setting rebuilds the backend but **keeps the conversation**: the outg
 backends share the same memory, so the Claude session id survives and the model can still answer a
 question about what you asked it four turns ago. Switching model mid-chat is fine. Use **New chat**
 when you want a clean slate.
+
+## Host requirements
+
+Needs a PlotJuggler host that provides the owned-plot-tab, playback and viewport services, and an
+SDK that carries the dataset-qualified naming contract. `min_sdk_required` is 0.28.0.
+
+One capability degrades instead of failing. Keeping a derived series or marker set out of the
+undo/redo history needs an SDK flag that is not released yet: where the host cannot honour it, the
+assistant says so in its reply as `undo_protection: "unavailable on this host"` rather than
+pretending the creation is protected. Everything else works on any host that meets the floor.
 
 ## Documentation
 

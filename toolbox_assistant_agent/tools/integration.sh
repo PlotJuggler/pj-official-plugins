@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The integration line for the Assistant Agent (NORTH_STAR.md §4, ARCHITECTURE.md → The
-# integration line): every open draft that serves the assistant, built and deployed together.
+# The integration line for the Assistant Agent (ROADMAP.md → How this is verified,
+# ARCHITECTURE.md → The integration line): every open change that serves the assistant,
+# built and deployed together.
 #
 #   SDK     : the worktree of the single SDK PR (#184), exported to the local Conan cache
 #   PJ4     : a LOCAL, never-pushed branch `integration/assistant` = host-ux + #619, pinned to

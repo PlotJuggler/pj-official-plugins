@@ -180,7 +180,7 @@ ambiguity is already gone.
   the turn. Now clamped, like `read_series` already was.
 - **Ollama had no memory.** It rebuilt its message list from scratch every turn, so it forgot
   the conversation. Claude does not have this problem because the CLI owns the session.
-  (Historical: the Ollama backend was later retired — `NORTH_STAR.md`. The lesson stands for
+  (Historical: the Ollama backend was later retired — `ROADMAP.md` → Not planned. The lesson stands for
   any future backend that owns its own history.)
 - **Streaming would have broken the transcript.** Each assistant event created a *new* message,
   so a streamed reply would have rendered one fragment per line. Chunks now append.
