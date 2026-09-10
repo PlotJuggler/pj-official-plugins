@@ -11,6 +11,8 @@
 
 namespace assistant_agent {
 
+#if defined(__unix__) || defined(__APPLE__)
+
 bool ensureWorkDir(std::string& work_dir, std::string& err) {
   if (!work_dir.empty()) {
     return true;
@@ -41,5 +43,23 @@ bool ensureWorkDir(std::string& work_dir, std::string& err) {
   work_dir = dir;
   return true;
 }
+
+#else
+
+// The directory this resolves to has to be one WE own, checked with lstat and
+// getuid so a planted symlink cannot redirect the CLI's session state. Windows
+// expresses that ownership differently, and nothing else in this plugin runs
+// there anyway -- runProcess (subprocess.hpp) refuses to spawn the CLI off
+// POSIX -- so fail closed with the same shape rather than settle for a weaker
+// check.
+bool ensureWorkDir(std::string& work_dir, std::string& err) {
+  if (!work_dir.empty()) {
+    return true;
+  }
+  err = "the assistant's working directory is only supported on POSIX platforms";
+  return false;
+}
+
+#endif
 
 }  // namespace assistant_agent

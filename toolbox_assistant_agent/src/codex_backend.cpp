@@ -2,10 +2,6 @@
 // SPDX-License-Identifier: MIT
 #include "codex_backend.hpp"
 
-#if defined(__unix__) || defined(__APPLE__)
-#include <unistd.h>  // mkstemp/write/close/unlink for the private instructions file
-#endif
-
 #include <string>
 #include <utility>
 #include <vector>
@@ -15,7 +11,7 @@
 #include "codex_sessions.hpp"
 #include "codex_stream.hpp"
 #include "harness_workdir.hpp"
-#include "private_file.hpp"  // writePrivateTempFile
+#include "private_file.hpp"  // writePrivateTempFile / removePrivateTempFile
 #include "stream_json.hpp"   // NdjsonSplitter (generic; not Claude-specific)
 #include "subprocess.hpp"
 #include "system_prompt.hpp"
@@ -89,7 +85,7 @@ CodexBackend::CodexBackend(std::string cli_path, std::string model, std::shared_
 
 CodexBackend::~CodexBackend() {
   if (!instructions_path_.empty()) {
-    unlink(instructions_path_.c_str());
+    removePrivateTempFile(instructions_path_);
   }
   // mcp_'s own destructor (McpLoopback) tears down the loopback server; it
   // never wrote a config FILE for Codex (url()/token() go straight into argv

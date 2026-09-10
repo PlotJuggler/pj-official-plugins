@@ -19,6 +19,12 @@ namespace assistant_agent {
 // POSIX only, same fallback shape as subprocess.hpp's runProcess.
 [[nodiscard]] bool writePrivateTempFile(const char* tmpl_prefix, const std::string& contents, std::string& out_path);
 
+// Removes a file writePrivateTempFile created. Callers hold these paths in a
+// member and drop them in a destructor, so this cannot report failure: an
+// already-gone file is the outcome they wanted. No-op off POSIX, where
+// writePrivateTempFile never created one.
+void removePrivateTempFile(const std::string& path);
+
 }  // namespace assistant_agent
 
 #if defined(__unix__) || defined(__APPLE__)
@@ -50,6 +56,12 @@ inline bool writePrivateTempFile(const char* tmpl_prefix, const std::string& con
   return true;
 }
 
+inline void removePrivateTempFile(const std::string& path) {
+  if (!path.empty()) {
+    unlink(path.c_str());
+  }
+}
+
 }  // namespace assistant_agent
 
 #else
@@ -58,6 +70,7 @@ namespace assistant_agent {
 inline bool writePrivateTempFile(const char*, const std::string&, std::string&) {
   return false;
 }
+inline void removePrivateTempFile(const std::string&) {}
 }  // namespace assistant_agent
 
 #endif

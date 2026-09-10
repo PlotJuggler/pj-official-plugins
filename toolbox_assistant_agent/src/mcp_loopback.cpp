@@ -2,18 +2,12 @@
 // SPDX-License-Identifier: MIT
 #include "mcp_loopback.hpp"
 
-#if defined(__unix__) || defined(__APPLE__)
-#include <unistd.h>  // unlink for the private MCP config file
-#endif
-
-#include "private_file.hpp"  // writePrivateTempFile
+#include "private_file.hpp"  // writePrivateTempFile / removePrivateTempFile
 
 namespace assistant_agent {
 
 McpLoopback::~McpLoopback() {
-  if (!config_path_.empty()) {
-    unlink(config_path_.c_str());
-  }
+  removePrivateTempFile(config_path_);
 }
 
 bool McpLoopback::ensure(const TurnTools& tools, std::string& err) {
