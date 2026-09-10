@@ -33,9 +33,11 @@ owns its own memory, auth and agentic loop. The Ollama backend that used to run 
 in-plugin was retired with that decision.
 
 Either way the model reaches *only* the twelve tools below — it cannot touch your machine
-outside PlotJuggler. On Claude Code every built-in tool is disabled with `--tools ""`; on Codex
-the same property comes from Code Mode's sealed JavaScript sandbox, which has no `require`,
-`process` or `fetch`.
+outside PlotJuggler. On Claude Code every built-in tool is disabled with `--tools ""`. Codex has no
+equivalent single switch, so the same property comes from the `-c` config values plus seven
+`--disable`s in `buildCodexArgv` — shell tool, unified exec, web search, view_image, a read-only
+sandbox, and the rest. Code Mode is not what withholds them: it is the JavaScript host our own MCP
+tools run inside, which is why it stays on.
 
 ## The twelve tools
 
@@ -139,9 +141,11 @@ Needs a PlotJuggler host that provides the owned-plot-tab, playback and viewport
 SDK that carries the dataset-qualified naming contract. `min_sdk_required` is 0.28.0.
 
 One capability degrades instead of failing. Keeping a derived series or marker set out of the
-undo/redo history needs an SDK flag that is not released yet: where the host cannot honour it, the
-assistant says so in its reply as `undo_protection: "unavailable on this host"` rather than
-pretending the creation is protected. Everything else works on any host that meets the floor.
+undo/redo history needs an SDK flag that is not released yet, so in every build shipped so far
+there is nothing to request and an undo really can remove the node. The assistant is told, and says
+so in its reply as `undo_protection: "unavailable: an undo can remove this"`, rather than pretending
+the creation is protected; the same disclosure covers a host that rejects the flag or does not
+confirm it. Everything else works on any host that meets the floor.
 
 ## Documentation
 

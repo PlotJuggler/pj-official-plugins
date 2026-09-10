@@ -3,7 +3,7 @@
 # ARCHITECTURE.md → The integration line): every open change that serves the assistant,
 # built and deployed together.
 #
-#   SDK     : the worktree of the single SDK PR (#184), exported to the local Conan cache
+#   SDK     : the worktree of the open SDK PR (#198), exported to the local Conan cache
 #   PJ4     : a LOCAL, never-pushed branch `integration/assistant` = host-ux + #619, pinned to
 #             that export, built with the host tests
 #   plugin  : this repo's assistant branch, built against the same export
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 PJ4="${PJ4:-$HOME/Work/PJ4}"
-SDK_WT="${SDK_WT:-$HOME/Work/plotjuggler_sdk/.worktrees/playback-viewport}"
+SDK_WT="${SDK_WT:-$HOME/Work/plotjuggler_sdk/.worktrees/history-exempt}"
 PLUGINS="${PLUGINS:-$HOME/Work/pj-official-plugins/.worktrees/assistant}"
 DEPLOY="${DEPLOY:-$HOME/Work/assistant-demo/deploy}"
 HOST_BRANCH="${HOST_BRANCH:-alvvm/assistant-host-ux}"
