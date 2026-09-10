@@ -23,6 +23,7 @@
 #include <fstream>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <pj_base/sdk/platform.hpp>
 #include <pj_base/sdk/settings_store_host.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <string>
@@ -80,11 +81,26 @@ TEST(AssistantDialogUi, TranscriptOptsIntoMarkdownWithoutRequiringANewWidgetClas
   EXPECT_NE(ui.find(R"(<property name="pjFollowTail" stdset="0"><bool>true</bool></property>)"), std::string::npos);
 }
 
-// Mirrors ClaudeBackend::ensureWorkDir's own resolution (claude_backend.cpp):
-// $XDG_STATE_HOME (unset here) else $HOME/.local/state, then the fixed
-// "pj-assistant-cli" leaf.
-std::filesystem::path expectedWorkDir(const std::filesystem::path& home) {
-  return home / ".local/state/pj-assistant-cli";
+// Mirrors ensureWorkDir's own resolution (harness_workdir.cpp): the SDK's
+// per-user data dir plus the fixed "pj-assistant-cli" leaf. Asking the SDK
+// rather than spelling the layout out keeps this correct on all three
+// platforms -- the fixtures below redirect userDataDir() into a temp dir.
+std::filesystem::path expectedWorkDir() {
+  return PJ::sdk::userDataDir() / "pj-assistant-cli";
+}
+
+// Proves the redirection above actually took: without it these tests would
+// still pass (they seed and read the same path production computes) while
+// quietly creating a directory in the developer's -- or the CI runner's --
+// real home. Called by every fixture right after its ScopedEnvs are in place.
+::testing::AssertionResult workDirIsInside(const std::filesystem::path& home) {
+  const std::string work = expectedWorkDir().string();
+  const std::string root = home.string();
+  if (work.rfind(root, 0) == 0) {
+    return ::testing::AssertionSuccess();
+  }
+  return ::testing::AssertionFailure() << "the work dir resolved to " << work << ", which is outside the test's "
+                                       << root << " -- PJ::sdk::userDataDir() was not redirected";
 }
 
 // A fresh $HOME per test, with two fixtures pre-seeded into the exact
@@ -96,23 +112,21 @@ class AssistantDialogDrawerTest : public ::testing::Test {
     home_ = makeTempDir("assistant_dialog_test_");
     ASSERT_FALSE(home_.empty());
     home_env_ = std::make_unique<ScopedEnv>("HOME", home_);
-    xdg_env_ = std::make_unique<ScopedEnv>("XDG_STATE_HOME", nullptr);
+    // PJ::sdk::userDataDir() reads XDG_DATA_HOME then HOME on Linux, HOME on
+    // macOS, and LOCALAPPDATA on Windows. Clearing the first and pointing the
+    // other two at this temp dir lands the work dir inside it everywhere.
+    xdg_env_ = std::make_unique<ScopedEnv>("XDG_DATA_HOME", nullptr);
+    localappdata_env_ = std::make_unique<ScopedEnv>("LOCALAPPDATA", home_);
     cfg_env_ = std::make_unique<ScopedEnv>("CLAUDE_CONFIG_DIR", nullptr);
     // The drawer stamps each row with the conversation's LOCAL time; pin the
     // zone so the row texts asserted below do not move with the machine.
     tz_env_ = std::make_unique<ScopedEnv>("TZ", "UTC");
     refreshTimezone();
+    ASSERT_TRUE(workDirIsInside(home_));
 
-    // ClaudeBackend::ensureWorkDir mkdir()s only the LAST path component,
-    // trusting "$HOME/.local/state" to already exist (true on any real
-    // desktop; comment there: "XDG_STATE_HOME normally exists"). A bare
-    // mkdtemp() $HOME has neither, so create the parent ourselves -- this
-    // mirrors reality, it isn't a production code change.
     std::error_code ec;
-    std::filesystem::create_directories(home_ / ".local/state", ec);
-    ASSERT_FALSE(ec) << (home_ / ".local/state") << ": " << ec.message();
 
-    const std::filesystem::path sessions_dir = claudeSessionsDir(expectedWorkDir(home_).string());
+    const std::filesystem::path sessions_dir = claudeSessionsDir(expectedWorkDir().string());
     std::filesystem::create_directories(sessions_dir, ec);
     ASSERT_FALSE(ec) << sessions_dir << ": " << ec.message();
     for (const char* name : {"session_alpha.jsonl", "session_gamma.jsonl"}) {
@@ -148,6 +162,7 @@ class AssistantDialogDrawerTest : public ::testing::Test {
   std::filesystem::path home_;
   std::unique_ptr<ScopedEnv> home_env_;
   std::unique_ptr<ScopedEnv> xdg_env_;
+  std::unique_ptr<ScopedEnv> localappdata_env_;
   std::unique_ptr<ScopedEnv> cfg_env_;
   std::unique_ptr<ScopedEnv> tz_env_;
   PJ::sdk::InMemorySettingsBackend backend_;
@@ -222,7 +237,7 @@ TEST_F(AssistantDialogDrawerTest, DeletingTheActiveConversationStartsANewOneAndR
 
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "");
 
-  const std::filesystem::path gamma_file = claudeSessionsDir(expectedWorkDir(home_).string()) / "session_gamma.jsonl";
+  const std::filesystem::path gamma_file = claudeSessionsDir(expectedWorkDir().string()) / "session_gamma.jsonl";
   EXPECT_FALSE(std::filesystem::exists(gamma_file)) << "the file itself must be gone, not just delisted";
 }
 
@@ -271,7 +286,7 @@ TEST_F(AssistantDialogDrawerTest, EveryCompletionRefreshesAndSelectsTheNewConver
   ASSERT_TRUE(dialog.onClicked("newChatButton"));
   (void)snapshot(dialog);
 
-  const std::filesystem::path sessions_dir = claudeSessionsDir(expectedWorkDir(home_).string());
+  const std::filesystem::path sessions_dir = claudeSessionsDir(expectedWorkDir().string());
   std::ifstream source(sessions_dir / "session_alpha.jsonl");
   ASSERT_TRUE(source.is_open());
   std::string contents((std::istreambuf_iterator<char>(source)), std::istreambuf_iterator<char>());
@@ -398,7 +413,7 @@ TEST_F(AssistantDialogDrawerTest, PruningDropsACustomNameWhoseConversationIsGone
   // Simulate the harness's own retention purging the file -- not our delete
   // path, so this proves the prune is driven by the LISTING, not by onItemDeleteRequested.
   std::error_code ec;
-  std::filesystem::remove(claudeSessionsDir(expectedWorkDir(home_).string()) / "session_gamma.jsonl", ec);
+  std::filesystem::remove(claudeSessionsDir(expectedWorkDir().string()) / "session_gamma.jsonl", ec);
   ASSERT_FALSE(ec);
 
   AssistantDialog dialog2;
@@ -492,21 +507,24 @@ class AssistantDialogCodexDrawerTest : public ::testing::Test {
     home_ = makeTempDir("assistant_dialog_codex_test_");
     ASSERT_FALSE(home_.empty());
     home_env_ = std::make_unique<ScopedEnv>("HOME", home_);
-    xdg_env_ = std::make_unique<ScopedEnv>("XDG_STATE_HOME", nullptr);
+    // PJ::sdk::userDataDir() reads XDG_DATA_HOME then HOME on Linux, HOME on
+    // macOS, and LOCALAPPDATA on Windows. Clearing the first and pointing the
+    // other two at this temp dir lands the work dir inside it everywhere.
+    xdg_env_ = std::make_unique<ScopedEnv>("XDG_DATA_HOME", nullptr);
+    localappdata_env_ = std::make_unique<ScopedEnv>("LOCALAPPDATA", home_);
     cfg_env_ = std::make_unique<ScopedEnv>("CLAUDE_CONFIG_DIR", nullptr);
     codex_home_ = makeTempDir("assistant_dialog_codex_home_");
     ASSERT_FALSE(codex_home_.empty());
     codex_home_env_ = std::make_unique<ScopedEnv>("CODEX_HOME", codex_home_);
     tz_env_ = std::make_unique<ScopedEnv>("TZ", "UTC");
     refreshTimezone();
+    ASSERT_TRUE(workDirIsInside(home_));
 
     std::error_code ec;
-    std::filesystem::create_directories(home_ / ".local/state", ec);
-    ASSERT_FALSE(ec) << (home_ / ".local/state") << ": " << ec.message();
 
     // CodexBackend's work dir resolves through the SAME harness_workdir.hpp
     // rules as Claude's (see expectedWorkDir above).
-    const std::string work_dir = expectedWorkDir(home_).string();
+    const std::string work_dir = expectedWorkDir().string();
     const std::filesystem::path sessions_dir = codex_home_ / "sessions" / "2026" / "09" / "03";
     std::filesystem::create_directories(sessions_dir, ec);
     ASSERT_FALSE(ec) << sessions_dir << ": " << ec.message();
@@ -549,6 +567,7 @@ class AssistantDialogCodexDrawerTest : public ::testing::Test {
   std::filesystem::path codex_home_;
   std::unique_ptr<ScopedEnv> home_env_;
   std::unique_ptr<ScopedEnv> xdg_env_;
+  std::unique_ptr<ScopedEnv> localappdata_env_;
   std::unique_ptr<ScopedEnv> cfg_env_;
   std::unique_ptr<ScopedEnv> codex_home_env_;
   std::unique_ptr<ScopedEnv> tz_env_;
@@ -650,7 +669,7 @@ TEST_F(AssistantDialogCodexDrawerTest, FirstCompletionRefreshesAndSelectsTheNewR
   const std::filesystem::path rollout =
       codex_home_ / "sessions" / "2026" / "09" / "03" / "rollout-2026-09-03T10-00-00-codex_new.jsonl";
   writeCodexFixture(
-      rollout, "codex_new", expectedWorkDir(home_).string(), "2026-09-03T10:00:00.000Z", "Inspect fresh data",
+      rollout, "codex_new", expectedWorkDir().string(), "2026-09-03T10:00:00.000Z", "Inspect fresh data",
       "The fresh data is ready.", "2026-09-03T10:00:05.000Z");
 
   AssistantDialogTestPeer::setCompletedSession(dialog, "codex_new");
@@ -676,18 +695,19 @@ TEST(AssistantDialogBackendSwitch, ClaudeCodexClaudeKeepsBothSessionIds) {
   const std::filesystem::path home = makeTempDir("assistant_dialog_switch_test_");
   ASSERT_FALSE(home.empty());
   ScopedEnv home_env("HOME", home);
-  ScopedEnv xdg_env("XDG_STATE_HOME", nullptr);
+  // See the fixtures above: this is what puts userDataDir() inside `home`.
+  ScopedEnv xdg_env("XDG_DATA_HOME", nullptr);
+  ScopedEnv localappdata_env("LOCALAPPDATA", home);
   ScopedEnv cfg_env("CLAUDE_CONFIG_DIR", nullptr);
   const std::filesystem::path codex_home = makeTempDir("assistant_dialog_switch_codex_home_");
   ASSERT_FALSE(codex_home.empty());
   ScopedEnv codex_home_env("CODEX_HOME", codex_home);
   ScopedEnv tz_env("TZ", "UTC");
   refreshTimezone();
+  ASSERT_TRUE(workDirIsInside(home));
 
   std::error_code ec;
-  std::filesystem::create_directories(home / ".local/state", ec);
-  ASSERT_FALSE(ec);
-  const std::string work_dir = expectedWorkDir(home).string();
+  const std::string work_dir = expectedWorkDir().string();
 
   const std::filesystem::path claude_sessions_dir = claudeSessionsDir(work_dir);
   std::filesystem::create_directories(claude_sessions_dir, ec);
@@ -765,18 +785,21 @@ class AssistantDialogSettingsSwitchTest : public ::testing::Test {
     home_ = makeTempDir("assistant_settings_switch_test_");
     ASSERT_FALSE(home_.empty());
     home_env_ = std::make_unique<ScopedEnv>("HOME", home_);
-    xdg_env_ = std::make_unique<ScopedEnv>("XDG_STATE_HOME", nullptr);
+    // PJ::sdk::userDataDir() reads XDG_DATA_HOME then HOME on Linux, HOME on
+    // macOS, and LOCALAPPDATA on Windows. Clearing the first and pointing the
+    // other two at this temp dir lands the work dir inside it everywhere.
+    xdg_env_ = std::make_unique<ScopedEnv>("XDG_DATA_HOME", nullptr);
+    localappdata_env_ = std::make_unique<ScopedEnv>("LOCALAPPDATA", home_);
     cfg_env_ = std::make_unique<ScopedEnv>("CLAUDE_CONFIG_DIR", nullptr);
     codex_home_ = makeTempDir("assistant_settings_switch_codex_home_");
     ASSERT_FALSE(codex_home_.empty());
     codex_home_env_ = std::make_unique<ScopedEnv>("CODEX_HOME", codex_home_);
     tz_env_ = std::make_unique<ScopedEnv>("TZ", "UTC");
     refreshTimezone();
+    ASSERT_TRUE(workDirIsInside(home_));
 
     std::error_code ec;
-    std::filesystem::create_directories(home_ / ".local/state", ec);
-    ASSERT_FALSE(ec) << (home_ / ".local/state") << ": " << ec.message();
-    const std::string work_dir = expectedWorkDir(home_).string();
+    const std::string work_dir = expectedWorkDir().string();
 
     const std::filesystem::path claude_sessions_dir = claudeSessionsDir(work_dir);
     std::filesystem::create_directories(claude_sessions_dir, ec);
@@ -826,6 +849,7 @@ class AssistantDialogSettingsSwitchTest : public ::testing::Test {
   std::filesystem::path codex_home_;
   std::unique_ptr<ScopedEnv> home_env_;
   std::unique_ptr<ScopedEnv> xdg_env_;
+  std::unique_ptr<ScopedEnv> localappdata_env_;
   std::unique_ptr<ScopedEnv> cfg_env_;
   std::unique_ptr<ScopedEnv> codex_home_env_;
   std::unique_ptr<ScopedEnv> tz_env_;
