@@ -3,12 +3,14 @@
 #include "claude_sessions.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <ctime>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_base/sdk/platform.hpp>
+#include <pj_base/time_format.hpp>
 #include <string_view>
 
 namespace assistant_agent {
@@ -61,61 +63,23 @@ std::filesystem::path claudeSessionsDir(const std::string& work_dir) {
   return std::filesystem::path(base) / "projects" / claudeCwdSlug(work_dir);
 }
 
-// Reads exactly `count` decimal digits at `at`, or nothing. No sign, no
-// whitespace, no short field: every producer of these timestamps writes
-// Date.toISOString(), which is fixed width.
-std::optional<int> readFixedDigits(std::string_view text, std::size_t at, std::size_t count) {
-  if (at + count > text.size()) {
-    return std::nullopt;
-  }
-  int value = 0;
-  for (std::size_t i = at; i < at + count; ++i) {
-    const char digit = text[i];
-    if (digit < '0' || digit > '9') {
-      return std::nullopt;
-    }
-    value = value * 10 + (digit - '0');
-  }
-  return value;
-}
-
 std::optional<std::time_t> parseIso8601Utc(const std::string& iso8601) {
-  // Parsed by hand, not with strptime (absent on MSVC) nor sscanf (deprecated
-  // there, and this repo builds warnings as errors) -- this plugin is built for
-  // Windows too. Only "YYYY-MM-DDTHH:MM:SS" is read; the fractional seconds and
-  // the 'Z' that follow are irrelevant to a minute-resolution label.
-  const std::string_view text(iso8601);
-  if (text.size() < 19 || text[4] != '-' || text[7] != '-' || text[10] != 'T' || text[13] != ':' || text[16] != ':') {
+  // PJ::parseIso8601Utc (pj_base/time_format.hpp) owns the parse: it is strict
+  // about the calendar, understands the fractional seconds and the zone suffix
+  // (Z or a numeric offset), and is locale-independent. It answers in Unix
+  // nanoseconds; the drawer only ever labels to the minute, so this narrows to
+  // whole seconds, flooring rather than truncating so a pre-epoch timestamp
+  // lands on the second that contains it.
+  const std::optional<std::int64_t> ns = PJ::parseIso8601Utc(iso8601);
+  if (!ns) {
     return std::nullopt;
   }
-  const std::optional<int> year_read = readFixedDigits(text, 0, 4);
-  const std::optional<int> month_read = readFixedDigits(text, 5, 2);
-  const std::optional<int> day_read = readFixedDigits(text, 8, 2);
-  const std::optional<int> hour_read = readFixedDigits(text, 11, 2);
-  const std::optional<int> minute_read = readFixedDigits(text, 14, 2);
-  const std::optional<int> second_read = readFixedDigits(text, 17, 2);
-  if (!year_read || !month_read || !day_read || !hour_read || !minute_read || !second_read) {
-    return std::nullopt;
+  constexpr std::int64_t kNsPerSecond = 1'000'000'000;
+  std::int64_t seconds = *ns / kNsPerSecond;
+  if (*ns % kNsPerSecond != 0 && *ns < 0) {
+    --seconds;
   }
-  const int year = *year_read;
-  const int month = *month_read;
-  const int day = *day_read;
-  const int hour = *hour_read;
-  const int minute = *minute_read;
-  const int second = *second_read;
-  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 60) {
-    return std::nullopt;
-  }
-  // Civil date -> days since the Unix epoch (Howard Hinnant's algorithm), so
-  // no timegm()/_mkgmtime() portability split is needed.
-  const int shifted_year = year - (month <= 2 ? 1 : 0);
-  const int era = (shifted_year >= 0 ? shifted_year : shifted_year - 399) / 400;
-  const unsigned year_of_era = static_cast<unsigned>(shifted_year - era * 400);
-  const unsigned shifted_month = static_cast<unsigned>(month > 2 ? month - 3 : month + 9);
-  const unsigned day_of_year = (153U * shifted_month + 2U) / 5U + static_cast<unsigned>(day) - 1U;
-  const unsigned day_of_era = year_of_era * 365U + year_of_era / 4U - year_of_era / 100U + day_of_year;
-  const long long days = static_cast<long long>(era) * 146097LL + static_cast<long long>(day_of_era) - 719468LL;
-  return static_cast<std::time_t>(days * 86400LL + hour * 3600LL + minute * 60LL + second);
+  return static_cast<std::time_t>(seconds);
 }
 
 std::string formatShortDate(const std::string& iso8601, bool local) {

@@ -29,7 +29,9 @@
 #include <nlohmann/json.hpp>
 #include <numbers>
 #include <optional>
+#include <pj_base/number_parse.hpp>
 #include <pj_base/sdk/platform.hpp>
+#include <pj_base/sdk/text_utils.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <string>
 #include <vector>
@@ -81,7 +83,7 @@ int envInt(const char* name, int fallback) {
   if (!raw) {
     return fallback;
   }
-  const int parsed = std::atoi(raw->c_str());
+  const int parsed = PJ::parseNumber<int>(*raw).value_or(0);
   return parsed > 0 ? parsed : fallback;
 }
 
@@ -90,13 +92,14 @@ double envDouble(const char* name, double fallback) {
   if (!raw) {
     return fallback;
   }
-  const double parsed = std::atof(raw->c_str());
+  // PJ::parseNumber, not std::atof: whole-string, and locale-independent (atof
+  // follows LC_NUMERIC and would read "0.5" as 0 under a comma-decimal locale).
+  const double parsed = PJ::parseNumber<double>(*raw).value_or(0.0);
   return parsed > 0.0 ? parsed : fallback;
 }
 
 std::string lower(std::string s) {
-  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return s;
+  return PJ::sdk::lowerAscii(std::move(s));
 }
 
 bool contains(const std::string& haystack, const std::string& needle) {
@@ -130,11 +133,11 @@ bool mentionsNumber(const std::string& text, double want, double tol) {
              ((std::isdigit(static_cast<unsigned char>(text[end])) != 0) || text[end] == '.' || text[end] == '-')) {
         ++end;
       }
-      try {
-        if (std::fabs(std::stod(text.substr(i, end - i)) - want) <= tol) {
-          return true;
-        }
-      } catch (...) {  // NOLINT(bugprone-empty-catch) — a token that isn't a number is simply not a match
+      // A token that isn't a number is simply not a match; parseNumber says so
+      // with nullopt instead of throwing, and does not follow LC_NUMERIC.
+      if (const std::optional<double> value = PJ::parseNumber<double>(text.substr(i, end - i));
+          value && std::fabs(*value - want) <= tol) {
+        return true;
       }
       i = end;
     } else {

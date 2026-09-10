@@ -178,6 +178,11 @@ TEST(ParseIso8601Utc, EpochSecondsAcrossLeapYearsAndCenturies) {
   EXPECT_FALSE(parseIso8601Utc("").has_value());
   EXPECT_FALSE(parseIso8601Utc("not a timestamp").has_value());
   EXPECT_FALSE(parseIso8601Utc("2026-13-01T00:00:00Z").has_value());
+  // What the SDK parser gives that a fixed-offset read of the first 19
+  // characters could not: the calendar is actually checked, and a numeric zone
+  // is applied rather than assumed to be UTC.
+  EXPECT_FALSE(parseIso8601Utc("2026-02-31T00:00:00Z").has_value());
+  EXPECT_EQ(parseIso8601Utc("2026-09-01T17:17:30.326+02:00"), 1788275850);
 }
 
 TEST(FormatShortDate, FormatsInUtcWhenAsked) {

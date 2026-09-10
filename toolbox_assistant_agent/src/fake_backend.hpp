@@ -4,6 +4,8 @@
 
 #include <atomic>
 #include <nlohmann/json.hpp>
+#include <pj_base/number_parse.hpp>
+#include <pj_base/sdk/text_utils.hpp>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -32,7 +34,7 @@ class FakeBackend : public LlmBackend {
  public:
   void sendUserMessage(const std::string& text, const TurnTools& tools, const EventSink& sink) override {
     cancelled_.store(false);
-    const std::string lower = toLower(text);
+    const std::string lower = PJ::sdk::lowerAscii(text);
     const std::vector<std::string> words = split(text);
 
     auto run = [&](const std::string& tool, const nlohmann::json& args) {
@@ -110,12 +112,6 @@ class FakeBackend : public LlmBackend {
   }
 
  private:
-  static std::string toLower(std::string s) {
-    for (char& c : s) {
-      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-    return s;
-  }
   static bool contains(const std::string& hay, const std::string& needle) {
     return hay.find(needle) != std::string::npos;
   }
@@ -145,11 +141,10 @@ class FakeBackend : public LlmBackend {
     return pos == std::string::npos ? path : path.substr(pos + 1);
   }
   static double parseDouble(const std::string& s) {
-    try {
-      return std::stod(s);
-    } catch (...) {
-      return 0.0;
-    }
+    // PJ::parseNumber, not std::stod: it is a whole-string parse that reports
+    // failure instead of throwing, and it does not follow LC_NUMERIC (std::stod
+    // mis-reads "1.5" under a comma-decimal locale).
+    return PJ::parseNumber<double>(s).value_or(0.0);
   }
 
   std::atomic<bool> cancelled_{false};
