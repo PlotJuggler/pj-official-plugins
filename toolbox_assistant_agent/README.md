@@ -57,9 +57,11 @@ hosts save those owned tabs in the layout while excluding them from undo/redo. O
 them only for the session, so `plot_tab` with `action: "list"` is the authority after a reload.
 
 Derived series and markers are saved with the layout too. Builds with the history-exempt SDK flag
-ask the host to keep them outside undo/redo, then read the stored recipe back. If the host rejects
-the flag or does not confirm it, the creation result sets `undo_protection` to `"unavailable on
-this host"`. Builds using an older SDK still create the node but cannot promise that exemption.
+ask the host to keep them outside undo/redo, then read the stored recipe back. Whenever that
+exemption is not secured, the creation result sets `undo_protection` to `"unavailable: an undo can
+remove this"` — whether the host rejected the flag, did not confirm it, or this build was compiled
+against an SDK that has no such flag. The model sees the disclosure in every one of those cases and
+can pass the consequence on instead of promising persistence it does not have.
 
 `playback` and `plot_tab` need a host exposing `pj.playback.v1`, `pj.plot_tabs.v1` and `pj.viewport.v1`
 (PlotJuggler with SDK >= 0.28.0); on an older host they answer with a clean "not exposed" the

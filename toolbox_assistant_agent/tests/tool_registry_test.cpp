@@ -1500,16 +1500,16 @@ TEST(ToolRegistry, DisclosesWhenHistoryExemptIsFalseInTheCreatedRecipe) {
   auto r = reg.execute(
       "create_derived_series", {{"name", "x2"}, {"inputs", json::array({"/imu/x"})}, {"expression", "value*2"}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
-  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable on this host");
+  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable: an undo can remove this");
 
   r = reg.execute("create_markers", {{"series", "/imu/x"}, {"comparison", ">"}, {"threshold", 1.0}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
-  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable on this host");
+  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable: an undo can remove this");
 
   const std::string rule = "local s = series(\"/imu/x\")\nstartMarker(0)\ncloseMarker(100)\n";
   r = reg.execute("create_markers", {{"inputs", json::array({"/imu/x"})}, {"rule", rule}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
-  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable on this host");
+  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable: an undo can remove this");
   EXPECT_EQ(dp.config_calls, 3) << "each persistent create site must verify the stored flag";
 }
 
@@ -1523,7 +1523,7 @@ TEST(ToolRegistry, DisclosesWhenHistoryExemptIsMissingFromTheCreatedRecipe) {
       "create_derived_series", {{"name", "x2"}, {"inputs", json::array({"/imu/x"})}, {"expression", "value*2"}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
   EXPECT_EQ(dp.config_calls, 1);
-  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable on this host");
+  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable: an undo can remove this");
 }
 
 TEST(ToolRegistry, DisclosesWhenTheCreatedRecipeCannotBeRead) {
@@ -1537,7 +1537,7 @@ TEST(ToolRegistry, DisclosesWhenTheCreatedRecipeCannotBeRead) {
       "create_derived_series", {{"name", "x2"}, {"inputs", json::array({"/imu/x"})}, {"expression", "value*2"}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
   EXPECT_EQ(dp.config_calls, 1);
-  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable on this host");
+  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable: an undo can remove this");
 }
 
 TEST(ToolRegistry, DegradesOnceWhenAnOlderHostRejectsTheReservedBit) {
@@ -1554,7 +1554,7 @@ TEST(ToolRegistry, DegradesOnceWhenAnOlderHostRejectsTheReservedBit) {
   EXPECT_EQ(dp.last_flags, 0u) << "the call that finally succeeded carried no flags";
   EXPECT_EQ(dp.config_calls, 0) << "the reserved-bit retry already established that protection is unavailable";
   const json j = json::parse(r.content);
-  EXPECT_EQ(j["undo_protection"], "unavailable on this host");
+  EXPECT_EQ(j["undo_protection"], "unavailable: an undo can remove this");
 }
 
 #else
@@ -1571,16 +1571,22 @@ TEST(ToolRegistry, CreatesCarryNoHistoryExemptFlagWithoutSdkSupport) {
   EXPECT_EQ(dp.last_flags, 0u) << "no HISTORY_EXEMPT bit exists in this SDK build to set";
   EXPECT_EQ(dp.config_calls, 0) << "an SDK without the flag must not probe the recipe";
 
+  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable: an undo can remove this")
+      << "this build cannot request the exemption, so the model must be told the node is in undo's "
+         "reach -- this is the configuration that ships until the SDK pin reaches the flag";
+
   r = reg.execute("create_markers", {{"series", "/imu/x"}, {"comparison", ">"}, {"threshold", 1.0}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
   EXPECT_EQ(dp.last_flags, 0u);
   EXPECT_EQ(dp.config_calls, 0);
+  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable: an undo can remove this");
 
   const std::string rule = "local s = series(\"/imu/x\")\nstartMarker(0)\ncloseMarker(100)\n";
   r = reg.execute("create_markers", {{"inputs", json::array({"/imu/x"})}, {"rule", rule}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
   EXPECT_EQ(dp.last_flags, 0u);
   EXPECT_EQ(dp.config_calls, 0);
+  EXPECT_EQ(json::parse(r.content)["undo_protection"], "unavailable: an undo can remove this");
 }
 
 #endif

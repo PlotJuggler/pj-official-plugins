@@ -1848,16 +1848,26 @@ auto createHistoryExempt(ToolContext& ctx, const std::string& id, Fn&& fn, bool&
 #else
     (void)ctx;
     (void)id;
+    // Built against an SDK with no history-exempt bit, so nothing was ever
+    // requested and the node IS in undo's reach. Say so: the reject-retry path
+    // above discloses the same thing, and without this the one configuration
+    // that actually ships today is the only one that stays silent -- the model
+    // then tells the user it created something persistent, and an undo removes
+    // it.
+    undo_protection_unavailable = true;
 #endif
   }
   return result;
 }
 
-// Adds the disclosure key when the host could not confirm undo/redo
-// protection for the node just created.
+// Adds the disclosure key when undo/redo protection could not be secured for
+// the node just created. The wording carries the consequence, not just the
+// fact: a bare "unavailable" leaves the model to guess what it means for the
+// user, and the reason differs (this build has no flag / this host refused or
+// did not confirm it) while the consequence never does.
 void annotateUndoProtection(json& result, bool unavailable) {
   if (unavailable) {
-    result["undo_protection"] = "unavailable on this host";
+    result["undo_protection"] = "unavailable: an undo can remove this";
   }
 }
 
