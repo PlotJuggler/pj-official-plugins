@@ -44,9 +44,11 @@ GUI produces identical markers in CI — only *who invokes the engine* differs.
    never mistaken for "no anomalies".
 4. Choose the **scope** — one segmented control on the Lua rule band, widening left to right:
    - **Timeseries:** under the selected source series only.
-   - **Dataset:** on the dataset-global topic — drawn on *every* plot of the dataset.
-   - **Global:** dataset-global on *every loaded dataset* (handy when several logs are open
-     at once).
+   - **Dataset:** on the dataset marker topic — drawn on *every* plot of the dataset, shown
+     as the *Dataset markers* row in the plot's Curves panel.
+   - **Global:** on the host's all-datasets marker topic, on *every loaded dataset* (handy
+     when several logs are open at once) — shown as the *Global markers* row, and can coexist
+     with a Dataset rule.
 5. **Apply** — submits the rule to the host as a live generator. It recomputes automatically
    when the data changes/reloads. The status shows `Done: …` or `Error: …`.
 6. **Save rule as… / Load rule…** — native file dialogs for the portable rule JSON (the same

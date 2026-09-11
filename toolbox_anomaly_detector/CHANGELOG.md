@@ -3,6 +3,12 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_anomaly_detector/`.
 
+## [Unreleased]
+
+### Fixed
+- A Global rule no longer replaces a Dataset rule (they shared generator id
+  `rule/__global__`).
+
 ## [0.2.0] - 2026-09-10
 
 ### Fixed

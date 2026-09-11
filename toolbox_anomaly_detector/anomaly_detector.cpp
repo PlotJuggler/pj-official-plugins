@@ -701,7 +701,10 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
   // engine, and all three run the same rule identically ("GUI == headless").
   //
   // `all_datasets` (only meaningful with `global`) publishes the global markers across
-  // EVERY loaded dataset; otherwise on the active dataset only.
+  // EVERY loaded dataset; otherwise on the active dataset only. The target stays the
+  // "__global__" topic in both cases and {"scope":"all"} is only a hint: a host that
+  // understands it remaps the topic to its all-datasets marker topic, an older host keeps
+  // writing "__global__" everywhere, so the plugin works against either.
   std::string runScript(const std::string& code, const std::string& source, bool global, bool all_datasets) {
     if (code.empty()) {
       return "Error: empty rule";
@@ -732,8 +735,10 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
     const bool global_all = global && all_datasets;
     const std::string params = global_all ? R"({"scope":"all"})" : "{}";
 
-    // Stable per-target id: re-Save upserts (replaces) the generator for that target.
-    const std::string id = "rule/" + target;
+    // Stable per-(target, scope) id: re-Save upserts (replaces) the generator for that rule.
+    // Dataset-scope and Global-scope both write the "__global__" target, so the scope must be
+    // folded into the id itself, or the two would collide on one generator.
+    const std::string id = "rule/" + (global_all ? std::string("__all__") : target);
     const PJ::Expected<std::vector<std::string>> submitted =
         gens.createMarkers(id, PJ::Span<const std::string_view>(inputs), target, code, params);
     if (!submitted) {
