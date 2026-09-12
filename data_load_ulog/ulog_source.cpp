@@ -293,7 +293,12 @@ class ULogSource : public PJ::FileSourceBase {
       if (!ts_offset) {
         topics_without_timestamp.push_back(topic_name);
       }
-      const auto format_size = static_cast<size_t>(sub->format()->sizeBytes());
+      // A trailing `_padding*` field is not required to be present in the
+      // logged bytes (ULog spec, "Padding": trailing padding "may not be
+      // logged, to avoid writing unnecessary data"), so the minimum valid
+      // payload size excludes it; padding anywhere else in the format still
+      // counts (see ulog_flatten::loggedSizeBytes).
+      const auto format_size = ulog_flatten::loggedSizeBytes(*sub->format());
 
       // Write data records.
       std::vector<PJ::sdk::NamedFieldValue> row_fields;
