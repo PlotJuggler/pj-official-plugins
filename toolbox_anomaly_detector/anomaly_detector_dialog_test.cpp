@@ -1,0 +1,418 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: Apache-2.0
+//
+// Dialog-level tests for the Source section: no auto-selection on open, the drop
+// target, the text filter, Apply gating, and a layout-restored source the catalog no
+// longer offers.
+//
+// Driven through the loaded .so like toolbox_fft's plugin test, because
+// AnomalyDetectorDialog lives in an anonymous namespace inside the .cpp and cannot be
+// constructed directly.
+
+#include <gtest/gtest.h>
+
+#include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "pj_base/sdk/service_traits.hpp"
+#include "pj_base/sdk/toolbox_plugin_base.hpp"
+#include "pj_plugins/host/dialog_handle.hpp"
+#include "pj_plugins/host/service_registry_builder.hpp"
+#include "pj_plugins/host/toolbox_library.hpp"
+#include "pj_plugins/host/widget_data_view.hpp"
+#include "pj_plugins/host/widget_event_builder.hpp"
+#include "pj_plugins/testing/toolbox_test_store.hpp"
+
+#ifndef PJ_ANOMALY_PLUGIN_PATH
+#error "PJ_ANOMALY_PLUGIN_PATH must be defined"
+#endif
+
+namespace {
+
+std::vector<std::int64_t> timestamps(std::size_t count) {
+  std::vector<std::int64_t> ts(count);
+  for (std::size_t i = 0; i < count; ++i) {
+    ts[i] = static_cast<std::int64_t>(i) * 1'000'000;
+  }
+  return ts;
+}
+
+std::vector<double> ramp(std::size_t count) {
+  std::vector<double> v(count);
+  for (std::size_t i = 0; i < count; ++i) {
+    v[i] = static_cast<double>(i);
+  }
+  return v;
+}
+
+struct PluginFixture {
+  // Declaration order is load-bearing. Members are destroyed in reverse, and this
+  // plugin's destructor talks to the host services (it tears down its ephemeral preview
+  // topic), so the handle MUST die before the store and registry it points at. The plugin
+  // is entitled to that: its destructor documents that the host outlives the plugin
+  // instance during teardown. Getting this backwards leaves the destructor reading freed
+  // memory — harmless-looking on Linux, an access violation on Windows and macOS.
+  PJ::ToolboxLibrary library;
+  PJ::testing::ToolboxTestStore store;
+  PJ::ServiceRegistryBuilder registry;
+  PJ::ToolboxHandle handle;
+
+  PluginFixture(PJ::ToolboxLibrary&& loaded, PJ::ToolboxHandle&& created)
+      : library(std::move(loaded)), handle(std::move(created)) {}
+
+  void addSeries(const std::string& topic, const std::string& field) {
+    store.addTopic(topic).addField(topic, field, timestamps(16), ramp(16));
+  }
+
+  // These throw rather than ASSERT because DialogHandle dereferences its vtable
+  // unconditionally (widget_data is `vt_->get_widget_data(ctx_)`), so handing it an
+  // unbound handle or an absent dialog is an access violation, not a test failure — and a
+  // crash reports nothing about which step went wrong. ASSERT_* would not help either: in
+  // a void member it only returns from the member, and the test would carry on into the
+  // same crash.
+  void bind() {
+    if (!handle.valid()) {
+      throw std::runtime_error("toolbox handle is invalid — createHandle() failed");
+    }
+    registry.registerService<PJ::sdk::ToolboxHostService>(store.makeHost());
+    registry.registerService<PJ::sdk::ToolboxRuntimeHostService>(store.makeRuntimeHost());
+    if (!handle.bind(registry.view())) {
+      throw std::runtime_error("handle.bind() failed");
+    }
+  }
+
+  PJ::DialogHandle dialog() {
+    const PJ_borrowed_dialog_t borrowed = handle.getDialog();
+    if (borrowed.vtable == nullptr || borrowed.ctx == nullptr) {
+      throw std::runtime_error("plugin returned no dialog: getDialog() gave a null fat pointer");
+    }
+    return PJ::DialogHandle::fromBorrowed(borrowed);
+  }
+};
+
+PluginFixture makeFixture() {
+  auto library = PJ::ToolboxLibrary::load(PJ_ANOMALY_PLUGIN_PATH);
+  if (!library) {
+    throw std::runtime_error(library.error());
+  }
+  auto handle = library->createHandle();
+  return PluginFixture(std::move(*library), std::move(handle));
+}
+
+// Read the payload through the host's own view rather than poking at the JSON: its
+// accessors return std::optional, so "the plugin stopped emitting this widget" fails the
+// test instead of silently defaulting to a value that happens to pass.
+PJ::WidgetDataView widgetData(const PJ::DialogHandle& dialog) {
+  return PJ::WidgetDataView(dialog.widget_data());
+}
+
+std::vector<std::string> listItems(const PJ::WidgetDataView& wd) {
+  return wd.listItems("source_list").value_or(std::vector<std::string>{});
+}
+
+std::vector<std::string> selectedItems(const PJ::WidgetDataView& wd) {
+  return wd.selectedItems("source_list").value_or(std::vector<std::string>{});
+}
+
+std::string statusText(const PJ::WidgetDataView& wd) {
+  return wd.text("status_label").value_or(std::string{});
+}
+
+// ---------------------------------------------------------------------------
+// Bring-up, one step per test.
+//
+// Split this finely on purpose: the fixture below reaches the plugin through fat
+// pointers that the SDK dereferences unconditionally, so a failure anywhere in the
+// sequence lands as one indistinguishable access violation. One assertion per step means
+// the first test that fails names the step, on platforms we cannot run locally.
+// ---------------------------------------------------------------------------
+
+TEST(AnomalyPluginBringUp, LibraryLoads) {
+  auto library = PJ::ToolboxLibrary::load(PJ_ANOMALY_PLUGIN_PATH);
+  ASSERT_TRUE(library) << "load failed: " << library.error();
+}
+
+TEST(AnomalyPluginBringUp, CreateHandleReturnsAValidInstance) {
+  auto library = PJ::ToolboxLibrary::load(PJ_ANOMALY_PLUGIN_PATH);
+  ASSERT_TRUE(library) << library.error();
+  auto handle = library->createHandle();
+  EXPECT_TRUE(handle.valid()) << "createHandle() produced a null instance or vtable";
+}
+
+TEST(AnomalyPluginBringUp, ManifestIsReadableBeforeBinding) {
+  auto library = PJ::ToolboxLibrary::load(PJ_ANOMALY_PLUGIN_PATH);
+  ASSERT_TRUE(library) << library.error();
+  auto handle = library->createHandle();
+  ASSERT_TRUE(handle.valid());
+  EXPECT_FALSE(handle.manifest().empty());
+}
+
+TEST(AnomalyPluginBringUp, BindsToATestStore) {
+  auto library = PJ::ToolboxLibrary::load(PJ_ANOMALY_PLUGIN_PATH);
+  ASSERT_TRUE(library) << library.error();
+  // Store and registry declared BEFORE the handle so they outlive it — see PluginFixture.
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("alpha").addField("alpha", "x", timestamps(16), ramp(16));
+  PJ::ServiceRegistryBuilder registry;
+  registry.registerService<PJ::sdk::ToolboxHostService>(store.makeHost());
+  registry.registerService<PJ::sdk::ToolboxRuntimeHostService>(store.makeRuntimeHost());
+  auto handle = library->createHandle();
+  ASSERT_TRUE(handle.valid());
+  EXPECT_TRUE(handle.bind(registry.view()));
+}
+
+TEST(AnomalyPluginBringUp, GetDialogReturnsANonNullFatPointer) {
+  auto library = PJ::ToolboxLibrary::load(PJ_ANOMALY_PLUGIN_PATH);
+  ASSERT_TRUE(library) << library.error();
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("alpha").addField("alpha", "x", timestamps(16), ramp(16));
+  PJ::ServiceRegistryBuilder registry;
+  registry.registerService<PJ::sdk::ToolboxHostService>(store.makeHost());
+  registry.registerService<PJ::sdk::ToolboxRuntimeHostService>(store.makeRuntimeHost());
+  auto handle = library->createHandle();
+  ASSERT_TRUE(handle.valid());
+  ASSERT_TRUE(handle.bind(registry.view()));
+
+  const PJ_borrowed_dialog_t borrowed = handle.getDialog();
+  EXPECT_NE(borrowed.ctx, nullptr);
+  EXPECT_NE(borrowed.vtable, nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Opening state
+// ---------------------------------------------------------------------------
+
+TEST(AnomalyDialogSource, OpensWithNoSourceSelected) {
+  // The regression this whole change exists for: the panel used to auto-select
+  // series_names_.front(), which on a real recording was a text field — unusable source,
+  // blank preview, no explanation.
+  auto fixture = makeFixture();
+  fixture.addSeries("alpha", "x");
+  fixture.addSeries("beta", "y");
+  fixture.bind();
+  auto dialog = fixture.dialog();
+
+  const auto wd = widgetData(dialog);
+  EXPECT_FALSE(listItems(wd).empty());
+  EXPECT_TRUE(selectedItems(wd).empty());
+  // clearChart() writes an EMPTY chart_series rather than omitting the key — that is what
+  // wipes a previously drawn curve, so assert emptiness, not absence.
+  ASSERT_TRUE(wd.chartSeries("preview_chart").has_value());
+  EXPECT_TRUE(wd.chartSeries("preview_chart")->empty());
+  EXPECT_FALSE(wd.chartPlaceholder("preview_chart").value_or(std::string{}).empty())
+      << "an empty chart must say why it is empty";
+  EXPECT_EQ(wd.enabled("apply_button"), std::optional<bool>{false})
+      << "Apply must be off until there is a source or a wider scope";
+}
+
+TEST(AnomalyDialogSource, DeclaresTheDropTargetInTheFirstDelivery) {
+  // PanelEngine reads drop targets ONCE, off the initial payload — a target that only
+  // appears on a later tick is never installed.
+  auto fixture = makeFixture();
+  fixture.addSeries("alpha", "x");
+  fixture.bind();
+  auto dialog = fixture.dialog();
+
+  const auto wd = widgetData(dialog);
+  EXPECT_TRUE(wd.isDropTarget("sourceGroup"));
+}
+
+// ---------------------------------------------------------------------------
+// Drag & drop
+// ---------------------------------------------------------------------------
+
+TEST(AnomalyDialogSource, DropSelectsTheSeriesAndEnablesApply) {
+  auto fixture = makeFixture();
+  fixture.addSeries("alpha", "x");
+  fixture.bind();
+  auto dialog = fixture.dialog();
+
+  ASSERT_TRUE(dialog.sendEvent("sourceGroup", PJ::WidgetEventBuilder::itemsDropped({"alpha/x"})));
+
+  const auto wd = widgetData(dialog);
+  EXPECT_EQ(selectedItems(wd), (std::vector<std::string>{"alpha/x"}));
+  EXPECT_EQ(wd.enabled("apply_button"), std::optional<bool>{true});
+}
+
+TEST(AnomalyDialogSource, DropOfSomethingUnavailableIsRejectedWithoutChangingTheSelection) {
+  // Also covers a dropped TEXT field: the host cannot resolve one to a series name, so it
+  // arrives as an unresolved catalog key and fails this same lookup.
+  auto fixture = makeFixture();
+  fixture.addSeries("alpha", "x");
+  fixture.bind();
+  auto dialog = fixture.dialog();
+
+  ASSERT_TRUE(dialog.sendEvent("sourceGroup", PJ::WidgetEventBuilder::itemsDropped({"alpha/x"})));
+  ASSERT_TRUE(dialog.sendEvent("sourceGroup", PJ::WidgetEventBuilder::itemsDropped({"dataset:1/column:7"})));
+
+  const auto wd = widgetData(dialog);
+  EXPECT_EQ(selectedItems(wd), (std::vector<std::string>{"alpha/x"})) << "a bad drop must not clear a good source";
+  EXPECT_NE(statusText(wd).find("unavailable"), std::string::npos) << statusText(wd);
+}
+
+TEST(AnomalyDialogSource, DroppingSeveralSeriesTakesTheFirstAndSaysSo) {
+  auto fixture = makeFixture();
+  fixture.addSeries("alpha", "x");
+  fixture.addSeries("beta", "y");
+  fixture.bind();
+  auto dialog = fixture.dialog();
+
+  ASSERT_TRUE(dialog.sendEvent("sourceGroup", PJ::WidgetEventBuilder::itemsDropped({"alpha/x", "beta/y"})));
+
+  const auto wd = widgetData(dialog);
+  EXPECT_EQ(selectedItems(wd), (std::vector<std::string>{"alpha/x"}));
+  EXPECT_NE(statusText(wd).find("one source series at a time"), std::string::npos) << statusText(wd);
+}
+
+// ---------------------------------------------------------------------------
+// Text filter
+// ---------------------------------------------------------------------------
+
+TEST(AnomalyDialogSource, FilterNarrowsTheListWithoutTouchingTheSelection) {
+  // The filter is a view, full stop. If narrowing the list could change what Apply runs,
+  // a user could silently publish markers from a series they can no longer see.
+  auto fixture = makeFixture();
+  fixture.addSeries("alpha", "x");
+  fixture.addSeries("beta", "y");
+  fixture.bind();
+  auto dialog = fixture.dialog();
+
+  ASSERT_TRUE(dialog.sendEvent("sourceGroup", PJ::WidgetEventBuilder::itemsDropped({"alpha/x"})));
+  ASSERT_TRUE(dialog.sendEvent("source_filter", PJ::WidgetEventBuilder::textChanged("beta")));
+
+  const auto wd = widgetData(dialog);
+  EXPECT_EQ(listItems(wd), (std::vector<std::string>{"beta/y"}));
+  EXPECT_EQ(selectedItems(wd), (std::vector<std::string>{"alpha/x"}));
+  EXPECT_EQ(wd.enabled("apply_button"), std::optional<bool>{true})
+      << "the hidden-but-selected source is still a valid source";
+}
+
+TEST(AnomalyDialogSource, FilterIsTrimmedAndCaseInsensitiveAndClearingRestoresEverything) {
+  auto fixture = makeFixture();
+  fixture.addSeries("alpha", "x");
+  fixture.addSeries("beta", "y");
+  fixture.bind();
+  auto dialog = fixture.dialog();
+
+  ASSERT_TRUE(dialog.sendEvent("source_filter", PJ::WidgetEventBuilder::textChanged("  ALpHa  ")));
+  EXPECT_EQ(listItems(widgetData(dialog)), (std::vector<std::string>{"alpha/x"}));
+
+  ASSERT_TRUE(dialog.sendEvent("source_filter", PJ::WidgetEventBuilder::textChanged("")));
+  EXPECT_EQ(listItems(widgetData(dialog)).size(), 2U);
+}
+
+TEST(AnomalyDialogSource, NoMatchesShowsAFilterAwarePlaceholder) {
+  auto fixture = makeFixture();
+  fixture.addSeries("alpha", "x");
+  fixture.bind();
+  auto dialog = fixture.dialog();
+
+  ASSERT_TRUE(dialog.sendEvent("source_filter", PJ::WidgetEventBuilder::textChanged("zzz")));
+
+  const auto wd = widgetData(dialog);
+  EXPECT_TRUE(listItems(wd).empty());
+  const std::string placeholder = wd.listPlaceholder("source_list").value_or(std::string{});
+  EXPECT_NE(placeholder.find("zzz"), std::string::npos) << placeholder;
+}
+
+// ---------------------------------------------------------------------------
+// Apply gating and scope
+// ---------------------------------------------------------------------------
+
+TEST(AnomalyDialogSource, WiderScopeEnablesApplyWithNoSource) {
+  // runScript already allows an empty source when the markers are global; with nothing
+  // auto-selected that path is now the normal one, so the UI has to say so up front
+  // instead of failing on the click.
+  auto fixture = makeFixture();
+  fixture.addSeries("alpha", "x");
+  fixture.bind();
+  auto dialog = fixture.dialog();
+
+  EXPECT_EQ(widgetData(dialog).enabled("apply_button"), std::optional<bool>{false});
+  ASSERT_TRUE(dialog.sendEvent("scope_dataset", PJ::WidgetEventBuilder::toggled(true)));
+  EXPECT_EQ(widgetData(dialog).enabled("apply_button"), std::optional<bool>{true});
+}
+
+// ---------------------------------------------------------------------------
+// Restored state
+// ---------------------------------------------------------------------------
+
+TEST(AnomalyDialogSource, RestoredSourceMissingFromTheCatalogIsKeptAndFlagged) {
+  // The dataset may just not have loaded yet, and a layout written before the type filter
+  // can point at a text field. Either way the stored source is preserved, never rewritten
+  // behind the user's back.
+  auto fixture = makeFixture();
+  fixture.addSeries("alpha", "x");
+  fixture.bind();
+  ASSERT_TRUE(fixture.handle.loadConfig(R"({"code":"-- rule","source":"ghost/x"})"));
+  auto dialog = fixture.dialog();
+
+  const auto wd = widgetData(dialog);
+  EXPECT_EQ(wd.enabled("apply_button"), std::optional<bool>{false});
+  EXPECT_NE(statusText(wd).find("ghost/x"), std::string::npos) << statusText(wd);
+
+  std::string saved;
+  ASSERT_TRUE(fixture.handle.saveConfig(saved));
+  EXPECT_NE(saved.find("ghost/x"), std::string::npos) << "the stored source must survive round-tripping";
+
+  // ...and a good drop recovers.
+  ASSERT_TRUE(dialog.sendEvent("sourceGroup", PJ::WidgetEventBuilder::itemsDropped({"alpha/x"})));
+  EXPECT_EQ(widgetData(dialog).enabled("apply_button"), std::optional<bool>{true});
+}
+
+// ---------------------------------------------------------------------------
+// Template retargeting — the behaviour auto-selection used to exercise
+// ---------------------------------------------------------------------------
+
+TEST(AnomalyDialogSource, PickingASourceRetargetsTheChosenBuiltinTemplate) {
+  auto fixture = makeFixture();
+  fixture.addSeries("alpha", "x");
+  fixture.bind();
+  auto dialog = fixture.dialog();
+
+  ASSERT_TRUE(dialog.sendEvent("function_list", PJ::WidgetEventBuilder::selectionChanged({"Threshold (line)"})));
+  ASSERT_TRUE(dialog.sendEvent("source_list", PJ::WidgetEventBuilder::selectionChanged({"alpha/x"})));
+
+  const auto wd = widgetData(dialog);
+  const std::string code = wd.codeContent("code_editor").value_or(std::string{});
+  EXPECT_NE(code.find("alpha/x"), std::string::npos) << code;
+  EXPECT_EQ(code.find("--SOURCE--"), std::string::npos) << code;
+}
+
+TEST(AnomalyDialogSource, ALoadedRuleSurvivesALaterSourceClick) {
+  // Adjacent regression: "load a rule, then pick a source" is the natural flow now that
+  // nothing is pre-selected, and the source click used to overwrite the loaded rule with
+  // the active builtin template.
+  auto fixture = makeFixture();
+  fixture.addSeries("alpha", "x");
+  fixture.bind();
+  auto dialog = fixture.dialog();
+
+  // std::filesystem rather than tmpnam (which the linker warns about) or mkstemp (POSIX
+  // only — this repo also builds on MSVC). The name is fixed because ctest runs this
+  // binary once; the file is removed at the end.
+  const std::string path = (std::filesystem::temp_directory_path() / "pj_anomaly_rule_test.json").string();
+  {
+    // Custom delimiter: the embedded Lua contains `)"`, which would close a plain R"( )".
+    std::ofstream out(path);
+    out << R"JSON({"version":1,"name":"n","description":"d",
+                   "rule":{"code":"-- handwritten rule\nlocal s = series(\"alpha/x\")",
+                           "source":"alpha/x","fail_on":"error"}})JSON";
+  }
+  ASSERT_TRUE(dialog.sendEvent("load_rule_button", PJ::WidgetEventBuilder::fileSelected(path)));
+  ASSERT_TRUE(dialog.sendEvent("source_list", PJ::WidgetEventBuilder::selectionChanged({"alpha/x"})));
+
+  const auto wd = widgetData(dialog);
+  const std::string code = wd.codeContent("code_editor").value_or(std::string{});
+  EXPECT_NE(code.find("handwritten rule"), std::string::npos) << code;
+  std::remove(path.c_str());
+}
+
+}  // namespace

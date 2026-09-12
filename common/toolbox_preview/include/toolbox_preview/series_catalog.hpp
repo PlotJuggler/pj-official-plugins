@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <pj_base/sdk/plugin_data_api.hpp>  // sdk::ToolboxHostView, sdk::FieldHandle
 #include <pj_plugins/sdk/widget_data.hpp>   // PJ::ChartPoint
 #include <string>
@@ -11,6 +12,7 @@
 #include <vector>
 
 #include "toolbox_preview/adaptive_poll.hpp"
+#include "toolbox_preview/series_types.hpp"  // isPlottableType, decodeSeriesAsDouble
 
 namespace toolbox_preview {
 
@@ -19,20 +21,35 @@ namespace toolbox_preview {
 [[nodiscard]] std::vector<PJ::ChartPoint> downsampleToChart(
     const std::vector<double>& timestamps_ns, const std::vector<double>& values, std::size_t max_points = 2000);
 
-/// Source-series cache for a generator toolbox preview. Enumerates the float64 series
-/// the toolbox host exposes, caches their samples for the background curve, and live-
-/// refreshes the *selected* source while streaming so the preview follows the window.
+/// Source-series cache for a generator toolbox preview. Enumerates the series the toolbox
+/// host exposes that can actually BE a source (see isPlottableType), caches their samples
+/// for the background curve, and live-refreshes the *selected* source while streaming so
+/// the preview follows the window.
 /// UI-free and generator-agnostic — the plugin owns the dialog and the output rendering.
+///
+/// The invariant that makes this class worth having: `names()` is exactly the set of
+/// series the host will accept as a generator input. Offering more (as it once did, by
+/// listing every scalar field including text ones) hands the user a choice that is
+/// guaranteed to fail downstream with an opaque Lua error.
+///
+/// That set is fixed by `isPlottableType`, i.e. it is POLICY, not a law of the class. A
+/// second consumer wanting a different set (toolbox_fft, say, deliberately excludes bool)
+/// should make the predicate injectable rather than fork this class.
 ///
 /// Lifetime: every method takes the plugin's long-lived `ToolboxHostView` (from
 /// `ToolboxPluginBase::toolboxHost()`); the materialized series borrow from it for the
 /// duration of the call only.
 class SeriesCatalog {
  public:
-  /// Re-read every float64 series only when the catalog STRUCTURE changed — an FNV
-  /// signature over data-source ids + per-topic field counts. A cheap no-op otherwise,
-  /// so it is safe to call every panel tick. Returns true when a refresh happened (the
-  /// caller then refills its source list and marks the preview dirty).
+  /// Re-read every usable series only when the catalog STRUCTURE changed — an FNV
+  /// signature over data-source ids, per-topic field counts, and each field's handle +
+  /// TYPE. A cheap no-op otherwise, so it is safe to call every panel tick. Returns true
+  /// when a refresh happened (the caller then refills its source list and marks the
+  /// preview dirty).
+  ///
+  /// The type belongs in that signature: reloading a different file over the same
+  /// source/topic shape can change a field's type while leaving the field COUNT alone,
+  /// and without it the type filter would stay frozen on the previous file's types.
   bool refreshStructureIfChanged(const PJ::sdk::ToolboxHostView& host);
 
   /// Force a full re-read regardless of the signature (call before submitting a
@@ -49,6 +66,9 @@ class SeriesCatalog {
   [[nodiscard]] const std::vector<std::string>& names() const {
     return series_names_;
   }
+  /// True when `name` has cached samples. Since the type filter landed this is ≈ "is in
+  /// names()"; a name that is listed but absent here means the host read failed, not that
+  /// the type was unsupported.
   [[nodiscard]] bool has(const std::string& name) const {
     return series_map_.find(name) != series_map_.end();
   }
@@ -69,23 +89,40 @@ class SeriesCatalog {
   struct SeriesData {
     std::vector<double> timestamps;  ///< nanoseconds
     std::vector<double> values;
+    /// Everything the live re-read needs to fetch this series again, kept alongside the
+    /// samples rather than in maps indexed by the same name.
+    PJ::sdk::FieldHandle handle{};
+    PJ::PrimitiveType type{};
   };
 
-  // Materialize a host float64 series into our double cache: convert int64 ns timestamps to
-  // double and bulk-copy the (already double) values. Shared by the full and single-source
-  // refresh so the conversion lives in exactly one place.
-  template <typename TsSpan>
-  static SeriesData buildSeriesData(const TsSpan& ts, const double* values, std::size_t count) {
-    SeriesData sa;
-    sa.timestamps.resize(count);
-    for (std::size_t i = 0; i < count; ++i) {
-      sa.timestamps[i] = static_cast<double>(ts[i]);  // int64 ns -> double
-    }
-    sa.values.assign(values, values + count);  // already double: bulk copy
-    return sa;
-  }
+  /// Borrowed pointers into a host-owned Arrow series, valid only while the holders that
+  /// produced them are alive. Exists so a caller can inspect sample count and last
+  /// timestamp WITHOUT paying for the decode — the streaming path polls far more often
+  /// than the data actually moves.
+  struct ArrowSeriesRef {
+    const std::int64_t* timestamps = nullptr;
+    const void* values = nullptr;
+    const std::uint8_t* validity = nullptr;
+    std::int64_t offset = 0;  ///< of the value column; a BIT offset when the type is kBool
+    std::size_t count = 0;
+  };
+
+  /// Validate the two-column Arrow struct the host returns and expose its buffers.
+  /// Rejects a shape that is not [int64 timestamp, typed value] and a value column whose
+  /// Arrow type contradicts `type` (decoding that would silently misread widths).
+  [[nodiscard]] static std::optional<ArrowSeriesRef> openSeries(
+      const ArrowSchema* schema, const ArrowArray* array, PJ::PrimitiveType type);
+
+  /// Read one field and widen it to doubles.
+  ///
+  /// Goes through readSeriesArrow rather than the friendlier readSeries/valuesAs* because
+  /// those only cover the ten NUMERIC types — Arrow BOOL is a packed bitmap, so there is
+  /// no valuesAsBool() to call, and they expose neither the validity bitmap nor the slice
+  /// offset. nullopt when the host read fails, the shape is wrong, or every sample is null.
+  [[nodiscard]] static std::optional<SeriesData> materializeSeries(
+      const PJ::sdk::ToolboxHostView& host, PJ::sdk::FieldHandle handle, PJ::PrimitiveType type);
+
   std::unordered_map<std::string, SeriesData> series_map_;
-  std::unordered_map<std::string, PJ::sdk::FieldHandle> field_handles_;  ///< name → handle, for the live re-read
   std::vector<std::string> series_names_;
   std::uint64_t last_catalog_sig_ = UINT64_MAX;  ///< forces the first refresh; guards live ticks
   std::uint64_t data_revision_ = 0;              ///< bumps when cached series DATA changes (see dataRevision)

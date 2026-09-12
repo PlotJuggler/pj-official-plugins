@@ -37,6 +37,25 @@ pj_emit_plugin_manifest(toolbox_anomaly_detector_plugin
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
+# Dialog-level tests drive the loaded .so (AnomalyDetectorDialog is in an anonymous
+# namespace, so it cannot be constructed directly) — same shape as toolbox_fft's.
+if(TARGET GTest::gtest_main)
+  add_executable(toolbox_anomaly_detector_dialog_test anomaly_detector_dialog_test.cpp)
+  target_compile_features(toolbox_anomaly_detector_dialog_test PRIVATE cxx_std_20)
+  target_compile_options(toolbox_anomaly_detector_dialog_test PRIVATE ${PJ_WARNING_FLAGS})
+  target_compile_definitions(toolbox_anomaly_detector_dialog_test PRIVATE
+    PJ_ANOMALY_PLUGIN_PATH="$<TARGET_FILE:toolbox_anomaly_detector_plugin>"
+  )
+  add_dependencies(toolbox_anomaly_detector_dialog_test toolbox_anomaly_detector_plugin)
+  target_link_libraries(toolbox_anomaly_detector_dialog_test PRIVATE
+    plotjuggler_sdk::plugin_host
+    plotjuggler_sdk::plugin_sdk
+    nlohmann_json::nlohmann_json
+    GTest::gtest_main
+  )
+  add_test(NAME toolbox_anomaly_detector_dialog_test COMMAND toolbox_anomaly_detector_dialog_test)
+endif()
+
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(toolbox_anomaly_detector_plugin
   REQUIRED_EXPORTS PJ_get_toolbox_vtable PJ_get_dialog_vtable)
