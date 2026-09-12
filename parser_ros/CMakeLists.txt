@@ -11,8 +11,8 @@ set(CMAKE_DISABLE_FIND_PACKAGE_ament_cmake TRUE)
 # Pin rosx_introspection 3.x for IDL-support APIs used by the PJ3 ROS parser lineage.
 CPMAddPackage(
   NAME rosx_introspection
-  URL https://github.com/facontidavide/rosx_introspection/archive/refs/tags/3.1.0.zip
-  URL_HASH SHA256=cce5cba9215cbd1f285ddd3f4d0e2f738372178c45731aaa86ba3e65ee492a22
+  URL https://github.com/facontidavide/rosx_introspection/archive/refs/tags/3.1.2.zip
+  URL_HASH SHA256=0ffecc3b21e8cbe01097292e3e5f7bab67777f9fc4f943ae68006c8939dbc23b
   OPTIONS "ROSX_HAS_JSON OFF"
 )
 
