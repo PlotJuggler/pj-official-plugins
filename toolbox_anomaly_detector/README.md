@@ -46,9 +46,12 @@ GUI produces identical markers in CI — only *who invokes the engine* differs.
    - **Timeseries:** under the selected source series only.
    - **Dataset:** on the dataset marker topic — drawn on *every* plot of the dataset, shown
      as the *Dataset markers* row in the plot's Curves panel.
-   - **Global:** on the host's all-datasets marker topic, on *every loaded dataset* (handy
-     when several logs are open at once) — shown as the *Global markers* row, and can coexist
-     with a Dataset rule.
+   - **Global:** on the host's all-datasets marker topic. The rule runs on every loaded
+     dataset that has the series it reads, and the combined result is drawn on *every loaded
+     dataset*, including those without that series and those loaded later — shown as the
+     *Global markers* row, and can coexist with a Dataset rule. Marker times are absolute, so
+     on a dataset with a different clock they fall outside the plot until the datasets are
+     aligned in the Source Timeline.
 5. **Apply** — submits the rule to the host as a live generator. It recomputes automatically
    when the data changes/reloads. The status shows `Done: …` or `Error: …`.
 6. **Save rule as… / Load rule…** — native file dialogs for the portable rule JSON (the same

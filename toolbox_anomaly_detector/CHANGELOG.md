@@ -8,6 +8,8 @@ below; for earlier releases see the git history of `toolbox_anomaly_detector/`.
 ### Fixed
 - A Global rule no longer replaces a Dataset rule (they shared generator id
   `rule/__global__`).
+- A Global rule is drawn on every loaded dataset, including those that lack the
+  series it reads (host-side; earlier hosts errored on such a dataset).
 
 ## [0.2.0] - 2026-09-10
 
