@@ -141,15 +141,9 @@ inline size_t loggedSizeBytes(const ulog_cpp::MessageFormat& format) {
   if (!fields.empty()) {
     const auto& last = *fields.back();
     if (last.name().starts_with("_padding")) {
-      // Field::sizeBytes() would do the same (type().size * array length),
-      // but is computed by hand here: it is an `inline` member defined only
-      // out-of-line in ulog_cpp's own messages.cpp, and the compiler elides
-      // its out-of-line body there since every call within that TU is fully
-      // inlined — so no definition ships in libulog_cpp.a, and a call from
-      // this header (a different TU) links as an unresolved dynamic symbol.
-      int arr_len = last.arrayLength();
-      size_t count = (arr_len < 0) ? 1 : static_cast<size_t>(arr_len);
-      size -= static_cast<size_t>(last.type().size) * count;
+      // sizeBytes() sums a name-keyed map, which undercounts duplicate fields.
+      // The ordered field's offset preserves the actual on-disk boundary.
+      size = static_cast<size_t>(last.offsetInMessage());
     }
   }
   return size;

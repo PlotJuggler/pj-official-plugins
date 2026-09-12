@@ -708,6 +708,55 @@ TEST(ULogFlattenTest, FormatWithoutTrailingPaddingIsUnaffected) {
   EXPECT_EQ(ulog_flatten::loggedSizeBytes(*sub->format()), static_cast<size_t>(sub->format()->sizeBytes()));
 }
 
+TEST(ULogFlattenTest, DuplicatePaddingNamesDoNotAdmitTruncatedTimestamp) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  // ulog_cpp accepts duplicate names, but sizeBytes() counts each name only
+  // once. The timestamp still occupies bytes 8-15 in the ordered layout.
+  builder.writeFormat("duplicate:float value;uint8_t[4] _padding0;uint64_t timestamp;uint8_t[4] _padding0");
+  builder.writeSubscription(1, 0, "duplicate");
+  for (size_t size : {12u, 15u, 16u, 20u}) {
+    builder.writeData(1, std::vector<uint8_t>(size, 0));
+  }
+
+  auto container = parseBuilder(builder);
+  ASSERT_FALSE(container->hadFatalError());
+  ASSERT_TRUE(container->parsingErrors().empty());
+  auto sub = container->subscription("duplicate");
+  ASSERT_NE(sub, nullptr);
+  const auto minimum_size = ulog_flatten::loggedSizeBytes(*sub->format());
+  EXPECT_EQ(minimum_size, 16u);
+  EXPECT_EQ(ulog_flatten::findTimestampOffset(*sub->format()), 8u);
+
+  const auto& samples = sub->rawSamples();
+  ASSERT_EQ(samples.size(), 4u);
+  EXPECT_LT(samples[0].data().size(), minimum_size);
+  EXPECT_LT(samples[1].data().size(), minimum_size);
+  EXPECT_GE(samples[2].data().size(), minimum_size);
+  EXPECT_GE(samples[3].data().size(), minimum_size);
+}
+
+TEST(ULogFlattenTest, NestedArrayPaddingStillCountsTowardLoggedSize) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("inner:float value;uint8_t[4] _padding0");
+  builder.writeFormat("outer:uint64_t timestamp;inner[2] children;float tail;uint8_t[4] _padding0");
+  builder.writeSubscription(1, 0, "outer");
+
+  auto container = parseBuilder(builder);
+  ASSERT_FALSE(container->hadFatalError());
+  auto sub = container->subscription("outer");
+  ASSERT_NE(sub, nullptr);
+  // Both nested padding fields remain; only the outermost 4 bytes are optional.
+  EXPECT_EQ(ulog_flatten::loggedSizeBytes(*sub->format()), 28u);
+  std::vector<size_t> offsets;
+  ulog_flatten::forEachFlatLeaf(
+      *sub->format(), 0, [&](const ulog_flatten::FlatLeaf& leaf) { offsets.push_back(leaf.offset); });
+  EXPECT_EQ(offsets, (std::vector<size_t>{8, 16, 24}));
+}
+
 // --- Parameter changes over time (PlotJuggler#1245) ---
 //
 // PARAMETER messages in the data section carry no timestamp of their own. The

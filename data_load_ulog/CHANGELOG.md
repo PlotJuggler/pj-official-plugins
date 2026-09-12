@@ -14,5 +14,7 @@ below; for earlier releases see the git history of `data_load_ulog/`.
   `battery_status`, `actuator_outputs` and `vehicle_land_detected` empty with
   no error shown, while `sensor_baro` and `sensor_combined` loaded fine.
   Records shorter than the real minimum are still corrupt and still skipped.
+- Preserve the required payload boundary when malformed formats repeat padding
+  names, preventing truncated records from reaching the timestamp read.
 
 ## [1.1.0] - 2026-08-30
