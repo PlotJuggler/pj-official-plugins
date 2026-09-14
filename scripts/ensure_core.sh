@@ -46,6 +46,11 @@ case "${PJ_SANITIZE:-}" in
   tsan) SAN_FLAG="-fsanitize=thread" ;;
   *)    SAN_FLAG="" ;;
 esac
+# The SDK must be compiled by the same compiler as the plugins that link it; see
+# scripts/sanitizer_compiler.sh.
+# shellcheck source=scripts/sanitizer_compiler.sh
+source "$(dirname "${BASH_SOURCE[0]}")/sanitizer_compiler.sh"
+pj_select_sanitizer_compiler "${PJ_SANITIZE:-}" || exit 1
 if [[ -n "${SAN_FLAG}" ]]; then
   SETTINGS+=(
     -c "plotjuggler_sdk/*:tools.build:cxxflags=['${SAN_FLAG}','-fno-omit-frame-pointer']"

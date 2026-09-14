@@ -6,7 +6,7 @@ BUILD_TYPE="${BUILD_TYPE:-Release}"
 
 usage() {
   cat <<EOF
-Usage: ./build.sh [--help] [--sdk-local[=path]] [plugin_dir]
+Usage: ./build.sh [--help] [--sdk-local[=path]] [--asan|--tsan] [plugin_dir]
 
 Build all plugins:
   ./build.sh
@@ -21,8 +21,14 @@ Develop against an UNRELEASED SDK (no Conan release needed):
       the Conan cache AS the pinned SDK_VERSION, rebuilding it every run.
       NOT reproducible — never use for release artifacts; refused in CI.
 
+Sanitizer lanes (compiled with Clang; see "Sanitizer lanes" in CLAUDE.md):
+  ./build.sh --asan [plugin_dir]   AddressSanitizer: instrumented plugins, tests not built
+  ./build.sh --tsan [plugin_dir]   ThreadSanitizer: instrumented plugins, tests built and run
+
 Environment:
   BUILD_TYPE=${BUILD_TYPE}  CMake/Conan build type
+  PJ_SANITIZE=asan|tsan  same as --asan / --tsan
+  PJ_SANITIZER_CLANG_VERSION=${PJ_SANITIZER_CLANG_VERSION:-22}  Clang major version for the sanitizer lanes (CC/CXX override it)
 EOF
 }
 
@@ -68,6 +74,15 @@ if [[ "$#" -gt 1 ]]; then
   usage >&2
   exit 1
 fi
+
+# --asan/--tsan must reach scripts/ensure_core.sh as well, which reads PJ_SANITIZE
+# to instrument the SDK, including a --sdk-local tree registered below.
+if [[ -n "$SANITIZE" ]]; then
+  export PJ_SANITIZE="$SANITIZE"
+fi
+# shellcheck source=scripts/sanitizer_compiler.sh
+source "$SCRIPT_DIR/scripts/sanitizer_compiler.sh"
+pj_select_sanitizer_compiler "$SANITIZE"
 
 if [[ -n "$SDK_LOCAL_DIR" ]]; then
   if [[ ! -d "$SDK_LOCAL_DIR" ]]; then
@@ -214,20 +229,27 @@ cmake -S "$SCRIPT_DIR" -B "$CMAKE_BUILD_DIR" -G Ninja \
 cmake --build "$CMAKE_BUILD_DIR" --config "$BUILD_TYPE" --parallel
 
 if [[ "$SANITIZE" == "tsan" ]]; then
-  # GCC's ThreadSanitizer aborts with "unexpected memory mapping" before running
-  # any test when the kernel randomises mmap more widely than its fixed shadow
-  # ranges (vm.mmap_rnd_bits=32 on current kernels). Disabling randomisation for
-  # the test process avoids a host sysctl change; the personality syscall it needs
-  # is denied by Docker's default seccomp profile, so the app repo's container
-  # wrapper relaxes seccomp for this lane. If the call is still refused, run
-  # unwrapped and let the runtime report rather than reporting a lane that passed
-  # without executing anything.
+  # ThreadSanitizer needs mmap randomisation narrower than current kernels use
+  # (vm.mmap_rnd_bits=32). GCC's runtime aborts with "unexpected memory mapping"
+  # before running any test; Clang's re-executes itself without randomisation.
+  # Disabling randomisation for the test process up front avoids a host sysctl
+  # change. The personality syscall it needs is denied by Docker's default seccomp
+  # profile, so the app repo's container wrapper relaxes seccomp for this lane. If
+  # the call is still refused, run unwrapped and let the runtime report, rather
+  # than reporting a lane that passed without executing anything.
   tsan_launch=()
   if setarch -R true >/dev/null 2>&1; then
     tsan_launch=(setarch -R)
   else
     echo "warning: 'setarch -R' unavailable; ThreadSanitizer may abort before running tests." >&2
   fi
+  # Clang's sanitizer runtimes name stack frames only through an llvm-symbolizer
+  # on PATH; without one a report is a list of bare addresses.
+  symbolizer_path=""
+  if [[ -x "/usr/lib/llvm-${PJ_SANITIZER_CLANG_VERSION:-22}/bin/llvm-symbolizer" ]]; then
+    symbolizer_path="/usr/lib/llvm-${PJ_SANITIZER_CLANG_VERSION:-22}/bin:"
+  fi
+  PATH="${symbolizer_path}${PATH}" \
   QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}" \
   TSAN_OPTIONS="halt_on_error=1 history_size=4 ${TSAN_OPTIONS:-}" \
     ${tsan_launch[@]+"${tsan_launch[@]}"} \
