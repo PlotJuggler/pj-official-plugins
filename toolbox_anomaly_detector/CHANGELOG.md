@@ -19,6 +19,9 @@ below; for earlier releases see the git history of `toolbox_anomaly_detector/`.
   broken. The list is now filtered by the host's own criterion (numeric and
   bool, no text), which is the same rule the marker engine and the host's
   resolver apply.
+- Picking a source before any function left the rule on `series("--SOURCE--")`
+  with a "none of the generator's inputs matches" error until a function was
+  picked; the source now retargets the pristine template as it should.
 
 ### Changed
 - One scope picker instead of the previous split control, section header bands

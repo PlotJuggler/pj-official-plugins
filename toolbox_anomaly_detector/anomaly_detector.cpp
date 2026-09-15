@@ -306,7 +306,11 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
   }
 
   bool onCodeChanged(std::string_view name, std::string_view code) override {
-    if (name == "code_editor") {
+    // A code event that changes nothing is not an edit. The host emits one on the panel's
+    // first paint (the syntax highlighter's deferred rehighlight fires textChanged after the
+    // signals are wired), and taking it as a user edit would pin the pristine template to
+    // "--SOURCE--" until a function is picked.
+    if (name == "code_editor" && code != code_) {
       code_ = std::string(code);  // user edits win over the template
       user_edited_ = true;        // ...and survive a later source change
     }

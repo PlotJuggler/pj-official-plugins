@@ -386,6 +386,43 @@ TEST(AnomalyDialogSource, PickingASourceRetargetsTheChosenBuiltinTemplate) {
   EXPECT_EQ(code.find("--SOURCE--"), std::string::npos) << code;
 }
 
+TEST(AnomalyDialogSource, AnEchoedCodeEventDoesNotPinTheTemplate) {
+  // The host echoes the editor's content back as a code event on the panel's first paint
+  // (the syntax highlighter's deferred rehighlight fires textChanged after the signals are
+  // wired). Taking that echo as a user edit left the pristine template on "--SOURCE--" when
+  // the source was picked before any function: reproduced in the app, invisible to a
+  // fixture that never echoes.
+  auto fixture = makeFixture();
+  fixture.addSeries("alpha", "x");
+  fixture.bind();
+  auto dialog = fixture.dialog();
+
+  const std::string pristine = widgetData(dialog).codeContent("code_editor").value_or(std::string{});
+  ASSERT_NE(pristine.find("--SOURCE--"), std::string::npos) << pristine;
+  // onCodeChanged answers false on purpose ("no widget_data re-read while typing"), so
+  // false is the expected reply, not a failure.
+  EXPECT_FALSE(dialog.sendEvent("code_editor", PJ::WidgetEventBuilder::codeChanged(pristine)));
+  ASSERT_TRUE(dialog.sendEvent("source_list", PJ::WidgetEventBuilder::selectionChanged({"alpha/x"})));
+
+  const std::string code = widgetData(dialog).codeContent("code_editor").value_or(std::string{});
+  EXPECT_NE(code.find("alpha/x"), std::string::npos) << code;
+  EXPECT_EQ(code.find("--SOURCE--"), std::string::npos) << code;
+}
+
+TEST(AnomalyDialogSource, ARealCodeEditSurvivesALaterSourceClick) {
+  auto fixture = makeFixture();
+  fixture.addSeries("alpha", "x");
+  fixture.bind();
+  auto dialog = fixture.dialog();
+
+  EXPECT_FALSE(
+      dialog.sendEvent("code_editor", PJ::WidgetEventBuilder::codeChanged("-- mine\nlocal s = series(\"alpha/x\")")));
+  ASSERT_TRUE(dialog.sendEvent("source_list", PJ::WidgetEventBuilder::selectionChanged({"alpha/x"})));
+
+  const std::string code = widgetData(dialog).codeContent("code_editor").value_or(std::string{});
+  EXPECT_NE(code.find("-- mine"), std::string::npos) << code;
+}
+
 TEST(AnomalyDialogSource, ALoadedRuleSurvivesALaterSourceClick) {
   // Adjacent regression: "load a rule, then pick a source" is the natural flow now that
   // nothing is pre-selected, and the source click used to overwrite the loaded rule with
