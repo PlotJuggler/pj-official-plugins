@@ -3,17 +3,13 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_anomaly_detector/`.
 
-## [Unreleased]
+## [0.2.0] - 2026-09-15
 
 ### Fixed
 - A Global rule no longer replaces a Dataset rule (they shared generator id
   `rule/__global__`).
 - A Global rule is drawn on every loaded dataset, including those that lack the
   series it reads (host-side; earlier hosts errored on such a dataset).
-
-## [0.2.0] - 2026-09-10
-
-### Fixed
 - The Source list offered every scalar field in the catalog but only cached
   samples for float64, so it silently split series into three groups the user
   could not tell apart: float64 worked, float32/int/bool ran on Apply but

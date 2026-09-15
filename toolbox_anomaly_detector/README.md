@@ -49,9 +49,12 @@ GUI produces identical markers in CI — only *who invokes the engine* differs.
    - **Global:** on the host's all-datasets marker topic. The rule runs on every loaded
      dataset that has the series it reads, and the combined result is drawn on *every loaded
      dataset*, including those without that series and those loaded later — shown as the
-     *Global markers* row, and can coexist with a Dataset rule. Marker times are absolute, so
-     on a dataset with a different clock they fall outside the plot until the datasets are
-     aligned in the Source Timeline.
+     *Global markers* row, and can coexist with a Dataset rule. Global markers keep their
+     display instant: on a dataset whose clock is not yet aligned in the Source Timeline they
+     can fall outside its data range.
+
+   The two rows and the all-datasets drawing need a PlotJuggler newer than 3.999.9. On an
+   older host both scopes share the dataset marker topic, so the last rule applied wins.
 5. **Apply** — submits the rule to the host as a live generator. It recomputes automatically
    when the data changes/reloads. The status shows `Done: …` or `Error: …`.
 6. **Save rule as… / Load rule…** — native file dialogs for the portable rule JSON (the same

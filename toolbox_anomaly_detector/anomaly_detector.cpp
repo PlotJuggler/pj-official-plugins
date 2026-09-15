@@ -736,8 +736,10 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
     const std::string params = global_all ? R"({"scope":"all"})" : "{}";
 
     // Stable per-(target, scope) id: re-Save upserts (replaces) the generator for that rule.
-    // Dataset-scope and Global-scope both write the "__global__" target, so the scope must be
-    // folded into the id itself, or the two would collide on one generator.
+    // One id is one generator on the host, and a scope change on an id replaces it, so a
+    // Dataset rule and a Global rule can only coexist under two ids. The host keeps their
+    // marker topics apart on its own (it rewrites "__global__" + scope:all to its
+    // all-datasets key); the id split is what keeps the RULES apart.
     const std::string id = "rule/" + (global_all ? std::string("__all__") : target);
     const PJ::Expected<std::vector<std::string>> submitted =
         gens.createMarkers(id, PJ::Span<const std::string_view>(inputs), target, code, params);
