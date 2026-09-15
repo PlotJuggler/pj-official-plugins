@@ -34,6 +34,17 @@ struct NamedFunction {
 /// Replace every "--SOURCE--" in `tmpl` with `source` (no-op if source empty).
 [[nodiscard]] std::string substituteSource(std::string tmpl, const std::string& source);
 
+/// The series a rule reads: every literal `series("...")` / `series('...')` call in `code`,
+/// in order of first appearance, deduplicated. Lua comments (`--` to end of line and
+/// `--[[ ]]` / `--[==[ ]==]` blocks) are skipped, and a `--` inside a string is not a
+/// comment, so a help comment or a commented-out line never declares an input.
+///
+/// This is what the GUI declares as generator inputs. The host materializes EVERY declared
+/// input whole-series on each run, so declaring only what the rule touches is what keeps
+/// the preview from re-materializing the dataset. Dynamic names (series("x"..v)) are not
+/// seen; anomaly rules use literal keys.
+[[nodiscard]] std::vector<std::string> parseSeriesRefs(const std::string& code);
+
 // ---------------------------------------------------------------------------
 // JSON report (structured output for the headless runner / CI pipelines)
 // ---------------------------------------------------------------------------

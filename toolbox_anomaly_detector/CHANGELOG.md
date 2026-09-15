@@ -22,6 +22,10 @@ below; for earlier releases see the git history of `toolbox_anomaly_detector/`.
 - Picking a source before any function left the rule on `series("--SOURCE--")`
   with a "none of the generator's inputs matches" error until a function was
   picked; the source now retargets the pristine template as it should.
+- A `series("...")` inside a Lua comment counted as a rule input, so the blank
+  template's help comment made the preview fail with "input 'topic/field' does
+  not exist", and a commented-out line could fail the rule the same way.
+  Comments are now skipped when the inputs are collected.
 
 ### Changed
 - One scope picker instead of the previous split control, section header bands

@@ -3,6 +3,7 @@
 
 #include "anomaly_helpers.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <nlohmann/json.hpp>
 
@@ -165,6 +166,110 @@ std::string substituteSource(std::string tmpl, const std::string& source) {
     pos += source.size();
   }
   return tmpl;
+}
+
+namespace {
+
+// Length of a Lua long-bracket opener at `pos` ("[[", "[=[", "[==[", ...), or 0 when
+// there is none. `level` receives the number of '=' signs.
+std::size_t longBracketOpen(const std::string& s, std::size_t pos, std::size_t& level) {
+  if (pos >= s.size() || s[pos] != '[') {
+    return 0;
+  }
+  std::size_t i = pos + 1;
+  while (i < s.size() && s[i] == '=') {
+    ++i;
+  }
+  if (i >= s.size() || s[i] != '[') {
+    return 0;
+  }
+  level = i - pos - 1;
+  return i - pos + 1;
+}
+
+// Index just past the closer "]=*]" that matches `level`, or npos when unterminated.
+std::size_t longBracketCloseEnd(const std::string& s, std::size_t from, std::size_t level) {
+  const std::string closer = "]" + std::string(level, '=') + "]";
+  const std::size_t at = s.find(closer, from);
+  return at == std::string::npos ? at : at + closer.size();
+}
+
+// Lua source with every comment blanked out (spaces, newlines kept) and everything else,
+// strings included, byte-for-byte in place. Only comments are removed: the reference
+// scanner below then cannot mistake a help comment or a commented-out line for code.
+std::string blankLuaComments(const std::string& code) {
+  std::string out = code;
+  std::size_t i = 0;
+  while (i < code.size()) {
+    const char c = code[i];
+    if (c == '"' || c == '\'') {  // short string: skip to the matching quote, honouring escapes
+      ++i;
+      while (i < code.size() && code[i] != c) {
+        i += (code[i] == '\\') ? 2 : 1;
+      }
+      ++i;
+      continue;
+    }
+    std::size_t level = 0;
+    if (const std::size_t open = longBracketOpen(code, i, level); open != 0) {  // long string
+      const std::size_t end = longBracketCloseEnd(code, i + open, level);
+      i = (end == std::string::npos) ? code.size() : end;
+      continue;
+    }
+    if (c == '-' && i + 1 < code.size() && code[i + 1] == '-') {  // comment
+      std::size_t end = 0;
+      if (const std::size_t open = longBracketOpen(code, i + 2, level); open != 0) {
+        end = longBracketCloseEnd(code, i + 2 + open, level);
+        if (end == std::string::npos) {
+          end = code.size();
+        }
+      } else {
+        end = code.find('\n', i);
+        if (end == std::string::npos) {
+          end = code.size();
+        }
+      }
+      for (std::size_t k = i; k < end; ++k) {
+        if (out[k] != '\n') {
+          out[k] = ' ';
+        }
+      }
+      i = end;
+      continue;
+    }
+    ++i;
+  }
+  return out;
+}
+
+}  // namespace
+
+std::vector<std::string> parseSeriesRefs(const std::string& code) {
+  const std::string source = blankLuaComments(code);
+  std::vector<std::string> refs;
+  const std::string token = "series(";
+  std::size_t pos = 0;
+  while ((pos = source.find(token, pos)) != std::string::npos) {
+    pos += token.size();
+    while (pos < source.size() && (source[pos] == ' ' || source[pos] == '\t')) {
+      ++pos;
+    }
+    if (pos >= source.size() || (source[pos] != '"' && source[pos] != '\'')) {
+      continue;  // not a string-literal argument
+    }
+    const char quote = source[pos++];
+    const std::size_t start = pos;
+    while (pos < source.size() && source[pos] != quote) {
+      ++pos;
+    }
+    if (pos > start && pos < source.size()) {
+      std::string name = source.substr(start, pos - start);
+      if (std::find(refs.begin(), refs.end(), name) == refs.end()) {
+        refs.push_back(std::move(name));  // dedup so the host materializes each series once
+      }
+    }
+  }
+  return refs;
 }
 
 // ---------------------------------------------------------------------------

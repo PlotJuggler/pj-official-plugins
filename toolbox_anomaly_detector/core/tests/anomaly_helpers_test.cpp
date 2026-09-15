@@ -135,6 +135,68 @@ TEST(SubstituteSource, DoesNotRescanInsertedTextAndTerminates) {
 // JSON report — the CI-facing artifact (verdict + summary + anomaly list)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// parseSeriesRefs — what the GUI declares as generator inputs
+// ---------------------------------------------------------------------------
+
+TEST(ParseSeriesRefs, FindsLiteralCallsInOrderWithoutDuplicates) {
+  const std::string code = "local a = series(\"x/1\")\nlocal b = series( 'y/2' )\nlocal c = series(\"x/1\")\n";
+  EXPECT_EQ(anomaly_core::parseSeriesRefs(code), (std::vector<std::string>{"x/1", "y/2"}));
+}
+
+TEST(ParseSeriesRefs, IgnoresNonLiteralArguments) {
+  const std::string code = "local n = 'x'\nlocal s = series(n)\nlocal t = series(\"a\"..n)\n";
+  EXPECT_EQ(anomaly_core::parseSeriesRefs(code), (std::vector<std::string>{"a"}));
+}
+
+TEST(ParseSeriesRefs, SkipsLineComments) {
+  // A help comment with an example call, and a line the user commented out to try
+  // something else: neither is read by the rule, so neither may be declared — the host
+  // rejects the whole rule when a declared input does not exist.
+  const std::string code =
+      "-- series(\"topic/field\"):size() / :at(i)\n"
+      "-- local old = series(\"gone/away\")\n"
+      "local s = series(\"real/one\")  -- series(\"trailing/comment\")\n";
+  EXPECT_EQ(anomaly_core::parseSeriesRefs(code), (std::vector<std::string>{"real/one"}));
+}
+
+TEST(ParseSeriesRefs, SkipsBlockCommentsAtAnyLevel) {
+  const std::string code =
+      "--[[ series(\"in/block\") ]] local s = series(\"a\")\n"
+      "--[==[ multi\nline series(\"in/levelled\") ]==]\n"
+      "local t = series(\"b\")\n";
+  EXPECT_EQ(anomaly_core::parseSeriesRefs(code), (std::vector<std::string>{"a", "b"}));
+}
+
+TEST(ParseSeriesRefs, DashesInsideAStringAreNotAComment) {
+  const std::string code = "local s = series(\"odd--name\")\nlocal t = series('a--b') -- series(\"c\")\n";
+  EXPECT_EQ(anomaly_core::parseSeriesRefs(code), (std::vector<std::string>{"odd--name", "a--b"}));
+}
+
+TEST(ParseSeriesRefs, EscapedQuoteDoesNotEndTheStringEarly) {
+  const std::string code = "local m = \"say \\\"hi\\\" -- not a comment\"\nlocal s = series(\"x\")\n";
+  EXPECT_EQ(anomaly_core::parseSeriesRefs(code), (std::vector<std::string>{"x"}));
+}
+
+TEST(ParseSeriesRefs, UnterminatedCommentSwallowsTheRest) {
+  const std::string code = "local s = series(\"a\")\n--[[ never closed series(\"b\")\n";
+  EXPECT_EQ(anomaly_core::parseSeriesRefs(code), (std::vector<std::string>{"a"}));
+}
+
+TEST(ParseSeriesRefs, NoBuiltinDeclaresAnythingButItsSource) {
+  // The blank template's help comment carries a series("topic/field") example; with a
+  // source substituted, a builtin may declare that source or nothing at all (the fixed
+  // limit lines and bands read no series), never a third name.
+  for (const auto& f : anomaly_core::builtinFunctions()) {
+    const std::string code = anomaly_core::substituteSource(f.code, "ds/src");
+    for (const std::string& ref : anomaly_core::parseSeriesRefs(code)) {
+      EXPECT_EQ(ref, "ds/src") << f.name;
+    }
+  }
+  const std::string blank = anomaly_core::substituteSource(anomaly_core::builtinFunctions().front().code, "ds/src");
+  EXPECT_EQ(anomaly_core::parseSeriesRefs(blank), (std::vector<std::string>{"ds/src"}));
+}
+
 TEST(MarkersToReport, CountsBySeverityAndStatus) {
   const std::vector<PlotMarker> markers{
       makeMarker(MarkerSeverity::kInfo, MarkerStatus::kNone),
