@@ -194,6 +194,17 @@ std::size_t longBracketCloseEnd(const std::string& s, std::size_t from, std::siz
   return at == std::string::npos ? at : at + closer.size();
 }
 
+// Index of the quote that closes the Lua short string opening at `s[pos]`, honouring
+// backslash escapes; `s.size()` when unterminated. The one definition of "where does this
+// string end" for both the comment blanker and the reference scanner.
+std::size_t quotedStringEnd(const std::string& s, std::size_t pos) {
+  const char quote = s[pos++];
+  while (pos < s.size() && s[pos] != quote) {
+    pos += (s[pos] == '\\') ? 2 : 1;
+  }
+  return std::min(pos, s.size());
+}
+
 // Lua source with every comment blanked out (spaces, newlines kept) and everything else,
 // strings included, byte-for-byte in place. Only comments are removed: the reference
 // scanner below then cannot mistake a help comment or a commented-out line for code.
@@ -202,12 +213,8 @@ std::string blankLuaComments(const std::string& code) {
   std::size_t i = 0;
   while (i < code.size()) {
     const char c = code[i];
-    if (c == '"' || c == '\'') {  // short string: skip to the matching quote, honouring escapes
-      ++i;
-      while (i < code.size() && code[i] != c) {
-        i += (code[i] == '\\') ? 2 : 1;
-      }
-      ++i;
+    if (c == '"' || c == '\'') {  // short string
+      i = quotedStringEnd(code, i) + 1;
       continue;
     }
     std::size_t level = 0;
@@ -257,11 +264,8 @@ std::vector<std::string> parseSeriesRefs(const std::string& code) {
     if (pos >= source.size() || (source[pos] != '"' && source[pos] != '\'')) {
       continue;  // not a string-literal argument
     }
-    const char quote = source[pos++];
-    const std::size_t start = pos;
-    while (pos < source.size() && source[pos] != quote) {
-      ++pos;
-    }
+    const std::size_t start = pos + 1;
+    pos = quotedStringEnd(source, pos);
     if (pos > start && pos < source.size()) {
       std::string name = source.substr(start, pos - start);
       if (std::find(refs.begin(), refs.end(), name) == refs.end()) {

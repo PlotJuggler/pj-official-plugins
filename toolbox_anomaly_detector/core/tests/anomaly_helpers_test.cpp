@@ -176,6 +176,8 @@ TEST(ParseSeriesRefs, DashesInsideAStringAreNotAComment) {
 TEST(ParseSeriesRefs, EscapedQuoteDoesNotEndTheStringEarly) {
   const std::string code = "local m = \"say \\\"hi\\\" -- not a comment\"\nlocal s = series(\"x\")\n";
   EXPECT_EQ(anomaly_core::parseSeriesRefs(code), (std::vector<std::string>{"x"}));
+  // Same rule inside the call itself: the name runs to the closing quote, escapes kept raw.
+  EXPECT_EQ(anomaly_core::parseSeriesRefs("series(\"a\\\"b\")"), (std::vector<std::string>{"a\\\"b"}));
 }
 
 TEST(ParseSeriesRefs, UnterminatedCommentSwallowsTheRest) {
