@@ -11,6 +11,7 @@ find_package(nlohmann_json REQUIRED)
 
 add_library(pj_toolbox_preview STATIC
   series_catalog.cpp
+  series_types.cpp
   ephemeral_preview.cpp
 )
 target_compile_features(pj_toolbox_preview PUBLIC cxx_std_20)
@@ -38,6 +39,8 @@ if(TARGET GTest::gtest_main)
   add_executable(toolbox_preview_test
     tests/adaptive_poll_test.cpp
     tests/ephemeral_preview_test.cpp
+    tests/series_decode_test.cpp
+    tests/series_catalog_test.cpp
   )
   if(DEFINED PJ_WARNING_FLAGS)
     target_compile_options(toolbox_preview_test PRIVATE ${PJ_WARNING_FLAGS})

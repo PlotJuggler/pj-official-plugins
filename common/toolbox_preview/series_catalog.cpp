@@ -24,6 +24,62 @@ std::vector<PJ::ChartPoint> downsampleToChart(
   return pts;
 }
 
+std::optional<SeriesCatalog::ArrowSeriesRef> SeriesCatalog::openSeries(
+    const ArrowSchema* schema, const ArrowArray* array, PJ::PrimitiveType type) {
+  // Contract: children[0] = int64 timestamps, children[1] = the typed value column.
+  if (schema == nullptr || array == nullptr || schema->n_children < 2 || array->n_children < 2) {
+    return std::nullopt;
+  }
+  const ArrowArray* ts_col = array->children[0];
+  const ArrowArray* val_col = array->children[1];
+  if (ts_col == nullptr || val_col == nullptr || ts_col->n_buffers < 2 || val_col->n_buffers < 2) {
+    return std::nullopt;
+  }
+  // Trust the catalog type only as far as the payload agrees with it: decoding a mismatch
+  // reads the buffer at the wrong width, which is silent garbage rather than a failure.
+  // This reaches into the SDK's detail:: namespace because the public wrapper that exposes
+  // the same mapping (MaterializedSeriesView::type) takes ownership of the holders and
+  // hides the raw buffers we still need for validity, bool bits and the slice offset.
+  if (PJ::sdk::detail::formatToPrimitiveType(schema->children[1]->format) != type) {
+    return std::nullopt;
+  }
+  const auto* timestamps = static_cast<const std::int64_t*>(ts_col->buffers[1]);
+  if (timestamps == nullptr) {
+    return std::nullopt;
+  }
+  ArrowSeriesRef ref;
+  ref.timestamps = timestamps + ts_col->offset;  // the timestamp column has its own offset
+  ref.values = val_col->buffers[1];
+  ref.validity = static_cast<const std::uint8_t*>(val_col->buffers[0]);
+  ref.offset = val_col->offset;
+  ref.count = static_cast<std::size_t>(val_col->length);
+  return ref;
+}
+
+std::optional<SeriesCatalog::SeriesData> SeriesCatalog::materializeSeries(
+    const PJ::sdk::ToolboxHostView& host, PJ::sdk::FieldHandle handle, PJ::PrimitiveType type) {
+  PJ::sdk::ArrowSchemaHolder schema;
+  PJ::sdk::ArrowArrayHolder array;
+  if (!host.readSeriesArrow(handle, schema.out(), array.out())) {
+    return std::nullopt;
+  }
+  const std::optional<ArrowSeriesRef> ref = openSeries(schema.get(), array.get(), type);
+  if (!ref) {
+    return std::nullopt;
+  }
+  SeriesData data;
+  data.handle = handle;
+  data.type = type;
+  if (!decodeSeriesAsDouble(
+          type, ref->values, ref->validity, ref->offset, ref->timestamps, ref->count, data.timestamps, data.values)) {
+    return std::nullopt;
+  }
+  if (data.timestamps.empty()) {
+    return std::nullopt;  // no samples, or every one of them was null
+  }
+  return data;
+}
+
 bool SeriesCatalog::refresh(const PJ::sdk::ToolboxHostView& host) {
   auto catalog = host.catalogSnapshot();
   if (!catalog) {
@@ -31,7 +87,6 @@ bool SeriesCatalog::refresh(const PJ::sdk::ToolboxHostView& host) {
   }
   series_map_.clear();
   series_names_.clear();
-  field_handles_.clear();
   const auto all_fields = catalog->fields();
   for (const auto& topic : catalog->topics()) {
     const std::string topic_name(PJ::sdk::toStringView(topic.name));
@@ -41,16 +96,15 @@ bool SeriesCatalog::refresh(const PJ::sdk::ToolboxHostView& host) {
       // (so per-series markers land on the right curve). It is the canonical "topic/field"
       // series key, not marker-specific data.
       std::string name = PJ::sdk::markerSeriesKey(topic_name, PJ::sdk::toStringView(f.name));
+      const PJ::PrimitiveType type = PJ::sdk::fromAbiType(f.type);
+      // Filter BEFORE the read, not after: a text topic would otherwise be materialised in
+      // full only to be thrown away.
+      if (!isPlottableType(type)) {
+        continue;
+      }
       series_names_.push_back(name);
-      auto series = host.readSeries(f.handle);
-      if (series && series->type() == PJ::PrimitiveType::kFloat64) {
-        const auto ts = series->timestamps();
-        const double* values = series->valuesAsFloat64();
-        const size_t count = ts.size();
-        if (values != nullptr) {
-          series_map_[name] = buildSeriesData(ts, values, count);
-          field_handles_[name] = f.handle;  // cached so the tick path re-reads ONE series
-        }
+      if (std::optional<SeriesData> data = materializeSeries(host, f.handle, type)) {
+        series_map_[name] = std::move(*data);
       }
     }
   }
@@ -70,6 +124,14 @@ bool SeriesCatalog::refreshStructureIfChanged(const PJ::sdk::ToolboxHostView& ho
   for (const auto& topic : catalog->topics()) {
     sig = (sig ^ (static_cast<std::uint64_t>(topic.source.id) << 32 | topic.field_count)) * 1099511628211ull;
   }
+  // Field handle + TYPE, not just the per-topic count. Reloading a different file over the
+  // same source/topic shape can retype a field without moving any count, and the source
+  // list is now type-filtered — so a signature blind to types would leave the filter
+  // frozen on the previous file's types.
+  for (const auto& f : catalog->fields()) {
+    sig = (sig ^ ((static_cast<std::uint64_t>(f.handle.id) << 8) | static_cast<std::uint64_t>(f.type))) *
+          1099511628211ull;
+  }
   if (sig == last_catalog_sig_) {
     return false;
   }
@@ -86,9 +148,9 @@ bool SeriesCatalog::refreshSelectedSourceData(const PJ::sdk::ToolboxHostView& ho
   if (selected.empty()) {
     return false;
   }
-  const auto handle_it = field_handles_.find(selected);
-  if (handle_it == field_handles_.end()) {
-    return false;  // not a readable float64 series (or not snapshotted yet)
+  const auto cached_it = series_map_.find(selected);
+  if (cached_it == series_map_.end()) {
+    return false;  // never materialised (unreadable, or not snapshotted yet)
   }
   if (selected != last_source_name_) {
     last_source_name_ = selected;  // new selection -> force a fresh read below
@@ -96,25 +158,36 @@ bool SeriesCatalog::refreshSelectedSourceData(const PJ::sdk::ToolboxHostView& ho
     last_source_last_ts_ = 0.0;
     source_poll_.reset();
   }
-  auto series = host.readSeries(handle_it->second);
-  if (!series || series->type() != PJ::PrimitiveType::kFloat64) {
+  // Open the Arrow payload but DON'T decode yet: this runs at the panel tick rate while
+  // most polls find nothing new, and decoding first would allocate and fill two vectors
+  // the size of the whole series only to throw them away.
+  PJ::sdk::ArrowSchemaHolder schema;
+  PJ::sdk::ArrowArrayHolder array;
+  if (!host.readSeriesArrow(cached_it->second.handle, schema.out(), array.out())) {
     return false;
   }
-  const auto ts = series->timestamps();
-  const double* values = series->valuesAsFloat64();
-  const size_t count = ts.size();
-  if (values == nullptr || count == 0) {
+  const std::optional<ArrowSeriesRef> ref = openSeries(schema.get(), array.get(), cached_it->second.type);
+  if (!ref || ref->count == 0) {
     return false;
   }
-  const double last_ts = static_cast<double>(ts[count - 1]);
-  if (count == last_source_count_ && last_ts == last_source_last_ts_) {
+  const double last_ts = static_cast<double>(ref->timestamps[ref->count - 1]);
+  if (ref->count == last_source_count_ && last_ts == last_source_last_ts_) {
     source_poll_.observe(false);  // unchanged -> let the cadence back off
     return false;                 // no new samples -> leave the (frozen) preview as is
   }
+
+  SeriesData data;
+  data.handle = cached_it->second.handle;
+  data.type = cached_it->second.type;
+  if (!decodeSeriesAsDouble(
+          data.type, ref->values, ref->validity, ref->offset, ref->timestamps, ref->count, data.timestamps,
+          data.values)) {
+    return false;
+  }
   source_poll_.observe(true);  // moving -> keep reading every tick for a smooth follow
-  last_source_count_ = count;
+  last_source_count_ = ref->count;
   last_source_last_ts_ = last_ts;
-  series_map_[selected] = buildSeriesData(ts, values, count);
+  cached_it->second = std::move(data);
   ++data_revision_;  // new samples for the selected source → invalidate the cached curve/overlay
   return true;
 }
