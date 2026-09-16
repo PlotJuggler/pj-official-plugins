@@ -42,6 +42,22 @@ ctest --test-dir build -R csv_parser    # single test by name
 
 Tests exist for: csv, json, protobuf, data_tamer, ros, ulog.
 
+### Sanitizer lanes
+
+```bash
+PJ_SANITIZE=tsan scripts/ensure_core.sh   # instrumented SDK, always built from source
+./build.sh --tsan                         # instrumented plugins; builds and RUNS the tests
+PJ_SANITIZE=asan scripts/ensure_core.sh
+./build.sh --asan                         # instrumented plugin .so files; tests are not built
+```
+
+- **Compiler.** Both lanes compile with Clang `PJ_SANITIZER_CLANG_VERSION` (default `22`).
+  - Install `clang-22`, `libclang-rt-22-dev` and `llvm-22` from apt.llvm.org.
+  - This is the compiler PlotJuggler 4's instrumented lanes use; its container builds this repo exactly this way.
+  - A `CC`/`CXX` you set yourself is kept.
+  - The SDK and the plugins must agree, because code instrumented for one compiler's sanitizer runtime cannot load into a process running another's. `scripts/sanitizer_compiler.sh` makes both scripts pick the same one.
+- **Conan cache.** Use a separate `CONAN_HOME` per lane: sanitizer flags do not enter Conan's `package_id`.
+
 ### Smoke Test with pj_proto_app
 
 ```bash
