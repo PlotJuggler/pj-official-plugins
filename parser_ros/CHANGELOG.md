@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_ros/`.
 
+## [1.2.2] - 2026-09-12
+
+### Changed
+- Bumped `rosx_introspection` to 3.1.2: picks up the unsigned CDR sequence-length fix (rosx #47) and 3.1.1's in-position DDS `@key` path rendering.
+
 ## [1.2.1] - 2026-09-06
 
 ### Fixed
