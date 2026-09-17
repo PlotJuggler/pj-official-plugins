@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>AssistantSettings</class>
+ <widget class="QDialog" name="AssistantSettings">
+  <property name="windowTitle"><string>Assistant Agent - Settings</string></property>
+  <property name="minimumWidth"><number>480</number></property>
+  <layout class="QVBoxLayout" name="settingsLayout">
+   <item>
+    <widget class="QLabel" name="backendCaption">
+     <property name="text"><string>Choose which model backend the assistant uses.</string></property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QFormLayout" name="formLayout">
+     <item row="0" column="0">
+      <widget class="QLabel" name="backendFieldLabel">
+       <property name="text"><string>Backend</string></property>
+      </widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QComboBox" name="backendCombo">
+       <item><property name="text"><string>Claude Code (subscription)</string></property></item>
+       <item><property name="text"><string>Codex (ChatGPT subscription)</string></property></item>
+      </widget>
+     </item>
+     <item row="1" column="0">
+      <widget class="QLabel" name="claudeModelLabel">
+       <property name="text"><string>Claude model</string></property>
+       <property name="pj_visible_when" stdset="0"><string>backendCombo:0</string></property>
+      </widget>
+     </item>
+     <item row="1" column="1">
+      <widget class="QComboBox" name="claudeModelCombo">
+       <property name="editable"><bool>false</bool></property>
+       <property name="pj_visible_when" stdset="0"><string>backendCombo:0</string></property>
+      </widget>
+     </item>
+     <item row="2" column="0">
+      <widget class="QLabel" name="claudeCustomModelLabel">
+       <property name="text"><string>Custom model</string></property>
+       <property name="pj_visible_when" stdset="0"><string>backendCombo:0;claudeModelCombo:1</string></property>
+      </widget>
+     </item>
+     <item row="2" column="1">
+      <widget class="QLineEdit" name="claudeModelEdit">
+       <property name="placeholderText"><string>full model name</string></property>
+       <property name="pj_visible_when" stdset="0"><string>backendCombo:0;claudeModelCombo:1</string></property>
+      </widget>
+     </item>
+     <item row="3" column="0">
+      <widget class="QLabel" name="claudeCliPathLabel">
+       <property name="text"><string>claude CLI path</string></property>
+       <property name="pj_visible_when" stdset="0"><string>backendCombo:0</string></property>
+      </widget>
+     </item>
+     <item row="3" column="1">
+      <widget class="QLineEdit" name="claudeCliPathEdit">
+       <property name="placeholderText"><string>claude (on PATH) or /full/path/to/claude</string></property>
+       <property name="pj_visible_when" stdset="0"><string>backendCombo:0</string></property>
+      </widget>
+     </item>
+     <item row="4" column="0">
+      <widget class="QLabel" name="codexModelLabel">
+       <property name="text"><string>Codex model</string></property>
+       <property name="pj_visible_when" stdset="0"><string>backendCombo:1</string></property>
+      </widget>
+     </item>
+     <item row="4" column="1">
+      <widget class="QComboBox" name="codexModelCombo">
+       <property name="editable"><bool>false</bool></property>
+       <property name="pj_visible_when" stdset="0"><string>backendCombo:1</string></property>
+      </widget>
+     </item>
+     <item row="5" column="0">
+      <widget class="QLabel" name="codexCustomModelLabel">
+       <property name="text"><string>Custom model</string></property>
+       <property name="pj_visible_when" stdset="0"><string>backendCombo:1;codexModelCombo:1</string></property>
+      </widget>
+     </item>
+     <item row="5" column="1">
+      <widget class="QLineEdit" name="codexModelEdit">
+       <property name="placeholderText"><string>full model name</string></property>
+       <property name="pj_visible_when" stdset="0"><string>backendCombo:1;codexModelCombo:1</string></property>
+      </widget>
+     </item>
+     <item row="6" column="0">
+      <widget class="QLabel" name="codexCliPathLabel">
+       <property name="text"><string>codex CLI path</string></property>
+       <property name="pj_visible_when" stdset="0"><string>backendCombo:1</string></property>
+      </widget>
+     </item>
+     <item row="6" column="1">
+      <widget class="QLineEdit" name="codexCliPathEdit">
+       <property name="placeholderText"><string>codex (on PATH) or /full/path/to/codex</string></property>
+       <property name="pj_visible_when" stdset="0"><string>backendCombo:1</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QLabel" name="testResultLabel">
+     <property name="text"><string/></property>
+     <property name="wordWrap"><bool>true</bool></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>

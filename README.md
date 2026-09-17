@@ -35,6 +35,7 @@
 | [![toolbox_mosaico](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_mosaico.json)](toolbox_mosaico/) | Toolbox | Mosaico cloud server browsing (Arrow Flight) |
 | [![toolbox_transform_editor](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_transform_editor.json)](toolbox_transform_editor/) | Toolbox | Lua-based derived/custom series editor |
 | [toolbox_anomaly_detector](toolbox_anomaly_detector/) | Toolbox | Lua anomaly detection → plot markers (shares its engine with the headless runner) |
+| [toolbox_assistant_agent](toolbox_assistant_agent/) | Toolbox | LLM assistant driving the plugin SDK through your Claude Code / Codex CLI (Linux/macOS runtime) |
 
 In addition to the plugins above, [`tools/anomaly_runner`](tools/anomaly_runner/) is a
 standalone **headless CLI** that runs the same anomaly-detection rules without a GUI (CSV/MCAP

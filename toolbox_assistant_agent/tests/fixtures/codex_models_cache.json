@@ -1,0 +1,48 @@
+{
+  "fetched_at": "2026-09-03T08:02:11.599960494Z",
+  "client_version": "0.153.0",
+  "models": [
+    {
+      "slug": "test-model-reserve",
+      "display_name": "Test Model Reserve",
+      "description": "Internal reserve model, not for direct selection.",
+      "visibility": "hide",
+      "priority": 3
+    },
+    {
+      "slug": "test-model-fast",
+      "display_name": "Test Model Fast",
+      "description": "Fast and affordable model for everyday coding tasks.",
+      "visibility": "list",
+      "priority": 7
+    },
+    {
+      "slug": "test-model-swift",
+      "display_name": "Test Model Swift",
+      "description": "Balanced agentic coding model for common work.",
+      "visibility": "list",
+      "priority": 8
+    },
+    {
+      "slug": "test-model-classic",
+      "display_name": "Test Model Classic",
+      "description": "Proven previous-generation model for coding and general work.",
+      "visibility": "list",
+      "priority": 12
+    },
+    {
+      "slug": "test-model-mini",
+      "display_name": "Test Model Mini",
+      "description": "Small, fast, and cost-efficient model for simpler tasks.",
+      "visibility": "list",
+      "priority": 23
+    },
+    {
+      "slug": "test-model-auto-review",
+      "display_name": "Test Model Auto-Review",
+      "description": "Used for automated review only.",
+      "visibility": "hide",
+      "priority": 43
+    }
+  ]
+}

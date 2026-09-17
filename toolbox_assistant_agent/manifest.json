@@ -1,0 +1,22 @@
+{
+  "id": "toolbox-assistant-agent",
+  "name": "Assistant Agent",
+  "version": "0.1.0",
+  "description": "A chat assistant that drives PlotJuggler through the plugin SDK: lists and describes topics, reads series statistics, and creates derived timeseries, markers and plot tabs it owns. Uses the Claude Code or Codex CLI already installed and signed in on your machine; the plugin stores no API keys. Linux and macOS at runtime.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "toolbox",
+  "tags": [
+    "llm",
+    "assistant",
+    "agent",
+    "claude",
+    "codex"
+  ],
+  "min_sdk_required": "0.34.0",
+  "min_plotjuggler_version": "4.0.0"
+}

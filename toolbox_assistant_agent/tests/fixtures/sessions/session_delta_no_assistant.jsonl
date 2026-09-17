@@ -1,0 +1,2 @@
+{"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-09-01T20:00:00.000Z", "sessionId": "delta-session-0001"}
+{"type": "user", "message": {"role": "user", "content": "Loaded data: nothing is loaded yet.\n\nhello?"}, "timestamp": "2026-09-01T20:00:00.050Z", "cwd": "/home/user/.local/state/pj-assistant-cli", "sessionId": "delta-session-0001"}
