@@ -117,13 +117,17 @@ TEST(CodexBackendCommandLine, DashCPresentOnlyWhenNotResuming) {
 // testConnection() now goes through locateCli() instead of execvp-ing the
 // configured name directly, so a CLI nowhere on PATH (and nowhere in any of
 // the fallback directories) fails with the directories it tried, not the
-// opaque "exited 127" execvp used to leave behind.
+// opaque "exited 127" execvp used to leave behind. POSIX only, like the
+// locator itself: elsewhere locateCli() is a stub that searches nothing (see
+// cli_locator.hpp), so there is no directory list to assert on.
+#if defined(__unix__) || defined(__APPLE__)
 TEST(CodexBackendConnection, NotFoundNamesEverySearchedDirectory) {
   CodexBackend backend("codex-que-no-existe", "");
   const auto result = backend.testConnection();
   EXPECT_FALSE(result.ok);
   EXPECT_NE(result.message.find("searched:"), std::string::npos) << result.message;
 }
+#endif
 
 TEST(CodexBackendCommandLine, ModelFlagOmittedWhenEmpty) {
   const std::vector<std::string> argv = assistant_agent::buildCodexArgv(
