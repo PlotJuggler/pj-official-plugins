@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>AssistantPanel</class>
+ <widget class="QWidget" name="AssistantPanel">
+  <property name="windowTitle"><string>Assistant Agent</string></property>
+  <!-- No explicit minimum on the root: an explicit minimumSize here would replace the
+       layout-computed one and stop the transcript's and the drawer's minimums from reaching
+       the floating window, which then squeezes the chat instead of widening. -->
+  <layout class="QVBoxLayout" name="rootLayout">
+   <item>
+    <!-- Tagged for the host's chrome: PlotJuggler hides it here and stands a proxy
+         in for it at the left of the panel's title bar. A host without that support
+         shows this row as is. The drawer itself has no toggle; it is always there. -->
+    <widget class="QFrame" name="headerBand">
+     <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+     <layout class="QHBoxLayout" name="headerLayout">
+      <item>
+       <spacer name="headerSpacer">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        <property name="sizeHint" stdset="0"><size><width>40</width><height>0</height></size></property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QPushButton" name="settingsButton">
+        <property name="text"><string>Settings...</string></property>
+        <property name="toolTip"><string>Settings</string></property>
+        <property name="pjToolboxChromeAction" stdset="0"><bool>true</bool></property>
+        <property name="chromeActionIcon" stdset="0"><string>:/resources/svg/settings_cog_light.svg</string></property>
+        <property name="chromeActionSlot" stdset="0"><string>leading</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="bodyRow" native="true">
+     <layout class="QHBoxLayout" name="bodyLayout">
+      <property name="leftMargin"><number>0</number></property>
+      <property name="rightMargin"><number>0</number></property>
+      <property name="topMargin"><number>0</number></property>
+      <property name="bottomMargin"><number>0</number></property>
+      <item>
+       <!-- Tagged as the panel's side drawer: PlotJuggler hoists it into a full-height
+            column beside its own title bar (tab and floating window alike) and draws
+            the separator. A host without that support keeps it here, beside the chat.
+            Always visible; no toggle. 160 is the splitter minimum, not the opening
+            width: the transcript next to it declares minimumWidth 380, and 240 (the
+            old fixed width) plus that plus margins pushed the panel's own minimum past
+            630px, squeezing the floating window. No maximumWidth, so the splitter is
+            free to open at this frame's natural (layout-computed) size instead. -->
+       <widget class="QFrame" name="conversationsDrawer">
+        <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+        <property name="minimumWidth"><number>160</number></property>
+        <property name="pjToolboxSideDrawer" stdset="0"><bool>true</bool></property>
+        <layout class="QVBoxLayout" name="drawerLayout">
+         <property name="leftMargin"><number>0</number></property>
+         <property name="topMargin"><number>0</number></property>
+         <property name="rightMargin"><number>0</number></property>
+         <property name="bottomMargin"><number>0</number></property>
+         <property name="spacing"><number>0</number></property>
+         <item>
+          <widget class="SectionHeaderBand" name="conversationsBand">
+           <property name="text"><string>Conversations</string></property>
+           <property name="trailingButtonNames">
+            <stringlist>
+             <string>newChatButton</string>
+            </stringlist>
+           </property>
+           <property name="trailingButtonToolTips">
+            <stringlist>
+             <string>New chat: start a fresh conversation (the current one stays in this list)</string>
+            </stringlist>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QListWidget" name="conversationList">
+           <property name="pj_context_actions" stdset="0"><string>rename=Rename</string></property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPlainTextEdit" name="transcriptText">
+        <property name="readOnly"><bool>true</bool></property>
+        <property name="minimumWidth"><number>380</number></property>
+        <property name="minimumHeight"><number>240</number></property>
+        <!-- A transcript, not a document: opens on the newest lines, follows them while
+             the reader is at the end, and shows a jump-to-latest button while not. -->
+        <property name="pjMarkdown" stdset="0"><bool>true</bool></property>
+        <property name="pjFollowTail" stdset="0"><bool>true</bool></property>
+        <property name="placeholderText"><string>Ask the assistant to list your topics, describe a topic, or plot the derivative of a series...</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="statusLabel">
+     <property name="text"><string>Ready.</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="inputRow" native="true">
+     <layout class="QHBoxLayout" name="inputLayout">
+      <property name="leftMargin"><number>0</number></property>
+      <property name="rightMargin"><number>0</number></property>
+      <property name="topMargin"><number>0</number></property>
+      <property name="bottomMargin"><number>0</number></property>
+      <item>
+       <widget class="QLineEdit" name="inputEdit">
+        <property name="placeholderText"><string>Type a message and press Send...</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="sendButton">
+        <property name="text"><string>Send</string></property>
+        <property name="default"><bool>true</bool></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="cancelButton">
+        <property name="text"><string>Cancel</string></property>
+        <property name="enabled"><bool>false</bool></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>
