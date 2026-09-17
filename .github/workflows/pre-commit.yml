@@ -14,6 +14,8 @@ concurrency:
 jobs:
   pre-commit:
     runs-on: ubuntu-22.04
+    env:
+      PJ_SDK_ROOT: ${{ github.workspace }}/.sdk
 
     steps:
       - name: Checkout
@@ -23,6 +25,17 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Read pinned SDK version
+        id: sdk
+        run: echo "version=$(tr -d '[:space:]' < SDK_VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout plotjuggler_sdk
+        uses: actions/checkout@v4
+        with:
+          repository: PlotJuggler/plotjuggler_sdk
+          ref: v${{ steps.sdk.outputs.version }}
+          path: .sdk
 
       - name: Validate SDK pins and plugin minimums
         run: python scripts/bump_core_version.py --check

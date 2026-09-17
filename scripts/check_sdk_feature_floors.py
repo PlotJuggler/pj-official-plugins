@@ -14,10 +14,12 @@ specific to this monorepo:
   - iteration over every top-level ``manifest.json`` plugin with aggregated
     PASS/WARN/FAIL reporting;
   - table resolution: an explicit ``--sdk-floors`` path wins (and must match
-    the interim copies byte-for-payload); otherwise the bundled interim table
-    stands in until the pinned ``SDK_VERSION`` ships it. Once ``SDK_VERSION``
-    reaches 0.33.0 the check HARD-FAILS while interim artifacts still exist,
-    forcing the cutover instead of trusting a doc comment.
+    any leftover interim copy byte-for-payload); otherwise the bundled interim
+    table stands in until the pinned ``SDK_VERSION`` ships it. Once
+    ``SDK_VERSION`` reaches 0.33.0 the check resolves the SDK's own table from
+    ``PJ_SDK_ROOT`` or the Conan cache instead, and HARD-FAILS while the
+    interim table still exists, forcing its deletion instead of trusting a
+    doc comment.
 
 Known, deliberate boundaries: the scan set is the LINK closure's directories —
 include-only dependencies, sources added via ``target_sources()`` from outside
@@ -45,8 +47,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
+import subprocess
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -62,8 +66,9 @@ DEFAULT_REPO_ROOT = SCRIPT_DIR.parent
 INTERIM_TABLE_NAME = "sdk_feature_floors_interim.json"
 VENDORED_CORE_NAME = "feature_floor_check.py"
 SDK_TABLE_RELATIVE = Path("pj_base") / "feature_floors.json"
-# The release whose SDK package ships table + checker; the interim copies must
-# be deleted (and CI rewired to the SDK's own files) when SDK_VERSION reaches it.
+# The release whose SDK package ships the floor table; the interim copy must
+# be deleted once SDK_VERSION reaches it, and the check resolves the SDK's own
+# table (--sdk-floors, PJ_SDK_ROOT, or the Conan cache) from then on.
 SDK_SHIPS_TABLE_FROM = (0, 33, 0)
 
 EXCLUDED_SOURCE_DIRS = frozenset(
@@ -152,59 +157,141 @@ def _repo_sdk_version(repo_root: Path) -> tuple[int, int, int] | None:
     return core.parse_version(version_file.read_text().strip(), "SDK_VERSION file")
 
 
+def _verify_and_load_table(
+    table_path: Path,
+    *,
+    interim_path: Path,
+    vendored_core_path: Path,
+    err: TextIO,
+) -> core.SurfaceTable:
+    """Load ``table_path`` and cross-check it against any leftover interim
+    table and the vendored checker core. Shared by the explicit --sdk-floors
+    path and every table resolved automatically (PJ_SDK_ROOT, Conan cache)."""
+    table = core.load_surface_table(table_path)
+    # A diverging interim artifact is a rot hazard: the SDK copy wins, and
+    # the stale duplicate fails the check outright (sync or delete it).
+    if interim_path.is_file():
+        if _surfaces_payload(table_path) != _surfaces_payload(interim_path):
+            raise CheckError(
+                f"interim table {interim_path} differs from the SDK table "
+                f"{table_path}; sync it or delete it (the SDK copy wins)"
+            )
+        print(f"NOTE: SDK surface table in use; delete the interim copy {interim_path}", file=err)
+    if vendored_core_path.is_file():
+        # Installed layout: core beside the table. SDK checkout layout:
+        # table under pj_base/, core under tools/feature_floors/.
+        candidates = [
+            table_path.parent / VENDORED_CORE_NAME,
+            table_path.parent.parent / "tools" / "feature_floors" / VENDORED_CORE_NAME,
+        ]
+        sdk_core_path = next((path for path in candidates if path.is_file()), None)
+        if sdk_core_path is None:
+            raise CheckError(
+                f"cannot verify the vendored checker core: no {VENDORED_CORE_NAME} found "
+                f"beside {table_path} or in its tools/feature_floors/ layout"
+            )
+        if sdk_core_path.read_bytes() != vendored_core_path.read_bytes():
+            raise CheckError(
+                f"vendored checker core {vendored_core_path} differs from the SDK's "
+                f"{sdk_core_path}; refresh the copy from the SDK (the SDK copy wins)"
+            )
+    return table
+
+
+def _pj_sdk_root_table_path(root_value: str) -> Path:
+    """Resolve PJ_SDK_ROOT to a feature_floors.json, accepting either the
+    installed layout (share/plotjuggler_sdk/) or an SDK checkout (pj_base/)."""
+    root = Path(root_value)
+    installed = root / "feature_floors.json"
+    if installed.is_file():
+        return installed
+    checkout = root / SDK_TABLE_RELATIVE
+    if checkout.is_file():
+        return checkout
+    raise CheckError(
+        f"PJ_SDK_ROOT={root_value} has no feature_floors.json (expected "
+        "<root>/feature_floors.json or <root>/pj_base/feature_floors.json)"
+    )
+
+
+def _conan_cache_table_path(sdk_version: tuple[int, int, int], *, err: TextIO) -> Path | None:
+    """Best-effort lookup of the pinned SDK's export_source in the Conan
+    cache. Any failure (no conan, cache miss, unexpected layout) is soft: it
+    only notes to err and lets the caller try the next source."""
+    formatted = core.format_version(sdk_version)
+    package_ref = f"plotjuggler_sdk/{formatted}"
+    try:
+        result = subprocess.run(
+            ["conan", "cache", "path", package_ref, "--folder=export_source"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        print("NOTE: conan is not available; cannot resolve the SDK table from the Conan cache", file=err)
+        return None
+    if result.returncode != 0:
+        print(f"NOTE: 'conan cache path {package_ref}' failed: {result.stderr.strip()}", file=err)
+        return None
+    export_source = Path(result.stdout.strip())
+    table_path = export_source / SDK_TABLE_RELATIVE
+    if not table_path.is_file():
+        print(f"NOTE: {export_source} (Conan cache export_source) has no {SDK_TABLE_RELATIVE}", file=err)
+        return None
+    return table_path
+
+
+def _resolve_post_cutover_table_path(sdk_version: tuple[int, int, int], *, err: TextIO) -> Path:
+    """Once SDK_VERSION ships the table, find it without an explicit
+    --sdk-floors: PJ_SDK_ROOT wins when set (and must resolve, no fallback),
+    otherwise try the Conan cache."""
+    pj_sdk_root = os.environ.get("PJ_SDK_ROOT")
+    if pj_sdk_root:
+        return _pj_sdk_root_table_path(pj_sdk_root)
+
+    conan_table_path = _conan_cache_table_path(sdk_version, err=err)
+    if conan_table_path is not None:
+        return conan_table_path
+
+    raise CheckError(
+        "no SDK surface table: pass --sdk-floors <path to share/plotjuggler_sdk/feature_floors.json>, "
+        "set PJ_SDK_ROOT to an installed share/plotjuggler_sdk/ dir or an SDK checkout, or make "
+        "plotjuggler_sdk/<SDK_VERSION> resolvable in the Conan cache"
+    )
+
+
 def resolve_surface_table(
     repo_root: Path,
     sdk_floors_path: Path | None,
     *,
     err: TextIO,
 ) -> core.SurfaceTable:
-    """Prefer the SDK's own table; fall back to the bundled interim copy."""
+    """Prefer an explicit table; once SDK_VERSION ships it, resolve the SDK's
+    own table (PJ_SDK_ROOT, then the Conan cache); otherwise fall back to the
+    bundled interim copy for pins older than SDK_SHIPS_TABLE_FROM."""
     interim_path = repo_root / "scripts" / INTERIM_TABLE_NAME
     vendored_core_path = repo_root / "scripts" / "vendor" / VENDORED_CORE_NAME
 
     sdk_version = _repo_sdk_version(repo_root)
-    if sdk_version is not None and sdk_version >= SDK_SHIPS_TABLE_FROM:
-        leftovers = [path for path in (interim_path, vendored_core_path) if path.is_file()]
-        if leftovers:
-            listed = ", ".join(str(path) for path in leftovers)
-            raise CheckError(
-                f"SDK_VERSION {core.format_version(sdk_version)} ships the floor table and "
-                f"checker in the package — delete the interim artifacts ({listed}) and point "
-                "the check at the SDK's share/plotjuggler_sdk/ copies via --sdk-floors"
-            )
+    ships_table = sdk_version is not None and sdk_version >= SDK_SHIPS_TABLE_FROM
+    if ships_table and interim_path.is_file():
+        raise CheckError(
+            f"SDK_VERSION {core.format_version(sdk_version)} ships the floor table in the "
+            f"package — delete the interim table {interim_path}; the check resolves the SDK's "
+            "table via --sdk-floors, PJ_SDK_ROOT or the Conan cache"
+        )
 
     if sdk_floors_path is not None:
         if not sdk_floors_path.is_file():
             raise CheckError(f"--sdk-floors table not found: {sdk_floors_path}")
-        table = core.load_surface_table(sdk_floors_path)
-        # A diverging interim artifact is a rot hazard: the SDK copy wins, and
-        # the stale duplicate fails the check outright (sync or delete it).
-        if interim_path.is_file():
-            if _surfaces_payload(sdk_floors_path) != _surfaces_payload(interim_path):
-                raise CheckError(
-                    f"interim table {interim_path} differs from the SDK table "
-                    f"{sdk_floors_path}; sync it or delete it (the SDK copy wins)"
-                )
-            print(f"NOTE: SDK surface table in use; delete the interim copy {interim_path}", file=err)
-        if vendored_core_path.is_file():
-            # Installed layout: core beside the table. SDK checkout layout:
-            # table under pj_base/, core under tools/feature_floors/.
-            candidates = [
-                sdk_floors_path.parent / VENDORED_CORE_NAME,
-                sdk_floors_path.parent.parent / "tools" / "feature_floors" / VENDORED_CORE_NAME,
-            ]
-            sdk_core_path = next((path for path in candidates if path.is_file()), None)
-            if sdk_core_path is None:
-                raise CheckError(
-                    f"cannot verify the vendored checker core: no {VENDORED_CORE_NAME} found "
-                    f"beside {sdk_floors_path} or in its tools/feature_floors/ layout"
-                )
-            if sdk_core_path.read_bytes() != vendored_core_path.read_bytes():
-                raise CheckError(
-                    f"vendored checker core {vendored_core_path} differs from the SDK's "
-                    f"{sdk_core_path}; sync it or delete scripts/vendor/ (the SDK copy wins)"
-                )
-        return table
+        return _verify_and_load_table(
+            sdk_floors_path, interim_path=interim_path, vendored_core_path=vendored_core_path, err=err
+        )
+
+    if ships_table:
+        resolved_path = _resolve_post_cutover_table_path(sdk_version, err=err)
+        return _verify_and_load_table(
+            resolved_path, interim_path=interim_path, vendored_core_path=vendored_core_path, err=err
+        )
 
     if not interim_path.is_file():
         raise CheckError(
