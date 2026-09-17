@@ -3,6 +3,13 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_anomaly_detector/`.
 
+## [0.2.1] - 2026-09-17
+
+### Fixed
+- The footer buttons (Save rule as..., Load rule..., Apply, Close) were drawn
+  touching each other since 0.2.0. They now keep the same gap as every other
+  action row in the app.
+
 ## [0.2.0] - 2026-09-15
 
 ### Fixed
