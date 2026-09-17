@@ -208,9 +208,14 @@
    </item>
 
    <!-- Rule file + Apply / Close (right). The scope selector is NOT here: it rides the
-        Lua rule band, next to the rule it scopes. -->
+        Lua rule band, next to the rule it scopes.
+        The spacing must be explicit: a nested layout with no value of its own inherits
+        its parent's, and mainLayout is 0, which glued the four buttons together. 8 is the
+        host's space_comfortable, the gap its own action rows use between loose buttons
+        (FilterEditorPanel.ui buttonBar); same as rangeRow in toolbox_mosaico. -->
    <item>
     <layout class="QHBoxLayout" name="bottomBar">
+     <property name="spacing"><number>8</number></property>
      <property name="leftMargin"><number>8</number></property>
      <property name="topMargin"><number>6</number></property>
      <property name="rightMargin"><number>8</number></property>
