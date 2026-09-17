@@ -1,9 +1,12 @@
+import contextlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
@@ -22,6 +25,16 @@ TABLE = {
     },
     "baseline": ["oldCall"],
 }
+
+
+@contextlib.contextmanager
+def _environ_without(*names: str):
+    """Run a block with the given environment variables guaranteed unset,
+    restoring the original environment afterwards."""
+    with mock.patch.dict(os.environ, {}, clear=False):
+        for name in names:
+            os.environ.pop(name, None)
+        yield
 
 
 class FixtureRepo:
@@ -344,7 +357,7 @@ class ReviewRegressionTests(unittest.TestCase):
             self.repo.root, sdk_floors_path=sdk_table, out=io.StringIO(), err=err
         )
         self.assertFalse(ok)
-        self.assertIn("delete the interim artifacts", err.getvalue())
+        self.assertIn("delete the interim table", err.getvalue())
 
     def test_malformed_sdk_version_rejected(self):
         (self.repo.root / "SDK_VERSION").write_text("garbage\n")
@@ -401,7 +414,7 @@ class CutoverTests(unittest.TestCase):
         (self.repo.root / "SDK_VERSION").write_text("0.33.0\n")
         ok, _, err = self.repo.run()
         self.assertFalse(ok)
-        self.assertIn("delete the interim artifacts", err)
+        self.assertIn("delete the interim table", err)
 
     def test_interim_table_before_cutover_still_works(self):
         (self.repo.root / "SDK_VERSION").write_text("0.32.0\n")
@@ -441,6 +454,82 @@ class TablePrecedenceTests(unittest.TestCase):
         self.assertIn("interim surface table", err)
 
 
+class PostCutoverTableResolutionTests(unittest.TestCase):
+    """SDK_VERSION >= 0.33.0, no explicit --sdk-floors, interim table gone:
+    PJ_SDK_ROOT and the Conan cache take over as automatic sources."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = FixtureRepo(Path(self._tmp.name))
+        self.addCleanup(self._tmp.cleanup)
+        self.repo.write_plugin(source="void f() { oldCall(); }\n")
+        (self.repo.root / "SDK_VERSION").write_text("0.34.1\n")
+        # Post-cutover resolution only kicks in once the interim table is gone.
+        self.repo.table_path.unlink()
+
+    def test_pj_sdk_root_installed_layout(self):
+        sdk_root = self.repo.root / "sdk_installed"
+        sdk_root.mkdir()
+        (sdk_root / "feature_floors.json").write_text(json.dumps(TABLE))
+        with mock.patch.dict(os.environ, {"PJ_SDK_ROOT": str(sdk_root)}):
+            ok, out, _ = self.repo.run()
+        self.assertTrue(ok)
+        self.assertIn("PASS example_plugin", out)
+
+    def test_pj_sdk_root_checkout_layout(self):
+        sdk_root = self.repo.root / "sdk_checkout"
+        (sdk_root / "pj_base").mkdir(parents=True)
+        (sdk_root / "pj_base" / "feature_floors.json").write_text(json.dumps(TABLE))
+        with mock.patch.dict(os.environ, {"PJ_SDK_ROOT": str(sdk_root)}):
+            ok, out, _ = self.repo.run()
+        self.assertTrue(ok)
+        self.assertIn("PASS example_plugin", out)
+
+    def test_pj_sdk_root_diverging_vendored_core_fails(self):
+        vendor_dir = self.repo.root / "scripts" / "vendor"
+        vendor_dir.mkdir(parents=True)
+        (vendor_dir / "feature_floor_check.py").write_bytes(b"# vendored\n")
+        sdk_root = self.repo.root / "sdk_checkout"
+        (sdk_root / "pj_base").mkdir(parents=True)
+        (sdk_root / "pj_base" / "feature_floors.json").write_text(json.dumps(TABLE))
+        core_dir = sdk_root / "tools" / "feature_floors"
+        core_dir.mkdir(parents=True)
+        (core_dir / "feature_floor_check.py").write_bytes(b"# different\n")
+        with mock.patch.dict(os.environ, {"PJ_SDK_ROOT": str(sdk_root)}):
+            ok, _, err = self.repo.run()
+        self.assertFalse(ok)
+        self.assertIn("differs from the SDK's", err)
+
+    def test_pj_sdk_root_without_table_fails_without_conan_fallback(self):
+        empty_root = self.repo.root / "sdk_empty"
+        empty_root.mkdir()
+        with mock.patch.dict(os.environ, {"PJ_SDK_ROOT": str(empty_root)}):
+            with mock.patch.object(checker.subprocess, "run") as run:
+                ok, _, err = self.repo.run()
+        run.assert_not_called()
+        self.assertFalse(ok)
+        self.assertIn(f"PJ_SDK_ROOT={empty_root} has no feature_floors.json", err)
+
+    def test_explicit_sdk_floors_beats_pj_sdk_root(self):
+        sdk_table = self.repo.write_table(TABLE, name="feature_floors.json")
+        broken_root = self.repo.root / "sdk_missing"  # deliberately never created
+        with mock.patch.dict(os.environ, {"PJ_SDK_ROOT": str(broken_root)}):
+            out = io.StringIO()
+            err = io.StringIO()
+            ok = checker.check_sdk_feature_floors(
+                self.repo.root, sdk_floors_path=sdk_table, out=out, err=err
+            )
+        self.assertTrue(ok)
+        self.assertIn("PASS example_plugin", out.getvalue())
+
+    def test_no_source_available_when_conan_unavailable(self):
+        with _environ_without("PJ_SDK_ROOT"):
+            with mock.patch.object(checker.subprocess, "run", side_effect=FileNotFoundError):
+                ok, _, err = self.repo.run()
+        self.assertFalse(ok)
+        self.assertIn("no SDK surface table", err)
+
+
 class ClosureTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -470,7 +559,37 @@ class ClosureTests(unittest.TestCase):
 class RealRepoAcceptanceTests(unittest.TestCase):
     """The audit gap the checker exists to catch, against the REAL tree."""
 
+    @staticmethod
+    def _real_sdk_table_path() -> Path | None:
+        """Locate the pinned SDK_VERSION's feature_floors.json the way the
+        checker does: PJ_SDK_ROOT first (CI's SDK checkout), then the Conan
+        cache's export_source. None when neither is available — the test then
+        skips rather than depending on a repo-local copy."""
+        pj_sdk_root = os.environ.get("PJ_SDK_ROOT")
+        if pj_sdk_root:
+            try:
+                return checker._pj_sdk_root_table_path(pj_sdk_root)
+            except checker.CheckError:
+                return None
+        version = (REPO_ROOT / "SDK_VERSION").read_text().strip()
+        try:
+            result = checker.subprocess.run(
+                ["conan", "cache", "path", f"plotjuggler_sdk/{version}", "--folder=export_source"],
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError:
+            return None
+        if result.returncode != 0:
+            return None
+        table_path = Path(result.stdout.strip()) / checker.SDK_TABLE_RELATIVE
+        return table_path if table_path.is_file() else None
+
     def test_lowered_mosaico_floor_fails_on_complete_ingest(self):
+        sdk_table_path = self._real_sdk_table_path()
+        if sdk_table_path is None:
+            self.skipTest("no SDK table: PJ_SDK_ROOT unset and plotjuggler_sdk export_source not in the Conan cache")
+
         out = io.StringIO()
         err = io.StringIO()
         real_manifest = json.loads((REPO_ROOT / "toolbox_mosaico" / "manifest.json").read_text())
@@ -479,13 +598,10 @@ class RealRepoAcceptanceTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmp:
-            # Mirror the repo root with the real scripts/, common/, and
-            # toolbox_mosaico sources, but a lowered manifest floor.
+            # Mirror the repo root with the real common/ and toolbox_mosaico
+            # sources, but a lowered manifest floor, checked against the real
+            # SDK table (no repo-local interim copy exists post-cutover).
             root = Path(tmp)
-            (root / "scripts").mkdir()
-            (root / "scripts" / checker.INTERIM_TABLE_NAME).write_bytes(
-                (SCRIPTS / checker.INTERIM_TABLE_NAME).read_bytes()
-            )
             import shutil
 
             shutil.copytree(REPO_ROOT / "common", root / "common")
@@ -493,7 +609,7 @@ class RealRepoAcceptanceTests(unittest.TestCase):
             lowered = dict(real_manifest, min_sdk_required="0.28.0")
             (root / "toolbox_mosaico" / "manifest.json").write_text(json.dumps(lowered))
 
-            ok = checker.check_sdk_feature_floors(root, out=out, err=err)
+            ok = checker.check_sdk_feature_floors(root, sdk_floors_path=sdk_table_path, out=out, err=err)
         self.assertFalse(ok)
         # Without a declared degraded range the lowered floor must fail: a
         # 0.30 surface is matched, and no suggested_sdk_version covers it.

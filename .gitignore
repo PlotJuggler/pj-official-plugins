@@ -17,3 +17,6 @@ __pycache__/
 
 # local MF4/BLF review build trees
 build-mf4/
+
+# CI's plotjuggler_sdk checkout (PJ_SDK_ROOT), see .github/workflows/pre-commit.yml
+/.sdk/

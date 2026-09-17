@@ -160,10 +160,15 @@ separate application-version requirement.
   invisible to it, so "no surfaces matched" or an over-declared-floor WARNING
   is never sufficient justification to lower `min_sdk_required` —
   toolbox_mosaico and data_load_mp4 (both 0.31.0 for compile-time reasons) are
-  the canonical examples, correct as declared. The table ships with
-  the SDK (`pj_base/feature_floors.json`, >= 0.33.0);
-  `scripts/sdk_feature_floors_interim.json` is the stand-in until then and must
-  be deleted once the SDK copy is in the pinned build.
+  the canonical examples, correct as declared. The table ships with the SDK
+  (`share/plotjuggler_sdk/feature_floors.json`, >= 0.33.0). The check takes it
+  from `--sdk-floors`, from `PJ_SDK_ROOT` (an installed `share/plotjuggler_sdk/`
+  dir or an SDK checkout), or from the pinned `SDK_VERSION`'s `export_source`
+  in the Conan cache when present. `scripts/vendor/feature_floor_check.py` is
+  the copy used on runners without an SDK (`release_tools.py`'s release build
+  legs and the `submit-to-registry` job) and is byte-compared against the
+  SDK's copy on every check that resolves a table — refresh it on every SDK
+  bump.
 
 **One-time baseline:** all plugins existing at this policy's introduction were
 assigned `min_sdk_required: "0.28.0"`, with build SDK `0.28.0`, by explicit user
