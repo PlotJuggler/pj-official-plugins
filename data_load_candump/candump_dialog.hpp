@@ -78,6 +78,9 @@ class CandumpDialog : public PJ::DialogPluginTyped {
   std::string summary_;
   std::vector<std::string> interface_names_;              // combo items, in prescan order
   std::vector<std::vector<std::string>> interface_rows_;  // table rows, parallel to interface_names_
+  // "absolute" / "relative" / "delta", or empty if the prescan saw no numeric timestamp at all.
+  // Feeds the "Automatic (<detected>)" comboTimeMode item text.
+  std::string detected_time_mode_text_;
   bool needs_scan_ = false;  // true between loadConfigDeferringScan() and the next widget_data()
   int selected_interface_index_ = 0;
 

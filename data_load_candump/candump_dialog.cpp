@@ -5,6 +5,7 @@
 #include <iterator>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <pj_base/time_format.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <sstream>
 #include <string>
@@ -21,18 +22,65 @@ namespace candump_detail {
 
 namespace {
 
-/// Renders raw nanoseconds (seconds*1e9 + fraction, may be negative) as
-/// "seconds.nanoseconds" using integer arithmetic only -- consistent with
-/// the parser's no-double philosophy, and avoids locale-dependent formatting
-/// in a summary label shown to the user.
-std::string formatNs(std::int64_t ns) {
-  const bool neg = ns < 0;
-  std::uint64_t mag = neg ? static_cast<std::uint64_t>(-ns) : static_cast<std::uint64_t>(ns);
-  const std::uint64_t seconds = mag / 1'000'000'000ull;
-  const std::uint64_t frac = mag % 1'000'000'000ull;
-  std::string frac_text = std::to_string(frac);
-  frac_text.insert(0, 9 - frac_text.size(), '0');
-  return (neg ? std::string("-") : std::string()) + std::to_string(seconds) + "." + frac_text;
+/// Renders `value` with "," thousands separators (e.g. 16000 -> "16,000").
+/// No locale dependence, matching this file's existing no-double/no-locale
+/// number formatting.
+std::string formatThousands(std::uint64_t value) {
+  const std::string digits = std::to_string(value);
+  std::string out;
+  out.reserve(digits.size() + digits.size() / 3);
+  const std::size_t n = digits.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    if (i > 0 && (n - i) % 3 == 0) {
+      out += ',';
+    }
+    out += digits[i];
+  }
+  return out;
+}
+
+/// Renders a non-negative nanosecond duration as "<seconds>.<decisecond> s"
+/// (e.g. "40.0 s"), using integer arithmetic only.
+std::string formatSecondsOneDecimal(std::int64_t duration_ns) {
+  const std::uint64_t mag = duration_ns > 0 ? static_cast<std::uint64_t>(duration_ns) : 0;
+  const std::uint64_t whole = mag / 1'000'000'000ull;
+  const std::uint64_t tenths = (mag % 1'000'000'000ull) / 100'000'000ull;
+  return formatThousands(whole) + "." + std::to_string(tenths) + " s";
+}
+
+/// UTC calendar date-time "YYYY-MM-DD HH:MM:SS" (PJ::formatIso8601Utc with
+/// its "T" separator swapped for a space) -- the SDK's own no-locale
+/// date-time formatter, so this stays consistent with how the rest of the
+/// host displays absolute timestamps.
+std::string formatDateTime(std::int64_t ts_ns) {
+  std::string iso = PJ::formatIso8601Utc(ts_ns);
+  if (iso.size() > 10) {
+    iso[10] = ' ';
+  }
+  return iso;
+}
+
+/// Basename of a filesystem path (text after the last '/' or '\', or the
+/// whole string if neither is present).
+std::string basenameOf(const std::string& path) {
+  const std::size_t pos = path.find_last_of("/\\");
+  return pos == std::string::npos ? path : path.substr(pos + 1);
+}
+
+/// Runs one of RecognizedCounters' `append*(std::string&) const` helpers --
+/// shared with CandumpSource's own one-line summary, where each writes
+/// "; <text>" as a continuation -- and, if it produced anything, appends its
+/// text as its OWN line instead (stripping the "; " continuation marker).
+/// Keeps the wording identical to CandumpSource's summary while giving the
+/// dialog's multi-line preview one warning per line.
+void appendCounterLine(
+    std::vector<std::string>& lines, void (RecognizedCounters::*appender)(std::string&) const,
+    const RecognizedCounters& counters) {
+  std::string fragment;
+  (counters.*appender)(fragment);
+  if (!fragment.empty()) {
+    lines.push_back(fragment.size() > 2 ? fragment.substr(2) : fragment);
+  }
 }
 
 /// Reads the last `tail_bytes` of `path` and returns the raw timestamp of
@@ -126,20 +174,40 @@ std::string CandumpDialog::widget_data() {
 
   PJ::WidgetData wd;
   wd.setText("labelSummary", summary_);
-  wd.setTableHeaders("tableInterfaces", {"Interface", "Frames", "IDs", "Dictionary"});
-  wd.setTableRows("tableInterfaces", interface_rows_);
+  wd.setTableHeaders("tableInterfaces", {"Interface", "Frames", "Messages", "Dictionary"});
+  // The Dictionary column follows the live assignment (the picker edits it
+  // after the scan), so it is filled here rather than in scanFile().
+  constexpr std::size_t kDictionaryColumn = 3;
+  auto rows = interface_rows_;
+  std::vector<std::string> dict_paths(rows.size());
+  for (std::size_t row = 0; row < rows.size(); ++row) {
+    if (const auto it = iface_dicts_.find(interface_names_[row]); it != iface_dicts_.end() && !it->second.empty()) {
+      dict_paths[row] = it->second.front();
+    }
+    rows[row][kDictionaryColumn] = dict_paths[row].empty() ? "none" : basenameOf(dict_paths[row]);
+  }
+  wd.setTableRows("tableInterfaces", rows);
+  for (std::size_t row = 0; row < dict_paths.size(); ++row) {
+    if (!dict_paths[row].empty()) {
+      wd.setCellTooltip("tableInterfaces", static_cast<int>(row), static_cast<int>(kDictionaryColumn), dict_paths[row]);
+    }
+  }
 
   wd.setItems("comboInterface", interface_names_);
   wd.setCurrentIndex("comboInterface", selected_interface_index_);
 
-  wd.setFilePicker("buttonDictionary", "Select dictionary...", "*.dbc *.csv", "Select DBC or ARUS-CSV dictionary");
+  wd.setFilePicker("buttonDictionary", "Choose .dbc / .csv...", "*.dbc *.csv", "Select a .dbc or CSV signal table");
   const std::string iface = currentInterface();
-  std::string dict_label = "(none)";
-  if (const auto it = iface_dicts_.find(iface); it != iface_dicts_.end() && !it->second.empty()) {
-    dict_label = it->second.front();
-    for (std::size_t k = 1; k < it->second.size(); ++k) {
-      dict_label += "; " + it->second[k];
+  std::string dict_label = "none";
+  if (!iface.empty()) {
+    std::string filename = "none";
+    if (const auto it = iface_dicts_.find(iface); it != iface_dicts_.end() && !it->second.empty()) {
+      filename = basenameOf(it->second.front());
+      for (std::size_t k = 1; k < it->second.size(); ++k) {
+        filename += "; " + basenameOf(it->second[k]);
+      }
     }
+    dict_label = "Dictionary for " + iface + ": " + filename;
   }
   wd.setText("labelDictionary", dict_label);
   wd.setEnabled("buttonDictionary", !iface.empty());
@@ -147,9 +215,9 @@ std::string CandumpDialog::widget_data() {
 
   wd.setChecked("checkRawUnassigned", raw_unassigned_);
 
-  wd.setItems(
-      "comboTimeMode",
-      {"Auto-detect", "Force absolute", "Force relative (monotonic, -tz)", "Force relative (delta, -td)"});
+  const std::string auto_item =
+      detected_time_mode_text_.empty() ? "Automatic" : "Automatic (" + detected_time_mode_text_ + ")";
+  wd.setItems("comboTimeMode", {auto_item, "Absolute", "Relative to start (-tz)", "Delta between frames (-td)"});
   wd.setCurrentIndex("comboTimeMode", time_mode_override_);
 
   return wd.toJson();
@@ -270,6 +338,7 @@ void CandumpDialog::scanFile() {
   summary_.clear();
   interface_names_.clear();
   interface_rows_.clear();
+  detected_time_mode_text_.clear();
   selected_interface_index_ = 0;
   if (filepath_.empty()) {
     return;
@@ -286,25 +355,16 @@ void CandumpDialog::scanFile() {
   // own (smaller) use of the same function.
   const PrescanResult scan = prescanCandump(file, kScanCap);
 
-  // First-assigned-dictionary label for the table's "Dictionary" column
-  // (labelDictionary in widget_data() below shows ALL assigned paths for
-  // the currently-selected interface instead -- a different label, kept
-  // separate; this one lambda covers every row here).
-  const auto dictLabelFor = [this](const std::string& iface) -> std::string {
-    const auto it = iface_dicts_.find(iface);
-    if (it == iface_dicts_.end() || it->second.empty()) {
-      return "(none)";
-    }
-    return it->second.front();
-  };
-
+  std::uint64_t total_frames = 0;
   interface_names_.reserve(scan.interfaces.size());
   interface_rows_.reserve(scan.interfaces.size());
   for (const auto& iface : scan.interfaces) {
+    total_frames += iface.frames;
     interface_names_.push_back(iface.interface);
+    // Dictionary column (index 3) is filled per render in widget_data().
     interface_rows_.push_back(
-        {iface.interface, std::to_string(iface.frames) + (scan.truncated ? "+" : ""),
-         std::to_string(iface.distinct_ids), dictLabelFor(iface.interface)});
+        {iface.interface, formatThousands(iface.frames) + (scan.truncated ? "+" : ""),
+         formatThousands(iface.distinct_ids), std::string{}});
   }
 
   if (scan.lines_scanned == 0) {
@@ -316,45 +376,70 @@ void CandumpDialog::scanFile() {
     return;
   }
 
-  const std::string format_label = scan.log_shaped >= scan.screen_shaped ? "log format (candump -l)" : "screen format";
-  std::string mode_label = "no timestamp found";
   if (scan.time_mode.saw_numeric_timestamp) {
     switch (scan.time_mode.mode) {
       case TimeMode::kAbsolute:
-        mode_label = "absolute";
+        detected_time_mode_text_ = "absolute";
         break;
       case TimeMode::kRelativeMonotonic:
-        mode_label = "relative, monotonic (-tz)";
+        detected_time_mode_text_ = "relative";
         break;
       case TimeMode::kRelativeDelta:
-        mode_label =
-            "relative, delta (-td); frames will not align with other absolute-time sources without manual offset";
+        detected_time_mode_text_ = "delta";
         break;
     }
-  } else if (scan.recognized.wall_clock > 0) {
-    mode_label = "wall-clock (-tA) -- unsupported in this version";
   }
 
-  summary_ =
-      format_label + "; time mode: " + mode_label + "; " + std::to_string(scan.interfaces.size()) + " interface(s)";
+  const std::string format_label = scan.log_shaped >= scan.screen_shaped ? "candump -l" : "screen output";
+  const std::optional<std::int64_t> last_ns =
+      scan.have_first_timestamp ? readTailLastTimestampNs(filepath_, kTailBytes) : std::nullopt;
+
+  std::vector<std::string> lines;
+  lines.push_back(basenameOf(filepath_));
+
+  std::string format_line = "Format: " + format_label + " \xC2\xB7 " + formatThousands(total_frames) + " frames";
+  if (last_ns.has_value()) {
+    format_line += " \xC2\xB7 " + formatSecondsOneDecimal(*last_ns - scan.first_timestamp_ns);
+  }
+  lines.push_back(format_line);
+
+  if (!scan.time_mode.saw_numeric_timestamp) {
+    lines.push_back("Start: unknown (no timestamp found).");
+  } else if (scan.have_first_timestamp) {
+    if (scan.time_mode.mode == TimeMode::kAbsolute) {
+      lines.push_back(
+          "Start: " + formatDateTime(scan.first_timestamp_ns) +
+          " UTC \xC2\xB7 absolute time, lines up with other datasets (e.g. an MCAP)");
+    } else {
+      lines.push_back(
+          "Start: relative time (no wall clock): does not line up with other datasets; "
+          "shift it in the Source Timeline.");
+    }
+  }
+
   if (scan.malformed > 0) {
-    summary_ += "; " + std::to_string(scan.malformed) + "/" + std::to_string(scan.lines_scanned) + " malformed line(s)";
+    lines.push_back(
+        formatThousands(scan.malformed) + " of " + formatThousands(scan.lines_scanned) +
+        " line(s) could not be parsed.");
   }
   if (scan.recognized.unsupported() > 0) {
-    summary_ +=
-        "; " + std::to_string(scan.recognized.unsupported()) + " recognized-but-unsupported frame(s) (RTR/FD/XL/error)";
+    lines.push_back(
+        formatThousands(scan.recognized.unsupported()) + " frame(s) recognized but not decoded (RTR/FD/XL/error).");
   }
-  scan.recognized.appendWallClock(summary_);
-  scan.recognized.appendErrorDetail(summary_);
-  scan.recognized.appendDropCount(summary_);
+  appendCounterLine(lines, &RecognizedCounters::appendWallClock, scan.recognized);
+  appendCounterLine(lines, &RecognizedCounters::appendErrorDetail, scan.recognized);
+  appendCounterLine(lines, &RecognizedCounters::appendDropCount, scan.recognized);
   if (scan.truncated) {
-    summary_ += "; prescan capped at " + std::to_string(kScanCap) + " lines";
+    lines.push_back(
+        "Preview limited to the first " + formatThousands(kScanCap) + " lines; counts above may be incomplete.");
   }
-  if (scan.have_first_timestamp) {
-    summary_ += "; range starts at " + formatNs(scan.first_timestamp_ns);
-    if (const auto last_ns = readTailLastTimestampNs(filepath_, kTailBytes)) {
-      summary_ += ", ends at " + formatNs(*last_ns);
+
+  summary_.clear();
+  for (std::size_t i = 0; i < lines.size(); ++i) {
+    if (i > 0) {
+      summary_ += '\n';
     }
+    summary_ += lines[i];
   }
 }
 

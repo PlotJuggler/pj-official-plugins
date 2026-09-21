@@ -93,6 +93,10 @@ TEST(CandumpDialogPicker, FileSelectionReplacesInterfaceList) {
   const std::string first_iface = saved["iface_dicts"].items().begin().key();
   EXPECT_EQ(saved["iface_dicts"].value(first_iface, nlohmann::json::array()), nlohmann::json::array({"new.dbc"}));
 
+  // The table's Dictionary column follows the pick (file name only).
+  const auto shown = nlohmann::json::parse(dialog.widget_data());
+  EXPECT_EQ(shown["tableInterfaces"]["rows"][0][3], "new.dbc");
+
   ASSERT_TRUE(dialog.onClicked("buttonClearDictionary"));
   const auto cleared = nlohmann::json::parse(dialog.saveConfig());
   EXPECT_FALSE(cleared["iface_dicts"].contains(first_iface));
@@ -112,8 +116,11 @@ TEST(CandumpDialogPrescan, SummarizesLogFormatFixture) {
   const std::string widget_json = dialog.widget_data();
   const auto parsed = nlohmann::json::parse(widget_json);
   const std::string summary = parsed["labelSummary"]["text"].get<std::string>();
-  EXPECT_NE(summary.find("log format"), std::string::npos) << summary;
-  EXPECT_NE(summary.find("absolute"), std::string::npos) << summary;
+  EXPECT_NE(summary.find("Format: candump -l"), std::string::npos) << summary;
+  EXPECT_NE(summary.find("UTC \xC2\xB7 absolute time"), std::string::npos) << summary;
+
+  // No dictionary assigned yet: the table's Dictionary column says so.
+  EXPECT_EQ(parsed["tableInterfaces"]["rows"][0][3], "none");
 
   // Two interfaces in the fixture: "can0" and "can-eth0.1".
   ASSERT_TRUE(parsed.contains("comboInterface"));
