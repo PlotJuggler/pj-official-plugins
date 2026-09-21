@@ -27,9 +27,9 @@ using assistant_agent::ClaudeBackend;
 using assistant_agent::ToolRegistry;
 using assistant_agent::testing::runListTopicsSmoke;
 
-// POSIX-guarded like the fake-CLI cases further down: it spawns the real
-// `claude`, and runProcess() refuses to spawn anything off POSIX.
-#if defined(__unix__) || defined(__APPLE__)
+// Guarded like the fake-CLI cases further down: it spawns the real
+// `claude`, and runProcess() spawns only on POSIX and Windows.
+#if defined(__unix__) || defined(__APPLE__) || defined(_WIN32)
 TEST(ClaudeSmoke, ListTopicsThroughMcp) {
   const std::optional<std::string> enabled = PJ::sdk::getEnv("ASSISTANT_CLAUDE_SMOKE");
   if (!enabled) {

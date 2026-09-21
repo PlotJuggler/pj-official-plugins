@@ -371,9 +371,9 @@ TEST(CodexBackend, ConversationMemorySurvivesARebuild) {
 
 // --- Live opt-in smoke ------------------------------------------------------
 
-// POSIX-guarded like the fake-CLI cases above: it spawns the real `codex`, and
-// runProcess() refuses to spawn anything off POSIX.
-#if defined(__unix__) || defined(__APPLE__)
+// Guarded like the fake-CLI cases above: it spawns the real `codex`, and
+// runProcess() spawns only on POSIX and Windows.
+#if defined(__unix__) || defined(__APPLE__) || defined(_WIN32)
 TEST(CodexSmoke, ListTopicsThroughMcp) {
   const std::optional<std::string> enabled = PJ::sdk::getEnv("ASSISTANT_CODEX_SMOKE");
   if (!enabled) {
