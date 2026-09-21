@@ -60,6 +60,7 @@ class CandumpDialog : public PJ::DialogPluginTyped {
   bool onClicked(std::string_view widget_name) override;
   bool onToggled(std::string_view widget_name, bool checked) override;
   bool onIndexChanged(std::string_view widget_name, int index) override;
+  bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override;
   void onAccepted(std::string_view /*json*/) override {}
   void onRejected() override {}
 
@@ -76,7 +77,7 @@ class CandumpDialog : public PJ::DialogPluginTyped {
 
   std::string filepath_;
   std::string summary_;
-  std::vector<std::string> interface_names_;              // combo items, in prescan order
+  std::vector<std::string> interface_names_;              // interface per table row, in prescan order
   std::vector<std::vector<std::string>> interface_rows_;  // table rows, parallel to interface_names_
   // "absolute" / "relative" / "delta", or empty if the prescan saw no numeric timestamp at all.
   // Feeds the "Automatic (<detected>)" comboTimeMode item text.
