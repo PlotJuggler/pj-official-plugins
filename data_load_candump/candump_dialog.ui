@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>CandumpDialogForm</class>
+ <widget class="QWidget" name="CandumpDialogForm">
+  <property name="windowTitle">
+   <string>candump File</string>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>640</width>
+    <height>440</height>
+   </size>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QLabel" name="labelSummary">
+     <property name="text"><string>candump file</string></property>
+     <property name="wordWrap"><bool>true</bool></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="tableInterfaces">
+     <property name="editTriggers">
+      <set>QAbstractItemView::NoEditTriggers</set>
+     </property>
+     <property name="selectionBehavior">
+      <enum>QAbstractItemView::SelectRows</enum>
+     </property>
+     <property name="sortingEnabled">
+      <bool>true</bool>
+     </property>
+     <column>
+      <property name="text"><string>Interface</string></property>
+     </column>
+     <column>
+      <property name="text"><string>Frames</string></property>
+     </column>
+     <column>
+      <property name="text"><string>IDs</string></property>
+     </column>
+     <column>
+      <property name="text"><string>Dictionary</string></property>
+     </column>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="dictionaryRow">
+     <item><widget class="QLabel" name="labelInterfaceCombo"><property name="text"><string>Interface</string></property></widget></item>
+     <item><widget class="QComboBox" name="comboInterface"/></item>
+     <item><widget class="QPushButton" name="buttonDictionary"><property name="text"><string>Select dictionary...</string></property></widget></item>
+     <item><widget class="QPushButton" name="buttonClearDictionary"><property name="text"><string>Clear</string></property></widget></item>
+     <item><widget class="QLabel" name="labelDictionary"><property name="text"><string>(none)</string></property></widget></item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QCheckBox" name="checkRawUnassigned">
+     <property name="text">
+      <string>Import unassigned/undecodable frames as raw bytes (CAN/&lt;iface&gt;/0x&lt;id&gt;/byte0..N)</string>
+     </property>
+     <property name="checked"><bool>true</bool></property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="timeModeRow">
+     <item><widget class="QLabel" name="labelTimeMode"><property name="text"><string>Time mode</string></property></widget></item>
+     <item><widget class="QComboBox" name="comboTimeMode"/></item>
+     <item>
+      <spacer name="horizontalSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>

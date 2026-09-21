@@ -21,6 +21,7 @@
 | [![data_load_3d](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_3d.json)](data_load_3d/) | DataSource | PLY/PCD point cloud & mesh loading |
 | [![data_load_mf4](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mf4.json)](data_load_mf4/) | DataSource | ASAM MF4/MDF loading (+ DBC CAN decode) |
 | [![data_load_blf](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_blf.json)](data_load_blf/) | DataSource | Vector BLF CAN-log loading (DBC decode) |
+| [data_load_candump](data_load_candump/) | DataSource | Linux SocketCAN `candump` log/screen capture loading (DBC or ARUS-CSV decode) |
 | [![data_stream_zmq](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_zmq.json)](data_stream_zmq/) | DataSource | ZeroMQ streaming |
 | [![data_stream_mqtt](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_mqtt.json)](data_stream_mqtt/) | DataSource | MQTT streaming |
 | [![data_stream_foxglove_bridge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_foxglove_bridge.json)](data_stream_foxglove_bridge/) | DataSource | Foxglove WebSocket bridge |
@@ -253,7 +254,7 @@ is available (`scripts/ensure_core.sh`).
 | rosx_introspection | parser_ros |
 | data_tamer | parser_ros, parser_data_tamer |
 | mdflib | data_load_mf4 |
-| dbc_parser_cpp + fast_float | data_load_mf4, data_load_blf (shared `common/can_dbc`) |
+| dbc_parser_cpp + fast_float | data_load_mf4, data_load_blf, data_load_candump (shared `common/can_dbc`) |
 | lblf | data_load_blf |
 
 ### Pinned transitive dependencies

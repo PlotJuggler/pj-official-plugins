@@ -1,0 +1,16 @@
+VERSION "1.0.0"
+
+NS_ :
+
+BS_:
+
+BU_: ECU
+
+BO_ 256 EngineData: 2 ECU
+ SG_ Speed : 0|16@1+ (0.1,0) [0|6553.5] "km/h" ECU
+
+BO_ 2147484882 ExtMsg: 8 ECU
+ SG_ ExtSig : 0|8@1+ (1,0) [0|255] "" ECU
+
+BO_ 1536 UnderscoreDlc: 8 ECU
+ SG_ Under : 0|8@1+ (1,0) [0|255] "" ECU

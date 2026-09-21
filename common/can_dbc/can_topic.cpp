@@ -17,9 +17,14 @@ std::string hexId(std::uint32_t id) {
 }
 
 std::string canTopicName(std::uint16_t bus_channel, const std::string& message_name, std::uint32_t can_id) {
+  const std::string bus = bus_channel == 0 ? "" : "ch" + std::to_string(bus_channel);
+  return canTopicName(std::string_view(bus), message_name, can_id);
+}
+
+std::string canTopicName(std::string_view bus, const std::string& message_name, std::uint32_t can_id) {
   std::string out = "CAN/";
-  if (bus_channel != 0) {
-    out += "ch" + std::to_string(bus_channel) + "/";
+  if (!bus.empty()) {
+    out += std::string(bus) + "/";
   }
   out += message_name.empty() ? hexId(can_id) : message_name;
   return out;
