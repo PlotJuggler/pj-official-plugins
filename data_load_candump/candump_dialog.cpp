@@ -193,23 +193,12 @@ std::string CandumpDialog::widget_data() {
     }
   }
 
-  wd.setItems("comboInterface", interface_names_);
-  wd.setCurrentIndex("comboInterface", selected_interface_index_);
-
+  // The dictionary buttons act on the selected table row (the interface).
+  if (!interface_names_.empty()) {
+    wd.setSelectedRows("tableInterfaces", {selected_interface_index_});
+  }
   wd.setFilePicker("buttonDictionary", "Choose .dbc / .csv...", "*.dbc *.csv", "Select a .dbc or CSV signal table");
   const std::string iface = currentInterface();
-  std::string dict_label = "none";
-  if (!iface.empty()) {
-    std::string filename = "none";
-    if (const auto it = iface_dicts_.find(iface); it != iface_dicts_.end() && !it->second.empty()) {
-      filename = basenameOf(it->second.front());
-      for (std::size_t k = 1; k < it->second.size(); ++k) {
-        filename += "; " + basenameOf(it->second[k]);
-      }
-    }
-    dict_label = "Dictionary for " + iface + ": " + filename;
-  }
-  wd.setText("labelDictionary", dict_label);
   wd.setEnabled("buttonDictionary", !iface.empty());
   wd.setEnabled("buttonClearDictionary", !iface.empty());
 
@@ -322,11 +311,21 @@ bool CandumpDialog::onToggled(std::string_view widget_name, bool checked) {
   return true;
 }
 
-bool CandumpDialog::onIndexChanged(std::string_view widget_name, int index) {
-  if (widget_name == "comboInterface") {
-    selected_interface_index_ = index;
-    return true;
+bool CandumpDialog::onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) {
+  if (widget_name != "tableInterfaces" || selected.empty()) {
+    return false;
   }
+  // The host reports each selected row by its first-column text: the interface name.
+  for (std::size_t i = 0; i < interface_names_.size(); ++i) {
+    if (interface_names_[i] == selected.front()) {
+      selected_interface_index_ = static_cast<int>(i);
+      return true;
+    }
+  }
+  return false;
+}
+
+bool CandumpDialog::onIndexChanged(std::string_view widget_name, int index) {
   if (widget_name == "comboTimeMode") {
     time_mode_override_ = index;
     return true;

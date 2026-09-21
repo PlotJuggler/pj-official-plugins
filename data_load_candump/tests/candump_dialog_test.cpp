@@ -86,7 +86,7 @@ TEST(CandumpDialogConfig, OutOfRangeTimeModeFallsBackToAuto) {
 TEST(CandumpDialogPicker, FileSelectionReplacesInterfaceList) {
   CandumpDialog dialog;
   dialog.setFilePath(testDataPath("log_format.log"));
-  ASSERT_TRUE(dialog.onIndexChanged("comboInterface", 0));
+  ASSERT_TRUE(dialog.onSelectionChanged("tableInterfaces", {"can0"}));
   ASSERT_TRUE(dialog.onFileSelected("buttonDictionary", "new.dbc"));
 
   const auto saved = nlohmann::json::parse(dialog.saveConfig());
@@ -108,6 +108,8 @@ TEST(CandumpDialogPicker, UnknownWidgetsReturnFalse) {
   EXPECT_FALSE(dialog.onClicked("somethingElse"));
   EXPECT_FALSE(dialog.onToggled("somethingElse", true));
   EXPECT_FALSE(dialog.onIndexChanged("somethingElse", 1));
+  EXPECT_FALSE(dialog.onSelectionChanged("somethingElse", {"can0"}));
+  EXPECT_FALSE(dialog.onSelectionChanged("tableInterfaces", {"no-such-iface"}));
 }
 
 TEST(CandumpDialogPrescan, SummarizesLogFormatFixture) {
@@ -123,11 +125,14 @@ TEST(CandumpDialogPrescan, SummarizesLogFormatFixture) {
   EXPECT_EQ(parsed["tableInterfaces"]["rows"][0][3], "none");
 
   // Two interfaces in the fixture: "can0" and "can-eth0.1".
-  ASSERT_TRUE(parsed.contains("comboInterface"));
-  const auto items = parsed["comboInterface"]["items"];
-  ASSERT_EQ(items.size(), 2u);
-  EXPECT_NE(std::find(items.begin(), items.end(), "can0"), items.end());
-  EXPECT_NE(std::find(items.begin(), items.end(), "can-eth0.1"), items.end());
+  const auto rows = parsed["tableInterfaces"]["rows"];
+  ASSERT_EQ(rows.size(), 2u);
+  std::vector<std::string> names;
+  for (const auto& row : rows) {
+    names.push_back(row[0].get<std::string>());
+  }
+  EXPECT_NE(std::find(names.begin(), names.end(), "can0"), names.end());
+  EXPECT_NE(std::find(names.begin(), names.end(), "can-eth0.1"), names.end());
 }
 
 TEST(CandumpDialogPrescan, ReportsNotACandumpFile) {
