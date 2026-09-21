@@ -4,11 +4,11 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_can_dbc/can_decoder.hpp>
 #include <pj_can_dbc/can_topic.hpp>
+#include <pj_can_dbc/signal_row.hpp>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <unordered_map>
-#include <vector>
 
 #include "blf_dialog.hpp"
 #include "blf_frames.hpp"
@@ -72,7 +72,7 @@ class BlfSource : public PJ::FileSourceBase {
     // Keyed by (channel, id, extended) packed numerically so the hot per-frame
     // lookup avoids building a string; the topic name is only built on a miss.
     std::unordered_map<std::uint64_t, PJ::sdk::TopicHandle> topics;
-    std::vector<PJ::sdk::NamedFieldValue> row_fields;
+    pj_can_dbc::SignalRowBuilder row_builder;
     std::uint64_t decoded_frames = 0;
     std::uint64_t unmatched = 0;
     std::uint64_t undecodable = 0;
@@ -134,14 +134,7 @@ class BlfSource : public PJ::FileSourceBase {
             }
             it = topics.emplace(key, *topic).first;
           }
-          row_fields.clear();
-          row_fields.reserve(signals.size());
-          for (const auto& sig : signals) {
-            row_fields.push_back({.name = sig.name, .value = sig.value});
-          }
-          (void)writeHost().appendRecord(
-              it->second, PJ::Timestamp{frame.ts_ns},
-              PJ::Span<const PJ::sdk::NamedFieldValue>(row_fields.data(), row_fields.size()));
+          (void)writeHost().appendRecord(it->second, PJ::Timestamp{frame.ts_ns}, row_builder.build(signals));
           return true;
         },
         stats);

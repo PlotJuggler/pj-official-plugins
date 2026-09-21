@@ -8,6 +8,7 @@
 #include <pj_base/sdk/text_utils.hpp>
 #include <pj_can_dbc/can_decoder.hpp>
 #include <pj_can_dbc/can_topic.hpp>
+#include <pj_can_dbc/signal_row.hpp>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -162,7 +163,8 @@ class CandumpSource : public PJ::FileSourceBase {
     std::string last_interface;
     InterfaceTopics* current_topics = nullptr;
     std::size_t decoded_topic_count = 0;
-    std::vector<PJ::sdk::NamedFieldValue> row_fields;
+    pj_can_dbc::SignalRowBuilder decoded_row_builder;
+    std::vector<PJ::sdk::NamedFieldValue> row_fields;  // raw-bytes fallback rows only (byte0..byteN)
 
     std::uint64_t seen = 0;
     std::uint64_t line_no = 0;
@@ -280,14 +282,7 @@ class CandumpSource : public PJ::FileSourceBase {
           it = current_topics->decoded.emplace(key, *topic).first;
           ++decoded_topic_count;
         }
-        row_fields.clear();
-        row_fields.reserve(signals.size());
-        for (const auto& sig : signals) {
-          row_fields.push_back({.name = sig.name, .value = sig.value});
-        }
-        (void)writeHost().appendRecord(
-            it->second, PJ::Timestamp{ts_ns},
-            PJ::Span<const PJ::sdk::NamedFieldValue>(row_fields.data(), row_fields.size()));
+        (void)writeHost().appendRecord(it->second, PJ::Timestamp{ts_ns}, decoded_row_builder.build(signals));
         continue;
       }
 

@@ -43,7 +43,13 @@ references.
   decode tests: `EngineData` (id `0x100`, `Speed` at bytes 0-1, LE, x0.1),
   `ExtMsg` (id `0x4D2` extended, `ExtSig` at byte 0), and `UnderscoreDlc`
   (id `0x600`, `Under` at byte 0, DLC 8 — matches both the log format's
-  `_F`-suffixed frame and the screen format's `{F}`-braced frame).
+  `_F`-suffixed frame and the screen format's `{F}`-braced frame). Also
+  carries two `VAL_` value tables exercised by
+  `CandumpDecode.ValueTableLabelsRouteThroughSignalRowBuilder`: `Speed`'s
+  table key (`1000`) matches its actual decoded raw value exactly (label
+  found), while `ExtSig`'s table key (`5`) does NOT match its actual raw
+  value (`1`), so its `<signal>_label` field falls back to the number as
+  text — one table entry each, deliberately picked to cover both outcomes.
 - `arus_subset.csv` — a subset of the real ARUS FS dictionary
   (<https://github.com/ARUSfs/log_plotter/blob/main/can_conversions.csv>,
   fetched and verified 2026-09-21), covering the CSV -> DBC ID-splitting rule

@@ -157,7 +157,10 @@ target_compile_options(blf_source_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(blf_source_test PRIVATE
   BLF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data")
 # blf_dialog.cpp includes the headers generated for the plugin target above.
-target_include_directories(blf_source_test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+# common/can_dbc/tests: shared findField() test helper (field_test_helpers.hpp).
+target_include_directories(blf_source_test PRIVATE
+  ${CMAKE_CURRENT_BINARY_DIR}/generated
+  ${CMAKE_CURRENT_LIST_DIR}/../common/can_dbc/tests)
 target_link_libraries(blf_source_test PRIVATE
   plotjuggler_sdk::plugin_host
   blf_core

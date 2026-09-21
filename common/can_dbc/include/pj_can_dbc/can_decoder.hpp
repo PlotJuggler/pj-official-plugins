@@ -7,17 +7,35 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <pj_base/expected.hpp>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace pj_can_dbc {
 
 /// One decoded signal from a CAN frame (physical/engineering value).
+///
+/// `raw`/`label` describe a DBC `VAL_` value table (an enum-like mapping
+/// from the signal's raw integer value to a text label, e.g. "0 OFF, 1
+/// READY, 2 DRIVING"): `raw` is set, to the signal's raw integer value
+/// (recovered from `value`/`factor`/`offset`), iff the signal has ANY
+/// `VAL_` entries; `label` is set iff `raw` matched one of the table's
+/// keys, in which case it views that entry's text — an empty `VAL_` text
+/// ("") is still "found" and stays distinct from "not found" (`nullopt`).
+/// `label_name` (the signal's `"<name>_label"` field name, precomputed at
+/// load) is set under the same condition as `raw`. `label`/`label_name` are
+/// views into storage owned by the `CanDecoder` that produced them: valid
+/// until that decoder's next `loadDbcFile`/`loadDbcString` call or its
+/// destruction, whichever comes first — do not retain them past that.
 struct DecodedSignal {
   std::string name;
   double value = 0.0;
   std::string unit;
+  std::string_view label_name{};
+  std::optional<std::int64_t> raw{};
+  std::optional<std::string_view> label{};
 };
 
 /// Outcome of decoding one frame. kUndecodable means the id matched a message
@@ -43,6 +61,11 @@ class CanDecoder {
 
   /// Number of message definitions currently loaded.
   std::size_t messageCount() const;
+
+  /// Number of signals (across all loaded messages) that carry a DBC `VAL_`
+  /// value table. A signal with an empty table (e.g. `factor == 0`, which
+  /// would make the raw-value round trip meaningless) does not count.
+  std::size_t valueTableCount() const;
 
   /// Name of the message matching `can_id`/`extended` (same rules as decode()),
   /// or an empty string if none matches. Used to name the output topic.
