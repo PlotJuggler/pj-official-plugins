@@ -4,23 +4,19 @@
 // Codex backend: the command-line lock, the fake-CLI resume/translation
 // tests, the parser (codex_stream.hpp), and the live opt-in smoke — mirrors
 // claude_smoke_test.cpp's structure for the Codex harness.
+#include "codex_backend.hpp"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cstdlib>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
+#include <pj_base/sdk/platform.hpp>
 #include <string>
 #include <vector>
 
-#if defined(__unix__) || defined(__APPLE__)
-#include <unistd.h>
-#endif
-
-#include <optional>
-#include <pj_base/sdk/platform.hpp>
-
-#include "codex_backend.hpp"
 #include "codex_stream.hpp"
 #include "support/backend_test_helpers.hpp"
 #include "tool_registry.hpp"
@@ -94,6 +90,16 @@ TEST(CodexBackendCommandLine, WithholdsEveryBuiltInTool) {
   }
 }
 
+// A Windows path handed to model_instructions_file must not be read by
+// Codex's own TOML parser as escape sequences (`\U...` among them): the
+// backslash has to survive as a literal backslash, doubled.
+TEST(CodexBackendCommandLine, EscapesBackslashesInTomlValues) {
+  const std::vector<std::string> argv = assistant_agent::buildCodexArgv(
+      "codex", "/tmp/work", "http://127.0.0.1:1234/mcp", "PJ_ASSISTANT_MCP_TOKEN", R"(C:\Users\x\f.md)", "", "");
+  const auto has = [&](const std::string& entry) { return std::find(argv.begin(), argv.end(), entry) != argv.end(); };
+  EXPECT_TRUE(has(R"(model_instructions_file="C:\\Users\\x\\f.md")"));
+}
+
 TEST(CodexBackendCommandLine, DashCPresentOnlyWhenNotResuming) {
   const std::vector<std::string> fresh = assistant_agent::buildCodexArgv(
       "codex", "/tmp/work", "http://127.0.0.1:1234/mcp", "PJ_ASSISTANT_MCP_TOKEN", "/tmp/instructions.txt", "", "");
@@ -117,10 +123,11 @@ TEST(CodexBackendCommandLine, DashCPresentOnlyWhenNotResuming) {
 // testConnection() now goes through locateCli() instead of execvp-ing the
 // configured name directly, so a CLI nowhere on PATH (and nowhere in any of
 // the fallback directories) fails with the directories it tried, not the
-// opaque "exited 127" execvp used to leave behind. POSIX only, like the
-// locator itself: elsewhere locateCli() is a stub that searches nothing (see
-// cli_locator.hpp), so there is no directory list to assert on.
-#if defined(__unix__) || defined(__APPLE__)
+// opaque "exited 127" execvp used to leave behind. locateCli() has a real
+// search on both POSIX and Windows now (see cli_locator.hpp); only truly
+// exotic platforms fall back to the stub that searches nothing, so this is
+// gated the same way the rest of the fake-CLI-adjacent tests are.
+#if defined(__unix__) || defined(__APPLE__) || defined(_WIN32)
 TEST(CodexBackendConnection, NotFoundNamesEverySearchedDirectory) {
   CodexBackend backend("codex-que-no-existe", "");
   const auto result = backend.testConnection();
@@ -230,10 +237,11 @@ TEST(ParseCodexLine, MalformedJsonIsIgnoredNeverThrows) {
 
 // --- CodexBackend, against a fake CLI (never spawns the real one) ----------
 
-#if defined(__unix__) || defined(__APPLE__)
+#if defined(__unix__) || defined(__APPLE__) || defined(_WIN32)
 namespace {
 
 using assistant_agent::testing::firstError;
+using assistant_agent::testing::removeFakeCli;
 using assistant_agent::testing::writeFakeCliScript;
 
 std::vector<BackendEvent> runOneCodexTurnAgainst(const std::vector<std::string>& lines, int exit_code, bool resuming) {
@@ -252,7 +260,7 @@ std::vector<BackendEvent> runOneCodexTurnAgainst(const std::vector<std::string>&
   CodexBackend backend(cli, "", memory);
   std::vector<BackendEvent> events;
   backend.sendUserMessage("hi", tools, [&](BackendEvent e) { events.push_back(std::move(e)); });
-  unlink(cli.c_str());
+  removeFakeCli(cli);
   return events;
 }
 
@@ -313,7 +321,7 @@ TEST(CodexBackendSuccess, ACleanTurnEmitsToolActivityAssistantTextMetricsThenCom
     CodexBackend backend(cli, "", memory);
     std::vector<BackendEvent> out;
     backend.sendUserMessage("hi", tools, [&](BackendEvent e) { out.push_back(std::move(e)); });
-    unlink(cli.c_str());
+    removeFakeCli(cli);
     return out;
   }();
 
@@ -346,7 +354,7 @@ TEST(CodexBackendSuccess, ACleanTurnEmitsToolActivityAssistantTextMetricsThenCom
   EXPECT_EQ(memory->session_id, "sess-new");
 }
 
-#endif  // POSIX
+#endif  // POSIX / Windows
 
 // The conversation lives in the LENT memory, not in the backend object,
 // exactly like ClaudeBackend's own pin (claude_smoke_test.cpp).

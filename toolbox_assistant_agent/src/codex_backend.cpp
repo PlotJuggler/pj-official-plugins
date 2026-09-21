@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #include "codex_backend.hpp"
 
+#include <cstdio>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,6 +19,48 @@
 #include "system_prompt.hpp"
 
 namespace assistant_agent {
+
+namespace {
+
+// TOML basic-string escaping for the config values buildCodexArgv passes
+// through `-c key="value"`. Without it, a Windows path like `C:\Users\x`
+// would be read by Codex's own TOML parser as escape sequences (`\U...`
+// among them) instead of a literal backslash -- corrupting the value (or
+// failing to parse) rather than naming the file/URL/env-var this plugin
+// meant. POSIX values never contain a backslash or a quote, so their output
+// is byte-identical to the unescaped string.
+std::string tomlBasicString(const std::string& s) {
+  std::string out;
+  out.reserve(s.size() + 2);
+  for (const char ch : s) {
+    const unsigned char c = static_cast<unsigned char>(ch);
+    switch (c) {
+      case '\\':
+        out += "\\\\";
+        break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        if (c < 0x20 || c == 0x7F) {
+          char buf[8];
+          std::snprintf(buf, sizeof(buf), "\\u%04X", c);
+          out += buf;
+        } else {
+          out += ch;
+        }
+    }
+  }
+  return out;
+}
+
+}  // namespace
 
 std::vector<std::string> buildCodexArgv(
     const std::string& cli_path, const std::string& workdir, const std::string& mcp_url,
@@ -61,14 +104,14 @@ std::vector<std::string> buildCodexArgv(
     argv.push_back(name);
   }
   // Replaces Codex's own "You are Codex" persona with ours.
-  addConfig("model_instructions_file=\"" + instructions_path + "\"");
+  addConfig("model_instructions_file=\"" + tomlBasicString(instructions_path) + "\"");
   // Our tools reach the model through this MCP server; without
   // default_tools_approval_mode="approve" every call fails outright with
   // "requires approval, but approval policy is never" (approval_policy=
   // "never" above disables Codex's OWN interactive prompt, it does not grant
   // MCP tools an exemption on its own).
-  addConfig("mcp_servers.pj.url=\"" + mcp_url + "\"");
-  addConfig("mcp_servers.pj.bearer_token_env_var=\"" + token_env_name + "\"");
+  addConfig("mcp_servers.pj.url=\"" + tomlBasicString(mcp_url) + "\"");
+  addConfig("mcp_servers.pj.bearer_token_env_var=\"" + tomlBasicString(token_env_name) + "\"");
   addConfig("mcp_servers.pj.required=true");
   addConfig(R"(mcp_servers.pj.default_tools_approval_mode="approve")");
   if (!model.empty()) {
@@ -105,7 +148,7 @@ bool CodexBackend::ensureInstructionsFile(std::string& error) {
   }
   const std::string contents =
       std::string(kSystemPrompt) + "\n\nNever spawn sub-agents or use collaboration tools; do the work in this turn.";
-  if (!writePrivateTempFile("/tmp/pj_assistant_codex_", contents, instructions_path_)) {
+  if (!writePrivateTempFile("pj_assistant_codex_", contents, instructions_path_)) {
     error = "could not write the Codex instructions file";
     return false;
   }

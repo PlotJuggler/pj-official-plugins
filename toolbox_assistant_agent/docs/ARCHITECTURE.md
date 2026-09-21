@@ -88,7 +88,9 @@ Per turn it spawns `claude -p --output-format stream-json`, with:
 - `--tools ""` — disables every built-in tool. This is the safety spine: `--strict-mcp-config`
   only restricts which MCP *servers* load, not whether Bash and Write are available.
 - `--mcp-config <file>` — a `0600` temp file, because the bearer token would otherwise be
-  visible in `/proc/<pid>/cmdline` to any local user.
+  visible in `/proc/<pid>/cmdline` to any local user. On Windows there is no mode bit and no
+  `/proc`; the file lives under `%TEMP%`, inside the signed-in user's own profile, so the
+  per-user ACL that already guards everything there is the stand-in.
 - `--resume <session_id>` — continuity across turns.
 
 The message goes in over **stdin**, never as an argument, for the same reason.
@@ -153,6 +155,18 @@ PlotJuggler launched from a desktop icon (or `systemd-run`) inherits the graphic
 not a login shell's — an npm-installed `codex` under nvm is invisible there even though it works
 fine from a terminal.
 
+**On Windows** the search is narrower, and only ever resolves a native `.exe`: PATH first, then
+`<home>\.local\bin` (the native Claude installer's default), then
+`%LOCALAPPDATA%\Microsoft\WinGet\Links`. There is no nvm search — npm-installed CLIs on Windows
+are `.cmd`/`.ps1` launchers, and this plugin refuses to run one (see subprocess.hpp's Windows
+contract: `CreateProcess` on a `.bat`/`.cmd` routes through `cmd.exe`, whose own parsing is the
+BatBadBut injection class). If PATH and the two fallbacks turn up nothing native but a
+`.cmd`/`.ps1` shim exists — on PATH, or under `%APPDATA%\npm` as a last resort that is checked but
+never added to `searched` — `locateCli()` records it as `CliLocation::npm_shim` anyway, purely so
+`cannotFindCliMessage()` (cli_probe.hpp) can name it and point at the native installer
+(`irm https://claude.ai/install.ps1 | iex` / `irm https://chatgpt.com/codex/install.ps1 | iex`)
+instead of the same opaque "not found" a shim's mere existence would otherwise cause.
+
 Resolving the path is not enough on its own: npm installs `codex` as a symlink to a JS file with
 `#!/usr/bin/env node`, and `node` lives in that very same nvm `bin/` directory the shebang expects
 `env` to find on `PATH`. `childEnvFor()` turns the directory `locateCli()` found into a `PATH`
@@ -170,7 +184,7 @@ ship.
 | | Claude Code | Codex (measured on 0.153) | OpenCode (from its docs; spike pending) |
 |---|---|---|---|
 | Built-in tools withheld | `--tools ""` | `features.shell_tool=false`, `features.unified_exec=false`, `web_search="disabled"`, `tools.view_image=false` + `--disable view_image`, `sandbox_mode="read-only"`, `approval_policy="never"`. Every call, ours included, runs inside Code Mode, a JavaScript host with no `require`, `process` or `fetch`; disabling that host would also disable our tools, so it stays on | `tools: { bash, read, write, edit, glob, grep, list, patch, webfetch, todowrite, todoread, task: false }` in a config file of ours |
-| Our tools reach the model | `--mcp-config <0600 file>` + `--strict-mcp-config` + `--allowedTools mcp__pj__*` | `-c mcp_servers.pj.url=…`, the bearer token through `bearer_token_env_var` (never on the command line), `required=true`, and `default_tools_approval_mode="approve"` — without it every call fails with "requires approval, but approval policy is never" | `mcp.pj = { type: "remote", url, headers }` |
+| Our tools reach the model | `--mcp-config <0600 file, %TEMP%-ACL on Windows>` + `--strict-mcp-config` + `--allowedTools mcp__pj__*` | `-c mcp_servers.pj.url=…`, the bearer token through `bearer_token_env_var` (never on the command line), `required=true`, and `default_tools_approval_mode="approve"` — without it every call fails with "requires approval, but approval policy is never" | `mcp.pj = { type: "remote", url, headers }` |
 | Isolated from the machine | `--restricted` + the private cwd | `--ignore-user-config` (sign-in kept), `--ignore-rules`, `-C <workdir>`, `--disable memories shell_snapshot multi_agent plugins apps skill_search`; `model_instructions_file` replaces the "You are Codex" persona with ours | `OPENCODE_CONFIG` pointing at our file — the open question is whether it wins over the user's global file, which OpenCode merges rather than replaces |
 | Resume | `--resume <id>`; the cwd must match | `codex exec resume <uuid>` — no `-C` on `resume`, the process cwd is the workdir; any cwd works | `--session <id>` |
 | Cost | `total_cost_usd` + tokens in `result` | tokens only, in `turn.completed.usage` | `step_finish.cost` (USD) + tokens |
