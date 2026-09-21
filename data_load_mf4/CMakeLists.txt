@@ -127,6 +127,7 @@ target_link_libraries(mf4_source_test PRIVATE
   plotjuggler_sdk::plugin_host
   mf4_core
   mdf
+  pj_can_dbc
   ZLIB::ZLIB
   EXPAT::EXPAT
   nlohmann_json::nlohmann_json

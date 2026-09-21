@@ -2,6 +2,7 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_can_dbc/can_decoder.hpp>
 #include <pj_can_dbc/can_topic.hpp>
+#include <pj_can_dbc/signal_row.hpp>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -81,6 +82,7 @@ class Mf4Source : public PJ::FileSourceBase {
     // from different buses must stay in separate topics, and the hot per-frame
     // lookup avoids building a string key.
     std::unordered_map<std::uint64_t, PJ::sdk::TopicHandle> can_topics;
+    pj_can_dbc::SignalRowBuilder can_row_builder;
     std::vector<PJ::sdk::NamedFieldValue> row_fields;
     std::size_t series_count = 0;
     std::size_t skipped_no_master = 0;
@@ -150,14 +152,7 @@ class Mf4Source : public PJ::FileSourceBase {
                 }
                 it = can_topics.emplace(key, *topic).first;
               }
-              row_fields.clear();
-              row_fields.reserve(signals.size());
-              for (const auto& sig : signals) {
-                row_fields.push_back({.name = sig.name, .value = sig.value});
-              }
-              (void)writeHost().appendRecord(
-                  it->second, PJ::Timestamp{ts_ns},
-                  PJ::Span<const PJ::sdk::NamedFieldValue>(row_fields.data(), row_fields.size()));
+              (void)writeHost().appendRecord(it->second, PJ::Timestamp{ts_ns}, can_row_builder.build(signals));
               return true;
             },
             &can_stats);

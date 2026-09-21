@@ -42,6 +42,10 @@ exact line references into those files.
   (`ID,bitIn,bitFin,Signed,Power,Scale,Offset,Name`, translated to DBC text
   in memory — see below) to each interface. Decoded signals become one topic
   per `(interface, message)` — `CAN/{interface}/{message}`.
+- A signal decoded from a DBC `VAL_` value table also gets a
+  **`<signal>_label`** text field (decoded label, or the raw value as text
+  when unmatched) — see `common/can_dbc`'s `signal_row.hpp` for the full
+  convention; collides with a DBC signal already named `<x>_label`.
 - Interfaces without an assigned dictionary, and frames a dictionary can't
   match or decode, optionally fall back to raw bytes:
   `CAN/{interface}/0x{id}/byte0..N` (toggle in the dialog, on by default).

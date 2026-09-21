@@ -21,6 +21,10 @@ so the plugin `.so` has no extra runtime dependencies.
 - Standard and extended (29-bit / J1939) frames are disambiguated; unmatched
   frames, matched-but-undecodable frames (e.g. truncated), and channels without
   a DBC are each counted and reported.
+- A signal decoded from a DBC `VAL_` value table also gets a
+  **`<signal>_label`** text field (decoded label, or the raw value as text
+  when unmatched) — see `common/can_dbc`'s `signal_row.hpp` for the full
+  convention; collides with a DBC signal already named `<x>_label`.
 
 ## Timestamp Handling
 

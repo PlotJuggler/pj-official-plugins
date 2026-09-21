@@ -3,6 +3,16 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_mf4/`.
 
+## [0.1.3] - 2026-09-21
+
+### Added
+
+- A signal decoded from a DBC `VAL_` value table (on a CAN bus-logging
+  channel group) now also gets a `<signal>_label` text field (decoded label,
+  or the raw value as text when unmatched); negative and all-unsigned `VAL_`
+  key conventions are both accepted. See the README for the `_label` naming
+  convention.
+
 ## [0.1.2] - 2026-09-21
 
 ### Fixed

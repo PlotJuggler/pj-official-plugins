@@ -23,7 +23,12 @@ dependencies.
   bus channel), one field per signal. Standard and extended (29-bit / J1939)
   frames are disambiguated. Frames that match a message id but cannot be decoded
   (truncated, or a CAN FD payload > 8 bytes) are counted and reported, not
-  silently dropped.
+  silently dropped. A signal decoded from a DBC `VAL_` value table also gets
+  a **`<signal>_label`** text field (decoded label, or the raw value as text
+  when unmatched) — see `common/can_dbc`'s `signal_row.hpp` for the full
+  convention; collides with a DBC signal already named `<x>_label`. Distinct
+  from MDF's own native enum/value-to-text channel conversion (out of scope
+  — see Known Limitations).
 - Preview dialog listing the file's channel groups (name, sample count, channel
   count, bus type)
 
