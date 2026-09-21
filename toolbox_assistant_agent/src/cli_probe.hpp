@@ -40,7 +40,7 @@ namespace assistant_agent {
     if (const std::size_t dot = stem.find_last_of('.'); dot != std::string::npos) {
       stem = stem.substr(0, dot);
     }
-    message += " found only the npm launcher '" + loc.npm_shim +
+    message += " Found only the npm launcher '" + loc.npm_shim +
                "', which the assistant does not run (it would need cmd.exe); install the native build";
     if (stem == "claude") {
       message += " (irm https://claude.ai/install.ps1 | iex)";
