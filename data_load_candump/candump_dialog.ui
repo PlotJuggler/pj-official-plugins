@@ -3,12 +3,12 @@
  <class>CandumpDialogForm</class>
  <widget class="QWidget" name="CandumpDialogForm">
   <property name="windowTitle">
-   <string>candump File</string>
+   <string>Open candump log</string>
   </property>
   <property name="minimumSize">
    <size>
     <width>640</width>
-    <height>440</height>
+    <height>300</height>
    </size>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
@@ -29,6 +29,18 @@
      <property name="sortingEnabled">
       <bool>true</bool>
      </property>
+     <property name="maximumSize">
+      <size>
+       <width>16777215</width>
+       <height>120</height>
+      </size>
+     </property>
+     <attribute name="verticalHeaderVisible">
+      <bool>false</bool>
+     </attribute>
+     <attribute name="horizontalHeaderStretchLastSection">
+      <bool>true</bool>
+     </attribute>
      <column>
       <property name="text"><string>Interface</string></property>
      </column>
@@ -36,7 +48,7 @@
       <property name="text"><string>Frames</string></property>
      </column>
      <column>
-      <property name="text"><string>IDs</string></property>
+      <property name="text"><string>Messages</string></property>
      </column>
      <column>
       <property name="text"><string>Dictionary</string></property>
@@ -45,24 +57,24 @@
    </item>
    <item>
     <layout class="QHBoxLayout" name="dictionaryRow">
-     <item><widget class="QLabel" name="labelInterfaceCombo"><property name="text"><string>Interface</string></property></widget></item>
+     <item><widget class="QLabel" name="labelInterfaceCombo"><property name="text"><string>Interface:</string></property></widget></item>
      <item><widget class="QComboBox" name="comboInterface"/></item>
-     <item><widget class="QPushButton" name="buttonDictionary"><property name="text"><string>Select dictionary...</string></property></widget></item>
-     <item><widget class="QPushButton" name="buttonClearDictionary"><property name="text"><string>Clear</string></property></widget></item>
-     <item><widget class="QLabel" name="labelDictionary"><property name="text"><string>(none)</string></property></widget></item>
+     <item><widget class="QLabel" name="labelDictionary"><property name="text"><string>Dictionary: none</string></property></widget></item>
+     <item><widget class="QPushButton" name="buttonDictionary"><property name="text"><string>Choose .dbc / .csv...</string></property></widget></item>
+     <item><widget class="QPushButton" name="buttonClearDictionary"><property name="text"><string>Remove</string></property></widget></item>
     </layout>
    </item>
    <item>
     <widget class="QCheckBox" name="checkRawUnassigned">
      <property name="text">
-      <string>Import unassigned/undecodable frames as raw bytes (CAN/&lt;iface&gt;/0x&lt;id&gt;/byte0..N)</string>
+      <string>Show frames without a dictionary as raw bytes</string>
      </property>
      <property name="checked"><bool>true</bool></property>
     </widget>
    </item>
    <item>
     <layout class="QHBoxLayout" name="timeModeRow">
-     <item><widget class="QLabel" name="labelTimeMode"><property name="text"><string>Time mode</string></property></widget></item>
+     <item><widget class="QLabel" name="labelTimeMode"><property name="text"><string>Timestamps:</string></property></widget></item>
      <item><widget class="QComboBox" name="comboTimeMode"/></item>
      <item>
       <spacer name="horizontalSpacer">
