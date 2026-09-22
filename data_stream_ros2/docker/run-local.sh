@@ -142,8 +142,8 @@ fi
 # (and, when build-release.yml's actions/cache step restores it, across
 # CI runs as well). Conan keys binaries by settings hash, so containers
 # with the same compiler/cppstd reuse each other's gtest + nlohmann_json
-# builds (humble + iron + proxy = GCC 11 / Ubuntu 22.04;
-# jazzy + rolling = GCC 13 / Ubuntu 24.04) instead of rebuilding from
+# builds (humble + proxy = Ubuntu 22.04; jazzy + kilted = Ubuntu 24.04;
+# lyrical + rolling = Ubuntu 26.04) instead of rebuilding from
 # source per distro.
 CONAN_CACHE_HOST="${CONAN_HOME:-${HOME}/.conan2}"
 mkdir -p "${CONAN_CACHE_HOST}"

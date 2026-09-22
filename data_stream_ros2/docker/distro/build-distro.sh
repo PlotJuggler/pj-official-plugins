@@ -24,7 +24,7 @@
 # AMENT_TRACE_SETUP_FILES and abort under -u.
 set -eo pipefail
 
-: "${ROS_DISTRO:?ROS_DISTRO must be set (humble|iron|jazzy|rolling)}"
+: "${ROS_DISTRO:?ROS_DISTRO must be set — see docker/distros.env}"
 
 # shellcheck source=/dev/null
 source "/opt/ros/${ROS_DISTRO}/setup.bash"
@@ -109,7 +109,7 @@ if [[ "${WITH_PJ_APP:-0}" == "1" ]]; then
 
   # Toolchain mismatch guard. /pj4/build/ is shared across distros (pj4 is
   # ROS-agnostic), but Conan caches and CMake configs are tied to a specific
-  # GCC. Switching between humble/iron (GCC 11) and jazzy/rolling (GCC 13)
+  # GCC. Switching between distros whose Ubuntu bases ship different GCCs
   # on the same build dir corrupts the cache, so refuse early with a clear
   # instruction instead of trying to recover.
   #

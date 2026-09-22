@@ -6,8 +6,8 @@ The extension has a proxy + per-distro split:
 - A distro-agnostic **proxy** `.so` that detects the ROS 2 distribution
   installed on the user's machine at load time and `dlopen`s the matching
   per-distro binary.
-- A **per-distro** `.so` per supported ROS 2 distribution (`humble`, `iron`,
-  `jazzy`, `rolling`), linked against that distro's `rclcpp`.
+- A **per-distro** `.so` per supported ROS 2 distribution (`humble`, `jazzy`,
+  `kilted`, `lyrical`, `rolling`), linked against that distro's `rclcpp`.
 
 These images cover two roles:
 
@@ -70,8 +70,9 @@ After `--bundle`, under the `pj-official-plugins` root:
       manifest.json                                  ← copied from data_stream_ros2/
       dist/
         humble/libros2_stream_plugin-humble.pjros2
-        iron/libros2_stream_plugin-iron.pjros2
         jazzy/libros2_stream_plugin-jazzy.pjros2
+        kilted/libros2_stream_plugin-kilted.pjros2
+        lyrical/libros2_stream_plugin-lyrical.pjros2
         rolling/libros2_stream_plugin-rolling.pjros2
 
     ros2-topic-subscriber-linux-x86_64.zip           ← marketplace artifact
@@ -105,8 +106,8 @@ heavier image never replaces the lean one used by CI. The plain-build path
 (without the flag) is unchanged in every respect.
 
 The single `build/` directory under `<pj4>` is intentional — `pj4` is
-ROS-agnostic. If you switch between toolchains (humble/iron use GCC 11,
-jazzy/rolling use GCC 13) the script aborts with a hint to
+ROS-agnostic. If you switch between toolchains (each distro's Ubuntu base
+ships a different GCC) the script aborts with a hint to
 `rm -rf <pj4>/build/`. It does not auto-delete.
 
 ### Test extension layout
