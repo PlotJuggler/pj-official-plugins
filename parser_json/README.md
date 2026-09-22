@@ -20,6 +20,11 @@ precision (int64, uint64) instead of coercing everything to double.
   Elements without a label, or repeating a label within the same array, keep
   the indexed name. Off by default so existing saved layouts keep their series
   names; the Foxglove bridge enables it for its json channels.
+- `use_embedded_timestamp` (bool, default `false`): use a top-level numeric
+  field from the JSON message as the record timestamp (in seconds) instead of
+  the host-provided receive time.
+- `timestamp_field_name` (string, default `"timestamp"`): name of that
+  top-level field. Configurable from the options dialog.
 
 ## Encoding
 
@@ -28,4 +33,3 @@ Registered as parser for `"json"` encoding.
 ## Known Limitations
 
 - Only JSON format supported (original also handled CBOR, BSON, MessagePack)
-- No configuration dialog for timestamp field name selection

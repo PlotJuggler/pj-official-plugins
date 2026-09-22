@@ -180,7 +180,7 @@ class JsonParser : public PJ::MessageParserPluginBase {
       // as ScalarRecord::ts so the host keys the row by it instead of the
       // transport receive time.
       use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
-      timestamp_field_name_ = cfg.value("timestamp_field_name", std::string("timestamp"));
+      timestamp_field_name_ = timestampFieldNameOrDefault(cfg.value("timestamp_field_name", std::string{}));
     }
     return PJ::okStatus();
   }

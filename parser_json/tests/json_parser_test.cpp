@@ -245,6 +245,17 @@ TEST(JsonParserTest, EmbeddedTimestampCustomFieldName) {
   EXPECT_EQ(f.recorder.rows()[0].timestamp, 5678123000000LL);
 }
 
+TEST(JsonParserTest, EmbeddedTimestampEmptyFieldNameMeansDefault) {
+  // A config saved with an empty/blank name must behave like the default
+  // "timestamp" key, not silently disable the embedded timestamp.
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true,"timestamp_field_name":"  "})"));
+  ASSERT_TRUE(f.parse(R"({"timestamp":12.5,"value":1.0})", 9999));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 12500000000LL);
+}
+
 TEST(JsonParserTest, EmbeddedTimestampMissingFieldFallsBackToHost) {
   JsonParserFixture f;
   f.setUp();
