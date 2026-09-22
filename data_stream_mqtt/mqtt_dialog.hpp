@@ -322,8 +322,8 @@ class MqttDialog : public PJ::DialogPluginTyped {
     };
 
     try {
-      discovery_client_ =
-          std::make_unique<mqtt::async_client>(pj::mqtt_support::brokerUri(settings), "pj_mqtt_discovery");
+      discovery_client_ = std::make_unique<mqtt::async_client>(
+          pj::mqtt_support::brokerUri(settings), pj::mqtt_support::randomClientId("pj_mqtt_discovery_"));
 
       // Collect discovered topic names from incoming messages
       discovery_client_->set_message_callback([this](mqtt::const_message_ptr msg) {
@@ -350,7 +350,8 @@ class MqttDialog : public PJ::DialogPluginTyped {
     if (discovery_client_) {
       try {
         if (discovery_client_->is_connected()) {
-          discovery_client_->disconnect()->wait();
+          // Bounded: runs on the UI thread, and an unresponsive broker never acks.
+          discovery_client_->disconnect()->wait_for(std::chrono::seconds(2));
         }
       } catch (...) {}
       discovery_client_.reset();

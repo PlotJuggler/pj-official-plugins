@@ -15,6 +15,14 @@ to message parsers.
 The dialog configures broker address, port, topic filter, QoS level,
 and SSL toggle. Parser encoding is auto-detected from message content.
 
+## Reconnection
+
+The source reconnects automatically (1s-5s backoff) if the connection to the
+broker drops, and re-subscribes to the same topics once reconnected. Each
+instance uses a random client id (`plotjuggler_mqtt_xxxxxxxx`) unless the
+config sets `client_id`, so multiple instances can connect to the same broker
+without disconnecting each other.
+
 ## Testing
 
 Test publisher scripts are in `test_scripts/`. Requires `pip install paho-mqtt protobuf`.
@@ -41,11 +49,3 @@ cd test_scripts/
 Options: `--host`, `--port`, `--topic`, `--rate`, `--qos`.
 
 The `test_message.proto` schema is used for protobuf modes.
-
-## Known Limitations
-
-- TLS certificate management not yet available (only on/off toggle)
-- Live topic discovery not implemented (manual filter only)
-- Username/password authentication not exposed in dialog
-- No reconnection detection or retry logic
-- MQTT protocol version not configurable (uses library default)
