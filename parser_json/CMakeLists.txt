@@ -41,6 +41,20 @@ target_link_libraries(json_parser_test PRIVATE
 )
 add_test(NAME json_parser_test COMMAND json_parser_test)
 
+add_executable(json_parser_dialog_test tests/json_parser_dialog_test.cpp)
+target_compile_features(json_parser_dialog_test PRIVATE cxx_std_20)
+target_compile_options(json_parser_dialog_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(json_parser_dialog_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
+target_link_libraries(json_parser_dialog_test PRIVATE
+  plotjuggler_sdk::plugin_sdk
+  nlohmann_json::nlohmann_json
+  GTest::gtest_main
+)
+add_test(NAME json_parser_dialog_test COMMAND json_parser_dialog_test)
+
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(parser_json_plugin
   REQUIRED_EXPORTS PJ_get_message_parser_vtable PJ_get_dialog_vtable)

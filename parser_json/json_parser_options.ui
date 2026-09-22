@@ -37,6 +37,27 @@
     </widget>
    </item>
    <item>
+    <layout class="QHBoxLayout" name="horizontalLayoutTimestampField">
+     <item>
+      <widget class="QLabel" name="labelTimestampField">
+       <property name="text">
+        <string>Timestamp field name:</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="lineEditTimestampField">
+       <property name="placeholderText">
+        <string>e.g. timestamp, ts, time</string>
+       </property>
+       <property name="toolTip">
+        <string>Name of the top-level JSON field containing the timestamp, in seconds.</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
     <widget class="QCheckBox" name="checkBoxLabelKeyedArrays">
      <property name="text">
       <string>Key arrays of labeled objects by label</string>
