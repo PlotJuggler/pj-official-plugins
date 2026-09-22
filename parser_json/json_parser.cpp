@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <deque>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
@@ -129,9 +130,18 @@ void flattenJson(
       sink.fields.push_back({prefix, value.get<int64_t>()});
       break;
 
-    case nlohmann::detail::value_t::number_unsigned:
-      sink.fields.push_back({prefix, value.get<uint64_t>()});
+    case nlohmann::detail::value_t::number_unsigned: {
+      // All JSON integers map to int64 so a field keeps one column type even
+      // if its sign changes across messages; values too large for int64
+      // fall back to double rather than wrapping negative.
+      auto v = value.get<uint64_t>();
+      if (v <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+        sink.fields.push_back({prefix, static_cast<int64_t>(v)});
+      } else {
+        sink.fields.push_back({prefix, static_cast<double>(v)});
+      }
       break;
+    }
 
     case nlohmann::detail::value_t::number_float:
       sink.fields.push_back({prefix, value.get<double>()});
