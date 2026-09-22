@@ -13,5 +13,6 @@ below; for earlier releases see the git history of `data_stream_mqtt/`.
 - Stop, Quit and closing the dialog no longer hang when the broker is unresponsive.
 - The streaming source and the dialog's topic discovery now default to a random
   client id, so two instances on the same broker no longer disconnect each other.
+- Connect in the dialog no longer freezes the UI while the broker does not answer.
 
 ## [0.9.1] - 2026-08-04
