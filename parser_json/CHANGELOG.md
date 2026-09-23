@@ -3,7 +3,9 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_json/`.
 
-## [1.2.0] - 2026-09-22
+## [1.2.1] - 2026-09-23
+
+First release of the changes below; 1.2.0 was never published (the number collides with a stale GitHub release).
 
 ### Added
 - The options dialog now lets you set the name of the embedded timestamp field (it was fixed to `timestamp`).
