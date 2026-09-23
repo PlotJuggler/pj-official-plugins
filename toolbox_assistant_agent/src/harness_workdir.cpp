@@ -6,6 +6,8 @@
 #include <pj_base/sdk/platform.hpp>
 #include <system_error>
 
+#include "platform_util.hpp"  // pathToUtf8
+
 namespace assistant_agent {
 
 bool ensureWorkDir(std::string& work_dir, std::string& err) {
@@ -27,11 +29,11 @@ bool ensureWorkDir(std::string& work_dir, std::string& err) {
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
   if (!std::filesystem::is_directory(dir, ec)) {
-    err = "could not create the assistant's working directory (" + dir.string() + ")";
+    err = "could not create the assistant's working directory (" + pathToUtf8(dir) + ")";
     return false;
   }
   std::filesystem::permissions(dir, std::filesystem::perms::owner_all, ec);  // best effort
-  work_dir = dir.string();
+  work_dir = pathToUtf8(dir);
   return true;
 }
 

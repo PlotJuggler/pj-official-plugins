@@ -55,7 +55,7 @@
      </item>
      <item row="3" column="1">
       <widget class="QLineEdit" name="claudeCliPathEdit">
-       <property name="placeholderText"><string>claude (on PATH) or /full/path/to/claude</string></property>
+       <property name="placeholderText"><string>claude (on PATH) or full path</string></property>
        <property name="pj_visible_when" stdset="0"><string>backendCombo:0</string></property>
       </widget>
      </item>
@@ -91,7 +91,7 @@
      </item>
      <item row="6" column="1">
       <widget class="QLineEdit" name="codexCliPathEdit">
-       <property name="placeholderText"><string>codex (on PATH) or /full/path/to/codex</string></property>
+       <property name="placeholderText"><string>codex (on PATH) or full path</string></property>
        <property name="pj_visible_when" stdset="0"><string>backendCombo:1</string></property>
       </widget>
      </item>

@@ -3,6 +3,28 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 
+## [0.2.0] - 2026-09-21
+
+### Added
+- Windows support: both backends spawn the native `claude.exe`/`codex.exe`
+  CLI directly (kernel32 only, no shell). An npm-installed `.cmd`/`.ps1`
+  launcher is never run — the CLI-not-found message names it and points at
+  the native installer instead.
+
+### Fixed
+- The past-conversations drawer came back empty whenever the CLI's working
+  directory contained `_`, a space, or other punctuation the old slug rule
+  did not account for (it only turned `/` and `.` into `-`); the drawer now
+  matches Claude Code's own mapping (every non-alphanumeric character, and
+  every multi-byte character, becomes exactly one `-`).
+- The drawer and the Codex session store now resolve the home directory via
+  `USERPROFILE` as well as `HOME`, needed on Windows where `HOME` is not
+  always set.
+- Codex config values (`model_instructions_file`, the MCP URL and bearer
+  token env var name) are now TOML-escaped — a Windows path such as
+  `C:\Users\x` was previously read by Codex's own TOML parser as escape
+  sequences instead of a literal backslash.
+
 ## [0.1.0] - 2026-09-17
 
 ### Added

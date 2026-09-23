@@ -96,8 +96,21 @@ TEST(CodexModelsCacheFile, ResolvesUnderCodexHomeThenHome) {
   {
     ScopedEnv codex_home("CODEX_HOME", nullptr);
     ScopedEnv home("HOME", nullptr);
+    ScopedEnv userprofile("USERPROFILE", nullptr);
     EXPECT_TRUE(codexModelsCacheFile().empty());
   }
 }
+
+// Windows only: HOME is not always set there, so this resolves through
+// codexHomeDir()'s USERPROFILE fallback the same as CodexSessionsDir's own
+// pin (codex_sessions_test.cpp).
+#if defined(_WIN32)
+TEST(CodexModelsCacheFile, FallsBackToUserProfileWhenHomeIsUnset) {
+  ScopedEnv codex_home("CODEX_HOME", nullptr);
+  ScopedEnv home("HOME", nullptr);
+  ScopedEnv userprofile("USERPROFILE", R"(C:\Users\testuser)");
+  EXPECT_EQ(codexModelsCacheFile(), std::filesystem::path(R"(C:\Users\testuser\.codex\models_cache.json)"));
+}
+#endif
 
 }  // namespace

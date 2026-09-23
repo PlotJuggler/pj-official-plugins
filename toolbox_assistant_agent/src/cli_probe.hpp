@@ -14,6 +14,9 @@ namespace assistant_agent {
 // The message for a CLI that locateCli() could not find anywhere it looked — shared between
 // probeCliVersion() and the "cannot find" guard each backend runs before spawning a turn, so the
 // wording never drifts between the two paths.
+//
+// Platform-neutral code: it only reads CliLocation fields, so it is exercised on Linux too by
+// constructing one with npm_shim set (locateCli() itself never fills npm_shim off Windows).
 [[nodiscard]] inline std::string cannotFindCliMessage(const std::string& cli_path, const CliLocation& loc) {
   std::string joined;
   for (std::size_t i = 0; i < loc.searched.size(); ++i) {
@@ -22,7 +25,35 @@ namespace assistant_agent {
     }
     joined += loc.searched[i];
   }
-  return "cannot find '" + cli_path + "' — searched: " + joined + ". Set the CLI path in Settings.";
+  std::string message = "cannot find '" + cli_path + "' — searched: " + joined + ".";
+  if (!loc.npm_shim.empty()) {
+    // A `.cmd`/`.ps1` launcher exists but this plugin never runs one — see
+    // CliLocation::npm_shim and subprocess.hpp's Windows contract (native
+    // .exe only, to stay out of the BatBadBut injection class). Naming an
+    // install command needs to know which CLI: the last path segment of the
+    // configured value is the stem (`claude`/`codex`), stripped of any
+    // extension a full path may have carried.
+    std::string stem = cli_path;
+    if (const std::size_t slash = stem.find_last_of("/\\"); slash != std::string::npos) {
+      stem = stem.substr(slash + 1);
+    }
+    if (const std::size_t dot = stem.find_last_of('.'); dot != std::string::npos) {
+      stem = stem.substr(0, dot);
+    }
+    message += " Found only the npm launcher '" + loc.npm_shim +
+               "', which the assistant does not run (it would need cmd.exe); install the native build";
+    if (stem == "claude") {
+      message += " (irm https://claude.ai/install.ps1 | iex)";
+    } else if (stem == "codex") {
+      message += " (irm https://chatgpt.com/codex/install.ps1 | iex)";
+    } else {
+      message += " for '" + stem + "'";
+    }
+    message += " — or set the CLI path in Settings to the .exe.";
+  } else {
+    message += " Set the CLI path in Settings.";
+  }
+  return message;
 }
 
 // The connectivity probe every headless-CLI backend runs: `<cli_path>

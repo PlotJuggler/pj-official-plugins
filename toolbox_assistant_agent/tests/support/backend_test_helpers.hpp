@@ -4,20 +4,29 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "llm_backend.hpp"    // BackendEvent, LlmBackend, TurnTools
+#include "platform_util.hpp"  // pathToUtf8, utf8ToPath
 #include "tool_registry.hpp"  // ToolRegistry, ToolContext
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>  // mkstemp/close/chmod for the fake CLI script
+#elif defined(_WIN32)
+#include <cstdio>  // snprintf
+#include <random>
 
-#include <fstream>
+#ifndef ASSISTANT_CHILD_HELPER
+#error "ASSISTANT_CHILD_HELPER must be defined by CMake for any target using writeFakeCliScript on Windows"
+#endif
 #endif
 
 namespace assistant_agent::testing {
@@ -64,7 +73,87 @@ inline std::string writeFakeCliScript(const std::vector<std::string>& stdout_lin
   return tmpl;
 }
 
-#endif  // POSIX
+// Removes a fake CLI writeFakeCliScript created. POSIX's is a single file;
+// kept for parity with the Windows overload below so call sites never need
+// an #ifdef of their own.
+inline void removeFakeCli(const std::string& cli_path) {
+  if (!cli_path.empty()) {
+    unlink(cli_path.c_str());
+  }
+}
+
+#elif defined(_WIN32)
+
+// Windows has no shell-script CLI stand-in (subprocess.hpp's runProcess
+// refuses anything but a native .exe — see its Windows contract), so the
+// fake CLI here is a COPY of tests/support/child_helper.cpp's own binary
+// (ASSISTANT_CHILD_HELPER, built as its own CMake target) under a fresh
+// name, paired with a `<copy>.exe.script` sidecar file: child_helper checks
+// for that file before any normal mode dispatch (see its own header
+// comment) and, when present, drains stdin then replays the script's first
+// line as its exit code and every later line as an stdout line — exactly
+// the behavior the POSIX shell-script version above gives.
+inline std::string writeFakeCliScript(const std::vector<std::string>& stdout_lines, int exit_code) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const fs::path temp_dir = fs::temp_directory_path(ec);
+  if (ec) {
+    return {};
+  }
+
+  std::random_device rd;
+  fs::path exe_path;
+  for (int attempt = 0; attempt < 16; ++attempt) {
+    char suffix[17];
+    std::snprintf(suffix, sizeof(suffix), "%08x%08x", rd(), rd());
+    const fs::path candidate = temp_dir / (std::string("pj_assistant_fake_cli_") + suffix + ".exe");
+    if (!fs::exists(candidate, ec)) {
+      exe_path = candidate;
+      break;
+    }
+  }
+  if (exe_path.empty()) {
+    return {};
+  }
+
+  fs::copy_file(utf8ToPath(ASSISTANT_CHILD_HELPER), exe_path, ec);
+  if (ec) {
+    return {};
+  }
+
+  fs::path script_path = exe_path;
+  script_path += ".script";
+  std::ofstream script(script_path, std::ios::binary);
+  if (!script) {
+    return {};
+  }
+  script << exit_code << "\n";
+  for (const auto& line : stdout_lines) {
+    script << line << "\n";
+  }
+  script.close();
+
+  return pathToUtf8(exe_path);
+}
+
+// Removes the copy of child_helper.exe AND its `.script` sidecar — a bare
+// `remove(exe)` would leave the sidecar behind for another fake CLI's random
+// name to never collide with, but there is no reason to keep it around.
+// Failures are ignored, like POSIX's unlink() above: this only ever runs in
+// a temp directory that gets cleaned up by the OS regardless.
+inline void removeFakeCli(const std::string& cli_path) {
+  if (cli_path.empty()) {
+    return;
+  }
+  std::error_code ec;
+  const std::filesystem::path exe_path = utf8ToPath(cli_path);
+  std::filesystem::path script_path = exe_path;
+  script_path += ".script";
+  std::filesystem::remove(exe_path, ec);
+  std::filesystem::remove(script_path, ec);
+}
+
+#endif  // POSIX / Windows
 
 // The shared body of ClaudeSmoke.ListTopicsThroughMcp and
 // CodexSmoke.ListTopicsThroughMcp: drive one live turn asking the model to
