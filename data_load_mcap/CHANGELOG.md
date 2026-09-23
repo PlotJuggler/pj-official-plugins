@@ -3,6 +3,14 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_mcap/`.
 
+## [1.3.0] - 2026-09-22
+
+### Added
+- Open a split ROS 2 bag through its `metadata.yaml`: every `.mcap` split it
+  lists loads as one dataset, with topics merged across files instead of one
+  prefixed dataset per file. Bags stored as sqlite3 (`.db3`) or with per-file
+  compression are rejected with a clear message.
+
 ## [1.2.0] - 2026-09-06
 
 ### Added
