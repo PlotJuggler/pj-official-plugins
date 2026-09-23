@@ -47,14 +47,17 @@ jobs:
           - distro: humble
             ubuntu: 22.04
             image: osrf/ros:humble-desktop
-          - distro: iron
-            ubuntu: 22.04
-            image: osrf/ros:iron-desktop
           - distro: jazzy
             ubuntu: 24.04
             image: osrf/ros:jazzy-desktop
-          - distro: rolling
+          - distro: kilted
             ubuntu: 24.04
+            image: osrf/ros:kilted-desktop
+          - distro: lyrical
+            ubuntu: 26.04
+            image: osrf/ros:lyrical-desktop
+          - distro: rolling
+            ubuntu: 26.04
             image: osrf/ros:rolling-desktop
 
     container:
@@ -195,34 +198,21 @@ jobs:
           name: ros2-proxy
           path: stage/
 
-      - name: Download distro humble
+      - name: Download distro artifacts
         uses: actions/download-artifact@v4
         with:
-          name: ros2-distro-humble
-          path: stage/dist/humble/
-
-      - name: Download distro iron
-        uses: actions/download-artifact@v4
-        with:
-          name: ros2-distro-iron
-          path: stage/dist/iron/
-
-      - name: Download distro jazzy
-        uses: actions/download-artifact@v4
-        with:
-          name: ros2-distro-jazzy
-          path: stage/dist/jazzy/
-
-      - name: Download distro rolling
-        uses: actions/download-artifact@v4
-        with:
-          name: ros2-distro-rolling
-          path: stage/dist/rolling/
+          pattern: ros2-distro-*
+          path: stage/dist/
 
       - name: Mark distro libraries as private payloads
         shell: bash
         run: |
-          for distro in humble iron jazzy rolling; do
+          shopt -s nullglob
+          downloaded=(stage/dist/ros2-distro-*)
+          [[ ${#downloaded[@]} -gt 0 ]] || { echo "no distro artifacts downloaded" >&2; exit 1; }
+          for dir in "${downloaded[@]}"; do
+            distro="${dir##*/ros2-distro-}"
+            mv "${dir}" "stage/dist/${distro}"
             mv "stage/dist/${distro}/libros2_stream_plugin-${distro}.so" \
               "stage/dist/${distro}/libros2_stream_plugin-${distro}.pjros2"
           done

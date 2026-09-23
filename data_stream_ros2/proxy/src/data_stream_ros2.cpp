@@ -52,11 +52,13 @@
 
 namespace {
 
-// Supported ROS 2 distributions, in preferred order. When the user has
-// several installed and no explicit ROS_DISTRO env var, the proxy picks the
-// highest-priority one present. LTS distros come first because they are the
-// reasonable "default" for a user who hasn't sourced anything.
-constexpr std::array<std::string_view, 4> kSupportedDistros = {"humble", "iron", "jazzy", "rolling"};
+// Supported ROS 2 distributions, in preferred order — oldest release first,
+// `rolling` last. When the user has several installed and no explicit
+// ROS_DISTRO env var, the proxy picks the highest-priority one present:
+// the settled release is the reasonable "default" for a user who hasn't
+// sourced anything, and `rolling` is never auto-selected over a release.
+// Keep in sync with docker/distros.env.
+constexpr auto kSupportedDistros = std::to_array<std::string_view>({"humble", "jazzy", "kilted", "lyrical", "rolling"});
 constexpr std::string_view kInnerLibrarySuffix = ".pjros2";
 
 // Cached state — the inner library stays resident for the process lifetime.

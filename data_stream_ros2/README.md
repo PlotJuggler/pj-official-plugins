@@ -34,8 +34,9 @@ This extension is therefore split into two artifacts:
   libros2_stream_plugin.so                ← proxy (entry point)
   dist/
     humble/libros2_stream_plugin-humble.pjros2
-    iron/libros2_stream_plugin-iron.pjros2
     jazzy/libros2_stream_plugin-jazzy.pjros2
+    kilted/libros2_stream_plugin-kilted.pjros2
+    lyrical/libros2_stream_plugin-lyrical.pjros2
     rolling/libros2_stream_plugin-rolling.pjros2
 ```
 
@@ -205,10 +206,11 @@ marketplace scanner picks it up like any installed extension.
 
 | | linux-x86_64 | linux-arm64 |
 |--|--|--|
-| humble (GCC 11) | ✅ | ✅ |
-| iron (GCC 11) | ✅ | ✅ |
-| jazzy (GCC 13) | ✅ | ✅ |
-| rolling (GCC 13) | ✅ | ✅ |
+| humble (Ubuntu 22.04) | ✅ | ✅ |
+| jazzy (Ubuntu 24.04) | ✅ | ✅ |
+| kilted (Ubuntu 24.04) | ✅ | ✅ |
+| lyrical (Ubuntu 26.04) | ✅ | ✅ |
+| rolling (Ubuntu 26.04) | ✅ | ✅ |
 
 Single source of truth: [`docker/distros.env`](docker/distros.env).
 
