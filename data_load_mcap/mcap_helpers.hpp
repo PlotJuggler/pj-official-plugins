@@ -4,9 +4,14 @@
 // before including this header.
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <mcap/reader.hpp>
 #include <memory>
 #include <optional>
+#include <sstream>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -267,6 +272,114 @@ inline void populateSummaryFromReader(const mcap::McapReader& reader, McapSummar
     info.channels.insert({id, ptr});
   }
   info.statistics = reader.statistics();
+}
+
+/// What a rosbag2 metadata.yaml says about where its data lives.
+struct Rosbag2Metadata {
+  bool is_rosbag2 = false;         ///< top-level rosbag2_bagfile_information key present
+  std::string storage_identifier;  ///< "mcap", "sqlite3", ... ("" when absent)
+  std::vector<std::string> relative_file_paths;
+};
+
+/// Line scan of the three rosbag2 metadata.yaml keys this plugin needs. Not a
+/// YAML parser: it relies on the block style rosbag2's yaml-cpp emitter always
+/// writes (one `- item` per line under `relative_file_paths:`).
+inline Rosbag2Metadata parseRosbag2Metadata(std::string_view yaml) {
+  const auto trim = [](std::string_view s) {
+    const auto first = s.find_first_not_of(" \t\r");
+    if (first == std::string_view::npos) {
+      return std::string_view{};
+    }
+    return s.substr(first, s.find_last_not_of(" \t\r") - first + 1);
+  };
+  const auto unquote = [](std::string_view s) {
+    if (s.size() >= 2 && (s.front() == '"' || s.front() == '\'') && s.back() == s.front()) {
+      s = s.substr(1, s.size() - 2);
+    }
+    return std::string(s);
+  };
+
+  Rosbag2Metadata out;
+  bool in_file_list = false;
+  std::istringstream lines{std::string(yaml)};
+  for (std::string raw; std::getline(lines, raw);) {
+    const std::string_view line = trim(raw);
+    if (in_file_list) {
+      if (line.starts_with("- ")) {
+        out.relative_file_paths.push_back(unquote(trim(line.substr(2))));
+        continue;
+      }
+      in_file_list = false;
+    }
+    if (line == "rosbag2_bagfile_information:") {
+      out.is_rosbag2 = true;
+    } else if (line.starts_with("storage_identifier:")) {
+      out.storage_identifier = unquote(trim(line.substr(std::string_view("storage_identifier:").size())));
+    } else if (line == "relative_file_paths:") {
+      in_file_list = true;
+    }
+  }
+  return out;
+}
+
+/// The MCAP files making up the recording at `path`, or an error message.
+struct RecordingFiles {
+  std::vector<std::string> paths;
+  std::string error;
+};
+
+/// A plain .mcap resolves to itself. A rosbag2 metadata.yaml resolves to the
+/// split files it lists, in recording order, relative to the yaml's folder.
+/// Only MCAP-storage bags are accepted: sqlite3 (.db3) bags and bags split
+/// with per-file compression (.mcap.zstd) are rejected, never half-loaded.
+inline RecordingFiles resolveRecordingFiles(const std::string& path) {
+  namespace fs = std::filesystem;
+  const auto has_extension = [](const fs::path& p, std::string_view ext) {
+    std::string e = p.extension().string();
+    std::transform(e.begin(), e.end(), e.begin(), [](char c) {
+      return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+    });
+    return e == ext;
+  };
+
+  const fs::path yaml_path(path);
+  if (!has_extension(yaml_path, ".yaml") && !has_extension(yaml_path, ".yml")) {
+    return {{path}, {}};
+  }
+
+  std::ifstream in(yaml_path, std::ios::binary);
+  if (!in) {
+    return {{}, "Cannot open " + path};
+  }
+  std::stringstream content;
+  content << in.rdbuf();
+  const Rosbag2Metadata meta = parseRosbag2Metadata(content.str());
+
+  if (!meta.is_rosbag2) {
+    return {{}, "Not a ROS 2 bag metadata.yaml: " + path};
+  }
+  if (!meta.storage_identifier.empty() && meta.storage_identifier != "mcap") {
+    return {
+        {},
+        "Only MCAP-storage ROS 2 bags are supported; this bag uses '" + meta.storage_identifier +
+            "'. Convert it with 'ros2 bag convert' (storage_id: mcap)."};
+  }
+  if (meta.relative_file_paths.empty()) {
+    return {{}, "The ROS 2 bag metadata lists no data files: " + path};
+  }
+
+  RecordingFiles out;
+  for (const std::string& relative : meta.relative_file_paths) {
+    const fs::path file = yaml_path.parent_path() / relative;
+    if (!has_extension(file, ".mcap")) {
+      return {{}, "Only MCAP-storage ROS 2 bags are supported; unsupported bag file: " + relative};
+    }
+    if (!fs::exists(file)) {
+      return {{}, "ROS 2 bag file listed in metadata.yaml is missing: " + file.string()};
+    }
+    out.paths.push_back(file.string());
+  }
+  return out;
 }
 
 }  // namespace PJ::McapHelpers

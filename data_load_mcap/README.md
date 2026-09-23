@@ -75,6 +75,21 @@ so the user can select which topics to import. Per-import options:
 - **Embedded timestamp** — extract from message headers when supported
   by the parser (e.g. ROS `header.stamp`).
 
+## Split ROS 2 bags (`metadata.yaml`)
+
+Opening a rosbag2 `metadata.yaml` loads every split listed under
+`relative_file_paths` as ONE dataset: the dialog merges channels by topic
+(message counts summed), each topic binds a single parser, and the splits
+are read back to back in listed order. Every split keeps its own cold-path
+byte store, so lazy `ObjectStore` pulls re-read the file the message came
+from — all splits must stay in place for the whole session.
+
+Only MCAP-storage bags are accepted. A `sqlite3` bag (`.db3` files) or a bag
+split with per-file compression (`.mcap.zstd`) is rejected with a message
+pointing at `ros2 bag convert`; nothing is half-loaded. A damaged split
+(e.g. the last one cut short by a killed recorder) is reported as a partial
+recovery while the other splits still load.
+
 ## Always-included channels
 
 Channels whose `(schema name, encoding)` matches a small built-in whitelist

@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cstdint>
+#include <iterator>
 #include <mcap/reader.hpp>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -249,9 +250,40 @@ inline nlohmann::json buildDocument(
   return document;
 }
 
-/// Full extraction off an opened reader: facts + record bodies + assembly.
-inline nlohmann::json extractDatasetMetadata(mcap::McapReader& reader, std::vector<std::string>* diagnostics) {
-  return buildDocument(gatherFileFacts(reader), collectMetadataRecords(reader, diagnostics), diagnostics);
+/// Facts of a recording split across files (a rosbag2 bag): counts add up,
+/// the time envelope widens. Every split repeats the channel and schema
+/// definitions, so those take the largest file's count rather than a sum.
+inline FileFacts mergeFileFacts(const FileFacts& a, const FileFacts& b) {
+  FileFacts merged;
+  merged.message_count = a.message_count + b.message_count;
+  merged.channel_count = std::max(a.channel_count, b.channel_count);
+  merged.schema_count = std::max(a.schema_count, b.schema_count);
+  merged.chunk_count = a.chunk_count + b.chunk_count;
+  merged.message_start_time_ns = a.message_start_time_ns;
+  merged.message_end_time_ns = a.message_end_time_ns;
+  if (b.message_start_time_ns.has_value()) {
+    merged.message_start_time_ns =
+        std::min(a.message_start_time_ns.value_or(*b.message_start_time_ns), *b.message_start_time_ns);
+    merged.message_end_time_ns =
+        std::max(a.message_end_time_ns.value_or(*b.message_end_time_ns), *b.message_end_time_ns);
+  }
+  merged.compression = a.compression == b.compression ? a.compression : std::nullopt;
+  return merged;
+}
+
+/// Full extraction off the opened reader(s) of one recording — a single MCAP,
+/// or every split of a rosbag2 bag in recording order: facts merged, metadata
+/// records concatenated, then assembled. `readers` is non-empty.
+inline nlohmann::json extractDatasetMetadata(
+    const std::vector<mcap::McapReader*>& readers, std::vector<std::string>* diagnostics) {
+  FileFacts facts = gatherFileFacts(*readers.front());
+  std::vector<mcap::Metadata> records = collectMetadataRecords(*readers.front(), diagnostics);
+  for (size_t i = 1; i < readers.size(); ++i) {
+    facts = mergeFileFacts(facts, gatherFileFacts(*readers[i]));
+    auto more = collectMetadataRecords(*readers[i], diagnostics);
+    records.insert(records.end(), std::make_move_iterator(more.begin()), std::make_move_iterator(more.end()));
+  }
+  return buildDocument(facts, records, diagnostics);
 }
 
 /// Delivery seam to the host (set_dataset_metadata, SDK 0.32). A host without
