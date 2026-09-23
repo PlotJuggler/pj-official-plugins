@@ -182,9 +182,39 @@ jobs:
           path: build/Release/bin/libros2_stream_plugin.so
           if-no-files-found: error
 
+  # RoboStack payloads: the same subscriber built against RoboStack's
+  # conda-built rclcpp, for PlotJuggler installed from conda (see
+  # data_stream_ros2/robostack/build.sh). Shipped as dist/<distro>-robostack/.
+  build-robostack:
+    name: robostack / ${{ matrix.distro }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [jazzy, kilted]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.8.14
+        with:
+          run-install: false
+          cache: false
+
+      - name: Build payload
+        run: data_stream_ros2/robostack/build.sh ${{ matrix.distro }} robostack-out
+
+      - name: Upload payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ros2-robostack-${{ matrix.distro }}
+          path: robostack-out/libros2_stream_plugin-${{ matrix.distro }}.pjros2
+          if-no-files-found: error
+
   package-extension:
     name: package marketplace zip
-    needs: [build-distro, build-proxy]
+    needs: [build-distro, build-robostack, build-proxy]
     runs-on: ubuntu-22.04
     timeout-minutes: 60
 
@@ -216,6 +246,21 @@ jobs:
             mv "stage/dist/${distro}/libros2_stream_plugin-${distro}.so" \
               "stage/dist/${distro}/libros2_stream_plugin-${distro}.pjros2"
           done
+
+      - name: Download RoboStack payloads
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ros2-robostack-*
+          path: stage/robostack/
+
+      - name: Place RoboStack payloads
+        shell: bash
+        run: |
+          for dir in stage/robostack/ros2-robostack-*; do
+            distro="${dir##*/ros2-robostack-}"
+            mv "${dir}" "stage/dist/${distro}-robostack"
+          done
+          rmdir stage/robostack
 
       - name: Copy manifest alongside proxy
         shell: bash

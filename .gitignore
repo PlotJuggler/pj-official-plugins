@@ -20,3 +20,6 @@ build-mf4/
 
 # CI's plotjuggler_sdk checkout (PJ_SDK_ROOT), see .github/workflows/pre-commit.yml
 /.sdk/
+
+# pixi environments (data_stream_ros2/robostack)
+.pixi/

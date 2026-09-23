@@ -1,0 +1,41 @@
+# Build environments for the RoboStack payloads of data_stream_ros2: the
+# per-distro subscriber compiled against RoboStack's conda-built rclcpp, which
+# is what a PlotJuggler installed from conda runs next to. See build.sh.
+
+[workspace]
+name = "data-stream-ros2-robostack"
+channels = ["conda-forge"]
+platforms = ["linux-64", "linux-aarch64"]
+
+[dependencies]
+cmake = ">=3.28"
+ninja = "*"
+patchelf = "*"
+# RoboStack's compiler and sysroot pins (its conda_build_config.yaml): the
+# payload then needs no newer glibc/libstdc++ than the ROS libraries it loads.
+gxx_linux-64 = "14.*"
+gcc_linux-64 = "14.*"
+sysroot_linux-64 = "2.28.*"
+# plotjuggler_sdk's own dependencies (it is built from source by build.sh).
+fmt = "12.1.*"
+fast_float = "*"
+nlohmann_json = "3.12.*"
+gtest = "*"
+
+[feature.jazzy]
+channels = ["robostack-jazzy"]
+[feature.jazzy.dependencies]
+ros-jazzy-rclcpp = "*"
+ros-jazzy-rosidl-typesupport-cpp = "*"
+ros-jazzy-rosidl-typesupport-introspection-cpp = "*"
+
+[feature.kilted]
+channels = ["robostack-kilted"]
+[feature.kilted.dependencies]
+ros-kilted-rclcpp = "*"
+ros-kilted-rosidl-typesupport-cpp = "*"
+ros-kilted-rosidl-typesupport-introspection-cpp = "*"
+
+[environments]
+jazzy = ["jazzy"]
+kilted = ["kilted"]
