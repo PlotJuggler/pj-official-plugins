@@ -245,6 +245,17 @@ TEST(JsonParserTest, EmbeddedTimestampCustomFieldName) {
   EXPECT_EQ(f.recorder.rows()[0].timestamp, 5678123000000LL);
 }
 
+TEST(JsonParserTest, EmbeddedTimestampEmptyFieldNameMeansDefault) {
+  // A config saved with an empty/blank name must behave like the default
+  // "timestamp" key, not silently disable the embedded timestamp.
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true,"timestamp_field_name":"  "})"));
+  ASSERT_TRUE(f.parse(R"({"timestamp":12.5,"value":1.0})", 9999));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 12500000000LL);
+}
+
 TEST(JsonParserTest, EmbeddedTimestampMissingFieldFallsBackToHost) {
   JsonParserFixture f;
   f.setUp();
@@ -350,6 +361,45 @@ TEST(JsonParserTest, EmbeddedTimestampIntegerValue) {
   ASSERT_TRUE(f.parse(R"({"timestamp":1000,"value":42.0})", 9999));
   ASSERT_EQ(f.recorder.rows().size(), 1u);
   EXPECT_EQ(f.recorder.rows()[0].timestamp, 1000000000000LL);  // 1000s * 1e9
+}
+
+// Regression: a field whose sign flips across messages must keep the same
+// column type (int64), otherwise the datastore rejects the second message
+// outright and the whole row is dropped.
+TEST(JsonParserTest, IntegerSignChangeKeepsInt64Type) {
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.parse(R"({"a":5})"));
+  ASSERT_TRUE(f.parse(R"({"a":-5})"));
+  ASSERT_EQ(f.recorder.rows().size(), 2u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].type, PJ::PrimitiveType::kInt64);
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[0].numeric, 5.0);
+  ASSERT_EQ(f.recorder.rows()[1].fields.size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[1].fields[0].type, PJ::PrimitiveType::kInt64);
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[1].fields[0].numeric, -5.0);
+}
+
+// A JSON integer too large for int64 falls back to double rather than
+// wrapping negative when cast to int64_t.
+TEST(JsonParserTest, UnsignedIntegerAboveInt64MaxBecomesFloat64) {
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.parse(R"({"a":18446744073709551615})"));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].type, PJ::PrimitiveType::kFloat64);
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[0].numeric, 1.8446744073709552e19);
+}
+
+TEST(JsonParserTest, FloatFieldUsesFloat64Type) {
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.parse(R"({"a":1.5})"));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].type, PJ::PrimitiveType::kFloat64);
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[0].numeric, 1.5);
 }
 
 }  // namespace
