@@ -1,4 +1,5 @@
 find_package(nlohmann_json REQUIRED)
+find_package(GTest REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
@@ -67,3 +68,10 @@ pj_emit_plugin_manifest(toolbox_transform_editor_plugin
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(toolbox_transform_editor_plugin
   REQUIRED_EXPORTS PJ_get_toolbox_vtable PJ_get_dialog_vtable)
+
+# --- Floor test (manifest.json suggested_sdk_version / floor_test) ---
+add_executable(toolbox_transform_editor_floor_test tests/floor_test.cpp)
+target_compile_features(toolbox_transform_editor_floor_test PRIVATE cxx_std_20)
+target_compile_options(toolbox_transform_editor_floor_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(toolbox_transform_editor_floor_test PRIVATE plotjuggler_sdk::base GTest::gtest_main)
+add_test(NAME toolbox_transform_editor_floor_test COMMAND toolbox_transform_editor_floor_test)

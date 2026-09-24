@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -21,6 +22,7 @@
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "transform_editor_dialog_ui.hpp"
@@ -285,6 +287,36 @@ inline std::string buildTransformScript(
   return src;
 }
 
+// On-demand header lines (see refreshPreview), each optional anywhere in the
+// GLOBAL code: "-- pj-outputs: name:type,..." and "-- pj-params: {...}".
+// .first = outputs (default one "result:number"), .second = params_json.
+inline std::pair<std::vector<PJ::sdk::DataProcessorOutput>, std::string> parseOnDemandHeader(
+    const std::string& global_code) {
+  static constexpr std::string_view kOutputs = "-- pj-outputs:";
+  static constexpr std::string_view kParams = "-- pj-params:";
+  std::pair<std::vector<PJ::sdk::DataProcessorOutput>, std::string> header{{}, "{}"};
+  std::istringstream lines(global_code);
+  std::string line;
+  while (std::getline(lines, line)) {
+    if (line.compare(0, kOutputs.size(), kOutputs) == 0) {
+      for (const std::string& spec : splitOutputNames(line.substr(kOutputs.size()))) {
+        const std::size_t colon = spec.find(':');
+        if (colon != std::string::npos) {
+          header.first.push_back({spec.substr(0, colon), spec.substr(colon + 1)});
+        }
+      }
+    } else if (line.compare(0, kParams.size(), kParams) == 0) {
+      const std::string rest = line.substr(kParams.size());
+      const std::size_t b = rest.find_first_not_of(" \t");
+      header.second = b == std::string::npos ? "{}" : rest.substr(b);
+    }
+  }
+  if (header.first.empty()) {
+    header.first.push_back({"result", "number"});
+  }
+  return header;
+}
+
 // ---------------------------------------------------------------------------
 // TransformEditorDialog
 // ---------------------------------------------------------------------------
@@ -379,6 +411,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       wd.setTableRows("tableFunctions", lib_rows);
       wd.setCodeContent("previewPlainText", combinedSnippetText(library_selected_))
           .setCodeLanguage("previewPlainText", "lua");
+    } else if (!on_demand_report_.empty()) {
+      // On-demand preview (see previewOnDemand): reuse this pane, no new UI.
+      wd.setCodeContent("previewPlainText", on_demand_report_).setCodeLanguage("previewPlainText", "json");
     }
 
     // Import / Export library buttons: the host drives the native file choosers.
@@ -1074,6 +1109,10 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   void setPreviewSeries(std::vector<PJ::ChartSeries> series) {
     preview_series_ = std::move(series);
   }
+  /// On-demand preview report (pretty JSON); see previewOnDemand().
+  void setOnDemandReport(std::string report) {
+    on_demand_report_ = std::move(report);
+  }
   /// Set by the toolbox after each ephemeral-preview attempt: empty = script
   /// accepted by the host; non-empty = the error shown over the preview chart.
   void setValidationError(std::string error) {
@@ -1232,6 +1271,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   bool autozoom_ = true;                // AutoZoom checkbox state (default on)
   bool edit_mode_ = false;              // opened to modify an existing series (locks the name, button = Modify)
   std::string validation_error_;        // host's rejection message for the current script (empty = OK)
+  std::string on_demand_report_;        // last on-demand preview report (pretty JSON); see setOnDemandReport
   std::string batch_validation_error_;  // batch-tab counterpart (empty = OK)
   bool batch_dirty_ = true;             // batch script/inputs changed → re-validate (start dirty)
 
@@ -1321,6 +1361,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     // Request the data processors host bridge for live (DerivedEngine) transforms.
     if (auto dp = services.get<PJ::sdk::DataProcessorsHostService>()) {
       dp_view_ = *dp;
+    }
+    // Optional: anchors an on-demand preview's instant to the playhead.
+    if (auto pb = services.get<PJ::sdk::PlaybackHostService>()) {
+      playback_view_ = *pb;
     }
     return PJ::okStatus();
   }
@@ -1585,6 +1629,86 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     dialog_.setAvailableSeries(std::move(series));
   }
 
+  // On-demand preview: evaluate ONCE, EPHEMERAL, at the playhead's raw instant; `inputs` are topic names verbatim.
+  void previewOnDemand(
+      const std::vector<std::string>& inputs, const std::vector<PJ::sdk::DataProcessorOutput>& outputs,
+      const std::string& script, const std::string& params_json) {
+    dialog_.setPreviewSeries({});
+    dialog_.setOnDemandReport("");
+    auto validation = dp_view_.validateScript("on_demand", "luau", script);
+    if (!validation) {
+      dialog_.setValidationError(std::string(validation.error()));
+      return;
+    }
+    // Invert one raw(0)->display conversion (the toRawNs() trick from toolbox_assistant_agent/src/tools.cpp).
+    std::optional<PJ::sdk::DataSourceHandle> source;
+    auto v2 = toolboxHost().catalogSnapshotV2();
+    if (v2 && !inputs.empty()) {
+      const std::string& in = inputs.front();
+      for (const auto& t : v2->topics()) {
+        const std::string tn(t.name.data, t.name.size);
+        if (in == tn || in.rfind(tn + "/", 0) == 0) {
+          source = t.source;
+          break;
+        }
+      }
+      for (const auto& o : v2->objectTopics()) {
+        if (!source && in == std::string(o.name.data, o.name.size)) {
+          source = o.source;
+        }
+      }
+    }
+    std::int64_t instant_ns = 0;
+    std::string note = "no playback service: evaluating at 0 s";
+    if (auto state = playback_view_.state(); state && source) {
+      if (auto offset_s = playback_view_.toDisplayTimeForSource(*source, 0)) {
+        instant_ns = static_cast<std::int64_t>(std::llround((state->current_time_s - *offset_s) * 1e9));
+        note.clear();
+      }
+    }
+    PJ::sdk::DataProcessorRequest request;
+    request.id = std::string(kPreviewId);
+    request.kind = "on_demand";
+    request.language = "luau";
+    request.script = script;
+    request.params_json = params_json;
+    request.inputs = inputs;
+    request.outputs = outputs;
+    request.flags = PJ_DATA_PROCESSOR_FLAG_EPHEMERAL;
+    request.instant_ns = instant_ns;
+
+    const PJ::sdk::EvaluationBudget budget{.max_millis = 1000};
+    auto handle = dp_view_.submitEvaluation(request, budget);
+    if (!handle) {
+      dialog_.setValidationError(std::string(handle.error()));
+      return;
+    }
+    auto attempt = dp_view_.pollEvaluation(*handle);
+    for (int tries = 0; tries < 150 && attempt && attempt->state == PJ::sdk::EvaluationState::kPending; ++tries) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      attempt = dp_view_.pollEvaluation(*handle);
+    }
+    (void)dp_view_.releaseEvaluation(*handle);
+    if (!attempt) {
+      dialog_.setValidationError(attempt.error());
+      return;
+    }
+    if (attempt->state != PJ::sdk::EvaluationState::kCompleted) {
+      std::string msg = "timed out waiting for the host";
+      if (attempt->state == PJ::sdk::EvaluationState::kCancelled) {
+        msg = "cancelled by the host";
+      } else if (attempt->state == PJ::sdk::EvaluationState::kFailed) {
+        const auto err = nlohmann::json::parse(attempt->json, nullptr, /*allow_exceptions=*/false);
+        msg = err.is_object() && err.contains("error") ? err["error"].get<std::string>() : attempt->json;
+      }
+      dialog_.setValidationError(msg);
+      return;
+    }
+    const auto report = nlohmann::json::parse(attempt->json, nullptr, /*allow_exceptions=*/false);
+    dialog_.setValidationError(note);
+    dialog_.setOnDemandReport(report.is_object() || report.is_array() ? report.dump(2) : attempt->json);
+  }
+
   void refreshPreview() {
     // Only the Create/Modify label consults the catalog mirror, and that lookup
     // short-circuits on an empty name — so skip the snapshot entirely until there
@@ -1625,6 +1749,16 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     for (const std::string& extra : dialog_.extraSources()) {
       input_topics.push_back(extra);
     }
+
+    // On-demand recipe (see previewOnDemand): opts the FUNCTION body out of
+    // the live per-sample contract into one evaluate-at-an-instant Luau chunk.
+    if (global.rfind("-- pj-kind: on_demand", 0) == 0) {
+      const std::string script = "local inputs, params = ...\n" + body;
+      const auto header = parseOnDemandHeader(global);
+      previewOnDemand(input_topics, header.first, script, header.second);
+      return;
+    }
+    dialog_.setOnDemandReport("");
 
     // Declare the SAME output topics the real Create path uses (splitOutputNames of
     // the comma-separated name field) so a MIMO body returning M values matches the
@@ -1783,6 +1917,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   bool callbacks_wired_ = false;
   std::optional<PJ::sdk::DataSourceHandle> ds_handle_{std::nullopt};
   PJ::sdk::DataProcessorsHostView dp_view_;
+  PJ::sdk::PlaybackHostView playback_view_;
   std::string preview_key_;  // non-empty when an ephemeral preview node is live
 };
 
