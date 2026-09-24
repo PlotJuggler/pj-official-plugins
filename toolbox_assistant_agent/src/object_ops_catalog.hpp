@@ -11,9 +11,6 @@
 // no entry here (FrameTransforms, ImageAnnotations, and every type with no
 // field table at all) exposes its field table only; there is nothing to add.
 //
-// KNOWN GAP: object_binder.cpp does not yet bind a coordinate-transform method
-// on PointCloud (no "transform(tf)"), even though earlier design notes
-// mention one. This table lists only what a script can actually call today.
 
 #include <pj_base/builtin/builtin_object.hpp>
 #include <string_view>
@@ -41,6 +38,8 @@ struct ObjectOperation {
            "new cloud keeping points where channel <op> value; op is one of <, <=, >, >=, ==, ~="},
           {"extreme_point(channel, \"max\"|\"min\")", "the point with the extreme value of channel, or nil if empty"},
           {"xyz_points()", "iterator over the cloud's finite {x, y, z} points"},
+          {"transform(tf)",
+           "a copy of the cloud rigidly moved by a pj.tf.lookup() result (frame_id becomes its target)"},
       };
     case BuiltinObjectType::kSceneEntities:
       return {
