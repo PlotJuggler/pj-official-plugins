@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -23,6 +24,7 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "luau_transform.hpp"
@@ -2277,6 +2279,492 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
 // remove is easy to spot rather than silently shadowed by the next call.
 std::atomic<unsigned> g_evaluate_counter{0};
 
+// --- evaluate()'s object / on-demand path -----------------------------------
+//
+// Selected when any input is an object topic, or 'at_s'/'window' was given —
+// see evaluateSeries below. Unlike the scalar path (a per-sample transform
+// read back through the catalog), this submits a kind="on_demand" request
+// through DataProcessorsHostView::submitEvaluation and reads the answer out
+// of the report JSON directly: objects never round-trip through the catalog
+// as bytes, only as the host's own summaries.
+
+// One resolved evaluate/create_derived_object input: either a scalar series
+// (numeric topic/field, same resolution create_derived_series uses) or an
+// object topic (point cloud, scene entities...). `host_path` is the literal
+// name the request's `inputs` array carries and the script's
+// `inputs["<host_path>"]` addresses; `display_path` is what gets echoed back
+// to the model. `source`/`has_source` carry the dataset this input resolved
+// to, when known, for the display<->raw time conversion below.
+struct ResolvedEvalInput {
+  std::string host_path;
+  std::string display_path;
+  bool is_object = false;
+  std::string object_type;
+  PJ::sdk::DataSourceHandle source{};
+  bool has_source = false;
+};
+
+// Outcome of resolving one input against the object-topic half of the v2
+// catalog. Mirrors SeriesLookup's ambiguity rule: an unqualified name that
+// exists as an object topic on several datasets is refused with the
+// qualified candidates rather than guessed.
+struct ObjectLookup {
+  std::optional<ResolvedEvalInput> resolved;
+  std::vector<std::string> candidates;
+  bool ambiguous = false;
+};
+
+// Resolve one input against the object half of the v2 catalog: an optional
+// "dataset:" qualifier (matched against known source names, longest match
+// wins, same convention matchDatasetQualifier uses for scalar paths) narrows
+// the search; the bare remainder is matched by exact name against
+// objectTopics(), excluding marker topics (drawn, not read). Ambiguous only
+// when an UNQUALIFIED bare name matches object topics on several datasets.
+ObjectLookup resolveObjectTopic(const PJ::sdk::CatalogSnapshotV2& v2, const std::string& want) {
+  ObjectLookup out;
+  const auto sources = v2.dataSources();
+  std::string bare = want;
+  std::size_t qualifier_len = 0;
+  PJ_data_source_handle_t qual_source{};
+  bool has_qualifier = false;
+  for (const auto& src : sources) {
+    const std::string name(PJ::sdk::toStringView(src.name));
+    if (name.empty() || name.size() <= qualifier_len || want.size() <= name.size() || want[name.size()] != ':' ||
+        want.compare(0, name.size(), name) != 0) {
+      continue;
+    }
+    qualifier_len = name.size();
+    qual_source = src.handle;
+    has_qualifier = true;
+  }
+  if (has_qualifier) {
+    bare = want.substr(qualifier_len + 1);
+  }
+
+  std::optional<ResolvedEvalInput> found;
+  bool ambiguous = false;
+  for (const auto& obj : v2.objectTopics()) {
+    const std::string name(PJ::sdk::toStringView(obj.name));
+    if (isMarkerObjectTopic(name) || name != bare) {
+      continue;
+    }
+    if (has_qualifier && obj.source.id != qual_source.id) {
+      continue;
+    }
+    ResolvedEvalInput r;
+    r.host_path = name;
+    r.display_path = qualifyWithDataset(objectTopicDatasetName(sources, obj.source), name);
+    r.is_object = true;
+    r.object_type = std::string(PJ::sdk::toStringView(obj.builtin_object_type));
+    r.source = obj.source;
+    r.has_source = true;
+    if (out.candidates.size() < kMaxCandidates) {
+      out.candidates.push_back(r.display_path);
+    }
+    if (!found) {
+      found = std::move(r);
+    } else {
+      ambiguous = true;
+    }
+  }
+  if (ambiguous) {
+    out.ambiguous = true;
+    return out;
+  }
+  if (found) {
+    out.resolved = std::move(found);
+    out.candidates.clear();
+  }
+  return out;
+}
+
+std::string objectLookupError(const std::string& want, const ObjectLookup& lookup) {
+  std::string msg = "'" + want + "' is ambiguous; it matches ";
+  for (std::size_t i = 0; i < lookup.candidates.size(); ++i) {
+    msg += (i != 0 ? ", " : "") + ("'" + lookup.candidates[i] + "'");
+  }
+  msg += ". Use the full path.";
+  return msg;
+}
+
+// Resolution result for a whole evaluate/create_derived_object 'inputs'
+// array: each entry tried as an object topic first, then (when it is not
+// one) as a scalar series — same host-create-blocker rule
+// create_derived_series applies, for the same reason: a series the host
+// cannot address unambiguously by bare name must not be handed to it.
+// `anchor_source` is the FIRST resolved input's dataset, used to anchor the
+// display<->raw time conversion (see toRawNs). `error` is non-empty on any
+// failure; the caller returns it as-is.
+struct ResolvedEvalInputs {
+  std::vector<ResolvedEvalInput> inputs;
+  std::optional<PJ::sdk::DataSourceHandle> anchor_source;
+  std::string error;
+};
+
+ResolvedEvalInputs resolveEvalInputs(
+    ToolContext& ctx, const PJ::sdk::CatalogSnapshotV2& v2, const std::vector<std::string>& raw_inputs) {
+  ResolvedEvalInputs out;
+  for (const auto& in : raw_inputs) {
+    ObjectLookup obj_lookup = resolveObjectTopic(v2, in);
+    if (obj_lookup.ambiguous) {
+      out.error = objectLookupError(in, obj_lookup);
+      return out;
+    }
+    if (obj_lookup.resolved) {
+      if (!out.anchor_source) {
+        out.anchor_source = obj_lookup.resolved->source;
+      }
+      out.inputs.push_back(std::move(*obj_lookup.resolved));
+      continue;
+    }
+    auto catalog = ctx.host.catalogSnapshot();
+    if (!catalog) {
+      out.error = "catalog unavailable: " + catalog.error();
+      return out;
+    }
+    auto lookup = resolveSeriesPath(*catalog, in);
+    if (!lookup.resolved) {
+      out.error = seriesLookupError(in, lookup);
+      return out;
+    }
+    if (auto blocked = hostCreateBlocker(*catalog, *lookup.resolved)) {
+      out.error = *blocked;
+      return out;
+    }
+    ResolvedEvalInput r;
+    r.host_path = lookup.resolved->host_path;
+    r.display_path = lookup.resolved->path;
+    r.is_object = false;
+    if (auto handle = dataSourceHandleFor(*catalog, lookup.resolved->dataset)) {
+      r.source = *handle;
+      r.has_source = true;
+      if (!out.anchor_source) {
+        out.anchor_source = *handle;
+      }
+    }
+    out.inputs.push_back(std::move(r));
+  }
+  return out;
+}
+
+// One declared "name:type" output, split for DataProcessorRequest.outputs.
+struct ParsedOutputs {
+  std::vector<PJ::sdk::DataProcessorOutput> outputs;
+  std::string error;
+};
+
+ParsedOutputs parseTypedOutputs(const json& arr) {
+  ParsedOutputs out;
+  for (const auto& o : arr) {
+    if (!o.is_string()) {
+      out.error = "'outputs' entries must be strings \"name:type\"";
+      return out;
+    }
+    const std::string spec = o.get<std::string>();
+    const std::size_t colon = spec.find(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 == spec.size()) {
+      out.error =
+          "'outputs' entries must be \"name:type\" (type is 'number', 'string', or a builtin object type "
+          "like 'kPointCloud'), got '" +
+          spec + "'";
+      return out;
+    }
+    out.outputs.push_back({spec.substr(0, colon), spec.substr(colon + 1)});
+  }
+  if (out.outputs.empty()) {
+    out.error = "'outputs' must declare at least one \"name:type\"";
+  }
+  return out;
+}
+
+// Inverse of toDisplaySeconds: DISPLAY seconds -> raw dataset ns. The SDK
+// exposes only the forward direction (toDisplayTimeForSource); this derives
+// the same per-source AFFINE offset applyDisplayWindow computes
+// (display(raw) = raw*1e-9 + offset, a per-DATASET constant, never a
+// per-sample fact) from one forward conversion of a known raw instant — raw
+// 0 always qualifies, so no sample lookup is needed — then inverts it.
+// Empty when no playback view is bound or the source-scoped conversion is
+// not supported by this host.
+std::optional<std::int64_t> toRawNs(ToolContext& ctx, PJ::sdk::DataSourceHandle source, double display_s) {
+  if (!ctx.playback.valid()) {
+    return std::nullopt;
+  }
+  const auto offset_s = ctx.playback.toDisplayTimeForSource(source, 0);
+  if (!offset_s) {
+    return std::nullopt;
+  }
+  const double raw_s = display_s - *offset_s;
+  return static_cast<std::int64_t>(std::llround(raw_s * 1e9));
+}
+
+// One evaluation bundle's *_ns fields (requested_ns, stamp_ns, each input's
+// resolved_ns), converted to display seconds (*_s) via the same anchor
+// toRawNs used going in. The untouched raw values ride along under "raw_ns"
+// only when `debug` is set — the model reads display seconds by default,
+// same as every other time this file reports.
+json convertBundleTimes(const json& bundle_in, ToolContext& ctx, PJ::sdk::DataSourceHandle source, bool debug) {
+  json bundle = bundle_in;
+  json raw = json::object();
+  auto toDisplay = [&](std::int64_t ns) {
+    if (auto d = ctx.playback.toDisplayTimeForSource(source, ns)) {
+      return *d;
+    }
+    return static_cast<double>(ns) * 1e-9;
+  };
+  auto convertTop = [&](const char* key_ns, const char* key_s) {
+    if (bundle.contains(key_ns) && bundle[key_ns].is_number_integer()) {
+      const std::int64_t ns = bundle[key_ns].get<std::int64_t>();
+      if (debug) {
+        raw[key_ns] = ns;
+      }
+      bundle[key_s] = toDisplay(ns);
+      bundle.erase(key_ns);
+    }
+  };
+  convertTop("requested_ns", "requested_s");
+  convertTop("stamp_ns", "stamp_s");
+  if (bundle.contains("inputs") && bundle["inputs"].is_array()) {
+    for (auto& in : bundle["inputs"]) {
+      if (in.contains("resolved_ns") && in["resolved_ns"].is_number_integer()) {
+        const std::int64_t ns = in["resolved_ns"].get<std::int64_t>();
+        in["resolved_s"] = toDisplay(ns);
+        in.erase("resolved_ns");
+      }
+    }
+  }
+  if (debug && !raw.empty()) {
+    bundle["raw_ns"] = raw;
+  }
+  return bundle;
+}
+
+// A report's "bundles" array, time-converted and capped to the LAST 50 (the
+// most recent instants are what a model asks a WINDOW evaluation for; the
+// earliest ones are the ones worth dropping when the budget produced more
+// than fit in a response).
+struct RenderedBundles {
+  json bundles = json::array();
+  bool truncated = false;
+};
+
+RenderedBundles renderBundles(ToolContext& ctx, PJ::sdk::DataSourceHandle source, const json& report, bool debug) {
+  RenderedBundles out;
+  if (!report.contains("bundles") || !report["bundles"].is_array()) {
+    return out;
+  }
+  const auto& arr = report["bundles"];
+  constexpr std::size_t kMaxBundles = 50;
+  const std::size_t total = arr.size();
+  const std::size_t start = total > kMaxBundles ? total - kMaxBundles : 0;
+  for (std::size_t i = start; i < total; ++i) {
+    out.bundles.push_back(convertBundleTimes(arr[i], ctx, source, debug));
+  }
+  out.truncated = total > kMaxBundles;
+  return out;
+}
+
+// submitEvaluation + poll-to-completion + releaseEvaluation (RAII, every
+// path), shared by evaluate's object path and create_derived_object's
+// post-create finding read. `error` is the host's or a timeout message;
+// `report` is the parsed report JSON on success only.
+struct SubmitAndPollResult {
+  bool ok = false;
+  json report;
+  std::string error;
+};
+
+SubmitAndPollResult submitAndPoll(
+    ToolContext& ctx, const PJ::sdk::DataProcessorRequest& request, std::uint64_t budget_ms,
+    std::uint64_t budget_evaluations) {
+  SubmitAndPollResult out;
+  PJ::sdk::EvaluationBudget budget;
+  budget.max_millis = budget_ms;
+  budget.max_evaluations = budget_evaluations;
+  auto handle = ctx.dp.submitEvaluation(request, budget);
+  if (!handle) {
+    out.error = handle.error();
+    return out;
+  }
+  struct ReleaseGuard {
+    ToolContext& ctx;
+    std::uint64_t handle;
+    ~ReleaseGuard() {
+      auto status = ctx.dp.releaseEvaluation(handle);
+      (void)status;  // best-effort: nothing to react to once we have our answer
+    }
+  } release_guard{ctx, *handle};
+
+  // The phase-0 host completes inline, so one poll suffices in practice; the
+  // loop (a short sleep, bounded by the budget plus headroom) is what makes
+  // this correct for a host that finishes the work in the background too.
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget_ms + 1000);
+  for (;;) {
+    auto polled = ctx.dp.pollEvaluation(*handle);
+    if (!polled) {
+      out.error = polled.error();
+      return out;
+    }
+    if (polled->state == PJ::sdk::EvaluationState::kPending) {
+      if (std::chrono::steady_clock::now() >= deadline) {
+        out.error = "timed out waiting for the host";
+        return out;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      continue;
+    }
+    if (polled->state == PJ::sdk::EvaluationState::kFailed) {
+      const json err = json::parse(polled->json, nullptr, /*allow_exceptions=*/false);
+      out.error = err.is_object() && err.contains("error") ? err["error"].get<std::string>() : polled->json;
+      return out;
+    }
+    if (polled->state == PJ::sdk::EvaluationState::kCancelled) {
+      out.error = "cancelled by the host";
+      return out;
+    }
+    const json report = json::parse(polled->json, nullptr, /*allow_exceptions=*/false);
+    if (!report.is_object()) {
+      out.error = "the host returned an unreadable report";
+      return out;
+    }
+    out.ok = true;
+    out.report = report;
+    return out;
+  }
+}
+
+std::uint64_t clampBudgetMs(const json& args) {
+  return static_cast<std::uint64_t>(std::clamp(args.value("budget_ms", 1000), 1, 5000));
+}
+
+std::uint64_t clampBudgetEvaluations(const json& args) {
+  return static_cast<std::uint64_t>(std::clamp(args.value("budget_evaluations", 50), 1, 500));
+}
+
+// evaluate()'s object path proper: validate 'outputs'/'body', resolve every
+// input (object or scalar), turn 'at_s'/'window' (display seconds) or the
+// current playhead into raw ns, submit an EPHEMERAL on_demand evaluation,
+// and hand back the time-converted report. Never installs or notifies —
+// same contract as the scalar path's ephemeral transform.
+ToolResult evaluateObjectPath(const json& args, ToolContext& ctx, const std::vector<std::string>& raw_inputs) {
+  if (!args.contains("outputs") || !args["outputs"].is_array() || args["outputs"].empty()) {
+    return ToolResult::failure(
+        "evaluate over objects (an object input, 'at_s' or 'window') requires 'outputs': an array of "
+        "\"name:type\" (type is 'number', 'string', or a builtin object type like 'kPointCloud')");
+  }
+  const ParsedOutputs parsed_outputs = parseTypedOutputs(args["outputs"]);
+  if (!parsed_outputs.error.empty()) {
+    return ToolResult::failure(parsed_outputs.error);
+  }
+  if (!args.contains("body") || !args["body"].is_string() || args["body"].get<std::string>().empty()) {
+    return ToolResult::failure(
+        "evaluate over objects requires 'body': a Luau chunk body reading inputs[\"<topic>\"] and returning a "
+        "table of the declared outputs ('expression' only applies to the plain scalar path)");
+  }
+  if (args.contains("at_s") && args.contains("window")) {
+    return ToolResult::failure("evaluate takes 'at_s' OR 'window', not both");
+  }
+
+  auto v2 = ctx.host.catalogSnapshotV2();
+  if (!v2) {
+    return ToolResult::failure(
+        "evaluating at a time or over objects requires catalog snapshot v2, which this host does not expose: " +
+        v2.error());
+  }
+  const ResolvedEvalInputs resolved = resolveEvalInputs(ctx, *v2, raw_inputs);
+  if (!resolved.error.empty()) {
+    return ToolResult::failure(resolved.error);
+  }
+  if (!resolved.anchor_source) {
+    return ToolResult::failure("evaluate needs at least one resolvable input to anchor its dataset's time conversion");
+  }
+
+  std::optional<std::int64_t> instant_ns;
+  std::optional<std::pair<std::int64_t, std::int64_t>> window_ns;
+  if (args.contains("window")) {
+    if (!args["window"].is_object() || !args["window"].contains("start_s") || !args["window"].contains("end_s") ||
+        !args["window"]["start_s"].is_number() || !args["window"]["end_s"].is_number()) {
+      return ToolResult::failure("'window' must be {\"start_s\": <number>, \"end_s\": <number>} (display seconds)");
+    }
+    const double start_s = args["window"]["start_s"].get<double>();
+    const double end_s = args["window"]["end_s"].get<double>();
+    if (end_s <= start_s) {
+      return ToolResult::failure("window.end_s must be greater than window.start_s");
+    }
+    const auto raw_start = toRawNs(ctx, *resolved.anchor_source, start_s);
+    const auto raw_end = toRawNs(ctx, *resolved.anchor_source, end_s);
+    if (!raw_start || !raw_end) {
+      return ToolResult::failure(
+          "cannot convert 'window' to raw time: the host did not expose pj.playback.v1 or per-source time "
+          "conversion");
+    }
+    window_ns = std::pair<std::int64_t, std::int64_t>{*raw_start, *raw_end};
+  } else if (args.contains("at_s")) {
+    if (!args["at_s"].is_number()) {
+      return ToolResult::failure("'at_s' must be a number (display seconds)");
+    }
+    instant_ns = toRawNs(ctx, *resolved.anchor_source, args["at_s"].get<double>());
+    if (!instant_ns) {
+      return ToolResult::failure(
+          "cannot convert 'at_s' to raw time: the host did not expose pj.playback.v1 or per-source time "
+          "conversion");
+    }
+  } else {
+    if (!ctx.playback.valid()) {
+      return ToolResult::failure("the host did not expose pj.playback.v1 (cannot evaluate at the current playhead)");
+    }
+    auto state = ctx.playback.state();
+    if (!state) {
+      return ToolResult::failure("playback state unavailable: " + state.error());
+    }
+    instant_ns = toRawNs(ctx, *resolved.anchor_source, state->current_time_s);
+    if (!instant_ns) {
+      return ToolResult::failure("cannot convert the current playhead to raw time for this dataset");
+    }
+  }
+
+  const std::string body = args["body"].get<std::string>();
+  const std::string script = buildOnDemandChunk(body);
+  if (auto v = ctx.dp.validateScript("on_demand", ctx.language, script); !v) {
+    return ToolResult::failure("invalid script: " + v.error());
+  }
+
+  const unsigned call_id = ++g_evaluate_counter;
+  const std::string id = "__evaluate_" + std::to_string(call_id);
+  std::vector<std::string> input_names;
+  for (const auto& ri : resolved.inputs) {
+    input_names.push_back(ri.host_path);
+  }
+
+  PJ::sdk::DataProcessorRequest request;
+  request.id = id;
+  request.kind = "on_demand";
+  request.language = ctx.language;
+  request.script = script;
+  request.params_json = "{}";
+  request.inputs = input_names;
+  request.outputs = parsed_outputs.outputs;
+  request.flags = PJ_DATA_PROCESSOR_FLAG_EPHEMERAL;
+  request.window = window_ns;
+  request.instant_ns = instant_ns;
+
+  const SubmitAndPollResult polled = submitAndPoll(ctx, request, clampBudgetMs(args), clampBudgetEvaluations(args));
+  if (!polled.ok) {
+    return ToolResult::failure("evaluate failed: " + polled.error);
+  }
+
+  const bool debug = args.value("debug", false);
+  json out = json::object();
+  if (polled.report.contains("coverage")) {
+    out["coverage"] = polled.report["coverage"];
+  }
+  const RenderedBundles rendered = renderBundles(ctx, *resolved.anchor_source, polled.report, debug);
+  out["bundles"] = rendered.bundles;
+  if (rendered.truncated) {
+    out["truncated"] = true;
+  }
+  return ToolResult::success(out.dump());
+}
+
 // Run a Luau computation over series and hand back numbers, without leaving
 // anything for the user to see: an EPHEMERAL transform is created, read once,
 // and removed before returning — the host hides ephemeral outputs from its
@@ -2304,6 +2792,30 @@ ToolResult evaluateSeries(const json& args, ToolContext& ctx) {
   }
   if (inputs.empty()) {
     return ToolResult::failure("'inputs' contained no string paths");
+  }
+
+  // The OBJECT path: selected when any input is an object topic (per the v2
+  // catalog), or when the model asked to evaluate at a specific time
+  // ('at_s'/'window') rather than over the whole series. This is a
+  // different host surface (kind="on_demand" via submitEvaluation, not a
+  // per-sample transform read back through the catalog), so it is routed
+  // out to its own function before anything below — which stays exactly
+  // the scalar-path code that shipped before objects existed.
+  {
+    bool any_object_input = false;
+    if (auto v2 = ctx.host.catalogSnapshotV2()) {
+      for (const auto& in : inputs) {
+        if (resolveObjectTopic(*v2, in).resolved) {
+          any_object_input = true;
+          break;
+        }
+      }
+    }
+    const bool has_time_selector =
+        (args.contains("at_s") && !args["at_s"].is_null()) || (args.contains("window") && !args["window"].is_null());
+    if (any_object_input || has_time_selector) {
+      return evaluateObjectPath(args, ctx, inputs);
+    }
   }
 
   // Same resolution, host-create-blocker and join-forecast rules as
@@ -2401,6 +2913,165 @@ ToolResult evaluateSeries(const json& args, ToolContext& ctx) {
     }
     const std::size_t max_points = static_cast<std::size_t>(std::clamp(args["buckets"].get<int>(), 1, 500));
     result = withCoarsenedBuckets(std::move(result), r.ts, r.vals, max_points);
+  }
+  return ToolResult::success(result.dump());
+}
+
+// Install a persisted kind="on_demand" node (an object-producing computation
+// the host re-evaluates on request, never eagerly) and, on success, evaluate
+// it once so the model sees a finding instead of taking "created" on faith.
+// Shares evaluateObjectPath's input resolution, time conversion and report
+// rendering; the difference is createV2 (persisted, HISTORY_EXEMPT like
+// create_derived_series) in place of an EPHEMERAL submitEvaluation.
+ToolResult createDerivedObject(const json& args, ToolContext& ctx) {
+  if (!ctx.dp.valid()) {
+    return ToolResult::failure("the host did not expose pj.data_processors.v1 (cannot create)");
+  }
+  if (!args.contains("name") || !args["name"].is_string() || args["name"].get<std::string>().empty()) {
+    return ToolResult::failure("create_derived_object requires a non-empty string 'name'");
+  }
+  const std::string name = args["name"].get<std::string>();
+  if (!args.contains("inputs") || !args["inputs"].is_array() || args["inputs"].empty()) {
+    return ToolResult::failure(
+        "create_derived_object requires a non-empty 'inputs' array of topic/field or object-topic paths");
+  }
+  if (!args.contains("body") || !args["body"].is_string() || args["body"].get<std::string>().empty()) {
+    return ToolResult::failure(
+        "create_derived_object requires 'body': a Luau chunk body reading inputs[\"<topic>\"] and returning a "
+        "table of the declared outputs");
+  }
+  if (!args.contains("outputs") || !args["outputs"].is_array() || args["outputs"].empty()) {
+    return ToolResult::failure(
+        "create_derived_object requires 'outputs': an array of \"name:type\" (type is 'number', 'string', or a "
+        "builtin object type like 'kPointCloud')");
+  }
+  const ParsedOutputs parsed_outputs = parseTypedOutputs(args["outputs"]);
+  if (!parsed_outputs.error.empty()) {
+    return ToolResult::failure(parsed_outputs.error);
+  }
+  std::vector<std::string> raw_inputs;
+  for (const auto& in : args["inputs"]) {
+    if (in.is_string()) {
+      raw_inputs.push_back(canonicalSeriesPath(in.get<std::string>()));
+    }
+  }
+  if (raw_inputs.empty()) {
+    return ToolResult::failure("'inputs' contained no string paths");
+  }
+
+  // Same "already taken" guard create_derived_series applies, for the same
+  // reason: installing over a name the user already has is not a judgement
+  // call this code gets to make.
+  if (auto existing = ctx.dp.list()) {
+    for (const auto& id : *existing) {
+      if (id == name) {
+        return ToolResult::failure(
+            "'" + name +
+            "' already exists — this assistant created it earlier in the session. Remove it first with "
+            "remove_derived_series, or choose another name.");
+      }
+    }
+  }
+
+  auto v2 = ctx.host.catalogSnapshotV2();
+  if (!v2) {
+    return ToolResult::failure(
+        "create_derived_object requires catalog snapshot v2, which this host does not expose: " + v2.error());
+  }
+  const ResolvedEvalInputs resolved = resolveEvalInputs(ctx, *v2, raw_inputs);
+  if (!resolved.error.empty()) {
+    return ToolResult::failure(resolved.error);
+  }
+  if (!resolved.anchor_source) {
+    return ToolResult::failure(
+        "create_derived_object needs at least one resolvable input to anchor its dataset's time conversion");
+  }
+
+  // A pin is a FINDING: evaluated once, at a fixed instant, and kept —
+  // unlike a bare on_demand install (no pin), which the host re-evaluates
+  // wherever a later consumer asks. Converted the same way evaluate's at_s
+  // is.
+  std::optional<std::int64_t> pin_ns;
+  if (args.contains("pin_at_s") && !args["pin_at_s"].is_null()) {
+    if (!args["pin_at_s"].is_number()) {
+      return ToolResult::failure("'pin_at_s' must be a number (display seconds)");
+    }
+    pin_ns = toRawNs(ctx, *resolved.anchor_source, args["pin_at_s"].get<double>());
+    if (!pin_ns) {
+      return ToolResult::failure(
+          "cannot convert 'pin_at_s' to raw time: the host did not expose pj.playback.v1 or per-source time "
+          "conversion");
+    }
+  }
+
+  const std::string body = args["body"].get<std::string>();
+  const std::string script = buildOnDemandChunk(body);
+  if (auto v = ctx.dp.validateScript("on_demand", ctx.language, script); !v) {
+    return ToolResult::failure("invalid script: " + v.error());
+  }
+
+  std::vector<std::string> input_names;
+  for (const auto& ri : resolved.inputs) {
+    input_names.push_back(ri.host_path);
+  }
+  const std::string params_json = args.contains("params") && args["params"].is_object() ? args["params"].dump() : "{}";
+  const std::string label = args.value("label", std::string{});
+
+  bool undo_protection_unavailable = false;
+  auto created = createHistoryExempt(
+      ctx, name,
+      [&](uint32_t flags) {
+        PJ::sdk::DataProcessorRequest request;
+        request.id = name;
+        request.kind = "on_demand";
+        request.language = ctx.language;
+        request.script = script;
+        request.params_json = params_json;
+        request.label = label;
+        request.inputs = input_names;
+        request.outputs = parsed_outputs.outputs;
+        request.flags = flags;
+        request.instant_ns = pin_ns;
+        return ctx.dp.createV2(request);
+      },
+      undo_protection_unavailable);
+  if (!created) {
+    return ToolResult::failure("create failed: " + created.error());
+  }
+  if (ctx.notify_data_changed) {
+    ctx.notify_data_changed();
+  }
+
+  json result = {{"created", name}, {"out_topics", *created}};
+  annotateUndoProtection(result, undo_protection_unavailable);
+
+  // Evaluate the installed node once, at the pin (if given) or the current
+  // playhead, so the model sees what it made instead of taking "created" on
+  // faith — the same principle "Closing the loop on what it creates"
+  // documents for markers and derived series. Best-effort: the node IS
+  // installed either way, so a failed read-back degrades the response
+  // rather than the tool call.
+  std::optional<std::int64_t> eval_ns = pin_ns;
+  if (!eval_ns && ctx.playback.valid()) {
+    if (auto state = ctx.playback.state()) {
+      eval_ns = toRawNs(ctx, *resolved.anchor_source, state->current_time_s);
+    }
+  }
+  if (eval_ns) {
+    PJ::sdk::DataProcessorRequest eval_request;
+    eval_request.id = name;
+    eval_request.kind = "on_demand";
+    eval_request.language = ctx.language;
+    eval_request.instant_ns = eval_ns;
+    const SubmitAndPollResult polled = submitAndPoll(ctx, eval_request, 1000, 1);
+    if (polled.ok) {
+      const RenderedBundles rendered = renderBundles(ctx, *resolved.anchor_source, polled.report, /*debug=*/false);
+      if (!rendered.bundles.empty()) {
+        result["bundle"] = rendered.bundles.front();
+      }
+    } else {
+      result["bundle_unavailable"] = polled.error;
+    }
   }
   return ToolResult::success(result.dump());
 }
@@ -3424,17 +4095,32 @@ ToolRegistry::ToolRegistry() {
 
   add(
       {"evaluate",
-       "Run a Luau computation over series and get numbers back — nothing is created or shown. Same "
-       "inputs/expression/body/global as create_derived_series. Returns stats (min/max with their "
-       "times, invalid count); add 'buckets' for the shape too. Use to answer how much/when/whether "
-       "before deciding if anything is worth creating.",
+       "Run a Luau computation and get the answer back — nothing is created or shown. Picked "
+       "automatically: SCALAR (default) takes the same inputs/expression/body/global as "
+       "create_derived_series and returns stats, add 'buckets' for the shape. OBJECT form kicks in "
+       "when an input is an object topic or 'at_s'/'window' is given: requires 'body' (reads "
+       "inputs[\"<topic>\"], returns a table of 'outputs') and 'outputs' ([\"name:type\", …], type is "
+       "'number', 'string', or a builtin object type e.g. 'kPointCloud'); 'at_s' evaluates at one "
+       "display-seconds instant, 'window':{start_s,end_s} over a span, neither defaults to the "
+       "playhead. Objects come back only as summaries, never bytes. To keep a result, "
+       "create_derived_object.",
        {{"type", "object"},
         {"properties",
          {{"inputs", {{"type", "array"}, {"items", {{"type", "string"}}}}},
-          {"expression", {{"type", "string"}}},
-          {"body", {{"type", "string"}}},
-          {"global", {{"type", "string"}}},
-          {"buckets", {{"type", "integer"}, {"description", "1-500"}}}}},
+          {"expression", {{"type", "string"}, {"description", "scalar only"}}},
+          {"body",
+           {{"type", "string"}, {"description", "scalar: return ...; object: reads inputs[..], returns table"}}},
+          {"global", {{"type", "string"}, {"description", "scalar only"}}},
+          {"buckets", {{"type", "integer"}, {"description", "scalar only; 1-500"}}},
+          {"outputs", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "object only, required"}}},
+          {"at_s", {{"type", "number"}, {"description", "object: instant, display seconds"}}},
+          {"window",
+           {{"type", "object"},
+            {"properties", {{"start_s", {{"type", "number"}}}, {"end_s", {{"type", "number"}}}}},
+            {"description", "object: span, display seconds"}}},
+          {"budget_ms", {{"type", "integer"}, {"description", "object; default 1000, max 5000"}}},
+          {"budget_evaluations", {{"type", "integer"}, {"description", "object; default 50, max 500"}}},
+          {"debug", {{"type", "boolean"}, {"description", "object: also report raw nanoseconds"}}}}},
         {"required", json::array({"inputs"})}},
        &evaluateSeries});
 
@@ -3464,6 +4150,28 @@ ToolRegistry::ToolRegistry() {
            {{"type", "string"}, {"description", "Luau run once per instance; locals persist across samples"}}}}},
         {"required", json::array({"name", "inputs"})}},
        &createDerivedSeries});
+
+  add(
+      {"create_derived_object",
+       "Install a live on-demand computation over object topics (point clouds, scene entities...) — "
+       "evaluated on request, not eagerly per sample like create_derived_series. 'body' reads "
+       "inputs[\"<topic>\"] and returns a table of the declared 'outputs' ([\"name:type\", …]). Without "
+       "'pin_at_s' it stays live for a later consumer (e.g. scene_view) to query; with 'pin_at_s' it is "
+       "a FINDING, evaluated once at that display-seconds instant and kept (shown under "
+       "<plugin>/<name>/…). Either way this call also evaluates it once itself and returns that first "
+       "bundle. Saved in layouts. Undo protection is verified when supported; failure is reported.",
+       {{"type", "object"},
+        {"properties",
+         {{"name", {{"type", "string"}, {"description", "name of the new node"}}},
+          {"inputs", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "topic/object paths"}}},
+          {"outputs",
+           {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "[\"name:type\", …], required"}}},
+          {"body", {{"type", "string"}, {"description", "reads inputs[..], returns table of 'outputs'"}}},
+          {"params", {{"type", "object"}, {"description", "forwarded to the script (optional)"}}},
+          {"pin_at_s", {{"type", "number"}, {"description", "OPTIONAL — pin as a finding, display seconds"}}},
+          {"label", {{"type", "string"}, {"description", "human-readable name (optional)"}}}}},
+        {"required", json::array({"name", "inputs", "outputs", "body"})}},
+       &createDerivedObject});
 
   add(
       {"create_markers",
@@ -3530,9 +4238,9 @@ ToolRegistry::ToolRegistry() {
 
   add(
       {"remove_derived_series",
-       "Delete a derived series this assistant created, by its name. Only its own creations — loaded "
-       "data cannot be touched. Use it to withdraw a series that turned out wrong instead of leaving "
-       "it in the user's panel.",
+       "Delete a derived series or object this assistant created, by its name. Only its own creations — "
+       "loaded data cannot be touched. Use it to withdraw a series or object that turned out wrong "
+       "instead of leaving it in the user's panel.",
        {{"type", "object"},
         {"properties", {{"name", {{"type", "string"}, {"description", "name given at creation"}}}}},
         {"required", json::array({"name"})}},

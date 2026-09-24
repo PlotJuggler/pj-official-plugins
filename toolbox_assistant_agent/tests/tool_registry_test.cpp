@@ -66,12 +66,13 @@ ToolContext makeCtx(PJ::testing::ToolboxTestStore& store, RecordingDpHost* dp, F
 
 TEST(ToolRegistry, ListsAllToolsAndSchemas) {
   ToolRegistry reg;
-  EXPECT_EQ(reg.tools().size(), 12u);
+  EXPECT_EQ(reg.tools().size(), 13u);
   // Both serializations expose every tool by name.
-  EXPECT_EQ(reg.toFunctionSpecs().size(), 12u);
-  EXPECT_EQ(reg.toMcpToolsList().size(), 12u);
+  EXPECT_EQ(reg.toFunctionSpecs().size(), 13u);
+  EXPECT_EQ(reg.toMcpToolsList().size(), 13u);
   EXPECT_NE(reg.find("evaluate"), nullptr);
   EXPECT_NE(reg.find("create_derived_series"), nullptr);
+  EXPECT_NE(reg.find("create_derived_object"), nullptr);
   EXPECT_NE(reg.find("playback"), nullptr);
   EXPECT_EQ(reg.find("play"), nullptr);
   EXPECT_NE(reg.find("plot_tab"), nullptr);
@@ -1606,6 +1607,268 @@ TEST(ToolRegistry, EvaluateCallsUseDistinctIds) {
   EXPECT_NE(first_id, second_id);
 }
 
+// evaluate's scalar path (no object input, no at_s/window) must be byte-for-
+// byte what shipped before objects existed: the object-path routing check
+// added in block 3.2 must fall through cleanly, on a host that has no v2
+// catalog at all (PJ::testing::ToolboxTestStore, used by every scalar test
+// above) as much as on one that does.
+TEST(ToolRegistry, ScalarEvaluateIsUntouched) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  dp.ephemeral_series_store = &store;
+  dp.ephemeral_series_ts = {0, kSec, 2 * kSec};
+  dp.ephemeral_series_vals = {1.0, 2.0, 3.0};
+  ToolContext ctx = makeCtx(store, &dp);
+
+  auto r = reg.execute("evaluate", {{"inputs", json::array({"/imu/x"})}, {"expression", "value + 1"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.create_calls, 1) << "the scalar ephemeral-transform path, unchanged";
+  EXPECT_EQ(dp.create_v2_calls, 0);
+  EXPECT_EQ(dp.submit_calls, 0) << "the object/on-demand surface must never be touched here";
+  const json j = json::parse(r.content);
+  EXPECT_TRUE(j.contains("stats"));
+  EXPECT_TRUE(j.contains("evaluated"));
+}
+
+// --- evaluate()'s object path: at_s/window over object topics --------------
+
+TEST(ToolRegistry, EvaluateAtCreatesEphemeralSubmitsPollsAndReleases) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  FakePlaybackHost pb;
+  pb.display_offset_ns = 1000;  // display(raw) = (raw - offset) * 1e-9
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = pb.view();
+
+  auto r = reg.execute(
+      "evaluate",
+      {{"inputs", json::array({"/cloud"})},
+       {"at_s", 2.0},
+       {"body", "return { cropped = inputs[\"/cloud\"], count = 1 }"},
+       {"outputs", json::array({"cropped:kPointCloud", "count:number"})}},
+      ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.submit_calls, 1);
+  EXPECT_EQ(dp.create_calls, 0) << "the object path never installs anything, ephemeral or otherwise";
+  EXPECT_NE(dp.last_flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL, 0u);
+  EXPECT_EQ(dp.last_kind, "on_demand");
+  EXPECT_NE(dp.last_time_flags & PJ_DATA_PROCESSOR_TIME_FLAG_INSTANT, 0u);
+  // to_raw(2.0 s) = 2.0 * 1e9 + display_offset_ns
+  EXPECT_EQ(dp.last_instant_ns, 2'000'001'000);
+  EXPECT_EQ(dp.poll_calls, 1) << "the phase-0 host completes inline; one poll suffices";
+  ASSERT_EQ(dp.released_handles.size(), 1u);
+  const json j = json::parse(r.content);
+  ASSERT_TRUE(j.contains("bundles"));
+  EXPECT_EQ(j["bundles"].size(), 1u);
+}
+
+TEST(ToolRegistry, EvaluateWindowPassesBudgetAndReturnsCoverage) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  FakePlaybackHost pb;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = pb.view();
+
+  auto r = reg.execute(
+      "evaluate",
+      {{"inputs", json::array({"/cloud"})},
+       {"window", {{"start_s", 1.0}, {"end_s", 3.0}}},
+       {"budget_ms", 2000},
+       {"budget_evaluations", 10},
+       {"body", "return { cropped = inputs[\"/cloud\"], count = 1 }"},
+       {"outputs", json::array({"cropped:kPointCloud", "count:number"})}},
+      ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_NE(dp.last_time_flags & PJ_DATA_PROCESSOR_TIME_FLAG_WINDOW, 0u);
+  EXPECT_EQ(dp.last_window_start_ns, 1'000'000'000);
+  EXPECT_EQ(dp.last_window_end_ns, 3'000'000'000);
+  EXPECT_EQ(dp.last_budget_max_millis, 2000u);
+  EXPECT_EQ(dp.last_budget_max_evaluations, 10u);
+  const json j = json::parse(r.content);
+  ASSERT_TRUE(j.contains("coverage")) << "coverage rides along verbatim";
+  EXPECT_EQ(j["coverage"]["candidates"], 1);
+}
+
+TEST(ToolRegistry, EvaluateWithObjectInputRequiresTypedOutputs) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+
+  auto r = reg.execute("evaluate", {{"inputs", json::array({"/cloud"})}, {"body", "return { count = 1 }"}}, ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("outputs"), std::string::npos) << r.content;
+  EXPECT_EQ(dp.submit_calls, 0);
+}
+
+TEST(ToolRegistry, EvaluateWaitsThroughPendingPolls) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  dp.pending_polls = 2;
+  FakePlaybackHost pb;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = pb.view();
+
+  auto r = reg.execute(
+      "evaluate",
+      {{"inputs", json::array({"/cloud"})},
+       {"at_s", 1.0},
+       {"body", "return { cropped = inputs[\"/cloud\"], count = 1 }"},
+       {"outputs", json::array({"cropped:kPointCloud", "count:number"})}},
+      ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.poll_calls, 3) << "2 PENDING answers, then COMPLETED";
+  EXPECT_EQ(dp.released_handles.size(), 1u);
+}
+
+// A host built before pj.data_processors.v1 gained submit_evaluation: the
+// v1 slots (including validate_data_processor_script) still work, so the
+// script validates cleanly, and only submitEvaluation itself reports the
+// gap -- a clean "not supported" the model can relay, never a crash.
+TEST(ToolRegistry, EvaluateOnOldHostReportsNotSupported) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  dp.supports_v2 = false;
+  FakePlaybackHost pb;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = pb.view();
+
+  auto r = reg.execute(
+      "evaluate",
+      {{"inputs", json::array({"/cloud"})},
+       {"at_s", 1.0},
+       {"body", "return { cropped = inputs[\"/cloud\"], count = 1 }"},
+       {"outputs", json::array({"cropped:kPointCloud", "count:number"})}},
+      ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("submit_evaluation"), std::string::npos) << r.content;
+  EXPECT_EQ(dp.validate_calls, 1) << "the v1 slot still works; only submit_evaluation is missing";
+}
+
+TEST(ToolRegistry, EvaluateTruncatesLongReports) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  json bundles = json::array();
+  for (int i = 0; i < 60; ++i) {
+    bundles.push_back(
+        {{"requested_ns", static_cast<std::int64_t>(i) * kSec},
+         {"stamp_ns", static_cast<std::int64_t>(i) * kSec},
+         {"inputs", json::array()},
+         {"outputs", json::object()}});
+  }
+  const json report = {{"coverage", {{"candidates", 60}, {"evaluated", 60}, {"complete", true}}}, {"bundles", bundles}};
+  dp.canned_report_json = report.dump();
+  FakePlaybackHost pb;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = pb.view();
+
+  auto r = reg.execute(
+      "evaluate",
+      {{"inputs", json::array({"/cloud"})},
+       {"window", {{"start_s", 0.0}, {"end_s", 60.0}}},
+       {"body", "return { cropped = inputs[\"/cloud\"], count = 1 }"},
+       {"outputs", json::array({"cropped:kPointCloud", "count:number"})}},
+      ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  ASSERT_TRUE(j.contains("bundles"));
+  EXPECT_EQ(j["bundles"].size(), 50u);
+  ASSERT_TRUE(j.contains("truncated"));
+  EXPECT_TRUE(j["truncated"].get<bool>());
+  // The LAST 50 of 60 survive, so the first one left is index 10.
+  ASSERT_TRUE(j["bundles"].front().contains("requested_s"));
+  EXPECT_DOUBLE_EQ(j["bundles"].front()["requested_s"].get<double>(), 10.0);
+}
+
+// --- create_derived_object ---------------------------------------------------
+
+#ifdef PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT
+TEST(ToolRegistry, CreateDerivedObjectPinsAFinding) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  dp.config_history_exempt = true;
+  FakePlaybackHost pb;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = pb.view();
+  int notify_calls = 0;
+  ctx.notify_data_changed = [&]() { ++notify_calls; };
+
+  auto r = reg.execute(
+      "create_derived_object",
+      {{"name", "cropped_cloud"},
+       {"inputs", json::array({"/cloud"})},
+       {"outputs", json::array({"cropped:kPointCloud", "count:number"})},
+       {"body", "return { cropped = inputs[\"/cloud\"], count = 1 }"},
+       {"pin_at_s", 2.5},
+       {"label", "cropped at 2.5s"}},
+      ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.create_v2_calls, 1);
+  EXPECT_EQ(dp.persistent_creates, 1) << "a pin is HISTORY_EXEMPT, not EPHEMERAL -- it is kept";
+  EXPECT_EQ(dp.last_kind, "on_demand");
+  EXPECT_NE(dp.last_create_v2_flags & PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT, 0u);
+  EXPECT_NE(dp.last_create_v2_time_flags & PJ_DATA_PROCESSOR_TIME_FLAG_INSTANT, 0u);
+  EXPECT_EQ(dp.last_create_v2_instant_ns, 2'500'000'000);
+  EXPECT_EQ(dp.last_create_v2_label, "cropped at 2.5s");
+  EXPECT_EQ(notify_calls, 1);
+  EXPECT_EQ(dp.submit_calls, 1) << "evaluated once after creating, so the model sees a finding";
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["created"], "cropped_cloud");
+  ASSERT_TRUE(j.contains("bundle"));
+  EXPECT_FALSE(j.contains("undo_protection"));
+}
+#endif
+
+TEST(ToolRegistry, CreateDerivedObjectDisclosesMissingUndoProtection) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;  // config_history_exempt left unset: the recipe omits the key
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+
+  auto r = reg.execute(
+      "create_derived_object",
+      {{"name", "cropped_cloud"},
+       {"inputs", json::array({"/cloud"})},
+       {"outputs", json::array({"cropped:kPointCloud", "count:number"})},
+       {"body", "return { cropped = inputs[\"/cloud\"], count = 1 }"}},
+      ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["undo_protection"], "unavailable: an undo can remove this");
+}
+
 // --- PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT: set when the SDK has it, with a
 // fallback for a host that rejects the unknown bit -----------------------
 
@@ -2043,8 +2306,12 @@ TEST(ToolRegistry, ToolSchemaStaysWithinItsBudget) {
   // which is why related verbs share one tool with an `action` argument
   // instead of standing alone. Raised for `evaluate` (run a Luau computation
   // without creating anything) — a new verb, not a variant of an existing
-  // one, so it could not be folded into another tool's `action`.
-  EXPECT_LT(chars, 10500u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
+  // one, so it could not be folded into another tool's `action`. Raised
+  // again for `create_derived_object` (block 3.2) and evaluate's own object
+  // path (at_s/window/outputs) — objects need a genuinely different
+  // request shape (on_demand, typed outputs, a pinned instant) that does
+  // not fit create_derived_series's `action`-less schema either.
+  EXPECT_LT(chars, 13500u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
 }
 
 // --- playback / viewport tools ----------------------------------------------

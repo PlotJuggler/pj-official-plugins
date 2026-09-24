@@ -249,6 +249,13 @@ So the creation tools report facts rather than intentions:
 - `create_derived_series` reports `points`: how many samples the new series has. With one input that
   is the input's length, read from the Arrow header without decoding values; with several it is the
   size of the timestamp intersection, which is what the join will actually produce.
+- `create_derived_object` reports a `bundle`: the same on-demand evaluation `evaluate`'s object path
+  returns, but for the node it just installed, read back immediately after the create — at the pin,
+  or the current playhead when there is none. "Created" alone tells the model nothing about an object
+  computation any more than it does about a marker set; the difference is that objects have no
+  `entryCount()`-shaped read-back to lean on at all, so the bundle IS the read-back, not an
+  approximation of one. A failed read-back does not fail the tool call — the node is installed either
+  way — it degrades the response (`bundle_unavailable`) instead.
 
 ### Facts, never instructions
 
@@ -293,6 +300,52 @@ on every return path with an RAII guard. It never calls `notify_data_changed`. T
 from the GUI catalog and layout, while the plugin-facing catalog ABI still enumerates it; that
 separation is what lets `readOne` return statistics and optional buckets without exposing a Custom
 Series row or triggering a catalog rebuild.
+
+### The object path: submit/poll/release instead of create/read/remove
+
+`evaluate` gains a second path, routed to before any of the scalar-path code above runs: selected
+when any input resolves as an object topic (`resolveObjectTopic` against `catalogSnapshotV2()`), or
+when the model passed `at_s`/`window` at all — even over scalar inputs, since those still need a
+CONSUMER-requested time rather than the whole series. Objects never round-trip through the catalog
+as bytes, so this path does not create-then-read like the scalar one; it goes straight at
+`pj.data_processors.v1`'s typed evaluation surface: `validateScript("on_demand", ...)`, then
+`submitEvaluation` of an `EPHEMERAL` `kind="on_demand"` request (id `__evaluate_N`, the same counter
+the scalar path uses, so both share one namespace), then `pollEvaluation` in a loop (a 10 ms sleep,
+bounded by the budget plus headroom — the phase-0 host completes inline, so this loop is currently
+dead code every time, but the contract allows a host that finishes in the background), then
+`releaseEvaluation` on every path via an RAII guard (`submitAndPoll`, shared with
+`create_derived_object`'s post-create finding read below).
+
+The script itself is a different shape too: not a per-sample `T:calculate` closure
+(`buildLuauTransform`) but a single chunk evaluated once per requested instant
+(`buildOnDemandChunk`, `luau_transform.hpp`) — `local inputs, params = ...` bound at the top, the
+model's `body` reading `inputs["<topic>"]` by its literal name and returning a table of the
+declared, TYPED `outputs`.
+
+Display seconds go in and come back out through the same per-source AFFINE offset
+`applyDisplayWindow` already uses for `t_start_s`/`t_end_s` (`display(raw) = raw*1e-9 + offset`, a
+per-DATASET constant): `toRawNs` derives it from ONE forward conversion of raw `0` — any raw value on
+the source works, since the offset does not depend on which sample it came from — then inverts it.
+The anchor source is the FIRST resolved input's dataset. Coming back out, `convertBundleTimes`
+converts every bundle's `requested_ns`/`stamp_ns`/`inputs[].resolved_ns` to `*_s` the same way,
+keeping the untouched nanoseconds under `raw_ns` only when the model passed `debug: true`; `coverage`
+rides back verbatim, and `bundles` is capped to the LAST 50 (`renderBundles`) with `"truncated": true`
+when the host produced more.
+
+## Installing an object computation: `create_derived_object`
+
+Mirrors `create_derived_series`'s persisted-node shape (`createHistoryExempt`, the same
+already-exists guard, `notify_data_changed` on success) but through `createV2` with a typed
+`DataProcessorRequest` instead of `createTransform`'s bare string arrays — objects need typed
+outputs and, for a pin, an `instant_ns` `create_data_processor` itself has no field for. Without
+`pin_at_s` the installed node stays live, re-evaluated wherever a later consumer (the `scene_view`
+tool block 3.3 will add) asks; with it, `instant_ns` is set on the create request itself, which is
+what makes a pin a FINDING rather than a live node that happens to be looked at once. Either way the
+tool then calls `submitEvaluation` on the node it just installed (`id` naming it, an EMPTY script —
+`request->id naming an installed on_demand node ... with an empty script evaluates that node`, per
+the ABI doc-comment) at the pin or the current playhead, through the same `submitAndPoll` +
+`renderBundles` evaluate's object path uses, and returns the first bundle: a finding is worth
+nothing if the model has to ask twice to see what it made.
 
 ## Where the assistant is allowed to draw
 

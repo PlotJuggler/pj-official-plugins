@@ -13,7 +13,9 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
@@ -70,6 +72,51 @@ struct RecordingDpHost {
   std::vector<std::string> last_outputs;
   std::vector<std::string> live_ids;  // what list() reports; the views point into this
   std::vector<std::string> resolved;  // storage the returned borrowed views point into
+
+  // --- v2 (typed request) surface: create_data_processor_v2 / submit_evaluation /
+  // poll_evaluation / release_evaluation, used by evaluate's object path and
+  // create_derived_object. Simulates an older host (slots null, so
+  // PJ_HAS_TAIL_SLOT fails) when supportsV2 is false.
+  bool supports_v2 = true;
+  bool fail_submit = false;
+  // How many times poll_evaluation answers PENDING before COMPLETED, captured
+  // per handle at submit time (see EvaluateWaitsThroughPendingPolls).
+  int pending_polls = 0;
+  // Default report: one bundle with a "cropped" object summary and a
+  // "count" scalar value, matching the crop_box shape fake_backend.hpp's
+  // "crop <topic> at <t>" phrase asks for.
+  std::string canned_report_json =
+      R"({"coverage":{"start_ns":0,"end_ns":0,"evaluated_until_ns":null,"candidates":1,"evaluated":1,)"
+      R"("cache_hits":0,"complete":true,"stopped":"complete"},"bundles":[{"requested_ns":0,"stamp_ns":0,)"
+      R"("from_cache":false,"revision":1,"inputs":[{"alias":"/cloud","resolved_ns":0,"is_object":true}],)"
+      R"("outputs":{"cropped":{"status":"ok","summary":{"count":42}},"count":{"status":"ok","value":42}}}]})";
+  int create_v2_calls = 0;
+  int submit_calls = 0;
+  int poll_calls = 0;
+  std::vector<std::uint64_t> released_handles;
+  std::uint32_t last_time_flags = 0;
+  std::int64_t last_window_start_ns = 0;
+  std::int64_t last_window_end_ns = 0;
+  std::int64_t last_instant_ns = 0;
+  std::string last_label;
+  std::vector<std::string> last_output_types;  // parallel to last_outputs
+  std::uint64_t last_budget_max_millis = 0;
+  std::uint64_t last_budget_max_evaluations = 0;
+  std::uint64_t last_budget_max_report_bytes = 0;
+  std::map<std::uint64_t, int> poll_countdown;
+  std::uint64_t next_handle = 1;
+  std::string last_poll_json;  // owned storage for the borrowed out_json view
+
+  // create_data_processor_v2's OWN snapshot of flags/time_flags/instant/label,
+  // taken separately from the shared last_* fields: create_derived_object
+  // installs via createV2 and then immediately submitEvaluation()s the
+  // installed node to read a finding back, and that second call's recordRequest
+  // would otherwise overwrite what the create call actually carried before a
+  // test gets to look at it.
+  std::uint32_t last_create_v2_flags = 0;
+  std::uint32_t last_create_v2_time_flags = 0;
+  std::int64_t last_create_v2_instant_ns = 0;
+  std::string last_create_v2_label;
 
   // One record per ACCEPTED persistent create, so a verdict can ask what a
   // surviving id actually is (kind, script, declared inputs) instead of judging
@@ -246,8 +293,137 @@ struct RecordingDpHost {
     return static_cast<int>(live_ids.size());
   }
 
+  // Records the typed request the same way tCreate does, then upserts it —
+  // outputs carry their declared TYPE too (last_output_types), and the time
+  // fields (time_flags/window/instant) that createTransform/createMarkers
+  // have no equivalent of.
+  static bool tCreateV2(
+      void* ctx, const PJ_data_processor_request_t* request, PJ_string_view_t* out_topics, uint64_t out_topics_capacity,
+      uint64_t* out_topics_count, PJ_error_t* err) noexcept {
+    auto* self = static_cast<RecordingDpHost*>(ctx);
+    ++self->create_v2_calls;
+    ++self->create_calls;
+    self->recordRequest(*request);
+    self->last_create_v2_flags = request->flags;
+    self->last_create_v2_time_flags = request->time_flags;
+    self->last_create_v2_instant_ns = request->time_ns;
+    self->last_create_v2_label = self->last_label;
+    if ((request->flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL) == 0) {
+      ++self->persistent_creates;
+    }
+    if (self->fail_create) {
+      PJ::sdk::fillError(err, 1, "test", "create rejected");
+      return false;
+    }
+    if (self->reject_unknown_flags &&
+        (request->flags & ~static_cast<uint32_t>(PJ_DATA_PROCESSOR_FLAG_EPHEMERAL)) != 0) {
+      PJ::sdk::fillError(err, 1, "test", "flags: unknown reserved bit set");
+      return false;
+    }
+    if ((request->flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL) == 0) {
+      self->live_ids.push_back(self->last_id);
+      self->created.push_back(
+          {self->last_id, self->last_kind, self->last_script, self->last_inputs, self->last_outputs});
+    }
+    self->resolved = self->last_outputs.empty() ? std::vector<std::string>{"auto_topic"} : self->last_outputs;
+    if (out_topics_count != nullptr) {
+      *out_topics_count = self->resolved.size();
+    }
+    for (uint64_t i = 0; i < self->resolved.size() && i < out_topics_capacity; ++i) {
+      out_topics[i] = PJ_string_view_t{self->resolved[i].data(), self->resolved[i].size()};
+    }
+    return true;
+  }
+
+  static bool tSubmit(
+      void* ctx, const PJ_data_processor_request_t* request, const PJ_evaluation_budget_t* budget, uint64_t* out_handle,
+      PJ_error_t* err) noexcept {
+    auto* self = static_cast<RecordingDpHost*>(ctx);
+    ++self->submit_calls;
+    self->recordRequest(*request);
+    if (budget != nullptr) {
+      self->last_budget_max_millis = budget->max_millis;
+      self->last_budget_max_evaluations = budget->max_evaluations;
+      self->last_budget_max_report_bytes = budget->max_report_bytes;
+    }
+    if (self->fail_submit) {
+      PJ::sdk::fillError(err, 1, "test", "submit rejected");
+      return false;
+    }
+    const std::uint64_t handle = self->next_handle++;
+    self->poll_countdown[handle] = self->pending_polls;
+    if (out_handle != nullptr) {
+      *out_handle = handle;
+    }
+    return true;
+  }
+
+  static bool tPoll(
+      void* ctx, uint64_t handle, uint32_t* out_state, PJ_string_view_t* out_json, PJ_error_t* err) noexcept {
+    auto* self = static_cast<RecordingDpHost*>(ctx);
+    ++self->poll_calls;
+    auto it = self->poll_countdown.find(handle);
+    if (it == self->poll_countdown.end()) {
+      PJ::sdk::fillError(err, 1, "test", "unknown evaluation handle");
+      return false;
+    }
+    if (it->second > 0) {
+      --it->second;
+      if (out_state != nullptr) {
+        *out_state = PJ_EVALUATION_STATE_PENDING;
+      }
+      self->last_poll_json = "{}";
+    } else {
+      if (out_state != nullptr) {
+        *out_state = PJ_EVALUATION_STATE_COMPLETED;
+      }
+      self->last_poll_json = self->canned_report_json;
+    }
+    if (out_json != nullptr) {
+      *out_json = PJ::sdk::toAbiString(self->last_poll_json);
+    }
+    return true;
+  }
+
+  static bool tRelease(void* ctx, uint64_t handle, PJ_error_t* err) noexcept {
+    auto* self = static_cast<RecordingDpHost*>(ctx);
+    auto it = self->poll_countdown.find(handle);
+    if (it == self->poll_countdown.end()) {
+      PJ::sdk::fillError(err, 1, "test", "unknown evaluation handle");
+      return false;
+    }
+    self->poll_countdown.erase(it);
+    self->released_handles.push_back(handle);
+    return true;
+  }
+
+  // Shared by tCreateV2/tSubmit: both take the same PJ_data_processor_request_t
+  // shape, so both record it into the same last_* fields tCreate does (plus
+  // the v2-only ones: types, time flags, window/instant, label).
+  void recordRequest(const PJ_data_processor_request_t& request) {
+    last_id = toStr(request.id);
+    last_kind = toStr(request.kind);
+    last_script = toStr(request.script);
+    last_flags = request.flags;
+    last_time_flags = request.time_flags;
+    last_window_start_ns = request.window_start_ns;
+    last_window_end_ns = request.window_end_ns;
+    last_instant_ns = request.time_ns;
+    last_label = toStr(request.label);
+    last_inputs.clear();
+    for (uint64_t i = 0; i < request.input_count; ++i) {
+      last_inputs.push_back(toStr(request.inputs[i]));
+    }
+    last_outputs.clear();
+    last_output_types.clear();
+    for (uint64_t i = 0; i < request.output_count; ++i) {
+      last_outputs.push_back(toStr(request.outputs[i].name));
+      last_output_types.push_back(toStr(request.outputs[i].type));
+    }
+  }
+
   PJ::sdk::DataProcessorsHostView view() {
-    static const PJ_data_processors_host_vtable_t vtable = {
+    static const PJ_data_processors_host_vtable_t vtable_full = {
         .protocol_version = 1,
         .struct_size = sizeof(PJ_data_processors_host_vtable_t),
         .create_data_processor = &RecordingDpHost::tCreate,
@@ -255,8 +431,26 @@ struct RecordingDpHost {
         .list_data_processor_ids = &RecordingDpHost::tList,
         .data_processor_config = &RecordingDpHost::tConfig,
         .validate_data_processor_script = &RecordingDpHost::tValidate,
+        .create_data_processor_v2 = &RecordingDpHost::tCreateV2,
+        .submit_evaluation = &RecordingDpHost::tSubmit,
+        .poll_evaluation = &RecordingDpHost::tPoll,
+        .release_evaluation = &RecordingDpHost::tRelease,
     };
-    return PJ::sdk::DataProcessorsHostView(PJ_data_processors_host_t{this, &vtable});
+    // struct_size stops right before create_data_processor_v2, so
+    // PJ_HAS_TAIL_SLOT fails for every v2 slot even though the pointers below
+    // it are never installed either -- either alone already fails the check,
+    // both together is what a host actually built before v2 existed reports.
+    static const PJ_data_processors_host_vtable_t vtable_v1_only = {
+        .protocol_version = 1,
+        .struct_size = offsetof(PJ_data_processors_host_vtable_t, create_data_processor_v2),
+        .create_data_processor = &RecordingDpHost::tCreate,
+        .remove_data_processor = &RecordingDpHost::tRemove,
+        .list_data_processor_ids = &RecordingDpHost::tList,
+        .data_processor_config = &RecordingDpHost::tConfig,
+        .validate_data_processor_script = &RecordingDpHost::tValidate,
+    };
+    return PJ::sdk::DataProcessorsHostView(
+        PJ_data_processors_host_t{this, supports_v2 ? &vtable_full : &vtable_v1_only});
   }
 };
 

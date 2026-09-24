@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <pj_base/number_parse.hpp>
 #include <pj_base/sdk/text_utils.hpp>
 #include <sstream>
@@ -26,6 +27,8 @@ namespace assistant_agent {
 //   "stats <topic/field>"                  -> read_series (stats)
 //   "derivative of <topic/field>"          -> create_derived_series (stateful)
 //   "mark <topic/field> > <n>"             -> create_markers
+//   "crop <topic> at <t>"                  -> evaluate (object path, at_s)
+//   "pin <topic> at <t>"                   -> create_derived_object (pin_at_s)
 //
 // Anything else echoes usage. Every tool call blocks on tools.invoke (the
 // GuiExecutor), so this exercises the exact cross-thread path a real backend
@@ -94,11 +97,42 @@ class FakeBackend : public LlmBackend {
       } else {
         run("create_markers", {{"series", path}, {"comparison", cmp}, {"threshold", threshold}});
       }
+    } else if (startsWith(lower, "crop")) {
+      const std::string path = firstPath(words);
+      const auto at_s = findAt(words);
+      if (path.empty() || !at_s) {
+        sink({BackendEvent::Kind::AssistantText, "Say: crop <topic> at <t>"});
+      } else {
+        // The crop_box body/outputs shape object_ops_catalog.hpp advertises
+        // for kPointCloud: a cropped cloud plus its point count, so the
+        // result reads as more than just "created".
+        run("evaluate", {{"inputs", nlohmann::json::array({path})},
+                         {"at_s", *at_s},
+                         {"body", "  local c = inputs[\"" + path +
+                                      "\"]:crop_box{min={x=-1,y=-1,z=-1},max={x=1,y=1,z=1}}\n"
+                                      "  return { cropped = c, count = c:count() }"},
+                         {"outputs", nlohmann::json::array({"cropped:kPointCloud", "count:number"})}});
+      }
+    } else if (startsWith(lower, "pin")) {
+      const std::string path = firstPath(words);
+      const auto at_s = findAt(words);
+      if (path.empty() || !at_s) {
+        sink({BackendEvent::Kind::AssistantText, "Say: pin <topic> at <t>"});
+      } else {
+        run("create_derived_object", {{"name", leaf(path) + "_pin"},
+                                      {"inputs", nlohmann::json::array({path})},
+                                      {"outputs", nlohmann::json::array({"cropped:kPointCloud", "count:number"})},
+                                      {"body", "  local c = inputs[\"" + path +
+                                                   "\"]:crop_box{min={x=-1,y=-1,z=-1},max={x=1,y=1,z=1}}\n"
+                                                   "  return { cropped = c, count = c:count() }"},
+                                      {"pin_at_s", *at_s}});
+      }
     } else {
       sink(
           {BackendEvent::Kind::AssistantText,
            "FakeBackend commands: 'list topics', 'status', 'describe <topic>', 'stats <topic/field>', "
-           "'derivative of <topic/field>', 'mark <topic/field> > <n>'."});
+           "'derivative of <topic/field>', 'mark <topic/field> > <n>', 'crop <topic> at <t>', "
+           "'pin <topic> at <t>'."});
     }
     sink({BackendEvent::Kind::TurnComplete, {}});
   }
@@ -135,6 +169,16 @@ class FakeBackend : public LlmBackend {
       }
     }
     return {};
+  }
+  // The number following a literal "at" token ("crop <topic> at <t>"),
+  // display seconds. Empty when there is no "at" or nothing parses after it.
+  static std::optional<double> findAt(const std::vector<std::string>& words) {
+    for (std::size_t i = 0; i + 1 < words.size(); ++i) {
+      if (PJ::sdk::lowerAscii(words[i]) == "at") {
+        return PJ::parseNumber<double>(words[i + 1]);
+      }
+    }
+    return std::nullopt;
   }
   static std::string leaf(const std::string& path) {
     const auto pos = path.find_last_of('/');

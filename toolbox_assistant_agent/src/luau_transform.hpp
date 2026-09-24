@@ -37,6 +37,24 @@ inline std::string luaStringEscape(std::string_view s) {
   return out;
 }
 
+// Wrap a model-supplied body into an on-demand Luau chunk (kind="on_demand",
+// the data-processors surface a consumer-requested-time script uses instead
+// of a per-sample transform). `inputs` (a table keyed by each declared
+// input's LITERAL name — the exact string this node's request carries, per
+// the host's on_demand contract: "the script reads each input under its
+// literal name") and `params` (this node's params_json, decoded) are bound
+// at the chunk's own top via Lua's vararg `...`; the body then reads
+// inputs["<topic>"] and returns a table of the declared outputs, by name.
+// Evaluated once per requested instant/window sample, not per data sample,
+// so unlike buildLuauTransform there is no factory/calculate split — the
+// body IS the chunk.
+inline std::string buildOnDemandChunk(const std::string& body) {
+  std::string src = "-- pj-script: luau\n";
+  src += "local inputs, params = ...\n";
+  src += body + "\n";
+  return src;
+}
+
 inline std::string buildLuauTransform(
     const std::string& id, const std::string& name, const std::string& global_code, const std::string& body,
     std::size_t num_extra) {

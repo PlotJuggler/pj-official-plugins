@@ -9,7 +9,7 @@ work by calling the same plugin SDK a human-written plugin would.
           │
           ▼
    ┌──────────────┐   tool calls    ┌──────────────────┐   SDK services   ┌────────────┐
-   │  chat panel  │ ──────────────▶ │ tool layer (12)  │ ───────────────▶ │ PlotJuggler│
+   │  chat panel  │ ──────────────▶ │ tool layer (13)  │ ───────────────▶ │ PlotJuggler│
    │  (floating)  │ ◀────────────── │   over MCP       │ ◀─────────────── │    host    │
    └──────────────┘   results       └──────────────────┘                  └────────────┘
 ```
@@ -29,26 +29,27 @@ this plugin itself created. There is no reachable operation that edits or delete
 | **Codex** | Drives your existing `codex` CLI subscription headlessly, over the same loopback MCP server. Usage is reported in tokens; Codex does not report a price. | Your subscription |
 | **Echo / Fake** | No model. Used for wiring tests. | — |
 
-Either way the model reaches *only* the twelve tools below — it cannot touch your machine
+Either way the model reaches *only* the thirteen tools below — it cannot touch your machine
 outside PlotJuggler. On Claude Code every built-in tool is disabled with `--tools ""`. Codex has no
 equivalent single switch, so the same property comes from the `-c` config values plus seven
 `--disable`s in `buildCodexArgv` — shell tool, unified exec, web search, view_image, a read-only
 sandbox, and the rest. Code Mode is not what withholds them: it is the JavaScript host our own MCP
 tools run inside, which is why it stays on.
 
-## The twelve tools
+## The thirteen tools
 
 | Tool | Does |
 |---|---|
 | `list_topics` | Search loaded topics by substring — scalar and object topics (point clouds, scene entities…) alike, on a host with catalog snapshot v2 |
 | `describe_topic` | Fields of one topic, with types and full paths; on an object topic, its field table and the operations a script may call on it |
 | `read_series` | Statistics, a min/max-preserving downsample (columns t0/dt/n/min/max/mean), or up to 200 raw samples inside a window you set; a path naming a topic with no field reads every numeric field of that topic |
-| `evaluate` | Run a bounded Luau computation and return statistics without leaving a series behind |
+| `evaluate` | Run a bounded Luau computation and return the answer without leaving anything behind — statistics over series, or (with an object input, `at_s` or `window`) a bounded on-demand read over objects, at one instant or across a span |
 | `create_derived_series` | Install a live Luau transform over one or more series |
+| `create_derived_object` | Install a live on-demand computation over object topics, or pin one instant of it as a kept finding (`pin_at_s`) |
 | `create_markers` | Install a marker generator (threshold or a raw Luau rule) |
 | `remove_markers` | Remove the assistant's own marker set — and only that one |
 | `list_created` | What this assistant has installed so far |
-| `remove_derived_series` | Withdraw one of its own derived series — and only its own |
+| `remove_derived_series` | Withdraw one of its own derived series or objects — and only its own |
 | `report_status` | Counts of loaded sources, topics, fields and object topics |
 | `playback` | The transport, by `action`: state / play / pause / seek / rate. One time cursor is shared by every plot, so this is the one control that is not scoped |
 | `plot_tab` | Tabs of the assistant's OWN, by `action`: create / add / remove / zoom / close / list |

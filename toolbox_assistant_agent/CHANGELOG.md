@@ -6,6 +6,20 @@ below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 ## [Unreleased]
 
 ### Added
+- New tool `create_derived_object`: installs a live on-demand computation over
+  object topics (point clouds, scene entities…), or pins one instant of it as
+  a kept finding with `pin_at_s`. Either way the call evaluates the installed
+  node once itself and returns the first bundle, so the model sees what it
+  made instead of taking "created" on faith. Requires SDK 0.35.0
+  (`create_data_processor_v2`/`submit_evaluation`/`poll_evaluation`/
+  `release_evaluation`).
+- `evaluate` gains an OBJECT path, selected when an input is an object topic
+  or `at_s`/`window` is given: a Luau chunk (`body`) reads
+  `inputs["<topic>"]` and returns a table of the declared, typed `outputs`,
+  evaluated at one display-seconds instant or over a span via the same
+  `pj.data_processors.v1` on-demand evaluation surface. The scalar path
+  (series in, statistics out) is unchanged. Objects come back only as
+  summaries — counts, bounds, frames — never as bytes.
 - `list_topics`, `describe_topic` and `report_status` now see object topics
   (point clouds, scene entities, images…) on a host with catalog snapshot v2
   (SDK 0.35.0): type, entry count, time range and dataset, tagged

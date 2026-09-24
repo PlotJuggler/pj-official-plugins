@@ -59,6 +59,19 @@ struct FakePlaybackHost {
     *out_display_s = static_cast<double>(absolute_ns - self->display_offset_ns) * 1e-9;
     return true;
   }
+  // Source-scoped conversion, same fixed offset as tToDisplayTime -- there is
+  // no per-source concept here, just enough to observe the OFFSET a caller
+  // (e.g. evaluate's object path) derives from one forward conversion.
+  static bool tToDisplayTimeForSource(
+      void* ctx, PJ_data_source_handle_t source, std::int64_t absolute_ns, double* out_display_s,
+      PJ_error_t*) noexcept {
+    auto* self = static_cast<FakePlaybackHost*>(ctx);
+    self->last_source_id = source.id;
+    *out_display_s = static_cast<double>(absolute_ns - self->display_offset_ns) * 1e-9;
+    return true;
+  }
+
+  std::uint32_t last_source_id = 0;
 
   PJ::sdk::PlaybackHostView view() {
     static const PJ_playback_host_vtable_t vtable = {
@@ -70,6 +83,7 @@ struct FakePlaybackHost {
         .set_playback_rate = &FakePlaybackHost::tSetRate,
         .get_state = &FakePlaybackHost::tGetState,
         .to_display_time = &FakePlaybackHost::tToDisplayTime,
+        .to_display_time_for_source = &FakePlaybackHost::tToDisplayTimeForSource,
     };
     return PJ::sdk::PlaybackHostView(PJ_playback_host_t{this, &vtable});
   }
