@@ -29,6 +29,7 @@ namespace assistant_agent {
 //   "mark <topic/field> > <n>"             -> create_markers
 //   "crop <topic> at <t>"                  -> evaluate (object path, at_s)
 //   "pin <topic> at <t>"                   -> create_derived_object (pin_at_s)
+//   "show <topic> in 3d"                   -> scene_view (create + attach)
 //
 // Anything else echoes usage. Every tool call blocks on tools.invoke (the
 // GuiExecutor), so this exercises the exact cross-thread path a real backend
@@ -127,12 +128,22 @@ class FakeBackend : public LlmBackend {
                                                    "  return { cropped = c, count = c:count() }"},
                                       {"pin_at_s", *at_s}});
       }
+    } else if (startsWith(lower, "show")) {
+      const std::string path = firstPath(words);
+      if (path.empty()) {
+        sink({BackendEvent::Kind::AssistantText, "Say: show <topic> in 3d"});
+      } else {
+        // Two tool calls, same as a model would issue them: an empty view of
+        // its own, then the topic attached to it.
+        run("scene_view", {{"action", "create"}, {"view", "scene"}, {"kind", "3d"}});
+        run("scene_view", {{"action", "attach"}, {"view", "scene"}, {"topics", nlohmann::json::array({path})}});
+      }
     } else {
       sink(
           {BackendEvent::Kind::AssistantText,
            "FakeBackend commands: 'list topics', 'status', 'describe <topic>', 'stats <topic/field>', "
            "'derivative of <topic/field>', 'mark <topic/field> > <n>', 'crop <topic> at <t>', "
-           "'pin <topic> at <t>'."});
+           "'pin <topic> at <t>', 'show <topic> in 3d'."});
     }
     sink({BackendEvent::Kind::TurnComplete, {}});
   }

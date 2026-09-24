@@ -40,7 +40,12 @@ struct ToolContext {
   // Tabs this assistant composed, and the only plots it may touch. The viewport
   // view is bounded to them by the host, so the two travel together.
   PJ::sdk::PlotTabHostView plot_tabs;
-  PJ::sdk::ViewportHostView viewport;         // zoom, scoped to the tabs above
+  PJ::sdk::ViewportHostView viewport;  // zoom, scoped to the tabs above
+  // 3D/2D scene views this assistant composed -- the same ownership discipline
+  // as plot_tabs, but for the object-topic viewer rather than the plot grid.
+  // Optional on the same terms: an unbound view degrades to a clean
+  // "host did not expose pj.scene_views.v1" the model reads.
+  PJ::sdk::SceneViewHostView scene_views;
   std::function<void()> notify_data_changed;  // runtimeHost().notifyDataChanged() after a create
   std::string language = "luau";              // transform/marker script backend
 };

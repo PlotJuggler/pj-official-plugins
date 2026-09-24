@@ -3573,6 +3573,179 @@ ToolResult plotTabTool(const json& args, ToolContext& ctx) {
   return refused.size() == paths.size() ? ToolResult::failure(out.dump()) : ToolResult::success(out.dump());
 }
 
+// --- the assistant's own scene views -----------------------------------------
+
+constexpr const char* kNoSceneViews = "the host did not expose pj.scene_views.v1 (cannot open scene views)";
+
+// Names of the scene views this assistant currently owns, mirroring
+// ownedTabList's role in plotTabTool's errors.
+std::string ownedViewList(ToolContext& ctx) {
+  auto ids = ctx.scene_views.listViews();
+  if (!ids || ids->empty()) {
+    return "none yet";
+  }
+  std::string out;
+  for (const std::string& id : *ids) {
+    out += (out.empty() ? "" : ", ") + id;
+  }
+  return out;
+}
+
+// The view as the HOST holds it, parsed back from view_config -- tabReadBack's
+// counterpart for scene views: every action answers with this rather than an
+// echo of the request, so a topic that did not land shows as absent instead of
+// being reported as attached.
+json viewReadBack(ToolContext& ctx, const std::string& view) {
+  auto config = ctx.scene_views.configOf(view);
+  if (!config) {
+    return {{"view", view}, {"contents_unavailable", config.error()}};
+  }
+  json parsed = json::parse(*config, nullptr, /*allow_exceptions=*/false);
+  if (!parsed.is_object()) {
+    return {{"view", view}, {"contents_unavailable", "the host returned no readable view contents"}};
+  }
+  parsed["view"] = view;
+  return parsed;
+}
+
+// One attach/detach outcome, resolved before the host is asked so a bad path
+// never reaches attachTopic/detachTopic in the first place.
+struct SceneTopicOutcome {
+  std::string display_topic;  // qualified form shown back to the model
+  std::string bare_topic;     // host_path, matched against the read-back below
+  bool called_ok = false;     // the host call itself succeeded (not yet verified as landed)
+  std::string error;          // set on resolve failure or a host refusal
+};
+
+ToolResult sceneViewTool(const json& args, ToolContext& ctx) {
+  const std::string action = args.value("action", std::string());
+  if (action.empty()) {
+    return ToolResult::failure(
+        "scene_view requires 'action': one of 'create', 'attach', 'detach', 'focus', 'close', 'list'");
+  }
+  if (!ctx.scene_views.valid()) {
+    return ToolResult::failure(kNoSceneViews);
+  }
+  if (action == "list") {
+    auto ids = ctx.scene_views.listViews();
+    if (!ids) {
+      return ToolResult::failure(ids.error());
+    }
+    json arr = json::array();
+    for (const std::string& id : *ids) {
+      arr.push_back(viewReadBack(ctx, id));
+    }
+    // Owning nothing is an answer, not a failure.
+    return ToolResult::success(json({{"count", arr.size()}, {"views", arr}}).dump());
+  }
+
+  const std::string view = args.value("view", std::string());
+  if (action == "create") {
+    // A name of its own, so the model can address the view again next turn
+    // without having to remember a host-chosen handle.
+    const std::string id = view.empty() ? "scene" : view;
+    const std::string kind = args.value("kind", std::string("3d"));
+    if (kind != "3d" && kind != "2d") {
+      return ToolResult::failure("'kind' must be \"3d\" or \"2d\"");
+    }
+    if (auto status = ctx.scene_views.createView(id, kind, args.value("title", std::string())); !status) {
+      return ToolResult::failure("could not create the view: " + status.error());
+    }
+    return ToolResult::success(viewReadBack(ctx, id).dump());
+  }
+  if (view.empty()) {
+    return ToolResult::failure(
+        "'" + action + "' needs 'view', the name of one of your own scene views (you have: " + ownedViewList(ctx) +
+        "). Only views you created can be changed; the user's scene docks are not yours to touch.");
+  }
+
+  if (action == "focus") {
+    if (auto status = ctx.scene_views.focusView(view); !status) {
+      return ToolResult::failure(status.error() + " (yours: " + ownedViewList(ctx) + ")");
+    }
+    return ToolResult::success(json({{"focused", view}}).dump());
+  }
+  if (action == "close") {
+    if (auto status = ctx.scene_views.closeView(view); !status) {
+      return ToolResult::failure(status.error() + " (yours: " + ownedViewList(ctx) + ")");
+    }
+    return ToolResult::success(json({{"closed", view}}).dump());
+  }
+
+  if (action != "attach" && action != "detach") {
+    return ToolResult::failure("unknown scene_view action '" + action + "'; use create/attach/detach/focus/close/list");
+  }
+  const std::vector<std::string> paths = requestedPaths(args, {"topics"});
+  if (paths.empty()) {
+    return ToolResult::failure("'" + action + "' needs 'topics': one object-topic path, or an array of them");
+  }
+  auto v2 = ctx.host.catalogSnapshotV2();
+  if (!v2) {
+    return ToolResult::failure(
+        "scene_view requires catalog snapshot v2, which this host does not expose: " + v2.error());
+  }
+  const bool attaching = action == "attach";
+  std::vector<SceneTopicOutcome> outcomes;
+  outcomes.reserve(paths.size());
+  for (const std::string& want : paths) {
+    SceneTopicOutcome o;
+    ObjectLookup lookup = resolveObjectTopic(*v2, want);
+    if (lookup.ambiguous) {
+      o.display_topic = want;
+      o.error = objectLookupError(want, lookup);
+      outcomes.push_back(std::move(o));
+      continue;
+    }
+    if (!lookup.resolved) {
+      o.display_topic = want;
+      o.error = "'" + want + "' is not a loaded object topic";
+      outcomes.push_back(std::move(o));
+      continue;
+    }
+    o.display_topic = lookup.resolved->display_path;
+    o.bare_topic = lookup.resolved->host_path;
+    const std::string dataset = objectTopicDatasetName(v2->dataSources(), lookup.resolved->source);
+    // The host addresses a view topic by its bare name and resolves the
+    // dataset itself, the same convention plotTabTool's addCurve follows.
+    auto status = attaching ? ctx.scene_views.attachTopic(view, o.bare_topic, dataset)
+                            : ctx.scene_views.detachTopic(view, o.bare_topic, dataset);
+    if (!status) {
+      o.error = status.error();
+      outcomes.push_back(std::move(o));
+      continue;
+    }
+    o.called_ok = true;
+    outcomes.push_back(std::move(o));
+  }
+
+  json out = viewReadBack(ctx, view);
+  // A call the host accepted is not yet a topic on screen: it may resolve to
+  // nothing and simply leave the view as it was. So, as in plotTabTool, the
+  // verdict comes from what the view HOLDS, not from what the calls returned.
+  const json& held = out.contains("topics") ? out["topics"] : json::array();
+  json results = json::array();
+  std::size_t landed = 0;
+  for (const auto& o : outcomes) {
+    if (!o.called_ok) {
+      results.push_back({{"topic", o.display_topic}, {"error", o.error}});
+      continue;
+    }
+    const bool present = std::any_of(
+        held.begin(), held.end(), [&](const json& t) { return t.value("topic", std::string()) == o.bare_topic; });
+    if (present == attaching) {
+      results.push_back({{"topic", o.display_topic}, {attaching ? "attached" : "detached", true}});
+      ++landed;
+    } else {
+      results.push_back(
+          {{"topic", o.display_topic}, {"error", attaching ? "did not land in the view" : "is still attached"}});
+    }
+  }
+  out["results"] = results;
+  // Nothing landed at all is a failure; a partial landing is a success whose
+  // truth the model still has to see.
+  return landed == 0 ? ToolResult::failure(out.dump()) : ToolResult::success(out.dump());
+}
+
 ToolResult reportStatus(const json& /*args*/, ToolContext& ctx) {
   auto catalog = ctx.host.catalogSnapshot();
   if (!catalog) {
@@ -4283,6 +4456,25 @@ ToolRegistry::ToolRegistry() {
           {"end_s", {{"type", "number"}}}}},
         {"required", json::array({"action"})}},
        &plotTabTool});
+
+  add(
+      {"scene_view",
+       "Open 3D/2D scene views of your own, the pj.scene_views.v1 counterpart of plot_tab: same "
+       "watermark and ownership, the user's scene docks unreachable.\n"
+       "action: 'create' (optional 'view', 'kind' \"3d\"|\"2d\" default \"3d\", 'title') | "
+       "'attach'/'detach' ('topics', object-topic paths) | 'focus' | 'close' | 'list'. Every action "
+       "reads back what the view actually holds, so a topic that did not land shows as missing "
+       "instead of attached.",
+       {{"type", "object"},
+        {"properties",
+         {{"action",
+           {{"type", "string"}, {"enum", json::array({"create", "attach", "detach", "focus", "close", "list"})}}},
+          {"view", {{"type", "string"}, {"description", "your name for the view"}}},
+          {"kind", {{"type", "string"}, {"enum", json::array({"3d", "2d"})}, {"description", "create only"}}},
+          {"title", {{"type", "string"}, {"description", "view title shown to the user (create)"}}},
+          {"topics", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "object-topic paths"}}}}},
+        {"required", json::array({"action"})}},
+       &sceneViewTool});
 
   add(
       {"report_status",

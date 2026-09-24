@@ -25,6 +25,7 @@
 #include "support/fake_object_read_host.hpp"
 #include "support/fake_playback_viewport_hosts.hpp"
 #include "support/fake_plot_tabs_host.hpp"
+#include "support/fake_scene_views_host.hpp"
 #include "support/recording_dp_host.hpp"
 
 namespace {
@@ -37,6 +38,7 @@ using assistant_agent::testing::FakeMultiDatasetHost;
 using assistant_agent::testing::FakeObjectReadHost;
 using assistant_agent::testing::FakePlaybackHost;
 using assistant_agent::testing::FakePlotTabsHost;
+using assistant_agent::testing::FakeSceneViewsHost;
 using assistant_agent::testing::FakeViewportHost;
 using assistant_agent::testing::RecordingDpHost;
 using nlohmann::json;
@@ -66,16 +68,17 @@ ToolContext makeCtx(PJ::testing::ToolboxTestStore& store, RecordingDpHost* dp, F
 
 TEST(ToolRegistry, ListsAllToolsAndSchemas) {
   ToolRegistry reg;
-  EXPECT_EQ(reg.tools().size(), 13u);
+  EXPECT_EQ(reg.tools().size(), 14u);
   // Both serializations expose every tool by name.
-  EXPECT_EQ(reg.toFunctionSpecs().size(), 13u);
-  EXPECT_EQ(reg.toMcpToolsList().size(), 13u);
+  EXPECT_EQ(reg.toFunctionSpecs().size(), 14u);
+  EXPECT_EQ(reg.toMcpToolsList().size(), 14u);
   EXPECT_NE(reg.find("evaluate"), nullptr);
   EXPECT_NE(reg.find("create_derived_series"), nullptr);
   EXPECT_NE(reg.find("create_derived_object"), nullptr);
   EXPECT_NE(reg.find("playback"), nullptr);
   EXPECT_EQ(reg.find("play"), nullptr);
   EXPECT_NE(reg.find("plot_tab"), nullptr);
+  EXPECT_NE(reg.find("scene_view"), nullptr);
   // zoom_to_time_range/zoom_reset were folded into plot_tab's 'zoom' action:
   // the user's plots are no longer reachable from any tool, only the tabs
   // this assistant composed itself.
@@ -2310,8 +2313,12 @@ TEST(ToolRegistry, ToolSchemaStaysWithinItsBudget) {
   // again for `create_derived_object` (block 3.2) and evaluate's own object
   // path (at_s/window/outputs) — objects need a genuinely different
   // request shape (on_demand, typed outputs, a pinned instant) that does
-  // not fit create_derived_series's `action`-less schema either.
-  EXPECT_LT(chars, 13500u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
+  // not fit create_derived_series's `action`-less schema either. Raised again
+  // for `scene_view` (block 3.3) — a new host service (pj.scene_views.v1)
+  // with its own create/attach/detach/focus/close/list verbs, not a variant
+  // of plot_tab's own action set (a different host object, a different
+  // ownership scope).
+  EXPECT_LT(chars, 14200u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
 }
 
 // --- playback / viewport tools ----------------------------------------------
@@ -2692,6 +2699,164 @@ TEST(ToolRegistry, PlotTabUnknownActionIsACleanFailure) {
 
   EXPECT_FALSE(reg.execute("plot_tab", {{"action", "levitate"}}, ctx).ok);
   EXPECT_FALSE(reg.execute("plot_tab", json::object(), ctx).ok);
+}
+
+// --- the assistant's own scene views ----------------------------------------
+//
+// scene_view is plot_tab's counterpart for the 3D/2D object viewer: same
+// create/attach-or-detach/close/list shape, same host-enforced ownership
+// (FakeSceneViewsHost models that, mirroring FakePlotTabsHost), same
+// read-the-view-back-rather-than-trust-the-call-result discipline. Attaching
+// takes object-topic paths (point clouds, scene entities...), resolved
+// through the v2 catalog by resolveObjectTopic rather than plot_tab's
+// topic/field series resolution.
+
+TEST(ToolRegistry, SceneViewCreateAttachReadsBack) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 42, 0, 5 * kSec);
+  FakeSceneViewsHost scenes;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.scene_views = scenes.view();
+
+  auto created = reg.execute("scene_view", {{"action", "create"}, {"view", "scene"}, {"title", "Cloud"}}, ctx);
+  ASSERT_TRUE(created.ok) << created.content;
+  json cj = json::parse(created.content);
+  EXPECT_EQ(cj["view"], "scene");
+  EXPECT_EQ(cj["kind"], "3d");  // default
+  EXPECT_EQ(cj["title"], "Cloud");
+  EXPECT_TRUE(cj["topics"].empty());
+
+  auto attached = reg.execute("scene_view", {{"action", "attach"}, {"view", "scene"}, {"topics", "/cloud"}}, ctx);
+  ASSERT_TRUE(attached.ok) << attached.content;
+  json aj = json::parse(attached.content);
+  ASSERT_EQ(aj["topics"].size(), 1u);
+  EXPECT_EQ(aj["topics"][0]["topic"], "/cloud");
+  ASSERT_EQ(aj["results"].size(), 1u);
+  EXPECT_EQ(aj["results"][0]["topic"], "/cloud");
+  EXPECT_EQ(aj["results"][0]["attached"], true);
+}
+
+// Three ways a requested topic can fail to end up attached: it is not in the
+// catalog at all, the catalog knows it but the host silently drops it (the
+// harder case -- every call still "succeeded"), and a "2d" view refuses a
+// type it does not accept. All three must be reported per-topic rather than
+// leaving the model to infer a miss from a shorter-than-expected list.
+TEST(ToolRegistry, SceneViewAttachUnknownTopicIsReported) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 5, 0, kSec);
+  host.addObjectTopic("/image", "kImage", 3, 0, kSec);
+  FakeSceneViewsHost scenes;
+  scenes.unresolvable.insert("/cloud");  // catalog knows it, the host does not place it
+  scenes.kind_rejects.insert("/image");  // the "2d" view below refuses this one
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.scene_views = scenes.view();
+  ASSERT_TRUE(reg.execute("scene_view", {{"action", "create"}, {"view", "flat"}, {"kind", "2d"}}, ctx).ok);
+
+  // A path the catalog cannot resolve at all is a request error.
+  auto missing =
+      reg.execute("scene_view", {{"action", "attach"}, {"view", "flat"}, {"topics", "/does/not/exist"}}, ctx);
+  EXPECT_FALSE(missing.ok) << missing.content;
+  EXPECT_NE(missing.content.find("not a loaded object topic"), std::string::npos) << missing.content;
+
+  // The catalog resolves it, the host accepts the call and places it nowhere.
+  auto dropped = reg.execute("scene_view", {{"action", "attach"}, {"view", "flat"}, {"topics", "/cloud"}}, ctx);
+  EXPECT_FALSE(dropped.ok) << dropped.content;
+  EXPECT_NE(dropped.content.find("did not land"), std::string::npos) << dropped.content;
+
+  // The host refuses the type outright for this view's kind.
+  auto refused = reg.execute("scene_view", {{"action", "attach"}, {"view", "flat"}, {"topics", "/image"}}, ctx);
+  EXPECT_FALSE(refused.ok) << refused.content;
+  json rj = json::parse(refused.content);
+  ASSERT_EQ(rj["results"].size(), 1u);
+  EXPECT_TRUE(rj["results"][0].contains("error"));
+  EXPECT_TRUE(scenes.find("flat")->topics.empty());
+}
+
+// The product rule stated as a test: the host, not the plugin, is what keeps
+// this assistant out of the user's own scene docks.
+TEST(ToolRegistry, SceneViewForeignViewIsUnreachable) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 5, 0, kSec);
+  FakeSceneViewsHost scenes;
+  scenes.addForeignView("user-1");
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.scene_views = scenes.view();
+
+  EXPECT_FALSE(
+      reg.execute("scene_view", {{"action", "attach"}, {"view", "user-1"}, {"topics", json::array({"/cloud"})}}, ctx)
+          .ok);
+  EXPECT_FALSE(
+      reg.execute("scene_view", {{"action", "detach"}, {"view", "user-1"}, {"topics", json::array({"/cloud"})}}, ctx)
+          .ok);
+  EXPECT_FALSE(reg.execute("scene_view", {{"action", "focus"}, {"view", "user-1"}}, ctx).ok);
+  EXPECT_FALSE(reg.execute("scene_view", {{"action", "close"}, {"view", "user-1"}}, ctx).ok);
+
+  EXPECT_EQ(scenes.foreign_mutations, 0);
+}
+
+TEST(ToolRegistry, SceneViewDetachAndClose) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 5, 0, kSec);
+  FakeSceneViewsHost scenes;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.scene_views = scenes.view();
+  ASSERT_TRUE(reg.execute("scene_view", {{"action", "create"}, {"view", "scene"}}, ctx).ok);
+  ASSERT_TRUE(reg.execute("scene_view", {{"action", "attach"}, {"view", "scene"}, {"topics", "/cloud"}}, ctx).ok);
+
+  auto detached = reg.execute("scene_view", {{"action", "detach"}, {"view", "scene"}, {"topics", "/cloud"}}, ctx);
+  ASSERT_TRUE(detached.ok) << detached.content;
+  json dj = json::parse(detached.content);
+  EXPECT_TRUE(dj["topics"].empty());
+  ASSERT_EQ(dj["results"].size(), 1u);
+  EXPECT_EQ(dj["results"][0]["detached"], true);
+
+  auto closed = reg.execute("scene_view", {{"action", "close"}, {"view", "scene"}}, ctx);
+  ASSERT_TRUE(closed.ok) << closed.content;
+  EXPECT_EQ(json::parse(closed.content)["closed"], "scene");
+  EXPECT_EQ(scenes.find("scene"), nullptr);
+}
+
+TEST(ToolRegistry, SceneViewListIsReadBack) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  FakeSceneViewsHost scenes;
+  scenes.addForeignView("user-1");
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.scene_views = scenes.view();
+  ASSERT_TRUE(reg.execute("scene_view", {{"action", "create"}, {"view", "a"}, {"kind", "3d"}}, ctx).ok);
+  ASSERT_TRUE(reg.execute("scene_view", {{"action", "create"}, {"view", "b"}, {"kind", "2d"}}, ctx).ok);
+
+  auto r = reg.execute("scene_view", {{"action", "list"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(json::parse(r.content)["count"], 2);
+  EXPECT_EQ(r.content.find("user-1"), std::string::npos) << r.content;
+
+  // Owning nothing is an answer, not an error.
+  FakeSceneViewsHost empty_scenes;
+  ToolContext empty_ctx;
+  empty_ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  empty_ctx.scene_views = empty_scenes.view();
+  auto empty_r = reg.execute("scene_view", {{"action", "list"}}, empty_ctx);
+  ASSERT_TRUE(empty_r.ok) << empty_r.content;
+  EXPECT_EQ(json::parse(empty_r.content)["count"], 0);
+}
+
+TEST(ToolRegistry, SceneViewOnOldHostReportsNotExposed) {
+  ToolRegistry reg;
+  ToolContext ctx;  // ctx.scene_views left unbound: a host older than SDK 0.35.0
+
+  auto r = reg.execute("scene_view", {{"action", "list"}}, ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("pj.scene_views.v1"), std::string::npos) << r.content;
 }
 
 TEST(ToolRegistry, ReadSeriesStatsGainDisplayStartWhenPlaybackBound) {

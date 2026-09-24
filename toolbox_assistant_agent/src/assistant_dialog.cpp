@@ -397,6 +397,10 @@ void AssistantDialog::setPlotTabsProvider(std::function<PJ::sdk::PlotTabHostView
   plot_tabs_provider_ = std::move(provider);
 }
 
+void AssistantDialog::setSceneViewsProvider(std::function<PJ::sdk::SceneViewHostView()> provider) {
+  scene_views_provider_ = std::move(provider);
+}
+
 void AssistantDialog::setSettings(PJ::sdk::SettingsView settings) {
   settings_ = settings;
   if (!conversation_loaded_) {
@@ -440,6 +444,9 @@ ToolContext AssistantDialog::makeToolContext() {
   }
   if (plot_tabs_provider_) {
     ctx.plot_tabs = plot_tabs_provider_();
+  }
+  if (scene_views_provider_) {
+    ctx.scene_views = scene_views_provider_();
   }
   if (runtime_host_provider_) {
     const PJ::ToolboxRuntimeHostView rt = runtime_host_provider_();

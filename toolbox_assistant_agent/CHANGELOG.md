@@ -3,9 +3,15 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 
-## [Unreleased]
+## [0.3.0] - 2026-09-24
 
 ### Added
+- New tool `scene_view`: opens 3D/2D scene views of the assistant's own,
+  watermarked "AI" exactly like `plot_tab`'s tabs — the same
+  create/attach/detach/focus/close/list shape, over `pj.scene_views.v1`. The
+  user's own scene docks are unreachable from it. Every action answers with
+  the view as the host holds it, so a topic that did not land shows as
+  missing rather than being reported as attached.
 - New tool `create_derived_object`: installs a live on-demand computation over
   object topics (point clouds, scene entities…), or pins one instant of it as
   a kept finding with `pin_at_s`. Either way the call evaluates the installed
@@ -34,6 +40,15 @@ below; for earlier releases see the git history of `toolbox_assistant_agent/`.
   `object_topics` and `derived_object_topics` counts.
 - Objects never reach the model as bytes: only their metadata, field
   shape and callable operations are exposed.
+
+### Changed
+- Tool count: 12 -> 14 (`create_derived_object`, `scene_view`).
+
+### Requires
+- `create_derived_object`, the object path of `evaluate`, and `scene_view`
+  need a host with SDK >= 0.35.0. On an older host they degrade to a clean
+  "not exposed" the model relays instead of guessing; every other tool keeps
+  working at the plugin's own floor, SDK 0.34.0.
 
 ## [0.2.0] - 2026-09-21
 
