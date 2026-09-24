@@ -59,6 +59,27 @@ no reachable operation that edits or deletes a loaded series. (`remove_derived_s
 membership against `dp.list()` before asking the host, so an unknown name is refused here with a
 useful message instead of being forwarded.)
 
+### Object topics
+
+`list_topics`, `describe_topic`, `report_status` and the catalog digest prefer
+`ctx.host.catalogSnapshotV2()` over the plain `catalogSnapshot()`: the v2 snapshot carries every
+object topic (point clouds, scene entities, images…) alongside the scalar catalog, each with its
+builtin type, entry count, raw time range and owning dataset. A host that predates the v2 slot
+(gated by `PJ_HAS_TAIL_SLOT`, same pattern as every other tail-slot service) degrades to the scalar
+listing plus an explicit note — never a silent undercount. Marker topics (`__markers__/` prefix)
+are filtered out everywhere: they are drawn by the plot overlay, not read by a script, so a model
+that saw them in `list_topics` could never do anything useful with the entry.
+
+`describe_topic` on an object topic never hands the model bytes. It walks the type's field table —
+`sdk::describe(BuiltinObjectType)`, the same compile-time registry `pj_scripting`'s Luau binder
+reads from in PJ4 — into a bounded JSON tree (depth capped at 3; a raw record buffer, e.g.
+`PointCloud::data`, states only its name and kind), and lists the operations a script may call on
+it from a static table in `object_ops_catalog.hpp` that mirrors PJ4's `object_binder.cpp` by hand.
+Keeping that table hand-written rather than derived is deliberate: the SDK's field table describes
+*data shape*, not the native methods a Luau binder layers on top of it, so there is no single source
+to generate operations from — the mirror has to be maintained, and object_ops_catalog.hpp's own
+comment says so.
+
 ### Path resolution
 
 Models produce paths that are close but not exact. `resolveSeriesPath` therefore:

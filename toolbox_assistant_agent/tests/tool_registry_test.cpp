@@ -108,6 +108,80 @@ TEST(ToolRegistry, ListTopics) {
   EXPECT_EQ(j["topics"][0]["fields"], 2);
 }
 
+// Object topics from catalog snapshot v2 (point clouds, scene entities…) show
+// up alongside scalar ones, tagged by kind so the model can tell them apart
+// without a second call.
+TEST(ToolRegistry, ListTopicsIncludesObjectTopicsFromSnapshotV2) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addTopic("/imu");
+  host.addField("/imu", "x");
+  host.addObjectTopic("/cloud", "kPointCloud", 42, 0, 5 * kSec);
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  auto r = reg.execute("list_topics", json::object(), ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 2);
+  EXPECT_FALSE(j.contains("objects")) << "v2 is supported here; the fallback note must not appear";
+  bool found_scalar = false;
+  bool found_object = false;
+  for (const auto& t : j["topics"]) {
+    if (t["topic"] == "/imu") {
+      found_scalar = true;
+      EXPECT_EQ(t["kind"], "scalar");
+    }
+    if (t["topic"] == "/cloud") {
+      found_object = true;
+      EXPECT_EQ(t["kind"], "object");
+      EXPECT_EQ(t["type"], "kPointCloud");
+      EXPECT_EQ(t["entries"], 42);
+      EXPECT_EQ(t["derived"], false);
+      EXPECT_EQ(t["time_basis"], "raw") << "no playback view bound in this test";
+      ASSERT_TRUE(t.contains("t_range_s"));
+      EXPECT_NEAR(t["t_range_s"][0].get<double>(), 0.0, 1e-9);
+      EXPECT_NEAR(t["t_range_s"][1].get<double>(), 5.0, 1e-6);
+    }
+  }
+  EXPECT_TRUE(found_scalar);
+  EXPECT_TRUE(found_object);
+}
+
+// A host built before catalog snapshot v2 existed: object topics are simply
+// not visible, and the response says so rather than silently under-reporting.
+TEST(ToolRegistry, ListTopicsFallsBackToV1AndSaysSo) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addTopic("/imu");
+  host.addField("/imu", "x");
+  host.supportsV2(false);
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  auto r = reg.execute("list_topics", json::object(), ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 1);
+  EXPECT_EQ(j["topics"][0]["topic"], "/imu");
+  ASSERT_TRUE(j.contains("objects"));
+  EXPECT_EQ(j["objects"], "not listed (host predates catalog snapshot v2)");
+}
+
+// Marker sets are object topics too, but they are drawn, not read -- they
+// must never reach the model through list_topics.
+TEST(ToolRegistry, ListTopicsExcludesMarkerTopics) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("__markers__/imu/x", "kPlotMarkers", 1, 0, kSec);
+  host.addObjectTopic("/cloud", "kPointCloud", 3, 0, kSec);
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  auto r = reg.execute("list_topics", json::object(), ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 1);
+  EXPECT_EQ(j["topics"][0]["topic"], "/cloud");
+}
+
 TEST(ToolRegistry, DescribeTopicListsFieldPaths) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;
@@ -127,6 +201,59 @@ TEST(ToolRegistry, DescribeUnknownTopicFails) {
   auto ctx = makeCtx(store, nullptr);
   auto r = reg.execute("describe_topic", {{"topic", "/nope"}}, ctx);
   EXPECT_FALSE(r.ok);
+}
+
+// describe_topic on an object topic walks its field table (PointCloud's own
+// fields, a list shown as "kind":"list", the raw "data" buffer carrying
+// nothing past its name/kind) and lists the operations a script may call on
+// it, mirroring pj_scripting/src/object_binder.cpp in PJ4.
+TEST(ToolRegistry, DescribeObjectTopicWalksTheFieldTableAndListsOperations) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, kSec);
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  auto r = reg.execute("describe_topic", {{"topic", "/cloud"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["kind"], "object");
+  EXPECT_EQ(j["type"], "kPointCloud");
+  EXPECT_EQ(j["entries"], 100);
+
+  std::vector<std::string> field_names;
+  for (const auto& f : j["fields"]) {
+    field_names.push_back(f["name"].get<std::string>());
+    if (f["name"] == "fields") {
+      EXPECT_EQ(f["kind"], "list");
+    }
+    if (f["name"] == "data") {
+      EXPECT_EQ(f["kind"], "buffer");
+      EXPECT_FALSE(f.contains("fields")) << "a buffer field carries nothing past its name/kind";
+    }
+  }
+  EXPECT_NE(std::find(field_names.begin(), field_names.end(), "frame_id"), field_names.end());
+  EXPECT_NE(std::find(field_names.begin(), field_names.end(), "width"), field_names.end());
+  EXPECT_NE(std::find(field_names.begin(), field_names.end(), "fields"), field_names.end());
+  EXPECT_NE(std::find(field_names.begin(), field_names.end(), "data"), field_names.end());
+
+  bool found_crop_box = false;
+  for (const auto& op : j["operations"]) {
+    if (op["name"].get<std::string>().find("crop_box") != std::string::npos) {
+      found_crop_box = true;
+    }
+  }
+  EXPECT_TRUE(found_crop_box) << j.dump();
+}
+
+TEST(ToolRegistry, DescribeScalarTopicSaysKindScalar) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);
+  auto r = reg.execute("describe_topic", {{"topic", "/imu"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["kind"], "scalar");
 }
 
 TEST(ToolRegistry, ReadSeriesStats) {
@@ -939,6 +1066,23 @@ TEST(CatalogDigest, FallsBackToPlainTruncationWhenNotEvenCountsFit) {
       << "this is the legacy truncation footer, not the mixed-tier one: " << digest;
 }
 
+// Object topics get one line each under their dataset, alongside the scalar
+// topics -- so a model reading the digest at the top of a turn already knows
+// a point cloud is loaded, without an extra list_topics round trip.
+TEST(CatalogDigest, MentionsObjects) {
+  FakeCatalogHost host;
+  host.addTopic("/imu");
+  host.addField("/imu", "x");
+  host.addObjectTopic("/cloud", "kPointCloud", 7, 0, 2 * kSec);
+
+  const std::string digest = catalogDigest(PJ::sdk::ToolboxHostView(host.makeHost()));
+
+  EXPECT_NE(digest.find("/imu"), std::string::npos) << digest;
+  EXPECT_NE(digest.find("/cloud"), std::string::npos) << digest;
+  EXPECT_NE(digest.find("object kPointCloud"), std::string::npos) << digest;
+  EXPECT_NE(digest.find("7 entries"), std::string::npos) << digest;
+}
+
 TEST(CatalogDigest, SaysWhenNothingIsLoaded) {
   PJ::testing::ToolboxTestStore store;
   const std::string digest = catalogDigest(PJ::sdk::ToolboxHostView(store.makeHost()));
@@ -1120,6 +1264,24 @@ TEST(ToolRegistry, ReportStatus) {
   auto j = json::parse(r.content);
   EXPECT_EQ(j["topics"], 1);
   EXPECT_EQ(j["fields"], 2);
+}
+
+TEST(ToolRegistry, ReportStatusCountsObjects) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addTopic("/imu");
+  host.addField("/imu", "x");
+  host.addObjectTopic("/cloud", "kPointCloud", 5, 0, kSec);
+  host.addObjectTopic(
+      "/derived_cloud", "kPointCloud", 5, 0, kSec, R"({"builtin_object_type":"kPointCloud","pj_derived":"true"})");
+  host.addObjectTopic("__markers__/imu/x", "kPlotMarkers", 1, 0, kSec);
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  auto r = reg.execute("report_status", json::object(), ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["object_topics"], 2) << "the marker topic must not be counted";
+  EXPECT_EQ(j["derived_object_topics"], 1);
 }
 
 // --- what the model is told about what it just made ------------------------

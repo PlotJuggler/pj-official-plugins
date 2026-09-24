@@ -3,6 +3,24 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 
+## [Unreleased]
+
+### Added
+- `list_topics`, `describe_topic` and `report_status` now see object topics
+  (point clouds, scene entities, images…) on a host with catalog snapshot v2
+  (SDK 0.35.0): type, entry count, time range and dataset, tagged
+  `"kind":"object"` alongside scalar topics tagged `"kind":"scalar"`.
+  `describe_topic` on an object topic returns its field table (walked from
+  the SDK's builtin field-table registry) and the operations a script may
+  call on it. Marker topics are excluded — they are drawn, not read. On a
+  host that predates catalog snapshot v2, the tools fall back to the scalar
+  listing and say so explicitly rather than under-reporting silently.
+- The catalog digest handed to the model at the top of every turn gains one
+  line per object topic under its dataset. `report_status` gains
+  `object_topics` and `derived_object_topics` counts.
+- Objects never reach the model as bytes: only their metadata, field
+  shape and callable operations are exposed.
+
 ## [0.2.0] - 2026-09-21
 
 ### Added

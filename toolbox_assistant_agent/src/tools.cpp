@@ -16,6 +16,9 @@
 #include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <pj_base/builtin/builtin_object.hpp>
+#include <pj_base/builtin/field_table.hpp>
+#include <pj_base/builtin/field_table_registry.hpp>
 #include <pj_base/builtin/plot_markers.hpp>
 #include <span>
 #include <sstream>
@@ -23,6 +26,7 @@
 #include <vector>
 
 #include "luau_transform.hpp"
+#include "object_ops_catalog.hpp"
 #include "series_stats.hpp"
 #include "tool_registry.hpp"
 
@@ -165,9 +169,8 @@ const char* primitiveTypeName(PJ::PrimitiveType t) {
 // same robot is the ordinary case — and a flat topic list makes them
 // indistinguishable. Without it the model can neither offer to compare two runs
 // nor avoid mixing them, for the same reason: it does not know there are two.
-std::map<std::uint32_t, std::string> datasetByTopicIndex(const PJ::sdk::CatalogSnapshot& catalog) {
+std::map<std::uint32_t, std::string> datasetByTopicIndex(std::span<const PJ_data_source_info_t> sources) {
   std::map<std::uint32_t, std::string> out;
-  const auto sources = catalog.dataSources();
   if (sources.size() < 2) {
     return out;  // one source (or none) adds no information worth the tokens
   }
@@ -176,6 +179,140 @@ std::map<std::uint32_t, std::string> datasetByTopicIndex(const PJ::sdk::CatalogS
     for (std::uint32_t i = 0; i < src.topic_count; ++i) {
       out[src.first_topic + i] = name;
     }
+  }
+  return out;
+}
+
+std::map<std::uint32_t, std::string> datasetByTopicIndex(const PJ::sdk::CatalogSnapshot& catalog) {
+  return datasetByTopicIndex(catalog.dataSources());
+}
+
+// --- object topics (catalog snapshot v2) ------------------------------------
+//
+// Object topics (point clouds, scene entities, images…) live beside the
+// scalar catalog in PJ_catalog_snapshot_v2_t. Marker sets are object topics
+// too, but they are drawn, not read — kMarkerObjectTopicPrefix filters them
+// out of everything a model sees (list_topics, describe_topic, the digest,
+// report_status), the same way pj_scene overlays already treat them.
+
+// True for a marker set's own object topic ("__markers__/<series>" or
+// "__markers__/__global__") -- excluded everywhere a model would otherwise
+// see it as a readable object.
+bool isMarkerObjectTopic(std::string_view name) {
+  return name.substr(0, PJ::sdk::kMarkerObjectTopicPrefix.size()) == PJ::sdk::kMarkerObjectTopicPrefix;
+}
+
+// Whether an object topic's metadata document names it as derived (produced
+// by an on-demand script, not ingested from a file/stream). Tolerant of a
+// missing or malformed document -- metadata is host-provided, not modeled
+// data, but it still crosses the plugin ABI as an untrusted string.
+bool metadataHasKey(std::string_view metadata_json, std::string_view key) {
+  const json parsed = json::parse(std::string(metadata_json), nullptr, /*allow_exceptions=*/false);
+  return !parsed.is_discarded() && parsed.is_object() && parsed.contains(std::string(key));
+}
+
+// The dataset an object topic's `source` handle belongs to, or empty when it
+// matches none (a host reporting no sources, same degraded case
+// datasetByTopicIndex documents for scalar topics).
+std::string objectTopicDatasetName(std::span<const PJ_data_source_info_t> sources, PJ_data_source_handle_t source) {
+  for (const auto& src : sources) {
+    if (src.handle.id == source.id) {
+      return std::string(PJ::sdk::toStringView(src.name));
+    }
+  }
+  return {};
+}
+
+const char* fieldKindName(PJ::sdk::FieldKind kind) {
+  using PJ::sdk::FieldKind;
+  switch (kind) {
+    case FieldKind::kNumber:
+      return "number";
+    case FieldKind::kBool:
+      return "bool";
+    case FieldKind::kInt64:
+      return "int64";
+    case FieldKind::kString:
+      return "string";
+    case FieldKind::kEnum:
+      return "enum";
+    case FieldKind::kStruct:
+      return "struct";
+    case FieldKind::kList:
+      return "list";
+    case FieldKind::kBuffer:
+      return "buffer";
+  }
+  return "unspecified";
+}
+
+// A field table's own field list is depth 1; a nested struct or a list's
+// struct element goes one level deeper. Capped at kMaxFieldDepth so a
+// describe_topic call on a deeply nested type stays bounded -- a list shows
+// its element shape once at the next depth rather than per element (there is
+// only one shape, the field table is per-TYPE not per-instance), and a buffer
+// field (raw record bytes, e.g. PointCloud::data) carries nothing past its
+// name/kind: the bytes never reach the model, only the native operations that
+// summarize them (see object_ops_catalog.hpp).
+constexpr int kMaxFieldDepth = 3;
+
+json fieldTableToJson(const PJ::sdk::FieldTableView& table, int depth) {
+  json arr = json::array();
+  for (const auto& f : table.fields) {
+    json entry = {{"name", std::string(f.name)}, {"kind", fieldKindName(f.kind)}};
+    const bool nestable = f.kind == PJ::sdk::FieldKind::kStruct || f.kind == PJ::sdk::FieldKind::kList;
+    if (nestable && f.nested != nullptr && depth < kMaxFieldDepth) {
+      entry["fields"] = fieldTableToJson(*f.nested, depth + 1);
+    }
+    arr.push_back(std::move(entry));
+  }
+  return arr;
+}
+
+// An object topic's time range, in the best axis available: display seconds
+// when a playback view is bound and can convert both ends (matching every
+// other display-time report in this file), else the raw dataset-domain
+// seconds the host reported, flagged so the model never mistakes one axis for
+// the other.
+struct ObjectTimeRange {
+  double a = 0.0;
+  double b = 0.0;
+  bool raw = false;
+};
+
+ObjectTimeRange objectTimeRange(
+    ToolContext& ctx, PJ_data_source_handle_t source, std::int64_t t_min_ns, std::int64_t t_max_ns) {
+  if (ctx.playback.valid()) {
+    const auto display_a = ctx.playback.toDisplayTimeForSource(source, t_min_ns);
+    const auto display_b = ctx.playback.toDisplayTimeForSource(source, t_max_ns);
+    if (display_a && display_b) {
+      return {*display_a, *display_b, false};
+    }
+  }
+  return {static_cast<double>(t_min_ns) * 1e-9, static_cast<double>(t_max_ns) * 1e-9, true};
+}
+
+// One list_topics/describe_topic entry for an object topic, the shape shared
+// by both tools: {"topic","kind":"object","type","entries","t_range_s"
+// [,"time_basis":"raw"][,"dataset"]}. Callers add whatever is specific to
+// their tool (list_topics adds "derived"; describe_topic adds "fields" and
+// "operations").
+json objectTopicCommonJson(
+    ToolContext& ctx, std::span<const PJ_data_source_info_t> sources, const PJ_object_topic_info_t& obj) {
+  const ObjectTimeRange range = objectTimeRange(ctx, obj.source, obj.time_min_ns, obj.time_max_ns);
+  json out = {
+      {"topic", std::string(PJ::sdk::toStringView(obj.name))},
+      {"kind", "object"},
+      {"type", std::string(PJ::sdk::toStringView(obj.builtin_object_type))},
+      {"entries", obj.entry_count},
+      {"t_range_s", json::array({range.a, range.b})},
+  };
+  if (range.raw) {
+    out["time_basis"] = "raw";
+  }
+  const std::string dataset = objectTopicDatasetName(sources, obj.source);
+  if (!dataset.empty()) {
+    out["dataset"] = dataset;
   }
   return out;
 }
@@ -495,11 +632,38 @@ bool readSeriesDoubles(
 
 // --- executors -------------------------------------------------------------
 
-ToolResult listTopics(const json& args, ToolContext& ctx) {
-  auto catalog = ctx.host.catalogSnapshot();
-  if (!catalog) {
-    return ToolResult::failure("catalog unavailable: " + catalog.error());
+// Scalar topics matching filter/dataset_filter, capped at `limit`, in
+// list_topics' shape -- {"topic","kind":"scalar","fields"[,"dataset"]} --
+// appended to `out_topics`. `matched`/`shown` accumulate so a caller merging
+// this with object topics (listTopics) gets one combined count of both kinds.
+void listScalarTopics(
+    std::span<const PJ_topic_info_t> topics, const std::map<std::uint32_t, std::string>& topic_dataset,
+    const std::string& filter, const std::string& dataset_filter, int limit, json& out_topics, int& matched,
+    int& shown) {
+  for (std::uint32_t ti = 0; ti < topics.size(); ++ti) {
+    const auto& topic = topics[ti];
+    const std::string name(PJ::sdk::toStringView(topic.name));
+    if (!filter.empty() && name.find(filter) == std::string::npos) {
+      continue;
+    }
+    const auto ds = topic_dataset.find(ti);
+    const std::string dataset = ds != topic_dataset.end() ? ds->second : std::string{};
+    if (!dataset_filter.empty() && dataset.find(dataset_filter) == std::string::npos) {
+      continue;
+    }
+    ++matched;
+    if (shown < limit) {
+      json entry = {{"topic", name}, {"kind", "scalar"}, {"fields", topic.field_count}};
+      if (!dataset.empty()) {
+        entry["dataset"] = dataset;
+      }
+      out_topics.push_back(std::move(entry));
+      ++shown;
+    }
   }
+}
+
+ToolResult listTopics(const json& args, ToolContext& ctx) {
   const std::string filter = args.value("filter", std::string{});
   // Clamped, not just defaulted: this response is re-sent on every remaining
   // round-trip of the turn, so an unbounded list would be paid for repeatedly.
@@ -514,49 +678,59 @@ ToolResult listTopics(const json& args, ToolContext& ctx) {
   json topics = json::array();
   int matched = 0;
   int shown = 0;
-  auto all = catalog->topics();
-  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(*catalog);
-  for (std::uint32_t ti = 0; ti < all.size(); ++ti) {
-    const auto& topic = all[ti];
-    const std::string name(PJ::sdk::toStringView(topic.name));
-    if (!filter.empty() && name.find(filter) == std::string::npos) {
-      continue;
-    }
-    const auto ds = topic_dataset.find(ti);
-    const std::string dataset = ds != topic_dataset.end() ? ds->second : std::string{};
-    if (!dataset_filter.empty() && dataset.find(dataset_filter) == std::string::npos) {
-      continue;
-    }
-    ++matched;
-    if (shown < limit) {
-      json entry = {{"topic", name}, {"fields", topic.field_count}};
-      if (!dataset.empty()) {
-        entry["dataset"] = dataset;
+
+  auto v2 = ctx.host.catalogSnapshotV2();
+  bool objects_listed = false;
+  if (v2) {
+    listScalarTopics(
+        v2->topics(), datasetByTopicIndex(v2->dataSources()), filter, dataset_filter, limit, topics, matched, shown);
+    for (const auto& obj : v2->objectTopics()) {
+      const std::string name(PJ::sdk::toStringView(obj.name));
+      if (isMarkerObjectTopic(name)) {
+        continue;  // drawn, not read -- never surfaced to the model
       }
-      topics.push_back(entry);
-      ++shown;
+      if (!filter.empty() && name.find(filter) == std::string::npos) {
+        continue;
+      }
+      const std::string dataset = objectTopicDatasetName(v2->dataSources(), obj.source);
+      if (!dataset_filter.empty() && dataset.find(dataset_filter) == std::string::npos) {
+        continue;
+      }
+      ++matched;
+      if (shown < limit) {
+        json entry = objectTopicCommonJson(ctx, v2->dataSources(), obj);
+        entry["derived"] = metadataHasKey(PJ::sdk::toStringView(obj.metadata_json), "pj_derived");
+        topics.push_back(std::move(entry));
+        ++shown;
+      }
     }
+    objects_listed = true;
+  } else {
+    auto catalog = ctx.host.catalogSnapshot();
+    if (!catalog) {
+      return ToolResult::failure("catalog unavailable: " + catalog.error());
+    }
+    listScalarTopics(
+        catalog->topics(), datasetByTopicIndex(catalog->dataSources()), filter, dataset_filter, limit, topics, matched,
+        shown);
   }
+
   json out = {{"count", matched}, {"shown", shown}, {"topics", topics}};
   if (matched > shown) {
     out["note"] = "truncated to " + std::to_string(shown) + " of " + std::to_string(matched) +
                   "; refine with a filter or raise limit";
   }
+  if (!objects_listed) {
+    out["objects"] = "not listed (host predates catalog snapshot v2)";
+  }
   return ToolResult::success(out.dump());
 }
 
-ToolResult describeTopic(const json& args, ToolContext& ctx) {
-  if (!args.contains("topic") || !args["topic"].is_string()) {
-    return ToolResult::failure("describe_topic requires a string 'topic'");
-  }
-  const std::string want = args["topic"].get<std::string>();
-  auto catalog = ctx.host.catalogSnapshot();
-  if (!catalog) {
-    return ToolResult::failure("catalog unavailable: " + catalog.error());
-  }
-  auto topics = catalog->topics();
-  auto fields = catalog->fields();
-  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(*catalog);
+// Scalar-topic half of describe_topic, shared by the catalog-snapshot-v2 and
+// legacy-v1 paths (identical span shapes either way).
+ToolResult describeScalarTopic(
+    std::span<const PJ_topic_info_t> topics, std::span<const PJ_field_info_t> fields,
+    const std::map<std::uint32_t, std::string>& topic_dataset, const std::string& want) {
   for (std::uint32_t ti = 0; ti < topics.size(); ++ti) {
     const auto& topic = topics[ti];
     if (std::string(PJ::sdk::toStringView(topic.name)) != want) {
@@ -575,13 +749,63 @@ ToolResult describeTopic(const json& args, ToolContext& ctx) {
           {"type", primitiveTypeName(PJ::sdk::fromAbiType(fields[idx].type))}};
       field_arr.push_back(entry);
     }
-    json out = {{"topic", want}, {"fields", field_arr}};
+    json out = {{"topic", want}, {"kind", "scalar"}, {"fields", field_arr}};
     if (auto it = topic_dataset.find(ti); it != topic_dataset.end()) {
       out["dataset"] = it->second;
     }
     return ToolResult::success(out.dump());
   }
   return ToolResult::failure("no topic named '" + want + "' (use list_topics)");
+}
+
+// Object-topic half of describe_topic: the field table walked recursively
+// (fieldTableToJson) plus the static operations a script may call on it
+// (object_ops_catalog.hpp). A type with no field table (kNone, buffer-only,
+// or not yet described) or an unrecognized builtin_object_type string
+// answers with empty "fields"/"operations" rather than failing -- the topic
+// itself is real, only its detail is unavailable.
+ToolResult describeObjectTopic(
+    ToolContext& ctx, std::span<const PJ_data_source_info_t> sources, const PJ_object_topic_info_t& obj) {
+  json out = objectTopicCommonJson(ctx, sources, obj);
+  json field_arr = json::array();
+  json op_arr = json::array();
+  const std::string type_name = out["type"].get<std::string>();
+  if (const auto type = PJ::sdk::parseBuiltinObjectType(type_name)) {
+    if (const PJ::sdk::FieldTableView* table = PJ::sdk::describe(*type)) {
+      field_arr = fieldTableToJson(*table, /*depth=*/1);
+    }
+    for (const ObjectOperation& op : objectOperationsFor(*type)) {
+      op_arr.push_back({{"name", std::string(op.name)}, {"doc", std::string(op.doc)}});
+    }
+  }
+  out["fields"] = std::move(field_arr);
+  out["operations"] = std::move(op_arr);
+  return ToolResult::success(out.dump());
+}
+
+ToolResult describeTopic(const json& args, ToolContext& ctx) {
+  if (!args.contains("topic") || !args["topic"].is_string()) {
+    return ToolResult::failure("describe_topic requires a string 'topic'");
+  }
+  const std::string want = args["topic"].get<std::string>();
+
+  auto v2 = ctx.host.catalogSnapshotV2();
+  if (v2) {
+    for (const auto& obj : v2->objectTopics()) {
+      const std::string name(PJ::sdk::toStringView(obj.name));
+      if (name != want || isMarkerObjectTopic(name)) {
+        continue;
+      }
+      return describeObjectTopic(ctx, v2->dataSources(), obj);
+    }
+    return describeScalarTopic(v2->topics(), v2->fields(), datasetByTopicIndex(v2->dataSources()), want);
+  }
+
+  auto catalog = ctx.host.catalogSnapshot();
+  if (!catalog) {
+    return ToolResult::failure("catalog unavailable: " + catalog.error());
+  }
+  return describeScalarTopic(catalog->topics(), catalog->fields(), datasetByTopicIndex(catalog->dataSources()), want);
 }
 
 json statsToJson(const SeriesStats& s) {
@@ -2696,6 +2920,28 @@ ToolResult reportStatus(const json& /*args*/, ToolContext& ctx) {
   if (!names.empty()) {
     out["dataset_names"] = names;
   }
+
+  auto v2 = ctx.host.catalogSnapshotV2();
+  if (v2) {
+    std::size_t object_topics = 0;
+    std::size_t derived_object_topics = 0;
+    for (const auto& obj : v2->objectTopics()) {
+      const std::string name(PJ::sdk::toStringView(obj.name));
+      if (isMarkerObjectTopic(name)) {
+        continue;  // drawn, not read -- not counted as an object topic
+      }
+      ++object_topics;
+      if (metadataHasKey(PJ::sdk::toStringView(obj.metadata_json), "pj_derived")) {
+        ++derived_object_topics;
+      }
+    }
+    out["object_topics"] = object_topics;
+    out["derived_object_topics"] = derived_object_topics;
+  } else {
+    out["object_topics"] = 0;
+    out["derived_object_topics"] = 0;
+    out["objects"] = "not listed (host predates catalog snapshot v2)";
+  }
   return ToolResult::success(out.dump());
 }
 
@@ -2714,10 +2960,14 @@ enum class Tier { kCount, kPartial, kFull };
 // catalogDigest, kept verbatim as the fallback for the rare budget so tight
 // that not even a bare field COUNT fits for every topic — see catalogDigest's
 // count-only feasibility check below, the only caller.
-std::string legacyCatalogDigest(const PJ::sdk::CatalogSnapshot& catalog, std::size_t budget_chars) {
+// Templated over the catalog type so it serves both the legacy (v1) host and
+// catalogSnapshotV2()'s scalar half -- both expose the same topics()/fields()/
+// dataSources() shape, and this fallback never touches object topics.
+template <class Catalog>
+std::string legacyCatalogDigest(const Catalog& catalog, std::size_t budget_chars) {
   auto topics = catalog.topics();
   auto fields = catalog.fields();
-  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(catalog);
+  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(catalog.dataSources());
 
   auto build = [&](bool with_fields, std::size_t& shown) -> std::string {
     std::string body;
@@ -2796,18 +3046,15 @@ std::string legacyCatalogDigest(const PJ::sdk::CatalogSnapshot& catalog, std::si
   return header + body + footer;
 }
 
-}  // namespace
-
-std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budget_chars) {
-  auto catalog = host.catalogSnapshot();
-  if (!catalog) {
-    return "Loaded data: unavailable (" + catalog.error() + "). Use list_topics to look it up.";
-  }
-  auto topics = catalog->topics();
-  auto fields = catalog->fields();
-  if (topics.empty()) {
-    return "Loaded data: nothing is loaded yet.";
-  }
+// The scalar half of the digest -- everything catalogDigest rendered before
+// object topics existed, unchanged in behavior. Templated over the catalog
+// type so catalogSnapshotV2()'s scalar arrays (identical shape to v1's) share
+// this without a second copy; the caller has already handled "nothing is
+// loaded" (that verdict needs to know about object topics too, on a v2 host).
+template <class Catalog>
+std::string renderScalarCatalogDigest(const Catalog& catalog, std::size_t budget_chars) {
+  auto topics = catalog.topics();
+  auto fields = catalog.fields();
   const std::uint32_t n = static_cast<std::uint32_t>(topics.size());
 
   // Which dataset each topic belongs to. PJ4 can hold several loaded at once —
@@ -2817,7 +3064,7 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
   // grouped contiguously per source (first_topic/topic_count), so this is a
   // lookup table rather than a scan. Empty when the host reports no sources, in
   // which case the listing stays exactly as it was.
-  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(*catalog);
+  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(catalog.dataSources());
 
   // Dataset-header prefix per topic index — empty except where a new dataset
   // starts. Precomputed once so every tier below (full/partial/count) shares
@@ -2920,7 +3167,7 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
     // Teach the qualifier by stating it where the dataset names are, instead
     // of spending schema tokens on it in every session: this line exists
     // only when several datasets are actually loaded.
-    if (catalog->dataSources().size() >= 2) {
+    if (catalog.dataSources().size() >= 2) {
       header +=
           "Several datasets are loaded; when the same topic exists in more than one, address the series as "
           "\"<dataset>:<topic>/<field>\".\n";
@@ -2968,7 +3215,7 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
     count_total += dataset_prefix[ti].size() + count_body[ti].size();
   }
   if (count_total > budget_chars) {
-    return legacyCatalogDigest(*catalog, budget_chars);
+    return legacyCatalogDigest(catalog, budget_chars);
   }
 
   // Every topic starts at "count" (already paid for above) and ascends
@@ -3036,6 +3283,84 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
         "rest.\n";
   }
   return renderHeader() + body + footer;
+}
+
+// One line per non-marker object topic, grouped under the same "dataset
+// \"X\":" headers the scalar half uses. Budgeted like a topic with one field:
+// every line is a fixed-size unit -- there is no field list inside it to
+// shrink -- so unlike a scalar topic it has only one tier, taken whole or
+// left out. Lines are appended greedily in catalog order until the next one
+// would exceed `budget_chars`; `shown < total` is catalogDigest's signal to
+// say the list was cut.
+struct ObjectDigestLines {
+  std::string body;
+  std::size_t shown = 0;
+  std::size_t total = 0;
+};
+
+ObjectDigestLines renderObjectDigestLines(const PJ::sdk::CatalogSnapshotV2& catalog, std::size_t budget_chars) {
+  ObjectDigestLines out;
+  const bool multi_dataset = catalog.dataSources().size() >= 2;
+  std::string current_dataset;
+  for (const auto& obj : catalog.objectTopics()) {
+    const std::string name(PJ::sdk::toStringView(obj.name));
+    if (isMarkerObjectTopic(name)) {
+      continue;
+    }
+    ++out.total;
+    const std::string dataset = objectTopicDatasetName(catalog.dataSources(), obj.source);
+    std::string line;
+    if (multi_dataset && dataset != current_dataset) {
+      current_dataset = dataset;
+      line += "dataset \"" + current_dataset + "\":\n";
+    }
+    const std::string type_name(PJ::sdk::toStringView(obj.builtin_object_type));
+    const double a = static_cast<double>(obj.time_min_ns) * 1e-9;
+    const double b = static_cast<double>(obj.time_max_ns) * 1e-9;
+    std::ostringstream oss;
+    oss << "  " << name << "  [object " << (type_name.empty() ? std::string("unknown") : type_name) << ", "
+        << obj.entry_count << " entries, " << std::fixed << std::setprecision(3) << a << "-" << b << " s]\n";
+    line += oss.str();
+    if (out.body.size() + line.size() > budget_chars) {
+      break;
+    }
+    out.body += line;
+    ++out.shown;
+  }
+  return out;
+}
+
+}  // namespace
+
+std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budget_chars) {
+  auto v2 = host.catalogSnapshotV2();
+  if (v2) {
+    const ObjectDigestLines object_lines = renderObjectDigestLines(*v2, budget_chars);
+    if (v2->topics().empty() && object_lines.total == 0) {
+      return "Loaded data: nothing is loaded yet.";
+    }
+    // Object topics are fixed-size lines with nothing to shrink, so they take
+    // their share of the budget first; the scalar tiering algorithm gets
+    // whatever is left, which is the whole budget on the common catalog with
+    // no object topics -- every existing scalar guarantee is unchanged then.
+    const std::size_t scalar_budget =
+        budget_chars > object_lines.body.size() ? budget_chars - object_lines.body.size() : 0;
+    std::string out = v2->topics().empty() ? std::string() : renderScalarCatalogDigest(*v2, scalar_budget);
+    out += object_lines.body;
+    if (object_lines.shown < object_lines.total) {
+      out += "Some object topics are TRUNCATED above; use list_topics with a filter to find the rest.\n";
+    }
+    return out;
+  }
+
+  auto catalog = host.catalogSnapshot();
+  if (!catalog) {
+    return "Loaded data: unavailable (" + catalog.error() + "). Use list_topics to look it up.";
+  }
+  if (catalog->topics().empty()) {
+    return "Loaded data: nothing is loaded yet.";
+  }
+  return renderScalarCatalogDigest(*catalog, budget_chars);
 }
 
 // --- registry --------------------------------------------------------------

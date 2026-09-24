@@ -40,8 +40,8 @@ tools run inside, which is why it stays on.
 
 | Tool | Does |
 |---|---|
-| `list_topics` | Search loaded topics by substring |
-| `describe_topic` | Fields of one topic, with types and full paths |
+| `list_topics` | Search loaded topics by substring — scalar and object topics (point clouds, scene entities…) alike, on a host with catalog snapshot v2 |
+| `describe_topic` | Fields of one topic, with types and full paths; on an object topic, its field table and the operations a script may call on it |
 | `read_series` | Statistics, a min/max-preserving downsample (columns t0/dt/n/min/max/mean), or up to 200 raw samples inside a window you set; a path naming a topic with no field reads every numeric field of that topic |
 | `evaluate` | Run a bounded Luau computation and return statistics without leaving a series behind |
 | `create_derived_series` | Install a live Luau transform over one or more series |
@@ -49,7 +49,7 @@ tools run inside, which is why it stays on.
 | `remove_markers` | Remove the assistant's own marker set — and only that one |
 | `list_created` | What this assistant has installed so far |
 | `remove_derived_series` | Withdraw one of its own derived series — and only its own |
-| `report_status` | Counts of loaded sources, topics and fields |
+| `report_status` | Counts of loaded sources, topics, fields and object topics |
 | `playback` | The transport, by `action`: state / play / pause / seek / rate. One time cursor is shared by every plot, so this is the one control that is not scoped |
 | `plot_tab` | Tabs of the assistant's OWN, by `action`: create / add / remove / zoom / close / list |
 

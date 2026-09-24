@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <string>
@@ -41,13 +42,41 @@ class FakeCatalogHost {
     return *this;
   }
 
+  // Adds an object topic (catalog snapshot v2 only -- see supportsV2()).
+  // `metadata_json` defaults to a document already carrying the canonical
+  // `builtin_object_type` key so a test that only needs a plausible object
+  // topic can omit it; a test asserting `"derived"` should pass a document
+  // with (or without) the `"pj_derived"` key explicitly.
+  FakeCatalogHost& addObjectTopic(
+      const std::string& name, const std::string& type_name, std::uint64_t entries, std::int64_t t_min_ns,
+      std::int64_t t_max_ns, const std::string& metadata_json = R"({"builtin_object_type":"kPointCloud"})") {
+    object_topics_.push_back({name, type_name, entries, t_min_ns, t_max_ns, metadata_json});
+    return *this;
+  }
+
+  // Opt-in, true by default: a test simulates a host that predates catalog
+  // snapshot v2 by calling supportsV2(false), which leaves the vtable's
+  // acquire_catalog_snapshot_v2 slot null AND shrinks struct_size to exclude
+  // it -- either alone already fails PJ_HAS_TAIL_SLOT, both together is what
+  // a host actually built before the slot existed would report.
+  FakeCatalogHost& supportsV2(bool value) {
+    supports_v2_ = value;
+    return *this;
+  }
+
   [[nodiscard]] PJ_toolbox_host_t makeHost() {
-    static const PJ_toolbox_host_vtable_t vtable = {
+    static const PJ_toolbox_host_vtable_t vtable_v2 = {
         .abi_version = PJ_PLUGIN_DATA_API_VERSION,
         .struct_size = sizeof(PJ_toolbox_host_vtable_t),
         .acquire_catalog_snapshot = &FakeCatalogHost::tAcquire,
+        .acquire_catalog_snapshot_v2 = &FakeCatalogHost::tAcquireV2,
     };
-    return PJ_toolbox_host_t{this, &vtable};
+    static const PJ_toolbox_host_vtable_t vtable_v1_only = {
+        .abi_version = PJ_PLUGIN_DATA_API_VERSION,
+        .struct_size = offsetof(PJ_toolbox_host_vtable_t, acquire_catalog_snapshot_v2),
+        .acquire_catalog_snapshot = &FakeCatalogHost::tAcquire,
+    };
+    return PJ_toolbox_host_t{this, supports_v2_ ? &vtable_v2 : &vtable_v1_only};
   }
 
  private:
@@ -59,33 +88,48 @@ class FakeCatalogHost {
     std::string name;
     std::vector<FieldSpec> fields;
   };
+  struct ObjectTopicSpec {
+    std::string name;
+    std::string type_name;
+    std::uint64_t entries;
+    std::int64_t t_min_ns;
+    std::int64_t t_max_ns;
+    std::string metadata_json;
+  };
 
   static PJ_string_view_t sv(const std::string& s) {
     return PJ_string_view_t{s.data(), s.size()};
   }
 
-  static bool tAcquire(void* ctx, PJ_catalog_snapshot_t* out, PJ_error_t* /*err*/) noexcept {
-    auto* self = static_cast<FakeCatalogHost*>(ctx);
-    self->topic_abi_.clear();
-    self->field_abi_.clear();
+  // Rebuilds topic_abi_/field_abi_ from topics_ -- shared by tAcquire and
+  // tAcquireV2 so the scalar half of a v2 snapshot is byte-for-byte what v1
+  // would have reported.
+  void rebuildScalarAbi() {
+    topic_abi_.clear();
+    field_abi_.clear();
     std::uint32_t field_cursor = 0;
-    for (std::size_t ti = 0; ti < self->topics_.size(); ++ti) {
-      const auto& t = self->topics_[ti];
+    for (std::size_t ti = 0; ti < topics_.size(); ++ti) {
+      const auto& t = topics_[ti];
       PJ_topic_info_t tinfo{};
       tinfo.handle = PJ_topic_handle_t{static_cast<std::uint32_t>(ti + 1)};
       tinfo.name = sv(t.name);
       tinfo.first_field = field_cursor;
       tinfo.field_count = static_cast<std::uint32_t>(t.fields.size());
-      self->topic_abi_.push_back(tinfo);
+      topic_abi_.push_back(tinfo);
       for (const auto& f : t.fields) {
         PJ_field_info_t finfo{};
         finfo.handle = PJ_field_handle_t{tinfo.handle, field_cursor + 1};
         finfo.name = sv(f.name);
         finfo.type = f.type;
-        self->field_abi_.push_back(finfo);
+        field_abi_.push_back(finfo);
         ++field_cursor;
       }
     }
+  }
+
+  static bool tAcquire(void* ctx, PJ_catalog_snapshot_t* out, PJ_error_t* /*err*/) noexcept {
+    auto* self = static_cast<FakeCatalogHost*>(ctx);
+    self->rebuildScalarAbi();
     out->data_sources = nullptr;
     out->data_source_count = 0;
     out->topics = self->topic_abi_.data();
@@ -97,9 +141,43 @@ class FakeCatalogHost {
     return true;
   }
 
+  static bool tAcquireV2(void* ctx, PJ_catalog_snapshot_v2_t* out, PJ_error_t* /*err*/) noexcept {
+    auto* self = static_cast<FakeCatalogHost*>(ctx);
+    self->rebuildScalarAbi();
+    self->object_topic_abi_.clear();
+    for (const auto& o : self->object_topics_) {
+      PJ_object_topic_info_t oinfo{};
+      oinfo.handle = PJ_object_topic_handle_t{static_cast<std::uint32_t>(self->object_topic_abi_.size() + 1)};
+      oinfo.source = PJ_data_source_handle_t{0};  // FakeCatalogHost has no data-source concept
+      oinfo.name = sv(o.name);
+      oinfo.builtin_object_type = sv(o.type_name);
+      oinfo.metadata_json = sv(o.metadata_json);
+      oinfo.entry_count = o.entries;
+      oinfo.time_min_ns = o.t_min_ns;
+      oinfo.time_max_ns = o.t_max_ns;
+      self->object_topic_abi_.push_back(oinfo);
+    }
+    out->struct_size = sizeof(PJ_catalog_snapshot_v2_t);
+    out->reserved = 0;
+    out->data_sources = nullptr;
+    out->data_source_count = 0;
+    out->topics = self->topic_abi_.data();
+    out->topic_count = self->topic_abi_.size();
+    out->fields = self->field_abi_.data();
+    out->field_count = self->field_abi_.size();
+    out->object_topics = self->object_topic_abi_.data();
+    out->object_topic_count = self->object_topic_abi_.size();
+    out->release_ctx = nullptr;
+    out->release = nullptr;
+    return true;
+  }
+
   std::vector<TopicSpec> topics_;
+  std::vector<ObjectTopicSpec> object_topics_;
+  bool supports_v2_ = true;
   std::vector<PJ_topic_info_t> topic_abi_;
   std::vector<PJ_field_info_t> field_abi_;
+  std::vector<PJ_object_topic_info_t> object_topic_abi_;
 };
 
 }  // namespace assistant_agent::testing
