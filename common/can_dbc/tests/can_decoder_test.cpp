@@ -4,6 +4,7 @@
 #include <pj_can_dbc/can_decoder.hpp>
 #include <pj_can_dbc/can_topic.hpp>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -256,6 +257,152 @@ TEST(CanDecoder, GarbageDbcYieldsNoMessages) {
   EXPECT_EQ(dec.messageCount(), 0u);
 }
 
+// --- Vendored dbc.cpp regex fix (common/can_dbc, not dbc_parser_cpp upstream):
+// factor/offset/min/max share one signed, optional-exponent number pattern,
+// and BO_/SG_ token separators tolerate tabs and repeated spaces. Before the
+// fix, any of these signals failed signal_re and were dropped SILENTLY (the
+// message would still load, just with fewer signals) -- so every test below
+// also pins messageCount()/signal presence, not just the decoded value.
+
+TEST(CanDecoderDbcFix, DecodesNegativeFactorAndOffset) {
+  // Upstream scalePattern was "Non negative float" -- a negative factor could
+  // not match SG_ at all, so this whole signal used to be dropped.
+  const char* const kFixDbc = R"DBC(VERSION "1.0.0"
+
+NS_ :
+
+BS_:
+
+BU_: ECU
+
+BO_ 300 NegMsg: 8 ECU
+ SG_ Neg : 0|8@1- (-2,-1) [0|0] "" ECU
+)DBC";
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kFixDbc).has_value());
+  EXPECT_EQ(dec.messageCount(), 1u);
+
+  // raw -3 (0xFD, signed 8-bit) -> -3 * -2 + -1 = 5.
+  const std::vector<std::uint8_t> data{0xFD, 0, 0, 0, 0, 0, 0, 0};
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(300, false, data, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* neg = find(sigs, "Neg");
+  ASSERT_NE(neg, nullptr);
+  EXPECT_DOUBLE_EQ(neg->value, 5.0);
+}
+
+TEST(CanDecoderDbcFix, DecodesExponentialFactorOffsetMinMax) {
+  // Upstream floatPattern had no exponent support at all -- Vector DBCs
+  // routinely emit float signals as "[-3.4E+38|3.4E+38]"; every one of these
+  // used to be dropped.
+  const char* const kFixDbc = R"DBC(VERSION "1.0.0"
+
+NS_ :
+
+BS_:
+
+BU_: ECU
+
+BO_ 301 ExpMsg: 8 ECU
+ SG_ Exp : 0|16@1+ (1E-2,1E+1) [-3.4E+38|3.4E+38] "" ECU
+)DBC";
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kFixDbc).has_value());
+  EXPECT_EQ(dec.messageCount(), 1u);
+
+  // raw 500 (0x01F4) -> 500 * 0.01 + 10 = 15.
+  const std::vector<std::uint8_t> data{0xF4, 0x01, 0, 0, 0, 0, 0, 0};
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(301, false, data, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* exp_sig = find(sigs, "Exp");
+  ASSERT_NE(exp_sig, nullptr);
+  EXPECT_DOUBLE_EQ(exp_sig->value, 15.0);
+}
+
+TEST(CanDecoderDbcFix, DecodesLeadingPlusSignAndLeadingDotNumbers) {
+  // "+2" (explicit plus) and ".5" (no leading digit) are both valid DBC
+  // numbers that neither upstream pattern accepted.
+  const char* const kFixDbc = R"DBC(VERSION "1.0.0"
+
+NS_ :
+
+BS_:
+
+BU_: ECU
+
+BO_ 302 PlusDotMsg: 8 ECU
+ SG_ PlusDot : 0|8@1+ (+2,.5) [0|0] "" ECU
+)DBC";
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kFixDbc).has_value());
+  EXPECT_EQ(dec.messageCount(), 1u);
+
+  // raw 3 -> 3 * 2 + 0.5 = 6.5.
+  const std::vector<std::uint8_t> data{3, 0, 0, 0, 0, 0, 0, 0};
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(302, false, data, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* pd = find(sigs, "PlusDot");
+  ASSERT_NE(pd, nullptr);
+  EXPECT_DOUBLE_EQ(pd->value, 6.5);
+}
+
+TEST(CanDecoderDbcFix, TabsAndDoubleSpacesDoNotDropTheSignal) {
+  // Upstream whiteSpace was exactly one "\\s" -- a tab or a doubled space
+  // between BO_/SG_ tokens (both legal DBC whitespace) failed signal_re, so
+  // the signal was silently dropped even though the message line itself is
+  // untouched by this fix (message_re's own whitespace is separately fixed
+  // and covered below).
+  const char* const kFixDbc = R"DBC(VERSION "1.0.0"
+
+NS_ :
+
+BS_:
+
+BU_: ECU
+
+BO_ 303 SpacedMsg: 8 ECU
+	SG_	Spaced  :	0|8@1+	(2,0)  [0|0]  "" 	ECU
+)DBC";
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kFixDbc).has_value());
+  EXPECT_EQ(dec.messageCount(), 1u);
+
+  const std::vector<std::uint8_t> data{5, 0, 0, 0, 0, 0, 0, 0};
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(303, false, data, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* spaced = find(sigs, "Spaced");
+  ASSERT_NE(spaced, nullptr);
+  EXPECT_DOUBLE_EQ(spaced->value, 10.0);
+}
+
+TEST(CanDecoderDbcFix, MessageLineToleratesTabsAndDoubleSpaces) {
+  // Same robustness check, but on the BO_ line's own whitespace (message_re).
+  const char* const kFixDbc = R"DBC(VERSION "1.0.0"
+
+NS_ :
+
+BS_:
+
+BU_: ECU
+
+BO_	304  SpacedMsg2:	8  ECU
+ SG_ S : 0|8@1+ (1,0) [0|0] "" ECU
+)DBC";
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kFixDbc).has_value());
+  EXPECT_EQ(dec.messageCount(), 1u);
+
+  const std::vector<std::uint8_t> data{7, 0, 0, 0, 0, 0, 0, 0};
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(304, false, data, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  EXPECT_NE(find(sigs, "S"), nullptr);
+}
+
 TEST(CanTopic, RendersHexIds) {
   EXPECT_EQ(pj_can_dbc::hexId(0x0u), "0x0");
   EXPECT_EQ(pj_can_dbc::hexId(0x100u), "0x100");
@@ -271,6 +418,16 @@ TEST(CanTopic, NamesTopicsByChannelAndMessage) {
   EXPECT_EQ(pj_can_dbc::canTopicName(2, "", 0x1ABu), "CAN/ch2/0x1AB");
   EXPECT_EQ(pj_can_dbc::canTopicName(0, "EngineData", 0x100u), "CAN/EngineData");
   EXPECT_EQ(pj_can_dbc::canTopicName(0, "", 0x7FFu), "CAN/0x7FF");
+}
+
+// data_load_candump's bus is a name (candump interface, e.g. "can0"), not a
+// number -- this overload is additive, keeping data_load_mf4/data_load_blf's
+// numeric-channel overload above untouched.
+TEST(CanTopic, NamesTopicsByInterfaceNameAndMessage) {
+  EXPECT_EQ(pj_can_dbc::canTopicName(std::string_view("can0"), "EngineData", 0x100u), "CAN/can0/EngineData");
+  EXPECT_EQ(pj_can_dbc::canTopicName(std::string_view("vcan0.1"), "", 0x1ABu), "CAN/vcan0.1/0x1AB");
+  EXPECT_EQ(pj_can_dbc::canTopicName(std::string_view(""), "EngineData", 0x100u), "CAN/EngineData");
+  EXPECT_EQ(pj_can_dbc::canTopicName(std::string_view(""), "", 0x7FFu), "CAN/0x7FF");
 }
 
 }  // namespace
