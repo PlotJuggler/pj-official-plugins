@@ -57,8 +57,10 @@ the scripted backend used named coordinate keys instead of positional arrays,
 and the editor sent reports to a library-only widget absent from its main UI.
 Both paths now use the actual binder contract and a visible main report pane.
 The initial owned scene also exposed host-side camera framing and ownership
-badge issues; automatic scene presentation must be checked with those host
-fixes, rather than relying on a manually adjusted camera.
+badge issues. After the host fixes, a fresh process and a newly created finding
+produced a visible cloud immediately on attaching it to a new scene: the host
+selected `lidar_top` automatically and displayed the `Assistant Agent` ownership
+badge. No frame selection or camera adjustment was needed.
 
 Deterministic tests separately cover pending/completed/failed/cancelled results,
 expiry, abandoned callers, cancellation followed by a new turn, editor changes
