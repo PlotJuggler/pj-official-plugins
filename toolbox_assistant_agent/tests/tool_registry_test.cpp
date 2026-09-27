@@ -12,14 +12,18 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <future>
 #include <iomanip>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <vector>
 
+#include "gui_executor.hpp"
+#include "object_ops_catalog.hpp"
 #include "support/fake_catalog_host.hpp"
 #include "support/fake_multi_dataset_host.hpp"
 #include "support/fake_object_read_host.hpp"
@@ -1736,6 +1740,13 @@ TEST(ToolRegistry, EvaluateWaitsThroughPendingPolls) {
        {"body", "return { cropped = inputs[\"/cloud\"], count = 1 }"},
        {"outputs", json::array({"cropped:kPointCloud", "count:number"})}},
       ctx);
+  ASSERT_TRUE(r.resume);
+  EXPECT_EQ(dp.poll_calls, 1);
+  EXPECT_TRUE(dp.released_handles.empty());
+  r = r.resume(ctx);
+  ASSERT_TRUE(r.resume);
+  r = r.resume(ctx);
+  EXPECT_FALSE(r.resume);
   ASSERT_TRUE(r.ok) << r.content;
   EXPECT_EQ(dp.poll_calls, 3) << "2 PENDING answers, then COMPLETED";
   EXPECT_EQ(dp.released_handles.size(), 1u);
@@ -1817,6 +1828,7 @@ TEST(ToolRegistry, CreateDerivedObjectPinsAFinding) {
   host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
   RecordingDpHost dp;
   dp.config_history_exempt = true;
+  dp.pending_polls = 2;
   FakePlaybackHost pb;
   ToolContext ctx;
   ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
@@ -1834,6 +1846,13 @@ TEST(ToolRegistry, CreateDerivedObjectPinsAFinding) {
        {"pin_at_s", 2.5},
        {"label", "cropped at 2.5s"}},
       ctx);
+  ASSERT_TRUE(r.resume);
+  EXPECT_EQ(dp.create_v2_calls, 1);
+  r = r.resume(ctx);
+  ASSERT_TRUE(r.resume);
+  r = r.resume(ctx);
+  EXPECT_FALSE(r.resume);
+  EXPECT_EQ(dp.released_handles.size(), 1u);
   ASSERT_TRUE(r.ok) << r.content;
   EXPECT_EQ(dp.create_v2_calls, 1);
   EXPECT_EQ(dp.persistent_creates, 1) << "a pin is HISTORY_EXEMPT, not EPHEMERAL -- it is kept";
@@ -3449,4 +3468,211 @@ TEST(ToolRegistry, RefusesToCreateOverAnExistingName) {
   EXPECT_NE(again.content.find("already exists"), std::string::npos) << again.content;
   EXPECT_EQ(dp.liveCount(), 1) << "the refused create must leave the first one untouched";
   EXPECT_EQ(dp.create_calls, 1) << "and must not reach the host at all";
+}
+
+TEST(ToolRegistry, AsyncEvaluationTerminalStatesReleaseExactlyOnce) {
+  for (auto state : {PJ_EVALUATION_STATE_FAILED, PJ_EVALUATION_STATE_CANCELLED}) {
+    ToolRegistry reg;
+    FakeCatalogHost host;
+    host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+    RecordingDpHost dp;
+    dp.pending_polls = 1;
+    dp.terminal_state = state;
+    dp.canned_report_json = R"({"error":"deliberate failure"})";
+    FakePlaybackHost playback;
+    ToolContext ctx;
+    ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+    ctx.dp = dp.view();
+    ctx.playback = playback.view();
+    auto r = reg.execute(
+        "evaluate",
+        {{"inputs", {"/cloud"}}, {"at_s", 1.0}, {"body", "return {count=1}"}, {"outputs", {"count:number"}}}, ctx);
+    ASSERT_TRUE(r.resume);
+    r = r.resume(ctx);
+    EXPECT_FALSE(r.ok);
+    EXPECT_FALSE(r.resume);
+    EXPECT_EQ(dp.released_handles.size(), 1u);
+  }
+}
+
+TEST(ToolRegistry, ExecutorShutdownReleasesPendingEvaluationOnGuiThread) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  dp.pending_polls = 100;
+  FakePlaybackHost playback;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = playback.view();
+  assistant_agent::GuiExecutor executor;
+  auto worker = std::async(std::launch::async, [&] {
+    return executor.call(
+        "evaluate",
+        {{"inputs", {"/cloud"}}, {"at_s", 1.0}, {"body", "return {count=1}"}, {"outputs", {"count:number"}}});
+  });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (executor.empty() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  EXPECT_FALSE(executor.empty());
+  executor.drain(reg, ctx);
+  EXPECT_EQ(dp.poll_calls, 1);
+  EXPECT_EQ(worker.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
+  executor.shutdown();
+  EXPECT_FALSE(worker.get().ok);
+  EXPECT_EQ(dp.released_handles.size(), 1u);
+}
+
+TEST(ToolRegistry, ReportStatusAccountsOnlyOwnFindingsAndDegradesExplicitly) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  RecordingDpHost dp;
+  dp.live_ids = {"finding"};
+  dp.canned_config_json = R"({"kind":"on_demand","pinned_t_ns":0,"memory_bytes":123,"state":"ready"})";
+  FakePlaybackHost playback;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = playback.view();
+  auto result = reg.execute("report_status", {}, ctx);
+  ASSERT_TRUE(result.ok);
+  auto report = json::parse(result.content);
+  EXPECT_EQ(report["findings"]["pinned"], 1);
+  EXPECT_EQ(report["findings"]["bytes"], 123);
+  EXPECT_EQ(report["processors"][0]["state"], "ready");
+  dp.fail_config = true;
+  report = json::parse(reg.execute("report_status", {}, ctx).content);
+  EXPECT_EQ(report["findings"]["complete"], false);
+}
+
+TEST(ToolRegistry, ExecutorAbandonedContinuationReleasesAtNextGuiTick) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  dp.pending_polls = 100;
+  FakePlaybackHost playback;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = playback.view();
+  assistant_agent::GuiExecutor executor(std::chrono::milliseconds(500));
+  auto worker = std::async(std::launch::async, [&] {
+    return executor.call(
+        "evaluate",
+        {{"inputs", {"/cloud"}}, {"at_s", 1.0}, {"body", "return {count=1}"}, {"outputs", {"count:number"}}});
+  });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (executor.empty() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  executor.drain(reg, ctx);
+  EXPECT_EQ(dp.poll_calls, 1);
+  EXPECT_FALSE(worker.get().ok);
+  EXPECT_TRUE(dp.released_handles.empty());
+  executor.drain(reg, ctx);
+  EXPECT_EQ(dp.poll_calls, 1);
+  EXPECT_EQ(dp.released_handles.size(), 1u);
+}
+
+TEST(ToolRegistry, MediaCatalogIncludesCallableOperationsAndFieldOnlyTypes) {
+  using assistant_agent::objectOperationsFor;
+  using PJ::sdk::BuiltinObjectType;
+  for (auto type :
+       {BuiltinObjectType::kPointCloud, BuiltinObjectType::kSceneEntities, BuiltinObjectType::kImage,
+        BuiltinObjectType::kDepthImage, BuiltinObjectType::kImageAnnotations, BuiltinObjectType::kVideoFrame}) {
+    EXPECT_FALSE(objectOperationsFor(type).empty());
+  }
+  EXPECT_TRUE(objectOperationsFor(BuiltinObjectType::kCameraInfo).empty());
+  EXPECT_TRUE(objectOperationsFor(BuiltinObjectType::kFrameTransforms).empty());
+  const auto depth = objectOperationsFor(BuiltinObjectType::kImage);
+  EXPECT_TRUE(
+      std::any_of(depth.begin(), depth.end(), [](const auto& op) { return op.name.starts_with("to_point_cloud("); }));
+}
+
+TEST(ToolRegistry, MediaCatalogHasAllEightSdkFieldTables) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  for (const auto* type :
+       {"kPointCloud", "kSceneEntities", "kFrameTransforms", "kImageAnnotations", "kImage", "kDepthImage",
+        "kCameraInfo", "kVideoFrame"}) {
+    const std::string topic = std::string("/") + type;
+    host.addObjectTopic(topic, type, 1, 0, kSec);
+    ToolContext ctx;
+    ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+    const auto result = reg.execute("describe_topic", {{"topic", topic}}, ctx);
+    ASSERT_TRUE(result.ok) << result.content;
+    const auto description = json::parse(result.content);
+    ASSERT_TRUE(description.contains("fields")) << description.dump();
+    EXPECT_FALSE(description["fields"].empty()) << type << ": rebuild with SDK media field tables";
+  }
+}
+
+TEST(ToolRegistry, ExecutorResumesPendingEvaluationWithoutResubmitting) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  dp.pending_polls = 2;
+  FakePlaybackHost playback;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = playback.view();
+  assistant_agent::GuiExecutor executor;
+  auto worker = std::async(std::launch::async, [&] {
+    return executor.call(
+        "evaluate",
+        {{"inputs", {"/cloud"}}, {"at_s", 1.0}, {"body", "return {count=1}"}, {"outputs", {"count:number"}}});
+  });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (executor.empty() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  for (int tick = 0; tick < 3; ++tick) {
+    executor.drain(reg, ctx);
+  }
+  EXPECT_TRUE(worker.get().ok);
+  EXPECT_EQ(dp.submit_calls, 1);
+  EXPECT_EQ(dp.poll_calls, 3);
+  EXPECT_EQ(dp.released_handles.size(), 1u);
+}
+
+TEST(ToolRegistry, ExecutorCancelReleasesPendingEvaluationAndAllowsAnotherTurn) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  dp.pending_polls = 100;
+  FakePlaybackHost playback;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = playback.view();
+  assistant_agent::GuiExecutor executor;
+  auto worker = std::async(std::launch::async, [&] {
+    return executor.call(
+        "evaluate",
+        {{"inputs", {"/cloud"}}, {"at_s", 1.0}, {"body", "return {count=1}"}, {"outputs", {"count:number"}}});
+  });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (executor.empty() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  EXPECT_FALSE(executor.empty());
+  executor.drain(reg, ctx);
+  EXPECT_EQ(dp.poll_calls, 1);
+  EXPECT_EQ(worker.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
+  executor.cancelPending();
+  EXPECT_FALSE(worker.get().ok);
+  EXPECT_EQ(dp.released_handles.size(), 1u);
+  auto next = std::async(std::launch::async, [&] { return executor.call("report_status", {}); });
+  const auto next_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (executor.empty() && std::chrono::steady_clock::now() < next_deadline) {
+    std::this_thread::yield();
+  }
+  executor.drain(reg, ctx);
+  EXPECT_TRUE(next.get().ok);
 }

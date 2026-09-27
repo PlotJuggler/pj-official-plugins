@@ -110,7 +110,7 @@ class FakeBackend : public LlmBackend {
         run("evaluate", {{"inputs", nlohmann::json::array({path})},
                          {"at_s", *at_s},
                          {"body", "  local c = inputs[\"" + path +
-                                      "\"]:crop_box{min={x=-1,y=-1,z=-1},max={x=1,y=1,z=1}}\n"
+                                      "\"]:crop_box{min={-1,-1,-1},max={1,1,1}}\n"
                                       "  return { cropped = c, count = c:count() }"},
                          {"outputs", nlohmann::json::array({"cropped:kPointCloud", "count:number"})}});
       }
@@ -124,7 +124,7 @@ class FakeBackend : public LlmBackend {
                                       {"inputs", nlohmann::json::array({path})},
                                       {"outputs", nlohmann::json::array({"cropped:kPointCloud", "count:number"})},
                                       {"body", "  local c = inputs[\"" + path +
-                                                   "\"]:crop_box{min={x=-1,y=-1,z=-1},max={x=1,y=1,z=1}}\n"
+                                                   "\"]:crop_box{min={-1,-1,-1},max={1,1,1}}\n"
                                                    "  return { cropped = c, count = c:count() }"},
                                       {"pin_at_s", *at_s}});
       }

@@ -15,6 +15,7 @@
 #include <iomanip>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_base/builtin/builtin_object.hpp>
@@ -24,7 +25,6 @@
 #include <span>
 #include <sstream>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include "luau_transform.hpp"
@@ -230,6 +230,8 @@ const char* fieldKindName(PJ::sdk::FieldKind kind) {
   switch (kind) {
     case FieldKind::kNumber:
       return "number";
+    case FieldKind::kOptionalNumber:
+      return "number|null";
     case FieldKind::kBool:
       return "bool";
     case FieldKind::kInt64:
@@ -2573,63 +2575,69 @@ struct SubmitAndPollResult {
   std::string error;
 };
 
-SubmitAndPollResult submitAndPoll(
+// The host's completion is drained by the GUI event loop. Polling must therefore
+// yield between ticks, never sleep on that same thread.
+struct PendingEvaluation : std::enable_shared_from_this<PendingEvaluation> {
+  PJ::sdk::DataProcessorsHostView host;
+  std::uint64_t handle = 0;
+  bool released = false;
+  std::chrono::steady_clock::time_point deadline;
+  std::function<ToolResult(ToolContext&, const SubmitAndPollResult&)> finish;
+
+  ~PendingEvaluation() {
+    release();
+  }
+  void release() {
+    if (!released) {
+      released = true;
+      (void)host.releaseEvaluation(handle);
+    }
+  }
+  ToolResult poll(ToolContext& ctx) {
+    SubmitAndPollResult result;
+    auto value = host.pollEvaluation(handle);
+    if (!value) {
+      result.error = value.error();
+    } else if (value->state == PJ::sdk::EvaluationState::kPending) {
+      if (std::chrono::steady_clock::now() < deadline) {
+        return ToolResult::deferred([self = shared_from_this()](ToolContext& current) { return self->poll(current); });
+      }
+      result.error = "timed out waiting for the host";
+    } else if (value->state == PJ::sdk::EvaluationState::kFailed) {
+      const auto error = json::parse(value->json, nullptr, false);
+      result.error = error.is_object() && error.contains("error") && error["error"].is_string()
+                         ? error["error"].get<std::string>()
+                         : value->json;
+    } else if (value->state == PJ::sdk::EvaluationState::kCancelled) {
+      result.error = "cancelled by the host";
+    } else {
+      result.report = json::parse(value->json, nullptr, false);
+      result.ok = result.report.is_object();
+      if (!result.ok) {
+        result.error = "the host returned an unreadable report";
+      }
+    }
+    release();
+    return finish(ctx, result);
+  }
+};
+
+ToolResult submitAndPoll(
     ToolContext& ctx, const PJ::sdk::DataProcessorRequest& request, std::uint64_t budget_ms,
-    std::uint64_t budget_evaluations) {
-  SubmitAndPollResult out;
+    std::uint64_t budget_evaluations, std::function<ToolResult(ToolContext&, const SubmitAndPollResult&)> finish) {
   PJ::sdk::EvaluationBudget budget;
   budget.max_millis = budget_ms;
   budget.max_evaluations = budget_evaluations;
   auto handle = ctx.dp.submitEvaluation(request, budget);
   if (!handle) {
-    out.error = handle.error();
-    return out;
+    return finish(ctx, SubmitAndPollResult{false, {}, handle.error()});
   }
-  struct ReleaseGuard {
-    ToolContext& ctx;
-    std::uint64_t handle;
-    ~ReleaseGuard() {
-      auto status = ctx.dp.releaseEvaluation(handle);
-      (void)status;  // best-effort: nothing to react to once we have our answer
-    }
-  } release_guard{ctx, *handle};
-
-  // The phase-0 host completes inline, so one poll suffices in practice; the
-  // loop (a short sleep, bounded by the budget plus headroom) is what makes
-  // this correct for a host that finishes the work in the background too.
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget_ms + 1000);
-  for (;;) {
-    auto polled = ctx.dp.pollEvaluation(*handle);
-    if (!polled) {
-      out.error = polled.error();
-      return out;
-    }
-    if (polled->state == PJ::sdk::EvaluationState::kPending) {
-      if (std::chrono::steady_clock::now() >= deadline) {
-        out.error = "timed out waiting for the host";
-        return out;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      continue;
-    }
-    if (polled->state == PJ::sdk::EvaluationState::kFailed) {
-      const json err = json::parse(polled->json, nullptr, /*allow_exceptions=*/false);
-      out.error = err.is_object() && err.contains("error") ? err["error"].get<std::string>() : polled->json;
-      return out;
-    }
-    if (polled->state == PJ::sdk::EvaluationState::kCancelled) {
-      out.error = "cancelled by the host";
-      return out;
-    }
-    const json report = json::parse(polled->json, nullptr, /*allow_exceptions=*/false);
-    if (!report.is_object()) {
-      out.error = "the host returned an unreadable report";
-      return out;
-    }
-    out.ok = true;
-    out.report = report;
-    return out;
-  }
+  auto pending = std::make_shared<PendingEvaluation>();
+  pending->host = ctx.dp;
+  pending->handle = *handle;
+  pending->deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget_ms + 1000);
+  pending->finish = std::move(finish);
+  return pending->poll(ctx);
 }
 
 std::uint64_t clampBudgetMs(const json& args) {
@@ -2747,22 +2755,24 @@ ToolResult evaluateObjectPath(const json& args, ToolContext& ctx, const std::vec
   request.window = window_ns;
   request.instant_ns = instant_ns;
 
-  const SubmitAndPollResult polled = submitAndPoll(ctx, request, clampBudgetMs(args), clampBudgetEvaluations(args));
-  if (!polled.ok) {
-    return ToolResult::failure("evaluate failed: " + polled.error);
-  }
-
-  const bool debug = args.value("debug", false);
-  json out = json::object();
-  if (polled.report.contains("coverage")) {
-    out["coverage"] = polled.report["coverage"];
-  }
-  const RenderedBundles rendered = renderBundles(ctx, *resolved.anchor_source, polled.report, debug);
-  out["bundles"] = rendered.bundles;
-  if (rendered.truncated) {
-    out["truncated"] = true;
-  }
-  return ToolResult::success(out.dump());
+  return submitAndPoll(
+      ctx, request, clampBudgetMs(args), clampBudgetEvaluations(args),
+      [source = *resolved.anchor_source, debug = args.value("debug", false)](
+          ToolContext& current, const SubmitAndPollResult& polled) {
+        if (!polled.ok) {
+          return ToolResult::failure("evaluate failed: " + polled.error);
+        }
+        json out = json::object();
+        if (polled.report.contains("coverage")) {
+          out["coverage"] = polled.report["coverage"];
+        }
+        const RenderedBundles rendered = renderBundles(current, source, polled.report, debug);
+        out["bundles"] = rendered.bundles;
+        if (rendered.truncated) {
+          out["truncated"] = true;
+        }
+        return ToolResult::success(out.dump());
+      });
 }
 
 // Run a Luau computation over series and hand back numbers, without leaving
@@ -3063,15 +3073,21 @@ ToolResult createDerivedObject(const json& args, ToolContext& ctx) {
     eval_request.kind = "on_demand";
     eval_request.language = ctx.language;
     eval_request.instant_ns = eval_ns;
-    const SubmitAndPollResult polled = submitAndPoll(ctx, eval_request, 1000, 1);
-    if (polled.ok) {
-      const RenderedBundles rendered = renderBundles(ctx, *resolved.anchor_source, polled.report, /*debug=*/false);
-      if (!rendered.bundles.empty()) {
-        result["bundle"] = rendered.bundles.front();
-      }
-    } else {
-      result["bundle_unavailable"] = polled.error;
-    }
+
+    return submitAndPoll(
+        ctx, eval_request, 1000, 1,
+        [result = std::move(result), source = *resolved.anchor_source](
+            ToolContext& current, const SubmitAndPollResult& polled) mutable {
+          if (polled.ok) {
+            const RenderedBundles rendered = renderBundles(current, source, polled.report, false);
+            if (!rendered.bundles.empty()) {
+              result["bundle"] = rendered.bundles.front();
+            }
+          } else {
+            result["bundle_unavailable"] = polled.error;
+          }
+          return ToolResult::success(result.dump());
+        });
   }
   return ToolResult::success(result.dump());
 }
@@ -3786,6 +3802,39 @@ ToolResult reportStatus(const json& /*args*/, ToolContext& ctx) {
     out["derived_object_topics"] = 0;
     out["objects"] = "not listed (host predates catalog snapshot v2)";
   }
+  // The host scopes list()/recipeOf() to this assistant's namespace.
+  json findings = {{"pinned", 0}, {"bytes", 0}, {"complete", true}};
+  json processors = json::array();
+  auto ids = ctx.dp.list();
+  if (!ids) {
+    findings["complete"] = false;
+  } else {
+    for (const auto& id : *ids) {
+      auto recipe = ctx.dp.recipeOf(id);
+      const auto node = recipe ? json::parse(*recipe, nullptr, false) : json();
+      if (!node.is_object()) {
+        findings["complete"] = false;
+        continue;
+      }
+      if (node.contains("pinned_t_ns")) {
+        findings["pinned"] = findings["pinned"].get<std::size_t>() + 1;
+        if (node.contains("memory_bytes") && node["memory_bytes"].is_number_unsigned()) {
+          findings["bytes"] = findings["bytes"].get<std::uint64_t>() + node["memory_bytes"].get<std::uint64_t>();
+        } else {
+          findings["complete"] = false;
+        }
+      }
+      json status = {{"name", id}};
+      for (const auto* key : {"kind", "state", "error", "detail", "requested_ns", "stale"}) {
+        if (node.contains(key)) {
+          status[key] = node[key];
+        }
+      }
+      processors.push_back(std::move(status));
+    }
+  }
+  out["findings"] = std::move(findings);
+  out["processors"] = std::move(processors);
   return ToolResult::success(out.dump());
 }
 
@@ -4437,7 +4486,8 @@ ToolRegistry::ToolRegistry() {
 
   add(
       {"plot_tab",
-       "Compose plot tabs of your own. A tab you create is watermarked \"AI\" and is the only place "
+       "Compose plot tabs of your own. A tab you create is marked with this assistant's ownership badge and is the "
+       "only place "
        "you may draw: the user's tabs are not yours to fill, zoom or close, and they do not go away "
        "when you close yours. Supporting hosts save your tabs with the layout and exclude them from "
        "undo/redo; older hosts may keep them only for the session.\n"

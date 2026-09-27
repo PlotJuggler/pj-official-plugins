@@ -470,6 +470,13 @@
                 </widget>
                </item>
                <item>
+                <widget class="QPlainTextEdit" name="onDemandReportPreview">
+                 <property name="readOnly"><bool>true</bool></property>
+                 <property name="visible"><bool>false</bool></property>
+                 <property name="placeholderText"><string>On-demand preview results</string></property>
+                </widget>
+               </item>
+               <item>
                 <widget class="QFrame" name="framePlotPreview">
                  <property name="minimumSize">
                   <size>

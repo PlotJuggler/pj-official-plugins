@@ -3,11 +3,17 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 
+## Unreleased
+
+- Fix scripted crop/pin examples to use positional coordinate arrays accepted by the real Luau binder.
+- Yield pending object evaluations between GUI ticks; release handles on completion, failure, cancellation, timeout and teardown.
+- Report own pinned findings, bytes and processor readiness; advertise media and annotation scripting operations.
+
 ## [0.3.0] - 2026-09-24
 
 ### Added
 - New tool `scene_view`: opens 3D/2D scene views of the assistant's own,
-  watermarked "AI" exactly like `plot_tab`'s tabs — the same
+  marked with the assistant ownership badge, like `plot_tab`'s tabs — the same
   create/attach/detach/focus/close/list shape, over `pj.scene_views.v1`. The
   user's own scene docks are unreachable from it. Every action answers with
   the view as the host holds it, so a topic that did not land shows as

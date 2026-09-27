@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_transform_editor/`.
 
+## Unreleased
+
+- Show on-demand JSON reports in the main preview pane; disable scalar Create while previewing this recipe kind.
+- Poll on-demand previews once per GUI tick without sleeping. Cancel and release pending previews when the script changes, expires, or the editor closes.
+
 ## [1.1.0] - 2026-09-24
 
 ### Added

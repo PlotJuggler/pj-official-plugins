@@ -50,13 +50,13 @@ tools run inside, which is why it stays on.
 | `remove_markers` | Remove the assistant's own marker set — and only that one |
 | `list_created` | What this assistant has installed so far |
 | `remove_derived_series` | Withdraw one of its own derived series or objects — and only its own |
-| `report_status` | Counts of loaded sources, topics, fields and object topics |
+| `report_status` | Counts of loaded sources, topics, fields and object topics; own pinned findings/bytes and processor readiness (with explicit incomplete accounting on older hosts) |
 | `playback` | The transport, by `action`: state / play / pause / seek / rate. One time cursor is shared by every plot, so this is the one control that is not scoped |
 | `plot_tab` | Tabs of the assistant's OWN, by `action`: create / add / remove / zoom / close / list |
 | `scene_view` | 3D/2D scene views of the assistant's OWN, by `action`: create / attach / detach / focus / close / list |
 
 `plot_tab` and `scene_view` are where the boundary lives. A tab or view the assistant creates is
-watermarked "AI" and is the only place it may draw, attach, zoom or close; your own tabs and scene
+marked with the assistant ownership badge and is the only place it may draw, attach, zoom or close; your own tabs and scene
 docks are unreachable from every tool it has. Supporting hosts save those owned tabs/views in the
 layout while excluding them from undo/redo. Older hosts may keep them only for the session, so
 `plot_tab`/`scene_view` with `action: "list"` is the authority after a reload.
@@ -174,3 +174,13 @@ real CLI and spend your subscription:
 ASSISTANT_CLAUDE_SMOKE=1 ctest --test-dir build/toolbox_assistant_agent/Release -R ClaudeSmoke
 ASSISTANT_CODEX_SMOKE=1  ctest --test-dir build/toolbox_assistant_agent/Release -R CodexBackend
 ```
+
+Object evaluations yield between GUI ticks while the host reports `PENDING`.
+Completion, failure, cancellation, deadline expiry and panel teardown release
+that evaluation handle exactly once. The assistant receives summaries, never
+image pixels or point-cloud bytes. `describe_topic` also advertises image/depth
+decode, pixel operations, depth projection, video frame lookup and annotation
+builders; CameraInfo and FrameTransforms expose fields only.
+
+See [native object acceptance](docs/OBJECT_ACCEPTANCE.md) for the real-host
+scripted workflow and recorded results.

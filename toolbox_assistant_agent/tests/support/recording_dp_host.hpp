@@ -59,6 +59,7 @@ struct RecordingDpHost {
   // fails.
   std::optional<bool> config_history_exempt;
   bool fail_config = false;
+  std::string canned_config_json;
   int config_calls = 0;
   std::string last_config_id;
   std::string last_config_json;  // owned storage for the borrowed out_recipe_json view
@@ -82,6 +83,7 @@ struct RecordingDpHost {
   // How many times poll_evaluation answers PENDING before COMPLETED, captured
   // per handle at submit time (see EvaluateWaitsThroughPendingPolls).
   int pending_polls = 0;
+  std::uint32_t terminal_state = PJ_EVALUATION_STATE_COMPLETED;
   // Default report: one bundle with a "cropped" object summary and a
   // "count" scalar value, matching the crop_box shape fake_backend.hpp's
   // "crop <topic> at <t>" phrase asks for.
@@ -275,6 +277,10 @@ struct RecordingDpHost {
       PJ::sdk::fillError(err, 1, "test", "config unavailable");
       return false;
     }
+    if (!self->canned_config_json.empty()) {
+      *out_recipe_json = PJ::sdk::toAbiString(self->canned_config_json);
+      return true;
+    }
     self->last_config_json = "{\"kind\":\"" + self->last_kind + "\"";
     if (self->config_history_exempt.has_value()) {
       self->last_config_json += std::string(",\"history_exempt\":") + (*self->config_history_exempt ? "true" : "false");
@@ -375,7 +381,7 @@ struct RecordingDpHost {
       self->last_poll_json = "{}";
     } else {
       if (out_state != nullptr) {
-        *out_state = PJ_EVALUATION_STATE_COMPLETED;
+        *out_state = self->terminal_state;
       }
       self->last_poll_json = self->canned_report_json;
     }
@@ -448,6 +454,10 @@ struct RecordingDpHost {
         .list_data_processor_ids = &RecordingDpHost::tList,
         .data_processor_config = &RecordingDpHost::tConfig,
         .validate_data_processor_script = &RecordingDpHost::tValidate,
+        .create_data_processor_v2 = nullptr,
+        .submit_evaluation = nullptr,
+        .poll_evaluation = nullptr,
+        .release_evaluation = nullptr,
     };
     return PJ::sdk::DataProcessorsHostView(
         PJ_data_processors_host_t{this, supports_v2 ? &vtable_full : &vtable_v1_only});

@@ -23,7 +23,7 @@ Three rules fall out of this and explain most of the code:
 
 **A backend never touches host services.** Backends run on the worker thread; the SDK views are
 only legal on the GUI thread. Everything a model asks for is marshalled back through
-`GuiExecutor`, which blocks the worker until `onTick` executes the call. That is also why the
+`GuiExecutor`, which blocks the worker until `onTick` finishes the call across one or more ticks. That is also why the
 catalog digest is built on the GUI thread *before* the turn is handed over — the worker could
 not build it itself.
 
@@ -78,7 +78,10 @@ it from a static table in `object_ops_catalog.hpp` that mirrors PJ4's `object_bi
 Keeping that table hand-written rather than derived is deliberate: the SDK's field table describes
 *data shape*, not the native methods a Luau binder layers on top of it, so there is no single source
 to generate operations from — the mirror has to be maintained, and object_ops_catalog.hpp's own
-comment says so.
+comment says so. Image/DepthImage decoding, projection, video lookup and annotation builders
+are included; CameraInfo and FrameTransforms expose their field tables without object methods.
+`report_status` reads this assistant's own recipes to count pinned findings and bytes, and
+returns available readiness fields. Failed recipe reads make accounting explicitly incomplete.
 
 ### Path resolution
 
@@ -310,11 +313,17 @@ CONSUMER-requested time rather than the whole series. Objects never round-trip t
 as bytes, so this path does not create-then-read like the scalar one; it goes straight at
 `pj.data_processors.v1`'s typed evaluation surface: `validateScript("on_demand", ...)`, then
 `submitEvaluation` of an `EPHEMERAL` `kind="on_demand"` request (id `__evaluate_N`, the same counter
-the scalar path uses, so both share one namespace), then `pollEvaluation` in a loop (a 10 ms sleep,
-bounded by the budget plus headroom — the phase-0 host completes inline, so this loop is currently
-dead code every time, but the contract allows a host that finishes in the background), then
-`releaseEvaluation` on every path via an RAII guard (`submitAndPoll`, shared with
-`create_derived_object`'s post-create finding read below).
+the scalar path uses, so both share one namespace). `pollEvaluation` runs once per GUI tick.
+A `PENDING` result returns a `ToolResult` continuation, which `GuiExecutor` requeues without
+waking the waiting backend. The next tick supplies a fresh `ToolContext`; no catalog snapshot
+or stack-local context is retained across ticks. The deadline is the evaluation budget plus
+one second of headroom.
+
+`PendingEvaluation` owns the handle and releases it exactly once on completion, host failure,
+cancellation, timeout, or destruction. Cancel and shutdown destroy queued continuations on the
+GUI thread while host services remain valid; abandoned worker requests are released at the next
+GUI tick. The same continuation serves `create_derived_object`'s post-create readback, so polling
+never repeats the persistent installation or its notification.
 
 The script itself is a different shape too: not a per-sample `T:calculate` closure
 (`buildLuauTransform`) but a single chunk evaluated once per requested instant

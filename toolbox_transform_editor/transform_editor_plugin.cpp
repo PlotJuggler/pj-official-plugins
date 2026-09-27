@@ -22,7 +22,6 @@
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <sstream>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include "transform_editor_dialog_ui.hpp"
@@ -411,10 +410,11 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       wd.setTableRows("tableFunctions", lib_rows);
       wd.setCodeContent("previewPlainText", combinedSnippetText(library_selected_))
           .setCodeLanguage("previewPlainText", "lua");
-    } else if (!on_demand_report_.empty()) {
-      // On-demand preview (see previewOnDemand): reuse this pane, no new UI.
-      wd.setCodeContent("previewPlainText", on_demand_report_).setCodeLanguage("previewPlainText", "json");
     }
+    const bool on_demand = global_code_.rfind("-- pj-kind: on_demand", 0) == 0;
+    wd.setVisible("onDemandReportPreview", on_demand);
+    wd.setVisible("framePlotPreview", !on_demand);
+    wd.setPlainText("onDemandReportPreview", !validation_error_.empty() ? validation_error_ : on_demand_report_);
 
     // Import / Export library buttons: the host drives the native file choosers.
     // Import opens an "open" dialog and Export a "save as"; both report back via
@@ -427,7 +427,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // the script as an ephemeral transform). PJ4 keeps its Modify-by-name
     // behaviour, so an already-existing name is not an error here.
     std::string single_term;
-    if (output_name_.empty()) {
+    if (output_name_.empty() && !on_demand) {
       single_term += "Create a name for the new series\n";
     } else if (std::find(sources_.begin(), sources_.end(), output_name_) != sources_.end()) {
       single_term += "Give the new series a name that isn't one of its inputs\n";
@@ -448,7 +448,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       io_status_.clear();
     }
     // Red fill on the name field when it's missing (PJ3 parity).
-    wd.setFieldValid("nameLineEdit", !output_name_.empty(), output_name_.empty() ? "Name is required" : "");
+    wd.setFieldValid(
+        "nameLineEdit", on_demand || !output_name_.empty(),
+        !on_demand && output_name_.empty() ? "Name is required" : "");
     if (!single_term.empty()) {
       wd.clearChart("framePlotPreview");
       wd.setChartPlaceholder("framePlotPreview", single_term);
@@ -500,8 +502,10 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // Each tab owns its Create action and validation gate. A pre-existing Single
     // output name and either explicit edit mode use the Modify label.
     const bool is_modify_single = outputNameExists(output_name_) || edit_mode_;
-    wd.setEnabled("pushButtonCreate", single_term.empty());
-    wd.setButtonText("pushButtonCreate", is_modify_single ? "Modify Time Series" : "Create New Time Series");
+    wd.setEnabled("pushButtonCreate", !on_demand && single_term.empty());
+    wd.setButtonText(
+        "pushButtonCreate",
+        on_demand ? "On-demand preview only" : (is_modify_single ? "Modify Time Series" : "Create New Time Series"));
     // Missing affix and empty inputs gate via the disabled button, not the overlay.
     wd.setEnabled("pushButtonCreateBatch", batch_term.empty() && !batch_sources_.empty() && !batch_suffix_.empty());
     wd.setButtonText("pushButtonCreateBatch", edit_mode_ ? "Modify Time Series" : "Create New Time Series");
@@ -1381,7 +1385,12 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   }
 
  private:
+  friend class TransformEditorPreviewTestPeer;
+
   void onSave() {
+    if (dialog_.globalCode().rfind("-- pj-kind: on_demand", 0) == 0) {
+      return;
+    }
     const auto& source = dialog_.sourceSeries();
     const auto& output_name = dialog_.outputName();
     const auto& global = dialog_.globalCode();
@@ -1521,6 +1530,11 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   }
 
   void tearDownPreview() {
+    if (pending_preview_ && dp_view_.valid()) {
+      (void)dp_view_.releaseEvaluation(*pending_preview_);
+    }
+    pending_preview_.reset();
+    preview_signature_.clear();
     if (!preview_key_.empty() && dp_view_.valid()) {
       (void)dp_view_.remove(preview_key_);
       preview_key_.clear();
@@ -1634,9 +1648,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       const std::vector<std::string>& inputs, const std::vector<PJ::sdk::DataProcessorOutput>& outputs,
       const std::string& script, const std::string& params_json) {
     dialog_.setPreviewSeries({});
-    dialog_.setOnDemandReport("");
     auto validation = dp_view_.validateScript("on_demand", "luau", script);
     if (!validation) {
+      tearDownPreview();
+      dialog_.setOnDemandReport("");
       dialog_.setValidationError(std::string(validation.error()));
       return;
     }
@@ -1677,29 +1692,56 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     request.flags = PJ_DATA_PROCESSOR_FLAG_EPHEMERAL;
     request.instant_ns = instant_ns;
 
-    const PJ::sdk::EvaluationBudget budget{.max_millis = 1000};
-    auto handle = dp_view_.submitEvaluation(request, budget);
-    if (!handle) {
-      dialog_.setValidationError(std::string(handle.error()));
+    nlohmann::json signature = {inputs, script, params_json, instant_ns};
+    for (const auto& output : outputs) {
+      signature.push_back({output.name, output.type});
+    }
+    const auto key = signature.dump();
+    const auto now = std::chrono::steady_clock::now();
+    if (key != preview_signature_ || (!pending_preview_ && now >= next_preview_refresh_)) {
+      const bool changed = key != preview_signature_;
+      tearDownPreview();
+      preview_signature_ = key;
+      next_preview_refresh_ = now + std::chrono::milliseconds(250);
+      if (changed) {
+        dialog_.setOnDemandReport("Evaluating on-demand preview...");
+      }
+      dialog_.setValidationError("");
+      const PJ::sdk::EvaluationBudget budget{.max_millis = 1000};
+      auto handle = dp_view_.submitEvaluation(request, budget);
+      if (!handle) {
+        dialog_.setOnDemandReport("");
+        dialog_.setValidationError(std::string(handle.error()));
+        return;
+      }
+      pending_preview_ = *handle;
+      preview_deadline_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    }
+    if (!pending_preview_) {
+      return;  // Reuse the last report briefly; a paused live input may still change.
+    }
+    auto attempt = dp_view_.pollEvaluation(*pending_preview_);
+    if (attempt && attempt->state == PJ::sdk::EvaluationState::kPending &&
+        std::chrono::steady_clock::now() < preview_deadline_) {
       return;
     }
-    auto attempt = dp_view_.pollEvaluation(*handle);
-    for (int tries = 0; tries < 150 && attempt && attempt->state == PJ::sdk::EvaluationState::kPending; ++tries) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      attempt = dp_view_.pollEvaluation(*handle);
-    }
-    (void)dp_view_.releaseEvaluation(*handle);
+    (void)dp_view_.releaseEvaluation(*pending_preview_);
+    pending_preview_.reset();
+    next_preview_refresh_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
     if (!attempt) {
+      dialog_.setOnDemandReport("");
       dialog_.setValidationError(attempt.error());
       return;
     }
     if (attempt->state != PJ::sdk::EvaluationState::kCompleted) {
+      dialog_.setOnDemandReport("");
       std::string msg = "timed out waiting for the host";
       if (attempt->state == PJ::sdk::EvaluationState::kCancelled) {
         msg = "cancelled by the host";
       } else if (attempt->state == PJ::sdk::EvaluationState::kFailed) {
         const auto err = nlohmann::json::parse(attempt->json, nullptr, /*allow_exceptions=*/false);
-        msg = err.is_object() && err.contains("error") ? err["error"].get<std::string>() : attempt->json;
+        msg = err.is_object() && err.contains("error") && err["error"].is_string() ? err["error"].get<std::string>()
+                                                                                   : attempt->json;
       }
       dialog_.setValidationError(msg);
       return;
@@ -1918,6 +1960,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   std::optional<PJ::sdk::DataSourceHandle> ds_handle_{std::nullopt};
   PJ::sdk::DataProcessorsHostView dp_view_;
   PJ::sdk::PlaybackHostView playback_view_;
+  std::optional<std::uint64_t> pending_preview_;
+  std::chrono::steady_clock::time_point preview_deadline_;
+  std::chrono::steady_clock::time_point next_preview_refresh_;
+  std::string preview_signature_;
   std::string preview_key_;  // non-empty when an ephemeral preview node is live
 };
 

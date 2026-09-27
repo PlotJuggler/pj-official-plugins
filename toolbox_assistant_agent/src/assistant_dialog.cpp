@@ -637,6 +637,7 @@ bool AssistantDialog::onClicked(std::string_view widget_name) {
     if (backend_) {
       backend_->cancel();
     }
+    gui_executor_.cancelPending();
     return false;
   }
   if (widget_name == "settingsButton") {
