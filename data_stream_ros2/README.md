@@ -17,8 +17,9 @@ This extension is therefore split into two artifacts:
 - **Proxy** (`libros2_stream_plugin.so`) — the entry point advertised by
   `manifest.json`. No dependency on `rclcpp`, `<dlfcn.h>` only. At first
   call into the plugin's vtable it detects the ROS 2 distribution
-  installed on the user's machine (via `ROS_DISTRO`, `/opt/ros/*`, or an
-  override env var) and `dlopen`s the matching per-distro binary.
+  installed on the user's machine (via `ROS_DISTRO`, the RoboStack
+  environment PlotJuggler runs from, or `/opt/ros/*`) and `dlopen`s the
+  matching per-distro binary.
 
 - **Per-distro inner** (`libros2_stream_plugin-<distro>.pjros2`) — the actual
   subscriber, compiled against one specific distro's `rclcpp`. One inner
@@ -213,6 +214,21 @@ marketplace scanner picks it up like any installed extension.
 | rolling (Ubuntu 26.04) | ✅ | ✅ |
 
 Single source of truth: [`docker/distros.env`](docker/distros.env).
+
+### RoboStack (conda)
+
+When PlotJuggler itself is installed from conda into a
+[RoboStack](https://robostack.github.io) environment, the proxy loads
+`dist/<distro>-robostack/` instead: RoboStack's `rclcpp` is a different
+build from `/opt/ros`'s. Supported: **jazzy** and **kilted**, on
+linux-x86_64 and linux-arm64 (the environments in
+[`robostack/pixi.toml`](robostack/pixi.toml)).
+
+These payloads carry no RPATH: their ROS libraries resolve through the
+conda-installed `plotjuggler4` executable's own (`$ORIGIN/../lib`). So they
+load only when PlotJuggler runs from the environment that holds `rclcpp`,
+which is exactly when the proxy picks them. Build one with
+`robostack/build.sh <distro>`.
 
 Windows is a follow-up — Chocolatey-based ROS 2 installs require a
 different bootstrap path and are not covered yet.

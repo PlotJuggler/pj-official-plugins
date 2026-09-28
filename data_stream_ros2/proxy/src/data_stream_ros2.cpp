@@ -8,7 +8,8 @@
  * extension's embedded manifest, so the host's plugin scanner can discover
  * and catalog the extension on a machine with no ROS installed. The vtable's
  * function slots are trampolines — the per-distro inner binary
- * (`dist/<distro>/libros2_stream_plugin-<distro>.pjros2` relative to this library)
+ * (`dist/<distro>/libros2_stream_plugin-<distro>.pjros2` relative to this library,
+ * or `dist/<distro>-robostack/` when PlotJuggler runs from a RoboStack env)
  * is dlopen-ed lazily on the first slot call (i.e. when the source is actually
  * instantiated), never at discovery time. Once loaded, the trampolines forward
  * straight to the inner's vtable.
@@ -82,8 +83,35 @@ bool distroDirectoryExists(std::string_view distro) {
   return std::filesystem::exists("/opt/ros/" + std::string(distro) + "/setup.bash");
 }
 
-bool condaDistroDirectoryExists(const std::filesystem::path& conda_prefix, std::string_view distro) {
-  return std::filesystem::exists(conda_prefix / "share" / std::string(distro));
+// The conda environment PlotJuggler runs from, when that environment holds
+// rclcpp (RoboStack). Keyed on the executable, not on CONDA_PREFIX: the
+// RoboStack payload resolves its ROS libraries through the executable's
+// DT_RPATH ($ORIGIN/../lib), so it only loads when the executable lives in
+// the environment that provides them.
+std::optional<std::filesystem::path> roboStackEnvironment() {
+  std::error_code ec;
+  const auto exe = std::filesystem::canonical("/proc/self/exe", ec);
+  if (ec) {
+    return std::nullopt;
+  }
+  auto env = exe.parent_path().parent_path();
+  if (!std::filesystem::exists(env / "lib" / "librclcpp.so", ec)) {
+    return std::nullopt;
+  }
+  return env;
+}
+
+// The distro whose rclcpp a conda environment holds, from its package records
+// (conda-meta/ros-<distro>-rclcpp-<version>-<build>.json).
+bool condaHasDistro(const std::filesystem::path& env, std::string_view distro) {
+  const std::string prefix = "ros-" + std::string(distro) + "-rclcpp-";
+  std::error_code ec;
+  for (const auto& entry : std::filesystem::directory_iterator(env / "conda-meta", ec)) {
+    if (entry.path().filename().string().starts_with(prefix)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Detect the ROS distribution to dispatch to. Chain of methods, highest
@@ -94,20 +122,20 @@ std::optional<std::string> detectRosDistro() {
     return env;
   }
 
-  // 2. Standard apt/debian install: /opt/ros/<distro>/setup.bash
-  for (const auto& distro : kSupportedDistros) {
-    if (distroDirectoryExists(distro)) {
-      return std::string(distro);
+  // 2. RoboStack: the environment PlotJuggler runs from. Ahead of /opt/ros,
+  //    since that environment is the ROS the payload will load.
+  if (auto env = roboStackEnvironment()) {
+    for (const auto& distro : kSupportedDistros) {
+      if (condaHasDistro(*env, distro)) {
+        return std::string(distro);
+      }
     }
   }
 
-  // 3. RoboStack / conda overlay: $CONDA_PREFIX/share/<distro>
-  if (auto prefix = PJ::sdk::getEnv("CONDA_PREFIX")) {
-    const std::filesystem::path conda_prefix(*prefix);
-    for (const auto& distro : kSupportedDistros) {
-      if (condaDistroDirectoryExists(conda_prefix, distro)) {
-        return std::string(distro);
-      }
+  // 3. Standard apt/debian install: /opt/ros/<distro>/setup.bash
+  for (const auto& distro : kSupportedDistros) {
+    if (distroDirectoryExists(distro)) {
+      return std::string(distro);
     }
   }
 
@@ -141,13 +169,16 @@ void loadInnerImpl() {
     return;
   }
 
-  const auto inner_path =
-      dir / "dist" / *distro / ("libros2_stream_plugin-" + *distro + std::string(kInnerLibrarySuffix));
+  // RoboStack's rclcpp is a different build from /opt/ros's, so it gets its
+  // own payload (dist/<distro>-robostack/).
+  const bool robostack = roboStackEnvironment().has_value();
+  const auto inner_path = dir / "dist" / (*distro + (robostack ? "-robostack" : "")) /
+                          ("libros2_stream_plugin-" + *distro + std::string(kInnerLibrarySuffix));
   if (!std::filesystem::exists(inner_path)) {
-    g_last_error = "ROS 2 distribution '" + *distro +
-                   "' is installed but no matching binary is shipped in this extension. "
+    g_last_error = "ROS 2 distribution '" + *distro + "'" + (robostack ? " (RoboStack)" : "") +
+                   " is installed but no matching binary is shipped in this extension. "
                    "Supported: " +
-                   supportedDistrosList() + ".";
+                   supportedDistrosList() + (robostack ? "; with RoboStack: jazzy, kilted." : ".");
     return;
   }
 
