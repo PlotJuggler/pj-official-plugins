@@ -594,8 +594,8 @@ PJ::Status RosParser::parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> 
   // (use_embedded_timestamp_); otherwise fall back to the message receive
   // time. The handler already folded the embedded stamp into the record.
   const PJ::Timestamp ts = record->ts.value_or(timestamp_ns);
-  return writeHost().appendRecord(
-      ts, PJ::Span<const PJ::sdk::NamedFieldValue>(record->fields.data(), record->fields.size()));
+  return bound_field_cache_.append(
+      writeHost(), ts, PJ::Span<const PJ::sdk::NamedFieldValue>(record->fields.data(), record->fields.size()));
 }
 
 // ---------------------------------------------------------------------------
@@ -810,8 +810,8 @@ PJ::Status RosParser::emitRecord(PJ::Timestamp ts) {
   for (const auto& f : owned_fields_) {
     named_fields_.push_back({.name = f.name, .value = f.value});
   }
-  return writeHost().appendRecord(
-      ts, PJ::Span<const PJ::sdk::NamedFieldValue>(named_fields_.data(), named_fields_.size()));
+  return bound_field_cache_.append(
+      writeHost(), ts, PJ::Span<const PJ::sdk::NamedFieldValue>(named_fields_.data(), named_fields_.size()));
 }
 
 // ---------------------------------------------------------------------------
