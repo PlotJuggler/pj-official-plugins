@@ -1,5 +1,6 @@
 #include <mqtt/async_client.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -63,7 +64,10 @@ class MqttSource : public PJ::StreamSourceBase {
     const auto connection = pj::mqtt_support::connectionSettingsFromJson(cfg);
     topic_filter_ = cfg.value("topics", std::string("#"));
     qos_ = cfg.value("qos", 0);
-    client_id_ = cfg.value("client_id", std::string("plotjuggler_mqtt"));
+    client_id_ = cfg.value("client_id", std::string{});
+    if (client_id_.empty()) {
+      client_id_ = pj::mqtt_support::randomClientId("plotjuggler_mqtt_");
+    }
     default_encoding_ = cfg.value("default_encoding", std::string("json"));
 
     // Read selected topics (from dialog discovery)
@@ -75,6 +79,10 @@ class MqttSource : public PJ::StreamSourceBase {
         }
       }
     }
+
+    initial_connect_done_.store(false, std::memory_order_relaxed);
+    (void)lost_cause_.take();
+    reconnected_.store(false, std::memory_order_relaxed);
 
     try {
       client_ = std::make_unique<mqtt::async_client>(pj::mqtt_support::brokerUri(connection), client_id_);
@@ -93,22 +101,26 @@ class MqttSource : public PJ::StreamSourceBase {
         message_queue_.push(std::move(m));
       });
 
-      // Detect connection loss
-      client_->set_connection_lost_handler([this](const std::string& cause) {
-        runtimeHost().reportMessage(
-            PJ::DataSourceMessageLevel::kWarning, "MQTT connection lost" + (cause.empty() ? "" : ": " + cause));
+      // These run on paho's internal thread: just latch state for onPoll to act on,
+      // no host/API calls here.
+      client_->set_connection_lost_handler([this](const std::string& cause) { lost_cause_.set(cause); });
+      client_->set_connected_handler([this](const std::string& /*cause*/) {
+        // Also fires for the initial connect below, which reports its own errors
+        // synchronously; only automatic-reconnect completions should hit onPoll.
+        if (initial_connect_done_.load(std::memory_order_relaxed)) {
+          reconnected_.store(true, std::memory_order_relaxed);
+        }
       });
 
-      client_->connect(pj::mqtt_support::makeConnectOptions(connection))->wait();
+      auto opts = pj::mqtt_support::makeConnectOptions(connection);
+      opts.set_automatic_reconnect(std::chrono::seconds(1), std::chrono::seconds(5));
+      client_->connect(opts)->wait();
 
-      // Subscribe to selected topics from dialog, or fall back to topic filter
-      if (!selected_topics_.empty()) {
-        for (const auto& topic : selected_topics_) {
-          client_->subscribe(topic, qos_)->wait();
-        }
-      } else {
-        client_->subscribe(topic_filter_, qos_)->wait();
+      for (const auto& topic : topicsToSubscribe()) {
+        client_->subscribe(topic, qos_)->wait();
       }
+
+      initial_connect_done_.store(true, std::memory_order_relaxed);
 
     } catch (const mqtt::exception& e) {
       return PJ::unexpected(std::string("MQTT error: ") + e.what());
@@ -118,6 +130,24 @@ class MqttSource : public PJ::StreamSourceBase {
   }
 
   PJ::Status onPoll() override {
+    if (auto cause = lost_cause_.take()) {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kWarning,
+          "MQTT connection lost" + (cause->empty() ? "" : ": " + *cause) + "; reconnecting");
+    }
+
+    if (reconnected_.exchange(false, std::memory_order_relaxed)) {
+      for (const auto& topic : topicsToSubscribe()) {
+        try {
+          client_->subscribe(topic, qos_);
+        } catch (const mqtt::exception& e) {
+          runtimeHost().reportMessage(
+              PJ::DataSourceMessageLevel::kWarning, "Failed to re-subscribe to " + topic + ": " + e.what());
+        }
+      }
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, "Reconnected to MQTT broker");
+    }
+
     auto batch = message_queue_.drain();
 
     while (!batch.empty()) {
@@ -146,16 +176,11 @@ class MqttSource : public PJ::StreamSourceBase {
   void onStop() override {
     if (client_) {
       try {
-        if (client_->is_connected()) {
-          if (!selected_topics_.empty()) {
-            for (const auto& topic : selected_topics_) {
-              client_->unsubscribe(topic)->wait();
-            }
-          } else {
-            client_->unsubscribe(topic_filter_)->wait();
-          }
-          client_->disconnect()->wait();
-        }
+        // clean_session=true drops subscriptions on disconnect, so no need to
+        // unsubscribe first. disconnect() unconditionally (not gated on
+        // is_connected()) because it's also what stops paho's automatic-reconnect
+        // loop; wait_for() bounds the call so an unresponsive broker can't hang Stop.
+        client_->disconnect()->wait_for(std::chrono::seconds(2));
       } catch (...) {}
       client_.reset();
     }
@@ -163,6 +188,12 @@ class MqttSource : public PJ::StreamSourceBase {
   }
 
  private:
+  /// Topics to (re)subscribe to: the dialog's discovered selection, or the
+  /// broker-side filter as a fallback. Shared by onStart and the onPoll resubscribe.
+  std::vector<std::string> topicsToSubscribe() const {
+    return selected_topics_.empty() ? std::vector<std::string>{topic_filter_} : selected_topics_;
+  }
+
   MqttDialog dialog_;
 
   std::string topic_filter_ = "#";
@@ -175,6 +206,11 @@ class MqttSource : public PJ::StreamSourceBase {
   std::unique_ptr<mqtt::async_client> client_;
   PJ::sdk::DrainQueue<MqttMessage> message_queue_;
   PJ::sdk::DelegatedIngestCache ingest_;
+
+  // Set by paho's callback thread, consumed by onPoll on the poll thread.
+  std::atomic<bool> initial_connect_done_{false};
+  std::atomic<bool> reconnected_{false};
+  PJ::sdk::LatestValueSlot<std::string> lost_cause_;  // set = connection lost, value = paho's cause
 };
 
 }  // namespace
