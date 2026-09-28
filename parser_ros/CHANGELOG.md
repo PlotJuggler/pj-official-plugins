@@ -3,6 +3,17 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_ros/`.
 
+## [1.2.4] - 2026-09-28
+
+### Changed
+- Direct ingest appends records by field handle. Handles are cached by the
+  field's position in the flattened message (a repeat costs one string
+  compare), so the host no longer normalizes, hashes and looks up every
+  field name of every message. About 33% faster on 368 k real
+  `sensor_msgs/Imu` messages. Records whose shape or types change still go
+  through the by-name path, so accepted data and error messages are
+  unchanged.
+
 ## [1.2.3] - 2026-09-28
 
 ### Fixed

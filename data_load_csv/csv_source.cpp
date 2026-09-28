@@ -184,17 +184,22 @@ class CsvSource : public PJ::FileSourceBase {
     }
 
     // --- Pre-register ALL columns before writing any data ---
+    // Rows are appended by handle: the by-name path copies every column name
+    // into each row and makes the host re-resolve it, per cell.
+    std::vector<PJ::sdk::FieldHandle> column_handles(result.columns.size());
     for (size_t col_idx : numeric_col_indices) {
       auto field = writeHost().ensureField(*topic, result.columns[col_idx].name, PJ::PrimitiveType::kFloat64);
       if (!field) {
         return PJ::unexpected(field.error());
       }
+      column_handles[col_idx] = *field;
     }
     for (size_t col_idx : string_col_indices) {
       auto field = writeHost().ensureField(*topic, result.columns[col_idx].name, PJ::PrimitiveType::kString);
       if (!field) {
         return PJ::unexpected(field.error());
       }
+      column_handles[col_idx] = *field;
     }
 
     // --- Build merged timeline and write records ---
@@ -225,33 +230,33 @@ class CsvSource : public PJ::FileSourceBase {
         all_points.begin(), all_points.end(), [](const DataPoint& a, const DataPoint& b) { return a.ts_ns < b.ts_ns; });
 
     // Group by timestamp and write multi-field records
-    std::vector<PJ::sdk::NamedFieldValue> row_fields;
+    std::vector<PJ::sdk::BoundFieldValue> row_fields;
     size_t i = 0;
     while (i < all_points.size()) {
       int64_t ts = all_points[i].ts_ns;
       row_fields.clear();
 
       // Collect all fields at this timestamp
-      // String values need to stay alive until appendRecord completes,
+      // String values need to stay alive until appendBoundRecord completes,
       // so we reference directly into all_points (stable since we don't modify it).
       while (i < all_points.size() && all_points[i].ts_ns == ts) {
         const auto& pt = all_points[i];
         if (pt.is_string) {
           row_fields.push_back({
-              .name = result.columns[pt.col_idx].name,
+              .field = column_handles[pt.col_idx],
               .value = std::string_view(pt.string_val),
           });
         } else {
           row_fields.push_back({
-              .name = result.columns[pt.col_idx].name,
+              .field = column_handles[pt.col_idx],
               .value = pt.numeric_val,
           });
         }
         i++;
       }
 
-      auto status = writeHost().appendRecord(
-          *topic, PJ::Timestamp{ts}, PJ::Span<const PJ::sdk::NamedFieldValue>(row_fields.data(), row_fields.size()));
+      auto status = writeHost().appendBoundRecord(
+          *topic, PJ::Timestamp{ts}, PJ::Span<const PJ::sdk::BoundFieldValue>(row_fields.data(), row_fields.size()));
       if (!status) {
         return status;
       }

@@ -278,11 +278,16 @@ class ULogSource : public PJ::FileSourceBase {
         field_types.push_back(leaf.is_string ? PJ::PrimitiveType::kString : ulogTypeToPrimitive(leaf.type));
       });
 
+      // Rows are appended by handle: the by-name path copies every field name
+      // into each row and makes the host re-resolve it, per field per record.
+      std::vector<PJ::sdk::FieldHandle> field_handles;
+      field_handles.reserve(field_names.size());
       for (size_t fi = 0; fi < field_names.size() && fi < field_types.size(); ++fi) {
         auto field = writeHost().ensureField(*topic, field_names[fi], field_types[fi]);
         if (!field) {
           return PJ::unexpected(field.error());
         }
+        field_handles.push_back(*field);
       }
 
       // The spec mandates a `uint64_t timestamp` field but not its position, so
@@ -301,8 +306,8 @@ class ULogSource : public PJ::FileSourceBase {
       const auto format_size = ulog_flatten::loggedSizeBytes(*sub->format());
 
       // Write data records.
-      std::vector<PJ::sdk::NamedFieldValue> row_fields;
-      row_fields.reserve(field_names.size());
+      std::vector<PJ::sdk::BoundFieldValue> row_fields;
+      row_fields.reserve(field_handles.size());
       std::vector<PJ::sdk::ValueRef> values;
       values.reserve(field_names.size());
 
@@ -333,14 +338,14 @@ class ULogSource : public PJ::FileSourceBase {
 
         // Build row.
         row_fields.clear();
-        size_t count = std::min(values.size(), field_names.size());
+        size_t count = std::min(values.size(), field_handles.size());
         for (size_t j = 0; j < count; ++j) {
-          row_fields.push_back({.name = field_names[j], .value = values[j]});
+          row_fields.push_back({.field = field_handles[j], .value = values[j]});
         }
 
-        auto status = writeHost().appendRecord(
+        auto status = writeHost().appendBoundRecord(
             *topic, PJ::Timestamp{ts_ns},
-            PJ::Span<const PJ::sdk::NamedFieldValue>(row_fields.data(), row_fields.size()));
+            PJ::Span<const PJ::sdk::BoundFieldValue>(row_fields.data(), row_fields.size()));
         if (!status) {
           return status;
         }
