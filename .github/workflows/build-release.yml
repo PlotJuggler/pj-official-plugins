@@ -111,6 +111,15 @@ jobs:
         shell: bash
         run: scripts/ensure_core.sh
 
+      # data_stream_ros2's RoboStack payloads build in pixi environments
+      # (data_stream_ros2/robostack), next to its Docker-built /opt/ros ones.
+      - name: Set up pixi (data_stream_ros2)
+        if: steps.build-scope.outputs.skip != 'true' && steps.build-scope.outputs.plugin_name == 'data_stream_ros2' && runner.os == 'Linux'
+        uses: prefix-dev/setup-pixi@v0.8.14
+        with:
+          run-install: false
+          cache: false
+
       - name: Build & Test
         if: steps.build-scope.outputs.skip != 'true'
         shell: bash

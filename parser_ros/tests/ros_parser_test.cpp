@@ -2010,6 +2010,74 @@ TEST(RosParserTest, CompressedDepthWithConfigHeaderIsStripped) {
   EXPECT_FLOAT_EQ(*img->compressed_depth_max, kDepthMax);
 }
 
+// Parses one sensor_msgs/CompressedImage with the given format string and data
+// and returns the emitted Image's encoding, or the parse error.
+static PJ::Expected<std::string> compressedImageEncoding(const std::string& format, const std::vector<uint8_t>& data) {
+  RosParserFixture f;
+  f.setUp();
+  if (!f.bindSchema("sensor_msgs/CompressedImage", kCompressedImageDef)) {
+    return PJ::unexpected(std::string("bindSchema failed"));
+  }
+  auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 7, 0, "camera");
+    enc.serializeString(format);
+    enc.serializeUInt32(static_cast<uint32_t>(data.size()));
+    for (uint8_t b : data) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(b));
+    }
+  });
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  auto rec = base->parseObject(1234, view);
+  if (!rec) {
+    return PJ::unexpected(rec.error());
+  }
+  const auto* img = pj_compat::getBuiltinObject<PJ::sdk::Image>(rec->object);
+  if (img == nullptr || img->data.size() != data.size()) {
+    return PJ::unexpected(std::string("no Image, or data not passed through verbatim"));
+  }
+  return img->encoding;
+}
+
+static const std::vector<uint8_t> kPngBytes = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+                                               0x00, 0x00, 0x00, 0x0D, 'I',  'H',  'D',  'R'};
+static const std::vector<uint8_t> kJpegBytes = {0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F'};
+
+// compressed_image_transport writes "<encoding>; png compressed [target]"; a
+// 16UC1 PNG is raw millimetres, so it takes the depth path like headerless
+// compressedDepth.
+TEST(RosParserTest, CompressedImageTransportPngFormats) {
+  auto depth = compressedImageEncoding("16UC1; png compressed ", kPngBytes);
+  ASSERT_TRUE(depth.has_value()) << depth.error();
+  EXPECT_EQ(*depth, "compressedDepth");
+
+  auto color = compressedImageEncoding("bgr8; png compressed bgr8", kPngBytes);
+  ASSERT_TRUE(color.has_value()) << color.error();
+  EXPECT_EQ(*color, "png");
+
+  auto mono = compressedImageEncoding("mono8; png compressed ", kPngBytes);
+  ASSERT_TRUE(mono.has_value()) << mono.error();
+  EXPECT_EQ(*mono, "png");
+}
+
+// Some recorders put only the raw encoding in `format`; the payload's magic
+// bytes identify the codec.
+TEST(RosParserTest, CompressedImageFormatWithoutCodecIsSniffed) {
+  auto depth = compressedImageEncoding("16UC1", kPngBytes);
+  ASSERT_TRUE(depth.has_value()) << depth.error();
+  EXPECT_EQ(*depth, "compressedDepth");
+
+  auto color = compressedImageEncoding("rgb8", kJpegBytes);
+  ASSERT_TRUE(color.has_value()) << color.error();
+  EXPECT_EQ(*color, "jpeg");
+}
+
+TEST(RosParserTest, CompressedImageUnknownPayloadIsRejected) {
+  auto rec = compressedImageEncoding("16UC1", {0x01, 0x02, 0x03, 0x04});
+  ASSERT_FALSE(rec.has_value());
+  EXPECT_NE(rec.error().find("16UC1"), std::string::npos);
+}
+
 TEST(RosParserTest, CompressedVideoProducesObject) {
   // foxglove_msgs/CompressedVideo. The first field is a BARE
   // builtin_interfaces/Time (sec, nanosec) — NOT a std_msgs/Header — followed

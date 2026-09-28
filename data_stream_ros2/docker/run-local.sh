@@ -9,6 +9,7 @@
 #   run-local.sh --distro <distro|all>     build distro artifact(s) only
 #   run-local.sh --proxy                   build the proxy only
 #   run-local.sh --bundle                  build everything + assemble + zip
+#                                          (the RoboStack payloads need pixi)
 #
 #   [--plugins <path>] [--core <path>] [--core-repo <url>]
 #   [--with-pj-app --pj4 <path>]
@@ -36,6 +37,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DISTRO_DIR="${SCRIPT_DIR}/distro"
 PROXY_DIR="${SCRIPT_DIR}/proxy"
 DISTROS_FILE="${SCRIPT_DIR}/distros.env"
+# Distros that also get a RoboStack payload (dist/<distro>-robostack/), built
+# natively with pixi rather than in Docker. Keep in sync with the environments
+# in ../robostack/pixi.toml.
+ROBOSTACK_DISTROS=(jazzy kilted)
 
 MODE=""
 DISTRO=""
@@ -206,6 +211,15 @@ build_all_distros() {
   done < "${DISTROS_FILE}"
 }
 
+# ─── RoboStack payloads (pixi, no Docker) ───────────────────────────────────
+build_robostack_distros() {
+  command -v pixi >/dev/null || { echo "error: the RoboStack payloads need pixi (https://pixi.sh)" >&2; exit 3; }
+  local distro
+  for distro in "${ROBOSTACK_DISTROS[@]}"; do
+    "${PLUGINS_DIR}/data_stream_ros2/robostack/build.sh" "${distro}" "${PLUGINS_DIR}/build_ros2_${distro}_robostack"
+  done
+}
+
 # ─── Bundle assembly: dist_ros2/ tree + ros2-topic-subscriber-linux-x86_64.zip ─
 assemble_bundle() {
   local stage="${PLUGINS_DIR}/dist_ros2"
@@ -234,6 +248,14 @@ assemble_bundle() {
     cp "${distro_so}" "${stage}/dist/${distro}/libros2_stream_plugin-${distro}.pjros2"
   done < "${DISTROS_FILE}"
 
+  local distro payload
+  for distro in "${ROBOSTACK_DISTROS[@]}"; do
+    payload="${PLUGINS_DIR}/build_ros2_${distro}_robostack/libros2_stream_plugin-${distro}.pjros2"
+    [[ -f "${payload}" ]] || { echo "RoboStack payload not found for ${distro}: ${payload}" >&2; exit 3; }
+    mkdir -p "${stage}/dist/${distro}-robostack"
+    cp "${payload}" "${stage}/dist/${distro}-robostack/"
+  done
+
   echo "[run-local] tree:"
   find "${stage}" -type f | sort
 
@@ -261,6 +283,7 @@ case "${MODE}" in
     ;;
   bundle)
     build_all_distros
+    build_robostack_distros
     build_proxy
     assemble_bundle
     ;;

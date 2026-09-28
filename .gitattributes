@@ -1,0 +1,2 @@
+# Generated lock files: collapsed in GitHub diffs, never line-merged (re-run `pixi lock`).
+pixi.lock merge=binary linguist-language=YAML linguist-generated=true -diff
