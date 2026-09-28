@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_ros/`.
 
+## [1.2.3] - 2026-09-28
+
+### Fixed
+- `sensor_msgs/CompressedImage`: accept `compressed_image_transport` PNG formats (`"<encoding>; png compressed ..."`) and formats that name only the raw encoding (e.g. `"16UC1"`), identifying the codec from the payload's magic bytes. A 16UC1 PNG is routed to the depth path. These topics previously failed with "unsupported CompressedImage format".
+
 ## [1.2.2] - 2026-09-12
 
 ### Changed
