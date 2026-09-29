@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <deque>
-#include <limits>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
@@ -126,23 +125,14 @@ void flattenJson(
       sink.fields.push_back({prefix, value.get<bool>()});
       break;
 
+    // Every number is a double, whatever the source spelled: JSON (and
+    // JavaScript-produced CBOR/MessagePack) writes 1.0 as "1", so a field's
+    // integer/float/signedness split is not stable across messages, and the
+    // host fixes a column's type from its first value. The host stores
+    // whole-number float chunks as compactly as integers and still offers
+    // whole-number fields as state series. Integers above 2^53 lose precision.
     case nlohmann::detail::value_t::number_integer:
-      sink.fields.push_back({prefix, value.get<int64_t>()});
-      break;
-
-    case nlohmann::detail::value_t::number_unsigned: {
-      // All JSON integers map to int64 so a field keeps one column type even
-      // if its sign changes across messages; values too large for int64
-      // fall back to double rather than wrapping negative.
-      auto v = value.get<uint64_t>();
-      if (v <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
-        sink.fields.push_back({prefix, static_cast<int64_t>(v)});
-      } else {
-        sink.fields.push_back({prefix, static_cast<double>(v)});
-      }
-      break;
-    }
-
+    case nlohmann::detail::value_t::number_unsigned:
     case nlohmann::detail::value_t::number_float:
       sink.fields.push_back({prefix, value.get<double>()});
       break;

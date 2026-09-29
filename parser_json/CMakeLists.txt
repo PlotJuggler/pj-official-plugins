@@ -37,6 +37,7 @@ target_compile_definitions(json_parser_test PRIVATE
 target_link_libraries(json_parser_test PRIVATE
   plotjuggler_sdk::plugin_sdk
   plotjuggler_sdk::plugin_host
+  nlohmann_json::nlohmann_json
   GTest::gtest_main
 )
 add_test(NAME json_parser_test COMMAND json_parser_test)
