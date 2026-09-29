@@ -3,6 +3,18 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_ros/`.
 
+## [1.2.5] - 2026-09-29
+
+### Fixed
+- Messages that the datastore rejects no longer register all of their fields.
+  An example is a `tf2_msgs/TFMessage` that lists the same parent/child pair
+  twice. In 1.2.4 such a message could add empty series, and it could set the
+  type of a field whose value type varies between messages. It now affects
+  columns exactly as it did before 1.2.4.
+- The error for such a message names the repeated field again
+  (`duplicate field name '…'`), as before 1.2.4, instead of a numeric field
+  id.
+
 ## [1.2.4] - 2026-09-28
 
 ### Changed
