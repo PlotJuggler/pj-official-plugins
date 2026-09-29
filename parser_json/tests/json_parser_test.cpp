@@ -393,7 +393,10 @@ TEST(JsonParserTest, BinaryFormatIntegersAreFloat64) {
   for (const auto& [encoding, bytes] : payloads) {
     JsonParserFixture f;
     f.setUp();
-    ASSERT_TRUE(f.handle.loadConfig(std::string(R"({"encoding_hint":")") + encoding + "\"}"));
+    // Built outside the macro: MSVC's traditional preprocessor mis-tokenizes a
+    // raw string with an odd number of quotes inside ASSERT_TRUE (C2017).
+    const std::string config = nlohmann::json{{"encoding_hint", encoding}}.dump();
+    ASSERT_TRUE(f.handle.loadConfig(config));
     ASSERT_TRUE(f.handle.parse(1000, PJ::Span<const uint8_t>(bytes.data(), bytes.size())).has_value()) << encoding;
     ASSERT_EQ(f.recorder.rows().size(), 1u) << encoding;
     for (const auto& field : f.recorder.rows()[0].fields) {
