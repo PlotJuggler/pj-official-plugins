@@ -824,7 +824,9 @@ void AssistantDialog::sendCurrentInput() {
   std::string catalog;
   if (host_provider_) {
     const SettingsStore store(settings_);
-    catalog = catalogDigest(host_provider_(), static_cast<std::size_t>(resolveCatalogBudgetChars(store)));
+    catalog = catalogDigest(
+        host_provider_(), static_cast<std::size_t>(resolveCatalogBudgetChars(store)),
+        playback_provider_ ? playback_provider_() : PJ::sdk::PlaybackHostView{});
   }
 
   postCommand([this, text, catalog, backend = backend_]() {

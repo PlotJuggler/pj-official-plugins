@@ -70,7 +70,9 @@ class ToolRegistry {
 // Whenever anything is left out the text says so explicitly — a model that
 // believes an incomplete listing is the whole truth will confidently tell the
 // user a signal does not exist.
-[[nodiscard]] std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budget_chars = 10000);
+[[nodiscard]] std::string catalogDigest(
+    const PJ::sdk::ToolboxHostView& host, std::size_t budget_chars = 10000,
+    const PJ::sdk::PlaybackHostView& playback = {});
 
 // A resolved "topic/field" curve path: the field handle plus the owning topic
 // name. `path` is the canonical form the lookup settled on — with several

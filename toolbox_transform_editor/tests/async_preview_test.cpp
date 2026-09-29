@@ -24,6 +24,19 @@ class TransformEditorPreviewTestPeer {
   static void expire(TransformEditorToolbox& editor) {
     editor.preview_deadline_ = std::chrono::steady_clock::time_point{};
   }
+  static void configure(TransformEditorToolbox& editor, bool source, bool body) {
+    nlohmann::json config = {
+        {"global_code", "-- pj-kind: on_demand\n-- pj-outputs: count:number"},
+        {"function_body", body ? "return {count=1}" : ""},
+        {"sources", source ? nlohmann::json::array({"/cloud"}) : nlohmann::json::array()}};
+    ASSERT_TRUE(editor.dialog_.loadConfig(config.dump()));
+  }
+  static void refreshCurrent(TransformEditorToolbox& editor) {
+    editor.refreshPreview();
+  }
+  static std::string report(TransformEditorToolbox& editor) {
+    return nlohmann::json::parse(editor.dialog_.widget_data())["onDemandReportPreview"]["plain_text"];
+  }
   static void close(TransformEditorToolbox& editor) {
     editor.tearDownPreview();
   }
@@ -109,4 +122,34 @@ TEST(TransformEditorPreview, ReportIsVisibleInMainPanelAndScalarCreateIsDisabled
   EXPECT_EQ(widgets["onDemandReportPreview"]["plain_text"], "{\"count\":42}");
   EXPECT_EQ(widgets["framePlotPreview"]["visible"], false);
   EXPECT_EQ(widgets["pushButtonCreate"]["enabled"], false);
+}
+
+TEST(TransformEditorPreview, ClearingBodyOrInputClearsCompletedAndPendingReports) {
+  for (bool clear_source : {false, true}) {
+    Host host;
+    TransformEditorToolbox editor;
+    TransformEditorPreviewTestPeer::bind(editor, host.view());
+    TransformEditorPreviewTestPeer::configure(editor, true, true);
+    TransformEditorPreviewTestPeer::refreshCurrent(editor);
+    ASSERT_FALSE(TransformEditorPreviewTestPeer::report(editor).empty());
+    TransformEditorPreviewTestPeer::configure(editor, !clear_source, clear_source);
+    TransformEditorPreviewTestPeer::refreshCurrent(editor);
+    EXPECT_TRUE(TransformEditorPreviewTestPeer::report(editor).empty());
+
+    host.pending_polls = 100;
+    TransformEditorPreviewTestPeer::configure(editor, true, true);
+    TransformEditorPreviewTestPeer::refreshCurrent(editor);
+    ASSERT_TRUE(TransformEditorPreviewTestPeer::pending(editor));
+    const int polls = host.poll_calls;
+    TransformEditorPreviewTestPeer::configure(editor, !clear_source, clear_source);
+    TransformEditorPreviewTestPeer::refreshCurrent(editor);
+    EXPECT_FALSE(TransformEditorPreviewTestPeer::pending(editor));
+    EXPECT_EQ(host.released_handles.size(), 2u);
+    // A terminal report arriving after invalidation must never be polled back
+    // into the editor: the old handle was released and the recipe is incomplete.
+    host.pending_polls = 0;
+    TransformEditorPreviewTestPeer::refreshCurrent(editor);
+    EXPECT_EQ(host.poll_calls, polls);
+    EXPECT_TRUE(TransformEditorPreviewTestPeer::report(editor).empty());
+  }
 }

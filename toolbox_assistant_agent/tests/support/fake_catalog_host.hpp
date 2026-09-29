@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <pj_base/sdk/plugin_data_api.hpp>
@@ -10,7 +11,7 @@
 
 namespace assistant_agent::testing {
 
-// A single-dataset, catalog-only toolbox host with topics whose field COUNT
+// A catalog-only toolbox host with optionally named object datasets and field COUNT
 // and TYPE the test controls. Neither existing fake covers this:
 // ToolboxTestStore stamps every field float64 with real timestamps/values
 // (it exists for the read path), and FakeMultiDatasetHost fixes one float64
@@ -49,8 +50,12 @@ class FakeCatalogHost {
   // with (or without) the `"pj_derived"` key explicitly.
   FakeCatalogHost& addObjectTopic(
       const std::string& name, const std::string& type_name, std::uint64_t entries, std::int64_t t_min_ns,
-      std::int64_t t_max_ns, const std::string& metadata_json = R"({"builtin_object_type":"kPointCloud"})") {
-    object_topics_.push_back({name, type_name, entries, t_min_ns, t_max_ns, metadata_json});
+      std::int64_t t_max_ns, const std::string& metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+      const std::string& dataset = {}) {
+    object_topics_.push_back({name, type_name, entries, t_min_ns, t_max_ns, metadata_json, dataset});
+    if (!dataset.empty() && std::find(datasets_.begin(), datasets_.end(), dataset) == datasets_.end()) {
+      datasets_.push_back(dataset);
+    }
     return *this;
   }
 
@@ -95,6 +100,7 @@ class FakeCatalogHost {
     std::int64_t t_min_ns;
     std::int64_t t_max_ns;
     std::string metadata_json;
+    std::string dataset;
   };
 
   static PJ_string_view_t sv(const std::string& s) {
@@ -105,6 +111,13 @@ class FakeCatalogHost {
   // tAcquireV2 so the scalar half of a v2 snapshot is byte-for-byte what v1
   // would have reported.
   void rebuildScalarAbi() {
+    source_abi_.clear();
+    for (std::size_t i = 0; i < datasets_.size(); ++i) {
+      PJ_data_source_info_t info{};
+      info.handle = PJ_data_source_handle_t{static_cast<std::uint32_t>(i + 1)};
+      info.name = sv(datasets_[i]);
+      source_abi_.push_back(info);
+    }
     topic_abi_.clear();
     field_abi_.clear();
     std::uint32_t field_cursor = 0;
@@ -130,8 +143,8 @@ class FakeCatalogHost {
   static bool tAcquire(void* ctx, PJ_catalog_snapshot_t* out, PJ_error_t* /*err*/) noexcept {
     auto* self = static_cast<FakeCatalogHost*>(ctx);
     self->rebuildScalarAbi();
-    out->data_sources = nullptr;
-    out->data_source_count = 0;
+    out->data_sources = self->source_abi_.data();
+    out->data_source_count = self->source_abi_.size();
     out->topics = self->topic_abi_.data();
     out->topic_count = self->topic_abi_.size();
     out->fields = self->field_abi_.data();
@@ -148,7 +161,12 @@ class FakeCatalogHost {
     for (const auto& o : self->object_topics_) {
       PJ_object_topic_info_t oinfo{};
       oinfo.handle = PJ_object_topic_handle_t{static_cast<std::uint32_t>(self->object_topic_abi_.size() + 1)};
-      oinfo.source = PJ_data_source_handle_t{0};  // FakeCatalogHost has no data-source concept
+      for (const auto& source : self->source_abi_) {
+        if (PJ::sdk::toStringView(source.name) == o.dataset) {
+          oinfo.source = source.handle;
+          break;
+        }
+      }
       oinfo.name = sv(o.name);
       oinfo.builtin_object_type = sv(o.type_name);
       oinfo.metadata_json = sv(o.metadata_json);
@@ -159,8 +177,8 @@ class FakeCatalogHost {
     }
     out->struct_size = sizeof(PJ_catalog_snapshot_v2_t);
     out->reserved = 0;
-    out->data_sources = nullptr;
-    out->data_source_count = 0;
+    out->data_sources = self->source_abi_.data();
+    out->data_source_count = self->source_abi_.size();
     out->topics = self->topic_abi_.data();
     out->topic_count = self->topic_abi_.size();
     out->fields = self->field_abi_.data();
@@ -172,6 +190,8 @@ class FakeCatalogHost {
     return true;
   }
 
+  std::vector<std::string> datasets_;
+  std::vector<PJ_data_source_info_t> source_abi_;
   std::vector<TopicSpec> topics_;
   std::vector<ObjectTopicSpec> object_topics_;
   bool supports_v2_ = true;

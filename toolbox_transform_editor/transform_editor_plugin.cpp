@@ -1764,6 +1764,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     // batch Create (and to avoid needless per-tick churn).
     if (dialog_.currentTab() != 0) {
       tearDownPreview();
+      dialog_.setOnDemandReport("");
       dialog_.setPreviewSeries({});
       return;
     }
@@ -1776,6 +1777,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
 
     if (source.empty() || body.empty()) {
       tearDownPreview();
+      dialog_.setOnDemandReport("");
       dialog_.setPreviewSeries({});
       dialog_.setValidationError("");  // incomplete input is not an error
       return;

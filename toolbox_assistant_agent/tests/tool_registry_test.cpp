@@ -2871,7 +2871,7 @@ TEST(ToolRegistry, SceneViewListIsReadBack) {
 
 TEST(ToolRegistry, SceneViewOnOldHostReportsNotExposed) {
   ToolRegistry reg;
-  ToolContext ctx;  // ctx.scene_views left unbound: a host older than SDK 0.35.0
+  ToolContext ctx;  // ctx.scene_views left unbound: a host older than SDK 0.36.0
 
   auto r = reg.execute("scene_view", {{"action", "list"}}, ctx);
   EXPECT_FALSE(r.ok);
@@ -3675,4 +3675,133 @@ TEST(ToolRegistry, ExecutorCancelReleasesPendingEvaluationAndAllowsAnotherTurn) 
   }
   executor.drain(reg, ctx);
   EXPECT_TRUE(next.get().ok);
+}
+
+TEST(CatalogDigest, ObjectRangeMatchesListingDisplayAxisAndMarksRawFallback) {
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 2, 1000 * kSec, 1001 * kSec);
+  FakePlaybackHost playback;
+  playback.display_offset_ns = 1000 * kSec;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.playback = playback.view();
+  ToolRegistry registry;
+  const auto listed = registry.execute("list_topics", json::object(), ctx);
+  ASSERT_TRUE(listed.ok);
+  EXPECT_EQ(json::parse(listed.content)["topics"][0]["t_range_s"], json::array({0.0, 1.0}));
+  EXPECT_NE(catalogDigest(ctx.host, 10000, ctx.playback).find("0.000-1.000 display seconds"), std::string::npos);
+  EXPECT_NE(catalogDigest(ctx.host).find("1000.000-1001.000 raw seconds"), std::string::npos);
+}
+
+TEST(ToolRegistry, SceneDetachVerifiesDatasetAndTopicTogether) {
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "A");
+  host.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "B");
+  FakeSceneViewsHost scenes;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.scene_views = scenes.view();
+  ToolRegistry registry;
+  ASSERT_TRUE(registry.execute("scene_view", {{"action", "create"}, {"view", "clouds"}}, ctx).ok);
+  ASSERT_TRUE(registry
+                  .execute(
+                      "scene_view",
+                      {{"action", "attach"}, {"view", "clouds"}, {"topics", json::array({"A:/cloud", "B:/cloud"})}},
+                      ctx)
+                  .ok);
+  auto result = registry.execute(
+      "scene_view", {{"action", "detach"}, {"view", "clouds"}, {"topics", json::array({"A:/cloud"})}}, ctx);
+  ASSERT_TRUE(result.ok) << result.content;
+  const auto response = json::parse(result.content);
+  EXPECT_EQ(response["results"][0]["detached"], true);
+  ASSERT_EQ(response["topics"].size(), 1u);
+  EXPECT_EQ(response["topics"][0]["dataset"], "B");
+}
+
+TEST(ToolRegistry, ObjectEvaluationPreservesQualifiedDatasetAndScriptAliases) {
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "A");
+  host.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "B:run");
+  RecordingDpHost dp;
+  FakePlaybackHost playback;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = playback.view();
+  ToolRegistry registry;
+  const json args = {
+      {"inputs", json::array({"B:run:/cloud"})},
+      {"at_s", 0.0},
+      {"body", "return {count=inputs[\"/cloud\"]:count()}"},
+      {"outputs", json::array({"count:number"})}};
+  auto result = registry.execute("evaluate", args, ctx);
+  ASSERT_TRUE(result.ok) << result.content;
+  EXPECT_EQ(dp.last_inputs, std::vector<std::string>({"B:run:/cloud"}));
+  EXPECT_NE(dp.last_script.find("[\"/cloud\"] = inputs[\"B:run:/cloud\"]"), std::string::npos);
+  EXPECT_NE(dp.last_script.find("[\"B:run:/cloud\"] = inputs[\"B:run:/cloud\"]"), std::string::npos);
+  EXPECT_EQ(playback.last_source_id, 2u);
+
+  auto create_args = args;
+  create_args.erase("at_s");
+  create_args["name"] = "selected_cloud";
+  create_args["pin_at_s"] = 0.0;
+  result = registry.execute("create_derived_object", create_args, ctx);
+  ASSERT_TRUE(result.ok) << result.content;
+  EXPECT_EQ(dp.create_v2_calls, 1);
+  EXPECT_EQ(dp.last_create_v2_inputs, std::vector<std::string>({"B:run:/cloud"}));
+  EXPECT_NE(dp.last_create_v2_script.find("[\"/cloud\"] = inputs[\"B:run:/cloud\"]"), std::string::npos);
+  // The post-create submit names the installed node; its input-free request
+  // must not replace the persisted binding. The validation sees its alias map.
+  EXPECT_NE(dp.last_validate_script.find("[\"/cloud\"] = inputs[\"B:run:/cloud\"]"), std::string::npos);
+}
+
+TEST(ToolRegistry, ObjectEvaluationAndCreationRejectCrossDatasetSelectionBeforeHostMutation) {
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "A");
+  host.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "B");
+  host.addObjectTopic("/camera", "kImage", 2, 0, kSec, "{}", "B");
+  RecordingDpHost dp;
+  FakePlaybackHost playback;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = playback.view();
+  ToolRegistry registry;
+  for (const auto* tool : {"evaluate", "create_derived_object"}) {
+    auto result = registry.execute(
+        tool,
+        {{"name", "wrong_source"},
+         {"inputs", json::array({"A:/cloud", "B:/camera"})},
+         {"at_s", 0.0},
+         {"outputs", json::array({"count:number"})},
+         {"body", "return {count=1}"}},
+        ctx);
+    EXPECT_FALSE(result.ok) << result.content;
+    EXPECT_NE(result.content.find("one dataset"), std::string::npos);
+  }
+  EXPECT_EQ(dp.submit_calls, 0);
+  EXPECT_EQ(dp.create_v2_calls, 0);
+}
+
+TEST(ToolRegistry, ObjectAliasesCannotOverwriteAnotherQualifiedInput) {
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "A");
+  host.addObjectTopic("A:/cloud", "kPointCloud", 2, 0, kSec, "{}", "A");
+  RecordingDpHost dp;
+  FakePlaybackHost playback;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = playback.view();
+  ToolRegistry registry;
+  auto result = registry.execute(
+      "evaluate",
+      {{"inputs", json::array({"A:/cloud", "A:A:/cloud"})},
+       {"at_s", 0.0},
+       {"outputs", json::array({"count:number"})},
+       {"body", "return {count=1}"}},
+      ctx);
+  EXPECT_FALSE(result.ok) << result.content;
+  EXPECT_NE(result.content.find("ambiguous input alias"), std::string::npos);
+  EXPECT_EQ(dp.submit_calls, 0);
 }

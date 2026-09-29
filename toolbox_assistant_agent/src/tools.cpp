@@ -285,10 +285,11 @@ struct ObjectTimeRange {
 };
 
 ObjectTimeRange objectTimeRange(
-    ToolContext& ctx, PJ_data_source_handle_t source, std::int64_t t_min_ns, std::int64_t t_max_ns) {
-  if (ctx.playback.valid()) {
-    const auto display_a = ctx.playback.toDisplayTimeForSource(source, t_min_ns);
-    const auto display_b = ctx.playback.toDisplayTimeForSource(source, t_max_ns);
+    const PJ::sdk::PlaybackHostView& playback, PJ_data_source_handle_t source, std::int64_t t_min_ns,
+    std::int64_t t_max_ns) {
+  if (playback.valid()) {
+    const auto display_a = playback.toDisplayTimeForSource(source, t_min_ns);
+    const auto display_b = playback.toDisplayTimeForSource(source, t_max_ns);
     if (display_a && display_b) {
       return {*display_a, *display_b, false};
     }
@@ -303,7 +304,7 @@ ObjectTimeRange objectTimeRange(
 // "operations").
 json objectTopicCommonJson(
     ToolContext& ctx, std::span<const PJ_data_source_info_t> sources, const PJ_object_topic_info_t& obj) {
-  const ObjectTimeRange range = objectTimeRange(ctx, obj.source, obj.time_min_ns, obj.time_max_ns);
+  const ObjectTimeRange range = objectTimeRange(ctx.playback, obj.source, obj.time_min_ns, obj.time_max_ns);
   json out = {
       {"topic", std::string(PJ::sdk::toStringView(obj.name))},
       {"kind", "object"},
@@ -2300,6 +2301,8 @@ std::atomic<unsigned> g_evaluate_counter{0};
 struct ResolvedEvalInput {
   std::string host_path;
   std::string display_path;
+  std::string request_path;  // dataset-qualified ABI input; host_path remains the bare scene topic
+  std::vector<std::string> aliases;
   bool is_object = false;
   std::string object_type;
   PJ::sdk::DataSourceHandle source{};
@@ -2391,15 +2394,16 @@ std::string objectLookupError(const std::string& want, const ObjectLookup& looku
 
 // Resolution result for a whole evaluate/create_derived_object 'inputs'
 // array: each entry tried as an object topic first, then (when it is not
-// one) as a scalar series — same host-create-blocker rule
-// create_derived_series applies, for the same reason: a series the host
-// cannot address unambiguously by bare name must not be handed to it.
+// one) as a scalar series. The on-demand ABI accepts source-name qualifiers,
+// so preserve the selected source instead of applying the legacy scalar
+// creation interface's bare-name restriction. Every input must share a source.
 // `anchor_source` is the FIRST resolved input's dataset, used to anchor the
 // display<->raw time conversion (see toRawNs). `error` is non-empty on any
 // failure; the caller returns it as-is.
 struct ResolvedEvalInputs {
   std::vector<ResolvedEvalInput> inputs;
   std::optional<PJ::sdk::DataSourceHandle> anchor_source;
+  std::map<std::string, std::string> aliases;  // script key -> qualified ABI key
   std::string error;
 };
 
@@ -2416,6 +2420,7 @@ ResolvedEvalInputs resolveEvalInputs(
       if (!out.anchor_source) {
         out.anchor_source = obj_lookup.resolved->source;
       }
+      obj_lookup.resolved->aliases = {in, obj_lookup.resolved->host_path};
       out.inputs.push_back(std::move(*obj_lookup.resolved));
       continue;
     }
@@ -2429,13 +2434,10 @@ ResolvedEvalInputs resolveEvalInputs(
       out.error = seriesLookupError(in, lookup);
       return out;
     }
-    if (auto blocked = hostCreateBlocker(*catalog, *lookup.resolved)) {
-      out.error = *blocked;
-      return out;
-    }
     ResolvedEvalInput r;
     r.host_path = lookup.resolved->host_path;
     r.display_path = lookup.resolved->path;
+    r.aliases = {in, r.host_path};
     r.is_object = false;
     if (auto handle = dataSourceHandleFor(*catalog, lookup.resolved->dataset)) {
       r.source = *handle;
@@ -2446,7 +2448,35 @@ ResolvedEvalInputs resolveEvalInputs(
     }
     out.inputs.push_back(std::move(r));
   }
+  for (auto& input : out.inputs) {
+    if (input.has_source && out.anchor_source && input.source.id != out.anchor_source->id) {
+      out.error = "on-demand inputs must belong to one dataset; cannot combine different datasets";
+      return out;
+    }
+    const std::string dataset = objectTopicDatasetName(v2.dataSources(), input.source);
+    input.request_path = qualifyWithDataset(dataset, input.host_path);
+    input.aliases.push_back(input.request_path);
+    for (const auto& alias : input.aliases) {
+      const auto [existing, inserted] = out.aliases.emplace(alias, input.request_path);
+      if (!inserted && existing->second != input.request_path) {
+        out.error = "ambiguous input alias '" + alias + "'; use distinct input paths";
+        return out;
+      }
+    }
+  }
   return out;
+}
+
+// Dataset qualifiers bind the host to the intended source. Keep both the
+// requested and historical bare script aliases without textual substitution in
+// user code. Building a fresh table also avoids overwriting another input key.
+std::string buildResolvedOnDemandChunk(const std::string& body, const ResolvedEvalInputs& resolved) {
+  std::string aliases = "inputs = {\n";
+  for (const auto& [alias, key] : resolved.aliases) {
+    aliases += "[\"" + luaStringEscape(alias) + "\"] = inputs[\"" + luaStringEscape(key) + "\"],\n";
+  }
+  aliases += "}\n";
+  return buildOnDemandChunk(aliases + body);
 }
 
 // One declared "name:type" output, split for DataProcessorRequest.outputs.
@@ -2731,7 +2761,7 @@ ToolResult evaluateObjectPath(const json& args, ToolContext& ctx, const std::vec
   }
 
   const std::string body = args["body"].get<std::string>();
-  const std::string script = buildOnDemandChunk(body);
+  const std::string script = buildResolvedOnDemandChunk(body, resolved);
   if (auto v = ctx.dp.validateScript("on_demand", ctx.language, script); !v) {
     return ToolResult::failure("invalid script: " + v.error());
   }
@@ -2740,7 +2770,7 @@ ToolResult evaluateObjectPath(const json& args, ToolContext& ctx, const std::vec
   const std::string id = "__evaluate_" + std::to_string(call_id);
   std::vector<std::string> input_names;
   for (const auto& ri : resolved.inputs) {
-    input_names.push_back(ri.host_path);
+    input_names.push_back(ri.request_path);
   }
 
   PJ::sdk::DataProcessorRequest request;
@@ -3015,14 +3045,14 @@ ToolResult createDerivedObject(const json& args, ToolContext& ctx) {
   }
 
   const std::string body = args["body"].get<std::string>();
-  const std::string script = buildOnDemandChunk(body);
+  const std::string script = buildResolvedOnDemandChunk(body, resolved);
   if (auto v = ctx.dp.validateScript("on_demand", ctx.language, script); !v) {
     return ToolResult::failure("invalid script: " + v.error());
   }
 
   std::vector<std::string> input_names;
   for (const auto& ri : resolved.inputs) {
-    input_names.push_back(ri.host_path);
+    input_names.push_back(ri.request_path);
   }
   const std::string params_json = args.contains("params") && args["params"].is_object() ? args["params"].dump() : "{}";
   const std::string label = args.value("label", std::string{});
@@ -3629,8 +3659,9 @@ json viewReadBack(ToolContext& ctx, const std::string& view) {
 struct SceneTopicOutcome {
   std::string display_topic;  // qualified form shown back to the model
   std::string bare_topic;     // host_path, matched against the read-back below
-  bool called_ok = false;     // the host call itself succeeded (not yet verified as landed)
-  std::string error;          // set on resolve failure or a host refusal
+  std::string dataset;
+  bool called_ok = false;  // the host call itself succeeded (not yet verified as landed)
+  std::string error;       // set on resolve failure or a host refusal
 };
 
 ToolResult sceneViewTool(const json& args, ToolContext& ctx) {
@@ -3720,11 +3751,11 @@ ToolResult sceneViewTool(const json& args, ToolContext& ctx) {
     }
     o.display_topic = lookup.resolved->display_path;
     o.bare_topic = lookup.resolved->host_path;
-    const std::string dataset = objectTopicDatasetName(v2->dataSources(), lookup.resolved->source);
+    o.dataset = objectTopicDatasetName(v2->dataSources(), lookup.resolved->source);
     // The host addresses a view topic by its bare name and resolves the
     // dataset itself, the same convention plotTabTool's addCurve follows.
-    auto status = attaching ? ctx.scene_views.attachTopic(view, o.bare_topic, dataset)
-                            : ctx.scene_views.detachTopic(view, o.bare_topic, dataset);
+    auto status = attaching ? ctx.scene_views.attachTopic(view, o.bare_topic, o.dataset)
+                            : ctx.scene_views.detachTopic(view, o.bare_topic, o.dataset);
     if (!status) {
       o.error = status.error();
       outcomes.push_back(std::move(o));
@@ -3746,8 +3777,9 @@ ToolResult sceneViewTool(const json& args, ToolContext& ctx) {
       results.push_back({{"topic", o.display_topic}, {"error", o.error}});
       continue;
     }
-    const bool present = std::any_of(
-        held.begin(), held.end(), [&](const json& t) { return t.value("topic", std::string()) == o.bare_topic; });
+    const bool present = std::any_of(held.begin(), held.end(), [&](const json& t) {
+      return t.value("topic", std::string()) == o.bare_topic && t.value("dataset", std::string()) == o.dataset;
+    });
     if (present == attaching) {
       results.push_back({{"topic", o.display_topic}, {attaching ? "attached" : "detached", true}});
       ++landed;
@@ -4191,7 +4223,8 @@ struct ObjectDigestLines {
   std::size_t total = 0;
 };
 
-ObjectDigestLines renderObjectDigestLines(const PJ::sdk::CatalogSnapshotV2& catalog, std::size_t budget_chars) {
+ObjectDigestLines renderObjectDigestLines(
+    const PJ::sdk::CatalogSnapshotV2& catalog, std::size_t budget_chars, const PJ::sdk::PlaybackHostView& playback) {
   ObjectDigestLines out;
   const bool multi_dataset = catalog.dataSources().size() >= 2;
   std::string current_dataset;
@@ -4208,11 +4241,11 @@ ObjectDigestLines renderObjectDigestLines(const PJ::sdk::CatalogSnapshotV2& cata
       line += "dataset \"" + current_dataset + "\":\n";
     }
     const std::string type_name(PJ::sdk::toStringView(obj.builtin_object_type));
-    const double a = static_cast<double>(obj.time_min_ns) * 1e-9;
-    const double b = static_cast<double>(obj.time_max_ns) * 1e-9;
+    const ObjectTimeRange range = objectTimeRange(playback, obj.source, obj.time_min_ns, obj.time_max_ns);
     std::ostringstream oss;
     oss << "  " << name << "  [object " << (type_name.empty() ? std::string("unknown") : type_name) << ", "
-        << obj.entry_count << " entries, " << std::fixed << std::setprecision(3) << a << "-" << b << " s]\n";
+        << obj.entry_count << " entries, " << std::fixed << std::setprecision(3) << range.a << "-" << range.b
+        << (range.raw ? " raw seconds" : " display seconds") << "]\n";
     line += oss.str();
     if (out.body.size() + line.size() > budget_chars) {
       break;
@@ -4225,10 +4258,11 @@ ObjectDigestLines renderObjectDigestLines(const PJ::sdk::CatalogSnapshotV2& cata
 
 }  // namespace
 
-std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budget_chars) {
+std::string catalogDigest(
+    const PJ::sdk::ToolboxHostView& host, std::size_t budget_chars, const PJ::sdk::PlaybackHostView& playback) {
   auto v2 = host.catalogSnapshotV2();
   if (v2) {
-    const ObjectDigestLines object_lines = renderObjectDigestLines(*v2, budget_chars);
+    const ObjectDigestLines object_lines = renderObjectDigestLines(*v2, budget_chars, playback);
     if (v2->topics().empty() && object_lines.total == 0) {
       return "Loaded data: nothing is loaded yet.";
     }

@@ -55,7 +55,7 @@ class AssistantToolbox : public PJ::ToolboxPluginBase {
     dialog_.setViewportProvider([this]() { return viewport_view_; });
     plot_tabs_view_ = services.get<PJ::sdk::PlotTabHostService>().value_or(PJ::sdk::PlotTabHostView{});
     dialog_.setPlotTabsProvider([this]() { return plot_tabs_view_; });
-    // 3D/2D scene views: pj.scene_views.v1 (SDK >= 0.35.0). Same optionality —
+    // 3D/2D scene views: pj.scene_views.v1 (SDK >= 0.36.0). Same optionality —
     // an older host simply does not register it, and scene_view degrades to a
     // clean "not exposed" the model reads.
     scene_views_view_ = services.get<PJ::sdk::SceneViewHostService>().value_or(PJ::sdk::SceneViewHostView{});

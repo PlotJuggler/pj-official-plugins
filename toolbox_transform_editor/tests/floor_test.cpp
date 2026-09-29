@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Floor test backing manifest.json's suggested_sdk_version 0.35.0: proves the
+// Floor test backing manifest.json's suggested_sdk_version 0.36.0: proves the
 // degraded path when the host predates submit_evaluation (ABI-APPENDED in
-// 0.35.0 — struct_size stops just before it, the "0.34 size" a floor-level
+// 0.36.0 — struct_size stops just before it, the "0.34 size" a floor-level
 // host would report). This is the exact host call previewOnDemand() makes in
 // transform_editor_plugin.cpp to run an on-demand preview; the plugin's own
 // classes are file-local (anonymous namespace, no public entry point to unit

@@ -70,7 +70,7 @@ can pass the consequence on instead of promising persistence it does not have.
 
 `playback` and `plot_tab` need a host exposing `pj.playback.v1`, `pj.plot_tabs.v1` and `pj.viewport.v1`
 (a host with SDK >= 0.34.0, the plugin's `min_sdk_required`); `scene_view` needs `pj.scene_views.v1`,
-a newer surface (SDK >= 0.35.0). On an older host each answers with a clean "not exposed" the model
+a newer surface (SDK >= 0.36.0). On an older host each answers with a clean "not exposed" the model
 relays instead of guessing.
 
 Paths may be abbreviated: a unique suffix or prefix resolves on its own, and an ambiguous one

@@ -22,7 +22,7 @@ below; for earlier releases see the git history of `toolbox_assistant_agent/`.
   object topics (point clouds, scene entities…), or pins one instant of it as
   a kept finding with `pin_at_s`. Either way the call evaluates the installed
   node once itself and returns the first bundle, so the model sees what it
-  made instead of taking "created" on faith. Requires SDK 0.35.0
+  made instead of taking "created" on faith. Requires SDK 0.36.0
   (`create_data_processor_v2`/`submit_evaluation`/`poll_evaluation`/
   `release_evaluation`).
 - `evaluate` gains an OBJECT path, selected when an input is an object topic
@@ -34,7 +34,7 @@ below; for earlier releases see the git history of `toolbox_assistant_agent/`.
   summaries — counts, bounds, frames — never as bytes.
 - `list_topics`, `describe_topic` and `report_status` now see object topics
   (point clouds, scene entities, images…) on a host with catalog snapshot v2
-  (SDK 0.35.0): type, entry count, time range and dataset, tagged
+  (SDK 0.36.0): type, entry count, time range and dataset, tagged
   `"kind":"object"` alongside scalar topics tagged `"kind":"scalar"`.
   `describe_topic` on an object topic returns its field table (walked from
   the SDK's builtin field-table registry) and the operations a script may
@@ -52,7 +52,7 @@ below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 
 ### Requires
 - `create_derived_object`, the object path of `evaluate`, and `scene_view`
-  need a host with SDK >= 0.35.0. On an older host they degrade to a clean
+  need a host with SDK >= 0.36.0. On an older host they degrade to a clean
   "not exposed" the model relays instead of guessing; every other tool keeps
   working at the plugin's own floor, SDK 0.34.0.
 

@@ -93,6 +93,8 @@ struct RecordingDpHost {
       R"("from_cache":false,"revision":1,"inputs":[{"alias":"/cloud","resolved_ns":0,"is_object":true}],)"
       R"("outputs":{"cropped":{"status":"ok","summary":{"count":42}},"count":{"status":"ok","value":42}}}]})";
   int create_v2_calls = 0;
+  std::vector<std::string> last_create_v2_inputs;
+  std::string last_create_v2_script;
   int submit_calls = 0;
   int poll_calls = 0;
   std::vector<std::uint64_t> released_handles;
@@ -310,6 +312,8 @@ struct RecordingDpHost {
     ++self->create_v2_calls;
     ++self->create_calls;
     self->recordRequest(*request);
+    self->last_create_v2_inputs = self->last_inputs;
+    self->last_create_v2_script = self->last_script;
     self->last_create_v2_flags = request->flags;
     self->last_create_v2_time_flags = request->time_flags;
     self->last_create_v2_instant_ns = request->time_ns;

@@ -19,7 +19,7 @@
     "hidden"
   ],
   "min_sdk_required": "0.28.0",
-  "suggested_sdk_version": "0.35.0",
+  "suggested_sdk_version": "0.36.0",
   "floor_test": "TransformEditorFloorTest.OnDemandSubmitReportsUnsupportedOnFloorHost",
   "min_plotjuggler_version": "4.0.0"
 }

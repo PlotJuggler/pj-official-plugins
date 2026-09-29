@@ -405,7 +405,7 @@ resolved dataset source; the tool's answer is `view_config` read back per topic,
 verdict, for the identical reason `plot_tab`'s `add`/`remove` read the tab back — the host may accept
 `attach_topic` and place the topic nowhere (a kind the view's `"3d"`/`"2d"` does not accept, or a
 name it cannot resolve), and that has to show as "did not land", not as a drawing that never
-happened. Requires `pj.scene_views.v1` (SDK >= 0.35.0), a newer surface than `plot_tab`'s own
+happened. Requires `pj.scene_views.v1` (SDK >= 0.36.0), a newer surface than `plot_tab`'s own
 floor (0.34.0); an older host gets a clean "not exposed" instead of the tool silently doing
 nothing.
 
