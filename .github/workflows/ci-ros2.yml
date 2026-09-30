@@ -185,14 +185,22 @@ jobs:
   # RoboStack payloads: the same subscriber built against RoboStack's
   # conda-built rclcpp, for PlotJuggler installed from conda (see
   # data_stream_ros2/robostack/build.sh). Shipped as dist/<distro>-robostack/.
+  # The release build packages each Linux arch natively, so both are built here;
+  # only the x86_64 payloads feed the (x86_64) test zip below.
   build-robostack:
-    name: robostack / ${{ matrix.distro }}
-    runs-on: ubuntu-22.04
+    name: robostack / ${{ matrix.distro }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         distro: [jazzy, kilted]
+        arch: [x86_64, aarch64]
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -206,6 +214,7 @@ jobs:
         run: data_stream_ros2/robostack/build.sh ${{ matrix.distro }} robostack-out
 
       - name: Upload payload
+        if: matrix.arch == 'x86_64'
         uses: actions/upload-artifact@v4
         with:
           name: ros2-robostack-${{ matrix.distro }}
