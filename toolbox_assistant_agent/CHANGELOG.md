@@ -9,7 +9,7 @@ below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 - Yield pending object evaluations between GUI ticks; release handles on completion, failure, cancellation, timeout and teardown.
 - Report own pinned findings, bytes and processor readiness; advertise media and annotation scripting operations.
 
-## [0.3.0] - 2026-09-24
+## [0.3.0] - Unreleased
 
 ### Added
 - New tool `scene_view`: opens 3D/2D scene views of the assistant's own,
