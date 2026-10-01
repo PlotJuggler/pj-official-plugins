@@ -16,6 +16,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_base/sdk/plugin_data_api.hpp>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -35,12 +36,38 @@ namespace derived_recipes {
 // of the declared outputs by name.
 [[nodiscard]] std::string buildOnDemandChunk(const std::string& body);
 
+// "    " in front of every line of `code` (an empty line stays empty); a blank body becomes `pass`.
+// Python is whitespace-sensitive, so a body that becomes the inside of a `def` goes through this.
+[[nodiscard]] std::string indentPython(const std::string& code);
+
 // Wrap a per-sample Luau body into a self-describing filter class the host runs as an eager
 // transform. The body runs with `time`, `value` and `v1..v<num_extra>` in scope; the global
 // section runs once per instance inside the factory closure.
 [[nodiscard]] std::string buildLuauTransform(
     const std::string& id, const std::string& name, const std::string& global_code, const std::string& body,
     std::size_t num_extra);
+
+// One local of an on-demand body: the variable the script reads and the `inputs[...]` key it
+// is bound from.
+struct InputBinding {
+  std::string var;
+  std::string key;
+};
+
+// The lines that bind one local per input ("local cloud = inputs[\"/lidar_top\"]" for Luau,
+// "cloud = inputs[\"/lidar_top\"]" for Python), to be put in front of a user body.
+[[nodiscard]] std::string buildVariablePrologue(std::string_view language, const std::vector<InputBinding>& bindings);
+
+// The variable name an input gets by default: the leaf of its topic or field path made a valid
+// identifier ("/lidar_top" -> "lidar_top", "pose/x" -> "x", "run1:/cloud" -> "cloud"). A name
+// in `taken`, a Lua/Python keyword or a name the chunk itself uses gets a "_2", "_3"... suffix
+// (a keyword gets "_" first), so the result is never in `taken`.
+[[nodiscard]] std::string inferredVariableName(std::string_view topic, const std::set<std::string>& taken);
+
+// "kPointCloud" -> "point cloud", "kSceneEntities" -> "scene", "kFrameTransforms" -> "transforms",
+// "number" and "string" unchanged; any other builtin object type is its name split into lower-case
+// words. A name that is not a builtin object type stays as it is.
+[[nodiscard]] std::string objectTypeLabel(const std::string& type);
 
 // --- catalog helpers -------------------------------------------------------
 
@@ -134,6 +161,11 @@ struct ResolvedEvalInput {
   std::string object_type;
   PJ::sdk::DataSourceHandle source{};
   bool has_source = false;
+  // The catalog row of an object input (zero for a scalar series): how many entries the topic holds
+  // and the raw ns of the first one, so a caller needs no second scan of the catalog.
+  std::uint64_t entry_count = 0;
+  std::int64_t time_min_ns = 0;
+  std::int64_t time_max_ns = 0;
 };
 
 // Outcome of resolving one input against the object-topic half of the v2 catalog. An
@@ -179,6 +211,12 @@ struct ResolvedEvalInputs {
 // bare script aliases without textual substitution in user code.
 [[nodiscard]] std::string buildResolvedOnDemandChunk(const std::string& body, const ResolvedEvalInputs& resolved);
 
+// Python counterpart of buildResolvedOnDemandChunk (language="python"): a module whose top
+// level defines `def evaluate(inputs, params):` (the contract of pj_scripting's
+// python_object_script.h). The same alias table is rebuilt first, then `body` follows, indented
+// one level.
+[[nodiscard]] std::string buildOnDemandChunkPython(const std::string& body, const ResolvedEvalInputs& resolved);
+
 // Declared outputs ("name:type" strings) split for DataProcessorRequest.outputs.
 struct ParsedOutputs {
   std::vector<PJ::sdk::DataProcessorOutput> outputs;
@@ -188,11 +226,7 @@ struct ParsedOutputs {
 
 // --- on-demand output types ------------------------------------------------
 
-// The output types an on-demand recipe can declare, in the order a type picker lists them:
-// "number", "string", then the builtin object types a recipe can produce.
-[[nodiscard]] const std::vector<std::string>& outputTypeNames();
 [[nodiscard]] bool isObjectOutputType(const std::string& type);
-[[nodiscard]] bool isValidOutputType(const std::string& type);
 // Which scene tab shows an output of this type: "2d" for image-like types, "3d" otherwise.
 [[nodiscard]] std::string sceneKindForOutputType(const std::string& type);
 

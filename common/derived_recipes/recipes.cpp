@@ -3,6 +3,7 @@
 #include "derived_recipes/recipes.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <pj_base/builtin/builtin_object.hpp>
 
@@ -407,6 +408,9 @@ ObjectLookup resolveObjectTopic(const PJ::sdk::CatalogSnapshotV2& v2, const std:
     r.object_type = std::string(PJ::sdk::toStringView(obj.builtin_object_type));
     r.source = obj.source;
     r.has_source = true;
+    r.entry_count = obj.entry_count;
+    r.time_min_ns = obj.time_min_ns;
+    r.time_max_ns = obj.time_max_ns;
     if (out.candidates.size() < kMaxCandidates) {
       out.candidates.push_back(r.display_path);
     }
@@ -497,16 +501,139 @@ ResolvedEvalInputs resolveEvalInputs(
   return out;
 }
 
-// Dataset qualifiers bind the host to the intended source. Keep both the
-// requested and historical bare script aliases without textual substitution in
-// user code. Building a fresh table also avoids overwriting another input key.
-std::string buildResolvedOnDemandChunk(const std::string& body, const ResolvedEvalInputs& resolved) {
-  std::string aliases = "inputs = {\n";
-  for (const auto& [alias, key] : resolved.aliases) {
-    aliases += "[\"" + luaStringEscape(alias) + "\"] = inputs[\"" + luaStringEscape(key) + "\"],\n";
+std::string indentPython(const std::string& code) {
+  if (code.find_first_not_of(" \t\r\n") == std::string::npos) {
+    return "    pass\n";
   }
-  aliases += "}\n";
-  return buildOnDemandChunk(aliases + body);
+  std::string out;
+  std::size_t start = 0;
+  while (start <= code.size()) {
+    const std::size_t nl = code.find('\n', start);
+    const std::string line = code.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+    out += line.empty() ? "\n" : "    " + line + "\n";
+    if (nl == std::string::npos) {
+      break;
+    }
+    start = nl + 1;
+  }
+  return out;
+}
+
+namespace {
+
+// The table that rebuilds `inputs` under every alias a script may use, so a dataset-qualified key and
+// the historical bare one both work without textual substitution in user code. Building a fresh table
+// also avoids overwriting another input key. Luau always gets the table; Python only when there are
+// aliases.
+std::string buildAliasTable(const ResolvedEvalInputs& resolved, bool python) {
+  if (python && resolved.aliases.empty()) {
+    return {};
+  }
+  std::string table = "inputs = {\n";
+  for (const auto& [alias, key] : resolved.aliases) {
+    const std::string value = "inputs[\"" + luaStringEscape(key) + "\"]";
+    table += python ? "\"" + luaStringEscape(alias) + "\": " + value + ",\n"
+                    : "[\"" + luaStringEscape(alias) + "\"] = " + value + ",\n";
+  }
+  table += "}\n";
+  return table;
+}
+
+}  // namespace
+
+std::string buildResolvedOnDemandChunk(const std::string& body, const ResolvedEvalInputs& resolved) {
+  return buildOnDemandChunk(buildAliasTable(resolved, /*python=*/false) + body);
+}
+
+std::string buildOnDemandChunkPython(const std::string& body, const ResolvedEvalInputs& resolved) {
+  std::string src = "# pj-script: python\n";
+  src += "def evaluate(inputs, params):\n";
+  src += indentPython(buildAliasTable(resolved, /*python=*/true) + body);
+  return src;
+}
+
+std::string buildVariablePrologue(std::string_view language, const std::vector<InputBinding>& bindings) {
+  const bool python = language == "python";
+  std::string out;
+  for (const auto& binding : bindings) {
+    out += std::string(python ? "" : "local ") + binding.var + " = inputs[\"" + luaStringEscape(binding.key) + "\"]\n";
+  }
+  return out;
+}
+
+std::string inferredVariableName(std::string_view topic, const std::set<std::string>& taken) {
+  static const std::set<std::string> kReserved = {
+      // Luau
+      "and", "break", "continue", "do", "else", "elseif", "end", "export", "false", "for", "function", "if", "in",
+      "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while", "type",
+      // Python
+      "False", "None", "True", "as", "assert", "async", "await", "class", "def", "del", "elif", "except", "finally",
+      "from", "global", "import", "is", "lambda", "nonlocal", "pass", "raise", "try", "with", "yield", "match", "case",
+      // names the generated chunk and the standard libraries use
+      "inputs", "params", "pj", "math", "string", "table", "print", "pairs", "ipairs", "tostring", "tonumber", "select",
+      "error", "os", "bit32", "utf8", "buffer", "coroutine", "vector", "len", "range", "str", "int", "float", "list",
+      "dict", "min", "max", "abs"};
+  std::string leaf(topic);
+  while (!leaf.empty() && leaf.back() == '/') {
+    leaf.pop_back();
+  }
+  if (const std::size_t slash = leaf.rfind('/'); slash != std::string::npos) {
+    leaf = leaf.substr(slash + 1);
+  } else if (const std::size_t colon = leaf.rfind(':'); colon != std::string::npos) {
+    leaf = leaf.substr(colon + 1);
+  }
+  std::string name;
+  for (const char ch : leaf) {
+    const bool ok = std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
+    const char mapped = ok ? ch : '_';
+    if (mapped == '_' && !name.empty() && name.back() == '_') {
+      continue;  // one underscore for a run of separators
+    }
+    name.push_back(mapped);
+  }
+  while (!name.empty() && name.back() == '_') {
+    name.pop_back();
+  }
+  if (name.empty()) {
+    name = "input";
+  } else if (std::isdigit(static_cast<unsigned char>(name.front())) != 0) {
+    name = "input_" + name;
+  }
+  if (kReserved.count(name) != 0) {
+    name += "_";
+  }
+  std::string candidate = name;
+  for (int n = 2; taken.count(candidate) != 0; ++n) {
+    candidate = name + "_" + std::to_string(n);
+  }
+  return candidate;
+}
+
+std::string objectTypeLabel(const std::string& type) {
+  if (type == "kSceneEntities") {
+    return "scene";
+  }
+  if (type == "kFrameTransforms") {
+    return "transforms";
+  }
+  // "kOccupancyGrid" -> "occupancy grid": only a builtin object type is split into words.
+  const auto parsed = PJ::sdk::parseBuiltinObjectType(type);
+  if (!parsed || *parsed == PJ::sdk::BuiltinObjectType::kNone || type.size() < 2 || type.front() != 'k') {
+    return type;
+  }
+  std::string label;
+  for (std::size_t i = 1; i < type.size(); ++i) {
+    const unsigned char ch = static_cast<unsigned char>(type[i]);
+    if (std::isupper(ch) != 0) {
+      if (i > 1) {
+        label.push_back(' ');
+      }
+      label.push_back(static_cast<char>(std::tolower(ch)));
+    } else {
+      label.push_back(type[i]);
+    }
+  }
+  return label;
 }
 
 ParsedOutputs parseTypedOutputs(const nlohmann::json& arr) {
@@ -533,25 +660,9 @@ ParsedOutputs parseTypedOutputs(const nlohmann::json& arr) {
   return out;
 }
 
-const std::vector<std::string>& outputTypeNames() {
-  static const std::vector<std::string> kNames = {
-      "number",
-      "string",
-      std::string(PJ::sdk::name(PJ::sdk::BuiltinObjectType::kPointCloud)),
-      std::string(PJ::sdk::name(PJ::sdk::BuiltinObjectType::kSceneEntities)),
-      std::string(PJ::sdk::name(PJ::sdk::BuiltinObjectType::kImageAnnotations)),
-      std::string(PJ::sdk::name(PJ::sdk::BuiltinObjectType::kImage)),
-  };
-  return kNames;
-}
-
 bool isObjectOutputType(const std::string& type) {
   const auto parsed = PJ::sdk::parseBuiltinObjectType(type);
   return parsed && *parsed != PJ::sdk::BuiltinObjectType::kNone;
-}
-
-bool isValidOutputType(const std::string& type) {
-  return type == "number" || type == "string" || isObjectOutputType(type);
 }
 
 std::string sceneKindForOutputType(const std::string& type) {

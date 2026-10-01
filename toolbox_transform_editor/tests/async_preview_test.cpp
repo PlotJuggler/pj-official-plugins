@@ -8,10 +8,18 @@
 #include "../transform_editor_plugin.cpp"
 
 namespace {
+
+// What a trial of `return {cropped = ..., count = ...}` reports: the outputs it inferred and one bundle.
+const char* const kTrialReport =
+    R"({"coverage":{"complete":true},"bundles":[{"requested_ns":0,"stamp_ns":0,"inputs":[],"outputs":{)"
+    R"("cropped":{"status":"ok","summary":{"type":"kPointCloud","points":23144}},"count":{"status":"ok","value":42}}}],)"
+    R"("outputs":[{"name":"cropped","type":"kPointCloud"},{"name":"count","type":"number"}]})";
+
 class TransformEditorPreviewTestPeer {
  public:
   static void bind(TransformEditorToolbox& editor, PJ::sdk::DataProcessorsHostView host) {
     editor.dp_view_ = host;
+    editor.edit_debounce_ = std::chrono::milliseconds(0);  // no waiting for quiet in a test
   }
   // The form resolves inputs against the catalog (object topics first), so a config-driven
   // preview needs one that knows "/cloud".
@@ -23,10 +31,17 @@ class TransformEditorPreviewTestPeer {
     request.kind = "on_demand";
     request.language = "luau";
     request.inputs = {"/cloud"};
-    request.outputs = {{"count", "number"}};
     request.script = script;
     request.params_json = "{}";
-    editor.previewOnDemand(request);
+    // The request is injected past the form, so tell the editor the form moved (its caches are per revision).
+    editor.dialog_.catalogChanged();
+    TransformEditorToolbox::OnDemandBuild build;
+    build.request = request;
+    TransformEditorToolbox::setTrialForm(build);
+    editor.previewOnDemand(build);
+  }
+  static void setDebounce(TransformEditorToolbox& editor, std::chrono::milliseconds value) {
+    editor.edit_debounce_ = value;
   }
   static bool pending(const TransformEditorToolbox& editor) {
     return editor.pending_preview_.has_value();
@@ -47,14 +62,13 @@ class TransformEditorPreviewTestPeer {
   static void refreshCurrent(TransformEditorToolbox& editor) {
     editor.refreshPreview();
   }
-  static std::string report(TransformEditorToolbox& editor) {
-    return nlohmann::json::parse(editor.dialog_.widget_data())["onDemandReportPreview"]["plain_text"];
+  static std::string status(TransformEditorToolbox& editor) {
+    return nlohmann::json::parse(editor.dialog_.widget_data())["statusLabel"]["label"];
   }
-  // The pane shows the form's own hints once no report is left, so "cleared" means that neither
-  // the completed report nor the pending placeholder is on screen any more.
+  // The status line shows the reason Create is disabled once no result is left, so "cleared" means that neither
+  // the result of the trial nor a pending run is on screen any more.
   static bool showsReport(TransformEditorToolbox& editor) {
-    const std::string text = report(editor);
-    return text.find("count: 42") != std::string::npos || text.find("Evaluating") != std::string::npos;
+    return status(editor).find("count: 42") != std::string::npos;
   }
   static void close(TransformEditorToolbox& editor) {
     editor.tearDownPreview();
@@ -64,6 +78,7 @@ using Host = assistant_agent::testing::RecordingDpHost;
 TEST(TransformEditorPreview, PendingYieldsThenCompletesAndReleasesOnce) {
   Host host;
   host.pending_polls = 2;
+  host.canned_report_json = kTrialReport;
   TransformEditorToolbox editor;
   TransformEditorPreviewTestPeer::bind(editor, host.view());
   TransformEditorPreviewTestPeer::tick(editor);
@@ -80,6 +95,7 @@ TEST(TransformEditorPreview, PendingYieldsThenCompletesAndReleasesOnce) {
 }
 TEST(TransformEditorPreview, CompletedSameInstantRefreshesForLiveInputChanges) {
   Host host;
+  host.canned_report_json = kTrialReport;
   TransformEditorToolbox editor;
   TransformEditorPreviewTestPeer::bind(editor, host.view());
   TransformEditorPreviewTestPeer::tick(editor);
@@ -128,24 +144,39 @@ TEST(TransformEditorPreview, ReplacementAndDestructionReleasePendingRequests) {
   }
   EXPECT_EQ(host.released_handles.size(), 2u);
 }
+TEST(TransformEditorPreview, AnEditWaitsForTheDebounceAndDropsTheRunInFlight) {
+  Host host;
+  host.pending_polls = 100;
+  TransformEditorToolbox editor;
+  TransformEditorPreviewTestPeer::bind(editor, host.view());
+  TransformEditorPreviewTestPeer::tick(editor);
+  ASSERT_TRUE(TransformEditorPreviewTestPeer::pending(editor));
+  TransformEditorPreviewTestPeer::setDebounce(editor, std::chrono::seconds(30));  // the user keeps typing
+  TransformEditorPreviewTestPeer::tick(editor, "return {count=2}");
+  EXPECT_FALSE(TransformEditorPreviewTestPeer::pending(editor)) << "the stale run is released at once";
+  EXPECT_EQ(host.released_handles.size(), 1u);
+  EXPECT_EQ(host.submit_calls, 1) << "nothing is submitted while the edits keep coming";
+  TransformEditorPreviewTestPeer::setDebounce(editor, std::chrono::milliseconds(0));
+  TransformEditorPreviewTestPeer::tick(editor, "return {count=2}");
+  EXPECT_EQ(host.submit_calls, 2);
+}
+
 }  // namespace
 
-TEST(TransformEditorPreview, ReportIsVisibleInMainPanelAndScalarCreateIsDisabled) {
+TEST(TransformEditorPreview, TheStatusLineShowsTheResultAndCreateWaitsForAnInferredTrial) {
   TransformEditorDialog dialog;
   ASSERT_TRUE(dialog.loadConfig(
       R"({"global_code":"-- pj-kind: on_demand","function_body":"return {count=1}","sources":["/cloud"]})"));
-  dialog.setOnDemandReport("{\"count\":42}");
+  dialog.setStatus("count: 42");
   const auto widgets = nlohmann::json::parse(dialog.widget_data());
-  EXPECT_NE(dialog.ui_content().find("name=\"onDemandReportPreview\""), std::string::npos);
-  EXPECT_EQ(widgets["onDemandReportPreview"]["visible"], true);
-  EXPECT_EQ(widgets["onDemandReportPreview"]["plain_text"], "{\"count\":42}");
-  EXPECT_EQ(widgets["framePlotPreview"]["visible"], false);
-  EXPECT_EQ(widgets["pushButtonCreate"]["enabled"], false);
+  EXPECT_EQ(widgets["statusLabel"]["label"], "count: 42");
+  EXPECT_EQ(widgets["pushButtonCreate"]["enabled"], false) << "no trial has succeeded yet";
 }
 
 TEST(TransformEditorPreview, ClearingBodyOrInputClearsCompletedAndPendingReports) {
   for (bool clear_source : {false, true}) {
     Host host;
+    host.canned_report_json = kTrialReport;
     assistant_agent::testing::FakeCatalogHost catalog;
     catalog.addObjectTopic("/cloud", "kPointCloud", 1, 0, 1);
     TransformEditorToolbox editor;

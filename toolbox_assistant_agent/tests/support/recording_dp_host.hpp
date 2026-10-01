@@ -92,6 +92,18 @@ struct RecordingDpHost {
       R"("cache_hits":0,"complete":true,"stopped":"complete"},"bundles":[{"requested_ns":0,"stamp_ns":0,)"
       R"("from_cache":false,"revision":1,"inputs":[{"alias":"/cloud","resolved_ns":0,"is_object":true}],)"
       R"("outputs":{"cropped":{"status":"ok","summary":{"count":42}},"count":{"status":"ok","value":42}}}]})";
+  // Reports served before canned_report_json, one per COMPLETED poll (front first): lets a test script
+  // a sequence of answers, e.g. "no sample" then a report.
+  std::vector<std::string> report_queue;
+  // What every submit_evaluation asked for, in order.
+  struct RecordedRequest {
+    std::int64_t instant_ns = 0;  // raw ns
+    std::uint32_t flags = 0;
+    std::size_t output_count = 0;  // declared outputs
+    std::string language;
+    std::string script;
+  };
+  std::vector<RecordedRequest> submits;
   int create_v2_calls = 0;
   std::vector<std::string> last_create_v2_inputs;
   std::string last_create_v2_script;
@@ -354,6 +366,9 @@ struct RecordingDpHost {
     auto* self = static_cast<RecordingDpHost*>(ctx);
     ++self->submit_calls;
     self->recordRequest(*request);
+    self->submits.push_back(
+        {request->time_ns, request->flags, static_cast<std::size_t>(request->output_count), toStr(request->language),
+         toStr(request->script)});
     if (budget != nullptr) {
       self->last_budget_max_millis = budget->max_millis;
       self->last_budget_max_evaluations = budget->max_evaluations;
@@ -390,7 +405,12 @@ struct RecordingDpHost {
       if (out_state != nullptr) {
         *out_state = self->terminal_state;
       }
-      self->last_poll_json = self->canned_report_json;
+      if (self->report_queue.empty()) {
+        self->last_poll_json = self->canned_report_json;
+      } else {
+        self->last_poll_json = self->report_queue.front();
+        self->report_queue.erase(self->report_queue.begin());
+      }
     }
     if (out_json != nullptr) {
       *out_json = PJ::sdk::toAbiString(self->last_poll_json);

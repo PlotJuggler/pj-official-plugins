@@ -23,6 +23,7 @@
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -35,6 +36,8 @@
 //   kFunctionLibraryUi  — live Function Library sub-panel (requestSubPanel).
 //   kSaveNameUi         — "save current function" name prompt (requestSubDialog).
 //   kOverwriteUi        — overwrite-existing-function confirmation (requestSubDialog).
+//   kCreateRecipeUi     — "Create..." name prompt with the summary of what is created (requestSubDialog).
+#include "create_recipe_ui.hpp"
 #include "function_library_ui.hpp"
 #include "overwrite_function_ui.hpp"
 #include "save_function_name_ui.hpp"
@@ -46,15 +49,62 @@ namespace {
 // Snippet
 // ---------------------------------------------------------------------------
 
+// One input a library function expects: the variable its body reads and the builtin object type
+// ("kPointCloud", ...) that variable holds.
+struct SnippetInput {
+  std::string var;
+  std::string type;
+};
+
 struct Snippet {
   std::string name;
   std::string global_code;
   std::string function_body;
   std::string language = "luau";  // "luau" | "python"; legacy/builtin snippets are Luau
+  std::string kind = "series";    // "series" (time, value, v1..) | "object" (one variable per input)
+  std::vector<SnippetInput> inputs = {};
+  std::string description = {};
 };
 
 std::filesystem::path snippetLibraryPath() {
   return PJ::sdk::userDataDir() / "toolbox_transform_editor" / "snippets.json";
+}
+
+// A string member of `item`, or `fallback` when it is missing or not a string (a hand-edited or
+// older library must never throw).
+std::string jsonString(const nlohmann::json& item, const char* key, const std::string& fallback = {}) {
+  const auto it = item.find(key);
+  return it != item.end() && it->is_string() ? it->get<std::string>() : fallback;
+}
+
+nlohmann::json snippetToJson(const Snippet& s) {
+  nlohmann::json inputs = nlohmann::json::array();
+  for (const auto& input : s.inputs) {
+    inputs.push_back({{"var", input.var}, {"type", input.type}});
+  }
+  return {
+      {"name", s.name}, {"global_code", s.global_code}, {"function_body", s.function_body}, {"language", s.language},
+      {"kind", s.kind}, {"inputs", std::move(inputs)},  {"description", s.description}};
+}
+
+// Tolerant of every older shape: the three fields added in 1.2.0 default when absent or malformed.
+Snippet snippetFromJson(const nlohmann::json& item) {
+  Snippet s;
+  s.name = jsonString(item, "name");
+  s.global_code = jsonString(item, "global_code");
+  s.function_body = jsonString(item, "function_body");
+  s.language = jsonString(item, "language", "luau");
+  s.kind = jsonString(item, "kind", "series") == "object" ? "object" : "series";
+  s.description = jsonString(item, "description");
+  const auto inputs = item.find("inputs");
+  if (inputs != item.end() && inputs->is_array()) {
+    for (const auto& input : *inputs) {
+      if (input.is_object() && !jsonString(input, "var").empty()) {
+        s.inputs.push_back({jsonString(input, "var"), jsonString(input, "type")});
+      }
+    }
+  }
+  return s;
 }
 
 // Write the snippet library as a JSON array to `path`, creating parent dirs.
@@ -66,11 +116,7 @@ bool saveSnippetsToPath(const std::vector<Snippet>& snippets, const std::filesys
     std::filesystem::create_directories(path.parent_path());
     nlohmann::json j = nlohmann::json::array();
     for (const auto& s : snippets) {
-      j.push_back(
-          {{"name", s.name},
-           {"global_code", s.global_code},
-           {"function_body", s.function_body},
-           {"language", s.language}});
+      j.push_back(snippetToJson(s));
     }
     std::ofstream out(path);
     if (!out) {
@@ -87,9 +133,120 @@ void saveSnippetsToDisk(const std::vector<Snippet>& snippets) {
   saveSnippetsToPath(snippets, snippetLibraryPath());  // best-effort autosave; failures are non-fatal
 }
 
-// Default snippets ported from PJ3's default.snippets.xml
-std::vector<Snippet> defaultSnippets() {
+// A built-in function of the object kind: its body reads one variable per declared input.
+Snippet objectSnippet(
+    std::string name, std::string description, std::vector<SnippetInput> inputs, std::string function_body) {
+  Snippet s;
+  s.name = std::move(name);
+  s.function_body = std::move(function_body);
+  s.kind = "object";
+  s.inputs = std::move(inputs);
+  s.description = std::move(description);
+  return s;
+}
+
+// The built-in functions that work on objects (point clouds, images, ...), the demo recipes
+// rewritten so each input is a variable and every parameter is a local with its default.
+std::vector<Snippet> objectDefaultSnippets() {
   return {
+      objectSnippet(
+          "points_per_frame", "Number of points in each frame of a point cloud.", {{"cloud", "kPointCloud"}},
+          "return cloud:count()"),
+      objectSnippet(
+          "lidar_crop",
+          "Crops a point cloud to a box (+-10 m in x and y, -2 to 3 m in z) and marks its highest point. Outputs: "
+          "the cropped cloud, its highest z, a report and a scene with a sphere on the highest point.",
+          {{"cloud", "kPointCloud"}},
+          R"lua(local half, zmin, zmax = 10, -2, 3
+local cropped = cloud:crop_box{min = {-half, -half, zmin}, max = {half, half, zmax}}
+local top = cropped:extreme_point("z", "max")
+if top == nil then
+  return { cropped = cropped, max_z = pj.unavailable("no points in the box"), report = "empty",
+           witness = pj.scene.new{frame_id = cloud.frame_id, id = "highest"}:finish() }
+end
+local w = pj.scene.new{frame_id = cloud.frame_id, id = "highest"}
+  :sphere{center = {top.x, top.y, top.z}, diameter = 0.3, color = {255, 40, 40, 255}}
+return { cropped = cropped, max_z = top.z,
+         report = string.format("%d of %d points kept; max z %.2f", cropped:count(), cloud:count(), top.z),
+         witness = w:finish() })lua"),
+      objectSnippet(
+          "lidar_crop_map",
+          "The same crop, transformed into the map frame when a transform is available, then the highest point.",
+          {{"cloud", "kPointCloud"}},
+          R"lua(local half, zmin, zmax = 10, -2, 3
+local cropped = cloud:crop_box{min = {-half, -half, zmin}, max = {half, half, zmax}}
+local tf, why = pj.tf.lookup("map", cloud.frame_id)
+local report
+if tf then
+  cropped = cropped:transform(tf)
+  report = string.format("%d of %d points kept, transformed to map", cropped:count(), cloud:count())
+else
+  report = "no tf: " .. why
+end
+local top = cropped:extreme_point("z", "max")
+if top == nil then
+  return { cropped = cropped, max_z = pj.unavailable("no points in the box"), report = report,
+           witness = pj.scene.new{frame_id = cropped.frame_id, id = "highest"}:finish() }
+end
+local w = pj.scene.new{frame_id = cropped.frame_id, id = "highest"}
+  :sphere{center = {top.x, top.y, top.z}, diameter = 0.3, color = {255, 40, 40, 255}}
+return { cropped = cropped, max_z = top.z, report = report, witness = w:finish() })lua"),
+      objectSnippet(
+          "witness_of_crop",
+          "Reads the cropped cloud of a lidar_crop recipe and places a sphere on its highest point (in the map frame "
+          "when a transform is available).",
+          {{"cloud", "kPointCloud"}},
+          R"lua(local tf, why = pj.tf.lookup("map", cloud.frame_id)
+local report
+if tf then
+  cloud = cloud:transform(tf)
+  report = "cropped cloud transformed to map"
+else
+  report = "using input frame: " .. why
+end
+local witness = pj.scene.new{frame_id = cloud.frame_id, id = "crop_highest"}
+local top = cloud:extreme_point("z", "max")
+if top == nil then
+  return { witness = witness:finish(), max_z = pj.unavailable("no points in the crop"), report = "empty crop" }
+end
+witness:sphere{center = {top.x, top.y, top.z}, diameter = 0.4, color = {40, 220, 255, 255}}
+return { witness = witness:finish(), max_z = top.z,
+         report = string.format("%d cropped points; %s", cloud:count(), report) })lua"),
+      objectSnippet(
+          "cam_threshold", "Marks the bright pixels of an image (above 128) as an overlay for that image.",
+          {{"image", "kImage"}},
+          R"lua(local threshold = 128
+local decoded, err = image:decode()
+if decoded == nil then
+  return { overlay = pj.unavailable(err) }
+end
+local gray = decoded.channels > 1 and decoded:to_gray() or decoded
+return { overlay = gray:threshold(">", threshold) })lua"),
+      objectSnippet(
+          "cam_annotations",
+          "Draws a rectangle and a label with the highest z of a lidar crop on the front camera image.",
+          {{"cloud", "kPointCloud"}},
+          R"lua(local image_topic = "/cam_front/image_rect_compressed"
+local half, zmin, zmax = 10, -2, 3
+local cropped = cloud:crop_box{min = {-half, -half, zmin}, max = {half, half, zmax}}
+local highest = cropped:extreme_point("z", "max")
+local a = pj.annotations.new{image_topic = image_topic}
+a:points{points = {{100, 100}, {500, 100}, {500, 300}, {100, 300}}, type = "line_loop", thickness = 3,
+         outline_color = {255, 80, 20, 255}}
+a:text{position = {110, 120}, text = highest and string.format("max_z %.2f", highest.z) or "no finite points",
+       font_size = 24}
+return { overlay = a:finish() })lua"),
+      objectSnippet(
+          "depth_cloud", "Turns a depth image and its camera calibration into a point cloud.",
+          {{"depth", "kDepthImage"}, {"camera_info", "kCameraInfo"}},
+          R"lua(local step, max_depth = 1, 5.0
+return depth:to_point_cloud(camera_info, {step = step, max_depth = max_depth}))lua"),
+  };
+}
+
+// Default snippets ported from PJ3's default.snippets.xml, then the object ones.
+std::vector<Snippet> defaultSnippets() {
+  std::vector<Snippet> snippets = {
       {"backward_difference_derivative", "prevX = 0\nprevY = 0\nis_first = true",
        "if (is_first) then\n  is_first = false\n  prevX = time\n  prevY = value\nend\n\ndx = time - prevX\ndy = value "
        "- prevY\nprevX = time\nprevY = value\n\nreturn dy/dx"},
@@ -114,6 +271,10 @@ std::vector<Snippet> defaultSnippets() {
        "w = value\nx = v1\ny = v2\nz = v3\n\ndcm10 = 2 * (x * y + w * z)\ndcm00 = w*w + x*x - y*y - z*z\n\nyaw = "
        "math.atan2(dcm10, dcm00)\n\nreturn yaw"},
   };
+  for (auto& snippet : objectDefaultSnippets()) {
+    snippets.push_back(std::move(snippet));
+  }
+  return snippets;
 }
 
 // Read a snippet library (JSON array) from `path`. Returns the parsed snippets
@@ -137,18 +298,24 @@ std::optional<std::vector<Snippet>> loadSnippetsFromPath(const std::filesystem::
     if (!item.is_object()) {
       continue;
     }
-    result.push_back(
-        {item.value("name", std::string{}), item.value("global_code", std::string{}),
-         item.value("function_body", std::string{}), item.value("language", std::string{"luau"})});
+    result.push_back(snippetFromJson(item));
   }
   return result;
 }
 
 // The persisted library, or the built-in defaults when none can be read yet —
 // a missing, unreadable, or corrupt file all fall back to the defaults (so a
-// transient read failure never silently presents an empty library).
+// transient read failure never silently presents an empty library). A persisted library
+// written before the object functions existed gets the ones it lacks appended by name.
 std::vector<Snippet> loadSnippetsFromDisk() {
   if (auto loaded = loadSnippetsFromPath(snippetLibraryPath())) {
+    for (auto& builtin : objectDefaultSnippets()) {
+      const bool present =
+          std::any_of(loaded->begin(), loaded->end(), [&](const Snippet& s) { return s.name == builtin.name; });
+      if (!present) {
+        loaded->push_back(std::move(builtin));
+      }
+    }
     return std::move(*loaded);
   }
   return defaultSnippets();
@@ -248,26 +415,12 @@ inline std::string buildTransformScript(
   // persistent state works, PJ3-style); the body becomes the function. Python is
   // whitespace-sensitive, so every body line is indented one level.
   if (language == "python") {
-    const auto indent_block = [](const std::string& code) {
-      std::string out;
-      std::size_t start = 0;
-      while (start <= code.size()) {
-        const std::size_t nl = code.find('\n', start);
-        const std::string line = code.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
-        out += "    " + line + "\n";
-        if (nl == std::string::npos) {
-          break;
-        }
-        start = nl + 1;
-      }
-      return out;
-    };
     std::string src = "# pj-script: python\n";
     if (!global_code.empty()) {
       src += global_code + "\n\n";
     }
     src += "def _pj_fn(" + params + "):\n";
-    src += indent_block(body.empty() ? "return value" : body);
+    src += derived_recipes::indentPython(body.empty() ? "return value" : body);
     src += "\n";
     src += "class T:\n";
     src += "    id = \"" + id + "\"\n";
@@ -295,39 +448,27 @@ inline std::string buildTransformScript(
   return src;
 }
 
-// On-demand header lines (see refreshPreview), each optional anywhere in the
-// GLOBAL code: "-- pj-outputs: name:type,..." and "-- pj-params: {...}".
-// .first = outputs (default one "result:number"), .second = params_json.
-inline std::pair<std::vector<PJ::sdk::DataProcessorOutput>, std::string> parseOnDemandHeader(
-    const std::string& global_code) {
-  static constexpr std::string_view kOutputs = "-- pj-outputs:";
+// The "-- pj-params: {...}" line of a legacy on-demand header (anywhere in the GLOBAL code): the params
+// text, "{}" when there is none. The outputs line of the header is ignored: a trial infers them.
+inline std::string parseLegacyParams(const std::string& global_code) {
   static constexpr std::string_view kParams = "-- pj-params:";
-  std::pair<std::vector<PJ::sdk::DataProcessorOutput>, std::string> header{{}, "{}"};
+  std::string params = "{}";
   std::istringstream lines(global_code);
   std::string line;
   while (std::getline(lines, line)) {
-    if (line.compare(0, kOutputs.size(), kOutputs) == 0) {
-      for (const std::string& spec : splitOutputNames(line.substr(kOutputs.size()))) {
-        const std::size_t colon = spec.find(':');
-        if (colon != std::string::npos) {
-          header.first.push_back({spec.substr(0, colon), spec.substr(colon + 1)});
-        }
-      }
-    } else if (line.compare(0, kParams.size(), kParams) == 0) {
+    if (line.compare(0, kParams.size(), kParams) == 0) {
       const std::string rest = line.substr(kParams.size());
       const std::size_t b = rest.find_first_not_of(" \t");
-      header.second = b == std::string::npos ? "{}" : rest.substr(b);
+      params = b == std::string::npos ? "{}" : rest.substr(b);
     }
   }
-  if (header.first.empty()) {
-    header.first.push_back({"result", "number"});
-  }
-  return header;
+  return params;
 }
 
 // Legacy on-demand headers (-- pj-kind / -- pj-outputs / -- pj-params in the GLOBAL code) are
 // still accepted when loading an old saved state; the form replaces them (the engine is deduced,
-// outputs table, params field). True when `global_code` opens with the kind header.
+// the outputs are inferred by a trial, the params have their own field). True when `global_code` opens with the kind
+// header.
 inline bool hasLegacyOnDemandHeader(const std::string& global_code) {
   return global_code.rfind("-- pj-kind: on_demand", 0) == 0;
 }
@@ -354,25 +495,22 @@ inline std::string stripOnDemandHeader(const std::string& global_code) {
 struct OnDemandOutput {
   std::string name;
   std::string type;
+  bool operator==(const OnDemandOutput&) const = default;
 };
 
 using derived_recipes::isObjectOutputType;
-using derived_recipes::isValidOutputType;
-using derived_recipes::outputTypeNames;
+using derived_recipes::objectTypeLabel;
 using derived_recipes::sceneKindForOutputType;
 
 enum class RecipeKind { kTransform, kOnDemand };
 
-// The engine is never picked by the user. A recipe is on-demand (evaluated where a consumer asks)
-// when it reads or writes an object, or declares a non-numeric output (a transform only emits
-// numeric series); otherwise it is the per-sample transform. An input type that is not an object
-// type (a number, a string, an unresolved or ambiguous name) never forces on-demand. `hint` is a
-// saved on-demand state: its script is an on-demand chunk whatever it reads.
-RecipeKind deduceEngine(
-    const std::vector<std::string>& input_types, const std::vector<std::string>& output_types, bool hint) {
-  const bool object =
-      hint || std::any_of(input_types.begin(), input_types.end(), isObjectOutputType) ||
-      std::any_of(output_types.begin(), output_types.end(), [](const std::string& type) { return type != "number"; });
+// The engine is never picked by the user, and outputs never decide it: a recipe is on-demand
+// (evaluated where a consumer asks) when it reads an object, otherwise it is the per-sample
+// transform. An input type that is not an object type (a number, a string, an unresolved or
+// ambiguous name) never forces on-demand. `hint` is a saved on-demand state: its script is an
+// on-demand chunk whatever it reads.
+RecipeKind deduceEngine(const std::vector<std::string>& input_types, bool hint) {
+  const bool object = hint || std::any_of(input_types.begin(), input_types.end(), isObjectOutputType);
   return object ? RecipeKind::kOnDemand : RecipeKind::kTransform;
 }
 
@@ -447,22 +585,6 @@ std::string shortNumber(const nlohmann::json& value) {
   return out.str();
 }
 
-// "kPointCloud" -> "point cloud"; a name that is not a builtin object type stays as it is.
-std::string objectTypeLabel(const std::string& type) {
-  static const std::pair<const char*, const char*> kLabels[] = {
-      {"kPointCloud", "point cloud"},
-      {"kSceneEntities", "scene entities"},
-      {"kImageAnnotations", "image annotations"},
-      {"kImage", "image"},
-      {"kFrameTransforms", "frame transforms"}};
-  for (const auto& [name, label] : kLabels) {
-    if (type == name) {
-      return label;
-    }
-  }
-  return type;
-}
-
 // What one object output holds, from the "summary" the host puts in a report.
 std::string summarizeObjectOutput(const nlohmann::json& summary) {
   std::string text = objectTypeLabel(summary.value("type", std::string{"object"}));
@@ -477,53 +599,290 @@ std::string summarizeObjectOutput(const nlohmann::json& summary) {
   count("circles", "circles");
   count("texts", "texts");
   count("transforms", "transforms");
-  const auto bounds = summary.find("bounds");
-  if (bounds != summary.end() && bounds->is_object() && bounds->contains("min") && bounds->contains("max") &&
-      (*bounds)["min"].is_array() && (*bounds)["max"].is_array() && (*bounds)["min"].size() == 3 &&
-      (*bounds)["max"].size() == 3) {
-    static constexpr const char* kAxes[] = {"x", "y", "z"};
-    text += ", bounds";
-    for (std::size_t axis = 0; axis < 3; ++axis) {
-      text += std::string(" ") + kAxes[axis] + "[" + shortNumber((*bounds)["min"][axis]) + "," +
-              shortNumber((*bounds)["max"][axis]) + "]";
-    }
+  return text;
+}
+
+// A number as the readout shows it; anything else is `fallback` followed by the host's reason, when it
+// gives one: "unavailable (no points in the box)".
+std::string formatValue(const nlohmann::json& entry, const std::string& fallback) {
+  if (entry.contains("value") && entry["value"].is_number()) {
+    return shortNumber(entry["value"]);
+  }
+  std::string text = fallback;
+  if (entry.contains("reason") && entry["reason"].is_string() && !entry["reason"].get<std::string>().empty()) {
+    text += " (" + entry["reason"].get<std::string>() + ")";
   }
   return text;
 }
 
-// One line per output of the first bundle, or the error text. `report` is the JSON the host returns
-// from poll_evaluation; anything that is not a report is shown as it is.
-std::string summarizeReport(const std::string& report) {
+// What a trial evaluation (INFER_OUTPUTS, no declared outputs) learned, parsed ONCE from the report the
+// host returns from poll_evaluation: the outputs the script returned, whether one of them was
+// unavailable at this instant (its type is not known yet), whether the instant had a sample at all, and
+// the host's error when the script failed. `summary` is one line per output of the first bundle
+// (anything that is not a report is shown as it is) and `readout` the "name: value" lines of its number
+// outputs; both are derived here so nothing re-reads the JSON afterwards.
+struct TrialReport {
+  std::vector<OnDemandOutput> outputs;
+  bool has_unknown = false;
+  bool has_sample = false;
+  std::string error;
+  std::string summary;
+  std::string readout;
+};
+
+TrialReport parseTrialReport(const std::string& report) {
+  TrialReport trial;
   const auto parsed = nlohmann::json::parse(report, nullptr, /*allow_exceptions=*/false);
   if (parsed.is_discarded() || !parsed.is_object()) {
-    return report;
+    trial.error = report;
+    trial.summary = report;
+    return trial;
   }
   if (parsed.contains("error") && parsed["error"].is_string()) {
-    return parsed["error"].get<std::string>();
+    trial.error = parsed["error"].get<std::string>();
+    trial.summary = trial.error;
+    return trial;
   }
   const auto bundles = parsed.find("bundles");
-  if (bundles == parsed.end() || !bundles->is_array() || bundles->empty() || !(*bundles)[0].is_object() ||
-      !(*bundles)[0].contains("outputs") || !(*bundles)[0]["outputs"].is_object()) {
-    return "no result at the cursor";
+  trial.has_sample = bundles != parsed.end() && bundles->is_array() && !bundles->empty();
+  const nlohmann::json* produced = nullptr;  // the "outputs" object of the first bundle
+  if (trial.has_sample && (*bundles)[0].is_object() && (*bundles)[0].contains("outputs") &&
+      (*bundles)[0]["outputs"].is_object()) {
+    produced = &(*bundles)[0]["outputs"];
   }
-  std::string text;
-  for (const auto& [name, entry] : (*bundles)[0]["outputs"].items()) {
-    std::string line = name + ": ";
-    const std::string status = entry.value("status", std::string{});
-    if (entry.contains("summary") && entry["summary"].is_object()) {
-      line += status == "empty" ? "empty " : "";
-      line += summarizeObjectOutput(entry["summary"]);
-    } else if (entry.contains("value")) {
-      line += entry["value"].is_string() ? entry["value"].get<std::string>() : entry["value"].dump();
-    } else {
-      line += status.empty() ? "no value" : status;
-      if (entry.contains("reason") && entry["reason"].is_string() && !entry["reason"].get<std::string>().empty()) {
-        line += " (" + entry["reason"].get<std::string>() + ")";
+  if (produced == nullptr) {
+    trial.summary = "no result at the cursor";
+  } else {
+    for (const auto& [name, entry] : produced->items()) {
+      const std::string status = entry.value("status", std::string{});
+      std::string line = name + ": ";
+      if (entry.contains("summary") && entry["summary"].is_object()) {
+        line += (status == "empty" ? "empty " : "") + summarizeObjectOutput(entry["summary"]);
+      } else if (entry.contains("value") && !entry["value"].is_number()) {
+        line += entry["value"].is_string() ? entry["value"].get<std::string>() : entry["value"].dump();
+      } else {
+        line += formatValue(entry, status.empty() ? std::string("no value") : status);
+      }
+      trial.summary += (trial.summary.empty() ? "" : "\n") + line;
+      if (status == "error" && trial.error.empty()) {
+        trial.error = entry.value("reason", name + ": error");
       }
     }
-    text += (text.empty() ? "" : "\n") + line;
+    if (trial.summary.empty()) {
+      trial.summary = "no outputs";
+    }
+    if (!trial.error.empty()) {
+      return trial;
+    }
   }
-  return text.empty() ? "no outputs" : text;
+  const auto outputs = parsed.find("outputs");
+  if (outputs != parsed.end() && outputs->is_array()) {
+    for (const auto& output : *outputs) {
+      if (output.is_object() && output.contains("name") && output["name"].is_string()) {
+        const std::string type = output.value("type", std::string{"unknown"});
+        trial.has_unknown = trial.has_unknown || type == "unknown";
+        trial.outputs.push_back({output["name"].get<std::string>(), type});
+      }
+    }
+  }
+  if (produced != nullptr) {
+    for (const auto& output : trial.outputs) {
+      if (output.type == "number" && produced->contains(output.name)) {
+        trial.readout += (trial.readout.empty() ? "" : "\n") + output.name + ": " +
+                         formatValue((*produced)[output.name], "unavailable");
+      }
+    }
+  }
+  return trial;
+}
+
+// How many values the body returns per sample, read from its `return` statements: the commas at the
+// top level of a return's expression list, the most of any return (an early `return nil` does not
+// count). 1 when no return has a value. Strings, comments and brackets are skipped.
+std::size_t returnArity(const std::string& body, const std::string& language) {
+  const bool python = language == "python";
+  const auto is_word = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; };
+  std::size_t best = 0;
+  std::size_t i = 0;
+  const std::size_t n = body.size();
+  const auto skip_string = [&](std::size_t at) {  // `at` is on the opening quote; returns the index after the string
+    const char quote = body[at];
+    if (python && body.compare(at, 3, std::string(3, quote)) == 0) {
+      const std::size_t close = body.find(std::string(3, quote), at + 3);
+      return close == std::string::npos ? n : close + 3;
+    }
+    std::size_t k = at + 1;
+    while (k < n && body[k] != quote && body[k] != '\n') {
+      k += body[k] == '\\' ? 2 : 1;
+    }
+    return std::min(k + 1, n);
+  };
+  const auto skip_lua_long =
+      [&](std::size_t at) {  // `at` is on "[": the index after a [[...]] / [=[...]=] block, or at
+        std::size_t k = at + 1;
+        std::size_t level = 0;
+        while (k < n && body[k] == '=') {
+          ++level, ++k;
+        }
+        if (k >= n || body[k] != '[') {
+          return at;
+        }
+        const std::size_t close = body.find("]" + std::string(level, '=') + "]", k + 1);
+        return close == std::string::npos ? n : close + level + 2;
+      };
+  while (i < n) {
+    const char c = body[i];
+    if (c == '"' || c == '\'') {
+      i = skip_string(i);
+    } else if (python && c == '#') {
+      while (i < n && body[i] != '\n') {
+        ++i;
+      }
+    } else if (!python && c == '-' && i + 1 < n && body[i + 1] == '-') {
+      const std::size_t after = i + 2 < n && body[i + 2] == '[' ? skip_lua_long(i + 2) : i + 2;
+      if (after != i + 2) {
+        i = after;
+      } else {
+        while (i < n && body[i] != '\n') {
+          ++i;
+        }
+      }
+    } else if (!python && c == '[' && skip_lua_long(i) != i) {
+      i = skip_lua_long(i);
+    } else if (is_word(c)) {
+      std::size_t end = i;
+      while (end < n && is_word(body[end])) {
+        ++end;
+      }
+      if (body.compare(i, end - i, "return") != 0) {
+        i = end;
+        continue;
+      }
+      // Parse the expression list after `return`.
+      std::size_t k = end;
+      int depth = 0;
+      std::size_t commas = 0;
+      bool any = false;
+      for (; k < n; ++k) {
+        const char d = body[k];
+        if (d == '"' || d == '\'') {
+          any = true;
+          k = skip_string(k) - 1;
+          continue;
+        }
+        if (d == '(' || d == '[' || d == '{') {
+          any = true;
+          ++depth;
+        } else if (d == ')' || d == ']' || d == '}') {
+          --depth;
+        } else if (depth == 0 && d == ';') {
+          break;
+        } else if (depth == 0 && d == '\n') {
+          // A Lua list may continue on the next line after a trailing comma.
+          std::size_t back = k;
+          while (back > end && std::isspace(static_cast<unsigned char>(body[back - 1])) != 0) {
+            --back;
+          }
+          if (python || back == end || body[back - 1] != ',') {
+            break;
+          }
+        } else if (depth == 0 && d == ',') {
+          ++commas;
+        } else if (depth == 0 && !python && is_word(d) && (k == 0 || !is_word(body[k - 1]))) {
+          std::size_t word_end = k;
+          while (word_end < n && is_word(body[word_end])) {
+            ++word_end;
+          }
+          const std::string word = body.substr(k, word_end - k);
+          if (word == "end" || word == "else" || word == "elseif" || word == "until") {
+            break;
+          }
+          any = true;
+          k = word_end - 1;
+        } else if (depth == 0 && python && d == '#') {
+          break;
+        } else if (std::isspace(static_cast<unsigned char>(d)) == 0) {
+          any = true;
+        }
+      }
+      if (any) {
+        best = std::max(best, commas + 1);
+      }
+      i = k;
+    } else {
+      ++i;
+    }
+  }
+  return std::clamp<std::size_t>(best, 1, 8);
+}
+
+// "Series" for a per-sample function, "2D" when every input of an object function is an image-like type, else "3D".
+std::string snippetKindLabel(const Snippet& snippet) {
+  if (snippet.kind != "object") {
+    return "Series";
+  }
+  const bool all_2d =
+      !snippet.inputs.empty() && std::all_of(snippet.inputs.begin(), snippet.inputs.end(), [](const auto& in) {
+        return derived_recipes::sceneKindForOutputType(in.type) == "2d";
+      });
+  return all_2d ? "2D" : "3D";
+}
+
+// "cloud (point cloud), camera_info (camera info)"
+std::string snippetInputsText(const std::vector<SnippetInput>& inputs) {
+  std::string text;
+  for (const auto& input : inputs) {
+    text += (text.empty() ? "" : ", ") + input.var + " (" + objectTypeLabel(input.type) + ")";
+  }
+  return text;
+}
+
+// ---------------------------------------------------------------------------
+// Preview chart
+// ---------------------------------------------------------------------------
+
+// (absolute ns, value) samples of one preview curve.
+using RawSamples = std::vector<std::pair<std::int64_t, double>>;
+
+// TODO(theme): These data-series colors are a deliberate color-as-data exception to the theme palette: a
+// curve's identity is carried by its color here. Use renderer-selected colors once the chart protocol
+// exposes them. #RRGGBB, cycled by series index so parallel outputs stay visually distinct.
+constexpr const char* kSeriesColors[] = {"#ff8800", "#0088ff", "#22aa22", "#cc2222", "#9933cc", "#00a0a0"};
+constexpr std::size_t kSeriesColorCount = sizeof(kSeriesColors) / sizeof(kSeriesColors[0]);
+
+// The first timestamp of the earliest curve (0 when every curve is empty): the common t0 that aligns them.
+std::int64_t earliestTimestamp(const std::vector<RawSamples>& curves) {
+  std::int64_t t0 = 0;
+  bool have = false;
+  for (const auto& raw : curves) {
+    if (!raw.empty() && (!have || raw.front().first < t0)) {
+      t0 = raw.front().first;
+      have = true;
+    }
+  }
+  return t0;
+}
+
+std::vector<PJ::ChartPoint> toChartPoints(const RawSamples& raw, std::int64_t t0) {
+  std::vector<PJ::ChartPoint> points;
+  points.reserve(raw.size());
+  for (const auto& [ts, v] : raw) {
+    points.push_back({static_cast<double>(ts - t0) / 1e9, v});
+  }
+  return points;
+}
+
+// One solid curve per non-empty entry of `raw`, labelled by `labels[k]` and colored by its index k, in
+// seconds from `t0`.
+std::vector<PJ::ChartSeries> toChartSeries(
+    const std::vector<RawSamples>& raw, const std::vector<std::string>& labels, std::int64_t t0) {
+  std::vector<PJ::ChartSeries> series;
+  for (std::size_t k = 0; k < raw.size(); ++k) {
+    if (!raw[k].empty()) {
+      series.push_back({labels[k], toChartPoints(raw[k], t0), kSeriesColors[k % kSeriesColorCount], /*dashed=*/false});
+    }
+  }
+  return series;
 }
 
 // ---------------------------------------------------------------------------
@@ -532,6 +891,10 @@ std::string summarizeReport(const std::string& report) {
 
 class TransformEditorDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
+
+  static constexpr const char* kNeedInputProblem = "Add an input (drag & drop a series or an object topic)";
+  static constexpr const char* kNeedBodyProblem = "Write your function body";
+  static constexpr const char* kNeedNewHostProblem = "Object inputs require a PlotJuggler host with SDK 0.36 or newer";
 
  public:
   std::string manifest() const override {
@@ -551,49 +914,39 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       pending_tab_restore_ = false;
     }
 
-    // Single function tab — one table of inputs (drop target). Col 0 is the radio
-    // marking which row provides `value`; col 1 is the series path; col 2 is the
-    // bound variable. The non-primary rows are v1, v2, ... in row order.
+    // Single function tab: one table of inputs (drop target). Col 0 is the radio marking which
+    // row provides `value` (series only); then the input, the Var the script reads it by, and the
+    // type of the input in words.
     const bool on_demand = isOnDemand();
+    const std::vector<std::string>& vars = variableNames();
     wd.setDropTarget("tableSources");
+    wd.setTableHeaders("tableSources", {"", "Input", "Var", "Type"});
     std::vector<std::vector<std::string>> rows;
     rows.reserve(sources_.size());
-    if (on_demand) {
-      // On-demand scripts read inputs["<path>"] (no value/v1 binding, so no radio) and an
-      // input may be an object topic, so the Type column says which kind each row is.
-      wd.setTableHeaders("tableSources", {"", "Input", "Key", "Type"});
-      for (const std::string& source : sources_) {
-        rows.push_back({"", source, "inputs[\"" + source + "\"]", inputTypeOf(source)});
-      }
-    } else {
-      wd.setTableHeaders("tableSources", {"", "Input", "Var"});
-      for (int i = 0; i < static_cast<int>(sources_.size()); ++i) {
-        rows.push_back({"", sources_[static_cast<std::size_t>(i)], variableName(i)});
-      }
+    for (std::size_t i = 0; i < sources_.size(); ++i) {
+      rows.push_back({"", sources_[i], vars[i], objectTypeLabel(inputTypeOf(sources_[i]))});
     }
     wd.setTableRows("tableSources", rows);
     wd.setListItemsDeletable("tableSources", true);
     if (!on_demand) {
       wd.setTableRadioColumn("tableSources", 0, primaryIndex());
     }
-    wd.setText("nameLineEdit", output_name_);
 
-    // There is no engine selector: the editor deduces it from the input and output types and
-    // says which one it picked (the tooltip, fixed in the .ui, names the 0.36 requirement).
-    wd.setText("engineLabel", on_demand ? "Computed at the cursor" : "Computed per sample");
-    buildOutputsPanel(wd, on_demand);
-
-    // Function signature reflects the inputs: `value` (the radio-selected row) plus
-    // v1..vN for the remaining series, so the user sees the identifier to reference
-    // for each one in the body.
-    const std::size_t num_extra = orderedExtras().size();
-    std::string signature = "function( time, value";
-    for (std::size_t i = 0; i < num_extra; ++i) {
-      signature += ", v" + std::to_string(i + 1);
-    }
-    signature += " )";
+    // Function signature reflects the inputs: `time, value, v1..vN` for series (the radio picks
+    // `value`), the Var of every input for objects.
+    std::string signature;
     if (on_demand) {
-      signature = "function( inputs, params )";
+      signature = "function( ";
+      for (std::size_t i = 0; i < vars.size(); ++i) {
+        signature += (i == 0 ? "" : ", ") + vars[i];
+      }
+      signature += vars.empty() ? ")" : " )";
+    } else {
+      signature = "function( time, value";
+      for (std::size_t i = 0; i + 1 < sources_.size(); ++i) {
+        signature += ", v" + std::to_string(i + 1);
+      }
+      signature += " )";
     }
     wd.setText("functionTitle", signature);
 
@@ -604,6 +957,30 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // them, not just the user clicking). Pushed every tick; matches language_.
     wd.setChecked("luaButton", language_ != "python");
     wd.setChecked("pythonButton", language_ == "python");
+
+    // The topic picker (object topics of the host catalog, with their type in words), the advanced
+    // disclosure (params and pinning, recipes evaluated at the cursor only) and the scene button.
+    std::vector<std::string> picker;
+    for (const auto& [name, type] : object_topics_) {
+      picker.push_back(name + "  [" + objectTypeLabel(type) + "]");
+    }
+    if (picker.empty()) {
+      picker.push_back("(no object topics loaded)");
+    }
+    wd.setItems("objectTopicCombo", picker);
+    wd.setCurrentIndex("objectTopicCombo", picker_index_);
+    wd.setEnabled("buttonAddObjectTopic", !object_topics_.empty());
+    wd.setVisible("buttonAdvanced", on_demand);
+    wd.setButtonText("buttonAdvanced", advanced_open_ ? "Advanced v" : "Advanced >");
+    wd.setVisible("advancedPane", on_demand && advanced_open_);
+    wd.setText("paramsLineEdit", params_text_);
+    const std::string& params_error = derived().params_error;
+    wd.setFieldValid("paramsLineEdit", params_error.empty(), params_error);
+    wd.setChecked("pinCurrentTimeCheck", pin_current_);
+    wd.setVisible("buttonShowScene", !scene_button_.empty());
+    if (!scene_button_.empty()) {
+      wd.setButtonText("buttonShowScene", scene_button_);
+    }
 
     // Function Library sub-panel (cloned from PJ3's buttonLibraryBox dialog).
     // One-shot open/close commands, then live population while it is open.
@@ -626,89 +1003,72 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       wd.requestSubDialog(kOverwriteUi);
       emit_save_confirm_dialog_ = false;
     }
+    // "Create..." name prompt: the name field prefilled, what will be created, and a note when the
+    // last attempt was refused or the name would replace a recipe.
+    if (emit_create_dialog_) {
+      wd.setText("createRecipeName", create_name_);
+      wd.setLabel("createRecipeSummary", createSummary());
+      wd.setLabel("createRecipeNote", create_note_);
+      wd.requestSubDialog(kCreateRecipeUi);
+      emit_create_dialog_ = false;
+    }
     if (library_open_) {
       const std::vector<std::string> names = filteredSnippetNames();
-      wd.setTableHeaders("tableFunctions", {"Function", "Language"});
+      wd.setTableHeaders("tableFunctions", {"Function", "Kind", "Language"});
       std::vector<std::vector<std::string>> lib_rows;
       lib_rows.reserve(names.size());
       for (const auto& n : names) {
         auto it = std::find_if(snippets_.begin(), snippets_.end(), [&](const Snippet& s) { return s.name == n; });
         const std::string lang = (it != snippets_.end() && it->language == "python") ? "Python" : "Lua";
-        lib_rows.push_back({n, lang});
+        lib_rows.push_back({n, it != snippets_.end() ? snippetKindLabel(*it) : "Series", lang});
       }
       wd.setTableRows("tableFunctions", lib_rows);
+      wd.setLabel("previewInfoLabel", snippetInfoText(library_selected_));
       wd.setCodeContent("previewPlainText", combinedSnippetText(library_selected_))
           .setCodeLanguage("previewPlainText", "lua");
     }
-    wd.setVisible("onDemandReportPreview", on_demand);
-    wd.setVisible("framePlotPreview", !on_demand);
-
     // Import / Export library buttons: the host drives the native file choosers.
     // Import opens an "open" dialog and Export a "save as"; both report back via
     // onFileSelected, routed by widget name. Complements the library browser above.
     wd.setFilePicker("buttonLoadFunctions", "", "Snippet library (*.json)", "Import snippet library");
     wd.setSaveFilePicker("buttonSaveFunctions", "", "Snippet library (*.json)", "Export snippet library", "json");
 
-    // Single-tab validation overlay — list every blocking problem over the chart.
-    // validation_error_ is the host's real compile/run error (refreshPreview ran
-    // the script as an ephemeral transform). PJ4 keeps its Modify-by-name
-    // behaviour, so an already-existing name is not an error here.
-    std::string single_term;
-    if (output_name_.empty()) {
-      single_term += on_demand ? "Create a name for the new output\n" : "Create a name for the new series\n";
-    } else if (std::find(sources_.begin(), sources_.end(), output_name_) != sources_.end()) {
-      single_term += "Give the new series a name that isn't one of its inputs\n";
+    // Over the chart: what is missing, then the host's message (the real compile/run error), then the
+    // readout of a recipe evaluated at the cursor when it has no series to plot. A one-shot Import/Export
+    // line goes first and clears on the next build.
+    std::string overlay;
+    for (const std::string& problem : formProblems()) {
+      overlay += problem + "\n";
     }
-    if (sources_.empty()) {
-      single_term += "Add an input (drag & drop a series or an object topic)\n";
-    }
-    if (function_body_.empty()) {
-      single_term += "Write your function body\n";
-    }
-    if (on_demand) {
-      if (!on_demand_supported_) {
-        single_term += "Object inputs and outputs require a PlotJuggler host with SDK 0.36 or newer\n";
-      }
-      if (validOutputs().empty()) {
-        single_term += "Declare at least one output (name and type)\n";
-      }
-      if (const std::string error = paramsError(params_text_); !error.empty()) {
-        single_term += error + "\n";
-      }
-    }
-    // In on-demand mode the host's message (validation_error_) travels in the report pane
-    // below, not in this overlay (the chart frame is hidden there).
-    const std::string hints_only = single_term;
     if (!validation_error_.empty()) {
-      single_term += validation_error_ + "\n";
+      overlay += validation_error_ + "\n";
     }
-    // A one-shot Import/Export status line shows in the overlay for this render
-    // (above any validation problems) and then clears on the next build.
+    if (overlay.empty() && on_demand && preview_series_.empty()) {
+      overlay = readout_;
+    }
     if (!io_status_.empty()) {
-      single_term = single_term.empty() ? io_status_ : io_status_ + "\n" + single_term;
+      overlay = overlay.empty() ? io_status_ : io_status_ + "\n" + overlay;
       io_status_.clear();
     }
-    // Red fill on the name field when it's missing (PJ3 parity).
-    wd.setFieldValid("nameLineEdit", !output_name_.empty(), output_name_.empty() ? "Name is required" : "");
-    // The result pane shows the host's message first, then the summary of the last report, and
-    // the form's own hints only while there is nothing else to show.
-    if (!validation_error_.empty()) {
-      wd.setPlainText("onDemandReportPreview", validation_error_);
-    } else if (!on_demand_report_.empty()) {
-      wd.setPlainText(
-          "onDemandReportPreview",
-          on_demand_note_.empty() ? on_demand_report_ : on_demand_note_ + "\n" + on_demand_report_);
-    } else {
-      wd.setPlainText("onDemandReportPreview", hints_only);
-    }
-    if (!single_term.empty()) {
+    if (!overlay.empty()) {
       wd.clearChart("framePlotPreview");
-      wd.setChartPlaceholder("framePlotPreview", single_term);
+      wd.setChartPlaceholder("framePlotPreview", overlay);
     } else {
       wd.setChartPlaceholder("framePlotPreview", "");
       wd.setChartSeries("framePlotPreview", preview_series_);
       wd.setChartAutoZoom("framePlotPreview", autozoom_);
     }
+    wd.setVisible("scenePreviewFrame", scene_preview_visible_);
+
+    // The one-line status: the result of the last trial, else why Create is disabled.
+    const std::string reason = canCreateReason();
+    std::string status = status_text_;
+    if (!needs_note_.empty()) {
+      status = needs_note_;
+    } else if (status.empty() || (!reason.empty() && !validation_error_.empty())) {
+      status = reason;
+    }
+    wd.setLabel("statusLabel", oneLine(status));
 
     // Batch tab content (set first so the validation overlay and Create gating
     // below see the current state). The rows ARE the input set, not a selection.
@@ -742,27 +1102,24 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // placeholder over the same rect. It lives on the Create setEnabled below.
     std::string batch_term;
     if (batch_function_body_.empty()) {
-      batch_term += "Write your function body\n";
+      batch_term += std::string(kNeedBodyProblem) + "\n";
     }
     if (!batch_validation_error_.empty()) {
       batch_term += batch_validation_error_ + "\n";
     }
     wd.setChartPlaceholder("framePlotPreviewBatch", batch_term);
 
-    // Each tab owns its Create action and validation gate. A pre-existing Single
-    // output name and either explicit edit mode use the Modify label.
-    const bool is_modify_single = outputNameExists(output_name_) || edit_mode_;
-    wd.setEnabled("pushButtonCreate", single_term.empty());
-    wd.setButtonText(
-        "pushButtonCreate", on_demand ? (is_modify_single ? "Modify Derived Object" : "Create Derived Object")
-                                      : (is_modify_single ? "Modify Time Series" : "Create New Time Series"));
+    // Each tab owns its Create action and validation gate. The reason a disabled Create is disabled goes
+    // on the status line and, where the host shows it, on the button.
+    wd.setEnabled("pushButtonCreate", reason.empty());
+    wd.setButtonText("pushButtonCreate", edit_mode_ ? "Modify" : "Create…");
+    wd.setFieldValid("pushButtonCreate", reason.empty(), reason);
     // Missing affix and empty inputs gate via the disabled button, not the overlay.
     wd.setEnabled("pushButtonCreateBatch", batch_term.empty() && !batch_sources_.empty() && !batch_suffix_.empty());
     wd.setButtonText("pushButtonCreateBatch", edit_mode_ ? "Modify Time Series" : "Create New Time Series");
     // Lock the identity while editing so a rename can't fork a new series (PJ3
-    // parity). Single: the name field. Batch: the sources + prefix/suffix that form
-    // the name. setEnabled(false) is cosmetic for drops — see onItemsDropped.
-    wd.setEnabled("nameLineEdit", !edit_mode_);
+    // parity). Batch: the sources + prefix/suffix that form the name. setEnabled(false) is
+    // cosmetic for drops — see onItemsDropped.
     wd.setEnabled("tableBatchSources", !edit_mode_);
     // Each Clear tracks its own list: nothing to clear, nothing to press. Batch
     // also follows the edit lock, matching its per-row trash.
@@ -776,11 +1133,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
 
   bool onTextChanged(std::string_view name, std::string_view text) override {
-    if (name == "nameLineEdit") {
-      output_name_ = std::string(text);
-      preview_dirty_ = true;
-      return true;
-    }
     // Live search filter in the function library box.
     if (name == "searchLineEdit") {
       library_search_ = std::string(text);
@@ -795,24 +1147,21 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       batch_suffix_ = std::string(text);
       return true;
     }
-    if (name == "outputNameEdit") {
-      new_output_name_ = std::string(text);
+    // Name typed in the "Create..." prompt (harvested on OK).
+    if (name == "createRecipeName") {
+      pending_create_name_ = std::string(text);
       return true;
     }
     if (name == "paramsLineEdit") {
       params_text_ = std::string(text);
-      preview_dirty_ = true;
+      formChanged();
       return true;
     }
     return false;
   }
 
-  // The output-type and object-topic combos only remember the current row; the Add buttons act on it.
+  // The object-topic combo only remembers the current row; Add input acts on it.
   bool onIndexChanged(std::string_view name, int index) override {
-    if (name == "outputTypeCombo") {
-      new_output_type_index_ = index;
-      return true;
-    }
     if (name == "objectTopicCombo") {
       picker_index_ = index;
       return true;
@@ -824,13 +1173,13 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     if (name == "globalVarsText") {
       global_code_ = std::string(text);
       validateSyntax();
-      preview_dirty_ = true;
+      formChanged();
       return true;
     }
     if (name == "functionText") {
       function_body_ = std::string(text);
       validateSyntax();
-      preview_dirty_ = true;
+      formChanged();
       return true;
     }
     if (name == "globalVarsTextBatch") {
@@ -848,7 +1197,16 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
   bool onClicked(std::string_view name) override {
     if (name == "pushButtonCreate") {
-      pending_create_ = PendingCreate::Single;
+      // Modify keeps the name (locked) and asks nothing; Create asks for the name first.
+      if (edit_mode_) {
+        pending_create_ = PendingCreate::Single;
+      } else if (canCreateReason().empty()) {
+        openCreatePrompt();
+      }
+      return true;
+    }
+    if (name == "buttonAdvanced") {
+      advanced_open_ = !advanced_open_;
       return true;
     }
     if (name == "pushButtonCreateBatch") {
@@ -859,8 +1217,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // in one go, the bulk counterpart of the per-row trash.
     if (name == "buttonClearSources") {
       sources_.clear();
+      var_overrides_.clear();
       primary_index_ = -1;
-      inputsOrOutputsChanged();
+      inputsChanged();
       return true;
     }
     if (name == "buttonClearBatchSources") {
@@ -898,13 +1257,16 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // name-prompt modal; the actual save happens on subDialogAccepted.
     if (name == "buttonSaveCurrent") {
       pending_save_name_ = output_name_;
+      create_stage_ = CreateStage::None;
       save_stage_ = SaveStage::NamePrompt;
       emit_save_name_dialog_ = true;
       return true;
     }
     // A modal sub-dialog was accepted (OK). Drives the save state machine.
     if (name == "subDialogAccepted") {
-      if (save_stage_ == SaveStage::NamePrompt) {
+      if (create_stage_ == CreateStage::Prompt) {
+        acceptCreatePrompt();
+      } else if (save_stage_ == SaveStage::NamePrompt) {
         if (pending_save_name_.empty()) {
           save_stage_ = SaveStage::None;
         } else if (snippetExists(pending_save_name_)) {
@@ -922,10 +1284,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     }
     if (name == "pushButtonHelp") {
       help_requested_ = true;
-      return true;
-    }
-    if (name == "buttonAddOutput") {
-      addOutput();
       return true;
     }
     if (name == "buttonAddObjectTopic") {
@@ -953,21 +1311,13 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       batch_dirty_ = true;
       return true;
     }
-    if (name == "tableOutputs") {
-      if (index < 0 || index >= static_cast<int>(outputs_.size())) {
-        return false;
-      }
-      outputs_.erase(outputs_.begin() + index);
-      outputs_untouched_ = false;
-      inputsOrOutputsChanged();
-      return true;
-    }
     if (name != "tableSources" || index < 0 || index >= static_cast<int>(sources_.size())) {
       return false;
     }
 
     const std::string primary_path = primarySource();
     sources_.erase(sources_.begin() + index);
+    var_overrides_.erase(var_overrides_.begin() + index);
     primary_index_ = 0;
     for (int i = 0; i < static_cast<int>(sources_.size()); ++i) {
       if (sources_[static_cast<std::size_t>(i)] == primary_path) {
@@ -978,7 +1328,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     if (sources_.empty()) {
       primary_index_ = -1;
     }
-    inputsOrOutputsChanged();
+    inputsChanged();
     return true;
   }
 
@@ -1051,7 +1401,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   bool onTableRadioSelected(std::string_view name, int row) override {
     if (name == "tableSources" && row >= 0 && row < static_cast<int>(sources_.size())) {
       primary_index_ = row;
-      preview_dirty_ = true;
+      formChanged();
       return true;
     }
     return false;
@@ -1070,18 +1420,18 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       pin_current_ = checked;
       return true;
     }
-    // Single-tab script language (Lua / Python). Only "luau" actually runs today;
-    // selecting Python re-validates so the host's "unsupported language" surfaces.
+    // Single-tab script language (Lua / Python); the preview re-runs so the host's verdict on the
+    // chosen language surfaces.
     if (name == "luaButton" && checked) {
       language_ = "luau";
       validateSyntax();
-      preview_dirty_ = true;
+      formChanged();
       return true;
     }
     if (name == "pythonButton" && checked) {
       language_ = "python";
       validateSyntax();
-      preview_dirty_ = true;
+      formChanged();
       return true;
     }
     if (name == "luaBatchButton" && checked) {
@@ -1215,11 +1565,13 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // keeps exactly today's shape.
     if (isOnDemand()) {
       cfg["kind"] = "on_demand";
+      // The outputs the last trial learned, for readers of the 1.2.0 shape; a trial re-infers them on load.
       nlohmann::json outputs = nlohmann::json::array();
-      for (const auto& o : outputs_) {
+      for (const auto& o : inferredOutputs()) {
         outputs.push_back({{"name", o.name}, {"type", o.type}});
       }
       cfg["outputs"] = std::move(outputs);
+      cfg["vars"] = variableNames();
       cfg["params_text"] = params_text_;
       cfg["pin_current_time"] = pin_current_;
     }
@@ -1285,6 +1637,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     current_tab_ = 0;             // open on the Single tab
     pending_tab_restore_ = true;  // one-shot: push the tab to the UI
     sources_.clear();
+    var_overrides_.clear();
     primary_index_ = -1;
     if (cfg.contains("sources") && cfg["sources"].is_array()) {
       sources_ = cfg["sources"].get<std::vector<std::string>>();
@@ -1302,10 +1655,22 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       }
       primary_index_ = sources_.empty() ? -1 : 0;
     }
+    // The Vars an on-demand state saved (the resolved names; a state saved by 1.2.0 has none).
+    // Only a name that is not the default of its row is kept as the user's own.
+    var_overrides_.assign(sources_.size(), std::string{});
+    if (cfg.contains("vars") && cfg["vars"].is_array() && cfg["vars"].size() == sources_.size()) {
+      const std::vector<std::string> defaults = onDemandVariableNames(var_overrides_);
+      for (std::size_t i = 0; i < sources_.size(); ++i) {
+        if (cfg["vars"][i].is_string() && cfg["vars"][i].get<std::string>() != defaults[i]) {
+          var_overrides_[i] = cfg["vars"][i].get<std::string>();
+        }
+      }
+    }
     // Loading a populated config = editing an existing series → MODIFY mode: the
     // button reads "Modify" and the name is locked so the user can't accidentally
     // fork a new series (PJ3 parity: editExistingPlot disables nameLineEdit).
     edit_mode_ = !output_name_.empty();
+    ++form_revision_;  // the sources, Vars, body and params were all replaced
     return true;
   }
 
@@ -1337,12 +1702,32 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
   // Save the current editor contents under `snippet_name` (insert or overwrite),
   // then persist the library to disk. The name prompt + overwrite warning are
-  // handled by the caller (the save state machine), mirroring PJ3.
+  // handled by the caller (the save state machine), mirroring PJ3. A function that reads objects
+  // is saved as an object function with the Var and type of each object input.
+  Snippet currentAsSnippet(const std::string& snippet_name) const {
+    Snippet sn;
+    sn.name = snippet_name;
+    sn.global_code = global_code_;
+    sn.function_body = function_body_;
+    sn.language = language_;
+    if (isOnDemand()) {
+      sn.kind = "object";
+      const std::vector<std::string> vars = variableNames();
+      for (std::size_t i = 0; i < sources_.size(); ++i) {
+        if (const std::string type = inputTypeOf(sources_[i]); isObjectOutputType(type)) {
+          sn.inputs.push_back({vars[i], type});
+        }
+      }
+    }
+    return sn;
+  }
+
   void doSaveSnippet(const std::string& snippet_name) {
-    Snippet sn{snippet_name, global_code_, function_body_, language_};
+    Snippet sn = currentAsSnippet(snippet_name);
     auto it =
         std::find_if(snippets_.begin(), snippets_.end(), [&](const Snippet& s) { return s.name == snippet_name; });
     if (it != snippets_.end()) {
+      sn.description = it->description;
       *it = sn;
     } else {
       snippets_.push_back(sn);
@@ -1398,8 +1783,26 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     return globals + "\n\nfunction(time,value)\n" + body + "\nend";
   }
 
+  // The description and the inputs the first selected function needs, for the library's preview.
+  std::string snippetInfoText(const std::vector<std::string>& names) const {
+    for (const auto& n : names) {
+      auto it = std::find_if(snippets_.begin(), snippets_.end(), [&](const Snippet& s) { return s.name == n; });
+      if (it == snippets_.end()) {
+        continue;
+      }
+      std::string text = it->description;
+      if (!it->inputs.empty()) {
+        text += (text.empty() ? "" : "\n") + std::string("Inputs: ") + snippetInputsText(it->inputs);
+      }
+      return text;
+    }
+    return {};
+  }
+
   // Load the selected library function(s) into the Single-tab editor (combined
-  // globals + body), then re-validate. Mirrors PJ3's "Use" / double-click.
+  // globals + body), then re-validate. Mirrors PJ3's "Use" / double-click. For a function that
+  // reads objects, each input it declares renames the Var of the first input of that type
+  // not yet bound; an input with no match is named on the status line.
   void loadSnippetsIntoEditor(const std::vector<std::string>& names) {
     if (names.empty()) {
       return;
@@ -1407,6 +1810,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     std::string globals;
     std::string body;
     bool language_set = false;
+    std::vector<SnippetInput> wanted;
     for (const auto& n : names) {
       auto it = std::find_if(snippets_.begin(), snippets_.end(), [&](const Snippet& s) { return s.name == n; });
       if (it == snippets_.end()) {
@@ -1428,25 +1832,167 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
         body += "\n";
       }
       body += it->function_body;
+      wanted.insert(wanted.end(), it->inputs.begin(), it->inputs.end());
     }
     global_code_ = globals;
     function_body_ = body;
-    output_name_ = names.front();  // seed with the first; the user can rename
+    if (!edit_mode_) {
+      output_name_ = names.front();  // seed with the first; the user can rename
+    }
     validateSyntax();
-    preview_dirty_ = true;
+    formChanged();
+    bindSnippetInputs(wanted);  // after formChanged, which drops the "needs:" remark of the previous load
   }
 
+  // Name the Var of the first unbound input of each wanted type after the function's variable.
+  void bindSnippetInputs(const std::vector<SnippetInput>& wanted) {
+    needs_note_.clear();
+    std::vector<bool> bound(sources_.size(), false);
+    std::string missing;
+    for (const auto& input : wanted) {
+      bool found = false;
+      for (std::size_t i = 0; i < sources_.size() && !found; ++i) {
+        if (!bound[i] && inputTypeOf(sources_[i]) == input.type) {
+          bound[i] = true;
+          var_overrides_[i] = input.var;
+          found = true;
+        }
+      }
+      if (!found) {
+        missing += (missing.empty() ? "" : ", ") + input.var + " (" + objectTypeLabel(input.type) + ")";
+      }
+    }
+    if (!missing.empty()) {
+      needs_note_ = "needs: " + missing;
+    }
+    ++form_revision_;  // the Vars changed
+  }
+
+  /// Replaces the plotted series; an identical set (the usual case while nothing changes) is kept as it is.
   void setPreviewSeries(std::vector<PJ::ChartSeries> series) {
-    preview_series_ = std::move(series);
+    if (!sameSeries(series, preview_series_)) {
+      preview_series_ = std::move(series);
+    }
   }
-  /// On-demand preview report (pretty JSON); see previewOnDemand().
-  void setOnDemandReport(std::string report) {
-    on_demand_report_ = std::move(report);
+  /// The readout shown over the chart of a recipe evaluated at the cursor while there is no series to plot.
+  void setReadout(std::string text) {
+    readout_ = std::move(text);
   }
-  /// A non-blocking remark shown above the report (e.g. "evaluating at 0 s"); unlike a
-  /// validation error it does not gate Create.
-  void setOnDemandNote(std::string note) {
-    on_demand_note_ = std::move(note);
+  /// The one-line result of the last trial ("max_z: 1.83, cropped: point cloud, 23 144 points", joined by a middle
+  /// dot).
+  void setStatus(std::string text) {
+    status_text_ = std::move(text);
+  }
+  /// Whether the scene pane next to the chart is shown (object outputs preview in a scene tab).
+  void setScenePreviewVisible(bool visible) {
+    scene_preview_visible_ = visible;
+  }
+  /// The outcome of a trial evaluation, parsed once: the outputs the script returned (an `unknown` type means the
+  /// value was unavailable at that instant). Create needs a trial that succeeded without any unknown output.
+  void setTrial(TrialReport report) {
+    report.error.clear();
+    storeTrial(std::move(report));
+  }
+  /// A trial that failed (the host's message) or found nothing to run on.
+  void setTrialFailure(std::string error) {
+    TrialReport report;
+    report.error = std::move(error);
+    storeTrial(std::move(report));
+  }
+  void clearTrial() {
+    storeTrial(std::nullopt);
+  }
+  const std::vector<OnDemandOutput>& inferredOutputs() const {
+    static const std::vector<OnDemandOutput> kNone;
+    return trial_ ? trial_->outputs : kNone;
+  }
+  /// The "name: value" lines of the number outputs of the last successful trial (empty after a failure).
+  const std::string& trialReadout() const {
+    static const std::string kNone;
+    return trial_ ? trial_->readout : kNone;
+  }
+  /// Changes whenever the inferred outputs do (not on every trial: a rerun that finds the same outputs keeps it).
+  std::uint64_t trialSerial() const {
+    return trial_serial_;
+  }
+  /// The last trial succeeded and every output has a type (none was unavailable at that instant).
+  bool trialUsable() const {
+    return trial_ && !trial_->outputs.empty() && !trial_->has_unknown;
+  }
+  /// The last trial failed (the host's message, or nothing to run on).
+  bool trialFailed() const {
+    return trial_ && !trial_->error.empty();
+  }
+
+  /// Why Create is disabled, or empty when it is enabled.
+  std::string canCreateReason() const {
+    if (const auto& problems = formProblems(); !problems.empty()) {
+      return problems.front();
+    }
+    if (!validation_error_.empty()) {
+      return validation_error_;
+    }
+    if (isOnDemand()) {
+      if (trialFailed()) {
+        return trial_->error;
+      }
+      if (trial_ && trial_->has_unknown) {
+        return "An output is unavailable at this instant, so its type is not known yet: move the cursor to a "
+               "frame where it has a value";
+      }
+      if (!trial_ || trial_->outputs.empty()) {
+        return "Waiting for the script to run";
+      }
+    }
+    return {};
+  }
+
+  /// One line on what Create will make, for the name prompt: "series `max_z`, point cloud `cropped`;
+  /// computed per /lidar_top frame" or "series `speed`; computed per sample".
+  std::string createSummary() const {
+    if (!isOnDemand()) {
+      const std::string name = create_name_.empty() ? std::string("result") : create_name_;
+      return "series `" + name + "`; computed per sample";
+    }
+    std::string text;
+    for (const auto& output : inferredOutputs()) {
+      const std::string kind = output.type == "number"   ? "series"
+                               : output.type == "string" ? "text"
+                                                         : objectTypeLabel(output.type);
+      text += (text.empty() ? "" : ", ") + kind + " `" + output.name + "`";
+    }
+    std::string per = "sample";
+    for (const std::string& source : sources_) {
+      if (isObjectOutputType(inputTypeOf(source))) {
+        per = source + " frame";
+        break;
+      }
+    }
+    return text + "; computed per " + per;
+  }
+
+  /// Why `name` cannot name what is created, or empty. The name may list several outputs separated by commas
+  /// for a transform; each one is checked.
+  std::string createNameError(const std::string& name) const {
+    const std::vector<std::string> names = isOnDemand() ? std::vector<std::string>{name} : splitOutputNames(name);
+    if (names.empty() || trimBlanks(name).empty()) {
+      return "Give it a name";
+    }
+    for (const std::string& each : names) {
+      if (each.find("__") != std::string::npos) {
+        return "A name cannot contain \"__\"";
+      }
+      if (std::find(sources_.begin(), sources_.end(), each) != sources_.end()) {
+        return "'" + each + "' is one of the inputs: give it another name";
+      }
+    }
+    return {};
+  }
+
+  /// Names of the editor's own recipes already installed, asked of the host when the Create prompt opens
+  /// (a name in this list is a Replace).
+  void setOwnRecipeLookup(std::function<bool(const std::string&)> cb) {
+    own_recipe_exists_ = std::move(cb);
   }
   /// Set by the toolbox after each ephemeral-preview attempt: empty = script
   /// accepted by the host; non-empty = the error shown over the preview chart.
@@ -1488,27 +2034,27 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     batch_dirty_ = false;
     return was;
   }
-  void setAvailableSeries(std::vector<std::string> series) {
-    all_series_ = std::move(series);
-  }
-
   // --- on-demand form ---
   RecipeKind kind() const {
-    std::vector<std::string> input_types;
-    for (const std::string& source : sources_) {
-      input_types.push_back(inputTypeOf(source));
-    }
-    std::vector<std::string> output_types;
-    for (const OnDemandOutput& output : outputs_) {
-      output_types.push_back(output.type);
-    }
-    return deduceEngine(input_types, output_types, kind_hint_on_demand_);
+    return derived().kind;
   }
   bool isOnDemand() const {
     return kind() == RecipeKind::kOnDemand;
   }
-  /// False on a host without the 0.36 surfaces (object inputs and outputs cannot be created then).
+  /// Counts the edits of everything the form's derived values (engine, Vars, problems, the request a
+  /// toolbox builds from it) are computed from. Equal revisions mean equal derived values.
+  std::uint64_t formRevision() const {
+    return form_revision_;
+  }
+  /// The catalog the input types are read from was re-read, so an input may now be of another type.
+  void catalogChanged() {
+    ++form_revision_;
+  }
+  /// False on a host without the 0.36 surfaces (object inputs cannot be used then).
   void setOnDemandSupported(bool supported) {
+    if (supported != on_demand_supported_) {
+      ++form_revision_;
+    }
     on_demand_supported_ = supported;
   }
   bool onDemandSupported() const {
@@ -1521,16 +2067,46 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   const std::vector<std::string>& sources() const {
     return sources_;
   }
-  /// Declared outputs that are usable: non-empty unique name, known type.
-  std::vector<OnDemandOutput> validOutputs() const {
-    std::vector<OnDemandOutput> out;
-    for (const auto& o : outputs_) {
-      const bool dup = std::any_of(out.begin(), out.end(), [&](const OnDemandOutput& e) { return e.name == o.name; });
-      if (!o.name.empty() && isValidOutputType(o.type) && !dup) {
-        out.push_back(o);
+  /// The variable of every input as the script reads it. Series only: `value`, `v1`, ... as the transform binds
+  /// them. With an object input: the Var column, the user's or the default taken from the topic leaf.
+  const std::vector<std::string>& variableNames() const {
+    return derived().vars;
+  }
+  /// Why the params field cannot be used, or empty when it can.
+  const std::string& paramsProblem() const {
+    return derived().params_error;
+  }
+  /// What stops the form from being run or created, in the order it is shown: no input, no body, an
+  /// unsupported host, bad params. The hints over the chart list them all; Create's reason is the first.
+  const std::vector<std::string>& formProblems() const {
+    return derived().problems;
+  }
+  /// The Vars of an on-demand recipe for the given overrides ("" = default): a name the user set (or a library
+  /// function bound) first, then the defaults in row order.
+  std::vector<std::string> onDemandVariableNames(const std::vector<std::string>& overrides) const {
+    std::vector<std::string> names(sources_.size());
+    std::set<std::string> taken;
+    for (std::size_t i = 0; i < sources_.size(); ++i) {
+      if (!overrides[i].empty() && taken.insert(overrides[i]).second) {
+        names[i] = overrides[i];
       }
     }
-    return out;
+    for (std::size_t i = 0; i < sources_.size(); ++i) {
+      if (names[i].empty()) {
+        names[i] = derived_recipes::inferredVariableName(sources_[i], taken);
+        taken.insert(names[i]);
+      }
+    }
+    return names;
+  }
+  /// (Var, input) pairs of an on-demand body, in row order.
+  std::vector<derived_recipes::InputBinding> variableBindings() const {
+    std::vector<derived_recipes::InputBinding> bindings;
+    const std::vector<std::string> names = variableNames();
+    for (std::size_t i = 0; i < sources_.size(); ++i) {
+      bindings.push_back({names[i], derived_recipes::canonicalSeriesPath(sources_[i])});
+    }
+    return bindings;
   }
   const std::string& paramsText() const {
     return params_text_;
@@ -1542,9 +2118,34 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   void setSceneButton(std::string label) {
     scene_button_ = std::move(label);
   }
-  /// Script body the on-demand chunk runs: the globals pane (if any) then the function body.
+  /// Script body the on-demand chunk runs: one local per input (the Var column), the globals pane (if any)
+  /// then the function body.
   std::string onDemandBody() const {
-    return global_code_.empty() ? function_body_ : global_code_ + "\n" + function_body_;
+    return derived_recipes::buildVariablePrologue(language_, variableBindings()) +
+           (global_code_.empty() ? function_body_ : global_code_ + "\n" + function_body_);
+  }
+  /// How many series a transform returns: the names listed in a saved comma-separated name, else the values its
+  /// return statements give.
+  std::size_t transformOutputCount() const {
+    const std::size_t named = transformOutputNames(output_name_).size();
+    return named != 0 ? named : returnArity(function_body_, language_);
+  }
+  /// The series a transform creates under `name`: the comma-separated names of an older state as they are, one name
+  /// for one return value, `name/a`, `name/b`... for several.
+  std::vector<std::string> transformOutputNames(const std::string& name) const {
+    std::vector<std::string> listed = splitOutputNames(name);
+    if (listed.size() > 1 || listed.empty()) {
+      return listed;
+    }
+    const std::size_t count = returnArity(function_body_, language_);
+    if (count == 1) {
+      return listed;
+    }
+    std::vector<std::string> names;
+    for (std::size_t k = 0; k < count; ++k) {
+      names.push_back(listed.front() + "/" + static_cast<char>('a' + k));
+    }
+    return names;
   }
 
   // The series that provides `value` (the radio-selected row), "" when no inputs.
@@ -1572,41 +2173,95 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
 
  private:
-  // True if a series with output name `name` already exists (so a Create would
-  // replace it → the button shows "Modify"). Matches against the available-series
-  // list, both as a full path and as the last "/"-segment.
-  bool outputNameExists(const std::string& name) const {
-    if (name.empty()) {
-      return false;
-    }
-    for (const auto& s : all_series_) {
-      if (s == name) {
-        return true;
-      }
-      // `name` is the output TOPIC; the series is listed as "topic/field".
-      if (s.size() > name.size() && s.compare(0, name.size(), name) == 0 && s[name.size()] == '/') {
-        return true;
-      }
-      // `name` matches the last path segment (field).
-      const auto slash = s.find_last_of('/');
-      if (slash != std::string::npos && s.substr(slash + 1) == name) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  // The saved-state hint lasts until the first change to the inputs or outputs.
-  void inputsOrOutputsChanged() {
-    kind_hint_on_demand_ = false;
+  // One edit of the form (inputs, body, globals, Var, params, language): the preview runs again, and
+  // Create waits for it (the last trial no longer describes what is on screen).
+  void formChanged() {
+    ++form_revision_;
     preview_dirty_ = true;
+    clearTrial();
+    needs_note_.clear();
   }
 
-  // The form always lists at least one output: seed "result:number" when none is declared.
-  void ensureOutput() {
-    if (outputs_.empty()) {
-      outputs_.push_back({"result", "number"});
+  void storeTrial(std::optional<TrialReport> trial) {
+    if (inferredOutputs() != (trial ? trial->outputs : std::vector<OnDemandOutput>{})) {
+      ++trial_serial_;
     }
+    trial_ = std::move(trial);
+  }
+
+  // What the form's edits determine, computed once per revision: the engine (an input's type is a catalog
+  // lookup), the Var of every input, the params verdict and the problems that stop Create.
+  struct Derived {
+    std::uint64_t revision = 0;
+    RecipeKind kind = RecipeKind::kTransform;
+    std::vector<std::string> vars;
+    std::string params_error;
+    std::vector<std::string> problems;
+  };
+  const Derived& derived() const {
+    if (derived_ && derived_->revision == form_revision_) {
+      return *derived_;
+    }
+    Derived d;
+    d.revision = form_revision_;
+    std::vector<std::string> input_types;
+    for (const std::string& source : sources_) {
+      input_types.push_back(inputTypeOf(source));
+    }
+    d.kind = deduceEngine(input_types, kind_hint_on_demand_);
+    if (d.kind == RecipeKind::kOnDemand) {
+      d.vars = onDemandVariableNames(var_overrides_);
+    } else {
+      d.vars.resize(sources_.size());
+      for (std::size_t i = 0; i < sources_.size(); ++i) {
+        d.vars[i] = variableName(static_cast<int>(i));
+      }
+    }
+    d.params_error = paramsError(params_text_);
+    if (sources_.empty()) {
+      d.problems.push_back(kNeedInputProblem);
+    }
+    if (function_body_.empty()) {
+      d.problems.push_back(kNeedBodyProblem);
+    }
+    if (d.kind == RecipeKind::kOnDemand) {
+      if (!on_demand_supported_) {
+        d.problems.push_back(kNeedNewHostProblem);
+      }
+      if (!d.params_error.empty()) {
+        d.problems.push_back(d.params_error);
+      }
+    }
+    derived_ = std::move(d);
+    return *derived_;
+  }
+
+  static bool sameSeries(const std::vector<PJ::ChartSeries>& a, const std::vector<PJ::ChartSeries>& b) {
+    return std::equal(a.begin(), a.end(), b.begin(), b.end(), [](const PJ::ChartSeries& x, const PJ::ChartSeries& y) {
+      return x.label == y.label && x.color == y.color && x.dashed == y.dashed &&
+             std::equal(
+                 x.points.begin(), x.points.end(), y.points.begin(), y.points.end(),
+                 [](const PJ::ChartPoint& p, const PJ::ChartPoint& q) { return p.x == q.x && p.y == q.y; });
+    });
+  }
+
+  // The saved-state hint lasts until the first change to the inputs.
+  void inputsChanged() {
+    kind_hint_on_demand_ = false;
+    formChanged();
+  }
+
+  // The status line is one line: the entries of a multi-line message are joined by a middle dot.
+  static std::string oneLine(std::string text) {
+    std::string out;
+    std::istringstream lines(text);
+    std::string line;
+    while (std::getline(lines, line)) {
+      if (!line.empty()) {
+        out += (out.empty() ? "" : " · ") + line;
+      }
+    }
+    return out;
   }
 
   // Add an input row (no duplicates). The first row of a transform becomes its `value`.
@@ -1615,42 +2270,12 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       return;
     }
     const bool was_empty = sources_.empty();
-    const std::string type = inputTypeOf(item);
-    const bool first_object =
-        type != "number" && std::all_of(sources_.begin(), sources_.end(), [&](const std::string& source) {
-          return inputTypeOf(source) == "number";
-        });
     sources_.push_back(item);
+    var_overrides_.push_back({});
     if (was_empty) {
       primary_index_ = 0;
     }
-    // The first object input makes the default output the same kind of object; an output
-    // the user already touched is left alone.
-    if (first_object && outputs_untouched_ && isObjectOutputType(type)) {
-      outputs_ = {{"result", type}};
-      outputs_untouched_ = false;
-    }
-    inputsOrOutputsChanged();
-  }
-
-  // Add the typed output from the name field and type combo.
-  void addOutput() {
-    const std::string name = trimBlanks(new_output_name_);
-    if (name.empty()) {
-      return;
-    }
-    const auto& types = outputTypeNames();
-    const std::string type = new_output_type_index_ >= 0 && new_output_type_index_ < static_cast<int>(types.size())
-                                 ? types[static_cast<std::size_t>(new_output_type_index_)]
-                                 : types.front();
-    const bool dup =
-        std::any_of(outputs_.begin(), outputs_.end(), [&](const OnDemandOutput& o) { return o.name == name; });
-    if (!dup) {
-      outputs_.push_back({name, type});
-      outputs_untouched_ = false;
-      new_output_name_.clear();
-      inputsOrOutputsChanged();
-    }
+    inputsChanged();
   }
 
   // "number" for a scalar input; the builtin type for an object topic. Resolved by the toolbox
@@ -1660,81 +2285,75 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     return input_type_of_ ? input_type_of_(source) : "number";
   }
 
-  // The panel under the output name: the engine label, the outputs (table, add row), the object-topic
-  // picker and the scene button for every recipe; the outputs table, params and pin only once the
-  // recipe is evaluated at the cursor (a per-sample transform names its numeric outputs in the name
-  // field and has neither params nor an instant).
-  void buildOutputsPanel(PJ::WidgetData& wd, bool on_demand) {
-    wd.setVisible("tableOutputs", on_demand);
-    wd.setVisible("paramsLabel", on_demand);
-    wd.setVisible("paramsLineEdit", on_demand);
-    wd.setVisible("pinCurrentTimeCheck", on_demand);
-    wd.setTableHeaders("tableOutputs", {"Output", "Type"});
-    std::vector<std::vector<std::string>> out_rows;
-    for (const auto& o : outputs_) {
-      out_rows.push_back({o.name, o.type});
+  // "Create...": ask for the name. The prefill is the last name, else the first output the trial learned.
+  void openCreatePrompt() {
+    save_stage_ = SaveStage::None;
+    create_stage_ = CreateStage::Prompt;
+    create_name_ = !output_name_.empty()        ? output_name_
+                   : !inferredOutputs().empty() ? inferredOutputs().front().name
+                                                : std::string("result");
+    pending_create_name_ = create_name_;
+    create_note_ = replaceNote(create_name_);
+    emit_create_dialog_ = true;
+  }
+
+  // "Replaces ..." when the name is already one of the editor's own recipes.
+  std::string replaceNote(const std::string& name) const {
+    return own_recipe_exists_ && own_recipe_exists_(name)
+               ? "A recipe named '" + name + "' already exists: OK replaces it."
+               : std::string{};
+  }
+
+  // OK in the prompt. A name that cannot be used, or that would replace a recipe and was not confirmed
+  // by pressing OK a second time, opens the prompt again with the reason.
+  void acceptCreatePrompt() {
+    const std::string name = trimBlanks(pending_create_name_);
+    create_stage_ = CreateStage::None;
+    create_name_ = name;
+    if (const std::string error = createNameError(name); !error.empty()) {
+      create_note_ = error;
+      create_stage_ = CreateStage::Prompt;
+      emit_create_dialog_ = true;
+      return;
     }
-    wd.setTableRows("tableOutputs", out_rows);
-    wd.setListPlaceholder("tableOutputs", "Declare the outputs the script returns");
-    wd.setListItemsDeletable("tableOutputs", true);
-    wd.setText("outputNameEdit", new_output_name_);
-    wd.setItems("outputTypeCombo", outputTypeNames());
-    wd.setCurrentIndex("outputTypeCombo", new_output_type_index_);
-    std::vector<std::string> picker;
-    for (const auto& [name, type] : object_topics_) {
-      picker.push_back(name + "  [" + type + "]");
+    if (own_recipe_exists_ && own_recipe_exists_(name) && replace_confirmed_ != name) {
+      replace_confirmed_ = name;
+      create_note_ = "A recipe named '" + name + "' already exists: press OK again to replace it.";
+      create_stage_ = CreateStage::Prompt;
+      emit_create_dialog_ = true;
+      return;
     }
-    if (picker.empty()) {
-      picker.push_back("(no object topics loaded)");
-    }
-    wd.setItems("objectTopicCombo", picker);
-    wd.setCurrentIndex("objectTopicCombo", picker_index_);
-    wd.setEnabled("buttonAddObjectTopic", !object_topics_.empty());
-    wd.setText("paramsLineEdit", params_text_);
-    const std::string params_error = paramsError(params_text_);
-    wd.setFieldValid("paramsLineEdit", params_error.empty(), params_error);
-    wd.setChecked("pinCurrentTimeCheck", pin_current_);
-    wd.setVisible("buttonShowScene", !scene_button_.empty());
-    if (!scene_button_.empty()) {
-      wd.setButtonText("buttonShowScene", scene_button_);
-    }
+    replace_confirmed_.clear();
+    output_name_ = name;
+    pending_create_ = PendingCreate::Single;
   }
 
   // The kind-specific part of loadConfig. `cfg` is the editor state; `user_params_text` the
-  // params object stored next to it (empty for a transform or a legacy state).
+  // params object stored next to it (empty for a transform or a legacy state). The outputs an older
+  // state declared are only a hint: the trial re-infers them.
   void loadKindState(const nlohmann::json& cfg, const std::string& user_params_text) {
-    outputs_.clear();
     params_text_.clear();
     pin_current_ = false;
     scene_button_.clear();
     kind_hint_on_demand_ = false;
-    outputs_untouched_ = true;
+    clearTrial();
+    status_text_.clear();
+    readout_.clear();
+    needs_note_.clear();
     if (cfg.value("kind", std::string{}) == "on_demand") {
       kind_hint_on_demand_ = true;
-      if (cfg.contains("outputs") && cfg["outputs"].is_array()) {
-        for (const auto& o : cfg["outputs"]) {
-          if (o.is_object() && o.contains("name") && o["name"].is_string()) {
-            outputs_.push_back({o["name"].get<std::string>(), o.value("type", std::string{"number"})});
-          }
-        }
-      }
       params_text_ = cfg.contains("params_text") && cfg["params_text"].is_string()
                          ? cfg["params_text"].get<std::string>()
                          : user_params_text;
       pin_current_ = cfg.value("pin_current_time", false);
-      outputs_untouched_ = outputs_.empty();
     } else if (hasLegacyOnDemandHeader(global_code_)) {
       // Old state: the kind, outputs and params lived in header lines of the global code.
       kind_hint_on_demand_ = true;
-      outputs_untouched_ = false;
-      const auto header = parseOnDemandHeader(global_code_);
-      for (const auto& o : header.first) {
-        outputs_.push_back({o.name, o.type});
-      }
-      params_text_ = header.second == "{}" ? std::string{} : header.second;
+      const std::string legacy_params = parseLegacyParams(global_code_);
+      params_text_ = legacy_params == "{}" ? std::string{} : legacy_params;
       global_code_ = stripOnDemandHeader(global_code_);
     }
-    ensureOutput();
+    advanced_open_ = !params_text_.empty() || pin_current_;
   }
 
   void validateSyntax() {
@@ -1800,25 +2419,33 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   int primary_index_ = -1;
   bool syntax_ok_ = false;
   // On-demand form state (see isOnDemand()).
-  bool kind_hint_on_demand_ = false;  // a loaded on-demand state: stays on-demand until an input/output changes
-  bool outputs_untouched_ = true;     // outputs_ is still the seeded default, so the first object input retypes it
-  std::vector<OnDemandOutput> outputs_{{"result", "number"}};
+  bool kind_hint_on_demand_ = false;  // a loaded on-demand state: stays on-demand until an input changes
+  std::vector<std::string>
+      var_overrides_;        // parallel to sources_: the Var the user (or a library function) set, "" = default
   std::string params_text_;  // the params JSON field, verbatim
   bool pin_current_ = false;
+  bool advanced_open_ = false;  // the Advanced disclosure (params, pin)
   bool on_demand_supported_ = true;
   std::vector<std::pair<std::string, std::string>> object_topics_;  // (name, builtin type) offered by the picker
-  std::string new_output_name_;
-  int new_output_type_index_ = 0;
   int picker_index_ = 0;
+  // The last trial evaluation (see setTrial) and what is shown from it; empty before the first one and
+  // after an edit.
+  std::optional<TrialReport> trial_;
+  std::uint64_t trial_serial_ = 0;
+  std::uint64_t form_revision_ = 1;  // see formRevision()
+  mutable std::optional<Derived> derived_;
+  std::string status_text_;
+  std::string readout_;
+  std::string needs_note_;  // "needs: cloud (point cloud)" after a library function found no input for a variable
+  bool scene_preview_visible_ = false;
   std::string scene_button_;  // label of the "Show in 3D/2D" button; empty hides it
   bool show_scene_requested_ = false;
   std::function<void()> on_show_scene_;
   std::function<std::string(const std::string&)> input_type_of_;
+  std::function<bool(const std::string&)> own_recipe_exists_;
   bool autozoom_ = true;                // AutoZoom checkbox state (default on)
   bool edit_mode_ = false;              // opened to modify an existing series (locks the name, button = Modify)
   std::string validation_error_;        // host's rejection message for the current script (empty = OK)
-  std::string on_demand_report_;        // last on-demand preview report (pretty JSON); see setOnDemandReport
-  std::string on_demand_note_;          // non-blocking remark above the report
   std::string batch_validation_error_;  // batch-tab counterpart (empty = OK)
   bool batch_dirty_ = true;             // batch script/inputs changed → re-validate (start dirty)
 
@@ -1830,7 +2457,15 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   bool pending_tab_restore_ = false;        // one-shot: push the tab after loadConfig
   std::vector<std::string> batch_sources_;  // full paths dropped into tableBatchSources
   bool batch_use_prefix_ = false;           // Prefix vs Suffix radio (default Suffix)
-  std::vector<std::string> all_series_;     // live catalog, for outputNameExists
+
+  // "Create..." prompt (the name prompt of a new recipe; Modify has none).
+  enum class CreateStage { None, Prompt };
+  CreateStage create_stage_ = CreateStage::None;
+  std::string create_name_;          // prefill of the prompt
+  std::string pending_create_name_;  // what the user typed (harvested on OK)
+  std::string create_note_;          // refusal or replace remark shown in the prompt
+  std::string replace_confirmed_;    // the name whose replacement the user already confirmed
+  bool emit_create_dialog_ = false;
 
   // Library
   std::vector<Snippet> snippets_;
@@ -1876,6 +2511,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
  public:
   TransformEditorToolbox() {
     dialog_.setInputTypeResolver([this](const std::string& source) { return inputTypeOf(source); });
+    dialog_.setOwnRecipeLookup([this](const std::string& name) { return ownRecipeExists(name); });
   }
 
   // The editor has no Close button; it is dismissed via the host panel chrome,
@@ -1944,6 +2580,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   void onSave() {
     // The engine follows the input types, so read the catalog now: Create acts on what the user sees.
     refreshOnDemandSupport(/*force=*/true);
+    if (const std::string reason = dialog_.canCreateReason(); !reason.empty()) {
+      report(PJ::ToolboxMessageLevel::kWarning, "Transform Editor: " + reason);
+      return;
+    }
     if (dialog_.isOnDemand()) {
       onSaveOnDemand();
       return;
@@ -1953,12 +2593,6 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     const auto& global = dialog_.globalCode();
     const auto& body = dialog_.functionBody();
 
-    if (source.empty() || output_name.empty() || body.empty()) {
-      report(
-          PJ::ToolboxMessageLevel::kWarning,
-          "Transform Editor: a source series, an output name, and a function body are required.");
-      return;
-    }
     if (!dp_view_.valid()) {
       report(
           PJ::ToolboxMessageLevel::kError,
@@ -1979,9 +2613,9 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     }
     const std::size_t num_extra = dialog_.extraSources().size();
 
-    // The name field doubles as a comma-separated list of output topics; the body
-    // must `return` one value per declared name (positional). See splitOutputNames.
-    std::vector<std::string> output_names = splitOutputNames(output_name);
+    // One output for one returned value; `name/a`, `name/b`... for several (an older state's
+    // comma-separated names stay as they are). The body must `return` one value per output.
+    std::vector<std::string> output_names = dialog_.transformOutputNames(output_name);
     if (output_names.empty()) {
       report(PJ::ToolboxMessageLevel::kWarning, "Transform Editor: no valid output name.");
       return;
@@ -2017,6 +2651,34 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     dialog_.requestClose();  // PJ3 parity: creating the series closes the editor.
   }
 
+  // True when `name` is already one of the editor's OWN recipes (installed with its state in the
+  // params), so Create would replace it. Recipes of the assistant or of other plugins never count.
+  bool ownRecipeExists(const std::string& name) {
+    if (!dp_view_.valid()) {
+      return false;
+    }
+    const std::vector<std::string> names =
+        dialog_.isOnDemand() ? std::vector<std::string>{name} : dialog_.transformOutputNames(name);
+    if (names.empty()) {
+      return false;
+    }
+    const std::string& id = names.front();
+    auto ids = dp_view_.list();
+    if (!ids || std::find(ids->begin(), ids->end(), id) == ids->end()) {
+      return false;
+    }
+    auto config = dp_view_.recipeOf(id);
+    if (!config) {
+      return false;
+    }
+    const auto parsed = nlohmann::json::parse(*config, nullptr, /*allow_exceptions=*/false);
+    if (!parsed.is_object() || !parsed.contains("params") || !parsed["params"].is_object()) {
+      return false;
+    }
+    const auto& params = parsed["params"];
+    return params.contains(kEditorParamsKey) || params.contains("function_body");
+  }
+
   // The catalog the on-demand features read: the toolbox host, or a test double.
   [[nodiscard]] PJ::sdk::ToolboxHostView catalogHost() const {
     return test_catalog_host_.valid() ? test_catalog_host_ : toolboxHost();
@@ -2032,7 +2694,6 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       return;
     }
     catalog_refresh_ticks_ = 1;
-    on_demand_build_.reset();
     catalog_v2_.reset();
     catalog_v2_error_.clear();
     std::vector<std::pair<std::string, std::string>> topics;
@@ -2049,6 +2710,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     }
     dialog_.setObjectTopics(std::move(topics));
     dialog_.setOnDemandSupported(catalog_v2_.has_value());
+    dialog_.catalogChanged();  // the input types, and so the build, may differ
   }
 
   // "number" for a scalar input; the builtin type for an object topic (read from the cached catalog).
@@ -2063,41 +2725,55 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     return lookup.resolved ? lookup.resolved->object_type : "number";
   }
 
-  // What the form asks the host to run: the request (inputs resolved to request paths, typed
-  // outputs, the generated script chunk, the user's params) and the dataset the playhead is
-  // anchored to. Create and the preview both start from it, so the preview runs what Create
-  // installs. `error` is a message for the user; `form_incomplete` marks the cases the form's own
-  // hints already explain (no outputs, bad params), which the preview leaves silent.
+  // The first entry of the first object input (its time range comes from the catalog): where a trial
+  // runs when the cursor is before every sample.
+  struct FirstEntry {
+    std::int64_t ns = 0;
+    std::string topic;  // the input as the user named it
+  };
+
+  // What the form asks the host to run: the request (inputs resolved to request paths, the generated
+  // script chunk in the selected language, the user's params; the outputs are left for the host to infer)
+  // and the dataset the playhead is anchored to. Create and the preview both start from it, so the
+  // preview runs what Create installs. `error` is a message for the user; `form_incomplete` marks the
+  // cases the form's own hints already explain (bad params), which the preview leaves silent.
+  // `trial_request` is the request a trial submits (the id, flags and no outputs set; the instant is
+  // added per run), `form_key` its signature and `data_stamp` the (entry count, last time) of every
+  // object input at the catalog read the build was made from: they change when the input data grows.
   struct OnDemandBuild {
     PJ::sdk::DataProcessorRequest request;
+    PJ::sdk::DataProcessorRequest trial_request;
+    std::string form_key;
     std::optional<PJ::sdk::DataSourceHandle> anchor;
+    std::optional<FirstEntry> first_entry;
+    std::vector<std::pair<std::uint64_t, std::int64_t>> data_stamp;
     std::string error;
     bool form_incomplete = false;
   };
 
-  // Rebuilt only when the sources, the body, the outputs or the params change, or the catalog is
-  // re-read (refreshOnDemandSupport); otherwise the cached build is returned.
+  // The trial's own form of `build.request` and its signature.
+  static void setTrialForm(OnDemandBuild& build) {
+    build.trial_request = build.request;
+    makeEphemeral(build.trial_request, kPreviewId, std::nullopt);
+    build.trial_request.flags |= PJ_DATA_PROCESSOR_FLAG_INFER_OUTPUTS;
+    build.form_key = requestSignature(build.trial_request);
+  }
+
+  // Rebuilt only when the form changes or the catalog is re-read (both bump the dialog's form revision);
+  // otherwise the cached build is returned.
   const OnDemandBuild& buildOnDemandRequest() {
-    const auto outputs = dialog_.validOutputs();
-    nlohmann::json key = {dialog_.sources(), dialog_.onDemandBody(), dialog_.paramsText()};
-    for (const auto& output : outputs) {
-      key.push_back({output.name, output.type});
-    }
-    if (on_demand_build_ && on_demand_build_key_ == key) {
+    if (on_demand_build_ && on_demand_build_revision_ == dialog_.formRevision()) {
       return *on_demand_build_;
     }
-    on_demand_build_key_ = std::move(key);
+    on_demand_build_revision_ = dialog_.formRevision();
     ++on_demand_build_count_;
     OnDemandBuild build;
     build.request.kind = "on_demand";
-    build.request.language = "luau";
+    build.request.language = dialog_.language() == "python" ? "python" : "luau";
     if (!catalog_v2_) {
       build.error = "The host's object catalog is unavailable" +
                     (catalog_v2_error_.empty() ? std::string() : ": " + catalog_v2_error_);
-    } else if (outputs.empty()) {
-      build.error = "Declare at least one output (name and type)";
-      build.form_incomplete = true;
-    } else if (const std::string params_error = paramsError(dialog_.paramsText()); !params_error.empty()) {
+    } else if (const std::string& params_error = dialog_.paramsProblem(); !params_error.empty()) {
       build.error = params_error;
       build.form_incomplete = true;
     } else {
@@ -2114,12 +2790,23 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
         for (const auto& input : resolved.inputs) {
           build.request.inputs.push_back(input.request_path);
         }
-        for (const auto& output : outputs) {
-          build.request.outputs.push_back({output.name, output.type});
-        }
-        build.request.script = derived_recipes::buildResolvedOnDemandChunk(dialog_.onDemandBody(), resolved);
+        const std::string body = dialog_.onDemandBody();
+        build.request.script = build.request.language == "python"
+                                   ? derived_recipes::buildOnDemandChunkPython(body, resolved)
+                                   : derived_recipes::buildResolvedOnDemandChunk(body, resolved);
         build.request.params_json = parseParamsObject(dialog_.paramsText())->dump();
         build.anchor = resolved.anchor_source;
+        for (std::size_t i = 0; i < resolved.inputs.size(); ++i) {
+          const auto& input = resolved.inputs[i];
+          if (!input.is_object) {
+            continue;
+          }
+          build.data_stamp.emplace_back(input.entry_count, input.time_max_ns);
+          if (!build.first_entry && input.entry_count > 0) {
+            build.first_entry = FirstEntry{input.time_min_ns, dialog_.sources()[i]};
+          }
+        }
+        setTrialForm(build);
       }
     }
     on_demand_build_ = std::move(build);
@@ -2133,19 +2820,13 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   }
 
   // Create / Modify an on_demand recipe: the same request the assistant's create_derived_object
-  // builds (shared helpers), plus the user's params and the editor state for the pencil.
+  // builds (shared helpers), with the outputs the trial inferred (INFER_OUTPUTS: the host binds them by
+  // name, positional returns by position, and stays strict), the user's params and the editor state for
+  // the pencil.
   void onSaveOnDemand() {
-    if (!dialog_.onDemandSupported()) {
-      report(
-          PJ::ToolboxMessageLevel::kError,
-          "Transform Editor: object inputs and outputs require a PlotJuggler host with SDK 0.36 or newer.");
-      return;
-    }
     const std::string id = trimBlanks(dialog_.outputName());
-    if (id.empty() || dialog_.sources().empty() || dialog_.validOutputs().empty() || dialog_.functionBody().empty()) {
-      report(
-          PJ::ToolboxMessageLevel::kWarning,
-          "Transform Editor: a name, at least one input, one output and a function body are required.");
+    if (id.empty()) {
+      report(PJ::ToolboxMessageLevel::kWarning, "Transform Editor: a name is required.");
       return;
     }
     const OnDemandBuild& build = buildOnDemandRequest();
@@ -2153,7 +2834,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       report(PJ::ToolboxMessageLevel::kError, "Transform Editor: " + build.error);
       return;
     }
-    if (auto valid = dp_view_.validateScript("on_demand", "luau", build.request.script); !valid) {
+    if (auto valid = dp_view_.validateScript("on_demand", build.request.language, build.request.script); !valid) {
       report(PJ::ToolboxMessageLevel::kError, "Transform Editor: invalid script: " + std::string(valid.error()));
       return;
     }
@@ -2161,7 +2842,11 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     PJ::sdk::DataProcessorRequest request = build.request;
     request.id = id;
     request.label = id;
-    request.flags = 0;  // the user's own recipe: undo/redo applies like it does to their transforms
+    // The user's own recipe (not EPHEMERAL): undo/redo applies like it does to their transforms.
+    request.flags = PJ_DATA_PROCESSOR_FLAG_INFER_OUTPUTS;
+    for (const auto& output : dialog_.inferredOutputs()) {
+      request.outputs.push_back({output.name, output.type});
+    }
     if (dialog_.pinCurrentTime()) {
       std::optional<std::int64_t> pinned;
       if (build.anchor) {
@@ -2336,43 +3021,69 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     dialog_.requestClose();  // PJ3 parity: creating the series closes the editor.
   }
 
-  // The preview of object outputs: an EPHEMERAL on_demand recipe (it evaluates at the playhead, so the
-  // preview follows the cursor) whose object topics are attached to ONE scene tab, reused across
-  // previews. The recipe is re-upserted in place when the form changes (at most every kPreviewRefresh);
-  // it is removed, and the tab closed, with the editor, on Create, or when the outputs stop being
-  // objects. Without scene tabs there is nothing to show beyond the text summary.
-  void updateObjectPreview(const OnDemandBuild& build) {
-    const auto& outputs = build.request.outputs;
-    const bool has_object = std::any_of(outputs.begin(), outputs.end(), [](const PJ::sdk::DataProcessorOutput& o) {
-      return isObjectOutputType(o.type);
-    });
-    if (!has_object || !plot_tabs_view_.hasSceneTabs() || !dp_view_.hasTypedRequests()) {
+  // The preview recipe of a trial that inferred its outputs: an EPHEMERAL on_demand recipe (it evaluates at
+  // the playhead, so the preview follows the cursor) with the inferred outputs and INFER_OUTPUTS. Its object
+  // topics are attached to ONE scene tab, reused across previews; each number output is plotted from the
+  // series the host materializes for it (a newer host) or, without it, shown as the readout at the cursor.
+  // The recipe is re-upserted in place when the form changes (at most every kPreviewRefresh); it is
+  // removed, and the tab closed, with the editor, on Create, or when the trial fails. Without scene tabs
+  // there is nothing to show for objects beyond the status line.
+  void updatePreviewRecipe(const OnDemandBuild& build) {
+    if (!dp_view_.hasTypedRequests() || dialog_.inferredOutputs().empty()) {
       tearDownObjectPreview(/*close_tab=*/false);
       return;
     }
-    PJ::sdk::DataProcessorRequest request = build.request;
-    makeEphemeral(request, kObjectPreviewId, std::nullopt);  // no instant: follows the cursor
-    const std::string key = requestSignature(request);
-    if (key == object_preview_signature_) {
-      return;  // already installed (or already refused: not retried until the form changes)
+    // The recipe follows the form and the trial's outputs: nothing to rebuild or compare while neither moved.
+    const std::pair<std::uint64_t, std::uint64_t> stamp{dialog_.formRevision(), dialog_.trialSerial()};
+    if (stamp != preview_recipe_stamp_) {
+      PJ::sdk::DataProcessorRequest request = build.request;
+      for (const auto& output : dialog_.inferredOutputs()) {
+        request.outputs.push_back({output.name, output.type});
+      }
+      makeEphemeral(request, kObjectPreviewId, std::nullopt);  // no instant: follows the cursor
+      request.flags |= PJ_DATA_PROCESSOR_FLAG_INFER_OUTPUTS;
+      const bool has_object = std::any_of(
+          request.outputs.begin(), request.outputs.end(),
+          [](const PJ::sdk::DataProcessorOutput& o) { return isObjectOutputType(o.type); });
+      const std::string key = requestSignature(request);
+      if (key != object_preview_signature_) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now < next_object_preview_refresh_) {
+          return;  // an edit just landed: the next tick installs the latest form
+        }
+        next_object_preview_refresh_ = now + kPreviewRefresh;
+        object_preview_signature_ = key;
+        // Re-upserting the id is an edit for the host: the topics stay and the bound scene layer with them.
+        auto created = dp_view_.createV2(request);
+        if (!created) {
+          detachPreviewTopics({});
+          report(PJ::ToolboxMessageLevel::kWarning, "Transform Editor: preview: " + std::string(created.error()));
+          return;
+        }
+        object_preview_live_ = true;
+        object_preview_topics_ = *created;
+        ++object_preview_installs_;
+        if (has_object && plot_tabs_view_.hasSceneTabs()) {
+          attachPreviewScene(request, *created, build.anchor);
+        } else {
+          detachPreviewTopics({});
+        }
+      }
+      preview_recipe_stamp_ = stamp;
+      preview_recipe_outputs_ = std::move(request.outputs);
+      preview_recipe_has_object_ = has_object;
     }
-    const auto now = std::chrono::steady_clock::now();
-    if (now < next_object_preview_refresh_) {
-      return;  // an edit just landed: the next tick installs the latest form
-    }
-    next_object_preview_refresh_ = now + kPreviewRefresh;
-    object_preview_signature_ = key;
-    // Re-upserting the id is an edit for the host: the topics stay and the bound scene layer with them.
-    auto created = dp_view_.createV2(request);
-    if (!created) {
-      detachPreviewTopics({});
-      report(PJ::ToolboxMessageLevel::kWarning, "Transform Editor: scene preview: " + std::string(created.error()));
-      return;
-    }
-    object_preview_live_ = true;
+    dialog_.setScenePreviewVisible(preview_recipe_has_object_);
+    showSeriesOrReadout(preview_recipe_outputs_, build);
+  }
+
+  // The object outputs of the installed preview recipe in the shared preview scene tab.
+  void attachPreviewScene(
+      const PJ::sdk::DataProcessorRequest& request, const std::vector<std::string>& created,
+      std::optional<PJ::sdk::DataSourceHandle> anchor) {
     SceneTargets targets;
-    if (created->size() == request.outputs.size()) {
-      targets = collectSceneTargets(request.outputs, *created, build.anchor);
+    if (created.size() == request.outputs.size()) {
+      targets = collectSceneTargets(request.outputs, created, anchor);
     }
     if (targets.topics.empty()) {
       detachPreviewTopics({});
@@ -2404,6 +3115,54 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     }
   }
 
+  // Plot the number outputs of the preview recipe over the whole history when the host materializes them
+  // (the catalog key is `<recipe key>/<output name>`); otherwise the readout at the cursor and a note. Read
+  // at most every kSeriesRead, and only when there is something new to read: it scans the catalog.
+  void showSeriesOrReadout(const std::vector<PJ::sdk::DataProcessorOutput>& outputs, const OnDemandBuild& build) {
+    std::vector<std::size_t> numbers;  // the index in `outputs` of each number output
+    for (std::size_t i = 0; i < outputs.size(); ++i) {
+      if (outputs[i].type == "number") {
+        numbers.push_back(i);
+      }
+    }
+    if (numbers.empty()) {
+      dialog_.setPreviewSeries({});
+      dialog_.setReadout({});  // object outputs are announced by the scene pane's own note
+      return;
+    }
+    // New data to read: the recipe was just (re)installed or an object input grew. Until the host
+    // materializes a series (an older one never does) and for inputs the catalog says nothing about
+    // (scalars), every period is a chance to find one.
+    const SeriesStamp stamp{object_preview_installs_, build.data_stamp};
+    const bool due = !series_available_ || build.data_stamp.empty() || !(series_read_stamp_ == stamp);
+    const auto now = std::chrono::steady_clock::now();
+    if (due && now >= next_series_read_) {
+      next_series_read_ = now + kSeriesRead;
+      std::vector<std::string> names;  // both spellings of each output's key, the created topic first
+      for (const std::size_t index : numbers) {
+        names.push_back(index < object_preview_topics_.size() ? object_preview_topics_[index] : std::string{});
+        names.push_back(std::string(kObjectPreviewId) + "/" + outputs[index].name);
+      }
+      const auto samples = readManyRawSamples(names);
+      std::vector<RawSamples> found;
+      std::vector<std::string> labels;
+      for (std::size_t i = 0; i < numbers.size(); ++i) {
+        const auto& first = samples[2 * i];
+        const auto& second = samples[2 * i + 1];
+        if (!first.empty() || !second.empty()) {
+          found.push_back(first.empty() ? second : first);
+          labels.push_back(outputs[numbers[i]].name);
+        }
+      }
+      std::vector<PJ::ChartSeries> series = toChartSeries(found, labels, earliestTimestamp(found));
+      series_available_ = !series.empty();
+      series_read_stamp_ = stamp;
+      dialog_.setPreviewSeries(std::move(series));  // keeps the plotted series when nothing changed
+    }
+    const std::string& readout = dialog_.trialReadout();
+    dialog_.setReadout(series_available_ ? readout : readout + "\nseries preview needs a newer host");
+  }
+
   // Take every topic of the preview tab that is not in `keep` back out of it.
   void detachPreviewTopics(const std::vector<std::pair<std::string, std::string>>& keep) {
     for (auto it = preview_topics_.begin(); it != preview_topics_.end();) {
@@ -2426,7 +3185,12 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     }
     object_preview_live_ = false;
     object_preview_signature_.clear();
+    object_preview_topics_.clear();
+    preview_recipe_stamp_ = {};
     next_object_preview_refresh_ = {};
+    series_available_ = false;
+    dialog_.setScenePreviewVisible(false);
+    dialog_.setReadout({});
     if (close_tab && preview_tab_open_ && plot_tabs_view_.hasSceneTabs()) {
       (void)plot_tabs_view_.close(kPreviewTabId);
     }
@@ -2441,7 +3205,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       (void)dp_view_.releaseEvaluation(*pending_preview_);
     }
     pending_preview_.reset();
-    preview_signature_.clear();
+    trial_form_key_.clear();  // whatever comes next is a fresh run
     if (!preview_key_.empty() && dp_view_.valid()) {
       (void)dp_view_.remove(preview_key_);
       preview_key_.clear();
@@ -2481,7 +3245,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   // `tname + "/" + fname` would rebuild the old "topic//field" and fail to match.
   std::vector<std::vector<std::pair<int64_t, double>>> readManyRawSamples(const std::vector<std::string>& names) {
     std::vector<std::vector<std::pair<int64_t, double>>> out(names.size());
-    auto catalog = toolboxHost().catalogSnapshot();
+    auto catalog = catalogHost().catalogSnapshot();
     if (!catalog) {
       return out;
     }
@@ -2502,7 +3266,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
         const std::string leaf = (!fname.empty() && fname.front() == '/') ? fname.substr(1) : fname;
         const std::string full = tname.empty() ? leaf : (tname + "/" + leaf);
         for (std::size_t i = 0; i < names.size(); ++i) {
-          if (found[i] || (tname != names[i] && full != names[i] && fname != names[i] && leaf != names[i])) {
+          if (found[i] || names[i].empty() ||
+              (tname != names[i] && full != names[i] && fname != names[i] && leaf != names[i])) {
             continue;
           }
           handles[i] = PJ::sdk::FieldHandle{f.handle};
@@ -2519,50 +3284,48 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     return out;
   }
 
-  // Snapshot the LIVE catalog as full "topic/field" paths, skipping our own "__"
-  // ephemeral outputs. Called every tick so series from a file/stream loaded after
-  // the editor opened are accounted for. Feeds outputNameExists, which is what
-  // decides whether the Single tab's button says Create or Modify.
-  void refreshAvailableSeries() {
-    auto catalog = toolboxHost().catalogSnapshot();
-    if (!catalog) {
-      return;
-    }
-    const auto fields = catalog->fields();
-    std::vector<std::string> series;
-    for (const auto& t : catalog->topics()) {
-      const std::string tname(t.name.data, t.name.size);
-      if (tname.rfind("__", 0) == 0) {
-        continue;
-      }
-      const uint32_t end = t.first_field + t.field_count;
-      for (uint32_t fi = t.first_field; fi < end && fi < fields.size(); ++fi) {
-        const auto& f = fields[fi];
-        const std::string fname(f.name.data, f.name.size);
-        // A ROS leaf carries a leading '/', so join WITHOUT doubling the slash —
-        // matching the host's joinTopicField (see readManyRawSamples). A naive
-        // `tname + "/" + fname` produces "topic//field", which then fails to
-        // resolve when createTransform is handed it as the batch input path.
-        const std::string leaf = (!fname.empty() && fname.front() == '/') ? fname.substr(1) : fname;
-        series.push_back(tname.empty() ? leaf : (tname + "/" + leaf));
+  // "t = 12.3 s" in the playback's display time of the anchor dataset (raw seconds without it).
+  std::string displayTimeText(std::optional<PJ::sdk::DataSourceHandle> anchor, std::int64_t raw_ns) {
+    double seconds = static_cast<double>(raw_ns) * 1e-9;
+    if (anchor && playback_view_.valid()) {
+      if (auto shown = playback_view_.toDisplayTimeForSource(*anchor, raw_ns)) {
+        seconds = *shown;
       }
     }
-    dialog_.setAvailableSeries(std::move(series));
+    std::ostringstream out;
+    out << std::setprecision(6) << seconds;
+    return out.str();
   }
 
-  // On-demand preview: evaluate ONCE, EPHEMERAL, at the playhead's raw instant. `request` carries
-  // the inputs (request paths), typed outputs, script and params; the id, flag and instant are set here.
+  // The host's verdict on a script, asked once per form revision: compiling it is not free and the form does
+  // not change between ticks. nullopt when the script is accepted, else the host's message. `make_script`
+  // builds the script only when the host is asked.
+  template <typename MakeScript>
+  std::optional<std::string> scriptError(std::string_view kind, const std::string& language, MakeScript&& make_script) {
+    if (!validation_ || validation_->revision != dialog_.formRevision() || validation_->kind != kind) {
+      auto verdict = dp_view_.validateScript(kind, language, make_script());
+      validation_ = Validation{
+          dialog_.formRevision(), std::string(kind),
+          verdict ? std::optional<std::string>{} : std::string(verdict.error())};
+    }
+    return validation_->error;
+  }
+
+  // The trial of an on-demand recipe: ONE evaluation, EPHEMERAL, with the outputs left for the host to
+  // infer (INFER_OUTPUTS), at the playhead's raw instant. `build` carries the request (inputs as request paths,
+  // script, language and params) and the trial's own form of it; the instant is set here. A trial runs 300 ms
+  // after the last edit and, for the readout at the cursor, at most every kTrialPeriod after that. When the
+  // cursor has no sample it runs once more at the first entry of the first object input (`build.first_entry`).
   // Returns false when the host rejected the script (the error is on the dialog).
-  bool previewOnDemand(
-      PJ::sdk::DataProcessorRequest request, std::optional<PJ::sdk::DataSourceHandle> anchor = std::nullopt) {
-    dialog_.setPreviewSeries({});
-    auto validation = dp_view_.validateScript("on_demand", "luau", request.script);
-    if (!validation) {
+  bool previewOnDemand(const OnDemandBuild& build) {
+    if (const auto invalid = scriptError("on_demand", build.request.language, [&] { return build.request.script; })) {
       tearDownPreview();
-      dialog_.setOnDemandReport("");
-      dialog_.setValidationError(std::string(validation.error()));
+      dialog_.setTrialFailure(*invalid);
+      dialog_.setValidationError(*invalid);
       return false;
     }
+    const auto& anchor = build.anchor;
+    const auto& first_entry = build.first_entry;
     // The playhead's raw instant in the anchor input's dataset (shared toRawNs: one raw(0)->display
     // conversion inverted).
     std::int64_t instant_ns = 0;
@@ -2575,22 +3338,31 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
         }
       }
     }
-    makeEphemeral(request, kPreviewId, instant_ns);
-    const auto key = requestSignature(request);
     const auto now = std::chrono::steady_clock::now();
-    if (key != preview_signature_ || (!pending_preview_ && now >= next_preview_refresh_)) {
-      const bool changed = key != preview_signature_;
+    // An edit obsoletes any evaluation in flight and waits for the debounce; the cursor alone does not.
+    if (build.form_key != trial_form_key_) {
       tearDownPreview();
-      preview_signature_ = key;
-      next_preview_refresh_ = now + kPreviewRefresh;
-      if (changed) {
-        dialog_.setOnDemandReport("Evaluating...");
-      }
+      trial_form_key_ = build.form_key;
+      trial_edit_at_ = now;
+      trial_form_pending_ = true;
+      no_sample_instant_.reset();
+    }
+    if (trial_form_pending_ && now < trial_edit_at_ + edit_debounce_) {
+      return true;
+    }
+    const bool at_first = first_entry && no_sample_instant_ && *no_sample_instant_ == instant_ns;
+    if (!pending_preview_ && (trial_form_pending_ || now >= next_preview_refresh_)) {
+      tearDownPreview();
+      trial_form_key_ = build.form_key;
+      trial_form_pending_ = false;
+      next_preview_refresh_ = now + kTrialPeriod;
       dialog_.setValidationError("");
+      PJ::sdk::DataProcessorRequest request = build.trial_request;
+      request.instant_ns = at_first ? first_entry->ns : instant_ns;
       const PJ::sdk::EvaluationBudget budget{.max_millis = 1000};
       auto handle = dp_view_.submitEvaluation(request, budget);
       if (!handle) {
-        dialog_.setOnDemandReport("");
+        dialog_.setTrialFailure(std::string(handle.error()));
         dialog_.setValidationError(std::string(handle.error()));
         return true;
       }
@@ -2607,39 +3379,61 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     }
     (void)dp_view_.releaseEvaluation(*pending_preview_);
     pending_preview_.reset();
-    next_preview_refresh_ = std::chrono::steady_clock::now() + kPreviewRefresh;
+    next_preview_refresh_ = std::chrono::steady_clock::now() + kTrialPeriod;
+    std::string error;
     if (!attempt) {
-      dialog_.setOnDemandReport("");
-      dialog_.setValidationError(attempt.error());
+      error = attempt.error();
+    } else if (attempt->state == PJ::sdk::EvaluationState::kFailed) {
+      const auto err = nlohmann::json::parse(attempt->json, nullptr, /*allow_exceptions=*/false);
+      error = err.is_object() && err.contains("error") && err["error"].is_string() ? err["error"].get<std::string>()
+                                                                                   : attempt->json;
+    } else if (attempt->state == PJ::sdk::EvaluationState::kCancelled) {
+      error = "cancelled by the host";
+    } else if (attempt->state != PJ::sdk::EvaluationState::kCompleted) {
+      error = "timed out waiting for the host";
+    }
+    TrialReport trial;
+    if (error.empty()) {
+      trial = parseTrialReport(attempt->json);
+      error = trial.error;
+    }
+    if (!error.empty()) {
+      dialog_.setTrialFailure(error);
+      dialog_.setValidationError(error);
+      dialog_.setStatus("");
       return true;
     }
-    if (attempt->state != PJ::sdk::EvaluationState::kCompleted) {
-      dialog_.setOnDemandReport("");
-      std::string msg = "timed out waiting for the host";
-      if (attempt->state == PJ::sdk::EvaluationState::kCancelled) {
-        msg = "cancelled by the host";
-      } else if (attempt->state == PJ::sdk::EvaluationState::kFailed) {
-        const auto err = nlohmann::json::parse(attempt->json, nullptr, /*allow_exceptions=*/false);
-        msg = err.is_object() && err.contains("error") && err["error"].is_string() ? err["error"].get<std::string>()
-                                                                                   : attempt->json;
+    if (!trial.has_sample) {
+      if (!at_first && first_entry && first_entry->ns != instant_ns) {
+        // No sample at the cursor: try again, now, at the first entry of the first object input.
+        no_sample_instant_ = instant_ns;
+        next_preview_refresh_ = {};
+        return previewOnDemand(build);
       }
-      dialog_.setValidationError(msg);
+      const std::string text = "No sample to run on: the inputs have no data";
+      dialog_.setTrialFailure(text);
+      dialog_.setValidationError("");
+      dialog_.setStatus(text);
       return true;
+    }
+    if (trial.outputs.empty()) {
+      const std::string text = "The script returned no values";
+      dialog_.setTrialFailure(text);
+      dialog_.setValidationError(text);
+      return true;
+    }
+    if (at_first) {
+      note = "previewing at t = " + displayTimeText(anchor, first_entry->ns) +
+             " s: cursor is before the first sample of " + first_entry->topic;
     }
     dialog_.setValidationError("");
-    dialog_.setOnDemandNote(note);
-    dialog_.setOnDemandReport(summarizeReport(attempt->json));
+    const std::string result = std::move(trial.summary);
+    dialog_.setTrial(std::move(trial));
+    dialog_.setStatus(note.empty() ? result : note + "\n" + result);
     return true;
   }
 
   void refreshPreview() {
-    // Only the Create/Modify label consults the catalog mirror, and that lookup
-    // short-circuits on an empty name — so skip the snapshot entirely until there
-    // is a name to match. Keeps the Batch tab, which never fills that field, off a
-    // lock-held per-tick copy of every topic and field.
-    if (!dialog_.outputName().empty()) {
-      refreshAvailableSeries();
-    }
     refreshOnDemandSupport();
     // The live preview belongs to the Single Function tab only. On the Batch tab
     // tear it down so its ephemeral node can never coexist with / leak into a
@@ -2647,7 +3441,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     if (dialog_.currentTab() != 0) {
       tearDownPreview();
       tearDownObjectPreview(/*close_tab=*/false);
-      dialog_.setOnDemandReport("");
+      dialog_.setStatus("");
       dialog_.setPreviewSeries({});
       return;
     }
@@ -2661,7 +3455,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     if (source.empty() || body.empty()) {
       tearDownPreview();
       tearDownObjectPreview(/*close_tab=*/false);
-      dialog_.setOnDemandReport("");
+      dialog_.clearTrial();
+      dialog_.setStatus("");
       dialog_.setPreviewSeries({});
       dialog_.setValidationError("");  // incomplete input is not an error
       return;
@@ -2678,41 +3473,47 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       input_topics.push_back(extra);
     }
 
-    // Object inputs or outputs (see previewOnDemand): the body is one evaluate-at-an-instant Luau chunk,
-    // built with the same helper the assistant uses so the preview runs what Create installs.
+    // Object inputs (see previewOnDemand): the body is one evaluate-at-an-instant chunk, built with the
+    // same helper the assistant uses so the preview runs what Create installs.
     if (dialog_.isOnDemand()) {
+      if (!showing_on_demand_) {
+        showing_on_demand_ = true;
+        dialog_.setPreviewSeries({});  // the ghost of a transform preview is not ours
+      }
       const OnDemandBuild& build = buildOnDemandRequest();
       if (!dialog_.onDemandSupported() || build.form_incomplete) {
-        tearDownPreview();  // the form's overlay says what is missing
+        tearDownPreview();  // the form's hints say what is missing
         tearDownObjectPreview(/*close_tab=*/false);
-        dialog_.setOnDemandReport("");
+        dialog_.clearTrial();
+        dialog_.setStatus("");
         return;
       }
       if (!build.error.empty()) {
         tearDownPreview();
         tearDownObjectPreview(/*close_tab=*/false);
-        dialog_.setOnDemandReport("");
+        dialog_.setTrialFailure(build.error);
         dialog_.setValidationError(build.error);
+        dialog_.setStatus("");
         return;
       }
-      if (previewOnDemand(build.request, build.anchor)) {
-        updateObjectPreview(build);
-      } else {
+      if (!previewOnDemand(build) || dialog_.trialFailed()) {
         tearDownObjectPreview(/*close_tab=*/false);
+      } else if (dialog_.trialUsable()) {
+        updatePreviewRecipe(build);
       }
       return;
     }
+    showing_on_demand_ = false;
     tearDownObjectPreview(/*close_tab=*/false);  // numeric outputs preview as a plot, below
-    dialog_.setOnDemandReport("");
+    dialog_.clearTrial();
+    dialog_.setStatus("");
 
-    // Declare the SAME output topics the real Create path uses (splitOutputNames of
-    // the comma-separated name field) so a MIMO body returning M values matches the
-    // node's arity — a single-output preview node drops every row of an M-output
-    // function and falsely reports "no output". Each slot gets a unique ephemeral
-    // name; fall back to one slot while the name field is still empty (mid-typing).
+    // Declare as many output topics as the body returns values (see transformOutputCount), so a MIMO body
+    // returning M values matches the node's arity — a single-output preview node drops every row of an
+    // M-output function and falsely reports "no output". Each slot gets a unique ephemeral name.
     const std::string preview_id(kPreviewId);
-    std::vector<std::string> output_names = splitOutputNames(dialog_.outputName());
-    const std::size_t num_outputs = output_names.empty() ? 1 : output_names.size();
+    const std::vector<std::string> output_names = dialog_.transformOutputNames(dialog_.outputName());
+    const std::size_t num_outputs = dialog_.transformOutputCount();
     std::vector<std::string> preview_outputs;
     preview_outputs.reserve(num_outputs);
     for (std::size_t k = 0; k < num_outputs; ++k) {
@@ -2726,11 +3527,11 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     // function does not create/tear down a transform on every keystroke. The
     // validation script uses the host's expected "__validate__" class id (the
     // preview/create script keeps preview_id for the upsert).
-    const std::string validate_script =
-        buildTransformScript("__validate__", "__validate__", global, body, num_extra, dialog_.language());
-    auto validation = dp_view_.validateScript("transform", dialog_.language(), validate_script);
-    dialog_.setValidationError(validation ? "" : std::string(validation.error()));
-    if (!validation) {
+    const auto invalid = scriptError("transform", dialog_.language(), [&] {
+      return buildTransformScript("__validate__", "__validate__", global, body, num_extra, dialog_.language());
+    });
+    dialog_.setValidationError(invalid.value_or(""));
+    if (invalid) {
       tearDownPreview();
       dialog_.setPreviewSeries({});
       return;
@@ -2762,8 +3563,9 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     read_names.insert(read_names.end(), preview_outputs.begin(), preview_outputs.end());
     auto samples = readManyRawSamples(read_names);
 
+    const std::int64_t t0 = earliestTimestamp(samples);  // before the ghost is moved out
     auto ghost_raw = std::move(samples[0]);
-    std::vector<std::vector<std::pair<int64_t, double>>> results(
+    std::vector<RawSamples> results(
         std::make_move_iterator(samples.begin() + 1), std::make_move_iterator(samples.end()));
     bool any_result = false;
     for (const auto& r : results) {
@@ -2776,63 +3578,35 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     // is legitimate (a suppressed output). validateScript (compile-only) can't catch
     // this runtime case; real inputs are used, so a valid MIMO is not falsely flagged.
     if (!ghost_raw.empty() && !any_result) {
-      // The output-name field declares N outputs; the body must return EXACTLY N
-      // values per point (positional). A silent MIMO no-op is almost always this
+      // The body must return EXACTLY as many values per point as the node has outputs (positional;
+      // the count is read from its return statements). A silent MIMO no-op is almost always this
       // arity mismatch — in EITHER direction (too few OR too many returns) — or a
-      // body that returns nothing. State the declared count symmetrically rather
+      // body that returns nothing. State the count symmetrically rather
       // than a misleading "must return a number" (the user may have returned several).
       const std::string n = std::to_string(num_outputs);
       const std::string plural = num_outputs == 1 ? "" : "s";
-      const std::string msg = "function produced no output — declared " + n + " output" + plural +
-                              ", so it must return exactly " + n + " value" + plural + " per point";
+      const std::string msg = "function produced no output: it must return exactly " + n + " value" + plural +
+                              " per point (counted from its return statements)";
       dialog_.setValidationError(msg);
     }
 
-    int64_t t0 = 0;
-    bool have_t0 = false;
-    if (!ghost_raw.empty()) {
-      t0 = ghost_raw.front().first;
-      have_t0 = true;
-    }
-    for (const auto& raw : results) {
-      if (!raw.empty() && (!have_t0 || raw.front().first < t0)) {
-        t0 = raw.front().first;
-        have_t0 = true;
+    std::vector<std::string> labels;
+    for (std::size_t k = 0; k < results.size(); ++k) {
+      if (k < output_names.size() && !output_names[k].empty()) {
+        labels.push_back(output_names[k]);
+      } else {
+        labels.push_back(results.size() > 1 ? ("result" + std::to_string(k)) : std::string("result"));
       }
     }
 
-    const auto to_points = [t0](const std::vector<std::pair<int64_t, double>>& raw) {
-      std::vector<PJ::ChartPoint> pts;
-      pts.reserve(raw.size());
-      for (const auto& [ts, v] : raw) {
-        pts.push_back({static_cast<double>(ts - t0) / 1e9, v});
-      }
-      return pts;
-    };
-
-    std::vector<PJ::ChartSeries> series;
-    // TODO(theme): These data-series colors are a deliberate color-as-data
-    // exception to the theme palette — a curve's identity is carried by its
-    // color here. Use renderer-selected colors once the chart protocol exposes
-    // them.
     // Ghost (original): faded blue + dashed, distinct from the solid result curves
     // — same styling as the native TransformEditorPanel. Color hex is #AARRGGBB.
-    series.push_back({source, to_points(ghost_raw), "#5A4488ff", /*dashed=*/true});
-    // One solid curve per declared output, cycling a small palette so parallel MIMO
-    // outputs stay visually distinct; labelled by the user's output name.
-    static constexpr const char* kResultColors[] = {"#ff8800", "#0088ff", "#22aa22", "#cc2222", "#9933cc", "#00a0a0"};
-    static constexpr std::size_t kNumColors = sizeof(kResultColors) / sizeof(kResultColors[0]);
-    for (std::size_t k = 0; k < results.size(); ++k) {
-      if (results[k].empty()) {
-        continue;
-      }
-      std::string label;
-      if (k < output_names.size() && !output_names[k].empty()) {
-        label = output_names[k];
-      } else {
-        label = results.size() > 1 ? ("result" + std::to_string(k)) : std::string("result");
-      }
-      series.push_back({label, to_points(results[k]), kResultColors[k % kNumColors], /*dashed=*/false});
+    std::vector<PJ::ChartSeries> series;
+    series.push_back({source, toChartPoints(ghost_raw, t0), "#5A4488ff", /*dashed=*/true});
+    // One solid curve per declared output, cycling the palette so parallel MIMO outputs stay visually
+    // distinct; labelled by the user's output name.
+    for (auto& solid : toChartSeries(results, labels, t0)) {
+      series.push_back(std::move(solid));
     }
     dialog_.setPreviewSeries(std::move(series));
   }
@@ -2856,7 +3630,9 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     dialog_.setBatchValidationError(status ? "" : std::string(status.error()));
   }
 
-  static constexpr auto kPreviewRefresh = std::chrono::milliseconds(250);  // between two preview evaluations/installs
+  static constexpr auto kPreviewRefresh = std::chrono::milliseconds(250);  // between two preview recipe installs
+  static constexpr auto kTrialPeriod = std::chrono::milliseconds(500);     // between two trials: the readout at 2 Hz
+  static constexpr auto kSeriesRead = std::chrono::milliseconds(500);      // between two reads of the preview series
   static constexpr std::string_view kPreviewId = "__te_preview__";
   static constexpr std::string_view kObjectPreviewId = "__te_obj_preview__";
   static constexpr std::string_view kPreviewTabId = "te_preview";
@@ -2872,9 +3648,15 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   int catalog_refresh_ticks_ = 0;                         // 0 = never read yet
   std::optional<PJ::sdk::CatalogSnapshotV2> catalog_v2_;  // empty when the host cannot do on-demand
   std::string catalog_v2_error_;
+  struct Validation {  // the host's verdict on the script of one form revision (see scriptError)
+    std::uint64_t revision = 0;
+    std::string kind;
+    std::optional<std::string> error;
+  };
+  std::optional<Validation> validation_;
   std::optional<OnDemandBuild> on_demand_build_;  // see buildOnDemandRequest()
-  nlohmann::json on_demand_build_key_;
-  int on_demand_build_count_ = 0;  // rebuilds so far (tests assert the cache holds)
+  std::uint64_t on_demand_build_revision_ = 0;    // the form revision it was built at
+  int on_demand_build_count_ = 0;                 // rebuilds so far (tests assert the cache holds)
   // "Show in 3D/2D" for the recipe just created: the tab id, its kind, and (topic, dataset) to attach.
   static constexpr std::string_view kSceneIdPrefix = "te_";
   std::string scene_id_;
@@ -2884,13 +3666,36 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   std::chrono::steady_clock::time_point preview_deadline_;
   std::chrono::steady_clock::time_point next_preview_refresh_;
   std::chrono::steady_clock::time_point next_object_preview_refresh_;  // debounce of the object preview
-  std::string preview_signature_;
-  std::string preview_key_;  // non-empty when an ephemeral preview node is live
-  // The preview of object outputs (see updateObjectPreview).
+  // The trial (see previewOnDemand): what the form asked for last (without the instant), when it changed,
+  // whether a run is owed to it, and the cursor instant that had no sample.
+  std::string trial_form_key_;
+  std::chrono::steady_clock::time_point trial_edit_at_;
+  bool trial_form_pending_ = false;
+  std::chrono::milliseconds edit_debounce_{300};  // quiet time after the last edit before a trial runs
+  std::optional<std::int64_t> no_sample_instant_;
+  bool showing_on_demand_ = false;  // the last refresh was a recipe evaluated at the cursor
+  std::chrono::steady_clock::time_point next_series_read_;
+  bool series_available_ = false;                   // the host materialized a series for a number output
+  std::vector<std::string> object_preview_topics_;  // the topics the host resolved for the preview recipe's outputs
+  std::string preview_key_;                         // non-empty when an ephemeral preview node is live
+  // The preview of object outputs (see updatePreviewRecipe).
   bool object_preview_live_ = false;      // the ephemeral on_demand recipe is installed
   std::string object_preview_signature_;  // what it was built from (also set when the host refused it)
-  bool preview_tab_open_ = false;         // the preview scene tab exists
-  std::string preview_tab_kind_;          // its kind, "3d" | "2d"
+  // The (form revision, trial serial) the recipe above was last reconciled with, and what that left: the
+  // outputs it declares and whether one is an object.
+  std::pair<std::uint64_t, std::uint64_t> preview_recipe_stamp_{};
+  std::vector<PJ::sdk::DataProcessorOutput> preview_recipe_outputs_;
+  bool preview_recipe_has_object_ = false;
+  std::uint64_t object_preview_installs_ = 0;  // how many times the host accepted the recipe
+  // What the preview series were last read at: the install count and the object inputs' data stamp.
+  struct SeriesStamp {
+    std::uint64_t installs = 0;
+    std::vector<std::pair<std::uint64_t, std::int64_t>> data;
+    bool operator==(const SeriesStamp&) const = default;
+  };
+  SeriesStamp series_read_stamp_;
+  bool preview_tab_open_ = false;                                    // the preview scene tab exists
+  std::string preview_tab_kind_;                                     // its kind, "3d" | "2d"
   std::vector<std::pair<std::string, std::string>> preview_topics_;  // (topic, dataset) attached to it
 };
 

@@ -65,3 +65,64 @@ TEST(DerivedRecipes, QualifyAndJoinHelpers) {
   EXPECT_TRUE(isMarkerObjectTopic("__markers__/x"));
   EXPECT_FALSE(isMarkerObjectTopic("/cloud"));
 }
+
+// --- Python on-demand chunk ---
+
+TEST(DerivedRecipes, PythonChunkDefinesEvaluateWithIndentedBody) {
+  ResolvedEvalInputs resolved;
+  const std::string chunk = buildOnDemandChunkPython("x = 1\n\nreturn {'a': x}", resolved);
+  EXPECT_EQ(chunk, "# pj-script: python\ndef evaluate(inputs, params):\n    x = 1\n\n    return {'a': x}\n");
+}
+
+TEST(DerivedRecipes, PythonChunkAliasesInputsAndKeepsAnEmptyBodyValid) {
+  ResolvedEvalInputs resolved;
+  resolved.aliases = {{"/cloud", "run1:/cloud"}};
+  const std::string chunk = buildOnDemandChunkPython("", resolved);
+  EXPECT_NE(chunk.find("def evaluate(inputs, params):\n    inputs = {\n"), std::string::npos) << chunk;
+  EXPECT_NE(chunk.find("\"/cloud\": inputs[\"run1:/cloud\"],"), std::string::npos) << chunk;
+  EXPECT_EQ(chunk.find("\n    pass"), std::string::npos) << "the alias table is already a statement";
+  EXPECT_NE(buildOnDemandChunkPython("  \n", ResolvedEvalInputs{}).find("    pass\n"), std::string::npos);
+}
+
+// --- Variable names ---
+
+TEST(DerivedRecipes, VariablePrologueBindsOneLocalPerInput) {
+  const std::vector<InputBinding> bindings = {{"cloud", "/lidar_top"}, {"x", "pose/x"}};
+  EXPECT_EQ(
+      buildVariablePrologue("luau", bindings), "local cloud = inputs[\"/lidar_top\"]\nlocal x = inputs[\"pose/x\"]\n");
+  EXPECT_EQ(buildVariablePrologue("python", bindings), "cloud = inputs[\"/lidar_top\"]\nx = inputs[\"pose/x\"]\n");
+  EXPECT_EQ(buildVariablePrologue("luau", {}), "");
+}
+
+TEST(DerivedRecipes, InferredVariableNameIsTheSanitizedLeaf) {
+  EXPECT_EQ(inferredVariableName("/lidar_top", {}), "lidar_top");
+  EXPECT_EQ(inferredVariableName("pose/x", {}), "x");
+  EXPECT_EQ(inferredVariableName("run1:/cam_front/image_rect", {}), "image_rect");
+  EXPECT_EQ(inferredVariableName("run1:cloud", {}), "cloud");
+  EXPECT_EQ(inferredVariableName("/a/b-c d", {}), "b_c_d");
+  EXPECT_EQ(inferredVariableName("/cloud/", {}), "cloud");
+  EXPECT_EQ(inferredVariableName("/3d", {}), "input_3d");
+  EXPECT_EQ(inferredVariableName("/", {}), "input");
+}
+
+TEST(DerivedRecipes, InferredVariableNameDeduplicatesAndAvoidsKeywords) {
+  EXPECT_EQ(inferredVariableName("/a/x", {"x"}), "x_2");
+  EXPECT_EQ(inferredVariableName("/b/x", {"x", "x_2"}), "x_3");
+  EXPECT_EQ(inferredVariableName("/end", {}), "end_");
+  EXPECT_EQ(inferredVariableName("/class", {}), "class_");
+  EXPECT_EQ(inferredVariableName("/None", {}), "None_");
+  EXPECT_EQ(inferredVariableName("/inputs", {}), "inputs_");
+  EXPECT_EQ(inferredVariableName("/pj", {}), "pj_");
+  EXPECT_EQ(inferredVariableName("/end", {"end_"}), "end__2");
+}
+
+TEST(DerivedRecipes, ObjectTypeLabelsAreReadable) {
+  EXPECT_EQ(objectTypeLabel("kPointCloud"), "point cloud");
+  EXPECT_EQ(objectTypeLabel("kImage"), "image");
+  EXPECT_EQ(objectTypeLabel("kImageAnnotations"), "image annotations");
+  EXPECT_EQ(objectTypeLabel("kSceneEntities"), "scene");
+  EXPECT_EQ(objectTypeLabel("kFrameTransforms"), "transforms");
+  EXPECT_EQ(objectTypeLabel("kCameraInfo"), "camera info");
+  EXPECT_EQ(objectTypeLabel("number"), "number");
+  EXPECT_EQ(objectTypeLabel("kNotAType"), "kNotAType");
+}

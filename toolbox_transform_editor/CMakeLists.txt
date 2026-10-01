@@ -56,6 +56,12 @@ pj_embed_ui(toolbox_transform_editor_plugin
   VAR_NAME kOverwriteUi
 )
 
+pj_embed_ui(toolbox_transform_editor_plugin
+  UI_FILE  ${CMAKE_CURRENT_SOURCE_DIR}/create_recipe.ui
+  HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/create_recipe_ui.hpp
+  VAR_NAME kCreateRecipeUi
+)
+
 pj_embed_manifest(toolbox_transform_editor_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/transform_editor_manifest.hpp
   VAR_NAME kTransformEditorManifest

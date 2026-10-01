@@ -157,7 +157,7 @@
                    </size>
                   </property>
                   <property name="toolTip">
-                   <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Drag &amp;amp; drop series or object topics here. For series, pick the radio to set which one is &lt;span style=&quot; font-weight:600;&quot;&gt;value&lt;/span&gt;.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                   <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Drag &amp;amp; drop series or object topics here. Var is the name the script reads each input by. With series only, pick the radio to set which one is &lt;span style=&quot; font-weight:600;&quot;&gt;value&lt;/span&gt;.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                   </property>
                   <property name="frameShape">
                    <enum>QFrame::NoFrame</enum>
@@ -172,12 +172,102 @@
                    <set>QAbstractItemView::NoEditTriggers</set>
                   </property>
                   <attribute name="horizontalHeaderVisible">
-                   <bool>false</bool>
+                   <bool>true</bool>
                   </attribute>
                   <attribute name="verticalHeaderVisible">
                    <bool>false</bool>
                   </attribute>
                  </widget>
+                </item>
+                <item>
+                 <layout class="QHBoxLayout" name="objectTopicLayout">
+                  <property name="spacing"><number>4</number></property>
+                  <property name="leftMargin"><number>6</number></property>
+                  <property name="topMargin"><number>4</number></property>
+                  <property name="rightMargin"><number>4</number></property>
+                  <property name="bottomMargin"><number>2</number></property>
+                  <item>
+                   <widget class="QComboBox" name="objectTopicCombo">
+                    <property name="toolTip">
+                     <string>Object topics (point clouds, scene entities, images...) loaded in the host.</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QPushButton" name="buttonAddObjectTopic">
+                    <property name="text">
+                     <string>Add input</string>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="buttonAdvanced">
+                  <property name="flat">
+                   <bool>true</bool>
+                  </property>
+                  <property name="text">
+                   <string>Advanced &gt;</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>Params passed to the script and pinning at the current time.</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QWidget" name="advancedPane" native="true">
+                  <property name="visible"><bool>false</bool></property>
+                  <layout class="QVBoxLayout" name="advancedPaneLayout">
+                   <property name="spacing"><number>4</number></property>
+                   <property name="leftMargin"><number>6</number></property>
+                   <property name="topMargin"><number>2</number></property>
+                   <property name="rightMargin"><number>4</number></property>
+                   <property name="bottomMargin"><number>4</number></property>
+                   <item>
+                    <layout class="QHBoxLayout" name="paramsLayout">
+                     <property name="spacing"><number>4</number></property>
+                     <property name="leftMargin"><number>0</number></property>
+                     <property name="topMargin"><number>0</number></property>
+                     <property name="rightMargin"><number>0</number></property>
+                     <property name="bottomMargin"><number>0</number></property>
+                     <item>
+                      <widget class="QLabel" name="paramsLabel">
+                       <property name="text">
+                        <string>Params (JSON)</string>
+                       </property>
+                      </widget>
+                     </item>
+                     <item>
+                      <widget class="QLineEdit" name="paramsLineEdit">
+                       <property name="placeholderText">
+                        <string>{"threshold": 1.0}</string>
+                       </property>
+                       <property name="toolTip">
+                        <string>JSON object handed to the script as params.</string>
+                       </property>
+                      </widget>
+                     </item>
+                    </layout>
+                   </item>
+                   <item>
+                    <widget class="QCheckBox" name="pinCurrentTimeCheck">
+                     <property name="text">
+                      <string>Pin at current time</string>
+                     </property>
+                     <property name="toolTip">
+                      <string>Evaluate once at the current playback time and keep that finding, instead of re-evaluating wherever a consumer asks.</string>
+                     </property>
+                    </widget>
+                   </item>
+                  </layout>
+                 </widget>
+                </item>
+                <item>
+                 <spacer name="leftSpacer">
+                  <property name="orientation"><enum>Qt::Vertical</enum></property>
+                  <property name="sizeHint" stdset="0"><size><width>20</width><height>0</height></size></property>
+                 </spacer>
                 </item>
                </layout>
               </widget>
@@ -446,193 +536,83 @@
                 <number>0</number>
                </property>
                <item>
-                <widget class="SectionHeaderBand" name="outputTimeseriesHeader">
-                 <property name="text">
-                  <string>Outputs</string>
+                <widget class="QSplitter" name="previewRowSplitter">
+                 <property name="orientation">
+                  <enum>Qt::Horizontal</enum>
                  </property>
-                 <property name="fillDockedWidgets" stdset="0">
-                  <bool>true</bool>
+                 <property name="childrenCollapsible">
+                  <bool>false</bool>
                  </property>
-                 <widget class="QLineEdit" name="nameLineEdit">
+                 <widget class="QFrame" name="framePlotPreview">
                   <property name="minimumSize">
                    <size>
-                    <width>220</width>
-                    <height>0</height>
+                    <width>0</width>
+                    <height>80</height>
                    </size>
                   </property>
-                  <property name="placeholderText">
-                   <string>name of the output</string>
+                  <property name="frameShape">
+                   <enum>QFrame::StyledPanel</enum>
                   </property>
-                  <property name="toolTip">
-                   <string>&lt;html&gt;&lt;body&gt;&lt;p&gt;Name of the new time series.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                  <property name="frameShadow">
+                   <enum>QFrame::Sunken</enum>
                   </property>
+                 </widget>
+                 <widget class="QFrame" name="scenePreviewFrame">
+                  <property name="visible"><bool>false</bool></property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>120</width>
+                    <height>80</height>
+                   </size>
+                  </property>
+                  <property name="frameShape">
+                   <enum>QFrame::StyledPanel</enum>
+                  </property>
+                  <property name="frameShadow">
+                   <enum>QFrame::Sunken</enum>
+                  </property>
+                  <layout class="QVBoxLayout" name="scenePreviewLayout">
+                   <item>
+                    <widget class="QLabel" name="scenePreviewNote">
+                     <property name="wordWrap"><bool>true</bool></property>
+                     <property name="alignment">
+                      <set>Qt::AlignCenter</set>
+                     </property>
+                     <property name="text">
+                      <string>Object outputs preview in the Transform Editor preview scene tab.</string>
+                     </property>
+                    </widget>
+                   </item>
+                  </layout>
                  </widget>
                 </widget>
                </item>
                <item>
-                <widget class="QWidget" name="onDemandPanel" native="true">
-                 <layout class="QVBoxLayout" name="onDemandPanelLayout">
-                     <property name="spacing"><number>4</number></property>
-                     <property name="leftMargin"><number>6</number></property>
-                     <property name="topMargin"><number>4</number></property>
-                     <property name="rightMargin"><number>4</number></property>
-                     <property name="bottomMargin"><number>4</number></property>
-                  <item>
-                   <widget class="QLabel" name="engineLabel">
-                    <property name="toolTip">
-                     <string>Computed per sample: every input and output is a number. Computed at the cursor: an input or output is an object (point cloud, scene, image...), which requires a PlotJuggler host with SDK 0.36 or newer.</string>
-                    </property>
-                   </widget>
-                  </item>
-                  <item>
-                   <widget class="QTableWidget" name="tableOutputs">
-                    <property name="minimumSize">
-                     <size>
-                      <width>0</width>
-                      <height>60</height>
-                     </size>
-                    </property>
-                    <property name="toolTip">
-                     <string>Outputs the script returns, by name. The body returns a table keyed by these names.</string>
-                    </property>
-                    <property name="selectionBehavior">
-                     <enum>QAbstractItemView::SelectRows</enum>
-                    </property>
-                    <property name="editTriggers">
-                     <set>QAbstractItemView::NoEditTriggers</set>
-                    </property>
-                    <attribute name="verticalHeaderVisible">
-                     <bool>false</bool>
-                    </attribute>
-                   </widget>
-                  </item>
-                  <item>
-                   <layout class="QHBoxLayout" name="outputEditLayout">
-                       <property name="spacing"><number>4</number></property>
-                       <property name="leftMargin"><number>0</number></property>
-                       <property name="topMargin"><number>0</number></property>
-                       <property name="rightMargin"><number>0</number></property>
-                       <property name="bottomMargin"><number>0</number></property>
-                    <item>
-                     <widget class="QLineEdit" name="outputNameEdit">
-                      <property name="placeholderText">
-                       <string>output name</string>
-                      </property>
-                     </widget>
-                    </item>
-                    <item>
-                     <widget class="QComboBox" name="outputTypeCombo"/>
-                    </item>
-                    <item>
-                     <widget class="QPushButton" name="buttonAddOutput">
-                      <property name="text">
-                       <string>Add output</string>
-                      </property>
-                     </widget>
-                    </item>
-                   </layout>
-                  </item>
-                  <item>
-                   <layout class="QHBoxLayout" name="objectTopicLayout">
-                       <property name="spacing"><number>4</number></property>
-                       <property name="leftMargin"><number>0</number></property>
-                       <property name="topMargin"><number>0</number></property>
-                       <property name="rightMargin"><number>0</number></property>
-                       <property name="bottomMargin"><number>0</number></property>
-                    <item>
-                     <widget class="QComboBox" name="objectTopicCombo">
-                      <property name="toolTip">
-                       <string>Object topics (point clouds, scene entities, images...) loaded in the host.</string>
-                      </property>
-                     </widget>
-                    </item>
-                    <item>
-                     <widget class="QPushButton" name="buttonAddObjectTopic">
-                      <property name="text">
-                       <string>Add input</string>
-                      </property>
-                     </widget>
-                    </item>
-                   </layout>
-                  </item>
-                  <item>
-                   <layout class="QHBoxLayout" name="paramsLayout">
-                       <property name="spacing"><number>4</number></property>
-                       <property name="leftMargin"><number>0</number></property>
-                       <property name="topMargin"><number>0</number></property>
-                       <property name="rightMargin"><number>0</number></property>
-                       <property name="bottomMargin"><number>0</number></property>
-                    <item>
-                     <widget class="QLabel" name="paramsLabel">
-                      <property name="text">
-                       <string>Params</string>
-                      </property>
-                     </widget>
-                    </item>
-                    <item>
-                     <widget class="QLineEdit" name="paramsLineEdit">
-                      <property name="placeholderText">
-                       <string>{"threshold": 1.0}</string>
-                      </property>
-                      <property name="toolTip">
-                       <string>JSON object handed to the script as params.</string>
-                      </property>
-                     </widget>
-                    </item>
-                   </layout>
-                  </item>
-                  <item>
-                   <layout class="QHBoxLayout" name="pinLayout">
-                       <property name="spacing"><number>4</number></property>
-                       <property name="leftMargin"><number>0</number></property>
-                       <property name="topMargin"><number>0</number></property>
-                       <property name="rightMargin"><number>0</number></property>
-                       <property name="bottomMargin"><number>0</number></property>
-                    <item>
-                     <widget class="QCheckBox" name="pinCurrentTimeCheck">
-                      <property name="text">
-                       <string>Pin at current time</string>
-                      </property>
-                      <property name="toolTip">
-                       <string>Evaluate once at the current playback time and keep that finding, instead of re-evaluating wherever a consumer asks.</string>
-                      </property>
-                     </widget>
-                    </item>
-                    <item>
-                     <widget class="QPushButton" name="buttonShowScene">
-                      <property name="visible"><bool>false</bool></property>
-                      <property name="text">
-                       <string>Show in 3D</string>
-                      </property>
-                     </widget>
-                    </item>
-                   </layout>
-                  </item>
-                 </layout>
-                </widget>
-               </item>
-               <item>
-                <widget class="QPlainTextEdit" name="onDemandReportPreview">
-                 <property name="readOnly"><bool>true</bool></property>
-                 <property name="visible"><bool>false</bool></property>
-                 <property name="placeholderText"><string>Preview of the result</string></property>
-                </widget>
-               </item>
-               <item>
-                <widget class="QFrame" name="framePlotPreview">
-                 <property name="minimumSize">
-                  <size>
-                   <width>0</width>
-                   <height>80</height>
-                  </size>
-                 </property>
-                 <property name="frameShape">
-                  <enum>QFrame::StyledPanel</enum>
-                 </property>
-                 <property name="frameShadow">
-                  <enum>QFrame::Sunken</enum>
-                 </property>
-                </widget>
+                <layout class="QHBoxLayout" name="statusRow">
+                 <property name="spacing"><number>4</number></property>
+                 <property name="leftMargin"><number>6</number></property>
+                 <property name="topMargin"><number>2</number></property>
+                 <property name="rightMargin"><number>4</number></property>
+                 <property name="bottomMargin"><number>2</number></property>
+                 <item>
+                  <widget class="QLabel" name="statusLabel">
+                   <property name="sizePolicy">
+                    <sizepolicy hsizetype="Ignored" vsizetype="Preferred"/>
+                   </property>
+                   <property name="textInteractionFlags">
+                    <set>Qt::TextSelectableByMouse</set>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="buttonShowScene">
+                   <property name="visible"><bool>false</bool></property>
+                   <property name="text">
+                    <string>Show in 3D</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
                </item>
               </layout>
              </widget>
@@ -672,7 +652,7 @@
              </sizepolicy>
             </property>
             <property name="text">
-             <string>Create New Time Series</string>
+             <string>Create...</string>
             </property>
            </widget>
           </item>
