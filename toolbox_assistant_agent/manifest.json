@@ -20,5 +20,6 @@
   "min_sdk_required": "0.34.0",
   "min_plotjuggler_version": "4.0.0",
   "suggested_sdk_version": "0.36.0",
-  "floor_test": "ToolRegistry.ListTopicsFallsBackToV1AndSaysSo"
+  "floor_test": "ToolRegistry.ListTopicsFallsBackToV1AndSaysSo",
+  "badge": "AI"
 }

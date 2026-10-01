@@ -22,9 +22,10 @@ pin instant, its recipe and the owned scene. A generic layout requires its input
 dataset to be loaded before restoring it.
 
 Open Transform Editor, drag the actual object row from the catalog into Inputs
-(or pick it in the object-topic list), switch the kind selector to On-demand,
-and declare the outputs `cropped` (kPointCloud) and `count` (number) in the
-outputs table. Put this in FUNCTION:
+(or pick it in the object-topic list), and declare the outputs `cropped`
+(kPointCloud) and `count` (number) in the outputs table. The editor reads
+"Computed at the cursor" under the output name: an object input or output makes
+it an on-demand recipe, with no engine to choose. Put this in FUNCTION:
 
 ```lua
 local c = inputs["/lidar_top"]:crop_box{min={-15,-15,-1},max={15,15,1}}

@@ -54,7 +54,7 @@ class TransformEditorPreviewTestPeer {
   // the completed report nor the pending placeholder is on screen any more.
   static bool showsReport(TransformEditorToolbox& editor) {
     const std::string text = report(editor);
-    return text.find("\"count\"") != std::string::npos || text.find("Evaluating") != std::string::npos;
+    return text.find("count: 42") != std::string::npos || text.find("Evaluating") != std::string::npos;
   }
   static void close(TransformEditorToolbox& editor) {
     editor.tearDownPreview();
