@@ -228,10 +228,53 @@ TEST(TransformEditorTrial, NoSampleAtTheCursorRetriesAtTheFirstEntry) {
   EXPECT_EQ(rig.dp.submits[0].instant_ns, 3'000'000'000);
   EXPECT_EQ(rig.dp.submits[1].instant_ns, 8'000'000'000) << "the first entry of /late";
   const std::string status = TransformEditorPreviewTestPeer::status(rig.editor);
-  EXPECT_NE(status.find("previewing at t = 8 s: cursor is before the first sample of /late"), std::string::npos)
+  EXPECT_NE(status.find("No sample of /late at the cursor (3.000 s): move the timeline to preview."), std::string::npos)
       << status;
-  EXPECT_NE(status.find("count: 42"), std::string::npos) << status;
+  EXPECT_NE(status.find("Outputs: cropped (point cloud), count (number)"), std::string::npos) << status;
+  EXPECT_EQ(status.find("count: 42"), std::string::npos) << "no value of the retried instant";
+  EXPECT_EQ(status.find("23 144"), std::string::npos) << "no point count of the retried instant";
+  EXPECT_EQ(status.find("previewing"), std::string::npos) << status;
+  EXPECT_TRUE(rig.dialog().trialReadout().empty());
   EXPECT_EQ(rig.dialog().canCreateReason(), "");
+}
+
+TEST(TransformEditorTrial, AnEmptyReturnNamesTheInputsTheScriptCanRead) {
+  Rig rig;
+  rig.catalog.addObjectTopic("/lidar_top", "kPointCloud", 5, 0, 5'000'000'000);
+  rig.dp.canned_report_json = R"({"error":"the script returned no values"})";
+  rig.dp.terminal_state = PJ_EVALUATION_STATE_FAILED;
+  rig.refresh();
+  rig.dialog().onItemsDropped("tableSources", {"/lidar_top"});
+  rig.dialog().onCodeChanged("functionText", "local x = lidar_top");
+  rig.refresh();
+  EXPECT_EQ(rig.dialog().canCreateReason(), "the script returned no values · inputs are: lidar_top");
+}
+
+TEST(TransformEditorTrial, AValueTheScriptReadsButNoInputBindsIsSaidSo) {
+  Rig rig;
+  rig.catalog.addObjectTopic("/lidar_top", "kPointCloud", 5, 0, 5'000'000'000);
+  rig.dp.canned_report_json = R"({"error":"the script returned no values"})";
+  rig.dp.terminal_state = PJ_EVALUATION_STATE_FAILED;
+  rig.refresh();
+  rig.dialog().onItemsDropped("tableSources", {"/lidar_top"});
+  rig.dialog().onCodeChanged("functionText", "return value");
+  rig.refresh();
+  EXPECT_EQ(
+      rig.dialog().canCreateReason(),
+      "the script returned no values · `value` is not defined here; inputs are: lidar_top");
+  // A field called value, or a longer name, is not the variable.
+  rig.dialog().onCodeChanged("functionText", "return lidar_top.value + values");
+  rig.refresh();
+  EXPECT_EQ(rig.dialog().canCreateReason(), "the script returned no values · inputs are: lidar_top");
+}
+
+TEST(TransformEditorTrial, OtherHostErrorsAreLeftAsTheyAre) {
+  Rig rig;
+  rig.dp.canned_report_json = R"({"error":"syntax error near 'end'"})";
+  rig.dp.terminal_state = PJ_EVALUATION_STATE_FAILED;
+  rig.load(onDemandConfig("my_filter"));
+  rig.refresh();
+  EXPECT_EQ(rig.dialog().canCreateReason(), "syntax error near 'end'");
 }
 
 TEST(TransformEditorTrial, NoSampleAnywhereIsAReasonNotACrash) {
@@ -747,9 +790,13 @@ TEST(TransformEditorLayout, TheRemovedWidgetsAreGone) {
     EXPECT_FALSE(widgets.contains(removed)) << removed << " is not in the widget data";
   }
   for (const char* wanted :
-       {"tableSources", "objectTopicCombo", "buttonAddObjectTopic", "statusLabel", "pushButtonCreate",
-        "framePlotPreview", "buttonAdvanced", "advancedPane"}) {
+       {"tableSources", "statusLabel", "pushButtonCreate", "framePlotPreview", "buttonAdvanced", "advancedPane"}) {
     EXPECT_NE(ui.find(std::string("name=\"") + wanted + "\""), std::string::npos) << wanted;
+  }
+  // Inputs are added by drag and drop only: no picker, no Add input, no spacer holding space under the table.
+  for (const char* gone : {"objectTopicCombo", "buttonAddObjectTopic", "objectTopicLayout", "leftSpacer"}) {
+    EXPECT_EQ(ui.find(std::string("name=\"") + gone + "\""), std::string::npos) << gone;
+    EXPECT_FALSE(widgets.contains(gone)) << gone;
   }
 }
 
@@ -780,34 +827,108 @@ TEST(TransformEditorLayout, TheInputsTableHasAVisibleHeaderAndReadableTypes) {
   EXPECT_NE(text.substr(header, 80).find("<bool>true</bool>"), std::string::npos) << "the header is visible";
 }
 
-TEST(TransformEditorLayout, ThePickerSitsUnderTheInputsAndShowsReadableTypes) {
+TEST(TransformEditorLayout, ObjectTopicsDroppedFromTheDatasetsTreeAreTheOnlyWayToAddThem) {
   Rig rig;
   rig.catalog.addObjectTopic("/img", "kImage", 3, 0, 1'000'000'000);
-  rig.catalog.addObjectTopic("__markers__/x", "kPlotMarkers", 1, 0, 1'000'000'000);
+  rig.catalog.addObjectTopic("/a", "kPointCloud", 1, 0, 1'000'000'000, "{}", "runA");
   rig.refresh();
-  const auto items = rig.widgets()["objectTopicCombo"]["items"];
-  ASSERT_EQ(items.size(), 2u) << "marker sets are excluded";
-  EXPECT_EQ(items[0], "/cloud  [point cloud]");
-  EXPECT_EQ(items[1], "/img  [image]");
-  const std::string ui = rig.dialog().ui_content();
-  EXPECT_LT(ui.find("name=\"tableSources\""), ui.find("name=\"objectTopicCombo\""));
-  EXPECT_LT(ui.find("name=\"objectTopicCombo\""), ui.find("name=\"rightWidget\""));
-  rig.dialog().onIndexChanged("objectTopicCombo", 1);
-  rig.dialog().onClicked("buttonAddObjectTopic");
-  EXPECT_EQ(rig.dialog().sources(), std::vector<std::string>{"/img"});
+  EXPECT_TRUE(rig.widgets()["tableSources"]["rows"].empty());
+  EXPECT_TRUE(rig.dialog().onItemsDropped("tableSources", {"/img", "runA:/a", "/img"}));
+  EXPECT_EQ(rig.dialog().sources(), (std::vector<std::string>{"/img", "runA:/a"})) << "no duplicates";
+  const auto rows = rig.widgets()["tableSources"]["rows"];
+  EXPECT_EQ(rows[0][3], "image");
+  EXPECT_EQ(rows[1][3], "point cloud");
+  EXPECT_EQ(rig.dialog().variableNames(), (std::vector<std::string>{"img", "a"}));
+  // The removed button is not a click target any more.
+  EXPECT_FALSE(rig.dialog().onClicked("buttonAddObjectTopic"));
 }
 
-TEST(TransformEditorLayout, ThePickerQualifiesNamesWhenSeveralDatasetsAreLoaded) {
+TEST(TransformEditorLayout, TheInputsTableKeepsTheLeftPaneHeight) {
   Rig rig;
-  rig.catalog.addObjectTopic("/a", "kPointCloud", 1, 0, 1'000'000'000, "{}", "runA");
-  rig.catalog.addObjectTopic("/b", "kImage", 1, 0, 1'000'000'000, "{}", "runB");
+  const std::string ui = rig.dialog().ui_content();
+  const std::size_t table = ui.find("name=\"tableSources\"");
+  const std::size_t advanced = ui.find("name=\"buttonAdvanced\"");
+  ASSERT_NE(table, std::string::npos);
+  ASSERT_NE(advanced, std::string::npos);
+  const std::string between = ui.substr(table, advanced - table);
+  EXPECT_NE(between.find("vsizetype=\"Expanding\""), std::string::npos);
+  EXPECT_NE(between.find("<verstretch>1</verstretch>"), std::string::npos);
+  EXPECT_EQ(between.find("<spacer"), std::string::npos);
+  const std::size_t left_end = ui.find("name=\"rightWidget\"");
+  EXPECT_EQ(ui.substr(advanced, left_end - advanced).find("<spacer"), std::string::npos)
+      << "nothing after Advanced soaks up the height";
+}
+
+TEST(TransformEditorLayout, TheFunctionHeaderIsElidedAndTheRightPaneKeepsRoomForItsButtons) {
+  Rig rig;
   rig.refresh();
-  const auto items = rig.widgets()["objectTopicCombo"]["items"];
-  EXPECT_NE(std::find(items.begin(), items.end(), "runA:/a  [point cloud]"), items.end());
-  EXPECT_NE(std::find(items.begin(), items.end(), "runB:/b  [image]"), items.end());
-  rig.dialog().onItemsDropped("tableSources", {"runA:/a"});
-  EXPECT_EQ(rig.widgets()["tableSources"]["rows"][0][3], "point cloud");
-  EXPECT_EQ(rig.dialog().variableNames(), std::vector<std::string>{"a"});
+  rig.dialog().onItemsDropped("tableSources", {"/cloud"});
+  rig.dialog().onCodeChanged("functionText", "return {}");
+  EXPECT_EQ(rig.widgets()["functionTitle"]["text"], "function( cloud )");
+  rig.catalog.addObjectTopic("/a/a_really_long_topic_leaf_name", "kPointCloud", 1, 0, 1);
+  rig.refresh();
+  rig.dialog().onItemsDropped("tableSources", {"/a/a_really_long_topic_leaf_name"});
+  const std::string title = rig.widgets()["functionTitle"]["text"];
+  EXPECT_LE(title.size(), 28u) << title;
+  EXPECT_EQ(title.substr(title.size() - 3), "...");
+  const std::string ui = rig.dialog().ui_content();
+  const std::size_t right = ui.find("name=\"rightWidget\"");
+  ASSERT_NE(right, std::string::npos);
+  EXPECT_NE(ui.substr(right, 200).find("<width>480</width>"), std::string::npos);
+}
+
+TEST(TransformEditorBody, TheUntouchedDefaultFollowsTheFirstObjectInput) {
+  Rig rig;
+  rig.refresh();
+  EXPECT_EQ(rig.dialog().functionBody(), "return value");
+  rig.dialog().onItemsDropped("tableSources", {"/cloud"});
+  EXPECT_EQ(rig.dialog().functionBody(), "return cloud");
+  // The host echoes the code it was given: not an edit.
+  rig.dialog().onCodeChanged("functionText", "return cloud");
+  rig.dialog().onClicked("buttonClearSources");
+  EXPECT_EQ(rig.dialog().functionBody(), "return value") << "back to the template with no object input";
+}
+
+TEST(TransformEditorBody, AnEmptyBodyIsFilledWhenTheRecipeBecomesOnDemand) {
+  Rig rig;
+  rig.refresh();
+  rig.dialog().onCodeChanged("functionText", "");
+  EXPECT_EQ(rig.dialog().functionBody(), "");
+  rig.dialog().onItemsDropped("tableSources", {"/cloud"});
+  EXPECT_EQ(rig.dialog().functionBody(), "return cloud");
+}
+
+TEST(TransformEditorBody, AnEditedBodyIsNeverTouched) {
+  Rig rig;
+  rig.refresh();
+  rig.dialog().onCodeChanged("functionText", "return value * 2");
+  rig.dialog().onItemsDropped("tableSources", {"/cloud"});
+  EXPECT_EQ(rig.dialog().functionBody(), "return value * 2");
+  rig.dialog().onClicked("buttonClearSources");
+  EXPECT_EQ(rig.dialog().functionBody(), "return value * 2");
+
+  // An automatic body the user then edits stays theirs, also after the inputs go.
+  Rig second;
+  second.refresh();
+  second.dialog().onItemsDropped("tableSources", {"/cloud"});
+  ASSERT_EQ(second.dialog().functionBody(), "return cloud");
+  second.dialog().onCodeChanged("functionText", "return { n = 1 }");
+  second.dialog().onClicked("buttonClearSources");
+  EXPECT_EQ(second.dialog().functionBody(), "return { n = 1 }");
+
+  // Clearing the editor by hand while an object input is there leaves it empty.
+  Rig third;
+  third.refresh();
+  third.dialog().onItemsDropped("tableSources", {"/cloud"});
+  third.dialog().onCodeChanged("functionText", "");
+  EXPECT_EQ(third.dialog().functionBody(), "");
+}
+
+TEST(TransformEditorBody, SeriesOnlyInputsKeepReturnValue) {
+  Rig rig;
+  rig.refresh();
+  rig.dialog().onItemsDropped("tableSources", {"a/x"});
+  EXPECT_EQ(rig.dialog().functionBody(), "return value");
 }
 
 TEST(TransformEditorLayout, TheAdvancedDisclosureIsCollapsedUntilToggled) {
@@ -844,7 +965,7 @@ TEST(TransformEditorVars, DefaultToTheSanitizedLeafWithSuffixesAndNoKeywords) {
   EXPECT_EQ(rig.dialog().variableNames(), (std::vector<std::string>{"lidar_top", "lidar_top_2", "end_", "x"}));
   const auto rows = rig.widgets()["tableSources"]["rows"];
   EXPECT_EQ(rows[1][2], "lidar_top_2");
-  EXPECT_EQ(rig.widgets()["functionTitle"]["text"], "function( lidar_top, lidar_top_2, end_, x )");
+  EXPECT_EQ(rig.widgets()["functionTitle"]["text"], "function( lidar_top, lida...") << "elided to fit the band";
   EXPECT_EQ(rig.dialog().variableBindings()[1].key, "/b/lidar_top");
 }
 

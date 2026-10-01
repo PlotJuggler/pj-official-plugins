@@ -6,10 +6,15 @@ below; for earlier releases see the git history of `toolbox_transform_editor/`.
 ## [1.2.0] - Unreleased
 
 ### Added
-- Object inputs. Drop point clouds, images, scenes or any other object topic next to the series, or
-  pick one from the list under the inputs table and press "Add input" (the list names each type in
-  words: point cloud, image, image annotations, scene, transforms). The table shows Input, Var and
-  Type. Each input is a variable of the script: Var defaults to the leaf of the topic (`/lidar_top`
+- Object inputs. Drop point clouds, images, scenes or any other object topic from the Datasets tree
+  next to the series (inputs are added by drag and drop only; the table names each type in words:
+  point cloud, image, image annotations, scene, transforms). The table shows Input, Var and
+  Type. While the function body is still the default `return value`, adding an object input
+  rewrites it to `return <first var>` (and back when the last object input is removed); an edited
+  body is never touched. A script that returns nothing is reported with the names it can read
+  (`The script returned no values · inputs are: lidar_top`). When the cursor is before the first
+  sample, the status line says so and lists the outputs instead of showing values from another
+  instant. The inputs table takes the height of the left pane and Advanced is a single row. Each input is a variable of the script: Var defaults to the leaf of the topic (`/lidar_top`
   becomes `lidar_top`, `pose/x` becomes `x`, a repeat gets `_2`, a Lua or Python keyword gets a
   trailing `_`), the function header reads `function( lidar_top, x )`, and `inputs["/lidar_top"]`
   keeps working. With series only nothing changes: `time`, `value` and `v1..vN`, so every

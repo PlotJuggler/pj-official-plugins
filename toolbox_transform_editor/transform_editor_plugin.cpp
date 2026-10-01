@@ -904,6 +904,16 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     return kTransformEditorDialogUi;
   }
 
+  // The header label of the function pane cannot shrink (the host band gives it its full text width), so a long
+  // signature is cut here to leave the Lua/Python radios and the library buttons their room.
+  static std::string elideSignature(const std::string& signature) {
+    constexpr std::size_t kMaxChars = 28;
+    if (signature.size() <= kMaxChars) {
+      return signature;
+    }
+    return signature.substr(0, kMaxChars - 3) + "...";
+  }
+
   PJ::WidgetData buildWidgetData() {
     PJ::WidgetData wd;
 
@@ -948,7 +958,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       }
       signature += " )";
     }
-    wd.setText("functionTitle", signature);
+    wd.setText("functionTitle", elideSignature(signature));
 
     const char* single_lang = (language_ == "python") ? "python" : "lua";
     wd.setCodeContent("globalVarsText", global_code_).setCodeLanguage("globalVarsText", single_lang);
@@ -958,18 +968,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     wd.setChecked("luaButton", language_ != "python");
     wd.setChecked("pythonButton", language_ == "python");
 
-    // The topic picker (object topics of the host catalog, with their type in words), the advanced
-    // disclosure (params and pinning, recipes evaluated at the cursor only) and the scene button.
-    std::vector<std::string> picker;
-    for (const auto& [name, type] : object_topics_) {
-      picker.push_back(name + "  [" + objectTypeLabel(type) + "]");
-    }
-    if (picker.empty()) {
-      picker.push_back("(no object topics loaded)");
-    }
-    wd.setItems("objectTopicCombo", picker);
-    wd.setCurrentIndex("objectTopicCombo", picker_index_);
-    wd.setEnabled("buttonAddObjectTopic", !object_topics_.empty());
+    // The advanced disclosure (params and pinning, recipes evaluated at the cursor only) and the scene
+    // button. Inputs are added by drag and drop only.
     wd.setVisible("buttonAdvanced", on_demand);
     wd.setButtonText("buttonAdvanced", advanced_open_ ? "Advanced v" : "Advanced >");
     wd.setVisible("advancedPane", on_demand && advanced_open_);
@@ -1169,15 +1169,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
-  // The object-topic combo only remembers the current row; Add input acts on it.
-  bool onIndexChanged(std::string_view name, int index) override {
-    if (name == "objectTopicCombo") {
-      picker_index_ = index;
-      return true;
-    }
-    return false;
-  }
-
   bool onCodeChanged(std::string_view name, std::string_view text) override {
     if (name == "globalVarsText") {
       global_code_ = std::string(text);
@@ -1186,9 +1177,15 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       return true;
     }
     if (name == "functionText") {
+      if (text == function_body_) {
+        return true;  // the host echoes the code it was just given; that is not an edit
+      }
       function_body_ = std::string(text);
+      auto_body_.clear();  // the user's own body: never rewritten by the editor
       validateSyntax();
+      body_edit_ = true;  // an empty body is the user's, not the template
       formChanged();
+      body_edit_ = false;
       return true;
     }
     if (name == "globalVarsTextBatch") {
@@ -1293,12 +1290,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     }
     if (name == "pushButtonHelp") {
       help_requested_ = true;
-      return true;
-    }
-    if (name == "buttonAddObjectTopic") {
-      if (picker_index_ >= 0 && picker_index_ < static_cast<int>(object_topics_.size())) {
-        addSource(object_topics_[static_cast<std::size_t>(picker_index_)].first);
-      }
       return true;
     }
     if (name == "buttonShowScene") {
@@ -1641,6 +1632,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     output_name_ = cfg.value("output_name", std::string{});
     global_code_ = cfg.value("global_code", std::string{});
     function_body_ = cfg.value("function_body", std::string{});
+    auto_body_.clear();
     language_ = cfg.value("language", std::string{"luau"});
     loadKindState(cfg, user_params_text);
     current_tab_ = 0;             // open on the Single tab
@@ -1845,6 +1837,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     }
     global_code_ = globals;
     function_body_ = body;
+    auto_body_.clear();
     if (!edit_mode_) {
       output_name_ = names.front();  // seed with the first; the user can rename
     }
@@ -2075,10 +2068,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   bool onDemandSupported() const {
     return on_demand_supported_;
   }
-  /// Object topics (name, builtin type) offered by the picker and typed in the inputs table.
-  void setObjectTopics(std::vector<std::pair<std::string, std::string>> topics) {
-    object_topics_ = std::move(topics);
-  }
   const std::vector<std::string>& sources() const {
     return sources_;
   }
@@ -2195,6 +2184,30 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     preview_dirty_ = true;
     clearTrial();
     needs_note_.clear();
+    if (!body_edit_) {
+      adaptDefaultBody();
+    }
+  }
+
+  // The series template reads `value`, which an object input does not bind (it binds its Var). While the body is
+  // still the untouched default, follow the inputs: `return <first var>` for an on-demand recipe, `return value`
+  // again once the last object input is gone. A body the user edited (or loaded) is never touched.
+  void adaptDefaultBody() {
+    const std::string kDefault = "return value";
+    if (isOnDemand() && !variableNames().empty()) {
+      if (function_body_.empty() || function_body_ == kDefault ||
+          (!auto_body_.empty() && function_body_ == auto_body_)) {
+        auto_body_ = "return " + variableNames().front();
+        function_body_ = auto_body_;
+        validateSyntax();
+      }
+    } else if (!auto_body_.empty()) {
+      if (function_body_ == auto_body_) {
+        function_body_ = kDefault;
+        validateSyntax();
+      }
+      auto_body_.clear();
+    }
   }
 
   void storeTrial(std::optional<TrialReport> trial) {
@@ -2430,6 +2443,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   std::string output_name_;
   std::string global_code_;
   std::string function_body_ = "return value";
+  bool body_edit_ = false;  // inside the handler of an edit of the body
+  std::string auto_body_;   // the body the editor wrote for the first object input ("" = none), see adaptDefaultBody
   std::vector<std::string> sources_;
   int primary_index_ = -1;
   bool syntax_ok_ = false;
@@ -2441,8 +2456,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   bool pin_current_ = false;
   bool advanced_open_ = false;  // the Advanced disclosure (params, pin)
   bool on_demand_supported_ = true;
-  std::vector<std::pair<std::string, std::string>> object_topics_;  // (name, builtin type) offered by the picker
-  int picker_index_ = 0;
   // The last trial evaluation (see setTrial) and what is shown from it; empty before the first one and
   // after an edit.
   std::optional<TrialReport> trial_;
@@ -2701,8 +2714,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     return test_catalog_host_.valid() ? test_catalog_host_ : toolboxHost();
   }
 
-  // The catalog snapshot the on-demand form works from, plus the object topics the inputs picker
-  // offers. Re-read every kCatalogRefreshTicks calls (the form's own edits never need a fresh read);
+  // The catalog snapshot the on-demand form works from, (inputs are added by drag and drop).
+  // Re-read every kCatalogRefreshTicks calls (the form's own edits never need a fresh read);
   // `force` re-reads now. Whether the host can do on-demand at all (the typed data-processor
   // surface plus catalog snapshot v2) is decided here too, and any re-read drops the cached build.
   void refreshOnDemandSupport(bool force = false) {
@@ -2713,19 +2726,14 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     catalog_refresh_ticks_ = 1;
     catalog_v2_.reset();
     catalog_v2_error_.clear();
-    std::vector<std::pair<std::string, std::string>> topics;
     if (dp_view_.hasTypedRequests()) {
       auto v2 = catalogHost().catalogSnapshotV2();
       if (v2) {
-        for (const auto& entry : derived_recipes::listObjectTopics(*v2)) {
-          topics.emplace_back(entry.qualified, entry.type);
-        }
         catalog_v2_ = std::move(*v2);
       } else {
         catalog_v2_error_ = std::string(v2.error());
       }
     }
-    dialog_.setObjectTopics(std::move(topics));
     dialog_.setOnDemandSupported(catalog_v2_.has_value());
     dialog_.catalogChanged();  // the input types, and so the build, may differ
   }
@@ -3254,7 +3262,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   }
 
   // "t = 12.3 s" in the playback's display time of the anchor dataset (raw seconds without it).
-  std::string displayTimeText(std::optional<PJ::sdk::DataSourceHandle> anchor, std::int64_t raw_ns) {
+  std::string displayTimeText(
+      std::optional<PJ::sdk::DataSourceHandle> anchor, std::int64_t raw_ns, int fixed_decimals = -1) {
     double seconds = static_cast<double>(raw_ns) * 1e-9;
     if (anchor && playback_view_.valid()) {
       if (auto shown = playback_view_.toDisplayTimeForSource(*anchor, raw_ns)) {
@@ -3262,7 +3271,11 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       }
     }
     std::ostringstream out;
-    out << std::setprecision(6) << seconds;
+    if (fixed_decimals >= 0) {
+      out << std::fixed << std::setprecision(fixed_decimals) << seconds;
+    } else {
+      out << std::setprecision(6) << seconds;
+    }
     return out.str();
   }
 
@@ -3367,6 +3380,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       error = trial.error;
     }
     if (!error.empty()) {
+      error = withInputsHint(error);
       dialog_.setTrialFailure(error);
       dialog_.setValidationError(error);
       dialog_.setStatus("");
@@ -3386,20 +3400,67 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       return true;
     }
     if (trial.outputs.empty()) {
-      const std::string text = "The script returned no values";
+      const std::string text = withInputsHint("The script returned no values");
       dialog_.setTrialFailure(text);
       dialog_.setValidationError(text);
       return true;
     }
-    if (at_first) {
-      note = "previewing at t = " + displayTimeText(anchor, first_entry->ns) +
-             " s: cursor is before the first sample of " + first_entry->topic;
-    }
     dialog_.setValidationError("");
+    if (at_first) {
+      // The outputs were learned at the first entry; the embedded scene follows the real cursor and stays
+      // empty, so the line says so and shows nothing measured at the retried instant.
+      std::string outputs;
+      for (const auto& output : trial.outputs) {
+        outputs += (outputs.empty() ? "" : ", ") + output.name + " (" + objectTypeLabel(output.type) + ")";
+      }
+      trial.readout.clear();
+      dialog_.setTrial(std::move(trial));
+      dialog_.setStatus(
+          "No sample of " + first_entry->topic + " at the cursor (" + displayTimeText(anchor, instant_ns, 3) +
+          " s): move the timeline to preview. Outputs: " + outputs);
+      return true;
+    }
     const std::string result = std::move(trial.summary);
     dialog_.setTrial(std::move(trial));
     dialog_.setStatus(note.empty() ? result : note + "\n" + result);
     return true;
+  }
+
+  // What the host says when the script returns nothing, or fails on a nil, does not name the inputs. Say which
+  // names are bound, and that `value` is one of them only for series inputs.
+  std::string withInputsHint(const std::string& error) const {
+    std::string lower = error;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
+    const bool no_values = lower.find("returned no values") != std::string::npos;
+    if (!no_values && lower.find("nil") == std::string::npos) {
+      return error;
+    }
+    const auto& vars = dialog_.variableNames();
+    std::string names;
+    for (const std::string& var : vars) {
+      names += (names.empty() ? "" : ", ") + var;
+    }
+    if (names.empty()) {
+      return error;
+    }
+    const bool value_bound = std::find(vars.begin(), vars.end(), "value") != vars.end();
+    if (!value_bound && mentionsIdentifier(dialog_.functionBody(), "value")) {
+      return error + " · `value` is not defined here; inputs are: " + names;
+    }
+    return no_values ? error + " · inputs are: " + names : error;
+  }
+
+  // `word` as an identifier of `text` (not part of a longer name, not a field after `.` or `:`).
+  static bool mentionsIdentifier(const std::string& text, const std::string& word) {
+    auto is_name = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; };
+    for (std::size_t at = text.find(word); at != std::string::npos; at = text.find(word, at + 1)) {
+      const bool before_ok = at == 0 || (!is_name(text[at - 1]) && text[at - 1] != '.' && text[at - 1] != ':');
+      const std::size_t end = at + word.size();
+      if (before_ok && (end >= text.size() || !is_name(text[end]))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   void refreshPreview() {
