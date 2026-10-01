@@ -1050,6 +1050,16 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       overlay = overlay.empty() ? io_status_ : io_status_ + "\n" + overlay;
       io_status_.clear();
     }
+    // Panes: the plot for numbers (and for anything the overlay has to say), the embedded scene for objects.
+    const bool scene_embedded = !scene_embed_kind_.empty();
+    wd.setVisible("framePlotPreview", !scene_embedded || preview_has_numbers_ || !overlay.empty());
+    wd.setVisible("frameScenePreview", scene_embedded);
+    if (scene_embedded) {
+      wd.setSceneView("frameScenePreview", scene_embed_kind_);
+      wd.setSceneTopics("frameScenePreview", scene_embed_topics_);
+    } else {
+      wd.clearSceneView("frameScenePreview");  // full state every tick: the host diffs each entry
+    }
     if (!overlay.empty()) {
       wd.clearChart("framePlotPreview");
       wd.setChartPlaceholder("framePlotPreview", overlay);
@@ -1058,7 +1068,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       wd.setChartSeries("framePlotPreview", preview_series_);
       wd.setChartAutoZoom("framePlotPreview", autozoom_);
     }
-    wd.setVisible("scenePreviewFrame", scene_preview_visible_);
 
     // The one-line status: the result of the last trial, else why Create is disabled.
     const std::string reason = canCreateReason();
@@ -1883,9 +1892,15 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   void setStatus(std::string text) {
     status_text_ = std::move(text);
   }
-  /// Whether the scene pane next to the chart is shown (object outputs preview in a scene tab).
-  void setScenePreviewVisible(bool visible) {
-    scene_preview_visible_ = visible;
+  /// The object outputs of the preview recipe shown by the scene view embedded next to the chart: its kind
+  /// ("3d" | "2d") and the (topic, dataset) pairs it follows. An empty kind removes the view.
+  void setEmbeddedScene(std::string kind, std::vector<PJ::SceneTopic> topics) {
+    scene_embed_kind_ = std::move(kind);
+    scene_embed_topics_ = std::move(topics);
+  }
+  /// Whether the preview recipe has a number output. With an embedded scene the plot is hidden when it has none.
+  void setPreviewHasNumbers(bool has_numbers) {
+    preview_has_numbers_ = has_numbers;
   }
   /// The outcome of a trial evaluation, parsed once: the outputs the script returned (an `unknown` type means the
   /// value was unavailable at that instant). Create needs a trial that succeeded without any unknown output.
@@ -2436,8 +2451,10 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   mutable std::optional<Derived> derived_;
   std::string status_text_;
   std::string readout_;
-  std::string needs_note_;  // "needs: cloud (point cloud)" after a library function found no input for a variable
-  bool scene_preview_visible_ = false;
+  std::string needs_note_;        // "needs: cloud (point cloud)" after a library function found no input for a variable
+  std::string scene_embed_kind_;  // the embedded scene view of the preview; empty = none
+  std::vector<PJ::SceneTopic> scene_embed_topics_;
+  bool preview_has_numbers_ = true;
   std::string scene_button_;  // label of the "Show in 3D/2D" button; empty hides it
   bool show_scene_requested_ = false;
   std::function<void()> on_show_scene_;
@@ -2517,11 +2534,11 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   // The editor has no Close button; it is dismissed via the host panel chrome,
   // which destroys this plugin instance. Remove the ephemeral live-preview node
   // here so it cannot keep recomputing in the DerivedEngine after the editor is
-  // gone (tearDownPreview() is a no-op when no preview is live), and close the preview scene
-  // tab with the ephemeral object recipe that fed it.
+  // gone (tearDownPreview() is a no-op when no preview is live), and remove the ephemeral
+  // object recipe that fed the embedded scene view.
   ~TransformEditorToolbox() override {
     tearDownPreview();
-    tearDownObjectPreview(/*close_tab=*/true);
+    tearDownObjectPreview();
   }
 
   uint64_t capabilities() const override {
@@ -2876,7 +2893,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       return;
     }
     report(PJ::ToolboxMessageLevel::kInfo, "Transform Editor: saved '" + id + "'.");
-    tearDownObjectPreview(/*close_tab=*/true);  // the created outputs replace the preview
+    tearDownObjectPreview();  // the created outputs replace the preview
     if (runtimeHostBound()) {
       runtimeHost().notifyDataChanged();
     }
@@ -2897,12 +2914,12 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     }
   }
 
-  // The object outputs of a created recipe with the dataset each one lives in, and the scene kind
-  // of the first. The dataset comes from the catalog like the assistant's scene_view attach does;
-  // a topic the catalog does not list yet takes the dataset its inputs were anchored to.
+  // The object outputs of a created recipe with the dataset each one lives in, and the one scene kind that
+  // shows them: 3D unless every object output is a 2D one. The dataset comes from the catalog like the assistant's
+  // scene_view attach does; a topic the catalog does not list yet takes the dataset its inputs were anchored to.
   struct SceneTargets {
-    std::vector<std::pair<std::string, std::string>> topics;  // (topic, dataset)
-    std::string kind;                                         // "3d" | "2d" of the first object output
+    std::vector<PJ::SceneTopic> topics;
+    std::string kind;  // "3d" unless every object output is 2D; empty without object outputs
   };
   SceneTargets collectSceneTargets(
       const std::vector<PJ::sdk::DataProcessorOutput>& outputs, const std::vector<std::string>& created,
@@ -2913,6 +2930,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       return targets;
     }
     const auto listed = derived_recipes::listObjectTopics(*v2);
+    bool all_2d = true;
     for (std::size_t i = 0; i < outputs.size(); ++i) {
       if (!isObjectOutputType(outputs[i].type)) {
         continue;
@@ -2924,10 +2942,11 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       } else if (anchor) {
         dataset = derived_recipes::objectTopicDatasetName(v2->dataSources(), *anchor);
       }
-      targets.topics.emplace_back(created[i], std::move(dataset));
-      if (targets.kind.empty()) {
-        targets.kind = sceneKindForOutputType(outputs[i].type);
-      }
+      targets.topics.push_back({created[i], std::move(dataset)});
+      all_2d = all_2d && sceneKindForOutputType(outputs[i].type) == "2d";
+    }
+    if (!targets.topics.empty()) {
+      targets.kind = all_2d ? "2d" : "3d";
     }
     return targets;
   }
@@ -2942,25 +2961,19 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       report(PJ::ToolboxMessageLevel::kError, "Transform Editor: " + std::string(status.error()));
       return;
     }
-    attachTopics(scene_id_, scene_topics_, PJ::ToolboxMessageLevel::kError, "Transform Editor: ");
+    attachTopics(scene_id_, scene_topics_);
     (void)plot_tabs_view_.focus(scene_id_);
   }
 
-  using TopicList = std::vector<std::pair<std::string, std::string>>;  // (topic, dataset)
-
-  // Attach each topic to the scene tab; failures are reported at `level` after `prefix`. Returns
-  // the topics that were attached.
-  TopicList attachTopics(
-      std::string_view tab_id, const TopicList& topics, PJ::ToolboxMessageLevel level, const std::string& prefix) {
-    TopicList attached;
+  // Attach each topic to the scene tab; a failure is reported as an error.
+  void attachTopics(std::string_view tab_id, const std::vector<PJ::SceneTopic>& topics) {
     for (const auto& [topic, dataset] : topics) {
-      if (auto status = plot_tabs_view_.attachTopic(tab_id, topic, dataset); status) {
-        attached.emplace_back(topic, dataset);
-      } else {
-        report(level, prefix + "could not attach '" + topic + "': " + std::string(status.error()));
+      if (auto status = plot_tabs_view_.attachTopic(tab_id, topic, dataset); !status) {
+        report(
+            PJ::ToolboxMessageLevel::kError,
+            "Transform Editor: could not attach '" + topic + "': " + std::string(status.error()));
       }
     }
-    return attached;
   }
 
   // Batch create: apply the batch function to EVERY input series, naming each
@@ -3022,17 +3035,20 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   }
 
   // The preview recipe of a trial that inferred its outputs: an EPHEMERAL on_demand recipe (it evaluates at
-  // the playhead, so the preview follows the cursor) with the inferred outputs and INFER_OUTPUTS. Its object
-  // topics are attached to ONE scene tab, reused across previews; each number output is plotted from the
+  // the playhead, so the preview follows the cursor) with the inferred outputs and INFER_OUTPUTS. Its
+  // object topics show in the scene view embedded in the editor; each number output is plotted from the
   // series the host materializes for it (a newer host) or, without it, shown as the readout at the cursor.
   // The recipe is re-upserted in place when the form changes (at most every kPreviewRefresh); it is
-  // removed, and the tab closed, with the editor, on Create, or when the trial fails. Without scene tabs
+  // removed with the editor, on Create, or when the trial fails. Without scene workspaces
   // there is nothing to show for objects beyond the status line.
   void updatePreviewRecipe(const OnDemandBuild& build) {
     if (!dp_view_.hasTypedRequests() || dialog_.inferredOutputs().empty()) {
-      tearDownObjectPreview(/*close_tab=*/false);
+      tearDownObjectPreview();
       return;
     }
+    // Objects preview in a scene view embedded next to the plot when the host has scene workspaces (the
+    // dialog host binds a `scene_view` frame to a live view there); otherwise only the status line shows.
+    const bool embedded = plot_tabs_view_.hasSceneTabs();
     // The recipe follows the form and the trial's outputs: nothing to rebuild or compare while neither moved.
     const std::pair<std::uint64_t, std::uint64_t> stamp{dialog_.formRevision(), dialog_.trialSerial()};
     if (stamp != preview_recipe_stamp_) {
@@ -3056,63 +3072,36 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
         // Re-upserting the id is an edit for the host: the topics stay and the bound scene layer with them.
         auto created = dp_view_.createV2(request);
         if (!created) {
-          detachPreviewTopics({});
+          dialog_.setEmbeddedScene({}, {});
           report(PJ::ToolboxMessageLevel::kWarning, "Transform Editor: preview: " + std::string(created.error()));
           return;
         }
         object_preview_live_ = true;
         object_preview_topics_ = *created;
         ++object_preview_installs_;
-        if (has_object && plot_tabs_view_.hasSceneTabs()) {
-          attachPreviewScene(request, *created, build.anchor);
+        if (has_object && embedded) {
+          showEmbeddedScene(request, *created, build.anchor);
         } else {
-          detachPreviewTopics({});
+          dialog_.setEmbeddedScene({}, {});  // the outputs are no longer objects
         }
       }
       preview_recipe_stamp_ = stamp;
       preview_recipe_outputs_ = std::move(request.outputs);
       preview_recipe_has_object_ = has_object;
     }
-    dialog_.setScenePreviewVisible(preview_recipe_has_object_);
     showSeriesOrReadout(preview_recipe_outputs_, build);
   }
 
-  // The object outputs of the installed preview recipe in the shared preview scene tab.
-  void attachPreviewScene(
+  // The object outputs of the installed preview recipe in the scene view embedded in the editor. One view
+  // for now, of the kind collectSceneTargets picks.
+  void showEmbeddedScene(
       const PJ::sdk::DataProcessorRequest& request, const std::vector<std::string>& created,
       std::optional<PJ::sdk::DataSourceHandle> anchor) {
     SceneTargets targets;
     if (created.size() == request.outputs.size()) {
       targets = collectSceneTargets(request.outputs, created, anchor);
     }
-    if (targets.topics.empty()) {
-      detachPreviewTopics({});
-      return;
-    }
-    if (!preview_tab_open_ || preview_tab_kind_ != targets.kind) {
-      detachPreviewTopics({});  // a tab of another kind starts empty
-      if (auto status = plot_tabs_view_.createV2(kPreviewTabId, targets.kind, "Transform Editor preview"); !status) {
-        report(PJ::ToolboxMessageLevel::kWarning, "Transform Editor: scene preview: " + std::string(status.error()));
-        return;
-      }
-      const bool first_open = !preview_tab_open_;
-      preview_tab_open_ = true;
-      preview_tab_kind_ = targets.kind;
-      if (first_open) {
-        (void)plot_tabs_view_.focus(kPreviewTabId);
-      }
-    }
-    detachPreviewTopics(targets.topics);  // topics of the previous recipe that this one no longer has
-    TopicList fresh;
-    for (const auto& entry : targets.topics) {
-      if (std::find(preview_topics_.begin(), preview_topics_.end(), entry) == preview_topics_.end()) {
-        fresh.push_back(entry);
-      }
-    }
-    for (auto& entry :
-         attachTopics(kPreviewTabId, fresh, PJ::ToolboxMessageLevel::kWarning, "Transform Editor: scene preview: ")) {
-      preview_topics_.push_back(std::move(entry));
-    }
+    dialog_.setEmbeddedScene(std::move(targets.kind), std::move(targets.topics));
   }
 
   // Plot the number outputs of the preview recipe over the whole history when the host materializes them
@@ -3125,9 +3114,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
         numbers.push_back(i);
       }
     }
+    dialog_.setPreviewHasNumbers(!numbers.empty());
     if (numbers.empty()) {
       dialog_.setPreviewSeries({});
-      dialog_.setReadout({});  // object outputs are announced by the scene pane's own note
+      dialog_.setReadout({});  // object outputs show in the scene view
       return;
     }
     // New data to read: the recipe was just (re)installed or an object input grew. Until the host
@@ -3163,23 +3153,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     dialog_.setReadout(series_available_ ? readout : readout + "\nseries preview needs a newer host");
   }
 
-  // Take every topic of the preview tab that is not in `keep` back out of it.
-  void detachPreviewTopics(const std::vector<std::pair<std::string, std::string>>& keep) {
-    for (auto it = preview_topics_.begin(); it != preview_topics_.end();) {
-      if (std::find(keep.begin(), keep.end(), *it) != keep.end()) {
-        ++it;
-        continue;
-      }
-      if (preview_tab_open_ && plot_tabs_view_.hasSceneTabs()) {
-        (void)plot_tabs_view_.detachTopic(kPreviewTabId, it->first, it->second);
-      }
-      it = preview_topics_.erase(it);
-    }
-  }
-
-  // Remove the ephemeral object recipe and take its topics off the preview tab; `close_tab` also closes the tab.
-  void tearDownObjectPreview(bool close_tab) {
-    detachPreviewTopics({});
+  // Remove the ephemeral object recipe and clear the embedded scene view.
+  void tearDownObjectPreview() {
     if (object_preview_live_ && dp_view_.valid()) {
       (void)dp_view_.remove(kObjectPreviewId);
     }
@@ -3189,15 +3164,9 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     preview_recipe_stamp_ = {};
     next_object_preview_refresh_ = {};
     series_available_ = false;
-    dialog_.setScenePreviewVisible(false);
+    dialog_.setEmbeddedScene({}, {});
+    dialog_.setPreviewHasNumbers(true);
     dialog_.setReadout({});
-    if (close_tab && preview_tab_open_ && plot_tabs_view_.hasSceneTabs()) {
-      (void)plot_tabs_view_.close(kPreviewTabId);
-    }
-    if (close_tab) {
-      preview_tab_open_ = false;
-      preview_tab_kind_.clear();
-    }
   }
 
   void tearDownPreview() {
@@ -3440,7 +3409,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     // batch Create (and to avoid needless per-tick churn).
     if (dialog_.currentTab() != 0) {
       tearDownPreview();
-      tearDownObjectPreview(/*close_tab=*/false);
+      tearDownObjectPreview();
       dialog_.setStatus("");
       dialog_.setPreviewSeries({});
       return;
@@ -3454,7 +3423,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
 
     if (source.empty() || body.empty()) {
       tearDownPreview();
-      tearDownObjectPreview(/*close_tab=*/false);
+      tearDownObjectPreview();
       dialog_.clearTrial();
       dialog_.setStatus("");
       dialog_.setPreviewSeries({});
@@ -3483,28 +3452,28 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       const OnDemandBuild& build = buildOnDemandRequest();
       if (!dialog_.onDemandSupported() || build.form_incomplete) {
         tearDownPreview();  // the form's hints say what is missing
-        tearDownObjectPreview(/*close_tab=*/false);
+        tearDownObjectPreview();
         dialog_.clearTrial();
         dialog_.setStatus("");
         return;
       }
       if (!build.error.empty()) {
         tearDownPreview();
-        tearDownObjectPreview(/*close_tab=*/false);
+        tearDownObjectPreview();
         dialog_.setTrialFailure(build.error);
         dialog_.setValidationError(build.error);
         dialog_.setStatus("");
         return;
       }
       if (!previewOnDemand(build) || dialog_.trialFailed()) {
-        tearDownObjectPreview(/*close_tab=*/false);
+        tearDownObjectPreview();
       } else if (dialog_.trialUsable()) {
         updatePreviewRecipe(build);
       }
       return;
     }
     showing_on_demand_ = false;
-    tearDownObjectPreview(/*close_tab=*/false);  // numeric outputs preview as a plot, below
+    tearDownObjectPreview();  // numeric outputs preview as a plot, below
     dialog_.clearTrial();
     dialog_.setStatus("");
 
@@ -3635,7 +3604,6 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   static constexpr auto kSeriesRead = std::chrono::milliseconds(500);      // between two reads of the preview series
   static constexpr std::string_view kPreviewId = "__te_preview__";
   static constexpr std::string_view kObjectPreviewId = "__te_obj_preview__";
-  static constexpr std::string_view kPreviewTabId = "te_preview";
 
   TransformEditorDialog dialog_;
   bool callbacks_wired_ = false;
@@ -3661,7 +3629,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   static constexpr std::string_view kSceneIdPrefix = "te_";
   std::string scene_id_;
   std::string scene_kind_;
-  std::vector<std::pair<std::string, std::string>> scene_topics_;
+  std::vector<PJ::SceneTopic> scene_topics_;
   std::optional<std::uint64_t> pending_preview_;
   std::chrono::steady_clock::time_point preview_deadline_;
   std::chrono::steady_clock::time_point next_preview_refresh_;
@@ -3694,9 +3662,6 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     bool operator==(const SeriesStamp&) const = default;
   };
   SeriesStamp series_read_stamp_;
-  bool preview_tab_open_ = false;                                    // the preview scene tab exists
-  std::string preview_tab_kind_;                                     // its kind, "3d" | "2d"
-  std::vector<std::pair<std::string, std::string>> preview_topics_;  // (topic, dataset) attached to it
 };
 
 }  // namespace

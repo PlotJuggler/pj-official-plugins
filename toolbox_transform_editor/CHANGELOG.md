@@ -26,8 +26,12 @@ below; for earlier releases see the git history of `toolbox_transform_editor/`.
   (for example `max_z: 1.83` and `cropped: point cloud, 23 144 points`, joined by a middle dot), "unavailable (reason)" for a value the
   script could not produce, or the host's error. Number outputs are plotted when the host provides
   their series over the whole recording and shown as a readout at the cursor otherwise; object
-  outputs show in the "Transform Editor preview" scene tab. When the cursor is before the first
-  sample of the first object input, the preview runs at that first sample and says so.
+  outputs show in a 3D or 2D scene view embedded next to the plot, which follows the cursor. The
+  preview shows the plot for numbers, the scene for objects and both side by side for a mixed
+  return; with one scene view, a mix of 2D and 3D objects shows as 3D. A host without scene
+  workspaces shows only the status line for objects; there is no scene-tab fallback for the preview.
+  The "Show in 3D" / "Show in 2D" button after Create still opens the objects in a scene tab, of the
+  kind chosen by the same rule. When the cursor is before the first sample of the first object input, the preview runs at that first sample and says so.
 - Create is enabled with at least one input, a function body and a run that succeeded with every
   output typed; otherwise the status line says why (and so does the button's tooltip on hosts that
   show it).

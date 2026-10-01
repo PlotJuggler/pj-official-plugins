@@ -99,6 +99,16 @@ const char* const kNumberReport =
     R"({"coverage":{"complete":true},"bundles":[{"requested_ns":0,"stamp_ns":0,"inputs":[],"outputs":{)"
     R"("value":{"status":"ok","value":1.83}}}],"outputs":[{"name":"value","type":"number"}]})";
 
+// Objects only: a point cloud and an image, and a 2D-only pair.
+const char* const kObjectsReport =
+    R"({"coverage":{"complete":true},"bundles":[{"requested_ns":0,"stamp_ns":0,"inputs":[],"outputs":{)"
+    R"("cropped":{"status":"ok","summary":{"type":"kPointCloud","points":10}}}}],)"
+    R"("outputs":[{"name":"cropped","type":"kPointCloud"}]})";
+const char* const kImageReport =
+    R"({"coverage":{"complete":true},"bundles":[{"requested_ns":0,"stamp_ns":0,"inputs":[],"outputs":{)"
+    R"("img":{"status":"ok","summary":{"type":"kImage"}}}}],)"
+    R"("outputs":[{"name":"img","type":"kImage"}]})";
+
 const char* const kMiddleDot = "·";
 
 // An on-demand editor state the way the host stores it: the user's params object plus "__editor". The
@@ -892,7 +902,7 @@ TEST(TransformEditorVars, ReturnArityReadsTheReturnStatements) {
 // The preview of the outputs
 // ---------------------------------------------------------------------------
 
-TEST(TransformEditorPreview, ObjectOutputsPreviewInAnEphemeralRecipeAttachedToOneSceneTab) {
+TEST(TransformEditorPreview, ObjectOutputsPreviewInAnEphemeralRecipeShownInTheEmbeddedSceneView) {
   Rig rig;
   rig.load(onDemandConfig("my_filter"));
   rig.refresh();
@@ -903,27 +913,93 @@ TEST(TransformEditorPreview, ObjectOutputsPreviewInAnEphemeralRecipeAttachedToOn
   EXPECT_EQ(rig.dp.last_id, "__te_obj_preview__");
   EXPECT_EQ(rig.dp.last_outputs, (std::vector<std::string>{"cropped", "count"})) << "the inferred outputs";
   EXPECT_EQ(rig.dp.last_create_v2_time_flags, 0u) << "no instant: the preview follows the cursor";
-  ASSERT_EQ(rig.tabs.tabs.size(), 1u);
-  EXPECT_EQ(rig.tabs.tabs[0].kind, "3d");
-  ASSERT_EQ(rig.tabs.tabs[0].topics.size(), 1u);
-  EXPECT_EQ(rig.tabs.tabs[0].topics[0].topic, "cropped");
+  EXPECT_TRUE(rig.tabs.tabs.empty()) << "no scene tab: the objects show in the embedded view";
   EXPECT_EQ(rig.dp.liveCount(), 0) << "an ephemeral recipe is never one of the user's";
-  EXPECT_EQ(rig.widgets()["scenePreviewFrame"]["visible"], true);
+  const auto widgets = rig.widgets();
+  EXPECT_EQ(widgets["frameScenePreview"]["scene_view"], "3d");
+  ASSERT_EQ(widgets["frameScenePreview"]["scene_topics"].size(), 1u);
+  EXPECT_EQ(widgets["frameScenePreview"]["scene_topics"][0]["topic"], "cropped");
+  EXPECT_EQ(widgets["frameScenePreview"]["visible"], true);
+  EXPECT_EQ(widgets["framePlotPreview"]["visible"], true) << "a mixed return shows both panes";
 
-  // Ticks with an unchanged form install nothing new.
+  // Ticks with an unchanged form install nothing new and keep sending the view.
   TransformEditorPreviewTestPeer::tick(rig.editor);
   EXPECT_EQ(rig.dp.create_v2_calls, 1);
+  EXPECT_EQ(rig.widgets()["frameScenePreview"]["scene_view"], "3d");
 
-  // A change re-upserts the same id in place (no remove) and reuses the tab and its topics.
+  // A change re-upserts the same id in place (no remove) and the view keeps its topics.
   rig.dp.last_removed.clear();
   rig.dialog().onTextChanged("paramsLineEdit", "{\"k\":3}");
   rig.refresh();
   EXPECT_EQ(rig.dp.create_v2_calls, 2);
-  EXPECT_EQ(rig.dp.last_id, "__te_obj_preview__");
   EXPECT_TRUE(rig.dp.last_removed.empty());
-  ASSERT_EQ(rig.tabs.tabs.size(), 1u);
-  ASSERT_EQ(rig.tabs.tabs[0].topics.size(), 1u);
+  EXPECT_TRUE(rig.tabs.tabs.empty());
+  const auto again = rig.widgets();
+  ASSERT_EQ(again["frameScenePreview"]["scene_topics"].size(), 1u);
   EXPECT_NE(rig.dp.last_create_v2_params_json.find("\"k\":3"), std::string::npos);
+}
+
+TEST(TransformEditorPreview, ObjectsOnlyHideThePlotAndNumbersOnlyHideTheSceneAndClearTheView) {
+  Rig rig;
+  rig.dp.canned_report_json = kObjectsReport;
+  rig.newObjectRecipe("return { cropped = cloud }");
+  auto widgets = rig.widgets();
+  EXPECT_EQ(widgets["frameScenePreview"]["scene_view"], "3d");
+  EXPECT_EQ(widgets["frameScenePreview"]["visible"], true);
+  EXPECT_EQ(widgets["framePlotPreview"]["visible"], false) << "objects only: the scene takes the area";
+  EXPECT_TRUE(rig.tabs.tabs.empty());
+
+  // The script now returns a number: the view goes away and the plot returns.
+  rig.dp.canned_report_json = kNumberReport;
+  rig.dialog().onCodeChanged("functionText", "return cloud:count()");
+  rig.refresh();
+  widgets = rig.widgets();
+  EXPECT_EQ(widgets["frameScenePreview"]["visible"], false);
+  EXPECT_EQ(widgets["framePlotPreview"]["visible"], true);
+  ASSERT_TRUE(widgets["frameScenePreview"].contains("scene_view"));
+  EXPECT_TRUE(widgets["frameScenePreview"]["scene_view"].is_null()) << "clearSceneView";
+  EXPECT_TRUE(widgets["frameScenePreview"]["scene_topics"].empty());
+  // The full state goes out every tick: the view stays cleared.
+  TransformEditorPreviewTestPeer::tick(rig.editor);
+  const auto later = rig.widgets();
+  ASSERT_TRUE(later["frameScenePreview"].contains("scene_view"));
+  EXPECT_TRUE(later["frameScenePreview"]["scene_view"].is_null());
+}
+
+TEST(TransformEditorPreview, NumbersOnlySendAClearedSceneView) {
+  Rig rig;
+  rig.dp.canned_report_json = kNumberReport;
+  rig.newObjectRecipe("return cloud:count()");
+  const auto widgets = rig.widgets();
+  ASSERT_TRUE(widgets["frameScenePreview"].contains("scene_view"));
+  EXPECT_TRUE(widgets["frameScenePreview"]["scene_view"].is_null());
+  EXPECT_EQ(widgets["frameScenePreview"]["visible"], false);
+  EXPECT_EQ(widgets["framePlotPreview"]["visible"], true);
+}
+
+TEST(TransformEditorPreview, TheEmbeddedViewIs2DOnlyWhenEveryObjectOutputIs2D) {
+  Rig rig;
+  rig.dp.canned_report_json = kImageReport;
+  rig.newObjectRecipe("return { img = cloud }");
+  EXPECT_EQ(rig.widgets()["frameScenePreview"]["scene_view"], "2d");
+  // A cloud next to the number of the default report is 3D.
+  rig.dp.canned_report_json = kTrialReport;
+  rig.dialog().onCodeChanged("functionText", "return { cropped = cloud, count = 1 }");
+  rig.refresh();
+  EXPECT_EQ(rig.widgets()["frameScenePreview"]["scene_view"], "3d");
+}
+
+TEST(TransformEditorPreview, CreateClearsTheEmbeddedView) {
+  Rig rig;
+  rig.dp.canned_report_json = kObjectsReport;
+  rig.load(onDemandConfig("my_filter"));
+  rig.refresh();
+  ASSERT_EQ(rig.widgets()["frameScenePreview"]["scene_view"], "3d");
+  TransformEditorPreviewTestPeer::save(rig.editor);
+  EXPECT_EQ(rig.dp.last_removed, "__te_obj_preview__");
+  const auto widgets = rig.widgets();
+  ASSERT_TRUE(widgets["frameScenePreview"].contains("scene_view"));
+  EXPECT_TRUE(widgets["frameScenePreview"]["scene_view"].is_null());
 }
 
 TEST(TransformEditorPreview, NumberOutputsShowTheReadoutAndSayWhenTheSeriesNeedsANewerHost) {
@@ -934,22 +1010,21 @@ TEST(TransformEditorPreview, NumberOutputsShowTheReadoutAndSayWhenTheSeriesNeeds
   const std::string placeholder = widgets["framePlotPreview"]["chart_placeholder"].dump();
   EXPECT_NE(placeholder.find("value: 1.83"), std::string::npos) << placeholder;
   EXPECT_NE(placeholder.find("series preview needs a newer host"), std::string::npos) << placeholder;
-  EXPECT_EQ(widgets["scenePreviewFrame"]["visible"], false);
+  EXPECT_EQ(widgets["frameScenePreview"]["visible"], false);
   EXPECT_TRUE(rig.tabs.tabs.empty()) << "no object output: no scene tab";
   EXPECT_EQ(TransformEditorPreviewTestPeer::status(rig.editor), "value: 1.83");
   EXPECT_EQ(rig.dialog().canCreateReason(), "") << "a missing series preview never blocks Create";
 }
 
-TEST(TransformEditorPreview, CreateAndCloseRemoveThePreviewRecipeAndItsTab) {
+TEST(TransformEditorPreview, CreateAndCloseRemoveThePreviewRecipe) {
   {
     Rig rig;
     rig.load(onDemandConfig("my_filter"));
     rig.refresh();
-    ASSERT_EQ(rig.tabs.tabs.size(), 1u);
+    ASSERT_EQ(rig.widgets()["frameScenePreview"]["scene_view"], "3d");
     rig.dp.last_removed.clear();
     TransformEditorPreviewTestPeer::save(rig.editor);
     EXPECT_EQ(rig.dp.last_removed, "__te_obj_preview__");
-    EXPECT_TRUE(rig.tabs.tabs.empty()) << "Create takes the preview tab away";
     EXPECT_EQ(rig.dp.liveCount(), 1);
   }
   RecordingDpHost dp;
@@ -963,23 +1038,22 @@ TEST(TransformEditorPreview, CreateAndCloseRemoveThePreviewRecipeAndItsTab) {
     TransformEditorPreviewTestPeer::bind(editor, dp, catalog, playback, tabs);
     ASSERT_TRUE(TransformEditorPreviewTestPeer::dialog(editor).loadConfig(onDemandConfig("f")));
     TransformEditorPreviewTestPeer::refresh(editor);
-    ASSERT_EQ(tabs.tabs.size(), 1u);
+    ASSERT_EQ(dp.create_v2_calls, 1);
   }  // closing the editor
   EXPECT_EQ(dp.last_removed, "__te_obj_preview__");
-  EXPECT_TRUE(tabs.tabs.empty());
 }
 
 TEST(TransformEditorPreview, AFailedTrialTakesThePreviewRecipeAway) {
   Rig rig;
   rig.load(onDemandConfig("my_filter"));
   rig.refresh();
-  ASSERT_EQ(rig.tabs.tabs.size(), 1u);
+  ASSERT_EQ(rig.widgets()["frameScenePreview"]["scene_view"], "3d");
   rig.dp.canned_report_json = R"({"error":"boom"})";
   rig.dp.terminal_state = PJ_EVALUATION_STATE_FAILED;
   rig.dialog().onCodeChanged("functionText", "return nope");
   rig.refresh();
   EXPECT_EQ(rig.dp.last_removed, "__te_obj_preview__");
-  EXPECT_TRUE(rig.tabs.tabs.empty() || rig.tabs.tabs[0].topics.empty());
+  EXPECT_TRUE(rig.widgets()["frameScenePreview"]["scene_view"].is_null());
 }
 
 TEST(TransformEditorPreview, SeriesOnlyRecipesInstallNoScenePreview) {
