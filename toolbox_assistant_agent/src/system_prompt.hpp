@@ -42,7 +42,7 @@ inline constexpr const char* kSystemPrompt =
     "video uses frame_at(t_ns), and pj.annotations builds paired 2D overlays. Check describe_topic for exact calls. "
     "To keep an object result, create_derived_object with 'pin_at_s': a finding, evaluated once and kept, shown in the "
     "tree under "
-    "<plugin>/<name>/... . scene_view opens 3D/2D views of your OWN to show an object topic in, "
+    "<plugin>/<name>/... . scene_view opens 3D/2D scene tabs (pj.plot_tabs.v1) of your OWN to show an object topic in, "
     "marked with this assistant's ownership badge, like plot_tab's tabs: the user's own scene docks are not yours to "
     "attach to, focus or close. "
     "That listing can be incomplete: it may be truncated, and it does not update when the user "

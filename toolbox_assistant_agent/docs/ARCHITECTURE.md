@@ -393,19 +393,21 @@ rather than from what the calls returned. The host may accept a curve and resolv
 "the call succeeded" is not yet "the curve is drawn" — the same reason `create_markers` reads its
 own output back out of the store instead of reporting an intention.
 
-`scene_view` (block 3.3) draws the same boundary over `pj.scene_views.v1` for the 3D/2D object
-viewer: `SceneViewHostView` mirrors `PlotTabHostView` slot for slot (`create_view`/`close_view`/
-`list_view_ids`/`view_config`/`attach_topic`/`detach_topic`/`focus_view`), the same per-plugin
-bridge identity scopes it to views this assistant composed, and a view it did not create is
+`scene_view` (block 3.3) draws the same boundary over the scene tabs of `pj.plot_tabs.v1` for the 3D/2D
+object viewer: `PlotTabHostView`'s tail slots (`create_tab_v2`/`attach_topic`/`detach_topic`/
+`focus_tab`, gated by `hasSceneTabs()`) serve them, the host lists plot and scene tabs together
+(a scene tab's config carries a `kind` of `3d`/`2d`, a plot tab's does not, which is how `plot_tab`
+and `scene_view` each list only their own), the same per-plugin
+bridge identity scopes it to tabs this assistant composed, and a tab it did not create is
 unreachable exactly as a foreign tab is — the host enforces it, `sceneViewTool` never sees the
 user's scene docks at all. `attach`/`detach` resolve their `topics` argument through
 `resolveObjectTopic` against `catalogSnapshotV2()` (the same object-topic resolution `evaluate`'s
 object path and `create_derived_object` use), then hand the host the bare topic name and its
-resolved dataset source; the tool's answer is `view_config` read back per topic, not the call's own
+resolved dataset source; the tool's answer is `tab_config` read back per topic, not the call's own
 verdict, for the identical reason `plot_tab`'s `add`/`remove` read the tab back — the host may accept
 `attach_topic` and place the topic nowhere (a kind the view's `"3d"`/`"2d"` does not accept, or a
 name it cannot resolve), and that has to show as "did not land", not as a drawing that never
-happened. Requires `pj.scene_views.v1` (SDK >= 0.36.0), a newer surface than `plot_tab`'s own
+happened. Requires the scene tabs of `pj.plot_tabs.v1` (SDK >= 0.36.0), a newer surface than `plot_tab`'s own
 floor (0.34.0); an older host gets a clean "not exposed" instead of the tool silently doing
 nothing.
 

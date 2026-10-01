@@ -14,7 +14,9 @@ below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 ### Added
 - New tool `scene_view`: opens 3D/2D scene views of the assistant's own,
   marked with the assistant ownership badge, like `plot_tab`'s tabs — the same
-  create/attach/detach/focus/close/list shape, over `pj.scene_views.v1`. The
+  create/attach/detach/focus/close/list shape, over the scene tabs of
+  `pj.plot_tabs.v1` (`plot_tab list` shows plot tabs only, `scene_view list`
+  scene tabs only). The
   user's own scene docks are unreachable from it. Every action answers with
   the view as the host holds it, so a topic that did not land shows as
   missing rather than being reported as attached.

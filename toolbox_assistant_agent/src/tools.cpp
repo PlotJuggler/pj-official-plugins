@@ -3457,35 +3457,82 @@ ToolResult playbackTool(const json& args, ToolContext& ctx) {
 
 constexpr const char* kNoPlotTabs = "the host did not expose pj.plot_tabs.v1 (cannot compose plot tabs)";
 
-// Names of the tabs this assistant currently owns, for the "which are mine?"
-// half of an error. An unreadable list degrades to no names rather than
-// replacing the real failure with a secondary one.
-std::string ownedTabList(ToolContext& ctx) {
+// One tab's config, fetched and parsed once. pj.plot_tabs.v1 lists plot tabs AND
+// scene tabs together; a scene tab's config carries a "kind" key and a plot tab's
+// does not, which is how plot_tab and scene_view each keep to their own.
+struct TabConfig {
+  std::string error;  // the host's refusal; empty when the config was fetched
+  json parsed;        // null when unreadable
+
+  [[nodiscard]] bool isScene() const {
+    return parsed.is_object() && parsed.contains("kind");
+  }
+};
+
+TabConfig fetchTabConfig(ToolContext& ctx, const std::string& id) {
+  TabConfig out;
+  auto config = ctx.plot_tabs.configOf(id);
+  if (!config) {
+    out.error = config.error();
+    return out;
+  }
+  out.parsed = json::parse(*config, nullptr, /*allow_exceptions=*/false);
+  return out;
+}
+
+// Ids this assistant owns of one flavour: scene tabs (3d/2d) or plot tabs. An
+// unreadable list degrades to no ids rather than replacing the real failure with a
+// secondary one.
+std::vector<std::string> ownedIdsOfKind(ToolContext& ctx, bool scene) {
+  std::vector<std::string> out;
   auto ids = ctx.plot_tabs.list();
-  if (!ids || ids->empty()) {
+  if (!ids) {
+    return out;
+  }
+  for (const std::string& id : *ids) {
+    if (fetchTabConfig(ctx, id).isScene() == scene) {
+      out.push_back(id);
+    }
+  }
+  return out;
+}
+
+std::string joinOrNone(const std::vector<std::string>& ids) {
+  if (ids.empty()) {
     return "none yet";
   }
   std::string out;
-  for (const std::string& id : *ids) {
+  for (const std::string& id : ids) {
     out += (out.empty() ? "" : ", ") + id;
   }
   return out;
 }
 
-// The tab as the HOST holds it, parsed back from tab_config. Every action
-// answers with this rather than an echo of the request, so a curve that did not
-// land shows as absent instead of being reported as drawn.
+std::string ownedTabList(ToolContext& ctx) {
+  return joinOrNone(ownedIdsOfKind(ctx, /*scene=*/false));
+}
+
+// The tab (`key` "tab") or scene view (`key` "view") as the HOST holds it, parsed back
+// from tab_config. Every action answers with this rather than an echo of the request,
+// so a curve or topic that did not land shows as absent instead of being reported as
+// drawn or attached.
+json readBackFrom(TabConfig config, const std::string& id, const char* key) {
+  if (!config.error.empty()) {
+    return {{key, id}, {"contents_unavailable", config.error}};
+  }
+  if (!config.parsed.is_object()) {
+    return {{key, id}, {"contents_unavailable", std::string("the host returned no readable ") + key + " contents"}};
+  }
+  config.parsed[key] = id;
+  return std::move(config.parsed);
+}
+
+json readBack(ToolContext& ctx, const std::string& id, const char* key) {
+  return readBackFrom(fetchTabConfig(ctx, id), id, key);
+}
+
 json tabReadBack(ToolContext& ctx, const std::string& tab) {
-  auto config = ctx.plot_tabs.configOf(tab);
-  if (!config) {
-    return {{"tab", tab}, {"contents_unavailable", config.error()}};
-  }
-  json parsed = json::parse(*config, nullptr, /*allow_exceptions=*/false);
-  if (!parsed.is_object()) {
-    return {{"tab", tab}, {"contents_unavailable", "the host returned no readable tab contents"}};
-  }
-  parsed["tab"] = tab;
-  return parsed;
+  return readBack(ctx, tab, "tab");
 }
 
 ToolResult plotTabTool(const json& args, ToolContext& ctx) {
@@ -3503,7 +3550,11 @@ ToolResult plotTabTool(const json& args, ToolContext& ctx) {
     }
     json arr = json::array();
     for (const std::string& id : *ids) {
-      arr.push_back(tabReadBack(ctx, id));
+      TabConfig config = fetchTabConfig(ctx, id);
+      if (config.isScene()) {
+        continue;  // scene tabs belong to scene_view
+      }
+      arr.push_back(readBackFrom(std::move(config), id, "tab"));
     }
     // Owning nothing is an answer, not a failure.
     return ToolResult::success(json({{"count", arr.size()}, {"tabs", arr}}).dump());
@@ -3621,37 +3672,17 @@ ToolResult plotTabTool(const json& args, ToolContext& ctx) {
 
 // --- the assistant's own scene views -----------------------------------------
 
-constexpr const char* kNoSceneViews = "the host did not expose pj.scene_views.v1 (cannot open scene views)";
+constexpr const char* kNoSceneViews =
+    "the host predates scene tabs in pj.plot_tabs.v1 (SDK 0.36.0): cannot open scene views";
 
-// Names of the scene views this assistant currently owns, mirroring
+// Names of the scene tabs this assistant currently owns, mirroring
 // ownedTabList's role in plotTabTool's errors.
 std::string ownedViewList(ToolContext& ctx) {
-  auto ids = ctx.scene_views.listViews();
-  if (!ids || ids->empty()) {
-    return "none yet";
-  }
-  std::string out;
-  for (const std::string& id : *ids) {
-    out += (out.empty() ? "" : ", ") + id;
-  }
-  return out;
+  return joinOrNone(ownedIdsOfKind(ctx, /*scene=*/true));
 }
 
-// The view as the HOST holds it, parsed back from view_config -- tabReadBack's
-// counterpart for scene views: every action answers with this rather than an
-// echo of the request, so a topic that did not land shows as absent instead of
-// being reported as attached.
 json viewReadBack(ToolContext& ctx, const std::string& view) {
-  auto config = ctx.scene_views.configOf(view);
-  if (!config) {
-    return {{"view", view}, {"contents_unavailable", config.error()}};
-  }
-  json parsed = json::parse(*config, nullptr, /*allow_exceptions=*/false);
-  if (!parsed.is_object()) {
-    return {{"view", view}, {"contents_unavailable", "the host returned no readable view contents"}};
-  }
-  parsed["view"] = view;
-  return parsed;
+  return readBack(ctx, view, "view");
 }
 
 // One attach/detach outcome, resolved before the host is asked so a bad path
@@ -3670,17 +3701,21 @@ ToolResult sceneViewTool(const json& args, ToolContext& ctx) {
     return ToolResult::failure(
         "scene_view requires 'action': one of 'create', 'attach', 'detach', 'focus', 'close', 'list'");
   }
-  if (!ctx.scene_views.valid()) {
+  if (!ctx.plot_tabs.hasSceneTabs()) {
     return ToolResult::failure(kNoSceneViews);
   }
   if (action == "list") {
-    auto ids = ctx.scene_views.listViews();
+    auto ids = ctx.plot_tabs.list();
     if (!ids) {
       return ToolResult::failure(ids.error());
     }
     json arr = json::array();
     for (const std::string& id : *ids) {
-      arr.push_back(viewReadBack(ctx, id));
+      TabConfig config = fetchTabConfig(ctx, id);
+      if (!config.isScene()) {
+        continue;  // plot tabs belong to plot_tab
+      }
+      arr.push_back(readBackFrom(std::move(config), id, "view"));
     }
     // Owning nothing is an answer, not a failure.
     return ToolResult::success(json({{"count", arr.size()}, {"views", arr}}).dump());
@@ -3695,7 +3730,7 @@ ToolResult sceneViewTool(const json& args, ToolContext& ctx) {
     if (kind != "3d" && kind != "2d") {
       return ToolResult::failure("'kind' must be \"3d\" or \"2d\"");
     }
-    if (auto status = ctx.scene_views.createView(id, kind, args.value("title", std::string())); !status) {
+    if (auto status = ctx.plot_tabs.createV2(id, kind, args.value("title", std::string())); !status) {
       return ToolResult::failure("could not create the view: " + status.error());
     }
     return ToolResult::success(viewReadBack(ctx, id).dump());
@@ -3707,13 +3742,13 @@ ToolResult sceneViewTool(const json& args, ToolContext& ctx) {
   }
 
   if (action == "focus") {
-    if (auto status = ctx.scene_views.focusView(view); !status) {
+    if (auto status = ctx.plot_tabs.focus(view); !status) {
       return ToolResult::failure(status.error() + " (yours: " + ownedViewList(ctx) + ")");
     }
     return ToolResult::success(json({{"focused", view}}).dump());
   }
   if (action == "close") {
-    if (auto status = ctx.scene_views.closeView(view); !status) {
+    if (auto status = ctx.plot_tabs.close(view); !status) {
       return ToolResult::failure(status.error() + " (yours: " + ownedViewList(ctx) + ")");
     }
     return ToolResult::success(json({{"closed", view}}).dump());
@@ -3754,8 +3789,8 @@ ToolResult sceneViewTool(const json& args, ToolContext& ctx) {
     o.dataset = objectTopicDatasetName(v2->dataSources(), lookup.resolved->source);
     // The host addresses a view topic by its bare name and resolves the
     // dataset itself, the same convention plotTabTool's addCurve follows.
-    auto status = attaching ? ctx.scene_views.attachTopic(view, o.bare_topic, o.dataset)
-                            : ctx.scene_views.detachTopic(view, o.bare_topic, o.dataset);
+    auto status = attaching ? ctx.plot_tabs.attachTopic(view, o.bare_topic, o.dataset)
+                            : ctx.plot_tabs.detachTopic(view, o.bare_topic, o.dataset);
     if (!status) {
       o.error = status.error();
       outcomes.push_back(std::move(o));
@@ -4543,7 +4578,7 @@ ToolRegistry::ToolRegistry() {
 
   add(
       {"scene_view",
-       "Open 3D/2D scene views of your own, the pj.scene_views.v1 counterpart of plot_tab: same "
+       "Open 3D/2D scene views of your own (the scene tabs of pj.plot_tabs.v1), the counterpart of plot_tab: same "
        "watermark and ownership, the user's scene docks unreachable.\n"
        "action: 'create' (optional 'view', 'kind' \"3d\"|\"2d\" default \"3d\", 'title') | "
        "'attach'/'detach' ('topics', object-topic paths) | 'focus' | 'close' | 'list'. Every action "

@@ -29,7 +29,6 @@
 #include "support/fake_object_read_host.hpp"
 #include "support/fake_playback_viewport_hosts.hpp"
 #include "support/fake_plot_tabs_host.hpp"
-#include "support/fake_scene_views_host.hpp"
 #include "support/recording_dp_host.hpp"
 
 namespace {
@@ -42,7 +41,6 @@ using assistant_agent::testing::FakeMultiDatasetHost;
 using assistant_agent::testing::FakeObjectReadHost;
 using assistant_agent::testing::FakePlaybackHost;
 using assistant_agent::testing::FakePlotTabsHost;
-using assistant_agent::testing::FakeSceneViewsHost;
 using assistant_agent::testing::FakeViewportHost;
 using assistant_agent::testing::RecordingDpHost;
 using nlohmann::json;
@@ -2333,7 +2331,7 @@ TEST(ToolRegistry, ToolSchemaStaysWithinItsBudget) {
   // path (at_s/window/outputs) — objects need a genuinely different
   // request shape (on_demand, typed outputs, a pinned instant) that does
   // not fit create_derived_series's `action`-less schema either. Raised again
-  // for `scene_view` (block 3.3) — a new host service (pj.scene_views.v1)
+  // for `scene_view` (block 3.3) — a new tab kind of pj.plot_tabs.v1
   // with its own create/attach/detach/focus/close/list verbs, not a variant
   // of plot_tab's own action set (a different host object, a different
   // ownership scope).
@@ -2724,7 +2722,7 @@ TEST(ToolRegistry, PlotTabUnknownActionIsACleanFailure) {
 //
 // scene_view is plot_tab's counterpart for the 3D/2D object viewer: same
 // create/attach-or-detach/close/list shape, same host-enforced ownership
-// (FakeSceneViewsHost models that, mirroring FakePlotTabsHost), same
+// (FakePlotTabsHost models that), same
 // read-the-view-back-rather-than-trust-the-call-result discipline. Attaching
 // takes object-topic paths (point clouds, scene entities...), resolved
 // through the v2 catalog by resolveObjectTopic rather than plot_tab's
@@ -2734,10 +2732,10 @@ TEST(ToolRegistry, SceneViewCreateAttachReadsBack) {
   ToolRegistry reg;
   FakeCatalogHost host;
   host.addObjectTopic("/cloud", "kPointCloud", 42, 0, 5 * kSec);
-  FakeSceneViewsHost scenes;
+  FakePlotTabsHost scenes;
   ToolContext ctx;
   ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
-  ctx.scene_views = scenes.view();
+  ctx.plot_tabs = scenes.view();
 
   auto created = reg.execute("scene_view", {{"action", "create"}, {"view", "scene"}, {"title", "Cloud"}}, ctx);
   ASSERT_TRUE(created.ok) << created.content;
@@ -2767,12 +2765,12 @@ TEST(ToolRegistry, SceneViewAttachUnknownTopicIsReported) {
   FakeCatalogHost host;
   host.addObjectTopic("/cloud", "kPointCloud", 5, 0, kSec);
   host.addObjectTopic("/image", "kImage", 3, 0, kSec);
-  FakeSceneViewsHost scenes;
-  scenes.unresolvable.insert("/cloud");  // catalog knows it, the host does not place it
-  scenes.kind_rejects.insert("/image");  // the "2d" view below refuses this one
+  FakePlotTabsHost scenes;
+  scenes.unresolvable_topics.insert("/cloud");  // catalog knows it, the host does not place it
+  scenes.kind_rejects.insert("/image");         // the "2d" view below refuses this one
   ToolContext ctx;
   ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
-  ctx.scene_views = scenes.view();
+  ctx.plot_tabs = scenes.view();
   ASSERT_TRUE(reg.execute("scene_view", {{"action", "create"}, {"view", "flat"}, {"kind", "2d"}}, ctx).ok);
 
   // A path the catalog cannot resolve at all is a request error.
@@ -2801,11 +2799,11 @@ TEST(ToolRegistry, SceneViewForeignViewIsUnreachable) {
   ToolRegistry reg;
   FakeCatalogHost host;
   host.addObjectTopic("/cloud", "kPointCloud", 5, 0, kSec);
-  FakeSceneViewsHost scenes;
+  FakePlotTabsHost scenes;
   scenes.addForeignView("user-1");
   ToolContext ctx;
   ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
-  ctx.scene_views = scenes.view();
+  ctx.plot_tabs = scenes.view();
 
   EXPECT_FALSE(
       reg.execute("scene_view", {{"action", "attach"}, {"view", "user-1"}, {"topics", json::array({"/cloud"})}}, ctx)
@@ -2823,10 +2821,10 @@ TEST(ToolRegistry, SceneViewDetachAndClose) {
   ToolRegistry reg;
   FakeCatalogHost host;
   host.addObjectTopic("/cloud", "kPointCloud", 5, 0, kSec);
-  FakeSceneViewsHost scenes;
+  FakePlotTabsHost scenes;
   ToolContext ctx;
   ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
-  ctx.scene_views = scenes.view();
+  ctx.plot_tabs = scenes.view();
   ASSERT_TRUE(reg.execute("scene_view", {{"action", "create"}, {"view", "scene"}}, ctx).ok);
   ASSERT_TRUE(reg.execute("scene_view", {{"action", "attach"}, {"view", "scene"}, {"topics", "/cloud"}}, ctx).ok);
 
@@ -2846,11 +2844,11 @@ TEST(ToolRegistry, SceneViewDetachAndClose) {
 TEST(ToolRegistry, SceneViewListIsReadBack) {
   ToolRegistry reg;
   FakeCatalogHost host;
-  FakeSceneViewsHost scenes;
+  FakePlotTabsHost scenes;
   scenes.addForeignView("user-1");
   ToolContext ctx;
   ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
-  ctx.scene_views = scenes.view();
+  ctx.plot_tabs = scenes.view();
   ASSERT_TRUE(reg.execute("scene_view", {{"action", "create"}, {"view", "a"}, {"kind", "3d"}}, ctx).ok);
   ASSERT_TRUE(reg.execute("scene_view", {{"action", "create"}, {"view", "b"}, {"kind", "2d"}}, ctx).ok);
 
@@ -2860,10 +2858,10 @@ TEST(ToolRegistry, SceneViewListIsReadBack) {
   EXPECT_EQ(r.content.find("user-1"), std::string::npos) << r.content;
 
   // Owning nothing is an answer, not an error.
-  FakeSceneViewsHost empty_scenes;
+  FakePlotTabsHost empty_scenes;
   ToolContext empty_ctx;
   empty_ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
-  empty_ctx.scene_views = empty_scenes.view();
+  empty_ctx.plot_tabs = empty_scenes.view();
   auto empty_r = reg.execute("scene_view", {{"action", "list"}}, empty_ctx);
   ASSERT_TRUE(empty_r.ok) << empty_r.content;
   EXPECT_EQ(json::parse(empty_r.content)["count"], 0);
@@ -2871,11 +2869,50 @@ TEST(ToolRegistry, SceneViewListIsReadBack) {
 
 TEST(ToolRegistry, SceneViewOnOldHostReportsNotExposed) {
   ToolRegistry reg;
-  ToolContext ctx;  // ctx.scene_views left unbound: a host older than SDK 0.36.0
+  FakePlotTabsHost tabs;
+  tabs.struct_size = 64;  // a 0.35 host: the seven v1 slots, no tail
+  ToolContext ctx;
+  ctx.plot_tabs = tabs.view();
 
   auto r = reg.execute("scene_view", {{"action", "list"}}, ctx);
   EXPECT_FALSE(r.ok);
-  EXPECT_NE(r.content.find("pj.scene_views.v1"), std::string::npos) << r.content;
+  EXPECT_NE(r.content.find("predates scene tabs in pj.plot_tabs.v1"), std::string::npos) << r.content;
+
+  // Full-size vtable with NULL tail slots (a host with no scene workspace).
+  FakePlotTabsHost no_scene;
+  no_scene.null_tail = true;
+  ctx.plot_tabs = no_scene.view();
+  EXPECT_FALSE(reg.execute("scene_view", {{"action", "list"}}, ctx).ok);
+
+  // No plot tabs service at all.
+  ToolContext unbound;
+  auto u = reg.execute("scene_view", {{"action", "list"}}, unbound);
+  EXPECT_FALSE(u.ok);
+  EXPECT_NE(u.content.find("predates scene tabs"), std::string::npos) << u.content;
+}
+
+// The host list is the union of plot and scene tabs; each tool shows its own kind.
+TEST(ToolRegistry, PlotTabAndSceneViewListsAreDisjoint) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  FakePlotTabsHost tabs;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.plot_tabs = tabs.view();
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "create"}, {"tab", "p"}}, ctx).ok);
+  ASSERT_TRUE(reg.execute("scene_view", {{"action", "create"}, {"view", "s"}}, ctx).ok);
+
+  auto plots = reg.execute("plot_tab", {{"action", "list"}}, ctx);
+  ASSERT_TRUE(plots.ok) << plots.content;
+  json pj = json::parse(plots.content);
+  ASSERT_EQ(pj["count"], 1);
+  EXPECT_EQ(pj["tabs"][0]["tab"], "p");
+
+  auto scenes = reg.execute("scene_view", {{"action", "list"}}, ctx);
+  ASSERT_TRUE(scenes.ok) << scenes.content;
+  json sj = json::parse(scenes.content);
+  ASSERT_EQ(sj["count"], 1);
+  EXPECT_EQ(sj["views"][0]["view"], "s");
 }
 
 TEST(ToolRegistry, ReadSeriesStatsGainDisplayStartWhenPlaybackBound) {
@@ -3697,10 +3734,10 @@ TEST(ToolRegistry, SceneDetachVerifiesDatasetAndTopicTogether) {
   FakeCatalogHost host;
   host.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "A");
   host.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "B");
-  FakeSceneViewsHost scenes;
+  FakePlotTabsHost scenes;
   ToolContext ctx;
   ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
-  ctx.scene_views = scenes.view();
+  ctx.plot_tabs = scenes.view();
   ToolRegistry registry;
   ASSERT_TRUE(registry.execute("scene_view", {{"action", "create"}, {"view", "clouds"}}, ctx).ok);
   ASSERT_TRUE(registry
