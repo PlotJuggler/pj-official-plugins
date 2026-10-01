@@ -344,6 +344,82 @@ TEST(RosParserTest, OmgIdlSchemaParsesCdrPayload) {
   EXPECT_TRUE(found_active);
 }
 
+// Original schema and first message from PlotJuggler issue #851's ROS2 IDL MCAP.
+TEST(RosParserTest, Ros2IdlSchemaParsesOriginalAckermannCdr) {
+  std::ifstream schema_file(std::string(PJ_ROS_PARSER_TEST_DATA_DIR) + "/ros2idl_ackermann.idl");
+  ASSERT_TRUE(schema_file.is_open());
+  const std::string schema((std::istreambuf_iterator<char>(schema_file)), std::istreambuf_iterator<char>());
+  std::ifstream message_file(std::string(PJ_ROS_PARSER_TEST_DATA_DIR) + "/ros2idl_ackermann.cdr", std::ios::binary);
+  ASSERT_TRUE(message_file.is_open());
+  const std::vector<uint8_t> payload((std::istreambuf_iterator<char>(message_file)), std::istreambuf_iterator<char>());
+
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("autoware_auto_control_msgs/msg/AckermannLateralCommand", schema, "ros2idl"));
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1U);
+  const auto& fields = f.recorder.rows()[0].fields;
+  ASSERT_EQ(fields.size(), 4U);
+  for (const auto& [name, value] : std::array<std::pair<const char*, double>, 4>{
+           {{"/stamp/sec", 0.0},
+            {"/stamp/nanosec", 0.0},
+            {"/steering_tire_angle", 0.5},
+            {"/steering_tire_rotation_rate", -0.5}}}) {
+    const auto field =
+        std::find_if(fields.begin(), fields.end(), [name](const auto& candidate) { return candidate.name == name; });
+    ASSERT_NE(field, fields.end()) << name;
+    EXPECT_DOUBLE_EQ(field->numeric, value) << name;
+  }
+}
+
+TEST(RosParserTest, Ros2IdlIncludesConstantsBeforeUsingThem) {
+  const std::string section = std::string(80, '=') + "\nIDL: ";
+  const std::string schema = section +
+                             "pkg/msg/Command\n#include \"pkg/msg/Constants.idl\"\n"
+                             "module pkg { module msg { struct Command { double values[pkg::msg::COUNT]; }; }; };\n" +
+                             section + "pkg/msg/Constants\nmodule pkg { module msg { const uint32 COUNT = 2; }; };\n" +
+                             section + "unused/msg/Unrelated\n#include \"missing/msg/Unused.idl\"\n";
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("pkg/msg/Command", schema, "ros2idl"));
+  ASSERT_TRUE(f.parse(serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(1.0));
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(2.0));
+  })));
+  ASSERT_EQ(f.recorder.rows().size(), 1U);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 2U);
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[0].numeric, 1.0);
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[1].numeric, 2.0);
+}
+
+TEST(RosParserTest, Ros2IdlRejectsMissingIncludesAndDuplicateFiles) {
+  const std::string section = std::string(80, '=') + "\nIDL: ";
+  const std::string root = "pkg/msg/Command\nmodule pkg { module msg { struct Command { int32 value; }; }; };\n";
+  for (const auto& [schema, diagnostic] : std::array<std::pair<std::string, std::string>, 2>{
+           {{section + "pkg/msg/Command\n#include <missing/msg/Type.idl>\n" + root.substr(root.find('\n') + 1),
+             "missing ros2idl file: missing/msg/Type"},
+            {section + root + section + root, "duplicate ros2idl file name: pkg/msg/Command"}}}) {
+    RosParserFixture f;
+    f.setUp();
+    ASSERT_TRUE(f.bindSchemaRaw("pkg/msg/Command", schema));
+    const auto status = f.handle.loadConfig(R"({"schema_encoding":"ros2idl"})");
+    ASSERT_FALSE(status);
+    EXPECT_NE(status.error().find(diagnostic), std::string::npos) << status.error();
+  }
+}
+
+TEST(RosParserTest, ClassifiesRos2IdlSchemaWithoutLoadConfig) {
+  const std::string type = "sensor_msgs/msg/PointCloud2";
+  const std::string schema = std::string(80, '=') + "\nIDL: " + type +
+                             "\nmodule sensor_msgs { module msg {"
+                             " struct PointCloud2 { uint32 height; uint32 width; }; }; };\n";
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchemaRaw(type, schema));
+  const auto bytes = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(schema.data()), schema.size());
+  EXPECT_EQ(f.handle.classifySchema(type, bytes), PJ::sdk::BuiltinObjectType::kPointCloud);
+}
+
 // --- Advertise-time classification: bindSchema() with NO loadConfig() ---
 //
 // The demand-subscription host classifies advertised topics through a
@@ -2461,6 +2537,40 @@ TEST(RosParserTest, GenericEmbeddedTimestamp) {
   EXPECT_EQ(f.recorder.rows()[0].timestamp, 100000000000LL);
 }
 
+TEST(RosParserTest, Ros2IdlPreservesHeaderTimestampAndQuaternionOutputs) {
+  const std::string schema = std::string(80, '=') + R"(
+IDL: pkg/msg/Stamped
+module builtin_interfaces { module msg { struct Time { int32 sec; uint32 nanosec; }; }; };
+module std_msgs { module msg {
+  struct Header { builtin_interfaces::msg::Time stamp; string frame_id; };
+}; };
+module geometry_msgs { module msg { struct Quaternion { double x; double y; double z; double w; }; }; };
+module pkg { module msg {
+  struct Stamped { std_msgs::msg::Header header; geometry_msgs::msg::Quaternion orientation; };
+}; };
+)";
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  ASSERT_TRUE(f.bindSchema("pkg/msg/Stamped", schema, "ros2idl"));
+  const auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 123, 400, "world");
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+  });
+  ASSERT_TRUE(f.parse(payload, 1000));
+  ASSERT_EQ(f.recorder.rows().size(), 1U);
+  const auto& row = f.recorder.rows()[0];
+  EXPECT_EQ(row.timestamp, 123000000400LL);
+  const auto* stamp = findField(row, "/header/stamp");
+  ASSERT_NE(stamp, nullptr);
+  EXPECT_DOUBLE_EQ(stamp->numeric, 123.0000004);
+  for (const auto* name : {"/orientation/roll", "/orientation/pitch", "/orientation/yaw"}) {
+    const auto* field = findField(row, name);
+    ASSERT_NE(field, nullptr) << name;
+    EXPECT_DOUBLE_EQ(field->numeric, 0.0);
+  }
+}
+
 TEST(RosParserTest, TransformStampedSpecialization) {
   static const char* kTransformStampedDef =
       "std_msgs/Header header\n"
@@ -2735,6 +2845,76 @@ TEST(RosParserTest, TextMarkerHumbleAndFoxyLayouts) {
     EXPECT_EQ(se->entities[0].texts[0].text, "hello");
     EXPECT_TRUE(se->entities[0].texts[0].billboard);
     EXPECT_DOUBLE_EQ(se->entities[0].texts[0].font_size, 0.25);
+  }
+}
+
+TEST(RosParserTest, Ros2IdlMarkerArrayPreservesTextAndIgnoresUnreferencedFiles) {
+  const std::string humble_schema = std::string(80, '=') + R"(
+IDL: visualization_msgs/msg/MarkerArray
+module builtin_interfaces { module msg {
+  struct Time { int32 sec; uint32 nanosec; };
+  struct Duration { int32 sec; uint32 nanosec; };
+}; };
+module std_msgs { module msg {
+  struct Header { builtin_interfaces::msg::Time stamp; string frame_id; };
+  struct ColorRGBA { float r; float g; float b; float a; };
+}; };
+module geometry_msgs { module msg {
+  struct Point { double x; double y; double z; };
+  struct Quaternion { double x; double y; double z; double w; };
+  struct Pose { Point position; Quaternion orientation; };
+  struct Vector3 { double x; double y; double z; };
+}; };
+module sensor_msgs { module msg {
+  struct CompressedImage { std_msgs::msg::Header header; string format; sequence<uint8> data; };
+}; };
+module visualization_msgs { module msg {
+  struct UVCoordinate { float u; float v; };
+  struct MeshFile { string filename; sequence<uint8> data; };
+  struct Marker {
+    std_msgs::msg::Header header;
+    string ns; int32 id; int32 type; int32 action;
+    geometry_msgs::msg::Pose pose; geometry_msgs::msg::Vector3 scale;
+    std_msgs::msg::ColorRGBA color; builtin_interfaces::msg::Duration lifetime;
+    boolean frame_locked;
+    sequence<geometry_msgs::msg::Point> points; sequence<std_msgs::msg::ColorRGBA> colors;
+    string texture_resource; sensor_msgs::msg::CompressedImage texture;
+    sequence<UVCoordinate> uv_coordinates;
+    string text; string mesh_resource; MeshFile mesh_file; boolean mesh_use_embedded_materials;
+  };
+  struct MarkerArray { sequence<Marker> markers; };
+}; };
+)";
+  for (bool humble : {true, false}) {
+    std::string schema = humble_schema;
+    if (!humble) {
+      const auto first = schema.find("    string texture_resource;");
+      const auto last = schema.find("    string text;", first);
+      schema.erase(first, last - first);
+      const std::string mesh = "MeshFile mesh_file; ";
+      schema.erase(schema.find(mesh), mesh.size());
+    }
+    schema += std::string(80, '=') +
+              "\nIDL: unrelated/msg/Extra\n"
+              "module unrelated { module msg { struct Extra { int32 uv_coordinates; int32 mesh_file; }; }; };\n";
+    RosParserFixture f;
+    f.setUp();
+    ASSERT_TRUE(f.bindSchema("visualization_msgs/msg/MarkerArray", schema, "ros2idl"));
+    MarkerWire text;
+    text.type = 9;  // TEXT_VIEW_FACING
+    text.text = "hello";
+    text.scale = {0.0, 0.0, 0.25};
+    const auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+      enc.serializeUInt32(1);
+      serializeMarker(enc, text, humble, humble);
+    });
+    PJ::sdk::BuiltinObject hold;
+    const auto* scene = parseSceneEntities(f, payload, hold);
+    ASSERT_NE(scene, nullptr) << (humble ? "humble" : "foxy");
+    ASSERT_EQ(scene->entities.size(), 1U);
+    ASSERT_EQ(scene->entities[0].texts.size(), 1U);
+    EXPECT_EQ(scene->entities[0].texts[0].text, "hello");
+    EXPECT_DOUBLE_EQ(scene->entities[0].texts[0].font_size, 0.25);
   }
 }
 
