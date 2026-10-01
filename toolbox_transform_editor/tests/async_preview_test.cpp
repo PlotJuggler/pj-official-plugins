@@ -3,6 +3,7 @@
 // are exercised without a Qt dependency or a fake replacement state machine.
 #include <gtest/gtest.h>
 
+#include "../../toolbox_assistant_agent/tests/support/fake_catalog_host.hpp"
 #include "../../toolbox_assistant_agent/tests/support/recording_dp_host.hpp"
 #include "../transform_editor_plugin.cpp"
 
@@ -12,8 +13,20 @@ class TransformEditorPreviewTestPeer {
   static void bind(TransformEditorToolbox& editor, PJ::sdk::DataProcessorsHostView host) {
     editor.dp_view_ = host;
   }
+  // The form resolves inputs against the catalog (object topics first), so a config-driven
+  // preview needs one that knows "/cloud".
+  static void bindCatalog(TransformEditorToolbox& editor, assistant_agent::testing::FakeCatalogHost& catalog) {
+    editor.test_catalog_host_ = PJ::sdk::ToolboxHostView(catalog.makeHost());
+  }
   static void tick(TransformEditorToolbox& editor, std::string script = "return {count=1}") {
-    editor.previewOnDemand({"/cloud"}, {{"count", "number"}}, script, "{}");
+    PJ::sdk::DataProcessorRequest request;
+    request.kind = "on_demand";
+    request.language = "luau";
+    request.inputs = {"/cloud"};
+    request.outputs = {{"count", "number"}};
+    request.script = script;
+    request.params_json = "{}";
+    editor.previewOnDemand(request);
   }
   static bool pending(const TransformEditorToolbox& editor) {
     return editor.pending_preview_.has_value();
@@ -36,6 +49,12 @@ class TransformEditorPreviewTestPeer {
   }
   static std::string report(TransformEditorToolbox& editor) {
     return nlohmann::json::parse(editor.dialog_.widget_data())["onDemandReportPreview"]["plain_text"];
+  }
+  // The pane shows the form's own hints once no report is left, so "cleared" means that neither
+  // the completed report nor the pending placeholder is on screen any more.
+  static bool showsReport(TransformEditorToolbox& editor) {
+    const std::string text = report(editor);
+    return text.find("\"count\"") != std::string::npos || text.find("Evaluating") != std::string::npos;
   }
   static void close(TransformEditorToolbox& editor) {
     editor.tearDownPreview();
@@ -127,14 +146,17 @@ TEST(TransformEditorPreview, ReportIsVisibleInMainPanelAndScalarCreateIsDisabled
 TEST(TransformEditorPreview, ClearingBodyOrInputClearsCompletedAndPendingReports) {
   for (bool clear_source : {false, true}) {
     Host host;
+    assistant_agent::testing::FakeCatalogHost catalog;
+    catalog.addObjectTopic("/cloud", "kPointCloud", 1, 0, 1);
     TransformEditorToolbox editor;
     TransformEditorPreviewTestPeer::bind(editor, host.view());
+    TransformEditorPreviewTestPeer::bindCatalog(editor, catalog);
     TransformEditorPreviewTestPeer::configure(editor, true, true);
     TransformEditorPreviewTestPeer::refreshCurrent(editor);
-    ASSERT_FALSE(TransformEditorPreviewTestPeer::report(editor).empty());
+    ASSERT_TRUE(TransformEditorPreviewTestPeer::showsReport(editor));
     TransformEditorPreviewTestPeer::configure(editor, !clear_source, clear_source);
     TransformEditorPreviewTestPeer::refreshCurrent(editor);
-    EXPECT_TRUE(TransformEditorPreviewTestPeer::report(editor).empty());
+    EXPECT_FALSE(TransformEditorPreviewTestPeer::showsReport(editor));
 
     host.pending_polls = 100;
     TransformEditorPreviewTestPeer::configure(editor, true, true);
@@ -150,6 +172,6 @@ TEST(TransformEditorPreview, ClearingBodyOrInputClearsCompletedAndPendingReports
     host.pending_polls = 0;
     TransformEditorPreviewTestPeer::refreshCurrent(editor);
     EXPECT_EQ(host.poll_calls, polls);
-    EXPECT_TRUE(TransformEditorPreviewTestPeer::report(editor).empty());
+    EXPECT_FALSE(TransformEditorPreviewTestPeer::showsReport(editor));
   }
 }

@@ -327,7 +327,7 @@ never repeats the persistent installation or its notification.
 
 The script itself is a different shape too: not a per-sample `T:calculate` closure
 (`buildLuauTransform`) but a single chunk evaluated once per requested instant
-(`buildOnDemandChunk`, `luau_transform.hpp`) — `local inputs, params = ...` bound at the top, the
+(`buildOnDemandChunk`, in `common/derived_recipes`, shared with the Transform Editor; `luau_transform.hpp` re-exports it) — `local inputs, params = ...` bound at the top, the
 model's `body` reading `inputs["<topic>"]` by its literal name and returning a table of the
 declared, TYPED `outputs`.
 

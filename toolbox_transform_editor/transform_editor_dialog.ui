@@ -299,6 +299,31 @@
                        <string>languageGroup</string>
                      </attribute>
                      </widget>
+                     <widget class="QRadioButton" name="kindTransformButton">
+                      <property name="text">
+                       <string>Transform</string>
+                      </property>
+                      <property name="checked">
+                       <bool>true</bool>
+                      </property>
+                      <property name="toolTip">
+                       <string>Per-sample transform: a live derived time series.</string>
+                      </property>
+                      <attribute name="buttonGroup">
+                       <string>kindGroup</string>
+                      </attribute>
+                     </widget>
+                     <widget class="QRadioButton" name="kindOnDemandButton">
+                      <property name="text">
+                       <string>On-demand</string>
+                      </property>
+                      <property name="toolTip">
+                       <string>On-demand recipe (3D/2D objects and numbers, evaluated where a consumer asks); requires a PlotJuggler host with SDK 0.36 or newer.</string>
+                      </property>
+                      <attribute name="buttonGroup">
+                       <string>kindGroup</string>
+                      </attribute>
+                     </widget>
                      <widget class="QPushButton" name="buttonLoadFunctions">
                       <property name="toolTip">
                        <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Import functions from a XML library.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
@@ -467,6 +492,142 @@
                    <string>&lt;html&gt;&lt;body&gt;&lt;p&gt;Name of the new time series.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                   </property>
                  </widget>
+                </widget>
+               </item>
+               <item>
+                <widget class="QWidget" name="onDemandPanel" native="true">
+                 <property name="visible"><bool>false</bool></property>
+                 <layout class="QVBoxLayout" name="onDemandPanelLayout">
+                     <property name="spacing"><number>4</number></property>
+                     <property name="leftMargin"><number>6</number></property>
+                     <property name="topMargin"><number>4</number></property>
+                     <property name="rightMargin"><number>4</number></property>
+                     <property name="bottomMargin"><number>4</number></property>
+                  <item>
+                   <widget class="QTableWidget" name="tableOutputs">
+                    <property name="minimumSize">
+                     <size>
+                      <width>0</width>
+                      <height>60</height>
+                     </size>
+                    </property>
+                    <property name="toolTip">
+                     <string>Outputs the script returns, by name. The body returns a table keyed by these names.</string>
+                    </property>
+                    <property name="selectionBehavior">
+                     <enum>QAbstractItemView::SelectRows</enum>
+                    </property>
+                    <property name="editTriggers">
+                     <set>QAbstractItemView::NoEditTriggers</set>
+                    </property>
+                    <attribute name="verticalHeaderVisible">
+                     <bool>false</bool>
+                    </attribute>
+                   </widget>
+                  </item>
+                  <item>
+                   <layout class="QHBoxLayout" name="outputEditLayout">
+                       <property name="spacing"><number>4</number></property>
+                       <property name="leftMargin"><number>0</number></property>
+                       <property name="topMargin"><number>0</number></property>
+                       <property name="rightMargin"><number>0</number></property>
+                       <property name="bottomMargin"><number>0</number></property>
+                    <item>
+                     <widget class="QLineEdit" name="outputNameEdit">
+                      <property name="placeholderText">
+                       <string>output name</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item>
+                     <widget class="QComboBox" name="outputTypeCombo"/>
+                    </item>
+                    <item>
+                     <widget class="QPushButton" name="buttonAddOutput">
+                      <property name="text">
+                       <string>Add output</string>
+                      </property>
+                     </widget>
+                    </item>
+                   </layout>
+                  </item>
+                  <item>
+                   <layout class="QHBoxLayout" name="objectTopicLayout">
+                       <property name="spacing"><number>4</number></property>
+                       <property name="leftMargin"><number>0</number></property>
+                       <property name="topMargin"><number>0</number></property>
+                       <property name="rightMargin"><number>0</number></property>
+                       <property name="bottomMargin"><number>0</number></property>
+                    <item>
+                     <widget class="QComboBox" name="objectTopicCombo">
+                      <property name="toolTip">
+                       <string>Object topics (point clouds, scene entities, images...) loaded in the host.</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item>
+                     <widget class="QPushButton" name="buttonAddObjectTopic">
+                      <property name="text">
+                       <string>Add input</string>
+                      </property>
+                     </widget>
+                    </item>
+                   </layout>
+                  </item>
+                  <item>
+                   <layout class="QHBoxLayout" name="paramsLayout">
+                       <property name="spacing"><number>4</number></property>
+                       <property name="leftMargin"><number>0</number></property>
+                       <property name="topMargin"><number>0</number></property>
+                       <property name="rightMargin"><number>0</number></property>
+                       <property name="bottomMargin"><number>0</number></property>
+                    <item>
+                     <widget class="QLabel" name="paramsLabel">
+                      <property name="text">
+                       <string>Params</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item>
+                     <widget class="QLineEdit" name="paramsLineEdit">
+                      <property name="placeholderText">
+                       <string>{"threshold": 1.0}</string>
+                      </property>
+                      <property name="toolTip">
+                       <string>JSON object handed to the script as params.</string>
+                      </property>
+                     </widget>
+                    </item>
+                   </layout>
+                  </item>
+                  <item>
+                   <layout class="QHBoxLayout" name="pinLayout">
+                       <property name="spacing"><number>4</number></property>
+                       <property name="leftMargin"><number>0</number></property>
+                       <property name="topMargin"><number>0</number></property>
+                       <property name="rightMargin"><number>0</number></property>
+                       <property name="bottomMargin"><number>0</number></property>
+                    <item>
+                     <widget class="QCheckBox" name="pinCurrentTimeCheck">
+                      <property name="text">
+                       <string>Pin at current time</string>
+                      </property>
+                      <property name="toolTip">
+                       <string>Evaluate once at the current playback time and keep that finding, instead of re-evaluating wherever a consumer asks.</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item>
+                     <widget class="QPushButton" name="buttonShowScene">
+                      <property name="visible"><bool>false</bool></property>
+                      <property name="text">
+                       <string>Show in 3D</string>
+                      </property>
+                     </widget>
+                    </item>
+                   </layout>
+                  </item>
+                 </layout>
                 </widget>
                </item>
                <item>

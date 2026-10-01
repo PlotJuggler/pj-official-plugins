@@ -5,6 +5,7 @@ below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 
 ## Unreleased
 
+- Shares recipe helpers (path and input resolution, typed outputs, the generated Luau chunk) with the Transform Editor through `common/derived_recipes`; behavior unchanged.
 - Fix scripted crop/pin examples to use positional coordinate arrays accepted by the real Luau binder.
 - Yield pending object evaluations between GUI ticks; release handles on completion, failure, cancellation, timeout and teardown.
 - Report own pinned findings, bytes and processor readiness; advertise media and annotation scripting operations.

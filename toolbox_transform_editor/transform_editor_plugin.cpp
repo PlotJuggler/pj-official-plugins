@@ -9,11 +9,13 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <pj_base/builtin/builtin_object.hpp>
 #include <pj_base/sdk/platform.hpp>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_base/sdk/service_traits.hpp>
@@ -24,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "derived_recipes/recipes.hpp"
 #include "transform_editor_dialog_ui.hpp"
 #include "transform_editor_manifest.hpp"
 // Auxiliary dialog/panel UIs, embedded from their .ui files at build time:
@@ -150,6 +153,13 @@ std::vector<Snippet> loadSnippetsFromDisk() {
   return defaultSnippets();
 }
 
+// `s` without leading/trailing spaces and tabs.
+inline std::string trimBlanks(const std::string& s) {
+  const std::size_t b = s.find_first_not_of(" \t");
+  const std::size_t e = s.find_last_not_of(" \t");
+  return b == std::string::npos ? std::string{} : s.substr(b, e - b + 1);
+}
+
 // The output-name field doubles as a comma-separated list: "roll,pitch,yaw" declares
 // three output topics and the body must `return r, p, q` (M values, positional).
 // Whitespace around each name is trimmed; empty entries drop. One name => one output
@@ -160,11 +170,9 @@ inline std::vector<std::string> splitOutputNames(const std::string& field) {
   while (start <= field.size()) {
     const std::size_t comma = field.find(',', start);
     const std::size_t end = (comma == std::string::npos) ? field.size() : comma;
-    std::string name = field.substr(start, end - start);
-    const std::size_t b = name.find_first_not_of(" \t");
-    const std::size_t e = name.find_last_not_of(" \t");
-    if (b != std::string::npos) {
-      names.push_back(name.substr(b, e - b + 1));
+    std::string name = trimBlanks(field.substr(start, end - start));
+    if (!name.empty()) {
+      names.push_back(std::move(name));
     }
     if (comma == std::string::npos) {
       break;
@@ -316,6 +324,72 @@ inline std::pair<std::vector<PJ::sdk::DataProcessorOutput>, std::string> parseOn
   return header;
 }
 
+// Legacy on-demand headers (-- pj-kind / -- pj-outputs / -- pj-params in the GLOBAL code) are
+// still accepted when loading an old saved state; the form replaces them (kind selector,
+// outputs table, params field). True when `global_code` opens with the kind header.
+inline bool hasLegacyOnDemandHeader(const std::string& global_code) {
+  return global_code.rfind("-- pj-kind: on_demand", 0) == 0;
+}
+
+// `global_code` without the three legacy header lines.
+inline std::string stripOnDemandHeader(const std::string& global_code) {
+  std::string out;
+  std::istringstream lines(global_code);
+  std::string line;
+  bool first = true;
+  while (std::getline(lines, line)) {
+    if (line.rfind("-- pj-kind:", 0) == 0 || line.rfind("-- pj-outputs:", 0) == 0 ||
+        line.rfind("-- pj-params:", 0) == 0) {
+      continue;
+    }
+    out += (first ? "" : "\n") + line;
+    first = false;
+  }
+  return out;
+}
+
+// One declared output of an on-demand recipe: the name the script returns it under and its
+// type ("number", "string", or a builtin object type such as "kPointCloud").
+struct OnDemandOutput {
+  std::string name;
+  std::string type;
+};
+
+using derived_recipes::isObjectOutputType;
+using derived_recipes::isValidOutputType;
+using derived_recipes::outputTypeNames;
+using derived_recipes::sceneKindForOutputType;
+
+enum class RecipeKind { kTransform, kOnDemand };
+
+// The params field is a JSON object (empty means "{}"). nullopt when it is not one.
+std::optional<nlohmann::json> parseParamsObject(const std::string& text) {
+  const std::size_t b = text.find_first_not_of(" \t\r\n");
+  if (b == std::string::npos) {
+    return nlohmann::json::object();
+  }
+  auto parsed = nlohmann::json::parse(text, nullptr, /*allow_exceptions=*/false);
+  if (parsed.is_discarded() || !parsed.is_object()) {
+    return std::nullopt;
+  }
+  return parsed;
+}
+
+// The key an on-demand recipe's params_json reserves for the editor's own state.
+constexpr const char* kEditorParamsKey = "__editor";
+
+// Why the params field cannot be used, or empty when it can.
+std::string paramsError(const std::string& text) {
+  const auto parsed = parseParamsObject(text);
+  if (!parsed) {
+    return "Params must be a JSON object";
+  }
+  if (parsed->contains(kEditorParamsKey)) {
+    return std::string("Params key \"") + kEditorParamsKey + "\" is reserved by the editor";
+  }
+  return {};
+}
+
 // ---------------------------------------------------------------------------
 // TransformEditorDialog
 // ---------------------------------------------------------------------------
@@ -344,18 +418,41 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // Single function tab — one table of inputs (drop target). Col 0 is the radio
     // marking which row provides `value`; col 1 is the series path; col 2 is the
     // bound variable. The non-primary rows are v1, v2, ... in row order.
+    const bool on_demand = isOnDemand();
     wd.setDropTarget("tableSources");
-    wd.setTableHeaders("tableSources", {"", "Input timeseries", "Var"});
     std::vector<std::vector<std::string>> rows;
     rows.reserve(sources_.size());
-    for (int i = 0; i < static_cast<int>(sources_.size()); ++i) {
-      rows.push_back({"", sources_[static_cast<std::size_t>(i)], variableName(i)});
+    if (on_demand) {
+      // On-demand scripts read inputs["<path>"] (no value/v1 binding, so no radio) and an
+      // input may be an object topic, so the Type column says which kind each row is.
+      wd.setTableHeaders("tableSources", {"", "Input", "Key", "Type"});
+      for (const std::string& source : sources_) {
+        rows.push_back({"", source, "inputs[\"" + source + "\"]", inputTypeOf(source)});
+      }
+    } else {
+      wd.setTableHeaders("tableSources", {"", "Input timeseries", "Var"});
+      for (int i = 0; i < static_cast<int>(sources_.size()); ++i) {
+        rows.push_back({"", sources_[static_cast<std::size_t>(i)], variableName(i)});
+      }
     }
     wd.setTableRows("tableSources", rows);
     wd.setListPlaceholder("tableSources", "Drag & drop timeseries here");
     wd.setListItemsDeletable("tableSources", true);
-    wd.setTableRadioColumn("tableSources", 0, primaryIndex());
+    if (!on_demand) {
+      wd.setTableRadioColumn("tableSources", 0, primaryIndex());
+    }
     wd.setText("nameLineEdit", output_name_);
+
+    // Kind selector, next to the Lua/Python radios. The on-demand kind needs the 0.36 data
+    // processor and catalog surfaces; on an older host it stays disabled (its tooltip, fixed
+    // in the .ui, names the requirement).
+    wd.setChecked("kindTransformButton", !on_demand);
+    wd.setChecked("kindOnDemandButton", on_demand);
+    wd.setEnabled("kindOnDemandButton", on_demand_supported_);
+    wd.setVisible("onDemandPanel", on_demand);
+    if (on_demand) {
+      buildOnDemandPanel(wd);
+    }
 
     // Function signature reflects the inputs: `value` (the radio-selected row) plus
     // v1..vN for the remaining series, so the user sees the identifier to reference
@@ -366,6 +463,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       signature += ", v" + std::to_string(i + 1);
     }
     signature += " )";
+    if (on_demand) {
+      signature = "on-demand chunk( inputs, params )";
+    }
     wd.setText("functionTitle", signature);
 
     const char* single_lang = (language_ == "python") ? "python" : "lua";
@@ -411,10 +511,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       wd.setCodeContent("previewPlainText", combinedSnippetText(library_selected_))
           .setCodeLanguage("previewPlainText", "lua");
     }
-    const bool on_demand = global_code_.rfind("-- pj-kind: on_demand", 0) == 0;
     wd.setVisible("onDemandReportPreview", on_demand);
     wd.setVisible("framePlotPreview", !on_demand);
-    wd.setPlainText("onDemandReportPreview", !validation_error_.empty() ? validation_error_ : on_demand_report_);
 
     // Import / Export library buttons: the host drives the native file choosers.
     // Import opens an "open" dialog and Export a "save as"; both report back via
@@ -427,17 +525,32 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // the script as an ephemeral transform). PJ4 keeps its Modify-by-name
     // behaviour, so an already-existing name is not an error here.
     std::string single_term;
-    if (output_name_.empty() && !on_demand) {
-      single_term += "Create a name for the new series\n";
+    if (output_name_.empty()) {
+      single_term += on_demand ? "Create a name for the new recipe\n" : "Create a name for the new series\n";
     } else if (std::find(sources_.begin(), sources_.end(), output_name_) != sources_.end()) {
       single_term += "Give the new series a name that isn't one of its inputs\n";
     }
     if (sources_.empty()) {
-      single_term += "Add an input time series (drag & drop)\n";
+      single_term += on_demand ? "Add an input (drag & drop, or pick an object topic)\n"
+                               : "Add an input time series (drag & drop)\n";
     }
     if (function_body_.empty()) {
       single_term += "Write your function body\n";
     }
+    if (on_demand) {
+      if (!on_demand_supported_) {
+        single_term += "On-demand recipes require a PlotJuggler host with SDK 0.36 or newer\n";
+      }
+      if (validOutputs().empty()) {
+        single_term += "Declare at least one output (name and type)\n";
+      }
+      if (const std::string error = paramsError(params_text_); !error.empty()) {
+        single_term += error + "\n";
+      }
+    }
+    // In on-demand mode the host's message (validation_error_) travels in the report pane
+    // below, not in this overlay (the chart frame is hidden there).
+    const std::string hints_only = single_term;
     if (!validation_error_.empty()) {
       single_term += validation_error_ + "\n";
     }
@@ -448,9 +561,18 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       io_status_.clear();
     }
     // Red fill on the name field when it's missing (PJ3 parity).
-    wd.setFieldValid(
-        "nameLineEdit", on_demand || !output_name_.empty(),
-        !on_demand && output_name_.empty() ? "Name is required" : "");
+    wd.setFieldValid("nameLineEdit", !output_name_.empty(), output_name_.empty() ? "Name is required" : "");
+    // The on-demand report pane shows the host's message first, then the last report, and
+    // the form's own hints only while there is nothing else to show.
+    if (!validation_error_.empty()) {
+      wd.setPlainText("onDemandReportPreview", validation_error_);
+    } else if (!on_demand_report_.empty()) {
+      wd.setPlainText(
+          "onDemandReportPreview",
+          on_demand_note_.empty() ? on_demand_report_ : on_demand_note_ + "\n" + on_demand_report_);
+    } else {
+      wd.setPlainText("onDemandReportPreview", hints_only);
+    }
     if (!single_term.empty()) {
       wd.clearChart("framePlotPreview");
       wd.setChartPlaceholder("framePlotPreview", single_term);
@@ -502,10 +624,10 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // Each tab owns its Create action and validation gate. A pre-existing Single
     // output name and either explicit edit mode use the Modify label.
     const bool is_modify_single = outputNameExists(output_name_) || edit_mode_;
-    wd.setEnabled("pushButtonCreate", !on_demand && single_term.empty());
+    wd.setEnabled("pushButtonCreate", single_term.empty());
     wd.setButtonText(
-        "pushButtonCreate",
-        on_demand ? "On-demand preview only" : (is_modify_single ? "Modify Time Series" : "Create New Time Series"));
+        "pushButtonCreate", on_demand ? (is_modify_single ? "Modify On-demand Recipe" : "Create On-demand Recipe")
+                                      : (is_modify_single ? "Modify Time Series" : "Create New Time Series"));
     // Missing affix and empty inputs gate via the disabled button, not the overlay.
     wd.setEnabled("pushButtonCreateBatch", batch_term.empty() && !batch_sources_.empty() && !batch_suffix_.empty());
     wd.setButtonText("pushButtonCreateBatch", edit_mode_ ? "Modify Time Series" : "Create New Time Series");
@@ -543,6 +665,28 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     }
     if (name == "suffixLineEdit") {
       batch_suffix_ = std::string(text);
+      return true;
+    }
+    if (name == "outputNameEdit") {
+      new_output_name_ = std::string(text);
+      return true;
+    }
+    if (name == "paramsLineEdit") {
+      params_text_ = std::string(text);
+      preview_dirty_ = true;
+      return true;
+    }
+    return false;
+  }
+
+  // The output-type and object-topic combos only remember the current row; the Add buttons act on it.
+  bool onIndexChanged(std::string_view name, int index) override {
+    if (name == "outputTypeCombo") {
+      new_output_type_index_ = index;
+      return true;
+    }
+    if (name == "objectTopicCombo") {
+      picker_index_ = index;
       return true;
     }
     return false;
@@ -652,6 +796,20 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       help_requested_ = true;
       return true;
     }
+    if (name == "buttonAddOutput") {
+      addOutput();
+      return true;
+    }
+    if (name == "buttonAddObjectTopic") {
+      if (picker_index_ >= 0 && picker_index_ < static_cast<int>(object_topics_.size())) {
+        addSource(object_topics_[static_cast<std::size_t>(picker_index_)].first);
+      }
+      return true;
+    }
+    if (name == "buttonShowScene") {
+      show_scene_requested_ = true;
+      return true;
+    }
     return false;
   }
 
@@ -665,6 +823,14 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       }
       batch_sources_.erase(batch_sources_.begin() + index);
       batch_dirty_ = true;
+      return true;
+    }
+    if (name == "tableOutputs") {
+      if (index < 0 || index >= static_cast<int>(outputs_.size())) {
+        return false;
+      }
+      outputs_.erase(outputs_.begin() + index);
+      preview_dirty_ = true;
       return true;
     }
     if (name != "tableSources" || index < 0 || index >= static_cast<int>(sources_.size())) {
@@ -697,6 +863,12 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     } else if (action == PendingCreate::Batch) {
       if (on_save_batch_) {
         on_save_batch_();
+      }
+    }
+    if (show_scene_requested_) {
+      show_scene_requested_ = false;
+      if (on_show_scene_) {
+        on_show_scene_();
       }
     }
     // Rebuild immediately after an editor change. Browser builds sample an
@@ -765,6 +937,18 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       batch_use_prefix_ = !checked;
       return true;
     }
+    if (name == "kindTransformButton" && checked) {
+      setKind(RecipeKind::kTransform);
+      return true;
+    }
+    if (name == "kindOnDemandButton" && checked) {
+      setKind(RecipeKind::kOnDemand);
+      return true;
+    }
+    if (name == "pinCurrentTimeCheck") {
+      pin_current_ = checked;
+      return true;
+    }
     // Single-tab script language (Lua / Python). Only "luau" actually runs today;
     // selecting Python re-validates so the host's "unsupported language" surfaces.
     if (name == "luaButton" && checked) {
@@ -802,17 +986,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
   bool onItemsDropped(std::string_view widget_name, const std::vector<std::string>& items) override {
     if (widget_name == "tableSources") {
-      const bool was_empty = sources_.empty();
       for (const auto& item : items) {
-        if (std::find(sources_.begin(), sources_.end(), item) == sources_.end()) {
-          sources_.push_back(item);
-        }
+        addSource(item);
       }
-      // The first series dropped becomes the primary (`value`) by default.
-      if (was_empty && !sources_.empty()) {
-        primary_index_ = 0;
-      }
-      preview_dirty_ = true;
       return true;
     }
     if (widget_name == "tableBatchSources") {
@@ -914,6 +1090,18 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // expose the primary as the source and the rest as extras in order.
     cfg["source_series"] = primarySource();
     cfg["extra_sources"] = orderedExtras();
+    // The on-demand form fields ride along only for that kind, so a transform's saved state
+    // keeps exactly today's shape.
+    if (isOnDemand()) {
+      cfg["kind"] = "on_demand";
+      nlohmann::json outputs = nlohmann::json::array();
+      for (const auto& o : outputs_) {
+        outputs.push_back({{"name", o.name}, {"type", o.type}});
+      }
+      cfg["outputs"] = std::move(outputs);
+      cfg["params_text"] = params_text_;
+      cfg["pin_current_time"] = pin_current_;
+    }
     return cfg.dump();
   }
 
@@ -937,8 +1125,18 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
   bool loadConfig(std::string_view json) override {
     auto cfg = nlohmann::json::parse(json, nullptr, false);
-    if (cfg.is_discarded()) {
+    if (cfg.is_discarded() || !cfg.is_object()) {
       return false;
+    }
+    // An on-demand recipe stores the user's params object plus "__editor", the editor's own
+    // state; a transform (and any older state) stores the editor state as the whole document.
+    std::string user_params_text;
+    if (cfg.contains(kEditorParamsKey) && cfg[kEditorParamsKey].is_object()) {
+      nlohmann::json user_params = cfg;
+      user_params.erase(kEditorParamsKey);
+      user_params_text = user_params.empty() ? std::string{} : user_params.dump();
+      nlohmann::json state = cfg[kEditorParamsKey];
+      cfg = std::move(state);
     }
     // A batch-created series reopens the BATCH tab (PJ3 parity), repopulated with
     // its source, prefix/suffix, global, body and language.
@@ -962,6 +1160,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     global_code_ = cfg.value("global_code", std::string{});
     function_body_ = cfg.value("function_body", std::string{});
     language_ = cfg.value("language", std::string{"luau"});
+    loadKindState(cfg, user_params_text);
     current_tab_ = 0;             // open on the Single tab
     pending_tab_restore_ = true;  // one-shot: push the tab to the UI
     sources_.clear();
@@ -991,6 +1190,12 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
   void setOnSave(std::function<void()> cb) {
     on_save_ = std::move(cb);
+  }
+  void setInputTypeResolver(std::function<std::string(const std::string&)> cb) {
+    input_type_of_ = std::move(cb);
+  }
+  void setOnShowScene(std::function<void()> cb) {
+    on_show_scene_ = std::move(cb);
   }
   void setOnSaveBatch(std::function<void()> cb) {
     on_save_batch_ = std::move(cb);
@@ -1117,6 +1322,11 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   void setOnDemandReport(std::string report) {
     on_demand_report_ = std::move(report);
   }
+  /// A non-blocking remark shown above the report (e.g. "evaluating at 0 s"); unlike a
+  /// validation error it does not gate Create.
+  void setOnDemandNote(std::string note) {
+    on_demand_note_ = std::move(note);
+  }
   /// Set by the toolbox after each ephemeral-preview attempt: empty = script
   /// accepted by the host; non-empty = the error shown over the preview chart.
   void setValidationError(std::string error) {
@@ -1159,6 +1369,50 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
   void setAvailableSeries(std::vector<std::string> series) {
     all_series_ = std::move(series);
+  }
+
+  // --- on-demand form ---
+  bool isOnDemand() const {
+    return kind_ == RecipeKind::kOnDemand;
+  }
+  /// False on a host without the 0.36 surfaces (the kind button is disabled then).
+  void setOnDemandSupported(bool supported) {
+    on_demand_supported_ = supported;
+  }
+  bool onDemandSupported() const {
+    return on_demand_supported_;
+  }
+  /// Object topics (name, builtin type) offered by the picker and typed in the inputs table.
+  void setObjectTopics(std::vector<std::pair<std::string, std::string>> topics) {
+    object_topics_ = std::move(topics);
+  }
+  const std::vector<std::string>& sources() const {
+    return sources_;
+  }
+  /// Declared outputs that are usable: non-empty unique name, known type.
+  std::vector<OnDemandOutput> validOutputs() const {
+    std::vector<OnDemandOutput> out;
+    for (const auto& o : outputs_) {
+      const bool dup = std::any_of(out.begin(), out.end(), [&](const OnDemandOutput& e) { return e.name == o.name; });
+      if (!o.name.empty() && isValidOutputType(o.type) && !dup) {
+        out.push_back(o);
+      }
+    }
+    return out;
+  }
+  const std::string& paramsText() const {
+    return params_text_;
+  }
+  bool pinCurrentTime() const {
+    return pin_current_;
+  }
+  /// Label of the "Show in 3D/2D" button offered for the recipe that was just created (empty hides it).
+  void setSceneButton(std::string label) {
+    scene_button_ = std::move(label);
+  }
+  /// Script body the on-demand chunk runs: the globals pane (if any) then the function body.
+  std::string onDemandBody() const {
+    return global_code_.empty() ? function_body_ : global_code_ + "\n" + function_body_;
   }
 
   // The series that provides `value` (the radio-selected row), "" when no inputs.
@@ -1208,6 +1462,130 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       }
     }
     return false;
+  }
+
+  // Switch the recipe kind. Entering on-demand seeds one "result:number" output when none is
+  // declared, so the form is immediately usable.
+  void setKind(RecipeKind kind) {
+    if (kind == RecipeKind::kOnDemand && !on_demand_supported_) {
+      return;
+    }
+    kind_ = kind;
+    ensureOutput();
+    preview_dirty_ = true;
+  }
+
+  // An on-demand recipe always lists at least one output: seed "result:number" when none is declared.
+  void ensureOutput() {
+    if (isOnDemand() && outputs_.empty()) {
+      outputs_.push_back({"result", "number"});
+    }
+  }
+
+  // Add an input row (no duplicates). The first row of a transform becomes its `value`.
+  void addSource(const std::string& item) {
+    if (item.empty() || std::find(sources_.begin(), sources_.end(), item) != sources_.end()) {
+      return;
+    }
+    const bool was_empty = sources_.empty();
+    sources_.push_back(item);
+    if (was_empty) {
+      primary_index_ = 0;
+    }
+    preview_dirty_ = true;
+  }
+
+  // Add the typed output from the name field and type combo.
+  void addOutput() {
+    const std::string name = trimBlanks(new_output_name_);
+    if (name.empty()) {
+      return;
+    }
+    const auto& types = outputTypeNames();
+    const std::string type = new_output_type_index_ >= 0 && new_output_type_index_ < static_cast<int>(types.size())
+                                 ? types[static_cast<std::size_t>(new_output_type_index_)]
+                                 : types.front();
+    const bool dup =
+        std::any_of(outputs_.begin(), outputs_.end(), [&](const OnDemandOutput& o) { return o.name == name; });
+    if (!dup) {
+      outputs_.push_back({name, type});
+      new_output_name_.clear();
+      preview_dirty_ = true;
+    }
+  }
+
+  // "number" for a scalar input; the builtin type for an object topic. Resolved by the toolbox
+  // against the catalog, so a "dataset:" qualifier and an ambiguous name are read the way Create
+  // reads them.
+  std::string inputTypeOf(const std::string& source) const {
+    return input_type_of_ ? input_type_of_(source) : "number";
+  }
+
+  // The on-demand-only widgets: outputs table + add row, object-topic picker, params, pin, scene button.
+  void buildOnDemandPanel(PJ::WidgetData& wd) {
+    wd.setTableHeaders("tableOutputs", {"Output", "Type"});
+    std::vector<std::vector<std::string>> out_rows;
+    for (const auto& o : outputs_) {
+      out_rows.push_back({o.name, o.type});
+    }
+    wd.setTableRows("tableOutputs", out_rows);
+    wd.setListPlaceholder("tableOutputs", "Declare the outputs the script returns");
+    wd.setListItemsDeletable("tableOutputs", true);
+    wd.setText("outputNameEdit", new_output_name_);
+    wd.setItems("outputTypeCombo", outputTypeNames());
+    wd.setCurrentIndex("outputTypeCombo", new_output_type_index_);
+    std::vector<std::string> picker;
+    for (const auto& [name, type] : object_topics_) {
+      picker.push_back(name + "  [" + type + "]");
+    }
+    if (picker.empty()) {
+      picker.push_back("(no object topics loaded)");
+    }
+    wd.setItems("objectTopicCombo", picker);
+    wd.setCurrentIndex("objectTopicCombo", picker_index_);
+    wd.setEnabled("buttonAddObjectTopic", !object_topics_.empty());
+    wd.setText("paramsLineEdit", params_text_);
+    const std::string params_error = paramsError(params_text_);
+    wd.setFieldValid("paramsLineEdit", params_error.empty(), params_error);
+    wd.setChecked("pinCurrentTimeCheck", pin_current_);
+    wd.setVisible("buttonShowScene", !scene_button_.empty());
+    if (!scene_button_.empty()) {
+      wd.setButtonText("buttonShowScene", scene_button_);
+    }
+  }
+
+  // The kind-specific part of loadConfig. `cfg` is the editor state; `user_params_text` the
+  // params object stored next to it (empty for a transform or a legacy state).
+  void loadKindState(const nlohmann::json& cfg, const std::string& user_params_text) {
+    kind_ = RecipeKind::kTransform;
+    outputs_.clear();
+    params_text_.clear();
+    pin_current_ = false;
+    scene_button_.clear();
+    if (cfg.value("kind", std::string{}) == "on_demand") {
+      kind_ = RecipeKind::kOnDemand;
+      if (cfg.contains("outputs") && cfg["outputs"].is_array()) {
+        for (const auto& o : cfg["outputs"]) {
+          if (o.is_object() && o.contains("name") && o["name"].is_string()) {
+            outputs_.push_back({o["name"].get<std::string>(), o.value("type", std::string{"number"})});
+          }
+        }
+      }
+      params_text_ = cfg.contains("params_text") && cfg["params_text"].is_string()
+                         ? cfg["params_text"].get<std::string>()
+                         : user_params_text;
+      pin_current_ = cfg.value("pin_current_time", false);
+    } else if (hasLegacyOnDemandHeader(global_code_)) {
+      // Old state: the kind, outputs and params lived in header lines of the global code.
+      kind_ = RecipeKind::kOnDemand;
+      const auto header = parseOnDemandHeader(global_code_);
+      for (const auto& o : header.first) {
+        outputs_.push_back({o.name, o.type});
+      }
+      params_text_ = header.second == "{}" ? std::string{} : header.second;
+      global_code_ = stripOnDemandHeader(global_code_);
+    }
+    ensureOutput();
   }
 
   void validateSyntax() {
@@ -1272,10 +1650,25 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   std::vector<std::string> sources_;
   int primary_index_ = -1;
   bool syntax_ok_ = false;
+  // On-demand form state (see isOnDemand()).
+  RecipeKind kind_ = RecipeKind::kTransform;
+  std::vector<OnDemandOutput> outputs_;
+  std::string params_text_;  // the params JSON field, verbatim
+  bool pin_current_ = false;
+  bool on_demand_supported_ = true;
+  std::vector<std::pair<std::string, std::string>> object_topics_;  // (name, builtin type) offered by the picker
+  std::string new_output_name_;
+  int new_output_type_index_ = 0;
+  int picker_index_ = 0;
+  std::string scene_button_;  // label of the "Show in 3D/2D" button; empty hides it
+  bool show_scene_requested_ = false;
+  std::function<void()> on_show_scene_;
+  std::function<std::string(const std::string&)> input_type_of_;
   bool autozoom_ = true;                // AutoZoom checkbox state (default on)
   bool edit_mode_ = false;              // opened to modify an existing series (locks the name, button = Modify)
   std::string validation_error_;        // host's rejection message for the current script (empty = OK)
   std::string on_demand_report_;        // last on-demand preview report (pretty JSON); see setOnDemandReport
+  std::string on_demand_note_;          // non-blocking remark above the report
   std::string batch_validation_error_;  // batch-tab counterpart (empty = OK)
   bool batch_dirty_ = true;             // batch script/inputs changed → re-validate (start dirty)
 
@@ -1331,6 +1724,10 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
 class TransformEditorToolbox : public PJ::ToolboxPluginBase {
  public:
+  TransformEditorToolbox() {
+    dialog_.setInputTypeResolver([this](const std::string& source) { return inputTypeOf(source); });
+  }
+
   // The editor has no Close button; it is dismissed via the host panel chrome,
   // which destroys this plugin instance. Remove the ephemeral live-preview node
   // here so it cannot keep recomputing in the DerivedEngine after the editor is
@@ -1346,6 +1743,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   PJ_borrowed_dialog_t getDialog() override {
     if (!callbacks_wired_) {
       dialog_.setOnSave([this]() { onSave(); });
+      dialog_.setOnShowScene([this]() { showInScene(); });
       dialog_.setOnSaveBatch([this]() { onSaveBatch(); });
       dialog_.setOnRefreshPreview([this]() { refreshPreview(); });
       dialog_.setOnValidateBatch([this]() { validateBatch(); });
@@ -1370,6 +1768,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     if (auto pb = services.get<PJ::sdk::PlaybackHostService>()) {
       playback_view_ = *pb;
     }
+    // Optional: "Show in 3D/2D" after creating an on-demand recipe.
+    if (auto tabs = services.get<PJ::sdk::PlotTabHostService>()) {
+      plot_tabs_view_ = *tabs;
+    }
     return PJ::okStatus();
   }
 
@@ -1388,19 +1790,14 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   friend class TransformEditorPreviewTestPeer;
 
   void onSave() {
-    if (dialog_.globalCode().rfind("-- pj-kind: on_demand", 0) == 0) {
+    if (dialog_.isOnDemand()) {
+      onSaveOnDemand();
       return;
     }
     const auto& source = dialog_.sourceSeries();
     const auto& output_name = dialog_.outputName();
     const auto& global = dialog_.globalCode();
     const auto& body = dialog_.functionBody();
-
-    const auto report = [this](PJ::ToolboxMessageLevel level, const std::string& msg) {
-      if (runtimeHostBound()) {
-        runtimeHost().reportMessage(level, msg);
-      }
-    };
 
     if (source.empty() || output_name.empty() || body.empty()) {
       report(
@@ -1466,15 +1863,252 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     dialog_.requestClose();  // PJ3 parity: creating the series closes the editor.
   }
 
+  // The catalog the on-demand features read: the toolbox host, or a test double.
+  [[nodiscard]] PJ::sdk::ToolboxHostView catalogHost() const {
+    return test_catalog_host_.valid() ? test_catalog_host_ : toolboxHost();
+  }
+
+  // The catalog snapshot the on-demand form works from, plus the object topics the inputs picker
+  // offers. Re-read every kCatalogRefreshTicks calls (the form's own edits never need a fresh read);
+  // `force` re-reads now. Whether the host can do on-demand at all (the typed data-processor
+  // surface plus catalog snapshot v2) is decided here too, and any re-read drops the cached build.
+  void refreshOnDemandSupport(bool force = false) {
+    if (!force && catalog_refresh_ticks_ > 0 && catalog_refresh_ticks_ < kCatalogRefreshTicks) {
+      ++catalog_refresh_ticks_;
+      return;
+    }
+    catalog_refresh_ticks_ = 1;
+    on_demand_build_.reset();
+    catalog_v2_.reset();
+    catalog_v2_error_.clear();
+    std::vector<std::pair<std::string, std::string>> topics;
+    if (dp_view_.hasTypedRequests()) {
+      auto v2 = catalogHost().catalogSnapshotV2();
+      if (v2) {
+        for (const auto& entry : derived_recipes::listObjectTopics(*v2)) {
+          topics.emplace_back(entry.qualified, entry.type);
+        }
+        catalog_v2_ = std::move(*v2);
+      } else {
+        catalog_v2_error_ = std::string(v2.error());
+      }
+    }
+    dialog_.setObjectTopics(std::move(topics));
+    dialog_.setOnDemandSupported(catalog_v2_.has_value());
+  }
+
+  // "number" for a scalar input; the builtin type for an object topic (read from the cached catalog).
+  std::string inputTypeOf(const std::string& source) const {
+    if (!catalog_v2_) {
+      return "number";
+    }
+    const auto lookup = derived_recipes::resolveObjectTopic(*catalog_v2_, derived_recipes::canonicalSeriesPath(source));
+    if (lookup.ambiguous) {
+      return "ambiguous";
+    }
+    return lookup.resolved ? lookup.resolved->object_type : "number";
+  }
+
+  // What the form asks the host to run: the request (inputs resolved to request paths, typed
+  // outputs, the generated script chunk, the user's params) and the dataset the playhead is
+  // anchored to. Create and the preview both start from it, so the preview runs what Create
+  // installs. `error` is a message for the user; `form_incomplete` marks the cases the form's own
+  // hints already explain (no outputs, bad params), which the preview leaves silent.
+  struct OnDemandBuild {
+    PJ::sdk::DataProcessorRequest request;
+    std::optional<PJ::sdk::DataSourceHandle> anchor;
+    std::string error;
+    bool form_incomplete = false;
+  };
+
+  // Rebuilt only when the sources, the body, the outputs or the params change, or the catalog is
+  // re-read (refreshOnDemandSupport); otherwise the cached build is returned.
+  const OnDemandBuild& buildOnDemandRequest() {
+    const auto outputs = dialog_.validOutputs();
+    nlohmann::json key = {dialog_.sources(), dialog_.onDemandBody(), dialog_.paramsText()};
+    for (const auto& output : outputs) {
+      key.push_back({output.name, output.type});
+    }
+    if (on_demand_build_ && on_demand_build_key_ == key) {
+      return *on_demand_build_;
+    }
+    on_demand_build_key_ = std::move(key);
+    ++on_demand_build_count_;
+    OnDemandBuild build;
+    build.request.kind = "on_demand";
+    build.request.language = "luau";
+    if (!catalog_v2_) {
+      build.error = "The host's object catalog is unavailable" +
+                    (catalog_v2_error_.empty() ? std::string() : ": " + catalog_v2_error_);
+    } else if (outputs.empty()) {
+      build.error = "Declare at least one output (name and type)";
+      build.form_incomplete = true;
+    } else if (const std::string params_error = paramsError(dialog_.paramsText()); !params_error.empty()) {
+      build.error = params_error;
+      build.form_incomplete = true;
+    } else {
+      std::vector<std::string> raw;
+      for (const std::string& source : dialog_.sources()) {
+        raw.push_back(derived_recipes::canonicalSeriesPath(source));
+      }
+      PJ::sdk::ToolboxHostView host = catalogHost();
+      const auto resolved =
+          derived_recipes::resolveEvalInputs(host, *catalog_v2_, raw, derived_recipes::Audience::kUser);
+      if (!resolved.error.empty()) {
+        build.error = resolved.error;
+      } else {
+        for (const auto& input : resolved.inputs) {
+          build.request.inputs.push_back(input.request_path);
+        }
+        for (const auto& output : outputs) {
+          build.request.outputs.push_back({output.name, output.type});
+        }
+        build.request.script = derived_recipes::buildResolvedOnDemandChunk(dialog_.onDemandBody(), resolved);
+        build.request.params_json = parseParamsObject(dialog_.paramsText())->dump();
+        build.anchor = resolved.anchor_source;
+      }
+    }
+    on_demand_build_ = std::move(build);
+    return *on_demand_build_;
+  }
+
+  void report(PJ::ToolboxMessageLevel level, const std::string& msg) {
+    if (runtimeHostBound()) {
+      runtimeHost().reportMessage(level, msg);
+    }
+  }
+
+  // Create / Modify an on_demand recipe: the same request the assistant's create_derived_object
+  // builds (shared helpers), plus the user's params and the editor state for the pencil.
+  void onSaveOnDemand() {
+    refreshOnDemandSupport(/*force=*/true);
+    if (!dialog_.onDemandSupported()) {
+      report(
+          PJ::ToolboxMessageLevel::kError,
+          "Transform Editor: on-demand recipes require a PlotJuggler host with SDK 0.36 or newer.");
+      return;
+    }
+    const std::string id = trimBlanks(dialog_.outputName());
+    if (id.empty() || dialog_.sources().empty() || dialog_.validOutputs().empty() || dialog_.functionBody().empty()) {
+      report(
+          PJ::ToolboxMessageLevel::kWarning,
+          "Transform Editor: a name, at least one input, one output and a function body are required.");
+      return;
+    }
+    const OnDemandBuild& build = buildOnDemandRequest();
+    if (!build.error.empty()) {
+      report(PJ::ToolboxMessageLevel::kError, "Transform Editor: " + build.error);
+      return;
+    }
+    if (auto valid = dp_view_.validateScript("on_demand", "luau", build.request.script); !valid) {
+      report(PJ::ToolboxMessageLevel::kError, "Transform Editor: invalid script: " + std::string(valid.error()));
+      return;
+    }
+
+    PJ::sdk::DataProcessorRequest request = build.request;
+    request.id = id;
+    request.label = id;
+    request.flags = 0;  // the user's own recipe: undo/redo applies like it does to their transforms
+    if (dialog_.pinCurrentTime()) {
+      std::optional<std::int64_t> pinned;
+      if (build.anchor) {
+        if (auto state = playback_view_.state()) {
+          pinned = derived_recipes::toRawNs(playback_view_, *build.anchor, state->current_time_s);
+        }
+      }
+      if (!pinned) {
+        report(
+            PJ::ToolboxMessageLevel::kError,
+            "Transform Editor: cannot pin at the current time: the host did not expose playback or per-source time "
+            "conversion.");
+        return;
+      }
+      request.instant_ns = pinned;
+    }
+    // The script receives the user's params; kEditorParamsKey carries the editor's state so the
+    // host's pencil can reopen this recipe (the script ignores it). buildOnDemandRequest refused
+    // params that already use the key.
+    nlohmann::json params = nlohmann::json::parse(request.params_json);
+    params[kEditorParamsKey] = nlohmann::json::parse(dialog_.saveConfig(), nullptr, /*allow_exceptions=*/false);
+    request.params_json = params.dump();
+
+    auto created = dp_view_.createV2(request);
+    if (!created) {
+      report(PJ::ToolboxMessageLevel::kError, "Transform Editor: " + std::string(created.error()));
+      return;
+    }
+    report(PJ::ToolboxMessageLevel::kInfo, "Transform Editor: saved on-demand recipe '" + id + "'.");
+    if (runtimeHostBound()) {
+      runtimeHost().notifyDataChanged();
+    }
+
+    // Offer to open the object outputs in a scene tab; otherwise the editor closes like Create does.
+    scene_topics_.clear();
+    scene_kind_.clear();
+    if (plot_tabs_view_.hasSceneTabs() && created->size() == request.outputs.size()) {
+      collectSceneTopics(request.outputs, *created, build.anchor);
+    }
+    if (!scene_topics_.empty()) {
+      scene_id_ = std::string(kSceneIdPrefix) + id;
+      dialog_.setSceneButton(scene_kind_ == "2d" ? "Show in 2D" : "Show in 3D");
+    } else {
+      dialog_.requestClose();
+    }
+  }
+
+  // The object outputs of a created recipe with the dataset each one lives in, and the scene kind
+  // of the first. The dataset comes from the catalog like the assistant's scene_view attach does;
+  // a topic the catalog does not list yet takes the dataset its inputs were anchored to.
+  void collectSceneTopics(
+      const std::vector<PJ::sdk::DataProcessorOutput>& outputs, const std::vector<std::string>& created,
+      std::optional<PJ::sdk::DataSourceHandle> anchor) {
+    auto v2 = catalogHost().catalogSnapshotV2();
+    if (!v2) {
+      return;
+    }
+    const auto listed = derived_recipes::listObjectTopics(*v2);
+    for (std::size_t i = 0; i < outputs.size(); ++i) {
+      if (!isObjectOutputType(outputs[i].type)) {
+        continue;
+      }
+      const auto it = std::find_if(listed.begin(), listed.end(), [&](const auto& e) { return e.name == created[i]; });
+      std::string dataset;
+      if (it != listed.end()) {
+        dataset = it->dataset;
+      } else if (anchor) {
+        dataset = derived_recipes::objectTopicDatasetName(v2->dataSources(), *anchor);
+      }
+      scene_topics_.emplace_back(created[i], std::move(dataset));
+      if (scene_kind_.empty()) {
+        scene_kind_ = sceneKindForOutputType(outputs[i].type);
+      }
+    }
+  }
+
+  // "Show in 3D/2D": a scene tab of the right kind with the created object topics attached.
+  void showInScene() {
+    if (!plot_tabs_view_.hasSceneTabs() || scene_topics_.empty()) {
+      return;
+    }
+    const std::string title = scene_id_.substr(kSceneIdPrefix.size());
+    if (auto status = plot_tabs_view_.createV2(scene_id_, scene_kind_, title); !status) {
+      report(PJ::ToolboxMessageLevel::kError, "Transform Editor: " + std::string(status.error()));
+      return;
+    }
+    for (const auto& [topic, dataset] : scene_topics_) {
+      if (auto status = plot_tabs_view_.attachTopic(scene_id_, topic, dataset); !status) {
+        report(
+            PJ::ToolboxMessageLevel::kError,
+            "Transform Editor: could not attach '" + topic + "': " + std::string(status.error()));
+      }
+    }
+    (void)plot_tabs_view_.focus(scene_id_);
+  }
+
   // Batch create: apply the batch function to EVERY input series, naming each
   // output with the prefix/suffix (mirrors the native panel's batch path). One
   // transform per source; each output is surfaced in Custom Series via on_data_changed.
   void onSaveBatch() {
-    const auto report = [this](PJ::ToolboxMessageLevel level, const std::string& msg) {
-      if (runtimeHostBound()) {
-        runtimeHost().reportMessage(level, msg);
-      }
-    };
     const std::string& body = dialog_.batchFunctionBody();
     const std::string& global = dialog_.batchGlobalCode();
     const std::string& suffix = dialog_.batchSuffix();
@@ -1643,57 +2277,36 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     dialog_.setAvailableSeries(std::move(series));
   }
 
-  // On-demand preview: evaluate ONCE, EPHEMERAL, at the playhead's raw instant; `inputs` are topic names verbatim.
+  // On-demand preview: evaluate ONCE, EPHEMERAL, at the playhead's raw instant. `request` carries
+  // the inputs (request paths), typed outputs, script and params; the id, flag and instant are set here.
   void previewOnDemand(
-      const std::vector<std::string>& inputs, const std::vector<PJ::sdk::DataProcessorOutput>& outputs,
-      const std::string& script, const std::string& params_json) {
+      PJ::sdk::DataProcessorRequest request, std::optional<PJ::sdk::DataSourceHandle> anchor = std::nullopt) {
     dialog_.setPreviewSeries({});
-    auto validation = dp_view_.validateScript("on_demand", "luau", script);
+    auto validation = dp_view_.validateScript("on_demand", "luau", request.script);
     if (!validation) {
       tearDownPreview();
       dialog_.setOnDemandReport("");
       dialog_.setValidationError(std::string(validation.error()));
       return;
     }
-    // Invert one raw(0)->display conversion (the toRawNs() trick from toolbox_assistant_agent/src/tools.cpp).
-    std::optional<PJ::sdk::DataSourceHandle> source;
-    auto v2 = toolboxHost().catalogSnapshotV2();
-    if (v2 && !inputs.empty()) {
-      const std::string& in = inputs.front();
-      for (const auto& t : v2->topics()) {
-        const std::string tn(t.name.data, t.name.size);
-        if (in == tn || in.rfind(tn + "/", 0) == 0) {
-          source = t.source;
-          break;
-        }
-      }
-      for (const auto& o : v2->objectTopics()) {
-        if (!source && in == std::string(o.name.data, o.name.size)) {
-          source = o.source;
-        }
-      }
-    }
+    // The playhead's raw instant in the anchor input's dataset (shared toRawNs: one raw(0)->display
+    // conversion inverted).
     std::int64_t instant_ns = 0;
     std::string note = "no playback service: evaluating at 0 s";
-    if (auto state = playback_view_.state(); state && source) {
-      if (auto offset_s = playback_view_.toDisplayTimeForSource(*source, 0)) {
-        instant_ns = static_cast<std::int64_t>(std::llround((state->current_time_s - *offset_s) * 1e9));
-        note.clear();
+    if (anchor) {
+      if (auto state = playback_view_.state()) {
+        if (auto raw = derived_recipes::toRawNs(playback_view_, *anchor, state->current_time_s)) {
+          instant_ns = *raw;
+          note.clear();
+        }
       }
     }
-    PJ::sdk::DataProcessorRequest request;
     request.id = std::string(kPreviewId);
-    request.kind = "on_demand";
-    request.language = "luau";
-    request.script = script;
-    request.params_json = params_json;
-    request.inputs = inputs;
-    request.outputs = outputs;
     request.flags = PJ_DATA_PROCESSOR_FLAG_EPHEMERAL;
     request.instant_ns = instant_ns;
 
-    nlohmann::json signature = {inputs, script, params_json, instant_ns};
-    for (const auto& output : outputs) {
+    nlohmann::json signature = {request.inputs, request.script, request.params_json, instant_ns};
+    for (const auto& output : request.outputs) {
       signature.push_back({output.name, output.type});
     }
     const auto key = signature.dump();
@@ -1746,9 +2359,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       dialog_.setValidationError(msg);
       return;
     }
-    const auto report = nlohmann::json::parse(attempt->json, nullptr, /*allow_exceptions=*/false);
-    dialog_.setValidationError(note);
-    dialog_.setOnDemandReport(report.is_object() || report.is_array() ? report.dump(2) : attempt->json);
+    const auto parsed = nlohmann::json::parse(attempt->json, nullptr, /*allow_exceptions=*/false);
+    dialog_.setValidationError("");
+    dialog_.setOnDemandNote(note);
+    dialog_.setOnDemandReport(parsed.is_object() || parsed.is_array() ? parsed.dump(2) : attempt->json);
   }
 
   void refreshPreview() {
@@ -1759,6 +2373,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     if (!dialog_.outputName().empty()) {
       refreshAvailableSeries();
     }
+    refreshOnDemandSupport();
     // The live preview belongs to the Single Function tab only. On the Batch tab
     // tear it down so its ephemeral node can never coexist with / leak into a
     // batch Create (and to avoid needless per-tick churn).
@@ -1794,12 +2409,22 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       input_topics.push_back(extra);
     }
 
-    // On-demand recipe (see previewOnDemand): opts the FUNCTION body out of
-    // the live per-sample contract into one evaluate-at-an-instant Luau chunk.
-    if (global.rfind("-- pj-kind: on_demand", 0) == 0) {
-      const std::string script = "local inputs, params = ...\n" + body;
-      const auto header = parseOnDemandHeader(global);
-      previewOnDemand(input_topics, header.first, script, header.second);
+    // On-demand recipe (see previewOnDemand): the body is one evaluate-at-an-instant Luau chunk,
+    // built with the same helper the assistant uses so the preview runs what Create installs.
+    if (dialog_.isOnDemand()) {
+      const OnDemandBuild& build = buildOnDemandRequest();
+      if (!dialog_.onDemandSupported() || build.form_incomplete) {
+        tearDownPreview();  // the form's overlay says what is missing
+        dialog_.setOnDemandReport("");
+        return;
+      }
+      if (!build.error.empty()) {
+        tearDownPreview();
+        dialog_.setOnDemandReport("");
+        dialog_.setValidationError(build.error);
+        return;
+      }
+      previewOnDemand(build.request, build.anchor);
       return;
     }
     dialog_.setOnDemandReport("");
@@ -1962,6 +2587,20 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   std::optional<PJ::sdk::DataSourceHandle> ds_handle_{std::nullopt};
   PJ::sdk::DataProcessorsHostView dp_view_;
   PJ::sdk::PlaybackHostView playback_view_;
+  PJ::sdk::PlotTabHostView plot_tabs_view_;
+  PJ::sdk::ToolboxHostView test_catalog_host_{PJ_toolbox_host_t{}};  // set by tests only; see catalogHost()
+  static constexpr int kCatalogRefreshTicks = 20;
+  int catalog_refresh_ticks_ = 0;                         // 0 = never read yet
+  std::optional<PJ::sdk::CatalogSnapshotV2> catalog_v2_;  // empty when the host cannot do on-demand
+  std::string catalog_v2_error_;
+  std::optional<OnDemandBuild> on_demand_build_;  // see buildOnDemandRequest()
+  nlohmann::json on_demand_build_key_;
+  int on_demand_build_count_ = 0;  // rebuilds so far (tests assert the cache holds)
+  // "Show in 3D/2D" for the recipe just created: the tab id, its kind, and (topic, dataset) to attach.
+  static constexpr std::string_view kSceneIdPrefix = "te_";
+  std::string scene_id_;
+  std::string scene_kind_;
+  std::vector<std::pair<std::string, std::string>> scene_topics_;
   std::optional<std::uint64_t> pending_preview_;
   std::chrono::steady_clock::time_point preview_deadline_;
   std::chrono::steady_clock::time_point next_preview_refresh_;

@@ -10,6 +10,7 @@ target_compile_features(toolbox_transform_editor_plugin PRIVATE cxx_std_20)
 target_compile_options(toolbox_transform_editor_plugin PRIVATE ${PJ_WARNING_FLAGS})
 
 target_link_libraries(toolbox_transform_editor_plugin PRIVATE
+  pj_derived_recipes
   plotjuggler_sdk::plugin_sdk
   nlohmann_json::nlohmann_json
 )
@@ -80,8 +81,26 @@ add_test(NAME toolbox_transform_editor_floor_test COMMAND toolbox_transform_edit
 add_executable(toolbox_transform_editor_async_preview_test tests/async_preview_test.cpp)
 target_compile_features(toolbox_transform_editor_async_preview_test PRIVATE cxx_std_20)
 target_compile_options(toolbox_transform_editor_async_preview_test PRIVATE ${PJ_WARNING_FLAGS})
+if(NOT MSVC)
+  # The shared fake hosts (assistant tests/support) designate only the vtable slots they serve.
+  target_compile_options(toolbox_transform_editor_async_preview_test PRIVATE -Wno-missing-field-initializers)
+endif()
 target_include_directories(toolbox_transform_editor_async_preview_test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 target_link_libraries(toolbox_transform_editor_async_preview_test PRIVATE
-  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main)
+  pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main)
 add_dependencies(toolbox_transform_editor_async_preview_test toolbox_transform_editor_plugin)
 add_test(NAME toolbox_transform_editor_async_preview_test COMMAND toolbox_transform_editor_async_preview_test)
+
+# Create / Modify / load of on-demand recipes through the real toolbox + dialog, against recording hosts.
+add_executable(toolbox_transform_editor_on_demand_test tests/on_demand_recipe_test.cpp)
+target_compile_features(toolbox_transform_editor_on_demand_test PRIVATE cxx_std_20)
+target_compile_options(toolbox_transform_editor_on_demand_test PRIVATE ${PJ_WARNING_FLAGS})
+if(NOT MSVC)
+  # The shared fake hosts (assistant tests/support) designate only the vtable slots they serve.
+  target_compile_options(toolbox_transform_editor_on_demand_test PRIVATE -Wno-missing-field-initializers)
+endif()
+target_include_directories(toolbox_transform_editor_on_demand_test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_link_libraries(toolbox_transform_editor_on_demand_test PRIVATE
+  pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main)
+add_dependencies(toolbox_transform_editor_on_demand_test toolbox_transform_editor_plugin)
+add_test(NAME toolbox_transform_editor_on_demand_test COMMAND toolbox_transform_editor_on_demand_test)
