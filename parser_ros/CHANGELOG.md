@@ -3,6 +3,15 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_ros/`.
 
+## [1.2.6] - 2026-10-01
+
+### Fixed
+- MCAP messages with `ros2idl` schemas are recognized and decoded. The parser
+  resolves bundled IDL files and includes, preserves include ordering, and
+  normalizes ROS2 resource names for decoding and builtin-object classification.
+- Quoted annotation text is decoded with the rosx_introspection fix in PR #48,
+  temporarily pinned by commit until the dependency release is published.
+
 ## [1.2.5] - 2026-09-29
 
 ### Fixed
