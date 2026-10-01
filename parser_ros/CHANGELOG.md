@@ -3,6 +3,14 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_ros/`.
 
+## [1.2.8] - 2026-10-01
+
+### Fixed
+- Empty or truncated ROS2 CDR headers are rejected before decoding, preventing
+  null-buffer crashes in marker objects and generic messages.
+- Specialized scalar handlers return decoder-initialization failures as parser
+  errors instead of letting exceptions escape.
+
 ## [1.2.5] - 2026-09-29
 
 ### Fixed

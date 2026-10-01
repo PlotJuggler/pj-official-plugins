@@ -2648,6 +2648,32 @@ const PJ::sdk::SceneEntities* parseSceneEntities(
   return pj_compat::getBuiltinObject<PJ::sdk::SceneEntities>(hold);
 }
 
+TEST(RosParserTest, RejectsTruncatedCdrHeaders) {
+  RosParserFixture markers;
+  markers.setUp();
+  ASSERT_TRUE(markers.bindSchema("visualization_msgs/MarkerArray", markerArrayDef(/*humble=*/true)));
+  auto* marker_base = static_cast<PJ::MessageParserPluginBase*>(markers.handle.context());
+  ASSERT_NE(marker_base, nullptr);
+
+  RosParserFixture pose;
+  pose.setUp();
+  ASSERT_TRUE(pose.bindSchema("geometry_msgs/Pose", kPoseDef));
+  auto* pose_base = static_cast<PJ::MessageParserPluginBase*>(pose.handle.context());
+  ASSERT_NE(pose_base, nullptr);
+  for (size_t size = 0; size < 4; ++size) {
+    const std::vector<uint8_t> payload(size, 0);
+    const PJ::Span<const uint8_t> bytes(payload.data(), payload.size());
+    EXPECT_FALSE(marker_base->parseObject(1000, PJ::sdk::PayloadView{bytes, {}}).has_value());
+    EXPECT_FALSE(pose_base->parseScalars(1000, bytes).has_value());
+  }
+  // Rejected payloads must not prevent a subsequent valid empty MarkerArray.
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) { enc.serializeUInt32(0); });
+  PJ::sdk::BuiltinObject hold;
+  const auto* entities = parseSceneEntities(markers, payload, hold);
+  ASSERT_NE(entities, nullptr);
+  EXPECT_TRUE(entities->entities.empty());
+}
+
 TEST(RosParserTest, MarkerArrayProducesSceneEntities) {
   RosParserFixture f;
   f.setUp();
