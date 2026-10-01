@@ -366,7 +366,7 @@ TEST(RosParserTest, Ros2IdlSchemaParsesOriginalAckermannCdr) {
             {"/steering_tire_angle", 0.5},
             {"/steering_tire_rotation_rate", -0.5}}}) {
     const auto field =
-        std::find_if(fields.begin(), fields.end(), [name](const auto& candidate) { return candidate.name == name; });
+        std::find_if(fields.begin(), fields.end(), [&](const auto& candidate) { return candidate.name == name; });
     ASSERT_NE(field, fields.end()) << name;
     EXPECT_DOUBLE_EQ(field->numeric, value) << name;
   }
