@@ -54,7 +54,7 @@
      <item row="0" column="1">
       <widget class="QLabel" name="labelAddress">
        <property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property>
-       <property name="text"><string>Address</string></property>
+       <property name="text"><string>Listen address / multicast group</string></property>
       </widget>
      </item>
      <item row="0" column="2">
@@ -71,6 +71,7 @@
      </item>
      <item row="1" column="1">
       <widget class="QLineEdit" name="lineEditAddress">
+       <property name="toolTip"><string>For unicast or broadcast, enter a local interface address or 0.0.0.0 (IPv4) / :: (IPv6) to listen on all interfaces. For multicast, enter the multicast group address to join.</string></property>
        <property name="placeholderText"><string>127.0.0.1</string></property>
       </widget>
      </item>
