@@ -1942,11 +1942,12 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
   // The host's validator instantiates the class it expects to be named
   // "__validate__" (DataProcessorService::validateScript), so the validation
   // script MUST use that id — while the install script keeps the real name.
-  const std::string validate_script = buildLuauTransform("__validate__", "__validate__", global, body, num_extra);
+  const std::string validate_script =
+      derived_recipes::buildTransformScript("__validate__", "__validate__", global, body, num_extra, "luau").script;
   if (auto v = ctx.dp.validateScript("transform", ctx.language, validate_script); !v) {
     return ToolResult::failure("invalid expression: " + v.error());
   }
-  const std::string script = buildLuauTransform(name, name, global, body, num_extra);
+  const std::string script = derived_recipes::buildTransformScript(name, name, global, body, num_extra, "luau").script;
 
   std::vector<std::string_view> in_views(inputs.begin(), inputs.end());
   std::vector<std::string_view> out_views(outputs.begin(), outputs.end());
@@ -2387,11 +2388,12 @@ ToolResult evaluateSeries(const json& args, ToolContext& ctx) {
   const std::string id = "__evaluate_" + std::to_string(call_id);
   // Same "__validate__" id trick create_derived_series uses: the host's
   // validator instantiates the class under that fixed name.
-  const std::string validate_script = buildLuauTransform("__validate__", "__validate__", global, body, num_extra);
+  const std::string validate_script =
+      derived_recipes::buildTransformScript("__validate__", "__validate__", global, body, num_extra, "luau").script;
   if (auto v = ctx.dp.validateScript("transform", ctx.language, validate_script); !v) {
     return ToolResult::failure("invalid expression: " + v.error());
   }
-  const std::string script = buildLuauTransform(id, id, global, body, num_extra);
+  const std::string script = derived_recipes::buildTransformScript(id, id, global, body, num_extra, "luau").script;
 
   const std::string output_name = id + "/value";
   std::vector<std::string_view> in_views(inputs.begin(), inputs.end());

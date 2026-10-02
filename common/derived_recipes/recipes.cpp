@@ -19,6 +19,10 @@ std::string luaStringEscape(std::string_view s) {
       out.push_back(ch);
     } else if (ch == '\n') {
       out += "\\n";
+    } else if (ch == '\r') {
+      out += "\\r";
+    } else if (ch == '\t') {
+      out += "\\t";
     } else {
       out.push_back(ch);
     }
@@ -30,30 +34,6 @@ std::string buildOnDemandChunk(const std::string& body) {
   std::string src = "-- pj-script: luau\n";
   src += "local inputs, params = ...\n";
   src += body + "\n";
-  return src;
-}
-
-std::string buildLuauTransform(
-    const std::string& id, const std::string& name, const std::string& global_code, const std::string& body,
-    std::size_t num_extra) {
-  std::string params = "time, value";
-  for (std::size_t k = 0; k < num_extra; ++k) {
-    params += ", v" + std::to_string(k + 1);
-  }
-
-  std::string src = "-- pj-script: luau\n";
-  src += "local function _pj_make()\n";
-  src += global_code + "\n";
-  src += "  return function(" + params + ")\n";
-  src += body + "\n";
-  src += "  end\n";
-  src += "end\n";
-  src += "local T = { id = \"" + luaStringEscape(id) + "\", name = \"" + luaStringEscape(name) +
-         "\", output = \"double\" }\n";
-  src += "T.__index = T\n";
-  src += "function T.create(_) return setmetatable({ fn = _pj_make() }, T) end\n";
-  src += "function T:calculate(t, v, ...) return self.fn(t, v, ...) end\n";
-  src += "return T\n";
   return src;
 }
 
@@ -637,6 +617,8 @@ std::size_t skipLuaLong(std::string_view text, std::size_t at) {
   return close == std::string_view::npos ? n : close + level + 2;
 }
 
+}  // namespace
+
 std::vector<CodeToken> tokenize(std::string_view text, std::string_view language) {
   const bool python = language == "python";
   const std::size_t n = text.size();
@@ -675,15 +657,6 @@ std::vector<CodeToken> tokenize(std::string_view text, std::string_view language
     i = token.end;
   }
   return out;
-}
-
-}  // namespace
-
-void forEachCodeToken(
-    std::string_view text, std::string_view language, const std::function<void(const CodeToken&)>& fn) {
-  for (const CodeToken& token : tokenize(text, language)) {
-    fn(token);
-  }
 }
 
 std::size_t returnArity(const std::string& body, const std::string& language) {
@@ -894,38 +867,6 @@ int terminatedLines(const std::string& prefix) {
   return static_cast<int>(std::count(prefix.begin(), prefix.end(), '\n'));
 }
 
-// Escape a string for a DOUBLE-QUOTED Luau or Python literal. A user-controlled id or name with a quote,
-// a backslash or a line break would otherwise close the literal early and the rest would be parsed as
-// CODE (a name like `a"; import os; ...` would run when the generated script is compiled). Both
-// languages accept the same C-style escapes for these characters.
-std::string escapeForStringLiteral(const std::string& in) {
-  std::string out;
-  out.reserve(in.size() + 8);
-  for (const char c : in) {
-    switch (c) {
-      case '\\':
-        out += "\\\\";
-        break;
-      case '"':
-        out += "\\\"";
-        break;
-      case '\n':
-        out += "\\n";
-        break;
-      case '\r':
-        out += "\\r";
-        break;
-      case '\t':
-        out += "\\t";
-        break;
-      default:
-        out += c;
-        break;
-    }
-  }
-  return out;
-}
-
 }  // namespace
 
 BuiltScript buildOnDemandScript(
@@ -935,14 +876,10 @@ BuiltScript buildOnDemandScript(
   const std::string prefix = buildAliasTable(resolved, python) + buildVariablePrologue(language, bindings);
   const std::string user = globals.empty() ? body : globals + "\n" + body;
   BuiltScript out;
-  int line = 1;  // the line the next part starts on
-  if (python) {
-    out.script = "# pj-script: python\ndef evaluate(inputs, params):\n" + indentPython(prefix + user);
-    line += 2;
-  } else {
-    out.script = buildOnDemandChunk(prefix + user);
-    line += 2;
-  }
+  const std::string chunk_body = buildVariablePrologue(language, bindings) + user;
+  out.script =
+      python ? buildOnDemandChunkPython(chunk_body, resolved) : buildResolvedOnDemandChunk(chunk_body, resolved);
+  int line = 3;  // the line after the two header lines
   line += terminatedLines(prefix);
   if (!globals.empty()) {
     out.layout.globals_first_line = line;
@@ -970,8 +907,8 @@ BuiltScript buildOnDemandScript(
 BuiltScript buildTransformScript(
     const std::string& raw_id, const std::string& raw_name, const std::string& global_code, const std::string& body,
     std::size_t num_extra, std::string_view language) {
-  const std::string id = escapeForStringLiteral(raw_id);
-  const std::string name = escapeForStringLiteral(raw_name);
+  const std::string id = luaStringEscape(raw_id);
+  const std::string name = luaStringEscape(raw_name);
   std::string params = "time, value";
   for (std::size_t k = 0; k < num_extra; ++k) {
     params += ", v" + std::to_string(k + 1);

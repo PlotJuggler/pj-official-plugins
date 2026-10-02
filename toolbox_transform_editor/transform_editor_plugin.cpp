@@ -1046,31 +1046,35 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // name-prompt modal; the actual save happens on subDialogAccepted.
     if (name == "buttonSaveCurrent") {
       pending_save_name_ = output_name_;
-      create_stage_ = CreateStage::None;
-      rename_stage_ = RenameStage::None;
-      save_stage_ = SaveStage::NamePrompt;
+      prompt_ = Prompt::SaveName;
       emit_save_name_dialog_ = true;
       return true;
     }
     // A modal sub-dialog was accepted (OK). Drives the save state machine.
     if (name == "subDialogAccepted") {
-      if (create_stage_ == CreateStage::Prompt) {
-        acceptCreatePrompt();
-      } else if (save_stage_ == SaveStage::NamePrompt) {
-        if (pending_save_name_.empty()) {
-          save_stage_ = SaveStage::None;
-        } else if (snippetExists(pending_save_name_)) {
-          save_stage_ = SaveStage::OverwriteConfirm;
-          emit_save_confirm_dialog_ = true;  // ask before overwriting
-        } else {
-          doSaveSnippet(pending_save_name_);
-          save_stage_ = SaveStage::None;
-        }
-      } else if (save_stage_ == SaveStage::OverwriteConfirm) {
-        doSaveSnippet(pending_save_name_);  // user confirmed overwrite
-        save_stage_ = SaveStage::None;
-      } else if (rename_stage_ == RenameStage::Prompt) {
-        acceptRenamePrompt();
+      const Prompt prompt = std::exchange(prompt_, Prompt::None);
+      switch (prompt) {
+        case Prompt::Create:
+          acceptCreatePrompt();
+          break;
+        case Prompt::SaveName:
+          if (pending_save_name_.empty()) {
+            // nothing to save
+          } else if (snippetExists(pending_save_name_)) {
+            prompt_ = Prompt::SaveOverwrite;
+            emit_save_confirm_dialog_ = true;  // ask before overwriting
+          } else {
+            doSaveSnippet(pending_save_name_);
+          }
+          break;
+        case Prompt::SaveOverwrite:
+          doSaveSnippet(pending_save_name_);  // user confirmed overwrite
+          break;
+        case Prompt::Rename:
+          acceptRenamePrompt();
+          break;
+        case Prompt::None:
+          break;
       }
       return true;
     }
@@ -2113,9 +2117,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
   // "Create...": ask for the name. The prefill is the last name, else the first output the trial learned.
   void openCreatePrompt() {
-    save_stage_ = SaveStage::None;
-    rename_stage_ = RenameStage::None;
-    create_stage_ = CreateStage::Prompt;
+    prompt_ = Prompt::Create;
     create_name_ = !output_name_.empty()        ? output_name_
                    : !inferredOutputs().empty() ? inferredOutputs().front().name
                                                 : std::string("result");
@@ -2127,9 +2129,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   // The prompt of one input's Var, prefilled with its current name. The script is not touched: the Var is the
   // name the chunk binds the input to, and the user's code keeps reading whatever name it was written with.
   void openRenamePrompt(std::size_t index) {
-    save_stage_ = SaveStage::None;
-    create_stage_ = CreateStage::None;
-    rename_stage_ = RenameStage::Prompt;
+    prompt_ = Prompt::Rename;
     rename_index_ = index;
     rename_text_ = variableNames()[index];
     pending_rename_text_ = rename_text_;
@@ -2140,7 +2140,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   // OK in the Rename Var prompt. A name that cannot be a Var (not an identifier, reserved, or taken by another
   // input) opens the prompt again with the reason; an empty name gives back the default Var of the row.
   void acceptRenamePrompt() {
-    rename_stage_ = RenameStage::None;
     if (rename_index_ >= sources_.size()) {
       return;
     }
@@ -2155,7 +2154,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     if (const std::string error = derived_recipes::varNameError(name, language_, others); !error.empty()) {
       rename_text_ = name;
       rename_note_ = error;
-      rename_stage_ = RenameStage::Prompt;
+      prompt_ = Prompt::Rename;
       emit_rename_dialog_ = true;
       return;
     }
@@ -2174,18 +2173,17 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   // by pressing OK a second time, opens the prompt again with the reason.
   void acceptCreatePrompt() {
     const std::string name = trimBlanks(pending_create_name_);
-    create_stage_ = CreateStage::None;
     create_name_ = name;
     if (const std::string error = createNameError(name); !error.empty()) {
       create_note_ = error;
-      create_stage_ = CreateStage::Prompt;
+      prompt_ = Prompt::Create;
       emit_create_dialog_ = true;
       return;
     }
     if (own_recipe_exists_ && own_recipe_exists_(name) && replace_confirmed_ != name) {
       replace_confirmed_ = name;
       create_note_ = "A recipe named '" + name + "' already exists: press OK again to replace it.";
-      create_stage_ = CreateStage::Prompt;
+      prompt_ = Prompt::Create;
       emit_create_dialog_ = true;
       return;
     }
@@ -2314,9 +2312,11 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   std::vector<std::string> batch_sources_;  // full paths dropped into tableBatchSources
   bool batch_use_prefix_ = false;           // Prefix vs Suffix radio (default Suffix)
 
+  // The modal prompt on screen, if any; OK dispatches on it and each opener assigns it.
+  enum class Prompt { None, SaveName, SaveOverwrite, Create, Rename };
+  Prompt prompt_ = Prompt::None;
+
   // "Create..." prompt (the name prompt of a new recipe; Modify has none).
-  enum class CreateStage { None, Prompt };
-  CreateStage create_stage_ = CreateStage::None;
   std::string create_name_;          // prefill of the prompt
   std::string pending_create_name_;  // what the user typed (harvested on OK)
   std::string create_note_;          // refusal or replace remark shown in the prompt
@@ -2324,8 +2324,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   bool emit_create_dialog_ = false;
 
   // "Rename Var" prompt (a double click on an input row).
-  enum class RenameStage { None, Prompt };
-  RenameStage rename_stage_ = RenameStage::None;
   std::size_t rename_index_ = 0;     // the row being renamed
   std::string rename_text_;          // prefill of the prompt
   std::string pending_rename_text_;  // what the user typed (harvested on OK)
@@ -2342,8 +2340,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   std::vector<std::string> library_selected_;  // names of the rows selected in the box
 
   // "Save current function" flow (PJ3 parity): name prompt -> overwrite warning.
-  enum class SaveStage { None, NamePrompt, OverwriteConfirm };
-  SaveStage save_stage_ = SaveStage::None;
   std::string pending_save_name_;          // name being saved (from the prompt)
   bool emit_save_name_dialog_ = false;     // one-shot: open the name prompt
   bool emit_save_confirm_dialog_ = false;  // one-shot: open the overwrite warning

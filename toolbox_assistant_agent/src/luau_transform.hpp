@@ -8,7 +8,6 @@
 
 namespace assistant_agent {
 
-using derived_recipes::buildLuauTransform;
 using derived_recipes::buildOnDemandChunk;
 using derived_recipes::luaStringEscape;
 

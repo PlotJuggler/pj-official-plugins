@@ -12,7 +12,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -27,8 +26,8 @@ namespace derived_recipes {
 
 // --- Luau text -------------------------------------------------------------
 
-// Escape a string for embedding inside a double-quoted Lua string literal (names, labels and
-// series paths land verbatim in generated scripts).
+// Escape a string for embedding inside a double-quoted Luau or Python string literal (names, labels
+// and series paths land verbatim in generated scripts): backslash, quote, line break and tab.
 [[nodiscard]] std::string luaStringEscape(std::string_view s);
 
 // Wrap a body into an on-demand Luau chunk (kind="on_demand"). `inputs` (a table keyed by each
@@ -40,13 +39,6 @@ namespace derived_recipes {
 // "    " in front of every line of `code` (an empty line stays empty); a blank body becomes `pass`.
 // Python is whitespace-sensitive, so a body that becomes the inside of a `def` goes through this.
 [[nodiscard]] std::string indentPython(const std::string& code);
-
-// Wrap a per-sample Luau body into a self-describing filter class the host runs as an eager
-// transform. The body runs with `time`, `value` and `v1..v<num_extra>` in scope; the global
-// section runs once per instance inside the factory closure.
-[[nodiscard]] std::string buildLuauTransform(
-    const std::string& id, const std::string& name, const std::string& global_code, const std::string& body,
-    std::size_t num_extra);
 
 // One local of an on-demand body: the variable the script reads and the `inputs[...]` key it
 // is bound from.
@@ -89,8 +81,7 @@ struct CodeToken {
 // Split `text` (language "luau" or "python") into tokens that cover it completely, in order. An
 // unterminated string runs to the end of its line (a long string or triple quote, to the end of
 // the text).
-void forEachCodeToken(
-    std::string_view text, std::string_view language, const std::function<void(const CodeToken&)>& fn);
+[[nodiscard]] std::vector<CodeToken> tokenize(std::string_view text, std::string_view language);
 
 // How many values the body returns per sample, read from its `return` statements: the commas at the
 // top level of a return's expression list, the most of any return (an early `return nil` does not

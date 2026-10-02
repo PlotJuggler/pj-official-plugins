@@ -30,7 +30,7 @@ TEST(DerivedRecipes, ParseTypedOutputsRejectsMalformedEntries) {
 }
 
 TEST(DerivedRecipes, LuaStringEscapeProtectsTheLiteral) {
-  EXPECT_EQ(luaStringEscape("a\"b\\c\nd"), "a\\\"b\\\\c\\nd");
+  EXPECT_EQ(luaStringEscape("a\"b\\c\nd\re\tf"), "a\\\"b\\\\c\\nd\\re\\tf");
 }
 
 TEST(DerivedRecipes, OnDemandChunkBindsInputsAndParamsFromVarargs) {
@@ -48,7 +48,7 @@ TEST(DerivedRecipes, ResolvedChunkAliasesEveryScriptKeyToTheQualifiedRequestKey)
 }
 
 TEST(DerivedRecipes, LuauTransformKeepsTheValueAndExtraInputParameters) {
-  const std::string script = buildLuauTransform("id", "name", "g = 1", "return value + v1", 1);
+  const std::string script = buildTransformScript("id", "name", "g = 1", "return value + v1", 1, "luau").script;
   EXPECT_NE(script.find("return function(time, value, v1)"), std::string::npos) << script;
   EXPECT_NE(script.find("id = \"id\""), std::string::npos);
 }
@@ -147,7 +147,7 @@ int lineOf(const std::string& script, const std::string& line) {
 
 std::string kinds(const std::string& text, const char* language) {
   std::string out;
-  forEachCodeToken(text, language, [&](const CodeToken& token) {
+  for (const CodeToken& token : tokenize(text, language)) {
     switch (token.kind) {
       case CodeTokenKind::kWord:
         out += 'w';
@@ -162,7 +162,7 @@ std::string kinds(const std::string& text, const char* language) {
         out += '.';
         break;
     }
-  });
+  }
   return out;
 }
 
