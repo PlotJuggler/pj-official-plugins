@@ -30,6 +30,8 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/query)
   add_subdirectory(common/transfer_rate)
   add_subdirectory(common/toolbox_preview)
+  add_subdirectory(common/derived_recipes)
+  add_subdirectory(common/test_support)
   # This block always adds every plugin (no PJ_BUILD_PLUGIN filtering), so its
   # consumers data_load_mf4/data_load_blf are always present — add their shared
   # can_dbc unconditionally too. (The standalone block below, which DOES honor
@@ -210,6 +212,14 @@ if(DEFINED PJ_BUILD_PLUGIN)
   endif()
 else()
   add_subdirectory(common/toolbox_preview)
+endif()
+
+# Shared derived-recipe helpers (path/input resolution, typed outputs, Luau chunk) and the header-only
+# fake hosts of their unit tests: consumed by the assistant and the Transform Editor only.
+set(PJ_DERIVED_RECIPES_CONSUMERS toolbox_assistant_agent toolbox_transform_editor)
+if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_DERIVED_RECIPES_CONSUMERS)
+  add_subdirectory(common/derived_recipes)
+  add_subdirectory(common/test_support)
 endif()
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@
 #include <string_view>
 #include <vector>
 
+#include "derived_recipes/recipes.hpp"
 #include "tool_context.hpp"
 
 namespace assistant_agent {
@@ -70,42 +71,16 @@ class ToolRegistry {
 // Whenever anything is left out the text says so explicitly — a model that
 // believes an incomplete listing is the whole truth will confidently tell the
 // user a signal does not exist.
-[[nodiscard]] std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budget_chars = 10000);
+[[nodiscard]] std::string catalogDigest(
+    const PJ::sdk::ToolboxHostView& host, std::size_t budget_chars = 10000,
+    const PJ::sdk::PlaybackHostView& playback = {});
 
-// A resolved "topic/field" curve path: the field handle plus the owning topic
-// name. `path` is the canonical form the lookup settled on — with several
-// datasets loaded it carries the "dataset:topic/field" qualifier, so whatever
-// echoes it back also discloses which dataset it came from. `host_path` is the
-// bare topic/field form: the HOST's create interface addresses inputs by name
-// and knows nothing of the qualifier, so anything handed to it goes in this
-// form (reads are unaffected — they go by handle).
-struct ResolvedSeries {
-  PJ::sdk::FieldHandle handle;
-  std::string topic;
-  std::string path;
-  std::string host_path;
-  // Source name of the dataset this resolved to, empty when only one dataset is
-  // loaded (and so the bare path is already unambiguous). Carried because a
-  // host that addresses a series by its parts should not have to re-split the
-  // qualified path to recover it.
-  std::string dataset;
-};
-
-// Outcome of a path lookup. When nothing resolves, `candidates` carries the
-// near misses so the caller can put them in the error — a model that gets told
-// what the real paths are corrects on the spot, instead of spending a whole
-// extra round-trip asking the catalog.
-struct SeriesLookup {
-  std::optional<ResolvedSeries> resolved;
-  std::vector<std::string> candidates;
-  bool ambiguous = false;  // several paths matched; refusing to guess between them
-};
-
-// Resolve one curve path against the catalog. Accepts the host's
-// "dataset:topic/field" qualifier (matched against known source names); an
-// unqualified path whose exact topic/field exists in several datasets is
-// refused as ambiguous with the qualified candidates. Exported for the unit
-// tests: resolution is where the multi-dataset rules live.
-[[nodiscard]] SeriesLookup resolveSeriesPath(const PJ::sdk::CatalogSnapshot& catalog, const std::string& series);
+// Path resolution lives in the shared derived_recipes library (also used by the Transform
+// Editor); re-exported here so the assistant's code and tests keep their names. Resolution
+// is where the multi-dataset rules live (the "dataset:topic/field" qualifier, ambiguity
+// refusal with qualified candidates).
+using derived_recipes::ResolvedSeries;
+using derived_recipes::resolveSeriesPath;
+using derived_recipes::SeriesLookup;
 
 }  // namespace assistant_agent

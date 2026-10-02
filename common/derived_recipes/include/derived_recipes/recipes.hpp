@@ -1,0 +1,320 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MIT
+#pragma once
+
+// Shared, UI-free helpers for creating persisted derived recipes (kind="transform" /
+// "on_demand") through pj.data_processors.v1: catalog path resolution (scalar series and
+// object topics, dataset qualifiers), input/output resolution, the generated Luau chunk, and
+// the display<->raw time conversion. Used by the assistant's tools and the Transform Editor,
+// so both build the same script and the same request from the same inputs.
+//
+// Nothing here owns host state: every function takes the host views it needs explicitly.
+
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <nlohmann/json.hpp>
+#include <optional>
+#include <pj_base/sdk/plugin_data_api.hpp>
+#include <set>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace derived_recipes {
+
+// --- Luau text -------------------------------------------------------------
+
+// Escape a string for embedding inside a double-quoted Luau or Python string literal (names, labels
+// and series paths land verbatim in generated scripts): backslash, quote, line break and tab.
+[[nodiscard]] std::string luaStringEscape(std::string_view s);
+
+// Wrap a body into an on-demand Luau chunk (kind="on_demand"). `inputs` (a table keyed by each
+// declared input's LITERAL name) and `params` (the node's params_json, decoded) are bound at
+// the chunk's top via the vararg `...`; the body reads inputs["<topic>"] and returns a table
+// of the declared outputs by name.
+[[nodiscard]] std::string buildOnDemandChunk(const std::string& body);
+
+// "    " in front of every line of `code` (an empty line stays empty); a blank body becomes `pass`.
+// Python is whitespace-sensitive, so a body that becomes the inside of a `def` goes through this.
+[[nodiscard]] std::string indentPython(const std::string& code);
+
+// One local of an on-demand body: the variable the script reads and the `inputs[...]` key it
+// is bound from.
+struct InputBinding {
+  std::string var;
+  std::string key;
+};
+
+// The lines that bind one local per input ("local cloud = inputs[\"/lidar_top\"]" for Luau,
+// "cloud = inputs[\"/lidar_top\"]" for Python), to be put in front of a user body.
+[[nodiscard]] std::string buildVariablePrologue(std::string_view language, const std::vector<InputBinding>& bindings);
+
+// The variable name an input gets by default: the leaf of its topic or field path made a valid
+// identifier ("/lidar_top" -> "lidar_top", "pose/x" -> "x", "run1:/cloud" -> "cloud"). A name
+// in `taken`, a Lua/Python keyword or a name the chunk itself uses gets a "_2", "_3"... suffix
+// (a keyword gets "_" first), so the result is never in `taken`.
+[[nodiscard]] std::string inferredVariableName(std::string_view topic, const std::set<std::string>& taken);
+
+// "kPointCloud" -> "point cloud", "kSceneEntities" -> "scene", "kFrameTransforms" -> "transforms",
+// "number" and "string" unchanged; any other builtin object type is its name split into lower-case
+// words. A name that is not a builtin object type stays as it is.
+[[nodiscard]] std::string objectTypeLabel(const std::string& type);
+
+// --- code tokens -----------------------------------------------------------
+
+// What a stretch of script text is, for the helpers that must not touch strings or comments.
+enum class CodeTokenKind {
+  kWord,     // a run of letters, digits and '_' (keywords, names, numbers)
+  kString,   // a quoted string; a Luau [[long]] / [=[long]=] string; a Python triple-quoted string
+  kComment,  // `-- ...` and `--[[ ... ]]` (Luau), `# ...` (Python); the line break is NOT part of it
+  kOther,    // any other single byte (punctuation, whitespace, line breaks)
+};
+
+struct CodeToken {
+  CodeTokenKind kind = CodeTokenKind::kOther;
+  std::size_t begin = 0;
+  std::size_t end = 0;  // one past the last byte
+};
+
+// Split `text` (language "luau" or "python") into tokens that cover it completely, in order. An
+// unterminated string runs to the end of its line (a long string or triple quote, to the end of
+// the text).
+[[nodiscard]] std::vector<CodeToken> tokenize(std::string_view text, std::string_view language);
+
+// How many values the body returns per sample, read from its `return` statements: the commas at the
+// top level of a return's expression list, the most of any return (an early `return nil` does not
+// count). 1 when no return has a value, at most 8. Strings, comments and brackets are skipped.
+[[nodiscard]] std::size_t returnArity(const std::string& body, const std::string& language);
+
+// `word` as an identifier of `text`: not inside a string or comment, not a field after `.` (or a
+// method after `:` in Luau), not a Luau table key (`{ word = 1 }`) and not a Python keyword
+// argument (`f(word=1)`).
+[[nodiscard]] bool mentionsIdentifier(std::string_view text, std::string_view language, std::string_view word);
+
+// `text` with every identifier use found as in mentionsIdentifier renamed through `renames` (old ->
+// new), all at once, so two names can be swapped. Nothing else changes.
+[[nodiscard]] std::string renameIdentifiers(
+    std::string_view text, std::string_view language, const std::map<std::string, std::string>& renames);
+
+// A name the chunk or the language owns: a keyword of `language` ("luau" or "python"; any other
+// value means both), or a name the generated chunk and the standard libraries use ("inputs",
+// "params", "math", ...). Such a name cannot be a Var.
+[[nodiscard]] bool isReservedScriptName(std::string_view name, std::string_view language = {});
+
+// Why `name` cannot be the Var of an input, "" when it can: an identifier ([A-Za-z_][A-Za-z0-9_]*),
+// not reserved in `language`, not one of `other_vars` (the Vars of the other inputs).
+[[nodiscard]] std::string varNameError(
+    std::string_view name, std::string_view language, const std::vector<std::string>& other_vars);
+
+// --- script layout and error lines ----------------------------------------
+
+// Where the user's own code sits in a generated chunk, as 1-based line numbers of the chunk. The
+// host reports errors against the chunk ("script:8:"), so the editor maps them back with
+// remapScriptLines. A part that is absent has 0 lines.
+struct ScriptLayout {
+  int body_first_line = 0;
+  int body_lines = 0;
+  int globals_first_line = 0;
+  int globals_lines = 0;
+};
+
+// A generated chunk and where the user's code is in it.
+struct BuiltScript {
+  std::string script;
+  ScriptLayout layout;
+};
+
+// The per-sample transform chunk of the Transform Editor (Luau, or a Python module with a class T);
+// `id` and `name` are escaped for the string literals they land in.
+[[nodiscard]] BuiltScript buildTransformScript(
+    const std::string& id, const std::string& name, const std::string& global_code, const std::string& body,
+    std::size_t num_extra, std::string_view language = "luau");
+
+// `error` with the chunk's line numbers ("script:8:", "filter:3:", "rule:2:" in Luau,
+// "<string>(8)" or `File "<string>", line 8` in Python) rewritten as the user sees their code:
+// "line 1", "globals line 2", or "line ?" when the line is in neither part (the generated frame).
+[[nodiscard]] std::string remapScriptLines(const std::string& error, const ScriptLayout& layout);
+
+// True when `error` is the kind a script raises when it reads a name that is not bound (a nil
+// local in Luau, a NameError or a None attribute in Python): the caller then lists the names
+// that are. The phrases are pinned by tests.
+[[nodiscard]] bool namesUndefinedName(std::string_view language, std::string_view error);
+
+// --- catalog helpers -------------------------------------------------------
+
+// Cap on how many near misses an error names (the text is fed back to a model and re-sent on
+// every later round trip, so an unbounded list would be paid for repeatedly).
+inline constexpr std::size_t kMaxCandidates = 10;
+
+// Dataset name for each topic INDEX, or empty when fewer than two data sources are loaded
+// (one source adds no information).
+using TopicDatasetMap = std::map<std::uint32_t, std::string>;
+[[nodiscard]] TopicDatasetMap datasetByTopicIndex(std::span<const PJ_data_source_info_t> sources);
+[[nodiscard]] TopicDatasetMap datasetByTopicIndex(const PJ::sdk::CatalogSnapshot& catalog);
+
+// True for a marker set's own object topic ("__markers__/...") -- drawn, not read.
+[[nodiscard]] bool isMarkerObjectTopic(std::string_view name);
+
+// The dataset an object topic's `source` handle belongs to, or empty when it matches none.
+[[nodiscard]] std::string objectTopicDatasetName(
+    std::span<const PJ_data_source_info_t> sources, PJ_data_source_handle_t source);
+
+// "dataset:name" when `dataset` is non-empty, else `name` unchanged.
+[[nodiscard]] std::string qualifyWithDataset(const std::string& dataset, const std::string& name);
+
+// A curve or topic path's dataset-qualifier prefix and the topic index range it narrows the
+// search to. The qualifier is matched against the KNOWN source names (longest match wins).
+struct QualifierMatch {
+  std::string bare;
+  std::uint32_t topic_lo = 0;
+  std::uint32_t topic_hi = 0;
+};
+[[nodiscard]] QualifierMatch matchDatasetQualifier(const PJ::sdk::CatalogSnapshot& catalog, std::string_view series);
+
+// Join a topic name and a field path into the canonical curve path (tolerates a leading '/'
+// on the field).
+[[nodiscard]] std::string joinSeriesPath(std::string_view topic, std::string_view field);
+
+// Collapse '/' runs in a series path.
+[[nodiscard]] std::string canonicalSeriesPath(std::string_view s);
+
+// A resolved "topic/field" curve path: the field handle plus the owning topic name. `path` is
+// the canonical form the lookup settled on (carries the "dataset:" qualifier when several
+// datasets are loaded); `host_path` is the bare topic/field form.
+struct ResolvedSeries {
+  PJ::sdk::FieldHandle handle;
+  std::string topic;
+  std::string path;
+  std::string host_path;
+  // Source name of the dataset this resolved to, empty when only one dataset is loaded.
+  std::string dataset;
+};
+
+// Outcome of a path lookup. When nothing resolves, `candidates` carries the near misses.
+struct SeriesLookup {
+  std::optional<ResolvedSeries> resolved;
+  std::vector<std::string> candidates;
+  bool ambiguous = false;  // several paths matched; refusing to guess between them
+};
+
+// Resolve one curve path against the catalog. Accepts the host's "dataset:topic/field"
+// qualifier; an unqualified path whose exact topic/field exists in several datasets is
+// refused as ambiguous with the qualified candidates.
+[[nodiscard]] SeriesLookup resolveSeriesPath(
+    const PJ::sdk::CatalogSnapshot& catalog, const std::string& series, const TopicDatasetMap& topic_dataset);
+[[nodiscard]] SeriesLookup resolveSeriesPath(const PJ::sdk::CatalogSnapshot& catalog, const std::string& series);
+
+// Who reads an error message: the assistant's model (told which of its tools to call next) or
+// a person in a dialog (told what to do in the UI).
+enum class Audience { kModel, kUser };
+
+// The error a failed lookup should produce.
+[[nodiscard]] std::string seriesLookupError(
+    const std::string& series, const SeriesLookup& lookup, Audience audience = Audience::kModel);
+
+// The DataSourceHandle a resolved series' dataset qualifies to. An empty name with exactly one
+// loaded source is that source.
+[[nodiscard]] std::optional<PJ::sdk::DataSourceHandle> dataSourceHandleFor(
+    const PJ::sdk::CatalogSnapshot& catalog, const std::string& dataset_name);
+
+// --- on-demand inputs / outputs -------------------------------------------
+
+// One resolved input: either a scalar series or an object topic. `host_path` is the literal
+// name the script's `inputs["<host_path>"]` addresses; `display_path` is what gets echoed
+// back; `request_path` is the dataset-qualified ABI input. `source`/`has_source` carry the
+// dataset this input resolved to, for the display<->raw time conversion.
+struct ResolvedEvalInput {
+  std::string host_path;
+  std::string display_path;
+  std::string request_path;
+  std::vector<std::string> aliases;
+  bool is_object = false;
+  std::string object_type;
+  PJ::sdk::DataSourceHandle source{};
+  bool has_source = false;
+  // The catalog row of an object input (zero for a scalar series): how many entries the topic holds
+  // and the raw ns of the first one, so a caller needs no second scan of the catalog. `info` is the row
+  // itself (its string views stay valid while the snapshot lives).
+  std::uint64_t entry_count = 0;
+  std::int64_t time_min_ns = 0;
+  std::int64_t time_max_ns = 0;
+  PJ_object_topic_info_t info{};
+};
+
+// Outcome of resolving one input against the object-topic half of the v2 catalog. An
+// unqualified name that exists on several datasets is refused with the qualified candidates.
+struct ObjectLookup {
+  std::optional<ResolvedEvalInput> resolved;
+  std::vector<std::string> candidates;
+  bool ambiguous = false;
+};
+
+// One non-marker object topic of the v2 catalog. `qualified` is the name to show or type back:
+// "dataset:name" when several datasets are loaded, else the bare name. `dataset` is always the
+// owning source's name. `info` is a copy of the catalog row (its string views stay valid while
+// the snapshot lives).
+struct ObjectTopicEntry {
+  std::string name;
+  std::string type;  // builtin object type name
+  std::string dataset;
+  std::string qualified;
+  PJ_object_topic_info_t info{};
+};
+[[nodiscard]] std::vector<ObjectTopicEntry> listObjectTopics(const PJ::sdk::CatalogSnapshotV2& v2);
+
+[[nodiscard]] ObjectLookup resolveObjectTopic(const PJ::sdk::CatalogSnapshotV2& v2, const std::string& want);
+[[nodiscard]] std::string objectLookupError(const std::string& want, const ObjectLookup& lookup);
+
+// Resolution result for a whole inputs array: each entry tried as an object topic first, then
+// as a scalar series. Every input must share a dataset. `anchor_source` is the FIRST resolved
+// input's dataset, used to anchor the display<->raw time conversion (see toRawNs). `error` is
+// non-empty on any failure.
+struct ResolvedEvalInputs {
+  std::vector<ResolvedEvalInput> inputs;
+  std::optional<PJ::sdk::DataSourceHandle> anchor_source;
+  std::map<std::string, std::string> aliases;  // script key -> qualified ABI key
+  std::string error;
+};
+
+[[nodiscard]] ResolvedEvalInputs resolveEvalInputs(
+    PJ::sdk::ToolboxHostView& host, const PJ::sdk::CatalogSnapshotV2& v2, const std::vector<std::string>& raw_inputs,
+    Audience audience = Audience::kModel);
+
+// Build the on-demand chunk for resolved inputs: keeps both the requested and the historical
+// bare script aliases without textual substitution in user code.
+[[nodiscard]] std::string buildResolvedOnDemandChunk(const std::string& body, const ResolvedEvalInputs& resolved);
+
+// Python counterpart of buildResolvedOnDemandChunk (language="python"): a module whose top
+// level defines `def evaluate(inputs, params):` (the contract of pj_scripting's
+// python_object_script.h). The same alias table is rebuilt first, then `body` follows, indented
+// one level.
+[[nodiscard]] std::string buildOnDemandChunkPython(const std::string& body, const ResolvedEvalInputs& resolved);
+
+// The on-demand chunk (language "luau" or "python") of the Transform Editor: the alias table for
+// `resolved`, one local per binding, the globals, then the body -- the same text
+// buildResolvedOnDemandChunk / buildOnDemandChunkPython give for that composed body.
+[[nodiscard]] BuiltScript buildOnDemandScript(
+    const std::string& body, const std::string& globals, const std::vector<InputBinding>& bindings,
+    const ResolvedEvalInputs& resolved, std::string_view language);
+
+// Declared outputs ("name:type" strings) split for DataProcessorRequest.outputs.
+struct ParsedOutputs {
+  std::vector<PJ::sdk::DataProcessorOutput> outputs;
+  std::string error;
+};
+[[nodiscard]] ParsedOutputs parseTypedOutputs(const nlohmann::json& arr);
+
+// --- on-demand output types ------------------------------------------------
+
+[[nodiscard]] bool isObjectOutputType(const std::string& type);
+// Which scene tab shows an output of this type: "2d" for image-like types, "3d" otherwise.
+[[nodiscard]] std::string sceneKindForOutputType(const std::string& type);
+
+// Inverse of toDisplaySeconds: DISPLAY seconds -> raw dataset ns, from one forward conversion
+// of raw 0. Empty when no playback view is bound or per-source conversion is unsupported.
+[[nodiscard]] std::optional<std::int64_t> toRawNs(
+    PJ::sdk::PlaybackHostView& playback, PJ::sdk::DataSourceHandle source, double display_s);
+
+}  // namespace derived_recipes

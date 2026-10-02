@@ -23,7 +23,7 @@ Three rules fall out of this and explain most of the code:
 
 **A backend never touches host services.** Backends run on the worker thread; the SDK views are
 only legal on the GUI thread. Everything a model asks for is marshalled back through
-`GuiExecutor`, which blocks the worker until `onTick` executes the call. That is also why the
+`GuiExecutor`, which blocks the worker until `onTick` finishes the call across one or more ticks. That is also why the
 catalog digest is built on the GUI thread *before* the turn is handed over — the worker could
 not build it itself.
 
@@ -58,6 +58,30 @@ created — so removal is bounded to its own work by construction rather than by
 no reachable operation that edits or deletes a loaded series. (`remove_derived_series` checks
 membership against `dp.list()` before asking the host, so an unknown name is refused here with a
 useful message instead of being forwarded.)
+
+### Object topics
+
+`list_topics`, `describe_topic`, `report_status` and the catalog digest prefer
+`ctx.host.catalogSnapshotV2()` over the plain `catalogSnapshot()`: the v2 snapshot carries every
+object topic (point clouds, scene entities, images…) alongside the scalar catalog, each with its
+builtin type, entry count, raw time range and owning dataset. A host that predates the v2 slot
+(gated by `PJ_HAS_TAIL_SLOT`, same pattern as every other tail-slot service) degrades to the scalar
+listing plus an explicit note — never a silent undercount. Marker topics (`__markers__/` prefix)
+are filtered out everywhere: they are drawn by the plot overlay, not read by a script, so a model
+that saw them in `list_topics` could never do anything useful with the entry.
+
+`describe_topic` on an object topic never hands the model bytes. It walks the type's field table —
+`sdk::describe(BuiltinObjectType)`, the same compile-time registry `pj_scripting`'s Luau binder
+reads from in PJ4 — into a bounded JSON tree (depth capped at 3; a raw record buffer, e.g.
+`PointCloud::data`, states only its name and kind), and lists the operations a script may call on
+it from a static table in `object_ops_catalog.hpp` that mirrors PJ4's `object_binder.cpp` by hand.
+Keeping that table hand-written rather than derived is deliberate: the SDK's field table describes
+*data shape*, not the native methods a Luau binder layers on top of it, so there is no single source
+to generate operations from — the mirror has to be maintained, and object_ops_catalog.hpp's own
+comment says so. Image/DepthImage decoding, projection, video lookup and annotation builders
+are included; CameraInfo and FrameTransforms expose their field tables without object methods.
+`report_status` reads this assistant's own recipes to count pinned findings and bytes, and
+returns available readiness fields. Failed recipe reads make accounting explicitly incomplete.
 
 ### Path resolution
 
@@ -228,6 +252,13 @@ So the creation tools report facts rather than intentions:
 - `create_derived_series` reports `points`: how many samples the new series has. With one input that
   is the input's length, read from the Arrow header without decoding values; with several it is the
   size of the timestamp intersection, which is what the join will actually produce.
+- `create_derived_object` reports a `bundle`: the same on-demand evaluation `evaluate`'s object path
+  returns, but for the node it just installed, read back immediately after the create — at the pin,
+  or the current playhead when there is none. "Created" alone tells the model nothing about an object
+  computation any more than it does about a marker set; the difference is that objects have no
+  `entryCount()`-shaped read-back to lean on at all, so the bundle IS the read-back, not an
+  approximation of one. A failed read-back does not fail the tool call — the node is installed either
+  way — it degrades the response (`bundle_unavailable`) instead.
 
 ### Facts, never instructions
 
@@ -273,6 +304,58 @@ from the GUI catalog and layout, while the plugin-facing catalog ABI still enume
 separation is what lets `readOne` return statistics and optional buckets without exposing a Custom
 Series row or triggering a catalog rebuild.
 
+### The object path: submit/poll/release instead of create/read/remove
+
+`evaluate` gains a second path, routed to before any of the scalar-path code above runs: selected
+when any input resolves as an object topic (`resolveObjectTopic` against `catalogSnapshotV2()`), or
+when the model passed `at_s`/`window` at all — even over scalar inputs, since those still need a
+CONSUMER-requested time rather than the whole series. Objects never round-trip through the catalog
+as bytes, so this path does not create-then-read like the scalar one; it goes straight at
+`pj.data_processors.v1`'s typed evaluation surface: `validateScript("on_demand", ...)`, then
+`submitEvaluation` of an `EPHEMERAL` `kind="on_demand"` request (id `__evaluate_N`, the same counter
+the scalar path uses, so both share one namespace). `pollEvaluation` runs once per GUI tick.
+A `PENDING` result returns a `ToolResult` continuation, which `GuiExecutor` requeues without
+waking the waiting backend. The next tick supplies a fresh `ToolContext`; no catalog snapshot
+or stack-local context is retained across ticks. The deadline is the evaluation budget plus
+one second of headroom.
+
+`PendingEvaluation` owns the handle and releases it exactly once on completion, host failure,
+cancellation, timeout, or destruction. Cancel and shutdown destroy queued continuations on the
+GUI thread while host services remain valid; abandoned worker requests are released at the next
+GUI tick. The same continuation serves `create_derived_object`'s post-create readback, so polling
+never repeats the persistent installation or its notification.
+
+The script itself is a different shape too: not a per-sample `T:calculate` closure
+(`buildTransformScript`) but a single chunk evaluated once per requested instant
+(`buildOnDemandChunk`, in `common/derived_recipes`, shared with the Transform Editor; `luau_transform.hpp` re-exports it) — `local inputs, params = ...` bound at the top, the
+model's `body` reading `inputs["<topic>"]` by its literal name and returning a table of the
+declared, TYPED `outputs`.
+
+Display seconds go in and come back out through the same per-source AFFINE offset
+`applyDisplayWindow` already uses for `t_start_s`/`t_end_s` (`display(raw) = raw*1e-9 + offset`, a
+per-DATASET constant): `toRawNs` derives it from ONE forward conversion of raw `0` — any raw value on
+the source works, since the offset does not depend on which sample it came from — then inverts it.
+The anchor source is the FIRST resolved input's dataset. Coming back out, `convertBundleTimes`
+converts every bundle's `requested_ns`/`stamp_ns`/`inputs[].resolved_ns` to `*_s` the same way,
+keeping the untouched nanoseconds under `raw_ns` only when the model passed `debug: true`; `coverage`
+rides back verbatim, and `bundles` is capped to the LAST 50 (`renderBundles`) with `"truncated": true`
+when the host produced more.
+
+## Installing an object computation: `create_derived_object`
+
+Mirrors `create_derived_series`'s persisted-node shape (`createHistoryExempt`, the same
+already-exists guard, `notify_data_changed` on success) but through `createV2` with a typed
+`DataProcessorRequest` instead of `createTransform`'s bare string arrays — objects need typed
+outputs and, for a pin, an `instant_ns` `create_data_processor` itself has no field for. Without
+`pin_at_s` the installed node stays live, re-evaluated wherever a later consumer (`scene_view`,
+below) asks; with it, `instant_ns` is set on the create request itself, which is
+what makes a pin a FINDING rather than a live node that happens to be looked at once. Either way the
+tool then calls `submitEvaluation` on the node it just installed (`id` naming it, an EMPTY script —
+`request->id naming an installed on_demand node ... with an empty script evaluates that node`, per
+the ABI doc-comment) at the pin or the current playhead, through the same `submitAndPoll` +
+`renderBundles` evaluate's object path uses, and returns the first bundle: a finding is worth
+nothing if the model has to ask twice to see what it made.
+
 ## Where the assistant is allowed to draw
 
 It composes plot tabs of its own, through `pj.plot_tabs.v1`, and those are the only plots it can
@@ -309,6 +392,24 @@ Each action answers with the tab as the host holds it, and the verdict is read f
 rather than from what the calls returned. The host may accept a curve and resolve it to nothing, so
 "the call succeeded" is not yet "the curve is drawn" — the same reason `create_markers` reads its
 own output back out of the store instead of reporting an intention.
+
+`scene_view` (block 3.3) draws the same boundary over the scene tabs of `pj.plot_tabs.v1` for the 3D/2D
+object viewer: `PlotTabHostView`'s tail slots (`create_tab_v2`/`attach_topic`/`detach_topic`/
+`focus_tab`, gated by `hasSceneTabs()`) serve them, the host lists plot and scene tabs together
+(a scene tab's config carries a `kind` of `3d`/`2d`, a plot tab's does not, which is how `plot_tab`
+and `scene_view` each list only their own), the same per-plugin
+bridge identity scopes it to tabs this assistant composed, and a tab it did not create is
+unreachable exactly as a foreign tab is — the host enforces it, `sceneViewTool` never sees the
+user's scene docks at all. `attach`/`detach` resolve their `topics` argument through
+`resolveObjectTopic` against `catalogSnapshotV2()` (the same object-topic resolution `evaluate`'s
+object path and `create_derived_object` use), then hand the host the bare topic name and its
+resolved dataset source; the tool's answer is `tab_config` read back per topic, not the call's own
+verdict, for the identical reason `plot_tab`'s `add`/`remove` read the tab back — the host may accept
+`attach_topic` and place the topic nowhere (a kind the view's `"3d"`/`"2d"` does not accept, or a
+name it cannot resolve), and that has to show as "did not land", not as a drawing that never
+happened. Requires the scene tabs of `pj.plot_tabs.v1` (SDK >= 0.36.0), a newer surface than `plot_tab`'s own
+floor (0.34.0); an older host gets a clean "not exposed" instead of the tool silently doing
+nothing.
 
 ## Refusing to build an empty curve
 
