@@ -2000,9 +2000,16 @@ TEST(TransformEditorTrial, ASeriesFunctionErrorIsRemappedToTheUsersLine) {
 // The preview's zoom, and renaming a Var
 // ---------------------------------------------------------------------------
 
-// The user zooms and pans the preview and double-clicks it to fit (host side): the editor never sends
-// chart_auto_zoom, which would wipe the user's view on every tick, and has no Fit button.
-TEST(TransformEditorChart, TheEditorNeverSendsAutoZoom) {
+// The user zooms and pans the preview and double-clicks it to fit (host side): the editor turns zoom on
+// every tick, also while the banner covers the plot, and never sends chart_auto_zoom, which would wipe
+// the user's view on every tick. There is no Fit button.
+TEST(TransformEditorChart, ThePreviewZoomsAndTheEditorNeverSendsAutoZoom) {
+  {
+    Rig empty;
+    const auto widgets = empty.widgets();
+    ASSERT_NE(widgets["framePlotPreview"]["chart_placeholder"], "") << "the banner covers the plot";
+    EXPECT_EQ(widgets["framePlotPreview"]["chart_zoom_enabled"], true) << "the chart is built zoomable";
+  }
   Rig rig;
   rig.dp.canned_report_json = kNumberReport;
   rig.newObjectRecipe("return cloud:count()");
@@ -2014,6 +2021,7 @@ TEST(TransformEditorChart, TheEditorNeverSendsAutoZoom) {
   ASSERT_EQ(plottedPoints(rig), 3);
   for (int tick = 0; tick < 3; ++tick) {
     const auto widgets = rig.widgets();
+    EXPECT_EQ(widgets["framePlotPreview"]["chart_zoom_enabled"], true) << "tick " << tick;
     EXPECT_FALSE(widgets["framePlotPreview"].contains("chart_auto_zoom")) << "tick " << tick;
     EXPECT_FALSE(widgets.contains("buttonFitPlot")) << "tick " << tick << ": the Fit button is gone";
   }

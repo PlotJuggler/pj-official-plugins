@@ -834,6 +834,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     } else {
       wd.clearSceneView("frameScenePreview");  // full state every tick: the host diffs each entry
     }
+    // Wheel/rubber-band zoom and pan on the preview; off by default, so it is declared every tick.
+    wd.setChartZoomEnabled("framePlotPreview", true);
     if (!overlay.empty()) {
       wd.clearChart("framePlotPreview");
       wd.setChartPlaceholder("framePlotPreview", overlay);
