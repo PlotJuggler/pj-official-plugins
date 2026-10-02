@@ -643,6 +643,14 @@ TrialReport parseTrialReport(const std::string& report) {
     trial.summary = trial.error;
     return trial;
   }
+  // A run the host stopped on an error says so in `coverage.error`; the bundles it left behind do not.
+  const auto coverage = parsed.find("coverage");
+  if (coverage != parsed.end() && coverage->is_object() && coverage->contains("error") &&
+      (*coverage)["error"].is_string()) {
+    trial.error = (*coverage)["error"].get<std::string>();
+    trial.summary = trial.error;
+    return trial;
+  }
   const auto bundles = parsed.find("bundles");
   trial.has_sample = bundles != parsed.end() && bundles->is_array() && !bundles->empty();
   const nlohmann::json* produced = nullptr;  // the "outputs" object of the first bundle
@@ -2965,12 +2973,12 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       return;
     }
     const std::string title = scene_id_.substr(kSceneIdPrefix.size());
-    if (auto status = plot_tabs_view_.createV2(scene_id_, scene_kind_, title); !status) {
+    if (auto status = plot_tabs_view_.createTabV2(scene_id_, scene_kind_, title); !status) {
       report(PJ::ToolboxMessageLevel::kError, "Transform Editor: " + std::string(status.error()));
       return;
     }
     attachTopics(scene_id_, scene_topics_);
-    (void)plot_tabs_view_.focus(scene_id_);
+    (void)plot_tabs_view_.focusTab(scene_id_);
   }
 
   // Attach each topic to the scene tab; a failure is reported as an error.
@@ -3136,19 +3144,18 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     const auto now = std::chrono::steady_clock::now();
     if (due && now >= next_series_read_) {
       next_series_read_ = now + kSeriesRead;
-      std::vector<std::string> names;  // both spellings of each output's key, the created topic first
+      // The host returned the catalog path of each output's series (`<owner>/<id>/<name>`) when it creates
+      // the preview recipe; read exactly that, never a name guessed from the output.
+      std::vector<std::string> names;
       for (const std::size_t index : numbers) {
         names.push_back(index < object_preview_topics_.size() ? object_preview_topics_[index] : std::string{});
-        names.push_back(std::string(kObjectPreviewId) + "/" + outputs[index].name);
       }
       const auto samples = readManyRawSamples(names);
       std::vector<RawSamples> found;
       std::vector<std::string> labels;
       for (std::size_t i = 0; i < numbers.size(); ++i) {
-        const auto& first = samples[2 * i];
-        const auto& second = samples[2 * i + 1];
-        if (!first.empty() || !second.empty()) {
-          found.push_back(first.empty() ? second : first);
+        if (!samples[i].empty()) {
+          found.push_back(samples[i]);
           labels.push_back(outputs[numbers[i]].name);
         }
       }
@@ -3189,15 +3196,13 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     }
   }
 
-  // Read a datastore field by name (exact, or topic/field suffix/prefix match) and
-  // return its (absolute_ns, value) samples, downsampled to ~2000 points for the
-  // preview. The ephemeral transform output lives in the engine's topic list (and
-  // hence in catalogSnapshot) even though it is kept out of the UI catalog, so this
-  // resolves both the source AND the transformed result by name.
+  // The ephemeral transform output lives in the engine's topic list (and hence in catalogSnapshot) even
+  // though it is kept out of the UI catalog, so the readers below resolve both the source AND the
+  // transformed result by name.
   // Decimated (timestamp, value) samples for one already-resolved field handle.
   std::vector<std::pair<int64_t, double>> samplesFromHandle(PJ::sdk::FieldHandle handle) {
     std::vector<std::pair<int64_t, double>> out;
-    auto read = toolboxHost().readSeries(handle);
+    auto read = catalogHost().readSeries(handle);
     if (!read || read->rowCount() == 0 || read->valuesAsFloat64() == nullptr) {
       return out;
     }
@@ -3212,7 +3217,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     return out;
   }
 
-  // Resolve several "topic/field" names (or a bare topic / bare field) against ONE
+  // Resolve several "topic/field" names (or a bare topic) against ONE
   // catalog snapshot in a single nested pass, returning decimated samples per name
   // (empty if a name did not resolve). The MIMO preview reads the source ghost + M
   // outputs every tick; a per-name readRawSamples would re-acquire the snapshot and
@@ -3243,8 +3248,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
         const std::string leaf = (!fname.empty() && fname.front() == '/') ? fname.substr(1) : fname;
         const std::string full = tname.empty() ? leaf : (tname + "/" + leaf);
         for (std::size_t i = 0; i < names.size(); ++i) {
-          if (found[i] || names[i].empty() ||
-              (tname != names[i] && full != names[i] && fname != names[i] && leaf != names[i])) {
+          if (found[i] || names[i].empty() || (tname != names[i] && full != names[i])) {
             continue;
           }
           handles[i] = PJ::sdk::FieldHandle{f.handle};

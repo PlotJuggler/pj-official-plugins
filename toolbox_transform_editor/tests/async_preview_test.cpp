@@ -3,6 +3,8 @@
 // are exercised without a Qt dependency or a fake replacement state machine.
 #include <gtest/gtest.h>
 
+#include <pj_plugins/testing/toolbox_test_store.hpp>
+
 #include "../../toolbox_assistant_agent/tests/support/fake_catalog_host.hpp"
 #include "../../toolbox_assistant_agent/tests/support/recording_dp_host.hpp"
 #include "../transform_editor_plugin.cpp"
@@ -69,6 +71,21 @@ class TransformEditorPreviewTestPeer {
   // the result of the trial nor a pending run is on screen any more.
   static bool showsReport(TransformEditorToolbox& editor) {
     return status(editor).find("count: 42") != std::string::npos;
+  }
+  // The preview recipe's number output `name` was installed and the host answered `topic` for it; the
+  // editor reads the series for it now.
+  static void readSeries(
+      TransformEditorToolbox& editor, PJ::testing::ToolboxTestStore& store, const std::string& name,
+      const std::string& topic) {
+    editor.test_catalog_host_ = PJ::sdk::ToolboxHostView(store.makeHost());
+    editor.object_preview_topics_ = {topic};
+    editor.showSeriesOrReadout({{name, "number"}}, TransformEditorToolbox::OnDemandBuild{});
+  }
+  static bool seriesAvailable(const TransformEditorToolbox& editor) {
+    return editor.series_available_;
+  }
+  static std::string widgets(TransformEditorToolbox& editor) {
+    return editor.dialog_.widget_data();
   }
   static void close(TransformEditorToolbox& editor) {
     editor.tearDownPreview();
@@ -159,6 +176,58 @@ TEST(TransformEditorPreview, AnEditWaitsForTheDebounceAndDropsTheRunInFlight) {
   TransformEditorPreviewTestPeer::setDebounce(editor, std::chrono::milliseconds(0));
   TransformEditorPreviewTestPeer::tick(editor, "return {count=2}");
   EXPECT_EQ(host.submit_calls, 2);
+}
+
+TEST(TransformEditorPreview, TheSeriesPreviewReadsExactlyTheNameTheHostReturned) {
+  const std::string real = "toolbox-transform-editor/__te_obj_preview__/value";
+  // The real series: topic `<owner>/<id>`, one column per output. Decoys: a topic whose column leaf is also
+  // `value`, one at the name the editor used to guess, and one with the same leaf under another topic.
+  auto build = [&](bool with_real) {
+    auto store = std::make_unique<PJ::testing::ToolboxTestStore>();
+    if (with_real) {
+      store->addTopic("toolbox-transform-editor/__te_obj_preview__")
+          .addField("toolbox-transform-editor/__te_obj_preview__", "value", {0, 1000000000}, {1.0, 2.0});
+    }
+    store->addTopic("__te_obj_preview__").addField("__te_obj_preview__", "value", {0, 1000000000}, {9.0, 9.0});
+    store->addTopic("/imu").addField("/imu", "value", {0, 1000000000}, {7.0, 7.0});
+    return store;
+  };
+  {
+    auto store = build(/*with_real=*/true);
+    TransformEditorToolbox editor;
+    TransformEditorPreviewTestPeer::readSeries(editor, *store, "value", real);
+    ASSERT_TRUE(TransformEditorPreviewTestPeer::seriesAvailable(editor));
+    const std::string shown = TransformEditorPreviewTestPeer::widgets(editor);
+    EXPECT_EQ(shown.find("9.0"), std::string::npos) << shown;
+    EXPECT_EQ(shown.find("7.0"), std::string::npos) << shown;
+  }
+  {
+    // The host did not materialize a series for this recipe (pinned, or no object input): nothing to plot,
+    // whatever else is called `value` in the catalog.
+    auto store = build(/*with_real=*/false);
+    TransformEditorToolbox editor;
+    TransformEditorPreviewTestPeer::readSeries(editor, *store, "value", real);
+    EXPECT_FALSE(TransformEditorPreviewTestPeer::seriesAvailable(editor));
+  }
+  {
+    // A host that returned no name for the output: the editor does not look one up.
+    auto store = build(/*with_real=*/false);
+    TransformEditorToolbox editor;
+    TransformEditorPreviewTestPeer::readSeries(editor, *store, "value", "");
+    EXPECT_FALSE(TransformEditorPreviewTestPeer::seriesAvailable(editor));
+  }
+}
+
+TEST(TransformEditorPreview, TheHostsCoverageErrorIsShownNotANoSampleNote) {
+  Host host;
+  host.canned_report_json =
+      R"({"coverage":{"complete":false,"stopped":"error","error":"input 'cloud' has no data source"},"bundles":[]})";
+  TransformEditorToolbox editor;
+  TransformEditorPreviewTestPeer::bind(editor, host.view());
+  TransformEditorPreviewTestPeer::tick(editor);
+  const std::string shown = TransformEditorPreviewTestPeer::widgets(editor);
+  EXPECT_NE(shown.find("input 'cloud' has no data source"), std::string::npos) << shown;
+  EXPECT_EQ(shown.find("No sample to run on"), std::string::npos) << shown;
 }
 
 }  // namespace
