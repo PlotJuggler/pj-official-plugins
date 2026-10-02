@@ -1096,20 +1096,6 @@ TEST(TransformEditorVars, PythonRecipesRunThePythonChunk) {
   EXPECT_EQ(rig.dialog().canCreateReason(), "");
 }
 
-TEST(TransformEditorVars, ReturnArityReadsTheReturnStatements) {
-  EXPECT_EQ(returnArity("return value*2", "luau"), 1u);
-  EXPECT_EQ(returnArity("return a, b", "luau"), 2u);
-  EXPECT_EQ(returnArity("return f(a, b), {1, 2}, \"x,y\"", "luau"), 3u);
-  EXPECT_EQ(returnArity("if x then return nil end\nreturn a, b, c", "luau"), 3u);
-  EXPECT_EQ(returnArity("-- return a, b\nreturn a", "luau"), 1u);
-  EXPECT_EQ(returnArity("local s = 'return a, b'\nreturn a", "luau"), 1u);
-  EXPECT_EQ(returnArity("return a,\n  b", "luau"), 2u);
-  EXPECT_EQ(returnArity("x = 1", "luau"), 1u) << "no return: one";
-  EXPECT_EQ(returnArity("return a, b", "python"), 2u);
-  EXPECT_EQ(returnArity("return a  # x, y", "python"), 1u);
-  EXPECT_EQ(returnArity("returned = 1, 2\nreturn z", "python"), 1u);
-}
-
 // ---------------------------------------------------------------------------
 // The preview of the outputs
 // ---------------------------------------------------------------------------

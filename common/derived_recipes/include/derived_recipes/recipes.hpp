@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -68,6 +69,87 @@ struct InputBinding {
 // "number" and "string" unchanged; any other builtin object type is its name split into lower-case
 // words. A name that is not a builtin object type stays as it is.
 [[nodiscard]] std::string objectTypeLabel(const std::string& type);
+
+// --- code tokens -----------------------------------------------------------
+
+// What a stretch of script text is, for the helpers that must not touch strings or comments.
+enum class CodeTokenKind {
+  kWord,     // a run of letters, digits and '_' (keywords, names, numbers)
+  kString,   // a quoted string; a Luau [[long]] / [=[long]=] string; a Python triple-quoted string
+  kComment,  // `-- ...` and `--[[ ... ]]` (Luau), `# ...` (Python); the line break is NOT part of it
+  kOther,    // any other single byte (punctuation, whitespace, line breaks)
+};
+
+struct CodeToken {
+  CodeTokenKind kind = CodeTokenKind::kOther;
+  std::size_t begin = 0;
+  std::size_t end = 0;  // one past the last byte
+};
+
+// Split `text` (language "luau" or "python") into tokens that cover it completely, in order. An
+// unterminated string runs to the end of its line (a long string or triple quote, to the end of
+// the text).
+void forEachCodeToken(
+    std::string_view text, std::string_view language, const std::function<void(const CodeToken&)>& fn);
+
+// How many values the body returns per sample, read from its `return` statements: the commas at the
+// top level of a return's expression list, the most of any return (an early `return nil` does not
+// count). 1 when no return has a value, at most 8. Strings, comments and brackets are skipped.
+[[nodiscard]] std::size_t returnArity(const std::string& body, const std::string& language);
+
+// `word` as an identifier of `text`: not inside a string or comment, not a field after `.` (or a
+// method after `:` in Luau), not a Luau table key (`{ word = 1 }`) and not a Python keyword
+// argument (`f(word=1)`).
+[[nodiscard]] bool mentionsIdentifier(std::string_view text, std::string_view language, std::string_view word);
+
+// `text` with every identifier use found as in mentionsIdentifier renamed through `renames` (old ->
+// new), all at once, so two names can be swapped. Nothing else changes.
+[[nodiscard]] std::string renameIdentifiers(
+    std::string_view text, std::string_view language, const std::map<std::string, std::string>& renames);
+
+// A name the chunk or the language owns: a keyword of `language` ("luau" or "python"; any other
+// value means both), or a name the generated chunk and the standard libraries use ("inputs",
+// "params", "math", ...). Such a name cannot be a Var.
+[[nodiscard]] bool isReservedScriptName(std::string_view name, std::string_view language = {});
+
+// Why `name` cannot be the Var of an input, "" when it can: an identifier ([A-Za-z_][A-Za-z0-9_]*),
+// not reserved in `language`, not one of `other_vars` (the Vars of the other inputs).
+[[nodiscard]] std::string varNameError(
+    std::string_view name, std::string_view language, const std::vector<std::string>& other_vars);
+
+// --- script layout and error lines ----------------------------------------
+
+// Where the user's own code sits in a generated chunk, as 1-based line numbers of the chunk. The
+// host reports errors against the chunk ("script:8:"), so the editor maps them back with
+// remapScriptLines. A part that is absent has 0 lines.
+struct ScriptLayout {
+  int body_first_line = 0;
+  int body_lines = 0;
+  int globals_first_line = 0;
+  int globals_lines = 0;
+};
+
+// A generated chunk and where the user's code is in it.
+struct BuiltScript {
+  std::string script;
+  ScriptLayout layout;
+};
+
+// The per-sample transform chunk of the Transform Editor (Luau, or a Python module with a class T);
+// `id` and `name` are escaped for the string literals they land in.
+[[nodiscard]] BuiltScript buildTransformScript(
+    const std::string& id, const std::string& name, const std::string& global_code, const std::string& body,
+    std::size_t num_extra, std::string_view language = "luau");
+
+// `error` with the chunk's line numbers ("script:8:", "filter:3:", "rule:2:" in Luau,
+// "<string>(8)" or `File "<string>", line 8` in Python) rewritten as the user sees their code:
+// "line 1", "globals line 2", or "line ?" when the line is in neither part (the generated frame).
+[[nodiscard]] std::string remapScriptLines(const std::string& error, const ScriptLayout& layout);
+
+// True when `error` is the kind a script raises when it reads a name that is not bound (a nil
+// local in Luau, a NameError or a None attribute in Python): the caller then lists the names
+// that are. The phrases are pinned by tests.
+[[nodiscard]] bool namesUndefinedName(std::string_view language, std::string_view error);
 
 // --- catalog helpers -------------------------------------------------------
 
@@ -218,6 +300,13 @@ struct ResolvedEvalInputs {
 // python_object_script.h). The same alias table is rebuilt first, then `body` follows, indented
 // one level.
 [[nodiscard]] std::string buildOnDemandChunkPython(const std::string& body, const ResolvedEvalInputs& resolved);
+
+// The on-demand chunk (language "luau" or "python") of the Transform Editor: the alias table for
+// `resolved`, one local per binding, the globals, then the body -- the same text
+// buildResolvedOnDemandChunk / buildOnDemandChunkPython give for that composed body.
+[[nodiscard]] BuiltScript buildOnDemandScript(
+    const std::string& body, const std::string& globals, const std::vector<InputBinding>& bindings,
+    const ResolvedEvalInputs& resolved, std::string_view language);
 
 // Declared outputs ("name:type" strings) split for DataProcessorRequest.outputs.
 struct ParsedOutputs {

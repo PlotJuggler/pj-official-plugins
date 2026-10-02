@@ -354,104 +354,6 @@ inline std::vector<std::string> splitOutputNames(const std::string& field) {
   return names;
 }
 
-// Build a complete self-describing Luau FILTER CLASS the host can compile and run
-// live as a DerivedEngine node (via createTransform). The user's global code runs
-// once per instance inside a factory closure, so its locals persist across calls
-// (PJ3 global-variable semantics); the body becomes the per-sample function with
-// `time`/`value` (and `v1..vN` for the additional sources) in scope.
-//
-// `num_extra` is the count of additional sources: the body function takes
-// `(time, value, v1, …, v<num_extra>)`, matching the host's MIMO calculate contract
-// (calculate(self, t, v, v1..vN-1) — see pj_scripting FILTER_CLASS.md). `:calculate`
-// forwards its args with `...`, so any arity works; the named params just give the
-// body the v1..vN identifiers. Output count is decided host-side by the `outputs`
-// passed to createTransform — `:calculate` returns the body's results unchanged
-// (MULTRET), so a body that `return`s M values feeds M output topics.
-// Escape a string so it is safe to embed inside a DOUBLE-QUOTED Lua or Python string
-// literal. Without this, a user-controlled id/name containing a quote (or backslash /
-// newline) closes the literal early and the rest is parsed as CODE — i.e. a nickname
-// like `a"; import os; os.system(...) ; z="` would execute arbitrary code when the
-// generated script is compiled/run. Both languages accept the same C-style escapes for
-// these characters, so one routine covers both backends.
-inline std::string escapeForStringLiteral(const std::string& in) {
-  std::string out;
-  out.reserve(in.size() + 8);
-  for (const char c : in) {
-    switch (c) {
-      case '\\':
-        out += "\\\\";
-        break;
-      case '"':
-        out += "\\\"";
-        break;
-      case '\n':
-        out += "\\n";
-        break;
-      case '\r':
-        out += "\\r";
-        break;
-      case '\t':
-        out += "\\t";
-        break;
-      default:
-        out += c;
-        break;
-    }
-  }
-  return out;
-}
-
-inline std::string buildTransformScript(
-    const std::string& raw_id, const std::string& raw_name, const std::string& global_code, const std::string& body,
-    std::size_t num_extra, const std::string& language = "luau") {
-  // Escape id/name before they are concatenated into the generated script's string
-  // literals — they are user-controlled (the output-name field) and would otherwise
-  // allow code injection. See escapeForStringLiteral.
-  const std::string id = escapeForStringLiteral(raw_id);
-  const std::string name = escapeForStringLiteral(raw_name);
-  std::string params = "time, value";
-  for (std::size_t k = 0; k < num_extra; ++k) {
-    params += ", v" + std::to_string(k + 1);
-  }
-
-  // Python backend: emit a module with a top-level class `T` (see pj_scripting's
-  // python_engine.h). The global section runs once at module level (so `global`
-  // persistent state works, PJ3-style); the body becomes the function. Python is
-  // whitespace-sensitive, so every body line is indented one level.
-  if (language == "python") {
-    std::string src = "# pj-script: python\n";
-    if (!global_code.empty()) {
-      src += global_code + "\n\n";
-    }
-    src += "def _pj_fn(" + params + "):\n";
-    src += derived_recipes::indentPython(body.empty() ? "return value" : body);
-    src += "\n";
-    src += "class T:\n";
-    src += "    id = \"" + id + "\"\n";
-    src += "    name = \"" + name + "\"\n";
-    src += "    output = \"double\"\n";
-    src += "    @staticmethod\n";
-    src += "    def create(params):\n        return T()\n";
-    src += "    def calculate(self, time, value, *args):\n        return _pj_fn(time, value, *args)\n";
-    return src;
-  }
-
-  // The header declares the backend; the host's inferTransformBackend reads it.
-  std::string src = "-- pj-script: " + language + "\n";
-  src += "local function _pj_make()\n";
-  src += global_code + "\n";
-  src += "  return function(" + params + ")\n";
-  src += body + "\n";
-  src += "  end\n";
-  src += "end\n";
-  src += "local T = { id = \"" + id + "\", name = \"" + name + "\", output = \"double\" }\n";
-  src += "T.__index = T\n";
-  src += "function T.create(_) return setmetatable({ fn = _pj_make() }, T) end\n";
-  src += "function T:calculate(t, v, ...) return self.fn(t, v, ...) end\n";
-  src += "return T\n";
-  return src;
-}
-
 // One declared output of an on-demand recipe: the name the script returns it under and its
 // type ("number", "string", or a builtin object type such as "kPointCloud").
 struct OnDemandOutput {
@@ -674,125 +576,7 @@ TrialReport parseTrialReport(const std::string& report) {
   return trial;
 }
 
-// How many values the body returns per sample, read from its `return` statements: the commas at the
-// top level of a return's expression list, the most of any return (an early `return nil` does not
-// count). 1 when no return has a value. Strings, comments and brackets are skipped.
-std::size_t returnArity(const std::string& body, const std::string& language) {
-  const bool python = language == "python";
-  const auto is_word = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; };
-  std::size_t best = 0;
-  std::size_t i = 0;
-  const std::size_t n = body.size();
-  const auto skip_string = [&](std::size_t at) {  // `at` is on the opening quote; returns the index after the string
-    const char quote = body[at];
-    if (python && body.compare(at, 3, std::string(3, quote)) == 0) {
-      const std::size_t close = body.find(std::string(3, quote), at + 3);
-      return close == std::string::npos ? n : close + 3;
-    }
-    std::size_t k = at + 1;
-    while (k < n && body[k] != quote && body[k] != '\n') {
-      k += body[k] == '\\' ? 2 : 1;
-    }
-    return std::min(k + 1, n);
-  };
-  const auto skip_lua_long =
-      [&](std::size_t at) {  // `at` is on "[": the index after a [[...]] / [=[...]=] block, or at
-        std::size_t k = at + 1;
-        std::size_t level = 0;
-        while (k < n && body[k] == '=') {
-          ++level, ++k;
-        }
-        if (k >= n || body[k] != '[') {
-          return at;
-        }
-        const std::size_t close = body.find("]" + std::string(level, '=') + "]", k + 1);
-        return close == std::string::npos ? n : close + level + 2;
-      };
-  while (i < n) {
-    const char c = body[i];
-    if (c == '"' || c == '\'') {
-      i = skip_string(i);
-    } else if (python && c == '#') {
-      while (i < n && body[i] != '\n') {
-        ++i;
-      }
-    } else if (!python && c == '-' && i + 1 < n && body[i + 1] == '-') {
-      const std::size_t after = i + 2 < n && body[i + 2] == '[' ? skip_lua_long(i + 2) : i + 2;
-      if (after != i + 2) {
-        i = after;
-      } else {
-        while (i < n && body[i] != '\n') {
-          ++i;
-        }
-      }
-    } else if (!python && c == '[' && skip_lua_long(i) != i) {
-      i = skip_lua_long(i);
-    } else if (is_word(c)) {
-      std::size_t end = i;
-      while (end < n && is_word(body[end])) {
-        ++end;
-      }
-      if (body.compare(i, end - i, "return") != 0) {
-        i = end;
-        continue;
-      }
-      // Parse the expression list after `return`.
-      std::size_t k = end;
-      int depth = 0;
-      std::size_t commas = 0;
-      bool any = false;
-      for (; k < n; ++k) {
-        const char d = body[k];
-        if (d == '"' || d == '\'') {
-          any = true;
-          k = skip_string(k) - 1;
-          continue;
-        }
-        if (d == '(' || d == '[' || d == '{') {
-          any = true;
-          ++depth;
-        } else if (d == ')' || d == ']' || d == '}') {
-          --depth;
-        } else if (depth == 0 && d == ';') {
-          break;
-        } else if (depth == 0 && d == '\n') {
-          // A Lua list may continue on the next line after a trailing comma.
-          std::size_t back = k;
-          while (back > end && std::isspace(static_cast<unsigned char>(body[back - 1])) != 0) {
-            --back;
-          }
-          if (python || back == end || body[back - 1] != ',') {
-            break;
-          }
-        } else if (depth == 0 && d == ',') {
-          ++commas;
-        } else if (depth == 0 && !python && is_word(d) && (k == 0 || !is_word(body[k - 1]))) {
-          std::size_t word_end = k;
-          while (word_end < n && is_word(body[word_end])) {
-            ++word_end;
-          }
-          const std::string word = body.substr(k, word_end - k);
-          if (word == "end" || word == "else" || word == "elseif" || word == "until") {
-            break;
-          }
-          any = true;
-          k = word_end - 1;
-        } else if (depth == 0 && python && d == '#') {
-          break;
-        } else if (std::isspace(static_cast<unsigned char>(d)) == 0) {
-          any = true;
-        }
-      }
-      if (any) {
-        best = std::max(best, commas + 1);
-      }
-      i = k;
-    } else {
-      ++i;
-    }
-  }
-  return std::clamp<std::size_t>(best, 1, 8);
-}
+using derived_recipes::returnArity;
 
 // "Series" for a per-sample function, "2D" when every input of an object function is an image-like type, else "3D".
 std::string snippetKindLabel(const Snippet& snippet) {
@@ -2603,7 +2387,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     // survives the plugin/panel closing.
     const std::string id = output_names.front();  // host namespaces it under the plugin id
     const std::string script =
-        buildTransformScript(id, output_names.front(), global, body, num_extra, dialog_.language());
+        derived_recipes::buildTransformScript(id, output_names.front(), global, body, num_extra, dialog_.language())
+            .script;
 
     std::vector<std::string_view> inputs(input_topics.begin(), input_topics.end());
     std::vector<std::string_view> outputs(output_names.begin(), output_names.end());
@@ -3013,7 +2798,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
         continue;
       }
       // Pass the FULL field path; the host resolves topic + selected leaf column.
-      const std::string script = buildTransformScript(name, name, global, body, 0, dialog_.batchLanguage());
+      const std::string script =
+          derived_recipes::buildTransformScript(name, name, global, body, 0, dialog_.batchLanguage()).script;
       std::vector<std::string_view> ins{source_display};
       std::vector<std::string_view> outs{name};
       // Persist this series' editor state (single-tab shape) so the Edit (pencil)
@@ -3428,23 +3214,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       return error;
     }
     const bool value_bound = std::find(vars.begin(), vars.end(), "value") != vars.end();
-    if (!value_bound && mentionsIdentifier(dialog_.functionBody(), "value")) {
+    if (!value_bound && derived_recipes::mentionsIdentifier(dialog_.functionBody(), dialog_.language(), "value")) {
       return error + " · `value` is not defined here; inputs are: " + names;
     }
     return no_values ? error + " · inputs are: " + names : error;
-  }
-
-  // `word` as an identifier of `text` (not part of a longer name, not a field after `.` or `:`).
-  static bool mentionsIdentifier(const std::string& text, const std::string& word) {
-    auto is_name = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; };
-    for (std::size_t at = text.find(word); at != std::string::npos; at = text.find(word, at + 1)) {
-      const bool before_ok = at == 0 || (!is_name(text[at - 1]) && text[at - 1] != '.' && text[at - 1] != ':');
-      const std::size_t end = at + word.size();
-      if (before_ok && (end >= text.size() || !is_name(text[end]))) {
-        return true;
-      }
-    }
-    return false;
   }
 
   void refreshPreview() {
@@ -3534,7 +3307,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       preview_outputs.push_back(preview_id + "_" + std::to_string(k));
     }
     const std::string script =
-        buildTransformScript(preview_id, preview_id, global, body, num_extra, dialog_.language());
+        derived_recipes::buildTransformScript(preview_id, preview_id, global, body, num_extra, dialog_.language())
+            .script;
 
     // Evaluate the code FIRST via the SDK (cheap: compile + one test point, no node).
     // Only materialise the live preview node when the script is valid — so a broken
@@ -3542,7 +3316,9 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     // validation script uses the host's expected "__validate__" class id (the
     // preview/create script keeps preview_id for the upsert).
     const auto invalid = scriptError("transform", dialog_.language(), [&] {
-      return buildTransformScript("__validate__", "__validate__", global, body, num_extra, dialog_.language());
+      return derived_recipes::buildTransformScript(
+                 "__validate__", "__validate__", global, body, num_extra, dialog_.language())
+          .script;
     });
     dialog_.setValidationError(invalid.value_or(""));
     if (invalid) {
@@ -3638,8 +3414,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       dialog_.setBatchValidationError("");
       return;
     }
-    const std::string script = buildTransformScript(
-        "__validate__", "__validate__", dialog_.batchGlobalCode(), body, 0, dialog_.batchLanguage());
+    const std::string script =
+        derived_recipes::buildTransformScript(
+            "__validate__", "__validate__", dialog_.batchGlobalCode(), body, 0, dialog_.batchLanguage())
+            .script;
     auto status = dp_view_.validateScript("transform", dialog_.batchLanguage(), script);
     dialog_.setBatchValidationError(status ? "" : std::string(status.error()));
   }
