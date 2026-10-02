@@ -7,24 +7,36 @@
 
 #include <filesystem>
 
-#include "../../toolbox_assistant_agent/tests/support/fake_catalog_host.hpp"
-#include "../../toolbox_assistant_agent/tests/support/fake_playback_viewport_hosts.hpp"
-#include "../../toolbox_assistant_agent/tests/support/fake_plot_tabs_host.hpp"
-#include "../../toolbox_assistant_agent/tests/support/recording_dp_host.hpp"
 #include "../transform_editor_plugin.cpp"
+#include "test_support/fake_catalog_host.hpp"
+#include "test_support/fake_playback_viewport_hosts.hpp"
+#include "test_support/fake_plot_tabs_host.hpp"
+#include "test_support/recording_dp_host.hpp"
 
 namespace {
 
-using assistant_agent::testing::FakeCatalogHost;
-using assistant_agent::testing::FakePlaybackHost;
-using assistant_agent::testing::FakePlotTabsHost;
-using assistant_agent::testing::RecordingDpHost;
+using toolbox_testing::FakeCatalogHost;
+using toolbox_testing::FakePlaybackHost;
+using toolbox_testing::FakePlotTabsHost;
+using toolbox_testing::RecordingDpHost;
 
 class TransformEditorPreviewTestPeer {
  public:
+  // The dialog host announces what it can do through set_host_info, as the real one does.
+  static void announceHost(TransformEditorToolbox& editor, std::uint64_t capabilities) {
+    PJ_dialog_host_info_t info{};
+    info.struct_size = sizeof(info);
+    info.capabilities = capabilities;
+    PJ_error_t error{};
+    const auto* vtable =
+        PJ::DialogPluginBase::vtableWithCreate(static_cast<decltype(PJ_dialog_vtable_t::create)>(nullptr));
+    PJ::DialogPluginBase* dialog = &editor.dialog_;
+    ASSERT_TRUE(vtable->set_host_info(dialog, &info, &error)) << error.message;
+  }
   static void bind(
       TransformEditorToolbox& editor, RecordingDpHost& dp, FakeCatalogHost& catalog, FakePlaybackHost& playback,
-      FakePlotTabsHost& tabs) {
+      FakePlotTabsHost& tabs, bool embeds_scene_views = true) {
+    announceHost(editor, embeds_scene_views ? PJ_DIALOG_HOST_EMBEDS_SCENE_VIEWS : 0);
     editor.dp_view_ = dp.view();
     editor.test_catalog_host_ = PJ::sdk::ToolboxHostView(catalog.makeHost());
     editor.playback_view_ = playback.view();
@@ -111,8 +123,7 @@ const char* const kImageReport =
 
 const char* const kMiddleDot = "·";
 
-// An on-demand editor state the way the host stores it: the user's params object plus "__editor". The
-// `outputs` it carries are the 1.2.0 hint.
+// An on-demand editor state the way the host stores it: the user's params object plus "__editor".
 std::string onDemandConfig(
     const std::string& name, const std::string& params_text = "{\"k\":2}", bool pin = false,
     const std::string& source = "/cloud") {
@@ -125,7 +136,6 @@ std::string onDemandConfig(
       {"language", "luau"},
       {"mode", "single"},
       {"kind", "on_demand"},
-      {"outputs", nlohmann::json::array({{{"name", "old_hint"}, {"type", "number"}}})},
       {"params_text", params_text},
       {"pin_current_time", pin},
   };
@@ -140,6 +150,7 @@ struct Rig {
   FakePlaybackHost playback;
   FakePlotTabsHost tabs;
   TransformEditorToolbox editor;
+  bool embeds_scene_views = true;  // what the dialog host announces; rebind() after changing it
 
   Rig() {
     catalog.addObjectTopic("/cloud", "kPointCloud", 5, 0, 5'000'000'000);
@@ -153,7 +164,7 @@ struct Rig {
   // The fakes pick their vtable when view() is called, so a test that changes a capability
   // flag rebinds afterwards.
   void rebind() {
-    TransformEditorPreviewTestPeer::bind(editor, dp, catalog, playback, tabs);
+    TransformEditorPreviewTestPeer::bind(editor, dp, catalog, playback, tabs, embeds_scene_views);
   }
   void load(const std::string& config) {
     ASSERT_TRUE(dialog().loadConfig(config));
@@ -209,7 +220,7 @@ TEST(TransformEditorTrial, SubmitsWithTheInferFlagAndNoOutputsAndParsesTheReport
   EXPECT_EQ(rig.dialog().canCreateReason(), "");
 }
 
-TEST(TransformEditorTrial, ALegacyDeclaredOutputIsOnlyAHintTheTrialReplaces) {
+TEST(TransformEditorTrial, ALoadedRecipeTrustsNoOutputsBeforeATrial) {
   Rig rig;
   rig.load(onDemandConfig("my_filter"));
   EXPECT_TRUE(rig.dialog().inferredOutputs().empty()) << "nothing is trusted before a trial";
@@ -379,7 +390,7 @@ TEST(TransformEditorCreate, ModifySendsTheInferFlagTheInferredOutputsParamsEdito
   EXPECT_EQ(params["__editor"]["kind"], "on_demand");
   EXPECT_EQ(params["__editor"]["output_name"], "my_filter");
   EXPECT_EQ(params["__editor"]["vars"], nlohmann::json::array({"cloud"}));
-  EXPECT_EQ(params["__editor"]["outputs"].size(), 2u);
+  EXPECT_FALSE(params["__editor"].contains("outputs")) << "a trial infers them on load";
 }
 
 TEST(TransformEditorCreate, WithoutPinTheRecipeCarriesNoInstant) {
@@ -692,10 +703,10 @@ TEST(TransformEditorCreate, PreviewTicksReuseTheResolvedBuild) {
 }
 
 // ---------------------------------------------------------------------------
-// Legacy states keep loading
+// Saved states keep loading
 // ---------------------------------------------------------------------------
 
-TEST(TransformEditorLegacy, A11TransformStateLoadsAndKeepsItsShape) {
+TEST(TransformEditorSavedState, AV10TransformStateLoadsAndKeepsItsShape) {
   Rig rig;
   rig.load(
       R"({"output_name":"dbl","global_code":"","function_body":"return value*2","sources":["a/x","b/y"],)"
@@ -713,7 +724,7 @@ TEST(TransformEditorLegacy, A11TransformStateLoadsAndKeepsItsShape) {
   EXPECT_EQ(rig.widgets()["pushButtonCreate"]["button_text"], "Modify") << "opened from Custom Topics: name locked";
 }
 
-TEST(TransformEditorLegacy, A120StateWithKindAndOutputsLoadsAsAnOnDemandRecipe) {
+TEST(TransformEditorSavedState, AStateWithKindLoadsAsAnOnDemandRecipe) {
   Rig rig;
   rig.load(onDemandConfig("my_filter", "{\"k\":2}"));
   rig.refresh();
@@ -722,17 +733,17 @@ TEST(TransformEditorLegacy, A120StateWithKindAndOutputsLoadsAsAnOnDemandRecipe) 
   EXPECT_EQ(rig.dialog().sources(), std::vector<std::string>{"/cloud"});
   EXPECT_EQ(rig.dialog().paramsText(), "{\"k\":2}");
   EXPECT_EQ(rig.dialog().variableNames(), std::vector<std::string>{"cloud"});
+  EXPECT_FALSE(nlohmann::json::parse(rig.dialog().saveConfig()).contains("outputs")) << "a trial infers them";
   EXPECT_TRUE(rig.widgets()["advancedPane"]["visible"].get<bool>()) << "params are set: the disclosure opens";
 }
 
-TEST(TransformEditorLegacy, ASavedOnDemandKindStaysOnDemandUntilTheInputsChange) {
+TEST(TransformEditorSavedState, ASavedOnDemandKindStaysOnDemandUntilTheInputsChange) {
   Rig rig;
   nlohmann::json editor = {
       {"output_name", "n"},
       {"function_body", "return {r = inputs[\"a/x\"]}"},
       {"sources", nlohmann::json::array({"a/x"})},
-      {"kind", "on_demand"},
-      {"outputs", nlohmann::json::array({{{"name", "r"}, {"type", "number"}}})}};
+      {"kind", "on_demand"}};
   nlohmann::json params = {{"__editor", editor}};
   rig.load(params.dump());
   EXPECT_TRUE(rig.dialog().isOnDemand()) << "its script is an on-demand chunk whatever it reads";
@@ -740,19 +751,7 @@ TEST(TransformEditorLegacy, ASavedOnDemandKindStaysOnDemandUntilTheInputsChange)
   EXPECT_FALSE(rig.dialog().isOnDemand());
 }
 
-TEST(TransformEditorLegacy, HeaderStateLoadsIntoTheForm) {
-  Rig rig;
-  rig.load(
-      R"({"output_name":"old","global_code":"-- pj-kind: on_demand\n-- pj-outputs: cropped:kPointCloud,count:number\n)"
-      R"(-- pj-params: {\"k\":1}\nlocal scale = 2","function_body":"return {count = scale}","sources":["/cloud"]})");
-  rig.refresh();
-  EXPECT_TRUE(rig.dialog().isOnDemand());
-  EXPECT_EQ(rig.dialog().paramsText(), "{\"k\":1}");
-  EXPECT_EQ(rig.dialog().globalCode(), "local scale = 2");  // header lines are gone, the rest stays
-  EXPECT_EQ(rig.widgets()["tableSources"]["rows"][0][3], "point cloud");
-}
-
-TEST(TransformEditorLegacy, AStateSavedByThisEditorLoadsBackWithItsVars) {
+TEST(TransformEditorSavedState, AStateSavedByThisEditorLoadsBackWithItsVars) {
   Rig rig;
   rig.catalog.addObjectTopic("/a/lidar", "kPointCloud", 1, 0, 1);
   rig.catalog.addObjectTopic("/b/lidar", "kPointCloud", 1, 0, 1);
@@ -1087,6 +1086,40 @@ TEST(TransformEditorPreview, ObjectsOnlyHideThePlotAndNumbersOnlyHideTheSceneAnd
   EXPECT_TRUE(later["frameScenePreview"]["scene_view"].is_null());
 }
 
+TEST(TransformEditorPreview, WithoutTheHostsSceneViewBitTheSceneFrameStaysHiddenAndTheReadoutShows) {
+  Rig rig;
+  rig.embeds_scene_views = false;  // scene workspaces exist (tabs), but the dialog host binds no scene_view frame
+  rig.rebind();
+  rig.dp.canned_report_json = kTrialReport;
+  rig.newObjectRecipe();
+  const auto widgets = rig.widgets();
+  EXPECT_EQ(widgets["frameScenePreview"]["visible"], false);
+  EXPECT_TRUE(widgets["frameScenePreview"]["scene_view"].is_null());
+  EXPECT_EQ(widgets["framePlotPreview"]["visible"], true);
+  EXPECT_NE(TransformEditorPreviewTestPeer::status(rig.editor).find("count: 42"), std::string::npos);
+  EXPECT_FALSE(rig.dialog().trialFailed());
+}
+
+TEST(TransformEditorPreview, AHostWithoutCatalogV2StillWarnsAboutObjectInputs) {
+  Rig rig;
+  rig.catalog.supportsV2(false);  // the v1 snapshot lists scalars only: an object topic is not there
+  rig.catalog.addTopic("/imu").addField("/imu", "x");
+  rig.rebind();
+  rig.refresh();
+  rig.dialog().onItemsDropped("tableSources", {"/imu/x"});
+  rig.dialog().onCodeChanged("functionText", "return value");
+  rig.refresh();
+  EXPECT_FALSE(rig.dialog().isOnDemand()) << "a scalar is a series input on any host";
+  EXPECT_EQ(rig.dialog().canCreateReason().find("SDK 0.36"), std::string::npos);
+
+  rig.dialog().onItemsDropped("tableSources", {"/cloud"});
+  rig.refresh();
+  EXPECT_TRUE(rig.dialog().isOnDemand()) << "not a scalar of the v1 snapshot: object-shaped";
+  EXPECT_NE(rig.dialog().canCreateReason().find("SDK 0.36"), std::string::npos) << rig.dialog().canCreateReason();
+  EXPECT_EQ(rig.widgets()["pushButtonCreate"]["enabled"], false);
+  EXPECT_EQ(rig.dp.submit_calls, 0);
+}
+
 TEST(TransformEditorPreview, NumbersOnlySendAClearedSceneView) {
   Rig rig;
   rig.dp.canned_report_json = kNumberReport;
@@ -1137,7 +1170,7 @@ TEST(TransformEditorPreview, NumberOutputsShowTheReadoutAndSayWhenTheSeriesNeeds
   EXPECT_EQ(rig.dialog().canCreateReason(), "") << "a missing series preview never blocks Create";
 }
 
-TEST(TransformEditorPreview, CreateAndCloseRemoveThePreviewRecipe) {
+TEST(TransformEditorPreview, CreateRemovesThePreviewRecipeAndCloseLeavesItToTheHost) {
   {
     Rig rig;
     rig.load(onDemandConfig("my_filter"));
@@ -1161,7 +1194,7 @@ TEST(TransformEditorPreview, CreateAndCloseRemoveThePreviewRecipe) {
     TransformEditorPreviewTestPeer::refresh(editor);
     ASSERT_EQ(dp.create_v2_calls, 1);
   }  // closing the editor
-  EXPECT_EQ(dp.last_removed, "__te_obj_preview__");
+  EXPECT_TRUE(dp.last_removed.empty()) << "the host removes the previews of a closed panel";
 }
 
 TEST(TransformEditorPreview, AFailedTrialTakesThePreviewRecipeAway) {
@@ -1185,13 +1218,14 @@ TEST(TransformEditorPreview, SeriesOnlyRecipesInstallNoScenePreview) {
   EXPECT_TRUE(rig.tabs.tabs.empty());
 }
 
-TEST(TransformEditorPreview, WithoutSceneTabsOnlyTheStatusLineRemains) {
+TEST(TransformEditorPreview, WithoutSceneTabsTheEmbeddedViewStillFollowsTheDialogHostBit) {
   Rig rig;
   rig.tabs.null_tail = true;
   rig.rebind();
   rig.load(onDemandConfig("my_filter"));
   rig.refresh();
   EXPECT_TRUE(rig.tabs.tabs.empty());
+  EXPECT_EQ(rig.widgets()["frameScenePreview"]["scene_view"], "3d") << "the bit alone gates the embedded view";
   EXPECT_NE(TransformEditorPreviewTestPeer::status(rig.editor).find("count: 42"), std::string::npos);
 }
 
@@ -1236,7 +1270,7 @@ TEST(TransformEditorLibrary, TheNewFieldsRoundTripAndAnOldLibraryStillLoads) {
   EXPECT_EQ((*loaded)[1].kind, "series");
   EXPECT_TRUE((*loaded)[1].inputs.empty());
 
-  // A library written before 1.2.0 has none of the fields; a hand-edited one may have them malformed.
+  // A library written by v1.0.x has none of the fields; a hand-edited one may have them malformed.
   {
     std::ofstream out(path);
     out << R"([{"name":"old","global_code":"g","function_body":"return value","language":"python"},)"

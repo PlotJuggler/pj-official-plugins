@@ -24,26 +24,26 @@
 
 #include "gui_executor.hpp"
 #include "object_ops_catalog.hpp"
-#include "support/fake_catalog_host.hpp"
 #include "support/fake_multi_dataset_host.hpp"
 #include "support/fake_object_read_host.hpp"
-#include "support/fake_playback_viewport_hosts.hpp"
-#include "support/fake_plot_tabs_host.hpp"
-#include "support/recording_dp_host.hpp"
+#include "test_support/fake_catalog_host.hpp"
+#include "test_support/fake_playback_viewport_hosts.hpp"
+#include "test_support/fake_plot_tabs_host.hpp"
+#include "test_support/recording_dp_host.hpp"
 
 namespace {
 
 using assistant_agent::catalogDigest;
 using assistant_agent::ToolContext;
 using assistant_agent::ToolRegistry;
-using assistant_agent::testing::FakeCatalogHost;
 using assistant_agent::testing::FakeMultiDatasetHost;
 using assistant_agent::testing::FakeObjectReadHost;
-using assistant_agent::testing::FakePlaybackHost;
-using assistant_agent::testing::FakePlotTabsHost;
-using assistant_agent::testing::FakeViewportHost;
-using assistant_agent::testing::RecordingDpHost;
 using nlohmann::json;
+using toolbox_testing::FakeCatalogHost;
+using toolbox_testing::FakePlaybackHost;
+using toolbox_testing::FakePlotTabsHost;
+using toolbox_testing::FakeViewportHost;
+using toolbox_testing::RecordingDpHost;
 
 constexpr std::int64_t kSec = 1'000'000'000;
 
@@ -207,6 +207,31 @@ TEST(ToolRegistry, DescribeUnknownTopicFails) {
   auto ctx = makeCtx(store, nullptr);
   auto r = reg.execute("describe_topic", {{"topic", "/nope"}}, ctx);
   EXPECT_FALSE(r.ok);
+}
+
+// An object topic that exists on two datasets is described like every other object input: the bare name is
+// refused with the qualified candidates, and "dataset:name" picks one.
+TEST(ToolRegistry, DescribeObjectTopicHonoursTheDatasetQualifierAndReportsAmbiguity) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, kSec, R"({"builtin_object_type":"kPointCloud"})", "runA");
+  host.addObjectTopic("/cloud", "kImage", 7, 0, kSec, R"({"builtin_object_type":"kImage"})", "runB");
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+
+  auto ambiguous = reg.execute("describe_topic", {{"topic", "/cloud"}}, ctx);
+  EXPECT_FALSE(ambiguous.ok) << ambiguous.content;
+  EXPECT_NE(ambiguous.content.find("ambiguous"), std::string::npos) << ambiguous.content;
+  EXPECT_NE(ambiguous.content.find("runA:/cloud"), std::string::npos) << ambiguous.content;
+  EXPECT_NE(ambiguous.content.find("runB:/cloud"), std::string::npos) << ambiguous.content;
+
+  auto b = reg.execute("describe_topic", {{"topic", "runB:/cloud"}}, ctx);
+  ASSERT_TRUE(b.ok) << b.content;
+  EXPECT_EQ(json::parse(b.content)["type"], "kImage");
+  EXPECT_EQ(json::parse(b.content)["entries"], 7);
+  auto a = reg.execute("describe_topic", {{"topic", "runA:/cloud"}}, ctx);
+  ASSERT_TRUE(a.ok) << a.content;
+  EXPECT_EQ(json::parse(a.content)["type"], "kPointCloud");
 }
 
 // describe_topic on an object topic walks its field table (PointCloud's own

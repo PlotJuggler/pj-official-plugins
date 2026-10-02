@@ -7,7 +7,7 @@
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <string>
 
-namespace assistant_agent::testing {
+namespace toolbox_testing {
 
 // Fake pj.playback.v1 host: records the last call, serves a settable state,
 // and converts absolute ns -> display seconds with a fixed offset so the
@@ -119,4 +119,4 @@ struct FakeViewportHost {
   }
 };
 
-}  // namespace assistant_agent::testing
+}  // namespace toolbox_testing

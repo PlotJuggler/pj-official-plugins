@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-namespace assistant_agent::testing {
+namespace toolbox_testing {
 
 // Records the last create/validate call so tests can assert the synthesized
 // Luau script + routed inputs/outputs. Returns success unless a fail flag is set.
@@ -492,4 +492,4 @@ struct RecordingDpHost {
   }
 };
 
-}  // namespace assistant_agent::testing
+}  // namespace toolbox_testing

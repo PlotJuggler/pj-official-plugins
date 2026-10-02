@@ -5,9 +5,9 @@
 
 #include <pj_plugins/testing/toolbox_test_store.hpp>
 
-#include "../../toolbox_assistant_agent/tests/support/fake_catalog_host.hpp"
-#include "../../toolbox_assistant_agent/tests/support/recording_dp_host.hpp"
 #include "../transform_editor_plugin.cpp"
+#include "test_support/fake_catalog_host.hpp"
+#include "test_support/recording_dp_host.hpp"
 
 namespace {
 
@@ -25,7 +25,7 @@ class TransformEditorPreviewTestPeer {
   }
   // The form resolves inputs against the catalog (object topics first), so a config-driven
   // preview needs one that knows "/cloud".
-  static void bindCatalog(TransformEditorToolbox& editor, assistant_agent::testing::FakeCatalogHost& catalog) {
+  static void bindCatalog(TransformEditorToolbox& editor, toolbox_testing::FakeCatalogHost& catalog) {
     editor.test_catalog_host_ = PJ::sdk::ToolboxHostView(catalog.makeHost());
   }
   static void tick(TransformEditorToolbox& editor, std::string script = "return {count=1}") {
@@ -56,7 +56,7 @@ class TransformEditorPreviewTestPeer {
   }
   static void configure(TransformEditorToolbox& editor, bool source, bool body) {
     nlohmann::json config = {
-        {"global_code", "-- pj-kind: on_demand\n-- pj-outputs: count:number"},
+        {"kind", "on_demand"},
         {"function_body", body ? "return {count=1}" : ""},
         {"sources", source ? nlohmann::json::array({"/cloud"}) : nlohmann::json::array()}};
     ASSERT_TRUE(editor.dialog_.loadConfig(config.dump()));
@@ -91,7 +91,7 @@ class TransformEditorPreviewTestPeer {
     editor.tearDownPreview();
   }
 };
-using Host = assistant_agent::testing::RecordingDpHost;
+using Host = toolbox_testing::RecordingDpHost;
 TEST(TransformEditorPreview, PendingYieldsThenCompletesAndReleasesOnce) {
   Host host;
   host.pending_polls = 2;
@@ -234,8 +234,7 @@ TEST(TransformEditorPreview, TheHostsCoverageErrorIsShownNotANoSampleNote) {
 
 TEST(TransformEditorPreview, TheStatusLineShowsTheResultAndCreateWaitsForAnInferredTrial) {
   TransformEditorDialog dialog;
-  ASSERT_TRUE(dialog.loadConfig(
-      R"({"global_code":"-- pj-kind: on_demand","function_body":"return {count=1}","sources":["/cloud"]})"));
+  ASSERT_TRUE(dialog.loadConfig(R"({"kind":"on_demand","function_body":"return {count=1}","sources":["/cloud"]})"));
   dialog.setStatus("count: 42");
   const auto widgets = nlohmann::json::parse(dialog.widget_data());
   EXPECT_EQ(widgets["statusLabel"]["label"], "count: 42");
@@ -246,7 +245,7 @@ TEST(TransformEditorPreview, ClearingBodyOrInputClearsCompletedAndPendingReports
   for (bool clear_source : {false, true}) {
     Host host;
     host.canned_report_json = kTrialReport;
-    assistant_agent::testing::FakeCatalogHost catalog;
+    toolbox_testing::FakeCatalogHost catalog;
     catalog.addObjectTopic("/cloud", "kPointCloud", 1, 0, 1);
     TransformEditorToolbox editor;
     TransformEditorPreviewTestPeer::bind(editor, host.view());

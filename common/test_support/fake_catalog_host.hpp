@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace assistant_agent::testing {
+namespace toolbox_testing {
 
 // A catalog-only toolbox host with optionally named object datasets and field COUNT
 // and TYPE the test controls. Neither existing fake covers this:
@@ -200,4 +200,4 @@ class FakeCatalogHost {
   std::vector<PJ_object_topic_info_t> object_topic_abi_;
 };
 
-}  // namespace assistant_agent::testing
+}  // namespace toolbox_testing

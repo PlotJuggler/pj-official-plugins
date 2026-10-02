@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace assistant_agent::testing {
+namespace toolbox_testing {
 
 // Fake pj.plot_tabs.v1 host: a MODEL of the host's tab state, not a recorder —
 // every test in tool_registry_test.cpp reads the outcome of a tool call back
@@ -394,4 +394,4 @@ struct FakePlotTabsHost {
   std::string config_storage_;
 };
 
-}  // namespace assistant_agent::testing
+}  // namespace toolbox_testing

@@ -192,7 +192,7 @@ if(TARGET GTest::gtest_main)
     src/tools.cpp
   )
   target_link_libraries(toolbox_assistant_agent_tool_registry_test PRIVATE
-    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
+    pj_derived_recipes pj_test_support plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_tool_registry_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src

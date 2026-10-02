@@ -22,6 +22,7 @@
 #include <pj_base/builtin/field_table.hpp>
 #include <pj_base/builtin/field_table_registry.hpp>
 #include <pj_base/builtin/plot_markers.hpp>
+#include <pj_base/sdk/object_topic_metadata.hpp>
 #include <span>
 #include <sstream>
 #include <string>
@@ -445,7 +446,7 @@ ToolResult listTopics(const json& args, ToolContext& ctx) {
       ++matched;
       if (shown < limit) {
         json entry = objectTopicCommonJson(ctx, v2->dataSources(), obj);
-        entry["derived"] = metadataHasKey(PJ::sdk::toStringView(obj.metadata_json), "pj_derived");
+        entry["derived"] = metadataHasKey(PJ::sdk::toStringView(obj.metadata_json), PJ::sdk::kDerivedMetadataKey);
         topics.push_back(std::move(entry));
         ++shown;
       }
@@ -537,12 +538,19 @@ ToolResult describeTopic(const json& args, ToolContext& ctx) {
 
   auto v2 = ctx.host.catalogSnapshotV2();
   if (v2) {
-    for (const auto& obj : v2->objectTopics()) {
-      const std::string name(PJ::sdk::toStringView(obj.name));
-      if (name != want || isMarkerObjectTopic(name)) {
-        continue;
+    // The same resolution every other object input gets: a "dataset:" qualifier is honoured and a name on
+    // several datasets is refused with the qualified candidates.
+    const ObjectLookup lookup = resolveObjectTopic(*v2, want);
+    if (lookup.ambiguous) {
+      return ToolResult::failure(objectLookupError(want, lookup));
+    }
+    if (lookup.resolved) {
+      for (const auto& obj : v2->objectTopics()) {
+        if (PJ::sdk::toStringView(obj.name) == lookup.resolved->host_path &&
+            obj.source.id == lookup.resolved->source.id) {
+          return describeObjectTopic(ctx, v2->dataSources(), obj);
+        }
       }
-      return describeObjectTopic(ctx, v2->dataSources(), obj);
     }
     return describeScalarTopic(v2->topics(), v2->fields(), datasetByTopicIndex(v2->dataSources()), want);
   }
@@ -3211,7 +3219,7 @@ ToolResult sceneViewTool(const json& args, ToolContext& ctx) {
     if (kind != "3d" && kind != "2d") {
       return ToolResult::failure("'kind' must be \"3d\" or \"2d\"");
     }
-    if (auto status = ctx.plot_tabs.createV2(id, kind, args.value("title", std::string())); !status) {
+    if (auto status = ctx.plot_tabs.createTabV2(id, kind, args.value("title", std::string())); !status) {
       return ToolResult::failure("could not create the view: " + status.error());
     }
     return ToolResult::success(viewReadBack(ctx, id).dump());
@@ -3223,7 +3231,7 @@ ToolResult sceneViewTool(const json& args, ToolContext& ctx) {
   }
 
   if (action == "focus") {
-    if (auto status = ctx.plot_tabs.focus(view); !status) {
+    if (auto status = ctx.plot_tabs.focusTab(view); !status) {
       return ToolResult::failure(status.error() + " (yours: " + ownedViewList(ctx) + ")");
     }
     return ToolResult::success(json({{"focused", view}}).dump());
@@ -3339,7 +3347,7 @@ ToolResult reportStatus(const json& /*args*/, ToolContext& ctx) {
         continue;  // drawn, not read -- not counted as an object topic
       }
       ++object_topics;
-      if (metadataHasKey(PJ::sdk::toStringView(obj.metadata_json), "pj_derived")) {
+      if (metadataHasKey(PJ::sdk::toStringView(obj.metadata_json), PJ::sdk::kDerivedMetadataKey)) {
         ++derived_object_topics;
       }
     }
