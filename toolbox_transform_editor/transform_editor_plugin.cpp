@@ -841,9 +841,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       wd.setChartPlaceholder("framePlotPreview", overlay);
     } else {
       wd.setChartPlaceholder("framePlotPreview", "");
-      // No chart_auto_zoom: the host fits until the user zooms or pans, refits on a new series set, and a
-      // double-click on the plot fits it again. Sending it every tick would wipe the user's zoom.
       wd.setChartSeries("framePlotPreview", preview_series_);
+      wd.setChartAutoZoom("framePlotPreview", true);
     }
 
     // The one-line status: the result of the last trial, else why Create is disabled.
