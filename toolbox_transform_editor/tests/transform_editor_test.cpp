@@ -1997,10 +1997,12 @@ TEST(TransformEditorTrial, ASeriesFunctionErrorIsRemappedToTheUsersLine) {
 }
 
 // ---------------------------------------------------------------------------
-// Fit, and renaming a Var
+// The preview's zoom, and renaming a Var
 // ---------------------------------------------------------------------------
 
-TEST(TransformEditorChart, TheEditorNeverSendsAutoZoomExceptOnceForTheFitButton) {
+// The user zooms and pans the preview and double-clicks it to fit (host side): the editor never sends
+// chart_auto_zoom, which would wipe the user's view on every tick, and has no Fit button.
+TEST(TransformEditorChart, TheEditorNeverSendsAutoZoom) {
   Rig rig;
   rig.dp.canned_report_json = kNumberReport;
   rig.newObjectRecipe("return cloud:count()");
@@ -2010,28 +2012,11 @@ TEST(TransformEditorChart, TheEditorNeverSendsAutoZoomExceptOnceForTheFitButton)
   TransformEditorPreviewTestPeer::reinstall(rig.editor);
   TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, {{"value", "number"}}, "value");
   ASSERT_EQ(plottedPoints(rig), 3);
-  auto zoom = [&] { return rig.widgets()["framePlotPreview"]; };
   for (int tick = 0; tick < 3; ++tick) {
-    EXPECT_FALSE(zoom().contains("chart_auto_zoom")) << "tick " << tick << ": the host fits until the user zooms";
+    const auto widgets = rig.widgets();
+    EXPECT_FALSE(widgets["framePlotPreview"].contains("chart_auto_zoom")) << "tick " << tick;
+    EXPECT_FALSE(widgets.contains("buttonFitPlot")) << "tick " << tick << ": the Fit button is gone";
   }
-  ASSERT_EQ(rig.widgets()["buttonFitPlot"]["enabled"], true) << "there is a curve to fit";
-  EXPECT_TRUE(rig.dialog().onClicked("buttonFitPlot"));
-  const auto fit = zoom();
-  ASSERT_TRUE(fit.contains("chart_auto_zoom"));
-  EXPECT_EQ(fit["chart_auto_zoom"], true);
-  EXPECT_FALSE(zoom().contains("chart_auto_zoom")) << "sent exactly once";
-  EXPECT_FALSE(zoom().contains("chart_auto_zoom"));
-}
-
-TEST(TransformEditorChart, FitWaitsForTheChartWhenAnOverlayCoversIt) {
-  Rig rig;
-  rig.dp.canned_report_json = R"({"error":"boom"})";
-  rig.dp.terminal_state = PJ_EVALUATION_STATE_FAILED;
-  rig.load(onDemandConfig("my_filter"));
-  rig.refresh();
-  EXPECT_EQ(rig.widgets()["buttonFitPlot"]["enabled"], false) << "nothing plotted";
-  rig.dialog().onClicked("buttonFitPlot");
-  EXPECT_FALSE(rig.widgets()["framePlotPreview"].contains("chart_auto_zoom")) << "no chart under the message";
 }
 
 TEST(TransformEditorVars, ADoubleClickOnAnInputRowOpensThePromptWithTheCurrentVar) {
@@ -2041,7 +2026,7 @@ TEST(TransformEditorVars, ADoubleClickOnAnInputRowOpensThePromptWithTheCurrentVa
   ASSERT_TRUE(widgets.contains("__request_sub_dialog"));
   EXPECT_NE(std::string(widgets["__request_sub_dialog"]["ui"]).find("renameVarName"), std::string::npos);
   EXPECT_EQ(widgets["renameVarName"]["text"], "cloud");
-  EXPECT_EQ(widgets["renameVarLabel"]["label"], "Var of /cloud:");
+  EXPECT_EQ(widgets["renameVarLabel"]["label"], "Variable name for /cloud:");
   EXPECT_EQ(widgets["renameVarNote"]["label"], "");
 }
 

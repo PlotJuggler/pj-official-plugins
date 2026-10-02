@@ -776,10 +776,12 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       wd.requestSubDialog(kCreateRecipeUi);
       emit_create_dialog_ = false;
     }
-    // "Rename Var" prompt, opened by a double click on an input row.
+    // "Rename variable" prompt, opened by a double click on an input row.
     if (emit_rename_dialog_) {
       wd.setText("renameVarName", rename_text_);
-      wd.setLabel("renameVarLabel", "Var of " + (rename_index_ < sources_.size() ? sources_[rename_index_] : "") + ":");
+      wd.setLabel(
+          "renameVarLabel",
+          "Variable name for " + (rename_index_ < sources_.size() ? sources_[rename_index_] : "") + ":");
       wd.setLabel("renameVarNote", rename_note_);
       wd.requestSubDialog(kRenameVarUi);
       emit_rename_dialog_ = false;
@@ -837,13 +839,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       wd.setChartPlaceholder("framePlotPreview", overlay);
     } else {
       wd.setChartPlaceholder("framePlotPreview", "");
+      // No chart_auto_zoom: the host fits until the user zooms or pans, refits on a new series set, and a
+      // double-click on the plot fits it again. Sending it every tick would wipe the user's zoom.
       wd.setChartSeries("framePlotPreview", preview_series_);
-      // No key: the host fits until the user zooms or pans and refits on a new series set. Fit is the one
-      // explicit request, for ONE build: sent every time it would wipe the user's zoom.
-      if (fit_requested_) {
-        wd.setChartAutoZoom("framePlotPreview", true);
-        fit_requested_ = false;
-      }
     }
 
     // The one-line status: the result of the last trial, else why Create is disabled.
@@ -897,7 +895,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     }
     wd.setChartPlaceholder("framePlotPreviewBatch", batch_term);
 
-    wd.setEnabled("buttonFitPlot", !preview_series_.empty());
     // Each tab owns its Create action and validation gate. The reason a disabled Create is disabled goes
     // on the status line and, where the host shows it, on the button.
     wd.setEnabled("pushButtonCreate", reason.empty());
@@ -941,7 +938,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       pending_create_name_ = std::string(text);
       return true;
     }
-    // Name typed in the "Rename Var" prompt (harvested on OK).
+    // Name typed in the "Rename variable" prompt (harvested on OK).
     if (name == "renameVarName") {
       pending_rename_text_ = std::string(text);
       return true;
@@ -1080,10 +1077,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     }
     if (name == "pushButtonHelp") {
       help_requested_ = true;
-      return true;
-    }
-    if (name == "buttonFitPlot") {
-      fit_requested_ = true;
       return true;
     }
     if (name == "buttonShowScene") {
@@ -2137,7 +2130,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     emit_rename_dialog_ = true;
   }
 
-  // OK in the Rename Var prompt. A name that cannot be a Var (not an identifier, reserved, or taken by another
+  // OK in the Rename variable prompt. A name that cannot be a Var (not an identifier, reserved, or taken by another
   // input) opens the prompt again with the reason; an empty name gives back the default Var of the row.
   void acceptRenamePrompt() {
     if (rename_index_ >= sources_.size()) {
@@ -2323,7 +2316,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   std::string replace_confirmed_;    // the name whose replacement the user already confirmed
   bool emit_create_dialog_ = false;
 
-  // "Rename Var" prompt (a double click on an input row).
+  // "Rename variable" prompt (a double click on an input row).
   std::size_t rename_index_ = 0;     // the row being renamed
   std::string rename_text_;          // prefill of the prompt
   std::string pending_rename_text_;  // what the user typed (harvested on OK)
@@ -2356,7 +2349,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 #else
   static constexpr int kPreviewRefreshTickInterval = 1;
 #endif
-  bool fit_requested_ = false;  // Fit was pressed: the next chart update asks the host to fit once
   bool help_requested_ = false;
   std::function<void()> on_save_;
   std::function<void()> on_save_batch_;

@@ -2,14 +2,16 @@
 <ui version="4.0">
  <class>RenameVar</class>
  <widget class="QDialog" name="RenameVar">
-  <property name="geometry"><rect><x>0</x><y>0</y><width>420</width><height>150</height></rect></property>
-  <property name="windowTitle"><string>Rename Var</string></property>
+  <property name="geometry"><rect><x>0</x><y>0</y><width>460</width><height>150</height></rect></property>
+  <property name="windowTitle"><string>Rename variable</string></property>
   <layout class="QVBoxLayout" name="renameVarLayout">
    <item>
-    <widget class="QLabel" name="renameVarLabel"><property name="text"><string>Var:</string></property></widget>
+    <widget class="QLabel" name="renameVarLabel"><property name="text"><string>Variable name:</string></property></widget>
    </item>
    <item>
-    <widget class="QLineEdit" name="renameVarName"/>
+    <widget class="QLineEdit" name="renameVarName">
+     <property name="minimumSize"><size><width>360</width><height>0</height></size></property>
+    </widget>
    </item>
    <item>
     <widget class="QLabel" name="renameVarNote">

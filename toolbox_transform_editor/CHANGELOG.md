@@ -47,8 +47,8 @@ One editor for series and objects.
   is none). New built-in object functions:
   `points_per_frame`, `lidar_crop`, `lidar_crop_map`, `witness_of_crop`, `cam_threshold`,
   `cam_annotations` and `depth_cloud`.
-- The preview plot can be zoomed and panned and keeps your view while it updates; editing the
-  recipe fits it again, and the Fit button next to the status line fits it on demand.
+- The preview plot zooms (mouse wheel, or drag a rectangle) and pans (Ctrl+drag or middle drag),
+  and keeps your view while it updates. Double-click it to fit the whole preview again.
 - Vars can be renamed: double-click an input row, type a name and press OK. A name must be an
   identifier, not a keyword or a name the script already owns (`inputs`, `params`, `math`...), and
   not the Var of another input; an empty name gives back the default. The script is never edited.
