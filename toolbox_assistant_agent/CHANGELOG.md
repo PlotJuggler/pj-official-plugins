@@ -3,13 +3,6 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 
-## Unreleased
-
-- Shares recipe helpers (path and input resolution, typed outputs, the generated Luau chunk) with the Transform Editor through `common/derived_recipes`; behavior unchanged.
-- Fix scripted crop/pin examples to use positional coordinate arrays accepted by the real Luau binder.
-- Yield pending object evaluations between GUI ticks; release handles on completion, failure, cancellation, timeout and teardown.
-- Report own pinned findings, bytes and processor readiness; advertise media and annotation scripting operations.
-
 ## [0.3.0] - Unreleased
 
 ### Added
@@ -50,8 +43,22 @@ below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 - Objects never reach the model as bytes: only their metadata, field
   shape and callable operations are exposed.
 
+- The panel declares the manifest badge "AI": a host shows it next to the objects the assistant
+  creates.
+- The assistant reports its own pinned findings, their bytes and the readiness of the processors,
+  and advertises the media and annotation scripting operations a script may call.
+
 ### Changed
 - Tool count: 12 -> 14 (`create_derived_object`, `scene_view`).
+- Pending object evaluations yield between GUI ticks instead of blocking the panel, and their
+  handles are released on completion, failure, cancellation, timeout and close.
+
+### Fixed
+- The crop and pin examples handed to the model use the positional coordinate arrays the Luau
+  binder accepts.
+- A Codex conversation is no longer titled "# AGENTS.md instructions" and no longer replays that
+  block as if you had written it: Codex 0.158 sends your global `AGENTS.md` as the first message of
+  every session, and the drawer skips it.
 
 ### Requires
 - `create_derived_object`, the object path of `evaluate`, and `scene_view`

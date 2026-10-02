@@ -2,7 +2,7 @@
   "id": "toolbox-transform-editor",
   "name": "Transform Editor",
   "version": "1.2.0",
-  "description": "Create named derived time series using Lua functions. Equivalent to the Custom Series editor in PJ3.",
+  "description": "Create derived time series and 2D/3D objects from series and object topics with Luau or Python functions: drop the inputs, write the function, preview the result and create it. The successor of the Custom Series editor of PJ3.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
   "website": "https://github.com/PlotJuggler/pj-official-plugins",
@@ -11,7 +11,8 @@
   "icon_url": "",
   "category": "toolbox",
   "tags": [
-    "lua",
+    "luau",
+    "python",
     "transform",
     "derived",
     "custom",

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // Transform Editor toolbox plugin for PlotJuggler 4.
-// Ports the PJ3 "Custom Series" / Function Editor to the PJ4 semantic UI.
-// Motor: pj.data_processors.v1 — onSave hands the host a self-describing Luau class
-// (N inputs -> M outputs) run live as a DerivedEngine node. Requires SDK >= 0.12.0.
-// Preview uses createEphemeralTransform (SDK 0.12+) — no local Lua runtime.
+// One editor for derived series and 2D/3D objects (the PJ3 "Custom Series" editor, extended): the user
+// drops series or object topics as inputs, writes a Luau or Python function, previews it and creates it.
+// A recipe over series installs a per-sample transform; one with object inputs installs an on-demand
+// recipe whose outputs a trial run infers. Both go through pj.data_processors.v1, so the plugin carries no
+// script runtime; previews are EPHEMERAL recipes the host removes with the panel. Series need SDK >= 0.28,
+// object inputs the 0.36 surfaces (typed requests, catalog snapshot v2).
 
 #include <algorithm>
 #include <cctype>

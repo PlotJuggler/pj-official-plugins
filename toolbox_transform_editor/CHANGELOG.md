@@ -5,71 +5,54 @@ below; for earlier releases see the git history of `toolbox_transform_editor/`.
 
 ## [1.2.0] - Unreleased
 
+One editor for series and objects.
+
 ### Added
-- Object inputs. Drop point clouds, images, scenes or any other object topic from the Datasets tree
-  next to the series (inputs are added by drag and drop only; the table names each type in words:
-  point cloud, image, image annotations, scene, transforms). The table shows Input, Var and
-  Type. While the function body is still the default `return value`, adding an object input
-  rewrites it to `return <first var>` (and back when the last object input is removed); an edited
-  body is never touched. A script that returns nothing is reported with the names it can read
-  (`The script returned no values · inputs are: lidar_top`). When the cursor is before the first
-  sample, the status line says so and lists the outputs instead of showing values from another
-  instant. The inputs table takes the height of the left pane and Advanced is a single row. Each input is a variable of the script: Var defaults to the leaf of the topic (`/lidar_top`
-  becomes `lidar_top`, `pose/x` becomes `x`, a repeat gets `_2`, a Lua or Python keyword gets a
-  trailing `_`), the function header reads `function( lidar_top, x )`, and `inputs["/lidar_top"]`
-  keeps working. With series only nothing changes: `time`, `value` and `v1..vN`, so every
-  existing function and transform still works. Var cannot be edited in the table (the dialog has
-  no cell editing); the library's Use renames it.
-- No outputs to declare. Run the script and the editor learns what it returns: `return value` is
-  one series, `return {value = ..., cropped = ...}` is a series and a point cloud. The name is asked
-  when you press "Create...", in a small dialog that says what will be created ("series `max_z`,
-  point cloud `cropped`; computed per /lidar_top frame"). A name cannot be empty, be one of the
-  inputs or contain `__`; one that already belongs to a recipe made by this editor asks for a second
-  OK to replace it. Opened from Custom Topics, the button reads "Modify" and the name stays.
-- One preview. A recipe with object inputs is run 300 ms after you stop editing and again, at most
-  twice a second, as the cursor moves. The status line under the preview shows the result
-  (for example `max_z: 1.83` and `cropped: point cloud, 23 144 points`, joined by a middle dot), "unavailable (reason)" for a value the
-  script could not produce, or the host's error. Number outputs are plotted when the host provides
-  their series over the whole recording and shown as a readout at the cursor otherwise; object
-  outputs show in a 3D or 2D scene view embedded next to the plot, which follows the cursor. The
-  preview shows the plot for numbers, the scene for objects and both side by side for a mixed
-  return; with one scene view, a mix of 2D and 3D objects shows as 3D. A host without scene
-  workspaces shows only the status line for objects; there is no scene-tab fallback for the preview.
-  The "Show in 3D" / "Show in 2D" button after Create still opens the objects in a scene tab, of the
-  kind chosen by the same rule. When the cursor is before the first sample of the first object input, the preview runs at that first sample and says so.
+- Inputs by drag and drop. Drop series and object topics (point clouds, images, image annotations,
+  scenes, transforms) from the Datasets tree; the table shows each input, its Var and its type in
+  words. Each input is a variable of the script. Var defaults to the leaf of the topic (`/lidar_top`
+  becomes `lidar_top`, `pose/x` becomes `x`, a repeat gets `_2`, a keyword gets a trailing `_`), and
+  `inputs["/lidar_top"]` keeps working. With series only, the variables stay `time`, `value` and
+  `v1..vN`. While the body is still the default `return value`, adding the first object input
+  rewrites it to `return <first var>`; an edited body is never touched.
+- Outputs are inferred. Run the script and the editor learns what it returns: `return value` is one
+  series, `return {value = ..., cropped = ...}` is a series and a point cloud. The name is asked
+  when you press "Create...", in a dialog that says what will be created ("series `max_z`, point
+  cloud `cropped`; computed per /lidar_top frame"). A name cannot be empty, be one of the inputs or
+  contain `__`; one that already belongs to a recipe of this editor asks for a second OK to replace
+  it. Opened from Custom Topics, the button reads "Modify" and the name stays.
+- Luau or Python for recipes with object inputs; a Python body is wrapped in
+  `def evaluate(inputs, params):` with the same variables.
+- One preview. A recipe with object inputs runs 300 ms after you stop editing and then, at most
+  twice a second, as the cursor moves. The status line shows the result (`max_z: 1.83`,
+  `cropped: point cloud, 23 144 points`), "unavailable (reason)" for a value the script could not
+  produce, or the error the host reports. Number outputs are plotted as series curves over the
+  whole recording when the host provides them, and shown as a readout at the cursor otherwise.
+  Object outputs show in a 3D or 2D scene view embedded next to the plot that follows the cursor
+  (a mix of 2D and 3D shows as 3D); a host that cannot embed a scene view shows only the status
+  line. When the cursor is before the first sample, the preview runs at the first sample of the
+  first object input and says so. A script that returns nothing is reported with the names it can
+  read (`The script returned no values · inputs are: lidar_top`). The preview recipes belong to the
+  editor's panel and the host removes them when it closes.
 - Create is enabled with at least one input, a function body and a run that succeeded with every
-  output typed; otherwise the status line says why (and so does the button's tooltip on hosts that
-  show it).
-- Python for objects. A recipe with object inputs runs in the selected language: a Python body is
-  wrapped in `def evaluate(inputs, params):` with the same variables.
-- Advanced (collapsed): the params JSON object handed to the script as `params` and "Pin at current
-  time", for recipes with object inputs.
+  output typed; otherwise the status line, and the button's tooltip, say why.
+- Advanced (collapsed): the params JSON object handed to the script as `params`, and "Pin at current
+  time".
 - The Function Library has a Kind column (Series, 3D, 2D), shows each function's description and
-  required inputs, and Use on an object function names the Var of the first matching unbound
-  input after the function's variables ("needs: cloud (point cloud)" when there is none). New
-  built-in object functions: `points_per_frame`, `lidar_crop`, `lidar_crop_map`, `witness_of_crop`,
-  `cam_threshold`, `cam_annotations` and `depth_cloud`. Libraries saved by older versions keep
-  loading; the new fields are optional.
-- After creating a recipe with object outputs, a "Show in 3D" / "Show in 2D" button opens a scene tab
-  with them (hosts with scene tabs only).
-- The recipe's input resolution and script are built by the same shared helpers the assistant uses
-  (`common/derived_recipes`), so the preview runs what Create installs and dataset-qualified inputs
-  resolve identically.
-- Older saved states keep loading: states with an explicit kind and declared outputs (the outputs
-  are only a hint; the run infers them again) and states with `-- pj-kind: on_demand` /
-  `-- pj-outputs:` / `-- pj-params:` header lines in the global code.
+  required inputs, and Use on an object function names the Var of the first matching unbound input
+  ("needs: cloud (point cloud)" when there is none). New built-in object functions:
+  `points_per_frame`, `lidar_crop`, `lidar_crop_map`, `witness_of_crop`, `cam_threshold`,
+  `cam_annotations` and `depth_cloud`.
+- After creating a recipe with object outputs, a "Show in 3D" / "Show in 2D" button opens a scene
+  tab with them (hosts with scene tabs only).
 
 ### Changed
 - A series function that returns several values (`return a, b`) creates `name/a`, `name/b`; the
-  count is read from the return statements. States saved with a comma-separated name keep their
-  names.
-- A recipe with object inputs keeps its saved editor state in its params under `"__editor"` next to
-  the user's own params (transforms keep today's format), and is installed with the outputs the
-  run inferred, bound by name.
-- Poll previews once per GUI tick without sleeping; cancel and release pending previews when
-  the script changes, expires, or the editor closes.
-- Object inputs need a host with the SDK 0.36 surfaces (`create_data_processor_v2`,
-  `submit_evaluation`, catalog snapshot v2, inferred outputs); on an older host the editor says so,
-  Create stays disabled for them and the numeric transform works as before.
+  count is read from the return statements.
+- The editor declares itself the Custom Topics editor in its manifest (`custom_topics_editor`), so
+  the host opens it for the "+" button and for editing the recipes it made.
+- Object inputs need a host with the SDK 0.36 surfaces (typed data-processor requests and catalog
+  snapshot v2); on an older host the editor says so, Create stays disabled for them and the series
+  transform works as before.
 
 ## [1.0.4] - 2026-08-04
