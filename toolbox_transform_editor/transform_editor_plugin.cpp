@@ -41,9 +41,11 @@
 //   kSaveNameUi         — "save current function" name prompt (requestSubDialog).
 //   kOverwriteUi        — overwrite-existing-function confirmation (requestSubDialog).
 //   kCreateRecipeUi     — "Create..." name prompt with the summary of what is created (requestSubDialog).
+//   kRenameVarUi        — name prompt of one input's Var, opened by a double click on its row (requestSubDialog).
 #include "create_recipe_ui.hpp"
 #include "function_library_ui.hpp"
 #include "overwrite_function_ui.hpp"
+#include "rename_var_ui.hpp"
 #include "save_function_name_ui.hpp"
 #include "transform_editor_help_ui.hpp"
 
@@ -774,6 +776,14 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       wd.requestSubDialog(kCreateRecipeUi);
       emit_create_dialog_ = false;
     }
+    // "Rename Var" prompt, opened by a double click on an input row.
+    if (emit_rename_dialog_) {
+      wd.setText("renameVarName", rename_text_);
+      wd.setLabel("renameVarLabel", "Var of " + (rename_index_ < sources_.size() ? sources_[rename_index_] : "") + ":");
+      wd.setLabel("renameVarNote", rename_note_);
+      wd.requestSubDialog(kRenameVarUi);
+      emit_rename_dialog_ = false;
+    }
     if (library_open_) {
       const std::vector<std::string> names = filteredSnippetNames();
       wd.setTableHeaders("tableFunctions", {"Function", "Kind", "Language"});
@@ -828,7 +838,12 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     } else {
       wd.setChartPlaceholder("framePlotPreview", "");
       wd.setChartSeries("framePlotPreview", preview_series_);
-      wd.setChartAutoZoom("framePlotPreview", true);
+      // No key: the host fits until the user zooms or pans and refits on a new series set. Fit is the one
+      // explicit request, for ONE build: sent every time it would wipe the user's zoom.
+      if (fit_requested_) {
+        wd.setChartAutoZoom("framePlotPreview", true);
+        fit_requested_ = false;
+      }
     }
 
     // The one-line status: the result of the last trial, else why Create is disabled.
@@ -882,6 +897,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     }
     wd.setChartPlaceholder("framePlotPreviewBatch", batch_term);
 
+    wd.setEnabled("buttonFitPlot", !preview_series_.empty());
     // Each tab owns its Create action and validation gate. The reason a disabled Create is disabled goes
     // on the status line and, where the host shows it, on the button.
     wd.setEnabled("pushButtonCreate", reason.empty());
@@ -923,6 +939,11 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // Name typed in the "Create..." prompt (harvested on OK).
     if (name == "createRecipeName") {
       pending_create_name_ = std::string(text);
+      return true;
+    }
+    // Name typed in the "Rename Var" prompt (harvested on OK).
+    if (name == "renameVarName") {
+      pending_rename_text_ = std::string(text);
       return true;
     }
     if (name == "paramsLineEdit") {
@@ -1026,6 +1047,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     if (name == "buttonSaveCurrent") {
       pending_save_name_ = output_name_;
       create_stage_ = CreateStage::None;
+      rename_stage_ = RenameStage::None;
       save_stage_ = SaveStage::NamePrompt;
       emit_save_name_dialog_ = true;
       return true;
@@ -1047,11 +1069,17 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       } else if (save_stage_ == SaveStage::OverwriteConfirm) {
         doSaveSnippet(pending_save_name_);  // user confirmed overwrite
         save_stage_ = SaveStage::None;
+      } else if (rename_stage_ == RenameStage::Prompt) {
+        acceptRenamePrompt();
       }
       return true;
     }
     if (name == "pushButtonHelp") {
       help_requested_ = true;
+      return true;
+    }
+    if (name == "buttonFitPlot") {
+      fit_requested_ = true;
       return true;
     }
     if (name == "buttonShowScene") {
@@ -1257,6 +1285,11 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       loadSnippetsIntoEditor(to_load);
       library_open_ = false;
       emit_close_library_ = true;
+      return true;
+    }
+    // Double-click on an input row of an on-demand recipe: rename the Var the script reads it by.
+    if (name == "tableSources" && isOnDemand() && index >= 0 && index < static_cast<int>(sources_.size())) {
+      openRenamePrompt(static_cast<std::size_t>(index));
       return true;
     }
     return false;
@@ -1556,8 +1589,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
   // Load the selected library function(s) into the Single-tab editor (combined
   // globals + body), then re-validate. Mirrors PJ3's "Use" / double-click. For a function that
-  // reads objects, each input it declares renames the Var of the first input of that type
-  // not yet bound; an input with no match is named on the status line.
+  // reads objects, each input it declares is matched with the first input of that type not yet bound and the
+  // function's text is rewritten to read that input's Var (the Vars stay as they are); an input with no match is
+  // named on the status line.
   void loadSnippetsIntoEditor(const std::vector<std::string>& names) {
     if (names.empty()) {
       return;
@@ -1599,17 +1633,22 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     bindSnippetInputs(wanted);  // after formChanged, which drops the "needs:" remark of the previous load
   }
 
-  // Name the Var of the first unbound input of each wanted type after the function's variable.
+  // Rewrite the text of the loaded function so each of its inputs reads the Var of the first unbound input of
+  // its type. An identifier-aware replacement (not strings, comments, fields or table keys), all at once.
   void bindSnippetInputs(const std::vector<SnippetInput>& wanted) {
     needs_note_.clear();
+    const std::vector<std::string> vars = variableNames();
     std::vector<bool> bound(sources_.size(), false);
+    std::map<std::string, std::string> renames;
     std::string missing;
     for (const auto& input : wanted) {
       bool found = false;
       for (std::size_t i = 0; i < sources_.size() && !found; ++i) {
         if (!bound[i] && inputTypeOf(sources_[i]) == input.type) {
           bound[i] = true;
-          var_overrides_[i] = input.var;
+          if (vars[i] != input.var) {
+            renames[input.var] = vars[i];
+          }
           found = true;
         }
       }
@@ -1617,10 +1656,14 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
         missing += (missing.empty() ? "" : ", ") + input.var + " (" + objectTypeLabel(input.type) + ")";
       }
     }
+    if (!renames.empty()) {
+      function_body_ = derived_recipes::renameIdentifiers(function_body_, language_, renames);
+      global_code_ = derived_recipes::renameIdentifiers(global_code_, language_, renames);
+    }
     if (!missing.empty()) {
       needs_note_ = "needs: " + missing;
     }
-    ++form_revision_;  // the Vars changed
+    ++form_revision_;  // the text changed
   }
 
   /// Replaces the plotted series; an identical set (the usual case while nothing changes) is kept as it is.
@@ -2071,6 +2114,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   // "Create...": ask for the name. The prefill is the last name, else the first output the trial learned.
   void openCreatePrompt() {
     save_stage_ = SaveStage::None;
+    rename_stage_ = RenameStage::None;
     create_stage_ = CreateStage::Prompt;
     create_name_ = !output_name_.empty()        ? output_name_
                    : !inferredOutputs().empty() ? inferredOutputs().front().name
@@ -2078,6 +2122,45 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     pending_create_name_ = create_name_;
     create_note_ = replaceNote(create_name_);
     emit_create_dialog_ = true;
+  }
+
+  // The prompt of one input's Var, prefilled with its current name. The script is not touched: the Var is the
+  // name the chunk binds the input to, and the user's code keeps reading whatever name it was written with.
+  void openRenamePrompt(std::size_t index) {
+    save_stage_ = SaveStage::None;
+    create_stage_ = CreateStage::None;
+    rename_stage_ = RenameStage::Prompt;
+    rename_index_ = index;
+    rename_text_ = variableNames()[index];
+    pending_rename_text_ = rename_text_;
+    rename_note_.clear();
+    emit_rename_dialog_ = true;
+  }
+
+  // OK in the Rename Var prompt. A name that cannot be a Var (not an identifier, reserved, or taken by another
+  // input) opens the prompt again with the reason; an empty name gives back the default Var of the row.
+  void acceptRenamePrompt() {
+    rename_stage_ = RenameStage::None;
+    if (rename_index_ >= sources_.size()) {
+      return;
+    }
+    const std::string name = trimBlanks(pending_rename_text_);
+    if (name.empty()) {
+      var_overrides_[rename_index_].clear();
+      formChanged();
+      return;
+    }
+    std::vector<std::string> others = variableNames();
+    others.erase(others.begin() + static_cast<std::ptrdiff_t>(rename_index_));
+    if (const std::string error = derived_recipes::varNameError(name, language_, others); !error.empty()) {
+      rename_text_ = name;
+      rename_note_ = error;
+      rename_stage_ = RenameStage::Prompt;
+      emit_rename_dialog_ = true;
+      return;
+    }
+    var_overrides_[rename_index_] = name;
+    formChanged();
   }
 
   // "Replaces ..." when the name is already one of the editor's own recipes.
@@ -2240,6 +2323,15 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   std::string replace_confirmed_;    // the name whose replacement the user already confirmed
   bool emit_create_dialog_ = false;
 
+  // "Rename Var" prompt (a double click on an input row).
+  enum class RenameStage { None, Prompt };
+  RenameStage rename_stage_ = RenameStage::None;
+  std::size_t rename_index_ = 0;     // the row being renamed
+  std::string rename_text_;          // prefill of the prompt
+  std::string pending_rename_text_;  // what the user typed (harvested on OK)
+  std::string rename_note_;          // why the last name was refused
+  bool emit_rename_dialog_ = false;
+
   // Library
   std::vector<Snippet> snippets_;
   // Function library box (interactive sub-panel) state.
@@ -2268,6 +2360,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 #else
   static constexpr int kPreviewRefreshTickInterval = 1;
 #endif
+  bool fit_requested_ = false;  // Fit was pressed: the next chart update asks the host to fit once
   bool help_requested_ = false;
   std::function<void()> on_save_;
   std::function<void()> on_save_batch_;

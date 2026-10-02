@@ -300,6 +300,17 @@ struct Rig {
 
 using Host = RecordingDpHost;
 
+// Double-click the Var of input row `row` and answer the prompt with `text` (OK). Returns the prompt's widgets.
+nlohmann::json renameVar(Rig& rig, int row, const std::string& text, bool press_ok = true) {
+  rig.dialog().onItemDoubleClicked("tableSources", row);
+  auto widgets = rig.widgets();  // the prompt is a one-shot of this build
+  rig.dialog().onTextChanged("renameVarName", text);
+  if (press_ok) {
+    rig.dialog().onClicked("subDialogAccepted");
+  }
+  return widgets;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -868,7 +879,7 @@ TEST(TransformEditorSavedState, AStateSavedByThisEditorLoadsBackWithItsVars) {
   rig.refresh();
   rig.dialog().onItemsDropped("tableSources", {"/a/lidar", "/b/lidar"});
   rig.dialog().onCodeChanged("functionText", "return a_cloud:count() + b_cloud:count()");
-  rig.dialog().bindSnippetInputs({{"b_cloud", "kPointCloud"}});
+  renameVar(rig, 0, "b_cloud");
   EXPECT_EQ(rig.dialog().variableNames(), (std::vector<std::string>{"b_cloud", "lidar"}));
   const std::string saved = rig.dialog().saveConfig();
   Rig other;
@@ -1417,7 +1428,7 @@ TEST(TransformEditorLibrary, TheBuiltInsKeepTheNineSeriesFunctionsAndAddTheObjec
   EXPECT_EQ(depth->inputs[1].var, "camera_info");
 }
 
-TEST(TransformEditorLibrary, UseOnAnObjectFunctionBindsTheVarOfTheFirstInputOfThatType) {
+TEST(TransformEditorLibrary, UseOnAnObjectFunctionRewritesTheTextToTheVarsOfTheMatchingInputs) {
   Rig rig;
   rig.catalog.addObjectTopic("/img", "kImage", 1, 0, 1);
   rig.catalog.addObjectTopic("/depth", "kDepthImage", 1, 0, 1);
@@ -1426,14 +1437,35 @@ TEST(TransformEditorLibrary, UseOnAnObjectFunctionBindsTheVarOfTheFirstInputOfTh
   rig.dialog().setSnippets(defaultSnippets());
   rig.dialog().onItemsDropped("tableSources", {"/img", "/cloud", "/info", "/depth"});
   rig.dialog().loadSnippetsIntoEditor({"depth_cloud"});
-  EXPECT_EQ(rig.dialog().variableNames(), (std::vector<std::string>{"img", "cloud", "camera_info", "depth"}));
+  // The Vars stay what they were; the template's camera_info reads the Var of the camera info input.
+  EXPECT_EQ(rig.dialog().variableNames(), (std::vector<std::string>{"img", "cloud", "info", "depth"}));
   EXPECT_EQ(rig.dialog().language(), "luau");
-  EXPECT_NE(rig.dialog().functionBody().find("depth:to_point_cloud(camera_info"), std::string::npos);
+  EXPECT_NE(rig.dialog().functionBody().find("depth:to_point_cloud(info"), std::string::npos)
+      << rig.dialog().functionBody();
+  EXPECT_EQ(rig.dialog().functionBody().find("camera_info"), std::string::npos);
   EXPECT_EQ(TransformEditorPreviewTestPeer::status(rig.editor).find("needs:"), std::string::npos);
 
   rig.dialog().loadSnippetsIntoEditor({"lidar_crop"});
-  EXPECT_EQ(rig.dialog().variableNames()[1], "cloud");
-  EXPECT_EQ(rig.dialog().variableNames()[0], "img");
+  EXPECT_EQ(rig.dialog().variableNames(), (std::vector<std::string>{"img", "cloud", "info", "depth"}));
+  EXPECT_NE(rig.dialog().functionBody().find("cloud"), std::string::npos);
+}
+
+TEST(TransformEditorLibrary, UseReadsTheUsersOwnVarAndLeavesStringsFieldsAndKeysAlone) {
+  Rig rig;
+  rig.refresh();
+  rig.dialog().setSnippets({Snippet{
+      "crop",
+      "",
+      "return { cropped = cloud:crop(), note = \"cloud\", n = cloud.cloud }",
+      "luau",
+      "object",
+      {{"cloud", "kPointCloud"}}}});
+  rig.dialog().onItemsDropped("tableSources", {"/cloud"});
+  renameVar(rig, 0, "lidar");
+  rig.dialog().loadSnippetsIntoEditor({"crop"});
+  EXPECT_EQ(rig.dialog().variableNames(), std::vector<std::string>{"lidar"}) << "the Var is the user's";
+  EXPECT_EQ(rig.dialog().functionBody(), "return { cropped = lidar:crop(), note = \"cloud\", n = lidar.cloud }")
+      << "only the variable reads the Var";
 }
 
 TEST(TransformEditorLibrary, UseWithNoInputOfTheNeededTypeSaysWhatIsNeeded) {
@@ -1962,6 +1994,148 @@ TEST(TransformEditorTrial, ASeriesFunctionErrorIsRemappedToTheUsersLine) {
   rig.dialog().onCodeChanged("functionText", "local y = value\nreturn yy ");  // a new form revision: asked again
   rig.refresh();
   EXPECT_EQ(rig.dialog().canCreateReason(), "test: line 2: unknown global 'yy'");
+}
+
+// ---------------------------------------------------------------------------
+// Fit, and renaming a Var
+// ---------------------------------------------------------------------------
+
+TEST(TransformEditorChart, TheEditorNeverSendsAutoZoomExceptOnceForTheFitButton) {
+  Rig rig;
+  rig.dp.canned_report_json = kNumberReport;
+  rig.newObjectRecipe("return cloud:count()");
+  rig.dp.config_series = {{"value", 3, 0, "", true}};
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("value").addField("value", "v", {0, 1000000000, 2000000000}, {1, 2, 3});
+  TransformEditorPreviewTestPeer::reinstall(rig.editor);
+  TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, {{"value", "number"}}, "value");
+  ASSERT_EQ(plottedPoints(rig), 3);
+  auto zoom = [&] { return rig.widgets()["framePlotPreview"]; };
+  for (int tick = 0; tick < 3; ++tick) {
+    EXPECT_FALSE(zoom().contains("chart_auto_zoom")) << "tick " << tick << ": the host fits until the user zooms";
+  }
+  ASSERT_EQ(rig.widgets()["buttonFitPlot"]["enabled"], true) << "there is a curve to fit";
+  EXPECT_TRUE(rig.dialog().onClicked("buttonFitPlot"));
+  const auto fit = zoom();
+  ASSERT_TRUE(fit.contains("chart_auto_zoom"));
+  EXPECT_EQ(fit["chart_auto_zoom"], true);
+  EXPECT_FALSE(zoom().contains("chart_auto_zoom")) << "sent exactly once";
+  EXPECT_FALSE(zoom().contains("chart_auto_zoom"));
+}
+
+TEST(TransformEditorChart, FitWaitsForTheChartWhenAnOverlayCoversIt) {
+  Rig rig;
+  rig.dp.canned_report_json = R"({"error":"boom"})";
+  rig.dp.terminal_state = PJ_EVALUATION_STATE_FAILED;
+  rig.load(onDemandConfig("my_filter"));
+  rig.refresh();
+  EXPECT_EQ(rig.widgets()["buttonFitPlot"]["enabled"], false) << "nothing plotted";
+  rig.dialog().onClicked("buttonFitPlot");
+  EXPECT_FALSE(rig.widgets()["framePlotPreview"].contains("chart_auto_zoom")) << "no chart under the message";
+}
+
+TEST(TransformEditorVars, ADoubleClickOnAnInputRowOpensThePromptWithTheCurrentVar) {
+  Rig rig;
+  rig.newObjectRecipe();
+  const auto widgets = renameVar(rig, 0, "cloud", /*press_ok=*/false);
+  ASSERT_TRUE(widgets.contains("__request_sub_dialog"));
+  EXPECT_NE(std::string(widgets["__request_sub_dialog"]["ui"]).find("renameVarName"), std::string::npos);
+  EXPECT_EQ(widgets["renameVarName"]["text"], "cloud");
+  EXPECT_EQ(widgets["renameVarLabel"]["label"], "Var of /cloud:");
+  EXPECT_EQ(widgets["renameVarNote"]["label"], "");
+}
+
+TEST(TransformEditorVars, RenamingSetsTheVarWithoutTouchingTheScriptAndItIsSaved) {
+  Rig rig;
+  rig.newObjectRecipe("return { cropped = cloud, count = 1 }");
+  const std::string body = rig.dialog().functionBody();
+  const std::string globals = rig.dialog().globalCode();
+  renameVar(rig, 0, "lidar");
+  EXPECT_EQ(rig.dialog().variableNames(), std::vector<std::string>{"lidar"});
+  EXPECT_EQ(rig.dialog().functionBody(), body) << "the script is never edited by a rename";
+  EXPECT_EQ(rig.dialog().globalCode(), globals);
+  rig.refresh();
+  EXPECT_NE(
+      TransformEditorPreviewTestPeer::script(rig.editor).find("local lidar = inputs[\"/cloud\"]"), std::string::npos);
+  EXPECT_EQ(rig.widgets()["tableSources"]["rows"][0][2], "lidar");
+  EXPECT_EQ(nlohmann::json::parse(rig.dialog().saveConfig()).at("vars"), nlohmann::json::array({"lidar"}));
+
+  Rig other;
+  other.load(rig.dialog().saveConfig());
+  other.refresh();
+  EXPECT_EQ(other.dialog().variableNames(), std::vector<std::string>{"lidar"});
+  EXPECT_EQ(other.dialog().functionBody(), body);
+}
+
+TEST(TransformEditorVars, ABadNameIsRefusedWithItsReasonAndThePromptReopens) {
+  Rig rig;
+  rig.catalog.addObjectTopic("/lidar_top", "kPointCloud", 1, 0, 1);
+  rig.refresh();
+  rig.dialog().onItemsDropped("tableSources", {"/lidar_top", "/cloud"});
+  ASSERT_EQ(rig.dialog().variableNames(), (std::vector<std::string>{"lidar_top", "cloud"}));
+  struct Case {
+    std::string name;
+    std::string reason;
+  };
+  for (const Case& bad :
+       {Case{"end", "reserved"}, Case{"inputs", "reserved"}, Case{"2x", "not a valid name"},
+        Case{"a-b", "not a valid name"}, Case{"cloud", "already the name of another input"}}) {
+    renameVar(rig, 0, bad.name);
+    const auto widgets = rig.widgets();
+    ASSERT_TRUE(widgets.contains("__request_sub_dialog")) << bad.name << ": the prompt reopens";
+    EXPECT_NE(std::string(widgets["renameVarNote"]["label"]).find(bad.reason), std::string::npos)
+        << bad.name << ": " << widgets["renameVarNote"]["label"];
+    EXPECT_EQ(widgets["renameVarName"]["text"], bad.name) << "what was typed stays to be fixed";
+    EXPECT_EQ(rig.dialog().variableNames()[0], "lidar_top") << bad.name << " changed nothing";
+  }
+  // A valid one on the reopened prompt is accepted.
+  rig.dialog().onTextChanged("renameVarName", "crop");
+  rig.dialog().onClicked("subDialogAccepted");
+  EXPECT_EQ(rig.dialog().variableNames(), (std::vector<std::string>{"crop", "cloud"}));
+}
+
+TEST(TransformEditorVars, AnEmptyNameGivesBackTheDefaultAndTheOwnNameIsAccepted) {
+  Rig rig;
+  rig.refresh();
+  rig.dialog().onItemsDropped("tableSources", {"/cloud"});
+  renameVar(rig, 0, "crop");
+  ASSERT_EQ(rig.dialog().variableNames(), std::vector<std::string>{"crop"});
+  renameVar(rig, 0, "  ");
+  EXPECT_EQ(rig.dialog().variableNames(), std::vector<std::string>{"cloud"}) << "the default of the row";
+  EXPECT_EQ(nlohmann::json::parse(rig.dialog().saveConfig()).at("vars"), nlohmann::json::array({"cloud"}));
+  renameVar(rig, 0, "cloud");  // the current name is not a clash with itself
+  EXPECT_FALSE(rig.widgets().contains("__request_sub_dialog"));
+  EXPECT_EQ(rig.dialog().variableNames(), std::vector<std::string>{"cloud"});
+}
+
+TEST(TransformEditorVars, OnlyOnDemandRecipesRenameAndABadRowIsIgnored) {
+  Rig rig;
+  rig.refresh();
+  rig.dialog().onItemsDropped("tableSources", {"a/x", "b/y"});
+  EXPECT_FALSE(rig.dialog().onItemDoubleClicked("tableSources", 0)) << "a series recipe keeps value and v1";
+  EXPECT_FALSE(rig.widgets().contains("__request_sub_dialog"));
+  Rig objects;
+  objects.refresh();
+  objects.dialog().onItemsDropped("tableSources", {"/cloud"});
+  EXPECT_FALSE(objects.dialog().onItemDoubleClicked("tableSources", 5));
+  EXPECT_FALSE(objects.dialog().onItemDoubleClicked("tableSources", -1));
+  EXPECT_TRUE(objects.dialog().onItemDoubleClicked("tableSources", 0));
+}
+
+TEST(TransformEditorVars, AnAbandonedRenamePromptDoesNotHijackTheCreatePrompt) {
+  Rig rig;
+  rig.newObjectRecipe();
+  rig.dialog().onItemDoubleClicked("tableSources", 0);
+  (void)rig.widgets();
+  // Cancel is not reported to the plugin: opening the Create prompt afterwards must not be taken for a rename.
+  rig.dialog().onClicked("pushButtonCreate");
+  (void)rig.widgets();
+  rig.dialog().onTextChanged("createRecipeName", "made");
+  rig.dialog().onClicked("subDialogAccepted");
+  TransformEditorPreviewTestPeer::deliver(rig.editor);
+  ASSERT_EQ(rig.dp.persistent_creates, 1);
+  EXPECT_EQ(rig.dp.created[0].id, "made");
+  EXPECT_EQ(rig.dialog().variableNames(), std::vector<std::string>{"cloud"});
 }
 
 // ---------------------------------------------------------------------------

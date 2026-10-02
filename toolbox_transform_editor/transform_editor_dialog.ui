@@ -569,6 +569,16 @@
                   </widget>
                  </item>
                  <item>
+                  <widget class="QPushButton" name="buttonFitPlot">
+                   <property name="toolTip">
+                    <string>Fit the plot to the whole preview</string>
+                   </property>
+                   <property name="text">
+                    <string>Fit</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
                   <widget class="QPushButton" name="buttonShowScene">
                    <property name="visible"><bool>false</bool></property>
                    <property name="text">
