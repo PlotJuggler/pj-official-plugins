@@ -11,16 +11,26 @@ platforms = ["linux-64", "linux-aarch64"]
 cmake = ">=3.28"
 ninja = "*"
 patchelf = "*"
-# RoboStack's compiler and sysroot pins (its conda_build_config.yaml): the
-# payload then needs no newer glibc/libstdc++ than the ROS libraries it loads.
-gxx_linux-64 = "14.*"
-gcc_linux-64 = "14.*"
-sysroot_linux-64 = "2.28.*"
 # plotjuggler_sdk's own dependencies (it is built from source by build.sh).
 fmt = "12.1.*"
 fast_float = "*"
 nlohmann_json = "3.12.*"
 gtest = "*"
+
+# Compiler and sysroot. gcc 14 is RoboStack's compiler pin (its
+# conda_build_config.yaml). The sysroot sets the oldest glibc the payload runs
+# on: 2.28, while RoboStack builds its ROS packages against 2.17.
+# Per platform, because the package names carry the TARGET: on linux-aarch64,
+# gxx_linux-64 is a cross compiler to x86_64 and cannot link the aarch64 rclcpp.
+[target.linux-64.dependencies]
+gxx_linux-64 = "14.*"
+gcc_linux-64 = "14.*"
+sysroot_linux-64 = "2.28.*"
+
+[target.linux-aarch64.dependencies]
+gxx_linux-aarch64 = "14.*"
+gcc_linux-aarch64 = "14.*"
+sysroot_linux-aarch64 = "2.28.*"
 
 [feature.jazzy]
 channels = ["robostack-jazzy"]

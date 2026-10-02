@@ -3,6 +3,14 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_ros2/`.
 
+## [1.1.1] - 2026-09-30
+
+### Fixed
+- linux-arm64: the RoboStack payloads now build. Their build environment
+  used the x86_64 compiler on arm64, which failed to link, so the 1.1.0
+  release has no linux-arm64 package. 1.1.1 ships the 1.1.0 changes below
+  on both linux-x86_64 and linux-arm64.
+
 ## [1.1.0] - 2026-09-22
 
 ### Added
