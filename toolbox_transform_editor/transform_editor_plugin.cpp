@@ -838,6 +838,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       status = needs_note_;
     } else if (status.empty() || (!reason.empty() && !validation_error_.empty())) {
       status = reason;
+    } else if (!series_note_.empty()) {
+      status += "\n" + series_note_;
     }
     wd.setLabel("statusLabel", oneLine(status));
 
@@ -1627,6 +1629,18 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       preview_series_ = std::move(series);
     }
   }
+  /// The names of the plotted series, in order.
+  std::vector<std::string> previewSeriesLabels() const {
+    std::vector<std::string> labels;
+    for (const auto& series : preview_series_) {
+      labels.push_back(series.label);
+    }
+    return labels;
+  }
+  /// A remark on the preview series ("computing the series... 40 rows"), appended to the status line.
+  void setSeriesNote(std::string note) {
+    series_note_ = std::move(note);
+  }
   /// The readout shown over the chart of a recipe evaluated at the cursor while there is no series to plot.
   void setReadout(std::string text) {
     readout_ = std::move(text);
@@ -1871,12 +1885,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   void setSceneButton(std::string label) {
     scene_button_ = std::move(label);
   }
-  /// Script body the on-demand chunk runs: one local per input (the Var column), the globals pane (if any)
-  /// then the function body.
-  std::string onDemandBody() const {
-    return derived_recipes::buildVariablePrologue(language_, variableBindings()) +
-           (global_code_.empty() ? function_body_ : global_code_ + "\n" + function_body_);
-  }
   /// How many series a transform returns: the names listed in a saved comma-separated name, else the values its
   /// return statements give.
   std::size_t transformOutputCount() const {
@@ -2112,6 +2120,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     kind_hint_on_demand_ = false;
     clearTrial();
     status_text_.clear();
+    series_note_.clear();
     readout_.clear();
     needs_note_.clear();
     if (cfg.value("kind", std::string{}) == "on_demand") {
@@ -2197,6 +2206,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   std::uint64_t form_revision_ = 1;  // see formRevision()
   mutable std::optional<Derived> derived_;
   std::string status_text_;
+  std::string series_note_;
   std::string readout_;
   std::string needs_note_;        // "needs: cloud (point cloud)" after a library function found no input for a variable
   std::string scene_embed_kind_;  // the embedded scene view of the preview; empty = none
@@ -2531,7 +2541,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     return lookup.resolved ? lookup.resolved->object_type : "number";
   }
 
-  // The first entry of the first object input (its time range comes from the catalog): where a trial
+  // The latest first entry of the object inputs (their time ranges come from the catalog): where a trial
   // runs when the cursor is before every sample.
   struct FirstEntry {
     std::int64_t ns = 0;
@@ -2549,6 +2559,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   struct OnDemandBuild {
     PJ::sdk::DataProcessorRequest request;
     PJ::sdk::DataProcessorRequest trial_request;
+    derived_recipes::ScriptLayout layout;  // where the user's code sits in request.script
     std::string form_key;
     std::optional<PJ::sdk::DataSourceHandle> anchor;
     std::optional<FirstEntry> first_entry;
@@ -2596,10 +2607,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
         for (const auto& input : resolved.inputs) {
           build.request.inputs.push_back(input.request_path);
         }
-        const std::string body = dialog_.onDemandBody();
-        build.request.script = build.request.language == "python"
-                                   ? derived_recipes::buildOnDemandChunkPython(body, resolved)
-                                   : derived_recipes::buildResolvedOnDemandChunk(body, resolved);
+        auto built = derived_recipes::buildOnDemandScript(
+            dialog_.functionBody(), dialog_.globalCode(), dialog_.variableBindings(), resolved, build.request.language);
+        build.request.script = std::move(built.script);
+        build.layout = built.layout;
         build.request.params_json = parseParamsObject(dialog_.paramsText())->dump();
         build.anchor = resolved.anchor_source;
         for (std::size_t i = 0; i < resolved.inputs.size(); ++i) {
@@ -2608,7 +2619,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
             continue;
           }
           build.data_stamp.emplace_back(input.entry_count, input.time_max_ns);
-          if (!build.first_entry && input.entry_count > 0) {
+          // The latest first entry: the earliest instant at which EVERY input has a sample.
+          if (input.entry_count > 0 && (!build.first_entry || input.time_min_ns > build.first_entry->ns)) {
             build.first_entry = FirstEntry{input.time_min_ns, dialog_.sources()[i]};
           }
         }
@@ -2641,7 +2653,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       return;
     }
     if (auto valid = dp_view_.validateScript("on_demand", build.request.language, build.request.script); !valid) {
-      report(PJ::ToolboxMessageLevel::kError, "Transform Editor: invalid script: " + std::string(valid.error()));
+      report(
+          PJ::ToolboxMessageLevel::kError,
+          "Transform Editor: invalid script: " +
+              derived_recipes::remapScriptLines(std::string(valid.error()), build.layout));
       return;
     }
 
@@ -2893,9 +2908,43 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     dialog_.setEmbeddedScene(std::move(targets.kind), std::move(targets.topics));
   }
 
+  // What the host says of the series of the preview recipe: `series{topic, rows, failed, first_error, complete}`
+  // of the recipe's own config (the owner may read its ephemerals by id). nullopt when it says nothing.
+  struct SeriesStatus {
+    std::uint64_t rows = 0;
+    std::uint64_t failed = 0;
+    std::string first_error;
+    bool complete = false;
+  };
+  std::optional<SeriesStatus> readSeriesStatus() {
+    if (!dp_view_.valid()) {
+      return std::nullopt;
+    }
+    const auto recipe = dp_view_.recipeOf(kObjectPreviewId);
+    if (!recipe) {
+      return std::nullopt;
+    }
+    const auto parsed = nlohmann::json::parse(*recipe, nullptr, /*allow_exceptions=*/false);
+    if (!parsed.is_object() || !parsed.contains("series") || !parsed["series"].is_object()) {
+      return std::nullopt;
+    }
+    const auto& series = parsed["series"];
+    SeriesStatus status;
+    status.rows = series.value("rows", std::uint64_t{0});
+    status.failed = series.value("failed", std::uint64_t{0});
+    if (series.contains("first_error") && series["first_error"].is_string()) {
+      status.first_error = series["first_error"].get<std::string>();
+    }
+    status.complete = series.value("complete", false);
+    return status;
+  }
+
   // Plot the number outputs of the preview recipe over the whole history when the host materializes them
-  // (the catalog key is `<recipe key>/<output name>`); otherwise the readout at the cursor and a note. Read
-  // at most every kSeriesRead, and only when there is something new to read: it scans the catalog.
+  // (the catalog key is `<recipe key>/<output name>`), else the readout at the cursor. The host fills the series
+  // while the replay runs, so it is read again every kSeriesRead for as long as the recipe's own series status
+  // says it is incomplete, and whenever its row count moved; it is not read at all once complete and unchanged.
+  // A new install or a growing input restarts it. While it is pending, the curve of the previous install stays
+  // when it has the same names. A host that does not report the status is read until a series shows up.
   void showSeriesOrReadout(const std::vector<PJ::sdk::DataProcessorOutput>& outputs, const OnDemandBuild& build) {
     std::vector<std::size_t> numbers;  // the index in `outputs` of each number output
     for (std::size_t i = 0; i < outputs.size(); ++i) {
@@ -2907,38 +2956,76 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     if (numbers.empty()) {
       dialog_.setPreviewSeries({});
       dialog_.setReadout({});  // object outputs show in the scene view
+      dialog_.setSeriesNote({});
       return;
     }
-    // New data to read: the recipe was just (re)installed or an object input grew. Until the host
-    // materializes a series (an older one never does) and for inputs the catalog says nothing about
-    // (scalars), every period is a chance to find one.
     const SeriesStamp stamp{object_preview_installs_, build.data_stamp};
-    const bool due = !series_available_ || build.data_stamp.empty() || !(series_read_stamp_ == stamp);
+    if (!(series_read_stamp_ == stamp)) {
+      series_progress_ = {};
+      series_read_stamp_ = stamp;
+    }
     const auto now = std::chrono::steady_clock::now();
-    if (due && now >= next_series_read_) {
+    if (!series_progress_.complete && now >= next_series_read_) {
       next_series_read_ = now + kSeriesRead;
-      // The host returned the catalog path of each output's series (`<owner>/<id>/<name>`) when it creates
-      // the preview recipe; read exactly that, never a name guessed from the output.
-      std::vector<std::string> names;
-      for (const std::size_t index : numbers) {
-        names.push_back(index < object_preview_topics_.size() ? object_preview_topics_[index] : std::string{});
+      const auto status = readSeriesStatus();
+      bool read = true;
+      if (status) {
+        read = !series_progress_.read_rows || *series_progress_.read_rows != status->rows;
+        series_progress_.read_rows = status->rows;
+        series_progress_.complete = status->complete;
+        series_progress_.note = seriesNote(*status, build);
+      } else {
+        series_progress_.note.clear();
+        // Nothing to wait for: an object input is read until a series shows up, a scalar one every period.
+        series_progress_.complete = series_available_ && !build.data_stamp.empty();
       }
-      const auto samples = readManyRawSamples(names);
-      std::vector<RawSamples> found;
-      std::vector<std::string> labels;
-      for (std::size_t i = 0; i < numbers.size(); ++i) {
-        if (!samples[i].empty()) {
-          found.push_back(samples[i]);
-          labels.push_back(outputs[numbers[i]].name);
+      if (read) {
+        // The host returned the catalog path of each output's series (`<owner>/<id>/<name>`) when it creates
+        // the preview recipe; read exactly that, never a name guessed from the output.
+        std::vector<std::string> names;
+        for (const std::size_t index : numbers) {
+          names.push_back(index < object_preview_topics_.size() ? object_preview_topics_[index] : std::string{});
+        }
+        const auto samples = readManyRawSamples(names);
+        std::vector<RawSamples> found;
+        std::vector<std::string> labels;
+        std::vector<std::string> expected;
+        for (std::size_t i = 0; i < numbers.size(); ++i) {
+          expected.push_back(outputs[numbers[i]].name);
+          if (!samples[i].empty()) {
+            found.push_back(samples[i]);
+            labels.push_back(outputs[numbers[i]].name);
+          }
+        }
+        std::vector<PJ::ChartSeries> series = toChartSeries(found, labels, earliestTimestamp(found));
+        // The series of a new install has no rows yet: the previous curve is still the best answer.
+        const bool keep_previous =
+            series.empty() && status && !status->complete && dialog_.previewSeriesLabels() == expected;
+        if (!keep_previous) {
+          series_available_ = !series.empty();
+          dialog_.setPreviewSeries(std::move(series));  // keeps the plotted series when nothing changed
         }
       }
-      std::vector<PJ::ChartSeries> series = toChartSeries(found, labels, earliestTimestamp(found));
-      series_available_ = !series.empty();
-      series_read_stamp_ = stamp;
-      dialog_.setPreviewSeries(std::move(series));  // keeps the plotted series when nothing changed
     }
+    dialog_.setSeriesNote(series_progress_.note);
     const std::string& readout = dialog_.trialReadout();
-    dialog_.setReadout(series_available_ ? readout : readout + "\nseries preview needs a newer host");
+    dialog_.setReadout(series_progress_.note.empty() ? readout : readout + "\n" + series_progress_.note);
+  }
+
+  // "computing the series... 1 234 rows" while the host is still filling it, then its first error.
+  std::string seriesNote(const SeriesStatus& status, const OnDemandBuild& build) const {
+    std::string note;
+    if (!status.complete) {
+      note = "computing the series…";
+      if (status.rows > 0) {
+        note += " " + groupDigits(status.rows) + " rows";
+      }
+    }
+    if (!status.first_error.empty()) {
+      note += (note.empty() ? "" : " · ") + std::string("series error: ") +
+              derived_recipes::remapScriptLines(status.first_error, build.layout);
+    }
+    return note;
   }
 
   // Remove the ephemeral object recipe and clear the embedded scene view.
@@ -2952,6 +3039,9 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     preview_recipe_stamp_ = {};
     next_object_preview_refresh_ = {};
     series_available_ = false;
+    series_progress_ = {};
+    series_read_stamp_ = {};
+    dialog_.setSeriesNote({});
     dialog_.setEmbeddedScene({}, {});
     dialog_.setPreviewHasNumbers(true);
     dialog_.setReadout({});
@@ -3046,10 +3136,12 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   template <typename MakeScript>
   std::optional<std::string> scriptError(std::string_view kind, const std::string& language, MakeScript&& make_script) {
     if (!validation_ || validation_->revision != dialog_.formRevision() || validation_->kind != kind) {
-      auto verdict = dp_view_.validateScript(kind, language, make_script());
+      const derived_recipes::BuiltScript built = make_script();
+      auto verdict = dp_view_.validateScript(kind, language, built.script);
       validation_ = Validation{
           dialog_.formRevision(), std::string(kind),
-          verdict ? std::optional<std::string>{} : std::string(verdict.error())};
+          verdict ? std::optional<std::string>{}
+                  : derived_recipes::remapScriptLines(std::string(verdict.error()), built.layout)};
     }
     return validation_->error;
   }
@@ -3058,10 +3150,13 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   // infer (INFER_OUTPUTS), at the playhead's raw instant. `build` carries the request (inputs as request paths,
   // script, language and params) and the trial's own form of it; the instant is set here. A trial runs 300 ms
   // after the last edit and, for the readout at the cursor, at most every kTrialPeriod after that. When the
-  // cursor has no sample it runs once more at the first entry of the first object input (`build.first_entry`).
+  // cursor is before the first instant at which every object input has a sample (`build.first_entry`), or has no
+  // sample, it runs at that entry instead and the outputs are learned there.
   // Returns false when the host rejected the script (the error is on the dialog).
   bool previewOnDemand(const OnDemandBuild& build) {
-    if (const auto invalid = scriptError("on_demand", build.request.language, [&] { return build.request.script; })) {
+    if (const auto invalid = scriptError("on_demand", build.request.language, [&] {
+          return derived_recipes::BuiltScript{build.request.script, build.layout};
+        })) {
       tearDownPreview();
       dialog_.setTrialFailure(*invalid);
       dialog_.setValidationError(*invalid);
@@ -3094,7 +3189,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     if (trial_form_pending_ && now < trial_edit_at_ + edit_debounce_) {
       return true;
     }
-    const bool at_first = first_entry && no_sample_instant_ && *no_sample_instant_ == instant_ns;
+    // The cursor is before the first instant at which every input has a sample: the host would only say that
+    // an input is missing, so run straight at that entry, where the outputs are learned.
+    const bool before_first = first_entry && instant_ns < first_entry->ns;
+    const bool at_first = before_first || (first_entry && no_sample_instant_ && *no_sample_instant_ == instant_ns);
     // The outputs were already learned at this first entry for this cursor instant: nothing to ask again
     // until the form, the first entry or the cursor moves.
     const bool settled = at_first && first_entry_learned_ &&
@@ -3107,7 +3205,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       trial_form_key_ = build.form_key;
       trial_form_pending_ = false;
       next_preview_refresh_ = now + kTrialPeriod;
-      dialog_.setValidationError("");
+      // The last verdict stays on screen until the next one replaces it: clearing it here would blink it.
       PJ::sdk::DataProcessorRequest request = build.trial_request;
       request.instant_ns = at_first ? first_entry->ns : instant_ns;
       const PJ::sdk::EvaluationBudget budget{.max_millis = 1000};
@@ -3149,7 +3247,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       error = trial.error;
     }
     if (!error.empty()) {
-      error = withInputsHint(error);
+      error = withInputsHint(derived_recipes::remapScriptLines(error, build.layout));
       dialog_.setTrialFailure(error);
       dialog_.setValidationError(error);
       dialog_.setStatus("");
@@ -3196,13 +3294,14 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     return true;
   }
 
-  // What the host says when the script returns nothing, or fails on a nil, does not name the inputs. Say which
-  // names are bound, and that `value` is one of them only for series inputs.
+  // What the host says when the script returns nothing, or reads a name that is not bound, does not name the
+  // inputs. Say which names are bound, and that `value` is one of them only for series inputs.
   std::string withInputsHint(const std::string& error) const {
     std::string lower = error;
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
     const bool no_values = lower.find("returned no values") != std::string::npos;
-    if (!no_values && lower.find("nil") == std::string::npos) {
+    const bool unbound = no_values || derived_recipes::namesUndefinedName(dialog_.language(), error);
+    if (!unbound && lower.find("nil") == std::string::npos) {
       return error;
     }
     const auto& vars = dialog_.variableNames();
@@ -3217,7 +3316,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     if (!value_bound && derived_recipes::mentionsIdentifier(dialog_.functionBody(), dialog_.language(), "value")) {
       return error + " · `value` is not defined here; inputs are: " + names;
     }
-    return no_values ? error + " · inputs are: " + names : error;
+    return unbound ? error + " · inputs are: " + names : error;
   }
 
   void refreshPreview() {
@@ -3306,9 +3405,9 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     for (std::size_t k = 0; k < num_outputs; ++k) {
       preview_outputs.push_back(preview_id + "_" + std::to_string(k));
     }
-    const std::string script =
-        derived_recipes::buildTransformScript(preview_id, preview_id, global, body, num_extra, dialog_.language())
-            .script;
+    const derived_recipes::BuiltScript built =
+        derived_recipes::buildTransformScript(preview_id, preview_id, global, body, num_extra, dialog_.language());
+    const std::string& script = built.script;
 
     // Evaluate the code FIRST via the SDK (cheap: compile + one test point, no node).
     // Only materialise the live preview node when the script is valid — so a broken
@@ -3317,8 +3416,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     // preview/create script keeps preview_id for the upsert).
     const auto invalid = scriptError("transform", dialog_.language(), [&] {
       return derived_recipes::buildTransformScript(
-                 "__validate__", "__validate__", global, body, num_extra, dialog_.language())
-          .script;
+          "__validate__", "__validate__", global, body, num_extra, dialog_.language());
     });
     dialog_.setValidationError(invalid.value_or(""));
     if (invalid) {
@@ -3336,7 +3434,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
         PJ::Span<const std::string_view>(outputs_sv.data(), outputs_sv.size()), script, "{}");
 
     if (!status) {
-      dialog_.setValidationError(std::string(status.error()));
+      dialog_.setValidationError(derived_recipes::remapScriptLines(std::string(status.error()), built.layout));
       dialog_.setPreviewSeries({});
       return;
     }
@@ -3414,12 +3512,11 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       dialog_.setBatchValidationError("");
       return;
     }
-    const std::string script =
-        derived_recipes::buildTransformScript(
-            "__validate__", "__validate__", dialog_.batchGlobalCode(), body, 0, dialog_.batchLanguage())
-            .script;
-    auto status = dp_view_.validateScript("transform", dialog_.batchLanguage(), script);
-    dialog_.setBatchValidationError(status ? "" : std::string(status.error()));
+    const derived_recipes::BuiltScript built = derived_recipes::buildTransformScript(
+        "__validate__", "__validate__", dialog_.batchGlobalCode(), body, 0, dialog_.batchLanguage());
+    auto status = dp_view_.validateScript("transform", dialog_.batchLanguage(), built.script);
+    dialog_.setBatchValidationError(
+        status ? "" : derived_recipes::remapScriptLines(std::string(status.error()), built.layout));
   }
 
   static constexpr auto kPreviewRefresh = std::chrono::milliseconds(250);  // between two preview recipe installs
@@ -3487,6 +3584,13 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     bool operator==(const SeriesStamp&) const = default;
   };
   SeriesStamp series_read_stamp_;
+  // Where the preview series is in its replay (see showSeriesOrReadout), restarted with the stamp above.
+  struct SeriesProgress {
+    std::optional<std::uint64_t> read_rows;  // the row count the samples were last read at
+    bool complete = false;                   // nothing left to wait for
+    std::string note;                        // the status line's remark on the series
+  };
+  SeriesProgress series_progress_;
 };
 
 }  // namespace

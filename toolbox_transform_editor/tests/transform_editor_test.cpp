@@ -150,6 +150,22 @@ class TransformEditorPreviewTestPeer {
     editor.object_preview_topics_ = {topic};
     editor.showSeriesOrReadout({{name, "number"}}, TransformEditorToolbox::OnDemandBuild{});
   }
+  // One read of the preview series as a tick does it, against `store` (the catalog the samples are read from);
+  // the scene catalog the rig set is put back afterwards.
+  static void pollSeries(
+      TransformEditorToolbox& editor, PJ::testing::ToolboxTestStore& store,
+      const std::vector<PJ::sdk::DataProcessorOutput>& outputs, const std::string& topic) {
+    const auto previous = editor.test_catalog_host_;
+    editor.test_catalog_host_ = PJ::sdk::ToolboxHostView(store.makeHost());
+    editor.object_preview_topics_ = {topic};
+    editor.next_series_read_ = {};
+    editor.showSeriesOrReadout(outputs, editor.buildOnDemandRequest());
+    editor.test_catalog_host_ = previous;
+  }
+  // The host accepted the preview recipe again (an edit re-upserts it): its series starts over.
+  static void reinstall(TransformEditorToolbox& editor) {
+    ++editor.object_preview_installs_;
+  }
   static bool seriesAvailable(const TransformEditorToolbox& editor) {
     return editor.series_available_;
   }
@@ -321,17 +337,18 @@ TEST(TransformEditorTrial, ALoadedRecipeTrustsNoOutputsBeforeATrial) {
   EXPECT_EQ(rig.dialog().inferredOutputs()[0].name, "cropped");
 }
 
-TEST(TransformEditorTrial, NoSampleAtTheCursorRetriesAtTheFirstEntry) {
+TEST(TransformEditorTrial, NoSampleAtTheCursorAfterTheFirstEntryStillRetriesAtTheFirstEntry) {
   Rig rig;
   rig.catalog.addObjectTopic("/late", "kPointCloud", 5, 8000000000, 9000000000);
+  rig.playback.state.current_time_s = 8.5;
   rig.dp.report_queue = {kNoSampleReport};  // the first answer: no sample at the cursor; then the canned report
   rig.load(onDemandConfig("my_filter", "{}", false, "/late"));
   rig.refresh();
   ASSERT_EQ(rig.dp.submit_calls, 2);
-  EXPECT_EQ(rig.dp.submits[0].instant_ns, 3000000000);
+  EXPECT_EQ(rig.dp.submits[0].instant_ns, 8500000000);
   EXPECT_EQ(rig.dp.submits[1].instant_ns, 8000000000) << "the first entry of /late";
   const std::string status = TransformEditorPreviewTestPeer::status(rig.editor);
-  EXPECT_NE(status.find("No sample of /late at the cursor (3.000 s): move the timeline to preview."), std::string::npos)
+  EXPECT_NE(status.find("No sample of /late at the cursor (8.500 s): move the timeline to preview."), std::string::npos)
       << status;
   EXPECT_NE(status.find("Outputs: cropped (point cloud), count (number)"), std::string::npos) << status;
   EXPECT_EQ(status.find("count: 42"), std::string::npos) << "no value of the retried instant";
@@ -386,7 +403,7 @@ TEST(TransformEditorTrial, NoSampleAnywhereIsAReasonNotACrash) {
   rig.dp.canned_report_json = kNoSampleReport;
   rig.load(onDemandConfig("my_filter", "{}", false, "/late"));
   rig.refresh();
-  EXPECT_EQ(rig.dp.submit_calls, 2) << "the cursor, then the first entry; no third try";
+  EXPECT_EQ(rig.dp.submit_calls, 1) << "the cursor is before the first entry: straight there, no second try";
   EXPECT_NE(rig.dialog().canCreateReason().find("No sample"), std::string::npos);
   EXPECT_EQ(TransformEditorPreviewTestPeer::widgets(rig.editor)["pushButtonCreate"]["enabled"], false);
 }
@@ -682,13 +699,14 @@ TEST(TransformEditorCreate, DisabledReasonsGoOnTheStatusLineAndTheButton) {
     EXPECT_EQ(rig.dialog().canCreateReason(), "");
   }
   {
-    Rig rig;  // a script error: the host's message
+    Rig rig;  // a script error: the host's message, and the names the script can read
     rig.dp.canned_report_json = R"({"error":"attempt to index nil with 'crop_box'"})";
     rig.dp.terminal_state = PJ_EVALUATION_STATE_FAILED;
     rig.load(onDemandConfig("my_filter"));
     rig.refresh();
-    EXPECT_EQ(rig.dialog().canCreateReason(), "attempt to index nil with 'crop_box'");
-    EXPECT_EQ(TransformEditorPreviewTestPeer::status(rig.editor), "attempt to index nil with 'crop_box'");
+    const std::string shown = std::string("attempt to index nil with 'crop_box' ") + kMiddleDot + " inputs are: cloud";
+    EXPECT_EQ(rig.dialog().canCreateReason(), shown);
+    EXPECT_EQ(TransformEditorPreviewTestPeer::status(rig.editor), shown);
     TransformEditorPreviewTestPeer::save(rig.editor);
     EXPECT_EQ(rig.dp.persistent_creates, 0);
   }
@@ -1234,17 +1252,21 @@ TEST(TransformEditorPreview, CreateClearsTheEmbeddedView) {
   EXPECT_TRUE(widgets["frameScenePreview"]["scene_view"].is_null());
 }
 
-TEST(TransformEditorPreview, NumberOutputsShowTheReadoutAndSayWhenTheSeriesNeedsANewerHost) {
+TEST(TransformEditorPreview, NumberOutputsShowTheReadoutWhileTheSeriesIsComputing) {
   Rig rig;
   rig.dp.canned_report_json = kNumberReport;
+  rig.dp.config_series = {{"value", 0, 0, "", false}};  // the host has not produced a row yet
   rig.newObjectRecipe("return cloud:count()");
   const auto widgets = rig.widgets();
   const std::string placeholder = widgets["framePlotPreview"]["chart_placeholder"].dump();
   EXPECT_NE(placeholder.find("value: 1.83"), std::string::npos) << placeholder;
-  EXPECT_NE(placeholder.find("series preview needs a newer host"), std::string::npos) << placeholder;
+  EXPECT_NE(placeholder.find("computing the series"), std::string::npos) << placeholder;
+  EXPECT_EQ(placeholder.find("newer host"), std::string::npos) << "that note is gone: " << placeholder;
   EXPECT_EQ(widgets["frameScenePreview"]["visible"], false);
   EXPECT_TRUE(rig.tabs.tabs.empty()) << "no object output: no scene tab";
-  EXPECT_EQ(TransformEditorPreviewTestPeer::status(rig.editor), "value: 1.83");
+  EXPECT_EQ(
+      TransformEditorPreviewTestPeer::status(rig.editor),
+      std::string("value: 1.83 ") + kMiddleDot + " computing the series…");
   EXPECT_EQ(rig.dialog().canCreateReason(), "") << "a missing series preview never blocks Create";
 }
 
@@ -1660,6 +1682,286 @@ TEST(TransformEditorPreview, ClearingBodyOrInputClearsCompletedAndPendingReports
     EXPECT_EQ(host.poll_calls, polls);
     EXPECT_FALSE(TransformEditorPreviewTestPeer::showsReport(editor));
   }
+}
+
+// ---------------------------------------------------------------------------
+// The preview series while the host replays it
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The 1-based line of the first line of `script` that is exactly `line`.
+int scriptLineOf(const std::string& script, const std::string& line) {
+  std::istringstream in(script);
+  std::string text;
+  for (int n = 1; std::getline(in, text); ++n) {
+    if (text == line) {
+      return n;
+    }
+  }
+  return -1;
+}
+
+const std::vector<PJ::sdk::DataProcessorOutput> kValueOutput = {{"value", "number"}};
+
+// The points of the first plotted series of the dialog, -1 when nothing is plotted.
+int plottedPoints(Rig& rig) {
+  const auto series = rig.widgets()["framePlotPreview"]["chart_series"];
+  return series.is_array() && !series.empty() ? static_cast<int>(series[0]["points"].size()) : -1;
+}
+
+std::string statusOf(Rig& rig) {
+  return TransformEditorPreviewTestPeer::status(rig.editor);
+}
+
+// A rig whose recipe has one number output, `value`, plotted from the series topic "value" of `store`.
+void numberRecipe(Rig& rig) {
+  rig.dp.canned_report_json = kNumberReport;
+  rig.newObjectRecipe("return cloud:count()");
+  rig.dp.config_calls = 0;
+  rig.dp.config_series_served = 0;
+}
+
+}  // namespace
+
+TEST(TransformEditorSeries, ItIsReadAgainAsTheRowsGrowAndNotAnyMoreOnceComplete) {
+  Rig rig;
+  numberRecipe(rig);
+  rig.dp.config_series = {{"value", 0, 0, "", false}, {"value", 4, 0, "", false}, {"value", 8, 0, "", true}};
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("value").addField("value", "v", {}, {});
+  TransformEditorPreviewTestPeer::reinstall(rig.editor);
+
+  TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, kValueOutput, "value");
+  EXPECT_EQ(plottedPoints(rig), -1) << "no row yet";
+  EXPECT_NE(statusOf(rig).find("computing the series…"), std::string::npos) << statusOf(rig);
+
+  store.extendField("v", {0, 1000000000, 2000000000, 3000000000}, {1, 2, 3, 4});
+  TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, kValueOutput, "value");
+  EXPECT_EQ(plottedPoints(rig), 4);
+  EXPECT_NE(statusOf(rig).find("computing the series… 4 rows"), std::string::npos) << statusOf(rig);
+
+  store.extendField("v", {4000000000, 5000000000, 6000000000, 7000000000}, {5, 6, 7, 8});
+  TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, kValueOutput, "value");
+  EXPECT_EQ(plottedPoints(rig), 8) << "re-read as the rows grew";
+  EXPECT_EQ(statusOf(rig).find("computing"), std::string::npos) << statusOf(rig);
+  EXPECT_EQ(rig.dp.last_config_id, "__te_obj_preview__") << "the owner reads its own ephemeral recipe by id";
+  ASSERT_EQ(rig.dp.config_calls, 3);
+
+  TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, kValueOutput, "value");
+  TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, kValueOutput, "value");
+  EXPECT_EQ(rig.dp.config_calls, 3) << "complete: nothing is asked again";
+  EXPECT_EQ(plottedPoints(rig), 8);
+}
+
+TEST(TransformEditorSeries, ARowCountThatDidNotMoveIsNotReadAgain) {
+  Rig rig;
+  numberRecipe(rig);
+  rig.dp.config_series = {{"value", 4, 0, "", false}, {"value", 4, 0, "", false}, {"value", 6, 0, "", false}};
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("value").addField("value", "v", {0, 1000000000, 2000000000, 3000000000}, {1, 2, 3, 4});
+  TransformEditorPreviewTestPeer::reinstall(rig.editor);
+  TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, kValueOutput, "value");
+  ASSERT_EQ(plottedPoints(rig), 4);
+  // The store grows behind the editor's back: with the host's row count unchanged there is nothing new to read.
+  store.extendField("v", {4000000000, 5000000000}, {5, 6});
+  TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, kValueOutput, "value");
+  EXPECT_EQ(plottedPoints(rig), 4);
+  TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, kValueOutput, "value");
+  EXPECT_EQ(plottedPoints(rig), 6) << "the row count moved: read again";
+}
+
+TEST(TransformEditorSeries, WhilePendingThePreviousCurveStaysAndTheStatusSaysComputing) {
+  Rig rig;
+  numberRecipe(rig);
+  rig.dp.config_series = {{"value", 3, 0, "", true}};
+  PJ::testing::ToolboxTestStore first;
+  first.addTopic("value").addField("value", "v", {0, 1000000000, 2000000000}, {1, 2, 3});
+  TransformEditorPreviewTestPeer::reinstall(rig.editor);
+  TransformEditorPreviewTestPeer::pollSeries(rig.editor, first, kValueOutput, "value");
+  ASSERT_EQ(plottedPoints(rig), 3);
+
+  // An edit re-installs the recipe: the host restarts the series, so the topic is empty for a while.
+  PJ::testing::ToolboxTestStore restarted;
+  restarted.addTopic("value").addField("value", "v", {}, {});
+  rig.dp.config_series = {{"value", 0, 0, "", false}};
+  rig.dp.config_series_served = 0;
+  TransformEditorPreviewTestPeer::reinstall(rig.editor);
+  TransformEditorPreviewTestPeer::pollSeries(rig.editor, restarted, kValueOutput, "value");
+  EXPECT_EQ(plottedPoints(rig), 3) << "the previous curve stays";
+  EXPECT_NE(statusOf(rig).find("computing the series…"), std::string::npos) << statusOf(rig);
+  EXPECT_EQ(statusOf(rig).find("newer host"), std::string::npos);
+  EXPECT_EQ(rig.widgets()["framePlotPreview"]["chart_placeholder"], "") << "the curve is not covered by a note";
+
+  // The same wait for outputs that are not the ones plotted: that curve is of no use any more.
+  rig.dp.config_series_served = 0;
+  TransformEditorPreviewTestPeer::reinstall(rig.editor);
+  TransformEditorPreviewTestPeer::pollSeries(rig.editor, restarted, {{"other", "number"}}, "value");
+  EXPECT_EQ(plottedPoints(rig), -1) << "different names: cleared";
+
+  // Rows arrive: the new curve replaces it.
+  PJ::testing::ToolboxTestStore arrived;
+  arrived.addTopic("value").addField("value", "v", {0, 1000000000}, {7, 8});
+  rig.dp.config_series = {{"value", 2, 0, "", true}};
+  rig.dp.config_series_served = 0;
+  TransformEditorPreviewTestPeer::reinstall(rig.editor);
+  TransformEditorPreviewTestPeer::pollSeries(rig.editor, arrived, kValueOutput, "value");
+  EXPECT_EQ(plottedPoints(rig), 2);
+  EXPECT_EQ(statusOf(rig).find("computing"), std::string::npos) << statusOf(rig);
+}
+
+TEST(TransformEditorSeries, TheHostsFirstSeriesErrorIsOnTheStatusLine) {
+  Rig rig;
+  numberRecipe(rig);
+  const int body_line = scriptLineOf(TransformEditorPreviewTestPeer::script(rig.editor), "return cloud:count()");
+  ASSERT_GT(body_line, 1);
+  rig.dp.config_series = {
+      {"value", 0, 5, "script:" + std::to_string(body_line) + ": attempt to index nil with 'count'", true}};
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("value").addField("value", "v", {}, {});
+  TransformEditorPreviewTestPeer::reinstall(rig.editor);
+  TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, kValueOutput, "value");
+  EXPECT_NE(statusOf(rig).find("series error: line 1: attempt to index nil with 'count'"), std::string::npos)
+      << statusOf(rig) << " (the chunk line is the user's line)";
+}
+
+// ---------------------------------------------------------------------------
+// A cursor before the first sample, errors that survive, errors in the user's own lines
+// ---------------------------------------------------------------------------
+
+TEST(TransformEditorTrial, ACursorBeforeTheFirstEntryRunsThereAndSaysSoInDisplaySeconds) {
+  Rig rig;
+  rig.playback.display_offset_ns = 1000000000000;  // display 0 s is raw 1000 s
+  rig.playback.state.current_time_s = 3.0;
+  rig.catalog.addObjectTopic("/late", "kPointCloud", 5, 1008000000000, 1009000000000);
+  rig.dp.first_sample_ns = 1008000000000;  // the host cannot run an input before its first entry
+  rig.dp.first_sample_input = "/late";
+  rig.load(onDemandConfig("my_filter", "{}", false, "/late"));
+  rig.refresh();
+  ASSERT_EQ(rig.dp.submit_calls, 1) << "straight at the first entry: no run at the cursor";
+  EXPECT_EQ(rig.dp.submits[0].instant_ns, 1008000000000);
+  const std::string status = TransformEditorPreviewTestPeer::status(rig.editor);
+  EXPECT_NE(
+      status.find("No sample of /late at the cursor (3.000 s): move the timeline to preview. Outputs: "),
+      std::string::npos)
+      << status;
+  EXPECT_EQ(status.find("t="), std::string::npos) << status;
+  EXPECT_EQ(status.find("1003"), std::string::npos) << "no raw ns: " << status;
+  EXPECT_EQ(status.find("missing input"), std::string::npos) << status;
+  EXPECT_EQ(rig.dialog().canCreateReason(), "") << "the outputs are known: Create stays enabled";
+  EXPECT_EQ(rig.widgets()["pushButtonCreate"]["enabled"], true);
+  const std::string overlay = rig.widgets()["framePlotPreview"]["chart_placeholder"].dump();
+  EXPECT_EQ(overlay.find("missing input"), std::string::npos) << overlay;
+}
+
+TEST(TransformEditorTrial, TheFirstEntryIsTheLatestFirstEntryOfTheInputs) {
+  Rig rig;
+  rig.catalog.addObjectTopic("/early", "kPointCloud", 5, 1000000000, 9000000000);
+  rig.catalog.addObjectTopic("/late", "kPointCloud", 5, 4000000000, 9000000000);
+  rig.playback.state.current_time_s = 2.0;
+  rig.dp.first_sample_ns = 4000000000;
+  rig.dp.first_sample_input = "/late";
+  rig.refresh();
+  rig.dialog().onItemsDropped("tableSources", {"/early", "/late"});
+  rig.dialog().onCodeChanged("functionText", "return { count = 1 }");
+  rig.refresh();
+  ASSERT_GE(rig.dp.submit_calls, 1);
+  EXPECT_EQ(rig.dp.submits.back().instant_ns, 4000000000) << "the instant at which every input has a sample";
+  const std::string status = TransformEditorPreviewTestPeer::status(rig.editor);
+  EXPECT_NE(status.find("No sample of /late at the cursor (2.000 s)"), std::string::npos) << status;
+}
+
+TEST(TransformEditorTrial, TheValidationErrorSurvivesTheTickThatSubmitsAgain) {
+  Rig rig;
+  rig.dp.canned_report_json = R"({"error":"boom"})";
+  rig.dp.terminal_state = PJ_EVALUATION_STATE_FAILED;
+  rig.load(onDemandConfig("my_filter"));
+  rig.refresh();
+  auto overlay = [&] { return rig.widgets()["framePlotPreview"]["chart_placeholder"].dump(); };
+  ASSERT_NE(overlay().find("boom"), std::string::npos) << overlay();
+  // The next trial is submitted and stays pending for a while: the verdict on screen is the last one.
+  rig.dp.pending_polls = 100;
+  TransformEditorPreviewTestPeer::releaseTrialTimer(rig.editor);
+  TransformEditorPreviewTestPeer::tick(rig.editor);
+  ASSERT_TRUE(TransformEditorPreviewTestPeer::pending(rig.editor));
+  EXPECT_NE(overlay().find("boom"), std::string::npos) << "tick 1 (the submit): " << overlay();
+  TransformEditorPreviewTestPeer::tick(rig.editor);
+  EXPECT_NE(overlay().find("boom"), std::string::npos) << "tick 2 (still pending): " << overlay();
+  // The next verdict replaces it.
+  rig.dp.pending_polls = 0;
+  rig.dp.canned_report_json = kTrialReport;
+  rig.dp.terminal_state = PJ_EVALUATION_STATE_COMPLETED;
+  TransformEditorPreviewTestPeer::expire(rig.editor);
+  TransformEditorPreviewTestPeer::tick(rig.editor);
+  rig.refresh();
+  EXPECT_EQ(overlay().find("boom"), std::string::npos) << overlay();
+}
+
+TEST(TransformEditorTrial, AnErrorInTheUsersCodeNamesTheUsersLineAndTheInputs) {
+  Rig rig;
+  rig.catalog.addObjectTopic("/lidar_top", "kPointCloud", 5, 0, 5000000000);
+  rig.dp.terminal_state = PJ_EVALUATION_STATE_FAILED;
+  rig.dp.canned_report_json = R"({"error":"x"})";
+  rig.refresh();
+  rig.dialog().onItemsDropped("tableSources", {"/lidar_top"});
+  rig.dialog().onCodeChanged("functionText", "return cloud.count");
+  rig.refresh();
+  // The host reports the line of the chunk; the chunk's directive and bindings come before the user's code.
+  const std::string script = TransformEditorPreviewTestPeer::script(rig.editor);
+  const int body_line = scriptLineOf(script, "return cloud.count");
+  ASSERT_GT(body_line, 1);
+  rig.dp.canned_report_json =
+      R"({"error":"script:)" + std::to_string(body_line) + R"(: attempt to index nil with 'count'"})";
+  rig.refresh();
+  const std::string reason = rig.dialog().canCreateReason();
+  EXPECT_EQ(reason, "line 1: attempt to index nil with 'count' " + std::string(kMiddleDot) + " inputs are: lidar_top");
+  EXPECT_EQ(reason.find("script:"), std::string::npos) << reason;
+  EXPECT_EQ(script.rfind("-- pj-script: luau\n", 0), 0u) << "the directive stays on line 1";
+
+  // A second line of the body is the second line of the user's code.
+  rig.dialog().onCodeChanged("functionText", "local n = 1\nreturn cloud.count");
+  rig.refresh();
+  const int second = scriptLineOf(TransformEditorPreviewTestPeer::script(rig.editor), "return cloud.count");
+  rig.dp.canned_report_json =
+      R"({"error":"script:)" + std::to_string(second) + R"(: attempt to index nil with 'count'"})";
+  rig.refresh();
+  EXPECT_EQ(rig.dialog().canCreateReason().rfind("line 2: attempt to index nil", 0), 0u);
+}
+
+TEST(TransformEditorTrial, APythonErrorIsRemappedToo) {
+  Rig rig;
+  rig.refresh();
+  rig.dialog().onItemsDropped("tableSources", {"/cloud"});
+  rig.dialog().onCodeChanged("functionText", "return {'count': cloud.count()}");
+  rig.dialog().onToggled("pythonButton", true);
+  rig.dp.terminal_state = PJ_EVALUATION_STATE_FAILED;
+  rig.dp.canned_report_json = R"({"error":"x"})";
+  rig.refresh();
+  const int line =
+      scriptLineOf(TransformEditorPreviewTestPeer::script(rig.editor), "    return {'count': cloud.count()}");
+  ASSERT_GT(line, 2);
+  rig.dp.canned_report_json = R"j({"error":"Python error: NameError: name 'cloudd' is not defined <string>()j" +
+                              std::to_string(line) + R"j()"})j";
+  rig.refresh();
+  EXPECT_EQ(
+      rig.dialog().canCreateReason(),
+      "Python error: NameError: name 'cloudd' is not defined line 1 " + std::string(kMiddleDot) + " inputs are: cloud");
+}
+
+TEST(TransformEditorTrial, ASeriesFunctionErrorIsRemappedToTheUsersLine) {
+  Rig rig;
+  rig.dp.fail_validate = true;
+  rig.refresh();
+  rig.dialog().onItemsDropped("tableSources", {"a/x"});
+  rig.dialog().onCodeChanged("functionText", "local y = value\nreturn yy");
+  rig.refresh();
+  // The host names the line of the generated chunk; the user's code starts after the wrapper.
+  const int line = scriptLineOf(rig.dp.last_validate_script, "return yy");
+  ASSERT_GT(line, 3);
+  rig.dp.validate_error = "script:" + std::to_string(line) + ": unknown global 'yy'";
+  rig.dialog().onCodeChanged("functionText", "local y = value\nreturn yy ");  // a new form revision: asked again
+  rig.refresh();
+  EXPECT_EQ(rig.dialog().canCreateReason(), "test: line 2: unknown global 'yy'");
 }
 
 // ---------------------------------------------------------------------------

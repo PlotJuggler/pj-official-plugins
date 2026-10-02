@@ -35,6 +35,7 @@ struct RecordingDpHost {
   int persistent_creates = 0;
   int validate_calls = 0;
   bool fail_validate = false;
+  std::string validate_error = "compile error";  // what a failing validate_data_processor_script says
   bool fail_create = false;
   // Simulate a host that has not heard of any create_data_processor flag bit
   // besides EPHEMERAL (i.e. an older host, pre-HISTORY_EXEMPT): any other bit
@@ -60,6 +61,18 @@ struct RecordingDpHost {
   std::optional<bool> config_history_exempt;
   bool fail_config = false;
   std::string canned_config_json;
+  // The `series{topic, rows, failed, first_error, complete}` object the config of an owner's own recipe carries
+  // while the host replays its history. data_processor_config serves one entry per call, in order, and repeats the
+  // last once they are used up; empty -> the recipe JSON has no "series" (a host that does not report it).
+  struct SeriesStatus {
+    std::string topic;
+    std::uint64_t rows = 0;
+    std::uint64_t failed = 0;
+    std::string first_error;
+    bool complete = false;
+  };
+  std::vector<SeriesStatus> config_series;
+  std::size_t config_series_served = 0;
   int config_calls = 0;
   std::string last_config_id;
   std::string last_config_json;  // owned storage for the borrowed out_recipe_json view
@@ -95,6 +108,11 @@ struct RecordingDpHost {
   // Reports served before canned_report_json, one per COMPLETED poll (front first): lets a test script
   // a sequence of answers, e.g. "no sample" then a report.
   std::vector<std::string> report_queue;
+  // When set, an evaluation requested at an instant before it is answered the way the host answers an input
+  // that has no sample yet: a report whose coverage carries the host's raw error (with the instant in ns),
+  // instead of the queued or canned report.
+  std::optional<std::int64_t> first_sample_ns;
+  std::string first_sample_input = "/cloud";
   // What every submit_evaluation asked for, in order.
   struct RecordedRequest {
     std::int64_t instant_ns = 0;  // raw ns
@@ -121,6 +139,7 @@ struct RecordingDpHost {
   std::uint64_t last_budget_max_evaluations = 0;
   std::uint64_t last_budget_max_report_bytes = 0;
   std::map<std::uint64_t, int> poll_countdown;
+  std::map<std::uint64_t, std::int64_t> handle_instant;  // the instant each submitted evaluation asked for
   std::uint64_t next_handle = 1;
   std::string last_poll_json;  // owned storage for the borrowed out_json view
 
@@ -251,7 +270,7 @@ struct RecordingDpHost {
     ++self->validate_calls;
     self->last_validate_script = toStr(script);
     if (self->fail_validate) {
-      PJ::sdk::fillError(err, 1, "test", "compile error");
+      PJ::sdk::fillError(err, 1, "test", self->validate_error.c_str());
       return false;
     }
     if (rejectsCrossRead(toStr(kind), self->last_validate_script, err)) {
@@ -300,6 +319,13 @@ struct RecordingDpHost {
     self->last_config_json = "{\"kind\":\"" + self->last_kind + "\"";
     if (self->config_history_exempt.has_value()) {
       self->last_config_json += std::string(",\"history_exempt\":") + (*self->config_history_exempt ? "true" : "false");
+    }
+    if (!self->config_series.empty()) {
+      const auto& series = self->config_series[std::min(self->config_series_served++, self->config_series.size() - 1)];
+      self->last_config_json += ",\"series\":{\"topic\":\"" + series.topic +
+                                "\",\"rows\":" + std::to_string(series.rows) +
+                                ",\"failed\":" + std::to_string(series.failed) + ",\"first_error\":\"" +
+                                series.first_error + "\",\"complete\":" + (series.complete ? "true" : "false") + "}";
     }
     self->last_config_json += "}";
     if (out_recipe_json != nullptr) {
@@ -380,6 +406,7 @@ struct RecordingDpHost {
     }
     const std::uint64_t handle = self->next_handle++;
     self->poll_countdown[handle] = self->pending_polls;
+    self->handle_instant[handle] = request->time_ns;
     if (out_handle != nullptr) {
       *out_handle = handle;
     }
@@ -405,7 +432,11 @@ struct RecordingDpHost {
       if (out_state != nullptr) {
         *out_state = self->terminal_state;
       }
-      if (self->report_queue.empty()) {
+      if (self->first_sample_ns && self->handle_instant[handle] < *self->first_sample_ns) {
+        self->last_poll_json =
+            R"({"coverage":{"complete":false,"stopped":"error","error":"on-demand: missing input ')" +
+            self->first_sample_input + "' at t=" + std::to_string(self->handle_instant[handle]) + R"("},"bundles":[]})";
+      } else if (self->report_queue.empty()) {
         self->last_poll_json = self->canned_report_json;
       } else {
         self->last_poll_json = self->report_queue.front();
