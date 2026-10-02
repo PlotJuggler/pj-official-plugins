@@ -30,15 +30,15 @@ One editor for series and objects.
   whole recording when the host provides them, and shown as a readout at the cursor otherwise. While
   the host is still computing a curve the status line says "computing the series… N rows" and the
   previous curve stays until the new one has data.
-  Object outputs show in a 3D or 2D scene view embedded next to the plot that follows the cursor
+  Object outputs show in a 3D or 2D scene view, embedded in the editor, that follows the cursor
   (a mix of 2D and 3D shows as 3D); a host that cannot embed a scene view shows only the status
   line. When the cursor is before the first instant at which every object input has a sample, the
   preview runs at that instant and says so in the timeline's seconds ("No sample of /lidar_top at
   the cursor (0.000 s): move the timeline to preview"); Create stays enabled. A script that returns nothing is reported with the names it can
   read (`The script returned no values · inputs are: lidar_top`). The preview recipes belong to the
   editor's panel and the host removes them when it closes.
-- Create is enabled with at least one input, a function body and a run that succeeded with every
-  output typed; otherwise the status line, and the button's tooltip, say why.
+- Create is enabled with at least one input, a function body and a run that succeeded; otherwise
+  the status line, and the button's tooltip, say why.
 - Advanced (collapsed): the params JSON object handed to the script as `params`, and "Pin at current
   time".
 - The Function Library has a Kind column (Series, 3D, 2D), shows each function's description and
@@ -48,7 +48,7 @@ One editor for series and objects.
   `points_per_frame`, `lidar_crop`, `lidar_crop_map`, `witness_of_crop`, `cam_threshold`,
   `cam_annotations` and `depth_cloud`.
 - The time-series preview zooms (wheel, rectangle) and pans (Ctrl or middle drag); right-click
-  undoes a rectangle zoom.
+  undoes a rectangle zoom, and the wheel does not zoom out past the whole curve.
 - Vars can be renamed: double-click an input row, type a name and press OK. A name must be an
   identifier, not a keyword or a name the script already owns (`inputs`, `params`, `math`...), and
   not the Var of another input; an empty name gives back the default. The script is never edited.
@@ -63,10 +63,8 @@ One editor for series and objects.
 ### Changed
 - A series function that returns several values (`return a, b`) creates `name/a`, `name/b`; the
   count is read from the return statements.
-- The editor declares itself the Custom Topics editor in its manifest (`custom_topics_editor`), so
-  the host opens it for the "+" button and for editing the recipes it made.
-- Object inputs need a host with the SDK 0.36 surfaces (typed data-processor requests and catalog
-  snapshot v2); on an older host the editor says so, Create stays disabled for them and the series
-  transform works as before.
+- The Custom Topics "+" button and the pencil on a recipe made here open this editor.
+- Object inputs need a host with SDK 0.36 or newer; on an older host the editor says so, Create
+  stays disabled for them and the series transform works as before.
 
 ## [1.0.4] - 2026-08-04
