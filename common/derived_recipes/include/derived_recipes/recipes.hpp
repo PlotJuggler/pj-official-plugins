@@ -162,10 +162,12 @@ struct ResolvedEvalInput {
   PJ::sdk::DataSourceHandle source{};
   bool has_source = false;
   // The catalog row of an object input (zero for a scalar series): how many entries the topic holds
-  // and the raw ns of the first one, so a caller needs no second scan of the catalog.
+  // and the raw ns of the first one, so a caller needs no second scan of the catalog. `info` is the row
+  // itself (its string views stay valid while the snapshot lives).
   std::uint64_t entry_count = 0;
   std::int64_t time_min_ns = 0;
   std::int64_t time_max_ns = 0;
+  PJ_object_topic_info_t info{};
 };
 
 // Outcome of resolving one input against the object-topic half of the v2 catalog. An

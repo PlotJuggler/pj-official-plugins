@@ -69,33 +69,15 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(toolbox_transform_editor_plugin
   REQUIRED_EXPORTS PJ_get_toolbox_vtable PJ_get_dialog_vtable)
 
-# --- Floor test (manifest.json suggested_sdk_version / floor_test) ---
-# The real toolbox against a host that predates the typed requests and catalog snapshot v2.
-add_executable(toolbox_transform_editor_floor_test tests/floor_test.cpp)
-target_compile_features(toolbox_transform_editor_floor_test PRIVATE cxx_std_20)
-target_compile_options(toolbox_transform_editor_floor_test PRIVATE ${PJ_WARNING_FLAGS})
-target_include_directories(toolbox_transform_editor_floor_test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
-target_link_libraries(toolbox_transform_editor_floor_test PRIVATE
+# --- Unit tests (also manifest.json suggested_sdk_version / floor_test) ---
+# One executable, so the plugin source is compiled into the tests once: the trial run, Create / Modify /
+# load of on-demand recipes, the asynchronous preview with cancellation on close, and the real toolbox
+# against a floor host that predates the typed requests and catalog snapshot v2.
+add_executable(toolbox_transform_editor_test tests/transform_editor_test.cpp)
+target_compile_features(toolbox_transform_editor_test PRIVATE cxx_std_20)
+target_compile_options(toolbox_transform_editor_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(toolbox_transform_editor_test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_link_libraries(toolbox_transform_editor_test PRIVATE
   pj_derived_recipes pj_test_support plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main)
-add_dependencies(toolbox_transform_editor_floor_test toolbox_transform_editor_plugin)
-add_test(NAME toolbox_transform_editor_floor_test COMMAND toolbox_transform_editor_floor_test)
-
-# The real toolbox's asynchronous preview, including cancellation on close.
-add_executable(toolbox_transform_editor_async_preview_test tests/async_preview_test.cpp)
-target_compile_features(toolbox_transform_editor_async_preview_test PRIVATE cxx_std_20)
-target_compile_options(toolbox_transform_editor_async_preview_test PRIVATE ${PJ_WARNING_FLAGS})
-target_include_directories(toolbox_transform_editor_async_preview_test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
-target_link_libraries(toolbox_transform_editor_async_preview_test PRIVATE
-  pj_derived_recipes pj_test_support plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main)
-add_dependencies(toolbox_transform_editor_async_preview_test toolbox_transform_editor_plugin)
-add_test(NAME toolbox_transform_editor_async_preview_test COMMAND toolbox_transform_editor_async_preview_test)
-
-# Create / Modify / load of on-demand recipes through the real toolbox + dialog, against recording hosts.
-add_executable(toolbox_transform_editor_on_demand_test tests/on_demand_recipe_test.cpp)
-target_compile_features(toolbox_transform_editor_on_demand_test PRIVATE cxx_std_20)
-target_compile_options(toolbox_transform_editor_on_demand_test PRIVATE ${PJ_WARNING_FLAGS})
-target_include_directories(toolbox_transform_editor_on_demand_test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
-target_link_libraries(toolbox_transform_editor_on_demand_test PRIVATE
-  pj_derived_recipes pj_test_support plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main)
-add_dependencies(toolbox_transform_editor_on_demand_test toolbox_transform_editor_plugin)
-add_test(NAME toolbox_transform_editor_on_demand_test COMMAND toolbox_transform_editor_on_demand_test)
+add_dependencies(toolbox_transform_editor_test toolbox_transform_editor_plugin)
+add_test(NAME toolbox_transform_editor_test COMMAND toolbox_transform_editor_test)

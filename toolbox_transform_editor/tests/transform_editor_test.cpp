@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
-// The simple Transform Editor through the real toolbox and dialog (the plugin source is compiled in,
-// like async_preview_test), against the recording and fake hosts the assistant's tests use: inputs, a
-// script and one preview. Outputs are inferred by a trial run; the name is asked at Create. Nothing
-// here runs a script: the recording host proves WHAT the editor asked the host to run or install.
+// The Transform Editor through the real toolbox and dialog, against the recording and fake hosts the
+// assistant's tests use. The plugin source is compiled in ONCE, for this one executable: the trial run,
+// Create / Modify / load of on-demand recipes, the asynchronous preview with its teardown, and the floor
+// host (manifest.json floor_test) that predates the typed requests and catalog snapshot v2. Nothing here
+// runs a script: the recording host proves WHAT the editor asked the host to run or install.
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <pj_plugins/testing/toolbox_test_store.hpp>
 
 #include "../transform_editor_plugin.cpp"
 #include "test_support/fake_catalog_host.hpp"
@@ -95,6 +97,94 @@ class TransformEditorPreviewTestPeer {
   static std::string status(TransformEditorToolbox& editor) {
     return widgets(editor)["statusLabel"]["label"];
   }
+  static void bind(TransformEditorToolbox& editor, PJ::sdk::DataProcessorsHostView host) {
+    editor.dp_view_ = host;
+    editor.edit_debounce_ = std::chrono::milliseconds(0);  // no waiting for quiet in a test
+  }
+  // The form resolves inputs against the catalog (object topics first), so a config-driven
+  // preview needs one that knows "/cloud".
+  static void bindCatalog(TransformEditorToolbox& editor, toolbox_testing::FakeCatalogHost& catalog) {
+    editor.test_catalog_host_ = PJ::sdk::ToolboxHostView(catalog.makeHost());
+  }
+  static void submitPreview(TransformEditorToolbox& editor, std::string script = "return {count=1}") {
+    PJ::sdk::DataProcessorRequest request;
+    request.kind = "on_demand";
+    request.language = "luau";
+    request.inputs = {"/cloud"};
+    request.script = script;
+    request.params_json = "{}";
+    // The request is injected past the form, so tell the editor the form moved (its caches are per revision).
+    editor.dialog_.catalogChanged();
+    TransformEditorToolbox::OnDemandBuild build;
+    build.request = request;
+    TransformEditorToolbox::setTrialForm(build);
+    editor.previewOnDemand(build);
+  }
+  static bool pending(const TransformEditorToolbox& editor) {
+    return editor.pending_preview_.has_value();
+  }
+  static void expire(TransformEditorToolbox& editor) {
+    editor.preview_deadline_ = std::chrono::steady_clock::time_point{};
+  }
+  static void configure(TransformEditorToolbox& editor, bool source, bool body) {
+    nlohmann::json config = {
+        {"kind", "on_demand"},
+        {"function_body", body ? "return {count=1}" : ""},
+        {"sources", source ? nlohmann::json::array({"/cloud"}) : nlohmann::json::array()}};
+    ASSERT_TRUE(editor.dialog_.loadConfig(config.dump()));
+  }
+  static void refreshCurrent(TransformEditorToolbox& editor) {
+    editor.refreshPreview();
+  }
+  // The status line shows the reason Create is disabled once no result is left, so "cleared" means that neither
+  // the result of the trial nor a pending run is on screen any more.
+  static bool showsReport(TransformEditorToolbox& editor) {
+    return status(editor).find("count: 42") != std::string::npos;
+  }
+  // The preview recipe's number output `name` was installed and the host answered `topic` for it; the
+  // editor reads the series for it now.
+  static void readSeries(
+      TransformEditorToolbox& editor, PJ::testing::ToolboxTestStore& store, const std::string& name,
+      const std::string& topic) {
+    editor.test_catalog_host_ = PJ::sdk::ToolboxHostView(store.makeHost());
+    editor.object_preview_topics_ = {topic};
+    editor.showSeriesOrReadout({{name, "number"}}, TransformEditorToolbox::OnDemandBuild{});
+  }
+  static bool seriesAvailable(const TransformEditorToolbox& editor) {
+    return editor.series_available_;
+  }
+  static std::string widgetText(TransformEditorToolbox& editor) {
+    return editor.dialog_.widget_data();
+  }
+  static void close(TransformEditorToolbox& editor) {
+    editor.tearDownPreview();
+  }
+  // A floor host: the v1 catalog lists scalars only and the data-processors vtable stops before the typed slots.
+  struct FloorHost {
+    RecordingDpHost dp;
+    FakeCatalogHost catalog;
+    FloorHost() {
+      dp.supports_v2 = false;
+      catalog.supportsV2(false);
+      catalog.addTopic("/imu").addField("/imu", "x");
+    }
+  };
+
+  static void bind(TransformEditorToolbox& editor, FloorHost& host) {
+    editor.dp_view_ = host.dp.view();
+    editor.test_catalog_host_ = PJ::sdk::ToolboxHostView(host.catalog.makeHost());
+    editor.edit_debounce_ = std::chrono::milliseconds(0);
+  }
+  static void load(TransformEditorToolbox& editor, const std::string& config) {
+    ASSERT_TRUE(editor.dialog_.loadConfig(config));
+    editor.refreshPreview();
+  }
+  static void saveAsIs(TransformEditorToolbox& editor) {
+    editor.onSave();
+  }
+  static std::string createReason(TransformEditorToolbox& editor) {
+    return editor.dialog_.canCreateReason();
+  }
 };
 
 // What a trial of `return {cropped = ..., count = ...}` reports: the outputs it inferred and one bundle.
@@ -153,7 +243,7 @@ struct Rig {
   bool embeds_scene_views = true;  // what the dialog host announces; rebind() after changing it
 
   Rig() {
-    catalog.addObjectTopic("/cloud", "kPointCloud", 5, 0, 5'000'000'000);
+    catalog.addObjectTopic("/cloud", "kPointCloud", 5, 0, 5000000000);
     playback.state.current_time_s = 3.0;
     dp.canned_report_json = kTrialReport;
     TransformEditorPreviewTestPeer::bind(editor, dp, catalog, playback, tabs);
@@ -192,6 +282,8 @@ struct Rig {
   }
 };
 
+using Host = RecordingDpHost;
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -207,7 +299,7 @@ TEST(TransformEditorTrial, SubmitsWithTheInferFlagAndNoOutputsAndParsesTheReport
       rig.dp.submits[0].flags,
       static_cast<std::uint32_t>(PJ_DATA_PROCESSOR_FLAG_EPHEMERAL | PJ_DATA_PROCESSOR_FLAG_INFER_OUTPUTS));
   EXPECT_EQ(rig.dp.submits[0].output_count, 0u) << "the outputs are the host's to infer";
-  EXPECT_EQ(rig.dp.submits[0].instant_ns, 3'000'000'000) << "at the cursor";
+  EXPECT_EQ(rig.dp.submits[0].instant_ns, 3000000000) << "at the cursor";
   const auto& outputs = rig.dialog().inferredOutputs();
   ASSERT_EQ(outputs.size(), 2u);
   EXPECT_EQ(outputs[0].name, "cropped");
@@ -231,13 +323,13 @@ TEST(TransformEditorTrial, ALoadedRecipeTrustsNoOutputsBeforeATrial) {
 
 TEST(TransformEditorTrial, NoSampleAtTheCursorRetriesAtTheFirstEntry) {
   Rig rig;
-  rig.catalog.addObjectTopic("/late", "kPointCloud", 5, 8'000'000'000, 9'000'000'000);
+  rig.catalog.addObjectTopic("/late", "kPointCloud", 5, 8000000000, 9000000000);
   rig.dp.report_queue = {kNoSampleReport};  // the first answer: no sample at the cursor; then the canned report
   rig.load(onDemandConfig("my_filter", "{}", false, "/late"));
   rig.refresh();
   ASSERT_EQ(rig.dp.submit_calls, 2);
-  EXPECT_EQ(rig.dp.submits[0].instant_ns, 3'000'000'000);
-  EXPECT_EQ(rig.dp.submits[1].instant_ns, 8'000'000'000) << "the first entry of /late";
+  EXPECT_EQ(rig.dp.submits[0].instant_ns, 3000000000);
+  EXPECT_EQ(rig.dp.submits[1].instant_ns, 8000000000) << "the first entry of /late";
   const std::string status = TransformEditorPreviewTestPeer::status(rig.editor);
   EXPECT_NE(status.find("No sample of /late at the cursor (3.000 s): move the timeline to preview."), std::string::npos)
       << status;
@@ -251,7 +343,7 @@ TEST(TransformEditorTrial, NoSampleAtTheCursorRetriesAtTheFirstEntry) {
 
 TEST(TransformEditorTrial, AnEmptyReturnNamesTheInputsTheScriptCanRead) {
   Rig rig;
-  rig.catalog.addObjectTopic("/lidar_top", "kPointCloud", 5, 0, 5'000'000'000);
+  rig.catalog.addObjectTopic("/lidar_top", "kPointCloud", 5, 0, 5000000000);
   rig.dp.canned_report_json = R"({"error":"the script returned no values"})";
   rig.dp.terminal_state = PJ_EVALUATION_STATE_FAILED;
   rig.refresh();
@@ -263,7 +355,7 @@ TEST(TransformEditorTrial, AnEmptyReturnNamesTheInputsTheScriptCanRead) {
 
 TEST(TransformEditorTrial, AValueTheScriptReadsButNoInputBindsIsSaidSo) {
   Rig rig;
-  rig.catalog.addObjectTopic("/lidar_top", "kPointCloud", 5, 0, 5'000'000'000);
+  rig.catalog.addObjectTopic("/lidar_top", "kPointCloud", 5, 0, 5000000000);
   rig.dp.canned_report_json = R"({"error":"the script returned no values"})";
   rig.dp.terminal_state = PJ_EVALUATION_STATE_FAILED;
   rig.refresh();
@@ -290,7 +382,7 @@ TEST(TransformEditorTrial, OtherHostErrorsAreLeftAsTheyAre) {
 
 TEST(TransformEditorTrial, NoSampleAnywhereIsAReasonNotACrash) {
   Rig rig;
-  rig.catalog.addObjectTopic("/late", "kPointCloud", 5, 8'000'000'000, 9'000'000'000);
+  rig.catalog.addObjectTopic("/late", "kPointCloud", 5, 8000000000, 9000000000);
   rig.dp.canned_report_json = kNoSampleReport;
   rig.load(onDemandConfig("my_filter", "{}", false, "/late"));
   rig.refresh();
@@ -323,7 +415,7 @@ TEST(TransformEditorTrial, CursorMovesRerunAtMostTwiceASecond) {
   TransformEditorPreviewTestPeer::releaseTrialTimer(rig.editor);
   TransformEditorPreviewTestPeer::tick(rig.editor);
   ASSERT_EQ(rig.dp.submit_calls, 2);
-  EXPECT_EQ(rig.dp.submits[1].instant_ns, 4'000'000'000);
+  EXPECT_EQ(rig.dp.submits[1].instant_ns, 4000000000);
   EXPECT_EQ(rig.dialog().canCreateReason(), "") << "a cursor move is not an edit: Create stays enabled";
 }
 
@@ -379,7 +471,7 @@ TEST(TransformEditorCreate, ModifySendsTheInferFlagTheInferredOutputsParamsEdito
   EXPECT_EQ(rig.dp.created[0].outputs, (std::vector<std::string>{"cropped", "count"}));
   EXPECT_EQ(rig.dp.last_output_types, (std::vector<std::string>{"kPointCloud", "number"}));
   EXPECT_EQ(rig.dp.last_create_v2_time_flags, static_cast<std::uint32_t>(PJ_DATA_PROCESSOR_TIME_FLAG_INSTANT));
-  EXPECT_EQ(rig.dp.last_create_v2_instant_ns, 3'000'000'000);  // playhead 3 s through the shared toRawNs
+  EXPECT_EQ(rig.dp.last_create_v2_instant_ns, 3000000000);  // playhead 3 s through the shared toRawNs
   EXPECT_NE(rig.dp.last_create_v2_script.find("local inputs, params = ..."), std::string::npos);
   EXPECT_NE(rig.dp.last_create_v2_script.find("local cloud = inputs[\"/cloud\"]"), std::string::npos)
       << "one local per input, named by its Var";
@@ -669,8 +761,8 @@ TEST(TransformEditorCreate, NoSceneButtonWithoutSceneTabsOrObjectOutputs) {
 
 TEST(TransformEditorCreate, ShowInSceneAttachesWithTheInputsDataset) {
   Rig rig;
-  rig.catalog.addObjectTopic("/a", "kPointCloud", 1, 0, 1'000'000'000, "{}", "runA");
-  rig.catalog.addObjectTopic("/b", "kPointCloud", 1, 0, 1'000'000'000, "{}", "runB");
+  rig.catalog.addObjectTopic("/a", "kPointCloud", 1, 0, 1000000000, "{}", "runA");
+  rig.catalog.addObjectTopic("/b", "kPointCloud", 1, 0, 1000000000, "{}", "runB");
   rig.dp.canned_report_json = R"({"bundles":[{"outputs":{"out":{"status":"ok","summary":{"type":"kPointCloud"}}}}],)"
                               R"("outputs":[{"name":"out","type":"kPointCloud"}]})";
   rig.load(onDemandConfig("my_filter", "{}", false, "runA:/a"));
@@ -801,10 +893,10 @@ TEST(TransformEditorLayout, TheRemovedWidgetsAreGone) {
 
 TEST(TransformEditorLayout, TheInputsTableHasAVisibleHeaderAndReadableTypes) {
   Rig rig;
-  rig.catalog.addObjectTopic("/img", "kImage", 3, 0, 1'000'000'000);
-  rig.catalog.addObjectTopic("/ann", "kImageAnnotations", 3, 0, 1'000'000'000);
-  rig.catalog.addObjectTopic("/scene", "kSceneEntities", 3, 0, 1'000'000'000);
-  rig.catalog.addObjectTopic("/tf", "kFrameTransforms", 3, 0, 1'000'000'000);
+  rig.catalog.addObjectTopic("/img", "kImage", 3, 0, 1000000000);
+  rig.catalog.addObjectTopic("/ann", "kImageAnnotations", 3, 0, 1000000000);
+  rig.catalog.addObjectTopic("/scene", "kSceneEntities", 3, 0, 1000000000);
+  rig.catalog.addObjectTopic("/tf", "kFrameTransforms", 3, 0, 1000000000);
   rig.refresh();
   rig.dialog().onItemsDropped("tableSources", {"/cloud", "/img", "/ann", "/scene", "/tf", "pose/x"});
   const auto widgets = rig.widgets();
@@ -828,8 +920,8 @@ TEST(TransformEditorLayout, TheInputsTableHasAVisibleHeaderAndReadableTypes) {
 
 TEST(TransformEditorLayout, ObjectTopicsDroppedFromTheDatasetsTreeAreTheOnlyWayToAddThem) {
   Rig rig;
-  rig.catalog.addObjectTopic("/img", "kImage", 3, 0, 1'000'000'000);
-  rig.catalog.addObjectTopic("/a", "kPointCloud", 1, 0, 1'000'000'000, "{}", "runA");
+  rig.catalog.addObjectTopic("/img", "kImage", 3, 0, 1000000000);
+  rig.catalog.addObjectTopic("/a", "kPointCloud", 1, 0, 1000000000, "{}", "runA");
   rig.refresh();
   EXPECT_TRUE(rig.widgets()["tableSources"]["rows"].empty());
   EXPECT_TRUE(rig.dialog().onItemsDropped("tableSources", {"/img", "runA:/a", "/img"}));
@@ -1185,7 +1277,7 @@ TEST(TransformEditorPreview, CreateRemovesThePreviewRecipeAndCloseLeavesItToTheH
   FakeCatalogHost catalog;
   FakePlaybackHost playback;
   FakePlotTabsHost tabs;
-  catalog.addObjectTopic("/cloud", "kPointCloud", 5, 0, 5'000'000'000);
+  catalog.addObjectTopic("/cloud", "kPointCloud", 5, 0, 5000000000);
   dp.canned_report_json = kTrialReport;
   {
     TransformEditorToolbox editor;
@@ -1397,4 +1489,223 @@ TEST(TransformEditorLibrary, SavingAnObjectFunctionRecordsItsInputs) {
   EXPECT_EQ(saved.inputs[0].var, "cloud");
   EXPECT_EQ(saved.inputs[0].type, "kPointCloud");
   EXPECT_EQ(saved.function_body, "return cloud:count()");
+}
+
+// ---------------------------------------------------------------------------
+// The asynchronous preview and its teardown
+// ---------------------------------------------------------------------------
+
+TEST(TransformEditorPreview, PendingYieldsThenCompletesAndReleasesOnce) {
+  Host host;
+  host.pending_polls = 2;
+  host.canned_report_json = kTrialReport;
+  TransformEditorToolbox editor;
+  TransformEditorPreviewTestPeer::bind(editor, host.view());
+  TransformEditorPreviewTestPeer::submitPreview(editor);
+  EXPECT_EQ(host.poll_calls, 1);
+  EXPECT_TRUE(TransformEditorPreviewTestPeer::pending(editor));
+  EXPECT_TRUE(host.released_handles.empty());
+  TransformEditorPreviewTestPeer::submitPreview(editor);
+  TransformEditorPreviewTestPeer::submitPreview(editor);
+  EXPECT_FALSE(TransformEditorPreviewTestPeer::pending(editor));
+  EXPECT_EQ(host.submit_calls, 1);
+  EXPECT_EQ(host.released_handles.size(), 1u);
+  TransformEditorPreviewTestPeer::close(editor);
+  EXPECT_EQ(host.released_handles.size(), 1u);
+}
+TEST(TransformEditorPreview, CompletedSameInstantRefreshesForLiveInputChanges) {
+  Host host;
+  host.canned_report_json = kTrialReport;
+  TransformEditorToolbox editor;
+  TransformEditorPreviewTestPeer::bind(editor, host.view());
+  TransformEditorPreviewTestPeer::submitPreview(editor);
+  TransformEditorPreviewTestPeer::submitPreview(editor);
+  EXPECT_EQ(host.submit_calls, 1);
+  TransformEditorPreviewTestPeer::releaseTrialTimer(editor);
+  TransformEditorPreviewTestPeer::submitPreview(editor);
+  EXPECT_EQ(host.submit_calls, 2);
+  EXPECT_EQ(host.released_handles.size(), 2u);
+}
+TEST(TransformEditorPreview, FailedAndCancelledReleaseOnce) {
+  for (auto state : {PJ_EVALUATION_STATE_FAILED, PJ_EVALUATION_STATE_CANCELLED}) {
+    Host host;
+    host.pending_polls = 1;
+    host.terminal_state = state;
+    host.canned_report_json = R"({"error":"deliberate failure"})";
+    TransformEditorToolbox editor;
+    TransformEditorPreviewTestPeer::bind(editor, host.view());
+    TransformEditorPreviewTestPeer::submitPreview(editor);
+    TransformEditorPreviewTestPeer::submitPreview(editor);
+    EXPECT_FALSE(TransformEditorPreviewTestPeer::pending(editor));
+    EXPECT_EQ(host.released_handles.size(), 1u);
+  }
+}
+TEST(TransformEditorPreview, ExpiryReleasesOnceWithoutBlocking) {
+  Host host;
+  host.pending_polls = 100;
+  TransformEditorToolbox editor;
+  TransformEditorPreviewTestPeer::bind(editor, host.view());
+  TransformEditorPreviewTestPeer::submitPreview(editor);
+  TransformEditorPreviewTestPeer::expire(editor);
+  TransformEditorPreviewTestPeer::submitPreview(editor);
+  EXPECT_FALSE(TransformEditorPreviewTestPeer::pending(editor));
+  EXPECT_EQ(host.released_handles.size(), 1u);
+}
+TEST(TransformEditorPreview, ReplacementAndDestructionReleasePendingRequests) {
+  Host host;
+  host.pending_polls = 100;
+  {
+    TransformEditorToolbox editor;
+    TransformEditorPreviewTestPeer::bind(editor, host.view());
+    TransformEditorPreviewTestPeer::submitPreview(editor);
+    TransformEditorPreviewTestPeer::submitPreview(editor, "return {count=2}");
+    EXPECT_EQ(host.submit_calls, 2);
+    EXPECT_EQ(host.released_handles.size(), 1u);
+  }
+  EXPECT_EQ(host.released_handles.size(), 2u);
+}
+TEST(TransformEditorPreview, AnEditWaitsForTheDebounceAndDropsTheRunInFlight) {
+  Host host;
+  host.pending_polls = 100;
+  TransformEditorToolbox editor;
+  TransformEditorPreviewTestPeer::bind(editor, host.view());
+  TransformEditorPreviewTestPeer::submitPreview(editor);
+  ASSERT_TRUE(TransformEditorPreviewTestPeer::pending(editor));
+  TransformEditorPreviewTestPeer::setDebounce(editor, std::chrono::seconds(30));  // the user keeps typing
+  TransformEditorPreviewTestPeer::submitPreview(editor, "return {count=2}");
+  EXPECT_FALSE(TransformEditorPreviewTestPeer::pending(editor)) << "the stale run is released at once";
+  EXPECT_EQ(host.released_handles.size(), 1u);
+  EXPECT_EQ(host.submit_calls, 1) << "nothing is submitted while the edits keep coming";
+  TransformEditorPreviewTestPeer::setDebounce(editor, std::chrono::milliseconds(0));
+  TransformEditorPreviewTestPeer::submitPreview(editor, "return {count=2}");
+  EXPECT_EQ(host.submit_calls, 2);
+}
+
+TEST(TransformEditorPreview, TheSeriesPreviewReadsExactlyTheNameTheHostReturned) {
+  const std::string real = "toolbox-transform-editor/__te_obj_preview__/value";
+  // The real series: topic `<owner>/<id>`, one column per output. Decoys: a topic whose column leaf is also
+  // `value`, one at the name the editor used to guess, and one with the same leaf under another topic.
+  auto build = [&](bool with_real) {
+    auto store = std::make_unique<PJ::testing::ToolboxTestStore>();
+    if (with_real) {
+      store->addTopic("toolbox-transform-editor/__te_obj_preview__")
+          .addField("toolbox-transform-editor/__te_obj_preview__", "value", {0, 1000000000}, {1.0, 2.0});
+    }
+    store->addTopic("__te_obj_preview__").addField("__te_obj_preview__", "value", {0, 1000000000}, {9.0, 9.0});
+    store->addTopic("/imu").addField("/imu", "value", {0, 1000000000}, {7.0, 7.0});
+    return store;
+  };
+  {
+    auto store = build(/*with_real=*/true);
+    TransformEditorToolbox editor;
+    TransformEditorPreviewTestPeer::readSeries(editor, *store, "value", real);
+    ASSERT_TRUE(TransformEditorPreviewTestPeer::seriesAvailable(editor));
+    const std::string shown = TransformEditorPreviewTestPeer::widgetText(editor);
+    EXPECT_EQ(shown.find("9.0"), std::string::npos) << shown;
+    EXPECT_EQ(shown.find("7.0"), std::string::npos) << shown;
+  }
+  {
+    // The host did not materialize a series for this recipe (pinned, or no object input): nothing to plot,
+    // whatever else is called `value` in the catalog.
+    auto store = build(/*with_real=*/false);
+    TransformEditorToolbox editor;
+    TransformEditorPreviewTestPeer::readSeries(editor, *store, "value", real);
+    EXPECT_FALSE(TransformEditorPreviewTestPeer::seriesAvailable(editor));
+  }
+  {
+    // A host that returned no name for the output: the editor does not look one up.
+    auto store = build(/*with_real=*/false);
+    TransformEditorToolbox editor;
+    TransformEditorPreviewTestPeer::readSeries(editor, *store, "value", "");
+    EXPECT_FALSE(TransformEditorPreviewTestPeer::seriesAvailable(editor));
+  }
+}
+
+TEST(TransformEditorPreview, TheHostsCoverageErrorIsShownNotANoSampleNote) {
+  Host host;
+  host.canned_report_json =
+      R"({"coverage":{"complete":false,"stopped":"error","error":"input 'cloud' has no data source"},"bundles":[]})";
+  TransformEditorToolbox editor;
+  TransformEditorPreviewTestPeer::bind(editor, host.view());
+  TransformEditorPreviewTestPeer::submitPreview(editor);
+  const std::string shown = TransformEditorPreviewTestPeer::widgetText(editor);
+  EXPECT_NE(shown.find("input 'cloud' has no data source"), std::string::npos) << shown;
+  EXPECT_EQ(shown.find("No sample to run on"), std::string::npos) << shown;
+}
+
+TEST(TransformEditorPreview, TheStatusLineShowsTheResultAndCreateWaitsForAnInferredTrial) {
+  TransformEditorDialog dialog;
+  ASSERT_TRUE(dialog.loadConfig(R"({"kind":"on_demand","function_body":"return {count=1}","sources":["/cloud"]})"));
+  dialog.setStatus("count: 42");
+  const auto widgets = nlohmann::json::parse(dialog.widget_data());
+  EXPECT_EQ(widgets["statusLabel"]["label"], "count: 42");
+  EXPECT_EQ(widgets["pushButtonCreate"]["enabled"], false) << "no trial has succeeded yet";
+}
+
+TEST(TransformEditorPreview, ClearingBodyOrInputClearsCompletedAndPendingReports) {
+  for (bool clear_source : {false, true}) {
+    Host host;
+    host.canned_report_json = kTrialReport;
+    toolbox_testing::FakeCatalogHost catalog;
+    catalog.addObjectTopic("/cloud", "kPointCloud", 1, 0, 1);
+    TransformEditorToolbox editor;
+    TransformEditorPreviewTestPeer::bind(editor, host.view());
+    TransformEditorPreviewTestPeer::bindCatalog(editor, catalog);
+    TransformEditorPreviewTestPeer::configure(editor, true, true);
+    TransformEditorPreviewTestPeer::refreshCurrent(editor);
+    ASSERT_TRUE(TransformEditorPreviewTestPeer::showsReport(editor));
+    TransformEditorPreviewTestPeer::configure(editor, !clear_source, clear_source);
+    TransformEditorPreviewTestPeer::refreshCurrent(editor);
+    EXPECT_FALSE(TransformEditorPreviewTestPeer::showsReport(editor));
+
+    host.pending_polls = 100;
+    TransformEditorPreviewTestPeer::configure(editor, true, true);
+    TransformEditorPreviewTestPeer::refreshCurrent(editor);
+    ASSERT_TRUE(TransformEditorPreviewTestPeer::pending(editor));
+    const int polls = host.poll_calls;
+    TransformEditorPreviewTestPeer::configure(editor, !clear_source, clear_source);
+    TransformEditorPreviewTestPeer::refreshCurrent(editor);
+    EXPECT_FALSE(TransformEditorPreviewTestPeer::pending(editor));
+    EXPECT_EQ(host.released_handles.size(), 2u);
+    // A terminal report arriving after invalidation must never be polled back
+    // into the editor: the old handle was released and the recipe is incomplete.
+    host.pending_polls = 0;
+    TransformEditorPreviewTestPeer::refreshCurrent(editor);
+    EXPECT_EQ(host.poll_calls, polls);
+    EXPECT_FALSE(TransformEditorPreviewTestPeer::showsReport(editor));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Floor host: no typed requests, no catalog v2
+// ---------------------------------------------------------------------------
+
+TEST(TransformEditorFloorTest, TheSeriesPathStillCreatesATransformOnAFloorHost) {
+  TransformEditorPreviewTestPeer::FloorHost host;
+  TransformEditorToolbox editor;
+  TransformEditorPreviewTestPeer::bind(editor, host);
+  TransformEditorPreviewTestPeer::load(
+      editor, R"({"output_name":"dbl","function_body":"return value*2","sources":["/imu/x"]})");
+  EXPECT_EQ(TransformEditorPreviewTestPeer::createReason(editor), "");
+  TransformEditorPreviewTestPeer::saveAsIs(editor);
+  ASSERT_EQ(host.dp.persistent_creates, 1);
+  EXPECT_EQ(host.dp.created[0].kind, "transform");
+  EXPECT_EQ(host.dp.created[0].inputs, std::vector<std::string>{"/imu/x"});
+  EXPECT_EQ(host.dp.submit_calls, 0);
+}
+
+TEST(TransformEditorFloorTest, OnDemandSubmitReportsUnsupportedOnFloorHost) {
+  TransformEditorPreviewTestPeer::FloorHost host;
+  TransformEditorToolbox editor;
+  TransformEditorPreviewTestPeer::bind(editor, host);
+  // "/cloud" is not a scalar of the v1 snapshot: the editor cannot tell what it is on this host, so it
+  // takes it for an object.
+  TransformEditorPreviewTestPeer::load(
+      editor, R"({"output_name":"n","function_body":"return {count = 1}","sources":["/cloud"]})");
+  const std::string reason = TransformEditorPreviewTestPeer::createReason(editor);
+  EXPECT_NE(reason.find("SDK 0.36"), std::string::npos) << reason;
+  TransformEditorPreviewTestPeer::saveAsIs(editor);
+  EXPECT_EQ(host.dp.persistent_creates, 0);
+  EXPECT_EQ(host.dp.create_v2_calls, 0);
+  EXPECT_EQ(host.dp.submit_calls, 0) << "no trial on a host without the typed requests";
 }

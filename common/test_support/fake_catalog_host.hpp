@@ -70,17 +70,21 @@ class FakeCatalogHost {
   }
 
   [[nodiscard]] PJ_toolbox_host_t makeHost() {
-    static const PJ_toolbox_host_vtable_t vtable_v2 = {
-        .abi_version = PJ_PLUGIN_DATA_API_VERSION,
-        .struct_size = sizeof(PJ_toolbox_host_vtable_t),
-        .acquire_catalog_snapshot = &FakeCatalogHost::tAcquire,
-        .acquire_catalog_snapshot_v2 = &FakeCatalogHost::tAcquireV2,
-    };
-    static const PJ_toolbox_host_vtable_t vtable_v1_only = {
-        .abi_version = PJ_PLUGIN_DATA_API_VERSION,
-        .struct_size = offsetof(PJ_toolbox_host_vtable_t, acquire_catalog_snapshot_v2),
-        .acquire_catalog_snapshot = &FakeCatalogHost::tAcquire,
-    };
+    static const PJ_toolbox_host_vtable_t vtable_v2 = [] {
+      PJ_toolbox_host_vtable_t v{};
+      v.abi_version = PJ_PLUGIN_DATA_API_VERSION;
+      v.struct_size = sizeof(PJ_toolbox_host_vtable_t);
+      v.acquire_catalog_snapshot = &FakeCatalogHost::tAcquire;
+      v.acquire_catalog_snapshot_v2 = &FakeCatalogHost::tAcquireV2;
+      return v;
+    }();
+    static const PJ_toolbox_host_vtable_t vtable_v1_only = [] {
+      PJ_toolbox_host_vtable_t v{};
+      v.abi_version = PJ_PLUGIN_DATA_API_VERSION;
+      v.struct_size = offsetof(PJ_toolbox_host_vtable_t, acquire_catalog_snapshot_v2);
+      v.acquire_catalog_snapshot = &FakeCatalogHost::tAcquire;
+      return v;
+    }();
     return PJ_toolbox_host_t{this, supports_v2_ ? &vtable_v2 : &vtable_v1_only};
   }
 

@@ -74,17 +74,19 @@ struct FakePlaybackHost {
   std::uint32_t last_source_id = 0;
 
   PJ::sdk::PlaybackHostView view() {
-    static const PJ_playback_host_vtable_t vtable = {
-        .protocol_version = 1,
-        .struct_size = sizeof(PJ_playback_host_vtable_t),
-        .play = &FakePlaybackHost::tPlay,
-        .pause = &FakePlaybackHost::tPause,
-        .seek = &FakePlaybackHost::tSeek,
-        .set_playback_rate = &FakePlaybackHost::tSetRate,
-        .get_state = &FakePlaybackHost::tGetState,
-        .to_display_time = &FakePlaybackHost::tToDisplayTime,
-        .to_display_time_for_source = &FakePlaybackHost::tToDisplayTimeForSource,
-    };
+    static const PJ_playback_host_vtable_t vtable = [] {
+      PJ_playback_host_vtable_t v{};
+      v.protocol_version = 1;
+      v.struct_size = sizeof(PJ_playback_host_vtable_t);
+      v.play = &FakePlaybackHost::tPlay;
+      v.pause = &FakePlaybackHost::tPause;
+      v.seek = &FakePlaybackHost::tSeek;
+      v.set_playback_rate = &FakePlaybackHost::tSetRate;
+      v.get_state = &FakePlaybackHost::tGetState;
+      v.to_display_time = &FakePlaybackHost::tToDisplayTime;
+      v.to_display_time_for_source = &FakePlaybackHost::tToDisplayTimeForSource;
+      return v;
+    }();
     return PJ::sdk::PlaybackHostView(PJ_playback_host_t{this, &vtable});
   }
 };
@@ -109,12 +111,14 @@ struct FakeViewportHost {
   }
 
   PJ::sdk::ViewportHostView view() {
-    static const PJ_viewport_host_vtable_t vtable = {
-        .protocol_version = 1,
-        .struct_size = sizeof(PJ_viewport_host_vtable_t),
-        .zoom_to_time_range = &FakeViewportHost::tZoom,
-        .zoom_reset = &FakeViewportHost::tReset,
-    };
+    static const PJ_viewport_host_vtable_t vtable = [] {
+      PJ_viewport_host_vtable_t v{};
+      v.protocol_version = 1;
+      v.struct_size = sizeof(PJ_viewport_host_vtable_t);
+      v.zoom_to_time_range = &FakeViewportHost::tZoom;
+      v.zoom_reset = &FakeViewportHost::tReset;
+      return v;
+    }();
     return PJ::sdk::ViewportHostView(PJ_viewport_host_t{this, &vtable});
   }
 };

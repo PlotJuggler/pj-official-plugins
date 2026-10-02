@@ -411,6 +411,7 @@ ObjectLookup resolveObjectTopic(const PJ::sdk::CatalogSnapshotV2& v2, const std:
     r.entry_count = obj.entry_count;
     r.time_min_ns = obj.time_min_ns;
     r.time_max_ns = obj.time_max_ns;
+    r.info = obj;
     if (out.candidates.size() < kMaxCandidates) {
       out.candidates.push_back(r.display_path);
     }

@@ -545,12 +545,7 @@ ToolResult describeTopic(const json& args, ToolContext& ctx) {
       return ToolResult::failure(objectLookupError(want, lookup));
     }
     if (lookup.resolved) {
-      for (const auto& obj : v2->objectTopics()) {
-        if (PJ::sdk::toStringView(obj.name) == lookup.resolved->host_path &&
-            obj.source.id == lookup.resolved->source.id) {
-          return describeObjectTopic(ctx, v2->dataSources(), obj);
-        }
-      }
+      return describeObjectTopic(ctx, v2->dataSources(), lookup.resolved->info);
     }
     return describeScalarTopic(v2->topics(), v2->fields(), datasetByTopicIndex(v2->dataSources()), want);
   }

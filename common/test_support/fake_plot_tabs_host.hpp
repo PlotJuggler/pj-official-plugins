@@ -370,21 +370,23 @@ struct FakePlotTabsHost {
   // Built per call so struct_size/null_tail set by the test take effect; the
   // vtable lives in this object, which outlives the view in every test.
   PJ::sdk::PlotTabHostView view() {
-    vtable_ = PJ_plot_tab_host_vtable_t{
-        .protocol_version = 1,
-        .struct_size = struct_size,
-        .create_tab = &FakePlotTabsHost::tCreate,
-        .close_tab = &FakePlotTabsHost::tClose,
-        .list_tab_ids = &FakePlotTabsHost::tListIds,
-        .tab_config = &FakePlotTabsHost::tTabConfig,
-        .add_curve = &FakePlotTabsHost::tAddCurve,
-        .remove_curve = &FakePlotTabsHost::tRemoveCurve,
-        .clear_tab = &FakePlotTabsHost::tClearTab,
-        .create_tab_v2 = null_tail ? nullptr : &FakePlotTabsHost::tCreateV2,
-        .attach_topic = null_tail ? nullptr : &FakePlotTabsHost::tAttachTopic,
-        .detach_topic = null_tail ? nullptr : &FakePlotTabsHost::tDetachTopic,
-        .focus_tab = null_tail ? nullptr : &FakePlotTabsHost::tFocus,
-    };
+    PJ_plot_tab_host_vtable_t vt{};
+    vt.protocol_version = 1;
+    vt.struct_size = struct_size;
+    vt.create_tab = &FakePlotTabsHost::tCreate;
+    vt.close_tab = &FakePlotTabsHost::tClose;
+    vt.list_tab_ids = &FakePlotTabsHost::tListIds;
+    vt.tab_config = &FakePlotTabsHost::tTabConfig;
+    vt.add_curve = &FakePlotTabsHost::tAddCurve;
+    vt.remove_curve = &FakePlotTabsHost::tRemoveCurve;
+    vt.clear_tab = &FakePlotTabsHost::tClearTab;
+    if (!null_tail) {
+      vt.create_tab_v2 = &FakePlotTabsHost::tCreateV2;
+      vt.attach_topic = &FakePlotTabsHost::tAttachTopic;
+      vt.detach_topic = &FakePlotTabsHost::tDetachTopic;
+      vt.focus_tab = &FakePlotTabsHost::tFocus;
+    }
+    vtable_ = vt;
     return PJ::sdk::PlotTabHostView(PJ_plot_tab_host_t{this, &vtable_});
   }
 

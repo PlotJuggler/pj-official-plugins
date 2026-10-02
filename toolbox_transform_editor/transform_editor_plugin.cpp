@@ -16,6 +16,7 @@
 #include <fstream>
 #include <functional>
 #include <iomanip>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_base/builtin/builtin_object.hpp>
@@ -28,6 +29,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "derived_recipes/recipes.hpp"
@@ -611,11 +613,13 @@ TrialReport parseTrialReport(const std::string& report) {
   }
   // A run the host stopped on an error says so in `coverage.error`; the bundles it left behind do not.
   const auto coverage = parsed.find("coverage");
-  if (coverage != parsed.end() && coverage->is_object() && coverage->contains("error") &&
-      (*coverage)["error"].is_string()) {
-    trial.error = (*coverage)["error"].get<std::string>();
-    trial.summary = trial.error;
-    return trial;
+  if (coverage != parsed.end() && coverage->is_object()) {
+    const auto error = coverage->find("error");
+    if (error != coverage->end() && error->is_string()) {
+      trial.error = error->get<std::string>();
+      trial.summary = trial.error;
+      return trial;
+    }
   }
   const auto bundles = parsed.find("bundles");
   trial.has_sample = bundles != parsed.end() && bundles->is_array() && !bundles->empty();
@@ -2668,7 +2672,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     catalog_refresh_ticks_ = 1;
     catalog_v2_.reset();
     catalog_v2_error_.clear();
-    catalog_scalar_paths_.reset();
+    catalog_scalar_known_.reset();
     if (dp_view_.hasTypedRequests()) {
       auto v2 = catalogHost().catalogSnapshotV2();
       if (v2) {
@@ -2678,41 +2682,60 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       }
     }
     if (!catalog_v2_ && catalogHost().valid() && !catalogHost().hasCatalogSnapshotV2()) {
-      catalog_scalar_paths_ = readScalarPaths();
+      catalog_scalar_known_.emplace();  // each source is looked up in the catalog once, on first use
     }
     dialog_.setOnDemandSupported(catalog_v2_.has_value());
     dialog_.catalogChanged();  // the input types, and so the build, may differ
   }
 
-  // Every scalar topic and `topic/field` path of the host's v1 catalog snapshot.
-  std::set<std::string> readScalarPaths() const {
-    std::set<std::string> paths;
-    auto catalog = catalogHost().catalogSnapshot();
-    if (!catalog) {
-      return paths;
-    }
-    const auto fields = catalog->fields();
-    for (const auto& t : catalog->topics()) {
+  // Calls fn(topic, path, field) for every field of the v1 catalog snapshot, `path` being the "topic/field"
+  // name with a ROS leaf's leading '/' dropped (matching the host's joinTopicField; a naive
+  // `topic + "/" + field` would rebuild "topic//field"), and once per topic with a null `field` first.
+  // fn returns false to stop the walk.
+  template <class Fn>
+  static void forEachScalarPath(const PJ::sdk::CatalogSnapshot& catalog, Fn&& fn) {
+    const auto fields = catalog.fields();
+    for (const auto& t : catalog.topics()) {
       const std::string tname(t.name.data, t.name.size);
-      paths.insert(tname);
+      if (!fn(tname, tname, static_cast<const PJ_field_info_t*>(nullptr))) {
+        return;
+      }
       const uint32_t end = t.first_field + t.field_count;
       for (uint32_t fi = t.first_field; fi < end && fi < fields.size(); ++fi) {
         const std::string fname(fields[fi].name.data, fields[fi].name.size);
         const std::string leaf = (!fname.empty() && fname.front() == '/') ? fname.substr(1) : fname;
-        paths.insert(tname.empty() ? leaf : tname + "/" + leaf);
+        if (!fn(tname, tname.empty() ? leaf : tname + "/" + leaf, &fields[fi])) {
+          return;
+        }
       }
     }
-    return paths;
+  }
+
+  // Whether `source` names a scalar topic or `topic/field` of the host's v1 catalog snapshot.
+  bool isV1Scalar(const std::string& source) const {
+    auto catalog = catalogHost().catalogSnapshot();
+    if (!catalog) {
+      return false;
+    }
+    const std::string path = derived_recipes::canonicalSeriesPath(source);
+    bool found = false;
+    forEachScalarPath(*catalog, [&](const std::string& topic, const std::string& full, const PJ_field_info_t*) {
+      found = topic == path || full == path || topic == source || full == source;
+      return !found;
+    });
+    return found;
   }
 
   // "number" for a scalar input; the builtin type for an object topic (read from the cached catalog). A
   // host without catalog snapshot v2 cannot list object topics: what is not a scalar there is "unknown".
   std::string inputTypeOf(const std::string& source) const {
     if (!catalog_v2_) {
-      if (catalog_scalar_paths_) {
-        const std::string path = derived_recipes::canonicalSeriesPath(source);
-        return catalog_scalar_paths_->count(path) != 0 || catalog_scalar_paths_->count(source) != 0 ? "number"
-                                                                                                    : kUnknownInputType;
+      if (catalog_scalar_known_) {
+        auto it = catalog_scalar_known_->find(source);
+        if (it == catalog_scalar_known_->end()) {
+          it = catalog_scalar_known_->emplace(source, isV1Scalar(source)).first;
+        }
+        return it->second ? "number" : kUnknownInputType;
       }
       return "number";
     }
@@ -3160,9 +3183,6 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     }
   }
 
-  // The ephemeral transform output lives in the engine's topic list (and hence in catalogSnapshot) even
-  // though it is kept out of the UI catalog, so the readers below resolve both the source AND the
-  // transformed result by name.
   // Decimated (timestamp, value) samples for one already-resolved field handle.
   std::vector<std::pair<int64_t, double>> samplesFromHandle(PJ::sdk::FieldHandle handle) {
     std::vector<std::pair<int64_t, double>> out;
@@ -3181,46 +3201,33 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     return out;
   }
 
-  // Resolve several "topic/field" names (or a bare topic) against ONE
-  // catalog snapshot in a single nested pass, returning decimated samples per name
-  // (empty if a name did not resolve). The MIMO preview reads the source ghost + M
-  // outputs every tick; a per-name readRawSamples would re-acquire the snapshot and
-  // re-scan the whole catalog M+1 times. Field paths in the snapshot are RELATIVE to
-  // their topic and a ROS leaf carries a leading '/', so reconstruct "topic/field"
-  // WITHOUT doubling the slash (matching the host's joinTopicField) — a naive
-  // `tname + "/" + fname` would rebuild the old "topic//field" and fail to match.
+  // Resolve several "topic/field" names (or a bare topic) against ONE catalog snapshot in a single pass,
+  // returning decimated samples per name (empty if a name did not resolve). The MIMO preview reads the
+  // source ghost + M outputs every tick; a per-name read would re-acquire the snapshot and re-scan the
+  // whole catalog M+1 times.
   std::vector<std::vector<std::pair<int64_t, double>>> readManyRawSamples(const std::vector<std::string>& names) {
     std::vector<std::vector<std::pair<int64_t, double>>> out(names.size());
     auto catalog = catalogHost().catalogSnapshot();
     if (!catalog) {
       return out;
     }
-    const auto fields = catalog->fields();
-    const auto topics = catalog->topics();
     std::vector<PJ::sdk::FieldHandle> handles(names.size());
     std::vector<bool> found(names.size(), false);
     std::size_t remaining = names.size();
-    for (const auto& t : topics) {
-      if (remaining == 0) {
-        break;
+    forEachScalarPath(*catalog, [&](const std::string& tname, const std::string& full, const PJ_field_info_t* f) {
+      if (f == nullptr) {
+        return remaining != 0;
       }
-      const std::string tname(t.name.data, t.name.size);
-      const uint32_t end = t.first_field + t.field_count;
-      for (uint32_t fi = t.first_field; fi < end && fi < fields.size(); ++fi) {
-        const auto& f = fields[fi];
-        const std::string fname(f.name.data, f.name.size);
-        const std::string leaf = (!fname.empty() && fname.front() == '/') ? fname.substr(1) : fname;
-        const std::string full = tname.empty() ? leaf : (tname + "/" + leaf);
-        for (std::size_t i = 0; i < names.size(); ++i) {
-          if (found[i] || names[i].empty() || (tname != names[i] && full != names[i])) {
-            continue;
-          }
-          handles[i] = PJ::sdk::FieldHandle{f.handle};
-          found[i] = true;
-          --remaining;
+      for (std::size_t i = 0; i < names.size(); ++i) {
+        if (found[i] || names[i].empty() || (tname != names[i] && full != names[i])) {
+          continue;
         }
+        handles[i] = PJ::sdk::FieldHandle{f->handle};
+        found[i] = true;
+        --remaining;
       }
-    }
+      return remaining != 0;
+    });
     for (std::size_t i = 0; i < names.size(); ++i) {
       if (found[i]) {
         out[i] = samplesFromHandle(handles[i]);
@@ -3296,13 +3303,21 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       trial_edit_at_ = now;
       trial_form_pending_ = true;
       no_sample_instant_.reset();
+      first_entry_learned_.reset();
     }
     if (trial_form_pending_ && now < trial_edit_at_ + edit_debounce_) {
       return true;
     }
     const bool at_first = first_entry && no_sample_instant_ && *no_sample_instant_ == instant_ns;
-    if (!pending_preview_ && (trial_form_pending_ || now >= next_preview_refresh_)) {
+    // The outputs were already learned at this first entry for this cursor instant: nothing to ask again
+    // until the form, the first entry or the cursor moves.
+    const bool settled = at_first && first_entry_learned_ &&
+                         *first_entry_learned_ == std::pair<std::int64_t, std::int64_t>{instant_ns, first_entry->ns};
+    if (!pending_preview_ && !settled && (trial_form_pending_ || now >= next_preview_refresh_)) {
       tearDownPreview();
+      if (!at_first) {
+        first_entry_learned_.reset();
+      }
       trial_form_key_ = build.form_key;
       trial_form_pending_ = false;
       next_preview_refresh_ = now + kTrialPeriod;
@@ -3386,6 +3401,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       dialog_.setStatus(
           "No sample of " + first_entry->topic + " at the cursor (" + displayTimeText(anchor, instant_ns, 3) +
           " s): move the timeline to preview. Outputs: " + outputs);
+      first_entry_learned_ = std::pair<std::int64_t, std::int64_t>{instant_ns, first_entry->ns};
       return true;
     }
     const std::string result = std::move(trial.summary);
@@ -3644,7 +3660,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   int catalog_refresh_ticks_ = 0;                         // 0 = never read yet
   std::optional<PJ::sdk::CatalogSnapshotV2> catalog_v2_;  // empty when the host cannot do on-demand
   std::string catalog_v2_error_;
-  std::optional<std::set<std::string>> catalog_scalar_paths_;  // set only on a host without catalog snapshot v2
+  // Set only on a host without catalog snapshot v2: source -> whether the v1 catalog lists it as a scalar.
+  mutable std::optional<std::map<std::string, bool>> catalog_scalar_known_;
   struct Validation {  // the host's verdict on the script of one form revision (see scriptError)
     std::uint64_t revision = 0;
     std::string kind;
@@ -3670,6 +3687,9 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   bool trial_form_pending_ = false;
   std::chrono::milliseconds edit_debounce_{300};  // quiet time after the last edit before a trial runs
   std::optional<std::int64_t> no_sample_instant_;
+  // (cursor instant, first-entry ns) of a trial that learned the outputs at the first entry: nothing is
+  // asked again until the form, the first entry or the cursor moves.
+  std::optional<std::pair<std::int64_t, std::int64_t>> first_entry_learned_;
   bool showing_on_demand_ = false;  // the last refresh was a recipe evaluated at the cursor
   std::chrono::steady_clock::time_point next_series_read_;
   bool series_available_ = false;                   // the host materialized a series for a number output
@@ -3678,8 +3698,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   // The preview of object outputs (see updatePreviewRecipe).
   bool object_preview_live_ = false;      // the ephemeral on_demand recipe is installed
   std::string object_preview_signature_;  // what it was built from (also set when the host refused it)
-  // The (form revision, trial serial) the recipe above was last reconciled with, and what that left: the
-  // outputs it declares and whether one is an object.
+  // The (form revision, trial serial) the recipe above was last reconciled with, and the outputs it declared.
   std::pair<std::uint64_t, std::uint64_t> preview_recipe_stamp_{};
   std::vector<PJ::sdk::DataProcessorOutput> preview_recipe_outputs_;
   std::uint64_t object_preview_installs_ = 0;  // how many times the host accepted the recipe

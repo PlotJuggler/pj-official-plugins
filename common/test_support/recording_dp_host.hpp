@@ -457,36 +457,36 @@ struct RecordingDpHost {
   }
 
   PJ::sdk::DataProcessorsHostView view() {
-    static const PJ_data_processors_host_vtable_t vtable_full = {
-        .protocol_version = 1,
-        .struct_size = sizeof(PJ_data_processors_host_vtable_t),
-        .create_data_processor = &RecordingDpHost::tCreate,
-        .remove_data_processor = &RecordingDpHost::tRemove,
-        .list_data_processor_ids = &RecordingDpHost::tList,
-        .data_processor_config = &RecordingDpHost::tConfig,
-        .validate_data_processor_script = &RecordingDpHost::tValidate,
-        .create_data_processor_v2 = &RecordingDpHost::tCreateV2,
-        .submit_evaluation = &RecordingDpHost::tSubmit,
-        .poll_evaluation = &RecordingDpHost::tPoll,
-        .release_evaluation = &RecordingDpHost::tRelease,
-    };
+    static const PJ_data_processors_host_vtable_t vtable_full = [] {
+      PJ_data_processors_host_vtable_t v{};
+      v.protocol_version = 1;
+      v.struct_size = sizeof(PJ_data_processors_host_vtable_t);
+      v.create_data_processor = &RecordingDpHost::tCreate;
+      v.remove_data_processor = &RecordingDpHost::tRemove;
+      v.list_data_processor_ids = &RecordingDpHost::tList;
+      v.data_processor_config = &RecordingDpHost::tConfig;
+      v.validate_data_processor_script = &RecordingDpHost::tValidate;
+      v.create_data_processor_v2 = &RecordingDpHost::tCreateV2;
+      v.submit_evaluation = &RecordingDpHost::tSubmit;
+      v.poll_evaluation = &RecordingDpHost::tPoll;
+      v.release_evaluation = &RecordingDpHost::tRelease;
+      return v;
+    }();
     // struct_size stops right before create_data_processor_v2, so
     // PJ_HAS_TAIL_SLOT fails for every v2 slot even though the pointers below
     // it are never installed either -- either alone already fails the check,
     // both together is what a host actually built before v2 existed reports.
-    static const PJ_data_processors_host_vtable_t vtable_v1_only = {
-        .protocol_version = 1,
-        .struct_size = offsetof(PJ_data_processors_host_vtable_t, create_data_processor_v2),
-        .create_data_processor = &RecordingDpHost::tCreate,
-        .remove_data_processor = &RecordingDpHost::tRemove,
-        .list_data_processor_ids = &RecordingDpHost::tList,
-        .data_processor_config = &RecordingDpHost::tConfig,
-        .validate_data_processor_script = &RecordingDpHost::tValidate,
-        .create_data_processor_v2 = nullptr,
-        .submit_evaluation = nullptr,
-        .poll_evaluation = nullptr,
-        .release_evaluation = nullptr,
-    };
+    static const PJ_data_processors_host_vtable_t vtable_v1_only = [] {
+      PJ_data_processors_host_vtable_t v{};
+      v.protocol_version = 1;
+      v.struct_size = offsetof(PJ_data_processors_host_vtable_t, create_data_processor_v2);
+      v.create_data_processor = &RecordingDpHost::tCreate;
+      v.remove_data_processor = &RecordingDpHost::tRemove;
+      v.list_data_processor_ids = &RecordingDpHost::tList;
+      v.data_processor_config = &RecordingDpHost::tConfig;
+      v.validate_data_processor_script = &RecordingDpHost::tValidate;
+      return v;
+    }();
     return PJ::sdk::DataProcessorsHostView(
         PJ_data_processors_host_t{this, supports_v2 ? &vtable_full : &vtable_v1_only});
   }
