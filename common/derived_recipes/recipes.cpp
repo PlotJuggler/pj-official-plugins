@@ -501,6 +501,10 @@ std::string indentPython(const std::string& code) {
   return out;
 }
 
+int physicalLines(const std::string& text) {
+  return 1 + static_cast<int>(std::count(text.begin(), text.end(), '\n'));
+}
+
 namespace {
 
 // The table that rebuilds `inputs` under every alias a script may use, so a dataset-qualified key and
@@ -523,25 +527,30 @@ std::string buildAliasTable(const ResolvedEvalInputs& resolved, bool python) {
 
 }  // namespace
 
-std::string buildResolvedOnDemandChunk(const std::string& body, const ResolvedEvalInputs& resolved) {
-  return buildOnDemandChunk(buildAliasTable(resolved, /*python=*/false) + body);
-}
-
-std::string buildOnDemandChunkPython(const std::string& body, const ResolvedEvalInputs& resolved) {
-  std::string src = "# pj-script: python\n";
-  src += "def evaluate(inputs, params):\n";
-  src += indentPython(buildAliasTable(resolved, /*python=*/true) + body);
-  return src;
-}
-
 namespace {
 
-// How many lines `text` takes when a line break follows it ("a\nb" -> 2, "" -> 1).
-int physicalLines(const std::string& text) {
-  return 1 + static_cast<int>(std::count(text.begin(), text.end(), '\n'));
+// Both on-demand chunks open with two header lines and then the alias table; the user's text follows.
+ScriptLayout onDemandLayout(const std::string& alias_table, const std::string& body) {
+  ScriptLayout layout;
+  layout.body_first_line = 3 + static_cast<int>(std::count(alias_table.begin(), alias_table.end(), '\n'));
+  layout.body_lines = physicalLines(body);
+  return layout;
 }
 
 }  // namespace
+
+BuiltScript buildResolvedOnDemandChunk(const std::string& body, const ResolvedEvalInputs& resolved) {
+  const std::string table = buildAliasTable(resolved, /*python=*/false);
+  return {buildOnDemandChunk(table + body), onDemandLayout(table, body)};
+}
+
+BuiltScript buildOnDemandChunkPython(const std::string& body, const ResolvedEvalInputs& resolved) {
+  const std::string table = buildAliasTable(resolved, /*python=*/true);
+  std::string src = "# pj-script: python\n";
+  src += "def evaluate(inputs, params):\n";
+  src += indentPython(table + body);
+  return {std::move(src), onDemandLayout(table, body)};
+}
 
 // Build a complete self-describing Luau FILTER CLASS the host can compile and run
 // live as a DerivedEngine node (via createTransform). The user's global code runs

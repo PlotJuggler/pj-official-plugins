@@ -41,7 +41,7 @@ TEST(DerivedRecipes, OnDemandChunkBindsInputsAndParamsFromVarargs) {
 TEST(DerivedRecipes, ResolvedChunkAliasesEveryScriptKeyToTheQualifiedRequestKey) {
   ResolvedEvalInputs resolved;
   resolved.aliases = {{"/cloud", "run1:/cloud"}, {"run1:/cloud", "run1:/cloud"}};
-  const std::string chunk = buildResolvedOnDemandChunk("return {}", resolved);
+  const std::string chunk = buildResolvedOnDemandChunk("return {}", resolved).script;
   EXPECT_NE(chunk.find("[\"/cloud\"] = inputs[\"run1:/cloud\"]"), std::string::npos) << chunk;
   EXPECT_NE(chunk.find("local inputs, params = ...\ninputs = {"), std::string::npos) << chunk;
   EXPECT_NE(chunk.find("return {}"), std::string::npos);
@@ -72,18 +72,18 @@ TEST(DerivedRecipes, QualifyAndJoinHelpers) {
 
 TEST(DerivedRecipes, PythonChunkDefinesEvaluateWithIndentedBody) {
   ResolvedEvalInputs resolved;
-  const std::string chunk = buildOnDemandChunkPython("x = 1\n\nreturn {'a': x}", resolved);
+  const std::string chunk = buildOnDemandChunkPython("x = 1\n\nreturn {'a': x}", resolved).script;
   EXPECT_EQ(chunk, "# pj-script: python\ndef evaluate(inputs, params):\n    x = 1\n\n    return {'a': x}\n");
 }
 
 TEST(DerivedRecipes, PythonChunkAliasesInputsAndKeepsAnEmptyBodyValid) {
   ResolvedEvalInputs resolved;
   resolved.aliases = {{"/cloud", "run1:/cloud"}};
-  const std::string chunk = buildOnDemandChunkPython("", resolved);
+  const std::string chunk = buildOnDemandChunkPython("", resolved).script;
   EXPECT_NE(chunk.find("def evaluate(inputs, params):\n    inputs = {\n"), std::string::npos) << chunk;
   EXPECT_NE(chunk.find("\"/cloud\": inputs[\"run1:/cloud\"],"), std::string::npos) << chunk;
   EXPECT_EQ(chunk.find("\n    pass"), std::string::npos) << "the alias table is already a statement";
-  EXPECT_NE(buildOnDemandChunkPython("  \n", ResolvedEvalInputs{}).find("    pass\n"), std::string::npos);
+  EXPECT_NE(buildOnDemandChunkPython("  \n", ResolvedEvalInputs{}).script.find("    pass\n"), std::string::npos);
 }
 
 namespace {
@@ -128,4 +128,17 @@ TEST(DerivedRecipes, TransformScriptEscapesTheIdAndName) {
   const BuiltScript built = buildTransformScript("a\"b", "n\nm", "", "return value", 0, "luau");
   EXPECT_NE(built.script.find("id = \"a\\\"b\""), std::string::npos) << built.script;
   EXPECT_NE(built.script.find("name = \"n\\nm\""), std::string::npos) << built.script;
+}
+
+TEST(DerivedRecipes, OnDemandChunksReportWhereTheBodyStarts) {
+  ResolvedEvalInputs resolved;
+  resolved.aliases = {{"/cloud", "run1:/cloud"}, {"run1:/cloud", "run1:/cloud"}};
+  const BuiltScript luau = buildResolvedOnDemandChunk("local a = 1\nreturn {a}", resolved);
+  EXPECT_EQ(luau.layout.body_first_line, lineOf(luau.script, "local a = 1"));
+  EXPECT_EQ(luau.layout.body_lines, 2);
+  const BuiltScript python = buildOnDemandChunkPython("a = 1\nreturn {'a': a}", resolved);
+  EXPECT_EQ(python.layout.body_first_line, lineOf(python.script, "    a = 1"));
+  EXPECT_EQ(python.layout.body_lines, 2);
+  const BuiltScript bare = buildResolvedOnDemandChunk("return {}", ResolvedEvalInputs{});
+  EXPECT_EQ(bare.layout.body_first_line, lineOf(bare.script, "return {}"));
 }

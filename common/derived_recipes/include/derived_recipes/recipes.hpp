@@ -41,6 +41,9 @@ namespace derived_recipes {
 
 // --- script layout ---------------------------------------------------------
 
+// How many lines `text` takes when a line break follows it ("a\nb" -> 2, "" -> 1).
+[[nodiscard]] int physicalLines(const std::string& text);
+
 // Where the user's own code sits in a generated chunk, as 1-based line numbers of the chunk. A part
 // that is absent has 0 lines.
 struct ScriptLayout {
@@ -203,14 +206,15 @@ struct ResolvedEvalInputs {
     Audience audience = Audience::kModel);
 
 // Build the on-demand chunk for resolved inputs: keeps both the requested and the historical
-// bare script aliases without textual substitution in user code.
-[[nodiscard]] std::string buildResolvedOnDemandChunk(const std::string& body, const ResolvedEvalInputs& resolved);
+// bare script aliases without textual substitution in user code. `layout` says where `body` starts
+// (only body_first_line and body_lines are set).
+[[nodiscard]] BuiltScript buildResolvedOnDemandChunk(const std::string& body, const ResolvedEvalInputs& resolved);
 
 // Python counterpart of buildResolvedOnDemandChunk (language="python"): a module whose top
 // level defines `def evaluate(inputs, params):` (the contract of pj_scripting's
 // python_object_script.h). The same alias table is rebuilt first, then `body` follows, indented
 // one level.
-[[nodiscard]] std::string buildOnDemandChunkPython(const std::string& body, const ResolvedEvalInputs& resolved);
+[[nodiscard]] BuiltScript buildOnDemandChunkPython(const std::string& body, const ResolvedEvalInputs& resolved);
 
 // Declared outputs ("name:type" strings) split for DataProcessorRequest.outputs.
 struct ParsedOutputs {

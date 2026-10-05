@@ -2254,7 +2254,7 @@ ToolResult evaluateObjectPath(const json& args, ToolContext& ctx, const std::vec
   }
 
   const std::string body = args["body"].get<std::string>();
-  const std::string script = buildResolvedOnDemandChunk(body, resolved);
+  const std::string script = buildResolvedOnDemandChunk(body, resolved).script;
   if (auto v = ctx.dp.validateScript("on_demand", ctx.language, script); !v) {
     return ToolResult::failure("invalid script: " + v.error());
   }
@@ -2539,7 +2539,7 @@ ToolResult createDerivedObject(const json& args, ToolContext& ctx) {
   }
 
   const std::string body = args["body"].get<std::string>();
-  const std::string script = buildResolvedOnDemandChunk(body, resolved);
+  const std::string script = buildResolvedOnDemandChunk(body, resolved).script;
   if (auto v = ctx.dp.validateScript("on_demand", ctx.language, script); !v) {
     return ToolResult::failure("invalid script: " + v.error());
   }
