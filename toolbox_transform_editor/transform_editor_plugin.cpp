@@ -1826,9 +1826,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   void setPreviewError(std::string error) {
     preview_error_ = std::move(error);
   }
-  const std::string& previewError() const {
-    return preview_error_;
-  }
   /// Why Create failed (the host refused the recipe), shown over the chart until the form is edited. Neither
   /// the status line nor a trial's result touches it, so the message outlives the next refresh.
   void setCreateError(std::string error) {
@@ -3065,13 +3062,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     }
   }
 
-  std::optional<SeriesStatus> readSeriesStatus() {
-    const auto recipe = readPreviewRecipe();
-    if (!recipe) {
-      return std::nullopt;
-    }
-    applyPreviewState(*recipe);
-    const auto& parsed = *recipe;
+  static std::optional<SeriesStatus> parseSeriesStatus(const nlohmann::json& parsed) {
     if (!parsed.contains("series") || !parsed["series"].is_object()) {
       return std::nullopt;
     }
@@ -3105,29 +3096,34 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
         numbers.push_back(i);
       }
     }
-    dialog_.setPreviewHasNumbers(!numbers.empty());
-    if (numbers.empty()) {
-      // No series to read, but the recipe still says whether it is healthy.
-      if (const auto now = std::chrono::steady_clock::now(); now >= next_series_read_) {
-        next_series_read_ = now + kSeriesRead;
-        if (const auto recipe = readPreviewRecipe()) {
-          applyPreviewState(*recipe);
-        }
+    const bool has_numbers = !numbers.empty();
+    dialog_.setPreviewHasNumbers(has_numbers);
+    if (has_numbers) {
+      const SeriesStamp stamp{object_preview_installs_, build.data_stamp};
+      if (!(series_read_stamp_ == stamp)) {
+        series_progress_ = {};
+        series_read_stamp_ = stamp;
       }
+    }
+    // The ONE bounded read of the recipe's status. Without numbers there is no series to wait for, but the
+    // recipe still says whether it is healthy.
+    const auto now = std::chrono::steady_clock::now();
+    const bool read_due = now >= next_series_read_ && (!has_numbers || !series_progress_.complete);
+    std::optional<SeriesStatus> status;
+    if (read_due) {
+      next_series_read_ = now + kSeriesRead;
+      if (const auto recipe = readPreviewRecipe()) {
+        applyPreviewState(*recipe);
+        status = parseSeriesStatus(*recipe);
+      }
+    }
+    if (!has_numbers) {
       dialog_.setPreviewSeries({});
       dialog_.setReadout({});  // object outputs show in the scene view
       dialog_.setSeriesNote({});
       return;
     }
-    const SeriesStamp stamp{object_preview_installs_, build.data_stamp};
-    if (!(series_read_stamp_ == stamp)) {
-      series_progress_ = {};
-      series_read_stamp_ = stamp;
-    }
-    const auto now = std::chrono::steady_clock::now();
-    if (!series_progress_.complete && now >= next_series_read_) {
-      next_series_read_ = now + kSeriesRead;
-      const auto status = readSeriesStatus();
+    if (read_due) {
       bool read = true;
       if (status) {
         read = !series_progress_.read_rows || *series_progress_.read_rows != status->rows;
@@ -3177,7 +3173,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     std::string note;
     if (!status.complete) {
       if (status.done && status.total) {
-        note = "Computing series: " + std::to_string(*status.done) + " / " + std::to_string(*status.total);
+        note = "Computing series: " + groupDigits(*status.done) + " / " + groupDigits(*status.total);
       } else {
         note = "computing the series…";
         if (status.rows > 0) {
