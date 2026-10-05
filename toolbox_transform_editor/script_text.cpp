@@ -337,50 +337,26 @@ std::string varNameError(std::string_view name, std::string_view language, const
   return {};
 }
 
-namespace {
-
-// How many lines `text` takes when a line break follows it ("a\nb" -> 2, "" -> 1).
-int physicalLines(const std::string& text) {
-  return 1 + static_cast<int>(std::count(text.begin(), text.end(), '\n'));
-}
-
-// The line-break-terminated lines of `prefix`.
-int terminatedLines(const std::string& prefix) {
-  return static_cast<int>(std::count(prefix.begin(), prefix.end(), '\n'));
-}
-
-// The 1-based line, in the generated chunk, where a body handed to the shared chunk builders begins
-// (after the header and the alias table). Read off the chunk itself, so it follows the library's
-// format instead of copying it.
-int bodyStartLine(const std::string& script_with_marker, std::string_view marker) {
-  const std::size_t at = script_with_marker.find(marker);
-  return 1 + static_cast<int>(std::count(
-                 script_with_marker.begin(), script_with_marker.begin() + static_cast<std::ptrdiff_t>(at), '\n'));
-}
-
-}  // namespace
-
 BuiltScript buildOnDemandScript(
     const std::string& body, const std::string& globals, const std::vector<InputBinding>& bindings,
     const ResolvedEvalInputs& resolved, std::string_view language) {
   const bool python = language == "python";
   const std::string prologue = buildVariablePrologue(language, bindings);
   const std::string user = globals.empty() ? body : globals + "\n" + body;
-  BuiltScript out;
   const std::string chunk_body = prologue + user;
-  out.script = python ? derived_recipes::buildOnDemandChunkPython(chunk_body, resolved)
-                      : derived_recipes::buildResolvedOnDemandChunk(chunk_body, resolved);
-  constexpr std::string_view kMarker = "@@pj-body@@";
-  const std::string probe = python ? derived_recipes::buildOnDemandChunkPython(std::string(kMarker), resolved)
-                                   : derived_recipes::buildResolvedOnDemandChunk(std::string(kMarker), resolved);
-  int line = bodyStartLine(probe, kMarker) + terminatedLines(prologue);
+  BuiltScript out = python ? derived_recipes::buildOnDemandChunkPython(chunk_body, resolved)
+                           : derived_recipes::buildResolvedOnDemandChunk(chunk_body, resolved);
+  // The user's text follows the variable prologue, one line per line break; the layout the builder
+  // reports is that of the whole chunk_body.
+  int line = out.layout.body_first_line + static_cast<int>(std::count(prologue.begin(), prologue.end(), '\n'));
+  out.layout = {};
   if (!globals.empty()) {
     out.layout.globals_first_line = line;
-    out.layout.globals_lines = physicalLines(globals);
+    out.layout.globals_lines = derived_recipes::physicalLines(globals);
     line += out.layout.globals_lines;
   }
   out.layout.body_first_line = line;
-  out.layout.body_lines = physicalLines(body);
+  out.layout.body_lines = derived_recipes::physicalLines(body);
   return out;
 }
 

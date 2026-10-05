@@ -214,7 +214,8 @@ TEST(ScriptText, LuauOnDemandLayoutPointsAtTheBodyAndTheGlobals) {
   EXPECT_EQ(built.layout.body_lines, 2);
   EXPECT_EQ(
       built.script, buildResolvedOnDemandChunk(
-                        buildVariablePrologue("luau", bindings) + "G1 = 5\nG2 = 6\nlocal n = 1\nreturn n", resolved));
+                        buildVariablePrologue("luau", bindings) + "G1 = 5\nG2 = 6\nlocal n = 1\nreturn n", resolved)
+                        .script);
 
   const BuiltScript plain = buildOnDemandScript("return 1", "", {}, ResolvedEvalInputs{}, "luau");
   EXPECT_EQ(plain.layout.globals_lines, 0);
@@ -232,7 +233,8 @@ TEST(ScriptText, PythonOnDemandLayoutPointsAtTheBodyAndTheGlobals) {
   EXPECT_EQ(built.layout.body_lines, 2);
   EXPECT_EQ(
       built.script,
-      buildOnDemandChunkPython(buildVariablePrologue("python", bindings) + "G = 5\nx = 1\nreturn {'a': x}", resolved));
+      buildOnDemandChunkPython(buildVariablePrologue("python", bindings) + "G = 5\nx = 1\nreturn {'a': x}", resolved)
+          .script);
 
   const BuiltScript bare = buildOnDemandScript("return 1", "", {}, ResolvedEvalInputs{}, "python");
   EXPECT_EQ(bare.layout.body_first_line, lineOf(bare.script, "    return 1"));
