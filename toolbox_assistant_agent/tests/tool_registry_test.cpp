@@ -12,34 +12,38 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <future>
 #include <iomanip>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <vector>
 
-#include "support/fake_catalog_host.hpp"
+#include "gui_executor.hpp"
+#include "object_ops_catalog.hpp"
 #include "support/fake_multi_dataset_host.hpp"
 #include "support/fake_object_read_host.hpp"
-#include "support/fake_playback_viewport_hosts.hpp"
-#include "support/fake_plot_tabs_host.hpp"
-#include "support/recording_dp_host.hpp"
+#include "test_support/fake_catalog_host.hpp"
+#include "test_support/fake_playback_viewport_hosts.hpp"
+#include "test_support/fake_plot_tabs_host.hpp"
+#include "test_support/recording_dp_host.hpp"
 
 namespace {
 
 using assistant_agent::catalogDigest;
 using assistant_agent::ToolContext;
 using assistant_agent::ToolRegistry;
-using assistant_agent::testing::FakeCatalogHost;
 using assistant_agent::testing::FakeMultiDatasetHost;
 using assistant_agent::testing::FakeObjectReadHost;
-using assistant_agent::testing::FakePlaybackHost;
-using assistant_agent::testing::FakePlotTabsHost;
-using assistant_agent::testing::FakeViewportHost;
-using assistant_agent::testing::RecordingDpHost;
 using nlohmann::json;
+using toolbox_testing::FakeCatalogHost;
+using toolbox_testing::FakePlaybackHost;
+using toolbox_testing::FakePlotTabsHost;
+using toolbox_testing::FakeViewportHost;
+using toolbox_testing::RecordingDpHost;
 
 constexpr std::int64_t kSec = 1'000'000'000;
 
@@ -66,15 +70,17 @@ ToolContext makeCtx(PJ::testing::ToolboxTestStore& store, RecordingDpHost* dp, F
 
 TEST(ToolRegistry, ListsAllToolsAndSchemas) {
   ToolRegistry reg;
-  EXPECT_EQ(reg.tools().size(), 12u);
+  EXPECT_EQ(reg.tools().size(), 14u);
   // Both serializations expose every tool by name.
-  EXPECT_EQ(reg.toFunctionSpecs().size(), 12u);
-  EXPECT_EQ(reg.toMcpToolsList().size(), 12u);
+  EXPECT_EQ(reg.toFunctionSpecs().size(), 14u);
+  EXPECT_EQ(reg.toMcpToolsList().size(), 14u);
   EXPECT_NE(reg.find("evaluate"), nullptr);
   EXPECT_NE(reg.find("create_derived_series"), nullptr);
+  EXPECT_NE(reg.find("create_derived_object"), nullptr);
   EXPECT_NE(reg.find("playback"), nullptr);
   EXPECT_EQ(reg.find("play"), nullptr);
   EXPECT_NE(reg.find("plot_tab"), nullptr);
+  EXPECT_NE(reg.find("scene_view"), nullptr);
   // zoom_to_time_range/zoom_reset were folded into plot_tab's 'zoom' action:
   // the user's plots are no longer reachable from any tool, only the tabs
   // this assistant composed itself.
@@ -108,6 +114,80 @@ TEST(ToolRegistry, ListTopics) {
   EXPECT_EQ(j["topics"][0]["fields"], 2);
 }
 
+// Object topics from catalog snapshot v2 (point clouds, scene entities…) show
+// up alongside scalar ones, tagged by kind so the model can tell them apart
+// without a second call.
+TEST(ToolRegistry, ListTopicsIncludesObjectTopicsFromSnapshotV2) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addTopic("/imu");
+  host.addField("/imu", "x");
+  host.addObjectTopic("/cloud", "kPointCloud", 42, 0, 5 * kSec);
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  auto r = reg.execute("list_topics", json::object(), ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 2);
+  EXPECT_FALSE(j.contains("objects")) << "v2 is supported here; the fallback note must not appear";
+  bool found_scalar = false;
+  bool found_object = false;
+  for (const auto& t : j["topics"]) {
+    if (t["topic"] == "/imu") {
+      found_scalar = true;
+      EXPECT_EQ(t["kind"], "scalar");
+    }
+    if (t["topic"] == "/cloud") {
+      found_object = true;
+      EXPECT_EQ(t["kind"], "object");
+      EXPECT_EQ(t["type"], "kPointCloud");
+      EXPECT_EQ(t["entries"], 42);
+      EXPECT_EQ(t["derived"], false);
+      EXPECT_EQ(t["time_basis"], "raw") << "no playback view bound in this test";
+      ASSERT_TRUE(t.contains("t_range_s"));
+      EXPECT_NEAR(t["t_range_s"][0].get<double>(), 0.0, 1e-9);
+      EXPECT_NEAR(t["t_range_s"][1].get<double>(), 5.0, 1e-6);
+    }
+  }
+  EXPECT_TRUE(found_scalar);
+  EXPECT_TRUE(found_object);
+}
+
+// A host built before catalog snapshot v2 existed: object topics are simply
+// not visible, and the response says so rather than silently under-reporting.
+TEST(ToolRegistry, ListTopicsFallsBackToV1AndSaysSo) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addTopic("/imu");
+  host.addField("/imu", "x");
+  host.supportsV2(false);
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  auto r = reg.execute("list_topics", json::object(), ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 1);
+  EXPECT_EQ(j["topics"][0]["topic"], "/imu");
+  ASSERT_TRUE(j.contains("objects"));
+  EXPECT_EQ(j["objects"], "not listed (host predates catalog snapshot v2)");
+}
+
+// Marker sets are object topics too, but they are drawn, not read -- they
+// must never reach the model through list_topics.
+TEST(ToolRegistry, ListTopicsExcludesMarkerTopics) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("__markers__/imu/x", "kPlotMarkers", 1, 0, kSec);
+  host.addObjectTopic("/cloud", "kPointCloud", 3, 0, kSec);
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  auto r = reg.execute("list_topics", json::object(), ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["count"], 1);
+  EXPECT_EQ(j["topics"][0]["topic"], "/cloud");
+}
+
 TEST(ToolRegistry, DescribeTopicListsFieldPaths) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;
@@ -127,6 +207,84 @@ TEST(ToolRegistry, DescribeUnknownTopicFails) {
   auto ctx = makeCtx(store, nullptr);
   auto r = reg.execute("describe_topic", {{"topic", "/nope"}}, ctx);
   EXPECT_FALSE(r.ok);
+}
+
+// An object topic that exists on two datasets is described like every other object input: the bare name is
+// refused with the qualified candidates, and "dataset:name" picks one.
+TEST(ToolRegistry, DescribeObjectTopicHonoursTheDatasetQualifierAndReportsAmbiguity) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, kSec, R"({"builtin_object_type":"kPointCloud"})", "runA");
+  host.addObjectTopic("/cloud", "kImage", 7, 0, kSec, R"({"builtin_object_type":"kImage"})", "runB");
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+
+  auto ambiguous = reg.execute("describe_topic", {{"topic", "/cloud"}}, ctx);
+  EXPECT_FALSE(ambiguous.ok) << ambiguous.content;
+  EXPECT_NE(ambiguous.content.find("ambiguous"), std::string::npos) << ambiguous.content;
+  EXPECT_NE(ambiguous.content.find("runA:/cloud"), std::string::npos) << ambiguous.content;
+  EXPECT_NE(ambiguous.content.find("runB:/cloud"), std::string::npos) << ambiguous.content;
+
+  auto b = reg.execute("describe_topic", {{"topic", "runB:/cloud"}}, ctx);
+  ASSERT_TRUE(b.ok) << b.content;
+  EXPECT_EQ(json::parse(b.content)["type"], "kImage");
+  EXPECT_EQ(json::parse(b.content)["entries"], 7);
+  auto a = reg.execute("describe_topic", {{"topic", "runA:/cloud"}}, ctx);
+  ASSERT_TRUE(a.ok) << a.content;
+  EXPECT_EQ(json::parse(a.content)["type"], "kPointCloud");
+}
+
+// describe_topic on an object topic walks its field table (PointCloud's own
+// fields, a list shown as "kind":"list", the raw "data" buffer carrying
+// nothing past its name/kind) and lists the operations a script may call on
+// it, mirroring pj_scripting/src/object_binder.cpp in PJ4.
+TEST(ToolRegistry, DescribeObjectTopicWalksTheFieldTableAndListsOperations) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, kSec);
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  auto r = reg.execute("describe_topic", {{"topic", "/cloud"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["kind"], "object");
+  EXPECT_EQ(j["type"], "kPointCloud");
+  EXPECT_EQ(j["entries"], 100);
+
+  std::vector<std::string> field_names;
+  for (const auto& f : j["fields"]) {
+    field_names.push_back(f["name"].get<std::string>());
+    if (f["name"] == "fields") {
+      EXPECT_EQ(f["kind"], "list");
+    }
+    if (f["name"] == "data") {
+      EXPECT_EQ(f["kind"], "buffer");
+      EXPECT_FALSE(f.contains("fields")) << "a buffer field carries nothing past its name/kind";
+    }
+  }
+  EXPECT_NE(std::find(field_names.begin(), field_names.end(), "frame_id"), field_names.end());
+  EXPECT_NE(std::find(field_names.begin(), field_names.end(), "width"), field_names.end());
+  EXPECT_NE(std::find(field_names.begin(), field_names.end(), "fields"), field_names.end());
+  EXPECT_NE(std::find(field_names.begin(), field_names.end(), "data"), field_names.end());
+
+  bool found_crop_box = false;
+  for (const auto& op : j["operations"]) {
+    if (op["name"].get<std::string>().find("crop_box") != std::string::npos) {
+      found_crop_box = true;
+    }
+  }
+  EXPECT_TRUE(found_crop_box) << j.dump();
+}
+
+TEST(ToolRegistry, DescribeScalarTopicSaysKindScalar) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  auto ctx = makeCtx(store, nullptr);
+  auto r = reg.execute("describe_topic", {{"topic", "/imu"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["kind"], "scalar");
 }
 
 TEST(ToolRegistry, ReadSeriesStats) {
@@ -939,6 +1097,23 @@ TEST(CatalogDigest, FallsBackToPlainTruncationWhenNotEvenCountsFit) {
       << "this is the legacy truncation footer, not the mixed-tier one: " << digest;
 }
 
+// Object topics get one line each under their dataset, alongside the scalar
+// topics -- so a model reading the digest at the top of a turn already knows
+// a point cloud is loaded, without an extra list_topics round trip.
+TEST(CatalogDigest, MentionsObjects) {
+  FakeCatalogHost host;
+  host.addTopic("/imu");
+  host.addField("/imu", "x");
+  host.addObjectTopic("/cloud", "kPointCloud", 7, 0, 2 * kSec);
+
+  const std::string digest = catalogDigest(PJ::sdk::ToolboxHostView(host.makeHost()));
+
+  EXPECT_NE(digest.find("/imu"), std::string::npos) << digest;
+  EXPECT_NE(digest.find("/cloud"), std::string::npos) << digest;
+  EXPECT_NE(digest.find("object kPointCloud"), std::string::npos) << digest;
+  EXPECT_NE(digest.find("7 entries"), std::string::npos) << digest;
+}
+
 TEST(CatalogDigest, SaysWhenNothingIsLoaded) {
   PJ::testing::ToolboxTestStore store;
   const std::string digest = catalogDigest(PJ::sdk::ToolboxHostView(store.makeHost()));
@@ -1120,6 +1295,24 @@ TEST(ToolRegistry, ReportStatus) {
   auto j = json::parse(r.content);
   EXPECT_EQ(j["topics"], 1);
   EXPECT_EQ(j["fields"], 2);
+}
+
+TEST(ToolRegistry, ReportStatusCountsObjects) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addTopic("/imu");
+  host.addField("/imu", "x");
+  host.addObjectTopic("/cloud", "kPointCloud", 5, 0, kSec);
+  host.addObjectTopic(
+      "/derived_cloud", "kPointCloud", 5, 0, kSec, R"({"builtin_object_type":"kPointCloud","pj_derived":"true"})");
+  host.addObjectTopic("__markers__/imu/x", "kPlotMarkers", 1, 0, kSec);
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  auto r = reg.execute("report_status", json::object(), ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  auto j = json::parse(r.content);
+  EXPECT_EQ(j["object_topics"], 2) << "the marker topic must not be counted";
+  EXPECT_EQ(j["derived_object_topics"], 1);
 }
 
 // --- what the model is told about what it just made ------------------------
@@ -1442,6 +1635,316 @@ TEST(ToolRegistry, EvaluateCallsUseDistinctIds) {
   (void)second;
   EXPECT_FALSE(first_id.empty());
   EXPECT_NE(first_id, second_id);
+}
+
+// evaluate's scalar path (no object input, no at_s/window) must be byte-for-
+// byte what shipped before objects existed: the object-path routing check
+// added in block 3.2 must fall through cleanly, on a host that has no v2
+// catalog at all (PJ::testing::ToolboxTestStore, used by every scalar test
+// above) as much as on one that does.
+TEST(ToolRegistry, ScalarEvaluateIsUntouched) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  dp.ephemeral_series_store = &store;
+  dp.ephemeral_series_ts = {0, kSec, 2 * kSec};
+  dp.ephemeral_series_vals = {1.0, 2.0, 3.0};
+  ToolContext ctx = makeCtx(store, &dp);
+
+  auto r = reg.execute("evaluate", {{"inputs", json::array({"/imu/x"})}, {"expression", "value + 1"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.create_calls, 1) << "the scalar ephemeral-transform path, unchanged";
+  EXPECT_EQ(dp.create_v2_calls, 0);
+  EXPECT_EQ(dp.submit_calls, 0) << "the object/on-demand surface must never be touched here";
+  const json j = json::parse(r.content);
+  EXPECT_TRUE(j.contains("stats"));
+  EXPECT_TRUE(j.contains("evaluated"));
+}
+
+// --- evaluate()'s object path: at_s/window over object topics --------------
+
+TEST(ToolRegistry, EvaluateAtCreatesEphemeralSubmitsPollsAndReleases) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  FakePlaybackHost pb;
+  pb.display_offset_ns = 1000;  // display(raw) = (raw - offset) * 1e-9
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = pb.view();
+
+  auto r = reg.execute(
+      "evaluate",
+      {{"inputs", json::array({"/cloud"})},
+       {"at_s", 2.0},
+       {"body", "return { cropped = inputs[\"/cloud\"], count = 1 }"},
+       {"outputs", json::array({"cropped:kPointCloud", "count:number"})}},
+      ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.submit_calls, 1);
+  EXPECT_EQ(dp.create_calls, 0) << "the object path never installs anything, ephemeral or otherwise";
+  EXPECT_NE(dp.last_flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL, 0u);
+  EXPECT_EQ(dp.last_kind, "on_demand");
+  EXPECT_NE(dp.last_time_flags & PJ_DATA_PROCESSOR_TIME_FLAG_INSTANT, 0u);
+  // to_raw(2.0 s) = 2.0 * 1e9 + display_offset_ns
+  EXPECT_EQ(dp.last_instant_ns, 2'000'001'000);
+  EXPECT_EQ(dp.poll_calls, 1) << "the phase-0 host completes inline; one poll suffices";
+  ASSERT_EQ(dp.released_handles.size(), 1u);
+  const json j = json::parse(r.content);
+  ASSERT_TRUE(j.contains("bundles"));
+  EXPECT_EQ(j["bundles"].size(), 1u);
+}
+
+TEST(ToolRegistry, EvaluateWindowPassesBudgetAndReturnsCoverage) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  FakePlaybackHost pb;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = pb.view();
+
+  auto r = reg.execute(
+      "evaluate",
+      {{"inputs", json::array({"/cloud"})},
+       {"window", {{"start_s", 1.0}, {"end_s", 3.0}}},
+       {"budget_ms", 2000},
+       {"budget_evaluations", 10},
+       {"body", "return { cropped = inputs[\"/cloud\"], count = 1 }"},
+       {"outputs", json::array({"cropped:kPointCloud", "count:number"})}},
+      ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_NE(dp.last_time_flags & PJ_DATA_PROCESSOR_TIME_FLAG_WINDOW, 0u);
+  EXPECT_EQ(dp.last_window_start_ns, 1'000'000'000);
+  EXPECT_EQ(dp.last_window_end_ns, 3'000'000'000);
+  EXPECT_EQ(dp.last_budget_max_millis, 2000u);
+  EXPECT_EQ(dp.last_budget_max_evaluations, 10u);
+  const json j = json::parse(r.content);
+  ASSERT_TRUE(j.contains("coverage")) << "coverage rides along verbatim";
+  EXPECT_EQ(j["coverage"]["candidates"], 1);
+}
+
+// The plugin does not copy the host's budget ceiling: it asks for what the call says (positive, with
+// defaults) and the host clamps.
+TEST(ToolRegistry, EvaluateRequestsTheBudgetUncappedAndPositive) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  FakePlaybackHost pb;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = pb.view();
+
+  const auto call = [&](json budget) {
+    json args = {
+        {"inputs", json::array({"/cloud"})},
+        {"at_s", 1.0},
+        {"body", "return { count = 1 }"},
+        {"outputs", json::array({"count:number"})}};
+    args.update(budget);
+    return reg.execute("evaluate", args, ctx);
+  };
+  ASSERT_TRUE(call({{"budget_ms", 60000}, {"budget_evaluations", 5000}}).ok);
+  EXPECT_EQ(dp.last_budget_max_millis, 60000u);
+  EXPECT_EQ(dp.last_budget_max_evaluations, 5000u);
+  ASSERT_TRUE(call({{"budget_ms", 0}, {"budget_evaluations", -3}}).ok);
+  EXPECT_EQ(dp.last_budget_max_millis, 1u);
+  EXPECT_EQ(dp.last_budget_max_evaluations, 1u);
+  ASSERT_TRUE(call(json::object()).ok);
+  EXPECT_EQ(dp.last_budget_max_millis, 1000u);
+  EXPECT_EQ(dp.last_budget_max_evaluations, 50u);
+}
+
+TEST(ToolRegistry, EvaluateWithObjectInputRequiresTypedOutputs) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+
+  auto r = reg.execute("evaluate", {{"inputs", json::array({"/cloud"})}, {"body", "return { count = 1 }"}}, ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("outputs"), std::string::npos) << r.content;
+  EXPECT_EQ(dp.submit_calls, 0);
+}
+
+TEST(ToolRegistry, EvaluateWaitsThroughPendingPolls) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  dp.pending_polls = 2;
+  FakePlaybackHost pb;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = pb.view();
+
+  auto r = reg.execute(
+      "evaluate",
+      {{"inputs", json::array({"/cloud"})},
+       {"at_s", 1.0},
+       {"body", "return { cropped = inputs[\"/cloud\"], count = 1 }"},
+       {"outputs", json::array({"cropped:kPointCloud", "count:number"})}},
+      ctx);
+  ASSERT_TRUE(r.resume);
+  EXPECT_EQ(dp.poll_calls, 1);
+  EXPECT_TRUE(dp.released_handles.empty());
+  r = r.resume(ctx);
+  ASSERT_TRUE(r.resume);
+  r = r.resume(ctx);
+  EXPECT_FALSE(r.resume);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.poll_calls, 3) << "2 PENDING answers, then COMPLETED";
+  EXPECT_EQ(dp.released_handles.size(), 1u);
+}
+
+// A host built before pj.data_processors.v1 gained submit_evaluation: the
+// v1 slots (including validate_data_processor_script) still work, so the
+// script validates cleanly, and only submitEvaluation itself reports the
+// gap -- a clean "not supported" the model can relay, never a crash.
+TEST(ToolRegistry, EvaluateOnOldHostReportsNotSupported) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  dp.supports_v2 = false;
+  FakePlaybackHost pb;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = pb.view();
+
+  auto r = reg.execute(
+      "evaluate",
+      {{"inputs", json::array({"/cloud"})},
+       {"at_s", 1.0},
+       {"body", "return { cropped = inputs[\"/cloud\"], count = 1 }"},
+       {"outputs", json::array({"cropped:kPointCloud", "count:number"})}},
+      ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("submit_evaluation"), std::string::npos) << r.content;
+  EXPECT_EQ(dp.validate_calls, 1) << "the v1 slot still works; only submit_evaluation is missing";
+}
+
+TEST(ToolRegistry, EvaluateTruncatesLongReports) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  json bundles = json::array();
+  for (int i = 0; i < 60; ++i) {
+    bundles.push_back(
+        {{"requested_ns", static_cast<std::int64_t>(i) * kSec},
+         {"stamp_ns", static_cast<std::int64_t>(i) * kSec},
+         {"inputs", json::array()},
+         {"outputs", json::object()}});
+  }
+  const json report = {{"coverage", {{"candidates", 60}, {"evaluated", 60}, {"complete", true}}}, {"bundles", bundles}};
+  dp.canned_report_json = report.dump();
+  FakePlaybackHost pb;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = pb.view();
+
+  auto r = reg.execute(
+      "evaluate",
+      {{"inputs", json::array({"/cloud"})},
+       {"window", {{"start_s", 0.0}, {"end_s", 60.0}}},
+       {"body", "return { cropped = inputs[\"/cloud\"], count = 1 }"},
+       {"outputs", json::array({"cropped:kPointCloud", "count:number"})}},
+      ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  ASSERT_TRUE(j.contains("bundles"));
+  EXPECT_EQ(j["bundles"].size(), 50u);
+  ASSERT_TRUE(j.contains("truncated"));
+  EXPECT_TRUE(j["truncated"].get<bool>());
+  // The LAST 50 of 60 survive, so the first one left is index 10.
+  ASSERT_TRUE(j["bundles"].front().contains("requested_s"));
+  EXPECT_DOUBLE_EQ(j["bundles"].front()["requested_s"].get<double>(), 10.0);
+}
+
+// --- create_derived_object ---------------------------------------------------
+
+#ifdef PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT
+TEST(ToolRegistry, CreateDerivedObjectPinsAFinding) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  dp.config_history_exempt = true;
+  dp.pending_polls = 2;
+  FakePlaybackHost pb;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = pb.view();
+  int notify_calls = 0;
+  ctx.notify_data_changed = [&]() { ++notify_calls; };
+
+  auto r = reg.execute(
+      "create_derived_object",
+      {{"name", "cropped_cloud"},
+       {"inputs", json::array({"/cloud"})},
+       {"outputs", json::array({"cropped:kPointCloud", "count:number"})},
+       {"body", "return { cropped = inputs[\"/cloud\"], count = 1 }"},
+       {"pin_at_s", 2.5},
+       {"label", "cropped at 2.5s"}},
+      ctx);
+  ASSERT_TRUE(r.resume);
+  EXPECT_EQ(dp.create_v2_calls, 1);
+  r = r.resume(ctx);
+  ASSERT_TRUE(r.resume);
+  r = r.resume(ctx);
+  EXPECT_FALSE(r.resume);
+  EXPECT_EQ(dp.released_handles.size(), 1u);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(dp.create_v2_calls, 1);
+  EXPECT_EQ(dp.persistent_creates, 1) << "a pin is HISTORY_EXEMPT, not EPHEMERAL -- it is kept";
+  EXPECT_EQ(dp.last_kind, "on_demand");
+  EXPECT_NE(dp.last_create_v2_flags & PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT, 0u);
+  EXPECT_NE(dp.last_create_v2_time_flags & PJ_DATA_PROCESSOR_TIME_FLAG_INSTANT, 0u);
+  EXPECT_EQ(dp.last_create_v2_instant_ns, 2'500'000'000);
+  EXPECT_EQ(dp.last_create_v2_label, "cropped at 2.5s");
+  EXPECT_EQ(notify_calls, 1);
+  EXPECT_EQ(dp.submit_calls, 1) << "evaluated once after creating, so the model sees a finding";
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["created"], "cropped_cloud");
+  ASSERT_TRUE(j.contains("bundle"));
+  EXPECT_FALSE(j.contains("undo_protection"));
+}
+#endif
+
+TEST(ToolRegistry, CreateDerivedObjectDisclosesMissingUndoProtection) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;  // config_history_exempt left unset: the recipe omits the key
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+
+  auto r = reg.execute(
+      "create_derived_object",
+      {{"name", "cropped_cloud"},
+       {"inputs", json::array({"/cloud"})},
+       {"outputs", json::array({"cropped:kPointCloud", "count:number"})},
+       {"body", "return { cropped = inputs[\"/cloud\"], count = 1 }"}},
+      ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["undo_protection"], "unavailable: an undo can remove this");
 }
 
 // --- PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT: set when the SDK has it, with a
@@ -1881,8 +2384,16 @@ TEST(ToolRegistry, ToolSchemaStaysWithinItsBudget) {
   // which is why related verbs share one tool with an `action` argument
   // instead of standing alone. Raised for `evaluate` (run a Luau computation
   // without creating anything) — a new verb, not a variant of an existing
-  // one, so it could not be folded into another tool's `action`.
-  EXPECT_LT(chars, 10500u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
+  // one, so it could not be folded into another tool's `action`. Raised
+  // again for `create_derived_object` (block 3.2) and evaluate's own object
+  // path (at_s/window/outputs) — objects need a genuinely different
+  // request shape (on_demand, typed outputs, a pinned instant) that does
+  // not fit create_derived_series's `action`-less schema either. Raised again
+  // for `scene_view` (block 3.3) — a new tab kind of pj.plot_tabs.v1
+  // with its own create/attach/detach/focus/close/list verbs, not a variant
+  // of plot_tab's own action set (a different host object, a different
+  // ownership scope).
+  EXPECT_LT(chars, 14200u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
 }
 
 // --- playback / viewport tools ----------------------------------------------
@@ -2263,6 +2774,203 @@ TEST(ToolRegistry, PlotTabUnknownActionIsACleanFailure) {
 
   EXPECT_FALSE(reg.execute("plot_tab", {{"action", "levitate"}}, ctx).ok);
   EXPECT_FALSE(reg.execute("plot_tab", json::object(), ctx).ok);
+}
+
+// --- the assistant's own scene views ----------------------------------------
+//
+// scene_view is plot_tab's counterpart for the 3D/2D object viewer: same
+// create/attach-or-detach/close/list shape, same host-enforced ownership
+// (FakePlotTabsHost models that), same
+// read-the-view-back-rather-than-trust-the-call-result discipline. Attaching
+// takes object-topic paths (point clouds, scene entities...), resolved
+// through the v2 catalog by resolveObjectTopic rather than plot_tab's
+// topic/field series resolution.
+
+TEST(ToolRegistry, SceneViewCreateAttachReadsBack) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 42, 0, 5 * kSec);
+  FakePlotTabsHost scenes;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.plot_tabs = scenes.view();
+
+  auto created = reg.execute("scene_view", {{"action", "create"}, {"view", "scene"}, {"title", "Cloud"}}, ctx);
+  ASSERT_TRUE(created.ok) << created.content;
+  json cj = json::parse(created.content);
+  EXPECT_EQ(cj["view"], "scene");
+  EXPECT_EQ(cj["kind"], "3d");  // default
+  EXPECT_EQ(cj["title"], "Cloud");
+  EXPECT_TRUE(cj["topics"].empty());
+
+  auto attached = reg.execute("scene_view", {{"action", "attach"}, {"view", "scene"}, {"topics", "/cloud"}}, ctx);
+  ASSERT_TRUE(attached.ok) << attached.content;
+  json aj = json::parse(attached.content);
+  ASSERT_EQ(aj["topics"].size(), 1u);
+  EXPECT_EQ(aj["topics"][0]["topic"], "/cloud");
+  ASSERT_EQ(aj["results"].size(), 1u);
+  EXPECT_EQ(aj["results"][0]["topic"], "/cloud");
+  EXPECT_EQ(aj["results"][0]["attached"], true);
+}
+
+// Three ways a requested topic can fail to end up attached: it is not in the
+// catalog at all, the catalog knows it but the host silently drops it (the
+// harder case -- every call still "succeeded"), and a "2d" view refuses a
+// type it does not accept. All three must be reported per-topic rather than
+// leaving the model to infer a miss from a shorter-than-expected list.
+TEST(ToolRegistry, SceneViewAttachUnknownTopicIsReported) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 5, 0, kSec);
+  host.addObjectTopic("/image", "kImage", 3, 0, kSec);
+  FakePlotTabsHost scenes;
+  scenes.unresolvable_topics.insert("/cloud");  // catalog knows it, the host does not place it
+  scenes.kind_rejects.insert("/image");         // the "2d" view below refuses this one
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.plot_tabs = scenes.view();
+  ASSERT_TRUE(reg.execute("scene_view", {{"action", "create"}, {"view", "flat"}, {"kind", "2d"}}, ctx).ok);
+
+  // A path the catalog cannot resolve at all is a request error.
+  auto missing =
+      reg.execute("scene_view", {{"action", "attach"}, {"view", "flat"}, {"topics", "/does/not/exist"}}, ctx);
+  EXPECT_FALSE(missing.ok) << missing.content;
+  EXPECT_NE(missing.content.find("not a loaded object topic"), std::string::npos) << missing.content;
+
+  // The catalog resolves it, the host accepts the call and places it nowhere.
+  auto dropped = reg.execute("scene_view", {{"action", "attach"}, {"view", "flat"}, {"topics", "/cloud"}}, ctx);
+  EXPECT_FALSE(dropped.ok) << dropped.content;
+  EXPECT_NE(dropped.content.find("did not land"), std::string::npos) << dropped.content;
+
+  // The host refuses the type outright for this view's kind.
+  auto refused = reg.execute("scene_view", {{"action", "attach"}, {"view", "flat"}, {"topics", "/image"}}, ctx);
+  EXPECT_FALSE(refused.ok) << refused.content;
+  json rj = json::parse(refused.content);
+  ASSERT_EQ(rj["results"].size(), 1u);
+  EXPECT_TRUE(rj["results"][0].contains("error"));
+  EXPECT_TRUE(scenes.find("flat")->topics.empty());
+}
+
+// The product rule stated as a test: the host, not the plugin, is what keeps
+// this assistant out of the user's own scene docks.
+TEST(ToolRegistry, SceneViewForeignViewIsUnreachable) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 5, 0, kSec);
+  FakePlotTabsHost scenes;
+  scenes.addForeignView("user-1");
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.plot_tabs = scenes.view();
+
+  EXPECT_FALSE(
+      reg.execute("scene_view", {{"action", "attach"}, {"view", "user-1"}, {"topics", json::array({"/cloud"})}}, ctx)
+          .ok);
+  EXPECT_FALSE(
+      reg.execute("scene_view", {{"action", "detach"}, {"view", "user-1"}, {"topics", json::array({"/cloud"})}}, ctx)
+          .ok);
+  EXPECT_FALSE(reg.execute("scene_view", {{"action", "focus"}, {"view", "user-1"}}, ctx).ok);
+  EXPECT_FALSE(reg.execute("scene_view", {{"action", "close"}, {"view", "user-1"}}, ctx).ok);
+
+  EXPECT_EQ(scenes.foreign_mutations, 0);
+}
+
+TEST(ToolRegistry, SceneViewDetachAndClose) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 5, 0, kSec);
+  FakePlotTabsHost scenes;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.plot_tabs = scenes.view();
+  ASSERT_TRUE(reg.execute("scene_view", {{"action", "create"}, {"view", "scene"}}, ctx).ok);
+  ASSERT_TRUE(reg.execute("scene_view", {{"action", "attach"}, {"view", "scene"}, {"topics", "/cloud"}}, ctx).ok);
+
+  auto detached = reg.execute("scene_view", {{"action", "detach"}, {"view", "scene"}, {"topics", "/cloud"}}, ctx);
+  ASSERT_TRUE(detached.ok) << detached.content;
+  json dj = json::parse(detached.content);
+  EXPECT_TRUE(dj["topics"].empty());
+  ASSERT_EQ(dj["results"].size(), 1u);
+  EXPECT_EQ(dj["results"][0]["detached"], true);
+
+  auto closed = reg.execute("scene_view", {{"action", "close"}, {"view", "scene"}}, ctx);
+  ASSERT_TRUE(closed.ok) << closed.content;
+  EXPECT_EQ(json::parse(closed.content)["closed"], "scene");
+  EXPECT_EQ(scenes.find("scene"), nullptr);
+}
+
+TEST(ToolRegistry, SceneViewListIsReadBack) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  FakePlotTabsHost scenes;
+  scenes.addForeignView("user-1");
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.plot_tabs = scenes.view();
+  ASSERT_TRUE(reg.execute("scene_view", {{"action", "create"}, {"view", "a"}, {"kind", "3d"}}, ctx).ok);
+  ASSERT_TRUE(reg.execute("scene_view", {{"action", "create"}, {"view", "b"}, {"kind", "2d"}}, ctx).ok);
+
+  auto r = reg.execute("scene_view", {{"action", "list"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(json::parse(r.content)["count"], 2);
+  EXPECT_EQ(r.content.find("user-1"), std::string::npos) << r.content;
+
+  // Owning nothing is an answer, not an error.
+  FakePlotTabsHost empty_scenes;
+  ToolContext empty_ctx;
+  empty_ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  empty_ctx.plot_tabs = empty_scenes.view();
+  auto empty_r = reg.execute("scene_view", {{"action", "list"}}, empty_ctx);
+  ASSERT_TRUE(empty_r.ok) << empty_r.content;
+  EXPECT_EQ(json::parse(empty_r.content)["count"], 0);
+}
+
+TEST(ToolRegistry, SceneViewOnOldHostReportsNotExposed) {
+  ToolRegistry reg;
+  FakePlotTabsHost tabs;
+  tabs.struct_size = 64;  // a 0.35 host: the seven v1 slots, no tail
+  ToolContext ctx;
+  ctx.plot_tabs = tabs.view();
+
+  auto r = reg.execute("scene_view", {{"action", "list"}}, ctx);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("predates scene tabs in pj.plot_tabs.v1"), std::string::npos) << r.content;
+
+  // Full-size vtable with NULL tail slots (a host with no scene workspace).
+  FakePlotTabsHost no_scene;
+  no_scene.null_tail = true;
+  ctx.plot_tabs = no_scene.view();
+  EXPECT_FALSE(reg.execute("scene_view", {{"action", "list"}}, ctx).ok);
+
+  // No plot tabs service at all.
+  ToolContext unbound;
+  auto u = reg.execute("scene_view", {{"action", "list"}}, unbound);
+  EXPECT_FALSE(u.ok);
+  EXPECT_NE(u.content.find("predates scene tabs"), std::string::npos) << u.content;
+}
+
+// The host list is the union of plot and scene tabs; each tool shows its own kind.
+TEST(ToolRegistry, PlotTabAndSceneViewListsAreDisjoint) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  FakePlotTabsHost tabs;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.plot_tabs = tabs.view();
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "create"}, {"tab", "p"}}, ctx).ok);
+  ASSERT_TRUE(reg.execute("scene_view", {{"action", "create"}, {"view", "s"}}, ctx).ok);
+
+  auto plots = reg.execute("plot_tab", {{"action", "list"}}, ctx);
+  ASSERT_TRUE(plots.ok) << plots.content;
+  json pj = json::parse(plots.content);
+  ASSERT_EQ(pj["count"], 1);
+  EXPECT_EQ(pj["tabs"][0]["tab"], "p");
+
+  auto scenes = reg.execute("scene_view", {{"action", "list"}}, ctx);
+  ASSERT_TRUE(scenes.ok) << scenes.content;
+  json sj = json::parse(scenes.content);
+  ASSERT_EQ(sj["count"], 1);
+  EXPECT_EQ(sj["views"][0]["view"], "s");
 }
 
 TEST(ToolRegistry, ReadSeriesStatsGainDisplayStartWhenPlaybackBound) {
@@ -2855,4 +3563,340 @@ TEST(ToolRegistry, RefusesToCreateOverAnExistingName) {
   EXPECT_NE(again.content.find("already exists"), std::string::npos) << again.content;
   EXPECT_EQ(dp.liveCount(), 1) << "the refused create must leave the first one untouched";
   EXPECT_EQ(dp.create_calls, 1) << "and must not reach the host at all";
+}
+
+TEST(ToolRegistry, AsyncEvaluationTerminalStatesReleaseExactlyOnce) {
+  for (auto state : {PJ_EVALUATION_STATE_FAILED, PJ_EVALUATION_STATE_CANCELLED}) {
+    ToolRegistry reg;
+    FakeCatalogHost host;
+    host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+    RecordingDpHost dp;
+    dp.pending_polls = 1;
+    dp.terminal_state = state;
+    dp.canned_report_json = R"({"error":"deliberate failure"})";
+    FakePlaybackHost playback;
+    ToolContext ctx;
+    ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+    ctx.dp = dp.view();
+    ctx.playback = playback.view();
+    auto r = reg.execute(
+        "evaluate",
+        {{"inputs", {"/cloud"}}, {"at_s", 1.0}, {"body", "return {count=1}"}, {"outputs", {"count:number"}}}, ctx);
+    ASSERT_TRUE(r.resume);
+    r = r.resume(ctx);
+    EXPECT_FALSE(r.ok);
+    EXPECT_FALSE(r.resume);
+    EXPECT_EQ(dp.released_handles.size(), 1u);
+  }
+}
+
+TEST(ToolRegistry, ExecutorShutdownReleasesPendingEvaluationOnGuiThread) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  dp.pending_polls = 100;
+  FakePlaybackHost playback;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = playback.view();
+  assistant_agent::GuiExecutor executor;
+  auto worker = std::async(std::launch::async, [&] {
+    return executor.call(
+        "evaluate",
+        {{"inputs", {"/cloud"}}, {"at_s", 1.0}, {"body", "return {count=1}"}, {"outputs", {"count:number"}}});
+  });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (executor.empty() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  EXPECT_FALSE(executor.empty());
+  executor.drain(reg, ctx);
+  EXPECT_EQ(dp.poll_calls, 1);
+  EXPECT_EQ(worker.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
+  executor.shutdown();
+  EXPECT_FALSE(worker.get().ok);
+  EXPECT_EQ(dp.released_handles.size(), 1u);
+}
+
+TEST(ToolRegistry, ReportStatusAccountsOnlyOwnFindingsAndDegradesExplicitly) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  RecordingDpHost dp;
+  dp.live_ids = {"finding"};
+  dp.canned_config_json = R"({"kind":"on_demand","pinned_t_ns":0,"memory_bytes":123,"state":"ready"})";
+  FakePlaybackHost playback;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = playback.view();
+  auto result = reg.execute("report_status", {}, ctx);
+  ASSERT_TRUE(result.ok);
+  auto report = json::parse(result.content);
+  EXPECT_EQ(report["findings"]["pinned"], 1);
+  EXPECT_EQ(report["findings"]["bytes"], 123);
+  EXPECT_EQ(report["processors"][0]["state"], "ready");
+  dp.fail_config = true;
+  report = json::parse(reg.execute("report_status", {}, ctx).content);
+  EXPECT_EQ(report["findings"]["complete"], false);
+}
+
+TEST(ToolRegistry, ExecutorAbandonedContinuationReleasesAtNextGuiTick) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  dp.pending_polls = 100;
+  FakePlaybackHost playback;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = playback.view();
+  assistant_agent::GuiExecutor executor(std::chrono::milliseconds(500));
+  auto worker = std::async(std::launch::async, [&] {
+    return executor.call(
+        "evaluate",
+        {{"inputs", {"/cloud"}}, {"at_s", 1.0}, {"body", "return {count=1}"}, {"outputs", {"count:number"}}});
+  });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (executor.empty() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  executor.drain(reg, ctx);
+  EXPECT_EQ(dp.poll_calls, 1);
+  EXPECT_FALSE(worker.get().ok);
+  EXPECT_TRUE(dp.released_handles.empty());
+  executor.drain(reg, ctx);
+  EXPECT_EQ(dp.poll_calls, 1);
+  EXPECT_EQ(dp.released_handles.size(), 1u);
+}
+
+TEST(ToolRegistry, MediaCatalogIncludesCallableOperationsAndFieldOnlyTypes) {
+  using assistant_agent::objectOperationsFor;
+  using PJ::sdk::BuiltinObjectType;
+  for (auto type :
+       {BuiltinObjectType::kPointCloud, BuiltinObjectType::kSceneEntities, BuiltinObjectType::kImage,
+        BuiltinObjectType::kDepthImage, BuiltinObjectType::kImageAnnotations, BuiltinObjectType::kVideoFrame}) {
+    EXPECT_FALSE(objectOperationsFor(type).empty());
+  }
+  EXPECT_TRUE(objectOperationsFor(BuiltinObjectType::kCameraInfo).empty());
+  EXPECT_TRUE(objectOperationsFor(BuiltinObjectType::kFrameTransforms).empty());
+  const auto depth = objectOperationsFor(BuiltinObjectType::kImage);
+  EXPECT_TRUE(
+      std::any_of(depth.begin(), depth.end(), [](const auto& op) { return op.name.starts_with("to_point_cloud("); }));
+}
+
+TEST(ToolRegistry, MediaCatalogHasAllEightSdkFieldTables) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  for (const auto* type :
+       {"kPointCloud", "kSceneEntities", "kFrameTransforms", "kImageAnnotations", "kImage", "kDepthImage",
+        "kCameraInfo", "kVideoFrame"}) {
+    const std::string topic = std::string("/") + type;
+    host.addObjectTopic(topic, type, 1, 0, kSec);
+    ToolContext ctx;
+    ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+    const auto result = reg.execute("describe_topic", {{"topic", topic}}, ctx);
+    ASSERT_TRUE(result.ok) << result.content;
+    const auto description = json::parse(result.content);
+    ASSERT_TRUE(description.contains("fields")) << description.dump();
+    EXPECT_FALSE(description["fields"].empty()) << type << ": rebuild with SDK media field tables";
+  }
+}
+
+TEST(ToolRegistry, ExecutorResumesPendingEvaluationWithoutResubmitting) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  dp.pending_polls = 2;
+  FakePlaybackHost playback;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = playback.view();
+  assistant_agent::GuiExecutor executor;
+  auto worker = std::async(std::launch::async, [&] {
+    return executor.call(
+        "evaluate",
+        {{"inputs", {"/cloud"}}, {"at_s", 1.0}, {"body", "return {count=1}"}, {"outputs", {"count:number"}}});
+  });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (executor.empty() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  for (int tick = 0; tick < 3; ++tick) {
+    executor.drain(reg, ctx);
+  }
+  EXPECT_TRUE(worker.get().ok);
+  EXPECT_EQ(dp.submit_calls, 1);
+  EXPECT_EQ(dp.poll_calls, 3);
+  EXPECT_EQ(dp.released_handles.size(), 1u);
+}
+
+TEST(ToolRegistry, ExecutorCancelReleasesPendingEvaluationAndAllowsAnotherTurn) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  dp.pending_polls = 100;
+  FakePlaybackHost playback;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = playback.view();
+  assistant_agent::GuiExecutor executor;
+  auto worker = std::async(std::launch::async, [&] {
+    return executor.call(
+        "evaluate",
+        {{"inputs", {"/cloud"}}, {"at_s", 1.0}, {"body", "return {count=1}"}, {"outputs", {"count:number"}}});
+  });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (executor.empty() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  EXPECT_FALSE(executor.empty());
+  executor.drain(reg, ctx);
+  EXPECT_EQ(dp.poll_calls, 1);
+  EXPECT_EQ(worker.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
+  executor.cancelPending();
+  EXPECT_FALSE(worker.get().ok);
+  EXPECT_EQ(dp.released_handles.size(), 1u);
+  auto next = std::async(std::launch::async, [&] { return executor.call("report_status", {}); });
+  const auto next_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (executor.empty() && std::chrono::steady_clock::now() < next_deadline) {
+    std::this_thread::yield();
+  }
+  executor.drain(reg, ctx);
+  EXPECT_TRUE(next.get().ok);
+}
+
+TEST(CatalogDigest, ObjectRangeMatchesListingDisplayAxisAndMarksRawFallback) {
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 2, 1000 * kSec, 1001 * kSec);
+  FakePlaybackHost playback;
+  playback.display_offset_ns = 1000 * kSec;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.playback = playback.view();
+  ToolRegistry registry;
+  const auto listed = registry.execute("list_topics", json::object(), ctx);
+  ASSERT_TRUE(listed.ok);
+  EXPECT_EQ(json::parse(listed.content)["topics"][0]["t_range_s"], json::array({0.0, 1.0}));
+  EXPECT_NE(catalogDigest(ctx.host, 10000, ctx.playback).find("0.000-1.000 display seconds"), std::string::npos);
+  EXPECT_NE(catalogDigest(ctx.host).find("1000.000-1001.000 raw seconds"), std::string::npos);
+}
+
+TEST(ToolRegistry, SceneDetachVerifiesDatasetAndTopicTogether) {
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "A");
+  host.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "B");
+  FakePlotTabsHost scenes;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.plot_tabs = scenes.view();
+  ToolRegistry registry;
+  ASSERT_TRUE(registry.execute("scene_view", {{"action", "create"}, {"view", "clouds"}}, ctx).ok);
+  ASSERT_TRUE(registry
+                  .execute(
+                      "scene_view",
+                      {{"action", "attach"}, {"view", "clouds"}, {"topics", json::array({"A:/cloud", "B:/cloud"})}},
+                      ctx)
+                  .ok);
+  auto result = registry.execute(
+      "scene_view", {{"action", "detach"}, {"view", "clouds"}, {"topics", json::array({"A:/cloud"})}}, ctx);
+  ASSERT_TRUE(result.ok) << result.content;
+  const auto response = json::parse(result.content);
+  EXPECT_EQ(response["results"][0]["detached"], true);
+  ASSERT_EQ(response["topics"].size(), 1u);
+  EXPECT_EQ(response["topics"][0]["dataset"], "B");
+}
+
+TEST(ToolRegistry, ObjectEvaluationPreservesQualifiedDatasetAndScriptAliases) {
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "A");
+  host.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "B:run");
+  RecordingDpHost dp;
+  FakePlaybackHost playback;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = playback.view();
+  ToolRegistry registry;
+  const json args = {
+      {"inputs", json::array({"B:run:/cloud"})},
+      {"at_s", 0.0},
+      {"body", "return {count=inputs[\"/cloud\"]:count()}"},
+      {"outputs", json::array({"count:number"})}};
+  auto result = registry.execute("evaluate", args, ctx);
+  ASSERT_TRUE(result.ok) << result.content;
+  EXPECT_EQ(dp.last_inputs, std::vector<std::string>({"B:run:/cloud"}));
+  EXPECT_NE(dp.last_script.find("[\"/cloud\"] = inputs[\"B:run:/cloud\"]"), std::string::npos);
+  EXPECT_NE(dp.last_script.find("[\"B:run:/cloud\"] = inputs[\"B:run:/cloud\"]"), std::string::npos);
+  EXPECT_EQ(playback.last_source_id, 2u);
+
+  auto create_args = args;
+  create_args.erase("at_s");
+  create_args["name"] = "selected_cloud";
+  create_args["pin_at_s"] = 0.0;
+  result = registry.execute("create_derived_object", create_args, ctx);
+  ASSERT_TRUE(result.ok) << result.content;
+  EXPECT_EQ(dp.create_v2_calls, 1);
+  EXPECT_EQ(dp.last_create_v2_inputs, std::vector<std::string>({"B:run:/cloud"}));
+  EXPECT_NE(dp.last_create_v2_script.find("[\"/cloud\"] = inputs[\"B:run:/cloud\"]"), std::string::npos);
+  // The post-create submit names the installed node; its input-free request
+  // must not replace the persisted binding. The validation sees its alias map.
+  EXPECT_NE(dp.last_validate_script.find("[\"/cloud\"] = inputs[\"B:run:/cloud\"]"), std::string::npos);
+}
+
+TEST(ToolRegistry, ObjectEvaluationAndCreationRejectCrossDatasetSelectionBeforeHostMutation) {
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "A");
+  host.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "B");
+  host.addObjectTopic("/camera", "kImage", 2, 0, kSec, "{}", "B");
+  RecordingDpHost dp;
+  FakePlaybackHost playback;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = playback.view();
+  ToolRegistry registry;
+  for (const auto* tool : {"evaluate", "create_derived_object"}) {
+    auto result = registry.execute(
+        tool,
+        {{"name", "wrong_source"},
+         {"inputs", json::array({"A:/cloud", "B:/camera"})},
+         {"at_s", 0.0},
+         {"outputs", json::array({"count:number"})},
+         {"body", "return {count=1}"}},
+        ctx);
+    EXPECT_FALSE(result.ok) << result.content;
+    EXPECT_NE(result.content.find("one dataset"), std::string::npos);
+  }
+  EXPECT_EQ(dp.submit_calls, 0);
+  EXPECT_EQ(dp.create_v2_calls, 0);
+}
+
+TEST(ToolRegistry, ObjectAliasesCannotOverwriteAnotherQualifiedInput) {
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "A");
+  host.addObjectTopic("A:/cloud", "kPointCloud", 2, 0, kSec, "{}", "A");
+  RecordingDpHost dp;
+  FakePlaybackHost playback;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = playback.view();
+  ToolRegistry registry;
+  auto result = registry.execute(
+      "evaluate",
+      {{"inputs", json::array({"A:/cloud", "A:A:/cloud"})},
+       {"at_s", 0.0},
+       {"outputs", json::array({"count:number"})},
+       {"body", "return {count=1}"}},
+      ctx);
+  EXPECT_FALSE(result.ok) << result.content;
+  EXPECT_NE(result.content.find("ambiguous input alias"), std::string::npos);
+  EXPECT_EQ(dp.submit_calls, 0);
 }
