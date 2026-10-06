@@ -659,6 +659,21 @@ TEST(CanDecoderValueTable, WideTableParsesWithoutCrashing) {
   EXPECT_EQ(*wide->label, "L42");
 }
 
+TEST(CanDecoderValueTable, SemicolonInsideLabelKeepsEveryEntry) {
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(valDbc(
+                                    "BO_ 608 SemiMsg: 8 ECU", R"(SG_ Semi : 0|8@1+ (1,0) [0|1] "" ECU)",
+                                    R"(VAL_ 608 Semi 0 "a;b" 1 "c" ;)"))
+                  .has_value());
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(608, false, std::vector<std::uint8_t>{0, 0, 0, 0, 0, 0, 0, 0}, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* semi = find(sigs, "Semi");
+  ASSERT_NE(semi, nullptr);
+  ASSERT_TRUE(semi->label.has_value());
+  EXPECT_EQ(*semi->label, "a;b");
+}
+
 TEST(CanDecoderValueTable, BuilderFieldOrderAndTypes) {
   CanDecoder dec;
   ASSERT_TRUE(dec.loadDbcString(kStatusValDbc).has_value());

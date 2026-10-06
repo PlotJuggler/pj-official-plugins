@@ -83,20 +83,23 @@ pj_apply_vendored_patch(_dbc_dbc_cpp _dbc_message_re_bug _dbc_message_re_fix "ca
 # Vendored fix: VAL_ (value tables) parsing rejects tabs/repeated whitespace
 # (value_re predates the shared whiteSpace variable) and reads every key as
 # non-negative (std::stoul), so a negative key ("-1 \"ERROR\"") throws and
-# drops the WHOLE VAL_ line silently. Fix: value_re/description_re tolerate
-# flexible whitespace (still 6 capture groups; only 2/3/4 consumed below);
-# the key is read with std::stoll and narrowed to uint32_t's bit pattern --
+# drops the WHOLE VAL_ line silently. Its repeated pair group also makes
+# MSVC's std::regex throw error_stack from about 50 pairs on, which fails the
+# load of the WHOLE DBC on Windows. Fix: value_re/description_re tolerate
+# flexible whitespace, and value_re takes the pairs as one plain `.*` run
+# (group 4, the only body group consumed) that description_re's iterator
+# below already splits into pairs; the key is read with std::stoll and narrowed to uint32_t's bit pattern --
 # pj_can_dbc::normalizeValueKey (can_decoder.cpp) restores the sign at load
 # time. Out of scope: VAL_TABLE_, an env-var VAL_, a multi-line VAL_, and an
 # escaped quote in label text.
 set(_dbc_value_re_bug [==[	, value_re("^(VAL_)\\s(\\d+)\\s(\\w+)((?:\\s(\\d+)\\s\"([^\"]*)\")+)\\s;$")]==])
-set(_dbc_value_re_fix [==[	, value_re("^(VAL_)\\s+(\\d+)\\s+(\\w+)((?:\\s+(-?\\d+)\\s+\"([^\"]*)\")+)\\s*;\\s*$")]==])
+set(_dbc_value_re_fix [==[	, value_re("^(VAL_)\\s+(\\d+)\\s+(\\w+)(\\s.*)\\s*;\\s*$")]==])
 set(_dbc_description_re_bug [==[			std::regex description_re("\\s(\\d+)\\s\"([^\"]*)\"");]==])
 set(_dbc_description_re_fix [==[			std::regex description_re("\\s+(-?\\d+)\\s+\"([^\"]*)\"");]==])
 set(_dbc_value_number_bug [==[				uint32_t number = static_cast<uint32_t>(std::stoul(desc_match.str(1)));]==])
 set(_dbc_value_number_fix [==[				uint32_t number = static_cast<uint32_t>(std::stoll(desc_match.str(1)));  // PJ fix: stoll accepts a leading minus sign (stoul throws out_of_range on it); narrowing a negative long long to uint32_t gives its 32-bit twos-complement bit pattern (sign restored in pj_can_dbc from Signal::is_signed/size)]==])
 
-pj_apply_vendored_patch(_dbc_dbc_cpp _dbc_value_re_bug _dbc_value_re_fix "can_dbc: dbc_parser_cpp value_re whitespace/negative-key")
+pj_apply_vendored_patch(_dbc_dbc_cpp _dbc_value_re_bug _dbc_value_re_fix "can_dbc: dbc_parser_cpp value_re whitespace/negative-key/MSVC error_stack")
 pj_apply_vendored_patch(_dbc_dbc_cpp _dbc_description_re_bug _dbc_description_re_fix "can_dbc: dbc_parser_cpp VAL_ description whitespace/negative-key")
 pj_apply_vendored_patch(_dbc_dbc_cpp _dbc_value_number_bug _dbc_value_number_fix "can_dbc: dbc_parser_cpp VAL_ negative key cast")
 file(CONFIGURE OUTPUT ${_dbc_patched_dir}/dbc.cpp CONTENT "${_dbc_dbc_cpp}" @ONLY)

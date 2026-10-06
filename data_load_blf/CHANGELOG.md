@@ -12,6 +12,10 @@ below; for earlier releases see the git history of `data_load_blf/`.
   unmatched); negative and all-unsigned `VAL_` key conventions are both
   accepted. See the README for the `_label` naming convention.
 
+### Fixed
+- A DBC whose value table (`VAL_`) has more than about 50 entries no longer
+  fails to load entirely on Windows.
+
 ## [0.1.2] - 2026-09-21
 
 ### Fixed
