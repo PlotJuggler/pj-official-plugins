@@ -25,3 +25,7 @@ One entry per released version (newest first).
 - Dialog: per-interface frame/id counts and current dictionary from a capped
   prescan, a dictionary picker per interface, a raw-fallback toggle, and the
   time-mode override.
+- A signal decoded from a DBC `VAL_` value table now also gets a
+  `<signal>_label` text field (decoded label, or the raw value as text when
+  unmatched); negative and all-unsigned `VAL_` key conventions are both
+  accepted. See the README for the `_label` naming convention.

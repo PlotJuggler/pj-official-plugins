@@ -62,7 +62,10 @@ target_compile_options(candump_source_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(candump_source_test PRIVATE
   CANDUMP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data")
 # candump_dialog.cpp includes the headers generated for the plugin target above.
-target_include_directories(candump_source_test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+# common/can_dbc/tests: shared findField() test helper (field_test_helpers.hpp).
+target_include_directories(candump_source_test PRIVATE
+  ${CMAKE_CURRENT_BINARY_DIR}/generated
+  ${CMAKE_CURRENT_LIST_DIR}/../common/can_dbc/tests)
 target_link_libraries(candump_source_test PRIVATE
   plotjuggler_sdk::plugin_host
   candump_core

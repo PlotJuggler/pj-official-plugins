@@ -6,11 +6,14 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <field_test_helpers.hpp>
 #include <fstream>
 #include <iterator>
 #include <pj_can_dbc/can_decoder.hpp>
+#include <pj_can_dbc/signal_row.hpp>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "../candump_parser.hpp"
@@ -26,6 +29,8 @@ using candump_test::testDataPath;
 using pj_can_dbc::CanDecoder;
 using pj_can_dbc::DecodedSignal;
 using pj_can_dbc::DecodeResult;
+using pj_can_dbc::SignalRowBuilder;
+using pj_can_dbc::testing::findField;
 
 std::string readFile(const std::string& name) {
   std::ifstream file(testDataPath(name.c_str()));
@@ -164,6 +169,36 @@ TEST(CandumpDecode, LogFormatFixtureDecodesThroughDbc) {
   EXPECT_DOUBLE_EQ(speed_value, 100.0);
   EXPECT_DOUBLE_EQ(ext_sig_value, 1.0);
   EXPECT_DOUBLE_EQ(under_value, 0.0);
+}
+
+// sample.dbc's VAL_ tables through the SAME SignalRowBuilder path
+// candump_source.cpp's decoded-frame branch uses: Speed's raw value (1000,
+// pinned above) matches its table exactly; ExtSig's raw value (1) has no
+// matching entry (the table only has key 5) and must fall back to its
+// number as text.
+TEST(CandumpDecode, ValueTableLabelsRouteThroughSignalRowBuilder) {
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcFile(testDataPath("sample.dbc")).has_value());
+
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto speed_sigs = dec.decode(0x100u, /*extended=*/false, std::vector<std::uint8_t>{0xE8, 0x03}, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  SignalRowBuilder speed_builder;
+  const auto speed_fields = speed_builder.build(speed_sigs);
+  const auto* speed_label = findField(speed_fields, "Speed_label");
+  ASSERT_NE(speed_label, nullptr);
+  ASSERT_TRUE(std::holds_alternative<std::string_view>(speed_label->value));
+  EXPECT_EQ(std::get<std::string_view>(speed_label->value), "HUNDRED_KMH");
+
+  const std::vector<std::uint8_t> ext_data{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+  const auto ext_sigs = dec.decode(0x4D2u, /*extended=*/true, ext_data, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  SignalRowBuilder ext_builder;
+  const auto ext_fields = ext_builder.build(ext_sigs);
+  const auto* ext_label = findField(ext_fields, "ExtSig_label");
+  ASSERT_NE(ext_label, nullptr);
+  ASSERT_TRUE(std::holds_alternative<std::string_view>(ext_label->value));
+  EXPECT_EQ(std::get<std::string_view>(ext_label->value), "1");
 }
 
 // screen_format.txt + sample.dbc. Fixture shapes verified against

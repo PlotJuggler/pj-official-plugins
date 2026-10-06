@@ -14,3 +14,6 @@ BO_ 2147484882 ExtMsg: 8 ECU
 
 BO_ 1536 UnderscoreDlc: 8 ECU
  SG_ Under : 0|8@1+ (1,0) [0|255] "" ECU
+
+VAL_ 256 Speed 1000 "HUNDRED_KMH" ;
+VAL_ 2147484882 ExtSig 5 "FIVE" ;

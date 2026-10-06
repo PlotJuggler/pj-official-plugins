@@ -1,13 +1,44 @@
+#include <algorithm>
+#include <cmath>
 #include <exception>
 #include <libdbc/dbc.hpp>
 #include <pj_can_dbc/can_decoder.hpp>
 #include <sstream>
+#include <string>
+#include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace pj_can_dbc {
 
 namespace {
+
+/// Normalizes a raw `VAL_` key (`Signal::ValueDescription::value`, a
+/// `uint32_t` bit pattern -- see the vendored dbc.cpp patch in
+/// common/can_dbc/CMakeLists.txt) to the signed integer the signal actually
+/// decodes to. Unsigned signals take the key as-is. Signed signals first
+/// reinterpret it as a two's-complement 32-bit value (the convention our
+/// vendored patch produces for a literal negative key, e.g. "-1"), then --
+/// for a signal narrower than 32 bits -- fold the equivalent ALL-UNSIGNED
+/// convention some DBC exporters use instead (e.g. "255" for an 8-bit
+/// signal's -1) onto the same negative key, so both spellings of the same
+/// fault value land on one table entry.
+std::int64_t normalizeValueKey(std::uint32_t raw_key, bool is_signed, std::uint32_t size) {
+  if (!is_signed) {
+    return static_cast<std::int64_t>(raw_key);
+  }
+  std::int64_t key = static_cast<std::int64_t>(static_cast<std::int32_t>(raw_key));
+  if (size < 32) {
+    const std::int64_t width = std::int64_t{1} << size;
+    const std::int64_t half = std::int64_t{1} << (size - 1);
+    if (key >= half && key < width) {
+      key -= width;
+    }
+  }
+  return key;
+}
+
 /// DBC extended-frame flag (Vector convention: bit 31 set on 29-bit messages).
 constexpr std::uint32_t kExtendedFlag = 0x8000'0000u;
 /// Highest standard (11-bit) CAN id.
@@ -32,14 +63,79 @@ bool messageLayoutInRange(const Libdbc::Message& msg) {
 }
 }  // namespace
 
-/// Name/unit of one signal, cached at DBC load. Libdbc::Message::get_signals()
-/// returns the whole Signal vector *by value* (each Signal owns strings plus
-/// unused receiver/value-description vectors), so calling it per frame would
-/// deep-copy on every decode; decode() only needs name + unit.
+/// Name/unit/value-table of one signal, cached at DBC load.
+/// Libdbc::Message::get_signals() returns the whole Signal vector *by value*
+/// (each Signal owns strings plus unused receiver/value-description
+/// vectors), so calling it per frame would deep-copy on every decode;
+/// decode() only needs what is cached here.
+///
+/// `labels` holds this signal's `VAL_` table (empty when it has none, or
+/// when `factor == 0` -- the raw-value round trip below is meaningless
+/// then), sorted by key and deduped keeping the FIRST entry for a
+/// duplicate key (a malformed DBC repeating a key is not our problem to
+/// referee). The label strings are owned here so `DecodedSignal::label`
+/// (a view) stays valid for the decoder's lifetime. `label_name` is the
+/// name of the text field carrying the label, allocated once per message at
+/// load (iff `labels` is non-empty; see assignLabelNames) instead of per
+/// decoded frame; `DecodedSignal::label_name` views it the same way.
 struct SignalMeta {
   std::string name;
   std::string unit;
+  double factor = 1.0;
+  double offset = 0.0;
+  std::vector<std::pair<std::int64_t, std::string>> labels;
+  std::string label_name;
 };
+
+/// Builds `SignalMeta::labels` from a signal's raw `VAL_` table: normalizes
+/// each key (see normalizeValueKey), sorts by key, and drops a duplicate
+/// key's later entry.
+std::vector<std::pair<std::int64_t, std::string>> buildLabels(const Libdbc::Signal& sig) {
+  std::vector<std::pair<std::int64_t, std::string>> labels;
+  if (sig.factor == 0.0 || sig.value_descriptions.empty()) {
+    return labels;
+  }
+  labels.reserve(sig.value_descriptions.size());
+  for (const auto& desc : sig.value_descriptions) {
+    labels.emplace_back(normalizeValueKey(desc.value, sig.is_signed, sig.size), desc.description);
+  }
+  std::stable_sort(labels.begin(), labels.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+  labels.erase(
+      std::unique(labels.begin(), labels.end(), [](const auto& a, const auto& b) { return a.first == b.first; }),
+      labels.end());
+  return labels;
+}
+
+/// Gives every signal with a `VAL_` table its text-field name: `"<name>_label"`,
+/// or `"<name>_label_2"`, `"_3"`, ... when that name is already taken within
+/// the message by a real signal (a DBC may pair `Foo` with a genuine
+/// `Foo_label`) or by an earlier signal's label, so one row never carries two
+/// fields with the same name. Allocation walks signals in declaration order
+/// against the set of ALL the message's real signal names, so the result is
+/// fixed at load and independent of frame data. Collisions are per message
+/// (each message is its own topic).
+void assignLabelNames(std::vector<SignalMeta>& meta) {
+  if (std::none_of(meta.begin(), meta.end(), [](const SignalMeta& m) { return !m.labels.empty(); })) {
+    return;  // the common case: nothing to name, so skip building the set
+  }
+  std::unordered_set<std::string> taken;
+  taken.reserve(meta.size() * 2);
+  for (const auto& signal_meta : meta) {
+    taken.insert(signal_meta.name);
+  }
+  for (auto& signal_meta : meta) {
+    if (signal_meta.labels.empty()) {
+      continue;
+    }
+    const std::string base = signal_meta.name + "_label";
+    std::string candidate = base;
+    for (std::size_t n = 2; taken.count(candidate) != 0; ++n) {
+      candidate = base + "_" + std::to_string(n);
+    }
+    taken.insert(candidate);
+    signal_meta.label_name = std::move(candidate);
+  }
+}
 
 struct MessageEntry {
   Libdbc::Message message;
@@ -61,8 +157,9 @@ struct CanDecoder::Impl {
       }
       std::vector<SignalMeta> meta;
       for (const auto& sig : msg.get_signals()) {
-        meta.push_back(SignalMeta{sig.name, sig.unit});
+        meta.push_back(SignalMeta{sig.name, sig.unit, sig.factor, sig.offset, buildLabels(sig), {}});
       }
+      assignLabelNames(meta);
       id_to_index[msg.id()] = messages.size();
       messages.push_back(MessageEntry{msg, std::move(meta)});
     }
@@ -118,6 +215,16 @@ std::size_t CanDecoder::messageCount() const {
   return impl_->messages.size();
 }
 
+std::size_t CanDecoder::valueTableCount() const {
+  std::size_t count = 0;
+  for (const auto& entry : impl_->messages) {
+    for (const auto& sig : entry.signals) {
+      count += sig.labels.empty() ? 0 : 1;
+    }
+  }
+  return count;
+}
+
 std::string CanDecoder::messageName(std::uint32_t can_id, bool extended) const {
   const MessageEntry* entry = impl_->find(can_id, extended);
   return entry != nullptr ? entry->message.name() : std::string{};
@@ -147,11 +254,27 @@ std::vector<DecodedSignal> CanDecoder::decode(
   }
   result = DecodeResult::kDecoded;
 
-  const auto& signals = entry->signals;  // cached name/unit, no per-frame copy
+  const auto& signals = entry->signals;  // cached name/unit/labels, no per-frame copy
   const std::size_t count = signals.size() < values.size() ? signals.size() : values.size();
   out.reserve(count);
   for (std::size_t k = 0; k < count; ++k) {
-    out.push_back(DecodedSignal{signals[k].name, values[k], signals[k].unit});
+    const SignalMeta& meta = signals[k];
+    DecodedSignal decoded{.name = meta.name, .value = values[k], .unit = meta.unit};
+    if (!meta.labels.empty()) {
+      decoded.label_name = meta.label_name;
+      // Recover the raw integer value from the physical value (inverse of
+      // dbc_parser_cpp's `value = raw * factor + offset`); factor == 0 was
+      // already excluded from having any labels at load time (buildLabels).
+      const std::int64_t raw = std::llround((values[k] - meta.offset) / meta.factor);
+      decoded.raw = raw;
+      const auto it = std::lower_bound(
+          meta.labels.begin(), meta.labels.end(), raw,
+          [](const auto& label_entry, std::int64_t key) { return label_entry.first < key; });
+      if (it != meta.labels.end() && it->first == raw) {
+        decoded.label = std::string_view(it->second);
+      }
+    }
+    out.push_back(std::move(decoded));
   }
   return out;
 }
