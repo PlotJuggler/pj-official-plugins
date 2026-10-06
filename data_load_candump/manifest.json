@@ -1,8 +1,8 @@
 {
-  "id": "blf-loader",
-  "name": "BLF Loader",
-  "version": "0.1.2",
-  "description": "Data loader for Vector BLF (Binary Logging Format) CAN logs, decoded to signals via DBC.",
+  "id": "candump-loader",
+  "name": "candump Loader",
+  "version": "0.1.0",
+  "description": "Data loader for Linux SocketCAN candump captures (log and screen format), decoded to signals via DBC or an ARUS-style CSV dictionary.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
   "website": "https://github.com/PlotJuggler/pj-official-plugins",
@@ -11,16 +11,17 @@
   "icon_url": "",
   "category": "data_loader",
   "tags": [
-    "blf",
-    "vector",
+    "candump",
+    "socketcan",
     "can",
     "automotive",
     "file",
     "loader"
   ],
   "file_extensions": [
-    ".blf",
-    ".BLF"
+    ".candump",
+    ".log",
+    ".txt"
   ],
   "min_sdk_required": "0.28.0",
   "min_plotjuggler_version": "4.0.0"

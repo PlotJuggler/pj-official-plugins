@@ -31,9 +31,10 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/transfer_rate)
   add_subdirectory(common/toolbox_preview)
   # This block always adds every plugin (no PJ_BUILD_PLUGIN filtering), so its
-  # consumers data_load_mf4/data_load_blf are always present — add their shared
-  # can_dbc unconditionally too. (The standalone block below, which DOES honor
-  # PJ_BUILD_PLUGIN, gates it to avoid the CPM download for unrelated plugins.)
+  # consumers data_load_mf4/data_load_blf/data_load_candump are always present
+  # — add their shared can_dbc unconditionally too. (The standalone block
+  # below, which DOES honor PJ_BUILD_PLUGIN, gates it to avoid the CPM
+  # download for unrelated plugins.)
   add_subdirectory(common/can_dbc)
 
   # Enabled entries track the v4 ABI (PJ_ABI_VERSION == 4): service-
@@ -48,6 +49,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(data_load_ulog)
   add_subdirectory(data_load_mf4)
   add_subdirectory(data_load_blf)
+  add_subdirectory(data_load_candump)
   add_subdirectory(data_load_3d)
   add_subdirectory(data_load_lerobot)
   add_subdirectory(data_load_mp4)
@@ -196,7 +198,7 @@ add_subdirectory(common/query)
 add_subdirectory(common/transfer_rate)
 # common/can_dbc has a CPM download side-effect, so configure it only for its
 # consumers (skipped when building an unrelated single plugin).
-set(PJ_CAN_DBC_CONSUMERS data_load_mf4 data_load_blf)
+set(PJ_CAN_DBC_CONSUMERS data_load_mf4 data_load_blf data_load_candump)
 if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_CAN_DBC_CONSUMERS)
   add_subdirectory(common/can_dbc)
 endif()
@@ -232,6 +234,7 @@ else()
   add_subdirectory(data_load_ulog)
   add_subdirectory(data_load_mf4)
   add_subdirectory(data_load_blf)
+  add_subdirectory(data_load_candump)
   add_subdirectory(data_load_3d)
   add_subdirectory(data_load_lerobot)
   add_subdirectory(data_load_mp4)
