@@ -47,6 +47,7 @@
 
 #include <cstdint>
 #include <istream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -162,6 +163,30 @@ enum class TimeMode {
   kAbsolute,           ///< raw ns IS the absolute (epoch) timestamp
   kRelativeMonotonic,  ///< `-tz`-style: raw ns is already a non-decreasing offset since start
   kRelativeDelta,      ///< `-td`-style: raw ns is the delta since the PREVIOUS frame; accumulate
+};
+
+/// True when `line` carries a numeric "(s.frac)" timestamp, whatever its kind
+/// (data, RTR, error, FD, XL, or an unparsable body behind a valid prefix).
+/// Wall-clock (`-t a`) timestamps are not numeric, and DROPCOUNT / `-e`
+/// detail lines carry no timestamp at all.
+[[nodiscard]] bool hasNumericTimestamp(const ParsedLine& line);
+
+/// Turns each line's raw timestamp into its position on the import timeline.
+/// Must be fed EVERY parsed line of the file, in order (not only the ones
+/// that become records): `candump -t d` prints a delta on every received
+/// frame, before looking at its type, so the running sum has to include the
+/// RTR/error/FD/XL and unparsable lines too or every later frame lands early. Returns nullopt for lines without a
+/// numeric timestamp (see hasNumericTimestamp), otherwise the line's timeline nanoseconds: the raw ns in
+/// absolute/monotonic mode, the running sum of deltas in delta mode.
+class TimelineClock {
+ public:
+  explicit TimelineClock(TimeMode mode) : mode_(mode) {}
+
+  std::optional<std::int64_t> advance(const ParsedLine& line);
+
+ private:
+  TimeMode mode_;
+  std::int64_t cumulative_ns_ = 0;
 };
 
 /// Below this many integer seconds, a timestamp is assumed to be relative

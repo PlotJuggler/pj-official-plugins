@@ -411,6 +411,10 @@ void parseScreenBody(std::string_view line, ParsedLine& out, std::size_t pos) {
   std::vector<std::uint8_t> data;
   if (is_bracket) {
     const int dlc = digits[0] - '0';
+    if (dlc > kMaxClassicBytes) {
+      out.kind = LineKind::kMalformed;  // "[N]" is `len + '0'` for len <= 8, so "[9]" cannot come from candump
+      return;
+    }
     data.reserve(static_cast<std::size_t>(dlc));
     for (int i = 0; i < dlc; ++i) {
       const std::string_view byte_tok = nextToken(line, pos);
@@ -623,6 +627,31 @@ ParsedLine parseLine(std::string_view line) {
 
 std::int64_t rawTimestampNs(const ParsedLine& line) {
   return combineRawNs(line.ts_seconds, line.ts_fraction_ns);
+}
+
+bool hasNumericTimestamp(const ParsedLine& line) {
+  return line.has_timestamp && line.kind != LineKind::kWallClockTs;
+}
+
+std::optional<std::int64_t> TimelineClock::advance(const ParsedLine& line) {
+  if (!hasNumericTimestamp(line)) {
+    return std::nullopt;
+  }
+  const std::int64_t raw_ns = rawTimestampNs(line);
+  if (mode_ == TimeMode::kRelativeDelta) {
+    // Saturating, like combineRawNs: a corrupt line can carry a huge delta.
+    constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+    constexpr std::int64_t kMin = std::numeric_limits<std::int64_t>::min();
+    if (raw_ns > 0 && cumulative_ns_ > kMax - raw_ns) {
+      cumulative_ns_ = kMax;
+    } else if (raw_ns < 0 && cumulative_ns_ < kMin - raw_ns) {
+      cumulative_ns_ = kMin;
+    } else {
+      cumulative_ns_ += raw_ns;
+    }
+    return cumulative_ns_;
+  }
+  return raw_ns;
 }
 
 TimeModeDetection detectTimeMode(std::istream& stream, std::uint64_t max_lines) {

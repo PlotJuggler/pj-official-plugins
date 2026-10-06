@@ -39,6 +39,13 @@ references.
   `%03llu` zero-padded seconds) and a non-monotonic sequence (`-t d`,
   delta-since-previous-frame shape) so `candump_detail::detectTimeMode`
   picks `kRelativeMonotonic` / `kRelativeDelta`.
+- `relative_td_mixed.log` / `relative_td_mixed_screen.txt` — the same `-t d`
+  capture in log and screen shape: data frames (id `100`, decodes to Speed
+  100/200/1000/300) interleaved with an RTR, an error frame (plus, in the
+  screen file, its `-e` TAB detail line), a CAN FD frame, a CAN XL frame and
+  (log file only) a `DROPCOUNT:` line. Every timestamped line carries a
+  delta, so the data frames land at 0 / 0.3 / 0.6 / 0.95 s only if the
+  running sum advances over the non-data lines too.
 - `sample.dbc` — the DBC used by `log_format.log`/`screen_format.txt`'s
   decode tests: `EngineData` (id `0x100`, `Speed` at bytes 0-1, LE, x0.1),
   `ExtMsg` (id `0x4D2` extended, `ExtSig` at byte 0), and `UnderscoreDlc`

@@ -13,7 +13,9 @@ using candump_detail::LineKind;
 using candump_detail::parseLine;
 using candump_detail::parseLogLine;
 using candump_detail::parseScreenLine;
+using candump_detail::prescanCandump;
 using candump_detail::rawTimestampNs;
+using candump_detail::TimelineClock;
 using candump_detail::TimeMode;
 
 // --- Log format: classic data frames ---
@@ -244,6 +246,15 @@ TEST(CandumpParserScreen, RightPaddedShortInterfaceName) {
   EXPECT_EQ(line.interface, "c0");
 }
 
+TEST(CandumpParserScreen, NineByteBracketDlcIsMalformed) {
+  // "[N]" is `len + '0'` for len <= 8 upstream, so "[9]" cannot come from
+  // candump -- and 9 payload bytes must never reach the classic-frame consumers.
+  EXPECT_EQ(parseLine(" (0.0)  can0  100   [9]  00 11 22 33 44 55 66 77 88").kind, LineKind::kMalformed);
+  const auto control = parseLine(" (0.0)  can0  100   [8]  00 11 22 33 44 55 66 77");
+  ASSERT_EQ(control.kind, LineKind::kData);
+  EXPECT_EQ(control.data.size(), 8u);
+}
+
 TEST(CandumpParserScreen, MissingDlcBracketIsMalformed) {
   EXPECT_EQ(parseScreenLine("(0.0) can0 100 2 E8 03").kind, LineKind::kMalformed);
 }
@@ -348,6 +359,77 @@ TEST(CandumpTimeMode, StopsAtMaxLines) {
   const auto det = detectTimeMode(in, 1);
   EXPECT_TRUE(det.saw_numeric_timestamp);
   EXPECT_EQ(det.mode, TimeMode::kRelativeMonotonic);  // only one sample: trivially monotonic
+}
+
+TEST(CandumpTimeMode, PrescanIgnoresMalformedLineTimestamps) {
+  // A corrupt line must not decide the time mode or the start time: here its
+  // small timestamp would otherwise make an absolute capture look relative.
+  std::istringstream in(
+      "(000.500000) can0 100#E8F\n"
+      "(1700000000.000000) can0 100#E803\n"
+      "(1700000001.000000) can0 100#E803\n");
+  const auto result = prescanCandump(in, 1000);
+  EXPECT_EQ(result.malformed, 1u);
+  EXPECT_EQ(result.time_mode.mode, TimeMode::kAbsolute);
+  EXPECT_EQ(result.first_timestamp_ns, 1'700'000'000'000'000'000LL);
+}
+
+// --- TimelineClock ---
+
+TEST(CandumpTimelineClock, AbsoluteAndMonotonicPassRawNsThrough) {
+  for (const TimeMode mode : {TimeMode::kAbsolute, TimeMode::kRelativeMonotonic}) {
+    TimelineClock clock(mode);
+    EXPECT_EQ(clock.advance(parseLine("(1700000000.250000) can0 100#E803")), 1'700'000'000'250'000'000LL);
+    EXPECT_EQ(clock.advance(parseLine("(1700000001.500000) can0 100#E803")), 1'700'000'001'500'000'000LL);
+  }
+}
+
+TEST(CandumpTimelineClock, DeltaModeSumsDeltas) {
+  TimelineClock clock(TimeMode::kRelativeDelta);
+  EXPECT_EQ(clock.advance(parseLine("(000.500000) can0 100#E803")), 500'000'000LL);
+  EXPECT_EQ(clock.advance(parseLine("(000.100000) can0 100#E803")), 600'000'000LL);
+  EXPECT_EQ(clock.advance(parseLine("(001.000000) can0 100#E803")), 1'600'000'000LL);
+}
+
+TEST(CandumpTimelineClock, DeltaModeAdvancesOverRtrAndErrorFrames) {
+  TimelineClock clock(TimeMode::kRelativeDelta);
+  EXPECT_EQ(clock.advance(parseLine("(000.500000) can0 100#E803")), 500'000'000LL);
+  EXPECT_EQ(clock.advance(parseLine("(000.100000) can0 200#R")), 600'000'000LL);
+  EXPECT_EQ(clock.advance(parseLine("(000.050000) can0 20000020#0000000000000000")), 650'000'000LL);
+  EXPECT_EQ(clock.advance(parseLine("(000.200000) can0 100#D007")), 850'000'000LL);
+}
+
+TEST(CandumpTimelineClock, DeltaModeAdvancesOverMalformedLineWithNumericTimestamp) {
+  const auto malformed = parseLine("(000.300000) can0 100#E8F");  // odd hex digit count
+  ASSERT_EQ(malformed.kind, LineKind::kMalformed);
+  ASSERT_TRUE(malformed.has_timestamp);
+
+  TimelineClock clock(TimeMode::kRelativeDelta);
+  EXPECT_EQ(clock.advance(parseLine("(000.500000) can0 100#E803")), 500'000'000LL);
+  EXPECT_EQ(clock.advance(malformed), 800'000'000LL);
+  EXPECT_EQ(clock.advance(parseLine("(000.100000) can0 100#E803")), 900'000'000LL);
+}
+
+TEST(CandumpTimelineClock, DeltaModeSaturatesInsteadOfOverflowing) {
+  TimelineClock clock(TimeMode::kRelativeDelta);
+  EXPECT_EQ(clock.advance(parseLine("(000.500000) can0 100#E803")), 500'000'000LL);
+  // 9223372037 s already saturates to INT64_MAX in rawTimestampNs.
+  EXPECT_EQ(clock.advance(parseLine("(9223372037.000000) can0 200#R")), std::numeric_limits<std::int64_t>::max());
+  EXPECT_EQ(clock.advance(parseLine("(000.100000) can0 100#E803")), std::numeric_limits<std::int64_t>::max());
+}
+
+TEST(CandumpTimelineClock, LinesWithoutNumericTimestampDoNotAdvance) {
+  TimelineClock clock(TimeMode::kRelativeDelta);
+  EXPECT_EQ(clock.advance(parseLine("(000.500000) can0 100#E803")), 500'000'000LL);
+
+  const auto wall_clock = parseLine("(2024-01-15 10:23:45.123456) can0 100#E803");
+  ASSERT_EQ(wall_clock.kind, LineKind::kWallClockTs);
+  EXPECT_FALSE(clock.advance(wall_clock).has_value());
+  EXPECT_FALSE(clock.advance(parseLine("DROPCOUNT: dropped 1 CAN frame on 'can0' socket (total drops 1)")).has_value());
+  EXPECT_FALSE(clock.advance(parseLine("\tbus-off")).has_value());
+  EXPECT_FALSE(clock.advance(parseLine("not a candump line")).has_value());
+
+  EXPECT_EQ(clock.advance(parseLine("(000.100000) can0 100#E803")), 600'000'000LL);
 }
 
 }  // namespace
